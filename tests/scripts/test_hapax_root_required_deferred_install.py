@@ -14,7 +14,6 @@ import stat
 import subprocess
 import sys
 import time
-from contextlib import contextmanager
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -218,7 +217,7 @@ def test_authenticated_installers_gate_before_receipts_and_deferral_drain() -> N
         assert superseded_gate < superseded_drain
         assert gate < snapshot < receipt < drain
         assert "no further effect or receipt advancement is permitted" in source
-        main = source[source.rindex("validate_authenticated_production_environment_names") :]
+        main = source[source.rindex("\nload_authenticated_sealed_sources\n") :]
         initial_gate = main.index(superseded_call)
         migration = main.index("migrate_legacy_root_required_state", initial_gate)
         assert initial_gate < migration
@@ -248,34 +247,31 @@ def test_every_installer_environment_name_has_one_authenticated_boundary_classif
         if sum(name in boundary_class for boundary_class in classes) != 1
     }
     indirect_expansions = set(re.findall(r"\$\{!([^}]+)\}", source))
-    deferred_module = _load_deferred_module()
-    required_names = _shell_array_names(source, "AUTHENTICATED_PRODUCTION_REQUIRED_ENV_NAMES")
-
     assert invalid_class_counts == {}
     assert mentioned & LEGACY_OOM_EFFECT_SELECTORS == legacy_effect_selectors
     assert all(reason.strip() for reason in SHARED_INSTALLER_CONTROL_RATIONALES.values())
     assert re.findall(r"HAPAX_(?=[$\"'{])", source) == []
     assert indirect_expansions - {"package_files[@]"} == set()
     assert re.search(r"\b(?:eval|(?:declare|local)\s+-n|printf\s+-v)\b", source) is None
-    assert len(required_names) == len(set(required_names))
-    assert set(required_names) == deferred_module.PRODUCTION_INSTALLER_REQUIRED_ENV_NAMES
+    assert "AUTHENTICATED_PRODUCTION_REQUIRED_ENV_NAMES" not in source
     assert "AUTHENTICATED_PRODUCTION_OPTIONAL_ENV_NAMES" not in source
-    assert "mapfile -d '' -t AUTHENTICATED_PRODUCTION_RAW_ENVIRONMENT" in source
-    assert '"/proc/$$/environ"' in source
+    assert "mapfile -d '' -t AUTHENTICATED_PRODUCTION_RAW_ENVIRONMENT" not in source
+    assert '"/proc/$$/environ"' not in source
     assert "compgen -e" not in source
     source_guard = source.index("must be executed, not sourced")
     privileged_guard = source.index("requires Bash privileged mode")
     option_enable = source.index("set -euo pipefail")
-    fixed_environment_accepted = source.index(
-        "AUTHENTICATED_PRODUCTION_INPUT_ENVIRONMENT_VALIDATED=1"
-    )
     root_derivation = source.index('ROOT="$(cd')
+    production_refusal = source.index("installation is disabled until")
     assert source_guard < privileged_guard < option_enable
     assert "BASH_LINENO[0]" in source[:option_enable]
     assert "moving it into an if condition suppresses errexit" in source[:option_enable]
-    assert source.index("noncanonical fixed environment values") < root_derivation
-    assert "$(" not in source[:fixed_environment_accepted]
-    assert "command-resolution values" in source[:fixed_environment_accepted]
+    assert option_enable < production_refusal < root_derivation
+    assert re.search(r"\$\((?!\()", source[option_enable:production_refusal]) is None
+    assert "done < /proc/self/status" in source[:root_derivation]
+    assert "done < /proc/self/uid_map" in source[:root_derivation]
+    assert "done < /proc/self/gid_map" in source[:root_derivation]
+    assert "done < /proc/self/mountinfo" in source[:root_derivation]
     assert "compgen -A variable" not in source[:root_derivation]
     assert 'unset "$_environment_name"' not in source
     assert (
@@ -287,7 +283,7 @@ def test_every_installer_environment_name_has_one_authenticated_boundary_classif
         is None
     )
     if installer_rel == INSTALLER:
-        production = source[source.rindex("validate_authenticated_production_environment_names") :]
+        production = source[source.rindex("\nload_authenticated_sealed_sources\n") :]
         assert (
             production.index("load_host_policy")
             < production.index("validate_authenticated_cap_environment_for_host")
@@ -666,9 +662,15 @@ def test_legacy_sudo_refusal_precedes_external_lookup_and_no_sudo_dispatch_remai
     root_test_guard = source.index(f'if [ "${{{test_mode_selector}:-0}}" = "1" ]')
     assert root_test_guard < source.index(f'if [ -n "${{{selector}:-}}" ]')
     assert source.index(f'if [ -n "${{{selector}:-}}" ]') < source.index('ROOT="$(cd ')
-    assert '[ "$UID" -eq 0 ]' in source
-    assert '[ "$EUID" -eq 0 ]' in source
-    assert '[ "$UID" -ne "$EUID" ]' in source
+    assert "done < /proc/self/status" in source
+    assert '"$_status_uid_real" != "$_status_uid_saved"' in source
+    assert '"$_status_gid_real" != "$_status_gid_effective"' in source
+    assert '"$_status_gid_real" != "$_status_gid_saved"' in source
+    assert '[[ "$_status_cap_eff" =~ ^0+$ ]]' in source
+    assert "done < /proc/self/uid_map" in source
+    assert "done < /proc/self/gid_map" in source
+    assert "done < /proc/self/mountinfo" in source
+    assert '"$_mount_point" = "$0"' in source
     assert '$(/usr/bin/dirname "${BASH_SOURCE[0]}")' in source
     assert '"$SUDO" "$@"' not in source
     assert "INSTALL_SUDO-/usr/bin/sudo" not in source
@@ -722,8 +724,308 @@ def test_root_user_namespace_cannot_enter_test_mode_before_external_lookup(
         pytest.skip("unprivileged user namespaces are disabled on this runner")
 
     assert result.returncode == 1
-    assert "test mode refuses root or set-ID execution before setup" in result.stderr
+    assert "test mode refuses root, set-ID, capability-bearing" in result.stderr
     assert not marker.exists()
+
+
+def _isolated_installer_environment(
+    tmp_path: Path, installer_rel: Path, selector: str
+) -> tuple[list[str], Path, Path]:
+    workspace = Path("/store-fast/scratch") / (
+        f"cx-crit-identity-{os.getpid()}-{time.monotonic_ns()}"
+    )
+    workspace.mkdir(mode=0o755)
+    isolated_root = workspace / "isolated"
+    isolated_root.mkdir(mode=0o700, exist_ok=True)
+    marker_root = workspace / "marker-root"
+    marker_root.mkdir(mode=0o777, exist_ok=True)
+    marker_root.chmod(0o777)
+    marker = marker_root / "hostile-path-command-ran"
+    fake_bin = workspace / "fake-bin"
+    fake_bin.mkdir(mode=0o755, exist_ok=True)
+    for name in ("dirname", "id", "getent"):
+        executable = fake_bin / name
+        executable.write_text(
+            f"#!/usr/bin/bash\n/usr/bin/touch {marker}\nexit 0\n", encoding="utf-8"
+        )
+        executable.chmod(0o755)
+    installer = workspace / "installer"
+    shutil.copy2(REPO_ROOT / installer_rel, installer)
+    installer.chmod(0o755)
+    command = [
+        "/usr/bin/env",
+        "-i",
+        f"PATH={fake_bin}:/usr/bin:/bin",
+        "HAPAX_ROOT_REQUIRED_INSTALLER_TEST_MODE=1",
+        f"HAPAX_ROOT_REQUIRED_INSTALLER_TEST_ROOT={isolated_root}",
+        f"{selector}=",
+        str(installer),
+        "--install",
+    ]
+    return command, marker, workspace
+
+
+@pytest.mark.parametrize(
+    ("installer_rel", "selector"),
+    (
+        (INSTALLER, "HAPAX_OOM_INSTALL_SUDO"),
+        (APCUPSD_INSTALLER, "HAPAX_APCUPSD_INSTALL_SUDO"),
+    ),
+)
+@pytest.mark.parametrize(
+    "identity_prefix",
+    (
+        (
+            "/usr/bin/unshare",
+            "--map-auto",
+            "--setuid",
+            "1000",
+            "--setgid",
+            "1000",
+            "--fork",
+            "--",
+        ),
+        (
+            "/usr/bin/unshare",
+            "--map-auto",
+            "--setuid",
+            "0",
+            "--setgid",
+            "0",
+            "--fork",
+            "--",
+            "/usr/bin/setpriv",
+            "--ruid",
+            "1000",
+            "--euid",
+            "1000",
+            "--rgid",
+            "1000",
+            "--egid",
+            "1001",
+            "--clear-groups",
+            "--",
+        ),
+        (
+            "/usr/bin/unshare",
+            "--map-auto",
+            "--setuid",
+            "0",
+            "--setgid",
+            "0",
+            "--fork",
+            "--",
+            "/usr/bin/setpriv",
+            "--reuid",
+            "1000",
+            "--regid",
+            "1000",
+            "--clear-groups",
+            "--inh-caps",
+            "+net_bind_service",
+            "--ambient-caps",
+            "+net_bind_service",
+            "--",
+        ),
+    ),
+    ids=("nonzero-user-map", "setgid", "effective-capability"),
+)
+def test_isolated_test_mode_rejects_noninitial_or_privileged_identity_before_lookup(
+    tmp_path: Path,
+    installer_rel: Path,
+    selector: str,
+    identity_prefix: tuple[str, ...],
+) -> None:
+    if not Path("/usr/bin/unshare").exists() or not Path("/usr/bin/setpriv").exists():
+        pytest.skip("unshare or setpriv is unavailable")
+    command, marker, workspace = _isolated_installer_environment(tmp_path, installer_rel, selector)
+    try:
+        result = subprocess.run(
+            [*identity_prefix, *command], text=True, capture_output=True, check=False
+        )
+        if "unshare failed" in result.stderr and "not permitted" in result.stderr.lower():
+            pytest.skip("unprivileged user namespaces are disabled on this runner")
+
+        assert result.returncode == 1
+        assert "test mode refuses root, set-ID, capability-bearing" in result.stderr
+        assert not marker.exists()
+    finally:
+        shutil.rmtree(workspace)
+
+
+@pytest.mark.parametrize(
+    ("installer_rel", "selector"),
+    (
+        (INSTALLER, "HAPAX_OOM_INSTALL_SUDO"),
+        (APCUPSD_INSTALLER, "HAPAX_APCUPSD_INSTALL_SUDO"),
+    ),
+)
+def test_bind_mounted_installer_alias_in_user_mount_namespace_cannot_enter_test_mode(
+    tmp_path: Path, installer_rel: Path, selector: str
+) -> None:
+    command, marker, workspace = _isolated_installer_environment(tmp_path, installer_rel, selector)
+    alias = workspace / "installer-bind-alias"
+    alias.touch(mode=0o755)
+    alias.chmod(0o755)
+    launcher = (
+        'set -e; /usr/bin/mount --bind "$1" "$2"; shift 2; '
+        'exec /usr/bin/setpriv --reuid 1000 --regid 1000 --clear-groups -- "$@"'
+    )
+    prefix = [
+        "/usr/bin/unshare",
+        "--map-users",
+        f"0:{os.getuid()}:1",
+        "--map-users",
+        "1:100000:65536",
+        "--map-groups",
+        f"0:{os.getgid()}:1",
+        "--map-groups",
+        "1:100000:65536",
+        "--setuid",
+        "0",
+        "--setgid",
+        "0",
+        "--mount",
+        "--fork",
+        "--",
+        "/usr/bin/bash",
+        "--noprofile",
+        "--norc",
+        "-p",
+        "-c",
+        launcher,
+        "bind-alias-test",
+        command[-2],
+        str(alias),
+    ]
+    command[-2] = str(alias)
+    try:
+        result = subprocess.run([*prefix, *command], text=True, capture_output=True, check=False)
+        if "unshare failed" in result.stderr and "not permitted" in result.stderr.lower():
+            pytest.skip("unprivileged user namespaces are disabled on this runner")
+
+        assert result.returncode == 1
+        assert "test mode refuses root, set-ID, capability-bearing" in result.stderr
+        assert not marker.exists()
+    finally:
+        shutil.rmtree(workspace)
+
+
+@pytest.mark.parametrize(
+    ("installer_rel", "fault", "guard_line"),
+    (
+        (
+            INSTALLER,
+            "setgid",
+            '        || [ "$_status_gid_real" != "$_status_gid_effective" ] \\\n',
+        ),
+        (
+            APCUPSD_INSTALLER,
+            "setgid",
+            '        || [ "$_status_gid_real" != "$_status_gid_effective" ] \\\n',
+        ),
+        (
+            INSTALLER,
+            "capability",
+            '        || ! [[ "$_status_cap_eff" =~ ^0+$ ]] \\\n',
+        ),
+        (
+            APCUPSD_INSTALLER,
+            "capability",
+            '        || ! [[ "$_status_cap_eff" =~ ^0+$ ]] \\\n',
+        ),
+        (
+            INSTALLER,
+            "mount-alias",
+            '        || [ "$_script_is_mountpoint" -ne 0 ]; then\n',
+        ),
+        (
+            APCUPSD_INSTALLER,
+            "mount-alias",
+            '        || [ "$_script_is_mountpoint" -ne 0 ]; then\n',
+        ),
+    ),
+)
+def test_isolated_identity_predicates_are_independently_mutation_verified(
+    installer_rel: Path, fault: str, guard_line: str
+) -> None:
+    workspace = Path("/store-fast/scratch") / (
+        f"cx-crit-identity-mutant-{os.getpid()}-{time.monotonic_ns()}"
+    )
+    workspace.mkdir(mode=0o755)
+    marker = workspace / "external-lookup-ran"
+    dirname = workspace / "dirname"
+    dirname.write_text(
+        f"#!/usr/bin/bash\n/usr/bin/touch {marker}\n/usr/bin/printf '%s\\n' {workspace}\n",
+        encoding="utf-8",
+    )
+    dirname.chmod(0o755)
+    status = workspace / "status"
+    status_text = Path("/proc/self/status").read_text(encoding="ascii")
+    if fault == "setgid":
+        status_text = re.sub(
+            r"(?m)^Gid:\s+\d+\s+\d+\s+\d+\s+\d+\s*$",
+            f"Gid:\t{os.getgid()}\t3\t{os.getgid()}\t{os.getgid()}",
+            status_text,
+        )
+    elif fault == "capability":
+        status_text = re.sub(
+            r"(?m)^CapEff:\s+[0-9a-fA-F]+\s*$",
+            "CapEff:\t0000000000000400",
+            status_text,
+        )
+    status.write_text(status_text, encoding="ascii")
+    mountinfo = workspace / "mountinfo"
+    script = workspace / "installer"
+    mountinfo.write_text(
+        f"1 0 0:1 / {script} rw - tmpfs tmpfs rw\n"
+        if fault == "mount-alias"
+        else Path("/proc/self/mountinfo").read_text(encoding="ascii"),
+        encoding="ascii",
+    )
+    source = (REPO_ROOT / installer_rel).read_text(encoding="utf-8")
+    source = source.replace("/proc/self/status", str(status), 1)
+    source = source.replace("/proc/self/mountinfo", str(mountinfo), 1)
+    source = source.replace("/usr/bin/dirname", str(dirname), 1)
+    assert guard_line in source
+    environment = {
+        **os.environ,
+        "HAPAX_ROOT_REQUIRED_INSTALLER_TEST_MODE": "1",
+        "HAPAX_ROOT_REQUIRED_INSTALLER_TEST_ROOT": str(workspace),
+        "HAPAX_OOM_INSTALL_SUDO": "",
+        "HAPAX_APCUPSD_INSTALL_SUDO": "",
+    }
+    try:
+        script.write_text(source, encoding="utf-8")
+        script.chmod(0o755)
+        guarded = subprocess.run(
+            [str(script), "--install"],
+            text=True,
+            capture_output=True,
+            check=False,
+            env=environment,
+        )
+        assert guarded.returncode == 1
+        assert "test mode refuses root, set-ID, capability-bearing" in guarded.stderr
+        assert not marker.exists()
+
+        replacement = (
+            "        || false; then\n" if fault == "mount-alias" else "        || false \\\n"
+        )
+        mutant = source.replace(guard_line, replacement, 1)
+        assert mutant != source
+        script.write_text(mutant, encoding="utf-8")
+        script.chmod(0o755)
+        exposed = subprocess.run(
+            [str(script), "--install"],
+            text=True,
+            capture_output=True,
+            check=False,
+            env=environment,
+        )
+        assert marker.exists(), (exposed.returncode, exposed.stderr)
+    finally:
+        shutil.rmtree(workspace)
 
 
 def test_manifest_owned_recovery_guidance_never_recommends_legacy_install_route() -> None:
@@ -732,7 +1034,10 @@ def test_manifest_owned_recovery_guidance_never_recommends_legacy_install_route(
         r"(?:scripts/)?install-(?:p0-oom-containment|apcupsd-power-alerts)\s+"
         r"--(?:install|verify-live)"
     )
-    direct_sudo_mutation = re.compile(r"(?i)next action:[^\n]*\brun sudo\b")
+    direct_mutation = re.compile(
+        r"(?i)next action:[^\n]*\brun\s+(?:sudo\s+)?systemctl\b[^\n]*"
+        r"\b(?:enable|disable|start|stop|restart|try-restart|daemon-reload|set-property)\b"
+    )
     manifests = (REPO_ROOT / MANIFEST, REPO_ROOT / APCUPSD_MANIFEST)
 
     for manifest in manifests:
@@ -741,7 +1046,7 @@ def test_manifest_owned_recovery_guidance_never_recommends_legacy_install_route(
                 continue
             source = (REPO_ROOT / relative).read_text(encoding="utf-8")
             assert forbidden.search(source) is None, relative
-            assert direct_sudo_mutation.search(source) is None, relative
+            assert direct_mutation.search(source) is None, relative
             assert "rerun the owning installer" not in source, relative
             assert "after sudo -v" not in source, relative
     for relative in (
@@ -1568,77 +1873,82 @@ def _load_deferred_module():
     return module
 
 
-def _production_helper_environment(module, *, cap_digest: str | None = None):
-    account = pwd.getpwuid(os.getuid())
-    home = Path(account.pw_dir)
-    sha = "a" * 40
-    repo = home / ".cache/hapax/source-activation/releases" / sha
-    state_root = home / ".local/state/hapax/root-required"
-    defer_root = home / ".cache/hapax/post-merge-root-required"
-    paths = module.InstallPaths(
-        home=home,
-        state_root=state_root,
-        defer_root=defer_root,
-        repo_alias=home / ".cache/hapax/source-activation/worktree",
-        sudo=Path("/usr/bin/sudo"),
-        test_mode=False,
-        test_root=None,
-    )
-    state_lock = module.LockedState(
-        lexical_root=state_root,
-        lexical_lock=state_root / ".lock",
-        state_fd=31,
-        lock_fd=32,
-        guard_fd=33,
-    )
-    runtime_gates = module.RuntimeGateSnapshot(
-        task_sha256="c" * 64,
-        cap_receipt_sha256=cap_digest,
-    )
-    env = module._child_env(
-        paths,
-        repo,
-        sha,
-        defer_root / sha / "oom-containment",
-        runtime_gates,
-        state_lock,
-    )
-    env[module.SEALED_SOURCE_FDS_ENV] = "/proc/self/fd/40"
-    env["HAPAX_RUNTIME_AUTHORITY_TASK"] = "/governed/runtime-authority-task.md"
-    return env, runtime_gates
+def _production_refusal_environment(tmp_path: Path) -> dict[str, str]:
+    return {
+        "HOME": str(tmp_path / "home"),
+        "PATH": "/usr/bin:/bin",
+        "LANG": "C.UTF-8",
+        "LC_ALL": "C.UTF-8",
+        "PYTHONNOUSERSITE": "1",
+        "PYTHONSAFEPATH": "1",
+    }
 
 
-@pytest.mark.parametrize("cap_digest", (None, "b" * 64), ids=("no-cap", "oom-cap"))
-def test_production_child_environment_is_closed_and_canonical(cap_digest: str | None) -> None:
-    module = _load_deferred_module()
-    env, runtime_gates = _production_helper_environment(module, cap_digest=cap_digest)
-
-    module._validate_production_child_environment(env, runtime_gates)
-
-    expected = (
-        module.PRODUCTION_INSTALLER_REQUIRED_ENV_NAMES - module.SHELL_GENERATED_INSTALLER_ENV_NAMES
-    )
-    assert set(env) == expected
-    assert env["HAPAX_LOCAL_JUDGE_CAP_RECEIPT_SHA256"] == (cap_digest or "")
-    assert env["XDG_RUNTIME_DIR"] == f"/run/user/{os.getuid()}"
-    assert not (module.SHELL_GENERATED_INSTALLER_ENV_NAMES & set(env))
-
-    env["DBUS_SESSION_BUS_ADDRESS"] = "unix:path=/caller-selected/bus"
-    with pytest.raises(module.DeferredInstallError, match="environment contract drifted"):
-        module._validate_production_child_environment(env, runtime_gates)
-
-
-def test_production_path_cannot_execute_the_interpreted_installer(tmp_path: Path) -> None:
-    module = _load_deferred_module()
-    paths = module.InstallPaths(
+def _production_paths(module, tmp_path: Path):
+    return module.InstallPaths(
         home=tmp_path,
         state_root=tmp_path / "state",
         defer_root=tmp_path / "defer",
         repo_alias=tmp_path / "repo",
-        sudo=Path("/usr/bin/sudo"),
         test_mode=False,
         test_root=None,
     )
+
+
+def test_production_surface_contains_only_refusal_not_executable_broker() -> None:
+    module = _load_deferred_module()
+    source = SCRIPT.read_text(encoding="utf-8")
+
+    for name in (
+        "BrokerRequest",
+        "PRODUCTION_BROKER",
+        "PRODUCTION_BROKER_PROTOCOL_ENABLED",
+        "_execute_production_broker",
+        "_validate_production_broker",
+        "_verify_broker_completion",
+        "_verify_root_broker_receipt",
+        "_validate_sudo",
+        "DEFAULT_SUDO",
+    ):
+        assert not hasattr(module, name)
+        assert name not in source
+    assert "subprocess.run(command" not in source
+    assert "production root-package application is disabled" in source
+
+
+def test_production_protocol_refuses_before_state_path_lock_or_subprocess(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    module = _load_deferred_module()
+    paths = _production_paths(module, tmp_path)
+    forbidden_calls: list[str] = []
+
+    def forbidden(*_args: object, **_kwargs: object) -> None:
+        forbidden_calls.append("called")
+        raise AssertionError("production refusal reached state or external execution")
+
+    monkeypatch.setattr(module, "_install_paths", lambda: paths)
+    monkeypatch.setattr(module, "_validate_owned_directory", forbidden)
+    monkeypatch.setattr(module, "_locked_state", forbidden)
+    monkeypatch.setattr(module.subprocess, "run", forbidden)
+
+    with pytest.raises(
+        module.DeferredInstallError, match="production root-package application is disabled"
+    ):
+        module.install(
+            module.OOM_PACKAGE,
+            expected_sha="a" * 40,
+            activation_release=tmp_path / "repo",
+            runtime_authority_task=tmp_path / "runtime-task.md",
+        )
+    assert not forbidden_calls
+
+
+def test_imported_internal_phases_refuse_production_before_validation(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    module = _load_deferred_module()
+    paths = _production_paths(module, tmp_path)
     state_lock = module.LockedState(
         lexical_root=paths.state_root,
         lexical_lock=paths.state_root / ".lock",
@@ -1646,143 +1956,31 @@ def test_production_path_cannot_execute_the_interpreted_installer(tmp_path: Path
         lock_fd=32,
         guard_fd=33,
     )
-
-    with pytest.raises(module.DeferredInstallError, match="Bash package execution is retired"):
-        module._execute_installer(
-            paths,
-            tmp_path / "repo",
-            "a" * 40,
-            tmp_path / "stage",
-            module.OOM_PACKAGE,
-            tmp_path / "runtime-task.md",
-            module.RuntimeGateSnapshot(task_sha256="b" * 64, cap_receipt_sha256=None),
-            state_lock,
-        )
-
-
-def test_production_locked_phase_returns_only_a_broker_request(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    module = _load_deferred_module()
-    sha = "a" * 40
-    repo = tmp_path / "repo"
-    repo.mkdir()
-    state_root = tmp_path / "state"
-    desired = state_root / "desired-receipts"
-    desired.mkdir(parents=True, mode=0o700)
-    receipt = desired / "oom-containment.sha"
-    receipt.write_text(f"{sha}\n", encoding="ascii")
-    receipt.chmod(0o600)
-    paths = module.InstallPaths(
-        home=tmp_path,
-        state_root=state_root,
-        defer_root=tmp_path / "defer",
-        repo_alias=repo,
-        sudo=Path("/usr/bin/sudo"),
-        test_mode=False,
-        test_root=None,
-    )
-    state_lock = module.LockedState(
-        lexical_root=state_root,
-        lexical_lock=state_root / ".lock",
-        state_fd=31,
-        lock_fd=32,
-        guard_fd=33,
-    )
-    child_or_sudo_called = False
-
-    def forbidden_call(*_args: object, **_kwargs: object) -> object:
-        nonlocal child_or_sudo_called
-        child_or_sudo_called = True
-        raise AssertionError("production locked phase reached child or sudo")
-
-    monkeypatch.setattr(module, "_physical_repo", lambda _alias: repo)
-    monkeypatch.setattr(module, "_validate_commit", lambda *_args: None)
-    monkeypatch.setattr(module, "_validate_stage", lambda *_args: tmp_path / "stage")
-    monkeypatch.setattr(
-        module,
-        "_validate_runtime_gates",
-        lambda *_args, **_kwargs: module.RuntimeGateSnapshot(
-            task_sha256="b" * 64, cap_receipt_sha256=None
-        ),
-    )
-    monkeypatch.setattr(module, "_execute_installer", forbidden_call)
-    monkeypatch.setattr(module.subprocess, "run", forbidden_call)
-    monkeypatch.setattr(module.secrets, "token_hex", lambda size: "c" * (size * 2))
-
-    outcome = module._install_locked(
-        module.OOM_PACKAGE,
-        paths=paths,
-        state_lock=state_lock,
-        expected_sha=sha,
-        activation_release=repo,
-        runtime_authority_task=tmp_path / "runtime-task.md",
-    )
-
-    assert outcome == module.BrokerRequest(module.OOM_PACKAGE, sha, "c" * 64)
-    assert not child_or_sudo_called
-
-
-def test_production_protocol_is_source_disabled_before_sudo_or_state_lock(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    module = _load_deferred_module()
-    paths = module.InstallPaths(
-        home=tmp_path,
-        state_root=tmp_path / "state",
-        defer_root=tmp_path / "defer",
-        repo_alias=tmp_path / "repo",
-        sudo=Path("/usr/bin/sudo"),
-        test_mode=False,
-        test_root=None,
-    )
     forbidden_calls: list[str] = []
 
     def forbidden(*_args: object, **_kwargs: object) -> None:
         forbidden_calls.append("called")
+        raise AssertionError("production refusal reached validation")
 
-    monkeypatch.setattr(module, "_install_paths", lambda: paths)
-    monkeypatch.setattr(module, "_validate_sudo", forbidden)
     monkeypatch.setattr(module, "_validate_owned_directory", forbidden)
-    monkeypatch.setattr(module, "_locked_state", forbidden)
-    monkeypatch.setattr(module, "_execute_production_broker", forbidden)
+    monkeypatch.setattr(module, "_require_isolated_test_process", forbidden)
 
-    with pytest.raises(module.DeferredInstallError, match="namespace-relative ownership"):
-        module.install(
+    with pytest.raises(
+        module.DeferredInstallError, match="production root-package application is disabled"
+    ):
+        module._install_locked(
             module.OOM_PACKAGE,
+            paths=paths,
+            state_lock=state_lock,
             expected_sha="a" * 40,
             activation_release=tmp_path / "repo",
             runtime_authority_task=tmp_path / "runtime-task.md",
         )
-    assert module.PRODUCTION_BROKER_PROTOCOL_ENABLED is False
-    assert not forbidden_calls
-
-
-def test_production_broker_secondary_guard_refuses_before_validation_or_sudo(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    module = _load_deferred_module()
-    paths = module.InstallPaths(
-        home=tmp_path,
-        state_root=tmp_path / "state",
-        defer_root=tmp_path / "defer",
-        repo_alias=tmp_path / "repo",
-        sudo=Path("/usr/bin/sudo"),
-        test_mode=False,
-        test_root=None,
-    )
-    request = module.BrokerRequest(module.OOM_PACKAGE, "a" * 40, "c" * 64)
-    forbidden_calls: list[str] = []
-
-    def forbidden(*_args: object, **_kwargs: object) -> None:
-        forbidden_calls.append("called")
-
-    monkeypatch.setattr(module, "_validate_production_broker", forbidden)
-    monkeypatch.setattr(module.subprocess, "run", forbidden)
-    monkeypatch.setattr(module, "_locked_state", forbidden)
-
-    with pytest.raises(module.DeferredInstallError, match="namespace-relative ownership"):
-        module._execute_production_broker(paths, request)
+    with pytest.raises(
+        module.DeferredInstallError, match="production root-package application is disabled"
+    ):
+        with module._locked_state(paths):
+            raise AssertionError("production lock unexpectedly opened")
     assert not forbidden_calls
 
 
@@ -1813,512 +2011,19 @@ def test_exact_git_stdin_production_entry_is_source_disabled(tmp_path: Path) -> 
         input=source,
         capture_output=True,
         check=False,
-        env={
-            "HOME": str(tmp_path / "home"),
-            "PATH": "/usr/bin:/bin",
-            "LANG": "C.UTF-8",
-            "LC_ALL": "C.UTF-8",
-            "PYTHONNOUSERSITE": "1",
-            "PYTHONSAFEPATH": "1",
-        },
+        env=_production_refusal_environment(tmp_path),
     )
 
     assert result.returncode == 1
     assert b"production root-package application is disabled" in result.stderr
-    assert b"namespace-relative ownership cannot authenticate host-root completion" in result.stderr
     assert b"root-owned package broker is not installed" not in result.stderr
-
-
-def test_production_broker_receives_no_child_or_task_capability(
-    tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
-    capsys: pytest.CaptureFixture[str],
-) -> None:
-    module = _load_deferred_module()
-    paths = module.InstallPaths(
-        home=tmp_path,
-        state_root=tmp_path / "state",
-        defer_root=tmp_path / "defer",
-        repo_alias=tmp_path / "repo",
-        sudo=Path("/usr/bin/sudo"),
-        test_mode=False,
-        test_root=None,
-    )
-    request = module.BrokerRequest(module.OOM_PACKAGE, "a" * 40, "c" * 64)
-    calls: list[tuple[list[str], dict[str, str]]] = []
-    completion_checked = False
-
-    @contextmanager
-    def fake_locked_state(_paths: object):
-        yield paths, object()
-
-    def fake_run(command: list[str], **kwargs: object) -> subprocess.CompletedProcess[bytes]:
-        calls.append((command, kwargs["env"]))
-        return subprocess.CompletedProcess(command, 0)
-
-    def verify_completion(*args: object, **kwargs: object) -> None:
-        nonlocal completion_checked
-        assert args == (paths, request)
-        assert kwargs == {}
-        completion_checked = True
-
-    monkeypatch.setattr(module, "PRODUCTION_BROKER_PROTOCOL_ENABLED", True)
-    monkeypatch.setattr(module, "_validate_production_broker", lambda: None)
-    monkeypatch.setattr(module.subprocess, "run", fake_run)
-    monkeypatch.setattr(module, "_locked_state", fake_locked_state)
-    monkeypatch.setattr(module, "_verify_broker_completion", verify_completion)
-
-    assert module._execute_production_broker(paths, request) == 0
-    assert completion_checked
-    assert calls == [
-        (
-            [
-                "/usr/bin/sudo",
-                "-n",
-                "/usr/local/sbin/hapax-root-required-package-apply",
-                "--package",
-                "oom-containment",
-                "--expected-sha",
-                "a" * 40,
-                "--request-id",
-                "c" * 64,
-            ],
-            module._safe_subprocess_env(tmp_path),
-        )
-    ]
-    flattened = " ".join(calls[0][0])
-    assert "runtime-authority" not in flattened
-    assert "sealed" not in flattened
-    assert "/proc/" not in flattened
-    assert (
-        "completed broker-attested package=oom-containment sha="
-        + "a" * 40
-        + " request_id="
-        + "c" * 64
-    ) in capsys.readouterr().out
-
-
-def test_production_broker_failure_cannot_advance_completion(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    module = _load_deferred_module()
-    paths = module.InstallPaths(
-        home=tmp_path,
-        state_root=tmp_path / "state",
-        defer_root=tmp_path / "defer",
-        repo_alias=tmp_path / "repo",
-        sudo=Path("/usr/bin/sudo"),
-        test_mode=False,
-        test_root=None,
-    )
-    completion_checked = False
-
-    def verify_completion(*_args: object) -> None:
-        nonlocal completion_checked
-        completion_checked = True
-
-    monkeypatch.setattr(module, "PRODUCTION_BROKER_PROTOCOL_ENABLED", True)
-    monkeypatch.setattr(module, "_validate_production_broker", lambda: None)
-    monkeypatch.setattr(
-        module.subprocess,
-        "run",
-        lambda command, **kwargs: subprocess.CompletedProcess(command, 73),
-    )
-    monkeypatch.setattr(module, "_verify_broker_completion", verify_completion)
-
-    with pytest.raises(module.DeferredInstallError, match="no installed receipt or deferral"):
-        module._execute_production_broker(
-            paths, module.BrokerRequest(module.APCUPSD_PACKAGE, "b" * 40, "c" * 64)
-        )
-    assert not completion_checked
-
-
-def test_missing_production_broker_refuses_with_bootstrap_action(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    module = _load_deferred_module()
-    real_stat = module.os.stat
-
-    def broker_absent(
-        path: os.PathLike[str] | str, *args: object, **kwargs: object
-    ) -> os.stat_result:
-        if path == module.PRODUCTION_BROKER.name and kwargs.get("dir_fd") is not None:
-            raise FileNotFoundError(path)
-        return real_stat(path, *args, **kwargs)
-
-    monkeypatch.setattr(module.os, "stat", broker_absent)
-
-    with pytest.raises(
-        module.DeferredInstallError,
-        match="root-owned package broker is not installed.*production remains disabled",
-    ):
-        module._validate_production_broker()
-
-
-def test_unmapped_host_root_uid_fails_closed(monkeypatch: pytest.MonkeyPatch) -> None:
-    module = _load_deferred_module()
-    real_read_text = module.Path.read_text
-
-    def fake_uid_map(path: Path, *args: object, **kwargs: object) -> str:
-        if path == Path("/proc/self/uid_map"):
-            return "0 100000 65536\n"
-        return real_read_text(path, *args, **kwargs)
-
-    monkeypatch.setattr(module.Path, "read_text", fake_uid_map)
-
-    with pytest.raises(module.DeferredInstallError, match="host UID 0 is not mapped"):
-        module._host_root_uid()
-
-
-def _write_root_broker_completion(tmp_path: Path, request: object) -> tuple[Path, Path]:
-    completion_root = tmp_path / "broker-completions"
-    receipt = completion_root / request.package.label / f"{request.request_id}.receipt"
-    receipt.parent.mkdir(parents=True)
-    receipt.write_text(
-        "schema=1\n"
-        f"request_id={request.request_id}\n"
-        f"package={request.package.label}\n"
-        f"sha={request.sha}\n",
-        encoding="ascii",
-    )
-    receipt.chmod(0o444)
-    current = receipt.parent / "current.receipt"
-    current.write_bytes(receipt.read_bytes())
-    current.chmod(0o444)
-    return completion_root, receipt
-
-
-def test_root_broker_completion_receipt_is_exact_and_request_scoped(tmp_path: Path) -> None:
-    module = _load_deferred_module()
-    request = module.BrokerRequest(module.OOM_PACKAGE, "a" * 40, "c" * 64)
-    completion_root, _receipt = _write_root_broker_completion(tmp_path, request)
-
-    module._verify_root_broker_receipt(
-        request,
-        completion_root=completion_root,
-        trust_anchor=tmp_path,
-        trusted_uid=os.getuid(),
-    )
-
-
-@pytest.mark.parametrize(
-    ("fault", "message"),
-    [
-        ("missing", "without root-owned completion evidence"),
-        ("mode", "exact mode-0444"),
-        ("content", "does not match this exact request"),
-        ("hardlink", "single-link trusted file"),
-        ("symlink", "exact mode-0444"),
-    ],
-)
-def test_root_broker_completion_receipt_rejects_untrusted_forms(
-    tmp_path: Path, fault: str, message: str
-) -> None:
-    module = _load_deferred_module()
-    request = module.BrokerRequest(module.OOM_PACKAGE, "a" * 40, "c" * 64)
-    completion_root, receipt = _write_root_broker_completion(tmp_path, request)
-    if fault == "missing":
-        receipt.unlink()
-    elif fault == "mode":
-        receipt.chmod(0o644)
-    elif fault == "content":
-        receipt.chmod(0o644)
-        receipt.write_text(
-            receipt.read_text(encoding="ascii").replace("sha=" + "a" * 40, "sha=" + "b" * 40),
-            encoding="ascii",
-        )
-        receipt.chmod(0o444)
-    elif fault == "hardlink":
-        linked = tmp_path / "linked-completion"
-        os.link(receipt, linked)
-    elif fault == "symlink":
-        target = tmp_path / "completion-target"
-        receipt.replace(target)
-        receipt.symlink_to(target)
-
-    with pytest.raises(module.DeferredInstallError, match=message):
-        module._verify_root_broker_receipt(
-            request,
-            completion_root=completion_root,
-            trust_anchor=tmp_path,
-            trusted_uid=os.getuid(),
-        )
-
-
-@pytest.mark.parametrize(
-    ("fault", "message"),
-    [
-        ("missing", "without root-owned completion evidence"),
-        ("mode", "exact mode-0444"),
-    ],
-)
-def test_root_broker_completion_rejects_untrusted_current_pointer(
-    tmp_path: Path, fault: str, message: str
-) -> None:
-    module = _load_deferred_module()
-    request = module.BrokerRequest(module.OOM_PACKAGE, "a" * 40, "c" * 64)
-    completion_root, receipt = _write_root_broker_completion(tmp_path, request)
-    current = receipt.parent / "current.receipt"
-    if fault == "missing":
-        current.unlink()
-    else:
-        current.chmod(0o644)
-
-    with pytest.raises(module.DeferredInstallError, match=message):
-        module._verify_root_broker_receipt(
-            request,
-            completion_root=completion_root,
-            trust_anchor=tmp_path,
-            trusted_uid=os.getuid(),
-        )
-
-
-@pytest.mark.parametrize(
-    ("fault", "message"),
-    [
-        ("writable", "not a trusted, non-writable directory"),
-        ("symlink", "cannot verify root-package broker completion evidence"),
-    ],
-)
-def test_root_broker_completion_rejects_untrusted_ancestor(
-    tmp_path: Path, fault: str, message: str
-) -> None:
-    module = _load_deferred_module()
-    request = module.BrokerRequest(module.OOM_PACKAGE, "a" * 40, "c" * 64)
-    completion_root, receipt = _write_root_broker_completion(tmp_path, request)
-    package_dir = receipt.parent
-    if fault == "writable":
-        package_dir.chmod(0o777)
-    else:
-        target = tmp_path / "completion-directory-target"
-        package_dir.replace(target)
-        package_dir.symlink_to(target, target_is_directory=True)
-
-    with pytest.raises(module.DeferredInstallError, match=message):
-        module._verify_root_broker_receipt(
-            request,
-            completion_root=completion_root,
-            trust_anchor=tmp_path,
-            trusted_uid=os.getuid(),
-        )
-
-
-def test_root_broker_completion_rejects_wrong_owner_or_request_id(tmp_path: Path) -> None:
-    module = _load_deferred_module()
-    request = module.BrokerRequest(module.OOM_PACKAGE, "a" * 40, "c" * 64)
-    completion_root, _receipt = _write_root_broker_completion(tmp_path, request)
-
-    with pytest.raises(module.DeferredInstallError, match="not a trusted, non-writable directory"):
-        module._verify_root_broker_receipt(
-            request,
-            completion_root=completion_root,
-            trust_anchor=tmp_path,
-            trusted_uid=os.getuid() + 1,
-        )
-    with pytest.raises(module.DeferredInstallError, match="request ID is not exactly 64"):
-        module._verify_root_broker_receipt(
-            module.BrokerRequest(module.OOM_PACKAGE, request.sha, "C" * 64),
-            completion_root=completion_root,
-            trust_anchor=tmp_path,
-            trusted_uid=os.getuid(),
-        )
-
-
-def test_root_broker_completion_requires_matching_current_generation(tmp_path: Path) -> None:
-    module = _load_deferred_module()
-    request = module.BrokerRequest(module.OOM_PACKAGE, "a" * 40, "c" * 64)
-    completion_root, receipt = _write_root_broker_completion(tmp_path, request)
-    current = receipt.parent / "current.receipt"
-    current.chmod(0o644)
-    current.write_text(
-        current.read_text(encoding="ascii").replace(
-            "request_id=" + "c" * 64, "request_id=" + "d" * 64
-        ),
-        encoding="ascii",
-    )
-    current.chmod(0o444)
-
-    with pytest.raises(module.DeferredInstallError, match="does not match this exact request"):
-        module._verify_root_broker_receipt(
-            request,
-            completion_root=completion_root,
-            trust_anchor=tmp_path,
-            trusted_uid=os.getuid(),
-        )
-
-
-def test_broker_zero_without_root_completion_cannot_claim_success(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
-) -> None:
-    module = _load_deferred_module()
-    paths = module.InstallPaths(
-        home=tmp_path,
-        state_root=tmp_path / "state",
-        defer_root=tmp_path / "defer",
-        repo_alias=tmp_path / "repo",
-        sudo=Path("/usr/bin/sudo"),
-        test_mode=False,
-        test_root=None,
-    )
-    request = module.BrokerRequest(module.OOM_PACKAGE, "a" * 40, "c" * 64)
-
-    @contextmanager
-    def fake_locked_state(_paths: object):
-        yield paths, object()
-
-    original_verify = module._verify_broker_completion
-
-    def verify_without_root_receipt(locked_paths: object, broker_request: object) -> None:
-        original_verify(
-            locked_paths,
-            broker_request,
-            completion_root=tmp_path / "missing-completions",
-            trust_anchor=tmp_path,
-            trusted_uid=os.getuid(),
-        )
-
-    monkeypatch.setattr(module, "PRODUCTION_BROKER_PROTOCOL_ENABLED", True)
-    monkeypatch.setattr(module, "_validate_production_broker", lambda: None)
-    monkeypatch.setattr(
-        module.subprocess,
-        "run",
-        lambda command, **kwargs: subprocess.CompletedProcess(command, 0),
-    )
-    monkeypatch.setattr(module, "_locked_state", fake_locked_state)
-    monkeypatch.setattr(module, "_verify_broker_completion", verify_without_root_receipt)
-
-    with pytest.raises(module.DeferredInstallError, match="without root-owned completion evidence"):
-        module._execute_production_broker(paths, request)
-    assert "completed broker-attested" not in capsys.readouterr().out
-
-
-@pytest.mark.parametrize("broker_outcome", ("missing", "nonzero", "zero"))
-def test_forged_caller_receipt_never_drains_for_any_broker_outcome(
-    tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
-    capsys: pytest.CaptureFixture[str],
-    broker_outcome: str,
-) -> None:
-    module = _load_deferred_module()
-    sha = "a" * 40
-    state_root = tmp_path / "state"
-    caller_receipt = state_root / "installed-receipts/oom-containment.sha"
-    caller_receipt.parent.mkdir(parents=True)
-    caller_receipt.write_text(f"{sha}\n", encoding="ascii")
-    caller_receipt.chmod(0o600)
-    defer_root = tmp_path / "defer"
-    stage = defer_root / sha / "oom-containment"
-    stage.mkdir(parents=True)
-    runbook = stage / "RUNBOOK.txt"
-    runbook.write_text("caller-owned pending work\n", encoding="utf-8")
-    runbook.chmod(0o600)
-    paths = module.InstallPaths(
-        home=tmp_path,
-        state_root=state_root,
-        defer_root=defer_root,
-        repo_alias=tmp_path / "repo",
-        sudo=Path("/usr/bin/sudo"),
-        test_mode=False,
-        test_root=None,
-    )
-    request = module.BrokerRequest(module.OOM_PACKAGE, sha, "c" * 64)
-
-    @contextmanager
-    def fake_locked_state(_paths: object):
-        yield paths, object()
-
-    monkeypatch.setattr(module, "PRODUCTION_BROKER_PROTOCOL_ENABLED", True)
-    if broker_outcome == "missing":
-
-        def refuse_missing_broker() -> None:
-            raise module.DeferredInstallError("broker missing")
-
-        monkeypatch.setattr(module, "_validate_production_broker", refuse_missing_broker)
-    else:
-        monkeypatch.setattr(module, "_validate_production_broker", lambda: None)
-        monkeypatch.setattr(
-            module.subprocess,
-            "run",
-            lambda command, **kwargs: subprocess.CompletedProcess(
-                command, 73 if broker_outcome == "nonzero" else 0
-            ),
-        )
-    if broker_outcome == "zero":
-        original_verify = module._verify_broker_completion
-
-        def verify_without_root_receipt(locked_paths: object, broker_request: object) -> None:
-            original_verify(
-                locked_paths,
-                broker_request,
-                completion_root=tmp_path / "missing-completions",
-                trust_anchor=tmp_path,
-                trusted_uid=os.getuid(),
-            )
-
-        monkeypatch.setattr(module, "_locked_state", fake_locked_state)
-        monkeypatch.setattr(module, "_verify_broker_completion", verify_without_root_receipt)
-
-    with pytest.raises(module.DeferredInstallError):
-        module._execute_production_broker(paths, request)
-    assert runbook.read_text(encoding="utf-8") == "caller-owned pending work\n"
-    assert not (stage / "DRAINED.txt").exists()
-    assert caller_receipt.read_text(encoding="ascii") == f"{sha}\n"
-    assert "completed broker-attested" not in capsys.readouterr().out
-
-
-def test_broker_completion_requires_exact_receipts_snapshots_and_drain(tmp_path: Path) -> None:
-    fixture = _fixture(tmp_path)
-    module = _load_deferred_module()
-    for kind in ("desired", "installed"):
-        receipt = fixture.state_root / f"{kind}-receipts" / f"{fixture.package}.sha"
-        receipt.parent.mkdir(parents=True, exist_ok=True)
-        receipt.write_text(f"{fixture.sha}\n", encoding="ascii")
-        receipt.chmod(0o600)
-    snapshot_root = fixture.state_root / "current-source"
-    for rel in (fixture.manifest, fixture.effects, fixture.installer, AUTHORITY_VERIFIER, PAYLOAD):
-        destination = snapshot_root / rel
-        destination.parent.mkdir(parents=True, exist_ok=True)
-        shutil.copy2(fixture.repo / rel, destination)
-    drained = fixture.stage / "DRAINED.txt"
-    fixture.stage.joinpath("RUNBOOK.txt").replace(drained)
-    drained.chmod(0o600)
-    paths = module.InstallPaths(
-        home=tmp_path,
-        state_root=fixture.state_root,
-        defer_root=fixture.defer_root,
-        repo_alias=fixture.repo_alias,
-        sudo=Path("/usr/bin/sudo"),
-        test_mode=False,
-        test_root=None,
-    )
-    request = module.BrokerRequest(module.OOM_PACKAGE, fixture.sha, "c" * 64)
-    completion_root, _completion = _write_root_broker_completion(tmp_path, request)
-
-    module._verify_broker_completion(
-        paths,
-        request,
-        completion_root=completion_root,
-        trust_anchor=tmp_path,
-        trusted_uid=os.getuid(),
-    )
-
-    (snapshot_root / PAYLOAD).write_text("substituted\n", encoding="utf-8")
-    with pytest.raises(module.DeferredInstallError, match="non-exact installed source"):
-        module._verify_broker_completion(
-            paths,
-            request,
-            completion_root=completion_root,
-            trust_anchor=tmp_path,
-            trusted_uid=os.getuid(),
-        )
 
 
 @pytest.mark.parametrize("installer_rel", (INSTALLER, APCUPSD_INSTALLER))
 def test_production_install_refuses_before_caller_path_lookup(
     tmp_path: Path, installer_rel: Path
 ) -> None:
-    module = _load_deferred_module()
-    env, _ = _production_helper_environment(module)
+    env = _production_refusal_environment(tmp_path)
     marker = tmp_path / "hostile-dirname-ran"
     fake_bin = tmp_path / "fake-bin"
     fake_bin.mkdir()
@@ -2395,10 +2100,17 @@ def test_installer_refuses_an_interpreter_that_omits_privileged_mode(
 
 @pytest.mark.parametrize("installer_rel", (INSTALLER, APCUPSD_INSTALLER))
 def test_helper_shaped_raw_environment_cannot_restore_bash_install_authority(
+    tmp_path: Path,
     installer_rel: Path,
 ) -> None:
-    module = _load_deferred_module()
-    env, _ = _production_helper_environment(module)
+    env = _production_refusal_environment(tmp_path)
+    env.update(
+        {
+            "HAPAX_ROOT_REQUIRED_PACKAGE_SHA": "a" * 40,
+            "HAPAX_RUNTIME_AUTHORITY_TASK": str(tmp_path / "caller-task.md"),
+            "HAPAX_ROOT_REQUIRED_SEALED_SOURCE_FDS": "/proc/self/fd/40",
+        }
+    )
 
     result = subprocess.run(
         [str(REPO_ROOT / installer_rel), "--authenticated-sealed-source", "--install"],

@@ -1683,6 +1683,10 @@ verify_local_judge_cap_receipt() {
     local DOCKER_HOST=unix:///var/run/docker.sock
     export DOCKER_HOST
     unset DOCKER_CONTEXT DOCKER_CONFIG DOCKER_TLS_VERIFY DOCKER_CERT_PATH
+    if [ "$phase" = installed ]; then
+        echo "hapax-post-merge-deploy: installed local-judge verification is disabled in this source revision because caller-owned receipts cannot attest host-root completion; next action: implement and review exact request-ID-bound cryptographic package and current-generation attestations before enabling activation" >&2
+        return 2
+    fi
     if ! [[ "$sha" =~ ^[0-9a-f]{40}$ ]] \
         || [[ "$phase" != candidate && "$phase" != applied && "$phase" != installed ]]; then
         echo "hapax-post-merge-deploy: invalid local-judge cap receipt selector; next action: pass a 40-hex SHA and candidate, applied, or installed" >&2

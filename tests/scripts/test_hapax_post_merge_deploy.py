@@ -2182,7 +2182,10 @@ def test_local_judge_cap_receipt_verifier_is_sha_host_and_evidence_bound() -> No
 
     assert "--verify-local-judge-cap-receipt <sha> <candidate|applied|installed>" in source
     assert '[[ "$phase" != candidate && "$phase" != applied && "$phase" != installed ]]' in source
-    assert 'if [ "$phase" = installed ] && [ "$receipt_installed_sha" != "$sha" ]; then' in verifier
+    installed_refusal = 'if [ "$phase" = installed ]; then'
+    assert installed_refusal in verifier
+    assert verifier.index(installed_refusal) < verifier.index('account_home="$(')
+    assert "caller-owned receipts cannot attest host-root completion" in verifier
     assert 'if [ "$phase" != candidate ]; then' in verifier
     assert 'repo_alias="$account_home/.cache/hapax/source-activation/worktree"' in source
     assert 'state="$ROOT_REQUIRED_STATE_ROOT"' in source
@@ -2217,6 +2220,27 @@ def test_local_judge_cap_receipt_verifier_is_sha_host_and_evidence_bound() -> No
     assert "if ! nvidia-smi " not in verifier
     assert 'image_id="$(docker ' not in verifier
     assert 'now="$(date ' not in verifier
+
+
+def test_local_judge_installed_phase_refuses_before_caller_artifact_lookup(
+    tmp_path: Path,
+) -> None:
+    result = subprocess.run(
+        [str(SCRIPT), "--verify-local-judge-cap-receipt", "a" * 40, "installed"],
+        text=True,
+        capture_output=True,
+        check=False,
+        env={
+            **os.environ,
+            "PATH": "/usr/bin:/bin",
+            "LANG": "C.UTF-8",
+            "LC_ALL": "C.UTF-8",
+        },
+    )
+
+    assert result.returncode == 2
+    assert "installed local-judge verification is disabled" in result.stderr
+    assert "canonical account-owned source activation" not in result.stderr
 
 
 def _cap_receipt_numeric_validator_source() -> str:
@@ -4479,7 +4503,7 @@ def test_root_required_audit_detects_stale_loaded_user_audit_timeout(tmp_path: P
         "hapax-oom-policy-audit.service loaded TimeoutStartUSec=infinity, expected 2min"
         in result.stderr
     )
-    assert "systemctl --user daemon-reload" in result.stderr
+    assert "governed transaction owns manager reload" in result.stderr
 
 
 def test_root_required_audit_detects_inactive_earlyoom(tmp_path: Path) -> None:
@@ -6173,8 +6197,6 @@ def test_root_required_audit_refuses_symlinked_shared_lock_parent(tmp_path: Path
     (
         SCRIPT,
         ROOT_REQUIRED_AUDIT,
-        REPO_ROOT / "scripts/install-apcupsd-power-alerts",
-        REPO_ROOT / "scripts/install-p0-oom-containment",
     ),
 )
 def test_root_required_lock_wrappers_open_lock_relative_to_held_parent(script: Path) -> None:
@@ -6320,8 +6342,6 @@ def test_state_generation_race_witness_fails_without_guard_bind(tmp_path: Path) 
     (
         SCRIPT,
         ROOT_REQUIRED_AUDIT,
-        REPO_ROOT / "scripts/install-apcupsd-power-alerts",
-        REPO_ROOT / "scripts/install-p0-oom-containment",
     ),
 )
 def test_generation_guard_serializes_across_network_namespaces(
@@ -6334,6 +6354,44 @@ def test_generation_guard_serializes_across_network_namespaces(
         expect_second_blocked=True,
         second_network_namespace=True,
     )
+
+
+@pytest.mark.parametrize(
+    "script",
+    (
+        REPO_ROOT / "scripts/install-apcupsd-power-alerts",
+        REPO_ROOT / "scripts/install-p0-oom-containment",
+    ),
+)
+def test_installer_generation_wrapper_refuses_unmapped_host_root_namespace(
+    tmp_path: Path, script: Path
+) -> None:
+    wrapper = tmp_path / "lock-wrapper.py"
+    wrapper.write_text(_root_required_lock_wrapper_source(script), encoding="utf-8")
+    state = tmp_path / "state"
+    state.mkdir(mode=0o700)
+
+    result = subprocess.run(
+        [
+            "/usr/bin/unshare",
+            "--user",
+            "--map-current-user",
+            "--net",
+            "/usr/bin/python3",
+            str(wrapper),
+            str(state),
+            str(state / ".lock"),
+            "/usr/bin/true",
+        ],
+        text=True,
+        capture_output=True,
+        check=False,
+    )
+    if "unshare failed" in result.stderr and "not permitted" in result.stderr.lower():
+        pytest.skip("unprivileged user namespaces are disabled on this runner")
+
+    assert result.returncode != 0
+    assert "host UID 0 is unmapped" in result.stderr
 
 
 @pytest.mark.parametrize(

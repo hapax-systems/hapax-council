@@ -13,7 +13,6 @@ import os
 import pwd
 import re
 import shlex
-import shutil
 import stat
 import subprocess
 from pathlib import Path
@@ -898,264 +897,31 @@ def test_local_judge_model_root_transition_functions_fail_on_bound_identity_chan
         assert "next action:" in refused.stderr
 
 
-def test_local_judge_activation_is_separately_authority_gated() -> None:
+def test_local_judge_activation_and_managed_recheck_are_not_runnable() -> None:
     text = (REPO_ROOT / "docs" / "runbooks" / "local-judge-stack.md").read_text()
-    marker = "activation_phase=restart"
-    start = text.rfind("```bash", 0, text.index(marker))
-    end = text.index("```", text.index(marker))
-    activation = text[start:end]
+    start = text.index("### Activation and recheck unavailable")
+    end = text.index("The name `hapax-local-judge`", start)
+    section = text[start:end]
+    flattened = " ".join(section.split())
 
-    assert "--verify-runtime-authority-for-release" in activation
-    assert "runtime:systemd-user:daemon-reload" in activation
-    assert "runtime:systemd-user:enable:hapax-local-judge.service" in activation
-    assert "runtime:systemd-user:restart:hapax-local-judge.service" in activation
-    assert "runtime:state:write-local-judge-activation-result" in activation
-    assert "systemd/units/hapax-local-judge.service" not in activation
-    assert "--verify-local-judge-cap-receipt" in activation
-    assert activation.index("--verify-local-judge-cap-receipt") < activation.index(marker)
-    assert 'account_home="$(/usr/bin/getent passwd' in activation
-    assert "/usr/bin/env -i" in activation
-    assert "/usr/bin/bash --noprofile --norc -p -s" in activation
-    assert 'release_git cat-file blob "$verifier_oid"' in activation
-    assert 'test "$(release_git rev-parse --verify \'HEAD^{commit}\')" = "$sha"' in activation
-    assert 'authority_check="$HOME/.local/bin/hapax-post-merge-deploy"' not in activation
-    assert '[[ "$exec_start" == *"argv[]=/usr/bin/env -i "* ]]' in activation
-    assert "--host=unix:///var/run/docker.sock --config=" in activation
-    assert "/hapax-local-judge/docker-config run " in activation
-    assert '[[ "$exec_start" == *" --memory 4G "* ]]' in activation
-    assert '[[ "$exec_start" == *" --memory-swap 6G "* ]]' in activation
-    assert "--fail --silent --show-error --max-time 30" in activation
-    assert "partial_success" in activation
-    assert "phase=$activation_phase" in activation
-    assert "inspect-service-and-journal-then-rerun-authorized-fence" in activation
+    assert "no runnable activation fence" in flattened
+    assert "--verify-local-judge-cap-receipt <sha> installed" in flattened
+    assert "fails unconditionally" in flattened
+    assert "cryptographically attested per-request and current" in flattened
+    assert "```bash" not in section
+    assert "activation_phase=" not in text
+    assert "HAPAX_LOCAL_JUDGE_ACTIVATION" not in text
+    assert "HAPAX_LOCAL_JUDGE_MANAGED_RECHECK" not in text
+    assert "runtime:systemd-user:enable:hapax-local-judge.service" not in text
+    assert "runtime:workload:run-local-judge-managed-recheck" not in text
 
 
-def _local_judge_activation_inner() -> str:
-    text = (REPO_ROOT / "docs" / "runbooks" / "local-judge-stack.md").read_text()
-    delimiter = "HAPAX_LOCAL_JUDGE_ACTIVATION"
-    start = text.index(f"<<'{delimiter}'\n") + len(f"<<'{delimiter}'\n")
-    end = text.index(f"\n{delimiter}\n", start)
-    return text[start:end]
-
-
-def _write_executable(path: Path, source: str) -> None:
-    path.write_text(source, encoding="utf-8")
-    path.chmod(0o755)
-
-
-def _activation_release(tmp_path: Path, verifier_source: str) -> tuple[Path, str]:
-    home = tmp_path / "account-home"
-    staging = tmp_path / "release-staging"
-    script = staging / "scripts" / "hapax-post-merge-deploy"
-    script.parent.mkdir(parents=True)
-    _write_executable(script, verifier_source)
-    subprocess.run(["/usr/bin/git", "init", "-q", str(staging)], check=True)
-    subprocess.run(
-        ["/usr/bin/git", "-C", str(staging), "config", "user.name", "Activation Test"],
-        check=True,
-    )
-    subprocess.run(
-        ["/usr/bin/git", "-C", str(staging), "config", "user.email", "activation@test.invalid"],
-        check=True,
-    )
-    subprocess.run(["/usr/bin/git", "-C", str(staging), "add", "."], check=True)
-    subprocess.run(
-        ["/usr/bin/git", "-C", str(staging), "commit", "-q", "-m", "fixture"],
-        check=True,
-    )
-    sha = subprocess.run(
-        ["/usr/bin/git", "-C", str(staging), "rev-parse", "HEAD"],
-        text=True,
-        capture_output=True,
-        check=True,
-    ).stdout.strip()
-    releases = home / ".cache" / "hapax" / "source-activation" / "releases"
-    releases.mkdir(parents=True)
-    release = releases / sha
-    staging.rename(release)
-    (releases.parent / "worktree").symlink_to(release)
-    return home, sha
-
-
-def _activation_command(path: Path, body: str) -> Path:
-    _write_executable(path, "#!/bin/bash\nset -euo pipefail\n" + body)
-    return path
-
-
-def _run_activation_inner(
-    home: Path,
-    inner: str,
-    commands: tuple[Path, Path, Path, Path],
-) -> subprocess.CompletedProcess[str]:
-    runtime_task = home / "runtime-task.md"
-    runtime_task.write_text("fixture runtime authority\n", encoding="utf-8")
-    return subprocess.run(
-        [
-            "/usr/bin/bash",
-            "--noprofile",
-            "--norc",
-            "-p",
-            "-s",
-            "--",
-            *(str(path) for path in commands),
-        ],
-        input=inner,
-        text=True,
-        capture_output=True,
-        check=False,
-        env={
-            "HOME": str(home),
-            "USER": "fixture",
-            "LOGNAME": "fixture",
-            "PATH": "/usr/bin:/bin",
-            "LANG": "C.UTF-8",
-            "LC_ALL": "C.UTF-8",
-            "XDG_RUNTIME_DIR": str(home / "run"),
-            "DBUS_SESSION_BUS_ADDRESS": f"unix:path={home}/run/bus",
-            "HAPAX_RUNTIME_AUTHORITY_TASK": str(runtime_task),
-        },
-    )
-
-
-def test_local_judge_activation_launcher_ignores_hostile_home_and_shell_env(
-    tmp_path: Path,
-) -> None:
-    text = (REPO_ROOT / "docs" / "runbooks" / "local-judge-stack.md").read_text()
-    delimiter = "<<'HAPAX_LOCAL_JUDGE_ACTIVATION'\n"
-    marker = text.index(delimiter)
-    start = text.rfind("```bash\n", 0, marker) + len("```bash\n")
-    launcher = text[start : marker + len(delimiter)]
-    expected_home = pwd.getpwuid(os.getuid()).pw_dir
-    hostile_home = tmp_path / "hostile-home"
-    hostile_home.mkdir()
-    bash_env_marker = tmp_path / "bash-env-ran"
-    bash_env = tmp_path / "hostile-bash-env"
-    bash_env.write_text(f"/usr/bin/printf x >> {bash_env_marker}\n", encoding="utf-8")
-    probe = (
-        launcher
-        + f'test "$HOME" = {shlex.quote(expected_home)}\n'
-        + 'test -z "${BASH_ENV+x}"\n'
-        + "if declare -F hostile >/dev/null; then exit 91; fi\n"
-        + "/usr/bin/printf 'clean-home:%s\\n' \"$HOME\"\n"
-        + "HAPAX_LOCAL_JUDGE_ACTIVATION\n"
-    )
-
-    result = subprocess.run(
-        ["/usr/bin/bash", "--noprofile", "--norc"],
-        input=probe,
-        text=True,
-        capture_output=True,
-        check=False,
-        env={
-            **os.environ,
-            "HOME": str(hostile_home),
-            "BASH_ENV": str(bash_env),
-            "BASH_FUNC_hostile%%": "() { return 0; }",
-            "HAPAX_RUNTIME_AUTHORITY_TASK": str(tmp_path / "runtime-task.md"),
-        },
-    )
-
-    assert result.returncode == 0, result.stderr
-    assert result.stdout == f"clean-home:{expected_home}\n"
-    assert bash_env_marker.read_text(encoding="utf-8") == "x"
-
-
-def test_local_judge_activation_rejects_substituted_checker_and_fabricated_receipt(
-    tmp_path: Path,
-) -> None:
-    verifier = """#!/bin/bash
-printf '%s\\n' "$*" >> "$HOME/release-verifier.log"
-case "$1" in
-  --verify-runtime-authority-for-release) exit 0 ;;
-  --verify-local-judge-cap-receipt) exit 42 ;;
-  *) exit 64 ;;
-esac
-"""
-    home, sha = _activation_release(tmp_path, verifier)
-    malicious_marker = home / "malicious-checker-ran"
-    malicious = home / ".local" / "bin" / "hapax-post-merge-deploy"
-    malicious.parent.mkdir(parents=True)
-    _write_executable(malicious, f"#!/bin/bash\ntouch {malicious_marker}\nexit 0\n")
-    receipt = home / ".local" / "state" / "hapax" / "root-required" / "desired-receipts"
-    receipt.mkdir(parents=True)
-    (receipt / "oom-containment.sha").write_text(f"{sha}\n", encoding="utf-8")
-    command_log = home / "systemctl.log"
-    commands = (
-        _activation_command(tmp_path / "systemctl", f"printf '%s\\n' \"$*\" >> {command_log}\n"),
-        _activation_command(tmp_path / "curl", "exit 0\n"),
-        _activation_command(tmp_path / "nvidia-smi", "exit 0\n"),
-        _activation_command(tmp_path / "oom-audit", "exit 0\n"),
-    )
-
-    result = _run_activation_inner(home, _local_judge_activation_inner(), commands)
-
-    assert result.returncode == 42
-    assert not malicious_marker.exists()
-    assert not command_log.exists()
-    invocations = (home / "release-verifier.log").read_text(encoding="utf-8").splitlines()
-    assert invocations[0].startswith(f"--verify-runtime-authority-for-release {sha} ")
-    assert invocations[1] == f"--verify-local-judge-cap-receipt {sha} installed"
-
-
-def test_local_judge_activation_records_partial_success_after_restart_failure(
-    tmp_path: Path,
-) -> None:
-    verifier = """#!/bin/bash
-printf '%s\\n' "$*" >> "$HOME/release-verifier.log"
-exit 0
-"""
-    home, sha = _activation_release(tmp_path, verifier)
-    systemctl_log = home / "systemctl.log"
-    systemctl = _activation_command(
-        tmp_path / "systemctl",
-        f"""printf '%s\\n' "$*" >> {systemctl_log}
-if [[ "$*" == *" -p ExecStart --value" ]]; then
-  printf 'argv[]=/usr/bin/env -i HOME=/home/hapax /usr/bin/docker --host=unix:///var/run/docker.sock --config=/run/user/1000/hapax-local-judge/docker-config run --name hapax-local-judge --memory 4G --memory-swap 6G image\\n'
-fi
-""",
-    )
-    curl = _activation_command(tmp_path / "curl", "exit 22\n")
-    nvidia_marker = home / "nvidia-ran"
-    audit_marker = home / "audit-ran"
-    commands = (
-        systemctl,
-        curl,
-        _activation_command(tmp_path / "nvidia-smi", f"touch {nvidia_marker}\n"),
-        _activation_command(tmp_path / "oom-audit", f"touch {audit_marker}\n"),
-    )
-
-    result = _run_activation_inner(home, _local_judge_activation_inner(), commands)
-
-    assert result.returncode == 22
-    calls = systemctl_log.read_text(encoding="utf-8").splitlines()
-    assert "--user daemon-reload" in calls
-    assert "--user enable hapax-local-judge.service" in calls
-    assert "--user restart hapax-local-judge.service" in calls
-    assert not nvidia_marker.exists()
-    assert not audit_marker.exists()
-    activation_result = (
-        home / ".local" / "state" / "hapax" / "local-judge-activation" / "latest.env"
-    ).read_text(encoding="utf-8")
-    assert f"candidate_sha={sha}\n" in activation_result
-    assert "status=partial_success\n" in activation_result
-    assert "phase=model_api\n" in activation_result
-    assert "service_mutation_started=true\n" in activation_result
-    assert (
-        "next_action=inspect-service-and-journal-then-rerun-authorized-fence\n" in activation_result
-    )
-    assert "local-judge activation partial_success" in result.stderr
-    assert "phase=model_api" in result.stderr
-    assert "next action: inspect" in result.stderr
-
-
-def test_local_judge_runtime_fences_are_valid_bash() -> None:
+def test_local_judge_remaining_runtime_fences_are_valid_bash() -> None:
     text = (REPO_ROOT / "docs" / "runbooks" / "local-judge-stack.md").read_text()
     markers = (
         'canary_name="hapax-local-judge-cap-canary-$$"',
         'release_verify "$sha"',
         "installed verification unavailable",
-        "activation_phase=restart",
-        'container_id="$(release_lifecycle managed-id',
     )
 
     for marker in markers:
@@ -1172,60 +938,30 @@ def test_local_judge_runtime_fences_are_valid_bash() -> None:
         assert result.returncode == 0, f"{marker}: {result.stderr}"
 
 
-def test_local_judge_runtime_fences_use_structured_active_task_authority() -> None:
+def test_local_judge_canary_uses_structured_active_task_authority() -> None:
     text = (REPO_ROOT / "docs" / "runbooks" / "local-judge-stack.md").read_text()
-    authority_fences = {
-        'canary_name="hapax-local-judge-cap-canary-$$"': (
-            "runtime:docker:pull:",
-            "runtime:docker:run-remove:hapax-local-judge-cap-canary",
-            "runtime:root-directory:ensure-root-0755:/store-fast/hapax-models",
-            "runtime:root-file:stage-content-addressed:/store-fast/hapax-models/sha256/",
-            "runtime:state:write-local-judge-cap-receipt",
-            "runtime:state:write-remove-canary-scratch:/store-fast/tmp",
-            "runtime:systemd-user:stop-restore:hapax-local-judge.service",
-        ),
-        "activation_phase=restart": (
-            "runtime:systemd-user:daemon-reload",
-            "runtime:systemd-user:enable:hapax-local-judge.service",
-            "runtime:systemd-user:restart:hapax-local-judge.service",
-            "runtime:state:write-local-judge-activation-result",
-        ),
-        'container_id="$(release_lifecycle managed-id': (
-            "runtime:state:write-remove-managed-recheck:/store-fast/tmp",
-            "runtime:workload:run-local-judge-managed-recheck:requests-24:workers-8",
-        ),
-    }
+    marker = 'canary_name="hapax-local-judge-cap-canary-$$"'
+    marker_index = text.index(marker)
+    start = text.rfind("```bash\n", 0, marker_index)
+    end = text.index("```", marker_index)
+    fence = text[start:end]
+    scopes = (
+        "runtime:docker:pull:",
+        "runtime:docker:run-remove:hapax-local-judge-cap-canary",
+        "runtime:root-directory:ensure-root-0755:/store-fast/hapax-models",
+        "runtime:root-file:stage-content-addressed:/store-fast/hapax-models/sha256/",
+        "runtime:state:write-local-judge-cap-receipt",
+        "runtime:state:write-remove-canary-scratch:/store-fast/tmp",
+        "runtime:systemd-user:stop-restore:hapax-local-judge.service",
+    )
 
-    for marker, scopes in authority_fences.items():
-        marker_index = text.index(marker)
-        start = text.rfind("```bash\n", 0, marker_index)
-        end = text.index("```", marker_index)
-        fence = text[start:end]
-        assert "--verify-runtime-authority" in fence
-        assert all(scope in fence for scope in scopes)
-        assert '"$runtime_task" systemd/units/hapax-local-judge.service' not in fence
-        assert "grep -Fqx 'runtime_mutation_authorized: true'" not in fence
+    assert "--verify-runtime-authority" in fence
+    assert all(scope in fence for scope in scopes)
+    assert '"$runtime_task" systemd/units/hapax-local-judge.service' not in fence
+    assert "grep -Fqx 'runtime_mutation_authorized: true'" not in fence
 
-    for marker in (
-        'release_verify "$sha"',
-        "installed verification unavailable",
-    ):
-        marker_index = text.index(marker)
-        start = text.rfind("```bash\n", 0, marker_index)
-        end = text.index("```", marker_index)
-        fence = text[start:end]
-        assert "--verify-runtime-authority" not in fence
-
-
-def test_local_judge_cap_receipt_is_required_before_install_and_activation() -> None:
-    text = (REPO_ROOT / "docs" / "runbooks" / "local-judge-stack.md").read_text()
     install = text.index('release_verify "$sha"')
-    activation = text.index("activation_phase=daemon_reload")
-    managed = text.index('container_id="$(release_lifecycle managed-id')
-
     assert text.rfind('--verify-local-judge-cap-receipt "$sha" candidate', 0, install) != -1
-    assert text.rfind('--verify-local-judge-cap-receipt "$sha" installed', 0, activation) != -1
-    assert text.rfind('--verify-local-judge-cap-receipt "$sha" installed', 0, managed) != -1
 
 
 def test_local_judge_canary_enters_clean_privileged_shell(tmp_path: Path) -> None:
@@ -1750,93 +1486,15 @@ exit 0
     assert not results.exists()
 
 
-def _local_judge_runtime_canary() -> str:
+def test_local_judge_managed_runtime_recheck_is_documented_but_not_executable() -> None:
     text = (REPO_ROOT / "docs" / "runbooks" / "local-judge-stack.md").read_text()
-    marker = text.index('container_id="$(release_lifecycle managed-id')
-    start = text.rfind("```bash", 0, marker)
-    end = text.index("```", marker)
-    return text[start:end]
+    flattened = " ".join(text.split())
 
-
-def test_local_judge_runtime_canary_fails_fast() -> None:
-    canary = _local_judge_runtime_canary()
-    managed_id = 'container_id="$(release_lifecycle managed-id'
-    assert canary.index("set -euo pipefail") < canary.index(managed_id)
-    assert 'account_home="$(/usr/bin/getent passwd' in canary
-    assert "/usr/bin/env -i" in canary
-    assert "HAPAX_LOCAL_JUDGE_MANAGED_RECHECK" in canary
-    assert 'repo_alias="$HOME/.cache/hapax/source-activation/worktree"' in canary
-    assert 'repo="$(/usr/bin/realpath -e -- "$repo_alias")"' in canary
-    assert 'release_root="$HOME/.cache/hapax/source-activation/releases"' in canary
-    assert '[[ "${repo##*/}" =~ ^[0-9a-f]{40}$ ]]' in canary
-    assert 'release_git cat-file blob "$verifier_oid"' in canary
-    assert 'release_git cat-file blob "$lifecycle_oid"' in canary
-    assert canary.count('release_lifecycle managed-id --cidfile "$cidfile"') == 2
-    assert "--verify-runtime-authority-for-release" in canary
-    assert "--verify-local-judge-cap-receipt" in canary
-    assert 'authority_check="$HOME/.local/bin/hapax-post-merge-deploy"' not in canary
-    assert '/usr/bin/systemctl --user show "$unit" -p NeedDaemonReload --value' in canary
-    assert '/usr/bin/systemctl --user show "$unit" -p FragmentPath --value' in canary
-    assert '/usr/bin/systemctl --user show "$unit" -p DropInPaths --value' in canary
-    assert '/usr/bin/systemctl --user show "$unit" -p ExecStart --value' in canary
-    assert '"argv[]=/usr/bin/env -i "' in canary
-    assert "--host=unix:///var/run/docker.sock --config=" in canary
-    assert "/hapax-local-judge/docker-config run " in canary
-    assert '" --memory 4G "' in canary
-    assert '" --memory-swap 6G "' in canary
-    assert "container=hapax-local-judge" not in canary
-    assert '-p ActiveState --value)" = active' in canary
-    assert 'test "$after_container_id" = "$container_id"' in canary
-    assert "{{json .HostConfig.OomKillDisable}}" in canary
-    assert '== null || "$oom_kill_disable" == false' in canary
-    assert "--run-local-judge-cap-workload http://127.0.0.1:5001" in canary
-    assert "run_verifierbench.py" not in canary
-    assert "length == 24" in canary
-    assert 'has("error")' in canary
-    assert 'has("pred")' in canary
-    assert ".error == null" in canary
-    assert '.pred == "A" or .pred == "B" or .pred == "C"' in canary
-    assert 'test "$before_state" = "$after_state"' in canary
-    assert 'test "$before_oom" = "$after_oom"' in canary
-    assert 'results="/store-fast/tmp/' in canary
-    assert 'test "$memory_peak" -le 3221225472' in canary
-    assert 'test "$swap_peak" -le 1073741824' in canary
-
-
-def test_local_judge_runtime_canary_executes_jsonl_acceptance_predicate() -> None:
-    jq = shutil.which("jq")
-    assert jq is not None
-    match = re.search(r"jq -e -s '([^']+)'", _local_judge_runtime_canary())
-    assert match is not None
-    predicate = match.group(1)
-
-    valid = [{"pred": ("A", "B", "C")[index % 3], "error": None} for index in range(24)]
-    cases = {
-        "complete": ("\n".join(json.dumps(row) for row in valid), True),
-        "partial": ("\n".join(json.dumps(row) for row in valid[:-1]), False),
-        "errored": (
-            "\n".join(json.dumps(row) for row in [*valid[:-1], {"pred": "A", "error": "timeout"}]),
-            False,
-        ),
-        "invalid-prediction": (
-            "\n".join(json.dumps(row) for row in [*valid[:-1], {"pred": "D", "error": None}]),
-            False,
-        ),
-        "missing-error-key": (
-            "\n".join(json.dumps(row) for row in [*valid[:-1], {"pred": "A"}]),
-            False,
-        ),
-        "malformed-json": ("\n".join(json.dumps(row) for row in valid[:-1]) + '\n{"pred":', False),
-    }
-
-    for name, (payload, should_pass) in cases.items():
-        result = subprocess.run(
-            [jq, "-e", "-s", predicate],
-            input=f"{payload}\n",
-            text=True,
-            capture_output=True,
-            check=False,
-        )
-        assert (result.returncode == 0) is should_pass, (
-            f"{name}: rc={result.returncode} stderr={result.stderr}"
-        )
+    assert (
+        "managed 8-worker, 24-request post-activation recheck is intentionally unavailable"
+        in flattened
+    )
+    assert "health, restart, OOM, and peak-memory predicates remain required" in flattened
+    assert "HAPAX_LOCAL_JUDGE_MANAGED_RECHECK" not in text
+    assert 'container_id="$(release_lifecycle managed-id' not in text
+    assert "--run-local-judge-cap-workload http://127.0.0.1:5001" not in text

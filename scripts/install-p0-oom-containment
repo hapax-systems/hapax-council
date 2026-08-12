@@ -10,52 +10,9 @@ else
 # Keep the body in this branch: moving it into an if condition suppresses errexit.
 set -euo pipefail
 ORIGINAL_ARGS=("$@")
-readonly -a AUTHENTICATED_PRODUCTION_REQUIRED_ENV_NAMES=(
-    GIT_CONFIG_GLOBAL
-    GIT_CONFIG_NOSYSTEM
-    GIT_NO_REPLACE_OBJECTS
-    GIT_OPTIONAL_LOCKS
-    HAPAX_LOCAL_JUDGE_CAP_RECEIPT_SHA256
-    HAPAX_POST_MERGE_ROOT_DEFER_DIR
-    HAPAX_ROOT_REQUIRED_DESIRED_RECEIPT_ROOT
-    HAPAX_ROOT_REQUIRED_DRAIN_DIR
-    HAPAX_ROOT_REQUIRED_GENERATION_GUARD_FD
-    HAPAX_ROOT_REQUIRED_GIT_REPO
-    HAPAX_ROOT_REQUIRED_INSTALLED_RECEIPT_ROOT
-    HAPAX_ROOT_REQUIRED_INSTALLED_SOURCE_ROOT
-    HAPAX_ROOT_REQUIRED_LOCK_FD
-    HAPAX_ROOT_REQUIRED_LOCK_FILE
-    HAPAX_ROOT_REQUIRED_LOCK_LEXICAL_PATH
-    HAPAX_ROOT_REQUIRED_LOCK_MODE
-    HAPAX_ROOT_REQUIRED_PACKAGE_SHA
-    HAPAX_ROOT_REQUIRED_SEALED_SOURCE_FDS
-    HAPAX_ROOT_REQUIRED_STATE_FD
-    HAPAX_ROOT_REQUIRED_STATE_LEXICAL_ROOT
-    HAPAX_ROOT_REQUIRED_STATE_ROOT
-    HAPAX_RUNTIME_AUTHORITY_TASK
-    HAPAX_RUNTIME_AUTHORITY_TASK_SHA256
-    HOME
-    LANG
-    LC_ALL
-    LOGNAME
-    PATH
-    PWD
-    PYTHONNOUSERSITE
-    PYTHONSAFEPATH
-    SHLVL
-    USER
-    XDG_RUNTIME_DIR
-)
-AUTHENTICATED_PRODUCTION_INPUT_ENV_NAMES=()
-AUTHENTICATED_PRODUCTION_MISSING_ENV_NAMES=()
-AUTHENTICATED_PRODUCTION_RAW_ENVIRONMENT=()
-AUTHENTICATED_PRODUCTION_UNEXPECTED_ENV_NAMES=()
-AUTHENTICATED_PRODUCTION_INPUT_ENVIRONMENT_VALIDATED=0
 _authenticated_requested=0
 _install_requested=0
 _source_value_follows=0
-# This bootstrap must remain Bash-only until the inherited vocabulary and fixed
-# command-resolution values have been accepted.
 for _argument in "$@"; do
     if [ "$_source_value_follows" -eq 1 ]; then
         _source_value_follows=0
@@ -67,10 +24,86 @@ for _argument in "$@"; do
         --install) _install_requested=1 ;;
     esac
 done
-if [ "${HAPAX_ROOT_REQUIRED_INSTALLER_TEST_MODE:-0}" = "1" ] \
-    && { [ "$UID" -eq 0 ] || [ "$EUID" -eq 0 ] || [ "$UID" -ne "$EUID" ]; }; then
-    echo "isolated OOM installer test mode refuses root or set-ID execution before setup; next action: rerun the scratch-only test as one unprivileged UID, or use a future cryptographically attested root-owned broker for production" >&2
-    exit 1
+if [ "${HAPAX_ROOT_REQUIRED_INSTALLER_TEST_MODE:-0}" = "1" ]; then
+    _status_uid_seen=0
+    _status_gid_seen=0
+    _status_cap_seen=0
+    _status_uid_real=
+    _status_uid_effective=
+    _status_uid_saved=
+    _status_uid_fs=
+    _status_gid_real=
+    _status_gid_effective=
+    _status_gid_saved=
+    _status_gid_fs=
+    _status_cap_eff=
+    while read -r _status_key _status_1 _status_2 _status_3 _status_4 _status_extra; do
+        case "$_status_key" in
+            Uid:)
+                _status_uid_seen=1
+                _status_uid_real="$_status_1"
+                _status_uid_effective="$_status_2"
+                _status_uid_saved="$_status_3"
+                _status_uid_fs="$_status_4"
+                ;;
+            Gid:)
+                _status_gid_seen=1
+                _status_gid_real="$_status_1"
+                _status_gid_effective="$_status_2"
+                _status_gid_saved="$_status_3"
+                _status_gid_fs="$_status_4"
+                ;;
+            CapEff:)
+                _status_cap_seen=1
+                _status_cap_eff="$_status_1"
+                ;;
+        esac
+    done < /proc/self/status
+
+    _uid_map_count=0
+    _uid_map_valid=1
+    while read -r _map_inside _map_outside _map_length _map_extra; do
+        _uid_map_count=$((_uid_map_count + 1))
+        if [ "$_map_inside" != 0 ] || [ "$_map_outside" != 0 ] \
+            || [ "$_map_length" != 4294967295 ] || [ -n "${_map_extra:-}" ]; then
+            _uid_map_valid=0
+        fi
+    done < /proc/self/uid_map
+    _gid_map_count=0
+    _gid_map_valid=1
+    while read -r _map_inside _map_outside _map_length _map_extra; do
+        _gid_map_count=$((_gid_map_count + 1))
+        if [ "$_map_inside" != 0 ] || [ "$_map_outside" != 0 ] \
+            || [ "$_map_length" != 4294967295 ] || [ -n "${_map_extra:-}" ]; then
+            _gid_map_valid=0
+        fi
+    done < /proc/self/gid_map
+    _script_is_mountpoint=0
+    while read -r _mount_id _mount_parent _mount_device _mount_root _mount_point _mount_rest; do
+        if [ "$_mount_point" = "$0" ]; then
+            _script_is_mountpoint=1
+            break
+        fi
+    done < /proc/self/mountinfo
+
+    if [ "$_status_uid_seen" -ne 1 ] || [ "$_status_gid_seen" -ne 1 ] \
+        || [ "$_status_cap_seen" -ne 1 ] \
+        || [ "$_status_uid_real" != "$UID" ] \
+        || [ "$_status_uid_effective" != "$EUID" ] \
+        || [ "$_status_uid_real" = 0 ] \
+        || [ "$_status_uid_real" != "$_status_uid_effective" ] \
+        || [ "$_status_uid_real" != "$_status_uid_saved" ] \
+        || [ "$_status_uid_real" != "$_status_uid_fs" ] \
+        || [ "$_status_gid_real" != "$_status_gid_effective" ] \
+        || [ "$_status_gid_real" != "$_status_gid_saved" ] \
+        || [ "$_status_gid_real" != "$_status_gid_fs" ] \
+        || ! [[ "$_status_cap_eff" =~ ^0+$ ]] \
+        || [ "$_uid_map_count" -ne 1 ] || [ "$_uid_map_valid" -ne 1 ] \
+        || [ "$_gid_map_count" -ne 1 ] || [ "$_gid_map_valid" -ne 1 ] \
+        || [ "$_script_is_mountpoint" -ne 0 ]; then
+        echo "isolated OOM installer test mode refuses root, set-ID, capability-bearing, or non-initial user/mount namespace execution before setup; next action: rerun the scratch-only test as one unprivileged process in the initial namespaces" >&2
+        exit 1
+    fi
 fi
 if [ -n "${HAPAX_OOM_INSTALL_SUDO:-}" ]; then
     echo "HAPAX_OOM_INSTALL_SUDO is retired; no interpreted installer may delegate through sudo; next action: remove the selector and dispatch separately authorized broker/attestation work because this source revision keeps production disabled" >&2
@@ -83,85 +116,17 @@ if [ "$_install_requested" -eq 1 ] \
 fi
 if [ "$_authenticated_requested" -eq 1 ] \
     && [ "${HAPAX_ROOT_REQUIRED_INSTALLER_TEST_MODE:-0}" != "1" ]; then
-    if ! mapfile -d '' -t AUTHENTICATED_PRODUCTION_RAW_ENVIRONMENT < "/proc/$$/environ"; then
-        echo "authenticated production OOM install cannot read its raw exported environment; next action: discard the direct invocation and regenerate its exact live command with hapax-post-merge-deploy" >&2
-        exit 1
-    fi
-    for _environment_entry in "${AUTHENTICATED_PRODUCTION_RAW_ENVIRONMENT[@]}"; do
-        case "$_environment_entry" in
-            *=*) _environment_name="${_environment_entry%%=*}" ;;
-            *) _environment_name= ;;
-        esac
-        if [[ "$_environment_name" =~ ^[A-Za-z_][A-Za-z0-9_]*$ ]]; then
-            _environment_display="$_environment_name"
-        else
-            _environment_display="<invalid-environment-entry>"
-        fi
-        _environment_duplicate=0
-        for _observed_environment_name in "${AUTHENTICATED_PRODUCTION_INPUT_ENV_NAMES[@]}"; do
-            if [ "$_environment_name" = "$_observed_environment_name" ]; then
-                _environment_duplicate=1
-                break
-            fi
-        done
-        if [ "$_environment_duplicate" -eq 1 ]; then
-            AUTHENTICATED_PRODUCTION_UNEXPECTED_ENV_NAMES+=("$_environment_display(duplicate)")
-            continue
-        fi
-        AUTHENTICATED_PRODUCTION_INPUT_ENV_NAMES+=("$_environment_name")
-        _environment_allowed=0
-        for _allowed_environment_name in "${AUTHENTICATED_PRODUCTION_REQUIRED_ENV_NAMES[@]}"; do
-            case "$_allowed_environment_name" in
-                PWD|SHLVL) continue ;;
-            esac
-            if [ "$_environment_name" = "$_allowed_environment_name" ]; then
-                _environment_allowed=1
-                break
-            fi
-        done
-        if [ "$_environment_allowed" -eq 0 ]; then
-            AUTHENTICATED_PRODUCTION_UNEXPECTED_ENV_NAMES+=("$_environment_display")
-        fi
-    done
-    for _required_environment_name in "${AUTHENTICATED_PRODUCTION_REQUIRED_ENV_NAMES[@]}"; do
-        case "$_required_environment_name" in
-            PWD|SHLVL) continue ;;
-        esac
-        _environment_found=0
-        for _observed_environment_name in "${AUTHENTICATED_PRODUCTION_INPUT_ENV_NAMES[@]}"; do
-            if [ "$_required_environment_name" = "$_observed_environment_name" ]; then
-                _environment_found=1
-                break
-            fi
-        done
-        [ "$_environment_found" -eq 1 ] \
-            || AUTHENTICATED_PRODUCTION_MISSING_ENV_NAMES+=("$_required_environment_name")
-    done
-    if [ "${#AUTHENTICATED_PRODUCTION_UNEXPECTED_ENV_NAMES[@]}" -ne 0 ] \
-        || [ "${#AUTHENTICATED_PRODUCTION_MISSING_ENV_NAMES[@]}" -ne 0 ]; then
-        echo "authenticated production OOM install refuses an unexpected raw exported environment vocabulary: missing=${AUTHENTICATED_PRODUCTION_MISSING_ENV_NAMES[*]:-none} unexpected=${AUTHENTICATED_PRODUCTION_UNEXPECTED_ENV_NAMES[*]:-none}; next action: discard the direct invocation and regenerate its exact live command with hapax-post-merge-deploy" >&2
-        exit 1
-    fi
-    if [ "${GIT_CONFIG_GLOBAL-}" != "/dev/null" ] \
-        || [ "${GIT_CONFIG_NOSYSTEM-}" != "1" ] \
-        || [ "${GIT_NO_REPLACE_OBJECTS-}" != "1" ] \
-        || [ "${GIT_OPTIONAL_LOCKS-}" != "0" ] \
-        || [ "${LANG-}" != "C.UTF-8" ] || [ "${LC_ALL-}" != "C.UTF-8" ] \
-        || [ "${PATH-}" != "/usr/local/sbin:/usr/local/bin:/usr/bin:/bin" ] \
-        || [ "${PYTHONNOUSERSITE-}" != "1" ] || [ "${PYTHONSAFEPATH-}" != "1" ] \
-        || [ "${XDG_RUNTIME_DIR-}" != "/run/user/$UID" ] || [ "${SHLVL-}" != "1" ] \
-        || { [ -n "${HAPAX_LOCAL_JUDGE_CAP_RECEIPT_SHA256-}" ] \
-            && ! [[ "${HAPAX_LOCAL_JUDGE_CAP_RECEIPT_SHA256-}" =~ ^[0-9a-f]{64}$ ]]; }; then
-        echo "authenticated production OOM install refuses noncanonical fixed environment values before command execution; next action: discard the direct invocation and regenerate its exact live command with hapax-post-merge-deploy" >&2
-        exit 1
-    fi
-    AUTHENTICATED_PRODUCTION_INPUT_ENVIRONMENT_VALIDATED=1
+    echo "authenticated production OOM installation is unavailable in this source revision; caller-created sealed descriptors do not establish runtime authority; next action: dispatch separately authorized broker/attestation work" >&2
+    exit 1
 fi
-unset AUTHENTICATED_PRODUCTION_INPUT_ENV_NAMES AUTHENTICATED_PRODUCTION_RAW_ENVIRONMENT
-unset _allowed_environment_name _argument _authenticated_requested _environment_allowed
-unset _environment_display _environment_duplicate _environment_entry _environment_found
-unset _environment_name _observed_environment_name _required_environment_name
-unset _install_requested _source_value_follows
+unset _argument _authenticated_requested _install_requested _source_value_follows
+unset _status_cap_eff _status_cap_seen _status_gid_effective _status_gid_fs
+unset _status_gid_real _status_gid_saved _status_gid_seen _status_key
+unset _status_uid_effective _status_uid_fs _status_uid_real _status_uid_saved
+unset _status_uid_seen _status_1 _status_2 _status_3 _status_4 _status_extra
+unset _gid_map_count _gid_map_valid _map_extra _map_inside _map_length _map_outside
+unset _mount_device _mount_id _mount_parent _mount_point _mount_rest _mount_root
+unset _script_is_mountpoint _uid_map_count _uid_map_valid
 
 ROOT="$(cd "$(/usr/bin/dirname "${BASH_SOURCE[0]}")/.." && /usr/bin/pwd -P)"
 SOURCE="$ROOT"
@@ -414,7 +379,9 @@ def host_root_uid() -> int:
             inside, outside, length = (int(field) for field in line.split())
             if outside <= 0 < outside + length:
                 return inside - outside
-    return 65534
+    raise SystemExit(
+        "host UID 0 is unmapped; rerun from the initial host user namespace"
+    )
 
 
 fd = int(sys.argv[1])
@@ -542,7 +509,9 @@ def host_root_uid() -> int:
             inside, outside, length = (int(field) for field in line.split())
             if outside <= 0 < outside + length:
                 return inside - outside
-    return 65534
+    raise SystemExit(
+        "host UID 0 is unmapped; rerun from the initial host user namespace"
+    )
 
 
 state_root, lock_path, script, *args = sys.argv[1:]
@@ -1844,66 +1813,6 @@ validate_authenticated_test_root() {
     fi
 }
 
-validate_authenticated_production_environment_names() {
-    [ "$AUTHENTICATED_SEALED_SOURCE" -eq 1 ] || return 0
-    [ "$ROOT_REQUIRED_INSTALLER_TEST_MODE" = "0" ] || return 0
-    if [ "$AUTHENTICATED_PRODUCTION_INPUT_ENVIRONMENT_VALIDATED" -ne 1 ]; then
-        echo "authenticated production OOM install has no complete raw-environment validation; next action: discard the direct invocation and regenerate its exact live command with hapax-post-merge-deploy" >&2
-        return 1
-    fi
-}
-
-validate_authenticated_production_contract() {
-    local account_record account_uid account_gid account_user account_home
-    local canonical_state canonical_defer canonical_release canonical_stage
-    validate_authenticated_production_environment_names || return 1
-    account_record="$(/usr/bin/python3 -I - <<'PY'
-import os
-import pwd
-
-account = pwd.getpwuid(os.getuid())
-print(f"{account.pw_uid}:{account.pw_gid}:{account.pw_name}:{account.pw_dir}")
-PY
-)" || return 1
-    IFS=: read -r account_uid account_gid account_user account_home <<< "$account_record"
-    canonical_state="$account_home/.local/state/hapax/root-required"
-    canonical_defer="$account_home/.cache/hapax/post-merge-root-required"
-    canonical_release="$account_home/.cache/hapax/source-activation/releases/$ROOT_REQUIRED_PACKAGE_SHA"
-    canonical_stage="$canonical_defer/$ROOT_REQUIRED_PACKAGE_SHA/oom-containment"
-    if [ -n "$LOCAL_JUDGE_CAP_RECEIPT_SHA256" ] \
-        && ! [[ "$LOCAL_JUDGE_CAP_RECEIPT_SHA256" =~ ^[0-9a-f]{64}$ ]]; then
-        echo "authenticated production OOM install rejected a malformed helper-bound local-judge cap digest; next action: discard the altered invocation and regenerate its live command with hapax-post-merge-deploy" >&2
-        return 1
-    fi
-    if [ "$account_uid" = "0" ] || [ "$TARGET_UID" != "$account_uid" ] \
-        || [ "$TARGET_GID" != "$account_gid" ] || [ "$TARGET_USER" != "$account_user" ] \
-        || [ "$TARGET_HOME" != "$account_home" ] || [ "$HOME" != "$account_home" ] \
-        || [ "${USER:-}" != "$account_user" ] || [ "${LOGNAME:-}" != "$account_user" ] \
-        || [ "$ACTUAL_UID" != "$account_uid" ] || [ "$EFFECTIVE_UID" != "$account_uid" ] \
-        || [ "${GIT_CONFIG_GLOBAL:-}" != "/dev/null" ] \
-        || [ "${GIT_CONFIG_NOSYSTEM:-}" != "1" ] \
-        || [ "${GIT_NO_REPLACE_OBJECTS:-}" != "1" ] \
-        || [ "${GIT_OPTIONAL_LOCKS:-}" != "0" ] \
-        || [ "${LANG:-}" != "C.UTF-8" ] || [ "${LC_ALL:-}" != "C.UTF-8" ] \
-        || [ "$PATH" != "/usr/local/sbin:/usr/local/bin:/usr/bin:/bin" ] \
-        || [ "${PYTHONNOUSERSITE:-}" != "1" ] || [ "${PYTHONSAFEPATH:-}" != "1" ] \
-        || [ "${XDG_RUNTIME_DIR:-}" != "/run/user/$account_uid" ] \
-        || [ "${PWD:-}" != "$canonical_release" ] || [ "${SHLVL:-}" != "1" ] \
-        || [ "$DOCKER" != "/usr/bin/docker" ] || [ "$SYSTEMCTL" != "/usr/bin/systemctl" ] \
-        || [ "$SYSTEMD_ANALYZE" != "/usr/bin/systemd-analyze" ] \
-        || [ "$RUNUSER" != "/usr/bin/runuser" ] \
-        || [ "$VISUDO" != "/usr/bin/visudo" ] \
-        || [ "$ROOT_REQUIRED_DEFER_ROOT" != "$canonical_defer" ] \
-        || [ "$ROOT_REQUIRED_GIT_REPO" != "$canonical_release" ] \
-        || [ "$SOURCE" != "$canonical_stage" ] \
-        || [ "${HAPAX_ROOT_REQUIRED_DRAIN_DIR:-}" != "$canonical_stage" ] \
-        || [[ "$RUNTIME_AUTHORITY_TASK" != /* ]]; then
-        echo "authenticated production OOM install rejected a noncanonical account, release, or stage contract; next action: discard the altered invocation and regenerate its live command with hapax-post-merge-deploy" >&2
-        return 1
-    fi
-    validate_authenticated_state_contract "$canonical_state"
-}
-
 validate_authenticated_test_contract() {
     local path selector_value
     local canonical_stage="$ROOT_REQUIRED_DEFER_ROOT/$ROOT_REQUIRED_PACKAGE_SHA/oom-containment"
@@ -1957,11 +1866,8 @@ validate_authenticated_install_contract() {
     [ "$AUTHENTICATED_SEALED_SOURCE" -eq 1 ] || return 0
     case "$ROOT_REQUIRED_INSTALLER_TEST_MODE" in
         0)
-            [ -z "$ROOT_REQUIRED_INSTALLER_TEST_ROOT" ] || {
-                echo "authenticated production OOM install refuses HAPAX_ROOT_REQUIRED_INSTALLER_TEST_ROOT without isolated test mode" >&2
-                return 1
-            }
-            validate_authenticated_production_contract
+            echo "authenticated production OOM installation is unavailable in this source revision; next action: dispatch separately authorized broker/attestation work" >&2
+            return 1
             ;;
         1) validate_authenticated_test_contract ;;
         *)
@@ -3651,7 +3557,7 @@ install_live() {
     user_systemctl daemon-reload
     for timer in "${user_audit_timers[@]}"; do
         user_systemctl enable --now "$timer" >/dev/null 2>&1 || {
-            echo "unable to enable $timer for UID $TARGET_UID; next action: run systemctl --user enable --now $timer as $TARGET_USER" >&2
+            echo "unable to enable $timer for UID $TARGET_UID; next action: rerun $OOM_REPAIR_ACTION" >&2
             return 1
         }
     done
@@ -3916,11 +3822,11 @@ verify_live() {
     done
     for timer in "${user_audit_timers[@]}"; do
         user_systemctl is-enabled --quiet "$timer" || {
-            echo "$timer is not enabled for UID $TARGET_UID; next action: run systemctl --user enable --now $timer as $TARGET_USER" >&2
+            echo "$timer is not enabled for UID $TARGET_UID; next action: rerun $OOM_REPAIR_ACTION" >&2
             return 1
         }
         user_systemctl is-active --quiet "$timer" || {
-            echo "$timer is not active for UID $TARGET_UID; next action: run systemctl --user enable --now $timer as $TARGET_USER" >&2
+            echo "$timer is not active for UID $TARGET_UID; next action: rerun $OOM_REPAIR_ACTION" >&2
             return 1
         }
     done
@@ -3954,7 +3860,7 @@ verify_user_audit_loaded_timeouts() {
             return 1
         fi
         if [ "$actual" != "$expected" ]; then
-            echo "live $unit TimeoutStartUSec drift: actual=${actual:-unavailable} expected=$expected; next action: run systemctl --user daemon-reload and $OOM_REPAIR_ACTION" >&2
+            echo "live $unit TimeoutStartUSec drift: actual=${actual:-unavailable} expected=$expected; next action: rerun $OOM_REPAIR_ACTION; the governed transaction owns manager reload" >&2
             return 1
         fi
         expected_environment="$(source_unit_value "$rel" Environment)" || return 1
@@ -3965,7 +3871,7 @@ verify_user_audit_loaded_timeouts() {
         case " $loaded_environment " in
             *" $expected_environment "*) ;;
             *)
-                echo "live $unit Environment drift: actual=${loaded_environment:-unavailable} expected to contain $expected_environment; next action: run systemctl --user daemon-reload and $OOM_REPAIR_ACTION" >&2
+                echo "live $unit Environment drift: actual=${loaded_environment:-unavailable} expected to contain $expected_environment; next action: rerun $OOM_REPAIR_ACTION; the governed transaction owns manager reload" >&2
                 return 1
                 ;;
         esac
@@ -4227,7 +4133,6 @@ verify_user_process_oom_floor() {
     [ "$failed" -eq 0 ]
 }
 
-validate_authenticated_production_environment_names
 load_authenticated_sealed_sources
 validate_authenticated_installer_call_form
 require_authenticated_install_authority

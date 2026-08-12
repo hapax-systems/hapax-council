@@ -2018,12 +2018,12 @@ audit_systemd_state() {
     for timer in hapax-oom-policy-audit.timer hapax-root-required-deploy-audit.timer; do
         if ! "$SYSTEMCTL" --user is-enabled --quiet "$timer"; then
             echo "root-required activation drift: $timer is not enabled" >&2
-            echo "  next action: run systemctl --user enable --now $timer" >&2
+            echo "  next action: run the runtime-authorized hapax-post-merge-deploy OOM reconciliation for the desired receipt SHA with HAPAX_RUNTIME_AUTHORITY_TASK" >&2
             failed=1
         fi
         if ! "$SYSTEMCTL" --user is-active --quiet "$timer"; then
             echo "root-required activation drift: $timer is not active" >&2
-            echo "  next action: run systemctl --user enable --now $timer" >&2
+            echo "  next action: run the runtime-authorized hapax-post-merge-deploy OOM reconciliation for the desired receipt SHA with HAPAX_RUNTIME_AUTHORITY_TASK" >&2
             failed=1
         fi
     done
@@ -2038,7 +2038,7 @@ audit_systemd_state() {
         fi
         if [ -z "$expected_audit_timeout" ] || [ "$loaded_audit_timeout" != "$expected_audit_timeout" ]; then
             echo "root-required activation drift: $unit loaded TimeoutStartUSec=${loaded_audit_timeout:-unavailable}, expected ${expected_audit_timeout:-source value missing}" >&2
-            echo "  next action: run systemctl --user daemon-reload, then run the runtime-authorized hapax-post-merge-deploy OOM reconciliation for the desired receipt SHA with HAPAX_RUNTIME_AUTHORITY_TASK" >&2
+            echo "  next action: run the runtime-authorized hapax-post-merge-deploy OOM reconciliation for the desired receipt SHA with HAPAX_RUNTIME_AUTHORITY_TASK; that governed transaction owns manager reload" >&2
             failed=1
         fi
         expected_audit_environment="$(awk '$0 ~ /^Environment=/ {sub(/^[^=]*=/, ""); print; exit}' "$INSTALLED_SOURCE_ROOT/$rel" 2>/dev/null || true)"
@@ -2055,7 +2055,7 @@ audit_systemd_state() {
                 ;;
             *)
                 echo "root-required activation drift: $unit loaded Environment=${loaded_audit_environment:-unavailable}, expected to contain ${expected_audit_environment:-source value missing}" >&2
-                echo "  next action: run systemctl --user daemon-reload, then run the runtime-authorized hapax-post-merge-deploy OOM reconciliation for the desired receipt SHA with HAPAX_RUNTIME_AUTHORITY_TASK" >&2
+                echo "  next action: run the runtime-authorized hapax-post-merge-deploy OOM reconciliation for the desired receipt SHA with HAPAX_RUNTIME_AUTHORITY_TASK; that governed transaction owns manager reload" >&2
                 failed=1
                 ;;
         esac
