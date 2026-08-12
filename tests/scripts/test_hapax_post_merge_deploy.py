@@ -3,14 +3,17 @@
 from __future__ import annotations
 
 import ast
+import csv
 import fcntl
 import hashlib
 import importlib.metadata
+import io
 import json
 import os
 import re
 import shutil
 import subprocess
+import sys
 import threading
 import time
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
@@ -130,6 +133,7 @@ def _run_runtime_authority_validator(
     *,
     dependency_prelude: str = "",
     post_dependency_prelude: str = "",
+    interpreter: Path = Path("/usr/bin/python3"),
 ) -> subprocess.CompletedProcess[str]:
     git_head = subprocess.run(
         ["/usr/bin/git", "-C", str(repo), "rev-parse", "HEAD"],
@@ -140,7 +144,7 @@ def _run_runtime_authority_validator(
     scopes = (scope,) if isinstance(scope, str) else scope
     return subprocess.run(
         [
-            "/usr/bin/python3",
+            str(interpreter),
             "-I",
             "-S",
             "-",
@@ -189,9 +193,13 @@ def _copy_runtime_authority_dependency_closure(target: Path) -> None:
     target.mkdir()
     for distribution in selected.values():
         source_root = Path(distribution.locate_file("")).resolve()
-        assert distribution.files
-        for item in distribution.files:
-            source = Path(distribution.locate_file(item)).resolve()
+        record_text = distribution.read_text("RECORD")
+        assert record_text
+        rows = csv.reader(io.StringIO(record_text, newline=""), strict=True)
+        for row in rows:
+            assert len(row) == 3
+            source = Path(distribution.locate_file(row[0])).resolve()
+            assert source.is_file()
             relative = source.relative_to(source_root)
             destination = target / relative
             destination.parent.mkdir(parents=True, exist_ok=True)
@@ -202,8 +210,10 @@ def _test_dependency_root_prelude(dependency_root: Path) -> str:
     return (
         f"RUNTIME_AUTHORITY_DEDICATED_SITE = Path({str(dependency_root)!r})\n"
         "def _fixture_trusted_inode(path, label):\n"
-        "    del label\n"
-        "    inode = path.lstat()\n"
+        "    try:\n"
+        "        inode = path.lstat()\n"
+        "    except OSError as exc:\n"
+        '        refuse(f"{label} is unavailable: {exc}")\n'
         "    if stat.S_ISLNK(inode.st_mode):\n"
         '        refuse(f"fixture dependency path contains a symlink: {path}")\n'
         "    if not stat.S_ISDIR(inode.st_mode) and not stat.S_ISREG(inode.st_mode):\n"
@@ -1482,6 +1492,25 @@ def test_runtime_authority_validator_rejects_dependency_manifest_identity_drift(
     assert "dependency manifest identity is unsupported" in result.stderr
 
 
+def test_runtime_authority_validator_accepts_exact_dedicated_closure(tmp_path: Path) -> None:
+    active_root = tmp_path / "hapax-cc-tasks" / "active"
+    active_root.mkdir(parents=True)
+    task = active_root / "runtime-cap.md"
+    task.write_text(_runtime_authority_task_text(), encoding="utf-8")
+    dependency_root = tmp_path / "runtime-dependencies"
+    _copy_runtime_authority_dependency_closure(dependency_root)
+
+    result = _run_runtime_authority_validator(
+        task,
+        active_root,
+        dependency_prelude=_test_dependency_root_prelude(dependency_root),
+        interpreter=Path(sys.executable),
+    )
+
+    assert result.returncode == 0, result.stderr
+    assert "runtime authority accepted: task_id=runtime-cap" in result.stdout
+
+
 def test_runtime_authority_validator_rejects_extra_dedicated_distribution(
     tmp_path: Path,
 ) -> None:
@@ -1529,6 +1558,134 @@ def test_runtime_authority_validator_rejects_record_payload_drift(tmp_path: Path
 
     assert result.returncode == 2
     assert "dependency RECORD digest mismatch: pydantic" in result.stderr
+
+
+@pytest.mark.parametrize("missing_kind", ("metadata-file", "package-tree"))
+def test_runtime_authority_validator_rejects_missing_recorded_file(
+    tmp_path: Path, missing_kind: str
+) -> None:
+    active_root = tmp_path / "hapax-cc-tasks" / "active"
+    active_root.mkdir(parents=True)
+    task = active_root / "runtime-cap.md"
+    task.write_text(_runtime_authority_task_text(), encoding="utf-8")
+    dependency_root = tmp_path / "runtime-dependencies"
+    _copy_runtime_authority_dependency_closure(dependency_root)
+    if missing_kind == "metadata-file":
+        next(dependency_root.glob("pydantic-*.dist-info/INSTALLER")).unlink()
+    else:
+        shutil.rmtree(dependency_root / "pydantic" / "deprecated")
+
+    result = _run_runtime_authority_validator(
+        task,
+        active_root,
+        dependency_prelude=_test_dependency_root_prelude(dependency_root),
+    )
+
+    assert result.returncode == 2
+    assert "dependency RECORD file pydantic is unavailable" in result.stderr
+
+
+def test_runtime_authority_validator_rejects_noncanonical_record_path(tmp_path: Path) -> None:
+    active_root = tmp_path / "hapax-cc-tasks" / "active"
+    active_root.mkdir(parents=True)
+    task = active_root / "runtime-cap.md"
+    task.write_text(_runtime_authority_task_text(), encoding="utf-8")
+    dependency_root = tmp_path / "runtime-dependencies"
+    _copy_runtime_authority_dependency_closure(dependency_root)
+    record = next(dependency_root.glob("pydantic-*.dist-info/RECORD"))
+    record_text = record.read_text(encoding="utf-8")
+    record.write_text(
+        record_text.replace(
+            "pydantic/__init__.py,",
+            "pydantic/../pydantic/__init__.py,",
+            1,
+        ),
+        encoding="utf-8",
+    )
+
+    result = _run_runtime_authority_validator(
+        task,
+        active_root,
+        dependency_prelude=_test_dependency_root_prelude(dependency_root),
+    )
+
+    assert result.returncode == 2
+    assert "dependency RECORD path is noncanonical: pydantic" in result.stderr
+
+
+def test_runtime_authority_validator_rejects_malformed_record_row(tmp_path: Path) -> None:
+    active_root = tmp_path / "hapax-cc-tasks" / "active"
+    active_root.mkdir(parents=True)
+    task = active_root / "runtime-cap.md"
+    task.write_text(_runtime_authority_task_text(), encoding="utf-8")
+    dependency_root = tmp_path / "runtime-dependencies"
+    _copy_runtime_authority_dependency_closure(dependency_root)
+    record = next(dependency_root.glob("pydantic-*.dist-info/RECORD"))
+    with record.open("a", encoding="utf-8") as stream:
+        stream.write("unexpected,two-fields\n")
+
+    result = _run_runtime_authority_validator(
+        task,
+        active_root,
+        dependency_prelude=_test_dependency_root_prelude(dependency_root),
+    )
+
+    assert result.returncode == 2
+    assert "dependency RECORD row is malformed: pydantic" in result.stderr
+
+
+def test_runtime_authority_validator_rejects_swapped_distribution_metadata_rows(
+    tmp_path: Path,
+) -> None:
+    active_root = tmp_path / "hapax-cc-tasks" / "active"
+    active_root.mkdir(parents=True)
+    task = active_root / "runtime-cap.md"
+    task.write_text(_runtime_authority_task_text(), encoding="utf-8")
+    dependency_root = tmp_path / "runtime-dependencies"
+    _copy_runtime_authority_dependency_closure(dependency_root)
+    pydantic_record = next(dependency_root.glob("pydantic-*.dist-info/RECORD"))
+    annotated_record = next(dependency_root.glob("annotated_types-*.dist-info/RECORD"))
+
+    def read_rows(record: Path) -> list[list[str]]:
+        return list(
+            csv.reader(
+                io.StringIO(record.read_text(encoding="utf-8"), newline=""),
+                strict=True,
+            )
+        )
+
+    pydantic_rows = read_rows(pydantic_record)
+    annotated_rows = read_rows(annotated_record)
+    pydantic_prefix = f"{pydantic_record.parent.name}/"
+    annotated_prefix = f"{annotated_record.parent.name}/"
+    pydantic_metadata = [row for row in pydantic_rows if row[0].startswith(pydantic_prefix)]
+    annotated_metadata = [row for row in annotated_rows if row[0].startswith(annotated_prefix)]
+    assert pydantic_metadata and annotated_metadata
+
+    for record, rows in (
+        (
+            pydantic_record,
+            [row for row in pydantic_rows if not row[0].startswith(pydantic_prefix)]
+            + annotated_metadata,
+        ),
+        (
+            annotated_record,
+            [row for row in annotated_rows if not row[0].startswith(annotated_prefix)]
+            + pydantic_metadata,
+        ),
+    ):
+        stream = io.StringIO(newline="")
+        csv.writer(stream, lineterminator="\n").writerows(rows)
+        record.write_text(stream.getvalue(), encoding="utf-8")
+
+    result = _run_runtime_authority_validator(
+        task,
+        active_root,
+        dependency_prelude=_test_dependency_root_prelude(dependency_root),
+    )
+
+    assert result.returncode == 2
+    assert "RECORD metadata root does not match its distribution" in result.stderr
 
 
 def test_runtime_authority_validator_rejects_malformed_record_digest(tmp_path: Path) -> None:

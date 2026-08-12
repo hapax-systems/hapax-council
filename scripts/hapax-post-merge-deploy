@@ -336,19 +336,22 @@ from __future__ import annotations
 
 import base64
 import binascii
+import csv
 import hashlib
 import importlib.abc
 import importlib.machinery
 import importlib.metadata
+import io
 import json
 import os
+import platform  # Preload optional stdlib probes before sealing the meta-path guard.
 import re
 import site
 import stat
 import subprocess
 import sys
 import types
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 
 
 TASK_MUTABLE_STATUSES = {
@@ -532,17 +535,13 @@ def distribution_metadata_root(
     name: str,
     root: Path,
 ) -> Path:
-    metadata_files = [
-        item
-        for item in (distribution.files or ())
-        if item.name == "METADATA"
-        and any(part.endswith(".dist-info") for part in item.parts[:-1])
-    ]
-    if len(metadata_files) != 1:
-        refuse(f"runtime-authority dependency has no unique METADATA file: {name}")
-    metadata_root = Path(os.path.abspath(distribution.locate_file(metadata_files[0]))).parent
-    if metadata_root.parent != root:
-        refuse(f"runtime-authority dependency metadata root is not direct: {name}")
+    provider_path = getattr(distribution, "_path", None)
+    try:
+        metadata_root = Path(os.path.abspath(os.fspath(provider_path)))
+    except TypeError:
+        refuse(f"runtime-authority dependency metadata provider is unsupported: {name}")
+    if metadata_root.parent != root or not metadata_root.name.endswith(".dist-info"):
+        refuse(f"runtime-authority dependency metadata provider is not direct: {name}")
     return metadata_root
 
 
@@ -554,19 +553,81 @@ def is_within(path: Path, root: Path) -> bool:
     return True
 
 
-def verify_distribution_record(
+def distribution_record_rows(
     distribution: importlib.metadata.Distribution,
+    name: str,
+) -> tuple[tuple[str, str, str], ...]:
+    try:
+        record_text = distribution.read_text("RECORD")
+    except (OSError, UnicodeError) as exc:
+        refuse(f"runtime-authority dependency RECORD cannot be read: {name}: {exc}")
+    if not record_text:
+        refuse(f"runtime-authority dependency has no RECORD inventory: {name}")
+    rows: list[tuple[str, str, str]] = []
+    try:
+        reader = csv.reader(io.StringIO(record_text, newline=""), strict=True)
+        for row_number, row in enumerate(reader, start=1):
+            if len(row) != 3:
+                refuse(
+                    f"runtime-authority dependency RECORD row is malformed: "
+                    f"{name} row={row_number}"
+                )
+            rows.append((row[0], row[1], row[2]))
+            if len(rows) > MAX_DEPENDENCY_TREE_ENTRIES:
+                refuse(f"runtime-authority dependency RECORD exceeds the row bound: {name}")
+    except csv.Error as exc:
+        refuse(f"runtime-authority dependency RECORD CSV is malformed: {name}: {exc}")
+    if not rows:
+        refuse(f"runtime-authority dependency has no RECORD inventory: {name}")
+    return tuple(rows)
+
+
+def record_target_path(raw_path: str, name: str, root: Path) -> Path:
+    relative = PurePosixPath(raw_path)
+    if (
+        not raw_path
+        or "\x00" in raw_path
+        or relative.is_absolute()
+        or not relative.parts
+        or relative.as_posix() != raw_path
+        or ".." in relative.parts
+    ):
+        refuse(f"runtime-authority dependency RECORD path is noncanonical: {name}")
+    path = root.joinpath(*relative.parts)
+    if not is_within(path, root):
+        refuse(f"runtime-authority dependency RECORD escapes its root: {name}")
+    return path
+
+
+def distribution_metadata_root_from_record(
+    record_rows: tuple[tuple[str, str, str], ...],
+    name: str,
+    root: Path,
+) -> Path:
+    metadata_files = [
+        record_target_path(raw_path, name, root)
+        for raw_path, _hash_spec, _size_spec in record_rows
+        if PurePosixPath(raw_path).name == "METADATA"
+        and any(part.endswith(".dist-info") for part in PurePosixPath(raw_path).parts[:-1])
+    ]
+    if len(metadata_files) != 1:
+        refuse(f"runtime-authority dependency has no unique METADATA file: {name}")
+    metadata_root = metadata_files[0].parent
+    if metadata_root.parent != root:
+        refuse(f"runtime-authority dependency metadata root is not direct: {name}")
+    return metadata_root
+
+
+def verify_distribution_record(
+    record_rows: tuple[tuple[str, str, str], ...],
     name: str,
     root: Path,
     admitted_roots: tuple[Path, ...],
     metadata_root: Path,
 ) -> set[Path]:
-    files = distribution.files
-    if not files:
-        refuse(f"runtime-authority dependency has no RECORD inventory: {name}")
     observed_paths: set[Path] = set()
-    for item in files:
-        path = Path(os.path.abspath(distribution.locate_file(item)))
+    for raw_path, hash_spec, size_spec in record_rows:
+        path = record_target_path(raw_path, name, root)
         if not is_within(path, root) or not any(
             path == admitted or is_within(path, admitted) for admitted in admitted_roots
         ):
@@ -578,13 +639,19 @@ def verify_distribution_record(
         inode = trusted_inode(path, f"runtime-authority dependency RECORD file {name}")
         if inode.st_size > MAX_DEPENDENCY_FILE_BYTES:
             refuse(f"runtime-authority dependency RECORD file exceeds the size bound: {name}")
-        if item.hash is None:
-            if path != metadata_root / "RECORD" or item.size is not None:
+        if not hash_spec:
+            if path != metadata_root / "RECORD" or size_spec:
                 refuse(f"runtime-authority dependency RECORD has an unhashed payload: {name}")
             continue
-        if item.hash.mode != "sha256" or item.size != inode.st_size:
+        hash_mode, separator, encoded_digest = hash_spec.partition("=")
+        if (
+            hash_mode != "sha256"
+            or separator != "="
+            or re.fullmatch(r"(?:0|[1-9][0-9]*)", size_spec) is None
+            or len(size_spec) > 20
+            or int(size_spec) != inode.st_size
+        ):
             refuse(f"runtime-authority dependency RECORD metadata is unsupported: {name}")
-        encoded_digest = item.hash.value
         if re.fullmatch(r"[A-Za-z0-9_-]{43}", encoded_digest) is None:
             refuse(f"runtime-authority dependency RECORD digest is malformed: {name}")
         try:
@@ -778,6 +845,18 @@ def admit_runtime_authority_dependencies() -> Path:
                 f"{name}={distribution.version!r} expected={expected_version!r}"
             )
         metadata_root = distribution_metadata_root(distribution, name, root)
+        record_rows = distribution_record_rows(distribution, name) if dedicated else None
+        if record_rows is not None:
+            record_metadata_root = distribution_metadata_root_from_record(
+                record_rows,
+                name,
+                root,
+            )
+            if record_metadata_root != metadata_root:
+                refuse(
+                    f"runtime-authority dependency RECORD metadata root does not match "
+                    f"its distribution: {name}"
+                )
         if not is_within(metadata_root, root):
             refuse(f"runtime-authority dependency metadata escapes its root: {name}")
         validate_trusted_tree(metadata_root, f"runtime-authority dependency metadata {name}")
@@ -789,9 +868,11 @@ def admit_runtime_authority_dependencies() -> Path:
             validate_trusted_tree(import_root, f"runtime-authority dependency import {name}")
             admitted_roots.append(import_root)
         if dedicated:
+            if record_rows is None:
+                refuse(f"runtime-authority dependency has no RECORD inventory: {name}")
             dedicated_files.update(
                 verify_distribution_record(
-                    distribution,
+                    record_rows,
                     name,
                     root,
                     tuple(admitted_roots),
