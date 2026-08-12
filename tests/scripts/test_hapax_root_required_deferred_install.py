@@ -31,32 +31,32 @@ APCUPSD_MANIFEST = Path("config/root-required/apcupsd-power-alerts.files")
 APCUPSD_EFFECTS = Path("config/root-required/apcupsd-power-alerts.effects")
 APCUPSD_INSTALLER = Path("scripts/install-apcupsd-power-alerts")
 AUTHORITY_VERIFIER = Path("scripts/hapax-post-merge-deploy")
-SHARED_INSTALLER_CONTROL_NAMES = {
-    "HAPAX_LOCAL_JUDGE_CAP_RECEIPT_SHA256",
-    "HAPAX_POST_MERGE_ROOT_DEFER_DIR",
-    "HAPAX_ROOT_REQUIRED_ALLOW_UNAUTHENTICATED_TEST_INSTALL",
-    "HAPAX_ROOT_REQUIRED_DESIRED_RECEIPT_ROOT",
-    "HAPAX_ROOT_REQUIRED_DRAIN_DIR",
-    "HAPAX_ROOT_REQUIRED_FINALIZE_GATE",
-    "HAPAX_ROOT_REQUIRED_GENERATION_GUARD_FD",
-    "HAPAX_ROOT_REQUIRED_GIT_REPO",
-    "HAPAX_ROOT_REQUIRED_INSTALLED_RECEIPT_ROOT",
-    "HAPAX_ROOT_REQUIRED_INSTALLED_SOURCE_ROOT",
-    "HAPAX_ROOT_REQUIRED_INSTALLER_TEST_MODE",
-    "HAPAX_ROOT_REQUIRED_INSTALLER_TEST_ROOT",
-    "HAPAX_ROOT_REQUIRED_LOCK_FD",
-    "HAPAX_ROOT_REQUIRED_LOCK_FILE",
-    "HAPAX_ROOT_REQUIRED_LOCK_HELD",
-    "HAPAX_ROOT_REQUIRED_LOCK_LEXICAL_PATH",
-    "HAPAX_ROOT_REQUIRED_LOCK_MODE",
-    "HAPAX_ROOT_REQUIRED_PACKAGE_SHA",
-    "HAPAX_ROOT_REQUIRED_SEALED_SOURCE_FDS",
-    "HAPAX_ROOT_REQUIRED_STATE_FD",
-    "HAPAX_ROOT_REQUIRED_STATE_LEXICAL_ROOT",
-    "HAPAX_ROOT_REQUIRED_STATE_ROOT",
-    "HAPAX_ROOT_REQUIRED_UNAUTHENTICATED_TEST_ROOT",
-    "HAPAX_RUNTIME_AUTHORITY_TASK",
-    "HAPAX_RUNTIME_AUTHORITY_TASK_SHA256",
+SHARED_INSTALLER_CONTROL_RATIONALES = {
+    "HAPAX_LOCAL_JUDGE_CAP_RECEIPT_SHA256": "helper-bound cap-artifact digest",
+    "HAPAX_POST_MERGE_ROOT_DEFER_DIR": "helper-selected canonical deferral root",
+    "HAPAX_ROOT_REQUIRED_ALLOW_UNAUTHENTICATED_TEST_INSTALL": "isolated-test admission",
+    "HAPAX_ROOT_REQUIRED_DESIRED_RECEIPT_ROOT": "stable state child",
+    "HAPAX_ROOT_REQUIRED_DRAIN_DIR": "exact helper-selected package stage",
+    "HAPAX_ROOT_REQUIRED_FINALIZE_GATE": "retired protocol input retained for refusal",
+    "HAPAX_ROOT_REQUIRED_GENERATION_GUARD_FD": "host-wide generation lock descriptor",
+    "HAPAX_ROOT_REQUIRED_GIT_REPO": "exact activation release",
+    "HAPAX_ROOT_REQUIRED_INSTALLED_RECEIPT_ROOT": "stable state child",
+    "HAPAX_ROOT_REQUIRED_INSTALLED_SOURCE_ROOT": "stable state child",
+    "HAPAX_ROOT_REQUIRED_INSTALLER_TEST_MODE": "helper-selected isolated-test branch",
+    "HAPAX_ROOT_REQUIRED_INSTALLER_TEST_ROOT": "helper-confined scratch root",
+    "HAPAX_ROOT_REQUIRED_LOCK_FD": "inherited package lock descriptor",
+    "HAPAX_ROOT_REQUIRED_LOCK_FILE": "lexical package lock path",
+    "HAPAX_ROOT_REQUIRED_LOCK_HELD": "retired re-exec marker scrubbed by lock bootstrap",
+    "HAPAX_ROOT_REQUIRED_LOCK_LEXICAL_PATH": "inherited lock identity witness",
+    "HAPAX_ROOT_REQUIRED_LOCK_MODE": "inherited lock exclusivity witness",
+    "HAPAX_ROOT_REQUIRED_PACKAGE_SHA": "exact package generation",
+    "HAPAX_ROOT_REQUIRED_SEALED_SOURCE_FDS": "exact Git package sources",
+    "HAPAX_ROOT_REQUIRED_STATE_FD": "stable state-generation descriptor",
+    "HAPAX_ROOT_REQUIRED_STATE_LEXICAL_ROOT": "state-generation identity witness",
+    "HAPAX_ROOT_REQUIRED_STATE_ROOT": "stable state-generation path",
+    "HAPAX_ROOT_REQUIRED_UNAUTHENTICATED_TEST_ROOT": "legacy isolated-test confinement",
+    "HAPAX_RUNTIME_AUTHORITY_TASK": "semantic runtime-authority input",
+    "HAPAX_RUNTIME_AUTHORITY_TASK_SHA256": "helper-bound authority snapshot",
 }
 LEGACY_OOM_EFFECT_SELECTORS = {
     "HAPAX_ROOT_FAILURE_INTAKE_DEST",
@@ -226,10 +226,20 @@ def test_every_installer_environment_name_has_one_authenticated_boundary_classif
     package_selectors = {
         name for name in mentioned if any(name.startswith(prefix) for prefix in selector_prefixes)
     }
-    classified = package_selectors | SHARED_INSTALLER_CONTROL_NAMES | legacy_effect_selectors
+    classes = (package_selectors, set(SHARED_INSTALLER_CONTROL_RATIONALES), legacy_effect_selectors)
+    invalid_class_counts = {
+        name: sum(name in boundary_class for boundary_class in classes)
+        for name in mentioned
+        if sum(name in boundary_class for boundary_class in classes) != 1
+    }
+    indirect_expansions = set(re.findall(r"\$\{!([^}]+)\}", source))
 
-    assert mentioned - classified == set()
+    assert invalid_class_counts == {}
     assert mentioned & LEGACY_OOM_EFFECT_SELECTORS == legacy_effect_selectors
+    assert all(reason.strip() for reason in SHARED_INSTALLER_CONTROL_RATIONALES.values())
+    assert re.findall(r"HAPAX_(?=[$\"'{])", source) == []
+    assert indirect_expansions - {"package_files[@]"} == set()
+    assert re.search(r"\b(?:eval|(?:declare|local)\s+-n|printf\s+-v)\b", source) is None
 
 
 def _sealed_memfd(name: str, data: bytes, *, executable: bool = False) -> int:
@@ -826,7 +836,7 @@ def test_isolated_test_mode_refuses_the_real_sudo_boundary(tmp_path: Path) -> No
     result = fixture.run()
 
     assert result.returncode == 1
-    assert "never /usr/bin/sudo" in result.stderr
+    assert "isolated sudo command escapes the deferred-install test root" in result.stderr
     assert not fixture.authority_calls.exists()
     assert not fixture.installer_pid_marker.exists()
 
