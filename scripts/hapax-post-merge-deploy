@@ -385,7 +385,6 @@ RUNTIME_AUTHORITY_MODULE_ROOTS = {
     "pydantic_core": "pydantic_core",
     "typing_extensions": "typing_extensions.py",
     "typing_inspection": "typing_inspection",
-    "_yaml": "_yaml",
     "yaml": "yaml",
 }
 RUNTIME_AUTHORITY_DEDICATED_SITE = Path(
@@ -585,12 +584,19 @@ def verify_distribution_record(
             continue
         if item.hash.mode != "sha256" or item.size != inode.st_size:
             refuse(f"runtime-authority dependency RECORD metadata is unsupported: {name}")
+        encoded_digest = item.hash.value
+        if re.fullmatch(r"[A-Za-z0-9_-]{43}", encoded_digest) is None:
+            refuse(f"runtime-authority dependency RECORD digest is malformed: {name}")
         try:
-            expected_digest = base64.urlsafe_b64decode(
-                item.hash.value + "=" * (-len(item.hash.value) % 4)
+            expected_digest = base64.b64decode(
+                encoded_digest + "=" * (-len(encoded_digest) % 4),
+                altchars=b"-_",
+                validate=True,
             )
         except (ValueError, binascii.Error) as exc:
             refuse(f"runtime-authority dependency RECORD digest is malformed: {name}: {exc}")
+        if len(expected_digest) != hashlib.sha256().digest_size:
+            refuse(f"runtime-authority dependency RECORD digest has the wrong size: {name}")
         try:
             fd = os.open(path, os.O_RDONLY | os.O_CLOEXEC | os.O_NOFOLLOW)
             try:
@@ -685,15 +691,27 @@ def validate_import_resolution(root: Path) -> None:
         )
 
 
-def trusted_stdlib_import(fullname: str) -> bool:
-    spec = importlib.machinery.PathFinder.find_spec(
-        fullname,
-        [str(root) for root in RUNTIME_AUTHORITY_STDLIB_ROOTS],
-    )
+def trusted_stdlib_spec(
+    fullname: str,
+    path: object,
+    target: object,
+) -> importlib.machinery.ModuleSpec | None:
+    builtin_spec = importlib.machinery.BuiltinImporter.find_spec(fullname, path, target)
+    if builtin_spec is not None:
+        return builtin_spec
+    frozen_spec = importlib.machinery.FrozenImporter.find_spec(fullname, path, target)
+    if frozen_spec is not None:
+        return frozen_spec
+    if path is None:
+        search_path = [str(root) for root in RUNTIME_AUTHORITY_STDLIB_ROOTS]
+    else:
+        try:
+            search_path = list(path)
+        except TypeError:
+            return None
+    spec = importlib.machinery.PathFinder.find_spec(fullname, search_path, target)
     if spec is None or not isinstance(spec.origin, str):
-        return False
-    if spec.origin in {"built-in", "frozen"}:
-        return True
+        return None
     origin = Path(os.path.abspath(spec.origin))
     for root in RUNTIME_AUTHORITY_STDLIB_ROOTS:
         if origin == root or is_within(origin, root):
@@ -703,8 +721,8 @@ def trusted_stdlib_import(fullname: str) -> bool:
                 f"runtime-authority standard-library import {fullname}",
                 directory=False,
             )
-            return True
-    return False
+            return spec
+    return None
 
 
 class RuntimeAuthorityImportGuard(importlib.abc.MetaPathFinder):
@@ -714,16 +732,15 @@ class RuntimeAuthorityImportGuard(importlib.abc.MetaPathFinder):
         path: object = None,
         target: object = None,
     ) -> importlib.machinery.ModuleSpec | None:
-        del path, target
         top_level = fullname.partition(".")[0]
-        if (
-            top_level not in RUNTIME_AUTHORITY_MODULE_ROOTS
-            and top_level not in sys.stdlib_module_names
-            and not (top_level == "shared" and "shared" in sys.modules)
-            and not trusted_stdlib_import(fullname)
+        if top_level in RUNTIME_AUTHORITY_MODULE_ROOTS or (
+            top_level == "shared" and "shared" in sys.modules
         ):
-            refuse(f"unlisted runtime-authority dependency import attempted: {top_level}")
-        return None
+            return None
+        spec = trusted_stdlib_spec(fullname, path, target)
+        if spec is not None:
+            return spec
+        refuse(f"unlisted runtime-authority dependency import attempted: {top_level}")
 
 
 def validate_loaded_dependency_origins(root: Path) -> None:

@@ -1291,6 +1291,7 @@ def test_runtime_authority_validator_has_no_release_tree_import_surface() -> Non
     assert "/usr/bin/env -i" in script
     assert "PYDANTIC_DISABLE_PLUGINS=__all__" in script
     assert "site.addsitedir" not in source
+    assert "sys.stdlib_module_names" not in source
     assert "sys.path.append(str(root))" in source
     assert "RuntimeAuthorityImportGuard" in source
     assert "verify_distribution_record" in source
@@ -1332,10 +1333,19 @@ def test_runtime_authority_dependency_contract_matches_release_manifest() -> Non
         in {
             "RUNTIME_AUTHORITY_DEPENDENCIES",
             "RUNTIME_AUTHORITY_DEPENDENCY_MANIFEST_HASH",
+            "RUNTIME_AUTHORITY_MODULE_ROOTS",
         }
     }
     manifest = json.loads(RUNTIME_DEPENDENCY_MANIFEST.read_text(encoding="utf-8"))
     dependencies = assignments["RUNTIME_AUTHORITY_DEPENDENCIES"]
+    assert assignments["RUNTIME_AUTHORITY_MODULE_ROOTS"] == {
+        "annotated_types": "annotated_types",
+        "pydantic": "pydantic",
+        "pydantic_core": "pydantic_core",
+        "typing_extensions": "typing_extensions.py",
+        "typing_inspection": "typing_inspection",
+        "yaml": "yaml",
+    }
     manifest_by_name = {
         re.sub(r"[-_.]+", "-", item["distribution"]).lower(): item
         for item in manifest["dependencies"]
@@ -1521,6 +1531,33 @@ def test_runtime_authority_validator_rejects_record_payload_drift(tmp_path: Path
     assert "dependency RECORD digest mismatch: pydantic" in result.stderr
 
 
+def test_runtime_authority_validator_rejects_malformed_record_digest(tmp_path: Path) -> None:
+    active_root = tmp_path / "hapax-cc-tasks" / "active"
+    active_root.mkdir(parents=True)
+    task = active_root / "runtime-cap.md"
+    task.write_text(_runtime_authority_task_text(), encoding="utf-8")
+    dependency_root = tmp_path / "runtime-dependencies"
+    _copy_runtime_authority_dependency_closure(dependency_root)
+    record = next(dependency_root.glob("pydantic-*.dist-info/RECORD"))
+    lines = record.read_text(encoding="utf-8").splitlines()
+    for index, line in enumerate(lines):
+        if line.startswith("pydantic/__init__.py,sha256="):
+            lines[index] = line.replace("sha256=", "sha256=!!!!", 1)
+            break
+    else:
+        raise AssertionError("pydantic RECORD lacks __init__.py")
+    record.write_text("\n".join(lines) + "\n", encoding="utf-8")
+
+    result = _run_runtime_authority_validator(
+        task,
+        active_root,
+        dependency_prelude=_test_dependency_root_prelude(dependency_root),
+    )
+
+    assert result.returncode == 2
+    assert "dependency RECORD digest is malformed: pydantic" in result.stderr
+
+
 def test_runtime_authority_validator_rejects_unrecorded_package_payload(
     tmp_path: Path,
 ) -> None:
@@ -1569,8 +1606,13 @@ def test_runtime_authority_validator_rejects_bare_dedicated_root_payload(
     assert "dependency root differs from the exact RECORD closure" in result.stderr
 
 
+@pytest.mark.parametrize(
+    "module_name",
+    ("unexpected_runtime_authority_dependency", "_yaml"),
+)
 def test_runtime_authority_validator_rejects_unlisted_dependency_import(
     tmp_path: Path,
+    module_name: str,
 ) -> None:
     active_root = tmp_path / "hapax-cc-tasks" / "active"
     active_root.mkdir(parents=True)
@@ -1580,11 +1622,45 @@ def test_runtime_authority_validator_rejects_unlisted_dependency_import(
     result = _run_runtime_authority_validator(
         task,
         active_root,
-        post_dependency_prelude="import unexpected_runtime_authority_dependency",
+        post_dependency_prelude=f"import {module_name}",
     )
 
     assert result.returncode == 2
-    assert "unlisted runtime-authority dependency import attempted" in result.stderr
+    assert f"unlisted runtime-authority dependency import attempted: {module_name}" in result.stderr
+
+
+def test_runtime_authority_validator_rejects_absent_stdlib_name_from_fallback_root(
+    tmp_path: Path,
+) -> None:
+    active_root = tmp_path / "hapax-cc-tasks" / "active"
+    active_root.mkdir(parents=True)
+    task = active_root / "runtime-cap.md"
+    task.write_text(_runtime_authority_task_text(), encoding="utf-8")
+    dependency_root = tmp_path / "runtime-dependencies"
+    _copy_runtime_authority_dependency_closure(dependency_root)
+    marker = tmp_path / "msvcrt-imported"
+    (dependency_root / "msvcrt.py").write_text(
+        f"from pathlib import Path\nPath({str(marker)!r}).write_text('ran')\n",
+        encoding="utf-8",
+    )
+    missing_dedicated = tmp_path / "missing-dedicated-root"
+    dependency_prelude = (
+        _test_dependency_root_prelude(dependency_root)
+        + "\n"
+        + f"RUNTIME_AUTHORITY_DEDICATED_SITE = Path({str(missing_dedicated)!r})\n"
+        + f"site.getsitepackages = lambda: [{str(dependency_root)!r}]"
+    )
+
+    result = _run_runtime_authority_validator(
+        task,
+        active_root,
+        dependency_prelude=dependency_prelude,
+        post_dependency_prelude="import msvcrt",
+    )
+
+    assert result.returncode == 2
+    assert "unlisted runtime-authority dependency import attempted: msvcrt" in result.stderr
+    assert not marker.exists()
 
 
 @pytest.mark.parametrize("unsafe_kind", ("non-root", "symlink"))
