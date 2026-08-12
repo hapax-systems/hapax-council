@@ -29,7 +29,11 @@ Three rules carry the weight here, and only the first is obvious:
   ``host_unreachable:`` blocker. Read that distinction through :func:`observation_outcome`, never
   by re-parsing the strings at each call site.
 
-Read-only throughout: the remote payload runs ``command -v`` and nothing else.
+Nothing this module runs on a remote host mutates it: the payload is ``command -v`` and nothing
+else. One local write is possible and is not hidden -- ``StrictHostKeyChecking=accept-new`` will
+append a first-contact key to the caller's ``known_hosts``. That is the transport's setting,
+inherited deliberately (prompting would hang a headless sweep), but "read-only throughout" would
+have been false, so it is stated rather than claimed away.
 """
 
 from __future__ import annotations
@@ -370,8 +374,30 @@ def _stamp(now: datetime | None) -> str:
 
 
 def _shape_id(host: str, cli: str) -> str:
+    """The registry's ``shape_id`` pattern is narrower than a tailnet host name, so this slugs.
+
+    Slugging is lossy -- ``Pi A`` and ``Pi-A`` both land on ``pi-a`` -- which means two distinct
+    hosts can produce one identity and have their evidence merged under it. Rather than paper over
+    that with a disambiguating suffix, :func:`_refuse_colliding_hosts` refuses a roster where it
+    happens: silently attributing one host's capabilities to another is the exact failure this
+    module exists to prevent, and a merged row is indistinguishable from a correct one.
+    """
     slug = _ID_UNSAFE.sub("-", f"bare-host.{host}.{cli}".lower())
     return slug.lstrip("-._") or "bare-host.unnamed"
+
+
+def _refuse_colliding_hosts(hosts: list[str]) -> None:
+    """Refuse a roster whose names are distinct but whose slugs are not."""
+    seen: dict[str, str] = {}
+    for host in hosts:
+        slug = _shape_id(host, "x")
+        first = seen.setdefault(slug, host)
+        if first != host:
+            raise ValueError(
+                f"hosts {first!r} and {host!r} both slug to {slug!r}, so their capability "
+                "observations would merge under one identity. Next action: rename one host on the "
+                "tailnet, or probe them in separate runs"
+            )
 
 
 def _descriptor(
@@ -533,6 +559,7 @@ def observe(
     roster silently omits hosts and returns an inventory that reads complete.
     """
     rows = hosts if hosts is not None else tailnet_hosts()
+    _refuse_colliding_hosts([str(row["name"]) for row in rows])
     stamp_dt = now if now is not None else datetime.now(UTC)
     probes = [
         probe_host_clis(row, catalogue=catalogue, runner=runner, self_name=self_name, now=stamp_dt)

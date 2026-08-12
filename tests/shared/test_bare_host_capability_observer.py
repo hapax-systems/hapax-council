@@ -498,6 +498,43 @@ def test_observe_refuses_rather_than_assuming_a_roster(monkeypatch):
         observe(runner=runner_for(), now=NOW)
 
 
+def test_observe_refuses_a_roster_whose_distinct_hosts_slug_to_one_identity():
+    # "Pi A" and "Pi-A" are two machines. Slugged, they are one shape_id, and one host's evidence
+    # would be filed under the other's name — the precise error this module exists to prevent.
+    with pytest.raises(ValueError, match="both slug to"):
+        observe(
+            hosts=[linux("Pi A"), linux("Pi-A")],
+            catalogue=SMALL_CATALOGUE,
+            runner=runner_for(stdout="cli=claude present=0 path=\n"),
+            now=NOW,
+        )
+
+
+def test_observe_does_not_refuse_a_roster_of_genuinely_distinct_slugs():
+    result = observe(
+        hosts=[linux("podium"), linux("appendix")],
+        catalogue=SMALL_CATALOGUE,
+        runner=runner_for(stdout="cli=claude present=0 path=\ncli=ollama present=0 path=\n"),
+        now=NOW,
+    )
+
+    assert result.host_count == 2
+    assert len({d.shape_id for d in result.descriptors}) == len(result.descriptors)
+
+
+def test_the_same_host_listed_twice_is_not_treated_as_a_collision():
+    # A duplicated roster row is a roster problem, not an identity ambiguity: both rows describe
+    # the same machine, so refusing here would block a sweep over a harmless duplicate.
+    result = observe(
+        hosts=[linux("podium"), linux("podium")],
+        catalogue=SMALL_CATALOGUE[:1],
+        runner=runner_for(stdout="cli=claude present=0 path=\n"),
+        now=NOW,
+    )
+
+    assert result.host_count == 2
+
+
 def test_shape_ids_are_registry_legal_for_hosts_with_awkward_names():
     # Uppercase and a space are illegal in the registry's shape_id pattern; dot, dash and
     # underscore are legal and must survive, because mangling them would silently merge two hosts.
