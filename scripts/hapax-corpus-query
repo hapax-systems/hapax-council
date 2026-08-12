@@ -375,17 +375,28 @@ def build_index(roots: list[Path]) -> list[Doc]:
 INDEX_SCHEMA = 2
 
 
-def save(docs: list[Doc], *, path: Path = CACHE_PATH, now: datetime | None = None) -> None:
+def save(
+    docs: list[Doc],
+    *,
+    path: Path = CACHE_PATH,
+    now: datetime | None = None,
+    roots: list[Path] | None = None,
+) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     payload = {
         "schema": INDEX_SCHEMA,
         "indexed_at": (now or datetime.now(UTC)).isoformat(),
+        # The roots the index was built FROM. Without this, an index built from corpus A
+        # answers queries the caller aimed at corpus B, silently — which is what
+        # HAPAX_CORPUS_ROOTS did before 2026-08-12: it was read only on the rebuild path,
+        # so setting it while a cache existed changed nothing at all.
+        "roots": sorted(str(r) for r in (roots or [])),
         "docs": [d.__dict__ for d in docs],
     }
     path.write_text(json.dumps(payload, ensure_ascii=False), encoding="utf-8")
 
 
-def load(*, path: Path = CACHE_PATH) -> tuple[list[Doc], datetime | None]:
+def load(*, path: Path = CACHE_PATH) -> tuple[list[Doc], datetime | None, list[str]]:
     """Return the indexed docs and when they were indexed.
 
     An unreadable, malformed, or older-schema index yields ``([], None)`` -- the caller
@@ -393,24 +404,26 @@ def load(*, path: Path = CACHE_PATH) -> tuple[list[Doc], datetime | None]:
     the failure mode this schema field exists to prevent.
     """
     if not path.is_file():
-        return [], None
+        return [], None, []
     try:
         raw = json.loads(path.read_text(encoding="utf-8"))
     except (OSError, ValueError):
-        return [], None
+        return [], None, []
     if not isinstance(raw, dict) or raw.get("schema") != INDEX_SCHEMA:
-        return [], None
+        return [], None, []
     try:
         docs = [Doc(**item) for item in raw.get("docs", [])]
     except TypeError:
-        return [], None
+        return [], None, []
     stamp: datetime | None = None
     if isinstance(raw.get("indexed_at"), str):
         try:
             stamp = datetime.fromisoformat(raw["indexed_at"])
         except ValueError:
             stamp = None
-    return docs, stamp
+    recorded = raw.get("roots")
+    roots = [str(r) for r in recorded] if isinstance(recorded, list) else []
+    return docs, stamp, roots
 
 
 def staleness_warning(indexed_at: datetime | None, *, now: datetime | None = None) -> str | None:
@@ -492,6 +505,17 @@ def cluster(
       document gets told so, not handed an arbitrary cluster.
     * **A corpus smaller than the floor is reported, not padded.** The caller says the floor
       could not be met rather than implying it was.
+    * **A match with no vocabulary neighbours is also reported.** ``related()`` requires shared
+      tokens longer than four characters, so a document that overlaps nothing has no
+      neighbours to borrow even in a large corpus. Padding with unrelated documents would
+      defeat the purpose -- the floor exists so a reader sees the *archipelago*, and three
+      irrelevant documents are not one.
+
+    So the honest predicate is **"never SILENTLY return one result"**, not "never return one
+    result". A shortfall always exists as a possibility; what the tool guarantees is that it is
+    announced, with its cause, rather than passed off as a complete answer. The absolute form of
+    the claim was shipped once and reviewed as a critical, correctly: an undeclared exception to
+    a headline commitment is worse than a declared limit.
     """
     matched = rows[:limit]
     if not matched or len(matched) >= MIN_CLUSTER:
@@ -555,9 +579,19 @@ def render(
     total = len(rows) + len(neighbours)
     print(f"\n{total} documents. Read the top {min(3, total)} before concluding anything.")
     if total < MIN_CLUSTER:
-        extra = "" if corpus_size is None else f" (corpus holds {corpus_size})"
+        # Name the cause. "Corpus too small" and "this document overlaps nothing" are different
+        # facts about the estate and lead to different next actions — index more, versus this
+        # topic is genuinely isolated. Collapsing them into one message loses the distinction
+        # that makes the warning actionable.
+        if corpus_size is not None and corpus_size < MIN_CLUSTER:
+            cause = f"the corpus holds only {corpus_size} document(s)"
+        else:
+            cause = (
+                "no other document shares enough distinctive vocabulary to be a neighbour"
+                f"{'' if corpus_size is None else f' (corpus holds {corpus_size})'}"
+            )
         print(
-            f"Only {total} available{extra} — below the {MIN_CLUSTER}-document floor. "
+            f"Only {total} available — below the {MIN_CLUSTER}-document floor because {cause}. "
             "Treat this as a corpus gap, not as a complete answer."
         )
     if dead:
@@ -625,12 +659,19 @@ def main(argv: list[str] | None = None) -> int:
     args = ap.parse_args(argv)
 
     index_path = Path(args.index).expanduser() if args.index else CACHE_PATH
-    docs, indexed_at = load(path=index_path)
-    # --root names a different corpus, so an index built from another one cannot answer for
-    # it. Reindex rather than silently serving the cached corpus under the caller's flag.
-    if args.reindex or not docs or args.root:
-        docs = build_index(resolve_roots(args.root))
-        save(docs, path=index_path)
+    docs, indexed_at, indexed_roots = load(path=index_path)
+    requested = resolve_roots(args.root)
+    # An index built from corpus A cannot answer a query aimed at corpus B. Comparing the
+    # recorded roots catches BOTH --root and HAPAX_CORPUS_ROOTS; the previous condition
+    # tested `args.root` only, so the environment variable was documented as an override
+    # and silently did nothing whenever a cache already existed.
+    # No guard on `indexed_roots` being non-empty: an index that records no roots predates
+    # this field, so it cannot be shown to match, and an unverifiable match must rebuild
+    # rather than be trusted. Legacy indexes therefore rebuild once and self-heal.
+    roots_changed = sorted(str(r) for r in requested) != sorted(indexed_roots)
+    if args.reindex or not docs or roots_changed:
+        docs = build_index(requested)
+        save(docs, path=index_path, roots=requested)
         print(f"indexed {len(docs)} documents -> {index_path}", file=sys.stderr)
     else:
         warning = staleness_warning(indexed_at)

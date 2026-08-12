@@ -228,7 +228,7 @@ def test_index_roundtrips_and_reports_when_it_was_built(mod: ModuleType, tmp_pat
     docs = [_doc(mod, "a.md", "quota receipt " * 10)]
 
     mod.save(docs, path=path, now=stamp)
-    loaded, indexed_at = mod.load(path=path)
+    loaded, indexed_at, _roots = mod.load(path=path)
 
     assert [d.name for d in loaded] == ["a.md"]
     assert indexed_at == stamp
@@ -253,7 +253,7 @@ def test_an_index_from_an_older_schema_is_discarded_not_half_read(
     path = tmp_path / "index.json"
     path.write_text('[{"path": "/x", "name": "x.md"}]', encoding="utf-8")
 
-    docs, indexed_at = mod.load(path=path)
+    docs, indexed_at, _roots = mod.load(path=path)
 
     assert docs == []
     assert indexed_at is None
@@ -263,7 +263,7 @@ def test_a_corrupt_index_is_discarded(mod: ModuleType, tmp_path: Path) -> None:
     path = tmp_path / "index.json"
     path.write_text("{not json", encoding="utf-8")
 
-    assert mod.load(path=path) == ([], None)
+    assert mod.load(path=path) == ([], None, [])
 
 
 # --- roots are configurable ---------------------------------------------------------
