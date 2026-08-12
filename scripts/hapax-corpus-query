@@ -73,9 +73,19 @@ MIN_INTERIOR_SUBSTRING_LEN = 5
 #: a stale index answers confidently about a corpus that has moved on.
 INDEX_STALE_AFTER_SECONDS = 6 * 3600
 
-#: Directories that are transcript dumps or message logs rather than plans. They swamp the
-#: ranking with incidental term matches and answer a different question.
-SKIP_DIR_PARTS = {"lanebus", "_archive-complete", "operator-corpus", "recovered-transcript-index"}
+#: Directories that are raw dumps rather than plans. They swamp the ranking with incidental
+#: term matches and answer a different question.
+#:
+#: `operator-corpus` was here until 2026-08-12, which meant this tool -- built specifically to
+#: stop research landing on one island -- excluded the island holding the operator's own
+#: verbatim stipulations. Only the bulk-raw subdirectories are skipped now; the curated
+#: records are indexed by ``_operator_records`` below.
+SKIP_DIR_PARTS = {
+    "lanebus",
+    "_archive-complete",
+    "prompt-histories",
+    "paste-cache",
+}
 
 TOKEN_RE = re.compile(r"[a-z][a-z0-9_-]{2,}")
 
@@ -264,11 +274,67 @@ def _supersedes(text: str) -> list[str]:
     return [m.strip().strip("\"'") for m in re.findall(r"-\s*(.+)", block.group(1))]
 
 
+#: JSON capture records whose ``content`` field is operator prose. These are the id space that
+#: ``originating_inflection:`` edges on task rows already resolve against (``pli-<sha16>``), so
+#: indexing them makes an utterance reachable from the work it caused and vice versa.
+#:
+#: Measured 2026-08-12: 20 records, 7,925 characters of operator prose, previously unreachable
+#: by any search in the estate -- the tool globbed ``*.md`` and the operator's words are JSON.
+#: Narrowing SKIP_DIR_PARTS alone would NOT have surfaced them; it surfaces 7 markdown files,
+#: two of which are AGENTS.md and CLAUDE.md. The file extension was the actual barrier.
+OPERATOR_RECORD_DIRS = ("records", "inflection-captures", "alignments")
+OPERATOR_RECORD_CONTENT_KEYS = ("content", "text", "prompt", "utterance", "operator_text")
+
+
+def _operator_records(root: Path) -> list[Doc]:
+    """Index JSON capture records as documents, keyed by their content field."""
+    docs: list[Doc] = []
+    for sub in OPERATOR_RECORD_DIRS:
+        for path in sorted(root.rglob(f"{sub}/*.json")):
+            try:
+                payload = json.loads(path.read_text(encoding="utf-8", errors="replace"))
+            except (OSError, ValueError):
+                continue
+            if not isinstance(payload, dict):
+                continue
+            body = next(
+                (
+                    payload[k]
+                    for k in OPERATOR_RECORD_CONTENT_KEYS
+                    if isinstance(payload.get(k), str) and payload[k].strip()
+                ),
+                None,
+            )
+            if body is None:
+                continue
+            tokens = [t for t in TOKEN_RE.findall(body.lower()) if t not in STOPWORDS]
+            counts = Counter(tokens)
+            title = str(payload.get("record_id") or path.stem)
+            docs.append(
+                Doc(
+                    path=str(path),
+                    name=path.name,
+                    title=f"operator utterance — {body.strip()[:72]}",
+                    doc_type="operator-record",
+                    status=str(payload.get("status") or ""),
+                    created=str(payload.get("captured_at") or "")[:19],
+                    mtime="",
+                    supersedes=[],
+                    tags=[title],
+                    size=len(body),
+                    counts={w: c for w, c in counts.most_common(600)},
+                    total_tokens=max(len(tokens), 1),
+                )
+            )
+    return docs
+
+
 def build_index(roots: list[Path]) -> list[Doc]:
     docs: list[Doc] = []
     for root in roots:
         if not root.is_dir():
             continue
+        docs.extend(_operator_records(root))
         for path in root.rglob("*.md"):
             if SKIP_DIR_PARTS & set(path.parts):
                 continue

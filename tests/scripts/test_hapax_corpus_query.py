@@ -9,6 +9,7 @@ result" fails exactly when the tool stops being worth having.
 
 from __future__ import annotations
 
+import json
 import os
 import stat
 import sys
@@ -408,3 +409,60 @@ def test_main_reindexes_when_root_is_given_even_if_an_index_exists(
     assert rc == 0
     assert "new.md" in out
     assert "old.md" not in out
+
+
+# --- the operator's own words must be reachable -------------------------------------
+
+
+def test_operator_json_records_are_indexed(mod: ModuleType, tmp_path: Path) -> None:
+    """The tool existed to stop research landing on one island, and excluded the island
+    holding the operator's verbatim stipulations.
+
+    Two separate barriers, and only fixing both reaches them: `operator-corpus` was in
+    SKIP_DIR_PARTS, AND the records are JSON while build_index globbed `*.md`. Measured
+    2026-08-12: narrowing the skip list alone surfaces 7 markdown files, two of which are
+    AGENTS.md and CLAUDE.md. The file extension was the real barrier.
+    """
+    records = tmp_path / "operator-corpus" / "records"
+    records.mkdir(parents=True)
+    (records / "pli-deadbeefdeadbeef.json").write_text(
+        json.dumps(
+            {
+                "record_id": "pli-deadbeefdeadbeef",
+                "captured_at": "2026-08-09T12:00:00Z",
+                "status": "CAPTURED_INERT_SUPPORT_ONLY",
+                "content": "my inflections should be systematically mapped to the system elements",
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    docs = mod.build_index([tmp_path])
+
+    assert len(docs) == 1
+    assert docs[0].doc_type == "operator-record"
+    assert "inflections" in docs[0].counts
+    assert mod.score(docs[0], ["inflections"]) > 0
+
+
+def test_a_record_without_prose_is_skipped_not_indexed_empty(
+    mod: ModuleType, tmp_path: Path
+) -> None:
+    """A metadata-only capture has nothing to search; indexing it as an empty document
+    would pad result counts and dilute the density ranking."""
+    records = tmp_path / "operator-corpus" / "records"
+    records.mkdir(parents=True)
+    (records / "pli-nocontent.json").write_text(
+        json.dumps({"record_id": "pli-nocontent", "status": "EMPTY"}), encoding="utf-8"
+    )
+
+    assert mod.build_index([tmp_path]) == []
+
+
+def test_bulk_raw_dirs_stay_excluded(mod: ModuleType) -> None:
+    """prompt-histories is 12 MB of raw transcript and paste-cache 608 KB. Indexing them
+    would swamp density ranking with incidental matches -- the exact failure the skip list
+    exists to prevent. Only the curated records were let in."""
+    assert "prompt-histories" in mod.SKIP_DIR_PARTS
+    assert "paste-cache" in mod.SKIP_DIR_PARTS
+    assert "operator-corpus" not in mod.SKIP_DIR_PARTS
