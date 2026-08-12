@@ -284,6 +284,8 @@ ROOT_REQUIRED_INSTALLED_RECEIPT_ROOT="${HAPAX_ROOT_REQUIRED_INSTALLED_RECEIPT_RO
 ROOT_REQUIRED_DESIRED_RECEIPT_ROOT="${HAPAX_ROOT_REQUIRED_DESIRED_RECEIPT_ROOT:-$ROOT_REQUIRED_STATE_ROOT/desired-receipts}"
 ROOT_REQUIRED_LOCK_FILE="${HAPAX_ROOT_REQUIRED_LOCK_FILE:-$ROOT_REQUIRED_STATE_ROOT/.lock}"
 ROOT_REQUIRED_DESIRED_SUPERSEDED=0
+ROOT_REQUIRED_SUPERSEDING_SHA=""
+POST_MERGE_TEST_MODE="${HAPAX_POST_MERGE_TEST_MODE:-0}"
 RECOVERY_BUNDLE_DEST="${HAPAX_RECOVERY_BUNDLE_DEST:-$HOME/.local/lib/hapax-recovery/council/current}"
 RECOVERY_BUNDLE_SOURCE_FILES=(
     scripts/hapax-p0-incident-intake
@@ -308,6 +310,123 @@ root_required_git() {
         GIT_NO_REPLACE_OBJECTS=1 \
         GIT_OPTIONAL_LOCKS=0 \
         /usr/bin/git -C "$REPO" "$@"
+}
+
+validate_root_required_path_selectors() {
+    local account_home name
+    local -a present=()
+    [ -z "${HAPAX_ROOT_REQUIRED_LOCK_FD:-}" ] || return 0
+    if [ "$POST_MERGE_TEST_MODE" = "1" ]; then
+        /usr/bin/python3 -I - "$0" <<'PY'
+from __future__ import annotations
+
+import os
+import stat
+import subprocess
+import sys
+from pathlib import Path
+
+invoked = Path(sys.argv[1])
+try:
+    inode = invoked.lstat()
+    real = invoked.resolve(strict=True)
+except OSError as exc:
+    print(f"hapax-post-merge-deploy: cannot authenticate test source: {exc}", file=sys.stderr)
+    raise SystemExit(1) from exc
+root = real.parent.parent
+if (
+    os.geteuid() == 0
+    or not invoked.is_absolute()
+    or invoked != real
+    or not stat.S_ISREG(inode.st_mode)
+    or inode.st_nlink != 1
+    or real != root / "scripts/hapax-post-merge-deploy"
+):
+    print(
+        "hapax-post-merge-deploy: isolated test mode requires the real repository script "
+        "under a non-root caller",
+        file=sys.stderr,
+    )
+    raise SystemExit(1)
+for path in (root, root / "scripts", real):
+    inspected = path.lstat()
+    if path.is_symlink() or inspected.st_uid != os.getuid() or inspected.st_mode & 0o022:
+        print(
+            "hapax-post-merge-deploy: isolated test source must be caller-owned and "
+            "non-group-writable",
+            file=sys.stderr,
+        )
+        raise SystemExit(1)
+env = {
+    "HOME": "/nonexistent",
+    "PATH": "/usr/bin:/bin",
+    "LANG": "C.UTF-8",
+    "LC_ALL": "C.UTF-8",
+    "GIT_CONFIG_GLOBAL": "/dev/null",
+    "GIT_CONFIG_NOSYSTEM": "1",
+    "GIT_NO_REPLACE_OBJECTS": "1",
+    "GIT_OPTIONAL_LOCKS": "0",
+}
+top = subprocess.run(
+    ["/usr/bin/git", "-C", str(root), "rev-parse", "--show-toplevel"],
+    capture_output=True,
+    check=False,
+    env=env,
+    text=True,
+)
+tracked = subprocess.run(
+    [
+        "/usr/bin/git",
+        "-C",
+        str(root),
+        "ls-files",
+        "--error-unmatch",
+        "--",
+        "scripts/hapax-post-merge-deploy",
+    ],
+    capture_output=True,
+    check=False,
+    env=env,
+    text=True,
+)
+if (
+    top.returncode != 0
+    or Path(top.stdout.strip()).resolve(strict=True) != root
+    or tracked.returncode != 0
+):
+    print(
+        "hapax-post-merge-deploy: isolated test source is not its tracked Git worktree root",
+        file=sys.stderr,
+    )
+    raise SystemExit(1)
+PY
+        return $?
+    fi
+    if [ "$POST_MERGE_TEST_MODE" != "0" ]; then
+        echo "hapax-post-merge-deploy: HAPAX_POST_MERGE_TEST_MODE must be exactly 1 when present; next action: remove the selector and rerun the canonical deploy" >&2
+        return 1
+    fi
+    for name in \
+        HAPAX_POST_MERGE_ROOT_DEFER_DIR \
+        HAPAX_ROOT_REQUIRED_STATE_ROOT \
+        HAPAX_ROOT_REQUIRED_INSTALLED_SOURCE_ROOT \
+        HAPAX_ROOT_REQUIRED_INSTALLED_RECEIPT_ROOT \
+        HAPAX_ROOT_REQUIRED_DESIRED_RECEIPT_ROOT \
+        HAPAX_ROOT_REQUIRED_LOCK_FILE; do
+        [[ -v $name ]] && present+=("$name")
+    done
+    if [ "${#present[@]}" -ne 0 ]; then
+        echo "hapax-post-merge-deploy: root-required path selectors are refused outside isolated test mode: ${present[*]}; next action: remove the selectors and rerun from the canonical account environment" >&2
+        return 1
+    fi
+    account_home="$(/usr/bin/python3 -I -c 'import os, pwd; print(pwd.getpwuid(os.getuid()).pw_dir)')" \
+        || return 1
+    if [ "$HOME" != "$account_home" ] \
+        || [ "$ROOT_DEFER_DIR" != "$account_home/.cache/hapax/post-merge-root-required" ] \
+        || [ "$ROOT_REQUIRED_STATE_ROOT" != "$account_home/.local/state/hapax/root-required" ]; then
+        echo "hapax-post-merge-deploy: canonical account HOME and root-required paths do not match passwd state; next action: remove the hostile HOME/path selectors and rerun" >&2
+        return 1
+    fi
 }
 
 verify_runtime_authority() {
@@ -718,7 +837,7 @@ def verify_distribution_record(
         if canonical_digest != encoded_digest:
             refuse(f"runtime-authority dependency RECORD digest is noncanonical: {name}")
         try:
-            fd = os.open(path, os.O_RDONLY | os.O_CLOEXEC | os.O_NOFOLLOW)
+            fd = os.open(path, os.O_RDONLY | os.O_NONBLOCK | os.O_CLOEXEC | os.O_NOFOLLOW)
             try:
                 opened = os.fstat(fd)
                 if (opened.st_dev, opened.st_ino) != (inode.st_dev, inode.st_ino):
@@ -1066,7 +1185,7 @@ try:
         )
     task_fd = os.open(
         task.name,
-        os.O_RDONLY | os.O_CLOEXEC | os.O_NOFOLLOW,
+        os.O_RDONLY | os.O_NONBLOCK | os.O_CLOEXEC | os.O_NOFOLLOW,
         dir_fd=active_fd,
     )
     opened_inode = os.fstat(task_fd)
@@ -1375,7 +1494,7 @@ def read_at(
             )
         fd = os.open(
             base,
-            os.O_RDONLY | os.O_CLOEXEC | os.O_NOFOLLOW,
+            os.O_RDONLY | os.O_NONBLOCK | os.O_CLOEXEC | os.O_NOFOLLOW,
             dir_fd=parent_fd,
         )
         opened = os.fstat(fd)
@@ -1700,7 +1819,7 @@ try:
         raise OSError("installed unit exceeds 1 MiB")
     fd = os.open(
         base,
-        os.O_RDONLY | os.O_CLOEXEC | os.O_NOFOLLOW,
+        os.O_RDONLY | os.O_NONBLOCK | os.O_CLOEXEC | os.O_NOFOLLOW,
         dir_fd=parent_fd,
     )
     opened = os.fstat(fd)
@@ -1801,7 +1920,7 @@ path, expected_size_text = sys.argv[1:]
 try:
     expected_size = int(expected_size_text)
     before = os.lstat(path)
-    fd = os.open(path, os.O_RDONLY | os.O_CLOEXEC | os.O_NOFOLLOW)
+    fd = os.open(path, os.O_RDONLY | os.O_NONBLOCK | os.O_CLOEXEC | os.O_NOFOLLOW)
     try:
         opened = os.fstat(fd)
     finally:
@@ -2152,7 +2271,7 @@ from pathlib import Path
 path, owner_profile = sys.argv[1:]
 try:
     before = os.lstat(path)
-    fd = os.open(path, os.O_RDONLY | os.O_CLOEXEC | os.O_NOFOLLOW)
+    fd = os.open(path, os.O_RDONLY | os.O_NONBLOCK | os.O_CLOEXEC | os.O_NOFOLLOW)
     try:
         opened = os.fstat(fd)
         digest = hashlib.sha256()
@@ -2258,11 +2377,19 @@ acquire_inherited_root_required_lock() {
 from __future__ import annotations
 
 import fcntl
-import hashlib
 import os
-import socket
 import stat
 import sys
+
+
+def host_root_uid() -> int:
+    with open("/proc/self/uid_map", encoding="ascii") as stream:
+        for line in stream:
+            inside, outside, length = (int(field) for field in line.split())
+            if outside <= 0 < outside + length:
+                return inside - outside
+    return 65534
+
 
 fd = int(sys.argv[1])
 state_fd = int(sys.argv[2])
@@ -2282,6 +2409,24 @@ try:
         != os.path.abspath(os.path.normpath(lexical_root))
     ):
         raise OSError("lock path must be absolute and name one file")
+    guard_inode = os.fstat(guard_fd)
+    published_guard = os.stat("/home", follow_symlinks=False)
+    if (
+        not stat.S_ISDIR(guard_inode.st_mode)
+        or guard_inode.st_uid != host_root_uid()
+        or guard_inode.st_mode & 0o022
+        or (guard_inode.st_dev, guard_inode.st_ino)
+        != (published_guard.st_dev, published_guard.st_ino)
+    ):
+        raise OSError("generation guard is not the immutable host anchor")
+    fcntl.flock(guard_fd, fcntl.LOCK_EX)
+    locked_guard = os.fstat(guard_fd)
+    published_guard = os.stat("/home", follow_symlinks=False)
+    if (locked_guard.st_dev, locked_guard.st_ino) != (
+        published_guard.st_dev,
+        published_guard.st_ino,
+    ):
+        raise OSError("generation-guard anchor changed during acquisition")
     parent_fd = os.open(
         lock_parent,
         os.O_RDONLY | os.O_CLOEXEC | os.O_DIRECTORY | os.O_NOFOLLOW,
@@ -2292,11 +2437,6 @@ try:
     path_inode = os.stat(lock_base, dir_fd=parent_fd, follow_symlinks=False)
     bound_inode = os.stat(bound_root)
     lexical_inode = os.stat(lexical_root, follow_symlinks=False)
-    guard = socket.socket(fileno=os.dup(guard_fd))
-    try:
-        guard_name = guard.getsockname()
-    finally:
-        guard.close()
 except OSError as exc:
     if parent_fd >= 0:
         os.close(parent_fd)
@@ -2331,20 +2471,6 @@ if (
         file=sys.stderr,
     )
     raise SystemExit(1)
-guard_material = (
-    f"hapax-root-required-state-v1\0{os.geteuid()}\0"
-    f"{os.path.abspath(os.path.normpath(lexical_root))}"
-).encode()
-expected_guard = b"\0hapax-root-required-v1-" + hashlib.sha256(guard_material).hexdigest()[:40].encode()
-if guard_name != expected_guard:
-    os.close(parent_fd)
-    print(
-        f"hapax-post-merge-deploy: refused invalid root-required generation guard for "
-        f"{lexical_root}; next action: remove caller-supplied HAPAX_ROOT_REQUIRED_LOCK_* "
-        "values and rerun",
-        file=sys.stderr,
-    )
-    raise SystemExit(1)
 os.fchmod(fd, 0o600)
 fcntl.flock(fd, fcntl.LOCK_EX)
 locked_inode = os.fstat(fd)
@@ -2371,6 +2497,7 @@ PY
 }
 
 reexec_with_safe_root_required_lock() {
+    validate_root_required_path_selectors || return 1
     if [ -n "${HAPAX_ROOT_REQUIRED_LOCK_FD:-}" ]; then
         acquire_inherited_root_required_lock
         return
@@ -2380,15 +2507,21 @@ reexec_with_safe_root_required_lock() {
         "$0" "${ORIGINAL_ARGS[@]}" <<'PY'
 from __future__ import annotations
 
-import errno
 import fcntl
-import hashlib
 import os
-import socket
 import stat
 import subprocess
 import sys
-import time
+
+
+def host_root_uid() -> int:
+    with open("/proc/self/uid_map", encoding="ascii") as stream:
+        for line in stream:
+            inside, outside, length = (int(field) for field in line.split())
+            if outside <= 0 < outside + length:
+                return inside - outside
+    return 65534
+
 
 state_root, lock_path, script, *args = sys.argv[1:]
 lock_parent = os.path.dirname(lock_path) or "."
@@ -2407,25 +2540,36 @@ if (
         file=sys.stderr,
     )
     raise SystemExit(1)
-guard_material = f"hapax-root-required-state-v1\0{os.geteuid()}\0{lexical_root}".encode()
-guard_name = b"\0hapax-root-required-v1-" + hashlib.sha256(guard_material).hexdigest()[:40].encode()
-guard = socket.socket(
-    socket.AF_UNIX,
-    socket.SOCK_STREAM | getattr(socket, "SOCK_CLOEXEC", 0),
-)
-while True:
-    try:
-        guard.bind(guard_name)
-        break
-    except OSError as exc:
-        if exc.errno != errno.EADDRINUSE:
-            print(
-                f"hapax-post-merge-deploy: cannot acquire the root-required generation guard: "
-                f"{exc}; next action: repair the local Unix-socket facility and rerun",
-                file=sys.stderr,
-            )
-            raise SystemExit(1) from exc
-        time.sleep(0.05)
+try:
+    guard_fd = os.open(
+        "/home",
+        os.O_RDONLY | os.O_CLOEXEC | os.O_DIRECTORY | os.O_NOFOLLOW,
+    )
+    guard_inode = os.fstat(guard_fd)
+    published_guard = os.stat("/home", follow_symlinks=False)
+    if (
+        not stat.S_ISDIR(guard_inode.st_mode)
+        or guard_inode.st_uid != host_root_uid()
+        or guard_inode.st_mode & 0o022
+        or (guard_inode.st_dev, guard_inode.st_ino)
+        != (published_guard.st_dev, published_guard.st_ino)
+    ):
+        raise OSError("generation guard is not the immutable host anchor")
+    fcntl.flock(guard_fd, fcntl.LOCK_EX)
+    locked_guard = os.fstat(guard_fd)
+    published_guard = os.stat("/home", follow_symlinks=False)
+    if (locked_guard.st_dev, locked_guard.st_ino) != (
+        published_guard.st_dev,
+        published_guard.st_ino,
+    ):
+        raise OSError("generation-guard anchor changed during acquisition")
+except OSError as exc:
+    print(
+        f"hapax-post-merge-deploy: cannot acquire the host-global root-required generation "
+        f"guard: {exc}; next action: repair the immutable /home anchor and rerun",
+        file=sys.stderr,
+    )
+    raise SystemExit(1) from exc
 old_umask = os.umask(0o077)
 try:
     os.makedirs(lexical_root, exist_ok=True)
@@ -2510,24 +2654,28 @@ try:
     env.pop("HAPAX_ROOT_REQUIRED_LOCK_HELD", None)
     stable_root = f"/proc/{os.getpid()}/fd/{parent_fd}"
     env["HAPAX_ROOT_REQUIRED_STATE_ROOT"] = stable_root
+    if env.get("HAPAX_POST_MERGE_TEST_MODE") != "1":
+        env["HAPAX_ROOT_REQUIRED_INSTALLED_SOURCE_ROOT"] = f"{stable_root}/current-source"
+        env["HAPAX_ROOT_REQUIRED_INSTALLED_RECEIPT_ROOT"] = f"{stable_root}/installed-receipts"
+        env["HAPAX_ROOT_REQUIRED_DESIRED_RECEIPT_ROOT"] = f"{stable_root}/desired-receipts"
     env["HAPAX_ROOT_REQUIRED_LOCK_FILE"] = lock_path
     env["HAPAX_ROOT_REQUIRED_LOCK_FD"] = str(fd)
     env["HAPAX_ROOT_REQUIRED_STATE_FD"] = str(parent_fd)
-    env["HAPAX_ROOT_REQUIRED_GENERATION_GUARD_FD"] = str(guard.fileno())
+    env["HAPAX_ROOT_REQUIRED_GENERATION_GUARD_FD"] = str(guard_fd)
     env["HAPAX_ROOT_REQUIRED_STATE_LEXICAL_ROOT"] = lexical_root
     env["HAPAX_ROOT_REQUIRED_LOCK_LEXICAL_PATH"] = lock_path
     env["HAPAX_ROOT_REQUIRED_LOCK_MODE"] = "exclusive"
     result = subprocess.run(
         [os.path.abspath(script), *args],
         env=env,
-        pass_fds=(fd, parent_fd, guard.fileno()),
+        pass_fds=(fd, parent_fd, guard_fd),
         check=False,
     )
     raise SystemExit(result.returncode)
 finally:
     os.close(fd)
     os.close(parent_fd)
-    guard.close()
+    os.close(guard_fd)
 PY
 }
 
@@ -3818,7 +3966,7 @@ if (
 try:
     receipt_fd = os.open(
         receipt.name,
-        os.O_RDONLY | os.O_CLOEXEC | os.O_NOFOLLOW,
+        os.O_RDONLY | os.O_NONBLOCK | os.O_CLOEXEC | os.O_NOFOLLOW,
         dir_fd=parent_fd,
     )
     opened = os.fstat(receipt_fd)
@@ -3882,6 +4030,128 @@ try:
 except OSError as exc:
     refuse(f"cannot reconcile completed {label} deferral marker {runbook}: {exc}")
 print(f"root-required {label} installed at {sha}; pending marker reconciled")
+PY
+}
+
+reconcile_superseded_root_required_deferral() {
+    local dest="$1" label="$2" superseding_sha="$3"
+    /usr/bin/python3 -I - "$dest" "$SHA" "$label" "$superseding_sha" <<'PY'
+from __future__ import annotations
+
+import os
+import stat
+import sys
+from pathlib import Path
+
+dest = Path(sys.argv[1])
+sha, label, superseding_sha = sys.argv[2:]
+
+
+def refuse(message: str) -> None:
+    print(
+        f"hapax-post-merge-deploy: {message}; next action: repair only the unsafe "
+        "caller-owned deferral marker, then rerun the desired SHA deploy",
+        file=sys.stderr,
+    )
+    raise SystemExit(1)
+
+
+def snapshot(inode: os.stat_result) -> tuple[int, ...]:
+    return (
+        inode.st_dev,
+        inode.st_ino,
+        inode.st_uid,
+        inode.st_gid,
+        inode.st_nlink,
+        stat.S_IMODE(inode.st_mode),
+        inode.st_size,
+        inode.st_mtime_ns,
+        inode.st_ctime_ns,
+    )
+
+
+try:
+    dest_fd = os.open(dest, os.O_RDONLY | os.O_CLOEXEC | os.O_DIRECTORY | os.O_NOFOLLOW)
+except FileNotFoundError:
+    raise SystemExit(0)
+except OSError as exc:
+    refuse(f"cannot open stale {label} deferral directory {dest}: {exc}")
+try:
+    directory = os.fstat(dest_fd)
+    published_directory = os.stat(dest, follow_symlinks=False)
+    if (
+        not stat.S_ISDIR(directory.st_mode)
+        or directory.st_uid != os.geteuid()
+        or directory.st_mode & 0o022
+        or (directory.st_dev, directory.st_ino)
+        != (published_directory.st_dev, published_directory.st_ino)
+    ):
+        refuse(f"stale {label} deferral directory is unsafe: {dest}")
+    try:
+        expected = os.stat("RUNBOOK.txt", dir_fd=dest_fd, follow_symlinks=False)
+    except FileNotFoundError:
+        try:
+            prior = os.stat("SUPERSEDED.txt", dir_fd=dest_fd, follow_symlinks=False)
+        except FileNotFoundError:
+            raise SystemExit(0)
+        if (
+            not stat.S_ISREG(prior.st_mode)
+            or prior.st_uid != os.geteuid()
+            or prior.st_nlink != 1
+            or stat.S_IMODE(prior.st_mode) != 0o600
+        ):
+            refuse(f"prior superseded {label} marker is unsafe: {dest / 'SUPERSEDED.txt'}")
+        raise SystemExit(0)
+    if (
+        not stat.S_ISREG(expected.st_mode)
+        or expected.st_uid != os.geteuid()
+        or expected.st_nlink != 1
+        or stat.S_IMODE(expected.st_mode) != 0o600
+    ):
+        refuse(f"stale {label} RUNBOOK.txt is not an exact caller-owned mode-0600 file")
+    marker_fd = os.open(
+        "RUNBOOK.txt",
+        os.O_RDONLY | os.O_NONBLOCK | os.O_CLOEXEC | os.O_NOFOLLOW,
+        dir_fd=dest_fd,
+    )
+    try:
+        opened = os.fstat(marker_fd)
+        published = os.stat("RUNBOOK.txt", dir_fd=dest_fd, follow_symlinks=False)
+        if snapshot(opened) != snapshot(expected) or snapshot(published) != snapshot(opened):
+            refuse(f"stale {label} RUNBOOK.txt changed while opening")
+        try:
+            prior = os.stat("SUPERSEDED.txt", dir_fd=dest_fd, follow_symlinks=False)
+        except FileNotFoundError:
+            prior = None
+        if prior is not None and (
+            not stat.S_ISREG(prior.st_mode)
+            or prior.st_uid != os.geteuid()
+            or prior.st_nlink != 1
+            or stat.S_IMODE(prior.st_mode) != 0o600
+        ):
+            refuse(f"prior superseded {label} marker is unsafe: {dest / 'SUPERSEDED.txt'}")
+        os.replace(
+            "RUNBOOK.txt",
+            "SUPERSEDED.txt",
+            src_dir_fd=dest_fd,
+            dst_dir_fd=dest_fd,
+        )
+        moved_fd = os.fstat(marker_fd)
+        moved = os.stat("SUPERSEDED.txt", dir_fd=dest_fd, follow_symlinks=False)
+        if (
+            (moved_fd.st_dev, moved_fd.st_ino) != (opened.st_dev, opened.st_ino)
+            or snapshot(moved) != snapshot(moved_fd)
+        ):
+            refuse(f"stale {label} RUNBOOK.txt changed during supersession")
+        os.fsync(dest_fd)
+    finally:
+        os.close(marker_fd)
+finally:
+    os.close(dest_fd)
+print(
+    f"root-required {label} stale deferral {sha} superseded by desired {superseding_sha}; "
+    "pending marker reconciled"
+)
 PY
 }
 
@@ -4088,7 +4358,7 @@ try:
         )
     fd = os.open(
         base,
-        os.O_RDONLY | os.O_CLOEXEC | os.O_NOFOLLOW,
+        os.O_RDONLY | os.O_NONBLOCK | os.O_CLOEXEC | os.O_NOFOLLOW,
         dir_fd=parent_fd,
     )
     opened = os.fstat(fd)
@@ -4192,7 +4462,11 @@ try:
             or expected.st_size != len(payload)
         ):
             refuse("the existing receipt is unsafe to normalize")
-        fd = os.open(base, os.O_RDONLY | os.O_CLOEXEC | os.O_NOFOLLOW, dir_fd=parent_fd)
+        fd = os.open(
+            base,
+            os.O_RDONLY | os.O_NONBLOCK | os.O_CLOEXEC | os.O_NOFOLLOW,
+            dir_fd=parent_fd,
+        )
         try:
             opened = os.fstat(fd)
             chunks: list[bytes] = []
@@ -4247,7 +4521,11 @@ try:
     os.replace(temp, base, src_dir_fd=parent_fd, dst_dir_fd=parent_fd)
     temp = None
     expected = os.stat(base, dir_fd=parent_fd, follow_symlinks=False)
-    fd = os.open(base, os.O_RDONLY | os.O_CLOEXEC | os.O_NOFOLLOW, dir_fd=parent_fd)
+    fd = os.open(
+        base,
+        os.O_RDONLY | os.O_NONBLOCK | os.O_CLOEXEC | os.O_NOFOLLOW,
+        dir_fd=parent_fd,
+    )
     try:
         opened = os.fstat(fd)
         chunks: list[bytes] = []
@@ -4292,6 +4570,7 @@ PY
 record_root_required_desired_sha() {
     local label="$1" stage="$2" receipt current manifest_rel
     ROOT_REQUIRED_DESIRED_SUPERSEDED=0
+    ROOT_REQUIRED_SUPERSEDING_SHA=""
     case "$label" in
         oom-containment) manifest_rel="config/root-required/oom-containment.files" ;;
         apcupsd-power-alerts) manifest_rel="config/root-required/apcupsd-power-alerts.files" ;;
@@ -4314,6 +4593,7 @@ record_root_required_desired_sha() {
             write_root_required_sha_receipt \
                 "$receipt" "$current" preserve-canonical || return 1
             ROOT_REQUIRED_DESIRED_SUPERSEDED=1
+            ROOT_REQUIRED_SUPERSEDING_SHA="$current"
             echo "root-required $label desired state $current supersedes stale deploy $SHA; desired receipt preserved"
             return 0
         fi
@@ -4356,6 +4636,9 @@ if [ "${#APCUPSD_POWER_ALERTS[@]}" -gt 0 ]; then
     if [ "$ROOT_REQUIRED_DESIRED_SUPERSEDED" -eq 0 ]; then
         defer_root_required_installer "apcupsd-power-alerts" "$APCUPSD_STAGE"
     else
+        reconcile_superseded_root_required_deferral \
+            "$ROOT_DEFER_DIR/$SHA/apcupsd-power-alerts" \
+            "apcupsd-power-alerts" "$ROOT_REQUIRED_SUPERSEDING_SHA" || exit 1
         echo "root-required apcupsd-power-alerts stale deploy $SHA emitted no superseded deferral"
     fi
     rm -rf "$APCUPSD_STAGE" 2>/dev/null || true
@@ -4383,6 +4666,9 @@ if [ "${#OOM_CONTAINMENT[@]}" -gt 0 ]; then
     if [ "$ROOT_REQUIRED_DESIRED_SUPERSEDED" -eq 0 ]; then
         defer_root_required_installer "oom-containment" "$OOM_STAGE"
     else
+        reconcile_superseded_root_required_deferral \
+            "$ROOT_DEFER_DIR/$SHA/oom-containment" \
+            "oom-containment" "$ROOT_REQUIRED_SUPERSEDING_SHA" || exit 1
         echo "root-required oom-containment stale deploy $SHA emitted no superseded deferral"
     fi
     rm -rf "$OOM_STAGE" 2>/dev/null || true

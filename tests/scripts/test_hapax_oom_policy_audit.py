@@ -2,12 +2,10 @@ from __future__ import annotations
 
 import csv
 import fcntl
-import hashlib
 import json
 import os
 import re
 import runpy
-import socket
 import stat
 import subprocess
 import time
@@ -63,6 +61,8 @@ INSTALLED_TEST_SELECTORS = {
     "HAPAX_OOM_AUDIT_DOCKER",
     "HAPAX_SYSTEMCTL",
     "HAPAX_SYSTEMD_ANALYZE",
+    "HAPAX_ROOT_REQUIRED_STATE_ROOT",
+    "HAPAX_ROOT_REQUIRED_LOCK_FILE",
 }
 
 
@@ -73,7 +73,13 @@ def test_every_audit_selector_is_in_the_installed_refusal_set() -> None:
         name
         for name in mentioned
         if name.startswith("HAPAX_OOM_AUDIT_")
-        or name in {"HAPAX_SYSTEMCTL", "HAPAX_SYSTEMD_ANALYZE"}
+        or name
+        in {
+            "HAPAX_SYSTEMCTL",
+            "HAPAX_SYSTEMD_ANALYZE",
+            "HAPAX_ROOT_REQUIRED_STATE_ROOT",
+            "HAPAX_ROOT_REQUIRED_LOCK_FILE",
+        }
     }
     namespace = runpy.run_path(str(SCRIPT))
 
@@ -141,6 +147,8 @@ def test_audit_resets_hostile_path_before_command_resolution(
         ("HAPAX_OOM_AUDIT_DOCKER", "/bin/true"),
         ("HAPAX_SYSTEMCTL", "/bin/true"),
         ("HAPAX_SYSTEMD_ANALYZE", "/bin/true"),
+        ("HAPAX_ROOT_REQUIRED_STATE_ROOT", "/tmp/fake-root-required-state"),
+        ("HAPAX_ROOT_REQUIRED_LOCK_FILE", "/tmp/fake-root-required-state/.lock"),
     ],
 )
 def test_installed_audit_refuses_every_test_selector(
@@ -1921,25 +1929,22 @@ def test_audit_refuses_inherited_lock_through_symlinked_parent_without_system_re
     fake_systemctl.chmod(0o755)
     inherited_fd = os.open(physical_lock, os.O_RDONLY)
     state_fd = os.open(physical, os.O_RDONLY | os.O_DIRECTORY)
-    guard = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
-    guard_material = f"hapax-root-required-state-v1\0{os.geteuid()}\0{lexical.absolute()}".encode()
-    guard.bind(
-        b"\0hapax-root-required-v1-" + hashlib.sha256(guard_material).hexdigest()[:40].encode()
-    )
+    guard_fd = os.open("/home", os.O_RDONLY | os.O_DIRECTORY)
+    fcntl.flock(guard_fd, fcntl.LOCK_EX)
     try:
         result = subprocess.run(
             [str(SCRIPT), "--json", "--uid", "1000"],
             text=True,
             capture_output=True,
             check=False,
-            pass_fds=(inherited_fd, state_fd, guard.fileno()),
+            pass_fds=(inherited_fd, state_fd, guard_fd),
             env={
                 **os.environ,
                 "HAPAX_SYSTEMCTL": str(fake_systemctl),
                 "HAPAX_ROOT_REQUIRED_LOCK_FILE": str(lexical / ".lock"),
                 "HAPAX_ROOT_REQUIRED_LOCK_FD": str(inherited_fd),
                 "HAPAX_ROOT_REQUIRED_STATE_FD": str(state_fd),
-                "HAPAX_ROOT_REQUIRED_GENERATION_GUARD_FD": str(guard.fileno()),
+                "HAPAX_ROOT_REQUIRED_GENERATION_GUARD_FD": str(guard_fd),
                 "HAPAX_ROOT_REQUIRED_STATE_LEXICAL_ROOT": str(lexical),
                 "HAPAX_ROOT_REQUIRED_LOCK_MODE": "shared",
             },
@@ -1947,7 +1952,7 @@ def test_audit_refuses_inherited_lock_through_symlinked_parent_without_system_re
     finally:
         os.close(inherited_fd)
         os.close(state_fd)
-        guard.close()
+        os.close(guard_fd)
 
     assert result.returncode == 1
     payload = json.loads(result.stdout)

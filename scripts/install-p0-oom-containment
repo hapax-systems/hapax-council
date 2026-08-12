@@ -252,11 +252,19 @@ acquire_root_required_lock() {
 from __future__ import annotations
 
 import fcntl
-import hashlib
 import os
-import socket
 import stat
 import sys
+
+
+def host_root_uid() -> int:
+    with open("/proc/self/uid_map", encoding="ascii") as stream:
+        for line in stream:
+            inside, outside, length = (int(field) for field in line.split())
+            if outside <= 0 < outside + length:
+                return inside - outside
+    return 65534
+
 
 fd = int(sys.argv[1])
 state_fd = int(sys.argv[2])
@@ -276,6 +284,24 @@ try:
         != os.path.abspath(os.path.normpath(lexical_root))
     ):
         raise OSError("lock path must be absolute and name one file")
+    guard_inode = os.fstat(guard_fd)
+    published_guard = os.stat("/home", follow_symlinks=False)
+    if (
+        not stat.S_ISDIR(guard_inode.st_mode)
+        or guard_inode.st_uid != host_root_uid()
+        or guard_inode.st_mode & 0o022
+        or (guard_inode.st_dev, guard_inode.st_ino)
+        != (published_guard.st_dev, published_guard.st_ino)
+    ):
+        raise OSError("generation guard is not the immutable host anchor")
+    fcntl.flock(guard_fd, fcntl.LOCK_EX)
+    locked_guard = os.fstat(guard_fd)
+    published_guard = os.stat("/home", follow_symlinks=False)
+    if (locked_guard.st_dev, locked_guard.st_ino) != (
+        published_guard.st_dev,
+        published_guard.st_ino,
+    ):
+        raise OSError("generation-guard anchor changed during acquisition")
     parent_fd = os.open(
         lock_parent,
         os.O_RDONLY | os.O_CLOEXEC | os.O_DIRECTORY | os.O_NOFOLLOW,
@@ -286,11 +312,6 @@ try:
     path_inode = os.stat(lock_base, dir_fd=parent_fd, follow_symlinks=False)
     bound_inode = os.stat(bound_root)
     lexical_inode = os.stat(lexical_root, follow_symlinks=False)
-    guard = socket.socket(fileno=os.dup(guard_fd))
-    try:
-        guard_name = guard.getsockname()
-    finally:
-        guard.close()
 except OSError as exc:
     if parent_fd >= 0:
         os.close(parent_fd)
@@ -322,19 +343,6 @@ if (
         f"OOM installer refused invalid shared lock descriptor for {lock_path}; expected the "
         "caller-owned, single-link, non-group-writable regular path inode; next action: "
         "remove caller-supplied HAPAX_ROOT_REQUIRED_LOCK_* values and rerun",
-        file=sys.stderr,
-    )
-    raise SystemExit(1)
-guard_material = (
-    f"hapax-root-required-state-v1\0{os.geteuid()}\0"
-    f"{os.path.abspath(os.path.normpath(lexical_root))}"
-).encode()
-expected_guard = b"\0hapax-root-required-v1-" + hashlib.sha256(guard_material).hexdigest()[:40].encode()
-if guard_name != expected_guard:
-    os.close(parent_fd)
-    print(
-        f"OOM installer refused invalid root-required generation guard for {lexical_root}; "
-        "next action: remove caller-supplied HAPAX_ROOT_REQUIRED_LOCK_* values and rerun",
         file=sys.stderr,
     )
     raise SystemExit(1)
@@ -372,14 +380,20 @@ reexec_with_safe_root_required_lock() {
         "$0" "${ORIGINAL_ARGS[@]}" <<'PY'
 from __future__ import annotations
 
-import errno
 import fcntl
-import hashlib
 import os
-import socket
 import stat
 import sys
-import time
+
+
+def host_root_uid() -> int:
+    with open("/proc/self/uid_map", encoding="ascii") as stream:
+        for line in stream:
+            inside, outside, length = (int(field) for field in line.split())
+            if outside <= 0 < outside + length:
+                return inside - outside
+    return 65534
+
 
 state_root, lock_path, script, *args = sys.argv[1:]
 lock_parent = os.path.dirname(lock_path) or "."
@@ -398,25 +412,36 @@ if (
         file=sys.stderr,
     )
     raise SystemExit(1)
-guard_material = f"hapax-root-required-state-v1\0{os.geteuid()}\0{lexical_root}".encode()
-guard_name = b"\0hapax-root-required-v1-" + hashlib.sha256(guard_material).hexdigest()[:40].encode()
-guard = socket.socket(
-    socket.AF_UNIX,
-    socket.SOCK_STREAM | getattr(socket, "SOCK_CLOEXEC", 0),
-)
-while True:
-    try:
-        guard.bind(guard_name)
-        break
-    except OSError as exc:
-        if exc.errno != errno.EADDRINUSE:
-            print(
-                f"OOM installer cannot acquire the state-generation guard: {exc}; next action: "
-                "repair the local Unix-socket facility and rerun",
-                file=sys.stderr,
-            )
-            raise SystemExit(1) from exc
-        time.sleep(0.05)
+try:
+    guard_fd = os.open(
+        "/home",
+        os.O_RDONLY | os.O_CLOEXEC | os.O_DIRECTORY | os.O_NOFOLLOW,
+    )
+    guard_inode = os.fstat(guard_fd)
+    published_guard = os.stat("/home", follow_symlinks=False)
+    if (
+        not stat.S_ISDIR(guard_inode.st_mode)
+        or guard_inode.st_uid != host_root_uid()
+        or guard_inode.st_mode & 0o022
+        or (guard_inode.st_dev, guard_inode.st_ino)
+        != (published_guard.st_dev, published_guard.st_ino)
+    ):
+        raise OSError("generation guard is not the immutable host anchor")
+    fcntl.flock(guard_fd, fcntl.LOCK_EX)
+    locked_guard = os.fstat(guard_fd)
+    published_guard = os.stat("/home", follow_symlinks=False)
+    if (locked_guard.st_dev, locked_guard.st_ino) != (
+        published_guard.st_dev,
+        published_guard.st_ino,
+    ):
+        raise OSError("generation-guard anchor changed during acquisition")
+except OSError as exc:
+    print(
+        f"OOM installer cannot acquire the host-global state-generation guard: {exc}; "
+        "next action: repair the immutable /home anchor and rerun",
+        file=sys.stderr,
+    )
+    raise SystemExit(1) from exc
 old_umask = os.umask(0o077)
 try:
     os.makedirs(lexical_root, exist_ok=True)
@@ -504,13 +529,13 @@ try:
     env["HAPAX_ROOT_REQUIRED_LOCK_FILE"] = lock_path
     env["HAPAX_ROOT_REQUIRED_LOCK_FD"] = str(fd)
     env["HAPAX_ROOT_REQUIRED_STATE_FD"] = str(parent_fd)
-    env["HAPAX_ROOT_REQUIRED_GENERATION_GUARD_FD"] = str(guard.fileno())
+    env["HAPAX_ROOT_REQUIRED_GENERATION_GUARD_FD"] = str(guard_fd)
     env["HAPAX_ROOT_REQUIRED_STATE_LEXICAL_ROOT"] = lexical_root
     env["HAPAX_ROOT_REQUIRED_LOCK_LEXICAL_PATH"] = lock_path
     executable = os.path.abspath(script)
     os.set_inheritable(fd, True)
     os.set_inheritable(parent_fd, True)
-    os.set_inheritable(guard.fileno(), True)
+    os.set_inheritable(guard_fd, True)
     os.execve(executable, [executable, *args], env)
 except OSError as exc:
     print(
@@ -522,7 +547,7 @@ except OSError as exc:
 finally:
     os.close(fd)
     os.close(parent_fd)
-    guard.close()
+    os.close(guard_fd)
 PY
 }
 
@@ -594,7 +619,7 @@ try:
         )
     fd = os.open(
         base,
-        os.O_RDONLY | os.O_CLOEXEC | os.O_NOFOLLOW,
+        os.O_RDONLY | os.O_NONBLOCK | os.O_CLOEXEC | os.O_NOFOLLOW,
         dir_fd=parent_fd,
     )
     opened = os.fstat(fd)
@@ -698,7 +723,11 @@ try:
             or expected.st_size != len(payload)
         ):
             refuse("the existing receipt is unsafe to normalize")
-        fd = os.open(base, os.O_RDONLY | os.O_CLOEXEC | os.O_NOFOLLOW, dir_fd=parent_fd)
+        fd = os.open(
+            base,
+            os.O_RDONLY | os.O_NONBLOCK | os.O_CLOEXEC | os.O_NOFOLLOW,
+            dir_fd=parent_fd,
+        )
         try:
             opened = os.fstat(fd)
             chunks: list[bytes] = []
@@ -753,7 +782,11 @@ try:
     os.replace(temp, base, src_dir_fd=parent_fd, dst_dir_fd=parent_fd)
     temp = None
     expected = os.stat(base, dir_fd=parent_fd, follow_symlinks=False)
-    fd = os.open(base, os.O_RDONLY | os.O_CLOEXEC | os.O_NOFOLLOW, dir_fd=parent_fd)
+    fd = os.open(
+        base,
+        os.O_RDONLY | os.O_NONBLOCK | os.O_CLOEXEC | os.O_NOFOLLOW,
+        dir_fd=parent_fd,
+    )
     try:
         opened = os.fstat(fd)
         chunks: list[bytes] = []
@@ -1187,7 +1220,7 @@ for path in source_paths:
     holder_pids.add(match.group(1))
     try:
         target = os.readlink(path)
-        fd = os.open(path, os.O_RDONLY | os.O_CLOEXEC)
+        fd = os.open(path, os.O_RDONLY | os.O_NONBLOCK | os.O_CLOEXEC)
         try:
             inode = os.fstat(fd)
             seals = fcntl.fcntl(fd, fcntl.F_GET_SEALS)

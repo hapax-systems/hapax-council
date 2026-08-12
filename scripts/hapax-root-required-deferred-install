@@ -6,7 +6,6 @@ from __future__ import annotations
 import argparse
 import contextlib
 import ctypes
-import errno
 import fcntl
 import hashlib
 import os
@@ -17,7 +16,6 @@ import socket
 import stat
 import subprocess
 import sys
-import time
 from dataclasses import dataclass, replace
 from pathlib import Path, PurePosixPath
 
@@ -38,6 +36,7 @@ REQUIRED_MEMFD_SEALS = (
 )
 LIBC = ctypes.CDLL(None, use_errno=True)
 PR_SET_PDEATHSIG = 1
+GENERATION_GUARD_ANCHOR = Path("/home")
 
 
 class DeferredInstallError(RuntimeError):
@@ -111,32 +110,44 @@ APCUPSD_PACKAGE = Package(
 PACKAGES = {package.label: package for package in (OOM_PACKAGE, APCUPSD_PACKAGE)}
 
 
-def _state_guard_address(state_root: Path) -> bytes:
-    lexical = os.path.abspath(os.path.normpath(state_root))
-    material = f"hapax-root-required-state-v1\0{os.geteuid()}\0{lexical}".encode()
-    digest = hashlib.sha256(material).hexdigest().encode()
-    return b"\0hapax-root-required-v1-" + digest[:40]
+def _host_root_uid() -> int:
+    for line in Path("/proc/self/uid_map").read_text(encoding="ascii").splitlines():
+        inside, outside, length = (int(field) for field in line.split())
+        if outside <= 0 < outside + length:
+            return inside - outside
+    return 65534
 
 
 @contextlib.contextmanager
 def _locked_state(paths: InstallPaths):
     lexical_root = Path(os.path.abspath(os.path.normpath(paths.state_root)))
     lexical_lock = lexical_root / ".lock"
-    guard = socket.socket(
-        socket.AF_UNIX,
-        socket.SOCK_STREAM | getattr(socket, "SOCK_CLOEXEC", 0),
-    )
+    guard_fd = -1
     state_fd = -1
     lock_fd = -1
     try:
-        while True:
-            try:
-                guard.bind(_state_guard_address(lexical_root))
-                break
-            except OSError as exc:
-                if exc.errno != errno.EADDRINUSE:
-                    raise _error(f"cannot acquire root-required generation guard: {exc}") from exc
-                time.sleep(0.05)
+        guard_fd = os.open(
+            GENERATION_GUARD_ANCHOR,
+            os.O_RDONLY | os.O_CLOEXEC | os.O_DIRECTORY | os.O_NOFOLLOW,
+        )
+        guard_inode = os.fstat(guard_fd)
+        published_guard = os.stat(GENERATION_GUARD_ANCHOR, follow_symlinks=False)
+        if (
+            not stat.S_ISDIR(guard_inode.st_mode)
+            or guard_inode.st_uid != _host_root_uid()
+            or guard_inode.st_mode & 0o022
+            or (guard_inode.st_dev, guard_inode.st_ino)
+            != (published_guard.st_dev, published_guard.st_ino)
+        ):
+            raise _error("root-required generation-guard anchor is unsafe")
+        fcntl.flock(guard_fd, fcntl.LOCK_EX)
+        locked_guard = os.fstat(guard_fd)
+        published_guard = os.stat(GENERATION_GUARD_ANCHOR, follow_symlinks=False)
+        if (locked_guard.st_dev, locked_guard.st_ino) != (
+            published_guard.st_dev,
+            published_guard.st_ino,
+        ):
+            raise _error("root-required generation-guard anchor changed during acquisition")
         state_fd = os.open(
             lexical_root,
             os.O_RDONLY | os.O_CLOEXEC | os.O_DIRECTORY | os.O_NOFOLLOW,
@@ -196,7 +207,7 @@ def _locked_state(paths: InstallPaths):
                 lexical_lock=lexical_lock,
                 state_fd=state_fd,
                 lock_fd=lock_fd,
-                guard_fd=guard.fileno(),
+                guard_fd=guard_fd,
             ),
         )
     except OSError as exc:
@@ -206,7 +217,8 @@ def _locked_state(paths: InstallPaths):
             os.close(lock_fd)
         if state_fd >= 0:
             os.close(state_fd)
-        guard.close()
+        if guard_fd >= 0:
+            os.close(guard_fd)
 
 
 def _error(message: str) -> DeferredInstallError:
@@ -393,7 +405,7 @@ def _read_regular_bytes(
 ) -> bytes:
     if not path.is_absolute() or not path.name:
         raise _error(f"{label} path must be absolute and name one file: {path}")
-    flags = os.O_RDONLY | os.O_CLOEXEC
+    flags = os.O_RDONLY | os.O_NONBLOCK | os.O_CLOEXEC
     if hasattr(os, "O_NOFOLLOW"):
         flags |= os.O_NOFOLLOW
     parent_fd = -1
@@ -468,7 +480,7 @@ def _read_exact_sha(path: Path, *, label: str) -> str:
 def _read_safe_receipt_sha(path: Path, *, label: str) -> str:
     if not path.is_absolute() or not path.name:
         raise _error(f"{label} path must be absolute and name one file: {path}")
-    flags = os.O_RDONLY | os.O_CLOEXEC
+    flags = os.O_RDONLY | os.O_NONBLOCK | os.O_CLOEXEC
     if hasattr(os, "O_NOFOLLOW"):
         flags |= os.O_NOFOLLOW
 
