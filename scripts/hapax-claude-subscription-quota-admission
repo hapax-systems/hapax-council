@@ -330,10 +330,33 @@ def main(argv: list[str] | None = None) -> int:
                     "window turns the measured path back into an attestation"
                 )
             observed_at, args.evidence_ref = _observe_from_transcript(args)
+            freshness_provenance = "measured:completed-turn-timestamp"
+            # A MEASURED RECEIPT MUST MEASURE BOTH HALVES, OR IT IS NOT A MEASURED RECEIPT.
+            #
+            # The route this unblocks is subscription-bounded. Reading a completed turn proves the
+            # provider served something; it does not prove WHICH credential it billed, and the
+            # transcript has no field that would. So the measured path also observes the account
+            # marker, and refuses if the host cannot support the claim — raising here rather than
+            # falling back to an asserted receipt, because a fallback would hand the caller the
+            # same unverifiable claim under a name that says it was checked.
+            from shared.claude_auth_surface import (
+                ClaudeAuthSurfaceUnavailable,
+                observe_subscription_marker,
+            )
+
+            try:
+                auth_provenance = observe_subscription_marker().provenance
+            except ClaudeAuthSurfaceUnavailable as exc:
+                raise ValueError(str(exc)) from exc
         else:
             if not args.evidence_ref:
                 raise ValueError("--evidence-ref is required unless --from-transcript is given")
             observed_at = _now(args)
+            # `observed_at` here is `now` and `evidence_ref` is whatever the caller typed. Nothing
+            # about that is measured, and saying otherwise is what let a manual attestation pass
+            # the strict reader as a measurement.
+            freshness_provenance = "attested:operator-evidence-ref"
+            auth_provenance = "caller_asserted"
         if not MIN_STALE_AFTER_SECONDS <= args.stale_after_seconds <= MAX_STALE_AFTER_SECONDS:
             raise ValueError(
                 f"--stale-after-seconds must be between {MIN_STALE_AFTER_SECONDS} and "
@@ -351,7 +374,7 @@ def main(argv: list[str] | None = None) -> int:
             ("route_id", route_id),
             ("capacity_pool", CAPACITY_POOL),
             ("auth_surface", AUTH_SURFACE),
-            # AUTH SURFACE IS ASSERTED BY THE CALLER; ONLY FRESHNESS IS MEASURED.
+            # BOTH PROVENANCES ARE DERIVED. NEITHER IS A CONSTANT.
             #
             # A Claude Code transcript record carries `requestId`, `timestamp`, `cwd`,
             # `entrypoint`, `version` and `message.{model,usage,...}` — and nothing naming the auth
@@ -360,17 +383,16 @@ def main(argv: list[str] | None = None) -> int:
             #   jq -r 'select(.type=="assistant")|keys[]'          ~/.claude/projects/*/*.jsonl
             #   jq -r 'select(.type=="assistant")|.message|keys[]' ~/.claude/projects/*/*.jsonl
             #
-            # A turn served through an API key is therefore indistinguishable, in the transcript,
-            # from one served on the subscription. `auth_surface` and `billing_mode` are CALLER
-            # ASSERTIONS carried on the receipt; the timestamp is the only measured part.
-            #
-            # Recording the split is the difference between a receipt that is wrong and one that
-            # is narrow — a downstream reader can see which half to trust. The route this unblocks
-            # is subscription-bounded, so the assertion is load-bearing, and making it observable
-            # needs a probe of the live auth surface: a different act from reading a transcript,
-            # and not in this task.
-            ("auth_surface_provenance", "caller_asserted"),
-            ("freshness_provenance", "measured:completed-turn-timestamp"),
+            # The first repair wrote both of these as literals: `caller_asserted` and
+            # `measured:completed-turn-timestamp`, unconditionally. That was wrong in both
+            # directions at once. It under-claimed the auth surface, which IS observable from the
+            # account marker (see shared/claude_auth_surface.py), so the route gate kept accepting
+            # an unverifiable assertion. And it over-claimed freshness on the ATTESTED path, where
+            # `observed_at` is simply `now` and `evidence_ref` is whatever the caller typed —
+            # laundering a manual attestation into a receipt labelled measured, which the strict
+            # reader then required. A constant cannot describe two paths.
+            ("auth_surface_provenance", auth_provenance),
+            ("freshness_provenance", freshness_provenance),
             ("observation", observation),
             ("observed_at", _iso(observed_at)),
             ("stale_after_seconds", args.stale_after_seconds),

@@ -1590,8 +1590,13 @@ def _claude_admission(
     observation: str = "subscription_quota_headroom_observed",
     secret_value_persisted: str = "false",
     lane_presence_used_as_quota_evidence: str = "false",
+    # The ATTESTED pair by default, because that is what this fixture actually builds: a
+    # hand-written receipt with a caller-supplied evidence_ref and no transcript behind it.
+    # Defaulting to the measured spelling would make every test in this file assert over a
+    # receipt claiming a measurement none of them performed — the same fixture-agrees-with-the-
+    # -defect trap that hid the missing limit_id check in the codex reader.
     auth_surface_provenance: str = "caller_asserted",
-    freshness_provenance: str = "measured:completed-turn-timestamp",
+    freshness_provenance: str = "attested:operator-evidence-ref",
     name: str = "claude-subscription-quota-admission.yaml",
 ) -> None:
     (relay / name).write_text(
@@ -2271,15 +2276,32 @@ def test_claude_admission_rejects_secret_persistence(tmp_path: Path) -> None:
             },
             "freshness-provenance-missing-or-unsupported",
         ),
-        # And a receipt may not claim the auth surface was MEASURED. Nothing on this host can
-        # measure it -- Claude Code transcript records carry no auth or billing key -- so this
-        # value is a false claim of evidence, which is worse than the silence it replaced.
+        # An unrecognised provenance is refused rather than read as the nearest known one.
         (
             {
                 "observed_at": "2026-06-09T23:55:00Z",
                 "auth_surface_provenance": "measured",
             },
             "auth-surface-provenance-missing-or-unsupported",
+        ),
+        # THE LAUNDERING CASE. Each field alone is a legal value; together they describe a path
+        # that does not exist. Measured freshness comes only from the transcript reader, which
+        # refuses to write anything unless it has also measured the account marker — so a
+        # measured timestamp beside a merely asserted auth surface is a strong half copied onto
+        # a weak one. Validating the fields separately accepted exactly this.
+        (
+            {
+                "observed_at": "2026-06-09T23:55:00Z",
+                "freshness_provenance": "measured:completed-turn-timestamp",
+            },
+            "provenance-pair-describes-no-producing-path",
+        ),
+        (
+            {
+                "observed_at": "2026-06-09T23:55:00Z",
+                "auth_surface_provenance": "measured:oauth-account-subscription-marker",
+            },
+            "provenance-pair-describes-no-producing-path",
         ),
     ],
 )

@@ -86,7 +86,18 @@ class TranscriptObservation:
     witness: str
 
 
-def _parse_utc(value: object) -> datetime | None:
+def _parse_utc(value: object, *, truncate: bool = True) -> datetime | None:
+    """Parse a transcript timestamp.
+
+    ``truncate`` drops microseconds, which is right for anything that reaches a receipt: the
+    receipt format carries whole seconds. It is WRONG for ordering two records against each
+    other. Claude writes millisecond precision, so a wall at ``12:00:00.900`` and a success at
+    ``12:00:00.100`` both truncate to ``12:00:00``, and the strict ``>`` deciding "is the newest
+    record a failure" answers no. The wall stays invisible for the whole second it shares with a
+    success — which is exactly the second in which a wall is most likely to appear, since the
+    refusal usually follows the last served turn immediately.
+    """
+
     if not isinstance(value, str) or not value:
         return None
     try:
@@ -95,7 +106,8 @@ def _parse_utc(value: object) -> datetime | None:
         return None
     if parsed.tzinfo is None:
         parsed = parsed.replace(tzinfo=UTC)
-    return parsed.astimezone(UTC).replace(microsecond=0)
+    parsed = parsed.astimezone(UTC)
+    return parsed.replace(microsecond=0) if truncate else parsed
 
 
 #: Record keys whose presence marks an assistant record as a provider FAILURE rather than a
@@ -162,7 +174,9 @@ def _completed_turn_timestamp(line: str) -> datetime | None:
         return None
     if not record.get("requestId"):
         return None
-    return _parse_utc(record.get("timestamp"))
+    # Full precision: this value is compared against a wall's timestamp, and truncating both to
+    # the second makes a later wall in the same second compare equal rather than greater.
+    return _parse_utc(record.get("timestamp"), truncate=False)
 
 
 def _api_error_timestamp(line: str) -> datetime | None:
@@ -190,7 +204,7 @@ def _api_error_timestamp(line: str) -> datetime | None:
         return None
     if not _is_api_error_record(record):
         return None
-    return _parse_utc(record.get("timestamp"))
+    return _parse_utc(record.get("timestamp"), truncate=False)
 
 
 def _tail_lines(path: Path, *, tail_bytes: int = TRANSCRIPT_TAIL_BYTES) -> list[str]:
@@ -277,7 +291,10 @@ def latest_transcript_observation(
     # `checked_at` means sub-tolerance skew can shorten the receipt's window, never extend
     # it past the moment we actually looked. Without this, a turn stamped 59 s ahead buys
     # 59 s of window backed by nothing observed.
-    observed_at = min(newest, checked_at)
+    # Truncated only here, at the boundary where the value becomes a receipt field. Ordering above
+    # ran at full precision; a whole-second stamp is what the receipt format carries, and rounding
+    # DOWN never buys window that was not witnessed.
+    observed_at = min(newest, checked_at).replace(microsecond=0)
 
     return TranscriptObservation(
         observed_at=observed_at,

@@ -315,3 +315,52 @@ def test_content_beyond_the_tail_bound_is_never_read(tmp_path: Path) -> None:
 
     assert obs.observed_at == tail_stamp
     assert obs.observed_at != head_stamp
+
+
+def test_a_wall_later_in_the_same_second_still_supersedes(tmp_path: Path) -> None:
+    """The sub-second case, which whole-second truncation hid.
+
+    Claude writes millisecond precision. Both stamps below truncate to the same second, so the
+    strict `newest_wall > newest` comparison answered "no wall" and the receipt was minted from a
+    success the refusal had already overtaken. This is the likeliest ordering in practice: a wall
+    normally arrives immediately after the last turn the account was served.
+    """
+    served = NOW - timedelta(seconds=300)
+    walled = served + timedelta(milliseconds=400)
+    assert served.replace(microsecond=0) == walled.replace(microsecond=0), (
+        "this test is meaningless unless both stamps fall inside one second"
+    )
+    _write(tmp_path, "a.jsonl", [_turn(served), _api_error_turn(walled, status=429)])
+
+    with pytest.raises(TranscriptQuotaUnavailable, match="quota wall"):
+        latest_transcript_observation(root=tmp_path, now=NOW, max_age_seconds=900)
+
+
+def test_a_wall_earlier_in_the_same_second_does_not_block(tmp_path: Path) -> None:
+    """The other direction, and why this is ordering rather than presence.
+
+    A wall BEFORE the last success is history: the account recovered, and the success proves it.
+    Full precision has to distinguish the two orderings inside one second, not refuse both.
+    """
+    walled = NOW - timedelta(seconds=300)
+    served = walled + timedelta(milliseconds=400)
+    _write(tmp_path, "a.jsonl", [_api_error_turn(walled, status=429), _turn(served)])
+
+    obs = latest_transcript_observation(root=tmp_path, now=NOW, max_age_seconds=900)
+
+    assert obs.observed_at == served.replace(microsecond=0)
+
+
+def test_the_receipt_timestamp_is_still_whole_seconds(tmp_path: Path) -> None:
+    """Precision is for ordering; the receipt format carries whole seconds.
+
+    Truncating at the boundary rather than at parse time keeps both true, and rounding DOWN never
+    buys window that was not witnessed.
+    """
+    served = NOW - timedelta(seconds=300) + timedelta(milliseconds=750)
+    _write(tmp_path, "a.jsonl", [_turn(served)])
+
+    obs = latest_transcript_observation(root=tmp_path, now=NOW, max_age_seconds=900)
+
+    assert obs.observed_at.microsecond == 0
+    assert obs.observed_at <= served
