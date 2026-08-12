@@ -12,6 +12,7 @@ import json
 import os
 import re
 import shutil
+import stat
 import subprocess
 import sys
 import threading
@@ -902,11 +903,15 @@ def _root_audit_env(
     _git(source_root, "commit", "-m", "root audit package")
     package_sha = _git(source_root, "rev-parse", "HEAD")
     receipt_root.mkdir(parents=True)
-    (receipt_root / "oom-containment.sha").write_text(f"{package_sha}\n", encoding="utf-8")
-    (receipt_root / "apcupsd-power-alerts.sha").write_text(f"{package_sha}\n", encoding="utf-8")
+    for label in ("oom-containment", "apcupsd-power-alerts"):
+        receipt = receipt_root / f"{label}.sha"
+        receipt.write_text(f"{package_sha}\n", encoding="utf-8")
+        receipt.chmod(0o600)
     desired_root.mkdir(parents=True)
-    (desired_root / "oom-containment.sha").write_text(f"{package_sha}\n", encoding="utf-8")
-    (desired_root / "apcupsd-power-alerts.sha").write_text(f"{package_sha}\n", encoding="utf-8")
+    for label in ("oom-containment", "apcupsd-power-alerts"):
+        receipt = desired_root / f"{label}.sha"
+        receipt.write_text(f"{package_sha}\n", encoding="utf-8")
+        receipt.chmod(0o600)
     return {
         **os.environ,
         "HAPAX_ROOT_REQUIRED_SOURCE_ROOT": str(source_root),
@@ -2755,7 +2760,16 @@ def test_p0_oom_deploy_always_creates_authenticated_deferral_without_restart(
     }
 
     result = subprocess.run(
-        [str(SCRIPT), sha],
+        [
+            "/usr/bin/bash",
+            "--noprofile",
+            "--norc",
+            "-c",
+            'umask 000; exec "$@"',
+            "hostile-umask",
+            str(SCRIPT),
+            sha,
+        ],
         text=True,
         capture_output=True,
         check=False,
@@ -2773,6 +2787,10 @@ def test_p0_oom_deploy_always_creates_authenticated_deferral_without_restart(
     assert not installed_source.exists(), (
         "post-merge must not republish installed source after the owning installer releases its lock"
     )
+    desired_receipt = home / ".local/state/hapax/root-required/desired-receipts/oom-containment.sha"
+    assert desired_receipt.read_text(encoding="utf-8") == f"{sha}\n"
+    assert stat.S_IMODE(desired_receipt.stat().st_mode) == 0o600
+    assert desired_receipt.parent.stat().st_mode & 0o022 == 0
     calls = systemctl_calls.read_text(encoding="utf-8") if systemctl_calls.exists() else ""
     assert "--user restart app.slice" not in calls
     record = json.loads(trace_path.read_text(encoding="utf-8").splitlines()[-1])
@@ -2863,6 +2881,7 @@ def test_stale_post_merge_deploy_preserves_newer_desired_receipt(tmp_path: Path)
     assert result.returncode == 0, result.stderr
     assert "supersedes stale deploy" in result.stdout
     assert oom_desired.read_text(encoding="utf-8").strip() == sha_b
+    assert stat.S_IMODE(oom_desired.stat().st_mode) == 0o600
 
 
 def test_post_merge_squash_equivalence_rejects_newer_manifest_file(tmp_path: Path) -> None:
@@ -3626,6 +3645,36 @@ def test_root_required_audit_fails_when_installed_receipt_is_missing(tmp_path: P
     assert result.returncode == 1
     assert "installed receipt missing" in result.stderr
     assert "oom-containment.sha" in result.stderr
+
+
+@pytest.mark.parametrize(
+    ("root_variable", "kind"),
+    [
+        ("HAPAX_ROOT_REQUIRED_INSTALLED_RECEIPT_ROOT", "installed"),
+        ("HAPAX_ROOT_REQUIRED_DESIRED_RECEIPT_ROOT", "desired"),
+    ],
+)
+def test_root_required_audit_rejects_permissive_receipt_mode(
+    tmp_path: Path,
+    root_variable: str,
+    kind: str,
+) -> None:
+    env = _root_audit_env(tmp_path)
+    receipt = Path(env[root_variable]) / "oom-containment.sha"
+    receipt.chmod(0o666)
+
+    result = subprocess.run(
+        [str(ROOT_REQUIRED_AUDIT)],
+        text=True,
+        capture_output=True,
+        check=False,
+        env=env,
+    )
+
+    assert result.returncode == 1
+    assert f"root-required {kind} receipt safety drift" in result.stderr
+    assert "mode=0666" in result.stderr
+    assert "authenticated live next-action command" in result.stderr
 
 
 def test_root_required_audit_detects_desired_package_not_installed(tmp_path: Path) -> None:

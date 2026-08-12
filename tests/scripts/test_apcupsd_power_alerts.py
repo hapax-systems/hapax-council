@@ -1174,7 +1174,7 @@ def test_installer_install_implies_verify_live_against_temp_destinations(tmp_pat
     (False, True),
     ids=("validated-fake-sudo", "omitted-forced-direct"),
 )
-def test_authenticated_deferred_helper_runs_real_apcupsd_installer_with_safe_nested_sudo(
+def test_authenticated_deferred_helper_runs_real_apcupsd_installer_with_safe_nested_sudo_and_umask(
     tmp_path: Path,
     omit_nested_sudo: bool,
 ) -> None:
@@ -1241,6 +1241,12 @@ def test_authenticated_deferred_helper_runs_real_apcupsd_installer_with_safe_nes
     nested_sudo_env = {} if omit_nested_sudo else {"HAPAX_APCUPSD_INSTALL_SUDO": str(root_sudo)}
     result = subprocess.run(
         [
+            "/usr/bin/bash",
+            "--noprofile",
+            "--norc",
+            "-c",
+            'umask 000; exec "$@"',
+            "hostile-umask",
             str(REPO_ROOT / "scripts/hapax-root-required-deferred-install"),
             "--package",
             "apcupsd-power-alerts",
@@ -1283,9 +1289,14 @@ def test_authenticated_deferred_helper_runs_real_apcupsd_installer_with_safe_nes
         calls = root_sudo_calls.read_text(encoding="utf-8")
         assert "install -m" in calls
         assert "/proc/" in calls and "/fd/" in calls
-    assert (state_root / "installed-receipts/apcupsd-power-alerts.sha").read_text().strip() == (
-        package_sha
+    receipts = (
+        state_root / "installed-receipts/apcupsd-power-alerts.sha",
+        state_root / "desired-receipts/apcupsd-power-alerts.sha",
     )
+    assert receipts[0].read_text().strip() == package_sha
+    for receipt in receipts:
+        assert stat.S_IMODE(receipt.stat().st_mode) == 0o600
+        assert receipt.parent.stat().st_mode & 0o022 == 0
     assert (stage / "DRAINED.txt").is_file()
     assert (state_root / "current-source/scripts/install-apcupsd-power-alerts").read_bytes() == (
         INSTALLER.read_bytes()
@@ -1903,7 +1914,15 @@ def test_apcupsd_installs_serialize_on_shared_package_lock(tmp_path: Path) -> No
     assert second.returncode == 0, (second_stdout, second_stderr)
 
 
-def test_installer_drains_root_required_deferral_after_success(tmp_path: Path) -> None:
+@pytest.mark.parametrize(
+    "block_receipt_publication",
+    (False, True),
+    ids=("safe-receipts-drain", "publication-failure-keeps-runbook"),
+)
+def test_installer_drains_only_after_safe_receipt_publication(
+    tmp_path: Path,
+    block_receipt_publication: bool,
+) -> None:
     dest = tmp_path / "apcupsd"
     audit_dir = tmp_path / "hapax-log"
     logrotate_dest = tmp_path / "logrotate.d" / "hapax-ups-power-events"
@@ -1920,9 +1939,25 @@ def test_installer_drains_root_required_deferral_after_success(tmp_path: Path) -
     fake_systemctl = tmp_path / "systemctl"
     fake_systemctl.write_text("#!/usr/bin/env bash\nexit 0\n", encoding="utf-8")
     fake_systemctl.chmod(0o755)
+    state_root = tmp_path / "root-state"
+    if block_receipt_publication:
+        state_root.mkdir()
+        (state_root / "installed-receipts").write_text("not a directory\n", encoding="utf-8")
 
     result = subprocess.run(
-        [str(INSTALLER), "--source", str(drain_dir), "--install", "--verify-live"],
+        [
+            "/usr/bin/bash",
+            "--noprofile",
+            "--norc",
+            "-c",
+            'umask 000; exec "$@"',
+            "hostile-umask",
+            str(INSTALLER),
+            "--source",
+            str(drain_dir),
+            "--install",
+            "--verify-live",
+        ],
         text=True,
         capture_output=True,
         check=False,
@@ -1941,14 +1976,26 @@ def test_installer_drains_root_required_deferral_after_success(tmp_path: Path) -
         },
     )
 
+    if block_receipt_publication:
+        assert result.returncode != 0
+        assert "root-required receipt publication refused" in result.stderr
+        assert (drain_dir / "RUNBOOK.txt").is_file()
+        assert not (drain_dir / "DRAINED.txt").exists()
+        return
+
     assert result.returncode == 0, result.stderr
     assert drain_dir.is_dir()
     assert (drain_dir / "DRAINED.txt").is_file()
     assert not (drain_dir / "RUNBOOK.txt").exists()
     assert sibling_dir.exists()
-    assert (
-        tmp_path / "root-state" / "installed-receipts" / "apcupsd-power-alerts.sha"
-    ).read_text().strip() == REPO_HEAD
+    receipts = (
+        state_root / "installed-receipts/apcupsd-power-alerts.sha",
+        state_root / "desired-receipts/apcupsd-power-alerts.sha",
+    )
+    assert receipts[0].read_text().strip() == REPO_HEAD
+    for receipt in receipts:
+        assert stat.S_IMODE(receipt.stat().st_mode) == 0o600
+        assert receipt.parent.stat().st_mode & 0o022 == 0
     assert (installed_source / "config" / "apcupsd" / "hapax-power-event.py").is_file()
     assert "root-required deferral marked drained" in result.stdout
 

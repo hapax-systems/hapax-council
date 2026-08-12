@@ -1967,7 +1967,25 @@ import subprocess
 import sys
 
 lock_path, script, *args = sys.argv[1:]
-os.makedirs(os.path.dirname(lock_path) or ".", exist_ok=True)
+lock_parent = os.path.dirname(lock_path) or "."
+old_umask = os.umask(0o077)
+try:
+    os.makedirs(lock_parent, exist_ok=True)
+finally:
+    os.umask(old_umask)
+parent_inode = os.lstat(lock_parent)
+if (
+    not stat.S_ISDIR(parent_inode.st_mode)
+    or parent_inode.st_uid != os.geteuid()
+    or parent_inode.st_mode & 0o022
+):
+    print(
+        f"hapax-post-merge-deploy: refused unsafe shared lock parent {lock_parent}; "
+        "expected a caller-owned, non-group-writable physical directory; next action: "
+        "repair the durable root-required state directory and rerun",
+        file=sys.stderr,
+    )
+    raise SystemExit(1)
 try:
     fd = os.open(
         lock_path,
@@ -3399,26 +3417,187 @@ validate_root_required_stage_manifest() {
     fi
 }
 
+read_safe_root_required_sha_receipt() {
+    local receipt="$1" kind="$2"
+    /usr/bin/python3 -I - "$receipt" "$kind" <<'PY'
+from __future__ import annotations
+
+import os
+import re
+import stat
+import sys
+
+receipt, kind = sys.argv[1:]
+parent = os.path.dirname(receipt) or "."
+
+
+def refuse(message: str) -> None:
+    print(
+        f"unsafe {kind} root-required receipt {receipt}: {message}; next action: "
+        "repair only the caller-owned receipt state and rerun the exact governed package",
+        file=sys.stderr,
+    )
+    raise SystemExit(1)
+
+
+try:
+    parent_inode = os.lstat(parent)
+    expected = os.lstat(receipt)
+    if (
+        not stat.S_ISDIR(parent_inode.st_mode)
+        or parent_inode.st_uid != os.geteuid()
+        or parent_inode.st_mode & 0o022
+    ):
+        refuse("the parent is not a caller-owned, non-group-writable physical directory")
+    if (
+        not stat.S_ISREG(expected.st_mode)
+        or expected.st_uid != os.geteuid()
+        or expected.st_nlink != 1
+        or expected.st_mode & 0o022
+        or expected.st_size != 41
+    ):
+        refuse(
+            f"owner={expected.st_uid} links={expected.st_nlink} "
+            f"mode={stat.S_IMODE(expected.st_mode):04o} size={expected.st_size}"
+        )
+    fd = os.open(receipt, os.O_RDONLY | os.O_CLOEXEC | os.O_NOFOLLOW)
+    try:
+        opened = os.fstat(fd)
+        data = os.read(fd, 42)
+    finally:
+        os.close(fd)
+except OSError as exc:
+    refuse(f"cannot inspect or read the receipt: {exc}")
+if (opened.st_dev, opened.st_ino) != (expected.st_dev, expected.st_ino):
+    refuse("the inode changed while opening")
+if re.fullmatch(rb"[0-9a-f]{40}\n", data) is None:
+    refuse("content is not exactly 40 lowercase hex characters and one newline")
+print(data[:-1].decode("ascii"))
+PY
+}
+
+write_root_required_sha_receipt() {
+    local receipt="$1" sha="$2"
+    /usr/bin/python3 -I - "$receipt" "$sha" <<'PY'
+from __future__ import annotations
+
+import os
+import re
+import secrets
+import stat
+import sys
+
+receipt, sha = sys.argv[1:]
+payload = f"{sha}\n".encode()
+parent = os.path.dirname(receipt)
+base = os.path.basename(receipt)
+temp: str | None = None
+parent_fd = -1
+
+
+def refuse(message: str) -> None:
+    print(
+        f"root-required receipt publication refused for {receipt}: {message}; next action: "
+        "repair the caller-owned receipt state and rerun the exact governed package",
+        file=sys.stderr,
+    )
+    raise SystemExit(1)
+
+
+try:
+    if not os.path.isabs(receipt) or not base or re.fullmatch(r"[0-9a-f]{40}", sha) is None:
+        refuse("the path must be absolute and the value exactly 40 lowercase hex characters")
+    old_umask = os.umask(0o077)
+    try:
+        os.makedirs(parent, mode=0o700, exist_ok=True)
+    finally:
+        os.umask(old_umask)
+    parent_fd = os.open(
+        parent,
+        os.O_RDONLY | os.O_CLOEXEC | os.O_DIRECTORY | os.O_NOFOLLOW,
+    )
+    parent_inode = os.fstat(parent_fd)
+    if parent_inode.st_uid != os.geteuid() or parent_inode.st_mode & 0o022:
+        refuse("the receipt directory is not caller-owned and non-group-writable")
+    temp = f".{base}.tmp.{os.getpid()}.{secrets.token_hex(8)}"
+    fd = os.open(
+        temp,
+        os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_CLOEXEC | os.O_NOFOLLOW,
+        0o600,
+        dir_fd=parent_fd,
+    )
+    try:
+        os.fchmod(fd, 0o600)
+        view = memoryview(payload)
+        while view:
+            written = os.write(fd, view)
+            if written <= 0:
+                refuse("the temporary receipt write made no progress")
+            view = view[written:]
+        os.fsync(fd)
+        inode = os.fstat(fd)
+        if (
+            not stat.S_ISREG(inode.st_mode)
+            or inode.st_uid != os.geteuid()
+            or inode.st_nlink != 1
+            or stat.S_IMODE(inode.st_mode) != 0o600
+            or inode.st_size != len(payload)
+        ):
+            refuse("the temporary receipt inode failed its owner/link/mode/size check")
+    finally:
+        os.close(fd)
+    os.replace(temp, base, src_dir_fd=parent_fd, dst_dir_fd=parent_fd)
+    temp = None
+    fd = os.open(base, os.O_RDONLY | os.O_CLOEXEC | os.O_NOFOLLOW, dir_fd=parent_fd)
+    try:
+        inode = os.fstat(fd)
+        observed = os.read(fd, len(payload) + 1)
+    finally:
+        os.close(fd)
+    if (
+        not stat.S_ISREG(inode.st_mode)
+        or inode.st_uid != os.geteuid()
+        or inode.st_nlink != 1
+        or stat.S_IMODE(inode.st_mode) != 0o600
+        or inode.st_size != len(payload)
+        or observed != payload
+    ):
+        refuse("the published receipt failed its owner/link/mode/content readback")
+    os.fsync(parent_fd)
+except OSError as exc:
+    refuse(f"atomic mode-0600 publication failed: {exc}")
+finally:
+    if temp is not None and parent_fd >= 0:
+        try:
+            os.unlink(temp, dir_fd=parent_fd)
+        except FileNotFoundError:
+            pass
+    if parent_fd >= 0:
+        os.close(parent_fd)
+PY
+}
+
 record_root_required_desired_sha() {
-    local label="$1" stage="$2" receipt temp current manifest_rel
+    local label="$1" stage="$2" receipt current manifest_rel
     case "$label" in
         oom-containment) manifest_rel="config/root-required/oom-containment.files" ;;
         apcupsd-power-alerts) manifest_rel="config/root-required/apcupsd-power-alerts.files" ;;
         *) echo "hapax-post-merge-deploy: unknown root-required package label: $label; next action: use oom-containment or apcupsd-power-alerts from the governed staging path" >&2; return 2 ;;
     esac
     validate_root_required_stage_manifest "$stage" "$manifest_rel" || return 1
-    mkdir -p "$ROOT_REQUIRED_DESIRED_RECEIPT_ROOT"
     receipt="$ROOT_REQUIRED_DESIRED_RECEIPT_ROOT/$label.sha"
     if [ -f "$receipt" ]; then
-        current="$(tr -d '[:space:]' < "$receipt")"
-        if ! [[ "$current" =~ ^[0-9a-f]{40}$ ]] || ! root_required_git cat-file -e "$current^{commit}" 2>/dev/null; then
+        current="$(read_safe_root_required_sha_receipt "$receipt" "desired-$label")" || return 1
+        if ! root_required_git cat-file -e "$current^{commit}" 2>/dev/null; then
             echo "hapax-post-merge-deploy: invalid or unavailable desired $label receipt $current; next action: restore the latest governed receipt and rerun this deploy" >&2
             return 1
         fi
         if [ "$current" = "$SHA" ]; then
+            write_root_required_sha_receipt "$receipt" "$current"
             return 0
         fi
         if root_required_git merge-base --is-ancestor "$SHA" "$current"; then
+            write_root_required_sha_receipt "$receipt" "$current"
             echo "root-required $label desired state $current supersedes stale deploy $SHA; desired receipt preserved"
             return 0
         fi
@@ -3431,9 +3610,7 @@ record_root_required_desired_sha() {
             fi
         fi
     fi
-    temp="$receipt.tmp.$$"
-    printf '%s\n' "$SHA" > "$temp"
-    mv -f "$temp" "$receipt"
+    write_root_required_sha_receipt "$receipt" "$SHA"
 }
 
 # apcupsd must be active before the OOM package verifies the recovery plane.
