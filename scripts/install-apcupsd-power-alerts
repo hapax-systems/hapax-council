@@ -732,7 +732,7 @@ verify_audit_log_parent() {
     if [ "$AUDIT_LOG" = "$DEFAULT_AUDIT_LOG" ]; then
         parent_expected_mode=2775
     fi
-    /usr/bin/python3 - "$AUDIT_LOG" "$AUDIT_LOG_OWNER_UID" "$AUDIT_LOG_OWNER_GID" \
+    /usr/bin/python3 -I - "$AUDIT_LOG" "$AUDIT_LOG_OWNER_UID" "$AUDIT_LOG_OWNER_GID" \
         "$parent_expected_mode" "$APC_REPAIR_ACTION" <<'PY'
 from __future__ import annotations
 
@@ -781,7 +781,7 @@ PY
 prepare_audit_log() {
     resolve_audit_log_identity
     verify_audit_log_parent
-    run_root /usr/bin/python3 - "$AUDIT_LOG" "$AUDIT_LOG_OWNER_UID" "$AUDIT_LOG_OWNER_GID" <<'PY'
+    run_root /usr/bin/python3 -I - "$AUDIT_LOG" "$AUDIT_LOG_OWNER_UID" "$AUDIT_LOG_OWNER_GID" <<'PY'
 from __future__ import annotations
 
 import os
@@ -1660,7 +1660,7 @@ validate_package_source_matches_commit() {
             echo "apcupsd package Git mode violates the destination contract at $rel: actual=$git_mode expected=$expected_mode; next action: restore the tracked executable class and rerun from a clean Git worktree or a fresh post-merge live command" >&2
             return 1
         fi
-        if ! /usr/bin/python3 - "$source_path" "$git_mode" "$AUTHENTICATED_SEALED_SOURCE" <<'PY'
+        if ! /usr/bin/python3 -I - "$source_path" "$git_mode" "$AUTHENTICATED_SEALED_SOURCE" <<'PY'
 from __future__ import annotations
 
 import os
