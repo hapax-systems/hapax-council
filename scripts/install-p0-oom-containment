@@ -349,7 +349,7 @@ user_systemctl() {
 preflight_root() {
     if [ -n "$SUDO" ] && [ "$INSTALL" -eq 1 ]; then
         "$SUDO" -n true 2>/dev/null || {
-            echo "sudo non-interactive access is required for OOM containment install; next action: run sudo -v or grant the target account NOPASSWD for the governed install/systemctl/tee commands, then rerun as that account" >&2
+            echo "sudo non-interactive access is required for OOM containment install; next action: run sudo -v or grant the target account the governed install/systemctl/enforcer commands, then rerun as that account" >&2
             return "$ROOT_REQUIRED_RC"
         }
     fi
@@ -3164,23 +3164,128 @@ check_source() {
     fi
 }
 
+OOM_SCORE_WRITES_ATTEMPTED=0
+OOM_SCORE_WRITES_APPLIED=0
+OOM_SCORE_WRITES_STALE=0
+OOM_SCORE_WRITES_FAILED=0
+
+capture_oom_target_starttime() {
+    local pid="$1" expected_cgroup="$2"
+    /usr/bin/python3 -I - "$PROC_ROOT" "$pid" "$expected_cgroup" <<'PY'
+from __future__ import annotations
+
+import os
+import sys
+
+STALE_IDENTITY = 75
+
+
+def read_at(parent_fd: int, name: str) -> bytes:
+    fd = os.open(
+        name,
+        os.O_RDONLY | os.O_CLOEXEC | os.O_NOFOLLOW | os.O_NONBLOCK,
+        dir_fd=parent_fd,
+    )
+    try:
+        data = os.read(fd, 65537)
+        if len(data) > 65536:
+            raise OSError(f"{name} exceeds 65536 bytes")
+        return data
+    finally:
+        os.close(fd)
+
+
+def process_starttime(raw: bytes) -> str:
+    close = raw.rfind(b")")
+    fields = raw[close + 1 :].split() if close >= 0 else []
+    if len(fields) <= 19 or not fields[19].isdigit():
+        raise OSError("malformed process stat record")
+    return fields[19].decode("ascii")
+
+
+def cgroup_matches(raw: bytes, expected: str) -> bool:
+    for line in raw.decode("utf-8", errors="strict").splitlines():
+        fields = line.split(":", 2)
+        if len(fields) == 3 and (
+            fields[2] == expected or fields[2].startswith(f"{expected}/")
+        ):
+            return True
+    return False
+
+
+proc_root, pid, expected_cgroup = sys.argv[1:]
+if not pid.isdigit() or int(pid) <= 0 or not expected_cgroup.startswith("/"):
+    raise SystemExit(1)
+root_fd = -1
+pid_fd = -1
+try:
+    root_fd = os.open(
+        proc_root,
+        os.O_RDONLY | os.O_CLOEXEC | os.O_DIRECTORY | os.O_NOFOLLOW,
+    )
+    pid_fd = os.open(
+        pid,
+        os.O_RDONLY | os.O_CLOEXEC | os.O_DIRECTORY | os.O_NOFOLLOW,
+        dir_fd=root_fd,
+    )
+    if not cgroup_matches(read_at(pid_fd, "cgroup"), expected_cgroup):
+        raise SystemExit(STALE_IDENTITY)
+    print(process_starttime(read_at(pid_fd, "stat")))
+except (FileNotFoundError, ProcessLookupError):
+    raise SystemExit(STALE_IDENTITY)
+except OSError:
+    raise SystemExit(1)
+finally:
+    if pid_fd >= 0:
+        os.close(pid_fd)
+    if root_fd >= 0:
+        os.close(root_fd)
+PY
+}
+
 write_oom_score() {
-    local pid score path
-    pid="$1"
-    score="$2"
+    local pid="$1" score="$2" expected_cgroup="${3:-}"
+    local path starttime output rc
     path="$PROC_ROOT/$pid/oom_score_adj"
-    [ -e "$path" ] || return 0
-    if [ "${HAPAX_OOM_FORCE_DIRECT_WRITE_FAIL:-0}" != "1" ] && { printf '%s\n' "$score" > "$path"; } 2>/dev/null; then
-        return 0
+    OOM_SCORE_WRITES_ATTEMPTED=$((OOM_SCORE_WRITES_ATTEMPTED + 1))
+    if [ -z "$expected_cgroup" ]; then
+        if [ ! -e "$path" ]; then
+            OOM_SCORE_WRITES_STALE=$((OOM_SCORE_WRITES_STALE + 1))
+            return 75
+        fi
+        if [ "${HAPAX_OOM_FORCE_DIRECT_WRITE_FAIL:-0}" != "1" ] \
+            && { printf '%s\n' "$score" > "$path"; } 2>/dev/null; then
+            OOM_SCORE_WRITES_APPLIED=$((OOM_SCORE_WRITES_APPLIED + 1))
+            return 0
+        fi
+        OOM_SCORE_WRITES_FAILED=$((OOM_SCORE_WRITES_FAILED + 1))
+        return 1
     fi
-    [ ! -e "$path" ] && return 0
-    if [ -n "$SUDO" ] || [ "$(id -u)" = "0" ]; then
-        printf '%s\n' "$score" | run_root tee "$path" >/dev/null || {
-            [ ! -e "$path" ] && return 0
-            return 1
-        }
-        return 0
+    if starttime="$(capture_oom_target_starttime "$pid" "$expected_cgroup")"; then
+        :
+    else
+        rc=$?
+        if [ "$rc" -eq 75 ]; then
+            OOM_SCORE_WRITES_STALE=$((OOM_SCORE_WRITES_STALE + 1))
+            return 75
+        fi
+        OOM_SCORE_WRITES_FAILED=$((OOM_SCORE_WRITES_FAILED + 1))
+        return 1
     fi
+    # The starttime closes the pre-escalation-to-dirfd window. The root-owned
+    # enforcer then checks it and the cgroup through one pinned /proc/PID dirfd.
+    if output="$(run_root "$OOM_ENFORCER_DEST" \
+        --write-scoped "$pid" "$score" "$starttime" "$expected_cgroup")"; then
+        OOM_SCORE_WRITES_APPLIED=$((OOM_SCORE_WRITES_APPLIED + 1))
+        return 0
+    else
+        rc=$?
+    fi
+    if [ "$rc" -eq 75 ]; then
+        OOM_SCORE_WRITES_STALE=$((OOM_SCORE_WRITES_STALE + 1))
+        return 75
+    fi
+    OOM_SCORE_WRITES_FAILED=$((OOM_SCORE_WRITES_FAILED + 1))
     return 1
 }
 
@@ -3284,8 +3389,14 @@ pid_matches_cgroup() {
 }
 
 write_oom_score_or_warn() {
-    local pid="$1" score="$2" label="$3"
-    if write_oom_score "$pid" "$score"; then
+    local pid="$1" score="$2" label="$3" expected_cgroup="$4" rc
+    if write_oom_score "$pid" "$score" "$expected_cgroup"; then
+        return 0
+    else
+        rc=$?
+    fi
+    if [ "$rc" -eq 75 ]; then
+        echo "warning: skipped stale oom_score_adj identity for $label pid=$pid; the privileged write was not retargeted; next action: rerun scripts/hapax-oom-policy-audit --json and $OOM_REPAIR_ACTION" >&2
         return 0
     fi
     echo "warning: failed to set oom_score_adj for $label pid=$pid; next action: run scripts/hapax-oom-policy-audit --json and rerun $OOM_REPAIR_ACTION" >&2
@@ -3299,7 +3410,7 @@ apply_recovery_unit_oom_scores() {
         score="${spec##*:}"
         pid="$(main_pid_for_unit "$unit")"
         [ -n "$pid" ] || continue
-        write_oom_score_or_warn "$pid" "$score" "$unit"
+        write_oom_score_or_warn "$pid" "$score" "$unit" "/system.slice/$unit"
     done
 }
 
@@ -3313,7 +3424,7 @@ apply_protected_user_unit_oom_scores() {
         while IFS= read -r pid; do
             [ -n "$pid" ] || continue
             pid_matches_cgroup "$pid" "$cgroup" || continue
-            write_oom_score_or_warn "$pid" "$score" "$unit"
+            write_oom_score_or_warn "$pid" "$score" "$unit" "$cgroup"
         done < <(printf '%s\n' "$output" | sort -u)
     done
 }
@@ -3343,7 +3454,7 @@ status_field() {
 }
 
 apply_user_process_oom_floor() {
-    local adj pid_dir pid status uid name score fixed=0
+    local adj pid_dir pid status uid name score rc fixed=0
     [ -d "$PROC_ROOT" ] || return 0
     for adj in "$PROC_ROOT"/[0-9]*/oom_score_adj; do
         [ -e "$adj" ] || continue
@@ -3359,10 +3470,15 @@ apply_user_process_oom_floor() {
         [ "$score" -le -800 ] || continue
         protected_user_unit_member_pid "$pid" && continue
         allowed_user_protected_process "$name" && continue
-        if write_oom_score "$pid" 100; then
+        if write_oom_score "$pid" 100 ""; then
             fixed=$((fixed + 1))
         else
-            echo "warning: failed to set oom_score_adj for user process name=$name pid=$pid; next action: run scripts/hapax-oom-policy-audit --json and rerun $OOM_REPAIR_ACTION" >&2
+            rc=$?
+            if [ "$rc" -eq 75 ]; then
+                echo "warning: skipped vanished user process name=$name pid=$pid while resetting oom_score_adj; next action: rerun scripts/hapax-oom-policy-audit --json" >&2
+            else
+                echo "warning: failed to set oom_score_adj for user process name=$name pid=$pid; next action: run scripts/hapax-oom-policy-audit --json and rerun $OOM_REPAIR_ACTION" >&2
+            fi
         fi
     done
     if [ "$fixed" -gt 0 ]; then
@@ -3555,9 +3671,11 @@ install_live() {
         apply_protected_user_unit_oom_scores
         user_pid="$("$SYSTEMCTL" show user@1000.service -p MainPID --value 2>/dev/null || true)"
         if [[ "$user_pid" =~ ^[0-9]+$ ]] && [ "$user_pid" -gt 0 ]; then
-            write_oom_score_or_warn "$user_pid" 100 "user@1000.service"
+            write_oom_score_or_warn "$user_pid" 100 "user@1000.service" \
+                "/user.slice/user-1000.slice/user@1000.service"
         fi
         apply_user_process_oom_floor
+        echo "oom_score_adj reconciliation summary: attempted=$OOM_SCORE_WRITES_ATTEMPTED applied=$OOM_SCORE_WRITES_APPLIED stale=$OOM_SCORE_WRITES_STALE failed=$OOM_SCORE_WRITES_FAILED"
         reconcile_docker_memory_limits
     fi
 }
