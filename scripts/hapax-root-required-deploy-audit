@@ -277,35 +277,69 @@ oom_manager_query_next_action() {
 
 acquire_inherited_root_required_lock() {
     local lock_fd="${HAPAX_ROOT_REQUIRED_LOCK_FD:-}"
+    local state_fd="${HAPAX_ROOT_REQUIRED_STATE_FD:-}"
+    local guard_fd="${HAPAX_ROOT_REQUIRED_GENERATION_GUARD_FD:-}"
+    local lexical_root="${HAPAX_ROOT_REQUIRED_STATE_LEXICAL_ROOT:-}"
     local lock_mode="${HAPAX_ROOT_REQUIRED_LOCK_MODE:-shared}"
-    if ! [[ "$lock_fd" =~ ^[0-9]+$ ]] || [ "$lock_fd" -lt 3 ]; then
+    local canonical_root="$HOME/.local/state/hapax/root-required"
+    if ! [[ "$lock_fd" =~ ^[0-9]+$ ]] || [ "$lock_fd" -lt 3 ] \
+        || ! [[ "$state_fd" =~ ^[0-9]+$ ]] || [ "$state_fd" -lt 3 ] \
+        || ! [[ "$guard_fd" =~ ^[0-9]+$ ]] || [ "$guard_fd" -lt 3 ]; then
         echo "root-required audit safe lock descriptor is absent; next action: remove caller-supplied HAPAX_ROOT_REQUIRED_LOCK_* values and rerun the installed audit" >&2
         return 1
     fi
-    /usr/bin/python3 - "$lock_fd" "$ROOT_REQUIRED_LOCK_FILE" "$lock_mode" <<'PY'
+    if [ "$AUDIT_TEST_MODE" != "1" ] \
+        && { [ "$lexical_root" != "$canonical_root" ] \
+            || [ "$ROOT_REQUIRED_LOCK_FILE" != "$canonical_root/.lock" ]; }; then
+        echo "root-required audit refused inherited lock state outside the canonical account root: $lexical_root; next action: remove caller-supplied HAPAX_ROOT_REQUIRED_* selectors and rerun the installed audit" >&2
+        return 1
+    fi
+    /usr/bin/python3 - \
+        "$lock_fd" "$state_fd" "$guard_fd" "$ROOT_REQUIRED_LOCK_FILE" \
+        "$ROOT_REQUIRED_STATE_ROOT" "$lexical_root" "$lock_mode" <<'PY'
 from __future__ import annotations
 
 import fcntl
+import hashlib
 import os
+import socket
 import stat
 import sys
 
 fd = int(sys.argv[1])
-lock_path = sys.argv[2]
-lock_mode = sys.argv[3]
+state_fd = int(sys.argv[2])
+guard_fd = int(sys.argv[3])
+lock_path = sys.argv[4]
+bound_root = sys.argv[5]
+lexical_root = sys.argv[6]
+lock_mode = sys.argv[7]
 lock_parent = os.path.dirname(lock_path) or "."
 lock_base = os.path.basename(lock_path)
 parent_fd = -1
 try:
-    if not os.path.isabs(lock_path) or not lock_base:
+    if (
+        not os.path.isabs(lock_path)
+        or not lock_base
+        or not os.path.isabs(lexical_root)
+        or os.path.abspath(os.path.normpath(lock_parent))
+        != os.path.abspath(os.path.normpath(lexical_root))
+    ):
         raise OSError("lock path must be absolute and name one file")
     parent_fd = os.open(
         lock_parent,
         os.O_RDONLY | os.O_CLOEXEC | os.O_DIRECTORY | os.O_NOFOLLOW,
     )
     parent_inode = os.fstat(parent_fd)
+    state_inode = os.fstat(state_fd)
     inode = os.fstat(fd)
     path_inode = os.stat(lock_base, dir_fd=parent_fd, follow_symlinks=False)
+    bound_inode = os.stat(bound_root)
+    lexical_inode = os.stat(lexical_root, follow_symlinks=False)
+    guard = socket.socket(fileno=os.dup(guard_fd))
+    try:
+        guard_name = guard.getsockname()
+    finally:
+        guard.close()
 except OSError as exc:
     if parent_fd >= 0:
         os.close(parent_fd)
@@ -319,6 +353,12 @@ if (
     not stat.S_ISDIR(parent_inode.st_mode)
     or parent_inode.st_uid != os.geteuid()
     or parent_inode.st_mode & 0o022
+    or (state_inode.st_dev, state_inode.st_ino)
+    != (parent_inode.st_dev, parent_inode.st_ino)
+    or (bound_inode.st_dev, bound_inode.st_ino)
+    != (state_inode.st_dev, state_inode.st_ino)
+    or (lexical_inode.st_dev, lexical_inode.st_ino)
+    != (state_inode.st_dev, state_inode.st_ino)
     or not stat.S_ISREG(inode.st_mode)
     or not stat.S_ISREG(path_inode.st_mode)
     or (inode.st_dev, inode.st_ino) != (path_inode.st_dev, path_inode.st_ino)
@@ -334,16 +374,32 @@ if (
         file=sys.stderr,
     )
     raise SystemExit(1)
+guard_material = (
+    f"hapax-root-required-state-v1\0{os.geteuid()}\0"
+    f"{os.path.abspath(os.path.normpath(lexical_root))}"
+).encode()
+expected_guard = b"\0hapax-root-required-v1-" + hashlib.sha256(guard_material).hexdigest()[:40].encode()
+if guard_name != expected_guard:
+    os.close(parent_fd)
+    print(
+        f"root-required audit refused invalid generation guard for {lexical_root}; next action: "
+        "remove caller-supplied HAPAX_ROOT_REQUIRED_LOCK_* values and rerun",
+        file=sys.stderr,
+    )
+    raise SystemExit(1)
 os.fchmod(fd, 0o600)
 fcntl.flock(fd, fcntl.LOCK_EX if lock_mode == "exclusive" else fcntl.LOCK_SH)
 locked_inode = os.fstat(fd)
 locked_path_inode = os.stat(lock_base, dir_fd=parent_fd, follow_symlinks=False)
+locked_lexical_inode = os.stat(lexical_root, follow_symlinks=False)
 if (
     (locked_inode.st_dev, locked_inode.st_ino)
     != (locked_path_inode.st_dev, locked_path_inode.st_ino)
     or locked_inode.st_uid != os.geteuid()
     or locked_inode.st_nlink != 1
     or stat.S_IMODE(locked_inode.st_mode) != 0o600
+    or (locked_lexical_inode.st_dev, locked_lexical_inode.st_ino)
+    != (state_inode.st_dev, state_inode.st_ino)
 ):
     os.close(parent_fd)
     print(
@@ -361,33 +417,65 @@ reexec_with_safe_root_required_lock() {
         acquire_inherited_root_required_lock
         return
     fi
-    exec /usr/bin/python3 - "$ROOT_REQUIRED_LOCK_FILE" "$0" "${ORIGINAL_ARGS[@]}" <<'PY'
+    exec /usr/bin/python3 - \
+        "$ROOT_REQUIRED_STATE_ROOT" "$ROOT_REQUIRED_LOCK_FILE" \
+        "$0" "${ORIGINAL_ARGS[@]}" <<'PY'
 from __future__ import annotations
 
+import errno
 import fcntl
+import hashlib
 import os
+import socket
 import stat
 import subprocess
 import sys
+import time
 
-lock_path, script, *args = sys.argv[1:]
+state_root, lock_path, script, *args = sys.argv[1:]
 lock_parent = os.path.dirname(lock_path) or "."
 lock_base = os.path.basename(lock_path)
-if not os.path.isabs(lock_path) or not lock_base:
+lexical_root = os.path.abspath(os.path.normpath(state_root))
+if (
+    not os.path.isabs(state_root)
+    or not os.path.isabs(lock_path)
+    or not lock_base
+    or os.path.abspath(os.path.normpath(lock_parent)) != lexical_root
+):
     print(
-        f"root-required audit refused invalid shared lock path {lock_path}; expected an absolute "
-        "path naming one file; next action: restore the canonical durable state path",
+        f"root-required audit refused invalid shared lock path {lock_path}; expected an "
+        "absolute .lock inside the selected durable state root; next action: restore the "
+        "canonical durable state path",
         file=sys.stderr,
     )
     raise SystemExit(1)
+guard_material = f"hapax-root-required-state-v1\0{os.geteuid()}\0{lexical_root}".encode()
+guard_name = b"\0hapax-root-required-v1-" + hashlib.sha256(guard_material).hexdigest()[:40].encode()
+guard = socket.socket(
+    socket.AF_UNIX,
+    socket.SOCK_STREAM | getattr(socket, "SOCK_CLOEXEC", 0),
+)
+while True:
+    try:
+        guard.bind(guard_name)
+        break
+    except OSError as exc:
+        if exc.errno != errno.EADDRINUSE:
+            print(
+                f"root-required audit cannot acquire the state-generation guard: {exc}; "
+                "next action: repair the local Unix-socket facility and rerun",
+                file=sys.stderr,
+            )
+            raise SystemExit(1) from exc
+        time.sleep(0.05)
 old_umask = os.umask(0o077)
 try:
-    os.makedirs(lock_parent, exist_ok=True)
+    os.makedirs(lexical_root, exist_ok=True)
 finally:
     os.umask(old_umask)
 try:
     parent_fd = os.open(
-        lock_parent,
+        lexical_root,
         os.O_RDONLY | os.O_CLOEXEC | os.O_DIRECTORY | os.O_NOFOLLOW,
     )
 except OSError as exc:
@@ -444,12 +532,15 @@ try:
     fcntl.flock(fd, fcntl.LOCK_SH)
     locked_inode = os.fstat(fd)
     locked_path_inode = os.stat(lock_base, dir_fd=parent_fd, follow_symlinks=False)
+    published_parent_inode = os.stat(lexical_root, follow_symlinks=False)
     if (
         (locked_inode.st_dev, locked_inode.st_ino)
         != (locked_path_inode.st_dev, locked_path_inode.st_ino)
         or locked_inode.st_uid != os.geteuid()
         or locked_inode.st_nlink != 1
         or stat.S_IMODE(locked_inode.st_mode) != 0o600
+        or (parent_inode.st_dev, parent_inode.st_ino)
+        != (published_parent_inode.st_dev, published_parent_inode.st_ino)
     ):
         print(
             f"root-required audit shared lock path changed during acquisition for {lock_path}; "
@@ -459,18 +550,26 @@ try:
         raise SystemExit(1)
     env = os.environ.copy()
     env.pop("HAPAX_ROOT_REQUIRED_LOCK_HELD", None)
+    stable_root = f"/proc/{os.getpid()}/fd/{parent_fd}"
+    env["HAPAX_ROOT_REQUIRED_STATE_ROOT"] = stable_root
+    env["HAPAX_ROOT_REQUIRED_LOCK_FILE"] = lock_path
     env["HAPAX_ROOT_REQUIRED_LOCK_FD"] = str(fd)
+    env["HAPAX_ROOT_REQUIRED_STATE_FD"] = str(parent_fd)
+    env["HAPAX_ROOT_REQUIRED_GENERATION_GUARD_FD"] = str(guard.fileno())
+    env["HAPAX_ROOT_REQUIRED_STATE_LEXICAL_ROOT"] = lexical_root
+    env["HAPAX_ROOT_REQUIRED_LOCK_LEXICAL_PATH"] = lock_path
     env["HAPAX_ROOT_REQUIRED_LOCK_MODE"] = "shared"
     result = subprocess.run(
         [os.path.abspath(script), *args],
         env=env,
-        pass_fds=(fd,),
+        pass_fds=(fd, parent_fd, guard.fileno()),
         check=False,
     )
     raise SystemExit(result.returncode)
 finally:
     os.close(fd)
     os.close(parent_fd)
+    guard.close()
 PY
 }
 
@@ -682,7 +781,7 @@ apcupsd_package_files=(
 )
 
 refuse_production_test_overrides() {
-    local name path
+    local name path inherited_lock=0
     local -a present=()
     local -a selectors=(
         HAPAX_ROOT_AUDIT_TEST_MODE
@@ -742,8 +841,18 @@ refuse_production_test_overrides() {
         HAPAX_ROOT_REQUIRED_LOCK_HELD
     )
     if [ "$AUDIT_TEST_MODE" != "1" ]; then
+        [ -n "${HAPAX_ROOT_REQUIRED_LOCK_FD:-}" ] && inherited_lock=1
         for name in "${selectors[@]}"; do
             if [[ -v $name ]]; then
+                if [ "$inherited_lock" -eq 1 ]; then
+                    case "$name" in
+                        HAPAX_ROOT_REQUIRED_STATE_ROOT|HAPAX_ROOT_REQUIRED_LOCK_FILE)
+                            # The re-exec wrapper supplies these two values; its inherited
+                            # descriptor validator binds them before any audit state is read.
+                            continue
+                            ;;
+                    esac
+                fi
                 present+=("$name")
             fi
         done
@@ -830,8 +939,8 @@ refuse_production_test_overrides() {
 }
 
 refuse_production_test_overrides || exit 1
-mkdir -p "$ROOT_DEFER_DIR"
 reexec_with_safe_root_required_lock
+mkdir -p "$ROOT_DEFER_DIR"
 
 rc=0
 
@@ -1342,7 +1451,7 @@ audit_package_receipt() {
     local label="$1" receipt sha rel source object_type expected_oid actual_oid failed=0
     shift
     receipt="$INSTALLED_RECEIPT_ROOT/$label.sha"
-    if [ ! -f "$receipt" ]; then
+    if [ ! -e "$receipt" ] && [ ! -L "$receipt" ]; then
         echo "root-required installed receipt missing: $receipt" >&2
         echo "  next action: rerun the newest governed $label installer package" >&2
         return 1
@@ -1391,7 +1500,7 @@ audit_desired_receipt() {
     local label="$1" desired installed desired_sha installed_sha
     desired="$DESIRED_RECEIPT_ROOT/$label.sha"
     installed="$INSTALLED_RECEIPT_ROOT/$label.sha"
-    if [ ! -f "$desired" ]; then
+    if [ ! -e "$desired" ] && [ ! -L "$desired" ]; then
         echo "root-required desired receipt missing: $desired" >&2
         echo "  next action: rerun hapax-post-merge-deploy for current main or the newest governed $label installer" >&2
         return 1
@@ -1405,7 +1514,7 @@ audit_desired_receipt() {
         return 1
     fi
     installed_sha=""
-    if [ -f "$installed" ]; then
+    if [ -e "$installed" ] || [ -L "$installed" ]; then
         if ! installed_sha="$(read_safe_sha_receipt "$installed" installed)"; then
             return 1
         fi

@@ -2,10 +2,12 @@ from __future__ import annotations
 
 import csv
 import fcntl
+import hashlib
 import json
 import os
 import re
 import runpy
+import socket
 import stat
 import subprocess
 import time
@@ -1823,6 +1825,40 @@ def test_audit_waits_for_exclusive_package_install_lock(tmp_path: Path) -> None:
     assert lock_check["status"] == "pass"
 
 
+def test_audit_reads_installed_profile_only_after_package_lock(tmp_path: Path) -> None:
+    lock = tmp_path / "root-state" / ".lock"
+    lock.parent.mkdir(parents=True)
+    profiles = tmp_path / "oom-host-profiles.tsv"
+    profiles.write_text("malformed-before-lock\n", encoding="utf-8")
+
+    with lock.open("w", encoding="utf-8") as lock_file:
+        lock.chmod(0o600)
+        fcntl.flock(lock_file.fileno(), fcntl.LOCK_EX)
+        proc = subprocess.Popen(
+            [str(SCRIPT), "--json", "--uid", "1000"],
+            text=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            env={
+                **os.environ,
+                "HAPAX_OOM_AUDIT_PROFILE_TABLE": str(profiles),
+                "HAPAX_ROOT_REQUIRED_LOCK_FILE": str(lock),
+            },
+        )
+        time.sleep(0.25)
+        assert proc.poll() is None, "profile parsing must not run ahead of the package lock"
+        profiles.write_bytes(
+            (REPO_ROOT / "config/root-required/oom-host-profiles.tsv").read_bytes()
+        )
+        fcntl.flock(lock_file.fileno(), fcntl.LOCK_UN)
+
+    stdout, stderr = proc.communicate(timeout=5)
+    assert proc.returncode in {0, 1}, stderr
+    checks = {check["name"]: check for check in json.loads(stdout)["checks"]}
+    assert checks["root_required_package_lock"]["status"] == "pass"
+    assert checks["host_memory_policy"]["status"] == "pass"
+
+
 @pytest.mark.parametrize("lock_kind", ["symlink", "hardlink"])
 def test_audit_refuses_unsafe_package_lock_without_system_reads(
     tmp_path: Path, lock_kind: str
@@ -1884,23 +1920,34 @@ def test_audit_refuses_inherited_lock_through_symlinked_parent_without_system_re
     )
     fake_systemctl.chmod(0o755)
     inherited_fd = os.open(physical_lock, os.O_RDONLY)
+    state_fd = os.open(physical, os.O_RDONLY | os.O_DIRECTORY)
+    guard = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+    guard_material = f"hapax-root-required-state-v1\0{os.geteuid()}\0{lexical.absolute()}".encode()
+    guard.bind(
+        b"\0hapax-root-required-v1-" + hashlib.sha256(guard_material).hexdigest()[:40].encode()
+    )
     try:
         result = subprocess.run(
             [str(SCRIPT), "--json", "--uid", "1000"],
             text=True,
             capture_output=True,
             check=False,
-            pass_fds=(inherited_fd,),
+            pass_fds=(inherited_fd, state_fd, guard.fileno()),
             env={
                 **os.environ,
                 "HAPAX_SYSTEMCTL": str(fake_systemctl),
                 "HAPAX_ROOT_REQUIRED_LOCK_FILE": str(lexical / ".lock"),
                 "HAPAX_ROOT_REQUIRED_LOCK_FD": str(inherited_fd),
+                "HAPAX_ROOT_REQUIRED_STATE_FD": str(state_fd),
+                "HAPAX_ROOT_REQUIRED_GENERATION_GUARD_FD": str(guard.fileno()),
+                "HAPAX_ROOT_REQUIRED_STATE_LEXICAL_ROOT": str(lexical),
                 "HAPAX_ROOT_REQUIRED_LOCK_MODE": "shared",
             },
         )
     finally:
         os.close(inherited_fd)
+        os.close(state_fd)
+        guard.close()
 
     assert result.returncode == 1
     payload = json.loads(result.stdout)

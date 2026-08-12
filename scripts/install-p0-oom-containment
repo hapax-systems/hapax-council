@@ -71,6 +71,8 @@ ROOT_REQUIRED_LOCK_FILE="${HAPAX_ROOT_REQUIRED_LOCK_FILE:-$ROOT_REQUIRED_STATE_R
 ROOT_REQUIRED_SEALED_SOURCE_FDS="${HAPAX_ROOT_REQUIRED_SEALED_SOURCE_FDS:-}"
 ROOT_REQUIRED_LEGACY_FINALIZE_GATE="${HAPAX_ROOT_REQUIRED_FINALIZE_GATE:-}"
 RUNTIME_AUTHORITY_TASK="${HAPAX_RUNTIME_AUTHORITY_TASK:-}"
+RUNTIME_AUTHORITY_TASK_SHA256="${HAPAX_RUNTIME_AUTHORITY_TASK_SHA256:-}"
+LOCAL_JUDGE_CAP_RECEIPT_SHA256="${HAPAX_LOCAL_JUDGE_CAP_RECEIPT_SHA256:-}"
 ROOT_REQUIRED_RECEIPT="$ROOT_REQUIRED_INSTALLED_RECEIPT_ROOT/oom-containment.sha"
 ROOT_REQUIRED_DESIRED_RECEIPT="$ROOT_REQUIRED_DESIRED_RECEIPT_ROOT/oom-containment.sha"
 SKIP_SUPERSEDED_INSTALL=0
@@ -235,33 +237,60 @@ git() {
 
 acquire_root_required_lock() {
     local lock_fd="${HAPAX_ROOT_REQUIRED_LOCK_FD:-}"
-    if ! [[ "$lock_fd" =~ ^[0-9]+$ ]] || [ "$lock_fd" -lt 3 ]; then
-        echo "OOM installer internal error: safe shared lock descriptor is absent; next action: remove caller-supplied HAPAX_ROOT_REQUIRED_LOCK_* values and rerun the unmodified installer as UID $TARGET_UID" >&2
+    local state_fd="${HAPAX_ROOT_REQUIRED_STATE_FD:-}"
+    local guard_fd="${HAPAX_ROOT_REQUIRED_GENERATION_GUARD_FD:-}"
+    local lexical_root="${HAPAX_ROOT_REQUIRED_STATE_LEXICAL_ROOT:-}"
+    if ! [[ "$lock_fd" =~ ^[0-9]+$ ]] || [ "$lock_fd" -lt 3 ] \
+        || ! [[ "$state_fd" =~ ^[0-9]+$ ]] || [ "$state_fd" -lt 3 ] \
+        || ! [[ "$guard_fd" =~ ^[0-9]+$ ]] || [ "$guard_fd" -lt 3 ]; then
+        echo "OOM installer refused invalid shared lock descriptor: the lock, state, or generation-guard descriptor is absent; next action: remove caller-supplied HAPAX_ROOT_REQUIRED_LOCK_* values and rerun the unmodified installer as UID $TARGET_UID" >&2
         return 1
     fi
-    /usr/bin/python3 - "$lock_fd" "$ROOT_REQUIRED_LOCK_FILE" <<'PY' || return 1
+    /usr/bin/python3 - \
+        "$lock_fd" "$state_fd" "$guard_fd" "$ROOT_REQUIRED_LOCK_FILE" \
+        "$ROOT_REQUIRED_STATE_ROOT" "$lexical_root" <<'PY' || return 1
 from __future__ import annotations
 
 import fcntl
+import hashlib
 import os
+import socket
 import stat
 import sys
 
 fd = int(sys.argv[1])
-lock_path = sys.argv[2]
+state_fd = int(sys.argv[2])
+guard_fd = int(sys.argv[3])
+lock_path = sys.argv[4]
+bound_root = sys.argv[5]
+lexical_root = sys.argv[6]
 lock_parent = os.path.dirname(lock_path) or "."
 lock_base = os.path.basename(lock_path)
 parent_fd = -1
 try:
-    if not os.path.isabs(lock_path) or not lock_base:
+    if (
+        not os.path.isabs(lock_path)
+        or not lock_base
+        or not os.path.isabs(lexical_root)
+        or os.path.abspath(os.path.normpath(lock_parent))
+        != os.path.abspath(os.path.normpath(lexical_root))
+    ):
         raise OSError("lock path must be absolute and name one file")
     parent_fd = os.open(
         lock_parent,
         os.O_RDONLY | os.O_CLOEXEC | os.O_DIRECTORY | os.O_NOFOLLOW,
     )
     parent_inode = os.fstat(parent_fd)
+    state_inode = os.fstat(state_fd)
     inode = os.fstat(fd)
     path_inode = os.stat(lock_base, dir_fd=parent_fd, follow_symlinks=False)
+    bound_inode = os.stat(bound_root)
+    lexical_inode = os.stat(lexical_root, follow_symlinks=False)
+    guard = socket.socket(fileno=os.dup(guard_fd))
+    try:
+        guard_name = guard.getsockname()
+    finally:
+        guard.close()
 except OSError as exc:
     if parent_fd >= 0:
         os.close(parent_fd)
@@ -275,6 +304,12 @@ if (
     not stat.S_ISDIR(parent_inode.st_mode)
     or parent_inode.st_uid != os.geteuid()
     or parent_inode.st_mode & 0o022
+    or (state_inode.st_dev, state_inode.st_ino)
+    != (parent_inode.st_dev, parent_inode.st_ino)
+    or (bound_inode.st_dev, bound_inode.st_ino)
+    != (state_inode.st_dev, state_inode.st_ino)
+    or (lexical_inode.st_dev, lexical_inode.st_ino)
+    != (state_inode.st_dev, state_inode.st_ino)
     or not stat.S_ISREG(inode.st_mode)
     or not stat.S_ISREG(path_inode.st_mode)
     or (inode.st_dev, inode.st_ino) != (path_inode.st_dev, path_inode.st_ino)
@@ -290,16 +325,32 @@ if (
         file=sys.stderr,
     )
     raise SystemExit(1)
+guard_material = (
+    f"hapax-root-required-state-v1\0{os.geteuid()}\0"
+    f"{os.path.abspath(os.path.normpath(lexical_root))}"
+).encode()
+expected_guard = b"\0hapax-root-required-v1-" + hashlib.sha256(guard_material).hexdigest()[:40].encode()
+if guard_name != expected_guard:
+    os.close(parent_fd)
+    print(
+        f"OOM installer refused invalid root-required generation guard for {lexical_root}; "
+        "next action: remove caller-supplied HAPAX_ROOT_REQUIRED_LOCK_* values and rerun",
+        file=sys.stderr,
+    )
+    raise SystemExit(1)
 os.fchmod(fd, 0o600)
 fcntl.flock(fd, fcntl.LOCK_EX)
 locked_inode = os.fstat(fd)
 locked_path_inode = os.stat(lock_base, dir_fd=parent_fd, follow_symlinks=False)
+locked_lexical_inode = os.stat(lexical_root, follow_symlinks=False)
 if (
     (locked_inode.st_dev, locked_inode.st_ino)
     != (locked_path_inode.st_dev, locked_path_inode.st_ino)
     or locked_inode.st_uid != os.geteuid()
     or locked_inode.st_nlink != 1
     or stat.S_IMODE(locked_inode.st_mode) != 0o600
+    or (locked_lexical_inode.st_dev, locked_lexical_inode.st_ino)
+    != (state_inode.st_dev, state_inode.st_ino)
 ):
     os.close(parent_fd)
     print(
@@ -316,32 +367,64 @@ PY
 
 reexec_with_safe_root_required_lock() {
     [ -z "${HAPAX_ROOT_REQUIRED_LOCK_FD:-}" ] || return 0
-    exec /usr/bin/python3 - "$ROOT_REQUIRED_LOCK_FILE" "$0" "${ORIGINAL_ARGS[@]}" <<'PY'
+    exec /usr/bin/python3 - \
+        "$ROOT_REQUIRED_STATE_ROOT" "$ROOT_REQUIRED_LOCK_FILE" \
+        "$0" "${ORIGINAL_ARGS[@]}" <<'PY'
 from __future__ import annotations
 
+import errno
 import fcntl
+import hashlib
 import os
+import socket
 import stat
 import sys
+import time
 
-lock_path, script, *args = sys.argv[1:]
+state_root, lock_path, script, *args = sys.argv[1:]
 lock_parent = os.path.dirname(lock_path) or "."
 lock_base = os.path.basename(lock_path)
-if not os.path.isabs(lock_path) or not lock_base:
+lexical_root = os.path.abspath(os.path.normpath(state_root))
+if (
+    not os.path.isabs(state_root)
+    or not os.path.isabs(lock_path)
+    or not lock_base
+    or os.path.abspath(os.path.normpath(lock_parent)) != lexical_root
+):
     print(
-        f"OOM installer refused invalid shared lock path {lock_path}; expected an absolute path "
-        "naming one file; next action: restore the canonical durable state path",
+        f"OOM installer refused invalid shared lock path {lock_path}; expected an absolute "
+        ".lock inside the selected durable state root; next action: restore the canonical "
+        "durable state path",
         file=sys.stderr,
     )
     raise SystemExit(1)
+guard_material = f"hapax-root-required-state-v1\0{os.geteuid()}\0{lexical_root}".encode()
+guard_name = b"\0hapax-root-required-v1-" + hashlib.sha256(guard_material).hexdigest()[:40].encode()
+guard = socket.socket(
+    socket.AF_UNIX,
+    socket.SOCK_STREAM | getattr(socket, "SOCK_CLOEXEC", 0),
+)
+while True:
+    try:
+        guard.bind(guard_name)
+        break
+    except OSError as exc:
+        if exc.errno != errno.EADDRINUSE:
+            print(
+                f"OOM installer cannot acquire the state-generation guard: {exc}; next action: "
+                "repair the local Unix-socket facility and rerun",
+                file=sys.stderr,
+            )
+            raise SystemExit(1) from exc
+        time.sleep(0.05)
 old_umask = os.umask(0o077)
 try:
-    os.makedirs(lock_parent, exist_ok=True)
+    os.makedirs(lexical_root, exist_ok=True)
 finally:
     os.umask(old_umask)
 try:
     parent_fd = os.open(
-        lock_parent,
+        lexical_root,
         os.O_RDONLY | os.O_CLOEXEC | os.O_DIRECTORY | os.O_NOFOLLOW,
     )
 except OSError as exc:
@@ -398,12 +481,15 @@ try:
     fcntl.flock(fd, fcntl.LOCK_EX)
     locked_inode = os.fstat(fd)
     locked_path_inode = os.stat(lock_base, dir_fd=parent_fd, follow_symlinks=False)
+    published_parent_inode = os.stat(lexical_root, follow_symlinks=False)
     if (
         (locked_inode.st_dev, locked_inode.st_ino)
         != (locked_path_inode.st_dev, locked_path_inode.st_ino)
         or locked_inode.st_uid != os.geteuid()
         or locked_inode.st_nlink != 1
         or stat.S_IMODE(locked_inode.st_mode) != 0o600
+        or (parent_inode.st_dev, parent_inode.st_ino)
+        != (published_parent_inode.st_dev, published_parent_inode.st_ino)
     ):
         print(
             f"OOM installer shared lock path changed during acquisition for {lock_path}; "
@@ -413,9 +499,18 @@ try:
         raise SystemExit(1)
     env = os.environ.copy()
     env.pop("HAPAX_ROOT_REQUIRED_LOCK_HELD", None)
+    stable_root = f"/proc/{os.getpid()}/fd/{parent_fd}"
+    env["HAPAX_ROOT_REQUIRED_STATE_ROOT"] = stable_root
+    env["HAPAX_ROOT_REQUIRED_LOCK_FILE"] = lock_path
     env["HAPAX_ROOT_REQUIRED_LOCK_FD"] = str(fd)
+    env["HAPAX_ROOT_REQUIRED_STATE_FD"] = str(parent_fd)
+    env["HAPAX_ROOT_REQUIRED_GENERATION_GUARD_FD"] = str(guard.fileno())
+    env["HAPAX_ROOT_REQUIRED_STATE_LEXICAL_ROOT"] = lexical_root
+    env["HAPAX_ROOT_REQUIRED_LOCK_LEXICAL_PATH"] = lock_path
     executable = os.path.abspath(script)
     os.set_inheritable(fd, True)
+    os.set_inheritable(parent_fd, True)
+    os.set_inheritable(guard.fileno(), True)
     os.execve(executable, [executable, *args], env)
 except OSError as exc:
     print(
@@ -427,6 +522,7 @@ except OSError as exc:
 finally:
     os.close(fd)
     os.close(parent_fd)
+    guard.close()
 PY
 }
 
@@ -700,7 +796,7 @@ PY
 }
 
 migrate_legacy_root_required_state() {
-    local label legacy receipt temp receipt_sha
+    local label legacy receipt desired temp receipt_sha
     legacy="$ROOT_REQUIRED_DEFER_ROOT/current-source"
     if [ ! -e "$ROOT_REQUIRED_INSTALLED_SOURCE_ROOT" ] && [ -d "$legacy" ]; then
         mkdir -p "$(dirname "$ROOT_REQUIRED_INSTALLED_SOURCE_ROOT")" || return 1
@@ -713,17 +809,22 @@ migrate_legacy_root_required_state() {
     for label in oom-containment apcupsd-power-alerts; do
         legacy="$ROOT_REQUIRED_DEFER_ROOT/installed-receipts/$label.sha"
         receipt="$ROOT_REQUIRED_INSTALLED_RECEIPT_ROOT/$label.sha"
-        if [ ! -f "$receipt" ] && [ "$legacy" != "$receipt" ] && [ -f "$legacy" ]; then
+        if [ -e "$receipt" ] || [ -L "$receipt" ]; then
+            read_safe_root_required_sha_receipt "$receipt" installed >/dev/null || return 1
+        elif [ "$legacy" != "$receipt" ] && { [ -e "$legacy" ] || [ -L "$legacy" ]; }; then
             receipt_sha="$(read_safe_root_required_sha_receipt "$legacy" legacy-installed)" || return 1
             write_root_required_sha_receipt \
                 "$receipt" "$receipt_sha" || return 1
             echo "migrated $label installed-package receipt to durable state"
         fi
         receipt="$ROOT_REQUIRED_INSTALLED_RECEIPT_ROOT/$label.sha"
-        if [ ! -f "$ROOT_REQUIRED_DESIRED_RECEIPT_ROOT/$label.sha" ] && [ -f "$receipt" ]; then
+        desired="$ROOT_REQUIRED_DESIRED_RECEIPT_ROOT/$label.sha"
+        if [ -e "$desired" ] || [ -L "$desired" ]; then
+            read_safe_root_required_sha_receipt "$desired" desired >/dev/null || return 1
+        elif [ -e "$receipt" ] || [ -L "$receipt" ]; then
             receipt_sha="$(read_safe_root_required_sha_receipt "$receipt" installed)" || return 1
             write_root_required_sha_receipt \
-                "$ROOT_REQUIRED_DESIRED_RECEIPT_ROOT/$label.sha" "$receipt_sha" || return 1
+                "$desired" "$receipt_sha" || return 1
             echo "initialized $label desired-package receipt from installed state"
         fi
     done
@@ -748,7 +849,9 @@ package_commits_equivalent() {
 
 validate_candidate_against_receipt() {
     local receipt_kind="$1" receipt_path="$2" receipt_sha
-    [ -f "$receipt_path" ] || return 0
+    if [ ! -e "$receipt_path" ] && [ ! -L "$receipt_path" ]; then
+        return 0
+    fi
     receipt_sha="$(read_safe_root_required_sha_receipt "$receipt_path" "$receipt_kind")" || return 1
     [ "$receipt_sha" != "$ROOT_REQUIRED_PACKAGE_SHA" ] || return 0
     if ! git -C "$ROOT_REQUIRED_GIT_REPO" cat-file -e "$receipt_sha^{commit}" 2>/dev/null; then
@@ -868,7 +971,9 @@ PY
 
 validate_no_unhandled_package_removals() {
     local installed_sha rel
-    [ -f "$ROOT_REQUIRED_RECEIPT" ] || return 0
+    if [ ! -e "$ROOT_REQUIRED_RECEIPT" ] && [ ! -L "$ROOT_REQUIRED_RECEIPT" ]; then
+        return 0
+    fi
     installed_sha="$(read_safe_root_required_sha_receipt "$ROOT_REQUIRED_RECEIPT" installed)" \
         || return 1
     if ! git -C "$ROOT_REQUIRED_GIT_REPO" cat-file -e "$installed_sha:$package_manifest_source" 2>/dev/null; then
@@ -1040,19 +1145,22 @@ load_authenticated_sealed_sources() {
     local raw="$ROOT_REQUIRED_SEALED_SOURCE_FDS" index
     local -a source_fds=()
     if [ "$AUTHENTICATED_SEALED_SOURCE" -eq 0 ]; then
-        if [ -n "$raw" ] || [ -n "$ROOT_REQUIRED_LEGACY_FINALIZE_GATE" ]; then
-            echo "refusing sealed-source or retired finalizer descriptors without the authenticated helper protocol flag; next action: remove helper-owned descriptor variables and regenerate the live command with hapax-post-merge-deploy" >&2
+        if [ -n "$raw" ] || [ -n "$ROOT_REQUIRED_LEGACY_FINALIZE_GATE" ] \
+            || [ -n "$RUNTIME_AUTHORITY_TASK_SHA256" ] \
+            || [ -n "$LOCAL_JUDGE_CAP_RECEIPT_SHA256" ]; then
+            echo "refusing sealed-source, authority-snapshot, or retired finalizer descriptors without the authenticated helper protocol flag; next action: remove helper-owned descriptor variables and regenerate the live command with hapax-post-merge-deploy" >&2
             return 1
         fi
         return 0
     fi
-    if [ "$INSTALL" -ne 1 ] || [ -z "$raw" ] || [ -z "$RUNTIME_AUTHORITY_TASK" ] \
-        || ! [[ "$ROOT_REQUIRED_PACKAGE_SHA" =~ ^[0-9a-f]{40}$ ]]; then
-        echo "authenticated sealed-source mode requires --install, an exact 40-hex package SHA, helper-owned source descriptors, and HAPAX_RUNTIME_AUTHORITY_TASK; next action: regenerate the live command with hapax-post-merge-deploy" >&2
-        return 1
-    fi
     if [ -n "$ROOT_REQUIRED_LEGACY_FINALIZE_GATE" ]; then
         echo "refusing the retired caller-supplied finalizer protocol; next action: remove HAPAX_ROOT_REQUIRED_FINALIZE_GATE and regenerate the live command with hapax-post-merge-deploy" >&2
+        return 1
+    fi
+    if [ "$INSTALL" -ne 1 ] || [ -z "$raw" ] || [ -z "$RUNTIME_AUTHORITY_TASK" ] \
+        || ! [[ "$ROOT_REQUIRED_PACKAGE_SHA" =~ ^[0-9a-f]{40}$ ]] \
+        || ! [[ "$RUNTIME_AUTHORITY_TASK_SHA256" =~ ^[0-9a-f]{64}$ ]]; then
+        echo "authenticated sealed-source mode requires --install, an exact 40-hex package SHA, helper-owned source descriptors, HAPAX_RUNTIME_AUTHORITY_TASK, and its helper-bound SHA-256 snapshot; next action: regenerate the live command with hapax-post-merge-deploy" >&2
         return 1
     fi
     IFS=: read -r -a source_fds <<< "$raw"
@@ -1169,12 +1277,17 @@ run_authenticated_authority_gate() {
         PYTHONNOUSERSITE=1 \
         PYTHONSAFEPATH=1 \
         /usr/bin/bash --noprofile --norc -p "$verifier" \
-        --verify-runtime-authority-for-release \
-        "$ROOT_REQUIRED_PACKAGE_SHA" "$RUNTIME_AUTHORITY_TASK" "${scopes[@]}" || {
+        --verify-runtime-authority-snapshot-for-release \
+        "$ROOT_REQUIRED_PACKAGE_SHA" "$RUNTIME_AUTHORITY_TASK" \
+        "$RUNTIME_AUTHORITY_TASK_SHA256" "${scopes[@]}" || {
         echo "authenticated OOM runtime-authority recheck rejected; no further effect or receipt advancement is permitted; next action: restore the canonical runtime-authorized task and regenerate the live command with hapax-post-merge-deploy" >&2
         return 1
     }
     if [ "$cap_phase" != authority-only ] && [ "$HOST_PROFILE" = appendix ]; then
+        if ! [[ "$LOCAL_JUDGE_CAP_RECEIPT_SHA256" =~ ^[0-9a-f]{64}$ ]]; then
+            echo "authenticated OOM local-judge cap snapshot is absent or malformed; next action: regenerate the live command with hapax-post-merge-deploy" >&2
+            return 1
+        fi
         /usr/bin/env -i \
             HOME="$TARGET_HOME" \
             PATH=/usr/local/sbin:/usr/local/bin:/usr/bin:/bin \
@@ -1186,8 +1299,18 @@ run_authenticated_authority_gate() {
             GIT_OPTIONAL_LOCKS=0 \
             PYTHONNOUSERSITE=1 \
             PYTHONSAFEPATH=1 \
+            HAPAX_ROOT_REQUIRED_STATE_ROOT="$ROOT_REQUIRED_STATE_ROOT" \
+            HAPAX_ROOT_REQUIRED_LOCK_FILE="$ROOT_REQUIRED_LOCK_FILE" \
+            HAPAX_ROOT_REQUIRED_LOCK_FD="$HAPAX_ROOT_REQUIRED_LOCK_FD" \
+            HAPAX_ROOT_REQUIRED_STATE_FD="$HAPAX_ROOT_REQUIRED_STATE_FD" \
+            HAPAX_ROOT_REQUIRED_GENERATION_GUARD_FD="$HAPAX_ROOT_REQUIRED_GENERATION_GUARD_FD" \
+            HAPAX_ROOT_REQUIRED_STATE_LEXICAL_ROOT="$HAPAX_ROOT_REQUIRED_STATE_LEXICAL_ROOT" \
+            HAPAX_ROOT_REQUIRED_LOCK_LEXICAL_PATH="$HAPAX_ROOT_REQUIRED_LOCK_LEXICAL_PATH" \
+            HAPAX_ROOT_REQUIRED_LOCK_MODE=exclusive \
             /usr/bin/bash --noprofile --norc -p "$verifier" \
-            --verify-local-judge-cap-receipt "$ROOT_REQUIRED_PACKAGE_SHA" "$cap_phase" || {
+            --verify-local-judge-cap-receipt-snapshot \
+            "$ROOT_REQUIRED_PACKAGE_SHA" "$cap_phase" \
+            "$LOCAL_JUDGE_CAP_RECEIPT_SHA256" || {
             echo "authenticated OOM local-judge cap recheck rejected at phase $cap_phase; no further effect or receipt advancement is permitted; next action: rerun the governed cap canary and regenerate the live command with hapax-post-merge-deploy" >&2
             return 1
         }
@@ -3585,6 +3708,11 @@ verify_user_process_oom_floor() {
 
 load_authenticated_sealed_sources
 require_authenticated_install_authority
+if [ "$INSTALL" -eq 1 ]; then
+    refuse_whole_script_root
+    reexec_with_safe_root_required_lock
+    acquire_root_required_lock
+fi
 if [ "$INSTALL" -eq 1 ] && [ "$AUTHENTICATED_SEALED_SOURCE" -eq 1 ]; then
     bind_authenticated_release_root
     validate_package_source_matches_commit
@@ -3595,9 +3723,6 @@ fi
 validate_docker_command
 
 if [ "$INSTALL" -eq 1 ]; then
-    refuse_whole_script_root
-    reexec_with_safe_root_required_lock
-    acquire_root_required_lock
     validate_root_required_package_order
     if [ "$SKIP_SUPERSEDED_INSTALL" -eq 1 ]; then
         run_authenticated_authority_gate authority-only

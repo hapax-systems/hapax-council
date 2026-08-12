@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import ctypes
 import fcntl
+import hashlib
 import importlib.machinery
 import importlib.util
 import os
@@ -83,6 +84,10 @@ def _git(repo: Path, *args: str) -> str:
     return subprocess.run(
         ["git", *args], cwd=repo, check=True, text=True, capture_output=True
     ).stdout.strip()
+
+
+def _sha256(path: Path) -> str:
+    return hashlib.sha256(path.read_bytes()).hexdigest()
 
 
 def _production_effects(relative_path: Path) -> set[str]:
@@ -330,20 +335,27 @@ def _fixture(tmp_path: Path, *, package: str = PACKAGE) -> DeferredFixture:
         '  touch "$HAPAX_OOM_DEFERRED_TEST_READY"\n'
         '  while [ ! -e "$HAPAX_OOM_DEFERRED_TEST_GO" ]; do sleep 0.01; done\n'
         "fi\n"
+        'if [ -n "${HAPAX_OOM_DEFERRED_TEST_STATE_WITNESS:-}" ]; then\n'
+        "  printf '%s\\n' \"$HAPAX_ROOT_REQUIRED_PACKAGE_SHA\" > "
+        '"$HAPAX_ROOT_REQUIRED_STATE_ROOT/$HAPAX_OOM_DEFERRED_TEST_STATE_WITNESS"\n'
+        "fi\n"
         'if [ -n "${HAPAX_OOM_DEFERRED_TEST_REJECT_FINAL_AUTHORITY:-}" ]; then\n'
         '  touch "$HAPAX_OOM_DEFERRED_TEST_REJECT_FINAL_AUTHORITY"\n'
         "fi\n"
         '/usr/bin/env -i HOME="$HOME" PATH=/usr/bin:/bin LANG=C.UTF-8 LC_ALL=C.UTF-8 '
         '/usr/bin/bash --noprofile --norc -p "${sealed_sources[3]}" '
-        '--verify-runtime-authority-for-release "$HAPAX_ROOT_REQUIRED_PACKAGE_SHA" '
-        '"$HAPAX_RUNTIME_AUTHORITY_TASK" '
+        "--verify-runtime-authority-snapshot-for-release "
+        '"$HAPAX_ROOT_REQUIRED_PACKAGE_SHA" "$HAPAX_RUNTIME_AUTHORITY_TASK" '
+        '"$HAPAX_RUNTIME_AUTHORITY_TASK_SHA256" '
         f'"runtime:receipt:advance:{package}" "runtime:test:mutate:{package}"\n'
         'if [ "${HAPAX_OOM_DEFERRED_TEST_FINALIZE_MODE:-full}" != authority-only ] '
         '&& [ -f "$HAPAX_ROOT_REQUIRED_STATE_ROOT/local-judge-cap-canary/'
         '$HAPAX_ROOT_REQUIRED_PACKAGE_SHA.env" ]; then\n'
         '  /usr/bin/env -i HOME="$HOME" PATH=/usr/bin:/bin LANG=C.UTF-8 LC_ALL=C.UTF-8 '
         '/usr/bin/bash --noprofile --norc -p "${sealed_sources[3]}" '
-        '--verify-local-judge-cap-receipt "$HAPAX_ROOT_REQUIRED_PACKAGE_SHA" applied\n'
+        "--verify-local-judge-cap-receipt-snapshot "
+        '"$HAPAX_ROOT_REQUIRED_PACKAGE_SHA" applied '
+        '"$HAPAX_LOCAL_JUDGE_CAP_RECEIPT_SHA256"\n'
         "fi\n"
         f'cat "${{sealed_sources[4]}}" > {payload_marker}\n'
         f"printf '%s\\n' \"$HAPAX_ROOT_REQUIRED_PACKAGE_SHA\" > {installer_marker}\n"
@@ -356,16 +368,16 @@ def _fixture(tmp_path: Path, *, package: str = PACKAGE) -> DeferredFixture:
         "#!/usr/bin/bash\n"
         "set -euo pipefail\n"
         f"printf '%s\\n' \"$*\" >> {authority_calls}\n"
-        f'if [ "${{1:-}}" = --verify-runtime-authority-for-release ] && [ -e {authority_reject} ]; then\n'
+        f'if [ "${{1:-}}" = --verify-runtime-authority-snapshot-for-release ] && [ -e {authority_reject} ]; then\n'
         "  echo 'runtime authority test rejection' >&2\n"
         "  exit 2\n"
         "fi\n"
-        f'if [ "${{1:-}}" = --verify-local-judge-cap-receipt ] && '
+        f'if [ "${{1:-}}" = --verify-local-judge-cap-receipt-snapshot ] && '
         f'[ "${{3:-}}" = applied ] && [ -e {installed_cap_reject} ]; then\n'
         "  echo 'applied cap receipt test rejection' >&2\n"
         "  exit 2\n"
         "fi\n"
-        f'if [ "${{1:-}}" = --verify-local-judge-cap-receipt ] && [ -e {cap_reject} ]; then\n'
+        f'if [ "${{1:-}}" = --verify-local-judge-cap-receipt-snapshot ] && [ -e {cap_reject} ]; then\n'
         "  echo 'cap receipt test rejection' >&2\n"
         "  exit 2\n"
         "fi\n",
@@ -481,16 +493,83 @@ def test_authenticated_deferred_install_executes_git_materialized_installer(
     assert all(not Path(path).exists() for path in source_paths)
     assert "HAPAX_ROOT_REQUIRED_FINALIZE_GATE=" not in child_environment
     assert f"HAPAX_RUNTIME_AUTHORITY_TASK={fixture.runtime_task}" in child_environment
+    task_digest = _sha256(fixture.runtime_task)
+    assert f"HAPAX_RUNTIME_AUTHORITY_TASK_SHA256={task_digest}" in child_environment
     assert fixture.payload_marker.read_text(encoding="utf-8") == "authenticated Git payload\n"
     assert f"completed authenticated package={fixture.package} sha={fixture.sha}" in result.stdout
     authority_calls = fixture.authority_calls.read_text(encoding="utf-8").splitlines()
     authority_call = (
-        f"--verify-runtime-authority-for-release {fixture.sha} {fixture.runtime_task} "
+        f"--verify-runtime-authority-snapshot-for-release {fixture.sha} "
+        f"{fixture.runtime_task} {task_digest} "
         f"runtime:receipt:advance:{fixture.package} runtime:test:mutate:{fixture.package}"
     )
     assert authority_calls == [authority_call, authority_call, authority_call]
     execution_root = fixture.state_root / ".deferred-install-exec"
     assert not execution_root.exists()
+
+
+def test_deferred_helper_generation_guard_survives_state_root_replacement(
+    tmp_path: Path,
+) -> None:
+    fixture = _fixture(tmp_path)
+    ready1, go1 = tmp_path / "ready1", tmp_path / "go1"
+    ready2, go2 = tmp_path / "ready2", tmp_path / "go2"
+    env1 = {
+        **fixture.env,
+        "HAPAX_OOM_DEFERRED_TEST_READY": str(ready1),
+        "HAPAX_OOM_DEFERRED_TEST_GO": str(go1),
+        "HAPAX_OOM_DEFERRED_TEST_STATE_WITNESS": "generation-one",
+    }
+    first = subprocess.Popen(
+        fixture.argv(),
+        text=True,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        env=env1,
+    )
+    deadline = time.monotonic() + 5
+    while not ready1.exists() and first.poll() is None and time.monotonic() < deadline:
+        time.sleep(0.01)
+    assert ready1.exists(), first.communicate(timeout=1)
+
+    generation_a = tmp_path / "state-generation-a"
+    fixture.state_root.rename(generation_a)
+    fixture.receipt.parent.mkdir(parents=True)
+    shutil.copy2(
+        generation_a / "desired-receipts" / fixture.receipt.name,
+        fixture.receipt,
+    )
+    env2 = {
+        **fixture.env,
+        "HAPAX_OOM_DEFERRED_TEST_READY": str(ready2),
+        "HAPAX_OOM_DEFERRED_TEST_GO": str(go2),
+        "HAPAX_OOM_DEFERRED_TEST_STATE_WITNESS": "generation-two",
+    }
+    second = subprocess.Popen(
+        fixture.argv(),
+        text=True,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        env=env2,
+    )
+    time.sleep(0.25)
+    assert not ready2.exists()
+
+    go1.touch()
+    stdout1, stderr1 = first.communicate(timeout=5)
+    assert first.returncode == 0, (stdout1, stderr1)
+    assert (generation_a / "generation-one").read_text(encoding="utf-8") == (f"{fixture.sha}\n")
+    assert not (fixture.state_root / "generation-one").exists()
+    deadline = time.monotonic() + 5
+    while not ready2.exists() and second.poll() is None and time.monotonic() < deadline:
+        time.sleep(0.01)
+    assert ready2.exists(), second.communicate(timeout=1)
+    go2.touch()
+    stdout2, stderr2 = second.communicate(timeout=5)
+    assert second.returncode == 0, (stdout2, stderr2)
+    assert (fixture.state_root / "generation-two").read_text(encoding="utf-8") == (
+        f"{fixture.sha}\n"
+    )
 
 
 def test_podium_oom_install_keeps_runtime_authority_without_appendix_cap_gate(
@@ -558,7 +637,10 @@ def test_runtime_authority_rejection_stops_before_sudo_or_installer(tmp_path: Pa
     result = fixture.run()
 
     assert result.returncode == 1
-    assert "exact runtime gate --verify-runtime-authority-for-release rejected" in result.stderr
+    assert (
+        "exact runtime gate --verify-runtime-authority-snapshot-for-release rejected"
+        in result.stderr
+    )
     assert "runtime authority test rejection" in result.stderr
     assert not fixture.sudo_calls.exists()
     assert not fixture.installer_marker.exists()
@@ -591,11 +673,12 @@ def test_appendix_oom_install_revalidates_cap_receipt_before_mutation(
     result = fixture.run()
 
     assert result.returncode == 0, result.stderr
+    cap_digest = _sha256(cap_receipt)
     calls = fixture.authority_calls.read_text(encoding="utf-8").splitlines()
     assert [line for line in calls if line.startswith("--verify-local-judge-cap-receipt")] == [
-        f"--verify-local-judge-cap-receipt {fixture.sha} candidate",
-        f"--verify-local-judge-cap-receipt {fixture.sha} candidate",
-        f"--verify-local-judge-cap-receipt {fixture.sha} applied",
+        f"--verify-local-judge-cap-receipt-snapshot {fixture.sha} candidate {cap_digest}",
+        f"--verify-local-judge-cap-receipt-snapshot {fixture.sha} candidate {cap_digest}",
+        f"--verify-local-judge-cap-receipt-snapshot {fixture.sha} applied {cap_digest}",
     ]
 
 
@@ -641,7 +724,7 @@ def test_superseded_authority_only_finalization_rejects_revoked_task_before_comp
             [
                 call
                 for call in authority_calls
-                if call.startswith("--verify-runtime-authority-for-release")
+                if call.startswith("--verify-runtime-authority-snapshot-for-release")
             ]
         )
         == 3
@@ -668,9 +751,10 @@ def test_superseded_authority_only_finalization_skips_obsolete_applied_cap(
         for call in fixture.authority_calls.read_text(encoding="utf-8").splitlines()
         if call.startswith("--verify-local-judge-cap-receipt")
     ]
+    cap_digest = _sha256(cap_receipt)
     assert cap_calls == [
-        f"--verify-local-judge-cap-receipt {fixture.sha} candidate",
-        f"--verify-local-judge-cap-receipt {fixture.sha} candidate",
+        f"--verify-local-judge-cap-receipt-snapshot {fixture.sha} candidate {cap_digest}",
+        f"--verify-local-judge-cap-receipt-snapshot {fixture.sha} candidate {cap_digest}",
     ]
 
 

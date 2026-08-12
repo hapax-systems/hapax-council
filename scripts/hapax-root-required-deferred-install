@@ -4,7 +4,9 @@
 from __future__ import annotations
 
 import argparse
+import contextlib
 import ctypes
+import errno
 import fcntl
 import hashlib
 import os
@@ -15,7 +17,8 @@ import socket
 import stat
 import subprocess
 import sys
-from dataclasses import dataclass
+import time
+from dataclasses import dataclass, replace
 from pathlib import Path, PurePosixPath
 
 SAFE_PATH = "/usr/local/sbin:/usr/local/bin:/usr/bin:/bin"
@@ -82,6 +85,15 @@ class RuntimeEffectPolicy:
     scopes: tuple[str, ...]
 
 
+@dataclass(frozen=True)
+class LockedState:
+    lexical_root: Path
+    lexical_lock: Path
+    state_fd: int
+    lock_fd: int
+    guard_fd: int
+
+
 OOM_PACKAGE = Package(
     label="oom-containment",
     manifest="config/root-required/oom-containment.files",
@@ -97,6 +109,104 @@ APCUPSD_PACKAGE = Package(
     cap_host=None,
 )
 PACKAGES = {package.label: package for package in (OOM_PACKAGE, APCUPSD_PACKAGE)}
+
+
+def _state_guard_address(state_root: Path) -> bytes:
+    lexical = os.path.abspath(os.path.normpath(state_root))
+    material = f"hapax-root-required-state-v1\0{os.geteuid()}\0{lexical}".encode()
+    digest = hashlib.sha256(material).hexdigest().encode()
+    return b"\0hapax-root-required-v1-" + digest[:40]
+
+
+@contextlib.contextmanager
+def _locked_state(paths: InstallPaths):
+    lexical_root = Path(os.path.abspath(os.path.normpath(paths.state_root)))
+    lexical_lock = lexical_root / ".lock"
+    guard = socket.socket(
+        socket.AF_UNIX,
+        socket.SOCK_STREAM | getattr(socket, "SOCK_CLOEXEC", 0),
+    )
+    state_fd = -1
+    lock_fd = -1
+    try:
+        while True:
+            try:
+                guard.bind(_state_guard_address(lexical_root))
+                break
+            except OSError as exc:
+                if exc.errno != errno.EADDRINUSE:
+                    raise _error(f"cannot acquire root-required generation guard: {exc}") from exc
+                time.sleep(0.05)
+        state_fd = os.open(
+            lexical_root,
+            os.O_RDONLY | os.O_CLOEXEC | os.O_DIRECTORY | os.O_NOFOLLOW,
+        )
+        state_inode = os.fstat(state_fd)
+        published_state = os.stat(lexical_root, follow_symlinks=False)
+        if (
+            not stat.S_ISDIR(state_inode.st_mode)
+            or state_inode.st_uid != os.getuid()
+            or state_inode.st_mode & 0o022
+            or (state_inode.st_dev, state_inode.st_ino)
+            != (published_state.st_dev, published_state.st_ino)
+        ):
+            raise _error(
+                "root-required state root must remain a caller-owned, non-group-writable "
+                "physical directory"
+            )
+        old_umask = os.umask(0o077)
+        try:
+            lock_fd = os.open(
+                ".lock",
+                os.O_RDWR | os.O_CREAT | os.O_CLOEXEC | os.O_NOFOLLOW,
+                0o600,
+                dir_fd=state_fd,
+            )
+        finally:
+            os.umask(old_umask)
+        lock_inode = os.fstat(lock_fd)
+        if (
+            not stat.S_ISREG(lock_inode.st_mode)
+            or lock_inode.st_uid != os.getuid()
+            or lock_inode.st_nlink != 1
+            or lock_inode.st_mode & 0o022
+        ):
+            raise _error(
+                "root-required lock must be a caller-owned, single-link, non-group-writable "
+                "regular file"
+            )
+        os.fchmod(lock_fd, 0o600)
+        fcntl.flock(lock_fd, fcntl.LOCK_EX)
+        locked = os.fstat(lock_fd)
+        published_lock = os.stat(".lock", dir_fd=state_fd, follow_symlinks=False)
+        published_state = os.stat(lexical_root, follow_symlinks=False)
+        if (
+            (locked.st_dev, locked.st_ino) != (published_lock.st_dev, published_lock.st_ino)
+            or stat.S_IMODE(locked.st_mode) != 0o600
+            or (state_inode.st_dev, state_inode.st_ino)
+            != (published_state.st_dev, published_state.st_ino)
+        ):
+            raise _error("root-required state or lock path changed during acquisition")
+        stable_root = Path(f"/proc/{os.getpid()}/fd/{state_fd}")
+        locked_paths = replace(paths, state_root=stable_root)
+        yield (
+            locked_paths,
+            LockedState(
+                lexical_root=lexical_root,
+                lexical_lock=lexical_lock,
+                state_fd=state_fd,
+                lock_fd=lock_fd,
+                guard_fd=guard.fileno(),
+            ),
+        )
+    except OSError as exc:
+        raise _error(f"cannot lock the physical root-required state generation: {exc}") from exc
+    finally:
+        if lock_fd >= 0:
+            os.close(lock_fd)
+        if state_fd >= 0:
+            os.close(state_fd)
+        guard.close()
 
 
 def _error(message: str) -> DeferredInstallError:
@@ -480,7 +590,11 @@ def _runtime_hostname(paths: InstallPaths) -> str:
 
 
 def _run_exact_authority_verifier(
-    paths: InstallPaths, repo: Path, sha: str, arguments: list[str]
+    paths: InstallPaths,
+    state_lock: LockedState,
+    repo: Path,
+    sha: str,
+    arguments: list[str],
 ) -> None:
     if _git_mode(repo, sha, AUTHORITY_VERIFIER_REL) != "100755":
         raise _error("exact runtime-authority verifier Git mode is not executable")
@@ -490,12 +604,15 @@ def _run_exact_authority_verifier(
         mode=0o755,
     )
     verifier = f"/proc/{os.getpid()}/fd/{fd}"
+    env = _safe_subprocess_env(paths.home)
+    env.update(_state_lock_env(paths, state_lock))
     try:
         result = subprocess.run(
             [BASH, verifier, *arguments],
             capture_output=True,
             check=False,
-            env=_safe_subprocess_env(paths.home),
+            env=env,
+            pass_fds=(state_lock.state_fd, state_lock.lock_fd, state_lock.guard_fd),
             preexec_fn=_parent_death_preexec(os.getpid()),
         )
     except OSError as exc:
@@ -514,6 +631,7 @@ def _run_exact_authority_verifier(
 
 def _validate_runtime_gates(
     paths: InstallPaths,
+    state_lock: LockedState,
     repo: Path,
     sha: str,
     package: Package,
@@ -527,12 +645,14 @@ def _validate_runtime_gates(
     task_digest = _runtime_task_digest(runtime_task)
     _run_exact_authority_verifier(
         paths,
+        state_lock,
         repo,
         sha,
         [
-            "--verify-runtime-authority-for-release",
+            "--verify-runtime-authority-snapshot-for-release",
             sha,
             str(runtime_task),
+            task_digest,
             *scopes,
         ],
     )
@@ -542,9 +662,15 @@ def _validate_runtime_gates(
         cap_digest = _cap_receipt_digest(paths, sha)
         _run_exact_authority_verifier(
             paths,
+            state_lock,
             repo,
             sha,
-            ["--verify-local-judge-cap-receipt", sha, cap_phase],
+            [
+                "--verify-local-judge-cap-receipt-snapshot",
+                sha,
+                cap_phase,
+                cap_digest,
+            ],
         )
     snapshot = RuntimeGateSnapshot(
         task_sha256=_runtime_task_digest(runtime_task),
@@ -575,6 +701,23 @@ def _safe_subprocess_env(home: Path) -> dict[str, str]:
         "PATH": SAFE_PATH,
         "PYTHONNOUSERSITE": "1",
         "PYTHONSAFEPATH": "1",
+    }
+
+
+def _state_lock_env(paths: InstallPaths, state_lock: LockedState) -> dict[str, str]:
+    stable_root = str(paths.state_root)
+    return {
+        "HAPAX_ROOT_REQUIRED_STATE_ROOT": stable_root,
+        "HAPAX_ROOT_REQUIRED_INSTALLED_SOURCE_ROOT": f"{stable_root}/current-source",
+        "HAPAX_ROOT_REQUIRED_INSTALLED_RECEIPT_ROOT": f"{stable_root}/installed-receipts",
+        "HAPAX_ROOT_REQUIRED_DESIRED_RECEIPT_ROOT": f"{stable_root}/desired-receipts",
+        "HAPAX_ROOT_REQUIRED_LOCK_FILE": str(state_lock.lexical_lock),
+        "HAPAX_ROOT_REQUIRED_LOCK_FD": str(state_lock.lock_fd),
+        "HAPAX_ROOT_REQUIRED_STATE_FD": str(state_lock.state_fd),
+        "HAPAX_ROOT_REQUIRED_GENERATION_GUARD_FD": str(state_lock.guard_fd),
+        "HAPAX_ROOT_REQUIRED_STATE_LEXICAL_ROOT": str(state_lock.lexical_root),
+        "HAPAX_ROOT_REQUIRED_LOCK_LEXICAL_PATH": str(state_lock.lexical_lock),
+        "HAPAX_ROOT_REQUIRED_LOCK_MODE": "exclusive",
     }
 
 
@@ -756,7 +899,14 @@ def _run_after_sudo_hook(paths: InstallPaths) -> None:
         raise _error(f"after-sudo test hook failed with rc={result.returncode}")
 
 
-def _child_env(paths: InstallPaths, repo: Path, sha: str, stage: Path) -> dict[str, str]:
+def _child_env(
+    paths: InstallPaths,
+    repo: Path,
+    sha: str,
+    stage: Path,
+    runtime_gates: RuntimeGateSnapshot,
+    state_lock: LockedState,
+) -> dict[str, str]:
     account = pwd.getpwuid(os.getuid())
     env = _safe_subprocess_env(paths.home)
     env.update(
@@ -773,8 +923,12 @@ def _child_env(paths: InstallPaths, repo: Path, sha: str, stage: Path) -> dict[s
             "HAPAX_ROOT_REQUIRED_GIT_REPO": str(repo),
             "HAPAX_ROOT_REQUIRED_PACKAGE_SHA": sha,
             "HAPAX_ROOT_REQUIRED_DRAIN_DIR": str(stage),
+            "HAPAX_RUNTIME_AUTHORITY_TASK_SHA256": runtime_gates.task_sha256,
         }
     )
+    env.update(_state_lock_env(paths, state_lock))
+    if runtime_gates.cap_receipt_sha256 is not None:
+        env["HAPAX_LOCAL_JUDGE_CAP_RECEIPT_SHA256"] = runtime_gates.cap_receipt_sha256
     runtime = Path(f"/run/user/{os.getuid()}")
     if runtime.is_dir():
         env["XDG_RUNTIME_DIR"] = str(runtime)
@@ -854,11 +1008,13 @@ def _execute_installer(
     stage: Path,
     package: Package,
     runtime_authority_task: Path,
+    runtime_gates: RuntimeGateSnapshot,
+    state_lock: LockedState,
 ) -> int:
     installer_rel = PurePosixPath(package.installer)
     if _git_mode(repo, sha, installer_rel) != "100755":
         raise _error("root-required installer Git mode is not executable")
-    env = _child_env(paths, repo, sha, stage)
+    env = _child_env(paths, repo, sha, stage, runtime_gates, state_lock)
     sources = _sealed_git_sources(repo, sha, package)
     source_paths = {rel: f"/proc/{os.getpid()}/fd/{fd}" for rel, fd in sources}
     installer = source_paths.get(installer_rel)
@@ -890,6 +1046,7 @@ def _execute_installer(
                 ],
                 check=False,
                 env=env,
+                pass_fds=(state_lock.state_fd, state_lock.lock_fd, state_lock.guard_fd),
                 preexec_fn=_parent_death_preexec(os.getpid()),
             )
         except OSError as exc:
@@ -909,16 +1066,15 @@ def _execute_installer(
     return result.returncode
 
 
-def install(
+def _install_locked(
     package: Package,
     *,
+    paths: InstallPaths,
+    state_lock: LockedState,
     expected_sha: str,
     activation_release: Path,
     runtime_authority_task: Path,
 ) -> int:
-    paths = _install_paths()
-    _validate_sudo(paths.sudo, test_mode=paths.test_mode)
-    _validate_owned_directory(paths.state_root, label="root-required state root")
     desired_receipts = paths.state_root / "desired-receipts"
     _validate_owned_directory(desired_receipts, label="desired-receipt directory")
     receipt = desired_receipts / f"{package.label}.sha"
@@ -938,7 +1094,14 @@ def install(
         )
     _validate_commit(repo, sha)
     _validate_stage(paths, repo, sha, package)
-    runtime_gates = _validate_runtime_gates(paths, repo, sha, package, runtime_authority_task)
+    runtime_gates = _validate_runtime_gates(
+        paths,
+        state_lock,
+        repo,
+        sha,
+        package,
+        runtime_authority_task,
+    )
     sudo_result = subprocess.run(
         [str(paths.sudo), "-v"], check=False, env=_safe_subprocess_env(paths.home)
     )
@@ -949,15 +1112,25 @@ def install(
         raise _error("desired package receipt changed during sudo warmup")
     _validate_commit(repo, sha)
     stage = _validate_stage(paths, repo, sha, package)
-    _validate_runtime_gates(
+    validated_runtime_gates = _validate_runtime_gates(
         paths,
+        state_lock,
         repo,
         sha,
         package,
         runtime_authority_task,
         expected=runtime_gates,
     )
-    result = _execute_installer(paths, repo, sha, stage, package, runtime_authority_task)
+    result = _execute_installer(
+        paths,
+        repo,
+        sha,
+        stage,
+        package,
+        runtime_authority_task,
+        validated_runtime_gates,
+        state_lock,
+    )
     if result != 0:
         return result
     print(
@@ -966,6 +1139,27 @@ def install(
         flush=True,
     )
     return 0
+
+
+def install(
+    package: Package,
+    *,
+    expected_sha: str,
+    activation_release: Path,
+    runtime_authority_task: Path,
+) -> int:
+    paths = _install_paths()
+    _validate_sudo(paths.sudo, test_mode=paths.test_mode)
+    _validate_owned_directory(paths.state_root, label="root-required state root")
+    with _locked_state(paths) as (locked_paths, state_lock):
+        return _install_locked(
+            package,
+            paths=locked_paths,
+            state_lock=state_lock,
+            expected_sha=expected_sha,
+            activation_release=activation_release,
+            runtime_authority_task=runtime_authority_task,
+        )
 
 
 def main(argv: list[str] | None = None) -> int:

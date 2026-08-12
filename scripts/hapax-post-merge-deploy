@@ -121,10 +121,12 @@ CHECK_SYMLINK_DRIFT=0
 VERIFY_RUNTIME_AUTHORITY=0
 RUNTIME_AUTHORITY_EXPECTED_SHA=""
 RUNTIME_AUTHORITY_TASK=""
+RUNTIME_AUTHORITY_TASK_SHA256=""
 RUNTIME_AUTHORITY_SCOPES=()
 VERIFY_LOCAL_JUDGE_CAP_RECEIPT=0
 LOCAL_JUDGE_CAP_SHA=""
 LOCAL_JUDGE_CAP_PHASE=""
+LOCAL_JUDGE_CAP_RECEIPT_SHA256=""
 RUN_LOCAL_JUDGE_CAP_WORKLOAD=0
 LOCAL_JUDGE_CAP_ENDPOINT=""
 LOCAL_JUDGE_CAP_RESULTS=""
@@ -151,7 +153,18 @@ if [ "${1:-}" = "--since" ]; then
     SINCE="${2:?commit SHA required after --since}"
     shift 2
 fi
-if [ "${1:-}" = "--verify-runtime-authority-for-release" ]; then
+if [ "${1:-}" = "--verify-runtime-authority-snapshot-for-release" ]; then
+    if [ "$#" -lt 5 ] || ! [[ "$2" =~ ^[0-9a-f]{40}$ ]] \
+        || ! [[ "$4" =~ ^[0-9a-f]{64}$ ]]; then
+        echo "usage: hapax-post-merge-deploy --verify-runtime-authority-snapshot-for-release <40-hex-sha> <active-cc-task.md> <task-sha256> <mutation-scope-ref> [mutation-scope-ref ...]" >&2
+        exit 2
+    fi
+    VERIFY_RUNTIME_AUTHORITY=1
+    RUNTIME_AUTHORITY_EXPECTED_SHA="$2"
+    RUNTIME_AUTHORITY_TASK="$3"
+    RUNTIME_AUTHORITY_TASK_SHA256="$4"
+    RUNTIME_AUTHORITY_SCOPES=("${@:5}")
+elif [ "${1:-}" = "--verify-runtime-authority-for-release" ]; then
     if [ "$#" -lt 4 ] || ! [[ "$2" =~ ^[0-9a-f]{40}$ ]]; then
         echo "usage: hapax-post-merge-deploy --verify-runtime-authority-for-release <40-hex-sha> <active-cc-task.md> <mutation-scope-ref> [mutation-scope-ref ...]" >&2
         exit 2
@@ -168,9 +181,25 @@ elif [ "${1:-}" = "--verify-runtime-authority" ]; then
     VERIFY_RUNTIME_AUTHORITY=1
     RUNTIME_AUTHORITY_TASK="$2"
     RUNTIME_AUTHORITY_SCOPES=("${@:3}")
+elif [ "${1:-}" = "--verify-local-judge-cap-receipt-snapshot" ]; then
+    if [ "$#" -ne 4 ] || ! [[ "$2" =~ ^[0-9a-f]{40}$ ]] \
+        || ! [[ "$3" =~ ^(candidate|applied|installed)$ ]] \
+        || ! [[ "$4" =~ ^[0-9a-f]{64}$ ]]; then
+        echo "usage: hapax-post-merge-deploy --verify-local-judge-cap-receipt-snapshot <sha> <candidate|applied|installed> <cap-receipt-sha256>" >&2
+        exit 2
+    fi
+    VERIFY_LOCAL_JUDGE_CAP_RECEIPT=1
+    LOCAL_JUDGE_CAP_SHA="$2"
+    LOCAL_JUDGE_CAP_PHASE="$3"
+    LOCAL_JUDGE_CAP_RECEIPT_SHA256="$4"
 elif [ "${1:-}" = "--verify-local-judge-cap-receipt" ]; then
     if [ "$#" -ne 3 ]; then
         echo "usage: hapax-post-merge-deploy --verify-local-judge-cap-receipt <sha> <candidate|applied|installed>" >&2
+        exit 2
+    fi
+    if ! [[ "$2" =~ ^[0-9a-f]{40}$ ]] \
+        || ! [[ "$3" =~ ^(candidate|applied|installed)$ ]]; then
+        echo "hapax-post-merge-deploy: invalid local-judge cap receipt selector; next action: pass one exact 40-hex SHA and candidate, applied, or installed" >&2
         exit 2
     fi
     VERIFY_LOCAL_JUDGE_CAP_RECEIPT=1
@@ -254,6 +283,7 @@ ROOT_REQUIRED_INSTALLED_SOURCE_ROOT="${HAPAX_ROOT_REQUIRED_INSTALLED_SOURCE_ROOT
 ROOT_REQUIRED_INSTALLED_RECEIPT_ROOT="${HAPAX_ROOT_REQUIRED_INSTALLED_RECEIPT_ROOT:-$ROOT_REQUIRED_STATE_ROOT/installed-receipts}"
 ROOT_REQUIRED_DESIRED_RECEIPT_ROOT="${HAPAX_ROOT_REQUIRED_DESIRED_RECEIPT_ROOT:-$ROOT_REQUIRED_STATE_ROOT/desired-receipts}"
 ROOT_REQUIRED_LOCK_FILE="${HAPAX_ROOT_REQUIRED_LOCK_FILE:-$ROOT_REQUIRED_STATE_ROOT/.lock}"
+ROOT_REQUIRED_DESIRED_SUPERSEDED=0
 RECOVERY_BUNDLE_DEST="${HAPAX_RECOVERY_BUNDLE_DEST:-$HOME/.local/lib/hapax-recovery/council/current}"
 RECOVERY_BUNDLE_SOURCE_FILES=(
     scripts/hapax-p0-incident-intake
@@ -281,8 +311,9 @@ root_required_git() {
 }
 
 verify_runtime_authority() {
-    local expected_sha="$1" task="$2" account_home active_root activation_alias release_root repo owner_uid git_head
-    shift 2
+    local expected_sha="$1" task="$2" expected_task_sha256="$3"
+    local account_home active_root activation_alias release_root repo owner_uid git_head
+    shift 3
     local -a scopes=("$@")
     if [ "${#scopes[@]}" -eq 0 ]; then
         echo "hapax-post-merge-deploy: runtime authority scope set is empty; next action: pass every exact mutation-scope ref owned by the operation" >&2
@@ -342,7 +373,8 @@ verify_runtime_authority() {
         LC_ALL=C.UTF-8 \
         PYDANTIC_DISABLE_PLUGINS=__all__ \
         /usr/bin/python3 -I -S - \
-        "$repo" "$git_head" "$task" "$active_root" "${scopes[@]}" <<'RUNTIME_AUTHORITY_PY'
+        "$repo" "$git_head" "$task" "$active_root" "$expected_task_sha256" \
+        "${scopes[@]}" <<'RUNTIME_AUTHORITY_PY'
 from __future__ import annotations
 
 import base64
@@ -969,13 +1001,14 @@ UniqueKeyLoader.add_constructor(
 )
 
 
-if len(sys.argv) < 6:
+if len(sys.argv) < 7:
     refuse("validator argument contract is incomplete")
 repo = Path(sys.argv[1])
 git_head = sys.argv[2]
 task = Path(sys.argv[3])
 active_root = Path(sys.argv[4])
-scopes = sys.argv[5:]
+expected_task_sha256 = sys.argv[5]
+scopes = sys.argv[6:]
 if not scopes or len(scopes) != len(set(scopes)):
     refuse("mutation scope set is empty or contains duplicates")
 if any(re.fullmatch(r"runtime:[A-Za-z0-9_./@*:+-]+", scope) is None for scope in scopes):
@@ -984,50 +1017,91 @@ if not repo.is_absolute() or re.fullmatch(r"[0-9a-f]{40}", git_head) is None:
     refuse("canonical route-schema source selector is malformed")
 if not task.is_absolute() or task != active_root / task.name:
     refuse("task is not a canonical active task path")
+if expected_task_sha256 and re.fullmatch(r"[0-9a-f]{64}", expected_task_sha256) is None:
+    refuse("expected runtime authority task digest is malformed")
+active_fd = -1
+task_fd = -1
+
+
+def snapshot(inode: os.stat_result) -> tuple[int, ...]:
+    return (
+        inode.st_dev,
+        inode.st_ino,
+        inode.st_uid,
+        inode.st_gid,
+        inode.st_nlink,
+        stat.S_IMODE(inode.st_mode),
+        inode.st_size,
+        inode.st_mtime_ns,
+        inode.st_ctime_ns,
+    )
+
+
 try:
-    active_inode = active_root.lstat()
+    active_fd = os.open(
+        active_root,
+        os.O_RDONLY | os.O_CLOEXEC | os.O_DIRECTORY | os.O_NOFOLLOW,
+    )
+    active_inode = os.fstat(active_fd)
 except OSError as exc:
     refuse(f"canonical active task path is unavailable: {exc}")
-if not stat.S_ISDIR(active_inode.st_mode) or active_root.is_symlink():
-    refuse("canonical active task path root is not a real directory")
 try:
-    task_inode = task.lstat()
-except OSError as exc:
-    refuse(f"canonical active task path is unavailable: {exc}")
-if (
-    not stat.S_ISREG(task_inode.st_mode)
-    or task.is_symlink()
-    or task_inode.st_uid != os.getuid()
-    or task_inode.st_nlink != 1
-    or task_inode.st_mode & 0o022
-    or task_inode.st_size > 2 * 1024 * 1024
-):
-    refuse("canonical active task path is not a caller-owned, single-link, non-writable regular note")
-try:
-    fd = os.open(task, os.O_RDONLY | os.O_CLOEXEC | os.O_NOFOLLOW)
-    try:
-        opened_inode = os.fstat(fd)
-        chunks: list[bytes] = []
-        while True:
-            chunk = os.read(fd, 65536)
-            if not chunk:
-                break
-            chunks.append(chunk)
-            if sum(map(len, chunks)) > 2 * 1024 * 1024:
-                refuse("canonical active task note exceeds the bounded parser size")
-    finally:
-        os.close(fd)
-    after_inode = task.lstat()
+    if (
+        not stat.S_ISDIR(active_inode.st_mode)
+        or active_inode.st_uid != os.getuid()
+        or active_inode.st_mode & 0o022
+    ):
+        refuse("canonical active task path root is not a caller-owned physical directory")
+    task_inode = os.stat(task.name, dir_fd=active_fd, follow_symlinks=False)
+    if (
+        not stat.S_ISREG(task_inode.st_mode)
+        or task_inode.st_uid != os.getuid()
+        or task_inode.st_nlink != 1
+        or task_inode.st_mode & 0o022
+        or task_inode.st_size > 2 * 1024 * 1024
+    ):
+        refuse(
+            "canonical active task path is not a caller-owned, single-link, "
+            "non-writable regular note"
+        )
+    task_fd = os.open(
+        task.name,
+        os.O_RDONLY | os.O_CLOEXEC | os.O_NOFOLLOW,
+        dir_fd=active_fd,
+    )
+    opened_inode = os.fstat(task_fd)
+    if snapshot(opened_inode) != snapshot(task_inode):
+        refuse("canonical active task note changed while opening")
+    chunks: list[bytes] = []
+    remaining = 2 * 1024 * 1024 + 1
+    while remaining:
+        chunk = os.read(task_fd, min(65536, remaining))
+        if not chunk:
+            break
+        chunks.append(chunk)
+        remaining -= len(chunk)
+    task_bytes = b"".join(chunks)
+    after_inode = os.fstat(task_fd)
+    published_inode = os.stat(task.name, dir_fd=active_fd, follow_symlinks=False)
 except OSError as exc:
     refuse(f"canonical active task note cannot be read safely: {exc}")
-identity = (opened_inode.st_dev, opened_inode.st_ino)
-if identity != (task_inode.st_dev, task_inode.st_ino) or identity != (
-    after_inode.st_dev,
-    after_inode.st_ino,
+finally:
+    if task_fd >= 0:
+        os.close(task_fd)
+    if active_fd >= 0:
+        os.close(active_fd)
+if (
+    snapshot(opened_inode) != snapshot(after_inode)
+    or snapshot(after_inode) != snapshot(published_inode)
+    or len(task_bytes) != opened_inode.st_size
+    or len(task_bytes) > 2 * 1024 * 1024
 ):
     refuse("canonical active task note changed while it was being read")
+task_sha256 = hashlib.sha256(task_bytes).hexdigest()
+if expected_task_sha256 and task_sha256 != expected_task_sha256:
+    refuse("canonical active task note does not match the caller-bound byte snapshot")
 try:
-    text = b"".join(chunks).decode("utf-8")
+    text = task_bytes.decode("utf-8")
 except UnicodeDecodeError as exc:
     refuse(f"canonical active task note is not UTF-8: {exc}")
 
@@ -1204,16 +1278,20 @@ if missing_scopes:
     refuse(f"mutation scope is not authorized: {missing_scopes[0]}")
 print(
     f"runtime authority accepted: task_id={task_id} status={status} "
-    f"scopes={len(scopes)}"
+    f"scopes={len(scopes)} task_sha256={task_sha256}"
 )
 RUNTIME_AUTHORITY_PY
 }
 
 read_local_judge_authority_artifacts() {
     local desired="$1" installed="$2" cap_root="$3" cap_receipt="$4" phase="$5"
-    /usr/bin/python3 -I - "$desired" "$installed" "$cap_root" "$cap_receipt" "$phase" <<'LOCAL_JUDGE_AUTHORITY_ARTIFACTS_PY'
+    local expected_cap_sha256="$6"
+    /usr/bin/python3 -I - \
+        "$desired" "$installed" "$cap_root" "$cap_receipt" "$phase" \
+        "$expected_cap_sha256" <<'LOCAL_JUDGE_AUTHORITY_ARTIFACTS_PY'
 from __future__ import annotations
 
+import hashlib
 import os
 import re
 import stat
@@ -1222,6 +1300,9 @@ from pathlib import Path
 
 desired_path, installed_path, cap_root_path, cap_receipt_path = map(Path, sys.argv[1:5])
 phase = sys.argv[5]
+expected_cap_sha256 = sys.argv[6]
+if expected_cap_sha256 and re.fullmatch(r"[0-9a-f]{64}", expected_cap_sha256) is None:
+    raise SystemExit(2)
 
 
 def refuse(message: str) -> None:
@@ -1381,6 +1462,9 @@ try:
     cap_text = cap_data.decode("utf-8")
 except UnicodeDecodeError:
     refuse("local-judge cap receipt is not UTF-8")
+cap_sha256 = hashlib.sha256(cap_data).hexdigest()
+if expected_cap_sha256 and cap_sha256 != expected_cap_sha256:
+    refuse("local-judge cap receipt does not match the caller-bound byte snapshot")
 lines = cap_text.splitlines()
 keys = (
     "schema",
@@ -1417,11 +1501,13 @@ print(desired_sha)
 print(installed_sha)
 for key in keys:
     print(fields[key])
+print(cap_sha256)
 LOCAL_JUDGE_AUTHORITY_ARTIFACTS_PY
 }
 
 verify_local_judge_cap_receipt() {
-    local sha="$1" phase="$2" account_home repo_alias release_root repo state desired installed
+    local sha="$1" phase="$2" expected_cap_sha256="$3"
+    local account_home repo_alias release_root repo state desired installed
     local cap_root cap_receipt source_unit_text gpu_uuid image image_id host git_head artifact_snapshot
     local installed_unit installed_unit_real expected_unit_oid actual_unit_oid
     local judge_model model_sha256 model_size_bytes model_host_dir model_host model_host_declared
@@ -1429,7 +1515,7 @@ verify_local_judge_cap_receipt() {
     local receipt_gpu_uuid receipt_image receipt_image_id receipt_model_sha256 receipt_model_size_bytes
     local receipt_model_host_dir receipt_model_identity receipt_workload_oid
     local receipt_memory_bytes receipt_memory_swap_bytes receipt_requests receipt_workers
-    local workload_oid memory_peak swap_peak completed_at now
+    local workload_oid memory_peak swap_peak completed_at now observed_cap_sha256
     local -a artifact_fields
     local DOCKER_HOST=unix:///var/run/docker.sock
     export DOCKER_HOST
@@ -1467,19 +1553,20 @@ verify_local_judge_cap_receipt() {
         echo "hapax-post-merge-deploy: cap receipt release HEAD does not match $sha; next action: reconcile source activation and rerun the canary" >&2
         return 2
     fi
-    state="$account_home/.local/state/hapax/root-required"
+    state="$ROOT_REQUIRED_STATE_ROOT"
     desired="$state/desired-receipts/oom-containment.sha"
     installed="$state/installed-receipts/oom-containment.sha"
     cap_root="$state/local-judge-cap-canary"
     cap_receipt="$cap_root/$sha.env"
     if ! artifact_snapshot="$(
         read_local_judge_authority_artifacts \
-            "$desired" "$installed" "$cap_root" "$cap_receipt" "$phase"
+            "$desired" "$installed" "$cap_root" "$cap_receipt" "$phase" \
+            "$expected_cap_sha256"
     )"; then
         return 2
     fi
     mapfile -t artifact_fields <<< "$artifact_snapshot"
-    if [ "${#artifact_fields[@]}" -ne 20 ]; then
+    if [ "${#artifact_fields[@]}" -ne 21 ]; then
         echo "hapax-post-merge-deploy: local-judge authority snapshot has an invalid field count; next action: repair the receipt verifier and rerun the governed canary" >&2
         return 2
     fi
@@ -1509,6 +1596,7 @@ verify_local_judge_cap_receipt() {
     memory_peak="${artifact_fields[17]}"
     swap_peak="${artifact_fields[18]}"
     completed_at="${artifact_fields[19]}"
+    observed_cap_sha256="${artifact_fields[20]}"
     if [ "${artifact_fields[2]}" != 1 ] || [ "${artifact_fields[3]}" != "$sha" ]; then
         echo "hapax-post-merge-deploy: local-judge cap receipt schema or SHA mismatch for $sha; next action: rerun the required pre-deploy cap canary" >&2
         return 2
@@ -1815,7 +1903,7 @@ CAP_RECEIPT_NUMERIC_PY
         echo "hapax-post-merge-deploy: cap receipt peak or time evidence is invalid, stale, or future-dated; next action: rerun the required pre-deploy cap canary" >&2
         return 2
     fi
-    echo "local-judge cap receipt accepted: sha=$sha phase=$phase receipt=$cap_receipt"
+    echo "local-judge cap receipt accepted: sha=$sha phase=$phase receipt=$cap_receipt cap_sha256=$observed_cap_sha256"
 }
 
 run_local_judge_cap_workload() {
@@ -2148,43 +2236,67 @@ if [ "$MEASURE_PROTECTED_LOCAL_JUDGE_MODEL" -eq 1 ]; then
     exit $?
 fi
 if [ "$VERIFY_RUNTIME_AUTHORITY" -eq 1 ]; then
-    verify_runtime_authority "$RUNTIME_AUTHORITY_EXPECTED_SHA" "$RUNTIME_AUTHORITY_TASK" "${RUNTIME_AUTHORITY_SCOPES[@]}"
+    verify_runtime_authority \
+        "$RUNTIME_AUTHORITY_EXPECTED_SHA" "$RUNTIME_AUTHORITY_TASK" \
+        "$RUNTIME_AUTHORITY_TASK_SHA256" "${RUNTIME_AUTHORITY_SCOPES[@]}"
     exit $?
 fi
-if [ "$VERIFY_LOCAL_JUDGE_CAP_RECEIPT" -eq 1 ]; then
-    verify_local_judge_cap_receipt "$LOCAL_JUDGE_CAP_SHA" "$LOCAL_JUDGE_CAP_PHASE"
-    exit $?
-fi
-
 acquire_inherited_root_required_lock() {
     local lock_fd="${HAPAX_ROOT_REQUIRED_LOCK_FD:-}"
-    if ! [[ "$lock_fd" =~ ^[0-9]+$ ]] || [ "$lock_fd" -lt 3 ]; then
+    local state_fd="${HAPAX_ROOT_REQUIRED_STATE_FD:-}"
+    local guard_fd="${HAPAX_ROOT_REQUIRED_GENERATION_GUARD_FD:-}"
+    local lexical_root="${HAPAX_ROOT_REQUIRED_STATE_LEXICAL_ROOT:-}"
+    if ! [[ "$lock_fd" =~ ^[0-9]+$ ]] || [ "$lock_fd" -lt 3 ] \
+        || ! [[ "$state_fd" =~ ^[0-9]+$ ]] || [ "$state_fd" -lt 3 ] \
+        || ! [[ "$guard_fd" =~ ^[0-9]+$ ]] || [ "$guard_fd" -lt 3 ]; then
         echo "hapax-post-merge-deploy: safe shared lock descriptor is absent; next action: remove caller-supplied HAPAX_ROOT_REQUIRED_LOCK_* values and rerun the package-owned deploy script" >&2
         return 1
     fi
-    /usr/bin/python3 - "$lock_fd" "$ROOT_REQUIRED_LOCK_FILE" <<'PY'
+    /usr/bin/python3 - \
+        "$lock_fd" "$state_fd" "$guard_fd" "$ROOT_REQUIRED_LOCK_FILE" \
+        "$ROOT_REQUIRED_STATE_ROOT" "$lexical_root" <<'PY'
 from __future__ import annotations
 
 import fcntl
+import hashlib
 import os
+import socket
 import stat
 import sys
 
 fd = int(sys.argv[1])
-lock_path = sys.argv[2]
+state_fd = int(sys.argv[2])
+guard_fd = int(sys.argv[3])
+lock_path = sys.argv[4]
+bound_root = sys.argv[5]
+lexical_root = sys.argv[6]
 lock_parent = os.path.dirname(lock_path) or "."
 lock_base = os.path.basename(lock_path)
 parent_fd = -1
 try:
-    if not os.path.isabs(lock_path) or not lock_base:
+    if (
+        not os.path.isabs(lock_path)
+        or not lock_base
+        or not os.path.isabs(lexical_root)
+        or os.path.abspath(os.path.normpath(lock_parent))
+        != os.path.abspath(os.path.normpath(lexical_root))
+    ):
         raise OSError("lock path must be absolute and name one file")
     parent_fd = os.open(
         lock_parent,
         os.O_RDONLY | os.O_CLOEXEC | os.O_DIRECTORY | os.O_NOFOLLOW,
     )
     parent_inode = os.fstat(parent_fd)
+    state_inode = os.fstat(state_fd)
     inode = os.fstat(fd)
     path_inode = os.stat(lock_base, dir_fd=parent_fd, follow_symlinks=False)
+    bound_inode = os.stat(bound_root)
+    lexical_inode = os.stat(lexical_root, follow_symlinks=False)
+    guard = socket.socket(fileno=os.dup(guard_fd))
+    try:
+        guard_name = guard.getsockname()
+    finally:
+        guard.close()
 except OSError as exc:
     if parent_fd >= 0:
         os.close(parent_fd)
@@ -2198,6 +2310,12 @@ if (
     not stat.S_ISDIR(parent_inode.st_mode)
     or parent_inode.st_uid != os.geteuid()
     or parent_inode.st_mode & 0o022
+    or (state_inode.st_dev, state_inode.st_ino)
+    != (parent_inode.st_dev, parent_inode.st_ino)
+    or (bound_inode.st_dev, bound_inode.st_ino)
+    != (state_inode.st_dev, state_inode.st_ino)
+    or (lexical_inode.st_dev, lexical_inode.st_ino)
+    != (state_inode.st_dev, state_inode.st_ino)
     or not stat.S_ISREG(inode.st_mode)
     or not stat.S_ISREG(path_inode.st_mode)
     or (inode.st_dev, inode.st_ino) != (path_inode.st_dev, path_inode.st_ino)
@@ -2213,16 +2331,33 @@ if (
         file=sys.stderr,
     )
     raise SystemExit(1)
+guard_material = (
+    f"hapax-root-required-state-v1\0{os.geteuid()}\0"
+    f"{os.path.abspath(os.path.normpath(lexical_root))}"
+).encode()
+expected_guard = b"\0hapax-root-required-v1-" + hashlib.sha256(guard_material).hexdigest()[:40].encode()
+if guard_name != expected_guard:
+    os.close(parent_fd)
+    print(
+        f"hapax-post-merge-deploy: refused invalid root-required generation guard for "
+        f"{lexical_root}; next action: remove caller-supplied HAPAX_ROOT_REQUIRED_LOCK_* "
+        "values and rerun",
+        file=sys.stderr,
+    )
+    raise SystemExit(1)
 os.fchmod(fd, 0o600)
 fcntl.flock(fd, fcntl.LOCK_EX)
 locked_inode = os.fstat(fd)
 locked_path_inode = os.stat(lock_base, dir_fd=parent_fd, follow_symlinks=False)
+locked_lexical_inode = os.stat(lexical_root, follow_symlinks=False)
 if (
     (locked_inode.st_dev, locked_inode.st_ino)
     != (locked_path_inode.st_dev, locked_path_inode.st_ino)
     or locked_inode.st_uid != os.geteuid()
     or locked_inode.st_nlink != 1
     or stat.S_IMODE(locked_inode.st_mode) != 0o600
+    or (locked_lexical_inode.st_dev, locked_lexical_inode.st_ino)
+    != (state_inode.st_dev, state_inode.st_ino)
 ):
     os.close(parent_fd)
     print(
@@ -2240,33 +2375,65 @@ reexec_with_safe_root_required_lock() {
         acquire_inherited_root_required_lock
         return
     fi
-    exec /usr/bin/python3 - "$ROOT_REQUIRED_LOCK_FILE" "$0" "${ORIGINAL_ARGS[@]}" <<'PY'
+    exec /usr/bin/python3 - \
+        "$ROOT_REQUIRED_STATE_ROOT" "$ROOT_REQUIRED_LOCK_FILE" \
+        "$0" "${ORIGINAL_ARGS[@]}" <<'PY'
 from __future__ import annotations
 
+import errno
 import fcntl
+import hashlib
 import os
+import socket
 import stat
 import subprocess
 import sys
+import time
 
-lock_path, script, *args = sys.argv[1:]
+state_root, lock_path, script, *args = sys.argv[1:]
 lock_parent = os.path.dirname(lock_path) or "."
 lock_base = os.path.basename(lock_path)
-if not os.path.isabs(lock_path) or not lock_base:
+lexical_root = os.path.abspath(os.path.normpath(state_root))
+if (
+    not os.path.isabs(state_root)
+    or not os.path.isabs(lock_path)
+    or not lock_base
+    or os.path.abspath(os.path.normpath(lock_parent)) != lexical_root
+):
     print(
         f"hapax-post-merge-deploy: refused invalid shared lock path {lock_path}; expected an "
-        "absolute path naming one file; next action: restore the canonical durable state path",
+        "absolute .lock inside the selected durable state root; next action: restore the "
+        "canonical durable state path",
         file=sys.stderr,
     )
     raise SystemExit(1)
+guard_material = f"hapax-root-required-state-v1\0{os.geteuid()}\0{lexical_root}".encode()
+guard_name = b"\0hapax-root-required-v1-" + hashlib.sha256(guard_material).hexdigest()[:40].encode()
+guard = socket.socket(
+    socket.AF_UNIX,
+    socket.SOCK_STREAM | getattr(socket, "SOCK_CLOEXEC", 0),
+)
+while True:
+    try:
+        guard.bind(guard_name)
+        break
+    except OSError as exc:
+        if exc.errno != errno.EADDRINUSE:
+            print(
+                f"hapax-post-merge-deploy: cannot acquire the root-required generation guard: "
+                f"{exc}; next action: repair the local Unix-socket facility and rerun",
+                file=sys.stderr,
+            )
+            raise SystemExit(1) from exc
+        time.sleep(0.05)
 old_umask = os.umask(0o077)
 try:
-    os.makedirs(lock_parent, exist_ok=True)
+    os.makedirs(lexical_root, exist_ok=True)
 finally:
     os.umask(old_umask)
 try:
     parent_fd = os.open(
-        lock_parent,
+        lexical_root,
         os.O_RDONLY | os.O_CLOEXEC | os.O_DIRECTORY | os.O_NOFOLLOW,
     )
 except OSError as exc:
@@ -2323,12 +2490,15 @@ try:
     fcntl.flock(fd, fcntl.LOCK_EX)
     locked_inode = os.fstat(fd)
     locked_path_inode = os.stat(lock_base, dir_fd=parent_fd, follow_symlinks=False)
+    published_parent_inode = os.stat(lexical_root, follow_symlinks=False)
     if (
         (locked_inode.st_dev, locked_inode.st_ino)
         != (locked_path_inode.st_dev, locked_path_inode.st_ino)
         or locked_inode.st_uid != os.geteuid()
         or locked_inode.st_nlink != 1
         or stat.S_IMODE(locked_inode.st_mode) != 0o600
+        or (parent_inode.st_dev, parent_inode.st_ino)
+        != (published_parent_inode.st_dev, published_parent_inode.st_ino)
     ):
         print(
             f"hapax-post-merge-deploy: shared lock path changed during acquisition for {lock_path}; "
@@ -2338,20 +2508,36 @@ try:
         raise SystemExit(1)
     env = os.environ.copy()
     env.pop("HAPAX_ROOT_REQUIRED_LOCK_HELD", None)
+    stable_root = f"/proc/{os.getpid()}/fd/{parent_fd}"
+    env["HAPAX_ROOT_REQUIRED_STATE_ROOT"] = stable_root
+    env["HAPAX_ROOT_REQUIRED_LOCK_FILE"] = lock_path
     env["HAPAX_ROOT_REQUIRED_LOCK_FD"] = str(fd)
+    env["HAPAX_ROOT_REQUIRED_STATE_FD"] = str(parent_fd)
+    env["HAPAX_ROOT_REQUIRED_GENERATION_GUARD_FD"] = str(guard.fileno())
+    env["HAPAX_ROOT_REQUIRED_STATE_LEXICAL_ROOT"] = lexical_root
+    env["HAPAX_ROOT_REQUIRED_LOCK_LEXICAL_PATH"] = lock_path
     env["HAPAX_ROOT_REQUIRED_LOCK_MODE"] = "exclusive"
     result = subprocess.run(
         [os.path.abspath(script), *args],
         env=env,
-        pass_fds=(fd,),
+        pass_fds=(fd, parent_fd, guard.fileno()),
         check=False,
     )
     raise SystemExit(result.returncode)
 finally:
     os.close(fd)
     os.close(parent_fd)
+    guard.close()
 PY
 }
+
+if [ "$VERIFY_LOCAL_JUDGE_CAP_RECEIPT" -eq 1 ]; then
+    reexec_with_safe_root_required_lock
+    verify_local_judge_cap_receipt \
+        "$LOCAL_JUDGE_CAP_SHA" "$LOCAL_JUDGE_CAP_PHASE" \
+        "$LOCAL_JUDGE_CAP_RECEIPT_SHA256"
+    exit $?
+fi
 
 # --- auto-enable marker (reform-improve-deploy-activation-20260601) ---
 # A systemd unit may declare it wants to be enabled+started on deploy by
@@ -3707,7 +3893,7 @@ defer_root_required_installer() {
     dest="$ROOT_DEFER_DIR/$SHA/$label"
     mkdir -p "$(dirname "$dest")"
     receipt="$ROOT_REQUIRED_INSTALLED_RECEIPT_ROOT/$label.sha"
-    if [ -f "$receipt" ]; then
+    if [ -e "$receipt" ] || [ -L "$receipt" ]; then
         installed_sha="$(read_safe_root_required_sha_receipt "$receipt" "installed-$label")" \
             || return 1
         write_root_required_sha_receipt \
@@ -4105,6 +4291,7 @@ PY
 
 record_root_required_desired_sha() {
     local label="$1" stage="$2" receipt current manifest_rel
+    ROOT_REQUIRED_DESIRED_SUPERSEDED=0
     case "$label" in
         oom-containment) manifest_rel="config/root-required/oom-containment.files" ;;
         apcupsd-power-alerts) manifest_rel="config/root-required/apcupsd-power-alerts.files" ;;
@@ -4112,7 +4299,7 @@ record_root_required_desired_sha() {
     esac
     validate_root_required_stage_manifest "$stage" "$manifest_rel" || return 1
     receipt="$ROOT_REQUIRED_DESIRED_RECEIPT_ROOT/$label.sha"
-    if [ -f "$receipt" ]; then
+    if [ -e "$receipt" ] || [ -L "$receipt" ]; then
         current="$(read_safe_root_required_sha_receipt "$receipt" "desired-$label")" || return 1
         if ! root_required_git cat-file -e "$current^{commit}" 2>/dev/null; then
             echo "hapax-post-merge-deploy: invalid or unavailable desired $label receipt $current; next action: restore the latest governed receipt and rerun this deploy" >&2
@@ -4126,6 +4313,7 @@ record_root_required_desired_sha() {
         if root_required_git merge-base --is-ancestor "$SHA" "$current"; then
             write_root_required_sha_receipt \
                 "$receipt" "$current" preserve-canonical || return 1
+            ROOT_REQUIRED_DESIRED_SUPERSEDED=1
             echo "root-required $label desired state $current supersedes stale deploy $SHA; desired receipt preserved"
             return 0
         fi
@@ -4165,7 +4353,11 @@ if [ "${#APCUPSD_POWER_ALERTS[@]}" -gt 0 ]; then
         rm -rf "$APCUPSD_STAGE" 2>/dev/null || true
         exit 1
     fi
-    defer_root_required_installer "apcupsd-power-alerts" "$APCUPSD_STAGE"
+    if [ "$ROOT_REQUIRED_DESIRED_SUPERSEDED" -eq 0 ]; then
+        defer_root_required_installer "apcupsd-power-alerts" "$APCUPSD_STAGE"
+    else
+        echo "root-required apcupsd-power-alerts stale deploy $SHA emitted no superseded deferral"
+    fi
     rm -rf "$APCUPSD_STAGE" 2>/dev/null || true
     DID_ANYTHING=1
 fi
@@ -4188,7 +4380,11 @@ if [ "${#OOM_CONTAINMENT[@]}" -gt 0 ]; then
         rm -rf "$OOM_STAGE" 2>/dev/null || true
         exit 1
     fi
-    defer_root_required_installer "oom-containment" "$OOM_STAGE"
+    if [ "$ROOT_REQUIRED_DESIRED_SUPERSEDED" -eq 0 ]; then
+        defer_root_required_installer "oom-containment" "$OOM_STAGE"
+    else
+        echo "root-required oom-containment stale deploy $SHA emitted no superseded deferral"
+    fi
     rm -rf "$OOM_STAGE" 2>/dev/null || true
     DID_ANYTHING=1
 fi
