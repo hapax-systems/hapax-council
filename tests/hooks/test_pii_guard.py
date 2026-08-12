@@ -378,13 +378,32 @@ class TestRegisteredHouseholdNames:
 
 
 # ── Structural age disclosure (needs no list) ──────────────────────
+#
+# THE AGES BELOW ARE THE PATTERN'S BOUNDARIES, NOT ANYONE'S.
+#
+# The first draft of these tests used the two ages the scrub had just removed. A test file in a
+# public repository asserting those exact numbers republishes, in a new file, the disclosure the
+# guard exists to prevent — and it does so under a heading that explains what they are. Caught in
+# review; the correction is the same convention this file already applies to names, which its own
+# docstring states: nothing that would be a disclosure appears as a literal here.
+#
+# So the in-range cases are the ENDS of the guard's 1..19 window plus its midpoint. That carries
+# no household information and is strictly better coverage than two interior points: an off-by-one
+# at either boundary now fails, and an interior pair would not have caught it.
+MINOR_AGE_LOW = "1"
+MINOR_AGE_MID = "14"
+MINOR_AGE_HIGH = "19"
+ADULT_AGE = "45"
 
 
 class TestAgeDisclosure:
     def test_blocks_name_paren_age(self, tmp_path: Path) -> None:
         repo = tmp_path
         (repo / ".git").mkdir()
-        result = _run(_edit(str(repo / "docs/x.md"), "Wilhelmina (11) likes chess.\n"), cwd=repo)
+        result = _run(
+            _edit(str(repo / "docs/x.md"), f"Wilhelmina ({MINOR_AGE_MID}) likes chess.\n"),
+            cwd=repo,
+        )
         assert result.returncode == 2
         assert "age disclosure" in result.stderr
 
@@ -398,7 +417,8 @@ class TestAgeDisclosure:
         (repo / ".git").mkdir()
         result = _run(
             _edit(
-                str(repo / "scripts/x.py"), '"""Adjusted for a single brilliant 11-year-old."""\n'
+                str(repo / "scripts/x.py"),
+                f'"""Adjusted for a single brilliant {MINOR_AGE_MID}-year-old."""\n',
             ),
             cwd=repo,
         )
@@ -408,7 +428,18 @@ class TestAgeDisclosure:
     def test_blocks_the_spaced_form(self, tmp_path: Path) -> None:
         repo = tmp_path
         (repo / ".git").mkdir()
-        result = _run(_edit(str(repo / "docs/x.md"), "an 8 year old reader\n"), cwd=repo)
+        result = _run(
+            _edit(str(repo / "docs/x.md"), f"an {MINOR_AGE_LOW} year old reader\n"), cwd=repo
+        )
+        assert result.returncode == 2
+
+    def test_blocks_the_upper_boundary_of_the_minor_range(self, tmp_path: Path) -> None:
+        """19 is inside the window; an off-by-one here is a silent hole."""
+        repo = tmp_path
+        (repo / ".git").mkdir()
+        result = _run(
+            _edit(str(repo / "docs/x.md"), f"a {MINOR_AGE_HIGH}-year-old reader\n"), cwd=repo
+        )
         assert result.returncode == 2
 
     def test_adult_ages_do_not_trip_the_minor_range(self, tmp_path: Path) -> None:
@@ -416,7 +447,16 @@ class TestAgeDisclosure:
         minor and the false-positive cost dominates."""
         repo = tmp_path
         (repo / ".git").mkdir()
-        result = _run(_edit(str(repo / "docs/x.md"), "a 45-year-old codebase\n"), cwd=repo)
+        result = _run(
+            _edit(str(repo / "docs/x.md"), f"a {ADULT_AGE}-year-old codebase\n"), cwd=repo
+        )
+        assert result.returncode == 0, result.stderr
+
+    def test_just_above_the_minor_range_does_not_trip(self, tmp_path: Path) -> None:
+        """The other boundary. 20 must not match, or the window is not what it says."""
+        repo = tmp_path
+        (repo / ".git").mkdir()
+        result = _run(_edit(str(repo / "docs/x.md"), "a 20-year-old codebase\n"), cwd=repo)
         assert result.returncode == 0, result.stderr
 
     def test_section_references_are_not_ages(self, tmp_path: Path) -> None:
@@ -455,7 +495,7 @@ class TestMultiEditAndNotebookEditAreActuallyScanned:
                     "file_path": str(repo / "docs/x.md"),
                     "edits": [
                         {"new_string": "harmless"},
-                        {"new_string": "an 11-year-old reader"},
+                        {"new_string": f"an {MINOR_AGE_MID}-year-old reader"},
                     ],
                 },
             },
@@ -472,7 +512,7 @@ class TestMultiEditAndNotebookEditAreActuallyScanned:
                 "tool_name": "NotebookEdit",
                 "tool_input": {
                     "notebook_path": str(repo / "notebooks/x.ipynb"),
-                    "new_source": "an 11-year-old reader",
+                    "new_source": f"an {MINOR_AGE_MID}-year-old reader",
                 },
             },
             cwd=repo,
@@ -504,7 +544,7 @@ class TestTheGateDoesNotDependOnVolume:
 
         `grep -oP ... | grep -qvP ...` under `set -o pipefail`: the `-q`
         consumer exits on its first hit, SIGPIPEs the producer, and the
-        pipeline status becomes 141, so the `if` is false. One `Example (11)`
+        pipeline status becomes 141, so the `if` is false. One candidate
         blocked; fifty thousand passed. A gate whose verdict depends on input
         size is worse than no gate — it passes exactly the large mechanical
         writes least likely to have been read by a human.
@@ -597,6 +637,59 @@ class TestDegradedCoverageIsRecorded:
         receipt = state / "hapax" / "pii-guard-degraded.jsonl"
         assert receipt.is_file(), "a degraded guard must leave a durable trace"
         assert "household_name_list_absent" in receipt.read_text(encoding="utf-8")
+
+
+# ── Shell writes ───────────────────────────────────────────────────
+
+
+class TestBashCommandsAreScanned:
+    """A shell write reaches tracked files without ever being an Edit.
+
+    Scanning the command TEXT is an honest partial — it catches the literal
+    case, which is how the original exposure was written, and cannot see
+    content assembled from variables or read from another file. The limit is
+    asserted here so nobody reads this class as full coverage.
+    """
+
+    def test_blocks_an_age_in_a_shell_command(self, tmp_path: Path) -> None:
+        result = _run(
+            {
+                "tool_name": "Bash",
+                "tool_input": {"command": f"echo 'a {MINOR_AGE_MID}-year-old reader' > docs/x.md"},
+            },
+            cwd=tmp_path,
+        )
+        assert result.returncode == 2, result.stdout + result.stderr
+        assert "shell command" in result.stderr
+
+    def test_blocks_the_operator_name_in_a_shell_command(self, tmp_path: Path) -> None:
+        result = _run(
+            {
+                "tool_name": "Bash",
+                "tool_input": {"command": f"printf '%s' '{OPERATOR_FULLNAME}' >> notes.md"},
+            },
+            cwd=tmp_path,
+        )
+        assert result.returncode == 2
+
+    def test_allows_an_ordinary_shell_command(self, tmp_path: Path) -> None:
+        result = _run(
+            {"tool_name": "Bash", "tool_input": {"command": "git status --short"}}, cwd=tmp_path
+        )
+        assert result.returncode == 0, result.stderr
+
+    def test_indirect_content_is_a_stated_limit_not_a_claim(self, tmp_path: Path) -> None:
+        """Pins the boundary: content the command does not spell out is NOT seen.
+
+        If a future change makes this pass by blocking, the docstring in the
+        hook is then wrong and must be updated with it — that is the point of
+        asserting a limitation rather than leaving it implied.
+        """
+        result = _run(
+            {"tool_name": "Bash", "tool_input": {"command": "cat source.txt > dest.md"}},
+            cwd=tmp_path,
+        )
+        assert result.returncode == 0
 
 
 # ── Hook integrity ─────────────────────────────────────────────────

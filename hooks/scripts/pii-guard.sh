@@ -32,11 +32,41 @@ fi
 input="$(cat)"
 tool_name="$(printf '%s' "$input" | jq -r '.tool_name // empty')"
 
-# Only gate file-mutating tools
+# Only gate file-mutating tools.
+#
+# `Bash` is here because a shell write (`> file`, `tee`, `sed -i`, a heredoc) mutates tracked
+# files without ever being an Edit, and this gate was blind to all of it. What is scanned for a
+# Bash call is the COMMAND TEXT, which is an honest partial: it catches the literal case, which
+# is how the original exposure was written, and it cannot see content assembled from variables
+# or read from another file. That limit is stated rather than papered over — the failure this
+# whole file documents is a guard reporting coverage it did not have.
+#
+# NOTE: code alone is not coverage. The hook must also be REGISTERED for Bash PreToolUse in
+# `~/.claude/settings.json`, exactly as `unguarded-cd-guard.sh` is. Until it is, this arm is
+# unreachable and the shell path stays unguarded.
 case "$tool_name" in
-  Edit|Write|MultiEdit|NotebookEdit) ;;
+  Edit|Write|MultiEdit|NotebookEdit|Bash) ;;
   *) exit 0 ;;
 esac
+
+if [ "$tool_name" = "Bash" ]; then
+  bash_command="$(printf '%s' "$input" | jq -r '.tool_input.command // empty' 2>/dev/null || true)"
+  [ -n "$bash_command" ] || exit 0
+  bash_blocked=()
+  if grep -qiP 'Ryan\s+Kleeberger' <<<"$bash_command"; then
+    bash_blocked+=("Operator full name in a shell command")
+  fi
+  if grep -qP '\b(?:[1-9]|1[0-9])[- ]year[- ]old\b' <<<"$bash_command"; then
+    bash_blocked+=("Possible age disclosure (N-year-old) in a shell command")
+  fi
+  if [ ${#bash_blocked[@]} -gt 0 ]; then
+    echo "BLOCKED: PII detected in a shell command:" >&2
+    for msg in "${bash_blocked[@]}"; do echo "  - $msg" >&2; done
+    echo "  A shell write reaches tracked files without passing through Edit/Write." >&2
+    exit 2
+  fi
+  exit 0
+fi
 
 # Extract file path.
 #
