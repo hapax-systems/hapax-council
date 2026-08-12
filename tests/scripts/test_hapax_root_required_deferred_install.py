@@ -7,6 +7,7 @@ import importlib.machinery
 import importlib.util
 import os
 import pwd
+import re
 import shutil
 import signal
 import stat
@@ -30,6 +31,37 @@ APCUPSD_MANIFEST = Path("config/root-required/apcupsd-power-alerts.files")
 APCUPSD_EFFECTS = Path("config/root-required/apcupsd-power-alerts.effects")
 APCUPSD_INSTALLER = Path("scripts/install-apcupsd-power-alerts")
 AUTHORITY_VERIFIER = Path("scripts/hapax-post-merge-deploy")
+SHARED_INSTALLER_CONTROL_NAMES = {
+    "HAPAX_LOCAL_JUDGE_CAP_RECEIPT_SHA256",
+    "HAPAX_POST_MERGE_ROOT_DEFER_DIR",
+    "HAPAX_ROOT_REQUIRED_ALLOW_UNAUTHENTICATED_TEST_INSTALL",
+    "HAPAX_ROOT_REQUIRED_DESIRED_RECEIPT_ROOT",
+    "HAPAX_ROOT_REQUIRED_DRAIN_DIR",
+    "HAPAX_ROOT_REQUIRED_FINALIZE_GATE",
+    "HAPAX_ROOT_REQUIRED_GENERATION_GUARD_FD",
+    "HAPAX_ROOT_REQUIRED_GIT_REPO",
+    "HAPAX_ROOT_REQUIRED_INSTALLED_RECEIPT_ROOT",
+    "HAPAX_ROOT_REQUIRED_INSTALLED_SOURCE_ROOT",
+    "HAPAX_ROOT_REQUIRED_INSTALLER_TEST_MODE",
+    "HAPAX_ROOT_REQUIRED_INSTALLER_TEST_ROOT",
+    "HAPAX_ROOT_REQUIRED_LOCK_FD",
+    "HAPAX_ROOT_REQUIRED_LOCK_FILE",
+    "HAPAX_ROOT_REQUIRED_LOCK_HELD",
+    "HAPAX_ROOT_REQUIRED_LOCK_LEXICAL_PATH",
+    "HAPAX_ROOT_REQUIRED_LOCK_MODE",
+    "HAPAX_ROOT_REQUIRED_PACKAGE_SHA",
+    "HAPAX_ROOT_REQUIRED_SEALED_SOURCE_FDS",
+    "HAPAX_ROOT_REQUIRED_STATE_FD",
+    "HAPAX_ROOT_REQUIRED_STATE_LEXICAL_ROOT",
+    "HAPAX_ROOT_REQUIRED_STATE_ROOT",
+    "HAPAX_ROOT_REQUIRED_UNAUTHENTICATED_TEST_ROOT",
+    "HAPAX_RUNTIME_AUTHORITY_TASK",
+    "HAPAX_RUNTIME_AUTHORITY_TASK_SHA256",
+}
+LEGACY_OOM_EFFECT_SELECTORS = {
+    "HAPAX_ROOT_FAILURE_INTAKE_DEST",
+    "HAPAX_ROOT_REQUIRED_AUDIT_DEST",
+}
 
 
 @dataclass
@@ -177,6 +209,29 @@ def test_authenticated_installers_gate_before_receipts_and_deferral_drain() -> N
         assert "no further effect or receipt advancement is permitted" in source
 
 
+@pytest.mark.parametrize(
+    ("installer_rel", "selector_prefixes", "legacy_effect_selectors"),
+    (
+        (INSTALLER, ("HAPAX_OOM_",), LEGACY_OOM_EFFECT_SELECTORS),
+        (APCUPSD_INSTALLER, ("HAPAX_APCUPSD_", "HAPAX_UPS_", "HAPAX_UPOWER_"), set()),
+    ),
+)
+def test_every_installer_environment_name_has_one_authenticated_boundary_classification(
+    installer_rel: Path,
+    selector_prefixes: tuple[str, ...],
+    legacy_effect_selectors: set[str],
+) -> None:
+    source = (REPO_ROOT / installer_rel).read_text(encoding="utf-8")
+    mentioned = set(re.findall(r"\bHAPAX_[A-Z0-9_]*[A-Z0-9]\b", source))
+    package_selectors = {
+        name for name in mentioned if any(name.startswith(prefix) for prefix in selector_prefixes)
+    }
+    classified = package_selectors | SHARED_INSTALLER_CONTROL_NAMES | legacy_effect_selectors
+
+    assert mentioned - classified == set()
+    assert mentioned & LEGACY_OOM_EFFECT_SELECTORS == legacy_effect_selectors
+
+
 def _sealed_memfd(name: str, data: bytes, *, executable: bool = False) -> int:
     if hasattr(os, "memfd_create"):
         fd = os.memfd_create(name, os.MFD_CLOEXEC | os.MFD_ALLOW_SEALING)
@@ -283,6 +338,148 @@ def test_direct_authenticated_protocol_rejects_same_uid_arbitrary_finalizer(
     assert not (tmp_path / "state").exists()
 
 
+@pytest.mark.parametrize(
+    (
+        "installer_rel",
+        "manifest_rel",
+        "selector_name",
+        "future_selectors",
+        "legacy_selectors",
+    ),
+    (
+        (
+            INSTALLER,
+            MANIFEST,
+            "HAPAX_OOM_SYSTEMD_SYSTEM_DIR",
+            ("HAPAX_OOM_FUTURE_EFFECT_SELECTOR",),
+            tuple(sorted(LEGACY_OOM_EFFECT_SELECTORS)),
+        ),
+        (
+            APCUPSD_INSTALLER,
+            APCUPSD_MANIFEST,
+            "HAPAX_APCUPSD_DEST",
+            (
+                "HAPAX_APCUPSD_FUTURE_EFFECT_SELECTOR",
+                "HAPAX_UPS_FUTURE_EFFECT_SELECTOR",
+                "HAPAX_UPOWER_FUTURE_EFFECT_SELECTOR",
+            ),
+            (),
+        ),
+    ),
+)
+def test_direct_authenticated_protocol_rejects_caller_selected_production_effects(
+    tmp_path: Path,
+    installer_rel: Path,
+    manifest_rel: Path,
+    selector_name: str,
+    future_selectors: tuple[str, ...],
+    legacy_selectors: tuple[str, ...],
+) -> None:
+    sha = _git(REPO_ROOT, "rev-parse", "HEAD")
+    package_files = [
+        line
+        for line in (REPO_ROOT / manifest_rel).read_text(encoding="utf-8").splitlines()
+        if line and not line.startswith("#")
+    ]
+    source_fds: list[int] = []
+    for index, relative in enumerate(package_files):
+        entry = subprocess.run(
+            ["git", "ls-tree", sha, "--", relative],
+            cwd=REPO_ROOT,
+            check=True,
+            text=True,
+            capture_output=True,
+        ).stdout.strip()
+        data = subprocess.run(
+            ["git", "show", f"{sha}:{relative}"],
+            cwd=REPO_ROOT,
+            check=True,
+            capture_output=True,
+        ).stdout
+        source_fds.append(
+            _sealed_memfd(
+                f"hapax-direct-source-{index}",
+                data,
+                executable=entry.startswith("100755 "),
+            )
+        )
+
+    state = tmp_path / "redirected-state"
+    state.mkdir(mode=0o700)
+    lock = state / ".lock"
+    lock.touch(mode=0o600)
+    state_fd = os.open(state, os.O_RDONLY | os.O_DIRECTORY)
+    lock_fd = os.open(lock, os.O_RDWR)
+    guard_fd = os.open("/home", os.O_RDONLY | os.O_DIRECTORY)
+    stable_state = f"/proc/{os.getpid()}/fd/{state_fd}"
+    runtime_task = tmp_path / "runtime-authority.md"
+    runtime_task.write_text("direct authenticated selector forgery\n", encoding="utf-8")
+    runtime_digest = hashlib.sha256(runtime_task.read_bytes()).hexdigest()
+    defer_root = tmp_path / "deferred"
+    package = "oom-containment" if installer_rel == INSTALLER else "apcupsd-power-alerts"
+    stage = defer_root / sha / package
+    redirected_effect = tmp_path / "caller-selected-effect"
+    sudo_marker = tmp_path / "sudo-ran"
+    fake_sudo = tmp_path / "sudo"
+    fake_sudo.write_text(f"#!/usr/bin/bash\ntouch {sudo_marker}\n", encoding="utf-8")
+    fake_sudo.chmod(0o755)
+    env = {
+        **os.environ,
+        "HAPAX_ROOT_REQUIRED_PACKAGE_SHA": sha,
+        "HAPAX_ROOT_REQUIRED_SEALED_SOURCE_FDS": ":".join(
+            f"/proc/{os.getpid()}/fd/{fd}" for fd in source_fds
+        ),
+        "HAPAX_RUNTIME_AUTHORITY_TASK": str(runtime_task),
+        "HAPAX_RUNTIME_AUTHORITY_TASK_SHA256": runtime_digest,
+        "HAPAX_POST_MERGE_ROOT_DEFER_DIR": str(defer_root),
+        "HAPAX_ROOT_REQUIRED_STATE_ROOT": stable_state,
+        "HAPAX_ROOT_REQUIRED_INSTALLED_SOURCE_ROOT": f"{stable_state}/current-source",
+        "HAPAX_ROOT_REQUIRED_INSTALLED_RECEIPT_ROOT": f"{stable_state}/installed-receipts",
+        "HAPAX_ROOT_REQUIRED_DESIRED_RECEIPT_ROOT": f"{stable_state}/desired-receipts",
+        "HAPAX_ROOT_REQUIRED_GIT_REPO": str(REPO_ROOT),
+        "HAPAX_ROOT_REQUIRED_DRAIN_DIR": str(stage),
+        "HAPAX_ROOT_REQUIRED_LOCK_FILE": str(lock),
+        "HAPAX_ROOT_REQUIRED_LOCK_FD": str(lock_fd),
+        "HAPAX_ROOT_REQUIRED_STATE_FD": str(state_fd),
+        "HAPAX_ROOT_REQUIRED_GENERATION_GUARD_FD": str(guard_fd),
+        "HAPAX_ROOT_REQUIRED_STATE_LEXICAL_ROOT": str(state),
+        "HAPAX_ROOT_REQUIRED_LOCK_LEXICAL_PATH": str(lock),
+        "HAPAX_ROOT_REQUIRED_LOCK_MODE": "exclusive",
+        selector_name: str(redirected_effect),
+        (
+            "HAPAX_OOM_INSTALL_SUDO" if installer_rel == INSTALLER else "HAPAX_APCUPSD_INSTALL_SUDO"
+        ): str(fake_sudo),
+    }
+    for selector in (*future_selectors, *legacy_selectors):
+        env[selector] = str(tmp_path / selector.lower())
+    try:
+        result = subprocess.run(
+            [
+                str(REPO_ROOT / installer_rel),
+                "--source",
+                str(stage),
+                "--authenticated-sealed-source",
+                "--install",
+            ],
+            text=True,
+            capture_output=True,
+            check=False,
+            env=env,
+            pass_fds=(*source_fds, state_fd, lock_fd, guard_fd),
+        )
+    finally:
+        for fd in (*source_fds, state_fd, lock_fd, guard_fd):
+            os.close(fd)
+
+    assert result.returncode != 0
+    assert "refuses caller-selected effect or test selectors" in result.stderr
+    for selector in (*future_selectors, *legacy_selectors):
+        assert selector in result.stderr
+    assert "next action:" in result.stderr
+    assert not sudo_marker.exists()
+    assert not redirected_effect.exists()
+
+
 def _fixture(tmp_path: Path, *, package: str = PACKAGE) -> DeferredFixture:
     manifest_rel, effects_rel, installer_rel = (
         (MANIFEST, EFFECTS, INSTALLER)
@@ -327,6 +524,7 @@ def _fixture(tmp_path: Path, *, package: str = PACKAGE) -> DeferredFixture:
     installer.write_text(
         "#!/usr/bin/bash\n"
         "set -euo pipefail\n"
+        "shopt -qo privileged\n"
         '[[ " $* " == *" --authenticated-sealed-source "* ]]\n'
         'IFS=: read -r -a sealed_sources <<< "$HAPAX_ROOT_REQUIRED_SEALED_SOURCE_FDS"\n'
         '[ "${#sealed_sources[@]}" -eq 5 ]\n'
@@ -415,6 +613,7 @@ def _fixture(tmp_path: Path, *, package: str = PACKAGE) -> DeferredFixture:
     env = {
         **os.environ,
         "HAPAX_ROOT_REQUIRED_DEFERRED_INSTALL_TEST_MODE": "1",
+        "HAPAX_ROOT_REQUIRED_DEFERRED_INSTALL_TEST_ROOT": str(tmp_path),
         "HAPAX_ROOT_REQUIRED_STATE_ROOT": str(state_root),
         "HAPAX_POST_MERGE_ROOT_DEFER_DIR": str(defer_root),
         "HAPAX_ROOT_REQUIRED_GIT_REPO": str(repo_alias),
@@ -478,6 +677,8 @@ def test_authenticated_deferred_install_executes_git_materialized_installer(
         "GIT_OPTIONAL_LOCKS=0",
         "HAPAX_APCUPSD_INSTALL_SUDO=",
         "HAPAX_OOM_INSTALL_SUDO=",
+        "HAPAX_ROOT_REQUIRED_INSTALLER_TEST_MODE=1",
+        f"HAPAX_ROOT_REQUIRED_INSTALLER_TEST_ROOT={tmp_path}",
         "PYTHONNOUSERSITE=1",
         "PYTHONSAFEPATH=1",
     ):
@@ -627,6 +828,31 @@ def test_isolated_test_mode_refuses_the_real_sudo_boundary(tmp_path: Path) -> No
     assert result.returncode == 1
     assert "never /usr/bin/sudo" in result.stderr
     assert not fixture.authority_calls.exists()
+    assert not fixture.installer_pid_marker.exists()
+
+
+def test_isolated_test_mode_refuses_runtime_task_outside_authenticated_root(
+    tmp_path: Path,
+) -> None:
+    test_root = tmp_path / "isolated-root"
+    test_root.mkdir()
+    fixture = _fixture(test_root)
+    outside_runtime_task = tmp_path / "outside-runtime-task.md"
+    outside_runtime_task.write_text("outside authenticated test root\n", encoding="utf-8")
+    argv = fixture.argv()
+    argv[argv.index("--runtime-authority-task") + 1] = str(outside_runtime_task)
+
+    result = subprocess.run(
+        argv,
+        text=True,
+        capture_output=True,
+        check=False,
+        env=fixture.env,
+    )
+
+    assert result.returncode == 1
+    assert "runtime authority task escapes the deferred-install test root" in result.stderr
+    assert not fixture.sudo_calls.exists()
     assert not fixture.installer_pid_marker.exists()
 
 

@@ -2,6 +2,31 @@
 # Install Hapax apcupsd config/hooks and verify power-event provenance paths.
 set -euo pipefail
 ORIGINAL_ARGS=("$@")
+AUTHENTICATED_PRODUCTION_SELECTOR_NAMES=()
+_authenticated_requested=0
+_source_value_follows=0
+for _argument in "$@"; do
+    if [ "$_source_value_follows" -eq 1 ]; then
+        _source_value_follows=0
+        continue
+    fi
+    case "$_argument" in
+        --source) _source_value_follows=1 ;;
+        --authenticated-sealed-source) _authenticated_requested=1 ;;
+    esac
+done
+if [ "$_authenticated_requested" -eq 1 ] \
+    && [ "${HAPAX_ROOT_REQUIRED_INSTALLER_TEST_MODE:-0}" != "1" ]; then
+    for _prefix in HAPAX_APCUPSD_ HAPAX_UPS_ HAPAX_UPOWER_; do
+        while IFS= read -r _selector; do
+            AUTHENTICATED_PRODUCTION_SELECTOR_NAMES+=("$_selector")
+        done < <(compgen -A variable "$_prefix")
+    done
+    if [ "${#AUTHENTICATED_PRODUCTION_SELECTOR_NAMES[@]}" -ne 0 ]; then
+        unset "${AUTHENTICATED_PRODUCTION_SELECTOR_NAMES[@]}"
+    fi
+fi
+unset _argument _authenticated_requested _prefix _selector _source_value_follows
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 SOURCE="$ROOT"
@@ -17,10 +42,10 @@ AUDIT_LOG_OWNER_UID="${HAPAX_UPS_AUDIT_LOG_OWNER_UID:-}"
 AUDIT_LOG_OWNER_GID="${HAPAX_UPS_AUDIT_LOG_OWNER_GID:-}"
 LOGROTATE_DEST="${HAPAX_APCUPSD_LOGROTATE_DEST:-/etc/logrotate.d/hapax-ups-power-events}"
 UPOWER_CONF_DEST="${HAPAX_UPOWER_CONF_DEST:-/etc/UPower/UPower.conf.d/90-hapax-apcupsd-owner.conf}"
-SYSTEMCTL="${HAPAX_APCUPSD_SYSTEMCTL:-systemctl}"
-BUSCTL="${HAPAX_APCUPSD_BUSCTL:-busctl}"
-APCACCESS="${HAPAX_APCUPSD_APCACCESS:-apcaccess}"
-SUDO="${HAPAX_APCUPSD_INSTALL_SUDO-sudo}"
+SYSTEMCTL="${HAPAX_APCUPSD_SYSTEMCTL:-/usr/bin/systemctl}"
+BUSCTL="${HAPAX_APCUPSD_BUSCTL:-/usr/bin/busctl}"
+APCACCESS="${HAPAX_APCUPSD_APCACCESS:-/usr/bin/apcaccess}"
+SUDO="${HAPAX_APCUPSD_INSTALL_SUDO-/usr/bin/sudo}"
 ACTUAL_UID="$(/usr/bin/id -u)"
 if [ "$ACTUAL_UID" != "0" ] && [ "${HAPAX_APCUPSD_INSTALL_TEST_ACTUAL_UID:-}" = "0" ]; then
     ACTUAL_UID=0
@@ -29,10 +54,10 @@ TARGET_UID="${HAPAX_APCUPSD_TARGET_UID:-1000}"
 TARGET_HOME="${HAPAX_APCUPSD_TARGET_HOME:-}"
 TARGET_GID="${HAPAX_APCUPSD_TARGET_GID:-}"
 if [ -z "$TARGET_HOME" ]; then
-    TARGET_HOME="$(getent passwd "$TARGET_UID" | cut -d: -f6 || true)"
+    TARGET_HOME="$(/usr/bin/getent passwd "$TARGET_UID" | /usr/bin/cut -d: -f6 || true)"
 fi
 if [ -z "$TARGET_GID" ]; then
-    TARGET_GID="$(getent passwd "$TARGET_UID" | cut -d: -f4 || true)"
+    TARGET_GID="$(/usr/bin/getent passwd "$TARGET_UID" | /usr/bin/cut -d: -f4 || true)"
 fi
 if [ -z "$TARGET_HOME" ] || [ -z "$TARGET_GID" ]; then
     echo "unable to resolve home/group for apcupsd target UID $TARGET_UID; next action: set HAPAX_APCUPSD_TARGET_UID, HAPAX_APCUPSD_TARGET_HOME, and HAPAX_APCUPSD_TARGET_GID explicitly" >&2
@@ -48,6 +73,8 @@ ROOT_REQUIRED_PACKAGE_SHA="${HAPAX_ROOT_REQUIRED_PACKAGE_SHA:-}"
 ROOT_REQUIRED_LOCK_FILE="${HAPAX_ROOT_REQUIRED_LOCK_FILE:-$ROOT_REQUIRED_STATE_ROOT/.lock}"
 ROOT_REQUIRED_SEALED_SOURCE_FDS="${HAPAX_ROOT_REQUIRED_SEALED_SOURCE_FDS:-}"
 ROOT_REQUIRED_LEGACY_FINALIZE_GATE="${HAPAX_ROOT_REQUIRED_FINALIZE_GATE:-}"
+ROOT_REQUIRED_INSTALLER_TEST_MODE="${HAPAX_ROOT_REQUIRED_INSTALLER_TEST_MODE:-0}"
+ROOT_REQUIRED_INSTALLER_TEST_ROOT="${HAPAX_ROOT_REQUIRED_INSTALLER_TEST_ROOT:-}"
 RUNTIME_AUTHORITY_TASK="${HAPAX_RUNTIME_AUTHORITY_TASK:-}"
 RUNTIME_AUTHORITY_TASK_SHA256="${HAPAX_RUNTIME_AUTHORITY_TASK_SHA256:-}"
 readonly APC_REPAIR_ACTION="the runtime-authorized hapax-post-merge-deploy APC package reconciliation for the desired receipt SHA with HAPAX_RUNTIME_AUTHORITY_TASK"
@@ -286,26 +313,172 @@ validate_isolated_test_executable() {
     case "$command" in
         /*) ;;
         *)
-            echo "unauthenticated apcupsd test install requires an absolute fake $label command under $root; got $command" >&2
+            echo "isolated apcupsd test install requires an absolute fake $label command under $root; got $command" >&2
             return 1
             ;;
     esac
     canonical="$(/usr/bin/realpath -e -- "$command" 2>/dev/null)" || {
-        echo "unauthenticated apcupsd test install cannot resolve fake $label command $command under $root" >&2
+        echo "isolated apcupsd test install cannot resolve fake $label command $command under $root" >&2
         return 1
     }
     if [ ! -f "$canonical" ] || [ -L "$command" ] || [ ! -x "$canonical" ] \
         || ! path_is_within_test_root "$canonical" "$root"; then
-        echo "unauthenticated apcupsd test install requires a non-symlink executable fake $label command under $root; got $command" >&2
+        echo "isolated apcupsd test install requires a non-symlink executable fake $label command under $root; got $command" >&2
         return 1
     fi
+}
+
+validate_authenticated_state_contract() {
+    local lexical_root="$1" state_fd="${HAPAX_ROOT_REQUIRED_STATE_FD:-}"
+    local lock_fd="${HAPAX_ROOT_REQUIRED_LOCK_FD:-}"
+    local guard_fd="${HAPAX_ROOT_REQUIRED_GENERATION_GUARD_FD:-}"
+    local expected_lock="$lexical_root/.lock"
+    if ! [[ "$state_fd" =~ ^[0-9]+$ ]] || [ "$state_fd" -lt 3 ] \
+        || ! [[ "$lock_fd" =~ ^[0-9]+$ ]] || [ "$lock_fd" -lt 3 ] \
+        || ! [[ "$guard_fd" =~ ^[0-9]+$ ]] || [ "$guard_fd" -lt 3 ] \
+        || ! [[ "$ROOT_REQUIRED_STATE_ROOT" =~ ^/proc/[1-9][0-9]*/fd/${state_fd}$ ]] \
+        || [ "$ROOT_REQUIRED_INSTALLED_SOURCE_ROOT" != "$ROOT_REQUIRED_STATE_ROOT/current-source" ] \
+        || [ "$ROOT_REQUIRED_INSTALLED_RECEIPT_ROOT" != "$ROOT_REQUIRED_STATE_ROOT/installed-receipts" ] \
+        || [ "$ROOT_REQUIRED_DESIRED_RECEIPT_ROOT" != "$ROOT_REQUIRED_STATE_ROOT/desired-receipts" ] \
+        || [ "$ROOT_REQUIRED_RECEIPT" != "$ROOT_REQUIRED_STATE_ROOT/installed-receipts/apcupsd-power-alerts.sha" ] \
+        || [ "$ROOT_REQUIRED_DESIRED_RECEIPT" != "$ROOT_REQUIRED_STATE_ROOT/desired-receipts/apcupsd-power-alerts.sha" ] \
+        || [ "${HAPAX_ROOT_REQUIRED_STATE_LEXICAL_ROOT:-}" != "$lexical_root" ] \
+        || [ "$ROOT_REQUIRED_LOCK_FILE" != "$expected_lock" ] \
+        || [ "${HAPAX_ROOT_REQUIRED_LOCK_LEXICAL_PATH:-}" != "$expected_lock" ] \
+        || [ "${HAPAX_ROOT_REQUIRED_LOCK_MODE:-}" != "exclusive" ]; then
+        echo "authenticated apcupsd install rejected a noncanonical inherited state contract; next action: discard the altered invocation and regenerate its live command with hapax-post-merge-deploy" >&2
+        return 1
+    fi
+}
+
+validate_authenticated_test_root() {
+    local raw="$ROOT_REQUIRED_INSTALLER_TEST_ROOT" root_mode account_home
+    if [ "$ROOT_REQUIRED_INSTALLER_TEST_MODE" != "1" ] || [ -z "$raw" ] \
+        || [[ "$raw" != /* ]] || [ -L "$raw" ]; then
+        echo "authenticated apcupsd isolated test mode requires an absolute non-symlink HAPAX_ROOT_REQUIRED_INSTALLER_TEST_ROOT" >&2
+        return 1
+    fi
+    AUTHENTICATED_TEST_ROOT="$(/usr/bin/realpath -e -- "$raw" 2>/dev/null)" || {
+        echo "authenticated apcupsd isolated test root is unavailable: $raw" >&2
+        return 1
+    }
+    root_mode="$(/usr/bin/stat -c %a -- "$AUTHENTICATED_TEST_ROOT" 2>/dev/null || true)"
+    account_home="$(/usr/bin/python3 -I -c 'import os, pwd; print(pwd.getpwuid(os.getuid()).pw_dir)')" \
+        || return 1
+    if [ "$AUTHENTICATED_TEST_ROOT" = / ] || [ "$AUTHENTICATED_TEST_ROOT" != "$raw" ] \
+        || [ ! -d "$AUTHENTICATED_TEST_ROOT" ] \
+        || [ "$(/usr/bin/stat -c %u -- "$AUTHENTICATED_TEST_ROOT" 2>/dev/null || true)" != "$(/usr/bin/id -u)" ] \
+        || ! [[ "$root_mode" =~ ^[0-7]+$ ]] \
+        || (( (8#$root_mode & 8#022) != 0 )) \
+        || [[ "$account_home" == "$AUTHENTICATED_TEST_ROOT" ]] \
+        || [[ "$account_home" == "$AUTHENTICATED_TEST_ROOT"/* ]]; then
+        echo "authenticated apcupsd isolated test root must be physical, caller-owned, and not group/other-writable: $raw" >&2
+        return 1
+    fi
+}
+
+reject_authenticated_production_selectors() {
+    if [ "${#AUTHENTICATED_PRODUCTION_SELECTOR_NAMES[@]}" -ne 0 ]; then
+        echo "authenticated production apcupsd install refuses caller-selected effect or test selectors: ${AUTHENTICATED_PRODUCTION_SELECTOR_NAMES[*]}; next action: remove the selectors and regenerate the exact live command with hapax-post-merge-deploy" >&2
+        return 1
+    fi
+}
+
+validate_authenticated_production_contract() {
+    local account_record account_uid account_gid account_user account_home
+    local canonical_state canonical_defer canonical_release canonical_stage
+    reject_authenticated_production_selectors || return 1
+    account_record="$(/usr/bin/python3 -I - <<'PY'
+import os
+import pwd
+
+account = pwd.getpwuid(os.getuid())
+print(f"{account.pw_uid}:{account.pw_gid}:{account.pw_name}:{account.pw_dir}")
+PY
+)" || return 1
+    IFS=: read -r account_uid account_gid account_user account_home <<< "$account_record"
+    canonical_state="$account_home/.local/state/hapax/root-required"
+    canonical_defer="$account_home/.cache/hapax/post-merge-root-required"
+    canonical_release="$account_home/.cache/hapax/source-activation/releases/$ROOT_REQUIRED_PACKAGE_SHA"
+    canonical_stage="$canonical_defer/$ROOT_REQUIRED_PACKAGE_SHA/apcupsd-power-alerts"
+    if [ "$account_uid" = "0" ] || [ "$TARGET_UID" != "$account_uid" ] \
+        || [ "$TARGET_GID" != "$account_gid" ] || [ "$TARGET_HOME" != "$account_home" ] \
+        || [ "$HOME" != "$account_home" ] || [ "${USER:-}" != "$account_user" ] \
+        || [ "${LOGNAME:-}" != "$account_user" ] || [ "$ACTUAL_UID" != "$account_uid" ] \
+        || [ "$PATH" != "/usr/local/sbin:/usr/local/bin:/usr/bin:/bin" ] \
+        || [ "$SYSTEMCTL" != "/usr/bin/systemctl" ] || [ "$BUSCTL" != "/usr/bin/busctl" ] \
+        || [ "$APCACCESS" != "/usr/bin/apcaccess" ] || [ "$SUDO" != "/usr/bin/sudo" ] \
+        || [ "$ROOT_REQUIRED_DEFER_ROOT" != "$canonical_defer" ] \
+        || [ "$ROOT_REQUIRED_GIT_REPO" != "$canonical_release" ] \
+        || [ "$SOURCE" != "$canonical_stage" ] \
+        || [ "${HAPAX_ROOT_REQUIRED_DRAIN_DIR:-}" != "$canonical_stage" ] \
+        || [[ "$RUNTIME_AUTHORITY_TASK" != /* ]]; then
+        echo "authenticated production apcupsd install rejected a noncanonical account, release, or stage contract; next action: discard the altered invocation and regenerate its live command with hapax-post-merge-deploy" >&2
+        return 1
+    fi
+    validate_authenticated_state_contract "$canonical_state"
+}
+
+validate_authenticated_test_contract() {
+    local path
+    local canonical_stage="$ROOT_REQUIRED_DEFER_ROOT/$ROOT_REQUIRED_PACKAGE_SHA/apcupsd-power-alerts"
+    local -a destinations
+    validate_authenticated_test_root || return 1
+    if [ "$SOURCE" != "$canonical_stage" ] \
+        || [ "${HAPAX_ROOT_REQUIRED_DRAIN_DIR:-}" != "$canonical_stage" ]; then
+        echo "authenticated apcupsd isolated test source and drain must name the exact staged package under $ROOT_REQUIRED_DEFER_ROOT" >&2
+        return 1
+    fi
+    validate_authenticated_state_contract "${HAPAX_ROOT_REQUIRED_STATE_LEXICAL_ROOT:-}" || return 1
+    destinations=(
+        "$DEST" "$AUDIT_DIR" "$AUDIT_LOG" "$LOGROTATE_DEST" "$UPOWER_CONF_DEST"
+        "$ROOT_REQUIRED_STATE_ROOT" "${HAPAX_ROOT_REQUIRED_STATE_LEXICAL_ROOT:-}"
+        "$ROOT_REQUIRED_INSTALLED_SOURCE_ROOT" "$ROOT_REQUIRED_DEFER_ROOT"
+        "$ROOT_REQUIRED_INSTALLED_RECEIPT_ROOT" "$ROOT_REQUIRED_DESIRED_RECEIPT_ROOT"
+        "$ROOT_REQUIRED_LOCK_FILE" "$ROOT_REQUIRED_GIT_REPO" "$SOURCE"
+        "${HAPAX_ROOT_REQUIRED_DRAIN_DIR:-}" "$RUNTIME_AUTHORITY_TASK" "$TARGET_HOME"
+    )
+    for path in "${destinations[@]}"; do
+        [ -n "$path" ] || continue
+        if ! path_is_within_test_root "$path" "$AUTHENTICATED_TEST_ROOT"; then
+            echo "authenticated apcupsd isolated test destination escapes $AUTHENTICATED_TEST_ROOT: $path" >&2
+            return 1
+        fi
+    done
+    validate_isolated_test_executable systemctl "$SYSTEMCTL" "$AUTHENTICATED_TEST_ROOT" || return 1
+    validate_isolated_test_executable busctl "$BUSCTL" "$AUTHENTICATED_TEST_ROOT" || return 1
+    validate_isolated_test_executable apcaccess "$APCACCESS" "$AUTHENTICATED_TEST_ROOT" || return 1
+    if [ -n "$SUDO" ]; then
+        validate_isolated_test_executable sudo "$SUDO" "$AUTHENTICATED_TEST_ROOT" || return 1
+    fi
+}
+
+validate_authenticated_install_contract() {
+    [ "$AUTHENTICATED_SEALED_SOURCE" -eq 1 ] || return 0
+    case "$ROOT_REQUIRED_INSTALLER_TEST_MODE" in
+        0)
+            [ -z "$ROOT_REQUIRED_INSTALLER_TEST_ROOT" ] || {
+                echo "authenticated production apcupsd install refuses HAPAX_ROOT_REQUIRED_INSTALLER_TEST_ROOT without isolated test mode" >&2
+                return 1
+            }
+            validate_authenticated_production_contract
+            ;;
+        1) validate_authenticated_test_contract ;;
+        *)
+            echo "HAPAX_ROOT_REQUIRED_INSTALLER_TEST_MODE must be exactly 1 when present" >&2
+            return 1
+            ;;
+    esac
 }
 
 require_authenticated_install_authority() {
     local raw_root root root_mode path
     local -a destinations
     [ "$INSTALL" -eq 1 ] || return 0
-    [ "$AUTHENTICATED_SEALED_SOURCE" -eq 0 ] || return 0
+    if [ "$AUTHENTICATED_SEALED_SOURCE" -eq 1 ]; then
+        validate_authenticated_install_contract
+        return
+    fi
     if production_destinations_selected; then
         echo "refusing unauthenticated production apcupsd install; next action: set HAPAX_RUNTIME_AUTHORITY_TASK to the canonical runtime-authorized task and rerun hapax-post-merge-deploy so its sealed helper invokes this installer" >&2
         return 1
@@ -1785,6 +1958,7 @@ if [ "$INSTALL" -ne 0 ]; then
     refuse_whole_script_root
     reexec_with_safe_root_required_lock
     acquire_root_required_lock
+    validate_authenticated_install_contract
 fi
 if [ "$INSTALL" -eq 1 ] && [ "$AUTHENTICATED_SEALED_SOURCE" -eq 1 ]; then
     bind_authenticated_release_root

@@ -3297,6 +3297,56 @@ def test_post_merge_refuses_root_required_path_selectors_outside_test_mode(
     assert not redirected.exists()
 
 
+def test_post_merge_rejects_valid_inherited_descriptors_for_redirected_production_state(
+    tmp_path: Path,
+) -> None:
+    state = tmp_path / "redirected-state"
+    state.mkdir(mode=0o700)
+    lock = state / ".lock"
+    lock.touch(mode=0o600)
+    state_fd = os.open(state, os.O_RDONLY | os.O_DIRECTORY)
+    lock_fd = os.open(lock, os.O_RDWR)
+    guard_fd = os.open("/home", os.O_RDONLY | os.O_DIRECTORY)
+    stable_state = f"/proc/{os.getpid()}/fd/{state_fd}"
+    env = {
+        **os.environ,
+        "HAPAX_ROOT_REQUIRED_STATE_ROOT": stable_state,
+        "HAPAX_ROOT_REQUIRED_INSTALLED_SOURCE_ROOT": f"{stable_state}/current-source",
+        "HAPAX_ROOT_REQUIRED_INSTALLED_RECEIPT_ROOT": f"{stable_state}/installed-receipts",
+        "HAPAX_ROOT_REQUIRED_DESIRED_RECEIPT_ROOT": f"{stable_state}/desired-receipts",
+        "HAPAX_ROOT_REQUIRED_LOCK_FILE": str(lock),
+        "HAPAX_ROOT_REQUIRED_LOCK_FD": str(lock_fd),
+        "HAPAX_ROOT_REQUIRED_STATE_FD": str(state_fd),
+        "HAPAX_ROOT_REQUIRED_GENERATION_GUARD_FD": str(guard_fd),
+        "HAPAX_ROOT_REQUIRED_STATE_LEXICAL_ROOT": str(state),
+        "HAPAX_ROOT_REQUIRED_LOCK_LEXICAL_PATH": str(lock),
+        "HAPAX_ROOT_REQUIRED_LOCK_MODE": "exclusive",
+    }
+    env.pop("HAPAX_POST_MERGE_TEST_MODE", None)
+    try:
+        result = subprocess.run(
+            [
+                str(SCRIPT),
+                "--verify-local-judge-cap-receipt-snapshot",
+                "a" * 40,
+                "candidate",
+                "b" * 64,
+            ],
+            text=True,
+            capture_output=True,
+            check=False,
+            env=env,
+            pass_fds=(state_fd, lock_fd, guard_fd),
+        )
+    finally:
+        os.close(state_fd)
+        os.close(lock_fd)
+        os.close(guard_fd)
+
+    assert result.returncode == 1
+    assert "refused a noncanonical inherited production root-required contract" in result.stderr
+
+
 @pytest.mark.parametrize("node_kind", ("fifo", "dangling-symlink", "directory"))
 def test_post_merge_refuses_unsafe_desired_receipt_nodes_before_deferral(
     tmp_path: Path,

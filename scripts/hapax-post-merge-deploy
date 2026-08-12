@@ -312,10 +312,54 @@ root_required_git() {
         /usr/bin/git -C "$REPO" "$@"
 }
 
+validate_inherited_root_required_path_contract() {
+    local account_home canonical_state canonical_lock state_fd lock_fd guard_fd
+    account_home="$(/usr/bin/python3 -I -c 'import os, pwd; print(pwd.getpwuid(os.getuid()).pw_dir)')" \
+        || return 1
+    canonical_state="$account_home/.local/state/hapax/root-required"
+    canonical_lock="$canonical_state/.lock"
+    state_fd="${HAPAX_ROOT_REQUIRED_STATE_FD:-}"
+    lock_fd="${HAPAX_ROOT_REQUIRED_LOCK_FD:-}"
+    guard_fd="${HAPAX_ROOT_REQUIRED_GENERATION_GUARD_FD:-}"
+    if [ "$HOME" != "$account_home" ] \
+        || ! [[ "$state_fd" =~ ^[0-9]+$ ]] || [ "$state_fd" -lt 3 ] \
+        || ! [[ "$lock_fd" =~ ^[0-9]+$ ]] || [ "$lock_fd" -lt 3 ] \
+        || ! [[ "$guard_fd" =~ ^[0-9]+$ ]] || [ "$guard_fd" -lt 3 ] \
+        || ! [[ "$ROOT_REQUIRED_STATE_ROOT" =~ ^/proc/[1-9][0-9]*/fd/${state_fd}$ ]] \
+        || [ "${HAPAX_ROOT_REQUIRED_STATE_LEXICAL_ROOT:-}" != "$canonical_state" ] \
+        || [ "$ROOT_REQUIRED_INSTALLED_SOURCE_ROOT" != "$ROOT_REQUIRED_STATE_ROOT/current-source" ] \
+        || [ "$ROOT_REQUIRED_INSTALLED_RECEIPT_ROOT" != "$ROOT_REQUIRED_STATE_ROOT/installed-receipts" ] \
+        || [ "$ROOT_REQUIRED_DESIRED_RECEIPT_ROOT" != "$ROOT_REQUIRED_STATE_ROOT/desired-receipts" ] \
+        || [ "$ROOT_REQUIRED_LOCK_FILE" != "$canonical_lock" ] \
+        || [ "${HAPAX_ROOT_REQUIRED_LOCK_LEXICAL_PATH:-}" != "$canonical_lock" ] \
+        || [ "${HAPAX_ROOT_REQUIRED_LOCK_MODE:-}" != "exclusive" ] \
+        || [ "$ROOT_DEFER_DIR" != "$account_home/.cache/hapax/post-merge-root-required" ]; then
+        echo "hapax-post-merge-deploy: refused a noncanonical inherited production root-required contract; next action: discard the caller-supplied descriptors and rerun from the canonical account environment" >&2
+        return 1
+    fi
+    ROOT_REQUIRED_INSTALLED_SOURCE_ROOT="$ROOT_REQUIRED_STATE_ROOT/current-source"
+    ROOT_REQUIRED_INSTALLED_RECEIPT_ROOT="$ROOT_REQUIRED_STATE_ROOT/installed-receipts"
+    ROOT_REQUIRED_DESIRED_RECEIPT_ROOT="$ROOT_REQUIRED_STATE_ROOT/desired-receipts"
+    ROOT_REQUIRED_LOCK_FILE="$canonical_lock"
+    ROOT_DEFER_DIR="$account_home/.cache/hapax/post-merge-root-required"
+}
+
 validate_root_required_path_selectors() {
     local account_home name
     local -a present=()
-    [ -z "${HAPAX_ROOT_REQUIRED_LOCK_FD:-}" ] || return 0
+    if [ -n "${HAPAX_ROOT_REQUIRED_LOCK_FD:-}" ]; then
+        case "$POST_MERGE_TEST_MODE" in
+            0)
+                validate_inherited_root_required_path_contract
+                return
+                ;;
+            1) ;;
+            *)
+                echo "hapax-post-merge-deploy: HAPAX_POST_MERGE_TEST_MODE must be exactly 1 when present; next action: remove the selector and rerun the canonical deploy" >&2
+                return 1
+                ;;
+        esac
+    fi
     if [ "$POST_MERGE_TEST_MODE" = "1" ]; then
         /usr/bin/python3 -I - "$0" <<'PY'
 from __future__ import annotations
