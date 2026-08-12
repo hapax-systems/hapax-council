@@ -8,6 +8,7 @@ distinguishable after they both collapse onto ``freshness_state=missing``.
 
 from __future__ import annotations
 
+import shlex
 import subprocess
 from datetime import UTC, datetime
 
@@ -289,11 +290,26 @@ def test_a_hostile_catalogue_cannot_reach_a_shell_through_the_public_entry_point
 
 
 def test_a_remote_probe_wraps_the_payload_in_bash_because_a_login_shell_may_be_fish():
-    argv = _probe_argv(_probe_payload(SMALL_CATALOGUE), "podium")
+    payload = _probe_payload(SMALL_CATALOGUE)
+    argv = _probe_argv(payload, "podium")
 
     assert argv[0] == "ssh"
     assert argv[-2] == "podium"
-    assert argv[-1].startswith("bash -c ")
+    # ssh joins everything after the hostname with spaces and hands the result to the remote login
+    # shell, so what matters is that THAT string re-lexes to exactly `bash -c <payload>` — asserting
+    # it merely starts with "bash -c " would pass on a payload the remote shell would mangle.
+    assert shlex.split(argv[-1]) == ["bash", "-c", payload]
+
+
+def test_the_wrapped_payload_survives_a_shell_that_is_not_posix():
+    # The wrapper exists because fish is a login shell on this estate. Round-tripping the joined
+    # command through a POSIX lexer is the closest deterministic check that the remote sees one
+    # intact argument rather than a for-loop fish would reject.
+    payload = _probe_payload(SMALL_CATALOGUE)
+    joined = " ".join(_probe_argv(payload, "podium")[-1:])
+
+    assert "for c in" not in shlex.split(joined)[0]
+    assert shlex.split(joined)[-1] == payload
 
 
 def test_the_local_probe_does_not_go_through_ssh():
@@ -406,6 +422,7 @@ def test_a_non_linux_host_is_recorded_as_not_probed_rather_than_dropped():
 
     assert probe.reachable is False
     assert "os=iOS" in probe.unreachable_reason
+    assert "next action" in probe.unreachable_reason.lower()
 
 
 def test_garbage_output_does_not_become_a_reachable_host():
@@ -547,3 +564,33 @@ def test_render_refuses_a_catalogue_the_observation_was_not_collected_under():
 
     with pytest.raises(ValueError, match="next action"):
         render(observation, catalogue=SMALL_CATALOGUE[:1])
+
+
+def test_render_refuses_a_same_length_catalogue_that_is_not_the_one_observed():
+    # The dangerous mismatch is the one a length check waves through: swap an entry and positional
+    # pairing would file claude's verdict under docker's heading and report it as observed.
+    stdout = "cli=claude present=1 path=/usr/bin/claude\ncli=ollama present=0 path=\n"
+    observation = observe(
+        hosts=[linux("podium")],
+        catalogue=SMALL_CATALOGUE,
+        runner=runner_for(stdout=stdout),
+        now=NOW,
+    )
+    substituted = (poisoned_spec("docker"), SMALL_CATALOGUE[1])
+
+    assert len(substituted) == len(SMALL_CATALOGUE)
+    with pytest.raises(ValueError, match="does not describe"):
+        render(observation, catalogue=substituted)
+
+
+def test_render_refuses_a_reordered_catalogue_of_the_same_length():
+    stdout = "cli=claude present=1 path=/usr/bin/claude\ncli=ollama present=0 path=\n"
+    observation = observe(
+        hosts=[linux("podium")],
+        catalogue=SMALL_CATALOGUE,
+        runner=runner_for(stdout=stdout),
+        now=NOW,
+    )
+
+    with pytest.raises(ValueError, match="does not describe"):
+        render(observation, catalogue=tuple(reversed(SMALL_CATALOGUE)))

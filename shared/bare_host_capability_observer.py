@@ -86,7 +86,8 @@ UNREACHABLE_REASON_PREFIX = "host_unreachable:"
 STALE_AFTER = "1d"
 
 #: Catalogue entries are interpolated into a remote shell command. Anything outside this pattern is
-#: rejected at import, so a future catalogue edit cannot become remote command injection.
+#: rejected by :func:`_probe_payload` -- the one place a name reaches a shell, so it holds for a
+#: caller-supplied catalogue too, which an import-time check over ``CLI_CATALOGUE`` would not.
 _SAFE_CLI_NAME = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]*$")
 
 #: ``shape_id`` must satisfy the registry's own pattern; host names from a tailnet do not.
@@ -322,7 +323,11 @@ def probe_host_clis(
     probe = HostCliProbe(host=name, probed_at=_stamp(now))
 
     if str(row.get("os") or "") != "linux":
-        probe.unreachable_reason = f"not probed: os={row.get('os') or 'unknown'!s}"
+        probe.unreachable_reason = (
+            f"not probed: os={row.get('os') or 'unknown'!s}; the payload is POSIX shell. "
+            "Next action: if this host does host capabilities, add an os-specific payload rather "
+            "than dropping the row"
+        )
         return probe
 
     payload = _probe_payload(catalogue)
@@ -575,6 +580,15 @@ def render(
     for host_index, host in enumerate(hosts):
         block = observation.descriptors[host_index * stride : (host_index + 1) * stride]
         for spec, descriptor in zip(catalogue, block, strict=True):
+            # Counting descriptors is not enough: a substituted or reordered catalogue of equal
+            # length would pass a length check and then let positional pairing file one CLI's
+            # verdict under another's heading -- reporting a capability as observed on the
+            # strength of a different capability. Each descriptor names its own CLI; check it.
+            if descriptor.observability != [f"local_probe:command-v:{spec.cli}"]:
+                raise ValueError(
+                    f"descriptor {descriptor.shape_id!r} does not describe {spec.cli!r}; "
+                    "next action: render with the catalogue the observation was collected under"
+                )
             grid[(host, spec.cli)] = _OUTCOME_MARK[observation_outcome(descriptor)]
 
     width = max((len(h) for h in hosts), default=4) + 1
