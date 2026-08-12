@@ -305,6 +305,20 @@ def _read_exact_sha(path: Path, *, label: str) -> str:
     return data[:-1].decode("ascii")
 
 
+def _read_safe_receipt_sha(path: Path, *, label: str) -> str:
+    inode = _lstat_regular(path, label=label, executable=False)
+    if (
+        inode.st_uid != os.getuid()
+        or inode.st_nlink != 1
+        or inode.st_mode & 0o022
+        or inode.st_size != 41
+    ):
+        raise _error(
+            f"{label} must be caller-owned, single-link, non-group-writable, and exactly 41 bytes"
+        )
+    return _read_exact_sha(path, label=label)
+
+
 def _bounded_diagnostic(stdout: bytes, stderr: bytes) -> str:
     raw = stderr or stdout
     first_line = next(iter(raw.decode("utf-8", errors="replace").strip().splitlines()), "none")
@@ -794,7 +808,7 @@ def install(
     desired_receipts = paths.state_root / "desired-receipts"
     _validate_owned_directory(desired_receipts, label="desired-receipt directory")
     receipt = desired_receipts / f"{package.label}.sha"
-    sha = _read_exact_sha(receipt, label="desired package receipt")
+    sha = _read_safe_receipt_sha(receipt, label="desired package receipt")
     if sha != expected_sha:
         raise _error(f"desired package receipt changed: expected={expected_sha} actual={sha}")
     repo = _physical_repo(paths.repo_alias)
@@ -817,7 +831,7 @@ def install(
     if sudo_result.returncode != 0:
         raise _error(f"sudo credential warmup failed with rc={sudo_result.returncode}")
     _run_after_sudo_hook(paths)
-    if _read_exact_sha(receipt, label="desired package receipt after sudo") != sha:
+    if _read_safe_receipt_sha(receipt, label="desired package receipt after sudo") != sha:
         raise _error("desired package receipt changed during sudo warmup")
     _validate_commit(repo, sha)
     stage = _validate_stage(paths, repo, sha, package)

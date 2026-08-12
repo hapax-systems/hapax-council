@@ -772,6 +772,19 @@ def test_symlinked_receipt_refuses_before_sudo(tmp_path: Path) -> None:
     assert not fixture.sudo_calls.exists()
 
 
+def test_writable_receipt_refuses_before_sudo_or_execution(tmp_path: Path) -> None:
+    fixture = _fixture(tmp_path)
+    fixture.receipt.chmod(0o666)
+
+    result = fixture.run()
+
+    assert result.returncode == 1
+    assert "desired package receipt must be caller-owned" in result.stderr
+    assert "non-group-writable" in result.stderr
+    assert not fixture.sudo_calls.exists()
+    assert not fixture.installer_marker.exists()
+
+
 @pytest.mark.parametrize("component", ["sha", "package", "installer"])
 def test_symlinked_stage_component_refuses_before_sudo(tmp_path: Path, component: str) -> None:
     fixture = _fixture(tmp_path)
