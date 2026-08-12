@@ -2236,6 +2236,227 @@ def test_local_judge_cap_workload_is_self_contained_and_complete(tmp_path: Path)
     assert _LocalJudgeHandler.requests_seen == 24
 
 
+def _protected_model_root_measure_source(
+    store_fast: Path,
+    mountinfo_path: Path,
+    expected_volume: Path,
+) -> str:
+    source = SCRIPT.read_text(encoding="utf-8")
+    marker = "<<'LOCAL_JUDGE_MODEL_ROOT_MEASURE_PY'\n"
+    measure = source.split(marker, 1)[1].split("\nLOCAL_JUDGE_MODEL_ROOT_MEASURE_PY", 1)[0]
+    measure = measure.replace(
+        'store_fast = Path("/store-fast")',
+        f"store_fast = Path({str(store_fast)!r})",
+        1,
+    )
+    measure = measure.replace(
+        'mountinfo_path = Path("/proc/self/mountinfo")',
+        f"mountinfo_path = Path({str(mountinfo_path)!r})",
+        1,
+    )
+    measure = measure.replace(
+        'expected_volume = Path(\n    "/dev/disk/by-uuid/5934e619-0f38-4285-8556-5fed21ef7b9a"\n)',
+        f"expected_volume = Path({str(expected_volume)!r})",
+        1,
+    )
+    measure = measure.replace("inode.st_uid != 0", "inode.st_uid != os.getuid()", 1)
+    measure = measure.replace(
+        "stat.S_ISBLK(volume_inode.st_mode)",
+        "stat.S_ISREG(volume_inode.st_mode)",
+        1,
+    )
+    return measure.replace(
+        "volume_device = (os.major(volume_inode.st_rdev), os.minor(volume_inode.st_rdev))",
+        "volume_device = (os.major(volume_inode.st_dev), os.minor(volume_inode.st_dev))",
+        1,
+    )
+
+
+def _run_protected_model_root_measure(
+    store_fast: Path,
+    model_root: Path,
+    *,
+    mount_variant: str = "valid",
+) -> subprocess.CompletedProcess[str]:
+    mountinfo_path = store_fast.parent / "synthetic-mountinfo"
+    expected_volume = store_fast.parent / "store-fast-volume"
+    expected_volume.touch(exist_ok=True)
+    device = store_fast.stat().st_dev
+    mount_point = store_fast
+    mount_root = "/"
+    mount_options = "rw,noatime"
+    filesystem = "xfs"
+    mount_source = expected_volume
+    if mount_variant == "absent":
+        mountinfo = ""
+    else:
+        if mount_variant == "wrong_source":
+            mount_source = store_fast.parent / "wrong-volume"
+            mount_source.touch()
+        elif mount_variant == "wrong_filesystem":
+            filesystem = "btrfs"
+        elif mount_variant == "subdirectory_bind":
+            mount_root = "/unexpected-root"
+        elif mount_variant == "read_only":
+            mount_options = "ro,noatime"
+        elif mount_variant == "wrong_device":
+            device += 1
+        elif mount_variant == "duplicate":
+            pass
+        elif mount_variant != "valid":
+            raise AssertionError(f"unknown mount variant: {mount_variant}")
+        mountinfo = (
+            f"901 1 {os.major(device)}:{os.minor(device)} {mount_root} {mount_point} "
+            f"{mount_options} - {filesystem} {mount_source} rw\n"
+        )
+        if mount_variant == "duplicate":
+            mountinfo += mountinfo.replace("901 1", "902 1", 1)
+    mountinfo_path.write_text(mountinfo, encoding="utf-8")
+    return subprocess.run(
+        ["/usr/bin/python3", "-I", "-", str(model_root)],
+        input=_protected_model_root_measure_source(
+            store_fast,
+            mountinfo_path,
+            expected_volume,
+        ),
+        text=True,
+        capture_output=True,
+        check=False,
+    )
+
+
+def test_protected_model_root_preflight_binds_existing_ancestors_and_allows_missing_tail(
+    tmp_path: Path,
+) -> None:
+    store_fast = tmp_path / "store-fast"
+    store_fast.mkdir(mode=0o755)
+    digest = "a" * 64
+    model_root = store_fast / "hapax-models" / "sha256" / digest
+
+    missing = _run_protected_model_root_measure(store_fast, model_root)
+
+    assert missing.returncode == 0, missing.stderr
+    missing_evidence = dict(line.split("=", 1) for line in missing.stdout.splitlines())
+    assert missing_evidence == {
+        "mount_identity": f"901:{store_fast.stat().st_dev}",
+        "store_fast_identity": f"{store_fast.stat().st_dev}:{store_fast.stat().st_ino}",
+        "models_identity": "missing",
+        "sha256_identity": "missing",
+        "digest_identity": "missing",
+    }
+
+    model_root.mkdir(parents=True, mode=0o755)
+    complete = _run_protected_model_root_measure(store_fast, model_root)
+
+    assert complete.returncode == 0, complete.stderr
+    complete_evidence = dict(line.split("=", 1) for line in complete.stdout.splitlines())
+    for key, path in (
+        ("store_fast_identity", store_fast),
+        ("models_identity", store_fast / "hapax-models"),
+        ("sha256_identity", store_fast / "hapax-models" / "sha256"),
+        ("digest_identity", model_root),
+    ):
+        assert complete_evidence[key] == f"{path.stat().st_dev}:{path.stat().st_ino}"
+
+
+@pytest.mark.parametrize(
+    "mount_variant",
+    (
+        "absent",
+        "duplicate",
+        "wrong_source",
+        "wrong_filesystem",
+        "subdirectory_bind",
+        "read_only",
+        "wrong_device",
+    ),
+)
+def test_protected_model_root_preflight_rejects_wrong_mount_identity(
+    tmp_path: Path,
+    mount_variant: str,
+) -> None:
+    store_fast = tmp_path / "store-fast"
+    store_fast.mkdir(mode=0o755)
+    model_root = store_fast / "hapax-models" / "sha256" / ("a" * 64)
+
+    result = _run_protected_model_root_measure(
+        store_fast,
+        model_root,
+        mount_variant=mount_variant,
+    )
+
+    assert result.returncode == 2
+    assert "next action:" in result.stderr
+    assert "/store-fast" in result.stderr
+
+
+def test_protected_model_root_cli_dispatch_keeps_production_trust_predicates(
+    tmp_path: Path,
+) -> None:
+    source = SCRIPT.read_text(encoding="utf-8")
+    expected_uuid = "5934e619-0f38-4285-8556-5fed21ef7b9a"
+    assert "inode.st_uid != 0" in source
+    assert "stat.S_ISBLK(volume_inode.st_mode)" in source
+    assert f"/dev/disk/by-uuid/{expected_uuid}" in source
+    assert 'print(f"mount_identity={mount_id}:{inode.st_dev}")' in source
+    registry = json.loads(
+        (REPO_ROOT / "config/infrastructure/host-storage-registry.json").read_text(encoding="utf-8")
+    )
+    matching_mounts = [
+        row
+        for row in registry["mounts"]
+        if row["target_host"] == "hapax-appendix" and row["mountpoints"] == ["/store-fast"]
+    ]
+    assert [row["uuid"] for row in matching_mounts] == [expected_uuid]
+
+    result = subprocess.run(
+        [
+            str(SCRIPT),
+            "--measure-protected-local-judge-model-root",
+            str(tmp_path / ("a" * 64)),
+        ],
+        text=True,
+        capture_output=True,
+        check=False,
+    )
+
+    assert result.returncode == 2
+    assert "not the canonical SHA-addressed directory" in result.stderr
+    assert "next action:" in result.stderr
+
+
+@pytest.mark.parametrize("component_index", range(4))
+@pytest.mark.parametrize("unsafe_kind", ("symlink", "writable"))
+def test_protected_model_root_preflight_rejects_every_unsafe_ancestor_before_staging(
+    tmp_path: Path,
+    component_index: int,
+    unsafe_kind: str,
+) -> None:
+    store_fast = tmp_path / "store-fast"
+    digest = "a" * 64
+    model_root = store_fast / "hapax-models" / "sha256" / digest
+    model_root.mkdir(parents=True, mode=0o755)
+    chain = (
+        store_fast,
+        store_fast / "hapax-models",
+        store_fast / "hapax-models" / "sha256",
+        model_root,
+    )
+    unsafe = chain[component_index]
+    if unsafe_kind == "writable":
+        unsafe.chmod(0o777)
+    else:
+        peer = tmp_path / f"ancestor-{component_index}-peer"
+        unsafe.rename(peer)
+        unsafe.symlink_to(peer, target_is_directory=True)
+
+    result = _run_protected_model_root_measure(store_fast, model_root)
+
+    assert result.returncode == 2
+    assert "not a physical root-owned non-writable directory" in result.stderr
+    assert "next action:" in result.stderr
+
+
 @pytest.mark.parametrize("unsafe_kind", (None, "symlink", "hardlink", "writable"))
 def test_local_judge_model_measurement_is_stable_and_safe(
     tmp_path: Path,

@@ -32,6 +32,9 @@ Model source (already present):
 `~/models/compassverifier-7b/CompassVerifier-7B.Q5_K_M.gguf` (5.4 GB; GGUF
 Q5_K_M). The authorized canary copies it once into a root-owned SHA-addressed
 directory on the existing `/store-fast` NVMe and serves only that protected copy.
+Preflight pins the Samsung volume's XFS UUID
+`5934e619-0f38-4285-8556-5fed21ef7b9a` and carries its live mount ID through
+every staging transition, so a `nofail` mount miss cannot fall through to SATA.
 
 After the merged release containing this protected-model measurement helper is
 the canonical source-activation worktree, and before requesting runtime authority,
@@ -196,6 +199,66 @@ candidate_workload() {
 }
 model_source_path="$HOME/models/compassverifier-7b/${judge_model##*/}"
 model_host_path="$model_host_dir/${judge_model##*/}"
+model_root_keys=(mount store_fast models sha256 digest)
+measure_model_root() {
+  candidate_workload --measure-protected-local-judge-model-root "$model_host_dir"
+}
+model_root_identity() {
+  local evidence="$1" key="$2" value=""
+  local -a matches=()
+  mapfile -t matches < <(printf '%s\n' "$evidence" | sed -n "s/^${key}_identity=//p")
+  if [ "${#matches[@]}" -ne 1 ]; then
+    echo "protected model root evidence has no unique ${key} identity" >&2
+    echo "next action: stop staging and rerun the exact candidate root measurement" >&2
+    return 1
+  fi
+  value="${matches[0]}"
+  if [[ "$value" != missing && ! "$value" =~ ^[0-9]+:[0-9]+$ ]]; then
+    echo "protected model root evidence has an invalid ${key} identity" >&2
+    echo "next action: stop staging and inspect the candidate helper output" >&2
+    return 1
+  fi
+  printf '%s\n' "$value"
+}
+validate_model_root_evidence() {
+  local evidence="$1" key=""
+  for key in "${model_root_keys[@]}"; do
+    model_root_identity "$evidence" "$key" >/dev/null
+  done
+}
+require_complete_model_root() {
+  local evidence="$1" key="" value=""
+  validate_model_root_evidence "$evidence"
+  for key in "${model_root_keys[@]}"; do
+    value="$(model_root_identity "$evidence" "$key")"
+    if [ "$value" = missing ]; then
+      echo "protected model root remains incomplete after directory creation: $key" >&2
+      echo "next action: stop staging and inspect the exact root-owned directory chain" >&2
+      return 1
+    fi
+  done
+}
+verify_model_root_transition() {
+  local before="$1" after="$2" key="" before_id="" after_id=""
+  validate_model_root_evidence "$before"
+  validate_model_root_evidence "$after"
+  for key in "${model_root_keys[@]}"; do
+    before_id="$(model_root_identity "$before" "$key")"
+    after_id="$(model_root_identity "$after" "$key")"
+    if [ "$before_id" != missing ] && [ "$before_id" != "$after_id" ]; then
+      echo "protected model root ancestor changed during staging: $key" >&2
+      echo "next action: stop publication, preserve the partial file, and inspect the root path" >&2
+      return 1
+    fi
+  done
+}
+
+# Authenticate and bind the governed /store-fast mount plus every existing
+# physical root-owned ancestor before the first sudo or Docker mutation.
+# Missing descendants may be created only below that bound chain, then every
+# newly complete ancestor is rebound before content writes.
+model_root_before="$(measure_model_root)"
+validate_model_root_evidence "$model_root_before"
 
 unit=hapax-local-judge.service
 canary_name="hapax-local-judge-cap-canary-$$"
@@ -208,9 +271,6 @@ canary_receipt="$canary_receipt_root/$candidate_sha.env"
 test -d /store-fast/tmp
 test ! -e "$results"
 test ! -e "$canary_cidfile"
-docker pull "$image"
-image_id="$(docker image inspect --format '{{.Id}}' "$image")"
-[[ "$image_id" =~ ^sha256:[0-9a-f]{64}$ ]]
 host="$(hostname)"
 test "$host" = hapax-appendix
 
@@ -224,11 +284,72 @@ if [ ! -e "$model_host_path" ] && [ ! -L "$model_host_path" ]; then
   (( (8#$source_mode & 022) == 0 ))
   sudo /usr/bin/install -d -o root -g root -m 0755 \
     /store-fast/hapax-models /store-fast/hapax-models/sha256 "$model_host_dir"
+  model_root_after_create="$(measure_model_root)"
+  require_complete_model_root "$model_root_after_create"
+  verify_model_root_transition "$model_root_before" "$model_root_after_create"
+  model_root_bound="$model_root_after_create"
   model_stage="$model_host_dir/.${judge_model##*/}.partial.$$"
+  if ! sudo /usr/bin/python3 -I - "$model_stage" <<'LOCAL_JUDGE_MODEL_STAGE_CREATE_PY'
+from __future__ import annotations
+
+import os
+import stat
+import sys
+
+path = sys.argv[1]
+if os.geteuid() != 0:
+    print(
+        "protected model stage creator is not root; "
+        "next action: restore the authorized sudo boundary before staging",
+        file=sys.stderr,
+    )
+    raise SystemExit(2)
+flags = os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_CLOEXEC | os.O_NOFOLLOW
+try:
+    fd = os.open(path, flags, 0o600)
+    try:
+        os.fchmod(fd, 0o600)
+        inode = os.fstat(fd)
+    finally:
+        os.close(fd)
+except OSError as exc:
+    print(
+        f"cannot atomically create protected model stage: {exc}; "
+        "next action: quarantine any stale partial and rerun the exact-SHA canary",
+        file=sys.stderr,
+    )
+    raise SystemExit(2) from exc
+if (
+    not stat.S_ISREG(inode.st_mode)
+    or inode.st_uid != 0
+    or inode.st_nlink != 1
+    or stat.S_IMODE(inode.st_mode) != 0o600
+    or inode.st_size != 0
+):
+    print(
+        "protected model stage did not retain root ownership, one link, mode 0600, and zero size; "
+        "next action: remove only this partial and inspect the target filesystem",
+        file=sys.stderr,
+    )
+    raise SystemExit(2)
+LOCAL_JUDGE_MODEL_STAGE_CREATE_PY
+  then
+    echo "protected model stage creation refused; no pre-existing path was removed" >&2
+    exit 1
+  fi
   if ! /usr/bin/dd if="$model_source_path" bs=4M iflag=fullblock,nofollow status=none | \
-      sudo /usr/bin/dd of="$model_stage" bs=4M oflag=excl,nofollow status=none; then
+      sudo /usr/bin/dd of="$model_stage" bs=4M oflag=nofollow status=none; then
     sudo /usr/bin/rm -f -- "$model_stage"
     echo "protected model staging failed; rerun after checking source stability" >&2
+    exit 1
+  fi
+  read -r stage_uid stage_mode stage_links stage_size stage_extra \
+    <<<"$(/usr/bin/stat -c '%u %a %h %s' -- "$model_stage")"
+  if [ -n "$stage_extra" ] || [ "$stage_uid" != 0 ] || [ "$stage_mode" != 600 ] \
+      || [ "$stage_links" != 1 ] || [ "$stage_size" != "$expected_model_size_bytes" ]; then
+    sudo /usr/bin/rm -f -- "$model_stage"
+    echo "protected model stage changed before sealing" >&2
+    echo "next action: stop publication, inspect the protected filesystem, and rerun the exact-SHA canary" >&2
     exit 1
   fi
   sudo /usr/bin/chmod 0444 "$model_stage"
@@ -242,8 +363,18 @@ if [ ! -e "$model_host_path" ] && [ ! -L "$model_host_path" ]; then
     echo "next action: quarantine the partial staged file, verify the source model, and rerun this exact-SHA canary" >&2
     exit 1
   fi
+  model_root_before_publish="$(measure_model_root)"
+  require_complete_model_root "$model_root_before_publish"
+  verify_model_root_transition "$model_root_bound" "$model_root_before_publish"
   sudo /usr/bin/mv -T -- "$model_stage" "$model_host_path"
+  model_root_bound="$model_root_before_publish"
+else
+  require_complete_model_root "$model_root_before"
+  model_root_bound="$model_root_before"
 fi
+model_root_after_publish="$(measure_model_root)"
+require_complete_model_root "$model_root_after_publish"
+verify_model_root_transition "$model_root_bound" "$model_root_after_publish"
 model_evidence="$(candidate_workload --measure-protected-local-judge-model "$model_host_path")"
 model_sha256="$(printf '%s\n' "$model_evidence" | sed -n 's/^model_sha256=//p')"
 model_size_bytes="$(printf '%s\n' "$model_evidence" | sed -n 's/^model_size_bytes=//p')"
@@ -255,6 +386,9 @@ if [ "$model_sha256" != "$expected_model_sha256" ] \
   exit 1
 fi
 [[ "$model_identity" =~ ^[0-9]+:[0-9]+:[0-9]+$ ]]
+docker pull "$image"
+image_id="$(docker image inspect --format '{{.Id}}' "$image")"
+[[ "$image_id" =~ ^sha256:[0-9a-f]{64}$ ]]
 
 was_active="$(systemctl --user show "$unit" -p ActiveState --value)"
 case "$was_active" in

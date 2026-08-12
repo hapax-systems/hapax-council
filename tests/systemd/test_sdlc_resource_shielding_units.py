@@ -14,6 +14,7 @@ import pwd
 import re
 import shlex
 import shutil
+import stat
 import subprocess
 from pathlib import Path
 
@@ -578,6 +579,8 @@ def test_local_judge_unit_names_the_protected_model_recheck() -> None:
     assert "only once this release is the" in text
     assert "canonical source-activation worktree" in text
     assert "/store-fast/hapax-models/sha256/" in text
+    assert "Container-internal path only" in text
+    assert "this value never names the mutable host source" in text
     assert 'account_home="$(/usr/bin/getent passwd "$(/usr/bin/id -u)"' in text
     assert "/home/hapax/.cache/hapax/source-activation/worktree" not in text
 
@@ -696,14 +699,58 @@ def test_local_judge_predeploy_canary_gates_exact_cap_installation() -> None:
     assert '"model_sha256=$model_sha256"' in canary
     assert '"model_host_dir=$model_host_dir"' in canary
     assert '"model_identity=$model_identity"' in canary
+    model_root_measure = (
+        'candidate_workload --measure-protected-local-judge-model-root "$model_host_dir"'
+    )
+    assert model_root_measure in canary
+    assert 'model_root_before="$(measure_model_root)"' in canary
+    assert 'model_root_after_create="$(measure_model_root)"' in canary
+    assert 'model_root_before_publish="$(measure_model_root)"' in canary
+    assert 'model_root_after_publish="$(measure_model_root)"' in canary
+    assert 'verify_model_root_transition "$model_root_before" "$model_root_after_create"' in canary
+    assert 'verify_model_root_transition "$model_root_bound" "$model_root_before_publish"' in canary
+    assert 'verify_model_root_transition "$model_root_bound" "$model_root_after_publish"' in canary
     assert "--measure-protected-local-judge-model" in canary
     model_measure = 'model_evidence="$(candidate_workload --measure-protected-local-judge-model'
     assert canary.index(model_measure) < canary.index("docker run --pull=never")
     assert canary.index(model_measure) < canary.index('receipt_tmp="$(mktemp')
     assert "sudo /usr/bin/install -d -o root -g root -m 0755" in canary
+    assert canary.index('model_root_before="$(measure_model_root)"') < canary.index(
+        "sudo /usr/bin/install -d -o root -g root -m 0755"
+    )
+    assert canary.index("sudo /usr/bin/install -d -o root -g root -m 0755") < canary.index(
+        'model_root_after_create="$(measure_model_root)"'
+    )
+    assert canary.index('model_root_after_create="$(measure_model_root)"') < canary.index(
+        'if ! sudo /usr/bin/python3 -I - "$model_stage"'
+    )
+    assert canary.index('if ! sudo /usr/bin/python3 -I - "$model_stage"') < canary.index(
+        'sudo /usr/bin/dd of="$model_stage"'
+    )
+    assert canary.index('sudo /usr/bin/dd of="$model_stage"') < canary.index(
+        'stage_evidence="$(candidate_workload --measure-protected-local-judge-model'
+    )
+    assert canary.index(
+        'stage_evidence="$(candidate_workload --measure-protected-local-judge-model'
+    ) < canary.index('model_root_before_publish="$(measure_model_root)"')
+    assert canary.index('model_root_before_publish="$(measure_model_root)"') < canary.index(
+        'sudo /usr/bin/mv -T -- "$model_stage" "$model_host_path"'
+    )
+    assert canary.index('sudo /usr/bin/mv -T -- "$model_stage" "$model_host_path"') < canary.index(
+        'model_root_after_publish="$(measure_model_root)"'
+    )
+    assert canary.index('model_root_after_publish="$(measure_model_root)"') < canary.index(
+        model_measure
+    )
+    assert canary.index(model_measure) < canary.index('docker pull "$image"')
     assert 'sudo /usr/bin/dd of="$model_stage"' in canary
     assert "iflag=fullblock,nofollow" in canary
-    assert "oflag=excl,nofollow" in canary
+    assert "oflag=nofollow" in canary
+    assert "os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_CLOEXEC | os.O_NOFOLLOW" in canary
+    assert "fd = os.open(path, flags, 0o600)" in canary
+    assert "os.fchmod(fd, 0o600)" in canary
+    assert 'stage_mode" != 600' in canary
+    assert "stage creation refused; no pre-existing path was removed" in canary
     assert 'sudo /usr/bin/chmod 0444 "$model_stage"' in canary
     assert (
         'test "$model_host_dir" = "/store-fast/hapax-models/sha256/$expected_model_sha256"'
@@ -740,6 +787,113 @@ def test_local_judge_predeploy_canary_gates_exact_cap_installation() -> None:
     assert '"$image_id" \\' in canary
     assert text.index(canary_marker) < text.index('release_verify "$sha"')
     assert "a skipped or incomplete staging canary is rejected before" in " ".join(text.split())
+
+
+def test_local_judge_model_stage_creator_is_atomic_mode_0600_and_exclusive(
+    tmp_path: Path,
+) -> None:
+    text = (REPO_ROOT / "docs" / "runbooks" / "local-judge-stack.md").read_text()
+    marker = "<<'LOCAL_JUDGE_MODEL_STAGE_CREATE_PY'\n"
+    source = text.split(marker, 1)[1].split("\nLOCAL_JUDGE_MODEL_STAGE_CREATE_PY", 1)[0]
+    assert "os.geteuid() != 0" in source
+    assert "inode.st_uid != 0" in source
+    assert "fd = os.open(path, flags, 0o600)" in source
+    source = source.replace(
+        "os.geteuid() != 0",
+        "os.geteuid() != os.getuid()",
+        1,
+    ).replace("inode.st_uid != 0", "inode.st_uid != os.getuid()", 1)
+    stage = tmp_path / "model.partial"
+
+    created = subprocess.run(
+        ["/usr/bin/python3", "-I", "-", str(stage)],
+        input=source,
+        text=True,
+        capture_output=True,
+        check=False,
+    )
+
+    assert created.returncode == 0, created.stderr
+    inode = stage.stat()
+    assert stat.S_ISREG(inode.st_mode)
+    assert stat.S_IMODE(inode.st_mode) == 0o600
+    assert inode.st_uid == os.getuid()
+    assert inode.st_nlink == 1
+    assert inode.st_size == 0
+
+    repeated = subprocess.run(
+        ["/usr/bin/python3", "-I", "-", str(stage)],
+        input=source,
+        text=True,
+        capture_output=True,
+        check=False,
+    )
+
+    assert repeated.returncode == 2
+    assert "cannot atomically create protected model stage" in repeated.stderr
+    assert "next action:" in repeated.stderr
+    assert stage.stat().st_ino == inode.st_ino
+
+
+def test_local_judge_model_root_transition_functions_fail_on_bound_identity_change() -> None:
+    text = (REPO_ROOT / "docs" / "runbooks" / "local-judge-stack.md").read_text()
+    start = text.index("model_root_keys=(mount store_fast models sha256 digest)")
+    end = text.index("# Authenticate and bind the governed /store-fast mount", start)
+    functions = text[start:end]
+    before = "\n".join(
+        (
+            "mount_identity=101:11",
+            "store_fast_identity=11:12",
+            "models_identity=missing",
+            "sha256_identity=missing",
+            "digest_identity=missing",
+        )
+    )
+    complete = "\n".join(
+        (
+            "mount_identity=101:11",
+            "store_fast_identity=11:12",
+            "models_identity=11:13",
+            "sha256_identity=11:14",
+            "digest_identity=11:15",
+        )
+    )
+    accepted = subprocess.run(
+        ["/usr/bin/bash", "--noprofile", "--norc"],
+        input=(
+            "set -euo pipefail\n"
+            f"{functions}\n"
+            f"before={shlex.quote(before)}\n"
+            f"after={shlex.quote(complete)}\n"
+            'require_complete_model_root "$after"\n'
+            'verify_model_root_transition "$before" "$after"\n'
+        ),
+        text=True,
+        capture_output=True,
+        check=False,
+    )
+    assert accepted.returncode == 0, accepted.stderr
+
+    for key, changed in (
+        ("mount", complete.replace("mount_identity=101:11", "mount_identity=102:11")),
+        ("models", complete.replace("models_identity=11:13", "models_identity=11:99")),
+    ):
+        refused = subprocess.run(
+            ["/usr/bin/bash", "--noprofile", "--norc"],
+            input=(
+                "set -euo pipefail\n"
+                f"{functions}\n"
+                f"before={shlex.quote(complete)}\n"
+                f"after={shlex.quote(changed)}\n"
+                'verify_model_root_transition "$before" "$after"\n'
+            ),
+            text=True,
+            capture_output=True,
+            check=False,
+        )
+        assert refused.returncode != 0
+        assert f"protected model root ancestor changed during staging: {key}" in refused.stderr
+        assert "next action:" in refused.stderr
 
 
 def test_local_judge_activation_is_separately_authority_gated() -> None:
