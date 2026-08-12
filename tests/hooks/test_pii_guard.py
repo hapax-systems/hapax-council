@@ -649,6 +649,13 @@ class TestBashCommandsAreScanned:
     case, which is how the original exposure was written, and cannot see
     content assembled from variables or read from another file. The limit is
     asserted here so nobody reads this class as full coverage.
+
+    The shell path runs the SAME battery as the Edit path. Its first version
+    ran its own pair of patterns while Edit ran five, so a registered
+    household name in `echo "..." > file` passed while the identical string
+    through Edit blocked — which tool a caller reached for decided whether a
+    child's name was protected. Divergent guards for one hazard are worse
+    than a single gap, because the gap at least behaves the same way twice.
     """
 
     def test_blocks_an_age_in_a_shell_command(self, tmp_path: Path) -> None:
@@ -671,6 +678,32 @@ class TestBashCommandsAreScanned:
             cwd=tmp_path,
         )
         assert result.returncode == 2
+
+    def test_a_registered_name_in_a_shell_command_is_blocked(self, tmp_path: Path) -> None:
+        """The divergence, pinned. This passed while the same string via Edit blocked."""
+        names = _names_file(tmp_path, "Wilhelmina\n")
+        result = _run_with_names(
+            {
+                "tool_name": "Bash",
+                "tool_input": {"command": 'echo "note from Wilhelmina" > docs/x.md'},
+            },
+            cwd=tmp_path,
+            names_file=names,
+        )
+        assert result.returncode == 2, result.stdout + result.stderr
+        assert "Registered household name" in result.stderr
+
+    def test_a_name_paren_age_in_a_shell_command_is_blocked(self, tmp_path: Path) -> None:
+        """The other check the shell path did not have."""
+        result = _run(
+            {
+                "tool_name": "Bash",
+                "tool_input": {"command": f'echo "Wilhelmina ({MINOR_AGE_MID})" > docs/x.md'},
+            },
+            cwd=tmp_path,
+        )
+        assert result.returncode == 2, result.stdout + result.stderr
+        assert "age disclosure" in result.stderr
 
     def test_allows_an_ordinary_shell_command(self, tmp_path: Path) -> None:
         result = _run(

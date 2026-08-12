@@ -49,23 +49,19 @@ case "$tool_name" in
   *) exit 0 ;;
 esac
 
+# ONE CHECK SET, NOT TWO. The first Bash arm ran its own pair of patterns — operator name and
+# prose age — while the Edit path ran five, including the registered-name list and `Name (NN)`.
+# Two guards for one hazard is the smell this file keeps re-teaching, and DIVERGENT guards are
+# worse than one: a registered household name in `echo "..." > file` passed while the same string
+# through Edit blocked, so which tool a caller reached for decided whether a child's name was
+# protected. That is not a gap in coverage, it is a coin flip.
+#
+# A Bash call therefore becomes (no path, command text) and falls through to the SAME battery
+# below. Every check the Edit path gains, the shell path gains with it — by construction, not by
+# somebody remembering to add it twice.
+is_bash_tool=0
 if [ "$tool_name" = "Bash" ]; then
-  bash_command="$(printf '%s' "$input" | jq -r '.tool_input.command // empty' 2>/dev/null || true)"
-  [ -n "$bash_command" ] || exit 0
-  bash_blocked=()
-  if grep -qiP 'Ryan\s+Kleeberger' <<<"$bash_command"; then
-    bash_blocked+=("Operator full name in a shell command")
-  fi
-  if grep -qP '\b(?:[1-9]|1[0-9])[- ]year[- ]old\b' <<<"$bash_command"; then
-    bash_blocked+=("Possible age disclosure (N-year-old) in a shell command")
-  fi
-  if [ ${#bash_blocked[@]} -gt 0 ]; then
-    echo "BLOCKED: PII detected in a shell command:" >&2
-    for msg in "${bash_blocked[@]}"; do echo "  - $msg" >&2; done
-    echo "  A shell write reaches tracked files without passing through Edit/Write." >&2
-    exit 2
-  fi
-  exit 0
+  is_bash_tool=1
 fi
 
 # Extract file path.
@@ -77,14 +73,22 @@ fi
 file_path="$(printf '%s' "$input" |
   jq -r '.tool_input.file_path // .tool_input.path // .tool_input.notebook_path // empty' \
   2>/dev/null || true)"
-[ -n "$file_path" ] || exit 0
+if [ "$is_bash_tool" -eq 0 ]; then
+  [ -n "$file_path" ] || exit 0
 
-# Skip files that aren't git-tracked or would be gitignored
-if git rev-parse --is-inside-work-tree &>/dev/null; then
-  # Allow writes to gitignored files (they won't reach GitHub)
-  if git check-ignore -q "$file_path" 2>/dev/null; then
-    exit 0
+  # Skip files that aren't git-tracked or would be gitignored
+  if git rev-parse --is-inside-work-tree &>/dev/null; then
+    # Allow writes to gitignored files (they won't reach GitHub)
+    if git check-ignore -q "$file_path" 2>/dev/null; then
+      exit 0
+    fi
   fi
+else
+  # A shell command has no single target path to gitignore-check: it may write several, or
+  # compute them. Skipping the path-shaped exits is the fail-closed choice — the command text
+  # is still scanned, and a caller cannot opt a shell write out of the guard by aiming it at
+  # something gitignored.
+  file_path="(shell command)"
 fi
 
 # Extract the new content being written.
@@ -92,8 +96,13 @@ fi
 # MultiEdit carries its payload in `edits[].new_string` and NotebookEdit in `new_source`.
 # Neither was read, so both tools fell through the empty-content exit below and returned 0
 # for content Edit would have blocked. Reproduced by direct execution before the fix.
+#
+# `.tool_input.command` is the Bash spelling. Scanning the command TEXT is an honest partial: it
+# catches the literal case, which is how the original exposure was written, and cannot see content
+# assembled from a variable or read from another file. Stated, not papered over.
 new_content="$(printf '%s' "$input" | jq -r '
   [ .tool_input.new_string?, .tool_input.content?, .tool_input.new_source?,
+    .tool_input.command?,
     (.tool_input.edits? // [] | .[]? | .new_string?) ]
   | map(select(type == "string")) | join("\n")
 ' 2>/dev/null || true)"
