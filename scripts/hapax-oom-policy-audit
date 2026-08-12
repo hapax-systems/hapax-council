@@ -4,8 +4,10 @@
 from __future__ import annotations
 
 import argparse
+import errno
 import fcntl
 import functools
+import hashlib
 import json
 import os
 import re
@@ -13,6 +15,7 @@ import socket
 import stat
 import subprocess
 import sys
+import time
 from collections.abc import Iterator
 from contextlib import contextmanager
 from dataclasses import asdict, dataclass
@@ -648,45 +651,124 @@ def _validate_lock_fd(fd: int, parent_fd: int, lock_base: str) -> None:
         )
 
 
+def _state_guard_address(lexical_root: Path) -> bytes:
+    normalized = os.path.abspath(os.path.normpath(lexical_root))
+    material = f"hapax-root-required-state-v1\0{os.geteuid()}\0{normalized}".encode()
+    return b"\0hapax-root-required-v1-" + hashlib.sha256(material).hexdigest()[:40].encode()
+
+
+def _open_generation_guard(inherited_lock: bool) -> tuple[socket.socket, Path]:
+    lexical_raw = os.environ.get(
+        "HAPAX_ROOT_REQUIRED_STATE_LEXICAL_ROOT",
+        str(ROOT_REQUIRED_LOCK_FILE.parent),
+    )
+    lexical_root = Path(os.path.abspath(os.path.normpath(lexical_raw)))
+    if lexical_root != Path(os.path.abspath(os.path.normpath(ROOT_REQUIRED_LOCK_FILE.parent))):
+        raise AuditLockError(
+            "package lock must be the .lock inside its lexical root-required state directory"
+        )
+    expected = _state_guard_address(lexical_root)
+    if inherited_lock:
+        raw = os.environ.get("HAPAX_ROOT_REQUIRED_GENERATION_GUARD_FD", "")
+        try:
+            guard_fd = int(raw)
+        except ValueError as exc:
+            raise AuditLockError("invalid inherited package generation-guard descriptor") from exc
+        if guard_fd < 3:
+            raise AuditLockError("invalid inherited package generation-guard descriptor")
+        try:
+            guard = socket.socket(fileno=os.dup(guard_fd))
+            observed = guard.getsockname()
+        except OSError as exc:
+            raise AuditLockError(
+                f"cannot inspect inherited package generation guard: {exc}"
+            ) from exc
+        if observed != expected:
+            guard.close()
+            raise AuditLockError("inherited package generation guard does not match state root")
+        return guard, lexical_root
+
+    guard = socket.socket(
+        socket.AF_UNIX,
+        socket.SOCK_STREAM | getattr(socket, "SOCK_CLOEXEC", 0),
+    )
+    while True:
+        try:
+            guard.bind(expected)
+            return guard, lexical_root
+        except OSError as exc:
+            if exc.errno != errno.EADDRINUSE:
+                guard.close()
+                raise AuditLockError(
+                    f"cannot acquire package state-generation guard: {exc}"
+                ) from exc
+            time.sleep(0.05)
+
+
+def _validate_state_generation(parent_fd: int, lexical_root: Path, inherited: bool) -> None:
+    try:
+        parent_inode = os.fstat(parent_fd)
+        published = os.stat(lexical_root, follow_symlinks=False)
+        if inherited:
+            state_fd = int(os.environ.get("HAPAX_ROOT_REQUIRED_STATE_FD", ""))
+            inherited_inode = os.fstat(state_fd)
+        else:
+            inherited_inode = parent_inode
+    except (OSError, ValueError) as exc:
+        raise AuditLockError(f"cannot bind package state generation: {exc}") from exc
+    identity = (parent_inode.st_dev, parent_inode.st_ino)
+    if identity != (published.st_dev, published.st_ino) or identity != (
+        inherited_inode.st_dev,
+        inherited_inode.st_ino,
+    ):
+        raise AuditLockError("package state directory changed while acquiring its shared lock")
+
+
 @contextmanager
 def shared_root_required_lock() -> Iterator[None]:
     inherited = os.environ.get("HAPAX_ROOT_REQUIRED_LOCK_FD", "")
     owns_fd = not inherited
-    parent_fd, lock_base = _open_lock_parent()
+    guard, lexical_root = _open_generation_guard(bool(inherited))
     try:
-        if inherited:
-            try:
-                fd = int(inherited)
-            except ValueError as exc:
-                raise AuditLockError("invalid inherited package lock descriptor") from exc
-            if fd < 3:
-                raise AuditLockError("invalid inherited package lock descriptor")
-            lock_mode = os.environ.get("HAPAX_ROOT_REQUIRED_LOCK_MODE", "shared")
-            if lock_mode not in {"shared", "exclusive"}:
-                raise AuditLockError(f"invalid inherited package lock mode: {lock_mode}")
-        else:
-            try:
-                fd = os.open(
-                    lock_base,
-                    os.O_CLOEXEC | os.O_NOFOLLOW | os.O_RDONLY,
-                    dir_fd=parent_fd,
-                )
-            except OSError as exc:
-                raise AuditLockError(
-                    f"cannot open existing safe package lock {ROOT_REQUIRED_LOCK_FILE}: {exc}; "
-                    "run the governed OOM installer to create package state"
-                ) from exc
-            lock_mode = "shared"
+        parent_fd, lock_base = _open_lock_parent()
         try:
-            _validate_lock_fd(fd, parent_fd, lock_base)
-            fcntl.flock(fd, fcntl.LOCK_EX if lock_mode == "exclusive" else fcntl.LOCK_SH)
-            _validate_lock_fd(fd, parent_fd, lock_base)
-            yield
+            _validate_state_generation(parent_fd, lexical_root, bool(inherited))
+            if inherited:
+                try:
+                    fd = int(inherited)
+                except ValueError as exc:
+                    raise AuditLockError("invalid inherited package lock descriptor") from exc
+                if fd < 3:
+                    raise AuditLockError("invalid inherited package lock descriptor")
+                lock_mode = os.environ.get("HAPAX_ROOT_REQUIRED_LOCK_MODE", "shared")
+                if lock_mode not in {"shared", "exclusive"}:
+                    raise AuditLockError(f"invalid inherited package lock mode: {lock_mode}")
+            else:
+                try:
+                    fd = os.open(
+                        lock_base,
+                        os.O_CLOEXEC | os.O_NOFOLLOW | os.O_RDONLY,
+                        dir_fd=parent_fd,
+                    )
+                except OSError as exc:
+                    raise AuditLockError(
+                        f"cannot open existing safe package lock {ROOT_REQUIRED_LOCK_FILE}: {exc}; "
+                        "run the governed OOM installer to create package state"
+                    ) from exc
+                lock_mode = "shared"
+            try:
+                _validate_lock_fd(fd, parent_fd, lock_base)
+                fcntl.flock(fd, fcntl.LOCK_EX if lock_mode == "exclusive" else fcntl.LOCK_SH)
+                _validate_lock_fd(fd, parent_fd, lock_base)
+                _validate_state_generation(parent_fd, lexical_root, bool(inherited))
+                yield
+            finally:
+                if owns_fd:
+                    os.close(fd)
         finally:
-            if owns_fd:
-                os.close(fd)
+            os.close(parent_fd)
     finally:
-        os.close(parent_fd)
+        guard.close()
 
 
 def _systemctl() -> str:
@@ -2082,6 +2164,7 @@ def main(argv: list[str] | None = None) -> int:
     )
     args = parser.parse_args(argv)
     policy_authority = "unresolved"
+    report_policy_authority = True
 
     try:
         if _sealed_package_profile_table() is not None and not args.host_policy_lines:
@@ -2090,8 +2173,46 @@ def main(argv: list[str] | None = None) -> int:
                 "next action: run the installed recurring audit without sealed package selectors"
             )
         _reject_installed_test_selectors()
-        policy_authority = _policy_authority_label(_profile_table_path())
-        policy = derive_host_policy()
+        if args.host_policy_lines:
+            policy_authority = _policy_authority_label(_profile_table_path())
+            policy = derive_host_policy()
+            print(_policy_lines(policy, policy_authority))
+            return _audit_exit_code(_policy_authority_checks(policy_authority))
+        with shared_root_required_lock():
+            policy_authority = _policy_authority_label(_profile_table_path())
+            policy = derive_host_policy()
+            checks = [
+                Check(
+                    "root_required_package_lock",
+                    "pass",
+                    "shared package lock held during readback",
+                    str(ROOT_REQUIRED_LOCK_FILE),
+                ),
+                Check(
+                    "host_memory_policy",
+                    "pass",
+                    "derived ceilings below physical RAM",
+                    f"{policy.profile}:{policy.physical_bytes}",
+                ),
+                *audit_zram(policy),
+                *audit_docker_limits(),
+                audit_user_manager(args.uid),
+                audit_user_manager_policy(args.uid),
+                audit_user_manager_live_score(args.uid),
+                *audit_recovery_system_units(),
+                *audit_sshd_policy(),
+                *audit_system_slice_reservation(),
+                *audit_user_slice_reservation(),
+                *audit_loaded_memory_dropin_ownership(args.uid),
+                *audit_system_memory_unit(f"user-{args.uid}.slice", policy),
+                *audit_system_memory_unit(f"user@{args.uid}.service", policy),
+                *audit_app_slice(policy),
+                *audit_session_slice(),
+                *audit_user_child_floor_composition(args.uid),
+                *audit_protected_user_units(policy),
+                audit_residual_user_process_protection(args.uid, policy),
+                *audit_tmux_scopes(),
+            ]
     except HostPolicyError as exc:
         checks = [
             Check(
@@ -2102,55 +2223,19 @@ def main(argv: list[str] | None = None) -> int:
                 f"{exc}; {NEXT_OOM_INSTALL}",
             )
         ]
-    else:
-        if args.host_policy_lines:
-            print(_policy_lines(policy, policy_authority))
-            return _audit_exit_code(_policy_authority_checks(policy_authority))
-        try:
-            with shared_root_required_lock():
-                checks = [
-                    Check(
-                        "root_required_package_lock",
-                        "pass",
-                        "shared package lock held during readback",
-                        str(ROOT_REQUIRED_LOCK_FILE),
-                    ),
-                    Check(
-                        "host_memory_policy",
-                        "pass",
-                        "derived ceilings below physical RAM",
-                        f"{policy.profile}:{policy.physical_bytes}",
-                    ),
-                    *audit_zram(policy),
-                    *audit_docker_limits(),
-                    audit_user_manager(args.uid),
-                    audit_user_manager_policy(args.uid),
-                    audit_user_manager_live_score(args.uid),
-                    *audit_recovery_system_units(),
-                    *audit_sshd_policy(),
-                    *audit_system_slice_reservation(),
-                    *audit_user_slice_reservation(),
-                    *audit_loaded_memory_dropin_ownership(args.uid),
-                    *audit_system_memory_unit(f"user-{args.uid}.slice", policy),
-                    *audit_system_memory_unit(f"user@{args.uid}.service", policy),
-                    *audit_app_slice(policy),
-                    *audit_session_slice(),
-                    *audit_user_child_floor_composition(args.uid),
-                    *audit_protected_user_units(policy),
-                    audit_residual_user_process_protection(args.uid, policy),
-                    *audit_tmux_scopes(),
-                ]
-        except AuditLockError as exc:
-            checks = [
-                Check(
-                    "root_required_package_lock",
-                    "error",
-                    "shared package lock held during readback",
-                    str(ROOT_REQUIRED_LOCK_FILE),
-                    f"{exc}; {NEXT_OOM_INSTALL}",
-                )
-            ]
-    checks = [*_policy_authority_checks(policy_authority), *checks]
+    except AuditLockError as exc:
+        report_policy_authority = False
+        checks = [
+            Check(
+                "root_required_package_lock",
+                "error",
+                "shared package lock held during readback",
+                str(ROOT_REQUIRED_LOCK_FILE),
+                f"{exc}; {NEXT_OOM_INSTALL}",
+            )
+        ]
+    authority_checks = _policy_authority_checks(policy_authority) if report_policy_authority else []
+    checks = [*authority_checks, *checks]
     if args.json:
         print(
             json.dumps(
