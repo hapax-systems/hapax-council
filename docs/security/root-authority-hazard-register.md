@@ -10,6 +10,11 @@ host-root-held trust anchor. Same-UID files, processes, environment variables,
 memfds, Git objects, receipts, logs, and loopback services are inputs, not
 authority.
 
+The source-only cutoff does not itself stop or replace previously installed
+root mutators. The retained `hapax-oom-score-enforce` service, timer, trigger,
+and sudoers policy therefore remain part of this register. Source conformance
+for those files is not evidence that their installed bytes have been cut over.
+
 | Hazard | Counterexample | Required boundary |
 |---|---|---|
 | Same-UID receipt forgery | Any Hapax process can reproduce another UID 1000 process's receipt bytes, ownership, mode, and directory layout. | Verify a per-request signature rooted in a host-root-held key; bind request ID, exact package SHA, generation, effects, and result. |
@@ -37,6 +42,11 @@ authority.
 | Unreachable source convergence | Deleting or hardening a source unit does not stop an enabled historical installed unit. | Ship an always-reachable retirement transaction that stops, disables/masks, removes artifacts, and reconciles external processes by immutable identity. |
 | False recovery promise | Timers or incident writers can persist a next action that the current source revision has disabled. | Treat recovery-string scans as an exit criterion and point only to an actually reachable, separately authorized successor. |
 | Unbounded diagnostic input | Git, journal, command, or receipt diagnostics can stream attacker-controlled output into logs or memory. | Bound every diagnostic read and preserve a stable actionable cause without interpreting payload content. |
+| Stale installed mutator | Source removes production installation while an older root-owned auditor, enforcer, trigger, timer, or sudoers grant remains active. | Staging must say that it does not reconcile installed bytes; a separately authorized cutover must identify, stop, replace, reload, and attest every retained runtime surface. |
+| Privilege-drop session amplification | A recurring root timer invokes `runuser` or another PAM path for each user-unit query, registering thousands of logind sessions and wedging login I/O. | Read package-owned user cgroups directly from the canonical cgroup v2 tree; never enter the user manager or invoke PAM from the recurring root enforcer. |
+| Cgroup basename ambiguity | A recursive basename search can select `attacker.scope/pipewire.service` or the right unit name under the wrong slice and mutate unrelated same-UID processes. | Resolve only the policy-owned `session.slice` or `app.slice` path plus the explicit direct-child fallback, then recheck each PID's exact `/proc` cgroup before writing. |
+| MainPID-only startup protection | A multi-process protected unit starts children before the trigger and only its reported main process receives the live score. | Enumerate every PID in the exact unit subtree for both recurring and startup paths; startup fails if no matching live PID exists. |
+| Privileged test-selector admission | `HAPAX_*_TEST_MODE`, fake procfs/cgroup roots, or substituted tools survive `sudo` and redirect a root write. | Use a privileged Bash entrypoint, clear shell startup selectors, reject test mode under root/sudo, and reject every declared selector in production even when its value is `0`. |
 
 The counterexamples above remain mandatory review input even though the code
 that exposed them was reverted. Reintroducing production root mutation or

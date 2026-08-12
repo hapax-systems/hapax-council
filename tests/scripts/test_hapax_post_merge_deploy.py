@@ -139,8 +139,8 @@ ROOT_AUDIT_SOURCE_FILES = {
         "ExecStart=/usr/local/sbin/hapax-oom-score-enforce --apply\n"
     ),
     "systemd/units/hapax-oom-score-enforce.timer": (
-        "[Unit]\n# Hapax-Install-Scope: system\n[Timer]\nOnBootSec=30s\n"
-        "OnUnitActiveSec=30s\nUnit=hapax-oom-score-enforce.service\n"
+        "[Unit]\n# Hapax-Install-Scope: system\n[Timer]\nOnBootSec=120s\n"
+        "OnUnitActiveSec=120s\nUnit=hapax-oom-score-enforce.service\n"
     ),
     "systemd/units/app.slice.d/oom-containment.conf": (
         "[Slice]\nMemoryHigh=72G\nMemoryMax=88G\nMemorySwapMax=8G\nMemoryLow=16G\nMemoryMin=8G\n"
@@ -398,8 +398,8 @@ def _effective_safety_unit_show_script(system_dir: Path, user_dir: Path) -> str:
             "hapax-oom-score-enforce.timer",
             system_dir / "hapax-oom-score-enforce.timer",
             "hapax-oom-score-enforce.service",
-            "30s",
-            "30s",
+            "120s",
+            "120s",
         ),
         (
             "user",
@@ -440,6 +440,7 @@ def _root_audit_env(
     drift_rel: str | None = None,
     missing_source_rel: str | None = None,
 ) -> dict[str, str]:
+    tmp_path.mkdir(parents=True, exist_ok=True)
     source_root = tmp_path / "source"
     installed_source = tmp_path / "installed-source"
     root_defer = tmp_path / "no-deferrals"
@@ -456,6 +457,7 @@ def _root_audit_env(
     sudoers_dest = tmp_path / "etc" / "sudoers.d" / "hapax-oom-score-enforce"
     sudoers_reference_dest = tmp_path / "share" / "hapax-oom-score-enforce.sudoers"
     profile_table_dest = tmp_path / "share" / "oom-host-profiles.tsv"
+    zram_generator_dest = tmp_path / "etc" / "systemd" / "zram-generator.conf"
     root_failure_dest = tmp_path / "sbin" / "hapax-root-failure-intake"
     oom_audit_dest = tmp_path / "sbin" / "hapax-oom-policy-audit"
     root_audit_dest = tmp_path / "sbin" / "hapax-root-required-deploy-audit"
@@ -558,6 +560,21 @@ def _root_audit_env(
                 dest.chmod(0o755)
             elif rel == "config/root-required/hapax-oom-score-enforce.sudoers":
                 dest.chmod(0o440)
+    selected_profile_dests = {
+        "config/root-required/oom-host-policy/appendix/app.slice.conf": (
+            user_dir / "app.slice.d" / "oom-containment.conf"
+        ),
+        "config/root-required/oom-host-policy/appendix/user-1000.slice.conf": (
+            system_dir / "user-1000.slice.d" / "oom-containment.conf"
+        ),
+        "config/root-required/oom-host-policy/appendix/user@1000.service.conf": (
+            system_dir / "user@1000.service.d" / "oom.conf"
+        ),
+        "config/root-required/oom-host-policy/appendix/zram-generator.conf": (zram_generator_dest),
+    }
+    for rel, dest in selected_profile_dests.items():
+        dest.parent.mkdir(parents=True, exist_ok=True)
+        dest.write_text(ROOT_AUDIT_SOURCE_FILES[rel], encoding="utf-8")
     sudoers_reference_dest.parent.mkdir(parents=True, exist_ok=True)
     sudoers_reference_dest.write_text(
         ROOT_AUDIT_SOURCE_FILES["config/root-required/hapax-oom-score-enforce.sudoers"],
@@ -592,6 +609,7 @@ def _root_audit_env(
         "HAPAX_OOM_SUDOERS_DEST": str(sudoers_dest),
         "HAPAX_OOM_SUDOERS_REFERENCE_DEST": str(sudoers_reference_dest),
         "HAPAX_OOM_PROFILE_TABLE_DEST": str(profile_table_dest),
+        "HAPAX_OOM_ZRAM_GENERATOR_DEST": str(zram_generator_dest),
         "HAPAX_OOM_SUDOERS_OWNER_UID": str(os.getuid()),
         "HAPAX_OOM_SUDOERS_OWNER_GID": str(os.getgid()),
         "HAPAX_ROOT_FAILURE_INTAKE_DEST": str(root_failure_dest),
@@ -611,6 +629,9 @@ def _root_audit_env(
         "HAPAX_ROOT_AUDIT_APCACCESS": str(fake_apcaccess),
         "HAPAX_ROOT_AUDIT_SUDO": str(fake_sudo),
         "HAPAX_ROOT_AUDIT_VISUDO": str(fake_visudo),
+        "HAPAX_ROOT_AUDIT_TEST_MODE": "1",
+        "HAPAX_ROOT_AUDIT_HOSTNAME": "hapax-appendix",
+        "HAPAX_ROOT_AUDIT_MEMTOTAL_KIB": str(60 * 1024**2),
         "HAPAX_TEST_ROOT_AUDIT_SUDO_CALLS": str(sudo_calls),
         "HAPAX_POST_MERGE_ROOT_DEFER_DIR": str(root_defer),
     }
@@ -982,7 +1003,7 @@ def test_p0_oom_deploy_validates_and_stages_desired_evidence_without_runtime_mut
             "[Unit]\n# Hapax-Install-Scope: system\n[Service]\nType=oneshot\nExecStart=/usr/local/sbin/hapax-oom-score-enforce --apply\n"
         ),
         "systemd/units/hapax-oom-score-enforce.timer": (
-            "[Unit]\n# Hapax-Install-Scope: system\n[Timer]\nOnBootSec=30s\nOnUnitActiveSec=30s\n"
+            "[Unit]\n# Hapax-Install-Scope: system\n[Timer]\nOnBootSec=120s\nOnUnitActiveSec=120s\n"
         ),
         **P0_OOM_AUDIT_FILES,
         "systemd/units/app.slice.d/oom-containment.conf": (
@@ -1038,6 +1059,8 @@ def test_p0_oom_deploy_validates_and_stages_desired_evidence_without_runtime_mut
     runbook = (deferred / "RUNBOOK.txt").read_text(encoding="utf-8")
     assert "non-authoritative desired-state evidence" in runbook
     assert "runtime-authorized root-broker" in runbook
+    assert "does not replace, stop, or otherwise reconcile an already installed" in runbook
+    assert "historical mutating semantics" in runbook
     assert "sudo -v" not in runbook
     assert "--install/--verify-live" in runbook
     assert stale_deferral.exists(), (
@@ -1051,6 +1074,13 @@ def test_p0_oom_deploy_validates_and_stages_desired_evidence_without_runtime_mut
     record = json.loads(trace_path.read_text(encoding="utf-8").splitlines()[-1])
     assert set(record["deploy_groups"]["oom_containment"]) == set(files)
     assert record["deploy_groups"]["systemd_dropins"] == []
+    assert record["status"] == "completed_with_runtime_deferral"
+    assert record["manual_deploy_needed"] is True
+    assert record["manual_deploy_executed"] is False
+    assert record["runtime_deferred"] == [f"oom-containment:{sha}"]
+    assert record["avsdlc"]["runtime_media_witness_required"] is False
+    assert record["avsdlc"]["runtime_media_witness_groups"] == []
+    assert "no manual deploys needed" not in result.stdout
 
 
 def test_p0_oom_staging_rejects_non_normalized_manifest_path_before_receipt(
@@ -1089,6 +1119,156 @@ def test_p0_oom_staging_rejects_non_normalized_manifest_path_before_receipt(
     assert not (
         home / ".local/state/hapax/root-required/desired-receipts/oom-containment.sha"
     ).exists()
+
+
+@pytest.mark.parametrize("preexisting_receipt", (False, True))
+def test_p0_oom_semantic_validation_precedes_desired_receipt_publication(
+    tmp_path: Path,
+    preexisting_receipt: bool,
+) -> None:
+    files = {
+        relative: (REPO_ROOT / relative).read_text(encoding="utf-8")
+        for relative in (
+            line for line in OOM_PACKAGE_MANIFEST.splitlines() if line and not line.startswith("#")
+        )
+    }
+    profile = "config/root-required/oom-host-profiles.tsv"
+    files[profile] = files[profile].replace(
+        "hapax-appendix\t59\t61",
+        "hapax-appendix\t59\t124",
+        1,
+    )
+    repo, sha = _repo_with_linear_commit(tmp_path, files)
+    home = tmp_path / "home"
+    receipt = home / ".local/state/hapax/root-required/desired-receipts/oom-containment.sha"
+    if preexisting_receipt:
+        receipt.parent.mkdir(parents=True)
+        receipt.write_text("preserve-this-invalid-sentinel\n", encoding="utf-8")
+
+    result = subprocess.run(
+        [str(SCRIPT), sha],
+        text=True,
+        capture_output=True,
+        check=False,
+        env={
+            **os.environ,
+            "HOME": str(home),
+            "REPO": str(repo),
+            "HAPAX_POST_MERGE_TRACE_PATH": str(tmp_path / "trace.jsonl"),
+            "HAPAX_POST_MERGE_ROOT_DEFER_DIR": str(tmp_path / "deferrals"),
+        },
+        timeout=30,
+    )
+
+    assert result.returncode == 1
+    assert "host profile intervals overlap" in result.stderr
+    if preexisting_receipt:
+        assert receipt.read_text(encoding="utf-8") == "preserve-this-invalid-sentinel\n"
+    else:
+        assert not receipt.exists()
+
+
+@pytest.mark.parametrize("installed_state", ("mask", "historical-file"))
+def test_historical_local_judge_change_is_always_runtime_deferred(
+    tmp_path: Path,
+    installed_state: str,
+) -> None:
+    package_files = {
+        relative: (REPO_ROOT / relative).read_text(encoding="utf-8")
+        for relative in (
+            line for line in OOM_PACKAGE_MANIFEST.splitlines() if line and not line.startswith("#")
+        )
+    }
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    _git(repo, "init", "-b", "main")
+    _git(repo, "config", "user.email", "trace-test@example.test")
+    _git(repo, "config", "user.name", "Trace Test")
+    for relative, body in package_files.items():
+        path = repo / relative
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(body, encoding="utf-8")
+        if body.startswith("#!"):
+            path.chmod(0o755)
+    manifest = repo / "config/root-required/oom-containment.files"
+    manifest.write_text(
+        OOM_PACKAGE_MANIFEST + "systemd/units/hapax-local-judge.service\n",
+        encoding="utf-8",
+    )
+    historical_unit = repo / "systemd/units/hapax-local-judge.service"
+    historical_unit.parent.mkdir(parents=True, exist_ok=True)
+    historical_unit.write_text(
+        "[Service]\nExecStart=/usr/bin/docker run --name hapax-local-judge mutable\n",
+        encoding="utf-8",
+    )
+    _git(repo, "add", ".")
+    _git(repo, "commit", "-m", "historical judge package")
+
+    manifest.write_text(OOM_PACKAGE_MANIFEST, encoding="utf-8")
+    historical_unit.unlink()
+    _git(repo, "add", "-A")
+    _git(repo, "commit", "-m", "retire historical judge source")
+    sha = _git(repo, "rev-parse", "HEAD")
+
+    home = tmp_path / "home"
+    installed = home / ".config/systemd/user/hapax-local-judge.service"
+    installed.parent.mkdir(parents=True)
+    if installed_state == "mask":
+        installed.symlink_to("/dev/null")
+    else:
+        installed.write_text("installed historical bytes must be preserved\n", encoding="utf-8")
+    before = os.lstat(installed)
+    dropin = installed.with_name(f"{installed.name}.d") / "override.conf"
+    dropin.parent.mkdir()
+    dropin.write_text("[Service]\nRestart=always\n", encoding="utf-8")
+    bin_dir, systemctl_calls = _fake_systemctl(tmp_path)
+    trace_path = tmp_path / "trace.jsonl"
+
+    result = subprocess.run(
+        [str(SCRIPT), sha],
+        text=True,
+        capture_output=True,
+        check=False,
+        env={
+            **os.environ,
+            "HOME": str(home),
+            "PATH": f"{bin_dir}:{os.environ['PATH']}",
+            "REPO": str(repo),
+            "HAPAX_SYSTEMCTL_CALLS": str(systemctl_calls),
+            "HAPAX_POST_MERGE_TRACE_PATH": str(trace_path),
+            "HAPAX_POST_MERGE_ROOT_DEFER_DIR": str(tmp_path / "deferrals"),
+        },
+        timeout=30,
+    )
+
+    assert result.returncode == 0, result.stderr
+    after = os.lstat(installed)
+    assert (after.st_dev, after.st_ino, after.st_mode) == (
+        before.st_dev,
+        before.st_ino,
+        before.st_mode,
+    )
+    if installed_state == "mask":
+        assert installed.is_symlink()
+        assert os.readlink(installed) == "/dev/null"
+    else:
+        assert installed.read_text(encoding="utf-8") == (
+            "installed historical bytes must be preserved\n"
+        )
+    assert dropin.read_text(encoding="utf-8") == "[Service]\nRestart=always\n"
+    calls = systemctl_calls.read_text(encoding="utf-8") if systemctl_calls.exists() else ""
+    assert "hapax-local-judge.service" not in calls
+    record = json.loads(trace_path.read_text(encoding="utf-8").splitlines()[-1])
+    assert record["deploy_groups"]["systemd_units"] == []
+    assert record["manual_deploy_needed"] is True
+    assert record["manual_deploy_executed"] is False
+    assert record["status"] == "completed_with_runtime_deferral"
+    assert set(record["runtime_deferred"]) == {
+        "local-judge-retirement:systemd/units/hapax-local-judge.service",
+        f"oom-containment:{sha}",
+    }
+    assert record["avsdlc"]["runtime_media_witness_required"] is False
+    assert "no manual deploys needed" not in result.stdout
 
 
 def test_root_packages_install_apcupsd_before_oom_recovery_verification(tmp_path: Path) -> None:
@@ -1338,7 +1518,7 @@ def test_concurrent_same_sha_root_required_oom_deploy_stages_complete_deferral(
             "[Unit]\n# Hapax-Install-Scope: system\n[Service]\nType=oneshot\nExecStart=/usr/local/sbin/hapax-oom-score-enforce --apply\n"
         ),
         "systemd/units/hapax-oom-score-enforce.timer": (
-            "[Unit]\n# Hapax-Install-Scope: system\n[Timer]\nOnBootSec=30s\nOnUnitActiveSec=30s\n"
+            "[Unit]\n# Hapax-Install-Scope: system\n[Timer]\nOnBootSec=120s\nOnUnitActiveSec=120s\n"
         ),
         **P0_OOM_AUDIT_FILES,
         "systemd/units/app.slice.d/oom-containment.conf": (
@@ -1497,6 +1677,70 @@ def test_root_required_audit_binds_profile_source_and_installed_table(tmp_path: 
     assert result.returncode == 1
     assert "oom-host-profiles.tsv differs" in result.stderr
     assert "runtime-authorized root-broker" in result.stderr
+
+
+def test_root_required_audit_compares_the_selected_host_policy_and_zram(
+    tmp_path: Path,
+) -> None:
+    env = _root_audit_env(tmp_path)
+    installed_root = Path(env["HAPAX_ROOT_REQUIRED_INSTALLED_SOURCE_ROOT"])
+    app_dest = Path(env["HAPAX_OOM_SYSTEMD_USER_DIR"]) / "app.slice.d" / "oom-containment.conf"
+    app_dest.write_text(
+        (installed_root / "config/root-required/oom-host-policy/podium/app.slice.conf").read_text(
+            encoding="utf-8"
+        ),
+        encoding="utf-8",
+    )
+
+    result = subprocess.run(
+        [str(ROOT_REQUIRED_AUDIT)],
+        text=True,
+        capture_output=True,
+        check=False,
+        env=env,
+    )
+
+    assert result.returncode == 1
+    assert "oom-host-policy/appendix/app.slice.conf differs" in result.stderr
+    assert str(app_dest) in result.stderr
+
+    podium_root = tmp_path / "podium"
+    podium_env = _root_audit_env(podium_root)
+    podium_env["HAPAX_ROOT_AUDIT_HOSTNAME"] = "hapax-podium"
+    podium_env["HAPAX_ROOT_AUDIT_MEMTOTAL_KIB"] = str(124 * 1024**2)
+    podium_installed = Path(podium_env["HAPAX_ROOT_REQUIRED_INSTALLED_SOURCE_ROOT"])
+    selected = {
+        "app.slice.conf": (
+            Path(podium_env["HAPAX_OOM_SYSTEMD_USER_DIR"]) / "app.slice.d" / "oom-containment.conf"
+        ),
+        "user-1000.slice.conf": (
+            Path(podium_env["HAPAX_OOM_SYSTEMD_SYSTEM_DIR"])
+            / "user-1000.slice.d"
+            / "oom-containment.conf"
+        ),
+        "user@1000.service.conf": (
+            Path(podium_env["HAPAX_OOM_SYSTEMD_SYSTEM_DIR"]) / "user@1000.service.d" / "oom.conf"
+        ),
+        "zram-generator.conf": Path(podium_env["HAPAX_OOM_ZRAM_GENERATOR_DEST"]),
+    }
+    for filename, destination in selected.items():
+        destination.write_text(
+            (podium_installed / "config/root-required/oom-host-policy/podium" / filename).read_text(
+                encoding="utf-8"
+            ),
+            encoding="utf-8",
+        )
+
+    podium_result = subprocess.run(
+        [str(ROOT_REQUIRED_AUDIT)],
+        text=True,
+        capture_output=True,
+        check=False,
+        env=podium_env,
+    )
+
+    assert podium_result.returncode == 0, podium_result.stderr
+    assert "NON-AUTHORITATIVE" in podium_result.stdout
 
 
 def test_root_required_audit_fails_when_canonical_audit_group_is_missing(

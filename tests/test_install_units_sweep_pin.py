@@ -881,6 +881,9 @@ class TestLocalJudgeRetirement:
                   *" rm -f {captured_id}")
                     printf '{replacement_id}\n' > "{container_state}"
                     ;;
+                  *" rm -f {replacement_id}")
+                    : > "{container_state}"
+                    ;;
                   *)
                     exit 97
                     ;;
@@ -929,3 +932,26 @@ class TestLocalJudgeRetirement:
         assert any(f" rm -f {captured_id}" in line for line in event_lines)
         assert not any(f" rm -f {replacement_id}" in line for line in event_lines)
         assert not any(line.startswith("uv ") for line in event_lines)
+
+        retry = subprocess.run(
+            ["bash", str(INSTALL_SCRIPT)],
+            check=False,
+            capture_output=True,
+            text=True,
+            env=env,
+            timeout=30,
+        )
+
+        assert retry.returncode == 0, retry.stderr
+        assert installed.is_symlink()
+        assert os.readlink(installed) == "/dev/null"
+        assert container_state.read_text(encoding="utf-8") == ""
+        retried_events = events.read_text(encoding="utf-8").splitlines()
+        replacement_remove = next(
+            index for index, line in enumerate(retried_events) if f" rm -f {replacement_id}" in line
+        )
+        uv_index = next(
+            index for index, line in enumerate(retried_events) if line.startswith("uv ")
+        )
+        assert replacement_remove < uv_index
+        assert "retired and masked historical local judge" in retry.stdout

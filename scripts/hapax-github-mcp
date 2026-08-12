@@ -1,12 +1,40 @@
-#!/usr/bin/env bash
+#!/usr/bin/bash -p
 # Launch the official local GitHub MCP server without storing tokens in config.
 
 set -euo pipefail
+umask 077
+unset CDPATH ENV BASH_ENV
+unset DOCKER_HOST DOCKER_CONTEXT DOCKER_CONFIG DOCKER_CERT_PATH
+unset DOCKER_TLS DOCKER_TLS_VERIFY DOCKER_API_VERSION
+PATH=/usr/local/sbin:/usr/local/bin:/usr/bin:/bin
+export PATH
+
+if ! PASSWD_ENTRY="$(/usr/bin/getent passwd "$EUID")"; then
+  echo "hapax-github-mcp: cannot resolve account home for uid $EUID; next action: restore the local passwd/NSS entry and rerun" >&2
+  exit 2
+fi
+IFS=: read -r _ _ PASSWD_UID _ _ ACCOUNT_HOME _ <<<"$PASSWD_ENTRY"
+ACCOUNT_HOME_MODE="$(/usr/bin/stat -c %a -- "$ACCOUNT_HOME" 2>/dev/null || true)"
+if [ "$PASSWD_UID" != "$EUID" ] || [ -z "$ACCOUNT_HOME" ] \
+  || [ ! -d "$ACCOUNT_HOME" ] || [ -L "$ACCOUNT_HOME" ] \
+  || [ "$(/usr/bin/stat -c %u -- "$ACCOUNT_HOME" 2>/dev/null)" != "$EUID" ] \
+  || ! [[ "$ACCOUNT_HOME_MODE" =~ ^[0-7]+$ ]] \
+  || [ "$((8#$ACCOUNT_HOME_MODE & 8#022))" -ne 0 ]; then
+  echo "hapax-github-mcp: unsafe passwd-derived account home for uid $EUID; next action: repair the account home ownership/path before launching the MCP server" >&2
+  exit 2
+fi
+if [ "${HOME:-}" != "$ACCOUNT_HOME" ]; then
+  echo "hapax-github-mcp: refusing ambient HOME=${HOME:-unset}; expected $ACCOUNT_HOME; next action: remove the HOME override and rerun from the canonical account" >&2
+  exit 2
+fi
+HOME="$ACCOUNT_HOME"
+export HOME
+unset XDG_CACHE_HOME
 
 pass_first_line() {
   local name="$1"
-  command -v pass >/dev/null 2>&1 || return 1
-  pass show "$name" 2>/dev/null | sed -n '1p'
+  [ -x /usr/bin/pass ] || return 1
+  /usr/bin/pass show "$name" 2>/dev/null | /usr/bin/sed -n '1p'
 }
 
 load_first_available_pass_secret() {
@@ -29,9 +57,9 @@ load_bearer_from_claude_mcp() {
   local server="$2"
   [ -n "${!env_name:-}" ] && return 0
   [ -r "$HOME/.claude.json" ] || return 1
-  command -v jq >/dev/null 2>&1 || return 1
+  [ -x /usr/bin/jq ] || return 1
   local header token
-  header="$(jq -r --arg server "$server" '.mcpServers[$server].headers.Authorization // empty' "$HOME/.claude.json" 2>/dev/null || true)"
+  header="$(/usr/bin/jq -r --arg server "$server" '.mcpServers[$server].headers.Authorization // empty' "$HOME/.claude.json" 2>/dev/null || true)"
   case "$header" in
     "Bearer "*)
       token="${header#Bearer }"
@@ -50,9 +78,9 @@ load_bearer_from_claude_mcp() {
 load_github_token_from_gh() {
   local env_name="$1"
   [ -n "${!env_name:-}" ] && return 0
-  command -v gh >/dev/null 2>&1 || return 1
+  [ -x /usr/bin/gh ] || return 1
   local value
-  value="$(gh auth token 2>/dev/null || true)"
+  value="$(/usr/bin/gh auth token 2>/dev/null || true)"
   if [ -n "$value" ]; then
     export "$env_name=$value"
     return 0
@@ -80,10 +108,11 @@ if [ -z "${GITHUB_PERSONAL_ACCESS_TOKEN:-}" ]; then
   exit 2
 fi
 
-LOG_DIR="${XDG_CACHE_HOME:-$HOME/.cache}/hapax/mcp-logs"
-mkdir -p "$LOG_DIR"
+LOG_DIR="$HOME/.cache/hapax/mcp-logs"
+/usr/bin/mkdir -p "$LOG_DIR"
+/usr/bin/chmod 0700 "$LOG_DIR"
 LOG_FILE="$LOG_DIR/github-mcp.log"
-CONTAINER_NAME="hapax-github-mcp-$USER-$$"
+CONTAINER_NAME="hapax-github-mcp-$EUID-$$"
 TOOLS="${HAPAX_GITHUB_MCP_TOOLS:-search_pull_requests,pull_request_read,merge_pull_request,add_issue_comment,create_pull_request}"
 FILTER_ARGS=()
 if [ -n "${HAPAX_GITHUB_MCP_TOOLSETS:-}" ]; then
@@ -94,15 +123,116 @@ else
   FILTER_ARGS=("--toolsets=pull_requests,issues")
 fi
 
-cleanup() {
-  docker rm -f "$CONTAINER_NAME" >/dev/null 2>&1 || true
+local_docker() {
+  (
+    set +e
+    /usr/bin/timeout --signal=KILL --kill-after=1s 5s \
+      /usr/bin/env -i \
+      HOME=/nonexistent \
+      PATH=/usr/bin:/bin \
+      LANG=C \
+      LC_ALL=C \
+      /usr/bin/docker \
+      --host=unix:///var/run/docker.sock \
+      --config=/nonexistent/hapax-github-mcp-docker \
+      "$@" 2>&1 | /usr/bin/head -c 1025
+    statuses=("${PIPESTATUS[@]}")
+    [ "${statuses[0]}" -eq 0 ] && [ "${statuses[1]}" -eq 0 ]
+  )
 }
-trap cleanup EXIT INT TERM HUP
 
-docker run -i --rm \
+launch_local_docker() {
+  /usr/bin/env -i \
+    HOME=/nonexistent \
+    PATH=/usr/bin:/bin \
+    LANG=C \
+    LC_ALL=C \
+    GITHUB_PERSONAL_ACCESS_TOKEN="$GITHUB_PERSONAL_ACCESS_TOKEN" \
+    /usr/bin/docker \
+    --host=unix:///var/run/docker.sock \
+    --config=/nonexistent/hapax-github-mcp-docker \
+    "$@"
+}
+
+bounded_reason() {
+  local reason="$1"
+  reason="${reason//$'\n'/ }"
+  reason="${reason//$'\r'/ }"
+  reason="${reason//$'\t'/ }"
+  /usr/bin/printf '%.320s' "$reason"
+}
+
+cleanup_failure() {
+  local message="$1"
+  /usr/bin/printf '%s\n' "$message" >&2
+  /usr/bin/printf '%s %s\n' "$(/usr/bin/date -u +%Y-%m-%dT%H:%M:%SZ)" "$message" \
+    >>"$LOG_FILE" 2>/dev/null || true
+}
+
+CID_DIR="$(/usr/bin/mktemp -d -p "$LOG_DIR" github-mcp.XXXXXXXXXX)"
+CID_FILE="$CID_DIR/container.cid"
+if [ "$(/usr/bin/stat -c %u -- "$CID_DIR")" != "$EUID" ] \
+  || [ "$(/usr/bin/stat -c %a -- "$CID_DIR")" != "700" ]; then
+  echo "hapax-github-mcp: unsafe immutable-ID scratch directory: $CID_DIR" >&2
+  exit 2
+fi
+
+cleanup() {
+  local rc=$?
+  local cid="" matches="" remove_error="" recheck=""
+  local cleanup_failed=0
+  trap - EXIT
+  set +e
+
+  if [ -e "$CID_FILE" ] || [ -L "$CID_FILE" ]; then
+    if [ ! -f "$CID_FILE" ] || [ -L "$CID_FILE" ] \
+      || [ "$(/usr/bin/stat -c %u -- "$CID_FILE" 2>/dev/null)" != "$EUID" ] \
+      || [ "$(/usr/bin/stat -c %h -- "$CID_FILE" 2>/dev/null)" != "1" ] \
+      || [ "$(/usr/bin/stat -c %s -- "$CID_FILE" 2>/dev/null)" != "64" ] \
+      || ! cid="$(/usr/bin/cat -- "$CID_FILE")" \
+      || ! [[ "$cid" =~ ^[0-9a-f]{64}$ ]]; then
+      cleanup_failed=1
+      cleanup_failure "hapax-github-mcp: refused unsafe immutable-ID scratch $CID_FILE; next action: inspect the retained scratch and local Docker inventory, then remove only a proven full container ID"
+    elif ! matches="$(local_docker ps -aq --no-trunc --filter "id=$cid" 2>&1)"; then
+      cleanup_failed=1
+      cleanup_failure "hapax-github-mcp: cannot prove cleanup state for immutable ID $cid: $(bounded_reason "$matches"); next action: restore the pinned local Docker socket and inspect that exact ID; retained scratch: $CID_FILE"
+    elif [ -n "$matches" ] && [ "$matches" != "$cid" ]; then
+      cleanup_failed=1
+      cleanup_failure "hapax-github-mcp: Docker returned an unexpected identity while cleaning $cid; next action: inspect the retained scratch and full local inventory without removing by name; retained scratch: $CID_FILE"
+    elif [ "$matches" = "$cid" ]; then
+      remove_error="$(local_docker rm -f "$cid" 2>&1)"
+      if ! recheck="$(local_docker ps -aq --no-trunc --filter "id=$cid" 2>&1)"; then
+        cleanup_failed=1
+        cleanup_failure "hapax-github-mcp: immutable-ID cleanup for $cid could not be rechecked: $(bounded_reason "$remove_error $recheck"); next action: restore Docker and inspect that exact ID; retained scratch: $CID_FILE"
+      elif [ -n "$recheck" ]; then
+        cleanup_failed=1
+        cleanup_failure "hapax-github-mcp: immutable-ID cleanup failed and $cid remains: $(bounded_reason "$remove_error"); next action: inspect and remove that exact ID without using its name; retained scratch: $CID_FILE"
+      fi
+    fi
+  fi
+
+  if [ "$cleanup_failed" -eq 0 ]; then
+    /usr/bin/rm -f -- "$CID_FILE"
+    /usr/bin/rmdir -- "$CID_DIR" || {
+      cleanup_failed=1
+      cleanup_failure "hapax-github-mcp: container absence is proven but scratch cleanup failed: $CID_DIR; next action: inspect and remove only this account-owned directory"
+    }
+  fi
+  if [ "$cleanup_failed" -ne 0 ] && [ "$rc" -eq 0 ]; then
+    rc=2
+  fi
+  exit "$rc"
+}
+trap cleanup EXIT
+trap 'exit 130' INT
+trap 'exit 143' TERM
+trap 'exit 129' HUP
+
+launch_local_docker run -i --rm \
+  --cidfile "$CID_FILE" \
   --name "$CONTAINER_NAME" \
-  --memory 512m \
-  --memory-swap 768m \
+  --memory 512M \
+  --memory-swap 768M \
   --log-driver none \
   --stop-timeout 1 \
   -e GITHUB_PERSONAL_ACCESS_TOKEN \

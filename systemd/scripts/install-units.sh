@@ -168,8 +168,15 @@ retire_historical_local_judge() {
     local name="hapax-local-judge.service"
     local dest="$DEST_DIR/$name"
     local historical=0
+    local already_masked=0
     if [ -e "$dest" ] || [ -L "$dest" ]; then
-        if ! { [ -L "$dest" ] && [ "$(readlink "$dest")" = "/dev/null" ]; }; then
+        if [ -L "$dest" ] && [ "$(readlink "$dest")" = "/dev/null" ]; then
+            # A mask can be the residue of a failed first retirement after the
+            # unit was disabled but before immutable-ID Docker cleanup. Keep
+            # reconciling until both the unit and container absence converge.
+            already_masked=1
+            historical=1
+        else
             historical=1
         fi
     fi
@@ -206,9 +213,11 @@ retire_historical_local_judge() {
         echo "ERROR: could not disable the historical local-judge unit" >&2
         return 2
     fi
-    if ! rm -f "$dest"; then
-        echo "ERROR: could not remove the historical local-judge unit" >&2
-        return 2
+    if [ "$already_masked" -eq 0 ]; then
+        if ! rm -f "$dest"; then
+            echo "ERROR: could not remove the historical local-judge unit" >&2
+            return 2
+        fi
     fi
     for wants_link in "$DEST_DIR"/*.wants/"$name"; do
         [ -e "$wants_link" ] || [ -L "$wants_link" ] || continue
@@ -223,9 +232,11 @@ retire_historical_local_judge() {
             return 2
         fi
     fi
-    if ! ln -s /dev/null "$dest"; then
-        echo "ERROR: could not mask the historical local-judge unit" >&2
-        return 2
+    if [ "$already_masked" -eq 0 ]; then
+        if ! ln -s /dev/null "$dest"; then
+            echo "ERROR: could not mask the historical local-judge unit" >&2
+            return 2
+        fi
     fi
     if ! "$systemctl_bin" --user daemon-reload >/dev/null; then
         echo "ERROR: could not reload the user manager after local-judge masking" >&2

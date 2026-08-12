@@ -1,13 +1,9 @@
 #!/usr/bin/bash -p
 # Validate the source-only OOM policy package. Production application is broker-only.
 
-if [[ "${BASH_SOURCE[0]}" != "$0" ]]; then
-    printf '%s\n' "OOM policy validator must be executed, not sourced" >&2
-    return 2 2>/dev/null || exit 2
-fi
-
-# This scan intentionally uses Bash builtins only. Production modes must refuse
-# before source resolution, NSS, locks, command lookup, or filesystem access.
+# This exact prefix intentionally uses Bash builtins only. Production modes must
+# refuse before source resolution, sourcing checks, NSS, locks, command lookup,
+# or filesystem access.
 _production_requested=0
 for _argument in "$@"; do
     case "$_argument" in
@@ -18,9 +14,17 @@ for _argument in "$@"; do
 done
 if [ "$_production_requested" -eq 1 ]; then
     printf '%s\n' "production OOM installation and authoritative live verification are unavailable in this source revision; no source, account, lock, tool, or live-state lookup was attempted; next action: preserve the desired exact-SHA package and dispatch separately runtime-authorized root-broker work against docs/security/root-authority-hazard-register.md" >&2
+    if [[ "${BASH_SOURCE[0]}" != "$0" ]]; then
+        return 77 2>/dev/null || exit 77
+    fi
     exit 77
 fi
 unset _argument _production_requested
+
+if [[ "${BASH_SOURCE[0]}" != "$0" ]]; then
+    printf '%s\n' "OOM policy validator must be executed, not sourced" >&2
+    return 2 2>/dev/null || exit 2
+fi
 
 if [[ "$-" != *p* ]]; then
     printf '%s\n' "OOM policy source validation requires direct privileged-mode Bash execution; next action: execute scripts/install-p0-oom-containment directly" >&2
@@ -163,6 +167,7 @@ def read_profiles(path: Path) -> dict[str, Profile]:
     regular_file(path)
     profiles: dict[str, Profile] = {}
     names: set[str] = set()
+    intervals: list[tuple[int, int, str]] = []
     for line_number, raw_line in enumerate(path.read_text(encoding="utf-8").splitlines(), 1):
         if not raw_line or raw_line.startswith("#"):
             continue
@@ -206,12 +211,20 @@ def read_profiles(path: Path) -> dict[str, Profile]:
             zram_mib,
         )
         names.add(name)
+        intervals.append((min_gib, max_gib, hostname))
 
     actual_hosts = {hostname: profile.name for hostname, profile in profiles.items()}
     if actual_hosts != EXPECTED_HOSTS:
         raise ValidationError(
             f"host profile set must be exactly {EXPECTED_HOSTS}, got {actual_hosts}"
         )
+    ordered = sorted(intervals)
+    for left, right in zip(ordered, ordered[1:], strict=False):
+        if left[1] >= right[0]:
+            raise ValidationError(
+                f"host profile intervals overlap: {left[2]}={left[0]}..{left[1]} and "
+                f"{right[2]}={right[0]}..{right[1]}"
+            )
     return profiles
 
 

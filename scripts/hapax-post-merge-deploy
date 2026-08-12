@@ -523,6 +523,7 @@ record_post_merge_trace() {
     HAPAX_TRACE_SYSTEMD_SYSTEM="$(_trace_join "${SYSTEMD_SYSTEM[@]}")" \
     HAPAX_TRACE_SYSTEMD_DROPINS="$(_trace_join "${SYSTEMD_DROPINS[@]}")" \
     HAPAX_TRACE_OOM_CONTAINMENT="$(_trace_join "${OOM_CONTAINMENT[@]}")" \
+    HAPAX_TRACE_RUNTIME_DEFERRED="$(_trace_join "${RUNTIME_DEFERRED[@]}")" \
     HAPAX_TRACE_APCUPSD_POWER_ALERTS="$(_trace_join "${APCUPSD_POWER_ALERTS[@]}")" \
     HAPAX_TRACE_USER_PRESETS="$(_trace_join "${USER_PRESETS[@]}")" \
     HAPAX_TRACE_WATCHDOGS="$(_trace_join "${WATCHDOGS[@]}")" \
@@ -578,6 +579,7 @@ deploy_groups = {
     "quake_assets": lines("HAPAX_TRACE_QUAKE_ASSETS"),
     "canonical_gate_closure": lines("HAPAX_TRACE_CANONICAL_GATE"),
 }
+runtime_deferred = lines("HAPAX_TRACE_RUNTIME_DEFERRED")
 runtime_media_groups = [
     name
     for name in (
@@ -588,7 +590,6 @@ runtime_media_groups = [
         "systemd_units",
         "systemd_system_units",
         "systemd_dropins",
-        "oom_containment",
         "apcupsd_power_alerts",
         "systemd_watchdogs",
         "recovery_bundle",
@@ -609,8 +610,9 @@ record = {
     "exit_code": exit_code,
     "changed_files": lines("HAPAX_TRACE_FILES"),
     "deploy_groups": deploy_groups,
-    "manual_deploy_needed": any(deploy_groups.values()),
+    "manual_deploy_needed": any(deploy_groups.values()) or bool(runtime_deferred),
     "manual_deploy_executed": manual_deploy_executed,
+    "runtime_deferred": runtime_deferred,
     "audio_safe_restart_units": lines("HAPAX_TRACE_AUDIO_SAFE_RESTARTS"),
     "systemd_unclassified": lines("HAPAX_TRACE_SYSTEMD_UNCLASSIFIED"),
     "avsdlc": {
@@ -690,7 +692,7 @@ else
     FILES="$(git diff-tree --root --no-commit-id --name-only -r "$SHA" | sort -u)"
 fi
 
-PW=(); HAPAX_CONF=(); WP=(); WP_LUA=(); SYSTEMD=(); SYSTEMD_SYSTEM=(); SYSTEMD_DROPINS=(); OOM_CONTAINMENT=(); APCUPSD_POWER_ALERTS=(); USER_PRESETS=(); WATCHDOGS=(); RECOVERY_BUNDLE=(); SCRIPTS=(); SCRIPT_PY=(); QUAKE_ASSETS=(); CANONICAL_GATE=()
+PW=(); HAPAX_CONF=(); WP=(); WP_LUA=(); SYSTEMD=(); SYSTEMD_SYSTEM=(); SYSTEMD_DROPINS=(); OOM_CONTAINMENT=(); APCUPSD_POWER_ALERTS=(); USER_PRESETS=(); WATCHDOGS=(); RECOVERY_BUNDLE=(); SCRIPTS=(); SCRIPT_PY=(); QUAKE_ASSETS=(); CANONICAL_GATE=(); RUNTIME_DEFERRED=()
 declare -A OOM_PACKAGE_PATHS=()
 declare -A APCUPSD_PACKAGE_PATHS=()
 GATE_CLOSURE=()
@@ -1084,6 +1086,14 @@ reconcile_canonical_gate_closure() {
 # remediation epic).
 while IFS= read -r f; do
     [ -z "$f" ] && continue
+    # The historical judge unit is retired. Classify it before either the old
+    # or current root-package manifest so a cumulative deploy can never
+    # reinstall, unmask, restart, or delete the installed tombstone. The
+    # generic installer owns a separately authorized retry-convergent cleanup.
+    if [ "$f" = "systemd/units/hapax-local-judge.service" ]; then
+        RUNTIME_DEFERRED+=("local-judge-retirement:$f")
+        continue
+    fi
     if [ -n "${OOM_PACKAGE_PATHS[$f]+present}" ]; then
         OOM_CONTAINMENT+=("$f")
         continue
@@ -1147,6 +1157,10 @@ while IFS= read -r f; do
         systemd/*)                        SYSTEMD_UNCLASSIFIED+=("$f") ;;
     esac
 done <<< "$FILES"
+
+if [ "${#OOM_CONTAINMENT[@]}" -gt 0 ]; then
+    RUNTIME_DEFERRED+=("oom-containment:$SHA")
+fi
 
 if [ "$REPORT_COVERAGE" = "1" ]; then
     if [ "${#SYSTEMD_UNCLASSIFIED[@]}" -gt 0 ]; then
@@ -1509,6 +1523,11 @@ Production OOM installation and authoritative live verification are unavailable
 in this source revision. This staged package and all same-UID receipts are input,
 not runtime authority.
 
+This staging does not replace, stop, or otherwise reconcile an already installed
+OOM auditor or timer. Existing installed bytes may retain historical mutating semantics
+until a separately runtime-authorized cutover verifies and replaces
+them; do not treat source acceptance or this RUNBOOK as that cutover.
+
 Next action: preserve this exact-SHA package and dispatch separately
 runtime-authorized root-broker work against
 docs/security/root-authority-hazard-register.md. Do not execute the staged
@@ -1666,10 +1685,6 @@ if [ "${#OOM_CONTAINMENT[@]}" -gt 0 ]; then
         rm -rf "$OOM_STAGE" 2>/dev/null || true
         exit "$stage_oom_rc"
     fi
-    if ! record_root_required_desired_sha "oom-containment" "$OOM_STAGE"; then
-        rm -rf "$OOM_STAGE" 2>/dev/null || true
-        exit 1
-    fi
     set +e
     HAPAX_ROOT_REQUIRED_PACKAGE_SHA="$SHA" \
         HAPAX_ROOT_REQUIRED_INSTALLED_SOURCE_ROOT="$ROOT_REQUIRED_INSTALLED_SOURCE_ROOT" \
@@ -1684,10 +1699,13 @@ if [ "${#OOM_CONTAINMENT[@]}" -gt 0 ]; then
         rm -rf "$OOM_STAGE" 2>/dev/null || true
         exit "$oom_installer_rc"
     fi
+    if ! record_root_required_desired_sha "oom-containment" "$OOM_STAGE"; then
+        rm -rf "$OOM_STAGE" 2>/dev/null || true
+        exit 1
+    fi
     defer_root_required_installer \
         "oom-containment" "$OOM_STAGE" "$OOM_CONTAINMENT_INSTALLER_PATH"
     rm -rf "$OOM_STAGE" 2>/dev/null || true
-    DID_ANYTHING=1
 fi
 
 slice_memory_issue_from_content() {
@@ -2196,7 +2214,9 @@ fi
 # while later merges stamped last-deployed-sha as healthy.
 reconcile_canonical_gate_closure
 
-if [ "$DID_ANYTHING" -eq 0 ]; then
+if [ "$DID_ANYTHING" -eq 0 ] && [ "${#RUNTIME_DEFERRED[@]}" -gt 0 ]; then
+    echo "merge $SHA: source staging completed; runtime work remains deferred (${RUNTIME_DEFERRED[*]})"
+elif [ "$DID_ANYTHING" -eq 0 ]; then
     echo "merge $SHA: no manual deploys needed (only auto-rebuild paths changed)"
 fi
 
@@ -2221,7 +2241,11 @@ fi
 # dangling/foreign ~/.local/bin/hapax-* symlink can't sit unnoticed.
 check_symlink_drift || true
 
-if record_post_merge_trace "completed" "0"; then
+trace_status="completed"
+if [ "${#RUNTIME_DEFERRED[@]}" -gt 0 ]; then
+    trace_status="completed_with_runtime_deferral"
+fi
+if record_post_merge_trace "$trace_status" "0"; then
     TRACE_WRITTEN=1
 else
     echo "warning: failed to write post-merge deploy trace to $TRACE_PATH" >&2
