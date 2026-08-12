@@ -34,6 +34,45 @@ SEALED_SOURCE_FDS_ENV = "HAPAX_ROOT_REQUIRED_SEALED_SOURCE_FDS"
 INSTALLER_TEST_MODE_ENV = "HAPAX_ROOT_REQUIRED_INSTALLER_TEST_MODE"
 INSTALLER_TEST_ROOT_ENV = "HAPAX_ROOT_REQUIRED_INSTALLER_TEST_ROOT"
 AUTHORITY_VERIFIER_REL = PurePosixPath("scripts/hapax-post-merge-deploy")
+SHELL_GENERATED_INSTALLER_ENV_NAMES = frozenset({"PWD", "SHLVL"})
+PRODUCTION_INSTALLER_REQUIRED_ENV_NAMES = frozenset(
+    {
+        "GIT_CONFIG_GLOBAL",
+        "GIT_CONFIG_NOSYSTEM",
+        "GIT_NO_REPLACE_OBJECTS",
+        "GIT_OPTIONAL_LOCKS",
+        "HAPAX_POST_MERGE_ROOT_DEFER_DIR",
+        "HAPAX_ROOT_REQUIRED_DESIRED_RECEIPT_ROOT",
+        "HAPAX_ROOT_REQUIRED_DRAIN_DIR",
+        "HAPAX_ROOT_REQUIRED_GENERATION_GUARD_FD",
+        "HAPAX_ROOT_REQUIRED_GIT_REPO",
+        "HAPAX_ROOT_REQUIRED_INSTALLED_RECEIPT_ROOT",
+        "HAPAX_ROOT_REQUIRED_INSTALLED_SOURCE_ROOT",
+        "HAPAX_ROOT_REQUIRED_LOCK_FD",
+        "HAPAX_ROOT_REQUIRED_LOCK_FILE",
+        "HAPAX_ROOT_REQUIRED_LOCK_LEXICAL_PATH",
+        "HAPAX_ROOT_REQUIRED_LOCK_MODE",
+        "HAPAX_ROOT_REQUIRED_PACKAGE_SHA",
+        "HAPAX_ROOT_REQUIRED_SEALED_SOURCE_FDS",
+        "HAPAX_ROOT_REQUIRED_STATE_FD",
+        "HAPAX_ROOT_REQUIRED_STATE_LEXICAL_ROOT",
+        "HAPAX_ROOT_REQUIRED_STATE_ROOT",
+        "HAPAX_RUNTIME_AUTHORITY_TASK",
+        "HAPAX_RUNTIME_AUTHORITY_TASK_SHA256",
+        "HOME",
+        "LANG",
+        "LC_ALL",
+        "LOGNAME",
+        "PATH",
+        "PWD",
+        "PYTHONNOUSERSITE",
+        "PYTHONSAFEPATH",
+        "SHLVL",
+        "USER",
+        "XDG_RUNTIME_DIR",
+    }
+)
+PRODUCTION_OOM_OPTIONAL_ENV_NAMES = frozenset({"HAPAX_LOCAL_JUDGE_CAP_RECEIPT_SHA256"})
 REQUIRED_MEMFD_SEALS = (
     fcntl.F_SEAL_SEAL | fcntl.F_SEAL_SHRINK | fcntl.F_SEAL_GROW | fcntl.F_SEAL_WRITE
 )
@@ -993,9 +1032,7 @@ def _child_env(
     env.update(_state_lock_env(paths, state_lock))
     if runtime_gates.cap_receipt_sha256 is not None:
         env["HAPAX_LOCAL_JUDGE_CAP_RECEIPT_SHA256"] = runtime_gates.cap_receipt_sha256
-    runtime = Path(f"/run/user/{os.getuid()}")
-    if runtime.is_dir():
-        env["XDG_RUNTIME_DIR"] = str(runtime)
+    env["XDG_RUNTIME_DIR"] = f"/run/user/{os.getuid()}"
     if paths.test_mode:
         if paths.test_root is None:
             raise _error("isolated installer child has no authenticated test root")
@@ -1013,6 +1050,21 @@ def _child_env(
             if name.startswith(test_prefixes) or name in test_names
         )
     return env
+
+
+def _validate_production_child_environment(
+    env: dict[str, str], runtime_gates: RuntimeGateSnapshot
+) -> None:
+    expected = PRODUCTION_INSTALLER_REQUIRED_ENV_NAMES - SHELL_GENERATED_INSTALLER_ENV_NAMES
+    if runtime_gates.cap_receipt_sha256 is not None:
+        expected |= PRODUCTION_OOM_OPTIONAL_ENV_NAMES
+    if set(env) != expected:
+        missing = sorted(expected - set(env))
+        unexpected = sorted(set(env) - expected)
+        raise _error(
+            "internal production installer environment contract drifted: "
+            f"missing={missing} unexpected={unexpected}"
+        )
 
 
 def _write_sealed_memfd(*, name: str, data: bytes, mode: int) -> int:
@@ -1092,6 +1144,8 @@ def _execute_installer(
         raise _error("sealed Git source set omits the package installer")
     env[SEALED_SOURCE_FDS_ENV] = ":".join(source_paths[rel] for rel, _ in sources)
     env["HAPAX_RUNTIME_AUTHORITY_TASK"] = str(runtime_authority_task)
+    if not paths.test_mode:
+        _validate_production_child_environment(env, runtime_gates)
     print(
         "hapax-root-required-deferred-install: authenticated "
         f"package={package.label} sha={sha} source=sealed-git-memfd",
@@ -1116,6 +1170,7 @@ def _execute_installer(
                     "--verify-live",
                 ],
                 check=False,
+                cwd=repo,
                 env=env,
                 pass_fds=(state_lock.state_fd, state_lock.lock_fd, state_lock.guard_fd),
                 preexec_fn=_parent_death_preexec(os.getpid()),

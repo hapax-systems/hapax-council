@@ -130,6 +130,14 @@ def _production_effects(relative_path: Path) -> set[str]:
     }
 
 
+def _shell_array_names(source: str, name: str) -> tuple[str, ...]:
+    match = re.search(rf"readonly -a {name}=\(\n(?P<body>(?:    [A-Z][A-Z0-9_]*\n)*)\)", source)
+    assert match is not None
+    names = tuple(line.strip() for line in match.group("body").splitlines() if line.strip())
+    assert all(re.fullmatch(r"[A-Z][A-Z0-9_]*", item) for item in names)
+    return names
+
+
 def test_production_effect_descriptors_match_non_file_mutator_semantics() -> None:
     oom = _production_effects(EFFECTS)
     apcupsd = _production_effects(APCUPSD_EFFECTS)
@@ -233,6 +241,12 @@ def test_every_installer_environment_name_has_one_authenticated_boundary_classif
         if sum(name in boundary_class for boundary_class in classes) != 1
     }
     indirect_expansions = set(re.findall(r"\$\{!([^}]+)\}", source))
+    deferred_module = _load_deferred_module()
+    required_names = _shell_array_names(source, "AUTHENTICATED_PRODUCTION_REQUIRED_ENV_NAMES")
+    optional_names = _shell_array_names(source, "AUTHENTICATED_PRODUCTION_OPTIONAL_ENV_NAMES")
+    expected_optional = (
+        deferred_module.PRODUCTION_OOM_OPTIONAL_ENV_NAMES if installer_rel == INSTALLER else set()
+    )
 
     assert invalid_class_counts == {}
     assert mentioned & LEGACY_OOM_EFFECT_SELECTORS == legacy_effect_selectors
@@ -240,6 +254,12 @@ def test_every_installer_environment_name_has_one_authenticated_boundary_classif
     assert re.findall(r"HAPAX_(?=[$\"'{])", source) == []
     assert indirect_expansions - {"package_files[@]"} == set()
     assert re.search(r"\b(?:eval|(?:declare|local)\s+-n|printf\s+-v)\b", source) is None
+    assert len(required_names) == len(set(required_names))
+    assert set(required_names) == deferred_module.PRODUCTION_INSTALLER_REQUIRED_ENV_NAMES
+    assert len(optional_names) == len(set(optional_names))
+    assert set(optional_names) == expected_optional
+    assert "compgen -e" in source
+    assert "compgen -A variable" not in source[: source.index('ROOT="$(cd')]
 
 
 def _sealed_memfd(name: str, data: bytes, *, executable: bool = False) -> int:
@@ -342,7 +362,8 @@ def test_direct_authenticated_protocol_rejects_same_uid_arbitrary_finalizer(
             os.close(fd)
 
     assert result.returncode != 0
-    assert "refusing the retired caller-supplied finalizer protocol" in result.stderr
+    assert "refuses an unexpected exported environment vocabulary" in result.stderr
+    assert "HAPAX_ROOT_REQUIRED_FINALIZE_GATE" in result.stderr
     assert "next action:" in result.stderr
     assert not sudo_marker.exists()
     assert not (tmp_path / "state").exists()
@@ -459,6 +480,9 @@ def test_direct_authenticated_protocol_rejects_caller_selected_production_effect
         (
             "HAPAX_OOM_INSTALL_SUDO" if installer_rel == INSTALLER else "HAPAX_APCUPSD_INSTALL_SUDO"
         ): str(fake_sudo),
+        "DBUS_SESSION_BUS_ADDRESS": f"unix:path={tmp_path / 'hostile-bus'}",
+        "DOCKER_HOST": "tcp://hostile.invalid:2376",
+        "SYSTEMD_EXEC_PID": "424242",
     }
     for selector in (*future_selectors, *legacy_selectors):
         env[selector] = str(tmp_path / selector.lower())
@@ -482,8 +506,14 @@ def test_direct_authenticated_protocol_rejects_caller_selected_production_effect
             os.close(fd)
 
     assert result.returncode != 0
-    assert "refuses caller-selected effect or test selectors" in result.stderr
-    for selector in (*future_selectors, *legacy_selectors):
+    assert "refuses an unexpected exported environment vocabulary" in result.stderr
+    for selector in (
+        *future_selectors,
+        *legacy_selectors,
+        "DBUS_SESSION_BUS_ADDRESS",
+        "DOCKER_HOST",
+        "SYSTEMD_EXEC_PID",
+    ):
         assert selector in result.stderr
     assert "next action:" in result.stderr
     assert not sudo_marker.exists()
@@ -691,6 +721,7 @@ def test_authenticated_deferred_install_executes_git_materialized_installer(
         f"HAPAX_ROOT_REQUIRED_INSTALLER_TEST_ROOT={tmp_path}",
         "PYTHONNOUSERSITE=1",
         "PYTHONSAFEPATH=1",
+        f"XDG_RUNTIME_DIR=/run/user/{os.getuid()}",
     ):
         assert safe in child_environment
     source_line = next(
@@ -1159,6 +1190,62 @@ def _load_deferred_module():
     sys.modules[name] = module
     loader.exec_module(module)
     return module
+
+
+@pytest.mark.parametrize("cap_digest", (None, "b" * 64), ids=("no-cap", "oom-cap"))
+def test_production_child_environment_is_closed_and_canonical(cap_digest: str | None) -> None:
+    module = _load_deferred_module()
+    account = pwd.getpwuid(os.getuid())
+    home = Path(account.pw_dir)
+    sha = "a" * 40
+    repo = home / ".cache/hapax/source-activation/releases" / sha
+    state_root = home / ".local/state/hapax/root-required"
+    defer_root = home / ".cache/hapax/post-merge-root-required"
+    paths = module.InstallPaths(
+        home=home,
+        state_root=state_root,
+        defer_root=defer_root,
+        repo_alias=home / ".cache/hapax/source-activation/worktree",
+        sudo=Path("/usr/bin/sudo"),
+        test_mode=False,
+        test_root=None,
+    )
+    state_lock = module.LockedState(
+        lexical_root=state_root,
+        lexical_lock=state_root / ".lock",
+        state_fd=31,
+        lock_fd=32,
+        guard_fd=33,
+    )
+    runtime_gates = module.RuntimeGateSnapshot(
+        task_sha256="c" * 64,
+        cap_receipt_sha256=cap_digest,
+    )
+    env = module._child_env(
+        paths,
+        repo,
+        sha,
+        defer_root / sha / "oom-containment",
+        runtime_gates,
+        state_lock,
+    )
+    env[module.SEALED_SOURCE_FDS_ENV] = "/proc/1/fd/40"
+    env["HAPAX_RUNTIME_AUTHORITY_TASK"] = "/governed/runtime-authority-task.md"
+
+    module._validate_production_child_environment(env, runtime_gates)
+
+    expected = (
+        module.PRODUCTION_INSTALLER_REQUIRED_ENV_NAMES - module.SHELL_GENERATED_INSTALLER_ENV_NAMES
+    )
+    if cap_digest is not None:
+        expected |= module.PRODUCTION_OOM_OPTIONAL_ENV_NAMES
+    assert set(env) == expected
+    assert env["XDG_RUNTIME_DIR"] == f"/run/user/{os.getuid()}"
+    assert not (module.SHELL_GENERATED_INSTALLER_ENV_NAMES & set(env))
+
+    env["DBUS_SESSION_BUS_ADDRESS"] = "unix:path=/caller-selected/bus"
+    with pytest.raises(module.DeferredInstallError, match="environment contract drifted"):
+        module._validate_production_child_environment(env, runtime_gates)
 
 
 def test_regular_reader_bounds_same_inode_growth_and_rejects_path_replacement(
