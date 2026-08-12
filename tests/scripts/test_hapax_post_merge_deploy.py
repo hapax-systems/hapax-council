@@ -4816,3 +4816,128 @@ def test_check_symlink_drift_ignores_legacy_alias_to_nonmatching_script(
     )
 
     assert result.returncode == 0, result.stderr
+
+
+# ── Pi-6 edge units: deleting the source does not retire the unit ──────────────────────
+#
+# `systemd/units-pi6/*` is installed by hand on another host, so the classification arm is a
+# correct no-op for adds and modifies. It is not correct for DELETES: merging a removal leaves the
+# installed timer and service running on Pi-6, and the only thing that changed is that the estate
+# no longer carries the source that would tell anyone they exist.
+#
+# The deploy cannot retire them — it has no authority on that host — so it must refuse to let the
+# deletion look complete. These tests pin the three outcomes.
+
+
+def _pi6_repo(tmp_path: Path) -> tuple[Path, Path]:
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    _git(repo, "init", "-b", "main")
+    _git(repo, "config", "user.email", "pi6-test@example.test")
+    _git(repo, "config", "user.name", "Pi6 Test")
+    (repo / "README.md").write_text("base\n", encoding="utf-8")
+    unit = repo / "systemd/units-pi6/claude-code-sync.timer"
+    unit.parent.mkdir(parents=True)
+    unit.write_text("[Timer]\nOnCalendar=hourly\n", encoding="utf-8")
+    _git(repo, "add", ".")
+    _git(repo, "commit", "-m", "base with a pi6 unit")
+    return repo, unit
+
+
+def _pi6_env(tmp_path: Path, repo: Path) -> dict[str, str]:
+    home = tmp_path / "home"
+    home.mkdir(exist_ok=True)
+    return {
+        **os.environ,
+        "HOME": str(home),
+        "REPO": str(repo),
+        "HAPAX_LOCAL_BIN": str(home / ".local" / "bin"),
+        "HAPAX_POST_MERGE_TRACE_PATH": str(tmp_path / "traces" / "post-merge-traces.jsonl"),
+        "HAPAX_POST_MERGE_PI6_DEFER_DIR": str(tmp_path / "pi6-defer"),
+        "HAPAX_DRIFT_NTFY": "0",
+    }
+
+
+def test_deleting_a_pi6_unit_defers_a_decommission(tmp_path: Path) -> None:
+    """The critical this closes: a merged deletion left the unit running with no record."""
+    repo, unit = _pi6_repo(tmp_path)
+    unit.unlink()
+    _git(repo, "add", "-A")
+    _git(repo, "commit", "-m", "delete the pi6 transcript offload")
+    sha = _git(repo, "rev-parse", "HEAD")
+
+    subprocess.run(
+        [str(SCRIPT), sha],
+        text=True,
+        capture_output=True,
+        check=False,
+        env=_pi6_env(tmp_path, repo),
+    )
+
+    runbook = tmp_path / "pi6-defer" / sha / "RUNBOOK.txt"
+    assert runbook.exists(), "a deleted pi6 unit left no decommission record"
+    body = runbook.read_text(encoding="utf-8")
+    assert "claude-code-sync.timer" in body, "the record must name the unit that is still installed"
+    assert "systemctl disable --now" in body, "the record must name the retiring command"
+    assert "unreachable host is an unknown" in body, (
+        "the record must refuse to read unreachability as retirement"
+    )
+
+
+def test_modifying_a_pi6_unit_defers_nothing(tmp_path: Path) -> None:
+    """Adds and modifies are genuinely this script's business to ignore — the arm was right
+    about them, and widening it into a deferral for every touch would make the record noise."""
+    repo, unit = _pi6_repo(tmp_path)
+    unit.write_text("[Timer]\nOnCalendar=daily\n", encoding="utf-8")
+    _git(repo, "add", "-A")
+    _git(repo, "commit", "-m", "retune the pi6 timer")
+    sha = _git(repo, "rev-parse", "HEAD")
+
+    subprocess.run(
+        [str(SCRIPT), sha],
+        text=True,
+        capture_output=True,
+        check=False,
+        env=_pi6_env(tmp_path, repo),
+    )
+
+    assert not (tmp_path / "pi6-defer" / sha).exists()
+
+
+def test_the_pi6_arm_stays_above_the_bare_systemd_glob() -> None:
+    """Position IS the mechanism, so a later edit must not be able to move it silently.
+
+    A `case` glob crosses `/`, so `systemd/*.timer` matches
+    `systemd/units-pi6/claude-code-sync.timer`. While the pi6 arm sat below that glob it was
+    unreachable for exactly the files that matter — the timer and the service — and they were
+    classified as SYSTEMD, i.e. as units for THIS host to install and restart. Only the non-unit
+    files ever reached the arm, which is why it read as working.
+    """
+    lines = SCRIPT.read_text(encoding="utf-8").splitlines()
+    pi6 = [i for i, ln in enumerate(lines) if ln.strip().startswith("systemd/units-pi6/*)")]
+    bare = [i for i, ln in enumerate(lines) if ln.strip().startswith("systemd/*.service|")]
+    assert pi6, "the pi6 classification arm is gone"
+    assert bare, "the bare systemd unit glob is gone; re-derive this ordering assertion"
+    assert min(pi6) < min(bare), (
+        f"the pi6 arm is at line {min(pi6) + 1}, below the bare systemd glob at "
+        f"{min(bare) + 1}. `systemd/*.timer` matches across `/`, so pi6 units would be "
+        "classified as this host's units to deploy."
+    )
+
+
+def test_a_drained_pi6_decommission_is_not_recreated(tmp_path: Path) -> None:
+    """Re-running the same merge must not stack duplicates over a completed retirement."""
+    repo, unit = _pi6_repo(tmp_path)
+    unit.unlink()
+    _git(repo, "add", "-A")
+    _git(repo, "commit", "-m", "delete the pi6 transcript offload")
+    sha = _git(repo, "rev-parse", "HEAD")
+    env = _pi6_env(tmp_path, repo)
+
+    subprocess.run([str(SCRIPT), sha], text=True, capture_output=True, check=False, env=env)
+    (tmp_path / "pi6-defer" / sha / "DRAINED.txt").write_text("done\n", encoding="utf-8")
+    (tmp_path / "pi6-defer" / sha / "RUNBOOK.txt").unlink()
+
+    subprocess.run([str(SCRIPT), sha], text=True, capture_output=True, check=False, env=env)
+
+    assert not (tmp_path / "pi6-defer" / sha / "RUNBOOK.txt").exists()

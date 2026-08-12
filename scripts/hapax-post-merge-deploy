@@ -168,6 +168,7 @@ OOM_CONTAINMENT_INSTALLER_PATH="scripts/install-p0-oom-containment"
 APCUPSD_INSTALLER_PATH="scripts/install-apcupsd-power-alerts"
 ROOT_REQUIRED_RC=77
 ROOT_DEFER_DIR="${HAPAX_POST_MERGE_ROOT_DEFER_DIR:-$HOME/.cache/hapax/post-merge-root-required}"
+PI6_DEFER_DIR="${HAPAX_POST_MERGE_PI6_DEFER_DIR:-$HOME/.cache/hapax/post-merge-pi6-decommission}"
 ROOT_REQUIRED_STATE_ROOT="${HAPAX_ROOT_REQUIRED_STATE_ROOT:-$HOME/.local/state/hapax/root-required}"
 ROOT_REQUIRED_INSTALLED_SOURCE_ROOT="${HAPAX_ROOT_REQUIRED_INSTALLED_SOURCE_ROOT:-$ROOT_REQUIRED_STATE_ROOT/current-source}"
 ROOT_REQUIRED_INSTALLED_RECEIPT_ROOT="${HAPAX_ROOT_REQUIRED_INSTALLED_RECEIPT_ROOT:-$ROOT_REQUIRED_STATE_ROOT/installed-receipts}"
@@ -691,7 +692,7 @@ else
     FILES="$(git diff-tree --root --no-commit-id --name-only -r "$SHA" | sort -u)"
 fi
 
-PW=(); HAPAX_CONF=(); WP=(); WP_LUA=(); SYSTEMD=(); SYSTEMD_SYSTEM=(); SYSTEMD_DROPINS=(); OOM_CONTAINMENT=(); APCUPSD_POWER_ALERTS=(); USER_PRESETS=(); WATCHDOGS=(); RECOVERY_BUNDLE=(); SCRIPTS=(); SCRIPT_PY=(); QUAKE_ASSETS=(); CANONICAL_GATE=()
+PW=(); HAPAX_CONF=(); WP=(); WP_LUA=(); SYSTEMD=(); SYSTEMD_SYSTEM=(); SYSTEMD_DROPINS=(); OOM_CONTAINMENT=(); APCUPSD_POWER_ALERTS=(); USER_PRESETS=(); WATCHDOGS=(); RECOVERY_BUNDLE=(); SCRIPTS=(); SCRIPT_PY=(); QUAKE_ASSETS=(); CANONICAL_GATE=(); PI6_UNITS=()
 declare -A OOM_PACKAGE_PATHS=()
 declare -A APCUPSD_PACKAGE_PATHS=()
 GATE_CLOSURE=()
@@ -1104,6 +1105,18 @@ while IFS= read -r f; do
         config/hapax/*.conf)              HAPAX_CONF+=("$f") ;;
         config/wireplumber/scripts/hapax/*.lua) WP_LUA+=("$f") ;;
         config/wireplumber/*.conf)        WP+=("$f") ;;
+        # ANOTHER HOST'S UNITS, AND THIS ARM MUST STAY ABOVE `systemd/*.timer`.
+        #
+        # A `case` glob crosses `/`, so `systemd/*.timer` matches
+        # `systemd/units-pi6/claude-code-sync.timer`. When the pi6 arm sat lower in this case it
+        # was unreachable for exactly the files that matter — the timer and the service — and they
+        # were classified as SYSTEMD, i.e. as units for THIS host to install and restart. The
+        # non-unit files (`sync-agent-wrapper.sh`) were the only ones the arm ever caught, which is
+        # why it read as working.
+        #
+        # Position is the whole mechanism here, so it is asserted in
+        # `test_hapax_post_merge_deploy.py` rather than left to whoever edits this case next.
+        systemd/units-pi6/*)              PI6_UNITS+=("$f") ;;
         systemd/units/notify-failure@.service|systemd/units/hapax-coord.service|systemd/units/hapax-coord-rebuild.service|systemd/units/hapax-coord-rebuild.timer)
             RECOVERY_BUNDLE+=("$f")
             if [ "$(unit_install_scope "$f")" = "system" ]; then
@@ -1145,12 +1158,7 @@ while IFS= read -r f; do
         systemd/units/*.md)               ;; # docs
         systemd/units/*.d/README.md)      ;; # drop-in dir docs (e.g. collapse ledgers)
         systemd/overrides/*)              ;; # source/rationale docs; deployable copies live under systemd/units
-        systemd/units-pi6/*)              ;; # another host's units: deployed by hand to the Pi
-                                             # edge fleet per pi-edge/README.md, never by this
-                                             # script. Classified explicitly rather than left to
-                                             # the catch-all so the coverage gate stays a real
-                                             # signal instead of a known-failing arm people learn
-                                             # to ignore.
+        # (the pi6 arm lives above `systemd/*.timer` — see the note there)
         systemd/*)                        SYSTEMD_UNCLASSIFIED+=("$f") ;;
     esac
 done <<< "$FILES"
@@ -1466,6 +1474,59 @@ stage_root_required_package() {
         fi
     done < <(git -C "$REPO" show "$SHA:$manifest" | awk 'NF && $1 !~ /^#/ {print $1}')
     printf '%s\n' "$SHA" > "$stage/.hapax-root-required-package-sha"
+}
+
+defer_pi6_decommission() {
+    # DELETING A UNIT FROM SOURCE DOES NOT RETIRE THE UNIT THAT IS RUNNING.
+    #
+    # `systemd/units-pi6/*` is deployed by hand to the Pi edge fleet and never by this script, so
+    # the classification arm above is a correct no-op for ADDS and MODIFIES. It is not correct for
+    # DELETES: merging a removal leaves the installed timer and service on Pi-6 exactly where they
+    # were, and the only thing that changed is that the estate no longer has the source that would
+    # tell anyone they exist.
+    #
+    # This deploy cannot retire them — the units live on another host and this process has no
+    # authority there. What it can do is refuse to let the deletion look complete. Network
+    # unreachability is not evidence of retirement, and neither is a merged diff.
+    #
+    # So a deletion becomes a deferral, mirroring `defer_root_required_installer`: the record names
+    # the host, the units, and the command, and it stays until someone drains it. Keyed by SHA so a
+    # rerun of the same merge does not stack duplicates.
+    local deleted=() f dest
+    for f in "${PI6_UNITS[@]}"; do
+        # `--name-only` cannot distinguish a delete from a modify, so ask the tree: a path in the
+        # changed set that no longer exists at this commit was removed by it.
+        if ! git -C "$REPO" cat-file -e "$SHA:$f" 2>/dev/null; then
+            deleted+=("$f")
+        fi
+    done
+    [ "${#deleted[@]}" -gt 0 ] || return 0
+
+    dest="$PI6_DEFER_DIR/$SHA"
+    if [ -f "$dest/DRAINED.txt" ]; then
+        echo "pi6 decommission for $SHA already drained; deferral not recreated"
+        return 0
+    fi
+    mkdir -p "$dest"
+    {
+        printf 'Pi-6 unit retirement deferred.\n\n'
+        printf 'Commit: %s\n' "$SHA"
+        printf 'Host:   pi6 (edge fleet; see pi-edge/README.md)\n\n'
+        printf 'These units were DELETED from source by this merge. Deleting the source does not\n'
+        printf 'stop an installed unit: until someone retires them on the host, they remain\n'
+        printf 'installed and will resume on the next boot or timer tick.\n\n'
+        printf 'Deleted:\n'
+        printf '  %s\n' "${deleted[@]}"
+        printf '\nRun from a host that can reach pi6:\n\n'
+        for f in "${deleted[@]}"; do
+            printf '  ssh pi6 sudo systemctl disable --now %s\n' "${f##*/}"
+        done
+        printf '\nThen record completion so this deferral stops reappearing:\n\n'
+        printf '  touch %s/DRAINED.txt\n' "$dest"
+        printf '\nIf pi6 is unreachable, leave this pending. An unreachable host is an unknown\n'
+        printf 'host, not a retired one.\n'
+    } > "$dest/RUNBOOK.txt"
+    echo "pi6 unit retirement DEFERRED (${#deleted[@]} unit(s)); runbook: $dest/RUNBOOK.txt" >&2
 }
 
 stage_oom_containment_installer() {
@@ -1815,6 +1876,11 @@ validate_generic_dropin_activation() {
             ;;
     esac
 }
+
+# --- Pi-6 edge units: a deletion is not a retirement ---
+if [ "${#PI6_UNITS[@]}" -gt 0 ]; then
+    defer_pi6_decommission
+fi
 
 # --- systemd unit drop-ins ---
 if [ "${#SYSTEMD_DROPINS[@]}" -gt 0 ]; then
