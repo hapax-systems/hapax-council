@@ -566,6 +566,23 @@ def test_render_refuses_a_catalogue_the_observation_was_not_collected_under():
         render(observation, catalogue=SMALL_CATALOGUE[:1])
 
 
+def test_render_refuses_a_stream_whose_host_blocks_were_reordered():
+    # Reordering whole per-host blocks keeps the count and every CLI identity intact, so a check
+    # on either alone waves it through and renders one host's capabilities under another's row.
+    stdout = "cli=claude present=1 path=/usr/bin/claude\ncli=ollama present=0 path=\n"
+    observation = observe(
+        hosts=[linux("podium"), linux("eta")],
+        catalogue=SMALL_CATALOGUE,
+        runner=_split_runner(stdout),
+        now=NOW,
+    )
+    stride = len(SMALL_CATALOGUE)
+    observation.descriptors = observation.descriptors[stride:] + observation.descriptors[:stride]
+
+    with pytest.raises(ValueError, match="next action"):
+        render(observation, catalogue=SMALL_CATALOGUE)
+
+
 def test_render_refuses_a_same_length_catalogue_that_is_not_the_one_observed():
     # The dangerous mismatch is the one a length check waves through: swap an entry and positional
     # pairing would file claude's verdict under docker's heading and report it as observed.
@@ -579,7 +596,7 @@ def test_render_refuses_a_same_length_catalogue_that_is_not_the_one_observed():
     substituted = (poisoned_spec("docker"), SMALL_CATALOGUE[1])
 
     assert len(substituted) == len(SMALL_CATALOGUE)
-    with pytest.raises(ValueError, match="does not describe"):
+    with pytest.raises(ValueError, match=r"is not 'bare-host\.podium\.docker'"):
         render(observation, catalogue=substituted)
 
 
@@ -592,5 +609,5 @@ def test_render_refuses_a_reordered_catalogue_of_the_same_length():
         now=NOW,
     )
 
-    with pytest.raises(ValueError, match="does not describe"):
+    with pytest.raises(ValueError, match=r"is not 'bare-host\.podium\.ollama'"):
         render(observation, catalogue=tuple(reversed(SMALL_CATALOGUE)))

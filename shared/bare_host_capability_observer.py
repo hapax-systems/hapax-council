@@ -580,14 +580,17 @@ def render(
     for host_index, host in enumerate(hosts):
         block = observation.descriptors[host_index * stride : (host_index + 1) * stride]
         for spec, descriptor in zip(catalogue, block, strict=True):
-            # Counting descriptors is not enough: a substituted or reordered catalogue of equal
-            # length would pass a length check and then let positional pairing file one CLI's
-            # verdict under another's heading -- reporting a capability as observed on the
-            # strength of a different capability. Each descriptor names its own CLI; check it.
-            if descriptor.observability != [f"local_probe:command-v:{spec.cli}"]:
+            # Counting descriptors is not enough. Positional pairing would otherwise file one
+            # cell's verdict under another's heading -- reporting a capability as observed on the
+            # strength of a different capability, or one host's answer under another host's row.
+            # A substituted catalogue and a reordered host block are the same failure, so they get
+            # the same check: shape_id encodes both identities, and it is built by the same
+            # function that built the descriptor, so one comparison settles both.
+            expected = _shape_id(host, spec.cli)
+            if descriptor.shape_id != expected:
                 raise ValueError(
-                    f"descriptor {descriptor.shape_id!r} does not describe {spec.cli!r}; "
-                    "next action: render with the catalogue the observation was collected under"
+                    f"descriptor {descriptor.shape_id!r} is not {expected!r}; next action: render "
+                    "with the catalogue and probe order the observation was collected under"
                 )
             grid[(host, spec.cli)] = _OUTCOME_MARK[observation_outcome(descriptor)]
 
