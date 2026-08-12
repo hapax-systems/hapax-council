@@ -42,11 +42,10 @@
 #   systemd/scripts/*              → installer helper scripts; no direct deploy
 #   systemd/watchdogs/*            → install executable into ~/.local/bin
 #   config/root-required/oom-containment.files and every path it owns
-#                                  → install P0 OOM containment policy into
-#                                    /etc/default, /etc/systemd/system, and
-#                                    ~/.config/systemd/user; apply active
-#                                    app.slice properties without restarting
-#                                    the live slice
+#                                  → validate and stage exact-SHA desired
+#                                    evidence; production application remains
+#                                    unavailable until a separately authorized
+#                                    root broker exists
 #   systemd/logrotate.d/*          → logrotate configs; require sudo install
 #   systemd/system/**              → other system-scoped configs; require sudo install
 #   config/root-required/apcupsd-power-alerts.files and every path it owns
@@ -1429,6 +1428,19 @@ if [ "${#RECOVERY_BUNDLE[@]}" -gt 0 ] || [ "$RECOVERY_BUNDLE_SELF_HEAL" = "1" ];
 fi
 
 # --- P0 OOM containment system/user policy ---
+root_required_manifest_path_is_safe() {
+    local rel="$1"
+    if [[ "$rel" =~ [[:space:]] ]]; then
+        return 1
+    fi
+    case "$rel" in
+        ""|/*|*\\*|*//*|.|..|./*|../*|*/./*|*/../*|*/.|*/..)
+            return 1
+            ;;
+    esac
+    return 0
+}
+
 stage_root_required_package() {
     local stage="$1" manifest="$2" label="$3"
     local rel dest git_mode
@@ -1438,6 +1450,10 @@ stage_root_required_package() {
     fi
     while IFS= read -r rel; do
         [ -n "$rel" ] || continue
+        if ! root_required_manifest_path_is_safe "$rel"; then
+            echo "hapax-post-merge-deploy: unsafe or non-normalized $label manifest path: $rel; next: use normalized repository-relative paths only" >&2
+            return 2
+        fi
         if ! git cat-file -e "$SHA:$rel" 2>/dev/null; then
             echo "hapax-post-merge-deploy: missing $label source at $SHA:$rel; next: restore every path declared by $manifest and rerun hapax-post-merge-deploy for this merge" >&2
             return 2
@@ -1473,13 +1489,40 @@ defer_root_required_installer() {
     dest="$ROOT_DEFER_DIR/$SHA/$label"
     mkdir -p "$(dirname "$dest")"
     receipt="$ROOT_REQUIRED_INSTALLED_RECEIPT_ROOT/$label.sha"
-    if [ -f "$receipt" ] && [ "$(tr -d '[:space:]' < "$receipt")" = "$SHA" ]; then
+    if [ "$label" != "oom-containment" ] \
+        && [ -f "$receipt" ] \
+        && [ "$(tr -d '[:space:]' < "$receipt")" = "$SHA" ]; then
         echo "root-required $label already installed at $SHA; deferral not recreated"
         return 0
     fi
     temp="$ROOT_DEFER_DIR/$SHA/.${label}.tmp.$$"
     rm -rf "$temp" 2>/dev/null || true
     cp -a "$stage" "$temp"
+    if [ "$label" = "oom-containment" ]; then
+        cat > "$temp/RUNBOOK.txt" <<EOF
+Root-required OOM package staged as non-authoritative desired-state evidence.
+
+Commit: $SHA
+Package: $label
+
+Production OOM installation and authoritative live verification are unavailable
+in this source revision. This staged package and all same-UID receipts are input,
+not runtime authority.
+
+Next action: preserve this exact-SHA package and dispatch separately
+runtime-authorized root-broker work against
+docs/security/root-authority-hazard-register.md. Do not execute the staged
+interpreter as root and do not recreate the retired --install/--verify-live path.
+
+Post-merge deploy continued so unrelated user-scope deploy groups for the same
+merge were not skipped.
+EOF
+        rm -rf "$dest" 2>/dev/null || true
+        mv "$temp" "$dest"
+        echo "root-required $label desired-state package staged at $dest"
+        echo "next action: dispatch separately runtime-authorized root-broker work; production OOM application is unavailable in this source revision"
+        return 0
+    fi
     cat > "$temp/RUNBOOK.txt" <<EOF
 Root-required post-merge deploy action deferred.
 
@@ -1633,15 +1676,16 @@ if [ "${#OOM_CONTAINMENT[@]}" -gt 0 ]; then
         HAPAX_ROOT_REQUIRED_INSTALLED_RECEIPT_ROOT="$ROOT_REQUIRED_INSTALLED_RECEIPT_ROOT" \
         HAPAX_ROOT_REQUIRED_DESIRED_RECEIPT_ROOT="$ROOT_REQUIRED_DESIRED_RECEIPT_ROOT" \
         HAPAX_ROOT_REQUIRED_GIT_REPO="$REPO" \
-        "$OOM_STAGE/$OOM_CONTAINMENT_INSTALLER_PATH" --source "$OOM_STAGE" --install --verify-live
+        "$OOM_STAGE/$OOM_CONTAINMENT_INSTALLER_PATH" \
+            --source "$OOM_STAGE" --check --no-runtime
     oom_installer_rc=$?
     set -e
-    if [ "$oom_installer_rc" -eq "$ROOT_REQUIRED_RC" ]; then
-        defer_root_required_installer "oom-containment" "$OOM_STAGE" "$OOM_CONTAINMENT_INSTALLER_PATH"
-    elif [ "$oom_installer_rc" -ne 0 ]; then
+    if [ "$oom_installer_rc" -ne 0 ]; then
         rm -rf "$OOM_STAGE" 2>/dev/null || true
         exit "$oom_installer_rc"
     fi
+    defer_root_required_installer \
+        "oom-containment" "$OOM_STAGE" "$OOM_CONTAINMENT_INSTALLER_PATH"
     rm -rf "$OOM_STAGE" 2>/dev/null || true
     DID_ANYTHING=1
 fi

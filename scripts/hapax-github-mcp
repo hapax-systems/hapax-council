@@ -101,6 +101,8 @@ trap cleanup EXIT INT TERM HUP
 
 docker run -i --rm \
   --name "$CONTAINER_NAME" \
+  --memory 512m \
+  --memory-swap 768m \
   --log-driver none \
   --stop-timeout 1 \
   -e GITHUB_PERSONAL_ACCESS_TOKEN \

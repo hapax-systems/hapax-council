@@ -1,7 +1,8 @@
 # Local Judge Stack — CompassVerifier-7B (cost-offload Tier-1)
 
 **Authority:** ISAP `S5-CAPACITY-ROUTING-COST-OFFLOAD-TIER1` · REQ `REQ-20260613-sdlc-cost-offload-program` · case `CASE-CAPACITY-ROUTING-001`.
-**Status:** served + routed + validated; **default OFF / shadow** until the council agreement gate clears (see *Promotion gate*).
+**Status:** parked and decommissioning. Activation is unavailable until a
+separately runtime-authorized, host-root-signed broker contract exists.
 
 ## What this is
 
@@ -21,42 +22,43 @@ Adapter: `shared/local_judge.py` (`LocalJudge.verify(...)`, shadow-defaulted).
 - **Host:** appendix (hapax-appendix, 192.168.68.50) — the SDLC rig.
 - **GPU:** GPU1 (RTX 5060 Ti, 16 GB, sm_120 Blackwell). **GPU0 (3090) grounding is
   never touched** — the container is pinned to the 5060 Ti by UUID.
-- **Serving:** `ghcr.io/ggml-org/llama.cpp:server-cuda` (natively Blackwell-capable:
-  `ARCHS=...,1200`, `BLACKWELL_NATIVE_FP4=1`) on `:5001`, OpenAI-compatible `/v1`.
+- **Former serving path:** `ghcr.io/ggml-org/llama.cpp:server-cuda` on `:5001`.
+  The mutable tag, mutable model bind, name-based cleanup, and unlimited memory
+  policy are retired and must not be recreated.
 - **Gateway:** podium LiteLLM (`:4000`) exposes it as the `local-judge` route, reached
   cross-rig at `http://192.168.68.50:5001/v1`.
 
-## Deploy (appendix)
+## Retirement (appendix)
 
-Model (already present): `~/models/compassverifier-7b/CompassVerifier-7B.Q5_K_M.gguf`
-(5.4 GB; GGUF Q5_K_M). Pull from `opencompass/CompassVerifier-7B` and quantize, or
-fetch a community GGUF, if absent.
+The source unit is deleted so post-merge deployment cannot resurrect it. The
+canonical user-unit installer treats `hapax-local-judge.service` as
+decommissioned and leaves an installed `/dev/null` mask as its tombstone. Its
+retirement transaction runs before environment sync:
 
-```sh
-# one-time: confirm the 5060 Ti UUID and update the unit's JUDGE_GPU_UUID if it differs
-nvidia-smi --query-gpu=index,name,uuid --format=csv
+1. Enumerate the exact local Docker daemon and capture a matching container's
+   full immutable ID.
+2. Disable the historical unit, remove wants links and drop-ins, replace its
+   installed unit with a `/dev/null` mask, and reload the user manager.
+3. Remove only the captured immutable container ID, signal the masked unit's
+   main process without invoking its historical name-based `ExecStop`, and
+   reject any replacement identity.
 
-docker pull ghcr.io/ggml-org/llama.cpp:server-cuda
-# hand serving to systemd (replaces any manual --restart container):
-docker rm -f hapax-local-judge 2>/dev/null
-cp systemd/units/hapax-local-judge.service ~/.config/systemd/user/
-systemctl --user daemon-reload
-systemctl --user enable --now hapax-local-judge
-# verify model loaded on GPU1 and 3090 VRAM unchanged:
-curl -s http://localhost:5001/v1/models | grep compassverifier
-nvidia-smi --query-gpu=index,name,memory.used --format=csv,noheader
-```
-
-Manual one-liner (equivalent, for ad-hoc runs):
+This source task does not authorize running that transaction on Appendix. The
+deployed historical unit remains a runtime gap until the normal user-unit
+deployment is separately authorized. Read-only inspection:
 
 ```sh
-docker run -d --name hapax-local-judge --restart unless-stopped \
-  --gpus device=<5060Ti-UUID> \
-  -v ~/models/compassverifier-7b:/models:ro -p 5001:5001 \
-  ghcr.io/ggml-org/llama.cpp:server-cuda \
-  -m /models/CompassVerifier-7B.Q5_K_M.gguf -a compassverifier-7b \
-  -c 65536 -np 8 -cb -ngl 99 --host 0.0.0.0 --port 5001
+systemctl --user is-enabled hapax-local-judge.service
+systemctl --user is-active hapax-local-judge.service
+docker --host=unix:///var/run/docker.sock ps -a --no-trunc \
+  --filter 'name=^/hapax-local-judge$' --format '{{.ID}} {{.Image}} {{.Names}}'
 ```
+
+Future activation requires host-root signatures over the exact request ID,
+generation, unit bytes, immutable image digest, content-addressed model digest
+and size, cap values, and completion result. The complete threat input is
+`docs/security/root-authority-hazard-register.md`. Same-UID receipts or local
+health responses are not activation authority.
 
 ## LiteLLM route (podium, host file — NOT tracked in this repo)
 
@@ -108,7 +110,7 @@ The adapter ships `shadow=True`. Before any gate acts on a local verdict:
    ≥90%, Cohen's κ ≥0.8, conservative-skewed** (errors are escalations to the
    incumbent, not false-accepts).
 
-## Operational notes
+## Historical performance notes
 
 - **No-co-residency guarantee:** the container is pinned to the 5060 Ti UUID; the
   3090 grounding instance (TabbyAPI `:5000`) is independent. Confirm with `nvidia-smi`.
@@ -116,6 +118,9 @@ The adapter ships `shadow=True`. Before any gate acts on a local verdict:
   prompt. 127/2817 (4.5%) VerifierBench items exceed an 8192-token slot and are
   reported as context-skips by the harness — the longest/pathological inputs; raise
   `-c`÷`-np` per slot to score them if a full-coverage number is wanted.
-- **Fallback drill:** `docker stop hapax-local-judge`, then a `local-judge` call
-  through `:4000` should return a `claude-haiku` answer without a hard error; restart
-  with `systemctl --user start hapax-local-judge`.
+- **Routing while parked:** calls must use the existing cloud fallback. A local
+  responder on `:5001` is not proof that the retired service is safe or current.
+- **Healthcheck caveat:** the historical container's image healthcheck probed a
+  different port than the configured service. Treat its prior unhealthy status
+  as non-diagnostic; immutable identity and the configured endpoint must be
+  bound together in any future health contract.

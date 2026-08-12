@@ -42,7 +42,22 @@ P0_USER_OOM_DROPINS = {
         "systemd/units/hapax-imagination.service.d/oom-protect.conf": "hapax-imagination.service",
     }.items()
 }
+OOM_HOST_POLICY_FILES = {
+    relative: (REPO_ROOT / relative).read_text(encoding="utf-8")
+    for relative in (
+        "config/root-required/oom-host-profiles.tsv",
+        "config/root-required/oom-host-policy/appendix/app.slice.conf",
+        "config/root-required/oom-host-policy/appendix/user-1000.slice.conf",
+        "config/root-required/oom-host-policy/appendix/user@1000.service.conf",
+        "config/root-required/oom-host-policy/appendix/zram-generator.conf",
+        "config/root-required/oom-host-policy/podium/app.slice.conf",
+        "config/root-required/oom-host-policy/podium/user-1000.slice.conf",
+        "config/root-required/oom-host-policy/podium/user@1000.service.conf",
+        "config/root-required/oom-host-policy/podium/zram-generator.conf",
+    )
+}
 P0_OOM_AUDIT_FILES = {
+    **OOM_HOST_POLICY_FILES,
     "scripts/hapax-oom-policy-audit": "#!/usr/bin/env python3\n",
     "scripts/hapax-root-required-deploy-audit": "#!/usr/bin/env bash\n",
     "systemd/units/hapax-oom-policy-audit.service": (
@@ -440,6 +455,7 @@ def _root_audit_env(
     trigger_dest = tmp_path / "bin" / "hapax-oom-score-trigger"
     sudoers_dest = tmp_path / "etc" / "sudoers.d" / "hapax-oom-score-enforce"
     sudoers_reference_dest = tmp_path / "share" / "hapax-oom-score-enforce.sudoers"
+    profile_table_dest = tmp_path / "share" / "oom-host-profiles.tsv"
     root_failure_dest = tmp_path / "sbin" / "hapax-root-failure-intake"
     oom_audit_dest = tmp_path / "sbin" / "hapax-oom-policy-audit"
     root_audit_dest = tmp_path / "sbin" / "hapax-root-required-deploy-audit"
@@ -485,6 +501,7 @@ def _root_audit_env(
         "scripts/hapax-oom-score-enforce": enforcer_dest,
         "scripts/hapax-oom-score-trigger": trigger_dest,
         "config/root-required/hapax-oom-score-enforce.sudoers": sudoers_dest,
+        "config/root-required/oom-host-profiles.tsv": profile_table_dest,
         "scripts/hapax-root-failure-intake": root_failure_dest,
         "scripts/hapax-oom-policy-audit": oom_audit_dest,
         "scripts/hapax-root-required-deploy-audit": root_audit_dest,
@@ -574,6 +591,7 @@ def _root_audit_env(
         "HAPAX_OOM_TRIGGER_DEST": str(trigger_dest),
         "HAPAX_OOM_SUDOERS_DEST": str(sudoers_dest),
         "HAPAX_OOM_SUDOERS_REFERENCE_DEST": str(sudoers_reference_dest),
+        "HAPAX_OOM_PROFILE_TABLE_DEST": str(profile_table_dest),
         "HAPAX_OOM_SUDOERS_OWNER_UID": str(os.getuid()),
         "HAPAX_OOM_SUDOERS_OWNER_GID": str(os.getgid()),
         "HAPAX_ROOT_FAILURE_INTAKE_DEST": str(root_failure_dest),
@@ -903,7 +921,7 @@ def test_systemd_coverage_includes_dropins_presets_and_source_overrides() -> Non
     assert "ok: all systemd/** paths" in result.stdout
 
 
-def test_p0_oom_deploy_uses_installer_without_restart_or_bulk_deferral_clear(
+def test_p0_oom_deploy_validates_and_stages_desired_evidence_without_runtime_mutation(
     tmp_path: Path,
 ) -> None:
     installer_calls = tmp_path / "oom-installer-calls.txt"
@@ -982,6 +1000,11 @@ def test_p0_oom_deploy_uses_installer_without_restart_or_bulk_deferral_clear(
     trace_path = tmp_path / "traces" / "post-merge-traces.jsonl"
     defer_dir = tmp_path / "root-required"
     installed_source = tmp_path / "root-state" / "current-source"
+    forged_receipt = (
+        home / ".local/state/hapax/root-required/installed-receipts/oom-containment.sha"
+    )
+    forged_receipt.parent.mkdir(parents=True)
+    forged_receipt.write_text(f"{sha}\n", encoding="utf-8")
     stale_deferral = defer_dir / "old-sha" / "oom-containment"
     stale_deferral.mkdir(parents=True)
     (stale_deferral / "RUNBOOK.txt").write_text("old deferred install\n", encoding="utf-8")
@@ -1006,7 +1029,17 @@ def test_p0_oom_deploy_uses_installer_without_restart_or_bulk_deferral_clear(
     )
 
     assert result.returncode == 0, result.stderr
-    assert "--install --verify-live" in installer_calls.read_text(encoding="utf-8")
+    installer_args = installer_calls.read_text(encoding="utf-8")
+    assert "--check --no-runtime" in installer_args
+    assert "--install" not in installer_args
+    assert "--verify-live" not in installer_args
+    deferred = defer_dir / sha / "oom-containment"
+    assert deferred.is_dir(), "a same-UID installed receipt must not suppress desired evidence"
+    runbook = (deferred / "RUNBOOK.txt").read_text(encoding="utf-8")
+    assert "non-authoritative desired-state evidence" in runbook
+    assert "runtime-authorized root-broker" in runbook
+    assert "sudo -v" not in runbook
+    assert "--install/--verify-live" in runbook
     assert stale_deferral.exists(), (
         "only an explicit staged RUNBOOK invocation may drain a deferral"
     )
@@ -1018,6 +1051,44 @@ def test_p0_oom_deploy_uses_installer_without_restart_or_bulk_deferral_clear(
     record = json.loads(trace_path.read_text(encoding="utf-8").splitlines()[-1])
     assert set(record["deploy_groups"]["oom_containment"]) == set(files)
     assert record["deploy_groups"]["systemd_dropins"] == []
+
+
+def test_p0_oom_staging_rejects_non_normalized_manifest_path_before_receipt(
+    tmp_path: Path,
+) -> None:
+    manifest = (
+        "config/root-required/oom-containment.files\n"
+        "scripts/install-p0-oom-containment\n"
+        "scripts/../README.md\n"
+    )
+    repo, sha = _repo_with_linear_commit(
+        tmp_path,
+        {
+            "config/root-required/oom-containment.files": manifest,
+            "scripts/install-p0-oom-containment": "#!/usr/bin/env bash\nexit 0\n",
+            "README.md": "must not be staged through a non-normalized alias\n",
+        },
+    )
+    home = tmp_path / "home"
+
+    result = subprocess.run(
+        [str(SCRIPT), sha],
+        text=True,
+        capture_output=True,
+        check=False,
+        env={
+            **os.environ,
+            "HOME": str(home),
+            "REPO": str(repo),
+            "HAPAX_POST_MERGE_TRACE_PATH": str(tmp_path / "trace.jsonl"),
+        },
+    )
+
+    assert result.returncode == 2
+    assert "unsafe or non-normalized OOM containment manifest path" in result.stderr
+    assert not (
+        home / ".local/state/hapax/root-required/desired-receipts/oom-containment.sha"
+    ).exists()
 
 
 def test_root_packages_install_apcupsd_before_oom_recovery_verification(tmp_path: Path) -> None:
@@ -1218,7 +1289,7 @@ def test_post_merge_squash_equivalence_rejects_git_mode_drift(tmp_path: Path) ->
 def test_concurrent_same_sha_root_required_oom_deploy_stages_complete_deferral(
     tmp_path: Path,
 ) -> None:
-    installer_body = "#!/usr/bin/env bash\nsleep 0.2\nexit 77\n"
+    installer_body = "#!/usr/bin/env bash\nsleep 0.2\nexit 0\n"
     files = {
         "config/root-required/oom-containment.files": OOM_PACKAGE_MANIFEST,
         "scripts/install-p0-oom-containment": installer_body,
@@ -1327,17 +1398,21 @@ def test_concurrent_same_sha_root_required_oom_deploy_stages_complete_deferral(
         assert (deferred / rel).read_bytes() == (repo / rel).read_bytes()
     assert not list((defer_dir / sha).glob(".oom-containment.tmp.*"))
     runbook = (deferred / "RUNBOOK.txt").read_text(encoding="utf-8")
-    assert "sudo -v" in runbook
+    assert "non-authoritative desired-state evidence" in runbook
+    assert "runtime-authorized root-broker" in runbook
+    assert "sudo -v" not in runbook
     assert "root shell" not in runbook
     assert "HAPAX_OOM_INSTALL_SUDO=" not in runbook
-    assert "HAPAX_ROOT_REQUIRED_DRAIN_DIR=" in runbook
-    assert f"HAPAX_ROOT_REQUIRED_PACKAGE_SHA={sha}" in runbook
-    assert "HAPAX_ROOT_REQUIRED_INSTALLED_SOURCE_ROOT=" in runbook
-    assert "HAPAX_ROOT_REQUIRED_INSTALLED_RECEIPT_ROOT=" in runbook
-    assert "HAPAX_ROOT_REQUIRED_DESIRED_RECEIPT_ROOT=" in runbook
-    assert "HAPAX_ROOT_REQUIRED_GIT_REPO=" in runbook
+    assert "HAPAX_ROOT_REQUIRED_DRAIN_DIR=" not in runbook
+    assert "HAPAX_ROOT_REQUIRED_PACKAGE_SHA=" not in runbook
+    assert "HAPAX_ROOT_REQUIRED_INSTALLED_SOURCE_ROOT=" not in runbook
+    assert "HAPAX_ROOT_REQUIRED_INSTALLED_RECEIPT_ROOT=" not in runbook
+    assert "HAPAX_ROOT_REQUIRED_DESIRED_RECEIPT_ROOT=" not in runbook
+    assert "HAPAX_ROOT_REQUIRED_GIT_REPO=" not in runbook
     assert (home / ".config" / "systemd" / "user" / "hapax-demo.service").is_file()
-    assert "root-required oom-containment install deferred" in first_stdout + second_stdout
+    assert "root-required oom-containment desired-state package staged" in (
+        first_stdout + second_stdout
+    )
     desired = home / ".local/state/hapax/root-required/desired-receipts/oom-containment.sha"
     assert desired.read_text(encoding="utf-8").strip() == sha
 
@@ -1353,7 +1428,8 @@ def test_concurrent_same_sha_root_required_oom_deploy_stages_complete_deferral(
 
     assert audit_result.returncode == 1
     assert "root-required post-merge deploy deferrals pending" in audit_result.stderr
-    assert "--install --verify-live" in audit_result.stderr
+    assert "runtime-authorized root-broker" in audit_result.stderr
+    assert "install-p0-oom-containment --install --verify-live" not in audit_result.stderr
     (deferred / "RUNBOOK.txt").unlink()
     assert desired.read_text(encoding="utf-8").strip() == sha
 
@@ -1373,6 +1449,54 @@ def test_root_required_audit_fails_when_oom_enforcer_source_missing(tmp_path: Pa
     assert result.returncode == 1
     assert "root-required source missing" in result.stderr
     assert "next action:" in result.stderr
+
+
+def test_root_required_audit_snapshot_list_covers_complete_oom_manifest() -> None:
+    body = ROOT_REQUIRED_AUDIT.read_text(encoding="utf-8")
+    array = body.split("oom_package_files=(", 1)[1].split(")\napcupsd_package_files=", 1)[0]
+    entries = {
+        line for line in OOM_PACKAGE_MANIFEST.splitlines() if line and not line.startswith("#")
+    }
+
+    for relative in entries:
+        assert f"\n    {relative}\n" in array
+
+
+def test_root_required_audit_binds_profile_source_and_installed_table(tmp_path: Path) -> None:
+    env = _root_audit_env(tmp_path)
+    installed_profile = (
+        Path(env["HAPAX_ROOT_REQUIRED_INSTALLED_SOURCE_ROOT"])
+        / "config/root-required/oom-host-policy/appendix/app.slice.conf"
+    )
+    installed_profile.unlink()
+
+    result = subprocess.run(
+        [str(ROOT_REQUIRED_AUDIT)],
+        text=True,
+        capture_output=True,
+        check=False,
+        env=env,
+    )
+
+    assert result.returncode == 1
+    assert "installed source is not bound" in result.stderr
+    assert "runtime-authorized root-broker" in result.stderr
+
+    installed_drift = tmp_path / "installed-drift"
+    installed_drift.mkdir()
+    env = _root_audit_env(installed_drift)
+    Path(env["HAPAX_OOM_PROFILE_TABLE_DEST"]).write_text("stale\n", encoding="utf-8")
+    result = subprocess.run(
+        [str(ROOT_REQUIRED_AUDIT)],
+        text=True,
+        capture_output=True,
+        check=False,
+        env=env,
+    )
+
+    assert result.returncode == 1
+    assert "oom-host-profiles.tsv differs" in result.stderr
+    assert "runtime-authorized root-broker" in result.stderr
 
 
 def test_root_required_audit_fails_when_canonical_audit_group_is_missing(
@@ -1414,7 +1538,8 @@ def test_root_required_audit_detects_oom_enforcer_drift(tmp_path: Path) -> None:
 
     assert result.returncode == 1
     assert "root-required install drift" in result.stderr
-    assert "install-p0-oom-containment --install --verify-live" in result.stderr
+    assert "runtime-authorized root-broker" in result.stderr
+    assert "install-p0-oom-containment --install --verify-live" not in result.stderr
 
 
 def test_root_required_audit_rejects_untrusted_root_artifact_owner(tmp_path: Path) -> None:
@@ -1519,7 +1644,8 @@ def test_root_required_audit_detects_stale_user_copy_of_system_unit(tmp_path: Pa
 
     assert result.returncode == 1
     assert "stale user-scope copy of system unit remains" in result.stderr
-    assert "install-p0-oom-containment --install --verify-live" in result.stderr
+    assert "runtime-authorized root-broker" in result.stderr
+    assert "install-p0-oom-containment --install --verify-live" not in result.stderr
 
 
 def test_root_required_audit_reads_sudoers_only_through_narrow_sudo(tmp_path: Path) -> None:
@@ -1559,7 +1685,8 @@ def test_root_required_audit_rejects_byte_identical_symlinked_install(tmp_path: 
 
     assert result.returncode == 1
     assert "install missing or not a regular stable copy" in result.stderr
-    assert "install-p0-oom-containment --install --verify-live" in result.stderr
+    assert "runtime-authorized root-broker" in result.stderr
+    assert "install-p0-oom-containment --install --verify-live" not in result.stderr
 
 
 def test_root_required_audit_rejects_nonexact_install_mode(tmp_path: Path) -> None:
@@ -1660,7 +1787,8 @@ def test_root_required_audit_detects_desired_package_not_installed(tmp_path: Pat
     assert result.returncode == 1
     assert "desired package is not installed" in result.stderr
     assert f"desired={desired_sha}" in result.stderr
-    assert "even if the cached RUNBOOK was lost" in result.stderr
+    assert "runtime-authorized root-broker" in result.stderr
+    assert "production OOM repair is unavailable" in result.stderr
 
 
 def test_root_required_audit_detects_nonexecutable_hook(tmp_path: Path) -> None:
@@ -1702,7 +1830,7 @@ def test_root_required_audit_detects_disabled_enforcer_timer(tmp_path: Path) -> 
 
     assert result.returncode == 1
     assert "hapax-oom-score-enforce.timer is not enabled" in result.stderr
-    assert "enable --now" in result.stderr
+    assert "runtime-authorized root-broker" in result.stderr
 
 
 def test_root_required_audit_detects_stale_loaded_enforcer_timeout(tmp_path: Path) -> None:
@@ -1726,7 +1854,7 @@ def test_root_required_audit_detects_stale_loaded_enforcer_timeout(tmp_path: Pat
 
     assert result.returncode == 1
     assert "loaded TimeoutStartUSec=infinity, expected 25s" in result.stderr
-    assert "systemctl daemon-reload" in result.stderr
+    assert "runtime-authorized root-broker" in result.stderr
 
 
 def test_root_required_audit_detects_stale_loaded_user_audit_timeout(tmp_path: Path) -> None:
@@ -1755,7 +1883,7 @@ def test_root_required_audit_detects_stale_loaded_user_audit_timeout(tmp_path: P
         "hapax-oom-policy-audit.service loaded TimeoutStartUSec=infinity, expected 2min"
         in result.stderr
     )
-    assert "systemctl --user daemon-reload" in result.stderr
+    assert "runtime-authorized root-broker" in result.stderr
 
 
 def test_root_required_audit_detects_inactive_earlyoom(tmp_path: Path) -> None:
@@ -1779,7 +1907,7 @@ def test_root_required_audit_detects_inactive_earlyoom(tmp_path: Path) -> None:
 
     assert result.returncode == 1
     assert "earlyoom.service is not active" in result.stderr
-    assert "enable --now earlyoom.service" in result.stderr
+    assert "runtime-authorized root-broker" in result.stderr
 
 
 def test_root_required_audit_detects_disabled_apcupsd(tmp_path: Path) -> None:
@@ -1848,7 +1976,9 @@ def test_root_required_audit_detects_stale_loaded_apcupsd_thresholds(tmp_path: P
     assert "expected 20" in result.stderr
 
 
-def test_root_required_audit_passes_when_oom_enforcer_matches(tmp_path: Path) -> None:
+def test_root_required_audit_clean_drift_result_is_explicitly_non_authoritative(
+    tmp_path: Path,
+) -> None:
     result = subprocess.run(
         [str(ROOT_REQUIRED_AUDIT)],
         text=True,
@@ -1859,6 +1989,20 @@ def test_root_required_audit_passes_when_oom_enforcer_matches(tmp_path: Path) ->
 
     assert result.returncode == 0, result.stderr
     assert "root-required post-merge deploy deferrals: none" in result.stdout
+    assert "NON-AUTHORITATIVE" in result.stdout
+    assert "same-UID receipts do not attest OOM runtime completion" in result.stdout
+
+
+def test_retired_oom_install_command_is_absent_from_recovery_surfaces() -> None:
+    for relative in (
+        "scripts/hapax-oom-score-enforce",
+        "scripts/hapax-post-merge-deploy",
+        "scripts/hapax-root-failure-intake",
+        "scripts/hapax-root-required-deploy-audit",
+        "systemd/README.md",
+    ):
+        body = (REPO_ROOT / relative).read_text(encoding="utf-8")
+        assert "install-p0-oom-containment --install --verify-live" not in body
 
 
 def test_root_required_audit_ignores_hostile_path(tmp_path: Path) -> None:

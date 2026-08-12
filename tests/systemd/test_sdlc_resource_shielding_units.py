@@ -201,16 +201,8 @@ def test_protected_user_unit_allowlist_and_scores_match_across_runtime_surfaces(
         "hapax-imagination.service": -800,
     }
     oom_installer = (REPO_ROOT / "scripts/install-p0-oom-containment").read_text()
-    installer_block = re.search(
-        r"^protected_user_unit_scores=\(\n(?P<body>.*?)^\)",
-        oom_installer,
-        flags=re.MULTILINE | re.DOTALL,
-    )
-    assert installer_block is not None
-    installer_scores = {}
-    for line in installer_block.group("body").splitlines():
-        unit, score = line.strip().rsplit(":", 1)
-        installer_scores[unit] = int(score)
+    assert "protected_user_unit_scores=(" not in oom_installer
+    assert "--apply-unit" not in oom_installer
 
     enforcer = (REPO_ROOT / "scripts/hapax-oom-score-enforce").read_text()
     enforcer_scores = {
@@ -257,14 +249,16 @@ def test_protected_user_unit_allowlist_and_scores_match_across_runtime_surfaces(
         for path in UNITS_DIR.glob("*.service.d/oom-protect.conf")
     }
 
-    assert installer_scores == enforcer_scores == enforcer_allowlist == audit_scores == expected
+    assert enforcer_scores == enforcer_allowlist == audit_scores == expected
     assert trigger_units == sudoers_units == dropin_units == set(expected)
 
 
 def test_oom_policy_audit_timer_is_source_controlled() -> None:
     timer = (UNITS_DIR / "hapax-oom-policy-audit.timer").read_text()
     service = (UNITS_DIR / "hapax-oom-policy-audit.service").read_text()
-    assert "Hapax-Installer-Owner: scripts/install-p0-oom-containment" in timer
+    assert "Hapax-Source-Owner: config/root-required/oom-containment.files" in service
+    assert "Hapax-Source-Owner: config/root-required/oom-containment.files" in timer
+    assert "Hapax-Installer-Owner" not in service + timer
     assert "Hapax-Auto-Enable" not in timer
     assert "OnUnitActiveSec=5min" in timer
     assert "ExecStart=/usr/local/sbin/hapax-oom-policy-audit --json" in service
@@ -284,7 +278,9 @@ def test_oom_policy_audit_timer_is_source_controlled() -> None:
 def test_root_required_deploy_audit_timer_is_source_controlled() -> None:
     timer = (UNITS_DIR / "hapax-root-required-deploy-audit.timer").read_text()
     service = (UNITS_DIR / "hapax-root-required-deploy-audit.service").read_text()
-    assert "Hapax-Installer-Owner: scripts/install-p0-oom-containment" in timer
+    assert "Hapax-Source-Owner: config/root-required/oom-containment.files" in service
+    assert "Hapax-Source-Owner: config/root-required/oom-containment.files" in timer
+    assert "Hapax-Installer-Owner" not in service + timer
     assert "Hapax-Auto-Enable" not in timer
     assert "OnUnitActiveSec=10min" in timer
     assert "ExecStart=/usr/local/sbin/hapax-root-required-deploy-audit" in service
@@ -396,19 +392,26 @@ def test_installer_links_service_dropins() -> None:
     assert '"$REPO_DIR"/*.scope.d' in body
 
 
-def test_p0_oom_containment_has_dedicated_installer() -> None:
-    installer = REPO_ROOT / "scripts" / "install-p0-oom-containment"
-    body = installer.read_text()
-    assert "systemd/system/user-1000.slice.d/oom-containment.conf" in body
-    assert "systemd/system/user@1000.service.d/oom.conf" in body
-    assert "systemd/units/app.slice.d/oom-containment.conf" in body
-    assert "systemd/units/session.slice.d/oom-containment.conf" in body
-    assert "config/earlyoom/default" in body
-    assert "app_slice_value MemoryHigh" in body
-    assert "apply_system_runtime_memory user-1000.slice" in body
-    assert "apply_system_runtime_memory user@1000.service" in body
-    assert "set-property --runtime app.slice" in body
-    assert "set-property --runtime session.slice" in body
-    assert "verify_system_unit_runtime_memory user-1000.slice" in body
-    assert "verify_app_slice_runtime" in body
-    assert "verify_session_slice_runtime" in body
+def test_p0_oom_containment_is_manifest_owned_and_source_only() -> None:
+    validator = (REPO_ROOT / "scripts/install-p0-oom-containment").read_text()
+    manifest = (REPO_ROOT / "config/root-required/oom-containment.files").read_text()
+
+    for relative in (
+        "config/root-required/oom-host-profiles.tsv",
+        "config/root-required/oom-host-policy/appendix/app.slice.conf",
+        "config/root-required/oom-host-policy/podium/app.slice.conf",
+        "systemd/system/user-1000.slice.d/oom-containment.conf",
+        "systemd/system/user@1000.service.d/oom.conf",
+        "systemd/units/app.slice.d/oom-containment.conf",
+        "systemd/units/session.slice.d/oom-containment.conf",
+        "config/earlyoom/default",
+    ):
+        assert relative in manifest
+
+    assert (
+        "production OOM installation and authoritative live verification are unavailable"
+        in validator
+    )
+    assert "set-property --runtime" not in validator
+    assert "apply_system_runtime_memory" not in validator
+    assert "verify_app_slice_runtime" not in validator
