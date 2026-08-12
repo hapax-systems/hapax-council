@@ -175,6 +175,37 @@ class TestPassthroughIsPartOfTheSelection:
             assert result.returncode == 6, f"{extra} slipped past the guard: {result.stdout}"
             assert "gpt-5.5" in result.stderr
 
+    def test_toml_whitespace_around_the_key_does_not_bypass(self, tmp_path: Path) -> None:
+        """The key is TOML, so `model = "x"` is the same assignment as `model="x"`.
+
+        Measured against codex 0.146 with `codex doctor`, which prints the effective config and
+        spends nothing:
+
+            codex -c 'model = "spaced"' doctor   -> spaced   (honoured — so it can bypass)
+            codex -c '"model" = "q"'    doctor   -> ignored  (a QUOTED key has no effect)
+
+        Hence normalisation of whitespace, and deliberately no handling of quoted keys: a guard
+        that fired on a form codex ignores would be refusing something that cannot happen.
+        """
+        for extra in (
+            ["-c", 'model = "gpt-5.5"'],
+            ["-c", "  model  =  gpt-5.5  "],
+            ["-c", 'model_reasoning_effort = "low"'],
+            ["--config", 'model = "gpt-5.5"'],
+        ):
+            result = _run_with_extra(extra, tmp_path)
+            assert result.returncode == 6, f"{extra} slipped past the guard: {result.stdout}"
+
+    def test_a_quoted_key_is_not_refused_because_codex_ignores_it(self, tmp_path: Path) -> None:
+        """The measurement above, pinned as behaviour.
+
+        If a future codex starts honouring quoted keys this test goes red, which is the signal
+        to widen the scanner — rather than the silence that would follow from having guessed.
+        """
+        result = _run_with_extra(["-c", '"model" = "gpt-5.5"'], tmp_path)
+        assert result.returncode == 0, result.stderr
+        assert result.stdout.strip() == f"{FRONTIER_MODEL}|{FRONTIER_EFFORT}"
+
     def test_the_cli_model_flag_at_the_frontier_is_not_a_downgrade(self, tmp_path: Path) -> None:
         result = _run_with_extra(["--model", FRONTIER_MODEL], tmp_path)
         assert result.returncode == 0, result.stderr

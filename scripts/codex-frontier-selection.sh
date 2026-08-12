@@ -48,6 +48,31 @@ CODEX_MODEL_REASON="${HAPAX_CODEX_MODEL_REASON:-}"
 # to stop exactly that. Two spellings of one selection, one of them checked: the same input-set
 # defect a third time, which is why the scanner now enumerates every spelling codex accepts
 # rather than the one that happened to be on my mind.
+#
+# THE KEY IS TOML, SO IT MAY CARRY WHITESPACE. Three rounds of review found three spellings this
+# scanner did not read: config-at-all, then the CLI flag, then `-c 'model = "gpt-5.5"'` with spaces
+# around the `=`. Three mitigations for one hazard is the estate's own proof that the boundary is
+# wrong, so before adding a fourth enumeration I measured what codex 0.146 actually honours,
+# with `codex doctor` (which prints the effective config and spends nothing):
+#
+#   codex -c 'model="A"' -c 'model="B"' doctor        -> B      (config is LAST-wins)
+#   codex --model A -c 'model="B"' doctor             -> A      (the FLAG beats a later config)
+#   codex -c 'model = "spaced"' doctor                -> spaced (whitespace around = is honoured)
+#   codex -c '"model" = "quoted"' doctor              -> ignored (a QUOTED key is not honoured)
+#
+# Those measurements decide the design, and one of them killed the redesign I intended. Emitting
+# the estate's own `-c model=` LAST would have made the validated selection win structurally and
+# demoted this scanner to an error-message improver — except the flag beats config regardless of
+# order, so that shape does not hold and the scanner stays load-bearing. Building it on
+# "last-wins covers everything" would have been a precondition asserted rather than checked.
+#
+# What remains is therefore normalisation, not another spelling: trim the whitespace TOML permits.
+# Quoted keys are deliberately NOT handled — codex ignores them, so they cannot bypass anything,
+# and refusing them would be a guard firing on a form that has no effect.
+_cfs_trim() {
+  _cfs_v="${_cfs_v#"${_cfs_v%%[![:space:]]*}"}"
+  _cfs_v="${_cfs_v%"${_cfs_v##*[![:space:]]}"}"
+}
 _cfs_strip_quotes() {
   _cfs_val="${_cfs_val%\"}"; _cfs_val="${_cfs_val#\"}"
   _cfs_val="${_cfs_val%\'}"; _cfs_val="${_cfs_val#\'}"
@@ -87,8 +112,8 @@ if [ "${#CODEX_EXTRA[@]}" -gt 0 ] 2>/dev/null; then
       esac
     fi
     [ -n "$_cfs_assign" ] || continue
-    _cfs_key="${_cfs_assign%%=*}"
-    _cfs_val="${_cfs_assign#*=}"
+    _cfs_v="${_cfs_assign%%=*}"; _cfs_trim; _cfs_key="$_cfs_v"
+    _cfs_v="${_cfs_assign#*=}"; _cfs_trim; _cfs_val="$_cfs_v"
     # codex config values are commonly quoted; the quotes are syntax, not value.
     _cfs_strip_quotes
     case "$_cfs_key" in
