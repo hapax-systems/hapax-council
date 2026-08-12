@@ -2,13 +2,20 @@
 
 **cc-task:** `insightface-arcface-enrollment-proof-reconcile` (P2, WSJF 5.5)
 **Author:** epsilon
-**Predecessor task:** `closed/ef7b-162-insightface-arcface-enrollment-upgrade-for-principal-a1-p.md`
+**Predecessor task:** `closed/ef7b-162-insightface-arcface-enrollment-upgrade-for-…-p.md`
 (marked `completed` by Antigravity 2026-04-26T20:20:12Z)
+
+> **Redaction notice, 2026-08-12.** The predecessor's real filename and its real title both
+> contain a household given name. They are ELIDED here rather than rewritten. Substituting an
+> alias into a filename produces a path that does not exist; substituting one into a quoted
+> title makes this document assert a name the task was never given. Either would be a silent
+> rewrite of a historical record — the record is redacted, not restated. The task is
+> identified by its stable id `ef7b-162`; resolve the full path by that id.
 
 ## Premise
 
-The closed task `ef7b-162` titled "InsightFace ArcFace enrollment
-upgrade for principal-a1 (per-person face-matcher gate)" claims completion,
+The closed task `ef7b-162` — titled "InsightFace ArcFace enrollment upgrade
+for […] (per-person face-matcher gate)", name elided per the notice above — claims completion,
 but the pipeline-ingress audit flagged that the high-risk
 consent-gated ArcFace upgrade was skipped or left for a later runner.
 The reconcile task asks whether the ArcFace enrollment upgrade code,
@@ -54,8 +61,14 @@ gate for principal-a1** — was not implemented:
   2026-08-11 scrub mapped both onto `principal-a1`, so they are described
   rather than quoted: quoting them would restore the disclosure this file's
   own rename removed, and writing `principal-a1` twice would make the claim
-  vacuous. Recheck with the household name list
-  (`$HAPAX_PII_NAMES_FILE`, outside any repo) as the search terms.
+  vacuous. Recheck, from the repo root, with the private list supplying the terms:
+
+  ```bash
+  # Re-derives the claim above. Exit 1 (no matches) is the asserted result.
+  grep -rniFf <(grep -v '^[#!]' "${HAPAX_PII_NAMES_FILE:-$HOME/.config/hapax/pii-names.txt}") \
+    agents shared logos
+  grep -rn 'per_person_face_matcher' agents shared logos
+  ```
 - No enrollment artifact at `~/hapax-state/face-enrollments/
   principal-a1.npz` (the path the consent contract names).
 - The consent contract `axioms/contracts/contract-principal-a1-enroll-2026-04-19.yaml`

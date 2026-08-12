@@ -38,8 +38,15 @@ case "$tool_name" in
   *) exit 0 ;;
 esac
 
-# Extract file path
-file_path="$(printf '%s' "$input" | jq -r '.tool_input.file_path // .tool_input.path // empty' 2>/dev/null || true)"
+# Extract file path.
+#
+# `notebook_path` is NotebookEdit's spelling. It was missing, so every NotebookEdit call
+# exited here with no path and therefore no scan -- the tool sat on the allowlist above and
+# was silently unguarded. Same shape as the household-name hole this file exists to close:
+# the gate was not bypassed, it was never asked the question.
+file_path="$(printf '%s' "$input" |
+  jq -r '.tool_input.file_path // .tool_input.path // .tool_input.notebook_path // empty' \
+  2>/dev/null || true)"
 [ -n "$file_path" ] || exit 0
 
 # Skip files that aren't git-tracked or would be gitignored
@@ -50,13 +57,72 @@ if git rev-parse --is-inside-work-tree &>/dev/null; then
   fi
 fi
 
-# Skip non-content files (binary, images, etc.)
+# Extract the new content being written.
+#
+# MultiEdit carries its payload in `edits[].new_string` and NotebookEdit in `new_source`.
+# Neither was read, so both tools fell through the empty-content exit below and returned 0
+# for content Edit would have blocked. Reproduced by direct execution before the fix.
+new_content="$(printf '%s' "$input" | jq -r '
+  [ .tool_input.new_string?, .tool_input.content?, .tool_input.new_source?,
+    (.tool_input.edits? // [] | .[]? | .new_string?) ]
+  | map(select(type == "string")) | join("\n")
+' 2>/dev/null || true)"
+
+# THE PATH IS SCANNED BEFORE ANY CONTENT-SHAPED EXIT, deliberately.
+#
+# The binary-extension skip and the empty-content exit both used to precede the filename
+# check, so a registered household name could be introduced as an image filename or an empty
+# file while the code claimed filenames were protected. A skip that is right about CONTENT
+# must not silently also skip the PATH.
+pii_names_file="${HAPAX_PII_NAMES_FILE:-$HOME/.config/hapax/pii-names.txt}"
+
+glob_escape() {
+  local s=$1
+  s=${s//\\/\\\\}; s=${s//\*/\\*}; s=${s//\?/\\?}; s=${s//\[/\\[}
+  printf '%s' "$s"
+}
+
+# 0 = contains a registered household name, 1 = clean or no list, 2 = the check itself broke.
+# Callers treat 2 as a match: an unreadable answer is not a clean answer.
+scan_for_registered_names() {
+  local haystack_lc="${1,,}" exempt_lc pii_name grep_status
+  [ -r "$pii_names_file" ] || return 1
+  while IFS= read -r pii_line; do
+    case "$pii_line" in
+      '!'*) exempt_lc="${pii_line#!}"
+            exempt_lc="${exempt_lc,,}"
+            [ -n "$exempt_lc" ] || continue
+            haystack_lc="${haystack_lc//$(glob_escape "$exempt_lc")/}" ;;
+    esac
+  done < "$pii_names_file"
+  while IFS= read -r pii_name; do
+    case "$pii_name" in ''|'#'*|'!'*) continue ;; esac
+    grep_status=0
+    printf '%s' "$haystack_lc" | grep -qP "(?<![A-Za-z])\\Q${pii_name,,}\\E(?![A-Za-z])" \
+      || grep_status=$?
+    if [ "$grep_status" -eq 0 ]; then return 0; fi
+    if [ "$grep_status" -gt 1 ]; then return 2; fi
+  done < "$pii_names_file"
+  return 1
+}
+
+name_check_broken=0
+path_name_status=0
+scan_for_registered_names "$file_path" || path_name_status=$?
+if [ "$path_name_status" -eq 0 ]; then
+  echo "BLOCKED: PII detected in the FILENAME being written: $file_path" >&2
+  echo "  - Registered household name in the path (see \$HAPAX_PII_NAMES_FILE)" >&2
+  echo "  Rename the file to an opaque principal id before writing it." >&2
+  exit 2
+elif [ "$path_name_status" -eq 2 ]; then
+  name_check_broken=1
+fi
+
+# Skip non-content files (binary, images, etc.) -- AFTER the path has been scanned.
 case "$file_path" in
   *.png|*.jpg|*.jpeg|*.gif|*.wav|*.mp3|*.mp4|*.db|*.sqlite) exit 0 ;;
 esac
 
-# Extract the new content being written
-new_content="$(printf '%s' "$input" | jq -r '.tool_input.new_string // .tool_input.content // empty' 2>/dev/null || true)"
 [ -n "$new_content" ] || exit 0
 
 # --- PII Pattern Checks ---
@@ -105,48 +171,35 @@ fi
 # an underscored form survive in two contract files and that the commit message documents. A
 # guard that reproduces the bug it reports is worse than no guard: it reports coverage it has
 # not got.
-glob_escape() {
-  local s=$1
-  s=${s//\\/\\\\}; s=${s//\*/\\*}; s=${s//\?/\\?}; s=${s//\[/\\[}
-  printf '%s' "$s"
-}
+# The scan itself is `scan_for_registered_names`, defined above the binary-extension skip so
+# the FILENAME can be checked before any content-shaped exit. Here it runs over the body.
+content_name_status=0
+scan_for_registered_names "$new_content" || content_name_status=$?
+if [ "$content_name_status" -eq 0 ]; then
+  blocked+=("Registered household name detected (see \$HAPAX_PII_NAMES_FILE)")
+elif [ "$content_name_status" -eq 2 ]; then
+  name_check_broken=1
+fi
 
-pii_names_file="${HAPAX_PII_NAMES_FILE:-$HOME/.config/hapax/pii-names.txt}"
-if [ -r "$pii_names_file" ]; then
-  # The path is scanned too. A registered name in a FILENAME is the same exposure as one in the
-  # body, and renaming files is precisely how the original scrub had to be carried out.
-  name_scan="$new_content
-$file_path"
-  name_scan_lc="${name_scan,,}"
-  while IFS= read -r pii_line; do
-    case "$pii_line" in
-      '!'*) exempt_lc="${pii_line#!}"
-            exempt_lc="${exempt_lc,,}"
-            [ -n "$exempt_lc" ] || continue
-            name_scan_lc="${name_scan_lc//$(glob_escape "$exempt_lc")/}" ;;
-    esac
-  done < "$pii_names_file"
-  while IFS= read -r pii_name; do
-    case "$pii_name" in ''|'#'*|'!'*) continue ;; esac
-    # `|| grep_status=$?` rather than a bare call: `set -e` is in force, and grep's exit 1
-    # (no match) would otherwise abort the hook before the status could be read. An aborting
-    # guard is a guard that stops checking, which is the failure this whole file is about.
-    grep_status=0
-    printf '%s' "$name_scan_lc" | grep -qP "(?<![A-Za-z])\\Q${pii_name,,}\\E(?![A-Za-z])" \
-      || grep_status=$?
-    if [ "$grep_status" -eq 0 ]; then
-      blocked+=("Registered household name detected (see \$HAPAX_PII_NAMES_FILE)")
-      break
-    elif [ "$grep_status" -gt 1 ]; then
-      # grep errored. Treat an unreadable check as a failed check, never as a pass.
-      blocked+=("pii-guard: name check errored (grep exit $grep_status) -- treating as a match")
-      break
-    fi
-  done < "$pii_names_file"
-else
+if [ "$name_check_broken" -eq 1 ]; then
+  blocked+=("Household name check ERRORED and was treated as a match -- see remedy below")
+fi
+
+if [ ! -r "$pii_names_file" ]; then
+  # An absent list is a durable configuration state, not a transient one: the warning repeats
+  # on every invocation and gets tuned out, and a permanently half-disabled guard then looks
+  # identical to a working one in any log. So the degradation is also RECORDED, once, where an
+  # audit can find it -- the answer to "was known-name protection on for that mutation?" must
+  # not depend on whether anyone was reading stderr.
   echo "pii-guard: no household name list at $pii_names_file --" \
        "name checks are limited to structural patterns." \
        "Create it (one name per line, outside any repo) to enable them." >&2
+  degraded_receipt="${XDG_STATE_HOME:-$HOME/.local/state}/hapax/pii-guard-degraded.jsonl"
+  if mkdir -p "$(dirname "$degraded_receipt")" 2>/dev/null; then
+    printf '{"at":"%s","degradation":"household_name_list_absent","expected_path":"%s","file":"%s"}\n' \
+      "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$pii_names_file" "$file_path" \
+      >>"$degraded_receipt" 2>/dev/null || true
+  fi
 fi
 
 # Age disclosure: a capitalised given name followed by a parenthesised 1-2 digit number.
@@ -164,10 +217,26 @@ fi
 # This list is a PRECISION measure, not a completeness claim. Its only failure mode is a false
 # NEGATIVE, and only for someone named exactly like a document-structure word. That is the right
 # direction to be wrong in for a check whose whole value is that it stays switched on.
+#
+# NOT A PIPELINE INTO `grep -q`. The first revision of this filter read
+#   grep -oP '<candidates>' | grep -qvP "$age_structure_words"
+# and was FAIL-OPEN above roughly one screen of matches. `set -o pipefail` is in force;
+# `grep -q` exits on its first hit, SIGPIPEs the upstream `grep -oP`, and the pipeline status
+# becomes 141, which makes the `if` false. Measured at the previous head: `Example (11)` alone
+# blocked, and fifty thousand of them passed. A gate whose verdict depends on input VOLUME is
+# worse than no gate, because it passes exactly the large mechanical writes most likely to
+# carry a disclosure nobody read.
+#
+# So: capture, then filter with `grep -v` (which consumes all input and never exits early),
+# then test the result for emptiness. No early-exiting consumer, no SIGPIPE, no volume
+# dependence. `|| true` on each capture because grep exits 1 on no-match under `set -e`.
 age_structure_words='^(?:Appendix|Chapter|Section|Figure|Fig|Table|Note|Item|Step|Part|Page|Line|Rule|Case|Tier|Level|Phase|Round|Wave|Slice|Gate|Volume|Version|Revision|Column|Row|Panel|Track|Slot|Tick|Axis|Band|Class|Group|Level|Stage)\b'
-if echo "$new_content" | grep -oP '\b[A-Z][a-z]{2,}\s+\((?:[1-9]|[1-9][0-9])\)' \
-     | grep -qvP "$age_structure_words"; then
-  blocked+=("Possible age disclosure (Name (NN)) -- use an opaque principal id")
+age_candidates="$(grep -oP '\b[A-Z][a-z]{2,}\s+\((?:[1-9]|[1-9][0-9])\)' <<<"$new_content" || true)"
+if [ -n "$age_candidates" ]; then
+  age_hits="$(grep -vP "$age_structure_words" <<<"$age_candidates" || true)"
+  if [ -n "$age_hits" ]; then
+    blocked+=("Possible age disclosure (Name (NN)) -- use an opaque principal id")
+  fi
 fi
 
 # The SAME disclosure written in prose. The scrub that added the check above removed every

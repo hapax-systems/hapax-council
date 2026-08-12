@@ -431,6 +431,174 @@ class TestAgeDisclosure:
         assert result.returncode == 0, result.stderr
 
 
+# ── Tools that were on the allowlist and never scanned ─────────────
+
+
+class TestMultiEditAndNotebookEditAreActuallyScanned:
+    """Both tools sat on the allowlist while their payloads were never read.
+
+    `MultiEdit` carries content in `edits[].new_string` and `NotebookEdit` in
+    `new_source` under `notebook_path`. The extraction read neither, so each
+    call fell through the empty-content exit and returned 0 for content `Edit`
+    blocked. Reproduced by direct execution before the fix — the guard was not
+    bypassed, it was never asked the question, which is the same shape as the
+    five-month exposure itself.
+    """
+
+    def test_multiedit_content_is_scanned(self, tmp_path: Path) -> None:
+        repo = tmp_path
+        (repo / ".git").mkdir()
+        result = _run(
+            {
+                "tool_name": "MultiEdit",
+                "tool_input": {
+                    "file_path": str(repo / "docs/x.md"),
+                    "edits": [
+                        {"new_string": "harmless"},
+                        {"new_string": "an 11-year-old reader"},
+                    ],
+                },
+            },
+            cwd=repo,
+        )
+        assert result.returncode == 2, result.stdout + result.stderr
+        assert "age disclosure" in result.stderr
+
+    def test_notebookedit_content_and_path_are_scanned(self, tmp_path: Path) -> None:
+        repo = tmp_path
+        (repo / ".git").mkdir()
+        result = _run(
+            {
+                "tool_name": "NotebookEdit",
+                "tool_input": {
+                    "notebook_path": str(repo / "notebooks/x.ipynb"),
+                    "new_source": "an 11-year-old reader",
+                },
+            },
+            cwd=repo,
+        )
+        assert result.returncode == 2, result.stdout + result.stderr
+
+    def test_multiedit_clean_content_still_passes(self, tmp_path: Path) -> None:
+        repo = tmp_path
+        (repo / ".git").mkdir()
+        result = _run(
+            {
+                "tool_name": "MultiEdit",
+                "tool_input": {
+                    "file_path": str(repo / "agents/x.py"),
+                    "edits": [{"new_string": "x = 1"}, {"new_string": "y = 2"}],
+                },
+            },
+            cwd=repo,
+        )
+        assert result.returncode == 0, result.stderr
+
+
+# ── Volume independence ────────────────────────────────────────────
+
+
+class TestTheGateDoesNotDependOnVolume:
+    def test_many_candidates_still_block(self, tmp_path: Path) -> None:
+        """The fail-open I shipped in the precision fix, pinned.
+
+        `grep -oP ... | grep -qvP ...` under `set -o pipefail`: the `-q`
+        consumer exits on its first hit, SIGPIPEs the producer, and the
+        pipeline status becomes 141, so the `if` is false. One `Example (11)`
+        blocked; fifty thousand passed. A gate whose verdict depends on input
+        size is worse than no gate — it passes exactly the large mechanical
+        writes least likely to have been read by a human.
+        """
+        repo = tmp_path
+        (repo / ".git").mkdir()
+        body = " ".join(f"Wilhelmina ({i % 90 + 1})" for i in range(50_000))
+        result = _run(_edit(str(repo / "docs/x.md"), body), cwd=repo)
+        assert result.returncode == 2, "the age gate went fail-open at volume"
+
+    def test_many_structure_words_still_pass(self, tmp_path: Path) -> None:
+        """The same volume, on the exempt side: precision must not decay either."""
+        repo = tmp_path
+        (repo / ".git").mkdir()
+        body = " ".join(f"Appendix ({i % 90 + 1})" for i in range(50_000))
+        result = _run(_edit(str(repo / "docs/x.md"), body), cwd=repo)
+        assert result.returncode == 0, result.stderr
+
+
+# ── Filename protection survives the content-shaped exits ──────────
+
+
+class TestFilenameIsCheckedBeforeContentExits:
+    """A skip that is right about CONTENT must not silently skip the PATH.
+
+    The binary-extension skip and the empty-content exit both preceded the
+    filename check, so a registered name could be introduced as an image
+    filename or an empty file while the code claimed filenames were protected.
+    """
+
+    def test_registered_name_in_an_image_filename_is_blocked(self, tmp_path: Path) -> None:
+        repo = tmp_path
+        (repo / ".git").mkdir()
+        names = _names_file(repo, "Wilhelmina\n")
+        result = _run_with_names(
+            _edit(str(repo / "assets/wilhelmina-portrait.png"), "binary-ish"),
+            cwd=repo,
+            names_file=names,
+        )
+        assert result.returncode == 2, result.stdout + result.stderr
+        assert "FILENAME" in result.stderr
+
+    def test_registered_name_in_an_empty_write_is_blocked(self, tmp_path: Path) -> None:
+        repo = tmp_path
+        (repo / ".git").mkdir()
+        names = _names_file(repo, "Wilhelmina\n")
+        result = _run_with_names(
+            _edit(str(repo / "docs/wilhelmina.md"), ""), cwd=repo, names_file=names
+        )
+        assert result.returncode == 2, result.stdout + result.stderr
+
+    def test_a_clean_image_filename_still_skips(self, tmp_path: Path) -> None:
+        repo = tmp_path
+        (repo / ".git").mkdir()
+        names = _names_file(repo, "Wilhelmina\n")
+        result = _run_with_names(
+            _edit(str(repo / "assets/diagram.png"), f"# {OPERATOR_FULLNAME}"),
+            cwd=repo,
+            names_file=names,
+        )
+        assert result.returncode == 0, result.stderr
+
+
+# ── Degraded coverage leaves an auditable trace ────────────────────
+
+
+class TestDegradedCoverageIsRecorded:
+    def test_missing_list_writes_a_degradation_receipt(self, tmp_path: Path) -> None:
+        """Absence of the list is durable, so the stderr warning repeats forever
+        and gets tuned out. A half-disabled guard must not look identical to a
+        working one in an audit."""
+        import os
+
+        repo = tmp_path
+        (repo / ".git").mkdir()
+        state = tmp_path / "state"
+        env = dict(os.environ)
+        env["HAPAX_PII_NAMES_FILE"] = str(repo / "absent.txt")
+        env["XDG_STATE_HOME"] = str(state)
+        result = subprocess.run(
+            ["bash", str(HOOK)],
+            input=json.dumps(_edit(str(repo / "agents/x.py"), "x = 1\n")),
+            capture_output=True,
+            text=True,
+            check=False,
+            cwd=repo,
+            env=env,
+        )
+        assert result.returncode == 0
+        receipt = state / "hapax" / "pii-guard-degraded.jsonl"
+        assert receipt.is_file(), "a degraded guard must leave a durable trace"
+        assert "household_name_list_absent" in receipt.read_text(encoding="utf-8")
+
+
 # ── Hook integrity ─────────────────────────────────────────────────
 
 
