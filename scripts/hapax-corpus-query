@@ -10,12 +10,14 @@ and which of them are dead."
 
 Design commitments, each one a direct response to that failure:
 
-* **Never return one result.** A single-document answer to a corpus question is the bug, so
-  a result set below ``MIN_CLUSTER`` is backfilled from the vocabulary-neighbours of what
-  matched, labelled as such. Two things it does not do: manufacture a cluster from zero
-  matches, or pad a corpus that genuinely holds fewer documents than the floor -- both say
-  so instead. See ``cluster()``, which is where the commitment is enforced rather than
-  described.
+* **Never SILENTLY return one result.** A single-document answer to a corpus question is the
+  bug, so a result set below ``MIN_CLUSTER`` is backfilled from the vocabulary-neighbours of
+  what matched, labelled as such. Three cases cannot be backfilled and are therefore
+  *announced with their cause* rather than padded: zero matches, a corpus smaller than the
+  floor, and a match that shares no distinctive vocabulary with anything. The absolute form of
+  this claim ("never return one result") was shipped twice and reviewed as a critical both
+  times -- an undeclared exception to a headline commitment is worse than a declared limit.
+  See ``cluster()``, where it is enforced rather than described.
 * **Rank by density, not presence.** A document that mentions a term twice is not about it.
   Hit-density separates the topic documents from the passing mentions.
 * **Surface supersession loudly.** ``status: retired`` / ``superseded`` and
@@ -291,6 +293,8 @@ def _operator_records(root: Path) -> list[Doc]:
     docs: list[Doc] = []
     for sub in OPERATOR_RECORD_DIRS:
         for path in sorted(root.rglob(f"{sub}/*.json")):
+            if SKIP_DIR_PARTS & set(path.parts):
+                continue
             try:
                 payload = json.loads(path.read_text(encoding="utf-8", errors="replace"))
             except (OSError, ValueError):
@@ -490,7 +494,11 @@ def related(doc: Doc, docs: list[Doc], limit: int) -> list[tuple[float, Doc]]:
 
 
 def cluster(
-    rows: list[tuple[float, Doc]], docs: list[Doc], *, limit: int
+    rows: list[tuple[float, Doc]],
+    docs: list[Doc],
+    *,
+    limit: int,
+    exclude: set[str] | None = None,
 ) -> tuple[list[tuple[float, Doc]], list[tuple[float, Doc]]]:
     """Enforce the floor: return (matched, neighbours) where the two together are a cluster.
 
@@ -521,7 +529,11 @@ def cluster(
     if not matched or len(matched) >= MIN_CLUSTER:
         return matched, []
 
-    seen = {doc.path for _, doc in matched}
+    # `exclude` covers the --related source document, which is not in `matched` (the matches
+    # ARE its neighbours) and would otherwise be eligible to backfill as a neighbour of its own
+    # neighbour. Listing a document as its own relative is not merely odd: it consumes a floor
+    # slot that should have gone to a genuinely distinct document.
+    seen = {doc.path for _, doc in matched} | set(exclude or ())
     neighbours: list[tuple[float, Doc]] = []
     for _, doc in matched:
         for similarity, other in related(doc, docs, limit):
@@ -684,7 +696,7 @@ def main(argv: list[str] | None = None) -> int:
             print(_related_miss_message(args.related, docs), file=sys.stderr)
             return 2
         rows = related(match, docs, args.limit)
-        matched, neighbours = cluster(rows, docs, limit=args.limit)
+        matched, neighbours = cluster(rows, docs, limit=args.limit, exclude={match.path})
         render(
             matched,
             header=f"Neighbours of {match.name}",

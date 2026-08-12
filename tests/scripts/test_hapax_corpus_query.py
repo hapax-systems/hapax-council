@@ -466,3 +466,61 @@ def test_bulk_raw_dirs_stay_excluded(mod: ModuleType) -> None:
     assert "prompt-histories" in mod.SKIP_DIR_PARTS
     assert "paste-cache" in mod.SKIP_DIR_PARTS
     assert "operator-corpus" not in mod.SKIP_DIR_PARTS
+
+
+# --- the shortfall branches the reviewers found undocumented-by-test -----------------
+
+
+def test_a_match_with_no_vocabulary_neighbours_is_announced_not_padded(
+    mod: ModuleType, capsys
+) -> None:  # noqa: ANN001
+    """The exception that made "never return one result" false, now exercised.
+
+    related() requires shared tokens longer than four characters. A document that overlaps
+    nothing has no neighbours to borrow even in a large corpus, so the floor cannot be met.
+    Padding with unrelated documents would defeat the purpose — the floor exists so a reader
+    sees the archipelago, and three irrelevant documents are not one.
+    """
+    lonely = _doc(mod, "lonely.md", "zzzq wwwx vvvy " * 20)
+    others = [_doc(mod, f"o{i}.md", "receipt admission ledger evidence " * 20) for i in range(6)]
+    docs = [lonely, *others]
+
+    matched, neighbours = mod.cluster([(9.0, lonely)], docs, limit=12)
+    mod.render(
+        matched, header="Corpus cluster for: zzzq", neighbours=neighbours, corpus_size=len(docs)
+    )
+
+    out = capsys.readouterr().out
+    assert len(matched) + len(neighbours) == 1, "no neighbour is borrowable"
+    assert "below the 3-document floor" in out
+    assert "shares enough distinctive vocabulary" in out, "the cause must be named"
+    assert "corpus holds 7" in out
+
+
+def test_the_related_source_is_never_its_own_neighbour(mod: ModuleType) -> None:
+    """In --related, the source document is not in `matched` — the matches ARE its
+    neighbours — so without an explicit exclusion it can backfill as a neighbour of its own
+    neighbour. That consumes a floor slot a distinct document should have had."""
+    source = _doc(mod, "source.md", "quota receipt admission ledger " * 30)
+    near = _doc(mod, "near.md", "quota receipt admission ledger " * 30)
+    docs = [source, near]
+
+    matched, neighbours = mod.cluster([(0.9, near)], docs, limit=12, exclude={source.path})
+
+    assert source.path not in [d.path for _, d in neighbours]
+
+
+def test_json_records_under_a_skipped_directory_are_not_indexed(
+    mod: ModuleType, tmp_path: Path
+) -> None:
+    """The skip list exists so raw dumps do not swamp density ranking. JSON indexing was
+    added without consulting it, so a records/ dir under prompt-histories would have been
+    ingested — the exclusion has to apply to both readers or it applies to neither."""
+    buried = tmp_path / "operator-corpus" / "prompt-histories" / "records"
+    buried.mkdir(parents=True)
+    (buried / "pli-buried.json").write_text(
+        json.dumps({"record_id": "pli-buried", "content": "quota receipt admission"}),
+        encoding="utf-8",
+    )
+
+    assert mod.build_index([tmp_path]) == []
