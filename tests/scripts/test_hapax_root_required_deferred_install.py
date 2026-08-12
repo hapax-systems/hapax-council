@@ -14,6 +14,7 @@ import stat
 import subprocess
 import sys
 import time
+from contextlib import contextmanager
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -508,8 +509,11 @@ def test_direct_authenticated_protocol_rejects_same_uid_arbitrary_finalizer(
             os.close(fd)
 
     assert result.returncode != 0
-    assert "refuses an unexpected raw exported environment vocabulary" in result.stderr
-    assert "HAPAX_ROOT_REQUIRED_FINALIZE_GATE" in result.stderr
+    assert (
+        "available only through the independently installed root-owned package broker"
+        in result.stderr
+    )
+    assert "no Bash installer effect or receipt advancement is permitted" in result.stderr
     assert "next action:" in result.stderr
     assert not sudo_marker.exists()
     assert not (tmp_path / "state").exists()
@@ -654,16 +658,11 @@ def test_direct_authenticated_protocol_rejects_caller_selected_production_effect
             os.close(fd)
 
     assert result.returncode != 0
-    assert "refuses an unexpected raw exported environment vocabulary" in result.stderr
-    for selector in (
-        *future_selectors,
-        *legacy_selectors,
-        "DBUS_SESSION_BUS_ADDRESS",
-        "DOCKER_HOST",
-        "SYSTEMD_EXEC_PID",
-    ):
-        assert selector in result.stderr
-    assert "<invalid-environment-entry>" in result.stderr
+    assert (
+        "available only through the independently installed root-owned package broker"
+        in result.stderr
+    )
+    assert "no Bash installer effect or receipt advancement is permitted" in result.stderr
     assert "next action:" in result.stderr
     assert not sudo_marker.exists()
     assert not redirected_effect.exists()
@@ -1402,8 +1401,211 @@ def test_production_child_environment_is_closed_and_canonical(cap_digest: str | 
         module._validate_production_child_environment(env, runtime_gates)
 
 
+def test_production_path_cannot_execute_the_interpreted_installer(tmp_path: Path) -> None:
+    module = _load_deferred_module()
+    paths = module.InstallPaths(
+        home=tmp_path,
+        state_root=tmp_path / "state",
+        defer_root=tmp_path / "defer",
+        repo_alias=tmp_path / "repo",
+        sudo=Path("/usr/bin/sudo"),
+        test_mode=False,
+        test_root=None,
+    )
+    state_lock = module.LockedState(
+        lexical_root=paths.state_root,
+        lexical_lock=paths.state_root / ".lock",
+        state_fd=31,
+        lock_fd=32,
+        guard_fd=33,
+    )
+
+    with pytest.raises(module.DeferredInstallError, match="Bash package execution is retired"):
+        module._execute_installer(
+            paths,
+            tmp_path / "repo",
+            "a" * 40,
+            tmp_path / "stage",
+            module.OOM_PACKAGE,
+            tmp_path / "runtime-task.md",
+            module.RuntimeGateSnapshot(task_sha256="b" * 64, cap_receipt_sha256=None),
+            state_lock,
+        )
+
+
+def test_production_install_releases_user_state_lock_before_broker(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    module = _load_deferred_module()
+    paths = module.InstallPaths(
+        home=tmp_path,
+        state_root=tmp_path / "state",
+        defer_root=tmp_path / "defer",
+        repo_alias=tmp_path / "repo",
+        sudo=Path("/usr/bin/sudo"),
+        test_mode=False,
+        test_root=None,
+    )
+    state_lock = module.LockedState(
+        lexical_root=paths.state_root,
+        lexical_lock=paths.state_root / ".lock",
+        state_fd=31,
+        lock_fd=32,
+        guard_fd=33,
+    )
+    lock_active = False
+
+    @contextmanager
+    def fake_locked_state(_paths: object):
+        nonlocal lock_active
+        assert not lock_active
+        lock_active = True
+        try:
+            yield paths, state_lock
+        finally:
+            lock_active = False
+
+    monkeypatch.setattr(module, "_install_paths", lambda: paths)
+    monkeypatch.setattr(module, "_validate_sudo", lambda *args, **kwargs: None)
+    monkeypatch.setattr(module, "_validate_owned_directory", lambda *args, **kwargs: None)
+    monkeypatch.setattr(module, "_locked_state", fake_locked_state)
+    monkeypatch.setattr(
+        module,
+        "_install_locked",
+        lambda *args, **kwargs: module.BrokerRequest(module.OOM_PACKAGE, "a" * 40),
+    )
+
+    def execute_broker(_paths: object, request: object) -> int:
+        assert not lock_active
+        assert request == module.BrokerRequest(module.OOM_PACKAGE, "a" * 40)
+        return 0
+
+    monkeypatch.setattr(module, "_execute_production_broker", execute_broker)
+
+    assert (
+        module.install(
+            module.OOM_PACKAGE,
+            expected_sha="a" * 40,
+            activation_release=tmp_path / "repo",
+            runtime_authority_task=tmp_path / "runtime-task.md",
+        )
+        == 0
+    )
+    assert not lock_active
+
+
+def test_production_broker_receives_no_child_or_task_capability(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    module = _load_deferred_module()
+    paths = module.InstallPaths(
+        home=tmp_path,
+        state_root=tmp_path / "state",
+        defer_root=tmp_path / "defer",
+        repo_alias=tmp_path / "repo",
+        sudo=Path("/usr/bin/sudo"),
+        test_mode=False,
+        test_root=None,
+    )
+    request = module.BrokerRequest(module.OOM_PACKAGE, "a" * 40)
+    calls: list[tuple[list[str], dict[str, str]]] = []
+    completion_checked = False
+
+    @contextmanager
+    def fake_locked_state(_paths: object):
+        yield paths, object()
+
+    def fake_run(command: list[str], **kwargs: object) -> subprocess.CompletedProcess[bytes]:
+        calls.append((command, kwargs["env"]))
+        return subprocess.CompletedProcess(command, 0)
+
+    def verify_completion(*_args: object) -> None:
+        nonlocal completion_checked
+        completion_checked = True
+
+    monkeypatch.setattr(module, "_validate_production_broker", lambda: None)
+    monkeypatch.setattr(module.subprocess, "run", fake_run)
+    monkeypatch.setattr(module, "_locked_state", fake_locked_state)
+    monkeypatch.setattr(module, "_verify_broker_completion", verify_completion)
+
+    assert module._execute_production_broker(paths, request) == 0
+    assert completion_checked
+    assert calls == [
+        (
+            [
+                "/usr/bin/sudo",
+                "-n",
+                "/usr/local/sbin/hapax-root-required-package-apply",
+                "--package",
+                "oom-containment",
+                "--expected-sha",
+                "a" * 40,
+            ],
+            module._safe_subprocess_env(tmp_path),
+        )
+    ]
+    flattened = " ".join(calls[0][0])
+    assert "runtime-authority" not in flattened
+    assert "sealed" not in flattened
+    assert "/proc/" not in flattened
+
+
+def test_production_broker_failure_cannot_advance_completion(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    module = _load_deferred_module()
+    paths = module.InstallPaths(
+        home=tmp_path,
+        state_root=tmp_path / "state",
+        defer_root=tmp_path / "defer",
+        repo_alias=tmp_path / "repo",
+        sudo=Path("/usr/bin/sudo"),
+        test_mode=False,
+        test_root=None,
+    )
+    completion_checked = False
+
+    def verify_completion(*_args: object) -> None:
+        nonlocal completion_checked
+        completion_checked = True
+
+    monkeypatch.setattr(module, "_validate_production_broker", lambda: None)
+    monkeypatch.setattr(
+        module.subprocess,
+        "run",
+        lambda command, **kwargs: subprocess.CompletedProcess(command, 73),
+    )
+    monkeypatch.setattr(module, "_verify_broker_completion", verify_completion)
+
+    with pytest.raises(module.DeferredInstallError, match="no installed receipt or deferral"):
+        module._execute_production_broker(
+            paths, module.BrokerRequest(module.APCUPSD_PACKAGE, "b" * 40)
+        )
+    assert not completion_checked
+
+
+def test_missing_production_broker_refuses_with_bootstrap_action(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    module = _load_deferred_module()
+    real_lstat = module.os.lstat
+
+    def broker_absent(path: Path) -> os.stat_result:
+        if Path(path) == module.PRODUCTION_BROKER:
+            raise FileNotFoundError(path)
+        return real_lstat(path)
+
+    monkeypatch.setattr(module.os, "lstat", broker_absent)
+
+    with pytest.raises(
+        module.DeferredInstallError,
+        match="root-owned package broker is not installed.*separately runtime-authorized",
+    ):
+        module._validate_production_broker()
+
+
 @pytest.mark.parametrize("installer_rel", (INSTALLER, APCUPSD_INSTALLER))
-def test_noncanonical_fixed_environment_refuses_before_path_lookup(
+def test_production_install_refuses_before_caller_path_lookup(
     tmp_path: Path, installer_rel: Path
 ) -> None:
     module = _load_deferred_module()
@@ -1425,7 +1627,10 @@ def test_noncanonical_fixed_environment_refuses_before_path_lookup(
     )
 
     assert result.returncode == 1
-    assert "noncanonical fixed environment values before command execution" in result.stderr
+    assert (
+        "available only through the independently installed root-owned package broker"
+        in result.stderr
+    )
     assert not marker.exists()
 
 
@@ -1483,7 +1688,7 @@ def test_installer_refuses_an_interpreter_that_omits_privileged_mode(
 
 
 @pytest.mark.parametrize("installer_rel", (INSTALLER, APCUPSD_INSTALLER))
-def test_helper_shaped_raw_environment_reaches_sealed_descriptor_validation(
+def test_helper_shaped_raw_environment_cannot_restore_bash_install_authority(
     installer_rel: Path,
 ) -> None:
     module = _load_deferred_module()
@@ -1498,7 +1703,10 @@ def test_helper_shaped_raw_environment_reaches_sealed_descriptor_validation(
     )
 
     assert result.returncode == 1
-    assert "source descriptor count mismatch" in result.stderr
+    assert (
+        "available only through the independently installed root-owned package broker"
+        in result.stderr
+    )
     assert "raw exported environment" not in result.stderr
 
 

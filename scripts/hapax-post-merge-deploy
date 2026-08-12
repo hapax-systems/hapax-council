@@ -4233,8 +4233,9 @@ Package: $label
 DO NOT EXECUTE THIS FILE OR COPY A COMMAND FROM IT. It is caller-owned pending-state
 metadata, not an authentication bootstrap. Re-run hapax-post-merge-deploy for this
 commit and use only the exact "next action: run:" command emitted to that live
-terminal. That command streams the receipt-bound helper directly from Git under
-env -i and requires this completion receipt:
+terminal. That command streams the receipt-bound advisory helper directly from Git
+under env -i. Production effects require the independently installed root-owned
+package broker and this completion receipt:
 
 $completion
 EOF
@@ -4246,7 +4247,7 @@ EOF
     runtime_task="${HAPAX_RUNTIME_AUTHORITY_TASK:-}"
     if [ -z "$runtime_task" ]; then
         echo "root-required $label authenticated command withheld because HAPAX_RUNTIME_AUTHORITY_TASK is unset"
-        echo "next action: set HAPAX_RUNTIME_AUTHORITY_TASK to the canonical active runtime-authorized cc-task note, then rerun hapax-post-merge-deploy for $SHA; the sealed helper will validate every exact-SHA effect scope before and after sudo" >&2
+        echo "next action: set HAPAX_RUNTIME_AUTHORITY_TASK to the canonical active runtime-authorized cc-task note, then rerun hapax-post-merge-deploy for $SHA; the advisory helper will narrow against every exact-SHA effect scope and the root-owned broker must independently authorize and apply" >&2
         return 0
     fi
     if [[ "$runtime_task" != /* ]] || [ ! -f "$runtime_task" ] || [ -L "$runtime_task" ]; then

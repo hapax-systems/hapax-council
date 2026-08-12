@@ -52,6 +52,7 @@ AUTHENTICATED_PRODUCTION_RAW_ENVIRONMENT=()
 AUTHENTICATED_PRODUCTION_UNEXPECTED_ENV_NAMES=()
 AUTHENTICATED_PRODUCTION_INPUT_ENVIRONMENT_VALIDATED=0
 _authenticated_requested=0
+_install_requested=0
 _source_value_follows=0
 # This bootstrap must remain Bash-only until the inherited vocabulary and fixed
 # command-resolution values have been accepted.
@@ -63,8 +64,14 @@ for _argument in "$@"; do
     case "$_argument" in
         --source) _source_value_follows=1 ;;
         --authenticated-sealed-source) _authenticated_requested=1 ;;
+        --install) _install_requested=1 ;;
     esac
 done
+if [ "$_install_requested" -eq 1 ] \
+    && [ "${HAPAX_ROOT_REQUIRED_INSTALLER_TEST_MODE:-0}" != "1" ]; then
+    echo "production OOM installation is available only through the independently installed root-owned package broker; no Bash installer effect or receipt advancement is permitted; next action: dispatch a separately runtime-authorized root-package broker bootstrap, install /usr/local/sbin/hapax-root-required-package-apply root:root and non-writable, then rerun hapax-post-merge-deploy" >&2
+    exit 1
+fi
 if [ "$_authenticated_requested" -eq 1 ] \
     && [ "${HAPAX_ROOT_REQUIRED_INSTALLER_TEST_MODE:-0}" != "1" ]; then
     if ! mapfile -d '' -t AUTHENTICATED_PRODUCTION_RAW_ENVIRONMENT < "/proc/$$/environ"; then
@@ -145,7 +152,7 @@ unset AUTHENTICATED_PRODUCTION_INPUT_ENV_NAMES AUTHENTICATED_PRODUCTION_RAW_ENVI
 unset _allowed_environment_name _argument _authenticated_requested _environment_allowed
 unset _environment_display _environment_duplicate _environment_entry _environment_found
 unset _environment_name _observed_environment_name _required_environment_name
-unset _source_value_follows
+unset _install_requested _source_value_follows
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 SOURCE="$ROOT"
@@ -274,10 +281,9 @@ Installs the P0 host-profiled OOM containment package:
 The app.slice and session.slice drop-ins are copied, not symlinked, so live
 containment does not depend on a mutable PR worktree. Runtime activation uses
 set-property without restarting either slice, then removes the generated
-control files and reloads the receipt-owned canonical policy. Run as the target
-account; the installer uses sudo only for root-owned destinations and refuses
-whole-script root execution. Production --install is accepted only through the
-authenticated sealed-source helper emitted by hapax-post-merge-deploy.
+control files and reloads the receipt-owned canonical policy. Mutation-capable
+paths run only in parent-selected isolated tests. Production --install is
+broker-only; this interpreted script has no production install authority.
 USAGE
 }
 

@@ -146,6 +146,8 @@ def _copy_oom_package(dest_root: Path, *, source_root: Path = REPO_ROOT) -> None
 
 @pytest.fixture(autouse=True)
 def _isolate_installed_source(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("HAPAX_ROOT_REQUIRED_INSTALLER_TEST_MODE", "1")
+    monkeypatch.setenv("HAPAX_ROOT_REQUIRED_INSTALLER_TEST_ROOT", str(tmp_path))
     monkeypatch.setenv("HAPAX_ROOT_REQUIRED_ALLOW_UNAUTHENTICATED_TEST_INSTALL", "1")
     monkeypatch.setenv("HAPAX_ROOT_REQUIRED_UNAUTHENTICATED_TEST_ROOT", str(tmp_path))
     monkeypatch.setenv("HAPAX_OOM_ENFORCE_TEST_MODE", "1")
