@@ -92,7 +92,7 @@ STALE_AFTER = "1d"
 #: Catalogue entries are interpolated into a remote shell command. Anything outside this pattern is
 #: rejected by :func:`_probe_payload` -- the one place a name reaches a shell, so it holds for a
 #: caller-supplied catalogue too, which an import-time check over ``CLI_CATALOGUE`` would not.
-_SAFE_CLI_NAME = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]*$")
+_SAFE_CLI_NAME = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]*")
 
 #: ``shape_id`` must satisfy the registry's own pattern; host names from a tailnet do not.
 _ID_UNSAFE = re.compile(r"[^a-z0-9._-]+")
@@ -237,7 +237,9 @@ def _probe_payload(catalogue: tuple[CliShapeSpec, ...]) -> str:
     this one.
     """
     for spec in catalogue:
-        if not _SAFE_CLI_NAME.match(spec.cli):
+        # fullmatch, not match: Python's ``$`` also matches just before a final newline, so
+        # ``match`` would accept "gh\n" and interpolate the newline straight into the for-list.
+        if not _SAFE_CLI_NAME.fullmatch(spec.cli):
             raise ValueError(
                 f"unsafe CLI name in catalogue: {spec.cli!r}; this name is interpolated into a "
                 "remote shell command. Next action: restrict the entry to letters, digits, dot, "

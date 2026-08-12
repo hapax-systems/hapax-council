@@ -247,9 +247,57 @@ def test_the_payload_asks_about_every_catalogue_entry_explicitly():
     assert "present=0" in payload
 
 
+REAL_SHELL_CATALOGUE: tuple[CliShapeSpec, ...] = (
+    CliShapeSpec(
+        cli="bash",
+        shape_class=CapabilityShapeClass.LOCAL_COMPUTE,
+        carrier_family="posix_shell",
+        summary="bash present on host.",
+        harness_shape="shell",
+        resource_semantics=("local-cpu",),
+    ),
+    CliShapeSpec(
+        cli="hapax-definitely-not-installed",
+        shape_class=CapabilityShapeClass.LOCAL_COMPUTE,
+        carrier_family="nothing",
+        summary="a binary that does not exist.",
+        harness_shape="none",
+        resource_semantics=("local-cpu",),
+    ),
+)
+
+
+def test_the_payload_actually_runs_in_a_real_shell_and_parses_back():
+    # Every other probe test fabricates stdout, so a payload that is syntactically broken — or
+    # whose real output does not match _parse_probe — would leave the whole suite green. This is
+    # the one test that runs the production local path end to end: payload -> bash -> parser ->
+    # descriptors. `bash` must be found (it just ran the payload) and the invented name must not.
+    probe = probe_host_clis(
+        linux("localhost"),
+        catalogue=REAL_SHELL_CATALOGUE,
+        self_name="localhost",  # forces the local `bash -c` branch, no ssh
+        now=NOW,
+    )
+
+    assert probe.reachable is True, probe.unreachable_reason
+    assert "bash" in probe.present
+    assert probe.present["bash"].endswith("bash")
+    assert probe.absent == ["hapax-definitely-not-installed"]
+
+    rows = descriptors_for_probe(probe, catalogue=REAL_SHELL_CATALOGUE, observed_at=NOW)
+    assert [observation_outcome(r) for r in rows] == ["observed", "absent"]
+
+
+def test_a_trailing_newline_does_not_slip_past_the_injection_guard():
+    # re.match with a "$" anchor accepts "gh\n"; only fullmatch refuses it. The guard's own
+    # docstring calls itself the single complete point where a name reaches a shell.
+    with pytest.raises(ValueError, match="unsafe CLI name"):
+        _probe_payload((poisoned_spec("gh\n"),))
+
+
 def test_the_shipped_catalogue_passes_the_injection_guard():
     # The catalogue is interpolated into a remote command, so this is the injection boundary.
-    assert all(_SAFE_CLI_NAME.match(spec.cli) for spec in CLI_CATALOGUE)
+    assert all(_SAFE_CLI_NAME.fullmatch(spec.cli) for spec in CLI_CATALOGUE)
     assert _probe_payload(CLI_CATALOGUE)
 
 
