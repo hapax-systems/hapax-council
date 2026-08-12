@@ -25,7 +25,7 @@ default pointing at nothing is *genesis* — R4.1's third clause is "first-init 
 task vault", so the pre-creation state is legitimate and has to be reportable rather than fatal.
 Collapsing both into one boolean is what would force a caller to guess which it was looking at, so
 :func:`resolve_cc_task_root` returns the path, the source that chose it, and whether it exists;
-:func:`require_cc_task_root` is the separate call for consumers that need a vault already there.
+a caller that needs a vault already present reads ``.exists`` and refuses on its own terms.
 """
 
 from __future__ import annotations
@@ -110,14 +110,9 @@ def cc_task_root() -> Path:
     return resolve_cc_task_root().path
 
 
-def require_cc_task_root() -> Path:
-    """The resolved path, which must already exist. For callers that read or mutate tasks."""
-
-    resolved = resolve_cc_task_root()
-    if not resolved.exists:
-        raise CcTaskRootUnavailable(
-            f"no cc-task vault at {resolved.path} (resolved from {resolved.source.value}). This "
-            f"is the pre-first-init state, not a broken install. Next: run first-init to create "
-            f"the task vault, or set {OVERRIDE_ENV} to an existing one"
-        )
-    return resolved.path
+# A `require_cc_task_root()` belongs here — the resolved path, refusing the genesis state with a
+# message that distinguishes "not created yet" from "broken install". It is deliberately NOT in
+# this commit: it would have no caller, and the estate's unused-callable gate is right to refuse
+# one. It lands with the first consumer that reads or mutates tasks, in the same change, so the
+# function and its call site are reviewed together. Nothing is lost meanwhile —
+# `resolve_cc_task_root().exists` already carries the distinction any such caller would need.

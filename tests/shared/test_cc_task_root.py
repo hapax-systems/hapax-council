@@ -11,7 +11,6 @@ from shared.cc_task_root import (
     CcTaskRootSource,
     CcTaskRootUnavailable,
     cc_task_root,
-    require_cc_task_root,
     resolve_cc_task_root,
 )
 
@@ -96,27 +95,22 @@ def test_an_absent_default_is_genesis_not_an_error(tmp_path, monkeypatch) -> Non
     assert resolved.path == tmp_path / "not-yet" / "20-projects" / "hapax-cc-tasks"
 
 
-def test_require_refuses_the_genesis_state_and_says_what_it_is(tmp_path, monkeypatch) -> None:
-    monkeypatch.delenv(OVERRIDE_ENV, raising=False)
-    monkeypatch.setenv("PERSONAL_VAULT_PATH", str(tmp_path / "not-yet"))
+def test_the_genesis_state_is_distinguishable_from_a_present_vault(tmp_path, monkeypatch) -> None:
+    """What a `require_*` helper would rest on, asserted on the resolver directly.
 
-    with pytest.raises(CcTaskRootUnavailable) as exc:
-        require_cc_task_root()
-
-    assert "pre-first-init" in str(exc.value), (
-        "a caller reading this must be able to tell genesis from a broken install"
-    )
-    assert "Next:" in str(exc.value)
-
-
-def test_require_returns_the_path_when_the_vault_is_there(tmp_path, monkeypatch) -> None:
+    The helper itself is deliberately not in this commit: it would have had no caller, and the
+    estate's unused-callable gate is right to refuse one. It lands with the first consumer that
+    needs it, reviewed beside its call site. This pins that the distinction is real and live.
+    """
     vault = tmp_path / "vault"
-    tasks = vault / "20-projects" / "hapax-cc-tasks"
-    tasks.mkdir(parents=True)
     monkeypatch.delenv(OVERRIDE_ENV, raising=False)
     monkeypatch.setenv("PERSONAL_VAULT_PATH", str(vault))
 
-    assert require_cc_task_root() == tasks
+    assert not resolve_cc_task_root().exists
+
+    (vault / "20-projects" / "hapax-cc-tasks").mkdir(parents=True)
+
+    assert resolve_cc_task_root().exists
 
 
 def test_active_and_closed_hang_off_the_resolved_root(tmp_path, monkeypatch) -> None:
