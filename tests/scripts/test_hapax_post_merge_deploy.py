@@ -1306,7 +1306,7 @@ def test_runtime_authority_validator_has_no_release_tree_import_surface() -> Non
     assert "sys.path.append(str(root))" in source
     assert "RuntimeAuthorityImportGuard" in source
     assert "verify_distribution_record" in source
-    assert "/opt/hapax/runtime-authority-python/site-packages" in source
+    assert "/var/lib/hapax/runtime-authority-python/site-packages" in source
 
 
 def test_runtime_authority_validator_pins_canonical_schema_compatibility_blobs() -> None:
@@ -1432,7 +1432,7 @@ def test_ci_installs_and_exercises_sealed_runtime_authority_closure() -> None:
 
     for install_step in (full_install, admission_install):
         command = install_step["run"]
-        assert "runtime_authority_parent=/opt/hapax/runtime-authority-python" in command
+        assert "runtime_authority_parent=/var/lib/hapax/runtime-authority-python" in command
         assert 'runtime_authority_target="$runtime_authority_parent/site-packages"' in command
         assert "--python /usr/bin/python3" in command
         assert "--require-hashes" in command
@@ -1442,6 +1442,7 @@ def test_ci_installs_and_exercises_sealed_runtime_authority_closure() -> None:
         assert "--link-mode=copy" in command
         assert "mktemp -d" in command
         assert "sudo mv -T" in command
+        assert "runtime-authority trust path: %n uid=%u gid=%g mode=%a" in command
         assert 'unlink "$runtime_authority_staging/.lock"' in command
         assert "must not pre-exist" in command
         assert "config/root-required/runtime-authority-python.requirements" in command
@@ -1881,22 +1882,15 @@ def test_runtime_authority_validator_allows_absent_stdlib_probe(tmp_path: Path) 
     assert "runtime authority accepted: task_id=runtime-cap" in result.stdout
 
 
-@pytest.mark.parametrize("unsafe_kind", ("non-root", "symlink"))
-def test_runtime_authority_validator_rejects_unsafe_dependency_root(
+def test_runtime_authority_validator_rejects_non_root_dependency_ancestor(
     tmp_path: Path,
-    unsafe_kind: str,
 ) -> None:
     active_root = tmp_path / "hapax-cc-tasks" / "active"
     active_root.mkdir(parents=True)
     task = active_root / "runtime-cap.md"
     task.write_text(_runtime_authority_task_text(), encoding="utf-8")
     dependency_root = tmp_path / "runtime-dependencies"
-    if unsafe_kind == "symlink":
-        target = tmp_path / "dependency-target"
-        target.mkdir()
-        dependency_root.symlink_to(target, target_is_directory=True)
-    else:
-        dependency_root.mkdir()
+    dependency_root.mkdir()
 
     result = _run_runtime_authority_validator(
         task,
@@ -1905,7 +1899,31 @@ def test_runtime_authority_validator_rejects_unsafe_dependency_root(
     )
 
     assert result.returncode == 2
-    assert "dependency root" in result.stderr
+    assert "dependency root is not root-owned and non-writable:" in result.stderr
+    assert "uid=" in result.stderr
+    assert "mode=" in result.stderr
+
+
+def test_runtime_authority_validator_rejects_symlink_dependency_root(
+    tmp_path: Path,
+) -> None:
+    active_root = tmp_path / "hapax-cc-tasks" / "active"
+    active_root.mkdir(parents=True)
+    task = active_root / "runtime-cap.md"
+    task.write_text(_runtime_authority_task_text(), encoding="utf-8")
+    target = tmp_path / "dependency-target"
+    target.mkdir()
+    dependency_root = tmp_path / "runtime-dependencies"
+    dependency_root.symlink_to(target, target_is_directory=True)
+
+    result = _run_runtime_authority_validator(
+        task,
+        active_root,
+        dependency_prelude=_test_dependency_root_prelude(dependency_root),
+    )
+
+    assert result.returncode == 2
+    assert f"fixture dependency path contains a symlink: {dependency_root}" in result.stderr
 
 
 def test_runtime_authority_validator_rejects_unpinned_candidate_schema_code(

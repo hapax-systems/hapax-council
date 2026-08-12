@@ -559,9 +559,12 @@ jobs:
       - name: Install sealed runtime-authority Python closure
         run: |
           set -euo pipefail
-          runtime_authority_parent=/opt/hapax/runtime-authority-python
+          runtime_authority_parent=/var/lib/hapax/runtime-authority-python
           runtime_authority_target="$runtime_authority_parent/site-packages"
           sudo install -d -o root -g root -m 0755 "$runtime_authority_parent"
+          for trusted_path in / /var /var/lib /var/lib/hapax "$runtime_authority_parent"; do
+            stat -c 'runtime-authority trust path: %n uid=%u gid=%g mode=%a' "$trusted_path"
+          done
           if sudo test -e "$runtime_authority_target"; then
             echo "runtime-authority target must not pre-exist: $runtime_authority_target" >&2
             exit 1
@@ -905,9 +908,12 @@ jobs:
         if: needs.post_merge_duplicate_filter.outputs.duplicate_merge_group != 'true' && needs.docs_only_filter.outputs.docs_only != 'true' && steps.test_mode.outputs.mode != 'merge-group-shards'
         run: |
           set -euo pipefail
-          runtime_authority_parent=/opt/hapax/runtime-authority-python
+          runtime_authority_parent=/var/lib/hapax/runtime-authority-python
           runtime_authority_target="$runtime_authority_parent/site-packages"
           sudo install -d -o root -g root -m 0755 "$runtime_authority_parent"
+          for trusted_path in / /var /var/lib /var/lib/hapax "$runtime_authority_parent"; do
+            stat -c 'runtime-authority trust path: %n uid=%u gid=%g mode=%a' "$trusted_path"
+          done
           if sudo test -e "$runtime_authority_target"; then
             echo "runtime-authority target must not pre-exist: $runtime_authority_target" >&2
             exit 1

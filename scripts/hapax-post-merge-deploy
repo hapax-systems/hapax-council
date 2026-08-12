@@ -390,7 +390,7 @@ RUNTIME_AUTHORITY_MODULE_ROOTS = {
     "yaml": "yaml",
 }
 RUNTIME_AUTHORITY_DEDICATED_SITE = Path(
-    "/opt/hapax/runtime-authority-python/site-packages"
+    "/var/lib/hapax/runtime-authority-python/site-packages"
 )
 RUNTIME_AUTHORITY_STDLIB_ROOTS = tuple(
     Path(value) for value in sys.path if value and Path(value).is_dir()
@@ -422,7 +422,10 @@ def trusted_inode(path: Path, label: str) -> os.stat_result:
     if stat.S_ISLNK(inode.st_mode):
         refuse(f"{label} contains a symlink: {path}")
     if inode.st_uid != 0 or inode.st_mode & 0o022:
-        refuse(f"{label} is not root-owned and non-writable: {path}")
+        refuse(
+            f"{label} is not root-owned and non-writable: {path} "
+            f"(uid={inode.st_uid}, gid={inode.st_gid}, mode={stat.S_IMODE(inode.st_mode):04o})"
+        )
     if not stat.S_ISDIR(inode.st_mode) and not stat.S_ISREG(inode.st_mode):
         refuse(f"{label} contains an unsupported filesystem object: {path}")
     return inode
