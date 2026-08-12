@@ -284,7 +284,7 @@ def _parser() -> argparse.ArgumentParser:
     return parser
 
 
-def _observe_from_transcript(args: argparse.Namespace) -> tuple[datetime, str]:
+def _observe_from_transcript(args: argparse.Namespace, *, session_id: str) -> tuple[datetime, str]:
     """Derive (observed_at, evidence_ref) from a real completed Claude turn.
 
     Stamps ``observed_at`` with the **turn's own** timestamp rather than ``now``: a later
@@ -302,6 +302,11 @@ def _observe_from_transcript(args: argparse.Namespace) -> tuple[datetime, str]:
         observation = latest_transcript_observation(
             now=_parse_utc(args.now) if args.now else None,
             max_age_seconds=args.max_observation_age_seconds,
+            # This session's transcript only. The auth surface was established from THIS
+            # process's environment, and that evidence covers exactly the turns this session
+            # produced — a fresher turn in another session was served under credentials nothing
+            # here has seen.
+            session_id=session_id,
         )
     except TranscriptQuotaUnavailable as exc:
         raise ValueError(f"no live transcript observation: {exc}") from exc
@@ -329,25 +334,33 @@ def main(argv: list[str] | None = None) -> int:
                     f"{MIN_OBSERVATION_AGE_SECONDS} and {MAX_OBSERVATION_AGE_SECONDS}; a wider "
                     "window turns the measured path back into an attestation"
                 )
-            observed_at, args.evidence_ref = _observe_from_transcript(args)
-            freshness_provenance = "measured:completed-turn-timestamp"
-            # A MEASURED RECEIPT MUST MEASURE BOTH HALVES, OR IT IS NOT A MEASURED RECEIPT.
+            # AUTH FIRST, AND IT DECIDES WHICH TRANSCRIPT MAY BE READ.
             #
             # The route this unblocks is subscription-bounded. Reading a completed turn proves the
             # provider served something; it does not prove WHICH credential it billed, and the
-            # transcript has no field that would. So the measured path also observes the account
-            # marker, and refuses if the host cannot support the claim — raising here rather than
+            # transcript has no field that would. So the measured path observes the account marker
+            # first, and refuses if the host cannot support the claim — raising rather than
             # falling back to an asserted receipt, because a fallback would hand the caller the
-            # same unverifiable claim under a name that says it was checked.
+            # same unverifiable claim under a name saying it was checked.
+            #
+            # The order matters as much as the check. The marker's evidence is THIS process's
+            # environment, which covers exactly the turns THIS session produced, so the session id
+            # it returns is what bounds the transcript scan below. Observing auth after picking a
+            # turn from anywhere on the host would pair evidence with a subject it never covered.
             from shared.claude_auth_surface import (
                 ClaudeAuthSurfaceUnavailable,
                 observe_subscription_marker,
             )
 
             try:
-                auth_provenance = observe_subscription_marker().provenance
+                marker = observe_subscription_marker()
             except ClaudeAuthSurfaceUnavailable as exc:
                 raise ValueError(str(exc)) from exc
+            auth_provenance = marker.provenance
+            observed_at, args.evidence_ref = _observe_from_transcript(
+                args, session_id=marker.session_id
+            )
+            freshness_provenance = "measured:completed-turn-timestamp"
         else:
             if not args.evidence_ref:
                 raise ValueError("--evidence-ref is required unless --from-transcript is given")

@@ -16,11 +16,15 @@ from pathlib import Path
 import pytest
 
 from shared.claude_auth_surface import (
+    API_KEY_ENV_VARS,
     AUTH_SURFACE_PROVENANCE,
     CLAUDE_CONFIG_ENV,
+    SESSION_ID_ENV,
     ClaudeAuthSurfaceUnavailable,
     observe_subscription_marker,
 )
+
+SESSION = "8e98d395-97d6-4ff0-9619-e61927dcfdb0"
 
 SUBSCRIBED = {
     "oauthAccount": {
@@ -34,8 +38,11 @@ def _config(tmp_path: Path, payload: dict, monkeypatch) -> Path:
     path = tmp_path / "claude.json"
     path.write_text(json.dumps(payload), encoding="utf-8")
     monkeypatch.setenv(CLAUDE_CONFIG_ENV, str(path))
-    for var in ("ANTHROPIC_API_KEY", "ANTHROPIC_AUTH_TOKEN", "CLAUDE_API_KEY"):
+    for var in API_KEY_ENV_VARS:
         monkeypatch.delenv(var, raising=False)
+    # A session id is part of the baseline: without one the measured path is unavailable whatever
+    # the account says, so every other case here would otherwise refuse for the wrong reason.
+    monkeypatch.setenv(SESSION_ID_ENV, SESSION)
     return path
 
 
@@ -50,7 +57,33 @@ def test_a_subscription_account_with_no_key_path_is_measured(tmp_path, monkeypat
     assert marker.provenance.startswith("measured:")
 
 
-@pytest.mark.parametrize("var", ["ANTHROPIC_API_KEY", "ANTHROPIC_AUTH_TOKEN", "CLAUDE_API_KEY"])
+def test_without_a_session_id_the_measured_path_is_unavailable(tmp_path, monkeypatch) -> None:
+    """The finding both reviewer families reached: whose environment, and when.
+
+    An environment check reads THIS process at THIS moment; the turns were served by another
+    process earlier. Measuring the wrong process is not a weaker measurement — it is a measurement
+    of something else, reported as the answer. A session id is what makes the two coincide: the
+    observer runs inside that session and inherits its environment. Without one there is no
+    measured path at all, however healthy the account looks.
+    """
+    _config(tmp_path, SUBSCRIBED, monkeypatch)
+    monkeypatch.delenv(SESSION_ID_ENV, raising=False)
+
+    with pytest.raises(ClaudeAuthSurfaceUnavailable) as exc:
+        observe_subscription_marker()
+
+    assert "different question" in str(exc.value)
+    assert "Next:" in str(exc.value)
+
+
+def test_the_marker_carries_the_session_it_speaks_for(tmp_path, monkeypatch) -> None:
+    """The scope must travel with the claim, or the caller cannot honour it."""
+    _config(tmp_path, SUBSCRIBED, monkeypatch)
+
+    assert observe_subscription_marker().session_id == SESSION
+
+
+@pytest.mark.parametrize("var", API_KEY_ENV_VARS)
 def test_an_api_key_in_the_environment_refuses(tmp_path, monkeypatch, var: str) -> None:
     """The condition that makes this a measurement rather than a guess.
 

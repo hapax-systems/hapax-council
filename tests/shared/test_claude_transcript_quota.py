@@ -317,6 +317,37 @@ def test_content_beyond_the_tail_bound_is_never_read(tmp_path: Path) -> None:
     assert obs.observed_at != head_stamp
 
 
+def test_a_session_scoped_scan_ignores_other_sessions(tmp_path: Path) -> None:
+    """The narrowing that makes auth evidence apply to the turns being read.
+
+    A fresher turn in another session was served under credentials the observing process never
+    saw. Reading it pairs an auth check of THIS environment with a subject it never covered —
+    the whole finding — and it fails silently, because the newer turn simply wins.
+    """
+    mine = "8e98d395-97d6-4ff0-9619-e61927dcfdb0"
+    _write(tmp_path, f"{mine}.jsonl", [_turn(NOW - timedelta(seconds=300))])
+    _write(tmp_path, "other-session.jsonl", [_turn(NOW - timedelta(seconds=5))])
+
+    obs = latest_transcript_observation(
+        root=tmp_path, now=NOW, max_age_seconds=900, session_id=mine
+    )
+
+    assert obs.observed_at == (NOW - timedelta(seconds=300)).replace(microsecond=0), (
+        "a fresher turn from another session was used"
+    )
+
+
+def test_a_session_with_no_transcript_refuses_rather_than_widening(tmp_path: Path) -> None:
+    """Falling back to every transcript on the host is the failure this scoping exists to
+    prevent, so a missing session transcript must refuse rather than quietly scan wider."""
+    _write(tmp_path, "other-session.jsonl", [_turn(NOW - timedelta(seconds=5))])
+
+    with pytest.raises(TranscriptQuotaUnavailable, match="no transcript for session"):
+        latest_transcript_observation(
+            root=tmp_path, now=NOW, max_age_seconds=900, session_id="not-a-session"
+        )
+
+
 def test_a_wall_later_in_the_same_second_still_supersedes(tmp_path: Path) -> None:
     """The sub-second case, which whole-second truncation hid.
 

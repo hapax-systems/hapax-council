@@ -388,6 +388,34 @@ def _fake_observation(stamp: str, witness: str):  # noqa: ANN202
     return _Obs()
 
 
+def _subscription_session(tmp_path: Path, monkeypatch) -> None:  # noqa: ANN001
+    """The auth evidence --from-transcript now requires before it will read anything.
+
+    A measured receipt claims the turns were served BY THE SUBSCRIPTION, so the account marker
+    and the session identity are preconditions rather than decoration. Faking the transcript
+    alone no longer produces a receipt — which is exactly the change these tests were updated
+    for, and a test that kept passing without this would have proved the guard was skippable.
+    """
+    from shared.claude_auth_surface import API_KEY_ENV_VARS, CLAUDE_CONFIG_ENV, SESSION_ID_ENV
+
+    config = tmp_path / "claude.json"
+    config.write_text(
+        json.dumps(
+            {
+                "oauthAccount": {
+                    "billingType": "google_play_subscription",
+                    "organizationType": "claude_max",
+                }
+            }
+        ),
+        encoding="utf-8",
+    )
+    monkeypatch.setenv(CLAUDE_CONFIG_ENV, str(config))
+    monkeypatch.setenv(SESSION_ID_ENV, "8e98d395-97d6-4ff0-9619-e61927dcfdb0")
+    for var in API_KEY_ENV_VARS:
+        monkeypatch.delenv(var, raising=False)
+
+
 def test_from_transcript_stamps_the_turns_time_not_now(  # noqa: ANN001
     tmp_path: Path, monkeypatch, capsys
 ) -> None:
@@ -396,6 +424,7 @@ def test_from_transcript_stamps_the_turns_time_not_now(  # noqa: ANN001
     module = _load_module()
     import shared.claude_transcript_quota as ctq
 
+    _subscription_session(tmp_path, monkeypatch)
     monkeypatch.setattr(
         ctq,
         "latest_transcript_observation",
@@ -437,6 +466,9 @@ def test_from_transcript_fails_closed_when_no_observation(  # noqa: ANN001
     def _unavailable(**_kw):  # noqa: ANN202
         raise ctq.TranscriptQuotaUnavailable("freshest completed turn is 5000s old")
 
+    # Auth satisfied on purpose, so the refusal under test is the STALE TURN rather than the auth
+    # gate standing in front of it. A test that passes for the wrong reason proves nothing.
+    _subscription_session(tmp_path, monkeypatch)
     monkeypatch.setattr(ctq, "latest_transcript_observation", _unavailable)
 
     rc = module.main(["--receipt-dir", str(tmp_path), "--from-transcript"])
@@ -444,6 +476,91 @@ def test_from_transcript_fails_closed_when_no_observation(  # noqa: ANN001
     assert rc == 2
     assert "no live transcript observation" in capsys.readouterr().err
     assert not any(tmp_path.glob("*.yaml"))
+
+
+def test_from_transcript_refuses_when_the_session_carries_a_gateway(  # noqa: ANN001
+    tmp_path: Path, monkeypatch, capsys
+) -> None:
+    """A live turn is not evidence of a SUBSCRIPTION turn.
+
+    Measured on this host 2026-08-12: ANTHROPIC_AUTH_TOKEN and ANTHROPIC_BASE_URL are both set in
+    the working session, so turns there may be served through a gateway and the transcript looks
+    identical either way. The measured path must refuse rather than mint a subscription claim it
+    cannot support — and it must refuse even though the transcript observation itself succeeds.
+    """
+    module = _load_module()
+    import shared.claude_transcript_quota as ctq
+
+    _subscription_session(tmp_path, monkeypatch)
+    monkeypatch.setenv("ANTHROPIC_BASE_URL", "https://gateway.example.test")
+    monkeypatch.setattr(
+        ctq,
+        "latest_transcript_observation",
+        lambda **_kw: _fake_observation(
+            "2026-08-11T16:47:25Z",
+            "claude-subscription-headroom-observed-20260811t164725z",
+        ),
+    )
+
+    rc = module.main(["--receipt-dir", str(tmp_path), "--from-transcript"])
+
+    assert rc == 2
+    assert "ANTHROPIC_BASE_URL" in capsys.readouterr().err
+    assert not any(tmp_path.glob("*.yaml")), "a receipt was written despite an unprovable claim"
+
+
+def test_from_transcript_refuses_outside_a_claude_session(  # noqa: ANN001
+    tmp_path: Path, monkeypatch, capsys
+) -> None:
+    """Run from cron, the observing process's environment says nothing about the turns it reads."""
+    from shared.claude_auth_surface import SESSION_ID_ENV
+
+    module = _load_module()
+    import shared.claude_transcript_quota as ctq
+
+    _subscription_session(tmp_path, monkeypatch)
+    monkeypatch.delenv(SESSION_ID_ENV, raising=False)
+    monkeypatch.setattr(
+        ctq,
+        "latest_transcript_observation",
+        lambda **_kw: _fake_observation(
+            "2026-08-11T16:47:25Z",
+            "claude-subscription-headroom-observed-20260811t164725z",
+        ),
+    )
+
+    rc = module.main(["--receipt-dir", str(tmp_path), "--from-transcript"])
+
+    assert rc == 2
+    assert not any(tmp_path.glob("*.yaml"))
+
+
+def test_the_measured_path_reads_only_its_own_sessions_transcript(  # noqa: ANN001
+    tmp_path: Path, monkeypatch
+) -> None:
+    """The auth evidence covers one session, so the scan must be bounded to that session.
+
+    Asserted on the argument actually passed, because the pairing is invisible otherwise: a scan
+    that quietly widened would still return a fresh turn and still mint a receipt.
+    """
+    module = _load_module()
+    import shared.claude_transcript_quota as ctq
+
+    _subscription_session(tmp_path, monkeypatch)
+    seen: dict = {}
+
+    def _record(**kw):  # noqa: ANN202
+        seen.update(kw)
+        return _fake_observation(
+            "2026-08-11T16:47:25Z",
+            "claude-subscription-headroom-observed-20260811t164725z",
+        )
+
+    monkeypatch.setattr(ctq, "latest_transcript_observation", _record)
+
+    module.main(["--receipt-dir", str(tmp_path), "--from-transcript"])
+
+    assert seen.get("session_id") == "8e98d395-97d6-4ff0-9619-e61927dcfdb0"
 
 
 def test_from_transcript_refuses_a_hand_supplied_evidence_ref(  # noqa: ANN001
@@ -564,6 +681,9 @@ def test_the_recovery_hint_matches_the_mode_it_is_printed_in(  # noqa: ANN001
     def _unavailable(**_kw):  # noqa: ANN202
         raise ctq.TranscriptQuotaUnavailable("freshest completed turn is 5000s old")
 
+    # Auth satisfied on purpose, so the refusal under test is the STALE TURN rather than the auth
+    # gate standing in front of it. A test that passes for the wrong reason proves nothing.
+    _subscription_session(tmp_path, monkeypatch)
     monkeypatch.setattr(ctq, "latest_transcript_observation", _unavailable)
 
     rc = module.main(["--receipt-dir", str(tmp_path), "--from-transcript"])

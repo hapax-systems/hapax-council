@@ -229,19 +229,34 @@ def latest_transcript_observation(
     now: datetime | None = None,
     max_age_seconds: int = DEFAULT_MAX_OBSERVATION_AGE_SECONDS,
     scan_limit: int = TRANSCRIPT_SCAN_LIMIT,
+    session_id: str = "",
 ) -> TranscriptObservation:
-    """Freshest completed-turn witness, or raise :class:`TranscriptQuotaUnavailable`."""
+    """Freshest completed-turn witness, or raise :class:`TranscriptQuotaUnavailable`.
+
+    ``session_id`` restricts the scan to one session's transcript, whose file is named for its
+    id. That narrowing is what lets a caller pair this observation with an auth-surface check of
+    its OWN environment: the observing process runs inside that session and inherits its
+    environment, so the credential facts it can see are the ones those turns were served under.
+    Scanning every transcript on the host breaks that pairing silently — the freshest turn may
+    come from a session started with entirely different credentials, or by a different tool.
+    """
 
     checked_at = (now or datetime.now(UTC)).astimezone(UTC).replace(microsecond=0)
     search_root = root or DEFAULT_TRANSCRIPT_ROOT
 
     try:
-        files = [p for p in search_root.glob(TRANSCRIPT_GLOB) if p.is_file()]
+        pattern = f"*/{session_id}.jsonl" if session_id else TRANSCRIPT_GLOB
+        files = [p for p in search_root.glob(pattern) if p.is_file()]
     except OSError as exc:
         raise TranscriptQuotaUnavailable(
             f"transcript root unreadable: {type(exc).__name__}"
         ) from exc
     if not files:
+        if session_id:
+            raise TranscriptQuotaUnavailable(
+                f"no transcript for session {session_id} under {search_root}; this session has "
+                "not written one yet. Next: complete a turn in this session, then re-observe"
+            )
         raise TranscriptQuotaUnavailable("no Claude Code transcripts found")
 
     files.sort(key=lambda p: p.stat().st_mtime if p.exists() else 0.0, reverse=True)

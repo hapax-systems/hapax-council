@@ -52,10 +52,25 @@ SUBSCRIPTION_ORGANIZATION_TYPES = frozenset({"claude_max", "claude_pro", "claude
 
 #: Environment variables that would route a turn through a metered API key. Any one being set
 #: means the transcript cannot tell us which credential served the turn.
-API_KEY_ENV_VARS = ("ANTHROPIC_API_KEY", "ANTHROPIC_AUTH_TOKEN", "CLAUDE_API_KEY")
+#: ``ANTHROPIC_BASE_URL`` belongs here for the same reason as a key: a gateway is the problem
+#: wearing different clothes. Turns routed through one are not served by the subscription at all,
+#: and the transcript looks identical either way. Measured on this host 2026-08-12:
+#: ``ANTHROPIC_AUTH_TOKEN`` and ``ANTHROPIC_BASE_URL`` are BOTH set in the live session, so this
+#: is not a hypothetical hazard — it is the current state.
+API_KEY_ENV_VARS = (
+    "ANTHROPIC_API_KEY",
+    "ANTHROPIC_AUTH_TOKEN",
+    "ANTHROPIC_BASE_URL",
+    "CLAUDE_API_KEY",
+)
 
 #: Settings key that makes Claude Code fetch a key at request time. Same consequence.
 API_KEY_HELPER_KEY = "apiKeyHelper"
+
+#: Set by Claude Code in every session it runs, and equal to the transcript's filename stem. Its
+#: presence is what lets this module claim the environment it reads belongs to the session that
+#: produced the turns being observed.
+SESSION_ID_ENV = "CLAUDE_CODE_SESSION_ID"
 
 AUTH_SURFACE_PROVENANCE = "measured:oauth-account-subscription-marker"
 
@@ -66,10 +81,16 @@ class ClaudeAuthSurfaceUnavailable(RuntimeError):
 
 @dataclass(frozen=True)
 class SubscriptionMarker:
-    """The two categorical facts the receipt may rest on. No credential values."""
+    """The categorical facts the receipt may rest on. No credential values.
+
+    ``session_id`` is carried because the whole claim is scoped to one session: the environment
+    inspected here belongs to THIS process, so the only turns it can speak for are the ones this
+    session produced.
+    """
 
     billing_type: str
     organization_type: str
+    session_id: str
 
     @property
     def provenance(self) -> str:
@@ -139,14 +160,39 @@ def observe_subscription_marker() -> SubscriptionMarker:
     # records no auth field, so nothing distinguishes which credential served the turn. There is
     # no weaker true statement available, so this refuses rather than degrading — a receipt
     # reading "probably the subscription" would be the caller assertion this module replaces.
+    # WHOSE ENVIRONMENT, AND WHEN. Both reviewer families landed on this and they were right.
+    #
+    # The check below reads THIS process's environment at THIS moment. The turns being observed
+    # were served by a different process at an earlier time, so an environment check here says
+    # nothing about them — a key could have been set in the session that produced the turns and
+    # absent in the one doing the observing. Measuring the wrong process is not a weaker
+    # measurement; it is a measurement of something else, reported as if it were the answer.
+    #
+    # The scope has to be narrowed until process and subject coincide. A session id makes that
+    # possible: the observing process runs INSIDE a Claude Code session, inherits that session's
+    # environment, and the session's transcript is the file named for its id. Restricted to that
+    # one transcript, the environment inspected here IS the environment those turns were served
+    # under. Without a session id -- a cron run, a detached shell -- there is no such coincidence,
+    # and the measured path is simply unavailable.
+    session_id = os.environ.get(SESSION_ID_ENV, "").strip()
+    if not session_id:
+        raise ClaudeAuthSurfaceUnavailable(
+            f"{SESSION_ID_ENV} is unset, so this process cannot show that the environment it is "
+            "reading belongs to the session that produced the turns being observed. Checking a "
+            "different process's environment answers a different question. Next: run this from "
+            "inside a Claude Code session, or mint an operator-attested receipt"
+        )
+
     active = _api_key_paths_active(config)
     if active:
         raise ClaudeAuthSurfaceUnavailable(
-            f"an API-key path is active on this host ({', '.join(active)}), so a turn in the "
-            "transcript may have been served by a metered key rather than the subscription, and "
-            "the transcript records no auth field to tell them apart. Next: unset "
-            f"{', '.join(active)} for the observing process, or mint an operator-attested receipt "
+            f"a non-subscription credential path is active in this session ({', '.join(active)}), "
+            "so its turns may have been served by a metered key or a gateway rather than the "
+            "subscription, and the transcript records no auth field to tell them apart. Next: "
+            f"unset {', '.join(active)} for the session, or mint an operator-attested receipt "
             "that does not claim measured auth"
         )
 
-    return SubscriptionMarker(billing_type=billing, organization_type=organization)
+    return SubscriptionMarker(
+        billing_type=billing, organization_type=organization, session_id=session_id
+    )
