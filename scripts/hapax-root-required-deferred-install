@@ -41,6 +41,7 @@ PRODUCTION_INSTALLER_REQUIRED_ENV_NAMES = frozenset(
         "GIT_CONFIG_NOSYSTEM",
         "GIT_NO_REPLACE_OBJECTS",
         "GIT_OPTIONAL_LOCKS",
+        "HAPAX_LOCAL_JUDGE_CAP_RECEIPT_SHA256",
         "HAPAX_POST_MERGE_ROOT_DEFER_DIR",
         "HAPAX_ROOT_REQUIRED_DESIRED_RECEIPT_ROOT",
         "HAPAX_ROOT_REQUIRED_DRAIN_DIR",
@@ -72,7 +73,6 @@ PRODUCTION_INSTALLER_REQUIRED_ENV_NAMES = frozenset(
         "XDG_RUNTIME_DIR",
     }
 )
-PRODUCTION_OOM_OPTIONAL_ENV_NAMES = frozenset({"HAPAX_LOCAL_JUDGE_CAP_RECEIPT_SHA256"})
 REQUIRED_MEMFD_SEALS = (
     fcntl.F_SEAL_SEAL | fcntl.F_SEAL_SHRINK | fcntl.F_SEAL_GROW | fcntl.F_SEAL_WRITE
 )
@@ -1030,8 +1030,7 @@ def _child_env(
         }
     )
     env.update(_state_lock_env(paths, state_lock))
-    if runtime_gates.cap_receipt_sha256 is not None:
-        env["HAPAX_LOCAL_JUDGE_CAP_RECEIPT_SHA256"] = runtime_gates.cap_receipt_sha256
+    env["HAPAX_LOCAL_JUDGE_CAP_RECEIPT_SHA256"] = runtime_gates.cap_receipt_sha256 or ""
     env["XDG_RUNTIME_DIR"] = f"/run/user/{os.getuid()}"
     if paths.test_mode:
         if paths.test_root is None:
@@ -1056,8 +1055,6 @@ def _validate_production_child_environment(
     env: dict[str, str], runtime_gates: RuntimeGateSnapshot
 ) -> None:
     expected = PRODUCTION_INSTALLER_REQUIRED_ENV_NAMES - SHELL_GENERATED_INSTALLER_ENV_NAMES
-    if runtime_gates.cap_receipt_sha256 is not None:
-        expected |= PRODUCTION_OOM_OPTIONAL_ENV_NAMES
     if set(env) != expected:
         missing = sorted(expected - set(env))
         unexpected = sorted(set(env) - expected)
