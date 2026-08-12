@@ -322,6 +322,29 @@ def main(argv: list[str] | None = None) -> int:
             # The witness is stamped with the observation's own time, not now: the receipt attests
             # what was measured and when, and a later stamp would overstate its freshness.
             observed_at = rollout.observed_at
+
+            # TWO BOUNDS, AND THEY DID NOT AGREE, SO SUCCESS COULD MEAN NOTHING.
+            #
+            # Observation acceptability defaults to 3600s; receipt lifetime defaults to 900s and
+            # runs FROM the observation timestamp. An observation aged 901-3600s therefore passed
+            # the reader, minted a receipt, printed success, and produced a `fresh_until` already
+            # in the past — an admission that cannot clear a single downstream freshness check.
+            # Exit 0 on a receipt that is dead on arrival is the worst available answer: it tells
+            # the caller the route is supplied when it is not.
+            #
+            # This is checked rather than "fixed" by widening the lifetime, because the two bounds
+            # are answering different questions and both answers are right. Acceptability asks
+            # how old a reading may be to be worth having; lifetime asks how long a reading stays
+            # true. What was missing is the relation BETWEEN them, which is all this enforces.
+            age_seconds = (_now(args) - observed_at).total_seconds()
+            if age_seconds >= args.stale_after_seconds:
+                raise ValueError(
+                    f"the newest rollout observation is {int(age_seconds)}s old but a receipt "
+                    f"lives {args.stale_after_seconds}s from the observation, so it would be "
+                    "stale the moment it was written. Next: run a codex session to produce a "
+                    "fresh observation, or raise --stale-after-seconds above the observation age "
+                    f"(ceiling {MAX_STALE_AFTER_SECONDS}s)"
+                )
             derived_ref = (
                 "codex-subscription-headroom-observed-"
                 + observed_at.strftime("%Y%m%dt%H%Mz").lower()

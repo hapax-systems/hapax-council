@@ -113,6 +113,23 @@ def _rate_limits_from_line(line: str) -> tuple[datetime, dict] | None:
     limits = payload.get("rate_limits")
     if not isinstance(limits, dict):
         return None
+    # THE DISCRIMINATOR IS LOAD-BEARING AND WAS NOT CHECKED.
+    #
+    # This module's opening line says the reading it trusts is ``limit_id: "codex"``. The first
+    # revision then accepted ANY ``payload.rate_limits`` mapping carrying a primary window, so a
+    # rollout holding some other provider's limits — or no identifier at all — could be
+    # represented as Codex subscription headroom and mint a positive admission. The docstring
+    # named the predicate; the code never applied it.
+    #
+    # A receipt is a claim about WHICH capacity pool has room. A reading from the wrong pool is
+    # not a weaker claim, it is a false one, and the estate routes real work against it. Absent
+    # is therefore treated as not-codex rather than as permission: failing closed costs one
+    # skipped rollout, failing open mints an admission nobody can trace back to a pool.
+    limit_id = limits.get("limit_id")
+    if limit_id is None:
+        limit_id = payload.get("limit_id")
+    if str(limit_id or "").strip().lower() != "codex":
+        return None
     observed_at = _parse_utc(str(record.get("timestamp") or ""))
     if observed_at is None:
         return None
@@ -161,16 +178,33 @@ def _head_lines(
     sits past 64KB. Whichever trips first wins, and a truncated final line is discarded rather
     than parsed.
     """
+    # THE BYTE CAP HAS TO BE ENFORCED BEFORE THE ALLOCATION, NOT AFTER IT.
+    #
+    # `for line in handle` materialises a whole line and only then lets the loop check
+    # `consumed`. A rollout whose FIRST line is a gigabyte therefore allocates a gigabyte before
+    # the cap is consulted — reproducing the exact OOM this docstring says is bounded (the 1.19GB
+    # rollout of 2026-08-09). The bound was real for many-small-lines and absent for the one shape
+    # that actually caused the incident, which is the case a cap exists for.
+    #
+    # Reading fixed-size chunks and splitting them keeps the peak proportional to the chunk, not
+    # to the file's longest line. A trailing partial line is dropped rather than parsed, as before.
+    chunk_size = min(max_bytes, 1 << 20)
     out: list[str] = []
     consumed = 0
+    buffer = ""
     try:
         with path.open("r", encoding="utf-8", errors="replace") as handle:
-            for line in handle:
-                consumed += len(line)
-                if consumed > max_bytes:
+            while len(out) < max_lines and consumed < max_bytes:
+                chunk = handle.read(min(chunk_size, max_bytes - consumed))
+                if not chunk:
                     break
-                out.append(line)
-                if len(out) >= max_lines:
+                consumed += len(chunk)
+                buffer += chunk
+                while "\n" in buffer and len(out) < max_lines:
+                    line, buffer = buffer.split("\n", 1)
+                    out.append(line + "\n")
+                # A single line longer than the cap can never complete; stop rather than grow.
+                if consumed >= max_bytes:
                     break
     except OSError:
         return []

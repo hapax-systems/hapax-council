@@ -26,6 +26,7 @@ from shared.codex_rollout_quota import (
     EXHAUSTED_USED_PERCENT,
     ROLLOUT_TAIL_BYTES,
     RolloutQuotaUnavailable,
+    _head_lines,
     latest_model_observation,
     latest_rollout_observation,
 )
@@ -33,22 +34,31 @@ from shared.codex_rollout_quota import (
 NOW = datetime(2026, 8, 10, 12, 0, 0, tzinfo=UTC)
 
 
-def _rollout(dir_: Path, *, at: datetime, used: float, window: int = 300, noise: str = "") -> Path:
-    """A rollout file shaped like the real thing: bulk content, then a rate_limits record."""
+def _rollout(
+    dir_: Path,
+    *,
+    at: datetime,
+    used: float,
+    window: int = 300,
+    noise: str = "",
+    limit_id: str | None = "codex",
+) -> Path:
+    """A rollout file shaped like the real thing: bulk content, then a rate_limits record.
+
+    ``limit_id`` defaults to ``"codex"`` because that is what a real Codex rollout carries and
+    what the module documents as the reading it trusts. The first version of this fixture OMITTED
+    it while the reader did not check it — the fixture and the code agreed on an unsafe predicate,
+    so the suite could not have caught the gap. ``limit_id=None`` and a foreign value are now
+    both exercised below.
+    """
     path = dir_ / "rollout-2026-08-10T00-00-00-test.jsonl"
     rows = []
     if noise:
         rows.append(json.dumps({"timestamp": at.isoformat(), "payload": {"content": noise}}))
-    rows.append(
-        json.dumps(
-            {
-                "timestamp": at.isoformat(),
-                "payload": {
-                    "rate_limits": {"primary": {"used_percent": used, "window_minutes": window}}
-                },
-            }
-        )
-    )
+    limits: dict = {"primary": {"used_percent": used, "window_minutes": window}}
+    if limit_id is not None:
+        limits["limit_id"] = limit_id
+    rows.append(json.dumps({"timestamp": at.isoformat(), "payload": {"rate_limits": limits}}))
     path.write_text("\n".join(rows) + "\n", encoding="utf-8")
     return path
 
@@ -217,7 +227,12 @@ def test_the_reader_is_bounded_and_does_not_slurp_the_file(tmp_path: Path) -> No
     tail = json.dumps(
         {
             "timestamp": at.isoformat(),
-            "payload": {"rate_limits": {"primary": {"used_percent": 7.0, "window_minutes": 300}}},
+            "payload": {
+                "rate_limits": {
+                    "limit_id": "codex",
+                    "primary": {"used_percent": 7.0, "window_minutes": 300},
+                }
+            },
         }
     )
     bulk = "\n".join([filler] * ((ROLLOUT_TAIL_BYTES // 4096) + 40))
@@ -227,3 +242,63 @@ def test_the_reader_is_bounded_and_does_not_slurp_the_file(tmp_path: Path) -> No
     obs = latest_rollout_observation(tmp_path, now=NOW)
 
     assert obs.used_percent == 7.0
+
+
+# ── The subscription discriminator ─────────────────────────────────
+#
+# The module's opening line names `limit_id: "codex"` as the reading it trusts, and the reader
+# did not check it: any `payload.rate_limits` mapping with a primary window could be minted as
+# Codex subscription headroom. The fixture above OMITTED the field, so the suite agreed with the
+# code on an unsafe predicate and could not have caught it. Both halves are pinned now.
+
+
+def test_a_foreign_limit_id_is_not_codex_headroom(tmp_path: Path) -> None:
+    """A reading from another capacity pool is not a weaker claim, it is a false one."""
+    _rollout(tmp_path, at=NOW - timedelta(minutes=2), used=7.0, limit_id="anthropic")
+    with pytest.raises(RolloutQuotaUnavailable):
+        latest_rollout_observation(tmp_path, now=NOW)
+
+
+def test_an_absent_limit_id_is_treated_as_not_codex(tmp_path: Path) -> None:
+    """Absent is not permission. Failing closed costs one skipped rollout; failing open mints
+    an admission nobody can trace back to a pool, which the estate then routes work against."""
+    _rollout(tmp_path, at=NOW - timedelta(minutes=2), used=7.0, limit_id=None)
+    with pytest.raises(RolloutQuotaUnavailable):
+        latest_rollout_observation(tmp_path, now=NOW)
+
+
+def test_the_discriminator_tolerates_case_and_surrounding_space(tmp_path: Path) -> None:
+    _rollout(tmp_path, at=NOW - timedelta(minutes=2), used=7.0, limit_id=" Codex ")
+    assert latest_rollout_observation(tmp_path, now=NOW).used_percent == 7.0
+
+
+# ── The head-read byte cap ─────────────────────────────────────────
+
+
+def test_one_enormous_opening_line_does_not_defeat_the_byte_cap(tmp_path: Path) -> None:
+    """The OOM shape, pinned.
+
+    `for line in handle` materialises a whole line before the loop can consult the byte counter,
+    so a rollout whose FIRST line is enormous allocated far past the cap — reproducing the 1.19GB
+    incident the module docstring claims is bounded. The bound was real for many-small-lines and
+    absent for the one shape that actually caused the outage.
+    """
+    path = tmp_path / "rollout-2026-08-10T00-00-00-huge.jsonl"
+    cap = 64 * 1024
+    path.write_text("x" * (cap * 8) + "\n" + '{"a": 1}\n', encoding="utf-8")
+
+    lines = _head_lines(path, max_lines=12, max_bytes=cap)
+
+    assert sum(len(line) for line in lines) <= cap, "the reader allocated past its own cap"
+
+
+def test_the_head_reader_still_returns_ordinary_leading_lines(tmp_path: Path) -> None:
+    """The cap must not cost the reader its actual job."""
+    path = tmp_path / "rollout-2026-08-10T00-00-00-small.jsonl"
+    path.write_text("".join(f'{{"n": {i}}}\n' for i in range(20)), encoding="utf-8")
+
+    lines = _head_lines(path, max_lines=5, max_bytes=1 << 20)
+
+    assert len(lines) == 5
+    assert lines[0].strip() == '{"n": 0}'
+    assert lines[4].strip() == '{"n": 4}'

@@ -157,6 +157,48 @@ class TestPassthroughIsPartOfTheSelection:
             result = _run_with_extra(extra, tmp_path)
             assert result.returncode == 6, f"{extra} slipped past the guard: {result.stdout}"
 
+    def test_the_cli_model_flag_is_seen_in_every_spelling(self, tmp_path: Path) -> None:
+        """`codex --help` lists `-m, --model <MODEL>` beside `-c, --config`.
+
+        The first revision of the scanner read only the config spellings, so `-- --model gpt-5.5`
+        walked past a guard written to stop exactly that. Two ways to say one thing, one of them
+        checked — the same input-set defect the fragment itself exists to fix, a layer out.
+        """
+        for extra in (
+            ["--model", "gpt-5.5"],
+            ["-m", "gpt-5.5"],
+            ["--model=gpt-5.5"],
+            ["-mgpt-5.5"],
+            ["--model", '"gpt-5.5"'],
+        ):
+            result = _run_with_extra(extra, tmp_path)
+            assert result.returncode == 6, f"{extra} slipped past the guard: {result.stdout}"
+            assert "gpt-5.5" in result.stderr
+
+    def test_the_cli_model_flag_at_the_frontier_is_not_a_downgrade(self, tmp_path: Path) -> None:
+        result = _run_with_extra(["--model", FRONTIER_MODEL], tmp_path)
+        assert result.returncode == 0, result.stderr
+        assert result.stdout.strip() == f"{FRONTIER_MODEL}|{FRONTIER_EFFORT}"
+
+    def test_a_profile_is_refused_because_it_cannot_be_resolved_here(self, tmp_path: Path) -> None:
+        """`-p/--profile` names a config.toml block that may set model or effort to anything.
+
+        Resolving it would mean parsing a file outside the repo and reimplementing codex's
+        precedence rules. A guard that GUESSES the effective model is worse than one that says it
+        cannot see it, so a profile must state its reason — the fail-closed direction.
+        """
+        for extra in (["--profile", "fast"], ["-p", "fast"], ["--profile=fast"]):
+            result = _run_with_extra(extra, tmp_path)
+            assert result.returncode == 6, f"{extra} was not refused: {result.stdout}"
+            assert "REFUSING --profile" in result.stderr
+            assert "fast" in result.stderr
+
+    def test_a_profile_with_a_stated_reason_proceeds(self, tmp_path: Path) -> None:
+        result = _run_with_extra(
+            ["--profile", "fast"], tmp_path, {"HAPAX_CODEX_MODEL_REASON": "operator-pinned profile"}
+        )
+        assert result.returncode == 0, result.stderr
+
     def test_passthrough_at_the_frontier_pair_is_not_refused(self, tmp_path: Path) -> None:
         """Precision: naming the frontier explicitly is not a downgrade."""
         result = _run_with_extra(["-c", f'model="{FRONTIER_MODEL}"'], tmp_path)
@@ -176,28 +218,103 @@ class TestPassthroughIsPartOfTheSelection:
         assert result.stdout.strip() == f"{FRONTIER_MODEL}|{FRONTIER_EFFORT}"
 
 
+class TestRecordBeforeProceedIsAPredicate:
+    """ "The reason is the artifact" has to mean the artifact exists.
+
+    The first revision wrote the decision log with `2>/dev/null || true` on both the mkdir and
+    the append, printed "recorded", and continued. A read-only cache or a full disk therefore
+    produced an UNRECORDED downgrade that announced itself as recorded — the stated predicate
+    and the behaviour disagreed, and the behaviour was the permissive one.
+    """
+
+    def test_an_unwritable_log_directory_refuses_the_downgrade(self, tmp_path: Path) -> None:
+        import os
+
+        cache = tmp_path / "cache"
+        cache.mkdir()
+        os.chmod(cache, 0o500)  # readable, not writable
+        try:
+            result = _run(
+                {
+                    "HAPAX_CODEX_EFFORT": "low",
+                    "HAPAX_CODEX_MODEL_REASON": "mechanical sweep",
+                    "XDG_CACHE_HOME": str(cache),
+                },
+                tmp_path,
+            )
+            assert result.returncode == 7, result.stdout + result.stderr
+            assert "REFUSING the downgrade" in result.stderr
+            assert "XDG_CACHE_HOME" in result.stderr, "the refusal must name its own remedy"
+        finally:
+            os.chmod(cache, 0o700)
+
+    def test_a_writable_log_still_permits_the_downgrade(self, tmp_path: Path) -> None:
+        """The other direction: this must not have become a blanket refusal."""
+        result = _run(
+            {"HAPAX_CODEX_EFFORT": "low", "HAPAX_CODEX_MODEL_REASON": "mechanical sweep"},
+            tmp_path,
+        )
+        assert result.returncode == 0, result.stderr
+
+    def test_a_reason_with_a_newline_does_not_corrupt_the_log(self, tmp_path: Path) -> None:
+        """One downgrade is one JSONL record. A raw newline in the reason would split it in
+        two, and the second half would not parse — corrupting the audit trail the record is
+        written to protect."""
+        import json
+
+        result = _run(
+            {
+                "HAPAX_CODEX_EFFORT": "low",
+                "HAPAX_CODEX_MODEL_REASON": 'sweep\nwith a newline and a " quote',
+            },
+            tmp_path,
+        )
+        assert result.returncode == 0, result.stderr
+        log = tmp_path / "cache" / "hapax" / "routing" / "model-decisions.jsonl"
+        body = log.read_text(encoding="utf-8").strip()
+        assert len(body.splitlines()) == 1, "one downgrade must be exactly one record"
+        assert json.loads(body)["effort"] == "low"
+
+
 def test_launchers_populate_passthrough_before_sourcing_the_fragment() -> None:
     """The ordering the passthrough check depends on, pinned in both launchers.
 
-    The fragment can only fold passthrough overrides in if CODEX_EXTRA is already
-    populated when it is sourced. That holds today in both launchers, and nothing else
-    would notice if an edit moved the source line above the argument parse — the guard
-    would simply stop seeing overrides, silently, which is the failure mode this whole
-    file exists to prevent.
+    The fragment can only fold passthrough overrides in if CODEX_EXTRA is already populated when
+    it is sourced. Nothing else would notice if an edit moved the source line above the argument
+    parse — the guard would simply stop seeing overrides, silently, which is the failure mode
+    this whole file exists to prevent.
+
+    Reviewed weakness, fixed here: an earlier version matched only ``CODEX_EXTRA+=(``, so a
+    launcher rewritten to assign (``CODEX_EXTRA=("$@")``) would have failed with "no longer
+    populates" — an error that reads like a broken test rather than the reordering it actually
+    is. Both spellings count now, and the failure message says which invariant broke.
+
+    This is a structural check because the alternative is not better. Driving a launcher for
+    real needs SIX governance preconditions stubbed — the enable flag, a worktree, an executable
+    hook adapter, the `HAPAX_CODEX_EXEC_AUTH_OK` sentinel, a cc-claim, and more past that — and
+    such a test would break on every preflight change while asserting almost nothing about
+    selection. Measured, not assumed: each precondition above was hit in turn while attempting
+    it, and one of them exits 6, the *same code* as the frontier refusal, so a naive end-to-end
+    assertion on the exit status would have passed for entirely the wrong reason.
     """
     for launcher in LAUNCHERS:
         lines = launcher.read_text(encoding="utf-8").splitlines()
-        appends = [i for i, ln in enumerate(lines) if "CODEX_EXTRA+=(" in ln]
+        populates = [
+            i
+            for i, ln in enumerate(lines)
+            if "CODEX_EXTRA+=(" in ln or "CODEX_EXTRA=(" in ln.replace(" ", "")
+        ]
         sources = [
             i
             for i, ln in enumerate(lines)
             if "codex-frontier-selection.sh" in ln and ln.lstrip().startswith(".")
         ]
-        assert appends, f"{launcher.name} no longer populates CODEX_EXTRA"
+        assert populates, f"{launcher.name} no longer populates CODEX_EXTRA at all"
         assert sources, f"{launcher.name} no longer sources the fragment"
-        assert max(appends) < min(sources), (
-            f"{launcher.name} sources the frontier fragment before CODEX_EXTRA is fully "
-            "populated, so passthrough overrides would bypass the guard"
+        assert max(populates) < min(sources), (
+            f"{launcher.name} sources the frontier fragment at line {min(sources) + 1}, before "
+            f"CODEX_EXTRA is finished being populated at line {max(populates) + 1}. Passthrough "
+            "overrides would bypass the guard."
         )
 
 

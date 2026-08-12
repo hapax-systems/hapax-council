@@ -42,32 +42,77 @@ CODEX_MODEL_REASON="${HAPAX_CODEX_MODEL_REASON:-}"
 #
 # Callers must therefore populate CODEX_EXTRA BEFORE sourcing this file. Both launchers do, and
 # `test_codex_frontier_selection.py` pins that ordering so a future edit cannot quietly undo it.
+# CONFIG IS NOT THE ONLY WAY TO SAY IT. `codex --help` lists `-m, --model <MODEL>` beside
+# `-c, --config <key=value>`, on the top-level command and on `exec`. The first revision of this
+# scanner read only `-c`/`--config`, so `-- --model gpt-5.5` walked straight past a guard written
+# to stop exactly that. Two spellings of one selection, one of them checked: the same input-set
+# defect a third time, which is why the scanner now enumerates every spelling codex accepts
+# rather than the one that happened to be on my mind.
+_cfs_strip_quotes() {
+  _cfs_val="${_cfs_val%\"}"; _cfs_val="${_cfs_val#\"}"
+  _cfs_val="${_cfs_val%\'}"; _cfs_val="${_cfs_val#\'}"
+}
 if [ "${#CODEX_EXTRA[@]}" -gt 0 ] 2>/dev/null; then
   _cfs_expect_config=0
+  _cfs_expect_model=0
+  _cfs_expect_profile=0
+  _cfs_profile=""
   for _cfs_arg in "${CODEX_EXTRA[@]}"; do
     _cfs_assign=""
+    if [ "$_cfs_expect_model" -eq 1 ]; then
+      _cfs_val="$_cfs_arg"; _cfs_strip_quotes; CODEX_MODEL="$_cfs_val"
+      _cfs_expect_model=0
+      continue
+    fi
+    if [ "$_cfs_expect_profile" -eq 1 ]; then
+      _cfs_profile="$_cfs_arg"
+      _cfs_expect_profile=0
+      continue
+    fi
     if [ "$_cfs_expect_config" -eq 1 ]; then
       _cfs_assign="$_cfs_arg"
       _cfs_expect_config=0
     else
       case "$_cfs_arg" in
-        -c|--config) _cfs_expect_config=1; continue ;;
-        -c*=*)       _cfs_assign="${_cfs_arg#-c}" ;;
-        --config=*)  _cfs_assign="${_cfs_arg#--config=}" ;;
+        -c|--config)  _cfs_expect_config=1; continue ;;
+        -m|--model)   _cfs_expect_model=1; continue ;;
+        -p|--profile) _cfs_expect_profile=1; continue ;;
+        --model=*)    _cfs_val="${_cfs_arg#--model=}"; _cfs_strip_quotes
+                      CODEX_MODEL="$_cfs_val"; continue ;;
+        -m?*)         _cfs_val="${_cfs_arg#-m}"; _cfs_strip_quotes
+                      CODEX_MODEL="$_cfs_val"; continue ;;
+        --profile=*)  _cfs_profile="${_cfs_arg#--profile=}"; continue ;;
+        -c?*=*)       _cfs_assign="${_cfs_arg#-c}" ;;
+        --config=*)   _cfs_assign="${_cfs_arg#--config=}" ;;
       esac
     fi
     [ -n "$_cfs_assign" ] || continue
     _cfs_key="${_cfs_assign%%=*}"
     _cfs_val="${_cfs_assign#*=}"
     # codex config values are commonly quoted; the quotes are syntax, not value.
-    _cfs_val="${_cfs_val%\"}"; _cfs_val="${_cfs_val#\"}"
-    _cfs_val="${_cfs_val%\'}"; _cfs_val="${_cfs_val#\'}"
+    _cfs_strip_quotes
     case "$_cfs_key" in
       model)                  CODEX_MODEL="$_cfs_val" ;;
       model_reasoning_effort) CODEX_EFFORT="$_cfs_val" ;;
     esac
   done
-  unset _cfs_expect_config _cfs_arg _cfs_assign _cfs_key _cfs_val
+
+  # A PROFILE MAKES THE SELECTION UNVERIFIABLE FROM HERE. `-p/--profile` names a block in
+  # ~/.codex/config.toml that may set `model` or `model_reasoning_effort` to anything. Resolving
+  # it would mean parsing a file outside the repository and reimplementing codex's precedence
+  # rules, and a guard that GUESSES the effective model is worse than one that says it cannot
+  # see it. So a profile must state its reason -- the fail-closed direction, and the same remedy
+  # as any other downgrade.
+  if [ -n "$_cfs_profile" ] && [ -z "$CODEX_MODEL_REASON" ]; then
+    echo "${CODEX_LAUNCHER:-hapax-codex}: REFUSING --profile with no stated reason." >&2
+    echo "  profile:  $_cfs_profile" >&2
+    echo "  A profile may set model or model_reasoning_effort in ~/.codex/config.toml, so the" >&2
+    echo "  effective selection cannot be verified here. This guard does not guess." >&2
+    echo "  Next: re-run with HAPAX_CODEX_MODEL_REASON='<why this profile>'." >&2
+    exit 6
+  fi
+  unset _cfs_expect_config _cfs_expect_model _cfs_expect_profile
+  unset _cfs_arg _cfs_assign _cfs_key _cfs_val _cfs_profile
 fi
 
 if [ "$CODEX_MODEL" != "$HAPAX_CODEX_FRONTIER_MODEL" ] ||
@@ -82,13 +127,39 @@ if [ "$CODEX_MODEL" != "$HAPAX_CODEX_FRONTIER_MODEL" ] ||
   fi
   # Recorded, not merely permitted: the reason is the artifact, and a lane that cannot
   # explain its own downgrade should not have taken one.
+  #
+  # RECORD-BEFORE-PROCEED IS A PREDICATE, SO IT FAILS CLOSED. The first revision wrote this
+  # with `2>/dev/null || true` on both the mkdir and the append, then printed "recorded" and
+  # carried on. A read-only cache, a full disk or a bad path therefore produced an UNRECORDED
+  # downgrade that announced itself as recorded — the stated predicate and the behaviour
+  # disagreed, and the behaviour was the permissive one. If the artifact is what makes the
+  # downgrade legitimate, then no artifact means no downgrade.
+  #
+  # The reason is escaped for JSON rather than stripped: a newline or a control character
+  # inside it would otherwise split one record into two lines and corrupt the log it exists
+  # to write. `\` and `"` are escaped, and everything below 0x20 becomes a space.
   MODEL_DECISION_LOG="${XDG_CACHE_HOME:-$HOME/.cache}/hapax/routing/model-decisions.jsonl"
-  mkdir -p "$(dirname "$MODEL_DECISION_LOG")" 2>/dev/null || true
-  printf '{"at":"%s","launcher":"%s","lane":"%s","model":"%s","effort":"%s","frontier_model":"%s","frontier_effort":"%s","reason":"%s"}\n' \
+  _cfs_reason_json="$(printf '%s' "$CODEX_MODEL_REASON" \
+    | sed -e 's/\\/\\\\/g' -e 's/"/\\"/g' | tr -d '\000-\010\013\014\016-\037' | tr '\n\r\t' '   ')"
+  if ! mkdir -p "$(dirname "$MODEL_DECISION_LOG")" 2>/dev/null; then
+    echo "${CODEX_LAUNCHER:-hapax-codex}: REFUSING the downgrade -- cannot create the decision log directory." >&2
+    echo "  path: $(dirname "$MODEL_DECISION_LOG")" >&2
+    echo "  A below-frontier selection is legitimate only because it is recorded, so an" >&2
+    echo "  unwritable record is a refusal, not a warning." >&2
+    echo "  Next: make that directory writable, or set XDG_CACHE_HOME to somewhere that is." >&2
+    exit 7
+  fi
+  if ! printf '{"at":"%s","launcher":"%s","lane":"%s","model":"%s","effort":"%s","frontier_model":"%s","frontier_effort":"%s","reason":"%s"}\n' \
     "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "${CODEX_LAUNCHER:-hapax-codex}" "${ROLE:-unknown}" \
     "$CODEX_MODEL" "$CODEX_EFFORT" \
     "$HAPAX_CODEX_FRONTIER_MODEL" "$HAPAX_CODEX_FRONTIER_EFFORT" \
-    "$(printf '%s' "$CODEX_MODEL_REASON" | tr -d '"\\')" \
-    >>"$MODEL_DECISION_LOG" 2>/dev/null || true
+    "$_cfs_reason_json" \
+    >>"$MODEL_DECISION_LOG" 2>/dev/null; then
+    echo "${CODEX_LAUNCHER:-hapax-codex}: REFUSING the downgrade -- cannot append to the decision log." >&2
+    echo "  path: $MODEL_DECISION_LOG" >&2
+    echo "  Next: check permissions and free space on that path, then re-run." >&2
+    exit 7
+  fi
+  unset _cfs_reason_json
   echo "${CODEX_LAUNCHER:-hapax-codex}: below-frontier selection recorded: model=$CODEX_MODEL effort=$CODEX_EFFORT" >&2
 fi
