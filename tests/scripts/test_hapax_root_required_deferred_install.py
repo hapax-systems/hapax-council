@@ -267,6 +267,7 @@ def test_every_installer_environment_name_has_one_authenticated_boundary_classif
     root_derivation = source.index('ROOT="$(cd')
     assert source_guard < privileged_guard < option_enable
     assert "BASH_LINENO[0]" in source[:option_enable]
+    assert "moving it into an if condition suppresses errexit" in source[:option_enable]
     assert source.index("noncanonical fixed environment values") < root_derivation
     assert "$(" not in source[:fixed_environment_accepted]
     assert "command-resolution values" in source[:fixed_environment_accepted]
