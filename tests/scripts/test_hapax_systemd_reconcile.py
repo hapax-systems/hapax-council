@@ -354,6 +354,35 @@ class TestDeadTimerDetection:
         assert r.returncode == 1
         assert "hapax-lane-reaper.timer" in r.stdout
 
+    def test_successful_apply_does_not_mask_a_dead_timer(self, tmp_path: Path) -> None:
+        """The one path where a repair could swallow the report: --apply cleared
+        real drift, printed its success line, and still owes the dead timer."""
+        user_dir = tmp_path / "systemd-user"
+        repo_units = tmp_path / "repo-units"
+        user_dir.mkdir()
+        repo_units.mkdir()
+        stale_link = user_dir / "hapax-gone.timer"
+        stale_link.symlink_to(repo_units / "hapax-gone.timer")
+        stub, env = _fake_systemctl(
+            tmp_path,
+            "hapax-lane-reaper.timer enabled enabled\n",
+            "hapax-lane-reaper.timer inactive\n",
+        )
+
+        r = _run_with_fake_systemd(
+            tmp_path,
+            "--apply",
+            user_dir=user_dir,
+            repo_units=repo_units,
+            systemctl=stub,
+            extra_env=env,
+        )
+
+        assert "reconciled 1 unit" in r.stdout, f"drift not repaired: {r.stdout!r}"
+        assert not stale_link.is_symlink()
+        assert "hapax-lane-reaper.timer" in r.stdout
+        assert r.returncode == 1, "a surviving dead timer must keep the exit non-zero"
+
     def test_quiet_still_names_dead_timers(self, tmp_path: Path) -> None:
         """--quiet suppresses chatter, not findings."""
         r = self._run(
