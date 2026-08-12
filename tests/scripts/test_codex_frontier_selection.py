@@ -400,6 +400,35 @@ def test_the_quota_command_is_executable_in_the_committed_tree() -> None:
     assert mode == "100755", f"{rel} is committed as {mode}; its shebang is unusable at 100644"
 
 
+def test_the_sourced_fragment_is_deliberately_not_executable() -> None:
+    """0644 is the correct mode here, and this pins it so the point stops being re-litigated.
+
+    `codex-frontier-selection.sh` has no shebang and defines shell variables in its caller's
+    scope; it is `.`-sourced by every launcher and does nothing useful when run as a child
+    process. Setting the executable bit would advertise an entry point that cannot work --
+    the two files in this PR differ in mode because they differ in kind, not by oversight.
+    """
+    fragment = REPO_ROOT / "scripts" / "codex-frontier-selection.sh"
+    rel = fragment.relative_to(REPO_ROOT)
+    out = subprocess.run(
+        ["git", "ls-tree", "HEAD", str(rel)],
+        cwd=REPO_ROOT,
+        capture_output=True,
+        text=True,
+        check=True,
+    ).stdout.strip()
+    assert out, f"{rel} is not present in the committed tree"
+    mode = out.split()[0]
+    assert mode == "100644", (
+        f"{rel} is committed as {mode}; a sourced fragment with no shebang must not advertise "
+        "itself as executable"
+    )
+    assert not fragment.read_text(encoding="utf-8").startswith("#!"), (
+        "the fragment gained a shebang; if it is now meant to be run directly this test's "
+        "premise is wrong and the mode should change with it"
+    )
+
+
 def test_no_launcher_carries_its_own_model_or_effort_literal() -> None:
     """The regression that actually happened: one copy moved and the other did not.
 

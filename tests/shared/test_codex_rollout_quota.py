@@ -34,6 +34,11 @@ from shared.codex_rollout_quota import (
 NOW = datetime(2026, 8, 10, 12, 0, 0, tzinfo=UTC)
 
 
+#: Sentinel for "omit the key entirely", distinct from a present-and-null `secondary`. Real
+#: rollouts write the key explicitly as null, so that -- not omission -- is the fixture default.
+_OMIT = object()
+
+
 def _rollout(
     dir_: Path,
     *,
@@ -42,6 +47,7 @@ def _rollout(
     window: int = 300,
     noise: str = "",
     limit_id: str | None = "codex",
+    secondary: object = None,
 ) -> Path:
     """A rollout file shaped like the real thing: bulk content, then a rate_limits record.
 
@@ -50,12 +56,19 @@ def _rollout(
     it while the reader did not check it — the fixture and the code agreed on an unsafe predicate,
     so the suite could not have caught the gap. ``limit_id=None`` and a foreign value are now
     both exercised below.
+
+    ``secondary`` had exactly the same defect and for the same reason: the fixture emitted no
+    second window while the reader consulted none, so a suite that looked thorough could not
+    reach the state where the account is walled on the window nobody read. It now defaults to
+    the real ordinary value (present, null) and the walled case is exercised below.
     """
     path = dir_ / "rollout-2026-08-10T00-00-00-test.jsonl"
     rows = []
     if noise:
         rows.append(json.dumps({"timestamp": at.isoformat(), "payload": {"content": noise}}))
     limits: dict = {"primary": {"used_percent": used, "window_minutes": window}}
+    if secondary is not _OMIT:
+        limits["secondary"] = secondary
     if limit_id is not None:
         limits["limit_id"] = limit_id
     rows.append(json.dumps({"timestamp": at.isoformat(), "payload": {"rate_limits": limits}}))
@@ -373,3 +386,78 @@ def test_the_newest_record_wins_when_it_is_the_healthy_one(tmp_path: Path) -> No
     )
 
     assert latest_rollout_observation(tmp_path, now=NOW).used_percent == 6.0
+
+
+def test_a_full_secondary_window_is_a_wall_even_when_the_primary_reads_empty(
+    tmp_path: Path,
+) -> None:
+    """The measured state, not a hypothetical.
+
+    This host's rollouts carry 779 records with ``secondary.used_percent == 100.0``, and among
+    them are records reading ``primary: {used_percent: 0.0, window_minutes: 300}``. Reading only
+    the primary reported maximum headroom at the moment the account was fully walled.
+    """
+
+    _rollout(
+        tmp_path,
+        at=NOW - timedelta(minutes=5),
+        used=0.0,
+        secondary={"used_percent": 100.0, "window_minutes": 10080},
+    )
+
+    with pytest.raises(RolloutQuotaUnavailable, match="secondary window is exhausted"):
+        latest_rollout_observation(tmp_path, now=NOW)
+
+
+def test_a_healthy_secondary_window_still_admits(tmp_path: Path) -> None:
+    _rollout(
+        tmp_path,
+        at=NOW - timedelta(minutes=5),
+        used=4.0,
+        secondary={"used_percent": 12.0, "window_minutes": 10080},
+    )
+
+    assert latest_rollout_observation(tmp_path, now=NOW).used_percent == 4.0
+
+
+def test_a_null_secondary_window_is_not_a_hole(tmp_path: Path) -> None:
+    """202,022 of this host's records read ``"secondary": null``.
+
+    A plan with a single window has nothing to violate, so the ordinary case must keep
+    admitting -- a second window check that refused everything would be a wall of its own.
+    """
+
+    _rollout(tmp_path, at=NOW - timedelta(minutes=5), used=4.0, secondary=None)
+
+    assert latest_rollout_observation(tmp_path, now=NOW).used_percent == 4.0
+
+
+def test_an_absent_secondary_key_is_treated_like_a_null_one(tmp_path: Path) -> None:
+    _rollout(tmp_path, at=NOW - timedelta(minutes=5), used=4.0, secondary=_OMIT)
+
+    assert latest_rollout_observation(tmp_path, now=NOW).used_percent == 4.0
+
+
+@pytest.mark.parametrize(
+    "secondary",
+    [
+        "100",
+        {"window_minutes": 10080},
+        {"used_percent": "unknown", "window_minutes": 10080},
+        {"used_percent": None},
+    ],
+)
+def test_an_unreadable_secondary_window_refuses_rather_than_admitting_on_the_primary(
+    tmp_path: Path, secondary: object
+) -> None:
+    """An unparseable window is an unknown window, not an empty one.
+
+    Falling back to "admit on the primary alone" here would widen the failure path -- the code
+    would attempt MORE on damaged data than it does on intact data, which is the shape of an
+    unsound fallback rather than of failure handling.
+    """
+
+    _rollout(tmp_path, at=NOW - timedelta(minutes=5), used=1.0, secondary=secondary)
+
+    with pytest.raises(RolloutQuotaUnavailable, match="secondary window"):
+        latest_rollout_observation(tmp_path, now=NOW)

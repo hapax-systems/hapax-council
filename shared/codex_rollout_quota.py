@@ -423,6 +423,49 @@ def latest_rollout_observation(
             f"codex primary window is exhausted (used_percent={used_percent}); that is a quota "
             "wall, not headroom — wait for the window to reset rather than admitting"
         )
+
+    # EITHER WINDOW BEING FULL IS A WALL. READING ONLY `primary` MEASURED THE WRONG ONE.
+    #
+    # Codex records two windows and an account is walled when EITHER is full, so a check that
+    # consults only `primary` is a real check whose input set excludes the deciding state.
+    # Measured across this host's rollouts 2026-08-12: **779 records carry
+    # `secondary.used_percent == 100.0`**, and among them are records reading
+    # `primary: {used_percent: 0.0, window_minutes: 300}` — maximum apparent headroom on the
+    # only window that was consulted, at the moment the account was fully walled on the other.
+    # That is the admission this module exists to refuse. Re-derive with::
+    #
+    #     cat ~/.codex/sessions/*/*/*/*.jsonl \
+    #       | grep -o '"secondary":{"used_percent":100.0' | wc -l
+    #
+    # `secondary: null` is the ordinary case (202,022 records) and is NOT a hole: a plan with
+    # one window has nothing to violate. Present-but-unreadable is different and refuses,
+    # because an unparseable window is an unknown window, not an empty one.
+    secondary = limits.get("secondary")
+    if secondary is not None:
+        if not isinstance(secondary, dict):
+            raise RolloutQuotaUnavailable(
+                "codex limit observation carries an unreadable secondary window; refusing "
+                "rather than admitting on the primary alone — run a codex session so the CLI "
+                "records a fresh limit observation"
+            )
+        try:
+            secondary_used = float(secondary["used_percent"])
+        except (KeyError, TypeError, ValueError) as exc:
+            raise RolloutQuotaUnavailable(
+                "codex secondary window lacks a usable used_percent; refusing rather than "
+                "admitting on the primary alone"
+            ) from exc
+        if not 0.0 <= secondary_used <= 1000.0:
+            raise RolloutQuotaUnavailable(
+                f"codex secondary window used_percent is out of range ({secondary_used})"
+            )
+        if secondary_used >= EXHAUSTED_USED_PERCENT:
+            raise RolloutQuotaUnavailable(
+                f"codex secondary window is exhausted (used_percent={secondary_used}) while the "
+                f"primary reads {used_percent}; either window being full is a quota wall — wait "
+                "for the secondary window to reset rather than admitting"
+            )
+
     # _parse_utc already normalised to whole-second UTC.
     return RolloutObservation(
         observed_at=observed_at,
