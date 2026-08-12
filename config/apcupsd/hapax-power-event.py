@@ -321,7 +321,7 @@ def main(argv: list[str] | None = None) -> int:
         print(
             "hapax-power-event: failed to append intent audit log: "
             f"{exc}; provenance degraded, continuing UPS notification; next action: check /var/log/hapax permissions and rerun "
-            "scripts/install-apcupsd-power-alerts --install --verify-live",
+            "hapax-post-merge-deploy with the canonical runtime-authorized task",
             file=sys.stderr,
         )
     delivery = post_ntfy(
@@ -335,7 +335,7 @@ def main(argv: list[str] | None = None) -> int:
         print(
             "hapax-power-event: UPS notification delivery failed: "
             f"{delivery.error}; next action: verify the local ntfy service and endpoint, then rerun "
-            "scripts/install-apcupsd-power-alerts --install --verify-live",
+            "hapax-post-merge-deploy with the canonical runtime-authorized task",
             file=sys.stderr,
         )
     record = {
@@ -353,7 +353,7 @@ def main(argv: list[str] | None = None) -> int:
         print(
             "hapax-power-event: failed to append delivery audit log: "
             f"{exc}; next action: check /var/log/hapax permissions and rerun "
-            "scripts/install-apcupsd-power-alerts --install --verify-live",
+            "hapax-post-merge-deploy with the canonical runtime-authorized task",
             file=sys.stderr,
         )
     return 0

@@ -464,10 +464,6 @@ def test_direct_authenticated_protocol_rejects_same_uid_arbitrary_finalizer(
     )
     runtime_task = tmp_path / "runtime-authority.md"
     runtime_task.write_text("forged direct protocol fixture\n", encoding="utf-8")
-    sudo_marker = tmp_path / "sudo-ran"
-    fake_sudo = tmp_path / "sudo"
-    fake_sudo.write_text(f"#!/usr/bin/bash\ntouch {sudo_marker}\n", encoding="utf-8")
-    fake_sudo.chmod(0o755)
     account = pwd.getpwuid(os.getuid())
     env = {
         **os.environ,
@@ -481,7 +477,7 @@ def test_direct_authenticated_protocol_rejects_same_uid_arbitrary_finalizer(
         "HAPAX_POST_MERGE_ROOT_DEFER_DIR": str(tmp_path / "deferred"),
         f"{prefix}_TARGET_UID": str(os.getuid()),
         f"{prefix}_TARGET_HOME": str(tmp_path / "home"),
-        f"{prefix}_INSTALL_SUDO": str(fake_sudo),
+        f"{prefix}_INSTALL_SUDO": "",
     }
     if prefix == "HAPAX_OOM":
         env["HAPAX_OOM_TARGET_USER"] = account.pw_name
@@ -509,14 +505,253 @@ def test_direct_authenticated_protocol_rejects_same_uid_arbitrary_finalizer(
             os.close(fd)
 
     assert result.returncode != 0
-    assert (
-        "available only through the independently installed root-owned package broker"
-        in result.stderr
-    )
+    assert "production" in result.stderr and "disabled" in result.stderr
     assert "no Bash installer effect or receipt advancement is permitted" in result.stderr
     assert "next action:" in result.stderr
-    assert not sudo_marker.exists()
     assert not (tmp_path / "state").exists()
+
+
+@pytest.mark.parametrize(
+    ("installer_rel", "prefix", "package"),
+    (
+        (INSTALLER, "HAPAX_OOM", "oom-containment"),
+        (APCUPSD_INSTALLER, "HAPAX_APCUPSD", "apcupsd-power-alerts"),
+    ),
+)
+@pytest.mark.parametrize("source_kind", ("tracked", "copied", "sealed-memfd"))
+@pytest.mark.parametrize("hostile_wrapper", (False, True), ids=("direct", "hostile-wrapper"))
+def test_test_mode_sudo_selector_refuses_before_any_interpreted_effect(
+    tmp_path: Path,
+    installer_rel: Path,
+    prefix: str,
+    package: str,
+    source_kind: str,
+    hostile_wrapper: bool,
+) -> None:
+    isolated_root = tmp_path / "isolated"
+    isolated_root.mkdir(mode=0o700)
+    outside = tmp_path / "outside"
+    outside.mkdir(mode=0o700)
+    sudo_calls = outside / "sudo-calls"
+    fake_sudo = outside / "sudo-recorder"
+    fake_sudo.write_text(
+        f'#!/usr/bin/bash\n/usr/bin/touch {sudo_calls}\nexec "$@"\n', encoding="utf-8"
+    )
+    fake_sudo.chmod(0o755)
+    mutator_marker = isolated_root / "mutator-ran"
+    fake_bin = isolated_root / "bin"
+    fake_bin.mkdir()
+    for name in ("dirname", "systemctl", "busctl", "apcaccess"):
+        executable = fake_bin / name
+        executable.write_text(
+            f"#!/usr/bin/bash\n/usr/bin/touch {mutator_marker}\nexit 0\n",
+            encoding="utf-8",
+        )
+        executable.chmod(0o755)
+    bash_env = isolated_root / "bash-env"
+    bash_env.write_text(f"/usr/bin/touch {mutator_marker}\n", encoding="utf-8")
+
+    source_fd = -1
+    if source_kind == "tracked":
+        installer = REPO_ROOT / installer_rel
+    elif source_kind == "copied":
+        installer = isolated_root / installer_rel.name
+        installer.write_bytes((REPO_ROOT / installer_rel).read_bytes())
+        installer.chmod(0o755)
+    else:
+        source_fd = _sealed_memfd(
+            f"hapax-caller-installer-{package}",
+            (REPO_ROOT / installer_rel).read_bytes(),
+            executable=True,
+        )
+        installer = Path(f"/proc/self/fd/{source_fd}")
+
+    state_root = isolated_root / "state"
+    defer_root = isolated_root / "deferred"
+    arguments = [
+        str(installer),
+        "--source",
+        str(REPO_ROOT),
+        "--authenticated-sealed-source",
+        "--install",
+        "--verify-live",
+    ]
+    if hostile_wrapper:
+        command = [
+            "/usr/bin/bash",
+            "--noprofile",
+            "--norc",
+            "-O",
+            "extdebug",
+            "-p",
+            "-c",
+            'set -T; trap \'case "$BASH_COMMAND" in *sudo-recorder*|*fake-systemctl*) '
+            '/usr/bin/touch "$TRAP_MARKER";; esac\' DEBUG; eval \'exec "$@"\'',
+            "hostile-wrapper",
+            *arguments,
+        ]
+    else:
+        command = arguments
+    env = {
+        **os.environ,
+        "BASH_ENV": str(bash_env),
+        "PATH": f"{fake_bin}:/usr/bin:/bin",
+        "TRAP_MARKER": str(mutator_marker),
+        "HAPAX_ROOT_REQUIRED_INSTALLER_TEST_MODE": "1",
+        "HAPAX_ROOT_REQUIRED_INSTALLER_TEST_ROOT": str(isolated_root),
+        "HAPAX_ROOT_REQUIRED_ALLOW_UNAUTHENTICATED_TEST_INSTALL": "1",
+        "HAPAX_ROOT_REQUIRED_UNAUTHENTICATED_TEST_ROOT": str(isolated_root),
+        "HAPAX_ROOT_REQUIRED_STATE_ROOT": str(state_root),
+        "HAPAX_POST_MERGE_ROOT_DEFER_DIR": str(defer_root),
+        f"{prefix}_INSTALL_SUDO": str(fake_sudo),
+        f"{prefix}_SYSTEMCTL": str(fake_bin / "systemctl"),
+        f"{prefix}_TARGET_UID": str(os.getuid()),
+        f"{prefix}_TARGET_GID": str(os.getgid()),
+        f"{prefix}_TARGET_HOME": str(isolated_root / "home"),
+    }
+    if prefix == "HAPAX_OOM":
+        env.update(
+            {
+                "HAPAX_OOM_TARGET_USER": pwd.getpwuid(os.getuid()).pw_name,
+                "HAPAX_OOM_SYSTEMD_SYSTEM_DIR": str(isolated_root / "systemd"),
+                "HAPAX_OOM_EARLYOOM_DEST": str(isolated_root / "earlyoom"),
+            }
+        )
+    else:
+        env.update(
+            {
+                "HAPAX_APCUPSD_DEST": str(isolated_root / "apcupsd"),
+                "HAPAX_APCUPSD_BUSCTL": str(fake_bin / "busctl"),
+                "HAPAX_APCUPSD_APCACCESS": str(fake_bin / "apcaccess"),
+            }
+        )
+    try:
+        result = subprocess.run(
+            command,
+            text=True,
+            capture_output=True,
+            check=False,
+            env=env,
+            pass_fds=(() if source_fd < 0 else (source_fd,)),
+        )
+    finally:
+        if source_fd >= 0:
+            os.close(source_fd)
+
+    assert result.returncode == 1
+    assert f"{prefix}_INSTALL_SUDO is retired" in result.stderr
+    assert "next action:" in result.stderr
+    assert not sudo_calls.exists()
+    assert not mutator_marker.exists()
+    assert not (state_root / "installed-receipts" / f"{package}.sha").exists()
+    assert not list(defer_root.rglob("DRAINED.txt"))
+
+
+@pytest.mark.parametrize(
+    ("installer_rel", "selector", "test_mode_selector"),
+    (
+        (INSTALLER, "HAPAX_OOM_INSTALL_SUDO", "HAPAX_ROOT_REQUIRED_INSTALLER_TEST_MODE"),
+        (
+            APCUPSD_INSTALLER,
+            "HAPAX_APCUPSD_INSTALL_SUDO",
+            "HAPAX_ROOT_REQUIRED_INSTALLER_TEST_MODE",
+        ),
+    ),
+)
+def test_legacy_sudo_refusal_precedes_external_lookup_and_no_sudo_dispatch_remains(
+    installer_rel: Path, selector: str, test_mode_selector: str
+) -> None:
+    source = (REPO_ROOT / installer_rel).read_text(encoding="utf-8")
+
+    root_test_guard = source.index(f'if [ "${{{test_mode_selector}:-0}}" = "1" ]')
+    assert root_test_guard < source.index(f'if [ -n "${{{selector}:-}}" ]')
+    assert source.index(f'if [ -n "${{{selector}:-}}" ]') < source.index('ROOT="$(cd ')
+    assert '[ "$UID" -eq 0 ]' in source
+    assert '[ "$EUID" -eq 0 ]' in source
+    assert '[ "$UID" -ne "$EUID" ]' in source
+    assert '$(/usr/bin/dirname "${BASH_SOURCE[0]}")' in source
+    assert '"$SUDO" "$@"' not in source
+    assert "INSTALL_SUDO-/usr/bin/sudo" not in source
+
+
+@pytest.mark.parametrize(
+    ("installer_rel", "selector"),
+    (
+        (INSTALLER, "HAPAX_OOM_INSTALL_SUDO"),
+        (APCUPSD_INSTALLER, "HAPAX_APCUPSD_INSTALL_SUDO"),
+    ),
+)
+def test_root_user_namespace_cannot_enter_test_mode_before_external_lookup(
+    tmp_path: Path, installer_rel: Path, selector: str
+) -> None:
+    unshare = Path("/usr/bin/unshare")
+    if not unshare.exists():
+        pytest.skip("unshare is unavailable")
+    isolated_root = tmp_path / "isolated"
+    isolated_root.mkdir(mode=0o700)
+    marker = tmp_path / "hostile-path-command-ran"
+    fake_bin = tmp_path / "fake-bin"
+    fake_bin.mkdir()
+    for name in ("dirname", "id", "getent"):
+        executable = fake_bin / name
+        executable.write_text(
+            f"#!/usr/bin/bash\n/usr/bin/touch {marker}\nexit 0\n", encoding="utf-8"
+        )
+        executable.chmod(0o755)
+
+    result = subprocess.run(
+        [
+            str(unshare),
+            "--user",
+            "--map-root-user",
+            "--",
+            "/usr/bin/env",
+            "-i",
+            f"PATH={fake_bin}:/usr/bin:/bin",
+            "HAPAX_ROOT_REQUIRED_INSTALLER_TEST_MODE=1",
+            f"HAPAX_ROOT_REQUIRED_INSTALLER_TEST_ROOT={isolated_root}",
+            f"{selector}=",
+            str(REPO_ROOT / installer_rel),
+            "--install",
+        ],
+        text=True,
+        capture_output=True,
+        check=False,
+    )
+    if "unshare failed" in result.stderr and "not permitted" in result.stderr.lower():
+        pytest.skip("unprivileged user namespaces are disabled on this runner")
+
+    assert result.returncode == 1
+    assert "test mode refuses root or set-ID execution before setup" in result.stderr
+    assert not marker.exists()
+
+
+def test_manifest_owned_recovery_guidance_never_recommends_legacy_install_route() -> None:
+    forbidden = re.compile(
+        r"(?i)(?:next action|then rerun|and rerun)[^\n]*"
+        r"(?:scripts/)?install-(?:p0-oom-containment|apcupsd-power-alerts)\s+"
+        r"--(?:install|verify-live)"
+    )
+    direct_sudo_mutation = re.compile(r"(?i)next action:[^\n]*\brun sudo\b")
+    manifests = (REPO_ROOT / MANIFEST, REPO_ROOT / APCUPSD_MANIFEST)
+
+    for manifest in manifests:
+        for relative in manifest.read_text(encoding="utf-8").splitlines():
+            if not relative or relative.startswith("#"):
+                continue
+            source = (REPO_ROOT / relative).read_text(encoding="utf-8")
+            assert forbidden.search(source) is None, relative
+            assert direct_sudo_mutation.search(source) is None, relative
+            assert "rerun the owning installer" not in source, relative
+            assert "after sudo -v" not in source, relative
+    for relative in (
+        "config/apcupsd/hapax-power-event.py",
+        "scripts/hapax-oom-score-enforce",
+        "scripts/hapax-root-failure-intake",
+    ):
+        source = (REPO_ROOT / relative).read_text(encoding="utf-8")
+        assert "hapax-post-merge-deploy" in source
+        assert "runtime-authorized task" in source
 
 
 @pytest.mark.parametrize(
@@ -600,10 +835,6 @@ def test_direct_authenticated_protocol_rejects_caller_selected_production_effect
     package = "oom-containment" if installer_rel == INSTALLER else "apcupsd-power-alerts"
     stage = defer_root / sha / package
     redirected_effect = tmp_path / "caller-selected-effect"
-    sudo_marker = tmp_path / "sudo-ran"
-    fake_sudo = tmp_path / "sudo"
-    fake_sudo.write_text(f"#!/usr/bin/bash\ntouch {sudo_marker}\n", encoding="utf-8")
-    fake_sudo.chmod(0o755)
     env = {
         **os.environ,
         "HAPAX_ROOT_REQUIRED_PACKAGE_SHA": sha,
@@ -629,7 +860,7 @@ def test_direct_authenticated_protocol_rejects_caller_selected_production_effect
         selector_name: str(redirected_effect),
         (
             "HAPAX_OOM_INSTALL_SUDO" if installer_rel == INSTALLER else "HAPAX_APCUPSD_INSTALL_SUDO"
-        ): str(fake_sudo),
+        ): "",
         "DBUS_SESSION_BUS_ADDRESS": f"unix:path={tmp_path / 'hostile-bus'}",
         "DOCKER_HOST": "tcp://hostile.invalid:2376",
         "SYSTEMD_EXEC_PID": "424242",
@@ -658,13 +889,9 @@ def test_direct_authenticated_protocol_rejects_caller_selected_production_effect
             os.close(fd)
 
     assert result.returncode != 0
-    assert (
-        "available only through the independently installed root-owned package broker"
-        in result.stderr
-    )
+    assert "production" in result.stderr and "disabled" in result.stderr
     assert "no Bash installer effect or receipt advancement is permitted" in result.stderr
     assert "next action:" in result.stderr
-    assert not sudo_marker.exists()
     assert not redirected_effect.exists()
 
 
@@ -805,7 +1032,6 @@ def _fixture(tmp_path: Path, *, package: str = PACKAGE) -> DeferredFixture:
         "HAPAX_ROOT_REQUIRED_STATE_ROOT": str(state_root),
         "HAPAX_POST_MERGE_ROOT_DEFER_DIR": str(defer_root),
         "HAPAX_ROOT_REQUIRED_GIT_REPO": str(repo_alias),
-        "HAPAX_ROOT_REQUIRED_DEFERRED_INSTALL_SUDO": str(sudo),
         "HAPAX_ROOT_REQUIRED_DEFERRED_INSTALL_TEST_HOSTNAME": "hapax-podium",
         "BASH_ENV": str(tmp_path / "hostile-bash-env"),
         "GIT_DIR": str(tmp_path / "hostile-git-dir"),
@@ -848,7 +1074,7 @@ def test_authenticated_deferred_install_executes_git_materialized_installer(
 
     assert result.returncode == 0, result.stderr
     assert fixture.installer_marker.read_text(encoding="utf-8").strip() == fixture.sha
-    assert fixture.sudo_calls.read_text(encoding="utf-8").splitlines() == ["-v"]
+    assert not fixture.sudo_calls.exists()
     child_environment = (tmp_path / "installer-environment").read_text(encoding="utf-8")
     for unsafe in (
         "BASH_ENV=",
@@ -887,7 +1113,7 @@ def test_authenticated_deferred_install_executes_git_materialized_installer(
     task_digest = _sha256(fixture.runtime_task)
     assert f"HAPAX_RUNTIME_AUTHORITY_TASK_SHA256={task_digest}" in child_environment
     assert fixture.payload_marker.read_text(encoding="utf-8") == "authenticated Git payload\n"
-    assert f"completed authenticated package={fixture.package} sha={fixture.sha}" in result.stdout
+    assert f"completed isolated-test package={fixture.package} sha={fixture.sha}" in result.stdout
     authority_calls = fixture.authority_calls.read_text(encoding="utf-8").splitlines()
     authority_call = (
         f"--verify-runtime-authority-snapshot-for-release {fixture.sha} "
@@ -1016,7 +1242,7 @@ def test_isolated_test_mode_refuses_the_real_sudo_boundary(tmp_path: Path) -> No
     result = fixture.run()
 
     assert result.returncode == 1
-    assert "isolated sudo command escapes the deferred-install test root" in result.stderr
+    assert "retired deferred-install privilege selectors are refused" in result.stderr
     assert not fixture.authority_calls.exists()
     assert not fixture.installer_pid_marker.exists()
 
@@ -1115,7 +1341,7 @@ def test_appendix_oom_install_requires_applied_cap_acceptance_before_finalizatio
     assert fixture.installer_pid_marker.exists()
     assert not fixture.installer_marker.exists()
     assert "applied cap receipt test rejection" in result.stderr
-    assert "completed authenticated" not in result.stdout
+    assert "completed broker-attested" not in result.stdout
     assert (fixture.stage / "RUNBOOK.txt").is_file()
     assert not (fixture.state_root / "installed-receipts" / f"{fixture.package}.sha").exists()
 
@@ -1174,7 +1400,7 @@ def test_superseded_authority_only_finalization_skips_obsolete_applied_cap(
     ]
 
 
-def test_runtime_task_change_during_sudo_warmup_refuses_installer(tmp_path: Path) -> None:
+def test_caller_executable_after_sudo_hook_is_refused_without_execution(tmp_path: Path) -> None:
     fixture = _fixture(tmp_path)
     hook = _hook(
         tmp_path / "change-runtime-task",
@@ -1185,8 +1411,9 @@ def test_runtime_task_change_during_sudo_warmup_refuses_installer(tmp_path: Path
     result = fixture.run()
 
     assert result.returncode == 1
-    assert "runtime authority task or cap receipt changed during sudo warmup" in result.stderr
-    assert fixture.sudo_calls.exists()
+    assert "retired deferred-install privilege selectors are refused" in result.stderr
+    assert fixture.runtime_task.read_text(encoding="utf-8") == "runtime authority fixture\n"
+    assert not fixture.sudo_calls.exists()
     assert not fixture.installer_marker.exists()
 
 
@@ -1228,7 +1455,7 @@ def test_test_selector_is_refused_without_isolated_test_mode(tmp_path: Path) -> 
     )
 
     assert result.returncode == 1
-    assert "test selectors are refused outside isolated test mode" in result.stderr
+    assert "retired deferred-install privilege selectors are refused" in result.stderr
 
 
 def test_cli_parse_failures_include_an_actionable_next_step() -> None:
@@ -1481,6 +1708,7 @@ def test_production_locked_phase_returns_only_a_broker_request(
     )
     monkeypatch.setattr(module, "_execute_installer", forbidden_call)
     monkeypatch.setattr(module.subprocess, "run", forbidden_call)
+    monkeypatch.setattr(module.secrets, "token_hex", lambda size: "c" * (size * 2))
 
     outcome = module._install_locked(
         module.OOM_PACKAGE,
@@ -1491,11 +1719,11 @@ def test_production_locked_phase_returns_only_a_broker_request(
         runtime_authority_task=tmp_path / "runtime-task.md",
     )
 
-    assert outcome == module.BrokerRequest(module.OOM_PACKAGE, sha)
+    assert outcome == module.BrokerRequest(module.OOM_PACKAGE, sha, "c" * 64)
     assert not child_or_sudo_called
 
 
-def test_production_install_releases_user_state_lock_before_broker(
+def test_production_protocol_is_source_disabled_before_sudo_or_state_lock(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     module = _load_deferred_module()
@@ -1508,55 +1736,29 @@ def test_production_install_releases_user_state_lock_before_broker(
         test_mode=False,
         test_root=None,
     )
-    state_lock = module.LockedState(
-        lexical_root=paths.state_root,
-        lexical_lock=paths.state_root / ".lock",
-        state_fd=31,
-        lock_fd=32,
-        guard_fd=33,
-    )
-    lock_active = False
+    forbidden_calls: list[str] = []
 
-    @contextmanager
-    def fake_locked_state(_paths: object):
-        nonlocal lock_active
-        assert not lock_active
-        lock_active = True
-        try:
-            yield paths, state_lock
-        finally:
-            lock_active = False
+    def forbidden(*_args: object, **_kwargs: object) -> None:
+        forbidden_calls.append("called")
 
     monkeypatch.setattr(module, "_install_paths", lambda: paths)
-    monkeypatch.setattr(module, "_validate_sudo", lambda *args, **kwargs: None)
-    monkeypatch.setattr(module, "_validate_owned_directory", lambda *args, **kwargs: None)
-    monkeypatch.setattr(module, "_locked_state", fake_locked_state)
-    monkeypatch.setattr(
-        module,
-        "_install_locked",
-        lambda *args, **kwargs: module.BrokerRequest(module.OOM_PACKAGE, "a" * 40),
-    )
+    monkeypatch.setattr(module, "_validate_sudo", forbidden)
+    monkeypatch.setattr(module, "_validate_owned_directory", forbidden)
+    monkeypatch.setattr(module, "_locked_state", forbidden)
+    monkeypatch.setattr(module, "_execute_production_broker", forbidden)
 
-    def execute_broker(_paths: object, request: object) -> int:
-        assert not lock_active
-        assert request == module.BrokerRequest(module.OOM_PACKAGE, "a" * 40)
-        return 0
-
-    monkeypatch.setattr(module, "_execute_production_broker", execute_broker)
-
-    assert (
+    with pytest.raises(module.DeferredInstallError, match="namespace-relative ownership"):
         module.install(
             module.OOM_PACKAGE,
             expected_sha="a" * 40,
             activation_release=tmp_path / "repo",
             runtime_authority_task=tmp_path / "runtime-task.md",
         )
-        == 0
-    )
-    assert not lock_active
+    assert module.PRODUCTION_BROKER_PROTOCOL_ENABLED is False
+    assert not forbidden_calls
 
 
-def test_production_broker_receives_no_child_or_task_capability(
+def test_production_broker_secondary_guard_refuses_before_validation_or_sudo(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     module = _load_deferred_module()
@@ -1569,7 +1771,80 @@ def test_production_broker_receives_no_child_or_task_capability(
         test_mode=False,
         test_root=None,
     )
-    request = module.BrokerRequest(module.OOM_PACKAGE, "a" * 40)
+    request = module.BrokerRequest(module.OOM_PACKAGE, "a" * 40, "c" * 64)
+    forbidden_calls: list[str] = []
+
+    def forbidden(*_args: object, **_kwargs: object) -> None:
+        forbidden_calls.append("called")
+
+    monkeypatch.setattr(module, "_validate_production_broker", forbidden)
+    monkeypatch.setattr(module.subprocess, "run", forbidden)
+    monkeypatch.setattr(module, "_locked_state", forbidden)
+
+    with pytest.raises(module.DeferredInstallError, match="namespace-relative ownership"):
+        module._execute_production_broker(paths, request)
+    assert not forbidden_calls
+
+
+def test_exact_git_stdin_production_entry_is_source_disabled(tmp_path: Path) -> None:
+    head = _git(REPO_ROOT, "rev-parse", "HEAD")
+    source = subprocess.run(
+        ["/usr/bin/git", "show", f"{head}:scripts/hapax-root-required-deferred-install"],
+        cwd=REPO_ROOT,
+        check=True,
+        capture_output=True,
+    ).stdout
+    assert source == SCRIPT.read_bytes()
+
+    result = subprocess.run(
+        [
+            "/usr/bin/python3",
+            "-I",
+            "-",
+            "--package",
+            "oom-containment",
+            "--expected-sha",
+            head,
+            "--activation-release",
+            str(tmp_path / "nonexistent-release"),
+            "--runtime-authority-task",
+            str(tmp_path / "nonexistent-task.md"),
+        ],
+        input=source,
+        capture_output=True,
+        check=False,
+        env={
+            "HOME": str(tmp_path / "home"),
+            "PATH": "/usr/bin:/bin",
+            "LANG": "C.UTF-8",
+            "LC_ALL": "C.UTF-8",
+            "PYTHONNOUSERSITE": "1",
+            "PYTHONSAFEPATH": "1",
+        },
+    )
+
+    assert result.returncode == 1
+    assert b"production root-package application is disabled" in result.stderr
+    assert b"namespace-relative ownership cannot authenticate host-root completion" in result.stderr
+    assert b"root-owned package broker is not installed" not in result.stderr
+
+
+def test_production_broker_receives_no_child_or_task_capability(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    module = _load_deferred_module()
+    paths = module.InstallPaths(
+        home=tmp_path,
+        state_root=tmp_path / "state",
+        defer_root=tmp_path / "defer",
+        repo_alias=tmp_path / "repo",
+        sudo=Path("/usr/bin/sudo"),
+        test_mode=False,
+        test_root=None,
+    )
+    request = module.BrokerRequest(module.OOM_PACKAGE, "a" * 40, "c" * 64)
     calls: list[tuple[list[str], dict[str, str]]] = []
     completion_checked = False
 
@@ -1581,10 +1856,13 @@ def test_production_broker_receives_no_child_or_task_capability(
         calls.append((command, kwargs["env"]))
         return subprocess.CompletedProcess(command, 0)
 
-    def verify_completion(*_args: object) -> None:
+    def verify_completion(*args: object, **kwargs: object) -> None:
         nonlocal completion_checked
+        assert args == (paths, request)
+        assert kwargs == {}
         completion_checked = True
 
+    monkeypatch.setattr(module, "PRODUCTION_BROKER_PROTOCOL_ENABLED", True)
     monkeypatch.setattr(module, "_validate_production_broker", lambda: None)
     monkeypatch.setattr(module.subprocess, "run", fake_run)
     monkeypatch.setattr(module, "_locked_state", fake_locked_state)
@@ -1602,6 +1880,8 @@ def test_production_broker_receives_no_child_or_task_capability(
                 "oom-containment",
                 "--expected-sha",
                 "a" * 40,
+                "--request-id",
+                "c" * 64,
             ],
             module._safe_subprocess_env(tmp_path),
         )
@@ -1610,6 +1890,12 @@ def test_production_broker_receives_no_child_or_task_capability(
     assert "runtime-authority" not in flattened
     assert "sealed" not in flattened
     assert "/proc/" not in flattened
+    assert (
+        "completed broker-attested package=oom-containment sha="
+        + "a" * 40
+        + " request_id="
+        + "c" * 64
+    ) in capsys.readouterr().out
 
 
 def test_production_broker_failure_cannot_advance_completion(
@@ -1631,6 +1917,7 @@ def test_production_broker_failure_cannot_advance_completion(
         nonlocal completion_checked
         completion_checked = True
 
+    monkeypatch.setattr(module, "PRODUCTION_BROKER_PROTOCOL_ENABLED", True)
     monkeypatch.setattr(module, "_validate_production_broker", lambda: None)
     monkeypatch.setattr(
         module.subprocess,
@@ -1641,7 +1928,7 @@ def test_production_broker_failure_cannot_advance_completion(
 
     with pytest.raises(module.DeferredInstallError, match="no installed receipt or deferral"):
         module._execute_production_broker(
-            paths, module.BrokerRequest(module.APCUPSD_PACKAGE, "b" * 40)
+            paths, module.BrokerRequest(module.APCUPSD_PACKAGE, "b" * 40, "c" * 64)
         )
     assert not completion_checked
 
@@ -1650,20 +1937,333 @@ def test_missing_production_broker_refuses_with_bootstrap_action(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     module = _load_deferred_module()
-    real_lstat = module.os.lstat
+    real_stat = module.os.stat
 
-    def broker_absent(path: Path) -> os.stat_result:
-        if Path(path) == module.PRODUCTION_BROKER:
+    def broker_absent(
+        path: os.PathLike[str] | str, *args: object, **kwargs: object
+    ) -> os.stat_result:
+        if path == module.PRODUCTION_BROKER.name and kwargs.get("dir_fd") is not None:
             raise FileNotFoundError(path)
-        return real_lstat(path)
+        return real_stat(path, *args, **kwargs)
 
-    monkeypatch.setattr(module.os, "lstat", broker_absent)
+    monkeypatch.setattr(module.os, "stat", broker_absent)
 
     with pytest.raises(
         module.DeferredInstallError,
-        match="root-owned package broker is not installed.*separately runtime-authorized",
+        match="root-owned package broker is not installed.*production remains disabled",
     ):
         module._validate_production_broker()
+
+
+def test_unmapped_host_root_uid_fails_closed(monkeypatch: pytest.MonkeyPatch) -> None:
+    module = _load_deferred_module()
+    real_read_text = module.Path.read_text
+
+    def fake_uid_map(path: Path, *args: object, **kwargs: object) -> str:
+        if path == Path("/proc/self/uid_map"):
+            return "0 100000 65536\n"
+        return real_read_text(path, *args, **kwargs)
+
+    monkeypatch.setattr(module.Path, "read_text", fake_uid_map)
+
+    with pytest.raises(module.DeferredInstallError, match="host UID 0 is not mapped"):
+        module._host_root_uid()
+
+
+def _write_root_broker_completion(tmp_path: Path, request: object) -> tuple[Path, Path]:
+    completion_root = tmp_path / "broker-completions"
+    receipt = completion_root / request.package.label / f"{request.request_id}.receipt"
+    receipt.parent.mkdir(parents=True)
+    receipt.write_text(
+        "schema=1\n"
+        f"request_id={request.request_id}\n"
+        f"package={request.package.label}\n"
+        f"sha={request.sha}\n",
+        encoding="ascii",
+    )
+    receipt.chmod(0o444)
+    current = receipt.parent / "current.receipt"
+    current.write_bytes(receipt.read_bytes())
+    current.chmod(0o444)
+    return completion_root, receipt
+
+
+def test_root_broker_completion_receipt_is_exact_and_request_scoped(tmp_path: Path) -> None:
+    module = _load_deferred_module()
+    request = module.BrokerRequest(module.OOM_PACKAGE, "a" * 40, "c" * 64)
+    completion_root, _receipt = _write_root_broker_completion(tmp_path, request)
+
+    module._verify_root_broker_receipt(
+        request,
+        completion_root=completion_root,
+        trust_anchor=tmp_path,
+        trusted_uid=os.getuid(),
+    )
+
+
+@pytest.mark.parametrize(
+    ("fault", "message"),
+    [
+        ("missing", "without root-owned completion evidence"),
+        ("mode", "exact mode-0444"),
+        ("content", "does not match this exact request"),
+        ("hardlink", "single-link trusted file"),
+        ("symlink", "exact mode-0444"),
+    ],
+)
+def test_root_broker_completion_receipt_rejects_untrusted_forms(
+    tmp_path: Path, fault: str, message: str
+) -> None:
+    module = _load_deferred_module()
+    request = module.BrokerRequest(module.OOM_PACKAGE, "a" * 40, "c" * 64)
+    completion_root, receipt = _write_root_broker_completion(tmp_path, request)
+    if fault == "missing":
+        receipt.unlink()
+    elif fault == "mode":
+        receipt.chmod(0o644)
+    elif fault == "content":
+        receipt.chmod(0o644)
+        receipt.write_text(
+            receipt.read_text(encoding="ascii").replace("sha=" + "a" * 40, "sha=" + "b" * 40),
+            encoding="ascii",
+        )
+        receipt.chmod(0o444)
+    elif fault == "hardlink":
+        linked = tmp_path / "linked-completion"
+        os.link(receipt, linked)
+    elif fault == "symlink":
+        target = tmp_path / "completion-target"
+        receipt.replace(target)
+        receipt.symlink_to(target)
+
+    with pytest.raises(module.DeferredInstallError, match=message):
+        module._verify_root_broker_receipt(
+            request,
+            completion_root=completion_root,
+            trust_anchor=tmp_path,
+            trusted_uid=os.getuid(),
+        )
+
+
+@pytest.mark.parametrize(
+    ("fault", "message"),
+    [
+        ("missing", "without root-owned completion evidence"),
+        ("mode", "exact mode-0444"),
+    ],
+)
+def test_root_broker_completion_rejects_untrusted_current_pointer(
+    tmp_path: Path, fault: str, message: str
+) -> None:
+    module = _load_deferred_module()
+    request = module.BrokerRequest(module.OOM_PACKAGE, "a" * 40, "c" * 64)
+    completion_root, receipt = _write_root_broker_completion(tmp_path, request)
+    current = receipt.parent / "current.receipt"
+    if fault == "missing":
+        current.unlink()
+    else:
+        current.chmod(0o644)
+
+    with pytest.raises(module.DeferredInstallError, match=message):
+        module._verify_root_broker_receipt(
+            request,
+            completion_root=completion_root,
+            trust_anchor=tmp_path,
+            trusted_uid=os.getuid(),
+        )
+
+
+@pytest.mark.parametrize(
+    ("fault", "message"),
+    [
+        ("writable", "not a trusted, non-writable directory"),
+        ("symlink", "cannot verify root-package broker completion evidence"),
+    ],
+)
+def test_root_broker_completion_rejects_untrusted_ancestor(
+    tmp_path: Path, fault: str, message: str
+) -> None:
+    module = _load_deferred_module()
+    request = module.BrokerRequest(module.OOM_PACKAGE, "a" * 40, "c" * 64)
+    completion_root, receipt = _write_root_broker_completion(tmp_path, request)
+    package_dir = receipt.parent
+    if fault == "writable":
+        package_dir.chmod(0o777)
+    else:
+        target = tmp_path / "completion-directory-target"
+        package_dir.replace(target)
+        package_dir.symlink_to(target, target_is_directory=True)
+
+    with pytest.raises(module.DeferredInstallError, match=message):
+        module._verify_root_broker_receipt(
+            request,
+            completion_root=completion_root,
+            trust_anchor=tmp_path,
+            trusted_uid=os.getuid(),
+        )
+
+
+def test_root_broker_completion_rejects_wrong_owner_or_request_id(tmp_path: Path) -> None:
+    module = _load_deferred_module()
+    request = module.BrokerRequest(module.OOM_PACKAGE, "a" * 40, "c" * 64)
+    completion_root, _receipt = _write_root_broker_completion(tmp_path, request)
+
+    with pytest.raises(module.DeferredInstallError, match="not a trusted, non-writable directory"):
+        module._verify_root_broker_receipt(
+            request,
+            completion_root=completion_root,
+            trust_anchor=tmp_path,
+            trusted_uid=os.getuid() + 1,
+        )
+    with pytest.raises(module.DeferredInstallError, match="request ID is not exactly 64"):
+        module._verify_root_broker_receipt(
+            module.BrokerRequest(module.OOM_PACKAGE, request.sha, "C" * 64),
+            completion_root=completion_root,
+            trust_anchor=tmp_path,
+            trusted_uid=os.getuid(),
+        )
+
+
+def test_root_broker_completion_requires_matching_current_generation(tmp_path: Path) -> None:
+    module = _load_deferred_module()
+    request = module.BrokerRequest(module.OOM_PACKAGE, "a" * 40, "c" * 64)
+    completion_root, receipt = _write_root_broker_completion(tmp_path, request)
+    current = receipt.parent / "current.receipt"
+    current.chmod(0o644)
+    current.write_text(
+        current.read_text(encoding="ascii").replace(
+            "request_id=" + "c" * 64, "request_id=" + "d" * 64
+        ),
+        encoding="ascii",
+    )
+    current.chmod(0o444)
+
+    with pytest.raises(module.DeferredInstallError, match="does not match this exact request"):
+        module._verify_root_broker_receipt(
+            request,
+            completion_root=completion_root,
+            trust_anchor=tmp_path,
+            trusted_uid=os.getuid(),
+        )
+
+
+def test_broker_zero_without_root_completion_cannot_claim_success(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    module = _load_deferred_module()
+    paths = module.InstallPaths(
+        home=tmp_path,
+        state_root=tmp_path / "state",
+        defer_root=tmp_path / "defer",
+        repo_alias=tmp_path / "repo",
+        sudo=Path("/usr/bin/sudo"),
+        test_mode=False,
+        test_root=None,
+    )
+    request = module.BrokerRequest(module.OOM_PACKAGE, "a" * 40, "c" * 64)
+
+    @contextmanager
+    def fake_locked_state(_paths: object):
+        yield paths, object()
+
+    original_verify = module._verify_broker_completion
+
+    def verify_without_root_receipt(locked_paths: object, broker_request: object) -> None:
+        original_verify(
+            locked_paths,
+            broker_request,
+            completion_root=tmp_path / "missing-completions",
+            trust_anchor=tmp_path,
+            trusted_uid=os.getuid(),
+        )
+
+    monkeypatch.setattr(module, "PRODUCTION_BROKER_PROTOCOL_ENABLED", True)
+    monkeypatch.setattr(module, "_validate_production_broker", lambda: None)
+    monkeypatch.setattr(
+        module.subprocess,
+        "run",
+        lambda command, **kwargs: subprocess.CompletedProcess(command, 0),
+    )
+    monkeypatch.setattr(module, "_locked_state", fake_locked_state)
+    monkeypatch.setattr(module, "_verify_broker_completion", verify_without_root_receipt)
+
+    with pytest.raises(module.DeferredInstallError, match="without root-owned completion evidence"):
+        module._execute_production_broker(paths, request)
+    assert "completed broker-attested" not in capsys.readouterr().out
+
+
+@pytest.mark.parametrize("broker_outcome", ("missing", "nonzero", "zero"))
+def test_forged_caller_receipt_never_drains_for_any_broker_outcome(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+    broker_outcome: str,
+) -> None:
+    module = _load_deferred_module()
+    sha = "a" * 40
+    state_root = tmp_path / "state"
+    caller_receipt = state_root / "installed-receipts/oom-containment.sha"
+    caller_receipt.parent.mkdir(parents=True)
+    caller_receipt.write_text(f"{sha}\n", encoding="ascii")
+    caller_receipt.chmod(0o600)
+    defer_root = tmp_path / "defer"
+    stage = defer_root / sha / "oom-containment"
+    stage.mkdir(parents=True)
+    runbook = stage / "RUNBOOK.txt"
+    runbook.write_text("caller-owned pending work\n", encoding="utf-8")
+    runbook.chmod(0o600)
+    paths = module.InstallPaths(
+        home=tmp_path,
+        state_root=state_root,
+        defer_root=defer_root,
+        repo_alias=tmp_path / "repo",
+        sudo=Path("/usr/bin/sudo"),
+        test_mode=False,
+        test_root=None,
+    )
+    request = module.BrokerRequest(module.OOM_PACKAGE, sha, "c" * 64)
+
+    @contextmanager
+    def fake_locked_state(_paths: object):
+        yield paths, object()
+
+    monkeypatch.setattr(module, "PRODUCTION_BROKER_PROTOCOL_ENABLED", True)
+    if broker_outcome == "missing":
+
+        def refuse_missing_broker() -> None:
+            raise module.DeferredInstallError("broker missing")
+
+        monkeypatch.setattr(module, "_validate_production_broker", refuse_missing_broker)
+    else:
+        monkeypatch.setattr(module, "_validate_production_broker", lambda: None)
+        monkeypatch.setattr(
+            module.subprocess,
+            "run",
+            lambda command, **kwargs: subprocess.CompletedProcess(
+                command, 73 if broker_outcome == "nonzero" else 0
+            ),
+        )
+    if broker_outcome == "zero":
+        original_verify = module._verify_broker_completion
+
+        def verify_without_root_receipt(locked_paths: object, broker_request: object) -> None:
+            original_verify(
+                locked_paths,
+                broker_request,
+                completion_root=tmp_path / "missing-completions",
+                trust_anchor=tmp_path,
+                trusted_uid=os.getuid(),
+            )
+
+        monkeypatch.setattr(module, "_locked_state", fake_locked_state)
+        monkeypatch.setattr(module, "_verify_broker_completion", verify_without_root_receipt)
+
+    with pytest.raises(module.DeferredInstallError):
+        module._execute_production_broker(paths, request)
+    assert runbook.read_text(encoding="utf-8") == "caller-owned pending work\n"
+    assert not (stage / "DRAINED.txt").exists()
+    assert caller_receipt.read_text(encoding="ascii") == f"{sha}\n"
+    assert "completed broker-attested" not in capsys.readouterr().out
 
 
 def test_broker_completion_requires_exact_receipts_snapshots_and_drain(tmp_path: Path) -> None:
@@ -1691,12 +2291,26 @@ def test_broker_completion_requires_exact_receipts_snapshots_and_drain(tmp_path:
         test_mode=False,
         test_root=None,
     )
+    request = module.BrokerRequest(module.OOM_PACKAGE, fixture.sha, "c" * 64)
+    completion_root, _completion = _write_root_broker_completion(tmp_path, request)
 
-    module._verify_broker_completion(paths, module.OOM_PACKAGE, fixture.sha)
+    module._verify_broker_completion(
+        paths,
+        request,
+        completion_root=completion_root,
+        trust_anchor=tmp_path,
+        trusted_uid=os.getuid(),
+    )
 
     (snapshot_root / PAYLOAD).write_text("substituted\n", encoding="utf-8")
     with pytest.raises(module.DeferredInstallError, match="non-exact installed source"):
-        module._verify_broker_completion(paths, module.OOM_PACKAGE, fixture.sha)
+        module._verify_broker_completion(
+            paths,
+            request,
+            completion_root=completion_root,
+            trust_anchor=tmp_path,
+            trusted_uid=os.getuid(),
+        )
 
 
 @pytest.mark.parametrize("installer_rel", (INSTALLER, APCUPSD_INSTALLER))
@@ -1722,10 +2336,7 @@ def test_production_install_refuses_before_caller_path_lookup(
     )
 
     assert result.returncode == 1
-    assert (
-        "available only through the independently installed root-owned package broker"
-        in result.stderr
-    )
+    assert "production" in result.stderr and "disabled" in result.stderr
     assert not marker.exists()
 
 
@@ -1798,10 +2409,7 @@ def test_helper_shaped_raw_environment_cannot_restore_bash_install_authority(
     )
 
     assert result.returncode == 1
-    assert (
-        "available only through the independently installed root-owned package broker"
-        in result.stderr
-    )
+    assert "production" in result.stderr and "disabled" in result.stderr
     assert "raw exported environment" not in result.stderr
 
 
@@ -2038,7 +2646,7 @@ def _hook(path: Path, body: str) -> Path:
     return path
 
 
-def test_receipt_change_during_sudo_warmup_refuses_execution(tmp_path: Path) -> None:
+def test_retired_hook_cannot_change_receipt_or_reach_execution(tmp_path: Path) -> None:
     fixture = _fixture(tmp_path)
     hook = _hook(
         tmp_path / "swap-receipt",
@@ -2049,12 +2657,13 @@ def test_receipt_change_during_sudo_warmup_refuses_execution(tmp_path: Path) -> 
     result = fixture.run()
 
     assert result.returncode == 1
-    assert "receipt changed during sudo warmup" in result.stderr
-    assert fixture.sudo_calls.exists()
+    assert "retired deferred-install privilege selectors are refused" in result.stderr
+    assert fixture.receipt.read_text(encoding="utf-8") == f"{fixture.sha}\n"
+    assert not fixture.sudo_calls.exists()
     assert not fixture.installer_marker.exists()
 
 
-def test_stage_change_during_sudo_warmup_refuses_execution(tmp_path: Path) -> None:
+def test_retired_hook_cannot_change_stage_or_reach_execution(tmp_path: Path) -> None:
     fixture = _fixture(tmp_path)
     hook = _hook(
         tmp_path / "swap-stage",
@@ -2065,7 +2674,8 @@ def test_stage_change_during_sudo_warmup_refuses_execution(tmp_path: Path) -> No
     result = fixture.run()
 
     assert result.returncode == 1
-    assert "staged package bytes do not match" in result.stderr
+    assert "retired deferred-install privilege selectors are refused" in result.stderr
+    assert (fixture.stage / INSTALLER).read_bytes() == (fixture.repo / INSTALLER).read_bytes()
     assert not fixture.installer_marker.exists()
 
 
@@ -2094,7 +2704,7 @@ def test_stage_replacement_after_final_validation_cannot_change_consumed_bytes(
     stdout, stderr = process.communicate(timeout=10)
 
     assert process.returncode == 0, stderr
-    assert "completed authenticated" in stdout
+    assert "completed isolated-test" in stdout
     assert fixture.payload_marker.read_text(encoding="utf-8") == "authenticated Git payload\n"
 
 
@@ -2135,7 +2745,7 @@ def test_installer_dies_if_the_descriptor_holding_helper_dies(tmp_path: Path) ->
             os.kill(child_pid, signal.SIGKILL)
 
 
-def test_activation_alias_swap_cannot_change_pinned_release(tmp_path: Path) -> None:
+def test_retired_hook_cannot_swap_activation_alias(tmp_path: Path) -> None:
     fixture = _fixture(tmp_path)
     replacement = tmp_path / "replacement-release"
     replacement.mkdir()
@@ -2148,9 +2758,10 @@ def test_activation_alias_swap_cannot_change_pinned_release(tmp_path: Path) -> N
 
     result = fixture.run()
 
-    assert result.returncode == 0, result.stderr
-    assert fixture.installer_marker.read_text(encoding="utf-8").strip() == fixture.sha
-    assert fixture.payload_marker.read_text(encoding="utf-8") == "authenticated Git payload\n"
+    assert result.returncode == 1
+    assert "retired deferred-install privilege selectors are refused" in result.stderr
+    assert fixture.repo_alias.resolve() == fixture.repo
+    assert not fixture.installer_marker.exists()
 
 
 def test_missing_explicit_test_defer_root_cannot_self_anchor_to_drain(

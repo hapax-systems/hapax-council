@@ -67,9 +67,18 @@ for _argument in "$@"; do
         --install) _install_requested=1 ;;
     esac
 done
+if [ "${HAPAX_ROOT_REQUIRED_INSTALLER_TEST_MODE:-0}" = "1" ] \
+    && { [ "$UID" -eq 0 ] || [ "$EUID" -eq 0 ] || [ "$UID" -ne "$EUID" ]; }; then
+    echo "isolated apcupsd installer test mode refuses root or set-ID execution before setup; next action: rerun the scratch-only test as one unprivileged UID, or use a future cryptographically attested root-owned broker for production" >&2
+    exit 1
+fi
+if [ -n "${HAPAX_APCUPSD_INSTALL_SUDO:-}" ]; then
+    echo "HAPAX_APCUPSD_INSTALL_SUDO is retired; no interpreted installer may delegate through sudo; next action: remove the selector and dispatch separately authorized broker/attestation work because this source revision keeps production disabled" >&2
+    exit 1
+fi
 if [ "$_install_requested" -eq 1 ] \
     && [ "${HAPAX_ROOT_REQUIRED_INSTALLER_TEST_MODE:-0}" != "1" ]; then
-    echo "production apcupsd installation is available only through the independently installed root-owned package broker; no Bash installer effect or receipt advancement is permitted; next action: dispatch a separately runtime-authorized root-package broker bootstrap, install /usr/local/sbin/hapax-root-required-package-apply root:root and non-writable, then rerun hapax-post-merge-deploy" >&2
+    echo "production apcupsd installation is disabled until a separately reviewed root-owned broker and source-pinned cryptographic completion attestation are implemented; no Bash installer effect or receipt advancement is permitted; next action: dispatch that separately runtime-authorized broker/attestation work and do not restore this interpreted path" >&2
     exit 1
 fi
 if [ "$_authenticated_requested" -eq 1 ] \
@@ -153,7 +162,7 @@ unset _environment_display _environment_duplicate _environment_entry _environmen
 unset _environment_name _observed_environment_name _required_environment_name
 unset _install_requested _source_value_follows
 
-ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+ROOT="$(cd "$(/usr/bin/dirname "${BASH_SOURCE[0]}")/.." && /usr/bin/pwd -P)"
 SOURCE="$ROOT"
 SRC="$SOURCE/config/apcupsd"
 DEST="${HAPAX_APCUPSD_DEST:-/etc/apcupsd}"
@@ -170,7 +179,6 @@ UPOWER_CONF_DEST="${HAPAX_UPOWER_CONF_DEST:-/etc/UPower/UPower.conf.d/90-hapax-a
 SYSTEMCTL="${HAPAX_APCUPSD_SYSTEMCTL:-/usr/bin/systemctl}"
 BUSCTL="${HAPAX_APCUPSD_BUSCTL:-/usr/bin/busctl}"
 APCACCESS="${HAPAX_APCUPSD_APCACCESS:-/usr/bin/apcaccess}"
-SUDO="${HAPAX_APCUPSD_INSTALL_SUDO-/usr/bin/sudo}"
 ACTUAL_UID="$(/usr/bin/id -u)"
 if [ "$ACTUAL_UID" != "0" ] && [ "${HAPAX_APCUPSD_INSTALL_TEST_ACTUAL_UID:-}" = "0" ]; then
     ACTUAL_UID=0
@@ -420,11 +428,7 @@ expect_header() {
 }
 
 run_root() {
-    if [ -n "$SUDO" ]; then
-        "$SUDO" "$@"
-    else
-        "$@"
-    fi
+    "$@"
 }
 
 production_destinations_selected() {
@@ -560,7 +564,7 @@ PY
         || [ "${PWD:-}" != "$canonical_release" ] || [ "${SHLVL:-}" != "1" ] \
         || [ -n "$LOCAL_JUDGE_CAP_RECEIPT_SHA256" ] \
         || [ "$SYSTEMCTL" != "/usr/bin/systemctl" ] || [ "$BUSCTL" != "/usr/bin/busctl" ] \
-        || [ "$APCACCESS" != "/usr/bin/apcaccess" ] || [ "$SUDO" != "/usr/bin/sudo" ] \
+        || [ "$APCACCESS" != "/usr/bin/apcaccess" ] \
         || [ "$ROOT_REQUIRED_DEFER_ROOT" != "$canonical_defer" ] \
         || [ "$ROOT_REQUIRED_GIT_REPO" != "$canonical_release" ] \
         || [ "$SOURCE" != "$canonical_stage" ] \
@@ -601,9 +605,6 @@ validate_authenticated_test_contract() {
     validate_isolated_test_executable systemctl "$SYSTEMCTL" "$AUTHENTICATED_TEST_ROOT" || return 1
     validate_isolated_test_executable busctl "$BUSCTL" "$AUTHENTICATED_TEST_ROOT" || return 1
     validate_isolated_test_executable apcaccess "$APCACCESS" "$AUTHENTICATED_TEST_ROOT" || return 1
-    if [ -n "$SUDO" ]; then
-        validate_isolated_test_executable sudo "$SUDO" "$AUTHENTICATED_TEST_ROOT" || return 1
-    fi
 }
 
 validate_authenticated_install_contract() {
@@ -676,23 +677,18 @@ require_authenticated_install_authority() {
 }
 
 preflight_root() {
-    if [ -n "$SUDO" ] && [ "$INSTALL" -eq 1 ]; then
-        "$SUDO" -n true 2>/dev/null || {
-            echo "sudo non-interactive access is required for apcupsd power-alert install; next action: run sudo -v or grant the target account NOPASSWD for the governed install/systemctl commands, then rerun as that account" >&2
-            return "$ROOT_REQUIRED_RC"
-        }
-    fi
+    return 0
 }
 
 refuse_whole_script_root() {
     if [ "$INSTALL" -eq 1 ] && [ "$ACTUAL_UID" = "0" ]; then
-        echo "whole-script root execution is refused because durable package state and its shared lock are owned by UID $TARGET_UID; next action: run this installer as UID $TARGET_UID after sudo -v so only run_root commands cross the privilege boundary" >&2
+        echo "whole-script root execution is refused because durable package state and its shared lock are owned by UID $TARGET_UID; next action: rerun only an isolated test as UID $TARGET_UID without privilege selectors, or dispatch separately authorized broker/attestation work because this source revision keeps production disabled" >&2
         return 2
     fi
 }
 
 install_audit_dir() {
-    if [ -n "$AUDIT_GROUP" ] && getent group "$AUDIT_GROUP" >/dev/null 2>&1 && { [ -n "$SUDO" ] || [ "$(id -u)" = "0" ]; }; then
+    if [ -n "$AUDIT_GROUP" ] && getent group "$AUDIT_GROUP" >/dev/null 2>&1 && [ "$(id -u)" = "0" ]; then
         run_root install -d -m 2775 -g "$AUDIT_GROUP" "$AUDIT_DIR"
     else
         run_root install -d -m 0775 "$AUDIT_DIR"
@@ -1925,18 +1921,18 @@ install_live() {
     run_root install -d -m 0755 "$(dirname "$UPOWER_CONF_DEST")"
     run_root install -m 0644 "$upower_source" "$UPOWER_CONF_DEST"
     run_root "$SYSTEMCTL" enable --now apcupsd.service || {
-        echo "unable to enable and start apcupsd.service; next action: run sudo systemctl enable --now apcupsd.service and inspect journalctl -u apcupsd.service" >&2
+        echo "unable to enable and start apcupsd.service; next action: inspect journalctl -u apcupsd.service and rerun $APC_REPAIR_ACTION" >&2
         return 1
     }
     if [ "$RESTART" -eq 1 ] && [ "$apcupsd_changed" -eq 1 ]; then
         run_root "$SYSTEMCTL" restart apcupsd.service || {
-            echo "unable to reload apcupsd's shutdown policy; next action: run sudo systemctl restart apcupsd.service and inspect journalctl -u apcupsd.service" >&2
+            echo "unable to reload apcupsd's shutdown policy; next action: inspect journalctl -u apcupsd.service and rerun $APC_REPAIR_ACTION" >&2
             return 1
         }
     fi
     if [ "$RESTART" -eq 1 ] && [ "$upower_changed" -eq 1 ]; then
         run_root "$SYSTEMCTL" try-restart upower.service || {
-            echo "unable to reload UPower's shutdown policy; next action: run sudo systemctl restart upower.service and verify busctl call org.freedesktop.UPower /org/freedesktop/UPower org.freedesktop.UPower GetCriticalAction returns Ignore" >&2
+            echo "unable to reload UPower's shutdown policy; next action: rerun $APC_REPAIR_ACTION and verify busctl call org.freedesktop.UPower /org/freedesktop/UPower org.freedesktop.UPower GetCriticalAction returns Ignore" >&2
             return 1
         }
     fi
@@ -1975,7 +1971,7 @@ apcupsd_live_policy_matches_source() {
 
 verify_apcupsd_live_policy() {
     if ! apcupsd_live_policy_matches_source; then
-        echo "apcupsd loaded shutdown policy drift: ${APCUPSD_LIVE_POLICY_DETAIL:-unknown}; next action: run sudo systemctl restart apcupsd.service and rerun scripts/install-apcupsd-power-alerts --verify-live" >&2
+        echo "apcupsd loaded shutdown policy drift: ${APCUPSD_LIVE_POLICY_DETAIL:-unknown}; next action: set HAPAX_RUNTIME_AUTHORITY_TASK to the canonical runtime-authorized task and rerun hapax-post-merge-deploy so the root-owned broker can restart and verify apcupsd.service" >&2
         return 1
     fi
 }
@@ -1993,7 +1989,7 @@ upower_live_policy_matches_source() {
 
 verify_upower_live_policy() {
     if ! upower_live_policy_matches_source; then
-        echo "UPower still owns a loaded shutdown action: ${UPOWER_LIVE_POLICY_DETAIL:-unknown}; next action: run sudo systemctl restart upower.service and rerun scripts/install-apcupsd-power-alerts --verify-live" >&2
+        echo "UPower still owns a loaded shutdown action: ${UPOWER_LIVE_POLICY_DETAIL:-unknown}; next action: set HAPAX_RUNTIME_AUTHORITY_TASK to the canonical runtime-authorized task and rerun hapax-post-merge-deploy so the root-owned broker can restart and verify upower.service" >&2
         return 1
     fi
 }
@@ -2092,11 +2088,11 @@ verify_live() {
     }
     verify_audit_log_target
     run_root "$SYSTEMCTL" is-enabled --quiet apcupsd.service || {
-        echo "apcupsd.service is not enabled; next action: run sudo systemctl enable --now apcupsd.service" >&2
+        echo "apcupsd.service is not enabled; next action: rerun $APC_REPAIR_ACTION" >&2
         return 1
     }
     run_root "$SYSTEMCTL" is-active --quiet apcupsd.service || {
-        echo "apcupsd.service is not active; next action: run sudo systemctl enable --now apcupsd.service and inspect journalctl -u apcupsd.service" >&2
+        echo "apcupsd.service is not active; next action: inspect journalctl -u apcupsd.service and rerun $APC_REPAIR_ACTION" >&2
         return 1
     }
     verify_apcupsd_live_policy

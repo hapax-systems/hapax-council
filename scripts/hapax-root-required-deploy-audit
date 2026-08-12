@@ -1621,13 +1621,13 @@ audit_root_artifact_trust() {
     actual="$(stat -c '%u:%g' "$path" 2>/dev/null || true)"
     if [ "$actual" != "$expected_uid:$expected_gid" ]; then
         echo "root-required root-artifact ownership drift: $path owner=${actual:-unavailable} expected=$expected_uid:$expected_gid" >&2
-        echo "  next action: rerun the owning installer as the target account after sudo -v" >&2
+        echo "  next action: set HAPAX_RUNTIME_AUTHORITY_TASK to the canonical runtime-authorized task and rerun hapax-post-merge-deploy through the root-owned package broker" >&2
         return 1
     fi
     parent="$(dirname "$path")"
     if [ ! -d "$parent" ] || [ -L "$parent" ]; then
         echo "root-required root-artifact parent is missing, symlinked, or not a directory: $parent" >&2
-        echo "  next action: repair the root-owned destination directory and rerun the owning installer" >&2
+        echo "  next action: authorize the destination repair, set HAPAX_RUNTIME_AUTHORITY_TASK to the canonical task, and rerun hapax-post-merge-deploy through the root-owned package broker" >&2
         return 1
     fi
     parent_actual="$(stat -c '%u:%g' "$parent" 2>/dev/null || true)"
@@ -1636,7 +1636,7 @@ audit_root_artifact_trust() {
         || ! [[ "$parent_mode" =~ ^[0-7]+$ ]] \
         || (( (8#$parent_mode & 8#022) != 0 )); then
         echo "root-required root-artifact parent trust drift: $parent owner/mode=${parent_actual:-unavailable}:${parent_mode:-unavailable} expected=$expected_uid:$expected_gid and no group/other write bits" >&2
-        echo "  next action: repair the root-owned destination directory and rerun the owning installer" >&2
+        echo "  next action: authorize the destination repair, set HAPAX_RUNTIME_AUTHORITY_TASK to the canonical task, and rerun hapax-post-merge-deploy through the root-owned package broker" >&2
         return 1
     fi
 }
@@ -1972,12 +1972,12 @@ audit_systemd_state() {
     local expected_audit_environment loaded_audit_environment
     if ! "$SYSTEMCTL" is-enabled --quiet hapax-oom-score-enforce.timer; then
         echo "root-required activation drift: hapax-oom-score-enforce.timer is not enabled" >&2
-        echo "  next action: run sudo systemctl enable --now hapax-oom-score-enforce.timer" >&2
+        echo "  next action: run the runtime-authorized hapax-post-merge-deploy OOM reconciliation for the desired receipt SHA with HAPAX_RUNTIME_AUTHORITY_TASK" >&2
         failed=1
     fi
     if ! "$SYSTEMCTL" is-active --quiet hapax-oom-score-enforce.timer; then
         echo "root-required activation drift: hapax-oom-score-enforce.timer is not active" >&2
-        echo "  next action: run sudo systemctl enable --now hapax-oom-score-enforce.timer" >&2
+        echo "  next action: run the runtime-authorized hapax-post-merge-deploy OOM reconciliation for the desired receipt SHA with HAPAX_RUNTIME_AUTHORITY_TASK" >&2
         failed=1
     fi
     expected_enforcer_timeout="$(awk -F= '$1 == "TimeoutStartSec" {print $2; exit}' "$INSTALLED_SOURCE_ROOT/systemd/units/hapax-oom-score-enforce.service" 2>/dev/null || true)"
@@ -1986,33 +1986,33 @@ audit_systemd_state() {
     fi
     if [ -z "$expected_enforcer_timeout" ] || [ "$loaded_enforcer_timeout" != "$expected_enforcer_timeout" ]; then
         echo "root-required activation drift: hapax-oom-score-enforce.service loaded TimeoutStartUSec=${loaded_enforcer_timeout:-unavailable}, expected ${expected_enforcer_timeout:-source value missing}" >&2
-        echo "  next action: run sudo systemctl daemon-reload, then run the runtime-authorized hapax-post-merge-deploy OOM reconciliation for the desired receipt SHA with HAPAX_RUNTIME_AUTHORITY_TASK" >&2
+        echo "  next action: run the runtime-authorized hapax-post-merge-deploy OOM reconciliation for the desired receipt SHA with HAPAX_RUNTIME_AUTHORITY_TASK; the broker transaction owns daemon reload" >&2
         failed=1
     fi
     if ! "$SYSTEMCTL" is-active --quiet apcupsd.service; then
         echo "root-required activation drift: apcupsd.service is not active" >&2
-        echo "  next action: run sudo systemctl restart apcupsd.service and inspect journalctl -u apcupsd.service" >&2
+        echo "  next action: inspect journalctl -u apcupsd.service, then run the runtime-authorized hapax-post-merge-deploy APC reconciliation for the desired receipt SHA with HAPAX_RUNTIME_AUTHORITY_TASK" >&2
         failed=1
     fi
     if ! "$SYSTEMCTL" is-enabled --quiet apcupsd.service; then
         echo "root-required activation drift: apcupsd.service is not enabled" >&2
-        echo "  next action: run sudo systemctl enable --now apcupsd.service" >&2
+        echo "  next action: run the runtime-authorized hapax-post-merge-deploy APC reconciliation for the desired receipt SHA with HAPAX_RUNTIME_AUTHORITY_TASK" >&2
         failed=1
     fi
     loaded_upower_action="$("$BUSCTL" call org.freedesktop.UPower /org/freedesktop/UPower org.freedesktop.UPower GetCriticalAction 2>/dev/null || true)"
     if [ "$loaded_upower_action" != 's "Ignore"' ]; then
         echo "root-required activation drift: UPower loaded critical action is ${loaded_upower_action:-unavailable}, expected Ignore" >&2
-        echo "  next action: run sudo systemctl restart upower.service and scripts/install-apcupsd-power-alerts --verify-live" >&2
+        echo "  next action: set HAPAX_RUNTIME_AUTHORITY_TASK to the canonical runtime-authorized task and rerun hapax-post-merge-deploy so the root-owned broker can restart and verify upower.service" >&2
         failed=1
     fi
     if ! "$SYSTEMCTL" is-enabled --quiet earlyoom.service; then
         echo "root-required activation drift: earlyoom.service is not enabled" >&2
-        echo "  next action: run sudo systemctl enable --now earlyoom.service" >&2
+        echo "  next action: run the runtime-authorized hapax-post-merge-deploy OOM reconciliation for the desired receipt SHA with HAPAX_RUNTIME_AUTHORITY_TASK" >&2
         failed=1
     fi
     if ! "$SYSTEMCTL" is-active --quiet earlyoom.service; then
         echo "root-required activation drift: earlyoom.service is not active" >&2
-        echo "  next action: run sudo systemctl enable --now earlyoom.service and inspect journalctl -u earlyoom.service" >&2
+        echo "  next action: inspect journalctl -u earlyoom.service, then run the runtime-authorized hapax-post-merge-deploy OOM reconciliation for the desired receipt SHA with HAPAX_RUNTIME_AUTHORITY_TASK" >&2
         failed=1
     fi
     for timer in hapax-oom-policy-audit.timer hapax-root-required-deploy-audit.timer; do
@@ -2091,7 +2091,7 @@ audit_apcupsd_loaded_policy() {
         ')"
         if [ -z "$expected" ] || [ "$actual" != "$expected" ]; then
             echo "root-required activation drift: apcupsd loaded $status_key=${actual:-unavailable}, expected $expected from $config_key" >&2
-            echo "  next action: run sudo systemctl restart apcupsd.service and scripts/install-apcupsd-power-alerts --verify-live" >&2
+            echo "  next action: set HAPAX_RUNTIME_AUTHORITY_TASK to the canonical runtime-authorized task and rerun hapax-post-merge-deploy so the root-owned broker can restart and verify apcupsd.service" >&2
             failed=1
         fi
     done
