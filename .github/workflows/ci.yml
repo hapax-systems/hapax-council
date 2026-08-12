@@ -894,6 +894,16 @@ jobs:
             -q --tb=line
       - name: Install python-prod optional witness system deps
         if: needs.post_merge_duplicate_filter.outputs.duplicate_merge_group != 'true' && needs.docs_only_filter.outputs.docs_only != 'true' && steps.test_mode.outputs.mode == 'pr-admission' && needs.docs_only_filter.outputs.python_prod_dependency_witness == 'true'
+        # Bounded because this step hangs. Observed 2026-08-12 on run 31554774553: stalled
+        # >20 min inside `apt-get update` while a neighbouring run completed the identical
+        # step in 36 s, consuming the whole 35-minute job clock instead of failing fast and
+        # being retryable.
+        #
+        # Its exposure also rises with the --no-renames fix in this same change: a moved
+        # pyproject.toml or ci.yml never reached the witness case before, because the rename
+        # collapsed to its destination. It fires correctly now, so a flaky mirror must not be
+        # the slowest possible way to find out.
+        timeout-minutes: 6
         run: |
           sudo apt-get update
           sudo apt-get install -y \
