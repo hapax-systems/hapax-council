@@ -7,6 +7,8 @@ import argparse
 import json
 import os
 import re
+import selectors
+import signal
 import socket
 import subprocess
 import sys
@@ -103,17 +105,12 @@ EXPECTED_HOST_PROFILES = {
 }
 LOCAL_DOCKER_HOST = "unix:///var/run/docker.sock"
 LOCAL_DOCKER_CONFIG = "/nonexistent/hapax-oom-policy-audit-docker"
-DOCKER_SELECTOR_ENV = frozenset(
-    {
-        "DOCKER_HOST",
-        "DOCKER_CONTEXT",
-        "DOCKER_CONFIG",
-        "DOCKER_CERT_PATH",
-        "DOCKER_TLS_VERIFY",
-        "DOCKER_TLS",
-        "DOCKER_API_VERSION",
-    }
-)
+COMMAND_OUTPUT_LIMIT = 16 * 1024
+COMMAND_TIMEOUT_SECONDS = 10.0
+DOCKER_INVENTORY_MAX_ROWS = 512
+DOCKER_TARGET_MAX = 64
+DOCKER_INVENTORY_LINE_MAX = 512
+DOCKER_INSPECT_LINE_MAX = 2048
 
 
 @dataclass
@@ -321,19 +318,103 @@ def _docker() -> str:
 
 def _run(args: list[str], *, env: dict[str, str] | None = None) -> subprocess.CompletedProcess[str]:
     try:
-        return subprocess.run(
-            args, capture_output=True, text=True, timeout=10, check=False, env=env
+        process = subprocess.Popen(
+            args,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            env=env,
+            start_new_session=True,
         )
-    except (FileNotFoundError, subprocess.TimeoutExpired) as exc:
+    except FileNotFoundError as exc:
         return subprocess.CompletedProcess(args=args, returncode=127, stdout="", stderr=str(exc))
+    assert process.stdout is not None
+    assert process.stderr is not None
+    selector = selectors.DefaultSelector()
+    selector.register(process.stdout, selectors.EVENT_READ, "stdout")
+    selector.register(process.stderr, selectors.EVENT_READ, "stderr")
+    buffers = {"stdout": bytearray(), "stderr": bytearray()}
+    total = 0
+    deadline = time.monotonic() + COMMAND_TIMEOUT_SECONDS
+    failure = ""
+    failure_rc = 0
+    try:
+        while selector.get_map():
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                failure = f"command timed out after {COMMAND_TIMEOUT_SECONDS:g}s"
+                failure_rc = 124
+                break
+            events = selector.select(remaining)
+            if not events:
+                continue
+            for key, _mask in events:
+                chunk = os.read(key.fd, min(8192, COMMAND_OUTPUT_LIMIT - total + 1))
+                if not chunk:
+                    selector.unregister(key.fileobj)
+                    continue
+                available = COMMAND_OUTPUT_LIMIT - total
+                if available > 0:
+                    buffers[key.data].extend(chunk[:available])
+                    total += min(len(chunk), available)
+                if len(chunk) > available:
+                    failure = f"command output exceeded {COMMAND_OUTPUT_LIMIT} bytes"
+                    failure_rc = 125
+                    break
+            if failure:
+                break
+    finally:
+        selector.close()
+
+    returncode = 0
+    if not failure:
+        remaining = max(0.0, deadline - time.monotonic())
+        try:
+            returncode = process.wait(timeout=remaining)
+        except subprocess.TimeoutExpired:
+            failure = f"command timed out after {COMMAND_TIMEOUT_SECONDS:g}s"
+            failure_rc = 124
+
+    if failure:
+        try:
+            os.killpg(process.pid, signal.SIGKILL)
+        except ProcessLookupError:
+            pass
+        try:
+            process.wait(timeout=1.0)
+        except subprocess.TimeoutExpired:
+            failure += "; killed process group did not reap within 1s"
+        for stream in (process.stdout, process.stderr):
+            stream.close()
+        stderr = buffers["stderr"].decode("utf-8", errors="replace")
+        if stderr and not stderr.endswith("\n"):
+            stderr += "\n"
+        stderr += failure
+        return subprocess.CompletedProcess(
+            args=args,
+            returncode=failure_rc,
+            stdout=buffers["stdout"].decode("utf-8", errors="replace"),
+            stderr=stderr,
+        )
+
+    try:
+        return subprocess.CompletedProcess(
+            args=args,
+            returncode=returncode,
+            stdout=buffers["stdout"].decode("utf-8", errors="replace"),
+            stderr=buffers["stderr"].decode("utf-8", errors="replace"),
+        )
+    finally:
+        process.stdout.close()
+        process.stderr.close()
 
 
 def _run_local_docker(args: list[str]) -> subprocess.CompletedProcess[str]:
-    env = os.environ.copy()
-    for selector in DOCKER_SELECTOR_ENV:
-        env.pop(selector, None)
-    env["DOCKER_HOST"] = LOCAL_DOCKER_HOST
-    env["DOCKER_CONFIG"] = LOCAL_DOCKER_CONFIG
+    env = {
+        "HOME": "/nonexistent",
+        "PATH": SAFE_PATH,
+        "LANG": "C",
+        "LC_ALL": "C",
+    }
     return _run(
         [
             _docker(),
@@ -1293,11 +1374,33 @@ def audit_docker_limits() -> list[Check]:
             )
         ]
 
+    inventory_lines = enumeration.stdout.splitlines()
+    if len(inventory_lines) > DOCKER_INVENTORY_MAX_ROWS:
+        return [
+            Check(
+                "docker_oom_targets",
+                "error",
+                f"at most {DOCKER_INVENTORY_MAX_ROWS} inventory rows",
+                str(len(inventory_lines)),
+                f"Docker inventory row bound exceeded; {NEXT_OOM_ACTION}",
+            )
+        ]
+
     targets: list[tuple[str, str]] = []
     seen_names: set[str] = set()
-    for raw_line in enumeration.stdout.splitlines():
+    for raw_line in inventory_lines:
         if not raw_line:
             continue
+        if len(raw_line) > DOCKER_INVENTORY_LINE_MAX:
+            return [
+                Check(
+                    "docker_oom_targets",
+                    "error",
+                    f"inventory lines at most {DOCKER_INVENTORY_LINE_MAX} characters",
+                    f"length={len(raw_line)}",
+                    f"Docker inventory line bound exceeded; {NEXT_OOM_ACTION}",
+                )
+            ]
         fields = raw_line.split("\t")
         if len(fields) != 2 or re.fullmatch(r"[0-9a-f]{64}", fields[0]) is None:
             return [
@@ -1326,6 +1429,17 @@ def audit_docker_limits() -> list[Check]:
         ):
             targets.append((container_id, name))
 
+    if len(targets) > DOCKER_TARGET_MAX:
+        return [
+            Check(
+                "docker_oom_targets",
+                "error",
+                f"at most {DOCKER_TARGET_MAX} OOM targets",
+                str(len(targets)),
+                f"Docker target count bound exceeded; {NEXT_OOM_ACTION}",
+            )
+        ]
+
     checks: list[Check] = []
     judge = next(
         ((container_id, name) for container_id, name in targets if name == "hapax-local-judge"),
@@ -1348,7 +1462,17 @@ def audit_docker_limits() -> list[Check]:
     ]
     checks.append(Check("docker_github_mcp_count", "pass", ">=0", str(len(mcp_targets))))
     for container_id, name in mcp_targets:
-        inspected = _run_local_docker(["inspect", container_id])
+        inspected = _run_local_docker(
+            [
+                "inspect",
+                "--format",
+                (
+                    "{{json .Id}}\t{{json .Name}}\t{{json .HostConfig.Memory}}\t"
+                    "{{json .HostConfig.MemorySwap}}\t{{json .HostConfig.OomKillDisable}}"
+                ),
+                container_id,
+            ]
+        )
         if inspected.returncode != 0:
             detail = (inspected.stderr or inspected.stdout).strip() or f"rc={inspected.returncode}"
             checks.append(
@@ -1362,21 +1486,22 @@ def audit_docker_limits() -> list[Check]:
             )
             continue
         try:
-            records = json.loads(inspected.stdout)
-            if (
-                not isinstance(records, list)
-                or len(records) != 1
-                or not isinstance(records[0], dict)
-            ):
-                raise ValueError("expected one Docker inspect record")
-            record = records[0]
-            host_config = record["HostConfig"]
-            actual_id = record["Id"]
-            actual_name = record["Name"]
-            memory = int(host_config["Memory"])
-            memory_swap = int(host_config["MemorySwap"])
-            oom_kill_disable = host_config.get("OomKillDisable")
-        except (KeyError, TypeError, ValueError, json.JSONDecodeError) as exc:
+            inspect_lines = inspected.stdout.splitlines()
+            if len(inspect_lines) != 1 or len(inspect_lines[0]) > DOCKER_INSPECT_LINE_MAX:
+                raise ValueError("expected one bounded Docker inspect line")
+            fields = inspect_lines[0].split("\t")
+            if len(fields) != 5:
+                raise ValueError("expected five formatted Docker inspect fields")
+            actual_id, actual_name, memory, memory_swap, oom_kill_disable = (
+                json.loads(field) for field in fields
+            )
+            if not isinstance(actual_id, str) or not isinstance(actual_name, str):
+                raise TypeError("Docker identity fields must be strings")
+            if type(memory) is not int or type(memory_swap) is not int:
+                raise TypeError("Docker memory fields must be integers")
+            if oom_kill_disable is not None and type(oom_kill_disable) is not bool:
+                raise TypeError("Docker OomKillDisable must be null or boolean")
+        except (TypeError, ValueError, json.JSONDecodeError) as exc:
             checks.append(
                 Check(
                     f"docker_{name}_limits",
@@ -1407,6 +1532,39 @@ def audit_docker_limits() -> list[Check]:
             )
         )
     return checks
+
+
+def audit_local_judge_unit() -> Check:
+    values = _show(
+        "hapax-local-judge.service",
+        ["LoadState", "UnitFileState", "ActiveState", "FragmentPath"],
+        user=True,
+    )
+    expected = {
+        "LoadState": "masked",
+        "UnitFileState": "masked",
+        "ActiveState": "inactive",
+        "FragmentPath": "/dev/null",
+    }
+    if "_error" in values:
+        return Check(
+            "local_judge_unit_retired",
+            "error",
+            ",".join(f"{key}={value}" for key, value in expected.items()),
+            "N/A",
+            f"cannot observe the historical local-judge unit: {values['_error']}; {NEXT_OOM_ACTION}",
+        )
+    actual = ",".join(f"{key}={values.get(key, 'N/A')}" for key in expected)
+    matches = all(values.get(key) == value for key, value in expected.items())
+    return Check(
+        "local_judge_unit_retired",
+        "pass" if matches else "gap",
+        ",".join(f"{key}={value}" for key, value in expected.items()),
+        actual,
+        ""
+        if matches
+        else f"historical local-judge unit is not fully masked and inactive; {NEXT_OOM_ACTION}",
+    )
 
 
 def audit_enforcer_timer() -> list[Check]:
@@ -1457,7 +1615,7 @@ def audit_enforcer_timer() -> list[Check]:
         completed_usec = int(service.get("InactiveEnterTimestampMonotonic", "0"))
     except ValueError:
         completed_usec = 0
-    now_usec = time.clock_gettime_ns(time.CLOCK_BOOTTIME) // 1000
+    now_usec = time.monotonic_ns() // 1000
     age_usec = now_usec - completed_usec if completed_usec else -1
     recent = completed_usec > 0 and -5_000_000 <= age_usec <= 180_000_000
     checks.append(
@@ -1505,6 +1663,7 @@ def main(argv: list[str] | None = None) -> int:
                 f"{policy.hostname}:{policy.profile}:{policy.physical_bytes}",
             ),
             *audit_zram(policy),
+            audit_local_judge_unit(),
             *audit_docker_limits(),
             *audit_enforcer_timer(),
             audit_user_manager(args.uid),

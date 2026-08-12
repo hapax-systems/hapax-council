@@ -307,6 +307,8 @@ def test_root_oom_enforcer_uses_system_scoped_failure_intake() -> None:
     assert "After=user@1000.service" in enforcer
     assert "StartLimitIntervalSec=0" in enforcer
     assert "StartLimitBurst" not in enforcer
+    assert "OnBootSec=120s" in timer
+    assert "OnUnitActiveSec=120s" in timer
     assert "AccuracySec=1s" in timer
     assert "# Hapax-Install-Scope: system" in intake
     assert "User=hapax" in intake
@@ -322,6 +324,9 @@ def test_root_oom_enforcer_uses_system_scoped_failure_intake() -> None:
     assert "hapax-systems/hapax-council/blob/main/systemd/README.md" in enforcer
     assert "/home/hapax" not in enforcer
     assert "ConditionPathExists" not in intake
+    enforcer_script = (REPO_ROOT / "scripts/hapax-oom-score-enforce").read_text()
+    assert "/usr/bin/runuser" not in enforcer_script
+    assert '"$SYSTEMCTL" --user' not in enforcer_script
 
 
 # ── L2: the audio-core cpuset fence ──────────────────────────────────────────

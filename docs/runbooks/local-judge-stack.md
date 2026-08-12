@@ -30,8 +30,11 @@ Adapter: `shared/local_judge.py` (`LocalJudge.verify(...)`, shadow-defaulted).
 
 ## Retirement (appendix)
 
-The source unit is deleted so post-merge deployment cannot resurrect it. The
-canonical user-unit installer treats `hapax-local-judge.service` as
+The source unit is deleted. Post-merge deployment classifies that exact
+historical path before consulting old or current package manifests and records
+runtime deferral; it never sends the path to generic user-unit, system-unit, or
+OOM deployment. The canonical user-unit installer treats
+`hapax-local-judge.service` as
 decommissioned and leaves an installed `/dev/null` mask as its tombstone. Its
 retirement transaction runs before environment sync:
 
@@ -43,9 +46,15 @@ retirement transaction runs before environment sync:
    main process without invoking its historical name-based `ExecStop`, and
    reject any replacement identity.
 
+A retry that begins with the `/dev/null` mask already installed still re-enters
+immutable-ID Docker reconciliation, so interruption between masking and removal
+does not leave the transaction permanently half-retired.
+
 This source task does not authorize running that transaction on Appendix. The
 deployed historical unit remains a runtime gap until the normal user-unit
-deployment is separately authorized. Read-only inspection:
+deployment is separately authorized. The observational OOM audit requires both
+container absence and `LoadState=masked`, `UnitFileState=masked`,
+`ActiveState=inactive`, and `FragmentPath=/dev/null`. Read-only inspection:
 
 ```sh
 systemctl --user is-enabled hapax-local-judge.service

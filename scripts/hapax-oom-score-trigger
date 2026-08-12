@@ -1,6 +1,7 @@
-#!/usr/bin/bash
+#!/usr/bin/bash -p
 # Fail-bounded user-side bridge to the allowlisted root OOM score enforcer.
 set -euo pipefail
+unset CDPATH ENV BASH_ENV
 
 unit="${1:-}"
 case "$unit" in
@@ -11,12 +12,26 @@ case "$unit" in
         ;;
 esac
 
-if [ "${HAPAX_OOM_TRIGGER_TEST_MODE:-0}" = "1" ]; then
+TEST_MODE="${HAPAX_OOM_TRIGGER_TEST_MODE:-0}"
+if [ "$TEST_MODE" = "1" ]; then
+    if [ "$(/usr/bin/id -u)" = "0" ] || [ -n "${SUDO_USER:-}" ]; then
+        echo "refusing OOM trigger test overrides under root/sudo execution; next action: run the installed trigger without HAPAX_OOM_TRIGGER_TEST_MODE" >&2
+        exit 2
+    fi
     TIMEOUT="${HAPAX_OOM_TRIGGER_TIMEOUT:-/usr/bin/timeout}"
     SUDO="${HAPAX_OOM_TRIGGER_SUDO:-/usr/bin/sudo}"
     ENFORCER="${HAPAX_OOM_TRIGGER_ENFORCER:-/usr/local/sbin/hapax-oom-score-enforce}"
     DEADLINE="${HAPAX_OOM_TRIGGER_DEADLINE:-5s}"
 else
+    for override in \
+        HAPAX_OOM_TRIGGER_TEST_MODE HAPAX_OOM_TRIGGER_TIMEOUT \
+        HAPAX_OOM_TRIGGER_SUDO HAPAX_OOM_TRIGGER_ENFORCER \
+        HAPAX_OOM_TRIGGER_DEADLINE; do
+        if declare -p "$override" >/dev/null 2>&1; then
+            echo "refusing production OOM trigger override $override; next action: remove HAPAX_OOM_TRIGGER_* overrides and rerun the package-owned command" >&2
+            exit 2
+        fi
+    done
     TIMEOUT="/usr/bin/timeout"
     SUDO="/usr/bin/sudo"
     ENFORCER="/usr/local/sbin/hapax-oom-score-enforce"

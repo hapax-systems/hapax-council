@@ -140,6 +140,10 @@ def _fake_systemctl(
     enforcer_active_age_seconds: int | None = None,
     host_profile: str = "podium",
     missing_protected_units: frozenset[str] = frozenset(),
+    judge_load_state: str = "masked",
+    judge_unit_file_state: str = "masked",
+    judge_active_state: str = "inactive",
+    judge_fragment_path: str = "/dev/null",
 ) -> Path:
     path = tmp_path / "systemctl"
     calls = tmp_path / "systemctl.calls"
@@ -201,7 +205,7 @@ def _fake_systemctl(
         f"MemoryLow={'0' if session_slice_unprotected else '2147483648'}\n"
         f"MemoryMin={'0' if session_slice_unprotected else '1073741824'}\n"
     )
-    now_usec = time.clock_gettime_ns(time.CLOCK_BOOTTIME) // 1000
+    now_usec = time.monotonic_ns() // 1000
     enforcer_timestamp = max(1, now_usec - enforcer_age_seconds * 1_000_000)
     enforcer_active_timestamp = (
         0
@@ -213,6 +217,7 @@ def _fake_systemctl(
 set -euo pipefail
 printf '%s\n' "$*" >> "{calls}"
 case "$*" in
+  *"--user show hapax-local-judge.service"*) printf 'LoadState={judge_load_state}\nUnitFileState={judge_unit_file_state}\nActiveState={judge_active_state}\nFragmentPath={judge_fragment_path}\n' ;;
   *"show hapax-oom-score-enforce.timer"*) printf 'LoadState=loaded\nUnitFileState={"enabled" if enforcer_timer_enabled else "disabled"}\nActiveState={"active" if enforcer_timer_active else "inactive"}\n' ;;
   *"show hapax-oom-score-enforce.service"*) printf 'Result={enforcer_result}\nExecMainStatus={enforcer_main_status}\nActiveEnterTimestampMonotonic={enforcer_active_timestamp}\nInactiveEnterTimestampMonotonic={enforcer_timestamp}\n' ;;
   *"show system.slice"*) printf '{system_slice_values}' ;;
@@ -245,6 +250,8 @@ def _fake_docker(
     mcp_memory_swap: int = 768 * 1024**2,
     mcp_oom_kill_disable: bool = False,
     include_judge: bool = False,
+    inventory_override: str | None = None,
+    inspect_override: str | None = None,
 ) -> Path:
     path = tmp_path / "docker"
     calls = tmp_path / "docker.calls"
@@ -254,31 +261,37 @@ def _fake_docker(
     ]
     if include_judge:
         containers.append(("f" * 64, "hapax-local-judge"))
-    inventory = "".join(f"{container_id}\\t{name}\\n" for container_id, name in containers)
+    inventory = "".join(f"{container_id}\t{name}\n" for container_id, name in containers)
+    inventory_file = tmp_path / "docker.inventory"
+    inventory_file.write_text(
+        inventory if inventory_override is None else inventory_override,
+        encoding="utf-8",
+    )
     inspect_cases = []
+    inspect_file = tmp_path / "docker.inspect"
+    if inspect_override is not None:
+        inspect_file.write_text(inspect_override, encoding="utf-8")
     for container_id, name in containers:
-        inspect_payload = json.dumps(
-            [
-                {
-                    "HostConfig": {
-                        "Memory": mcp_memory,
-                        "MemorySwap": mcp_memory_swap,
-                        "OomKillDisable": mcp_oom_kill_disable,
-                    },
-                    "Id": container_id,
-                    "Name": f"/{name}",
-                }
-            ]
+        inspect_payload = "\t".join(
+            json.dumps(value)
+            for value in (
+                container_id,
+                f"/{name}",
+                mcp_memory,
+                mcp_memory_swap,
+                mcp_oom_kill_disable,
+            )
         )
-        inspect_cases.append(
-            f"  *\" inspect {container_id}\") printf '%s\\n' '{inspect_payload}' ;;"
-        )
+        if inspect_override is None:
+            inspect_cases.append(f"  *\" {container_id}\") printf '%s\\n' '{inspect_payload}' ;;")
+    if inspect_override is not None:
+        inspect_cases.append(f'  *" inspect --format "*) cat "{inspect_file}" ;;')
     path.write_text(
         "#!/usr/bin/env bash\n"
         "set -euo pipefail\n"
         f'printf \'%s\\n\' "$*" >> "{calls}"\n'
         'case "$*" in\n'
-        f"  *\" ps -a --no-trunc --format \"*) printf '{inventory}' ;;\n"
+        f'  *" ps -a --no-trunc --format "*) cat "{inventory_file}" ;;\n'
         + "\n".join(inspect_cases)
         + "\n"
         '  *) echo "unexpected docker args: $*" >&2; exit 9 ;;\n'
@@ -345,6 +358,12 @@ def _run(
     docker_mcp_memory_swap: int = 768 * 1024**2,
     docker_mcp_oom_kill_disable: bool = False,
     docker_include_judge: bool = False,
+    docker_inventory_override: str | None = None,
+    docker_inspect_override: str | None = None,
+    judge_load_state: str = "masked",
+    judge_unit_file_state: str = "masked",
+    judge_active_state: str = "inactive",
+    judge_fragment_path: str = "/dev/null",
 ) -> subprocess.CompletedProcess[str]:
     if proc_root is None:
         proc_root = tmp_path / "proc"
@@ -471,6 +490,10 @@ def _run(
                 enforcer_active_age_seconds=enforcer_active_age_seconds,
                 host_profile=host_profile,
                 missing_protected_units=missing_protected_units,
+                judge_load_state=judge_load_state,
+                judge_unit_file_state=judge_unit_file_state,
+                judge_active_state=judge_active_state,
+                judge_fragment_path=judge_fragment_path,
             )
         ),
         "HAPAX_OOM_AUDIT_DOCKER": str(
@@ -481,6 +504,8 @@ def _run(
                 mcp_memory_swap=docker_mcp_memory_swap,
                 mcp_oom_kill_disable=docker_mcp_oom_kill_disable,
                 include_judge=docker_include_judge,
+                inventory_override=docker_inventory_override,
+                inspect_override=docker_inspect_override,
             )
         ),
         "HAPAX_OOM_AUDIT_PROC_ROOT": str(proc_root),
@@ -506,6 +531,7 @@ def test_audit_passes_when_user_manager_is_killable_and_app_slice_bounded(tmp_pa
     assert statuses["audit_authority"] == "pass"
     assert statuses["host_memory_policy"] == "pass"
     assert statuses["zram_size"] == "pass"
+    assert statuses["local_judge_unit_retired"] == "pass"
     assert statuses["docker_hapax-local-judge_retired"] == "pass"
     assert statuses["oom_enforcer_timer_UnitFileState"] == "pass"
     assert statuses["user_manager_oom_score_adjust"] == "pass"
@@ -1037,6 +1063,13 @@ def test_enforcer_recency_uses_completed_run_not_recent_active_transition(
     assert check["status"] == "gap"
 
 
+def test_enforcer_recency_uses_the_systemd_monotonic_clock_domain() -> None:
+    body = SCRIPT.read_text(encoding="utf-8")
+
+    assert "time.monotonic_ns()" in body
+    assert "CLOCK_BOOTTIME" not in body
+
+
 def test_audit_accepts_all_three_ephemeral_mcp_containers_with_exact_limits(
     tmp_path: Path,
 ) -> None:
@@ -1084,6 +1117,75 @@ def test_audit_requires_historical_local_judge_to_be_absent(tmp_path: Path) -> N
     )
     assert check["status"] == "gap"
     assert check["actual"] == "f" * 64
+
+
+def test_audit_requires_historical_local_judge_unit_to_be_masked_and_inactive(
+    tmp_path: Path,
+) -> None:
+    result = _run(
+        tmp_path,
+        judge_load_state="loaded",
+        judge_unit_file_state="enabled",
+        judge_active_state="active",
+        judge_fragment_path="/home/hapax/.config/systemd/user/hapax-local-judge.service",
+    )
+
+    assert result.returncode == 1
+    payload = json.loads(result.stdout)
+    checks = {item["name"]: item for item in payload["checks"]}
+    assert checks["docker_hapax-local-judge_retired"]["status"] == "pass"
+    assert checks["local_judge_unit_retired"]["status"] == "gap"
+    assert "ActiveState=active" in checks["local_judge_unit_retired"]["actual"]
+
+
+def test_audit_bounds_docker_output_before_parsing(tmp_path: Path) -> None:
+    result = _run(tmp_path, docker_inventory_override="x" * (20 * 1024))
+
+    assert result.returncode == 1
+    payload = json.loads(result.stdout)
+    check = next(item for item in payload["checks"] if item["name"] == "docker_oom_targets")
+    assert check["status"] == "error"
+    assert "output exceeded 16384 bytes" in check["detail"]
+
+
+def test_command_deadline_survives_a_child_that_closes_both_pipes() -> None:
+    namespace = runpy.run_path(str(SCRIPT))
+    bounded_run = namespace["_run"]
+    bounded_run.__globals__["COMMAND_TIMEOUT_SECONDS"] = 0.1
+
+    started = time.monotonic()
+    result = bounded_run(["/usr/bin/bash", "-c", "exec 1>&- 2>&-; /usr/bin/sleep 10"])
+    elapsed = time.monotonic() - started
+
+    assert result.returncode == 124
+    assert "timed out" in result.stderr
+    assert elapsed < 2
+
+
+def test_audit_bounds_docker_inventory_rows(tmp_path: Path) -> None:
+    result = _run(tmp_path, docker_inventory_override="x\n" * 513)
+
+    assert result.returncode == 1
+    payload = json.loads(result.stdout)
+    check = next(item for item in payload["checks"] if item["name"] == "docker_oom_targets")
+    assert check["status"] == "error"
+    assert check["target"] == "at most 512 inventory rows"
+
+
+def test_audit_rejects_malformed_formatted_docker_inspect(tmp_path: Path) -> None:
+    result = _run(
+        tmp_path,
+        docker_mcp_count=1,
+        docker_inspect_override="[]\n",
+    )
+
+    assert result.returncode == 1
+    payload = json.loads(result.stdout)
+    check = next(
+        item for item in payload["checks"] if item["name"].startswith("docker_hapax-github-mcp-")
+    )
+    assert check["status"] == "error"
+    assert "five formatted Docker inspect fields" in check["detail"]
 
 
 def test_audit_is_behaviorally_observational(tmp_path: Path) -> None:
