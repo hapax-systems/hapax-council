@@ -217,6 +217,10 @@ def test_authenticated_installers_gate_before_receipts_and_deferral_drain() -> N
         assert superseded_gate < superseded_drain
         assert gate < snapshot < receipt < drain
         assert "no further effect or receipt advancement is permitted" in source
+        main = source[source.rindex("validate_authenticated_production_environment_names") :]
+        initial_gate = main.index(superseded_call)
+        migration = main.index("migrate_legacy_root_required_state", initial_gate)
+        assert initial_gate < migration
 
 
 @pytest.mark.parametrize(
@@ -310,6 +314,120 @@ def _sealed_memfd(name: str, data: bytes, *, executable: bool = False) -> int:
         | getattr(fcntl, "F_SEAL_WRITE", 0x0008),
     )
     return fd
+
+
+def _installer_function(relative: Path, name: str, next_name: str) -> str:
+    source = (REPO_ROOT / relative).read_text(encoding="utf-8")
+    start = source.index(f"{name}() {{")
+    end = source.index(f"\n{next_name}() {{", start)
+    return source[start:end]
+
+
+@pytest.mark.parametrize(
+    ("installer_rel", "label"),
+    ((INSTALLER, "OOM"), (APCUPSD_INSTALLER, "apcupsd")),
+)
+def test_authenticated_source_loader_rejects_foreign_holder_fd_paths(
+    installer_rel: Path,
+    label: str,
+) -> None:
+    source_fd = _sealed_memfd("hapax-foreign-holder-source", b"package source\n")
+    foreign_path = f"/proc/{os.getpid()}/fd/{source_fd}"
+    loader = _installer_function(
+        installer_rel,
+        "load_authenticated_sealed_sources",
+        "bind_authenticated_release_root"
+        if installer_rel == INSTALLER
+        else "run_authenticated_authority_gate",
+    )
+    command = (
+        "set -uo pipefail\n"
+        "AUTHENTICATED_SEALED_SOURCE=1\n"
+        "INSTALL=1\n"
+        "ROOT_REQUIRED_LEGACY_FINALIZE_GATE=\n"
+        f"ROOT_REQUIRED_SEALED_SOURCE_FDS={foreign_path!s}\n"
+        f"ROOT_REQUIRED_PACKAGE_SHA={'a' * 40}\n"
+        "RUNTIME_AUTHORITY_TASK=/governed/runtime-authority.md\n"
+        f"RUNTIME_AUTHORITY_TASK_SHA256={'b' * 64}\n"
+        "LOCAL_JUDGE_CAP_RECEIPT_SHA256=\n"
+        "package_files=(payload)\n"
+        "declare -A ROOT_REQUIRED_SEALED_SOURCES=()\n"
+        f"{loader}\n"
+        "load_authenticated_sealed_sources\n"
+    )
+    try:
+        result = subprocess.run(
+            ["/usr/bin/bash", "--noprofile", "--norc", "-p", "-c", command],
+            text=True,
+            capture_output=True,
+            check=False,
+        )
+    finally:
+        os.close(source_fd)
+
+    assert result.returncode != 0
+    assert f"authenticated {label} source descriptors are unavailable" in result.stderr
+    assert "next action:" in result.stderr
+
+
+@pytest.mark.parametrize(
+    ("installer_rel", "label"),
+    ((INSTALLER, "OOM"), (APCUPSD_INSTALLER, "apcupsd")),
+)
+def test_package_source_comparison_observes_git_blob_materialization_failure(
+    tmp_path: Path,
+    installer_rel: Path,
+    label: str,
+) -> None:
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    _git(repo, "init", "-q")
+    _git(repo, "config", "user.email", "tests@hapax.local")
+    _git(repo, "config", "user.name", "Hapax Tests")
+    payload = repo / "payload"
+    payload.write_bytes(b"")
+    payload.chmod(0o755)
+    _git(repo, "add", "payload")
+    _git(repo, "commit", "-qm", "empty executable payload")
+    sha = _git(repo, "rev-parse", "HEAD")
+    blob = _git(repo, "rev-parse", "HEAD:payload")
+    loose_object = repo / ".git" / "objects" / blob[:2] / blob[2:]
+    assert loose_object.is_file()
+    loose_object.unlink()
+
+    source_fd = _sealed_memfd("hapax-empty-executable", b"", executable=True)
+    validator = _installer_function(
+        installer_rel,
+        "validate_package_source_matches_commit",
+        "validate_no_unhandled_package_removals",
+    )
+    command = (
+        "set -uo pipefail\n"
+        f"ROOT_REQUIRED_GIT_REPO={repo!s}\n"
+        f"ROOT_REQUIRED_PACKAGE_SHA={sha}\n"
+        "AUTHENTICATED_SEALED_SOURCE=1\n"
+        "package_files=(payload)\n"
+        f"SOURCE_FD={source_fd}\n"
+        'git() { /usr/bin/git "$@"; }\n'
+        "src_path() { printf '/proc/self/fd/%s\\n' \"$SOURCE_FD\"; }\n"
+        "expected_package_git_mode() { printf '%s\\n' 100755; }\n"
+        f"{validator}\n"
+        "validate_package_source_matches_commit\n"
+    )
+    try:
+        result = subprocess.run(
+            ["/usr/bin/bash", "--noprofile", "--norc", "-p", "-c", command],
+            pass_fds=(source_fd,),
+            text=True,
+            capture_output=True,
+            check=False,
+        )
+    finally:
+        os.close(source_fd)
+
+    assert result.returncode != 0
+    assert f"{label} install source does not match claimed commit" in result.stderr
+    assert "next action:" in result.stderr
 
 
 @pytest.mark.parametrize(
@@ -763,8 +881,8 @@ def test_authenticated_deferred_install_executes_git_materialized_installer(
     )
     source_paths = source_line.split("=", 1)[1].split(":")
     assert len(source_paths) == 5
-    assert all(path.startswith("/proc/") and "/fd/" in path for path in source_paths)
-    assert all(not Path(path).exists() for path in source_paths)
+    assert all(re.fullmatch(r"/proc/self/fd/[0-9]+", path) for path in source_paths)
+    assert len(set(source_paths)) == len(source_paths)
     assert "HAPAX_ROOT_REQUIRED_FINALIZE_GATE=" not in child_environment
     assert f"HAPAX_RUNTIME_AUTHORITY_TASK={fixture.runtime_task}" in child_environment
     task_digest = _sha256(fixture.runtime_task)
@@ -1259,7 +1377,7 @@ def _production_helper_environment(module, *, cap_digest: str | None = None):
         runtime_gates,
         state_lock,
     )
-    env[module.SEALED_SOURCE_FDS_ENV] = "/proc/1/fd/40"
+    env[module.SEALED_SOURCE_FDS_ENV] = "/proc/self/fd/40"
     env["HAPAX_RUNTIME_AUTHORITY_TASK"] = "/governed/runtime-authority-task.md"
     return env, runtime_gates
 

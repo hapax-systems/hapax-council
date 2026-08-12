@@ -392,7 +392,7 @@ acquire_root_required_lock() {
         echo "OOM installer refused invalid shared lock descriptor: the lock, state, or generation-guard descriptor is absent; next action: remove caller-supplied HAPAX_ROOT_REQUIRED_LOCK_* values and rerun the unmodified installer as UID $TARGET_UID" >&2
         return 1
     fi
-    /usr/bin/python3 - \
+    /usr/bin/python3 -I - \
         "$lock_fd" "$state_fd" "$guard_fd" "$ROOT_REQUIRED_LOCK_FILE" \
         "$ROOT_REQUIRED_STATE_ROOT" "$lexical_root" <<'PY' || return 1
 from __future__ import annotations
@@ -516,12 +516,11 @@ if (
 os.close(parent_fd)
 PY
     mkdir -p "$ROOT_REQUIRED_DEFER_ROOT" || return 1
-    migrate_legacy_root_required_state || return 1
 }
 
 reexec_with_safe_root_required_lock() {
     [ -z "${HAPAX_ROOT_REQUIRED_LOCK_FD:-}" ] || return 0
-    exec /usr/bin/python3 - \
+    exec /usr/bin/python3 -I - \
         "$ROOT_REQUIRED_STATE_ROOT" "$ROOT_REQUIRED_LOCK_FILE" \
         "$0" "${ORIGINAL_ARGS[@]}" <<'PY'
 from __future__ import annotations
@@ -670,7 +669,7 @@ try:
         raise SystemExit(1)
     env = os.environ.copy()
     env.pop("HAPAX_ROOT_REQUIRED_LOCK_HELD", None)
-    stable_root = f"/proc/{os.getpid()}/fd/{parent_fd}"
+    stable_root = f"/proc/self/fd/{parent_fd}"
     env["HAPAX_ROOT_REQUIRED_STATE_ROOT"] = stable_root
     env["HAPAX_ROOT_REQUIRED_LOCK_FILE"] = lock_path
     env["HAPAX_ROOT_REQUIRED_LOCK_FD"] = str(fd)
@@ -1011,15 +1010,11 @@ migrate_legacy_root_required_state() {
 
 package_commits_equivalent() {
     local installed_sha="$1" candidate_sha="$2" rel installed_mode candidate_mode
-    cmp -s \
-        <(git -C "$ROOT_REQUIRED_GIT_REPO" show "$installed_sha:$package_manifest_source" 2>/dev/null) \
-        <(git -C "$ROOT_REQUIRED_GIT_REPO" show "$candidate_sha:$package_manifest_source" 2>/dev/null) || return 1
     for rel in "${package_files[@]}"; do
         git -C "$ROOT_REQUIRED_GIT_REPO" cat-file -e "$installed_sha:$rel" 2>/dev/null || return 1
         git -C "$ROOT_REQUIRED_GIT_REPO" cat-file -e "$candidate_sha:$rel" 2>/dev/null || return 1
-        cmp -s \
-            <(git -C "$ROOT_REQUIRED_GIT_REPO" show "$installed_sha:$rel") \
-            <(git -C "$ROOT_REQUIRED_GIT_REPO" show "$candidate_sha:$rel") || return 1
+        git -C "$ROOT_REQUIRED_GIT_REPO" diff --quiet --no-ext-diff \
+            "$installed_sha:$rel" "$candidate_sha:$rel" || return 1
         installed_mode="$(git -C "$ROOT_REQUIRED_GIT_REPO" ls-tree "$installed_sha" -- "$rel" | awk 'NR == 1 {print $1}')"
         candidate_mode="$(git -C "$ROOT_REQUIRED_GIT_REPO" ls-tree "$candidate_sha" -- "$rel" | awk 'NR == 1 {print $1}')"
         [ -n "$installed_mode" ] && [ "$installed_mode" = "$candidate_mode" ] || return 1
@@ -1141,7 +1136,8 @@ PY
             echo "OOM install source is not a regular file with the claimed Git mode at $rel; next action: discard the substituted or mode-drifted package and rerun from a clean Git worktree or a fresh post-merge live command" >&2
             return 1
         fi
-        if ! cmp -s <(git -C "$ROOT_REQUIRED_GIT_REPO" show "$ROOT_REQUIRED_PACKAGE_SHA:$rel") "$source_path"; then
+        if ! git -C "$ROOT_REQUIRED_GIT_REPO" show "$ROOT_REQUIRED_PACKAGE_SHA:$rel" \
+            | cmp -s - "$source_path"; then
             echo "OOM install source does not match claimed commit $ROOT_REQUIRED_PACKAGE_SHA at $rel; next action: discard the modified package and rerun from a clean Git worktree or a fresh post-merge live command" >&2
             return 1
         fi
@@ -1149,7 +1145,7 @@ PY
 }
 
 validate_no_unhandled_package_removals() {
-    local installed_sha rel
+    local installed_sha installed_manifest rel
     if [ ! -e "$ROOT_REQUIRED_RECEIPT" ] && [ ! -L "$ROOT_REQUIRED_RECEIPT" ]; then
         return 0
     fi
@@ -1159,15 +1155,19 @@ validate_no_unhandled_package_removals() {
         echo "installed OOM commit predates the versioned ownership manifest; package-removal guard is using the one-time legacy bridge"
         return 0
     fi
+    installed_manifest="$(
+        git -C "$ROOT_REQUIRED_GIT_REPO" show "$installed_sha:$package_manifest_source"
+    )" || {
+        echo "cannot materialize the installed OOM ownership manifest; next action: repair the exact installed Git object before advancing receipts" >&2
+        return 1
+    }
     while IFS= read -r rel; do
+        [ -n "$rel" ] || continue
         if ! awk -v wanted="$rel" 'NF && $1 !~ /^#/ && $1 == wanted { found = 1 } END { exit !found }' "$(src_path "$package_manifest_source")"; then
             echo "refusing OOM package removal or rename of $rel; next action: retain the owned path or add explicit governed live-removal handling before advancing receipts" >&2
             return 1
         fi
-    done < <(
-        git -C "$ROOT_REQUIRED_GIT_REPO" show "$installed_sha:$package_manifest_source" |
-            awk 'NF && $1 !~ /^#/ {print $1}'
-    )
+    done < <(/usr/bin/awk 'NF && $1 !~ /^#/ {print $1}' <<< "$installed_manifest")
 }
 
 validate_root_required_deferral_dir() {
@@ -1358,14 +1358,18 @@ import sys
 
 required = fcntl.F_SEAL_SEAL | fcntl.F_SEAL_SHRINK | fcntl.F_SEAL_GROW | fcntl.F_SEAL_WRITE
 source_paths = sys.argv[1:]
-holder_pids: set[str] = set()
+source_fds: set[int] = set()
 for path in source_paths:
-    match = re.fullmatch(r"/proc/([1-9][0-9]*)/fd/([0-9]+)", path)
+    match = re.fullmatch(r"/proc/self/fd/([0-9]+)", path)
     if match is None:
         raise SystemExit(1)
-    holder_pids.add(match.group(1))
+    source_fd = int(match.group(1))
+    if source_fd < 3 or source_fd in source_fds:
+        raise SystemExit(1)
+    source_fds.add(source_fd)
     try:
         target = os.readlink(path)
+        inherited_inode = os.fstat(source_fd)
         fd = os.open(path, os.O_RDONLY | os.O_NONBLOCK | os.O_CLOEXEC)
         try:
             inode = os.fstat(fd)
@@ -1378,11 +1382,10 @@ for path in source_paths:
         not target.startswith("/memfd:hapax-")
         or not stat.S_ISREG(inode.st_mode)
         or inode.st_uid != os.geteuid()
+        or (inode.st_dev, inode.st_ino) != (inherited_inode.st_dev, inherited_inode.st_ino)
         or seals & required != required
     ):
         raise SystemExit(1)
-if len(holder_pids) != 1:
-    raise SystemExit(1)
 PY
     then
         echo "authenticated OOM source descriptors are unavailable, unsealed, or not caller-owned memfds; next action: leave the deferral pending and regenerate its live command with hapax-post-merge-deploy" >&2
@@ -1726,6 +1729,20 @@ src_path() {
     printf '%s/%s\n' "$SOURCE" "$rel"
 }
 
+validate_authenticated_installer_call_form() {
+    [ "$AUTHENTICATED_SEALED_SOURCE" -eq 1 ] || return 0
+    local expected
+    expected="$(src_path scripts/install-p0-oom-containment)" || return 1
+    if [[ "${BASH_SOURCE[1]:-}" != "$0" ]] \
+        || [[ "${BASH_LINENO[1]:-1}" != "0" ]] \
+        || ! [[ "$0" =~ ^/proc/self/fd/[0-9]+$ ]] \
+        || ! [[ "$0" -ef "$expected" ]] \
+        || ! [[ "/proc/$$/fd/255" -ef "$expected" ]]; then
+        echo "authenticated OOM installer call form is not bound to its inherited sealed source descriptor; next action: discard the sourced/evaluated/foreign-holder invocation and regenerate it with hapax-post-merge-deploy" >&2
+        return 1
+    fi
+}
+
 production_destinations_selected() {
     local path
     for path in \
@@ -1781,7 +1798,7 @@ validate_authenticated_state_contract() {
     if ! [[ "$state_fd" =~ ^[0-9]+$ ]] || [ "$state_fd" -lt 3 ] \
         || ! [[ "$lock_fd" =~ ^[0-9]+$ ]] || [ "$lock_fd" -lt 3 ] \
         || ! [[ "$guard_fd" =~ ^[0-9]+$ ]] || [ "$guard_fd" -lt 3 ] \
-        || ! [[ "$ROOT_REQUIRED_STATE_ROOT" =~ ^/proc/[1-9][0-9]*/fd/${state_fd}$ ]] \
+        || [ "$ROOT_REQUIRED_STATE_ROOT" != "/proc/self/fd/$state_fd" ] \
         || [ "$ROOT_REQUIRED_INSTALLED_SOURCE_ROOT" != "$ROOT_REQUIRED_STATE_ROOT/current-source" ] \
         || [ "$ROOT_REQUIRED_INSTALLED_RECEIPT_ROOT" != "$ROOT_REQUIRED_STATE_ROOT/installed-receipts" ] \
         || [ "$ROOT_REQUIRED_DESIRED_RECEIPT_ROOT" != "$ROOT_REQUIRED_STATE_ROOT/desired-receipts" ] \
@@ -2092,7 +2109,7 @@ load_host_policy() {
         HAPAX_OOM_AUDIT_TEST_MODE="${HAPAX_OOM_ENFORCE_TEST_MODE:-0}" \
         HAPAX_OOM_AUDIT_MEMTOTAL_KIB="${HAPAX_OOM_POLICY_MEMTOTAL_KIB:-}" \
         HAPAX_OOM_AUDIT_HOSTNAME="${HAPAX_OOM_POLICY_HOSTNAME:-}" \
-        /usr/bin/python3 "$(src_path "$oom_policy_audit_source")" --host-policy-lines
+        /usr/bin/python3 -I "$(src_path "$oom_policy_audit_source")" --host-policy-lines
     )"; then
         echo "unable to derive the governed OOM host policy from physical RAM; next action: run scripts/hapax-oom-policy-audit --host-policy-lines and add a reviewed host sizing-table entry if this is a new memory class" >&2
         return 1
@@ -4210,13 +4227,8 @@ verify_user_process_oom_floor() {
 
 validate_authenticated_production_environment_names
 load_authenticated_sealed_sources
+validate_authenticated_installer_call_form
 require_authenticated_install_authority
-if [ "$INSTALL" -eq 1 ]; then
-    refuse_whole_script_root
-    reexec_with_safe_root_required_lock
-    acquire_root_required_lock
-    validate_authenticated_install_contract
-fi
 if [ "$INSTALL" -eq 1 ] && [ "$AUTHENTICATED_SEALED_SOURCE" -eq 1 ]; then
     bind_authenticated_release_root
     validate_package_source_matches_commit
@@ -4224,6 +4236,13 @@ if [ "$INSTALL" -eq 1 ] && [ "$AUTHENTICATED_SEALED_SOURCE" -eq 1 ]; then
     validate_authenticated_cap_environment_for_host
     validate_selected_host_sources
     run_authenticated_authority_gate authority-only
+fi
+if [ "$INSTALL" -eq 1 ]; then
+    refuse_whole_script_root
+    reexec_with_safe_root_required_lock
+    acquire_root_required_lock
+    validate_authenticated_install_contract
+    migrate_legacy_root_required_state
 fi
 validate_docker_command
 

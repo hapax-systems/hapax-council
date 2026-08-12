@@ -241,7 +241,7 @@ def _locked_state(paths: InstallPaths):
             != (published_state.st_dev, published_state.st_ino)
         ):
             raise _error("root-required state or lock path changed during acquisition")
-        stable_root = Path(f"/proc/{os.getpid()}/fd/{state_fd}")
+        stable_root = Path(f"/proc/self/fd/{state_fd}")
         locked_paths = replace(paths, state_root=stable_root)
         yield (
             locked_paths,
@@ -703,7 +703,7 @@ def _run_exact_authority_verifier(
         data=_git(repo, "show", f"{sha}:{AUTHORITY_VERIFIER_REL}"),
         mode=0o755,
     )
-    verifier = f"/proc/{os.getpid()}/fd/{fd}"
+    verifier = f"/proc/self/fd/{fd}"
     env = _safe_subprocess_env(paths.home)
     env.update(_state_lock_env(paths, state_lock))
     try:
@@ -712,7 +712,7 @@ def _run_exact_authority_verifier(
             capture_output=True,
             check=False,
             env=env,
-            pass_fds=(state_lock.state_fd, state_lock.lock_fd, state_lock.guard_fd),
+            pass_fds=(state_lock.state_fd, state_lock.lock_fd, state_lock.guard_fd, fd),
             preexec_fn=_parent_death_preexec(os.getpid()),
         )
     except OSError as exc:
@@ -1133,7 +1133,7 @@ def _execute_installer(
         raise _error("root-required installer Git mode is not executable")
     env = _child_env(paths, repo, sha, stage, runtime_gates, state_lock)
     sources = _sealed_git_sources(repo, sha, package)
-    source_paths = {rel: f"/proc/{os.getpid()}/fd/{fd}" for rel, fd in sources}
+    source_paths = {rel: f"/proc/self/fd/{fd}" for rel, fd in sources}
     installer = source_paths.get(installer_rel)
     if installer is None:
         for _, fd in sources:
@@ -1169,7 +1169,12 @@ def _execute_installer(
                 check=False,
                 cwd=repo,
                 env=env,
-                pass_fds=(state_lock.state_fd, state_lock.lock_fd, state_lock.guard_fd),
+                pass_fds=(
+                    state_lock.state_fd,
+                    state_lock.lock_fd,
+                    state_lock.guard_fd,
+                    *(fd for _, fd in sources),
+                ),
                 preexec_fn=_parent_death_preexec(os.getpid()),
             )
         except OSError as exc:
