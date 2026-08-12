@@ -1,5 +1,16 @@
 #!/usr/bin/bash -p
 # Install P0 OOM containment policy from the source tree to live systemd/earlyoom paths.
+if [[ "${BASH_SOURCE[0]}" != "$0" ]]; then
+    printf '%s\n' "OOM containment installer must be executed, not sourced; next action: execute scripts/install-p0-oom-containment as a command through hapax-post-merge-deploy" >&2
+    return 1
+fi
+case "$-" in
+    *p*) ;;
+    *)
+        printf '%s\n' "OOM containment installer requires Bash privileged mode; next action: execute the installer directly or let hapax-post-merge-deploy invoke its sealed copy" >&2
+        exit 1
+        ;;
+esac
 set -euo pipefail
 ORIGINAL_ARGS=("$@")
 readonly -a AUTHENTICATED_PRODUCTION_REQUIRED_ENV_NAMES=(
@@ -45,6 +56,8 @@ AUTHENTICATED_PRODUCTION_UNEXPECTED_ENV_NAMES=()
 AUTHENTICATED_PRODUCTION_INPUT_ENVIRONMENT_VALIDATED=0
 _authenticated_requested=0
 _source_value_follows=0
+# This bootstrap must remain Bash-only until the inherited vocabulary and fixed
+# command-resolution values have been accepted.
 for _argument in "$@"; do
     if [ "$_source_value_follows" -eq 1 ]; then
         _source_value_follows=0

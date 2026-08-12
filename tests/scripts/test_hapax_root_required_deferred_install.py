@@ -258,10 +258,27 @@ def test_every_installer_environment_name_has_one_authenticated_boundary_classif
     assert "mapfile -d '' -t AUTHENTICATED_PRODUCTION_RAW_ENVIRONMENT" in source
     assert '"/proc/$$/environ"' in source
     assert "compgen -e" not in source
+    source_guard = source.index("must be executed, not sourced")
+    privileged_guard = source.index("requires Bash privileged mode")
+    option_enable = source.index("set -euo pipefail")
+    fixed_environment_accepted = source.index(
+        "AUTHENTICATED_PRODUCTION_INPUT_ENVIRONMENT_VALIDATED=1"
+    )
     root_derivation = source.index('ROOT="$(cd')
+    assert source_guard < privileged_guard < option_enable
     assert source.index("noncanonical fixed environment values") < root_derivation
+    assert "$(" not in source[:fixed_environment_accepted]
+    assert "command-resolution values" in source[:fixed_environment_accepted]
     assert "compgen -A variable" not in source[:root_derivation]
     assert 'unset "$_environment_name"' not in source
+    assert (
+        re.search(
+            r"(?m)^\s*(?:export(?:\s|$)|(?:declare|local|typeset)\s+-[A-Za-z]*x|"
+            r"set\s+(?:-a|-o\s+allexport)(?:\s|$))",
+            source,
+        )
+        is None
+    )
     if installer_rel == INSTALLER:
         production = source[source.rindex("validate_authenticated_production_environment_names") :]
         assert (
@@ -1275,7 +1292,7 @@ def test_noncanonical_fixed_environment_refuses_before_path_lookup(
     fake_bin = tmp_path / "fake-bin"
     fake_bin.mkdir()
     fake_dirname = fake_bin / "dirname"
-    fake_dirname.write_text(f"#!/usr/bin/bash\ntouch {marker}\n", encoding="utf-8")
+    fake_dirname.write_text(f"#!/usr/bin/bash\n/usr/bin/touch {marker}\n", encoding="utf-8")
     fake_dirname.chmod(0o755)
     env["PATH"] = str(fake_bin)
 
@@ -1290,6 +1307,53 @@ def test_noncanonical_fixed_environment_refuses_before_path_lookup(
     assert result.returncode == 1
     assert "noncanonical fixed environment values before command execution" in result.stderr
     assert not marker.exists()
+
+
+@pytest.mark.parametrize("installer_rel", (INSTALLER, APCUPSD_INSTALLER))
+def test_installer_refuses_sourcing_without_mutating_the_caller_shell(
+    installer_rel: Path,
+) -> None:
+    result = subprocess.run(
+        [
+            "/usr/bin/bash",
+            "--noprofile",
+            "--norc",
+            "-c",
+            'source "$1"; rc=$?; printf "source-rc=%s\\n" "$rc"',
+            "installer-source-test",
+            str(REPO_ROOT / installer_rel),
+        ],
+        text=True,
+        capture_output=True,
+        check=False,
+    )
+
+    assert result.returncode == 0
+    assert result.stdout == "source-rc=1\n"
+    assert "must be executed, not sourced" in result.stderr
+    assert "next action:" in result.stderr
+
+
+@pytest.mark.parametrize("installer_rel", (INSTALLER, APCUPSD_INSTALLER))
+def test_installer_refuses_an_interpreter_that_omits_privileged_mode(
+    installer_rel: Path,
+) -> None:
+    result = subprocess.run(
+        [
+            "/usr/bin/bash",
+            "--noprofile",
+            "--norc",
+            str(REPO_ROOT / installer_rel),
+            "--check",
+        ],
+        text=True,
+        capture_output=True,
+        check=False,
+    )
+
+    assert result.returncode == 1
+    assert "requires Bash privileged mode" in result.stderr
+    assert "next action:" in result.stderr
 
 
 @pytest.mark.parametrize("installer_rel", (INSTALLER, APCUPSD_INSTALLER))
