@@ -1558,6 +1558,42 @@ def test_runtime_authority_validator_rejects_malformed_record_digest(tmp_path: P
     assert "dependency RECORD digest is malformed: pydantic" in result.stderr
 
 
+@pytest.mark.parametrize("pad_bits", [1, 2, 3])
+def test_runtime_authority_validator_rejects_noncanonical_record_digest(
+    tmp_path: Path, pad_bits: int
+) -> None:
+    active_root = tmp_path / "hapax-cc-tasks" / "active"
+    active_root.mkdir(parents=True)
+    task = active_root / "runtime-cap.md"
+    task.write_text(_runtime_authority_task_text(), encoding="utf-8")
+    dependency_root = tmp_path / "runtime-dependencies"
+    _copy_runtime_authority_dependency_closure(dependency_root)
+    record = next(dependency_root.glob("pydantic-*.dist-info/RECORD"))
+    lines = record.read_text(encoding="utf-8").splitlines()
+    alphabet = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-_"
+    for index, line in enumerate(lines):
+        if line.startswith("pydantic/__init__.py,sha256="):
+            prefix, encoded_and_size = line.split("sha256=", 1)
+            encoded_digest, size = encoded_and_size.split(",", 1)
+            final_index = alphabet.index(encoded_digest[-1])
+            assert final_index % 4 == 0
+            noncanonical_digest = encoded_digest[:-1] + alphabet[final_index + pad_bits]
+            lines[index] = f"{prefix}sha256={noncanonical_digest},{size}"
+            break
+    else:
+        raise AssertionError("pydantic RECORD lacks __init__.py")
+    record.write_text("\n".join(lines) + "\n", encoding="utf-8")
+
+    result = _run_runtime_authority_validator(
+        task,
+        active_root,
+        dependency_prelude=_test_dependency_root_prelude(dependency_root),
+    )
+
+    assert result.returncode == 2
+    assert "dependency RECORD digest is noncanonical: pydantic" in result.stderr
+
+
 def test_runtime_authority_validator_rejects_unrecorded_package_payload(
     tmp_path: Path,
 ) -> None:
