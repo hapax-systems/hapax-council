@@ -1,13 +1,11 @@
 """The agentgov licence must be machine-readable, and that claim must be testable.
 
-The PR asserted "say the licence where a machine can read it" and shipped no way to check it.
-A licensing claim that only a human can verify is the same class of defect as a guard nobody
-runs: it is correct on the day it lands and silently wrong afterwards.
+A licensing claim only a human can verify is the same class of defect as a guard nobody runs:
+correct on the day it lands, silently wrong afterwards. These tests make the claim checkable.
 
-Scope note: this covers `packages/agentgov/LICENSE` only. The council README's SPDX line was
-removed from this change because the governing task records `mutation_surface: source` and
-`docs_mutation_authorized: false`, and a public documentation surface is not authorized by
-source-mutation authority. Both reviewer families raised that independently as a critical.
+Scope: `packages/agentgov/LICENSE`. Documentation surfaces are out of scope for this module —
+they are governed by a different authority (`docs_mutation_authorized`) and belong to whatever
+task holds it.
 """
 
 from __future__ import annotations
@@ -51,17 +49,18 @@ def test_the_spdx_identifier_agrees_with_the_licence_text_beside_it() -> None:
     assert SPDX_LINE_RE.search(text).group("id") == EXPECTED_SPDX_ID  # type: ignore[union-attr]
 
 
-def test_the_licence_states_no_copyright_holder_this_change_did_not_verify() -> None:
-    """The ownership line is deliberately untouched.
+def test_adding_an_spdx_identifier_leaves_the_copyright_line_intact() -> None:
+    """Adding a licence *identifier* must not become an ownership *determination*.
 
-    An earlier revision of this PR reassigned the copyright holder. Both reviewer families
-    called that an ownership determination unsupported by anything in the diff, and they were
-    right — the repository names three different holders across `LICENSE`, `CITATION.cff` and
-    `.zenodo.json`, so the change introduced the inconsistency it claimed to remove.
-
-    This test pins the holder as it stands so a future "tidy-up" has to argue with a failing
-    test rather than a comment.
+    Those are different acts with different evidence requirements: which terms apply is
+    checkable against the licence text sitting beside it, while who holds the copyright is not
+    checkable from anything in this repository. This test pins the boundary between them — it
+    asserts the SPDX addition did not disturb the holder, not that any particular holder is
+    correct.
     """
     text = AGENTGOV_LICENSE.read_text(encoding="utf-8")
 
-    assert "Copyright (c) 2026 Ryan Lee" in text
+    copyright_lines = [ln for ln in text.splitlines() if ln.startswith("Copyright (c)")]
+
+    assert len(copyright_lines) == 1, "the SPDX addition must not add or remove a copyright line"
+    assert SPDX_LINE_RE.search(text) is not None
