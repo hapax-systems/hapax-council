@@ -266,6 +266,7 @@ def test_every_installer_environment_name_has_one_authenticated_boundary_classif
     )
     root_derivation = source.index('ROOT="$(cd')
     assert source_guard < privileged_guard < option_enable
+    assert "BASH_LINENO[0]" in source[:option_enable]
     assert source.index("noncanonical fixed environment values") < root_derivation
     assert "$(" not in source[:fixed_environment_accepted]
     assert "command-resolution values" in source[:fixed_environment_accepted]
@@ -1313,25 +1314,27 @@ def test_noncanonical_fixed_environment_refuses_before_path_lookup(
 def test_installer_refuses_sourcing_without_mutating_the_caller_shell(
     installer_rel: Path,
 ) -> None:
-    result = subprocess.run(
-        [
-            "/usr/bin/bash",
-            "--noprofile",
-            "--norc",
-            "-c",
-            'source "$1"; rc=$?; printf "source-rc=%s\\n" "$rc"',
-            "installer-source-test",
-            str(REPO_ROOT / installer_rel),
-        ],
-        text=True,
-        capture_output=True,
-        check=False,
-    )
+    installer = str(REPO_ROOT / installer_rel)
+    for shell_zero in ("installer-source-test", installer):
+        result = subprocess.run(
+            [
+                "/usr/bin/bash",
+                "--noprofile",
+                "--norc",
+                "-c",
+                'source "$1"; rc=$?; printf "source-rc=%s\\n" "$rc"',
+                shell_zero,
+                installer,
+            ],
+            text=True,
+            capture_output=True,
+            check=False,
+        )
 
-    assert result.returncode == 0
-    assert result.stdout == "source-rc=1\n"
-    assert "must be executed, not sourced" in result.stderr
-    assert "next action:" in result.stderr
+        assert result.returncode == 0
+        assert result.stdout == "source-rc=1\n"
+        assert "must be executed, not sourced" in result.stderr
+        assert "next action:" in result.stderr
 
 
 @pytest.mark.parametrize("installer_rel", (INSTALLER, APCUPSD_INSTALLER))

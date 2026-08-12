@@ -1,6 +1,6 @@
 #!/usr/bin/bash -p
 # Install Hapax apcupsd config/hooks and verify power-event provenance paths.
-if [[ "${BASH_SOURCE[0]}" != "$0" ]]; then
+if [[ "${BASH_SOURCE[0]}" != "$0" ]] || [[ "${BASH_LINENO[0]:-1}" != "0" ]]; then
     printf '%s\n' "apcupsd installer must be executed, not sourced; next action: execute scripts/install-apcupsd-power-alerts as a command through hapax-post-merge-deploy" >&2
     return 1
 fi
