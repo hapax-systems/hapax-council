@@ -22,6 +22,8 @@ import json
 import subprocess
 from pathlib import Path
 
+import pytest
+
 REPO_ROOT = Path(__file__).parent.parent.parent
 HOOK = REPO_ROOT / "hooks" / "scripts" / "pii-guard.sh"
 
@@ -636,6 +638,48 @@ class TestDegradedCoverageIsRecorded:
         assert result.returncode == 0
         receipt = state / "hapax" / "pii-guard-degraded.jsonl"
         assert receipt.is_file(), "a degraded guard must leave a durable trace"
+        assert "household_name_list_absent" in receipt.read_text(encoding="utf-8")
+
+    @pytest.mark.parametrize(
+        ("path", "content", "case"),
+        [
+            ("assets/photo.png", "binary-ish", "binary extension"),
+            ("agents/empty.py", "", "empty content"),
+        ],
+    )
+    def test_the_early_exits_still_record_the_degradation(
+        self, tmp_path: Path, path: str, content: str, case: str
+    ) -> None:
+        """The writes that exit early are degraded too, and used to leave no trace.
+
+        The receipt sat BELOW the binary-extension skip and the empty-content exit, so a `.png`
+        or an empty write ran with known-name protection off and recorded nothing. The receipt
+        exists so that "was known-name protection on for that mutation?" has an answer which does
+        not depend on who was reading stderr — and for these two shapes the answer was silence,
+        which reads as "protected" and meant "not checked, not recorded".
+        """
+        import os
+
+        repo = tmp_path
+        (repo / ".git").mkdir()
+        state = tmp_path / "state"
+        env = dict(os.environ)
+        env["HAPAX_PII_NAMES_FILE"] = str(repo / "absent.txt")
+        env["XDG_STATE_HOME"] = str(state)
+
+        result = subprocess.run(
+            ["bash", str(HOOK)],
+            input=json.dumps(_edit(str(repo / path), content)),
+            capture_output=True,
+            text=True,
+            check=False,
+            cwd=repo,
+            env=env,
+        )
+
+        assert result.returncode == 0
+        receipt = state / "hapax" / "pii-guard-degraded.jsonl"
+        assert receipt.is_file(), f"{case} exited before recording the degradation"
         assert "household_name_list_absent" in receipt.read_text(encoding="utf-8")
 
 

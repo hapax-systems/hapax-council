@@ -157,6 +157,31 @@ elif [ "$path_name_status" -eq 2 ]; then
   name_check_broken=1
 fi
 
+record_name_list_degradation() {
+  # BEFORE THE EARLY EXITS, because those writes are degraded too.
+  #
+  # This warning and receipt used to sit at the bottom of the script, after the binary-extension
+  # skip and the empty-content exit. A `.png` write and an empty write therefore ran with known-
+  # name protection OFF and left NO record of it — and the receipt exists precisely so that
+  # "was known-name protection on for that mutation?" has an answer that does not depend on who
+  # was reading stderr. Silence read as "protected"; it meant "not checked, not recorded".
+  #
+  # An absent list is a durable configuration state, not a transient one: a permanently
+  # half-disabled guard looks identical to a working one in any log.
+  [ ! -r "$pii_names_file" ] || return 0
+  echo "pii-guard: no household name list at $pii_names_file --" \
+       "name checks are limited to structural patterns." \
+       "Create it (one name per line, outside any repo) to enable them." >&2
+  degraded_receipt="${XDG_STATE_HOME:-$HOME/.local/state}/hapax/pii-guard-degraded.jsonl"
+  if mkdir -p "$(dirname "$degraded_receipt")" 2>/dev/null; then
+    printf '{"at":"%s","degradation":"household_name_list_absent","expected_path":"%s","file":"%s"}\n' \
+      "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$pii_names_file" "$file_path" \
+      >>"$degraded_receipt" 2>/dev/null || true
+  fi
+}
+
+record_name_list_degradation
+
 # Skip non-content files (binary, images, etc.) -- AFTER the path has been scanned.
 case "$file_path" in
   *.png|*.jpg|*.jpeg|*.gif|*.wav|*.mp3|*.mp4|*.db|*.sqlite) exit 0 ;;
@@ -224,22 +249,9 @@ if [ "$name_check_broken" -eq 1 ]; then
   blocked+=("Household name check ERRORED and was treated as a match -- see remedy below")
 fi
 
-if [ ! -r "$pii_names_file" ]; then
-  # An absent list is a durable configuration state, not a transient one: the warning repeats
-  # on every invocation and gets tuned out, and a permanently half-disabled guard then looks
-  # identical to a working one in any log. So the degradation is also RECORDED, once, where an
-  # audit can find it -- the answer to "was known-name protection on for that mutation?" must
-  # not depend on whether anyone was reading stderr.
-  echo "pii-guard: no household name list at $pii_names_file --" \
-       "name checks are limited to structural patterns." \
-       "Create it (one name per line, outside any repo) to enable them." >&2
-  degraded_receipt="${XDG_STATE_HOME:-$HOME/.local/state}/hapax/pii-guard-degraded.jsonl"
-  if mkdir -p "$(dirname "$degraded_receipt")" 2>/dev/null; then
-    printf '{"at":"%s","degradation":"household_name_list_absent","expected_path":"%s","file":"%s"}\n' \
-      "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$pii_names_file" "$file_path" \
-      >>"$degraded_receipt" 2>/dev/null || true
-  fi
-fi
+# The degradation warning and receipt now fire in `record_name_list_degradation`, called BEFORE
+# the binary-extension skip and the empty-content exit. Recording them here left both of those
+# writes running degraded with no record — see that function for the reasoning.
 
 # Age disclosure: a capitalised given name followed by a parenthesised 1-2 digit number.
 # Four files shipped publicly in exactly that form, naming two children and their ages.
