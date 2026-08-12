@@ -1301,7 +1301,8 @@ def test_runtime_authority_validator_has_no_release_tree_import_surface() -> Non
     assert "/usr/bin/env -i" in script
     assert "PYDANTIC_DISABLE_PLUGINS=__all__" in script
     assert "site.addsitedir" not in source
-    assert "sys.stdlib_module_names" not in source
+    assert "if top_level in sys.stdlib_module_names:" in source
+    assert "raise ModuleNotFoundError" in source
     assert "sys.path.append(str(root))" in source
     assert "RuntimeAuthorityImportGuard" in source
     assert "verify_distribution_record" in source
@@ -1854,6 +1855,30 @@ def test_runtime_authority_validator_rejects_absent_stdlib_name_from_fallback_ro
     assert result.returncode == 2
     assert "unlisted runtime-authority dependency import attempted: msvcrt" in result.stderr
     assert not marker.exists()
+
+
+def test_runtime_authority_validator_allows_absent_stdlib_probe(tmp_path: Path) -> None:
+    active_root = tmp_path / "hapax-cc-tasks" / "active"
+    active_root.mkdir(parents=True)
+    task = active_root / "runtime-cap.md"
+    task.write_text(_runtime_authority_task_text(), encoding="utf-8")
+
+    result = _run_runtime_authority_validator(
+        task,
+        active_root,
+        post_dependency_prelude=(
+            "try:\n"
+            "    import _wmi\n"
+            "except ModuleNotFoundError as exc:\n"
+            "    if exc.name != '_wmi':\n"
+            "        raise\n"
+            "else:\n"
+            "    refuse('absent stdlib probe unexpectedly resolved')"
+        ),
+    )
+
+    assert result.returncode == 0, result.stderr
+    assert "runtime authority accepted: task_id=runtime-cap" in result.stdout
 
 
 @pytest.mark.parametrize("unsafe_kind", ("non-root", "symlink"))

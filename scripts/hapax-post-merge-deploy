@@ -344,7 +344,6 @@ import importlib.metadata
 import io
 import json
 import os
-import platform  # Preload optional stdlib probes before sealing the meta-path guard.
 import re
 import site
 import stat
@@ -398,6 +397,8 @@ RUNTIME_AUTHORITY_STDLIB_ROOTS = tuple(
 )
 MAX_DEPENDENCY_TREE_ENTRIES = 20_000
 MAX_DEPENDENCY_FILE_BYTES = 64 * 1024 * 1024
+STDLIB_NOT_FOUND = object()
+STDLIB_UNTRUSTED = object()
 
 
 def refuse(reason: str) -> None:
@@ -766,7 +767,7 @@ def trusted_stdlib_spec(
     fullname: str,
     path: object,
     target: object,
-) -> importlib.machinery.ModuleSpec | None:
+) -> importlib.machinery.ModuleSpec | object:
     builtin_spec = importlib.machinery.BuiltinImporter.find_spec(fullname, path, target)
     if builtin_spec is not None:
         return builtin_spec
@@ -779,10 +780,12 @@ def trusted_stdlib_spec(
         try:
             search_path = list(path)
         except TypeError:
-            return None
+            return STDLIB_UNTRUSTED
     spec = importlib.machinery.PathFinder.find_spec(fullname, search_path, target)
-    if spec is None or not isinstance(spec.origin, str):
-        return None
+    if spec is None:
+        return STDLIB_NOT_FOUND
+    if not isinstance(spec.origin, str):
+        return STDLIB_UNTRUSTED
     origin = Path(os.path.abspath(spec.origin))
     for root in RUNTIME_AUTHORITY_STDLIB_ROOTS:
         if origin == root or is_within(origin, root):
@@ -793,10 +796,13 @@ def trusted_stdlib_spec(
                 directory=False,
             )
             return spec
-    return None
+    return STDLIB_UNTRUSTED
 
 
 class RuntimeAuthorityImportGuard(importlib.abc.MetaPathFinder):
+    def __init__(self, dependency_root: Path) -> None:
+        self.dependency_root = dependency_root
+
     def find_spec(
         self,
         fullname: str,
@@ -809,8 +815,20 @@ class RuntimeAuthorityImportGuard(importlib.abc.MetaPathFinder):
         ):
             return None
         spec = trusted_stdlib_spec(fullname, path, target)
-        if spec is not None:
+        if isinstance(spec, importlib.machinery.ModuleSpec):
             return spec
+        if spec is STDLIB_UNTRUSTED:
+            refuse(f"untrusted runtime-authority import resolution attempted: {fullname}")
+        if path is None:
+            untrusted_spec = importlib.machinery.PathFinder.find_spec(
+                fullname,
+                [str(self.dependency_root)],
+                target,
+            )
+            if untrusted_spec is not None:
+                refuse(f"unlisted runtime-authority dependency import attempted: {top_level}")
+        if top_level in sys.stdlib_module_names:
+            raise ModuleNotFoundError(f"No module named {fullname!r}", name=fullname)
         refuse(f"unlisted runtime-authority dependency import attempted: {top_level}")
 
 
@@ -882,7 +900,7 @@ def admit_runtime_authority_dependencies() -> Path:
     if dedicated:
         validate_exact_dependency_root(root, dedicated_files)
     validate_import_resolution(root)
-    sys.meta_path.insert(0, RuntimeAuthorityImportGuard())
+    sys.meta_path.insert(0, RuntimeAuthorityImportGuard(root))
     # Root ownership is the trust anchor; these path checks are not atomic against root itself.
     sys.path.append(str(root))
     return root
