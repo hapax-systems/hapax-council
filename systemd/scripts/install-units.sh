@@ -45,6 +45,10 @@ DECOMMISSIONED_UNITS=(
     hapax-relay-heartbeat.service
     hapax-relay-heartbeat.timer
     hapax-youtube-viewer-count.timer
+    # Retired 2026-08-12: the historical local judge used a mutable image,
+    # mutable model bind, name-based removal, and no memory limit. Source omits
+    # the unit and the installed path stays masked until a trusted broker exists.
+    hapax-local-judge.service
     # Superseded 2026-05-02 by hapax-parametric-modulation-heartbeat.service.
     # Per memory `feedback_no_presets_use_parametric_modulation`: preset-pulse
     # heartbeats (PR #2239) are the wrong unit. Parametric modulation at the
@@ -114,14 +118,6 @@ if [ "$PROJECT_DIR" != "$EXPECTED_PRIMARY" ] && [ "${ALLOW_NONSTANDARD_REPO:-0}"
     exit 1
 fi
 
-# Ensure all optional dependency groups are installed.
-# Services run via `uv run` which uses the default venv — if optional
-# extras (sync-pipeline, logos-api, audio) aren't installed, agents
-# crash with ModuleNotFoundError at runtime.
-echo "Syncing venv with all extras..."
-(cd "$PROJECT_DIR" && uv sync --all-extras --quiet)
-echo "venv synced"
-
 mkdir -p "$DEST_DIR"
 
 is_decommissioned_unit() {
@@ -135,8 +131,148 @@ is_decommissioned_unit() {
     return 1
 }
 
+query_local_judge_container_id() {
+    local docker_bin="$1"
+    local output
+    if ! output="$(
+        /usr/bin/env -i \
+            HOME="$HOME" LANG=C LC_ALL=C PATH=/usr/bin:/bin \
+            "$docker_bin" \
+            --host=unix:///var/run/docker.sock \
+            --config=/nonexistent/hapax-local-judge-retirement \
+            ps -aq --no-trunc --filter 'name=^/hapax-local-judge$'
+    )"; then
+        echo "ERROR: cannot enumerate the historical local-judge container from the pinned local Docker daemon" >&2
+        return 1
+    fi
+
+    LOCAL_JUDGE_CONTAINER_ID=""
+    local line
+    local count=0
+    while IFS= read -r line; do
+        [ -n "$line" ] || continue
+        count=$((count + 1))
+        if ! [[ "$line" =~ ^[0-9a-f]{64}$ ]]; then
+            echo "ERROR: local-judge retirement received a malformed Docker container ID" >&2
+            return 1
+        fi
+        LOCAL_JUDGE_CONTAINER_ID="$line"
+    done <<< "$output"
+    if [ "$count" -gt 1 ]; then
+        echo "ERROR: local-judge retirement found multiple exact-name containers" >&2
+        return 1
+    fi
+}
+
+retire_historical_local_judge() {
+    local name="hapax-local-judge.service"
+    local dest="$DEST_DIR/$name"
+    local historical=0
+    if [ -e "$dest" ] || [ -L "$dest" ]; then
+        if ! { [ -L "$dest" ] && [ "$(readlink "$dest")" = "/dev/null" ]; }; then
+            historical=1
+        fi
+    fi
+    local wants_link
+    for wants_link in "$DEST_DIR"/*.wants/"$name"; do
+        [ -e "$wants_link" ] || [ -L "$wants_link" ] || continue
+        historical=1
+    done
+    local dropin_dir="$DEST_DIR/${name}.d"
+    if [ -e "$dropin_dir" ] || [ -L "$dropin_dir" ]; then
+        historical=1
+    fi
+    [ "$historical" -eq 1 ] || return 1
+
+    local systemctl_bin="${HAPAX_INSTALL_UNITS_RETIRE_SYSTEMCTL:-/usr/bin/systemctl}"
+    local docker_bin="${HAPAX_INSTALL_UNITS_RETIRE_DOCKER:-/usr/bin/docker}"
+    if { [ -n "${HAPAX_INSTALL_UNITS_RETIRE_SYSTEMCTL:-}" ] \
+        || [ -n "${HAPAX_INSTALL_UNITS_RETIRE_DOCKER:-}" ]; } \
+        && [ "${ALLOW_NONSTANDARD_REPO:-0}" != "1" ]; then
+        echo "ERROR: local-judge retirement command overrides are test-only" >&2
+        return 2
+    fi
+    if [ ! -x "$systemctl_bin" ] || [ ! -x "$docker_bin" ]; then
+        echo "ERROR: local-judge retirement requires executable systemctl and Docker clients" >&2
+        return 2
+    fi
+
+    if ! query_local_judge_container_id "$docker_bin"; then
+        return 2
+    fi
+    local before_id="$LOCAL_JUDGE_CONTAINER_ID"
+
+    if ! "$systemctl_bin" --user disable "$name" >/dev/null; then
+        echo "ERROR: could not disable the historical local-judge unit" >&2
+        return 2
+    fi
+    if ! rm -f "$dest"; then
+        echo "ERROR: could not remove the historical local-judge unit" >&2
+        return 2
+    fi
+    for wants_link in "$DEST_DIR"/*.wants/"$name"; do
+        [ -e "$wants_link" ] || [ -L "$wants_link" ] || continue
+        if ! rm -f "$wants_link"; then
+            echo "ERROR: could not remove a historical local-judge wants link" >&2
+            return 2
+        fi
+    done
+    if [ -e "$dropin_dir" ] || [ -L "$dropin_dir" ]; then
+        if ! rm -rf "$dropin_dir"; then
+            echo "ERROR: could not remove historical local-judge drop-ins" >&2
+            return 2
+        fi
+    fi
+    if ! ln -s /dev/null "$dest"; then
+        echo "ERROR: could not mask the historical local-judge unit" >&2
+        return 2
+    fi
+    if ! "$systemctl_bin" --user daemon-reload >/dev/null; then
+        echo "ERROR: could not reload the user manager after local-judge masking" >&2
+        return 2
+    fi
+
+    if [ -n "$before_id" ]; then
+        if ! /usr/bin/env -i \
+                HOME="$HOME" LANG=C LC_ALL=C PATH=/usr/bin:/bin \
+                "$docker_bin" \
+                --host=unix:///var/run/docker.sock \
+                --config=/nonexistent/hapax-local-judge-retirement \
+                rm -f "$before_id" >/dev/null; then
+            echo "ERROR: could not remove the captured historical local-judge container ID" >&2
+            return 2
+        fi
+    fi
+    "$systemctl_bin" --user kill --kill-who=main --signal=SIGTERM "$name" >/dev/null 2>&1 || true
+    for _retirement_wait in {1..20}; do
+        if ! "$systemctl_bin" --user is-active --quiet "$name"; then
+            break
+        fi
+        /usr/bin/sleep 0.1
+    done
+    if "$systemctl_bin" --user is-active --quiet "$name"; then
+        echo "ERROR: historical local-judge unit remained active after immutable-ID retirement" >&2
+        return 2
+    fi
+
+    if ! query_local_judge_container_id "$docker_bin"; then
+        return 2
+    fi
+    if [ -n "$LOCAL_JUDGE_CONTAINER_ID" ]; then
+        echo "ERROR: local-judge container appeared or remained after immutable-ID reconciliation; refusing name-based cleanup" >&2
+        return 2
+    fi
+    "$systemctl_bin" --user reset-failed "$name" >/dev/null 2>&1 || true
+    echo "retired and masked historical local judge (container_id=${before_id:-absent})"
+    return 0
+}
+
 remove_decommissioned_unit() {
     local name="$1"
+    if [ "$name" = "hapax-local-judge.service" ]; then
+        retire_historical_local_judge
+        return
+    fi
     local removed=0
     local dest="$DEST_DIR/$name"
     if [ -e "$dest" ] || [ -L "$dest" ]; then
@@ -195,10 +331,24 @@ dedicated_p0_oom_unit() {
 changed=0
 new_timers=()
 for retired_unit in "${DECOMMISSIONED_UNITS[@]}"; do
-    if remove_decommissioned_unit "$retired_unit"; then
-        changed=$((changed + 1))
-    fi
+    retirement_rc=0
+    remove_decommissioned_unit "$retired_unit" || retirement_rc=$?
+    case "$retirement_rc" in
+        0) changed=$((changed + 1)) ;;
+        1) ;;
+        *)
+            echo "ERROR: failed to retire $retired_unit" >&2
+            exit "$retirement_rc"
+            ;;
+    esac
 done
+
+# Retire stale units before dependency synchronization. Decommissioning must
+# remain reachable even when the project environment is currently unhealthy.
+# Services installed below run via `uv run`, so synchronize before linking them.
+echo "Syncing venv with all extras..."
+(cd "$PROJECT_DIR" && uv sync --all-extras --quiet)
+echo "venv synced"
 
 for unit in "$REPO_DIR"/*.service "$REPO_DIR"/*.timer "$REPO_DIR"/*.target "$REPO_DIR"/*.path "$REPO_DIR"/*.slice; do
     [ -f "$unit" ] || continue

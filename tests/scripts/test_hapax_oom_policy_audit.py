@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import fcntl
 import json
 import os
 import runpy
@@ -62,11 +61,17 @@ def _protected_user_unit_cases(
     wrong_audio_no_new_privileges: bool = False,
     unit_pids: dict[str, int] | None = None,
     unit_cgroups: dict[str, str] | None = None,
+    missing_units: frozenset[str] = frozenset(),
 ) -> str:
     unit_pids = unit_pids or {}
     unit_cgroups = unit_cgroups or {}
     cases = []
     for unit in PROTECTED_USER_UNIT_SCORES:
+        if unit in missing_units:
+            cases.append(
+                f"  *\"--user show {unit} --no-pager\"*) printf 'LoadState=not-found\\n' ;;"
+            )
+            continue
         actual = 0 if wrong_unit_score and unit == "studio-compositor.service" else 100
         pid = unit_pids.get(unit, 0)
         cgroup = unit_cgroups.get(unit, "")
@@ -86,8 +91,8 @@ def _protected_user_unit_cases(
             else "no"
         )
         cases.append(
-            f'  *"--user show {unit} --no-pager -p OOMScoreAdjust -p MainPID"*) '
-            f"printf 'OOMScoreAdjust={actual}\\nMainPID={pid}\\nControlGroup={cgroup}\\n"
+            f'  *"--user show {unit} --no-pager"*) '
+            f"printf 'LoadState=loaded\\nOOMScoreAdjust={actual}\\nMainPID={pid}\\nControlGroup={cgroup}\\n"
             f"MemoryLow={memory_low}\\nMemoryMin={memory_min}\\nSlice={slice_name}\\n"
             f"NoNewPrivileges={no_new_privileges}\\n' ;;"
         )
@@ -127,11 +132,30 @@ def _fake_systemctl(
     sshd_policy: str = "continue",
     wrong_recovery_unit_score: bool = False,
     inactive_recovery_unit: str | None = None,
+    enforcer_timer_enabled: bool = True,
+    enforcer_timer_active: bool = True,
+    enforcer_result: str = "success",
+    enforcer_main_status: int = 0,
+    enforcer_age_seconds: int = 30,
+    enforcer_active_age_seconds: int | None = None,
+    host_profile: str = "podium",
+    missing_protected_units: frozenset[str] = frozenset(),
 ) -> Path:
     path = tmp_path / "systemctl"
+    calls = tmp_path / "systemctl.calls"
+    if host_profile == "appendix":
+        app_high = 46 * 1024**3
+        app_max = 54 * 1024**3
+        uid_high = 48 * 1024**3
+        uid_max = 56 * 1024**3
+    else:
+        app_high = 72 * 1024**3
+        app_max = 88 * 1024**3
+        uid_high = 80 * 1024**3
+        uid_max = 96 * 1024**3
     app_values = (
-        "MemoryHigh=77309411328\n"
-        "MemoryMax=94489280512\n"
+        f"MemoryHigh={app_high}\n"
+        f"MemoryMax={app_max}\n"
         "MemorySwapMax=8589934592\n"
         "MemoryLow=17179869184\n"
         "MemoryMin=8589934592\n"
@@ -145,8 +169,8 @@ def _fake_systemctl(
         )
     )
     uid_memory_values = (
-        "MemoryHigh=85899345920\n"
-        "MemoryMax=103079215104\n"
+        f"MemoryHigh={uid_high}\n"
+        f"MemoryMax={uid_max}\n"
         "MemorySwapMax=8589934592\n"
         f"MemoryLow={'17179869184' if user_floor_overcommitted else '21474836480'}\n"
         f"MemoryMin={'8589934592' if user_floor_overcommitted else '10737418240'}\n"
@@ -177,10 +201,20 @@ def _fake_systemctl(
         f"MemoryLow={'0' if session_slice_unprotected else '2147483648'}\n"
         f"MemoryMin={'0' if session_slice_unprotected else '1073741824'}\n"
     )
+    now_usec = time.clock_gettime_ns(time.CLOCK_BOOTTIME) // 1000
+    enforcer_timestamp = max(1, now_usec - enforcer_age_seconds * 1_000_000)
+    enforcer_active_timestamp = (
+        0
+        if enforcer_active_age_seconds is None
+        else max(1, now_usec - enforcer_active_age_seconds * 1_000_000)
+    )
     path.write_text(
         f"""#!/usr/bin/env bash
 set -euo pipefail
+printf '%s\n' "$*" >> "{calls}"
 case "$*" in
+  *"show hapax-oom-score-enforce.timer"*) printf 'LoadState=loaded\nUnitFileState={"enabled" if enforcer_timer_enabled else "disabled"}\nActiveState={"active" if enforcer_timer_active else "inactive"}\n' ;;
+  *"show hapax-oom-score-enforce.service"*) printf 'Result={enforcer_result}\nExecMainStatus={enforcer_main_status}\nActiveEnterTimestampMonotonic={enforcer_active_timestamp}\nInactiveEnterTimestampMonotonic={enforcer_timestamp}\n' ;;
   *"show system.slice"*) printf '{system_slice_values}' ;;
   *"show user.slice"*) printf '{user_slice_values}ControlGroup=/user.slice\n' ;;
   *"show user-1000.slice"*) printf '{uid_memory_values}ControlGroup=/user.slice/user-1000.slice\n' ;;
@@ -191,12 +225,64 @@ case "$*" in
 {_recovery_system_unit_cases(wrong_score=wrong_recovery_unit_score, inactive_unit=inactive_recovery_unit)}
   *"show app.slice"*) printf '{app_values}ControlGroup=/user.slice/user-1000.slice/user@1000.service/app.slice\n' ;;
   *"show session.slice"*) printf '{session_slice_values}ControlGroup=/user.slice/user-1000.slice/user@1000.service/session.slice\n' ;;
-{_protected_user_unit_cases(wrong_unit_score=wrong_unit_score, wrong_unit_memory=wrong_unit_memory, wrong_unit_slice=wrong_unit_slice, wrong_audio_no_new_privileges=wrong_audio_no_new_privileges, unit_pids=protected_unit_pids, unit_cgroups=protected_unit_cgroups)}
+{_protected_user_unit_cases(wrong_unit_score=wrong_unit_score, wrong_unit_memory=wrong_unit_memory, wrong_unit_slice=wrong_unit_slice, wrong_audio_no_new_privileges=wrong_audio_no_new_privileges, unit_pids=protected_unit_pids, unit_cgroups=protected_unit_cgroups, missing_units=missing_protected_units)}
   *"list-units --type=scope"*) printf 'tmux-spawn-a.scope loaded active running tmux child pane\\n' ;;
   *"show tmux-spawn-a.scope"*) printf '{tmux_values}' ;;
   *) echo "unexpected args: $*" >&2; exit 9 ;;
 esac
 """,
+        encoding="utf-8",
+    )
+    path.chmod(path.stat().st_mode | stat.S_IXUSR)
+    return path
+
+
+def _fake_docker(
+    tmp_path: Path,
+    *,
+    mcp_count: int = 0,
+    mcp_memory: int = 512 * 1024**2,
+    mcp_memory_swap: int = 768 * 1024**2,
+    mcp_oom_kill_disable: bool = False,
+    include_judge: bool = False,
+) -> Path:
+    path = tmp_path / "docker"
+    calls = tmp_path / "docker.calls"
+    containers = [
+        (f"{index + 1:064x}", f"hapax-github-mcp-{1000 + index}-{index + 1}")
+        for index in range(mcp_count)
+    ]
+    if include_judge:
+        containers.append(("f" * 64, "hapax-local-judge"))
+    inventory = "".join(f"{container_id}\\t{name}\\n" for container_id, name in containers)
+    inspect_cases = []
+    for container_id, name in containers:
+        inspect_payload = json.dumps(
+            [
+                {
+                    "HostConfig": {
+                        "Memory": mcp_memory,
+                        "MemorySwap": mcp_memory_swap,
+                        "OomKillDisable": mcp_oom_kill_disable,
+                    },
+                    "Id": container_id,
+                    "Name": f"/{name}",
+                }
+            ]
+        )
+        inspect_cases.append(
+            f"  *\" inspect {container_id}\") printf '%s\\n' '{inspect_payload}' ;;"
+        )
+    path.write_text(
+        "#!/usr/bin/env bash\n"
+        "set -euo pipefail\n"
+        f'printf \'%s\\n\' "$*" >> "{calls}"\n'
+        'case "$*" in\n'
+        f"  *\" ps -a --no-trunc --format \"*) printf '{inventory}' ;;\n"
+        + "\n".join(inspect_cases)
+        + "\n"
+        '  *) echo "unexpected docker args: $*" >&2; exit 9 ;;\n'
+        "esac\n",
         encoding="utf-8",
     )
     path.chmod(path.stat().st_mode | stat.S_IXUSR)
@@ -246,6 +332,19 @@ def _run(
     extra_user_sibling_floor: bool = False,
     extra_app_sibling_floor: bool = False,
     extra_session_sibling_floor: bool = False,
+    enforcer_timer_enabled: bool = True,
+    enforcer_timer_active: bool = True,
+    enforcer_result: str = "success",
+    enforcer_main_status: int = 0,
+    enforcer_age_seconds: int = 30,
+    enforcer_active_age_seconds: int | None = None,
+    host_profile: str = "podium",
+    missing_protected_units: frozenset[str] = frozenset(),
+    docker_mcp_count: int = 0,
+    docker_mcp_memory: int = 512 * 1024**2,
+    docker_mcp_memory_swap: int = 768 * 1024**2,
+    docker_mcp_oom_kill_disable: bool = False,
+    docker_include_judge: bool = False,
 ) -> subprocess.CompletedProcess[str]:
     if proc_root is None:
         proc_root = tmp_path / "proc"
@@ -254,6 +353,12 @@ def _run(
         _write_proc(proc_root, 900, name="systemd", uid=1000, oom_score=100)
     if not (proc_root / "920").exists():
         _write_proc(proc_root, 920, name="sshd", uid=0, oom_score=0)
+    memtotal_kib = 60 * 1024**2 if host_profile == "appendix" else 124 * 1024**2
+    (proc_root / "meminfo").write_text(f"MemTotal:       {memtotal_kib} kB\n", encoding="utf-8")
+    (proc_root / "swaps").write_text(
+        "Filename\tType\tSize\tUsed\tPriority\n/dev/zram0\tpartition\t33554428\t0\t100\n",
+        encoding="utf-8",
+    )
     for unit, pid in RECOVERY_SYSTEM_UNIT_PIDS.items():
         if not (proc_root / str(pid)).exists():
             live_score = (
@@ -325,8 +430,17 @@ def _run(
             child_dir.mkdir(parents=True, exist_ok=True)
             (child_dir / "memory.low").write_text(f"{memory_low}\n", encoding="utf-8")
             (child_dir / "memory.min").write_text(f"{memory_min}\n", encoding="utf-8")
+    sys_root = tmp_path / "sys"
+    zram_root = sys_root / "block/zram0"
+    zram_root.mkdir(parents=True, exist_ok=True)
+    zram_gib = 16 if host_profile == "appendix" else 32
+    (zram_root / "disksize").write_text(f"{zram_gib * 1024**3}\n", encoding="utf-8")
+    (zram_root / "comp_algorithm").write_text("lzo [zstd] lz4\n", encoding="utf-8")
     env = {
         **os.environ,
+        "HAPAX_OOM_AUDIT_TEST_MODE": "1",
+        "HAPAX_OOM_AUDIT_HOSTNAME": f"hapax-{host_profile}",
+        "HAPAX_OOM_AUDIT_MEMTOTAL_KIB": str(memtotal_kib),
         "HAPAX_SYSTEMCTL": str(
             _fake_systemctl(
                 tmp_path,
@@ -349,11 +463,29 @@ def _run(
                 sshd_policy=sshd_policy,
                 wrong_recovery_unit_score=wrong_recovery_unit_score,
                 inactive_recovery_unit=inactive_recovery_unit,
+                enforcer_timer_enabled=enforcer_timer_enabled,
+                enforcer_timer_active=enforcer_timer_active,
+                enforcer_result=enforcer_result,
+                enforcer_main_status=enforcer_main_status,
+                enforcer_age_seconds=enforcer_age_seconds,
+                enforcer_active_age_seconds=enforcer_active_age_seconds,
+                host_profile=host_profile,
+                missing_protected_units=missing_protected_units,
+            )
+        ),
+        "HAPAX_OOM_AUDIT_DOCKER": str(
+            _fake_docker(
+                tmp_path,
+                mcp_count=docker_mcp_count,
+                mcp_memory=docker_mcp_memory,
+                mcp_memory_swap=docker_mcp_memory_swap,
+                mcp_oom_kill_disable=docker_mcp_oom_kill_disable,
+                include_judge=docker_include_judge,
             )
         ),
         "HAPAX_OOM_AUDIT_PROC_ROOT": str(proc_root),
         "HAPAX_OOM_AUDIT_CGROUP_ROOT": str(cgroup_root),
-        "HAPAX_ROOT_REQUIRED_LOCK_FILE": str(tmp_path / "root-state" / ".lock"),
+        "HAPAX_OOM_AUDIT_SYS_ROOT": str(sys_root),
     }
     return subprocess.run(
         [str(SCRIPT), "--json", "--uid", "1000"],
@@ -369,7 +501,13 @@ def test_audit_passes_when_user_manager_is_killable_and_app_slice_bounded(tmp_pa
     assert result.returncode == 0, result.stderr
     payload = json.loads(result.stdout)
     statuses = {check["name"]: check["status"] for check in payload["checks"]}
-    assert statuses["root_required_package_lock"] == "pass"
+    assert payload["authoritative"] is False
+    assert payload["scope"] == "observational-live-drift"
+    assert statuses["audit_authority"] == "pass"
+    assert statuses["host_memory_policy"] == "pass"
+    assert statuses["zram_size"] == "pass"
+    assert statuses["docker_hapax-local-judge_retired"] == "pass"
+    assert statuses["oom_enforcer_timer_UnitFileState"] == "pass"
     assert statuses["user_manager_oom_score_adjust"] == "pass"
     assert statuses["user_manager_OOMPolicy"] == "pass"
     assert statuses["system_slice_MemoryLow"] == "pass"
@@ -385,90 +523,6 @@ def test_audit_passes_when_user_manager_is_killable_and_app_slice_bounded(tmp_pa
     assert statuses["user_unit_pipewire.service_Slice"] == "pass"
     assert statuses["user_unit_pipewire.service_NoNewPrivileges"] == "pass"
     assert statuses["user_unit_studio-compositor.service_Slice"] == "pass"
-
-
-def test_audit_waits_for_exclusive_package_install_lock(tmp_path: Path) -> None:
-    lock = tmp_path / "root-state" / ".lock"
-    lock.parent.mkdir(parents=True)
-    calls = tmp_path / "systemctl-calls"
-    fake_systemctl = tmp_path / "systemctl"
-    fake_systemctl.write_text(
-        f"#!/bin/sh\nprintf '%s\\n' \"$*\" >> {calls!s}\nexit 1\n", encoding="utf-8"
-    )
-    fake_systemctl.chmod(0o755)
-
-    with lock.open("w", encoding="utf-8") as lock_file:
-        lock.chmod(0o600)
-        fcntl.flock(lock_file.fileno(), fcntl.LOCK_EX)
-        proc = subprocess.Popen(
-            [str(SCRIPT), "--json", "--uid", "1000"],
-            text=True,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE,
-            env={
-                **os.environ,
-                "HAPAX_SYSTEMCTL": str(fake_systemctl),
-                "HAPAX_ROOT_REQUIRED_LOCK_FILE": str(lock),
-            },
-        )
-        time.sleep(0.25)
-        assert proc.poll() is None
-        assert not calls.exists()
-        fcntl.flock(lock_file.fileno(), fcntl.LOCK_UN)
-
-    stdout, stderr = proc.communicate(timeout=5)
-    assert proc.returncode == 1, stderr
-    assert calls.is_file()
-    payload = json.loads(stdout)
-    lock_check = next(
-        check for check in payload["checks"] if check["name"] == "root_required_package_lock"
-    )
-    assert lock_check["status"] == "pass"
-
-
-@pytest.mark.parametrize("lock_kind", ["symlink", "hardlink"])
-def test_audit_refuses_unsafe_package_lock_without_system_reads(
-    tmp_path: Path, lock_kind: str
-) -> None:
-    state_root = tmp_path / "root-state"
-    state_root.mkdir()
-    protected = tmp_path / "protected"
-    protected.write_text("sentinel\n", encoding="utf-8")
-    lock = state_root / ".lock"
-    if lock_kind == "symlink":
-        lock.symlink_to(protected)
-    else:
-        os.link(protected, lock)
-    calls = tmp_path / "systemctl-calls"
-    fake_systemctl = tmp_path / "systemctl"
-    fake_systemctl.write_text(
-        f"#!/bin/sh\nprintf '%s\\n' \"$*\" >> {calls!s}\nexit 1\n", encoding="utf-8"
-    )
-    fake_systemctl.chmod(0o755)
-
-    result = subprocess.run(
-        [str(SCRIPT), "--json", "--uid", "1000"],
-        text=True,
-        capture_output=True,
-        check=False,
-        env={
-            **os.environ,
-            "HAPAX_SYSTEMCTL": str(fake_systemctl),
-            "HAPAX_ROOT_REQUIRED_LOCK_FILE": str(lock),
-        },
-    )
-
-    assert result.returncode == 1
-    payload = json.loads(result.stdout)
-    assert len(payload["checks"]) == 1
-    check = payload["checks"][0]
-    assert check["actual"] == str(lock)
-    assert check["name"] == "root_required_package_lock"
-    assert check["status"] == "error"
-    assert check["target"] == "shared package lock held during readback"
-    assert "package lock" in check["detail"]
-    assert not calls.exists()
-    assert protected.read_text(encoding="utf-8") == "sentinel\n"
 
 
 def test_audit_fails_when_session_slice_audio_reservation_is_missing(tmp_path: Path) -> None:
@@ -716,7 +770,8 @@ def test_audit_fails_when_protected_user_unit_loses_oom_score(tmp_path: Path) ->
         if item["name"] == "user_unit_studio-compositor.service_OOMScoreAdjust"
     )
     assert check["status"] == "gap"
-    assert "install-p0-oom-containment" in check["detail"]
+    assert "separately runtime-authorized root-broker work" in check["detail"]
+    assert "install-p0-oom-containment" not in check["detail"]
 
 
 def test_audit_fails_when_protected_user_unit_loses_memory_reservation(
@@ -891,3 +946,226 @@ def test_audit_allows_python_child_inside_protected_unit_cgroup(tmp_path: Path) 
         item for item in payload["checks"] if item["name"] == "user_process_residual_oom_protection"
     )
     assert check["status"] == "pass"
+
+
+@pytest.mark.parametrize("host_profile", ["appendix", "podium"])
+def test_audit_passes_for_each_shipped_host_profile(tmp_path: Path, host_profile: str) -> None:
+    result = _run(tmp_path, host_profile=host_profile)
+
+    assert result.returncode == 0, result.stderr
+    payload = json.loads(result.stdout)
+    policy = next(item for item in payload["checks"] if item["name"] == "host_memory_policy")
+    assert policy["status"] == "pass"
+    assert f"hapax-{host_profile}:{host_profile}:" in policy["actual"]
+
+
+def test_appendix_skips_only_its_declared_absent_user_units(tmp_path: Path) -> None:
+    missing = frozenset(
+        {
+            "hapax-daimonion.service",
+            "studio-compositor.service",
+            "hapax-imagination.service",
+        }
+    )
+    result = _run(
+        tmp_path,
+        host_profile="appendix",
+        missing_protected_units=missing,
+    )
+
+    assert result.returncode == 0, result.stderr
+    payload = json.loads(result.stdout)
+    checks = {item["name"]: item for item in payload["checks"]}
+    for unit in missing:
+        check = checks[f"user_unit_{unit}_availability"]
+        assert check["status"] == "pass"
+        assert check["actual"] == "not-found"
+
+
+def test_podium_fails_when_an_appendix_optional_unit_is_absent(tmp_path: Path) -> None:
+    result = _run(
+        tmp_path,
+        missing_protected_units=frozenset({"studio-compositor.service"}),
+    )
+
+    assert result.returncode == 1
+    payload = json.loads(result.stdout)
+    check = next(
+        item
+        for item in payload["checks"]
+        if item["name"] == "user_unit_studio-compositor.service_availability"
+    )
+    assert check["status"] == "gap"
+    assert check["target"] == "loaded"
+
+
+@pytest.mark.parametrize(
+    ("kwargs", "check_name"),
+    (
+        ({"enforcer_timer_enabled": False}, "oom_enforcer_timer_UnitFileState"),
+        ({"enforcer_timer_active": False}, "oom_enforcer_timer_ActiveState"),
+        ({"enforcer_result": "exit-code"}, "oom_enforcer_last_result"),
+        ({"enforcer_main_status": 1}, "oom_enforcer_last_result"),
+        ({"enforcer_age_seconds": 181}, "oom_enforcer_last_run_recent"),
+    ),
+)
+def test_audit_fails_closed_on_unhealthy_recurring_enforcer(
+    tmp_path: Path, kwargs: dict[str, object], check_name: str
+) -> None:
+    result = _run(tmp_path, **kwargs)
+
+    assert result.returncode == 1
+    payload = json.loads(result.stdout)
+    check = next(item for item in payload["checks"] if item["name"] == check_name)
+    assert check["status"] == "gap"
+
+
+def test_enforcer_recency_uses_completed_run_not_recent_active_transition(
+    tmp_path: Path,
+) -> None:
+    result = _run(
+        tmp_path,
+        enforcer_age_seconds=181,
+        enforcer_active_age_seconds=30,
+    )
+
+    assert result.returncode == 1
+    payload = json.loads(result.stdout)
+    check = next(
+        item for item in payload["checks"] if item["name"] == "oom_enforcer_last_run_recent"
+    )
+    assert check["status"] == "gap"
+
+
+def test_audit_accepts_all_three_ephemeral_mcp_containers_with_exact_limits(
+    tmp_path: Path,
+) -> None:
+    result = _run(tmp_path, docker_mcp_count=3)
+
+    assert result.returncode == 0, result.stderr
+    payload = json.loads(result.stdout)
+    checks = {item["name"]: item for item in payload["checks"]}
+    assert checks["docker_github_mcp_count"]["actual"] == "3"
+    limit_checks = [
+        item for item in payload["checks"] if item["name"].startswith("docker_hapax-github-mcp-")
+    ]
+    assert len(limit_checks) == 3
+    assert all(item["status"] == "pass" for item in limit_checks)
+
+
+@pytest.mark.parametrize(
+    "kwargs",
+    (
+        {"docker_mcp_memory": 0},
+        {"docker_mcp_memory_swap": 0},
+        {"docker_mcp_oom_kill_disable": True},
+    ),
+)
+def test_audit_rejects_mcp_limit_or_oom_killer_drift(
+    tmp_path: Path, kwargs: dict[str, object]
+) -> None:
+    result = _run(tmp_path, docker_mcp_count=1, **kwargs)
+
+    assert result.returncode == 1
+    payload = json.loads(result.stdout)
+    check = next(
+        item for item in payload["checks"] if item["name"].startswith("docker_hapax-github-mcp-")
+    )
+    assert check["status"] == "gap"
+
+
+def test_audit_requires_historical_local_judge_to_be_absent(tmp_path: Path) -> None:
+    result = _run(tmp_path, docker_include_judge=True)
+
+    assert result.returncode == 1
+    payload = json.loads(result.stdout)
+    check = next(
+        item for item in payload["checks"] if item["name"] == "docker_hapax-local-judge_retired"
+    )
+    assert check["status"] == "gap"
+    assert check["actual"] == "f" * 64
+
+
+def test_audit_is_behaviorally_observational(tmp_path: Path) -> None:
+    result = _run(tmp_path, docker_mcp_count=3)
+
+    assert result.returncode == 0, result.stderr
+    systemctl_calls = (tmp_path / "systemctl.calls").read_text(encoding="utf-8").splitlines()
+    docker_calls = (tmp_path / "docker.calls").read_text(encoding="utf-8").splitlines()
+    assert systemctl_calls
+    assert docker_calls
+    assert all(" show " in f" {call} " or " list-units " in f" {call} " for call in systemctl_calls)
+    assert all(" ps " in f" {call} " or " inspect " in f" {call} " for call in docker_calls)
+    assert not any(
+        token in f" {call} "
+        for call in systemctl_calls
+        for token in (" start ", " stop ", " restart ", " enable ", " disable ")
+    )
+    assert not any(
+        token in f" {call} "
+        for call in docker_calls
+        for token in (" rm ", " stop ", " update ", " run ")
+    )
+
+
+def test_source_test_selectors_require_explicit_test_mode(tmp_path: Path) -> None:
+    marker = tmp_path / "systemctl-ran"
+    fake = tmp_path / "systemctl"
+    fake.write_text(f"#!/bin/sh\ntouch {marker!s}\n", encoding="utf-8")
+    fake.chmod(0o755)
+    env = os.environ.copy()
+    env.pop("HAPAX_OOM_AUDIT_TEST_MODE", None)
+    env["HAPAX_SYSTEMCTL"] = str(fake)
+
+    result = subprocess.run(
+        [str(SCRIPT), "--json"],
+        check=False,
+        capture_output=True,
+        text=True,
+        env=env,
+    )
+
+    assert result.returncode == 1
+    payload = json.loads(result.stdout)
+    assert payload["checks"][0]["name"] == "host_memory_policy"
+    assert "test selectors require" in payload["checks"][0]["detail"]
+    assert not marker.exists()
+
+
+def test_canonical_installed_audit_rejects_test_mode(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("HAPAX_OOM_AUDIT_TEST_MODE", "1")
+    namespace = runpy.run_path(str(SCRIPT))
+    admission = namespace["_validate_test_mode_admission"]
+    admission.__globals__["INSTALLED_AUDIT_PATH"] = namespace["SCRIPT_PATH"]
+
+    with pytest.raises(namespace["HostPolicyError"], match="canonical installed audit"):
+        admission()
+
+
+@pytest.mark.parametrize("memtotal_gib", [59, 61])
+def test_appendix_profile_interval_is_inclusive(
+    monkeypatch: pytest.MonkeyPatch, memtotal_gib: int
+) -> None:
+    monkeypatch.setenv("HAPAX_OOM_AUDIT_TEST_MODE", "1")
+    monkeypatch.setenv("HAPAX_OOM_AUDIT_HOSTNAME", "hapax-appendix")
+    monkeypatch.setenv("HAPAX_OOM_AUDIT_MEMTOTAL_KIB", str(memtotal_gib * 1024**2))
+    namespace = runpy.run_path(str(SCRIPT))
+
+    namespace["_validate_test_mode_admission"]()
+    policy = namespace["derive_host_policy"]()
+    assert policy.profile == "appendix"
+
+
+@pytest.mark.parametrize("memtotal_gib", [58, 62])
+def test_appendix_profile_refuses_out_of_interval_memory(
+    monkeypatch: pytest.MonkeyPatch, memtotal_gib: int
+) -> None:
+    monkeypatch.setenv("HAPAX_OOM_AUDIT_TEST_MODE", "1")
+    monkeypatch.setenv("HAPAX_OOM_AUDIT_HOSTNAME", "hapax-appendix")
+    monkeypatch.setenv("HAPAX_OOM_AUDIT_MEMTOTAL_KIB", str(memtotal_gib * 1024**2))
+    namespace = runpy.run_path(str(SCRIPT))
+
+    with pytest.raises(namespace["HostPolicyError"], match="outside admitted interval"):
+        namespace["derive_host_policy"]()

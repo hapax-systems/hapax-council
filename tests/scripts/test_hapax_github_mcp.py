@@ -74,6 +74,9 @@ fi
 
     assert result.returncode == 0, result.stderr
     args = docker_args.read_text()
+    assert "--memory 512m" in args
+    assert "--memory-swap 768m" in args
+    assert "--oom-kill-disable" not in args
     assert "--log-driver none" in args
     assert "-e GITHUB_PERSONAL_ACCESS_TOKEN" in args
     assert "--tools=search_pull_requests,pull_request_read,merge_pull_request" in args
