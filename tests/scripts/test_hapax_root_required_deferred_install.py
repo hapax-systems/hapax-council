@@ -956,7 +956,6 @@ def test_regular_reader_bounds_same_inode_growth_and_rejects_path_replacement(
             max_bytes=len(original),
         )
     assert sum(requested) <= len(original) + 1
-
     path.write_bytes(original)
     requested.clear()
     first = True
@@ -980,6 +979,32 @@ def test_regular_reader_bounds_same_inode_growth_and_rejects_path_replacement(
             max_bytes=len(original),
         )
     assert sum(requested) <= len(original) + 1
+
+
+def test_deferred_receipt_reader_refuses_regular_to_fifo_swap_without_blocking(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    module = _load_deferred_module()
+    receipt = tmp_path / "desired.sha"
+    receipt.write_text(f"{'a' * 40}\n", encoding="utf-8")
+    receipt.chmod(0o600)
+    real_open = os.open
+    swapped = False
+
+    def swap_before_file_open(path, flags, *args, dir_fd=None, **kwargs):
+        nonlocal swapped
+        if path == receipt.name and dir_fd is not None and not swapped:
+            swapped = True
+            os.unlink(receipt.name, dir_fd=dir_fd)
+            os.mkfifo(receipt.name, 0o600, dir_fd=dir_fd)
+        return real_open(path, flags, *args, dir_fd=dir_fd, **kwargs)
+
+    monkeypatch.setattr(module.os, "open", swap_before_file_open)
+
+    with pytest.raises(module.DeferredInstallError, match="changed while it was opened"):
+        module._read_safe_receipt_sha(receipt, label="desired receipt")
+    assert swapped
 
 
 @pytest.mark.parametrize(

@@ -4,10 +4,8 @@
 from __future__ import annotations
 
 import argparse
-import errno
 import fcntl
 import functools
-import hashlib
 import json
 import os
 import re
@@ -15,7 +13,6 @@ import socket
 import stat
 import subprocess
 import sys
-import time
 from collections.abc import Iterator
 from contextlib import contextmanager
 from dataclasses import asdict, dataclass
@@ -83,8 +80,11 @@ TEST_ONLY_SELECTORS = frozenset(
         "HAPAX_OOM_AUDIT_DOCKER",
         "HAPAX_SYSTEMCTL",
         "HAPAX_SYSTEMD_ANALYZE",
+        "HAPAX_ROOT_REQUIRED_STATE_ROOT",
+        "HAPAX_ROOT_REQUIRED_LOCK_FILE",
     }
 )
+GENERATION_GUARD_ANCHOR = Path("/home")
 ROOT_REQUIRED_STATE_ROOT = Path(
     os.environ.get(
         "HAPAX_ROOT_REQUIRED_STATE_ROOT",
@@ -181,6 +181,14 @@ class AuditLockError(RuntimeError):
 
 class HostPolicyError(RuntimeError):
     pass
+
+
+def _host_root_uid() -> int:
+    for line in Path("/proc/self/uid_map").read_text(encoding="ascii").splitlines():
+        inside, outside, length = (int(field) for field in line.split())
+        if outside <= 0 < outside + length:
+            return inside - outside
+    return 65534
 
 
 def _source_checkout_warning(detail: str) -> None:
@@ -296,7 +304,7 @@ def _sealed_memfd_holder(path: Path) -> str | None:
     required = fcntl.F_SEAL_SEAL | fcntl.F_SEAL_SHRINK | fcntl.F_SEAL_GROW | fcntl.F_SEAL_WRITE
     try:
         target = os.readlink(path)
-        fd = os.open(path, os.O_RDONLY | os.O_CLOEXEC)
+        fd = os.open(path, os.O_RDONLY | os.O_NONBLOCK | os.O_CLOEXEC)
         try:
             inode = os.fstat(fd)
             seals = fcntl.fcntl(fd, fcntl.F_GET_SEALS)
@@ -651,13 +659,30 @@ def _validate_lock_fd(fd: int, parent_fd: int, lock_base: str) -> None:
         )
 
 
-def _state_guard_address(lexical_root: Path) -> bytes:
-    normalized = os.path.abspath(os.path.normpath(lexical_root))
-    material = f"hapax-root-required-state-v1\0{os.geteuid()}\0{normalized}".encode()
-    return b"\0hapax-root-required-v1-" + hashlib.sha256(material).hexdigest()[:40].encode()
+def _validate_generation_guard_fd(guard_fd: int) -> None:
+    try:
+        guard_inode = os.fstat(guard_fd)
+        published = os.stat(GENERATION_GUARD_ANCHOR, follow_symlinks=False)
+    except OSError as exc:
+        raise AuditLockError(f"cannot inspect package generation guard: {exc}") from exc
+    if (
+        not stat.S_ISDIR(guard_inode.st_mode)
+        or guard_inode.st_uid != _host_root_uid()
+        or guard_inode.st_mode & 0o022
+        or (guard_inode.st_dev, guard_inode.st_ino) != (published.st_dev, published.st_ino)
+    ):
+        raise AuditLockError("package generation guard is not the immutable host anchor")
+    try:
+        fcntl.flock(guard_fd, fcntl.LOCK_EX)
+        locked = os.fstat(guard_fd)
+        published = os.stat(GENERATION_GUARD_ANCHOR, follow_symlinks=False)
+    except OSError as exc:
+        raise AuditLockError(f"cannot acquire package generation guard: {exc}") from exc
+    if (locked.st_dev, locked.st_ino) != (published.st_dev, published.st_ino):
+        raise AuditLockError("package generation-guard anchor changed during acquisition")
 
 
-def _open_generation_guard(inherited_lock: bool) -> tuple[socket.socket, Path]:
+def _open_generation_guard(inherited_lock: bool) -> tuple[int, Path]:
     lexical_raw = os.environ.get(
         "HAPAX_ROOT_REQUIRED_STATE_LEXICAL_ROOT",
         str(ROOT_REQUIRED_LOCK_FILE.parent),
@@ -667,7 +692,6 @@ def _open_generation_guard(inherited_lock: bool) -> tuple[socket.socket, Path]:
         raise AuditLockError(
             "package lock must be the .lock inside its lexical root-required state directory"
         )
-    expected = _state_guard_address(lexical_root)
     if inherited_lock:
         raw = os.environ.get("HAPAX_ROOT_REQUIRED_GENERATION_GUARD_FD", "")
         try:
@@ -676,33 +700,22 @@ def _open_generation_guard(inherited_lock: bool) -> tuple[socket.socket, Path]:
             raise AuditLockError("invalid inherited package generation-guard descriptor") from exc
         if guard_fd < 3:
             raise AuditLockError("invalid inherited package generation-guard descriptor")
-        try:
-            guard = socket.socket(fileno=os.dup(guard_fd))
-            observed = guard.getsockname()
-        except OSError as exc:
-            raise AuditLockError(
-                f"cannot inspect inherited package generation guard: {exc}"
-            ) from exc
-        if observed != expected:
-            guard.close()
-            raise AuditLockError("inherited package generation guard does not match state root")
-        return guard, lexical_root
+        _validate_generation_guard_fd(guard_fd)
+        return guard_fd, lexical_root
 
-    guard = socket.socket(
-        socket.AF_UNIX,
-        socket.SOCK_STREAM | getattr(socket, "SOCK_CLOEXEC", 0),
-    )
-    while True:
-        try:
-            guard.bind(expected)
-            return guard, lexical_root
-        except OSError as exc:
-            if exc.errno != errno.EADDRINUSE:
-                guard.close()
-                raise AuditLockError(
-                    f"cannot acquire package state-generation guard: {exc}"
-                ) from exc
-            time.sleep(0.05)
+    try:
+        guard_fd = os.open(
+            GENERATION_GUARD_ANCHOR,
+            os.O_RDONLY | os.O_CLOEXEC | os.O_DIRECTORY | os.O_NOFOLLOW,
+        )
+    except OSError as exc:
+        raise AuditLockError(f"cannot open package generation guard: {exc}") from exc
+    try:
+        _validate_generation_guard_fd(guard_fd)
+    except AuditLockError:
+        os.close(guard_fd)
+        raise
+    return guard_fd, lexical_root
 
 
 def _validate_state_generation(parent_fd: int, lexical_root: Path, inherited: bool) -> None:
@@ -728,7 +741,7 @@ def _validate_state_generation(parent_fd: int, lexical_root: Path, inherited: bo
 def shared_root_required_lock() -> Iterator[None]:
     inherited = os.environ.get("HAPAX_ROOT_REQUIRED_LOCK_FD", "")
     owns_fd = not inherited
-    guard, lexical_root = _open_generation_guard(bool(inherited))
+    guard_fd, lexical_root = _open_generation_guard(bool(inherited))
     try:
         parent_fd, lock_base = _open_lock_parent()
         try:
@@ -747,7 +760,7 @@ def shared_root_required_lock() -> Iterator[None]:
                 try:
                     fd = os.open(
                         lock_base,
-                        os.O_CLOEXEC | os.O_NOFOLLOW | os.O_RDONLY,
+                        os.O_CLOEXEC | os.O_NOFOLLOW | os.O_NONBLOCK | os.O_RDONLY,
                         dir_fd=parent_fd,
                     )
                 except OSError as exc:
@@ -768,7 +781,8 @@ def shared_root_required_lock() -> Iterator[None]:
         finally:
             os.close(parent_fd)
     finally:
-        guard.close()
+        if owns_fd:
+            os.close(guard_fd)
 
 
 def _systemctl() -> str:
