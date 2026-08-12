@@ -98,24 +98,40 @@ if [ ! -d "$REPO_UNITS" ]; then
 fi
 
 # --------------------------------------------------------------------------
+# Enumerate the unit files ONCE, and refuse if systemd cannot be asked.
+#
+# Both checks below read this list, so this is the single point where the
+# whole script's input set is established. It must not fail open: a run that
+# could not interrogate systemd has assessed nothing, and reporting "no drift"
+# or a silent pass would be the same lie this script exists to catch — a check
+# whose input set excludes the deciding state. Refuse loudly instead, naming
+# the command to re-run.
+#
+# Unit names are filtered by the readers below rather than by a systemctl
+# pattern argument, so the scope holds regardless of what the invocation asks.
+# --------------------------------------------------------------------------
+if ! UNIT_FILES="$($SYSTEMCTL --user list-unit-files --full --no-pager --no-legend 2>/dev/null)"; then
+    echo "error: could not enumerate systemd user units — nothing was assessed" >&2
+    echo "  no drift check and no timer liveness check ran; this is not a pass." >&2
+    echo "  recheck: $SYSTEMCTL --user list-unit-files --full --no-pager" >&2
+    echo "  if that fails too, there is no systemd user session here and this" >&2
+    echo "  host is not one the reconciler can speak for." >&2
+    exit 2
+fi
+
+# --------------------------------------------------------------------------
 # `enabled` is not `running`.
 #
 # Scope is narrow on purpose. Only `enabled`/`enabled-runtime` timers are
 # asserted: `disabled` and inactive is the operator's intent, `static` units
 # have no [Install] section to be enabled by, and a `.service` is expected to
-# be inactive between oneshot runs. Unit names are filtered here rather than
-# relying on systemctl's pattern argument, so the scope holds regardless of
-# what the invocation asks for.
+# be inactive between oneshot runs.
 # --------------------------------------------------------------------------
 DEAD_TIMERS=()
 DEAD_TIMER_STATES=()
 
 collect_dead_timers() {
-    local unit_files unit state active_state
-    if ! unit_files="$($SYSTEMCTL --user list-unit-files --full --no-pager --no-legend 'hapax-*.timer' 2>/dev/null)"; then
-        echo "warning: could not list unit files — timer liveness not assessed" >&2
-        return 0
-    fi
+    local unit state active_state
 
     while read -r unit state _; do
         case "$unit" in
@@ -133,7 +149,7 @@ collect_dead_timers() {
         fi
         DEAD_TIMERS+=("$unit")
         DEAD_TIMER_STATES+=("${active_state:-unknown}")
-    done <<<"$unit_files"
+    done <<<"$UNIT_FILES"
 }
 
 # Reports every enabled-but-not-running timer by name. Returns 1 if any were
@@ -150,8 +166,17 @@ report_dead_timers() {
     echo ""
     echo "An enabled timer that is not active has no next elapse point and will"
     echo "not recover on its own — it stays dead until something starts it, and"
-    echo "its consumers keep polling for output nothing is producing. Starting a"
-    echo "unit is a runtime act; this reconciler reports only."
+    echo "its consumers keep polling for output nothing is producing."
+    echo ""
+    echo "Next action — starting a unit is a runtime act, so this needs a task"
+    echo "carrying runtime_mutation_authorized, not this reconciler:"
+    for i in "${!DEAD_TIMERS[@]}"; do
+        echo "  $SYSTEMCTL --user start ${DEAD_TIMERS[$i]}"
+    done
+    echo "Then confirm it took: $SYSTEMCTL --user list-timers --all"
+    echo "A timer that goes inactive again has the monotonic shape"
+    echo "(OnBootSec + OnUnitActiveSec) and wants an OnCalendar schedule, which"
+    echo "can recover from a missed activation."
     return 1
 }
 
@@ -160,10 +185,7 @@ collect_dead_timers
 # Collect linked unit names (second column = "linked") plus any Hapax unit
 # symlink present in the user unit directory. Broken symlinks can disappear
 # from `systemctl list-unit-files`, so filesystem discovery is the repair path.
-mapfile -t LINKED < <(
-    $SYSTEMCTL --user list-unit-files --full --no-pager 2>/dev/null \
-        | awk '$2=="linked"{print $1}'
-)
+mapfile -t LINKED < <(printf '%s\n' "$UNIT_FILES" | awk '$2=="linked"{print $1}')
 
 if [ -d "$USER_UNIT_DIR" ]; then
     for symlink in "$USER_UNIT_DIR"/*.service "$USER_UNIT_DIR"/*.timer "$USER_UNIT_DIR"/*.target "$USER_UNIT_DIR"/*.path; do

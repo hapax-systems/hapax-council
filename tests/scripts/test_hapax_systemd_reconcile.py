@@ -27,21 +27,30 @@ SCRIPT = Path(__file__).resolve().parents[2] / "scripts" / "hapax-systemd-reconc
 # A stand-in for `systemctl --user` driven by two fixture files. It deliberately
 # ignores any unit-name pattern it is passed, so the script cannot lean on
 # systemctl's own filtering — the scope guards must be in the script.
+#
+# The verb is the first non-flag argument, never a substring scan: a fixture
+# unit named e.g. `hapax-is-active.timer` must not flip the stub's mode.
+# Setting FAKE_LIST_EXIT makes enumeration fail, which is how the script's
+# refusal path is reached.
 FAKE_SYSTEMCTL = """#!/usr/bin/env bash
-mode=""
+verb=""
 for a in "$@"; do
     case "$a" in
-        list-unit-files) mode=list ;;
-        is-active) mode=isactive ;;
-        daemon-reload|disable) mode=noop ;;
+        -*) continue ;;
     esac
+    verb="$a"
+    break
 done
 
-case "$mode" in
-    list)
+case "$verb" in
+    list-unit-files)
+        if [ -n "${FAKE_LIST_EXIT:-}" ] && [ "${FAKE_LIST_EXIT}" != 0 ]; then
+            echo "System has not been booted with systemd as init system." >&2
+            exit "$FAKE_LIST_EXIT"
+        fi
         cat "$FAKE_UNIT_FILES"
         ;;
-    isactive)
+    is-active)
         unit="${@: -1}"
         state="$(awk -v u="$unit" '$1==u{print $2}' "$FAKE_ACTIVE_STATES")"
         [ -n "$state" ] || state=inactive
@@ -51,6 +60,25 @@ case "$mode" in
 esac
 exit 0
 """
+
+
+def _host_can_enumerate_user_units() -> bool:
+    """Whether this host has a systemd user session to interrogate at all.
+
+    CI runners do not; the developer host does. The script refuses (exit 2)
+    where it cannot ask, so the live-state tests must know which world they
+    are in rather than accepting both outcomes.
+    """
+    try:
+        probe = subprocess.run(
+            ["systemctl", "--user", "list-unit-files", "--full", "--no-pager"],
+            capture_output=True,
+            text=True,
+            timeout=30,
+        )
+    except (OSError, subprocess.SubprocessError):
+        return False
+    return probe.returncode == 0
 
 
 def _fake_systemctl(
@@ -126,17 +154,27 @@ class TestDryRun:
     def test_dry_run_against_live_state(self) -> None:
         """Exercise against real systemctl — passes regardless of host drift state.
 
-        Exit 0 = no drift; exit 1 = drift detected. Either is valid.
-        The test asserts the script runs cleanly and produces output.
+        Exit 0 = no drift; exit 1 = drift and/or a dead timer. Either is valid.
+        Where there is no systemd user session to interrogate the script must
+        refuse (exit 2) rather than report a clean estate it never looked at.
         """
-        r = subprocess.run([str(SCRIPT)], capture_output=True, text=True, timeout=30)
+        r = subprocess.run([str(SCRIPT)], capture_output=True, text=True, timeout=60)
+
+        if not _host_can_enumerate_user_units():
+            assert r.returncode == 2, (
+                f"no user systemd here, so the run assessed nothing and must refuse; "
+                f"got exit {r.returncode}; stdout={r.stdout!r} stderr={r.stderr!r}"
+            )
+            assert "nothing was assessed" in r.stderr
+            return
+
         assert r.returncode in (0, 1), (
             f"unexpected exit {r.returncode}; stdout={r.stdout!r} stderr={r.stderr!r}"
         )
         # Some output must be produced.
         assert r.stdout.strip()
         if r.returncode == 1:
-            # Drift detected — output must name at least one unit.
+            # Drift and/or a dead timer — output must name what it found.
             assert "drift" in r.stdout.lower() or "Detected" in r.stdout
 
     def test_dry_run_through_symlink_resolves_repo_root(self, tmp_path: Path) -> None:
@@ -144,9 +182,10 @@ class TestDryRun:
         linked_script = tmp_path / "hapax-systemd-reconcile.sh"
         linked_script.symlink_to(SCRIPT)
 
-        r = subprocess.run([str(linked_script)], capture_output=True, text=True, timeout=30)
+        r = subprocess.run([str(linked_script)], capture_output=True, text=True, timeout=60)
 
-        assert r.returncode in (0, 1), (
+        expected = (0, 1) if _host_can_enumerate_user_units() else (2,)
+        assert r.returncode in expected, (
             f"unexpected exit {r.returncode}; stdout={r.stdout!r} stderr={r.stderr!r}"
         )
         assert "not found" not in r.stderr
@@ -218,6 +257,84 @@ hapax-lane-idle-watchdog.timer inactive
 hapax-daimonion.service inactive
 dbus-broker.timer inactive
 """
+
+
+class TestEnumerationRefusal:
+    """If systemd cannot be asked, nothing was assessed — and that is not a pass.
+
+    This is the branch where the whole check turns into a no-op, so it is the
+    one that must not fail open: a warn-and-continue here would report "no
+    drift" for an estate the script never looked at, which is precisely the
+    defect class the timer assertion exists to catch.
+    """
+
+    def _run_with_failing_enumeration(
+        self, tmp_path: Path, *args: str
+    ) -> subprocess.CompletedProcess[str]:
+        stub, env = _fake_systemctl(
+            tmp_path,
+            "hapax-lane-reaper.timer enabled enabled\n",
+            "hapax-lane-reaper.timer inactive\n",
+        )
+        env["FAKE_LIST_EXIT"] = "1"
+        return _run_with_fake_systemd(tmp_path, *args, systemctl=stub, extra_env=env)
+
+    def test_enumeration_failure_exits_two(self, tmp_path: Path) -> None:
+        r = self._run_with_failing_enumeration(tmp_path)
+
+        assert r.returncode == 2, (
+            f"a run that assessed nothing must not exit 0 or 1; "
+            f"got {r.returncode}; stdout={r.stdout!r} stderr={r.stderr!r}"
+        )
+
+    def test_enumeration_failure_does_not_claim_a_clean_estate(self, tmp_path: Path) -> None:
+        r = self._run_with_failing_enumeration(tmp_path)
+
+        assert "no drift" not in r.stdout.lower()
+        assert "nothing to reconcile" not in r.stdout.lower()
+
+    def test_enumeration_failure_names_a_next_action(self, tmp_path: Path) -> None:
+        """executive_function: an error carries the command that diagnoses it."""
+        r = self._run_with_failing_enumeration(tmp_path)
+
+        assert "nothing was assessed" in r.stderr
+        assert "recheck:" in r.stderr
+        assert "list-unit-files" in r.stderr
+
+    def test_enumeration_failure_refuses_under_apply_too(self, tmp_path: Path) -> None:
+        """--apply must not disable or unlink anything on an unread estate."""
+        user_dir = tmp_path / "systemd-user"
+        repo_units = tmp_path / "repo-units"
+        user_dir.mkdir()
+        repo_units.mkdir()
+        stale_link = user_dir / "hapax-gone.timer"
+        stale_link.symlink_to(repo_units / "hapax-gone.timer")
+        stub, env = _fake_systemctl(
+            tmp_path,
+            "hapax-lane-reaper.timer enabled enabled\n",
+            "hapax-lane-reaper.timer inactive\n",
+        )
+        env["FAKE_LIST_EXIT"] = "1"
+
+        r = _run_with_fake_systemd(
+            tmp_path,
+            "--apply",
+            user_dir=user_dir,
+            repo_units=repo_units,
+            systemctl=stub,
+            extra_env=env,
+        )
+
+        assert r.returncode == 2
+        assert "reconciled" not in r.stdout
+        assert stale_link.is_symlink(), "unlinked a unit on an estate it never read"
+
+    def test_enumeration_failure_is_loud_under_quiet(self, tmp_path: Path) -> None:
+        """--quiet suppresses chatter, not a refusal."""
+        r = self._run_with_failing_enumeration(tmp_path, "--quiet")
+
+        assert r.returncode == 2
+        assert "nothing was assessed" in r.stderr
 
 
 class TestDeadTimerDetection:
