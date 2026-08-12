@@ -177,7 +177,16 @@ PLATFORM_PATHS: dict[tuple[str, str, str], PlatformPath] = {
         "codex",
         "headless",
         "spark",
-        'scripts/hapax-codex --session <lane> --terminal tmux --task <task> -- -c model="gpt-5.3-codex-spark"',
+        # THE REASON IS PART OF THE COMMAND, because the launcher now refuses without it.
+        #
+        # Spark is below frontier by definition — that is the entire point of the route — so the
+        # frontier-selection guard exits 6 on this command unless HAPAX_CODEX_MODEL_REASON is
+        # set. Published without it, the one documented governed Spark dispatch fails every time
+        # anyone runs it. The route's own justification (the note below) IS the reason, so it
+        # travels with the command rather than being left for an operator to invent at a prompt.
+        'HAPAX_CODEX_MODEL_REASON="full Codex quota blocked; Spark quality-equivalent for this '
+        'bounded task" scripts/hapax-codex --session <lane> --terminal tmux --task <task> '
+        '-- -c model="gpt-5.3-codex-spark"',
         "Codex Spark quota-wall tmux lane with methodology bootstrap",
         True,
         "Use only when full Codex quota is blocked and Spark is quality-equivalent for the bounded task.",
