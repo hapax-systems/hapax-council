@@ -4962,7 +4962,7 @@ def test_an_observed_retirement_clears_the_deferral_and_leaves_a_receipt(tmp_pat
         tmp_path,
         name="ssh-retired",
         rc=0,
-        listing="ssh.service enabled enabled\ncron.service enabled enabled",
+        listing="claude-code-sync.timer inactive not-found",
     )
 
     subprocess.run(
@@ -4991,7 +4991,7 @@ def test_a_surviving_unit_keeps_the_deferral_open(tmp_path: Path) -> None:
         tmp_path,
         name="ssh-still-installed",
         rc=0,
-        listing="claude-code-sync.timer enabled enabled\nssh.service enabled enabled",
+        listing="claude-code-sync.timer active enabled",
     )
 
     result = subprocess.run(
@@ -5006,7 +5006,7 @@ def test_a_surviving_unit_keeps_the_deferral_open(tmp_path: Path) -> None:
         "a receipt was minted while the unit was still installed"
     )
     assert (tmp_path / "pi6-defer" / sha / "RUNBOOK.txt").exists()
-    assert "still has claude-code-sync.timer" in result.stderr
+    assert "claude-code-sync.timer still running or still enabled" in result.stderr
 
 
 def test_an_unreachable_host_mints_no_receipt(tmp_path: Path) -> None:
@@ -5032,7 +5032,11 @@ def test_a_substring_match_does_not_count_as_a_survivor(tmp_path: Path) -> None:
         tmp_path,
         name="ssh-lookalike",
         rc=0,
-        listing="old-claude-code-sync.timer enabled enabled",
+        # The retired unit answers as retired; a differently-named unit that CONTAINS its name
+        # is active. Only the exact-name line may decide.
+        listing=(
+            "claude-code-sync.timer inactive not-found\nold-claude-code-sync.timer active enabled"
+        ),
     )
 
     subprocess.run(
@@ -5048,8 +5052,15 @@ def test_a_substring_match_does_not_count_as_a_survivor(tmp_path: Path) -> None:
     )
 
 
-def test_an_existing_receipt_is_not_recreated(tmp_path: Path) -> None:
-    """Re-running the same merge must not stack duplicates over a completed retirement."""
+def test_a_hand_written_receipt_does_not_clear_the_deferral(tmp_path: Path) -> None:
+    """This test asserted the opposite, and asserting it is how the hole survived.
+
+    It wrote the literal string "observed" into RETIRED.receipt and required the deploy to treat
+    it as authoritative — codifying the very bypass the receipt was introduced to close. An
+    interrupted write leaves exactly that: a file whose existence means nothing.
+
+    A receipt is a record, not a key. Only a live answer from the host clears the deferral.
+    """
     repo, sha = _pi6_deleted(tmp_path)
     env = _pi6_env(tmp_path, repo)
 
@@ -5059,7 +5070,156 @@ def test_an_existing_receipt_is_not_recreated(tmp_path: Path) -> None:
 
     subprocess.run([str(SCRIPT), sha], text=True, capture_output=True, check=False, env=env)
 
-    assert not (tmp_path / "pi6-defer" / sha / "RUNBOOK.txt").exists()
+    assert (tmp_path / "pi6-defer" / sha / "RUNBOOK.txt").exists(), (
+        "a hand-written receipt suppressed the deferral with no host observation behind it"
+    )
+
+
+def test_an_empty_receipt_does_not_clear_the_deferral(tmp_path: Path) -> None:
+    """The interrupted-write case directly: zero bytes is what a killed process leaves."""
+    repo, sha = _pi6_deleted(tmp_path)
+    env = _pi6_env(tmp_path, repo)
+
+    subprocess.run([str(SCRIPT), sha], text=True, capture_output=True, check=False, env=env)
+    (tmp_path / "pi6-defer" / sha / "RETIRED.receipt").write_text("", encoding="utf-8")
+    (tmp_path / "pi6-defer" / sha / "RUNBOOK.txt").unlink()
+
+    subprocess.run([str(SCRIPT), sha], text=True, capture_output=True, check=False, env=env)
+
+    assert (tmp_path / "pi6-defer" / sha / "RUNBOOK.txt").exists()
+
+
+def test_a_disabled_but_present_unit_file_satisfies_the_check(tmp_path: Path) -> None:
+    """The runbook must be able to satisfy its own verifier.
+
+    `systemctl disable --now` stops the unit and leaves its FILE in place, listed as disabled.
+    The first predicate required absence from `list-unit-files`, so an operator who followed the
+    prescribed action exactly would find the deferral still open on every later deploy, with
+    nothing explaining why.
+    """
+    repo, sha = _pi6_deleted(tmp_path)
+    ssh = _pi6_ssh_stub(
+        tmp_path, name="ssh-disabled", rc=0, listing="claude-code-sync.timer inactive disabled"
+    )
+
+    subprocess.run(
+        [str(SCRIPT), sha],
+        text=True,
+        capture_output=True,
+        check=False,
+        env=_pi6_env(tmp_path, repo, ssh=ssh),
+    )
+
+    assert (tmp_path / "pi6-defer" / sha / "RETIRED.receipt").exists(), (
+        "disable --now produces inactive+disabled, which is exactly what the runbook prescribes"
+    )
+
+
+def test_an_active_unit_with_no_unit_file_is_not_retired(tmp_path: Path) -> None:
+    """File absence is not retirement.
+
+    A unit already loaded into PID 1 keeps running after its file is deleted, until something
+    stops it or systemd is reloaded. The file-listing predicate would have certified this as
+    retired while the timer was still firing.
+    """
+    repo, sha = _pi6_deleted(tmp_path)
+    ssh = _pi6_ssh_stub(
+        tmp_path,
+        name="ssh-loaded-fileless",
+        rc=0,
+        listing="claude-code-sync.timer active not-found",
+    )
+
+    result = subprocess.run(
+        [str(SCRIPT), sha],
+        text=True,
+        capture_output=True,
+        check=False,
+        env=_pi6_env(tmp_path, repo, ssh=ssh),
+    )
+
+    assert not (tmp_path / "pi6-defer" / sha / "RETIRED.receipt").exists(), (
+        "a still-running timer was certified as retired because its file was gone"
+    )
+    assert "still running or still enabled" in result.stderr
+
+
+def test_a_stopped_but_still_enabled_unit_is_not_retired(tmp_path: Path) -> None:
+    """Inactive alone is not enough: an enabled unit returns on the next boot or timer tick."""
+    repo, sha = _pi6_deleted(tmp_path)
+    ssh = _pi6_ssh_stub(
+        tmp_path,
+        name="ssh-stopped-enabled",
+        rc=0,
+        listing="claude-code-sync.timer inactive enabled",
+    )
+
+    subprocess.run(
+        [str(SCRIPT), sha],
+        text=True,
+        capture_output=True,
+        check=False,
+        env=_pi6_env(tmp_path, repo, ssh=ssh),
+    )
+
+    assert not (tmp_path / "pi6-defer" / sha / "RETIRED.receipt").exists()
+
+
+def test_a_unit_the_host_says_nothing_about_is_a_survivor(tmp_path: Path) -> None:
+    """Silence is not evidence: a truncated or partial answer must not read as absence."""
+    repo, sha = _pi6_deleted(tmp_path)
+    ssh = _pi6_ssh_stub(tmp_path, name="ssh-silent", rc=0, listing="")
+
+    subprocess.run(
+        [str(SCRIPT), sha],
+        text=True,
+        capture_output=True,
+        check=False,
+        env=_pi6_env(tmp_path, repo, ssh=ssh),
+    )
+
+    assert not (tmp_path / "pi6-defer" / sha / "RETIRED.receipt").exists()
+
+
+def test_a_pending_retirement_is_visible_in_the_exit_status(tmp_path: Path) -> None:
+    """A file under ~/.cache that nothing polls is not a signal.
+
+    The function used to end on `echo`, so it returned 0 and the deploy reported success while
+    units on another host were known-unretired.
+    """
+    repo, sha = _pi6_deleted(tmp_path)
+
+    result = subprocess.run(
+        [str(SCRIPT), sha],
+        text=True,
+        capture_output=True,
+        check=False,
+        env=_pi6_env(tmp_path, repo),
+    )
+
+    assert result.returncode == 78, (
+        f"a deferred retirement exited {result.returncode}; it must be distinguishable from "
+        "both success and failure"
+    )
+    assert "retirement is pending" in result.stderr
+
+
+def test_a_verified_retirement_exits_zero(tmp_path: Path) -> None:
+    """The deferred RC must not fire when nothing is pending."""
+    repo, sha = _pi6_deleted(tmp_path)
+    ssh = _pi6_ssh_stub(
+        tmp_path, name="ssh-clean", rc=0, listing="claude-code-sync.timer inactive not-found"
+    )
+
+    result = subprocess.run(
+        [str(SCRIPT), sha],
+        text=True,
+        capture_output=True,
+        check=False,
+        env=_pi6_env(tmp_path, repo, ssh=ssh),
+    )
+
+    assert result.returncode == 0, result.stderr
 
 
 def test_no_touchable_file_clears_the_deferral(tmp_path: Path) -> None:

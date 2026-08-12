@@ -169,6 +169,10 @@ APCUPSD_INSTALLER_PATH="scripts/install-apcupsd-power-alerts"
 ROOT_REQUIRED_RC=77
 ROOT_DEFER_DIR="${HAPAX_POST_MERGE_ROOT_DEFER_DIR:-$HOME/.cache/hapax/post-merge-root-required}"
 PI6_DEFER_DIR="${HAPAX_POST_MERGE_PI6_DEFER_DIR:-$HOME/.cache/hapax/post-merge-pi6-decommission}"
+#: Distinct from a failure, mirroring ROOT_REQUIRED_RC. A deploy that completed every group it
+#: could, but left units running on an unreachable host, is neither a success nor a crash.
+PI6_DEFER_RC=78
+PI6_DEFER_PENDING=0
 PI6_SSH_HOST="${HAPAX_POST_MERGE_PI6_SSH_HOST:-pi6}"
 #: The ssh transport, overridable so a test can substitute a stub that answers as the host
 #: would. Without a seam the retirement observation is unreachable from any test.
@@ -1508,21 +1512,20 @@ defer_pi6_decommission() {
     [ "${#deleted[@]}" -gt 0 ] || return 0
 
     dest="$PI6_DEFER_DIR/$SHA"
-    # A PRIOR RECEIPT CLEARS THIS; A FILE SOMEBODY TOUCHED DOES NOT.
+    # NO LOCAL FILE CLEARS THIS. ASK THE HOST, EVERY TIME.
     #
-    # The first version cleared on `[ -f DRAINED.txt ]`, which tests only that someone ran
-    # `touch`. That is not a precondition — it is an attestation with no referent, and it
-    # silences the deferral forever whether or not a single unit was retired. The receipt below
-    # is written only by `observe_pi6_units_retired`, out of the host's own answer.
+    # Two revisions of this function got the same thing wrong. The first cleared on
+    # `[ -f DRAINED.txt ]` — someone runs `touch`, the record goes quiet forever. The second
+    # replaced that with `[ -f RETIRED.receipt ]` and argued the receipt was trustworthy because
+    # only the observation writes it. That MOVED the sentinel; it did not remove it. An empty or
+    # half-written receipt from an interrupted write suppresses the deferral just as well as a
+    # touched file, and nothing on this side can tell the difference.
     #
-    # Retirement is monotonic: a unit that is gone does not come back unless something
-    # reinstalls it, which would be a new merge carrying a new SHA and its own deferral. So an
-    # existing receipt is honoured without re-asking, and pi6 being unreachable later cannot
-    # un-retire what was already observed gone.
-    if [ -f "$dest/RETIRED.receipt" ]; then
-        echo "pi6 decommission for $SHA already evidenced; deferral not recreated"
-        return 0
-    fi
+    # Needing a second guard for one hazard — validate the receipt's contents, bind it to the
+    # SHA, check it is non-empty — is the signal that the shape is wrong rather than the
+    # boundary. The shape: a receipt is a RECORD, never an authorization. The deferral clears
+    # only on a live answer from the host, which costs one ssh per deploy and is the only
+    # precondition that is checkable at the moment it is used.
     mkdir -p "$dest"
     if observe_pi6_units_retired "$dest/RETIRED.receipt" "${deleted[@]}"; then
         rm -f "$dest/RUNBOOK.txt" 2>/dev/null || true
@@ -1542,10 +1545,15 @@ defer_pi6_decommission() {
         for f in "${deleted[@]}"; do
             printf '  ssh %s sudo systemctl disable --now %s\n' "$PI6_SSH_HOST" "${f##*/}"
         done
-        printf '\nThen re-run this deploy for the same commit. It re-asks the host and writes\n'
-        printf '%s/RETIRED.receipt from the answer.\n' "$dest"
-        printf 'There is deliberately no file you can touch to clear this: the deferral is held\n'
-        printf 'open by the absence of an observation, not by the absence of an assertion.\n'
+        printf '\nThat is enough: the check accepts a unit that is stopped AND not enabled, which\n'
+        printf 'is exactly what `disable --now` leaves behind. Removing the unit file is optional\n'
+        printf 'and, on its own, is NOT sufficient — a unit already loaded into PID 1 keeps\n'
+        printf 'running after its file is deleted.\n'
+        printf '\nThen re-run this deploy for the same commit. It re-asks the host every time and\n'
+        printf 'writes %s/RETIRED.receipt from the answer.\n' "$dest"
+        printf 'There is deliberately no file you can create to clear this, and the receipt is a\n'
+        printf 'record rather than a key: the deferral is held open by the absence of an\n'
+        printf 'observation, not by the absence of an assertion.\n'
         printf '\nIf %s is unreachable, leave this pending. An unreachable host is an unknown\n' \
             "$PI6_SSH_HOST"
         printf 'host, not a retired one.\n'
@@ -1562,6 +1570,13 @@ defer_pi6_decommission() {
         done
     } > "$dest/RUNBOOK.txt"
     echo "pi6 unit retirement DEFERRED (${#deleted[@]} unit(s)); runbook: $dest/RUNBOOK.txt" >&2
+    # MACHINE-VISIBLE, because a file under ~/.cache that nothing polls is not a signal.
+    #
+    # Ending on `echo` returned 0 and the deploy reported success while units on another host
+    # were known-unretired. The root-required deferral already solves this with a distinct RC
+    # that the caller checks; this mirrors it rather than inventing a second convention.
+    PI6_DEFER_PENDING=1
+    return "$PI6_DEFER_RC"
 }
 
 observe_pi6_units_retired() {
@@ -1572,22 +1587,50 @@ observe_pi6_units_retired() {
     # auth, a timeout, or a listing that still contains one of the units. The failure path does
     # strictly less than the success path — it never records a retirement it did not see — which
     # is the only shape that keeps "unreachable" from quietly becoming "retired".
+    # WHAT "RETIRED" MEANS, AND WHY IT IS NOT FILE ABSENCE.
+    #
+    # The first predicate asked `systemctl list-unit-files` and treated a unit's absence from
+    # that listing as retirement. That is the wrong question twice over:
+    #
+    #   * It observes FILES, not RUNNING STATE. A unit already loaded into PID 1 keeps running
+    #     after its file is deleted, until something stops it or systemd is reloaded. So the
+    #     check could mint "retired" while the timer was still firing — the exact claim the
+    #     receipt exists to make, made about a unit that had not stopped.
+    #   * It contradicted the runbook printed three lines away. `systemctl disable --now` leaves
+    #     the unit FILE in place, listed as `disabled`. An operator who followed the prescribed
+    #     action to the letter would find the deferral still open on every subsequent deploy,
+    #     with nothing explaining why.
+    #
+    # So the question is asked of each exact unit, and the answer must be BOTH stopped and not
+    # installed-to-run: `is-active` in {inactive, unknown, failed-absent forms} and `is-enabled`
+    # in {disabled, masked, not-found}. `active`, `activating`, `reloading`, `failed`, `enabled`,
+    # `static` and `indirect` all mean the unit is still there in a way that matters. That set
+    # accepts exactly what the runbook produces and refuses the loaded-but-fileless case.
     local receipt="$1"; shift
-    local units=("$@") listing unit rc=0 survivors=()
+    local units=("$@") answer unit rc=0 survivors=() remote="" state=""
     command -v "${PI6_SSH_CMD%% *}" >/dev/null 2>&1 || return 1
-    listing="$($PI6_SSH_CMD -o BatchMode=yes -o ConnectTimeout="$PI6_SSH_TIMEOUT" \
-        "$PI6_SSH_HOST" 'systemctl list-unit-files --no-pager --no-legend' 2>/dev/null)" || rc=$?
+    for unit in "${units[@]}"; do
+        remote+="printf '%s %s %s\\n' '${unit##*/}' \"\$(systemctl is-active '${unit##*/}' 2>&1 | head -1)\" \"\$(systemctl is-enabled '${unit##*/}' 2>&1 | head -1)\"; "
+    done
+    answer="$($PI6_SSH_CMD -o BatchMode=yes -o ConnectTimeout="$PI6_SSH_TIMEOUT" \
+        "$PI6_SSH_HOST" "$remote" 2>/dev/null)" || rc=$?
     [ "$rc" -eq 0 ] || return 1
     for unit in "${units[@]}"; do
-        # Anchor on the unit NAME at line start so an unrelated unit that merely contains this
-        # name as a substring cannot count as a survivor, and a real survivor cannot hide inside
-        # another line's text.
-        if printf '%s\n' "$listing" | grep -qE "^${unit##*/}([[:space:]]|$)"; then
-            survivors+=("${unit##*/}")
-        fi
+        # One line per unit, matched on the exact name at line start so a lookalike cannot answer
+        # for it. A unit the host said nothing about is a survivor: silence is not evidence.
+        state="$(printf '%s\n' "$answer" | grep -E "^${unit##*/} " | head -1)"
+        case "$state" in
+            *" inactive "*|*" unknown "*)
+                case "$state" in
+                    *" disabled"|*" masked"|*" not-found"|*" alias") ;;
+                    *) survivors+=("${unit##*/}") ;;
+                esac
+                ;;
+            *) survivors+=("${unit##*/}") ;;
+        esac
     done
     if [ "${#survivors[@]}" -gt 0 ]; then
-        echo "hapax-post-merge-deploy: $PI6_SSH_HOST still has ${survivors[*]}; next: ssh $PI6_SSH_HOST sudo systemctl disable --now ${survivors[*]}, then re-run this deploy for $SHA" >&2
+        echo "hapax-post-merge-deploy: $PI6_SSH_HOST reports ${survivors[*]} still running or still enabled; next: ssh $PI6_SSH_HOST sudo systemctl disable --now ${survivors[*]}, then re-run this deploy for $SHA" >&2
         return 1
     fi
     {
@@ -1595,9 +1638,10 @@ observe_pi6_units_retired() {
         printf 'Commit:      %s\n' "$SHA"
         printf 'Host:        %s\n' "$PI6_SSH_HOST"
         printf 'Observed at: %s\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)"
-        printf 'Method:      systemctl list-unit-files over ssh; none of the units below appear\n\n'
-        printf 'Retired:\n'
-        printf '  %s\n' "${units[@]##*/}"
+        printf 'Method:      systemctl is-active + is-enabled over ssh, per unit\n'
+        printf 'Predicate:   stopped AND not installed-to-run (a deleted unit file is not enough)\n\n'
+        printf 'Observed state:\n'
+        printf '%s\n' "$answer"
     } > "$receipt"
 }
 
@@ -1951,7 +1995,11 @@ validate_generic_dropin_activation() {
 
 # --- Pi-6 edge units: a deletion is not a retirement ---
 if [ "${#PI6_UNITS[@]}" -gt 0 ]; then
-    defer_pi6_decommission
+    # Recorded, not acted on here. The deferral must not abort the rest of the deploy — the same
+    # reasoning the root-required deferral states: unrelated user-scope groups for this merge
+    # should not be skipped because another host is unreachable. But it must not vanish either,
+    # so the pending state is carried to the exit status below.
+    defer_pi6_decommission || true
 fi
 
 # --- systemd unit drop-ins ---
@@ -2327,3 +2375,14 @@ else
     echo "warning: failed to write post-merge deploy trace to $TRACE_PATH" >&2
 fi
 record_last_deployed_sha
+
+# A KNOWN-UNRETIRED UNIT ON ANOTHER HOST IS NOT A SUCCESSFUL DEPLOY.
+#
+# Everything above ran and is recorded; what did not happen is the Pi-6 retirement, and the only
+# durable trace of that was a file under ~/.cache that nothing polls. This makes it visible to
+# whatever ran the deploy, using the same distinct-RC convention as the root-required deferral so
+# a caller can tell "deferred" from "failed".
+if [ "${PI6_DEFER_PENDING:-0}" -eq 1 ]; then
+    echo "hapax-post-merge-deploy: exiting $PI6_DEFER_RC — pi6 unit retirement is pending for $SHA; next: follow $PI6_DEFER_DIR/$SHA/RUNBOOK.txt, then re-run this deploy for the same commit" >&2
+    exit "$PI6_DEFER_RC"
+fi
