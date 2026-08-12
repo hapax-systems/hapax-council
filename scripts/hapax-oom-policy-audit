@@ -298,12 +298,16 @@ def _source_checkout_root() -> Path | None:
 
 
 def _sealed_memfd_holder(path: Path) -> str | None:
-    match = re.fullmatch(r"/proc/([1-9][0-9]*)/fd/([0-9]+)", str(path))
+    match = re.fullmatch(r"/proc/self/fd/([0-9]+)", str(path))
     if match is None:
+        return None
+    source_fd = int(match.group(1))
+    if source_fd < 3:
         return None
     required = fcntl.F_SEAL_SEAL | fcntl.F_SEAL_SHRINK | fcntl.F_SEAL_GROW | fcntl.F_SEAL_WRITE
     try:
         target = os.readlink(path)
+        inherited_inode = os.fstat(source_fd)
         fd = os.open(path, os.O_RDONLY | os.O_NONBLOCK | os.O_CLOEXEC)
         try:
             inode = os.fstat(fd)
@@ -316,10 +320,11 @@ def _sealed_memfd_holder(path: Path) -> str | None:
         not target.startswith("/memfd:hapax-")
         or not stat.S_ISREG(inode.st_mode)
         or inode.st_uid != os.geteuid()
+        or (inode.st_dev, inode.st_ino) != (inherited_inode.st_dev, inherited_inode.st_ino)
         or seals & required != required
     ):
         return None
-    return match.group(1)
+    return "self"
 
 
 def _sealed_package_profile_table() -> Path | None:

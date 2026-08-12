@@ -544,8 +544,8 @@ def sealed(name, data, mode):
 
 audit_fd = sealed("hapax-audit", open(sys.argv[1], "rb").read(), 0o755)
 profile_fd = sealed("hapax-profile", open(sys.argv[2], "rb").read(), 0o644)
-audit_path = f"/proc/{os.getpid()}/fd/{audit_fd}"
-profile_path = f"/proc/{os.getpid()}/fd/{profile_fd}"
+audit_path = f"/proc/self/fd/{audit_fd}"
+profile_path = f"/proc/self/fd/{profile_fd}"
 for name in tuple(os.environ):
     if name.startswith("HAPAX_OOM_AUDIT_") or name in {"HAPAX_SYSTEMCTL", "HAPAX_SYSTEMD_ANALYZE"}:
         os.environ.pop(name, None)
@@ -587,7 +587,7 @@ print(namespace["_profile_table_context"](namespace["_profile_table_path"]()))
     assert result.returncode == 0, result.stderr
     assert "profile=appendix" in result.stdout
     assert f"zram={16 * 1024**3}" in result.stdout
-    assert "path=/proc/" in result.stdout and "/fd/" in result.stdout
+    assert "path=/proc/self/fd/" in result.stdout
     assert "sealed package-source" in result.stdout
 
 

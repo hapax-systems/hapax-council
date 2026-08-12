@@ -4268,7 +4268,7 @@ def _run_install_verify_live(
             "#!/usr/bin/bash\n"
             "set -euo pipefail\n"
             'if [ "${1:-}" = --verify-local-judge-cap-receipt-snapshot ]; then\n'
-            '  [[ "$HAPAX_ROOT_REQUIRED_STATE_ROOT" =~ ^/proc/[1-9][0-9]*/fd/[0-9]+$ ]]\n'
+            '  [[ "$HAPAX_ROOT_REQUIRED_STATE_ROOT" =~ ^/proc/self/fd/[0-9]+$ ]]\n'
             '  [ "$HAPAX_ROOT_REQUIRED_LOCK_MODE" = exclusive ]\n'
             "  for name in HAPAX_ROOT_REQUIRED_LOCK_FD HAPAX_ROOT_REQUIRED_STATE_FD "
             "HAPAX_ROOT_REQUIRED_GENERATION_GUARD_FD; do\n"
