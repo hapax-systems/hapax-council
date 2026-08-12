@@ -38,12 +38,37 @@
 # already applied to a downgrade, applied to the larger act. This guard cannot order models, so
 # it cannot tell raising from lowering; requiring a stated reason for any change is the predicate
 # it CAN check, and it is the honest one.
+# NORMALISE THE ENV CHANNEL TOO, because the guard compares STRINGS.
+#
+# `_cfs_trim` below already trims values arriving through `-c key=value`, and the env channel was
+# left raw — the same one-arm-normalised asymmetry as `-m?*` having no `-p?*` twin. Measured:
+#
+#   HAPAX_CODEX_FRONTIER_MODEL=" gpt-5.6-sol" HAPAX_CODEX_MODEL_REASON=x
+#     -> exit 0, model=[ gpt-5.6-sol]
+#
+# Two consequences, and the second is the worse one. A padded string is handed to codex as the
+# model name. And because CODEX_MODEL is derived from the same padded frontier, the below-frontier
+# comparison finds them equal, concludes nothing was downgraded, and writes NO decision record —
+# so the act that most needs recording is the one that leaves no trace.
+#
+# Trimmed at assignment, before any comparison, so every later check compares the value codex will
+# actually receive. Defined inline rather than via `_cfs_trim` because that helper is declared
+# further down; the duplication is two expansions and the alternative is a forward reference.
 HAPAX_CODEX_FRONTIER_MODEL_BUILTIN="gpt-5.6-sol"
 HAPAX_CODEX_FRONTIER_EFFORT_BUILTIN="ultra"
-HAPAX_CODEX_FRONTIER_MODEL="${HAPAX_CODEX_FRONTIER_MODEL:-$HAPAX_CODEX_FRONTIER_MODEL_BUILTIN}"
-HAPAX_CODEX_FRONTIER_EFFORT="${HAPAX_CODEX_FRONTIER_EFFORT:-$HAPAX_CODEX_FRONTIER_EFFORT_BUILTIN}"
-CODEX_MODEL="${HAPAX_CODEX_MODEL:-$HAPAX_CODEX_FRONTIER_MODEL}"
-CODEX_EFFORT="${HAPAX_CODEX_EFFORT:-$HAPAX_CODEX_FRONTIER_EFFORT}"
+_cfs_env_trim() {
+  _cfs_e="${_cfs_e#"${_cfs_e%%[![:space:]]*}"}"
+  _cfs_e="${_cfs_e%"${_cfs_e##*[![:space:]]}"}"
+}
+_cfs_e="${HAPAX_CODEX_FRONTIER_MODEL:-$HAPAX_CODEX_FRONTIER_MODEL_BUILTIN}"; _cfs_env_trim
+HAPAX_CODEX_FRONTIER_MODEL="${_cfs_e:-$HAPAX_CODEX_FRONTIER_MODEL_BUILTIN}"
+_cfs_e="${HAPAX_CODEX_FRONTIER_EFFORT:-$HAPAX_CODEX_FRONTIER_EFFORT_BUILTIN}"; _cfs_env_trim
+HAPAX_CODEX_FRONTIER_EFFORT="${_cfs_e:-$HAPAX_CODEX_FRONTIER_EFFORT_BUILTIN}"
+_cfs_e="${HAPAX_CODEX_MODEL:-$HAPAX_CODEX_FRONTIER_MODEL}"; _cfs_env_trim
+CODEX_MODEL="${_cfs_e:-$HAPAX_CODEX_FRONTIER_MODEL}"
+_cfs_e="${HAPAX_CODEX_EFFORT:-$HAPAX_CODEX_FRONTIER_EFFORT}"; _cfs_env_trim
+CODEX_EFFORT="${_cfs_e:-$HAPAX_CODEX_FRONTIER_EFFORT}"
+unset _cfs_e
 CODEX_MODEL_REASON="${HAPAX_CODEX_MODEL_REASON:-}"
 
 if [ "$HAPAX_CODEX_FRONTIER_MODEL" != "$HAPAX_CODEX_FRONTIER_MODEL_BUILTIN" ] ||

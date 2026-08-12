@@ -15,6 +15,8 @@ import os
 import subprocess
 from pathlib import Path
 
+import pytest
+
 REPO_ROOT = Path(__file__).resolve().parents[2]
 FRAGMENT = REPO_ROOT / "scripts" / "codex-frontier-selection.sh"
 LAUNCHERS = (
@@ -99,6 +101,58 @@ def test_raising_the_frontier_pair_moves_the_default(tmp_path: Path) -> None:
     )
     assert result.returncode == 0, result.stderr
     assert result.stdout.strip() == "gpt-9|max"
+
+
+@pytest.mark.parametrize("padded", [" gpt-5.6-sol", "gpt-5.6-sol ", "  gpt-5.6-sol  "])
+def test_whitespace_padding_does_not_reach_codex_as_the_model_name(
+    tmp_path: Path, padded: str
+) -> None:
+    """The guard compares STRINGS, and the env channel was not normalised.
+
+    `_cfs_trim` already trimmed values arriving through `-c key=value`; the env channel was left
+    raw — the same one-arm-normalised asymmetry as `-m?*` having had no `-p?*` twin. Measured
+    before the fix: a padded frontier with any reason exited 0 with `model=[ gpt-5.6-sol]`, handing
+    codex a model name it would not resolve.
+    """
+    result = _run({"HAPAX_CODEX_FRONTIER_MODEL": padded, "HAPAX_CODEX_MODEL_REASON": "x"}, tmp_path)
+
+    assert result.returncode == 0, result.stderr
+    assert result.stdout.strip() == "gpt-5.6-sol|ultra", (
+        f"padding survived into the model name: {result.stdout!r}"
+    )
+
+
+def test_a_padded_direct_model_override_is_also_trimmed(tmp_path: Path) -> None:
+    """`HAPAX_CODEX_MODEL` is its own caller-settable channel, and it needed its own case.
+
+    Found by mutation, not by inspection: deleting the CODEX_MODEL trim reddened NOTHING, because
+    the frontier trim already normalises the value CODEX_MODEL usually derives from. That made the
+    trim look redundant while a real path — a padded direct override — remained uncovered. A trim
+    with no test is a trim nobody can tell is load-bearing.
+    """
+    result = _run(
+        {"HAPAX_CODEX_MODEL": "  gpt-5.5  ", "HAPAX_CODEX_MODEL_REASON": "bounded sweep"},
+        tmp_path,
+    )
+
+    assert result.returncode == 0, result.stderr
+    assert result.stdout.strip() == "gpt-5.5|ultra", (
+        f"padding survived on the direct model override: {result.stdout!r}"
+    )
+
+
+def test_whitespace_alone_is_not_a_frontier_redefinition(tmp_path: Path) -> None:
+    """The worse half of the same defect.
+
+    A padded frontier also padded CODEX_MODEL, so the below-frontier comparison found the two
+    equal, concluded nothing was downgraded, and wrote NO decision record — the act most needing a
+    record left no trace. After trimming, a whitespace-only difference is correctly not a
+    redefinition at all, so no reason is demanded and nothing is misrecorded.
+    """
+    result = _run({"HAPAX_CODEX_FRONTIER_MODEL": " gpt-5.6-sol "}, tmp_path)
+
+    assert result.returncode == 0, result.stderr
+    assert result.stdout.strip() == "gpt-5.6-sol|ultra"
 
 
 def test_an_unstated_frontier_change_is_refused(tmp_path: Path) -> None:
