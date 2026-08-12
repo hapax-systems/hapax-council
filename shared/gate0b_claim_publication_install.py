@@ -252,15 +252,38 @@ def _write_private_file(path: Path, payload: bytes, *, mode: int = 0o600) -> Non
         os.fsync(fd)
     finally:
         os.close(fd)
+    linked = False
     try:
-        os.replace(tmp, path)
-        os.chmod(path, mode, follow_symlinks=False)
-    except Exception:
+        os.link(tmp, path)
+        linked = True
+    except FileExistsError as exc:
+        try:
+            raced = path.read_bytes()
+        except OSError as read_exc:
+            raise ExecutionAdmissionError(
+                "gate0b_install_file_collision",
+                "quarantine the colliding install artifact and rerun first-use install",
+                str(path),
+            ) from read_exc
+        if raced != payload:
+            raise ExecutionAdmissionError(
+                "gate0b_install_file_collision",
+                "quarantine the colliding install artifact and rerun first-use install",
+                str(path),
+            ) from exc
+    except OSError as exc:
+        raise ExecutionAdmissionError(
+            "gate0b_install_file_unavailable",
+            "restore a writable euid-owned install directory and rerun first-use install",
+            str(path),
+        ) from exc
+    finally:
         try:
             tmp.unlink()
         except FileNotFoundError:
             pass
-        raise
+    if linked:
+        os.chmod(path, mode, follow_symlinks=False)
 
 
 def _load_install_receipt(path: Path) -> Gate0BClaimPublicationInstallReceipt:

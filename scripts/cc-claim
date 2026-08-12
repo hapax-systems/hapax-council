@@ -33,6 +33,7 @@ if [[ -f "$ROLE_HELPER" ]]; then
 fi
 
 force=false
+recover_claim_publications_only=false
 # Default mode publishes through the admitted Gate-0B claim-publication path.
 # The legacy note/cache writer is available only as an explicit slice-1 fallback.
 canon_enforced="1"
@@ -40,6 +41,7 @@ usage() {
   cat >&2 <<'USAGE'
 usage: cc-claim [--force] <task_id> [--dispatch-* VALUE ...]
        cc-claim [--force] [--dispatch-* VALUE ...] <task_id>
+       cc-claim --recover-claim-publications [<task_id>]
 
 Omit dispatch flags in default mode for a manual self-witnessed binding.
 USAGE
@@ -59,6 +61,7 @@ dispatch_idempotency_key="${HAPAX_CLAIM_DISPATCH_IDEMPOTENCY_KEY:-}"
 while [[ $# -gt 0 ]]; do
   case "$1" in
     --force) force=true; shift ;;
+    --recover-claim-publications) recover_claim_publications_only=true; shift ;;
     --dispatch-message-id) dispatch_message_id="${2:-}"; shift 2 ;;
     --dispatch-binding-hash) dispatch_binding_hash="${2:-}"; shift 2 ;;
     --dispatch-platform) dispatch_platform="${2:-}"; shift 2 ;;
@@ -70,7 +73,7 @@ while [[ $# -gt 0 ]]; do
     *) task_id="$1"; shift ;;
   esac
 done
-if [[ -z "$task_id" ]]; then
+if [[ -z "$task_id" && "$recover_claim_publications_only" != "true" ]]; then
   usage
   exit 1
 fi
@@ -86,6 +89,59 @@ fi
 if [[ ! -x "$python_runner" ]]; then
   echo "cc-claim: python3 missing; cannot rewrite frontmatter. Next action: install python3 or rerun from a provisioned repo virtualenv." >&2
   exit 3
+fi
+if [[ "$recover_claim_publications_only" == "true" ]]; then
+  "$python_runner" -I - "$SCRIPT_DIR/.." "$task_id" <<'PYEOF'
+import sys
+from pathlib import Path
+
+repo_root = Path(sys.argv[1]).resolve()
+task_id = sys.argv[2] or None
+if str(repo_root) not in sys.path:
+    sys.path.insert(0, str(repo_root))
+
+from shared.gate0b_claim_publication_install import default_claim_publication_roots  # noqa: E402
+from shared.sdlc_claim import ClaimPublicationError, recover_claim_publications  # noqa: E402
+
+roots = default_claim_publication_roots(home=Path.home())
+try:
+    results = recover_claim_publications(
+        cache_dir=Path(roots.claim_cache_dir),
+        transaction_root=Path(roots.claim_transaction_root),
+        receipt_root=Path(roots.claim_receipt_root),
+        lock_root=Path(roots.claim_lock_root),
+        task_id=task_id,
+    )
+except ClaimPublicationError as exc:
+    print(
+        f"cc-claim: HOLD — {exc}. Next action: repair the named recovery root, "
+        "then rerun cc-claim --recover-claim-publications"
+        + (f" {task_id}" if task_id else "")
+        + ".",
+        file=sys.stderr,
+    )
+    sys.exit(8)
+if not results:
+    scope = task_id or "all tasks"
+    print(f"cc-claim: no admitted claim-publication journals required recovery for {scope}")
+    sys.exit(0)
+holds = [item for item in results if item.state == "hold"]
+for item in results:
+    suffix = f":{item.reason_code}" if item.reason_code else ""
+    print(f"cc-claim: recovery {item.publication_id}:{item.state}{suffix}")
+if holds:
+    print(
+        "cc-claim: HOLD — admitted claim-publication recovery still has held journals. "
+        "Next action: repair or quarantine the named journal/projection/receipt path, "
+        "then rerun cc-claim --recover-claim-publications"
+        + (f" {task_id}" if task_id else "")
+        + ".",
+        file=sys.stderr,
+    )
+    sys.exit(8)
+sys.exit(0)
+PYEOF
+  exit $?
 fi
 dispatch_values=(
   "$dispatch_message_id"
@@ -173,6 +229,13 @@ for cf in "$legacy_claim_file" "$HOME/.cache/hapax/cc-active-task-$role-"*; do
   existing_task="$(head -n1 "$cf" | tr -d '[:space:]' || true)"
   cf_mtime="$(stat -c %Y "$cf" 2>/dev/null || echo "$now_epoch")"
   if (( now_epoch - cf_mtime > lease_ttl )); then
+    if [[ "$canon_enforced" == "1" && "$cf" == "$legacy_claim_file" && -n "$session_claim_file" && -f "$session_claim_file" ]]; then
+      session_existing_task="$(head -n1 "$session_claim_file" | tr -d '[:space:]' || true)"
+      session_cf_mtime="$(stat -c %Y "$session_claim_file" 2>/dev/null || echo 0)"
+      if [[ -n "$existing_task" && "$session_existing_task" == "$existing_task" ]] && (( now_epoch - session_cf_mtime <= lease_ttl )); then
+        continue
+      fi
+    fi
     if [[ "$canon_enforced" == "1" ]]; then
       claim_base="$(basename "$cf")"
       claim_key="${claim_base#cc-active-task-}"
@@ -319,6 +382,7 @@ if canon_enforced:
         ClaimPublicationError,
         ClaimPublicationIntent,
         inspect_claim_publications,
+        recover_claim_publications,
         resolve_applied_claim_publication,
     )
     from shared.sdlc_task_store import (  # noqa: E402
@@ -384,11 +448,43 @@ if canon_enforced:
     )
     held = [item for item in inspections if item.disposition == "hold"]
     if held:
+        try:
+            recovered = recover_claim_publications(
+                cache_dir=cache_dir,
+                transaction_root=transaction_root,
+                receipt_root=receipt_root,
+                lock_root=lock_root,
+                task_id=task_id,
+            )
+        except ClaimPublicationError as exc:
+            print(
+                f"cc-claim: HOLD — {exc}. Next action: repair the named recovery root, "
+                f"then rerun `cc-claim --recover-claim-publications {task_id}`.",
+                file=sys.stderr,
+            )
+            sys.exit(8)
+        inspections = inspect_claim_publications(
+            cache_dir=cache_dir,
+            transaction_root=transaction_root,
+            receipt_root=receipt_root,
+            task_id=task_id,
+        )
+        held = [item for item in inspections if item.disposition == "hold"]
+    if held:
+        recovered_summary = ""
+        if "recovered" in locals() and recovered:
+            recovered_summary = " Recovery results: " + ",".join(
+                f"{item.publication_id}:{item.state}"
+                + (f":{item.reason_code}" if item.reason_code else "")
+                for item in recovered
+            )
         print(
             "cc-claim: HOLD — claim publication inspection requires reconciliation: "
             + ",".join(f"{item.publication_id}:{item.reason_code}" for item in held)
-            + ". Next action: run admitted claim-publication recovery or restore the listed "
-            "journal/receipt files, then rerun cc-claim.",
+            + "."
+            + recovered_summary
+            + f" Next action: run `cc-claim --recover-claim-publications {task_id}` "
+            "after repairing the listed journal/projection/receipt path, then rerun cc-claim.",
             file=sys.stderr,
         )
         sys.exit(8)

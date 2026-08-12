@@ -401,6 +401,34 @@ def test_expired_session_claim_exact_release_allows_canonical_retry(
     assert "status: claimed" in note.read_text(encoding="utf-8")
 
 
+def test_default_claim_ignores_stale_role_shadow_when_session_lease_is_fresh(
+    tmp_path: Path,
+) -> None:
+    home = tmp_path / "home"
+    note = _write_task(home, "active", "long-lived-review")
+    first = _claim(home, "long-lived-review")
+    cache = home / ".cache" / "hapax"
+    role_claim = cache / "cc-active-task-cx-test"
+    session_claim = cache / f"cc-active-task-cx-test-{_SESSION_ID}"
+
+    assert first.returncode == 0, first.stderr
+    assert role_claim.read_text(encoding="utf-8") == "long-lived-review\n"
+    assert session_claim.read_text(encoding="utf-8") == "long-lived-review\n"
+    os.utime(role_claim, (0, 0))
+    os.utime(session_claim, None)
+
+    second = _claim(
+        home,
+        "long-lived-review",
+        extra_env={"HAPAX_CLAIM_LEASE_TTL_SECS": "1"},
+    )
+
+    assert second.returncode == 0, second.stderr
+    assert "expired claim" not in second.stderr
+    assert "applied publication already owns task" in second.stdout
+    assert "status: claimed" in note.read_text(encoding="utf-8")
+
+
 def test_default_claim_refuses_pid_shaped_session_id(tmp_path: Path) -> None:
     home = tmp_path / "home"
     note = _write_task(home, "active", "pid-session")
@@ -601,6 +629,7 @@ def test_default_claim_holds_corrupt_publication_inspection_before_rewrite(
         / f"claim-pub-{'a' * 64}"
     )
     transaction.mkdir(parents=True)
+    transaction.parent.chmod(0o700)
     transaction.chmod(0o700)
     (transaction / "manifest.json").write_text("{}\n", encoding="ascii")
     (transaction / "manifest.json").chmod(0o600)
@@ -609,8 +638,43 @@ def test_default_claim_holds_corrupt_publication_inspection_before_rewrite(
 
     assert result.returncode == 8
     assert "claim publication inspection requires reconciliation" in result.stderr
-    assert "Next action: run admitted claim-publication recovery" in result.stderr
+    assert f"cc-claim --recover-claim-publications {task_id}" in result.stderr
     assert "status: offered" in note.read_text(encoding="utf-8")
+
+
+def test_recover_claim_publications_subcommand_uses_live_gate0b_roots(
+    tmp_path: Path,
+) -> None:
+    home = tmp_path / "home"
+    task_id = "recover-live-root"
+    _write_task(home, "active", task_id)
+    transaction = (
+        home
+        / ".local"
+        / "share"
+        / "hapax"
+        / "claim-publications"
+        / "gate0b-claim-publish-v1"
+        / f"claim-pub-{'a' * 64}"
+    )
+    transaction.mkdir(parents=True)
+    transaction.parent.chmod(0o700)
+    transaction.chmod(0o700)
+    (transaction / "manifest.json").write_text("{}\n", encoding="ascii")
+    (transaction / "manifest.json").chmod(0o600)
+
+    result = _claim(
+        home,
+        task_id,
+        dispatch=False,
+        install_gate0b=False,
+        extra_args=["--recover-claim-publications"],
+    )
+
+    assert result.returncode == 8
+    assert f"cc-claim: recovery claim-pub-{'a' * 64}:hold" in result.stdout
+    assert "cc-claim --recover-claim-publications recover-live-root" in result.stderr
+    assert not (home / ".cache" / "hapax" / "claim-publications").exists()
 
 
 def test_body_bullets_are_not_claim_dependencies(tmp_path: Path) -> None:

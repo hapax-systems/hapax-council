@@ -1976,7 +1976,7 @@ def test_private_admitted_transaction_marks_recovery_after_untyped_exception(
         if phase == "after_projection" and index == 0:
             raise RuntimeError("simulated projection crash")
 
-    with pytest.raises(RuntimeError, match="simulated projection crash"):
+    with pytest.raises(ClaimPublicationError) as raised:
         sdlc_claim._apply_admitted_claim_publication_transaction(
             fixture.intent,
             active.consumption,
@@ -1993,9 +1993,99 @@ def test_private_admitted_transaction_marks_recovery_after_untyped_exception(
         sdlc_claim._load_admitted_manifest(manifest_path)
     )
     assert state == "recovery_required"
+    assert raised.value.reason_code == "claim_publication_projection_failed"
+    assert "run admitted recovery" in raised.value.repair_action
     assert json.loads(manifest_path.read_text(encoding="ascii"))["reason_code"] == (
         "claim_publication_projection_failed"
     )
+
+
+def test_private_admitted_transaction_wraps_journal_update_failure_by_phase(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    fixture = _fixture(tmp_path)
+    active = _active_admission_fixture(tmp_path, fixture)
+    receipt_root = tmp_path / "receipts"
+    original_persist_state = sdlc_claim._persist_admitted_manifest_state
+
+    def fail_postimage_state(*args: object, **kwargs: object) -> None:
+        if kwargs.get("state") == "postimage_complete":
+            raise RuntimeError("simulated journal write failure")
+        original_persist_state(*args, **kwargs)
+
+    monkeypatch.setattr(sdlc_claim, "_persist_admitted_manifest_state", fail_postimage_state)
+
+    with pytest.raises(ClaimPublicationError) as raised:
+        sdlc_claim._apply_admitted_claim_publication_transaction(
+            fixture.intent,
+            active.consumption,
+            transaction_root=fixture.transactions,
+            receipt_root=receipt_root,
+            lock_root=fixture.locks,
+            now=active.checked_at,
+        )
+
+    publication_id = admitted_claim_publication_id(fixture.intent, active.consumption)
+    manifest_path = fixture.transactions / publication_id / "manifest.json"
+    _intent, _projections, _loaded_id, state, _consumption = sdlc_claim._load_admitted_manifest(
+        manifest_path
+    )
+
+    assert raised.value.reason_code == "claim_publication_journal_update_failed"
+    assert "transaction root" in raised.value.repair_action
+    assert state == "recovery_required"
+    assert json.loads(manifest_path.read_text(encoding="ascii"))["reason_code"] == (
+        "claim_publication_journal_update_failed"
+    )
+
+
+def test_private_admitted_transaction_wraps_receipt_failure_by_phase(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    fixture = _fixture(tmp_path)
+    active = _active_admission_fixture(tmp_path, fixture)
+    receipt_root = tmp_path / "receipts"
+    original_persist_receipt = sdlc_claim._persist_admitted_receipt
+
+    def fail_receipt_raw(*args: object, **kwargs: object) -> None:
+        raise RuntimeError("simulated receipt sink failure")
+
+    monkeypatch.setattr(sdlc_claim, "_persist_admitted_receipt", fail_receipt_raw)
+
+    with pytest.raises(ClaimPublicationError) as raised:
+        sdlc_claim._apply_admitted_claim_publication_transaction(
+            fixture.intent,
+            active.consumption,
+            transaction_root=fixture.transactions,
+            receipt_root=receipt_root,
+            lock_root=fixture.locks,
+            now=active.checked_at,
+        )
+
+    publication_id = admitted_claim_publication_id(fixture.intent, active.consumption)
+    manifest_path = fixture.transactions / publication_id / "manifest.json"
+    _intent, _projections, _loaded_id, state, _consumption = sdlc_claim._load_admitted_manifest(
+        manifest_path
+    )
+    assert raised.value.reason_code == "claim_publication_receipt_persist_failed"
+    assert "receipt root" in raised.value.repair_action
+    assert state == "recovery_required"
+    assert json.loads(manifest_path.read_text(encoding="ascii"))["reason_code"] == (
+        "claim_publication_receipt_persist_failed"
+    )
+
+    monkeypatch.setattr(sdlc_claim, "_persist_admitted_receipt", original_persist_receipt)
+    results = recover_claim_publications(
+        cache_dir=fixture.cache,
+        transaction_root=fixture.transactions,
+        receipt_root=receipt_root,
+        lock_root=fixture.locks,
+        task_id=fixture.intent.task_id,
+    )
+
+    assert results == (sdlc_claim.ClaimPublicationRecoveryResult(publication_id, "applied"),)
 
 
 def test_admitted_recovery_completes_postimage_without_receipt(

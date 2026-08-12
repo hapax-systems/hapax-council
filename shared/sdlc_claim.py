@@ -2123,6 +2123,27 @@ def _translate_lifecycle_error(
     return ClaimPublicationError(reason_code, repair_action, detail)
 
 
+def _admitted_transaction_phase_error(phase: str, exc: Exception) -> ClaimPublicationError:
+    detail = f"{phase}:{type(exc).__name__}"
+    if phase.startswith("journal_"):
+        return ClaimPublicationError(
+            "claim_publication_journal_update_failed",
+            "preserve the admitted journal directory, restore the writable transaction root, and run admitted recovery before retrying",
+            detail,
+        )
+    if phase == "receipt_persist":
+        return ClaimPublicationError(
+            "claim_publication_receipt_persist_failed",
+            "preserve the admitted journal, restore the writable receipt root, and run admitted recovery before retrying",
+            detail,
+        )
+    return ClaimPublicationError(
+        "claim_publication_projection_failed",
+        "preserve the admitted journal and run admitted recovery before retrying",
+        detail,
+    )
+
+
 def _ensure_claim_private_directory(path: Path) -> None:
     try:
         fd = _ensure_private_directory_fd(_normalized(path))
@@ -3686,8 +3707,11 @@ def _apply_admitted_claim_publication_transaction(
             _scratch_for(projection, publication_id, index)
             for index, projection in enumerate(live_projections)
         )
+        phase = "preflight"
         try:
+            phase = "pre_projection_preflight"
             _locked_preflight(intent, projections)
+            phase = "journal_projecting"
             _persist_admitted_manifest_state(
                 manifest_path,
                 intent,
@@ -3696,11 +3720,15 @@ def _apply_admitted_claim_publication_transaction(
                 publication_id,
                 state="projecting",
             )
+            phase = "live_projection"
             _apply_projections(live_projections, scratches, failure_hook)
+            phase = "scratch_finalize"
             _finalize_applied_scratches(live_projections, scratches)
+            phase = "postimage_validation"
             _require_exact_task_postimage(intent)
             _assert_preimages(projections[7:])
             consumption.require_source_proofs(intent)
+            phase = "journal_postimage_complete"
             _persist_admitted_manifest_state(
                 manifest_path,
                 intent,
@@ -3709,6 +3737,7 @@ def _apply_admitted_claim_publication_transaction(
                 publication_id,
                 state="postimage_complete",
             )
+            phase = "receipt_persist"
             _persist_admitted_receipt(
                 receipt_path,
                 intent,
@@ -3716,6 +3745,7 @@ def _apply_admitted_claim_publication_transaction(
                 projections,
                 publication_id,
             )
+            phase = "journal_applied"
             _persist_admitted_manifest_state(
                 manifest_path,
                 intent,
@@ -3751,17 +3781,22 @@ def _apply_admitted_claim_publication_transaction(
                 reason_code=wrapped.reason_code,
             )
             raise wrapped from exc
-        except Exception:
-            _persist_admitted_manifest_state(
-                manifest_path,
-                intent,
-                consumption,
-                projections,
-                publication_id,
-                state="recovery_required",
-                reason_code="claim_publication_projection_failed",
-            )
-            raise
+        except Exception as exc:
+            wrapped = _admitted_transaction_phase_error(phase, exc)
+            try:
+                _persist_admitted_manifest_state(
+                    manifest_path,
+                    intent,
+                    consumption,
+                    projections,
+                    publication_id,
+                    state="recovery_required",
+                    reason_code=wrapped.reason_code,
+                )
+            except ClaimPublicationError:
+                if not phase.startswith("journal_"):
+                    raise
+            raise wrapped from exc
 
         return _as_admitted_receipt(
             manifest_path,
