@@ -2744,6 +2744,24 @@ def test_canonical_installed_audit_rejects_test_mode(
         admission()
 
 
+@pytest.mark.parametrize(
+    "hostname",
+    ("hapax-appendix.example", "hapax-appendix.evil"),
+)
+def test_host_profile_refuses_suffixed_hostname(
+    monkeypatch: pytest.MonkeyPatch,
+    hostname: str,
+) -> None:
+    monkeypatch.setenv("HAPAX_OOM_AUDIT_TEST_MODE", "1")
+    monkeypatch.setenv("HAPAX_OOM_AUDIT_HOSTNAME", hostname)
+    monkeypatch.setenv("HAPAX_OOM_AUDIT_MEMTOTAL_KIB", str(60 * 1024**2))
+    namespace = runpy.run_path(str(SCRIPT))
+
+    assert namespace["_hostname"]() == hostname
+    with pytest.raises(namespace["HostPolicyError"], match="unsupported canonical hostname"):
+        namespace["derive_host_policy"]()
+
+
 @pytest.mark.parametrize("memtotal_gib", [59, 61])
 def test_appendix_profile_interval_is_inclusive(
     monkeypatch: pytest.MonkeyPatch, memtotal_gib: int

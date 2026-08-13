@@ -34,6 +34,7 @@ PY_MODULE = re.compile(r"python3?\s+-m\s+(agents[\w.]*|shared[\w.]*)")
 
 # ── units migrated to source-activation by this task (positive pins) ──
 MIGRATED_UNITS = (
+    "hapax-feedback-loop-detector.service",
     "hapax-segment-prep.service",
     "vault-context-writer.service",
     "health-connect-parse.service",
@@ -86,7 +87,6 @@ KNOWN_CANONICAL_EXCEPTIONS = frozenset(
         "hapax-broadcast-audio-health.service",
         "hapax-broadcast-egress-loopback-producer.service",
         "hapax-channel-trailer.service",
-        "hapax-feedback-loop-detector.service",
         "hapax-lufs-panic-cap.service",
         "hapax-overlay-producer.service",
         "hapax-pipewire-graph-shadow.service",

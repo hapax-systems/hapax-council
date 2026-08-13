@@ -2900,6 +2900,13 @@ def test_retired_enforcer_has_no_failure_intake_dependency() -> None:
     assert "audit_effective_failure_intake_unit" not in audit
 
 
+def test_root_required_audit_uses_unabridged_kernel_hostname() -> None:
+    audit = ROOT_REQUIRED_AUDIT.read_text(encoding="utf-8")
+
+    assert 'hostname="$(/usr/bin/hostname)"' in audit
+    assert "hostname --short" not in audit
+
+
 @pytest.mark.parametrize(
     ("property_name", "loaded_value", "expected_error"),
     (
