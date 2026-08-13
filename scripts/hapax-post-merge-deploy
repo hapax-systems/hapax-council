@@ -652,12 +652,67 @@ trap trace_on_exit EXIT
 # Record the SHA this deploy cycle ran against (real-deploy modes only). The
 # staleness alarm + the AC `rev-list <last-deployed-sha>..origin/main` read it;
 # the .service edge-trigger reads it to compute the cumulative --since range.
+atomic_write_sha_receipt() {
+    local path="$1" value="$2"
+    /usr/bin/python3 - "$path" "$value" <<'PY'
+from __future__ import annotations
+
+import os
+import re
+import sys
+import tempfile
+
+path = os.path.abspath(sys.argv[1])
+value = sys.argv[2]
+if re.fullmatch(r"[0-9a-f]{40}", value) is None:
+    print(f"hapax-post-merge-deploy: refused invalid SHA receipt value: {value!r}", file=sys.stderr)
+    raise SystemExit(1)
+
+parent = os.path.dirname(path)
+fd = -1
+temp_path = ""
+try:
+    os.makedirs(parent, mode=0o700, exist_ok=True)
+    fd, temp_path = tempfile.mkstemp(prefix=f".{os.path.basename(path)}.tmp.", dir=parent)
+    os.fchmod(fd, 0o600)
+    payload = f"{value}\n".encode("ascii")
+    offset = 0
+    while offset < len(payload):
+        written = os.write(fd, payload[offset:])
+        if written <= 0:
+            raise OSError("short write while publishing SHA receipt")
+        offset += written
+    os.fsync(fd)
+    os.close(fd)
+    fd = -1
+    os.replace(temp_path, path)
+    temp_path = ""
+    dir_fd = os.open(parent, os.O_RDONLY | os.O_DIRECTORY)
+    try:
+        os.fsync(dir_fd)
+    finally:
+        os.close(dir_fd)
+except (OSError, ValueError) as exc:
+    if fd >= 0:
+        os.close(fd)
+    if temp_path:
+        try:
+            os.unlink(temp_path)
+        except FileNotFoundError:
+            pass
+    print(f"hapax-post-merge-deploy: failed to publish SHA receipt {path}: {exc}", file=sys.stderr)
+    raise SystemExit(1) from exc
+PY
+}
+
 record_last_deployed_sha() {
     [ "$DRY_RUN" = "1" ] && return 0
     [ "$REPORT_COVERAGE" = "1" ] && return 0
     [ -n "$SHA" ] || return 0
-    mkdir -p "$(dirname "$LAST_DEPLOYED_SHA_PATH")" 2>/dev/null || true
-    printf '%s\n' "$SHA" > "$LAST_DEPLOYED_SHA_PATH"
+    if ! atomic_write_sha_receipt "$LAST_DEPLOYED_SHA_PATH" "$SHA"; then
+        echo "hapax-post-merge-deploy: failed to publish last-deployed SHA; refusing successful completion" >&2
+        return 1
+    fi
 }
 
 cd "$REPO"
@@ -719,19 +774,67 @@ GOVERNED_INTAKE_PRESET_UNIT_SETS=(
 )
 GOVERNED_INTAKE_PRESET_ENABLE=()
 
+root_required_manifest_path_is_safe() {
+    local rel="$1"
+    if [[ "$rel" =~ [[:space:]] ]]; then
+        return 1
+    fi
+    case "$rel" in
+        ""|/*|*\\*|*//*|.|..|./*|../*|*/./*|*/../*|*/.|*/..)
+            return 1
+            ;;
+    esac
+    return 0
+}
+
 load_root_required_manifest_paths() {
-    local manifest="$1" revision="$2" target_name="$3" content rel
+    local manifest="$1" revision="$2" target_name="$3"
+    local content="" entry="" mode="" type="" rel="" extra="" line=""
     local -n target="$target_name"
+    local -A seen=()
     if [ "$COVERAGE_FROM_STDIN" = "1" ]; then
         [ -f "$REPO/$manifest" ] || return 0
-        content="$(cat "$REPO/$manifest")"
+        if ! content="$(cat "$REPO/$manifest")"; then
+            echo "hapax-post-merge-deploy: failed to read source coverage manifest $manifest" >&2
+            return 2
+        fi
     else
-        content="$(git -C "$REPO" show "$revision:$manifest" 2>/dev/null || true)"
+        if ! entry="$(git -C "$REPO" ls-tree "$revision" -- "$manifest")"; then
+            echo "hapax-post-merge-deploy: failed to inspect root-required manifest $revision:$manifest; refusing package classification" >&2
+            return 2
+        fi
+        [ -n "$entry" ] || return 0
+        if [[ "$entry" == *$'\n'* ]]; then
+            echo "hapax-post-merge-deploy: ambiguous root-required manifest entry $revision:$manifest; refusing package classification" >&2
+            return 2
+        fi
+        read -r mode type _ <<< "$entry"
+        if [[ "$mode" != 100644 && "$mode" != 100755 ]] || [ "$type" != blob ]; then
+            echo "hapax-post-merge-deploy: root-required manifest is not a regular Git blob at $revision:$manifest; refusing package classification" >&2
+            return 2
+        fi
+        if ! content="$(git -C "$REPO" show "$revision:$manifest")"; then
+            echo "hapax-post-merge-deploy: failed to read root-required manifest $revision:$manifest; refusing package classification" >&2
+            return 2
+        fi
     fi
-    while IFS= read -r rel; do
+    while IFS= read -r line; do
+        rel=""
+        extra=""
+        read -r rel extra <<< "$line" || true
         [ -n "$rel" ] || continue
+        [[ "$rel" == \#* ]] && continue
+        if [ -n "$extra" ] || ! root_required_manifest_path_is_safe "$rel"; then
+            echo "hapax-post-merge-deploy: malformed root-required manifest entry in $manifest: $line" >&2
+            return 2
+        fi
+        if [ -n "${seen[$rel]+present}" ]; then
+            echo "hapax-post-merge-deploy: duplicate root-required manifest path in $manifest: $rel" >&2
+            return 2
+        fi
+        seen["$rel"]=1
         target["$rel"]=1
-    done < <(awk 'NF && $1 !~ /^#/ {print $1}' <<< "$content")
+    done <<< "$content"
 }
 
 load_root_required_package_paths() {
@@ -1189,10 +1292,10 @@ if [ -z "$FILES" ]; then
     if [ "$DID_ANYTHING" -ne 0 ]; then
         trace_status="completed"
     fi
+    record_last_deployed_sha
     if record_post_merge_trace "$trace_status" "0"; then
         TRACE_WRITTEN=1
     fi
-    record_last_deployed_sha
     echo "no files changed in $SHA"
     exit 0
 fi
@@ -1442,28 +1545,32 @@ if [ "${#RECOVERY_BUNDLE[@]}" -gt 0 ] || [ "$RECOVERY_BUNDLE_SELF_HEAL" = "1" ];
 fi
 
 # --- P0 OOM containment system/user policy ---
-root_required_manifest_path_is_safe() {
-    local rel="$1"
-    if [[ "$rel" =~ [[:space:]] ]]; then
-        return 1
-    fi
-    case "$rel" in
-        ""|/*|*\\*|*//*|.|..|./*|../*|*/./*|*/../*|*/.|*/..)
-            return 1
-            ;;
-    esac
-    return 0
-}
-
 stage_root_required_package() {
     local stage="$1" manifest="$2" label="$3"
-    local rel dest git_mode
+    local rel dest git_mode git_type git_tree manifest_line extra payload_tmp mode
+    local manifest_text="" entry_count=0
+    if [ ! -d "$stage" ] || [ -L "$stage" ]; then
+        echo "hapax-post-merge-deploy: invalid $label stage directory: $stage" >&2
+        return 2
+    fi
     if ! git cat-file -e "$SHA:$manifest" 2>/dev/null; then
         echo "hapax-post-merge-deploy: missing $label manifest at $SHA:$manifest; next: restore the versioned ownership manifest and rerun hapax-post-merge-deploy for this merge" >&2
         return 2
     fi
-    while IFS= read -r rel; do
+    if ! manifest_text="$(git -C "$REPO" show "$SHA:$manifest")"; then
+        echo "hapax-post-merge-deploy: failed to read $label manifest at $SHA:$manifest; refusing to publish an incomplete stage" >&2
+        return 2
+    fi
+    while IFS= read -r manifest_line; do
+        rel=""
+        extra=""
+        read -r rel extra <<< "$manifest_line" || true
         [ -n "$rel" ] || continue
+        [[ "$rel" == \#* ]] && continue
+        if [ -n "$extra" ]; then
+            echo "hapax-post-merge-deploy: malformed $label manifest entry: $manifest_line; next: declare exactly one normalized path per line" >&2
+            return 2
+        fi
         if ! root_required_manifest_path_is_safe "$rel"; then
             echo "hapax-post-merge-deploy: unsafe or non-normalized $label manifest path: $rel; next: use normalized repository-relative paths only" >&2
             return 2
@@ -1472,7 +1579,15 @@ stage_root_required_package() {
             echo "hapax-post-merge-deploy: missing $label source at $SHA:$rel; next: restore every path declared by $manifest and rerun hapax-post-merge-deploy for this merge" >&2
             return 2
         fi
-        git_mode="$(git -C "$REPO" ls-tree "$SHA" -- "$rel" | awk 'NR == 1 {print $1}')"
+        if ! git_tree="$(git -C "$REPO" ls-tree "$SHA" -- "$rel")"; then
+            echo "hapax-post-merge-deploy: failed to inspect $label Git mode at $SHA:$rel; refusing to publish an incomplete stage" >&2
+            return 2
+        fi
+        if [ -z "$git_tree" ] || [[ "$git_tree" == *$'\n'* ]]; then
+            echo "hapax-post-merge-deploy: ambiguous $label Git entry at $SHA:$rel; refusing to publish an incomplete stage" >&2
+            return 2
+        fi
+        read -r git_mode git_type _ <<< "$git_tree"
         case "$git_mode" in
             100644|100755) ;;
             *)
@@ -1480,16 +1595,49 @@ stage_root_required_package() {
                 return 2
                 ;;
         esac
-        dest="$stage/$rel"
-        mkdir -p "$(dirname "$dest")"
-        git show "$SHA:$rel" > "$dest"
-        if [ "$git_mode" = "100755" ]; then
-            chmod 0755 "$dest"
-        else
-            chmod 0644 "$dest"
+        if [ "$git_type" != "blob" ]; then
+            echo "hapax-post-merge-deploy: unsupported $label Git object type ${git_type:-missing} at $SHA:$rel; expected a blob" >&2
+            return 2
         fi
-    done < <(git -C "$REPO" show "$SHA:$manifest" | awk 'NF && $1 !~ /^#/ {print $1}')
-    printf '%s\n' "$SHA" > "$stage/.hapax-root-required-package-sha"
+        dest="$stage/$rel"
+        if ! mkdir -p "$(dirname "$dest")"; then
+            echo "hapax-post-merge-deploy: failed to create $label stage directory for $rel" >&2
+            return 2
+        fi
+        if ! payload_tmp="$(mktemp "$dest.tmp.XXXXXX")"; then
+            echo "hapax-post-merge-deploy: failed to allocate $label stage file for $rel" >&2
+            return 2
+        fi
+        if ! git -C "$REPO" show "$SHA:$rel" > "$payload_tmp"; then
+            rm -f -- "$payload_tmp" 2>/dev/null || true
+            echo "hapax-post-merge-deploy: failed to read $label source at $SHA:$rel; refusing to publish an incomplete stage" >&2
+            return 2
+        fi
+        if [ "$git_mode" = "100755" ]; then
+            mode=0755
+        else
+            mode=0644
+        fi
+        if ! chmod "$mode" "$payload_tmp"; then
+            rm -f -- "$payload_tmp" 2>/dev/null || true
+            echo "hapax-post-merge-deploy: failed to set $label stage mode for $rel" >&2
+            return 2
+        fi
+        if ! mv -f -- "$payload_tmp" "$dest"; then
+            rm -f -- "$payload_tmp" 2>/dev/null || true
+            echo "hapax-post-merge-deploy: failed to publish $label stage file for $rel" >&2
+            return 2
+        fi
+        entry_count=$((entry_count + 1))
+    done <<< "$manifest_text"
+    if [ "$entry_count" -eq 0 ]; then
+        echo "hapax-post-merge-deploy: $label manifest at $SHA:$manifest has no package paths; refusing to publish an empty stage" >&2
+        return 2
+    fi
+    if ! atomic_write_sha_receipt "$stage/.hapax-root-required-package-sha" "$SHA"; then
+        echo "hapax-post-merge-deploy: failed to publish the $label stage marker" >&2
+        return 2
+    fi
 }
 
 stage_oom_containment_installer() {
@@ -1566,43 +1714,80 @@ EOF
 }
 
 root_required_stage_matches_commit() {
-    local stage="$1" commit="$2" manifest_rel="$3" file rel git_mode stage_mode
-    cmp -s "$stage/$manifest_rel" <(git -C "$REPO" show "$commit:$manifest_rel" 2>/dev/null) || return 1
-    while IFS= read -r rel; do
+    local stage="$1" commit="$2" manifest_rel="$3" file rel git_mode git_type stage_mode
+    local source_oid stage_oid git_tree manifest_line extra entry_count=0
+    [ -f "$stage/$manifest_rel" ] || return 1
+    [ ! -L "$stage/$manifest_rel" ] || return 1
+    if ! source_oid="$(git -C "$REPO" rev-parse --verify "$commit:$manifest_rel" 2>/dev/null)"; then
+        return 1
+    fi
+    if ! stage_oid="$(git -C "$REPO" hash-object "$stage/$manifest_rel" 2>/dev/null)"; then
+        return 1
+    fi
+    [ "$source_oid" = "$stage_oid" ] || return 1
+    while IFS= read -r manifest_line; do
+        rel=""
+        extra=""
+        read -r rel extra <<< "$manifest_line" || true
+        [ -n "$rel" ] || continue
+        [[ "$rel" == \#* ]] && continue
+        [ -z "$extra" ] || return 1
+        root_required_manifest_path_is_safe "$rel" || return 1
         file="$stage/$rel"
         [ -f "$file" ] || return 1
         [ ! -L "$file" ] || return 1
-        git -C "$REPO" cat-file -e "$commit:$rel" 2>/dev/null || return 1
-        cmp -s "$file" <(git -C "$REPO" show "$commit:$rel") || return 1
-        git_mode="$(git -C "$REPO" ls-tree "$commit" -- "$rel" | awk 'NR == 1 {print $1}')"
+        if ! source_oid="$(git -C "$REPO" rev-parse --verify "$commit:$rel" 2>/dev/null)"; then
+            return 1
+        fi
+        if ! stage_oid="$(git -C "$REPO" hash-object "$file" 2>/dev/null)"; then
+            return 1
+        fi
+        [ "$source_oid" = "$stage_oid" ] || return 1
+        if ! git_tree="$(git -C "$REPO" ls-tree "$commit" -- "$rel")"; then
+            return 1
+        fi
+        [ -n "$git_tree" ] || return 1
+        [[ "$git_tree" != *$'\n'* ]] || return 1
+        read -r git_mode git_type _ <<< "$git_tree"
+        [ "$git_type" = "blob" ] || return 1
         stage_mode=100644
         [ -x "$file" ] && stage_mode=100755
         [ "$git_mode" = "$stage_mode" ] || return 1
-    done < <(awk 'NF && $1 !~ /^#/ {print $1}' "$stage/$manifest_rel")
+        entry_count=$((entry_count + 1))
+    done < "$stage/$manifest_rel"
+    [ "$entry_count" -gt 0 ]
 }
 
 validate_root_required_stage_manifest() {
-    local stage="$1" manifest_rel="$2"
-    if ! cmp -s \
-        <(awk 'NF && $1 !~ /^#/ {print $1}' "$stage/$manifest_rel" | sort) \
-        <(find "$stage" -type f ! -name .hapax-root-required-package-sha -printf '%P\n' | sort); then
+    local stage="$1" manifest_rel="$2" expected actual
+    if ! expected="$(awk 'NF && $1 !~ /^#/ {print $1}' "$stage/$manifest_rel" | LC_ALL=C sort)"; then
+        echo "hapax-post-merge-deploy: failed to read staged $manifest_rel; refusing desired-state publication" >&2
+        return 1
+    fi
+    if ! actual="$(find "$stage" -type f ! -name .hapax-root-required-package-sha -printf '%P\n' | LC_ALL=C sort)"; then
+        echo "hapax-post-merge-deploy: failed to enumerate staged root-required package; refusing desired-state publication" >&2
+        return 1
+    fi
+    if [ -z "$expected" ] || [ "$expected" != "$actual" ]; then
         echo "hapax-post-merge-deploy: staged root-required package does not match $manifest_rel; next action: update the versioned ownership manifest and staging list together" >&2
         return 1
     fi
 }
 
 record_root_required_desired_sha() {
-    local label="$1" stage="$2" receipt temp current manifest_rel
+    local label="$1" stage="$2" receipt current manifest_rel
     case "$label" in
         oom-containment) manifest_rel="config/root-required/oom-containment.files" ;;
         apcupsd-power-alerts) manifest_rel="config/root-required/apcupsd-power-alerts.files" ;;
         *) echo "hapax-post-merge-deploy: unknown root-required package label: $label; next action: use oom-containment or apcupsd-power-alerts from the governed staging path" >&2; return 2 ;;
     esac
     validate_root_required_stage_manifest "$stage" "$manifest_rel" || return 1
-    mkdir -p "$ROOT_REQUIRED_DESIRED_RECEIPT_ROOT"
     receipt="$ROOT_REQUIRED_DESIRED_RECEIPT_ROOT/$label.sha"
     if [ -f "$receipt" ]; then
-        current="$(tr -d '[:space:]' < "$receipt")"
+        if ! current="$(tr -d '[:space:]' < "$receipt")"; then
+            echo "hapax-post-merge-deploy: failed to read desired $label receipt $receipt; refusing to replace it" >&2
+            return 1
+        fi
         if ! [[ "$current" =~ ^[0-9a-f]{40}$ ]] || ! git -C "$REPO" cat-file -e "$current^{commit}" 2>/dev/null; then
             echo "hapax-post-merge-deploy: invalid or unavailable desired $label receipt $current; next action: restore the latest governed receipt and rerun this deploy" >&2
             return 1
@@ -1623,9 +1808,10 @@ record_root_required_desired_sha() {
             fi
         fi
     fi
-    temp="$receipt.tmp.$$"
-    printf '%s\n' "$SHA" > "$temp"
-    mv -f "$temp" "$receipt"
+    if ! atomic_write_sha_receipt "$receipt" "$SHA"; then
+        echo "hapax-post-merge-deploy: failed to publish desired $label receipt; refusing successful staging" >&2
+        return 1
+    fi
 }
 
 # apcupsd must be active before the OOM package verifies the recovery plane.
@@ -2245,9 +2431,9 @@ trace_status="completed"
 if [ "${#RUNTIME_DEFERRED[@]}" -gt 0 ]; then
     trace_status="completed_with_runtime_deferral"
 fi
+record_last_deployed_sha
 if record_post_merge_trace "$trace_status" "0"; then
     TRACE_WRITTEN=1
 else
     echo "warning: failed to write post-merge deploy trace to $TRACE_PATH" >&2
 fi
-record_last_deployed_sha

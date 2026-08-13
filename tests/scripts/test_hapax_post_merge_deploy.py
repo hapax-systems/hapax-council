@@ -6,6 +6,7 @@ import fcntl
 import hashlib
 import json
 import os
+import re
 import subprocess
 import time
 from pathlib import Path
@@ -29,18 +30,23 @@ RECOVERY_BUNDLE_SOURCE_FILES = {
     "shared/p0_incident_intake.py": "def main():\n    return 0\n",
 }
 P0_USER_OOM_DROPINS = {
-    relative: (
-        "[Service]\nOOMScoreAdjust=100\n"
-        f"ExecStartPost=-/usr/local/bin/hapax-oom-score-trigger {unit}\n"
-    )
-    for relative, unit in {
+    relative: "[Service]\nOOMScoreAdjust=100\n"
+    for relative in {
         "systemd/units/pipewire.service.d/oom-protect.conf": "pipewire.service",
         "systemd/units/pipewire-pulse.service.d/oom-protect.conf": "pipewire-pulse.service",
         "systemd/units/wireplumber.service.d/oom-protect.conf": "wireplumber.service",
         "systemd/units/hapax-daimonion.service.d/oom-protect.conf": "hapax-daimonion.service",
         "systemd/units/studio-compositor.service.d/oom-protect.conf": "studio-compositor.service",
         "systemd/units/hapax-imagination.service.d/oom-protect.conf": "hapax-imagination.service",
-    }.items()
+    }
+}
+P0_PROTECTED_APP_UNITS = {
+    relative: (REPO_ROOT / relative).read_text(encoding="utf-8")
+    for relative in (
+        "systemd/units/hapax-daimonion.service",
+        "systemd/units/studio-compositor.service",
+        "systemd/units/hapax-imagination.service",
+    )
 }
 OOM_HOST_POLICY_FILES = {
     relative: (REPO_ROOT / relative).read_text(encoding="utf-8")
@@ -88,12 +94,15 @@ ROOT_AUDIT_SOURCE_FILES = {
     "config/root-required/apcupsd-power-alerts.files": APCUPSD_PACKAGE_MANIFEST,
     "scripts/install-p0-oom-containment": "#!/usr/bin/env bash\n",
     "config/root-required/hapax-oom-score-enforce.sudoers": (
-        "hapax ALL=(root) NOPASSWD: /usr/local/sbin/hapax-oom-score-enforce --apply-unit pipewire.service\n"
+        "Cmnd_Alias HAPAX_ROOT_REQUIRED_AUDIT = /usr/bin/visudo -cf "
+        "/etc/sudoers.d/hapax-oom-score-enforce\n"
+        "hapax ALL=(root) NOPASSWD:NOSETENV: HAPAX_ROOT_REQUIRED_AUDIT\n"
     ),
     "scripts/install-apcupsd-power-alerts": "#!/usr/bin/env bash\n",
     "scripts/hapax-oom-score-enforce": "#!/usr/bin/env bash\necho enforcer\n",
     "scripts/hapax-oom-score-trigger": "#!/usr/bin/env bash\necho trigger\n",
     "scripts/hapax-root-failure-intake": "#!/usr/bin/env bash\necho root failure\n",
+    **P0_PROTECTED_APP_UNITS,
     **P0_OOM_AUDIT_FILES,
     "config/earlyoom/default": 'EARLYOOM_ARGS="--ignore recovery"\n',
     "systemd/system/system.slice.d/oom-containment.conf": (
@@ -134,8 +143,7 @@ ROOT_AUDIT_SOURCE_FILES = {
     ),
     "systemd/units/hapax-oom-score-enforce.service": (
         "[Unit]\n# Hapax-Install-Scope: system\n"
-        "OnFailure=hapax-root-failure-intake@%n.service\n"
-        "[Service]\nType=oneshot\nTimeoutStartSec=25s\n"
+        "[Service]\nType=oneshot\nTimeoutStartSec=5s\n"
         "ExecStart=/usr/local/sbin/hapax-oom-score-enforce --apply\n"
     ),
     "systemd/units/hapax-oom-score-enforce.timer": (
@@ -183,6 +191,40 @@ def _git(repo: Path, *args: str) -> str:
         check=True,
     )
     return result.stdout.strip()
+
+
+def _fake_git_with_show_failure(tmp_path: Path) -> Path:
+    bin_dir = tmp_path / "git-bin"
+    bin_dir.mkdir()
+    fake = bin_dir / "git"
+    fake.write_text(
+        "#!/usr/bin/env bash\n"
+        "set -euo pipefail\n"
+        "matched=0\n"
+        "previous=\n"
+        'for arg in "$@"; do\n'
+        '    if [ "$previous" = show ] && [ "$arg" = "$HAPAX_FAIL_GIT_SHOW_OBJECT" ]; then\n'
+        "        matched=1\n"
+        "        break\n"
+        "    fi\n"
+        '    previous="$arg"\n'
+        "done\n"
+        'if [ "$matched" = 1 ]; then\n'
+        "    count=0\n"
+        '    if [ -f "$HAPAX_FAIL_GIT_SHOW_COUNT_FILE" ]; then\n'
+        '        read -r count < "$HAPAX_FAIL_GIT_SHOW_COUNT_FILE"\n'
+        "    fi\n"
+        "    count=$((count + 1))\n"
+        '    printf \'%s\\n\' "$count" > "$HAPAX_FAIL_GIT_SHOW_COUNT_FILE"\n'
+        '    if [ "$count" -eq "$HAPAX_FAIL_GIT_SHOW_ON_COUNT" ]; then\n'
+        "        exit 86\n"
+        "    fi\n"
+        "fi\n"
+        'exec /usr/bin/git "$@"\n',
+        encoding="utf-8",
+    )
+    fake.chmod(0o755)
+    return bin_dir
 
 
 def _repo_with_merge_commit(tmp_path: Path) -> tuple[Path, str]:
@@ -342,7 +384,7 @@ def _effective_safety_unit_show_script(system_dir: Path, user_dir: Path) -> str:
             "hapax-oom-score-enforce.service",
             system_dir / "hapax-oom-score-enforce.service",
             "/usr/local/sbin/hapax-oom-score-enforce --apply",
-            "hapax-root-failure-intake@hapax-oom-score-enforce.service.service",
+            "",
         ),
         (
             "user",
@@ -373,25 +415,6 @@ def _effective_safety_unit_show_script(system_dir: Path, user_dir: Path) -> str:
                 f'if [ "$*" = "{prefix} {unit} -p {prop} --value" ]; '
                 f"then printf '%s\\n' '{value}'; fi\n"
             )
-    failure_unit = "hapax-root-failure-intake@hapax-oom-score-enforce.service.service"
-    failure_properties = {
-        "FragmentPath": str(system_dir / "hapax-root-failure-intake@.service"),
-        "DropInPaths": "",
-        "ExecStart": (
-            "{ path=/usr/local/sbin/hapax-root-failure-intake ; "
-            "argv[]=/usr/local/sbin/hapax-root-failure-intake "
-            "hapax-oom-score-enforce.service ; }"
-        ),
-        "User": "hapax",
-        "Environment": "PATH=/usr/local/sbin:/usr/local/bin:/usr/bin:/bin",
-        "StartLimitIntervalUSec": "1h",
-        "StartLimitBurst": "1",
-    }
-    for prop, value in failure_properties.items():
-        lines.append(
-            f'if [ "$*" = "show {failure_unit} -p {prop} --value" ]; '
-            f"then printf '%s\\n' '{value}'; fi\n"
-        )
     timers = (
         (
             "system",
@@ -466,7 +489,9 @@ def _root_audit_env(
     fake_systemctl = tmp_path / "root-audit-systemctl"
     fake_systemctl.write_text(
         "#!/usr/bin/env bash\n"
-        'if [ "$*" = "show hapax-oom-score-enforce.service -p TimeoutStartUSec --value" ]; then printf "25s\\n"; fi\n'
+        'if [ "$*" = "is-enabled hapax-oom-score-enforce.timer" ]; then printf "static\\n"; exit 0; fi\n'
+        'if [ "$*" = "is-active --quiet hapax-oom-score-enforce.timer" ]; then exit 1; fi\n'
+        'if [ "$*" = "show hapax-oom-score-enforce.service -p TimeoutStartUSec --value" ]; then printf "5s\\n"; fi\n'
         'if [ "$*" = "--user show hapax-oom-policy-audit.service -p TimeoutStartUSec --value" ]; then printf "2min\\n"; fi\n'
         'if [ "$*" = "--user show hapax-root-required-deploy-audit.service -p TimeoutStartUSec --value" ]; then printf "2min\\n"; fi\n'
         'if [ "$*" = "--user show hapax-oom-policy-audit.service -p Environment --value" ]; then printf "PATH=/usr/local/sbin:/usr/local/bin:/usr/bin:/bin\\n"; fi\n'
@@ -959,7 +984,8 @@ def test_p0_oom_deploy_validates_and_stages_desired_evidence_without_runtime_mut
         future_manifest_path: 'FUTURE_EARLYOOM_POLICY="enabled"\n',
         "scripts/install-p0-oom-containment": installer_body,
         "config/root-required/hapax-oom-score-enforce.sudoers": (
-            "hapax ALL=(root) NOPASSWD: /usr/local/sbin/hapax-oom-score-enforce --apply-unit pipewire.service\n"
+            "Cmnd_Alias HAPAX_ROOT_REQUIRED_AUDIT = /usr/bin/visudo -cf /etc/sudoers.d/hapax-oom-score-enforce\n"
+            "hapax ALL=(root) NOPASSWD:NOSETENV: HAPAX_ROOT_REQUIRED_AUDIT\n"
         ),
         "scripts/hapax-oom-score-enforce": "#!/usr/bin/env bash\nexit 0\n",
         "scripts/hapax-oom-score-trigger": "#!/usr/bin/env bash\nexit 0\n",
@@ -1014,6 +1040,7 @@ def test_p0_oom_deploy_validates_and_stages_desired_evidence_without_runtime_mut
             "MemoryLow=2G\nMemoryMin=1G\n"
         ),
         **P0_USER_OOM_DROPINS,
+        **P0_PROTECTED_APP_UNITS,
     }
     repo, sha = _repo_with_linear_commit(tmp_path, files)
     home = tmp_path / "home"
@@ -1115,10 +1142,116 @@ def test_p0_oom_staging_rejects_non_normalized_manifest_path_before_receipt(
     )
 
     assert result.returncode == 2
-    assert "unsafe or non-normalized OOM containment manifest path" in result.stderr
+    assert "malformed root-required manifest entry" in result.stderr
     assert not (
         home / ".local/state/hapax/root-required/desired-receipts/oom-containment.sha"
     ).exists()
+
+
+@pytest.mark.parametrize(
+    ("failed_path", "failed_occurrence", "expected_error", "trace_expected"),
+    (
+        (
+            "config/root-required/oom-containment.files",
+            1,
+            "refusing package classification",
+            False,
+        ),
+        (
+            "config/root-required/oom-containment.files",
+            2,
+            "refusing package classification",
+            False,
+        ),
+        (
+            "config/root-required/oom-containment.files",
+            3,
+            "refusing to publish an incomplete stage",
+            True,
+        ),
+        (
+            "config/root-required/oom-containment.files",
+            4,
+            "refusing to publish an incomplete stage",
+            True,
+        ),
+        (
+            "scripts/install-p0-oom-containment",
+            1,
+            "refusing to publish an incomplete stage",
+            True,
+        ),
+    ),
+    ids=(
+        "classification-manifest-read",
+        "classification-after-lock-manifest-read",
+        "staging-manifest-read",
+        "manifest-payload-read",
+        "source-payload-read",
+    ),
+)
+def test_p0_oom_staging_git_read_failure_cannot_publish_package_state(
+    tmp_path: Path,
+    failed_path: str,
+    failed_occurrence: int,
+    expected_error: str,
+    trace_expected: bool,
+) -> None:
+    manifest_path = "config/root-required/oom-containment.files"
+    installer_path = "scripts/install-p0-oom-containment"
+    manifest = f"{manifest_path}\n{installer_path}\n"
+    repo, sha = _repo_with_linear_commit(
+        tmp_path,
+        {
+            manifest_path: manifest,
+            installer_path: (
+                "#!/usr/bin/env bash\nprintf 'called\\n' > \"$HAPAX_STAGE_INSTALLER_CALLS\"\n"
+            ),
+        },
+    )
+    home = tmp_path / "home"
+    temp_root = tmp_path / "stages"
+    temp_root.mkdir()
+    defer_root = tmp_path / "deferred"
+    trace_path = tmp_path / "traces" / "post-merge-traces.jsonl"
+    installer_calls = tmp_path / "installer-calls"
+    count_file = tmp_path / "failed-show-count"
+    bin_dir = _fake_git_with_show_failure(tmp_path)
+
+    result = subprocess.run(
+        [str(SCRIPT), sha],
+        text=True,
+        capture_output=True,
+        check=False,
+        env={
+            **os.environ,
+            "HOME": str(home),
+            "PATH": f"{bin_dir}:{os.environ['PATH']}",
+            "REPO": str(repo),
+            "TMPDIR": str(temp_root),
+            "HAPAX_POST_MERGE_TRACE_PATH": str(trace_path),
+            "HAPAX_POST_MERGE_ROOT_DEFER_DIR": str(defer_root),
+            "HAPAX_STAGE_INSTALLER_CALLS": str(installer_calls),
+            "HAPAX_FAIL_GIT_SHOW_OBJECT": f"{sha}:{failed_path}",
+            "HAPAX_FAIL_GIT_SHOW_COUNT_FILE": str(count_file),
+            "HAPAX_FAIL_GIT_SHOW_ON_COUNT": str(failed_occurrence),
+        },
+    )
+
+    assert result.returncode == 2, (result.stdout, result.stderr)
+    assert expected_error in result.stderr
+    assert not installer_calls.exists()
+    assert not defer_root.exists()
+    assert not (
+        home / ".local/state/hapax/root-required/desired-receipts/oom-containment.sha"
+    ).exists()
+    assert not (trace_path.parent / "last-deployed-sha").exists()
+    assert not list(temp_root.rglob(".hapax-root-required-package-sha"))
+    assert trace_path.exists() is trace_expected
+    if trace_expected:
+        record = json.loads(trace_path.read_text(encoding="utf-8").splitlines()[-1])
+        assert record["status"] == "failed"
+        assert record["exit_code"] == 2
 
 
 @pytest.mark.parametrize("preexisting_receipt", (False, True))
@@ -1474,7 +1607,8 @@ def test_concurrent_same_sha_root_required_oom_deploy_stages_complete_deferral(
         "config/root-required/oom-containment.files": OOM_PACKAGE_MANIFEST,
         "scripts/install-p0-oom-containment": installer_body,
         "config/root-required/hapax-oom-score-enforce.sudoers": (
-            "hapax ALL=(root) NOPASSWD: /usr/local/sbin/hapax-oom-score-enforce --apply-unit pipewire.service\n"
+            "Cmnd_Alias HAPAX_ROOT_REQUIRED_AUDIT = /usr/bin/visudo -cf /etc/sudoers.d/hapax-oom-score-enforce\n"
+            "hapax ALL=(root) NOPASSWD:NOSETENV: HAPAX_ROOT_REQUIRED_AUDIT\n"
         ),
         "scripts/hapax-oom-score-enforce": "#!/usr/bin/env bash\nexit 0\n",
         "scripts/hapax-oom-score-trigger": "#!/usr/bin/env bash\nexit 0\n",
@@ -1529,6 +1663,7 @@ def test_concurrent_same_sha_root_required_oom_deploy_stages_complete_deferral(
             "MemoryLow=2G\nMemoryMin=1G\n"
         ),
         **P0_USER_OOM_DROPINS,
+        **P0_PROTECTED_APP_UNITS,
         "systemd/units/hapax-demo.service": (
             "[Unit]\nDescription=Demo\n\n[Service]\nType=oneshot\nExecStart=/bin/true\n"
         ),
@@ -1629,6 +1764,44 @@ def test_root_required_audit_fails_when_oom_enforcer_source_missing(tmp_path: Pa
     assert result.returncode == 1
     assert "root-required source missing" in result.stderr
     assert "next action:" in result.stderr
+
+
+def test_canonical_root_audit_refuses_every_state_and_tool_selector(
+    tmp_path: Path,
+) -> None:
+    source = ROOT_REQUIRED_AUDIT.read_text(encoding="utf-8")
+    selector_block = source.split("canonical_forbidden_selectors=(", 1)[1].split("\n)", 1)[0]
+    selectors = [line.strip() for line in selector_block.splitlines() if line.strip()]
+    assert len(selectors) >= 35
+    referenced_selectors = set(re.findall(r"\bHAPAX_[A-Z0-9_]*[A-Z0-9]\b", source))
+    internal_protocol = {
+        "HAPAX_ROOT_REQUIRED_LOCK_FD",
+        "HAPAX_ROOT_REQUIRED_LOCK_HELD",
+        "HAPAX_ROOT_REQUIRED_LOCK_MODE",
+    }
+    assert referenced_selectors - internal_protocol == set(selectors)
+
+    staged = tmp_path / "hapax-root-required-deploy-audit"
+    staged.write_text(
+        source.replace("/usr/local/sbin/hapax-root-required-deploy-audit", str(staged)),
+        encoding="utf-8",
+    )
+    staged.chmod(0o755)
+    base_env = os.environ.copy()
+    for selector in selectors:
+        base_env.pop(selector, None)
+
+    for selector in selectors:
+        result = subprocess.run(
+            [str(staged)],
+            env=base_env | {selector: "/tmp/caller-controlled"},
+            capture_output=True,
+            text=True,
+            timeout=5,
+            check=False,
+        )
+        assert result.returncode == 2, (selector, result.stderr)
+        assert f"refuses production selector {selector}" in result.stderr
 
 
 def test_root_required_audit_snapshot_list_covers_complete_oom_manifest() -> None:
@@ -2053,12 +2226,12 @@ def test_root_required_audit_detects_nonexecutable_hook(tmp_path: Path) -> None:
     assert "install-apcupsd-power-alerts" in result.stderr
 
 
-def test_root_required_audit_detects_disabled_enforcer_timer(tmp_path: Path) -> None:
+def test_root_required_audit_detects_enabled_retired_enforcer_timer(tmp_path: Path) -> None:
     env = _root_audit_env(tmp_path)
     fake_systemctl = Path(env["HAPAX_ROOT_AUDIT_SYSTEMCTL"])
     fake_systemctl.write_text(
         "#!/usr/bin/env bash\n"
-        'if [ "$*" = "is-enabled --quiet hapax-oom-score-enforce.timer" ]; then exit 1; fi\n'
+        'if [ "$*" = "is-enabled hapax-oom-score-enforce.timer" ]; then printf "enabled\\n"; exit 0; fi\n'
         "exit 0\n",
         encoding="utf-8",
     )
@@ -2073,7 +2246,7 @@ def test_root_required_audit_detects_disabled_enforcer_timer(tmp_path: Path) -> 
     )
 
     assert result.returncode == 1
-    assert "hapax-oom-score-enforce.timer is not enabled" in result.stderr
+    assert "hapax-oom-score-enforce.timer UnitFileState=enabled, expected static" in result.stderr
     assert "runtime-authorized root-broker" in result.stderr
 
 
@@ -2097,7 +2270,7 @@ def test_root_required_audit_detects_stale_loaded_enforcer_timeout(tmp_path: Pat
     )
 
     assert result.returncode == 1
-    assert "loaded TimeoutStartUSec=infinity, expected 25s" in result.stderr
+    assert "loaded TimeoutStartUSec=infinity, expected 5s" in result.stderr
     assert "runtime-authorized root-broker" in result.stderr
 
 
@@ -2106,7 +2279,7 @@ def test_root_required_audit_detects_stale_loaded_user_audit_timeout(tmp_path: P
     fake_systemctl = Path(env["HAPAX_ROOT_AUDIT_SYSTEMCTL"])
     fake_systemctl.write_text(
         "#!/usr/bin/env bash\n"
-        'if [ "$*" = "show hapax-oom-score-enforce.service -p TimeoutStartUSec --value" ]; then printf "25s\\n"; fi\n'
+        'if [ "$*" = "show hapax-oom-score-enforce.service -p TimeoutStartUSec --value" ]; then printf "5s\\n"; fi\n'
         'if [ "$*" = "--user show hapax-oom-policy-audit.service -p TimeoutStartUSec --value" ]; then printf "infinity\\n"; fi\n'
         'if [ "$*" = "--user show hapax-root-required-deploy-audit.service -p TimeoutStartUSec --value" ]; then printf "2min\\n"; fi\n'
         "exit 0\n",
@@ -2308,84 +2481,14 @@ def test_root_required_audit_rejects_effective_service_dropin(tmp_path: Path) ->
     assert "override.conf" in result.stderr
 
 
-def test_root_required_audit_rejects_effective_failure_intake_dropin(
-    tmp_path: Path,
-) -> None:
-    env = _root_audit_env(tmp_path)
-    fake_systemctl = Path(env["HAPAX_ROOT_AUDIT_SYSTEMCTL"])
-    baseline_systemctl = fake_systemctl.with_name("root-audit-systemctl-baseline")
-    fake_systemctl.rename(baseline_systemctl)
-    failure_unit = "hapax-root-failure-intake@hapax-oom-score-enforce.service.service"
-    fake_systemctl.write_text(
-        "#!/usr/bin/env bash\n"
-        f'if [ "$*" = "show {failure_unit} -p DropInPaths --value" ]; then\n'
-        "  printf '%s\\n' '/etc/systemd/system/hapax-root-failure-intake@.service.d/override.conf'\n"
-        "  exit 0\n"
-        "fi\n"
-        f'if [ "$*" = "show {failure_unit} -p ExecStart --value" ]; then\n'
-        "  printf '%s\\n' '{ path=/usr/bin/true ; argv[]=/usr/bin/true ; }'\n"
-        "  exit 0\n"
-        "fi\n"
-        f'exec "{baseline_systemctl!s}" "$@"\n',
-        encoding="utf-8",
+def test_retired_enforcer_has_no_failure_intake_dependency() -> None:
+    service = (REPO_ROOT / "systemd/units/hapax-oom-score-enforce.service").read_text(
+        encoding="utf-8"
     )
-    fake_systemctl.chmod(0o755)
+    audit = ROOT_REQUIRED_AUDIT.read_text(encoding="utf-8")
 
-    result = subprocess.run(
-        [str(ROOT_REQUIRED_AUDIT)],
-        text=True,
-        capture_output=True,
-        check=False,
-        env=env,
-    )
-
-    assert result.returncode == 1
-    assert f"effective {failure_unit} unit-source drift" in result.stderr
-    assert "override.conf" in result.stderr
-
-
-@pytest.mark.parametrize(
-    ("property_name", "bad_value", "expected_error"),
-    [
-        ("ExecStart", "{ path=/usr/bin/true ; argv[]=/usr/bin/true ; }", "ExecStart drift"),
-        ("User", "root", "identity/limit drift"),
-        ("Environment", "PATH=/tmp/shadow", "identity/limit drift"),
-        ("StartLimitIntervalUSec", "infinity", "identity/limit drift"),
-        ("StartLimitBurst", "99", "identity/limit drift"),
-    ],
-)
-def test_root_required_audit_rejects_effective_failure_intake_property_drift(
-    tmp_path: Path,
-    property_name: str,
-    bad_value: str,
-    expected_error: str,
-) -> None:
-    env = _root_audit_env(tmp_path)
-    fake_systemctl = Path(env["HAPAX_ROOT_AUDIT_SYSTEMCTL"])
-    baseline_systemctl = fake_systemctl.with_name("root-audit-systemctl-baseline")
-    fake_systemctl.rename(baseline_systemctl)
-    failure_unit = "hapax-root-failure-intake@hapax-oom-score-enforce.service.service"
-    fake_systemctl.write_text(
-        "#!/usr/bin/env bash\n"
-        f'if [ "$*" = "show {failure_unit} -p {property_name} --value" ]; then\n'
-        f"  printf '%s\\n' '{bad_value}'\n"
-        "  exit 0\n"
-        "fi\n"
-        f'exec "{baseline_systemctl!s}" "$@"\n',
-        encoding="utf-8",
-    )
-    fake_systemctl.chmod(0o755)
-
-    result = subprocess.run(
-        [str(ROOT_REQUIRED_AUDIT)],
-        text=True,
-        capture_output=True,
-        check=False,
-        env=env,
-    )
-
-    assert result.returncode == 1
-    assert f"effective {failure_unit} {expected_error}" in result.stderr
+    assert "OnFailure=" not in service
+    assert "audit_effective_failure_intake_unit" not in audit
 
 
 @pytest.mark.parametrize(
@@ -2431,6 +2534,33 @@ def test_root_required_audit_rejects_effective_timer_drift(
     assert result.returncode == 1
     assert f"effective hapax-oom-policy-audit.timer {expected_error}" in result.stderr
     assert loaded_value in result.stderr
+
+
+def test_root_required_audit_normalizes_equivalent_timer_durations(tmp_path: Path) -> None:
+    env = _root_audit_env(tmp_path)
+    fake_systemctl = Path(env["HAPAX_ROOT_AUDIT_SYSTEMCTL"])
+    baseline_systemctl = fake_systemctl.with_name("root-audit-systemctl-baseline")
+    fake_systemctl.rename(baseline_systemctl)
+    fake_systemctl.write_text(
+        "#!/usr/bin/env bash\n"
+        'if [ "$*" = "show hapax-oom-score-enforce.timer -p TimersMonotonic --value" ]; then\n'
+        "  printf '%s\\n' 'OnBootUSec=2min OnUnitActiveUSec=2min'\n"
+        "  exit 0\n"
+        "fi\n"
+        f'exec "{baseline_systemctl!s}" "$@"\n',
+        encoding="utf-8",
+    )
+    fake_systemctl.chmod(0o755)
+
+    result = subprocess.run(
+        [str(ROOT_REQUIRED_AUDIT)],
+        text=True,
+        capture_output=True,
+        check=False,
+        env=env,
+    )
+
+    assert result.returncode == 0, result.stderr
 
 
 def test_root_required_audit_legacy_manifest_transition_is_fail_closed(tmp_path: Path) -> None:
@@ -4879,6 +5009,10 @@ def test_gate_untouched_diff_redeploys_drifted_canonical_gate(tmp_path: Path) ->
     calls = tmp_path / "hooks-doctor-calls.txt"
     _seed_canonical_gate(repo, canon, stale=True)
     env = _gate_reconcile_env(tmp_path, repo, canon, calls)
+    receipt = tmp_path / "traces" / "last-deployed-sha"
+    receipt.parent.mkdir(parents=True)
+    receipt.write_text(f"{'0' * 40}\n", encoding="utf-8")
+    receipt.chmod(0o444)
 
     result = subprocess.run(
         [str(SCRIPT), sha],
@@ -4894,8 +5028,8 @@ def test_gate_untouched_diff_redeploys_drifted_canonical_gate(tmp_path: Path) ->
     assert (canon / "cc-task-gate.sh").read_text(encoding="utf-8") == (
         repo / "hooks" / "scripts" / "cc-task-gate.impl.sh"
     ).read_text(encoding="utf-8")
-    receipt = tmp_path / "traces" / "last-deployed-sha"
     assert receipt.read_text(encoding="utf-8").strip() == sha
+    assert receipt.stat().st_mode & 0o777 == 0o600
     record = json.loads(
         (tmp_path / "traces" / "post-merge-traces.jsonl")
         .read_text(encoding="utf-8")
@@ -4908,6 +5042,49 @@ def test_gate_untouched_diff_redeploys_drifted_canonical_gate(tmp_path: Path) ->
     assert record["manual_deploy_executed"] is True
     assert record["avsdlc"]["runtime_media_witness_required"] is True
     assert record["avsdlc"]["runtime_media_witness_groups"] == ["canonical_gate_closure"]
+
+
+def test_last_deployed_sha_failure_preserves_previous_cursor_and_records_failure(
+    tmp_path: Path,
+) -> None:
+    if os.geteuid() == 0:
+        pytest.skip("directory permission failure requires an unprivileged test user")
+    repo, sha = _repo_with_gate_closure_and_docs_commit(tmp_path)
+    canon = tmp_path / "canon"
+    calls = tmp_path / "hooks-doctor-calls.txt"
+    _seed_canonical_gate(repo, canon, stale=True)
+    env = _gate_reconcile_env(tmp_path, repo, canon, calls)
+    cursor_parent = tmp_path / "readonly-cursor"
+    cursor_parent.mkdir()
+    cursor = cursor_parent / "last-deployed-sha"
+    previous = "1" * 40
+    cursor.write_text(f"{previous}\n", encoding="utf-8")
+    cursor_parent.chmod(0o555)
+    env["HAPAX_POST_MERGE_LAST_DEPLOYED_SHA_PATH"] = str(cursor)
+
+    try:
+        result = subprocess.run(
+            [str(SCRIPT), sha],
+            text=True,
+            capture_output=True,
+            check=False,
+            env=env,
+        )
+    finally:
+        cursor_parent.chmod(0o755)
+
+    assert result.returncode != 0, (result.stdout, result.stderr)
+    assert "failed to publish last-deployed SHA" in result.stderr
+    assert cursor.read_text(encoding="utf-8").strip() == previous
+    assert not list(cursor_parent.glob(".last-deployed-sha.tmp.*"))
+    records = [
+        json.loads(line)
+        for line in Path(env["HAPAX_POST_MERGE_TRACE_PATH"])
+        .read_text(encoding="utf-8")
+        .splitlines()
+    ]
+    assert records[-1]["status"] == "failed"
+    assert records[-1]["exit_code"] == result.returncode
 
 
 def test_dry_run_gate_drift_does_not_redeploy(tmp_path: Path) -> None:

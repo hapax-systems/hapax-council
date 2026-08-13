@@ -9,6 +9,10 @@ unset DOCKER_TLS DOCKER_TLS_VERIFY DOCKER_API_VERSION
 PATH=/usr/local/sbin:/usr/local/bin:/usr/bin:/bin
 export PATH
 
+readonly GITHUB_MCP_IMAGE_DIGEST="sha256:30197479d8036c7811892bc07e06f9a05c9ef3cdd79bc59f256d50647f95788c"
+readonly GITHUB_MCP_IMAGE="ghcr.io/github/github-mcp-server@$GITHUB_MCP_IMAGE_DIGEST"
+readonly MAX_SECRET_BYTES=8192
+
 if ! PASSWD_ENTRY="$(/usr/bin/getent passwd "$EUID")"; then
   echo "hapax-github-mcp: cannot resolve account home for uid $EUID; next action: restore the local passwd/NSS entry and rerun" >&2
   exit 2
@@ -32,9 +36,15 @@ export HOME
 unset XDG_CACHE_HOME
 
 pass_first_line() {
-  local name="$1"
+  local name="$1" output
   [ -x /usr/bin/pass ] || return 1
-  /usr/bin/pass show "$name" 2>/dev/null | /usr/bin/sed -n '1p'
+  output="$(
+    /usr/bin/timeout --signal=KILL --kill-after=1s 5s \
+      /usr/bin/pass show "$name" 2>/dev/null \
+      | /usr/bin/head -c $((MAX_SECRET_BYTES + 1))
+  )" || return 1
+  [ "${#output}" -le "$MAX_SECRET_BYTES" ] || return 1
+  /usr/bin/printf '%s\n' "${output%%$'\n'*}"
 }
 
 load_first_available_pass_secret() {
@@ -56,10 +66,20 @@ load_bearer_from_claude_mcp() {
   local env_name="$1"
   local server="$2"
   [ -n "${!env_name:-}" ] && return 0
-  [ -r "$HOME/.claude.json" ] || return 1
+  [ -f "$HOME/.claude.json" ] && [ ! -L "$HOME/.claude.json" ] \
+    && [ "$(/usr/bin/stat -c %u -- "$HOME/.claude.json" 2>/dev/null)" = "$EUID" ] \
+    && [ "$(/usr/bin/stat -c %s -- "$HOME/.claude.json" 2>/dev/null)" -le 1048576 ] \
+    || return 1
   [ -x /usr/bin/jq ] || return 1
   local header token
-  header="$(/usr/bin/jq -r --arg server "$server" '.mcpServers[$server].headers.Authorization // empty' "$HOME/.claude.json" 2>/dev/null || true)"
+  header="$(
+    /usr/bin/timeout --signal=KILL --kill-after=1s 5s \
+      /usr/bin/jq -r --arg server "$server" \
+      '.mcpServers[$server].headers.Authorization // empty' \
+      "$HOME/.claude.json" 2>/dev/null \
+      | /usr/bin/head -c $((MAX_SECRET_BYTES + 8))
+  )" || return 1
+  [ "${#header}" -le $((MAX_SECRET_BYTES + 7)) ] || return 1
   case "$header" in
     "Bearer "*)
       token="${header#Bearer }"
@@ -80,7 +100,12 @@ load_github_token_from_gh() {
   [ -n "${!env_name:-}" ] && return 0
   [ -x /usr/bin/gh ] || return 1
   local value
-  value="$(/usr/bin/gh auth token 2>/dev/null || true)"
+  value="$(
+    /usr/bin/timeout --signal=KILL --kill-after=1s 5s \
+      /usr/bin/gh auth token 2>/dev/null \
+      | /usr/bin/head -c $((MAX_SECRET_BYTES + 1))
+  )" || return 1
+  [ "${#value}" -le "$MAX_SECRET_BYTES" ] || return 1
   if [ -n "$value" ]; then
     export "$env_name=$value"
     return 0
@@ -107,6 +132,13 @@ if [ -z "${GITHUB_PERSONAL_ACCESS_TOKEN:-}" ]; then
   echo "hapax-github-mcp: no GitHub token found in pass, gh auth, CODEX_GITHUB_PERSONAL_ACCESS_TOKEN, or Claude MCP config" >&2
   exit 2
 fi
+if [ "${#GITHUB_PERSONAL_ACCESS_TOKEN}" -gt "$MAX_SECRET_BYTES" ] \
+  || [[ "$GITHUB_PERSONAL_ACCESS_TOKEN" == *$'\n'* ]] \
+  || [[ "$GITHUB_PERSONAL_ACCESS_TOKEN" == *$'\r'* ]]; then
+  echo "hapax-github-mcp: refused malformed or oversized GitHub token" >&2
+  unset GITHUB_PERSONAL_ACCESS_TOKEN
+  exit 2
+fi
 
 LOG_DIR="$HOME/.cache/hapax/mcp-logs"
 /usr/bin/mkdir -p "$LOG_DIR"
@@ -116,8 +148,17 @@ CONTAINER_NAME="hapax-github-mcp-$EUID-$$"
 TOOLS="${HAPAX_GITHUB_MCP_TOOLS:-search_pull_requests,pull_request_read,merge_pull_request,add_issue_comment,create_pull_request}"
 FILTER_ARGS=()
 if [ -n "${HAPAX_GITHUB_MCP_TOOLSETS:-}" ]; then
+  if [ "${#HAPAX_GITHUB_MCP_TOOLSETS}" -gt 1024 ] \
+    || ! [[ "$HAPAX_GITHUB_MCP_TOOLSETS" =~ ^[A-Za-z0-9_,.-]+$ ]]; then
+    echo "hapax-github-mcp: refused malformed or oversized toolset filter" >&2
+    exit 2
+  fi
   FILTER_ARGS=(--toolsets="$HAPAX_GITHUB_MCP_TOOLSETS")
 elif [ -n "$TOOLS" ]; then
+  if [ "${#TOOLS}" -gt 1024 ] || ! [[ "$TOOLS" =~ ^[A-Za-z0-9_,.-]+$ ]]; then
+    echo "hapax-github-mcp: refused malformed or oversized tool filter" >&2
+    exit 2
+  fi
   FILTER_ARGS=(--tools="$TOOLS")
 else
   FILTER_ARGS=("--toolsets=pull_requests,issues")
@@ -153,6 +194,16 @@ launch_local_docker() {
     --config=/nonexistent/hapax-github-mcp-docker \
     "$@"
 }
+
+IMAGE_ID="$(local_docker image inspect --format '{{.Id}}' "$GITHUB_MCP_IMAGE")" || {
+  echo "hapax-github-mcp: pinned GitHub MCP image is unavailable from the local Docker content store; next action: provision the reviewed digest separately, then rerun" >&2
+  exit 2
+}
+if [ "$IMAGE_ID" != "$GITHUB_MCP_IMAGE_DIGEST" ]; then
+  echo "hapax-github-mcp: local Docker resolved the pinned GitHub MCP image to an unexpected content ID; refusing token release" >&2
+  exit 2
+fi
+unset IMAGE_ID
 
 bounded_reason() {
   local reason="$1"
@@ -229,14 +280,19 @@ trap 'exit 143' TERM
 trap 'exit 129' HUP
 
 launch_local_docker run -i --rm \
+  --pull=never \
   --cidfile "$CID_FILE" \
   --name "$CONTAINER_NAME" \
   --memory 512M \
   --memory-swap 768M \
   --log-driver none \
   --stop-timeout 1 \
+  --read-only \
+  --tmpfs /tmp:rw,noexec,nosuid,size=16m \
+  --cap-drop ALL \
+  --security-opt no-new-privileges \
   -e GITHUB_PERSONAL_ACCESS_TOKEN \
-  ghcr.io/github/github-mcp-server \
+  "$GITHUB_MCP_IMAGE" \
   stdio \
   --log-file /tmp/github-mcp.log \
   "${FILTER_ARGS[@]}" \
