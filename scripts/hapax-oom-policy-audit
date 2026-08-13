@@ -2469,9 +2469,7 @@ def audit_docker_limits(uid: int) -> list[Check]:
     assert closing_inventory is not None
     assert closing_labeled_ids is not None
 
-    final_inventory, final_labeled_ids, final_inventory_error = _read_docker_inventory(
-        closing=True
-    )
+    final_inventory, final_labeled_ids, final_inventory_error = _read_docker_inventory(closing=True)
     if final_inventory_error is not None:
         checks.append(final_inventory_error)
         return checks
@@ -2483,8 +2481,7 @@ def audit_docker_limits(uid: int) -> list[Check]:
             sum(
                 1
                 for container_id, name in bounded_inventory.items()
-                if container_id in bounded_labeled_ids
-                or name.startswith("hapax-github-mcp-")
+                if container_id in bounded_labeled_ids or name.startswith("hapax-github-mcp-")
             )
             for bounded_inventory, bounded_labeled_ids in (
                 (closing_inventory, closing_labeled_ids),
