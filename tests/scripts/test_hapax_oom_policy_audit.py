@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import ast
 import json
 import os
 import pwd
@@ -47,11 +48,52 @@ GITHUB_MCP_IMAGE = f"ghcr.io/github/github-mcp-server@{GITHUB_MCP_IMAGE_DIGEST}"
 GITHUB_MCP_LOCAL_IMAGE_ID = f"sha256:{'b' * 64}"
 GITHUB_MCP_BOOT_ID = "12345678-1234-1234-1234-123456789abc"
 GITHUB_MCP_APP_ID = "stdio-v1"
+DOCKER_AUDIT_GLOBAL_ARGS = [
+    "--host",
+    "unix:///var/run/docker.sock",
+    "--config",
+    "/nonexistent/hapax-oom-policy-audit-docker",
+]
 DOCKER_INVENTORY_FORMAT = (
     '{{.ID}}\t{{.Names}}\t{{.Label "org.hapax.github-mcp.app"}}'
     '{{range split .Labels ","}}{{if eq . '
     '"org.hapax.github-mcp.app="}}P{{end}}{{end}}'
 )
+DOCKER_IMAGE_INSPECT_FORMAT = '{{.Id}}{{range .RepoDigests}}{{printf "\\n%s" .}}{{end}}'
+
+
+def _load_docker_container_inspect_format() -> str:
+    tree = ast.parse(SCRIPT.read_text(encoding="utf-8"))
+    candidates: list[str] = []
+    for node in ast.walk(tree):
+        if (
+            not isinstance(node, ast.Call)
+            or not isinstance(node.func, ast.Name)
+            or node.func.id != "_run_local_docker"
+            or len(node.args) != 1
+            or not isinstance(node.args[0], ast.List)
+        ):
+            continue
+        elements = node.args[0].elts
+        if (
+            len(elements) != 4
+            or not isinstance(elements[3], ast.Name)
+            or elements[3].id != "container_id"
+        ):
+            continue
+        try:
+            prefix = [ast.literal_eval(element) for element in elements[:2]]
+            format_argument = ast.literal_eval(elements[2])
+        except (ValueError, TypeError):
+            continue
+        if prefix == ["inspect", "--format"] and isinstance(format_argument, str):
+            candidates.append(format_argument)
+    if len(candidates) != 1:
+        raise AssertionError("expected one literal immutable-ID Docker inspect call")
+    return candidates[0]
+
+
+DOCKER_CONTAINER_INSPECT_FORMAT = _load_docker_container_inspect_format()
 GITHUB_MCP_IMAGE_LABELS = {
     "io.modelcontextprotocol.server.name": "io.github.github/github-mcp-server",
     "org.opencontainers.image.created": "2026-05-29T12:26:39.099Z",
@@ -583,7 +625,7 @@ def _fake_docker(
             encoding="utf-8",
         )
         generation_files.append(generation_file)
-    inspect_cases = []
+    inspect_payloads: list[tuple[str, str]] = []
     inspect_file = tmp_path / "docker.inspect"
     failure_file = tmp_path / "docker.failure"
     failure_file.write_text(failure_detail, encoding="utf-8")
@@ -745,14 +787,7 @@ def _fake_docker(
                 networks,
             )
         )
-        if inspect_override is None and failure_phase != "inspect":
-            inspect_cases.append(
-                f"  *\" {container_id}\") printf '%s\\n' {shlex.quote(inspect_payload)} ;;"
-            )
-    if failure_phase == "inspect":
-        inspect_cases.append(f'  *" inspect --format "*) cat "{failure_file}" >&2; exit 17 ;;')
-    elif inspect_override is not None:
-        inspect_cases.append(f'  *" inspect --format "*) cat "{inspect_file}" ;;')
+        inspect_payloads.append((container_id, inspect_payload))
     image_response = (
         f'cat "{failure_file}" >&2; exit 17'
         if failure_phase == "image"
@@ -778,20 +813,63 @@ def _fake_docker(
         )
 
     inventory_response = generation_response()
-    inventory_case = shlex.quote(
-        "--host unix:///var/run/docker.sock "
-        "--config /nonexistent/hapax-oom-policy-audit-docker "
-        f"ps -a --no-trunc --format {DOCKER_INVENTORY_FORMAT}"
+
+    def exact_argv_condition(arguments: list[str]) -> str:
+        checks = [f"(( $# == {len(arguments)} ))"]
+        checks.extend(
+            f'[[ "${{{index}}}" == {shlex.quote(argument)} ]]'
+            for index, argument in enumerate(arguments, start=1)
+        )
+        return " && ".join(checks)
+
+    inventory_condition = exact_argv_condition(
+        [
+            *DOCKER_AUDIT_GLOBAL_ARGS,
+            "ps",
+            "-a",
+            "--no-trunc",
+            "--format",
+            DOCKER_INVENTORY_FORMAT,
+        ]
     )
+    image_condition = exact_argv_condition(
+        [
+            *DOCKER_AUDIT_GLOBAL_ARGS,
+            "image",
+            "inspect",
+            "--format",
+            DOCKER_IMAGE_INSPECT_FORMAT,
+            GITHUB_MCP_IMAGE,
+        ]
+    )
+    inspect_cases = []
+    for container_id, inspect_payload in inspect_payloads:
+        inspect_condition = exact_argv_condition(
+            [
+                *DOCKER_AUDIT_GLOBAL_ARGS,
+                "inspect",
+                "--format",
+                DOCKER_CONTAINER_INSPECT_FORMAT,
+                container_id,
+            ]
+        )
+        if failure_phase == "inspect":
+            inspect_response = f'cat "{failure_file}" >&2; exit 17'
+        elif inspect_override is not None:
+            inspect_response = f'cat "{inspect_file}"'
+        else:
+            inspect_response = f"printf '%s\\n' {shlex.quote(inspect_payload)}"
+        inspect_cases.append(f"if {inspect_condition}; then {inspect_response}; exit 0; fi")
     path.write_text(
         "#!/usr/bin/env bash\n"
         "set -euo pipefail\n"
         f'printf \'%s\\n\' "$*" >> "{calls}"\n'
-        'case "$*" in\n'
-        f'  *" image inspect --format "*) {image_response} ;;\n'
-        f"  {inventory_case}) {inventory_response} ;;\n" + "\n".join(inspect_cases) + "\n"
-        '  *) echo "unexpected docker args: $*" >&2; exit 9 ;;\n'
-        "esac\n",
+        f"if {image_condition}; then {image_response}; exit 0; fi\n"
+        f"if {inventory_condition}; then {inventory_response}; exit 0; fi\n"
+        + "\n".join(inspect_cases)
+        + "\n"
+        + 'echo "unexpected docker args: $*" >&2\n'
+        + "exit 9\n",
         encoding="utf-8",
     )
     path.chmod(path.stat().st_mode | stat.S_IXUSR)
@@ -2195,7 +2273,74 @@ def test_fake_docker_requires_exact_inventory_template(tmp_path: Path) -> None:
     docker = _fake_docker(tmp_path)
 
     result = subprocess.run(
-        [str(docker), "ps", "-a", "--no-trunc", "--format", "{{.ID}}"],
+        [
+            str(docker),
+            *DOCKER_AUDIT_GLOBAL_ARGS,
+            "ps",
+            "-a",
+            "--no-trunc",
+            "--format",
+            "{{.ID}}",
+        ],
+        text=True,
+        capture_output=True,
+        check=False,
+    )
+
+    assert result.returncode == 9
+    assert "unexpected docker args" in result.stderr
+
+
+def test_fake_docker_rejects_inventory_format_split_across_arguments(tmp_path: Path) -> None:
+    docker = _fake_docker(tmp_path)
+
+    result = subprocess.run(
+        [
+            str(docker),
+            *DOCKER_AUDIT_GLOBAL_ARGS,
+            "ps",
+            "-a",
+            "--no-trunc",
+            "--format",
+            *DOCKER_INVENTORY_FORMAT.split(" "),
+        ],
+        text=True,
+        capture_output=True,
+        check=False,
+    )
+
+    assert result.returncode == 9
+    assert "unexpected docker args" in result.stderr
+
+
+def test_fake_docker_rejects_non_inspect_command_ending_in_known_id(tmp_path: Path) -> None:
+    docker = _fake_docker(tmp_path, mcp_count=1)
+    container_id = f"{1:064x}"
+
+    result = subprocess.run(
+        [str(docker), *DOCKER_AUDIT_GLOBAL_ARGS, "rm", container_id],
+        text=True,
+        capture_output=True,
+        check=False,
+    )
+
+    assert result.returncode == 9
+    assert "unexpected docker args" in result.stderr
+
+
+def test_fake_docker_requires_exact_container_inspect_template(tmp_path: Path) -> None:
+    docker = _fake_docker(tmp_path, mcp_count=1)
+    container_id = f"{1:064x}"
+
+    result = subprocess.run(
+        [
+            str(docker),
+            *DOCKER_AUDIT_GLOBAL_ARGS,
+            "inspect",
+            "--format",
+            "{{json .Id}}",
+            container_id,
+        ],
         text=True,
         capture_output=True,
         check=False,
