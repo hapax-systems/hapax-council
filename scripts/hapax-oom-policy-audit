@@ -1769,7 +1769,7 @@ def _docker_mcp_networks_match(networks: object) -> bool:
 
 def _read_docker_inventory(
     *, closing: bool
-) -> tuple[dict[str, str] | None, set[str] | None, Check | None]:
+) -> tuple[dict[str, str] | None, dict[str, str] | None, Check | None]:
     check_name = "docker_oom_inventory_stable" if closing else "docker_oom_targets"
     scope = "closing Docker" if closing else "Docker"
     enumeration = _run_local_docker(
@@ -1812,7 +1812,7 @@ def _read_docker_inventory(
         )
 
     inventory: dict[str, str] = {}
-    labeled_ids: set[str] = set()
+    app_labels: dict[str, str] = {}
     seen_names: set[str] = set()
     for raw_line in inventory_lines:
         if not raw_line:
@@ -1873,30 +1873,29 @@ def _read_docker_inventory(
             )
         seen_names.add(name)
         inventory[container_id] = name
-        if app_label:
-            labeled_ids.add(container_id)
-    return inventory, labeled_ids, None
+        app_labels[container_id] = app_label
+    return inventory, app_labels, None
 
 
 def _docker_target_generation(
-    inventory: dict[str, str], labeled_ids: set[str]
-) -> frozenset[tuple[str, str, bool]]:
+    inventory: dict[str, str], app_labels: dict[str, str]
+) -> frozenset[tuple[str, str, str]]:
     return frozenset(
-        (container_id, name, container_id in labeled_ids)
+        (container_id, name, app_labels[container_id])
         for container_id, name in inventory.items()
         if name == "hapax-local-judge"
-        or container_id in labeled_ids
+        or app_labels[container_id]
         or name.startswith("hapax-github-mcp-")
     )
 
 
 def audit_docker_limits(uid: int) -> list[Check]:
-    inventory, labeled_ids, inventory_error = _read_docker_inventory(closing=False)
+    inventory, app_labels, inventory_error = _read_docker_inventory(closing=False)
     if inventory_error is not None:
         return [inventory_error]
     assert inventory is not None
-    assert labeled_ids is not None
-    target_generation = _docker_target_generation(inventory, labeled_ids)
+    assert app_labels is not None
+    target_generation = _docker_target_generation(inventory, app_labels)
 
     judge = next(
         (
@@ -1909,7 +1908,7 @@ def audit_docker_limits(uid: int) -> list[Check]:
     mcp_targets = [
         (container_id, name)
         for container_id, name in inventory.items()
-        if container_id in labeled_ids or name.startswith("hapax-github-mcp-")
+        if app_labels[container_id] or name.startswith("hapax-github-mcp-")
     ]
 
     if len(mcp_targets) > DOCKER_TARGET_MAX:
@@ -2460,32 +2459,32 @@ def audit_docker_limits(uid: int) -> list[Check]:
             )
         )
 
-    closing_inventory, closing_labeled_ids, closing_inventory_error = _read_docker_inventory(
+    closing_inventory, closing_app_labels, closing_inventory_error = _read_docker_inventory(
         closing=True
     )
     if closing_inventory_error is not None:
         checks.append(closing_inventory_error)
         return checks
     assert closing_inventory is not None
-    assert closing_labeled_ids is not None
+    assert closing_app_labels is not None
 
-    final_inventory, final_labeled_ids, final_inventory_error = _read_docker_inventory(closing=True)
+    final_inventory, final_app_labels, final_inventory_error = _read_docker_inventory(closing=True)
     if final_inventory_error is not None:
         checks.append(final_inventory_error)
         return checks
     assert final_inventory is not None
-    assert final_labeled_ids is not None
+    assert final_app_labels is not None
 
     closing_target_count = max(
         (
             sum(
                 1
                 for container_id, name in bounded_inventory.items()
-                if container_id in bounded_labeled_ids or name.startswith("hapax-github-mcp-")
+                if bounded_app_labels[container_id] or name.startswith("hapax-github-mcp-")
             )
-            for bounded_inventory, bounded_labeled_ids in (
-                (closing_inventory, closing_labeled_ids),
-                (final_inventory, final_labeled_ids),
+            for bounded_inventory, bounded_app_labels in (
+                (closing_inventory, closing_app_labels),
+                (final_inventory, final_app_labels),
             )
         )
     )
@@ -2502,8 +2501,8 @@ def audit_docker_limits(uid: int) -> list[Check]:
         return checks
 
     inventory_stable = (
-        _docker_target_generation(closing_inventory, closing_labeled_ids) == target_generation
-        and _docker_target_generation(final_inventory, final_labeled_ids) == target_generation
+        _docker_target_generation(closing_inventory, closing_app_labels) == target_generation
+        and _docker_target_generation(final_inventory, final_app_labels) == target_generation
     )
     checks.append(
         Check(
