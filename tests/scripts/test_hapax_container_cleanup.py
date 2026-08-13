@@ -39,6 +39,7 @@ class TestCleanupScript:
         assert "docker" not in body
         assert "HAPAX_CONTAINER_STALE_HOURS" not in body
         assert "launcher owns lifecycle reconciliation" in body
+        assert body.rstrip().endswith("exit 0")
 
     def test_running_retired_cleanup_never_executes_a_docker_client(self, tmp_path):
         docker_marker = tmp_path / "docker-called"
@@ -74,6 +75,13 @@ class TestCleanupSystemdUnits:
 
     def test_service_has_memory_limit(self):
         assert "MemoryMax" in _parse_unit(SERVICE)["Service"]
+
+    def test_service_runs_sentinel_from_source_activation(self):
+        service = _parse_unit(SERVICE)["Service"]
+        activation = "%h/.cache/hapax/source-activation/worktree"
+        assert service["WorkingDirectory"] == [activation]
+        assert service["ExecStart"] == [f"{activation}/scripts/hapax-container-cleanup"]
+        assert "projects/hapax-council" not in SERVICE.read_text()
 
     def test_timer_is_parked(self):
         assert "# Hapax-Parked: true" in TIMER.read_text()

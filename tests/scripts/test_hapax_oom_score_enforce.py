@@ -80,6 +80,24 @@ def test_retired_trigger_rejects_nonallowlisted_unit() -> None:
 
     assert result.returncode == 2
     assert "refusing non-retired" in result.stderr
+    assert "next action:" in result.stderr
+
+
+@pytest.mark.parametrize("args", ((), ("pipewire.service", "extra")))
+def test_retired_trigger_usage_errors_include_next_action(args: tuple[str, ...]) -> None:
+    result = _run(TRIGGER, *args)
+
+    assert result.returncode == 2
+    assert "usage:" in result.stderr
+    assert "next action:" in result.stderr
+
+
+def test_retired_root_units_refuse_manual_start() -> None:
+    service = (REPO_ROOT / "systemd/units/hapax-oom-score-enforce.service").read_text()
+    timer = (REPO_ROOT / "systemd/units/hapax-oom-score-enforce.timer").read_text()
+
+    assert "RefuseManualStart=yes" in service
+    assert "RefuseManualStart=yes" in timer
 
 
 @pytest.mark.parametrize(
