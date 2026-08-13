@@ -2,8 +2,10 @@ from __future__ import annotations
 
 import json
 import os
+import pwd
 import re
 import runpy
+import shlex
 import stat
 import subprocess
 import time
@@ -44,6 +46,124 @@ GITHUB_MCP_IMAGE_DIGEST = "sha256:30197479d8036c7811892bc07e06f9a05c9ef3cdd79bc5
 GITHUB_MCP_IMAGE = f"ghcr.io/github/github-mcp-server@{GITHUB_MCP_IMAGE_DIGEST}"
 GITHUB_MCP_LOCAL_IMAGE_ID = f"sha256:{'b' * 64}"
 GITHUB_MCP_BOOT_ID = "12345678-1234-1234-1234-123456789abc"
+GITHUB_MCP_IMAGE_LABELS = {
+    "io.modelcontextprotocol.server.name": "io.github.github/github-mcp-server",
+    "org.opencontainers.image.created": "2026-05-29T12:26:39.099Z",
+    "org.opencontainers.image.description": "GitHub's official MCP Server",
+    "org.opencontainers.image.licenses": "MIT",
+    "org.opencontainers.image.revision": "b5397f6e3305531a1c534b90b2d347a70fa84da9",
+    "org.opencontainers.image.source": "https://github.com/github/github-mcp-server",
+    "org.opencontainers.image.title": "github-mcp-server",
+    "org.opencontainers.image.url": "https://github.com/github/github-mcp-server",
+    "org.opencontainers.image.version": "1.1.2",
+}
+
+
+def _valid_mcp_host_config(
+    record: dict[str, object],
+    *,
+    memory: int,
+    memory_swap: int,
+    oom_kill_disable: bool,
+    uid: int = 1000,
+) -> dict[str, object]:
+    launch_id = str(record["launch_label"])
+    suffix = launch_id.removeprefix(f"{uid}-")
+    host_config: dict[str, object] = {
+        "AutoRemove": record["auto_remove"],
+        "Binds": record["binds"],
+        "BlkioDeviceReadBps": [],
+        "BlkioDeviceReadIOps": [],
+        "BlkioDeviceWriteBps": [],
+        "BlkioDeviceWriteIOps": [],
+        "BlkioWeight": 0,
+        "BlkioWeightDevice": [],
+        "CapAdd": record["cap_add"],
+        "CapDrop": record["cap_drop"],
+        "Cgroup": "",
+        "CgroupParent": "",
+        "CgroupnsMode": record["cgroupns_mode"],
+        "ConsoleSize": [0, 0],
+        "ContainerIDFile": str(
+            Path(pwd.getpwuid(uid).pw_dir)
+            / ".cache/hapax/mcp-logs"
+            / f"github-mcp.{suffix}"
+            / "container.cid"
+        ),
+        "CpuCount": 0,
+        "CpuPercent": 0,
+        "CpuPeriod": 0,
+        "CpuQuota": 0,
+        "CpuRealtimePeriod": 0,
+        "CpuRealtimeRuntime": 0,
+        "CpuShares": record["cpu_shares"],
+        "CpusetCpus": "",
+        "CpusetMems": "",
+        "DeviceCgroupRules": None,
+        "DeviceRequests": record["device_requests"],
+        "Devices": record["devices"],
+        "Dns": record["dns"],
+        "DnsOptions": record["dns_options"],
+        "DnsSearch": record["dns_search"],
+        "ExtraHosts": record["extra_hosts"],
+        "GroupAdd": record["group_add"],
+        "IOMaximumBandwidth": 0,
+        "IOMaximumIOps": 0,
+        "IpcMode": record["ipc_mode"],
+        "Isolation": "",
+        "Links": record["links"],
+        "LogConfig": {"Config": record["log_config"], "Type": record["log_driver"]},
+        "MaskedPaths": [
+            "/proc/acpi",
+            "/proc/asound",
+            "/proc/interrupts",
+            "/proc/kcore",
+            "/proc/keys",
+            "/proc/latency_stats",
+            "/proc/sched_debug",
+            "/proc/scsi",
+            "/proc/timer_list",
+            "/proc/timer_stats",
+            "/sys/devices/virtual/powercap",
+            "/sys/firmware",
+        ],
+        "Memory": memory,
+        "MemoryReservation": record["memory_reservation"],
+        "MemorySwap": memory_swap,
+        "MemorySwappiness": None,
+        "NanoCpus": record["nano_cpus"],
+        "NetworkMode": record["network_mode"],
+        "OomKillDisable": oom_kill_disable,
+        "OomScoreAdj": record["oom_score_adj"],
+        "PidMode": record["pid_mode"],
+        "PidsLimit": record["pids_limit"],
+        "PortBindings": record["port_bindings"],
+        "Privileged": record["privileged"],
+        "PublishAllPorts": record["publish_all_ports"],
+        "ReadonlyPaths": [
+            "/proc/bus",
+            "/proc/fs",
+            "/proc/irq",
+            "/proc/sys",
+            "/proc/sysrq-trigger",
+        ],
+        "ReadonlyRootfs": record["readonly_rootfs"],
+        "RestartPolicy": {
+            "MaximumRetryCount": record["restart_max"],
+            "Name": record["restart_name"],
+        },
+        "Runtime": record["runtime"],
+        "SecurityOpt": record["security_opt"],
+        "ShmSize": record["shm_size"],
+        "Tmpfs": record["tmpfs"],
+        "UTSMode": record["uts_mode"],
+        "Ulimits": [],
+        "UsernsMode": record["userns_mode"],
+        "VolumeDriver": "",
+        "VolumesFrom": record["volumes_from"],
+    }
+    host_config.update(record["host_config_overrides"])
+    return host_config
 
 
 def test_audit_and_launcher_pin_the_same_github_mcp_digest() -> None:
@@ -257,7 +377,10 @@ def _fake_docker(
     mcp_oom_kill_disable: bool = False,
     include_judge: bool = False,
     inventory_override: str | None = None,
+    labeled_inventory_override: str | None = None,
     inspect_override: str | None = None,
+    failure_phase: str | None = None,
+    failure_detail: str = "",
     mcp_image_id: str = GITHUB_MCP_LOCAL_IMAGE_ID,
     mcp_local_image_id: str = GITHUB_MCP_LOCAL_IMAGE_ID,
     mcp_repo_digest: str = GITHUB_MCP_IMAGE,
@@ -303,6 +426,56 @@ def _fake_docker(
             "container_state": "running",
             "stop_timeout": 1,
             "extra_labels": {},
+            "attach_stdin": True,
+            "attach_stdout": True,
+            "attach_stderr": True,
+            "open_stdin": True,
+            "stdin_once": True,
+            "tty": False,
+            "user": "0",
+            "env_count": 3,
+            "env_path_marker": "P",
+            "env_ssl_marker": "S",
+            "env_token_marker": "T",
+            "working_dir": "/server",
+            "stop_signal": "SIGTERM",
+            "network_disabled": False,
+            "exposed_ports": {"8082/tcp": {}},
+            "memory_reservation": 0,
+            "oom_score_adj": 0,
+            "log_config": {},
+            "uts_mode": "private",
+            "cgroupns_mode": "private",
+            "userns_mode": "",
+            "runtime": "runc",
+            "pids_limit": 128,
+            "restart_name": "no",
+            "restart_max": 0,
+            "nano_cpus": 0,
+            "cpu_shares": 0,
+            "publish_all_ports": False,
+            "shm_size": 64 * 1024**2,
+            "dns": None,
+            "dns_options": None,
+            "dns_search": None,
+            "extra_hosts": None,
+            "links": None,
+            "group_add": None,
+            "volumes_from": None,
+            "network_count": 1,
+            "bridge_network_marker": "B",
+            "hostname": f"{index + 1:064x}"[:12],
+            "domainname": "",
+            "entrypoint": ["/server/github-mcp-server"],
+            "config_cmd": [
+                "stdio",
+                "--log-file",
+                "/tmp/github-mcp.log",
+                "--tools=pull_request_read",
+            ],
+            "volumes": None,
+            "network_ports": {"8082/tcp": None},
+            "host_config_overrides": {},
         }
         record.update(mcp_signature_overrides)
         containers.append(record)
@@ -313,6 +486,8 @@ def _fake_docker(
     labeled_inventory = "".join(
         f"{record['container_id']}\n" for record in containers if record["app_label"] is not None
     )
+    if labeled_inventory_override is not None:
+        labeled_inventory = labeled_inventory_override
     inventory_file = tmp_path / "docker.inventory"
     inventory_file.write_text(
         inventory if inventory_override is None else inventory_override,
@@ -320,24 +495,35 @@ def _fake_docker(
     )
     inspect_cases = []
     inspect_file = tmp_path / "docker.inspect"
+    failure_file = tmp_path / "docker.failure"
+    failure_file.write_text(failure_detail, encoding="utf-8")
     if inspect_override is not None:
         inspect_file.write_text(inspect_override, encoding="utf-8")
     for record in containers:
         container_id = str(record["container_id"])
         name = str(record["name"])
-        labels = {
-            key: str(record[field])
-            for key, field in (
-                ("org.hapax.github-mcp.app", "app_label"),
-                ("org.hapax.github-mcp.uid", "uid_label"),
-                ("org.hapax.github-mcp.launch", "launch_label"),
-                ("org.hapax.github-mcp.lease-pid", "lease_pid_label"),
-                ("org.hapax.github-mcp.lease-start", "lease_start_label"),
-                ("org.hapax.github-mcp.lease-boot", "lease_boot_label"),
-            )
-            if record[field] is not None
-        }
+        labels = dict(GITHUB_MCP_IMAGE_LABELS)
+        labels.update(
+            {
+                key: str(record[field])
+                for key, field in (
+                    ("org.hapax.github-mcp.app", "app_label"),
+                    ("org.hapax.github-mcp.uid", "uid_label"),
+                    ("org.hapax.github-mcp.launch", "launch_label"),
+                    ("org.hapax.github-mcp.lease-pid", "lease_pid_label"),
+                    ("org.hapax.github-mcp.lease-start", "lease_start_label"),
+                    ("org.hapax.github-mcp.lease-boot", "lease_boot_label"),
+                )
+                if record[field] is not None
+            }
+        )
         labels.update(record["extra_labels"])
+        host_config = _valid_mcp_host_config(
+            record,
+            memory=mcp_memory,
+            memory_swap=mcp_memory_swap,
+            oom_kill_disable=mcp_oom_kill_disable,
+        )
         inspect_payload = "\t".join(
             json.dumps(value)
             for value in (
@@ -369,20 +555,85 @@ def _fake_docker(
                 record["port_bindings"],
                 record["container_state"],
                 record["stop_timeout"],
+                len(labels),
+                record["attach_stdin"],
+                record["attach_stdout"],
+                record["attach_stderr"],
+                record["open_stdin"],
+                record["stdin_once"],
+                record["tty"],
+                record["user"],
+                record["env_count"],
+                record["env_path_marker"],
+                record["env_ssl_marker"],
+                record["env_token_marker"],
+                record["working_dir"],
+                record["stop_signal"],
+                record["network_disabled"],
+                record["exposed_ports"],
+                record["memory_reservation"],
+                record["oom_score_adj"],
+                record["log_config"],
+                record["uts_mode"],
+                record["cgroupns_mode"],
+                record["userns_mode"],
+                record["runtime"],
+                record["pids_limit"],
+                record["restart_name"],
+                record["restart_max"],
+                record["nano_cpus"],
+                record["cpu_shares"],
+                record["publish_all_ports"],
+                record["shm_size"],
+                record["dns"],
+                record["dns_options"],
+                record["dns_search"],
+                record["extra_hosts"],
+                record["links"],
+                record["group_add"],
+                record["volumes_from"],
+                record["network_count"],
+                record["bridge_network_marker"],
+                record["hostname"],
+                record["domainname"],
+                record["entrypoint"],
+                record["config_cmd"],
+                record["volumes"],
+                record["network_ports"],
+                host_config,
             )
         )
-        if inspect_override is None:
-            inspect_cases.append(f"  *\" {container_id}\") printf '%s\\n' '{inspect_payload}' ;;")
-    if inspect_override is not None:
+        if inspect_override is None and failure_phase != "inspect":
+            inspect_cases.append(
+                f"  *\" {container_id}\") printf '%s\\n' {shlex.quote(inspect_payload)} ;;"
+            )
+    if failure_phase == "inspect":
+        inspect_cases.append(f'  *" inspect --format "*) cat "{failure_file}" >&2; exit 17 ;;')
+    elif inspect_override is not None:
         inspect_cases.append(f'  *" inspect --format "*) cat "{inspect_file}" ;;')
+    image_response = (
+        f'cat "{failure_file}" >&2; exit 17'
+        if failure_phase == "image"
+        else f"printf '%s\\n%s\\n' '{mcp_local_image_id}' '{mcp_repo_digest}'"
+    )
+    labeled_response = (
+        f'cat "{failure_file}" >&2; exit 17'
+        if failure_phase == "label"
+        else f"printf '%s' '{labeled_inventory}'"
+    )
+    inventory_response = (
+        f'cat "{failure_file}" >&2; exit 17'
+        if failure_phase == "inventory"
+        else f'cat "{inventory_file}"'
+    )
     path.write_text(
         "#!/usr/bin/env bash\n"
         "set -euo pipefail\n"
         f'printf \'%s\\n\' "$*" >> "{calls}"\n'
         'case "$*" in\n'
-        f"  *\" image inspect --format \"*) printf '%s\\n%s\\n' '{mcp_local_image_id}' '{mcp_repo_digest}' ;;\n"
-        f"  *\" ps -aq --no-trunc --filter label=org.hapax.github-mcp.app\"*) printf '%s' '{labeled_inventory}' ;;\n"
-        f'  *" ps -a --no-trunc --format "*) cat "{inventory_file}" ;;\n'
+        f'  *" image inspect --format "*) {image_response} ;;\n'
+        f'  *" ps -aq --no-trunc --filter label=org.hapax.github-mcp.app"*) {labeled_response} ;;\n'
+        f'  *" ps -a --no-trunc --format "*) {inventory_response} ;;\n'
         + "\n".join(inspect_cases)
         + "\n"
         '  *) echo "unexpected docker args: $*" >&2; exit 9 ;;\n'
@@ -461,7 +712,10 @@ def _run(
     docker_mcp_oom_kill_disable: bool = False,
     docker_include_judge: bool = False,
     docker_inventory_override: str | None = None,
+    docker_labeled_inventory_override: str | None = None,
     docker_inspect_override: str | None = None,
+    docker_failure_phase: str | None = None,
+    docker_failure_detail: str = "",
     docker_mcp_image_id: str = GITHUB_MCP_LOCAL_IMAGE_ID,
     docker_mcp_local_image_id: str = GITHUB_MCP_LOCAL_IMAGE_ID,
     docker_mcp_repo_digest: str = GITHUB_MCP_IMAGE,
@@ -622,7 +876,10 @@ def _run(
                 mcp_oom_kill_disable=docker_mcp_oom_kill_disable,
                 include_judge=docker_include_judge,
                 inventory_override=docker_inventory_override,
+                labeled_inventory_override=docker_labeled_inventory_override,
                 inspect_override=docker_inspect_override,
+                failure_phase=docker_failure_phase,
+                failure_detail=docker_failure_detail,
                 mcp_image_id=docker_mcp_image_id,
                 mcp_local_image_id=docker_mcp_local_image_id,
                 mcp_repo_digest=docker_mcp_repo_digest,
@@ -1222,7 +1479,7 @@ def test_audit_accepts_all_three_ephemeral_mcp_containers_with_exact_limits(
     checks = {item["name"]: item for item in payload["checks"]}
     assert checks["docker_github_mcp_count"]["actual"] == "3"
     limit_checks = [
-        item for item in payload["checks"] if item["name"].startswith("docker_hapax-github-mcp-")
+        item for item in payload["checks"] if item["name"].startswith("docker_github_mcp_target_")
     ]
     assert len(limit_checks) == 3
     assert all(item["status"] == "pass" for item in limit_checks)
@@ -1244,7 +1501,7 @@ def test_audit_rejects_mcp_limit_or_oom_killer_drift(
     assert result.returncode == 1
     payload = json.loads(result.stdout)
     check = next(
-        item for item in payload["checks"] if item["name"].startswith("docker_hapax-github-mcp-")
+        item for item in payload["checks"] if item["name"].startswith("docker_github_mcp_target_")
     )
     assert check["status"] == "gap"
 
@@ -1275,18 +1532,22 @@ def test_audit_rejects_missing_or_inconsistent_mcp_labels(
     assert "labels" in check["detail"]
 
 
-def test_audit_discovers_app_labeled_mcp_name_lookalike(tmp_path: Path) -> None:
+def test_audit_discovers_app_labeled_mcp_name_lookalike_without_emitting_its_name(
+    tmp_path: Path,
+) -> None:
+    untrusted_name = "unrelated-container-private-name"
     result = _run(
         tmp_path,
         docker_mcp_count=1,
-        docker_mcp_signature_overrides={"name": "unrelated-container"},
+        docker_mcp_signature_overrides={"name": untrusted_name},
     )
 
     assert result.returncode == 1
     payload = json.loads(result.stdout)
     checks = {item["name"]: item for item in payload["checks"]}
     assert checks["docker_github_mcp_count"]["actual"] == "1"
-    assert checks["docker_unrelated-container_limits"]["status"] == "gap"
+    assert checks["docker_github_mcp_target_1_limits"]["status"] == "gap"
+    assert untrusted_name not in result.stdout
 
 
 @pytest.mark.parametrize(
@@ -1309,6 +1570,67 @@ def test_audit_discovers_app_labeled_mcp_name_lookalike(tmp_path: Path) -> None:
         {"device_requests": [{"Driver": "nvidia", "Count": -1}]},
         {"port_bindings": {"8080/tcp": [{"HostPort": "8080"}]}},
         {"stop_timeout": 10},
+        {"attach_stdin": False},
+        {"attach_stdout": False},
+        {"attach_stderr": False},
+        {"open_stdin": False},
+        {"stdin_once": False},
+        {"tty": True},
+        {"user": "123"},
+        {"env_count": 4},
+        {"env_path_marker": ""},
+        {"env_ssl_marker": ""},
+        {"env_token_marker": ""},
+        {"working_dir": "/tmp"},
+        {"stop_signal": "SIGKILL"},
+        {"network_disabled": True},
+        {"exposed_ports": {"8080/tcp": {}}},
+        {"memory_reservation": 1024},
+        {"oom_score_adj": -500},
+        {"log_config": {"tag": "untrusted"}},
+        {"uts_mode": "host"},
+        {"cgroupns_mode": "host"},
+        {"userns_mode": "host"},
+        {"runtime": "untrusted-runtime"},
+        {"pids_limit": 0},
+        {"restart_name": "always"},
+        {"restart_max": 1},
+        {"nano_cpus": 1_000_000_000},
+        {"cpu_shares": 1024},
+        {"publish_all_ports": True},
+        {"shm_size": 128 * 1024**2},
+        {"dns": ["192.0.2.1"]},
+        {"dns_options": ["use-vc"]},
+        {"dns_search": ["private.invalid"]},
+        {"extra_hosts": ["host.docker.internal:host-gateway"]},
+        {"links": ["other:other"]},
+        {"group_add": ["0"]},
+        {"volumes_from": ["other:ro"]},
+        {"network_count": 2},
+        {"bridge_network_marker": ""},
+        {"hostname": "attacker-hostname"},
+        {"domainname": "private.invalid"},
+        {"entrypoint": ["/bin/sh"]},
+        {"config_cmd": ["-c", "id"]},
+        {"volumes": {"/host": {}}},
+        {"network_ports": {"8082/tcp": [{"HostPort": "8082"}]}},
+        {"extra_labels": {"org.opencontainers.image.revision": "unreviewed-image-revision"}},
+        {"host_config_overrides": {"BlkioWeight": 500}},
+        {"host_config_overrides": {"Cgroup": "host-cgroup"}},
+        {"host_config_overrides": {"CgroupParent": "/host"}},
+        {"host_config_overrides": {"ConsoleSize": [24, 80]}},
+        {"host_config_overrides": {"ContainerIDFile": "/tmp/untrusted.cid"}},
+        {"host_config_overrides": {"CpuQuota": 100000}},
+        {"host_config_overrides": {"CpusetCpus": "0"}},
+        {"host_config_overrides": {"DeviceCgroupRules": ["a *:* rwm"]}},
+        {"host_config_overrides": {"IOMaximumIOps": 1000}},
+        {"host_config_overrides": {"MaskedPaths": []}},
+        {"host_config_overrides": {"MemorySwappiness": 0}},
+        {"host_config_overrides": {"ReadonlyPaths": []}},
+        {"host_config_overrides": {"Ulimits": [{"Name": "nofile", "Hard": 65536}]}},
+        {"host_config_overrides": {"VolumeDriver": "local"}},
+        {"host_config_overrides": {"Annotations": {"unreviewed": "value"}}},
+        {"host_config_overrides": {"FutureEscapeSurface": {"enabled": True}}},
     ),
 )
 def test_audit_rejects_mcp_runtime_security_drift(
@@ -1346,7 +1668,7 @@ def test_audit_does_not_emit_unrelated_container_labels(tmp_path: Path) -> None:
         docker_mcp_signature_overrides={"extra_labels": {"unrelated.example/value": secret}},
     )
 
-    assert result.returncode == 0, result.stdout
+    assert result.returncode == 1
     assert secret not in result.stdout
 
 
@@ -1378,6 +1700,46 @@ def test_audit_does_not_emit_untrusted_container_metadata(tmp_path: Path) -> Non
     assert mount_secret not in result.stdout
 
 
+@pytest.mark.parametrize("phase", ("inventory", "label", "image", "inspect"))
+def test_audit_does_not_emit_docker_command_failure_output(tmp_path: Path, phase: str) -> None:
+    secret = f"{phase}-failure-secret-must-not-be-emitted"
+    result = _run(
+        tmp_path,
+        docker_mcp_count=1,
+        docker_failure_phase=phase,
+        docker_failure_detail=secret,
+    )
+
+    assert result.returncode == 1
+    assert secret not in result.stdout
+    assert secret not in result.stderr
+
+
+@pytest.mark.parametrize(
+    "inventory",
+    (
+        f"{'a' * 64}\tprivate-malformed-name\textra-field\n",
+        f"{'a' * 64}\tprivate-duplicate-name\n{'b' * 64}\tprivate-duplicate-name\n",
+    ),
+)
+def test_audit_does_not_emit_untrusted_malformed_inventory(tmp_path: Path, inventory: str) -> None:
+    result = _run(tmp_path, docker_inventory_override=inventory)
+
+    assert result.returncode == 1
+    assert "private-" not in result.stdout
+
+
+def test_audit_does_not_emit_untrusted_labeled_inventory(tmp_path: Path) -> None:
+    secret = "private-malformed-labeled-id"
+    result = _run(
+        tmp_path,
+        docker_labeled_inventory_override=f"{secret}\n",
+    )
+
+    assert result.returncode == 1
+    assert secret not in result.stdout
+
+
 def test_audit_treats_auto_remove_teardown_as_converging(tmp_path: Path) -> None:
     result = _run(
         tmp_path,
@@ -1386,6 +1748,23 @@ def test_audit_treats_auto_remove_teardown_as_converging(tmp_path: Path) -> None
     )
 
     assert result.returncode == 0, result.stdout
+
+
+def test_audit_rejects_removing_container_with_dead_lease(tmp_path: Path) -> None:
+    result = _run(
+        tmp_path,
+        docker_mcp_count=1,
+        docker_mcp_signature_overrides={
+            "container_state": "removing",
+            "lease_start_label": "999999",
+        },
+    )
+
+    assert result.returncode == 1
+    payload = json.loads(result.stdout)
+    check = next(item for item in payload["checks"] if item["name"].endswith("_limits"))
+    assert check["status"] == "gap"
+    assert "Converging=False" in check["actual"]
 
 
 def test_audit_rejects_zombie_mcp_lease_holder(tmp_path: Path) -> None:
@@ -1434,17 +1813,18 @@ def test_audit_rejects_mcp_image_substitution(tmp_path: Path) -> None:
     assert result.returncode == 1
     payload = json.loads(result.stdout)
     check = next(
-        item for item in payload["checks"] if item["name"].startswith("docker_hapax-github-mcp-")
+        item for item in payload["checks"] if item["name"].startswith("docker_github_mcp_target_")
     )
     assert check["status"] == "gap"
     assert "image" in check["detail"]
 
 
 def test_audit_rejects_missing_exact_mcp_repo_digest(tmp_path: Path) -> None:
+    untrusted_digest = f"private.example/image@sha256:{'f' * 64}"
     result = _run(
         tmp_path,
         docker_mcp_count=1,
-        docker_mcp_repo_digest=f"ghcr.io/github/github-mcp-server@sha256:{'f' * 64}",
+        docker_mcp_repo_digest=untrusted_digest,
     )
 
     assert result.returncode == 1
@@ -1452,6 +1832,7 @@ def test_audit_rejects_missing_exact_mcp_repo_digest(tmp_path: Path) -> None:
     check = next(item for item in payload["checks"] if item["name"] == "docker_github_mcp_image")
     assert check["status"] == "gap"
     assert "RepoDigest" in check["detail"]
+    assert untrusted_digest not in result.stdout
 
 
 def test_audit_requires_historical_local_judge_to_be_absent(tmp_path: Path) -> None:
@@ -1543,10 +1924,10 @@ def test_audit_rejects_malformed_formatted_docker_inspect(tmp_path: Path) -> Non
     assert result.returncode == 1
     payload = json.loads(result.stdout)
     check = next(
-        item for item in payload["checks"] if item["name"].startswith("docker_hapax-github-mcp-")
+        item for item in payload["checks"] if item["name"].startswith("docker_github_mcp_target_")
     )
     assert check["status"] == "error"
-    assert "twenty-eight formatted Docker inspect fields" in check["detail"]
+    assert "seventy-four formatted Docker inspect fields" in check["detail"]
 
 
 def test_audit_is_behaviorally_observational(tmp_path: Path) -> None:

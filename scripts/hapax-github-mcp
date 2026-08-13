@@ -6,8 +6,19 @@ umask 077
 unset CDPATH ENV BASH_ENV
 unset DOCKER_HOST DOCKER_CONTEXT DOCKER_CONFIG DOCKER_CERT_PATH
 unset DOCKER_TLS DOCKER_TLS_VERIFY DOCKER_API_VERSION
+GITHUB_PERSONAL_ACCESS_TOKEN="${GITHUB_PERSONAL_ACCESS_TOKEN:-${CODEX_GITHUB_PERSONAL_ACCESS_TOKEN:-}}"
+unset CODEX_GITHUB_PERSONAL_ACCESS_TOKEN
+export -n GITHUB_PERSONAL_ACCESS_TOKEN
 PATH=/usr/local/sbin:/usr/local/bin:/usr/bin:/bin
 export PATH
+
+for managed_signal in INT TERM HUP; do
+  if [ "$(trap -p "$managed_signal")" = "trap -- '' SIG$managed_signal" ]; then
+    echo "hapax-github-mcp: refused inherited ignored signal disposition for SIG$managed_signal; next action: launch from a parent with default INT/TERM/HUP dispositions" >&2
+    exit 2
+  fi
+done
+unset managed_signal
 
 readonly GITHUB_MCP_IMAGE_DIGEST="sha256:30197479d8036c7811892bc07e06f9a05c9ef3cdd79bc59f256d50647f95788c"
 readonly GITHUB_MCP_IMAGE="ghcr.io/github/github-mcp-server@$GITHUB_MCP_IMAGE_DIGEST"
@@ -20,7 +31,8 @@ readonly GITHUB_MCP_LEASE_START_LABEL="org.hapax.github-mcp.lease-start"
 readonly GITHUB_MCP_LEASE_BOOT_LABEL="org.hapax.github-mcp.lease-boot"
 readonly GITHUB_MCP_SERVER_PATH="/server/github-mcp-server"
 readonly MAX_SECRET_BYTES=8192
-readonly MAX_APP_CONTAINERS=64
+readonly MAX_APP_CONTAINERS=63
+readonly MAX_DOCKER_OUTPUT_BYTES=16384
 
 if ! PASSWD_ENTRY="$(/usr/bin/getent passwd "$EUID")"; then
   echo "hapax-github-mcp: cannot resolve account home for uid $EUID; next action: restore the local passwd/NSS entry and rerun" >&2
@@ -64,7 +76,7 @@ load_first_available_pass_secret() {
   for entry in "$@"; do
     value="$(pass_first_line "$entry" || true)"
     if [ -n "$value" ]; then
-      export "$env_name=$value"
+      printf -v "$env_name" '%s' "$value"
       return 0
     fi
   done
@@ -98,7 +110,7 @@ load_bearer_from_claude_mcp() {
       ;;
   esac
   if [ -n "$token" ]; then
-    export "$env_name=$token"
+    printf -v "$env_name" '%s' "$token"
     return 0
   fi
   return 1
@@ -116,15 +128,11 @@ load_github_token_from_gh() {
   )" || return 1
   [ "${#value}" -le "$MAX_SECRET_BYTES" ] || return 1
   if [ -n "$value" ]; then
-    export "$env_name=$value"
+    printf -v "$env_name" '%s' "$value"
     return 0
   fi
   return 1
 }
-
-if [ -n "${CODEX_GITHUB_PERSONAL_ACCESS_TOKEN:-}" ] && [ -z "${GITHUB_PERSONAL_ACCESS_TOKEN:-}" ]; then
-  export GITHUB_PERSONAL_ACCESS_TOKEN="$CODEX_GITHUB_PERSONAL_ACCESS_TOKEN"
-fi
 
 load_first_available_pass_secret GITHUB_PERSONAL_ACCESS_TOKEN \
   github/codex-personal-access-token \
@@ -184,7 +192,7 @@ local_docker() {
       /usr/bin/docker \
       --host=unix:///var/run/docker.sock \
       --config=/nonexistent/hapax-github-mcp-docker \
-      "$@" 2>&1 | /usr/bin/head -c 4097
+      "$@" 2>&1 | /usr/bin/head -c $((MAX_DOCKER_OUTPUT_BYTES + 1))
     statuses=("${PIPESTATUS[@]}")
     [ "${statuses[0]}" -eq 0 ] && [ "${statuses[1]}" -eq 0 ]
   )
@@ -291,6 +299,26 @@ query_exact_container_id() {
   EXACT_ID_MATCH="$output"
 }
 
+CONTAINER_ABSENCE_ERROR=""
+wait_for_container_absence() {
+  local container_id="$1" attempt
+  CONTAINER_ABSENCE_ERROR=""
+  for ((attempt = 1; attempt <= 20; attempt++)); do
+    if ! query_exact_container_id "$container_id"; then
+      CONTAINER_ABSENCE_ERROR="$EXACT_ID_ERROR"
+      return 2
+    fi
+    if [ -z "$EXACT_ID_MATCH" ]; then
+      return 0
+    fi
+    if [ "$attempt" -lt 20 ]; then
+      /usr/bin/sleep 0.05
+    fi
+  done
+  CONTAINER_ABSENCE_ERROR="immutable ID remained observable after bounded removal convergence"
+  return 1
+}
+
 MCP_SIGNATURE_ERROR=""
 MCP_SIGNATURE_LAUNCH_ID=""
 MCP_SIGNATURE_LEASE_PID=""
@@ -316,15 +344,204 @@ tmpfs_options_match() {
     && [ "$seen_nosuid" -eq 1 ] && [ "$seen_size" -eq 1 ]
 }
 
+validate_mcp_json_surfaces() {
+  local host_config="$1" labels="$2" launch_id="$3"
+  local lease_pid="$4" lease_start="$5" lease_boot="$6"
+  /usr/bin/python3 -I -S - \
+    "$LOG_DIR" "$EUID" "$launch_id" "$lease_pid" "$lease_start" "$lease_boot" \
+    3<<<"$host_config" 4<<<"$labels" <<'PY'
+from __future__ import annotations
+
+import json
+import os
+import sys
+
+
+def same_type_value(actual: object, expected: object) -> bool:
+    if type(actual) is not type(expected):
+        return False
+    if isinstance(expected, dict):
+        return actual.keys() == expected.keys() and all(
+            same_type_value(actual[key], value) for key, value in expected.items()
+        )
+    if isinstance(expected, list):
+        return len(actual) == len(expected) and all(
+            same_type_value(left, right) for left, right in zip(actual, expected, strict=True)
+        )
+    return actual == expected
+
+
+def empty_value(value: object) -> bool:
+    return value is None or value is False or value == 0 or value == "" or value == [] or value == {}
+
+
+log_dir, uid, launch_id, lease_pid, lease_start, lease_boot = sys.argv[1:]
+try:
+    host = json.load(os.fdopen(3, encoding="utf-8"))
+    labels = json.load(os.fdopen(4, encoding="utf-8"))
+except (OSError, UnicodeError, json.JSONDecodeError):
+    raise SystemExit(1)
+if not isinstance(host, dict) or not isinstance(labels, dict):
+    raise SystemExit(1)
+
+suffix = launch_id.removeprefix(f"{uid}-")
+expected_host = {
+    "AutoRemove": True,
+    "BlkioWeight": 0,
+    "CapDrop": ["ALL"],
+    "Cgroup": "",
+    "CgroupParent": "",
+    "CgroupnsMode": "private",
+    "ConsoleSize": [0, 0],
+    "ContainerIDFile": os.path.join(log_dir, f"github-mcp.{suffix}", "container.cid"),
+    "CpuCount": 0,
+    "CpuPercent": 0,
+    "CpuPeriod": 0,
+    "CpuQuota": 0,
+    "CpuRealtimePeriod": 0,
+    "CpuRealtimeRuntime": 0,
+    "CpuShares": 0,
+    "CpusetCpus": "",
+    "CpusetMems": "",
+    "IOMaximumBandwidth": 0,
+    "IOMaximumIOps": 0,
+    "IpcMode": "private",
+    "Isolation": "",
+    "LogConfig": {"Config": {}, "Type": "none"},
+    "MaskedPaths": [
+        "/proc/acpi",
+        "/proc/asound",
+        "/proc/interrupts",
+        "/proc/kcore",
+        "/proc/keys",
+        "/proc/latency_stats",
+        "/proc/sched_debug",
+        "/proc/scsi",
+        "/proc/timer_list",
+        "/proc/timer_stats",
+        "/sys/devices/virtual/powercap",
+        "/sys/firmware",
+    ],
+    "Memory": 536870912,
+    "MemoryReservation": 0,
+    "MemorySwap": 805306368,
+    "NanoCpus": 0,
+    "NetworkMode": "bridge",
+    "OomScoreAdj": 0,
+    "PidMode": "",
+    "PidsLimit": 128,
+    "PortBindings": {},
+    "Privileged": False,
+    "PublishAllPorts": False,
+    "ReadonlyPaths": [
+        "/proc/bus",
+        "/proc/fs",
+        "/proc/irq",
+        "/proc/sys",
+        "/proc/sysrq-trigger",
+    ],
+    "ReadonlyRootfs": True,
+    "RestartPolicy": {"MaximumRetryCount": 0, "Name": "no"},
+    "Runtime": "runc",
+    "ShmSize": 67108864,
+    "UTSMode": "private",
+    "UsernsMode": "",
+    "VolumeDriver": "",
+}
+for key, expected in expected_host.items():
+    if key not in host or not same_type_value(host[key], expected):
+        raise SystemExit(1)
+
+nullable_empty_lists = {
+    "Binds",
+    "BlkioDeviceReadBps",
+    "BlkioDeviceReadIOps",
+    "BlkioDeviceWriteBps",
+    "BlkioDeviceWriteIOps",
+    "BlkioWeightDevice",
+    "CapAdd",
+    "DeviceCgroupRules",
+    "DeviceRequests",
+    "Devices",
+    "Dns",
+    "DnsOptions",
+    "DnsSearch",
+    "ExtraHosts",
+    "GroupAdd",
+    "Links",
+    "Ulimits",
+    "VolumesFrom",
+}
+for key in nullable_empty_lists:
+    if key not in host or host[key] not in (None, []):
+        raise SystemExit(1)
+if host.get("MemorySwappiness") is not None:
+    raise SystemExit(1)
+if host.get("OomKillDisable") not in (None, False):
+    raise SystemExit(1)
+if host.get("SecurityOpt") not in (["no-new-privileges"], ["no-new-privileges:true"]):
+    raise SystemExit(1)
+tmpfs = host.get("Tmpfs")
+if not isinstance(tmpfs, dict) or set(tmpfs) != {"/tmp"}:
+    raise SystemExit(1)
+tmpfs_options = tmpfs["/tmp"]
+if not isinstance(tmpfs_options, str) or len(tmpfs_options.split(",")) != 4 or set(
+    tmpfs_options.split(",")
+) != {"rw", "noexec", "nosuid", "size=16m"}:
+    raise SystemExit(1)
+
+known = set(expected_host) | nullable_empty_lists | {
+    "MemorySwappiness",
+    "OomKillDisable",
+    "SecurityOpt",
+    "Tmpfs",
+}
+if any(not empty_value(value) for key, value in host.items() if key not in known):
+    raise SystemExit(1)
+
+expected_labels = {
+    "io.modelcontextprotocol.server.name": "io.github.github/github-mcp-server",
+    "org.opencontainers.image.created": "2026-05-29T12:26:39.099Z",
+    "org.opencontainers.image.description": "GitHub's official MCP Server",
+    "org.opencontainers.image.licenses": "MIT",
+    "org.opencontainers.image.revision": "b5397f6e3305531a1c534b90b2d347a70fa84da9",
+    "org.opencontainers.image.source": "https://github.com/github/github-mcp-server",
+    "org.opencontainers.image.title": "github-mcp-server",
+    "org.opencontainers.image.url": "https://github.com/github/github-mcp-server",
+    "org.opencontainers.image.version": "1.1.2",
+    "org.hapax.github-mcp.app": "stdio-v1",
+    "org.hapax.github-mcp.uid": uid,
+    "org.hapax.github-mcp.launch": launch_id,
+    "org.hapax.github-mcp.lease-pid": lease_pid,
+    "org.hapax.github-mcp.lease-start": lease_start,
+    "org.hapax.github-mcp.lease-boot": lease_boot,
+}
+if labels != expected_labels:
+    raise SystemExit(1)
+PY
+}
+
 validate_mcp_container_signature() {
   local container_id="$1" output
   local actual_id actual_name actual_app actual_uid actual_launch actual_lease_pid
-  local actual_lease_start actual_lease_boot actual_image actual_config_image actual_path
-  local actual_args actual_memory actual_memory_swap actual_oom_kill_disable
+  local actual_lease_start actual_lease_boot actual_label_count actual_image
+  local actual_config_image actual_path actual_args actual_attach_stdin actual_attach_stdout
+  local actual_attach_stderr actual_open_stdin actual_stdin_once actual_tty actual_user
+  local actual_env_count actual_env_path actual_env_ssl actual_env_token actual_working_dir
+  local actual_stop_signal actual_network_disabled actual_exposed_ports actual_memory
+  local actual_memory_swap actual_memory_reservation actual_oom_kill_disable actual_oom_score_adj
   local actual_readonly actual_cap_drop actual_security_opt actual_auto_remove
-  local actual_log_driver actual_tmpfs actual_binds actual_mounts actual_privileged
+  local actual_log_driver actual_log_config actual_tmpfs actual_binds actual_mounts actual_privileged
   local actual_cap_add actual_network_mode actual_pid_mode actual_ipc_mode actual_devices
-  local actual_device_requests actual_port_bindings actual_state actual_stop_timeout extra tmpfs_ok=0
+  local actual_uts_mode actual_cgroupns_mode actual_userns_mode actual_device_requests
+  local actual_port_bindings actual_runtime actual_pids_limit actual_restart_name
+  local actual_restart_max actual_nano_cpus actual_cpu_shares actual_publish_all_ports
+  local actual_shm_size actual_dns actual_dns_options actual_dns_search actual_extra_hosts
+  local actual_links actual_group_add actual_volumes_from actual_network_count
+  local actual_bridge_network actual_state actual_stop_timeout actual_hostname actual_domainname
+  local actual_entrypoint actual_config_cmd actual_volumes actual_network_ports
+  local actual_labels_json actual_host_config extra tmpfs_ok=0 json_surfaces_ok=0
+  local inspect_format
   local args_pattern='^\["stdio","--log-file","/tmp/github-mcp.log","--(tools|toolsets)=[A-Za-z0-9_,.-]{1,1024}"\]$'
   local tmpfs_pattern='^\{"/tmp":"([^"]*)"\}$'
   MCP_SIGNATURE_ERROR=""
@@ -333,10 +550,20 @@ validate_mcp_container_signature() {
   MCP_SIGNATURE_LEASE_START=""
   MCP_SIGNATURE_LEASE_BOOT=""
   MCP_SIGNATURE_STATE=""
+  inspect_format='{{.Id}}{{printf "\t"}}{{.Name}}{{printf "\t"}}{{index .Config.Labels "org.hapax.github-mcp.app"}}{{printf "\t"}}{{index .Config.Labels "org.hapax.github-mcp.uid"}}{{printf "\t"}}{{index .Config.Labels "org.hapax.github-mcp.launch"}}{{printf "\t"}}{{index .Config.Labels "org.hapax.github-mcp.lease-pid"}}{{printf "\t"}}{{index .Config.Labels "org.hapax.github-mcp.lease-start"}}{{printf "\t"}}{{index .Config.Labels "org.hapax.github-mcp.lease-boot"}}{{printf "\t"}}{{len .Config.Labels}}'
+  inspect_format+='{{printf "\t"}}{{.Image}}{{printf "\t"}}{{.Config.Image}}{{printf "\t"}}{{.Path}}{{printf "\t"}}{{json .Args}}'
+  inspect_format+='{{printf "\t"}}{{.Config.AttachStdin}}{{printf "\t"}}{{.Config.AttachStdout}}{{printf "\t"}}{{.Config.AttachStderr}}{{printf "\t"}}{{.Config.OpenStdin}}{{printf "\t"}}{{.Config.StdinOnce}}{{printf "\t"}}{{.Config.Tty}}{{printf "\t"}}{{.Config.User}}'
+  inspect_format+='{{printf "\t"}}{{len .Config.Env}}{{printf "\t"}}{{range .Config.Env}}{{if eq . "PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"}}P{{end}}{{end}}{{printf "\t"}}{{range .Config.Env}}{{if eq . "SSL_CERT_FILE=/etc/ssl/certs/ca-certificates.crt"}}S{{end}}{{end}}{{printf "\t"}}{{range .Config.Env}}{{if and (eq (printf "%.29s" .) "GITHUB_PERSONAL_ACCESS_TOKEN=") (gt (len .) 29)}}T{{end}}{{end}}'
+  inspect_format+='{{printf "\t"}}{{.Config.WorkingDir}}{{printf "\t"}}{{.Config.StopSignal}}{{printf "\t"}}{{.Config.NetworkDisabled}}{{printf "\t"}}{{json .Config.ExposedPorts}}'
+  inspect_format+='{{printf "\t"}}{{.HostConfig.Memory}}{{printf "\t"}}{{.HostConfig.MemorySwap}}{{printf "\t"}}{{.HostConfig.MemoryReservation}}{{printf "\t"}}{{json .HostConfig.OomKillDisable}}{{printf "\t"}}{{.HostConfig.OomScoreAdj}}'
+  inspect_format+='{{printf "\t"}}{{.HostConfig.ReadonlyRootfs}}{{printf "\t"}}{{json .HostConfig.CapDrop}}{{printf "\t"}}{{json .HostConfig.SecurityOpt}}{{printf "\t"}}{{.HostConfig.AutoRemove}}{{printf "\t"}}{{.HostConfig.LogConfig.Type}}{{printf "\t"}}{{json .HostConfig.LogConfig.Config}}{{printf "\t"}}{{json .HostConfig.Tmpfs}}'
+  inspect_format+='{{printf "\t"}}{{json .HostConfig.Binds}}{{printf "\t"}}{{json .Mounts}}{{printf "\t"}}{{json .HostConfig.Privileged}}{{printf "\t"}}{{json .HostConfig.CapAdd}}{{printf "\t"}}{{json .HostConfig.NetworkMode}}{{printf "\t"}}{{json .HostConfig.PidMode}}{{printf "\t"}}{{json .HostConfig.IpcMode}}{{printf "\t"}}{{json .HostConfig.UTSMode}}{{printf "\t"}}{{json .HostConfig.CgroupnsMode}}{{printf "\t"}}{{json .HostConfig.UsernsMode}}'
+  inspect_format+='{{printf "\t"}}{{json .HostConfig.Devices}}{{printf "\t"}}{{json .HostConfig.DeviceRequests}}{{printf "\t"}}{{json .HostConfig.PortBindings}}{{printf "\t"}}{{.HostConfig.Runtime}}{{printf "\t"}}{{.HostConfig.PidsLimit}}{{printf "\t"}}{{.HostConfig.RestartPolicy.Name}}{{printf "\t"}}{{.HostConfig.RestartPolicy.MaximumRetryCount}}'
+  inspect_format+='{{printf "\t"}}{{.HostConfig.NanoCpus}}{{printf "\t"}}{{.HostConfig.CpuShares}}{{printf "\t"}}{{.HostConfig.PublishAllPorts}}{{printf "\t"}}{{.HostConfig.ShmSize}}{{printf "\t"}}{{json .HostConfig.Dns}}{{printf "\t"}}{{json .HostConfig.DnsOptions}}{{printf "\t"}}{{json .HostConfig.DnsSearch}}{{printf "\t"}}{{json .HostConfig.ExtraHosts}}{{printf "\t"}}{{json .HostConfig.Links}}{{printf "\t"}}{{json .HostConfig.GroupAdd}}{{printf "\t"}}{{json .HostConfig.VolumesFrom}}'
+  inspect_format+='{{printf "\t"}}{{len .NetworkSettings.Networks}}{{printf "\t"}}{{range $name, $_ := .NetworkSettings.Networks}}{{if eq $name "bridge"}}B{{end}}{{end}}{{printf "\t"}}{{.State.Status}}{{printf "\t"}}{{.Config.StopTimeout}}'
+  inspect_format+='{{printf "\t"}}{{json .Config.Hostname}}{{printf "\t"}}{{json .Config.Domainname}}{{printf "\t"}}{{json .Config.Entrypoint}}{{printf "\t"}}{{json .Config.Cmd}}{{printf "\t"}}{{json .Config.Volumes}}{{printf "\t"}}{{json .NetworkSettings.Ports}}{{printf "\t"}}{{json .Config.Labels}}{{printf "\t"}}{{json .HostConfig}}'
   if ! output="$(
-    local_docker inspect --format \
-      '{{.Id}}{{printf "\t"}}{{.Name}}{{printf "\t"}}{{index .Config.Labels "org.hapax.github-mcp.app"}}{{printf "\t"}}{{index .Config.Labels "org.hapax.github-mcp.uid"}}{{printf "\t"}}{{index .Config.Labels "org.hapax.github-mcp.launch"}}{{printf "\t"}}{{index .Config.Labels "org.hapax.github-mcp.lease-pid"}}{{printf "\t"}}{{index .Config.Labels "org.hapax.github-mcp.lease-start"}}{{printf "\t"}}{{index .Config.Labels "org.hapax.github-mcp.lease-boot"}}{{printf "\t"}}{{.Image}}{{printf "\t"}}{{.Config.Image}}{{printf "\t"}}{{.Path}}{{printf "\t"}}{{json .Args}}{{printf "\t"}}{{.HostConfig.Memory}}{{printf "\t"}}{{.HostConfig.MemorySwap}}{{printf "\t"}}{{json .HostConfig.OomKillDisable}}{{printf "\t"}}{{.HostConfig.ReadonlyRootfs}}{{printf "\t"}}{{json .HostConfig.CapDrop}}{{printf "\t"}}{{json .HostConfig.SecurityOpt}}{{printf "\t"}}{{.HostConfig.AutoRemove}}{{printf "\t"}}{{.HostConfig.LogConfig.Type}}{{printf "\t"}}{{json .HostConfig.Tmpfs}}{{printf "\t"}}{{json .HostConfig.Binds}}{{printf "\t"}}{{json .Mounts}}{{printf "\t"}}{{json .HostConfig.Privileged}}{{printf "\t"}}{{json .HostConfig.CapAdd}}{{printf "\t"}}{{json .HostConfig.NetworkMode}}{{printf "\t"}}{{json .HostConfig.PidMode}}{{printf "\t"}}{{json .HostConfig.IpcMode}}{{printf "\t"}}{{json .HostConfig.Devices}}{{printf "\t"}}{{json .HostConfig.DeviceRequests}}{{printf "\t"}}{{json .HostConfig.PortBindings}}{{printf "\t"}}{{.State.Status}}{{printf "\t"}}{{.Config.StopTimeout}}' \
-      "$container_id"
+    local_docker inspect --format "$inspect_format" "$container_id"
   )"; then
     MCP_SIGNATURE_ERROR="$(bounded_reason "$output")"
     return 1
@@ -345,23 +572,43 @@ validate_mcp_container_signature() {
     MCP_SIGNATURE_ERROR="unexpected multiline inspect record"
     return 1
   fi
+  if [ "${#output}" -gt "$MAX_DOCKER_OUTPUT_BYTES" ]; then
+    MCP_SIGNATURE_ERROR="oversized inspect record"
+    return 1
+  fi
   IFS=$'\t' read -r \
     actual_id actual_name actual_app actual_uid actual_launch actual_lease_pid \
-    actual_lease_start actual_lease_boot actual_image actual_config_image actual_path \
-    actual_args actual_memory actual_memory_swap actual_oom_kill_disable \
-    actual_readonly actual_cap_drop actual_security_opt actual_auto_remove \
-    actual_log_driver actual_tmpfs actual_binds actual_mounts actual_privileged \
-    actual_cap_add actual_network_mode actual_pid_mode actual_ipc_mode actual_devices \
-    actual_device_requests actual_port_bindings actual_state actual_stop_timeout extra \
+    actual_lease_start actual_lease_boot actual_label_count actual_image \
+    actual_config_image actual_path actual_args actual_attach_stdin actual_attach_stdout \
+    actual_attach_stderr actual_open_stdin actual_stdin_once actual_tty actual_user \
+    actual_env_count actual_env_path actual_env_ssl actual_env_token actual_working_dir \
+    actual_stop_signal actual_network_disabled actual_exposed_ports actual_memory \
+    actual_memory_swap actual_memory_reservation actual_oom_kill_disable actual_oom_score_adj \
+    actual_readonly actual_cap_drop actual_security_opt actual_auto_remove actual_log_driver \
+    actual_log_config actual_tmpfs actual_binds actual_mounts actual_privileged actual_cap_add \
+    actual_network_mode actual_pid_mode actual_ipc_mode actual_uts_mode actual_cgroupns_mode \
+    actual_userns_mode actual_devices actual_device_requests actual_port_bindings actual_runtime \
+    actual_pids_limit actual_restart_name actual_restart_max actual_nano_cpus actual_cpu_shares \
+    actual_publish_all_ports actual_shm_size actual_dns actual_dns_options actual_dns_search \
+    actual_extra_hosts actual_links actual_group_add actual_volumes_from actual_network_count \
+    actual_bridge_network actual_state actual_stop_timeout actual_hostname actual_domainname \
+    actual_entrypoint actual_config_cmd actual_volumes actual_network_ports actual_labels_json \
+    actual_host_config extra \
     <<< "$output"
   if [[ "$actual_tmpfs" =~ $tmpfs_pattern ]] \
     && tmpfs_options_match "${BASH_REMATCH[1]}"; then
     tmpfs_ok=1
   fi
+  if validate_mcp_json_surfaces \
+    "$actual_host_config" "$actual_labels_json" "$actual_launch" \
+    "$actual_lease_pid" "$actual_lease_start" "$actual_lease_boot"; then
+    json_surfaces_ok=1
+  fi
   if [ -n "$extra" ] \
     || [ "$actual_id" != "$container_id" ] \
     || [ "$actual_app" != "$GITHUB_MCP_APP_ID" ] \
     || [ "$actual_uid" != "$EUID" ] \
+    || [ "$actual_label_count" != "15" ] \
     || ! [[ "$actual_launch" =~ ^${EUID}-[A-Za-z0-9]{10}$ ]] \
     || [ "$actual_name" != "/hapax-github-mcp-$actual_launch" ] \
     || ! [[ "$actual_lease_pid" =~ ^[1-9][0-9]*$ ]] \
@@ -371,15 +618,33 @@ validate_mcp_container_signature() {
     || [ "$actual_config_image" != "$GITHUB_MCP_IMAGE" ] \
     || [ "$actual_path" != "$GITHUB_MCP_SERVER_PATH" ] \
     || ! [[ "$actual_args" =~ $args_pattern ]] \
+    || [ "$actual_attach_stdin" != "true" ] \
+    || [ "$actual_attach_stdout" != "true" ] \
+    || [ "$actual_attach_stderr" != "true" ] \
+    || [ "$actual_open_stdin" != "true" ] \
+    || [ "$actual_stdin_once" != "true" ] \
+    || [ "$actual_tty" != "false" ] \
+    || [ "$actual_user" != "0" ] \
+    || [ "$actual_env_count" != "3" ] \
+    || [ "$actual_env_path" != "P" ] \
+    || [ "$actual_env_ssl" != "S" ] \
+    || [ "$actual_env_token" != "T" ] \
+    || [ "$actual_working_dir" != "/server" ] \
+    || [ "$actual_stop_signal" != "SIGTERM" ] \
+    || [ "$actual_network_disabled" != "false" ] \
+    || [ "$actual_exposed_ports" != '{"8082/tcp":{}}' ] \
     || [ "$actual_memory" != "536870912" ] \
     || [ "$actual_memory_swap" != "805306368" ] \
+    || [ "$actual_memory_reservation" != "0" ] \
     || { [ "$actual_oom_kill_disable" != "null" ] && [ "$actual_oom_kill_disable" != "false" ]; } \
+    || [ "$actual_oom_score_adj" != "0" ] \
     || [ "$actual_readonly" != "true" ] \
     || [ "$actual_cap_drop" != '["ALL"]' ] \
     || { [ "$actual_security_opt" != '["no-new-privileges"]' ] \
          && [ "$actual_security_opt" != '["no-new-privileges:true"]' ]; } \
     || [ "$actual_auto_remove" != "true" ] \
     || [ "$actual_log_driver" != "none" ] \
+    || { [ "$actual_log_config" != "null" ] && [ "$actual_log_config" != "{}" ]; } \
     || [ "$tmpfs_ok" -ne 1 ] \
     || [ "$actual_binds" != "null" ] \
     || [ "$actual_mounts" != "[]" ] \
@@ -388,11 +653,38 @@ validate_mcp_container_signature() {
     || [ "$actual_network_mode" != '"bridge"' ] \
     || [ "$actual_pid_mode" != '""' ] \
     || [ "$actual_ipc_mode" != '"private"' ] \
+    || [ "$actual_uts_mode" != '"private"' ] \
+    || [ "$actual_cgroupns_mode" != '"private"' ] \
+    || [ "$actual_userns_mode" != '""' ] \
     || [ "$actual_devices" != "[]" ] \
     || [ "$actual_device_requests" != "null" ] \
     || [ "$actual_port_bindings" != "{}" ] \
+    || [ "$actual_runtime" != "runc" ] \
+    || [ "$actual_pids_limit" != "128" ] \
+    || [ "$actual_restart_name" != "no" ] \
+    || [ "$actual_restart_max" != "0" ] \
+    || [ "$actual_nano_cpus" != "0" ] \
+    || [ "$actual_cpu_shares" != "0" ] \
+    || [ "$actual_publish_all_ports" != "false" ] \
+    || [ "$actual_shm_size" != "67108864" ] \
+    || { [ "$actual_dns" != "null" ] && [ "$actual_dns" != "[]" ]; } \
+    || { [ "$actual_dns_options" != "null" ] && [ "$actual_dns_options" != "[]" ]; } \
+    || { [ "$actual_dns_search" != "null" ] && [ "$actual_dns_search" != "[]" ]; } \
+    || { [ "$actual_extra_hosts" != "null" ] && [ "$actual_extra_hosts" != "[]" ]; } \
+    || { [ "$actual_links" != "null" ] && [ "$actual_links" != "[]" ]; } \
+    || { [ "$actual_group_add" != "null" ] && [ "$actual_group_add" != "[]" ]; } \
+    || { [ "$actual_volumes_from" != "null" ] && [ "$actual_volumes_from" != "[]" ]; } \
+    || [ "$actual_network_count" != "1" ] \
+    || [ "$actual_bridge_network" != "B" ] \
     || ! [[ "$actual_state" =~ ^(created|running|restarting|paused|removing|exited|dead)$ ]] \
-    || [ "$actual_stop_timeout" != "1" ]; then
+    || [ "$actual_stop_timeout" != "1" ] \
+    || [ "$actual_hostname" != "\"${container_id:0:12}\"" ] \
+    || [ "$actual_domainname" != '""' ] \
+    || [ "$actual_entrypoint" != '["/server/github-mcp-server"]' ] \
+    || ! [[ "$actual_config_cmd" =~ $args_pattern ]] \
+    || [ "$actual_volumes" != "null" ] \
+    || [ "$actual_network_ports" != '{"8082/tcp":null}' ] \
+    || [ "$json_surfaces_ok" -ne 1 ]; then
     MCP_SIGNATURE_ERROR="immutable launch signature mismatch"
     return 1
   fi
@@ -503,10 +795,10 @@ reconcile_prior_mcp_containers() {
       return 1
     fi
     if [ "$MCP_SIGNATURE_STATE" = "removing" ]; then
-      if query_exact_container_id "$container_id" && [ -z "$EXACT_ID_MATCH" ]; then
+      if wait_for_container_absence "$container_id"; then
         continue
       fi
-      echo "hapax-github-mcp: prior immutable ID $container_id is still removing; retry after Docker converges" >&2
+      echo "hapax-github-mcp: prior immutable ID $container_id did not finish removing: $CONTAINER_ABSENCE_ERROR; refusing token release" >&2
       return 1
     fi
     liveness_rc=0
@@ -523,12 +815,8 @@ reconcile_prior_mcp_containers() {
     fi
     remove_rc=0
     remove_output="$(local_docker rm -f "$container_id")" || remove_rc=$?
-    if ! query_exact_container_id "$container_id"; then
-      echo "hapax-github-mcp: cannot recheck dead-lease cleanup for immutable ID $container_id: $EXACT_ID_ERROR; refusing token release" >&2
-      return 1
-    fi
-    if [ -n "$EXACT_ID_MATCH" ]; then
-      echo "hapax-github-mcp: dead-lease immutable ID $container_id remains after cleanup (rm_rc=$remove_rc reason=$(bounded_reason "$remove_output")); refusing token release" >&2
+    if ! wait_for_container_absence "$container_id"; then
+      echo "hapax-github-mcp: dead-lease immutable ID $container_id remains after bounded cleanup (rm_rc=$remove_rc reason=$(bounded_reason "$remove_output $CONTAINER_ABSENCE_ERROR")); refusing token release" >&2
       return 1
     fi
   done
@@ -605,8 +893,6 @@ cleanup() {
         || ! cid="$(/usr/bin/cat -- "$CID_FILE")" \
         || ! [[ "$cid" =~ ^[0-9a-f]{64}$ ]]; then
         cid_state="unsafe"
-        cleanup_failed=1
-        cleanup_failure "hapax-github-mcp: refused unsafe immutable-ID scratch $CID_FILE; next action: inspect the retained scratch and local Docker inventory, then remove only a proven full container ID"
       else
         cid_state="valid"
       fi
@@ -635,10 +921,14 @@ cleanup() {
       elif [ -n "$EXACT_ID_MATCH" ]; then
         candidate="$cid"
       fi
-    elif [ "$cid_state" = "absent" ] \
+    elif { [ "$cid_state" = "absent" ] || [ "$cid_state" = "unsafe" ]; } \
       && [ "$name_query_ok" -eq 1 ] \
       && [ -n "$EXACT_NAME_ID" ]; then
       candidate="$EXACT_NAME_ID"
+    fi
+    if [ "$cid_state" = "unsafe" ] && [ "$name_query_ok" -eq 0 ]; then
+      cleanup_failed=1
+      cleanup_failure "hapax-github-mcp: unsafe immutable-ID scratch could not be recovered through exact-name discovery; retained scratch: $CID_FILE"
     fi
     if [ "$name_query_ok" -eq 0 ] && [ -z "$candidate" ]; then
       cleanup_failed=1
@@ -654,12 +944,9 @@ cleanup() {
         fi
       else
         remove_error="$(local_docker rm -f "$candidate")"
-        if ! query_exact_container_id "$candidate"; then
+        if ! wait_for_container_absence "$candidate"; then
           cleanup_failed=1
-          cleanup_failure "hapax-github-mcp: immutable-ID cleanup for $candidate could not be rechecked: $(bounded_reason "$remove_error $EXACT_ID_ERROR"); retained scratch: $CID_FILE"
-        elif [ -n "$EXACT_ID_MATCH" ]; then
-          cleanup_failed=1
-          cleanup_failure "hapax-github-mcp: immutable-ID cleanup failed and $candidate remains: $(bounded_reason "$remove_error"); retained scratch: $CID_FILE"
+          cleanup_failure "hapax-github-mcp: immutable-ID cleanup failed to converge for $candidate: $(bounded_reason "$remove_error $CONTAINER_ABSENCE_ERROR"); retained scratch: $CID_FILE"
         fi
         if ! query_exact_container_name; then
           cleanup_failed=1
@@ -698,6 +985,8 @@ forward_active_docker_signal() {
   FORWARDED_SIGNAL_RC="$status"
   if [[ "$ACTIVE_DOCKER_PID" =~ ^[1-9][0-9]*$ ]]; then
     signal_active_docker_child "$signal"
+  else
+    exit "$status"
   fi
 }
 trap 'forward_active_docker_signal INT 130' INT
@@ -711,6 +1000,9 @@ fi
 if [ -n "$EXACT_NAME_ID" ]; then
   echo "hapax-github-mcp: generated launch name unexpectedly exists at immutable ID $EXACT_NAME_ID; refusing token release" >&2
   exit 2
+fi
+if [ "$FORWARDED_SIGNAL_RC" -ne 0 ]; then
+  exit "$FORWARDED_SIGNAL_RC"
 fi
 
 LAUNCH_ATTEMPTED=1
@@ -727,9 +1019,19 @@ launch_local_docker run -i --rm \
   --label "$GITHUB_MCP_LEASE_BOOT_LABEL=$LEASE_BOOT_ID" \
   --memory 512M \
   --memory-swap 768M \
+  --memory-reservation 0 \
+  --user 0 \
+  --workdir /server \
+  --runtime runc \
+  --pids-limit 128 \
+  --oom-score-adj 0 \
+  --uts private \
+  --cgroupns private \
   --network bridge \
   --log-driver none \
   --stop-timeout 1 \
+  --stop-signal SIGTERM \
+  --shm-size 64M \
   --read-only \
   --tmpfs /tmp:rw,noexec,nosuid,size=16m \
   --cap-drop ALL \

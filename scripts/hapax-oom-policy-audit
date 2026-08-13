@@ -6,6 +6,7 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import pwd
 import re
 import selectors
 import signal
@@ -108,9 +109,9 @@ LOCAL_DOCKER_CONFIG = "/nonexistent/hapax-oom-policy-audit-docker"
 COMMAND_OUTPUT_LIMIT = 16 * 1024
 COMMAND_TIMEOUT_SECONDS = 10.0
 DOCKER_INVENTORY_MAX_ROWS = 512
-DOCKER_TARGET_MAX = 64
+DOCKER_TARGET_MAX = 63
 DOCKER_INVENTORY_LINE_MAX = 512
-DOCKER_INSPECT_LINE_MAX = 4096
+DOCKER_INSPECT_LINE_MAX = 16 * 1024
 GITHUB_MCP_IMAGE_DIGEST = "sha256:30197479d8036c7811892bc07e06f9a05c9ef3cdd79bc59f256d50647f95788c"
 GITHUB_MCP_IMAGE = f"ghcr.io/github/github-mcp-server@{GITHUB_MCP_IMAGE_DIGEST}"
 GITHUB_MCP_PATH = "/server/github-mcp-server"
@@ -121,6 +122,17 @@ GITHUB_MCP_LAUNCH_LABEL = "org.hapax.github-mcp.launch"
 GITHUB_MCP_LEASE_PID_LABEL = "org.hapax.github-mcp.lease-pid"
 GITHUB_MCP_LEASE_START_LABEL = "org.hapax.github-mcp.lease-start"
 GITHUB_MCP_LEASE_BOOT_LABEL = "org.hapax.github-mcp.lease-boot"
+GITHUB_MCP_IMAGE_LABELS = {
+    "io.modelcontextprotocol.server.name": "io.github.github/github-mcp-server",
+    "org.opencontainers.image.created": "2026-05-29T12:26:39.099Z",
+    "org.opencontainers.image.description": "GitHub's official MCP Server",
+    "org.opencontainers.image.licenses": "MIT",
+    "org.opencontainers.image.revision": "b5397f6e3305531a1c534b90b2d347a70fa84da9",
+    "org.opencontainers.image.source": "https://github.com/github/github-mcp-server",
+    "org.opencontainers.image.title": "github-mcp-server",
+    "org.opencontainers.image.url": "https://github.com/github/github-mcp-server",
+    "org.opencontainers.image.version": "1.1.2",
+}
 
 
 @dataclass
@@ -436,6 +448,14 @@ def _run_local_docker(args: list[str]) -> subprocess.CompletedProcess[str]:
         ],
         env=env,
     )
+
+
+def _docker_failure_summary(result: subprocess.CompletedProcess[str]) -> str:
+    if result.returncode == 124:
+        return f"timed out after {COMMAND_TIMEOUT_SECONDS:g}s"
+    if result.returncode == 125:
+        return f"output exceeded {COMMAND_OUTPUT_LIMIT} bytes"
+    return f"rc={result.returncode}"
 
 
 def _show(unit: str, properties: list[str], *, user: bool = False) -> dict[str, str]:
@@ -1402,19 +1422,183 @@ def _docker_mcp_lease_is_live(
     return True, ""
 
 
+def _same_json_value(actual: object, expected: object) -> bool:
+    if type(actual) is not type(expected):
+        return False
+    if isinstance(expected, dict):
+        assert isinstance(actual, dict)
+        return actual.keys() == expected.keys() and all(
+            _same_json_value(actual[key], value) for key, value in expected.items()
+        )
+    if isinstance(expected, list):
+        assert isinstance(actual, list)
+        return len(actual) == len(expected) and all(
+            _same_json_value(left, right) for left, right in zip(actual, expected, strict=True)
+        )
+    return actual == expected
+
+
+def _empty_json_value(value: object) -> bool:
+    return (
+        value is None or value is False or value == 0 or value == "" or value == [] or value == {}
+    )
+
+
+def _expected_github_mcp_labels(
+    uid: int,
+    launch_id: str,
+    lease_pid: str,
+    lease_start: str,
+    lease_boot: str,
+) -> dict[str, str]:
+    return {
+        **GITHUB_MCP_IMAGE_LABELS,
+        GITHUB_MCP_APP_LABEL: GITHUB_MCP_APP_ID,
+        GITHUB_MCP_UID_LABEL: str(uid),
+        GITHUB_MCP_LAUNCH_LABEL: launch_id,
+        GITHUB_MCP_LEASE_PID_LABEL: lease_pid,
+        GITHUB_MCP_LEASE_START_LABEL: lease_start,
+        GITHUB_MCP_LEASE_BOOT_LABEL: lease_boot,
+    }
+
+
+def _docker_mcp_host_config_matches(host: object, uid: int, launch_id: str) -> bool:
+    if not isinstance(host, dict) or re.fullmatch(rf"{uid}-[A-Za-z0-9]{{10}}", launch_id) is None:
+        return False
+    try:
+        account_home = pwd.getpwuid(uid).pw_dir
+    except KeyError:
+        return False
+    suffix = launch_id.removeprefix(f"{uid}-")
+    expected = {
+        "AutoRemove": True,
+        "BlkioWeight": 0,
+        "CapDrop": ["ALL"],
+        "Cgroup": "",
+        "CgroupParent": "",
+        "CgroupnsMode": "private",
+        "ConsoleSize": [0, 0],
+        "ContainerIDFile": str(
+            Path(account_home) / ".cache/hapax/mcp-logs" / f"github-mcp.{suffix}" / "container.cid"
+        ),
+        "CpuCount": 0,
+        "CpuPercent": 0,
+        "CpuPeriod": 0,
+        "CpuQuota": 0,
+        "CpuRealtimePeriod": 0,
+        "CpuRealtimeRuntime": 0,
+        "CpuShares": 0,
+        "CpusetCpus": "",
+        "CpusetMems": "",
+        "IOMaximumBandwidth": 0,
+        "IOMaximumIOps": 0,
+        "IpcMode": "private",
+        "Isolation": "",
+        "LogConfig": {"Config": {}, "Type": "none"},
+        "MaskedPaths": [
+            "/proc/acpi",
+            "/proc/asound",
+            "/proc/interrupts",
+            "/proc/kcore",
+            "/proc/keys",
+            "/proc/latency_stats",
+            "/proc/sched_debug",
+            "/proc/scsi",
+            "/proc/timer_list",
+            "/proc/timer_stats",
+            "/sys/devices/virtual/powercap",
+            "/sys/firmware",
+        ],
+        "Memory": BYTES_512M,
+        "MemoryReservation": 0,
+        "MemorySwap": BYTES_768M,
+        "NanoCpus": 0,
+        "NetworkMode": "bridge",
+        "OomScoreAdj": 0,
+        "PidMode": "",
+        "PidsLimit": 128,
+        "PortBindings": {},
+        "Privileged": False,
+        "PublishAllPorts": False,
+        "ReadonlyPaths": [
+            "/proc/bus",
+            "/proc/fs",
+            "/proc/irq",
+            "/proc/sys",
+            "/proc/sysrq-trigger",
+        ],
+        "ReadonlyRootfs": True,
+        "RestartPolicy": {"MaximumRetryCount": 0, "Name": "no"},
+        "Runtime": "runc",
+        "ShmSize": 64 * 1024**2,
+        "UTSMode": "private",
+        "UsernsMode": "",
+        "VolumeDriver": "",
+    }
+    if any(
+        key not in host or not _same_json_value(host[key], value) for key, value in expected.items()
+    ):
+        return False
+    nullable_empty_lists = {
+        "Binds",
+        "BlkioDeviceReadBps",
+        "BlkioDeviceReadIOps",
+        "BlkioDeviceWriteBps",
+        "BlkioDeviceWriteIOps",
+        "BlkioWeightDevice",
+        "CapAdd",
+        "DeviceCgroupRules",
+        "DeviceRequests",
+        "Devices",
+        "Dns",
+        "DnsOptions",
+        "DnsSearch",
+        "ExtraHosts",
+        "GroupAdd",
+        "Links",
+        "Ulimits",
+        "VolumesFrom",
+    }
+    if any(key not in host or host[key] not in (None, []) for key in nullable_empty_lists):
+        return False
+    if host.get("MemorySwappiness") is not None or host.get("OomKillDisable") not in (None, False):
+        return False
+    if host.get("SecurityOpt") not in (["no-new-privileges"], ["no-new-privileges:true"]):
+        return False
+    tmpfs = host.get("Tmpfs")
+    if not isinstance(tmpfs, dict) or set(tmpfs) != {"/tmp"}:
+        return False
+    tmpfs_options = tmpfs["/tmp"]
+    if (
+        not isinstance(tmpfs_options, str)
+        or len(tmpfs_options.split(",")) != 4
+        or set(tmpfs_options.split(",")) != {"rw", "noexec", "nosuid", "size=16m"}
+    ):
+        return False
+    known = (
+        set(expected)
+        | nullable_empty_lists
+        | {
+            "MemorySwappiness",
+            "OomKillDisable",
+            "SecurityOpt",
+            "Tmpfs",
+        }
+    )
+    return all(_empty_json_value(value) for key, value in host.items() if key not in known)
+
+
 def audit_docker_limits(uid: int) -> list[Check]:
     enumeration = _run_local_docker(["ps", "-a", "--no-trunc", "--format", "{{.ID}}\t{{.Names}}"])
     if enumeration.returncode != 0:
-        detail = (
-            enumeration.stderr or enumeration.stdout
-        ).strip() or f"rc={enumeration.returncode}"
         return [
             Check(
                 "docker_oom_targets",
                 "error",
                 "local Docker inventory observable",
                 "N/A",
-                f"Docker enumeration failed: {detail}; {NEXT_OOM_ACTION}",
+                f"Docker enumeration failed: {_docker_failure_summary(enumeration)}; "
+                f"{NEXT_OOM_ACTION}",
             )
         ]
 
@@ -1452,7 +1636,7 @@ def audit_docker_limits(uid: int) -> list[Check]:
                     "docker_oom_targets",
                     "error",
                     "full immutable IDs and exact names",
-                    raw_line[:256],
+                    "malformed",
                     f"malformed Docker inventory; {NEXT_OOM_ACTION}",
                 )
             ]
@@ -1463,7 +1647,7 @@ def audit_docker_limits(uid: int) -> list[Check]:
                     "docker_oom_targets",
                     "error",
                     "unique immutable IDs",
-                    container_id,
+                    "duplicate",
                     f"duplicate Docker ID in inventory; {NEXT_OOM_ACTION}",
                 )
             ]
@@ -1473,7 +1657,7 @@ def audit_docker_limits(uid: int) -> list[Check]:
                     "docker_oom_targets",
                     "error",
                     "unique exact names",
-                    name,
+                    "duplicate",
                     f"duplicate Docker name in inventory; {NEXT_OOM_ACTION}",
                 )
             ]
@@ -1484,14 +1668,14 @@ def audit_docker_limits(uid: int) -> list[Check]:
         ["ps", "-aq", "--no-trunc", "--filter", f"label={GITHUB_MCP_APP_LABEL}"]
     )
     if labeled.returncode != 0:
-        detail = (labeled.stderr or labeled.stdout).strip() or f"rc={labeled.returncode}"
         return [
             Check(
                 "docker_oom_targets",
                 "error",
                 "GitHub MCP label inventory observable",
                 "N/A",
-                f"Docker label enumeration failed: {detail}; {NEXT_OOM_ACTION}",
+                f"Docker label enumeration failed: {_docker_failure_summary(labeled)}; "
+                f"{NEXT_OOM_ACTION}",
             )
         ]
     labeled_ids: set[str] = set()
@@ -1502,7 +1686,7 @@ def audit_docker_limits(uid: int) -> list[Check]:
                     "docker_oom_targets",
                     "error",
                     "labeled IDs present in the immutable inventory",
-                    raw_id[:256],
+                    "malformed",
                     f"malformed or inconsistent Docker label inventory; {NEXT_OOM_ACTION}",
                 )
             ]
@@ -1560,10 +1744,10 @@ def audit_docker_limits(uid: int) -> list[Check]:
         image_actual = "N/A"
         image_detail = ""
         if image_inspect.returncode != 0:
-            detail = (
-                image_inspect.stderr or image_inspect.stdout
-            ).strip() or f"rc={image_inspect.returncode}"
-            image_detail = f"cannot resolve the pinned local image: {detail}; {NEXT_OOM_ACTION}"
+            image_detail = (
+                "cannot resolve the pinned local image: "
+                f"{_docker_failure_summary(image_inspect)}; {NEXT_OOM_ACTION}"
+            )
         else:
             image_lines = image_inspect.stdout.splitlines()
             if (
@@ -1577,8 +1761,12 @@ def audit_docker_limits(uid: int) -> list[Check]:
             else:
                 local_image_id = image_lines[0]
                 repo_digests = image_lines[1:]
-                image_actual = f"ConfigID={local_image_id},RepoDigests={repo_digests}"
-                if GITHUB_MCP_IMAGE in repo_digests:
+                reviewed_digest_present = GITHUB_MCP_IMAGE in repo_digests
+                image_actual = (
+                    "ConfigIDFormat=true,"
+                    f"ReviewedRepoDigestPresent={str(reviewed_digest_present).lower()}"
+                )
+                if reviewed_digest_present:
                     resolved_image_id = local_image_id
                     image_status = "pass"
                 else:
@@ -1596,7 +1784,8 @@ def audit_docker_limits(uid: int) -> list[Check]:
                 image_detail,
             )
         )
-    for container_id, name in mcp_targets:
+    for target_index, (container_id, name) in enumerate(mcp_targets, start=1):
+        check_name = f"docker_github_mcp_target_{target_index}_limits"
         inspected = _run_local_docker(
             [
                 "inspect",
@@ -1614,20 +1803,53 @@ def audit_docker_limits(uid: int) -> list[Check]:
                     "{{json .HostConfig.NetworkMode}}\t{{json .HostConfig.PidMode}}\t"
                     "{{json .HostConfig.IpcMode}}\t{{json .HostConfig.Devices}}\t"
                     "{{json .HostConfig.DeviceRequests}}\t{{json .HostConfig.PortBindings}}\t"
-                    "{{json .State.Status}}\t{{json .Config.StopTimeout}}"
+                    "{{json .State.Status}}\t{{json .Config.StopTimeout}}\t"
+                    "{{len .Config.Labels}}\t{{json .Config.AttachStdin}}\t"
+                    "{{json .Config.AttachStdout}}\t{{json .Config.AttachStderr}}\t"
+                    "{{json .Config.OpenStdin}}\t{{json .Config.StdinOnce}}\t"
+                    "{{json .Config.Tty}}\t{{json .Config.User}}\t{{len .Config.Env}}\t"
+                    '"{{range .Config.Env}}{{if eq . '
+                    '"PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"'
+                    '}}P{{end}}{{end}}"\t'
+                    '"{{range .Config.Env}}{{if eq . '
+                    '"SSL_CERT_FILE=/etc/ssl/certs/ca-certificates.crt"'
+                    '}}S{{end}}{{end}}"\t'
+                    '"{{range .Config.Env}}{{if and (eq (printf "%.29s" .) '
+                    '"GITHUB_PERSONAL_ACCESS_TOKEN=") (gt (len .) 29)}}T{{end}}{{end}}"\t'
+                    "{{json .Config.WorkingDir}}\t{{json .Config.StopSignal}}\t"
+                    "{{json .Config.NetworkDisabled}}\t{{json .Config.ExposedPorts}}\t"
+                    "{{json .HostConfig.MemoryReservation}}\t"
+                    "{{json .HostConfig.OomScoreAdj}}\t{{json .HostConfig.LogConfig.Config}}\t"
+                    "{{json .HostConfig.UTSMode}}\t{{json .HostConfig.CgroupnsMode}}\t"
+                    "{{json .HostConfig.UsernsMode}}\t{{json .HostConfig.Runtime}}\t"
+                    "{{json .HostConfig.PidsLimit}}\t"
+                    "{{json .HostConfig.RestartPolicy.Name}}\t"
+                    "{{json .HostConfig.RestartPolicy.MaximumRetryCount}}\t"
+                    "{{json .HostConfig.NanoCpus}}\t{{json .HostConfig.CpuShares}}\t"
+                    "{{json .HostConfig.PublishAllPorts}}\t{{json .HostConfig.ShmSize}}\t"
+                    "{{json .HostConfig.Dns}}\t{{json .HostConfig.DnsOptions}}\t"
+                    "{{json .HostConfig.DnsSearch}}\t{{json .HostConfig.ExtraHosts}}\t"
+                    "{{json .HostConfig.Links}}\t{{json .HostConfig.GroupAdd}}\t"
+                    "{{json .HostConfig.VolumesFrom}}\t{{len .NetworkSettings.Networks}}\t"
+                    '"{{range $name, $_ := .NetworkSettings.Networks}}'
+                    '{{if eq $name "bridge"}}B{{end}}{{end}}"\t'
+                    "{{json .Config.Hostname}}\t{{json .Config.Domainname}}\t"
+                    "{{json .Config.Entrypoint}}\t{{json .Config.Cmd}}\t"
+                    "{{json .Config.Volumes}}\t{{json .NetworkSettings.Ports}}\t"
+                    "{{json .HostConfig}}"
                 ),
                 container_id,
             ]
         )
         if inspected.returncode != 0:
-            detail = (inspected.stderr or inspected.stdout).strip() or f"rc={inspected.returncode}"
             checks.append(
                 Check(
-                    f"docker_{name}_limits",
+                    check_name,
                     "error",
                     f"Memory={BYTES_512M},MemorySwap={BYTES_768M},OomKillDisable=false",
                     "N/A",
-                    f"Docker inspect failed for immutable ID {container_id}: {detail}; {NEXT_OOM_ACTION}",
+                    "Docker inspect failed for selected immutable target: "
+                    f"{_docker_failure_summary(inspected)}; {NEXT_OOM_ACTION}",
                 )
             )
             continue
@@ -1636,8 +1858,8 @@ def audit_docker_limits(uid: int) -> list[Check]:
             if len(inspect_lines) != 1 or len(inspect_lines[0]) > DOCKER_INSPECT_LINE_MAX:
                 raise ValueError("expected one bounded Docker inspect line")
             fields = inspect_lines[0].split("\t")
-            if len(fields) != 28:
-                raise ValueError("expected twenty-eight formatted Docker inspect fields")
+            if len(fields) != 74:
+                raise ValueError("expected seventy-four formatted Docker inspect fields")
             (
                 actual_id,
                 actual_name,
@@ -1667,6 +1889,52 @@ def audit_docker_limits(uid: int) -> list[Check]:
                 port_bindings,
                 container_state,
                 stop_timeout,
+                label_count,
+                attach_stdin,
+                attach_stdout,
+                attach_stderr,
+                open_stdin,
+                stdin_once,
+                tty,
+                container_user,
+                env_count,
+                env_path_marker,
+                env_ssl_marker,
+                env_token_marker,
+                working_dir,
+                stop_signal,
+                network_disabled,
+                exposed_ports,
+                memory_reservation,
+                oom_score_adj,
+                log_config,
+                uts_mode,
+                cgroupns_mode,
+                userns_mode,
+                runtime,
+                pids_limit,
+                restart_name,
+                restart_max,
+                nano_cpus,
+                cpu_shares,
+                publish_all_ports,
+                shm_size,
+                dns,
+                dns_options,
+                dns_search,
+                extra_hosts,
+                links,
+                group_add,
+                volumes_from,
+                network_count,
+                bridge_network_marker,
+                hostname,
+                domainname,
+                entrypoint,
+                config_cmd,
+                volumes,
+                network_ports,
+                host_config,
             ) = (json.loads(field) for field in fields)
             if not all(
                 isinstance(value, str)
@@ -1685,6 +1953,14 @@ def audit_docker_limits(uid: int) -> list[Check]:
                 isinstance(value, str) for value in process_args
             ):
                 raise TypeError("Docker process arguments must be a string list")
+            if not isinstance(config_cmd, list) or not all(
+                isinstance(value, str) for value in config_cmd
+            ):
+                raise TypeError("Docker Config.Cmd must be a string list")
+            if not isinstance(entrypoint, list) or not all(
+                isinstance(value, str) for value in entrypoint
+            ):
+                raise TypeError("Docker entrypoint must be a string list")
             if type(readonly_rootfs) is not bool or type(auto_remove) is not bool:
                 raise TypeError("Docker security booleans must be boolean")
             if not isinstance(cap_drop, list) or not all(
@@ -1718,14 +1994,86 @@ def audit_docker_limits(uid: int) -> list[Check]:
                 raise TypeError("Docker runtime state fields must be strings")
             if type(stop_timeout) is not int:
                 raise TypeError("Docker StopTimeout must be an integer")
+            if not all(
+                type(value) is bool
+                for value in (
+                    attach_stdin,
+                    attach_stdout,
+                    attach_stderr,
+                    open_stdin,
+                    stdin_once,
+                    tty,
+                    network_disabled,
+                    publish_all_ports,
+                )
+            ):
+                raise TypeError("Docker stdio and network flags must be boolean")
+            if not all(
+                type(value) is int
+                for value in (
+                    label_count,
+                    env_count,
+                    memory_reservation,
+                    oom_score_adj,
+                    pids_limit,
+                    restart_max,
+                    nano_cpus,
+                    cpu_shares,
+                    shm_size,
+                    network_count,
+                )
+            ):
+                raise TypeError("Docker resource and cardinality fields must be integers")
+            if not all(
+                isinstance(value, str)
+                for value in (
+                    container_user,
+                    env_path_marker,
+                    env_ssl_marker,
+                    env_token_marker,
+                    working_dir,
+                    stop_signal,
+                    uts_mode,
+                    cgroupns_mode,
+                    userns_mode,
+                    runtime,
+                    restart_name,
+                    bridge_network_marker,
+                    hostname,
+                    domainname,
+                )
+            ):
+                raise TypeError("Docker immutable configuration fields must be strings")
+            if exposed_ports is not None and not isinstance(exposed_ports, dict):
+                raise TypeError("Docker ExposedPorts must be null or a map")
+            if log_config is not None and not isinstance(log_config, dict):
+                raise TypeError("Docker log configuration must be null or a map")
+            if volumes is not None and not isinstance(volumes, dict):
+                raise TypeError("Docker Config.Volumes must be null or a map")
+            if not isinstance(network_ports, dict):
+                raise TypeError("Docker network ports must be a map")
+            if not isinstance(host_config, dict):
+                raise TypeError("Docker HostConfig must be a map")
+            for value in (
+                dns,
+                dns_options,
+                dns_search,
+                extra_hosts,
+                links,
+                group_add,
+                volumes_from,
+            ):
+                if value is not None and not isinstance(value, list):
+                    raise TypeError("Docker network lists must be null or lists")
         except (TypeError, ValueError, json.JSONDecodeError) as exc:
             checks.append(
                 Check(
-                    f"docker_{name}_limits",
+                    check_name,
                     "error",
                     "one complete inspect record",
                     "malformed",
-                    f"cannot parse Docker inspect for {container_id}: {exc}; {NEXT_OOM_ACTION}",
+                    f"cannot parse Docker inspect for selected immutable target: {exc}; "
+                    f"{NEXT_OOM_ACTION}",
                 )
             )
             continue
@@ -1738,6 +2086,9 @@ def audit_docker_limits(uid: int) -> list[Check]:
             labels.get(GITHUB_MCP_APP_LABEL) == GITHUB_MCP_APP_ID
             and labels.get(GITHUB_MCP_UID_LABEL) == str(uid)
             and re.fullmatch(rf"{uid}-[A-Za-z0-9]{{10}}", launch_id) is not None
+            and label_count == 15
+            and labels
+            == _expected_github_mcp_labels(uid, launch_id, lease_pid, lease_start, lease_boot)
         )
         identity_ok = (
             actual_id == container_id
@@ -1754,9 +2105,34 @@ def audit_docker_limits(uid: int) -> list[Check]:
             and process_args[:3] == ["stdio", "--log-file", "/tmp/github-mcp.log"]
             and re.fullmatch(r"--(?:tools|toolsets)=[A-Za-z0-9_,.-]{1,1024}", process_args[3])
             is not None
+            and attach_stdin is True
+            and attach_stdout is True
+            and attach_stderr is True
+            and open_stdin is True
+            and stdin_once is True
+            and tty is False
+            and container_user == "0"
+            and env_count == 3
+            and env_path_marker == "P"
+            and env_ssl_marker == "S"
+            and env_token_marker == "T"
+            and working_dir == "/server"
+            and stop_signal == "SIGTERM"
+            and hostname == container_id[:12]
+            and domainname == ""
+            and entrypoint == [GITHUB_MCP_PATH]
+            and config_cmd == process_args
+            and volumes is None
         )
         limits_ok = (
-            memory == BYTES_512M and memory_swap == BYTES_768M and oom_kill_disable in {None, False}
+            memory == BYTES_512M
+            and memory_swap == BYTES_768M
+            and memory_reservation == 0
+            and oom_kill_disable in {None, False}
+            and oom_score_adj == 0
+            and pids_limit == 128
+            and nano_cpus == 0
+            and cpu_shares == 0
         )
         security_ok = (
             readonly_rootfs is True
@@ -1764,6 +2140,7 @@ def audit_docker_limits(uid: int) -> list[Check]:
             and security_opt in (["no-new-privileges"], ["no-new-privileges:true"])
             and auto_remove is True
             and log_driver == "none"
+            and log_config in (None, {})
             and set(tmpfs) == {"/tmp"}
             and len(tmpfs["/tmp"].split(",")) == 4
             and set(tmpfs["/tmp"].split(",")) == {"rw", "noexec", "nosuid", "size=16m"}
@@ -1774,9 +2151,30 @@ def audit_docker_limits(uid: int) -> list[Check]:
             and network_mode == "bridge"
             and pid_mode == ""
             and ipc_mode == "private"
+            and uts_mode == "private"
+            and cgroupns_mode == "private"
+            and userns_mode == ""
             and devices == []
             and device_requests is None
             and port_bindings == {}
+            and runtime == "runc"
+            and restart_name == "no"
+            and restart_max == 0
+            and publish_all_ports is False
+            and shm_size == 64 * 1024**2
+            and network_disabled is False
+            and exposed_ports == {"8082/tcp": {}}
+            and dns in (None, [])
+            and dns_options in (None, [])
+            and dns_search in (None, [])
+            and extra_hosts in (None, [])
+            and links in (None, [])
+            and group_add in (None, [])
+            and volumes_from in (None, [])
+            and network_count == 1
+            and bridge_network_marker == "B"
+            and network_ports == {"8082/tcp": None}
+            and _docker_mcp_host_config_matches(host_config, uid, launch_id)
             and container_state
             in {"created", "running", "restarting", "paused", "removing", "exited", "dead"}
             and stop_timeout == 1
@@ -1784,14 +2182,10 @@ def audit_docker_limits(uid: int) -> list[Check]:
         lease_live, lease_detail = _docker_mcp_lease_is_live(
             lease_pid, lease_start, lease_boot, uid
         )
-        converging = container_state == "removing"
+        converging = container_state == "removing" and lease_live
         status = (
             "pass"
-            if identity_ok
-            and limits_ok
-            and command_ok
-            and security_ok
-            and (lease_live or converging)
+            if identity_ok and limits_ok and command_ok and security_ok and lease_live
             else "gap"
         )
         safe_state = (
@@ -1808,9 +2202,9 @@ def audit_docker_limits(uid: int) -> list[Check]:
         )
         checks.append(
             Check(
-                f"docker_{name}_limits",
+                check_name,
                 status,
-                f"id={container_id},name=/{name},Memory={BYTES_512M},"
+                f"generated exact identity,Memory={BYTES_512M},"
                 f"MemorySwap={BYTES_768M},OomKillDisable=false,Image={GITHUB_MCP_IMAGE},"
                 "immutable labels, hardened security, live launch lease",
                 actual,

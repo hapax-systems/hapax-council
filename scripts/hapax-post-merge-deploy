@@ -111,6 +111,9 @@ SINCE=""
 TRACE_READY=0
 TRACE_WRITTEN=0
 SHA=""
+CHANGED_FILES=""
+FILES=""
+SYSTEMD_PENDING_SNAPSHOT="absent"
 if [ "${1:-}" = "--dry-run" ]; then
     DRY_RUN=1
     shift
@@ -168,6 +171,10 @@ TRACE_MAX_RECORDS="${HAPAX_POST_MERGE_TRACE_MAX_RECORDS:-200}"
 # trace file by default so a test override of HAPAX_POST_MERGE_TRACE_PATH
 # isolates it automatically.
 LAST_DEPLOYED_SHA_PATH="${HAPAX_POST_MERGE_LAST_DEPLOYED_SHA_PATH:-$(dirname "$TRACE_PATH")/last-deployed-sha}"
+# Durable replay set for system-manager work that could not be witnessed at the
+# deploy SHA. The queue stores source paths only; every replay re-evaluates
+# those paths against the newest exact SHA rather than trusting old bytes.
+SYSTEMD_RUNTIME_PENDING_PATH="${HAPAX_POST_MERGE_SYSTEMD_PENDING_PATH:-$(dirname "$TRACE_PATH")/systemd-runtime-pending.json}"
 RECOVERY_INSTALLER_PATH="scripts/hapax-recovery-plane-install"
 OOM_CONTAINMENT_INSTALLER_PATH="scripts/install-p0-oom-containment"
 APCUPSD_INSTALLER_PATH="scripts/install-apcupsd-power-alerts"
@@ -514,13 +521,15 @@ _trace_join() {
 record_post_merge_trace() {
     local status="$1"
     local exit_code="${2:-0}"
+    local cursor_path="${3:-}"
+    local cursor_value="${4:-}"
     local -a recovery_bundle_trace
     recovery_bundle_trace=("${RECOVERY_BUNDLE[@]}")
     if [ "${RECOVERY_BUNDLE_SELF_HEAL:-0}" = "1" ]; then
         recovery_bundle_trace+=("self-heal:$RECOVERY_BUNDLE_DEST")
     fi
 
-    HAPAX_TRACE_FILES="$FILES" \
+    HAPAX_TRACE_FILES="$CHANGED_FILES" \
     HAPAX_TRACE_PW="$(_trace_join "${PW[@]}")" \
     HAPAX_TRACE_HAPAX_CONF="$(_trace_join "${HAPAX_CONF[@]}")" \
     HAPAX_TRACE_WP="$(_trace_join "${WP[@]}")" \
@@ -528,6 +537,10 @@ record_post_merge_trace() {
     HAPAX_TRACE_SYSTEMD="$(_trace_join "${SYSTEMD[@]}")" \
     HAPAX_TRACE_SYSTEMD_SYSTEM="$(_trace_join "${SYSTEMD_SYSTEM[@]}")" \
     HAPAX_TRACE_SYSTEMD_DROPINS="$(_trace_join "${SYSTEMD_DROPINS[@]}")" \
+    HAPAX_TRACE_SYSTEMD_SYSTEM_DROPINS="$(_trace_join "${SYSTEMD_SYSTEM_DROPINS[@]}")" \
+    HAPAX_TRACE_SYSTEMD_RUNTIME_REPLAYED="$(_trace_join "${SYSTEMD_RUNTIME_REPLAYED[@]}")" \
+    HAPAX_SYSTEMD_PENDING_ADD="$(_trace_join "${SYSTEMD_PENDING_ADD[@]}")" \
+    HAPAX_SYSTEMD_PENDING_REMOVE="$(_trace_join "${SYSTEMD_PENDING_REMOVE[@]}")" \
     HAPAX_TRACE_OOM_CONTAINMENT="$(_trace_join "${OOM_CONTAINMENT[@]}")" \
     HAPAX_TRACE_RUNTIME_DEFERRED="$(_trace_join "${RUNTIME_DEFERRED[@]}")" \
     HAPAX_TRACE_APCUPSD_POWER_ALERTS="$(_trace_join "${APCUPSD_POWER_ALERTS[@]}")" \
@@ -541,12 +554,15 @@ record_post_merge_trace() {
     HAPAX_TRACE_AUDIO_SAFE_RESTARTS="$(_trace_join "${AUDIO_SAFE_RESTARTS[@]}")" \
     HAPAX_TRACE_SYSTEMD_UNCLASSIFIED="$(_trace_join "${SYSTEMD_UNCLASSIFIED[@]}")" \
     python3 - "$TRACE_PATH" "$TRACE_MAX_RECORDS" "$SHA" "$DRY_RUN" "$status" "$exit_code" \
-        "$DID_ANYTHING" <<'PY'
+        "$DID_ANYTHING" "$cursor_path" "$cursor_value" "$SYSTEMD_RUNTIME_PENDING_PATH" \
+        "$SYSTEMD_PENDING_SNAPSHOT" <<'PY'
 from __future__ import annotations
 
 import fcntl
+import hashlib
 import json
 import os
+import re
 import stat
 import sys
 import tempfile
@@ -556,6 +572,101 @@ from pathlib import Path
 
 def lines(name: str) -> list[str]:
     return [line for line in os.environ.get(name, "").splitlines() if line]
+
+
+PENDING_PATH_RE = re.compile(
+    r"^systemd/units/(?:"
+    r"[A-Za-z0-9_.@:-]+\.(?:service|timer|path|slice|target)|"
+    r"[A-Za-z0-9_.@:-]+\.(?:service|timer|slice|scope)\.d/"
+    r"[A-Za-z0-9_.@:-]+\.conf)$"
+)
+MAX_PENDING_PATHS = 256
+MAX_PENDING_BYTES = 128 * 1024
+
+
+def validate_pending_paths(value: object) -> set[str]:
+    if not isinstance(value, list) or len(value) > MAX_PENDING_PATHS:
+        raise ValueError("pending systemd paths must be a bounded list")
+    paths: set[str] = set()
+    for item in value:
+        if not isinstance(item, str) or PENDING_PATH_RE.fullmatch(item) is None:
+            raise ValueError("pending systemd queue contains an unsafe source path")
+        if item in paths:
+            raise ValueError("pending systemd queue contains a duplicate source path")
+        paths.add(item)
+    return paths
+
+
+def read_pending(path: Path) -> tuple[set[str], str]:
+    if not os.path.lexists(path):
+        return set(), "absent"
+    read_fd = os.open(path, os.O_RDONLY | os.O_CLOEXEC | os.O_NOFOLLOW)
+    try:
+        before = os.fstat(read_fd)
+        if (
+            not stat.S_ISREG(before.st_mode)
+            or before.st_uid != os.geteuid()
+            or before.st_nlink != 1
+            or before.st_mode & 0o077
+            or before.st_size > MAX_PENDING_BYTES
+        ):
+            raise OSError(f"unsafe pending systemd queue inode: {path}")
+        payload = bytearray()
+        while True:
+            chunk = os.read(read_fd, 65536)
+            if not chunk:
+                break
+            payload.extend(chunk)
+            if len(payload) > MAX_PENDING_BYTES:
+                raise OSError("pending systemd queue exceeds the bounded size")
+        after = os.fstat(read_fd)
+        path_after = os.lstat(path)
+    finally:
+        os.close(read_fd)
+    generation = lambda value: (
+        value.st_dev,
+        value.st_ino,
+        value.st_size,
+        value.st_mtime_ns,
+        value.st_ctime_ns,
+    )
+    if generation(before) != generation(after) or generation(after) != generation(path_after):
+        raise OSError("pending systemd queue changed during read")
+    data = json.loads(payload)
+    if not isinstance(data, dict) or set(data) != {"schema_version", "paths"}:
+        raise ValueError("pending systemd queue has an unsupported schema")
+    if data["schema_version"] != 1:
+        raise ValueError("pending systemd queue has an unsupported schema version")
+    return validate_pending_paths(data["paths"]), hashlib.sha256(payload).hexdigest()
+
+
+def write_temp(parent: Path, name: str, payload: bytes) -> tuple[int, str]:
+    fd, temp_path = tempfile.mkstemp(prefix=f".{name}.tmp.", dir=parent)
+    try:
+        os.fchmod(fd, 0o600)
+        offset = 0
+        while offset < len(payload):
+            written = os.write(fd, payload[offset:])
+            if written <= 0:
+                raise OSError(f"short write while staging {name}")
+            offset += written
+        os.fsync(fd)
+    except Exception:
+        os.close(fd)
+        try:
+            os.unlink(temp_path)
+        except FileNotFoundError:
+            pass
+        raise
+    return fd, temp_path
+
+
+def fsync_dir(parent: Path) -> None:
+    dir_fd = os.open(parent, os.O_RDONLY | os.O_DIRECTORY | os.O_CLOEXEC)
+    try:
+        os.fsync(dir_fd)
+    finally:
+        os.close(dir_fd)
 
 
 path = Path(sys.argv[1]).expanduser()
@@ -569,6 +680,19 @@ dry_run = sys.argv[4] == "1"
 status = sys.argv[5]
 exit_code = int(sys.argv[6])
 manual_deploy_executed = sys.argv[7] == "1"
+cursor_path = sys.argv[8]
+cursor_value = sys.argv[9]
+pending_path = Path(sys.argv[10]).expanduser()
+pending_snapshot = sys.argv[11]
+if bool(cursor_path) != bool(cursor_value):
+    print("hapax-post-merge-deploy: incomplete cursor publication request", file=sys.stderr)
+    raise SystemExit(1)
+if cursor_value and re.fullmatch(r"[0-9a-f]{40}", cursor_value) is None:
+    print(
+        f"hapax-post-merge-deploy: refused invalid SHA receipt value: {cursor_value!r}",
+        file=sys.stderr,
+    )
+    raise SystemExit(1)
 
 deploy_groups = {
     "pipewire": lines("HAPAX_TRACE_PW"),
@@ -578,6 +702,7 @@ deploy_groups = {
     "systemd_units": lines("HAPAX_TRACE_SYSTEMD"),
     "systemd_system_units": lines("HAPAX_TRACE_SYSTEMD_SYSTEM"),
     "systemd_dropins": lines("HAPAX_TRACE_SYSTEMD_DROPINS"),
+    "systemd_system_dropins": lines("HAPAX_TRACE_SYSTEMD_SYSTEM_DROPINS"),
     "oom_containment": lines("HAPAX_TRACE_OOM_CONTAINMENT"),
     "apcupsd_power_alerts": lines("HAPAX_TRACE_APCUPSD_POWER_ALERTS"),
     "systemd_user_presets": lines("HAPAX_TRACE_USER_PRESETS"),
@@ -599,6 +724,7 @@ runtime_media_groups = [
         "systemd_units",
         "systemd_system_units",
         "systemd_dropins",
+        "systemd_system_dropins",
         "apcupsd_power_alerts",
         "systemd_watchdogs",
         "recovery_bundle",
@@ -622,6 +748,7 @@ record = {
     "manual_deploy_needed": any(deploy_groups.values()) or bool(runtime_deferred),
     "manual_deploy_executed": manual_deploy_executed,
     "runtime_deferred": runtime_deferred,
+    "systemd_runtime_replayed": lines("HAPAX_TRACE_SYSTEMD_RUNTIME_REPLAYED"),
     "audio_safe_restart_units": lines("HAPAX_TRACE_AUDIO_SAFE_RESTARTS"),
     "systemd_unclassified": lines("HAPAX_TRACE_SYSTEMD_UNCLASSIFIED"),
     "avsdlc": {
@@ -634,7 +761,8 @@ record = {
 parent = path.parent
 fd = -1
 lock_fd = -1
-tmp_path = ""
+temp_paths: list[str] = []
+failure_surface = f"trace {path}"
 try:
     parent.mkdir(mode=0o700, parents=True, exist_ok=True)
     lock_path = parent / f".{path.name}.lock"
@@ -653,6 +781,23 @@ try:
         raise OSError(f"unsafe trace lock inode: {lock_path}")
     os.fchmod(lock_fd, 0o600)
     fcntl.flock(lock_fd, fcntl.LOCK_EX)
+    if pending_path.absolute() == path.absolute():
+        raise ValueError("trace and pending-systemd queue paths must differ")
+    current_pending, current_pending_digest = read_pending(pending_path)
+    pending_add = validate_pending_paths(lines("HAPAX_SYSTEMD_PENDING_ADD"))
+    pending_remove = validate_pending_paths(lines("HAPAX_SYSTEMD_PENDING_REMOVE"))
+    if pending_add & pending_remove:
+        raise ValueError("a systemd path cannot be both pending and converged")
+    if cursor_path and current_pending_digest == pending_snapshot:
+        next_pending = (current_pending | pending_add) - pending_remove
+    elif cursor_path:
+        # Another deploy changed the queue after this process loaded it. Keep
+        # every concurrent item and suppress removals until the next replay.
+        next_pending = current_pending | pending_add
+    else:
+        next_pending = current_pending
+    if len(next_pending) > MAX_PENDING_PATHS:
+        raise ValueError("pending systemd queue exceeds the bounded path count")
     previous: list[str] = []
     if os.path.lexists(path):
         read_fd = os.open(path, os.O_RDONLY | os.O_CLOEXEC | os.O_NOFOLLOW)
@@ -667,24 +812,56 @@ try:
                 os.close(read_fd)
     previous.append(json.dumps(record, sort_keys=True))
     payload = ("\n".join(previous[-max_records:]) + "\n").encode("utf-8")
-    fd, tmp_path = tempfile.mkstemp(prefix=f".{path.name}.tmp.", dir=parent)
-    os.fchmod(fd, 0o600)
-    offset = 0
-    while offset < len(payload):
-        written = os.write(fd, payload[offset:])
-        if written <= 0:
-            raise OSError("short write while publishing post-merge trace")
-        offset += written
-    os.fsync(fd)
+    fd, trace_temp = write_temp(parent, path.name, payload)
+    temp_paths.append(trace_temp)
     os.close(fd)
     fd = -1
-    os.replace(tmp_path, path)
-    tmp_path = ""
-    dir_fd = os.open(parent, os.O_RDONLY | os.O_DIRECTORY | os.O_CLOEXEC)
-    try:
-        os.fsync(dir_fd)
-    finally:
-        os.close(dir_fd)
+    pending_temp = ""
+    cursor_temp = ""
+    if cursor_path:
+        cursor = Path(cursor_path).expanduser()
+        cursor_parent = cursor.parent
+        if cursor.absolute() in {path.absolute(), pending_path.absolute()}:
+            raise ValueError("trace, queue, and cursor paths must be distinct")
+        pending_parent = pending_path.parent
+        pending_parent.mkdir(mode=0o700, parents=True, exist_ok=True)
+        cursor_parent.mkdir(mode=0o700, parents=True, exist_ok=True)
+        if next_pending:
+            failure_surface = f"pending systemd queue {pending_path}"
+            pending_payload = (
+                json.dumps(
+                    {"schema_version": 1, "paths": sorted(next_pending)},
+                    sort_keys=True,
+                    separators=(",", ":"),
+                )
+                + "\n"
+            ).encode("utf-8")
+            fd, pending_temp = write_temp(pending_parent, pending_path.name, pending_payload)
+            temp_paths.append(pending_temp)
+            os.close(fd)
+            fd = -1
+        failure_surface = f"last-deployed SHA {cursor}"
+        cursor_payload = f"{cursor_value}\n".encode("ascii")
+        fd, cursor_temp = write_temp(cursor_parent, cursor.name, cursor_payload)
+        temp_paths.append(cursor_temp)
+        os.close(fd)
+        fd = -1
+    failure_surface = f"trace {path}"
+    os.replace(trace_temp, path)
+    temp_paths.remove(trace_temp)
+    fsync_dir(parent)
+    if cursor_path:
+        failure_surface = f"pending systemd queue {pending_path}"
+        if next_pending:
+            os.replace(pending_temp, pending_path)
+            temp_paths.remove(pending_temp)
+        elif os.path.lexists(pending_path):
+            os.unlink(pending_path)
+        fsync_dir(pending_path.parent)
+        failure_surface = f"last-deployed SHA {cursor}"
+        os.replace(cursor_temp, cursor)
+        temp_paths.remove(cursor_temp)
+        fsync_dir(cursor_parent)
     os.close(lock_fd)
     lock_fd = -1
 except (OSError, UnicodeError, ValueError) as exc:
@@ -692,12 +869,12 @@ except (OSError, UnicodeError, ValueError) as exc:
         os.close(fd)
     if lock_fd >= 0:
         os.close(lock_fd)
-    if tmp_path:
+    for temp_path in temp_paths:
         try:
-            os.unlink(tmp_path)
+            os.unlink(temp_path)
         except FileNotFoundError:
             pass
-    print(f"hapax-post-merge-deploy: failed to publish trace {path}: {exc}", file=sys.stderr)
+    print(f"hapax-post-merge-deploy: failed to publish {failure_surface}: {exc}", file=sys.stderr)
     raise SystemExit(1) from exc
 PY
 }
@@ -773,29 +950,97 @@ except (OSError, ValueError) as exc:
 PY
 }
 
-record_last_deployed_sha() {
-    [ "$DRY_RUN" = "1" ] && return 0
-    [ "$REPORT_COVERAGE" = "1" ] && return 0
-    [ -n "$SHA" ] || return 0
-    if ! atomic_write_sha_receipt "$LAST_DEPLOYED_SHA_PATH" "$SHA"; then
-        echo "hapax-post-merge-deploy: failed to publish last-deployed SHA; refusing successful completion" >&2
-        return 1
-    fi
-}
-
 finalize_deploy_receipts() {
     local status="$1"
-    if ! record_post_merge_trace "$status" "0"; then
-        echo "hapax-post-merge-deploy: failed to publish completion trace; last-deployed SHA is unchanged" >&2
+    local cursor_path="" cursor_value=""
+    if [ "$DRY_RUN" != "1" ] && [ "$REPORT_COVERAGE" != "1" ] && [ -n "$SHA" ]; then
+        cursor_path="$LAST_DEPLOYED_SHA_PATH"
+        cursor_value="$SHA"
+    fi
+    if ! record_post_merge_trace \
+        "$status" "0" "$cursor_path" "$cursor_value"; then
+        echo "hapax-post-merge-deploy: failed to publish completion trace and last-deployed SHA transaction" >&2
         return 1
     fi
     TRACE_WRITTEN=1
-    if ! record_last_deployed_sha; then
-        # The EXIT trap appends a failed record after the already durable
-        # completion attempt, preserving the exact cursor-publication failure.
-        TRACE_WRITTEN=0
-        return 1
-    fi
+}
+
+load_systemd_runtime_pending() {
+    /usr/bin/python3 -I -S - "$SYSTEMD_RUNTIME_PENDING_PATH" <<'PY'
+from __future__ import annotations
+
+import hashlib
+import json
+import os
+import re
+import stat
+import sys
+from pathlib import Path
+
+
+path = Path(sys.argv[1]).expanduser()
+path_re = re.compile(
+    r"^systemd/units/(?:"
+    r"[A-Za-z0-9_.@:-]+\.(?:service|timer|path|slice|target)|"
+    r"[A-Za-z0-9_.@:-]+\.(?:service|timer|slice|scope)\.d/"
+    r"[A-Za-z0-9_.@:-]+\.conf)$"
+)
+if not os.path.lexists(path):
+    print("absent")
+    raise SystemExit(0)
+
+fd = os.open(path, os.O_RDONLY | os.O_CLOEXEC | os.O_NOFOLLOW)
+try:
+    before = os.fstat(fd)
+    if (
+        not stat.S_ISREG(before.st_mode)
+        or before.st_uid != os.geteuid()
+        or before.st_nlink != 1
+        or before.st_mode & 0o077
+        or before.st_size > 128 * 1024
+    ):
+        raise OSError(f"unsafe pending systemd queue inode: {path}")
+    payload = bytearray()
+    while True:
+        chunk = os.read(fd, 65536)
+        if not chunk:
+            break
+        payload.extend(chunk)
+        if len(payload) > 128 * 1024:
+            raise OSError("pending systemd queue exceeds the bounded size")
+    after = os.fstat(fd)
+    path_after = os.lstat(path)
+finally:
+    os.close(fd)
+
+generation = lambda value: (
+    value.st_dev,
+    value.st_ino,
+    value.st_size,
+    value.st_mtime_ns,
+    value.st_ctime_ns,
+)
+if generation(before) != generation(after) or generation(after) != generation(path_after):
+    raise OSError("pending systemd queue changed during read")
+data = json.loads(payload)
+if not isinstance(data, dict) or set(data) != {"schema_version", "paths"}:
+    raise ValueError("pending systemd queue has an unsupported schema")
+if data["schema_version"] != 1:
+    raise ValueError("pending systemd queue has an unsupported schema version")
+paths = data["paths"]
+if not isinstance(paths, list) or len(paths) > 256:
+    raise ValueError("pending systemd paths must be a bounded list")
+seen: set[str] = set()
+for item in paths:
+    if not isinstance(item, str) or path_re.fullmatch(item) is None:
+        raise ValueError("pending systemd queue contains an unsafe source path")
+    if item in seen:
+        raise ValueError("pending systemd queue contains a duplicate source path")
+    seen.add(item)
+print(hashlib.sha256(payload).hexdigest())
+for item in sorted(seen):
+    print(item)
+PY
 }
 
 cd "$REPO"
@@ -831,7 +1076,44 @@ else
     FILES="$(git diff-tree --root --no-commit-id --name-only -r "$SHA" | sort -u)"
 fi
 
-PW=(); HAPAX_CONF=(); WP=(); WP_LUA=(); SYSTEMD=(); SYSTEMD_SYSTEM=(); SYSTEMD_DROPINS=(); OOM_CONTAINMENT=(); APCUPSD_POWER_ALERTS=(); USER_PRESETS=(); WATCHDOGS=(); RECOVERY_BUNDLE=(); SCRIPTS=(); SCRIPT_PY=(); QUAKE_ASSETS=(); CANONICAL_GATE=(); RUNTIME_DEFERRED=()
+CHANGED_FILES="$FILES"
+SYSTEMD_PENDING_PRIOR=()
+SYSTEMD_RUNTIME_REPLAYED=()
+SYSTEMD_PENDING_ADD=()
+SYSTEMD_PENDING_REMOVE=()
+declare -A SYSTEMD_PENDING_PRIOR_SET=()
+declare -A CHANGED_FILE_SET=()
+if [ "$REPORT_COVERAGE" != "1" ]; then
+    if ! pending_output="$(load_systemd_runtime_pending)"; then
+        echo "hapax-post-merge-deploy: failed to load the pending systemd runtime queue; refusing to advance the deploy cursor" >&2
+        exit 2
+    fi
+    mapfile -t pending_lines <<< "$pending_output"
+    SYSTEMD_PENDING_SNAPSHOT="${pending_lines[0]:-}"
+    if ! [[ "$SYSTEMD_PENDING_SNAPSHOT" =~ ^(absent|[0-9a-f]{64})$ ]]; then
+        echo "hapax-post-merge-deploy: malformed pending systemd queue snapshot" >&2
+        exit 2
+    fi
+    for ((pending_index = 1; pending_index < ${#pending_lines[@]}; pending_index++)); do
+        pending_path="${pending_lines[$pending_index]}"
+        SYSTEMD_PENDING_PRIOR+=("$pending_path")
+        SYSTEMD_PENDING_PRIOR_SET["$pending_path"]=1
+    done
+    while IFS= read -r changed_path; do
+        [ -n "$changed_path" ] || continue
+        CHANGED_FILE_SET["$changed_path"]=1
+    done <<< "$CHANGED_FILES"
+    for pending_path in "${SYSTEMD_PENDING_PRIOR[@]}"; do
+        if [ -z "${CHANGED_FILE_SET[$pending_path]+present}" ]; then
+            SYSTEMD_RUNTIME_REPLAYED+=("$pending_path")
+        fi
+    done
+    if [ "${#SYSTEMD_PENDING_PRIOR[@]}" -gt 0 ]; then
+        FILES="$({ printf '%s\n' "$FILES"; printf '%s\n' "${SYSTEMD_PENDING_PRIOR[@]}"; } | sed '/^$/d' | sort -u)"
+    fi
+fi
+
+PW=(); HAPAX_CONF=(); WP=(); WP_LUA=(); SYSTEMD=(); SYSTEMD_SYSTEM=(); SYSTEMD_DROPINS=(); SYSTEMD_SYSTEM_DROPINS=(); SYSTEMD_PENDING_USER_UNITS=(); SYSTEMD_PENDING_USER_DROPINS=(); OOM_CONTAINMENT=(); APCUPSD_POWER_ALERTS=(); USER_PRESETS=(); WATCHDOGS=(); RECOVERY_BUNDLE=(); SCRIPTS=(); SCRIPT_PY=(); QUAKE_ASSETS=(); CANONICAL_GATE=(); RUNTIME_DEFERRED=()
 declare -A OOM_PACKAGE_PATHS=()
 declare -A APCUPSD_PACKAGE_PATHS=()
 GATE_CLOSURE=()
@@ -984,19 +1266,28 @@ git_blob_state_at() {
 
 UNIT_INSTALL_SCOPE=""
 unit_install_scope() {
-    local f="$1"
+    local f="$1" allow_absent="${2:-0}" pending_owner="${3:-$1}"
     UNIT_INSTALL_SCOPE=""
     if [ "$COVERAGE_FROM_STDIN" = "1" ]; then
         UNIT_INSTALL_SCOPE="user"
         return 0
     fi
-    local revision="$SHA" content base_ref
+    local revision="$SHA" content base_ref prior_content
+    local prior_scope_marker_count prior_system_marker_count
     if ! git_blob_state_at "$revision" "$f" "systemd unit"; then
         return 1
     fi
     if [ "$GIT_BLOB_PRESENT" -eq 0 ]; then
         base_ref="${SINCE:-${FIRST_PARENT:-}}"
         if [ -z "$base_ref" ]; then
+            if [ -n "${SYSTEMD_PENDING_PRIOR_SET[$pending_owner]+present}" ]; then
+                UNIT_INSTALL_SCOPE="system"
+                return 0
+            fi
+            if [ "$allow_absent" = "1" ]; then
+                UNIT_INSTALL_SCOPE="user"
+                return 0
+            fi
             echo "hapax-post-merge-deploy: changed systemd unit is absent at $SHA:$f and has no base commit for install-scope classification" >&2
             return 1
         fi
@@ -1005,6 +1296,14 @@ unit_install_scope() {
             return 1
         fi
         if [ "$GIT_BLOB_PRESENT" -eq 0 ]; then
+            if [ -n "${SYSTEMD_PENDING_PRIOR_SET[$pending_owner]+present}" ]; then
+                UNIT_INSTALL_SCOPE="system"
+                return 0
+            fi
+            if [ "$allow_absent" = "1" ]; then
+                UNIT_INSTALL_SCOPE="user"
+                return 0
+            fi
             echo "hapax-post-merge-deploy: changed systemd unit is absent from both classification revisions: $f" >&2
             return 1
         fi
@@ -1015,10 +1314,10 @@ unit_install_scope() {
     fi
     local scope_marker_count system_marker_count
     scope_marker_count="$(
-        grep -Eic '^[#;][[:space:]]*Hapax-Install-Scope[[:space:]]*:' <<< "$content" || true
+        grep -Eic '^[[:blank:]]*[#;][[:blank:]]*Hapax-Install-Scope[[:blank:]]*:' <<< "$content" || true
     )"
     system_marker_count="$(
-        grep -Eic '^[#;][[:space:]]*Hapax-Install-Scope:[[:space:]]*system[[:space:]]*$' <<< "$content" || true
+        grep -Eic '^[[:blank:]]*[#;][[:blank:]]*Hapax-Install-Scope[[:blank:]]*:[[:blank:]]*system[[:blank:]]*$' <<< "$content" || true
     )"
     if [ "$scope_marker_count" -eq 0 ]; then
         UNIT_INSTALL_SCOPE="user"
@@ -1027,6 +1326,33 @@ unit_install_scope() {
     else
         echo "hapax-post-merge-deploy: malformed Hapax-Install-Scope marker at $revision:$f (duplicate or unsupported value)" >&2
         return 1
+    fi
+    if [ "$UNIT_INSTALL_SCOPE" = "user" ] && [ "$revision" = "$SHA" ]; then
+        base_ref="${SINCE:-${FIRST_PARENT:-}}"
+        if [ -n "$base_ref" ]; then
+            if ! git_blob_state_at "$base_ref" "$f" "prior systemd unit"; then
+                return 1
+            fi
+            if [ "$GIT_BLOB_PRESENT" -eq 1 ]; then
+                if ! prior_content="$(git -C "$REPO" show "$base_ref:$f")"; then
+                    echo "hapax-post-merge-deploy: failed to read prior systemd unit while classifying install-scope transition at $base_ref:$f" >&2
+                    return 1
+                fi
+                prior_scope_marker_count="$(
+                    grep -Eic '^[[:blank:]]*[#;][[:blank:]]*Hapax-Install-Scope[[:blank:]]*:' <<< "$prior_content" || true
+                )"
+                prior_system_marker_count="$(
+                    grep -Eic '^[[:blank:]]*[#;][[:blank:]]*Hapax-Install-Scope[[:blank:]]*:[[:blank:]]*system[[:blank:]]*$' <<< "$prior_content" || true
+                )"
+                if [ "$prior_scope_marker_count" -eq 1 ] \
+                    && [ "$prior_system_marker_count" -eq 1 ]; then
+                    UNIT_INSTALL_SCOPE="transition"
+                elif [ "$prior_scope_marker_count" -ne 0 ]; then
+                    echo "hapax-post-merge-deploy: malformed prior Hapax-Install-Scope marker at $base_ref:$f" >&2
+                    return 1
+                fi
+            fi
+        fi
     fi
 }
 
@@ -1378,6 +1704,9 @@ while IFS= read -r f; do
             fi
             if [ "$UNIT_INSTALL_SCOPE" = "system" ]; then
                 SYSTEMD_SYSTEM+=("$f")
+            elif [ "$UNIT_INSTALL_SCOPE" = "transition" ] \
+                || [ -n "${SYSTEMD_PENDING_PRIOR_SET[$f]+present}" ]; then
+                SYSTEMD_PENDING_USER_UNITS+=("$f")
             else
                 SYSTEMD+=("$f")
             fi
@@ -1388,12 +1717,28 @@ while IFS= read -r f; do
             fi
             if [ "$UNIT_INSTALL_SCOPE" = "system" ]; then
                 SYSTEMD_SYSTEM+=("$f")
+            elif [ "$UNIT_INSTALL_SCOPE" = "transition" ] \
+                || [ -n "${SYSTEMD_PENDING_PRIOR_SET[$f]+present}" ]; then
+                SYSTEMD_PENDING_USER_UNITS+=("$f")
             else
                 SYSTEMD+=("$f")
             fi
             ;;
         systemd/*.service|systemd/*.timer|systemd/*.path) SYSTEMD+=("$f") ;;
-        systemd/units/*.service.d/*.conf|systemd/units/*.timer.d/*.conf|systemd/units/*.slice.d/*.conf|systemd/units/*.scope.d/*.conf) SYSTEMD_DROPINS+=("$f") ;;
+        systemd/units/*.service.d/*.conf|systemd/units/*.timer.d/*.conf|systemd/units/*.slice.d/*.conf|systemd/units/*.scope.d/*.conf)
+            dropin_base_unit="${f%%.d/*}"
+            if ! unit_install_scope "$dropin_base_unit" 1 "$f"; then
+                exit 2
+            fi
+            if [ "$UNIT_INSTALL_SCOPE" = "system" ]; then
+                SYSTEMD_SYSTEM_DROPINS+=("$f")
+            elif [ "$UNIT_INSTALL_SCOPE" = "transition" ] \
+                || [ -n "${SYSTEMD_PENDING_PRIOR_SET[$f]+present}" ]; then
+                SYSTEMD_PENDING_USER_DROPINS+=("$f")
+            else
+                SYSTEMD_DROPINS+=("$f")
+            fi
+            ;;
         systemd/user-preset.d/*.preset)   USER_PRESETS+=("$f") ;;
         systemd/watchdogs/*)              WATCHDOGS+=("$f") ;;
         systemd/scripts/*)                ;; # installer helpers; run manually when needed
@@ -2218,7 +2563,453 @@ validate_generic_dropin_activation() {
     esac
 }
 
-# --- systemd unit drop-ins ---
+system_unit_file_witness() {
+    local path="$1" expected_oid="$2"
+    /usr/bin/python3 -I -S - "$path" "$expected_oid" <<'PY'
+from __future__ import annotations
+
+import hashlib
+import os
+import stat
+import sys
+
+path, expected_oid = sys.argv[1:]
+try:
+    path_before = os.lstat(path)
+except FileNotFoundError:
+    print("absent")
+    raise SystemExit(0)
+if not stat.S_ISREG(path_before.st_mode):
+    raise SystemExit(1)
+
+fd = os.open(path, os.O_RDONLY | os.O_CLOEXEC | os.O_NOFOLLOW)
+try:
+    before = os.fstat(fd)
+    if (before.st_dev, before.st_ino) != (path_before.st_dev, path_before.st_ino):
+        raise OSError("system unit path changed before read")
+    if before.st_size > 4 * 1024 * 1024:
+        raise OSError("system unit exceeds the bounded witness size")
+    payload = bytearray()
+    while True:
+        chunk = os.read(fd, 65536)
+        if not chunk:
+            break
+        payload.extend(chunk)
+    after = os.fstat(fd)
+    path_after = os.lstat(path)
+finally:
+    os.close(fd)
+
+generation_before = (
+    before.st_dev,
+    before.st_ino,
+    before.st_size,
+    before.st_mtime_ns,
+    before.st_ctime_ns,
+)
+generation_after = (
+    after.st_dev,
+    after.st_ino,
+    after.st_size,
+    after.st_mtime_ns,
+    after.st_ctime_ns,
+)
+path_generation_after = (
+    path_after.st_dev,
+    path_after.st_ino,
+    path_after.st_size,
+    path_after.st_mtime_ns,
+    path_after.st_ctime_ns,
+)
+if generation_before != generation_after or generation_after != path_generation_after:
+    raise OSError("system unit generation changed during read")
+
+algorithm = hashlib.sha1 if len(expected_oid) == 40 else hashlib.sha256
+digest = algorithm(f"blob {len(payload)}\0".encode("ascii") + payload).hexdigest()
+print("\t".join(("present", digest, *(str(value) for value in generation_after))))
+PY
+}
+
+SYSTEM_EXPECTED_DROPIN_PATHS=""
+load_expected_system_dropin_paths() {
+    local source_unit="$1" listing line mode type object_and_path tree_path
+    local prefix="${source_unit}.d/"
+    local -a expected=()
+    SYSTEM_EXPECTED_DROPIN_PATHS=""
+    if ! listing="$(git -C "$REPO" ls-tree -r "$SHA" -- "${source_unit}.d")"; then
+        echo "hapax-post-merge-deploy: failed to enumerate system drop-ins at $SHA:${source_unit}.d" >&2
+        return 1
+    fi
+    while IFS= read -r line; do
+        [ -n "$line" ] || continue
+        read -r mode type object_and_path <<< "$line"
+        if [[ "$object_and_path" != *$'\t'* ]]; then
+            echo "hapax-post-merge-deploy: malformed system drop-in Git entry at $SHA:${source_unit}.d" >&2
+            return 1
+        fi
+        tree_path="${object_and_path#*$'\t'}"
+        case "$tree_path" in
+            "$prefix"*.conf) ;;
+            *) continue ;;
+        esac
+        if [[ "$mode" != 100644 && "$mode" != 100755 ]] || [ "$type" != "blob" ]; then
+            echo "hapax-post-merge-deploy: unsupported system drop-in Git entry at $SHA:$tree_path" >&2
+            return 1
+        fi
+        expected+=("$SYSTEMD_SYSTEM_DIR/${tree_path#systemd/units/}")
+    done <<< "$listing"
+    if [ "${#expected[@]}" -gt 0 ]; then
+        SYSTEM_EXPECTED_DROPIN_PATHS="$(printf '%s\n' "${expected[@]}" | sort -u)"
+    fi
+}
+
+system_dropin_paths_match() {
+    local observed="$1" expected="$2"
+    [ "${#observed}" -le 131072 ] || return 1
+    [ "${#expected}" -le 131072 ] || return 1
+    /usr/bin/python3 -I -S - "$observed" "$expected" <<'PY'
+from __future__ import annotations
+
+import os
+import sys
+
+observed = sys.argv[1].split()
+expected = [line for line in sys.argv[2].splitlines() if line]
+if len(observed) != len(set(observed)) or len(expected) != len(set(expected)):
+    raise SystemExit(1)
+if any(not path.startswith("/") or any(char.isspace() for char in path) for path in observed):
+    raise SystemExit(1)
+raise SystemExit(0 if set(observed) == set(expected) else 1)
+PY
+}
+
+pending_system_scope_absent_for_user_path() {
+    local source_path="$1" rel base system_dest manager_unit
+    local file_before file_after manager_record line
+    local load_state fragment_path dropin_paths need_reload
+    local record_ok property_count load_seen fragment_seen dropins_seen reload_seen
+    rel="${source_path#systemd/units/}"
+    case "$rel" in
+        *.d/*.conf)
+            base="${rel%%.d/*}"
+            system_dest="$SYSTEMD_SYSTEM_DIR/$rel"
+            ;;
+        *)
+            base="$(basename "$rel")"
+            system_dest="$SYSTEMD_SYSTEM_DIR/$base"
+            ;;
+    esac
+    manager_unit="$base"
+    if [[ "$manager_unit" == *@.* ]]; then
+        manager_unit="${manager_unit/@./@hapax-post-merge-witness.}"
+    fi
+    if ! file_before="$(system_unit_file_witness "$system_dest" "")" \
+        || [ "$file_before" != "absent" ]; then
+        return 1
+    fi
+    if ! manager_record="$(
+        systemctl show "$manager_unit" \
+            --property=LoadState,FragmentPath,DropInPaths,NeedDaemonReload --no-pager
+    )"; then
+        return 1
+    fi
+    load_state=""
+    fragment_path=""
+    dropin_paths=""
+    need_reload=""
+    record_ok=1
+    property_count=0
+    load_seen=0
+    fragment_seen=0
+    dropins_seen=0
+    reload_seen=0
+    while IFS= read -r line; do
+        case "$line" in
+            LoadState=*)
+                [ "$load_seen" -eq 0 ] || record_ok=0
+                load_seen=1
+                load_state="${line#LoadState=}"
+                ;;
+            FragmentPath=*)
+                [ "$fragment_seen" -eq 0 ] || record_ok=0
+                fragment_seen=1
+                fragment_path="${line#FragmentPath=}"
+                ;;
+            DropInPaths=*)
+                [ "$dropins_seen" -eq 0 ] || record_ok=0
+                dropins_seen=1
+                dropin_paths="${line#DropInPaths=}"
+                ;;
+            NeedDaemonReload=*)
+                [ "$reload_seen" -eq 0 ] || record_ok=0
+                reload_seen=1
+                need_reload="${line#NeedDaemonReload=}"
+                ;;
+            *) record_ok=0 ;;
+        esac
+        property_count=$((property_count + 1))
+    done <<< "$manager_record"
+    if [ "$property_count" -ne 4 ] \
+        || [ "$load_seen" -ne 1 ] \
+        || [ "$fragment_seen" -ne 1 ] \
+        || [ "$dropins_seen" -ne 1 ] \
+        || [ "$reload_seen" -ne 1 ] \
+        || [ "$load_state" != "not-found" ] \
+        || [ -n "$fragment_path" ] \
+        || [ -n "$dropin_paths" ] \
+        || [ "$need_reload" != "no" ]; then
+        record_ok=0
+    fi
+    [ "$record_ok" -eq 1 ] || return 1
+    if ! file_after="$(system_unit_file_witness "$system_dest" "")" \
+        || [ "$file_after" != "$file_before" ]; then
+        return 1
+    fi
+}
+
+for f in "${SYSTEMD_PENDING_USER_UNITS[@]}"; do
+    if pending_system_scope_absent_for_user_path "$f"; then
+        SYSTEMD_PENDING_REMOVE+=("$f")
+        SYSTEMD+=("$f")
+        echo "system-to-user transition witness converged: $f"
+    else
+        SYSTEMD_PENDING_ADD+=("$f")
+        RUNTIME_DEFERRED+=("systemd-system-to-user:$f")
+        echo "  runtime deferred: prior system installation for '$f' has not been proven absent; refusing user-manager publication" >&2
+    fi
+done
+for f in "${SYSTEMD_PENDING_USER_DROPINS[@]}"; do
+    if pending_system_scope_absent_for_user_path "$f"; then
+        SYSTEMD_PENDING_REMOVE+=("$f")
+        SYSTEMD_DROPINS+=("$f")
+        echo "system-to-user transition witness converged: $f"
+    else
+        SYSTEMD_PENDING_ADD+=("$f")
+        RUNTIME_DEFERRED+=("systemd-system-to-user:$f")
+        echo "  runtime deferred: prior system installation for '$f' has not been proven absent; refusing user-manager publication" >&2
+    fi
+done
+
+reconcile_user_unit_absence() {
+    local unit_name="$1" user_unit="$SYSTEMD_USER_DIR/$1" user_dropin_dir
+    local wants_link user_record line load_state fragment_path active_state sub_state
+    local record_ok property_count load_seen fragment_seen active_seen sub_seen
+    user_dropin_dir="$SYSTEMD_USER_DIR/$unit_name.d"
+    systemctl --user disable --now "$unit_name" >/dev/null 2>&1 || true
+    if [ -e "$user_unit" ] || [ -L "$user_unit" ]; then
+        if ! rm -f -- "$user_unit"; then
+            echo "hapax-post-merge-deploy: failed to remove stale user unit $user_unit" >&2
+            return 1
+        fi
+        DID_ANYTHING=1
+    fi
+    for wants_link in "$SYSTEMD_USER_DIR"/*.wants/"$unit_name"; do
+        [ -e "$wants_link" ] || [ -L "$wants_link" ] || continue
+        if ! rm -f -- "$wants_link"; then
+            echo "hapax-post-merge-deploy: failed to remove stale user wants link $wants_link" >&2
+            return 1
+        fi
+        DID_ANYTHING=1
+    done
+    if [ -e "$user_dropin_dir" ] || [ -L "$user_dropin_dir" ]; then
+        if ! rm -rf -- "$user_dropin_dir"; then
+            echo "hapax-post-merge-deploy: failed to remove stale user drop-in directory $user_dropin_dir" >&2
+            return 1
+        fi
+        DID_ANYTHING=1
+    fi
+    if ! systemctl --user daemon-reload; then
+        echo "hapax-post-merge-deploy: failed to reload the user manager while retiring stale $unit_name artifacts" >&2
+        return 1
+    fi
+    if ! user_record="$(
+        systemctl --user show "$unit_name" \
+            --property=LoadState,FragmentPath,ActiveState,SubState --no-pager
+    )"; then
+        echo "hapax-post-merge-deploy: cannot obtain the combined user-manager absence witness for $unit_name" >&2
+        return 1
+    fi
+    load_state=""
+    fragment_path=""
+    active_state=""
+    sub_state=""
+    record_ok=1
+    property_count=0
+    load_seen=0
+    fragment_seen=0
+    active_seen=0
+    sub_seen=0
+    while IFS= read -r line; do
+        case "$line" in
+            LoadState=*)
+                [ "$load_seen" -eq 0 ] || record_ok=0
+                load_seen=1
+                load_state="${line#LoadState=}"
+                ;;
+            FragmentPath=*)
+                [ "$fragment_seen" -eq 0 ] || record_ok=0
+                fragment_seen=1
+                fragment_path="${line#FragmentPath=}"
+                ;;
+            ActiveState=*)
+                [ "$active_seen" -eq 0 ] || record_ok=0
+                active_seen=1
+                active_state="${line#ActiveState=}"
+                ;;
+            SubState=*)
+                [ "$sub_seen" -eq 0 ] || record_ok=0
+                sub_seen=1
+                sub_state="${line#SubState=}"
+                ;;
+            *) record_ok=0 ;;
+        esac
+        property_count=$((property_count + 1))
+    done <<< "$user_record"
+    if [ "$property_count" -ne 4 ] \
+        || [ "$load_seen" -ne 1 ] \
+        || [ "$fragment_seen" -ne 1 ] \
+        || [ "$active_seen" -ne 1 ] \
+        || [ "$sub_seen" -ne 1 ] \
+        || [ "$load_state" != "not-found" ] \
+        || [ -n "$fragment_path" ] \
+        || [ "$active_state" != "inactive" ] \
+        || [ "$sub_state" != "dead" ]; then
+        record_ok=0
+    fi
+    if [ "$record_ok" -ne 1 ]; then
+        echo "hapax-post-merge-deploy: stale user-manager state remains for system-scoped $unit_name" >&2
+        return 1
+    fi
+}
+
+# A system-owned base unit owns all of its drop-ins. Never materialize those
+# bytes in the user manager; remove stale user artifacts and leave the exact
+# system installation to an authorized runtime deploy.
+if [ "${#SYSTEMD_SYSTEM_DROPINS[@]}" -gt 0 ]; then
+    echo "system-scoped systemd drop-ins changed (${#SYSTEMD_SYSTEM_DROPINS[@]}):"
+    for f in "${SYSTEMD_SYSTEM_DROPINS[@]}"; do
+        rel="${f#systemd/units/}"
+        dropin_dir="$(dirname "$rel")"
+        unit_name="${dropin_dir%.d}"
+        system_dest="$SYSTEMD_SYSTEM_DIR/$rel"
+        if ! reconcile_user_unit_absence "$unit_name"; then
+            exit 1
+        fi
+        if ! git_blob_state_at "$SHA" "$f" "system-scoped systemd drop-in"; then
+            exit 2
+        fi
+        dropin_base_source="${f%%.d/*}"
+        if ! load_expected_system_dropin_paths "$dropin_base_source"; then
+            exit 2
+        fi
+        expected_system_dropins="$SYSTEM_EXPECTED_DROPIN_PATHS"
+        system_dropin_converged=0
+        system_dropin_file_before=""
+        if system_dropin_file_before="$(system_unit_file_witness "$system_dest" "$GIT_BLOB_OID")"; then
+            if [ "$GIT_BLOB_PRESENT" -eq 1 ] \
+                && [[ "$system_dropin_file_before" == $'present\t'"$GIT_BLOB_OID"$'\t'* ]]; then
+                system_dropin_converged=1
+            elif [ "$GIT_BLOB_PRESENT" -eq 0 ] && [ "$system_dropin_file_before" = "absent" ]; then
+                system_dropin_converged=1
+            fi
+        else
+            echo "  runtime deferred: cannot obtain a stable file witness for '$system_dest'" >&2
+        fi
+        system_dropin_manager_converged=0
+        if [ "$system_dropin_converged" -eq 1 ]; then
+            system_manager_record=""
+            if ! system_manager_record="$(
+                systemctl show "$unit_name" \
+                    --property=LoadState,FragmentPath,DropInPaths,NeedDaemonReload --no-pager
+            )"; then
+                echo "  runtime deferred: cannot query the system-manager witness for '$unit_name'" >&2
+            else
+                system_load_state=""
+                system_fragment_path=""
+                system_dropin_paths=""
+                system_need_reload=""
+                system_manager_record_ok=1
+                system_manager_property_count=0
+                system_load_seen=0
+                system_fragment_seen=0
+                system_dropins_seen=0
+                system_reload_seen=0
+                while IFS= read -r system_manager_line; do
+                    case "$system_manager_line" in
+                        LoadState=*)
+                            [ "$system_load_seen" -eq 0 ] || system_manager_record_ok=0
+                            system_load_seen=1
+                            system_load_state="${system_manager_line#LoadState=}"
+                            ;;
+                        FragmentPath=*)
+                            [ "$system_fragment_seen" -eq 0 ] || system_manager_record_ok=0
+                            system_fragment_seen=1
+                            system_fragment_path="${system_manager_line#FragmentPath=}"
+                            ;;
+                        DropInPaths=*)
+                            [ "$system_dropins_seen" -eq 0 ] || system_manager_record_ok=0
+                            system_dropins_seen=1
+                            system_dropin_paths="${system_manager_line#DropInPaths=}"
+                            ;;
+                        NeedDaemonReload=*)
+                            [ "$system_reload_seen" -eq 0 ] || system_manager_record_ok=0
+                            system_reload_seen=1
+                            system_need_reload="${system_manager_line#NeedDaemonReload=}"
+                            ;;
+                        *) system_manager_record_ok=0 ;;
+                    esac
+                    system_manager_property_count=$((system_manager_property_count + 1))
+                done <<< "$system_manager_record"
+                if [ "$system_manager_property_count" -ne 4 ] \
+                    || [ "$system_load_seen" -ne 1 ] \
+                    || [ "$system_fragment_seen" -ne 1 ] \
+                    || [ "$system_dropins_seen" -ne 1 ] \
+                    || [ "$system_reload_seen" -ne 1 ] \
+                    || [ -z "$system_load_state" ] \
+                    || [ -z "$system_need_reload" ]; then
+                    system_manager_record_ok=0
+                fi
+                if [ "$system_manager_record_ok" -ne 1 ]; then
+                    echo "  runtime deferred: malformed combined system-manager witness for '$unit_name'" >&2
+                elif [ "$GIT_BLOB_PRESENT" -eq 1 ] \
+                    && [ "$system_load_state" = "loaded" ] \
+                    && [ "$system_fragment_path" = "$SYSTEMD_SYSTEM_DIR/$unit_name" ] \
+                    && system_dropin_paths_match \
+                        "$system_dropin_paths" "$expected_system_dropins" \
+                    && [ "$system_need_reload" = "no" ]; then
+                    system_dropin_manager_converged=1
+                elif [ "$GIT_BLOB_PRESENT" -eq 0 ] \
+                    && system_dropin_paths_match \
+                        "$system_dropin_paths" "$expected_system_dropins" \
+                    && [ "$system_need_reload" = "no" ]; then
+                    system_dropin_manager_converged=1
+                else
+                    echo "  runtime deferred: system manager has not loaded the exact '$system_dest' state" >&2
+                fi
+            fi
+            if [ "$system_dropin_manager_converged" -eq 1 ]; then
+                system_dropin_file_after=""
+                if ! system_dropin_file_after="$(
+                    system_unit_file_witness "$system_dest" "$GIT_BLOB_OID"
+                )" || [ "$system_dropin_file_after" != "$system_dropin_file_before" ]; then
+                    system_dropin_manager_converged=0
+                    echo "  runtime deferred: '$system_dest' changed generation across the system-manager witness" >&2
+                fi
+            fi
+        fi
+        if [ "$system_dropin_converged" -eq 1 ] \
+            && [ "$system_dropin_manager_converged" -eq 1 ]; then
+            SYSTEMD_PENDING_REMOVE+=("$f")
+            echo "  exact file and system-manager witness: '$system_dest'"
+        else
+            SYSTEMD_PENDING_ADD+=("$f")
+            RUNTIME_DEFERRED+=("systemd-system-dropin:$f")
+            echo "  runtime deferred: '$system_dest' lacks an exact $SHA file-and-manager witness; next action: install or remove it through an authorized system-unit installer, reload the system manager, then rerun this deploy" >&2
+        fi
+    done
+fi
+
+# --- user-scoped systemd unit drop-ins ---
 if [ "${#SYSTEMD_DROPINS[@]}" -gt 0 ]; then
     echo "systemd drop-ins changed (${#SYSTEMD_DROPINS[@]}):"
     DROPIN_BASE_REF="${SINCE:-${FIRST_PARENT:-}}"
@@ -2290,80 +3081,12 @@ if [ "${#SYSTEMD_DROPINS[@]}" -gt 0 ]; then
     DID_ANYTHING=1
 fi
 
-system_unit_file_witness() {
-    local path="$1" expected_oid="$2"
-    /usr/bin/python3 -I -S - "$path" "$expected_oid" <<'PY'
-from __future__ import annotations
-
-import hashlib
-import os
-import stat
-import sys
-
-path, expected_oid = sys.argv[1:]
-try:
-    path_before = os.lstat(path)
-except FileNotFoundError:
-    print("absent")
-    raise SystemExit(0)
-if not stat.S_ISREG(path_before.st_mode):
-    raise SystemExit(1)
-
-fd = os.open(path, os.O_RDONLY | os.O_CLOEXEC | os.O_NOFOLLOW)
-try:
-    before = os.fstat(fd)
-    if (before.st_dev, before.st_ino) != (path_before.st_dev, path_before.st_ino):
-        raise OSError("system unit path changed before read")
-    if before.st_size > 4 * 1024 * 1024:
-        raise OSError("system unit exceeds the bounded witness size")
-    payload = bytearray()
-    while True:
-        chunk = os.read(fd, 65536)
-        if not chunk:
-            break
-        payload.extend(chunk)
-    after = os.fstat(fd)
-    path_after = os.lstat(path)
-finally:
-    os.close(fd)
-
-generation_before = (
-    before.st_dev,
-    before.st_ino,
-    before.st_size,
-    before.st_mtime_ns,
-    before.st_ctime_ns,
-)
-generation_after = (
-    after.st_dev,
-    after.st_ino,
-    after.st_size,
-    after.st_mtime_ns,
-    after.st_ctime_ns,
-)
-path_generation_after = (
-    path_after.st_dev,
-    path_after.st_ino,
-    path_after.st_size,
-    path_after.st_mtime_ns,
-    path_after.st_ctime_ns,
-)
-if generation_before != generation_after or generation_after != path_generation_after:
-    raise OSError("system unit generation changed during read")
-
-algorithm = hashlib.sha1 if len(expected_oid) == 40 else hashlib.sha256
-digest = algorithm(f"blob {len(payload)}\0".encode("ascii") + payload).hexdigest()
-print("\t".join(("present", digest, *(str(value) for value in generation_after))))
-PY
-}
-
 # --- systemd units ---
 if [ "${#SYSTEMD_SYSTEM[@]}" -gt 0 ]; then
     echo "system-scoped systemd units changed (${#SYSTEMD_SYSTEM[@]}):"
     mkdir -p "$SYSTEMD_USER_DIR"
     for f in "${SYSTEMD_SYSTEM[@]}"; do
         base="$(basename "$f")"
-        dest="$SYSTEMD_USER_DIR/$base"
         system_dest="$SYSTEMD_SYSTEM_DIR/$base"
         system_manager_unit="$base"
         if [[ "$system_manager_unit" == *@.* ]]; then
@@ -2373,9 +3096,12 @@ if [ "${#SYSTEMD_SYSTEM[@]}" -gt 0 ]; then
         if ! git_blob_state_at "$SHA" "$f" "system-scoped systemd unit"; then
             exit 2
         fi
-        systemctl --user disable --now "$base" >/dev/null 2>&1 || true
-        if [ -e "$dest" ] || [ -L "$dest" ]; then
-            rm -fv "$dest" || true
+        if ! load_expected_system_dropin_paths "$f"; then
+            exit 2
+        fi
+        expected_system_dropins="$SYSTEM_EXPECTED_DROPIN_PATHS"
+        if ! reconcile_user_unit_absence "$base"; then
+            exit 1
         fi
         system_unit_converged=0
         system_file_before=""
@@ -2394,17 +3120,19 @@ if [ "${#SYSTEMD_SYSTEM[@]}" -gt 0 ]; then
             system_manager_record=""
             if ! system_manager_record="$(
                 systemctl show "$system_manager_unit" \
-                    --property=LoadState,FragmentPath,NeedDaemonReload --no-pager
+                    --property=LoadState,FragmentPath,DropInPaths,NeedDaemonReload --no-pager
             )"; then
                 echo "  runtime deferred: cannot query the system-manager witness for '$system_manager_unit'" >&2
             else
                 system_load_state=""
                 system_fragment_path=""
+                system_dropin_paths=""
                 system_need_reload=""
                 system_manager_record_ok=1
                 system_manager_property_count=0
                 system_load_seen=0
                 system_fragment_seen=0
+                system_dropins_seen=0
                 system_reload_seen=0
                 while IFS= read -r system_manager_line; do
                     case "$system_manager_line" in
@@ -2418,6 +3146,11 @@ if [ "${#SYSTEMD_SYSTEM[@]}" -gt 0 ]; then
                             system_fragment_seen=1
                             system_fragment_path="${system_manager_line#FragmentPath=}"
                             ;;
+                        DropInPaths=*)
+                            [ "$system_dropins_seen" -eq 0 ] || system_manager_record_ok=0
+                            system_dropins_seen=1
+                            system_dropin_paths="${system_manager_line#DropInPaths=}"
+                            ;;
                         NeedDaemonReload=*)
                             [ "$system_reload_seen" -eq 0 ] || system_manager_record_ok=0
                             system_reload_seen=1
@@ -2427,9 +3160,10 @@ if [ "${#SYSTEMD_SYSTEM[@]}" -gt 0 ]; then
                     esac
                     system_manager_property_count=$((system_manager_property_count + 1))
                 done <<< "$system_manager_record"
-                if [ "$system_manager_property_count" -ne 3 ] \
+                if [ "$system_manager_property_count" -ne 4 ] \
                     || [ "$system_load_seen" -ne 1 ] \
                     || [ "$system_fragment_seen" -ne 1 ] \
+                    || [ "$system_dropins_seen" -ne 1 ] \
                     || [ "$system_reload_seen" -ne 1 ] \
                     || [ -z "$system_load_state" ] \
                     || [ -z "$system_need_reload" ]; then
@@ -2440,11 +3174,15 @@ if [ "${#SYSTEMD_SYSTEM[@]}" -gt 0 ]; then
                 elif [ "$GIT_BLOB_PRESENT" -eq 1 ] \
                 && [ "$system_load_state" = "loaded" ] \
                 && [ "$system_fragment_path" = "$system_dest" ] \
+                && system_dropin_paths_match \
+                    "$system_dropin_paths" "$expected_system_dropins" \
                 && [ "$system_need_reload" = "no" ]; then
                     system_manager_converged=1
                 elif [ "$GIT_BLOB_PRESENT" -eq 0 ] \
                 && [ "$system_load_state" = "not-found" ] \
                 && [ -z "$system_fragment_path" ] \
+                && system_dropin_paths_match \
+                    "$system_dropin_paths" "$expected_system_dropins" \
                 && [ "$system_need_reload" = "no" ]; then
                     system_manager_converged=1
                 else
@@ -2462,13 +3200,14 @@ if [ "${#SYSTEMD_SYSTEM[@]}" -gt 0 ]; then
             fi
         fi
         if [ "$system_unit_converged" -eq 1 ] && [ "$system_manager_converged" -eq 1 ]; then
+            SYSTEMD_PENDING_REMOVE+=("$f")
             echo "  exact file and system-manager witness: '$system_dest'"
         else
+            SYSTEMD_PENDING_ADD+=("$f")
             RUNTIME_DEFERRED+=("systemd-system:$f")
             echo "  runtime deferred: '$system_dest' lacks an exact $SHA file-and-manager witness; next action: install or remove it through an authorized system-unit installer, reload the system manager, then rerun this deploy" >&2
         fi
     done
-    systemctl --user daemon-reload
 fi
 
 PUBLISHED_GIT_CONTENT=""

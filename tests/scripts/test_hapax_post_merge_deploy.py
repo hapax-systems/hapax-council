@@ -900,12 +900,20 @@ if [ "${{1:-}}" = show ]; then
     unit="${{2:?}}"
     path="{system_dir}/$unit"
     case "$*" in
-        *" --property=LoadState,FragmentPath,NeedDaemonReload --no-pager")
+        *" --property=LoadState,FragmentPath,DropInPaths,NeedDaemonReload --no-pager")
             if [ -f "$path" ]; then
                 printf 'LoadState=loaded\nFragmentPath=%s\n' "$path"
             else
                 printf 'LoadState=not-found\nFragmentPath=\n'
             fi
+            printf 'DropInPaths='
+            separator=
+            for dropin in "$path.d"/*.conf; do
+                [ -f "$dropin" ] || continue
+                printf '%s%s' "$separator" "$dropin"
+                separator=' '
+            done
+            printf '\n'
             marker="${{HAPAX_SYSTEMCTL_NEEDS_RELOAD_MARKER:-}}"
             if [ -n "$marker" ] && [ -e "$marker" ]; then
                 printf 'NeedDaemonReload=yes\n'
@@ -918,6 +926,13 @@ if [ "${{1:-}}" = show ]; then
         *" -p NeedDaemonReload --value")
             marker="${{HAPAX_SYSTEMCTL_NEEDS_RELOAD_MARKER:-}}"
             if [ -n "$marker" ] && [ -e "$marker" ]; then printf 'yes\n'; else printf 'no\n'; fi
+            ;;
+        *) exit 97 ;;
+    esac
+elif [ "${{1:-}}" = --user ] && [ "${{2:-}}" = show ]; then
+    case "$*" in
+        *" --property=LoadState,FragmentPath,ActiveState,SubState --no-pager")
+            printf 'LoadState=not-found\nFragmentPath=\nActiveState=inactive\nSubState=dead\n'
             ;;
         *) exit 97 ;;
     esac
@@ -3112,6 +3127,86 @@ def test_generic_service_dropin_atomically_replaces_changed_destination_symlink(
     assert "--user restart demo.service" in calls
 
 
+def test_system_scoped_base_routes_changed_dropin_to_runtime_deferral(tmp_path: Path) -> None:
+    unit_path = "systemd/units/demo-root.service"
+    dropin_path = f"{unit_path}.d/override.conf"
+    unit_body = (
+        "[Unit]\n# Hapax-Install-Scope: system\n[Service]\nType=oneshot\nExecStart=/usr/bin/true\n"
+    )
+    dropin_body = "[Service]\nEnvironment=DEMO=system\n"
+    repo, _ = _repo_with_linear_commit(
+        tmp_path,
+        {unit_path: unit_body},
+    )
+    source_dropin = repo / dropin_path
+    source_dropin.parent.mkdir()
+    source_dropin.write_text(dropin_body, encoding="utf-8")
+    _git(repo, "add", dropin_path)
+    _git(repo, "commit", "-m", "add system unit drop-in")
+    sha = _git(repo, "rev-parse", "HEAD")
+    home = tmp_path / "home"
+    stale_user_dropin = home / ".config/systemd/user/demo-root.service.d/override.conf"
+    stale_user_dropin.parent.mkdir(parents=True)
+    stale_user_dropin.write_text("[Service]\nEnvironment=DEMO=user\n", encoding="utf-8")
+    system_dir = tmp_path / "systemd-system"
+    system_dir.mkdir()
+    bin_dir, systemctl_calls = _fake_systemctl_with_system_witness(tmp_path, system_dir)
+    script = _post_merge_script_with_system_dir(tmp_path, system_dir)
+    trace_path = tmp_path / "traces/post-merge-traces.jsonl"
+    env = {
+        **os.environ,
+        "HOME": str(home),
+        "PATH": f"{bin_dir}:{os.environ['PATH']}",
+        "REPO": str(repo),
+        "HAPAX_SYSTEMCTL_CALLS": str(systemctl_calls),
+        "HAPAX_POST_MERGE_TRACE_PATH": str(trace_path),
+    }
+
+    result = subprocess.run(
+        [str(script), sha],
+        text=True,
+        capture_output=True,
+        check=False,
+        env=env,
+    )
+
+    assert result.returncode == 0, result.stderr
+    assert not stale_user_dropin.exists()
+    assert "--user restart demo-root.service" not in (
+        systemctl_calls.read_text(encoding="utf-8") if systemctl_calls.exists() else ""
+    )
+    record = json.loads(trace_path.read_text(encoding="utf-8").splitlines()[-1])
+    assert record["runtime_deferred"] == [f"systemd-system-dropin:{dropin_path}"]
+    assert record["deploy_groups"]["systemd_dropins"] == []
+    assert record["deploy_groups"]["systemd_system_dropins"] == [dropin_path]
+    pending_path = trace_path.parent / "systemd-runtime-pending.json"
+    assert json.loads(pending_path.read_text(encoding="utf-8"))["paths"] == [dropin_path]
+
+    (repo / "README.md").write_text("unrelated drop-in successor\n", encoding="utf-8")
+    _git(repo, "add", "README.md")
+    _git(repo, "commit", "-m", "unrelated drop-in successor")
+    successor_sha = _git(repo, "rev-parse", "HEAD")
+    (system_dir / "demo-root.service").write_text(unit_body, encoding="utf-8")
+    installed_dropin = system_dir / "demo-root.service.d/override.conf"
+    installed_dropin.parent.mkdir()
+    installed_dropin.write_text(dropin_body, encoding="utf-8")
+
+    converged = subprocess.run(
+        [str(script), successor_sha],
+        text=True,
+        capture_output=True,
+        check=False,
+        env=env,
+    )
+
+    assert converged.returncode == 0, converged.stderr
+    assert not pending_path.exists()
+    replay_record = json.loads(trace_path.read_text(encoding="utf-8").splitlines()[-1])
+    assert replay_record["changed_files"] == ["README.md"]
+    assert replay_record["systemd_runtime_replayed"] == [dropin_path]
+    assert replay_record["runtime_deferred"] == []
+
+
 def test_generic_slice_dropin_rejects_symlink_with_removed_property(tmp_path: Path) -> None:
     dropin_path = "systemd/units/demo.slice.d/memory.conf"
     candidate_content = "[Slice]\nMemoryHigh=2G\nMemoryMax=3G\n"
@@ -3473,7 +3568,7 @@ def test_system_scoped_units_defer_runtime_without_blocking_source_deploy(tmp_pa
     unit_path = "systemd/units/hapax-l12-critical-usb-guard.service"
     unit_body = (
         "[Unit]\n"
-        "# Hapax-Install-Scope: system\n"
+        "  # Hapax-Install-Scope : system  \n"
         "Description=System scoped guard\n"
         "\n"
         "[Service]\n"
@@ -3521,11 +3616,21 @@ def test_system_scoped_units_defer_runtime_without_blocking_source_deploy(tmp_pa
     deferred_record = json.loads(trace_path.read_text(encoding="utf-8").splitlines()[-1])
     assert deferred_record["status"] == "completed_with_runtime_deferral"
     assert deferred_record["runtime_deferred"] == [f"systemd-system:{unit_path}"]
+    pending_path = trace_path.parent / "systemd-runtime-pending.json"
+    assert json.loads(pending_path.read_text(encoding="utf-8")) == {
+        "schema_version": 1,
+        "paths": [unit_path],
+    }
+
+    (repo / "README.md").write_text("unrelated successor\n", encoding="utf-8")
+    _git(repo, "add", "README.md")
+    _git(repo, "commit", "-m", "unrelated successor")
+    successor_sha = _git(repo, "rev-parse", "HEAD")
 
     (system_dir / Path(unit_path).name).write_text(unit_body, encoding="utf-8")
     reload_marker.touch()
     not_reloaded = subprocess.run(
-        [str(script), sha],
+        [str(script), successor_sha],
         text=True,
         capture_output=True,
         check=False,
@@ -3534,11 +3639,15 @@ def test_system_scoped_units_defer_runtime_without_blocking_source_deploy(tmp_pa
 
     assert not_reloaded.returncode == 0
     assert "system manager has not loaded" in not_reloaded.stderr
-    assert cursor.read_text(encoding="utf-8").strip() == sha
+    assert cursor.read_text(encoding="utf-8").strip() == successor_sha
+    replay_record = json.loads(trace_path.read_text(encoding="utf-8").splitlines()[-1])
+    assert replay_record["changed_files"] == ["README.md"]
+    assert replay_record["systemd_runtime_replayed"] == [unit_path]
+    assert json.loads(pending_path.read_text(encoding="utf-8"))["paths"] == [unit_path]
 
     reload_marker.unlink()
     result = subprocess.run(
-        [str(script), sha],
+        [str(script), successor_sha],
         text=True,
         capture_output=True,
         check=False,
@@ -3547,7 +3656,8 @@ def test_system_scoped_units_defer_runtime_without_blocking_source_deploy(tmp_pa
 
     assert result.returncode == 0, result.stderr
     assert "exact file and system-manager witness" in result.stdout
-    assert cursor.read_text(encoding="utf-8").strip() == sha
+    assert cursor.read_text(encoding="utf-8").strip() == successor_sha
+    assert not pending_path.exists()
     calls = systemctl_calls.read_text(encoding="utf-8")
     assert "--user disable --now hapax-l12-critical-usb-guard.service" in calls
     assert "--user daemon-reload" in calls
@@ -3604,6 +3714,159 @@ def test_changed_system_scoped_unit_records_deferral_until_exact_bytes_are_insta
     assert cursor.read_text(encoding="utf-8").strip() == sha
 
 
+def test_system_to_user_scope_transition_defers_then_replays_after_system_absence(
+    tmp_path: Path,
+) -> None:
+    unit_path = "systemd/units/hapax-scope-transition.service"
+    system_body = (
+        "[Unit]\n# Hapax-Install-Scope: system\n[Service]\nType=oneshot\nExecStart=/usr/bin/true\n"
+    )
+    user_body = "[Service]\nType=oneshot\nExecStart=/usr/bin/true\n"
+    repo, _ = _repo_with_linear_commit(tmp_path, {unit_path: system_body})
+    (repo / unit_path).write_text(user_body, encoding="utf-8")
+    _git(repo, "add", unit_path)
+    _git(repo, "commit", "-m", "move unit to user scope")
+    sha = _git(repo, "rev-parse", "HEAD")
+    home = tmp_path / "home"
+    system_dir = tmp_path / "systemd-system"
+    system_dir.mkdir()
+    installed_system_unit = system_dir / Path(unit_path).name
+    installed_system_unit.write_text(system_body, encoding="utf-8")
+    script = _post_merge_script_with_system_dir(tmp_path, system_dir)
+    bin_dir, systemctl_calls = _fake_systemctl_with_system_witness(tmp_path, system_dir)
+    trace_path = tmp_path / "traces/post-merge-traces.jsonl"
+    pending_path = trace_path.parent / "systemd-runtime-pending.json"
+    env = {
+        **os.environ,
+        "HOME": str(home),
+        "PATH": f"{bin_dir}:{os.environ['PATH']}",
+        "REPO": str(repo),
+        "HAPAX_SYSTEMCTL_CALLS": str(systemctl_calls),
+        "HAPAX_POST_MERGE_TRACE_PATH": str(trace_path),
+    }
+
+    deferred = subprocess.run(
+        [str(script), sha],
+        text=True,
+        capture_output=True,
+        check=False,
+        env=env,
+    )
+
+    assert deferred.returncode == 0, deferred.stderr
+    assert "refusing user-manager publication" in deferred.stderr
+    assert not (home / ".config/systemd/user/hapax-scope-transition.service").exists()
+    assert json.loads(pending_path.read_text(encoding="utf-8"))["paths"] == [unit_path]
+
+    installed_system_unit.unlink()
+    (repo / "README.md").write_text("unrelated transition successor\n", encoding="utf-8")
+    _git(repo, "add", "README.md")
+    _git(repo, "commit", "-m", "unrelated transition successor")
+    successor_sha = _git(repo, "rev-parse", "HEAD")
+    result = subprocess.run(
+        [str(script), successor_sha],
+        text=True,
+        capture_output=True,
+        check=False,
+        env=env,
+    )
+
+    assert result.returncode == 0, result.stderr
+    assert "system-to-user transition witness converged" in result.stdout
+    assert not pending_path.exists()
+    assert (home / ".config/systemd/user/hapax-scope-transition.service").read_text(
+        encoding="utf-8"
+    ) == user_body
+
+
+def test_pending_systemd_queue_conflict_preserves_concurrent_addition_and_removal(
+    tmp_path: Path,
+) -> None:
+    unit_path = "systemd/units/hapax-pending-a.service"
+    concurrent_path = "systemd/units/hapax-pending-b.service"
+    unit_body = (
+        "[Unit]\n# Hapax-Install-Scope: system\n[Service]\nType=oneshot\nExecStart=/usr/bin/true\n"
+    )
+    repo, _ = _repo_with_linear_commit(tmp_path, {unit_path: unit_body})
+    (repo / "README.md").write_text("unrelated replay trigger\n", encoding="utf-8")
+    _git(repo, "add", "README.md")
+    _git(repo, "commit", "-m", "unrelated replay trigger")
+    sha = _git(repo, "rev-parse", "HEAD")
+    home = tmp_path / "home"
+    system_dir = tmp_path / "systemd-system"
+    system_dir.mkdir()
+    (system_dir / Path(unit_path).name).write_text(unit_body, encoding="utf-8")
+    script = _post_merge_script_with_system_dir(tmp_path, system_dir)
+    bin_dir, systemctl_calls = _fake_systemctl_with_system_witness(tmp_path, system_dir)
+    real_systemctl = bin_dir / "systemctl-real"
+    (bin_dir / "systemctl").rename(real_systemctl)
+    manager_marker = tmp_path / "manager-witness-started"
+    manager_release = tmp_path / "manager-witness-release"
+    (bin_dir / "systemctl").write_text(
+        "#!/usr/bin/env bash\n"
+        "set -euo pipefail\n"
+        'if [ "${1:-}" = show ] && [ ! -e "$HAPAX_MANAGER_WITNESS_MARKER" ]; then\n'
+        '  : > "$HAPAX_MANAGER_WITNESS_MARKER"\n'
+        '  while [ ! -e "$HAPAX_MANAGER_WITNESS_RELEASE" ]; do /usr/bin/sleep 0.01; done\n'
+        "fi\n"
+        f'exec {shlex.quote(str(real_systemctl))} "$@"\n',
+        encoding="utf-8",
+    )
+    (bin_dir / "systemctl").chmod(0o755)
+    trace_path = tmp_path / "traces/post-merge-traces.jsonl"
+    pending_path = trace_path.parent / "systemd-runtime-pending.json"
+    pending_path.parent.mkdir(parents=True)
+    pending_path.write_text(
+        json.dumps({"schema_version": 1, "paths": [unit_path]}) + "\n",
+        encoding="utf-8",
+    )
+    pending_path.chmod(0o600)
+    env = {
+        **os.environ,
+        "HOME": str(home),
+        "PATH": f"{bin_dir}:{os.environ['PATH']}",
+        "REPO": str(repo),
+        "HAPAX_SYSTEMCTL_CALLS": str(systemctl_calls),
+        "HAPAX_POST_MERGE_TRACE_PATH": str(trace_path),
+        "HAPAX_MANAGER_WITNESS_MARKER": str(manager_marker),
+        "HAPAX_MANAGER_WITNESS_RELEASE": str(manager_release),
+    }
+
+    process = subprocess.Popen(
+        [str(script), sha],
+        text=True,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        env=env,
+    )
+    try:
+        deadline = time.monotonic() + 10
+        while (
+            not manager_marker.exists() and process.poll() is None and time.monotonic() < deadline
+        ):
+            time.sleep(0.01)
+        assert manager_marker.exists(), "deploy did not reach the system-manager witness"
+        pending_path.write_text(
+            json.dumps(
+                {"schema_version": 1, "paths": [unit_path, concurrent_path]},
+                sort_keys=True,
+                separators=(",", ":"),
+            )
+            + "\n",
+            encoding="utf-8",
+        )
+        pending_path.chmod(0o600)
+    finally:
+        manager_release.touch()
+        stdout, stderr = process.communicate(timeout=10)
+
+    assert process.returncode == 0, (stdout, stderr)
+    assert json.loads(pending_path.read_text(encoding="utf-8"))["paths"] == [
+        unit_path,
+        concurrent_path,
+    ]
+
+
 def test_deleted_system_scoped_unit_records_deferral_until_installed_copy_is_absent(
     tmp_path: Path,
 ) -> None:
@@ -3642,13 +3905,24 @@ def test_deleted_system_scoped_unit_records_deferral_until_installed_copy_is_abs
     assert cursor.read_text(encoding="utf-8").strip() == sha
     deferred_record = json.loads(trace_path.read_text(encoding="utf-8").splitlines()[-1])
     assert deferred_record["status"] == "completed_with_runtime_deferral"
+    pending_path = trace_path.parent / "systemd-runtime-pending.json"
+    assert json.loads(pending_path.read_text(encoding="utf-8"))["paths"] == [unit_path]
+
+    (repo / "README.md").write_text("successor after deletion\n", encoding="utf-8")
+    _git(repo, "add", "README.md")
+    _git(repo, "commit", "-m", "unrelated successor after deletion")
+    successor_sha = _git(repo, "rev-parse", "HEAD")
 
     installed.unlink()
     converged = subprocess.run(
-        [str(script), sha], text=True, capture_output=True, check=False, env=env
+        [str(script), successor_sha], text=True, capture_output=True, check=False, env=env
     )
     assert converged.returncode == 0, converged.stderr
-    assert cursor.read_text(encoding="utf-8").strip() == sha
+    assert cursor.read_text(encoding="utf-8").strip() == successor_sha
+    assert not pending_path.exists()
+    replay_record = json.loads(trace_path.read_text(encoding="utf-8").splitlines()[-1])
+    assert replay_record["changed_files"] == ["README.md"]
+    assert replay_record["systemd_runtime_replayed"] == [unit_path]
 
 
 def test_malformed_system_scope_marker_is_refused(tmp_path: Path) -> None:
@@ -5715,6 +5989,80 @@ def test_last_deployed_sha_failure_preserves_previous_cursor_and_records_failure
     ]
     assert records[-1]["status"] == "failed"
     assert records[-1]["exit_code"] == result.returncode
+
+
+def test_completion_trace_and_cursor_publish_under_one_trace_lock(tmp_path: Path) -> None:
+    repo, sha = _repo_with_gate_closure_and_docs_commit(tmp_path)
+    canon = tmp_path / "canon"
+    calls = tmp_path / "hooks-doctor-calls.txt"
+    _seed_canonical_gate(repo, canon, stale=False)
+    env = _gate_reconcile_env(tmp_path, repo, canon, calls)
+    marker = tmp_path / "trace-python-returned"
+    release = tmp_path / "release-trace-python"
+    python_bin = tmp_path / "bin" / "python3"
+    python_bin.parent.mkdir()
+    python_bin.write_text(
+        "#!/usr/bin/env bash\n"
+        "set -euo pipefail\n"
+        '/usr/bin/python3 "$@"\n'
+        "rc=$?\n"
+        'if [ "${HAPAX_PAUSE_AFTER_TRACE_PYTHON:-0}" = 1 ]; then\n'
+        '  : > "$HAPAX_TRACE_PYTHON_RETURNED_MARKER"\n'
+        '  while [ ! -e "$HAPAX_TRACE_PYTHON_RELEASE" ]; do /usr/bin/sleep 0.01; done\n'
+        "fi\n"
+        'exit "$rc"\n',
+        encoding="utf-8",
+    )
+    python_bin.chmod(0o755)
+    env["PATH"] = f"{python_bin.parent}:{env['PATH']}"
+    env["HAPAX_PAUSE_AFTER_TRACE_PYTHON"] = "1"
+    env["HAPAX_TRACE_PYTHON_RETURNED_MARKER"] = str(marker)
+    env["HAPAX_TRACE_PYTHON_RELEASE"] = str(release)
+    cursor = tmp_path / "traces/last-deployed-sha"
+
+    process = subprocess.Popen(
+        [str(SCRIPT), sha],
+        text=True,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        env=env,
+    )
+    try:
+        deadline = time.monotonic() + 10
+        while not marker.exists() and process.poll() is None and time.monotonic() < deadline:
+            time.sleep(0.01)
+        assert marker.exists(), "deploy did not reach completion trace publication"
+        assert cursor.read_text(encoding="utf-8").strip() == sha
+    finally:
+        release.touch()
+        stdout, stderr = process.communicate(timeout=10)
+
+    assert process.returncode == 0, (stdout, stderr)
+
+
+def test_empty_commit_dry_run_never_publishes_deploy_cursor(tmp_path: Path) -> None:
+    repo, sha = _repo_with_gate_closure_and_docs_commit(tmp_path)
+    _git(repo, "commit", "--allow-empty", "-m", "empty dry-run edge")
+    sha = _git(repo, "rev-parse", "HEAD")
+    canon = tmp_path / "canon"
+    calls = tmp_path / "hooks-doctor-calls.txt"
+    _seed_canonical_gate(repo, canon, stale=False)
+    env = _gate_reconcile_env(tmp_path, repo, canon, calls)
+    cursor = tmp_path / "traces/last-deployed-sha"
+
+    result = subprocess.run(
+        [str(SCRIPT), "--dry-run", sha],
+        text=True,
+        capture_output=True,
+        check=False,
+        env=env,
+    )
+
+    assert result.returncode == 0, result.stderr
+    assert not cursor.exists()
+    record = json.loads(Path(env["HAPAX_POST_MERGE_TRACE_PATH"]).read_text(encoding="utf-8"))
+    assert record["mode"] == "dry_run"
+    assert record["status"] == "no_changes"
 
 
 @pytest.mark.parametrize("empty_commit", [False, True], ids=["changed-files", "no-files"])
