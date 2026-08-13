@@ -440,9 +440,9 @@ def classify_critical_floor_risk(
         if properties.oom_score_adjust is None:
             state = _worse_state(state, ResourceState.YELLOW)
             reasons.append("missing_oom_score_adjust")
-        elif properties.oom_score_adjust > expected_oom_score:
+        elif properties.oom_score_adjust != expected_oom_score:
             state = _worse_state(state, ResourceState.YELLOW)
-            reasons.append("oom_score_less_protected_than_profile")
+            reasons.append("oom_score_adjust_drift")
 
     message = (
         f"{service_name} critical memory floor risk: {', '.join(reasons)}"

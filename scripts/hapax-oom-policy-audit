@@ -1453,6 +1453,57 @@ def audit_docker_limits() -> list[Check]:
         if name.startswith("hapax-github-mcp-")
     ]
     checks.append(Check("docker_github_mcp_count", "pass", ">=0", str(len(mcp_targets))))
+    resolved_image_id: str | None = None
+    if mcp_targets:
+        image_inspect = _run_local_docker(
+            [
+                "image",
+                "inspect",
+                "--format",
+                '{{.Id}}{{range .RepoDigests}}{{printf "\\n%s" .}}{{end}}',
+                GITHUB_MCP_IMAGE,
+            ]
+        )
+        image_status = "error"
+        image_actual = "N/A"
+        image_detail = ""
+        if image_inspect.returncode != 0:
+            detail = (
+                image_inspect.stderr or image_inspect.stdout
+            ).strip() or f"rc={image_inspect.returncode}"
+            image_detail = f"cannot resolve the pinned local image: {detail}; {NEXT_OOM_ACTION}"
+        else:
+            image_lines = image_inspect.stdout.splitlines()
+            if (
+                len(image_lines) < 2
+                or len(image_lines) > DOCKER_TARGET_MAX
+                or any(len(line) > DOCKER_INVENTORY_LINE_MAX for line in image_lines)
+                or re.fullmatch(r"sha256:[0-9a-f]{64}", image_lines[0]) is None
+            ):
+                image_detail = f"malformed bounded Docker image identity; {NEXT_OOM_ACTION}"
+                image_actual = "malformed"
+            else:
+                local_image_id = image_lines[0]
+                repo_digests = image_lines[1:]
+                image_actual = f"ConfigID={local_image_id},RepoDigests={repo_digests}"
+                if GITHUB_MCP_IMAGE in repo_digests:
+                    resolved_image_id = local_image_id
+                    image_status = "pass"
+                else:
+                    image_status = "gap"
+                    image_detail = (
+                        "local image RepoDigests do not contain the exact reviewed reference; "
+                        f"{NEXT_OOM_ACTION}"
+                    )
+        checks.append(
+            Check(
+                "docker_github_mcp_image",
+                image_status,
+                f"RepoDigest={GITHUB_MCP_IMAGE},ConfigID=sha256:<64 lowercase hex>",
+                image_actual,
+                image_detail,
+            )
+        )
     for container_id, name in mcp_targets:
         inspected = _run_local_docker(
             [
@@ -1522,7 +1573,8 @@ def audit_docker_limits() -> list[Check]:
             continue
         identity_ok = actual_id == container_id and actual_name == f"/{name}"
         command_ok = (
-            image_id == GITHUB_MCP_IMAGE_DIGEST
+            resolved_image_id is not None
+            and image_id == resolved_image_id
             and config_image == GITHUB_MCP_IMAGE
             and process_path == GITHUB_MCP_PATH
             and len(process_args) == 4
@@ -1557,14 +1609,13 @@ def audit_docker_limits() -> list[Check]:
 def audit_local_judge_unit() -> Check:
     values = _show(
         "hapax-local-judge.service",
-        ["LoadState", "UnitFileState", "ActiveState", "FragmentPath"],
+        ["LoadState", "UnitFileState", "ActiveState"],
         user=True,
     )
     expected = {
         "LoadState": "masked",
         "UnitFileState": "masked",
         "ActiveState": "inactive",
-        "FragmentPath": "/dev/null",
     }
     if "_error" in values:
         return Check(
