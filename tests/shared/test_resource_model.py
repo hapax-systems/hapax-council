@@ -275,6 +275,16 @@ class TestServiceProfileCompleteness:
             assert allocation.limit == expected_limit
             assert allocation.enforcement == Enforcement.HARD
 
+    def test_delegated_broadcast_profiles_never_model_negative_oom_scores(self):
+        modeled_scores = {
+            name: profile.oom_score_adj
+            for name, profile in DEFAULT_SERVICE_PROFILES.items()
+            if profile.oom_score_adj is not None
+        }
+
+        assert modeled_scores["hapax-daimonion"] == 100
+        assert all(score >= 0 for score in modeled_scores.values())
+
 
 class TestContentionGroupConsistency:
     def test_gpu0_is_host_qualified_podium_5090(self):

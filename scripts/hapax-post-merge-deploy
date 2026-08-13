@@ -859,19 +859,81 @@ load_root_required_package_paths() {
 
 load_root_required_package_paths
 
-unit_install_scope() {
-    local f="$1"
-    if [ "$COVERAGE_FROM_STDIN" = "1" ]; then
-        printf 'user\n'
+GIT_BLOB_PRESENT=0
+GIT_BLOB_MODE=""
+GIT_BLOB_OID=""
+git_blob_state_at() {
+    local revision="$1" path="$2" label="$3"
+    local entry mode type object_and_path oid tree_path
+    GIT_BLOB_PRESENT=0
+    GIT_BLOB_MODE=""
+    GIT_BLOB_OID=""
+    if ! entry="$(git -C "$REPO" ls-tree "$revision" -- "$path")"; then
+        echo "hapax-post-merge-deploy: failed to inspect $label Git entry at $revision:$path; refusing to infer deletion" >&2
+        return 1
+    fi
+    if [ -z "$entry" ]; then
         return 0
     fi
-    local content
-    content="$(git show "$SHA:$f" 2>/dev/null || true)"
+    if [[ "$entry" == *$'\n'* ]]; then
+        echo "hapax-post-merge-deploy: ambiguous $label Git entry at $revision:$path" >&2
+        return 1
+    fi
+    read -r mode type object_and_path <<< "$entry"
+    if [[ "$object_and_path" != *$'\t'* ]]; then
+        echo "hapax-post-merge-deploy: malformed $label Git entry at $revision:$path" >&2
+        return 1
+    fi
+    oid="${object_and_path%%$'\t'*}"
+    tree_path="${object_and_path#*$'\t'}"
+    if [[ "$mode" != 100644 && "$mode" != 100755 ]] \
+        || [ "$type" != "blob" ] \
+        || ! [[ "$oid" =~ ^([0-9a-f]{40}|[0-9a-f]{64})$ ]] \
+        || [ "$tree_path" != "$path" ]; then
+        echo "hapax-post-merge-deploy: unsupported $label Git entry at $revision:$path; expected one regular blob at the exact path" >&2
+        return 1
+    fi
+    GIT_BLOB_PRESENT=1
+    GIT_BLOB_MODE="$mode"
+    GIT_BLOB_OID="$oid"
+}
+
+UNIT_INSTALL_SCOPE=""
+unit_install_scope() {
+    local f="$1"
+    UNIT_INSTALL_SCOPE=""
+    if [ "$COVERAGE_FROM_STDIN" = "1" ]; then
+        UNIT_INSTALL_SCOPE="user"
+        return 0
+    fi
+    local revision="$SHA" content base_ref
+    if ! git_blob_state_at "$revision" "$f" "systemd unit"; then
+        return 1
+    fi
+    if [ "$GIT_BLOB_PRESENT" -eq 0 ]; then
+        base_ref="${SINCE:-${FIRST_PARENT:-}}"
+        if [ -z "$base_ref" ]; then
+            echo "hapax-post-merge-deploy: changed systemd unit is absent at $SHA:$f and has no base commit for install-scope classification" >&2
+            return 1
+        fi
+        revision="$base_ref"
+        if ! git_blob_state_at "$revision" "$f" "prior systemd unit"; then
+            return 1
+        fi
+        if [ "$GIT_BLOB_PRESENT" -eq 0 ]; then
+            echo "hapax-post-merge-deploy: changed systemd unit is absent from both classification revisions: $f" >&2
+            return 1
+        fi
+    fi
+    if ! content="$(git -C "$REPO" show "$revision:$f")"; then
+        echo "hapax-post-merge-deploy: failed to read systemd unit while classifying install scope at $revision:$f" >&2
+        return 1
+    fi
     if [ -n "$content" ] \
         && grep -Eiq '^[#;][[:space:]]*Hapax-Install-Scope:[[:space:]]*system([[:space:]]*$|[[:space:]]+)' <<< "$content"; then
-        printf 'system\n'
+        UNIT_INSTALL_SCOPE="system"
     else
-        printf 'user\n'
+        UNIT_INSTALL_SCOPE="user"
     fi
 }
 
@@ -1218,14 +1280,20 @@ while IFS= read -r f; do
         config/wireplumber/*.conf)        WP+=("$f") ;;
         systemd/units/notify-failure@.service|systemd/units/hapax-coord.service|systemd/units/hapax-coord-rebuild.service|systemd/units/hapax-coord-rebuild.timer)
             RECOVERY_BUNDLE+=("$f")
-            if [ "$(unit_install_scope "$f")" = "system" ]; then
+            if ! unit_install_scope "$f"; then
+                exit 2
+            fi
+            if [ "$UNIT_INSTALL_SCOPE" = "system" ]; then
                 SYSTEMD_SYSTEM+=("$f")
             else
                 SYSTEMD+=("$f")
             fi
             ;;
         systemd/units/*.service|systemd/units/*.timer|systemd/units/*.path|systemd/units/*.target|systemd/units/*.slice)
-            if [ "$(unit_install_scope "$f")" = "system" ]; then
+            if ! unit_install_scope "$f"; then
+                exit 2
+            fi
+            if [ "$UNIT_INSTALL_SCOPE" = "system" ]; then
                 SYSTEMD_SYSTEM+=("$f")
             else
                 SYSTEMD+=("$f")
@@ -2147,21 +2215,57 @@ if [ "${#SYSTEMD_SYSTEM[@]}" -gt 0 ]; then
     DID_ANYTHING=1
 fi
 
+PUBLISHED_GIT_CONTENT=""
+publish_systemd_unit_at_sha() {
+    local source_path="$1" dest="$2" dest_dir base temp
+    PUBLISHED_GIT_CONTENT=""
+    dest_dir="$(dirname "$dest")"
+    base="$(basename "$dest")"
+    if ! temp="$(mktemp "$dest_dir/.${base}.tmp.XXXXXX")"; then
+        echo "hapax-post-merge-deploy: failed to reserve an atomic systemd unit temporary beside $dest" >&2
+        return 1
+    fi
+    if ! git -C "$REPO" show "$SHA:$source_path" > "$temp"; then
+        rm -f -- "$temp" 2>/dev/null || true
+        echo "hapax-post-merge-deploy: failed to materialize systemd unit at $SHA:$source_path; existing destination is unchanged" >&2
+        return 1
+    fi
+    if ! PUBLISHED_GIT_CONTENT="$(/usr/bin/cat -- "$temp")"; then
+        rm -f -- "$temp" 2>/dev/null || true
+        echo "hapax-post-merge-deploy: failed to read staged systemd unit at $temp" >&2
+        return 1
+    fi
+    if ! chmod 0644 "$temp"; then
+        rm -f -- "$temp" 2>/dev/null || true
+        echo "hapax-post-merge-deploy: failed to set staged systemd unit mode for $source_path" >&2
+        return 1
+    fi
+    if ! mv -fT -- "$temp" "$dest"; then
+        rm -f -- "$temp" 2>/dev/null || true
+        echo "hapax-post-merge-deploy: failed to atomically publish systemd unit $dest" >&2
+        return 1
+    fi
+}
+
 if [ "${#SYSTEMD[@]}" -gt 0 ]; then
     echo "systemd units changed (${#SYSTEMD[@]}):"
     mkdir -p "$SYSTEMD_USER_DIR"
     SYSTEMD_INSTALLED=()
+    declare -A SYSTEMD_INSTALLED_CONTENT=()
     for f in "${SYSTEMD[@]}"; do
         base="$(basename "$f")"
         dest="$SYSTEMD_USER_DIR/$base"
-        if git cat-file -e "$SHA:$f" 2>/dev/null; then
-            if [ -L "$dest" ]; then
-                rm -f "$dest"
+        if ! git_blob_state_at "$SHA" "$f" "systemd unit"; then
+            exit 2
+        fi
+        if [ "$GIT_BLOB_PRESENT" -eq 1 ]; then
+            if ! publish_systemd_unit_at_sha "$f" "$dest"; then
+                exit 1
             fi
-            git show "$SHA:$f" > "$dest"
             echo "  '$f' -> '$dest'"
             cleanup_known_stale_user_dropins_for_unit "$base"
             SYSTEMD_INSTALLED+=("$f")
+            SYSTEMD_INSTALLED_CONTENT["$f"]="$PUBLISHED_GIT_CONTENT"
         else
             rm -fv "$dest" || true
         fi
@@ -2169,7 +2273,7 @@ if [ "${#SYSTEMD[@]}" -gt 0 ]; then
     systemctl --user daemon-reload
     for f in "${SYSTEMD_INSTALLED[@]}"; do
         base="$(basename "$f")"
-        unit_content="$(git show "$SHA:$f" 2>/dev/null || true)"
+        unit_content="${SYSTEMD_INSTALLED_CONTENT[$f]}"
         if unit_content_parked "$unit_content"; then
             echo "parking $base (Hapax-Parked marker)"
             if ! systemctl --user disable --now "$base"; then

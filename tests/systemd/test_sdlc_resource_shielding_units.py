@@ -181,6 +181,19 @@ def test_broadcast_critical_user_oom_dropins_are_source_controlled() -> None:
         assert _directive(text, "MemoryLow") is not None
         assert _directive(text, "MemoryMin") is not None
 
+    delegated_scores = {}
+    for unit_path in UNITS_DIR.glob("*.service"):
+        text = unit_path.read_text()
+        if "Hapax-Install-Scope: system" in text:
+            continue
+        score = _directive(text, "OOMScoreAdjust")
+        if score is not None:
+            delegated_scores[unit_path.name] = int(score)
+
+    assert delegated_scores["hapax-daimonion.service"] == 100
+    assert delegated_scores["hapax-feedback-loop-detector.service"] == 100
+    assert all(score >= 0 for score in delegated_scores.values())
+
 
 def test_protected_user_units_have_no_root_negative_score_bridge() -> None:
     expected_units = {

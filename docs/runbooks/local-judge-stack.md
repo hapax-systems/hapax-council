@@ -54,11 +54,13 @@ This source task does not authorize running that transaction on Appendix. The
 deployed historical unit remains a runtime gap until the normal user-unit
 deployment is separately authorized. The observational OOM audit requires both
 container absence and `LoadState=masked`, `UnitFileState=masked`,
-`ActiveState=inactive`, and `FragmentPath=/dev/null`. Read-only inspection:
+and `ActiveState=inactive`. `FragmentPath` reports the search-path location of
+the mask, not its `/dev/null` symlink target. Read-only inspection:
 
 ```sh
 systemctl --user is-enabled hapax-local-judge.service
 systemctl --user is-active hapax-local-judge.service
+readlink "$HOME/.config/systemd/user/hapax-local-judge.service"
 docker --host=unix:///var/run/docker.sock ps -a --no-trunc \
   --filter 'name=^/hapax-local-judge$' --format '{{.ID}} {{.Image}} {{.Names}}'
 ```

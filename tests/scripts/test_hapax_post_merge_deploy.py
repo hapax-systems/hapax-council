@@ -3385,6 +3385,108 @@ def test_user_scoped_units_still_deploy_to_user_dir(tmp_path: Path) -> None:
     assert record["deploy_groups"]["systemd_system_units"] == []
 
 
+def test_systemd_scope_classification_git_failure_preserves_existing_unit(
+    tmp_path: Path,
+) -> None:
+    unit_path = "systemd/units/hapax-system-demo.service"
+    repo, sha = _repo_with_linear_commit(
+        tmp_path,
+        {
+            unit_path: (
+                "[Unit]\n"
+                "# Hapax-Install-Scope: system\n"
+                "[Service]\n"
+                "Type=oneshot\n"
+                "ExecStart=/usr/bin/true\n"
+            )
+        },
+    )
+    home = tmp_path / "home"
+    installed = home / ".config/systemd/user/hapax-system-demo.service"
+    installed.parent.mkdir(parents=True)
+    installed.write_text("prior user unit\n", encoding="utf-8")
+    systemctl_bin, systemctl_calls = _fake_systemctl(tmp_path)
+    git_bin = _fake_git_with_show_failure(tmp_path)
+    trace_path = tmp_path / "traces/post-merge-traces.jsonl"
+    cursor = tmp_path / "traces/last-deployed-sha"
+
+    result = subprocess.run(
+        [str(SCRIPT), sha],
+        text=True,
+        capture_output=True,
+        check=False,
+        env={
+            **os.environ,
+            "HOME": str(home),
+            "PATH": f"{git_bin}:{systemctl_bin}:{os.environ['PATH']}",
+            "REPO": str(repo),
+            "HAPAX_SYSTEMCTL_CALLS": str(systemctl_calls),
+            "HAPAX_POST_MERGE_TRACE_PATH": str(trace_path),
+            "HAPAX_POST_MERGE_LAST_DEPLOYED_SHA_PATH": str(cursor),
+            "HAPAX_FAIL_GIT_SHOW_OBJECT": f"{sha}:{unit_path}",
+            "HAPAX_FAIL_GIT_SHOW_COUNT_FILE": str(tmp_path / "git-show.count"),
+            "HAPAX_FAIL_GIT_SHOW_ON_COUNT": "1",
+        },
+    )
+
+    assert result.returncode != 0
+    assert "failed to read systemd unit while classifying install scope" in result.stderr
+    assert installed.read_text(encoding="utf-8") == "prior user unit\n"
+    assert not cursor.exists()
+
+
+def test_systemd_unit_git_show_failure_preserves_existing_bytes(
+    tmp_path: Path,
+) -> None:
+    unit_path = "systemd/units/hapax-user-demo.service"
+    repo, sha = _repo_with_linear_commit(
+        tmp_path,
+        {
+            unit_path: (
+                "[Unit]\n"
+                "Description=Replacement user unit\n"
+                "[Service]\n"
+                "Type=oneshot\n"
+                "ExecStart=/usr/bin/true\n"
+            )
+        },
+    )
+    home = tmp_path / "home"
+    installed = home / ".config/systemd/user/hapax-user-demo.service"
+    installed.parent.mkdir(parents=True)
+    installed.write_text("prior user unit\n", encoding="utf-8")
+    systemctl_bin, systemctl_calls = _fake_systemctl(tmp_path)
+    git_bin = _fake_git_with_show_failure(tmp_path)
+    trace_path = tmp_path / "traces/post-merge-traces.jsonl"
+    cursor = tmp_path / "traces/last-deployed-sha"
+
+    result = subprocess.run(
+        [str(SCRIPT), sha],
+        text=True,
+        capture_output=True,
+        check=False,
+        env={
+            **os.environ,
+            "HOME": str(home),
+            "PATH": f"{git_bin}:{systemctl_bin}:{os.environ['PATH']}",
+            "REPO": str(repo),
+            "HAPAX_SYSTEMCTL_CALLS": str(systemctl_calls),
+            "HAPAX_POST_MERGE_TRACE_PATH": str(trace_path),
+            "HAPAX_POST_MERGE_LAST_DEPLOYED_SHA_PATH": str(cursor),
+            "HAPAX_FAIL_GIT_SHOW_OBJECT": f"{sha}:{unit_path}",
+            "HAPAX_FAIL_GIT_SHOW_COUNT_FILE": str(tmp_path / "git-show.count"),
+            # Classification runs once before and once after the lock re-exec.
+            "HAPAX_FAIL_GIT_SHOW_ON_COUNT": "3",
+        },
+    )
+
+    assert result.returncode != 0
+    assert "failed to materialize systemd unit" in result.stderr
+    assert installed.read_text(encoding="utf-8") == "prior user unit\n"
+    assert not list(installed.parent.glob(".hapax-user-demo.service.tmp.*"))
+    assert not cursor.exists()
+
+
 def test_watchdog_change_installs_commit_copy_to_local_bin(tmp_path: Path) -> None:
     home = tmp_path / "home"
     watchdog_body = "#!/usr/bin/env bash\necho deployed-watchdog\n"

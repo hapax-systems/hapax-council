@@ -41,6 +41,7 @@ PROTECTED_USER_UNIT_MEMORY = {
 }
 GITHUB_MCP_IMAGE_DIGEST = "sha256:30197479d8036c7811892bc07e06f9a05c9ef3cdd79bc59f256d50647f95788c"
 GITHUB_MCP_IMAGE = f"ghcr.io/github/github-mcp-server@{GITHUB_MCP_IMAGE_DIGEST}"
+GITHUB_MCP_LOCAL_IMAGE_ID = f"sha256:{'b' * 64}"
 
 
 def test_audit_resets_hostile_path_before_command_resolution(
@@ -142,7 +143,7 @@ def _fake_systemctl(
     judge_load_state: str = "masked",
     judge_unit_file_state: str = "masked",
     judge_active_state: str = "inactive",
-    judge_fragment_path: str = "/dev/null",
+    judge_fragment_path: str = "/home/hapax/.config/systemd/user/hapax-local-judge.service",
 ) -> Path:
     path = tmp_path / "systemctl"
     calls = tmp_path / "systemctl.calls"
@@ -244,7 +245,9 @@ def _fake_docker(
     include_judge: bool = False,
     inventory_override: str | None = None,
     inspect_override: str | None = None,
-    mcp_image_id: str = GITHUB_MCP_IMAGE_DIGEST,
+    mcp_image_id: str = GITHUB_MCP_LOCAL_IMAGE_ID,
+    mcp_local_image_id: str = GITHUB_MCP_LOCAL_IMAGE_ID,
+    mcp_repo_digest: str = GITHUB_MCP_IMAGE,
 ) -> Path:
     path = tmp_path / "docker"
     calls = tmp_path / "docker.calls"
@@ -293,6 +296,7 @@ def _fake_docker(
         "set -euo pipefail\n"
         f'printf \'%s\\n\' "$*" >> "{calls}"\n'
         'case "$*" in\n'
+        f"  *\" image inspect --format \"*) printf '%s\\n%s\\n' '{mcp_local_image_id}' '{mcp_repo_digest}' ;;\n"
         f'  *" ps -a --no-trunc --format "*) cat "{inventory_file}" ;;\n'
         + "\n".join(inspect_cases)
         + "\n"
@@ -368,11 +372,13 @@ def _run(
     docker_include_judge: bool = False,
     docker_inventory_override: str | None = None,
     docker_inspect_override: str | None = None,
-    docker_mcp_image_id: str = GITHUB_MCP_IMAGE_DIGEST,
+    docker_mcp_image_id: str = GITHUB_MCP_LOCAL_IMAGE_ID,
+    docker_mcp_local_image_id: str = GITHUB_MCP_LOCAL_IMAGE_ID,
+    docker_mcp_repo_digest: str = GITHUB_MCP_IMAGE,
     judge_load_state: str = "masked",
     judge_unit_file_state: str = "masked",
     judge_active_state: str = "inactive",
-    judge_fragment_path: str = "/dev/null",
+    judge_fragment_path: str = "/home/hapax/.config/systemd/user/hapax-local-judge.service",
 ) -> subprocess.CompletedProcess[str]:
     if proc_root is None:
         proc_root = tmp_path / "proc"
@@ -513,6 +519,8 @@ def _run(
                 inventory_override=docker_inventory_override,
                 inspect_override=docker_inspect_override,
                 mcp_image_id=docker_mcp_image_id,
+                mcp_local_image_id=docker_mcp_local_image_id,
+                mcp_repo_digest=docker_mcp_repo_digest,
             )
         ),
         "HAPAX_OOM_AUDIT_PROC_ROOT": str(proc_root),
@@ -1151,6 +1159,20 @@ def test_audit_rejects_mcp_image_substitution(tmp_path: Path) -> None:
     assert "image" in check["detail"]
 
 
+def test_audit_rejects_missing_exact_mcp_repo_digest(tmp_path: Path) -> None:
+    result = _run(
+        tmp_path,
+        docker_mcp_count=1,
+        docker_mcp_repo_digest=f"ghcr.io/github/github-mcp-server@sha256:{'f' * 64}",
+    )
+
+    assert result.returncode == 1
+    payload = json.loads(result.stdout)
+    check = next(item for item in payload["checks"] if item["name"] == "docker_github_mcp_image")
+    assert check["status"] == "gap"
+    assert "RepoDigest" in check["detail"]
+
+
 def test_audit_requires_historical_local_judge_to_be_absent(tmp_path: Path) -> None:
     result = _run(tmp_path, docker_include_judge=True)
 
@@ -1180,6 +1202,20 @@ def test_audit_requires_historical_local_judge_unit_to_be_masked_and_inactive(
     assert checks["docker_hapax-local-judge_retired"]["status"] == "pass"
     assert checks["local_judge_unit_retired"]["status"] == "gap"
     assert "ActiveState=active" in checks["local_judge_unit_retired"]["actual"]
+
+
+def test_audit_accepts_masked_judge_with_realistic_fragment_search_path(
+    tmp_path: Path,
+) -> None:
+    result = _run(
+        tmp_path,
+        judge_fragment_path="/home/hapax/.config/systemd/user/hapax-local-judge.service",
+    )
+
+    assert result.returncode == 0, result.stderr
+    payload = json.loads(result.stdout)
+    check = next(item for item in payload["checks"] if item["name"] == "local_judge_unit_retired")
+    assert check["status"] == "pass"
 
 
 def test_audit_bounds_docker_output_before_parsing(tmp_path: Path) -> None:

@@ -446,7 +446,7 @@ DEFAULT_SERVICE_PROFILES: dict[str, ServiceResourceProfile] = {
             ),
         },
         contention_groups=["CG-GPU0", "CG-CPU-GENERAL", "CG-RAM"],
-        oom_score_adj=-500,
+        oom_score_adj=100,
         labels={"kind": "systemd"},
     ),
     "studio-compositor": ServiceResourceProfile(
