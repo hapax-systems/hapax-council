@@ -24,12 +24,12 @@ RECOVERY_SYSTEM_UNIT_PIDS = {
     unit: 930 + index for index, unit in enumerate(RECOVERY_SYSTEM_UNIT_SCORES)
 }
 PROTECTED_USER_UNIT_SCORES = {
-    "pipewire.service": -900,
-    "pipewire-pulse.service": -900,
-    "wireplumber.service": -900,
-    "hapax-daimonion.service": -500,
-    "studio-compositor.service": -800,
-    "hapax-imagination.service": -800,
+    "pipewire.service": 100,
+    "pipewire-pulse.service": 100,
+    "wireplumber.service": 100,
+    "hapax-daimonion.service": 100,
+    "studio-compositor.service": 100,
+    "hapax-imagination.service": 100,
 }
 PROTECTED_USER_UNIT_MEMORY = {
     "pipewire.service": (536870912, 268435456),
@@ -39,6 +39,8 @@ PROTECTED_USER_UNIT_MEMORY = {
     "studio-compositor.service": (6442450944, 3221225472),
     "hapax-imagination.service": (6442450944, 3221225472),
 }
+GITHUB_MCP_IMAGE_DIGEST = "sha256:30197479d8036c7811892bc07e06f9a05c9ef3cdd79bc59f256d50647f95788c"
+GITHUB_MCP_IMAGE = f"ghcr.io/github/github-mcp-server@{GITHUB_MCP_IMAGE_DIGEST}"
 
 
 def test_audit_resets_hostile_path_before_command_resolution(
@@ -132,12 +134,9 @@ def _fake_systemctl(
     sshd_policy: str = "continue",
     wrong_recovery_unit_score: bool = False,
     inactive_recovery_unit: str | None = None,
-    enforcer_timer_enabled: bool = True,
-    enforcer_timer_active: bool = True,
-    enforcer_result: str = "success",
-    enforcer_main_status: int = 0,
-    enforcer_age_seconds: int = 30,
-    enforcer_active_age_seconds: int | None = None,
+    enforcer_timer_enabled: bool = False,
+    enforcer_timer_active: bool = False,
+    enforcer_service_active: bool = False,
     host_profile: str = "podium",
     missing_protected_units: frozenset[str] = frozenset(),
     judge_load_state: str = "masked",
@@ -205,21 +204,14 @@ def _fake_systemctl(
         f"MemoryLow={'0' if session_slice_unprotected else '2147483648'}\n"
         f"MemoryMin={'0' if session_slice_unprotected else '1073741824'}\n"
     )
-    now_usec = time.monotonic_ns() // 1000
-    enforcer_timestamp = max(1, now_usec - enforcer_age_seconds * 1_000_000)
-    enforcer_active_timestamp = (
-        0
-        if enforcer_active_age_seconds is None
-        else max(1, now_usec - enforcer_active_age_seconds * 1_000_000)
-    )
     path.write_text(
         f"""#!/usr/bin/env bash
 set -euo pipefail
 printf '%s\n' "$*" >> "{calls}"
 case "$*" in
   *"--user show hapax-local-judge.service"*) printf 'LoadState={judge_load_state}\nUnitFileState={judge_unit_file_state}\nActiveState={judge_active_state}\nFragmentPath={judge_fragment_path}\n' ;;
-  *"show hapax-oom-score-enforce.timer"*) printf 'LoadState=loaded\nUnitFileState={"enabled" if enforcer_timer_enabled else "disabled"}\nActiveState={"active" if enforcer_timer_active else "inactive"}\n' ;;
-  *"show hapax-oom-score-enforce.service"*) printf 'Result={enforcer_result}\nExecMainStatus={enforcer_main_status}\nActiveEnterTimestampMonotonic={enforcer_active_timestamp}\nInactiveEnterTimestampMonotonic={enforcer_timestamp}\n' ;;
+  *"show hapax-oom-score-enforce.timer"*) printf 'LoadState=loaded\nUnitFileState={"enabled" if enforcer_timer_enabled else "static"}\nActiveState={"active" if enforcer_timer_active else "inactive"}\n' ;;
+  *"show hapax-oom-score-enforce.service"*) printf 'LoadState=loaded\nActiveState={"active" if enforcer_service_active else "inactive"}\n' ;;
   *"show system.slice"*) printf '{system_slice_values}' ;;
   *"show user.slice"*) printf '{user_slice_values}ControlGroup=/user.slice\n' ;;
   *"show user-1000.slice"*) printf '{uid_memory_values}ControlGroup=/user.slice/user-1000.slice\n' ;;
@@ -252,6 +244,7 @@ def _fake_docker(
     include_judge: bool = False,
     inventory_override: str | None = None,
     inspect_override: str | None = None,
+    mcp_image_id: str = GITHUB_MCP_IMAGE_DIGEST,
 ) -> Path:
     path = tmp_path / "docker"
     calls = tmp_path / "docker.calls"
@@ -280,6 +273,15 @@ def _fake_docker(
                 mcp_memory,
                 mcp_memory_swap,
                 mcp_oom_kill_disable,
+                mcp_image_id,
+                GITHUB_MCP_IMAGE,
+                "/server/github-mcp-server",
+                [
+                    "stdio",
+                    "--log-file",
+                    "/tmp/github-mcp.log",
+                    "--tools=pull_request_read",
+                ],
             )
         )
         if inspect_override is None:
@@ -302,11 +304,20 @@ def _fake_docker(
     return path
 
 
-def _write_proc(proc_root: Path, pid: int, *, name: str, uid: int, oom_score: int) -> None:
+def _write_proc(
+    proc_root: Path,
+    pid: int,
+    *,
+    name: str,
+    uid: int,
+    oom_score: int,
+    ppid: int = 1,
+) -> None:
     pid_dir = proc_root / str(pid)
     pid_dir.mkdir(parents=True)
     (pid_dir / "status").write_text(
-        f"Name:\t{name}\nUid:\t{uid}\t{uid}\t{uid}\t{uid}\n", encoding="utf-8"
+        f"Name:\t{name}\nUid:\t{uid}\t{uid}\t{uid}\t{uid}\nPPid:\t{ppid}\n",
+        encoding="utf-8",
     )
     (pid_dir / "oom_score_adj").write_text(f"{oom_score}\n", encoding="utf-8")
 
@@ -345,12 +356,9 @@ def _run(
     extra_user_sibling_floor: bool = False,
     extra_app_sibling_floor: bool = False,
     extra_session_sibling_floor: bool = False,
-    enforcer_timer_enabled: bool = True,
-    enforcer_timer_active: bool = True,
-    enforcer_result: str = "success",
-    enforcer_main_status: int = 0,
-    enforcer_age_seconds: int = 30,
-    enforcer_active_age_seconds: int | None = None,
+    enforcer_timer_enabled: bool = False,
+    enforcer_timer_active: bool = False,
+    enforcer_service_active: bool = False,
     host_profile: str = "podium",
     missing_protected_units: frozenset[str] = frozenset(),
     docker_mcp_count: int = 0,
@@ -360,6 +368,7 @@ def _run(
     docker_include_judge: bool = False,
     docker_inventory_override: str | None = None,
     docker_inspect_override: str | None = None,
+    docker_mcp_image_id: str = GITHUB_MCP_IMAGE_DIGEST,
     judge_load_state: str = "masked",
     judge_unit_file_state: str = "masked",
     judge_active_state: str = "inactive",
@@ -484,10 +493,7 @@ def _run(
                 inactive_recovery_unit=inactive_recovery_unit,
                 enforcer_timer_enabled=enforcer_timer_enabled,
                 enforcer_timer_active=enforcer_timer_active,
-                enforcer_result=enforcer_result,
-                enforcer_main_status=enforcer_main_status,
-                enforcer_age_seconds=enforcer_age_seconds,
-                enforcer_active_age_seconds=enforcer_active_age_seconds,
+                enforcer_service_active=enforcer_service_active,
                 host_profile=host_profile,
                 missing_protected_units=missing_protected_units,
                 judge_load_state=judge_load_state,
@@ -506,6 +512,7 @@ def _run(
                 include_judge=docker_include_judge,
                 inventory_override=docker_inventory_override,
                 inspect_override=docker_inspect_override,
+                mcp_image_id=docker_mcp_image_id,
             )
         ),
         "HAPAX_OOM_AUDIT_PROC_ROOT": str(proc_root),
@@ -817,20 +824,20 @@ def test_audit_fails_when_protected_user_unit_loses_memory_reservation(
     assert "memory reservation drifted" in check["detail"]
 
 
-def test_audit_fails_when_protected_user_unit_cgroup_pid_loses_oom_score(
+def test_audit_fails_when_protected_user_unit_process_has_any_negative_score(
     tmp_path: Path,
 ) -> None:
     proc_root = tmp_path / "proc"
     proc_root.mkdir()
     cgroup_root = tmp_path / "cgroup"
     cgroup_dir = (
-        cgroup_root / "user.slice/user-1000.slice/user@1000.service/app.slice/pipewire.service"
+        cgroup_root / "user.slice/user-1000.slice/user@1000.service/session.slice/pipewire.service"
     )
     cgroup_dir.mkdir(parents=True)
     (cgroup_dir / "cgroup.procs").write_text("910\n916\n", encoding="utf-8")
-    _write_proc(proc_root, 910, name="pipewire", uid=1000, oom_score=-900)
-    _write_proc(proc_root, 916, name="pipewire-worker", uid=1000, oom_score=100)
-    pipewire_cgroup = "/user.slice/user-1000.slice/user@1000.service/app.slice/pipewire.service"
+    _write_proc(proc_root, 910, name="pipewire", uid=1000, oom_score=100)
+    _write_proc(proc_root, 916, name="pipewire-worker", uid=1000, oom_score=-500, ppid=910)
+    pipewire_cgroup = "/user.slice/user-1000.slice/user@1000.service/session.slice/pipewire.service"
     _write_proc_cgroup(proc_root, 910, pipewire_cgroup)
     _write_proc_cgroup(proc_root, 916, pipewire_cgroup)
 
@@ -841,7 +848,7 @@ def test_audit_fails_when_protected_user_unit_cgroup_pid_loses_oom_score(
         protected_unit_pids={"pipewire.service": 910},
         protected_unit_cgroups={
             "pipewire.service": (
-                "/user.slice/user-1000.slice/user@1000.service/app.slice/pipewire.service"
+                "/user.slice/user-1000.slice/user@1000.service/session.slice/pipewire.service"
             )
         },
     )
@@ -854,6 +861,11 @@ def test_audit_fails_when_protected_user_unit_cgroup_pid_loses_oom_score(
         if item["name"] == "user_unit_pipewire.service_pid_916_live_oom_score_adj"
     )
     assert check["status"] == "gap"
+    assert check["target"] == "100"
+    residual = next(
+        item for item in payload["checks"] if item["name"] == "user_process_residual_oom_protection"
+    )
+    assert "916:pipewire-worker=-500" in residual["actual"]
 
 
 def test_audit_revalidates_protected_pid_cgroup_before_score_and_exemption(
@@ -869,7 +881,7 @@ def test_audit_revalidates_protected_pid_cgroup_before_score_and_exemption(
     cgroup_dir = cgroup_root / studio_cgroup.lstrip("/")
     cgroup_dir.mkdir(parents=True)
     (cgroup_dir / "cgroup.procs").write_text("914\n", encoding="utf-8")
-    _write_proc(proc_root, 914, name="python", uid=1000, oom_score=-800)
+    _write_proc(proc_root, 914, name="python", uid=1000, oom_score=-500)
     _write_proc_cgroup(proc_root, 914, moved_cgroup)
 
     result = _run(
@@ -893,7 +905,7 @@ def test_audit_revalidates_protected_pid_cgroup_before_score_and_exemption(
         item for item in payload["checks"] if item["name"] == "user_process_residual_oom_protection"
     )
     assert residual["status"] == "gap"
-    assert "914:python=-800" in residual["actual"]
+    assert "914:python=-500" in residual["actual"]
 
 
 def test_audit_passes_when_unbounded_tmux_scope_is_app_slice_backed(tmp_path: Path) -> None:
@@ -928,7 +940,8 @@ def test_audit_fails_when_user_process_retains_inherited_protection(tmp_path: Pa
     proc_root = tmp_path / "proc"
     proc_root.mkdir()
     _write_proc(proc_root, 101, name="codex", uid=1000, oom_score=-900)
-    _write_proc(proc_root, 102, name="wireplumber", uid=1000, oom_score=-900)
+    _write_proc(proc_root, 102, name="wireplumber", uid=1000, oom_score=-500)
+    _write_proc(proc_root, 103, name="worker", uid=1000, oom_score=-1)
     _write_proc(proc_root, 900, name="systemd", uid=1000, oom_score=100)
 
     result = _run(tmp_path, proc_root=proc_root)
@@ -940,10 +953,11 @@ def test_audit_fails_when_user_process_retains_inherited_protection(tmp_path: Pa
     )
     assert check["status"] == "gap"
     assert "101:codex=-900" in check["actual"]
-    assert "102:wireplumber=-900" not in check["actual"]
+    assert "102:wireplumber=-500" in check["actual"]
+    assert "103:worker=-1" in check["actual"]
 
 
-def test_audit_allows_python_child_inside_protected_unit_cgroup(tmp_path: Path) -> None:
+def test_audit_allows_neutral_python_child_inside_protected_unit_cgroup(tmp_path: Path) -> None:
     proc_root = tmp_path / "proc"
     proc_root.mkdir()
     cgroup_root = tmp_path / "cgroup"
@@ -953,8 +967,8 @@ def test_audit_allows_python_child_inside_protected_unit_cgroup(tmp_path: Path) 
     cgroup_dir = cgroup_root / studio_cgroup.lstrip("/")
     cgroup_dir.mkdir(parents=True)
     (cgroup_dir / "cgroup.procs").write_text("914\n916\n", encoding="utf-8")
-    _write_proc(proc_root, 914, name="python", uid=1000, oom_score=-800)
-    _write_proc(proc_root, 916, name="python", uid=1000, oom_score=-800)
+    _write_proc(proc_root, 914, name="python", uid=1000, oom_score=100)
+    _write_proc(proc_root, 916, name="python", uid=1000, oom_score=100, ppid=914)
     _write_proc_cgroup(proc_root, 914, studio_cgroup)
     _write_proc_cgroup(proc_root, 916, studio_cgroup)
 
@@ -972,6 +986,46 @@ def test_audit_allows_python_child_inside_protected_unit_cgroup(tmp_path: Path) 
         item for item in payload["checks"] if item["name"] == "user_process_residual_oom_protection"
     )
     assert check["status"] == "pass"
+
+
+def test_audit_rejects_same_uid_process_injected_below_protected_cgroup(
+    tmp_path: Path,
+) -> None:
+    proc_root = tmp_path / "proc"
+    proc_root.mkdir()
+    cgroup_root = tmp_path / "cgroup"
+    pipewire_cgroup = "/user.slice/user-1000.slice/user@1000.service/session.slice/pipewire.service"
+    cgroup_dir = cgroup_root / pipewire_cgroup.lstrip("/")
+    attacker_dir = cgroup_dir / "evil.scope"
+    attacker_dir.mkdir(parents=True)
+    (cgroup_dir / "cgroup.procs").write_text("910\n", encoding="utf-8")
+    (attacker_dir / "cgroup.procs").write_text("916\n", encoding="utf-8")
+    _write_proc(proc_root, 910, name="pipewire", uid=1000, oom_score=100)
+    _write_proc(proc_root, 916, name="wireplumber", uid=1000, oom_score=-500, ppid=1)
+    _write_proc_cgroup(proc_root, 910, pipewire_cgroup)
+    _write_proc_cgroup(proc_root, 916, f"{pipewire_cgroup}/evil.scope")
+
+    result = _run(
+        tmp_path,
+        proc_root=proc_root,
+        cgroup_root=cgroup_root,
+        protected_unit_pids={"pipewire.service": 910},
+        protected_unit_cgroups={"pipewire.service": pipewire_cgroup},
+    )
+
+    assert result.returncode == 1
+    payload = json.loads(result.stdout)
+    identity = next(
+        item
+        for item in payload["checks"]
+        if item["name"] == "user_unit_pipewire.service_pid_916_process_tree_identity"
+    )
+    assert identity["status"] == "gap"
+    residual = next(
+        item for item in payload["checks"] if item["name"] == "user_process_residual_oom_protection"
+    )
+    assert residual["status"] == "gap"
+    assert "916:wireplumber=-500" in residual["actual"]
 
 
 @pytest.mark.parametrize("host_profile", ["appendix", "podium"])
@@ -1028,14 +1082,12 @@ def test_podium_fails_when_an_appendix_optional_unit_is_absent(tmp_path: Path) -
 @pytest.mark.parametrize(
     ("kwargs", "check_name"),
     (
-        ({"enforcer_timer_enabled": False}, "oom_enforcer_timer_UnitFileState"),
-        ({"enforcer_timer_active": False}, "oom_enforcer_timer_ActiveState"),
-        ({"enforcer_result": "exit-code"}, "oom_enforcer_last_result"),
-        ({"enforcer_main_status": 1}, "oom_enforcer_last_result"),
-        ({"enforcer_age_seconds": 181}, "oom_enforcer_last_run_recent"),
+        ({"enforcer_timer_enabled": True}, "oom_enforcer_timer_UnitFileState"),
+        ({"enforcer_timer_active": True}, "oom_enforcer_timer_ActiveState"),
+        ({"enforcer_service_active": True}, "oom_enforcer_service_ActiveState"),
     ),
 )
-def test_audit_fails_closed_on_unhealthy_recurring_enforcer(
+def test_audit_fails_closed_when_retired_enforcer_surface_is_active(
     tmp_path: Path, kwargs: dict[str, object], check_name: str
 ) -> None:
     result = _run(tmp_path, **kwargs)
@@ -1044,30 +1096,6 @@ def test_audit_fails_closed_on_unhealthy_recurring_enforcer(
     payload = json.loads(result.stdout)
     check = next(item for item in payload["checks"] if item["name"] == check_name)
     assert check["status"] == "gap"
-
-
-def test_enforcer_recency_uses_completed_run_not_recent_active_transition(
-    tmp_path: Path,
-) -> None:
-    result = _run(
-        tmp_path,
-        enforcer_age_seconds=181,
-        enforcer_active_age_seconds=30,
-    )
-
-    assert result.returncode == 1
-    payload = json.loads(result.stdout)
-    check = next(
-        item for item in payload["checks"] if item["name"] == "oom_enforcer_last_run_recent"
-    )
-    assert check["status"] == "gap"
-
-
-def test_enforcer_recency_uses_the_systemd_monotonic_clock_domain() -> None:
-    body = SCRIPT.read_text(encoding="utf-8")
-
-    assert "time.monotonic_ns()" in body
-    assert "CLOCK_BOOTTIME" not in body
 
 
 def test_audit_accepts_all_three_ephemeral_mcp_containers_with_exact_limits(
@@ -1105,6 +1133,22 @@ def test_audit_rejects_mcp_limit_or_oom_killer_drift(
         item for item in payload["checks"] if item["name"].startswith("docker_hapax-github-mcp-")
     )
     assert check["status"] == "gap"
+
+
+def test_audit_rejects_mcp_image_substitution(tmp_path: Path) -> None:
+    result = _run(
+        tmp_path,
+        docker_mcp_count=1,
+        docker_mcp_image_id=f"sha256:{'f' * 64}",
+    )
+
+    assert result.returncode == 1
+    payload = json.loads(result.stdout)
+    check = next(
+        item for item in payload["checks"] if item["name"].startswith("docker_hapax-github-mcp-")
+    )
+    assert check["status"] == "gap"
+    assert "image" in check["detail"]
 
 
 def test_audit_requires_historical_local_judge_to_be_absent(tmp_path: Path) -> None:
@@ -1185,7 +1229,7 @@ def test_audit_rejects_malformed_formatted_docker_inspect(tmp_path: Path) -> Non
         item for item in payload["checks"] if item["name"].startswith("docker_hapax-github-mcp-")
     )
     assert check["status"] == "error"
-    assert "five formatted Docker inspect fields" in check["detail"]
+    assert "nine formatted Docker inspect fields" in check["detail"]
 
 
 def test_audit_is_behaviorally_observational(tmp_path: Path) -> None:

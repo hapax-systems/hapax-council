@@ -6,8 +6,8 @@ PATH=/usr/local/sbin:/usr/local/bin:/usr/bin:/bin
 export PATH
 
 ROOT_DEFER_DIR="${HAPAX_POST_MERGE_ROOT_DEFER_DIR:-$HOME/.cache/hapax/post-merge-root-required}"
-# Deferrals are cleared only by the explicit HAPAX_ROOT_REQUIRED_DRAIN_DIR path
-# in the owning installer; this audit intentionally never mutates them.
+# Deferrals are cleared only by the owning installer's explicit drain path;
+# this audit intentionally never mutates them.
 ROOT_REQUIRED_STATE_ROOT="${HAPAX_ROOT_REQUIRED_STATE_ROOT:-$HOME/.local/state/hapax/root-required}"
 INSTALLED_SOURCE_ROOT="${HAPAX_ROOT_REQUIRED_INSTALLED_SOURCE_ROOT:-$ROOT_REQUIRED_STATE_ROOT/current-source}"
 INSTALLED_RECEIPT_ROOT="${HAPAX_ROOT_REQUIRED_INSTALLED_RECEIPT_ROOT:-$ROOT_REQUIRED_STATE_ROOT/installed-receipts}"
@@ -54,13 +54,67 @@ readonly OOM_REPAIR_ACTION="preserve the exact desired package and dispatch sepa
 ROOT_AUDIT_TEST_MODE="${HAPAX_ROOT_AUDIT_TEST_MODE:-0}"
 ROOT_AUDIT_HOSTNAME_OVERRIDE="${HAPAX_ROOT_AUDIT_HOSTNAME:-}"
 ROOT_AUDIT_MEMTOTAL_KIB_OVERRIDE="${HAPAX_ROOT_AUDIT_MEMTOTAL_KIB:-}"
-if [ "$(/usr/bin/readlink -f -- "$0")" = "/usr/local/sbin/hapax-root-required-deploy-audit" ] \
-    && { [ -n "${HAPAX_ROOT_AUDIT_TEST_MODE+x}" ] \
-        || [ -n "${HAPAX_ROOT_AUDIT_HOSTNAME+x}" ] \
-        || [ -n "${HAPAX_ROOT_AUDIT_MEMTOTAL_KIB+x}" ]; }; then
-    echo "root-required audit refuses test selectors from the canonical installed path; next action: remove HAPAX_ROOT_AUDIT_TEST_MODE/HOSTNAME/MEMTOTAL_KIB and rerun" >&2
-    exit 2
+canonical_forbidden_selectors=(
+    HAPAX_POST_MERGE_ROOT_DEFER_DIR
+    HAPAX_ROOT_REQUIRED_STATE_ROOT
+    HAPAX_ROOT_REQUIRED_INSTALLED_SOURCE_ROOT
+    HAPAX_ROOT_REQUIRED_INSTALLED_RECEIPT_ROOT
+    HAPAX_ROOT_REQUIRED_DESIRED_RECEIPT_ROOT
+    HAPAX_ROOT_REQUIRED_GIT_REPO
+    HAPAX_ROOT_REQUIRED_LOCK_FILE
+    HAPAX_OOM_ENFORCER_DEST
+    HAPAX_OOM_TRIGGER_DEST
+    HAPAX_OOM_SUDOERS_DEST
+    HAPAX_OOM_SUDOERS_REFERENCE_DEST
+    HAPAX_OOM_PROFILE_TABLE_DEST
+    HAPAX_OOM_ZRAM_GENERATOR_DEST
+    HAPAX_OOM_SUDOERS_OWNER_UID
+    HAPAX_OOM_SUDOERS_OWNER_GID
+    HAPAX_ROOT_FAILURE_INTAKE_DEST
+    HAPAX_OOM_POLICY_AUDIT_DEST
+    HAPAX_ROOT_REQUIRED_AUDIT_DEST
+    HAPAX_OOM_EARLYOOM_DEST
+    HAPAX_OOM_SYSTEMD_SYSTEM_DIR
+    HAPAX_OOM_SYSTEMD_USER_DIR
+    HAPAX_APCUPSD_DEST
+    HAPAX_UPS_AUDIT_LOG
+    HAPAX_UPS_AUDIT_LOG_OWNER_UID
+    HAPAX_UPS_AUDIT_LOG_OWNER_GID
+    HAPAX_APCUPSD_LOGROTATE_DEST
+    HAPAX_UPOWER_CONF_DEST
+    HAPAX_ROOT_AUDIT_SYSTEMCTL
+    HAPAX_ROOT_AUDIT_BUSCTL
+    HAPAX_ROOT_AUDIT_APCACCESS
+    HAPAX_ROOT_AUDIT_CMP
+    HAPAX_ROOT_AUDIT_GETENT
+    HAPAX_ROOT_AUDIT_SUDO
+    HAPAX_ROOT_AUDIT_VISUDO
+    HAPAX_ROOT_AUDIT_TEST_ROOT_UID
+    HAPAX_ROOT_AUDIT_TEST_ROOT_GID
+    HAPAX_ROOT_AUDIT_TEST_MODE
+    HAPAX_ROOT_AUDIT_HOSTNAME
+    HAPAX_ROOT_AUDIT_MEMTOTAL_KIB
+)
+if [ "$(/usr/bin/readlink -f -- "$0")" = "/usr/local/sbin/hapax-root-required-deploy-audit" ]; then
+    for selector in "${canonical_forbidden_selectors[@]}"; do
+        if declare -p "$selector" >/dev/null 2>&1; then
+            echo "root-required audit refuses production selector $selector from the canonical installed path; next action: remove every HAPAX_* audit override and rerun" >&2
+            exit 2
+        fi
+    done
+    canonical_passwd_entry="$(/usr/bin/getent passwd "$(/usr/bin/id -u)")" || {
+        echo "root-required audit cannot resolve its canonical account home" >&2
+        exit 2
+    }
+    canonical_home="$(/usr/bin/printf '%s\n' "$canonical_passwd_entry" | /usr/bin/cut -d: -f6)"
+    if [ -z "$canonical_home" ] || [ "${HOME:-}" != "$canonical_home" ] \
+        || [ ! -d "$canonical_home" ] || [ -L "$canonical_home" ]; then
+        echo "root-required audit refuses non-canonical HOME=${HOME:-unset}; expected NSS home $canonical_home" >&2
+        exit 2
+    fi
 fi
+unset canonical_passwd_entry canonical_home selector
+readonly -a canonical_forbidden_selectors
 if [ "$ROOT_AUDIT_TEST_MODE" != "0" ] && [ "$ROOT_AUDIT_TEST_MODE" != "1" ]; then
     echo "root-required audit test mode must be exactly 1 when enabled" >&2
     exit 2
@@ -364,8 +418,11 @@ oom_package_files=(
     systemd/units/pipewire.service.d/oom-protect.conf
     systemd/units/pipewire-pulse.service.d/oom-protect.conf
     systemd/units/wireplumber.service.d/oom-protect.conf
+    systemd/units/hapax-daimonion.service
     systemd/units/hapax-daimonion.service.d/oom-protect.conf
+    systemd/units/studio-compositor.service
     systemd/units/studio-compositor.service.d/oom-protect.conf
+    systemd/units/hapax-imagination.service
     systemd/units/hapax-imagination.service.d/oom-protect.conf
 )
 apcupsd_package_files=(
@@ -648,6 +705,42 @@ loaded_unit_property() {
     fi
 }
 
+duration_to_usec() {
+    /usr/bin/python3 -I -S - "$1" <<'PY'
+from __future__ import annotations
+
+import re
+import sys
+from decimal import Decimal, InvalidOperation
+
+text = sys.argv[1].strip()
+units = {
+    "us": Decimal(1),
+    "ms": Decimal(1_000),
+    "s": Decimal(1_000_000),
+    "sec": Decimal(1_000_000),
+    "min": Decimal(60_000_000),
+    "h": Decimal(3_600_000_000),
+    "d": Decimal(86_400_000_000),
+    "w": Decimal(604_800_000_000),
+}
+pattern = re.compile(r"([0-9]+(?:\.[0-9]+)?)(us|ms|sec|min|s|h|d|w)", re.IGNORECASE)
+position = 0
+total = Decimal(0)
+try:
+    for match in pattern.finditer(text):
+        if text[position : match.start()].strip():
+            raise ValueError
+        total += Decimal(match.group(1)) * units[match.group(2).lower()]
+        position = match.end()
+    if position == 0 or text[position:].strip() or total != total.to_integral_value():
+        raise ValueError
+except (InvalidOperation, ValueError):
+    raise SystemExit(1)
+print(int(total))
+PY
+}
+
 audit_effective_service_unit() {
     local manager="$1" unit="$2" rel="$3" expected_fragment="$4"
     local expected_exec expected_failure expected_user actual_fragment actual_dropins
@@ -682,54 +775,11 @@ audit_effective_service_unit() {
     fi
 }
 
-audit_effective_failure_intake_unit() {
-    local unit="hapax-root-failure-intake@hapax-oom-score-enforce.service.service"
-    local instance="hapax-oom-score-enforce.service"
-    local rel="systemd/units/hapax-root-failure-intake@.service"
-    local expected_fragment="$SYSTEMD_SYSTEM_DIR/hapax-root-failure-intake@.service"
-    local expected_exec expected_user expected_environment expected_interval expected_burst
-    local actual_fragment actual_dropins actual_exec actual_user actual_environment
-    local actual_interval actual_burst
-    expected_exec="$(installed_unit_value "$rel" ExecStart)"
-    expected_exec="${expected_exec//%i/$instance}"
-    expected_user="$(installed_unit_value "$rel" User)"
-    expected_environment="$(installed_unit_value "$rel" Environment)"
-    expected_interval="$(installed_unit_value "$rel" StartLimitIntervalSec)"
-    expected_burst="$(installed_unit_value "$rel" StartLimitBurst)"
-    actual_fragment="$(loaded_unit_property system "$unit" FragmentPath)" || actual_fragment=""
-    actual_dropins="$(loaded_unit_property system "$unit" DropInPaths)" || actual_dropins="query-error"
-    actual_exec="$(loaded_unit_property system "$unit" ExecStart)" || actual_exec=""
-    actual_user="$(loaded_unit_property system "$unit" User)" || actual_user="query-error"
-    actual_environment="$(loaded_unit_property system "$unit" Environment)" || actual_environment="query-error"
-    actual_interval="$(loaded_unit_property system "$unit" StartLimitIntervalUSec)" || actual_interval="query-error"
-    actual_burst="$(loaded_unit_property system "$unit" StartLimitBurst)" || actual_burst="query-error"
-    if [ -z "$expected_exec" ] || [ -z "$expected_user" ] || [ -z "$expected_environment" ] \
-        || [ -z "$expected_interval" ] || [ -z "$expected_burst" ] \
-        || [ "$actual_fragment" != "$expected_fragment" ] || [ -n "$actual_dropins" ]; then
-        echo "root-required effective $unit unit-source drift: FragmentPath=${actual_fragment:-unavailable} DropInPaths=${actual_dropins:-none} expected FragmentPath=$expected_fragment and no drop-ins" >&2
-        echo "  next action: $OOM_REPAIR_ACTION" >&2
-        return 1
-    fi
-    case "$actual_exec" in
-        *"argv[]=$expected_exec ;"*) ;;
-        *)
-            echo "root-required effective $unit ExecStart drift: actual=${actual_exec:-unavailable} expected=$expected_exec" >&2
-            echo "  next action: $OOM_REPAIR_ACTION" >&2
-            return 1
-            ;;
-    esac
-    if [ "$actual_user" != "$expected_user" ] || [ "$actual_environment" != "$expected_environment" ] \
-        || [ "$actual_interval" != "$expected_interval" ] || [ "$actual_burst" != "$expected_burst" ]; then
-        echo "root-required effective $unit identity/limit drift: User=${actual_user:-default} Environment=${actual_environment:-none} StartLimitIntervalUSec=${actual_interval:-none} StartLimitBurst=${actual_burst:-none} expected User=$expected_user Environment=$expected_environment StartLimitIntervalUSec=$expected_interval StartLimitBurst=$expected_burst" >&2
-        echo "  next action: $OOM_REPAIR_ACTION" >&2
-        return 1
-    fi
-}
-
 audit_effective_timer_unit() {
     local manager="$1" unit="$2" rel="$3" expected_fragment="$4"
     local expected_target expected_boot expected_active actual_fragment actual_dropins
-    local actual_target actual_timers
+    local actual_target actual_timers actual_boot actual_active
+    local expected_boot_usec expected_active_usec actual_boot_usec actual_active_usec
     expected_target="$(installed_unit_value "$rel" Unit)"
     expected_boot="$(installed_unit_value "$rel" OnBootSec)"
     expected_active="$(installed_unit_value "$rel" OnUnitActiveSec)"
@@ -748,14 +798,22 @@ audit_effective_timer_unit() {
         echo "  next action: $OOM_REPAIR_ACTION" >&2
         return 1
     fi
-    case "$actual_timers" in
-        *"OnBootUSec=$expected_boot"*"OnUnitActiveUSec=$expected_active"*|*"OnUnitActiveUSec=$expected_active"*"OnBootUSec=$expected_boot"*) ;;
-        *)
-            echo "root-required effective $unit cadence drift: actual=${actual_timers:-unavailable} expected OnBootUSec=$expected_boot and OnUnitActiveUSec=$expected_active" >&2
-            echo "  next action: $OOM_REPAIR_ACTION" >&2
-            return 1
-            ;;
-    esac
+    actual_boot="$(/usr/bin/printf '%s\n' "$actual_timers" | /usr/bin/sed -n 's/.*OnBootUSec=\([^ ;}]*\).*/\1/p')"
+    actual_active="$(/usr/bin/printf '%s\n' "$actual_timers" | /usr/bin/sed -n 's/.*OnUnitActiveUSec=\([^ ;}]*\).*/\1/p')"
+    expected_boot_usec="$(duration_to_usec "$expected_boot")" \
+        && expected_active_usec="$(duration_to_usec "$expected_active")" \
+        && actual_boot_usec="$(duration_to_usec "$actual_boot")" \
+        && actual_active_usec="$(duration_to_usec "$actual_active")" || {
+        echo "root-required effective $unit cadence is unparseable: actual=${actual_timers:-unavailable} expected OnBootUSec=$expected_boot and OnUnitActiveUSec=$expected_active" >&2
+        echo "  next action: $OOM_REPAIR_ACTION" >&2
+        return 1
+    }
+    if [ "$actual_boot_usec" != "$expected_boot_usec" ] \
+        || [ "$actual_active_usec" != "$expected_active_usec" ]; then
+        echo "root-required effective $unit cadence drift: actual=${actual_timers:-unavailable} expected OnBootUSec=$expected_boot and OnUnitActiveUSec=$expected_active" >&2
+        echo "  next action: $OOM_REPAIR_ACTION" >&2
+        return 1
+    fi
 }
 
 audit_effective_safety_units() {
@@ -763,7 +821,6 @@ audit_effective_safety_units() {
     audit_effective_service_unit system hapax-oom-score-enforce.service \
         systemd/units/hapax-oom-score-enforce.service \
         "$SYSTEMD_SYSTEM_DIR/hapax-oom-score-enforce.service" || failed=1
-    audit_effective_failure_intake_unit || failed=1
     audit_effective_timer_unit system hapax-oom-score-enforce.timer \
         systemd/units/hapax-oom-score-enforce.timer \
         "$SYSTEMD_SYSTEM_DIR/hapax-oom-score-enforce.timer" || failed=1
@@ -786,13 +843,17 @@ audit_systemd_state() {
     local failed=0 loaded_upower_action expected_enforcer_timeout loaded_enforcer_timeout
     local spec unit rel expected_audit_timeout loaded_audit_timeout
     local expected_audit_environment loaded_audit_environment
-    if ! "$SYSTEMCTL" is-enabled --quiet hapax-oom-score-enforce.timer; then
-        echo "root-required activation drift: hapax-oom-score-enforce.timer is not enabled" >&2
+    local enforcer_timer_unit_file_state
+    enforcer_timer_unit_file_state="$(
+        "$SYSTEMCTL" is-enabled hapax-oom-score-enforce.timer 2>/dev/null || true
+    )"
+    if [ "$enforcer_timer_unit_file_state" != "static" ]; then
+        echo "root-required retirement drift: hapax-oom-score-enforce.timer UnitFileState=${enforcer_timer_unit_file_state:-unavailable}, expected static" >&2
         echo "  next action: $OOM_REPAIR_ACTION" >&2
         failed=1
     fi
-    if ! "$SYSTEMCTL" is-active --quiet hapax-oom-score-enforce.timer; then
-        echo "root-required activation drift: hapax-oom-score-enforce.timer is not active" >&2
+    if "$SYSTEMCTL" is-active --quiet hapax-oom-score-enforce.timer; then
+        echo "root-required retirement drift: hapax-oom-score-enforce.timer remains active" >&2
         echo "  next action: $OOM_REPAIR_ACTION" >&2
         failed=1
     fi

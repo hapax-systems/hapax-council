@@ -68,12 +68,12 @@ RECOVERY_SYSTEM_UNITS = {
     "dbus-broker.service": -900,
 }
 PROTECTED_USER_UNITS = {
-    "pipewire.service": -900,
-    "pipewire-pulse.service": -900,
-    "wireplumber.service": -900,
-    "hapax-daimonion.service": -500,
-    "studio-compositor.service": -800,
-    "hapax-imagination.service": -800,
+    "pipewire.service": 100,
+    "pipewire-pulse.service": 100,
+    "wireplumber.service": 100,
+    "hapax-daimonion.service": 100,
+    "studio-compositor.service": 100,
+    "hapax-imagination.service": 100,
 }
 AUDIO_USER_UNITS = frozenset({"pipewire.service", "pipewire-pulse.service", "wireplumber.service"})
 PROTECTED_USER_UNIT_SLICES = {
@@ -111,6 +111,9 @@ DOCKER_INVENTORY_MAX_ROWS = 512
 DOCKER_TARGET_MAX = 64
 DOCKER_INVENTORY_LINE_MAX = 512
 DOCKER_INSPECT_LINE_MAX = 2048
+GITHUB_MCP_IMAGE_DIGEST = "sha256:30197479d8036c7811892bc07e06f9a05c9ef3cdd79bc59f256d50647f95788c"
+GITHUB_MCP_IMAGE = f"ghcr.io/github/github-mcp-server@{GITHUB_MCP_IMAGE_DIGEST}"
+GITHUB_MCP_PATH = "/server/github-mcp-server"
 
 
 @dataclass
@@ -953,36 +956,27 @@ def _cgroup_pids(cgroup: str) -> list[str]:
     return sorted(pids, key=int)
 
 
-def _protected_user_unit_memberships(policy: HostMemoryPolicy) -> dict[str, set[str]]:
-    protected: dict[str, set[str]] = {}
-    for unit in PROTECTED_USER_UNITS:
-        values = _show(
-            unit,
-            [
-                "LoadState",
-                "OOMScoreAdjust",
-                "MainPID",
-                "ControlGroup",
-                "MemoryLow",
-                "MemoryMin",
-                "Slice",
-            ],
-            user=True,
-        )
-        if values.get("LoadState") == "not-found" and unit in policy.optional_user_units:
-            continue
-        cgroup = values.get("ControlGroup", "")
-        main_pid = values.get("MainPID", "0")
-        candidates = set(_cgroup_pids(cgroup))
-        if main_pid.isdigit() and main_pid != "0":
-            candidates.add(main_pid)
-        if cgroup.startswith("/"):
-            for pid in candidates:
-                protected.setdefault(pid, set()).add(cgroup)
-    return protected
+def _pid_matches_observed_unit_process_tree(pid: str, main_pid: str, cgroup: str, uid: int) -> bool:
+    if not pid.isdigit() or not main_pid.isdigit() or main_pid == "0" or not cgroup.startswith("/"):
+        return False
+    current = pid
+    seen: set[str] = set()
+    for _ in range(256):
+        if current in seen or not current.isdigit() or current == "0":
+            return False
+        seen.add(current)
+        if not _pid_matches_cgroup(current, cgroup):
+            return False
+        status = PROC_ROOT / current / "status"
+        if _status_field(status, "Uid") != str(uid):
+            return False
+        if current == main_pid:
+            return True
+        current = _status_field(status, "PPid")
+    return False
 
 
-def audit_protected_user_units(policy: HostMemoryPolicy) -> list[Check]:
+def audit_protected_user_units(policy: HostMemoryPolicy, uid: int) -> list[Check]:
     checks: list[Check] = []
     for unit, expected in PROTECTED_USER_UNITS.items():
         values = _show(
@@ -1038,8 +1032,8 @@ def audit_protected_user_units(policy: HostMemoryPolicy) -> list[Check]:
             ""
             if status == "pass"
             else (
-                "broadcast-critical user unit must start at the user manager's valid score 100; "
-                f"root applies live score {expected} after startup; {NEXT_OOM_ACTION}"
+                "delegated user units must remain at the user manager's score 100; "
+                f"root-negative user scoring is retired; {NEXT_OOM_ACTION}"
             )
         )
         checks.append(Check(f"user_unit_{unit}_OOMScoreAdjust", status, "100", actual, detail))
@@ -1115,8 +1109,23 @@ def audit_protected_user_units(policy: HostMemoryPolicy) -> list[Check]:
                     )
                 )
                 continue
+            if not _pid_matches_observed_unit_process_tree(pid, main_pid, control_group, uid):
+                checks.append(
+                    Check(
+                        f"user_unit_{unit}_pid_{pid}_process_tree_identity",
+                        "gap",
+                        f"uid {uid} descendant of MainPID {main_pid}",
+                        f"uid={_status_field(PROC_ROOT / pid / 'status', 'Uid') or 'N/A'},"
+                        f"ppid={_status_field(PROC_ROOT / pid / 'status', 'PPid') or 'N/A'}",
+                        "reported user-manager cgroup/process-tree observation was inconsistent; "
+                        f"user-manager data remains non-authoritative; {NEXT_OOM_ACTION}",
+                    )
+                )
+                continue
             live = _proc_oom_score(pid)
-            if not _pid_matches_cgroup(pid, control_group):
+            if not _pid_matches_cgroup(
+                pid, control_group
+            ) or not _pid_matches_observed_unit_process_tree(pid, main_pid, control_group, uid):
                 actual_cgroups = _proc_cgroups(pid)
                 checks.append(
                     Check(
@@ -1124,7 +1133,7 @@ def audit_protected_user_units(policy: HostMemoryPolicy) -> list[Check]:
                         "gap",
                         f"{control_group} or descendant",
                         ",".join(actual_cgroups) if actual_cgroups else "N/A",
-                        f"protected PID moved during live-score readback; {NEXT_OOM_ACTION}",
+                        f"protected PID moved or changed process-tree identity during live-score readback; {NEXT_OOM_ACTION}",
                     )
                 )
                 continue
@@ -1133,7 +1142,7 @@ def audit_protected_user_units(policy: HostMemoryPolicy) -> list[Check]:
             live_detail = (
                 ""
                 if live_status == "pass"
-                else f"live broadcast-critical user unit OOM score drifted; {NEXT_OOM_ACTION}"
+                else f"live delegated user unit must remain at score 100; {NEXT_OOM_ACTION}"
             )
             checks.append(
                 Check(
@@ -1200,16 +1209,6 @@ def audit_tmux_scopes() -> list[Check]:
     return checks
 
 
-_ALLOWED_USER_PROTECTED_NAMES = {
-    "pipewire",
-    "pipewire-pulse",
-    "wireplumber",
-    "dbus-broker",
-    "dbus-daemon",
-    "systemd",
-}
-
-
 def _status_field(status: Path, key: str) -> str:
     try:
         for line in status.read_text(encoding="utf-8", errors="replace").splitlines():
@@ -1221,7 +1220,7 @@ def _status_field(status: Path, key: str) -> str:
     return ""
 
 
-def audit_residual_user_process_protection(uid: int, policy: HostMemoryPolicy) -> Check:
+def audit_residual_user_process_protection(uid: int) -> Check:
     proc_root = PROC_ROOT
     if not proc_root.is_dir():
         return Check(
@@ -1231,7 +1230,6 @@ def audit_residual_user_process_protection(uid: int, policy: HostMemoryPolicy) -
             "N/A",
             f"proc root unavailable; {NEXT_OOM_ACTION}",
         )
-    protected_memberships = _protected_user_unit_memberships(policy)
     offenders: list[str] = []
     for adj in proc_root.glob("[0-9]*/oom_score_adj"):
         pid_dir = adj.parent
@@ -1242,16 +1240,9 @@ def audit_residual_user_process_protection(uid: int, policy: HostMemoryPolicy) -
             score = int(adj.read_text(encoding="utf-8").strip())
         except (OSError, ValueError):
             continue
-        if score > -800:
-            continue
-        if any(
-            _pid_matches_cgroup(pid_dir.name, cgroup)
-            for cgroup in protected_memberships.get(pid_dir.name, set())
-        ):
+        if score >= 0:
             continue
         name = _status_field(status, "Name")
-        if name in _ALLOWED_USER_PROTECTED_NAMES:
-            continue
         offenders.append(f"{pid_dir.name}:{name}={score}")
     if offenders:
         shown = ",".join(offenders[:8])
@@ -1259,15 +1250,16 @@ def audit_residual_user_process_protection(uid: int, policy: HostMemoryPolicy) -
         return Check(
             "user_process_residual_oom_protection",
             "gap",
-            "no uid processes <= -800 outside allowlist",
+            "no observed uid processes with negative oom_score_adj",
             shown + extra,
-            f"stale inherited OOMScoreAdjust; {NEXT_OOM_ACTION}",
+            f"root-granted or inherited negative OOM score remains after bridge retirement; {NEXT_OOM_ACTION}",
         )
     return Check(
         "user_process_residual_oom_protection",
         "pass",
-        "no uid processes <= -800 outside allowlist",
+        "no observed uid processes with negative oom_score_adj",
         "none",
+        "point-in-time observational scan only; it does not prove absence across fork or cgroup races",
     )
 
 
@@ -1468,7 +1460,8 @@ def audit_docker_limits() -> list[Check]:
                 "--format",
                 (
                     "{{json .Id}}\t{{json .Name}}\t{{json .HostConfig.Memory}}\t"
-                    "{{json .HostConfig.MemorySwap}}\t{{json .HostConfig.OomKillDisable}}"
+                    "{{json .HostConfig.MemorySwap}}\t{{json .HostConfig.OomKillDisable}}\t"
+                    "{{json .Image}}\t{{json .Config.Image}}\t{{json .Path}}\t{{json .Args}}"
                 ),
                 container_id,
             ]
@@ -1490,17 +1483,32 @@ def audit_docker_limits() -> list[Check]:
             if len(inspect_lines) != 1 or len(inspect_lines[0]) > DOCKER_INSPECT_LINE_MAX:
                 raise ValueError("expected one bounded Docker inspect line")
             fields = inspect_lines[0].split("\t")
-            if len(fields) != 5:
-                raise ValueError("expected five formatted Docker inspect fields")
-            actual_id, actual_name, memory, memory_swap, oom_kill_disable = (
-                json.loads(field) for field in fields
-            )
-            if not isinstance(actual_id, str) or not isinstance(actual_name, str):
+            if len(fields) != 9:
+                raise ValueError("expected nine formatted Docker inspect fields")
+            (
+                actual_id,
+                actual_name,
+                memory,
+                memory_swap,
+                oom_kill_disable,
+                image_id,
+                config_image,
+                process_path,
+                process_args,
+            ) = (json.loads(field) for field in fields)
+            if not all(
+                isinstance(value, str)
+                for value in (actual_id, actual_name, image_id, config_image, process_path)
+            ):
                 raise TypeError("Docker identity fields must be strings")
             if type(memory) is not int or type(memory_swap) is not int:
                 raise TypeError("Docker memory fields must be integers")
             if oom_kill_disable is not None and type(oom_kill_disable) is not bool:
                 raise TypeError("Docker OomKillDisable must be null or boolean")
+            if not isinstance(process_args, list) or not all(
+                isinstance(value, str) for value in process_args
+            ):
+                raise TypeError("Docker process arguments must be a string list")
         except (TypeError, ValueError, json.JSONDecodeError) as exc:
             checks.append(
                 Check(
@@ -1513,22 +1521,34 @@ def audit_docker_limits() -> list[Check]:
             )
             continue
         identity_ok = actual_id == container_id and actual_name == f"/{name}"
+        command_ok = (
+            image_id == GITHUB_MCP_IMAGE_DIGEST
+            and config_image == GITHUB_MCP_IMAGE
+            and process_path == GITHUB_MCP_PATH
+            and len(process_args) == 4
+            and process_args[:3] == ["stdio", "--log-file", "/tmp/github-mcp.log"]
+            and re.fullmatch(r"--(?:tools|toolsets)=[A-Za-z0-9_,.-]{1,1024}", process_args[3])
+            is not None
+        )
         limits_ok = (
             memory == BYTES_512M and memory_swap == BYTES_768M and oom_kill_disable in {None, False}
         )
-        status = "pass" if identity_ok and limits_ok else "gap"
+        status = "pass" if identity_ok and limits_ok and command_ok else "gap"
         actual = (
             f"id={actual_id},name={actual_name},Memory={memory},"
-            f"MemorySwap={memory_swap},OomKillDisable={oom_kill_disable}"
+            f"MemorySwap={memory_swap},OomKillDisable={oom_kill_disable},"
+            f"Image={image_id},ConfigImage={config_image},Path={process_path},Args={process_args}"
         )
         checks.append(
             Check(
                 f"docker_{name}_limits",
                 status,
                 f"id={container_id},name=/{name},Memory={BYTES_512M},"
-                f"MemorySwap={BYTES_768M},OomKillDisable=false",
+                f"MemorySwap={BYTES_768M},OomKillDisable=false,Image={GITHUB_MCP_IMAGE}",
                 actual,
-                "" if status == "pass" else f"Docker identity or limit drifted; {NEXT_OOM_ACTION}",
+                ""
+                if status == "pass"
+                else f"Docker identity, image, command, or limit drifted; {NEXT_OOM_ACTION}",
             )
         )
     return checks
@@ -1574,17 +1594,13 @@ def audit_enforcer_timer() -> list[Check]:
     )
     service = _show(
         "hapax-oom-score-enforce.service",
-        [
-            "Result",
-            "ExecMainStatus",
-            "InactiveEnterTimestampMonotonic",
-        ],
+        ["LoadState", "ActiveState"],
     )
     checks: list[Check] = []
     for key, expected in (
         ("LoadState", "loaded"),
-        ("UnitFileState", "enabled"),
-        ("ActiveState", "active"),
+        ("UnitFileState", "static"),
+        ("ActiveState", "inactive"),
     ):
         actual = timer.get(key, "N/A")
         status = "pass" if actual == expected else "gap"
@@ -1596,37 +1612,23 @@ def audit_enforcer_timer() -> list[Check]:
                 actual,
                 ""
                 if status == "pass"
-                else f"recurring OOM enforcement is unavailable; {NEXT_OOM_ACTION}",
+                else f"retired root OOM timer must remain static and inactive; {NEXT_OOM_ACTION}",
             )
         )
-    result = service.get("Result", "N/A")
-    main_status = service.get("ExecMainStatus", "N/A")
-    successful = result == "success" and main_status == "0"
-    checks.append(
-        Check(
-            "oom_enforcer_last_result",
-            "pass" if successful else "gap",
-            "Result=success,ExecMainStatus=0",
-            f"Result={result},ExecMainStatus={main_status}",
-            "" if successful else f"last OOM enforcer run failed; {NEXT_OOM_ACTION}",
+    for key, expected in (("LoadState", "loaded"), ("ActiveState", "inactive")):
+        actual = service.get(key, "N/A")
+        status = "pass" if actual == expected else "gap"
+        checks.append(
+            Check(
+                f"oom_enforcer_service_{key}",
+                status,
+                expected,
+                actual,
+                ""
+                if status == "pass"
+                else f"retired root OOM service must remain loaded but inactive; {NEXT_OOM_ACTION}",
+            )
         )
-    )
-    try:
-        completed_usec = int(service.get("InactiveEnterTimestampMonotonic", "0"))
-    except ValueError:
-        completed_usec = 0
-    now_usec = time.monotonic_ns() // 1000
-    age_usec = now_usec - completed_usec if completed_usec else -1
-    recent = completed_usec > 0 and -5_000_000 <= age_usec <= 180_000_000
-    checks.append(
-        Check(
-            "oom_enforcer_last_run_recent",
-            "pass" if recent else "gap",
-            "successful run within 180 seconds",
-            "never" if completed_usec == 0 else f"age_usec={age_usec}",
-            "" if recent else f"OOM enforcer has no recent run; {NEXT_OOM_ACTION}",
-        )
-    )
     return checks
 
 
@@ -1678,8 +1680,8 @@ def main(argv: list[str] | None = None) -> int:
             *audit_app_slice(policy),
             *audit_session_slice(),
             *audit_user_child_floor_composition(args.uid),
-            *audit_protected_user_units(policy),
-            audit_residual_user_process_protection(args.uid, policy),
+            *audit_protected_user_units(policy, args.uid),
+            audit_residual_user_process_protection(args.uid),
             *audit_tmux_scopes(),
         ]
     except HostPolicyError as exc:
