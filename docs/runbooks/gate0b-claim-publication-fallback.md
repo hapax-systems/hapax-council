@@ -20,6 +20,65 @@ hash.
 cc-claim <task-id>
 ```
 
+For an isolated behavioral recheck from the repository root:
+
+```bash
+set -euo pipefail
+smoke_home="$(mktemp -d /tmp/hapax-gate0b-default-recheck.XXXXXX)"
+trap 'rm -rf "$smoke_home"' EXIT
+HOME="$smoke_home" UV_LINK_MODE=copy scripts/hapax-fsm-smoke --mode default
+```
+
+Expected result: the smoke prints the default admitted claim path, manual
+binding, first-use install, admitted publication, normal close, claim-after-close
+dispatch-only residue archival, and second admitted publication.
+
+For a live default claim, assert the expected sidecars and receipts after
+`cc-claim <task-id>`:
+
+```bash
+set -euo pipefail
+task_id='<task-id>'
+lane="${HAPAX_AGENT_ROLE:-${CODEX_ROLE:-${CLAUDE_ROLE:-<lane>}}}"
+session="${HAPAX_SESSION_ID:-${CLAUDE_CODE_SESSION_ID:-<session-id>}}"
+cache_dir="$HOME/.cache/hapax"
+install_root="$HOME/.local/share/hapax/execution-invocations/gate0b-claim-publish-v1"
+dispatch_file="$cache_dir/cc-claim-dispatch-$lane-$session.json"
+test -f "$dispatch_file" || dispatch_file="$cache_dir/cc-claim-dispatch-$lane.json"
+test -f "$dispatch_file"
+test -f "$install_root/activation-receipt.json"
+test "$(head -n1 "$cache_dir/cc-active-task-$lane")" = "$task_id"
+test "$(head -n1 "$cache_dir/cc-active-task-$lane-$session")" = "$task_id"
+receipt_hash="$(
+  python - "$dispatch_file" "$task_id" "$lane" "$session" <<'PY'
+import json
+import re
+import sys
+from pathlib import Path
+
+record = json.loads(Path(sys.argv[1]).read_text(encoding="ascii"))
+task_id, lane, session = sys.argv[2:5]
+assert record["task_id"] == task_id
+assert record["lane"] == lane
+assert record["session_id"] == session
+assert record["dispatch_message_id"].startswith("manual-cc-claim:")
+assert str(record["coord_dispatch_idempotency_key"]).startswith("manual-cc-claim:")
+assert record["platform"] == "codex"
+assert record["mode"] == "headless"
+assert record["profile"] == "ultra"
+assert re.fullmatch(r"[0-9a-f]{64}", record["binding_hash"])
+assert re.fullmatch(r"[0-9a-f]{64}", record["receipt_hash"])
+print(record["receipt_hash"])
+PY
+)"
+test -f "$cache_dir/claim-publication-receipts/$receipt_hash.json"
+```
+
+Expected result: every command exits zero. The dispatch sidecar is manual
+provenance, the content-addressed install receipt exists, both activation
+sidecars name the claimed task, and the admitted receipt named by the binding is
+present.
+
 First use on a host installs the Gate-0B claim-publication composition root for
 the current `HOME` and then publishes the admitted claim. The install is
 content-addressed and idempotent for exact matching files. A corrupt,
