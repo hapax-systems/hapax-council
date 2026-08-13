@@ -4294,6 +4294,9 @@ def test_parked_service_is_disabled_without_restart(tmp_path: Path) -> None:
         },
     )
     home = tmp_path / "home"
+    deployed = home / ".config/systemd/user/demo-parked.service"
+    deployed.parent.mkdir(parents=True)
+    deployed.write_text("[Service]\nExecStart=/usr/bin/false\nRestart=always\n", encoding="utf-8")
     bin_dir, systemctl_calls = _fake_systemctl(tmp_path)
 
     result = subprocess.run(
@@ -4318,6 +4321,205 @@ def test_parked_service_is_disabled_without_restart(tmp_path: Path) -> None:
     assert "--user reset-failed demo-parked.service" in calls
     assert "--user restart demo-parked.service" not in calls
     assert "--user enable --now demo-parked.service" not in calls
+    ordered_calls = calls.splitlines()
+    assert ordered_calls.index("--user disable --now demo-parked.service") < ordered_calls.index(
+        "--user daemon-reload"
+    )
+
+
+def test_new_parked_service_is_not_pre_stopped_before_its_first_publication(
+    tmp_path: Path,
+) -> None:
+    unit_path = "systemd/units/new-parked.service"
+    repo, sha = _repo_with_linear_commit(
+        tmp_path,
+        {
+            unit_path: (
+                "# Hapax-Parked: true\n"
+                "[Unit]\nDescription=New parked sentinel\n"
+                "[Service]\nType=oneshot\nExecStart=/usr/bin/true\n"
+            )
+        },
+    )
+    home = tmp_path / "home"
+    bin_dir, systemctl_calls = _fake_systemctl(tmp_path)
+    (bin_dir / "systemctl").write_text(
+        "#!/usr/bin/env bash\n"
+        'printf \'%s\\n\' "$*" >> "$HAPAX_SYSTEMCTL_CALLS"\n'
+        'case "$*" in\n'
+        "  '--user show new-parked.service -p LoadState --value') printf 'not-found\\n' ;;\n"
+        "esac\n"
+        "exit 0\n",
+        encoding="utf-8",
+    )
+    (bin_dir / "systemctl").chmod(0o755)
+
+    result = subprocess.run(
+        [str(SCRIPT), sha],
+        text=True,
+        capture_output=True,
+        check=False,
+        env={
+            **os.environ,
+            "HOME": str(home),
+            "PATH": f"{bin_dir}:{os.environ['PATH']}",
+            "REPO": str(repo),
+            "HAPAX_SYSTEMCTL_CALLS": str(systemctl_calls),
+            "HAPAX_POST_MERGE_TRACE_PATH": str(tmp_path / "traces/trace.jsonl"),
+        },
+    )
+
+    assert result.returncode == 0, result.stderr
+    calls = systemctl_calls.read_text(encoding="utf-8").splitlines()
+    assert calls.index("--user daemon-reload") < calls.index(
+        "--user disable --now new-parked.service"
+    )
+    assert (home / ".config/systemd/user/new-parked.service").is_file()
+
+
+def test_loaded_parked_service_without_installed_file_is_pre_stopped(
+    tmp_path: Path,
+) -> None:
+    unit_path = "systemd/units/loaded-parked.service"
+    repo, sha = _repo_with_linear_commit(
+        tmp_path,
+        {
+            unit_path: (
+                "# Hapax-Parked: true\n"
+                "[Unit]\nDescription=Loaded parked sentinel\n"
+                "[Service]\nType=oneshot\nExecStart=/usr/bin/true\n"
+            )
+        },
+    )
+    home = tmp_path / "home"
+    bin_dir, systemctl_calls = _fake_systemctl(tmp_path)
+    (bin_dir / "systemctl").write_text(
+        "#!/usr/bin/env bash\n"
+        'printf \'%s\\n\' "$*" >> "$HAPAX_SYSTEMCTL_CALLS"\n'
+        'case "$*" in\n'
+        "  '--user show loaded-parked.service -p LoadState --value') printf 'loaded\\n' ;;\n"
+        "esac\n"
+        "exit 0\n",
+        encoding="utf-8",
+    )
+    (bin_dir / "systemctl").chmod(0o755)
+
+    result = subprocess.run(
+        [str(SCRIPT), sha],
+        text=True,
+        capture_output=True,
+        check=False,
+        env={
+            **os.environ,
+            "HOME": str(home),
+            "PATH": f"{bin_dir}:{os.environ['PATH']}",
+            "REPO": str(repo),
+            "HAPAX_SYSTEMCTL_CALLS": str(systemctl_calls),
+            "HAPAX_POST_MERGE_TRACE_PATH": str(tmp_path / "traces/trace.jsonl"),
+        },
+    )
+
+    assert result.returncode == 0, result.stderr
+    calls = systemctl_calls.read_text(encoding="utf-8").splitlines()
+    assert calls.index("--user disable --now loaded-parked.service") < calls.index(
+        "--user daemon-reload"
+    )
+    assert (home / ".config/systemd/user/loaded-parked.service").is_file()
+
+
+def test_parked_service_is_disabled_before_a_failing_daemon_reload(tmp_path: Path) -> None:
+    unit_path = "systemd/units/demo-parked.service"
+    target_body = (
+        "# Hapax-Parked: true\n"
+        "[Unit]\nDescription=Parked test service\n"
+        "[Service]\nType=oneshot\nExecStart=/usr/bin/true\nRestart=no\n"
+    )
+    repo, sha = _repo_with_linear_commit(tmp_path, {unit_path: target_body})
+    home = tmp_path / "home"
+    deployed = home / ".config/systemd/user/demo-parked.service"
+    deployed.parent.mkdir(parents=True)
+    deployed.write_text(
+        "[Unit]\nDescription=Historical active detector\n"
+        "[Service]\nExecStart=/usr/bin/false\nRestart=always\n",
+        encoding="utf-8",
+    )
+    bin_dir, systemctl_calls = _fake_systemctl(tmp_path)
+    (bin_dir / "systemctl").write_text(
+        "#!/usr/bin/env bash\n"
+        'printf \'%s\\n\' "$*" >> "$HAPAX_SYSTEMCTL_CALLS"\n'
+        '[ "$*" != "--user daemon-reload" ] || exit 88\n'
+        "exit 0\n",
+        encoding="utf-8",
+    )
+    (bin_dir / "systemctl").chmod(0o755)
+
+    result = subprocess.run(
+        [str(SCRIPT), sha],
+        text=True,
+        capture_output=True,
+        check=False,
+        env={
+            **os.environ,
+            "HOME": str(home),
+            "PATH": f"{bin_dir}:{os.environ['PATH']}",
+            "REPO": str(repo),
+            "HAPAX_SYSTEMCTL_CALLS": str(systemctl_calls),
+            "HAPAX_POST_MERGE_TRACE_PATH": str(tmp_path / "traces/trace.jsonl"),
+        },
+    )
+
+    assert result.returncode == 88
+    calls = systemctl_calls.read_text(encoding="utf-8").splitlines()
+    assert "--user disable --now demo-parked.service" in calls
+    assert calls.index("--user disable --now demo-parked.service") < calls.index(
+        "--user daemon-reload"
+    )
+    assert deployed.read_text(encoding="utf-8") == target_body
+    assert not (tmp_path / "traces/last-deployed-sha").exists()
+
+
+def test_retired_top_level_rebuild_duplicate_cannot_remove_or_replace_canonical_unit(
+    tmp_path: Path,
+) -> None:
+    legacy_path = "systemd/hapax-rebuild-services.service"
+    repo, _ = _repo_with_linear_commit(
+        tmp_path,
+        {
+            legacy_path: (
+                "[Service]\nExecStart=/tmp/rebuild --service hapax-feedback-loop-detector.service\n"
+            )
+        },
+    )
+    _git(repo, "rm", legacy_path)
+    _git(repo, "commit", "-m", "retire top-level rebuild duplicate")
+    sha = _git(repo, "rev-parse", "HEAD")
+    home = tmp_path / "home"
+    deployed = home / ".config/systemd/user/hapax-rebuild-services.service"
+    deployed.parent.mkdir(parents=True)
+    canonical_body = "[Service]\nExecStart=/stable/rebuild --service current.service\n"
+    deployed.write_text(canonical_body, encoding="utf-8")
+    bin_dir, systemctl_calls = _fake_systemctl(tmp_path)
+
+    result = subprocess.run(
+        [str(SCRIPT), sha],
+        text=True,
+        capture_output=True,
+        check=False,
+        env={
+            **os.environ,
+            "HOME": str(home),
+            "PATH": f"{bin_dir}:{os.environ['PATH']}",
+            "REPO": str(repo),
+            "HAPAX_SYSTEMCTL_CALLS": str(systemctl_calls),
+            "HAPAX_POST_MERGE_TRACE_PATH": str(tmp_path / "traces/trace.jsonl"),
+        },
+    )
+
+    assert result.returncode == 0, result.stderr
+    assert deployed.read_text(encoding="utf-8") == canonical_body
+    calls = systemctl_calls.read_text(encoding="utf-8") if systemctl_calls.exists() else ""
+    assert "hapax-feedback-loop-detector.service" not in calls
+    assert "daemon-reload" not in calls
 
 
 def test_systemd_coverage_includes_slice_units() -> None:
@@ -6336,11 +6538,8 @@ def test_real_deploy_invokes_smoke_runner_with_sha(tmp_path: Path) -> None:
     assert not tampered_marker.exists(), "deploy invoked mutable worktree smoke bytes"
 
 
-def test_real_deploy_smoke_failure_does_not_block_trace(tmp_path: Path) -> None:
-    """If the smoke runner exits non-zero (defying its own contract),
-    the deploy script must still write its post-merge trace and exit
-    cleanly. The `|| true` guard around the smoke invocation is the
-    contract this test pins."""
+def test_real_deploy_smoke_execution_failure_blocks_completion_receipt(tmp_path: Path) -> None:
+    """A non-zero runner is an execution failure, not an advisory gate result."""
     repo, sha = _repo_with_merge_commit(tmp_path)
     trace_path = tmp_path / "traces" / "post-merge-traces.jsonl"
 
@@ -6369,18 +6568,26 @@ def test_real_deploy_smoke_failure_does_not_block_trace(tmp_path: Path) -> None:
         env=env,
     )
 
-    assert result.returncode == 0, result.stderr
+    assert result.returncode == 1
+    assert "exact-target smoke runner failed" in result.stderr
+    assert "next action:" in result.stderr
     assert trace_path.exists(), "post-merge trace was not written"
     records = [json.loads(line) for line in trace_path.read_text(encoding="utf-8").splitlines()]
-    assert records[-1]["status"] == "completed"
+    assert records[-1]["status"] == "failed"
+    assert records[-1]["exit_code"] == 1
+    assert not (trace_path.parent / "last-deployed-sha").exists()
 
 
-def test_real_deploy_with_no_smoke_script_is_a_no_op(tmp_path: Path) -> None:
-    """If ``scripts/hapax-post-merge-smoke`` is absent (e.g. on a repo
-    that hasn't yet adopted the smoke runner), the deploy script
-    silently skips smoke and completes normally — backward-compatible
-    with the pre-#2148 deploy chain."""
+def test_real_deploy_with_governed_chain_but_no_smoke_script_fails_visible(
+    tmp_path: Path,
+) -> None:
     repo, sha = _repo_with_merge_commit(tmp_path)
+    deploy_source = repo / "scripts" / "hapax-post-merge-deploy"
+    deploy_source.write_text("#!/usr/bin/env bash\nexit 0\n", encoding="utf-8")
+    deploy_source.chmod(0o755)
+    _git(repo, "add", "scripts/hapax-post-merge-deploy")
+    _git(repo, "commit", "-m", "adopt governed deploy chain without smoke")
+    sha = _git(repo, "rev-parse", "HEAD")
     # HOME MUST be isolated: the deploy computes LOCAL_BIN=$HOME/.local/bin and
     # symlinks the fixture's scripts/hapax-demo into it. Without this override a
     # *real* deploy leaks ~/.local/bin/hapax-demo into the operator's PATH that
@@ -6407,8 +6614,52 @@ def test_real_deploy_with_no_smoke_script_is_a_no_op(tmp_path: Path) -> None:
         env=env,
     )
 
-    assert result.returncode == 0, result.stderr
+    assert result.returncode == 1
+    assert "exact-target smoke runner is missing" in result.stderr
+    assert sha in result.stderr
+    assert "next action:" in result.stderr
     assert trace_path.exists()
+    record = json.loads(trace_path.read_text(encoding="utf-8").splitlines()[-1])
+    assert record["status"] == "failed"
+    assert not (trace_path.parent / "last-deployed-sha").exists()
+
+
+def test_real_deploy_smoke_runner_has_a_forced_whole_process_deadline(
+    tmp_path: Path,
+) -> None:
+    repo, _ = _repo_with_merge_commit(tmp_path)
+    smoke_stub = repo / "scripts" / "hapax-post-merge-smoke"
+    smoke_stub.write_text(
+        "#!/usr/bin/env bash\ntrap '' TERM\nwhile :; do :; done\n", encoding="utf-8"
+    )
+    smoke_stub.chmod(0o755)
+    _git(repo, "add", "scripts/hapax-post-merge-smoke")
+    _git(repo, "commit", "-m", "add wedged smoke runner")
+    sha = _git(repo, "rev-parse", "HEAD")
+    home = tmp_path / "home"
+    trace_path = tmp_path / "traces" / "post-merge-traces.jsonl"
+    started = time.monotonic()
+
+    result = subprocess.run(
+        [str(SCRIPT), sha],
+        text=True,
+        capture_output=True,
+        timeout=10,
+        check=False,
+        env={
+            **os.environ,
+            "HOME": str(home),
+            "REPO": str(repo),
+            "HAPAX_POST_MERGE_TRACE_PATH": str(trace_path),
+            "HAPAX_POST_MERGE_SMOKE_TIMEOUT_S": "1",
+        },
+    )
+
+    assert result.returncode == 137
+    assert time.monotonic() - started < 3
+    assert "exact-target smoke runner failed" in result.stderr
+    assert "rc=137" in result.stderr
+    assert not (trace_path.parent / "last-deployed-sha").exists()
 
 
 def _music_player_unit_body() -> str:

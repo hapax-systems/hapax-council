@@ -2100,6 +2100,12 @@ reconcile_canonical_gate_closure() {
 # remediation epic).
 while IFS= read -r f; do
     [ -z "$f" ] && continue
+    # Retired duplicate of systemd/units/hapax-rebuild-services.service. Never
+    # publish or remove the canonical installed unit when this historical path
+    # changes; the duplicate previously retained an L-12 detector restart.
+    if [ "$f" = "systemd/hapax-rebuild-services.service" ]; then
+        continue
+    fi
     # The historical judge unit is retired. Classify it before either the old
     # or current root-package manifest so a cumulative deploy can never
     # reinstall, unmask, restart, or delete the installed tombstone. The
@@ -4012,18 +4018,76 @@ publish_systemd_unit_at_sha() {
     fi
 }
 
+parked_user_unit_preexists() {
+    local base="$1" dest="$SYSTEMD_USER_DIR/$1" load_state
+    if [ -e "$dest" ] || [ -L "$dest" ]; then
+        return 0
+    fi
+    if ! load_state="$(systemctl --user show "$base" -p LoadState --value)"; then
+        echo "hapax-post-merge-deploy: cannot determine whether parked unit $base has a prior loaded definition; refusing publication; next action: repair the user manager and rerun this deploy" >&2
+        return 2
+    fi
+    case "$load_state" in
+        not-found) return 1 ;;
+        "")
+            echo "hapax-post-merge-deploy: user manager returned no LoadState for parked unit $base; refusing publication; next action: inspect systemctl --user show $base and rerun this deploy" >&2
+            return 2
+            ;;
+        *) return 0 ;;
+    esac
+}
+
 if [ "${#SYSTEMD[@]}" -gt 0 ]; then
     echo "systemd units changed (${#SYSTEMD[@]}):"
-    mkdir -p "$SYSTEMD_USER_DIR"
     SYSTEMD_INSTALLED=()
+    declare -A SYSTEMD_TARGET_PRESENT=()
+    declare -A SYSTEMD_TARGET_CONTENT=()
     declare -A SYSTEMD_INSTALLED_CONTENT=()
+
+    # Resolve every target object before mutation, then stop parked units while
+    # the historical loaded definition is still authoritative. A later publish
+    # or daemon-reload failure must not leave a Restart=always retirement target
+    # running under its old loaded definition.
     for f in "${SYSTEMD[@]}"; do
-        base="$(basename "$f")"
-        dest="$SYSTEMD_USER_DIR/$base"
         if ! git_blob_state_at "$SHA" "$f" "systemd unit"; then
             exit 2
         fi
         if [ "$GIT_BLOB_PRESENT" -eq 1 ]; then
+            if ! unit_content="$(git -C "$REPO" show "$SHA:$f")"; then
+                echo "hapax-post-merge-deploy: failed to materialize systemd unit preflight at $SHA:$f; no user-unit files were changed; next action: restore the exact Git object and rerun this deploy" >&2
+                exit 1
+            fi
+            SYSTEMD_TARGET_PRESENT["$f"]=1
+            SYSTEMD_TARGET_CONTENT["$f"]="$unit_content"
+        else
+            SYSTEMD_TARGET_PRESENT["$f"]=0
+            SYSTEMD_TARGET_CONTENT["$f"]=""
+        fi
+    done
+    for f in "${SYSTEMD[@]}"; do
+        if [ "${SYSTEMD_TARGET_PRESENT[$f]}" -eq 1 ] \
+            && unit_content_parked "${SYSTEMD_TARGET_CONTENT[$f]}"; then
+            base="$(basename "$f")"
+            parked_preexisting_rc=0
+            parked_user_unit_preexists "$base" || parked_preexisting_rc=$?
+            if [ "$parked_preexisting_rc" -eq 1 ]; then
+                continue
+            fi
+            [ "$parked_preexisting_rc" -eq 0 ] || exit 1
+            echo "pre-parking $base before publication (Hapax-Parked marker)"
+            if ! systemctl --user disable --now "$base"; then
+                echo "hapax-post-merge-deploy: unable to disable parked unit $base before publication; next action: inspect systemctl --user status $base and rerun the governed deploy" >&2
+                exit 1
+            fi
+            systemctl --user reset-failed "$base" >/dev/null 2>&1 || true
+        fi
+    done
+
+    mkdir -p "$SYSTEMD_USER_DIR"
+    for f in "${SYSTEMD[@]}"; do
+        base="$(basename "$f")"
+        dest="$SYSTEMD_USER_DIR/$base"
+        if [ "${SYSTEMD_TARGET_PRESENT[$f]}" -eq 1 ]; then
             if ! publish_systemd_unit_at_sha "$f" "$dest"; then
                 exit 1
             fi
@@ -4304,10 +4368,9 @@ fi
 # DRY_RUN and REPORT_COVERAGE modes exited earlier so this only fires
 # in real-deploy mode. The smoke runner inspects the exact deployed commit or
 # cumulative $SINCE..$SHA range, fires matching gates, ntfy's on failure, and
-# ALWAYS exits 0 - the deploy already happened; the smoke is informational. The
-# itself enforces the 0-exit contract; we still wrap with `|| true`
-# defensively so a smoke-side bug can never block trace recording or
-# the deploy script's normal exit. Rationale: shipping in #2148
+# exits 0 after reporting advisory gate failures. Missing code, publication
+# failure, a non-zero runner, or a whole-process timeout are execution failures:
+# they block the completion receipt so the deployment remains retryable. Rationale: shipping in #2148
 # without a deploy-chain caller meant every smoke-side fix lived as
 # dead code (zeta audit finding 2026-05-02, severity HIGH). Materialize the
 # runner from the target object even when the mutable worktree or activation
@@ -4315,16 +4378,69 @@ fi
 SMOKE_SOURCE_PATH="scripts/hapax-post-merge-smoke"
 SMOKE_SCRIPT="$LOCAL_BIN/hapax-post-merge-smoke"
 SMOKE_ARGS=("$SHA")
+SMOKE_TIMEOUT_S="${HAPAX_POST_MERGE_SMOKE_TIMEOUT_S:-60}"
+if ! [[ "$SMOKE_TIMEOUT_S" =~ ^[0-9]+$ ]] \
+    || [ "$SMOKE_TIMEOUT_S" -lt 1 ] \
+    || [ "$SMOKE_TIMEOUT_S" -gt 300 ]; then
+    SMOKE_TIMEOUT_S=60
+fi
 if [ -n "$SINCE" ]; then
     SMOKE_ARGS=(--since "$SINCE" "$SHA")
 fi
-if git -C "$REPO" cat-file -e "$SHA:$SMOKE_SOURCE_PATH" 2>/dev/null; then
-    if mkdir -p "$LOCAL_BIN" \
-        && publish_git_executable_at_sha "$SMOKE_SOURCE_PATH" "$SMOKE_SCRIPT"; then
-        REPO_ROOT="$REPO" "$SMOKE_SCRIPT" "${SMOKE_ARGS[@]}" || true
-    else
+
+smoke_contract_present_at() {
+    local revision="$1" path
+    for path in "$SMOKE_SOURCE_PATH" scripts/hapax-post-merge-deploy; do
+        if ! git_blob_state_at "$revision" "$path" "post-merge smoke contract"; then
+            return 2
+        fi
+        [ "$GIT_BLOB_PRESENT" -eq 0 ] || return 0
+    done
+    return 1
+}
+
+if ! git_blob_state_at "$SHA" "$SMOKE_SOURCE_PATH" "exact-target smoke runner"; then
+    exit 1
+fi
+if [ "$GIT_BLOB_PRESENT" -eq 1 ]; then
+    if ! mkdir -p "$LOCAL_BIN" \
+        || ! publish_git_executable_at_sha "$SMOKE_SOURCE_PATH" "$SMOKE_SCRIPT"; then
         echo "hapax-post-merge-deploy: exact-target smoke runner could not be published; next action: repair $LOCAL_BIN ownership/capacity and rerun the governed deploy smoke for $SHA" >&2
+        exit 1
     fi
+    smoke_rc=0
+    /usr/bin/timeout --signal=TERM --kill-after=1s "${SMOKE_TIMEOUT_S}s" \
+        /usr/bin/env REPO_ROOT="$REPO" "$SMOKE_SCRIPT" "${SMOKE_ARGS[@]}" \
+        || smoke_rc=$?
+    if [ "$smoke_rc" -ne 0 ]; then
+        echo "hapax-post-merge-deploy: exact-target smoke runner failed or exceeded ${SMOKE_TIMEOUT_S}s (rc=$smoke_rc); refusing the completion receipt; next action: inspect the smoke diagnostics, repair the exact runner or blocked gate probe, and rerun this deploy for $SHA" >&2
+        exit "$smoke_rc"
+    fi
+else
+    smoke_required=0
+    if smoke_contract_present_at "$SHA"; then
+        smoke_required=1
+    else
+        smoke_contract_rc=$?
+        [ "$smoke_contract_rc" -eq 1 ] || exit 1
+    fi
+    SMOKE_BASE="$SINCE"
+    if [ -z "$SMOKE_BASE" ]; then
+        SMOKE_BASE="$(git -C "$REPO" rev-parse --verify --quiet "${SHA}^1" 2>/dev/null || true)"
+    fi
+    if [ "$smoke_required" -eq 0 ] && [ -n "$SMOKE_BASE" ]; then
+        if smoke_contract_present_at "$SMOKE_BASE"; then
+            smoke_required=1
+        else
+            smoke_contract_rc=$?
+            [ "$smoke_contract_rc" -eq 1 ] || exit 1
+        fi
+    fi
+    if [ "$smoke_required" -eq 1 ]; then
+        echo "hapax-post-merge-deploy: exact-target smoke runner is missing at $SHA:$SMOKE_SOURCE_PATH; refusing the completion receipt; next action: restore the governed runner at the target commit and rerun this deploy" >&2
+        exit 1
+    fi
+    echo "hapax-post-merge-deploy: legacy target has no governed smoke contract at $SHA; no smoke ran" >&2
 fi
 
 # Self-verify the deploy symlinks resolve to the canonical tree (advisory:
