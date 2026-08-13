@@ -119,7 +119,7 @@ for label, path in (("home", home), ("destination", destination), ("lock", lock)
         print(f"ERROR: isolated test {label} escapes {resolved_root}", file=sys.stderr)
         raise SystemExit(1)
 PY
-    ROOT_REQUIRED_LOCK_ANCHOR="$HAPAX_ROOT_REQUIRED_ISOLATED_TEST_ROOT"
+    ROOT_REQUIRED_LOCK_ANCHOR="/"
 }
 
 acquire_inherited_root_required_lock() {
@@ -162,11 +162,14 @@ def validate_anchor() -> None:
     path_inode = os.lstat(anchor_path)
     parent_path = os.path.dirname(anchor_path)
     parent_inode = os.lstat(parent_path)
+    expected_anchor_uid = 0 if isolated else os.geteuid()
+    if isolated and anchor_path != "/":
+        raise OSError("isolated lock anchor must be the stable filesystem root")
     if (
         not stat.S_ISDIR(inode.st_mode)
         or not stat.S_ISDIR(path_inode.st_mode)
-        or inode.st_uid != os.geteuid()
-        or path_inode.st_uid != os.geteuid()
+        or inode.st_uid != expected_anchor_uid
+        or path_inode.st_uid != expected_anchor_uid
         or inode.st_mode & 0o022
         or path_inode.st_mode & 0o022
         or (inode.st_dev, inode.st_ino) != (path_inode.st_dev, path_inode.st_ino)
@@ -274,11 +277,14 @@ def validate_anchor(anchor_fd: int) -> None:
     path_inode = os.lstat(anchor_path)
     parent_path = os.path.dirname(anchor_path)
     parent_inode = os.lstat(parent_path)
+    expected_anchor_uid = 0 if isolated else os.geteuid()
+    if isolated and anchor_path != "/":
+        raise OSError("isolated lock anchor must be the stable filesystem root")
     if (
         not stat.S_ISDIR(inode.st_mode)
         or not stat.S_ISDIR(path_inode.st_mode)
-        or inode.st_uid != os.geteuid()
-        or path_inode.st_uid != os.geteuid()
+        or inode.st_uid != expected_anchor_uid
+        or path_inode.st_uid != expected_anchor_uid
         or inode.st_mode & 0o022
         or path_inode.st_mode & 0o022
         or (inode.st_dev, inode.st_ino) != (path_inode.st_dev, path_inode.st_ino)

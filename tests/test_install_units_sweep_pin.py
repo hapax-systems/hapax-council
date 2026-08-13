@@ -604,7 +604,7 @@ class TestSharedInstallLock:
         lock.chmod(0o600)
         other.chmod(0o600)
         fd = os.open(other, os.O_RDWR)
-        anchor_fd = os.open(tmp_path, os.O_RDONLY | os.O_DIRECTORY)
+        anchor_fd = os.open("/", os.O_RDONLY | os.O_DIRECTORY)
         try:
             env["HAPAX_ROOT_REQUIRED_LOCK_FILE"] = str(lock)
             env["HAPAX_ROOT_REQUIRED_LOCK_FD"] = str(fd)
@@ -632,7 +632,7 @@ class TestSharedInstallLock:
         lock.write_text("", encoding="utf-8")
         lock.chmod(0o600)
         fd = os.open(lock, os.O_RDWR)
-        anchor_fd = os.open(tmp_path, os.O_RDONLY | os.O_DIRECTORY)
+        anchor_fd = os.open("/", os.O_RDONLY | os.O_DIRECTORY)
         try:
             fcntl.flock(fd, fcntl.LOCK_EX)
             env["HAPAX_ROOT_REQUIRED_LOCK_FILE"] = str(lock)
@@ -708,9 +708,8 @@ class TestSharedInstallLock:
                 text=True,
                 env=env,
             )
-            time.sleep(0.25)
+            _wait_for_flock_block(second)
             assert len(events.read_text(encoding="utf-8").splitlines()) == 1
-            assert second.poll() is None
             release.touch()
             first_stdout, first_stderr = first.communicate(timeout=30)
             second_stdout, second_stderr = second.communicate(timeout=30)
@@ -740,7 +739,7 @@ class TestSharedInstallLock:
         pass_fds: tuple[int, ...] = ()
         anchor_fd = -1
         if inherited_descriptor:
-            anchor_fd = os.open(tmp_path, os.O_RDONLY | os.O_DIRECTORY)
+            anchor_fd = os.open("/", os.O_RDONLY | os.O_DIRECTORY)
             env["HAPAX_ROOT_REQUIRED_LOCK_FD"] = str(waiter_fd)
             env["HAPAX_ROOT_REQUIRED_LOCK_ANCHOR_FD"] = str(anchor_fd)
             env["HAPAX_ROOT_REQUIRED_LOCK_MODE"] = "exclusive"

@@ -2994,7 +2994,7 @@ def test_root_required_audit_rejects_lock_path_replaced_while_waiting(
     pass_fds: tuple[int, ...] = ()
     anchor_fd = -1
     if inherited_descriptor:
-        anchor_fd = os.open(Path(env["HOME"]), os.O_RDONLY | os.O_DIRECTORY)
+        anchor_fd = os.open("/", os.O_RDONLY | os.O_DIRECTORY)
         env["HAPAX_ROOT_REQUIRED_LOCK_FD"] = str(waiter_fd)
         env["HAPAX_ROOT_REQUIRED_LOCK_ANCHOR_FD"] = str(anchor_fd)
         env["HAPAX_ROOT_REQUIRED_LOCK_MODE"] = "shared"
@@ -3282,7 +3282,7 @@ def test_post_merge_deploy_rejects_lock_path_replaced_while_waiting(
     pass_fds: tuple[int, ...] = ()
     anchor_fd = -1
     if inherited_descriptor:
-        anchor_fd = os.open(tmp_path, os.O_RDONLY | os.O_DIRECTORY)
+        anchor_fd = os.open("/", os.O_RDONLY | os.O_DIRECTORY)
         env["HAPAX_ROOT_REQUIRED_LOCK_FD"] = str(waiter_fd)
         env["HAPAX_ROOT_REQUIRED_LOCK_ANCHOR_FD"] = str(anchor_fd)
         env["HAPAX_ROOT_REQUIRED_LOCK_MODE"] = "exclusive"
@@ -3379,8 +3379,8 @@ def test_post_merge_deploy_serializes_after_acquired_lock_path_is_replaced(
             env=env,
             start_new_session=True,
         )
-        time.sleep(0.3)
-        assert newer.poll() is None, "replacement lock inode bypassed the active deploy"
+        _wait_for_flock_block(newer)
+        assert not (tmp_path / "traces/last-deployed-sha").exists()
     finally:
         release.touch()
         older_stdout, older_stderr = older.communicate(timeout=20)
@@ -3392,6 +3392,24 @@ def test_post_merge_deploy_serializes_after_acquired_lock_path_is_replaced(
     assert newer.returncode == 0, (newer_stdout, newer_stderr)
     cursor = tmp_path / "traces/last-deployed-sha"
     assert cursor.read_text(encoding="utf-8").strip() == newer_sha
+
+
+@pytest.mark.parametrize(
+    "script",
+    (SCRIPT, ROOT_REQUIRED_AUDIT),
+)
+def test_root_required_lock_helpers_use_isolated_python(script: Path) -> None:
+    source = script.read_text(encoding="utf-8")
+    lock_region = source[
+        source.index("acquire_inherited_root_required_lock()") : source.index(
+            "read_last_deployed_sha_under_lock()"
+            if script == SCRIPT
+            else "resolve_apcupsd_audit_log_identity()"
+        )
+    ]
+
+    assert "/usr/bin/python3 -I -S -" in lock_region
+    assert '/usr/bin/python3 - "$lock_fd"' not in lock_region
 
 
 def test_apcupsd_power_alert_deploy_stages_dedicated_package_for_root_broker(

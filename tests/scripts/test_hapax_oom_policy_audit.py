@@ -46,6 +46,7 @@ GITHUB_MCP_IMAGE_DIGEST = "sha256:30197479d8036c7811892bc07e06f9a05c9ef3cdd79bc5
 GITHUB_MCP_IMAGE = f"ghcr.io/github/github-mcp-server@{GITHUB_MCP_IMAGE_DIGEST}"
 GITHUB_MCP_LOCAL_IMAGE_ID = f"sha256:{'b' * 64}"
 GITHUB_MCP_BOOT_ID = "12345678-1234-1234-1234-123456789abc"
+GITHUB_MCP_APP_ID = "stdio-v1"
 GITHUB_MCP_IMAGE_LABELS = {
     "io.modelcontextprotocol.server.name": "io.github.github/github-mcp-server",
     "org.opencontainers.image.created": "2026-05-29T12:26:39.099Z",
@@ -513,36 +514,53 @@ def _fake_docker(
     initial_labeled_inventory = (
         labeled_inventory if labeled_inventory_override is None else labeled_inventory_override
     )
-    inventory_file = tmp_path / "docker.inventory"
-    inventory_file.write_text(initial_inventory, encoding="utf-8")
-    closing_inventory_file = tmp_path / "docker.inventory.closing"
-    closing_inventory_file.write_text(
-        initial_inventory if closing_inventory_override is None else closing_inventory_override,
-        encoding="utf-8",
+    closing_inventory = (
+        initial_inventory if closing_inventory_override is None else closing_inventory_override
     )
-    final_inventory_file = tmp_path / "docker.inventory.final"
-    final_inventory_file.write_text(
-        closing_inventory_file.read_text(encoding="utf-8")
-        if final_inventory_override is None
-        else final_inventory_override,
-        encoding="utf-8",
+    final_inventory = (
+        closing_inventory if final_inventory_override is None else final_inventory_override
     )
-    labeled_inventory_file = tmp_path / "docker.labeled-inventory"
-    labeled_inventory_file.write_text(initial_labeled_inventory, encoding="utf-8")
-    closing_labeled_inventory_file = tmp_path / "docker.labeled-inventory.closing"
-    closing_labeled_inventory_file.write_text(
+    closing_labeled_inventory = (
         initial_labeled_inventory
         if closing_labeled_inventory_override is None
-        else closing_labeled_inventory_override,
-        encoding="utf-8",
+        else closing_labeled_inventory_override
     )
-    final_labeled_inventory_file = tmp_path / "docker.labeled-inventory.final"
-    final_labeled_inventory_file.write_text(
-        closing_labeled_inventory_file.read_text(encoding="utf-8")
+    final_labeled_inventory = (
+        closing_labeled_inventory
         if final_labeled_inventory_override is None
-        else final_labeled_inventory_override,
-        encoding="utf-8",
+        else final_labeled_inventory_override
     )
+
+    def combine_inventory_and_labels(raw_inventory: str, raw_labeled: str) -> str:
+        label_rows = raw_labeled.splitlines()
+        labeled_ids = set(label_rows)
+        inventory_ids: set[str] = set()
+        rows: list[str] = []
+        for raw_row in raw_inventory.splitlines():
+            fields = raw_row.split("\t")
+            if len(fields) == 2:
+                inventory_ids.add(fields[0])
+                label = GITHUB_MCP_APP_ID if fields[0] in labeled_ids else ""
+                rows.append(f"{raw_row}\t{label}")
+            else:
+                rows.append(f"{raw_row}\t")
+        for raw_id in label_rows:
+            if raw_id not in inventory_ids:
+                rows.append(f"{raw_id}\tmissing-inventory-row\t{GITHUB_MCP_APP_ID}\textra")
+        return "".join(f"{row}\n" for row in rows)
+
+    generation_files: list[Path] = []
+    for suffix, raw_inventory, raw_labeled in (
+        ("initial", initial_inventory, initial_labeled_inventory),
+        ("closing", closing_inventory, closing_labeled_inventory),
+        ("final", final_inventory, final_labeled_inventory),
+    ):
+        generation_file = tmp_path / f"docker.inventory-labels.{suffix}"
+        generation_file.write_text(
+            combine_inventory_and_labels(raw_inventory, raw_labeled),
+            encoding="utf-8",
+        )
+        generation_files.append(generation_file)
     inspect_cases = []
     inspect_file = tmp_path / "docker.inspect"
     failure_file = tmp_path / "docker.failure"
@@ -719,32 +737,17 @@ def _fake_docker(
         else f"printf '%s\\n%s\\n' '{mcp_local_image_id}' '{mcp_repo_digest}'"
     )
 
-    def sequenced_response(
-        *,
-        kind: str,
-        initial_file: Path,
-        closing_file: Path,
-        initial_failure_phase: str,
-        closing_failure_phase: str,
-        final_file: Path | None = None,
-        final_failure_phase: str | None = None,
-    ) -> str:
-        count_file = tmp_path / f"docker.{kind}.count"
-        initial_response = (
-            f'cat "{failure_file}" >&2; exit 17'
-            if failure_phase == initial_failure_phase
-            else f'cat "{initial_file}"'
-        )
-        closing_response = (
-            f'cat "{failure_file}" >&2; exit 17'
-            if failure_phase == closing_failure_phase
-            else f'cat "{closing_file}"'
-        )
-        final_response = (
-            f'cat "{failure_file}" >&2; exit 17'
-            if final_failure_phase is not None and failure_phase == final_failure_phase
-            else f'cat "{final_file or closing_file}"'
-        )
+    def generation_response() -> str:
+        count_file = tmp_path / "docker.inventory-labels.count"
+
+        def response(generation_file: Path, failure_phases: set[str]) -> str:
+            if failure_phase in failure_phases:
+                return f'cat "{failure_file}" >&2; exit 17'
+            return f'cat "{generation_file}"'
+
+        initial_response = response(generation_files[0], {"inventory", "label"})
+        closing_response = response(generation_files[1], {"closing_inventory", "closing_label"})
+        final_response = response(generation_files[2], {"final_inventory", "final_label"})
         return (
             f'count=0; if [[ -r "{count_file}" ]]; then read -r count < "{count_file}"; fi; '
             f'count=$((count + 1)); printf \'%s\\n\' "$count" > "{count_file}"; '
@@ -752,31 +755,13 @@ def _fake_docker(
             f"elif (( count == 2 )); then {closing_response}; else {final_response}; fi"
         )
 
-    labeled_response = sequenced_response(
-        kind="label-inventory",
-        initial_file=labeled_inventory_file,
-        closing_file=closing_labeled_inventory_file,
-        initial_failure_phase="label",
-        closing_failure_phase="closing_label",
-        final_file=final_labeled_inventory_file,
-        final_failure_phase="final_label",
-    )
-    inventory_response = sequenced_response(
-        kind="inventory",
-        initial_file=inventory_file,
-        closing_file=closing_inventory_file,
-        initial_failure_phase="inventory",
-        closing_failure_phase="closing_inventory",
-        final_file=final_inventory_file,
-        final_failure_phase="final_inventory",
-    )
+    inventory_response = generation_response()
     path.write_text(
         "#!/usr/bin/env bash\n"
         "set -euo pipefail\n"
         f'printf \'%s\\n\' "$*" >> "{calls}"\n'
         'case "$*" in\n'
         f'  *" image inspect --format "*) {image_response} ;;\n'
-        f'  *" ps -aq --no-trunc --filter label=org.hapax.github-mcp.app"*) {labeled_response} ;;\n'
         f'  *" ps -a --no-trunc --format "*) {inventory_response} ;;\n'
         + "\n".join(inspect_cases)
         + "\n"
@@ -2069,6 +2054,14 @@ def test_audit_fails_when_nonprefix_label_target_appears_only_in_final_generatio
     assert "inventory changed during bounded audit" in check["detail"]
 
 
+def test_docker_inventory_binds_identity_and_label_in_one_daemon_snapshot() -> None:
+    source = SCRIPT.read_text(encoding="utf-8")
+
+    assert '{{.ID}}\\t{{.Names}}\\t{{.Label "org.hapax.github-mcp.app"}}' in source
+    assert '"ps", "-aq", "--no-trunc", "--filter"' not in source
+    assert "_read_docker_labeled_inventory" not in source
+
+
 def test_audit_allows_unrelated_container_churn_during_closing_witness(
     tmp_path: Path,
 ) -> None:
@@ -2336,7 +2329,7 @@ def _full_docker_inventory(row_count: int) -> str:
 def test_audit_accepts_advertised_docker_inventory_maximum_through_runner(
     tmp_path: Path,
 ) -> None:
-    result = _run(tmp_path, docker_inventory_override=_full_docker_inventory(239))
+    result = _run(tmp_path, docker_inventory_override=_full_docker_inventory(236))
 
     assert result.returncode == 0, result.stdout
     payload = json.loads(result.stdout)
@@ -2345,13 +2338,13 @@ def test_audit_accepts_advertised_docker_inventory_maximum_through_runner(
 
 
 def test_audit_bounds_docker_inventory_rows(tmp_path: Path) -> None:
-    result = _run(tmp_path, docker_inventory_override=_full_docker_inventory(240))
+    result = _run(tmp_path, docker_inventory_override=_full_docker_inventory(237))
 
     assert result.returncode == 1
     payload = json.loads(result.stdout)
     check = next(item for item in payload["checks"] if item["name"] == "docker_oom_targets")
     assert check["status"] == "error"
-    assert check["target"] == "at most 239 inventory rows"
+    assert check["target"] == "at most 236 inventory rows"
 
 
 def test_audit_rejects_malformed_formatted_docker_inspect(tmp_path: Path) -> None:
