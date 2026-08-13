@@ -53,6 +53,7 @@ VISUDO="${HAPAX_ROOT_AUDIT_VISUDO:-/usr/bin/visudo}"
 ROOT_ARTIFACT_TEST_UID="${HAPAX_ROOT_AUDIT_TEST_ROOT_UID:-$(/usr/bin/id -u)}"
 ROOT_ARTIFACT_TEST_GID="${HAPAX_ROOT_AUDIT_TEST_ROOT_GID:-$(/usr/bin/id -g)}"
 readonly OOM_REPAIR_ACTION="preserve the exact desired package and dispatch separately runtime-authorized root-broker work; production OOM repair is unavailable in this source revision"
+readonly APC_REPAIR_ACTION="preserve the exact desired package and dispatch separately runtime-authorized root-broker work; production APC repair is unavailable in this source revision"
 
 ROOT_AUDIT_TEST_MODE="${HAPAX_ROOT_AUDIT_TEST_MODE:-0}"
 ROOT_AUDIT_HOSTNAME_OVERRIDE="${HAPAX_ROOT_AUDIT_HOSTNAME:-}"
@@ -365,7 +366,7 @@ audit_apcupsd_audit_log() {
     fi
     /usr/bin/python3 - "$APCUPSD_AUDIT_LOG" \
         "$APCUPSD_AUDIT_LOG_OWNER_UID" "$APCUPSD_AUDIT_LOG_OWNER_GID" \
-        "$parent_expected_mode" <<'PY'
+        "$parent_expected_mode" "$APC_REPAIR_ACTION" <<'PY'
 from __future__ import annotations
 
 import os
@@ -376,6 +377,7 @@ path = sys.argv[1]
 owner_uid = int(sys.argv[2])
 owner_gid = int(sys.argv[3])
 parent_expected_mode = int(sys.argv[4], 8) if sys.argv[4] else None
+repair_action = sys.argv[5]
 parent = os.path.dirname(path) or "."
 try:
     parent_inode = os.lstat(parent)
@@ -385,7 +387,7 @@ except OSError as exc:
         file=sys.stderr,
     )
     print(
-        "  next action: run scripts/install-apcupsd-power-alerts --install --verify-live",
+        f"  next action: {repair_action}",
         file=sys.stderr,
     )
     raise SystemExit(1) from exc
@@ -409,8 +411,7 @@ if not stat.S_ISDIR(parent_inode.st_mode) or (
         file=sys.stderr,
     )
     print(
-        "  next action: repair the audit-log directory and run "
-        "scripts/install-apcupsd-power-alerts --install --verify-live",
+        f"  next action: repair the audit-log directory, then {repair_action}",
         file=sys.stderr,
     )
     raise SystemExit(1)
@@ -419,7 +420,7 @@ try:
 except OSError as exc:
     print(f"root-required install drift: UPS audit log missing: {path}: {exc}", file=sys.stderr)
     print(
-        "  next action: run scripts/install-apcupsd-power-alerts --install --verify-live",
+        f"  next action: {repair_action}",
         file=sys.stderr,
     )
     raise SystemExit(1) from exc
@@ -437,8 +438,7 @@ if (
         file=sys.stderr,
     )
     print(
-        "  next action: preserve valid content and run "
-        "scripts/install-apcupsd-power-alerts --install --verify-live",
+        f"  next action: preserve valid content, then {repair_action}",
         file=sys.stderr,
     )
     raise SystemExit(1)
@@ -580,7 +580,7 @@ audit_desired_receipt() {
         if [ "$label" = "oom-containment" ]; then
             echo "  next action: $OOM_REPAIR_ACTION" >&2
         else
-            echo "  next action: rerun hapax-post-merge-deploy for current main or the newest governed $label installer" >&2
+            echo "  next action: $APC_REPAIR_ACTION" >&2
         fi
         return 1
     fi
@@ -599,7 +599,7 @@ audit_desired_receipt() {
         if [ "$label" = "oom-containment" ]; then
             echo "  next action: $OOM_REPAIR_ACTION" >&2
         else
-            echo "  next action: regenerate the exact package from $desired_sha and run its governed installer, even if the cached RUNBOOK was lost" >&2
+            echo "  next action: regenerate the exact package from $desired_sha, then $APC_REPAIR_ACTION" >&2
         fi
         return 1
     fi
@@ -612,7 +612,7 @@ compare_root_file() {
         echo "root-required source missing or not a regular stable copy: $source" >&2
         case "$rel" in
             config/apcupsd/*|config/upower/*|systemd/logrotate.d/hapax-ups-power-events)
-                echo "  next action: run scripts/install-apcupsd-power-alerts --install --verify-live" >&2
+                echo "  next action: $APC_REPAIR_ACTION" >&2
                 ;;
             *)
                 echo "  next action: $OOM_REPAIR_ACTION" >&2
@@ -624,7 +624,7 @@ compare_root_file() {
         echo "root-required install missing or not a regular stable copy: $dest" >&2
         case "$rel" in
             config/apcupsd/*|config/upower/*|systemd/logrotate.d/hapax-ups-power-events)
-                echo "  next action: run scripts/install-apcupsd-power-alerts --install --verify-live" >&2
+                echo "  next action: $APC_REPAIR_ACTION" >&2
                 ;;
             *)
                 echo "  next action: $OOM_REPAIR_ACTION" >&2
@@ -638,7 +638,7 @@ compare_root_file() {
         echo "root-required install mode drift: $dest mode=${actual_mode:-unavailable} expected=$expected_mode" >&2
         case "$rel" in
             config/apcupsd/*|config/upower/*|systemd/logrotate.d/hapax-ups-power-events)
-                echo "  next action: run scripts/install-apcupsd-power-alerts --install --verify-live" >&2
+                echo "  next action: $APC_REPAIR_ACTION" >&2
                 ;;
             *)
                 echo "  next action: $OOM_REPAIR_ACTION" >&2
@@ -654,7 +654,7 @@ compare_root_file() {
         echo "root-required install drift: $rel differs at $dest from $source" >&2
         case "$rel" in
             config/apcupsd/*|config/upower/*|systemd/logrotate.d/hapax-ups-power-events)
-                echo "  next action: run scripts/install-apcupsd-power-alerts --install --verify-live" >&2
+                echo "  next action: $APC_REPAIR_ACTION" >&2
                 ;;
             *)
                 echo "  next action: $OOM_REPAIR_ACTION" >&2
@@ -749,7 +749,7 @@ verify_executable() {
         echo "root-required executable mode drift: $dest is not executable" >&2
         case "$rel" in
             config/apcupsd/*)
-                echo "  next action: run scripts/install-apcupsd-power-alerts --install --verify-live" >&2
+                echo "  next action: $APC_REPAIR_ACTION" >&2
                 ;;
             *)
                 echo "  next action: $OOM_REPAIR_ACTION" >&2
@@ -1087,7 +1087,7 @@ audit_apcupsd_loaded_policy() {
     source_config="$INSTALLED_SOURCE_ROOT/config/apcupsd/apcupsd.conf"
     status="$("$APCACCESS" status 2>/dev/null)" || {
         echo "root-required activation drift: unable to query apcupsd loaded shutdown policy" >&2
-        echo "  next action: inspect systemctl status apcupsd.service and run scripts/install-apcupsd-power-alerts --install --verify-live" >&2
+        echo "  next action: inspect systemctl status apcupsd.service, then $APC_REPAIR_ACTION" >&2
         return 1
     }
     for spec in BATTERYLEVEL:MBATTCHG MINUTES:MINTIMEL TIMEOUT:MAXTIME; do
@@ -1343,14 +1343,13 @@ fi
 echo "root-required post-merge deploy deferrals pending (${#runbooks[@]}):" >&2
 for runbook in "${runbooks[@]}"; do
     dir="$(dirname "$runbook")"
-    command="$(awk '/^  .*--install --verify-live$/ {sub(/^  /, ""); print; exit}' "$runbook")"
     echo "  $dir" >&2
     if [ "$(basename "$dir")" = "oom-containment" ]; then
         echo "    next action: $OOM_REPAIR_ACTION" >&2
-    elif [ -n "$command" ]; then
-        echo "    next action: $command" >&2
+    elif [ "$(basename "$dir")" = "apcupsd-power-alerts" ]; then
+        echo "    next action: $APC_REPAIR_ACTION" >&2
     else
-        echo "    next action: inspect $runbook and run the root-required installer" >&2
+        echo "    next action: inspect $runbook and dispatch the package-specific governed root broker" >&2
     fi
 done
 exit 1
