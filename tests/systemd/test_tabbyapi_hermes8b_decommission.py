@@ -61,7 +61,10 @@ def test_install_units_cleans_decommissioned_dropin_dirs() -> None:
     assert 'dropin_dir="$DEST_DIR/${name}.d"' in body, (
         "remove_decommissioned_unit must compute the drop-in dir path"
     )
-    assert 'rm -rf "$dropin_dir"' in body, (
+    assert '[ -e "$dropin_dir" ] || [ -L "$dropin_dir" ]' in body, (
+        "remove_decommissioned_unit must recognize regular and symlinked drop-in paths"
+    )
+    assert 'rm -rf -- "$dropin_dir"' in body, (
         "remove_decommissioned_unit must rm -rf the drop-in dir so "
         "stale conf symlinks don't survive the unit retirement"
     )

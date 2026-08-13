@@ -36,7 +36,17 @@ def test_install_units_removes_and_masks_decommissioned_units() -> None:
     for unit in sorted(DECOMMISSIONED_UNITS):
         assert unit in body
     assert "DECOMMISSIONED_UNITS=(" in body
-    assert 'systemctl --user disable --now "$name"' in body
+    checked_retirement = body.split("stop_disable_user_unit_checked() {", 1)[1].split(
+        "park_user_unit_checked() {", 1
+    )[0]
+    stop = checked_retirement.index('systemctl --user stop "$name"')
+    inactive_witness = checked_retirement.index(
+        'systemctl --user show "$name" -p ActiveState --value'
+    )
+    disable = checked_retirement.index('systemctl --user disable "$name"')
+    assert stop < inactive_witness < disable
+    assert 'stop_disable_user_unit_checked "$name" "decommissioned unit"' in body
+    assert 'systemctl --user disable --now "$name"' not in body
     assert 'systemctl --user mask "$name"' in body
     assert "skipped decommissioned unit" in body
 

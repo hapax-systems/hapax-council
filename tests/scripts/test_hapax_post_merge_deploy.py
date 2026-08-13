@@ -11,6 +11,7 @@ import re
 import shlex
 import signal
 import subprocess
+import textwrap
 import time
 from pathlib import Path
 
@@ -185,6 +186,9 @@ pipe_seen=0
 collect_seen=0
 service_type_seen=0
 expand_disabled_seen=0
+memory_high_seen=0
+memory_max_seen=0
+tasks_max_seen=0
 stop_timeout_seen=0
 kill_mode_seen=0
 sigkill_seen=0
@@ -198,6 +202,9 @@ while [ "$#" -gt 0 ]; do
         --service-type=exec) service_type_seen=1 ;;
         --expand-environment=no) expand_disabled_seen=1 ;;
         --property=RuntimeMaxSec=*) runtime_seen=1; runtime="${1#*=}"; runtime="${runtime%s}" ;;
+        --property=MemoryHigh=1536M) memory_high_seen=1 ;;
+        --property=MemoryMax=2G) memory_max_seen=1 ;;
+        --property=TasksMax=512) tasks_max_seen=1 ;;
         --property=TimeoutStopSec=1s) stop_timeout_seen=1 ;;
         --property=KillMode=control-group) kill_mode_seen=1 ;;
         --property=SendSIGKILL=yes) sigkill_seen=1 ;;
@@ -207,7 +214,7 @@ while [ "$#" -gt 0 ]; do
     esac
     shift
 done
-if [ "$runtime_seen$user_seen$wait_seen$pipe_seen$collect_seen$service_type_seen$expand_disabled_seen$stop_timeout_seen$kill_mode_seen$sigkill_seen$no_ask_seen" != 11111111111 ]; then
+if [ "$runtime_seen$user_seen$wait_seen$pipe_seen$collect_seen$service_type_seen$expand_disabled_seen$memory_high_seen$memory_max_seen$tasks_max_seen$stop_timeout_seen$kill_mode_seen$sigkill_seen$no_ask_seen" != 11111111111111 ]; then
     echo "fake systemd-run: missing bounded-service contract" >&2
     exit 92
 fi
@@ -267,6 +274,10 @@ def _git(repo: Path, *args: str) -> str:
         check=True,
     )
     return result.stdout.strip()
+
+
+def _deploy_cursor_marker(home: Path) -> Path:
+    return home / ".local/state/hapax/root-required/post-merge-deploy-cursor-established"
 
 
 def _flock_identities(expected_lock: Path) -> set[tuple[int, int, int]]:
@@ -490,6 +501,32 @@ def _post_merge_script_with_system_dir(
         ),
         encoding="utf-8",
     )
+    staged.chmod(0o755)
+    return staged
+
+
+def _post_merge_script_with_cursor_fsync_failure(tmp_path: Path) -> Path:
+    staged = tmp_path / "hapax-post-merge-deploy-fsync-failure"
+    source = SCRIPT.read_text(encoding="utf-8")
+    needle = """def fsync_dir(parent: Path) -> None:
+    dir_fd = os.open(parent, os.O_RDONLY | os.O_DIRECTORY | os.O_CLOEXEC)
+"""
+    replacement = """cursor_test_fsync_counts: dict[str, int] = {}
+
+
+def fsync_dir(parent: Path) -> None:
+    parent_key = str(parent.absolute())
+    cursor_test_fsync_counts[parent_key] = cursor_test_fsync_counts.get(parent_key, 0) + 1
+    if (
+        parent_key == os.environ.get("HAPAX_TEST_CURSOR_FSYNC_PARENT")
+        and cursor_test_fsync_counts[parent_key]
+        == int(os.environ.get("HAPAX_TEST_CURSOR_FSYNC_COUNT", "2"))
+    ):
+        raise OSError("injected post-replace cursor directory sync failure")
+    dir_fd = os.open(parent, os.O_RDONLY | os.O_DIRECTORY | os.O_CLOEXEC)
+"""
+    assert source.count(needle) == 1
+    staged.write_text(source.replace(needle, replacement), encoding="utf-8")
     staged.chmod(0o755)
     return staged
 
@@ -3988,6 +4025,47 @@ def test_generic_service_dropin_atomically_replaces_changed_destination_symlink(
     assert "--user restart demo.service" in calls
 
 
+def test_generic_service_dropin_git_inspection_failure_creates_no_target_directory(
+    tmp_path: Path,
+) -> None:
+    dropin_path = "systemd/units/demo.service.d/override.conf"
+    repo, sha = _repo_with_linear_commit(
+        tmp_path,
+        {dropin_path: "[Service]\nEnvironment=DEMO=new\n"},
+    )
+    home = tmp_path / "home"
+    dropin_dir = home / ".config/systemd/user/demo.service.d"
+    git_bin = _fake_git_with_ls_tree_failure(tmp_path)
+    systemctl_bin, systemctl_calls = _fake_systemctl(tmp_path)
+    cursor = tmp_path / "traces/last-deployed-sha"
+
+    result = subprocess.run(
+        [str(SCRIPT), sha],
+        text=True,
+        capture_output=True,
+        check=False,
+        env={
+            **os.environ,
+            "HOME": str(home),
+            "PATH": f"{git_bin}:{systemctl_bin}:{os.environ['PATH']}",
+            "REPO": str(repo),
+            "HAPAX_SYSTEMCTL_CALLS": str(systemctl_calls),
+            "HAPAX_POST_MERGE_TRACE_PATH": str(tmp_path / "traces/deploy.jsonl"),
+            "HAPAX_POST_MERGE_LAST_DEPLOYED_SHA_PATH": str(cursor),
+            "HAPAX_FAIL_GIT_LS_TREE_PATH": dropin_path,
+            "HAPAX_FAIL_GIT_LS_TREE_COUNT_FILE": str(tmp_path / "git-ls-tree.count"),
+            "HAPAX_FAIL_GIT_LS_TREE_ON_COUNT": "1",
+        },
+    )
+
+    assert result.returncode != 0
+    assert "refusing to infer deletion" in result.stderr
+    assert not dropin_dir.exists()
+    calls = systemctl_calls.read_text(encoding="utf-8") if systemctl_calls.exists() else ""
+    assert "daemon-reload" not in calls
+    assert not cursor.exists()
+
+
 def test_system_scoped_base_routes_changed_dropin_to_runtime_deferral(tmp_path: Path) -> None:
     unit_path = "systemd/units/demo-root.service"
     dropin_path = f"{unit_path}.d/override.conf"
@@ -4840,6 +4918,143 @@ def test_pre_guard_deploy_helper_bootstraps_rebuild_compatibility_copy(
     assert "--user daemon-reload" in systemctl_calls.read_text(encoding="utf-8")
 
 
+def _rollout_adoption_fixture(tmp_path: Path) -> tuple[Path, Path, str, Path, Path]:
+    repo = tmp_path / "rollout-repo"
+    repo.mkdir()
+    _git(repo, "init", "-b", "main")
+    _git(repo, "config", "user.email", "rollout-test@example.test")
+    _git(repo, "config", "user.name", "Rollout Test")
+    deploy_path = repo / "scripts/hapax-post-merge-deploy"
+    smoke_path = repo / "scripts/hapax-post-merge-smoke"
+    install_path = repo / "systemd/scripts/install-units.sh"
+    deploy_path.parent.mkdir(parents=True)
+    install_path.parent.mkdir(parents=True)
+    deploy_path.write_text(
+        _git(REPO_ROOT, "show", f"{PRE_GUARD_DEPLOY_SHA}:scripts/hapax-post-merge-deploy"),
+        encoding="utf-8",
+    )
+    smoke_path.write_text(
+        _git(REPO_ROOT, "show", f"{PRE_GUARD_DEPLOY_SHA}:scripts/hapax-post-merge-smoke"),
+        encoding="utf-8",
+    )
+    install_path.write_text("DECOMMISSIONED_UNITS=(\n)\n", encoding="utf-8")
+    deploy_path.chmod(0o755)
+    smoke_path.chmod(0o755)
+    _git(repo, "add", ".")
+    _git(repo, "commit", "-m", "pre-adoption deploy contract")
+
+    deploy_path.write_text(SCRIPT.read_text(encoding="utf-8"), encoding="utf-8")
+    smoke_path.write_text(SMOKE.read_text(encoding="utf-8"), encoding="utf-8")
+    deploy_path.chmod(0o755)
+    smoke_path.chmod(0o755)
+    unit = repo / "systemd/units/rollout-adoption.service"
+    unit.parent.mkdir(parents=True)
+    unit.write_text(
+        "[Unit]\nDescription=Rollout adoption witness\n[Service]\nExecStart=/usr/bin/true\n",
+        encoding="utf-8",
+    )
+    _git(repo, "add", ".")
+    _git(repo, "commit", "-m", "adopt blocking exact deploy contract")
+    sha = _git(repo, "rev-parse", "HEAD")
+
+    predecessor_dir = tmp_path / "predecessor"
+    predecessor_dir.mkdir()
+    predecessor = predecessor_dir / "hapax-post-merge-deploy"
+    predecessor.write_text(
+        _git(REPO_ROOT, "show", f"{PRE_GUARD_DEPLOY_SHA}:scripts/hapax-post-merge-deploy"),
+        encoding="utf-8",
+    )
+    predecessor.chmod(0o755)
+
+    bin_dir = tmp_path / "rollout-bin"
+    bin_dir.mkdir()
+    calls = tmp_path / "rollout-systemctl-calls.txt"
+    systemctl = bin_dir / "systemctl"
+    systemctl.write_text(
+        textwrap.dedent(
+            f"""\
+            #!/usr/bin/env bash
+            printf '%s\n' "$*" >> "{calls}"
+            case "$*" in
+              "--user show rollout-adoption.service -p ActiveState --value")
+                if [ "${{HAPAX_ROLLOUT_MANAGER_FAIL:-0}}" = 1 ]; then exit 86; fi
+                printf 'active\n'
+                ;;
+              "--user is-active --quiet "*) exit 3 ;;
+            esac
+            exit 0
+            """
+        ),
+        encoding="utf-8",
+    )
+    systemctl.chmod(0o755)
+    return repo, predecessor, sha, bin_dir, calls
+
+
+def test_predecessor_adopts_exact_helper_before_first_completion_receipt(
+    tmp_path: Path,
+) -> None:
+    repo, predecessor, sha, bin_dir, _ = _rollout_adoption_fixture(tmp_path)
+    home = tmp_path / "home"
+    trace = tmp_path / "traces/deploy.jsonl"
+    cursor = trace.parent / "last-deployed-sha"
+
+    result = subprocess.run(
+        [str(predecessor), sha],
+        text=True,
+        capture_output=True,
+        check=False,
+        cwd=repo,
+        env={
+            **os.environ,
+            "HOME": str(home),
+            "PATH": f"{bin_dir}:{os.environ['PATH']}",
+            "REPO": str(repo),
+            "HAPAX_POST_MERGE_TRACE_PATH": str(trace),
+            "HAPAX_DRIFT_NTFY": "0",
+        },
+        timeout=30,
+    )
+
+    assert result.returncode == 0, (result.stdout, result.stderr)
+    installed_helper = home / ".local/bin/hapax-post-merge-deploy"
+    assert installed_helper.read_bytes() == SCRIPT.read_bytes()
+    assert cursor.read_text(encoding="utf-8").strip() == sha
+    marker = _deploy_cursor_marker(home)
+    assert marker.read_text(encoding="utf-8") == "hapax-deploy-cursor-established-v1\n"
+
+
+def test_predecessor_cannot_stamp_when_adopted_exact_smoke_fails(tmp_path: Path) -> None:
+    repo, predecessor, sha, bin_dir, _ = _rollout_adoption_fixture(tmp_path)
+    home = tmp_path / "home"
+    trace = tmp_path / "traces/deploy.jsonl"
+    cursor = trace.parent / "last-deployed-sha"
+
+    result = subprocess.run(
+        [str(predecessor), sha],
+        text=True,
+        capture_output=True,
+        check=False,
+        cwd=repo,
+        env={
+            **os.environ,
+            "HOME": str(home),
+            "PATH": f"{bin_dir}:{os.environ['PATH']}",
+            "REPO": str(repo),
+            "HAPAX_POST_MERGE_TRACE_PATH": str(trace),
+            "HAPAX_ROLLOUT_MANAGER_FAIL": "1",
+            "HAPAX_DRIFT_NTFY": "0",
+        },
+        timeout=30,
+    )
+
+    assert result.returncode != 0
+    assert "exact replacement deploy failed" in result.stderr
+    assert "exact-target smoke runner failed" in result.stderr
+    assert not cursor.exists()
+    assert not _deploy_cursor_marker(home).exists()
+
+
 def test_current_helper_maps_historical_rebuild_path_to_canonical_object(
     tmp_path: Path,
 ) -> None:
@@ -5538,6 +5753,156 @@ def test_user_scoped_units_still_deploy_to_user_dir(tmp_path: Path) -> None:
     assert record["deploy_groups"]["systemd_system_units"] == []
 
 
+def _deleted_user_unit_fixture(tmp_path: Path) -> tuple[Path, str, str]:
+    unit_path = "systemd/units/hapax-deleted-demo.service"
+    repo, _ = _repo_with_linear_commit(
+        tmp_path,
+        {
+            unit_path: (
+                "[Unit]\nDescription=Deleted demo\n"
+                "[Service]\nExecStart=/usr/bin/sleep infinity\n"
+                "[Install]\nWantedBy=default.target\n"
+            )
+        },
+    )
+    _git(repo, "rm", unit_path)
+    _git(repo, "commit", "-m", "delete user service")
+    return repo, _git(repo, "rev-parse", "HEAD"), unit_path
+
+
+def _deleted_user_unit_systemctl(
+    tmp_path: Path,
+    unit_name: str,
+    *,
+    stop_rc: int = 0,
+) -> tuple[Path, Path, Path]:
+    bin_dir = tmp_path / "deleted-unit-bin"
+    bin_dir.mkdir()
+    calls = tmp_path / "deleted-unit-systemctl-calls.txt"
+    state = tmp_path / "deleted-unit-state.txt"
+    state.write_text("active enabled\n", encoding="utf-8")
+    systemctl = bin_dir / "systemctl"
+    systemctl.write_text(
+        textwrap.dedent(
+            f"""\
+            #!/usr/bin/env bash
+            printf '%s\n' "$*" >> "{calls}"
+            read -r active enabled < "{state}"
+            case "$*" in
+              "--user stop {unit_name}")
+                [ {stop_rc} -eq 0 ] || exit {stop_rc}
+                active=inactive
+                ;;
+              "--user show {unit_name} -p ActiveState --value")
+                printf '%s\n' "$active"
+                exit 0
+                ;;
+              "--user disable {unit_name}") enabled=disabled ;;
+              "--user show "*" -p LoadState --value") printf 'not-found\n'; exit 0 ;;
+              "--user show "*" -p ActiveState --value") printf 'inactive\n'; exit 0 ;;
+            esac
+            printf '%s %s\n' "$active" "$enabled" > "{state}"
+            exit 0
+            """
+        ),
+        encoding="utf-8",
+    )
+    systemctl.chmod(0o755)
+    return bin_dir, calls, state
+
+
+def test_deleted_user_unit_is_stopped_and_disabled_before_fragment_removal(
+    tmp_path: Path,
+) -> None:
+    repo, sha, unit_path = _deleted_user_unit_fixture(tmp_path)
+    unit_name = Path(unit_path).name
+    home = tmp_path / "home"
+    installed = home / ".config/systemd/user" / unit_name
+    installed.parent.mkdir(parents=True)
+    installed.write_text("historical loaded unit\n", encoding="utf-8")
+    dropin = installed.parent / f"{unit_name}.d/override.conf"
+    dropin.parent.mkdir()
+    dropin.write_text("[Service]\nRestart=always\n", encoding="utf-8")
+    wants = installed.parent / f"default.target.wants/{unit_name}"
+    wants.parent.mkdir()
+    wants.symlink_to(installed)
+    bin_dir, calls, state = _deleted_user_unit_systemctl(tmp_path, unit_name)
+    cursor = tmp_path / "traces/last-deployed-sha"
+
+    result = subprocess.run(
+        [str(SCRIPT), sha],
+        text=True,
+        capture_output=True,
+        check=False,
+        env={
+            **os.environ,
+            "HOME": str(home),
+            "PATH": f"{bin_dir}:{os.environ['PATH']}",
+            "REPO": str(repo),
+            "HAPAX_POST_MERGE_TRACE_PATH": str(tmp_path / "traces/deploy.jsonl"),
+            "HAPAX_POST_MERGE_LAST_DEPLOYED_SHA_PATH": str(cursor),
+            "HAPAX_DRIFT_NTFY": "0",
+        },
+    )
+
+    assert result.returncode == 0, result.stderr
+    assert not installed.exists()
+    assert not dropin.parent.exists()
+    assert not wants.exists() and not wants.is_symlink()
+    assert state.read_text(encoding="utf-8").strip() == "inactive disabled"
+    ordered_calls = calls.read_text(encoding="utf-8").splitlines()
+    stop = f"--user stop {unit_name}"
+    witness = f"--user show {unit_name} -p ActiveState --value"
+    disable = f"--user disable {unit_name}"
+    stop_index = ordered_calls.index(stop)
+    assert stop_index < ordered_calls.index(witness, stop_index + 1)
+    assert ordered_calls.index(witness, stop_index + 1) < ordered_calls.index(disable)
+    assert cursor.read_text(encoding="utf-8").strip() == sha
+
+
+def test_deleted_user_unit_stop_failure_preserves_fragment_and_cursor(
+    tmp_path: Path,
+) -> None:
+    repo, sha, unit_path = _deleted_user_unit_fixture(tmp_path)
+    unit_name = Path(unit_path).name
+    home = tmp_path / "home"
+    installed = home / ".config/systemd/user" / unit_name
+    installed.parent.mkdir(parents=True)
+    installed.write_text("historical loaded unit\n", encoding="utf-8")
+    dropin = installed.parent / f"{unit_name}.d/override.conf"
+    dropin.parent.mkdir()
+    dropin.write_text("[Service]\nRestart=always\n", encoding="utf-8")
+    wants = installed.parent / f"default.target.wants/{unit_name}"
+    wants.parent.mkdir()
+    wants.symlink_to(installed)
+    bin_dir, _, state = _deleted_user_unit_systemctl(tmp_path, unit_name, stop_rc=73)
+    cursor = tmp_path / "traces/last-deployed-sha"
+
+    result = subprocess.run(
+        [str(SCRIPT), sha],
+        text=True,
+        capture_output=True,
+        check=False,
+        env={
+            **os.environ,
+            "HOME": str(home),
+            "PATH": f"{bin_dir}:{os.environ['PATH']}",
+            "REPO": str(repo),
+            "HAPAX_POST_MERGE_TRACE_PATH": str(tmp_path / "traces/deploy.jsonl"),
+            "HAPAX_POST_MERGE_LAST_DEPLOYED_SHA_PATH": str(cursor),
+            "HAPAX_DRIFT_NTFY": "0",
+        },
+    )
+
+    assert result.returncode != 0
+    assert "unable to stop deleted user unit" in result.stderr
+    assert installed.read_text(encoding="utf-8") == "historical loaded unit\n"
+    assert dropin.is_file()
+    assert wants.is_symlink()
+    assert state.read_text(encoding="utf-8").strip() == "active enabled"
+    assert not cursor.exists()
+
+
 def test_systemd_scope_classification_git_failure_preserves_existing_unit(
     tmp_path: Path,
 ) -> None:
@@ -5692,6 +6057,131 @@ def test_systemd_unit_git_show_failure_preserves_existing_bytes(
     assert "failed to materialize systemd unit" in result.stderr
     assert installed.read_text(encoding="utf-8") == "prior user unit\n"
     assert not list(installed.parent.glob(".hapax-user-demo.service.tmp.*"))
+    assert not cursor.exists()
+
+
+def test_runtime_config_git_inspection_failure_is_not_treated_as_deletion(
+    tmp_path: Path,
+) -> None:
+    config_path = "config/hapax/review-live.conf"
+    repo, sha = _repo_with_linear_commit(tmp_path, {config_path: "replacement=true\n"})
+    home = tmp_path / "home"
+    installed = home / ".config/hapax/review-live.conf"
+    installed.parent.mkdir(parents=True)
+    installed.write_text("previous=true\n", encoding="utf-8")
+    git_bin = _fake_git_with_ls_tree_failure(tmp_path)
+    cursor = tmp_path / "traces/last-deployed-sha"
+
+    result = subprocess.run(
+        [str(SCRIPT), sha],
+        text=True,
+        capture_output=True,
+        check=False,
+        env={
+            **os.environ,
+            "HOME": str(home),
+            "PATH": f"{git_bin}:{os.environ['PATH']}",
+            "REPO": str(repo),
+            "HAPAX_POST_MERGE_TRACE_PATH": str(tmp_path / "traces/deploy.jsonl"),
+            "HAPAX_POST_MERGE_LAST_DEPLOYED_SHA_PATH": str(cursor),
+            "HAPAX_FAIL_GIT_LS_TREE_PATH": config_path,
+            "HAPAX_FAIL_GIT_LS_TREE_COUNT_FILE": str(tmp_path / "git-ls-tree.count"),
+            "HAPAX_FAIL_GIT_LS_TREE_ON_COUNT": "1",
+            "HAPAX_DRIFT_NTFY": "0",
+        },
+    )
+
+    assert result.returncode != 0
+    assert "refusing to infer deletion" in result.stderr
+    assert installed.read_text(encoding="utf-8") == "previous=true\n"
+    assert not cursor.exists()
+
+
+def test_runtime_config_git_show_failure_does_not_truncate_live_bytes(
+    tmp_path: Path,
+) -> None:
+    config_path = "config/hapax/review-live.conf"
+    repo, sha = _repo_with_linear_commit(tmp_path, {config_path: "replacement=true\n"})
+    home = tmp_path / "home"
+    installed = home / ".config/hapax/review-live.conf"
+    installed.parent.mkdir(parents=True)
+    installed.write_text("previous=true\n", encoding="utf-8")
+    git_bin = _fake_git_with_show_failure(tmp_path)
+    cursor = tmp_path / "traces/last-deployed-sha"
+
+    result = subprocess.run(
+        [str(SCRIPT), sha],
+        text=True,
+        capture_output=True,
+        check=False,
+        env={
+            **os.environ,
+            "HOME": str(home),
+            "PATH": f"{git_bin}:{os.environ['PATH']}",
+            "REPO": str(repo),
+            "HAPAX_POST_MERGE_TRACE_PATH": str(tmp_path / "traces/deploy.jsonl"),
+            "HAPAX_POST_MERGE_LAST_DEPLOYED_SHA_PATH": str(cursor),
+            "HAPAX_FAIL_GIT_SHOW_OBJECT": f"{sha}:{config_path}",
+            "HAPAX_FAIL_GIT_SHOW_COUNT_FILE": str(tmp_path / "git-show.count"),
+            "HAPAX_FAIL_GIT_SHOW_ON_COUNT": "1",
+            "HAPAX_DRIFT_NTFY": "0",
+        },
+    )
+
+    assert result.returncode != 0
+    assert "failed to materialize Hapax runtime configuration" in result.stderr
+    assert installed.read_text(encoding="utf-8") == "previous=true\n"
+    assert not list(installed.parent.glob(".review-live.conf.tmp.*"))
+    assert not cursor.exists()
+
+
+def test_watchdog_chmod_failure_preserves_live_executable_and_cursor(tmp_path: Path) -> None:
+    watchdog_path = "systemd/watchdogs/health-watchdog"
+    repo, sha = _repo_with_linear_commit(
+        tmp_path,
+        {watchdog_path: "#!/usr/bin/env bash\necho replacement\n"},
+    )
+    home = tmp_path / "home"
+    installed = home / ".local/bin/health-watchdog"
+    installed.parent.mkdir(parents=True)
+    installed.write_text("#!/usr/bin/env bash\necho previous\n", encoding="utf-8")
+    installed.chmod(0o755)
+    bin_dir = tmp_path / "chmod-bin"
+    bin_dir.mkdir()
+    chmod = bin_dir / "chmod"
+    chmod.write_text(
+        "#!/usr/bin/env bash\n"
+        'last="${!#}"\n'
+        'case "$last" in\n'
+        '  "$HOME"/.local/bin/.health-watchdog.tmp.*) exit 78 ;;\n'
+        "esac\n"
+        'exec /usr/bin/chmod "$@"\n',
+        encoding="utf-8",
+    )
+    chmod.chmod(0o755)
+    cursor = tmp_path / "traces/last-deployed-sha"
+
+    result = subprocess.run(
+        [str(SCRIPT), sha],
+        text=True,
+        capture_output=True,
+        check=False,
+        env={
+            **os.environ,
+            "HOME": str(home),
+            "PATH": f"{bin_dir}:{os.environ['PATH']}",
+            "REPO": str(repo),
+            "HAPAX_POST_MERGE_TRACE_PATH": str(tmp_path / "traces/deploy.jsonl"),
+            "HAPAX_POST_MERGE_LAST_DEPLOYED_SHA_PATH": str(cursor),
+            "HAPAX_DRIFT_NTFY": "0",
+        },
+    )
+
+    assert result.returncode != 0
+    assert "failed to atomically publish systemd watchdog script" in result.stderr
+    assert installed.read_text(encoding="utf-8") == "#!/usr/bin/env bash\necho previous\n"
+    assert installed.stat().st_mode & 0o777 == 0o755
+    assert not list(installed.parent.glob(".health-watchdog.tmp.*"))
     assert not cursor.exists()
 
 
@@ -7561,10 +8051,49 @@ def test_archive_confs_are_not_classified_as_deployable(tmp_path):
     assert excl < match, "exclusion must precede the deploy classification"
 
 
-def test_pw_deploy_parse_lints_confs(tmp_path):
+def test_pw_deploy_parse_lints_confs() -> None:
     script = SCRIPT.read_text()
     assert "spa-json-dump" in script, "conf parse-lint missing from PW deploy path"
-    assert "REFUSED (spa-json parse error" in script
+    assert (
+        'publish_exact_file_or_delete "$f" "$dest" 0644 "PipeWire configuration" spa-json' in script
+    )
+
+
+def test_pw_parse_failure_preserves_live_config_and_cursor(tmp_path: Path) -> None:
+    relative = "config/pipewire/99-invalid.conf"
+    repo, sha = _repo_with_linear_commit(tmp_path, {relative: "not valid SPA JSON\n"})
+    home = tmp_path / "home"
+    live = home / ".config/pipewire/pipewire.conf.d/99-invalid.conf"
+    live.parent.mkdir(parents=True)
+    live.write_text("previous live configuration\n", encoding="utf-8")
+    bin_dir = tmp_path / "bin"
+    bin_dir.mkdir()
+    validator = bin_dir / "spa-json-dump"
+    validator.write_text("#!/usr/bin/env bash\nexit 23\n", encoding="utf-8")
+    validator.chmod(0o755)
+    cursor = tmp_path / "traces/last-deployed-sha"
+
+    result = subprocess.run(
+        [str(SCRIPT), sha],
+        text=True,
+        capture_output=True,
+        check=False,
+        env={
+            **os.environ,
+            "HOME": str(home),
+            "PATH": f"{bin_dir}:{os.environ['PATH']}",
+            "REPO": str(repo),
+            "HAPAX_DRIFT_NTFY": "0",
+            "HAPAX_POST_MERGE_LAST_DEPLOYED_SHA_PATH": str(cursor),
+            "HAPAX_POST_MERGE_TRACE_PATH": str(tmp_path / "traces/deploy.jsonl"),
+        },
+    )
+
+    assert result.returncode != 0
+    assert "REFUSED invalid PipeWire SPA JSON" in result.stderr
+    assert live.read_text(encoding="utf-8") == "previous live configuration\n"
+    assert not cursor.exists()
+    assert not list(live.parent.glob(".99-invalid.conf.tmp.*"))
 
 
 def _fake_hooks_doctor() -> str:
@@ -7763,6 +8292,37 @@ def test_cursor_baseline_drives_cumulative_diff_without_explicit_since(tmp_path:
     assert deployed.is_file()
     assert deployed.read_text(encoding="utf-8") == "#!/usr/bin/env bash\necho backlog\n"
     assert cursor.read_text(encoding="utf-8").strip() == target
+    marker = _deploy_cursor_marker(Path(env["HOME"]))
+    assert marker.read_text(encoding="utf-8") == "hapax-deploy-cursor-established-v1\n"
+    assert marker.stat().st_mode & 0o777 == 0o600
+
+
+def test_missing_established_cursor_refuses_to_skip_cumulative_backlog(tmp_path: Path) -> None:
+    repo, _, _, target = _repo_with_cursor_backlog(tmp_path)
+    canon = tmp_path / "canon"
+    calls = tmp_path / "hooks-doctor-calls.txt"
+    _seed_canonical_gate(repo, canon, stale=False)
+    env = _gate_reconcile_env(tmp_path, repo, canon, calls)
+    cursor = tmp_path / "traces/last-deployed-sha"
+    marker = _deploy_cursor_marker(Path(env["HOME"]))
+    marker.parent.mkdir(parents=True)
+    marker.write_text("hapax-deploy-cursor-established-v1\n", encoding="utf-8")
+    marker.chmod(0o600)
+
+    result = subprocess.run(
+        [str(SCRIPT), target],
+        text=True,
+        capture_output=True,
+        check=False,
+        env=env,
+    )
+
+    assert result.returncode != 0
+    assert "established deploy cursor is missing" in result.stderr
+    assert not (Path(env["HOME"]) / ".local/bin/hapax-backlog-demo").exists()
+    assert not cursor.exists()
+    assert not cursor.parent.exists()
+    assert marker.read_text(encoding="utf-8") == "hapax-deploy-cursor-established-v1\n"
 
 
 def test_explicit_since_cannot_skip_past_trusted_cursor(tmp_path: Path) -> None:
@@ -7827,6 +8387,10 @@ def test_last_deployed_sha_failure_preserves_previous_cursor_and_records_failure
     previous = _git(repo, "rev-parse", f"{sha}^")
     cursor.write_text(f"{previous}\n", encoding="utf-8")
     cursor.chmod(0o600)
+    marker = _deploy_cursor_marker(Path(env["HOME"]))
+    marker.parent.mkdir(parents=True)
+    marker.write_text("hapax-deploy-cursor-established-v1\n", encoding="utf-8")
+    marker.chmod(0o600)
     cursor_parent.chmod(0o555)
     env["HAPAX_POST_MERGE_LAST_DEPLOYED_SHA_PATH"] = str(cursor)
 
@@ -7853,6 +8417,80 @@ def test_last_deployed_sha_failure_preserves_previous_cursor_and_records_failure
     ]
     assert records[-1]["status"] == "failed"
     assert records[-1]["exit_code"] == result.returncode
+
+
+@pytest.mark.parametrize("with_previous_cursor", (True, False))
+def test_post_replace_cursor_fsync_failure_rolls_back_visible_cursor(
+    tmp_path: Path,
+    with_previous_cursor: bool,
+) -> None:
+    repo, sha = _repo_with_gate_closure_and_docs_commit(tmp_path)
+    canon = tmp_path / "canon"
+    calls = tmp_path / "hooks-doctor-calls.txt"
+    _seed_canonical_gate(repo, canon, stale=False)
+    env = _gate_reconcile_env(tmp_path, repo, canon, calls)
+    cursor_parent = tmp_path / "cursor-domain"
+    cursor_parent.mkdir()
+    cursor = cursor_parent / "last-deployed-sha"
+    previous = _git(repo, "rev-parse", f"{sha}^")
+    marker = _deploy_cursor_marker(Path(env["HOME"]))
+    if with_previous_cursor:
+        marker.parent.mkdir(parents=True)
+        cursor.write_text(f"{previous}\n", encoding="utf-8")
+        cursor.chmod(0o600)
+        marker.write_text("hapax-deploy-cursor-established-v1\n", encoding="utf-8")
+        marker.chmod(0o600)
+    env["HAPAX_POST_MERGE_LAST_DEPLOYED_SHA_PATH"] = str(cursor)
+    env["HAPAX_TEST_CURSOR_FSYNC_PARENT"] = str(cursor_parent.absolute())
+    script = _post_merge_script_with_cursor_fsync_failure(tmp_path)
+
+    result = subprocess.run(
+        [str(script), sha],
+        text=True,
+        capture_output=True,
+        check=False,
+        env=env,
+    )
+
+    assert result.returncode != 0
+    assert "cursor directory sync failed and the prior cursor state was restored" in result.stderr
+    if with_previous_cursor:
+        assert cursor.read_text(encoding="utf-8").strip() == previous
+        assert marker.read_text(encoding="utf-8") == "hapax-deploy-cursor-established-v1\n"
+    else:
+        assert not cursor.exists()
+        assert not marker.exists()
+    assert not list(cursor_parent.glob(".last-deployed-sha.tmp.*"))
+    assert not list(cursor_parent.glob(".last-deployed-sha.restore.tmp.*"))
+
+
+def test_first_publication_marker_fsync_failure_leaves_no_false_establishment(
+    tmp_path: Path,
+) -> None:
+    repo, sha = _repo_with_gate_closure_and_docs_commit(tmp_path)
+    canon = tmp_path / "canon"
+    calls = tmp_path / "hooks-doctor-calls.txt"
+    _seed_canonical_gate(repo, canon, stale=False)
+    env = _gate_reconcile_env(tmp_path, repo, canon, calls)
+    cursor = tmp_path / "cursor-domain/last-deployed-sha"
+    cursor.parent.mkdir()
+    marker = _deploy_cursor_marker(Path(env["HOME"]))
+    env["HAPAX_POST_MERGE_LAST_DEPLOYED_SHA_PATH"] = str(cursor)
+    env["HAPAX_TEST_CURSOR_FSYNC_PARENT"] = str(marker.parent.absolute())
+    script = _post_merge_script_with_cursor_fsync_failure(tmp_path)
+
+    result = subprocess.run(
+        [str(script), sha],
+        text=True,
+        capture_output=True,
+        check=False,
+        env=env,
+    )
+
+    assert result.returncode != 0
+    assert "failed to publish deploy cursor establishment marker" in result.stderr
+    assert not cursor.exists()
+    assert not marker.exists()
 
 
 def test_older_process_cannot_regress_cursor_after_newer_deploy_completes(

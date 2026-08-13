@@ -187,6 +187,7 @@ OOM_CONTAINMENT_INSTALLER_PATH="scripts/install-p0-oom-containment"
 APCUPSD_INSTALLER_PATH="scripts/install-apcupsd-power-alerts"
 ROOT_DEFER_DIR="${HAPAX_POST_MERGE_ROOT_DEFER_DIR:-$HOME/.cache/hapax/post-merge-root-required}"
 ROOT_REQUIRED_STATE_ROOT="${HAPAX_ROOT_REQUIRED_STATE_ROOT:-$HOME/.local/state/hapax/root-required}"
+DEPLOY_CURSOR_ESTABLISHED_PATH="$ROOT_REQUIRED_STATE_ROOT/post-merge-deploy-cursor-established"
 ROOT_REQUIRED_INSTALLED_SOURCE_ROOT="${HAPAX_ROOT_REQUIRED_INSTALLED_SOURCE_ROOT:-$ROOT_REQUIRED_STATE_ROOT/current-source}"
 ROOT_REQUIRED_INSTALLED_RECEIPT_ROOT="${HAPAX_ROOT_REQUIRED_INSTALLED_RECEIPT_ROOT:-$ROOT_REQUIRED_STATE_ROOT/installed-receipts}"
 ROOT_REQUIRED_DESIRED_RECEIPT_ROOT="${HAPAX_ROOT_REQUIRED_DESIRED_RECEIPT_ROOT:-$ROOT_REQUIRED_STATE_ROOT/desired-receipts}"
@@ -214,6 +215,7 @@ configure_root_required_state_domain() {
             "HOME=$HOME" \
             "HAPAX_POST_MERGE_TRACE_PATH=$TRACE_PATH" \
             "HAPAX_POST_MERGE_LAST_DEPLOYED_SHA_PATH=$LAST_DEPLOYED_SHA_PATH" \
+            "HAPAX_POST_MERGE_CURSOR_ESTABLISHED_PATH=$DEPLOY_CURSOR_ESTABLISHED_PATH" \
             "HAPAX_POST_MERGE_SYSTEMD_PENDING_PATH=$SYSTEMD_RUNTIME_PENDING_PATH" \
             "HAPAX_POST_MERGE_ROOT_DEFER_DIR=$ROOT_DEFER_DIR" \
             "HAPAX_ROOT_REQUIRED_STATE_ROOT=$ROOT_REQUIRED_STATE_ROOT" \
@@ -330,6 +332,7 @@ PY
     SYSTEMD_RUNTIME_PENDING_PATH="$nss_home/.cache/hapax/post-merge-traces/systemd-runtime-pending.json"
     ROOT_DEFER_DIR="$nss_home/.cache/hapax/post-merge-root-required"
     ROOT_REQUIRED_STATE_ROOT="$nss_home/.local/state/hapax/root-required"
+    DEPLOY_CURSOR_ESTABLISHED_PATH="$ROOT_REQUIRED_STATE_ROOT/post-merge-deploy-cursor-established"
     ROOT_REQUIRED_INSTALLED_SOURCE_ROOT="$ROOT_REQUIRED_STATE_ROOT/current-source"
     ROOT_REQUIRED_INSTALLED_RECEIPT_ROOT="$ROOT_REQUIRED_STATE_ROOT/installed-receipts"
     ROOT_REQUIRED_DESIRED_RECEIPT_ROOT="$ROOT_REQUIRED_STATE_ROOT/desired-receipts"
@@ -615,18 +618,62 @@ PY
 }
 
 read_last_deployed_sha_under_lock() {
-    /usr/bin/python3 -I -S - "$LAST_DEPLOYED_SHA_PATH" <<'PY'
+    /usr/bin/python3 -I -S - \
+        "$LAST_DEPLOYED_SHA_PATH" "$DEPLOY_CURSOR_ESTABLISHED_PATH" <<'PY'
 from __future__ import annotations
 
 import os
 import re
 import stat
 import sys
+import tempfile
 
 path = os.path.abspath(sys.argv[1])
+marker = os.path.abspath(sys.argv[2])
+marker_payload = b"hapax-deploy-cursor-established-v1\n"
+if marker == path:
+    raise OSError("deploy cursor and establishment marker must differ")
+
+
+def validate_marker() -> bool:
+    try:
+        marker_before = os.lstat(marker)
+    except FileNotFoundError:
+        return False
+    if (
+        not stat.S_ISREG(marker_before.st_mode)
+        or marker_before.st_uid != os.geteuid()
+        or marker_before.st_nlink != 1
+        or marker_before.st_mode & 0o133
+        or marker_before.st_size != len(marker_payload)
+    ):
+        raise OSError("unsafe deploy-cursor establishment marker")
+    marker_fd = os.open(marker, os.O_RDONLY | os.O_CLOEXEC | os.O_NOFOLLOW)
+    try:
+        inode = os.fstat(marker_fd)
+        payload = os.read(marker_fd, len(marker_payload) + 1)
+        marker_after = os.lstat(marker)
+    finally:
+        os.close(marker_fd)
+    if (
+        payload != marker_payload
+        or (inode.st_dev, inode.st_ino) != (marker_before.st_dev, marker_before.st_ino)
+        or (inode.st_dev, inode.st_ino) != (marker_after.st_dev, marker_after.st_ino)
+    ):
+        raise OSError("deploy-cursor establishment marker changed during read")
+    return True
+
+
+marker_exists = validate_marker()
 try:
     path_before = os.lstat(path)
 except FileNotFoundError:
+    if marker_exists:
+        print(
+            "hapax-post-merge-deploy: established deploy cursor is missing; refusing to reset cumulative deployment history",
+            file=sys.stderr,
+        )
+        raise SystemExit(1)
     raise SystemExit(0)
 except OSError as exc:
     print(
@@ -685,6 +732,32 @@ except UnicodeDecodeError as exc:
     raise OSError("cursor is not ASCII") from exc
 if re.fullmatch(r"[0-9a-f]{40}\n", value) is None:
     raise OSError("cursor does not contain one canonical SHA")
+if not marker_exists:
+    marker_parent = os.path.dirname(marker)
+    os.makedirs(marker_parent, mode=0o700, exist_ok=True)
+    marker_fd, marker_temp = tempfile.mkstemp(
+        prefix=f".{os.path.basename(marker)}.tmp.", dir=marker_parent
+    )
+    try:
+        os.fchmod(marker_fd, 0o600)
+        if os.write(marker_fd, marker_payload) != len(marker_payload):
+            raise OSError("short write while migrating deploy-cursor establishment marker")
+        os.fsync(marker_fd)
+        os.close(marker_fd)
+        marker_fd = -1
+        os.replace(marker_temp, marker)
+        dir_fd = os.open(marker_parent, os.O_RDONLY | os.O_DIRECTORY | os.O_CLOEXEC)
+        try:
+            os.fsync(dir_fd)
+        finally:
+            os.close(dir_fd)
+    finally:
+        if marker_fd >= 0:
+            os.close(marker_fd)
+        try:
+            os.unlink(marker_temp)
+        except FileNotFoundError:
+            pass
 print(value[:-1])
 PY
 }
@@ -975,7 +1048,7 @@ record_post_merge_trace() {
     HAPAX_TRACE_SYSTEMD_UNCLASSIFIED="$(_trace_join "${SYSTEMD_UNCLASSIFIED[@]}")" \
     /usr/bin/python3 -I -S - "$TRACE_PATH" "$TRACE_MAX_RECORDS" "$SHA" "$DRY_RUN" "$status" "$exit_code" \
         "$DID_ANYTHING" "$cursor_path" "$cursor_value" "$SYSTEMD_RUNTIME_PENDING_PATH" \
-        "$SYSTEMD_PENDING_SNAPSHOT" <<'PY'
+        "$SYSTEMD_PENDING_SNAPSHOT" "$DEPLOY_CURSOR_ESTABLISHED_PATH" <<'PY'
 from __future__ import annotations
 
 import fcntl
@@ -1104,6 +1177,7 @@ cursor_path = sys.argv[8]
 cursor_value = sys.argv[9]
 pending_path = Path(sys.argv[10]).expanduser()
 pending_snapshot = sys.argv[11]
+cursor_established_path = Path(sys.argv[12]).expanduser()
 if bool(cursor_path) != bool(cursor_value):
     print("hapax-post-merge-deploy: incomplete cursor publication request", file=sys.stderr)
     raise SystemExit(1)
@@ -1183,6 +1257,9 @@ fd = -1
 lock_fd = -1
 temp_paths: list[str] = []
 failure_surface = f"trace {path}"
+marker_parent: Path | None = None
+marker_preexisting = False
+marker_published = False
 try:
     parent.mkdir(mode=0o700, parents=True, exist_ok=True)
     lock_path = parent / f".{path.name}.lock"
@@ -1238,14 +1315,25 @@ try:
     fd = -1
     pending_temp = ""
     cursor_temp = ""
+    cursor_restore_temp = ""
     if cursor_path:
         cursor = Path(cursor_path).expanduser()
         cursor_parent = cursor.parent
-        if cursor.absolute() in {path.absolute(), pending_path.absolute()}:
-            raise ValueError("trace, queue, and cursor paths must be distinct")
+        if len(
+            {
+                path.absolute(),
+                pending_path.absolute(),
+                cursor.absolute(),
+                cursor_established_path.absolute(),
+            }
+        ) != 4:
+            raise ValueError("trace, queue, cursor, and cursor marker paths must be distinct")
         pending_parent = pending_path.parent
+        marker_parent = cursor_established_path.parent
         pending_parent.mkdir(mode=0o700, parents=True, exist_ok=True)
         cursor_parent.mkdir(mode=0o700, parents=True, exist_ok=True)
+        marker_parent.mkdir(mode=0o700, parents=True, exist_ok=True)
+        marker_preexisting = os.path.lexists(cursor_established_path)
         if next_pending:
             failure_surface = f"pending systemd queue {pending_path}"
             pending_payload = (
@@ -1261,11 +1349,42 @@ try:
             os.close(fd)
             fd = -1
         failure_surface = f"last-deployed SHA {cursor}"
+        if os.path.lexists(cursor):
+            previous_cursor_fd = os.open(
+                cursor, os.O_RDONLY | os.O_CLOEXEC | os.O_NOFOLLOW
+            )
+            try:
+                previous_cursor_payload = os.read(previous_cursor_fd, 42)
+                if os.read(previous_cursor_fd, 1):
+                    raise OSError("existing cursor exceeded its exact size")
+            finally:
+                os.close(previous_cursor_fd)
+            if re.fullmatch(rb"[0-9a-f]{40}\n", previous_cursor_payload) is None:
+                raise OSError("existing cursor is not one canonical SHA")
+            fd, cursor_restore_temp = write_temp(
+                cursor_parent, f"{cursor.name}.restore", previous_cursor_payload
+            )
+            temp_paths.append(cursor_restore_temp)
+            os.close(fd)
+            fd = -1
         cursor_payload = f"{cursor_value}\n".encode("ascii")
         fd, cursor_temp = write_temp(cursor_parent, cursor.name, cursor_payload)
         temp_paths.append(cursor_temp)
         os.close(fd)
         fd = -1
+        failure_surface = f"deploy cursor establishment marker {cursor_established_path}"
+        marker_payload = b"hapax-deploy-cursor-established-v1\n"
+        fd, marker_temp = write_temp(
+            marker_parent, cursor_established_path.name, marker_payload
+        )
+        temp_paths.append(marker_temp)
+        os.close(fd)
+        fd = -1
+    fsync_dir(parent)
+    if cursor_path:
+        fsync_dir(pending_path.parent)
+        fsync_dir(cursor_parent)
+        fsync_dir(marker_parent)
     failure_surface = f"trace {path}"
     os.replace(trace_temp, path)
     temp_paths.remove(trace_temp)
@@ -1278,13 +1397,54 @@ try:
         elif os.path.lexists(pending_path):
             os.unlink(pending_path)
         fsync_dir(pending_path.parent)
+        failure_surface = f"deploy cursor establishment marker {cursor_established_path}"
+        os.replace(marker_temp, cursor_established_path)
+        marker_published = True
+        temp_paths.remove(marker_temp)
+        fsync_dir(marker_parent)
         failure_surface = f"last-deployed SHA {cursor}"
         os.replace(cursor_temp, cursor)
         temp_paths.remove(cursor_temp)
-        fsync_dir(cursor_parent)
+        try:
+            fsync_dir(cursor_parent)
+        except OSError as cursor_sync_error:
+            failure_surface = f"last-deployed SHA rollback {cursor}"
+            try:
+                if cursor_restore_temp:
+                    os.replace(cursor_restore_temp, cursor)
+                    temp_paths.remove(cursor_restore_temp)
+                    cursor_restore_temp = ""
+                elif os.path.lexists(cursor):
+                    os.unlink(cursor)
+                fsync_dir(cursor_parent)
+                if marker_published and not marker_preexisting:
+                    if os.path.lexists(cursor_established_path):
+                        os.unlink(cursor_established_path)
+                    fsync_dir(marker_parent)
+                    marker_published = False
+            except OSError as rollback_error:
+                raise OSError(
+                    f"cursor directory sync failed ({cursor_sync_error}); rollback also failed: {rollback_error}"
+                ) from rollback_error
+            raise OSError(
+                f"cursor directory sync failed and the prior cursor state was restored: {cursor_sync_error}"
+            ) from cursor_sync_error
+        if cursor_restore_temp:
+            os.unlink(cursor_restore_temp)
+            temp_paths.remove(cursor_restore_temp)
+            cursor_restore_temp = ""
     os.close(lock_fd)
     lock_fd = -1
 except (OSError, UnicodeError, ValueError) as exc:
+    marker_rollback_error: OSError | None = None
+    if marker_published and not marker_preexisting and marker_parent is not None:
+        try:
+            if os.path.lexists(cursor_established_path):
+                os.unlink(cursor_established_path)
+            fsync_dir(marker_parent)
+            marker_published = False
+        except OSError as cleanup_error:
+            marker_rollback_error = cleanup_error
     if fd >= 0:
         os.close(fd)
     if lock_fd >= 0:
@@ -1294,7 +1454,14 @@ except (OSError, UnicodeError, ValueError) as exc:
             os.unlink(temp_path)
         except FileNotFoundError:
             pass
-    print(f"hapax-post-merge-deploy: failed to publish {failure_surface}: {exc}", file=sys.stderr)
+    marker_rollback_suffix = ""
+    if marker_rollback_error is not None:
+        marker_rollback_suffix = f"; new marker rollback also failed: {marker_rollback_error}"
+    print(
+        f"hapax-post-merge-deploy: failed to publish {failure_surface}: {exc}"
+        f"{marker_rollback_suffix}",
+        file=sys.stderr,
+    )
     raise SystemExit(1) from exc
 PY
 }
@@ -1548,7 +1715,10 @@ if [ "$COVERAGE_FROM_STDIN" = "1" ]; then
     FILES="$(cat)"
 elif [ -n "$SINCE" ]; then
     # Cumulative range deploy: union of every file changed across <since>..<SHA>.
-    FILES="$(git diff --name-only "$SINCE" "$SHA" | sort -u)"
+    if ! FILES="$(git diff --name-only "$SINCE" "$SHA" | sort -u)"; then
+        echo "hapax-post-merge-deploy: failed to enumerate cumulative changes for ${SINCE}..${SHA}" >&2
+        exit 2
+    fi
 elif [ -n "$TARGET_FIRST_PARENT" ]; then
     if ! FILES="$(git diff --name-only "$TARGET_FIRST_PARENT" "$SHA" | sort -u)"; then
         echo "hapax-post-merge-deploy: failed to enumerate target changes for ${TARGET_FIRST_PARENT}..${SHA}" >&2
@@ -2335,21 +2505,36 @@ cache_systemd_target_at_sha() {
     fi
 }
 
-parked_user_unit_preexists() {
-    local base="$1" dest="$SYSTEMD_USER_DIR/$1" load_state active_state
-    if [ -e "$dest" ] || [ -L "$dest" ]; then
+user_unit_artifacts_exist() {
+    local base="$1" dest="$SYSTEMD_USER_DIR/$1" artifact
+    if [ -e "$dest" ] || [ -L "$dest" ] \
+        || [ -e "$SYSTEMD_USER_DIR/${base}.d" ] \
+        || [ -L "$SYSTEMD_USER_DIR/${base}.d" ]; then
+        return 0
+    fi
+    for artifact in "$SYSTEMD_USER_DIR"/*.wants/"$base"; do
+        if [ -e "$artifact" ] || [ -L "$artifact" ]; then
+            return 0
+        fi
+    done
+    return 1
+}
+
+user_unit_preexists() {
+    local base="$1" reason="$2" load_state active_state
+    if user_unit_artifacts_exist "$base"; then
         return 0
     fi
     if ! load_state="$(systemctl --user show "$base" -p LoadState --value)"; then
-        echo "hapax-post-merge-deploy: cannot query LoadState for parked unit $base before publication" >&2
+        echo "hapax-post-merge-deploy: cannot query LoadState for $reason $base before mutation" >&2
         return 2
     fi
     if ! active_state="$(systemctl --user show "$base" -p ActiveState --value)"; then
-        echo "hapax-post-merge-deploy: cannot query ActiveState for parked unit $base before publication" >&2
+        echo "hapax-post-merge-deploy: cannot query ActiveState for $reason $base before mutation" >&2
         return 2
     fi
     if [ -z "$load_state" ] || [ -z "$active_state" ]; then
-        echo "hapax-post-merge-deploy: user manager returned an empty state for parked unit $base before publication" >&2
+        echo "hapax-post-merge-deploy: user manager returned an empty state for $reason $base before mutation" >&2
         return 2
     fi
     if [ "$load_state" = "not-found" ] && [ "$active_state" = "inactive" ]; then
@@ -2358,25 +2543,53 @@ parked_user_unit_preexists() {
     return 0
 }
 
-park_user_unit_checked() {
-    local base="$1" active_state
+remove_user_unit_artifacts_checked() {
+    local base="$1" reason="$2" dest="$SYSTEMD_USER_DIR/$1" artifact
+    if [ -e "$dest" ] || [ -L "$dest" ]; then
+        if ! rm -f -- "$dest"; then
+            echo "hapax-post-merge-deploy: failed to remove $reason fragment $dest" >&2
+            return 1
+        fi
+    fi
+    for artifact in "$SYSTEMD_USER_DIR"/*.wants/"$base"; do
+        [ -e "$artifact" ] || [ -L "$artifact" ] || continue
+        if ! rm -f -- "$artifact"; then
+            echo "hapax-post-merge-deploy: failed to remove $reason enablement link $artifact" >&2
+            return 1
+        fi
+    done
+    artifact="$SYSTEMD_USER_DIR/${base}.d"
+    if [ -e "$artifact" ] || [ -L "$artifact" ]; then
+        if ! rm -rf -- "$artifact"; then
+            echo "hapax-post-merge-deploy: failed to remove $reason drop-in path $artifact" >&2
+            return 1
+        fi
+    fi
+}
+
+stop_disable_user_unit_checked() {
+    local base="$1" reason="$2" active_state
     if ! systemctl --user stop "$base"; then
-        echo "hapax-post-merge-deploy: unable to stop parked unit $base" >&2
+        echo "hapax-post-merge-deploy: unable to stop $reason $base" >&2
         return 1
     fi
     if ! active_state="$(systemctl --user show "$base" -p ActiveState --value)"; then
-        echo "hapax-post-merge-deploy: cannot verify ActiveState for parked unit $base after stop" >&2
+        echo "hapax-post-merge-deploy: cannot verify ActiveState for $reason $base after stop" >&2
         return 1
     fi
     if [ "$active_state" != "inactive" ]; then
-        echo "hapax-post-merge-deploy: parked unit $base remained ActiveState=${active_state:-missing} after stop" >&2
+        echo "hapax-post-merge-deploy: $reason $base remained ActiveState=${active_state:-missing} after stop" >&2
         return 1
     fi
     if ! systemctl --user disable "$base"; then
-        echo "hapax-post-merge-deploy: unable to disable parked unit $base after verified stop" >&2
+        echo "hapax-post-merge-deploy: unable to disable $reason $base after verified stop" >&2
         return 1
     fi
     systemctl --user reset-failed "$base" >/dev/null 2>&1 || true
+}
+
+park_user_unit_checked() {
+    stop_disable_user_unit_checked "$1" "parked unit"
 }
 
 prepark_cached_systemd_target() {
@@ -2386,13 +2599,26 @@ prepark_cached_systemd_target() {
         return 0
     fi
     base="$(basename "$source_path")"
-    parked_user_unit_preexists "$base" || parked_preexisting_rc=$?
+    user_unit_preexists "$base" "parked unit" || parked_preexisting_rc=$?
     if [ "$parked_preexisting_rc" -eq 1 ]; then
         return 0
     fi
     [ "$parked_preexisting_rc" -eq 0 ] || return 1
     echo "pre-parking $base before all eligible deployment groups (Hapax-Parked marker)"
     park_user_unit_checked "$base"
+}
+
+retire_deleted_cached_systemd_target() {
+    local source_path="$1" base preexisting_rc=0
+    [ "${SYSTEMD_TARGET_PRESENT[$source_path]}" -eq 0 ] || return 0
+    base="$(basename "$source_path")"
+    user_unit_preexists "$base" "deleted user unit" || preexisting_rc=$?
+    if [ "$preexisting_rc" -eq 1 ]; then
+        return 0
+    fi
+    [ "$preexisting_rc" -eq 0 ] || return 1
+    echo "retiring deleted user unit $base before fragment removal"
+    stop_disable_user_unit_checked "$base" "deleted user unit"
 }
 
 # Resolve every target user-unit object before any deploy group mutates state,
@@ -2406,32 +2632,61 @@ if [ "${#SYSTEMD[@]}" -gt 0 ] || [ "${#SYSTEMD_PENDING_USER_UNITS[@]}" -gt 0 ]; 
     done
     for f in "${SYSTEMD[@]}" "${SYSTEMD_PENDING_USER_UNITS[@]}"; do
         prepark_cached_systemd_target "$f" || exit 1
+        retire_deleted_cached_systemd_target "$f" || exit 1
         SYSTEMD_EARLY_PREPARKED["$f"]=1
     done
 fi
 
+publish_exact_file_or_delete() {
+    local source_path="$1" dest="$2" mode="$3" label="$4" validator="${5:-}"
+    local dest_dir base temp
+    if ! git_blob_state_at "$SHA" "$source_path" "$label"; then
+        return 2
+    fi
+    if [ "$GIT_BLOB_PRESENT" -eq 0 ]; then
+        if [ -e "$dest" ] || [ -L "$dest" ]; then
+            if ! rm -f -- "$dest"; then
+                echo "hapax-post-merge-deploy: failed to remove deleted $label destination $dest" >&2
+                return 1
+            fi
+        fi
+        echo "  (deleted: $source_path)"
+        return 0
+    fi
+    dest_dir="$(dirname "$dest")"
+    base="$(basename "$dest")"
+    if ! mkdir -p -- "$dest_dir" \
+        || ! temp="$(mktemp "$dest_dir/.${base}.tmp.XXXXXX")"; then
+        echo "hapax-post-merge-deploy: failed to reserve a staged $label beside $dest" >&2
+        return 1
+    fi
+    if ! git -C "$REPO" show "$SHA:$source_path" > "$temp"; then
+        rm -f -- "$temp" 2>/dev/null || true
+        echo "hapax-post-merge-deploy: failed to materialize $label at $SHA:$source_path" >&2
+        return 1
+    fi
+    if [ "$validator" = "spa-json" ] \
+        && command -v spa-json-dump >/dev/null 2>&1 \
+        && ! spa-json-dump /dev/stdin < "$temp" >/dev/null 2>&1; then
+        rm -f -- "$temp" 2>/dev/null || true
+        echo "hapax-post-merge-deploy: REFUSED invalid PipeWire SPA JSON at $SHA:$source_path; live configuration is unchanged" >&2
+        return 1
+    fi
+    if ! chmod "$mode" "$temp" \
+        || ! mv -fT -- "$temp" "$dest"; then
+        rm -f -- "$temp" 2>/dev/null || true
+        echo "hapax-post-merge-deploy: failed to atomically publish $label $dest" >&2
+        return 1
+    fi
+    echo "  '$source_path' -> '$dest'"
+}
+
 # --- PipeWire confs ---
 if [ "${#PW[@]}" -gt 0 ]; then
     echo "pipewire confs changed (${#PW[@]}):"
-    mkdir -p "$PW_CONF_DIR"
     for f in "${PW[@]}"; do
         dest="$PW_CONF_DIR/$(basename "$f")"
-        if git cat-file -e "$SHA:$f" 2>/dev/null; then
-            # Parse-lint BEFORE the live conf dir sees it: one syntax-invalid
-            # conf start-limit-kills the whole audio stack (2026-06-11 P0).
-            if command -v spa-json-dump >/dev/null 2>&1; then
-                if ! git show "$SHA:$f" | spa-json-dump /dev/stdin >/dev/null 2>&1; then
-                    echo "  REFUSED (spa-json parse error, would kill PipeWire): '$f'" >&2
-                    DEPLOY_ERRORS=$((${DEPLOY_ERRORS:-0} + 1))
-                    continue
-                fi
-            fi
-            git show "$SHA:$f" > "$dest"
-            echo "  '$f' -> '$dest'"
-        else
-            echo "  (deleted: $f)"
-            rm -fv "$dest" || true
-        fi
+        publish_exact_file_or_delete "$f" "$dest" 0644 "PipeWire configuration" spa-json || exit $?
     done
     echo "restarting pipewire stack"
     systemctl --user restart pipewire pipewire-pulse wireplumber
@@ -2441,16 +2696,9 @@ fi
 # --- Hapax runtime config ---
 if [ "${#HAPAX_CONF[@]}" -gt 0 ]; then
     echo "hapax runtime config changed (${#HAPAX_CONF[@]}):"
-    mkdir -p "$HAPAX_CONF_DIR"
     for f in "${HAPAX_CONF[@]}"; do
         dest="$HAPAX_CONF_DIR/$(basename "$f")"
-        if git cat-file -e "$SHA:$f" 2>/dev/null; then
-            git show "$SHA:$f" > "$dest"
-            echo "  '$f' -> '$dest'"
-        else
-            echo "  (deleted: $f)"
-            rm -fv "$dest" || true
-        fi
+        publish_exact_file_or_delete "$f" "$dest" 0644 "Hapax runtime configuration" || exit $?
     done
     echo "restarting hapax-audio-reconciler"
     systemctl --user restart hapax-audio-reconciler.service || true
@@ -2460,15 +2708,9 @@ fi
 # --- WirePlumber confs ---
 if [ "${#WP[@]}" -gt 0 ]; then
     echo "wireplumber confs changed (${#WP[@]}):"
-    mkdir -p "$WP_CONF_DIR"
     for f in "${WP[@]}"; do
         dest="$WP_CONF_DIR/$(basename "$f")"
-        if git cat-file -e "$SHA:$f" 2>/dev/null; then
-            git show "$SHA:$f" > "$dest"
-            echo "  '$f' -> '$dest'"
-        else
-            rm -fv "$dest" || true
-        fi
+        publish_exact_file_or_delete "$f" "$dest" 0644 "WirePlumber configuration" || exit $?
     done
     # WP restart alone if we didn't already restart above
     if [ "${#PW[@]}" -eq 0 ]; then
@@ -2485,15 +2727,9 @@ fi
 # policy can go stale on deploy while its .conf updates (FM-13).
 if [ "${#WP_LUA[@]}" -gt 0 ]; then
     echo "wireplumber lua scripts changed (${#WP_LUA[@]}):"
-    mkdir -p "$WP_SCRIPTS_DIR"
     for f in "${WP_LUA[@]}"; do
         dest="$WP_SCRIPTS_DIR/$(basename "$f")"
-        if git cat-file -e "$SHA:$f" 2>/dev/null; then
-            git show "$SHA:$f" > "$dest"
-            echo "  '$f' -> '$dest'"
-        else
-            rm -fv "$dest" || true
-        fi
+        publish_exact_file_or_delete "$f" "$dest" 0644 "WirePlumber Lua script" || exit $?
     done
     # Restart wireplumber only if neither the pipewire stack nor the WP confs
     # above already restarted it.
@@ -2506,17 +2742,10 @@ fi
 # --- systemd watchdog helper scripts ---
 if [ "${#WATCHDOGS[@]}" -gt 0 ]; then
     echo "systemd watchdog scripts changed (${#WATCHDOGS[@]}):"
-    mkdir -p "$LOCAL_BIN"
     for f in "${WATCHDOGS[@]}"; do
         base="$(basename "$f")"
         dest="$LOCAL_BIN/$base"
-        if git cat-file -e "$SHA:$f" 2>/dev/null; then
-            git show "$SHA:$f" > "$dest"
-            chmod +x "$dest" 2>/dev/null || true
-            echo "  '$f' -> '$dest'"
-        else
-            rm -fv "$dest" || true
-        fi
+        publish_exact_file_or_delete "$f" "$dest" 0755 "systemd watchdog script" || exit $?
         matches="$(grep -l -F "$dest" "$REPO/systemd/units/"*.service 2>/dev/null || true)"
         for unit_path in $matches; do
             base_unit="$(basename "$unit_path")"
@@ -3090,11 +3319,17 @@ validate_generic_dropin_activation() {
             return 1
             ;;
         *.slice)
-            if ! git -C "$REPO" cat-file -e "$SHA:$f" 2>/dev/null; then
+            if ! git_blob_state_at "$SHA" "$f" "generic slice drop-in"; then
+                return 1
+            fi
+            if [ "$GIT_BLOB_PRESENT" -eq 0 ]; then
                 echo "hapax-post-merge-deploy: refusing generic slice drop-in deletion for $f because runtime set-property overrides cannot be safely inferred; next action: use a governed slice-specific removal that clears persistent and runtime policy together" >&2
                 return 1
             fi
-            content="$(git -C "$REPO" show "$SHA:$f")"
+            if ! content="$(git -C "$REPO" show "$SHA:$f")"; then
+                echo "hapax-post-merge-deploy: failed to materialize generic slice drop-in at $SHA:$f" >&2
+                return 1
+            fi
             invalid_memory="$(printf '%s\n' "$content" | awk -F= '
                 /^(MemoryHigh|MemoryMax|MemorySwapMax|MemoryLow|MemoryMin)=/ {
                     if ($2 !~ /^(infinity|[0-9]+([.][0-9]+)?([KMGTPE](iB|B)?)?|[0-9]+%)$/) {
@@ -3938,8 +4173,14 @@ if [ "${#SYSTEMD_DROPINS[@]}" -gt 0 ]; then
         unit_name="${dropin_dir%.d}"
         dest_dir="$SYSTEMD_USER_DIR/$dropin_dir"
         dest="$dest_dir/$conf_name"
-        mkdir -p "$dest_dir"
-        if git cat-file -e "$SHA:$f" 2>/dev/null; then
+        if ! git_blob_state_at "$SHA" "$f" "systemd user drop-in"; then
+            exit 1
+        fi
+        if [ "$GIT_BLOB_PRESENT" -eq 1 ]; then
+            if ! mkdir -p "$dest_dir"; then
+                echo "hapax-post-merge-deploy: unable to create the drop-in staging directory for $f; next action: verify destination ownership and capacity, then rerun the governed deploy" >&2
+                exit 1
+            fi
             if ! dropin_temp="$(mktemp "$dest_dir/.${conf_name}.tmp.XXXXXX")"; then
                 echo "hapax-post-merge-deploy: unable to reserve a temporary path for $f; next action: verify destination ownership and capacity, then rerun the governed deploy" >&2
                 exit 1
@@ -3949,8 +4190,8 @@ if [ "${#SYSTEMD_DROPINS[@]}" -gt 0 ]; then
                 echo "hapax-post-merge-deploy: unable to materialize $f before drop-in activation; next action: verify the commit object and rerun the governed deploy" >&2
                 exit 1
             fi
-            chmod 0644 "$dropin_temp"
-            if ! mv -fT "$dropin_temp" "$dest"; then
+            if ! chmod 0644 "$dropin_temp" \
+                || ! mv -fT "$dropin_temp" "$dest"; then
                 rm -f "$dropin_temp" 2>/dev/null || true
                 echo "hapax-post-merge-deploy: unable to atomically replace drop-in $dest; next action: remove unsafe destination drift and rerun the governed deploy" >&2
                 exit 1
@@ -3958,7 +4199,12 @@ if [ "${#SYSTEMD_DROPINS[@]}" -gt 0 ]; then
             echo "  '$f' -> '$dest'"
             DROPIN_UNITS_TO_RESTART+=("$unit_name")
         else
-            rm -fv "$dest" || true
+            if [ -e "$dest" ] || [ -L "$dest" ]; then
+                if ! rm -f -- "$dest"; then
+                    echo "hapax-post-merge-deploy: unable to remove deleted drop-in $dest" >&2
+                    exit 1
+                fi
+            fi
         fi
     done
     systemctl --user daemon-reload
@@ -4202,8 +4448,7 @@ if [ "${#SYSTEMD[@]}" -gt 0 ]; then
             SYSTEMD_INSTALLED+=("$f")
             SYSTEMD_INSTALLED_CONTENT["$f"]="$PUBLISHED_GIT_CONTENT"
         else
-            if ! rm -fv -- "$dest"; then
-                echo "hapax-post-merge-deploy: failed to remove deleted systemd unit $dest" >&2
+            if ! remove_user_unit_artifacts_checked "$base" "deleted systemd unit"; then
                 exit 1
             fi
         fi
@@ -4480,17 +4725,23 @@ fi
 run_bounded_user_service() {
     local unit_stem="$1" runtime_s="$2"
     shift 2
-    local env_name
+    local env_name env_value client_timeout_s
     local -a environment_args=()
     if [ ! -x "$SYSTEMD_RUN_BIN" ] || [ -L "$SYSTEMD_RUN_BIN" ]; then
         echo "hapax-post-merge-deploy: trusted systemd-run executable is unavailable at $SYSTEMD_RUN_BIN" >&2
         return 2
     fi
-    while IFS= read -r env_name; do
-        [[ "$env_name" =~ ^[A-Za-z_][A-Za-z0-9_]*$ ]] || continue
-        environment_args+=("--setenv=$env_name")
-    done < <(compgen -e)
-    "$SYSTEMD_RUN_BIN" \
+    for env_name in HOME PATH NTFY_TOPIC HAPAX_SMOKE_OFF HAPAX_SMOKE_DRYRUN \
+        HAPAX_SMOKE_NTFY_TIMEOUT_S HAPAX_SMOKE_ISOLATED_TEST_ROOT \
+        HAPAX_SMOKE_SYSTEMD_RUN_BIN HAPAX_TEST_SMOKE_DESCENDANT_PID_FILE; do
+        [[ -v "$env_name" ]] || continue
+        env_value="${!env_name}"
+        [ "${#env_value}" -le 4096 ] || return 2
+        environment_args+=("--setenv=${env_name}=${env_value}")
+    done
+    client_timeout_s=$((runtime_s + 10))
+    /usr/bin/timeout --foreground --signal=TERM --kill-after=2s "${client_timeout_s}s" \
+        "$SYSTEMD_RUN_BIN" \
         --user \
         --wait \
         --pipe \
@@ -4501,11 +4752,15 @@ run_bounded_user_service() {
         --service-type=exec \
         --expand-environment=no \
         --property="RuntimeMaxSec=${runtime_s}s" \
+        --property=MemoryHigh=1536M \
+        --property=MemoryMax=2G \
+        --property=TasksMax=512 \
         --property=TimeoutStopSec=1s \
         --property=KillMode=control-group \
         --property=SendSIGKILL=yes \
         "${environment_args[@]}" \
         --setenv="REPO_ROOT=$REPO" \
+        --setenv=HAPAX_POST_MERGE_EXACT_SMOKE_CALLER=1 \
         -- \
         "$@"
 }
