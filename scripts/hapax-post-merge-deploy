@@ -268,7 +268,7 @@ for item in sys.argv[2:]:
         )
         raise SystemExit(2)
 PY
-        ROOT_REQUIRED_LOCK_ANCHOR="$test_root"
+        ROOT_REQUIRED_LOCK_ANCHOR="/"
         return
     fi
 
@@ -320,7 +320,7 @@ acquire_inherited_root_required_lock() {
         echo "hapax-post-merge-deploy: safe shared lock descriptors are absent; next action: remove caller-supplied HAPAX_ROOT_REQUIRED_LOCK_* values and rerun the package-owned deploy script" >&2
         return 1
     fi
-    /usr/bin/python3 - "$lock_fd" "$anchor_fd" "$ROOT_REQUIRED_LOCK_FILE" \
+    /usr/bin/python3 -I -S - "$lock_fd" "$anchor_fd" "$ROOT_REQUIRED_LOCK_FILE" \
         "$ROOT_REQUIRED_LOCK_ANCHOR" "$isolated" <<'PY'
 from __future__ import annotations
 
@@ -344,11 +344,14 @@ def validate_anchor() -> None:
         parent_inode = os.lstat(parent_path)
     except OSError as exc:
         raise OSError(f"cannot inspect stable lock anchor: {exc}") from exc
+    expected_anchor_uid = 0 if isolated else os.geteuid()
+    if isolated and anchor_path != "/":
+        raise OSError("isolated lock anchor must be the stable filesystem root")
     if (
         not stat.S_ISDIR(inode.st_mode)
         or not stat.S_ISDIR(path_inode.st_mode)
-        or inode.st_uid != os.geteuid()
-        or path_inode.st_uid != os.geteuid()
+        or inode.st_uid != expected_anchor_uid
+        or path_inode.st_uid != expected_anchor_uid
         or inode.st_mode & 0o022
         or path_inode.st_mode & 0o022
         or (inode.st_dev, inode.st_ino) != (path_inode.st_dev, path_inode.st_ino)
@@ -442,7 +445,7 @@ reexec_with_safe_root_required_lock() {
     fi
     local isolated=0
     [ -z "${HAPAX_ROOT_REQUIRED_ISOLATED_TEST_ROOT:-}" ] || isolated=1
-    exec /usr/bin/python3 - "$ROOT_REQUIRED_LOCK_ANCHOR" "$ROOT_REQUIRED_LOCK_FILE" \
+    exec /usr/bin/python3 -I -S - "$ROOT_REQUIRED_LOCK_ANCHOR" "$ROOT_REQUIRED_LOCK_FILE" \
         "$isolated" "$0" "${ORIGINAL_ARGS[@]}" <<'PY'
 from __future__ import annotations
 
@@ -464,11 +467,14 @@ def validate_anchor(anchor_fd: int) -> None:
     path_inode = os.lstat(anchor_path)
     parent_path = os.path.dirname(anchor_path)
     parent_inode = os.lstat(parent_path)
+    expected_anchor_uid = 0 if isolated else os.geteuid()
+    if isolated and anchor_path != "/":
+        raise OSError("isolated lock anchor must be the stable filesystem root")
     if (
         not stat.S_ISDIR(inode.st_mode)
         or not stat.S_ISDIR(path_inode.st_mode)
-        or inode.st_uid != os.geteuid()
-        or path_inode.st_uid != os.geteuid()
+        or inode.st_uid != expected_anchor_uid
+        or path_inode.st_uid != expected_anchor_uid
         or inode.st_mode & 0o022
         or path_inode.st_mode & 0o022
         or (inode.st_dev, inode.st_ino) != (path_inode.st_dev, path_inode.st_ino)

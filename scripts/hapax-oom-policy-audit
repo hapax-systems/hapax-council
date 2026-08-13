@@ -110,8 +110,8 @@ LOCAL_DOCKER_CONFIG = "/nonexistent/hapax-oom-policy-audit-docker"
 COMMAND_OUTPUT_LIMIT = 16 * 1024
 COMMAND_TIMEOUT_SECONDS = 10.0
 # Reserve one complete minimum Docker row so the row-overflow result is reachable
-# before the aggregate byte limiter (64-byte ID, tab, 2-byte name, newline).
-DOCKER_INVENTORY_MIN_ROW_BYTES = 68
+# before the aggregate byte limiter (64-byte ID, tabs, 2-byte name, empty label, newline).
+DOCKER_INVENTORY_MIN_ROW_BYTES = 69
 DOCKER_INVENTORY_MAX_ROWS = COMMAND_OUTPUT_LIMIT // DOCKER_INVENTORY_MIN_ROW_BYTES - 1
 DOCKER_TARGET_MAX = 63
 DOCKER_INVENTORY_LINE_MAX = 512
@@ -1767,12 +1767,23 @@ def _docker_mcp_networks_match(networks: object) -> bool:
     return mac_octets[:2] == b"\x02\x42" and mac_octets[2:] == address.packed
 
 
-def _read_docker_inventory(*, closing: bool) -> tuple[dict[str, str] | None, Check | None]:
+def _read_docker_inventory(
+    *, closing: bool
+) -> tuple[dict[str, str] | None, set[str] | None, Check | None]:
     check_name = "docker_oom_inventory_stable" if closing else "docker_oom_targets"
     scope = "closing Docker" if closing else "Docker"
-    enumeration = _run_local_docker(["ps", "-a", "--no-trunc", "--format", "{{.ID}}\t{{.Names}}"])
+    enumeration = _run_local_docker(
+        [
+            "ps",
+            "-a",
+            "--no-trunc",
+            "--format",
+            '{{.ID}}\t{{.Names}}\t{{.Label "org.hapax.github-mcp.app"}}',
+        ]
+    )
     if enumeration.returncode != 0:
         return (
+            None,
             None,
             Check(
                 check_name,
@@ -1790,6 +1801,7 @@ def _read_docker_inventory(*, closing: bool) -> tuple[dict[str, str] | None, Che
     if len(inventory_lines) > DOCKER_INVENTORY_MAX_ROWS:
         return (
             None,
+            None,
             Check(
                 check_name,
                 "error",
@@ -1800,12 +1812,14 @@ def _read_docker_inventory(*, closing: bool) -> tuple[dict[str, str] | None, Che
         )
 
     inventory: dict[str, str] = {}
+    labeled_ids: set[str] = set()
     seen_names: set[str] = set()
     for raw_line in inventory_lines:
         if not raw_line:
             continue
         if len(raw_line) > DOCKER_INVENTORY_LINE_MAX:
             return (
+                None,
                 None,
                 Check(
                     check_name,
@@ -1817,11 +1831,12 @@ def _read_docker_inventory(*, closing: bool) -> tuple[dict[str, str] | None, Che
             )
         fields = raw_line.split("\t")
         if (
-            len(fields) != 2
+            len(fields) != 3
             or re.fullmatch(r"[0-9a-f]{64}", fields[0]) is None
             or re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9_.-]+", fields[1]) is None
         ):
             return (
+                None,
                 None,
                 Check(
                     check_name,
@@ -1831,9 +1846,10 @@ def _read_docker_inventory(*, closing: bool) -> tuple[dict[str, str] | None, Che
                     f"malformed {scope} inventory; {NEXT_OOM_ACTION}",
                 ),
             )
-        container_id, name = fields
+        container_id, name, app_label = fields
         if container_id in inventory:
             return (
+                None,
                 None,
                 Check(
                     check_name,
@@ -1846,6 +1862,7 @@ def _read_docker_inventory(*, closing: bool) -> tuple[dict[str, str] | None, Che
         if name in seen_names:
             return (
                 None,
+                None,
                 Check(
                     check_name,
                     "error",
@@ -1856,46 +1873,9 @@ def _read_docker_inventory(*, closing: bool) -> tuple[dict[str, str] | None, Che
             )
         seen_names.add(name)
         inventory[container_id] = name
-    return inventory, None
-
-
-def _read_docker_labeled_inventory(
-    inventory: dict[str, str], *, closing: bool
-) -> tuple[set[str] | None, Check | None]:
-    check_name = "docker_oom_inventory_stable" if closing else "docker_oom_targets"
-    scope = "closing Docker" if closing else "Docker"
-    labeled = _run_local_docker(
-        ["ps", "-aq", "--no-trunc", "--filter", f"label={GITHUB_MCP_APP_LABEL}"]
-    )
-    if labeled.returncode != 0:
-        return (
-            None,
-            Check(
-                check_name,
-                "error",
-                "closing GitHub MCP label inventory observable"
-                if closing
-                else "GitHub MCP label inventory observable",
-                "N/A",
-                f"{scope} label enumeration failed: {_docker_failure_summary(labeled)}; "
-                f"{NEXT_OOM_ACTION}",
-            ),
-        )
-    labeled_ids: set[str] = set()
-    for raw_id in labeled.stdout.splitlines():
-        if re.fullmatch(r"[0-9a-f]{64}", raw_id) is None or raw_id not in inventory:
-            return (
-                None,
-                Check(
-                    check_name,
-                    "error",
-                    "labeled IDs present in the immutable inventory",
-                    "malformed",
-                    f"malformed or inconsistent {scope} label inventory; {NEXT_OOM_ACTION}",
-                ),
-            )
-        labeled_ids.add(raw_id)
-    return labeled_ids, None
+        if app_label:
+            labeled_ids.add(container_id)
+    return inventory, labeled_ids, None
 
 
 def _docker_target_generation(
@@ -1911,14 +1891,10 @@ def _docker_target_generation(
 
 
 def audit_docker_limits(uid: int) -> list[Check]:
-    inventory, inventory_error = _read_docker_inventory(closing=False)
+    inventory, labeled_ids, inventory_error = _read_docker_inventory(closing=False)
     if inventory_error is not None:
         return [inventory_error]
     assert inventory is not None
-
-    labeled_ids, labeled_error = _read_docker_labeled_inventory(inventory, closing=False)
-    if labeled_error is not None:
-        return [labeled_error]
     assert labeled_ids is not None
     target_generation = _docker_target_generation(inventory, labeled_ids)
 
@@ -2484,32 +2460,22 @@ def audit_docker_limits(uid: int) -> list[Check]:
             )
         )
 
-    closing_inventory, closing_inventory_error = _read_docker_inventory(closing=True)
+    closing_inventory, closing_labeled_ids, closing_inventory_error = _read_docker_inventory(
+        closing=True
+    )
     if closing_inventory_error is not None:
         checks.append(closing_inventory_error)
         return checks
     assert closing_inventory is not None
-
-    closing_labeled_ids, closing_labeled_error = _read_docker_labeled_inventory(
-        closing_inventory, closing=True
-    )
-    if closing_labeled_error is not None:
-        checks.append(closing_labeled_error)
-        return checks
     assert closing_labeled_ids is not None
 
-    final_inventory, final_inventory_error = _read_docker_inventory(closing=True)
+    final_inventory, final_labeled_ids, final_inventory_error = _read_docker_inventory(
+        closing=True
+    )
     if final_inventory_error is not None:
         checks.append(final_inventory_error)
         return checks
     assert final_inventory is not None
-
-    final_labeled_ids, final_labeled_error = _read_docker_labeled_inventory(
-        final_inventory, closing=True
-    )
-    if final_labeled_error is not None:
-        checks.append(final_labeled_error)
-        return checks
     assert final_labeled_ids is not None
 
     closing_target_count = max(
