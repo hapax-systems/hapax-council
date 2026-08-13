@@ -236,10 +236,46 @@ def test_install_rejects_existing_receipt_collision(tmp_path: Path) -> None:
     fixture = _fixture(tmp_path)
     receipt_path = Path(fixture.roots.invocation_store_root) / "activation-receipt.json"
     receipt_path.parent.mkdir(parents=True)
+    receipt_path.parent.chmod(0o700)
     receipt_path.write_text("{}\n", encoding="ascii")
+    receipt_path.chmod(0o600)
 
     with pytest.raises(ExecutionAdmissionError, match="gate0b_install_file_collision"):
         _install(tmp_path, fixture)
+
+
+def test_install_rejects_matching_artifacts_with_unsafe_metadata(tmp_path: Path) -> None:
+    fixture = _fixture(tmp_path)
+    _install(tmp_path, fixture)
+    receipt_path = Path(fixture.roots.invocation_store_root) / "activation-receipt.json"
+    manifest_path = Path(fixture.roots.invocation_store_root) / "composition-manifest.json"
+    receipt_payload = receipt_path.read_bytes()
+    manifest_payload = manifest_path.read_bytes()
+
+    receipt_path.chmod(0o644)
+    with pytest.raises(ExecutionAdmissionError) as mode_exc:
+        _install(tmp_path, fixture)
+    assert mode_exc.value.reason_code == "gate0b_install_file_unsafe"
+    assert "single-link mode-0600 regular file" in mode_exc.value.repair_action
+    receipt_path.chmod(0o600)
+
+    manifest_path.chmod(0o644)
+    with pytest.raises(ExecutionAdmissionError) as load_exc:
+        load_claim_publication_composition(Path(fixture.roots.invocation_store_root))
+    assert load_exc.value.reason_code == "gate0b_install_file_unsafe"
+    assert "single-link mode-0600 regular file" in load_exc.value.repair_action
+    manifest_path.chmod(0o600)
+
+    manifest_path.unlink()
+    unsafe_target = tmp_path / "unsafe-manifest.json"
+    unsafe_target.write_bytes(manifest_payload)
+    unsafe_target.chmod(0o600)
+    manifest_path.symlink_to(unsafe_target)
+    with pytest.raises(ExecutionAdmissionError) as symlink_exc:
+        load_claim_publication_composition(Path(fixture.roots.invocation_store_root))
+    assert symlink_exc.value.reason_code == "gate0b_install_file_unsafe"
+    assert manifest_path.read_bytes() == manifest_payload
+    assert receipt_path.read_bytes() == receipt_payload
 
 
 def test_install_private_writer_refuses_racing_collision_without_overwrite(

@@ -6,6 +6,7 @@ import multiprocessing as mp
 import os
 import queue
 import stat
+import subprocess
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
@@ -249,6 +250,78 @@ def _fixture(
         cache=cache,
         transactions=tmp_path / "transactions",
         locks=tmp_path / "locks",
+    )
+
+
+def _home_fixture(
+    tmp_path: Path,
+    *,
+    task_id: str = "task-alpha",
+    resume: bool = False,
+) -> ClaimFixture:
+    home = tmp_path / "home"
+    repo_root = Path(__file__).resolve().parents[2]
+    vault = home / "Documents" / "Personal" / "20-projects" / "hapax-cc-tasks"
+    active = vault / "active"
+    cache = home / ".cache" / "hapax"
+    active.mkdir(parents=True)
+    (vault / "closed").mkdir()
+    cache.mkdir(parents=True)
+    before = _note(
+        task_id=task_id,
+        status="pr_open" if resume else "offered",
+        assigned_to="cx-red" if resume else "unassigned",
+        claimed_at="2026-07-10T12:00:00Z" if resume else "null",
+    )
+    authorization = (
+        b"stage: S6_IMPLEMENTATION\n"
+        b"implementation_authorized: true\n"
+        b"source_mutation_authorized: true\n"
+        b"docs_mutation_authorized: true\n"
+        b"runtime_mutation_authorized: false\n"
+        b"mutation_scope_refs:\n" + f"  - {repo_root / 'shared' / 'sdlc_claim.py'}\n".encode()
+    )
+    before = before.replace(b"claimable: true\n---", b"claimable: true\n" + authorization + b"---")
+    note_path = active / f"{task_id}.md"
+    note_path.write_bytes(before)
+    task = resolve_task_note(vault, task_id, require_no_other_state=True)
+    binding = ClaimDispatchBinding.create(
+        task_id=task_id,
+        lane="cx-red",
+        session_id="session-abc",
+        claim_epoch=1_720_700_000,
+        dispatch_message_id="dispatch-msg-001",
+        platform="codex",
+        mode="headless",
+        profile="ultra",
+        authority_case="CASE-CLAIM-001",
+        binding_hash="a" * 64,
+        coord_dispatch_idempotency_key="coord-dispatch-001",
+    )
+    after = _note(
+        task_id=task_id,
+        status="pr_open" if resume else "claimed",
+        assigned_to="cx-red",
+        claimed_at=("2026-07-10T12:00:00Z" if resume else "2026-07-11T12:00:00Z"),
+    )
+    after = after.replace(b"claimable: true\n---", b"claimable: true\n" + authorization + b"---")
+    if resume:
+        after = after.replace(
+            b"Body remains exact.",
+            b"- 2026-07-11T12:00:00Z cx-red resumed (session-abc)\n\nBody remains exact.",
+        )
+    intent = ClaimPublicationIntent.create(
+        task=task,
+        cache_dir=cache,
+        note_after=after,
+        binding=binding,
+    )
+    return ClaimFixture(
+        intent=intent,
+        vault=vault,
+        cache=cache,
+        transactions=home / ".local" / "share" / "hapax" / "claim-publications",
+        locks=home / ".local" / "state" / "hapax" / "task-locks",
     )
 
 
@@ -1662,6 +1735,103 @@ def test_private_admitted_transaction_marks_recovery_after_projection_failure(
     assert recovered_id == publication_id
     assert recovered_state == "applied"
     assert recovered_receipt.recovered is False
+
+
+def test_active_claim_cache_is_not_published_before_receipt(
+    tmp_path: Path,
+) -> None:
+    fixture = _home_fixture(tmp_path, task_id="receipt-bound-claim", resume=True)
+    active = _active_admission_fixture(tmp_path, fixture)
+    receipt_root = fixture.cache / "claim-publication-receipts"
+
+    def failure_hook(phase: str, index: int | None) -> None:
+        if phase == "after_activation_projection" and index == 0:
+            raise ClaimPublicationError(
+                "claim_publication_activation_simulated",
+                "run admitted recovery in the test harness",
+                fixture.intent.task_id,
+            )
+
+    with pytest.raises(ClaimPublicationError) as raised:
+        sdlc_claim._apply_admitted_claim_publication_transaction(
+            fixture.intent,
+            active.consumption,
+            transaction_root=fixture.transactions,
+            receipt_root=receipt_root,
+            lock_root=fixture.locks,
+            now=active.checked_at,
+            failure_hook=failure_hook,
+        )
+
+    assert raised.value.reason_code == "claim_publication_activation_simulated"
+    receipt_path = claim_publication_receipt_path(
+        fixture.cache,
+        fixture.intent.binding,
+        receipt_root=receipt_root,
+    )
+    role_claim = fixture.cache / "cc-active-task-cx-red"
+    session_claim = fixture.cache / "cc-active-task-cx-red-session-abc"
+    assert receipt_path.exists()
+    assert role_claim.read_text(encoding="utf-8") == "receipt-bound-claim\n"
+    assert not session_claim.exists()
+
+    repo_root = Path(__file__).resolve().parents[2]
+    gate_env = os.environ.copy()
+    for key in (
+        "HAPAX_AGENT_NAME",
+        "CODEX_THREAD_NAME",
+        "CODEX_SESSION_NAME",
+        "CODEX_SESSION",
+        "CODEX_ROLE",
+        "CLAUDE_ROLE",
+        "CLAUDE_CODE_SESSION_ID",
+        "HAPAX_SESSION_ID",
+    ):
+        gate_env.pop(key, None)
+    gate_env.update(
+        {
+            "HOME": str(tmp_path / "home"),
+            "HAPAX_AGENT_ROLE": "cx-red",
+            "HAPAX_AGENT_NAME": "cx-red",
+            "HAPAX_SESSION_ID": "session-abc",
+        }
+    )
+    gated = subprocess.run(
+        ["bash", str(repo_root / "hooks" / "scripts" / "cc-task-gate.impl.sh")],
+        input=json.dumps(
+            {
+                "tool_name": "Write",
+                "tool_input": {
+                    "file_path": str(repo_root / "shared" / "sdlc_claim.py"),
+                },
+            }
+        ),
+        env=gate_env,
+        text=True,
+        capture_output=True,
+        check=False,
+    )
+
+    assert gated.returncode == 0, gated.stderr
+    assert "status: pr_open" in (
+        fixture.vault / "active" / f"{fixture.intent.task_id}.md"
+    ).read_text(encoding="utf-8")
+
+    results = recover_claim_publications(
+        cache_dir=fixture.cache,
+        transaction_root=fixture.transactions,
+        receipt_root=receipt_root,
+        lock_root=fixture.locks,
+        task_id=fixture.intent.task_id,
+    )
+
+    assert results == (
+        sdlc_claim.ClaimPublicationRecoveryResult(
+            admitted_claim_publication_id(fixture.intent, active.consumption),
+            "applied",
+        ),
+    )
+    assert session_claim.read_text(encoding="utf-8") == "receipt-bound-claim\n"
 
 
 def test_private_admitted_transaction_refuses_receipt_collision_without_live_writes(

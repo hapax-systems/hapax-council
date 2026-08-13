@@ -2,9 +2,9 @@
 
 The task vault and claim cache cannot be changed by one POSIX rename. This
 module journals the seven mutation projections plus any immutable admission
-proof projections and emits a self-hashed applied receipt only after every
-postimage is durable. Readers must require that receipt before treating an
-individual claim file as authoritative.
+proof projections. For admitted publications, note/epoch/dispatch projections
+are durable before the self-hashed receipt is persisted; `cc-active-task-*`
+activation files are published only after that receipt exists.
 """
 
 from __future__ import annotations
@@ -37,6 +37,7 @@ from shared.coord_projection import (
     _file_state,
     _finalize_applied_scratches,
     _fsync_directory,
+    _ProjectionScratch,
     _scratch_for,
 )
 from shared.execution_admission import (
@@ -2044,6 +2045,55 @@ def _admitted_projections(
     return (*_projections(intent), *consumption.proof_projections())
 
 
+def _is_claim_activation_projection(projection: FileProjection) -> bool:
+    return projection.path.name.startswith("cc-active-task-")
+
+
+def _activation_failure_hook(
+    failure_hook: Callable[[str, int | None], None] | None,
+) -> Callable[[str, int | None], None] | None:
+    if failure_hook is None:
+        return None
+
+    def wrapped(phase: str, index: int | None) -> None:
+        if phase == "before_projection":
+            failure_hook("before_activation_projection", index)
+        elif phase == "after_projection":
+            failure_hook("after_activation_projection", index)
+        else:
+            failure_hook(f"activation_{phase}", index)
+
+    return wrapped
+
+
+def _split_activation_projections(
+    live_projections: Sequence[FileProjection],
+    scratches: Sequence[_ProjectionScratch],
+) -> tuple[
+    tuple[FileProjection, ...],
+    tuple[_ProjectionScratch, ...],
+    tuple[FileProjection, ...],
+    tuple[_ProjectionScratch, ...],
+]:
+    pre_activation: list[FileProjection] = []
+    pre_activation_scratches: list[_ProjectionScratch] = []
+    activation: list[FileProjection] = []
+    activation_scratches: list[_ProjectionScratch] = []
+    for projection, scratch in zip(live_projections, scratches, strict=True):
+        if _is_claim_activation_projection(projection):
+            activation.append(projection)
+            activation_scratches.append(scratch)
+        else:
+            pre_activation.append(projection)
+            pre_activation_scratches.append(scratch)
+    return (
+        tuple(pre_activation),
+        tuple(pre_activation_scratches),
+        tuple(activation),
+        tuple(activation_scratches),
+    )
+
+
 def _projection_vector(projections: Sequence[FileProjection]) -> str:
     return _sha256(
         b"hapax.claim-publication-projection-vector.v1\0"
@@ -3707,6 +3757,12 @@ def _apply_admitted_claim_publication_transaction(
             _scratch_for(projection, publication_id, index)
             for index, projection in enumerate(live_projections)
         )
+        (
+            pre_activation_projections,
+            pre_activation_scratches,
+            activation_projections,
+            activation_scratches,
+        ) = _split_activation_projections(live_projections, scratches)
         phase = "preflight"
         try:
             phase = "pre_projection_preflight"
@@ -3720,11 +3776,11 @@ def _apply_admitted_claim_publication_transaction(
                 publication_id,
                 state="projecting",
             )
-            phase = "live_projection"
-            _apply_projections(live_projections, scratches, failure_hook)
-            phase = "scratch_finalize"
-            _finalize_applied_scratches(live_projections, scratches)
-            phase = "postimage_validation"
+            phase = "pre_activation_projection"
+            _apply_projections(pre_activation_projections, pre_activation_scratches, failure_hook)
+            phase = "pre_activation_scratch_finalize"
+            _finalize_applied_scratches(pre_activation_projections, pre_activation_scratches)
+            phase = "pre_activation_postimage_validation"
             _require_exact_task_postimage(intent)
             _assert_preimages(projections[7:])
             consumption.require_source_proofs(intent)
@@ -3745,6 +3801,18 @@ def _apply_admitted_claim_publication_transaction(
                 projections,
                 publication_id,
             )
+            phase = "activation_projection"
+            _apply_projections(
+                activation_projections,
+                activation_scratches,
+                _activation_failure_hook(failure_hook),
+            )
+            phase = "activation_scratch_finalize"
+            _finalize_applied_scratches(activation_projections, activation_scratches)
+            phase = "postimage_validation"
+            _require_exact_task_postimage(intent)
+            _assert_preimages(projections[7:])
+            consumption.require_source_proofs(intent)
             phase = "journal_applied"
             _persist_admitted_manifest_state(
                 manifest_path,
@@ -4703,10 +4771,18 @@ def _recover_one(
             _scratch_for(projection, publication_id, index)
             for index, projection in enumerate(live_projections)
         )
-        try:
-            _assert_preimages(projections[7:])
-            consumption.require_source_proofs(intent)
-            for projection, scratch in zip(live_projections, scratches, strict=True):
+        (
+            pre_activation_projections,
+            pre_activation_scratches,
+            activation_projections,
+            activation_scratches,
+        ) = _split_activation_projections(live_projections, scratches)
+
+        def apply_missing_postimages(
+            target_projections: Sequence[FileProjection],
+            target_scratches: Sequence[_ProjectionScratch],
+        ) -> None:
+            for projection, scratch in zip(target_projections, target_scratches, strict=True):
                 current_content, current_mode = _file_state(projection.path)
                 if current_content == projection.after and current_mode == projection.after_mode:
                     continue
@@ -4718,7 +4794,12 @@ def _recover_one(
                     "preserve every live projection and inspect the conflicting path before retrying recovery",
                     str(projection.path),
                 )
-            _finalize_applied_scratches(live_projections, scratches)
+            _finalize_applied_scratches(target_projections, target_scratches)
+
+        try:
+            _assert_preimages(projections[7:])
+            consumption.require_source_proofs(intent)
+            apply_missing_postimages(pre_activation_projections, pre_activation_scratches)
             _require_exact_task_postimage(intent)
             _assert_preimages(projections[7:])
             consumption.require_source_proofs(intent)
@@ -4756,6 +4837,17 @@ def _recover_one(
                 projections,
                 publication_id,
             )
+        try:
+            apply_missing_postimages(activation_projections, activation_scratches)
+            _require_exact_task_postimage(intent)
+            _assert_preimages(projections[7:])
+            consumption.require_source_proofs(intent)
+        except LifecycleTransitionError as exc:
+            raise _translate_lifecycle_error(
+                "claim_publication_recovery_projection_failed",
+                "preserve the admitted journal and retry recovery after the activation path stabilizes",
+                exc,
+            ) from exc
         _persist_admitted_manifest_state(
             manifest_path,
             intent,

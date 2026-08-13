@@ -41,11 +41,16 @@ _IDENTITY_ENV = (
 
 
 def _extract_python(script_path: pathlib.Path) -> str:
-    """Extract the embedded Python from the bash heredoc."""
+    """Extract the embedded Python block that owns the PR dependency gate."""
     text = script_path.read_text()
-    start = text.index("<<'PYEOF'") + len("<<'PYEOF'") + 1
-    end = text.index("\nPYEOF", start)
-    return text[start:end]
+    offset = 0
+    while True:
+        start = text.index("<<'PYEOF'", offset) + len("<<'PYEOF'") + 1
+        end = text.index("\nPYEOF", start)
+        py_code = text[start:end]
+        if "def _parse_pr_number(" in py_code:
+            return py_code
+        offset = end + len("\nPYEOF")
 
 
 def test_script_exists_and_executable():

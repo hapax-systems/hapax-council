@@ -235,6 +235,24 @@ def test_partial_dispatch_binding_flags_fail_without_writes(tmp_path: Path) -> N
     assert not (home / ".cache" / "hapax").exists()
 
 
+def test_dispatch_option_missing_operand_reports_next_action(tmp_path: Path) -> None:
+    home = tmp_path / "home"
+    note = _write_task(home, "active", "missing-dispatch-value")
+
+    result = _claim(
+        home,
+        "missing-dispatch-value",
+        dispatch=False,
+        extra_args=["--dispatch-message-id", "--dispatch-binding-hash"],
+    )
+
+    assert result.returncode == 1
+    assert "missing value for --dispatch-message-id" in result.stderr
+    assert "Next action: rerun with '--dispatch-message-id VALUE'" in result.stderr
+    assert "Every --dispatch-* option requires one VALUE" in result.stderr
+    assert "status: offered" in note.read_text(encoding="utf-8")
+
+
 def test_default_claim_refuses_retired_force_flag(tmp_path: Path) -> None:
     home = tmp_path / "home"
     note = _write_task(home, "active", "force-retired")
@@ -524,6 +542,7 @@ def test_default_claim_holds_corrupt_install_receipt_without_overwrite(
     roots = default_claim_publication_roots(home=home)
     receipt = Path(roots.invocation_store_root) / "activation-receipt.json"
     receipt.parent.mkdir(parents=True)
+    receipt.parent.chmod(0o700)
     receipt.write_text("{}\n", encoding="ascii")
     receipt.chmod(0o600)
 
