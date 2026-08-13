@@ -24,6 +24,7 @@ import hashlib
 import json
 import os
 import pwd
+import re
 import signal
 import subprocess
 import textwrap
@@ -381,7 +382,46 @@ def _basic_installer_env(tmp_path: Path) -> dict[str, str]:
     return env
 
 
-def _wait_for_flock_block(process: subprocess.Popen[str]) -> None:
+def _flock_identities(expected_lock: Path) -> set[tuple[int, int, int]]:
+    expected = expected_lock.stat()
+    identities = {(os.major(expected.st_dev), os.minor(expected.st_dev), expected.st_ino)}
+    try:
+        mount_lines = Path("/proc/self/mountinfo").read_text(encoding="utf-8").splitlines()
+    except OSError:
+        return identities
+
+    resolved = expected_lock.resolve()
+    best_depth = -1
+    best_device: tuple[int, int] | None = None
+    for line in mount_lines:
+        fields = line.partition(" - ")[0].split()
+        if len(fields) < 5:
+            continue
+        mountpoint = Path(
+            re.sub(
+                r"\\([0-7]{3})",
+                lambda match: chr(int(match.group(1), 8)),
+                fields[4],
+            )
+        )
+        if resolved != mountpoint and not resolved.is_relative_to(mountpoint):
+            continue
+        try:
+            major_raw, minor_raw = fields[2].split(":", 1)
+            device = (int(major_raw), int(minor_raw))
+        except ValueError:
+            continue
+        depth = len(mountpoint.parts)
+        if depth > best_depth:
+            best_depth = depth
+            best_device = device
+    if best_device is not None:
+        identities.add((*best_device, expected.st_ino))
+    return identities
+
+
+def _wait_for_flock_block(process: subprocess.Popen[str], expected_lock: Path) -> None:
+    expected_identities = _flock_identities(expected_lock)
     deadline = time.monotonic() + 10
     while process.poll() is None and time.monotonic() < deadline:
         descendants = {process.pid}
@@ -400,15 +440,24 @@ def _wait_for_flock_block(process: subprocess.Popen[str]) -> None:
                 if ppid in descendants and pid not in descendants:
                     descendants.add(pid)
                     changed = True
-        for pid in descendants:
-            try:
-                waiting = (Path("/proc") / str(pid) / "wchan").read_text().strip()
-            except OSError:
+        try:
+            lock_lines = Path("/proc/locks").read_text(encoding="utf-8").splitlines()
+        except OSError:
+            lock_lines = []
+        for line in lock_lines:
+            fields = line.split()
+            if len(fields) < 7 or fields[1:3] != ["->", "FLOCK"]:
                 continue
-            if waiting == "locks_lock_inode_wait":
+            try:
+                waiter_pid = int(fields[5])
+                major_raw, minor_raw, inode_raw = fields[6].split(":", 2)
+                identity = (int(major_raw, 16), int(minor_raw, 16), int(inode_raw))
+            except (ValueError, IndexError):
+                continue
+            if waiter_pid in descendants and identity in expected_identities:
                 return
         time.sleep(0.01)
-    raise AssertionError("child did not reach the deterministic flock wait")
+    raise AssertionError(f"child did not reach the deterministic flock wait on {expected_lock}")
 
 
 def _kill_process_group(process: subprocess.Popen[str]) -> None:
@@ -708,7 +757,7 @@ class TestSharedInstallLock:
                 text=True,
                 env=env,
             )
-            _wait_for_flock_block(second)
+            _wait_for_flock_block(second, Path("/"))
             assert len(events.read_text(encoding="utf-8").splitlines()) == 1
             release.touch()
             first_stdout, first_stderr = first.communicate(timeout=30)
@@ -754,7 +803,7 @@ class TestSharedInstallLock:
             start_new_session=True,
         )
         try:
-            _wait_for_flock_block(installer)
+            _wait_for_flock_block(installer, lock)
             replacement = lock.with_name("replacement.lock")
             replacement.write_text("", encoding="utf-8")
             replacement.chmod(0o600)
@@ -844,7 +893,7 @@ class TestSharedInstallLock:
                     start_new_session=True,
                 )
                 try:
-                    _wait_for_flock_block(process)
+                    _wait_for_flock_block(process, lock)
                     assert process.poll() is None
                 finally:
                     _kill_process_group(process)

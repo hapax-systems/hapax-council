@@ -47,6 +47,11 @@ GITHUB_MCP_IMAGE = f"ghcr.io/github/github-mcp-server@{GITHUB_MCP_IMAGE_DIGEST}"
 GITHUB_MCP_LOCAL_IMAGE_ID = f"sha256:{'b' * 64}"
 GITHUB_MCP_BOOT_ID = "12345678-1234-1234-1234-123456789abc"
 GITHUB_MCP_APP_ID = "stdio-v1"
+DOCKER_INVENTORY_FORMAT = (
+    '{{.ID}}\t{{.Names}}\t{{.Label "org.hapax.github-mcp.app"}}'
+    '{{range split .Labels ","}}{{if eq . '
+    '"org.hapax.github-mcp.app="}}P{{end}}{{end}}'
+)
 GITHUB_MCP_IMAGE_LABELS = {
     "io.modelcontextprotocol.server.name": "io.github.github/github-mcp-server",
     "org.opencontainers.image.created": "2026-05-29T12:26:39.099Z",
@@ -509,7 +514,9 @@ def _fake_docker(
         inventory_items.append(("f" * 64, "hapax-local-judge"))
     inventory = "".join(f"{container_id}\t{name}\n" for container_id, name in inventory_items)
     labeled_inventory = "".join(
-        f"{record['container_id']}\n" for record in containers if record["app_label"] is not None
+        f"{record['container_id']}\t{record['app_label']}\n"
+        for record in containers
+        if record["app_label"] is not None
     )
     initial_inventory = inventory if inventory_override is None else inventory_override
     initial_labeled_inventory = (
@@ -533,21 +540,33 @@ def _fake_docker(
     )
 
     def combine_inventory_and_labels(raw_inventory: str, raw_labeled: str) -> str:
-        label_rows = raw_labeled.splitlines()
-        labeled_ids = set(label_rows)
+        label_values: dict[str, str] = {}
+        malformed_label_rows: list[str] = []
+        for raw_label in raw_labeled.splitlines():
+            fields = raw_label.split("\t")
+            if len(fields) == 1:
+                label_values[fields[0]] = GITHUB_MCP_APP_ID
+            elif len(fields) == 2:
+                label_values[fields[0]] = fields[1]
+            else:
+                malformed_label_rows.append(raw_label)
         inventory_ids: set[str] = set()
         rows: list[str] = []
         for raw_row in raw_inventory.splitlines():
             fields = raw_row.split("\t")
             if len(fields) == 2:
                 inventory_ids.add(fields[0])
-                label = GITHUB_MCP_APP_ID if fields[0] in labeled_ids else ""
-                rows.append(f"{raw_row}\t{label}")
+                present = fields[0] in label_values
+                label = label_values.get(fields[0], "")
+                snapshot_label = "P" if present and not label else label
+                rows.append(f"{raw_row}\t{snapshot_label}")
             else:
                 rows.append(f"{raw_row}\t")
-        for raw_id in label_rows:
+        for raw_id, label in label_values.items():
             if raw_id not in inventory_ids:
-                rows.append(f"{raw_id}\tmissing-inventory-row\t{GITHUB_MCP_APP_ID}\textra")
+                snapshot_label = label or "P"
+                rows.append(f"{raw_id}\tmissing-inventory-row\t{snapshot_label}\textra")
+        rows.extend(f"{row}\tmalformed\textra" for row in malformed_label_rows)
         return "".join(f"{row}\n" for row in rows)
 
     generation_files: list[Path] = []
@@ -759,15 +778,18 @@ def _fake_docker(
         )
 
     inventory_response = generation_response()
+    inventory_case = shlex.quote(
+        "--host unix:///var/run/docker.sock "
+        "--config /nonexistent/hapax-oom-policy-audit-docker "
+        f"ps -a --no-trunc --format {DOCKER_INVENTORY_FORMAT}"
+    )
     path.write_text(
         "#!/usr/bin/env bash\n"
         "set -euo pipefail\n"
         f'printf \'%s\\n\' "$*" >> "{calls}"\n'
         'case "$*" in\n'
         f'  *" image inspect --format "*) {image_response} ;;\n'
-        f'  *" ps -a --no-trunc --format "*) {inventory_response} ;;\n'
-        + "\n".join(inspect_cases)
-        + "\n"
+        f"  {inventory_case}) {inventory_response} ;;\n" + "\n".join(inspect_cases) + "\n"
         '  *) echo "unexpected docker args: $*" >&2; exit 9 ;;\n'
         "esac\n",
         encoding="utf-8",
@@ -2078,10 +2100,116 @@ def test_audit_fails_when_app_label_value_changes_after_target_inspect(tmp_path:
     assert check["actual"] == "changed"
 
 
+def test_audit_binds_initial_app_label_value_to_target_inspect(tmp_path: Path) -> None:
+    container_id = f"{1:064x}"
+    result = _run(
+        tmp_path,
+        docker_mcp_count=1,
+        docker_labeled_inventory_override=f"{container_id}\twrong-app\n",
+    )
+
+    assert result.returncode == 1
+    payload = json.loads(result.stdout)
+    target = next(item for item in payload["checks"] if item["name"].endswith("_limits"))
+    stable = next(
+        item for item in payload["checks"] if item["name"] == "docker_oom_inventory_stable"
+    )
+    assert target["status"] == "gap"
+    assert "SnapshotLabelMatch=False" in target["actual"]
+    assert stable["status"] == "pass"
+
+
+def test_audit_discovers_present_empty_app_label_on_arbitrary_name(tmp_path: Path) -> None:
+    result = _run(
+        tmp_path,
+        docker_mcp_count=1,
+        docker_mcp_signature_overrides={
+            "name": "arbitrary-runtime-name",
+            "app_label": "",
+        },
+    )
+
+    assert result.returncode == 1
+    payload = json.loads(result.stdout)
+    checks = {item["name"]: item for item in payload["checks"]}
+    assert checks["docker_github_mcp_count"]["actual"] == "1"
+    assert checks["docker_github_mcp_target_1_limits"]["status"] == "gap"
+
+
+def test_audit_does_not_select_absent_app_label_on_arbitrary_name(tmp_path: Path) -> None:
+    result = _run(
+        tmp_path,
+        docker_mcp_count=1,
+        docker_mcp_signature_overrides={
+            "name": "arbitrary-runtime-name",
+            "app_label": None,
+        },
+    )
+
+    assert result.returncode == 0, result.stdout
+    payload = json.loads(result.stdout)
+    count = next(item for item in payload["checks"] if item["name"] == "docker_github_mcp_count")
+    assert count["actual"] == "0"
+
+
+def test_audit_fails_closed_on_flattened_empty_label_marker_spoof(tmp_path: Path) -> None:
+    container_id = f"{1:064x}"
+    result = _run(
+        tmp_path,
+        docker_mcp_count=1,
+        docker_labeled_inventory_override=f"{container_id}\t\n",
+        docker_mcp_signature_overrides={
+            "name": "arbitrary-runtime-name",
+            "app_label": None,
+        },
+    )
+
+    assert result.returncode == 1
+    payload = json.loads(result.stdout)
+    target = next(item for item in payload["checks"] if item["name"].endswith("_limits"))
+    assert target["status"] == "gap"
+    assert "SnapshotLabelMatch=False" in target["actual"]
+
+
+def test_audit_detects_present_empty_label_becoming_absent(tmp_path: Path) -> None:
+    result = _run(
+        tmp_path,
+        docker_mcp_count=1,
+        docker_closing_labeled_inventory_override="",
+        docker_mcp_signature_overrides={
+            "name": "arbitrary-runtime-name",
+            "app_label": "",
+        },
+    )
+
+    assert result.returncode == 1
+    payload = json.loads(result.stdout)
+    stable = next(
+        item for item in payload["checks"] if item["name"] == "docker_oom_inventory_stable"
+    )
+    assert stable["status"] == "error"
+    assert stable["actual"] == "changed"
+
+
+def test_fake_docker_requires_exact_inventory_template(tmp_path: Path) -> None:
+    docker = _fake_docker(tmp_path)
+
+    result = subprocess.run(
+        [str(docker), "ps", "-a", "--no-trunc", "--format", "{{.ID}}"],
+        text=True,
+        capture_output=True,
+        check=False,
+    )
+
+    assert result.returncode == 9
+    assert "unexpected docker args" in result.stderr
+
+
 def test_docker_inventory_binds_identity_and_label_in_one_daemon_snapshot() -> None:
     source = SCRIPT.read_text(encoding="utf-8")
 
     assert '{{.ID}}\\t{{.Names}}\\t{{.Label "org.hapax.github-mcp.app"}}' in source
+    assert '"org.hapax.github-mcp.app="}}P' in source
     assert '"ps", "-aq", "--no-trunc", "--filter"' not in source
     assert "_read_docker_labeled_inventory" not in source
 

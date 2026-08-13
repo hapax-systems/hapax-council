@@ -7,6 +7,7 @@ import json
 import os
 import pwd
 import runpy
+import shlex
 import shutil
 import signal
 import stat
@@ -1096,6 +1097,44 @@ def test_apcupsd_real_install_rejects_caller_selected_state_or_identity(
     assert result.returncode == 2
     assert selector in result.stderr
     assert "caller-selected production" in result.stderr
+
+
+def test_apcupsd_real_install_refuses_caller_getent_before_execution(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.delenv("HAPAX_ROOT_REQUIRED_ISOLATED_TEST_ROOT")
+    marker = tmp_path / "caller-getent-executed"
+    fake_getent = tmp_path / "getent"
+    fake_getent.write_text(
+        f"#!/usr/bin/env bash\n/usr/bin/touch {shlex.quote(str(marker))}\n",
+        encoding="utf-8",
+    )
+    fake_getent.chmod(0o755)
+    env = {
+        key: value
+        for key, value in os.environ.items()
+        if not key.startswith("HAPAX_ROOT_REQUIRED_")
+        and not key.startswith("HAPAX_POST_MERGE_")
+        and not key.startswith("HAPAX_APCUPSD_")
+        and not key.startswith("HAPAX_UPS_")
+        and not key.startswith("HAPAX_UPOWER_")
+    }
+    env["HOME"] = pwd.getpwuid(os.geteuid()).pw_dir
+    env["HAPAX_APCUPSD_GETENT"] = str(fake_getent)
+
+    result = subprocess.run(
+        [str(INSTALLER), "--source", str(tmp_path / "missing-source"), "--install"],
+        text=True,
+        capture_output=True,
+        check=False,
+        env=env,
+    )
+
+    assert result.returncode == 2
+    assert "HAPAX_APCUPSD_GETENT" in result.stderr
+    assert "caller-selected production" in result.stderr
+    assert not marker.exists()
 
 
 def test_apcupsd_real_install_rejects_home_spoofing(
