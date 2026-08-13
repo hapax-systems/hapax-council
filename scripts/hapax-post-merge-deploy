@@ -4198,7 +4198,11 @@ publish_git_executable_at_sha() {
         echo "hapax-post-merge-deploy: unable to materialize $source_path for $dest; next action: verify the commit object and rerun the governed deploy" >&2
         return 1
     fi
-    chmod 0755 "$temp"
+    if ! chmod 0755 "$temp"; then
+        rm -f "$temp" 2>/dev/null || true
+        echo "hapax-post-merge-deploy: unable to set executable mode on staged launcher $dest; next action: verify destination ownership and rerun the governed deploy" >&2
+        return 1
+    fi
     if ! mv -fT -- "$temp" "$dest"; then
         rm -f "$temp" 2>/dev/null || true
         echo "hapax-post-merge-deploy: unable to atomically publish launcher $dest; next action: move unsafe destination drift aside and rerun the governed deploy" >&2
@@ -4298,17 +4302,29 @@ fi
 
 # Smoke-runner gate (cc-task post-merge-smoke-deploy-wiring, 2026-05-02).
 # DRY_RUN and REPORT_COVERAGE modes exited earlier so this only fires
-# in real-deploy mode. The smoke runner inspects the diff for $SHA,
-# fires gates that match, ntfy's on failure, and ALWAYS exits 0 — the
-# deploy already happened; the smoke is informational. The script
+# in real-deploy mode. The smoke runner inspects the exact deployed commit or
+# cumulative $SINCE..$SHA range, fires matching gates, ntfy's on failure, and
+# ALWAYS exits 0 - the deploy already happened; the smoke is informational. The
 # itself enforces the 0-exit contract; we still wrap with `|| true`
 # defensively so a smoke-side bug can never block trace recording or
 # the deploy script's normal exit. Rationale: shipping in #2148
 # without a deploy-chain caller meant every smoke-side fix lived as
-# dead code (zeta audit finding 2026-05-02, severity HIGH).
-SMOKE_SCRIPT="$REPO/scripts/hapax-post-merge-smoke"
-if [ -x "$SMOKE_SCRIPT" ]; then
-    "$SMOKE_SCRIPT" "$SHA" || true
+# dead code (zeta audit finding 2026-05-02, severity HIGH). Materialize the
+# runner from the target object even when the mutable worktree or activation
+# alias still names the preceding release.
+SMOKE_SOURCE_PATH="scripts/hapax-post-merge-smoke"
+SMOKE_SCRIPT="$LOCAL_BIN/hapax-post-merge-smoke"
+SMOKE_ARGS=("$SHA")
+if [ -n "$SINCE" ]; then
+    SMOKE_ARGS=(--since "$SINCE" "$SHA")
+fi
+if git -C "$REPO" cat-file -e "$SHA:$SMOKE_SOURCE_PATH" 2>/dev/null; then
+    if mkdir -p "$LOCAL_BIN" \
+        && publish_git_executable_at_sha "$SMOKE_SOURCE_PATH" "$SMOKE_SCRIPT"; then
+        REPO_ROOT="$REPO" "$SMOKE_SCRIPT" "${SMOKE_ARGS[@]}" || true
+    else
+        echo "hapax-post-merge-deploy: exact-target smoke runner could not be published; next action: repair $LOCAL_BIN ownership/capacity and rerun the governed deploy smoke for $SHA" >&2
+    fi
 fi
 
 # Self-verify the deploy symlinks resolve to the canonical tree (advisory:

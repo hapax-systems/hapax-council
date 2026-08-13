@@ -10,11 +10,13 @@
 #
 # Usage:
 #   scripts/hapax-post-merge-smoke <merge-sha>
+#   scripts/hapax-post-merge-smoke --since <base-sha> <target-sha>
 #
 # Env:
-#   NTFY_TOPIC          (optional) ntfy topic; if unset, prints to stderr
-#   HAPAX_SMOKE_OFF=1   skip all gates (post-merge-deploy can hard-disable)
-#   HAPAX_SMOKE_DRYRUN=1  print which gates would fire without running them
+#   NTFY_TOPIC                 (optional) ntfy topic; if unset, prints to stderr
+#   HAPAX_SMOKE_NTFY_TIMEOUT_S notification deadline in seconds (1..10; default 5)
+#   HAPAX_SMOKE_OFF=1          skip all gates (post-merge-deploy can hard-disable)
+#   HAPAX_SMOKE_DRYRUN=1       print which gates would fire without running them
 set -uo pipefail
 unset GIT_DIR GIT_WORK_TREE GIT_COMMON_DIR GIT_INDEX_FILE GIT_OBJECT_DIRECTORY
 unset GIT_ALTERNATE_OBJECT_DIRECTORIES GIT_SHALLOW_FILE GIT_REPLACE_REF_BASE
@@ -22,9 +24,13 @@ export GIT_NO_REPLACE_OBJECTS=1
 
 [ "${HAPAX_SMOKE_OFF:-0}" = "1" ] && exit 0
 
-SHA="${1:-HEAD}"
-REPO_ROOT="${REPO_ROOT:-$(git rev-parse --show-toplevel 2>/dev/null || echo .)}"
 DRYRUN="${HAPAX_SMOKE_DRYRUN:-0}"
+NTFY_TIMEOUT_S="${HAPAX_SMOKE_NTFY_TIMEOUT_S:-5}"
+if ! [[ "$NTFY_TIMEOUT_S" =~ ^([1-9]|10)$ ]]; then
+    NTFY_TIMEOUT_S=5
+fi
+SHA="<missing>"
+SINCE=""
 
 # Failure tracking is installed before change discovery so a broken Git object
 # graph cannot turn the smoke run into an empty successful change set.
@@ -42,7 +48,10 @@ emit_failure_notice() {
         body="$body | $entry"
     done
     if [ -n "${NTFY_TOPIC:-}" ]; then
-        curl -s \
+        /usr/bin/timeout --signal=TERM --kill-after=1s "${NTFY_TIMEOUT_S}s" \
+            curl --fail --silent --show-error \
+            --connect-timeout 2 \
+            --max-time "$NTFY_TIMEOUT_S" \
             -H "Title: post-merge smoke FAIL ($count gate$([ "$count" -gt 1 ] && echo s))" \
             -H "Priority: default" \
             -H "Tags: warning,test" \
@@ -53,31 +62,117 @@ emit_failure_notice() {
 }
 trap emit_failure_notice EXIT
 
-if ! cd "$REPO_ROOT"; then
+case "$#" in
+    1)
+        if [ "$1" = "--since" ]; then
+            record_failure \
+                "change-discovery" \
+                "malformed arguments; next action: invoke hapax-post-merge-smoke <target-sha> or --since <base-sha> <target-sha>"
+            exit 0
+        fi
+        SHA="$1"
+        ;;
+    3)
+        if [ "$1" != "--since" ]; then
+            record_failure \
+                "change-discovery" \
+                "malformed arguments; next action: invoke hapax-post-merge-smoke <target-sha> or --since <base-sha> <target-sha>"
+            exit 0
+        fi
+        SINCE="$2"
+        SHA="$3"
+        ;;
+    *)
+        record_failure \
+            "change-discovery" \
+            "malformed arguments; next action: invoke hapax-post-merge-smoke <target-sha> or --since <base-sha> <target-sha>"
+        exit 0
+        ;;
+esac
+
+if [ -z "${REPO_ROOT:-}" ]; then
+    if ! REPO_ROOT="$(git rev-parse --show-toplevel 2>/dev/null)"; then
+        record_failure \
+            "change-discovery" \
+            "cannot discover a Git repository root; next action: set REPO_ROOT to the deployed release containing the target commit and rerun this smoke"
+        exit 0
+    fi
+fi
+if ! cd -- "$REPO_ROOT"; then
     record_failure \
         "change-discovery" \
         "cannot enter repository root $REPO_ROOT; next action: restore the deployed source root and rerun this smoke"
     exit 0
 fi
+if ! OBSERVED_REPO_ROOT="$(git rev-parse --show-toplevel 2>/dev/null)"; then
+    record_failure \
+        "change-discovery" \
+        "$REPO_ROOT is not a Git repository; next action: restore the deployed source root and rerun this smoke"
+    exit 0
+fi
+if [ "$(pwd -P)" != "$(cd -- "$OBSERVED_REPO_ROOT" && pwd -P)" ]; then
+    record_failure \
+        "change-discovery" \
+        "$REPO_ROOT is not the repository top level; next action: set REPO_ROOT=$OBSERVED_REPO_ROOT and rerun this smoke"
+    exit 0
+fi
 
-# Resolve the SHA range. If SHA is a single commit, compare against its
-# first parent. Tolerant of merge commits and squash-merges.
+# Resolve every caller-provided ref once before parent or tree reads. A
+# single-commit smoke compares its first parent, while --since covers the exact
+# cumulative deployment range. Root commits use an explicit --root tree diff.
 if ! SHA_RESOLVED="$(git rev-parse --verify --quiet "${SHA}^{commit}")"; then
-    echo "smoke: invalid SHA '$SHA'; skipping" >&2
+    record_failure \
+        "change-discovery" \
+        "cannot resolve target commit $SHA in $REPO_ROOT; next action: fetch or restore the exact target object and rerun this smoke"
     exit 0
 fi
 SHA="$SHA_RESOLVED"
-if FIRST_PARENT="$(git rev-parse --verify --quiet "${SHA}^1" 2>/dev/null)"; then
-    DIFF_BASE="$FIRST_PARENT"
+if [ -n "$SINCE" ]; then
+    if ! SINCE_RESOLVED="$(git rev-parse --verify --quiet "${SINCE}^{commit}")"; then
+        record_failure \
+            "change-discovery" \
+            "cannot resolve --since commit $SINCE in $REPO_ROOT; next action: fetch or restore the exact base object and rerun this smoke"
+        exit 0
+    fi
+    SINCE="$SINCE_RESOLVED"
+    if git merge-base --is-ancestor "$SINCE" "$SHA"; then
+        :
+    else
+        ancestor_rc=$?
+        if [ "$ancestor_rc" -eq 1 ]; then
+            record_failure \
+                "change-discovery" \
+                "--since commit $SINCE is not an ancestor of target $SHA; next action: select the trusted deployed ancestor and rerun this smoke"
+        else
+            record_failure \
+                "change-discovery" \
+                "cannot compare --since commit $SINCE with target $SHA; next action: verify both commit objects and rerun this smoke"
+        fi
+        exit 0
+    fi
+    DIFF_LABEL="${SINCE}..${SHA}"
+    if ! CHANGED_FILES="$(git diff --name-only "$SINCE" "$SHA" -- 2>/dev/null)"; then
+        record_failure \
+            "change-discovery" \
+            "cannot enumerate changed files for $DIFF_LABEL; next action: verify both commit objects with git cat-file -e and rerun this smoke"
+        exit 0
+    fi
+elif FIRST_PARENT="$(git rev-parse --verify --quiet "${SHA}^1" 2>/dev/null)"; then
+    DIFF_LABEL="${FIRST_PARENT}..${SHA}"
+    if ! CHANGED_FILES="$(git diff --name-only "$FIRST_PARENT" "$SHA" -- 2>/dev/null)"; then
+        record_failure \
+            "change-discovery" \
+            "cannot enumerate changed files for $DIFF_LABEL; next action: verify both commit objects with git cat-file -e and rerun this smoke"
+        exit 0
+    fi
 else
-    DIFF_BASE="${SHA}~1"
-fi
-
-if ! CHANGED_FILES="$(git diff --name-only "${DIFF_BASE}..${SHA}" 2>/dev/null)"; then
-    record_failure \
-        "change-discovery" \
-        "cannot enumerate changed files for ${DIFF_BASE}..${SHA}; next action: verify both commit objects with git cat-file -e and rerun this smoke"
-    exit 0
+    DIFF_LABEL="root..${SHA}"
+    if ! CHANGED_FILES="$(git diff-tree --root --no-commit-id --name-only -r "$SHA" -- 2>/dev/null)"; then
+        record_failure \
+            "change-discovery" \
+            "cannot enumerate changed files for $DIFF_LABEL; next action: verify the root commit object with git cat-file -e and rerun this smoke"
+        exit 0
+    fi
 fi
 [ -z "$CHANGED_FILES" ] && exit 0
 

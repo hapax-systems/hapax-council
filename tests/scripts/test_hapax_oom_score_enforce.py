@@ -64,6 +64,7 @@ def test_retired_enforcer_rejects_every_other_request(args: tuple[str, ...]) -> 
     result = _run(ENFORCER, *args)
 
     assert result.returncode == 2
+    assert "next action:" in result.stderr
 
 
 @pytest.mark.parametrize("unit", PROTECTED_UNITS)
@@ -92,12 +93,23 @@ def test_retired_trigger_usage_errors_include_next_action(args: tuple[str, ...])
     assert "next action:" in result.stderr
 
 
-def test_retired_root_units_refuse_manual_start() -> None:
+def test_retired_root_units_refuse_every_activation_path() -> None:
     service = (REPO_ROOT / "systemd/units/hapax-oom-score-enforce.service").read_text()
     timer = (REPO_ROOT / "systemd/units/hapax-oom-score-enforce.timer").read_text()
 
-    assert "RefuseManualStart=yes" in service
-    assert "RefuseManualStart=yes" in timer
+    for body in (service, timer):
+        assert "RefuseManualStart=yes" in body
+        assert "ConditionPathExists=!/" in body
+
+    condition = subprocess.run(
+        ["systemd-analyze", "condition", "ConditionPathExists=!/"],
+        capture_output=True,
+        text=True,
+        timeout=5,
+        check=False,
+    )
+    assert condition.returncode == 1
+    assert "Conditions failed" in condition.stdout + condition.stderr
 
 
 @pytest.mark.parametrize(

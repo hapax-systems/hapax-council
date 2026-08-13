@@ -6282,19 +6282,32 @@ def test_coverage_rejects_commit_ranges_before_touching_targets() -> None:
 def test_real_deploy_invokes_smoke_runner_with_sha(tmp_path: Path) -> None:
     """The smoke runner is wired into the deploy chain (cc-task
     post-merge-smoke-deploy-wiring). After deploy actions complete,
-    ``$REPO/scripts/hapax-post-merge-smoke <sha>`` is invoked. We stub
-    the smoke script with a recorder so the test can assert it ran
-    with the right SHA, without depending on the live smoke logic."""
+    the exact target's smoke runner is invoked from the release-copy path. The
+    target does not change that runner, so this also proves publication is not
+    accidentally conditional on its presence in the current diff."""
     repo, sha = _repo_with_merge_commit(tmp_path)
     trace_path = tmp_path / "traces" / "post-merge-traces.jsonl"
     smoke_recorder = tmp_path / "smoke-call-record.txt"
 
     smoke_stub = repo / "scripts" / "hapax-post-merge-smoke"
     smoke_stub.write_text(
-        f'#!/bin/sh\nprintf "smoke-invoked sha=%s\\n" "$1" > "{smoke_recorder}"\nexit 0\n',
+        f'#!/bin/sh\nprintf "smoke-invoked args=%s root=%s\\n" "$*" "$REPO_ROOT" '
+        f'> "{smoke_recorder}"\nexit 0\n',
         encoding="utf-8",
     )
     smoke_stub.chmod(0o755)
+    _git(repo, "add", "scripts/hapax-post-merge-smoke")
+    _git(repo, "commit", "-m", "add exact smoke runner")
+    target_file = repo / "docs" / "target.md"
+    target_file.parent.mkdir(parents=True)
+    target_file.write_text("target leaves smoke unchanged\n", encoding="utf-8")
+    _git(repo, "add", "docs/target.md")
+    _git(repo, "commit", "-m", "target without smoke change")
+    sha = _git(repo, "rev-parse", "HEAD")
+    tampered_marker = tmp_path / "tampered-smoke-called"
+    smoke_stub.write_text(
+        f"#!/bin/sh\nprintf tampered > {tampered_marker}\nexit 0\n", encoding="utf-8"
+    )
 
     # HOME isolated so the real deploy's scripts/hapax-demo symlink lands under
     # tmp, not the operator's ~/.local/bin (fix-deploy-symlink-skew leak).
@@ -6303,6 +6316,7 @@ def test_real_deploy_invokes_smoke_runner_with_sha(tmp_path: Path) -> None:
         **os.environ,
         "HOME": str(home),
         "REPO": str(repo),
+        "REPO_ROOT": str(tmp_path / "ambient-foreign-root"),
         "HAPAX_POST_MERGE_TRACE_PATH": str(trace_path),
     }
 
@@ -6316,7 +6330,10 @@ def test_real_deploy_invokes_smoke_runner_with_sha(tmp_path: Path) -> None:
 
     assert result.returncode == 0, result.stderr
     assert smoke_recorder.exists(), "smoke runner was not invoked"
-    assert smoke_recorder.read_text(encoding="utf-8").strip() == f"smoke-invoked sha={sha}"
+    assert smoke_recorder.read_text(encoding="utf-8").strip() == (
+        f"smoke-invoked args={sha} root={repo}"
+    )
+    assert not tampered_marker.exists(), "deploy invoked mutable worktree smoke bytes"
 
 
 def test_real_deploy_smoke_failure_does_not_block_trace(tmp_path: Path) -> None:
@@ -6330,6 +6347,9 @@ def test_real_deploy_smoke_failure_does_not_block_trace(tmp_path: Path) -> None:
     smoke_stub = repo / "scripts" / "hapax-post-merge-smoke"
     smoke_stub.write_text("#!/bin/sh\necho smoke-broken >&2\nexit 1\n", encoding="utf-8")
     smoke_stub.chmod(0o755)
+    _git(repo, "add", "scripts/hapax-post-merge-smoke")
+    _git(repo, "commit", "-m", "add failing smoke runner")
+    sha = _git(repo, "rev-parse", "HEAD")
 
     # HOME isolated so the real deploy's scripts/hapax-demo symlink lands under
     # tmp, not the operator's ~/.local/bin (fix-deploy-symlink-skew leak).

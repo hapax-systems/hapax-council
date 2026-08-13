@@ -10,6 +10,7 @@ readonly RETIREMENT_MESSAGE="root negative OOM scoring for delegated user servic
 
 usage() {
     printf 'usage: hapax-oom-score-enforce --apply | --apply-unit UNIT\n' >&2
+    printf 'next action: invoke only the retained compatibility surface, or remove the stale caller instead of restoring root mutation\n' >&2
 }
 
 case "${1:-}" in
@@ -30,6 +31,7 @@ case "${1:-}" in
                 ;;
             *)
                 printf 'refusing non-retired OOM unit: %s\n' "$2" >&2
+                printf 'next action: keep delegated user services at OOMScoreAdjust=100 and remove this stale caller\n' >&2
                 exit 2
                 ;;
         esac

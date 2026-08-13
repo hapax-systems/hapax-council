@@ -25,6 +25,22 @@ from shared.resource_model import (
 )
 
 
+def _effective_service_directives(unit_name: str) -> dict[str, str]:
+    root = Path(__file__).resolve().parents[2] / "systemd" / "units"
+    sources = [root / unit_name, *sorted((root / f"{unit_name}.d").glob("*.conf"))]
+    directives: dict[str, str] = {}
+    for source in sources:
+        in_service = False
+        for raw_line in source.read_text(encoding="utf-8").splitlines():
+            line = raw_line.strip()
+            if line.startswith("[") and line.endswith("]"):
+                in_service = line == "[Service]"
+            elif in_service and line and not line.startswith(("#", ";")) and "=" in line:
+                key, _, value = line.partition("=")
+                directives[key.strip()] = value.strip()
+    return directives
+
+
 class TestResourceTypeCompleteness:
     def test_all_five_types_are_distinct(self):
         values = [rt.value for rt in ResourceType]
@@ -278,9 +294,14 @@ class TestServiceProfileCompleteness:
 
     def test_daimonion_profile_matches_effective_capacity_dropin(self):
         allocation = DEFAULT_SERVICE_PROFILES["hapax-daimonion"].allocations[ResourceType.RAM]
+        effective = _effective_service_directives("hapax-daimonion.service")
 
         assert allocation.limit == 16.0
         assert allocation.enforcement == Enforcement.HARD
+        assert effective["MemoryHigh"] == "12G"
+        assert effective["MemoryMax"] == "16G"
+        assert "MemoryHigh=12G" in allocation.notes
+        assert "MemoryMax=16G" in allocation.notes
 
         compendium = (Path(__file__).resolve().parents[2] / "docs/compendium.md").read_text()
         assert "MemoryHigh=12G, MemoryMax=16G" in compendium
