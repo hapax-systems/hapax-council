@@ -1,11 +1,14 @@
 #!/usr/bin/env bash
 # Install Hapax apcupsd config/hooks and verify power-event provenance paths.
 set -euo pipefail
+PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
+export PATH
 # Repository selectors are never package-authority inputs. The staged source,
 # explicit repository root, and immutable commit are the complete Git surface.
 unset GIT_DIR GIT_WORK_TREE GIT_COMMON_DIR GIT_INDEX_FILE GIT_OBJECT_DIRECTORY
 unset GIT_ALTERNATE_OBJECT_DIRECTORIES GIT_SHALLOW_FILE GIT_REPLACE_REF_BASE
 export GIT_NO_REPLACE_OBJECTS=1
+readonly GIT=/usr/bin/git
 ORIGINAL_ARGS=("$@")
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
@@ -25,6 +28,7 @@ UPOWER_CONF_DEST="${HAPAX_UPOWER_CONF_DEST:-/etc/UPower/UPower.conf.d/90-hapax-a
 SYSTEMCTL="${HAPAX_APCUPSD_SYSTEMCTL:-systemctl}"
 BUSCTL="${HAPAX_APCUPSD_BUSCTL:-busctl}"
 APCACCESS="${HAPAX_APCUPSD_APCACCESS:-apcaccess}"
+GETENT="${HAPAX_APCUPSD_GETENT:-/usr/bin/getent}"
 SUDO="${HAPAX_APCUPSD_INSTALL_SUDO-sudo}"
 REAL_UID="$(/usr/bin/id -u)"
 ACTUAL_UID="$REAL_UID"
@@ -39,10 +43,10 @@ if [ -n "${HAPAX_ROOT_REQUIRED_ISOLATED_TEST_ROOT:-}" ]; then
     TARGET_GID="${TARGET_GID:-$(/usr/bin/id -g)}"
 fi
 if [ -z "$TARGET_HOME" ]; then
-    TARGET_HOME="$(getent passwd "$TARGET_UID" | cut -d: -f6 || true)"
+    TARGET_HOME="$("$GETENT" passwd "$TARGET_UID" | cut -d: -f6 || true)"
 fi
 if [ -z "$TARGET_GID" ]; then
-    TARGET_GID="$(getent passwd "$TARGET_UID" | cut -d: -f4 || true)"
+    TARGET_GID="$("$GETENT" passwd "$TARGET_UID" | cut -d: -f4 || true)"
 fi
 if [ -z "$TARGET_HOME" ] || [ -z "$TARGET_GID" ]; then
     echo "unable to resolve home/group for apcupsd target UID $TARGET_UID; next action: set HAPAX_APCUPSD_TARGET_UID, HAPAX_APCUPSD_TARGET_HOME, and HAPAX_APCUPSD_TARGET_GID explicitly" >&2
@@ -158,7 +162,7 @@ refuse_whole_script_root() {
 }
 
 install_audit_dir() {
-    if [ -n "$AUDIT_GROUP" ] && getent group "$AUDIT_GROUP" >/dev/null 2>&1 && { [ -n "$SUDO" ] || [ "$(id -u)" = "0" ]; }; then
+    if [ -n "$AUDIT_GROUP" ] && "$GETENT" group "$AUDIT_GROUP" >/dev/null 2>&1 && { [ -n "$SUDO" ] || [ "$(id -u)" = "0" ]; }; then
         run_root install -d -m 2775 -g "$AUDIT_GROUP" "$AUDIT_DIR"
     else
         run_root install -d -m 0775 "$AUDIT_DIR"
@@ -172,7 +176,7 @@ resolve_audit_log_identity() {
             echo "canonical UPS audit log requires group $DEFAULT_AUDIT_GROUP, not $AUDIT_GROUP; next action: remove HAPAX_APCUPSD_AUDIT_GROUP or use a noncanonical audit-log path" >&2
             return 1
         fi
-        if ! group_entry="$(getent group "$DEFAULT_AUDIT_GROUP" 2>/dev/null)" \
+        if ! group_entry="$("$GETENT" group "$DEFAULT_AUDIT_GROUP" 2>/dev/null)" \
             || [ -z "$group_entry" ]; then
             echo "required UPS audit group is missing: $DEFAULT_AUDIT_GROUP; next action: restore the canonical $DEFAULT_AUDIT_GROUP group before installing or verifying apcupsd power alerts" >&2
             return 1
@@ -203,8 +207,8 @@ resolve_audit_log_identity() {
     if [ -z "$AUDIT_LOG_OWNER_GID" ]; then
         if [[ "$AUDIT_LOG" == /var/log/* ]] \
             && [ -n "$AUDIT_GROUP" ] \
-            && getent group "$AUDIT_GROUP" >/dev/null 2>&1; then
-            AUDIT_LOG_OWNER_GID="$(getent group "$AUDIT_GROUP" | cut -d: -f3)"
+            && "$GETENT" group "$AUDIT_GROUP" >/dev/null 2>&1; then
+            AUDIT_LOG_OWNER_GID="$("$GETENT" group "$AUDIT_GROUP" | cut -d: -f3)"
         else
             AUDIT_LOG_OWNER_GID="$(/usr/bin/id -g)"
         fi
@@ -384,6 +388,9 @@ configure_root_required_state_domain() {
     if [ -n "${HAPAX_ROOT_REQUIRED_DRAIN_DIR:-}" ]; then
         validation_args+=(path HAPAX_ROOT_REQUIRED_DRAIN_DIR "$HAPAX_ROOT_REQUIRED_DRAIN_DIR")
     fi
+    if [[ -v HAPAX_APCUPSD_GETENT ]]; then
+        validation_args+=(exec HAPAX_APCUPSD_GETENT "$GETENT")
+    fi
     if [ -n "$test_root" ]; then
         /usr/bin/python3 -I -S - "$test_root" "${validation_args[@]}" <<'PY'
 from __future__ import annotations
@@ -479,6 +486,7 @@ PY
         HAPAX_APCUPSD_TARGET_UID \
         HAPAX_APCUPSD_TARGET_GID \
         HAPAX_APCUPSD_TARGET_HOME \
+        HAPAX_APCUPSD_GETENT \
         HAPAX_APCUPSD_INSTALL_TEST_ACTUAL_UID; do
         if [[ -v "$selector" ]]; then
             echo "apcupsd installer: $selector selects caller-selected production identity or state; remove it or use a confined HAPAX_ROOT_REQUIRED_ISOLATED_TEST_ROOT harness" >&2
@@ -714,16 +722,16 @@ migrate_legacy_root_required_state() {
 package_commits_equivalent() {
     local installed_sha="$1" candidate_sha="$2" rel installed_mode candidate_mode
     cmp -s \
-        <(git -C "$ROOT_REQUIRED_GIT_REPO" show "$installed_sha:$package_manifest_source" 2>/dev/null) \
-        <(git -C "$ROOT_REQUIRED_GIT_REPO" show "$candidate_sha:$package_manifest_source" 2>/dev/null) || return 1
+        <("$GIT" -C "$ROOT_REQUIRED_GIT_REPO" show "$installed_sha:$package_manifest_source" 2>/dev/null) \
+        <("$GIT" -C "$ROOT_REQUIRED_GIT_REPO" show "$candidate_sha:$package_manifest_source" 2>/dev/null) || return 1
     for rel in "${package_files[@]}"; do
-        git -C "$ROOT_REQUIRED_GIT_REPO" cat-file -e "$installed_sha:$rel" 2>/dev/null || return 1
-        git -C "$ROOT_REQUIRED_GIT_REPO" cat-file -e "$candidate_sha:$rel" 2>/dev/null || return 1
+        "$GIT" -C "$ROOT_REQUIRED_GIT_REPO" cat-file -e "$installed_sha:$rel" 2>/dev/null || return 1
+        "$GIT" -C "$ROOT_REQUIRED_GIT_REPO" cat-file -e "$candidate_sha:$rel" 2>/dev/null || return 1
         cmp -s \
-            <(git -C "$ROOT_REQUIRED_GIT_REPO" show "$installed_sha:$rel") \
-            <(git -C "$ROOT_REQUIRED_GIT_REPO" show "$candidate_sha:$rel") || return 1
-        installed_mode="$(git -C "$ROOT_REQUIRED_GIT_REPO" ls-tree "$installed_sha" -- "$rel" | awk 'NR == 1 {print $1}')"
-        candidate_mode="$(git -C "$ROOT_REQUIRED_GIT_REPO" ls-tree "$candidate_sha" -- "$rel" | awk 'NR == 1 {print $1}')"
+            <("$GIT" -C "$ROOT_REQUIRED_GIT_REPO" show "$installed_sha:$rel") \
+            <("$GIT" -C "$ROOT_REQUIRED_GIT_REPO" show "$candidate_sha:$rel") || return 1
+        installed_mode="$("$GIT" -C "$ROOT_REQUIRED_GIT_REPO" ls-tree "$installed_sha" -- "$rel" | awk 'NR == 1 {print $1}')"
+        candidate_mode="$("$GIT" -C "$ROOT_REQUIRED_GIT_REPO" ls-tree "$candidate_sha" -- "$rel" | awk 'NR == 1 {print $1}')"
         [ -n "$installed_mode" ] && [ "$installed_mode" = "$candidate_mode" ] || return 1
     done
 }
@@ -737,14 +745,14 @@ validate_candidate_against_receipt() {
         return 1
     }
     [ "$receipt_sha" != "$ROOT_REQUIRED_PACKAGE_SHA" ] || return 0
-    if ! git -C "$ROOT_REQUIRED_GIT_REPO" cat-file -e "$receipt_sha^{commit}" 2>/dev/null; then
+    if ! "$GIT" -C "$ROOT_REQUIRED_GIT_REPO" cat-file -e "$receipt_sha^{commit}" 2>/dev/null; then
         echo "cannot validate apcupsd package order for $receipt_kind=$receipt_sha candidate=$ROOT_REQUIRED_PACKAGE_SHA; next action: fetch both commits into $ROOT_REQUIRED_GIT_REPO and rerun the staged RUNBOOK" >&2
         return 1
     fi
-    if git -C "$ROOT_REQUIRED_GIT_REPO" merge-base --is-ancestor "$receipt_sha" "$ROOT_REQUIRED_PACKAGE_SHA"; then
+    if "$GIT" -C "$ROOT_REQUIRED_GIT_REPO" merge-base --is-ancestor "$receipt_sha" "$ROOT_REQUIRED_PACKAGE_SHA"; then
         return 0
     fi
-    if git -C "$ROOT_REQUIRED_GIT_REPO" merge-base --is-ancestor "$ROOT_REQUIRED_PACKAGE_SHA" "$receipt_sha"; then
+    if "$GIT" -C "$ROOT_REQUIRED_GIT_REPO" merge-base --is-ancestor "$ROOT_REQUIRED_PACKAGE_SHA" "$receipt_sha"; then
         SKIP_SUPERSEDED_INSTALL=1
         echo "root-required apcupsd package $ROOT_REQUIRED_PACKAGE_SHA is superseded by $receipt_kind $receipt_sha; live files and durable desired state will not be rolled back"
         return 0
@@ -770,7 +778,7 @@ validate_root_required_package_order() {
         fi
     fi
     if [ -z "$ROOT_REQUIRED_PACKAGE_SHA" ]; then
-        ROOT_REQUIRED_PACKAGE_SHA="$(git -C "$SOURCE" rev-parse HEAD 2>/dev/null || true)"
+        ROOT_REQUIRED_PACKAGE_SHA="$("$GIT" -C "$SOURCE" rev-parse HEAD 2>/dev/null || true)"
     fi
     if [ -z "$ROOT_REQUIRED_PACKAGE_SHA" ]; then
         echo "apcupsd install source has no package SHA; next action: run from a Git worktree or the exact staged RUNBOOK command" >&2
@@ -780,7 +788,7 @@ validate_root_required_package_order() {
         echo "invalid root-required package SHA: $ROOT_REQUIRED_PACKAGE_SHA; next action: rerun the exact command from the staged RUNBOOK.txt" >&2
         return 1
     }
-    git -C "$ROOT_REQUIRED_GIT_REPO" cat-file -e "$ROOT_REQUIRED_PACKAGE_SHA^{commit}" 2>/dev/null || {
+    "$GIT" -C "$ROOT_REQUIRED_GIT_REPO" cat-file -e "$ROOT_REQUIRED_PACKAGE_SHA^{commit}" 2>/dev/null || {
         echo "root-required apcupsd package commit is unavailable: $ROOT_REQUIRED_PACKAGE_SHA; next action: fetch it into $ROOT_REQUIRED_GIT_REPO and rerun the staged RUNBOOK" >&2
         return 1
     }
@@ -811,7 +819,7 @@ expected_package_git_mode() {
 validate_package_source_matches_commit() {
     local rel git_mode expected_mode
     for rel in "${package_files[@]}"; do
-        git_mode="$(git -C "$ROOT_REQUIRED_GIT_REPO" ls-tree "$ROOT_REQUIRED_PACKAGE_SHA" -- "$rel" | awk 'NR == 1 {print $1}')"
+        git_mode="$("$GIT" -C "$ROOT_REQUIRED_GIT_REPO" ls-tree "$ROOT_REQUIRED_PACKAGE_SHA" -- "$rel" | awk 'NR == 1 {print $1}')"
         expected_mode="$(expected_package_git_mode "$rel")"
         if [ "$git_mode" != "$expected_mode" ]; then
             echo "apcupsd package Git mode violates the destination contract at $rel: actual=$git_mode expected=$expected_mode; next action: restore the tracked executable class and rerun from a clean Git worktree or exact staged RUNBOOK" >&2
@@ -839,7 +847,7 @@ PY
             echo "apcupsd install source is not a regular file with the claimed Git mode at $rel; next action: discard the substituted or mode-drifted package and rerun from a clean Git worktree or exact staged RUNBOOK" >&2
             return 1
         fi
-        if ! cmp -s <(git -C "$ROOT_REQUIRED_GIT_REPO" show "$ROOT_REQUIRED_PACKAGE_SHA:$rel") "$SOURCE/$rel"; then
+        if ! cmp -s <("$GIT" -C "$ROOT_REQUIRED_GIT_REPO" show "$ROOT_REQUIRED_PACKAGE_SHA:$rel") "$SOURCE/$rel"; then
             echo "apcupsd install source does not match claimed commit $ROOT_REQUIRED_PACKAGE_SHA at $rel; next action: discard the modified package and rerun from a clean Git worktree or exact staged RUNBOOK" >&2
             return 1
         fi
@@ -850,7 +858,7 @@ validate_no_unhandled_package_removals() {
     local installed_sha rel
     [ -f "$ROOT_REQUIRED_RECEIPT" ] || return 0
     installed_sha="$(tr -d '[:space:]' < "$ROOT_REQUIRED_RECEIPT")"
-    if ! git -C "$ROOT_REQUIRED_GIT_REPO" cat-file -e "$installed_sha:$package_manifest_source" 2>/dev/null; then
+    if ! "$GIT" -C "$ROOT_REQUIRED_GIT_REPO" cat-file -e "$installed_sha:$package_manifest_source" 2>/dev/null; then
         echo "installed apcupsd commit predates the versioned ownership manifest; package-removal guard is using the one-time legacy bridge"
         return 0
     fi
@@ -860,7 +868,7 @@ validate_no_unhandled_package_removals() {
             return 1
         fi
     done < <(
-        git -C "$ROOT_REQUIRED_GIT_REPO" show "$installed_sha:$package_manifest_source" |
+        "$GIT" -C "$ROOT_REQUIRED_GIT_REPO" show "$installed_sha:$package_manifest_source" |
             awk 'NF && $1 !~ /^#/ {print $1}'
     )
 }
