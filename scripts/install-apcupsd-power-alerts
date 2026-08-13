@@ -92,7 +92,7 @@ usage() {
     cat <<'USAGE'
 usage: scripts/install-apcupsd-power-alerts [--source DIR] [--check] [--install] [--verify-live] [--no-restart]
 
-Installs:
+Source-checks and read-only verifies the intended files:
   config/apcupsd/apcupsd.conf        -> /etc/apcupsd/apcupsd.conf
   config/apcupsd/hapax-power-event.py -> /etc/apcupsd/hapax-power-event.py
   config/apcupsd/onbattery           -> /etc/apcupsd/onbattery
@@ -102,8 +102,9 @@ Installs:
   systemd/logrotate.d/hapax-ups-power-events -> /etc/logrotate.d/hapax-ups-power-events
 
 Power events are recorded at /var/log/hapax/ups-power-events.jsonl before/after
-ntfy delivery state is known. Run the installer as the target account; it uses
-sudo only for root-owned destinations and refuses whole-script root execution.
+ntfy delivery state is known. Production --install is unavailable until a
+separately authorized root broker exists. The install implementation is exposed
+only inside a confined, caller-owned isolated test root with no sudo bridge.
 USAGE
 }
 
@@ -1082,18 +1083,18 @@ install_live() {
     run_root install -d -m 0755 "$(dirname "$UPOWER_CONF_DEST")"
     run_root install -m 0644 "$SOURCE/config/upower/90-hapax-apcupsd-owner.conf" "$UPOWER_CONF_DEST"
     run_root "$SYSTEMCTL" enable --now apcupsd.service || {
-        echo "unable to enable and start apcupsd.service; next action: run sudo systemctl enable --now apcupsd.service and inspect journalctl -u apcupsd.service" >&2
+        echo "unable to enable and start apcupsd.service; next action: inspect journalctl -u apcupsd.service, then $APC_REPAIR_ACTION" >&2
         return 1
     }
     if [ "$RESTART" -eq 1 ] && [ "$apcupsd_changed" -eq 1 ]; then
         run_root "$SYSTEMCTL" restart apcupsd.service || {
-            echo "unable to reload apcupsd's shutdown policy; next action: run sudo systemctl restart apcupsd.service and inspect journalctl -u apcupsd.service" >&2
+            echo "unable to reload apcupsd's shutdown policy; next action: inspect journalctl -u apcupsd.service, then $APC_REPAIR_ACTION" >&2
             return 1
         }
     fi
     if [ "$RESTART" -eq 1 ] && [ "$upower_changed" -eq 1 ]; then
         run_root "$SYSTEMCTL" try-restart upower.service || {
-            echo "unable to reload UPower's shutdown policy; next action: run sudo systemctl restart upower.service and verify busctl call org.freedesktop.UPower /org/freedesktop/UPower org.freedesktop.UPower GetCriticalAction returns Ignore" >&2
+            echo "unable to reload UPower's shutdown policy; next action: $APC_REPAIR_ACTION, then verify busctl call org.freedesktop.UPower /org/freedesktop/UPower org.freedesktop.UPower GetCriticalAction returns Ignore" >&2
             return 1
         }
     fi
@@ -1132,7 +1133,7 @@ apcupsd_live_policy_matches_source() {
 
 verify_apcupsd_live_policy() {
     if ! apcupsd_live_policy_matches_source; then
-        echo "apcupsd loaded shutdown policy drift: ${APCUPSD_LIVE_POLICY_DETAIL:-unknown}; next action: run sudo systemctl restart apcupsd.service and rerun scripts/install-apcupsd-power-alerts --verify-live" >&2
+        echo "apcupsd loaded shutdown policy drift: ${APCUPSD_LIVE_POLICY_DETAIL:-unknown}; next action: $APC_REPAIR_ACTION, then rerun scripts/install-apcupsd-power-alerts --verify-live" >&2
         return 1
     fi
 }
@@ -1150,7 +1151,7 @@ upower_live_policy_matches_source() {
 
 verify_upower_live_policy() {
     if ! upower_live_policy_matches_source; then
-        echo "UPower still owns a loaded shutdown action: ${UPOWER_LIVE_POLICY_DETAIL:-unknown}; next action: run sudo systemctl restart upower.service and rerun scripts/install-apcupsd-power-alerts --verify-live" >&2
+        echo "UPower still owns a loaded shutdown action: ${UPOWER_LIVE_POLICY_DETAIL:-unknown}; next action: $APC_REPAIR_ACTION, then rerun scripts/install-apcupsd-power-alerts --verify-live" >&2
         return 1
     fi
 }
@@ -1249,11 +1250,11 @@ verify_live() {
     }
     verify_audit_log_target
     run_root "$SYSTEMCTL" is-enabled --quiet apcupsd.service || {
-        echo "apcupsd.service is not enabled; next action: run sudo systemctl enable --now apcupsd.service" >&2
+        echo "apcupsd.service is not enabled; next action: $APC_REPAIR_ACTION" >&2
         return 1
     }
     run_root "$SYSTEMCTL" is-active --quiet apcupsd.service || {
-        echo "apcupsd.service is not active; next action: run sudo systemctl enable --now apcupsd.service and inspect journalctl -u apcupsd.service" >&2
+        echo "apcupsd.service is not active; next action: inspect journalctl -u apcupsd.service, then $APC_REPAIR_ACTION" >&2
         return 1
     }
     verify_apcupsd_live_policy

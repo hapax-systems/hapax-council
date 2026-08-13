@@ -1157,6 +1157,9 @@ def test_apcupsd_repair_guidance_never_advertises_retired_bare_install() -> None
         content = surface.read_text(encoding="utf-8")
         assert "install-apcupsd-power-alerts --install" not in content, surface
         assert "--install --verify-live" not in content, surface
+        assert "sudo systemctl restart apcupsd.service" not in content, surface
+        assert "sudo systemctl enable --now apcupsd.service" not in content, surface
+        assert "sudo systemctl restart upower.service" not in content, surface
 
 
 def test_apcupsd_isolated_test_mode_rejects_state_path_escape(tmp_path: Path) -> None:
