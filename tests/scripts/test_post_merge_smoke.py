@@ -30,6 +30,68 @@ SMOKE = REPO_ROOT / "scripts" / "hapax-post-merge-smoke"
 INSTALL_UNITS_PATH = "systemd/scripts/install-units.sh"
 
 
+def _bounded_systemd_run_stub() -> str:
+    return r"""
+set -euo pipefail
+runtime=60
+runtime_seen=0
+user_seen=0
+wait_seen=0
+pipe_seen=0
+collect_seen=0
+service_type_seen=0
+expand_disabled_seen=0
+stop_timeout_seen=0
+kill_mode_seen=0
+sigkill_seen=0
+no_ask_seen=0
+while [ "$#" -gt 0 ]; do
+    case "$1" in
+        --user) user_seen=1 ;;
+        --wait) wait_seen=1 ;;
+        --pipe) pipe_seen=1 ;;
+        --collect) collect_seen=1 ;;
+        --service-type=exec) service_type_seen=1 ;;
+        --expand-environment=no) expand_disabled_seen=1 ;;
+        --property=RuntimeMaxSec=*) runtime_seen=1; runtime="${1#*=}"; runtime="${runtime%s}" ;;
+        --property=TimeoutStopSec=1s) stop_timeout_seen=1 ;;
+        --property=KillMode=control-group) kill_mode_seen=1 ;;
+        --property=SendSIGKILL=yes) sigkill_seen=1 ;;
+        --no-ask-password) no_ask_seen=1 ;;
+        --setenv=*=*) export "${1#--setenv=}" ;;
+        --) shift; break ;;
+    esac
+    shift
+done
+if [ "$runtime_seen$user_seen$wait_seen$pipe_seen$collect_seen$service_type_seen$expand_disabled_seen$stop_timeout_seen$kill_mode_seen$sigkill_seen$no_ask_seen" != 11111111111 ]; then
+    exit 92
+fi
+/usr/bin/setsid --wait "$@" &
+leader=$!
+deadline=$((SECONDS + runtime))
+while kill -0 "$leader" 2>/dev/null; do
+    if [ "$SECONDS" -ge "$deadline" ]; then
+        kill -TERM -- "-$leader" 2>/dev/null || true
+        sleep 0.1
+        kill -KILL -- "-$leader" 2>/dev/null || true
+        wait "$leader" 2>/dev/null || true
+        exit 137
+    fi
+    sleep 0.02
+done
+rc=0
+wait "$leader" || rc=$?
+if [ -n "${HAPAX_TEST_SMOKE_DESCENDANT_PID_FILE:-}" ] \
+    && [ -s "$HAPAX_TEST_SMOKE_DESCENDANT_PID_FILE" ]; then
+    read -r descendant < "$HAPAX_TEST_SMOKE_DESCENDANT_PID_FILE"
+    kill -TERM "$descendant" 2>/dev/null || true
+    sleep 0.05
+    kill -KILL "$descendant" 2>/dev/null || true
+fi
+exit "$rc"
+"""
+
+
 def _install_units_source(*decommissioned_units: str) -> str:
     entries = "".join(f"    {unit}\n" for unit in decommissioned_units)
     return f"DECOMMISSIONED_UNITS=(\n{entries})\n"
@@ -50,14 +112,16 @@ def _run(
         "REPO_ROOT": str(cwd),
         "HAPAX_SMOKE_OFF": "0",
     }
-    if stubs:
-        bin_dir = cwd / "_stubs"
-        bin_dir.mkdir(parents=True, exist_ok=True)
-        for name, body in stubs.items():
-            stub = bin_dir / name
-            stub.write_text(f"#!/usr/bin/env bash\n{body}\n")
-            stub.chmod(0o755)
-        env["PATH"] = f"{bin_dir}:{env['PATH']}"
+    bin_dir = cwd / "_stubs"
+    bin_dir.mkdir(parents=True, exist_ok=True)
+    effective_stubs = {"systemd-run": _bounded_systemd_run_stub(), **(stubs or {})}
+    for name, body in effective_stubs.items():
+        stub = bin_dir / name
+        stub.write_text(f"#!/usr/bin/env bash\n{body}\n")
+        stub.chmod(0o755)
+    env["PATH"] = f"{bin_dir}:{env['PATH']}"
+    env["HAPAX_SMOKE_ISOLATED_TEST_ROOT"] = str(cwd)
+    env["HAPAX_SMOKE_SYSTEMD_RUN_BIN"] = str(bin_dir / "systemd-run")
     if extra_env:
         env.update(extra_env)
     command = ["bash", str(SMOKE)]
@@ -139,11 +203,42 @@ class TestKillSwitch:
             stubs={"curl": 'printf called > "$HAPAX_SMOKE_NTFY_MARKER"'},
         )
 
-        assert result.returncode == 0
+        assert result.returncode == 2
         assert "smoke FAIL: change-discovery:" in result.stderr
         assert "cannot resolve target commit" in result.stderr
         assert "next action:" in result.stderr
         assert marker.read_text() == "called"
+
+    def test_invalid_ref_cannot_expand_notification_beyond_payload_bound(
+        self, tmp_path: Path
+    ) -> None:
+        repo = _make_repo(tmp_path)
+        payload = repo / "ntfy-payload"
+        invalid_ref = "invalid-" + ("x" * 12000)
+        result = _run(
+            invalid_ref,
+            cwd=repo,
+            extra_env={
+                "NTFY_TOPIC": "test-topic",
+                "HAPAX_SMOKE_NTFY_PAYLOAD": str(payload),
+            },
+            stubs={
+                "curl": r"""
+while [ "$#" -gt 0 ]; do
+    if [ "$1" = "-d" ]; then
+        printf '%s' "$2" > "$HAPAX_SMOKE_NTFY_PAYLOAD"
+        exit 0
+    fi
+    shift
+done
+exit 91
+"""
+            },
+        )
+
+        assert result.returncode == 2
+        assert payload.stat().st_size <= 4096
+        assert invalid_ref not in payload.read_text(encoding="utf-8")
 
     def test_foreign_repo_root_is_operator_visible_and_notified(self, tmp_path: Path) -> None:
         repo = _make_repo(tmp_path / "expected")
@@ -162,7 +257,7 @@ class TestKillSwitch:
             stubs={"curl": 'printf called > "$HAPAX_SMOKE_NTFY_MARKER"'},
         )
 
-        assert result.returncode == 0
+        assert result.returncode == 2
         assert "smoke FAIL: change-discovery:" in result.stderr
         assert "cannot resolve target commit" in result.stderr
         assert "next action:" in result.stderr
@@ -181,7 +276,7 @@ class TestKillSwitch:
             stubs={"curl": 'printf called > "$HAPAX_SMOKE_NTFY_MARKER"'},
         )
 
-        assert result.returncode == 0
+        assert result.returncode == 2
         assert "smoke FAIL: change-discovery:" in result.stderr
         assert "cannot resolve --since commit" in result.stderr
         assert "next action:" in result.stderr
@@ -195,7 +290,7 @@ class TestKillSwitch:
 
         result = _run(sha, since="", cwd=repo)
 
-        assert result.returncode == 0
+        assert result.returncode == 2
         assert "smoke FAIL: change-discovery:" in result.stderr
         assert "empty --since commit" in result.stderr
         assert "next action:" in result.stderr
@@ -210,7 +305,16 @@ class TestKillSwitch:
             },
         )
 
-        result = _run(sha, cwd=repo, stubs={"systemctl": "exit 3"})
+        result = _run(
+            sha,
+            cwd=repo,
+            stubs={
+                "systemctl": (
+                    'if [ "${2:-}" = show ] && [ "${5:-}" = ActiveState ]; then '
+                    "echo inactive; exit 0; fi\nexit 3"
+                )
+            },
+        )
 
         assert result.returncode == 0
         assert "root.service not active after deploy" in result.stderr
@@ -236,7 +340,7 @@ class TestKillSwitch:
 
         result = _run(sha, cwd=shallow)
 
-        assert result.returncode == 0
+        assert result.returncode == 2
         assert "smoke FAIL: change-discovery:" in result.stderr
         assert "first parent object" in result.stderr
         assert "shallow" in result.stderr
@@ -313,7 +417,7 @@ exec /usr/bin/git "$@"
             },
         )
 
-        assert result.returncode == 0
+        assert result.returncode == 2
         assert "smoke FAIL: change-discovery:" in result.stderr
         assert "cannot enumerate changed files" in result.stderr
         assert "next action:" in result.stderr
@@ -334,6 +438,40 @@ exec /usr/bin/git "$@"
         assert result.returncode == 0
         assert time.monotonic() - started < 2.5
         assert "slow-notice.service not active after deploy" in result.stderr
+
+    def test_failure_notification_cgroup_reaps_detached_descendants(self, tmp_path: Path) -> None:
+        repo = _make_repo(tmp_path)
+        sha = _commit_files(repo, {"systemd/units/notice-child.service": "[Unit]\n"})
+        pid_file = repo / "detached-notice-child.pid"
+
+        result = _run(
+            sha,
+            cwd=repo,
+            extra_env={
+                "NTFY_TOPIC": "test-topic",
+                "HAPAX_TEST_SMOKE_DESCENDANT_PID_FILE": str(pid_file),
+            },
+            stubs={
+                "systemctl": "exit 3",
+                "curl": (
+                    "/usr/bin/setsid /usr/bin/sleep 30 &\n"
+                    'printf \'%s\\n\' "$!" > "$HAPAX_TEST_SMOKE_DESCENDANT_PID_FILE"\n'
+                    "exit 0"
+                ),
+            },
+        )
+
+        assert result.returncode == 0
+        pid = int(pid_file.read_text(encoding="utf-8"))
+        deadline = time.monotonic() + 2
+        while Path(f"/proc/{pid}").exists() and time.monotonic() < deadline:
+            status = Path(f"/proc/{pid}/status")
+            if status.exists() and "State:\tZ" in status.read_text(encoding="utf-8"):
+                break
+            time.sleep(0.02)
+        assert not Path(f"/proc/{pid}").exists() or "State:\tZ" in Path(
+            f"/proc/{pid}/status"
+        ).read_text(encoding="utf-8")
 
     def test_failure_notification_payload_and_retained_entries_are_bounded(
         self, tmp_path: Path
@@ -390,7 +528,16 @@ class TestServicesRestartedGate:
         )
         (repo / INSTALL_UNITS_PATH).write_text(_install_units_source())
 
-        result = _run(sha, cwd=repo, stubs={"systemctl": "exit 3"})
+        result = _run(
+            sha,
+            cwd=repo,
+            stubs={
+                "systemctl": (
+                    'if [ "${2:-}" = show ] && [ "${5:-}" = ActiveState ]; then '
+                    "echo inactive; exit 0; fi\nexit 3"
+                )
+            },
+        )
 
         assert result.returncode == 0
         assert "services-restarted" not in result.stderr
@@ -407,7 +554,16 @@ class TestServicesRestartedGate:
             },
         )
 
-        result = _run(sha, cwd=repo, stubs={"systemctl": "exit 0"})
+        result = _run(
+            sha,
+            cwd=repo,
+            stubs={
+                "systemctl": (
+                    'if [ "${2:-}" = show ] && [ "${5:-}" = ActiveState ]; then '
+                    "echo active; fi\nexit 0"
+                )
+            },
+        )
 
         assert result.returncode == 0
         assert "services-restarted" in result.stderr
@@ -428,7 +584,16 @@ class TestServicesRestartedGate:
             },
         )
 
-        result = _run(sha, cwd=repo, stubs={"systemctl": "exit 0"})
+        result = _run(
+            sha,
+            cwd=repo,
+            stubs={
+                "systemctl": (
+                    'if [ "${2:-}" = show ] && [ "${5:-}" = ActiveState ]; then '
+                    "echo active; fi\nexit 0"
+                )
+            },
+        )
 
         assert result.returncode == 0
         assert "services-restarted" in result.stderr
@@ -454,7 +619,7 @@ class TestServicesRestartedGate:
 
         result = _run(sha, cwd=repo, stubs={"systemctl": "exit 0"})
 
-        assert result.returncode == 0
+        assert result.returncode == 2
         assert "services-restarted" in result.stderr
         assert "cannot read exact-SHA decommission data" in result.stderr
 
@@ -470,7 +635,7 @@ class TestServicesRestartedGate:
 
         result = _run(sha, cwd=repo, stubs={"systemctl": "exit 0"})
 
-        assert result.returncode == 0
+        assert result.returncode == 2
         assert "services-restarted" in result.stderr
         assert "cannot parse exact-SHA decommission data" in result.stderr
 
@@ -567,9 +732,34 @@ class TestServicesRestartedGate:
         )
         result = _run(sha, cwd=repo, stubs={"systemctl": "exit 0"})
 
-        assert result.returncode == 0
+        assert result.returncode == 2
         assert "services-restarted" in result.stderr
         assert "invalid Hapax-Install-Scope" in result.stderr
+
+    def test_inactive_expected_state_query_failure_is_execution_failure(
+        self, tmp_path: Path
+    ) -> None:
+        repo = _make_repo(tmp_path)
+        unit = "retired-query-failure.service"
+        sha = _commit_files(
+            repo,
+            {
+                INSTALL_UNITS_PATH: _install_units_source(unit),
+                f"systemd/units/{unit}": "[Unit]\n",
+            },
+        )
+        result = _run(
+            sha,
+            cwd=repo,
+            stubs={
+                "systemctl": (
+                    'if [ "${2:-}" = show ] && [ "${5:-}" = ActiveState ]; then exit 74; fi\nexit 3'
+                )
+            },
+        )
+
+        assert result.returncode == 2
+        assert "cannot query ActiveState" in result.stderr
 
     def test_successful_oneshot_inactive_unit_passes_silently(self, tmp_path: Path) -> None:
         repo = _make_repo(tmp_path)
@@ -883,15 +1073,15 @@ class TestScriptIntegrity:
         assert "HAPAX_SMOKE_OFF" in body
         assert "HAPAX_SMOKE_DRYRUN" in body
 
-    def test_script_always_exits_zero(self) -> None:
-        """Smoke is informational; never block the deploy chain."""
+    def test_script_propagates_execution_failures_only(self) -> None:
+        """Advisory gates stay zero, but infrastructure failures block receipts."""
         body = SMOKE.read_text(encoding="utf-8")
-        # Body must end with `exit 0` (last non-blank, non-comment line).
+        assert "record_execution_failure()" in body
         for line in reversed(body.splitlines()):
             stripped = line.strip()
             if not stripped or stripped.startswith("#"):
                 continue
-            assert stripped == "exit 0", f"last executable line must be `exit 0`: {line!r}"
+            assert stripped == 'exit "$EXECUTION_FAILURE"'
             break
 
     def test_script_uses_ntfy_on_failure(self) -> None:
