@@ -30,10 +30,11 @@ cd "$REPO_ROOT" || exit 0
 
 # Resolve the SHA range. If SHA is a single commit, compare against its
 # first parent. Tolerant of merge commits and squash-merges.
-if ! git rev-parse --verify --quiet "${SHA}^{commit}" >/dev/null; then
+if ! SHA_RESOLVED="$(git rev-parse --verify --quiet "${SHA}^{commit}")"; then
     echo "smoke: invalid SHA '$SHA'; skipping" >&2
     exit 0
 fi
+SHA="$SHA_RESOLVED"
 if FIRST_PARENT="$(git rev-parse --verify --quiet "${SHA}^1" 2>/dev/null)"; then
     DIFF_BASE="$FIRST_PARENT"
 else
@@ -94,10 +95,10 @@ unit_install_scope() {
         return 1
     fi
     scope_marker_count="$(
-        grep -Eic '^[#;][[:space:]]*Hapax-Install-Scope[[:space:]]*:' <<< "$content" || true
+        grep -Eic '^[[:blank:]]*[#;][[:blank:]]*Hapax-Install-Scope[[:blank:]]*:' <<< "$content" || true
     )"
     system_marker_count="$(
-        grep -Eic '^[#;][[:space:]]*Hapax-Install-Scope:[[:space:]]*system[[:space:]]*$' <<< "$content" || true
+        grep -Eic '^[[:blank:]]*[#;][[:blank:]]*Hapax-Install-Scope[[:blank:]]*:[[:blank:]]*system[[:blank:]]*$' <<< "$content" || true
     )"
     if [ "$scope_marker_count" -eq 0 ]; then
         printf 'user\n'
