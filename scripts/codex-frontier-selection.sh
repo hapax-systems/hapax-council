@@ -68,8 +68,20 @@ _cfs_e="${HAPAX_CODEX_MODEL:-$HAPAX_CODEX_FRONTIER_MODEL}"; _cfs_env_trim
 CODEX_MODEL="${_cfs_e:-$HAPAX_CODEX_FRONTIER_MODEL}"
 _cfs_e="${HAPAX_CODEX_EFFORT:-$HAPAX_CODEX_FRONTIER_EFFORT}"; _cfs_env_trim
 CODEX_EFFORT="${_cfs_e:-$HAPAX_CODEX_FRONTIER_EFFORT}"
+# THE REASON IS AN ENV INPUT TOO — and it is the one that gates everything below.
+#
+# The previous commit normalised four env inputs and left this fifth raw, so
+# `HAPAX_CODEX_MODEL_REASON="   "` passed `[ -z ]`, authorised a below-frontier downgrade, and
+# recorded a reason that says nothing. Empty was refused; whitespace was not.
+#
+# THIS IS THE THIRD TIME IN THIS FILE that one arm of a pair was normalised and its twin was not:
+# `-m?*` had no `-p?*`; config values were trimmed while env values were not; env values were
+# trimmed while the reason was not. Three is not a smell, it is the shape being wrong — so every
+# env input now goes through `_cfs_env_trim` in one block, with nothing assigned outside it. A
+# fourth arm cannot be forgotten if there is no separate place to put one.
+_cfs_e="${HAPAX_CODEX_MODEL_REASON:-}"; _cfs_env_trim
+CODEX_MODEL_REASON="$_cfs_e"
 unset _cfs_e
-CODEX_MODEL_REASON="${HAPAX_CODEX_MODEL_REASON:-}"
 
 if [ "$HAPAX_CODEX_FRONTIER_MODEL" != "$HAPAX_CODEX_FRONTIER_MODEL_BUILTIN" ] ||
   [ "$HAPAX_CODEX_FRONTIER_EFFORT" != "$HAPAX_CODEX_FRONTIER_EFFORT_BUILTIN" ]; then

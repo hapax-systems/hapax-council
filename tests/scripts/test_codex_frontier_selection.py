@@ -122,6 +122,66 @@ def test_whitespace_padding_does_not_reach_codex_as_the_model_name(
     )
 
 
+@pytest.mark.parametrize("blank", ["   ", " ", "\t", "  \t "])
+def test_a_whitespace_only_reason_does_not_authorize_a_downgrade(
+    tmp_path: Path, blank: str
+) -> None:
+    """The reason is an env input too, and it gates everything else.
+
+    The previous commit normalised four env inputs and left this fifth raw, so `[ -z ]` accepted
+    whitespace: a below-frontier downgrade was authorised and the recorded reason said nothing.
+    Empty was refused; whitespace was not. A guard whose authorising input is unnormalised is
+    authorising on a string nobody read.
+    """
+    result = _run_with_extra(
+        ["-c", 'model="gpt-5.3-codex-spark"'],
+        tmp_path,
+        {"HAPAX_CODEX_MODEL_REASON": blank},
+    )
+
+    assert result.returncode == 6, f"a blank reason authorised the downgrade: {result.stdout!r}"
+    assert "REFUSING a below-frontier selection" in result.stderr
+
+
+def test_a_whitespace_only_reason_does_not_authorize_a_frontier_change(tmp_path: Path) -> None:
+    """The same hole on the larger act: redefining the frontier moves every launcher's default."""
+    result = _run(
+        {"HAPAX_CODEX_FRONTIER_MODEL": "gpt-9", "HAPAX_CODEX_MODEL_REASON": " "}, tmp_path
+    )
+
+    assert result.returncode == 6
+    assert "REFUSING a redefined frontier" in result.stderr
+
+
+def test_every_env_input_is_normalised_in_one_block() -> None:
+    """Structural, because this was the THIRD one-arm-normalised defect in this file.
+
+    `-m?*` had no `-p?*` twin; config values were trimmed while env values were not; env values
+    were trimmed while the reason was not. Three is the shape being wrong rather than a smell, so
+    every env input now goes through `_cfs_env_trim` and none is assigned outside that block. This
+    fails if a future input is added raw — which is the only way to stop a fourth arm appearing.
+    """
+    code = [
+        ln
+        for ln in FRAGMENT.read_text(encoding="utf-8").splitlines()
+        if not ln.lstrip().startswith("#")
+    ]
+
+    for env_var in (
+        "HAPAX_CODEX_FRONTIER_MODEL",
+        "HAPAX_CODEX_FRONTIER_EFFORT",
+        "HAPAX_CODEX_MODEL",
+        "HAPAX_CODEX_EFFORT",
+        "HAPAX_CODEX_MODEL_REASON",
+    ):
+        reads = [ln for ln in code if f"${{{env_var}:-" in ln]
+        assert reads, f"{env_var} is no longer read; re-derive this assertion"
+        for ln in reads:
+            assert "_cfs_e=" in ln, (
+                f"{env_var} is consumed without going through _cfs_env_trim: {ln.strip()}"
+            )
+
+
 def test_a_padded_direct_model_override_is_also_trimmed(tmp_path: Path) -> None:
     """`HAPAX_CODEX_MODEL` is its own caller-settable channel, and it needed its own case.
 
