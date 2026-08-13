@@ -3,8 +3,9 @@
 #
 # Invoked by hapax-post-merge-deploy after services restart. Walks a
 # matrix of smoke gates that match the diff produced by $SHA, and
-# ntfy's on any failure. Always exits 0 — the deploy already happened;
-# the smoke is informational. The operator decides whether to revert.
+# ntfy's on any failure. Health-gate findings remain advisory (exit 0), while
+# malformed inputs, unavailable Git objects, and probe infrastructure failures
+# exit non-zero so the deploy caller cannot stamp a false completion receipt.
 #
 # Per cc-task `post-merge-smoke-runner` (WSJF 6.5, 2026-05-02).
 #
@@ -31,6 +32,49 @@ if ! [[ "$NTFY_TIMEOUT_S" =~ ^([1-9]|10)$ ]]; then
 fi
 SHA="<missing>"
 SINCE=""
+EXECUTION_FAILURE=0
+SYSTEMD_RUN_BIN="/usr/bin/systemd-run"
+
+if [ -n "${HAPAX_SMOKE_SYSTEMD_RUN_BIN:-}" ]; then
+    if [ -z "${HAPAX_SMOKE_ISOLATED_TEST_ROOT:-}" ]; then
+        echo "hapax-post-merge-smoke: HAPAX_SMOKE_SYSTEMD_RUN_BIN is test-only" >&2
+        exit 2
+    fi
+    if ! /usr/bin/python3 -I -S - \
+        "$HAPAX_SMOKE_ISOLATED_TEST_ROOT" "$HAPAX_SMOKE_SYSTEMD_RUN_BIN" <<'PY'
+import os
+import stat
+import sys
+
+root = os.path.abspath(sys.argv[1])
+candidate = os.path.abspath(sys.argv[2])
+try:
+    root_stat = os.lstat(root)
+    candidate_stat = os.lstat(candidate)
+    inside = os.path.commonpath((root, candidate)) == root
+except (OSError, ValueError):
+    raise SystemExit(2)
+if (
+    not inside
+    or candidate == root
+    or os.path.realpath(root) != root
+    or os.path.realpath(candidate) != candidate
+    or not stat.S_ISDIR(root_stat.st_mode)
+    or root_stat.st_uid != os.geteuid()
+    or root_stat.st_mode & 0o022
+    or not stat.S_ISREG(candidate_stat.st_mode)
+    or candidate_stat.st_uid != os.geteuid()
+    or candidate_stat.st_mode & 0o022
+    or not candidate_stat.st_mode & 0o100
+):
+    raise SystemExit(2)
+PY
+    then
+        echo "hapax-post-merge-smoke: invalid isolated systemd-run test executable" >&2
+        exit 2
+    fi
+    SYSTEMD_RUN_BIN="$HAPAX_SMOKE_SYSTEMD_RUN_BIN"
+fi
 
 # Failure tracking is installed before change discovery so a broken Git object
 # graph cannot turn the smoke run into an empty successful change set.
@@ -47,12 +91,50 @@ record_failure() {
     fi
 }
 
+record_execution_failure() {
+    EXECUTION_FAILURE=2
+    record_failure "$@"
+}
+
+run_bounded_user_service() {
+    local unit_stem="$1" runtime_s="$2"
+    shift 2
+    local env_name
+    local -a environment_args=()
+    if [ ! -x "$SYSTEMD_RUN_BIN" ] || [ -L "$SYSTEMD_RUN_BIN" ]; then
+        return 2
+    fi
+    while IFS= read -r env_name; do
+        [[ "$env_name" =~ ^[A-Za-z_][A-Za-z0-9_]*$ ]] || continue
+        environment_args+=("--setenv=$env_name")
+    done < <(compgen -e)
+    "$SYSTEMD_RUN_BIN" \
+        --user \
+        --wait \
+        --pipe \
+        --collect \
+        --quiet \
+        --no-ask-password \
+        --unit="${unit_stem}.service" \
+        --service-type=exec \
+        --expand-environment=no \
+        --property="RuntimeMaxSec=${runtime_s}s" \
+        --property=TimeoutStopSec=1s \
+        --property=KillMode=control-group \
+        --property=SendSIGKILL=yes \
+        "${environment_args[@]}" \
+        -- \
+        "$@"
+}
+
 emit_failure_notice() {
     local count=$FAILED_GATE_COUNT
     local retained=${#FAILED_GATES[@]}
     local omitted=$((count - retained))
     [ "$count" -eq 0 ] && return
-    local body="merge=$SHA gates_failed=$count"
+    local sha_display body
+    printf -v sha_display '%.80s' "$SHA"
+    body="merge=$sha_display gates_failed=$count"
     for entry in "${FAILED_GATES[@]}"; do
         echo "smoke FAIL: $entry" >&2
         body="$body | $entry"
@@ -61,8 +143,11 @@ emit_failure_notice() {
         echo "smoke FAIL: $omitted additional smoke failures omitted from bounded notice output" >&2
         body="$body | omitted=$omitted"
     fi
+    printf -v body '%.3900s' "$body"
     if [ -n "${NTFY_TOPIC:-}" ]; then
-        /usr/bin/timeout --signal=TERM --kill-after=1s "${NTFY_TIMEOUT_S}s" \
+        run_bounded_user_service \
+            "hapax-post-merge-smoke-notice-${BASHPID}" \
+            "$NTFY_TIMEOUT_S" \
             curl --fail --silent --show-error \
             --connect-timeout 2 \
             --max-time "$NTFY_TIMEOUT_S" \
@@ -79,80 +164,80 @@ trap emit_failure_notice EXIT
 case "$#" in
     1)
         if [ "$1" = "--since" ]; then
-            record_failure \
+            record_execution_failure \
                 "change-discovery" \
                 "malformed arguments; next action: invoke hapax-post-merge-smoke <target-sha> or --since <base-sha> <target-sha>"
-            exit 0
+            exit 2
         fi
         SHA="$1"
         ;;
     3)
         if [ "$1" != "--since" ]; then
-            record_failure \
+            record_execution_failure \
                 "change-discovery" \
                 "malformed arguments; next action: invoke hapax-post-merge-smoke <target-sha> or --since <base-sha> <target-sha>"
-            exit 0
+            exit 2
         fi
         if [ -z "$2" ]; then
-            record_failure \
+            record_execution_failure \
                 "change-discovery" \
                 "empty --since commit; next action: pass the trusted deployed ancestor explicitly and rerun this smoke"
-            exit 0
+            exit 2
         fi
         SINCE="$2"
         SHA="$3"
         ;;
     *)
-        record_failure \
+        record_execution_failure \
             "change-discovery" \
             "malformed arguments; next action: invoke hapax-post-merge-smoke <target-sha> or --since <base-sha> <target-sha>"
-        exit 0
+        exit 2
         ;;
 esac
 
 if [ -z "${REPO_ROOT:-}" ]; then
     if ! REPO_ROOT="$(git rev-parse --show-toplevel 2>/dev/null)"; then
-        record_failure \
+        record_execution_failure \
             "change-discovery" \
             "cannot discover a Git repository root; next action: set REPO_ROOT to the deployed release containing the target commit and rerun this smoke"
-        exit 0
+        exit 2
     fi
 fi
 if ! cd -- "$REPO_ROOT"; then
-    record_failure \
+    record_execution_failure \
         "change-discovery" \
         "cannot enter repository root $REPO_ROOT; next action: restore the deployed source root and rerun this smoke"
-    exit 0
+    exit 2
 fi
 if ! OBSERVED_REPO_ROOT="$(git rev-parse --show-toplevel 2>/dev/null)"; then
-    record_failure \
+    record_execution_failure \
         "change-discovery" \
         "$REPO_ROOT is not a Git repository; next action: restore the deployed source root and rerun this smoke"
-    exit 0
+    exit 2
 fi
 if [ "$(pwd -P)" != "$(cd -- "$OBSERVED_REPO_ROOT" && pwd -P)" ]; then
-    record_failure \
+    record_execution_failure \
         "change-discovery" \
         "$REPO_ROOT is not the repository top level; next action: set REPO_ROOT=$OBSERVED_REPO_ROOT and rerun this smoke"
-    exit 0
+    exit 2
 fi
 
 # Resolve every caller-provided ref once before parent or tree reads. A
 # single-commit smoke compares its first parent, while --since covers the exact
 # cumulative deployment range. Root commits use an explicit --root tree diff.
 if ! SHA_RESOLVED="$(git rev-parse --verify --quiet "${SHA}^{commit}")"; then
-    record_failure \
+    record_execution_failure \
         "change-discovery" \
         "cannot resolve target commit $SHA in $REPO_ROOT; next action: fetch or restore the exact target object and rerun this smoke"
-    exit 0
+    exit 2
 fi
 SHA="$SHA_RESOLVED"
 if [ -n "$SINCE" ]; then
     if ! SINCE_RESOLVED="$(git rev-parse --verify --quiet "${SINCE}^{commit}")"; then
-        record_failure \
+        record_execution_failure \
             "change-discovery" \
             "cannot resolve --since commit $SINCE in $REPO_ROOT; next action: fetch or restore the exact base object and rerun this smoke"
-        exit 0
+        exit 2
     fi
     SINCE="$SINCE_RESOLVED"
     if git merge-base --is-ancestor "$SINCE" "$SHA"; then
@@ -160,22 +245,22 @@ if [ -n "$SINCE" ]; then
     else
         ancestor_rc=$?
         if [ "$ancestor_rc" -eq 1 ]; then
-            record_failure \
+            record_execution_failure \
                 "change-discovery" \
                 "--since commit $SINCE is not an ancestor of target $SHA; next action: select the trusted deployed ancestor and rerun this smoke"
         else
-            record_failure \
+            record_execution_failure \
                 "change-discovery" \
                 "cannot compare --since commit $SINCE with target $SHA; next action: verify both commit objects and rerun this smoke"
         fi
-        exit 0
+        exit 2
     fi
     DIFF_LABEL="${SINCE}..${SHA}"
     if ! CHANGED_FILES="$(git diff --name-only "$SINCE" "$SHA" -- 2>/dev/null)"; then
-        record_failure \
+        record_execution_failure \
             "change-discovery" \
             "cannot enumerate changed files for $DIFF_LABEL; next action: verify both commit objects with git cat-file -e and rerun this smoke"
-        exit 0
+        exit 2
     fi
 else
     if ! FIRST_PARENT="$(
@@ -186,33 +271,33 @@ else
                 in_header && /^parent / && !found { print $2; found = 1 }
             '
     )"; then
-        record_failure \
+        record_execution_failure \
             "change-discovery" \
             "cannot inspect target commit header for $SHA; next action: restore the exact commit object and rerun this smoke"
-        exit 0
+        exit 2
     fi
     if [ -n "$FIRST_PARENT" ]; then
         if ! [[ "$FIRST_PARENT" =~ ^([0-9a-f]{40}|[0-9a-f]{64})$ ]] \
             || ! git cat-file -e "${FIRST_PARENT}^{commit}" 2>/dev/null; then
-            record_failure \
+            record_execution_failure \
                 "change-discovery" \
                 "target $SHA names unavailable first parent object $FIRST_PARENT (likely a shallow boundary); next action: fetch the parent history and rerun this smoke"
-            exit 0
+            exit 2
         fi
         DIFF_LABEL="${FIRST_PARENT}..${SHA}"
         if ! CHANGED_FILES="$(git diff --name-only "$FIRST_PARENT" "$SHA" -- 2>/dev/null)"; then
-            record_failure \
+            record_execution_failure \
                 "change-discovery" \
                 "cannot enumerate changed files for $DIFF_LABEL; next action: verify both commit objects with git cat-file -e and rerun this smoke"
-            exit 0
+            exit 2
         fi
     else
         DIFF_LABEL="root..${SHA}"
         if ! CHANGED_FILES="$(git diff-tree --root --no-commit-id --name-only -r "$SHA" -- 2>/dev/null)"; then
-            record_failure \
+            record_execution_failure \
                 "change-discovery" \
                 "cannot enumerate changed files for $DIFF_LABEL; next action: verify the root commit object with git cat-file -e and rerun this smoke"
-            exit 0
+            exit 2
         fi
     fi
 fi
@@ -259,7 +344,7 @@ load_decommissioned_units() {
     local source parsed
     DECOMMISSIONED_UNITS=()
     if ! source="$(git show "${SHA}:systemd/scripts/install-units.sh" 2>/dev/null)"; then
-        record_failure \
+        record_execution_failure \
             "services-restarted" \
             "cannot read exact-SHA decommission data from systemd/scripts/install-units.sh"
         return 1
@@ -305,7 +390,7 @@ load_decommissioned_units() {
             }
         ' <<< "$source"
     )"; then
-        record_failure \
+        record_execution_failure \
             "services-restarted" \
             "cannot parse exact-SHA decommission data from systemd/scripts/install-units.sh"
         return 1
@@ -367,7 +452,7 @@ gate_services_restarted() {
         case "$f" in
             systemd/units/*.service)
                 if ! scope="$(unit_install_scope "$f")"; then
-                    record_failure "services-restarted" "$f has an invalid Hapax-Install-Scope marker"
+                    record_execution_failure "services-restarted" "$f cannot be classified from the exact target Git object or has an invalid Hapax-Install-Scope marker"
                     continue
                 fi
                 if [ "$scope" = "user" ]; then
@@ -397,17 +482,26 @@ gate_services_restarted() {
         else
             parked_rc=$?
             if [ "$parked_rc" -eq 2 ]; then
-                record_failure \
+                record_execution_failure \
                     "services-restarted" \
                     "cannot read exact-SHA unit content for $unit; next action: restore the target Git object and rerun this smoke"
                 continue
             fi
         fi
         if [ "$inactive_expected" -eq 1 ]; then
-            if systemctl --user is-active --quiet "$unit" 2>/dev/null; then
+            local active_state
+            if ! active_state="$(systemctl --user show "$unit" -p ActiveState --value 2>/dev/null)"; then
+                record_execution_failure \
+                    "services-restarted" \
+                    "cannot query ActiveState for inactive-expected unit $unit; next action: repair the user manager and rerun this smoke"
+            elif [ -z "$active_state" ]; then
+                record_execution_failure \
+                    "services-restarted" \
+                    "user manager returned an empty ActiveState for inactive-expected unit $unit; next action: inspect systemctl --user show $unit and rerun this smoke"
+            elif [ "$active_state" != "inactive" ]; then
                 record_failure \
                     "services-restarted" \
-                    "$unit must be inactive after deploy; next action: systemctl --user disable --now $unit and rerun the governed deploy smoke"
+                    "$unit must be inactive after deploy (ActiveState=$active_state); next action: systemctl --user stop $unit, disable it, and rerun the governed deploy smoke"
             fi
             continue
         fi
@@ -525,5 +619,5 @@ gate_services_restarted
 gate_broadcast_healthy
 gate_m8_midi_clock_peer
 
-# Trap fires emit_failure_notice on exit. Always exit 0.
-exit 0
+# Trap emits the bounded notice while preserving advisory-vs-execution status.
+exit "$EXECUTION_FAILURE"

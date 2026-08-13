@@ -114,6 +114,7 @@ DEPLOY_CURSOR_SHA=""
 TRACE_READY=0
 TRACE_WRITTEN=0
 SHA=""
+TARGET_FIRST_PARENT=""
 CHANGED_FILES=""
 FILES=""
 SYSTEMD_PENDING_SNAPSHOT="absent"
@@ -167,6 +168,7 @@ SYSTEMD_SYSTEM_DIR="/etc/systemd/system"
 SYSTEMD_SYSTEM_EXPECTED_UID=0
 SYSTEMD_SYSTEM_TRUST_ROOT="/"
 LOCAL_BIN="$HOME/.local/bin"
+SYSTEMD_RUN_BIN="${HAPAX_POST_MERGE_SYSTEMD_RUN_BIN:-/usr/bin/systemd-run}"
 TRACE_PATH="${HAPAX_POST_MERGE_TRACE_PATH:-$HOME/.cache/hapax/post-merge-traces/post-merge-traces.jsonl}"
 TRACE_MAX_RECORDS="${HAPAX_POST_MERGE_TRACE_MAX_RECORDS:-200}"
 # Receipt of the last SHA a real deploy cycle ran against (completed or
@@ -219,6 +221,7 @@ configure_root_required_state_domain() {
             "HAPAX_ROOT_REQUIRED_INSTALLED_RECEIPT_ROOT=$ROOT_REQUIRED_INSTALLED_RECEIPT_ROOT" \
             "HAPAX_ROOT_REQUIRED_DESIRED_RECEIPT_ROOT=$ROOT_REQUIRED_DESIRED_RECEIPT_ROOT" \
             "HAPAX_ROOT_REQUIRED_LOCK_FILE=$ROOT_REQUIRED_LOCK_FILE" \
+            "HAPAX_POST_MERGE_SYSTEMD_RUN_OVERRIDE=${HAPAX_POST_MERGE_SYSTEMD_RUN_BIN:-}" \
             "HAPAX_RECOVERY_BUNDLE_DEST=$RECOVERY_BUNDLE_DEST" <<'PY'
 from __future__ import annotations
 
@@ -251,6 +254,8 @@ if (
 
 for item in sys.argv[2:]:
     label, separator, candidate = item.partition("=")
+    if label == "HAPAX_POST_MERGE_SYSTEMD_RUN_OVERRIDE" and not candidate:
+        continue
     if not separator or not candidate or not os.path.isabs(candidate) or "\n" in candidate:
         print(f"hapax-post-merge-deploy: {label} is invalid in isolated test mode", file=sys.stderr)
         raise SystemExit(2)
@@ -267,6 +272,27 @@ for item in sys.argv[2:]:
             file=sys.stderr,
         )
         raise SystemExit(2)
+    if label == "HAPAX_POST_MERGE_SYSTEMD_RUN_OVERRIDE":
+        try:
+            executable = os.lstat(candidate)
+        except OSError as exc:
+            print(
+                f"hapax-post-merge-deploy: {label} is unavailable: {exc}",
+                file=sys.stderr,
+            )
+            raise SystemExit(2) from exc
+        if (
+            not stat.S_ISREG(executable.st_mode)
+            or executable.st_uid != os.geteuid()
+            or executable.st_mode & 0o022
+            or not executable.st_mode & 0o100
+            or resolved != lexical
+        ):
+            print(
+                f"hapax-post-merge-deploy: {label} is not a trusted isolated executable",
+                file=sys.stderr,
+            )
+            raise SystemExit(2)
 PY
         ROOT_REQUIRED_LOCK_ANCHOR="/"
         return
@@ -281,7 +307,8 @@ PY
         HAPAX_ROOT_REQUIRED_INSTALLED_SOURCE_ROOT \
         HAPAX_ROOT_REQUIRED_INSTALLED_RECEIPT_ROOT \
         HAPAX_ROOT_REQUIRED_DESIRED_RECEIPT_ROOT \
-        HAPAX_ROOT_REQUIRED_LOCK_FILE; do
+        HAPAX_ROOT_REQUIRED_LOCK_FILE \
+        HAPAX_POST_MERGE_SYSTEMD_RUN_BIN; do
         if [[ -v "$selector" ]]; then
             echo "hapax-post-merge-deploy: $selector selects caller-selected production state; remove it or use a confined HAPAX_ROOT_REQUIRED_ISOLATED_TEST_ROOT harness" >&2
             return 2
@@ -1457,6 +1484,28 @@ if [ "$COVERAGE_FROM_STDIN" != "1" ]; then
         exit 2
     fi
     SHA="$SHA_RESOLVED"
+    if ! TARGET_COMMIT_TEXT="$(git cat-file -p "$SHA" 2>/dev/null)"; then
+        echo "hapax-post-merge-deploy: cannot inspect target commit header for $SHA" >&2
+        exit 2
+    fi
+    while IFS= read -r commit_header_line; do
+        [ -n "$commit_header_line" ] || break
+        case "$commit_header_line" in
+            parent\ *)
+                if [ -z "$TARGET_FIRST_PARENT" ]; then
+                    TARGET_FIRST_PARENT="${commit_header_line#parent }"
+                fi
+                ;;
+        esac
+    done <<< "$TARGET_COMMIT_TEXT"
+    if [ -n "$TARGET_FIRST_PARENT" ]; then
+        if ! [[ "$TARGET_FIRST_PARENT" =~ ^([0-9a-f]{40}|[0-9a-f]{64})$ ]] \
+            || ! git cat-file -e "${TARGET_FIRST_PARENT}^{commit}" 2>/dev/null; then
+            echo "hapax-post-merge-deploy: target $SHA names unavailable first parent $TARGET_FIRST_PARENT; refusing to treat a shallow boundary as a root commit" >&2
+            exit 2
+        fi
+    fi
+    FIRST_PARENT="$TARGET_FIRST_PARENT"
 fi
 
 if [ -n "$SINCE" ]; then
@@ -1500,10 +1549,16 @@ if [ "$COVERAGE_FROM_STDIN" = "1" ]; then
 elif [ -n "$SINCE" ]; then
     # Cumulative range deploy: union of every file changed across <since>..<SHA>.
     FILES="$(git diff --name-only "$SINCE" "$SHA" | sort -u)"
-elif FIRST_PARENT="$(git rev-parse --verify --quiet "$SHA^1")"; then
-    FILES="$(git diff --name-only "$FIRST_PARENT" "$SHA" | sort -u)"
+elif [ -n "$TARGET_FIRST_PARENT" ]; then
+    if ! FILES="$(git diff --name-only "$TARGET_FIRST_PARENT" "$SHA" | sort -u)"; then
+        echo "hapax-post-merge-deploy: failed to enumerate target changes for ${TARGET_FIRST_PARENT}..${SHA}" >&2
+        exit 2
+    fi
 else
-    FILES="$(git diff-tree --root --no-commit-id --name-only -r "$SHA" | sort -u)"
+    if ! FILES="$(git diff-tree --root --no-commit-id --name-only -r "$SHA" | sort -u)"; then
+        echo "hapax-post-merge-deploy: failed to enumerate root target changes for $SHA" >&2
+        exit 2
+    fi
 fi
 
 CHANGED_FILES="$FILES"
@@ -2100,10 +2155,13 @@ reconcile_canonical_gate_closure() {
 # remediation epic).
 while IFS= read -r f; do
     [ -z "$f" ] && continue
-    # Retired duplicate of systemd/units/hapax-rebuild-services.service. Never
-    # publish or remove the canonical installed unit when this historical path
-    # changes; the duplicate previously retained an L-12 detector restart.
+    # Upgrade bridge for the historical top-level path. The compatibility copy
+    # is byte-identical to the canonical unit so an already-installed pre-guard
+    # deploy helper publishes safe bytes on the first deployment. Current and
+    # later helpers always reconcile the installed basename from the canonical
+    # exact-SHA object, even if the compatibility path drifts.
     if [ "$f" = "systemd/hapax-rebuild-services.service" ]; then
+        SYSTEMD+=("systemd/units/hapax-rebuild-services.service")
         continue
     fi
     # The historical judge unit is retired. Classify it before either the old
@@ -2203,6 +2261,10 @@ while IFS= read -r f; do
     esac
 done <<< "$FILES"
 
+if [ "${#SYSTEMD[@]}" -gt 1 ]; then
+    mapfile -t SYSTEMD < <(printf '%s\n' "${SYSTEMD[@]}" | sort -u)
+fi
+
 if [ "${#OOM_CONTAINMENT[@]}" -gt 0 ]; then
     RUNTIME_DEFERRED+=("oom-containment:$SHA")
 fi
@@ -2246,6 +2308,106 @@ if [ "$DRY_RUN" = "1" ]; then
     TRACE_WRITTEN=1
     echo "dry-run: post-merge deploy trace written to $TRACE_PATH"
     exit 0
+fi
+
+declare -A SYSTEMD_TARGET_PRESENT=()
+declare -A SYSTEMD_TARGET_CONTENT=()
+declare -A SYSTEMD_EARLY_PREPARKED=()
+
+cache_systemd_target_at_sha() {
+    local source_path="$1" unit_content
+    if [ -n "${SYSTEMD_TARGET_PRESENT[$source_path]+cached}" ]; then
+        return 0
+    fi
+    if ! git_blob_state_at "$SHA" "$source_path" "systemd unit"; then
+        return 2
+    fi
+    if [ "$GIT_BLOB_PRESENT" -eq 1 ]; then
+        if ! unit_content="$(git -C "$REPO" show "$SHA:$source_path")"; then
+            echo "hapax-post-merge-deploy: failed to materialize systemd unit preflight at $SHA:$source_path" >&2
+            return 1
+        fi
+        SYSTEMD_TARGET_PRESENT["$source_path"]=1
+        SYSTEMD_TARGET_CONTENT["$source_path"]="$unit_content"
+    else
+        SYSTEMD_TARGET_PRESENT["$source_path"]=0
+        SYSTEMD_TARGET_CONTENT["$source_path"]=""
+    fi
+}
+
+parked_user_unit_preexists() {
+    local base="$1" dest="$SYSTEMD_USER_DIR/$1" load_state active_state
+    if [ -e "$dest" ] || [ -L "$dest" ]; then
+        return 0
+    fi
+    if ! load_state="$(systemctl --user show "$base" -p LoadState --value)"; then
+        echo "hapax-post-merge-deploy: cannot query LoadState for parked unit $base before publication" >&2
+        return 2
+    fi
+    if ! active_state="$(systemctl --user show "$base" -p ActiveState --value)"; then
+        echo "hapax-post-merge-deploy: cannot query ActiveState for parked unit $base before publication" >&2
+        return 2
+    fi
+    if [ -z "$load_state" ] || [ -z "$active_state" ]; then
+        echo "hapax-post-merge-deploy: user manager returned an empty state for parked unit $base before publication" >&2
+        return 2
+    fi
+    if [ "$load_state" = "not-found" ] && [ "$active_state" = "inactive" ]; then
+        return 1
+    fi
+    return 0
+}
+
+park_user_unit_checked() {
+    local base="$1" active_state
+    if ! systemctl --user stop "$base"; then
+        echo "hapax-post-merge-deploy: unable to stop parked unit $base" >&2
+        return 1
+    fi
+    if ! active_state="$(systemctl --user show "$base" -p ActiveState --value)"; then
+        echo "hapax-post-merge-deploy: cannot verify ActiveState for parked unit $base after stop" >&2
+        return 1
+    fi
+    if [ "$active_state" != "inactive" ]; then
+        echo "hapax-post-merge-deploy: parked unit $base remained ActiveState=${active_state:-missing} after stop" >&2
+        return 1
+    fi
+    if ! systemctl --user disable "$base"; then
+        echo "hapax-post-merge-deploy: unable to disable parked unit $base after verified stop" >&2
+        return 1
+    fi
+    systemctl --user reset-failed "$base" >/dev/null 2>&1 || true
+}
+
+prepark_cached_systemd_target() {
+    local source_path="$1" base parked_preexisting_rc=0
+    if [ "${SYSTEMD_TARGET_PRESENT[$source_path]}" -ne 1 ] \
+        || ! unit_content_parked "${SYSTEMD_TARGET_CONTENT[$source_path]}"; then
+        return 0
+    fi
+    base="$(basename "$source_path")"
+    parked_user_unit_preexists "$base" || parked_preexisting_rc=$?
+    if [ "$parked_preexisting_rc" -eq 1 ]; then
+        return 0
+    fi
+    [ "$parked_preexisting_rc" -eq 0 ] || return 1
+    echo "pre-parking $base before all eligible deployment groups (Hapax-Parked marker)"
+    park_user_unit_checked "$base"
+}
+
+# Resolve every target user-unit object before any deploy group mutates state,
+# including system-to-user transitions whose publication still needs a later
+# system-manager absence witness. Existing parked user instances are stopped
+# under their historical loaded definition before OOM staging, dependency
+# work, or other unrelated groups can fail.
+if [ "${#SYSTEMD[@]}" -gt 0 ] || [ "${#SYSTEMD_PENDING_USER_UNITS[@]}" -gt 0 ]; then
+    for f in "${SYSTEMD[@]}" "${SYSTEMD_PENDING_USER_UNITS[@]}"; do
+        cache_systemd_target_at_sha "$f" || exit $?
+    done
+    for f in "${SYSTEMD[@]}" "${SYSTEMD_PENDING_USER_UNITS[@]}"; do
+        prepark_cached_systemd_target "$f" || exit 1
+        SYSTEMD_EARLY_PREPARKED["$f"]=1
+    done
 fi
 
 # --- PipeWire confs ---
@@ -3364,6 +3526,10 @@ pending_system_scope_absent_for_user_path() {
 
 for f in "${SYSTEMD_PENDING_USER_UNITS[@]}"; do
     if pending_system_scope_absent_for_user_path "$f"; then
+        cache_systemd_target_at_sha "$f" || exit $?
+        if [ -z "${SYSTEMD_EARLY_PREPARKED[$f]+prepared}" ]; then
+            prepark_cached_systemd_target "$f" || exit 1
+        fi
         SYSTEMD_PENDING_REMOVE+=("$f")
         SYSTEMD+=("$f")
         echo "system-to-user transition witness converged: $f"
@@ -4018,70 +4184,10 @@ publish_systemd_unit_at_sha() {
     fi
 }
 
-parked_user_unit_preexists() {
-    local base="$1" dest="$SYSTEMD_USER_DIR/$1" load_state
-    if [ -e "$dest" ] || [ -L "$dest" ]; then
-        return 0
-    fi
-    if ! load_state="$(systemctl --user show "$base" -p LoadState --value)"; then
-        echo "hapax-post-merge-deploy: cannot determine whether parked unit $base has a prior loaded definition; refusing publication; next action: repair the user manager and rerun this deploy" >&2
-        return 2
-    fi
-    case "$load_state" in
-        not-found) return 1 ;;
-        "")
-            echo "hapax-post-merge-deploy: user manager returned no LoadState for parked unit $base; refusing publication; next action: inspect systemctl --user show $base and rerun this deploy" >&2
-            return 2
-            ;;
-        *) return 0 ;;
-    esac
-}
-
 if [ "${#SYSTEMD[@]}" -gt 0 ]; then
     echo "systemd units changed (${#SYSTEMD[@]}):"
     SYSTEMD_INSTALLED=()
-    declare -A SYSTEMD_TARGET_PRESENT=()
-    declare -A SYSTEMD_TARGET_CONTENT=()
     declare -A SYSTEMD_INSTALLED_CONTENT=()
-
-    # Resolve every target object before mutation, then stop parked units while
-    # the historical loaded definition is still authoritative. A later publish
-    # or daemon-reload failure must not leave a Restart=always retirement target
-    # running under its old loaded definition.
-    for f in "${SYSTEMD[@]}"; do
-        if ! git_blob_state_at "$SHA" "$f" "systemd unit"; then
-            exit 2
-        fi
-        if [ "$GIT_BLOB_PRESENT" -eq 1 ]; then
-            if ! unit_content="$(git -C "$REPO" show "$SHA:$f")"; then
-                echo "hapax-post-merge-deploy: failed to materialize systemd unit preflight at $SHA:$f; no user-unit files were changed; next action: restore the exact Git object and rerun this deploy" >&2
-                exit 1
-            fi
-            SYSTEMD_TARGET_PRESENT["$f"]=1
-            SYSTEMD_TARGET_CONTENT["$f"]="$unit_content"
-        else
-            SYSTEMD_TARGET_PRESENT["$f"]=0
-            SYSTEMD_TARGET_CONTENT["$f"]=""
-        fi
-    done
-    for f in "${SYSTEMD[@]}"; do
-        if [ "${SYSTEMD_TARGET_PRESENT[$f]}" -eq 1 ] \
-            && unit_content_parked "${SYSTEMD_TARGET_CONTENT[$f]}"; then
-            base="$(basename "$f")"
-            parked_preexisting_rc=0
-            parked_user_unit_preexists "$base" || parked_preexisting_rc=$?
-            if [ "$parked_preexisting_rc" -eq 1 ]; then
-                continue
-            fi
-            [ "$parked_preexisting_rc" -eq 0 ] || exit 1
-            echo "pre-parking $base before publication (Hapax-Parked marker)"
-            if ! systemctl --user disable --now "$base"; then
-                echo "hapax-post-merge-deploy: unable to disable parked unit $base before publication; next action: inspect systemctl --user status $base and rerun the governed deploy" >&2
-                exit 1
-            fi
-            systemctl --user reset-failed "$base" >/dev/null 2>&1 || true
-        fi
-    done
 
     mkdir -p "$SYSTEMD_USER_DIR"
     for f in "${SYSTEMD[@]}"; do
@@ -4096,7 +4202,10 @@ if [ "${#SYSTEMD[@]}" -gt 0 ]; then
             SYSTEMD_INSTALLED+=("$f")
             SYSTEMD_INSTALLED_CONTENT["$f"]="$PUBLISHED_GIT_CONTENT"
         else
-            rm -fv "$dest" || true
+            if ! rm -fv -- "$dest"; then
+                echo "hapax-post-merge-deploy: failed to remove deleted systemd unit $dest" >&2
+                exit 1
+            fi
         fi
     done
     systemctl --user daemon-reload
@@ -4105,11 +4214,7 @@ if [ "${#SYSTEMD[@]}" -gt 0 ]; then
         unit_content="${SYSTEMD_INSTALLED_CONTENT[$f]}"
         if unit_content_parked "$unit_content"; then
             echo "parking $base (Hapax-Parked marker)"
-            if ! systemctl --user disable --now "$base"; then
-                echo "hapax-post-merge-deploy: unable to disable parked unit $base; next action: inspect systemctl --user status $base and rerun the governed deploy" >&2
-                exit 1
-            fi
-            systemctl --user reset-failed "$base" >/dev/null 2>&1 || true
+            park_user_unit_checked "$base" || exit 1
         elif systemctl --user is-active --quiet "$base"; then
             if [[ "$base" == *.timer ]] && unit_content_timer_enable_only "$unit_content"; then
                 echo "leaving active $base running (Hapax-Timer-Enable-Only marker; not restarting during deploy)"
@@ -4281,13 +4386,21 @@ if [ "${#SCRIPTS[@]}" -gt 0 ]; then
     for f in "${SCRIPTS[@]}"; do
         base="$(basename "$f")"
         dest="$LOCAL_BIN/$base"
-        if git -C "$REPO" cat-file -e "$SHA:$f" 2>/dev/null; then
+        if ! git_blob_state_at "$SHA" "$f" "hapax launcher"; then
+            exit 2
+        fi
+        if [ "$GIT_BLOB_PRESENT" -eq 1 ]; then
             # Copy-from-SHA (the WATCHDOGS pattern): the installed script is the
             # deployed release's content, never a live view of a mutable tree.
-            publish_git_executable_at_sha "$f" "$dest"
+            if ! publish_git_executable_at_sha "$f" "$dest"; then
+                exit 1
+            fi
             echo "  '$f' -> '$dest' (copy @ ${SHA:0:9})"
         else
-            rm -fv "$dest" || true
+            if ! rm -fv -- "$dest"; then
+                echo "hapax-post-merge-deploy: failed to remove deleted launcher $dest" >&2
+                exit 1
+            fi
         fi
         matches="$(
             { grep -l -F "$dest" "$REPO/systemd/units/"*.service 2>/dev/null || true; \
@@ -4364,6 +4477,39 @@ elif [ "$DID_ANYTHING" -eq 0 ]; then
     echo "merge $SHA: no manual deploys needed (only auto-rebuild paths changed)"
 fi
 
+run_bounded_user_service() {
+    local unit_stem="$1" runtime_s="$2"
+    shift 2
+    local env_name
+    local -a environment_args=()
+    if [ ! -x "$SYSTEMD_RUN_BIN" ] || [ -L "$SYSTEMD_RUN_BIN" ]; then
+        echo "hapax-post-merge-deploy: trusted systemd-run executable is unavailable at $SYSTEMD_RUN_BIN" >&2
+        return 2
+    fi
+    while IFS= read -r env_name; do
+        [[ "$env_name" =~ ^[A-Za-z_][A-Za-z0-9_]*$ ]] || continue
+        environment_args+=("--setenv=$env_name")
+    done < <(compgen -e)
+    "$SYSTEMD_RUN_BIN" \
+        --user \
+        --wait \
+        --pipe \
+        --collect \
+        --quiet \
+        --no-ask-password \
+        --unit="${unit_stem}.service" \
+        --service-type=exec \
+        --expand-environment=no \
+        --property="RuntimeMaxSec=${runtime_s}s" \
+        --property=TimeoutStopSec=1s \
+        --property=KillMode=control-group \
+        --property=SendSIGKILL=yes \
+        "${environment_args[@]}" \
+        --setenv="REPO_ROOT=$REPO" \
+        -- \
+        "$@"
+}
+
 # Smoke-runner gate (cc-task post-merge-smoke-deploy-wiring, 2026-05-02).
 # DRY_RUN and REPORT_COVERAGE modes exited earlier so this only fires
 # in real-deploy mode. The smoke runner inspects the exact deployed commit or
@@ -4409,9 +4555,10 @@ if [ "$GIT_BLOB_PRESENT" -eq 1 ]; then
         exit 1
     fi
     smoke_rc=0
-    /usr/bin/timeout --signal=TERM --kill-after=1s "${SMOKE_TIMEOUT_S}s" \
-        /usr/bin/env REPO_ROOT="$REPO" "$SMOKE_SCRIPT" "${SMOKE_ARGS[@]}" \
-        || smoke_rc=$?
+    run_bounded_user_service \
+        "hapax-post-merge-smoke-${SHA:0:12}-${BASHPID}" \
+        "$SMOKE_TIMEOUT_S" \
+        "$SMOKE_SCRIPT" "${SMOKE_ARGS[@]}" || smoke_rc=$?
     if [ "$smoke_rc" -ne 0 ]; then
         echo "hapax-post-merge-deploy: exact-target smoke runner failed or exceeded ${SMOKE_TIMEOUT_S}s (rc=$smoke_rc); refusing the completion receipt; next action: inspect the smoke diagnostics, repair the exact runner or blocked gate probe, and rerun this deploy for $SHA" >&2
         exit "$smoke_rc"
@@ -4426,7 +4573,7 @@ else
     fi
     SMOKE_BASE="$SINCE"
     if [ -z "$SMOKE_BASE" ]; then
-        SMOKE_BASE="$(git -C "$REPO" rev-parse --verify --quiet "${SHA}^1" 2>/dev/null || true)"
+        SMOKE_BASE="$TARGET_FIRST_PARENT"
     fi
     if [ "$smoke_required" -eq 0 ] && [ -n "$SMOKE_BASE" ]; then
         if smoke_contract_present_at "$SMOKE_BASE"; then
