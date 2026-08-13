@@ -197,8 +197,49 @@ def _git(repo: Path, *args: str) -> str:
     return result.stdout.strip()
 
 
-def _wait_for_flock_block(process: subprocess.Popen[str]) -> None:
-    deadline = time.monotonic() + 10
+def _flock_identities(expected_lock: Path) -> set[tuple[int, int, int]]:
+    expected = expected_lock.stat()
+    identities = {(os.major(expected.st_dev), os.minor(expected.st_dev), expected.st_ino)}
+    try:
+        mount_lines = Path("/proc/self/mountinfo").read_text(encoding="utf-8").splitlines()
+    except OSError:
+        return identities
+
+    resolved = expected_lock.resolve()
+    best_depth = -1
+    best_device: tuple[int, int] | None = None
+    for line in mount_lines:
+        fields = line.partition(" - ")[0].split()
+        if len(fields) < 5:
+            continue
+        mountpoint = Path(
+            re.sub(
+                r"\\([0-7]{3})",
+                lambda match: chr(int(match.group(1), 8)),
+                fields[4],
+            )
+        )
+        if resolved != mountpoint and not resolved.is_relative_to(mountpoint):
+            continue
+        try:
+            major_raw, minor_raw = fields[2].split(":", 1)
+            device = (int(major_raw), int(minor_raw))
+        except ValueError:
+            continue
+        depth = len(mountpoint.parts)
+        if depth > best_depth:
+            best_depth = depth
+            best_device = device
+    if best_device is not None:
+        identities.add((*best_device, expected.st_ino))
+    return identities
+
+
+def _wait_for_flock_block(
+    process: subprocess.Popen[str], expected_lock: Path, *, timeout: float = 10
+) -> None:
+    expected_identities = _flock_identities(expected_lock)
+    deadline = time.monotonic() + timeout
     while process.poll() is None and time.monotonic() < deadline:
         descendants = {process.pid}
         changed = True
@@ -216,15 +257,59 @@ def _wait_for_flock_block(process: subprocess.Popen[str]) -> None:
                 if ppid in descendants and pid not in descendants:
                     descendants.add(pid)
                     changed = True
-        for pid in descendants:
-            try:
-                waiting = (Path("/proc") / str(pid) / "wchan").read_text().strip()
-            except OSError:
+        try:
+            lock_lines = Path("/proc/locks").read_text(encoding="utf-8").splitlines()
+        except OSError:
+            lock_lines = []
+        for line in lock_lines:
+            fields = line.split()
+            if len(fields) < 7 or fields[1:3] != ["->", "FLOCK"]:
                 continue
-            if waiting == "locks_lock_inode_wait":
+            try:
+                waiter_pid = int(fields[5])
+                major_raw, minor_raw, inode_raw = fields[6].split(":", 2)
+                identity = (int(major_raw, 16), int(minor_raw, 16), int(inode_raw))
+            except (ValueError, IndexError):
+                continue
+            if waiter_pid in descendants and identity in expected_identities:
                 return
         time.sleep(0.01)
-    raise AssertionError("child did not reach the deterministic flock wait")
+    raise AssertionError(f"child did not reach the deterministic flock wait on {expected_lock}")
+
+
+def test_wait_for_flock_block_requires_expected_inode(tmp_path: Path) -> None:
+    expected = tmp_path / "expected.lock"
+    unrelated = tmp_path / "unrelated.lock"
+    expected.write_text("", encoding="utf-8")
+    unrelated.write_text("", encoding="utf-8")
+    blocker_fd = os.open(unrelated, os.O_RDWR)
+    fcntl.flock(blocker_fd, fcntl.LOCK_EX)
+    process = subprocess.Popen(
+        [
+            "/usr/bin/python3",
+            "-I",
+            "-S",
+            "-c",
+            (
+                "import fcntl, os, sys; "
+                "fd = os.open(sys.argv[1], os.O_RDWR); "
+                "fcntl.flock(fd, fcntl.LOCK_EX)"
+            ),
+            str(unrelated),
+        ],
+        text=True,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        start_new_session=True,
+    )
+    try:
+        with pytest.raises(AssertionError, match="deterministic flock wait"):
+            _wait_for_flock_block(process, expected, timeout=0.2)
+    finally:
+        fcntl.flock(blocker_fd, fcntl.LOCK_UN)
+        os.close(blocker_fd)
+        if process.poll() is None:
+            _kill_process_group(process)
 
 
 def _kill_process_group(process: subprocess.Popen[str]) -> None:
@@ -1319,6 +1404,8 @@ def test_p0_oom_deploy_validates_and_stages_desired_evidence_without_runtime_mut
     ).strip() == sha
     desired_receipt = home / ".local/state/hapax/root-required/desired-receipts/oom-containment.sha"
     assert desired_receipt.read_text(encoding="utf-8").strip() == sha
+    cursor = tmp_path / "traces/last-deployed-sha"
+    assert cursor.read_text(encoding="utf-8").strip() == sha
     runbook = (deferred / "RUNBOOK.txt").read_text(encoding="utf-8")
     assert "non-authoritative desired-state evidence" in runbook
     assert "runtime-authorized root-broker" in runbook
@@ -3031,7 +3118,7 @@ def test_root_required_audit_rejects_lock_path_replaced_while_waiting(
         start_new_session=True,
     )
     try:
-        _wait_for_flock_block(audit)
+        _wait_for_flock_block(audit, lock)
         replacement = lock.with_name("replacement.lock")
         replacement.write_text("", encoding="utf-8")
         replacement.chmod(0o600)
@@ -3319,7 +3406,7 @@ def test_post_merge_deploy_rejects_lock_path_replaced_while_waiting(
         start_new_session=True,
     )
     try:
-        _wait_for_flock_block(deploy)
+        _wait_for_flock_block(deploy, lock)
         replacement = lock.with_name("replacement.lock")
         replacement.write_text("", encoding="utf-8")
         replacement.chmod(0o600)
@@ -3401,7 +3488,7 @@ def test_post_merge_deploy_serializes_after_acquired_lock_path_is_replaced(
             env=env,
             start_new_session=True,
         )
-        _wait_for_flock_block(newer)
+        _wait_for_flock_block(newer, Path("/"))
         assert not (tmp_path / "traces/last-deployed-sha").exists()
     finally:
         release.touch()
@@ -3447,6 +3534,7 @@ def test_root_required_embedded_system_python_is_isolated(script: Path) -> None:
     source = script.read_text(encoding="utf-8")
 
     assert re.search(r"/usr/bin/python3\s+-(?:\s|$)", source) is None
+    assert re.search(r"(?:^|\s)python3\s+-(?:\s|$)", source, re.MULTILINE) is None
 
 
 def test_apcupsd_power_alert_deploy_stages_dedicated_package_for_root_broker(
@@ -7078,24 +7166,30 @@ def test_completion_trace_and_cursor_publish_under_one_trace_lock(tmp_path: Path
     env["HAPAX_TRACE_PYTHON_RELEASE"] = str(release)
     cursor = tmp_path / "traces/last-deployed-sha"
 
-    process = subprocess.Popen(
+    source = SCRIPT.read_text(encoding="utf-8")
+    transaction_start = source.index("def write_temp(")
+    transaction = source[transaction_start : source.index("PY\n}", transaction_start)]
+    assert (
+        transaction.index("fcntl.flock(lock_fd, fcntl.LOCK_EX)")
+        < transaction.index("os.replace(trace_temp, path)")
+        < transaction.index("os.replace(cursor_temp, cursor)")
+        < transaction.index("os.close(lock_fd)")
+    )
+
+    release.touch()
+    result = subprocess.run(
         [str(SCRIPT), sha],
         text=True,
-        stdout=subprocess.PIPE,
-        stderr=subprocess.PIPE,
+        capture_output=True,
+        check=False,
         env=env,
     )
-    try:
-        deadline = time.monotonic() + 10
-        while not marker.exists() and process.poll() is None and time.monotonic() < deadline:
-            time.sleep(0.01)
-        assert marker.exists(), "deploy did not reach completion trace publication"
-        assert cursor.read_text(encoding="utf-8").strip() == sha
-    finally:
-        release.touch()
-        stdout, stderr = process.communicate(timeout=10)
 
-    assert process.returncode == 0, (stdout, stderr)
+    assert result.returncode == 0, result.stderr
+    assert not marker.exists(), "transactional Python must ignore caller PATH"
+    assert cursor.read_text(encoding="utf-8").strip() == sha
+    trace = Path(env["HAPAX_POST_MERGE_TRACE_PATH"])
+    assert json.loads(trace.read_text(encoding="utf-8").splitlines()[-1])["sha"] == sha
 
 
 def test_empty_commit_dry_run_never_publishes_deploy_cursor(tmp_path: Path) -> None:

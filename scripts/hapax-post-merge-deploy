@@ -946,7 +946,7 @@ record_post_merge_trace() {
     HAPAX_TRACE_CANONICAL_GATE="$(_trace_join "${CANONICAL_GATE[@]}")" \
     HAPAX_TRACE_AUDIO_SAFE_RESTARTS="$(_trace_join "${AUDIO_SAFE_RESTARTS[@]}")" \
     HAPAX_TRACE_SYSTEMD_UNCLASSIFIED="$(_trace_join "${SYSTEMD_UNCLASSIFIED[@]}")" \
-    python3 - "$TRACE_PATH" "$TRACE_MAX_RECORDS" "$SHA" "$DRY_RUN" "$status" "$exit_code" \
+    /usr/bin/python3 -I -S - "$TRACE_PATH" "$TRACE_MAX_RECORDS" "$SHA" "$DRY_RUN" "$status" "$exit_code" \
         "$DID_ANYTHING" "$cursor_path" "$cursor_value" "$SYSTEMD_RUNTIME_PENDING_PATH" \
         "$SYSTEMD_PENDING_SNAPSHOT" <<'PY'
 from __future__ import annotations
@@ -2383,7 +2383,7 @@ recovery_bundle_runtime_missing() {
 }
 
 recovery_bundle_runtime_stale() {
-    python3 - "$RECOVERY_BUNDLE_DEST/manifest.json" "$REPO" "$SHA" "${RECOVERY_BUNDLE_SOURCE_FILES[@]}" <<'PY'
+    /usr/bin/python3 -I -S - "$RECOVERY_BUNDLE_DEST/manifest.json" "$REPO" "$SHA" "${RECOVERY_BUNDLE_SOURCE_FILES[@]}" <<'PY'
 import hashlib
 import json
 import subprocess
