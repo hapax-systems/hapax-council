@@ -180,7 +180,7 @@ validate_historical_local_judge_container() {
                 --host=unix:///var/run/docker.sock \
                 --config=/nonexistent/hapax-local-judge-retirement \
                 inspect --format \
-                '{{json .Id}}{{printf "\t"}}{{json .Name}}{{printf "\t"}}{{json .Config.Image}}{{printf "\t"}}{{json .Path}}{{printf "\t"}}{{json .Args}}{{printf "\t"}}{{json .HostConfig.Binds}}{{printf "\t"}}{{json .HostConfig.PortBindings}}{{printf "\t"}}{{json .HostConfig.AutoRemove}}' \
+                '{{json .Id}}{{printf "\t"}}{{json .Name}}{{printf "\t"}}{{json .Image}}{{printf "\t"}}{{json .Config.Image}}{{printf "\t"}}{{json .Path}}{{printf "\t"}}{{json .Args}}{{printf "\t"}}{{json .HostConfig.Binds}}{{printf "\t"}}{{json .Mounts}}{{printf "\t"}}{{json .HostConfig.Privileged}}{{printf "\t"}}{{json .HostConfig.CapAdd}}{{printf "\t"}}{{json .HostConfig.CapDrop}}{{printf "\t"}}{{json .HostConfig.NetworkMode}}{{printf "\t"}}{{json .HostConfig.PidMode}}{{printf "\t"}}{{json .HostConfig.IpcMode}}{{printf "\t"}}{{json .HostConfig.Devices}}{{printf "\t"}}{{json .HostConfig.DeviceRequests}}{{printf "\t"}}{{json .HostConfig.PortBindings}}{{printf "\t"}}{{json .HostConfig.AutoRemove}}' \
                 "$container_id" \
             | /usr/bin/head -c 4097
     )"; then
@@ -191,7 +191,7 @@ validate_historical_local_judge_container() {
         echo "ERROR: historical local-judge Docker signature was empty, multiline, or oversized" >&2
         return 1
     fi
-    if ! /usr/bin/python3 - "$container_id" "$HOME" "$output" <<'PY'
+    if ! /usr/bin/python3 -I -S - "$container_id" "$HOME" "$output" <<'PY'
 from __future__ import annotations
 
 import json
@@ -199,10 +199,29 @@ import sys
 
 container_id, home, record = sys.argv[1:]
 fields = record.split("\t")
-if len(fields) != 8:
+if len(fields) != 18:
     raise SystemExit(1)
 try:
-    actual_id, name, image, path, args, binds, ports, auto_remove = (
+    (
+        actual_id,
+        name,
+        image_id,
+        config_image,
+        path,
+        args,
+        binds,
+        mounts,
+        privileged,
+        cap_add,
+        cap_drop,
+        network_mode,
+        pid_mode,
+        ipc_mode,
+        devices,
+        device_requests,
+        ports,
+        auto_remove,
+    ) = (
         json.loads(field) for field in fields
     )
 except (TypeError, ValueError, json.JSONDecodeError):
@@ -226,13 +245,42 @@ expected_args = [
     "5001",
 ]
 expected_ports = {"5001/tcp": [{"HostIp": "", "HostPort": "5001"}]}
+expected_mounts = [
+    {
+        "Destination": "/models",
+        "Mode": "ro",
+        "Propagation": "rprivate",
+        "RW": False,
+        "Source": f"{home}/models/compassverifier-7b",
+        "Type": "bind",
+    }
+]
+expected_device_requests = [
+    {
+        "Capabilities": [["gpu"]],
+        "Count": 0,
+        "DeviceIDs": ["GPU-347222d9-00af-5a94-a365-c57c09dfddcd"],
+        "Driver": "",
+        "Options": {},
+    }
+]
 valid = (
     actual_id == container_id
     and name == "/hapax-local-judge"
-    and image == "ghcr.io/ggml-org/llama.cpp:server-cuda"
+    and image_id == "sha256:841b199aed2649a748875b043b32fed2e8c2d4d87e1d563556817fb7fa44b72b"
+    and config_image == "ghcr.io/ggml-org/llama.cpp:server-cuda"
     and path == "/app/llama-server"
     and args == expected_args
     and binds == [f"{home}/models/compassverifier-7b:/models:ro"]
+    and mounts == expected_mounts
+    and privileged is False
+    and cap_add is None
+    and cap_drop is None
+    and network_mode == "bridge"
+    and pid_mode == ""
+    and ipc_mode == "private"
+    and devices == []
+    and device_requests == expected_device_requests
     and ports == expected_ports
     and auto_remove is True
 )
@@ -335,14 +383,18 @@ retire_historical_local_judge() {
         && ! validate_historical_local_judge_container "$docker_bin" "$before_id"; then
         return 2
     fi
-    local manager_load_state manager_unit_file_state manager_active_state
+    local manager_load_state manager_unit_file_state="" manager_active_state
     if ! manager_load_state="$(
         query_local_judge_manager_property "$systemctl_bin" LoadState
-    )" || ! manager_unit_file_state="$(
-        query_local_judge_manager_property "$systemctl_bin" UnitFileState
     )" || ! manager_active_state="$(
         query_local_judge_manager_property "$systemctl_bin" ActiveState
     )"; then
+        return 2
+    fi
+    if [ "$manager_load_state" != "not-found" ] \
+        && ! manager_unit_file_state="$(
+            query_local_judge_manager_property "$systemctl_bin" UnitFileState
+        )"; then
         return 2
     fi
     if [ "$already_masked" -eq 1 ] && [ "$artifacts_clean" -eq 1 ] \
@@ -424,6 +476,7 @@ retire_historical_local_judge() {
         echo "ERROR: local-judge container appeared or remained after immutable-ID reconciliation; refusing name-based cleanup" >&2
         return 2
     fi
+    "$systemctl_bin" --user reset-failed "$name" >/dev/null 2>&1 || true
     local final_load_state final_unit_file_state final_active_state
     if ! final_load_state="$(
         query_local_judge_manager_property "$systemctl_bin" LoadState
@@ -440,7 +493,6 @@ retire_historical_local_judge() {
         echo "ERROR: user manager does not witness local-judge masked/masked/inactive after retirement (LoadState=$final_load_state UnitFileState=$final_unit_file_state ActiveState=$final_active_state)" >&2
         return 2
     fi
-    "$systemctl_bin" --user reset-failed "$name" >/dev/null 2>&1 || true
     echo "retired and masked historical local judge (container_id=${before_id:-absent})"
     return 0
 }
@@ -476,9 +528,26 @@ remove_decommissioned_unit() {
     [ "$removed" -eq 1 ]
 }
 
-system_install_scope_unit() {
-    grep -Eq '^[#;][[:space:]]*Hapax-Install-Scope:[[:space:]]*system[[:space:]]*$' "$1" || return 1
-    return 0
+UNIT_INSTALL_SCOPE=""
+classify_unit_install_scope() {
+    local path="$1" scope_marker_count system_marker_count
+    UNIT_INSTALL_SCOPE="user"
+    [ -f "$path" ] || return 0
+    scope_marker_count="$(
+        grep -Eic '^[#;][[:space:]]*Hapax-Install-Scope[[:space:]]*:' "$path" || true
+    )"
+    system_marker_count="$(
+        grep -Eic '^[#;][[:space:]]*Hapax-Install-Scope:[[:space:]]*system[[:space:]]*$' "$path" || true
+    )"
+    if [ "$scope_marker_count" -eq 0 ]; then
+        return 0
+    fi
+    if [ "$scope_marker_count" -eq 1 ] && [ "$system_marker_count" -eq 1 ]; then
+        UNIT_INSTALL_SCOPE="system"
+        return 0
+    fi
+    echo "ERROR: malformed Hapax-Install-Scope marker in $path (duplicate or unsupported value)" >&2
+    return 1
 }
 
 timer_enable_only() {
@@ -540,7 +609,10 @@ for unit in "$REPO_DIR"/*.service "$REPO_DIR"/*.timer "$REPO_DIR"/*.target "$REP
         echo "skipped dedicated P0 OOM unit: $name"
         continue
     fi
-    if system_install_scope_unit "$unit"; then
+    if ! classify_unit_install_scope "$unit"; then
+        exit 1
+    fi
+    if [ "$UNIT_INSTALL_SCOPE" = "system" ]; then
         systemctl --user disable --now "$name" >/dev/null 2>&1 || true
         if [ -e "$dest" ] || [ -L "$dest" ]; then
             rm -f "$dest"
@@ -553,6 +625,12 @@ for unit in "$REPO_DIR"/*.service "$REPO_DIR"/*.timer "$REPO_DIR"/*.target "$REP
             changed=$((changed + 1))
             echo "removed stale user-scope wants link: $wants_link"
         done
+        stale_dropin_dir="$DEST_DIR/${name}.d"
+        if [ -e "$stale_dropin_dir" ] || [ -L "$stale_dropin_dir" ]; then
+            rm -rf -- "$stale_dropin_dir"
+            changed=$((changed + 1))
+            echo "removed stale user-scope drop-ins for system unit: ${name}.d"
+        fi
         echo "skipped system-scope unit: $name"
         continue
     fi
@@ -759,6 +837,19 @@ dropin_changed=0
 for dropin_dir in "$REPO_DIR"/*.service.d "$REPO_DIR"/*.timer.d "$REPO_DIR"/*.slice.d "$REPO_DIR"/*.scope.d; do
     [ -d "$dropin_dir" ] || continue
     svc_name="$(basename "$dropin_dir")"
+    base_unit="$REPO_DIR/${svc_name%.d}"
+    if ! classify_unit_install_scope "$base_unit"; then
+        exit 1
+    fi
+    if [ "$UNIT_INSTALL_SCOPE" = "system" ]; then
+        dest_dropin_dir="$DEST_DIR/$svc_name"
+        if [ -e "$dest_dropin_dir" ] || [ -L "$dest_dropin_dir" ]; then
+            rm -rf -- "$dest_dropin_dir"
+            dropin_changed=$((dropin_changed + 1))
+            echo "dropin-removed-system-scope: $svc_name"
+        fi
+        continue
+    fi
     for conf in "$dropin_dir"/*.conf; do
         [ -f "$conf" ] || continue
         conf_name="$(basename "$conf")"

@@ -178,6 +178,25 @@ class TestServicesRestartedGate:
         assert "services-restarted" not in result.stderr
         assert "hapax-l12-critical-usb-guard.service" not in result.stderr
 
+    def test_malformed_install_scope_marker_records_classification_failure(
+        self, tmp_path: Path
+    ) -> None:
+        repo = _make_repo(tmp_path)
+        sha = _commit_files(
+            repo,
+            {
+                "systemd/units/root-owned.service": (
+                    "[Unit]\n# Hapax-Install-Scope: system disabled\n"
+                    "[Service]\nExecStart=/usr/bin/true\n"
+                )
+            },
+        )
+        result = _run(sha, cwd=repo, stubs={"systemctl": "exit 0"})
+
+        assert result.returncode == 0
+        assert "services-restarted" in result.stderr
+        assert "invalid Hapax-Install-Scope" in result.stderr
+
     def test_successful_oneshot_inactive_unit_passes_silently(self, tmp_path: Path) -> None:
         repo = _make_repo(tmp_path)
         sha = _commit_files(

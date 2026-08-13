@@ -11,6 +11,8 @@ import ast
 import re
 from pathlib import Path
 
+from shared.resource_model import DEFAULT_SERVICE_PROFILES
+
 REPO_ROOT = Path(__file__).resolve().parents[2]
 UNITS_DIR = REPO_ROOT / "systemd" / "units"
 INSTALLER = REPO_ROOT / "systemd" / "scripts" / "install-units.sh"
@@ -152,7 +154,7 @@ def test_sdlc_slice_exists_and_is_idle_weighted() -> None:
 
 def test_sdlc_slice_fences_audio_cores() -> None:
     text = _unit_fragments(UNITS_DIR, "hapax-sdlc.slice")
-    allowed = _parse_cpu_set(_directive(text, "AllowedCPUs") or "")
+    allowed = _merged_cpu_set(text, "AllowedCPUs")
     assert allowed == FLEET_FENCE
     assert not (allowed & AUDIO_CORES), "no pytest/cargo worker may land on the audio cores"
 
@@ -322,6 +324,14 @@ def test_protected_user_units_have_no_root_negative_score_bridge() -> None:
 
     assert audit_scores == expected_scores
     assert dropin_units == expected_units
+    modeled_scores = {
+        name: profile.oom_score_adj
+        for name, profile in DEFAULT_SERVICE_PROFILES.items()
+        if profile.oom_score_adj is not None
+    }
+    assert modeled_scores == {
+        unit.removesuffix(".service"): score for unit, score in expected_scores.items()
+    }
     assert all(unit in enforcer and unit in trigger for unit in expected_units)
     assert "--apply-unit" not in sudoers
     assert "HAPAX_OOM_SCORE_ENFORCE" not in sudoers
@@ -422,6 +432,7 @@ def test_compositor_excluded_from_audio_cores() -> None:
     allowed = _merged_cpu_set(
         _unit_fragments(UNITS_DIR, "studio-compositor.service"), "CPUAffinity"
     )
+    assert allowed, "studio compositor CPUAffinity must not reset to the unrestricted empty set"
     assert not (allowed & AUDIO_CORES)
 
 
@@ -448,7 +459,7 @@ def test_coordinator_pinned_to_a_fleet_fenced_core() -> None:
     # The controller gets cores the SDLC fleet is fenced OUT of, so it never
     # starves while throttling the controlled (the exact death of 2026-06-01).
     text = _unit_fragments(UNITS_DIR, "hapax-coordinator.service")
-    allowed = _parse_cpu_set(_directive(text, "AllowedCPUs") or "")
+    allowed = _merged_cpu_set(text, "AllowedCPUs")
     assert allowed, "coordinator must pin to a protected cpuset"
     assert not (allowed & FLEET_FENCE), "coordinator cores must be off the SDLC fleet's cpuset"
 

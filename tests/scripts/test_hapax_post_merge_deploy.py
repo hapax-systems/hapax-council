@@ -457,6 +457,7 @@ def _effective_safety_unit_show_script(system_dir: Path, user_dir: Path) -> str:
         properties = {
             "FragmentPath": str(fragment),
             "DropInPaths": "",
+            "NeedDaemonReload": "no",
             "ExecStart": f"{{ path={exec_start.split()[0]} ; argv[]={exec_start} ; }}",
             "OnFailure": on_failure,
             "User": "",
@@ -497,6 +498,7 @@ def _effective_safety_unit_show_script(system_dir: Path, user_dir: Path) -> str:
         properties = {
             "FragmentPath": str(fragment),
             "DropInPaths": "",
+            "NeedDaemonReload": "no",
             "Unit": target,
             "TimersMonotonic": (f"OnBootUSec={on_boot} OnUnitActiveUSec={on_active}"),
         }
@@ -898,6 +900,19 @@ if [ "${{1:-}}" = show ]; then
     unit="${{2:?}}"
     path="{system_dir}/$unit"
     case "$*" in
+        *" --property=LoadState,FragmentPath,NeedDaemonReload --no-pager")
+            if [ -f "$path" ]; then
+                printf 'LoadState=loaded\nFragmentPath=%s\n' "$path"
+            else
+                printf 'LoadState=not-found\nFragmentPath=\n'
+            fi
+            marker="${{HAPAX_SYSTEMCTL_NEEDS_RELOAD_MARKER:-}}"
+            if [ -n "$marker" ] && [ -e "$marker" ]; then
+                printf 'NeedDaemonReload=yes\n'
+            else
+                printf 'NeedDaemonReload=no\n'
+            fi
+            ;;
         *" -p LoadState --value") [ -f "$path" ] && printf 'loaded\n' || printf 'not-found\n' ;;
         *" -p FragmentPath --value") [ ! -f "$path" ] || printf '%s\n' "$path" ;;
         *" -p NeedDaemonReload --value")
@@ -1013,6 +1028,46 @@ def test_dry_run_writes_bounded_post_merge_trace(tmp_path: Path) -> None:
     assert records[-1]["avsdlc"]["gate_point"] == "S9 post-merge production witness"
     assert records[-1]["avsdlc"]["runtime_media_witness_required"] is True
     assert records[-1]["avsdlc"]["runtime_media_witness_groups"] == ["hapax_scripts"]
+
+
+def test_trace_writer_takes_its_own_lock_for_dry_runs() -> None:
+    source = SCRIPT.read_text(encoding="utf-8")
+    trace_writer = source.split("record_post_merge_trace() {", 1)[1].split(
+        "\n}\n\ntrace_on_exit()", 1
+    )[0]
+
+    assert "fcntl.flock" in trace_writer
+    assert "LOCK_EX" in trace_writer
+
+
+def test_deploy_ignores_repository_replace_refs(tmp_path: Path) -> None:
+    path = "systemd/uncovered/replacement-hidden.conf"
+    repo, sha = _repo_with_linear_commit(tmp_path, {path: "hidden by replacement\n"})
+    parent = _git(repo, "rev-parse", f"{sha}^1")
+    replacement = _git(
+        repo,
+        "commit-tree",
+        f"{parent}^{{tree}}",
+        "-p",
+        parent,
+        "-m",
+        "replacement hides changed path",
+    )
+    _git(repo, "replace", sha, replacement)
+    assert _git(repo, "diff", "--name-only", f"{sha}^1", sha) == ""
+
+    env = {**os.environ, "REPO": str(repo)}
+    env.pop("GIT_NO_REPLACE_OBJECTS", None)
+    result = subprocess.run(
+        [str(SCRIPT), "--report-coverage", sha],
+        text=True,
+        capture_output=True,
+        check=False,
+        env=env,
+    )
+
+    assert result.returncode == 1
+    assert path in result.stderr
 
 
 def test_systemd_coverage_includes_dropins_presets_and_source_overrides() -> None:
@@ -2562,6 +2617,54 @@ def test_root_required_audit_rejects_effective_service_dropin(tmp_path: Path) ->
     assert "override.conf" in result.stderr
 
 
+def test_root_required_audit_rejects_execstart_substring_with_extra_argv(tmp_path: Path) -> None:
+    env = _root_audit_env(tmp_path)
+    fake_systemctl = Path(env["HAPAX_ROOT_AUDIT_SYSTEMCTL"])
+    baseline_systemctl = fake_systemctl.with_name("root-audit-systemctl-baseline")
+    fake_systemctl.rename(baseline_systemctl)
+    fake_systemctl.write_text(
+        "#!/usr/bin/env bash\n"
+        'if [ "$*" = "--user show hapax-oom-policy-audit.service -p ExecStart --value" ]; then\n'
+        "  printf '%s\\n' '{ path=/usr/local/sbin/hapax-oom-policy-audit ; argv[]=/usr/local/sbin/hapax-oom-policy-audit --json --unreviewed ; }'\n"
+        "  exit 0\n"
+        "fi\n"
+        f'exec "{baseline_systemctl!s}" "$@"\n',
+        encoding="utf-8",
+    )
+    fake_systemctl.chmod(0o755)
+
+    result = subprocess.run(
+        [str(ROOT_REQUIRED_AUDIT)], text=True, capture_output=True, check=False, env=env
+    )
+
+    assert result.returncode == 1
+    assert "effective hapax-oom-policy-audit.service ExecStart drift" in result.stderr
+
+
+def test_root_required_audit_rejects_manager_reload_debt(tmp_path: Path) -> None:
+    env = _root_audit_env(tmp_path)
+    fake_systemctl = Path(env["HAPAX_ROOT_AUDIT_SYSTEMCTL"])
+    baseline_systemctl = fake_systemctl.with_name("root-audit-systemctl-baseline")
+    fake_systemctl.rename(baseline_systemctl)
+    fake_systemctl.write_text(
+        "#!/usr/bin/env bash\n"
+        'if [ "$*" = "--user show hapax-oom-policy-audit.service -p NeedDaemonReload --value" ]; then\n'
+        "  printf 'yes\\n'\n"
+        "  exit 0\n"
+        "fi\n"
+        f'exec "{baseline_systemctl!s}" "$@"\n',
+        encoding="utf-8",
+    )
+    fake_systemctl.chmod(0o755)
+
+    result = subprocess.run(
+        [str(ROOT_REQUIRED_AUDIT)], text=True, capture_output=True, check=False, env=env
+    )
+
+    assert result.returncode == 1
+    assert "NeedDaemonReload=yes" in result.stderr
+
+
 def test_retired_enforcer_has_no_failure_intake_dependency() -> None:
     service = (REPO_ROOT / "systemd/units/hapax-oom-score-enforce.service").read_text(
         encoding="utf-8"
@@ -3366,7 +3469,7 @@ def test_systemd_coverage_still_flags_unknown_systemd_paths() -> None:
     assert "systemd/uncovered/example.conf" in result.stderr
 
 
-def test_system_scoped_units_skip_user_deploy_and_clean_stale_copy(tmp_path: Path) -> None:
+def test_system_scoped_units_defer_runtime_without_blocking_source_deploy(tmp_path: Path) -> None:
     unit_path = "systemd/units/hapax-l12-critical-usb-guard.service"
     unit_body = (
         "[Unit]\n"
@@ -3411,12 +3514,12 @@ def test_system_scoped_units_skip_user_deploy_and_clean_stale_copy(tmp_path: Pat
         env=env,
     )
 
-    assert deferred.returncode == 77, deferred.stderr
+    assert deferred.returncode == 0, deferred.stderr
     assert "runtime deferred" in deferred.stderr
     assert not stale_user_unit.exists()
-    assert not cursor.exists()
+    assert cursor.read_text(encoding="utf-8").strip() == sha
     deferred_record = json.loads(trace_path.read_text(encoding="utf-8").splitlines()[-1])
-    assert deferred_record["status"] == "blocked_runtime_deferral"
+    assert deferred_record["status"] == "completed_with_runtime_deferral"
     assert deferred_record["runtime_deferred"] == [f"systemd-system:{unit_path}"]
 
     (system_dir / Path(unit_path).name).write_text(unit_body, encoding="utf-8")
@@ -3429,9 +3532,9 @@ def test_system_scoped_units_skip_user_deploy_and_clean_stale_copy(tmp_path: Pat
         env=env,
     )
 
-    assert not_reloaded.returncode == 77
+    assert not_reloaded.returncode == 0
     assert "system manager has not loaded" in not_reloaded.stderr
-    assert not cursor.exists()
+    assert cursor.read_text(encoding="utf-8").strip() == sha
 
     reload_marker.unlink()
     result = subprocess.run(
@@ -3453,7 +3556,7 @@ def test_system_scoped_units_skip_user_deploy_and_clean_stale_copy(tmp_path: Pat
     assert record["deploy_groups"]["systemd_units"] == []
 
 
-def test_changed_system_scoped_unit_holds_cursor_until_exact_bytes_are_installed(
+def test_changed_system_scoped_unit_records_deferral_until_exact_bytes_are_installed(
     tmp_path: Path,
 ) -> None:
     unit_path = "systemd/units/hapax-system-demo.service"
@@ -3488,8 +3591,10 @@ def test_changed_system_scoped_unit_holds_cursor_until_exact_bytes_are_installed
     deferred = subprocess.run(
         [str(script), sha], text=True, capture_output=True, check=False, env=env
     )
-    assert deferred.returncode == 77
-    assert not cursor.exists()
+    assert deferred.returncode == 0, deferred.stderr
+    assert cursor.read_text(encoding="utf-8").strip() == sha
+    deferred_record = json.loads(trace_path.read_text(encoding="utf-8").splitlines()[-1])
+    assert deferred_record["status"] == "completed_with_runtime_deferral"
 
     installed.write_text(new_body, encoding="utf-8")
     converged = subprocess.run(
@@ -3499,7 +3604,7 @@ def test_changed_system_scoped_unit_holds_cursor_until_exact_bytes_are_installed
     assert cursor.read_text(encoding="utf-8").strip() == sha
 
 
-def test_deleted_system_scoped_unit_holds_cursor_until_installed_copy_is_absent(
+def test_deleted_system_scoped_unit_records_deferral_until_installed_copy_is_absent(
     tmp_path: Path,
 ) -> None:
     unit_path = "systemd/units/hapax-system-demo.service"
@@ -3533,8 +3638,10 @@ def test_deleted_system_scoped_unit_holds_cursor_until_installed_copy_is_absent(
     deferred = subprocess.run(
         [str(script), sha], text=True, capture_output=True, check=False, env=env
     )
-    assert deferred.returncode == 77
-    assert not cursor.exists()
+    assert deferred.returncode == 0, deferred.stderr
+    assert cursor.read_text(encoding="utf-8").strip() == sha
+    deferred_record = json.loads(trace_path.read_text(encoding="utf-8").splitlines()[-1])
+    assert deferred_record["status"] == "completed_with_runtime_deferral"
 
     installed.unlink()
     converged = subprocess.run(
@@ -3544,7 +3651,7 @@ def test_deleted_system_scoped_unit_holds_cursor_until_installed_copy_is_absent(
     assert cursor.read_text(encoding="utf-8").strip() == sha
 
 
-def test_malformed_system_scope_marker_remains_user_scoped(tmp_path: Path) -> None:
+def test_malformed_system_scope_marker_is_refused(tmp_path: Path) -> None:
     unit_path = "systemd/units/hapax-user-demo.service"
     unit_body = (
         "[Unit]\n# Hapax-Install-Scope: system disabled\n"
@@ -3570,13 +3677,58 @@ def test_malformed_system_scope_marker_remains_user_scoped(tmp_path: Path) -> No
         },
     )
 
+    assert result.returncode != 0
+    assert "malformed Hapax-Install-Scope marker" in result.stderr
+    assert not (home / ".config/systemd/user/hapax-user-demo.service").exists()
+    assert not (trace_path.parent / "last-deployed-sha").exists()
+
+
+def test_system_manager_witness_rejects_file_generation_change(tmp_path: Path) -> None:
+    unit_path = "systemd/units/hapax-system-demo.service"
+    unit_body = (
+        "[Unit]\n# Hapax-Install-Scope: system\n[Service]\nType=oneshot\nExecStart=/usr/bin/true\n"
+    )
+    repo, sha = _repo_with_linear_commit(tmp_path, {unit_path: unit_body})
+    home = tmp_path / "home"
+    system_dir = tmp_path / "systemd-system"
+    system_dir.mkdir()
+    installed = system_dir / Path(unit_path).name
+    installed.write_text(unit_body, encoding="utf-8")
+    script = _post_merge_script_with_system_dir(tmp_path, system_dir)
+    bin_dir, systemctl_calls = _fake_systemctl_with_system_witness(tmp_path, system_dir)
+    systemctl = bin_dir / "systemctl"
+    original = systemctl.read_text(encoding="utf-8")
+    mutation = f'printf "drifted\\n" > {shlex.quote(str(installed))}\n'
+    systemctl.write_text(
+        original.replace(
+            'if [ "${1:-}" = show ]; then\n',
+            f'if [ "${{1:-}}" = show ]; then\n{mutation}',
+            1,
+        ),
+        encoding="utf-8",
+    )
+    trace_path = tmp_path / "traces/post-merge-traces.jsonl"
+
+    result = subprocess.run(
+        [str(script), sha],
+        text=True,
+        capture_output=True,
+        check=False,
+        env={
+            **os.environ,
+            "HOME": str(home),
+            "PATH": f"{bin_dir}:{os.environ['PATH']}",
+            "REPO": str(repo),
+            "HAPAX_SYSTEMCTL_CALLS": str(systemctl_calls),
+            "HAPAX_POST_MERGE_TRACE_PATH": str(trace_path),
+        },
+    )
+
     assert result.returncode == 0, result.stderr
-    assert (home / ".config/systemd/user/hapax-user-demo.service").read_text(
-        encoding="utf-8"
-    ) == unit_body
+    assert "exact file and system-manager witness" not in result.stdout
     record = json.loads(trace_path.read_text(encoding="utf-8").splitlines()[-1])
-    assert record["deploy_groups"]["systemd_units"] == [unit_path]
-    assert record["deploy_groups"]["systemd_system_units"] == []
+    assert record["status"] == "completed_with_runtime_deferral"
+    assert record["runtime_deferred"] == [f"systemd-system:{unit_path}"]
 
 
 def test_user_scoped_units_still_deploy_to_user_dir(tmp_path: Path) -> None:
@@ -3907,6 +4059,43 @@ def test_preset_only_unit_git_show_failure_preserves_existing_bytes(
     assert "failed to materialize systemd unit" in result.stderr
     assert installed.read_text(encoding="utf-8") == "prior governed intake unit\n"
     assert not list(installed.parent.glob(f".{unit}.tmp.*"))
+    assert not cursor.exists()
+
+
+def test_user_preset_git_show_failure_preserves_existing_bytes(tmp_path: Path) -> None:
+    repo, sha = _repo_with_intake_units_then_preset_commit(tmp_path)
+    preset_path = "systemd/user-preset.d/hapax.preset"
+    home = tmp_path / "home"
+    installed = home / ".config/systemd/user-preset/hapax.preset"
+    installed.parent.mkdir(parents=True)
+    installed.write_text("prior preset bytes\n", encoding="utf-8")
+    systemctl_bin, systemctl_calls = _fake_systemctl(tmp_path)
+    git_bin = _fake_git_with_show_failure(tmp_path)
+    trace_path = tmp_path / "traces/post-merge-traces.jsonl"
+    cursor = tmp_path / "traces/last-deployed-sha"
+
+    result = subprocess.run(
+        [str(SCRIPT), sha],
+        text=True,
+        capture_output=True,
+        check=False,
+        env={
+            **os.environ,
+            "HOME": str(home),
+            "PATH": f"{git_bin}:{systemctl_bin}:{os.environ['PATH']}",
+            "REPO": str(repo),
+            "HAPAX_SYSTEMCTL_CALLS": str(systemctl_calls),
+            "HAPAX_POST_MERGE_TRACE_PATH": str(trace_path),
+            "HAPAX_POST_MERGE_LAST_DEPLOYED_SHA_PATH": str(cursor),
+            "HAPAX_FAIL_GIT_SHOW_OBJECT": f"{sha}:{preset_path}",
+            "HAPAX_FAIL_GIT_SHOW_COUNT_FILE": str(tmp_path / "git-show.count"),
+            "HAPAX_FAIL_GIT_SHOW_ON_COUNT": "1",
+        },
+    )
+
+    assert result.returncode != 0
+    assert installed.read_text(encoding="utf-8") == "prior preset bytes\n"
+    assert not list(installed.parent.glob(".hapax.preset.tmp.*"))
     assert not cursor.exists()
 
 

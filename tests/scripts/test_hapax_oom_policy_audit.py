@@ -284,6 +284,22 @@ def _fake_docker(
             "auto_remove": True,
             "log_driver": "none",
             "tmpfs": {"/tmp": "rw,noexec,nosuid,size=16m"},
+            "binds": None,
+            "mounts": [],
+            "privileged": False,
+            "cap_add": None,
+            "network_mode": "bridge",
+            "pid_mode": "",
+            "ipc_mode": "private",
+            "devices": [],
+            "device_requests": None,
+            "port_bindings": {},
+            "process_args": [
+                "stdio",
+                "--log-file",
+                "/tmp/github-mcp.log",
+                "--tools=pull_request_read",
+            ],
             "container_state": "running",
             "stop_timeout": 1,
             "extra_labels": {},
@@ -334,18 +350,23 @@ def _fake_docker(
                 mcp_image_id,
                 GITHUB_MCP_IMAGE,
                 "/server/github-mcp-server",
-                [
-                    "stdio",
-                    "--log-file",
-                    "/tmp/github-mcp.log",
-                    "--tools=pull_request_read",
-                ],
+                record["process_args"],
                 record["readonly_rootfs"],
                 record["cap_drop"],
                 record["security_opt"],
                 record["auto_remove"],
                 record["log_driver"],
                 record["tmpfs"],
+                record["binds"],
+                record["mounts"],
+                record["privileged"],
+                record["cap_add"],
+                record["network_mode"],
+                record["pid_mode"],
+                record["ipc_mode"],
+                record["devices"],
+                record["device_requests"],
+                record["port_bindings"],
                 record["container_state"],
                 record["stop_timeout"],
             )
@@ -381,6 +402,7 @@ def _write_proc(
     oom_score: int,
     ppid: int = 1,
     start_ticks: int | None = None,
+    process_state: str = "S",
 ) -> None:
     pid_dir = proc_root / str(pid)
     pid_dir.mkdir(parents=True)
@@ -390,7 +412,7 @@ def _write_proc(
     )
     (pid_dir / "oom_score_adj").write_text(f"{oom_score}\n", encoding="utf-8")
     if start_ticks is not None:
-        stat_tail = ["S", str(ppid), *(["0"] * 17), str(start_ticks)]
+        stat_tail = [process_state, str(ppid), *(["0"] * 17), str(start_ticks)]
         (pid_dir / "stat").write_text(f"{pid} ({name}) {' '.join(stat_tail)}\n", encoding="utf-8")
 
 
@@ -1276,6 +1298,16 @@ def test_audit_discovers_app_labeled_mcp_name_lookalike(tmp_path: Path) -> None:
         {"auto_remove": False},
         {"log_driver": "json-file"},
         {"tmpfs": {}},
+        {"binds": ["/:/host:ro"]},
+        {"mounts": [{"Type": "bind", "Source": "/", "Destination": "/host"}]},
+        {"privileged": True},
+        {"cap_add": ["SYS_ADMIN"]},
+        {"network_mode": "host"},
+        {"pid_mode": "host"},
+        {"ipc_mode": "host"},
+        {"devices": [{"PathOnHost": "/dev/kvm"}]},
+        {"device_requests": [{"Driver": "nvidia", "Count": -1}]},
+        {"port_bindings": {"8080/tcp": [{"HostPort": "8080"}]}},
         {"stop_timeout": 10},
     ),
 )
@@ -1316,6 +1348,66 @@ def test_audit_does_not_emit_unrelated_container_labels(tmp_path: Path) -> None:
 
     assert result.returncode == 0, result.stdout
     assert secret not in result.stdout
+
+
+def test_audit_does_not_emit_untrusted_container_metadata(tmp_path: Path) -> None:
+    label_secret = "governed-label-secret-must-not-be-emitted"
+    argument_secret = "argument-secret-must-not-be-emitted"
+    network_secret = "network-secret-must-not-be-emitted"
+    mount_secret = "mount-source-secret-must-not-be-emitted"
+    result = _run(
+        tmp_path,
+        docker_mcp_count=1,
+        docker_mcp_signature_overrides={
+            "launch_label": label_secret,
+            "process_args": [
+                "stdio",
+                "--log-file",
+                "/tmp/github-mcp.log",
+                f"--token={argument_secret}",
+            ],
+            "network_mode": network_secret,
+            "mounts": [{"Type": "bind", "Source": mount_secret, "Destination": "/host"}],
+        },
+    )
+
+    assert result.returncode == 1
+    assert label_secret not in result.stdout
+    assert argument_secret not in result.stdout
+    assert network_secret not in result.stdout
+    assert mount_secret not in result.stdout
+
+
+def test_audit_treats_auto_remove_teardown_as_converging(tmp_path: Path) -> None:
+    result = _run(
+        tmp_path,
+        docker_mcp_count=1,
+        docker_mcp_signature_overrides={"container_state": "removing"},
+    )
+
+    assert result.returncode == 0, result.stdout
+
+
+def test_audit_rejects_zombie_mcp_lease_holder(tmp_path: Path) -> None:
+    proc_root = tmp_path / "proc"
+    proc_root.mkdir()
+    _write_proc(
+        proc_root,
+        8000,
+        name="hapax-github-mcp",
+        uid=1000,
+        oom_score=100,
+        start_ticks=900000,
+        process_state="Z",
+    )
+
+    result = _run(tmp_path, proc_root=proc_root, docker_mcp_count=1)
+
+    assert result.returncode == 1
+    payload = json.loads(result.stdout)
+    check = next(item for item in payload["checks"] if item["name"].endswith("_limits"))
+    assert check["status"] == "gap"
+    assert "zombie" in check["detail"]
 
 
 def test_audit_rejects_dead_or_reused_mcp_launch_lease(tmp_path: Path) -> None:
@@ -1454,7 +1546,7 @@ def test_audit_rejects_malformed_formatted_docker_inspect(tmp_path: Path) -> Non
         item for item in payload["checks"] if item["name"].startswith("docker_hapax-github-mcp-")
     )
     assert check["status"] == "error"
-    assert "eighteen formatted Docker inspect fields" in check["detail"]
+    assert "twenty-eight formatted Docker inspect fields" in check["detail"]
 
 
 def test_audit_is_behaviorally_observational(tmp_path: Path) -> None:

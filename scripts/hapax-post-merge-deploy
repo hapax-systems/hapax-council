@@ -95,6 +95,11 @@
 # Exits non-zero if any deploy step failed (or, in --report-coverage
 # mode, if any systemd/** path is unclassified).
 set -euo pipefail
+# Repository selectors are never deployment inputs. Explicit repository roots
+# and immutable commit objects are the only accepted identity surface.
+unset GIT_DIR GIT_WORK_TREE GIT_COMMON_DIR GIT_INDEX_FILE GIT_OBJECT_DIRECTORY
+unset GIT_ALTERNATE_OBJECT_DIRECTORIES GIT_SHALLOW_FILE GIT_REPLACE_REF_BASE
+export GIT_NO_REPLACE_OBJECTS=1
 ORIGINAL_ARGS=("$@")
 
 DRY_RUN=0
@@ -539,6 +544,7 @@ record_post_merge_trace() {
         "$DID_ANYTHING" <<'PY'
 from __future__ import annotations
 
+import fcntl
 import json
 import os
 import stat
@@ -627,9 +633,26 @@ record = {
 
 parent = path.parent
 fd = -1
+lock_fd = -1
 tmp_path = ""
 try:
     parent.mkdir(mode=0o700, parents=True, exist_ok=True)
+    lock_path = parent / f".{path.name}.lock"
+    lock_fd = os.open(
+        lock_path,
+        os.O_RDWR | os.O_CREAT | os.O_CLOEXEC | os.O_NOFOLLOW,
+        0o600,
+    )
+    lock_stat = os.fstat(lock_fd)
+    if (
+        not stat.S_ISREG(lock_stat.st_mode)
+        or lock_stat.st_uid != os.geteuid()
+        or lock_stat.st_nlink != 1
+        or lock_stat.st_mode & 0o022
+    ):
+        raise OSError(f"unsafe trace lock inode: {lock_path}")
+    os.fchmod(lock_fd, 0o600)
+    fcntl.flock(lock_fd, fcntl.LOCK_EX)
     previous: list[str] = []
     if os.path.lexists(path):
         read_fd = os.open(path, os.O_RDONLY | os.O_CLOEXEC | os.O_NOFOLLOW)
@@ -662,9 +685,13 @@ try:
         os.fsync(dir_fd)
     finally:
         os.close(dir_fd)
+    os.close(lock_fd)
+    lock_fd = -1
 except (OSError, UnicodeError, ValueError) as exc:
     if fd >= 0:
         os.close(fd)
+    if lock_fd >= 0:
+        os.close(lock_fd)
     if tmp_path:
         try:
             os.unlink(tmp_path)
@@ -792,10 +819,11 @@ if [ "$COVERAGE_FROM_STDIN" = "1" ]; then
     FILES="$(cat)"
 elif [ -n "$SINCE" ]; then
     # Cumulative range deploy: union of every file changed across <since>..<SHA>.
-    if ! git rev-parse --verify --quiet "$SINCE^{commit}" >/dev/null; then
+    if ! SINCE_RESOLVED="$(git rev-parse --verify --quiet "$SINCE^{commit}")"; then
         echo "hapax-post-merge-deploy: --since '$SINCE' is not a valid commit" >&2
         exit 2
     fi
+    SINCE="$SINCE_RESOLVED"
     FILES="$(git diff --name-only "$SINCE" "$SHA" | sort -u)"
 elif FIRST_PARENT="$(git rev-parse --verify --quiet "$SHA^1")"; then
     FILES="$(git diff --name-only "$FIRST_PARENT" "$SHA" | sort -u)"
@@ -985,11 +1013,20 @@ unit_install_scope() {
         echo "hapax-post-merge-deploy: failed to read systemd unit while classifying install scope at $revision:$f" >&2
         return 1
     fi
-    if [ -n "$content" ] \
-        && grep -Eiq '^[#;][[:space:]]*Hapax-Install-Scope:[[:space:]]*system[[:space:]]*$' <<< "$content"; then
+    local scope_marker_count system_marker_count
+    scope_marker_count="$(
+        grep -Eic '^[#;][[:space:]]*Hapax-Install-Scope[[:space:]]*:' <<< "$content" || true
+    )"
+    system_marker_count="$(
+        grep -Eic '^[#;][[:space:]]*Hapax-Install-Scope:[[:space:]]*system[[:space:]]*$' <<< "$content" || true
+    )"
+    if [ "$scope_marker_count" -eq 0 ]; then
+        UNIT_INSTALL_SCOPE="user"
+    elif [ "$scope_marker_count" -eq 1 ] && [ "$system_marker_count" -eq 1 ]; then
         UNIT_INSTALL_SCOPE="system"
     else
-        UNIT_INSTALL_SCOPE="user"
+        echo "hapax-post-merge-deploy: malformed Hapax-Install-Scope marker at $revision:$f (duplicate or unsupported value)" >&2
+        return 1
     fi
 }
 
@@ -2253,11 +2290,77 @@ if [ "${#SYSTEMD_DROPINS[@]}" -gt 0 ]; then
     DID_ANYTHING=1
 fi
 
+system_unit_file_witness() {
+    local path="$1" expected_oid="$2"
+    /usr/bin/python3 -I -S - "$path" "$expected_oid" <<'PY'
+from __future__ import annotations
+
+import hashlib
+import os
+import stat
+import sys
+
+path, expected_oid = sys.argv[1:]
+try:
+    path_before = os.lstat(path)
+except FileNotFoundError:
+    print("absent")
+    raise SystemExit(0)
+if not stat.S_ISREG(path_before.st_mode):
+    raise SystemExit(1)
+
+fd = os.open(path, os.O_RDONLY | os.O_CLOEXEC | os.O_NOFOLLOW)
+try:
+    before = os.fstat(fd)
+    if (before.st_dev, before.st_ino) != (path_before.st_dev, path_before.st_ino):
+        raise OSError("system unit path changed before read")
+    if before.st_size > 4 * 1024 * 1024:
+        raise OSError("system unit exceeds the bounded witness size")
+    payload = bytearray()
+    while True:
+        chunk = os.read(fd, 65536)
+        if not chunk:
+            break
+        payload.extend(chunk)
+    after = os.fstat(fd)
+    path_after = os.lstat(path)
+finally:
+    os.close(fd)
+
+generation_before = (
+    before.st_dev,
+    before.st_ino,
+    before.st_size,
+    before.st_mtime_ns,
+    before.st_ctime_ns,
+)
+generation_after = (
+    after.st_dev,
+    after.st_ino,
+    after.st_size,
+    after.st_mtime_ns,
+    after.st_ctime_ns,
+)
+path_generation_after = (
+    path_after.st_dev,
+    path_after.st_ino,
+    path_after.st_size,
+    path_after.st_mtime_ns,
+    path_after.st_ctime_ns,
+)
+if generation_before != generation_after or generation_after != path_generation_after:
+    raise OSError("system unit generation changed during read")
+
+algorithm = hashlib.sha1 if len(expected_oid) == 40 else hashlib.sha256
+digest = algorithm(f"blob {len(payload)}\0".encode("ascii") + payload).hexdigest()
+print("\t".join(("present", digest, *(str(value) for value in generation_after))))
+PY
+}
+
 # --- systemd units ---
 if [ "${#SYSTEMD_SYSTEM[@]}" -gt 0 ]; then
     echo "system-scoped systemd units changed (${#SYSTEMD_SYSTEM[@]}):"
     mkdir -p "$SYSTEMD_USER_DIR"
-    system_unit_pending=0
     for f in "${SYSTEMD_SYSTEM[@]}"; do
         base="$(basename "$f")"
         dest="$SYSTEMD_USER_DIR/$base"
@@ -2275,54 +2378,97 @@ if [ "${#SYSTEMD_SYSTEM[@]}" -gt 0 ]; then
             rm -fv "$dest" || true
         fi
         system_unit_converged=0
-        if [ "$GIT_BLOB_PRESENT" -eq 1 ]; then
-            if [ -f "$system_dest" ] && [ ! -L "$system_dest" ]; then
-                if ! installed_oid="$(git -C "$REPO" hash-object --no-filters -- "$system_dest")"; then
-                    echo "hapax-post-merge-deploy: failed to hash installed system unit $system_dest" >&2
-                    exit 2
-                fi
-                if [ "$installed_oid" = "$GIT_BLOB_OID" ]; then
-                    system_unit_converged=1
-                fi
+        system_file_before=""
+        if system_file_before="$(system_unit_file_witness "$system_dest" "$GIT_BLOB_OID")"; then
+            if [ "$GIT_BLOB_PRESENT" -eq 1 ] \
+                && [[ "$system_file_before" == $'present\t'"$GIT_BLOB_OID"$'\t'* ]]; then
+                system_unit_converged=1
+            elif [ "$GIT_BLOB_PRESENT" -eq 0 ] && [ "$system_file_before" = "absent" ]; then
+                system_unit_converged=1
             fi
-        elif [ ! -e "$system_dest" ] && [ ! -L "$system_dest" ]; then
-            system_unit_converged=1
+        else
+            echo "  runtime deferred: cannot obtain a stable file witness for '$system_dest'" >&2
         fi
         system_manager_converged=0
         if [ "$system_unit_converged" -eq 1 ]; then
-            if ! system_load_state="$(systemctl show "$system_manager_unit" -p LoadState --value)" \
-                || ! system_fragment_path="$(systemctl show "$system_manager_unit" -p FragmentPath --value)" \
-                || ! system_need_reload="$(systemctl show "$system_manager_unit" -p NeedDaemonReload --value)"; then
+            system_manager_record=""
+            if ! system_manager_record="$(
+                systemctl show "$system_manager_unit" \
+                    --property=LoadState,FragmentPath,NeedDaemonReload --no-pager
+            )"; then
                 echo "  runtime deferred: cannot query the system-manager witness for '$system_manager_unit'" >&2
-            elif [ "$GIT_BLOB_PRESENT" -eq 1 ] \
+            else
+                system_load_state=""
+                system_fragment_path=""
+                system_need_reload=""
+                system_manager_record_ok=1
+                system_manager_property_count=0
+                system_load_seen=0
+                system_fragment_seen=0
+                system_reload_seen=0
+                while IFS= read -r system_manager_line; do
+                    case "$system_manager_line" in
+                        LoadState=*)
+                            [ "$system_load_seen" -eq 0 ] || system_manager_record_ok=0
+                            system_load_seen=1
+                            system_load_state="${system_manager_line#LoadState=}"
+                            ;;
+                        FragmentPath=*)
+                            [ "$system_fragment_seen" -eq 0 ] || system_manager_record_ok=0
+                            system_fragment_seen=1
+                            system_fragment_path="${system_manager_line#FragmentPath=}"
+                            ;;
+                        NeedDaemonReload=*)
+                            [ "$system_reload_seen" -eq 0 ] || system_manager_record_ok=0
+                            system_reload_seen=1
+                            system_need_reload="${system_manager_line#NeedDaemonReload=}"
+                            ;;
+                        *) system_manager_record_ok=0 ;;
+                    esac
+                    system_manager_property_count=$((system_manager_property_count + 1))
+                done <<< "$system_manager_record"
+                if [ "$system_manager_property_count" -ne 3 ] \
+                    || [ "$system_load_seen" -ne 1 ] \
+                    || [ "$system_fragment_seen" -ne 1 ] \
+                    || [ "$system_reload_seen" -ne 1 ] \
+                    || [ -z "$system_load_state" ] \
+                    || [ -z "$system_need_reload" ]; then
+                    system_manager_record_ok=0
+                fi
+                if [ "$system_manager_record_ok" -ne 1 ]; then
+                    echo "  runtime deferred: malformed combined system-manager witness for '$system_manager_unit'" >&2
+                elif [ "$GIT_BLOB_PRESENT" -eq 1 ] \
                 && [ "$system_load_state" = "loaded" ] \
                 && [ "$system_fragment_path" = "$system_dest" ] \
                 && [ "$system_need_reload" = "no" ]; then
-                system_manager_converged=1
-            elif [ "$GIT_BLOB_PRESENT" -eq 0 ] \
+                    system_manager_converged=1
+                elif [ "$GIT_BLOB_PRESENT" -eq 0 ] \
                 && [ "$system_load_state" = "not-found" ] \
                 && [ -z "$system_fragment_path" ] \
                 && [ "$system_need_reload" = "no" ]; then
-                system_manager_converged=1
-            else
-                echo "  runtime deferred: system manager has not loaded the exact '$system_dest' state" >&2
+                    system_manager_converged=1
+                else
+                    echo "  runtime deferred: system manager has not loaded the exact '$system_dest' state" >&2
+                fi
+            fi
+            if [ "$system_manager_converged" -eq 1 ]; then
+                system_file_after=""
+                if ! system_file_after="$(
+                    system_unit_file_witness "$system_dest" "$GIT_BLOB_OID"
+                )" || [ "$system_file_after" != "$system_file_before" ]; then
+                    system_manager_converged=0
+                    echo "  runtime deferred: '$system_dest' changed generation across the system-manager witness" >&2
+                fi
             fi
         fi
         if [ "$system_unit_converged" -eq 1 ] && [ "$system_manager_converged" -eq 1 ]; then
             echo "  exact file and system-manager witness: '$system_dest'"
         else
             RUNTIME_DEFERRED+=("systemd-system:$f")
-            system_unit_pending=1
             echo "  runtime deferred: '$system_dest' lacks an exact $SHA file-and-manager witness; next action: install or remove it through an authorized system-unit installer, reload the system manager, then rerun this deploy" >&2
         fi
     done
     systemctl --user daemon-reload
-    if [ "$system_unit_pending" -ne 0 ]; then
-        if record_post_merge_trace "blocked_runtime_deferral" "$ROOT_REQUIRED_RC"; then
-            TRACE_WRITTEN=1
-        fi
-        exit "$ROOT_REQUIRED_RC"
-    fi
 fi
 
 PUBLISHED_GIT_CONTENT=""
@@ -2430,11 +2576,13 @@ if [ "${#SYSTEMD[@]}" -gt 0 ]; then
     DID_ANYTHING=1
 fi
 
+declare -A USER_PRESET_CONTENT=()
 preset_enables_unit_at_sha() {
     local unit="$1" preset
     for preset in "${USER_PRESETS[@]}"; do
-        git cat-file -e "$SHA:$preset" 2>/dev/null || continue
-        if git show "$SHA:$preset" | grep -Eq "^[[:space:]]*enable[[:space:]]+$unit([[:space:]]|$)"; then
+        [ -n "${USER_PRESET_CONTENT[$preset]+present}" ] || continue
+        if grep -Eq "^[[:space:]]*enable[[:space:]]+$unit([[:space:]]|$)" \
+            <<< "${USER_PRESET_CONTENT[$preset]}"; then
             return 0
         fi
     done
@@ -2503,11 +2651,20 @@ if [ "${#USER_PRESETS[@]}" -gt 0 ]; then
     for f in "${USER_PRESETS[@]}"; do
         base="$(basename "$f")"
         dest="$SYSTEMD_USER_PRESET_DIR/$base"
-        if git cat-file -e "$SHA:$f" 2>/dev/null; then
-            git show "$SHA:$f" > "$dest"
+        if ! git_blob_state_at "$SHA" "$f" "systemd user preset"; then
+            exit 2
+        fi
+        if [ "$GIT_BLOB_PRESENT" -eq 1 ]; then
+            if ! publish_systemd_unit_at_sha "$f" "$dest"; then
+                exit 1
+            fi
+            USER_PRESET_CONTENT["$f"]="$PUBLISHED_GIT_CONTENT"
             echo "  '$f' -> '$dest'"
         else
-            rm -fv "$dest" || true
+            if ! rm -fv -- "$dest"; then
+                echo "hapax-post-merge-deploy: failed to remove deleted systemd user preset $dest" >&2
+                exit 1
+            fi
         fi
     done
     install_governed_intake_preset_units

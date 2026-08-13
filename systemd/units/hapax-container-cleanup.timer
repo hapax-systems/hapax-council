@@ -1,5 +1,6 @@
 [Unit]
-Description=Hourly container orphan cleanup
+Description=Retired Hapax container cleanup timer
+# Hapax-Parked: true
 
 [Timer]
 OnCalendar=hourly
