@@ -181,7 +181,6 @@ SYSTEMD_RUNTIME_PENDING_PATH="${HAPAX_POST_MERGE_SYSTEMD_PENDING_PATH:-$(dirname
 RECOVERY_INSTALLER_PATH="scripts/hapax-recovery-plane-install"
 OOM_CONTAINMENT_INSTALLER_PATH="scripts/install-p0-oom-containment"
 APCUPSD_INSTALLER_PATH="scripts/install-apcupsd-power-alerts"
-ROOT_REQUIRED_RC=77
 ROOT_DEFER_DIR="${HAPAX_POST_MERGE_ROOT_DEFER_DIR:-$HOME/.cache/hapax/post-merge-root-required}"
 ROOT_REQUIRED_STATE_ROOT="${HAPAX_ROOT_REQUIRED_STATE_ROOT:-$HOME/.local/state/hapax/root-required}"
 ROOT_REQUIRED_INSTALLED_SOURCE_ROOT="${HAPAX_ROOT_REQUIRED_INSTALLED_SOURCE_ROOT:-$ROOT_REQUIRED_STATE_ROOT/current-source}"
@@ -2091,6 +2090,9 @@ done <<< "$FILES"
 if [ "${#OOM_CONTAINMENT[@]}" -gt 0 ]; then
     RUNTIME_DEFERRED+=("oom-containment:$SHA")
 fi
+if [ "${#APCUPSD_POWER_ALERTS[@]}" -gt 0 ]; then
+    RUNTIME_DEFERRED+=("apcupsd-power-alerts:$SHA")
+fi
 
 if [ "$REPORT_COVERAGE" = "1" ]; then
     if [ "${#SYSTEMD_UNCLASSIFIED[@]}" -gt 0 ]; then
@@ -2468,17 +2470,10 @@ stage_oom_containment_installer() {
 }
 
 defer_root_required_installer() {
-    local label="$1" stage="$2" installer="$3" dest temp receipt
+    local label="$1" stage="$2" dest temp
     mkdir -p "$ROOT_DEFER_DIR"
     dest="$ROOT_DEFER_DIR/$SHA/$label"
     mkdir -p "$(dirname "$dest")"
-    receipt="$ROOT_REQUIRED_INSTALLED_RECEIPT_ROOT/$label.sha"
-    if [ "$label" != "oom-containment" ] \
-        && [ -f "$receipt" ] \
-        && [ "$(tr -d '[:space:]' < "$receipt")" = "$SHA" ]; then
-        echo "root-required $label already installed at $SHA; deferral not recreated"
-        return 0
-    fi
     temp="$ROOT_DEFER_DIR/$SHA/.${label}.tmp.$$"
     rm -rf "$temp" 2>/dev/null || true
     cp -a "$stage" "$temp"
@@ -2498,8 +2493,7 @@ OOM auditor or timer. Existing installed bytes may retain historical mutating se
 until a separately runtime-authorized cutover verifies and replaces
 them; do not treat source acceptance or this RUNBOOK as that cutover.
 
-Next action: preserve this exact-SHA package and dispatch separately
-runtime-authorized root-broker work against
+Next action: preserve this exact-SHA package and dispatch separately runtime-authorized root-broker work against
 docs/security/root-authority-hazard-register.md. Do not execute the staged
 interpreter as root and do not recreate the retired --install/--verify-live path.
 
@@ -2512,27 +2506,34 @@ EOF
         echo "next action: dispatch separately runtime-authorized root-broker work; production OOM application is unavailable in this source revision"
         return 0
     fi
-    cat > "$temp/RUNBOOK.txt" <<EOF
-Root-required post-merge deploy action deferred.
+    if [ "$label" = "apcupsd-power-alerts" ]; then
+        cat > "$temp/RUNBOOK.txt" <<EOF
+Root-required APC package staged as non-authoritative desired-state evidence.
 
 Commit: $SHA
 Package: $label
 
-Run from this host after this root-authority preparation:
+Production APC installation is unavailable in this source revision. A
+caller-owned shell and mutable staged paths cannot carry root authority, and
+same-UID receipts or drained markers cannot establish runtime completion.
 
-  sudo -v
+Next action: preserve this exact-SHA package and dispatch separately runtime-authorized root-broker work against
+docs/security/root-authority-hazard-register.md. Do not execute the staged
+interpreter as root and do not use its isolated-test install path against live
+destinations.
 
-Default sudo path after sudo -v:
-
-  HAPAX_ROOT_REQUIRED_PACKAGE_SHA=$SHA HAPAX_ROOT_REQUIRED_DRAIN_DIR=$dest HAPAX_ROOT_REQUIRED_GIT_REPO=$REPO $dest/$installer --source $dest --install --verify-live
-
-Post-merge deploy continued after this deferral so unrelated user-scope deploy
-groups for the same merge were not skipped.
+Post-merge deploy continued so unrelated user-scope deploy groups for the same
+merge were not skipped.
 EOF
-    rm -rf "$dest" 2>/dev/null || true
-    mv "$temp" "$dest"
-    echo "root-required $label install deferred to $dest"
-    echo "next action: run HAPAX_ROOT_REQUIRED_PACKAGE_SHA=$SHA HAPAX_ROOT_REQUIRED_DRAIN_DIR=$dest HAPAX_ROOT_REQUIRED_GIT_REPO=$REPO $dest/$installer --source $dest --install --verify-live with root authority"
+        rm -rf "$dest" 2>/dev/null || true
+        mv "$temp" "$dest"
+        echo "root-required $label desired-state package staged at $dest"
+        echo "next action: dispatch separately runtime-authorized root-broker work; production APC application is unavailable in this source revision"
+        return 0
+    fi
+    rm -rf "$temp" 2>/dev/null || true
+    echo "hapax-post-merge-deploy: unsupported root-required package label $label; no runbook published" >&2
+    return 2
 }
 
 root_required_stage_matches_commit() {
@@ -2661,17 +2662,14 @@ if [ "${#APCUPSD_POWER_ALERTS[@]}" -gt 0 ]; then
         exit 1
     fi
     set +e
-    HAPAX_ROOT_REQUIRED_PACKAGE_SHA="$SHA" \
-        HAPAX_ROOT_REQUIRED_GIT_REPO="$REPO" \
-        "$APCUPSD_STAGE/$APCUPSD_INSTALLER_PATH" --source "$APCUPSD_STAGE" --install --verify-live
+    "$APCUPSD_STAGE/$APCUPSD_INSTALLER_PATH" --source "$APCUPSD_STAGE" --check
     apcupsd_installer_rc=$?
     set -e
-    if [ "$apcupsd_installer_rc" -eq "$ROOT_REQUIRED_RC" ]; then
-        defer_root_required_installer "apcupsd-power-alerts" "$APCUPSD_STAGE" "$APCUPSD_INSTALLER_PATH"
-    elif [ "$apcupsd_installer_rc" -ne 0 ]; then
+    if [ "$apcupsd_installer_rc" -ne 0 ]; then
         rm -rf "$APCUPSD_STAGE" 2>/dev/null || true
         exit "$apcupsd_installer_rc"
     fi
+    defer_root_required_installer "apcupsd-power-alerts" "$APCUPSD_STAGE"
     rm -rf "$APCUPSD_STAGE" 2>/dev/null || true
     DID_ANYTHING=1
 fi
@@ -2708,8 +2706,7 @@ if [ "${#OOM_CONTAINMENT[@]}" -gt 0 ]; then
         rm -rf "$OOM_STAGE" 2>/dev/null || true
         exit 1
     fi
-    defer_root_required_installer \
-        "oom-containment" "$OOM_STAGE" "$OOM_CONTAINMENT_INSTALLER_PATH"
+    defer_root_required_installer "oom-containment" "$OOM_STAGE"
     rm -rf "$OOM_STAGE" 2>/dev/null || true
 fi
 

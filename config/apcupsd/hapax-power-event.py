@@ -29,6 +29,10 @@ DEFAULT_NTFY_TIMEOUT_S = 5.0
 DEFAULT_APCACCESS = "/usr/bin/apcaccess"
 DEFAULT_APCACCESS_TIMEOUT_S = 3.0
 SHUTDOWN_IO_TIMEOUT_S = 1.0
+APC_REPAIR_ACTION = (
+    "preserve the exact desired package and dispatch separately runtime-authorized "
+    "root-broker work; production APC repair is unavailable in this source revision"
+)
 
 EVENT_TEXT = {
     "onbattery": {
@@ -320,8 +324,8 @@ def main(argv: list[str] | None = None) -> int:
         intent_audit_error = f"{type(exc).__name__}: {exc}"
         print(
             "hapax-power-event: failed to append intent audit log: "
-            f"{exc}; provenance degraded, continuing UPS notification; next action: check /var/log/hapax permissions and rerun "
-            "scripts/install-apcupsd-power-alerts --install --verify-live",
+            f"{exc}; provenance degraded, continuing UPS notification; next action: "
+            f"check /var/log/hapax permissions, then {APC_REPAIR_ACTION}",
             file=sys.stderr,
         )
     delivery = post_ntfy(
@@ -334,8 +338,8 @@ def main(argv: list[str] | None = None) -> int:
     if delivery.attempted and not delivery.ok:
         print(
             "hapax-power-event: UPS notification delivery failed: "
-            f"{delivery.error}; next action: verify the local ntfy service and endpoint, then rerun "
-            "scripts/install-apcupsd-power-alerts --install --verify-live",
+            f"{delivery.error}; next action: verify the local ntfy service and endpoint; "
+            f"for package repair, {APC_REPAIR_ACTION}",
             file=sys.stderr,
         )
     record = {
@@ -352,8 +356,7 @@ def main(argv: list[str] | None = None) -> int:
     except OSError as exc:
         print(
             "hapax-power-event: failed to append delivery audit log: "
-            f"{exc}; next action: check /var/log/hapax permissions and rerun "
-            "scripts/install-apcupsd-power-alerts --install --verify-live",
+            f"{exc}; next action: check /var/log/hapax permissions, then {APC_REPAIR_ACTION}",
             file=sys.stderr,
         )
     return 0

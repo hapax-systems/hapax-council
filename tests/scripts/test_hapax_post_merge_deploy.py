@@ -2430,7 +2430,8 @@ def test_root_required_audit_detects_nonexecutable_hook(tmp_path: Path) -> None:
 
     assert result.returncode == 1
     assert "executable mode drift" in result.stderr
-    assert "install-apcupsd-power-alerts" in result.stderr
+    assert "separately runtime-authorized root-broker" in result.stderr
+    assert "production APC repair is unavailable" in result.stderr
 
 
 def test_root_required_audit_detects_enabled_retired_enforcer_timer(tmp_path: Path) -> None:
@@ -3283,7 +3284,9 @@ def test_post_merge_deploy_rejects_lock_path_replaced_while_waiting(
     assert not calls.exists()
 
 
-def test_apcupsd_power_alert_deploy_uses_dedicated_installer(tmp_path: Path) -> None:
+def test_apcupsd_power_alert_deploy_stages_dedicated_package_for_root_broker(
+    tmp_path: Path,
+) -> None:
     installer_calls = tmp_path / "apcupsd-installer-calls.txt"
     installer_body = (
         "#!/usr/bin/env bash\n"
@@ -3313,6 +3316,7 @@ def test_apcupsd_power_alert_deploy_uses_dedicated_installer(tmp_path: Path) -> 
     home = tmp_path / "home"
     bin_dir, systemctl_calls = _fake_systemctl(tmp_path)
     trace_path = tmp_path / "traces" / "post-merge-traces.jsonl"
+    defer_dir = tmp_path / "root-required"
     env = {
         **os.environ,
         "HOME": str(home),
@@ -3321,6 +3325,7 @@ def test_apcupsd_power_alert_deploy_uses_dedicated_installer(tmp_path: Path) -> 
         "HAPAX_APCUPSD_INSTALL_CALLS": str(installer_calls),
         "HAPAX_SYSTEMCTL_CALLS": str(systemctl_calls),
         "HAPAX_POST_MERGE_TRACE_PATH": str(trace_path),
+        "HAPAX_POST_MERGE_ROOT_DEFER_DIR": str(defer_dir),
     }
 
     result = subprocess.run(
@@ -3332,9 +3337,22 @@ def test_apcupsd_power_alert_deploy_uses_dedicated_installer(tmp_path: Path) -> 
     )
 
     assert result.returncode == 0, result.stderr
-    assert "--install --verify-live" in installer_calls.read_text(encoding="utf-8")
+    installer_args = installer_calls.read_text(encoding="utf-8")
+    assert "--check" in installer_args
+    assert "--install" not in installer_args
+    assert "--verify-live" not in installer_args
+    deferred = defer_dir / sha / "apcupsd-power-alerts"
+    assert (deferred / future_manifest_path).read_text(encoding="utf-8") == "future hook\n"
+    runbook = (deferred / "RUNBOOK.txt").read_text(encoding="utf-8")
+    assert "non-authoritative desired-state evidence" in runbook
+    assert "separately runtime-authorized root-broker" in runbook
+    assert "sudo -v" not in runbook
+    assert "--install" not in runbook
+    assert "HAPAX_ROOT_REQUIRED_PACKAGE_SHA=" not in runbook
     record = json.loads(trace_path.read_text(encoding="utf-8").splitlines()[-1])
     assert set(record["deploy_groups"]["apcupsd_power_alerts"]) == set(files)
+    assert record["status"] == "completed_with_runtime_deferral"
+    assert record["runtime_deferred"] == [f"apcupsd-power-alerts:{sha}"]
 
 
 def test_generic_slice_dropin_deploy_uses_runtime_set_property_not_restart(
