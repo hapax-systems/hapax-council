@@ -40,11 +40,21 @@ canon_enforced="1"
 usage() {
   cat >&2 <<'USAGE'
 usage: cc-claim [--force] <task_id> [--dispatch-* VALUE ...]
-       cc-claim [--force] [--dispatch-* VALUE ...] <task_id>
+       cc-claim [--force] [--dispatch-* VALUE ...] -- <task_id>
        cc-claim --recover-claim-publications [<task_id>]
 
 Omit dispatch flags in default mode for a manual self-witnessed binding.
+Every --dispatch-* option requires one VALUE from the dispatcher receipt.
 USAGE
+}
+require_option_value() {
+  local flag="$1"
+  local value="${2:-}"
+  if [[ -z "$value" || "$value" == --* ]]; then
+    echo "cc-claim: missing value for $flag. Next action: rerun with '$flag VALUE' from the dispatcher receipt, or omit all dispatch flags for a manual self-witnessed binding." >&2
+    usage
+    exit 1
+  fi
 }
 if [[ "${HAPAX_GATE0B_CLAIM_PUBLICATION_OFF:-}" == "1" ]]; then
   canon_enforced="0"
@@ -62,13 +72,14 @@ while [[ $# -gt 0 ]]; do
   case "$1" in
     --force) force=true; shift ;;
     --recover-claim-publications) recover_claim_publications_only=true; shift ;;
-    --dispatch-message-id) dispatch_message_id="${2:-}"; shift 2 ;;
-    --dispatch-binding-hash) dispatch_binding_hash="${2:-}"; shift 2 ;;
-    --dispatch-platform) dispatch_platform="${2:-}"; shift 2 ;;
-    --dispatch-mode) dispatch_mode="${2:-}"; shift 2 ;;
-    --dispatch-profile) dispatch_profile="${2:-}"; shift 2 ;;
-    --dispatch-authority-case) dispatch_authority_case="${2:-}"; shift 2 ;;
-    --dispatch-idempotency-key) dispatch_idempotency_key="${2:-}"; shift 2 ;;
+    --dispatch-message-id) require_option_value "$1" "${2:-}"; dispatch_message_id="$2"; shift 2 ;;
+    --dispatch-binding-hash) require_option_value "$1" "${2:-}"; dispatch_binding_hash="$2"; shift 2 ;;
+    --dispatch-platform) require_option_value "$1" "${2:-}"; dispatch_platform="$2"; shift 2 ;;
+    --dispatch-mode) require_option_value "$1" "${2:-}"; dispatch_mode="$2"; shift 2 ;;
+    --dispatch-profile) require_option_value "$1" "${2:-}"; dispatch_profile="$2"; shift 2 ;;
+    --dispatch-authority-case) require_option_value "$1" "${2:-}"; dispatch_authority_case="$2"; shift 2 ;;
+    --dispatch-idempotency-key) require_option_value "$1" "${2:-}"; dispatch_idempotency_key="$2"; shift 2 ;;
+    --) shift; task_id="${1:-}"; shift || true ;;
     -*) echo "cc-claim: unknown flag '$1'. Next action: check the usage below and rerun with only supported cc-claim options." >&2; usage; exit 1 ;;
     *) task_id="$1"; shift ;;
   esac

@@ -60,26 +60,37 @@ Check both legacy role-keyed and governed session-keyed cache files:
 ```bash
 set -euo pipefail
 shopt -s nullglob
-task_note="$HOME/Documents/Personal/20-projects/hapax-cc-tasks/active/<task-id>.md"
+task_id='<task-id>'
+lane="${HAPAX_AGENT_ROLE:-${CODEX_ROLE:-${CLAUDE_ROLE:-<lane>}}}"
+vault_active="$HOME/Documents/Personal/20-projects/hapax-cc-tasks/active"
+task_notes=()
+test -f "$vault_active/$task_id.md" && task_notes+=("$vault_active/$task_id.md")
+for candidate in "$vault_active/$task_id-"*.md; do
+  task_notes+=("$candidate")
+done
+test "${#task_notes[@]}" -gt 0
+task_note="${task_notes[0]}"
 matches=()
-for claim_file in "$HOME"/.cache/hapax/cc-active-task-<lane>*; do
+for claim_file in "$HOME"/.cache/hapax/cc-active-task-"$lane"*; do
   observed_task="$(head -n1 "$claim_file")"
-  test "$observed_task" = "<task-id>" && printf '%s\n' "$claim_file"
-  test "$observed_task" = "<task-id>" && matches+=("$claim_file")
+  test "$observed_task" = "$task_id" && printf '%s\n' "$claim_file"
+  test "$observed_task" = "$task_id" && matches+=("$claim_file")
 done
 test "${#matches[@]}" -gt 0
 test -f "$task_note"
 rg -q "^status: claimed$" "$task_note"
-rg -q "^assigned_to: <lane>$" "$task_note"
+rg -q "^assigned_to: $lane$" "$task_note"
+relay_files=("$HOME"/.cache/hapax/relay/*.yaml)
 rg -q "HAPAX_GATE0B_CLAIM_PUBLICATION_OFF=1|operator-authorized emergency fallback|using legacy claim writer" \
-  "$task_note" "$HOME/.cache/hapax/relay"/*.yaml
+  "$task_note" "${relay_files[@]}"
 ```
 
-Expected result: at least one exact `cc-active-task-<lane>*` path is printed,
-the task note contains `status: claimed` and `assigned_to: <lane>`, and the
-operator log or relay records why the non-admitted fallback was used. If any
-command exits nonzero, the fallback did not produce a complete legacy claim or
-the operator reason is missing.
+Expected result: at least one exact `cc-active-task-$lane*` path is printed,
+the resolved task note (`active/<task-id>.md` or `active/<task-id>-*.md`)
+contains `status: claimed` and `assigned_to: $lane`, and the operator log or
+relay records why the non-admitted fallback was used. If any command exits
+nonzero, the fallback did not produce a complete legacy claim or the operator
+reason is missing.
 
 Record why the fallback was used in the task session log or relay status. The
 verification proves only a legacy claim write; it is not admitted-publication
