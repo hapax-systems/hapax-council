@@ -1049,6 +1049,20 @@ def test_installer_fails_closed_when_canonical_audit_group_is_missing(
         ("HAPAX_APCUPSD_TARGET_UID", lambda _root: str(os.geteuid())),
         ("HAPAX_APCUPSD_TARGET_GID", lambda _root: str(os.getegid())),
         ("HAPAX_APCUPSD_TARGET_HOME", lambda root: root / "target-home"),
+        ("HAPAX_APCUPSD_DEST", lambda root: root / "apcupsd"),
+        ("HAPAX_APCUPSD_AUDIT_DIR", lambda root: root / "audit"),
+        ("HAPAX_APCUPSD_AUDIT_GROUP", lambda _root: "hapax"),
+        ("HAPAX_UPS_AUDIT_LOG", lambda root: root / "audit.jsonl"),
+        ("HAPAX_UPS_AUDIT_LOG_OWNER_UID", lambda _root: str(os.geteuid())),
+        ("HAPAX_UPS_AUDIT_LOG_OWNER_GID", lambda _root: str(os.getegid())),
+        ("HAPAX_APCUPSD_LOGROTATE_DEST", lambda root: root / "logrotate"),
+        ("HAPAX_UPOWER_CONF_DEST", lambda root: root / "upower"),
+        ("HAPAX_APCUPSD_SYSTEMCTL", lambda _root: "/usr/bin/systemctl"),
+        ("HAPAX_APCUPSD_BUSCTL", lambda _root: "/usr/bin/busctl"),
+        ("HAPAX_APCUPSD_APCACCESS", lambda _root: "/usr/bin/apcaccess"),
+        ("HAPAX_APCUPSD_GETENT", lambda _root: "/usr/bin/getent"),
+        ("HAPAX_APCUPSD_INSTALL_SUDO", lambda _root: ""),
+        ("HAPAX_APCUPSD_INSTALL_TEST_ACTUAL_UID", lambda _root: "0"),
     ),
 )
 def test_apcupsd_real_install_rejects_caller_selected_state_or_identity(
@@ -1064,6 +1078,8 @@ def test_apcupsd_real_install_rejects_caller_selected_state_or_identity(
         if not key.startswith("HAPAX_ROOT_REQUIRED_")
         and not key.startswith("HAPAX_POST_MERGE_")
         and not key.startswith("HAPAX_APCUPSD_")
+        and not key.startswith("HAPAX_UPS_")
+        and not key.startswith("HAPAX_UPOWER_")
     }
     env["HOME"] = pwd.getpwuid(os.geteuid()).pw_dir
     value = value_factory(tmp_path)
@@ -1093,6 +1109,8 @@ def test_apcupsd_real_install_rejects_home_spoofing(
         if not key.startswith("HAPAX_ROOT_REQUIRED_")
         and not key.startswith("HAPAX_POST_MERGE_")
         and not key.startswith("HAPAX_APCUPSD_")
+        and not key.startswith("HAPAX_UPS_")
+        and not key.startswith("HAPAX_UPOWER_")
     }
     env["HOME"] = str(tmp_path / "spoofed-home")
 
