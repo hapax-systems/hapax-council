@@ -696,6 +696,60 @@ installed_unit_value() {
         "$INSTALLED_SOURCE_ROOT/$rel" 2>/dev/null || true
 }
 
+expand_expected_systemd_exec_specifiers() {
+    local literal="$1" uid passwd_record
+    if ! uid="$(/usr/bin/id -u)" \
+        || ! passwd_record="$("$GETENT" passwd "$uid")" \
+        || [[ "$passwd_record" == *$'\n'* ]]; then
+        echo "root-required audit cannot resolve canonical account data for systemd specifier expansion" >&2
+        return 1
+    fi
+    /usr/bin/python3 -I -S - "$literal" "$passwd_record" "$uid" <<'PY'
+from __future__ import annotations
+
+import os
+import sys
+
+literal, passwd_record, uid_text = sys.argv[1:]
+parts = passwd_record.split(":")
+try:
+    uid = int(uid_text)
+except ValueError:
+    raise SystemExit(1)
+if (
+    len(parts) != 7
+    or parts[2] != uid_text
+    or uid < 0
+    or not parts[5].startswith("/")
+    or os.path.normpath(parts[5]) != parts[5]
+):
+    raise SystemExit(1)
+home = parts[5]
+runtime = f"/run/user/{uid}"
+
+expanded: list[str] = []
+position = 0
+while position < len(literal):
+    if literal[position] != "%":
+        expanded.append(literal[position])
+        position += 1
+        continue
+    if position + 1 >= len(literal):
+        raise SystemExit(1)
+    specifier = literal[position + 1]
+    if specifier == "%":
+        expanded.append("%")
+    elif specifier == "h":
+        expanded.append(home)
+    elif specifier == "t":
+        expanded.append(runtime)
+    else:
+        raise SystemExit(1)
+    position += 2
+print("".join(expanded))
+PY
+}
+
 loaded_unit_property() {
     local manager="$1" unit="$2" property="$3"
     if [ "$manager" = "user" ]; then
@@ -743,10 +797,18 @@ PY
 
 audit_effective_service_unit() {
     local manager="$1" unit="$2" rel="$3" expected_fragment="$4"
-    local expected_exec expected_failure expected_user actual_fragment actual_dropins
+    local expected_exec expected_exec_literal expected_failure expected_user actual_fragment actual_dropins
     local expected_path actual_exec actual_path actual_argv actual_failure actual_user
     local actual_need_reload argv_count
-    expected_exec="$(installed_unit_value "$rel" ExecStart)"
+    expected_exec_literal="$(installed_unit_value "$rel" ExecStart)"
+    if [ -z "$expected_exec_literal" ] \
+        || ! expected_exec="$(
+            expand_expected_systemd_exec_specifiers "$expected_exec_literal"
+        )"; then
+        echo "root-required effective $unit cannot derive its canonical expanded ExecStart" >&2
+        echo "  next action: $OOM_REPAIR_ACTION" >&2
+        return 1
+    fi
     expected_failure="$(installed_unit_value "$rel" OnFailure)"
     expected_failure="${expected_failure//%n/$unit}"
     expected_user="$(installed_unit_value "$rel" User)"
@@ -757,7 +819,7 @@ audit_effective_service_unit() {
     actual_exec="$(loaded_unit_property "$manager" "$unit" ExecStart)" || actual_exec=""
     actual_failure="$(loaded_unit_property "$manager" "$unit" OnFailure)" || actual_failure="query-error"
     actual_user="$(loaded_unit_property "$manager" "$unit" User)" || actual_user="query-error"
-    if [ -z "$expected_exec" ] || [ "$actual_fragment" != "$expected_fragment" ] \
+    if [ "$actual_fragment" != "$expected_fragment" ] \
         || [ -n "$actual_dropins" ] || [ "$actual_need_reload" != "no" ]; then
         echo "root-required effective $unit unit-source drift: FragmentPath=${actual_fragment:-unavailable} DropInPaths=${actual_dropins:-none} NeedDaemonReload=${actual_need_reload:-unavailable} expected FragmentPath=$expected_fragment, no drop-ins, and NeedDaemonReload=no" >&2
         echo "  next action: $OOM_REPAIR_ACTION" >&2

@@ -19,17 +19,20 @@ ones. This test pins:
 
 from __future__ import annotations
 
+import fcntl
 import hashlib
 import json
 import os
 import subprocess
 import textwrap
+import time
 from pathlib import Path
 
 import pytest
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
 INSTALL_SCRIPT = REPO_ROOT / "systemd" / "scripts" / "install-units.sh"
+POST_MERGE_DEPLOY = REPO_ROOT / "scripts" / "hapax-post-merge-deploy"
 LOCAL_JUDGE_UNIT = REPO_ROOT / "systemd" / "units" / "hapax-local-judge.service"
 
 F53FED723_LOCAL_JUDGE_UNIT = """[Unit]
@@ -126,6 +129,23 @@ LOCAL_JUDGE_READONLY_PATHS = [
     "/proc/sys",
     "/proc/sysrq-trigger",
 ]
+LOCAL_JUDGE_BRIDGE_ENDPOINT = {
+    "IPAMConfig": None,
+    "Links": None,
+    "Aliases": None,
+    "MacAddress": "02:42:ac:11:00:02",
+    "DriverOpts": None,
+    "GwPriority": 0,
+    "NetworkID": "b" * 64,
+    "EndpointID": "c" * 64,
+    "Gateway": "172.17.0.1",
+    "IPAddress": "172.17.0.2",
+    "IPPrefixLen": 16,
+    "IPv6Gateway": "",
+    "GlobalIPv6Address": "",
+    "GlobalIPv6PrefixLen": 0,
+    "DNSNames": None,
+}
 
 
 def _json_record(*values: object) -> str:
@@ -151,6 +171,7 @@ def _historical_local_judge_inspect_record(
     profile: str = "mutable-uncapped-home",
     config_overrides: dict[str, object] | None = None,
     host_overrides: dict[str, object] | None = None,
+    network_overrides: dict[str, object] | None = None,
     top_overrides: dict[str, object] | None = None,
 ) -> str:
     profiles = {
@@ -262,6 +283,8 @@ def _historical_local_judge_inspect_record(
         "Source": source,
         "Type": "bind",
     }
+    bridge_endpoint = json.loads(json.dumps(LOCAL_JUDGE_BRIDGE_ENDPOINT))
+    bridge_endpoint.update(network_overrides or {})
     top = {
         "id": container_id,
         "name": "/hapax-local-judge",
@@ -272,7 +295,7 @@ def _historical_local_judge_inspect_record(
         "config": config,
         "host": host,
         "mounts": [mount],
-        "networks": {"bridge": {}},
+        "networks": {"bridge": bridge_endpoint},
         "state": {"Status": "running"},
     }
     top.update(top_overrides or {})
@@ -323,6 +346,24 @@ esac
     return systemctl
 
 
+def _basic_installer_env(tmp_path: Path) -> dict[str, str]:
+    bin_dir = tmp_path / "bin"
+    bin_dir.mkdir(exist_ok=True)
+    for command in ("systemctl", "uv"):
+        executable = bin_dir / command
+        executable.write_text("#!/usr/bin/env bash\nexit 0\n", encoding="utf-8")
+        executable.chmod(0o755)
+    return {
+        **os.environ,
+        "ALLOW_NONSTANDARD_REPO": "1",
+        "HOME": str(tmp_path / "home"),
+        "PATH": f"{bin_dir}:{os.environ['PATH']}",
+        "HAPAX_INSTALL_UNITS_RETIRE_DOCKER": str(_empty_retirement_docker(tmp_path)),
+        "HAPAX_INSTALL_UNITS_RETIRE_SYSTEMCTL": str(_retired_manager_systemctl(tmp_path)),
+        "SKIP_TIMER_ENABLE": "1",
+    }
+
+
 class TestInstallUnitsScriptExists:
     def test_script_present(self) -> None:
         assert INSTALL_SCRIPT.is_file(), f"install-units.sh missing at {INSTALL_SCRIPT}"
@@ -359,6 +400,199 @@ class TestPrimaryWorktreeGuard:
         assert "ALLOW_NONSTANDARD_REPO" in body, (
             "must expose an override env var for intentional non-primary runs"
         )
+
+
+class TestSharedInstallLock:
+    def test_canonical_lock_is_acquired_before_user_unit_mutation(self) -> None:
+        body = INSTALL_SCRIPT.read_text(encoding="utf-8")
+        deploy = POST_MERGE_DEPLOY.read_text(encoding="utf-8")
+        assert (
+            'ROOT_REQUIRED_LOCK_FILE="${HAPAX_ROOT_REQUIRED_LOCK_FILE:-'
+            '$HOME/.local/state/hapax/root-required/.lock}"'
+        ) in body
+        assert (
+            'ROOT_REQUIRED_STATE_ROOT="${HAPAX_ROOT_REQUIRED_STATE_ROOT:-'
+            '$HOME/.local/state/hapax/root-required}"'
+        ) in deploy
+        assert (
+            'ROOT_REQUIRED_LOCK_FILE="${HAPAX_ROOT_REQUIRED_LOCK_FILE:-'
+            '$ROOT_REQUIRED_STATE_ROOT/.lock}"'
+        ) in deploy
+        assert '\nreexec_with_safe_root_required_lock\n\nmkdir -p "$DEST_DIR"' in body
+        assert "O_CLOEXEC | os.O_CREAT | os.O_NOFOLLOW | os.O_RDWR" in body
+
+    def test_default_lock_is_created_private(self, tmp_path: Path) -> None:
+        env = _basic_installer_env(tmp_path)
+
+        result = subprocess.run(
+            ["bash", str(INSTALL_SCRIPT)],
+            check=False,
+            capture_output=True,
+            text=True,
+            env=env,
+            timeout=30,
+        )
+
+        assert result.returncode == 0, result.stderr
+        lock = Path(env["HOME"]) / ".local/state/hapax/root-required/.lock"
+        assert lock.is_file() and not lock.is_symlink()
+        assert lock.stat().st_mode & 0o777 == 0o600
+        assert lock.stat().st_nlink == 1
+
+    @pytest.mark.parametrize("unsafe_kind", ("symlink", "hardlink", "writable", "directory"))
+    def test_unsafe_lock_is_refused_before_user_mutation(
+        self, tmp_path: Path, unsafe_kind: str
+    ) -> None:
+        env = _basic_installer_env(tmp_path)
+        lock = tmp_path / "shared.lock"
+        if unsafe_kind == "symlink":
+            target = tmp_path / "lock-target"
+            target.write_text("", encoding="utf-8")
+            target.chmod(0o600)
+            lock.symlink_to(target)
+        elif unsafe_kind == "hardlink":
+            target = tmp_path / "lock-target"
+            target.write_text("", encoding="utf-8")
+            target.chmod(0o600)
+            os.link(target, lock)
+        elif unsafe_kind == "writable":
+            lock.write_text("", encoding="utf-8")
+            lock.chmod(0o666)
+        else:
+            lock.mkdir()
+        env["HAPAX_ROOT_REQUIRED_LOCK_FILE"] = str(lock)
+
+        result = subprocess.run(
+            ["bash", str(INSTALL_SCRIPT)],
+            check=False,
+            capture_output=True,
+            text=True,
+            env=env,
+            timeout=10,
+        )
+
+        assert result.returncode != 0
+        assert "refused unsafe shared install lock" in result.stderr
+        assert not (Path(env["HOME"]) / ".config/systemd/user").exists()
+
+    def test_inherited_descriptor_must_match_lock_path(self, tmp_path: Path) -> None:
+        env = _basic_installer_env(tmp_path)
+        lock = tmp_path / "shared.lock"
+        other = tmp_path / "other.lock"
+        lock.write_text("", encoding="utf-8")
+        other.write_text("", encoding="utf-8")
+        lock.chmod(0o600)
+        other.chmod(0o600)
+        fd = os.open(other, os.O_RDWR)
+        try:
+            env["HAPAX_ROOT_REQUIRED_LOCK_FILE"] = str(lock)
+            env["HAPAX_ROOT_REQUIRED_LOCK_FD"] = str(fd)
+            result = subprocess.run(
+                ["bash", str(INSTALL_SCRIPT)],
+                check=False,
+                capture_output=True,
+                text=True,
+                env=env,
+                pass_fds=(fd,),
+                timeout=10,
+            )
+        finally:
+            os.close(fd)
+
+        assert result.returncode != 0
+        assert "refused invalid inherited shared install lock" in result.stderr
+        assert not (Path(env["HOME"]) / ".config/systemd/user").exists()
+
+    def test_inherited_owner_lock_does_not_self_deadlock(self, tmp_path: Path) -> None:
+        env = _basic_installer_env(tmp_path)
+        lock = tmp_path / "shared.lock"
+        lock.write_text("", encoding="utf-8")
+        lock.chmod(0o600)
+        fd = os.open(lock, os.O_RDWR)
+        try:
+            fcntl.flock(fd, fcntl.LOCK_EX)
+            env["HAPAX_ROOT_REQUIRED_LOCK_FILE"] = str(lock)
+            env["HAPAX_ROOT_REQUIRED_LOCK_FD"] = str(fd)
+            result = subprocess.run(
+                ["bash", str(INSTALL_SCRIPT)],
+                check=False,
+                capture_output=True,
+                text=True,
+                env=env,
+                pass_fds=(fd,),
+                timeout=30,
+            )
+        finally:
+            os.close(fd)
+
+        assert result.returncode == 0, result.stderr
+
+    def test_two_installers_serialize_on_override_lock(self, tmp_path: Path) -> None:
+        env = _basic_installer_env(tmp_path)
+        events = tmp_path / "lock-events"
+        started = tmp_path / "first-started"
+        release = tmp_path / "release-first"
+        owner = tmp_path / "first-owner"
+        retire_systemctl = tmp_path / "blocking-retire-systemctl"
+        retire_systemctl.write_text(
+            textwrap.dedent(
+                f"""\
+                #!/usr/bin/env bash
+                printf 'entered %s\n' "$$" >> "{events}"
+                if mkdir "{owner}" 2>/dev/null; then
+                    touch "{started}"
+                    while [ ! -e "{release}" ]; do sleep 0.02; done
+                fi
+                case "$*" in
+                  *" show hapax-local-judge.service "*)
+                    printf 'LoadState=masked\nUnitFileState=masked\nActiveState=inactive\nSubState=dead\nMainPID=0\nControlPID=0\n'
+                    ;;
+                esac
+                exit 0
+                """
+            ),
+            encoding="utf-8",
+        )
+        retire_systemctl.chmod(0o755)
+        env["HAPAX_INSTALL_UNITS_RETIRE_SYSTEMCTL"] = str(retire_systemctl)
+        env["HAPAX_ROOT_REQUIRED_LOCK_FILE"] = str(tmp_path / "shared.lock")
+
+        first = subprocess.Popen(
+            ["bash", str(INSTALL_SCRIPT)],
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+            env=env,
+        )
+        second: subprocess.Popen[str] | None = None
+        try:
+            deadline = time.monotonic() + 10
+            while not started.exists() and first.poll() is None and time.monotonic() < deadline:
+                time.sleep(0.02)
+            assert started.exists(), "first installer did not reach the controlled mutation"
+            second = subprocess.Popen(
+                ["bash", str(INSTALL_SCRIPT)],
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                text=True,
+                env=env,
+            )
+            time.sleep(0.25)
+            assert len(events.read_text(encoding="utf-8").splitlines()) == 1
+            assert second.poll() is None
+            release.touch()
+            first_stdout, first_stderr = first.communicate(timeout=30)
+            second_stdout, second_stderr = second.communicate(timeout=30)
+        finally:
+            release.touch(exist_ok=True)
+            for process in (first, second):
+                if process is not None and process.poll() is None:
+                    process.kill()
+                    process.communicate()
+
+        assert first.returncode == 0, f"{first_stdout}\n{first_stderr}"
+        assert second.returncode == 0, f"{second_stdout}\n{second_stderr}"
+        assert len(events.read_text(encoding="utf-8").splitlines()) >= 4
 
 
 class TestTimerEnablementSweep:
@@ -1382,9 +1616,16 @@ class TestLocalJudgeRetirement:
         (
             ("top", "name", "/foreign"),
             ("top", "image", "sha256:" + "f" * 64),
+            ("top", "path", "/bin/sh"),
+            ("top", "args", ["-c", "id"]),
             ("config", "User", "1234"),
             ("config", "Env", ["PATH=/tmp", "UNATTESTED=1"]),
             ("config", "WorkingDir", "/tmp"),
+            ("config", "Healthcheck", None),
+            ("config", "OnBuild", ["RUN id"]),
+            ("config", "Shell", ["/bin/sh", "-c"]),
+            ("config", "ArgsEscaped", True),
+            ("config", "MacAddress", "02:42:ac:11:00:02"),
             ("config", "FutureRuntimeField", {"dangerous": True}),
             ("host", "ReadonlyRootfs", True),
             ("host", "SecurityOpt", ["seccomp=unconfined"]),
@@ -1429,9 +1670,144 @@ class TestLocalJudgeRetirement:
         assert not any(line.startswith("uv ") for line in lines)
 
     @pytest.mark.parametrize(
+        ("key", "value"),
+        (
+            ("Aliases", ["hapax-local-judge"]),
+            ("IPAMConfig", {"IPv4Address": "172.17.0.2"}),
+            ("DriverOpts", {}),
+            ("NetworkID", "B" * 64),
+            ("NetworkID", "0" * 64),
+            ("EndpointID", "c" * 63),
+            ("EndpointID", LOCAL_JUDGE_BRIDGE_ENDPOINT["NetworkID"]),
+            ("Gateway", "not-an-ip"),
+            ("Gateway", "10.0.0.1"),
+            ("Gateway", "127.0.0.1"),
+            ("IPAddress", "0.0.0.0"),
+            ("IPAddress", "10.0.0.2"),
+            ("IPPrefixLen", 0),
+            ("IPPrefixLen", 33),
+            ("IPPrefixLen", True),
+            ("MacAddress", "not-a-mac"),
+            ("MacAddress", "00:42:ac:11:00:02"),
+            ("MacAddress", "02:42:ac:11:00:03"),
+            ("GwPriority", False),
+            ("IPv6Gateway", "::1"),
+            ("DNSNames", []),
+            ("FutureEndpointField", "enabled"),
+        ),
+        ids=(
+            "alias",
+            "static-ipam",
+            "driver-options",
+            "uppercase-network-id",
+            "zero-network-id",
+            "short-endpoint-id",
+            "equal-network-and-endpoint-id",
+            "malformed-gateway",
+            "gateway-outside-network",
+            "loopback-gateway",
+            "unspecified-address",
+            "address-outside-network",
+            "zero-prefix",
+            "oversized-prefix",
+            "boolean-prefix",
+            "malformed-mac",
+            "global-mac",
+            "mac-address-mismatch",
+            "boolean-priority",
+            "ipv6-gateway",
+            "dns-names",
+            "extra-key",
+        ),
+    )
+    def test_unattested_bridge_endpoint_is_preserved(
+        self, tmp_path: Path, key: str, value: object
+    ) -> None:
+        container_id = "a" * 64
+        record = _historical_local_judge_inspect_record(
+            container_id,
+            tmp_path / "home",
+            network_overrides={key: value},
+        )
+        harness = _prepare_local_judge_retirement(
+            tmp_path,
+            container_id=container_id,
+            container_record=record,
+        )
+
+        result = _run_local_judge_retirement(harness)
+
+        assert result.returncode == 2
+        assert "complete historical local-judge profile" in result.stderr
+        assert Path(harness["name_state"]).read_text(encoding="utf-8").strip() == container_id
+        assert not any(f" rm -f {container_id}" in line for line in _event_lines(harness))
+
+    def test_extra_bridge_network_is_preserved(self, tmp_path: Path) -> None:
+        container_id = "a" * 64
+        networks = {
+            "bridge": json.loads(json.dumps(LOCAL_JUDGE_BRIDGE_ENDPOINT)),
+            "hostile": json.loads(json.dumps(LOCAL_JUDGE_BRIDGE_ENDPOINT)),
+        }
+        record = _historical_local_judge_inspect_record(
+            container_id,
+            tmp_path / "home",
+            top_overrides={"networks": networks},
+        )
+        harness = _prepare_local_judge_retirement(
+            tmp_path,
+            container_id=container_id,
+            container_record=record,
+        )
+
+        result = _run_local_judge_retirement(harness)
+
+        assert result.returncode == 2
+        assert Path(harness["name_state"]).read_text(encoding="utf-8").strip() == container_id
+        assert not any(f" rm -f {container_id}" in line for line in _event_lines(harness))
+
+    def test_missing_bridge_endpoint_key_is_preserved(self, tmp_path: Path) -> None:
+        container_id = "a" * 64
+        fields = [
+            json.loads(value)
+            for value in _historical_local_judge_inspect_record(
+                container_id, tmp_path / "home"
+            ).split("\t")
+        ]
+        fields[9]["bridge"].pop("EndpointID")
+        harness = _prepare_local_judge_retirement(
+            tmp_path,
+            container_id=container_id,
+            container_record=_json_record(*fields),
+        )
+
+        result = _run_local_judge_retirement(harness)
+
+        assert result.returncode == 2
+        assert Path(harness["name_state"]).read_text(encoding="utf-8").strip() == container_id
+        assert not any(f" rm -f {container_id}" in line for line in _event_lines(harness))
+
+    @pytest.mark.parametrize(
         ("record_index", "field"),
-        ((6, "User"), (7, "OomScoreAdj"), (7, "LogConfig")),
-        ids=("missing-config-user", "missing-host-oom-score", "missing-host-log-config"),
+        (
+            (6, "User"),
+            (6, "Healthcheck"),
+            (6, "OnBuild"),
+            (6, "Shell"),
+            (6, "ArgsEscaped"),
+            (6, "MacAddress"),
+            (7, "OomScoreAdj"),
+            (7, "LogConfig"),
+        ),
+        ids=(
+            "missing-config-user",
+            "missing-config-healthcheck",
+            "missing-config-onbuild",
+            "missing-config-shell",
+            "missing-config-args-escaped",
+            "missing-config-mac-address",
+            "missing-host-oom-score",
+            "missing-host-log-config",
+        ),
     )
     def test_incomplete_inspect_record_is_preserved(
         self, tmp_path: Path, record_index: int, field: str

@@ -202,6 +202,10 @@ def _valid_inspect_shell(
     network_count: str = "1",
     bridge_network: str = "B",
     host_config_overrides: dict[str, object] | None = None,
+    config_overrides: dict[str, object] | None = None,
+    config_omissions: tuple[str, ...] = (),
+    endpoint_overrides: dict[str, object] | None = None,
+    network_overrides: dict[str, object] | None = None,
 ) -> str:
     host_config = _valid_host_config(
         container_name,
@@ -248,8 +252,76 @@ def _valid_inspect_shell(
         "org.hapax.github-mcp.lease-start": "HAPAXLABELSTART",
         "org.hapax.github-mcp.lease-boot": "HAPAXLABELBOOT",
     }
+    config_probes: dict[str, object] = {
+        "Healthcheck": None,
+        "Shell": None,
+        "OnBuild": None,
+        "ArgsEscaped": False,
+        "MacAddress": "",
+    }
+    config: dict[str, object] = {
+        "Hostname": container_id[:12],
+        "Domainname": "",
+        "User": user,
+        "AttachStdin": json.loads(attach_stdin),
+        "AttachStdout": json.loads(attach_stdout),
+        "AttachStderr": json.loads(attach_stderr),
+        "ExposedPorts": json.loads(exposed_ports),
+        "Tty": json.loads(tty),
+        "OpenStdin": json.loads(open_stdin),
+        "StdinOnce": json.loads(stdin_once),
+        "Env": [
+            "PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin",
+            "SSL_CERT_FILE=/etc/ssl/certs/ca-certificates.crt",
+            "GITHUB_PERSONAL_ACCESS_TOKEN=test-token",
+        ],
+        "Cmd": json.loads(
+            '["stdio","--log-file","/tmp/github-mcp.log","--tools=pull_request_read"]'
+        ),
+        "Image": GITHUB_MCP_IMAGE,
+        "Volumes": None,
+        "WorkingDir": working_dir,
+        "Entrypoint": ["/server/github-mcp-server"],
+        "NetworkDisabled": json.loads(network_disabled),
+        "Labels": labels,
+        "StopSignal": stop_signal,
+        "StopTimeout": 1,
+    }
+    for key, value in (config_overrides or {}).items():
+        if key in config_probes:
+            config_probes[key] = value
+        else:
+            config[key] = value
+    for key in config_omissions:
+        config.pop(key, None)
+    endpoint: dict[str, object] = {
+        "IPAMConfig": None,
+        "Links": None,
+        "Aliases": None,
+        "DriverOpts": None,
+        "GwPriority": 0,
+        "NetworkID": "c" * 64,
+        "EndpointID": "d" * 64,
+        "Gateway": "172.17.0.1",
+        "IPAddress": "172.17.0.2",
+        "MacAddress": "02:42:ac:11:00:02",
+        "IPPrefixLen": 16,
+        "IPv6Gateway": "",
+        "GlobalIPv6Address": "",
+        "GlobalIPv6PrefixLen": 0,
+        "DNSNames": None,
+    }
+    endpoint.update(endpoint_overrides or {})
+    networks: dict[str, object] = {"bridge": endpoint}
+    networks.update(network_overrides or {})
     host_config_shell = shlex.quote(json.dumps(host_config, separators=(",", ":")))
     labels_shell = shlex.quote(json.dumps(labels, separators=(",", ":")))
+    config_shell = shlex.quote(json.dumps(config, separators=(",", ":")))
+    networks_shell = shlex.quote(json.dumps(networks, separators=(",", ":")))
+    added_config_shell = " ".join(
+        shlex.quote(json.dumps(config_probes[field], separators=(",", ":")))
+        for field in ("Healthcheck", "Shell", "OnBuild", "ArgsEscaped", "MacAddress")
+    )
     return f'''launch_id="$(cat "{label_dir / "launch"}")"
     launch_suffix="${{launch_id#*-}}"
     host_config={host_config_shell}
@@ -260,6 +332,13 @@ def _valid_inspect_shell(
     labels_json="${{labels_json/HAPAXLABELPID/$(cat "{label_dir / "pid"}")}}"
     labels_json="${{labels_json/HAPAXLABELSTART/$(cat "{label_dir / "start"}")}}"
     labels_json="${{labels_json/HAPAXLABELBOOT/$(cat "{label_dir / "boot"}")}}"
+    config_json={config_shell}
+    config_json="${{config_json/HAPAXLABELUID/$(cat "{label_dir / "uid"}")}}"
+    config_json="${{config_json/HAPAXLABELLAUNCH/$launch_id}}"
+    config_json="${{config_json/HAPAXLABELPID/$(cat "{label_dir / "pid"}")}}"
+    config_json="${{config_json/HAPAXLABELSTART/$(cat "{label_dir / "start"}")}}"
+    config_json="${{config_json/HAPAXLABELBOOT/$(cat "{label_dir / "boot"}")}}"
+    networks_json={networks_shell}
     printf '%s\\t' \\
       '{container_id}' "/$(cat "{container_name}")" \\
       "$(cat "{label_dir / "app"}")" "$(cat "{label_dir / "uid"}")" \\
@@ -281,8 +360,8 @@ def _valid_inspect_shell(
       '{bridge_network}' '{state}' '1' '"{container_id[:12]}"' '""' \\
       '["/server/github-mcp-server"]' \\
       '["stdio","--log-file","/tmp/github-mcp.log","--tools=pull_request_read"]' \\
-      'null' '{{"8082/tcp":null}}' "$labels_json"
-    printf '%s\\n' "$host_config" '''
+      'null' '{{"8082/tcp":null}}' {added_config_shell} "$labels_json"
+    printf '%s\\t%s\\t%s\\n' "$host_config" "$config_json" "$networks_json" '''
 
 
 def test_github_mcp_script_is_valid_bash() -> None:
@@ -335,9 +414,16 @@ def test_github_mcp_signature_covers_host_escape_surfaces() -> None:
         ".Config.Domainname",
         ".Config.Entrypoint",
         ".Config.Cmd",
+        ".Config.Healthcheck",
+        ".Config.Shell",
+        ".Config.OnBuild",
+        ".Config.ArgsEscaped",
+        ".Config.MacAddress",
         ".Config.Volumes",
         ".Config.ExposedPorts",
         ".NetworkSettings.Ports",
+        "{{json .Config}}",
+        "{{json .NetworkSettings.Networks}}",
         "{{json .HostConfig}}",
         ".HostConfig.Binds",
         ".Mounts",
@@ -397,6 +483,7 @@ def _stage_wrapper_with_docker(
     gh_bin: Path | None = None,
     timeout_bin: Path | None = None,
     head_bin: Path | None = None,
+    before_pid_assignment: str | None = None,
 ) -> Path:
     source = WRAPPER.read_text(encoding="utf-8")
     assert source.count("/usr/bin/docker") == 2
@@ -413,6 +500,13 @@ def _stage_wrapper_with_docker(
         'LOG_DIR="$HOME/.cache/hapax/mcp-logs"',
         f'LOG_DIR="{tmp_path / "mcp-logs"}"',
     )
+    if before_pid_assignment is not None:
+        boundary = '  2>>"$LOG_FILE" &\nACTIVE_DOCKER_PID=$!'
+        assert source.count(boundary) == 1
+        source = source.replace(
+            boundary,
+            f'  2>>"$LOG_FILE" &\n{before_pid_assignment}\nACTIVE_DOCKER_PID=$!',
+        )
     staged = tmp_path / "hapax-github-mcp"
     staged.write_text(source, encoding="utf-8")
     staged.chmod(0o755)
@@ -948,7 +1042,7 @@ case " $* " in
   *" ps -aq --no-trunc --filter label=org.hapax.github-mcp.app=stdio-v1 "*) : ;;
   *" ps -aq --no-trunc --filter name="*) cat "{state}" 2>/dev/null || true ;;
   *" inspect --format "*)
-    {_valid_inspect_shell(container_id, container_name, label_dir)}
+    {_valid_inspect_shell(container_id, container_name, label_dir, config_overrides={"FutureEmptyConfig": None})}
     ;;
   *" rm -f {container_id} "*) : > "{state}" ;;
   *" ps -aq --no-trunc --filter id={container_id} "*) cat "{state}" ;;
@@ -981,7 +1075,28 @@ esac
     assert "test-token" not in result.stderr
 
 
-@pytest.mark.parametrize("corruption", ("launch-label", "host-config"))
+@pytest.mark.parametrize(
+    "corruption",
+    (
+        "launch-label",
+        "host-config",
+        "healthcheck",
+        "shell",
+        "on-build",
+        "args-escaped",
+        "config-mac-address",
+        "empty-token",
+        "wrong-token-key",
+        "missing-config-volumes",
+        "unknown-config",
+        "aliases",
+        "static-ipam",
+        "unsafe-endpoint-mac",
+        "mismatched-endpoint-mac",
+        "unknown-empty-endpoint",
+        "unknown-endpoint",
+    ),
+)
 def test_github_mcp_never_removes_unproven_exact_name_candidate(
     tmp_path: Path, corruption: str
 ) -> None:
@@ -999,11 +1114,44 @@ def test_github_mcp_never_removes_unproven_exact_name_candidate(
         if corruption == "launch-label"
         else ":"
     )
+    config_corruptions = {
+        "healthcheck": {"Healthcheck": {"Test": ["CMD", "/bin/false"]}},
+        "shell": {"Shell": ["/bin/sh", "-c"]},
+        "on-build": {"OnBuild": ["RUN /bin/false"]},
+        "args-escaped": {"ArgsEscaped": True},
+        "config-mac-address": {"MacAddress": "02:42:ac:11:00:99"},
+        "empty-token": {
+            "Env": [
+                "PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin",
+                "SSL_CERT_FILE=/etc/ssl/certs/ca-certificates.crt",
+                "GITHUB_PERSONAL_ACCESS_TOKEN=",
+            ]
+        },
+        "wrong-token-key": {
+            "Env": [
+                "PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin",
+                "SSL_CERT_FILE=/etc/ssl/certs/ca-certificates.crt",
+                "GITHUB_TOKEN=test-token",
+            ]
+        },
+        "unknown-config": {"FutureExecutableSurface": ["/bin/false"]},
+    }
+    endpoint_corruptions = {
+        "aliases": {"Aliases": ["trusted-looking-alias"]},
+        "static-ipam": {"IPAMConfig": {"IPv4Address": "172.17.0.99"}},
+        "unsafe-endpoint-mac": {"MacAddress": "01:42:ac:11:00:02"},
+        "mismatched-endpoint-mac": {"MacAddress": "02:42:ac:11:00:03"},
+        "unknown-empty-endpoint": {"FutureEmptyEndpoint": None},
+        "unknown-endpoint": {"FutureRouteSurface": {"Enabled": True}},
+    }
     inspect_record = _valid_inspect_shell(
         container_id,
         container_name,
         label_dir,
         host_config_overrides={"CgroupParent": "/host"} if corruption == "host-config" else None,
+        config_overrides=config_corruptions.get(corruption),
+        config_omissions=("Volumes",) if corruption == "missing-config-volumes" else (),
+        endpoint_overrides=endpoint_corruptions.get(corruption),
     )
     fake_docker = bin_dir / "docker-client"
     fake_docker.write_text(
@@ -1284,6 +1432,88 @@ esac
 
     assert signal_sent.exists()
     assert result.returncode == 42, result.stderr
+    assert state.read_text(encoding="utf-8") == ""
+
+
+def test_github_mcp_forwards_signal_between_async_fork_and_pid_assignment(
+    tmp_path: Path,
+) -> None:
+    bin_dir = tmp_path / "bin"
+    bin_dir.mkdir()
+    state = tmp_path / "container-state"
+    ready = tmp_path / "child-ready"
+    signal_forwarded = tmp_path / "signal-forwarded"
+    child_pid = tmp_path / "child-pid"
+    container_name = tmp_path / "container-name"
+    label_dir = tmp_path / "labels"
+    label_dir.mkdir()
+    cid = "a" * 64
+    fake_docker = bin_dir / "docker-client"
+    fake_docker.write_text(
+        f"""#!/usr/bin/env bash
+set -euo pipefail
+case " $* " in
+  *" image inspect "*) printf '%s\n%s\n' '{GITHUB_MCP_LOCAL_IMAGE_ID}' '{GITHUB_MCP_IMAGE}' ;;
+  *" run "*)
+    cidfile=""
+    while [ "$#" -gt 0 ]; do
+      case "$1" in
+        --cidfile) cidfile="$2"; shift 2 ;;
+        --name) printf '%s' "$2" > "{container_name}"; shift 2 ;;
+        {_label_capture_case(label_dir)}
+        *) shift ;;
+      esac
+    done
+    printf '%s' '{cid}' > "$cidfile"
+    printf '%s' '{cid}' > "{state}"
+    printf '%s' "$$" > "{child_pid}"
+    trap 'printf TERM > "{signal_forwarded}"; exit 143' TERM
+    : > "{ready}"
+    while true; do sleep 1; done
+    ;;
+  *" ps -aq --no-trunc --filter label=org.hapax.github-mcp.app=stdio-v1 "*) : ;;
+  *" ps -aq --no-trunc --filter name=^/hapax-github-mcp- "*) : ;;
+  *" ps -aq --no-trunc --filter name="*) cat "{state}" 2>/dev/null || true ;;
+  *" ps -aq --no-trunc --filter id={cid} "*) cat "{state}" 2>/dev/null || true ;;
+  *" inspect --format "*) {_valid_inspect_shell(cid, container_name, label_dir)} ;;
+  *" rm -f {cid} "*) : > "{state}" ;;
+  *) exit 9 ;;
+esac
+""",
+        encoding="utf-8",
+    )
+    fake_docker.chmod(0o755)
+    staged = _stage_wrapper_with_docker(
+        tmp_path,
+        fake_docker,
+        before_pid_assignment=(
+            f'while [ ! -e "{ready}" ]; do /usr/bin/sleep 0.01; done\nkill -TERM "$BASHPID"'
+        ),
+    )
+    env = _base_env(tmp_path, bin_dir)
+    env["GITHUB_PERSONAL_ACCESS_TOKEN"] = "test-token"
+
+    process = subprocess.Popen(
+        [str(staged)],
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=True,
+        env=env,
+    )
+    try:
+        _stdout, stderr = process.communicate(timeout=5)
+    finally:
+        if process.poll() is None:
+            process.kill()
+            process.wait(timeout=5)
+        if child_pid.exists():
+            try:
+                os.kill(int(child_pid.read_text(encoding="ascii")), signal.SIGKILL)
+            except ProcessLookupError:
+                pass
+
+    assert process.returncode == 143, stderr
+    assert signal_forwarded.read_text(encoding="ascii") == "TERM"
     assert state.read_text(encoding="utf-8") == ""
 
 
