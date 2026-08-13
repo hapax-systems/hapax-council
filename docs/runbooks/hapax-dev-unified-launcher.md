@@ -62,12 +62,9 @@ uv run pytest tests/scripts/test_hapax_methodology_dispatch.py::test_dispatch_wo
   still correctly seen as busy.
   Claim-cache writers must also keep the matching
   `~/.cache/hapax/cc-claim-epoch-<name>` sidecar in step, including
-  session-keyed variants. Legacy/fallback writers write the epoch sidecar before
-  the claim cache. The admitted Gate-0B writer stages the task note plus
-  epoch/dispatch sidecars first, persists the content-addressed claim-publication
-  receipt, and only then activates each `cc-active-task-*` file. This keeps a
-  partially projected claim cache from authorizing source writes before the
-  receipt-bound publication exists.
+  session-keyed variants. The sidecar is written before the claim cache and
+  stores `<epoch> <task_id>` so terminal checks can age unassigned claim-stamp
+  drift without trusting claim-file mtime.
   Recheck a lane's sidecar contract with:
   `for f in ~/.cache/hapax/cc-active-task-<name>*; do k=${f##*/cc-active-task-}; printf '%s -> %s :: ' "$f" "$(head -n1 "$f")"; head -n1 ~/.cache/hapax/cc-claim-epoch-"$k"; done`.
   Emergency-only bypass: set `HAPAX_CLAIM_EPOCH_CHECK_BYPASS=1` only while

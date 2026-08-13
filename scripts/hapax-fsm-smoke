@@ -24,7 +24,7 @@ repo="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 
 run_smoke() (
   local smoke_mode="$1"
-  local sb task active claim_log old_home old_home_was_set
+  local sb task second_task active claim_log second_claim_log old_home old_home_was_set
   old_home="${HOME-}"
   old_home_was_set=0
   [[ -v HOME ]] && old_home_was_set=1
@@ -157,6 +157,43 @@ EOF
   step "close"
   timeout 30 uv run --no-sync bash scripts/cc-close "$task" --status done
   require_file "$sb/Documents/Personal/20-projects/hapax-cc-tasks/closed/$task.md"
+
+  if [[ "$smoke_mode" == "default" ]]; then
+    second_task="${task}-after-close"
+    cat > "$active/$second_task.md" <<EOF
+---
+type: cc-task
+task_id: $second_task
+title: "FSM smoke second probe"
+status: offered
+authority_case: CASE-TEST-001
+parent_spec: docs/specs/fsm-smoke.md
+stage: S6_IMPLEMENTATION
+claimable: true
+assigned_to: unassigned
+updated_at: 2026-01-01T00:00:00Z
+---
+# FSM smoke second probe
+
+Disposable task note for claim-after-close verification.
+EOF
+
+    step "claim after close"
+    second_claim_log="$sb/claim-${smoke_mode}-after-close.log"
+    if ! timeout 30 uv run --no-sync bash scripts/cc-claim "$second_task" >"$second_claim_log" 2>&1; then
+      cat "$second_claim_log"
+      exit 1
+    fi
+    cat "$second_claim_log"
+    require_grep "archived terminal dispatch-only claim residue" "$second_claim_log"
+    require_grep "admitted publication applied" "$second_claim_log"
+    require_grep "$second_task" "$sb/.cache/hapax/cc-active-task-alpha"
+    require_grep "status: claimed" "$active/$second_task.md"
+
+    step "close after-close claim"
+    timeout 30 uv run --no-sync bash scripts/cc-close "$second_task" --status done
+    require_file "$sb/Documents/Personal/20-projects/hapax-cc-tasks/closed/$second_task.md"
+  fi
 
   step "recovery governor"
   timeout 30 uv run --no-sync python -m shared.recovery_governor --permit "lane:smoke-${smoke_mode}"

@@ -58,7 +58,7 @@ require_option_value() {
 }
 if [[ "${HAPAX_GATE0B_CLAIM_PUBLICATION_OFF:-}" == "1" ]]; then
   canon_enforced="0"
-  echo "cc-claim: WARNING — HAPAX_GATE0B_CLAIM_PUBLICATION_OFF=1; using legacy claim writer. Next action: use only for an operator-authorized emergency fallback, verify the legacy claim/close result, then unset the killswitch and repair the admitted Gate-0B claim-publication path before normal work resumes." >&2
+  echo "cc-claim: WARNING - HAPAX_GATE0B_CLAIM_PUBLICATION_OFF=1; using legacy claim writer. Next action: use only for an operator-authorized emergency fallback, verify the legacy claim/close result, then unset the killswitch and repair the admitted Gate-0B claim-publication path before normal work resumes." >&2
 fi
 task_id=""
 dispatch_message_id="${HAPAX_CLAIM_DISPATCH_MESSAGE_ID:-}"
@@ -173,7 +173,7 @@ if [[ "$dispatch_present" -gt 0 && "$dispatch_missing" -gt 0 ]]; then
   exit 1
 fi
 if [[ "$canon_enforced" == "1" && "$force" == "true" ]]; then
-  echo "cc-claim: --force is retired under canon echo enforcement; release the prior claim through a governed transition. Next action: run cc-close on the current task if terminal, or ask the operator to perform a governed release of the stale claim before retrying." >&2
+  echo "cc-claim: --force is retired under canon enforcement; release the prior claim through a governed transition. Next action: run cc-close on the current task if terminal, or ask the operator to perform a governed release of the stale claim before retrying." >&2
   exit 2
 fi
 # Resolve identity from the SAME source of truth as the gate (agent-role.sh):
@@ -206,14 +206,14 @@ from shared.session_identity import is_claim_keyable_session_id
 sys.exit(0 if is_claim_keyable_session_id(sys.argv[1]) else 1)
 ' "$session_id" "$SCRIPT_DIR/.." 2>/dev/null; then
   if [[ "$canon_enforced" == "1" ]]; then
-    echo "cc-claim: canon echo enforcement requires a claim-keyable non-PID session id. Next action: relaunch the lane with a UUID-like HAPAX_SESSION_ID; pid-shaped session ids cannot own canonical claims." >&2
+    echo "cc-claim: canon enforcement requires a claim-keyable non-PID session id. Next action: relaunch the lane with a UUID-like HAPAX_SESSION_ID; pid-shaped session ids cannot own canonical claims." >&2
     exit 2
   fi
   echo "cc-claim: session id '$session_id' is not claim-keyable (pid-shaped or malformed) — using legacy role-keyed claim only" >&2
   session_id=""
 fi
 if [[ "$canon_enforced" == "1" && -z "$session_id" ]]; then
-  echo "cc-claim: canon echo enforcement requires a claim-keyable session id. Next action: relaunch through the governed session launcher so HAPAX_SESSION_ID is set, then rerun cc-claim." >&2
+  echo "cc-claim: canon enforcement requires a claim-keyable session id. Next action: relaunch through the governed session launcher so HAPAX_SESSION_ID is set, then rerun cc-claim." >&2
   exit 2
 fi
 if [[ -n "$session_id" ]]; then
@@ -355,6 +355,7 @@ if str(repo_root) not in sys.path:
 from shared.sdlc_lifecycle import (  # noqa: E402
     TASK_CLAIMABLE_STATUSES,
     TASK_RESUMABLE_STATUSES,
+    TASK_TERMINAL_STATUSES,
     blocked_reason_from_frontmatter,
     blocked_witness_from_frontmatter,
     frontmatter_from_text,
@@ -399,8 +400,138 @@ if canon_enforced:
     from shared.sdlc_task_store import (  # noqa: E402
         ClaimDispatchBinding,
         TaskStoreError,
+        claim_dispatch_binding_path,
+        load_claim_dispatch_binding,
         resolve_task_note,
     )
+
+    def _safe_lineage_component(value: str) -> str:
+        return re.sub(r"[^A-Za-z0-9._:-]+", "_", value).strip("._:-")[:160] or "unknown"
+
+    def _task_note_path_for_any_state(vault_root: Path, observed_task_id: str) -> Path | None:
+        for subdir in ("closed", "active"):
+            root = vault_root / subdir
+            exact = root / f"{observed_task_id}.md"
+            if exact.is_file():
+                return exact
+            for candidate in sorted(root.glob(f"{observed_task_id}-*.md")):
+                if candidate.is_file():
+                    return candidate
+        return None
+
+    def _task_status_for_any_state(vault_root: Path, observed_task_id: str) -> str:
+        task_path = _task_note_path_for_any_state(vault_root, observed_task_id)
+        if task_path is None:
+            return "missing"
+        return _frontmatter_scalar(task_path.read_text(encoding="utf-8"), "status") or "unknown"
+
+    def _archive_dispatch_only_claim_residue(
+        *,
+        vault_root: Path,
+        cache_dir: Path,
+        role: str,
+        session_id: str,
+        current_task_id: str,
+        observed_at: str,
+    ) -> None:
+        keys_to_check: set[str] = {role, f"{role}-{session_id}"}
+        role_dispatch = claim_dispatch_binding_path(cache_dir, role)
+        if role_dispatch.exists() and not (
+            (cache_dir / f"cc-active-task-{role}").exists()
+            or (cache_dir / f"cc-claim-epoch-{role}").exists()
+        ):
+            try:
+                role_binding = load_claim_dispatch_binding(role_dispatch)
+            except TaskStoreError:
+                role_binding = None
+            if role_binding is not None:
+                keys_to_check.add(f"{role}-{role_binding.session_id}")
+
+        dispatch_only: list[tuple[str, Path, ClaimDispatchBinding]] = []
+        for claim_key in sorted(keys_to_check):
+            dispatch_path = claim_dispatch_binding_path(cache_dir, claim_key)
+            claim_path = cache_dir / f"cc-active-task-{claim_key}"
+            epoch_path = cache_dir / f"cc-claim-epoch-{claim_key}"
+            if not dispatch_path.exists():
+                continue
+            if claim_path.exists() or epoch_path.exists():
+                continue
+            try:
+                binding = load_claim_dispatch_binding(dispatch_path)
+            except TaskStoreError as exc:
+                print(
+                    f"cc-claim: HOLD - {exc}. Next action: restore the matching "
+                    f"cc-active-task/cc-claim-epoch sidecars for {dispatch_path}, "
+                    "or archive this corrupt dispatch-only residue through the "
+                    "task lineage before retrying.",
+                    file=sys.stderr,
+                )
+                sys.exit(8)
+            if binding.task_id == current_task_id:
+                print(
+                    "cc-claim: HOLD - current task has dispatch-only claim residue "
+                    f"at {dispatch_path}. Next action: restore the matching "
+                    "cc-active-task and cc-claim-epoch sidecars for this admitted "
+                    "claim, or run admitted recovery before retrying.",
+                    file=sys.stderr,
+                )
+                sys.exit(8)
+            if binding.lane != role:
+                print(
+                    "cc-claim: HOLD - dispatch-only claim residue is bound to a "
+                    f"different lane at {dispatch_path}. Next action: preserve the "
+                    "sidecar and ask the owning lane/operator to reconcile its "
+                    "claim lineage before retrying.",
+                    file=sys.stderr,
+                )
+                sys.exit(8)
+            status = _task_status_for_any_state(vault_root, binding.task_id)
+            if status not in TASK_TERMINAL_STATUSES:
+                print(
+                    "cc-claim: HOLD - dispatch-only claim residue belongs to a "
+                    f"non-terminal or missing task (task_id={binding.task_id}, "
+                    f"status={status}). Next action: restore the matching "
+                    "cc-active-task/cc-claim-epoch sidecars or close/release that "
+                    "task through the governed lifecycle before retrying.",
+                    file=sys.stderr,
+                )
+                sys.exit(8)
+            dispatch_only.append((claim_key, dispatch_path, binding))
+
+        if not dispatch_only:
+            return
+        lineage_root = vault_root / "_lineage"
+        archived: list[str] = []
+        for claim_key, dispatch_path, binding in dispatch_only:
+            lineage_dir = (
+                lineage_root
+                / _safe_lineage_component(binding.task_id)
+                / (
+                    "closed-claim-dispatch-residue-"
+                    f"{_safe_lineage_component(observed_at)}-"
+                    f"{_safe_lineage_component(claim_key)}"
+                )
+            )
+            lineage_dir.mkdir(parents=True, exist_ok=False)
+            destination = lineage_dir / dispatch_path.name
+            dispatch_path.replace(destination)
+            (lineage_dir / "README.md").write_text(
+                "Archived dispatch-only claim residue before a fresh admitted claim.\n"
+                f"task_id: {binding.task_id}\n"
+                f"claim_key: {claim_key}\n"
+                f"source: {dispatch_path}\n"
+                f"archived_at: {observed_at}\n"
+                "reason: normal close removed active/epoch sidecars but preserved "
+                "the dispatch binding spent leg.\n",
+                encoding="utf-8",
+            )
+            archived.append(str(destination))
+        print(
+            "cc-claim: archived terminal dispatch-only claim residue before fresh "
+            "admitted claim: "
+            + ", ".join(archived),
+            file=sys.stderr,
+        )
 
     cache_dir.mkdir(parents=True, exist_ok=True)
     gate0b_roots = default_claim_publication_roots(home=Path.home())
@@ -509,6 +640,15 @@ if canon_enforced:
             cache_dir / f"cc-claim-dispatch-{key}.json",
         )
     )
+    _archive_dispatch_only_claim_residue(
+        vault_root=path.parent.parent,
+        cache_dir=cache_dir,
+        role=role,
+        session_id=session_id,
+        current_task_id=task_id,
+        observed_at=datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ"),
+    )
+    claim_paths = tuple(candidate for candidate in claim_paths if candidate.exists())
     if any(candidate.exists() for candidate in claim_paths):
         try:
             applied = resolve_applied_claim_publication(
