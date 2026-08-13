@@ -371,6 +371,7 @@ def _basic_installer_env(tmp_path: Path) -> dict[str, str]:
         "SKIP_TIMER_ENABLE": "1",
     }
     for name in (
+        "HAPAX_ROOT_REQUIRED_LOCK_ANCHOR_FD",
         "HAPAX_ROOT_REQUIRED_LOCK_FD",
         "HAPAX_ROOT_REQUIRED_LOCK_FILE",
         "HAPAX_ROOT_REQUIRED_LOCK_MODE",
@@ -603,19 +604,22 @@ class TestSharedInstallLock:
         lock.chmod(0o600)
         other.chmod(0o600)
         fd = os.open(other, os.O_RDWR)
+        anchor_fd = os.open(tmp_path, os.O_RDONLY | os.O_DIRECTORY)
         try:
             env["HAPAX_ROOT_REQUIRED_LOCK_FILE"] = str(lock)
             env["HAPAX_ROOT_REQUIRED_LOCK_FD"] = str(fd)
+            env["HAPAX_ROOT_REQUIRED_LOCK_ANCHOR_FD"] = str(anchor_fd)
             result = subprocess.run(
                 ["bash", str(INSTALL_SCRIPT)],
                 check=False,
                 capture_output=True,
                 text=True,
                 env=env,
-                pass_fds=(fd,),
+                pass_fds=(anchor_fd, fd),
                 timeout=10,
             )
         finally:
+            os.close(anchor_fd)
             os.close(fd)
 
         assert result.returncode != 0
@@ -628,20 +632,23 @@ class TestSharedInstallLock:
         lock.write_text("", encoding="utf-8")
         lock.chmod(0o600)
         fd = os.open(lock, os.O_RDWR)
+        anchor_fd = os.open(tmp_path, os.O_RDONLY | os.O_DIRECTORY)
         try:
             fcntl.flock(fd, fcntl.LOCK_EX)
             env["HAPAX_ROOT_REQUIRED_LOCK_FILE"] = str(lock)
             env["HAPAX_ROOT_REQUIRED_LOCK_FD"] = str(fd)
+            env["HAPAX_ROOT_REQUIRED_LOCK_ANCHOR_FD"] = str(anchor_fd)
             result = subprocess.run(
                 ["bash", str(INSTALL_SCRIPT)],
                 check=False,
                 capture_output=True,
                 text=True,
                 env=env,
-                pass_fds=(fd,),
+                pass_fds=(anchor_fd, fd),
                 timeout=30,
             )
         finally:
+            os.close(anchor_fd)
             os.close(fd)
 
         assert result.returncode == 0, result.stderr
@@ -689,6 +696,11 @@ class TestSharedInstallLock:
             while not started.exists() and first.poll() is None and time.monotonic() < deadline:
                 time.sleep(0.02)
             assert started.exists(), "first installer did not reach the controlled mutation"
+            lock = Path(env["HAPAX_ROOT_REQUIRED_LOCK_FILE"])
+            replacement = lock.with_name("replacement.lock")
+            replacement.write_text("", encoding="utf-8")
+            replacement.chmod(0o600)
+            os.replace(replacement, lock)
             second = subprocess.Popen(
                 ["bash", str(INSTALL_SCRIPT)],
                 stdout=subprocess.PIPE,
@@ -726,10 +738,13 @@ class TestSharedInstallLock:
         waiter_fd = os.open(lock, os.O_RDWR)
         fcntl.flock(blocker_fd, fcntl.LOCK_EX)
         pass_fds: tuple[int, ...] = ()
+        anchor_fd = -1
         if inherited_descriptor:
+            anchor_fd = os.open(tmp_path, os.O_RDONLY | os.O_DIRECTORY)
             env["HAPAX_ROOT_REQUIRED_LOCK_FD"] = str(waiter_fd)
+            env["HAPAX_ROOT_REQUIRED_LOCK_ANCHOR_FD"] = str(anchor_fd)
             env["HAPAX_ROOT_REQUIRED_LOCK_MODE"] = "exclusive"
-            pass_fds = (waiter_fd,)
+            pass_fds = (anchor_fd, waiter_fd)
         installer = subprocess.Popen(
             ["bash", str(INSTALL_SCRIPT)],
             stdout=subprocess.PIPE,
@@ -750,6 +765,8 @@ class TestSharedInstallLock:
         finally:
             if installer.poll() is None:
                 _kill_process_group(installer)
+            if anchor_fd >= 0:
+                os.close(anchor_fd)
             os.close(waiter_fd)
             os.close(blocker_fd)
 

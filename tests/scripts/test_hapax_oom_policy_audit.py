@@ -381,6 +381,7 @@ def _fake_docker(
     closing_inventory_override: str | None = None,
     closing_labeled_inventory_override: str | None = None,
     final_inventory_override: str | None = None,
+    final_labeled_inventory_override: str | None = None,
     inspect_override: str | None = None,
     failure_phase: str | None = None,
     failure_detail: str = "",
@@ -533,6 +534,13 @@ def _fake_docker(
         initial_labeled_inventory
         if closing_labeled_inventory_override is None
         else closing_labeled_inventory_override,
+        encoding="utf-8",
+    )
+    final_labeled_inventory_file = tmp_path / "docker.labeled-inventory.final"
+    final_labeled_inventory_file.write_text(
+        closing_labeled_inventory_file.read_text(encoding="utf-8")
+        if final_labeled_inventory_override is None
+        else final_labeled_inventory_override,
         encoding="utf-8",
     )
     inspect_cases = []
@@ -750,6 +758,8 @@ def _fake_docker(
         closing_file=closing_labeled_inventory_file,
         initial_failure_phase="label",
         closing_failure_phase="closing_label",
+        final_file=final_labeled_inventory_file,
+        final_failure_phase="final_label",
     )
     inventory_response = sequenced_response(
         kind="inventory",
@@ -850,6 +860,7 @@ def _run(
     docker_closing_inventory_override: str | None = None,
     docker_closing_labeled_inventory_override: str | None = None,
     docker_final_inventory_override: str | None = None,
+    docker_final_labeled_inventory_override: str | None = None,
     docker_inspect_override: str | None = None,
     docker_failure_phase: str | None = None,
     docker_failure_detail: str = "",
@@ -1017,6 +1028,7 @@ def _run(
                 closing_inventory_override=docker_closing_inventory_override,
                 closing_labeled_inventory_override=docker_closing_labeled_inventory_override,
                 final_inventory_override=docker_final_inventory_override,
+                final_labeled_inventory_override=docker_final_labeled_inventory_override,
                 inspect_override=docker_inspect_override,
                 failure_phase=docker_failure_phase,
                 failure_detail=docker_failure_detail,
@@ -2037,6 +2049,26 @@ def test_audit_fails_when_docker_target_appears_after_initial_inventory(
     assert "inventory changed during bounded audit" in check["detail"]
 
 
+def test_audit_fails_when_nonprefix_label_target_appears_only_in_final_generation(
+    tmp_path: Path,
+) -> None:
+    container_id = "e" * 64
+    result = _run(
+        tmp_path,
+        docker_final_inventory_override=f"{container_id}\tarbitrary-runtime-name\n",
+        docker_final_labeled_inventory_override=f"{container_id}\n",
+    )
+
+    assert result.returncode == 1
+    payload = json.loads(result.stdout)
+    check = next(
+        item for item in payload["checks"] if item["name"] == "docker_oom_inventory_stable"
+    )
+    assert check["status"] == "error"
+    assert check["actual"] == "changed"
+    assert "inventory changed during bounded audit" in check["detail"]
+
+
 def test_audit_allows_unrelated_container_churn_during_closing_witness(
     tmp_path: Path,
 ) -> None:
@@ -2097,6 +2129,13 @@ def test_audit_allows_unrelated_container_churn_during_closing_witness(
             {
                 "docker_failure_phase": "final_inventory",
                 "docker_failure_detail": "private-closing-final-failure",
+            },
+            "N/A",
+        ),
+        (
+            {
+                "docker_failure_phase": "final_label",
+                "docker_failure_detail": "private-closing-final-label-failure",
             },
             "N/A",
         ),

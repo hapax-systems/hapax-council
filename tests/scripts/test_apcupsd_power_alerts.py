@@ -1145,6 +1145,43 @@ def test_production_apcupsd_install_is_retired_before_lock_or_live_mutation() ->
     assert "separately runtime-authorized root-broker" in source
 
 
+def test_production_apcupsd_install_functionally_refuses_before_lock() -> None:
+    unshare = shutil.which("unshare")
+    if unshare is None:
+        pytest.skip("unshare is unavailable")
+    probe = subprocess.run(
+        [unshare, "--user", "--map-root-user", "--", "/usr/bin/true"],
+        text=True,
+        capture_output=True,
+        check=False,
+    )
+    if probe.returncode != 0:
+        pytest.skip("unprivileged user namespaces are unavailable")
+
+    result = subprocess.run(
+        [
+            unshare,
+            "--user",
+            "--map-root-user",
+            "--",
+            str(INSTALLER),
+            "--source",
+            "/nonexistent-apcupsd-source",
+            "--install",
+        ],
+        text=True,
+        capture_output=True,
+        check=False,
+        env={"HOME": "/root", "PATH": "/usr/local/sbin:/usr/local/bin:/usr/bin:/bin"},
+        timeout=10,
+    )
+
+    assert result.returncode == 77, result.stderr
+    assert "production APC installation is unavailable" in result.stderr
+    assert "no lock, sudo command, live mutation" in result.stderr
+    assert "missing source" not in result.stderr
+
+
 def test_apcupsd_repair_guidance_never_advertises_retired_bare_install() -> None:
     surfaces = (
         INSTALLER,
