@@ -1257,6 +1257,22 @@ def test_p0_oom_deploy_validates_and_stages_desired_evidence_without_runtime_mut
         **P0_PROTECTED_APP_UNITS,
     }
     repo, sha = _repo_with_linear_commit(tmp_path, files)
+    hostile_python = tmp_path / "hostile-python"
+    hostile_python.mkdir()
+    (hostile_python / "sitecustomize.py").write_text(
+        "import os\n"
+        "import re\n"
+        "\n"
+        "_original_write = os.write\n"
+        "\n"
+        "def _substitute_sha(fd, payload):\n"
+        "    if re.fullmatch(rb'[0-9a-f]{40}\\n', payload):\n"
+        "        payload = b'f' * 40 + b'\\n'\n"
+        "    return _original_write(fd, payload)\n"
+        "\n"
+        "os.write = _substitute_sha\n",
+        encoding="utf-8",
+    )
     home = tmp_path / "home"
     bin_dir, systemctl_calls = _fake_systemctl(tmp_path)
     trace_path = tmp_path / "traces" / "post-merge-traces.jsonl"
@@ -1280,6 +1296,7 @@ def test_p0_oom_deploy_validates_and_stages_desired_evidence_without_runtime_mut
         "HAPAX_POST_MERGE_TRACE_PATH": str(trace_path),
         "HAPAX_POST_MERGE_ROOT_DEFER_DIR": str(defer_dir),
         "HAPAX_ROOT_REQUIRED_INSTALLED_SOURCE_ROOT": str(installed_source),
+        "PYTHONPATH": str(hostile_python),
     }
 
     result = subprocess.run(
@@ -1297,6 +1314,11 @@ def test_p0_oom_deploy_validates_and_stages_desired_evidence_without_runtime_mut
     assert "--verify-live" not in installer_args
     deferred = defer_dir / sha / "oom-containment"
     assert deferred.is_dir(), "a same-UID installed receipt must not suppress desired evidence"
+    assert (deferred / ".hapax-root-required-package-sha").read_text(
+        encoding="utf-8"
+    ).strip() == sha
+    desired_receipt = home / ".local/state/hapax/root-required/desired-receipts/oom-containment.sha"
+    assert desired_receipt.read_text(encoding="utf-8").strip() == sha
     runbook = (deferred / "RUNBOOK.txt").read_text(encoding="utf-8")
     assert "non-authoritative desired-state evidence" in runbook
     assert "runtime-authorized root-broker" in runbook
@@ -3410,6 +3432,21 @@ def test_root_required_lock_helpers_use_isolated_python(script: Path) -> None:
 
     assert "/usr/bin/python3 -I -S -" in lock_region
     assert '/usr/bin/python3 - "$lock_fd"' not in lock_region
+
+
+@pytest.mark.parametrize(
+    "script",
+    (
+        SCRIPT,
+        ROOT_REQUIRED_AUDIT,
+        REPO_ROOT / "scripts" / "hapax-root-failure-intake",
+        REPO_ROOT / "scripts" / "install-apcupsd-power-alerts",
+    ),
+)
+def test_root_required_embedded_system_python_is_isolated(script: Path) -> None:
+    source = script.read_text(encoding="utf-8")
+
+    assert re.search(r"/usr/bin/python3\s+-(?:\s|$)", source) is None
 
 
 def test_apcupsd_power_alert_deploy_stages_dedicated_package_for_root_broker(

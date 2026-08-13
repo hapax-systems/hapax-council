@@ -1292,7 +1292,7 @@ trap trace_on_exit EXIT
 # the .service edge-trigger reads it to compute the cumulative --since range.
 atomic_write_sha_receipt() {
     local path="$1" value="$2"
-    /usr/bin/python3 - "$path" "$value" <<'PY'
+    /usr/bin/python3 -I -S - "$path" "$value" <<'PY'
 from __future__ import annotations
 
 import os

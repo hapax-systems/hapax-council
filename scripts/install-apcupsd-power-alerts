@@ -227,7 +227,7 @@ verify_audit_log_parent() {
     if [ "$AUDIT_LOG" = "$DEFAULT_AUDIT_LOG" ]; then
         parent_expected_mode=2775
     fi
-    /usr/bin/python3 - "$AUDIT_LOG" "$AUDIT_LOG_OWNER_UID" "$AUDIT_LOG_OWNER_GID" \
+    /usr/bin/python3 -I -S - "$AUDIT_LOG" "$AUDIT_LOG_OWNER_UID" "$AUDIT_LOG_OWNER_GID" \
         "$parent_expected_mode" "$APC_REPAIR_ACTION" <<'PY'
 from __future__ import annotations
 
@@ -276,7 +276,7 @@ PY
 prepare_audit_log() {
     resolve_audit_log_identity
     verify_audit_log_parent
-    run_root /usr/bin/python3 - "$AUDIT_LOG" "$AUDIT_LOG_OWNER_UID" "$AUDIT_LOG_OWNER_GID" <<'PY'
+    run_root /usr/bin/python3 -I -S - "$AUDIT_LOG" "$AUDIT_LOG_OWNER_UID" "$AUDIT_LOG_OWNER_GID" <<'PY'
 from __future__ import annotations
 
 import os
@@ -323,7 +323,7 @@ PY
 verify_audit_log_target() {
     resolve_audit_log_identity
     verify_audit_log_parent
-    /usr/bin/python3 - "$AUDIT_LOG" "$AUDIT_LOG_OWNER_UID" "$AUDIT_LOG_OWNER_GID" \
+    /usr/bin/python3 -I -S - "$AUDIT_LOG" "$AUDIT_LOG_OWNER_UID" "$AUDIT_LOG_OWNER_GID" \
         "$APC_REPAIR_ACTION" <<'PY'
 from __future__ import annotations
 
@@ -559,7 +559,7 @@ acquire_root_required_lock() {
         echo "apcupsd installer internal error: safe shared lock descriptor is absent; next action: remove caller-supplied HAPAX_ROOT_REQUIRED_LOCK_* values and rerun the unmodified installer as UID $TARGET_UID" >&2
         return 1
     fi
-    /usr/bin/python3 - "$lock_fd" "$ROOT_REQUIRED_LOCK_FILE" <<'PY'
+    /usr/bin/python3 -I -S - "$lock_fd" "$ROOT_REQUIRED_LOCK_FILE" <<'PY'
 from __future__ import annotations
 
 import fcntl
@@ -632,7 +632,7 @@ PY
 
 reexec_with_safe_root_required_lock() {
     [ -z "${HAPAX_ROOT_REQUIRED_LOCK_FD:-}" ] || return 0
-    exec /usr/bin/python3 - "$ROOT_REQUIRED_LOCK_FILE" "$0" "${ORIGINAL_ARGS[@]}" <<'PY'
+    exec /usr/bin/python3 -I -S - "$ROOT_REQUIRED_LOCK_FILE" "$0" "${ORIGINAL_ARGS[@]}" <<'PY'
 from __future__ import annotations
 
 import fcntl
@@ -859,7 +859,7 @@ validate_package_source_matches_commit() {
             echo "apcupsd package Git mode violates the destination contract at $rel: actual=$git_mode expected=$expected_mode; next action: restore the tracked executable class and rerun from a clean Git worktree or exact staged RUNBOOK" >&2
             return 1
         fi
-        if ! /usr/bin/python3 - "$SOURCE/$rel" "$git_mode" <<'PY'
+        if ! /usr/bin/python3 -I -S - "$SOURCE/$rel" "$git_mode" <<'PY'
 from __future__ import annotations
 
 import os
