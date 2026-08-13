@@ -275,6 +275,12 @@ class TestServiceProfileCompleteness:
             assert allocation.limit == expected_limit
             assert allocation.enforcement == Enforcement.HARD
 
+    def test_daimonion_profile_matches_effective_capacity_dropin(self):
+        allocation = DEFAULT_SERVICE_PROFILES["hapax-daimonion"].allocations[ResourceType.RAM]
+
+        assert allocation.limit == 16.0
+        assert allocation.enforcement == Enforcement.HARD
+
     def test_delegated_broadcast_profiles_never_model_negative_oom_scores(self):
         modeled_scores = {
             name: profile.oom_score_adj

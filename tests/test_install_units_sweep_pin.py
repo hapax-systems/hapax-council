@@ -87,17 +87,51 @@ LOCAL_JUDGE_ARGS = [
 
 
 def _historical_local_judge_inspect_record(
-    container_id: str, home: Path, *, name: str = "/hapax-local-judge"
+    container_id: str,
+    home: Path,
+    *,
+    name: str = "/hapax-local-judge",
+    image_id: str = "sha256:841b199aed2649a748875b043b32fed2e8c2d4d87e1d563556817fb7fa44b72b",
+    device_requests: list[dict[str, object]] | None = None,
 ) -> str:
+    if device_requests is None:
+        device_requests = [
+            {
+                "Capabilities": [["gpu"]],
+                "Count": 0,
+                "DeviceIDs": ["GPU-347222d9-00af-5a94-a365-c57c09dfddcd"],
+                "Driver": "",
+                "Options": {},
+            }
+        ]
     return "\t".join(
         json.dumps(value, separators=(",", ":"))
         for value in (
             container_id,
             name,
+            image_id,
             "ghcr.io/ggml-org/llama.cpp:server-cuda",
             "/app/llama-server",
             LOCAL_JUDGE_ARGS,
             [f"{home}/models/compassverifier-7b:/models:ro"],
+            [
+                {
+                    "Destination": "/models",
+                    "Mode": "ro",
+                    "Propagation": "rprivate",
+                    "RW": False,
+                    "Source": f"{home}/models/compassverifier-7b",
+                    "Type": "bind",
+                }
+            ],
+            False,
+            None,
+            None,
+            "bridge",
+            "",
+            "private",
+            [],
+            device_requests,
             {"5001/tcp": [{"HostIp": "", "HostPort": "5001"}]},
             True,
         )
@@ -545,6 +579,9 @@ class TestServiceDropInInstall:
         user_dir.mkdir(parents=True)
         stale = user_dir / "hapax-oom-score-enforce.timer"
         stale.write_text("[Timer]\nOnUnitActiveSec=30s\n", encoding="utf-8")
+        stale_dropin = user_dir / "hapax-oom-score-enforce.timer.d" / "override.conf"
+        stale_dropin.parent.mkdir()
+        stale_dropin.write_text("[Timer]\nOnUnitActiveSec=5s\n", encoding="utf-8")
         bin_dir = tmp_path / "bin"
         bin_dir.mkdir()
         calls = tmp_path / "systemctl-calls.txt"
@@ -575,12 +612,59 @@ class TestServiceDropInInstall:
 
         assert result.returncode == 0, result.stderr
         assert not stale.exists()
+        assert not stale_dropin.parent.exists()
         assert (
             "removed stale user-scope system unit: hapax-oom-score-enforce.timer" in result.stdout
         )
         assert "--user disable --now hapax-oom-score-enforce.timer" in calls.read_text(
             encoding="utf-8"
         )
+
+    def test_system_scope_base_prevents_generic_user_dropin_install(self, tmp_path: Path) -> None:
+        project = tmp_path / "project"
+        script = project / "systemd" / "scripts" / "install-units.sh"
+        units = project / "systemd" / "units"
+        script.parent.mkdir(parents=True)
+        units.mkdir(parents=True)
+        script.write_text(INSTALL_SCRIPT.read_text(encoding="utf-8"), encoding="utf-8")
+        script.chmod(0o755)
+        base = units / "root-owned.service"
+        base.write_text(
+            "[Unit]\n; hapax-install-scope: SYSTEM\n[Service]\nExecStart=/usr/bin/true\n",
+            encoding="utf-8",
+        )
+        dropin = units / "root-owned.service.d" / "override.conf"
+        dropin.parent.mkdir()
+        dropin.write_text("[Service]\nEnvironment=SHOULD_NOT_INSTALL=1\n", encoding="utf-8")
+
+        bin_dir = tmp_path / "bin"
+        bin_dir.mkdir()
+        for command in ("systemctl", "uv"):
+            executable = bin_dir / command
+            executable.write_text("#!/usr/bin/env bash\nexit 0\n", encoding="utf-8")
+            executable.chmod(0o755)
+        home = tmp_path / "home"
+        stale_dropin = home / ".config/systemd/user/root-owned.service.d/override.conf"
+        stale_dropin.parent.mkdir(parents=True)
+        stale_dropin.write_text("stale\n", encoding="utf-8")
+        env = {
+            **os.environ,
+            "ALLOW_NONSTANDARD_REPO": "1",
+            "HOME": str(home),
+            "PATH": f"{bin_dir}:{os.environ['PATH']}",
+            "HAPAX_INSTALL_UNITS_RETIRE_DOCKER": str(_empty_retirement_docker(tmp_path)),
+            "HAPAX_INSTALL_UNITS_RETIRE_SYSTEMCTL": str(_retired_manager_systemctl(tmp_path)),
+            "SKIP_TIMER_ENABLE": "1",
+        }
+
+        result = subprocess.run(
+            ["bash", str(script)], check=False, capture_output=True, text=True, env=env
+        )
+
+        assert result.returncode == 0, result.stderr
+        assert not stale_dropin.parent.exists()
+        assert "skipped system-scope unit: root-owned.service" in result.stdout
+        assert "dropin-linked: root-owned.service.d/override.conf" not in result.stdout
 
     def test_script_reloads_daemon_when_dropins_change(self) -> None:
         body = INSTALL_SCRIPT.read_text(encoding="utf-8")
@@ -938,8 +1022,9 @@ class TestLocalJudgeRetirement:
             ("not-found", "inactive", "a" * 64),
             ("loaded", "active", ""),
             ("not-found", "inactive", ""),
+            ("not-found", "failed", ""),
         ],
-        ids=("container-only", "crash-before-mask", "pristine-tombstone"),
+        ids=("container-only", "crash-before-mask", "pristine-tombstone", "failed-tombstone"),
     )
     def test_retirement_converges_without_filesystem_history(
         self,
@@ -980,6 +1065,8 @@ class TestLocalJudgeRetirement:
                   "--user show hapax-local-judge.service -p UnitFileState --value")
                     if [ -L "{installed}" ] && [ "$(readlink "{installed}")" = /dev/null ]; then
                       printf 'masked\n'
+                    elif grep -qx not-found "{load_state}"; then
+                      exit 0
                     else
                       printf 'disabled\n'
                     fi
@@ -988,6 +1075,11 @@ class TestLocalJudgeRetirement:
                     printf 'masked\n' > "{load_state}"
                     ;;
                   "--user kill --kill-who=main --signal=SIGTERM hapax-local-judge.service")
+                    if grep -qx active "{active_state}"; then
+                      printf 'inactive\n' > "{active_state}"
+                    fi
+                    ;;
+                  "--user reset-failed hapax-local-judge.service")
                     printf 'inactive\n' > "{active_state}"
                     ;;
                   "--user is-active --quiet hapax-local-judge.service")
@@ -1218,7 +1310,18 @@ class TestLocalJudgeRetirement:
         assert not any(f" rm -f {replacement_id}" in line for line in retried_events)
         assert not any(line.startswith("uv ") for line in retried_events)
 
-    def test_unrelated_initial_exact_name_container_is_never_removed(self, tmp_path: Path) -> None:
+    @pytest.mark.parametrize(
+        "record_overrides",
+        (
+            {"name": "/unrelated-workload"},
+            {"image_id": "sha256:" + "b" * 64},
+            {"device_requests": []},
+        ),
+        ids=("wrong-name", "wrong-immutable-image", "missing-gpu-request"),
+    )
+    def test_unrelated_initial_exact_name_container_is_never_removed(
+        self, tmp_path: Path, record_overrides: dict[str, object]
+    ) -> None:
         home = tmp_path / "home"
         installed = home / ".config/systemd/user/hapax-local-judge.service"
         installed.parent.mkdir(parents=True)
@@ -1228,7 +1331,7 @@ class TestLocalJudgeRetirement:
         events = tmp_path / "events"
         container_id = "c" * 64
         unrelated_record = _historical_local_judge_inspect_record(
-            container_id, home, name="/unrelated-workload"
+            container_id, home, **record_overrides
         )
 
         systemctl = bin_dir / "systemctl"

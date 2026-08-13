@@ -16,6 +16,9 @@
 #   HAPAX_SMOKE_OFF=1   skip all gates (post-merge-deploy can hard-disable)
 #   HAPAX_SMOKE_DRYRUN=1  print which gates would fire without running them
 set -uo pipefail
+unset GIT_DIR GIT_WORK_TREE GIT_COMMON_DIR GIT_INDEX_FILE GIT_OBJECT_DIRECTORY
+unset GIT_ALTERNATE_OBJECT_DIRECTORIES GIT_SHALLOW_FILE GIT_REPLACE_REF_BASE
+export GIT_NO_REPLACE_OBJECTS=1
 
 [ "${HAPAX_SMOKE_OFF:-0}" = "1" ] && exit 0
 
@@ -79,13 +82,29 @@ trap emit_failure_notice EXIT
 
 unit_install_scope() {
     local f="$1"
-    local content
-    content="$(git show "${SHA}:$f" 2>/dev/null || true)"
-    if [ -n "$content" ] \
-        && grep -Eiq '^[#;][[:space:]]*Hapax-Install-Scope:[[:space:]]*system([[:space:]]*$|[[:space:]]+)' <<< "$content"; then
+    local content entry scope_marker_count system_marker_count
+    if ! entry="$(git ls-tree "$SHA" -- "$f")"; then
+        return 1
+    fi
+    if [ -z "$entry" ]; then
+        printf 'deleted\n'
+        return 0
+    fi
+    if ! content="$(git show "${SHA}:$f")"; then
+        return 1
+    fi
+    scope_marker_count="$(
+        grep -Eic '^[#;][[:space:]]*Hapax-Install-Scope[[:space:]]*:' <<< "$content" || true
+    )"
+    system_marker_count="$(
+        grep -Eic '^[#;][[:space:]]*Hapax-Install-Scope:[[:space:]]*system[[:space:]]*$' <<< "$content" || true
+    )"
+    if [ "$scope_marker_count" -eq 0 ]; then
+        printf 'user\n'
+    elif [ "$scope_marker_count" -eq 1 ] && [ "$system_marker_count" -eq 1 ]; then
         printf 'system\n'
     else
-        printf 'user\n'
+        return 1
     fi
 }
 
@@ -117,11 +136,15 @@ bridge_inactive_expected_for_live_mode() {
 }
 
 gate_services_restarted() {
-    local changed_units=()
+    local changed_units=() scope
     while IFS= read -r f; do
         case "$f" in
             systemd/units/*.service)
-                if [ "$(unit_install_scope "$f")" != "system" ]; then
+                if ! scope="$(unit_install_scope "$f")"; then
+                    record_failure "services-restarted" "$f has an invalid Hapax-Install-Scope marker"
+                    continue
+                fi
+                if [ "$scope" = "user" ]; then
                     changed_units+=("$(basename "$f")")
                 fi
                 ;;
