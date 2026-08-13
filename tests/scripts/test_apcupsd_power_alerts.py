@@ -1719,6 +1719,102 @@ def test_claimed_apcupsd_commit_rejects_modified_package_before_live_mutation(
     assert not live.exists()
 
 
+@pytest.mark.parametrize(
+    "selector",
+    (
+        "GIT_DIR",
+        "GIT_COMMON_DIR",
+        "GIT_OBJECT_DIRECTORY",
+        "GIT_ALTERNATE_OBJECT_DIRECTORIES",
+        "GIT_SHALLOW_FILE",
+    ),
+)
+def test_apcupsd_install_ignores_ambient_git_repository_selectors(
+    tmp_path: Path,
+    selector: str,
+) -> None:
+    source = tmp_path / "staged"
+    source.mkdir()
+    subprocess.run(["git", "init", "-b", "main"], cwd=source, check=True, capture_output=True)
+    subprocess.run(["git", "config", "user.email", "ups-test@example.test"], cwd=source, check=True)
+    subprocess.run(["git", "config", "user.name", "UPS Test"], cwd=source, check=True)
+    _copy_apcupsd_package(source)
+    subprocess.run(["git", "add", "."], cwd=source, check=True)
+    subprocess.run(["git", "commit", "-m", "package"], cwd=source, check=True, capture_output=True)
+    package_sha = subprocess.run(
+        ["git", "rev-parse", "HEAD"], cwd=source, check=True, text=True, capture_output=True
+    ).stdout.strip()
+    live = tmp_path / "live-apcupsd"
+
+    result = subprocess.run(
+        [str(INSTALLER), "--source", str(source), "--install"],
+        text=True,
+        capture_output=True,
+        check=False,
+        env={
+            **os.environ,
+            "HAPAX_APCUPSD_INSTALL_SUDO": "",
+            "HAPAX_APCUPSD_DEST": str(live),
+            "HAPAX_ROOT_REQUIRED_PACKAGE_SHA": package_sha,
+            "HAPAX_ROOT_REQUIRED_GIT_REPO": str(source),
+            selector: str(tmp_path / "caller-selected-git-state"),
+        },
+    )
+
+    assert result.returncode == 0, (selector, result.stderr)
+    assert (live / "apcupsd.conf").is_file()
+
+
+def test_apcupsd_install_ignores_replace_refs_when_binding_package_source(
+    tmp_path: Path,
+) -> None:
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    subprocess.run(["git", "init", "-b", "main"], cwd=repo, check=True, capture_output=True)
+    subprocess.run(["git", "config", "user.email", "ups-test@example.test"], cwd=repo, check=True)
+    subprocess.run(["git", "config", "user.name", "UPS Test"], cwd=repo, check=True)
+    _copy_apcupsd_package(repo)
+    subprocess.run(["git", "add", "."], cwd=repo, check=True)
+    subprocess.run(
+        ["git", "commit", "-m", "canonical package"], cwd=repo, check=True, capture_output=True
+    )
+    canonical_sha = subprocess.run(
+        ["git", "rev-parse", "HEAD"], cwd=repo, check=True, text=True, capture_output=True
+    ).stdout.strip()
+
+    substituted = repo / "config/apcupsd/onbattery"
+    substituted.write_text("#!/bin/sh\nexit 0\n", encoding="utf-8")
+    substituted.chmod(0o755)
+    subprocess.run(["git", "add", str(substituted.relative_to(repo))], cwd=repo, check=True)
+    subprocess.run(
+        ["git", "commit", "-m", "replacement package"], cwd=repo, check=True, capture_output=True
+    )
+    replacement_sha = subprocess.run(
+        ["git", "rev-parse", "HEAD"], cwd=repo, check=True, text=True, capture_output=True
+    ).stdout.strip()
+    subprocess.run(["git", "replace", canonical_sha, replacement_sha], cwd=repo, check=True)
+    live = tmp_path / "live-apcupsd"
+
+    result = subprocess.run(
+        [str(INSTALLER), "--source", str(repo), "--install"],
+        text=True,
+        capture_output=True,
+        check=False,
+        env={
+            **os.environ,
+            "HAPAX_APCUPSD_INSTALL_SUDO": "",
+            "HAPAX_APCUPSD_DEST": str(live),
+            "HAPAX_ROOT_REQUIRED_PACKAGE_SHA": canonical_sha,
+            "HAPAX_ROOT_REQUIRED_GIT_REPO": str(repo),
+        },
+    )
+
+    assert result.returncode == 1
+    assert "does not match claimed commit" in result.stderr
+    assert "config/apcupsd/onbattery" in result.stderr
+    assert not live.exists()
+
+
 @pytest.mark.parametrize("drift_kind", ("symlink", "git_mode"))
 def test_claimed_apcupsd_commit_rejects_substituted_source_before_live_mutation(
     tmp_path: Path,
