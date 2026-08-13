@@ -171,7 +171,7 @@ PLATFORM_PATHS: dict[tuple[str, str, str], PlatformPath] = {
         "scripts/hapax-codex --session <lane> --terminal tmux --task <task>",
         "Codex full-capability tmux lane with methodology bootstrap",
         True,
-        "Default Codex SOP: GPT-5.5 xhigh from the Codex launcher.",
+        "Default Codex SOP: gpt-5.6-sol / ultra from the Codex launcher.",
     ),
     ("codex", "headless", "spark"): PlatformPath(
         "codex",

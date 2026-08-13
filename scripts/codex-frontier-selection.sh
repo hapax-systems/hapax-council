@@ -237,6 +237,9 @@ if [ "${#CODEX_EXTRA[@]}" -gt 0 ] 2>/dev/null; then
     echo "  Next: re-run with HAPAX_CODEX_MODEL_REASON='<why this profile>'." >&2
     exit 6
   fi
+  # Kept for the record block below. Unsetting it here is what made a reasoned profile
+  # exit 0 with MODEL_DECISION_LOG unset — the reason was required, then discarded.
+  _cfs_decision_profile="${_cfs_profile:-}"
   unset _cfs_expect_config _cfs_expect_model _cfs_expect_profile
   unset _cfs_arg _cfs_assign _cfs_key _cfs_val _cfs_profile
   unset _cfs_flag_model _cfs_config_model _cfs_config_effort
@@ -252,41 +255,69 @@ if [ "$CODEX_MODEL" != "$HAPAX_CODEX_FRONTIER_MODEL" ] ||
     echo "  must say why. Next: re-run with HAPAX_CODEX_MODEL_REASON='<why>'." >&2
     exit 6
   fi
-  # Recorded, not merely permitted: the reason is the artifact, and a lane that cannot
-  # explain its own downgrade should not have taken one.
-  #
-  # RECORD-BEFORE-PROCEED IS A PREDICATE, SO IT FAILS CLOSED. The first revision wrote this
-  # with `2>/dev/null || true` on both the mkdir and the append, then printed "recorded" and
-  # carried on. A read-only cache, a full disk or a bad path therefore produced an UNRECORDED
-  # downgrade that announced itself as recorded — the stated predicate and the behaviour
-  # disagreed, and the behaviour was the permissive one. If the artifact is what makes the
-  # downgrade legitimate, then no artifact means no downgrade.
-  #
-  # The reason is escaped for JSON rather than stripped: a newline or a control character
-  # inside it would otherwise split one record into two lines and corrupt the log it exists
-  # to write. `\` and `"` are escaped, and everything below 0x20 becomes a space.
+fi
+
+# RECORD EVERY DECISION THAT REQUIRED A REASON.
+#
+# The write used to live only inside the below-frontier arm. Redefining the frontier and
+# naming a profile also require a reason — then both exited 0 with MODEL_DECISION_LOG unset.
+# The file's own invariant is that the reason is the artifact. If the artifact is what makes
+# the act legitimate, then no artifact means no act: frontier, profile, and below-frontier
+# share one write, and it fails closed.
+#
+# RECORD-BEFORE-PROCEED IS A PREDICATE. The first revision wrote this with
+# `2>/dev/null || true` on both the mkdir and the append, then printed "recorded" and
+# carried on. A read-only cache, a full disk or a bad path therefore produced an UNRECORDED
+# decision that announced itself as recorded. If the artifact is what makes the selection
+# legitimate, then no artifact means no selection.
+#
+# The reason is escaped for JSON rather than stripped: a newline or a control character
+# inside it would otherwise split one record into two lines and corrupt the log it exists
+# to write. `\` and `"` are escaped, and everything below 0x20 becomes a space.
+_cfs_needs_record=0
+_cfs_kind=""
+if [ "$HAPAX_CODEX_FRONTIER_MODEL" != "$HAPAX_CODEX_FRONTIER_MODEL_BUILTIN" ] ||
+  [ "$HAPAX_CODEX_FRONTIER_EFFORT" != "$HAPAX_CODEX_FRONTIER_EFFORT_BUILTIN" ]; then
+  _cfs_needs_record=1
+  _cfs_kind="frontier"
+fi
+if [ -n "${_cfs_decision_profile:-}" ]; then
+  _cfs_needs_record=1
+  _cfs_kind="${_cfs_kind:+$_cfs_kind+}profile"
+fi
+if [ "$CODEX_MODEL" != "$HAPAX_CODEX_FRONTIER_MODEL" ] ||
+  [ "$CODEX_EFFORT" != "$HAPAX_CODEX_FRONTIER_EFFORT" ]; then
+  _cfs_needs_record=1
+  _cfs_kind="${_cfs_kind:+$_cfs_kind+}below-frontier"
+fi
+
+if [ "$_cfs_needs_record" -eq 1 ]; then
   MODEL_DECISION_LOG="${XDG_CACHE_HOME:-$HOME/.cache}/hapax/routing/model-decisions.jsonl"
   _cfs_reason_json="$(printf '%s' "$CODEX_MODEL_REASON" \
     | sed -e 's/\\/\\\\/g' -e 's/"/\\"/g' | tr -d '\000-\010\013\014\016-\037' | tr '\n\r\t' '   ')"
   if ! mkdir -p "$(dirname "$MODEL_DECISION_LOG")" 2>/dev/null; then
-    echo "${CODEX_LAUNCHER:-hapax-codex}: REFUSING the downgrade -- cannot create the decision log directory." >&2
+    echo "${CODEX_LAUNCHER:-hapax-codex}: REFUSING the selection -- cannot create the decision log directory." >&2
     echo "  path: $(dirname "$MODEL_DECISION_LOG")" >&2
-    echo "  A below-frontier selection is legitimate only because it is recorded, so an" >&2
+    echo "  A reasoned selection is legitimate only because it is recorded, so an" >&2
     echo "  unwritable record is a refusal, not a warning." >&2
     echo "  Next: make that directory writable, or set XDG_CACHE_HOME to somewhere that is." >&2
     exit 7
   fi
-  if ! printf '{"at":"%s","launcher":"%s","lane":"%s","model":"%s","effort":"%s","frontier_model":"%s","frontier_effort":"%s","reason":"%s"}\n' \
+  if ! printf '{"at":"%s","launcher":"%s","lane":"%s","kind":"%s","model":"%s","effort":"%s","frontier_model":"%s","frontier_effort":"%s","builtin_frontier_model":"%s","builtin_frontier_effort":"%s","profile":"%s","reason":"%s"}\n' \
     "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "${CODEX_LAUNCHER:-hapax-codex}" "${ROLE:-unknown}" \
+    "$_cfs_kind" \
     "$CODEX_MODEL" "$CODEX_EFFORT" \
     "$HAPAX_CODEX_FRONTIER_MODEL" "$HAPAX_CODEX_FRONTIER_EFFORT" \
+    "$HAPAX_CODEX_FRONTIER_MODEL_BUILTIN" "$HAPAX_CODEX_FRONTIER_EFFORT_BUILTIN" \
+    "${_cfs_decision_profile:-}" \
     "$_cfs_reason_json" \
     >>"$MODEL_DECISION_LOG" 2>/dev/null; then
-    echo "${CODEX_LAUNCHER:-hapax-codex}: REFUSING the downgrade -- cannot append to the decision log." >&2
+    echo "${CODEX_LAUNCHER:-hapax-codex}: REFUSING the selection -- cannot append to the decision log." >&2
     echo "  path: $MODEL_DECISION_LOG" >&2
     echo "  Next: check permissions and free space on that path, then re-run." >&2
     exit 7
   fi
   unset _cfs_reason_json
-  echo "${CODEX_LAUNCHER:-hapax-codex}: below-frontier selection recorded: model=$CODEX_MODEL effort=$CODEX_EFFORT" >&2
+  echo "${CODEX_LAUNCHER:-hapax-codex}: selection recorded: kind=$_cfs_kind model=$CODEX_MODEL effort=$CODEX_EFFORT" >&2
 fi
+unset _cfs_needs_record _cfs_kind _cfs_decision_profile

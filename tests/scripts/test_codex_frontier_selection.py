@@ -101,6 +101,12 @@ def test_raising_the_frontier_pair_moves_the_default(tmp_path: Path) -> None:
     )
     assert result.returncode == 0, result.stderr
     assert result.stdout.strip() == "gpt-9|max"
+    log = tmp_path / "cache" / "hapax" / "routing" / "model-decisions.jsonl"
+    assert log.is_file(), "a reasoned frontier redefinition must leave a record"
+    entry = log.read_text(encoding="utf-8")
+    assert '"kind":"frontier"' in entry
+    assert '"model":"gpt-9"' in entry
+    assert '"reason":"estate adopted gpt-9 as frontier"' in entry
 
 
 @pytest.mark.parametrize("padded", [" gpt-5.6-sol", "gpt-5.6-sol ", "  gpt-5.6-sol  "])
@@ -410,6 +416,12 @@ class TestPassthroughIsPartOfTheSelection:
             ["--profile", "fast"], tmp_path, {"HAPAX_CODEX_MODEL_REASON": "operator-pinned profile"}
         )
         assert result.returncode == 0, result.stderr
+        log = tmp_path / "cache" / "hapax" / "routing" / "model-decisions.jsonl"
+        assert log.is_file(), "a reasoned profile must leave a record"
+        entry = log.read_text(encoding="utf-8")
+        assert '"kind":"profile"' in entry
+        assert '"profile":"fast"' in entry
+        assert '"reason":"operator-pinned profile"' in entry
 
     def test_passthrough_at_the_frontier_pair_is_not_refused(self, tmp_path: Path) -> None:
         """Precision: naming the frontier explicitly is not a downgrade."""
@@ -455,8 +467,32 @@ class TestRecordBeforeProceedIsAPredicate:
                 tmp_path,
             )
             assert result.returncode == 7, result.stdout + result.stderr
-            assert "REFUSING the downgrade" in result.stderr
+            assert "cannot create the decision log" in result.stderr
             assert "XDG_CACHE_HOME" in result.stderr, "the refusal must name its own remedy"
+        finally:
+            os.chmod(cache, 0o700)
+
+    def test_an_unwritable_log_directory_refuses_a_frontier_redefinition(
+        self, tmp_path: Path
+    ) -> None:
+        """The record predicate is not below-frontier-only. A reasoned frontier move
+        that cannot be written is the same failure as an unrecorded downgrade."""
+        import os
+
+        cache = tmp_path / "cache"
+        cache.mkdir()
+        os.chmod(cache, 0o500)
+        try:
+            result = _run(
+                {
+                    "HAPAX_CODEX_FRONTIER_MODEL": "gpt-9",
+                    "HAPAX_CODEX_MODEL_REASON": "estate adopted gpt-9",
+                    "XDG_CACHE_HOME": str(cache),
+                },
+                tmp_path,
+            )
+            assert result.returncode == 7, result.stdout + result.stderr
+            assert "cannot create the decision log" in result.stderr
         finally:
             os.chmod(cache, 0o700)
 
