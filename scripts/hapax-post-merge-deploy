@@ -189,6 +189,7 @@ ROOT_REQUIRED_INSTALLED_SOURCE_ROOT="${HAPAX_ROOT_REQUIRED_INSTALLED_SOURCE_ROOT
 ROOT_REQUIRED_INSTALLED_RECEIPT_ROOT="${HAPAX_ROOT_REQUIRED_INSTALLED_RECEIPT_ROOT:-$ROOT_REQUIRED_STATE_ROOT/installed-receipts}"
 ROOT_REQUIRED_DESIRED_RECEIPT_ROOT="${HAPAX_ROOT_REQUIRED_DESIRED_RECEIPT_ROOT:-$ROOT_REQUIRED_STATE_ROOT/desired-receipts}"
 ROOT_REQUIRED_LOCK_FILE="${HAPAX_ROOT_REQUIRED_LOCK_FILE:-$ROOT_REQUIRED_STATE_ROOT/.lock}"
+ROOT_REQUIRED_LOCK_ANCHOR=""
 RECOVERY_BUNDLE_DEST="${HAPAX_RECOVERY_BUNDLE_DEST:-$HOME/.local/lib/hapax-recovery/council/current}"
 RECOVERY_BUNDLE_SOURCE_FILES=(
     scripts/hapax-p0-incident-intake
@@ -267,6 +268,7 @@ for item in sys.argv[2:]:
         )
         raise SystemExit(2)
 PY
+        ROOT_REQUIRED_LOCK_ANCHOR="$test_root"
         return
     fi
 
@@ -305,15 +307,21 @@ PY
     ROOT_REQUIRED_INSTALLED_RECEIPT_ROOT="$ROOT_REQUIRED_STATE_ROOT/installed-receipts"
     ROOT_REQUIRED_DESIRED_RECEIPT_ROOT="$ROOT_REQUIRED_STATE_ROOT/desired-receipts"
     ROOT_REQUIRED_LOCK_FILE="$ROOT_REQUIRED_STATE_ROOT/.lock"
+    ROOT_REQUIRED_LOCK_ANCHOR="$nss_home"
 }
 
 acquire_inherited_root_required_lock() {
     local lock_fd="${HAPAX_ROOT_REQUIRED_LOCK_FD:-}"
-    if ! [[ "$lock_fd" =~ ^[0-9]+$ ]] || [ "$lock_fd" -lt 3 ]; then
-        echo "hapax-post-merge-deploy: safe shared lock descriptor is absent; next action: remove caller-supplied HAPAX_ROOT_REQUIRED_LOCK_* values and rerun the package-owned deploy script" >&2
+    local anchor_fd="${HAPAX_ROOT_REQUIRED_LOCK_ANCHOR_FD:-}"
+    local isolated=0
+    [ -z "${HAPAX_ROOT_REQUIRED_ISOLATED_TEST_ROOT:-}" ] || isolated=1
+    if ! [[ "$lock_fd" =~ ^[0-9]+$ ]] || [ "$lock_fd" -lt 3 ] \
+        || ! [[ "$anchor_fd" =~ ^[0-9]+$ ]] || [ "$anchor_fd" -lt 3 ]; then
+        echo "hapax-post-merge-deploy: safe shared lock descriptors are absent; next action: remove caller-supplied HAPAX_ROOT_REQUIRED_LOCK_* values and rerun the package-owned deploy script" >&2
         return 1
     fi
-    /usr/bin/python3 - "$lock_fd" "$ROOT_REQUIRED_LOCK_FILE" <<'PY'
+    /usr/bin/python3 - "$lock_fd" "$anchor_fd" "$ROOT_REQUIRED_LOCK_FILE" \
+        "$ROOT_REQUIRED_LOCK_ANCHOR" "$isolated" <<'PY'
 from __future__ import annotations
 
 import fcntl
@@ -322,7 +330,51 @@ import stat
 import sys
 
 fd = int(sys.argv[1])
-lock_path = sys.argv[2]
+anchor_fd = int(sys.argv[2])
+lock_path = os.path.abspath(sys.argv[3])
+anchor_path = os.path.abspath(sys.argv[4])
+isolated = sys.argv[5] == "1"
+
+
+def validate_anchor() -> None:
+    try:
+        inode = os.fstat(anchor_fd)
+        path_inode = os.lstat(anchor_path)
+        parent_path = os.path.dirname(anchor_path)
+        parent_inode = os.lstat(parent_path)
+    except OSError as exc:
+        raise OSError(f"cannot inspect stable lock anchor: {exc}") from exc
+    if (
+        not stat.S_ISDIR(inode.st_mode)
+        or not stat.S_ISDIR(path_inode.st_mode)
+        or inode.st_uid != os.geteuid()
+        or path_inode.st_uid != os.geteuid()
+        or inode.st_mode & 0o022
+        or path_inode.st_mode & 0o022
+        or (inode.st_dev, inode.st_ino) != (path_inode.st_dev, path_inode.st_ino)
+        or os.path.realpath(anchor_path) != anchor_path
+    ):
+        raise OSError("stable lock anchor is not a trusted caller-owned directory")
+    if not isolated and (
+        not stat.S_ISDIR(parent_inode.st_mode)
+        or parent_inode.st_uid != 0
+        or parent_inode.st_mode & 0o022
+        or os.path.realpath(parent_path) != parent_path
+    ):
+        raise OSError("production lock anchor parent is replaceable by the caller")
+
+
+try:
+    validate_anchor()
+    fcntl.flock(anchor_fd, fcntl.LOCK_EX)
+    validate_anchor()
+except OSError as exc:
+    print(
+        f"hapax-post-merge-deploy: refused unstable shared lock anchor {anchor_path}: {exc}",
+        file=sys.stderr,
+    )
+    raise SystemExit(1) from exc
+
 try:
     inode_before = os.fstat(fd)
     path_before = os.lstat(lock_path)
@@ -383,11 +435,15 @@ PY
 }
 
 reexec_with_safe_root_required_lock() {
-    if [ -n "${HAPAX_ROOT_REQUIRED_LOCK_FD:-}" ]; then
+    if [ -n "${HAPAX_ROOT_REQUIRED_LOCK_FD:-}" ] \
+        || [ -n "${HAPAX_ROOT_REQUIRED_LOCK_ANCHOR_FD:-}" ]; then
         acquire_inherited_root_required_lock
         return
     fi
-    exec /usr/bin/python3 - "$ROOT_REQUIRED_LOCK_FILE" "$0" "${ORIGINAL_ARGS[@]}" <<'PY'
+    local isolated=0
+    [ -z "${HAPAX_ROOT_REQUIRED_ISOLATED_TEST_ROOT:-}" ] || isolated=1
+    exec /usr/bin/python3 - "$ROOT_REQUIRED_LOCK_ANCHOR" "$ROOT_REQUIRED_LOCK_FILE" \
+        "$isolated" "$0" "${ORIGINAL_ARGS[@]}" <<'PY'
 from __future__ import annotations
 
 import fcntl
@@ -396,8 +452,52 @@ import stat
 import subprocess
 import sys
 
-lock_path, script, *args = sys.argv[1:]
+anchor_path, lock_path, isolated_raw, script, *args = sys.argv[1:]
+anchor_path = os.path.abspath(anchor_path)
+lock_path = os.path.abspath(lock_path)
+isolated = isolated_raw == "1"
 os.makedirs(os.path.dirname(lock_path) or ".", exist_ok=True)
+
+
+def validate_anchor(anchor_fd: int) -> None:
+    inode = os.fstat(anchor_fd)
+    path_inode = os.lstat(anchor_path)
+    parent_path = os.path.dirname(anchor_path)
+    parent_inode = os.lstat(parent_path)
+    if (
+        not stat.S_ISDIR(inode.st_mode)
+        or not stat.S_ISDIR(path_inode.st_mode)
+        or inode.st_uid != os.geteuid()
+        or path_inode.st_uid != os.geteuid()
+        or inode.st_mode & 0o022
+        or path_inode.st_mode & 0o022
+        or (inode.st_dev, inode.st_ino) != (path_inode.st_dev, path_inode.st_ino)
+        or os.path.realpath(anchor_path) != anchor_path
+    ):
+        raise OSError("stable lock anchor is not a trusted caller-owned directory")
+    if not isolated and (
+        not stat.S_ISDIR(parent_inode.st_mode)
+        or parent_inode.st_uid != 0
+        or parent_inode.st_mode & 0o022
+        or os.path.realpath(parent_path) != parent_path
+    ):
+        raise OSError("production lock anchor parent is replaceable by the caller")
+
+
+try:
+    anchor_fd = os.open(
+        anchor_path,
+        os.O_CLOEXEC | os.O_DIRECTORY | os.O_NOFOLLOW | os.O_RDONLY,
+    )
+    validate_anchor(anchor_fd)
+    fcntl.flock(anchor_fd, fcntl.LOCK_EX)
+    validate_anchor(anchor_fd)
+except OSError as exc:
+    print(
+        f"hapax-post-merge-deploy: refused unstable shared lock anchor {anchor_path}: {exc}",
+        file=sys.stderr,
+    )
+    raise SystemExit(1) from exc
 try:
     fd = os.open(
         lock_path,
@@ -466,16 +566,18 @@ try:
     env = os.environ.copy()
     env.pop("HAPAX_ROOT_REQUIRED_LOCK_HELD", None)
     env["HAPAX_ROOT_REQUIRED_LOCK_FD"] = str(fd)
+    env["HAPAX_ROOT_REQUIRED_LOCK_ANCHOR_FD"] = str(anchor_fd)
     env["HAPAX_ROOT_REQUIRED_LOCK_MODE"] = "exclusive"
     result = subprocess.run(
         [os.path.abspath(script), *args],
         env=env,
-        pass_fds=(fd,),
+        pass_fds=(anchor_fd, fd),
         check=False,
     )
     raise SystemExit(result.returncode)
 finally:
     os.close(fd)
+    os.close(anchor_fd)
 PY
 }
 
@@ -2639,7 +2741,8 @@ record_root_required_desired_sha() {
     fi
 }
 
-# apcupsd must be active before the OOM package verifies the recovery plane.
+# Validate the APC source package before the OOM source package so recovery-plane
+# policy errors are reported in dependency order. Runtime application is deferred.
 stage_apcupsd_power_alert_installer() {
     stage_root_required_package \
         "$1" config/root-required/apcupsd-power-alerts.files "apcupsd power-alert"
@@ -2659,10 +2762,6 @@ if [ "${#APCUPSD_POWER_ALERTS[@]}" -gt 0 ]; then
         rm -rf "$APCUPSD_STAGE" 2>/dev/null || true
         exit "$stage_apcupsd_rc"
     fi
-    if ! record_root_required_desired_sha "apcupsd-power-alerts" "$APCUPSD_STAGE"; then
-        rm -rf "$APCUPSD_STAGE" 2>/dev/null || true
-        exit 1
-    fi
     set +e
     "$APCUPSD_STAGE/$APCUPSD_INSTALLER_PATH" --source "$APCUPSD_STAGE" --check
     apcupsd_installer_rc=$?
@@ -2670,6 +2769,10 @@ if [ "${#APCUPSD_POWER_ALERTS[@]}" -gt 0 ]; then
     if [ "$apcupsd_installer_rc" -ne 0 ]; then
         rm -rf "$APCUPSD_STAGE" 2>/dev/null || true
         exit "$apcupsd_installer_rc"
+    fi
+    if ! record_root_required_desired_sha "apcupsd-power-alerts" "$APCUPSD_STAGE"; then
+        rm -rf "$APCUPSD_STAGE" 2>/dev/null || true
+        exit 1
     fi
     defer_root_required_installer "apcupsd-power-alerts" "$APCUPSD_STAGE"
     rm -rf "$APCUPSD_STAGE" 2>/dev/null || true

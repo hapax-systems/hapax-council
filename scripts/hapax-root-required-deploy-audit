@@ -17,6 +17,7 @@ INSTALLED_RECEIPT_ROOT="${HAPAX_ROOT_REQUIRED_INSTALLED_RECEIPT_ROOT:-$ROOT_REQU
 DESIRED_RECEIPT_ROOT="${HAPAX_ROOT_REQUIRED_DESIRED_RECEIPT_ROOT:-$ROOT_REQUIRED_STATE_ROOT/desired-receipts}"
 ROOT_REQUIRED_GIT_REPO="${HAPAX_ROOT_REQUIRED_GIT_REPO:-$HOME/.cache/hapax/source-activation/worktree}"
 ROOT_REQUIRED_LOCK_FILE="${HAPAX_ROOT_REQUIRED_LOCK_FILE:-$ROOT_REQUIRED_STATE_ROOT/.lock}"
+ROOT_REQUIRED_LOCK_ANCHOR="$HOME"
 OOM_ENFORCER_DEST="${HAPAX_OOM_ENFORCER_DEST:-/usr/local/sbin/hapax-oom-score-enforce}"
 OOM_TRIGGER_DEST="${HAPAX_OOM_TRIGGER_DEST:-/usr/local/bin/hapax-oom-score-trigger}"
 OOM_SUDOERS_DEST="${HAPAX_OOM_SUDOERS_DEST:-/etc/sudoers.d/hapax-oom-score-enforce}"
@@ -132,12 +133,15 @@ fi
 
 acquire_inherited_root_required_lock() {
     local lock_fd="${HAPAX_ROOT_REQUIRED_LOCK_FD:-}"
+    local anchor_fd="${HAPAX_ROOT_REQUIRED_LOCK_ANCHOR_FD:-}"
     local lock_mode="${HAPAX_ROOT_REQUIRED_LOCK_MODE:-shared}"
-    if ! [[ "$lock_fd" =~ ^[0-9]+$ ]] || [ "$lock_fd" -lt 3 ]; then
-        echo "root-required audit safe lock descriptor is absent; next action: remove caller-supplied HAPAX_ROOT_REQUIRED_LOCK_* values and rerun the installed audit" >&2
+    if ! [[ "$lock_fd" =~ ^[0-9]+$ ]] || [ "$lock_fd" -lt 3 ] \
+        || ! [[ "$anchor_fd" =~ ^[0-9]+$ ]] || [ "$anchor_fd" -lt 3 ]; then
+        echo "root-required audit safe lock descriptors are absent; next action: remove caller-supplied HAPAX_ROOT_REQUIRED_LOCK_* values and rerun the installed audit" >&2
         return 1
     fi
-    /usr/bin/python3 - "$lock_fd" "$ROOT_REQUIRED_LOCK_FILE" "$lock_mode" <<'PY'
+    /usr/bin/python3 - "$lock_fd" "$anchor_fd" "$ROOT_REQUIRED_LOCK_FILE" \
+        "$ROOT_REQUIRED_LOCK_ANCHOR" "$lock_mode" "$ROOT_AUDIT_TEST_MODE" <<'PY'
 from __future__ import annotations
 
 import fcntl
@@ -146,10 +150,54 @@ import stat
 import sys
 
 fd = int(sys.argv[1])
-lock_path = sys.argv[2]
-lock_mode = sys.argv[3]
+anchor_fd = int(sys.argv[2])
+lock_path = os.path.abspath(sys.argv[3])
+anchor_path = os.path.abspath(sys.argv[4])
+lock_mode = sys.argv[5]
+isolated = sys.argv[6] == "1"
 if lock_mode not in {"exclusive", "shared"}:
     raise SystemExit(1)
+
+
+def validate_anchor() -> None:
+    inode = os.fstat(anchor_fd)
+    path_inode = os.lstat(anchor_path)
+    parent_path = os.path.dirname(anchor_path)
+    parent_inode = os.lstat(parent_path)
+    if (
+        not stat.S_ISDIR(inode.st_mode)
+        or not stat.S_ISDIR(path_inode.st_mode)
+        or inode.st_uid != os.geteuid()
+        or path_inode.st_uid != os.geteuid()
+        or inode.st_mode & 0o022
+        or path_inode.st_mode & 0o022
+        or (inode.st_dev, inode.st_ino) != (path_inode.st_dev, path_inode.st_ino)
+        or os.path.realpath(anchor_path) != anchor_path
+    ):
+        raise OSError("stable lock anchor is not a trusted caller-owned directory")
+    if not isolated and (
+        not stat.S_ISDIR(parent_inode.st_mode)
+        or parent_inode.st_uid != 0
+        or parent_inode.st_mode & 0o022
+        or os.path.realpath(parent_path) != parent_path
+    ):
+        raise OSError("production lock anchor parent is replaceable by the caller")
+
+
+try:
+    validate_anchor()
+    fcntl.flock(
+        anchor_fd,
+        fcntl.LOCK_EX if lock_mode == "exclusive" else fcntl.LOCK_SH,
+    )
+    validate_anchor()
+except OSError as exc:
+    print(
+        f"root-required audit refused unstable shared lock anchor {anchor_path}: {exc}",
+        file=sys.stderr,
+    )
+    raise SystemExit(1) from exc
+
 try:
     inode_before = os.fstat(fd)
     path_before = os.lstat(lock_path)
@@ -210,11 +258,13 @@ PY
 }
 
 reexec_with_safe_root_required_lock() {
-    if [ -n "${HAPAX_ROOT_REQUIRED_LOCK_FD:-}" ]; then
+    if [ -n "${HAPAX_ROOT_REQUIRED_LOCK_FD:-}" ] \
+        || [ -n "${HAPAX_ROOT_REQUIRED_LOCK_ANCHOR_FD:-}" ]; then
         acquire_inherited_root_required_lock
         return
     fi
-    exec /usr/bin/python3 - "$ROOT_REQUIRED_LOCK_FILE" "$0" "${ORIGINAL_ARGS[@]}" <<'PY'
+    exec /usr/bin/python3 - "$ROOT_REQUIRED_LOCK_ANCHOR" "$ROOT_REQUIRED_LOCK_FILE" \
+        "$ROOT_AUDIT_TEST_MODE" "$0" "${ORIGINAL_ARGS[@]}" <<'PY'
 from __future__ import annotations
 
 import fcntl
@@ -223,8 +273,52 @@ import stat
 import subprocess
 import sys
 
-lock_path, script, *args = sys.argv[1:]
+anchor_path, lock_path, isolated_raw, script, *args = sys.argv[1:]
+anchor_path = os.path.abspath(anchor_path)
+lock_path = os.path.abspath(lock_path)
+isolated = isolated_raw == "1"
 os.makedirs(os.path.dirname(lock_path) or ".", exist_ok=True)
+
+
+def validate_anchor(anchor_fd: int) -> None:
+    inode = os.fstat(anchor_fd)
+    path_inode = os.lstat(anchor_path)
+    parent_path = os.path.dirname(anchor_path)
+    parent_inode = os.lstat(parent_path)
+    if (
+        not stat.S_ISDIR(inode.st_mode)
+        or not stat.S_ISDIR(path_inode.st_mode)
+        or inode.st_uid != os.geteuid()
+        or path_inode.st_uid != os.geteuid()
+        or inode.st_mode & 0o022
+        or path_inode.st_mode & 0o022
+        or (inode.st_dev, inode.st_ino) != (path_inode.st_dev, path_inode.st_ino)
+        or os.path.realpath(anchor_path) != anchor_path
+    ):
+        raise OSError("stable lock anchor is not a trusted caller-owned directory")
+    if not isolated and (
+        not stat.S_ISDIR(parent_inode.st_mode)
+        or parent_inode.st_uid != 0
+        or parent_inode.st_mode & 0o022
+        or os.path.realpath(parent_path) != parent_path
+    ):
+        raise OSError("production lock anchor parent is replaceable by the caller")
+
+
+try:
+    anchor_fd = os.open(
+        anchor_path,
+        os.O_CLOEXEC | os.O_DIRECTORY | os.O_NOFOLLOW | os.O_RDONLY,
+    )
+    validate_anchor(anchor_fd)
+    fcntl.flock(anchor_fd, fcntl.LOCK_SH)
+    validate_anchor(anchor_fd)
+except OSError as exc:
+    print(
+        f"root-required audit refused unstable shared lock anchor {anchor_path}: {exc}",
+        file=sys.stderr,
+    )
+    raise SystemExit(1) from exc
 try:
     fd = os.open(
         lock_path,
@@ -293,16 +387,18 @@ try:
     env = os.environ.copy()
     env.pop("HAPAX_ROOT_REQUIRED_LOCK_HELD", None)
     env["HAPAX_ROOT_REQUIRED_LOCK_FD"] = str(fd)
+    env["HAPAX_ROOT_REQUIRED_LOCK_ANCHOR_FD"] = str(anchor_fd)
     env["HAPAX_ROOT_REQUIRED_LOCK_MODE"] = "shared"
     result = subprocess.run(
         [os.path.abspath(script), *args],
         env=env,
-        pass_fds=(fd,),
+        pass_fds=(anchor_fd, fd),
         check=False,
     )
     raise SystemExit(result.returncode)
 finally:
     os.close(fd)
+    os.close(anchor_fd)
 PY
 }
 
@@ -513,7 +609,8 @@ rc=0
 
 pending_runbooks() {
     [ -d "$ROOT_DEFER_DIR" ] || return 0
-    find "$ROOT_DEFER_DIR" -mindepth 3 -maxdepth 3 -name RUNBOOK.txt -type f | sort
+    find "$ROOT_DEFER_DIR" -mindepth 3 -maxdepth 3 -name RUNBOOK.txt -type f -print0 \
+        | sort -z
 }
 
 source_for_rel() {
@@ -1325,7 +1422,12 @@ audit_root_installs() {
     [ "$failed" -eq 0 ]
 }
 
-mapfile -t runbooks < <(pending_runbooks)
+mapfile -d '' -t runbooks < <(pending_runbooks)
+pending_runbooks_pid=$!
+if ! wait "$pending_runbooks_pid"; then
+    echo "root-required audit cannot enumerate root-required deploy deferrals; refusing a false clean result" >&2
+    exit 1
+fi
 if [ "${#runbooks[@]}" -eq 0 ]; then
     audit_desired_receipt "oom-containment" || rc=1
     audit_desired_receipt "apcupsd-power-alerts" || rc=1

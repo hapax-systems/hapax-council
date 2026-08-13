@@ -1611,19 +1611,19 @@ def test_historical_local_judge_change_is_always_runtime_deferred(
     assert "no manual deploys needed" not in result.stdout
 
 
-def test_root_packages_install_apcupsd_before_oom_recovery_verification(tmp_path: Path) -> None:
-    order = tmp_path / "install-order"
-    apcupsd_ready = tmp_path / "apcupsd-ready"
+def test_root_packages_check_apcupsd_before_oom_source_validation(tmp_path: Path) -> None:
+    order = tmp_path / "source-check-order"
+    apcupsd_checked = tmp_path / "apcupsd-checked"
     apcupsd_installer = (
         "#!/usr/bin/env bash\n"
         "set -euo pipefail\n"
         'printf "apcupsd\\n" >> "$HAPAX_ROOT_PACKAGE_ORDER"\n'
-        'touch "$HAPAX_APCUPSD_READY_WITNESS"\n'
+        'touch "$HAPAX_APCUPSD_CHECKED_WITNESS"\n'
     )
     oom_installer = (
         "#!/usr/bin/env bash\n"
         "set -euo pipefail\n"
-        '[ -f "$HAPAX_APCUPSD_READY_WITNESS" ] || { echo "apcupsd inactive" >&2; exit 42; }\n'
+        '[ -f "$HAPAX_APCUPSD_CHECKED_WITNESS" ] || { echo "apcupsd unchecked" >&2; exit 42; }\n'
         'printf "oom\\n" >> "$HAPAX_ROOT_PACKAGE_ORDER"\n'
     )
     files = {
@@ -1649,7 +1649,7 @@ def test_root_packages_install_apcupsd_before_oom_recovery_verification(tmp_path
             "HOME": str(tmp_path / "home"),
             "REPO": str(repo),
             "HAPAX_ROOT_PACKAGE_ORDER": str(order),
-            "HAPAX_APCUPSD_READY_WITNESS": str(apcupsd_ready),
+            "HAPAX_APCUPSD_CHECKED_WITNESS": str(apcupsd_checked),
             "HAPAX_POST_MERGE_TRACE_PATH": str(tmp_path / "trace.jsonl"),
         },
     )
@@ -1982,6 +1982,7 @@ def test_canonical_root_audit_refuses_every_state_and_tool_selector(
     assert len(selectors) >= 35
     referenced_selectors = set(re.findall(r"\bHAPAX_[A-Z0-9_]*[A-Z0-9]\b", source))
     internal_protocol = {
+        "HAPAX_ROOT_REQUIRED_LOCK_ANCHOR_FD",
         "HAPAX_ROOT_REQUIRED_LOCK_FD",
         "HAPAX_ROOT_REQUIRED_LOCK_HELD",
         "HAPAX_ROOT_REQUIRED_LOCK_MODE",
@@ -2556,7 +2557,8 @@ def test_root_required_audit_detects_disabled_apcupsd(tmp_path: Path) -> None:
 
     assert result.returncode == 1
     assert "apcupsd.service is not enabled" in result.stderr
-    assert "enable --now apcupsd.service" in result.stderr
+    assert "separately runtime-authorized root-broker" in result.stderr
+    assert "production APC repair is unavailable" in result.stderr
 
 
 def test_root_required_audit_detects_stale_loaded_upower_action(tmp_path: Path) -> None:
@@ -2616,6 +2618,27 @@ def test_root_required_audit_clean_drift_result_is_explicitly_non_authoritative(
     assert "root-required post-merge deploy deferrals: none" in result.stdout
     assert "NON-AUTHORITATIVE" in result.stdout
     assert "same-UID receipts do not attest OOM runtime completion" in result.stdout
+
+
+def test_root_required_audit_fails_when_deferral_enumeration_fails(tmp_path: Path) -> None:
+    env = _root_audit_env(tmp_path)
+    unreadable = Path(env["HAPAX_POST_MERGE_ROOT_DEFER_DIR"]) / "unreadable"
+    unreadable.mkdir(parents=True)
+    unreadable.chmod(0)
+    try:
+        result = subprocess.run(
+            [str(ROOT_REQUIRED_AUDIT)],
+            text=True,
+            capture_output=True,
+            check=False,
+            env=env,
+        )
+    finally:
+        unreadable.chmod(0o700)
+
+    assert result.returncode != 0
+    assert "cannot enumerate root-required deploy deferrals" in result.stderr
+    assert "root-required post-merge deploy deferrals: none" not in result.stdout
 
 
 def test_root_required_audit_accepts_shipped_service_after_systemd_expansion(
@@ -2969,10 +2992,13 @@ def test_root_required_audit_rejects_lock_path_replaced_while_waiting(
     fcntl.flock(blocker_fd, fcntl.LOCK_EX)
     env["HAPAX_ROOT_REQUIRED_LOCK_FILE"] = str(lock)
     pass_fds: tuple[int, ...] = ()
+    anchor_fd = -1
     if inherited_descriptor:
+        anchor_fd = os.open(Path(env["HOME"]), os.O_RDONLY | os.O_DIRECTORY)
         env["HAPAX_ROOT_REQUIRED_LOCK_FD"] = str(waiter_fd)
+        env["HAPAX_ROOT_REQUIRED_LOCK_ANCHOR_FD"] = str(anchor_fd)
         env["HAPAX_ROOT_REQUIRED_LOCK_MODE"] = "shared"
-        pass_fds = (waiter_fd,)
+        pass_fds = (anchor_fd, waiter_fd)
     audit = subprocess.Popen(
         [str(ROOT_REQUIRED_AUDIT)],
         text=True,
@@ -2993,6 +3019,8 @@ def test_root_required_audit_rejects_lock_path_replaced_while_waiting(
     finally:
         if audit.poll() is None:
             _kill_process_group(audit)
+        if anchor_fd >= 0:
+            os.close(anchor_fd)
         os.close(waiter_fd)
         os.close(blocker_fd)
 
@@ -3252,10 +3280,13 @@ def test_post_merge_deploy_rejects_lock_path_replaced_while_waiting(
     fcntl.flock(blocker_fd, fcntl.LOCK_EX)
     env["HAPAX_ROOT_REQUIRED_LOCK_FILE"] = str(lock)
     pass_fds: tuple[int, ...] = ()
+    anchor_fd = -1
     if inherited_descriptor:
+        anchor_fd = os.open(tmp_path, os.O_RDONLY | os.O_DIRECTORY)
         env["HAPAX_ROOT_REQUIRED_LOCK_FD"] = str(waiter_fd)
+        env["HAPAX_ROOT_REQUIRED_LOCK_ANCHOR_FD"] = str(anchor_fd)
         env["HAPAX_ROOT_REQUIRED_LOCK_MODE"] = "exclusive"
-        pass_fds = (waiter_fd,)
+        pass_fds = (anchor_fd, waiter_fd)
     deploy = subprocess.Popen(
         [str(SCRIPT), sha],
         text=True,
@@ -3276,12 +3307,91 @@ def test_post_merge_deploy_rejects_lock_path_replaced_while_waiting(
     finally:
         if deploy.poll() is None:
             _kill_process_group(deploy)
+        if anchor_fd >= 0:
+            os.close(anchor_fd)
         os.close(waiter_fd)
         os.close(blocker_fd)
 
     assert deploy.returncode == 1, stdout
     assert "lock identity changed while acquiring" in stderr
     assert not calls.exists()
+
+
+def test_post_merge_deploy_serializes_after_acquired_lock_path_is_replaced(
+    tmp_path: Path,
+) -> None:
+    repo, older_sha = _repo_with_gate_closure_and_docs_commit(tmp_path)
+    (repo / "README.md").write_text("newer deploy\n", encoding="utf-8")
+    _git(repo, "add", "README.md")
+    _git(repo, "commit", "-m", "newer deploy target")
+    newer_sha = _git(repo, "rev-parse", "HEAD")
+    older_parent = _git(repo, "rev-parse", f"{older_sha}^")
+    canon = tmp_path / "canon"
+    calls = tmp_path / "hooks-doctor-calls.txt"
+    _seed_canonical_gate(repo, canon, stale=False)
+    env = _gate_reconcile_env(tmp_path, repo, canon, calls)
+    state_root = tmp_path / "root-state"
+    lock = state_root / ".lock"
+    env["HAPAX_ROOT_REQUIRED_STATE_ROOT"] = str(state_root)
+    env["HAPAX_ROOT_REQUIRED_LOCK_FILE"] = str(lock)
+
+    marker = tmp_path / "older-inside-critical-section"
+    release = tmp_path / "release-older"
+    fake_bin = tmp_path / "git-bin"
+    fake_bin.mkdir()
+    fake_git = fake_bin / "git"
+    fake_git.write_text(
+        "#!/usr/bin/env bash\n"
+        "set -euo pipefail\n"
+        f'if [ "$*" = "diff --name-only {older_parent} {older_sha}" ]; then\n'
+        f"  : > {shlex.quote(str(marker))}\n"
+        f"  while [ ! -e {shlex.quote(str(release))} ]; do /usr/bin/sleep 0.01; done\n"
+        "fi\n"
+        'exec /usr/bin/git "$@"\n',
+        encoding="utf-8",
+    )
+    fake_git.chmod(0o755)
+    env["PATH"] = f"{fake_bin}:{env['PATH']}"
+
+    older = subprocess.Popen(
+        [str(SCRIPT), older_sha],
+        text=True,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        env=env,
+        start_new_session=True,
+    )
+    newer: subprocess.Popen[str] | None = None
+    try:
+        deadline = time.monotonic() + 10
+        while not marker.exists() and older.poll() is None and time.monotonic() < deadline:
+            time.sleep(0.01)
+        assert marker.exists(), "older deploy did not enter the locked critical section"
+        replacement = lock.with_name("replacement.lock")
+        replacement.write_text("", encoding="utf-8")
+        replacement.chmod(0o600)
+        os.replace(replacement, lock)
+        newer = subprocess.Popen(
+            [str(SCRIPT), newer_sha],
+            text=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            env=env,
+            start_new_session=True,
+        )
+        time.sleep(0.3)
+        assert newer.poll() is None, "replacement lock inode bypassed the active deploy"
+    finally:
+        release.touch()
+        older_stdout, older_stderr = older.communicate(timeout=20)
+        if newer is not None:
+            newer_stdout, newer_stderr = newer.communicate(timeout=20)
+
+    assert older.returncode == 0, (older_stdout, older_stderr)
+    assert newer is not None
+    assert newer.returncode == 0, (newer_stdout, newer_stderr)
+    cursor = tmp_path / "traces/last-deployed-sha"
+    assert cursor.read_text(encoding="utf-8").strip() == newer_sha
 
 
 def test_apcupsd_power_alert_deploy_stages_dedicated_package_for_root_broker(
@@ -3353,6 +3463,58 @@ def test_apcupsd_power_alert_deploy_stages_dedicated_package_for_root_broker(
     assert set(record["deploy_groups"]["apcupsd_power_alerts"]) == set(files)
     assert record["status"] == "completed_with_runtime_deferral"
     assert record["runtime_deferred"] == [f"apcupsd-power-alerts:{sha}"]
+
+
+@pytest.mark.parametrize("preexisting_receipt", (False, True))
+def test_apcupsd_semantic_validation_precedes_desired_receipt_publication(
+    tmp_path: Path,
+    preexisting_receipt: bool,
+) -> None:
+    manifest_rel = "config/root-required/apcupsd-power-alerts.files"
+    installer_rel = "scripts/install-apcupsd-power-alerts"
+    installer_calls = tmp_path / "apcupsd-check-calls"
+    repo, sha = _repo_with_linear_commit(
+        tmp_path,
+        {
+            manifest_rel: f"{manifest_rel}\n{installer_rel}\n",
+            installer_rel: (
+                "#!/usr/bin/env bash\n"
+                "set -euo pipefail\n"
+                'printf \'%s\\n\' "$*" > "$HAPAX_APCUPSD_CHECK_CALLS"\n'
+                "exit 41\n"
+            ),
+        },
+    )
+    home = tmp_path / "home"
+    receipt = home / ".local/state/hapax/root-required/desired-receipts/apcupsd-power-alerts.sha"
+    previous = _git(repo, "rev-parse", f"{sha}^")
+    if preexisting_receipt:
+        receipt.parent.mkdir(parents=True)
+        receipt.write_text(f"{previous}\n", encoding="utf-8")
+
+    result = subprocess.run(
+        [str(SCRIPT), sha],
+        text=True,
+        capture_output=True,
+        check=False,
+        env={
+            **os.environ,
+            "HOME": str(home),
+            "REPO": str(repo),
+            "HAPAX_APCUPSD_CHECK_CALLS": str(installer_calls),
+            "HAPAX_POST_MERGE_TRACE_PATH": str(tmp_path / "trace.jsonl"),
+            "HAPAX_POST_MERGE_ROOT_DEFER_DIR": str(tmp_path / "deferrals"),
+        },
+    )
+
+    assert result.returncode == 41, (result.stdout, result.stderr)
+    assert "--check" in installer_calls.read_text(encoding="utf-8")
+    if preexisting_receipt:
+        assert receipt.read_text(encoding="utf-8") == f"{previous}\n"
+    else:
+        assert not receipt.exists()
+    assert not (tmp_path / "deferrals").exists()
+    assert not (tmp_path / "last-deployed-sha").exists()
 
 
 def test_generic_slice_dropin_deploy_uses_runtime_set_property_not_restart(
