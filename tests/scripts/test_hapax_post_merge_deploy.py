@@ -303,6 +303,7 @@ def test_wait_for_flock_block_requires_expected_inode(tmp_path: Path) -> None:
         start_new_session=True,
     )
     try:
+        _wait_for_flock_block(process, unrelated)
         with pytest.raises(AssertionError, match="deterministic flock wait"):
             _wait_for_flock_block(process, expected, timeout=0.2)
     finally:
