@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import runpy
 import stat
 import subprocess
@@ -42,6 +43,18 @@ PROTECTED_USER_UNIT_MEMORY = {
 GITHUB_MCP_IMAGE_DIGEST = "sha256:30197479d8036c7811892bc07e06f9a05c9ef3cdd79bc59f256d50647f95788c"
 GITHUB_MCP_IMAGE = f"ghcr.io/github/github-mcp-server@{GITHUB_MCP_IMAGE_DIGEST}"
 GITHUB_MCP_LOCAL_IMAGE_ID = f"sha256:{'b' * 64}"
+GITHUB_MCP_BOOT_ID = "12345678-1234-1234-1234-123456789abc"
+
+
+def test_audit_and_launcher_pin_the_same_github_mcp_digest() -> None:
+    launcher = (REPO_ROOT / "scripts" / "hapax-github-mcp").read_text(encoding="utf-8")
+    audit = SCRIPT.read_text(encoding="utf-8")
+    launcher_match = re.search(r'^readonly GITHUB_MCP_IMAGE_DIGEST="([^"]+)"$', launcher, re.M)
+    audit_match = re.search(r'^GITHUB_MCP_IMAGE_DIGEST = "([^"]+)"$', audit, re.M)
+
+    assert launcher_match is not None
+    assert audit_match is not None
+    assert launcher_match.group(1) == audit_match.group(1) == GITHUB_MCP_IMAGE_DIGEST
 
 
 def test_audit_resets_hostile_path_before_command_resolution(
@@ -248,16 +261,42 @@ def _fake_docker(
     mcp_image_id: str = GITHUB_MCP_LOCAL_IMAGE_ID,
     mcp_local_image_id: str = GITHUB_MCP_LOCAL_IMAGE_ID,
     mcp_repo_digest: str = GITHUB_MCP_IMAGE,
+    mcp_signature_overrides: dict[str, object] | None = None,
 ) -> Path:
     path = tmp_path / "docker"
     calls = tmp_path / "docker.calls"
-    containers = [
-        (f"{index + 1:064x}", f"hapax-github-mcp-{1000 + index}-{index + 1}")
-        for index in range(mcp_count)
-    ]
+    mcp_signature_overrides = mcp_signature_overrides or {}
+    containers = []
+    for index in range(mcp_count):
+        launch_id = f"1000-{index + 1:010x}"
+        record: dict[str, object] = {
+            "container_id": f"{index + 1:064x}",
+            "name": f"hapax-github-mcp-{launch_id}",
+            "app_label": "stdio-v1",
+            "uid_label": "1000",
+            "launch_label": launch_id,
+            "lease_pid_label": str(8000 + index),
+            "lease_start_label": str(900000 + index),
+            "lease_boot_label": GITHUB_MCP_BOOT_ID,
+            "readonly_rootfs": True,
+            "cap_drop": ["ALL"],
+            "security_opt": ["no-new-privileges"],
+            "auto_remove": True,
+            "log_driver": "none",
+            "tmpfs": {"/tmp": "rw,noexec,nosuid,size=16m"},
+            "container_state": "running",
+            "stop_timeout": 1,
+            "extra_labels": {},
+        }
+        record.update(mcp_signature_overrides)
+        containers.append(record)
+    inventory_items = [(str(record["container_id"]), str(record["name"])) for record in containers]
     if include_judge:
-        containers.append(("f" * 64, "hapax-local-judge"))
-    inventory = "".join(f"{container_id}\t{name}\n" for container_id, name in containers)
+        inventory_items.append(("f" * 64, "hapax-local-judge"))
+    inventory = "".join(f"{container_id}\t{name}\n" for container_id, name in inventory_items)
+    labeled_inventory = "".join(
+        f"{record['container_id']}\n" for record in containers if record["app_label"] is not None
+    )
     inventory_file = tmp_path / "docker.inventory"
     inventory_file.write_text(
         inventory if inventory_override is None else inventory_override,
@@ -267,12 +306,28 @@ def _fake_docker(
     inspect_file = tmp_path / "docker.inspect"
     if inspect_override is not None:
         inspect_file.write_text(inspect_override, encoding="utf-8")
-    for container_id, name in containers:
+    for record in containers:
+        container_id = str(record["container_id"])
+        name = str(record["name"])
+        labels = {
+            key: str(record[field])
+            for key, field in (
+                ("org.hapax.github-mcp.app", "app_label"),
+                ("org.hapax.github-mcp.uid", "uid_label"),
+                ("org.hapax.github-mcp.launch", "launch_label"),
+                ("org.hapax.github-mcp.lease-pid", "lease_pid_label"),
+                ("org.hapax.github-mcp.lease-start", "lease_start_label"),
+                ("org.hapax.github-mcp.lease-boot", "lease_boot_label"),
+            )
+            if record[field] is not None
+        }
+        labels.update(record["extra_labels"])
         inspect_payload = "\t".join(
             json.dumps(value)
             for value in (
                 container_id,
                 f"/{name}",
+                labels,
                 mcp_memory,
                 mcp_memory_swap,
                 mcp_oom_kill_disable,
@@ -285,6 +340,14 @@ def _fake_docker(
                     "/tmp/github-mcp.log",
                     "--tools=pull_request_read",
                 ],
+                record["readonly_rootfs"],
+                record["cap_drop"],
+                record["security_opt"],
+                record["auto_remove"],
+                record["log_driver"],
+                record["tmpfs"],
+                record["container_state"],
+                record["stop_timeout"],
             )
         )
         if inspect_override is None:
@@ -297,6 +360,7 @@ def _fake_docker(
         f'printf \'%s\\n\' "$*" >> "{calls}"\n'
         'case "$*" in\n'
         f"  *\" image inspect --format \"*) printf '%s\\n%s\\n' '{mcp_local_image_id}' '{mcp_repo_digest}' ;;\n"
+        f"  *\" ps -aq --no-trunc --filter label=org.hapax.github-mcp.app\"*) printf '%s' '{labeled_inventory}' ;;\n"
         f'  *" ps -a --no-trunc --format "*) cat "{inventory_file}" ;;\n'
         + "\n".join(inspect_cases)
         + "\n"
@@ -316,6 +380,7 @@ def _write_proc(
     uid: int,
     oom_score: int,
     ppid: int = 1,
+    start_ticks: int | None = None,
 ) -> None:
     pid_dir = proc_root / str(pid)
     pid_dir.mkdir(parents=True)
@@ -324,6 +389,9 @@ def _write_proc(
         encoding="utf-8",
     )
     (pid_dir / "oom_score_adj").write_text(f"{oom_score}\n", encoding="utf-8")
+    if start_ticks is not None:
+        stat_tail = ["S", str(ppid), *(["0"] * 17), str(start_ticks)]
+        (pid_dir / "stat").write_text(f"{pid} ({name}) {' '.join(stat_tail)}\n", encoding="utf-8")
 
 
 def _write_proc_cgroup(proc_root: Path, pid: int, cgroup: str) -> None:
@@ -375,6 +443,7 @@ def _run(
     docker_mcp_image_id: str = GITHUB_MCP_LOCAL_IMAGE_ID,
     docker_mcp_local_image_id: str = GITHUB_MCP_LOCAL_IMAGE_ID,
     docker_mcp_repo_digest: str = GITHUB_MCP_IMAGE,
+    docker_mcp_signature_overrides: dict[str, object] | None = None,
     judge_load_state: str = "masked",
     judge_unit_file_state: str = "masked",
     judge_active_state: str = "inactive",
@@ -383,6 +452,20 @@ def _run(
     if proc_root is None:
         proc_root = tmp_path / "proc"
         proc_root.mkdir(exist_ok=True)
+    boot_id = proc_root / "sys/kernel/random/boot_id"
+    boot_id.parent.mkdir(parents=True, exist_ok=True)
+    boot_id.write_text(f"{GITHUB_MCP_BOOT_ID}\n", encoding="utf-8")
+    for index in range(docker_mcp_count):
+        lease_pid = 8000 + index
+        if not (proc_root / str(lease_pid)).exists():
+            _write_proc(
+                proc_root,
+                lease_pid,
+                name="hapax-github-mcp",
+                uid=1000,
+                oom_score=100,
+                start_ticks=900000 + index,
+            )
     if not (proc_root / "900").exists():
         _write_proc(proc_root, 900, name="systemd", uid=1000, oom_score=100)
     if not (proc_root / "920").exists():
@@ -521,6 +604,7 @@ def _run(
                 mcp_image_id=docker_mcp_image_id,
                 mcp_local_image_id=docker_mcp_local_image_id,
                 mcp_repo_digest=docker_mcp_repo_digest,
+                mcp_signature_overrides=docker_mcp_signature_overrides,
             )
         ),
         "HAPAX_OOM_AUDIT_PROC_ROOT": str(proc_root),
@@ -1143,6 +1227,111 @@ def test_audit_rejects_mcp_limit_or_oom_killer_drift(
     assert check["status"] == "gap"
 
 
+@pytest.mark.parametrize(
+    "signature_overrides",
+    (
+        {"app_label": None},
+        {"app_label": "wrong-app"},
+        {"uid_label": "2000"},
+        {"launch_label": "1000-short"},
+    ),
+)
+def test_audit_rejects_missing_or_inconsistent_mcp_labels(
+    tmp_path: Path,
+    signature_overrides: dict[str, object],
+) -> None:
+    result = _run(
+        tmp_path,
+        docker_mcp_count=1,
+        docker_mcp_signature_overrides=signature_overrides,
+    )
+
+    assert result.returncode == 1
+    payload = json.loads(result.stdout)
+    check = next(item for item in payload["checks"] if item["name"].endswith("_limits"))
+    assert check["status"] == "gap"
+    assert "labels" in check["detail"]
+
+
+def test_audit_discovers_app_labeled_mcp_name_lookalike(tmp_path: Path) -> None:
+    result = _run(
+        tmp_path,
+        docker_mcp_count=1,
+        docker_mcp_signature_overrides={"name": "unrelated-container"},
+    )
+
+    assert result.returncode == 1
+    payload = json.loads(result.stdout)
+    checks = {item["name"]: item for item in payload["checks"]}
+    assert checks["docker_github_mcp_count"]["actual"] == "1"
+    assert checks["docker_unrelated-container_limits"]["status"] == "gap"
+
+
+@pytest.mark.parametrize(
+    "signature_overrides",
+    (
+        {"readonly_rootfs": False},
+        {"cap_drop": []},
+        {"security_opt": []},
+        {"auto_remove": False},
+        {"log_driver": "json-file"},
+        {"tmpfs": {}},
+        {"stop_timeout": 10},
+    ),
+)
+def test_audit_rejects_mcp_runtime_security_drift(
+    tmp_path: Path,
+    signature_overrides: dict[str, object],
+) -> None:
+    result = _run(
+        tmp_path,
+        docker_mcp_count=1,
+        docker_mcp_signature_overrides=signature_overrides,
+    )
+
+    assert result.returncode == 1
+    payload = json.loads(result.stdout)
+    check = next(item for item in payload["checks"] if item["name"].endswith("_limits"))
+    assert check["status"] == "gap"
+    assert "security" in check["detail"]
+
+
+def test_audit_accepts_semantically_identical_tmpfs_option_order(tmp_path: Path) -> None:
+    result = _run(
+        tmp_path,
+        docker_mcp_count=1,
+        docker_mcp_signature_overrides={"tmpfs": {"/tmp": "size=16m,nosuid,rw,noexec"}},
+    )
+
+    assert result.returncode == 0, result.stdout
+
+
+def test_audit_does_not_emit_unrelated_container_labels(tmp_path: Path) -> None:
+    secret = "unrelated-label-value-must-not-be-emitted"
+    result = _run(
+        tmp_path,
+        docker_mcp_count=1,
+        docker_mcp_signature_overrides={"extra_labels": {"unrelated.example/value": secret}},
+    )
+
+    assert result.returncode == 0, result.stdout
+    assert secret not in result.stdout
+
+
+def test_audit_rejects_dead_or_reused_mcp_launch_lease(tmp_path: Path) -> None:
+    result = _run(
+        tmp_path,
+        docker_mcp_count=1,
+        docker_mcp_signature_overrides={"lease_start_label": "999999"},
+    )
+
+    assert result.returncode == 1
+    payload = json.loads(result.stdout)
+    check = next(item for item in payload["checks"] if item["name"].endswith("_limits"))
+    assert check["status"] == "gap"
+    assert "PID was reused" in check["detail"]
+
+
 def test_audit_rejects_mcp_image_substitution(tmp_path: Path) -> None:
     result = _run(
         tmp_path,
@@ -1265,7 +1454,7 @@ def test_audit_rejects_malformed_formatted_docker_inspect(tmp_path: Path) -> Non
         item for item in payload["checks"] if item["name"].startswith("docker_hapax-github-mcp-")
     )
     assert check["status"] == "error"
-    assert "nine formatted Docker inspect fields" in check["detail"]
+    assert "eighteen formatted Docker inspect fields" in check["detail"]
 
 
 def test_audit_is_behaviorally_observational(tmp_path: Path) -> None:

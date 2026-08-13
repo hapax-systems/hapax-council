@@ -8,6 +8,7 @@ load-bearing directives from silently regressing.
 from __future__ import annotations
 
 import ast
+import re
 from pathlib import Path
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
@@ -18,17 +19,26 @@ INSTALLER = REPO_ROOT / "systemd" / "scripts" / "install-units.sh"
 # 6+7 with SMT siblings). No SDLC worker may ever land here.
 AUDIO_CORES = {6, 7, 14, 15}
 FLEET_FENCE = {0, 1, 2, 3, 4, 5, 8, 9, 10, 11, 12, 13}
+SYSTEM_SCOPE_RE = re.compile(r"^[#;]\s*Hapax-Install-Scope:\s*system\s*$", re.IGNORECASE)
 
 
-def _directive(text: str, key: str) -> str | None:
+def _directives(text: str, key: str) -> list[str]:
+    values: list[str] = []
     for line in text.splitlines():
         s = line.strip()
         if s.startswith("#") or "=" not in s:
             continue
         k, v = s.split("=", 1)
         if k.strip() == key:
-            return v.strip()
-    return None
+            values.append(v.strip())
+    return values
+
+
+def _directive(text: str, key: str) -> str | None:
+    """Return the effective value for a scalar systemd directive."""
+
+    values = _directives(text, key)
+    return values[-1] if values else None
 
 
 def _parse_cpu_set(spec: str) -> set[int]:
@@ -42,6 +52,94 @@ def _parse_cpu_set(spec: str) -> set[int]:
     return out
 
 
+def _merged_cpu_set(text: str, key: str) -> set[int]:
+    """Model systemd's list assignment semantics, including an empty reset."""
+
+    effective: set[int] = set()
+    for value in _directives(text, key):
+        if not value:
+            effective.clear()
+        else:
+            effective.update(_parse_cpu_set(value))
+    return effective
+
+
+def _unit_fragments(units_dir: Path, unit_name: str) -> str:
+    paths = [units_dir / unit_name, *sorted((units_dir / f"{unit_name}.d").glob("*.conf"))]
+    return "\n".join(path.read_text() for path in paths if path.is_file())
+
+
+def _is_system_scope(text: str) -> bool:
+    return any(SYSTEM_SCOPE_RE.fullmatch(line.strip()) for line in text.splitlines())
+
+
+def _delegated_oom_assignments(units_dir: Path) -> list[tuple[str, int]]:
+    assignments: list[tuple[str, int]] = []
+    paths = sorted(units_dir.glob("*.service")) + sorted(units_dir.glob("*.service.d/*.conf"))
+    for path in paths:
+        text = path.read_text()
+        if path.parent == units_dir:
+            base_text = text
+        else:
+            base_path = units_dir / path.parent.name.removesuffix(".d")
+            base_text = base_path.read_text() if base_path.is_file() else ""
+        # Install scope belongs to the base unit. Generic drop-in deployment
+        # does not honor a marker injected into a sibling .conf file.
+        if _is_system_scope(base_text):
+            continue
+        for value in _directives(text, "OOMScoreAdjust"):
+            assignments.append((str(path.relative_to(units_dir)), int(value)))
+    return assignments
+
+
+def test_directive_helpers_match_systemd_assignment_semantics() -> None:
+    scalar = "[Service]\nOOMScoreAdjust=100\nOOMScoreAdjust=-500\n"
+    assert _directive(scalar, "OOMScoreAdjust") == "-500"
+
+    affinity = "[Service]\nCPUAffinity=0-2\nCPUAffinity=5\n"
+    assert _merged_cpu_set(affinity, "CPUAffinity") == {0, 1, 2, 5}
+    reset_affinity = affinity + "CPUAffinity=\nCPUAffinity=8 9\n"
+    assert _merged_cpu_set(reset_affinity, "CPUAffinity") == {8, 9}
+
+
+def test_delegated_oom_sweep_includes_sibling_dropins(tmp_path: Path) -> None:
+    (tmp_path / "example.service").write_text("[Service]\nOOMScoreAdjust=100\n", encoding="utf-8")
+    dropin = tmp_path / "example.service.d"
+    dropin.mkdir()
+    (dropin / "zz-override.conf").write_text(
+        "# Hapax-Install-Scope: system\n[Service]\nOOMScoreAdjust=-500\n",
+        encoding="utf-8",
+    )
+
+    assert _delegated_oom_assignments(tmp_path) == [
+        ("example.service", 100),
+        ("example.service.d/zz-override.conf", -500),
+    ]
+
+
+def test_system_scope_is_derived_from_the_base_unit(tmp_path: Path) -> None:
+    (tmp_path / "root-owned.service").write_text(
+        "; Hapax-Install-Scope: system\n[Service]\nOOMScoreAdjust=-900\n",
+        encoding="utf-8",
+    )
+    dropin = tmp_path / "root-owned.service.d"
+    dropin.mkdir()
+    (dropin / "override.conf").write_text("[Service]\nOOMScoreAdjust=-800\n", encoding="utf-8")
+
+    assert _delegated_oom_assignments(tmp_path) == []
+
+
+def test_unit_fragments_include_later_affinity_dropins(tmp_path: Path) -> None:
+    (tmp_path / "example.service").write_text("[Service]\nCPUAffinity=0-2\n", encoding="utf-8")
+    dropin = tmp_path / "example.service.d"
+    dropin.mkdir()
+    (dropin / "10-reset.conf").write_text("[Service]\nCPUAffinity=\n", encoding="utf-8")
+    (dropin / "99-override.conf").write_text("[Service]\nCPUAffinity=6 7\n", encoding="utf-8")
+
+    text = _unit_fragments(tmp_path, "example.service")
+    assert _merged_cpu_set(text, "CPUAffinity") == {6, 7}
+
+
 # ── L1: the elastic yield slice ──────────────────────────────────────────────
 
 
@@ -53,14 +151,14 @@ def test_sdlc_slice_exists_and_is_idle_weighted() -> None:
 
 
 def test_sdlc_slice_fences_audio_cores() -> None:
-    text = (UNITS_DIR / "hapax-sdlc.slice").read_text()
+    text = _unit_fragments(UNITS_DIR, "hapax-sdlc.slice")
     allowed = _parse_cpu_set(_directive(text, "AllowedCPUs") or "")
     assert allowed == FLEET_FENCE
     assert not (allowed & AUDIO_CORES), "no pytest/cargo worker may land on the audio cores"
 
 
 def test_sdlc_slice_throttles_memory_without_killing() -> None:
-    text = (UNITS_DIR / "hapax-sdlc.slice").read_text()
+    text = _unit_fragments(UNITS_DIR, "hapax-sdlc.slice")
     assert _directive(text, "MemoryHigh") == "48G", "MemoryHigh reclaim-throttles, never kills"
     # MemoryMax-as-throttle would SIGKILL a lane mid-work — that is degradation.
     assert _directive(text, "MemoryMax") is None, "MemoryMax must not be used as a throttle"
@@ -181,18 +279,12 @@ def test_broadcast_critical_user_oom_dropins_are_source_controlled() -> None:
         assert _directive(text, "MemoryLow") is not None
         assert _directive(text, "MemoryMin") is not None
 
-    delegated_scores = {}
-    for unit_path in UNITS_DIR.glob("*.service"):
-        text = unit_path.read_text()
-        if "Hapax-Install-Scope: system" in text:
-            continue
-        score = _directive(text, "OOMScoreAdjust")
-        if score is not None:
-            delegated_scores[unit_path.name] = int(score)
+    delegated_assignments = _delegated_oom_assignments(UNITS_DIR)
+    delegated_scores = dict(delegated_assignments)
 
     assert delegated_scores["hapax-daimonion.service"] == 100
     assert delegated_scores["hapax-feedback-loop-detector.service"] == 100
-    assert all(score >= 0 for score in delegated_scores.values())
+    assert all(score >= 0 for _, score in delegated_assignments)
 
 
 def test_protected_user_units_have_no_root_negative_score_bridge() -> None:
@@ -326,14 +418,17 @@ def test_root_oom_enforcer_is_a_disabled_retirement_sentinel() -> None:
 
 def test_compositor_excluded_from_audio_cores() -> None:
     conf = UNITS_DIR / "studio-compositor.service.d" / "cpu-affinity.conf"
-    allowed = _parse_cpu_set(_directive(conf.read_text(), "CPUAffinity") or "")
+    assert conf.exists()
+    allowed = _merged_cpu_set(
+        _unit_fragments(UNITS_DIR, "studio-compositor.service"), "CPUAffinity"
+    )
     assert not (allowed & AUDIO_CORES)
 
 
 def test_daimonion_cpu_side_fenced_off_audio_cores() -> None:
     conf = UNITS_DIR / "hapax-daimonion.service.d" / "cpu-affinity.conf"
     assert conf.exists(), "daimonion CPU-side work must be pinned off the audio data-loops"
-    allowed = _parse_cpu_set(_directive(conf.read_text(), "CPUAffinity") or "")
+    allowed = _merged_cpu_set(_unit_fragments(UNITS_DIR, "hapax-daimonion.service"), "CPUAffinity")
     assert allowed, "CPUAffinity must be set"
     assert not (allowed & AUDIO_CORES), "daimonion vision/STT spikes must not preempt audio"
 
@@ -342,7 +437,7 @@ def test_daimonion_cpu_side_fenced_off_audio_cores() -> None:
 
 
 def test_coordinator_has_high_cpuweight() -> None:
-    text = (UNITS_DIR / "hapax-coordinator.service").read_text()
+    text = _unit_fragments(UNITS_DIR, "hapax-coordinator.service")
     weight = _directive(text, "CPUWeight")
     assert weight is not None and weight.isdigit() and int(weight) >= 1000, (
         "the controller must out-weight the idle fleet it throttles"
@@ -352,7 +447,7 @@ def test_coordinator_has_high_cpuweight() -> None:
 def test_coordinator_pinned_to_a_fleet_fenced_core() -> None:
     # The controller gets cores the SDLC fleet is fenced OUT of, so it never
     # starves while throttling the controlled (the exact death of 2026-06-01).
-    text = (UNITS_DIR / "hapax-coordinator.service").read_text()
+    text = _unit_fragments(UNITS_DIR, "hapax-coordinator.service")
     allowed = _parse_cpu_set(_directive(text, "AllowedCPUs") or "")
     assert allowed, "coordinator must pin to a protected cpuset"
     assert not (allowed & FLEET_FENCE), "coordinator cores must be off the SDLC fleet's cpuset"
