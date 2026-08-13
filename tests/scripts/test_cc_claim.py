@@ -260,7 +260,7 @@ def test_default_claim_refuses_retired_force_flag(tmp_path: Path) -> None:
     result = _claim(home, "force-retired", extra_args=["--force"])
 
     assert result.returncode == 2
-    assert "--force is retired under canon echo enforcement" in result.stderr
+    assert "--force is retired under canon enforcement" in result.stderr
     assert "Next action: run cc-close" in result.stderr
     assert "status: offered" in note.read_text(encoding="utf-8")
 
@@ -568,6 +568,52 @@ def test_default_claim_is_idempotent_for_existing_applied_publication(
     assert second.returncode == 0, second.stderr
     assert "applied publication already owns task" in second.stdout
     assert "status: claimed" in note.read_text(encoding="utf-8")
+
+
+def test_default_claim_after_normal_close_archives_dispatch_only_residue(
+    tmp_path: Path,
+) -> None:
+    home = tmp_path / "home"
+    first_note = _write_task(home, "active", "closed-before-next")
+    first = _claim(home, "closed-before-next")
+    assert first.returncode == 0, first.stderr
+
+    task_root = _task_root(home)
+    closed_note = task_root / "closed" / first_note.name
+    closed_note.write_text(
+        first_note.read_text(encoding="utf-8").replace("status: claimed", "status: done", 1),
+        encoding="utf-8",
+    )
+    first_note.unlink()
+    cache = home / ".cache" / "hapax"
+    for key in ("cx-test", f"cx-test-{_SESSION_ID}"):
+        (cache / f"cc-active-task-{key}").unlink()
+        (cache / f"cc-claim-epoch-{key}").unlink()
+    assert (cache / "cc-claim-dispatch-cx-test.json").is_file()
+    assert (cache / f"cc-claim-dispatch-cx-test-{_SESSION_ID}.json").is_file()
+
+    second_note = _write_task(home, "active", "claim-after-close")
+    second = _claim(home, "claim-after-close")
+
+    assert second.returncode == 0, second.stderr
+    assert "archived terminal dispatch-only claim residue" in second.stderr
+    assert "admitted publication applied" in second.stdout
+    assert "status: claimed" in second_note.read_text(encoding="utf-8")
+    assert (cache / "cc-active-task-cx-test").read_text(encoding="utf-8") == ("claim-after-close\n")
+    assert (cache / f"cc-active-task-cx-test-{_SESSION_ID}").read_text(
+        encoding="utf-8"
+    ) == "claim-after-close\n"
+    assert (cache / "cc-claim-dispatch-cx-test.json").is_file()
+    assert (cache / f"cc-claim-dispatch-cx-test-{_SESSION_ID}.json").is_file()
+    archived = sorted(
+        (task_root / "_lineage" / "closed-before-next").glob(
+            "closed-claim-dispatch-residue-*/*.json"
+        )
+    )
+    assert [path.name for path in archived] == [
+        "cc-claim-dispatch-cx-test.json",
+        f"cc-claim-dispatch-cx-test-{_SESSION_ID}.json",
+    ]
 
 
 def test_default_claim_holds_existing_publication_for_different_dispatch(

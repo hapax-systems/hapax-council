@@ -2049,6 +2049,18 @@ def _is_claim_activation_projection(projection: FileProjection) -> bool:
     return projection.path.name.startswith("cc-active-task-")
 
 
+@dataclass(frozen=True)
+class _ClaimProjectionPhaseItem:
+    index: int
+    projection: FileProjection
+
+
+@dataclass(frozen=True)
+class _ReceiptBeforeActivationProjectionPlan:
+    pre_receipt: tuple[_ClaimProjectionPhaseItem, ...]
+    activation: tuple[_ClaimProjectionPhaseItem, ...]
+
+
 def _activation_failure_hook(
     failure_hook: Callable[[str, int | None], None] | None,
 ) -> Callable[[str, int | None], None] | None:
@@ -2066,32 +2078,33 @@ def _activation_failure_hook(
     return wrapped
 
 
-def _split_activation_projections(
+def _receipt_before_activation_projection_plan(
     live_projections: Sequence[FileProjection],
-    scratches: Sequence[_ProjectionScratch],
-) -> tuple[
-    tuple[FileProjection, ...],
-    tuple[_ProjectionScratch, ...],
-    tuple[FileProjection, ...],
-    tuple[_ProjectionScratch, ...],
-]:
-    pre_activation: list[FileProjection] = []
-    pre_activation_scratches: list[_ProjectionScratch] = []
-    activation: list[FileProjection] = []
-    activation_scratches: list[_ProjectionScratch] = []
-    for projection, scratch in zip(live_projections, scratches, strict=True):
+) -> _ReceiptBeforeActivationProjectionPlan:
+    pre_receipt: list[_ClaimProjectionPhaseItem] = []
+    activation: list[_ClaimProjectionPhaseItem] = []
+    for index, projection in enumerate(live_projections):
+        item = _ClaimProjectionPhaseItem(index=index, projection=projection)
         if _is_claim_activation_projection(projection):
-            activation.append(projection)
-            activation_scratches.append(scratch)
+            activation.append(item)
         else:
-            pre_activation.append(projection)
-            pre_activation_scratches.append(scratch)
-    return (
-        tuple(pre_activation),
-        tuple(pre_activation_scratches),
-        tuple(activation),
-        tuple(activation_scratches),
+            pre_receipt.append(item)
+    return _ReceiptBeforeActivationProjectionPlan(
+        pre_receipt=tuple(pre_receipt),
+        activation=tuple(activation),
     )
+
+
+def _phase_projections(
+    phase_items: Sequence[_ClaimProjectionPhaseItem],
+) -> tuple[FileProjection, ...]:
+    return tuple(item.projection for item in phase_items)
+
+
+def _phase_scratches(
+    phase_items: Sequence[_ClaimProjectionPhaseItem], publication_id: str
+) -> tuple[_ProjectionScratch, ...]:
+    return tuple(_scratch_for(item.projection, publication_id, item.index) for item in phase_items)
 
 
 def _projection_vector(projections: Sequence[FileProjection]) -> str:
@@ -3753,16 +3766,9 @@ def _apply_admitted_claim_publication_transaction(
         )
         _ensure_claim_private_directory(receipt_directory)
 
-        scratches = tuple(
-            _scratch_for(projection, publication_id, index)
-            for index, projection in enumerate(live_projections)
-        )
-        (
-            pre_activation_projections,
-            pre_activation_scratches,
-            activation_projections,
-            activation_scratches,
-        ) = _split_activation_projections(live_projections, scratches)
+        projection_plan = _receipt_before_activation_projection_plan(live_projections)
+        pre_activation_projections = _phase_projections(projection_plan.pre_receipt)
+        pre_activation_scratches = _phase_scratches(projection_plan.pre_receipt, publication_id)
         phase = "preflight"
         try:
             phase = "pre_projection_preflight"
@@ -3801,6 +3807,8 @@ def _apply_admitted_claim_publication_transaction(
                 projections,
                 publication_id,
             )
+            activation_projections = _phase_projections(projection_plan.activation)
+            activation_scratches = _phase_scratches(projection_plan.activation, publication_id)
             phase = "activation_projection"
             _apply_projections(
                 activation_projections,
@@ -4767,16 +4775,9 @@ def _recover_one(
             )
 
         live_projections = projections[:7]
-        scratches = tuple(
-            _scratch_for(projection, publication_id, index)
-            for index, projection in enumerate(live_projections)
-        )
-        (
-            pre_activation_projections,
-            pre_activation_scratches,
-            activation_projections,
-            activation_scratches,
-        ) = _split_activation_projections(live_projections, scratches)
+        projection_plan = _receipt_before_activation_projection_plan(live_projections)
+        pre_activation_projections = _phase_projections(projection_plan.pre_receipt)
+        pre_activation_scratches = _phase_scratches(projection_plan.pre_receipt, publication_id)
 
         def apply_missing_postimages(
             target_projections: Sequence[FileProjection],
@@ -4837,6 +4838,8 @@ def _recover_one(
                 projections,
                 publication_id,
             )
+        activation_projections = _phase_projections(projection_plan.activation)
+        activation_scratches = _phase_scratches(projection_plan.activation, publication_id)
         try:
             apply_missing_postimages(activation_projections, activation_scratches)
             _require_exact_task_postimage(intent)

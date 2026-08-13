@@ -249,8 +249,24 @@ def test_install_rejects_matching_artifacts_with_unsafe_metadata(tmp_path: Path)
     _install(tmp_path, fixture)
     receipt_path = Path(fixture.roots.invocation_store_root) / "activation-receipt.json"
     manifest_path = Path(fixture.roots.invocation_store_root) / "composition-manifest.json"
+    install_root = Path(fixture.roots.invocation_store_root)
     receipt_payload = receipt_path.read_bytes()
     manifest_payload = manifest_path.read_bytes()
+
+    install_root.chmod(0o755)
+    with pytest.raises(ExecutionAdmissionError) as dir_exc:
+        _install(tmp_path, fixture)
+    assert dir_exc.value.reason_code == "gate0b_install_directory_unsafe"
+    assert "mode-0700 private install directory" in dir_exc.value.repair_action
+    install_root.chmod(0o700)
+
+    hardlink = tmp_path / "activation-receipt-hardlink.json"
+    os.link(receipt_path, hardlink)
+    with pytest.raises(ExecutionAdmissionError) as hardlink_exc:
+        _install(tmp_path, fixture)
+    assert hardlink_exc.value.reason_code == "gate0b_install_file_unsafe"
+    assert "single-link mode-0600 regular file" in hardlink_exc.value.repair_action
+    hardlink.unlink()
 
     receipt_path.chmod(0o644)
     with pytest.raises(ExecutionAdmissionError) as mode_exc:

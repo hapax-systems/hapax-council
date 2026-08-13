@@ -26,6 +26,13 @@ content-addressed and idempotent for exact matching files. A corrupt,
 noncanonical, or mismatched receipt/manifest HOLDs; `cc-claim` does not
 overwrite non-matching install artifacts.
 
+The admitted writer stages the task note, epoch sidecars, and dispatch-binding
+sidecars first. It persists the content-addressed claim-publication receipt
+before constructing or publishing any `cc-active-task-*` activation file. If a
+normal close leaves terminal dispatch-only residue, the next admitted
+`cc-claim` archives that residue under the old task's `_lineage/` before
+publishing the fresh claim.
+
 Governed dispatch may still pass an explicit dispatch-issued binding:
 
 ```bash

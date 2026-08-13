@@ -1737,6 +1737,104 @@ def test_private_admitted_transaction_marks_recovery_after_projection_failure(
     assert recovered_receipt.recovered is False
 
 
+def test_pre_receipt_projection_failure_does_not_publish_claim_cache(
+    tmp_path: Path,
+) -> None:
+    fixture = _home_fixture(tmp_path, task_id="pre-receipt-claim", resume=True)
+    active = _active_admission_fixture(tmp_path, fixture)
+    receipt_root = fixture.cache / "claim-publication-receipts"
+
+    def failure_hook(phase: str, index: int | None) -> None:
+        if phase == "after_projection" and index == 0:
+            raise ClaimPublicationError(
+                "claim_publication_pre_receipt_simulated",
+                "run admitted recovery in the test harness",
+                fixture.intent.task_id,
+            )
+
+    with pytest.raises(ClaimPublicationError) as raised:
+        sdlc_claim._apply_admitted_claim_publication_transaction(
+            fixture.intent,
+            active.consumption,
+            transaction_root=fixture.transactions,
+            receipt_root=receipt_root,
+            lock_root=fixture.locks,
+            now=active.checked_at,
+            failure_hook=failure_hook,
+        )
+
+    receipt_path = claim_publication_receipt_path(
+        fixture.cache,
+        fixture.intent.binding,
+        receipt_root=receipt_root,
+    )
+    role_claim = fixture.cache / "cc-active-task-cx-red"
+    session_claim = fixture.cache / "cc-active-task-cx-red-session-abc"
+
+    assert raised.value.reason_code == "claim_publication_pre_receipt_simulated"
+    assert not receipt_path.exists()
+    assert not role_claim.exists()
+    assert not session_claim.exists()
+
+    repo_root = Path(__file__).resolve().parents[2]
+    gate_env = os.environ.copy()
+    for key in (
+        "HAPAX_AGENT_NAME",
+        "CODEX_THREAD_NAME",
+        "CODEX_SESSION_NAME",
+        "CODEX_SESSION",
+        "CODEX_ROLE",
+        "CLAUDE_ROLE",
+        "CLAUDE_CODE_SESSION_ID",
+        "HAPAX_SESSION_ID",
+    ):
+        gate_env.pop(key, None)
+    gate_env.update(
+        {
+            "HOME": str(tmp_path / "home"),
+            "HAPAX_AGENT_ROLE": "cx-red",
+            "HAPAX_AGENT_NAME": "cx-red",
+            "HAPAX_SESSION_ID": "session-abc",
+        }
+    )
+    gated = subprocess.run(
+        ["bash", str(repo_root / "hooks" / "scripts" / "cc-task-gate.impl.sh")],
+        input=json.dumps(
+            {
+                "tool_name": "Write",
+                "tool_input": {
+                    "file_path": str(repo_root / "shared" / "sdlc_claim.py"),
+                },
+            }
+        ),
+        env=gate_env,
+        text=True,
+        capture_output=True,
+        check=False,
+    )
+
+    assert gated.returncode == 2
+    assert "no claimed task" in gated.stderr
+
+    results = recover_claim_publications(
+        cache_dir=fixture.cache,
+        transaction_root=fixture.transactions,
+        receipt_root=receipt_root,
+        lock_root=fixture.locks,
+        task_id=fixture.intent.task_id,
+    )
+
+    assert results == (
+        sdlc_claim.ClaimPublicationRecoveryResult(
+            admitted_claim_publication_id(fixture.intent, active.consumption),
+            "applied",
+        ),
+    )
+    assert receipt_path.exists()
+    assert role_claim.read_text(encoding="utf-8") == "pre-receipt-claim\n"
+    assert session_claim.read_text(encoding="utf-8") == "pre-receipt-claim\n"
+
+
 def test_active_claim_cache_is_not_published_before_receipt(
     tmp_path: Path,
 ) -> None:
