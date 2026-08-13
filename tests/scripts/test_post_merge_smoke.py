@@ -187,6 +187,19 @@ class TestKillSwitch:
         assert "next action:" in result.stderr
         assert marker.read_text() == "called"
 
+    def test_empty_since_is_rejected_instead_of_collapsing_to_single_commit(
+        self, tmp_path: Path
+    ) -> None:
+        repo = _make_repo(tmp_path)
+        sha = _commit_files(repo, {"README.md": "target\n"})
+
+        result = _run(sha, since="", cwd=repo)
+
+        assert result.returncode == 0
+        assert "smoke FAIL: change-discovery:" in result.stderr
+        assert "empty --since commit" in result.stderr
+        assert "next action:" in result.stderr
+
     def test_root_commit_smokes_added_service(self, tmp_path: Path) -> None:
         repo = _init_repo(tmp_path)
         sha = _commit_files(
@@ -201,6 +214,33 @@ class TestKillSwitch:
 
         assert result.returncode == 0
         assert "root.service not active after deploy" in result.stderr
+
+    def test_shallow_boundary_is_not_misclassified_as_a_root_commit(self, tmp_path: Path) -> None:
+        origin = _make_repo(tmp_path / "origin")
+        _commit_files(origin, {"agents/midi_clock.py": "enabled = True\n"})
+        (origin / "agents/midi_clock.py").unlink()
+        subprocess.run(["git", "add", "-A"], cwd=origin, check=True)
+        subprocess.run(["git", "commit", "-q", "-m", "delete gate input"], cwd=origin, check=True)
+        shallow = tmp_path / "shallow"
+        subprocess.run(
+            ["git", "clone", "-q", "--depth", "1", f"file://{origin}", str(shallow)],
+            check=True,
+        )
+        sha = subprocess.run(
+            ["git", "rev-parse", "HEAD"],
+            cwd=shallow,
+            capture_output=True,
+            text=True,
+            check=True,
+        ).stdout.strip()
+
+        result = _run(sha, cwd=shallow)
+
+        assert result.returncode == 0
+        assert "smoke FAIL: change-discovery:" in result.stderr
+        assert "first parent object" in result.stderr
+        assert "shallow" in result.stderr
+        assert "next action:" in result.stderr
 
     def test_cumulative_range_smokes_intermediate_service(self, tmp_path: Path) -> None:
         repo = _make_repo(tmp_path)
@@ -288,12 +328,50 @@ exec /usr/bin/git "$@"
             sha,
             cwd=repo,
             extra_env={"NTFY_TOPIC": "test-topic", "HAPAX_SMOKE_NTFY_TIMEOUT_S": "1"},
-            stubs={"systemctl": "exit 3", "curl": "sleep 3"},
+            stubs={"systemctl": "exit 3", "curl": "trap '' TERM\nwhile :; do :; done"},
         )
 
         assert result.returncode == 0
         assert time.monotonic() - started < 2.5
         assert "slow-notice.service not active after deploy" in result.stderr
+
+    def test_failure_notification_payload_and_retained_entries_are_bounded(
+        self, tmp_path: Path
+    ) -> None:
+        repo = _make_repo(tmp_path)
+        files = {
+            f"systemd/units/failure-{index:02d}-{'x' * 96}.service": "[Unit]\n"
+            for index in range(20)
+        }
+        sha = _commit_files(repo, files)
+        payload = repo / "ntfy-payload"
+        result = _run(
+            sha,
+            cwd=repo,
+            extra_env={
+                "NTFY_TOPIC": "test-topic",
+                "HAPAX_SMOKE_NTFY_PAYLOAD": str(payload),
+            },
+            stubs={
+                "systemctl": "exit 3",
+                "curl": r"""
+while [ "$#" -gt 0 ]; do
+    if [ "$1" = "-d" ]; then
+        printf '%s' "$2" > "$HAPAX_SMOKE_NTFY_PAYLOAD"
+        exit 0
+    fi
+    shift
+done
+exit 91
+""",
+            },
+        )
+
+        assert result.returncode == 0
+        assert "gates_failed=20" in payload.read_text(encoding="utf-8")
+        assert payload.stat().st_size <= 4096
+        assert "additional smoke failures omitted" in result.stderr
+        assert "omitted=" in payload.read_text(encoding="utf-8")
 
 
 # ── Gate: services-restarted ───────────────────────────────────────
@@ -317,6 +395,45 @@ class TestServicesRestartedGate:
         assert result.returncode == 0
         assert "services-restarted" not in result.stderr
         assert f"{unit} not active" not in result.stderr
+
+    def test_active_decommissioned_unit_records_retirement_failure(self, tmp_path: Path) -> None:
+        repo = _make_repo(tmp_path)
+        unit = "retired-but-still-active.service"
+        sha = _commit_files(
+            repo,
+            {
+                INSTALL_UNITS_PATH: _install_units_source(unit),
+                f"systemd/units/{unit}": "[Unit]\n",
+            },
+        )
+
+        result = _run(sha, cwd=repo, stubs={"systemctl": "exit 0"})
+
+        assert result.returncode == 0
+        assert "services-restarted" in result.stderr
+        assert f"{unit} must be inactive after deploy" in result.stderr
+        assert "next action:" in result.stderr
+
+    def test_active_parked_unit_records_retirement_failure(self, tmp_path: Path) -> None:
+        repo = _make_repo(tmp_path)
+        unit = "parked-but-still-active.service"
+        sha = _commit_files(
+            repo,
+            {
+                f"systemd/units/{unit}": (
+                    "# Hapax-Parked: true\n"
+                    "[Unit]\nDescription=Parked\n"
+                    "[Service]\nType=oneshot\nExecStart=/usr/bin/true\n"
+                )
+            },
+        )
+
+        result = _run(sha, cwd=repo, stubs={"systemctl": "exit 0"})
+
+        assert result.returncode == 0
+        assert "services-restarted" in result.stderr
+        assert f"{unit} must be inactive after deploy" in result.stderr
+        assert "next action:" in result.stderr
 
     def test_worktree_decommission_cannot_override_exact_sha(self, tmp_path: Path) -> None:
         repo = _make_repo(tmp_path)
