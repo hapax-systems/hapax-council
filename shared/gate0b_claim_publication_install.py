@@ -219,10 +219,32 @@ def claim_publication_install_receipt_bytes(
     return _canonical(checked.model_dump(mode="json", by_alias=True)) + b"\n"
 
 
+def _install_io_error(path: Path, operation: str) -> ExecutionAdmissionError:
+    return ExecutionAdmissionError(
+        "gate0b_install_file_unavailable",
+        "restore a writable euid-owned mode-0700 install directory, remove stale install temp files, and rerun first-use install",
+        f"{operation}:{path}",
+    )
+
+
 def _write_private_file(path: Path, payload: bytes, *, mode: int = 0o600) -> None:
     path = _absolute(path, label="private install file")
-    path.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
-    _require_private_install_directory(path.parent)
+    try:
+        path.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
+    except OSError as exc:
+        raise ExecutionAdmissionError(
+            "gate0b_install_directory_unavailable",
+            "restore a writable euid-owned mode-0700 private install directory and rerun first-use install",
+            str(path.parent),
+        ) from exc
+    try:
+        _require_private_install_directory(path.parent)
+    except FileNotFoundError as exc:
+        raise ExecutionAdmissionError(
+            "gate0b_install_directory_unavailable",
+            "restore a writable euid-owned mode-0700 private install directory and rerun first-use install",
+            str(path.parent),
+        ) from exc
     try:
         existing = _read_private_install_file(path, mode=mode)
     except FileNotFoundError:
@@ -236,53 +258,102 @@ def _write_private_file(path: Path, payload: bytes, *, mode: int = 0o600) -> Non
             str(path),
         )
     tmp = path.with_name(f".{path.name}.tmp-{os.getpid()}-{secrets.token_hex(8)}")
-    fd = os.open(
-        tmp,
-        os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_CLOEXEC | os.O_NOFOLLOW,
-        mode,
-    )
-    try:
-        os.write(fd, payload)
-        os.fsync(fd)
-    finally:
-        os.close(fd)
     linked = False
     try:
-        os.link(tmp, path)
-        linked = True
-    except FileExistsError as exc:
         try:
-            raced = _read_private_install_file(path, mode=mode)
-        except OSError as read_exc:
+            fd = os.open(
+                tmp,
+                os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_CLOEXEC | os.O_NOFOLLOW,
+                mode,
+            )
+        except OSError as exc:
+            raise _install_io_error(tmp, "open") from exc
+        try:
+            try:
+                view = memoryview(payload)
+                while view:
+                    written = os.write(fd, view)
+                    if written <= 0:
+                        raise OSError("install temp write made no progress")
+                    view = view[written:]
+            except OSError as exc:
+                raise _install_io_error(tmp, "write") from exc
+            try:
+                os.fsync(fd)
+            except OSError as exc:
+                raise _install_io_error(tmp, "fsync") from exc
+        finally:
+            try:
+                os.close(fd)
+            except OSError as exc:
+                raise _install_io_error(tmp, "close") from exc
+        try:
+            os.link(tmp, path)
+            linked = True
+        except FileExistsError as exc:
+            try:
+                raced = _read_private_install_file(path, mode=mode)
+            except OSError as read_exc:
+                raise ExecutionAdmissionError(
+                    "gate0b_install_file_collision",
+                    "quarantine the colliding install artifact and rerun first-use install",
+                    str(path),
+                ) from read_exc
+            if raced != payload:
+                raise ExecutionAdmissionError(
+                    "gate0b_install_file_collision",
+                    "quarantine the colliding install artifact and rerun first-use install",
+                    str(path),
+                ) from exc
+        except OSError as exc:
             raise ExecutionAdmissionError(
-                "gate0b_install_file_collision",
-                "quarantine the colliding install artifact and rerun first-use install",
-                str(path),
-            ) from read_exc
-        if raced != payload:
-            raise ExecutionAdmissionError(
-                "gate0b_install_file_collision",
-                "quarantine the colliding install artifact and rerun first-use install",
+                "gate0b_install_file_unavailable",
+                "restore a writable euid-owned mode-0700 install directory and rerun first-use install",
                 str(path),
             ) from exc
-    except OSError as exc:
-        raise ExecutionAdmissionError(
-            "gate0b_install_file_unavailable",
-            "restore a writable euid-owned mode-0700 install directory and rerun first-use install",
-            str(path),
-        ) from exc
-    finally:
+    except ExecutionAdmissionError:
         try:
             tmp.unlink()
         except FileNotFoundError:
             pass
+        except OSError:
+            pass
+        raise
+    try:
+        tmp.unlink()
+    except FileNotFoundError:
+        pass
+    except OSError as exc:
+        raise ExecutionAdmissionError(
+            "gate0b_install_temp_cleanup_failed",
+            "remove the stale install temp file, verify the installed artifact, and rerun first-use install",
+            str(tmp),
+        ) from exc
     if linked:
-        os.chmod(path, mode, follow_symlinks=False)
-        _read_private_install_file(path, mode=mode)
+        try:
+            os.chmod(path, mode, follow_symlinks=False)
+        except OSError as exc:
+            raise _install_io_error(path, "chmod") from exc
+        installed = _read_private_install_file(path, mode=mode)
+        if installed != payload:
+            raise ExecutionAdmissionError(
+                "gate0b_install_file_readback_mismatch",
+                "quarantine the mismatched install artifact and rerun first-use install",
+                str(path),
+            )
 
 
 def _require_private_install_directory(path: Path) -> None:
-    parent_meta = path.stat(follow_symlinks=False)
+    try:
+        parent_meta = path.stat(follow_symlinks=False)
+    except FileNotFoundError:
+        raise
+    except OSError as exc:
+        raise ExecutionAdmissionError(
+            "gate0b_install_directory_unavailable",
+            "restore an euid-owned mode-0700 private install directory, then rerun first-use install",
+            str(path),
+        ) from exc
     if (
         not stat.S_ISDIR(parent_meta.st_mode)
         or parent_meta.st_uid != os.geteuid()

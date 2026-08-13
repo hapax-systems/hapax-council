@@ -333,6 +333,126 @@ def test_install_private_writer_refuses_racing_collision_without_overwrite(
     assert list(target.parent.glob(".activation-receipt.json.tmp-*")) == []
 
 
+def test_install_private_writer_wraps_mkdir_failure(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    target = tmp_path / "root" / "activation-receipt.json"
+    original_mkdir = Path.mkdir
+
+    def failing_mkdir(self: Path, *args: object, **kwargs: object) -> None:
+        if self == target.parent:
+            raise OSError("simulated mkdir failure")
+        original_mkdir(self, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "mkdir", failing_mkdir)
+
+    with pytest.raises(ExecutionAdmissionError) as excinfo:
+        install_machinery._write_private_file(target, b'{"schema":"fixture"}\n')
+
+    assert excinfo.value.reason_code == "gate0b_install_directory_unavailable"
+    assert "rerun first-use install" in excinfo.value.repair_action
+
+
+@pytest.mark.parametrize("operation", ["open", "write", "fsync"])
+def test_install_private_writer_wraps_temp_write_failures(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    operation: str,
+) -> None:
+    target = tmp_path / "root" / "activation-receipt.json"
+    target.parent.mkdir(parents=True, mode=0o700)
+    payload = b'{"schema":"fixture"}\n'
+
+    if operation == "open":
+        original_open = install_machinery.os.open
+
+        def failing_open(
+            path: str | bytes | os.PathLike[str],
+            flags: int,
+            mode: int = 0o777,
+            *,
+            dir_fd: int | None = None,
+        ) -> int:
+            if Path(path).name.startswith(".activation-receipt.json.tmp-"):
+                raise OSError("simulated temp open failure")
+            return original_open(path, flags, mode, dir_fd=dir_fd)
+
+        monkeypatch.setattr(install_machinery.os, "open", failing_open)
+    elif operation == "write":
+
+        def failing_write(fd: int, data: bytes | bytearray | memoryview) -> int:
+            del fd, data
+            raise OSError("simulated temp write failure")
+
+        monkeypatch.setattr(install_machinery.os, "write", failing_write)
+    else:
+
+        def failing_fsync(fd: int) -> None:
+            del fd
+            raise OSError("simulated temp fsync failure")
+
+        monkeypatch.setattr(install_machinery.os, "fsync", failing_fsync)
+
+    with pytest.raises(ExecutionAdmissionError) as excinfo:
+        install_machinery._write_private_file(target, payload)
+
+    assert excinfo.value.reason_code == "gate0b_install_file_unavailable"
+    assert operation in excinfo.value.detail
+    assert "rerun first-use install" in excinfo.value.repair_action
+    assert list(target.parent.glob(".activation-receipt.json.tmp-*")) == []
+    assert not target.exists()
+
+
+def test_install_private_writer_wraps_temp_cleanup_failure(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    target = tmp_path / "root" / "activation-receipt.json"
+    target.parent.mkdir(parents=True, mode=0o700)
+    original_unlink = Path.unlink
+
+    def failing_unlink(self: Path, *args: object, **kwargs: object) -> None:
+        if self.name.startswith(".activation-receipt.json.tmp-"):
+            raise OSError("simulated temp cleanup failure")
+        original_unlink(self, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "unlink", failing_unlink)
+
+    with pytest.raises(ExecutionAdmissionError) as excinfo:
+        install_machinery._write_private_file(target, b'{"schema":"fixture"}\n')
+
+    assert excinfo.value.reason_code == "gate0b_install_temp_cleanup_failed"
+    assert "remove the stale install temp file" in excinfo.value.repair_action
+
+
+def test_install_private_writer_wraps_chmod_failure(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    target = tmp_path / "root" / "activation-receipt.json"
+    target.parent.mkdir(parents=True, mode=0o700)
+
+    def failing_chmod(
+        path: str | bytes | os.PathLike[str],
+        mode: int,
+        *,
+        follow_symlinks: bool = True,
+    ) -> None:
+        del mode, follow_symlinks
+        if Path(path) == target:
+            raise OSError("simulated chmod failure")
+
+    monkeypatch.setattr(install_machinery.os, "chmod", failing_chmod)
+
+    with pytest.raises(ExecutionAdmissionError) as excinfo:
+        install_machinery._write_private_file(target, b'{"schema":"fixture"}\n')
+
+    assert excinfo.value.reason_code == "gate0b_install_file_unavailable"
+    assert "chmod" in excinfo.value.detail
+    assert "rerun first-use install" in excinfo.value.repair_action
+
+
 def test_invocation_store_private_writer_is_idempotent_and_rejects_collision(
     tmp_path: Path,
 ) -> None:

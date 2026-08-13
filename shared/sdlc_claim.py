@@ -2073,7 +2073,7 @@ def _activation_failure_hook(
         elif phase == "after_projection":
             failure_hook("after_activation_projection", index)
         else:
-            failure_hook(f"activation_{phase}", index)
+            failure_hook(f"claim_activation_projection_{phase}", index)
 
     return wrapped
 
@@ -3720,6 +3720,15 @@ def _apply_admitted_claim_publication_transaction(
     projections = _admitted_projections(intent, consumption)
     live_projections = projections[:7]
     publication_id = admitted_claim_publication_id(intent, consumption)
+    receipt_before_activation_plan = _receipt_before_activation_projection_plan(live_projections)
+    pre_receipt_projections = _phase_projections(receipt_before_activation_plan.pre_receipt)
+    pre_receipt_scratches = _phase_scratches(
+        receipt_before_activation_plan.pre_receipt, publication_id
+    )
+    activation_projections = _phase_projections(receipt_before_activation_plan.activation)
+    activation_scratches = _phase_scratches(
+        receipt_before_activation_plan.activation, publication_id
+    )
     transaction_directory = root / publication_id
     manifest_path = transaction_directory / "manifest.json"
     receipt_path = claim_publication_receipt_path(
@@ -3766,9 +3775,6 @@ def _apply_admitted_claim_publication_transaction(
         )
         _ensure_claim_private_directory(receipt_directory)
 
-        projection_plan = _receipt_before_activation_projection_plan(live_projections)
-        pre_activation_projections = _phase_projections(projection_plan.pre_receipt)
-        pre_activation_scratches = _phase_scratches(projection_plan.pre_receipt, publication_id)
         phase = "preflight"
         try:
             phase = "pre_projection_preflight"
@@ -3783,9 +3789,9 @@ def _apply_admitted_claim_publication_transaction(
                 state="projecting",
             )
             phase = "pre_activation_projection"
-            _apply_projections(pre_activation_projections, pre_activation_scratches, failure_hook)
+            _apply_projections(pre_receipt_projections, pre_receipt_scratches, failure_hook)
             phase = "pre_activation_scratch_finalize"
-            _finalize_applied_scratches(pre_activation_projections, pre_activation_scratches)
+            _finalize_applied_scratches(pre_receipt_projections, pre_receipt_scratches)
             phase = "pre_activation_postimage_validation"
             _require_exact_task_postimage(intent)
             _assert_preimages(projections[7:])
@@ -3807,8 +3813,6 @@ def _apply_admitted_claim_publication_transaction(
                 projections,
                 publication_id,
             )
-            activation_projections = _phase_projections(projection_plan.activation)
-            activation_scratches = _phase_scratches(projection_plan.activation, publication_id)
             phase = "activation_projection"
             _apply_projections(
                 activation_projections,
@@ -4775,9 +4779,17 @@ def _recover_one(
             )
 
         live_projections = projections[:7]
-        projection_plan = _receipt_before_activation_projection_plan(live_projections)
-        pre_activation_projections = _phase_projections(projection_plan.pre_receipt)
-        pre_activation_scratches = _phase_scratches(projection_plan.pre_receipt, publication_id)
+        receipt_before_activation_plan = _receipt_before_activation_projection_plan(
+            live_projections
+        )
+        pre_receipt_projections = _phase_projections(receipt_before_activation_plan.pre_receipt)
+        pre_receipt_scratches = _phase_scratches(
+            receipt_before_activation_plan.pre_receipt, publication_id
+        )
+        activation_projections = _phase_projections(receipt_before_activation_plan.activation)
+        activation_scratches = _phase_scratches(
+            receipt_before_activation_plan.activation, publication_id
+        )
 
         def apply_missing_postimages(
             target_projections: Sequence[FileProjection],
@@ -4800,7 +4812,7 @@ def _recover_one(
         try:
             _assert_preimages(projections[7:])
             consumption.require_source_proofs(intent)
-            apply_missing_postimages(pre_activation_projections, pre_activation_scratches)
+            apply_missing_postimages(pre_receipt_projections, pre_receipt_scratches)
             _require_exact_task_postimage(intent)
             _assert_preimages(projections[7:])
             consumption.require_source_proofs(intent)
@@ -4838,8 +4850,6 @@ def _recover_one(
                 projections,
                 publication_id,
             )
-        activation_projections = _phase_projections(projection_plan.activation)
-        activation_scratches = _phase_scratches(projection_plan.activation, publication_id)
         try:
             apply_missing_postimages(activation_projections, activation_scratches)
             _require_exact_task_postimage(intent)

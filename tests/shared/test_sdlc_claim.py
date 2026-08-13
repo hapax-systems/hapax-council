@@ -1835,6 +1835,74 @@ def test_pre_receipt_projection_failure_does_not_publish_claim_cache(
     assert session_claim.read_text(encoding="utf-8") == "pre-receipt-claim\n"
 
 
+def test_admitted_transaction_persists_receipt_before_activation_phase(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    fixture = _home_fixture(tmp_path, task_id="receipt-before-activation", resume=True)
+    active = _active_admission_fixture(tmp_path, fixture)
+    receipt_root = fixture.cache / "claim-publication-receipts"
+    events: list[str] = []
+    projections = sdlc_claim._admitted_projections(fixture.intent, active.consumption)
+    plan = sdlc_claim._receipt_before_activation_projection_plan(projections[:7])
+
+    assert all(
+        not item.projection.path.name.startswith("cc-active-task-") for item in plan.pre_receipt
+    )
+    assert {item.projection.path.name for item in plan.activation} == {
+        "cc-active-task-cx-red",
+        "cc-active-task-cx-red-session-abc",
+    }
+
+    original_persist_receipt = sdlc_claim._persist_admitted_receipt
+
+    def recording_persist_receipt(*args: object, **kwargs: object) -> None:
+        events.append("receipt_persist")
+        original_persist_receipt(*args, **kwargs)
+
+    def recording_failure_hook(phase: str, index: int | None) -> None:
+        del index
+        if phase in {"after_projection", "after_activation_projection"}:
+            events.append(phase)
+
+    monkeypatch.setattr(sdlc_claim, "_persist_admitted_receipt", recording_persist_receipt)
+
+    receipt = sdlc_claim._apply_admitted_claim_publication_transaction(
+        fixture.intent,
+        active.consumption,
+        transaction_root=fixture.transactions,
+        receipt_root=receipt_root,
+        lock_root=fixture.locks,
+        now=active.checked_at,
+        failure_hook=recording_failure_hook,
+    )
+
+    receipt_index = events.index("receipt_persist")
+    assert "after_projection" in events[:receipt_index]
+    assert "after_activation_projection" not in events[:receipt_index]
+    assert events[receipt_index + 1 :] == [
+        "after_activation_projection",
+        "after_activation_projection",
+    ]
+    assert receipt.receipt_path.exists()
+    assert (fixture.cache / "cc-active-task-cx-red").read_text(encoding="utf-8") == (
+        "receipt-before-activation\n"
+    )
+    assert (fixture.cache / "cc-active-task-cx-red-session-abc").read_text(
+        encoding="utf-8"
+    ) == "receipt-before-activation\n"
+
+
+def test_activation_failure_hook_names_unexpected_phases_as_claim_activation_context() -> None:
+    observed: list[tuple[str, int | None]] = []
+    hook = sdlc_claim._activation_failure_hook(lambda phase, index: observed.append((phase, index)))
+    assert hook is not None
+
+    hook("scratch_finalize", 3)
+
+    assert observed == [("claim_activation_projection_scratch_finalize", 3)]
+
+
 def test_active_claim_cache_is_not_published_before_receipt(
     tmp_path: Path,
 ) -> None:
