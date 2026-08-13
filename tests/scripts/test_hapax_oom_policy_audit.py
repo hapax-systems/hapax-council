@@ -378,6 +378,9 @@ def _fake_docker(
     include_judge: bool = False,
     inventory_override: str | None = None,
     labeled_inventory_override: str | None = None,
+    closing_inventory_override: str | None = None,
+    closing_labeled_inventory_override: str | None = None,
+    final_inventory_override: str | None = None,
     inspect_override: str | None = None,
     failure_phase: str | None = None,
     failure_detail: str = "",
@@ -505,11 +508,31 @@ def _fake_docker(
     labeled_inventory = "".join(
         f"{record['container_id']}\n" for record in containers if record["app_label"] is not None
     )
-    if labeled_inventory_override is not None:
-        labeled_inventory = labeled_inventory_override
+    initial_inventory = inventory if inventory_override is None else inventory_override
+    initial_labeled_inventory = (
+        labeled_inventory if labeled_inventory_override is None else labeled_inventory_override
+    )
     inventory_file = tmp_path / "docker.inventory"
-    inventory_file.write_text(
-        inventory if inventory_override is None else inventory_override,
+    inventory_file.write_text(initial_inventory, encoding="utf-8")
+    closing_inventory_file = tmp_path / "docker.inventory.closing"
+    closing_inventory_file.write_text(
+        initial_inventory if closing_inventory_override is None else closing_inventory_override,
+        encoding="utf-8",
+    )
+    final_inventory_file = tmp_path / "docker.inventory.final"
+    final_inventory_file.write_text(
+        closing_inventory_file.read_text(encoding="utf-8")
+        if final_inventory_override is None
+        else final_inventory_override,
+        encoding="utf-8",
+    )
+    labeled_inventory_file = tmp_path / "docker.labeled-inventory"
+    labeled_inventory_file.write_text(initial_labeled_inventory, encoding="utf-8")
+    closing_labeled_inventory_file = tmp_path / "docker.labeled-inventory.closing"
+    closing_labeled_inventory_file.write_text(
+        initial_labeled_inventory
+        if closing_labeled_inventory_override is None
+        else closing_labeled_inventory_override,
         encoding="utf-8",
     )
     inspect_cases = []
@@ -687,15 +710,55 @@ def _fake_docker(
         if failure_phase == "image"
         else f"printf '%s\\n%s\\n' '{mcp_local_image_id}' '{mcp_repo_digest}'"
     )
-    labeled_response = (
-        f'cat "{failure_file}" >&2; exit 17'
-        if failure_phase == "label"
-        else f"printf '%s' '{labeled_inventory}'"
+
+    def sequenced_response(
+        *,
+        kind: str,
+        initial_file: Path,
+        closing_file: Path,
+        initial_failure_phase: str,
+        closing_failure_phase: str,
+        final_file: Path | None = None,
+        final_failure_phase: str | None = None,
+    ) -> str:
+        count_file = tmp_path / f"docker.{kind}.count"
+        initial_response = (
+            f'cat "{failure_file}" >&2; exit 17'
+            if failure_phase == initial_failure_phase
+            else f'cat "{initial_file}"'
+        )
+        closing_response = (
+            f'cat "{failure_file}" >&2; exit 17'
+            if failure_phase == closing_failure_phase
+            else f'cat "{closing_file}"'
+        )
+        final_response = (
+            f'cat "{failure_file}" >&2; exit 17'
+            if final_failure_phase is not None and failure_phase == final_failure_phase
+            else f'cat "{final_file or closing_file}"'
+        )
+        return (
+            f'count=0; if [[ -r "{count_file}" ]]; then read -r count < "{count_file}"; fi; '
+            f'count=$((count + 1)); printf \'%s\\n\' "$count" > "{count_file}"; '
+            f"if (( count == 1 )); then {initial_response}; "
+            f"elif (( count == 2 )); then {closing_response}; else {final_response}; fi"
+        )
+
+    labeled_response = sequenced_response(
+        kind="label-inventory",
+        initial_file=labeled_inventory_file,
+        closing_file=closing_labeled_inventory_file,
+        initial_failure_phase="label",
+        closing_failure_phase="closing_label",
     )
-    inventory_response = (
-        f'cat "{failure_file}" >&2; exit 17'
-        if failure_phase == "inventory"
-        else f'cat "{inventory_file}"'
+    inventory_response = sequenced_response(
+        kind="inventory",
+        initial_file=inventory_file,
+        closing_file=closing_inventory_file,
+        initial_failure_phase="inventory",
+        closing_failure_phase="closing_inventory",
+        final_file=final_inventory_file,
+        final_failure_phase="final_inventory",
     )
     path.write_text(
         "#!/usr/bin/env bash\n"
@@ -784,6 +847,9 @@ def _run(
     docker_include_judge: bool = False,
     docker_inventory_override: str | None = None,
     docker_labeled_inventory_override: str | None = None,
+    docker_closing_inventory_override: str | None = None,
+    docker_closing_labeled_inventory_override: str | None = None,
+    docker_final_inventory_override: str | None = None,
     docker_inspect_override: str | None = None,
     docker_failure_phase: str | None = None,
     docker_failure_detail: str = "",
@@ -948,6 +1014,9 @@ def _run(
                 include_judge=docker_include_judge,
                 inventory_override=docker_inventory_override,
                 labeled_inventory_override=docker_labeled_inventory_override,
+                closing_inventory_override=docker_closing_inventory_override,
+                closing_labeled_inventory_override=docker_closing_labeled_inventory_override,
+                final_inventory_override=docker_final_inventory_override,
                 inspect_override=docker_inspect_override,
                 failure_phase=docker_failure_phase,
                 failure_detail=docker_failure_detail,
@@ -1481,6 +1550,55 @@ def test_audit_passes_for_each_shipped_host_profile(tmp_path: Path, host_profile
     assert f"hapax-{host_profile}:{host_profile}:" in policy["actual"]
 
 
+@pytest.mark.parametrize(
+    "appendix_row",
+    (
+        "hapax-appendix\t59\t61\tappendix\t50G\t54G\t48G\t56G\t16384",
+        "hapax-appendix\t59\t61\tappendix\t46G\t57G\t48G\t56G\t16384",
+    ),
+)
+def test_host_profile_parser_rejects_app_ceiling_above_parent_uid_ceiling(
+    tmp_path: Path,
+    appendix_row: str,
+) -> None:
+    table = tmp_path / "oom-host-profiles.tsv"
+    table.write_text(
+        appendix_row + "\n" + "hapax-podium\t123\t125\tpodium\t72G\t88G\t80G\t96G\t32768\n",
+        encoding="utf-8",
+    )
+    namespace = runpy.run_path(str(SCRIPT))
+    derive_host_policy = namespace["derive_host_policy"]
+    derive_host_policy.__globals__["_profile_table_path"] = lambda: table
+    derive_host_policy.__globals__["_hostname"] = lambda: "hapax-appendix"
+    derive_host_policy.__globals__["_memtotal_kib"] = lambda: 60 * 1024**2
+
+    with pytest.raises(
+        namespace["HostPolicyError"], match="app ceilings must not exceed UID ceilings"
+    ):
+        derive_host_policy()
+
+
+def test_host_profile_parser_accepts_app_ceilings_equal_to_parent_uid_ceilings(
+    tmp_path: Path,
+) -> None:
+    table = tmp_path / "oom-host-profiles.tsv"
+    table.write_text(
+        "hapax-appendix\t59\t61\tappendix\t48G\t56G\t48G\t56G\t16384\n"
+        "hapax-podium\t123\t125\tpodium\t72G\t88G\t80G\t96G\t32768\n",
+        encoding="utf-8",
+    )
+    namespace = runpy.run_path(str(SCRIPT))
+    derive_host_policy = namespace["derive_host_policy"]
+    derive_host_policy.__globals__["_profile_table_path"] = lambda: table
+    derive_host_policy.__globals__["_hostname"] = lambda: "hapax-appendix"
+    derive_host_policy.__globals__["_memtotal_kib"] = lambda: 60 * 1024**2
+
+    policy = derive_host_policy()
+
+    assert policy.app_memory_high == policy.uid_memory_high
+    assert policy.app_memory_max == policy.uid_memory_max
+
+
 def test_appendix_skips_only_its_declared_absent_user_units(tmp_path: Path) -> None:
     missing = frozenset(
         {
@@ -1883,6 +2001,124 @@ def test_audit_does_not_emit_untrusted_labeled_inventory(tmp_path: Path) -> None
 
     assert result.returncode == 1
     assert secret not in result.stdout
+
+
+@pytest.mark.parametrize(
+    "kwargs",
+    (
+        {
+            "docker_closing_inventory_override": (
+                f"{'a' * 64}\thapax-github-mcp-1000-0000000001\n"
+            ),
+            "docker_closing_labeled_inventory_override": f"{'a' * 64}\n",
+        },
+        {
+            "docker_inventory_override": f"{'b' * 64}\tunrelated-container\n",
+            "docker_closing_labeled_inventory_override": f"{'b' * 64}\n",
+        },
+        {
+            "docker_final_inventory_override": (f"{'c' * 64}\thapax-github-mcp-1000-0000000002\n"),
+        },
+    ),
+)
+def test_audit_fails_when_docker_target_appears_after_initial_inventory(
+    tmp_path: Path,
+    kwargs: dict[str, str],
+) -> None:
+    result = _run(tmp_path, **kwargs)
+
+    assert result.returncode == 1
+    payload = json.loads(result.stdout)
+    check = next(
+        item for item in payload["checks"] if item["name"] == "docker_oom_inventory_stable"
+    )
+    assert check["status"] == "error"
+    assert check["actual"] == "changed"
+    assert "inventory changed during bounded audit" in check["detail"]
+
+
+def test_audit_allows_unrelated_container_churn_during_closing_witness(
+    tmp_path: Path,
+) -> None:
+    unrelated = f"{'d' * 64}\tunrelated-container\n"
+    result = _run(
+        tmp_path,
+        docker_closing_inventory_override=unrelated,
+        docker_final_inventory_override=unrelated,
+    )
+
+    assert result.returncode == 0, result.stdout
+    payload = json.loads(result.stdout)
+    check = next(
+        item for item in payload["checks"] if item["name"] == "docker_oom_inventory_stable"
+    )
+    assert check["status"] == "pass"
+    assert check["actual"] == "stable"
+
+
+@pytest.mark.parametrize(
+    ("kwargs", "expected_actual"),
+    (
+        (
+            {
+                "docker_closing_inventory_override": (
+                    f"{'a' * 64}\tprivate-closing-name\textra-field\n"
+                ),
+            },
+            "malformed",
+        ),
+        (
+            {"docker_closing_labeled_inventory_override": "private-closing-label\n"},
+            "malformed",
+        ),
+        (
+            {
+                "docker_failure_phase": "closing_inventory",
+                "docker_failure_detail": "private-closing-inventory-failure",
+            },
+            "N/A",
+        ),
+        (
+            {
+                "docker_failure_phase": "closing_label",
+                "docker_failure_detail": "private-closing-label-failure",
+            },
+            "N/A",
+        ),
+        (
+            {
+                "docker_final_inventory_override": (
+                    f"{'a' * 64}\tprivate-closing-final\textra-field\n"
+                ),
+            },
+            "malformed",
+        ),
+        (
+            {
+                "docker_failure_phase": "final_inventory",
+                "docker_failure_detail": "private-closing-final-failure",
+            },
+            "N/A",
+        ),
+    ),
+)
+def test_audit_fails_closed_and_redacts_invalid_closing_docker_inventory(
+    tmp_path: Path,
+    kwargs: dict[str, str],
+    expected_actual: str,
+) -> None:
+    result = _run(tmp_path, **kwargs)
+
+    assert result.returncode == 1
+    assert "private-closing" not in result.stdout
+    assert "private-closing" not in result.stderr
+    payload = json.loads(result.stdout)
+    check = next(
+        item for item in payload["checks"] if item["name"] == "docker_oom_inventory_stable"
+    )
+    assert check["status"] == "error"
+    assert check["actual"] == expected_actual
+    assert "closing Docker" in check["detail"]
 
 
 def test_audit_treats_auto_remove_teardown_as_converging(tmp_path: Path) -> None:
