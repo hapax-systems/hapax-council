@@ -26,6 +26,12 @@ from pathlib import Path
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 SMOKE = REPO_ROOT / "scripts" / "hapax-post-merge-smoke"
+INSTALL_UNITS_PATH = "systemd/scripts/install-units.sh"
+
+
+def _install_units_source(*decommissioned_units: str) -> str:
+    entries = "".join(f"    {unit}\n" for unit in decommissioned_units)
+    return f"DECOMMISSIONED_UNITS=(\n{entries})\n"
 
 
 def _run(
@@ -72,6 +78,9 @@ def _make_repo(tmp_path: Path) -> Path:
     subprocess.run(["git", "config", "user.email", "t@x"], cwd=tmp_path, check=True)
     subprocess.run(["git", "config", "user.name", "T"], cwd=tmp_path, check=True)
     subprocess.run(["git", "config", "commit.gpgsign", "false"], cwd=tmp_path, check=True)
+    install_units = tmp_path / INSTALL_UNITS_PATH
+    install_units.parent.mkdir(parents=True, exist_ok=True)
+    install_units.write_text(_install_units_source())
     (tmp_path / ".gitkeep").write_text("")
     subprocess.run(["git", "add", "-A"], cwd=tmp_path, check=True)
     subprocess.run(["git", "commit", "-q", "-m", "baseline"], cwd=tmp_path, check=True, env=env)
@@ -149,6 +158,63 @@ exec /usr/bin/git "$@"
 
 
 class TestServicesRestartedGate:
+    def test_exact_sha_decommission_wins_when_worktree_removes_unit(self, tmp_path: Path) -> None:
+        repo = _make_repo(tmp_path)
+        unit = "retired-at-reviewed-sha.service"
+        sha = _commit_files(
+            repo,
+            {
+                INSTALL_UNITS_PATH: _install_units_source(unit),
+                f"systemd/units/{unit}": "[Unit]\n",
+            },
+        )
+        (repo / INSTALL_UNITS_PATH).write_text(_install_units_source())
+
+        result = _run(sha, cwd=repo, stubs={"systemctl": "exit 3"})
+
+        assert result.returncode == 0
+        assert "services-restarted" not in result.stderr
+        assert f"{unit} not active" not in result.stderr
+
+    def test_worktree_decommission_cannot_override_exact_sha(self, tmp_path: Path) -> None:
+        repo = _make_repo(tmp_path)
+        unit = "live-at-reviewed-sha.service"
+        sha = _commit_files(repo, {f"systemd/units/{unit}": "[Unit]\n"})
+        (repo / INSTALL_UNITS_PATH).write_text(_install_units_source(unit))
+
+        result = _run(sha, cwd=repo, stubs={"systemctl": "exit 3"})
+
+        assert result.returncode == 0
+        assert "services-restarted" in result.stderr
+        assert f"{unit} not active" in result.stderr
+
+    def test_missing_exact_sha_decommission_data_records_failure(self, tmp_path: Path) -> None:
+        repo = _make_repo(tmp_path)
+        (repo / INSTALL_UNITS_PATH).unlink()
+        sha = _commit_files(repo, {"systemd/units/foo.service": "[Unit]\n"})
+
+        result = _run(sha, cwd=repo, stubs={"systemctl": "exit 0"})
+
+        assert result.returncode == 0
+        assert "services-restarted" in result.stderr
+        assert "cannot read exact-SHA decommission data" in result.stderr
+
+    def test_malformed_exact_sha_decommission_data_records_failure(self, tmp_path: Path) -> None:
+        repo = _make_repo(tmp_path)
+        sha = _commit_files(
+            repo,
+            {
+                INSTALL_UNITS_PATH: "DECOMMISSIONED_UNITS=(foo.service)\n",
+                "systemd/units/foo.service": "[Unit]\n",
+            },
+        )
+
+        result = _run(sha, cwd=repo, stubs={"systemctl": "exit 0"})
+
+        assert result.returncode == 0
+        assert "services-restarted" in result.stderr
+        assert "cannot parse exact-SHA decommission data" in result.stderr
+
     def test_inactive_unit_records_failure(self, tmp_path: Path) -> None:
         repo = _make_repo(tmp_path)
         sha = _commit_files(repo, {"systemd/units/foo.service": "[Unit]\n"})

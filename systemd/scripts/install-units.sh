@@ -10,9 +10,183 @@
 # Set ALLOW_NONSTANDARD_REPO=1 to override (for intentional testing).
 set -euo pipefail
 
+ORIGINAL_ARGS=("$@")
 REPO_DIR="$(cd "$(dirname "$0")/../units" && pwd)"
 PROJECT_DIR="$(cd "$(dirname "$0")/../.." && pwd)"
 DEST_DIR="${HOME}/.config/systemd/user"
+ROOT_REQUIRED_LOCK_FILE="${HAPAX_ROOT_REQUIRED_LOCK_FILE:-$HOME/.local/state/hapax/root-required/.lock}"
+
+acquire_inherited_root_required_lock() {
+    local lock_fd="${HAPAX_ROOT_REQUIRED_LOCK_FD:-}"
+    if ! [[ "$lock_fd" =~ ^[0-9]+$ ]] || [ "$lock_fd" -lt 3 ]; then
+        echo "ERROR: safe shared install lock descriptor is absent" >&2
+        return 1
+    fi
+    /usr/bin/python3 -I -S - "$lock_fd" "$ROOT_REQUIRED_LOCK_FILE" <<'PY'
+from __future__ import annotations
+
+import fcntl
+import os
+import stat
+import sys
+
+fd = int(sys.argv[1])
+lock_path = sys.argv[2]
+
+
+def valid(inode: os.stat_result) -> bool:
+    return (
+        stat.S_ISREG(inode.st_mode)
+        and inode.st_uid == os.geteuid()
+        and inode.st_nlink == 1
+        and not inode.st_mode & 0o022
+    )
+
+
+try:
+    inode_before = os.fstat(fd)
+    path_before = os.lstat(lock_path)
+except OSError as exc:
+    print(
+        f"ERROR: refused invalid inherited shared install lock {lock_path}: {exc}",
+        file=sys.stderr,
+    )
+    raise SystemExit(1) from exc
+if (
+    not valid(inode_before)
+    or not valid(path_before)
+    or (inode_before.st_dev, inode_before.st_ino)
+    != (path_before.st_dev, path_before.st_ino)
+):
+    print(
+        f"ERROR: refused invalid inherited shared install lock {lock_path}; "
+        "expected one caller-owned, single-link, non-group/world-writable regular path inode",
+        file=sys.stderr,
+    )
+    raise SystemExit(1)
+
+fcntl.flock(fd, fcntl.LOCK_EX)
+os.fchmod(fd, 0o600)
+try:
+    inode_after = os.fstat(fd)
+    path_after = os.lstat(lock_path)
+except OSError as exc:
+    print(
+        f"ERROR: shared install lock path changed while acquiring {lock_path}: {exc}",
+        file=sys.stderr,
+    )
+    raise SystemExit(1) from exc
+if (
+    not valid(inode_after)
+    or not valid(path_after)
+    or (inode_after.st_dev, inode_after.st_ino)
+    != (path_after.st_dev, path_after.st_ino)
+    or (inode_before.st_dev, inode_before.st_ino)
+    != (inode_after.st_dev, inode_after.st_ino)
+):
+    print(
+        f"ERROR: shared install lock identity changed while acquiring {lock_path}",
+        file=sys.stderr,
+    )
+    raise SystemExit(1)
+PY
+}
+
+reexec_with_safe_root_required_lock() {
+    if [ -n "${HAPAX_ROOT_REQUIRED_LOCK_FD:-}" ]; then
+        acquire_inherited_root_required_lock
+        return
+    fi
+    exec /usr/bin/python3 -I -S - \
+        "$ROOT_REQUIRED_LOCK_FILE" "$0" "${ORIGINAL_ARGS[@]}" <<'PY'
+from __future__ import annotations
+
+import fcntl
+import os
+import stat
+import subprocess
+import sys
+
+requested_path, script, *args = sys.argv[1:]
+if not requested_path or "\n" in requested_path or len(requested_path) > 4096:
+    print("ERROR: refused malformed shared install lock path", file=sys.stderr)
+    raise SystemExit(1)
+lock_path = os.path.abspath(requested_path)
+parent = os.path.dirname(lock_path)
+try:
+    os.makedirs(parent, mode=0o700, exist_ok=True)
+    fd = os.open(
+        lock_path,
+        os.O_CLOEXEC | os.O_CREAT | os.O_NOFOLLOW | os.O_RDWR,
+        0o600,
+    )
+except OSError as exc:
+    print(
+        f"ERROR: refused unsafe shared install lock {lock_path}: {exc}",
+        file=sys.stderr,
+    )
+    raise SystemExit(1) from exc
+
+
+def valid(inode: os.stat_result) -> bool:
+    return (
+        stat.S_ISREG(inode.st_mode)
+        and inode.st_uid == os.geteuid()
+        and inode.st_nlink == 1
+        and not inode.st_mode & 0o022
+    )
+
+
+try:
+    inode_before = os.fstat(fd)
+    path_before = os.lstat(lock_path)
+    if (
+        not valid(inode_before)
+        or not valid(path_before)
+        or (inode_before.st_dev, inode_before.st_ino)
+        != (path_before.st_dev, path_before.st_ino)
+    ):
+        print(
+            f"ERROR: refused unsafe shared install lock inode {lock_path}; "
+            "expected one caller-owned, single-link, non-group/world-writable regular file",
+            file=sys.stderr,
+        )
+        raise SystemExit(1)
+    fcntl.flock(fd, fcntl.LOCK_EX)
+    os.fchmod(fd, 0o600)
+    inode_after = os.fstat(fd)
+    path_after = os.lstat(lock_path)
+    if (
+        not valid(inode_after)
+        or not valid(path_after)
+        or (inode_after.st_dev, inode_after.st_ino)
+        != (path_after.st_dev, path_after.st_ino)
+        or (inode_before.st_dev, inode_before.st_ino)
+        != (inode_after.st_dev, inode_after.st_ino)
+    ):
+        print(
+            f"ERROR: shared install lock identity changed while acquiring {lock_path}",
+            file=sys.stderr,
+        )
+        raise SystemExit(1)
+    env = os.environ.copy()
+    env.pop("HAPAX_ROOT_REQUIRED_LOCK_HELD", None)
+    env.pop("HAPAX_ROOT_REQUIRED_LOCK_MODE", None)
+    env["HAPAX_ROOT_REQUIRED_LOCK_FILE"] = lock_path
+    env["HAPAX_ROOT_REQUIRED_LOCK_FD"] = str(fd)
+    env["HAPAX_ROOT_REQUIRED_LOCK_MODE"] = "exclusive"
+    result = subprocess.run(
+        [os.path.abspath(script), *args],
+        env=env,
+        pass_fds=(fd,),
+        check=False,
+    )
+    raise SystemExit(result.returncode)
+finally:
+    os.close(fd)
+PY
+}
+
 DECOMMISSIONED_UNITS=(
     # Retired 2026-06-07: superseded by the direct video50/video52 + UDP
     # ffmpeg media-source topology (#3819/#3827/#3837). The OBS V4L2 capture
@@ -117,6 +291,8 @@ if [ "$PROJECT_DIR" != "$EXPECTED_PRIMARY" ] && [ "${ALLOW_NONSTANDARD_REPO:-0}"
     echo "  (e.g. for intentional testing in a dedicated long-lived worktree)." >&2
     exit 1
 fi
+
+reexec_with_safe_root_required_lock
 
 mkdir -p "$DEST_DIR"
 
@@ -364,8 +540,10 @@ validate_historical_local_judge_container() {
             3<<<"$LOCAL_JUDGE_IMAGE_RECORD" 4<<<"$output" <<'PY'
 from __future__ import annotations
 
+import ipaddress
 import json
 import os
+import re
 import sys
 
 container_id, home, config_id, image_digest = sys.argv[1:]
@@ -616,6 +794,103 @@ unknown_host_defaults = all(
     empty(value) for key, value in host.items() if key not in checked_host_keys
 )
 
+bridge_endpoint_keys = {
+    "IPAMConfig",
+    "Links",
+    "Aliases",
+    "MacAddress",
+    "DriverOpts",
+    "GwPriority",
+    "NetworkID",
+    "EndpointID",
+    "Gateway",
+    "IPAddress",
+    "IPPrefixLen",
+    "IPv6Gateway",
+    "GlobalIPv6Address",
+    "GlobalIPv6PrefixLen",
+    "DNSNames",
+}
+
+
+def valid_bridge_endpoint(value: object) -> bool:
+    if not isinstance(value, dict) or set(value) != {"bridge"}:
+        return False
+    endpoint = value.get("bridge")
+    if not isinstance(endpoint, dict) or set(endpoint) != bridge_endpoint_keys:
+        return False
+    if any(
+        endpoint.get(key) is not None
+        for key in ("IPAMConfig", "Links", "Aliases", "DriverOpts", "DNSNames")
+    ):
+        return False
+    if type(endpoint.get("GwPriority")) is not int or endpoint["GwPriority"] != 0:
+        return False
+    if (
+        type(endpoint.get("GlobalIPv6PrefixLen")) is not int
+        or endpoint["GlobalIPv6PrefixLen"] != 0
+        or endpoint.get("IPv6Gateway") != ""
+        or endpoint.get("GlobalIPv6Address") != ""
+    ):
+        return False
+    network_id = endpoint.get("NetworkID")
+    endpoint_id = endpoint.get("EndpointID")
+    if (
+        not isinstance(network_id, str)
+        or not isinstance(endpoint_id, str)
+        or re.fullmatch(r"[0-9a-f]{64}", network_id) is None
+        or re.fullmatch(r"[0-9a-f]{64}", endpoint_id) is None
+        or network_id == "0" * 64
+        or endpoint_id == "0" * 64
+        or network_id == endpoint_id
+    ):
+        return False
+
+    prefix = endpoint.get("IPPrefixLen")
+    gateway_value = endpoint.get("Gateway")
+    address_value = endpoint.get("IPAddress")
+    if (
+        type(prefix) is not int
+        or not 1 <= prefix <= 30
+        or not isinstance(gateway_value, str)
+        or not isinstance(address_value, str)
+    ):
+        return False
+    try:
+        gateway = ipaddress.IPv4Address(gateway_value)
+        address = ipaddress.IPv4Address(address_value)
+        network = ipaddress.IPv4Network((address, prefix), strict=False)
+    except ipaddress.AddressValueError:
+        return False
+    if (
+        gateway.is_unspecified
+        or address.is_unspecified
+        or gateway == address
+        or gateway not in network
+        or gateway in (network.network_address, network.broadcast_address)
+        or address in (network.network_address, network.broadcast_address)
+        or any(
+            value.is_loopback
+            or value.is_link_local
+            or value.is_multicast
+            or value.is_reserved
+            for value in (gateway, address)
+        )
+    ):
+        return False
+
+    mac = endpoint.get("MacAddress")
+    if not isinstance(mac, str) or not re.fullmatch(
+        r"[0-9a-f]{2}(?::[0-9a-f]{2}){5}", mac
+    ):
+        return False
+    mac_octets = bytes.fromhex(mac.replace(":", ""))
+    return (
+        mac_octets[0] & 0b11 == 0b10
+        and mac_octets[:2] == b"\x02\x42"
+        and mac_octets[2:] == address.packed
+    )
+
 profiles = (
     (
         "mutable-uncapped-home",
@@ -677,7 +952,7 @@ valid = (
     and baseline_host_valid
     and checked_host_keys.issubset(host)
     and unknown_host_defaults
-    and set(networks) == {"bridge"}
+    and valid_bridge_endpoint(networks)
     and state.get("Status")
     in {"created", "running", "restarting", "paused", "removing", "exited", "dead"}
     and bool(matched_profile)

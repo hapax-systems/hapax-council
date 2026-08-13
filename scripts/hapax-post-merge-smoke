@@ -109,6 +109,77 @@ unit_install_scope() {
     fi
 }
 
+DECOMMISSIONED_UNITS=()
+load_decommissioned_units() {
+    local source parsed
+    DECOMMISSIONED_UNITS=()
+    if ! source="$(git show "${SHA}:systemd/scripts/install-units.sh" 2>/dev/null)"; then
+        record_failure \
+            "services-restarted" \
+            "cannot read exact-SHA decommission data from systemd/scripts/install-units.sh"
+        return 1
+    fi
+    if ! parsed="$(
+        awk '
+            BEGIN {
+                state = 0
+                declarations = 0
+                invalid = 0
+            }
+            /^[[:space:]]*DECOMMISSIONED_UNITS=/ {
+                declarations++
+                if ($0 !~ /^[[:space:]]*DECOMMISSIONED_UNITS=\([[:space:]]*$/ || state != 0) {
+                    invalid = 1
+                } else {
+                    state = 1
+                }
+                next
+            }
+            state == 1 && /^[[:space:]]*\)[[:space:]]*$/ {
+                state = 2
+                next
+            }
+            state == 1 {
+                line = $0
+                if (line ~ /^[[:space:]]*($|#)/) {
+                    next
+                }
+                sub(/^[[:space:]]*/, "", line)
+                sub(/[[:space:]]+#.*$/, "", line)
+                sub(/[[:space:]]*$/, "", line)
+                if (line !~ /^[A-Za-z0-9_.@:-]+$/ || seen[line]++) {
+                    invalid = 1
+                    next
+                }
+                print line
+            }
+            END {
+                if (invalid || declarations != 1 || state != 2) {
+                    exit 1
+                }
+            }
+        ' <<< "$source"
+    )"; then
+        record_failure \
+            "services-restarted" \
+            "cannot parse exact-SHA decommission data from systemd/scripts/install-units.sh"
+        return 1
+    fi
+    if [ -n "$parsed" ]; then
+        mapfile -t DECOMMISSIONED_UNITS <<< "$parsed"
+    fi
+}
+
+is_decommissioned_unit() {
+    local candidate="$1" retired
+    for retired in "${DECOMMISSIONED_UNITS[@]}"; do
+        if [ "$candidate" = "$retired" ]; then
+            return 0
+        fi
+    done
+    return 1
+}
+
 bridge_inactive_expected_for_live_mode() {
     local unit="$1"
     [ "$unit" = "hapax-v4l2-bridge.service" ] || return 1
@@ -154,6 +225,7 @@ gate_services_restarted() {
     [ "${#changed_units[@]}" -eq 0 ] && return
 
     [ "$DRYRUN" = "1" ] && { echo "[dry-run] services-restarted: ${changed_units[*]}"; return; }
+    load_decommissioned_units || return
 
     for unit in "${changed_units[@]}"; do
         # Template unit files (foo@.service) are install-only at smoke time.
@@ -164,8 +236,7 @@ gate_services_restarted() {
             continue
         fi
         # Skip decommissioned-list units; they should NOT be active.
-        if grep -qF "$unit" "$REPO_ROOT/systemd/scripts/install-units.sh" 2>/dev/null \
-            && grep -qE "DECOMMISSIONED_UNITS=\(" "$REPO_ROOT/systemd/scripts/install-units.sh"; then
+        if is_decommissioned_unit "$unit"; then
             continue
         fi
         if ! systemctl --user is-active --quiet "$unit" 2>/dev/null; then

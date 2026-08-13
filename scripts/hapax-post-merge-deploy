@@ -161,6 +161,8 @@ SYSTEMD_USER_DIR="$HOME/.config/systemd/user"
 SYSTEMD_RUNTIME_USER_DIR="${XDG_RUNTIME_DIR:-/run/user/$(id -u)}/systemd/user"
 SYSTEMD_USER_PRESET_DIR="$HOME/.config/systemd/user-preset"
 SYSTEMD_SYSTEM_DIR="/etc/systemd/system"
+SYSTEMD_SYSTEM_EXPECTED_UID=0
+SYSTEMD_SYSTEM_TRUST_ROOT="/"
 LOCAL_BIN="$HOME/.local/bin"
 TRACE_PATH="${HAPAX_POST_MERGE_TRACE_PATH:-$HOME/.cache/hapax/post-merge-traces/post-merge-traces.jsonl}"
 TRACE_MAX_RECORDS="${HAPAX_POST_MERGE_TRACE_MAX_RECORDS:-200}"
@@ -304,6 +306,116 @@ try:
 finally:
     os.close(fd)
 PY
+}
+
+read_last_deployed_sha_under_lock() {
+    /usr/bin/python3 -I -S - "$LAST_DEPLOYED_SHA_PATH" <<'PY'
+from __future__ import annotations
+
+import os
+import re
+import stat
+import sys
+
+path = os.path.abspath(sys.argv[1])
+try:
+    path_before = os.lstat(path)
+except FileNotFoundError:
+    raise SystemExit(0)
+except OSError as exc:
+    print(
+        f"hapax-post-merge-deploy: cannot inspect deploy cursor {path}: {exc}",
+        file=sys.stderr,
+    )
+    raise SystemExit(1) from exc
+
+mode = stat.S_IMODE(path_before.st_mode)
+if (
+    not stat.S_ISREG(path_before.st_mode)
+    or path_before.st_uid != os.geteuid()
+    or path_before.st_nlink != 1
+    or mode & 0o133
+    or path_before.st_size != 41
+):
+    print(
+        f"hapax-post-merge-deploy: refused unsafe deploy cursor {path}; expected "
+        "one caller-owned, single-link, non-executable regular file not writable by group/other containing one SHA",
+        file=sys.stderr,
+    )
+    raise SystemExit(1)
+
+fd = -1
+try:
+    fd = os.open(path, os.O_RDONLY | os.O_CLOEXEC | os.O_NOFOLLOW)
+    before = os.fstat(fd)
+    if (before.st_dev, before.st_ino) != (path_before.st_dev, path_before.st_ino):
+        raise OSError("cursor path changed before read")
+    payload = os.read(fd, 42)
+    if os.read(fd, 1):
+        raise OSError("cursor exceeded its exact size")
+    after = os.fstat(fd)
+    path_after = os.lstat(path)
+finally:
+    if fd >= 0:
+        os.close(fd)
+
+def generation(value: os.stat_result) -> tuple[int, ...]:
+    return (
+        value.st_dev,
+        value.st_ino,
+        value.st_mode,
+        value.st_uid,
+        value.st_nlink,
+        value.st_size,
+        value.st_mtime_ns,
+        value.st_ctime_ns,
+    )
+
+if generation(before) != generation(after) or generation(after) != generation(path_after):
+    raise OSError("cursor generation changed during read")
+try:
+    value = payload.decode("ascii")
+except UnicodeDecodeError as exc:
+    raise OSError("cursor is not ASCII") from exc
+if re.fullmatch(r"[0-9a-f]{40}\n", value) is None:
+    raise OSError("cursor does not contain one canonical SHA")
+print(value[:-1])
+PY
+}
+
+admit_monotonic_deploy_target() {
+    local current rc
+    if ! current="$(read_last_deployed_sha_under_lock)"; then
+        echo "hapax-post-merge-deploy: cannot establish a trusted deploy cursor before mutation" >&2
+        return 1
+    fi
+    [ -n "$current" ] || return 0
+    if ! git -C "$REPO" cat-file -e "$current^{commit}" 2>/dev/null; then
+        echo "hapax-post-merge-deploy: deploy cursor references unavailable commit $current; next action: restore the latest governed cursor object before deploying" >&2
+        return 1
+    fi
+    [ "$current" != "$SHA" ] || return 0
+    if git -C "$REPO" merge-base --is-ancestor "$current" "$SHA"; then
+        return 0
+    else
+        rc=$?
+        if [ "$rc" -ne 1 ]; then
+            echo "hapax-post-merge-deploy: failed to compare deploy cursor $current with candidate $SHA" >&2
+            return 1
+        fi
+    fi
+    if git -C "$REPO" merge-base --is-ancestor "$SHA" "$current"; then
+        echo "hapax-post-merge-deploy: refusing stale deploy target $SHA because cursor $current already supersedes it; governed rollback requires a separate runtime-authorized path" >&2
+        return 1
+    else
+        rc=$?
+        if [ "$rc" -ne 1 ]; then
+            echo "hapax-post-merge-deploy: failed to compare deploy candidate $SHA with cursor $current" >&2
+            return 1
+        fi
+    fi
+    echo "hapax-post-merge-deploy: refusing ancestry-divergent deploy target $SHA from cursor $current; next action: reconcile source history through a governed deploy" >&2
+    return 1
 }
 
 # --- auto-enable marker (reform-improve-deploy-activation-20260601) ---
@@ -1789,6 +1901,7 @@ fi
 
 if [ "$DRY_RUN" != "1" ]; then
     reexec_with_safe_root_required_lock
+    admit_monotonic_deploy_target
 fi
 
 TRACE_READY=1
@@ -2565,7 +2678,9 @@ validate_generic_dropin_activation() {
 
 system_unit_file_witness() {
     local path="$1" expected_oid="$2"
-    /usr/bin/python3 -I -S - "$path" "$expected_oid" <<'PY'
+    /usr/bin/python3 -I -S - \
+        "$path" "$expected_oid" "$SYSTEMD_SYSTEM_TRUST_ROOT" \
+        "$SYSTEMD_SYSTEM_EXPECTED_UID" <<'PY'
 from __future__ import annotations
 
 import hashlib
@@ -2573,13 +2688,105 @@ import os
 import stat
 import sys
 
-path, expected_oid = sys.argv[1:]
+raw_path, expected_oid, raw_trust_root, expected_uid_text = sys.argv[1:]
+try:
+    expected_uid = int(expected_uid_text)
+except ValueError:
+    raise SystemExit(1)
+path = os.path.normpath(raw_path)
+trust_root = os.path.normpath(raw_trust_root)
+if (
+    not path.startswith("/")
+    or not trust_root.startswith("/")
+    or path != raw_path
+    or trust_root != raw_trust_root
+    or expected_uid < 0
+):
+    raise SystemExit(1)
+try:
+    if os.path.commonpath((path, trust_root)) != trust_root or path == trust_root:
+        raise SystemExit(1)
+except ValueError:
+    raise SystemExit(1)
+
+
+def generation(value: os.stat_result) -> tuple[int, ...]:
+    return (
+        value.st_dev,
+        value.st_ino,
+        value.st_mode,
+        value.st_uid,
+        value.st_nlink,
+        value.st_size,
+        value.st_mtime_ns,
+        value.st_ctime_ns,
+    )
+
+
+def trusted_ancestors(
+    *, allow_missing_suffix: bool
+) -> list[tuple[str, tuple[int, ...] | None]]:
+    parent = os.path.dirname(path)
+    relative = os.path.relpath(parent, trust_root)
+    components = [] if relative == "." else relative.split(os.sep)
+    current = trust_root
+    witnessed: list[tuple[str, tuple[int, ...] | None]] = []
+    for component in ("", *components):
+        if component:
+            if component in (".", "..") or os.sep in component:
+                raise OSError("unsafe system-unit ancestor component")
+            current = os.path.join(current, component)
+        try:
+            value = os.lstat(current)
+        except FileNotFoundError:
+            if not allow_missing_suffix:
+                raise
+            witnessed.append((current, None))
+            break
+        if (
+            not stat.S_ISDIR(value.st_mode)
+            or value.st_uid != expected_uid
+            or stat.S_IMODE(value.st_mode) & 0o022
+        ):
+            raise OSError(f"untrusted system-unit ancestor: {current}")
+        witnessed.append((current, generation(value)))
+    return witnessed
+
+
+def serialize_ancestors(
+    values: list[tuple[str, tuple[int, ...] | None]]
+) -> str:
+    return ";".join(
+        f"{name}:missing"
+        if observed is None
+        else f"{name}:{','.join(str(item) for item in observed)}"
+        for name, observed in values
+    )
+
+
+try:
+    ancestors_before = trusted_ancestors(allow_missing_suffix=True)
+except (FileNotFoundError, OSError):
+    raise SystemExit(1)
 try:
     path_before = os.lstat(path)
 except FileNotFoundError:
-    print("absent")
+    try:
+        ancestors_after = trusted_ancestors(allow_missing_suffix=True)
+    except (FileNotFoundError, OSError):
+        raise SystemExit(1)
+    if ancestors_before != ancestors_after:
+        raise SystemExit(1)
+    print("\t".join(("absent", serialize_ancestors(ancestors_after))))
     raise SystemExit(0)
-if not stat.S_ISREG(path_before.st_mode):
+if (
+    not stat.S_ISREG(path_before.st_mode)
+    or path_before.st_uid != expected_uid
+    or path_before.st_nlink != 1
+    or stat.S_IMODE(path_before.st_mode) != 0o644
+):
+    raise SystemExit(1)
+if any(observed is None for _, observed in ancestors_before):
     raise SystemExit(1)
 
 fd = os.open(path, os.O_RDONLY | os.O_CLOEXEC | os.O_NOFOLLOW)
@@ -2597,45 +2804,49 @@ try:
         payload.extend(chunk)
     after = os.fstat(fd)
     path_after = os.lstat(path)
+    ancestors_after = trusted_ancestors(allow_missing_suffix=False)
 finally:
     os.close(fd)
 
-generation_before = (
-    before.st_dev,
-    before.st_ino,
-    before.st_size,
-    before.st_mtime_ns,
-    before.st_ctime_ns,
-)
-generation_after = (
-    after.st_dev,
-    after.st_ino,
-    after.st_size,
-    after.st_mtime_ns,
-    after.st_ctime_ns,
-)
-path_generation_after = (
-    path_after.st_dev,
-    path_after.st_ino,
-    path_after.st_size,
-    path_after.st_mtime_ns,
-    path_after.st_ctime_ns,
-)
-if generation_before != generation_after or generation_after != path_generation_after:
+generation_before = generation(before)
+generation_after = generation(after)
+path_generation_after = generation(path_after)
+if (
+    generation_before != generation_after
+    or generation_after != path_generation_after
+    or ancestors_before != ancestors_after
+):
     raise OSError("system unit generation changed during read")
 
+if expected_oid and len(expected_oid) not in (40, 64):
+    raise SystemExit(1)
 algorithm = hashlib.sha1 if len(expected_oid) == 40 else hashlib.sha256
 digest = algorithm(f"blob {len(payload)}\0".encode("ascii") + payload).hexdigest()
-print("\t".join(("present", digest, *(str(value) for value in generation_after))))
+print(
+    "\t".join(
+        (
+            "present",
+            digest,
+            str(after.st_uid),
+            format(stat.S_IMODE(after.st_mode), "04o"),
+            str(after.st_nlink),
+            *(str(value) for value in generation_after),
+            serialize_ancestors(ancestors_after),
+        )
+    )
+)
 PY
 }
 
 SYSTEM_EXPECTED_DROPIN_PATHS=""
+SYSTEM_EXPECTED_DROPIN_RECORDS=""
 load_expected_system_dropin_paths() {
-    local source_unit="$1" listing line mode type object_and_path tree_path
+    local source_unit="$1" listing line mode type object_and_path object_oid tree_path
     local prefix="${source_unit}.d/"
-    local -a expected=()
+    local installed_path
+    local -a expected=() records=()
     SYSTEM_EXPECTED_DROPIN_PATHS=""
+    SYSTEM_EXPECTED_DROPIN_RECORDS=""
     if ! listing="$(git -C "$REPO" ls-tree -r "$SHA" -- "${source_unit}.d")"; then
         echo "hapax-post-merge-deploy: failed to enumerate system drop-ins at $SHA:${source_unit}.d" >&2
         return 1
@@ -2647,20 +2858,77 @@ load_expected_system_dropin_paths() {
             echo "hapax-post-merge-deploy: malformed system drop-in Git entry at $SHA:${source_unit}.d" >&2
             return 1
         fi
+        object_oid="${object_and_path%%$'\t'*}"
         tree_path="${object_and_path#*$'\t'}"
         case "$tree_path" in
             "$prefix"*.conf) ;;
             *) continue ;;
         esac
-        if [[ "$mode" != 100644 && "$mode" != 100755 ]] || [ "$type" != "blob" ]; then
+        if [ "$mode" != 100644 ] || [ "$type" != "blob" ] \
+            || ! [[ "$object_oid" =~ ^[0-9a-f]{40}([0-9a-f]{24})?$ ]]; then
             echo "hapax-post-merge-deploy: unsupported system drop-in Git entry at $SHA:$tree_path" >&2
             return 1
         fi
-        expected+=("$SYSTEMD_SYSTEM_DIR/${tree_path#systemd/units/}")
+        installed_path="$SYSTEMD_SYSTEM_DIR/${tree_path#systemd/units/}"
+        expected+=("$installed_path")
+        records+=("$installed_path"$'\t'"$object_oid")
     done <<< "$listing"
     if [ "${#expected[@]}" -gt 0 ]; then
         SYSTEM_EXPECTED_DROPIN_PATHS="$(printf '%s\n' "${expected[@]}" | sort -u)"
+        SYSTEM_EXPECTED_DROPIN_RECORDS="$(printf '%s\n' "${records[@]}" | sort -u)"
     fi
+}
+
+SYSTEM_EXPECTED_FRAGMENT_OID=""
+SYSTEM_EXPECTED_FRAGMENT_PRESENT=0
+load_expected_system_fragment_oid() {
+    local source_unit="$1" listing mode type object_and_path object_oid tree_path
+    SYSTEM_EXPECTED_FRAGMENT_OID=""
+    SYSTEM_EXPECTED_FRAGMENT_PRESENT=0
+    if ! listing="$(git -C "$REPO" ls-tree "$SHA" -- "$source_unit")"; then
+        echo "hapax-post-merge-deploy: cannot resolve exact system fragment at $SHA:$source_unit" >&2
+        return 1
+    fi
+    [ -n "$listing" ] || return 0
+    if [[ "$listing" == *$'\n'* ]]; then
+        echo "hapax-post-merge-deploy: ambiguous exact system fragment at $SHA:$source_unit" >&2
+        return 1
+    fi
+    read -r mode type object_and_path <<< "$listing"
+    if [[ "$object_and_path" != *$'\t'* ]]; then
+        return 1
+    fi
+    object_oid="${object_and_path%%$'\t'*}"
+    tree_path="${object_and_path#*$'\t'}"
+    if [ "$mode" != 100644 ] || [ "$type" != "blob" ] \
+        || [ "$tree_path" != "$source_unit" ] \
+        || ! [[ "$object_oid" =~ ^[0-9a-f]{40}([0-9a-f]{24})?$ ]]; then
+        echo "hapax-post-merge-deploy: unsupported exact system fragment at $SHA:$source_unit" >&2
+        return 1
+    fi
+    SYSTEM_EXPECTED_FRAGMENT_OID="$object_oid"
+    SYSTEM_EXPECTED_FRAGMENT_PRESENT=1
+}
+
+system_dropin_file_set_witness() {
+    local records="$1" path oid extra witness count=0
+    if [ -z "$records" ]; then
+        printf 'none\n'
+        return 0
+    fi
+    [ "${#records}" -le 131072 ] || return 1
+    while IFS=$'\t' read -r path oid extra; do
+        [ -n "$path" ] && [ -n "$oid" ] && [ -z "$extra" ] || return 1
+        if ! [[ "$oid" =~ ^[0-9a-f]{40}([0-9a-f]{24})?$ ]] \
+            || ! witness="$(system_unit_file_witness "$path" "$oid")" \
+            || [[ "$witness" != $'present\t'"$oid"$'\t'* ]]; then
+            return 1
+        fi
+        printf '%s\t%s\n' "$path" "$witness"
+        count=$((count + 1))
+        [ "$count" -le 512 ] || return 1
+    done <<< "$records"
+    [ "$count" -gt 0 ]
 }
 
 system_dropin_paths_match() {
@@ -2704,7 +2972,7 @@ pending_system_scope_absent_for_user_path() {
         manager_unit="${manager_unit/@./@hapax-post-merge-witness.}"
     fi
     if ! file_before="$(system_unit_file_witness "$system_dest" "")" \
-        || [ "$file_before" != "absent" ]; then
+        || [[ "$file_before" != absent$'\t'* ]]; then
         return 1
     fi
     if ! manager_record="$(
@@ -2790,10 +3058,93 @@ for f in "${SYSTEMD_PENDING_USER_DROPINS[@]}"; do
     fi
 done
 
+user_unit_absence_witness() {
+    local unit_name="$1"
+    /usr/bin/python3 -I -S - "$SYSTEMD_USER_DIR" "$unit_name" <<'PY'
+from __future__ import annotations
+
+import os
+import re
+import stat
+import sys
+
+root, unit = sys.argv[1:]
+if (
+    not root.startswith("/")
+    or os.path.normpath(root) != root
+    or re.fullmatch(r"[A-Za-z0-9_.@:-]+", unit) is None
+):
+    raise SystemExit(1)
+
+
+def generation(value: os.stat_result) -> tuple[int, ...]:
+    return (
+        value.st_dev,
+        value.st_ino,
+        value.st_mode,
+        value.st_uid,
+        value.st_nlink,
+        value.st_size,
+        value.st_mtime_ns,
+        value.st_ctime_ns,
+    )
+
+
+def trusted_directory(path: str) -> os.stat_result:
+    value = os.lstat(path)
+    if (
+        not stat.S_ISDIR(value.st_mode)
+        or value.st_uid != os.geteuid()
+        or stat.S_IMODE(value.st_mode) & 0o022
+    ):
+        raise OSError(f"untrusted user-unit directory: {path}")
+    return value
+
+
+if not os.path.lexists(root):
+    print("absent-root")
+    raise SystemExit(0)
+
+root_before = trusted_directory(root)
+if os.path.lexists(os.path.join(root, unit)) or os.path.lexists(
+    os.path.join(root, f"{unit}.d")
+):
+    raise SystemExit(1)
+
+wants_before: dict[str, tuple[int, ...]] = {}
+with os.scandir(root) as entries:
+    names = sorted(entry.name for entry in entries if entry.name.endswith(".wants"))
+if len(names) > 512 or len(names) != len(set(names)):
+    raise SystemExit(1)
+for name in names:
+    if "/" in name or name in (".", ".."):
+        raise SystemExit(1)
+    wants_path = os.path.join(root, name)
+    wants_before[name] = generation(trusted_directory(wants_path))
+    if os.path.lexists(os.path.join(wants_path, unit)):
+        raise SystemExit(1)
+
+root_after = trusted_directory(root)
+with os.scandir(root) as entries:
+    names_after = sorted(entry.name for entry in entries if entry.name.endswith(".wants"))
+if names_after != names:
+    raise SystemExit(1)
+wants_after = {
+    name: generation(trusted_directory(os.path.join(root, name))) for name in names_after
+}
+if generation(root_before) != generation(root_after) or wants_before != wants_after:
+    raise SystemExit(1)
+print("root=" + ",".join(str(value) for value in generation(root_after)))
+for name in names_after:
+    print(name + "=" + ",".join(str(value) for value in wants_after[name]))
+PY
+}
+
 reconcile_user_unit_absence() {
     local unit_name="$1" user_unit="$SYSTEMD_USER_DIR/$1" user_dropin_dir
     local wants_link user_record line load_state fragment_path active_state sub_state
     local record_ok property_count load_seen fragment_seen active_seen sub_seen
+    local absence_before absence_after
     user_dropin_dir="$SYSTEMD_USER_DIR/$unit_name.d"
     systemctl --user disable --now "$unit_name" >/dev/null 2>&1 || true
     if [ -e "$user_unit" ] || [ -L "$user_unit" ]; then
@@ -2820,6 +3171,10 @@ reconcile_user_unit_absence() {
     fi
     if ! systemctl --user daemon-reload; then
         echo "hapax-post-merge-deploy: failed to reload the user manager while retiring stale $unit_name artifacts" >&2
+        return 1
+    fi
+    if ! absence_before="$(user_unit_absence_witness "$unit_name")"; then
+        echo "hapax-post-merge-deploy: cannot establish stable filesystem absence for stale user $unit_name artifacts" >&2
         return 1
     fi
     if ! user_record="$(
@@ -2880,6 +3235,11 @@ reconcile_user_unit_absence() {
         echo "hapax-post-merge-deploy: stale user-manager state remains for system-scoped $unit_name" >&2
         return 1
     fi
+    if ! absence_after="$(user_unit_absence_witness "$unit_name")" \
+        || [ "$absence_after" != "$absence_before" ]; then
+        echo "hapax-post-merge-deploy: stale user $unit_name filesystem state changed across the manager absence witness" >&2
+        return 1
+    fi
 }
 
 # A system-owned base unit owns all of its drop-ins. Never materialize those
@@ -2903,17 +3263,53 @@ if [ "${#SYSTEMD_SYSTEM_DROPINS[@]}" -gt 0 ]; then
             exit 2
         fi
         expected_system_dropins="$SYSTEM_EXPECTED_DROPIN_PATHS"
+        expected_system_dropin_records="$SYSTEM_EXPECTED_DROPIN_RECORDS"
+        if ! load_expected_system_fragment_oid "$dropin_base_source"; then
+            exit 2
+        fi
+        expected_system_fragment_oid="$SYSTEM_EXPECTED_FRAGMENT_OID"
+        expected_system_fragment_present="$SYSTEM_EXPECTED_FRAGMENT_PRESENT"
+        if [ "$expected_system_fragment_present" -eq 0 ] \
+            && [ -n "$expected_system_dropin_records" ]; then
+            echo "hapax-post-merge-deploy: exact SHA has system drop-ins without their owning fragment at $SHA:$dropin_base_source" >&2
+            exit 2
+        fi
+        system_fragment_dest="$SYSTEMD_SYSTEM_DIR/$unit_name"
         system_dropin_converged=0
         system_dropin_file_before=""
         if system_dropin_file_before="$(system_unit_file_witness "$system_dest" "$GIT_BLOB_OID")"; then
             if [ "$GIT_BLOB_PRESENT" -eq 1 ] \
                 && [[ "$system_dropin_file_before" == $'present\t'"$GIT_BLOB_OID"$'\t'* ]]; then
                 system_dropin_converged=1
-            elif [ "$GIT_BLOB_PRESENT" -eq 0 ] && [ "$system_dropin_file_before" = "absent" ]; then
+            elif [ "$GIT_BLOB_PRESENT" -eq 0 ] \
+                && [[ "$system_dropin_file_before" == absent$'\t'* ]]; then
                 system_dropin_converged=1
             fi
         else
             echo "  runtime deferred: cannot obtain a stable file witness for '$system_dest'" >&2
+        fi
+        system_fragment_file_before=""
+        system_dropin_files_before=""
+        if [ "$system_dropin_converged" -eq 1 ]; then
+            if ! system_fragment_file_before="$(
+                system_unit_file_witness \
+                    "$system_fragment_dest" "$expected_system_fragment_oid"
+            )"; then
+                system_dropin_converged=0
+            elif [ "$expected_system_fragment_present" -eq 1 ] \
+                && [[ "$system_fragment_file_before" != $'present\t'"$expected_system_fragment_oid"$'\t'* ]]; then
+                system_dropin_converged=0
+            elif [ "$expected_system_fragment_present" -eq 0 ] \
+                && [[ "$system_fragment_file_before" != absent$'\t'* ]]; then
+                system_dropin_converged=0
+            elif ! system_dropin_files_before="$(
+                system_dropin_file_set_witness "$expected_system_dropin_records"
+            )"; then
+                system_dropin_converged=0
+            fi
+            if [ "$system_dropin_converged" -ne 1 ]; then
+                echo "  runtime deferred: effective fragment or sibling drop-in bytes for '$unit_name' are not exact trusted Git objects" >&2
+            fi
         fi
         system_dropin_manager_converged=0
         if [ "$system_dropin_converged" -eq 1 ]; then
@@ -2971,14 +3367,16 @@ if [ "${#SYSTEMD_SYSTEM_DROPINS[@]}" -gt 0 ]; then
                 fi
                 if [ "$system_manager_record_ok" -ne 1 ]; then
                     echo "  runtime deferred: malformed combined system-manager witness for '$unit_name'" >&2
-                elif [ "$GIT_BLOB_PRESENT" -eq 1 ] \
+                elif [ "$expected_system_fragment_present" -eq 1 ] \
                     && [ "$system_load_state" = "loaded" ] \
                     && [ "$system_fragment_path" = "$SYSTEMD_SYSTEM_DIR/$unit_name" ] \
                     && system_dropin_paths_match \
                         "$system_dropin_paths" "$expected_system_dropins" \
                     && [ "$system_need_reload" = "no" ]; then
                     system_dropin_manager_converged=1
-                elif [ "$GIT_BLOB_PRESENT" -eq 0 ] \
+                elif [ "$expected_system_fragment_present" -eq 0 ] \
+                    && [ "$system_load_state" = "not-found" ] \
+                    && [ -z "$system_fragment_path" ] \
                     && system_dropin_paths_match \
                         "$system_dropin_paths" "$expected_system_dropins" \
                     && [ "$system_need_reload" = "no" ]; then
@@ -2989,11 +3387,23 @@ if [ "${#SYSTEMD_SYSTEM_DROPINS[@]}" -gt 0 ]; then
             fi
             if [ "$system_dropin_manager_converged" -eq 1 ]; then
                 system_dropin_file_after=""
+                system_fragment_file_after=""
+                system_dropin_files_after=""
                 if ! system_dropin_file_after="$(
                     system_unit_file_witness "$system_dest" "$GIT_BLOB_OID"
-                )" || [ "$system_dropin_file_after" != "$system_dropin_file_before" ]; then
+                )" \
+                    || [ "$system_dropin_file_after" != "$system_dropin_file_before" ] \
+                    || ! system_fragment_file_after="$(
+                        system_unit_file_witness \
+                            "$system_fragment_dest" "$expected_system_fragment_oid"
+                    )" \
+                    || [ "$system_fragment_file_after" != "$system_fragment_file_before" ] \
+                    || ! system_dropin_files_after="$(
+                        system_dropin_file_set_witness "$expected_system_dropin_records"
+                    )" \
+                    || [ "$system_dropin_files_after" != "$system_dropin_files_before" ]; then
                     system_dropin_manager_converged=0
-                    echo "  runtime deferred: '$system_dest' changed generation across the system-manager witness" >&2
+                    echo "  runtime deferred: effective fragment/drop-in generations for '$unit_name' changed across the system-manager witness" >&2
                 fi
             fi
         fi
@@ -3100,6 +3510,7 @@ if [ "${#SYSTEMD_SYSTEM[@]}" -gt 0 ]; then
             exit 2
         fi
         expected_system_dropins="$SYSTEM_EXPECTED_DROPIN_PATHS"
+        expected_system_dropin_records="$SYSTEM_EXPECTED_DROPIN_RECORDS"
         if ! reconcile_user_unit_absence "$base"; then
             exit 1
         fi
@@ -3109,11 +3520,20 @@ if [ "${#SYSTEMD_SYSTEM[@]}" -gt 0 ]; then
             if [ "$GIT_BLOB_PRESENT" -eq 1 ] \
                 && [[ "$system_file_before" == $'present\t'"$GIT_BLOB_OID"$'\t'* ]]; then
                 system_unit_converged=1
-            elif [ "$GIT_BLOB_PRESENT" -eq 0 ] && [ "$system_file_before" = "absent" ]; then
+            elif [ "$GIT_BLOB_PRESENT" -eq 0 ] \
+                && [[ "$system_file_before" == absent$'\t'* ]]; then
                 system_unit_converged=1
             fi
         else
             echo "  runtime deferred: cannot obtain a stable file witness for '$system_dest'" >&2
+        fi
+        system_dropin_files_before=""
+        if [ "$system_unit_converged" -eq 1 ] \
+            && ! system_dropin_files_before="$(
+                system_dropin_file_set_witness "$expected_system_dropin_records"
+            )"; then
+            system_unit_converged=0
+            echo "  runtime deferred: effective sibling drop-in bytes for '$base' are not exact trusted Git objects" >&2
         fi
         system_manager_converged=0
         if [ "$system_unit_converged" -eq 1 ]; then
@@ -3191,11 +3611,17 @@ if [ "${#SYSTEMD_SYSTEM[@]}" -gt 0 ]; then
             fi
             if [ "$system_manager_converged" -eq 1 ]; then
                 system_file_after=""
+                system_dropin_files_after=""
                 if ! system_file_after="$(
                     system_unit_file_witness "$system_dest" "$GIT_BLOB_OID"
-                )" || [ "$system_file_after" != "$system_file_before" ]; then
+                )" \
+                    || [ "$system_file_after" != "$system_file_before" ] \
+                    || ! system_dropin_files_after="$(
+                        system_dropin_file_set_witness "$expected_system_dropin_records"
+                    )" \
+                    || [ "$system_dropin_files_after" != "$system_dropin_files_before" ]; then
                     system_manager_converged=0
-                    echo "  runtime deferred: '$system_dest' changed generation across the system-manager witness" >&2
+                    echo "  runtime deferred: effective fragment/drop-in generations for '$base' changed across the system-manager witness" >&2
                 fi
             fi
         fi
