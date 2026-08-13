@@ -108,6 +108,7 @@ COVERAGE_FROM_STDIN=0
 VERIFY_AUTO_ENABLE=0
 CHECK_SYMLINK_DRIFT=0
 SINCE=""
+DEPLOY_CURSOR_SHA=""
 TRACE_READY=0
 TRACE_WRITTEN=0
 SHA=""
@@ -200,6 +201,111 @@ RECOVERY_BUNDLE_REQUIRED_FILES=(
     manifest.json
 )
 
+configure_root_required_state_domain() {
+    local test_root="${HAPAX_ROOT_REQUIRED_ISOLATED_TEST_ROOT:-}"
+    local selector nss_home
+    if [ -n "$test_root" ]; then
+        /usr/bin/python3 -I -S - \
+            "$test_root" \
+            "HOME=$HOME" \
+            "HAPAX_POST_MERGE_TRACE_PATH=$TRACE_PATH" \
+            "HAPAX_POST_MERGE_LAST_DEPLOYED_SHA_PATH=$LAST_DEPLOYED_SHA_PATH" \
+            "HAPAX_POST_MERGE_SYSTEMD_PENDING_PATH=$SYSTEMD_RUNTIME_PENDING_PATH" \
+            "HAPAX_POST_MERGE_ROOT_DEFER_DIR=$ROOT_DEFER_DIR" \
+            "HAPAX_ROOT_REQUIRED_STATE_ROOT=$ROOT_REQUIRED_STATE_ROOT" \
+            "HAPAX_ROOT_REQUIRED_INSTALLED_SOURCE_ROOT=$ROOT_REQUIRED_INSTALLED_SOURCE_ROOT" \
+            "HAPAX_ROOT_REQUIRED_INSTALLED_RECEIPT_ROOT=$ROOT_REQUIRED_INSTALLED_RECEIPT_ROOT" \
+            "HAPAX_ROOT_REQUIRED_DESIRED_RECEIPT_ROOT=$ROOT_REQUIRED_DESIRED_RECEIPT_ROOT" \
+            "HAPAX_ROOT_REQUIRED_LOCK_FILE=$ROOT_REQUIRED_LOCK_FILE" \
+            "HAPAX_RECOVERY_BUNDLE_DEST=$RECOVERY_BUNDLE_DEST" <<'PY'
+from __future__ import annotations
+
+import os
+import stat
+import sys
+
+root = sys.argv[1]
+if not os.path.isabs(root) or "\n" in root or len(root) > 4096:
+    print("hapax-post-merge-deploy: isolated test root must be one absolute path", file=sys.stderr)
+    raise SystemExit(2)
+root = os.path.abspath(root)
+try:
+    root_stat = os.lstat(root)
+except OSError as exc:
+    print(f"hapax-post-merge-deploy: invalid isolated test root {root}: {exc}", file=sys.stderr)
+    raise SystemExit(2) from exc
+if (
+    not stat.S_ISDIR(root_stat.st_mode)
+    or root_stat.st_uid != os.geteuid()
+    or root_stat.st_mode & 0o022
+    or os.path.realpath(root) != root
+):
+    print(
+        "hapax-post-merge-deploy: isolated test root must be a caller-owned, "
+        "non-symlink, non-group/world-writable directory",
+        file=sys.stderr,
+    )
+    raise SystemExit(2)
+
+for item in sys.argv[2:]:
+    label, separator, candidate = item.partition("=")
+    if not separator or not candidate or not os.path.isabs(candidate) or "\n" in candidate:
+        print(f"hapax-post-merge-deploy: {label} is invalid in isolated test mode", file=sys.stderr)
+        raise SystemExit(2)
+    lexical = os.path.abspath(candidate)
+    resolved = os.path.realpath(candidate)
+    try:
+        lexical_inside = os.path.commonpath((root, lexical)) == root
+        resolved_inside = os.path.commonpath((root, resolved)) == root
+    except ValueError:
+        lexical_inside = resolved_inside = False
+    if not lexical_inside or not resolved_inside or lexical == root:
+        print(
+            f"hapax-post-merge-deploy: {label} escapes isolated test root {root}",
+            file=sys.stderr,
+        )
+        raise SystemExit(2)
+PY
+        return
+    fi
+
+    for selector in \
+        HAPAX_POST_MERGE_TRACE_PATH \
+        HAPAX_POST_MERGE_LAST_DEPLOYED_SHA_PATH \
+        HAPAX_POST_MERGE_SYSTEMD_PENDING_PATH \
+        HAPAX_POST_MERGE_ROOT_DEFER_DIR \
+        HAPAX_ROOT_REQUIRED_STATE_ROOT \
+        HAPAX_ROOT_REQUIRED_INSTALLED_SOURCE_ROOT \
+        HAPAX_ROOT_REQUIRED_INSTALLED_RECEIPT_ROOT \
+        HAPAX_ROOT_REQUIRED_DESIRED_RECEIPT_ROOT \
+        HAPAX_ROOT_REQUIRED_LOCK_FILE; do
+        if [[ -v "$selector" ]]; then
+            echo "hapax-post-merge-deploy: $selector selects caller-selected production state; remove it or use a confined HAPAX_ROOT_REQUIRED_ISOLATED_TEST_ROOT harness" >&2
+            return 2
+        fi
+    done
+    nss_home="$(/usr/bin/python3 -I -S - <<'PY'
+import os
+import pwd
+
+print(pwd.getpwuid(os.geteuid()).pw_dir)
+PY
+)"
+    if [ -z "$nss_home" ] || [ "${nss_home#/}" = "$nss_home" ] || [ "$HOME" != "$nss_home" ]; then
+        echo "hapax-post-merge-deploy: HOME does not match NSS home for UID $(/usr/bin/id -u); refusing a split production state domain" >&2
+        return 2
+    fi
+    TRACE_PATH="$nss_home/.cache/hapax/post-merge-traces/post-merge-traces.jsonl"
+    LAST_DEPLOYED_SHA_PATH="$nss_home/.cache/hapax/post-merge-traces/last-deployed-sha"
+    SYSTEMD_RUNTIME_PENDING_PATH="$nss_home/.cache/hapax/post-merge-traces/systemd-runtime-pending.json"
+    ROOT_DEFER_DIR="$nss_home/.cache/hapax/post-merge-root-required"
+    ROOT_REQUIRED_STATE_ROOT="$nss_home/.local/state/hapax/root-required"
+    ROOT_REQUIRED_INSTALLED_SOURCE_ROOT="$ROOT_REQUIRED_STATE_ROOT/current-source"
+    ROOT_REQUIRED_INSTALLED_RECEIPT_ROOT="$ROOT_REQUIRED_STATE_ROOT/installed-receipts"
+    ROOT_REQUIRED_DESIRED_RECEIPT_ROOT="$ROOT_REQUIRED_STATE_ROOT/desired-receipts"
+    ROOT_REQUIRED_LOCK_FILE="$ROOT_REQUIRED_STATE_ROOT/.lock"
+}
+
 acquire_inherited_root_required_lock() {
     local lock_fd="${HAPAX_ROOT_REQUIRED_LOCK_FD:-}"
     if ! [[ "$lock_fd" =~ ^[0-9]+$ ]] || [ "$lock_fd" -lt 3 ]; then
@@ -217,8 +323,8 @@ import sys
 fd = int(sys.argv[1])
 lock_path = sys.argv[2]
 try:
-    inode = os.fstat(fd)
-    path_inode = os.lstat(lock_path)
+    inode_before = os.fstat(fd)
+    path_before = os.lstat(lock_path)
 except OSError as exc:
     print(
         f"hapax-post-merge-deploy: refused invalid shared lock descriptor for {lock_path}: "
@@ -227,12 +333,13 @@ except OSError as exc:
     )
     raise SystemExit(1) from exc
 if (
-    not stat.S_ISREG(inode.st_mode)
-    or not stat.S_ISREG(path_inode.st_mode)
-    or (inode.st_dev, inode.st_ino) != (path_inode.st_dev, path_inode.st_ino)
-    or inode.st_uid != os.geteuid()
-    or inode.st_nlink != 1
-    or inode.st_mode & 0o022
+    not stat.S_ISREG(inode_before.st_mode)
+    or not stat.S_ISREG(path_before.st_mode)
+    or (inode_before.st_dev, inode_before.st_ino)
+    != (path_before.st_dev, path_before.st_ino)
+    or inode_before.st_uid != os.geteuid()
+    or inode_before.st_nlink != 1
+    or inode_before.st_mode & 0o022
 ):
     print(
         f"hapax-post-merge-deploy: refused invalid shared lock descriptor for {lock_path}; "
@@ -243,6 +350,34 @@ if (
     raise SystemExit(1)
 os.fchmod(fd, 0o600)
 fcntl.flock(fd, fcntl.LOCK_EX)
+try:
+    inode_after = os.fstat(fd)
+    path_after = os.lstat(lock_path)
+except OSError as exc:
+    print(
+        f"hapax-post-merge-deploy: shared lock identity changed while acquiring {lock_path}: {exc}",
+        file=sys.stderr,
+    )
+    raise SystemExit(1) from exc
+if (
+    not stat.S_ISREG(inode_after.st_mode)
+    or not stat.S_ISREG(path_after.st_mode)
+    or inode_after.st_uid != os.geteuid()
+    or path_after.st_uid != os.geteuid()
+    or inode_after.st_nlink != 1
+    or path_after.st_nlink != 1
+    or inode_after.st_mode & 0o022
+    or path_after.st_mode & 0o022
+    or (inode_after.st_dev, inode_after.st_ino)
+    != (path_after.st_dev, path_after.st_ino)
+    or (inode_before.st_dev, inode_before.st_ino)
+    != (inode_after.st_dev, inode_after.st_ino)
+):
+    print(
+        f"hapax-post-merge-deploy: shared lock identity changed while acquiring {lock_path}",
+        file=sys.stderr,
+    )
+    raise SystemExit(1)
 PY
 }
 
@@ -276,12 +411,19 @@ except OSError as exc:
     )
     raise SystemExit(1) from exc
 try:
-    inode = os.fstat(fd)
+    inode_before = os.fstat(fd)
+    path_before = os.lstat(lock_path)
     if (
-        not stat.S_ISREG(inode.st_mode)
-        or inode.st_uid != os.geteuid()
-        or inode.st_nlink != 1
-        or inode.st_mode & 0o022
+        not stat.S_ISREG(inode_before.st_mode)
+        or not stat.S_ISREG(path_before.st_mode)
+        or inode_before.st_uid != os.geteuid()
+        or path_before.st_uid != os.geteuid()
+        or inode_before.st_nlink != 1
+        or path_before.st_nlink != 1
+        or inode_before.st_mode & 0o022
+        or path_before.st_mode & 0o022
+        or (inode_before.st_dev, inode_before.st_ino)
+        != (path_before.st_dev, path_before.st_ino)
     ):
         print(
             f"hapax-post-merge-deploy: refused unsafe shared lock inode {lock_path}; expected "
@@ -292,6 +434,34 @@ try:
         raise SystemExit(1)
     os.fchmod(fd, 0o600)
     fcntl.flock(fd, fcntl.LOCK_EX)
+    try:
+        inode_after = os.fstat(fd)
+        path_after = os.lstat(lock_path)
+    except OSError as exc:
+        print(
+            f"hapax-post-merge-deploy: shared lock identity changed while acquiring {lock_path}: {exc}",
+            file=sys.stderr,
+        )
+        raise SystemExit(1) from exc
+    if (
+        not stat.S_ISREG(inode_after.st_mode)
+        or not stat.S_ISREG(path_after.st_mode)
+        or inode_after.st_uid != os.geteuid()
+        or path_after.st_uid != os.geteuid()
+        or inode_after.st_nlink != 1
+        or path_after.st_nlink != 1
+        or inode_after.st_mode & 0o022
+        or path_after.st_mode & 0o022
+        or (inode_after.st_dev, inode_after.st_ino)
+        != (path_after.st_dev, path_after.st_ino)
+        or (inode_before.st_dev, inode_before.st_ino)
+        != (inode_after.st_dev, inode_after.st_ino)
+    ):
+        print(
+            f"hapax-post-merge-deploy: shared lock identity changed while acquiring {lock_path}",
+            file=sys.stderr,
+        )
+        raise SystemExit(1)
     env = os.environ.copy()
     env.pop("HAPAX_ROOT_REQUIRED_LOCK_HELD", None)
     env["HAPAX_ROOT_REQUIRED_LOCK_FD"] = str(fd)
@@ -385,11 +555,13 @@ PY
 
 admit_monotonic_deploy_target() {
     local current rc
+    DEPLOY_CURSOR_SHA=""
     if ! current="$(read_last_deployed_sha_under_lock)"; then
         echo "hapax-post-merge-deploy: cannot establish a trusted deploy cursor before mutation" >&2
         return 1
     fi
     [ -n "$current" ] || return 0
+    DEPLOY_CURSOR_SHA="$current"
     if ! git -C "$REPO" cat-file -e "$current^{commit}" 2>/dev/null; then
         echo "hapax-post-merge-deploy: deploy cursor references unavailable commit $current; next action: restore the latest governed cursor object before deploying" >&2
         return 1
@@ -1155,6 +1327,12 @@ for item in sorted(seen):
 PY
 }
 
+if [ "$COVERAGE_FROM_STDIN" != "1" ] \
+    && [ "$DRY_RUN" != "1" ] \
+    && [ "$REPORT_COVERAGE" != "1" ]; then
+    configure_root_required_state_domain
+fi
+
 cd "$REPO"
 # Ensure the commit's objects are available locally even if main hasn't been
 # pulled yet; diffing an unfetched SHA would fail and falsely signal
@@ -1172,15 +1350,46 @@ if [ "$COVERAGE_FROM_STDIN" != "1" ]; then
     SHA="$SHA_RESOLVED"
 fi
 
-if [ "$COVERAGE_FROM_STDIN" = "1" ]; then
-    FILES="$(cat)"
-elif [ -n "$SINCE" ]; then
-    # Cumulative range deploy: union of every file changed across <since>..<SHA>.
+if [ -n "$SINCE" ]; then
     if ! SINCE_RESOLVED="$(git rev-parse --verify --quiet "$SINCE^{commit}")"; then
         echo "hapax-post-merge-deploy: --since '$SINCE' is not a valid commit" >&2
         exit 2
     fi
     SINCE="$SINCE_RESOLVED"
+fi
+
+if [ "$COVERAGE_FROM_STDIN" != "1" ] \
+    && [ "$DRY_RUN" != "1" ] \
+    && [ "$REPORT_COVERAGE" != "1" ]; then
+    reexec_with_safe_root_required_lock
+    admit_monotonic_deploy_target
+    if [ -n "$DEPLOY_CURSOR_SHA" ] && [ "$DEPLOY_CURSOR_SHA" != "$SHA" ]; then
+        if [ -n "$SINCE" ] && [ "$SINCE" != "$DEPLOY_CURSOR_SHA" ]; then
+            echo "hapax-post-merge-deploy: --since $SINCE does not match trusted deploy cursor $DEPLOY_CURSOR_SHA; refusing to skip an undeployed commit range" >&2
+            exit 2
+        fi
+        SINCE="$DEPLOY_CURSOR_SHA"
+    fi
+fi
+
+if [ -n "$SINCE" ]; then
+    if git merge-base --is-ancestor "$SINCE" "$SHA"; then
+        :
+    else
+        since_ancestor_rc=$?
+        if [ "$since_ancestor_rc" -eq 1 ]; then
+            echo "hapax-post-merge-deploy: --since $SINCE is not an ancestor of deploy target $SHA" >&2
+        else
+            echo "hapax-post-merge-deploy: failed to compare --since $SINCE with deploy target $SHA" >&2
+        fi
+        exit 2
+    fi
+fi
+
+if [ "$COVERAGE_FROM_STDIN" = "1" ]; then
+    FILES="$(cat)"
+elif [ -n "$SINCE" ]; then
+    # Cumulative range deploy: union of every file changed across <since>..<SHA>.
     FILES="$(git diff --name-only "$SINCE" "$SHA" | sort -u)"
 elif FIRST_PARENT="$(git rev-parse --verify --quiet "$SHA^1")"; then
     FILES="$(git diff --name-only "$FIRST_PARENT" "$SHA" | sort -u)"
@@ -1899,11 +2108,6 @@ if [ "$REPORT_COVERAGE" = "1" ]; then
     exit 0
 fi
 
-if [ "$DRY_RUN" != "1" ]; then
-    reexec_with_safe_root_required_lock
-    admit_monotonic_deploy_target
-fi
-
 TRACE_READY=1
 if [ -z "$FILES" ]; then
     reconcile_canonical_gate_closure
@@ -2320,7 +2524,7 @@ Run from this host after this root-authority preparation:
 
 Default sudo path after sudo -v:
 
-  HAPAX_ROOT_REQUIRED_PACKAGE_SHA=$SHA HAPAX_ROOT_REQUIRED_DRAIN_DIR=$dest HAPAX_ROOT_REQUIRED_INSTALLED_SOURCE_ROOT=$ROOT_REQUIRED_INSTALLED_SOURCE_ROOT HAPAX_ROOT_REQUIRED_INSTALLED_RECEIPT_ROOT=$ROOT_REQUIRED_INSTALLED_RECEIPT_ROOT HAPAX_ROOT_REQUIRED_DESIRED_RECEIPT_ROOT=$ROOT_REQUIRED_DESIRED_RECEIPT_ROOT HAPAX_ROOT_REQUIRED_GIT_REPO=$REPO $dest/$installer --source $dest --install --verify-live
+  HAPAX_ROOT_REQUIRED_PACKAGE_SHA=$SHA HAPAX_ROOT_REQUIRED_DRAIN_DIR=$dest HAPAX_ROOT_REQUIRED_GIT_REPO=$REPO $dest/$installer --source $dest --install --verify-live
 
 Post-merge deploy continued after this deferral so unrelated user-scope deploy
 groups for the same merge were not skipped.
@@ -2328,7 +2532,7 @@ EOF
     rm -rf "$dest" 2>/dev/null || true
     mv "$temp" "$dest"
     echo "root-required $label install deferred to $dest"
-    echo "next action: run HAPAX_ROOT_REQUIRED_PACKAGE_SHA=$SHA HAPAX_ROOT_REQUIRED_DRAIN_DIR=$dest HAPAX_ROOT_REQUIRED_INSTALLED_SOURCE_ROOT=$ROOT_REQUIRED_INSTALLED_SOURCE_ROOT HAPAX_ROOT_REQUIRED_INSTALLED_RECEIPT_ROOT=$ROOT_REQUIRED_INSTALLED_RECEIPT_ROOT HAPAX_ROOT_REQUIRED_DESIRED_RECEIPT_ROOT=$ROOT_REQUIRED_DESIRED_RECEIPT_ROOT HAPAX_ROOT_REQUIRED_GIT_REPO=$REPO $dest/$installer --source $dest --install --verify-live with root authority"
+    echo "next action: run HAPAX_ROOT_REQUIRED_PACKAGE_SHA=$SHA HAPAX_ROOT_REQUIRED_DRAIN_DIR=$dest HAPAX_ROOT_REQUIRED_GIT_REPO=$REPO $dest/$installer --source $dest --install --verify-live with root authority"
 }
 
 root_required_stage_matches_commit() {
@@ -2458,9 +2662,6 @@ if [ "${#APCUPSD_POWER_ALERTS[@]}" -gt 0 ]; then
     fi
     set +e
     HAPAX_ROOT_REQUIRED_PACKAGE_SHA="$SHA" \
-        HAPAX_ROOT_REQUIRED_INSTALLED_SOURCE_ROOT="$ROOT_REQUIRED_INSTALLED_SOURCE_ROOT" \
-        HAPAX_ROOT_REQUIRED_INSTALLED_RECEIPT_ROOT="$ROOT_REQUIRED_INSTALLED_RECEIPT_ROOT" \
-        HAPAX_ROOT_REQUIRED_DESIRED_RECEIPT_ROOT="$ROOT_REQUIRED_DESIRED_RECEIPT_ROOT" \
         HAPAX_ROOT_REQUIRED_GIT_REPO="$REPO" \
         "$APCUPSD_STAGE/$APCUPSD_INSTALLER_PATH" --source "$APCUPSD_STAGE" --install --verify-live
     apcupsd_installer_rc=$?
@@ -2931,6 +3132,18 @@ system_dropin_file_set_witness() {
     [ "$count" -gt 0 ]
 }
 
+system_dropin_directory_witness() {
+    local unit_name="$1" witness
+    if ! witness="$(
+        system_unit_file_witness \
+            "$SYSTEMD_SYSTEM_DIR/$unit_name.d/.hapax-directory-witness" ""
+    )" \
+        || [[ "$witness" != absent$'\t'* ]]; then
+        return 1
+    fi
+    printf '%s\n' "$witness"
+}
+
 system_dropin_paths_match() {
     local observed="$1" expected="$2"
     [ "${#observed}" -le 131072 ] || return 1
@@ -3290,6 +3503,7 @@ if [ "${#SYSTEMD_SYSTEM_DROPINS[@]}" -gt 0 ]; then
         fi
         system_fragment_file_before=""
         system_dropin_files_before=""
+        system_dropin_directory_before=""
         if [ "$system_dropin_converged" -eq 1 ]; then
             if ! system_fragment_file_before="$(
                 system_unit_file_witness \
@@ -3304,6 +3518,10 @@ if [ "${#SYSTEMD_SYSTEM_DROPINS[@]}" -gt 0 ]; then
                 system_dropin_converged=0
             elif ! system_dropin_files_before="$(
                 system_dropin_file_set_witness "$expected_system_dropin_records"
+            )"; then
+                system_dropin_converged=0
+            elif ! system_dropin_directory_before="$(
+                system_dropin_directory_witness "$unit_name"
             )"; then
                 system_dropin_converged=0
             fi
@@ -3389,6 +3607,7 @@ if [ "${#SYSTEMD_SYSTEM_DROPINS[@]}" -gt 0 ]; then
                 system_dropin_file_after=""
                 system_fragment_file_after=""
                 system_dropin_files_after=""
+                system_dropin_directory_after=""
                 if ! system_dropin_file_after="$(
                     system_unit_file_witness "$system_dest" "$GIT_BLOB_OID"
                 )" \
@@ -3401,7 +3620,11 @@ if [ "${#SYSTEMD_SYSTEM_DROPINS[@]}" -gt 0 ]; then
                     || ! system_dropin_files_after="$(
                         system_dropin_file_set_witness "$expected_system_dropin_records"
                     )" \
-                    || [ "$system_dropin_files_after" != "$system_dropin_files_before" ]; then
+                    || [ "$system_dropin_files_after" != "$system_dropin_files_before" ] \
+                    || ! system_dropin_directory_after="$(
+                        system_dropin_directory_witness "$unit_name"
+                    )" \
+                    || [ "$system_dropin_directory_after" != "$system_dropin_directory_before" ]; then
                     system_dropin_manager_converged=0
                     echo "  runtime deferred: effective fragment/drop-in generations for '$unit_name' changed across the system-manager witness" >&2
                 fi
@@ -3528,12 +3751,20 @@ if [ "${#SYSTEMD_SYSTEM[@]}" -gt 0 ]; then
             echo "  runtime deferred: cannot obtain a stable file witness for '$system_dest'" >&2
         fi
         system_dropin_files_before=""
+        system_dropin_directory_before=""
         if [ "$system_unit_converged" -eq 1 ] \
             && ! system_dropin_files_before="$(
                 system_dropin_file_set_witness "$expected_system_dropin_records"
             )"; then
             system_unit_converged=0
             echo "  runtime deferred: effective sibling drop-in bytes for '$base' are not exact trusted Git objects" >&2
+        fi
+        if [ "$system_unit_converged" -eq 1 ] \
+            && ! system_dropin_directory_before="$(
+                system_dropin_directory_witness "$base"
+            )"; then
+            system_unit_converged=0
+            echo "  runtime deferred: sibling drop-in directory for '$base' is not a stable trusted generation" >&2
         fi
         system_manager_converged=0
         if [ "$system_unit_converged" -eq 1 ]; then
@@ -3612,6 +3843,7 @@ if [ "${#SYSTEMD_SYSTEM[@]}" -gt 0 ]; then
             if [ "$system_manager_converged" -eq 1 ]; then
                 system_file_after=""
                 system_dropin_files_after=""
+                system_dropin_directory_after=""
                 if ! system_file_after="$(
                     system_unit_file_witness "$system_dest" "$GIT_BLOB_OID"
                 )" \
@@ -3619,7 +3851,11 @@ if [ "${#SYSTEMD_SYSTEM[@]}" -gt 0 ]; then
                     || ! system_dropin_files_after="$(
                         system_dropin_file_set_witness "$expected_system_dropin_records"
                     )" \
-                    || [ "$system_dropin_files_after" != "$system_dropin_files_before" ]; then
+                    || [ "$system_dropin_files_after" != "$system_dropin_files_before" ] \
+                    || ! system_dropin_directory_after="$(
+                        system_dropin_directory_witness "$base"
+                    )" \
+                    || [ "$system_dropin_directory_after" != "$system_dropin_directory_before" ]; then
                     system_manager_converged=0
                     echo "  runtime deferred: effective fragment/drop-in generations for '$base' changed across the system-manager witness" >&2
                 fi

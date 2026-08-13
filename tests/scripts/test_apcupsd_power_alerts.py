@@ -1,16 +1,19 @@
 from __future__ import annotations
 
 import errno
+import fcntl
 import grp
 import json
 import os
 import pwd
 import runpy
 import shutil
+import signal
 import stat
 import subprocess
 import threading
 import time
+from collections.abc import Callable
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 
@@ -38,6 +41,44 @@ APCUPSD_PACKAGE_FILES = (
 )
 
 
+def _wait_for_flock_block(process: subprocess.Popen[str]) -> None:
+    deadline = time.monotonic() + 10
+    while process.poll() is None and time.monotonic() < deadline:
+        descendants = {process.pid}
+        changed = True
+        while changed:
+            changed = False
+            for status_path in Path("/proc").glob("[0-9]*/status"):
+                try:
+                    fields = dict(
+                        line.split(":", 1) for line in status_path.read_text().splitlines()
+                    )
+                    pid = int(status_path.parent.name)
+                    ppid = int(fields["PPid"].strip())
+                except (OSError, KeyError, ValueError):
+                    continue
+                if ppid in descendants and pid not in descendants:
+                    descendants.add(pid)
+                    changed = True
+        for pid in descendants:
+            try:
+                waiting = (Path("/proc") / str(pid) / "wchan").read_text().strip()
+            except OSError:
+                continue
+            if waiting == "locks_lock_inode_wait":
+                return
+        time.sleep(0.01)
+    raise AssertionError("child did not reach the deterministic flock wait")
+
+
+def _kill_process_group(process: subprocess.Popen[str]) -> None:
+    try:
+        os.killpg(process.pid, signal.SIGKILL)
+    except ProcessLookupError:
+        return
+    process.wait(timeout=5)
+
+
 def _copy_apcupsd_package(dest_root: Path) -> None:
     for relative in APCUPSD_PACKAGE_FILES:
         dest = dest_root / relative
@@ -47,6 +88,12 @@ def _copy_apcupsd_package(dest_root: Path) -> None:
 
 @pytest.fixture(autouse=True)
 def _isolate_installed_source(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    home = tmp_path / "home"
+    monkeypatch.setenv("HOME", str(home))
+    monkeypatch.setenv("HAPAX_ROOT_REQUIRED_ISOLATED_TEST_ROOT", str(tmp_path))
+    monkeypatch.setenv("HAPAX_APCUPSD_TARGET_UID", str(os.geteuid()))
+    monkeypatch.setenv("HAPAX_APCUPSD_TARGET_GID", str(os.getegid()))
+    monkeypatch.setenv("HAPAX_APCUPSD_TARGET_HOME", str(home))
     monkeypatch.setenv("HAPAX_POST_MERGE_ROOT_DEFER_DIR", str(tmp_path / "root-required"))
     monkeypatch.setenv("HAPAX_ROOT_REQUIRED_STATE_ROOT", str(tmp_path / "root-state"))
     monkeypatch.setenv(
@@ -56,6 +103,10 @@ def _isolate_installed_source(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -
     fake_busctl.write_text("#!/bin/sh\nprintf '%s\\n' 's \"Ignore\"'\n", encoding="utf-8")
     fake_busctl.chmod(0o755)
     monkeypatch.setenv("HAPAX_APCUPSD_BUSCTL", str(fake_busctl))
+    fake_systemctl = tmp_path / "systemctl"
+    fake_systemctl.write_text("#!/bin/sh\nexit 0\n", encoding="utf-8")
+    fake_systemctl.chmod(0o755)
+    monkeypatch.setenv("HAPAX_APCUPSD_SYSTEMCTL", str(fake_systemctl))
     fake_apcaccess = tmp_path / "apcaccess"
     fake_apcaccess.write_text(
         "#!/bin/sh\n"
@@ -64,6 +115,12 @@ def _isolate_installed_source(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -
     )
     fake_apcaccess.chmod(0o755)
     monkeypatch.setenv("HAPAX_APCUPSD_APCACCESS", str(fake_apcaccess))
+    monkeypatch.setenv("HAPAX_APCUPSD_DEST", str(tmp_path / "apcupsd"))
+    monkeypatch.setenv("HAPAX_APCUPSD_AUDIT_DIR", str(tmp_path / "audit"))
+    monkeypatch.setenv("HAPAX_APCUPSD_LOGROTATE_DEST", str(tmp_path / "logrotate" / "hapax-ups"))
+    monkeypatch.setenv(
+        "HAPAX_UPOWER_CONF_DEST", str(tmp_path / "upower" / "90-hapax-apcupsd-owner.conf")
+    )
     monkeypatch.setenv("HAPAX_ROOT_REQUIRED_GIT_REPO", str(REPO_ROOT))
 
 
@@ -938,12 +995,121 @@ def test_installer_fails_closed_when_canonical_audit_group_is_missing(
             "PATH": f"{fake_bin}:{os.environ['PATH']}",
             "HAPAX_APCUPSD_TARGET_HOME": str(tmp_path),
             "HAPAX_APCUPSD_TARGET_GID": str(os.getgid()),
+            "HAPAX_APCUPSD_DEST": "/etc/apcupsd",
+            "HAPAX_APCUPSD_AUDIT_DIR": "/var/log/hapax",
+            "HAPAX_APCUPSD_LOGROTATE_DEST": "/etc/logrotate.d/hapax-ups-power-events",
+            "HAPAX_UPOWER_CONF_DEST": "/etc/UPower/UPower.conf.d/90-hapax-apcupsd-owner.conf",
             "HAPAX_APCUPSD_INSTALL_SUDO": "",
         },
     )
 
     assert result.returncode == 1
     assert "required UPS audit group is missing: hapax" in result.stderr
+
+
+@pytest.mark.parametrize(
+    ("selector", "value_factory"),
+    (
+        ("HAPAX_POST_MERGE_ROOT_DEFER_DIR", lambda root: root / "defer"),
+        ("HAPAX_ROOT_REQUIRED_STATE_ROOT", lambda root: root / "state"),
+        ("HAPAX_ROOT_REQUIRED_INSTALLED_SOURCE_ROOT", lambda root: root / "source"),
+        ("HAPAX_ROOT_REQUIRED_INSTALLED_RECEIPT_ROOT", lambda root: root / "receipts"),
+        ("HAPAX_ROOT_REQUIRED_DESIRED_RECEIPT_ROOT", lambda root: root / "desired"),
+        ("HAPAX_ROOT_REQUIRED_LOCK_FILE", lambda root: root / "lock"),
+        ("HAPAX_APCUPSD_TARGET_UID", lambda _root: str(os.geteuid())),
+        ("HAPAX_APCUPSD_TARGET_GID", lambda _root: str(os.getegid())),
+        ("HAPAX_APCUPSD_TARGET_HOME", lambda root: root / "target-home"),
+    ),
+)
+def test_apcupsd_real_install_rejects_caller_selected_state_or_identity(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    selector: str,
+    value_factory: Callable[[Path], str | Path],
+) -> None:
+    monkeypatch.delenv("HAPAX_ROOT_REQUIRED_ISOLATED_TEST_ROOT")
+    env = {
+        key: value
+        for key, value in os.environ.items()
+        if not key.startswith("HAPAX_ROOT_REQUIRED_")
+        and not key.startswith("HAPAX_POST_MERGE_")
+        and not key.startswith("HAPAX_APCUPSD_")
+    }
+    env["HOME"] = pwd.getpwuid(os.geteuid()).pw_dir
+    value = value_factory(tmp_path)
+    env[selector] = str(value)
+
+    result = subprocess.run(
+        [str(INSTALLER), "--source", str(tmp_path / "missing-source"), "--install"],
+        text=True,
+        capture_output=True,
+        check=False,
+        env=env,
+    )
+
+    assert result.returncode == 2
+    assert selector in result.stderr
+    assert "caller-selected production" in result.stderr
+
+
+def test_apcupsd_real_install_rejects_home_spoofing(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.delenv("HAPAX_ROOT_REQUIRED_ISOLATED_TEST_ROOT")
+    env = {
+        key: value
+        for key, value in os.environ.items()
+        if not key.startswith("HAPAX_ROOT_REQUIRED_")
+        and not key.startswith("HAPAX_POST_MERGE_")
+        and not key.startswith("HAPAX_APCUPSD_")
+    }
+    env["HOME"] = str(tmp_path / "spoofed-home")
+
+    result = subprocess.run(
+        [str(INSTALLER), "--source", str(tmp_path / "missing-source"), "--install"],
+        text=True,
+        capture_output=True,
+        check=False,
+        env=env,
+    )
+
+    assert result.returncode == 2
+    assert "HOME does not match NSS home" in result.stderr
+
+
+def test_apcupsd_isolated_test_mode_rejects_state_path_escape(tmp_path: Path) -> None:
+    escaped_lock = tmp_path.parent / f"{tmp_path.name}-escaped-apcupsd.lock"
+    env = {
+        **os.environ,
+        "HAPAX_ROOT_REQUIRED_LOCK_FILE": str(escaped_lock),
+        "HAPAX_APCUPSD_INSTALL_SUDO": "",
+    }
+
+    result = subprocess.run(
+        [str(INSTALLER), "--source", str(tmp_path / "missing-source"), "--install"],
+        text=True,
+        capture_output=True,
+        check=False,
+        env=env,
+    )
+
+    assert result.returncode == 2
+    assert "HAPAX_ROOT_REQUIRED_LOCK_FILE escapes isolated test root" in result.stderr
+    assert not escaped_lock.exists()
+
+
+def test_apcupsd_isolated_test_mode_refuses_privilege_bridge(tmp_path: Path) -> None:
+    result = subprocess.run(
+        [str(INSTALLER), "--source", str(tmp_path / "missing-source"), "--install"],
+        text=True,
+        capture_output=True,
+        check=False,
+        env={**os.environ, "HAPAX_APCUPSD_INSTALL_SUDO": "/usr/bin/sudo"},
+    )
+
+    assert result.returncode == 2
+    assert "privilege bridge" in result.stderr
 
 
 def test_installer_install_implies_verify_live_against_temp_destinations(tmp_path: Path) -> None:
@@ -1372,6 +1538,65 @@ def test_installer_rejects_forged_inherited_lock_descriptor_before_mutation(
     assert "refused invalid shared lock descriptor" in result.stderr
     assert not lock.exists()
     assert not live.exists()
+
+
+@pytest.mark.parametrize("inherited_descriptor", (False, True))
+def test_installer_rejects_lock_path_replaced_while_waiting(
+    tmp_path: Path,
+    inherited_descriptor: bool,
+) -> None:
+    lock = tmp_path / "root-state" / ".lock"
+    lock.parent.mkdir(parents=True, exist_ok=True)
+    lock.write_text("", encoding="utf-8")
+    lock.chmod(0o600)
+    blocker_fd = os.open(lock, os.O_RDWR)
+    waiter_fd = os.open(lock, os.O_RDWR)
+    fcntl.flock(blocker_fd, fcntl.LOCK_EX)
+    fake_systemctl = tmp_path / "systemctl"
+    fake_systemctl.write_text("#!/usr/bin/env bash\nexit 0\n", encoding="utf-8")
+    fake_systemctl.chmod(0o755)
+    env = {
+        **os.environ,
+        "HAPAX_APCUPSD_DEST": str(tmp_path / "apcupsd"),
+        "HAPAX_APCUPSD_AUDIT_DIR": str(tmp_path / "hapax-log"),
+        "HAPAX_APCUPSD_LOGROTATE_DEST": str(tmp_path / "logrotate"),
+        "HAPAX_UPOWER_CONF_DEST": str(tmp_path / "upower"),
+        "HAPAX_APCUPSD_SYSTEMCTL": str(fake_systemctl),
+        "HAPAX_APCUPSD_INSTALL_SUDO": "",
+        "HAPAX_ROOT_REQUIRED_PACKAGE_SHA": REPO_HEAD,
+        "HAPAX_ROOT_REQUIRED_GIT_REPO": str(REPO_ROOT),
+        "HAPAX_ROOT_REQUIRED_LOCK_FILE": str(lock),
+    }
+    pass_fds: tuple[int, ...] = ()
+    if inherited_descriptor:
+        env["HAPAX_ROOT_REQUIRED_LOCK_FD"] = str(waiter_fd)
+        pass_fds = (waiter_fd,)
+    installer = subprocess.Popen(
+        [str(INSTALLER), "--install", "--verify-live"],
+        text=True,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        env=env,
+        pass_fds=pass_fds,
+        start_new_session=True,
+    )
+    try:
+        _wait_for_flock_block(installer)
+        replacement = lock.with_name("replacement.lock")
+        replacement.write_text("", encoding="utf-8")
+        replacement.chmod(0o600)
+        os.replace(replacement, lock)
+        fcntl.flock(blocker_fd, fcntl.LOCK_UN)
+        stdout, stderr = installer.communicate(timeout=10)
+    finally:
+        if installer.poll() is None:
+            _kill_process_group(installer)
+        os.close(waiter_fd)
+        os.close(blocker_fd)
+
+    assert installer.returncode == 1, stdout
+    assert "lock identity changed while acquiring" in stderr
+    assert not Path(env["HAPAX_APCUPSD_DEST"]).exists()
 
 
 def test_unversioned_apcupsd_install_source_fails_before_live_mutation(tmp_path: Path) -> None:

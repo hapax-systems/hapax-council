@@ -21,13 +21,18 @@ SYSTEMCTL="${HAPAX_APCUPSD_SYSTEMCTL:-systemctl}"
 BUSCTL="${HAPAX_APCUPSD_BUSCTL:-busctl}"
 APCACCESS="${HAPAX_APCUPSD_APCACCESS:-apcaccess}"
 SUDO="${HAPAX_APCUPSD_INSTALL_SUDO-sudo}"
-ACTUAL_UID="$(/usr/bin/id -u)"
+REAL_UID="$(/usr/bin/id -u)"
+ACTUAL_UID="$REAL_UID"
 if [ "$ACTUAL_UID" != "0" ] && [ "${HAPAX_APCUPSD_INSTALL_TEST_ACTUAL_UID:-}" = "0" ]; then
     ACTUAL_UID=0
 fi
-TARGET_UID="${HAPAX_APCUPSD_TARGET_UID:-1000}"
+TARGET_UID="${HAPAX_APCUPSD_TARGET_UID:-$REAL_UID}"
 TARGET_HOME="${HAPAX_APCUPSD_TARGET_HOME:-}"
 TARGET_GID="${HAPAX_APCUPSD_TARGET_GID:-}"
+if [ -n "${HAPAX_ROOT_REQUIRED_ISOLATED_TEST_ROOT:-}" ]; then
+    TARGET_HOME="${TARGET_HOME:-${HOME:-}}"
+    TARGET_GID="${TARGET_GID:-$(/usr/bin/id -g)}"
+fi
 if [ -z "$TARGET_HOME" ]; then
     TARGET_HOME="$(getent passwd "$TARGET_UID" | cut -d: -f6 || true)"
 fi
@@ -351,6 +356,156 @@ canonical_dir() {
     (cd "$dir" && pwd -P)
 }
 
+configure_root_required_state_domain() {
+    local test_root="${HAPAX_ROOT_REQUIRED_ISOLATED_TEST_ROOT:-}"
+    local selector nss_record nss_uid nss_gid nss_home
+    local -a validation_args=(
+        path HOME "$TARGET_HOME"
+        path HAPAX_APCUPSD_DEST "$DEST"
+        path HAPAX_APCUPSD_AUDIT_DIR "$AUDIT_DIR"
+        path HAPAX_UPS_AUDIT_LOG "$AUDIT_LOG"
+        path HAPAX_APCUPSD_LOGROTATE_DEST "$LOGROTATE_DEST"
+        path HAPAX_UPOWER_CONF_DEST "$UPOWER_CONF_DEST"
+        path HAPAX_POST_MERGE_ROOT_DEFER_DIR "$ROOT_REQUIRED_DEFER_ROOT"
+        path HAPAX_ROOT_REQUIRED_STATE_ROOT "$ROOT_REQUIRED_STATE_ROOT"
+        path HAPAX_ROOT_REQUIRED_INSTALLED_SOURCE_ROOT "$ROOT_REQUIRED_INSTALLED_SOURCE_ROOT"
+        path HAPAX_ROOT_REQUIRED_INSTALLED_RECEIPT_ROOT "$ROOT_REQUIRED_INSTALLED_RECEIPT_ROOT"
+        path HAPAX_ROOT_REQUIRED_DESIRED_RECEIPT_ROOT "$ROOT_REQUIRED_DESIRED_RECEIPT_ROOT"
+        path HAPAX_ROOT_REQUIRED_LOCK_FILE "$ROOT_REQUIRED_LOCK_FILE"
+        exec HAPAX_APCUPSD_SYSTEMCTL "$SYSTEMCTL"
+        exec HAPAX_APCUPSD_BUSCTL "$BUSCTL"
+        exec HAPAX_APCUPSD_APCACCESS "$APCACCESS"
+    )
+    if [ -n "${HAPAX_ROOT_REQUIRED_DRAIN_DIR:-}" ]; then
+        validation_args+=(path HAPAX_ROOT_REQUIRED_DRAIN_DIR "$HAPAX_ROOT_REQUIRED_DRAIN_DIR")
+    fi
+    if [ -n "$test_root" ]; then
+        /usr/bin/python3 -I -S - "$test_root" "${validation_args[@]}" <<'PY'
+from __future__ import annotations
+
+import os
+import shutil
+import stat
+import sys
+
+root = sys.argv[1]
+if not os.path.isabs(root) or "\n" in root or len(root) > 4096:
+    print("apcupsd installer: isolated test root must be one absolute path", file=sys.stderr)
+    raise SystemExit(2)
+root = os.path.abspath(root)
+try:
+    root_stat = os.lstat(root)
+except OSError as exc:
+    print(f"apcupsd installer: invalid isolated test root {root}: {exc}", file=sys.stderr)
+    raise SystemExit(2) from exc
+if (
+    not stat.S_ISDIR(root_stat.st_mode)
+    or root_stat.st_uid != os.geteuid()
+    or root_stat.st_mode & 0o022
+    or os.path.realpath(root) != root
+):
+    print(
+        "apcupsd installer: isolated test root must be a caller-owned, non-symlink, "
+        "non-group/world-writable directory",
+        file=sys.stderr,
+    )
+    raise SystemExit(2)
+
+def require_inside(label: str, candidate: str) -> str:
+    if not candidate or not os.path.isabs(candidate) or "\n" in candidate:
+        print(f"apcupsd installer: {label} is invalid in isolated test mode", file=sys.stderr)
+        raise SystemExit(2)
+    lexical = os.path.abspath(candidate)
+    resolved = os.path.realpath(candidate)
+    try:
+        inside = (
+            os.path.commonpath((root, lexical)) == root
+            and os.path.commonpath((root, resolved)) == root
+        )
+    except ValueError:
+        inside = False
+    if not inside or lexical == root:
+        print(f"apcupsd installer: {label} escapes isolated test root {root}", file=sys.stderr)
+        raise SystemExit(2)
+    return resolved
+
+items = sys.argv[2:]
+if len(items) % 3:
+    raise SystemExit("apcupsd installer internal error: malformed test confinement request")
+for offset in range(0, len(items), 3):
+    kind, label, candidate = items[offset : offset + 3]
+    if kind == "path":
+        require_inside(label, candidate)
+        continue
+    if kind != "exec":
+        raise SystemExit("apcupsd installer internal error: unknown confinement kind")
+    executable = candidate if "/" in candidate else shutil.which(candidate)
+    if executable is None:
+        print(f"apcupsd installer: {label} is not executable in isolated test mode", file=sys.stderr)
+        raise SystemExit(2)
+    resolved = require_inside(label, executable)
+    try:
+        executable_stat = os.stat(resolved)
+    except OSError as exc:
+        print(f"apcupsd installer: invalid {label}: {exc}", file=sys.stderr)
+        raise SystemExit(2) from exc
+    if (
+        not stat.S_ISREG(executable_stat.st_mode)
+        or executable_stat.st_uid != os.geteuid()
+        or not executable_stat.st_mode & 0o100
+    ):
+        print(f"apcupsd installer: {label} is untrusted in isolated test mode", file=sys.stderr)
+        raise SystemExit(2)
+PY
+        if [ -n "$SUDO" ]; then
+            echo "apcupsd installer: isolated test mode refuses a privilege bridge; set HAPAX_APCUPSD_INSTALL_SUDO to the empty string" >&2
+            return 2
+        fi
+        return
+    fi
+
+    for selector in \
+        HAPAX_POST_MERGE_ROOT_DEFER_DIR \
+        HAPAX_ROOT_REQUIRED_STATE_ROOT \
+        HAPAX_ROOT_REQUIRED_INSTALLED_SOURCE_ROOT \
+        HAPAX_ROOT_REQUIRED_INSTALLED_RECEIPT_ROOT \
+        HAPAX_ROOT_REQUIRED_DESIRED_RECEIPT_ROOT \
+        HAPAX_ROOT_REQUIRED_LOCK_FILE \
+        HAPAX_APCUPSD_TARGET_UID \
+        HAPAX_APCUPSD_TARGET_GID \
+        HAPAX_APCUPSD_TARGET_HOME \
+        HAPAX_APCUPSD_INSTALL_TEST_ACTUAL_UID; do
+        if [[ -v "$selector" ]]; then
+            echo "apcupsd installer: $selector selects caller-selected production identity or state; remove it or use a confined HAPAX_ROOT_REQUIRED_ISOLATED_TEST_ROOT harness" >&2
+            return 2
+        fi
+    done
+    nss_record="$(/usr/bin/python3 -I -S - <<'PY'
+import os
+import pwd
+
+record = pwd.getpwuid(os.geteuid())
+print(f"{record.pw_uid}:{record.pw_gid}:{record.pw_dir}")
+PY
+)"
+    IFS=: read -r nss_uid nss_gid nss_home <<< "$nss_record"
+    if [ -z "$nss_home" ] || [ "${nss_home#/}" = "$nss_home" ] || [ "${HOME:-}" != "$nss_home" ]; then
+        echo "apcupsd installer: HOME does not match NSS home for UID $REAL_UID; refusing a split production state domain" >&2
+        return 2
+    fi
+    TARGET_UID="$nss_uid"
+    TARGET_GID="$nss_gid"
+    TARGET_HOME="$nss_home"
+    ROOT_REQUIRED_STATE_ROOT="$nss_home/.local/state/hapax/root-required"
+    ROOT_REQUIRED_INSTALLED_SOURCE_ROOT="$ROOT_REQUIRED_STATE_ROOT/current-source"
+    ROOT_REQUIRED_INSTALLED_RECEIPT_ROOT="$ROOT_REQUIRED_STATE_ROOT/installed-receipts"
+    ROOT_REQUIRED_DESIRED_RECEIPT_ROOT="$ROOT_REQUIRED_STATE_ROOT/desired-receipts"
+    ROOT_REQUIRED_DEFER_ROOT="$nss_home/.cache/hapax/post-merge-root-required"
+    ROOT_REQUIRED_LOCK_FILE="$ROOT_REQUIRED_STATE_ROOT/.lock"
+    ROOT_REQUIRED_RECEIPT="$ROOT_REQUIRED_INSTALLED_RECEIPT_ROOT/apcupsd-power-alerts.sha"
+    ROOT_REQUIRED_DESIRED_RECEIPT="$ROOT_REQUIRED_DESIRED_RECEIPT_ROOT/apcupsd-power-alerts.sha"
+}
+
 acquire_root_required_lock() {
     local lock_fd="${HAPAX_ROOT_REQUIRED_LOCK_FD:-}"
     if ! [[ "$lock_fd" =~ ^[0-9]+$ ]] || [ "$lock_fd" -lt 3 ]; then
@@ -368,8 +523,8 @@ import sys
 fd = int(sys.argv[1])
 lock_path = sys.argv[2]
 try:
-    inode = os.fstat(fd)
-    path_inode = os.lstat(lock_path)
+    inode_before = os.fstat(fd)
+    path_before = os.lstat(lock_path)
 except OSError as exc:
     print(
         f"apcupsd installer refused invalid shared lock descriptor for {lock_path}: {exc}; "
@@ -378,12 +533,13 @@ except OSError as exc:
     )
     raise SystemExit(1) from exc
 if (
-    not stat.S_ISREG(inode.st_mode)
-    or not stat.S_ISREG(path_inode.st_mode)
-    or (inode.st_dev, inode.st_ino) != (path_inode.st_dev, path_inode.st_ino)
-    or inode.st_uid != os.geteuid()
-    or inode.st_nlink != 1
-    or inode.st_mode & 0o022
+    not stat.S_ISREG(inode_before.st_mode)
+    or not stat.S_ISREG(path_before.st_mode)
+    or (inode_before.st_dev, inode_before.st_ino)
+    != (path_before.st_dev, path_before.st_ino)
+    or inode_before.st_uid != os.geteuid()
+    or inode_before.st_nlink != 1
+    or inode_before.st_mode & 0o022
 ):
     print(
         f"apcupsd installer refused invalid shared lock descriptor for {lock_path}; expected "
@@ -394,6 +550,34 @@ if (
     raise SystemExit(1)
 os.fchmod(fd, 0o600)
 fcntl.flock(fd, fcntl.LOCK_EX)
+try:
+    inode_after = os.fstat(fd)
+    path_after = os.lstat(lock_path)
+except OSError as exc:
+    print(
+        f"apcupsd installer shared lock identity changed while acquiring {lock_path}: {exc}",
+        file=sys.stderr,
+    )
+    raise SystemExit(1) from exc
+if (
+    not stat.S_ISREG(inode_after.st_mode)
+    or not stat.S_ISREG(path_after.st_mode)
+    or inode_after.st_uid != os.geteuid()
+    or path_after.st_uid != os.geteuid()
+    or inode_after.st_nlink != 1
+    or path_after.st_nlink != 1
+    or inode_after.st_mode & 0o022
+    or path_after.st_mode & 0o022
+    or (inode_after.st_dev, inode_after.st_ino)
+    != (path_after.st_dev, path_after.st_ino)
+    or (inode_before.st_dev, inode_before.st_ino)
+    != (inode_after.st_dev, inode_after.st_ino)
+):
+    print(
+        f"apcupsd installer shared lock identity changed while acquiring {lock_path}",
+        file=sys.stderr,
+    )
+    raise SystemExit(1)
 PY
     mkdir -p "$ROOT_REQUIRED_DEFER_ROOT"
     migrate_legacy_root_required_state
@@ -426,12 +610,19 @@ except OSError as exc:
     )
     raise SystemExit(1) from exc
 try:
-    inode = os.fstat(fd)
+    inode_before = os.fstat(fd)
+    path_before = os.lstat(lock_path)
     if (
-        not stat.S_ISREG(inode.st_mode)
-        or inode.st_uid != os.geteuid()
-        or inode.st_nlink != 1
-        or inode.st_mode & 0o022
+        not stat.S_ISREG(inode_before.st_mode)
+        or not stat.S_ISREG(path_before.st_mode)
+        or inode_before.st_uid != os.geteuid()
+        or path_before.st_uid != os.geteuid()
+        or inode_before.st_nlink != 1
+        or path_before.st_nlink != 1
+        or inode_before.st_mode & 0o022
+        or path_before.st_mode & 0o022
+        or (inode_before.st_dev, inode_before.st_ino)
+        != (path_before.st_dev, path_before.st_ino)
     ):
         print(
             f"apcupsd installer refused unsafe shared lock inode {lock_path}; expected one "
@@ -442,6 +633,34 @@ try:
         raise SystemExit(1)
     os.fchmod(fd, 0o600)
     fcntl.flock(fd, fcntl.LOCK_EX)
+    try:
+        inode_after = os.fstat(fd)
+        path_after = os.lstat(lock_path)
+    except OSError as exc:
+        print(
+            f"apcupsd installer shared lock identity changed while acquiring {lock_path}: {exc}",
+            file=sys.stderr,
+        )
+        raise SystemExit(1) from exc
+    if (
+        not stat.S_ISREG(inode_after.st_mode)
+        or not stat.S_ISREG(path_after.st_mode)
+        or inode_after.st_uid != os.geteuid()
+        or path_after.st_uid != os.geteuid()
+        or inode_after.st_nlink != 1
+        or path_after.st_nlink != 1
+        or inode_after.st_mode & 0o022
+        or path_after.st_mode & 0o022
+        or (inode_after.st_dev, inode_after.st_ino)
+        != (path_after.st_dev, path_after.st_ino)
+        or (inode_before.st_dev, inode_before.st_ino)
+        != (inode_after.st_dev, inode_after.st_ino)
+    ):
+        print(
+            f"apcupsd installer shared lock identity changed while acquiring {lock_path}",
+            file=sys.stderr,
+        )
+        raise SystemExit(1)
     env = os.environ.copy()
     env.pop("HAPAX_ROOT_REQUIRED_LOCK_HELD", None)
     env["HAPAX_ROOT_REQUIRED_LOCK_FD"] = str(fd)
@@ -994,6 +1213,7 @@ verify_live() {
     verify_apcupsd_live_policy
 }
 
+[ "$INSTALL" -eq 0 ] || configure_root_required_state_domain
 [ "$CHECK" -eq 0 ] || check_source
 [ "$INSTALL" -eq 0 ] || refuse_whole_script_root
 [ "$INSTALL" -eq 0 ] || reexec_with_safe_root_required_lock

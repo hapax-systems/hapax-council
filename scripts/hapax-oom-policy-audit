@@ -277,6 +277,10 @@ def derive_host_policy() -> HostMemoryPolicy:
             raise HostPolicyError(
                 f"{table}:{line_number}: UID ceilings must be ordered below interval floor"
             )
+        if app_high_bytes > uid_high_bytes or app_max_bytes > uid_max_bytes:
+            raise HostPolicyError(
+                f"{table}:{line_number}: app ceilings must not exceed UID ceilings"
+            )
         if zram_mib < 8192 or zram_mib * 2 > min_gib * 1024:
             raise HostPolicyError(
                 f"{table}:{line_number}: zram must be at least 8192 MiB and no more than half the interval floor"
@@ -1763,31 +1767,37 @@ def _docker_mcp_networks_match(networks: object) -> bool:
     return mac_octets[:2] == b"\x02\x42" and mac_octets[2:] == address.packed
 
 
-def audit_docker_limits(uid: int) -> list[Check]:
+def _read_docker_inventory(*, closing: bool) -> tuple[dict[str, str] | None, Check | None]:
+    check_name = "docker_oom_inventory_stable" if closing else "docker_oom_targets"
+    scope = "closing Docker" if closing else "Docker"
     enumeration = _run_local_docker(["ps", "-a", "--no-trunc", "--format", "{{.ID}}\t{{.Names}}"])
     if enumeration.returncode != 0:
-        return [
+        return (
+            None,
             Check(
-                "docker_oom_targets",
+                check_name,
                 "error",
-                "local Docker inventory observable",
+                "closing local Docker inventory observable"
+                if closing
+                else "local Docker inventory observable",
                 "N/A",
-                f"Docker enumeration failed: {_docker_failure_summary(enumeration)}; "
+                f"{scope} enumeration failed: {_docker_failure_summary(enumeration)}; "
                 f"{NEXT_OOM_ACTION}",
-            )
-        ]
+            ),
+        )
 
     inventory_lines = enumeration.stdout.splitlines()
     if len(inventory_lines) > DOCKER_INVENTORY_MAX_ROWS:
-        return [
+        return (
+            None,
             Check(
-                "docker_oom_targets",
+                check_name,
                 "error",
                 f"at most {DOCKER_INVENTORY_MAX_ROWS} inventory rows",
                 str(len(inventory_lines)),
-                f"Docker inventory row bound exceeded; {NEXT_OOM_ACTION}",
-            )
-        ]
+                f"{scope} inventory row bound exceeded; {NEXT_OOM_ACTION}",
+            ),
+        )
 
     inventory: dict[str, str] = {}
     seen_names: set[str] = set()
@@ -1795,81 +1805,122 @@ def audit_docker_limits(uid: int) -> list[Check]:
         if not raw_line:
             continue
         if len(raw_line) > DOCKER_INVENTORY_LINE_MAX:
-            return [
+            return (
+                None,
                 Check(
-                    "docker_oom_targets",
+                    check_name,
                     "error",
                     f"inventory lines at most {DOCKER_INVENTORY_LINE_MAX} characters",
                     f"length={len(raw_line)}",
-                    f"Docker inventory line bound exceeded; {NEXT_OOM_ACTION}",
-                )
-            ]
+                    f"{scope} inventory line bound exceeded; {NEXT_OOM_ACTION}",
+                ),
+            )
         fields = raw_line.split("\t")
         if (
             len(fields) != 2
             or re.fullmatch(r"[0-9a-f]{64}", fields[0]) is None
             or re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9_.-]+", fields[1]) is None
         ):
-            return [
+            return (
+                None,
                 Check(
-                    "docker_oom_targets",
+                    check_name,
                     "error",
                     "full immutable IDs and exact names",
                     "malformed",
-                    f"malformed Docker inventory; {NEXT_OOM_ACTION}",
-                )
-            ]
+                    f"malformed {scope} inventory; {NEXT_OOM_ACTION}",
+                ),
+            )
         container_id, name = fields
         if container_id in inventory:
-            return [
+            return (
+                None,
                 Check(
-                    "docker_oom_targets",
+                    check_name,
                     "error",
                     "unique immutable IDs",
                     "duplicate",
-                    f"duplicate Docker ID in inventory; {NEXT_OOM_ACTION}",
-                )
-            ]
+                    f"duplicate {scope} ID in inventory; {NEXT_OOM_ACTION}",
+                ),
+            )
         if name in seen_names:
-            return [
+            return (
+                None,
                 Check(
-                    "docker_oom_targets",
+                    check_name,
                     "error",
                     "unique exact names",
                     "duplicate",
-                    f"duplicate Docker name in inventory; {NEXT_OOM_ACTION}",
-                )
-            ]
+                    f"duplicate {scope} name in inventory; {NEXT_OOM_ACTION}",
+                ),
+            )
         seen_names.add(name)
         inventory[container_id] = name
+    return inventory, None
 
+
+def _read_docker_labeled_inventory(
+    inventory: dict[str, str], *, closing: bool
+) -> tuple[set[str] | None, Check | None]:
+    check_name = "docker_oom_inventory_stable" if closing else "docker_oom_targets"
+    scope = "closing Docker" if closing else "Docker"
     labeled = _run_local_docker(
         ["ps", "-aq", "--no-trunc", "--filter", f"label={GITHUB_MCP_APP_LABEL}"]
     )
     if labeled.returncode != 0:
-        return [
+        return (
+            None,
             Check(
-                "docker_oom_targets",
+                check_name,
                 "error",
-                "GitHub MCP label inventory observable",
+                "closing GitHub MCP label inventory observable"
+                if closing
+                else "GitHub MCP label inventory observable",
                 "N/A",
-                f"Docker label enumeration failed: {_docker_failure_summary(labeled)}; "
+                f"{scope} label enumeration failed: {_docker_failure_summary(labeled)}; "
                 f"{NEXT_OOM_ACTION}",
-            )
-        ]
+            ),
+        )
     labeled_ids: set[str] = set()
     for raw_id in labeled.stdout.splitlines():
         if re.fullmatch(r"[0-9a-f]{64}", raw_id) is None or raw_id not in inventory:
-            return [
+            return (
+                None,
                 Check(
-                    "docker_oom_targets",
+                    check_name,
                     "error",
                     "labeled IDs present in the immutable inventory",
                     "malformed",
-                    f"malformed or inconsistent Docker label inventory; {NEXT_OOM_ACTION}",
-                )
-            ]
+                    f"malformed or inconsistent {scope} label inventory; {NEXT_OOM_ACTION}",
+                ),
+            )
         labeled_ids.add(raw_id)
+    return labeled_ids, None
+
+
+def _docker_target_generation(
+    inventory: dict[str, str], labeled_ids: set[str]
+) -> frozenset[tuple[str, str, bool]]:
+    return frozenset(
+        (container_id, name, container_id in labeled_ids)
+        for container_id, name in inventory.items()
+        if name == "hapax-local-judge"
+        or container_id in labeled_ids
+        or name.startswith("hapax-github-mcp-")
+    )
+
+
+def audit_docker_limits(uid: int) -> list[Check]:
+    inventory, inventory_error = _read_docker_inventory(closing=False)
+    if inventory_error is not None:
+        return [inventory_error]
+    assert inventory is not None
+
+    labeled_ids, labeled_error = _read_docker_labeled_inventory(inventory, closing=False)
+    if labeled_error is not None:
+        return [labeled_error]
+    assert labeled_ids is not None
+    target_generation = _docker_target_generation(inventory, labeled_ids)
 
     judge = next(
         (
@@ -2432,6 +2483,62 @@ def audit_docker_limits(uid: int) -> list[Check]:
                 ),
             )
         )
+
+    closing_inventory, closing_inventory_error = _read_docker_inventory(closing=True)
+    if closing_inventory_error is not None:
+        checks.append(closing_inventory_error)
+        return checks
+    assert closing_inventory is not None
+
+    closing_labeled_ids, closing_labeled_error = _read_docker_labeled_inventory(
+        closing_inventory, closing=True
+    )
+    if closing_labeled_error is not None:
+        checks.append(closing_labeled_error)
+        return checks
+    assert closing_labeled_ids is not None
+
+    final_inventory, final_inventory_error = _read_docker_inventory(closing=True)
+    if final_inventory_error is not None:
+        checks.append(final_inventory_error)
+        return checks
+    assert final_inventory is not None
+
+    closing_target_count = max(
+        sum(
+            1
+            for container_id, name in bounded_inventory.items()
+            if container_id in closing_labeled_ids or name.startswith("hapax-github-mcp-")
+        )
+        for bounded_inventory in (closing_inventory, final_inventory)
+    )
+    if closing_target_count > DOCKER_TARGET_MAX:
+        checks.append(
+            Check(
+                "docker_oom_inventory_stable",
+                "error",
+                f"at most {DOCKER_TARGET_MAX} OOM targets",
+                str(closing_target_count),
+                f"closing Docker target count bound exceeded; {NEXT_OOM_ACTION}",
+            )
+        )
+        return checks
+
+    inventory_stable = (
+        _docker_target_generation(closing_inventory, closing_labeled_ids) == target_generation
+        and _docker_target_generation(final_inventory, closing_labeled_ids) == target_generation
+    )
+    checks.append(
+        Check(
+            "docker_oom_inventory_stable",
+            "pass" if inventory_stable else "error",
+            "one stable complete Docker target inventory generation",
+            "stable" if inventory_stable else "changed",
+            ""
+            if inventory_stable
+            else f"Docker inventory changed during bounded audit; {NEXT_OOM_ACTION}",
+        )
+    )
     return checks
 
 

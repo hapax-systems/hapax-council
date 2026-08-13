@@ -59,6 +59,12 @@ def rewrite(path: Path, old: str, new: str) -> None:
     path.write_text(text.replace(old, new, 1), encoding="utf-8")
 
 
+def source_file_bytes(source: Path) -> dict[Path, bytes]:
+    return {
+        path.relative_to(source): path.read_bytes() for path in source.rglob("*") if path.is_file()
+    }
+
+
 def test_source_validator_is_executable() -> None:
     assert INSTALLER.stat().st_mode & 0o111
 
@@ -224,6 +230,46 @@ def test_profile_table_rejects_unsafe_bounds(
 
     assert result.returncode == 1
     assert expected in result.stderr
+
+
+def test_profile_table_rejects_app_high_above_uid_high_before_mutation(
+    tmp_path: Path,
+) -> None:
+    source = staged_source(tmp_path)
+    table = source / PROFILE_TABLE
+    rewrite(
+        table,
+        "hapax-appendix\t59\t61\tappendix\t46G\t54G\t48G\t56G\t16384",
+        "hapax-appendix\t59\t61\tappendix\t49G\t54G\t48G\t56G\t16384",
+    )
+    before = source_file_bytes(source)
+
+    result = run_installer("--source", str(source), "--check", "--no-runtime")
+
+    assert result.returncode == 1
+    assert "app_high must not exceed uid_high" in result.stderr
+    assert result.stdout == ""
+    assert source_file_bytes(source) == before
+
+
+def test_profile_table_rejects_app_max_above_uid_max_before_mutation(
+    tmp_path: Path,
+) -> None:
+    source = staged_source(tmp_path)
+    table = source / PROFILE_TABLE
+    rewrite(
+        table,
+        "hapax-appendix\t59\t61\tappendix\t46G\t54G\t48G\t56G\t16384",
+        "hapax-appendix\t59\t61\tappendix\t46G\t57G\t48G\t56G\t16384",
+    )
+    before = source_file_bytes(source)
+
+    result = run_installer("--source", str(source), "--check", "--no-runtime")
+
+    assert result.returncode == 1
+    assert "app_max must not exceed uid_max" in result.stderr
+    assert result.stdout == ""
+    assert source_file_bytes(source) == before
 
 
 def test_profile_table_requires_exact_host_set(tmp_path: Path) -> None:

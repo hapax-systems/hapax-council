@@ -13,8 +13,111 @@ set -euo pipefail
 ORIGINAL_ARGS=("$@")
 REPO_DIR="$(cd "$(dirname "$0")/../units" && pwd)"
 PROJECT_DIR="$(cd "$(dirname "$0")/../.." && pwd)"
-DEST_DIR="${HOME}/.config/systemd/user"
-ROOT_REQUIRED_LOCK_FILE="${HAPAX_ROOT_REQUIRED_LOCK_FILE:-$HOME/.local/state/hapax/root-required/.lock}"
+NSS_HOME=""
+DEST_DIR=""
+ROOT_REQUIRED_LOCK_FILE=""
+
+configure_root_required_lock_domain() {
+    if ! NSS_HOME="$(/usr/bin/python3 -I -S - <<'PY'
+import os
+import pwd
+import sys
+
+try:
+    home = pwd.getpwuid(os.geteuid()).pw_dir
+except KeyError:
+    print("ERROR: current UID has no canonical NSS home", file=sys.stderr)
+    raise SystemExit(1)
+if not home or "\n" in home or len(home) > 4096 or not os.path.isabs(home):
+    print("ERROR: current UID has an invalid canonical NSS home", file=sys.stderr)
+    raise SystemExit(1)
+print(home)
+PY
+    )"; then
+        return 1
+    fi
+
+    if [ "${HAPAX_ROOT_REQUIRED_ISOLATED_TEST_ROOT+x}" != "x" ]; then
+        for selector in HAPAX_ROOT_REQUIRED_STATE_ROOT HAPAX_ROOT_REQUIRED_LOCK_FILE; do
+            if [[ -v "$selector" ]]; then
+                echo "ERROR: production refuses $selector" >&2
+                return 1
+            fi
+        done
+        if [ "$HOME" != "$NSS_HOME" ]; then
+            echo "ERROR: production HOME must exactly match canonical NSS home $NSS_HOME" >&2
+            return 1
+        fi
+        DEST_DIR="$NSS_HOME/.config/systemd/user"
+        ROOT_REQUIRED_LOCK_FILE="$NSS_HOME/.local/state/hapax/root-required/.lock"
+        return
+    fi
+
+    DEST_DIR="$HOME/.config/systemd/user"
+    ROOT_REQUIRED_LOCK_FILE="${HAPAX_ROOT_REQUIRED_LOCK_FILE:-$HOME/.local/state/hapax/root-required/.lock}"
+    /usr/bin/python3 -I -S - \
+        "$HAPAX_ROOT_REQUIRED_ISOLATED_TEST_ROOT" \
+        "$HOME" "$DEST_DIR" "$ROOT_REQUIRED_LOCK_FILE" <<'PY'
+from __future__ import annotations
+
+import os
+import stat
+import sys
+
+root, home, destination, lock = sys.argv[1:]
+if (
+    not root
+    or "\n" in root
+    or len(root) > 4096
+    or not os.path.isabs(root)
+):
+    print(
+        "ERROR: HAPAX_ROOT_REQUIRED_ISOLATED_TEST_ROOT must name an absolute directory",
+        file=sys.stderr,
+    )
+    raise SystemExit(1)
+try:
+    root_inode = os.lstat(root)
+except OSError as exc:
+    print(
+        f"ERROR: refused invalid isolated test root {root}: {exc}",
+        file=sys.stderr,
+    )
+    raise SystemExit(1) from exc
+if (
+    not stat.S_ISDIR(root_inode.st_mode)
+    or root_inode.st_uid != os.geteuid()
+    or root_inode.st_mode & 0o022
+    or os.path.realpath(root) != root
+):
+    print(
+        "ERROR: isolated test root must be a caller-owned, non-symlink directory "
+        "with no group/world write bits",
+        file=sys.stderr,
+    )
+    raise SystemExit(1)
+
+resolved_root = os.path.realpath(root)
+for label, path in (("home", home), ("destination", destination), ("lock", lock)):
+    if not path or "\n" in path or len(path) > 4096 or not os.path.isabs(path):
+        print(f"ERROR: isolated test {label} path is invalid", file=sys.stderr)
+        raise SystemExit(1)
+    lexical_path = os.path.abspath(path)
+    resolved_path = os.path.realpath(path)
+    try:
+        confined = (
+            lexical_path != root
+            and resolved_path != resolved_root
+            and os.path.commonpath((root, lexical_path)) == root
+            and os.path.commonpath((resolved_root, resolved_path)) == resolved_root
+        )
+    except ValueError:
+        confined = False
+    if not confined:
+        print(f"ERROR: isolated test {label} escapes {resolved_root}", file=sys.stderr)
+        raise SystemExit(1)
+PY
+}
 
 acquire_inherited_root_required_lock() {
     local lock_fd="${HAPAX_ROOT_REQUIRED_LOCK_FD:-}"
@@ -172,7 +275,6 @@ try:
     env = os.environ.copy()
     env.pop("HAPAX_ROOT_REQUIRED_LOCK_HELD", None)
     env.pop("HAPAX_ROOT_REQUIRED_LOCK_MODE", None)
-    env["HAPAX_ROOT_REQUIRED_LOCK_FILE"] = lock_path
     env["HAPAX_ROOT_REQUIRED_LOCK_FD"] = str(fd)
     env["HAPAX_ROOT_REQUIRED_LOCK_MODE"] = "exclusive"
     result = subprocess.run(
@@ -186,6 +288,8 @@ finally:
     os.close(fd)
 PY
 }
+
+configure_root_required_lock_domain
 
 DECOMMISSIONED_UNITS=(
     # Retired 2026-06-07: superseded by the direct video50/video52 + UDP

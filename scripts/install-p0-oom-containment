@@ -197,6 +197,10 @@ def read_profiles(path: Path) -> dict[str, Profile]:
             raise ValidationError(f"{path}:{line_number}: app ceilings must be ordered below interval floor")
         if not (uid_high_gib < uid_max_gib < min_gib):
             raise ValidationError(f"{path}:{line_number}: UID ceilings must be ordered below interval floor")
+        if app_high_gib > uid_high_gib:
+            raise ValidationError(f"{path}:{line_number}: app_high must not exceed uid_high")
+        if app_max_gib > uid_max_gib:
+            raise ValidationError(f"{path}:{line_number}: app_max must not exceed uid_max")
         if zram_mib < 8192 or zram_mib * 2 > min_gib * 1024:
             raise ValidationError(f"{path}:{line_number}: zram must be 8192 MiB or larger and no more than half the interval floor")
         profiles[hostname] = Profile(
