@@ -110,10 +110,17 @@ COMMAND_TIMEOUT_SECONDS = 10.0
 DOCKER_INVENTORY_MAX_ROWS = 512
 DOCKER_TARGET_MAX = 64
 DOCKER_INVENTORY_LINE_MAX = 512
-DOCKER_INSPECT_LINE_MAX = 2048
+DOCKER_INSPECT_LINE_MAX = 4096
 GITHUB_MCP_IMAGE_DIGEST = "sha256:30197479d8036c7811892bc07e06f9a05c9ef3cdd79bc59f256d50647f95788c"
 GITHUB_MCP_IMAGE = f"ghcr.io/github/github-mcp-server@{GITHUB_MCP_IMAGE_DIGEST}"
 GITHUB_MCP_PATH = "/server/github-mcp-server"
+GITHUB_MCP_APP_LABEL = "org.hapax.github-mcp.app"
+GITHUB_MCP_APP_ID = "stdio-v1"
+GITHUB_MCP_UID_LABEL = "org.hapax.github-mcp.uid"
+GITHUB_MCP_LAUNCH_LABEL = "org.hapax.github-mcp.launch"
+GITHUB_MCP_LEASE_PID_LABEL = "org.hapax.github-mcp.lease-pid"
+GITHUB_MCP_LEASE_START_LABEL = "org.hapax.github-mcp.lease-start"
+GITHUB_MCP_LEASE_BOOT_LABEL = "org.hapax.github-mcp.lease-boot"
 
 
 @dataclass
@@ -1350,7 +1357,49 @@ def audit_zram(policy: HostMemoryPolicy) -> list[Check]:
     return checks
 
 
-def audit_docker_limits() -> list[Check]:
+def _docker_mcp_lease_is_live(
+    lease_pid: str,
+    lease_start: str,
+    lease_boot: str,
+    uid: int,
+) -> tuple[bool, str]:
+    if re.fullmatch(r"[1-9][0-9]*", lease_pid) is None:
+        return False, "lease PID is malformed"
+    if re.fullmatch(r"[1-9][0-9]*", lease_start) is None:
+        return False, "lease start time is malformed"
+    if (
+        re.fullmatch(
+            r"[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}",
+            lease_boot,
+        )
+        is None
+    ):
+        return False, "lease boot ID is malformed"
+    try:
+        live_boot = (PROC_ROOT / "sys/kernel/random/boot_id").read_text(encoding="utf-8").strip()
+        status_lines = (PROC_ROOT / lease_pid / "status").read_text(encoding="utf-8").splitlines()
+        stat_line = (PROC_ROOT / lease_pid / "stat").read_text(encoding="utf-8").strip()
+    except OSError:
+        return False, "lease process or boot identity is no longer observable"
+    uid_line = next((line for line in status_lines if line.startswith("Uid:\t")), "")
+    uid_fields = uid_line.split()
+    try:
+        stat_tail = stat_line.rsplit(") ", 1)[1].split()
+        live_start = stat_tail[19]
+    except (IndexError, ValueError):
+        return False, "lease process identity is malformed"
+    if len(uid_fields) != 5 or not all(value.isdecimal() for value in uid_fields[1:]):
+        return False, "lease process UID identity is malformed"
+    if live_boot != lease_boot:
+        return False, "lease boot identity is stale"
+    if uid_fields[1] != str(uid):
+        return False, "lease process UID does not match the audited operator"
+    if live_start != lease_start:
+        return False, "lease PID was reused or its start identity drifted"
+    return True, ""
+
+
+def audit_docker_limits(uid: int) -> list[Check]:
     enumeration = _run_local_docker(["ps", "-a", "--no-trunc", "--format", "{{.ID}}\t{{.Names}}"])
     if enumeration.returncode != 0:
         detail = (
@@ -1378,7 +1427,7 @@ def audit_docker_limits() -> list[Check]:
             )
         ]
 
-    targets: list[tuple[str, str]] = []
+    inventory: dict[str, str] = {}
     seen_names: set[str] = set()
     for raw_line in inventory_lines:
         if not raw_line:
@@ -1405,6 +1454,16 @@ def audit_docker_limits() -> list[Check]:
                 )
             ]
         container_id, name = fields
+        if container_id in inventory:
+            return [
+                Check(
+                    "docker_oom_targets",
+                    "error",
+                    "unique immutable IDs",
+                    container_id,
+                    f"duplicate Docker ID in inventory; {NEXT_OOM_ACTION}",
+                )
+            ]
         if name in seen_names:
             return [
                 Check(
@@ -1416,27 +1475,62 @@ def audit_docker_limits() -> list[Check]:
                 )
             ]
         seen_names.add(name)
-        if name == "hapax-local-judge" or (
-            name.startswith("hapax-github-mcp-") and len(name) > len("hapax-github-mcp-")
-        ):
-            targets.append((container_id, name))
+        inventory[container_id] = name
 
-    if len(targets) > DOCKER_TARGET_MAX:
+    labeled = _run_local_docker(
+        ["ps", "-aq", "--no-trunc", "--filter", f"label={GITHUB_MCP_APP_LABEL}"]
+    )
+    if labeled.returncode != 0:
+        detail = (labeled.stderr or labeled.stdout).strip() or f"rc={labeled.returncode}"
+        return [
+            Check(
+                "docker_oom_targets",
+                "error",
+                "GitHub MCP label inventory observable",
+                "N/A",
+                f"Docker label enumeration failed: {detail}; {NEXT_OOM_ACTION}",
+            )
+        ]
+    labeled_ids: set[str] = set()
+    for raw_id in labeled.stdout.splitlines():
+        if re.fullmatch(r"[0-9a-f]{64}", raw_id) is None or raw_id not in inventory:
+            return [
+                Check(
+                    "docker_oom_targets",
+                    "error",
+                    "labeled IDs present in the immutable inventory",
+                    raw_id[:256],
+                    f"malformed or inconsistent Docker label inventory; {NEXT_OOM_ACTION}",
+                )
+            ]
+        labeled_ids.add(raw_id)
+
+    judge = next(
+        (
+            (container_id, name)
+            for container_id, name in inventory.items()
+            if name == "hapax-local-judge"
+        ),
+        None,
+    )
+    mcp_targets = [
+        (container_id, name)
+        for container_id, name in inventory.items()
+        if container_id in labeled_ids or name.startswith("hapax-github-mcp-")
+    ]
+
+    if len(mcp_targets) > DOCKER_TARGET_MAX:
         return [
             Check(
                 "docker_oom_targets",
                 "error",
                 f"at most {DOCKER_TARGET_MAX} OOM targets",
-                str(len(targets)),
+                str(len(mcp_targets)),
                 f"Docker target count bound exceeded; {NEXT_OOM_ACTION}",
             )
         ]
 
     checks: list[Check] = []
-    judge = next(
-        ((container_id, name) for container_id, name in targets if name == "hapax-local-judge"),
-        None,
-    )
     checks.append(
         Check(
             "docker_hapax-local-judge_retired",
@@ -1447,11 +1541,6 @@ def audit_docker_limits() -> list[Check]:
         )
     )
 
-    mcp_targets = [
-        (container_id, name)
-        for container_id, name in targets
-        if name.startswith("hapax-github-mcp-")
-    ]
     checks.append(Check("docker_github_mcp_count", "pass", ">=0", str(len(mcp_targets))))
     resolved_image_id: str | None = None
     if mcp_targets:
@@ -1510,9 +1599,14 @@ def audit_docker_limits() -> list[Check]:
                 "inspect",
                 "--format",
                 (
-                    "{{json .Id}}\t{{json .Name}}\t{{json .HostConfig.Memory}}\t"
-                    "{{json .HostConfig.MemorySwap}}\t{{json .HostConfig.OomKillDisable}}\t"
-                    "{{json .Image}}\t{{json .Config.Image}}\t{{json .Path}}\t{{json .Args}}"
+                    "{{json .Id}}\t{{json .Name}}\t{{json .Config.Labels}}\t"
+                    "{{json .HostConfig.Memory}}\t{{json .HostConfig.MemorySwap}}\t"
+                    "{{json .HostConfig.OomKillDisable}}\t{{json .Image}}\t"
+                    "{{json .Config.Image}}\t{{json .Path}}\t{{json .Args}}\t"
+                    "{{json .HostConfig.ReadonlyRootfs}}\t{{json .HostConfig.CapDrop}}\t"
+                    "{{json .HostConfig.SecurityOpt}}\t{{json .HostConfig.AutoRemove}}\t"
+                    "{{json .HostConfig.LogConfig.Type}}\t{{json .HostConfig.Tmpfs}}\t"
+                    "{{json .State.Status}}\t{{json .Config.StopTimeout}}"
                 ),
                 container_id,
             ]
@@ -1534,11 +1628,12 @@ def audit_docker_limits() -> list[Check]:
             if len(inspect_lines) != 1 or len(inspect_lines[0]) > DOCKER_INSPECT_LINE_MAX:
                 raise ValueError("expected one bounded Docker inspect line")
             fields = inspect_lines[0].split("\t")
-            if len(fields) != 9:
-                raise ValueError("expected nine formatted Docker inspect fields")
+            if len(fields) != 18:
+                raise ValueError("expected eighteen formatted Docker inspect fields")
             (
                 actual_id,
                 actual_name,
+                labels,
                 memory,
                 memory_swap,
                 oom_kill_disable,
@@ -1546,6 +1641,14 @@ def audit_docker_limits() -> list[Check]:
                 config_image,
                 process_path,
                 process_args,
+                readonly_rootfs,
+                cap_drop,
+                security_opt,
+                auto_remove,
+                log_driver,
+                tmpfs,
+                container_state,
+                stop_timeout,
             ) = (json.loads(field) for field in fields)
             if not all(
                 isinstance(value, str)
@@ -1554,12 +1657,34 @@ def audit_docker_limits() -> list[Check]:
                 raise TypeError("Docker identity fields must be strings")
             if type(memory) is not int or type(memory_swap) is not int:
                 raise TypeError("Docker memory fields must be integers")
+            if not isinstance(labels, dict) or not all(
+                isinstance(key, str) and isinstance(value, str) for key, value in labels.items()
+            ):
+                raise TypeError("Docker labels must be a string map")
             if oom_kill_disable is not None and type(oom_kill_disable) is not bool:
                 raise TypeError("Docker OomKillDisable must be null or boolean")
             if not isinstance(process_args, list) or not all(
                 isinstance(value, str) for value in process_args
             ):
                 raise TypeError("Docker process arguments must be a string list")
+            if type(readonly_rootfs) is not bool or type(auto_remove) is not bool:
+                raise TypeError("Docker security booleans must be boolean")
+            if not isinstance(cap_drop, list) or not all(
+                isinstance(value, str) for value in cap_drop
+            ):
+                raise TypeError("Docker CapDrop must be a string list")
+            if not isinstance(security_opt, list) or not all(
+                isinstance(value, str) for value in security_opt
+            ):
+                raise TypeError("Docker SecurityOpt must be a string list")
+            if not isinstance(tmpfs, dict) or not all(
+                isinstance(key, str) and isinstance(value, str) for key, value in tmpfs.items()
+            ):
+                raise TypeError("Docker Tmpfs must be a string map")
+            if not all(isinstance(value, str) for value in (log_driver, container_state)):
+                raise TypeError("Docker runtime state fields must be strings")
+            if type(stop_timeout) is not int:
+                raise TypeError("Docker StopTimeout must be an integer")
         except (TypeError, ValueError, json.JSONDecodeError) as exc:
             checks.append(
                 Check(
@@ -1571,7 +1696,19 @@ def audit_docker_limits() -> list[Check]:
                 )
             )
             continue
-        identity_ok = actual_id == container_id and actual_name == f"/{name}"
+        launch_id = labels.get(GITHUB_MCP_LAUNCH_LABEL, "")
+        lease_pid = labels.get(GITHUB_MCP_LEASE_PID_LABEL, "")
+        lease_start = labels.get(GITHUB_MCP_LEASE_START_LABEL, "")
+        lease_boot = labels.get(GITHUB_MCP_LEASE_BOOT_LABEL, "")
+        expected_name = f"/hapax-github-mcp-{launch_id}"
+        identity_ok = (
+            actual_id == container_id
+            and actual_name == f"/{name}"
+            and labels.get(GITHUB_MCP_APP_LABEL) == GITHUB_MCP_APP_ID
+            and labels.get(GITHUB_MCP_UID_LABEL) == str(uid)
+            and re.fullmatch(rf"{uid}-[A-Za-z0-9]{{10}}", launch_id) is not None
+            and actual_name == expected_name
+        )
         command_ok = (
             resolved_image_id is not None
             and image_id == resolved_image_id
@@ -1585,22 +1722,59 @@ def audit_docker_limits() -> list[Check]:
         limits_ok = (
             memory == BYTES_512M and memory_swap == BYTES_768M and oom_kill_disable in {None, False}
         )
-        status = "pass" if identity_ok and limits_ok and command_ok else "gap"
+        security_ok = (
+            readonly_rootfs is True
+            and cap_drop == ["ALL"]
+            and security_opt in (["no-new-privileges"], ["no-new-privileges:true"])
+            and auto_remove is True
+            and log_driver == "none"
+            and set(tmpfs) == {"/tmp"}
+            and len(tmpfs["/tmp"].split(",")) == 4
+            and set(tmpfs["/tmp"].split(",")) == {"rw", "noexec", "nosuid", "size=16m"}
+            and container_state in {"created", "running", "restarting", "exited", "dead"}
+            and stop_timeout == 1
+        )
+        lease_live, lease_detail = _docker_mcp_lease_is_live(
+            lease_pid, lease_start, lease_boot, uid
+        )
+        status = (
+            "pass"
+            if identity_ok and limits_ok and command_ok and security_ok and lease_live
+            else "gap"
+        )
+        identity_labels = {
+            key: labels.get(key)
+            for key in (
+                GITHUB_MCP_APP_LABEL,
+                GITHUB_MCP_UID_LABEL,
+                GITHUB_MCP_LAUNCH_LABEL,
+                GITHUB_MCP_LEASE_PID_LABEL,
+                GITHUB_MCP_LEASE_START_LABEL,
+                GITHUB_MCP_LEASE_BOOT_LABEL,
+            )
+        }
         actual = (
-            f"id={actual_id},name={actual_name},Memory={memory},"
+            f"id={actual_id},name={actual_name},labels={identity_labels},Memory={memory},"
             f"MemorySwap={memory_swap},OomKillDisable={oom_kill_disable},"
-            f"Image={image_id},ConfigImage={config_image},Path={process_path},Args={process_args}"
+            f"Image={image_id},ConfigImage={config_image},Path={process_path},Args={process_args},"
+            f"ReadonlyRootfs={readonly_rootfs},CapDrop={cap_drop},SecurityOpt={security_opt},"
+            f"AutoRemove={auto_remove},LogDriver={log_driver},Tmpfs={tmpfs},"
+            f"State={container_state},StopTimeout={stop_timeout},LeaseLive={lease_live}"
         )
         checks.append(
             Check(
                 f"docker_{name}_limits",
                 status,
                 f"id={container_id},name=/{name},Memory={BYTES_512M},"
-                f"MemorySwap={BYTES_768M},OomKillDisable=false,Image={GITHUB_MCP_IMAGE}",
+                f"MemorySwap={BYTES_768M},OomKillDisable=false,Image={GITHUB_MCP_IMAGE},"
+                "immutable labels, hardened security, live launch lease",
                 actual,
                 ""
                 if status == "pass"
-                else f"Docker identity, image, command, or limit drifted; {NEXT_OOM_ACTION}",
+                else (
+                    "Docker identity, labels, image, command, limits, security, or launch lease "
+                    f"drifted{f': {lease_detail}' if not lease_live else ''}; {NEXT_OOM_ACTION}"
+                ),
             )
         )
     return checks
@@ -1717,7 +1891,7 @@ def main(argv: list[str] | None = None) -> int:
             ),
             *audit_zram(policy),
             audit_local_judge_unit(),
-            *audit_docker_limits(),
+            *audit_docker_limits(args.uid),
             *audit_enforcer_timer(),
             audit_user_manager(args.uid),
             audit_user_manager_policy(args.uid),

@@ -170,6 +170,80 @@ query_local_judge_container_id() {
     fi
 }
 
+validate_historical_local_judge_container() {
+    local docker_bin="$1" container_id="$2" output
+    if ! output="$(
+        /usr/bin/env -i \
+            HOME="$HOME" LANG=C LC_ALL=C PATH=/usr/bin:/bin \
+            /usr/bin/timeout --signal=KILL 5s \
+                "$docker_bin" \
+                --host=unix:///var/run/docker.sock \
+                --config=/nonexistent/hapax-local-judge-retirement \
+                inspect --format \
+                '{{json .Id}}{{printf "\t"}}{{json .Name}}{{printf "\t"}}{{json .Config.Image}}{{printf "\t"}}{{json .Path}}{{printf "\t"}}{{json .Args}}{{printf "\t"}}{{json .HostConfig.Binds}}{{printf "\t"}}{{json .HostConfig.PortBindings}}{{printf "\t"}}{{json .HostConfig.AutoRemove}}' \
+                "$container_id" \
+            | /usr/bin/head -c 4097
+    )"; then
+        echo "ERROR: cannot inspect the captured historical local-judge container" >&2
+        return 1
+    fi
+    if [ -z "$output" ] || [ "${#output}" -gt 4096 ] || [[ "$output" == *$'\n'* ]]; then
+        echo "ERROR: historical local-judge Docker signature was empty, multiline, or oversized" >&2
+        return 1
+    fi
+    if ! /usr/bin/python3 - "$container_id" "$HOME" "$output" <<'PY'
+from __future__ import annotations
+
+import json
+import sys
+
+container_id, home, record = sys.argv[1:]
+fields = record.split("\t")
+if len(fields) != 8:
+    raise SystemExit(1)
+try:
+    actual_id, name, image, path, args, binds, ports, auto_remove = (
+        json.loads(field) for field in fields
+    )
+except (TypeError, ValueError, json.JSONDecodeError):
+    raise SystemExit(1)
+
+expected_args = [
+    "-m",
+    "/models/CompassVerifier-7B.Q5_K_M.gguf",
+    "-a",
+    "compassverifier-7b",
+    "-c",
+    "65536",
+    "-np",
+    "8",
+    "-cb",
+    "-ngl",
+    "99",
+    "--host",
+    "0.0.0.0",
+    "--port",
+    "5001",
+]
+expected_ports = {"5001/tcp": [{"HostIp": "", "HostPort": "5001"}]}
+valid = (
+    actual_id == container_id
+    and name == "/hapax-local-judge"
+    and image == "ghcr.io/ggml-org/llama.cpp:server-cuda"
+    and path == "/app/llama-server"
+    and args == expected_args
+    and binds == [f"{home}/models/compassverifier-7b:/models:ro"]
+    and ports == expected_ports
+    and auto_remove is True
+)
+raise SystemExit(0 if valid else 1)
+PY
+    then
+        echo "ERROR: exact-name container does not match the durable historical local-judge signature; refusing destructive cleanup" >&2
+        return 1
+    fi
+}
+
 query_local_judge_manager_property() {
     local systemctl_bin="$1" property="$2" output
     if ! output="$(
@@ -257,9 +331,15 @@ retire_historical_local_judge() {
         return 2
     fi
     local before_id="$LOCAL_JUDGE_CONTAINER_ID"
-    local manager_load_state manager_active_state
+    if [ -n "$before_id" ] \
+        && ! validate_historical_local_judge_container "$docker_bin" "$before_id"; then
+        return 2
+    fi
+    local manager_load_state manager_unit_file_state manager_active_state
     if ! manager_load_state="$(
         query_local_judge_manager_property "$systemctl_bin" LoadState
+    )" || ! manager_unit_file_state="$(
+        query_local_judge_manager_property "$systemctl_bin" UnitFileState
     )" || ! manager_active_state="$(
         query_local_judge_manager_property "$systemctl_bin" ActiveState
     )"; then
@@ -268,6 +348,7 @@ retire_historical_local_judge() {
     if [ "$already_masked" -eq 1 ] && [ "$artifacts_clean" -eq 1 ] \
         && [ -z "$before_id" ] \
         && [ "$manager_load_state" = "masked" ] \
+        && [ "$manager_unit_file_state" = "masked" ] \
         && [ "$manager_active_state" = "inactive" ]; then
         return 1
     fi
@@ -341,6 +422,22 @@ retire_historical_local_judge() {
     fi
     if [ -n "$LOCAL_JUDGE_CONTAINER_ID" ]; then
         echo "ERROR: local-judge container appeared or remained after immutable-ID reconciliation; refusing name-based cleanup" >&2
+        return 2
+    fi
+    local final_load_state final_unit_file_state final_active_state
+    if ! final_load_state="$(
+        query_local_judge_manager_property "$systemctl_bin" LoadState
+    )" || ! final_unit_file_state="$(
+        query_local_judge_manager_property "$systemctl_bin" UnitFileState
+    )" || ! final_active_state="$(
+        query_local_judge_manager_property "$systemctl_bin" ActiveState
+    )"; then
+        return 2
+    fi
+    if [ "$final_load_state" != "masked" ] \
+        || [ "$final_unit_file_state" != "masked" ] \
+        || [ "$final_active_state" != "inactive" ]; then
+        echo "ERROR: user manager does not witness local-judge masked/masked/inactive after retirement (LoadState=$final_load_state UnitFileState=$final_unit_file_state ActiveState=$final_active_state)" >&2
         return 2
     fi
     "$systemctl_bin" --user reset-failed "$name" >/dev/null 2>&1 || true

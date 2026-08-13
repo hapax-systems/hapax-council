@@ -7,11 +7,47 @@ import pwd
 import subprocess
 from pathlib import Path
 
+import pytest
+
 REPO_ROOT = Path(__file__).parent.parent.parent
 WRAPPER = REPO_ROOT / "scripts" / "hapax-github-mcp"
 GITHUB_MCP_IMAGE_DIGEST = "sha256:30197479d8036c7811892bc07e06f9a05c9ef3cdd79bc59f256d50647f95788c"
 GITHUB_MCP_IMAGE = f"ghcr.io/github/github-mcp-server@{GITHUB_MCP_IMAGE_DIGEST}"
 GITHUB_MCP_LOCAL_IMAGE_ID = f"sha256:{'b' * 64}"
+
+
+def _label_capture_case(label_dir: Path) -> str:
+    return f'''--label)
+          case "$2" in
+            org.hapax.github-mcp.app=*) printf '%s' "${{2#*=}}" > "{label_dir / "app"}" ;;
+            org.hapax.github-mcp.uid=*) printf '%s' "${{2#*=}}" > "{label_dir / "uid"}" ;;
+            org.hapax.github-mcp.launch=*) printf '%s' "${{2#*=}}" > "{label_dir / "launch"}" ;;
+            org.hapax.github-mcp.lease-pid=*) printf '%s' "${{2#*=}}" > "{label_dir / "pid"}" ;;
+            org.hapax.github-mcp.lease-start=*) printf '%s' "${{2#*=}}" > "{label_dir / "start"}" ;;
+            org.hapax.github-mcp.lease-boot=*) printf '%s' "${{2#*=}}" > "{label_dir / "boot"}" ;;
+            *) exit 96 ;;
+          esac
+          shift 2
+          ;;'''
+
+
+def _valid_inspect_shell(
+    container_id: str,
+    container_name: Path,
+    label_dir: Path,
+    *,
+    tmpfs_options: str = "rw,noexec,nosuid,size=16m",
+) -> str:
+    return f'''printf '%s\\t' \\
+      '{container_id}' "/$(cat "{container_name}")" \\
+      "$(cat "{label_dir / "app"}")" "$(cat "{label_dir / "uid"}")" \\
+      "$(cat "{label_dir / "launch"}")" "$(cat "{label_dir / "pid"}")" \\
+      "$(cat "{label_dir / "start"}")" "$(cat "{label_dir / "boot"}")" \\
+      '{GITHUB_MCP_LOCAL_IMAGE_ID}' '{GITHUB_MCP_IMAGE}' '/server/github-mcp-server' \\
+      '["stdio","--log-file","/tmp/github-mcp.log","--tools=pull_request_read"]' \\
+      '536870912' '805306368' 'false' 'true' '["ALL"]' \\
+      '["no-new-privileges"]' 'true' 'none' '{tmpfs_options}' 'exited'
+    printf '%s\\n' '1' '''
 
 
 def test_github_mcp_script_is_valid_bash() -> None:
@@ -23,6 +59,15 @@ def test_github_mcp_script_is_valid_bash() -> None:
     )
 
     assert result.returncode == 0, result.stderr
+
+
+def test_github_mcp_token_is_not_placed_in_process_arguments() -> None:
+    source = WRAPPER.read_text(encoding="utf-8")
+    launch_body = source.split("launch_local_docker() {", 1)[1].split("\n}\n\nIMAGE_RECORD=", 1)[0]
+
+    assert "exec /usr/bin/docker" in launch_body
+    assert "/usr/bin/env" not in launch_body
+    assert 'GITHUB_PERSONAL_ACCESS_TOKEN="$github_token"' in launch_body
 
 
 def _stage_wrapper_with_docker(
@@ -67,7 +112,8 @@ def test_github_mcp_pins_docker_and_cleans_up_by_full_id(tmp_path: Path) -> None
     selector_leaks = tmp_path / "selector-leaks.txt"
     state = tmp_path / "container-state"
     container_name = tmp_path / "container-name"
-    launch_id = tmp_path / "launch-id"
+    label_dir = tmp_path / "labels"
+    label_dir.mkdir()
     container_id = "a" * 64
 
     fake_pass = bin_dir / "pass"
@@ -115,7 +161,7 @@ case " $* " in
       case "$1" in
         --cidfile) cidfile="$2"; shift 2 ;;
         --name) printf '%s' "$2" > "{container_name}"; shift 2 ;;
-        --label) printf '%s' "${{2#org.hapax.github-mcp.launch=}}" > "{launch_id}"; shift 2 ;;
+        {_label_capture_case(label_dir)}
         *) shift ;;
       esac
     done
@@ -123,14 +169,13 @@ case " $* " in
     printf '%s' '{container_id}' > "$cidfile"
     printf '%s' '{container_id}' > "{state}"
     ;;
+  *" ps -aq --no-trunc --filter label=org.hapax.github-mcp.app=stdio-v1 "*) : ;;
   *" ps -aq --no-trunc --filter name="*) cat "{state}" 2>/dev/null || true ;;
   *" ps -aq --no-trunc --filter id={container_id} "*)
     cat "{state}"
     ;;
   *" inspect --format "*)
-    printf '%s\t/%s\t%s\t%s\t%s\t%s\n' \
-      '{container_id}' "$(cat "{container_name}")" "$(cat "{launch_id}")" \
-      '{GITHUB_MCP_LOCAL_IMAGE_ID}' '{GITHUB_MCP_IMAGE}' '/server/github-mcp-server'
+    {_valid_inspect_shell(container_id, container_name, label_dir)}
     ;;
   *" rm -f {container_id} "*)
     : > "{state}"
@@ -182,7 +227,12 @@ esac
     assert "--cap-drop ALL" in run_call
     assert "--security-opt no-new-privileges" in run_call
     assert GITHUB_MCP_IMAGE in run_call
+    assert "--label org.hapax.github-mcp.app=stdio-v1" in run_call
+    assert f"--label org.hapax.github-mcp.uid={os.geteuid()}" in run_call
     assert "--label org.hapax.github-mcp.launch=" in run_call
+    assert "--label org.hapax.github-mcp.lease-pid=" in run_call
+    assert "--label org.hapax.github-mcp.lease-start=" in run_call
+    assert "--label org.hapax.github-mcp.lease-boot=" in run_call
     assert "--name hapax-github-mcp-" in run_call
     assert "-e GITHUB_PERSONAL_ACCESS_TOKEN" in run_call
     assert "--tools=search_pull_requests,pull_request_read,merge_pull_request" in run_call
@@ -204,13 +254,98 @@ esac
     assert "test-token" not in result.stderr
 
 
+def test_github_mcp_reclaims_valid_dead_lease_before_next_launch(tmp_path: Path) -> None:
+    bin_dir = tmp_path / "bin"
+    bin_dir.mkdir()
+    calls = tmp_path / "docker-calls.txt"
+    state = tmp_path / "container-state"
+    stale_id = "9" * 64
+    current_id = "a" * 64
+    state.write_text(stale_id, encoding="utf-8")
+    stale_labels = tmp_path / "stale-labels"
+    current_labels = tmp_path / "current-labels"
+    stale_labels.mkdir()
+    current_labels.mkdir()
+    stale_launch = f"{os.geteuid()}-DEADLEASE1"
+    stale_name = tmp_path / "stale-name"
+    current_name = tmp_path / "current-name"
+    stale_name.write_text(f"hapax-github-mcp-{stale_launch}", encoding="utf-8")
+    stale_values = {
+        "app": "stdio-v1",
+        "uid": str(os.geteuid()),
+        "launch": stale_launch,
+        "pid": "99999999",
+        "start": "1",
+        "boot": Path("/proc/sys/kernel/random/boot_id").read_text(encoding="ascii").strip(),
+    }
+    for name, value in stale_values.items():
+        (stale_labels / name).write_text(value, encoding="ascii")
+
+    fake_docker = bin_dir / "docker-client"
+    fake_docker.write_text(
+        f"""#!/usr/bin/env bash
+set -euo pipefail
+token_state="$(env | grep -q '^GITHUB_PERSONAL_ACCESS_TOKEN=' && echo present || true)"
+printf '%s|token=%s\n' "$*" "$token_state" >> "{calls}"
+case " $* " in
+  *" image inspect "*)
+    printf '%s\n%s\n' '{GITHUB_MCP_LOCAL_IMAGE_ID}' '{GITHUB_MCP_IMAGE}'
+    ;;
+  *" run "*)
+    cidfile=""
+    while [ "$#" -gt 0 ]; do
+      case "$1" in
+        --cidfile) cidfile="$2"; shift 2 ;;
+        --name) printf '%s' "$2" > "{current_name}"; shift 2 ;;
+        {_label_capture_case(current_labels)}
+        *) shift ;;
+      esac
+    done
+    printf '%s' '{current_id}' > "$cidfile"
+    printf '%s' '{current_id}' > "{state}"
+    ;;
+  *" ps -aq --no-trunc --filter "*) cat "{state}" ;;
+  *" inspect --format "*"{stale_id} "*)
+    {_valid_inspect_shell(stale_id, stale_name, stale_labels, tmpfs_options="size=16m,nosuid,rw,noexec")}
+    ;;
+  *" inspect --format "*"{current_id} "*)
+    {_valid_inspect_shell(current_id, current_name, current_labels)}
+    ;;
+  *" rm -f {stale_id} "*) : > "{state}" ;;
+  *" rm -f {current_id} "*) : > "{state}" ;;
+  *) echo "unexpected Docker call: $*" >&2; exit 9 ;;
+esac
+""",
+        encoding="utf-8",
+    )
+    fake_docker.chmod(0o755)
+    staged = _stage_wrapper_with_docker(tmp_path, fake_docker)
+    env = _base_env(tmp_path, bin_dir)
+    env["GITHUB_PERSONAL_ACCESS_TOKEN"] = "test-token"
+
+    result = subprocess.run(
+        [str(staged)], capture_output=True, text=True, env=env, timeout=5, check=False
+    )
+
+    assert result.returncode == 0, result.stderr
+    docker_calls = calls.read_text(encoding="utf-8").splitlines()
+    stale_remove = next(i for i, call in enumerate(docker_calls) if f"rm -f {stale_id}" in call)
+    launch = next(i for i, call in enumerate(docker_calls) if " run " in f" {call} ")
+    assert stale_remove < launch
+    assert any(f"rm -f {current_id}" in call for call in docker_calls)
+    assert not any("rm -f hapax-github-mcp-" in call for call in docker_calls)
+    assert all(call.endswith("|token=") for call in docker_calls if " run " not in f" {call} ")
+    assert state.read_text(encoding="utf-8") == ""
+
+
 def test_github_mcp_retains_cid_scratch_when_exact_cleanup_fails(tmp_path: Path) -> None:
     bin_dir = tmp_path / "bin"
     bin_dir.mkdir()
     calls = tmp_path / "docker-calls.txt"
     state = tmp_path / "container-state"
     container_name = tmp_path / "container-name"
-    launch_id = tmp_path / "launch-id"
+    label_dir = tmp_path / "labels"
+    label_dir.mkdir()
     container_id = "b" * 64
     fake_docker = bin_dir / "docker-client"
     fake_docker.write_text(
@@ -226,18 +361,17 @@ case " $* " in
       case "$1" in
         --cidfile) printf '%s' '{container_id}' > "$2"; shift 2 ;;
         --name) printf '%s' "$2" > "{container_name}"; shift 2 ;;
-        --label) printf '%s' "${{2#org.hapax.github-mcp.launch=}}" > "{launch_id}"; shift 2 ;;
+        {_label_capture_case(label_dir)}
         *) shift ;;
       esac
     done
     printf '%s' '{container_id}' > "{state}"
     ;;
+  *" ps -aq --no-trunc --filter label=org.hapax.github-mcp.app=stdio-v1 "*) : ;;
   *" ps -aq --no-trunc --filter name="*) cat "{state}" 2>/dev/null || true ;;
   *" ps -aq --no-trunc --filter id={container_id} "*) cat "{state}" ;;
   *" inspect --format "*)
-    printf '%s\t/%s\t%s\t%s\t%s\t%s\n' \
-      '{container_id}' "$(cat "{container_name}")" "$(cat "{launch_id}")" \
-      '{GITHUB_MCP_LOCAL_IMAGE_ID}' '{GITHUB_MCP_IMAGE}' '/server/github-mcp-server'
+    {_valid_inspect_shell(container_id, container_name, label_dir)}
     ;;
   *" rm -f {container_id} "*) echo "simulated remove failure" >&2; exit 17 ;;
   *) exit 9 ;;
@@ -290,6 +424,7 @@ case " $* " in
     done
     printf '%s' '{container_id}' > "{state}"
     ;;
+  *" ps -aq --no-trunc --filter label=org.hapax.github-mcp.app=stdio-v1 "*) : ;;
   *" ps -aq --no-trunc --filter name="*) cat "{state}" 2>/dev/null || true ;;
   *" ps -aq --no-trunc --filter id={container_id} "*)
     printf '%02000d' 0
@@ -331,7 +466,8 @@ def test_github_mcp_recovers_created_container_when_cidfile_is_absent(
     calls = tmp_path / "docker-calls.txt"
     state = tmp_path / "container-state"
     container_name = tmp_path / "container-name"
-    launch_id = tmp_path / "launch-id"
+    label_dir = tmp_path / "labels"
+    label_dir.mkdir()
     container_id = "d" * 64
     fake_docker = bin_dir / "docker-client"
     fake_docker.write_text(
@@ -346,19 +482,17 @@ case " $* " in
     while [ "$#" -gt 0 ]; do
       case "$1" in
         --name) printf '%s' "$2" > "{container_name}"; shift 2 ;;
-        --label) printf '%s' "${{2#org.hapax.github-mcp.launch=}}" > "{launch_id}"; shift 2 ;;
+        {_label_capture_case(label_dir)}
         *) shift ;;
       esac
     done
     printf '%s' '{container_id}' > "{state}"
     exit 42
     ;;
+  *" ps -aq --no-trunc --filter label=org.hapax.github-mcp.app=stdio-v1 "*) : ;;
   *" ps -aq --no-trunc --filter name="*) cat "{state}" 2>/dev/null || true ;;
   *" inspect --format "*)
-    printf '%s\t/%s\t%s\t%s\t%s\t%s\n' \
-      '{container_id}' "$(cat "{container_name}")" "$(cat "{launch_id}")" \
-      '{GITHUB_MCP_LOCAL_IMAGE_ID}' '{GITHUB_MCP_IMAGE}' \
-      '/server/github-mcp-server'
+    {_valid_inspect_shell(container_id, container_name, label_dir)}
     ;;
   *" rm -f {container_id} "*) : > "{state}" ;;
   *" ps -aq --no-trunc --filter id={container_id} "*) cat "{state}" ;;
@@ -397,6 +531,8 @@ def test_github_mcp_never_removes_unproven_exact_name_candidate(tmp_path: Path) 
     calls = tmp_path / "docker-calls.txt"
     state = tmp_path / "container-state"
     container_name = tmp_path / "container-name"
+    label_dir = tmp_path / "labels"
+    label_dir.mkdir()
     remove_marker = tmp_path / "remove-ran"
     container_id = "e" * 64
     fake_docker = bin_dir / "docker-client"
@@ -410,18 +546,20 @@ case " $* " in
     ;;
   *" run "*)
     while [ "$#" -gt 0 ]; do
-      if [ "$1" = "--name" ]; then printf '%s' "$2" > "{container_name}"; fi
-      shift
+      case "$1" in
+        --name) printf '%s' "$2" > "{container_name}"; shift 2 ;;
+        {_label_capture_case(label_dir)}
+        *) shift ;;
+      esac
     done
+    printf '%s' 'wrong-launch-identity' > "{label_dir / "launch"}"
     printf '%s' '{container_id}' > "{state}"
     exit 42
     ;;
+  *" ps -aq --no-trunc --filter label=org.hapax.github-mcp.app=stdio-v1 "*) : ;;
   *" ps -aq --no-trunc --filter name="*) cat "{state}" 2>/dev/null || true ;;
   *" inspect --format "*)
-    printf '%s\t/%s\t%s\t%s\t%s\t%s\n' \
-      '{container_id}' "$(cat "{container_name}")" 'wrong-launch-identity' \
-      '{GITHUB_MCP_LOCAL_IMAGE_ID}' '{GITHUB_MCP_IMAGE}' \
-      '/server/github-mcp-server'
+    {_valid_inspect_shell(container_id, container_name, label_dir)}
     ;;
   *" rm -f "*) printf ran > "{remove_marker}" ;;
   *) echo "unexpected Docker call: $*" >&2; exit 9 ;;
@@ -450,6 +588,229 @@ esac
     scratch_dirs = [path for path in (tmp_path / "mcp-logs").glob("github-mcp.*") if path.is_dir()]
     assert len(scratch_dirs) == 1
     assert "test-token" not in result.stderr
+
+
+@pytest.mark.parametrize(
+    ("cid_present", "name_id"),
+    [(True, "c" * 64), (False, "a" * 64)],
+    ids=["cid-name-disagree", "cid-absent-name-present"],
+)
+def test_github_mcp_disagreement_refusal_is_terminal(
+    tmp_path: Path, cid_present: bool, name_id: str
+) -> None:
+    bin_dir = tmp_path / "bin"
+    bin_dir.mkdir()
+    calls = tmp_path / "docker-calls.txt"
+    launched = tmp_path / "launched"
+    remove_marker = tmp_path / "remove-ran"
+    inspect_marker = tmp_path / "inspect-ran"
+    cid = "a" * 64
+    id_response = f"printf '%s\\n' '{cid}'" if cid_present else ":"
+    fake_docker = bin_dir / "docker-client"
+    fake_docker.write_text(
+        f"""#!/usr/bin/env bash
+set -euo pipefail
+printf '%s\n' "$*" >> "{calls}"
+case " $* " in
+  *" image inspect "*) printf '%s\n%s\n' '{GITHUB_MCP_LOCAL_IMAGE_ID}' '{GITHUB_MCP_IMAGE}' ;;
+  *" run "*)
+    while [ "$#" -gt 0 ]; do
+      if [ "$1" = --cidfile ]; then printf '%s' '{cid}' > "$2"; fi
+      shift
+    done
+    : > "{launched}"
+    exit 42
+    ;;
+  *" ps -aq --no-trunc --filter label=org.hapax.github-mcp.app=stdio-v1 "*) : ;;
+  *" ps -aq --no-trunc --filter name=^/hapax-github-mcp- "*) : ;;
+  *" ps -aq --no-trunc --filter name="*)
+    [ -e "{launched}" ] && printf '%s\n' '{name_id}'
+    ;;
+  *" ps -aq --no-trunc --filter id={cid} "*)
+    {id_response}
+    ;;
+  *" inspect --format "*) : > "{inspect_marker}" ;;
+  *" rm -f "*) : > "{remove_marker}" ;;
+  *) exit 9 ;;
+esac
+""",
+        encoding="utf-8",
+    )
+    fake_docker.chmod(0o755)
+    staged = _stage_wrapper_with_docker(tmp_path, fake_docker)
+    env = _base_env(tmp_path, bin_dir)
+    env["GITHUB_PERSONAL_ACCESS_TOKEN"] = "test-token"
+
+    result = subprocess.run(
+        [str(staged)], capture_output=True, text=True, env=env, timeout=5, check=False
+    )
+
+    assert result.returncode == 2
+    assert "refusing" in result.stderr
+    assert not inspect_marker.exists()
+    assert not remove_marker.exists()
+    assert not any(" rm -f " in f" {call} " for call in calls.read_text().splitlines())
+
+
+def test_github_mcp_cid_proof_survives_name_probe_failure(tmp_path: Path) -> None:
+    bin_dir = tmp_path / "bin"
+    bin_dir.mkdir()
+    calls = tmp_path / "docker-calls.txt"
+    state = tmp_path / "container-state"
+    launched = tmp_path / "launched"
+    container_name = tmp_path / "container-name"
+    label_dir = tmp_path / "labels"
+    label_dir.mkdir()
+    cid = "a" * 64
+    fake_docker = bin_dir / "docker-client"
+    fake_docker.write_text(
+        f"""#!/usr/bin/env bash
+set -euo pipefail
+printf '%s\n' "$*" >> "{calls}"
+case " $* " in
+  *" image inspect "*) printf '%s\n%s\n' '{GITHUB_MCP_LOCAL_IMAGE_ID}' '{GITHUB_MCP_IMAGE}' ;;
+  *" run "*)
+    cidfile=""
+    while [ "$#" -gt 0 ]; do
+      case "$1" in
+        --cidfile) cidfile="$2"; shift 2 ;;
+        --name) printf '%s' "$2" > "{container_name}"; shift 2 ;;
+        {_label_capture_case(label_dir)}
+        *) shift ;;
+      esac
+    done
+    printf '%s' '{cid}' > "$cidfile"
+    printf '%s' '{cid}' > "{state}"
+    : > "{launched}"
+    exit 42
+    ;;
+  *" ps -aq --no-trunc --filter label=org.hapax.github-mcp.app=stdio-v1 "*) : ;;
+  *" ps -aq --no-trunc --filter name=^/hapax-github-mcp- "*) : ;;
+  *" ps -aq --no-trunc --filter name="*)
+    if [ -e "{launched}" ]; then exit 17; fi
+    ;;
+  *" ps -aq --no-trunc --filter id={cid} "*) cat "{state}" ;;
+  *" inspect --format "*) {_valid_inspect_shell(cid, container_name, label_dir)} ;;
+  *" rm -f {cid} "*) : > "{state}" ;;
+  *) exit 9 ;;
+esac
+""",
+        encoding="utf-8",
+    )
+    fake_docker.chmod(0o755)
+    staged = _stage_wrapper_with_docker(tmp_path, fake_docker)
+    env = _base_env(tmp_path, bin_dir)
+    env["GITHUB_PERSONAL_ACCESS_TOKEN"] = "test-token"
+
+    result = subprocess.run(
+        [str(staged)], capture_output=True, text=True, env=env, timeout=5, check=False
+    )
+
+    assert result.returncode == 2
+    assert any(f"rm -f {cid}" in call for call in calls.read_text().splitlines())
+    assert state.read_text(encoding="utf-8") == ""
+
+
+def test_github_mcp_absent_cid_and_failed_name_probe_retains_failure_evidence(
+    tmp_path: Path,
+) -> None:
+    bin_dir = tmp_path / "bin"
+    bin_dir.mkdir()
+    launched = tmp_path / "launched"
+    fake_docker = bin_dir / "docker-client"
+    fake_docker.write_text(
+        f"""#!/usr/bin/env bash
+set -euo pipefail
+case " $* " in
+  *" image inspect "*) printf '%s\n%s\n' '{GITHUB_MCP_LOCAL_IMAGE_ID}' '{GITHUB_MCP_IMAGE}' ;;
+  *" run "*) : > "{launched}"; exit 42 ;;
+  *" ps -aq --no-trunc --filter label=org.hapax.github-mcp.app=stdio-v1 "*) : ;;
+  *" ps -aq --no-trunc --filter name=^/hapax-github-mcp- "*) : ;;
+  *" ps -aq --no-trunc --filter name="*)
+    if [ -e "{launched}" ]; then exit 17; fi
+    ;;
+  *) exit 9 ;;
+esac
+""",
+        encoding="utf-8",
+    )
+    fake_docker.chmod(0o755)
+    staged = _stage_wrapper_with_docker(tmp_path, fake_docker)
+    env = _base_env(tmp_path, bin_dir)
+    env["GITHUB_PERSONAL_ACCESS_TOKEN"] = "test-token"
+
+    result = subprocess.run(
+        [str(staged)], capture_output=True, text=True, env=env, timeout=5, check=False
+    )
+
+    assert result.returncode == 2
+    assert "cannot prove exact-name cleanup state" in result.stderr
+    scratch_dirs = [path for path in (tmp_path / "mcp-logs").glob("github-mcp.*") if path.is_dir()]
+    assert len(scratch_dirs) == 1
+    assert "test-token" not in result.stderr
+
+
+def test_github_mcp_ignores_sigterm_during_cleanup(tmp_path: Path) -> None:
+    bin_dir = tmp_path / "bin"
+    bin_dir.mkdir()
+    state = tmp_path / "container-state"
+    launched = tmp_path / "launched"
+    signal_sent = tmp_path / "signal-sent"
+    container_name = tmp_path / "container-name"
+    label_dir = tmp_path / "labels"
+    label_dir.mkdir()
+    cid = "a" * 64
+    fake_docker = bin_dir / "docker-client"
+    fake_docker.write_text(
+        f"""#!/usr/bin/env bash
+set -euo pipefail
+case " $* " in
+  *" image inspect "*) printf '%s\n%s\n' '{GITHUB_MCP_LOCAL_IMAGE_ID}' '{GITHUB_MCP_IMAGE}' ;;
+  *" run "*)
+    cidfile=""
+    while [ "$#" -gt 0 ]; do
+      case "$1" in
+        --cidfile) cidfile="$2"; shift 2 ;;
+        --name) printf '%s' "$2" > "{container_name}"; shift 2 ;;
+        {_label_capture_case(label_dir)}
+        *) shift ;;
+      esac
+    done
+    printf '%s' '{cid}' > "$cidfile"
+    printf '%s' '{cid}' > "{state}"
+    : > "{launched}"
+    exit 42
+    ;;
+  *" ps -aq --no-trunc --filter label=org.hapax.github-mcp.app=stdio-v1 "*) : ;;
+  *" ps -aq --no-trunc --filter name=^/hapax-github-mcp- "*) : ;;
+  *" ps -aq --no-trunc --filter name="*)
+    if [ -e "{launched}" ] && [ ! -e "{signal_sent}" ]; then
+      : > "{signal_sent}"
+      kill -TERM "$(cat "{label_dir / "pid"}")"
+      sleep 0.05
+    fi
+    cat "{state}" 2>/dev/null || true
+    ;;
+  *" ps -aq --no-trunc --filter id={cid} "*) cat "{state}" ;;
+  *" inspect --format "*) {_valid_inspect_shell(cid, container_name, label_dir)} ;;
+  *" rm -f {cid} "*) : > "{state}" ;;
+  *) exit 9 ;;
+esac
+""",
+        encoding="utf-8",
+    )
+    fake_docker.chmod(0o755)
+    staged = _stage_wrapper_with_docker(tmp_path, fake_docker)
+    env = _base_env(tmp_path, bin_dir)
+    env["GITHUB_PERSONAL_ACCESS_TOKEN"] = "test-token"
+
+    result = subprocess.run(
+        [str(staged)], capture_output=True, text=True, env=env, timeout=5, check=False
+    )
+
+    assert signal_sent.exists()
+    assert result.returncode == 42, result.stderr
+    assert state.read_text(encoding="utf-8") == ""
 
 
 def test_github_mcp_refuses_substituted_local_image_before_token_release(

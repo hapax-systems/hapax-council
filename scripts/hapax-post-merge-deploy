@@ -152,6 +152,7 @@ WP_SCRIPTS_DIR="$HOME/.local/share/wireplumber/scripts/hapax"
 SYSTEMD_USER_DIR="$HOME/.config/systemd/user"
 SYSTEMD_RUNTIME_USER_DIR="${XDG_RUNTIME_DIR:-/run/user/$(id -u)}/systemd/user"
 SYSTEMD_USER_PRESET_DIR="$HOME/.config/systemd/user-preset"
+SYSTEMD_SYSTEM_DIR="/etc/systemd/system"
 LOCAL_BIN="$HOME/.local/bin"
 TRACE_PATH="${HAPAX_POST_MERGE_TRACE_PATH:-$HOME/.cache/hapax/post-merge-traces/post-merge-traces.jsonl}"
 TRACE_MAX_RECORDS="${HAPAX_POST_MERGE_TRACE_MAX_RECORDS:-200}"
@@ -540,7 +541,9 @@ from __future__ import annotations
 
 import json
 import os
+import stat
 import sys
+import tempfile
 from datetime import UTC, datetime
 from pathlib import Path
 
@@ -622,15 +625,53 @@ record = {
     },
 }
 
-path.parent.mkdir(parents=True, exist_ok=True)
-previous = []
-if path.exists():
-    previous = [line for line in path.read_text(encoding="utf-8").splitlines() if line.strip()]
-previous.append(json.dumps(record, sort_keys=True))
-kept = previous[-max_records:]
-tmp_path = path.with_name(f"{path.name}.tmp")
-tmp_path.write_text("\n".join(kept) + "\n", encoding="utf-8")
-os.replace(tmp_path, path)
+parent = path.parent
+fd = -1
+tmp_path = ""
+try:
+    parent.mkdir(mode=0o700, parents=True, exist_ok=True)
+    previous: list[str] = []
+    if os.path.lexists(path):
+        read_fd = os.open(path, os.O_RDONLY | os.O_CLOEXEC | os.O_NOFOLLOW)
+        try:
+            if not stat.S_ISREG(os.fstat(read_fd).st_mode):
+                raise OSError("existing trace is not a regular file")
+            with os.fdopen(read_fd, "r", encoding="utf-8") as stream:
+                read_fd = -1
+                previous = [line for line in stream.read().splitlines() if line.strip()]
+        finally:
+            if read_fd >= 0:
+                os.close(read_fd)
+    previous.append(json.dumps(record, sort_keys=True))
+    payload = ("\n".join(previous[-max_records:]) + "\n").encode("utf-8")
+    fd, tmp_path = tempfile.mkstemp(prefix=f".{path.name}.tmp.", dir=parent)
+    os.fchmod(fd, 0o600)
+    offset = 0
+    while offset < len(payload):
+        written = os.write(fd, payload[offset:])
+        if written <= 0:
+            raise OSError("short write while publishing post-merge trace")
+        offset += written
+    os.fsync(fd)
+    os.close(fd)
+    fd = -1
+    os.replace(tmp_path, path)
+    tmp_path = ""
+    dir_fd = os.open(parent, os.O_RDONLY | os.O_DIRECTORY | os.O_CLOEXEC)
+    try:
+        os.fsync(dir_fd)
+    finally:
+        os.close(dir_fd)
+except (OSError, UnicodeError, ValueError) as exc:
+    if fd >= 0:
+        os.close(fd)
+    if tmp_path:
+        try:
+            os.unlink(tmp_path)
+        except FileNotFoundError:
+            pass
+    print(f"hapax-post-merge-deploy: failed to publish trace {path}: {exc}", file=sys.stderr)
+    raise SystemExit(1) from exc
 PY
 }
 
@@ -711,6 +752,21 @@ record_last_deployed_sha() {
     [ -n "$SHA" ] || return 0
     if ! atomic_write_sha_receipt "$LAST_DEPLOYED_SHA_PATH" "$SHA"; then
         echo "hapax-post-merge-deploy: failed to publish last-deployed SHA; refusing successful completion" >&2
+        return 1
+    fi
+}
+
+finalize_deploy_receipts() {
+    local status="$1"
+    if ! record_post_merge_trace "$status" "0"; then
+        echo "hapax-post-merge-deploy: failed to publish completion trace; last-deployed SHA is unchanged" >&2
+        return 1
+    fi
+    TRACE_WRITTEN=1
+    if ! record_last_deployed_sha; then
+        # The EXIT trap appends a failed record after the already durable
+        # completion attempt, preserving the exact cursor-publication failure.
+        TRACE_WRITTEN=0
         return 1
     fi
 }
@@ -930,7 +986,7 @@ unit_install_scope() {
         return 1
     fi
     if [ -n "$content" ] \
-        && grep -Eiq '^[#;][[:space:]]*Hapax-Install-Scope:[[:space:]]*system([[:space:]]*$|[[:space:]]+)' <<< "$content"; then
+        && grep -Eiq '^[#;][[:space:]]*Hapax-Install-Scope:[[:space:]]*system[[:space:]]*$' <<< "$content"; then
         UNIT_INSTALL_SCOPE="system"
     else
         UNIT_INSTALL_SCOPE="user"
@@ -1360,9 +1416,8 @@ if [ -z "$FILES" ]; then
     if [ "$DID_ANYTHING" -ne 0 ]; then
         trace_status="completed"
     fi
-    record_last_deployed_sha
-    if record_post_merge_trace "$trace_status" "0"; then
-        TRACE_WRITTEN=1
+    if ! finalize_deploy_receipts "$trace_status"; then
+        exit 1
     fi
     echo "no files changed in $SHA"
     exit 0
@@ -2202,17 +2257,72 @@ fi
 if [ "${#SYSTEMD_SYSTEM[@]}" -gt 0 ]; then
     echo "system-scoped systemd units changed (${#SYSTEMD_SYSTEM[@]}):"
     mkdir -p "$SYSTEMD_USER_DIR"
+    system_unit_pending=0
     for f in "${SYSTEMD_SYSTEM[@]}"; do
         base="$(basename "$f")"
         dest="$SYSTEMD_USER_DIR/$base"
-        echo "  '$f' marked Hapax-Install-Scope: system; skipping user deploy"
+        system_dest="$SYSTEMD_SYSTEM_DIR/$base"
+        system_manager_unit="$base"
+        if [[ "$system_manager_unit" == *@.* ]]; then
+            system_manager_unit="${system_manager_unit/@./@hapax-post-merge-witness.}"
+        fi
+        echo "  '$f' marked Hapax-Install-Scope: system; reconciling user copy and verifying exact system installation"
+        if ! git_blob_state_at "$SHA" "$f" "system-scoped systemd unit"; then
+            exit 2
+        fi
         systemctl --user disable --now "$base" >/dev/null 2>&1 || true
         if [ -e "$dest" ] || [ -L "$dest" ]; then
             rm -fv "$dest" || true
         fi
+        system_unit_converged=0
+        if [ "$GIT_BLOB_PRESENT" -eq 1 ]; then
+            if [ -f "$system_dest" ] && [ ! -L "$system_dest" ]; then
+                if ! installed_oid="$(git -C "$REPO" hash-object --no-filters -- "$system_dest")"; then
+                    echo "hapax-post-merge-deploy: failed to hash installed system unit $system_dest" >&2
+                    exit 2
+                fi
+                if [ "$installed_oid" = "$GIT_BLOB_OID" ]; then
+                    system_unit_converged=1
+                fi
+            fi
+        elif [ ! -e "$system_dest" ] && [ ! -L "$system_dest" ]; then
+            system_unit_converged=1
+        fi
+        system_manager_converged=0
+        if [ "$system_unit_converged" -eq 1 ]; then
+            if ! system_load_state="$(systemctl show "$system_manager_unit" -p LoadState --value)" \
+                || ! system_fragment_path="$(systemctl show "$system_manager_unit" -p FragmentPath --value)" \
+                || ! system_need_reload="$(systemctl show "$system_manager_unit" -p NeedDaemonReload --value)"; then
+                echo "  runtime deferred: cannot query the system-manager witness for '$system_manager_unit'" >&2
+            elif [ "$GIT_BLOB_PRESENT" -eq 1 ] \
+                && [ "$system_load_state" = "loaded" ] \
+                && [ "$system_fragment_path" = "$system_dest" ] \
+                && [ "$system_need_reload" = "no" ]; then
+                system_manager_converged=1
+            elif [ "$GIT_BLOB_PRESENT" -eq 0 ] \
+                && [ "$system_load_state" = "not-found" ] \
+                && [ -z "$system_fragment_path" ] \
+                && [ "$system_need_reload" = "no" ]; then
+                system_manager_converged=1
+            else
+                echo "  runtime deferred: system manager has not loaded the exact '$system_dest' state" >&2
+            fi
+        fi
+        if [ "$system_unit_converged" -eq 1 ] && [ "$system_manager_converged" -eq 1 ]; then
+            echo "  exact file and system-manager witness: '$system_dest'"
+        else
+            RUNTIME_DEFERRED+=("systemd-system:$f")
+            system_unit_pending=1
+            echo "  runtime deferred: '$system_dest' lacks an exact $SHA file-and-manager witness; next action: install or remove it through an authorized system-unit installer, reload the system manager, then rerun this deploy" >&2
+        fi
     done
     systemctl --user daemon-reload
-    DID_ANYTHING=1
+    if [ "$system_unit_pending" -ne 0 ]; then
+        if record_post_merge_trace "blocked_runtime_deferral" "$ROOT_REQUIRED_RC"; then
+            TRACE_WRITTEN=1
+        fi
+        exit "$ROOT_REQUIRED_RC"
+    fi
 fi
 
 PUBLISHED_GIT_CONTENT=""
@@ -2336,10 +2446,9 @@ install_governed_intake_unit_at_sha() {
     local rel dest
     rel="systemd/units/$unit"
     dest="$SYSTEMD_USER_DIR/$unit"
-    if [ -L "$dest" ]; then
-        rm -f "$dest"
+    if ! publish_systemd_unit_at_sha "$rel" "$dest"; then
+        return 1
     fi
-    git show "$SHA:$rel" > "$dest"
     echo "  '$rel' -> '$dest' ($reason)"
     cleanup_known_stale_user_dropins_for_unit "$unit"
     return 0
@@ -2348,7 +2457,10 @@ install_governed_intake_unit_at_sha() {
 governed_intake_unit_exists_at_sha() {
     local unit="$1"
     local rel="systemd/units/$unit"
-    if git cat-file -e "$SHA:$rel" 2>/dev/null; then
+    if ! git_blob_state_at "$SHA" "$rel" "governed intake systemd unit"; then
+        return 2
+    fi
+    if [ "$GIT_BLOB_PRESENT" -eq 1 ]; then
         return 0
     fi
     echo "  warning: preset requires $unit but $rel is absent at $SHA; cannot activate governed intake. Next action: add $rel at the deployed SHA or remove the preset enable for its timer." >&2
@@ -2356,20 +2468,28 @@ governed_intake_unit_exists_at_sha() {
 }
 
 install_governed_intake_preset_units() {
-    local set timer unit install_ok
+    local set timer unit install_ok unit_status
     GOVERNED_INTAKE_PRESET_ENABLE=()
     for set in "${GOVERNED_INTAKE_PRESET_UNIT_SETS[@]}"; do
         timer="${set%% *}"
         preset_enables_unit_at_sha "$timer" || continue
         install_ok=1
         for unit in $set; do
-            if ! governed_intake_unit_exists_at_sha "$unit"; then
+            if governed_intake_unit_exists_at_sha "$unit"; then
+                :
+            else
+                unit_status=$?
+                if [ "$unit_status" -gt 1 ]; then
+                    return "$unit_status"
+                fi
                 install_ok=0
             fi
         done
         [ "$install_ok" -eq 1 ] || continue
         for unit in $set; do
-            install_governed_intake_unit_at_sha "$unit" "preset-activated governed intake unit"
+            if ! install_governed_intake_unit_at_sha "$unit" "preset-activated governed intake unit"; then
+                return 1
+            fi
         done
         GOVERNED_INTAKE_PRESET_ENABLE+=("$timer")
     done
@@ -2535,9 +2655,6 @@ trace_status="completed"
 if [ "${#RUNTIME_DEFERRED[@]}" -gt 0 ]; then
     trace_status="completed_with_runtime_deferral"
 fi
-record_last_deployed_sha
-if record_post_merge_trace "$trace_status" "0"; then
-    TRACE_WRITTEN=1
-else
-    echo "warning: failed to write post-merge deploy trace to $TRACE_PATH" >&2
+if ! finalize_deploy_receipts "$trace_status"; then
+    exit 1
 fi

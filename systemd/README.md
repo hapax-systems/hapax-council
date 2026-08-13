@@ -373,7 +373,9 @@ compiler's node-id filename convention.
 three `OOMScoreAdjust=-900` PipeWire override snapshots there are non-deployable
 evidence from the former design. The authoritative deployable drop-ins live
 under `systemd/units/{pipewire,pipewire-pulse,wireplumber}.service.d/`, configure
-the valid startup score `100`, and rely on the root timer for live score `-900`.
+the valid delegated score `100`, and pair it with source-controlled
+`MemoryLow=`/`MemoryMin=` reservations. The former root timer bridge to a live
+score of `-900` is retired.
 
 ## Storage Management
 
