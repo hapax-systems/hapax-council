@@ -146,6 +146,25 @@ def test_since_deploys_cumulative_union_not_just_tip(tmp_path: Path) -> None:
     assert record["sha"] == shas["c3"]
 
 
+def test_since_forwards_exact_cumulative_range_to_smoke(tmp_path: Path) -> None:
+    repo, shas = _repo_with_three_unit_commits(tmp_path)
+    recorder = tmp_path / "smoke-args.txt"
+    smoke = repo / "scripts" / "hapax-post-merge-smoke"
+    smoke.parent.mkdir(parents=True, exist_ok=True)
+    smoke.write_text(f'#!/bin/sh\nprintf "%s\\n" "$*" > "{recorder}"\nexit 0\n', encoding="utf-8")
+    smoke.chmod(0o755)
+    _git(repo, "add", "scripts/hapax-post-merge-smoke")
+    _git(repo, "commit", "-m", "add smoke recorder")
+    target = _git(repo, "rev-parse", "HEAD")
+    bin_dir, _calls = _fake_systemctl(tmp_path)
+    env = _env(repo, bin_dir, tmp_path)
+
+    result = _run(["--since", shas["base"], target], env)
+
+    assert result.returncode == 0, result.stderr
+    assert recorder.read_text(encoding="utf-8").strip() == (f"--since {shas['base']} {target}")
+
+
 def test_plain_tip_deploy_only_covers_first_parent_diff(tmp_path: Path) -> None:
     """Contrast: a plain `<tip>` deploy on a linear history covers only the tip
     commit's own diff — proving --since is what closes the multi-merge gap."""

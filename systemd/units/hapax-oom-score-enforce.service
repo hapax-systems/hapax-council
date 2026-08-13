@@ -4,6 +4,9 @@ Description=Retired Hapax root-to-user OOM score bridge sentinel
 Documentation=https://github.com/hapax-systems/hapax-council/blob/main/systemd/README.md
 StartLimitIntervalSec=0
 RefuseManualStart=yes
+# RefuseManualStart does not block dependency activation. This impossible
+# condition keeps the retired root bridge inert through every start path.
+ConditionPathExists=!/
 
 [Service]
 Type=oneshot
