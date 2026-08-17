@@ -50,7 +50,8 @@ RECEIPT_BOUNDED_SUBSCRIPTION_PROVIDERS = {
 }
 GLMCP_QUOTA_TELEMETRY_WRITER_REF = "scripts/hapax-quota-telemetry-writer"
 AGY_ADMISSION_SUPPORTED_TOOL = "hapax-agy-reviewer"
-AGY_ADMISSION_MODEL = "gemini-3.1-pro-preview"
+AGY_ADMISSION_MODEL = "gemini-3.1-pro-high"
+AGY_ADMISSION_MODELS = frozenset({AGY_ADMISSION_MODEL, "gemini-3.1-pro-preview"})
 AGY_ADMISSION_RECEIPT_LABEL_RE = re.compile(
     r"\Arelay-receipt:"
     r"(?:[a-z0-9_.+-]*agy-quota-admission[a-z0-9_.+-]*\.yaml|"

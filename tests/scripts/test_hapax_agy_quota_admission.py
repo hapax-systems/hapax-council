@@ -71,7 +71,7 @@ def test_agy_quota_admission_writes_short_lived_safe_receipt(
     summary = json.loads(capsys.readouterr().out)
     assert summary["route_id"] == "agy.review.direct"
     assert summary["supported_tool"] == "hapax-agy-reviewer"
-    assert summary["model"] == "gemini-3.1-pro-preview"
+    assert summary["model"] == "gemini-3.1-pro-high"
     path = Path(summary["path"])
     receipt = path.read_text(encoding="utf-8")
     assert "schema: hapax.agy_quota_admission.v1" in receipt

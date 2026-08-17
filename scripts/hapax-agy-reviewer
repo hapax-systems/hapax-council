@@ -10,10 +10,13 @@ import sys
 import tempfile
 from pathlib import Path
 
-DEFAULT_MODEL = "gemini-3.1-pro-preview"
+DEFAULT_MODEL = "gemini-3.1-pro-high"
 DEFAULT_PRINT_TIMEOUT = "20m0s"
 DEFAULT_AGY_BIN = "/usr/bin/agy"
 PINNED_REVIEW_MODEL = DEFAULT_MODEL
+# Live agy 1.1.13 names the 3.1 Pro seat gemini-3.1-pro-high / -low.
+# The old preview id is still accepted as the same seat and rewritten to high.
+PINNED_REVIEW_MODELS = frozenset({DEFAULT_MODEL, "gemini-3.1-pro-preview"})
 
 REVIEW_PROMPT = """You are a blind PR reviewer invoked non-interactively through agy --print.
 Review ONLY the dossier supplied in the review-dossier.md file in your current sandbox
@@ -83,6 +86,26 @@ def _parser() -> argparse.ArgumentParser:
     return parser
 
 
+def _seed_agy_oauth(sandbox_home: Path) -> None:
+    """Copy only the operator OAuth token into the isolated HOME.
+
+    The review env rewrites HOME/XDG so a leaked tool cannot see the
+    operator's conversations. That also hid the token, so a live ``agy``
+    login could not satisfy ``hapax-agy-quota-admission``. Presence of the
+    token is not a quota observation; absence of the token is not a
+    quota block.
+    """
+
+    src = Path.home() / ".gemini" / "antigravity-cli" / "antigravity-oauth-token"
+    if not src.is_file():
+        return
+    dest_dir = sandbox_home / ".gemini" / "antigravity-cli"
+    dest_dir.mkdir(parents=True, exist_ok=True)
+    dest = dest_dir / "antigravity-oauth-token"
+    dest.write_bytes(src.read_bytes())
+    dest.chmod(0o600)
+
+
 def _review_env(workdir: Path) -> dict[str, str]:
     preserved = (
         "PATH",
@@ -116,18 +139,22 @@ def main(argv: list[str] | None = None) -> int:
     if agy_bin.name != "agy" or not agy_bin.is_absolute():
         print("hapax-agy-reviewer: --agy-bin must be an absolute path named agy", file=sys.stderr)
         return 64
-    if args.model != PINNED_REVIEW_MODEL:
+    if args.model not in PINNED_REVIEW_MODELS:
         print(
             "hapax-agy-reviewer: review model is pinned to "
             f"{PINNED_REVIEW_MODEL} for registry family traceability",
             file=sys.stderr,
         )
         return 64
+    cli_model = PINNED_REVIEW_MODEL
 
     dossier = sys.stdin.read()
     prompt = "\n\n".join([REVIEW_PROMPT.strip(), "# Reviewer dossier", dossier.strip()])
     with tempfile.TemporaryDirectory(prefix="hapax-agy-review-") as tmp:
         workdir = Path(tmp)
+        sandbox_home = workdir / "home"
+        sandbox_home.mkdir(parents=True, exist_ok=True)
+        _seed_agy_oauth(sandbox_home)
         prompt_path = workdir / "review-dossier.md"
         prompt_path.write_text(prompt, encoding="utf-8")
         cmd = [
@@ -137,9 +164,14 @@ def main(argv: list[str] | None = None) -> int:
             "--log-file",
             str(workdir / "agy.log"),
             "--sandbox",
+            # Headless agy auto-denies tools and then emits nothing. Skip the
+            # prompt so the pinned print-mode review can write the YAML fence.
+            # HOME/XDG still point at the temp sandbox.
+            "--dangerously-skip-permissions",
+            "--disable-slash-commands",
         ]
-        if args.model:
-            cmd.extend(["--model", args.model])
+        if cli_model:
+            cmd.extend(["--model", cli_model])
         cmd.extend(["--print", PRINT_PROMPT])
 
         try:

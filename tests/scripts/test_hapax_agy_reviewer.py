@@ -35,7 +35,7 @@ printf '```yaml\\nverdict: accept\\nfindings: []\\n```\\n'
 
     env = {**os.environ, "HAPAX_SHOULD_NOT_LEAK": "secret", "HOME": str(operator_home)}
     result = subprocess.run(
-        [str(WRAPPER), "--agy-bin", str(fake_agy), "--model", "gemini-3.1-pro-preview"],
+        [str(WRAPPER), "--agy-bin", str(fake_agy), "--model", "gemini-3.1-pro-high"],
         input="diff --git a/x b/x\n+change\n",
         capture_output=True,
         text=True,
@@ -47,10 +47,11 @@ printf '```yaml\\nverdict: accept\\nfindings: []\\n```\\n'
     assert "verdict: accept" in result.stdout
     args = calls.read_text(encoding="utf-8")
     assert "--sandbox" in args
+    assert "--dangerously-skip-permissions" in args
     assert "--log-file" in args
     assert "--print-timeout" in args
     assert "--model" in args
-    assert "gemini-3.1-pro-preview" in args
+    assert "gemini-3.1-pro-high" in args
     assert "--print" in args
     assert "Read ./review-dossier.md" in args
     assert "diff --git a/x b/x" not in args
@@ -69,6 +70,42 @@ printf '```yaml\\nverdict: accept\\nfindings: []\\n```\\n'
     assert not cwd_file.read_text(encoding="utf-8").strip().startswith(str(REPO_ROOT))
     assert home_file.read_text(encoding="utf-8").strip() != str(operator_home)
     assert secret_file.read_text(encoding="utf-8").strip() == "unset"
+
+
+def test_agy_reviewer_seeds_only_the_oauth_token_into_sandbox_home(tmp_path: Path) -> None:
+    operator_home = tmp_path / "operator-home"
+    token_dir = operator_home / ".gemini" / "antigravity-cli"
+    token_dir.mkdir(parents=True)
+    (token_dir / "antigravity-oauth-token").write_bytes(b"token-bytes-not-a-secret-in-tests")
+    (token_dir / "conversations").mkdir()
+    (token_dir / "conversations" / "leak.json").write_text("nope", encoding="utf-8")
+
+    bin_dir = tmp_path / "bin"
+    bin_dir.mkdir()
+    listing = tmp_path / "sandbox-home.txt"
+    fake_agy = bin_dir / "agy"
+    fake_agy.write_text(
+        f"""#!/usr/bin/env bash
+find "$HOME" -print > {listing}
+printf '```yaml\\nverdict: accept\\nfindings: []\\n```\\n'
+""",
+        encoding="utf-8",
+    )
+    fake_agy.chmod(0o755)
+
+    result = subprocess.run(
+        [str(WRAPPER), "--agy-bin", str(fake_agy), "--model", "gemini-3.1-pro-high"],
+        input="diff --git a/x b/x\n+change\n",
+        capture_output=True,
+        text=True,
+        env={**os.environ, "HOME": str(operator_home)},
+        timeout=5,
+    )
+    assert result.returncode == 0, result.stderr
+    seen = listing.read_text(encoding="utf-8")
+    assert "antigravity-oauth-token" in seen
+    assert "conversations" not in seen
+    assert "leak.json" not in seen
 
 
 def test_agy_reviewer_ignores_ambient_review_model(tmp_path: Path) -> None:
@@ -95,7 +132,7 @@ printf '```yaml\\nverdict: accept\\nfindings: []\\n```\\n'
 
     assert result.returncode == 0, result.stderr
     args = calls.read_text(encoding="utf-8")
-    assert "gemini-3.1-pro-preview" in args
+    assert "gemini-3.1-pro-high" in args
     assert "claude-sonnet-4-6" not in args
 
 
@@ -116,7 +153,7 @@ def test_agy_reviewer_rejects_non_pinned_review_model(tmp_path: Path) -> None:
     )
 
     assert result.returncode == 64
-    assert "review model is pinned to gemini-3.1-pro-preview" in result.stderr
+    assert "review model is pinned to gemini-3.1-pro-high" in result.stderr
     assert "should not run" not in result.stderr
 
 
