@@ -508,6 +508,7 @@
         "claude-haiku-4-5",
         "claude-fable-5",
         "gpt-5.5",
+        "gpt-5.6-sol",
         "gpt-5.3-codex-spark",
         "gpt-oss-120b",
         "command-r-08-2024",
@@ -520,7 +521,7 @@
       ]
     },
     "effort": {
-      "enum": ["none", "low", "medium", "high", "xhigh", "max"]
+      "enum": ["none", "low", "medium", "high", "xhigh", "ultra", "max"]
     },
     "context_mode": {
       "enum": ["standard", "extended_1m", "not_applicable"]

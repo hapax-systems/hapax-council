@@ -57,17 +57,17 @@ SEED_CAPABILITY_DESCRIPTORS: list[CapabilityHarnessDescriptor] = [
         freshness_state=FreshnessState.DARK,
         freshness_remediation_task="cc-task-capability-harness-descriptor-20260703",
     ),
-    # model_effort_slice — Codex GPT-5.5 xhigh
+    # model_effort_slice — Codex frontier pair, per scripts/codex-frontier-selection.sh
     CapabilityHarnessDescriptor(
-        capability_id="codex.gpt-5-5.xhigh.source-edit",
-        display_name="Codex GPT-5.5 xhigh (source edit)",
+        capability_id="codex.gpt-5-6-sol.ultra.source-edit",
+        display_name="Codex GPT-5.6-sol ultra (source edit)",
         shape=CapabilityShape.MODEL_EFFORT_SLICE,
         domain=CapabilityDomain.LLM_WORKER,
         actions=[CapabilityAction.IMPLEMENT],
         platform_id="codex",
         route_id="codex.headless.full",
-        model="gpt-5.5",
-        effort="xhigh",
+        model="gpt-5.6-sol",
+        effort="ultra",
         authority_ceiling=AuthorityCeiling.REPO_MUTATION,
         spend_authority_required=True,
         resource_pools=["codex-quota"],

@@ -844,7 +844,7 @@ class RouteEnvelope(_RouteModel):
 # Effort / ContextMode StrEnums owned by shared.platform_capability_registry — but that module
 # is HIGHER (it imports ToolAuthorityUse from here), so this lower module speaks the value strings
 # and a drift-pin test binds these tuples to the registry enums (see test_route_metadata_schema).
-_EFFORT_DEMAND_VALUES = ("none", "low", "medium", "high", "xhigh", "max")
+_EFFORT_DEMAND_VALUES = ("none", "low", "medium", "high", "xhigh", "ultra", "max")
 _CONTEXT_MODE_DEMAND_VALUES = ("standard", "extended_1m", "not_applicable")
 
 
