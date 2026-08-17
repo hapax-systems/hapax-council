@@ -1,5 +1,14 @@
-model = "gpt-5.5"
-model_reasoning_effort = "xhigh"
+# THE LAUNCHERS ARE NOT THE ONLY CALLER. scripts/codex-frontier-selection.sh unified the
+# frontier pair across the two governed launchers, but this file is installed verbatim to
+# ~/.codex/config.toml by scripts/install-codex-config.sh and is what every AD-HOC `codex` /
+# `codex exec` invocation reads — the 29-of-33 population that measurably bypasses the
+# launchers entirely. While it said gpt-5.5/xhigh, running the installer REGRESSED a live
+# host off the frontier, silently and without a stated reason, which is the exact act the
+# selection guard exists to refuse. Kept equal to the builtins in
+# scripts/codex-frontier-selection.sh; tests/test_codex_frontier_declaration_parity.py fails
+# if the two drift.
+model = "gpt-5.6-sol"
+model_reasoning_effort = "ultra"
 approval_policy = "never"
 sandbox_mode = "danger-full-access"
 

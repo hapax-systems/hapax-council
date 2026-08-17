@@ -31,7 +31,7 @@ REGISTRY = REPO_ROOT / "config" / "platform-capability-registry.json"
 #: composite_assemblies field is absent, the registry's behavior is byte-identical — and the
 #: promise was aspiration, not fact. This pins the file's sha256: a registry edit must move the
 #: pin in the same commit, so the byte surface changes only deliberately and diff-visibly.
-REGISTRY_BYTE_PIN = "9cc5d81a64225588c0a3c6b879075300b81b9dc04427bf8f6ba0dae6964b5a92"
+REGISTRY_BYTE_PIN = "ed63fedb7d2b5a4cf1e0ba05585cf57e3c7b95f488b4e601b5e33da1e982bdcc"
 
 
 def test_registry_bytes_are_pinned() -> None:
@@ -284,11 +284,15 @@ def test_schema_pins_execution_descriptor_axes_and_model_catalog() -> None:
         "medium",
         "high",
         "xhigh",
+        # codex's own top tier. Absent until 2026-08-17, which is why the registry could not
+        # record what the launchers ran: measured 10,205 'ultra' turn-context records against
+        # 3,610 'xhigh' in ~/.codex/sessions/**/rollout-*.jsonl.
+        "ultra",
         "max",
     }
     assert "extended_1m" in set(schema["$defs"]["context_mode"]["enum"])
     model_ids = set(schema["$defs"]["model_id"]["enum"])
-    assert {"gpt-5.5", "gpt-5.3-codex-spark", "claude-opus-4-8"} <= model_ids
+    assert {"gpt-5.5", "gpt-5.6-sol", "gpt-5.3-codex-spark", "claude-opus-4-8"} <= model_ids
     # the retired placeholder must NOT be a structured model identity
     assert "claude-code-default" not in model_ids
 
@@ -304,9 +308,16 @@ def test_seed_registry_retires_claude_code_default_and_splits_the_smuggle() -> N
             f"{route['route_id']} still carries the retired placeholder"
         )
 
+    # The split is the invariant here, not the values: model_or_engine must not be carrying an
+    # effort the descriptor does not state. The values themselves are pinned against their single
+    # source (scripts/codex-frontier-selection.sh) by
+    # tests/test_codex_frontier_declaration_parity.py — asserting them a second time here would
+    # be a copy of the frontier, which is the defect this route already had once.
     codex = routes["codex.headless.full"]["execution_descriptor"]
-    assert codex["model_id"] == "gpt-5.5"
-    assert codex["effort"] == "xhigh"
+    assert (
+        routes["codex.headless.full"]["model_or_engine"] == f"{codex['model_id']}-{codex['effort']}"
+    )
+    assert codex["effort"] in {"none", "low", "medium", "high", "xhigh", "ultra", "max"}
 
 
 def test_seed_registry_keeps_absent_evidence_blocked_unless_explicitly_seeded() -> None:

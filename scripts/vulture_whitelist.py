@@ -5071,3 +5071,35 @@ _ = (
     delta_to_classify_kwargs,
     discover_from_deltas,
 )
+
+
+# Codex rollout quota observers. `scripts/hapax-codex-quota-admission` calls
+# `latest_rollout_observation` (:317), but the script carries no `.py` suffix so vulture never
+# scans it and the call site is invisible. Same shape as the claude transcript observer above.
+#
+# `latest_model_observation` is the D2 step-3 posture observer — it reads what a codex session
+# ACTUALLY ran under. The consumer is `unreasoned_below_frontier_finding` /
+# `emit_unreasoned_below_frontier_posture` in this same module, called from
+# hapax-codex-quota-admission and hapax-codex (extensionless, invisible to vulture).
+#
+# `remaining_percent` needed BOTH fixes, and the order matters. The gate flagged it and it was
+# right to: the property was tested while production recomputed `round(100.0 - used_percent, 4)`
+# inline at :403. That duplication is now removed — the call site uses the property, which is
+# what makes the existing test meaningful. It is listed here anyway, and only because the
+# caller lives in an extensionless script vulture cannot scan. Whitelisting FIRST would have
+# silenced a real finding; whitelisting after fixing it records an invisible call site.
+from shared.codex_rollout_quota import (  # noqa: E402
+    RolloutObservation,
+    emit_unreasoned_below_frontier_posture,
+    latest_model_observation,
+    latest_rollout_observation,
+    unreasoned_below_frontier_finding,
+)
+
+_ = (
+    latest_model_observation,
+    latest_rollout_observation,
+    emit_unreasoned_below_frontier_posture,
+    unreasoned_below_frontier_finding,
+    RolloutObservation.remaining_percent,
+)

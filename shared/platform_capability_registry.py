@@ -170,13 +170,23 @@ class Profile(StrEnum):
 
 
 class Effort(StrEnum):
-    """Reasoning-effort axis (operator-steered; today smuggled into launchers/model strings)."""
+    """Reasoning-effort axis (operator-steered; today smuggled into launchers/model strings).
+
+    This is a VALUE SET, not a ranking — nothing here orders the members, and no consumer may
+    infer that a later member is a higher tier. ``ULTRA`` is codex's own top tier, added because
+    the vocabulary could not name what the launchers actually run: measured across
+    ``~/.codex/sessions/**/rollout-*.jsonl`` on 2026-08-17, ``reasoning_effort`` was ``ultra`` in
+    10,205 turn-context records against 3,610 for ``xhigh``. A closed enum that cannot spell the
+    live value does not constrain routing — it leaves the true value unrecordable, so every
+    consumer reasons about a subject the process never ran under.
+    """
 
     NONE = "none"
     LOW = "low"
     MEDIUM = "medium"
     HIGH = "high"
     XHIGH = "xhigh"
+    ULTRA = "ultra"
     MAX = "max"
 
 
@@ -218,6 +228,7 @@ class ModelId(StrEnum):
     CLAUDE_HAIKU_4_5 = "claude-haiku-4-5"
     CLAUDE_FABLE_5 = "claude-fable-5"
     GPT_5_5 = "gpt-5.5"
+    GPT_5_6_SOL = "gpt-5.6-sol"
     GPT_5_3_CODEX_SPARK = "gpt-5.3-codex-spark"
     GPT_OSS_120B = "gpt-oss-120b"
     COMMAND_R_08_2024 = "command-r-08-2024"
@@ -2424,6 +2435,7 @@ _MODEL_OR_ENGINE_TO_MODEL_ID: dict[str, ModelId] = {
     "claude-sonnet-5": ModelId.CLAUDE_SONNET_5,
     "claude-haiku": ModelId.CLAUDE_HAIKU_4_5,
     "gpt-5.5": ModelId.GPT_5_5,
+    "gpt-5.6-sol": ModelId.GPT_5_6_SOL,
     "gpt-5.3-codex-spark": ModelId.GPT_5_3_CODEX_SPARK,
     "gpt-oss-120b": ModelId.GPT_OSS_120B,
     "mistral-vibe": ModelId.MISTRAL_MEDIUM_3_5,

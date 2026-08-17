@@ -2706,15 +2706,15 @@
       "profile": "full",
       "launcher": "scripts/hapax-codex --session <lane> --terminal tmux --task <task>",
       "summary": "Codex full-capability tmux lane with methodology bootstrap",
-      "notes": "Default Codex SOP: GPT-5.5 xhigh from the Codex launcher.",
+      "notes": "The frontier pair is defined once, in scripts/codex-frontier-selection.sh (the HAPAX_CODEX_FRONTIER_MODEL/_EFFORT builtins); execution_descriptor below records what that file resolves to when the launcher runs with no override, and tests/test_codex_frontier_declaration_parity.py fails if the two drift. Selecting anything else requires a stated reason and is refused without one. This note deliberately does not restate the pair: the note it replaces spelled a model version as prose, no predicate checked it, and it outlived the launchers by a release.",
       "route_state": "blocked",
       "blocked_reasons": [
         "account_live_quota_receipt_absent"
       ],
-      "model_or_engine": "gpt-5.5-xhigh",
+      "model_or_engine": "gpt-5.6-sol-ultra",
       "execution_descriptor": {
-        "model_id": "gpt-5.5",
-        "effort": "xhigh",
+        "model_id": "gpt-5.6-sol",
+        "effort": "ultra",
         "context_mode": "standard",
         "fast_mode": "off",
         "quantization": "none"
@@ -3021,9 +3021,9 @@
       "platform": "codex",
       "mode": "headless",
       "profile": "spark",
-      "launcher": "scripts/hapax-codex --session <lane> --terminal tmux --task <task> -- -c model=\"gpt-5.3-codex-spark\"",
+      "launcher": "HAPAX_CODEX_MODEL_REASON='<why Spark and not the frontier, for this task>' scripts/hapax-codex --session <lane> --terminal tmux --task <task> -- -c model=\"gpt-5.3-codex-spark\" -c model_reasoning_effort=\"xhigh\"",
       "summary": "Codex Spark quota-wall tmux lane with methodology bootstrap",
-      "notes": "Use only when full Codex quota is blocked and Spark is quality-equivalent for the bounded task.",
+      "notes": "Use only when full Codex quota is blocked and Spark is quality-equivalent for the bounded task. Spark is BELOW the frontier pair, so scripts/codex-frontier-selection.sh refuses this launcher (exit 6) unless HAPAX_CODEX_MODEL_REASON states why. That reason is a per-invocation operator act and is deliberately a placeholder in the launcher rather than a canned constant: a constant reason makes the guard compare a value against itself. model_reasoning_effort is passed explicitly because it would otherwise fall through to the frontier default, and this route would then run at an effort its own descriptor does not declare.",
       "route_state": "blocked",
       "blocked_reasons": [
         "quality_equivalence_record_absent",

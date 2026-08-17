@@ -254,11 +254,11 @@
       "inventory_disposition": "evidence_only_non_supply"
     },
     "codex.headless.full": {
-      "fingerprint": "f908ff68bdd68206ec38ff4c2f98b8363207440f2884b974bfbd8bbb78ebf57f",
+      "fingerprint": "c3a4b2bb6be1d2f472f8c2f898dd13b3c23c398d817e575e2fd6cca34a62e366",
       "inventory_disposition": "admitted_supply"
     },
     "codex.headless.spark": {
-      "fingerprint": "109cad5b25c13d21d698e48a28d26f1e5565102a9d9f6884306a2ec248cea05b",
+      "fingerprint": "3ed0febec41af95dd1c12e38684194146ebd8c60a0cc535693acbbd31e6dc9ac",
       "inventory_disposition": "admitted_supply"
     },
     "context7.query_docs": {
