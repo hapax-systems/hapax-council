@@ -252,6 +252,7 @@ if str(REPO_ROOT) not in sys.path:
 from shared.codex_rollout_quota import (  # noqa: E402
     DEFAULT_MAX_OBSERVATION_AGE_SECONDS,
     RolloutObservation,
+    emit_unreasoned_below_frontier_posture,
     latest_rollout_observation,
 )
 from shared.codex_rollout_quota import (
@@ -317,6 +318,21 @@ def _parser() -> argparse.ArgumentParser:
 def main(argv: list[str] | None = None) -> int:
     args = _parser().parse_args(argv)
     try:
+        # D2 step 3: the quota writer already walks rollouts. While it is here, also
+        # threshold the newest observed model. A below-frontier pair with no recorded
+        # reason is a posture finding, not a quota hold — emit and continue.
+        posture = emit_unreasoned_below_frontier_posture(
+            sessions_dir=args.sessions_dir,
+            now=_now(args),
+        )
+        if posture is not None:
+            print(
+                "hapax-codex-quota-admission: below-frontier posture: "
+                f"observed {posture['model']}/{posture['effort']} vs "
+                f"{posture['frontier_model']}/{posture['frontier_effort']}; "
+                f"{posture['next']}",
+                file=sys.stderr,
+            )
         observed_at = _now(args)
         if not MIN_STALE_AFTER_SECONDS <= args.stale_after_seconds <= MAX_STALE_AFTER_SECONDS:
             raise ValueError(
@@ -464,7 +480,11 @@ def _consumer_exists() -> bool:
 
     repo = Path(__file__).resolve().parent.parent
     me = Path(__file__).resolve()
-    for candidate in (*repo.glob("scripts/*"), *repo.glob("shared/*.py"), *repo.glob("agents/**/*.py")):
+    for candidate in (
+        *repo.glob("scripts/*"),
+        *repo.glob("shared/*.py"),
+        *repo.glob("agents/**/*.py"),
+    ):
         if not candidate.is_file() or candidate.resolve() == me:
             continue
         try:

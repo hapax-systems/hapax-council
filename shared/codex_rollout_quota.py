@@ -279,9 +279,136 @@ def latest_model_observation(
         return ModelObservation(observed_at=observed_at, model=model, reasoning_effort=effort)
 
     raise RolloutQuotaUnavailable(
-        f"no codex session under {sessions_dir} recorded a model within {max_age_seconds}s; "
-        "run a codex session so the CLI writes a fresh rollout"
+        f"no fresh model observation under {sessions_dir}; run a codex session, or raise "
+        "the observation age bound"
     )
+
+
+DEFAULT_FRONTIER_MODEL = (
+    os.environ.get("HAPAX_CODEX_FRONTIER_MODEL", "gpt-5.6-sol").strip() or "gpt-5.6-sol"
+)
+DEFAULT_FRONTIER_EFFORT = os.environ.get("HAPAX_CODEX_FRONTIER_EFFORT", "ultra").strip() or "ultra"
+DEFAULT_MODEL_DECISION_LOG = Path(
+    os.environ.get(
+        "HAPAX_CODEX_MODEL_DECISION_LOG",
+        str(Path.home() / ".cache" / "hapax" / "routing" / "model-decisions.jsonl"),
+    )
+)
+DEFAULT_POSTURE_LOG = Path(
+    os.environ.get(
+        "HAPAX_CODEX_POSTURE_LOG",
+        str(Path.home() / ".cache" / "hapax" / "routing" / "below-frontier-posture.jsonl"),
+    )
+)
+
+
+def _decision_covers(
+    observation: ModelObservation,
+    decision_log: Path,
+) -> bool:
+    """True when the decision log already recorded a non-empty reason for this pair."""
+
+    if not decision_log.is_file():
+        return False
+    want_model = observation.model.strip()
+    want_effort = (observation.reasoning_effort or "").strip()
+    try:
+        handle = decision_log.open(encoding="utf-8", errors="replace")
+    except OSError:
+        return False
+    with handle:
+        for line in handle:
+            try:
+                record = json.loads(line)
+            except (json.JSONDecodeError, ValueError):
+                continue
+            if not isinstance(record, dict):
+                continue
+            if str(record.get("model") or "").strip() != want_model:
+                continue
+            recorded_effort = str(record.get("effort") or "").strip()
+            if want_effort and recorded_effort and recorded_effort != want_effort:
+                continue
+            if str(record.get("reason") or "").strip():
+                return True
+    return False
+
+
+def unreasoned_below_frontier_finding(
+    observation: ModelObservation,
+    *,
+    frontier_model: str = DEFAULT_FRONTIER_MODEL,
+    frontier_effort: str = DEFAULT_FRONTIER_EFFORT,
+    decision_log: Path | None = None,
+) -> dict[str, str] | None:
+    """D2 step 3: a finding when the observed pair is below the frontier and no reason was recorded.
+
+    Detection, not prevention. The launcher already refuses an unreasoned downgrade at selection
+    time. This watches ad-hoc sessions that never went through that gate. Silence is not a
+    frontier model, and a missing reason is not a recorded one.
+    """
+
+    frontier_model = frontier_model.strip() or DEFAULT_FRONTIER_MODEL
+    frontier_effort = frontier_effort.strip() or DEFAULT_FRONTIER_EFFORT
+    model = observation.model.strip()
+    effort = (observation.reasoning_effort or "").strip()
+    if model == frontier_model and (not effort or effort == frontier_effort):
+        return None
+    if _decision_covers(observation, decision_log or DEFAULT_MODEL_DECISION_LOG):
+        return None
+    return {
+        "schema": "hapax.codex_below_frontier_posture.v1",
+        "kind": "below-frontier-unreasoned",
+        "model": model,
+        "effort": effort,
+        "frontier_model": frontier_model,
+        "frontier_effort": frontier_effort,
+        "observed_at": observation.observed_at.isoformat().replace("+00:00", "Z"),
+        "next": (
+            "re-run the session through hapax-codex / hapax-codex-headless with "
+            "HAPAX_CODEX_MODEL_REASON set, or raise the frontier if this pair is now the floor"
+        ),
+    }
+
+
+def emit_unreasoned_below_frontier_posture(
+    *,
+    sessions_dir: Path | None = None,
+    now: datetime | None = None,
+    frontier_model: str = DEFAULT_FRONTIER_MODEL,
+    frontier_effort: str = DEFAULT_FRONTIER_EFFORT,
+    decision_log: Path | None = None,
+    posture_log: Path | None = None,
+    max_age_seconds: int = DEFAULT_MAX_MODEL_OBSERVATION_AGE_SECONDS,
+) -> dict[str, str] | None:
+    """Observe the newest session and persist a finding if it is an unreasoned downgrade.
+
+    Returns the finding dict when one is written, otherwise None. A missing observation is
+    not a finding — the observer refuses to invent a model.
+    """
+
+    try:
+        observation = latest_model_observation(
+            sessions_dir,
+            now=now or datetime.now(tz=UTC),
+            max_age_seconds=max_age_seconds,
+        )
+    except RolloutQuotaUnavailable:
+        return None
+    finding = unreasoned_below_frontier_finding(
+        observation,
+        frontier_model=frontier_model,
+        frontier_effort=frontier_effort,
+        decision_log=decision_log,
+    )
+    if finding is None:
+        return None
+    dest = posture_log or DEFAULT_POSTURE_LOG
+    dest.parent.mkdir(parents=True, exist_ok=True)
+    line = json.dumps(finding, sort_keys=True, separators=(",", ":")) + "\n"
+    with dest.open("a", encoding="utf-8") as handle:
+        handle.write(line)
+    return finding
 
 
 def _first_str(record: object, key: str) -> str | None:

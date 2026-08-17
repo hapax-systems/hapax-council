@@ -5078,8 +5078,9 @@ _ = (
 # scans it and the call site is invisible. Same shape as the claude transcript observer above.
 #
 # `latest_model_observation` is the D2 step-3 posture observer — it reads what a codex session
-# ACTUALLY ran under. Its consumer (the below-frontier threshold) is deliberately a follow-up:
-# the observer must exist before anything can threshold on it.
+# ACTUALLY ran under. The consumer is `unreasoned_below_frontier_finding` /
+# `emit_unreasoned_below_frontier_posture` in this same module, called from
+# hapax-codex-quota-admission and hapax-codex (extensionless, invisible to vulture).
 #
 # `remaining_percent` needed BOTH fixes, and the order matters. The gate flagged it and it was
 # right to: the property was tested while production recomputed `round(100.0 - used_percent, 4)`

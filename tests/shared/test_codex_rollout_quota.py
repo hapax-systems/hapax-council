@@ -27,8 +27,10 @@ from shared.codex_rollout_quota import (
     ROLLOUT_TAIL_BYTES,
     RolloutQuotaUnavailable,
     _head_lines,
+    emit_unreasoned_below_frontier_posture,
     latest_model_observation,
     latest_rollout_observation,
+    unreasoned_below_frontier_finding,
 )
 
 NOW = datetime(2026, 8, 10, 12, 0, 0, tzinfo=UTC)
@@ -461,3 +463,86 @@ def test_an_unreadable_secondary_window_refuses_rather_than_admitting_on_the_pri
 
     with pytest.raises(RolloutQuotaUnavailable, match="secondary window"):
         latest_rollout_observation(tmp_path, now=NOW)
+
+
+def test_below_frontier_without_a_recorded_reason_is_a_posture_finding(tmp_path: Path) -> None:
+    """D2 step 3: the observer feeds a consumer. Silence is not a reason."""
+
+    _model_rollout(tmp_path, model="gpt-5.5", effort="xhigh")
+    observation = latest_model_observation(tmp_path, now=NOW, max_age_seconds=86400 * 30)
+
+    finding = unreasoned_below_frontier_finding(
+        observation,
+        frontier_model="gpt-5.6-sol",
+        frontier_effort="ultra",
+        decision_log=tmp_path / "missing-decisions.jsonl",
+    )
+
+    assert finding is not None
+    assert finding["kind"] == "below-frontier-unreasoned"
+    assert finding["model"] == "gpt-5.5"
+    assert finding["effort"] == "xhigh"
+
+
+def test_a_recorded_reason_clears_the_below_frontier_posture(tmp_path: Path) -> None:
+    _model_rollout(tmp_path, model="gpt-5.5", effort="xhigh")
+    observation = latest_model_observation(tmp_path, now=NOW, max_age_seconds=86400 * 30)
+    log = tmp_path / "model-decisions.jsonl"
+    log.write_text(
+        json.dumps(
+            {
+                "model": "gpt-5.5",
+                "effort": "xhigh",
+                "reason": "spark host cannot host sol/ultra",
+            }
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+
+    assert (
+        unreasoned_below_frontier_finding(
+            observation,
+            frontier_model="gpt-5.6-sol",
+            frontier_effort="ultra",
+            decision_log=log,
+        )
+        is None
+    )
+
+
+def test_frontier_observation_is_not_a_posture_finding(tmp_path: Path) -> None:
+    _model_rollout(tmp_path, model="gpt-5.6-sol", effort="ultra")
+    observation = latest_model_observation(tmp_path, now=NOW, max_age_seconds=86400 * 30)
+
+    assert (
+        unreasoned_below_frontier_finding(
+            observation,
+            frontier_model="gpt-5.6-sol",
+            frontier_effort="ultra",
+            decision_log=tmp_path / "none.jsonl",
+        )
+        is None
+    )
+
+
+def test_producer_to_consumer_writes_the_posture_log(tmp_path: Path) -> None:
+    """The production emit path is observer -> finding -> durable log."""
+
+    _model_rollout(tmp_path, model="gpt-5.5", effort="xhigh")
+    dest = tmp_path / "posture.jsonl"
+
+    finding = emit_unreasoned_below_frontier_posture(
+        sessions_dir=tmp_path,
+        now=NOW,
+        frontier_model="gpt-5.6-sol",
+        frontier_effort="ultra",
+        decision_log=tmp_path / "none.jsonl",
+        posture_log=dest,
+        max_age_seconds=86400 * 30,
+    )
+
+    assert finding is not None
+    written = json.loads(dest.read_text(encoding="utf-8"))
+    assert written["schema"] == "hapax.codex_below_frontier_posture.v1"
+    assert written["model"] == "gpt-5.5"

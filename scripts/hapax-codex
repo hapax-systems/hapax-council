@@ -1407,6 +1407,14 @@ CODEX_LAUNCHER="hapax-codex"
 # shellcheck disable=SC1091
 . "$(dirname "$(readlink -f "$0")")/codex-frontier-selection.sh"
 
+# D2 step 3: observe what the newest session actually ran, and emit a finding if it
+# was below the frontier with no recorded reason. Detection only — this launcher
+# already refuses an unreasoned downgrade at selection time.
+_cfs_self_dir="$(dirname "$(readlink -f "$0")")"
+PYTHONPATH="${_cfs_self_dir}/..${PYTHONPATH:+:$PYTHONPATH}" python3 -c \
+  'from shared.codex_rollout_quota import emit_unreasoned_below_frontier_posture as e; e()' \
+  >/dev/null || true
+
 append_bootstrap_prompt=0
 if [ -n "$BOOTSTRAP_FILE" ] && [ "$explicit_codex_command" -eq 0 ]; then
   if [ "${#CODEX_EXTRA[@]}" -eq 0 ]; then

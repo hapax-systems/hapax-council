@@ -1103,6 +1103,12 @@ CODEX_LAUNCHER="hapax-codex-headless"
 # shellcheck disable=SC1091
 . "$(dirname "$(readlink -f "$0")")/codex-frontier-selection.sh"
 
+# D2 step 3: same observer consumer as hapax-codex. Detection only.
+_cfs_self_dir="$(dirname "$(readlink -f "$0")")"
+PYTHONPATH="${_cfs_self_dir}/..${PYTHONPATH:+:$PYTHONPATH}" python3 -c \
+  'from shared.codex_rollout_quota import emit_unreasoned_below_frontier_posture as e; e()' \
+  >/dev/null || true
+
 # The rest mirrors hapax-codex's governed CODEX_ARGS: full-access sandbox under external
 # governance, the codex-hook-adapter on every phase, and the hapax MCP surface. `--json`
 # streams JSONL events; `--cd` binds the worktree; trust is scoped to the worktree.
