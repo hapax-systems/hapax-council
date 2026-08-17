@@ -13,6 +13,7 @@ Environment=HOME=%h
 Environment=PYTHONOPTIMIZE=0
 # No PYTHONPATH: python -c puts cwd (WorkingDirectory) first on sys.path.
 # An inherited PYTHONPATH cannot shadow the pinned generation.
-ExecStart=/usr/bin/python3 -c "import k0,sys; p=k0.__file__; ok=k0.K0_DRIFT_PIN==k0.RATIFIED_PIN; print('k0-pin-ok' if ok else 'k0-pin-drift', k0.K0_DRIFT_PIN, k0.RATIFIED_PIN, len(k0.K0.members), p); raise SystemExit(0 if ok else 'k0 drift: computed=%s ratified=%s file=%s; re-derive the kernel or add a K0 exclusion-ledger entry' % (k0.K0_DRIFT_PIN, k0.RATIFIED_PIN, p))"
+# %%s so systemd does not eat %s (user-shell specifier) before Python sees it.
+ExecStart=/usr/bin/python3 -c "import k0; p=k0.__file__; ok=k0.K0_DRIFT_PIN==k0.RATIFIED_PIN; print('k0-pin-ok' if ok else 'k0-pin-drift', k0.K0_DRIFT_PIN, k0.RATIFIED_PIN, len(k0.K0.members), p); raise SystemExit(0 if ok else 'k0 drift: computed=%%s ratified=%%s file=%%s; re-derive the kernel or add a K0 exclusion-ledger entry' %% (k0.K0_DRIFT_PIN, k0.RATIFIED_PIN, p))"
 TimeoutStartSec=30
 Restart=no
