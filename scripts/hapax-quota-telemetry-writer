@@ -358,6 +358,11 @@ GLMCP_ADMISSION_CONTRACT_BY_ENDPOINT = {
 }
 # Keep this fail-closed. This receipt gates the direct GLM review route, so the
 # model must match scripts/hapax-glmcp-reviewer's Coding Plan adapter.
+#
+# Keep BOTH ids — see shared/quota_spend_ledger.py GLMCP_ADMISSION_MODELS. The
+# deployed copy of THIS script is a source-activation of main, so between landing
+# a model bump and running hapax-source-activate it still refuses the new id and
+# drops those receipts every 10-minute tick. The overlap is the transition path.
 GLMCP_ADMISSION_MODELS = frozenset({"glm-5.3", "glm-5.2"})
 GLMCP_ADMISSION_FIELDS = frozenset(
     {

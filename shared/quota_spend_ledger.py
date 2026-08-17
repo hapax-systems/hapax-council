@@ -159,6 +159,15 @@ GLMCP_ADMISSION_ENDPOINTS = frozenset(
 )
 # Mirrors scripts/hapax-quota-telemetry-writer and the direct
 # scripts/hapax-glmcp-reviewer route metadata.
+#
+# Keep BOTH ids. glm-5.2 is not merely legacy tolerance: the deployed writer is a
+# source-activation of main, so during the window between landing a model bump and
+# running hapax-source-activate, the deployed writer still refuses the NEW id and
+# drops its receipts on the next 10-minute telemetry tick. Measured 2026-08-17: a
+# glm-5.3 receipt went fresh and reverted within 10 minutes, ledger evidence_ref
+# "ignored:model-missing-or-unsupported-expected-documented-glm-review-model-id-glm-5-2".
+# The overlap is the only thing that makes that window survivable — mint the
+# transition receipt under the older id, which Z.ai remaps to the current model.
 GLMCP_ADMISSION_MODELS = frozenset({"glm-5.3", "glm-5.2"})
 GLMCP_ADMISSION_RECEIPT_LABEL_RE = re.compile(
     r"\Arelay-receipt:"
