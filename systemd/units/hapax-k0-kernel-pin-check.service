@@ -1,0 +1,19 @@
+[Unit]
+Description=Hapax K0 ratified-kernel pin check (R0.4)
+Documentation=file://%h/Documents/Personal/30-areas/hapax/first-init-k0-kernel-fixed-point-spec-2026-08-01.md
+# Not the vault draft k0-manifest.yaml checker. That scheduled the wrong
+# kernel (#4550 PARKED). This imports the ratified package so the
+# import-time drift pin is on a live path.
+OnFailure=notify-failure@%n.service
+
+[Service]
+Type=oneshot
+WorkingDirectory=%h/projects/reins/api
+Environment=HOME=%h
+Environment=PYTHONPATH=%h/projects/reins/api
+ExecStart=/usr/bin/python3 -c "import k0; assert k0.K0_DRIFT_PIN == k0.RATIFIED_PIN, k0.K0_DRIFT_PIN; print('k0-pin-ok', k0.RATIFIED_PIN, len(k0.K0.members))"
+TimeoutStartSec=30
+Restart=no
+
+[Install]
+WantedBy=default.target

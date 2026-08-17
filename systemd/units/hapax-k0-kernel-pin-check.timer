@@ -1,0 +1,12 @@
+[Unit]
+Description=Hapax K0 ratified-kernel pin check (daily, off-peak)
+
+[Timer]
+OnCalendar=*-*-* 05:17:00
+Persistent=true
+AccuracySec=5min
+RandomizedDelaySec=10min
+Unit=hapax-k0-kernel-pin-check.service
+
+[Install]
+WantedBy=timers.target
