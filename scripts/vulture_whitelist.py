@@ -5090,12 +5090,16 @@ _ = (
 # silenced a real finding; whitelisting after fixing it records an invisible call site.
 from shared.codex_rollout_quota import (  # noqa: E402
     RolloutObservation,
+    emit_unreasoned_below_frontier_posture,
     latest_model_observation,
     latest_rollout_observation,
+    unreasoned_below_frontier_finding,
 )
 
 _ = (
     latest_model_observation,
     latest_rollout_observation,
+    emit_unreasoned_below_frontier_posture,
+    unreasoned_below_frontier_finding,
     RolloutObservation.remaining_percent,
 )
