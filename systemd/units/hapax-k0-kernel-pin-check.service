@@ -5,6 +5,7 @@ Documentation=file://%h/Documents/Personal/30-areas/hapax/first-init-k0-kernel-f
 # kernel (#4550 PARKED). This imports the ratified package so the
 # import-time drift pin is on a live path.
 OnFailure=notify-failure@%n.service
+AssertPathExists=%h/.local/share/reins/current/api/k0/manifest.py
 
 [Service]
 Type=oneshot
@@ -12,7 +13,6 @@ Type=oneshot
 WorkingDirectory=%h/.local/share/reins/current/api
 Environment=HOME=%h
 Environment=PYTHONPATH=%h/.local/share/reins/current/api
-AssertPathExists=%h/.local/share/reins/current/api/k0/manifest.py
 ExecStart=/usr/bin/python3 -c "import k0; assert k0.K0_DRIFT_PIN == k0.RATIFIED_PIN, k0.K0_DRIFT_PIN; print('k0-pin-ok', k0.RATIFIED_PIN, len(k0.K0.members))"
 TimeoutStartSec=30
 Restart=no
