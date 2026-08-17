@@ -159,7 +159,7 @@ GLMCP_ADMISSION_ENDPOINTS = frozenset(
 )
 # Mirrors scripts/hapax-quota-telemetry-writer and the direct
 # scripts/hapax-glmcp-reviewer route metadata.
-GLMCP_ADMISSION_MODELS = frozenset({"glm-5.2"})
+GLMCP_ADMISSION_MODELS = frozenset({"glm-5.3", "glm-5.2"})
 GLMCP_ADMISSION_RECEIPT_LABEL_RE = re.compile(
     r"\Arelay-receipt:"
     r"(?:[a-z0-9_.+-]*glmcp-quota-admission[a-z0-9_.+-]*\.yaml|"
