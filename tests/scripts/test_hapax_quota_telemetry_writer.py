@@ -338,6 +338,7 @@ def _glmcp_payg_spend(
     reconcile_by: str = "2026-07-07T14:04:30Z",
     estimated_cost_usd: str = "0.05",
     model_or_engine: str = "glm-5.2",
+    model_id: str = "z_ai-glm-5.2",
     extra_fields: str = "",
 ) -> None:
     task_hash_line = f"task_hash: {task_hash}\n" if task_hash is not None else ""
@@ -352,7 +353,7 @@ capacity_pool: api_paid_spend
 budget_id: tb-20260706-zai-glmcp-payg-review
 provider: z_ai
 model_or_engine: {model_or_engine}
-model_id: z_ai-glm-5.2
+model_id: {model_id}
 effort: none
 quantization: not_applicable
 auth_surface: api_key
@@ -1335,7 +1336,18 @@ def test_glmcp_payg_spend_receipt_accepts_the_current_coding_plan_model(
         name="glmcp-quota-admission-payg.yaml",
         evidence_ref=spend_receipt_name,
     )
-    _glmcp_payg_spend(relay, name=spend_receipt_name, model_or_engine="glm-5.3")
+    # model_id is passed explicitly, and deliberately does NOT say z_ai-glm-5.3:
+    # no such ModelId exists yet (minting one is a governed registry change, see the
+    # task note's blocked sub-part). This pairing — model_or_engine glm-5.3 against
+    # model_id z_ai-glm-5.2 — is the real transitional state hapax-glmcp-reviewer
+    # emits today, not an endorsement of it. Stated here rather than inherited from a
+    # helper default so the coupling is visible when the identity is finally minted.
+    _glmcp_payg_spend(
+        relay,
+        name=spend_receipt_name,
+        model_or_engine="glm-5.3",
+        model_id="z_ai-glm-5.2",
+    )
 
     result, out = _run_writer(tmp_path, now=PAYG_NOW)
 
