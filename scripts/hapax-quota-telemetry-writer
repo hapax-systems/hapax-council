@@ -1665,7 +1665,7 @@ def active_glmcp_payg_spend_receipts(
         if fields.get("provider", "") != GLMCP_PAYG_BUDGET_PROVIDER:
             reject(path, "provider missing or unsupported")
             continue
-        if fields.get("model_or_engine", "") != "glm-5.2":
+        if fields.get("model_or_engine", "") not in GLMCP_ADMISSION_MODELS:
             reject(path, "model_or_engine missing or unsupported")
             continue
         if fields.get("estimated_cost_usd", "") != GLMCP_PAYG_ESTIMATED_COST_USD:
