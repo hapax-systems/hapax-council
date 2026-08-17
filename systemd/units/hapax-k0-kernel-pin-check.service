@@ -8,12 +8,11 @@ OnFailure=notify-failure@%n.service
 
 [Service]
 Type=oneshot
-WorkingDirectory=%h/projects/reins/api
+# Import the pinned generation (#31), not the developer checkout.
+WorkingDirectory=%h/.local/share/reins/current/api
 Environment=HOME=%h
-Environment=PYTHONPATH=%h/projects/reins/api
+Environment=PYTHONPATH=%h/.local/share/reins/current/api
+AssertPathExists=%h/.local/share/reins/current/api/k0/manifest.py
 ExecStart=/usr/bin/python3 -c "import k0; assert k0.K0_DRIFT_PIN == k0.RATIFIED_PIN, k0.K0_DRIFT_PIN; print('k0-pin-ok', k0.RATIFIED_PIN, len(k0.K0.members))"
 TimeoutStartSec=30
 Restart=no
-
-[Install]
-WantedBy=default.target
