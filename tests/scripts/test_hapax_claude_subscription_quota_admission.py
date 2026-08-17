@@ -368,3 +368,333 @@ def test_write_oserror_returns_one(tmp_path: Path, monkeypatch, capsys) -> None:
     )
     assert rc == 1
     assert "failed to write receipt" in capsys.readouterr().err
+
+
+# --- --from-transcript: measurement instead of attestation -------------------------
+#
+# The default path takes whatever --evidence-ref the caller types; it validates the
+# *shape* of the claim, never that the observation happened. --from-transcript closes
+# that: the evidence ref and observed_at are both derived from a real completed Claude
+# turn, so a timer firing on a cadence asserts something that was actually checked.
+
+
+def _fake_observation(stamp: str, witness: str):  # noqa: ANN202
+    from datetime import UTC, datetime
+
+    class _Obs:
+        observed_at = datetime.fromisoformat(stamp.replace("Z", "+00:00")).astimezone(UTC)
+
+    _Obs.witness = witness
+    return _Obs()
+
+
+def _subscription_session(tmp_path: Path, monkeypatch) -> None:  # noqa: ANN001
+    """The auth evidence --from-transcript now requires before it will read anything.
+
+    A measured receipt claims the turns were served BY THE SUBSCRIPTION, so the account marker
+    and the session identity are preconditions rather than decoration. Faking the transcript
+    alone no longer produces a receipt — which is exactly the change these tests were updated
+    for, and a test that kept passing without this would have proved the guard was skippable.
+    """
+    from shared.claude_auth_surface import API_KEY_ENV_VARS, CLAUDE_CONFIG_ENV, SESSION_ID_ENV
+
+    config = tmp_path / "claude.json"
+    config.write_text(
+        json.dumps(
+            {
+                "oauthAccount": {
+                    "billingType": "google_play_subscription",
+                    "organizationType": "claude_max",
+                }
+            }
+        ),
+        encoding="utf-8",
+    )
+    monkeypatch.setenv(CLAUDE_CONFIG_ENV, str(config))
+    monkeypatch.setenv(SESSION_ID_ENV, "8e98d395-97d6-4ff0-9619-e61927dcfdb0")
+    for var in API_KEY_ENV_VARS:
+        monkeypatch.delenv(var, raising=False)
+
+
+def test_from_transcript_stamps_the_turns_time_not_now(  # noqa: ANN001
+    tmp_path: Path, monkeypatch, capsys
+) -> None:
+    """observed_at must be the turn's own timestamp. Stamping `now` would open a
+    freshness window wider than the evidence supports."""
+    module = _load_module()
+    import shared.claude_transcript_quota as ctq
+
+    _subscription_session(tmp_path, monkeypatch)
+    monkeypatch.setattr(
+        ctq,
+        "latest_transcript_observation",
+        lambda **_kw: _fake_observation(
+            "2026-08-11T16:47:25Z",
+            "claude-subscription-headroom-observed-20260811t164725z",
+        ),
+    )
+
+    rc = module.main(
+        [
+            "--receipt-dir",
+            str(tmp_path),
+            "--from-transcript",
+            "--route-id",
+            "claude.review.opus",
+            "--stale-after-seconds",
+            "3600",
+            "--json",
+        ]
+    )
+
+    assert rc == 0
+    payload = json.loads(capsys.readouterr().out)
+    assert payload["observed_at"] == "2026-08-11T16:47:25Z"
+    assert payload["fresh_until"] == "2026-08-11T17:47:25Z"
+    assert payload["observation"] == "subscription_quota_headroom_observed"
+    assert payload["lane_presence_used_as_quota_evidence"] is False
+
+
+def test_from_transcript_fails_closed_when_no_observation(  # noqa: ANN001
+    tmp_path: Path, monkeypatch, capsys
+) -> None:
+    """Idle estate, stale turn, clock skew -- all arrive here, and all must write
+    nothing. A timer that mints anyway is attesting a fact nobody checked."""
+    module = _load_module()
+    import shared.claude_transcript_quota as ctq
+
+    def _unavailable(**_kw):  # noqa: ANN202
+        raise ctq.TranscriptQuotaUnavailable("freshest completed turn is 5000s old")
+
+    # Auth satisfied on purpose, so the refusal under test is the STALE TURN rather than the auth
+    # gate standing in front of it. A test that passes for the wrong reason proves nothing.
+    _subscription_session(tmp_path, monkeypatch)
+    monkeypatch.setattr(ctq, "latest_transcript_observation", _unavailable)
+
+    rc = module.main(["--receipt-dir", str(tmp_path), "--from-transcript"])
+
+    assert rc == 2
+    assert "no live transcript observation" in capsys.readouterr().err
+    assert not any(tmp_path.glob("*.yaml"))
+
+
+def test_from_transcript_refuses_when_the_session_carries_a_gateway(  # noqa: ANN001
+    tmp_path: Path, monkeypatch, capsys
+) -> None:
+    """A live turn is not evidence of a SUBSCRIPTION turn.
+
+    Measured on this host 2026-08-12: ANTHROPIC_AUTH_TOKEN and ANTHROPIC_BASE_URL are both set in
+    the working session, so turns there may be served through a gateway and the transcript looks
+    identical either way. The measured path must refuse rather than mint a subscription claim it
+    cannot support — and it must refuse even though the transcript observation itself succeeds.
+    """
+    module = _load_module()
+    import shared.claude_transcript_quota as ctq
+
+    _subscription_session(tmp_path, monkeypatch)
+    monkeypatch.setenv("ANTHROPIC_BASE_URL", "https://gateway.example.test")
+    monkeypatch.setattr(
+        ctq,
+        "latest_transcript_observation",
+        lambda **_kw: _fake_observation(
+            "2026-08-11T16:47:25Z",
+            "claude-subscription-headroom-observed-20260811t164725z",
+        ),
+    )
+
+    rc = module.main(["--receipt-dir", str(tmp_path), "--from-transcript"])
+
+    assert rc == 2
+    assert "ANTHROPIC_BASE_URL" in capsys.readouterr().err
+    assert not any(tmp_path.glob("*.yaml")), "a receipt was written despite an unprovable claim"
+
+
+def test_from_transcript_refuses_outside_a_claude_session(  # noqa: ANN001
+    tmp_path: Path, monkeypatch, capsys
+) -> None:
+    """Run from cron, the observing process's environment says nothing about the turns it reads."""
+    from shared.claude_auth_surface import SESSION_ID_ENV
+
+    module = _load_module()
+    import shared.claude_transcript_quota as ctq
+
+    _subscription_session(tmp_path, monkeypatch)
+    monkeypatch.delenv(SESSION_ID_ENV, raising=False)
+    monkeypatch.setattr(
+        ctq,
+        "latest_transcript_observation",
+        lambda **_kw: _fake_observation(
+            "2026-08-11T16:47:25Z",
+            "claude-subscription-headroom-observed-20260811t164725z",
+        ),
+    )
+
+    rc = module.main(["--receipt-dir", str(tmp_path), "--from-transcript"])
+
+    assert rc == 2
+    assert not any(tmp_path.glob("*.yaml"))
+
+
+def test_the_measured_path_reads_only_its_own_sessions_transcript(  # noqa: ANN001
+    tmp_path: Path, monkeypatch
+) -> None:
+    """The auth evidence covers one session, so the scan must be bounded to that session.
+
+    Asserted on the argument actually passed, because the pairing is invisible otherwise: a scan
+    that quietly widened would still return a fresh turn and still mint a receipt.
+    """
+    module = _load_module()
+    import shared.claude_transcript_quota as ctq
+
+    _subscription_session(tmp_path, monkeypatch)
+    seen: dict = {}
+
+    def _record(**kw):  # noqa: ANN202
+        seen.update(kw)
+        return _fake_observation(
+            "2026-08-11T16:47:25Z",
+            "claude-subscription-headroom-observed-20260811t164725z",
+        )
+
+    monkeypatch.setattr(ctq, "latest_transcript_observation", _record)
+
+    module.main(["--receipt-dir", str(tmp_path), "--from-transcript"])
+
+    assert seen.get("session_id") == "8e98d395-97d6-4ff0-9619-e61927dcfdb0"
+
+
+def test_from_transcript_refuses_a_hand_supplied_evidence_ref(  # noqa: ANN001
+    tmp_path: Path, capsys
+) -> None:
+    """Measured and attested are different claims; do not let one wear the other."""
+    rc = _run(
+        [
+            "--receipt-dir",
+            str(tmp_path),
+            "--from-transcript",
+            "--evidence-ref",
+            "claude-subscription-headroom-observed-20260708t1400z",
+        ]
+    )
+
+    assert rc == 2
+    assert "do not pass both" in capsys.readouterr().err
+    assert not any(tmp_path.glob("*.yaml"))
+
+
+def test_from_transcript_cannot_claim_the_operator_observation(  # noqa: ANN001
+    tmp_path: Path, capsys
+) -> None:
+    """A transcript witnesses liveness, never an operator's confirmation of headroom.
+    Only the operator can make that claim."""
+    rc = _run(
+        [
+            "--receipt-dir",
+            str(tmp_path),
+            "--from-transcript",
+            "--observation",
+            "operator_confirmed_subscription_headroom",
+        ]
+    )
+
+    assert rc == 2
+    assert "can only support" in capsys.readouterr().err
+    assert not any(tmp_path.glob("*.yaml"))
+
+
+def test_evidence_ref_still_required_without_from_transcript(  # noqa: ANN001
+    tmp_path: Path, capsys
+) -> None:
+    rc = _run(["--receipt-dir", str(tmp_path)])
+
+    assert rc == 2
+    assert "--evidence-ref is required" in capsys.readouterr().err
+    assert not any(tmp_path.glob("*.yaml"))
+
+
+def test_rejects_out_of_bounds_max_observation_age(tmp_path: Path, capsys) -> None:  # noqa: ANN001
+    """The knob that can hollow out the whole mode.
+
+    `--max-observation-age-seconds 999999` would mint from a turn observed yesterday --
+    returning the measured path to an attestation, quietly, with no other signal that
+    anything changed. It gets the same clamp as its `--stale-after-seconds` sibling.
+    """
+    for age in ("30", "999999"):
+        rc = _run(
+            [
+                "--receipt-dir",
+                str(tmp_path),
+                "--from-transcript",
+                "--max-observation-age-seconds",
+                age,
+            ]
+        )
+
+        assert rc == 2
+        assert "--max-observation-age-seconds must be between" in capsys.readouterr().err
+    assert not any(tmp_path.glob("*.yaml"))
+
+
+def test_max_observation_age_is_checked_before_the_transcript_is_read(  # noqa: ANN001
+    tmp_path: Path, monkeypatch, capsys
+) -> None:
+    """The clamp must reject the argument, not merely be ignored downstream.
+
+    Without ordering, an out-of-bounds value could still be handed to the observer -- the
+    refusal has to happen before any observation is attempted, or a wide window is doing
+    real work before anyone complains about it.
+    """
+    module = _load_module()
+    import shared.claude_transcript_quota as ctq
+
+    def _must_not_run(**_kw):  # noqa: ANN202
+        raise AssertionError("observer was called despite an out-of-bounds window")
+
+    monkeypatch.setattr(ctq, "latest_transcript_observation", _must_not_run)
+
+    rc = module.main(
+        [
+            "--receipt-dir",
+            str(tmp_path),
+            "--from-transcript",
+            "--max-observation-age-seconds",
+            "999999",
+        ]
+    )
+
+    assert rc == 2
+    assert "--max-observation-age-seconds must be between" in capsys.readouterr().err
+
+
+def test_the_recovery_hint_matches_the_mode_it_is_printed_in(  # noqa: ANN001
+    tmp_path: Path, monkeypatch, capsys
+) -> None:
+    """An error message that names an impossible next action is worse than none.
+
+    Under --from-transcript the tool DERIVES the evidence-ref and refuses a supplied one,
+    so the attested path's hint -- "pass a sanitized --evidence-ref" -- is advice the caller
+    cannot take. Each mode gets the hint that is actually actionable in it.
+    """
+    module = _load_module()
+    import shared.claude_transcript_quota as ctq
+
+    def _unavailable(**_kw):  # noqa: ANN202
+        raise ctq.TranscriptQuotaUnavailable("freshest completed turn is 5000s old")
+
+    # Auth satisfied on purpose, so the refusal under test is the STALE TURN rather than the auth
+    # gate standing in front of it. A test that passes for the wrong reason proves nothing.
+    _subscription_session(tmp_path, monkeypatch)
+    monkeypatch.setattr(ctq, "latest_transcript_observation", _unavailable)
+
+    rc = module.main(["--receipt-dir", str(tmp_path), "--from-transcript"])
+    measured_err = capsys.readouterr().err
+
+    assert rc == 2
+    assert "do not supply --evidence-ref" in measured_err
+    assert "pass a sanitized --evidence-ref" not in measured_err
+
+    rc = _run(["--receipt-dir", str(tmp_path), "--evidence-ref", "not a safe ref"])
+    attested_err = capsys.readouterr().err
+
+    assert rc == 2
+    assert "pass a sanitized --evidence-ref" in attested_err

@@ -1590,6 +1590,13 @@ def _claude_admission(
     observation: str = "subscription_quota_headroom_observed",
     secret_value_persisted: str = "false",
     lane_presence_used_as_quota_evidence: str = "false",
+    # The ATTESTED pair by default, because that is what this fixture actually builds: a
+    # hand-written receipt with a caller-supplied evidence_ref and no transcript behind it.
+    # Defaulting to the measured spelling would make every test in this file assert over a
+    # receipt claiming a measurement none of them performed — the same fixture-agrees-with-the-
+    # -defect trap that hid the missing limit_id check in the codex reader.
+    auth_surface_provenance: str = "caller_asserted",
+    freshness_provenance: str = "attested:operator-evidence-ref",
     name: str = "claude-subscription-quota-admission.yaml",
 ) -> None:
     (relay / name).write_text(
@@ -1599,6 +1606,8 @@ def _claude_admission(
         f"route_id: {route_id}\n"
         "capacity_pool: subscription_quota\n"
         "auth_surface: subscription\n"
+        f"auth_surface_provenance: {auth_surface_provenance}\n"
+        f"freshness_provenance: {freshness_provenance}\n"
         f"observation: {observation}\n"
         f"observed_at: {observed_at}\n"
         f"stale_after_seconds: {stale_after_seconds}\n"
@@ -2250,6 +2259,50 @@ def test_claude_admission_rejects_secret_persistence(tmp_path: Path) -> None:
             },
             "receipt-name-names-billing-or-account-identifier",
         ),
+        # The provenance split has to be REQUIRED, not merely permitted. A receipt that omits
+        # it is the pre-fix receipt: it presents a caller assertion about which credential
+        # served the turn beside a measured timestamp, with nothing marking the difference.
+        (
+            {
+                "observed_at": "2026-06-09T23:55:00Z",
+                "auth_surface_provenance": "",
+            },
+            "auth-surface-provenance-missing-or-unsupported",
+        ),
+        (
+            {
+                "observed_at": "2026-06-09T23:55:00Z",
+                "freshness_provenance": "",
+            },
+            "freshness-provenance-missing-or-unsupported",
+        ),
+        # An unrecognised provenance is refused rather than read as the nearest known one.
+        (
+            {
+                "observed_at": "2026-06-09T23:55:00Z",
+                "auth_surface_provenance": "measured",
+            },
+            "auth-surface-provenance-missing-or-unsupported",
+        ),
+        # THE LAUNDERING CASE. Each field alone is a legal value; together they describe a path
+        # that does not exist. Measured freshness comes only from the transcript reader, which
+        # refuses to write anything unless it has also measured the account marker — so a
+        # measured timestamp beside a merely asserted auth surface is a strong half copied onto
+        # a weak one. Validating the fields separately accepted exactly this.
+        (
+            {
+                "observed_at": "2026-06-09T23:55:00Z",
+                "freshness_provenance": "measured:completed-turn-timestamp",
+            },
+            "provenance-pair-describes-no-producing-path",
+        ),
+        (
+            {
+                "observed_at": "2026-06-09T23:55:00Z",
+                "auth_surface_provenance": "measured:oauth-account-subscription-marker",
+            },
+            "provenance-pair-describes-no-producing-path",
+        ),
     ],
 )
 def test_claude_admission_fail_closed_validation_cases(
@@ -2276,13 +2329,16 @@ def test_claude_admission_rejects_strict_parse_failure(tmp_path: Path) -> None:
     relay = tmp_path / "relay-receipts"
     relay.mkdir()
     _claude_admission(relay, observed_at="2026-06-09T23:55:00Z")
-    with (relay / "claude-subscription-quota-admission.yaml").open(
-        "a",
-        encoding="utf-8",
-    ) as receipt:
+    receipt_path = relay / "claude-subscription-quota-admission.yaml"
+    # Derived, not hardcoded. The duplicate is appended, so its line number is a function of
+    # how many fields the receipt carries -- pinning the literal made an unrelated field
+    # addition fail here with "duplicate key not reported", which reads as the strict parser
+    # breaking rather than the fixture growing by two lines.
+    duplicate_line = len(receipt_path.read_text(encoding="utf-8").splitlines()) + 1
+    with receipt_path.open("a", encoding="utf-8") as receipt:
         receipt.write("status: quota_available\n")
 
-    _assert_claude_admission_ignored(tmp_path, "duplicate-key-on-line-18")
+    _assert_claude_admission_ignored(tmp_path, f"duplicate-key-on-line-{duplicate_line}")
 
 
 def test_agy_admission_rejects_secret_persistence(tmp_path: Path) -> None:

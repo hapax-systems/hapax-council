@@ -7,14 +7,28 @@ fresh account-live subscription quota. It is patterned after
 are consumed by ``scripts/hapax-quota-telemetry-writer`` before that route is treated as
 quota-fresh.
 
-Account-live subscription quota is NOT mechanically observable yet (Claude Code OTel usage/cost
-integration is incomplete — CASE-CAPACITY-ROUTING-001 R2, "use receipts and manual refresh until
-observable"). So this writer records an OPERATOR / governed-probe attestation of a bounded
-account-live observation (an evidence ref naming what was observed), NEVER a live Claude smoke
-(no runtime side effect, no provider spend) and NEVER lane/tmux/session presence. It persists no
-secret value and no prompt/response content, and the receipt is short-lived so it cannot stand as
-stale evidence. Fail-closed: an unsafe/invalid observation exits non-zero and writes nothing, so the
-route stays held.
+Two paths, and the difference between them is the whole point.
+
+**Measured (``--from-transcript``).** Subscription *liveness* IS mechanically observable: a completed
+assistant turn in Claude Code's own transcripts is exactly the default observation this writer
+names — a real Claude invocation that returned without hitting a quota wall. ``--from-transcript``
+reads it and derives both the evidence ref and ``observed_at`` from the turn itself, so nobody types
+a claim that was never checked. See ``shared/claude_transcript_quota``. Prefer this path.
+
+**Attested (explicit ``--evidence-ref``).** The original path, retained because liveness is not the
+only claim: ``operator_confirmed_subscription_headroom`` is an operator act and cannot be measured
+from disk. On this path the writer validates the *shape* of the reference and never that the
+observation happened — an evidence ref merely names what was allegedly seen.
+
+CASE-CAPACITY-ROUTING-001 R2 said "use receipts and manual refresh until observable". For liveness
+that exit condition is now met. **What remains unobservable is headroom MAGNITUDE**: Claude Code's
+``rateLimits`` transcript field is null in every record on this estate and no usage/limit file exists
+under ``~/.claude``, so the codex ``--from-rollout`` percentage read has no analogue here.
+
+Both paths: NEVER a live Claude smoke (no runtime side effect, no provider spend) and NEVER
+lane/tmux/session presence. No secret value and no prompt/response content is persisted, and the
+receipt is short-lived so it cannot stand as stale evidence. Fail-closed: an unsafe or invalid
+observation exits non-zero and writes nothing, so the route stays held.
 """
 
 from __future__ import annotations
@@ -26,6 +40,10 @@ import sys
 import tempfile
 from datetime import UTC, datetime
 from pathlib import Path
+
+REPO_ROOT = Path(__file__).resolve().parents[1]
+if str(REPO_ROOT) not in sys.path:
+    sys.path.insert(0, str(REPO_ROOT))
 
 DEFAULT_RECEIPT_DIR = Path(
     os.environ.get(
@@ -45,6 +63,18 @@ SECRET_SOURCE = "claude:operator-session-subscription"
 DEFAULT_STALE_AFTER_SECONDS = 900
 MIN_STALE_AFTER_SECONDS = 60
 MAX_STALE_AFTER_SECONDS = 3600
+#: With --from-transcript: how old the freshest completed turn may be and still count as
+#: a live observation. Matches the receipt's own default TTL -- an observation older than
+#: the window it would open is not evidence for that window.
+DEFAULT_MAX_OBSERVATION_AGE_SECONDS = 900
+#: Clamped for the same reason --stale-after-seconds is, and it matters more. This knob is
+#: the one that can silently convert the MEASURED path back into an attestation: a caller
+#: (or a future timer unit) passing 999999 would mint from a turn observed yesterday, whose
+#: whole premise is that the observation is fresh. The ceiling matches
+#: MAX_STALE_AFTER_SECONDS so an observation can never be older than the longest window it
+#: could open.
+MIN_OBSERVATION_AGE_SECONDS = 60
+MAX_OBSERVATION_AGE_SECONDS = MAX_STALE_AFTER_SECONDS
 
 # The bounded observation kinds this writer will attest. Each names an account-live subscription
 # observation that is NOT lane/tmux/session presence: a real Claude invocation completed without a
@@ -55,10 +85,22 @@ ALLOWED_OBSERVATIONS = (
     "operator_confirmed_subscription_headroom",
 )
 
+#: Attested path only. Under --from-transcript the tool DERIVES the evidence-ref and refuses
+#: a caller-supplied one, so telling the caller to pass one is advice that cannot be taken.
 VALIDATION_RECOVERY_HINT = (
     "next action: rerun with --help to confirm bounds, pass a sanitized --evidence-ref that names "
     "the account-live observation (never a lane/tmux name), pick an allowed --observation, then "
     "rerun after a genuine account-live subscription observation"
+)
+
+#: Measured path. Nothing here asks for an evidence-ref: the only way through is a real
+#: completed turn inside the window, which is the entire point of the mode.
+TRANSCRIPT_RECOVERY_HINT = (
+    "next action: this mode mints only from a completed Claude turn observed in the last "
+    f"{DEFAULT_MAX_OBSERVATION_AGE_SECONDS}s -- do not supply --evidence-ref (it is derived). "
+    "If the estate is idle, that refusal is correct: run a real Claude request and rerun. "
+    "Widen with --max-observation-age-seconds only within "
+    f"{MIN_OBSERVATION_AGE_SECONDS}-{MAX_OBSERVATION_AGE_SECONDS}s"
 )
 
 SAFE_REF_RE = re.compile(r"\A[a-z0-9][a-z0-9_.+-]{2,239}\Z")
@@ -202,11 +244,26 @@ def _parser() -> argparse.ArgumentParser:
     parser.add_argument("--now")
     parser.add_argument(
         "--evidence-ref",
-        required=True,
         help=(
             "Sanitized ref naming the account-live observation (never a lane/tmux name), "
-            "for example claude-subscription-headroom-observed-20260708t1400z"
+            "for example claude-subscription-headroom-observed-20260708t1400z. "
+            "Required unless --from-transcript supplies it."
         ),
+    )
+    parser.add_argument(
+        "--from-transcript",
+        action="store_true",
+        help=(
+            "MEASURE instead of attest: read the freshest completed Claude turn from "
+            "Claude Code's own transcripts and derive --evidence-ref and observed_at "
+            "from it. Fails closed when absent, stale, or clock-skewed."
+        ),
+    )
+    parser.add_argument(
+        "--max-observation-age-seconds",
+        type=int,
+        default=DEFAULT_MAX_OBSERVATION_AGE_SECONDS,
+        help="With --from-transcript: refuse if the freshest turn is older than this.",
     )
     parser.add_argument(
         "--observation",
@@ -227,10 +284,92 @@ def _parser() -> argparse.ArgumentParser:
     return parser
 
 
+def _observe_from_transcript(args: argparse.Namespace, *, session_id: str) -> tuple[datetime, str]:
+    """Derive (observed_at, evidence_ref) from a real completed Claude turn.
+
+    Stamps ``observed_at`` with the **turn's own** timestamp rather than ``now``: a later
+    stamp would hand the receipt a freshness window its evidence does not support. Any
+    failure raises and nothing is written -- the route stays held, which is the correct
+    outcome when the estate is idle.
+    """
+
+    from shared.claude_transcript_quota import (
+        TranscriptQuotaUnavailable,
+        latest_transcript_observation,
+    )
+
+    try:
+        observation = latest_transcript_observation(
+            now=_parse_utc(args.now) if args.now else None,
+            max_age_seconds=args.max_observation_age_seconds,
+            # This session's transcript only. The auth surface was established from THIS
+            # process's environment, and that evidence covers exactly the turns this session
+            # produced — a fresher turn in another session was served under credentials nothing
+            # here has seen.
+            session_id=session_id,
+        )
+    except TranscriptQuotaUnavailable as exc:
+        raise ValueError(f"no live transcript observation: {exc}") from exc
+    return observation.observed_at, observation.witness
+
+
 def main(argv: list[str] | None = None) -> int:
     args = _parser().parse_args(argv)
     try:
-        observed_at = _now(args)
+        if args.from_transcript:
+            if args.evidence_ref:
+                raise ValueError("--evidence-ref is derived by --from-transcript; do not pass both")
+            if args.observation != ALLOWED_OBSERVATIONS[0]:
+                raise ValueError(
+                    "--from-transcript measures liveness and can only support "
+                    f"--observation {ALLOWED_OBSERVATIONS[0]}"
+                )
+            if (
+                not MIN_OBSERVATION_AGE_SECONDS
+                <= args.max_observation_age_seconds
+                <= MAX_OBSERVATION_AGE_SECONDS
+            ):
+                raise ValueError(
+                    "--max-observation-age-seconds must be between "
+                    f"{MIN_OBSERVATION_AGE_SECONDS} and {MAX_OBSERVATION_AGE_SECONDS}; a wider "
+                    "window turns the measured path back into an attestation"
+                )
+            # AUTH FIRST, AND IT DECIDES WHICH TRANSCRIPT MAY BE READ.
+            #
+            # The route this unblocks is subscription-bounded. Reading a completed turn proves the
+            # provider served something; it does not prove WHICH credential it billed, and the
+            # transcript has no field that would. So the measured path observes the account marker
+            # first, and refuses if the host cannot support the claim — raising rather than
+            # falling back to an asserted receipt, because a fallback would hand the caller the
+            # same unverifiable claim under a name saying it was checked.
+            #
+            # The order matters as much as the check. The marker's evidence is THIS process's
+            # environment, which covers exactly the turns THIS session produced, so the session id
+            # it returns is what bounds the transcript scan below. Observing auth after picking a
+            # turn from anywhere on the host would pair evidence with a subject it never covered.
+            from shared.claude_auth_surface import (
+                ClaudeAuthSurfaceUnavailable,
+                observe_subscription_marker,
+            )
+
+            try:
+                marker = observe_subscription_marker()
+            except ClaudeAuthSurfaceUnavailable as exc:
+                raise ValueError(str(exc)) from exc
+            auth_provenance = marker.provenance
+            observed_at, args.evidence_ref = _observe_from_transcript(
+                args, session_id=marker.session_id
+            )
+            freshness_provenance = "measured:completed-turn-timestamp"
+        else:
+            if not args.evidence_ref:
+                raise ValueError("--evidence-ref is required unless --from-transcript is given")
+            observed_at = _now(args)
+            # `observed_at` here is `now` and `evidence_ref` is whatever the caller typed. Nothing
+            # about that is measured, and saying otherwise is what let a manual attestation pass
+            # the strict reader as a measurement.
+            freshness_provenance = "attested:operator-evidence-ref"
+            auth_provenance = "caller_asserted"
         if not MIN_STALE_AFTER_SECONDS <= args.stale_after_seconds <= MAX_STALE_AFTER_SECONDS:
             raise ValueError(
                 f"--stale-after-seconds must be between {MIN_STALE_AFTER_SECONDS} and "
@@ -248,6 +387,25 @@ def main(argv: list[str] | None = None) -> int:
             ("route_id", route_id),
             ("capacity_pool", CAPACITY_POOL),
             ("auth_surface", AUTH_SURFACE),
+            # BOTH PROVENANCES ARE DERIVED. NEITHER IS A CONSTANT.
+            #
+            # A Claude Code transcript record carries `requestId`, `timestamp`, `cwd`,
+            # `entrypoint`, `version` and `message.{model,usage,...}` — and nothing naming the auth
+            # surface or billing mode. Enumerated on this estate 2026-08-12; re-derive with:
+            #
+            #   jq -r 'select(.type=="assistant")|keys[]'          ~/.claude/projects/*/*.jsonl
+            #   jq -r 'select(.type=="assistant")|.message|keys[]' ~/.claude/projects/*/*.jsonl
+            #
+            # The first repair wrote both of these as literals: `caller_asserted` and
+            # `measured:completed-turn-timestamp`, unconditionally. That was wrong in both
+            # directions at once. It under-claimed the auth surface, which IS observable from the
+            # account marker (see shared/claude_auth_surface.py), so the route gate kept accepting
+            # an unverifiable assertion. And it over-claimed freshness on the ATTESTED path, where
+            # `observed_at` is simply `now` and `evidence_ref` is whatever the caller typed —
+            # laundering a manual attestation into a receipt labelled measured, which the strict
+            # reader then required. A constant cannot describe two paths.
+            ("auth_surface_provenance", auth_provenance),
+            ("freshness_provenance", freshness_provenance),
             ("observation", observation),
             ("observed_at", _iso(observed_at)),
             ("stale_after_seconds", args.stale_after_seconds),
@@ -262,8 +420,9 @@ def main(argv: list[str] | None = None) -> int:
         ]
         _write_flat_yaml_atomic(path, fields)
     except ValueError as exc:
+        hint = TRANSCRIPT_RECOVERY_HINT if args.from_transcript else VALIDATION_RECOVERY_HINT
         print(
-            f"hapax-claude-subscription-quota-admission: {exc}; {VALIDATION_RECOVERY_HINT}",
+            f"hapax-claude-subscription-quota-admission: {exc}; {hint}",
             file=sys.stderr,
         )
         return 2

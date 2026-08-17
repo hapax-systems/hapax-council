@@ -209,6 +209,28 @@ CLAUDE_ADMISSION_SCHEMA = "hapax.claude_quota_admission.v1"
 CLAUDE_ADMISSION_PROVIDER = SUBSCRIPTION_PROVIDERS["claude"]
 CLAUDE_ADMISSION_CAPACITY_POOL = "subscription_quota"
 CLAUDE_ADMISSION_AUTH_SURFACE = "subscription"
+#: How each of the two load-bearing receipt claims was arrived at. There are TWO producing paths
+#: and they make different claims, so pinning one literal was itself the defect: requiring
+#: `measured:completed-turn-timestamp` unconditionally laundered the attested path, whose
+#: `observed_at` is simply `now` and whose `evidence_ref` was typed by hand, into a receipt the
+#: reader accepted as measured.
+CLAUDE_ADMISSION_AUTH_SURFACE_PROVENANCES = frozenset(
+    {"caller_asserted", "measured:oauth-account-subscription-marker"}
+)
+CLAUDE_ADMISSION_FRESHNESS_PROVENANCES = frozenset(
+    {"attested:operator-evidence-ref", "measured:completed-turn-timestamp"}
+)
+#: THE PAIRING IS THE CHECK, not the two fields separately. Measured freshness comes only from the
+#: transcript path, and that path also observes the account marker before it will write anything.
+#: So a receipt claiming a measured timestamp beside a merely asserted auth surface describes a
+#: path that does not exist — the shape a forgery takes when it copies the strong half of one
+#: receipt onto the weak half of another.
+CLAUDE_ADMISSION_PROVENANCE_PAIRS = frozenset(
+    {
+        ("caller_asserted", "attested:operator-evidence-ref"),
+        ("measured:oauth-account-subscription-marker", "measured:completed-turn-timestamp"),
+    }
+)
 CLAUDE_ADMISSION_SECRET_SOURCE = "claude:operator-session-subscription"
 CLAUDE_ADMISSION_BILLING_MODE = "operator_session_subscription"
 CLAUDE_ADMISSION_OBSERVATIONS = frozenset(
@@ -268,6 +290,12 @@ CLAUDE_ADMISSION_FIELDS = frozenset(
         "route_id",
         "capacity_pool",
         "auth_surface",
+        # The provenance split. A Claude Code transcript carries no auth-surface or billing field,
+        # so `auth_surface` and `billing_mode` are caller ASSERTIONS while `observed_at` is
+        # MEASURED. The receipt records which is which, and a strict reader has to accept the
+        # fields that say so — otherwise the honesty is unreadable by the only consumer of it.
+        "auth_surface_provenance",
+        "freshness_provenance",
         "observation",
         "observed_at",
         "stale_after_seconds",
@@ -1274,6 +1302,37 @@ def active_claude_admission_receipts(
                 failed = True
                 break
         if failed:
+            continue
+        # Required, and checked as a PAIR. Each field alone is a legal value on one of the two
+        # producing paths; only the combination says which path ran. Validating them separately
+        # would accept `measured` freshness beside `caller_asserted` auth — a receipt describing
+        # a path that does not exist, which is exactly the shape of the laundering this replaces.
+        auth_provenance = fields.get("auth_surface_provenance", "").strip()
+        freshness_provenance = fields.get("freshness_provenance", "").strip()
+        if auth_provenance not in CLAUDE_ADMISSION_AUTH_SURFACE_PROVENANCES:
+            reject(
+                path,
+                "auth_surface_provenance missing or unsupported; expected one of "
+                + ", ".join(sorted(CLAUDE_ADMISSION_AUTH_SURFACE_PROVENANCES)),
+                fields.get("route_id", "").strip(),
+            )
+            continue
+        if freshness_provenance not in CLAUDE_ADMISSION_FRESHNESS_PROVENANCES:
+            reject(
+                path,
+                "freshness_provenance missing or unsupported; expected one of "
+                + ", ".join(sorted(CLAUDE_ADMISSION_FRESHNESS_PROVENANCES)),
+                fields.get("route_id", "").strip(),
+            )
+            continue
+        if (auth_provenance, freshness_provenance) not in CLAUDE_ADMISSION_PROVENANCE_PAIRS:
+            reject(
+                path,
+                "provenance pair describes no producing path "
+                f"({auth_provenance} with {freshness_provenance}); measured freshness comes only "
+                "from the transcript path, which also measures the account marker",
+                fields.get("route_id", "").strip(),
+            )
             continue
         route_id = fields.get("route_id", "").strip()
         if route_id not in CLAUDE_SUBSCRIPTION_ROUTES:

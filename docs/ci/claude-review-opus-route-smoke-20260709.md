@@ -89,10 +89,23 @@ HAPAX_RUN_CLAUDE_REVIEWER_REAL_SMOKE=1 uv run pytest tests/scripts/test_hapax_cl
 To refresh admission after this receipt expires:
 
 ```bash
-scripts/hapax-claude-subscription-quota-admission --route-id claude.review.opus --evidence-ref claude-subscription-headroom-observed-$(date -u +%Y%m%dt%H%M%Sz) --json
+scripts/hapax-claude-subscription-quota-admission --route-id claude.review.opus --from-transcript --json
 scripts/hapax-quota-telemetry-writer --json
 scripts/hapax-platform-capability-freshness --route claude.review.opus --json
 ```
+
+`--from-transcript` derives both `observed_at` and the evidence ref from a real
+completed Claude turn, and refuses when there is not one inside the freshness
+window. The form this replaced —
+`--evidence-ref claude-subscription-headroom-observed-$(date -u +%Y%m%dt%H%M%Sz)` —
+built the witness label out of the current clock, so it minted a "subscription
+headroom observed" receipt at whatever moment the operator ran it, including a
+moment when the subscription was refusing to serve. It always succeeded, which is
+why it was never evidence.
+
+All three commands are required, in order: minting alone is inert, the telemetry
+writer folds the receipt into the live ledger, and the freshness check is what
+confirms the route actually moved.
 
 If the route remains wedged because the live ledger is unreadable or the
 admission receipt cannot be refreshed, do not bypass with raw `claude -p`.
