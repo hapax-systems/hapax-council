@@ -1152,11 +1152,12 @@ def active_agy_admission_receipts(
                 reject(path, f"{key} missing or unsupported; expected {value}")
                 failed = True
                 break
-        if fields.get("model", "") not in AGY_ADMISSION_MODELS:
+        # Same first-failure-only contract as the loop above: one bad receipt
+        # must count once, not once per broken field.
+        if not failed and fields.get("model", "") not in AGY_ADMISSION_MODELS:
             reject(
                 path,
-                "model missing or unsupported; expected "
-                f"{sorted(AGY_ADMISSION_MODELS)}",
+                f"model missing or unsupported; expected {sorted(AGY_ADMISSION_MODELS)}",
             )
             failed = True
         if failed:
@@ -1199,7 +1200,10 @@ def active_agy_admission_receipts(
                     "relay-receipt:"
                     f"{_receipt_label(path)}:witness:{receipt_evidence_ref}:"
                     f"supported_tool:{AGY_ADMISSION_SUPPORTED_TOOL}:"
-                    f"model:{AGY_ADMISSION_MODEL}:"
+                    # The observed model, not the pinned constant: two ids name
+                    # this seat, and an evidence ref that renames what the
+                    # receipt witnessed is not evidence.
+                    f"model:{fields.get('model', '')}:"
                     f"observed_at:{observed_at.isoformat().replace('+00:00', 'Z')}:"
                     f"fresh_until:{fresh_until.isoformat().replace('+00:00', 'Z')}"
                 ),

@@ -1530,7 +1530,7 @@ def _is_agy_admission_evidence_ref(ref: str) -> bool:
         AGY_ADMISSION_RECEIPT_LABEL_RE.match(ref) is not None
         and _has_safe_agy_admission_witness(ref)
         and f":supported_tool:{AGY_ADMISSION_SUPPORTED_TOOL}:" in ref
-        and f":model:{AGY_ADMISSION_MODEL}:" in ref
+        and any(f":model:{model}:" in ref for model in AGY_ADMISSION_MODELS)
         and ":observed_at:" in ref
         and ":fresh_until:" in ref
     )
