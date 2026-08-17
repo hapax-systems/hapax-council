@@ -1,18 +1,18 @@
 [Unit]
 Description=Hapax K0 ratified-kernel pin check (R0.4)
-Documentation=file://%h/Documents/Personal/30-areas/hapax/first-init-k0-kernel-fixed-point-spec-2026-08-01.md
-# Not the vault draft k0-manifest.yaml checker. That scheduled the wrong
-# kernel (#4550 PARKED). This imports the ratified package so the
-# import-time drift pin is on a live path.
+# Import the pinned generation, not the developer checkout. Spec is the
+# first-init K0 fixed-point note in the vault; this unit does not depend
+# on that path existing.
 OnFailure=notify-failure@%n.service
 AssertPathExists=%h/.local/share/reins/current/api/k0/manifest.py
 
 [Service]
 Type=oneshot
-# Import the pinned generation (#31), not the developer checkout.
 WorkingDirectory=%h/.local/share/reins/current/api
 Environment=HOME=%h
-Environment=PYTHONPATH=%h/.local/share/reins/current/api
-ExecStart=/usr/bin/python3 -c "import k0; assert k0.K0_DRIFT_PIN == k0.RATIFIED_PIN, k0.K0_DRIFT_PIN; print('k0-pin-ok', k0.RATIFIED_PIN, len(k0.K0.members))"
+Environment=PYTHONOPTIMIZE=0
+# No PYTHONPATH: python -c puts cwd (WorkingDirectory) first on sys.path.
+# An inherited PYTHONPATH cannot shadow the pinned generation.
+ExecStart=/usr/bin/python3 -c "import k0,sys; p=k0.__file__; ok=k0.K0_DRIFT_PIN==k0.RATIFIED_PIN; print('k0-pin-ok' if ok else 'k0-pin-drift', k0.K0_DRIFT_PIN, k0.RATIFIED_PIN, len(k0.K0.members), p); raise SystemExit(0 if ok else 'k0 drift: computed=%s ratified=%s file=%s; re-derive the kernel or add a K0 exclusion-ledger entry' % (k0.K0_DRIFT_PIN, k0.RATIFIED_PIN, p))"
 TimeoutStartSec=30
 Restart=no
