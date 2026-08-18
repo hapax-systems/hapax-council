@@ -78,6 +78,8 @@ __all__ = [
     "HostCliProbe",
     "InventoryUnavailable",
     "descriptors_for_probe",
+    "descriptors_from_bare_host_receipts",
+    "load_bare_host_cli_probe_receipts",
     "observation_outcome",
     "observe",
     "probe_host_clis",
@@ -815,3 +817,67 @@ def write_bare_host_cli_probe_receipts(
         )
         written.append(path)
     return written
+
+
+def load_bare_host_cli_probe_receipts(
+    receipt_dir: Path | None = None,
+) -> list[BareHostCliProbeReceiptV1]:
+    """Load landed overlay receipts. Missing directory is an empty stream."""
+
+    dest = _receipt_root(receipt_dir)
+    if not dest.is_dir():
+        return []
+    receipts: list[BareHostCliProbeReceiptV1] = []
+    for path in sorted(dest.glob("*.json")):
+        receipts.append(
+            BareHostCliProbeReceiptV1.model_validate_json(path.read_text(encoding="utf-8"))
+        )
+    return receipts
+
+
+def descriptors_from_bare_host_receipts(
+    receipts: list[BareHostCliProbeReceiptV1],
+    *,
+    catalogue: tuple[CliShapeSpec, ...] = CLI_CATALOGUE,
+) -> list[CapabilityShapeDescriptor]:
+    """Rebuild evidence-only descriptors. Never a harness. Never supply."""
+
+    by_cli = {spec.cli: spec for spec in catalogue}
+    rows: list[CapabilityShapeDescriptor] = []
+    for receipt in receipts:
+        spec = by_cli.get(receipt.cli)
+        if spec is None:
+            raise ValueError(
+                f"receipt {receipt.receipt_id!r} names cli {receipt.cli!r} which is not in "
+                "the catalogue; next action: land with the catalogue the receipt was written under"
+            )
+        if receipt.demand_eligible:
+            raise ValueError(
+                f"receipt {receipt.receipt_id!r} is demand_eligible; next action: refuse the "
+                "stream, this inventory plane is not supply"
+            )
+        if receipt.outcome == "observed":
+            failure_classes = ["presence_without_measured_throughput"]
+            remediation_refs = [f"require:capability-intake-stage0:{receipt.cli}"]
+            freshness = CapabilityShapeFreshnessState.FRESH
+        elif receipt.outcome == "absent":
+            failure_classes = ["cli_absent"]
+            remediation_refs = [f"require:install-or-intake:{receipt.cli}"]
+            freshness = CapabilityShapeFreshnessState.MISSING
+        else:
+            failure_classes = ["host_unreachable"]
+            remediation_refs = [f"require:reach-host:{receipt.host}"]
+            freshness = CapabilityShapeFreshnessState.MISSING
+        rows.append(
+            _descriptor(
+                spec,
+                host=receipt.host,
+                observed_at=receipt.observed_at,
+                evidence_refs=list(receipt.evidence_refs),
+                blocked_reasons=list(receipt.blocked_reasons),
+                freshness=freshness,
+                failure_classes=failure_classes,
+                remediation_refs=remediation_refs,
+            )
+        )
+    return rows

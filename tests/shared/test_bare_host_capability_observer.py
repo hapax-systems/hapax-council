@@ -29,6 +29,8 @@ from shared.bare_host_capability_observer import (
     _probe_argv,
     _probe_payload,
     descriptors_for_probe,
+    descriptors_from_bare_host_receipts,
+    load_bare_host_cli_probe_receipts,
     observation_outcome,
     observe,
     probe_host_clis,
@@ -905,3 +907,25 @@ def test_top_level_bare_host_json_breaks_the_route_overlay_loader(tmp_path):
 
     with pytest.raises(PlatformCapabilityReceiptError):
         load_platform_capability_receipts(tmp_path, now=NOW)
+
+
+def test_loaded_receipts_rebuild_as_non_supply_descriptors(tmp_path):
+    observation = observe(
+        hosts=[linux("podium")],
+        catalogue=SMALL_CATALOGUE,
+        runner=runner_for(
+            stdout="cli=claude present=1 path=/usr/bin/claude\ncli=ollama present=0 path=\n"
+        ),
+        now=NOW,
+    )
+    write_bare_host_cli_probe_receipts(observation, receipt_dir=tmp_path, catalogue=SMALL_CATALOGUE)
+
+    loaded = load_bare_host_cli_probe_receipts(tmp_path)
+    rebuilt = descriptors_from_bare_host_receipts(loaded, catalogue=SMALL_CATALOGUE)
+
+    assert {row.shape_id for row in rebuilt} == {d.shape_id for d in observation.descriptors}
+    assert all(row.demand_eligible is False for row in rebuilt)
+    assert all(row.route_ids == [] for row in rebuilt)
+    absent = next(row for row in rebuilt if row.shape_id.endswith(".ollama"))
+    assert absent.observed_at is None
+    assert any(reason.startswith(ABSENT_REASON_PREFIX) for reason in absent.blocked_reasons)

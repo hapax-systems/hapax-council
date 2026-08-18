@@ -212,7 +212,53 @@ class TaggedCapabilityInventoryTest(unittest.TestCase):
             shape.shape_id for shape in self.snapshot.evidence_only_non_supply_descriptors()
         }
 
-        self.assertEqual(observed, expected)
+        # Registry omitted shapes stay visible. Bare-host overlay receipts may add more
+        # evidence-only rows; they must not remove these.
+        self.assertTrue(expected <= observed, observed)
+
+    def test_bare_host_receipts_enter_the_non_supply_plane_only(self) -> None:
+        from shared.bare_host_capability_observer import (
+            observe,
+            write_bare_host_cli_probe_receipts,
+        )
+        from tests.shared.test_bare_host_capability_observer import (
+            SMALL_CATALOGUE,
+            linux,
+            runner_for,
+        )
+
+        with tempfile.TemporaryDirectory() as tmp:
+            receipt_dir = Path(tmp)
+            observation = observe(
+                hosts=[linux("podium")],
+                catalogue=SMALL_CATALOGUE,
+                runner=runner_for(
+                    stdout="cli=claude present=1 path=/usr/bin/claude\ncli=ollama present=0 path=\n"
+                ),
+            )
+            write_bare_host_cli_probe_receipts(
+                observation, receipt_dir=receipt_dir, catalogue=SMALL_CATALOGUE
+            )
+            snapshot = aggregate_capability_inventory(bare_host_receipt_dir=receipt_dir)
+
+        overlay_ids = {d.shape_id for d in observation.descriptors}
+        evidence_ids = {d.shape_id for d in snapshot.evidence_only_non_supply_descriptors()}
+        supply_ids = {d.capability_id for d in snapshot.admitted_supply_descriptors()}
+        self.assertTrue(overlay_ids <= evidence_ids)
+        self.assertTrue(overlay_ids.isdisjoint(supply_ids))
+        self.assertTrue(
+            all(
+                record.inventory_disposition is InventoryDisposition.EVIDENCE_ONLY_NON_SUPPLY
+                for record in snapshot.records
+                if record.inventory_id in overlay_ids
+            )
+        )
+
+    def test_v1_supply_delta_does_not_admit_bare_host_shapes(self) -> None:
+        observed, _ = full_inventory_delta(registered={})
+        self.assertFalse(
+            any(descriptor.capability_id.startswith("bare-host.") for descriptor in observed)
+        )
 
     def test_legacy_projection_contains_admitted_supply_only(self) -> None:
         legacy = aggregate_all_capabilities()
