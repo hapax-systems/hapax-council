@@ -22,6 +22,7 @@ if str(REPO_ROOT) not in sys.path:
 
 from shared.sdlc_lifecycle import (  # noqa: E402
     TASK_NON_FULFILLING_CLOSED_STATUSES,
+    evaluate_blocked_witness,
     frontmatter_from_text,
     is_active_blocked_with_evidence,
     task_closure_validity,
@@ -258,6 +259,17 @@ def cascade_unblock(trigger_task_id: str | None = None) -> int:
                 f"cc-cascade-unblock: {f.stem} remains blocked (current blocked evidence present)"
             )
             continue
+        # Untyped / unknown / unsatisfied witnesses stay blocked even when
+        # blocked_reason is empty. TRUE-skip polarity of the exemption guard
+        # is preserved; only a typed SATISFIED witness may proceed to unblock.
+        if re.search(r"(?m)^blocked_witness:", text):
+            verdict = evaluate_blocked_witness(frontmatter)
+            if verdict != "satisfied":
+                print(
+                    f"cc-cascade-unblock: {f.stem} remains blocked "
+                    f"(witness {verdict}; evaluator does not mutate)"
+                )
+                continue
 
         unmet = [dep for dep in deps if dep not in satisfied_ids]
         if unmet:

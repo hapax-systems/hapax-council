@@ -445,10 +445,23 @@ depends_on: []
         encoding="utf-8",
     )
 
+    untyped = vault / "active" / "untyped.md"
+    untyped.write_text(
+        """---
+status: blocked
+blocked_reason: null
+blocked_witness: /tmp/prose-or-path-not-a-kind
+depends_on: []
+---
+""",
+        encoding="utf-8",
+    )
+
     assert module.cascade_unblock() == 1
     assert "status: offered" in satisfied.read_text(encoding="utf-8")
     assert "status: blocked" in unsatisfied.read_text(encoding="utf-8")
     assert "status: blocked" in unknown.read_text(encoding="utf-8")
+    assert "status: blocked" in untyped.read_text(encoding="utf-8")
 
 
 def test_safe_read_text_tolerates_missing_file(tmp_path: Path) -> None:
