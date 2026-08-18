@@ -27,6 +27,12 @@ enable hapax-source-activate.timer
 # dead on the host for six weeks while every static inventory listed it, so the
 # P0 intake loop kept minting and never drained. Pinned by
 # test_every_critical_timer_is_enableable_and_preset_declared.
+#
+# The same pass removed a stale `enable hapax-visual-pool-snapshot-harvester.timer`
+# line: that unit was retired 2026-05-14 and its file deleted from systemd/units/
+# (it is in install-units.sh DECOMMISSIONED_UNITS), so systemd silently ignored the
+# directive -- the reverse of the same invisible-divergence bug. Now pinned in both
+# directions by test_preset_enable_lines_all_name_real_units.
 enable hapax-operator-current-state.timer
 enable hapax-relay-to-cc-tasks.timer
 enable hapax-darkplaces-live-texture-rebuild.path
@@ -40,7 +46,6 @@ enable hapax-mail-monitor-fallback.timer
 enable hapax-daimonion-quarantine-watchdog.timer
 enable hapax-audio-topology-verify.timer
 enable hapax-s4-arm.timer
-enable hapax-visual-pool-snapshot-harvester.timer
 enable hapax-segment-prep.timer
 enable hapax-segment-prep-emit-health.timer
 enable hapax-obsidian-publish-sync.timer
