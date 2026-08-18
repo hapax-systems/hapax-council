@@ -166,6 +166,38 @@ class TestGDriveCriticalScript:
         assert result.returncode == 1
         assert "contains no postgres-all.sql" in result.stderr
 
+    def test_materialize_does_not_truncate_durable_path_when_restic_fails(self, tmp_path):
+        text = GDRIVE_SCRIPT.read_text()
+        start = text.index("materialize_validated_dump() {")
+        end = text.index("\nappend_required() {", start)
+        bin_dir = tmp_path / "bin"
+        bin_dir.mkdir()
+        (bin_dir / "pass").write_text("#!/usr/bin/env bash\necho secret\n", encoding="utf-8")
+        (bin_dir / "restic").write_text(
+            "#!/usr/bin/env bash\n"
+            "if [[ \"$1\" == ls ]]; then echo '-rw- 1 1 2000000000 date /snap/postgres-all.sql'; exit 0; fi\n"
+            "echo partial-bytes; exit 1\n",
+            encoding="utf-8",
+        )
+        (bin_dir / "pass").chmod(0o755)
+        (bin_dir / "restic").chmod(0o755)
+        durable = tmp_path / "postgres-all.sql"
+        durable.write_text("keep-me", encoding="utf-8")
+        probe = tmp_path / "probe.sh"
+        probe.write_text(
+            "#!/usr/bin/env bash\nset -euo pipefail\n"
+            f"POSTGRES_DUMP_PATH={durable}\n"
+            "TIER1_REPO=repo\nTIER1_PASSWORD_ENTRY=entry\n"
+            "POSTGRES_DUMP_MIN_BYTES=1000000000\n"
+            "log() { :; }\n" + text[start:end] + "materialize_validated_dump\n",
+            encoding="utf-8",
+        )
+        probe.chmod(0o755)
+        env = {**__import__("os").environ, "PATH": f"{bin_dir}:{__import__('os').environ['PATH']}"}
+        result = subprocess.run([str(probe)], capture_output=True, text=True, timeout=10, env=env)
+        assert result.returncode != 0
+        assert durable.read_text(encoding="utf-8") == "keep-me"
+
     def test_script_requires_validated_dump_on_durable_path(self):
         text = GDRIVE_SCRIPT.read_text()
         assert "append_required" in text

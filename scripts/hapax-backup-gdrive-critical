@@ -125,15 +125,18 @@ materialize_validated_dump() {
         exit 1
     }
     snap_path="$(echo "$listing" | awk '{print $NF}')"
+    local partial="${POSTGRES_DUMP_PATH}.partial"
     RESTIC_REPOSITORY="$TIER1_REPO" RESTIC_PASSWORD="$password" \
-        restic dump latest "$snap_path" > "$POSTGRES_DUMP_PATH"
+        restic dump latest "$snap_path" > "$partial"
     local size
-    size="$(wc -c < "$POSTGRES_DUMP_PATH")"
+    size="$(wc -c < "$partial")"
     if (( size < POSTGRES_DUMP_MIN_BYTES )); then
+        rm -f "$partial"
         echo "ERROR: materialized dump is implausibly small: ${size} bytes" >&2
         echo "Next: inspect Tier-1 snapshot; refuse to ship a truncated dump" >&2
         exit 1
     fi
+    mv -f "$partial" "$POSTGRES_DUMP_PATH"
     log "Materialized validated dump: ${size} bytes -> $POSTGRES_DUMP_PATH"
 }
 
@@ -182,7 +185,13 @@ append_vault_evidence() {
 
     local file
     for file in "${files[@]}"; do
-        append_required "$HAPAX_VAULT_DIR/$file" "$manifest" "vault evidence $file"
+        # Evidence notes must not block the dump. Missing names stay loud in
+        # the log; only the dump is fail-closed.
+        if [[ ! -e "$HAPAX_VAULT_DIR/$file" ]]; then
+            log "WARN: vault evidence absent (not blocking dump): $file"
+            continue
+        fi
+        append_if_exists "$HAPAX_VAULT_DIR/$file" "$manifest"
     done
 }
 
