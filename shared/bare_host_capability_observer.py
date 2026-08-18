@@ -38,17 +38,23 @@ have been false, so it is stated rather than claimed away.
 
 from __future__ import annotations
 
+import json
 import re
 import shlex
 import subprocess
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
+from pathlib import Path
 from typing import Literal
 
 from shared.estate_host_inventory import (
     SSH_TIMEOUT_SECONDS,
     InventoryUnavailable,
     tailnet_hosts,
+)
+from shared.platform_capability_receipts import (
+    DEFAULT_PLATFORM_CAPABILITY_RECEIPT_DIR,
+    BareHostCliProbeReceiptV1,
 )
 from shared.platform_capability_registry import (
     AuthorityCeiling,
@@ -60,11 +66,13 @@ from shared.platform_capability_registry import (
 
 __all__ = [
     "ABSENT_REASON_PREFIX",
+    "BARE_HOST_CLI_RECEIPT_SUBDIR",
     "CLI_CATALOGUE",
     "OBSERVATION_RECEIPT_CLASS",
     "STALE_AFTER",
     "UNREACHABLE_REASON_PREFIX",
     "NOT_PROBED_REASON_PREFIX",
+    "BareHostCliProbeReceiptV1",
     "BareHostObservation",
     "CliShapeSpec",
     "HostCliProbe",
@@ -73,7 +81,9 @@ __all__ = [
     "observation_outcome",
     "observe",
     "probe_host_clis",
+    "receipts_for_observation",
     "render",
+    "write_bare_host_cli_probe_receipts",
 ]
 
 #: The receipt class every row from this module carries. ``CapabilityShapeDescriptor`` requires an
@@ -90,6 +100,11 @@ NOT_PROBED_REASON_PREFIX = "host_not_probed:"
 #: Presence changes on the timescale of a package install, not a request. A day is long enough that
 #: the row is not permanently re-probing itself and short enough that a stale row is visibly stale.
 STALE_AFTER = "1d"
+
+#: Sibling of the route-overlay ``*.json`` files. The overlay loader glob-parses
+#: every top-level ``*.json`` as ``PlatformCapabilityReceipt``; this stream must
+#: not share that glob.
+BARE_HOST_CLI_RECEIPT_SUBDIR = "bare-host-cli"
 
 #: Catalogue entries are interpolated into a remote shell command. Anything outside this pattern is
 #: rejected by :func:`_probe_payload` -- the one place a name reaches a shell, so it holds for a
@@ -714,3 +729,89 @@ def render(
             f"{host:<{width}}" + "".join(f"{grid.get((host_index, n), '?'):>10}" for n in names)
         )
     return "\n".join(lines)
+
+
+def _receipt_root(receipt_dir: Path | None) -> Path:
+    root = receipt_dir if receipt_dir is not None else DEFAULT_PLATFORM_CAPABILITY_RECEIPT_DIR
+    return Path(root) / BARE_HOST_CLI_RECEIPT_SUBDIR
+
+
+def receipts_for_observation(
+    observation: BareHostObservation,
+    *,
+    catalogue: tuple[CliShapeSpec, ...] = CLI_CATALOGUE,
+) -> list[BareHostCliProbeReceiptV1]:
+    """Project the descriptor stream into typed landing receipts. Does not write."""
+
+    hosts = [p.host for p in observation.probes]
+    stride = len(catalogue)
+    if len(observation.descriptors) != len(hosts) * stride:
+        raise ValueError(
+            "observation carries "
+            f"{len(observation.descriptors)} descriptors for {len(hosts)} hosts x {stride} "
+            "catalogue entries; next action: land with the catalogue the observation was "
+            "collected under"
+        )
+    receipts: list[BareHostCliProbeReceiptV1] = []
+    stamp = observation.probed_at.replace(":", "").replace("-", "").lower()
+    for host_index, host in enumerate(hosts):
+        block = observation.descriptors[host_index * stride : (host_index + 1) * stride]
+        for spec, descriptor in zip(catalogue, block, strict=True):
+            expected = _shape_id(host, spec.cli)
+            if descriptor.shape_id != expected:
+                raise ValueError(
+                    f"descriptor {descriptor.shape_id!r} is not {expected!r}; next action: land "
+                    "with the catalogue and probe order the observation was collected under"
+                )
+            if descriptor.observation_receipt_class != OBSERVATION_RECEIPT_CLASS:
+                raise ValueError(
+                    f"descriptor {descriptor.shape_id!r} carries "
+                    f"{descriptor.observation_receipt_class!r}; next action: land only "
+                    f"{OBSERVATION_RECEIPT_CLASS} rows"
+                )
+            if descriptor.demand_eligible:
+                raise ValueError(
+                    f"descriptor {descriptor.shape_id!r} is demand_eligible; next action: refuse "
+                    "the observation, this stream is not supply"
+                )
+            outcome = observation_outcome(descriptor)
+            receipts.append(
+                BareHostCliProbeReceiptV1(
+                    receipt_id=f"{descriptor.shape_id}-{stamp}",
+                    host=host,
+                    cli=spec.cli,
+                    shape_id=descriptor.shape_id,
+                    outcome=outcome,
+                    observed_at=descriptor.observed_at,
+                    stale_after=descriptor.stale_after,
+                    demand_eligible=False,
+                    evidence_refs=list(descriptor.evidence_refs),
+                    blocked_reasons=list(descriptor.blocked_reasons),
+                )
+            )
+    return receipts
+
+
+def write_bare_host_cli_probe_receipts(
+    observation: BareHostObservation,
+    *,
+    receipt_dir: Path | None = None,
+    catalogue: tuple[CliShapeSpec, ...] = CLI_CATALOGUE,
+) -> list[Path]:
+    """Persist one receipt per descriptor under the overlay subdirectory.
+
+    Never writes top-level ``*.json`` in ``receipt_dir``: that glob is owned by
+    ``load_platform_capability_receipts``.
+    """
+
+    dest = _receipt_root(receipt_dir)
+    dest.mkdir(parents=True, exist_ok=True)
+    written: list[Path] = []
+    for receipt in receipts_for_observation(observation, catalogue=catalogue):
+        path = dest / f"{receipt.shape_id}.json"
+        path.write_text(
+            json.dumps(receipt.model_dump(mode="json"), indent=2, sort_keys=True) + "\n",
+            encoding="utf-8",
+        )
+        written.append(path)
+    return written

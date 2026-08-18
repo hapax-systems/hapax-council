@@ -18,6 +18,7 @@ from pydantic import ValidationError
 from shared.bare_host_capability_observer import (
     _SAFE_CLI_NAME,
     ABSENT_REASON_PREFIX,
+    BARE_HOST_CLI_RECEIPT_SUBDIR,
     CLI_CATALOGUE,
     NOT_PROBED_REASON_PREFIX,
     OBSERVATION_RECEIPT_CLASS,
@@ -31,7 +32,14 @@ from shared.bare_host_capability_observer import (
     observation_outcome,
     observe,
     probe_host_clis,
+    receipts_for_observation,
     render,
+    write_bare_host_cli_probe_receipts,
+)
+from shared.platform_capability_receipts import (
+    BareHostCliProbeReceiptV1,
+    PlatformCapabilityReceiptError,
+    load_platform_capability_receipts,
 )
 from shared.platform_capability_registry import (
     AuthorityCeiling,
@@ -834,3 +842,66 @@ def test_one_hostile_row_does_not_stop_the_other_hosts_being_observed() -> None:
 
     assert observation.host_count == 2
     assert observation.reachable_count == 1, "the well-named host must still have been probed"
+
+
+# --- L4 receipt landing -----------------------------------------------------------------------
+
+
+def test_receipts_cover_every_descriptor_and_keep_absent_as_a_row():
+    observation = observe(
+        hosts=[linux("podium")],
+        catalogue=SMALL_CATALOGUE,
+        runner=runner_for(
+            stdout="cli=claude present=1 path=/usr/bin/claude\ncli=ollama present=0 path=\n"
+        ),
+        now=NOW,
+    )
+
+    receipts = receipts_for_observation(observation, catalogue=SMALL_CATALOGUE)
+
+    assert len(receipts) == len(observation.descriptors)
+    by_cli = {r.cli: r for r in receipts}
+    assert by_cli["claude"].outcome == "observed"
+    assert by_cli["claude"].observed_at == NOW
+    assert by_cli["ollama"].outcome == "absent"
+    assert by_cli["ollama"].observed_at is None
+    assert by_cli["ollama"].evidence_refs
+    assert all(r.demand_eligible is False for r in receipts)
+    assert all(r.receipt_class == OBSERVATION_RECEIPT_CLASS for r in receipts)
+
+
+def test_writer_lands_under_the_subdir_and_does_not_break_the_route_overlay(tmp_path):
+    observation = observe(
+        hosts=[linux("podium"), linux("eta")],
+        catalogue=SMALL_CATALOGUE,
+        runner=_split_runner(
+            "cli=claude present=1 path=/usr/bin/claude\ncli=ollama present=0 path=\n"
+        ),
+        now=NOW,
+    )
+
+    written = write_bare_host_cli_probe_receipts(
+        observation, receipt_dir=tmp_path, catalogue=SMALL_CATALOGUE
+    )
+
+    assert written
+    assert all(path.parent.name == BARE_HOST_CLI_RECEIPT_SUBDIR for path in written)
+    assert list(tmp_path.glob("*.json")) == []
+    assert load_platform_capability_receipts(tmp_path, now=NOW) == {}
+    loaded = BareHostCliProbeReceiptV1.model_validate_json(written[0].read_text(encoding="utf-8"))
+    assert loaded.demand_eligible is False
+
+
+def test_top_level_bare_host_json_breaks_the_route_overlay_loader(tmp_path):
+    observation = observe(
+        hosts=[linux("podium")],
+        catalogue=SMALL_CATALOGUE[:1],
+        runner=runner_for(stdout="cli=claude present=1 path=/usr/bin/claude\n"),
+        now=NOW,
+    )
+    receipts = receipts_for_observation(observation, catalogue=SMALL_CATALOGUE[:1])
+    poison = tmp_path / "bare-host.podium.claude.json"
+    poison.write_text(receipts[0].model_dump_json(), encoding="utf-8")
+
+    with pytest.raises(PlatformCapabilityReceiptError):
+        load_platform_capability_receipts(tmp_path, now=NOW)
