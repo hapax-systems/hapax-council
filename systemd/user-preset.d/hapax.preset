@@ -21,6 +21,14 @@ enable hapax-cc-task-offer-ready.timer
 enable hapax-security-signal-intake.timer
 enable hapax-p0-incident-reaper.timer
 enable hapax-source-activate.timer
+# Added 2026-08-18: both are CRITICAL_UNITS in audit-runtime-activation-drift.py
+# but were absent from this preset -- the two enablement inventories disagreed.
+# That divergence is the class of defect that left hapax-p0-incident-reaper.timer
+# dead on the host for six weeks while every static inventory listed it, so the
+# P0 intake loop kept minting and never drained. Pinned by
+# test_every_critical_timer_is_enableable_and_preset_declared.
+enable hapax-operator-current-state.timer
+enable hapax-relay-to-cc-tasks.timer
 enable hapax-darkplaces-live-texture-rebuild.path
 enable hapax-screwm-gpu-drift-rebuild.path
 # Attended-only boot containment: strips the DarkPlaces runtime gate at every

@@ -267,3 +267,62 @@ def test_security_signal_artifact_matches_systemd_state_contract() -> None:
     artifacts = {label: relative_path for label, relative_path, _ in audit.CRITICAL_ARTIFACTS}
 
     assert artifacts["security_signal_intake_state"] == Path("security-signal-intake-state.json")
+
+
+def test_every_critical_timer_is_enableable_and_preset_declared() -> None:
+    # Two independent inventories decide whether a critical timer actually runs:
+    # CRITICAL_UNITS here (what the drift audit demands be active) and
+    # systemd/user-preset.d/hapax.preset (what the governed deploy enables). When
+    # they disagree, a timer is "critical" in the audit's eyes yet nothing ever
+    # enables it -- and a timer with no [Install] section cannot be enabled at all,
+    # so `systemctl --user enable` is a silent no-op and it stays dormant.
+    #
+    # This is not hypothetical: hapax-p0-incident-reaper.timer sat uninstalled on
+    # the host for six weeks (2026-07-05 -> 2026-08-18) while its unit file, its
+    # CLI entry point, its tests and its CRITICAL_UNITS membership all existed. The
+    # P0 incident intake therefore ran mint-only with no drain half, and resolved
+    # incidents accreted in state.json instead of draining. Auditing the same
+    # question found hapax-operator-current-state.timer and
+    # hapax-relay-to-cc-tasks.timer critical-but-not-preset-declared.
+    #
+    # Timers only: critical *services* are enabled through install-units.sh's
+    # AUTO_ENABLE_SERVICES list, a deliberately different mechanism (starting a
+    # daemon is not the same commitment as arming a timer).
+    repo_root = Path(__file__).resolve().parents[2]
+    units_dir = repo_root / "systemd" / "units"
+    preset = (repo_root / "systemd" / "user-preset.d" / "hapax.preset").read_text(encoding="utf-8")
+    preset_enabled = {
+        line.split(None, 1)[1].strip()
+        for line in preset.splitlines()
+        if line.strip().startswith("enable ")
+    }
+
+    missing_unit_file: list[str] = []
+    not_installable: list[str] = []
+    not_preset_declared: list[str] = []
+
+    critical_timers = sorted(name for name in audit.CRITICAL_UNITS if name.endswith(".timer"))
+    assert critical_timers, "CRITICAL_UNITS declares no timers — inventory lost?"
+
+    for name in critical_timers:
+        unit_path = units_dir / name
+        if not unit_path.is_file():
+            missing_unit_file.append(name)
+            continue
+        if not audit.parse_unit_file(unit_path).installable:
+            not_installable.append(name)
+        if name not in preset_enabled:
+            not_preset_declared.append(name)
+
+    assert missing_unit_file == [], (
+        f"CRITICAL_UNITS timers with no unit file in systemd/units/: {missing_unit_file}"
+    )
+    assert not_installable == [], (
+        "CRITICAL_UNITS timers with no [Install] section — `systemctl --user enable` "
+        f"is a silent no-op for these, so they can never arm: {not_installable}"
+    )
+    assert not_preset_declared == [], (
+        "CRITICAL_UNITS timers absent from systemd/user-preset.d/hapax.preset — the "
+        "drift audit demands they be active but the governed deploy never enables "
+        f"them: {not_preset_declared}"
+    )
