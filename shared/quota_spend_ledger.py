@@ -50,7 +50,8 @@ RECEIPT_BOUNDED_SUBSCRIPTION_PROVIDERS = {
 }
 GLMCP_QUOTA_TELEMETRY_WRITER_REF = "scripts/hapax-quota-telemetry-writer"
 AGY_ADMISSION_SUPPORTED_TOOL = "hapax-agy-reviewer"
-AGY_ADMISSION_MODEL = "gemini-3.1-pro-preview"
+AGY_ADMISSION_MODEL = "gemini-3.1-pro-high"
+AGY_ADMISSION_MODELS = frozenset({AGY_ADMISSION_MODEL, "gemini-3.1-pro-preview"})
 AGY_ADMISSION_RECEIPT_LABEL_RE = re.compile(
     r"\Arelay-receipt:"
     r"(?:[a-z0-9_.+-]*agy-quota-admission[a-z0-9_.+-]*\.yaml|"
@@ -1529,7 +1530,7 @@ def _is_agy_admission_evidence_ref(ref: str) -> bool:
         AGY_ADMISSION_RECEIPT_LABEL_RE.match(ref) is not None
         and _has_safe_agy_admission_witness(ref)
         and f":supported_tool:{AGY_ADMISSION_SUPPORTED_TOOL}:" in ref
-        and f":model:{AGY_ADMISSION_MODEL}:" in ref
+        and any(f":model:{model}:" in ref for model in AGY_ADMISSION_MODELS)
         and ":observed_at:" in ref
         and ":fresh_until:" in ref
     )

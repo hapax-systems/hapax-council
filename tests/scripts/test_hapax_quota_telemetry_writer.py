@@ -1580,6 +1580,70 @@ def test_fresh_agy_admission_receipt_marks_agy_fresh(tmp_path: Path) -> None:
     assert summary["agy_admissions"] == 1
 
 
+@pytest.mark.parametrize("model", ["gemini-3.1-pro-high", "gemini-3.1-pro-preview"])
+def test_agy_admission_accepts_either_pinned_model_id(tmp_path: Path, model: str) -> None:
+    """agy renamed the seat; a receipt minted under either id is the same seat."""
+
+    relay = tmp_path / "relay-receipts"
+    relay.mkdir()
+    _agy_admission(relay, observed_at="2026-06-09T23:55:00Z", model=model)
+
+    result, out = _run_writer(tmp_path)
+
+    assert result.returncode == 0, result.stderr
+    payload = json.loads(out.read_text(encoding="utf-8"))
+    agy_snapshot = next(
+        snapshot
+        for snapshot in payload["quota_snapshots"]
+        if snapshot["route_id"] == "agy.review.direct"
+    )
+    assert agy_snapshot["subscription_quota_state"] == "fresh"
+    assert any(f"model:{model}" in ref for ref in agy_snapshot["evidence_refs"])
+    summary = json.loads(result.stdout)
+    assert summary["agy_admissions"] == 1
+
+
+def test_agy_admission_rejects_an_unpinned_model_id(tmp_path: Path) -> None:
+    relay = tmp_path / "relay-receipts"
+    relay.mkdir()
+    _agy_admission(relay, observed_at="2026-06-09T23:55:00Z", model="gemini-3.1-pro-low")
+
+    result, out = _run_writer(tmp_path)
+
+    assert result.returncode == 0, result.stderr
+    payload = json.loads(out.read_text(encoding="utf-8"))
+    agy_snapshot = next(
+        snapshot
+        for snapshot in payload["quota_snapshots"]
+        if snapshot["route_id"] == "agy.review.direct"
+    )
+    assert agy_snapshot["subscription_quota_state"] == "unknown"
+    assert any(
+        "ignored:model-missing-or-unsupported" in ref for ref in agy_snapshot["evidence_refs"]
+    )
+    summary = json.loads(result.stdout)
+    assert summary["agy_admissions"] == 0
+    assert summary["agy_ignored_admissions"] == 1
+
+
+def test_agy_admission_counts_a_doubly_invalid_receipt_once(tmp_path: Path) -> None:
+    relay = tmp_path / "relay-receipts"
+    relay.mkdir()
+    _agy_admission(
+        relay,
+        observed_at="2026-06-09T23:55:00Z",
+        model="gemini-3.1-pro-low",
+        secret_value_persisted="true",
+    )
+
+    result, _ = _run_writer(tmp_path)
+
+    assert result.returncode == 0, result.stderr
+    summary = json.loads(result.stdout)
+    assert summary["agy_admissions"] == 0
+    assert summary["agy_ignored_admissions"] == 1
+
+
 def _claude_admission(
     relay: Path,
     *,
