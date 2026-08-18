@@ -117,6 +117,43 @@ class ProviderDocsEvidence(StrictReceiptModel):
         return self
 
 
+class BareHostCliProbeReceiptV1(StrictReceiptModel):
+    """Evidence-only landing for one bare-host CLI observation.
+
+    These receipts are not ``PlatformCapabilityReceipt`` rows and must not be
+    written as top-level ``*.json`` in the route-overlay directory: that loader
+    glob-parses every such file as a platform receipt.
+    """
+
+    receipt_schema: Literal[1] = RECEIPT_SCHEMA_VERSION
+    receipt_class: Literal["BareHostCliProbeReceiptV1"] = "BareHostCliProbeReceiptV1"
+    receipt_id: str
+    host: str
+    cli: str
+    shape_id: str
+    outcome: Literal["observed", "absent", "not_observable"]
+    observed_at: datetime | None
+    stale_after: str
+    demand_eligible: Literal[False] = False
+    evidence_refs: list[str] = Field(default_factory=list)
+    blocked_reasons: list[str] = Field(default_factory=list)
+
+    @model_validator(mode="after")
+    def _not_supply_and_duration_is_valid(self) -> Self:
+        parse_duration_spec(self.stale_after)
+        if self.demand_eligible:
+            raise ValueError("bare-host CLI probe receipts cannot be demand_eligible")
+        if self.outcome == "observed" and self.observed_at is None:
+            raise ValueError("observed bare-host receipts require observed_at")
+        if self.outcome != "observed" and self.observed_at is not None:
+            raise ValueError("unobserved bare-host receipts must not carry observed_at")
+        if self.outcome == "absent" and not self.evidence_refs:
+            raise ValueError("absent CLI receipts require a negative-probe evidence_ref")
+        if self.outcome == "not_observable" and self.evidence_refs:
+            raise ValueError("not-observable receipts must not cite a probe as evidence")
+        return self
+
+
 class PlatformCapabilityReceipt(StrictReceiptModel):
     receipt_schema: Literal[1] = RECEIPT_SCHEMA_VERSION
     receipt_id: str
