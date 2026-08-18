@@ -1,0 +1,90 @@
+#!/usr/bin/env python3
+"""Run the bare-host CLI observer and land BareHostCliProbeReceiptV1 rows.
+
+Unreachable hosts stay in the result (exit 0). A missing roster is a refusal
+(exit 2) with a next action. This is the L5 timer payload; it does not admit
+supply.
+"""
+
+from __future__ import annotations
+
+import argparse
+import json
+import sys
+from datetime import UTC, datetime
+from pathlib import Path
+
+REPO_ROOT = Path(__file__).resolve().parents[1]
+if str(REPO_ROOT) not in sys.path:
+    sys.path.insert(0, str(REPO_ROOT))
+
+from shared.bare_host_capability_observer import (  # noqa: E402
+    BARE_HOST_CLI_RECEIPT_SUBDIR,
+    InventoryUnavailable,
+    observe,
+    render,
+    write_bare_host_cli_probe_receipts,
+)
+from shared.platform_capability_receipts import (  # noqa: E402
+    DEFAULT_PLATFORM_CAPABILITY_RECEIPT_DIR,
+)
+
+
+def _parse_now(value: str | None) -> datetime | None:
+    if not value:
+        return None
+    raw = value.strip().replace("Z", "+00:00")
+    parsed = datetime.fromisoformat(raw)
+    if parsed.tzinfo is None:
+        parsed = parsed.replace(tzinfo=UTC)
+    return parsed.astimezone(UTC)
+
+
+def main(argv: list[str] | None = None) -> int:
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument(
+        "--receipt-dir",
+        type=Path,
+        default=None,
+        help="Overlay root (default: HAPAX_PLATFORM_CAPABILITY_RECEIPT_DIR or cache path)",
+    )
+    parser.add_argument(
+        "--hosts-json",
+        type=Path,
+        default=None,
+        help="Test/fixture roster. Omit to measure the live tailnet.",
+    )
+    parser.add_argument("--now", default=None, help="ISO-8601 UTC stamp for tests")
+    args = parser.parse_args(argv)
+
+    hosts = None
+    if args.hosts_json is not None:
+        payload = json.loads(args.hosts_json.read_text(encoding="utf-8"))
+        if not isinstance(payload, list):
+            print(
+                "hapax-bare-host-capability-probe: --hosts-json must be a list; "
+                "next action: write a JSON array of host rows",
+                file=sys.stderr,
+            )
+            return 2
+        hosts = payload
+
+    try:
+        observation = observe(hosts=hosts, now=_parse_now(args.now))
+    except InventoryUnavailable as exc:
+        print(
+            f"hapax-bare-host-capability-probe: roster unavailable ({exc}); "
+            "next action: restore tailscale or pass --hosts-json",
+            file=sys.stderr,
+        )
+        return 2
+
+    root = args.receipt_dir or DEFAULT_PLATFORM_CAPABILITY_RECEIPT_DIR
+    written = write_bare_host_cli_probe_receipts(observation, receipt_dir=root)
+    print(render(observation))
+    print(f"wrote {len(written)} receipts under {root / BARE_HOST_CLI_RECEIPT_SUBDIR}")
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())
