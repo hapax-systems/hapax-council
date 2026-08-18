@@ -285,6 +285,81 @@ blocked_witness:
         assert evaluate_blocked_witness(fm, now=now) == "refuse"
         assert is_active_blocked_with_evidence(fm) is True
 
+    def test_non_string_kind_or_ref_refuses(self) -> None:
+        fm = frontmatter_from_text(
+            """---
+status: blocked
+blocked_reason: waiting
+blocked_witness:
+  kind: 123
+  ref: 456
+---
+"""
+        )
+        assert evaluate_blocked_witness(fm) == "refuse"
+
+    def test_receipt_fresh_satisfied_and_stale(self, tmp_path: Path) -> None:
+        receipt = tmp_path / "receipt.yaml"
+        receipt.write_text(
+            "observed_at: 2026-08-18T00:00:00Z\nstale_after_seconds: 3600\n",
+            encoding="utf-8",
+        )
+        fm = frontmatter_from_text(
+            f"""---
+status: blocked
+blocked_reason: waiting
+blocked_witness:
+  kind: receipt_fresh
+  ref: {receipt}
+---
+"""
+        )
+        fresh_now = datetime(2026, 8, 18, 0, 10, tzinfo=UTC)
+        stale_now = datetime(2026, 8, 18, 2, 0, tzinfo=UTC)
+        assert evaluate_blocked_witness(fm, now=fresh_now) == "satisfied"
+        assert evaluate_blocked_witness(fm, now=stale_now) == "unsatisfied"
+
+    def test_ancestor_of_main_evaluates_returncodes(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        fm = frontmatter_from_text(
+            """---
+status: blocked
+blocked_reason: waiting
+blocked_witness:
+  kind: ancestor_of_main
+  ref: abcdef1
+---
+"""
+        )
+
+        class _Result:
+            def __init__(self, returncode: int) -> None:
+                self.returncode = returncode
+
+        box = {"rc": 0}
+
+        def _run(*_args: object, **_kwargs: object) -> _Result:
+            return _Result(box["rc"])
+
+        monkeypatch.setattr("shared.blocked_witness.subprocess.run", _run)
+        box["rc"] = 0
+        assert evaluate_blocked_witness(fm) == "satisfied"
+        box["rc"] = 1
+        assert evaluate_blocked_witness(fm) == "unsatisfied"
+        box["rc"] = 128
+        assert evaluate_blocked_witness(fm) == "refuse"
+
+        bad = frontmatter_from_text(
+            """---
+status: blocked
+blocked_reason: waiting
+blocked_witness:
+  kind: ancestor_of_main
+  ref: not-a-sha
+---
+"""
+        )
+        assert evaluate_blocked_witness(bad) == "refuse"
+
     def test_malformed_frontmatter_is_non_fulfilling_not_exception(self) -> None:
         text = """---
 status: blocked

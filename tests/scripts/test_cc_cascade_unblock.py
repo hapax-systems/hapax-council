@@ -464,6 +464,110 @@ depends_on: []
     assert "status: blocked" in untyped.read_text(encoding="utf-8")
 
 
+def _write_typed_witness_row(
+    vault: Path,
+    task_id: str,
+    *,
+    kind: str,
+    ref: str,
+    depends_on: list[str],
+    blocked_reason: str = "null",
+) -> Path:
+    path = vault / "active" / f"{task_id}.md"
+    deps = "\n".join(f"  - {dep}" for dep in depends_on)
+    path.write_text(
+        f"""---
+status: blocked
+blocked_reason: {blocked_reason}
+blocked_witness:
+  kind: {kind}
+  ref: {ref}
+depends_on:
+{deps}
+---
+""",
+        encoding="utf-8",
+    )
+    return path
+
+
+def test_cascade_offers_satisfied_typed_witness_when_deps_are_valid(tmp_path: Path) -> None:
+    module = _load_module()
+    vault = _make_vault(tmp_path, module)
+    module._check_pr_merged = lambda _pr: "merged"
+    present = tmp_path / "present"
+    present.write_text("ok", encoding="utf-8")
+    _write_task(
+        vault,
+        "closed",
+        "valid-dep",
+        status="done",
+        pr=123,
+        body="## Acceptance criteria\n\n- [x] Evidence exists\n",
+    )
+    target = _write_typed_witness_row(
+        vault,
+        "target",
+        kind="path_exists",
+        ref=str(present),
+        depends_on=["valid-dep"],
+    )
+
+    assert module.cascade_unblock("valid-dep") == 1
+    text = target.read_text(encoding="utf-8")
+    assert "status: offered" in text
+    assert "blocked_reason: null" in text
+
+
+def test_cascade_keeps_refuse_and_unsatisfied_witness_blocked_even_with_valid_deps(
+    tmp_path: Path,
+) -> None:
+    module = _load_module()
+    vault = _make_vault(tmp_path, module)
+    module._check_pr_merged = lambda _pr: "merged"
+    missing = tmp_path / "missing"
+    _write_task(
+        vault,
+        "closed",
+        "valid-dep",
+        status="done",
+        pr=123,
+        body="## Acceptance criteria\n\n- [x] Evidence exists\n",
+    )
+    refuse = _write_typed_witness_row(
+        vault,
+        "refuse",
+        kind="existence_implies_resolved",
+        ref="/tmp/x",
+        depends_on=["valid-dep"],
+    )
+    unsatisfied = _write_typed_witness_row(
+        vault,
+        "unsatisfied",
+        kind="path_exists",
+        ref=str(missing),
+        depends_on=["valid-dep"],
+    )
+    untyped = vault / "active" / "untyped.md"
+    untyped.write_text(
+        """---
+status: blocked
+blocked_reason: null
+blocked_witness: /tmp/prose-or-path-not-a-kind
+depends_on:
+  - valid-dep
+---
+""",
+        encoding="utf-8",
+    )
+
+    assert module.cascade_unblock("valid-dep") == 0
+    assert "status: blocked" in refuse.read_text(encoding="utf-8")
+    assert "status: blocked" in unsatisfied.read_text(encoding="utf-8")
+    assert "status: blocked" in untyped.read_text(encoding="utf-8")
+    assert "waiting_for_closure_valid_dependencies" not in refuse.read_text(encoding="utf-8")
+
+
 def test_safe_read_text_tolerates_missing_file(tmp_path: Path) -> None:
     module = _load_module()
     missing = tmp_path / "gone.md"

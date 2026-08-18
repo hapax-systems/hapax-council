@@ -261,7 +261,10 @@ def cascade_unblock(trigger_task_id: str | None = None) -> int:
             if verdict != "satisfied":
                 print(
                     f"cc-cascade-unblock: {f.stem} remains blocked "
-                    f"(witness {verdict}; evaluator does not mutate)"
+                    f"(witness {verdict}; evaluator does not mutate; "
+                    "next: set blocked_witness.kind to path_exists|"
+                    "ancestor_of_main|receipt_fresh with a valid ref, "
+                    "or remove blocked_witness after an operator decision)"
                 )
                 continue
 
