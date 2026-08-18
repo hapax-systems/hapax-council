@@ -851,7 +851,9 @@ def test_receipts_cover_every_descriptor_and_keep_absent_as_a_row():
     observation = observe(
         hosts=[linux("podium")],
         catalogue=SMALL_CATALOGUE,
-        runner=runner_for(stdout="cli=claude present=1 path=/usr/bin/claude\ncli=ollama present=0 path=\n"),
+        runner=runner_for(
+            stdout="cli=claude present=1 path=/usr/bin/claude\ncli=ollama present=0 path=\n"
+        ),
         now=NOW,
     )
 
@@ -872,7 +874,9 @@ def test_writer_lands_under_the_subdir_and_does_not_break_the_route_overlay(tmp_
     observation = observe(
         hosts=[linux("podium"), linux("eta")],
         catalogue=SMALL_CATALOGUE,
-        runner=_split_runner("cli=claude present=1 path=/usr/bin/claude\ncli=ollama present=0 path=\n"),
+        runner=_split_runner(
+            "cli=claude present=1 path=/usr/bin/claude\ncli=ollama present=0 path=\n"
+        ),
         now=NOW,
     )
 
