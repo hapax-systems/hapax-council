@@ -70,6 +70,12 @@ class TestWatchdogScript:
         text = SCRIPT.read_text()
         assert "exit 1" in text, "Must exit non-zero on failure"
 
+    def test_script_checks_postgres_dump_presence_in_newest_snapshot(self):
+        text = SCRIPT.read_text()
+        assert "check_postgres_dump_in_snapshot" in text
+        assert "postgres-all.sql" in text
+        assert "implausibly small" in text
+
     def test_script_bash_syntax_valid(self):
         result = subprocess.run(
             ["bash", "-n", str(SCRIPT)],
@@ -107,6 +113,47 @@ class TestGDriveCriticalScript:
         text = GDRIVE_SCRIPT.read_text()
         assert "validate_manifest_readability" in text
         assert "refusing partial snapshot" in text
+
+    def test_script_requires_validated_dump_on_durable_path(self):
+        text = GDRIVE_SCRIPT.read_text()
+        assert "append_required" in text
+        assert "/store/llm-data/postgres-dumps/postgres-all.sql" in text
+        assert "/tmp/hapax-backup-dumps" not in text
+
+    def test_script_names_the_pitr_rpo_decision_doc(self):
+        text = GDRIVE_SCRIPT.read_text()
+        assert "postgres-backup-rpo-pitr-decision-2026-06-05.md" in text
+        assert "postgres-backup-rpo-decision-2026-06-05.md" not in text
+
+    def test_script_appends_vault_bundle_dir_if_present(self):
+        text = GDRIVE_SCRIPT.read_text()
+        assert "VAULT_BUNDLE_DIR" in text
+        assert "/store/llm-data/vault-bundles" in text
+
+    def test_append_required_fails_closed_when_the_path_is_absent(self, tmp_path):
+        """Drive the real function, not a copy. The gdrive script is not source-safe."""
+        text = GDRIVE_SCRIPT.read_text()
+        start = text.index("append_required() {")
+        end = text.index("\n}\n", start) + 3
+        extract = tmp_path / "append_required.sh"
+        extract.write_text(
+            "#!/usr/bin/env bash\nset -euo pipefail\n"
+            + text[start:end]
+            + 'append_required "$1" "$2" dump\n',
+            encoding="utf-8",
+        )
+        extract.chmod(0o755)
+        manifest = tmp_path / "m"
+        missing = tmp_path / "nope"
+        result = subprocess.run(
+            [str(extract), str(missing), str(manifest)],
+            capture_output=True,
+            text=True,
+            timeout=10,
+        )
+        assert result.returncode == 1
+        assert "required dump missing" in result.stderr
+        assert not manifest.exists() or manifest.read_text() == ""
 
     def test_script_bash_syntax_valid(self):
         result = subprocess.run(

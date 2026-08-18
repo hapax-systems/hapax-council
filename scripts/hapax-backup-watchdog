@@ -112,8 +112,30 @@ check_restic_integrity() {
 check_snapshot_age "$TIER1_REPO" "Tier1-NAS" "$TIER1_MAX_AGE_HOURS" "$TIER1_PASSWORD_ENTRY"
 check_snapshot_age "$GDRIVE_CRITICAL_REPO" "GDrive-Critical" "$GDRIVE_CRITICAL_MAX_AGE_HOURS" "$GDRIVE_CRITICAL_PASSWORD_ENTRY"
 check_qdrant_snapshots
+check_postgres_dump_in_snapshot() {
+    local repo="$1" label="$2" entry="$3"
+    local pw
+    pw="$(pass show "$entry" 2>/dev/null | sed -n '1p')" || {
+        FAILURES+=("$label: dump-check cannot read restic password")
+        return
+    }
+    [[ -z "$pw" ]] && { FAILURES+=("$label: dump-check restic password empty"); return; }
+    local listing
+    listing="$(RESTIC_REPOSITORY="$repo" RESTIC_PASSWORD="$pw" restic ls --long latest 2>/dev/null | grep -F "postgres-all.sql" | head -1)" || true
+    [[ -z "$listing" ]] && { FAILURES+=("$label: newest snapshot contains NO postgres-all.sql"); return; }
+    local size
+    size="$(echo "$listing" | tr -s " " | cut -d" " -f4)"
+    case "$size" in
+        ""|*[!0-9]*) FAILURES+=("$label: could not parse dump size"); return ;;
+    esac
+    (( size < 1000000000 )) && { FAILURES+=("$label: postgres dump implausibly small: ${size} bytes"); return; }
+    log "  $label: postgres dump present, ${size} bytes"
+}
+
 check_restic_integrity "$TIER1_REPO" "Tier1-NAS" "$TIER1_PASSWORD_ENTRY"
 check_restic_integrity "$GDRIVE_CRITICAL_REPO" "GDrive-Critical" "$GDRIVE_CRITICAL_PASSWORD_ENTRY" true
+check_postgres_dump_in_snapshot "$TIER1_REPO" "Tier1-NAS" "$TIER1_PASSWORD_ENTRY"
+check_postgres_dump_in_snapshot "$GDRIVE_CRITICAL_REPO" "GDrive-Critical" "$GDRIVE_CRITICAL_PASSWORD_ENTRY"
 
 # Report
 if (( ${#FAILURES[@]} > 0 )); then

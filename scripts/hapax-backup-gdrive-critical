@@ -2,16 +2,23 @@
 set -euo pipefail
 
 # Bounded critical-artifact offsite backup while broad Tier 2 B2 is blocked.
-# This script intentionally does not create live database dumps, create Qdrant
-# snapshots, upload live MinIO backing stores, or run destructive restic prune.
+# This script does not create live database dumps, create Qdrant snapshots,
+# upload live MinIO backing stores, or run destructive restic prune. It does
+# require a producer-validated Postgres dump already on a durable path — the
+# offsite lane previously shipped zero dumps.
 
 REPO="${HAPAX_GDRIVE_CRITICAL_REPO:-rclone:gdrive:hapax-backups/restic-critical}"
 PASSWORD_ENTRY="${HAPAX_GDRIVE_CRITICAL_RESTIC_PASSWORD_ENTRY:-backblaze/restic-password}"
 CACHE_DIR="${RESTIC_CACHE_DIR:-/store/llm-data/restic-cache/gdrive-critical}"
 WORK_DIR="${HAPAX_GDRIVE_CRITICAL_WORK_DIR:-/store/llm-data/gdrive-critical-backup}"
 POSTGRES_PITR_DIR="${HAPAX_POSTGRES_PITR_DIR:-/store/llm-data/postgres-pitr}"
+# Durable copy of the producer-validated dump. Not /tmp: hapax-backup-local
+# trap-cleans that path on EXIT. A missing file fails the run.
+POSTGRES_DUMP_PATH="${HAPAX_POSTGRES_DUMP_PATH:-/store/llm-data/postgres-dumps/postgres-all.sql}"
 QDRANT_SNAPSHOT_DIR="${HAPAX_QDRANT_SNAPSHOT_DIR:-/store/llm-data/qdrant-snapshots}"
 HAPAX_VAULT_DIR="${HAPAX_VAULT_DIR:-$HOME/Documents/Personal/30-areas/hapax}"
+# Bundle must not live inside the vault it bundles (recursive growth).
+VAULT_BUNDLE_DIR="${HAPAX_VAULT_BUNDLE_DIR:-/store/llm-data/vault-bundles}"
 
 # Conservative Google Drive/rclone defaults. Operators may tune these by env.
 export RCLONE_TRANSFERS="${RCLONE_TRANSFERS:-1}"
@@ -43,6 +50,7 @@ Modes:
 
 This is not the broad B2 Tier 2 backup. It never creates DB dumps, creates
 Qdrant snapshots, uploads live MinIO backing stores, or runs destructive prune.
+It requires a producer-validated dump at HAPAX_POSTGRES_DUMP_PATH.
 EOF
             exit 0
             ;;
@@ -92,6 +100,16 @@ append_if_exists() {
     fi
 }
 
+append_required() {
+    local path="$1" manifest="$2" label="$3"
+    if [[ ! -e "$path" ]]; then
+        echo "ERROR: required $label missing: $path" >&2
+        echo "Next: place a producer-validated artifact at that path (not /tmp) and re-run" >&2
+        exit 1
+    fi
+    printf '%s\n' "$path" >> "$manifest"
+}
+
 append_latest_qdrant_snapshots() {
     local manifest="$1"
     if [[ ! -d "$QDRANT_SNAPSHOT_DIR" ]]; then
@@ -120,14 +138,14 @@ append_vault_evidence() {
         "gdrive-critical-offsite-source-automation-plan-2026-06-05.md"
         "langfuse-minio-clickhouse-retention-policy-2026-06-05.md"
         "offsite-backup-capacity-restic-evidence-2026-06-05.md"
-        "postgres-backup-rpo-decision-2026-06-05.md"
+        "postgres-backup-rpo-pitr-decision-2026-06-05.md"
         "qdrant-snapshot-restore-sop-2026-06-05.md"
         "sop-baseline-gate-2026-06-04.md"
     )
 
     local file
     for file in "${files[@]}"; do
-        append_if_exists "$HAPAX_VAULT_DIR/$file" "$manifest"
+        append_required "$HAPAX_VAULT_DIR/$file" "$manifest" "vault evidence $file"
     done
 }
 
@@ -154,9 +172,11 @@ build_manifest() {
     local manifest="$run_dir/backup-files.txt"
     : > "$manifest"
 
+    append_required "$POSTGRES_DUMP_PATH" "$manifest" "validated Postgres dump"
     append_if_exists "$POSTGRES_PITR_DIR" "$manifest"
     append_latest_qdrant_snapshots "$manifest"
     append_vault_evidence "$manifest"
+    append_if_exists "$VAULT_BUNDLE_DIR" "$manifest"
 
     sort -u "$manifest" -o "$manifest"
     if [[ ! -s "$manifest" ]]; then
