@@ -24,9 +24,20 @@ repo="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 
 run_smoke() (
   local smoke_mode="$1"
-  local sb task active
+  local sb task second_task active claim_log second_claim_log old_home old_home_was_set
+  old_home="${HOME-}"
+  old_home_was_set=0
+  [[ -v HOME ]] && old_home_was_set=1
   sb="$(mktemp -d /tmp/hapax-fsm-smoke-XXXXXX)"
-  trap 'rm -rf "$sb"' EXIT
+  cleanup() {
+    if [[ "$old_home_was_set" == "1" ]]; then
+      export HOME="$old_home"
+    else
+      unset HOME
+    fi
+    rm -rf "$sb"
+  }
+  trap cleanup EXIT
   task="cc-task-fsm-smoke-probe-${smoke_mode}"
   active="$sb/Documents/Personal/20-projects/hapax-cc-tasks/active"
   mkdir -p "$active" "$sb/.cache/hapax"
@@ -38,6 +49,13 @@ run_smoke() (
   export HAPAX_COORD_DIR="$sb/.cache/hapax/coord"
   export HAPAX_CC_HYGIENE_OFF=1
   export HAPAX_RAPID_CLOSE_OFF=1
+  unset HAPAX_CLAIM_DISPATCH_MESSAGE_ID
+  unset HAPAX_CLAIM_DISPATCH_BINDING_HASH
+  unset HAPAX_CLAIM_DISPATCH_PLATFORM
+  unset HAPAX_CLAIM_DISPATCH_MODE
+  unset HAPAX_CLAIM_DISPATCH_PROFILE
+  unset HAPAX_CLAIM_DISPATCH_AUTHORITY_CASE
+  unset HAPAX_CLAIM_DISPATCH_IDEMPOTENCY_KEY
 
   if [[ "$smoke_mode" == "killswitch" ]]; then
     export HAPAX_ACCEPTANCE_RECEIPT_GATE_OFF=1
@@ -86,10 +104,44 @@ EOF
       exit 1
     fi
   }
-
+  reject_grep() {
+    if grep -q "$1" "$2"; then
+      printf '[%s] unexpected %s in %s\n' "$smoke_mode" "$1" "$2" >&2
+      exit 1
+    fi
+  }
+  require_find_match() {
+    if ! find "$1" "${@:2}" -print -quit 2>/dev/null | grep -q .; then
+      printf '[%s] missing expected match under: %s\n' "$smoke_mode" "$1" >&2
+      exit 1
+    fi
+  }
   cd "$repo"
   step "claim"
-  timeout 30 uv run --no-sync bash scripts/cc-claim "$task"
+  claim_log="$sb/claim-${smoke_mode}.log"
+  if ! timeout 30 uv run --no-sync bash scripts/cc-claim "$task" >"$claim_log" 2>&1; then
+    cat "$claim_log"
+    exit 1
+  fi
+  cat "$claim_log"
+  if [[ "$smoke_mode" == "default" ]]; then
+    require_grep "manual claim binding issued" "$claim_log"
+    require_grep "Gate-0B claim-publication root installed for first use" "$claim_log"
+    require_grep "admitted publication applied" "$claim_log"
+    reject_grep "HAPAX_GATE0B_CLAIM_PUBLICATION_OFF=1" "$claim_log"
+    require_find_match \
+      "$sb/.local/share/hapax/claim-publications/gate0b-claim-publish-v1" \
+      -mindepth 2 -maxdepth 2 -name manifest.json
+    require_find_match \
+      "$sb/.cache/hapax/claim-publication-receipts" \
+      -type f -name '*.json'
+    require_find_match \
+      "$sb/.local/share/hapax/claim-publications/execution-admission/claim-publication" \
+      -type f -name '*.json'
+  else
+    require_grep "HAPAX_GATE0B_CLAIM_PUBLICATION_OFF=1" "$claim_log"
+    reject_grep "admitted publication applied" "$claim_log"
+  fi
   require_file "$sb/.cache/hapax/cc-active-task-alpha"
   require_grep "$task" "$sb/.cache/hapax/cc-active-task-alpha"
   require_grep "status: claimed" "$active/$task.md"
@@ -105,6 +157,43 @@ EOF
   step "close"
   timeout 30 uv run --no-sync bash scripts/cc-close "$task" --status done
   require_file "$sb/Documents/Personal/20-projects/hapax-cc-tasks/closed/$task.md"
+
+  if [[ "$smoke_mode" == "default" ]]; then
+    second_task="${task}-after-close"
+    cat > "$active/$second_task.md" <<EOF
+---
+type: cc-task
+task_id: $second_task
+title: "FSM smoke second probe"
+status: offered
+authority_case: CASE-TEST-001
+parent_spec: docs/specs/fsm-smoke.md
+stage: S6_IMPLEMENTATION
+claimable: true
+assigned_to: unassigned
+updated_at: 2026-01-01T00:00:00Z
+---
+# FSM smoke second probe
+
+Disposable task note for claim-after-close verification.
+EOF
+
+    step "claim after close"
+    second_claim_log="$sb/claim-${smoke_mode}-after-close.log"
+    if ! timeout 30 uv run --no-sync bash scripts/cc-claim "$second_task" >"$second_claim_log" 2>&1; then
+      cat "$second_claim_log"
+      exit 1
+    fi
+    cat "$second_claim_log"
+    require_grep "archived terminal dispatch-only claim residue" "$second_claim_log"
+    require_grep "admitted publication applied" "$second_claim_log"
+    require_grep "$second_task" "$sb/.cache/hapax/cc-active-task-alpha"
+    require_grep "status: claimed" "$active/$second_task.md"
+
+    step "close after-close claim"
+    timeout 30 uv run --no-sync bash scripts/cc-close "$second_task" --status done
+    require_file "$sb/Documents/Personal/20-projects/hapax-cc-tasks/closed/$second_task.md"
+  fi
 
   step "recovery governor"
   timeout 30 uv run --no-sync python -m shared.recovery_governor --permit "lane:smoke-${smoke_mode}"

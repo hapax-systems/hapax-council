@@ -12,7 +12,7 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import Literal, Self
 
-from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
+from pydantic import BaseModel, ConfigDict, Field, ValidationError, field_validator, model_validator
 
 from shared.execution_admission import (
     _MAX_EXECUTION_INVOCATION_BUNDLE_BYTES,
@@ -219,18 +219,34 @@ def claim_publication_install_receipt_bytes(
     return _canonical(checked.model_dump(mode="json", by_alias=True)) + b"\n"
 
 
+def _install_io_error(path: Path, operation: str) -> ExecutionAdmissionError:
+    return ExecutionAdmissionError(
+        "gate0b_install_file_unavailable",
+        "restore a writable euid-owned mode-0700 install directory, remove stale install temp files, and rerun first-use install",
+        f"{operation}:{path}",
+    )
+
+
 def _write_private_file(path: Path, payload: bytes, *, mode: int = 0o600) -> None:
     path = _absolute(path, label="private install file")
-    path.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
-    parent_meta = path.parent.stat(follow_symlinks=False)
-    if not stat.S_ISDIR(parent_meta.st_mode) or parent_meta.st_uid != os.geteuid():
-        raise ExecutionAdmissionError(
-            "gate0b_install_directory_unsafe",
-            "restore an euid-owned private install directory",
-            str(path.parent),
-        )
     try:
-        existing = path.read_bytes()
+        path.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
+    except OSError as exc:
+        raise ExecutionAdmissionError(
+            "gate0b_install_directory_unavailable",
+            "restore a writable euid-owned mode-0700 private install directory and rerun first-use install",
+            str(path.parent),
+        ) from exc
+    try:
+        _require_private_install_directory(path.parent)
+    except FileNotFoundError as exc:
+        raise ExecutionAdmissionError(
+            "gate0b_install_directory_unavailable",
+            "restore a writable euid-owned mode-0700 private install directory and rerun first-use install",
+            str(path.parent),
+        ) from exc
+    try:
+        existing = _read_private_install_file(path, mode=mode)
     except FileNotFoundError:
         existing = None
     if existing == payload:
@@ -238,34 +254,154 @@ def _write_private_file(path: Path, payload: bytes, *, mode: int = 0o600) -> Non
     if existing is not None:
         raise ExecutionAdmissionError(
             "gate0b_install_file_collision",
-            "quarantine the colliding install artifact",
+            "quarantine the colliding install artifact and rerun first-use install",
             str(path),
         )
     tmp = path.with_name(f".{path.name}.tmp-{os.getpid()}-{secrets.token_hex(8)}")
-    fd = os.open(
-        tmp,
-        os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_CLOEXEC | os.O_NOFOLLOW,
-        mode,
-    )
+    linked = False
     try:
-        os.write(fd, payload)
-        os.fsync(fd)
-    finally:
-        os.close(fd)
-    try:
-        os.replace(tmp, path)
-        os.chmod(path, mode, follow_symlinks=False)
-    except Exception:
+        try:
+            fd = os.open(
+                tmp,
+                os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_CLOEXEC | os.O_NOFOLLOW,
+                mode,
+            )
+        except OSError as exc:
+            raise _install_io_error(tmp, "open") from exc
+        try:
+            try:
+                view = memoryview(payload)
+                while view:
+                    written = os.write(fd, view)
+                    if written <= 0:
+                        raise OSError("install temp write made no progress")
+                    view = view[written:]
+            except OSError as exc:
+                raise _install_io_error(tmp, "write") from exc
+            try:
+                os.fsync(fd)
+            except OSError as exc:
+                raise _install_io_error(tmp, "fsync") from exc
+        finally:
+            try:
+                os.close(fd)
+            except OSError as exc:
+                raise _install_io_error(tmp, "close") from exc
+        try:
+            os.link(tmp, path)
+            linked = True
+        except FileExistsError as exc:
+            try:
+                raced = _read_private_install_file(path, mode=mode)
+            except OSError as read_exc:
+                raise ExecutionAdmissionError(
+                    "gate0b_install_file_collision",
+                    "quarantine the colliding install artifact and rerun first-use install",
+                    str(path),
+                ) from read_exc
+            if raced != payload:
+                raise ExecutionAdmissionError(
+                    "gate0b_install_file_collision",
+                    "quarantine the colliding install artifact and rerun first-use install",
+                    str(path),
+                ) from exc
+        except OSError as exc:
+            raise ExecutionAdmissionError(
+                "gate0b_install_file_unavailable",
+                "restore a writable euid-owned mode-0700 install directory and rerun first-use install",
+                str(path),
+            ) from exc
+    except ExecutionAdmissionError:
         try:
             tmp.unlink()
         except FileNotFoundError:
             pass
+        except OSError:
+            pass
         raise
+    try:
+        tmp.unlink()
+    except FileNotFoundError:
+        pass
+    except OSError as exc:
+        raise ExecutionAdmissionError(
+            "gate0b_install_temp_cleanup_failed",
+            "remove the stale install temp file, verify the installed artifact, and rerun first-use install",
+            str(tmp),
+        ) from exc
+    if linked:
+        try:
+            os.chmod(path, mode, follow_symlinks=False)
+        except OSError as exc:
+            raise _install_io_error(path, "chmod") from exc
+        installed = _read_private_install_file(path, mode=mode)
+        if installed != payload:
+            raise ExecutionAdmissionError(
+                "gate0b_install_file_readback_mismatch",
+                "quarantine the mismatched install artifact and rerun first-use install",
+                str(path),
+            )
+
+
+def _require_private_install_directory(path: Path) -> None:
+    try:
+        parent_meta = path.stat(follow_symlinks=False)
+    except FileNotFoundError:
+        raise
+    except OSError as exc:
+        raise ExecutionAdmissionError(
+            "gate0b_install_directory_unavailable",
+            "restore an euid-owned mode-0700 private install directory, then rerun first-use install",
+            str(path),
+        ) from exc
+    if (
+        not stat.S_ISDIR(parent_meta.st_mode)
+        or parent_meta.st_uid != os.geteuid()
+        or stat.S_IMODE(parent_meta.st_mode) != 0o700
+    ):
+        raise ExecutionAdmissionError(
+            "gate0b_install_directory_unsafe",
+            "restore an euid-owned mode-0700 private install directory, then rerun first-use install",
+            str(path),
+        )
+
+
+def _read_private_install_file(path: Path, *, mode: int = 0o600) -> bytes:
+    try:
+        _require_private_install_directory(path.parent)
+        metadata = path.stat(follow_symlinks=False)
+    except FileNotFoundError:
+        raise
+    except OSError as exc:
+        raise ExecutionAdmissionError(
+            "gate0b_install_file_unavailable",
+            "restore an euid-owned single-link mode-0600 regular install artifact and rerun first-use install",
+            str(path),
+        ) from exc
+    if (
+        not stat.S_ISREG(metadata.st_mode)
+        or metadata.st_uid != os.geteuid()
+        or metadata.st_nlink != 1
+        or stat.S_IMODE(metadata.st_mode) != mode
+    ):
+        raise ExecutionAdmissionError(
+            "gate0b_install_file_unsafe",
+            "replace the install artifact with one euid-owned single-link mode-0600 regular file, then rerun first-use install",
+            str(path),
+        )
+    try:
+        return path.read_bytes()
+    except OSError as exc:
+        raise ExecutionAdmissionError(
+            "gate0b_install_file_unavailable",
+            "restore readable euid-owned mode-0600 install artifact bytes and rerun first-use install",
+            str(path),
+        ) from exc
 
 
 def _load_install_receipt(path: Path) -> Gate0BClaimPublicationInstallReceipt:
     try:
-        payload = path.read_bytes()
+        payload = _read_private_install_file(path)
     except OSError as exc:
         raise ExecutionAdmissionError(
             "gate0b_install_receipt_missing",
@@ -280,7 +416,14 @@ def _load_install_receipt(path: Path) -> Gate0BClaimPublicationInstallReceipt:
             "restore canonical ASCII JSON activation receipt bytes",
             str(path),
         ) from exc
-    receipt = Gate0BClaimPublicationInstallReceipt.model_validate(record)
+    try:
+        receipt = Gate0BClaimPublicationInstallReceipt.model_validate(record)
+    except ValidationError as exc:
+        raise ExecutionAdmissionError(
+            "gate0b_install_receipt_malformed",
+            "restore a canonical Gate-0B install receipt generated by install_claim_publication_composition",
+            str(path),
+        ) from exc
     if payload != claim_publication_install_receipt_bytes(receipt):
         raise ExecutionAdmissionError(
             "gate0b_install_receipt_noncanonical",
@@ -324,10 +467,12 @@ def _generation_roots(activation_generation: ContentAddress) -> tuple[ContentAdd
     shared = Path(__file__).resolve().parent
     roots = (
         activation_generation,
+        module_file_address(shared / "coord_projection.py"),
         module_file_address(shared / "execution_admission.py"),
         module_file_address(Path(__file__)),
         module_file_address(shared / "gate0b_claim_publication_lease.py"),
         module_file_address(shared / "gate0b_claim_publication_effect.py"),
+        module_file_address(shared / "sdlc_claim.py"),
     )
     return tuple(
         sorted({(item.ref, item.sha256): item for item in roots}.values(), key=lambda x: x.ref)
@@ -623,7 +768,7 @@ def load_claim_publication_composition(
     root_path = _absolute(invocation_store_root, label="claim-publication invocation store root")
     receipt = _load_install_receipt(root_path / INSTALL_RECEIPT_FILENAME)
     try:
-        manifest_payload = (root_path / "composition-manifest.json").read_bytes()
+        manifest_payload = _read_private_install_file(root_path / "composition-manifest.json")
         manifest_record = json.loads(manifest_payload.decode("ascii"))
     except (OSError, UnicodeError, json.JSONDecodeError) as exc:
         raise ExecutionAdmissionError(

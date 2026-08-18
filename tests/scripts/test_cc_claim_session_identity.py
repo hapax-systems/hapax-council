@@ -19,12 +19,19 @@ from __future__ import annotations
 
 import os
 import subprocess
+from datetime import UTC, datetime
 from pathlib import Path
+
+from shared.gate0b_claim_publication_install import (
+    default_claim_publication_roots,
+    install_claim_publication_composition,
+)
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 SCRIPT = REPO_ROOT / "scripts" / "cc-claim"
 
 _UUID = "12345678-1234-4321-8765-123456789abc"
+_BINDING_HASH = "b" * 64
 
 # The FULL precedence chain of hapax_agent_identity, which returns the first
 # variable that is set. HAPAX_AGENT_NAME is checked BEFORE HAPAX_AGENT_ROLE, so
@@ -42,6 +49,14 @@ _IDENTITY_ENV = (
     "HAPAX_SESSION_ID",
     "CLAUDE_CODE_SESSION_ID",
     "CODEX_THREAD_ID",
+    "HAPAX_GATE0B_CLAIM_PUBLICATION_OFF",
+    "HAPAX_CLAIM_DISPATCH_MESSAGE_ID",
+    "HAPAX_CLAIM_DISPATCH_BINDING_HASH",
+    "HAPAX_CLAIM_DISPATCH_PLATFORM",
+    "HAPAX_CLAIM_DISPATCH_MODE",
+    "HAPAX_CLAIM_DISPATCH_PROFILE",
+    "HAPAX_CLAIM_DISPATCH_AUTHORITY_CASE",
+    "HAPAX_CLAIM_DISPATCH_IDEMPOTENCY_KEY",
 )
 
 
@@ -59,6 +74,7 @@ def _write_task(home: Path, task_id: str) -> Path:
                 f'title: "{task_id}"',
                 "status: offered",
                 "assigned_to: unassigned",
+                "claimable: true",
                 "kind: build",
                 "authority_case: CASE-TEST-001",
                 "parent_spec: /tmp/isap-test.md",
@@ -79,7 +95,33 @@ def _write_task(home: Path, task_id: str) -> Path:
     return path
 
 
-def _claim(home: Path, task_id: str, *, session_id: str | None) -> subprocess.CompletedProcess[str]:
+def _dispatch_env(task_id: str) -> dict[str, str]:
+    return {
+        "HAPAX_CLAIM_DISPATCH_MESSAGE_ID": f"dispatch-{task_id}",
+        "HAPAX_CLAIM_DISPATCH_BINDING_HASH": _BINDING_HASH,
+        "HAPAX_CLAIM_DISPATCH_PLATFORM": "codex",
+        "HAPAX_CLAIM_DISPATCH_MODE": "headless",
+        "HAPAX_CLAIM_DISPATCH_PROFILE": "ultra",
+        "HAPAX_CLAIM_DISPATCH_AUTHORITY_CASE": "CASE-TEST-001",
+        "HAPAX_CLAIM_DISPATCH_IDEMPOTENCY_KEY": f"coord-{task_id}",
+    }
+
+
+def _install_gate0b_claim_publication_root(home: Path) -> None:
+    install_claim_publication_composition(
+        roots=default_claim_publication_roots(home=home),
+        installed_at=datetime(2026, 8, 9, 17, 0, tzinfo=UTC),
+        install_task_ref="cc-task-gate0b-slice1b-cc-claim-reland-20260809-test",
+    )
+
+
+def _claim(
+    home: Path,
+    task_id: str,
+    *,
+    session_id: str | None,
+    legacy: bool = False,
+) -> subprocess.CompletedProcess[str]:
     env = os.environ.copy()
     for var in _IDENTITY_ENV:
         env.pop(var, None)
@@ -88,6 +130,11 @@ def _claim(home: Path, task_id: str, *, session_id: str | None) -> subprocess.Co
     env["HAPAX_AGENT_NAME"] = "epsilon"
     if session_id is not None:
         env["HAPAX_SESSION_ID"] = session_id
+    if legacy:
+        env["HAPAX_GATE0B_CLAIM_PUBLICATION_OFF"] = "1"
+    else:
+        env.update(_dispatch_env(task_id))
+        _install_gate0b_claim_publication_root(home)
     return subprocess.run(
         ["bash", str(SCRIPT), task_id],
         env=env,
@@ -127,7 +174,7 @@ def test_pid_shaped_session_id_is_refused_as_claim_key(tmp_path: Path) -> None:
     home = tmp_path / "home"
     _write_task(home, "task-pid")
     # The exact shape the pre-fix launcher fallback minted: <role>-$$.
-    result = _claim(home, "task-pid", session_id="epsilon-12345")
+    result = _claim(home, "task-pid", session_id="epsilon-12345", legacy=True)
     assert result.returncode == 0, result.stderr
 
     cache = home / ".cache" / "hapax"
@@ -152,7 +199,7 @@ def test_pid_shaped_session_id_is_refused_as_claim_key(tmp_path: Path) -> None:
 def test_no_session_id_still_claims_legacy_only(tmp_path: Path) -> None:
     home = tmp_path / "home"
     _write_task(home, "task-bare")
-    result = _claim(home, "task-bare", session_id=None)
+    result = _claim(home, "task-bare", session_id=None, legacy=True)
     assert result.returncode == 0, result.stderr
 
     cache = home / ".cache" / "hapax"
