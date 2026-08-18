@@ -397,6 +397,60 @@ def test_cascade_withdraw_skips_already_withdrawn(tmp_path: Path) -> None:
     assert "status: withdrawn" in target.read_text(encoding="utf-8")
 
 
+def test_cascade_evaluates_no_deps_typed_witness_and_does_not_bulk_unblock(
+    tmp_path: Path,
+) -> None:
+    module = _load_module()
+    vault = _make_vault(tmp_path, module)
+    present = tmp_path / "present"
+    present.write_text("ok", encoding="utf-8")
+    missing = tmp_path / "missing"
+    satisfied = vault / "active" / "satisfied.md"
+    unsatisfied = vault / "active" / "unsatisfied.md"
+    unknown = vault / "active" / "unknown.md"
+    satisfied.write_text(
+        f"""---
+status: blocked
+blocked_reason: waiting
+blocked_witness:
+  kind: path_exists
+  ref: {present}
+depends_on: []
+---
+""",
+        encoding="utf-8",
+    )
+    unsatisfied.write_text(
+        f"""---
+status: blocked
+blocked_reason: waiting
+blocked_witness:
+  kind: path_exists
+  ref: {missing}
+depends_on: []
+---
+""",
+        encoding="utf-8",
+    )
+    unknown.write_text(
+        """---
+status: blocked
+blocked_reason: waiting
+blocked_witness:
+  kind: existence_implies_resolved
+  ref: /tmp/x
+depends_on: []
+---
+""",
+        encoding="utf-8",
+    )
+
+    assert module.cascade_unblock() == 1
+    assert "status: offered" in satisfied.read_text(encoding="utf-8")
+    assert "status: blocked" in unsatisfied.read_text(encoding="utf-8")
+    assert "status: blocked" in unknown.read_text(encoding="utf-8")
+
+
 def test_safe_read_text_tolerates_missing_file(tmp_path: Path) -> None:
     module = _load_module()
     missing = tmp_path / "gone.md"

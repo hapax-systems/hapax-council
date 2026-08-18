@@ -227,9 +227,15 @@ def _blocked_candidates(trigger_task_id: str | None) -> list[tuple[Path, str, li
             continue
 
         deps = _parse_depends(text)
-        if not deps:
+        has_witness = bool(re.search(r"(?m)^blocked_witness:", text))
+        # No-deps rows were skipped outright, so typed witnesses never ran.
+        # A blocked_witness makes the row a candidate; the evaluator, not this
+        # continue, decides whether evidence is still current.
+        if not deps and not has_witness:
             continue
-        if trigger_aliases and not trigger_aliases.intersection(deps):
+        if trigger_aliases and deps and not trigger_aliases.intersection(deps):
+            continue
+        if trigger_aliases and not deps and not has_witness:
             continue
         candidates.append((f, text, deps))
 

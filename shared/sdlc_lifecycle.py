@@ -2,14 +2,16 @@
 
 from __future__ import annotations
 
+import os
 import re
+import subprocess
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass
-from datetime import datetime
+from datetime import UTC, datetime, timedelta
 from importlib import resources
 from pathlib import Path
 from types import MappingProxyType
-from typing import Any
+from typing import Any, Literal
 
 import yaml
 
@@ -231,11 +233,103 @@ def blocked_reason_from_frontmatter(frontmatter: Mapping[str, Any]) -> str | Non
 def blocked_witness_from_frontmatter(frontmatter: Mapping[str, Any]) -> str | None:
     """Return the canonical witness path for an active blocked task, if present."""
 
+    raw = frontmatter.get("blocked_witness")
+    if isinstance(raw, Mapping):
+        ref = _frontmatter_non_null_scalar(raw.get("ref"))
+        if ref:
+            return ref
     for field in BLOCKED_WITNESS_FIELDS:
         witness = _frontmatter_non_null_scalar(frontmatter.get(field))
         if witness:
             return witness
     return None
+
+
+BLOCKED_WITNESS_KINDS = frozenset({"path_exists", "ancestor_of_main", "receipt_fresh"})
+BlockedWitnessVerdict = Literal["satisfied", "unsatisfied", "refuse"]
+
+
+def evaluate_blocked_witness(
+    frontmatter: Mapping[str, Any],
+    *,
+    now: datetime | None = None,
+    git_repo: Path | None = None,
+) -> BlockedWitnessVerdict:
+    """Evaluate a typed blocked_witness. Unknown/untyped kinds refuse.
+
+    This function only evaluates. Unblocking remains the cascade predicate.
+    """
+
+    raw = frontmatter.get("blocked_witness")
+    if not isinstance(raw, Mapping):
+        # A bare string is the pre-contract shape. Existence is not satisfaction.
+        return "refuse"
+    kind = _frontmatter_non_null_scalar(raw.get("kind")) or ""
+    ref = _frontmatter_non_null_scalar(raw.get("ref")) or ""
+    if not kind or not ref:
+        return "refuse"
+    if kind not in BLOCKED_WITNESS_KINDS:
+        return "refuse"
+    if kind == "path_exists":
+        path = Path(ref).expanduser()
+        return "satisfied" if path.exists() else "unsatisfied"
+    if kind == "ancestor_of_main":
+        return _sha_is_ancestor_of_main(ref, git_repo=git_repo)
+    if kind == "receipt_fresh":
+        return _receipt_is_fresh(ref, now=now)
+    return "refuse"
+
+
+def _sha_is_ancestor_of_main(sha: str, *, git_repo: Path | None) -> BlockedWitnessVerdict:
+    if not re.fullmatch(r"[0-9a-f]{7,64}", sha.strip().lower()):
+        return "refuse"
+    repo = git_repo or Path(os.environ.get("HAPAX_WITNESS_GIT_REPO") or ".")
+    try:
+        result = subprocess.run(
+            ["git", "-C", str(repo), "merge-base", "--is-ancestor", sha, "origin/main"],
+            check=False,
+            capture_output=True,
+            text=True,
+            timeout=10,
+        )
+    except (OSError, subprocess.SubprocessError):
+        return "refuse"
+    if result.returncode == 0:
+        return "satisfied"
+    if result.returncode == 1:
+        return "unsatisfied"
+    return "refuse"
+
+
+def _receipt_is_fresh(ref: str, *, now: datetime | None) -> BlockedWitnessVerdict:
+    path = Path(ref).expanduser()
+    if not path.is_file():
+        return "unsatisfied"
+    try:
+        payload = yaml.safe_load(path.read_text(encoding="utf-8"))
+    except (OSError, yaml.YAMLError):
+        return "refuse"
+    if not isinstance(payload, Mapping):
+        return "refuse"
+    observed = payload.get("observed_at")
+    stale_after = payload.get("stale_after_seconds")
+    if not observed or stale_after is None:
+        return "refuse"
+    try:
+        observed_dt = datetime.fromisoformat(str(observed).replace("Z", "+00:00"))
+        if observed_dt.tzinfo is None:
+            observed_dt = observed_dt.replace(tzinfo=UTC)
+        horizon = int(stale_after)
+    except (TypeError, ValueError):
+        return "refuse"
+    if horizon <= 0:
+        return "refuse"
+    moment = now if now is not None else datetime.now(UTC)
+    if moment.tzinfo is None:
+        moment = moment.replace(tzinfo=UTC)
+    if moment - observed_dt <= timedelta(seconds=horizon):
+        return "satisfied"
+    return "unsatisfied"
 
 
 def is_dependency_blocked_reason(reason: str | None) -> bool:
@@ -260,14 +354,20 @@ def active_blocked_task_blockers(frontmatter: Mapping[str, Any]) -> tuple[str, .
 
 
 def is_active_blocked_with_evidence(frontmatter: Mapping[str, Any]) -> bool:
-    """True for the stable active blocked-with-evidence lifecycle state."""
+    """True for the stable active blocked-with-evidence lifecycle state.
+
+    A typed witness that evaluates ``satisfied`` is no longer current evidence.
+    Untyped or unknown kinds refuse and therefore remain blocked.
+    """
 
     status = _frontmatter_scalar(frontmatter.get("status")).lower()
     reason = blocked_reason_from_frontmatter(frontmatter)
     witness = blocked_witness_from_frontmatter(frontmatter)
-    return bool(
+    if not (
         status == "blocked" and reason and witness and not is_dependency_blocked_reason(reason)
-    )
+    ):
+        return False
+    return evaluate_blocked_witness(frontmatter) != "satisfied"
 
 
 # --- Acceptance-receipt enforcement (capacity routing Phase 0.2) -------------

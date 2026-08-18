@@ -29,6 +29,7 @@ from shared.sdlc_lifecycle import (
     acceptance_receipt_blockers,
     acceptance_receipt_path,
     active_blocked_task_blockers,
+    evaluate_blocked_witness,
     frontmatter_from_text,
     is_active_blocked_with_evidence,
     is_dependency_blocked_reason,
@@ -208,6 +209,60 @@ blocked_reason: minio_mirror_still_d_state
         )
         assert is_active_blocked_with_evidence(dependency_wait) is False
         assert is_active_blocked_with_evidence(no_witness) is False
+
+    def test_typed_witness_unknown_kind_refuses(self) -> None:
+        fm = frontmatter_from_text(
+            """---
+status: blocked
+blocked_reason: waiting
+blocked_witness:
+  kind: existence_implies_resolved
+  ref: /tmp/anything
+---
+"""
+        )
+        assert evaluate_blocked_witness(fm) == "refuse"
+        assert is_active_blocked_with_evidence(fm) is True
+
+    def test_typed_path_exists_witness_evaluates_the_named_path(self, tmp_path: Path) -> None:
+        present = tmp_path / "here"
+        present.write_text("ok", encoding="utf-8")
+        missing = tmp_path / "gone"
+        sat = frontmatter_from_text(
+            f"""---
+status: blocked
+blocked_reason: waiting
+blocked_witness:
+  kind: path_exists
+  ref: {present}
+---
+"""
+        )
+        uns = frontmatter_from_text(
+            f"""---
+status: blocked
+blocked_reason: waiting
+blocked_witness:
+  kind: path_exists
+  ref: {missing}
+---
+"""
+        )
+        assert evaluate_blocked_witness(sat) == "satisfied"
+        assert is_active_blocked_with_evidence(sat) is False
+        assert evaluate_blocked_witness(uns) == "unsatisfied"
+        assert is_active_blocked_with_evidence(uns) is True
+
+    def test_string_witness_is_untyped_and_refuses(self) -> None:
+        fm = frontmatter_from_text(
+            """---
+status: blocked
+blocked_reason: waiting
+blocked_witness: /tmp/does-not-need-to-exist
+---
+"""
+        )
+        assert evaluate_blocked_witness(fm) == "refuse"
 
     def test_malformed_frontmatter_is_non_fulfilling_not_exception(self) -> None:
         text = """---
