@@ -254,4 +254,5 @@ _PYDANTIC_DYNAMIC_ENTRYPOINTS = (
     SurfaceEvidence._evidence_or_reason,
     ProviderDocsEvidence._duration_is_valid,
     PlatformCapabilityReceipt._duration_is_valid,
+    BareHostCliProbeReceiptV1._not_supply_and_duration_is_valid,
 )
