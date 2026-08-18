@@ -128,7 +128,8 @@ check_postgres_dump_in_snapshot() {
     case "$size" in
         ""|*[!0-9]*) FAILURES+=("$label: could not parse dump size"); return ;;
     esac
-    (( size < 1000000000 )) && { FAILURES+=("$label: postgres dump implausibly small: ${size} bytes"); return; }
+    local min_bytes="${HAPAX_POSTGRES_DUMP_MIN_BYTES:-1000000000}"
+    (( size < min_bytes )) && { FAILURES+=("$label: postgres dump implausibly small: ${size} bytes"); return; }
     log "  $label: postgres dump present, ${size} bytes"
 }
 

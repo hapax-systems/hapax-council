@@ -15,6 +15,9 @@ POSTGRES_PITR_DIR="${HAPAX_POSTGRES_PITR_DIR:-/store/llm-data/postgres-pitr}"
 # Durable copy of the producer-validated dump. Not /tmp: hapax-backup-local
 # trap-cleans that path on EXIT. A missing file fails the run.
 POSTGRES_DUMP_PATH="${HAPAX_POSTGRES_DUMP_PATH:-/store/llm-data/postgres-dumps/postgres-all.sql}"
+TIER1_REPO="${HAPAX_TIER1_RESTIC_REPO:-/mnt/nas/backups/restic}"
+TIER1_PASSWORD_ENTRY="${HAPAX_TIER1_RESTIC_PASSWORD_ENTRY:-backups/restic-password}"
+POSTGRES_DUMP_MIN_BYTES="${HAPAX_POSTGRES_DUMP_MIN_BYTES:-1000000000}"
 QDRANT_SNAPSHOT_DIR="${HAPAX_QDRANT_SNAPSHOT_DIR:-/store/llm-data/qdrant-snapshots}"
 HAPAX_VAULT_DIR="${HAPAX_VAULT_DIR:-$HOME/Documents/Personal/30-areas/hapax}"
 # Bundle must not live inside the vault it bundles (recursive growth).
@@ -100,6 +103,40 @@ append_if_exists() {
     fi
 }
 
+materialize_validated_dump() {
+    # Copy the newest Tier-1 dump onto the durable path. The producer trap-cleans
+    # /tmp; we refuse to point the manifest there. Fail closed if NAS has no dump.
+    mkdir -p "$(dirname "$POSTGRES_DUMP_PATH")"
+    local password
+    password="$(pass show "$TIER1_PASSWORD_ENTRY" 2>/dev/null | sed -n '1p')" || {
+        echo "ERROR: cannot read Tier-1 restic password ($TIER1_PASSWORD_ENTRY)" >&2
+        echo "Next: unlock pass and re-run" >&2
+        exit 1
+    }
+    [[ -n "$password" ]] || {
+        echo "ERROR: Tier-1 restic password is empty" >&2
+        exit 1
+    }
+    local listing snap_path
+    listing="$(RESTIC_REPOSITORY="$TIER1_REPO" RESTIC_PASSWORD="$password" restic ls --long latest 2>/dev/null | grep -F "postgres-all.sql" | head -1)" || true
+    [[ -n "$listing" ]] || {
+        echo "ERROR: Tier-1 latest snapshot contains no postgres-all.sql" >&2
+        echo "Next: run hapax-backup-local so NAS holds a validated dump" >&2
+        exit 1
+    }
+    snap_path="$(echo "$listing" | awk '{print $NF}')"
+    RESTIC_REPOSITORY="$TIER1_REPO" RESTIC_PASSWORD="$password" \
+        restic dump latest "$snap_path" > "$POSTGRES_DUMP_PATH"
+    local size
+    size="$(wc -c < "$POSTGRES_DUMP_PATH")"
+    if (( size < POSTGRES_DUMP_MIN_BYTES )); then
+        echo "ERROR: materialized dump is implausibly small: ${size} bytes" >&2
+        echo "Next: inspect Tier-1 snapshot; refuse to ship a truncated dump" >&2
+        exit 1
+    fi
+    log "Materialized validated dump: ${size} bytes -> $POSTGRES_DUMP_PATH"
+}
+
 append_required() {
     local path="$1" manifest="$2" label="$3"
     if [[ ! -e "$path" ]]; then
@@ -172,6 +209,7 @@ build_manifest() {
     local manifest="$run_dir/backup-files.txt"
     : > "$manifest"
 
+    materialize_validated_dump
     append_required "$POSTGRES_DUMP_PATH" "$manifest" "validated Postgres dump"
     append_if_exists "$POSTGRES_PITR_DIR" "$manifest"
     append_latest_qdrant_snapshots "$manifest"
