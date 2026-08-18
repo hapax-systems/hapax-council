@@ -19,10 +19,12 @@ from shared.bare_host_capability_observer import (
     _SAFE_CLI_NAME,
     ABSENT_REASON_PREFIX,
     CLI_CATALOGUE,
+    NOT_PROBED_REASON_PREFIX,
     OBSERVATION_RECEIPT_CLASS,
     UNREACHABLE_REASON_PREFIX,
     CliShapeSpec,
     HostCliProbe,
+    InventoryUnavailable,
     _probe_argv,
     _probe_payload,
     descriptors_for_probe,
@@ -469,8 +471,14 @@ def test_a_non_linux_host_is_recorded_as_not_probed_rather_than_dropped():
     probe = probe_host_clis(row, catalogue=SMALL_CATALOGUE, runner=runner_for(), now=NOW)
 
     assert probe.reachable is False
+    assert probe.skipped is True
     assert "os=iOS" in probe.unreachable_reason
     assert "next action" in probe.unreachable_reason.lower()
+    rows = descriptors_for_probe(probe, catalogue=SMALL_CATALOGUE, observed_at=NOW)
+    assert all(d.failure_classes == ["host_not_probed"] for d in rows)
+    assert all(any(r.startswith(NOT_PROBED_REASON_PREFIX) for r in d.blocked_reasons) for d in rows)
+    assert all(observation_outcome(d) == "not_observable" for d in rows)
+    assert not any(d.failure_classes == ["host_unreachable"] for d in rows)
 
 
 def test_garbage_output_does_not_become_a_reachable_host():
@@ -535,15 +543,37 @@ def test_observe_keeps_unreachable_hosts_in_the_result():
 
 
 def test_observe_refuses_rather_than_assuming_a_roster(monkeypatch):
-    import shared.bare_host_capability_observer as module
-
     def _refuse():
-        raise module.InventoryUnavailable("tailscale is not installed")
+        raise InventoryUnavailable("tailscale is not installed")
 
-    monkeypatch.setattr(module, "tailnet_hosts", _refuse)
+    monkeypatch.setattr(
+        "shared.bare_host_capability_observer.tailnet_hosts",
+        _refuse,
+    )
 
-    with pytest.raises(module.InventoryUnavailable):
+    with pytest.raises(InventoryUnavailable):
         observe(runner=runner_for(), now=NOW)
+
+
+def test_empty_catalogue_is_not_an_unreachable_host():
+    calls: list[object] = []
+
+    def _run(argv, **kwargs):
+        calls.append(argv)
+        return FakeCompleted(returncode=2, stderr="syntax error")
+
+    probe = probe_host_clis(linux("podium"), catalogue=(), runner=_run, now=NOW)
+    assert probe.reachable is True
+    assert probe.skipped is False
+    assert calls == []
+    assert _probe_payload(()) == "true\n"
+
+
+def test_a_nameless_roster_row_does_not_raise():
+    probe = probe_host_clis({}, catalogue=SMALL_CATALOGUE, runner=runner_for(), now=NOW)
+    assert probe.skipped is True
+    assert probe.reachable is False
+    assert "no host name" in probe.unreachable_reason
 
 
 def test_observe_refuses_a_roster_whose_distinct_hosts_slug_to_one_identity():

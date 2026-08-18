@@ -64,6 +64,7 @@ __all__ = [
     "OBSERVATION_RECEIPT_CLASS",
     "STALE_AFTER",
     "UNREACHABLE_REASON_PREFIX",
+    "NOT_PROBED_REASON_PREFIX",
     "BareHostObservation",
     "CliShapeSpec",
     "HostCliProbe",
@@ -84,6 +85,7 @@ OBSERVATION_RECEIPT_CLASS = "BareHostCliProbeReceiptV1"
 #: :func:`observation_outcome` is the only supported reader.
 ABSENT_REASON_PREFIX = "cli_absent_on_host:"
 UNREACHABLE_REASON_PREFIX = "host_unreachable:"
+NOT_PROBED_REASON_PREFIX = "host_not_probed:"
 
 #: Presence changes on the timescale of a package install, not a request. A day is long enough that
 #: the row is not permanently re-probing itself and short enough that a stale row is visibly stale.
@@ -211,6 +213,7 @@ class HostCliProbe:
 
     host: str
     reachable: bool = False
+    skipped: bool = False
     unreachable_reason: str = ""
     present: dict[str, str] = field(default_factory=dict)
     absent: list[str] = field(default_factory=list)
@@ -252,6 +255,11 @@ def _probe_payload(catalogue: tuple[CliShapeSpec, ...]) -> str:
                 "dash and underscore."
             )
     names = " ".join(spec.cli for spec in catalogue)
+    if not names:
+        # An empty for-list is a shell syntax error (`for c in ; do`). That would come
+        # back as a non-zero exit with no stdout and be filed as unreachable — the
+        # exact "not asked" vs "not reachable" collapse this module exists to prevent.
+        return "true\n"
     return (
         f"for c in {names}; do\n"
         '  p="$(command -v "$c" 2>/dev/null || true)"\n'
@@ -349,15 +357,27 @@ def probe_host_clis(
     now: datetime | None = None,
 ) -> HostCliProbe:
     """Ask one host which catalogue CLIs it has. Never raises: unreachable is a populated row."""
-    name = str(row["name"])
+    name = str(row.get("name") or "")
     probe = HostCliProbe(host=name, probed_at=_stamp(now))
+    if not name:
+        probe.skipped = True
+        probe.unreachable_reason = (
+            "not probed: roster row has no host name. Next action: fix the roster row"
+        )
+        return probe
 
     if str(row.get("os") or "") != "linux":
+        probe.skipped = True
         probe.unreachable_reason = (
             f"not probed: os={row.get('os') or 'unknown'!s}; the payload is POSIX shell. "
             "Next action: if this host does host capabilities, add an os-specific payload rather "
             "than dropping the row"
         )
+        return probe
+
+    if not catalogue:
+        # No questions to ask is not a transport failure and is not an OS skip.
+        probe.reachable = True
         return probe
 
     payload = _probe_payload(catalogue)
@@ -494,6 +514,23 @@ def descriptors_for_probe(
     stamp = observed_at if observed_at is not None else datetime.now(UTC)
     rows: list[CapabilityShapeDescriptor] = []
     for spec in catalogue:
+        if probe.skipped:
+            rows.append(
+                _descriptor(
+                    spec,
+                    host=probe.host,
+                    observed_at=None,
+                    evidence_refs=[],
+                    blocked_reasons=[
+                        f"{NOT_PROBED_REASON_PREFIX}{probe.host}:"
+                        f"{probe.unreachable_reason or 'unknown'}"
+                    ],
+                    freshness=CapabilityShapeFreshnessState.MISSING,
+                    failure_classes=["host_not_probed"],
+                    remediation_refs=[f"require:os-specific-payload:{probe.host}"],
+                )
+            )
+            continue
         if not probe.reachable:
             rows.append(
                 _descriptor(
@@ -600,7 +637,9 @@ def observe(
     roster silently omits hosts and returns an inventory that reads complete.
     """
     rows = hosts if hosts is not None else tailnet_hosts()
-    _refuse_colliding_hosts([str(row["name"]) for row in rows])
+    _refuse_colliding_hosts(
+        [str(row.get("name") or "") for row in rows if str(row.get("name") or "")]
+    )
     stamp_dt = now if now is not None else datetime.now(UTC)
     probes = [
         probe_host_clis(row, catalogue=catalogue, runner=runner, self_name=self_name, now=stamp_dt)
@@ -613,7 +652,7 @@ def observe(
         probed_at=_stamp(stamp_dt),
         host_count=len(probes),
         reachable_count=sum(1 for p in probes if p.reachable),
-        unreachable=[p.host for p in probes if not p.reachable],
+        unreachable=[p.host for p in probes if not p.reachable and not p.skipped],
         probes=probes,
         descriptors=descriptors,
     )
