@@ -5071,3 +5071,8 @@ _ = (
     delta_to_classify_kwargs,
     discover_from_deltas,
 )
+
+# Called from scripts/cc-cascade-unblock (extensionless scanner path).
+from shared.blocked_witness import evaluate_blocked_witness  # noqa: E402
+
+_ = (evaluate_blocked_witness,)
