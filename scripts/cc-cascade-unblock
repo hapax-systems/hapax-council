@@ -20,6 +20,7 @@ REPO_ROOT = Path(__file__).resolve().parents[1]
 if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
+from shared.blocked_witness import evaluate_blocked_witness  # noqa: E402
 from shared.sdlc_lifecycle import (  # noqa: E402
     TASK_NON_FULFILLING_CLOSED_STATUSES,
     frontmatter_from_text,
@@ -252,6 +253,20 @@ def cascade_unblock(trigger_task_id: str | None = None) -> int:
                 f"cc-cascade-unblock: {f.stem} remains blocked (current blocked evidence present)"
             )
             continue
+        # Untyped / unknown / unsatisfied witnesses stay blocked even when
+        # blocked_reason is empty. TRUE-skip polarity of the exemption guard
+        # is preserved; only a typed SATISFIED witness may proceed to unblock.
+        if re.search(r"(?m)^blocked_witness:", text):
+            verdict = evaluate_blocked_witness(frontmatter)
+            if verdict != "satisfied":
+                print(
+                    f"cc-cascade-unblock: {f.stem} remains blocked "
+                    f"(witness {verdict}; evaluator does not mutate; "
+                    "next: set blocked_witness.kind to path_exists|"
+                    "ancestor_of_main|receipt_fresh with a valid ref, "
+                    "or remove blocked_witness after an operator decision)"
+                )
+                continue
 
         unmet = [dep for dep in deps if dep not in satisfied_ids]
         if unmet:

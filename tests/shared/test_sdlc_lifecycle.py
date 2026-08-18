@@ -14,10 +14,12 @@ from __future__ import annotations
 import ast
 import tomllib
 from collections.abc import Callable
+from datetime import UTC, datetime
 from pathlib import Path
 
 import pytest
 
+from shared.blocked_witness import evaluate_blocked_witness
 from shared.sdlc_lifecycle import (
     PR_ACTIONS,
     SDLC_STAGE_METADATA,
@@ -208,6 +210,155 @@ blocked_reason: minio_mirror_still_d_state
         )
         assert is_active_blocked_with_evidence(dependency_wait) is False
         assert is_active_blocked_with_evidence(no_witness) is False
+
+    def test_typed_witness_unknown_kind_refuses(self) -> None:
+        fm = frontmatter_from_text(
+            """---
+status: blocked
+blocked_reason: waiting
+blocked_witness:
+  kind: existence_implies_resolved
+  ref: /tmp/anything
+---
+"""
+        )
+        assert evaluate_blocked_witness(fm) == "refuse"
+        assert is_active_blocked_with_evidence(fm) is True
+
+    def test_typed_path_exists_witness_evaluates_the_named_path(self, tmp_path: Path) -> None:
+        present = tmp_path / "here"
+        present.write_text("ok", encoding="utf-8")
+        missing = tmp_path / "gone"
+        sat = frontmatter_from_text(
+            f"""---
+status: blocked
+blocked_reason: waiting
+blocked_witness:
+  kind: path_exists
+  ref: {present}
+---
+"""
+        )
+        uns = frontmatter_from_text(
+            f"""---
+status: blocked
+blocked_reason: waiting
+blocked_witness:
+  kind: path_exists
+  ref: {missing}
+---
+"""
+        )
+        assert evaluate_blocked_witness(sat) == "satisfied"
+        assert is_active_blocked_with_evidence(sat) is True
+        assert evaluate_blocked_witness(uns) == "unsatisfied"
+        assert is_active_blocked_with_evidence(uns) is True
+
+    def test_string_witness_is_untyped_and_refuses(self) -> None:
+        fm = frontmatter_from_text(
+            """---
+status: blocked
+blocked_reason: waiting
+blocked_witness: /tmp/does-not-need-to-exist
+---
+"""
+        )
+        assert evaluate_blocked_witness(fm) == "refuse"
+
+    def test_future_receipt_timestamp_refuses(self, tmp_path: Path) -> None:
+        receipt = tmp_path / "receipt.yaml"
+        receipt.write_text(
+            "observed_at: 2099-01-01T00:00:00Z\nstale_after_seconds: 3600\n",
+            encoding="utf-8",
+        )
+        fm = frontmatter_from_text(
+            f"""---
+status: blocked
+blocked_reason: waiting
+blocked_witness:
+  kind: receipt_fresh
+  ref: {receipt}
+---
+"""
+        )
+        now = datetime(2026, 8, 18, tzinfo=UTC)
+        assert evaluate_blocked_witness(fm, now=now) == "refuse"
+        assert is_active_blocked_with_evidence(fm) is True
+
+    def test_non_string_kind_or_ref_refuses(self) -> None:
+        fm = frontmatter_from_text(
+            """---
+status: blocked
+blocked_reason: waiting
+blocked_witness:
+  kind: 123
+  ref: 456
+---
+"""
+        )
+        assert evaluate_blocked_witness(fm) == "refuse"
+
+    def test_receipt_fresh_satisfied_and_stale(self, tmp_path: Path) -> None:
+        receipt = tmp_path / "receipt.yaml"
+        receipt.write_text(
+            "observed_at: 2026-08-18T00:00:00Z\nstale_after_seconds: 3600\n",
+            encoding="utf-8",
+        )
+        fm = frontmatter_from_text(
+            f"""---
+status: blocked
+blocked_reason: waiting
+blocked_witness:
+  kind: receipt_fresh
+  ref: {receipt}
+---
+"""
+        )
+        fresh_now = datetime(2026, 8, 18, 0, 10, tzinfo=UTC)
+        stale_now = datetime(2026, 8, 18, 2, 0, tzinfo=UTC)
+        assert evaluate_blocked_witness(fm, now=fresh_now) == "satisfied"
+        assert evaluate_blocked_witness(fm, now=stale_now) == "unsatisfied"
+
+    def test_ancestor_of_main_evaluates_returncodes(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        fm = frontmatter_from_text(
+            """---
+status: blocked
+blocked_reason: waiting
+blocked_witness:
+  kind: ancestor_of_main
+  ref: abcdef1
+---
+"""
+        )
+
+        class _Result:
+            def __init__(self, returncode: int) -> None:
+                self.returncode = returncode
+
+        box = {"rc": 0}
+
+        def _run(*_args: object, **_kwargs: object) -> _Result:
+            return _Result(box["rc"])
+
+        monkeypatch.setattr("shared.blocked_witness.subprocess.run", _run)
+        box["rc"] = 0
+        assert evaluate_blocked_witness(fm) == "satisfied"
+        box["rc"] = 1
+        assert evaluate_blocked_witness(fm) == "unsatisfied"
+        box["rc"] = 128
+        assert evaluate_blocked_witness(fm) == "refuse"
+
+        bad = frontmatter_from_text(
+            """---
+status: blocked
+blocked_reason: waiting
+blocked_witness:
+  kind: ancestor_of_main
+  ref: not-a-sha
+---
+"""
+        )
+        assert evaluate_blocked_witness(bad) == "refuse"
 
     def test_malformed_frontmatter_is_non_fulfilling_not_exception(self) -> None:
         text = """---
