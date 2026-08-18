@@ -327,6 +327,8 @@ def _receipt_is_fresh(ref: str, *, now: datetime | None) -> BlockedWitnessVerdic
     moment = now if now is not None else datetime.now(UTC)
     if moment.tzinfo is None:
         moment = moment.replace(tzinfo=UTC)
+    if observed_dt > moment:
+        return "refuse"
     if moment - observed_dt <= timedelta(seconds=horizon):
         return "satisfied"
     return "unsatisfied"

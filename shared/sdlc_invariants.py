@@ -269,11 +269,14 @@ def _record_task_status(record: Mapping[str, object]) -> str:
 def _record_is_evidenced_block(record: Mapping[str, object]) -> bool:
     """Whether a liveness record is an explicitly witnessed active block."""
 
+    witness = record.get("blocked_witness")
+    if not isinstance(witness, dict):
+        witness = str(witness or "").strip()
     return is_active_blocked_with_evidence(
         {
             "status": _record_task_status(record),
             "blocked_reason": str(record.get("blocked_reason") or "").strip(),
-            "blocked_witness": str(record.get("blocked_witness") or "").strip(),
+            "blocked_witness": witness,
             "blocked_witness_path": str(record.get("blocked_witness_path") or "").strip(),
         }
     )
@@ -614,10 +617,10 @@ def _load_ledger_trace(path: Path, *, vault_tasks: Path | None = None) -> list[d
     return trace
 
 
-def _load_vault_task_liveness_metadata(vault_tasks: Path) -> dict[str, dict[str, str]]:
+def _load_vault_task_liveness_metadata(vault_tasks: Path) -> dict[str, dict[str, object]]:
     """Read status/blocker metadata from cc-task notes for INV-2 interpretation."""
 
-    metadata: dict[str, dict[str, str]] = {}
+    metadata: dict[str, dict[str, object]] = {}
     for subdir in ("active", "closed"):
         directory = vault_tasks / subdir
         if not directory.is_dir():
@@ -633,10 +636,13 @@ def _load_vault_task_liveness_metadata(vault_tasks: Path) -> dict[str, dict[str,
             status = str(frontmatter.get("status") or "").strip().lower()
             if not status and subdir == "closed":
                 status = "closed"
-            row = {
+            witness = frontmatter.get("blocked_witness")
+            if not isinstance(witness, dict):
+                witness = str(witness or "").strip()
+            row: dict[str, object] = {
                 "task_status": status,
                 "blocked_reason": str(frontmatter.get("blocked_reason") or "").strip(),
-                "blocked_witness": str(frontmatter.get("blocked_witness") or "").strip(),
+                "blocked_witness": witness,
                 "blocked_witness_path": str(frontmatter.get("blocked_witness_path") or "").strip(),
             }
             metadata[task_id] = {key: value for key, value in row.items() if value}

@@ -14,6 +14,7 @@ from __future__ import annotations
 import ast
 import tomllib
 from collections.abc import Callable
+from datetime import UTC, datetime
 from pathlib import Path
 
 import pytest
@@ -263,6 +264,26 @@ blocked_witness: /tmp/does-not-need-to-exist
 """
         )
         assert evaluate_blocked_witness(fm) == "refuse"
+
+    def test_future_receipt_timestamp_refuses(self, tmp_path: Path) -> None:
+        receipt = tmp_path / "receipt.yaml"
+        receipt.write_text(
+            "observed_at: 2099-01-01T00:00:00Z\nstale_after_seconds: 3600\n",
+            encoding="utf-8",
+        )
+        fm = frontmatter_from_text(
+            f"""---
+status: blocked
+blocked_reason: waiting
+blocked_witness:
+  kind: receipt_fresh
+  ref: {receipt}
+---
+"""
+        )
+        now = datetime(2026, 8, 18, tzinfo=UTC)
+        assert evaluate_blocked_witness(fm, now=now) == "refuse"
+        assert is_active_blocked_with_evidence(fm) is True
 
     def test_malformed_frontmatter_is_non_fulfilling_not_exception(self) -> None:
         text = """---
