@@ -2,16 +2,26 @@
 set -euo pipefail
 
 # Bounded critical-artifact offsite backup while broad Tier 2 B2 is blocked.
-# This script intentionally does not create live database dumps, create Qdrant
-# snapshots, upload live MinIO backing stores, or run destructive restic prune.
+# This script does not create live database dumps, create Qdrant snapshots,
+# upload live MinIO backing stores, or run destructive restic prune. It does
+# require a producer-validated Postgres dump already on a durable path — the
+# offsite lane previously shipped zero dumps.
 
 REPO="${HAPAX_GDRIVE_CRITICAL_REPO:-rclone:gdrive:hapax-backups/restic-critical}"
 PASSWORD_ENTRY="${HAPAX_GDRIVE_CRITICAL_RESTIC_PASSWORD_ENTRY:-backblaze/restic-password}"
 CACHE_DIR="${RESTIC_CACHE_DIR:-/store/llm-data/restic-cache/gdrive-critical}"
 WORK_DIR="${HAPAX_GDRIVE_CRITICAL_WORK_DIR:-/store/llm-data/gdrive-critical-backup}"
 POSTGRES_PITR_DIR="${HAPAX_POSTGRES_PITR_DIR:-/store/llm-data/postgres-pitr}"
+# Durable copy of the producer-validated dump. Not /tmp: hapax-backup-local
+# trap-cleans that path on EXIT. A missing file fails the run.
+POSTGRES_DUMP_PATH="${HAPAX_POSTGRES_DUMP_PATH:-/store/llm-data/postgres-dumps/postgres-all.sql}"
+TIER1_REPO="${HAPAX_TIER1_RESTIC_REPO:-/mnt/nas/backups/restic}"
+TIER1_PASSWORD_ENTRY="${HAPAX_TIER1_RESTIC_PASSWORD_ENTRY:-backups/restic-password}"
+POSTGRES_DUMP_MIN_BYTES="${HAPAX_POSTGRES_DUMP_MIN_BYTES:-1000000000}"
 QDRANT_SNAPSHOT_DIR="${HAPAX_QDRANT_SNAPSHOT_DIR:-/store/llm-data/qdrant-snapshots}"
 HAPAX_VAULT_DIR="${HAPAX_VAULT_DIR:-$HOME/Documents/Personal/30-areas/hapax}"
+# Bundle must not live inside the vault it bundles (recursive growth).
+VAULT_BUNDLE_DIR="${HAPAX_VAULT_BUNDLE_DIR:-/store/llm-data/vault-bundles}"
 
 # Conservative Google Drive/rclone defaults. Operators may tune these by env.
 export RCLONE_TRANSFERS="${RCLONE_TRANSFERS:-1}"
@@ -43,6 +53,7 @@ Modes:
 
 This is not the broad B2 Tier 2 backup. It never creates DB dumps, creates
 Qdrant snapshots, uploads live MinIO backing stores, or runs destructive prune.
+It requires a producer-validated dump at HAPAX_POSTGRES_DUMP_PATH.
 EOF
             exit 0
             ;;
@@ -92,6 +103,53 @@ append_if_exists() {
     fi
 }
 
+materialize_validated_dump() {
+    # Copy the newest Tier-1 dump onto the durable path. The producer trap-cleans
+    # /tmp; we refuse to point the manifest there. Fail closed if NAS has no dump.
+    mkdir -p "$(dirname "$POSTGRES_DUMP_PATH")"
+    local password
+    password="$(pass show "$TIER1_PASSWORD_ENTRY" 2>/dev/null | sed -n '1p')" || {
+        echo "ERROR: cannot read Tier-1 restic password ($TIER1_PASSWORD_ENTRY)" >&2
+        echo "Next: unlock pass and re-run" >&2
+        exit 1
+    }
+    [[ -n "$password" ]] || {
+        echo "ERROR: Tier-1 restic password is empty" >&2
+        exit 1
+    }
+    local listing snap_path
+    listing="$(RESTIC_REPOSITORY="$TIER1_REPO" RESTIC_PASSWORD="$password" restic ls --long latest 2>/dev/null | grep -F "postgres-all.sql" | head -1)" || true
+    [[ -n "$listing" ]] || {
+        echo "ERROR: Tier-1 latest snapshot contains no postgres-all.sql" >&2
+        echo "Next: run hapax-backup-local so NAS holds a validated dump" >&2
+        exit 1
+    }
+    snap_path="$(echo "$listing" | awk '{print $NF}')"
+    local partial="${POSTGRES_DUMP_PATH}.partial"
+    RESTIC_REPOSITORY="$TIER1_REPO" RESTIC_PASSWORD="$password" \
+        restic dump latest "$snap_path" > "$partial"
+    local size
+    size="$(wc -c < "$partial")"
+    if (( size < POSTGRES_DUMP_MIN_BYTES )); then
+        rm -f "$partial"
+        echo "ERROR: materialized dump is implausibly small: ${size} bytes" >&2
+        echo "Next: inspect Tier-1 snapshot; refuse to ship a truncated dump" >&2
+        exit 1
+    fi
+    mv -f "$partial" "$POSTGRES_DUMP_PATH"
+    log "Materialized validated dump: ${size} bytes -> $POSTGRES_DUMP_PATH"
+}
+
+append_required() {
+    local path="$1" manifest="$2" label="$3"
+    if [[ ! -e "$path" ]]; then
+        echo "ERROR: required $label missing: $path" >&2
+        echo "Next: place a producer-validated artifact at that path (not /tmp) and re-run" >&2
+        exit 1
+    fi
+    printf '%s\n' "$path" >> "$manifest"
+}
+
 append_latest_qdrant_snapshots() {
     local manifest="$1"
     if [[ ! -d "$QDRANT_SNAPSHOT_DIR" ]]; then
@@ -120,13 +178,19 @@ append_vault_evidence() {
         "gdrive-critical-offsite-source-automation-plan-2026-06-05.md"
         "langfuse-minio-clickhouse-retention-policy-2026-06-05.md"
         "offsite-backup-capacity-restic-evidence-2026-06-05.md"
-        "postgres-backup-rpo-decision-2026-06-05.md"
+        "postgres-backup-rpo-pitr-decision-2026-06-05.md"
         "qdrant-snapshot-restore-sop-2026-06-05.md"
         "sop-baseline-gate-2026-06-04.md"
     )
 
     local file
     for file in "${files[@]}"; do
+        # Evidence notes must not block the dump. Missing names stay loud in
+        # the log; only the dump is fail-closed.
+        if [[ ! -e "$HAPAX_VAULT_DIR/$file" ]]; then
+            log "WARN: vault evidence absent (not blocking dump): $file"
+            continue
+        fi
         append_if_exists "$HAPAX_VAULT_DIR/$file" "$manifest"
     done
 }
@@ -154,9 +218,12 @@ build_manifest() {
     local manifest="$run_dir/backup-files.txt"
     : > "$manifest"
 
+    materialize_validated_dump
+    append_required "$POSTGRES_DUMP_PATH" "$manifest" "validated Postgres dump"
     append_if_exists "$POSTGRES_PITR_DIR" "$manifest"
     append_latest_qdrant_snapshots "$manifest"
     append_vault_evidence "$manifest"
+    append_if_exists "$VAULT_BUNDLE_DIR" "$manifest"
 
     sort -u "$manifest" -o "$manifest"
     if [[ ! -s "$manifest" ]]; then

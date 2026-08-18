@@ -70,6 +70,38 @@ class TestWatchdogScript:
         text = SCRIPT.read_text()
         assert "exit 1" in text, "Must exit non-zero on failure"
 
+    def test_script_checks_postgres_dump_presence_in_newest_snapshot(self):
+        text = SCRIPT.read_text()
+        assert "check_postgres_dump_in_snapshot" in text
+        assert "postgres-all.sql" in text
+        assert "implausibly small" in text
+
+    def test_dump_check_fails_when_restic_listing_has_no_dump(self, tmp_path, monkeypatch):
+        text = SCRIPT.read_text()
+        start = text.index("check_postgres_dump_in_snapshot() {")
+        end = text.index("\n}\n", start) + 3
+        probe = tmp_path / "probe.sh"
+        bin_dir = tmp_path / "bin"
+        bin_dir.mkdir()
+        (bin_dir / "pass").write_text("#!/usr/bin/env bash\necho secret\n", encoding="utf-8")
+        (bin_dir / "restic").write_text("#!/usr/bin/env bash\nexit 0\n", encoding="utf-8")
+        (bin_dir / "pass").chmod(0o755)
+        (bin_dir / "restic").chmod(0o755)
+        probe.write_text(
+            "#!/usr/bin/env bash\nset -euo pipefail\n"
+            "FAILURES=()\nlog() { :; }\n"
+            + text[start:end]
+            + "check_postgres_dump_in_snapshot repo lbl entry\n"
+            + 'printf "%s\\n" "${FAILURES[@]}"\n'
+            + "exit ${#FAILURES[@]}\n",
+            encoding="utf-8",
+        )
+        probe.chmod(0o755)
+        env = {**__import__("os").environ, "PATH": f"{bin_dir}:{__import__('os').environ['PATH']}"}
+        result = subprocess.run([str(probe)], capture_output=True, text=True, timeout=10, env=env)
+        assert result.returncode == 1
+        assert "NO postgres-all.sql" in result.stdout
+
     def test_script_bash_syntax_valid(self):
         result = subprocess.run(
             ["bash", "-n", str(SCRIPT)],
@@ -107,6 +139,134 @@ class TestGDriveCriticalScript:
         text = GDRIVE_SCRIPT.read_text()
         assert "validate_manifest_readability" in text
         assert "refusing partial snapshot" in text
+
+    def test_materialize_fails_when_tier1_has_no_dump(self, tmp_path):
+        text = GDRIVE_SCRIPT.read_text()
+        start = text.index("materialize_validated_dump() {")
+        end = text.index("\nappend_required() {", start)
+        bin_dir = tmp_path / "bin"
+        bin_dir.mkdir()
+        (bin_dir / "pass").write_text("#!/usr/bin/env bash\necho secret\n", encoding="utf-8")
+        (bin_dir / "restic").write_text("#!/usr/bin/env bash\nexit 0\n", encoding="utf-8")
+        (bin_dir / "pass").chmod(0o755)
+        (bin_dir / "restic").chmod(0o755)
+        dump = tmp_path / "postgres-dumps" / "postgres-all.sql"
+        probe = tmp_path / "probe.sh"
+        probe.write_text(
+            "#!/usr/bin/env bash\nset -euo pipefail\n"
+            f"POSTGRES_DUMP_PATH={dump}\n"
+            "TIER1_REPO=repo\nTIER1_PASSWORD_ENTRY=entry\n"
+            "POSTGRES_DUMP_MIN_BYTES=1000000000\n"
+            "log() { :; }\n" + text[start:end] + "materialize_validated_dump\n",
+            encoding="utf-8",
+        )
+        probe.chmod(0o755)
+        env = {**__import__("os").environ, "PATH": f"{bin_dir}:{__import__('os').environ['PATH']}"}
+        result = subprocess.run([str(probe)], capture_output=True, text=True, timeout=10, env=env)
+        assert result.returncode == 1
+        assert "contains no postgres-all.sql" in result.stderr
+
+    def test_materialize_does_not_truncate_durable_path_when_restic_fails(self, tmp_path):
+        text = GDRIVE_SCRIPT.read_text()
+        start = text.index("materialize_validated_dump() {")
+        end = text.index("\nappend_required() {", start)
+        bin_dir = tmp_path / "bin"
+        bin_dir.mkdir()
+        (bin_dir / "pass").write_text("#!/usr/bin/env bash\necho secret\n", encoding="utf-8")
+        (bin_dir / "restic").write_text(
+            "#!/usr/bin/env bash\n"
+            "if [[ \"$1\" == ls ]]; then echo '-rw- 1 1 2000000000 date /snap/postgres-all.sql'; exit 0; fi\n"
+            "echo partial-bytes; exit 1\n",
+            encoding="utf-8",
+        )
+        (bin_dir / "pass").chmod(0o755)
+        (bin_dir / "restic").chmod(0o755)
+        durable = tmp_path / "postgres-all.sql"
+        durable.write_text("keep-me", encoding="utf-8")
+        probe = tmp_path / "probe.sh"
+        probe.write_text(
+            "#!/usr/bin/env bash\nset -euo pipefail\n"
+            f"POSTGRES_DUMP_PATH={durable}\n"
+            "TIER1_REPO=repo\nTIER1_PASSWORD_ENTRY=entry\n"
+            "POSTGRES_DUMP_MIN_BYTES=1000000000\n"
+            "log() { :; }\n" + text[start:end] + "materialize_validated_dump\n",
+            encoding="utf-8",
+        )
+        probe.chmod(0o755)
+        env = {**__import__("os").environ, "PATH": f"{bin_dir}:{__import__('os').environ['PATH']}"}
+        result = subprocess.run([str(probe)], capture_output=True, text=True, timeout=10, env=env)
+        assert result.returncode != 0
+        assert durable.read_text(encoding="utf-8") == "keep-me"
+
+    def test_script_requires_validated_dump_on_durable_path(self):
+        text = GDRIVE_SCRIPT.read_text()
+        assert "append_required" in text
+        assert "materialize_validated_dump" in text
+        assert "/store/llm-data/postgres-dumps/postgres-all.sql" in text
+        assert "/tmp/hapax-backup-dumps" not in text
+        assert "restic dump latest" in text
+
+    def test_script_names_the_pitr_rpo_decision_doc(self):
+        text = GDRIVE_SCRIPT.read_text()
+        assert "postgres-backup-rpo-pitr-decision-2026-06-05.md" in text
+        assert "postgres-backup-rpo-decision-2026-06-05.md" not in text
+
+    def test_script_appends_vault_bundle_dir_if_present(self):
+        text = GDRIVE_SCRIPT.read_text()
+        assert "VAULT_BUNDLE_DIR" in text
+        assert "/store/llm-data/vault-bundles" in text
+
+    def test_append_required_fails_closed_when_the_path_is_absent(self, tmp_path):
+        """Drive the real function, not a copy. The gdrive script is not source-safe."""
+        text = GDRIVE_SCRIPT.read_text()
+        start = text.index("append_required() {")
+        end = text.index("\n}\n", start) + 3
+        extract = tmp_path / "append_required.sh"
+        extract.write_text(
+            "#!/usr/bin/env bash\nset -euo pipefail\n"
+            + text[start:end]
+            + 'append_required "$1" "$2" dump\n',
+            encoding="utf-8",
+        )
+        extract.chmod(0o755)
+        manifest = tmp_path / "m"
+        missing = tmp_path / "nope"
+        result = subprocess.run(
+            [str(extract), str(missing), str(manifest)],
+            capture_output=True,
+            text=True,
+            timeout=10,
+        )
+        assert result.returncode == 1
+        assert "required dump missing" in result.stderr
+        assert not manifest.exists() or manifest.read_text() == ""
+
+    def test_append_required_writes_the_path_when_it_exists(self, tmp_path):
+        text = GDRIVE_SCRIPT.read_text()
+        start = text.index("append_required() {")
+        end = text.index("\n}\n", start) + 3
+        extract = tmp_path / "append_required.sh"
+        extract.write_text(
+            "#!/usr/bin/env bash\nset -euo pipefail\n"
+            + text[start:end]
+            + 'append_required "$1" "$2" dump\n',
+            encoding="utf-8",
+        )
+        extract.chmod(0o755)
+        present = tmp_path / "dump.sql"
+        present.write_text("ok", encoding="utf-8")
+        manifest = tmp_path / "m"
+        result = subprocess.run(
+            [str(extract), str(present), str(manifest)],
+            capture_output=True,
+            text=True,
+            timeout=10,
+        )
+        assert result.returncode == 0, result.stderr
+        assert (
+            present.resolve().as_posix() in manifest.read_text()
+            or str(present) in manifest.read_text()
+        )
 
     def test_script_bash_syntax_valid(self):
         result = subprocess.run(
