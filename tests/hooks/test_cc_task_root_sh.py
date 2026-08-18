@@ -189,6 +189,39 @@ def test_they_agree_on_a_tilde_vault(tmp_path: Path) -> None:
     _assert_agree(_env(tmp_path, PERSONAL_VAULT_PATH="~/v"))
 
 
+def test_they_agree_that_a_named_user_tilde_override_refuses(tmp_path: Path, vault: Path) -> None:
+    """Python expanduser() accepts ~user; the shell case only handles ~ and ~/.
+
+    Expanding on one side and leaving a literal on the other is a silent split SSOT.
+    Both sides refuse the form rather than inventing ~user expansion the shell cannot
+    perform portably.
+    """
+    env = _env(
+        tmp_path,
+        PERSONAL_VAULT_PATH=str(vault),
+        HAPAX_CC_TASKS_ROOT="~nobody/tasks",
+    )
+    sh = _shell(env)
+    py = _python(env)
+
+    assert sh.returncode == 2
+    assert py.returncode == 2
+    assert "named-user tilde" in sh.stderr
+    assert "named-user tilde" in py.stderr
+    assert str(vault) not in sh.stdout, "the shell resolver fell back to the vault default"
+
+
+def test_they_agree_that_a_named_user_tilde_vault_refuses(tmp_path: Path) -> None:
+    env = _env(tmp_path, PERSONAL_VAULT_PATH="~nobody/vault")
+    sh = _shell(env)
+    py = _python(env)
+
+    assert sh.returncode == 2
+    assert py.returncode == 2
+    assert "named-user tilde" in sh.stderr
+    assert "named-user tilde" in py.stderr
+
+
 def test_the_shell_require_succeeds_when_the_vault_is_present(tmp_path: Path, vault: Path) -> None:
     """The success half of require was never driven — only its refusal was.
 

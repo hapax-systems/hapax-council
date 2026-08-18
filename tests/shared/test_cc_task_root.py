@@ -124,6 +124,30 @@ def test_active_and_closed_hang_off_the_resolved_root(tmp_path, monkeypatch) -> 
     assert resolved.closed == root / "closed"
 
 
+def test_a_named_user_tilde_override_refuses(tmp_path, monkeypatch) -> None:
+    """~user is expanduser() on Python and a literal on the shell. Refuse, do not expand."""
+    vault = tmp_path / "vault" / "20-projects" / "hapax-cc-tasks"
+    vault.mkdir(parents=True)
+    monkeypatch.setenv(OVERRIDE_ENV, "~nobody/tasks")
+    monkeypatch.setenv("PERSONAL_VAULT_PATH", str(tmp_path / "vault"))
+
+    with pytest.raises(CcTaskRootUnavailable) as exc:
+        resolve_cc_task_root()
+
+    assert "named-user tilde" in str(exc.value)
+    assert "Next:" in str(exc.value)
+
+
+def test_a_named_user_tilde_vault_knob_refuses(monkeypatch) -> None:
+    monkeypatch.delenv(OVERRIDE_ENV, raising=False)
+    monkeypatch.setenv("PERSONAL_VAULT_PATH", "~nobody/vault")
+
+    with pytest.raises(CcTaskRootUnavailable) as exc:
+        resolve_cc_task_root()
+
+    assert "named-user tilde" in str(exc.value)
+
+
 def test_todays_environment_resolves_to_todays_hardcoded_path(monkeypatch) -> None:
     """The adoption safety property. If this ever differs, migrating a call site MOVES the SSOT.
 

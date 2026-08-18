@@ -13,7 +13,20 @@
 # Sourced, not executed: it defines a variable in its caller's scope and has no shebang.
 #
 # Usage:
-#   . "$(dirname "$0")/cc-task-root.sh"   # sets CC_TASK_ROOT, or exits 2 with a next action
+#   . "$(dirname "$0")/cc-task-root.sh"
+#   cc_task_root_resolve || return $?   # sets CC_TASK_ROOT, or returns 2 with a next action
+
+_cc_task_root_reject_named_user_tilde() {
+  # ~user is expanduser() on Python and a literal here. Refuse, do not expand.
+  case "$1" in
+    "~"|"~/"*) return 0 ;;
+    "~"*)
+      echo "cc-task-root: ${2} uses a named-user tilde (${1}). The shell resolver cannot expand ~user forms, so both sides refuse them rather than silently disagree. Next: set ${2} to an absolute path or a ~/ form" >&2
+      return 2
+      ;;
+  esac
+  return 0
+}
 
 cc_task_root_resolve() {
   local override personal
@@ -24,6 +37,7 @@ cc_task_root_resolve() {
   # TILDE EXPANSION IS NOT AUTOMATIC INSIDE A VARIABLE. Python's `expanduser` turns `~/tasks`
   # into an absolute path; the shell leaves it literal, so `-d` fails on a root that exists and
   # the two resolvers disagree about the SSOT. Expanded here so both sides mean the same thing.
+  _cc_task_root_reject_named_user_tilde "$override" "HAPAX_CC_TASKS_ROOT" || return $?
   case "$override" in
     "~") override="$HOME" ;;
     "~/"*) override="$HOME/${override#\~/}" ;;
@@ -49,6 +63,7 @@ cc_task_root_resolve() {
   personal="${personal#"${personal%%[![:space:]]*}"}"
   personal="${personal%"${personal##*[![:space:]]}"}"
   [ -n "$personal" ] || personal="$HOME/Documents/Personal"
+  _cc_task_root_reject_named_user_tilde "$personal" "PERSONAL_VAULT_PATH" || return $?
   case "$personal" in
     "~") personal="$HOME" ;;
     "~/"*) personal="$HOME/${personal#\~/}" ;;

@@ -72,6 +72,21 @@ class CcTaskRoot:
         return self.path / "closed"
 
 
+def _reject_named_user_tilde(raw: str, knob: str) -> None:
+    """Refuse ~user forms both sides cannot expand the same way.
+
+    ``Path.expanduser`` accepts ``~user``; the shell fragment only rewrites ``~`` and
+    ``~/``. Expanding on one side and leaving a literal on the other is a silent split
+    SSOT. Failure paths narrow: both sides refuse rather than growing a ~user expander.
+    """
+    if raw.startswith("~") and raw != "~" and not raw.startswith("~/"):
+        raise CcTaskRootUnavailable(
+            f"{knob} uses a named-user tilde ({raw}). The shell resolver cannot expand "
+            f"~user forms, so both sides refuse them rather than silently disagree. "
+            f"Next: set {knob} to an absolute path or a ~/ form"
+        )
+
+
 def _personal_vault() -> Path:
     # Read at call time rather than import time. `shared.config` snapshots PERSONAL_VAULT_PATH
     # into a module constant when it is first imported, which makes it unchangeable for the life
@@ -88,6 +103,7 @@ def _personal_vault() -> Path:
     raw = os.environ.get("PERSONAL_VAULT_PATH", "").strip()
     if not raw:
         return Path.home() / "Documents" / "Personal"
+    _reject_named_user_tilde(raw, "PERSONAL_VAULT_PATH")
     return Path(raw).expanduser()
 
 
@@ -101,6 +117,7 @@ def resolve_cc_task_root() -> CcTaskRoot:
 
     override = os.environ.get(OVERRIDE_ENV, "").strip()
     if override:
+        _reject_named_user_tilde(override, OVERRIDE_ENV)
         path = Path(override).expanduser()
         if not path.is_dir():
             raise CcTaskRootUnavailable(
