@@ -50,7 +50,15 @@ if [[ -z "$role" ]] && declare -F hapax_agent_identity >/dev/null 2>&1; then
   role="$(hapax_agent_identity 2>/dev/null || true)"
 fi
 
-vault_root="$HOME/Documents/Personal/20-projects/hapax-cc-tasks"
+ROOT_HELPER="$SCRIPT_DIR/../hooks/scripts/cc-task-root.sh"
+if [[ ! -f "$ROOT_HELPER" ]]; then
+  echo "cc-close: cc-task-root.sh missing next to the installed scripts. Next: restore hooks/scripts/cc-task-root.sh" >&2
+  exit 2
+fi
+# shellcheck source=../hooks/scripts/cc-task-root.sh
+. "$ROOT_HELPER"
+cc_task_root_resolve || exit $?
+vault_root="$CC_TASK_ROOT"
 note_path=""
 # Match `<task_id>-<descriptor>.md` (most tasks).
 for candidate in "$vault_root/active/$task_id-"*.md; do

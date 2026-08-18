@@ -52,6 +52,15 @@ if [[ -f "$SCRIPT_DIR/escape-grant.sh" ]]; then
   . "$SCRIPT_DIR/escape-grant.sh"
 fi
 
+if [[ -f "$SCRIPT_DIR/cc-task-root.sh" ]]; then
+  # shellcheck source=cc-task-root.sh
+  . "$SCRIPT_DIR/cc-task-root.sh"
+  cc_task_root_resolve || exit $?
+else
+  echo "cc-task-gate: cc-task-root.sh missing. Next: restore hooks/scripts/cc-task-root.sh" >&2
+  exit 2
+fi
+
 # This gate's scope name for escape grants (a grant must cover this exact gate,
 # or "*"). One gate, not a global off-switch.
 GATE_NAME="cc-task-gate"
@@ -691,7 +700,7 @@ EOF
 fi
 
 # --- 6. Locate task note in vault ---
-vault_root="$HOME/Documents/Personal/20-projects/hapax-cc-tasks"
+vault_root="$CC_TASK_ROOT"
 note_path=""
 for candidate in "$vault_root/active/$task_id-"*.md; do
   if [[ -f "$candidate" ]]; then
