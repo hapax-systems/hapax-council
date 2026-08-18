@@ -683,7 +683,7 @@ def render(
             "collected under"
         )
 
-    grid: dict[tuple[str, str], str] = {}
+    grid: dict[tuple[int, str], str] = {}
     for host_index, host in enumerate(hosts):
         block = observation.descriptors[host_index * stride : (host_index + 1) * stride]
         for spec, descriptor in zip(catalogue, block, strict=True):
@@ -711,7 +711,6 @@ def render(
     ]
     for host_index, host in enumerate(hosts):
         lines.append(
-            f"{host:<{width}}"
-            + "".join(f"{grid.get((host_index, n), '?'):>10}" for n in names)
+            f"{host:<{width}}" + "".join(f"{grid.get((host_index, n), '?'):>10}" for n in names)
         )
     return "\n".join(lines)
