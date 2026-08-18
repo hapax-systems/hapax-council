@@ -20,9 +20,9 @@ REPO_ROOT = Path(__file__).resolve().parents[1]
 if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
+from shared.blocked_witness import evaluate_blocked_witness  # noqa: E402
 from shared.sdlc_lifecycle import (  # noqa: E402
     TASK_NON_FULFILLING_CLOSED_STATUSES,
-    evaluate_blocked_witness,
     frontmatter_from_text,
     is_active_blocked_with_evidence,
     task_closure_validity,
@@ -228,15 +228,9 @@ def _blocked_candidates(trigger_task_id: str | None) -> list[tuple[Path, str, li
             continue
 
         deps = _parse_depends(text)
-        has_witness = bool(re.search(r"(?m)^blocked_witness:", text))
-        # No-deps rows were skipped outright, so typed witnesses never ran.
-        # A blocked_witness makes the row a candidate; the evaluator, not this
-        # continue, decides whether evidence is still current.
-        if not deps and not has_witness:
+        if not deps:
             continue
-        if trigger_aliases and deps and not trigger_aliases.intersection(deps):
-            continue
-        if trigger_aliases and not deps and not has_witness:
+        if trigger_aliases and not trigger_aliases.intersection(deps):
             continue
         candidates.append((f, text, deps))
 

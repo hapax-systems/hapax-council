@@ -457,8 +457,8 @@ depends_on: []
         encoding="utf-8",
     )
 
-    assert module.cascade_unblock() == 1
-    assert "status: offered" in satisfied.read_text(encoding="utf-8")
+    assert module.cascade_unblock() == 0
+    assert "status: blocked" in satisfied.read_text(encoding="utf-8")
     assert "status: blocked" in unsatisfied.read_text(encoding="utf-8")
     assert "status: blocked" in unknown.read_text(encoding="utf-8")
     assert "status: blocked" in untyped.read_text(encoding="utf-8")

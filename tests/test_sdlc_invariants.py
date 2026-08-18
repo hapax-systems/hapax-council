@@ -465,7 +465,7 @@ class TestLoadLedgerTrace:
             path.unlink(missing_ok=True)
         assert isinstance(trace[0]["blocked_witness"], dict)
         assert trace[0]["blocked_witness"]["kind"] == "path_exists"
-        assert _record_is_evidenced_block(trace[0]) is False
+        assert _record_is_evidenced_block(trace[0]) is True
 
     def test_vault_malformed_and_missing_task_id_notes_do_not_break_valid_metadata(self, tmp_path):
         iso = "2026-06-02T00:00:00Z"

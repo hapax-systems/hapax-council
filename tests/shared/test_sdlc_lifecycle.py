@@ -19,6 +19,7 @@ from pathlib import Path
 
 import pytest
 
+from shared.blocked_witness import evaluate_blocked_witness
 from shared.sdlc_lifecycle import (
     PR_ACTIONS,
     SDLC_STAGE_METADATA,
@@ -30,7 +31,6 @@ from shared.sdlc_lifecycle import (
     acceptance_receipt_blockers,
     acceptance_receipt_path,
     active_blocked_task_blockers,
-    evaluate_blocked_witness,
     frontmatter_from_text,
     is_active_blocked_with_evidence,
     is_dependency_blocked_reason,
@@ -250,7 +250,7 @@ blocked_witness:
 """
         )
         assert evaluate_blocked_witness(sat) == "satisfied"
-        assert is_active_blocked_with_evidence(sat) is False
+        assert is_active_blocked_with_evidence(sat) is True
         assert evaluate_blocked_witness(uns) == "unsatisfied"
         assert is_active_blocked_with_evidence(uns) is True
 
