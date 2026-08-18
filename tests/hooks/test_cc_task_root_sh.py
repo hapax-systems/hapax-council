@@ -22,8 +22,8 @@ REPO_ROOT = Path(__file__).resolve().parents[2]
 FRAGMENT = REPO_ROOT / "hooks/scripts/cc-task-root.sh"
 
 
-def _shell(env: dict[str, str], *, require: bool = False) -> subprocess.CompletedProcess[str]:
-    fn = "cc_task_root_require" if require else "cc_task_root_resolve"
+def _shell(env: dict[str, str], *, cwd: Path | None = None) -> subprocess.CompletedProcess[str]:
+    fn = "cc_task_root_resolve"
     script = (
         f'. "{FRAGMENT}"\n'
         f"if {fn}; then\n"
@@ -33,11 +33,16 @@ def _shell(env: dict[str, str], *, require: bool = False) -> subprocess.Complete
         "fi\n"
     )
     return subprocess.run(
-        ["bash", "-c", script], text=True, capture_output=True, check=False, env=env
+        ["bash", "-c", script],
+        text=True,
+        capture_output=True,
+        check=False,
+        env=env,
+        cwd=cwd,
     )
 
 
-def _python(env: dict[str, str]) -> subprocess.CompletedProcess[str]:
+def _python(env: dict[str, str], *, cwd: Path | None = None) -> subprocess.CompletedProcess[str]:
     script = (
         "from shared.cc_task_root import resolve_cc_task_root, CcTaskRootUnavailable\n"
         "import sys\n"
@@ -54,7 +59,7 @@ def _python(env: dict[str, str]) -> subprocess.CompletedProcess[str]:
         capture_output=True,
         check=False,
         env={**env, "PYTHONPATH": str(REPO_ROOT)},
-        cwd=REPO_ROOT,
+        cwd=cwd or REPO_ROOT,
     )
 
 
@@ -74,9 +79,11 @@ def vault(tmp_path: Path) -> Path:
     return tmp_path / "vault"
 
 
-def _assert_agree(env: dict[str, str]) -> subprocess.CompletedProcess[str]:
-    sh = _shell(env)
-    py = _python(env)
+def _assert_agree(
+    env: dict[str, str], *, cwd: Path | None = None
+) -> subprocess.CompletedProcess[str]:
+    sh = _shell(env, cwd=cwd)
+    py = _python(env, cwd=cwd)
     assert sh.returncode == py.returncode, (
         f"shell exited {sh.returncode}, python {py.returncode}\n"
         f"shell stderr: {sh.stderr}\npython stderr: {py.stderr}"
@@ -211,6 +218,36 @@ def test_they_agree_that_a_named_user_tilde_override_refuses(tmp_path: Path, vau
     assert str(vault) not in sh.stdout, "the shell resolver fell back to the vault default"
 
 
+def test_they_agree_that_a_relative_override_refuses(tmp_path: Path, vault: Path) -> None:
+    """A relative override is a different directory per cwd. Refuse, do not anchor."""
+    env = _env(tmp_path, PERSONAL_VAULT_PATH=str(vault), HAPAX_CC_TASKS_ROOT="vault")
+    here = tmp_path / "here"
+    there = tmp_path / "there"
+    here.mkdir()
+    there.mkdir()
+    (here / "vault").mkdir()
+    (there / "vault").mkdir()
+
+    for cwd in (here, there):
+        sh = _shell(env, cwd=cwd)
+        py = _python(env, cwd=cwd)
+        assert sh.returncode == 2, sh.stderr
+        assert py.returncode == 2, py.stderr
+        assert "is relative" in sh.stderr
+        assert "is relative" in py.stderr
+        assert str(vault) not in sh.stdout
+
+
+def test_they_agree_that_a_relative_vault_knob_refuses(tmp_path: Path) -> None:
+    env = _env(tmp_path, PERSONAL_VAULT_PATH="somewhere")
+    sh = _shell(env, cwd=tmp_path)
+    py = _python(env, cwd=tmp_path)
+    assert sh.returncode == 2
+    assert py.returncode == 2
+    assert "is relative" in sh.stderr
+    assert "is relative" in py.stderr
+
+
 def test_they_agree_that_a_named_user_tilde_vault_refuses(tmp_path: Path) -> None:
     env = _env(tmp_path, PERSONAL_VAULT_PATH="~nobody/vault")
     sh = _shell(env)
@@ -222,36 +259,8 @@ def test_they_agree_that_a_named_user_tilde_vault_refuses(tmp_path: Path) -> Non
     assert "named-user tilde" in py.stderr
 
 
-def test_the_shell_require_succeeds_when_the_vault_is_present(tmp_path: Path, vault: Path) -> None:
-    """The success half of require was never driven — only its refusal was.
-
-    A require that refused unconditionally would have passed the refusal test and shipped.
-    """
-    result = _shell(_env(tmp_path, PERSONAL_VAULT_PATH=str(vault)), require=True)
-
-    assert result.returncode == 0, result.stderr
-    lines = result.stdout.split()
-    assert lines[0] == str(vault / "20-projects" / "hapax-cc-tasks")
-    assert lines[2] == "1"
-
-
-def test_the_shell_require_refuses_genesis(tmp_path: Path) -> None:
-    result = _shell(_env(tmp_path, PERSONAL_VAULT_PATH=str(tmp_path / "not-yet")), require=True)
-
-    assert result.returncode == 2
-    assert "pre-first-init" in result.stderr
-
-
 def test_the_fragment_is_sourced_not_executed() -> None:
     """No shebang, and not executable: it defines variables in its caller's scope and does
     nothing as a child process."""
     assert not FRAGMENT.read_text(encoding="utf-8").startswith("#!")
-    mode = subprocess.run(
-        ["git", "ls-tree", "HEAD", "hooks/scripts/cc-task-root.sh"],
-        cwd=REPO_ROOT,
-        capture_output=True,
-        text=True,
-        check=True,
-    ).stdout.split()
-    if mode:  # absent from HEAD until this branch lands; the shebang check still applies
-        assert mode[0] == "100644"
+    assert not os.access(FRAGMENT, os.X_OK)

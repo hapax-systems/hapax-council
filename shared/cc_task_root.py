@@ -20,6 +20,14 @@ configured is precisely the failure this module exists to prevent, and it is inv
 inside — the writes succeed, into the wrong SSOT. A failure path may do less than the primary; it
 may not do something else instead.
 
+**A relative value is refused, not anchored.** ``HAPAX_CC_TASKS_ROOT=.`` names a *different*
+directory for every consumer, according to where each one was launched — a gate run from the
+repo root would consult one vault while a writer run from elsewhere updated another, both
+succeeding. That is the same split SSOT as above, reached without either resolver disagreeing,
+so textual parity between them cannot detect it. There is no anchor worth choosing (cwd is the
+defect; ``$HOME`` or the repo root would invent a meaning nobody configured), so both sides
+refuse and name the next action.
+
 **Absence is two states, not one.** An override pointing at nothing is a misconfiguration. The
 default pointing at nothing is *genesis* — R4.1's third clause is "first-init creates the empty
 task vault", so the pre-creation state is legitimate and has to be reportable rather than fatal.
@@ -87,6 +95,29 @@ def _reject_named_user_tilde(raw: str, knob: str) -> None:
         )
 
 
+def _require_absolute(path: Path, knob: str) -> Path:
+    """Refuse a configured value that is not absolute once tildes are handled.
+
+    A relative value is not a location, it is a location *per process*. Both resolvers
+    accept it and agree textually, yet every consumer still reads a different vault
+    depending on where it was launched — the split SSOT this module exists to prevent,
+    arriving with no disagreement anywhere to detect.
+
+    Refused rather than anchored, because there is no anchor to choose: cwd is the defect
+    itself, and ``$HOME`` or the repo root would be inventing a meaning the operator did
+    not write. A failure path may do less than the primary; it may not do something else
+    instead.
+    """
+    if not path.is_absolute():
+        raise CcTaskRootUnavailable(
+            f"{knob} is relative ({path}). A relative root resolves against each "
+            f"consumer's working directory, so a gate and a writer started from "
+            f"different directories would use different task vaults and both would "
+            f"succeed. Next: set {knob} to an absolute path"
+        )
+    return path
+
+
 def _personal_vault() -> Path:
     # Read at call time rather than import time. `shared.config` snapshots PERSONAL_VAULT_PATH
     # into a module constant when it is first imported, which makes it unchangeable for the life
@@ -102,9 +133,11 @@ def _personal_vault() -> Path:
     # variable, so it is expanded here and stripped there, and the two must not disagree.
     raw = os.environ.get("PERSONAL_VAULT_PATH", "").strip()
     if not raw:
-        return Path.home() / "Documents" / "Personal"
+        # Checked on the default branch too: the default is built from $HOME, so a relative
+        # HOME would produce a relative root here exactly as a relative knob would.
+        return _require_absolute(Path.home() / "Documents" / "Personal", "HOME")
     _reject_named_user_tilde(raw, "PERSONAL_VAULT_PATH")
-    return Path(raw).expanduser()
+    return _require_absolute(Path(raw).expanduser(), "PERSONAL_VAULT_PATH")
 
 
 def resolve_cc_task_root() -> CcTaskRoot:
@@ -118,7 +151,9 @@ def resolve_cc_task_root() -> CcTaskRoot:
     override = os.environ.get(OVERRIDE_ENV, "").strip()
     if override:
         _reject_named_user_tilde(override, OVERRIDE_ENV)
-        path = Path(override).expanduser()
+        # Absolute BEFORE the is_dir probe. `.` IS a directory, so probing first would
+        # accept it and anchor the SSOT on whatever cwd the consumer happened to have.
+        path = _require_absolute(Path(override).expanduser(), OVERRIDE_ENV)
         if not path.is_dir():
             raise CcTaskRootUnavailable(
                 f"{OVERRIDE_ENV} names {path}, which is not a directory. Refusing rather than "
@@ -126,7 +161,10 @@ def resolve_cc_task_root() -> CcTaskRoot:
                 f"a different SSOT than the one you configured. Next: create {path}, or unset "
                 f"{OVERRIDE_ENV} to use the personal vault"
             )
-        return CcTaskRoot(path=path, source=CcTaskRootSource.OVERRIDE, exists=True)
+        # Probed, not a constant. The is_dir() above already establishes it, but writing
+        # True here would keep `exists` correct while silently ceasing to MEAN it — and a
+        # later relaxation of that guard would leave the field lying with no test red.
+        return CcTaskRoot(path=path, source=CcTaskRootSource.OVERRIDE, exists=path.is_dir())
 
     path = _personal_vault().joinpath(*VAULT_RELATIVE_PARTS)
     return CcTaskRoot(path=path, source=CcTaskRootSource.PERSONAL_VAULT, exists=path.is_dir())

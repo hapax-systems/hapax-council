@@ -28,8 +28,21 @@ _cc_task_root_reject_named_user_tilde() {
   return 0
 }
 
+_cc_task_root_require_absolute() {
+  # A relative value is not a location, it is a location PER PROCESS. Both resolvers accept
+  # it and agree textually, and every consumer still reads a different vault depending on
+  # where it was launched -- the split SSOT this file exists to prevent, arriving with no
+  # disagreement anywhere to detect. Refused rather than anchored: cwd is the defect, and
+  # $HOME or the repo root would invent a meaning nobody configured.
+  case "$1" in
+    /*) return 0 ;;
+  esac
+  echo "cc-task-root: ${2} is relative (${1}). A relative root resolves against each consumer's working directory, so a gate and a writer started from different directories would use different task vaults and both would succeed. Next: set ${2} to an absolute path" >&2
+  return 2
+}
+
 cc_task_root_resolve() {
-  local override personal
+  local override personal knob
   override="${HAPAX_CC_TASKS_ROOT:-}"
   # Trim surrounding whitespace, so a stray space in a unit file is not a different path.
   override="${override#"${override%%[![:space:]]*}"}"
@@ -44,6 +57,9 @@ cc_task_root_resolve() {
   esac
 
   if [ -n "$override" ]; then
+    # Absolute BEFORE the -d probe. `.` IS a directory, so probing first would accept it
+    # and anchor the SSOT on whatever cwd the consumer happened to have.
+    _cc_task_root_require_absolute "$override" "HAPAX_CC_TASKS_ROOT" || return $?
     # Precedence, not fallback. An override that names nothing usable REFUSES; resolving to the
     # vault default here would write cc-tasks into a different SSOT than the operator configured,
     # and every write would succeed.
@@ -62,12 +78,22 @@ cc_task_root_resolve() {
   personal="${PERSONAL_VAULT_PATH:-$HOME/Documents/Personal}"
   personal="${personal#"${personal%%[![:space:]]*}"}"
   personal="${personal%"${personal##*[![:space:]]}"}"
-  [ -n "$personal" ] || personal="$HOME/Documents/Personal"
-  _cc_task_root_reject_named_user_tilde "$personal" "PERSONAL_VAULT_PATH" || return $?
+  # Which knob the value came from, so a refusal names the one the operator can actually
+  # change. Python decides this the same way, on the STRIPPED value, so an all-whitespace
+  # PERSONAL_VAULT_PATH is reported as HOME on both sides rather than one each.
+  knob="PERSONAL_VAULT_PATH"
+  if [ -z "$personal" ]; then
+    personal="$HOME/Documents/Personal"
+    knob="HOME"
+  fi
+  _cc_task_root_reject_named_user_tilde "$personal" "$knob" || return $?
   case "$personal" in
     "~") personal="$HOME" ;;
     "~/"*) personal="$HOME/${personal#\~/}" ;;
   esac
+  # Checked on the default branch too: the default is built from $HOME, so a relative HOME
+  # would produce a relative root here exactly as a relative knob would.
+  _cc_task_root_require_absolute "$personal" "$knob" || return $?
   CC_TASK_ROOT="$personal/20-projects/hapax-cc-tasks"
   CC_TASK_ROOT_SOURCE="personal_vault"
   # A missing default is genesis, not a fault: R4.1's third clause is that first-init CREATES the
@@ -80,11 +106,11 @@ cc_task_root_resolve() {
   return 0
 }
 
-cc_task_root_require() {
-  cc_task_root_resolve || return $?
-  if [ "$CC_TASK_ROOT_EXISTS" -ne 1 ]; then
-    echo "cc-task-root: no cc-task vault at ${CC_TASK_ROOT} (resolved from ${CC_TASK_ROOT_SOURCE}). This is the pre-first-init state, not a broken install. Next: run first-init to create the task vault, or set HAPAX_CC_TASKS_ROOT to an existing one" >&2
-    return 2
-  fi
-  return 0
-}
+# A `cc_task_root_require` belongs here — resolve, then refuse the genesis state with a message
+# distinguishing "not created yet" from "broken install". It is deliberately NOT in this commit,
+# for the same reason its Python twin is withheld (shared/cc_task_root.py, end of file): it would
+# have no caller. It had one here and not there, which made the two surfaces stop being one rule —
+# a future consumer written against the shell would have had no Python equivalent to agree with,
+# and the parity pin would have covered `resolve` only. Both land with the first consumer that
+# needs them, in the same change, so function and call site are reviewed together. Nothing is lost
+# meanwhile: CC_TASK_ROOT_EXISTS already carries the distinction any such caller would read.

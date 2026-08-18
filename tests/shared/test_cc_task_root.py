@@ -124,6 +124,31 @@ def test_active_and_closed_hang_off_the_resolved_root(tmp_path, monkeypatch) -> 
     assert resolved.closed == root / "closed"
 
 
+def test_a_relative_override_refuses(tmp_path, monkeypatch) -> None:
+    vault = tmp_path / "vault" / "20-projects" / "hapax-cc-tasks"
+    vault.mkdir(parents=True)
+    monkeypatch.setenv(OVERRIDE_ENV, "vault")
+    monkeypatch.setenv("PERSONAL_VAULT_PATH", str(tmp_path / "vault"))
+    monkeypatch.chdir(tmp_path)
+
+    with pytest.raises(CcTaskRootUnavailable) as exc:
+        resolve_cc_task_root()
+
+    assert "is relative" in str(exc.value)
+    assert "Next:" in str(exc.value)
+
+
+def test_a_relative_vault_knob_refuses(tmp_path, monkeypatch) -> None:
+    monkeypatch.delenv(OVERRIDE_ENV, raising=False)
+    monkeypatch.setenv("PERSONAL_VAULT_PATH", "somewhere")
+    monkeypatch.chdir(tmp_path)
+
+    with pytest.raises(CcTaskRootUnavailable) as exc:
+        resolve_cc_task_root()
+
+    assert "is relative" in str(exc.value)
+
+
 def test_a_named_user_tilde_override_refuses(tmp_path, monkeypatch) -> None:
     """~user is expanduser() on Python and a literal on the shell. Refuse, do not expand."""
     vault = tmp_path / "vault" / "20-projects" / "hapax-cc-tasks"
