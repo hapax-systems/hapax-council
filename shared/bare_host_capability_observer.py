@@ -699,7 +699,7 @@ def render(
                     f"descriptor {descriptor.shape_id!r} is not {expected!r}; next action: render "
                     "with the catalogue and probe order the observation was collected under"
                 )
-            grid[(host, spec.cli)] = _OUTCOME_MARK[observation_outcome(descriptor)]
+            grid[(host_index, spec.cli)] = _OUTCOME_MARK[observation_outcome(descriptor)]
 
     width = max((len(h) for h in hosts), default=4) + 1
     lines = [
@@ -709,6 +709,9 @@ def render(
         "",
         f"{'HOST':<{width}}" + "".join(f"{n[:9]:>10}" for n in names),
     ]
-    for host in hosts:
-        lines.append(f"{host:<{width}}" + "".join(f"{grid.get((host, n), '?'):>10}" for n in names))
+    for host_index, host in enumerate(hosts):
+        lines.append(
+            f"{host:<{width}}"
+            + "".join(f"{grid.get((host_index, n), '?'):>10}" for n in names)
+        )
     return "\n".join(lines)

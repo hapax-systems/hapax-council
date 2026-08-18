@@ -603,14 +603,28 @@ def test_observe_does_not_refuse_a_roster_of_genuinely_distinct_slugs():
 def test_the_same_host_listed_twice_is_not_treated_as_a_collision():
     # A duplicated roster row is a roster problem, not an identity ambiguity: both rows describe
     # the same machine, so refusing here would block a sweep over a harmless duplicate.
+    # Render keys by probe index so the later row cannot overwrite the earlier verdict.
+    calls = {"n": 0}
+
+    def _run(argv, **kwargs):
+        calls["n"] += 1
+        if calls["n"] == 1:
+            return FakeCompleted(stdout="cli=claude present=1 path=/usr/bin/claude\n")
+        return FakeCompleted(stderr="No route to host", returncode=255)
+
     result = observe(
         hosts=[linux("podium"), linux("podium")],
         catalogue=SMALL_CATALOGUE[:1],
-        runner=runner_for(stdout="cli=claude present=0 path=\n"),
+        runner=_run,
         now=NOW,
     )
 
     assert result.host_count == 2
+    table = render(result, catalogue=SMALL_CATALOGUE[:1])
+    rows = [ln for ln in table.splitlines() if ln.startswith("podium")]
+    assert len(rows) == 2
+    assert "yes" in rows[0]
+    assert "?" in rows[1]
 
 
 def test_shape_ids_are_registry_legal_for_hosts_with_awkward_names():
