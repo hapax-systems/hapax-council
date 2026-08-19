@@ -116,8 +116,11 @@ def _externalise_raw_signal(dumped: dict) -> dict:
             ) as tmp:
                 tmp.write(encoded)
                 tmp_path = Path(tmp.name)
+            # Last statement in the try: if it succeeds there is no exception, so the
+            # cleanup below never runs against a renamed file. (An earlier revision also
+            # cleared tmp_path here; that assignment was unreachable-dead — nothing
+            # followed it — and guarded only a hypothetical future edit.)
             os.replace(tmp_path, blob)
-            tmp_path = None  # ownership transferred by the rename
     except OSError as exc:
         # Keep the payload inline (status quo) and say so. Never blocks dispatch.
         # Clean up the temp file: if the write succeeded and the rename did not, an
@@ -127,6 +130,9 @@ def _externalise_raw_signal(dumped: dict) -> dict:
             try:
                 tmp_path.unlink()
             except OSError:
+                # Best-effort by design. The temp may already be gone (a concurrent
+                # writer of identical content renamed it), and a cleanup failure must
+                # never mask the original OSError being reported below.
                 pass
         out["raw_signal_ref_error"] = f"{type(exc).__name__}: {exc}"
         return out
