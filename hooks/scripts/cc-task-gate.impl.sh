@@ -6,7 +6,7 @@
 # file at $HAPAX_CANONICAL_HOOKS (default ~/.local/lib/hapax/hooks/cc-task-gate.sh),
 # so "update the gate" is a one-file change instead of a 26-worktree physical
 # fan-out (reform FM-6 collapse). The deployed closure carries this file plus its
-# sourced siblings agent-role.sh + escape-grant.sh. Drift between any worktree's
+# sourced siblings agent-role.sh + escape-grant.sh + cc-task-root.sh. Drift between any worktree's
 # shim and the canonical copy is detected by hooks-doctor.sh (SessionStart + CI +
 # timer); the canonical copy is refreshed by hapax-post-merge-deploy on merge.
 #
@@ -57,8 +57,17 @@ if [[ -f "$SCRIPT_DIR/cc-task-root.sh" ]]; then
   . "$SCRIPT_DIR/cc-task-root.sh"
   cc_task_root_resolve || exit $?
 else
-  echo "cc-task-gate: cc-task-root.sh missing. Next: restore hooks/scripts/cc-task-root.sh" >&2
-  exit 2
+  # Same class as a missing bootstrap helper: a mid-deploy / staged closure
+  # must not fail-close every mutation. Fall back to the personal-vault
+  # default the resolver would have built. hooks-doctor + post-merge-deploy
+  # still ship the sibling so production uses the resolver.
+  CC_TASK_ROOT="${HOME}/Documents/Personal/20-projects/hapax-cc-tasks"
+  CC_TASK_ROOT_SOURCE="missing_sibling_default"
+  if [[ -d "$CC_TASK_ROOT" ]]; then
+    CC_TASK_ROOT_EXISTS=1
+  else
+    CC_TASK_ROOT_EXISTS=0
+  fi
 fi
 
 # This gate's scope name for escape grants (a grant must cover this exact gate,
