@@ -25,9 +25,11 @@ worker path existed.
 from __future__ import annotations
 
 import fcntl
+import hashlib
 import json
 import os
 import tempfile
+from collections.abc import Mapping
 from pathlib import Path
 
 from shared.failure_classification import FailureCode, FailureReceipt
@@ -53,6 +55,162 @@ WORKER_AVAILABILITY_DEGRADE_CODES: frozenset[FailureCode] = frozenset(
 )
 
 
+#: Content-addressed store for externalised ``raw_signal`` payloads. Sibling of the
+#: ledger, so a reader that has one has the other.
+FAILURE_SIGNAL_BLOB_DIR = Path.home() / ".cache" / "hapax" / "failure-signals"
+
+#: Signals at or below this stay INLINE. Small payloads are worth more readable in
+#: the ledger than deduplicated, and the bloat is entirely in the large ones.
+RAW_SIGNAL_INLINE_MAX_BYTES = 4096
+
+
+def _externalise_raw_signal(dumped: dict) -> dict:
+    """Replace a large ``raw_signal`` with a content-addressed reference.
+
+    MEASURED 2026-08-19 on appendix: the ledger was **732.7 MB across 3,614
+    records**, and ``raw_signal`` accounted for **731.1 MB of it (99.8%)**. Of those
+    3,614 payloads only **11 were distinct** — a single 186,359-character string
+    repeated **3,589 times**, a 328x dedupe ratio. The ledger was re-embedding the
+    same error blob on every failure.
+
+    Content addressing collapses that to one file on disk plus a hash per record:
+    ~732 MB becomes well under 1 MB, with the payload still byte-for-byte
+    retrievable. **This is losslessness preserved by indirection, not truncation** —
+    the docstring contract of the caller is "one lossless line", and dropping bytes
+    would break it.
+
+    FORWARD-ONLY. Existing ledger lines are left exactly as they are; no history
+    rewrite. A reader must therefore handle BOTH shapes: an inline ``raw_signal``
+    string, or ``raw_signal_ref`` naming the blob.
+
+    FAIL-OPEN, and narrowing rather than widening: if the blob cannot be written,
+    the payload stays INLINE — the previous behaviour — and ``raw_signal_ref_error``
+    records why. That degrades to the status quo instead of silently dropping
+    evidence, and it is never silent.
+    """
+    raw = dumped.get("raw_signal")
+    if not isinstance(raw, str):
+        return dumped
+    # surrogatepass, NOT replace. Python str admits lone surrogates (a subprocess
+    # decoding bytes with errors="surrogateescape" produces them routinely, which is
+    # exactly how a raw failure signal is captured). Under errors="replace" each one
+    # becomes "?" — and since the inline copy is then dropped, that silently destroys
+    # the only remaining copy. The contract here is LOSSLESS; "replace" quietly broke
+    # it for precisely the payloads most likely to appear in a failure ledger.
+    # Readers must decode with the same error mode: see read_raw_signal().
+    encoded = raw.encode("utf-8", "surrogatepass")
+    if len(encoded) <= RAW_SIGNAL_INLINE_MAX_BYTES:
+        return dumped
+
+    digest = hashlib.sha256(encoded).hexdigest()
+    out = dict(dumped)
+    tmp_path: Path | None = None
+    try:
+        FAILURE_SIGNAL_BLOB_DIR.mkdir(parents=True, exist_ok=True)
+        blob = FAILURE_SIGNAL_BLOB_DIR / f"{digest}.txt"
+        if not blob.exists():
+            # Atomic, and safe against concurrent writers of identical content:
+            # same digest means same bytes, so a racing rename is a no-op.
+            with tempfile.NamedTemporaryFile(
+                mode="wb", dir=FAILURE_SIGNAL_BLOB_DIR, delete=False
+            ) as tmp:
+                tmp.write(encoded)
+                tmp_path = Path(tmp.name)
+            # Last statement in the try: if it succeeds there is no exception, so the
+            # cleanup below never runs against a renamed file. (An earlier revision also
+            # cleared tmp_path here; that assignment was unreachable-dead — nothing
+            # followed it — and guarded only a hypothetical future edit.)
+            os.replace(tmp_path, blob)
+    except OSError as exc:
+        # Keep the payload inline (status quo) and say so. Never blocks dispatch.
+        # Clean up the temp file: if the write succeeded and the rename did not, an
+        # orphan of full payload size would otherwise accumulate in the blob dir on
+        # every retry — a storage failure that grows storage is the wrong shape.
+        if tmp_path is not None:
+            try:
+                tmp_path.unlink()
+            except OSError:
+                # Best-effort by design. The temp may already be gone (a concurrent
+                # writer of identical content renamed it), and a cleanup failure must
+                # never mask the original OSError being reported below.
+                pass
+        out["raw_signal_ref_error"] = f"{type(exc).__name__}: {exc}"
+        return out
+
+    out.pop("raw_signal", None)
+    out["raw_signal_ref"] = {
+        "sha256": digest,
+        "bytes": len(encoded),
+        "path": str(blob),
+    }
+    return out
+
+
+def read_raw_signal(record: Mapping[str, object]) -> str | None:
+    """Recover a ledger record's raw signal, whichever shape it is stored in.
+
+    Emitting ``raw_signal_ref`` without shipping a reader would have made the ledger
+    write-only: `shared/jsonl_tail.py` returns lines, nothing resolves the blob, and
+    every existing consumer expects an inline ``raw_signal``. A format change with no
+    consumer is not forward-compatible, it is just broken later.
+
+    Handles BOTH shapes, because the change is forward-only and old lines keep the
+    inline string:
+      * inline   -> ``record["raw_signal"]`` returned as-is
+      * external -> ``record["raw_signal_ref"]`` resolved from disk
+
+    VERIFIES rather than trusts. The blob is content-addressed, so both the byte
+    length and the SHA-256 are checkable, and a mismatch means corruption or a
+    truncated write — exactly what the reader exists to catch. Returns ``None`` on
+    any failure rather than raising: this sits on a diagnostic path and must not
+    become a second outage. Decodes with ``surrogatepass`` to match the writer.
+    """
+    inline = record.get("raw_signal")
+    if isinstance(inline, str):
+        return inline
+
+    ref = record.get("raw_signal_ref")
+    if not isinstance(ref, Mapping):
+        return None
+
+    # The digest and length are REQUIRED, not optional. An earlier revision checked each
+    # only `if isinstance(...)`, so a ref carrying neither skipped verification entirely
+    # while the docstring claimed the reader verifies rather than trusts.
+    expected_sha = ref.get("sha256")
+    expected_bytes = ref.get("bytes")
+    if not isinstance(expected_sha, str) or not isinstance(expected_bytes, int):
+        return None
+
+    # CONFINE the read to the blob directory, and require the filename to be the digest it
+    # declares. Without this the reader resolves whatever `path` the record carries and
+    # returns its contents — an arbitrary-file-read reachable from a ledger line. The ledger
+    # is written by this module today, but it is a plain JSONL file on disk that anything can
+    # append to, and its whole purpose is to carry hostile provider output. Content-addressing
+    # makes the check free: the only legitimate path is <blob dir>/<sha256>.txt.
+    path = ref.get("path")
+    if not isinstance(path, str):
+        return None
+    try:
+        resolved = Path(path).resolve()
+        blob_dir = FAILURE_SIGNAL_BLOB_DIR.resolve()
+    except OSError:
+        return None
+    if resolved.parent != blob_dir or resolved.name != f"{expected_sha}.txt":
+        return None
+
+    try:
+        data = resolved.read_bytes()
+    except OSError:
+        return None
+
+    if len(data) != expected_bytes:
+        return None
+    if hashlib.sha256(data).hexdigest() != expected_sha:
+        return None
+
+    return data.decode("utf-8", "surrogatepass")
+
+
 def append_failure_receipt_record(
     *,
     task_id: str,
@@ -75,7 +233,7 @@ def append_failure_receipt_record(
         "task_id": task_id,
         "lane": lane,
         "returncode": returncode,
-        **receipt.model_dump(),
+        **_externalise_raw_signal(receipt.model_dump()),
     }
     return append_jsonl(ledger_path or FAILURE_CLASSIFICATION_LEDGER, record, raising=False)
 

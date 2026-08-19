@@ -5076,3 +5076,13 @@ _ = (
 from shared.blocked_witness import evaluate_blocked_witness  # noqa: E402
 
 _ = (evaluate_blocked_witness,)
+
+# Read half of the externalised failure-signal format. The ledger has no production
+# reader yet — this PR ships the write side, which is why vulture sees no call path.
+# It is not speculative: without it, every consumer reads an externalised raw_signal as
+# ABSENT rather than as a reference, leaving the format unusable write-only. Exercised
+# by 7 cases in tests/test_worker_failure_witness_signal_externalisation.py, reached as
+# `wfw.read_raw_signal(...)` through a module alias vulture cannot resolve.
+from shared.worker_failure_witness import read_raw_signal  # noqa: E402
+
+_ = (read_raw_signal,)
