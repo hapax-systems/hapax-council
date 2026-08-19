@@ -616,3 +616,12 @@ def test_blocked_candidates_survives_concurrent_close(tmp_path: Path, monkeypatc
     monkeypatch.undo()
     assert "status: offered" in survivor.read_text(encoding="utf-8")
     assert not vanishing.exists()
+
+
+def test_imported_vault_follows_hapax_cc_tasks_root(tmp_path: Path, monkeypatch) -> None:
+    override = tmp_path / "elsewhere"
+    override.mkdir()
+    monkeypatch.setenv("HAPAX_CC_TASKS_ROOT", str(override))
+    module = _load_module()
+    assert override == module.VAULT
+    assert override / "active" == module.ACTIVE

@@ -28,6 +28,7 @@ IMPL = REPO_ROOT / "hooks" / "scripts" / "cc-task-gate.impl.sh"
 CLOSURE_SIBLINGS = (
     "agent-role.sh",
     "escape-grant.sh",
+    "cc-task-root.sh",
     "cc-task-gate-bootstrap.py",
     "hooks-doctor.sh",
 )
@@ -163,6 +164,7 @@ def test_deploy_canonical_lands_healthy_closure(tmp_path):
     for sibling in (
         "agent-role.sh",
         "escape-grant.sh",
+        "cc-task-root.sh",
         "cc-task-gate-bootstrap.py",
         "hooks-doctor.sh",
     ):

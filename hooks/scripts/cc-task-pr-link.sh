@@ -238,7 +238,18 @@ if [[ -z "$task_id" ]]; then
 fi
 
 # --- 8. Locate vault note ---
-vault_root="$HOME/Documents/Personal/20-projects/hapax-cc-tasks"
+if [[ -f "$SCRIPT_DIR/cc-task-root.sh" ]]; then
+  # shellcheck source=cc-task-root.sh
+  . "$SCRIPT_DIR/cc-task-root.sh"
+  if ! cc_task_root_resolve; then
+    echo "cc-task-pr-link: cc-task root unavailable, skipping link" >&2
+    exit 0
+  fi
+  vault_root="$CC_TASK_ROOT"
+else
+  echo "cc-task-pr-link: cc-task-root.sh missing, skipping link" >&2
+  exit 0
+fi
 note_path=""
 for candidate in "$vault_root/active/$task_id-"*.md; do
   if [[ -f "$candidate" ]]; then
