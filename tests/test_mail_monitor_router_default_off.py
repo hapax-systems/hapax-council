@@ -46,6 +46,14 @@ def _load_app_with(flag_value: str | None):
 
 _MISSING = object()
 
+#: (parent package, child attribute) bindings the import machinery sets as a side effect.
+_PARENT_BINDINGS = (("logos", "api"), ("logos.api", "app"))
+
+
+def _owned_module(name: str) -> bool:
+    """Every sys.modules entry that importing ``logos.api.app`` can create."""
+    return name == "logos" or name.startswith("logos.api")
+
 
 @pytest.fixture(autouse=True)
 def _restore_env_and_import_state() -> Iterator[None]:
@@ -61,11 +69,16 @@ def _restore_env_and_import_state() -> Iterator[None]:
     live consumer of exactly that binding.
     """
     original_flag = os.environ.get(FLAG)
-    saved_modules = {
-        name: mod for name, mod in sys.modules.items() if name.startswith("logos.api.app")
+    saved_modules = {name: mod for name, mod in sys.modules.items() if _owned_module(name)}
+    # Importing logos.api.app also creates the ANCESTOR packages if absent, and binds
+    # each child as an attribute of its parent. Restoring only logos.api.app leaves
+    # those behind on an isolated run of this module, where nothing under logos.* is
+    # imported at setup.
+    saved_attrs = {
+        (parent, child): getattr(sys.modules[parent], child, _MISSING)
+        for parent, child in _PARENT_BINDINGS
+        if parent in sys.modules
     }
-    api_pkg = sys.modules.get("logos.api")
-    saved_pkg_attr = getattr(api_pkg, "app", _MISSING) if api_pkg is not None else _MISSING
 
     yield
 
@@ -74,17 +87,20 @@ def _restore_env_and_import_state() -> Iterator[None]:
     else:
         os.environ[FLAG] = original_flag
 
-    for name in [m for m in sys.modules if m.startswith("logos.api.app")]:
+    for name in [m for m in sys.modules if _owned_module(m)]:
         del sys.modules[name]
     sys.modules.update(saved_modules)
 
-    if api_pkg is not None:
-        if saved_pkg_attr is _MISSING:
+    for (parent, child), original in saved_attrs.items():
+        pkg = sys.modules.get(parent)
+        if pkg is None:
+            continue  # the package itself was absent and has been evicted
+        if original is _MISSING:
             # Nothing was bound before; a leftover binding is itself the pollution.
-            if hasattr(api_pkg, "app"):
-                delattr(api_pkg, "app")
+            if hasattr(pkg, child):
+                delattr(pkg, child)
         else:
-            api_pkg.app = saved_pkg_attr
+            setattr(pkg, child, original)
 
 
 def _routes(app) -> set[str]:
@@ -160,3 +176,36 @@ def test_teardown_restores_the_import_cache() -> None:
 
     assert sys.modules["logos.api.app"] is baseline_module
     assert api_pkg.app is baseline_attr
+
+
+def test_teardown_removes_packages_it_created() -> None:
+    """An isolated run of this module imports logos.* for the first time.
+
+    In that case there is no prior binding to restore — the correct restoration is
+    REMOVAL. Skipping it (as an `api_pkg is None` early-out does) leaves logos and
+    logos.api reachable with a stale `app` attribute for the rest of the session.
+    """
+    stashed = {n: m for n, m in sys.modules.items() if _owned_module(n)}
+    stashed_logos_api = getattr(sys.modules.get("logos"), "api", _MISSING)
+    for name in list(stashed):
+        del sys.modules[name]
+
+    try:
+        assert "logos.api" not in sys.modules, "precondition: logos.* is absent"
+
+        fixture = _restore_env_and_import_state.__wrapped__()
+        next(fixture)  # setup: snapshot an EMPTY logos.* namespace
+        _load_app_with("1")
+        assert "logos.api" in sys.modules, "the import should have created it"
+
+        with pytest.raises(StopIteration):
+            next(fixture)  # teardown
+
+        leaked = sorted(n for n in sys.modules if _owned_module(n))
+        assert leaked == [], f"teardown left modules it created: {leaked}"
+    finally:
+        for name in [n for n in sys.modules if _owned_module(n)]:
+            del sys.modules[name]
+        sys.modules.update(stashed)
+        if stashed_logos_api is not _MISSING:
+            sys.modules["logos"].api = stashed_logos_api
