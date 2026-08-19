@@ -296,6 +296,20 @@ def test_missing_root_sibling_refuses_relative_override(tmp_path: Path):
     assert "not absolute" in result.stderr
 
 
+def test_missing_root_sibling_refuses_relative_personal_vault(tmp_path: Path):
+    gate = _stage_gate(tmp_path, helper="absent")
+    note = _intake_note(tmp_path, "cc-tasks")
+    result = _run(
+        gate,
+        _candidate_write(note),
+        tmp_path,
+        role=None,
+        extra_env={"PERSONAL_VAULT_PATH": "relative-vault"},
+    )
+    assert result.returncode == 2, result.stderr
+    assert "PERSONAL_VAULT_PATH is not absolute" in result.stderr
+
+
 # --- Sanity: with the REAL helper present, behaviour is unchanged -----------------
 
 

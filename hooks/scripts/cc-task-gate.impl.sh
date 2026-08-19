@@ -85,13 +85,20 @@ else
         ;;
     esac
   else
-    _cc_fb="${PERSONAL_VAULT_PATH:-$HOME/Documents/Personal}"
+    _cc_fb="${PERSONAL_VAULT_PATH:-}"
     _cc_fb="${_cc_fb#"${_cc_fb%%[![:space:]]*}"}"
     _cc_fb="${_cc_fb%"${_cc_fb##*[![:space:]]}"}"
+    if [[ -z "$_cc_fb" ]]; then
+      _cc_fb="$HOME/Documents/Personal"
+    fi
     case "$_cc_fb" in
       "~") _cc_fb="$HOME" ;;
       "~/"*) _cc_fb="$HOME/${_cc_fb#\~/}" ;;
     esac
+    if [[ "$_cc_fb" != /* ]]; then
+      echo "cc-task-gate: cc-task-root.sh missing and PERSONAL_VAULT_PATH is not absolute. Next: restore hooks/scripts/cc-task-root.sh" >&2
+      exit 2
+    fi
     CC_TASK_ROOT="${_cc_fb}/20-projects/hapax-cc-tasks"
   fi
   unset _cc_fb
