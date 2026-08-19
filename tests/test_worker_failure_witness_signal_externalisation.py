@@ -100,6 +100,80 @@ def test_non_string_raw_signal_is_untouched() -> None:
         assert wfw._externalise_raw_signal(payload) == payload
 
 
+# --------------------------------------------------------------------------
+# Review findings from PR #4581 (CodeRabbit). Each of these pins a defect the
+# original test suite could not reach.
+# --------------------------------------------------------------------------
+
+
+def test_lone_surrogates_survive_the_round_trip(_blob_dir: Path) -> None:
+    """The original suite tested losslessness with ASCII only, so it could not fail.
+
+    Python ``str`` admits lone surrogates — a subprocess whose bytes are decoded with
+    ``errors="surrogateescape"`` produces them routinely, which is exactly how a raw
+    failure signal gets captured. The first implementation encoded with
+    ``errors="replace"``, turning each into "?", and THEN dropped the inline copy —
+    silently destroying the only remaining copy while the suite stayed green because
+    every fixture was ``"E" * 200_000``.
+    """
+    payload = "\ud800" * 5000 + "tail"
+    out = wfw._externalise_raw_signal({"raw_signal": payload})
+    assert "raw_signal_ref" in out, "should still externalise"
+    recovered = wfw.read_raw_signal(out)
+    assert recovered == payload, "lone surrogates must survive byte-for-byte"
+
+
+def test_failed_replace_leaves_no_orphan_blob(
+    _blob_dir: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A storage failure must not GROW storage.
+
+    If the temp write succeeds and ``os.replace`` fails, the payload-sized temp file
+    would otherwise be orphaned in the blob dir on every retry.
+    """
+
+    def boom(*_a: object, **_k: object) -> None:
+        raise OSError("replace failed")
+
+    monkeypatch.setattr(wfw.os, "replace", boom)
+    out = wfw._externalise_raw_signal({"raw_signal": BIG})
+
+    assert out["raw_signal"] == BIG, "payload stays inline on failure"
+    assert "raw_signal_ref_error" in out
+    leftovers = list(_blob_dir.iterdir()) if _blob_dir.exists() else []
+    assert leftovers == [], f"orphaned temp file(s): {leftovers}"
+
+
+class TestReadRawSignal:
+    """A format change with no reader is not forward-compatible, just broken later."""
+
+    def test_reads_inline_shape(self) -> None:
+        assert wfw.read_raw_signal({"raw_signal": SMALL}) == SMALL
+
+    def test_reads_external_shape(self, _blob_dir: Path) -> None:
+        out = wfw._externalise_raw_signal({"raw_signal": BIG})
+        assert wfw.read_raw_signal(out) == BIG
+
+    def test_rejects_wrong_sha(self, _blob_dir: Path) -> None:
+        out = wfw._externalise_raw_signal({"raw_signal": BIG})
+        out["raw_signal_ref"]["sha256"] = "0" * 64
+        assert wfw.read_raw_signal(out) is None, "corruption must not be returned"
+
+    def test_rejects_wrong_length(self, _blob_dir: Path) -> None:
+        out = wfw._externalise_raw_signal({"raw_signal": BIG})
+        out["raw_signal_ref"]["bytes"] = 1
+        assert wfw.read_raw_signal(out) is None, "truncation must not be returned"
+
+    def test_missing_blob_returns_none_not_raises(self, _blob_dir: Path) -> None:
+        out = wfw._externalise_raw_signal({"raw_signal": BIG})
+        Path(out["raw_signal_ref"]["path"]).unlink()
+        assert wfw.read_raw_signal(out) is None
+
+    def test_garbage_record_returns_none(self) -> None:
+        for rec in ({}, {"raw_signal_ref": "not-a-mapping"}, {"raw_signal_ref": {}}):
+            assert wfw.read_raw_signal(rec) is None
+
+
 def test_record_written_to_ledger_is_small(tmp_path: Path, _blob_dir: Path) -> None:
     """End-to-end: the ledger LINE must shrink, which is the whole point."""
     receipt = wfw.FailureReceipt(raw_signal=BIG)

@@ -29,6 +29,7 @@ import hashlib
 import json
 import os
 import tempfile
+from collections.abc import Mapping
 from pathlib import Path
 
 from shared.failure_classification import FailureCode, FailureReceipt
@@ -90,12 +91,20 @@ def _externalise_raw_signal(dumped: dict) -> dict:
     raw = dumped.get("raw_signal")
     if not isinstance(raw, str):
         return dumped
-    encoded = raw.encode("utf-8", "replace")
+    # surrogatepass, NOT replace. Python str admits lone surrogates (a subprocess
+    # decoding bytes with errors="surrogateescape" produces them routinely, which is
+    # exactly how a raw failure signal is captured). Under errors="replace" each one
+    # becomes "?" — and since the inline copy is then dropped, that silently destroys
+    # the only remaining copy. The contract here is LOSSLESS; "replace" quietly broke
+    # it for precisely the payloads most likely to appear in a failure ledger.
+    # Readers must decode with the same error mode: see read_raw_signal().
+    encoded = raw.encode("utf-8", "surrogatepass")
     if len(encoded) <= RAW_SIGNAL_INLINE_MAX_BYTES:
         return dumped
 
     digest = hashlib.sha256(encoded).hexdigest()
     out = dict(dumped)
+    tmp_path: Path | None = None
     try:
         FAILURE_SIGNAL_BLOB_DIR.mkdir(parents=True, exist_ok=True)
         blob = FAILURE_SIGNAL_BLOB_DIR / f"{digest}.txt"
@@ -108,8 +117,17 @@ def _externalise_raw_signal(dumped: dict) -> dict:
                 tmp.write(encoded)
                 tmp_path = Path(tmp.name)
             os.replace(tmp_path, blob)
+            tmp_path = None  # ownership transferred by the rename
     except OSError as exc:
         # Keep the payload inline (status quo) and say so. Never blocks dispatch.
+        # Clean up the temp file: if the write succeeded and the rename did not, an
+        # orphan of full payload size would otherwise accumulate in the blob dir on
+        # every retry — a storage failure that grows storage is the wrong shape.
+        if tmp_path is not None:
+            try:
+                tmp_path.unlink()
+            except OSError:
+                pass
         out["raw_signal_ref_error"] = f"{type(exc).__name__}: {exc}"
         return out
 
@@ -120,6 +138,50 @@ def _externalise_raw_signal(dumped: dict) -> dict:
         "path": str(blob),
     }
     return out
+
+
+def read_raw_signal(record: Mapping[str, object]) -> str | None:
+    """Recover a ledger record's raw signal, whichever shape it is stored in.
+
+    Emitting ``raw_signal_ref`` without shipping a reader would have made the ledger
+    write-only: `shared/jsonl_tail.py` returns lines, nothing resolves the blob, and
+    every existing consumer expects an inline ``raw_signal``. A format change with no
+    consumer is not forward-compatible, it is just broken later.
+
+    Handles BOTH shapes, because the change is forward-only and old lines keep the
+    inline string:
+      * inline   -> ``record["raw_signal"]`` returned as-is
+      * external -> ``record["raw_signal_ref"]`` resolved from disk
+
+    VERIFIES rather than trusts. The blob is content-addressed, so both the byte
+    length and the SHA-256 are checkable, and a mismatch means corruption or a
+    truncated write — exactly what the reader exists to catch. Returns ``None`` on
+    any failure rather than raising: this sits on a diagnostic path and must not
+    become a second outage. Decodes with ``surrogatepass`` to match the writer.
+    """
+    inline = record.get("raw_signal")
+    if isinstance(inline, str):
+        return inline
+
+    ref = record.get("raw_signal_ref")
+    if not isinstance(ref, Mapping):
+        return None
+    path = ref.get("path")
+    if not isinstance(path, str):
+        return None
+    try:
+        data = Path(path).read_bytes()
+    except OSError:
+        return None
+
+    expected_bytes = ref.get("bytes")
+    if isinstance(expected_bytes, int) and len(data) != expected_bytes:
+        return None
+    expected_sha = ref.get("sha256")
+    if isinstance(expected_sha, str) and hashlib.sha256(data).hexdigest() != expected_sha:
+        return None
+
+    return data.decode("utf-8", "surrogatepass")
 
 
 def append_failure_receipt_record(
