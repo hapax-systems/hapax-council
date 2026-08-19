@@ -1,3 +1,8 @@
+# Hapax-Auto-Enable: true
+# Without this marker `hapax-post-merge-deploy` installs the unit but never enables it —
+# the file lands, nothing arms, and the receipt lapses exactly as before. Only 7 of 150
+# shipped timers carry it, so its absence is the silent default, not an oversight to
+# assume away.
 [Unit]
 Description=Observe account-live Claude quota every 10m (receipt stale_after=30m window)
 
@@ -13,9 +18,14 @@ Description=Observe account-live Claude quota every 10m (receipt stale_after=30m
 OnBootSec=3min
 OnUnitActiveSec=10min
 AccuracySec=1min
-# Survive a suspend/downtime gap: run once on resume rather than waiting a full interval
-# with an already-expired receipt.
-Persistent=true
+# Deliberately NO Persistent=. systemd.timer(5): "this setting only has an effect on timers
+# configured with OnCalendar=" — on a monotonic timer it is silently inert. An earlier
+# revision set Persistent=true with a comment claiming it caught up after a suspend gap;
+# that comment asserted behaviour the unit did not have, which is the same documentation-rot
+# defect this whole change exists to remove.
+#
+# Catch-up is also the wrong goal here. After downtime you want a FRESH observation, not a
+# replayed one, and OnBootSec=3min already provides it.
 
 [Install]
 WantedBy=timers.target

@@ -31,6 +31,9 @@ ExecStart=%h/.cache/hapax/source-activation/worktree/.venv/bin/python \
 WorkingDirectory=%h/.cache/hapax/source-activation/worktree
 Environment=HOME=%h
 Environment=PYTHONPATH=%h/.cache/hapax/source-activation/worktree
+# Pin PATH so the probe cannot resolve a different `claude` from an inherited manager
+# environment. Which binary answers is part of what is being measured.
+Environment=PATH=%h/.npm-global/bin:%h/.local/bin:/usr/local/bin:/usr/bin:/bin
 # 3 = quota wall observed, 4 = no evidence and no probe result. Both are intended
 # fail-closed outcomes, not failures of this unit. 5 (a receipt write FAILED) is
 # deliberately EXCLUDED: without that, a bad --route-id or an unwritable receipt dir leaves
