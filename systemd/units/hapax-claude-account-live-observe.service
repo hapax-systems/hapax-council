@@ -1,7 +1,10 @@
 [Unit]
 Description=Observe account-live Claude subscription quota (mechanical, no attestation)
 Documentation=file://%h/.cache/hapax/source-activation/worktree/scripts/hapax-claude-account-live-observe
-After=hapax-secrets.service
+# Deliberately NOT After=hapax-secrets.service and NO EnvironmentFile. That file carries
+# ANTHROPIC_BASE_URL pointing at podium's LiteLLM proxy; inheriting it would send the probe
+# to a different endpoint while the receipt asserts auth_surface=subscription. The observer
+# needs no secrets — it reads local artifacts and, at most, runs the CLI as the operator.
 # Deliberately NO OnFailure=notify-failure@%n.service. This unit exits non-zero as a
 # NORMAL outcome: 3 = a quota wall was observed, 4 = nothing exercised the subscription
 # and the probe could not observe either. Both are correct fail-closed results that hold
@@ -28,9 +31,11 @@ ExecStart=%h/.cache/hapax/source-activation/worktree/.venv/bin/python \
 WorkingDirectory=%h/.cache/hapax/source-activation/worktree
 Environment=HOME=%h
 Environment=PYTHONPATH=%h/.cache/hapax/source-activation/worktree
-EnvironmentFile=-/run/user/1000/hapax-secrets.env
 # 3 = quota wall observed, 4 = no evidence and no probe result. Both are intended
-# fail-closed outcomes, not failures of this unit.
+# fail-closed outcomes, not failures of this unit. 5 (a receipt write FAILED) is
+# deliberately EXCLUDED: without that, a bad --route-id or an unwritable receipt dir leaves
+# systemd green forever while nothing is ever written — the precise silent lapse this unit
+# exists to end.
 SuccessExitStatus=0 3 4
 StandardOutput=journal
 StandardError=journal

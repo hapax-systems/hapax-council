@@ -59,8 +59,10 @@ import os
 import re
 import subprocess
 import sys
+from collections.abc import Mapping
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
+from typing import Final
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 ADMISSION_WRITER = REPO_ROOT / "scripts" / "hapax-claude-subscription-quota-admission"
@@ -90,14 +92,50 @@ WALL_MARKERS = (
 )
 
 
-class Observation:
-    __slots__ = ("kind", "at", "source", "detail")
+#: A served response only witnesses the ANTHROPIC subscription if an Anthropic model served
+#: it. Measured 2026-08-19 across the live transcript corpus: 1299 `fugu-ultra` and 167
+#: `glm-4.7` served records are present — other providers speaking the Claude Code wire
+#: format, from the same inherited-env redirect this observer now refuses. Without this
+#: filter each of those mints an `anthropic-claude-subscription` receipt.
+CLAUDE_MODEL_RE = re.compile(r"\Aclaude-[a-z0-9.-]+\Z")
 
-    def __init__(self, kind: str, at: datetime, source: str, detail: str = "") -> None:
+#: Which route each model family may witness. `claude.review.opus` must not be vouched for
+#: by a Haiku serve: when the Opus entitlement is exhausted, cheap models keep answering,
+#: and that is precisely when a fanned-out receipt would be most wrong.
+ROUTE_MODEL_PREFIXES: Final[dict[str, tuple[str, ...]]] = {
+    "claude.review.opus": ("claude-opus",),
+    "claude.headless.full": ("claude-",),
+}
+
+
+class Observation:
+    __slots__ = ("kind", "at", "source", "detail", "model")
+
+    def __init__(
+        self, kind: str, at: datetime, source: str, detail: str = "", model: str | None = None
+    ) -> None:
         self.kind = kind  # "served" | "wall"
         self.at = at
         self.source = source
         self.detail = detail
+        self.model = model
+
+
+def _anthropic_model(record: Mapping[str, object]) -> str | None:
+    """The Anthropic model that served a record, or None if it was not one.
+
+    Also drops `<synthetic>` and any non-Claude id. A record whose model cannot be
+    identified is NOT evidence — an unnamed serve could be from any provider.
+    """
+    model = record.get("model")
+    if isinstance(model, str) and CLAUDE_MODEL_RE.fullmatch(model):
+        return model
+    usage = record.get("modelUsage")
+    if isinstance(usage, dict):
+        named = [m for m in usage if isinstance(m, str) and CLAUDE_MODEL_RE.fullmatch(m)]
+        if named and len(named) == len(usage):
+            return sorted(named)[0]
+    return None
 
 
 def _parse_ts(value: object) -> datetime | None:
@@ -141,15 +179,46 @@ def _wall_text(record: dict) -> str:
         value = record.get(key)
         if isinstance(value, str):
             parts.append(value)
+        elif isinstance(value, dict):
+            # Transcripts report the refusal as a structured payload
+            # ({"type": "rate_limit_error", "message": ...}), not a bare string.
+            # Read only the two naming fields — never arbitrary nested content.
+            parts.extend(
+                str(value[k]) for k in ("type", "message") if isinstance(value.get(k), str)
+            )
     result = record.get("result")
     if record.get("is_error") and isinstance(result, str):
         parts.append(result[:400])
     return " ".join(parts)
 
 
+def _classify(record: Mapping[str, object], at: datetime, source: str) -> Observation | None:
+    """One record -> wall / served / nothing. Wall is checked FIRST and needs no model."""
+    if any(marker.search(_wall_text(record)) for marker in WALL_MARKERS):
+        return Observation("wall", at, source, "provider-quota-refusal")
+    if record.get("is_error") or _served_tokens(record.get("usage")) <= 0:
+        return None
+    model = _anthropic_model(record)
+    if model is None:
+        return None  # served, but not by Anthropic — witnesses nothing about this subscription
+    return Observation("served", at, source, model=model)
+
+
 def _scan_headless(path: Path, floor: datetime) -> list[Observation]:
-    """Headless lane results: is_error / api_error_status / usage."""
+    """Headless lane results: is_error / api_error_status / usage.
+
+    Many of these records carry no per-record ``timestamp``, so the file mtime is the only
+    clock available. Stamping EVERY undated record with mtime turns one append into a whole
+    file of same-instant observations, and ``max()`` returns the first maximal element — so a
+    lane whose first record is a success would report "served" forever, no matter what was
+    appended after it. Measured across the 14 live lane files: one lane (alpha) fails open
+    exactly that way, six others would hold a permanent false wall.
+
+    A lane log is a STREAM, not a bag: when records are undated, only the LAST classified
+    record represents the file's current state.
+    """
     out: list[Observation] = []
+    undated_last: Observation | None = None
     try:
         with path.open("r", encoding="utf-8", errors="replace") as fh:
             for line in fh:
@@ -162,27 +231,49 @@ def _scan_headless(path: Path, floor: datetime) -> list[Observation]:
                     continue
                 if not isinstance(record, dict):
                     continue
-                at = _parse_ts(record.get("timestamp")) or _mtime(path)
-                if at is None or at < floor:
+                dated = _parse_ts(record.get("timestamp"))
+                if dated is not None:
+                    if dated >= floor:
+                        obs = _classify(record, dated, "headless-result")
+                        if obs is not None:
+                            out.append(obs)
                     continue
-                text = _wall_text(record)
-                if any(marker.search(text) for marker in WALL_MARKERS):
-                    out.append(Observation("wall", at, "headless-result", "provider-quota-refusal"))
-                elif not record.get("is_error") and _served_tokens(record.get("usage")) > 0:
-                    out.append(Observation("served", at, "headless-result"))
+                mtime = _mtime(path)
+                if mtime is None or mtime < floor:
+                    continue
+                obs = _classify(record, mtime, "headless-result")
+                if obs is None:
+                    continue
+                if obs.kind == "served":
+                    # mtime is a FILE fact, not a record fact. Dating a serve with it
+                    # fabricates freshness: a 30-day-old success in a file appended to a
+                    # minute ago would read as a serve a minute ago. Undated serves are
+                    # therefore not evidence at all. Dating a WALL with mtime is merely
+                    # conservative (it can only withhold availability), so walls are kept.
+                    continue
+                undated_last = obs
     except OSError:
         return []
+    if undated_last is not None:
+        out.append(undated_last)
     return out
 
 
 def _scan_transcript(path: Path, floor: datetime) -> list[Observation]:
-    """Session transcripts: assistant records carry message.usage per served response."""
+    """Session transcripts: assistant records carry message.usage per served response.
+
+    Transcripts carry a real per-record timestamp, so ordering here is trustworthy — but the
+    first version had NO wall branch at all, so a 429 one minute ago lost to a success nine
+    minutes ago. There are ~1093 wall-shaped records in the live corpus; this is the ordinary
+    case, not an edge one. The line prefilter must therefore admit records with no usage
+    field, or a wall gets dropped before it is ever parsed.
+    """
     out: list[Observation] = []
     try:
         with path.open("r", encoding="utf-8", errors="replace") as fh:
             for line in fh:
                 line = line.strip()
-                if not line or '"usage"' not in line:
+                if not line or '"usage"' not in line and '"error"' not in line:
                     continue
                 try:
                     record = json.loads(line)
@@ -196,8 +287,11 @@ def _scan_transcript(path: Path, floor: datetime) -> list[Observation]:
                 message = record.get("message")
                 if not isinstance(message, dict):
                     continue
-                if _served_tokens(message.get("usage")) > 0:
-                    out.append(Observation("served", at, "session-transcript"))
+                # The wall may be reported on the envelope or inside the message.
+                merged = {**record, **message}
+                obs = _classify(merged, at, "session-transcript")
+                if obs is not None:
+                    out.append(obs)
     except OSError:
         return []
     return out
@@ -221,9 +315,44 @@ PROBE_ARGV = (
 )
 PROBE_TIMEOUT_SECONDS = 180
 
+#: Env vars that redirect the Claude CLI away from the operator's subscription. If ANY is
+#: set, the probe would measure somebody else's endpoint while the receipt asserts
+#: ``auth_surface: subscription``. NOT hypothetical: /run/user/1000/hapax-secrets.env carries
+#: ANTHROPIC_BASE_URL pointing at podium's LiteLLM proxy, and this unit originally loaded that
+#: file via EnvironmentFile=. The estate has already had one incident where inherited provider
+#: env silently redirected Claude to a third-party API.
+#:
+#: Scrubbing alone is NOT the fix. If the caller's environment says "talk to that endpoint",
+#: quietly ignoring it and measuring something else is a different lie. The probe REFUSES and
+#: names the variable, so the route holds rather than being vouched for on the wrong evidence.
+PROVIDER_REDIRECT_ENV_PREFIXES = ("ANTHROPIC_", "CLAUDE_CODE_USE_")
+
+
+def provider_redirect_env() -> list[str]:
+    """Names of set env vars that would point the probe at a non-subscription endpoint."""
+    return sorted(
+        name
+        for name, value in os.environ.items()
+        if value and name.startswith(PROVIDER_REDIRECT_ENV_PREFIXES)
+    )
+
 
 def probe(now: datetime, *, cwd: str = "/") -> Observation | None:
-    """Actively observe account-live by making one bounded real request."""
+    """Actively observe account-live by making one bounded real request.
+
+    Refuses outright when the environment would redirect the CLI off the subscription —
+    see :data:`PROVIDER_REDIRECT_ENV_PREFIXES`. Returning ``None`` means "no evidence",
+    which holds the route; it never mints.
+    """
+    redirected = provider_redirect_env()
+    if redirected:
+        print(
+            "probe refused: environment would redirect the Claude CLI off the operator "
+            f"subscription ({', '.join(redirected)} set). A receipt minted here would "
+            "assert auth_surface=subscription for an endpoint that is not the subscription.",
+            file=sys.stderr,
+        )
+        return None
     try:
         proc = subprocess.run(
             list(PROBE_ARGV),
@@ -292,9 +421,11 @@ def observe(
         found.extend(_scan_transcript(path, floor))
     if not found:
         return "no_evidence", None
-    newest = max(found, key=lambda o: o.at)
-    # A wall that is NEWER than the newest served response is the live state. Ordering
-    # matters: a served response from 20 minutes ago does not survive a wall 2 minutes ago.
+    # A wall that is NEWER than the newest served response is the live state: a served
+    # response from 20 minutes ago does not survive a wall 2 minutes ago. On an exact tie
+    # the wall wins — `max` returns the FIRST maximal element, so without the second key a
+    # tie silently resolves to whichever the scan happened to emit first.
+    newest = max(found, key=lambda o: (o.at, o.kind == "wall"))
     if newest.kind == "wall":
         return "walled", newest
     return "served", newest
@@ -322,6 +453,20 @@ def mint(
     evidence_ref = f"{WITNESS_PREFIX}-{stamp}"
     results: list[dict] = []
     for route_id in route_ids:
+        # Mint a route ONLY from evidence in its own model family. A Haiku serve does not
+        # witness claude.review.opus — and the moment the Opus entitlement is exhausted is
+        # exactly when cheap models keep answering, so fanning one observation across both
+        # routes is wrong precisely when it matters most.
+        prefixes = ROUTE_MODEL_PREFIXES.get(route_id)
+        if prefixes and not (evidence.model or "").startswith(prefixes):
+            results.append(
+                {
+                    "route_id": route_id,
+                    "skipped": "model-family-mismatch",
+                    "observed_model": evidence.model,
+                }
+            )
+            continue
         argv = [
             sys.executable,
             str(ADMISSION_WRITER),
@@ -342,7 +487,11 @@ def mint(
         if dry_run:
             results.append({"route_id": route_id, "would_run": argv[2:]})
             continue
-        proc = subprocess.run(argv, capture_output=True, text=True, timeout=60)
+        try:
+            proc = subprocess.run(argv, capture_output=True, text=True, timeout=60)
+        except (OSError, subprocess.TimeoutExpired) as exc:
+            results.append({"route_id": route_id, "returncode": -1, "stderr": f"{type(exc).__name__}: {exc}"})
+            continue
         results.append(
             {
                 "route_id": route_id,
@@ -352,6 +501,18 @@ def mint(
             }
         )
     return results
+
+
+def mint_failed(receipts: list[dict]) -> bool:
+    """True if any route was attempted and its write did not succeed.
+
+    A skipped route (model-family mismatch) is not a failure — it is the filter working.
+    A route whose writer exited non-zero IS: the observer would otherwise print
+    ``verdict: served`` and exit 0 having written nothing, which is the exact silent lapse
+    this unit exists to end. Reproduced with an invalid --route-id: writer exits 2, receipt
+    dir empty, observer previously reported success.
+    """
+    return any(r.get("returncode") not in (0, None) for r in receipts)
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -412,7 +573,21 @@ def main(argv: list[str] | None = None) -> int:
             receipt_dir=args.receipt_dir,
             dry_run=args.dry_run,
         )
-        rc = 0
+        payload["observed_model"] = evidence.model
+        if not args.dry_run and mint_failed(payload["receipts"]):
+            payload["hint"] = (
+                "observation succeeded but at least one receipt write FAILED — the route is "
+                "not vouched for. Exit 5 is deliberately outside SuccessExitStatus so this "
+                "surfaces instead of leaving systemd green with no receipts."
+            )
+            rc = 5
+        elif not args.dry_run and not any(
+            r.get("returncode") == 0 for r in payload["receipts"]
+        ):
+            payload["hint"] = "every route was skipped; no receipt was written"
+            rc = 5
+        else:
+            rc = 0
     elif verdict == "walled":
         payload["hint"] = (
             "subscription refused for quota reasons more recently than it served; "
