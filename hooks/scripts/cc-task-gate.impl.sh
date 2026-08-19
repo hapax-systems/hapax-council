@@ -6,7 +6,7 @@
 # file at $HAPAX_CANONICAL_HOOKS (default ~/.local/lib/hapax/hooks/cc-task-gate.sh),
 # so "update the gate" is a one-file change instead of a 26-worktree physical
 # fan-out (reform FM-6 collapse). The deployed closure carries this file plus its
-# sourced siblings agent-role.sh + escape-grant.sh. Drift between any worktree's
+# sourced siblings agent-role.sh + escape-grant.sh + cc-task-root.sh. Drift between any worktree's
 # shim and the canonical copy is detected by hooks-doctor.sh (SessionStart + CI +
 # timer); the canonical copy is refreshed by hapax-post-merge-deploy on merge.
 #
@@ -50,6 +50,58 @@ fi
 if [[ -f "$SCRIPT_DIR/escape-grant.sh" ]]; then
   # shellcheck source=escape-grant.sh
   . "$SCRIPT_DIR/escape-grant.sh"
+fi
+
+if [[ -f "$SCRIPT_DIR/cc-task-root.sh" ]]; then
+  # shellcheck source=cc-task-root.sh
+  . "$SCRIPT_DIR/cc-task-root.sh"
+  cc_task_root_resolve || exit $?
+else
+  # Same class as a missing bootstrap helper: a mid-deploy / staged closure
+  # must not fail-close every mutation. Honor HAPAX_CC_TASKS_ROOT /
+  # PERSONAL_VAULT_PATH with the same absolute-directory rules as the
+  # resolver; only the unset case uses the personal-vault default.
+  # hooks-doctor + post-merge-deploy still ship the sibling so production
+  # uses the resolver.
+  _cc_fb="${HAPAX_CC_TASKS_ROOT:-}"
+  _cc_fb="${_cc_fb#"${_cc_fb%%[![:space:]]*}"}"
+  _cc_fb="${_cc_fb%"${_cc_fb##*[![:space:]]}"}"
+  if [[ -n "$_cc_fb" ]]; then
+    case "$_cc_fb" in
+      "~") _cc_fb="$HOME" ;;
+      "~/"*) _cc_fb="$HOME/${_cc_fb#\~/}" ;;
+    esac
+    case "$_cc_fb" in
+      /*)
+        if [[ ! -d "$_cc_fb" ]]; then
+          echo "cc-task-gate: cc-task-root.sh missing and HAPAX_CC_TASKS_ROOT is not a directory. Next: restore hooks/scripts/cc-task-root.sh" >&2
+          exit 2
+        fi
+        CC_TASK_ROOT="$_cc_fb"
+        ;;
+      *)
+        echo "cc-task-gate: cc-task-root.sh missing and HAPAX_CC_TASKS_ROOT is not absolute. Next: restore hooks/scripts/cc-task-root.sh" >&2
+        exit 2
+        ;;
+    esac
+  else
+    _cc_fb="${PERSONAL_VAULT_PATH:-}"
+    _cc_fb="${_cc_fb#"${_cc_fb%%[![:space:]]*}"}"
+    _cc_fb="${_cc_fb%"${_cc_fb##*[![:space:]]}"}"
+    if [[ -z "$_cc_fb" ]]; then
+      _cc_fb="$HOME/Documents/Personal"
+    fi
+    case "$_cc_fb" in
+      "~") _cc_fb="$HOME" ;;
+      "~/"*) _cc_fb="$HOME/${_cc_fb#\~/}" ;;
+    esac
+    if [[ "$_cc_fb" != /* ]]; then
+      echo "cc-task-gate: cc-task-root.sh missing and PERSONAL_VAULT_PATH is not absolute. Next: restore hooks/scripts/cc-task-root.sh" >&2
+      exit 2
+    fi
+    CC_TASK_ROOT="${_cc_fb}/20-projects/hapax-cc-tasks"
+  fi
+  unset _cc_fb
 fi
 
 # This gate's scope name for escape grants (a grant must cover this exact gate,
@@ -691,7 +743,7 @@ EOF
 fi
 
 # --- 6. Locate task note in vault ---
-vault_root="$HOME/Documents/Personal/20-projects/hapax-cc-tasks"
+vault_root="$CC_TASK_ROOT"
 note_path=""
 for candidate in "$vault_root/active/$task_id-"*.md; do
   if [[ -f "$candidate" ]]; then
