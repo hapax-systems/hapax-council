@@ -92,7 +92,15 @@ lease_ttl="${HAPAX_CLAIM_LEASE_TTL_SECS:-21600}"
 # session's claim auto-frees instead of deadlocking the role forever. The gate
 # refreshes a live session's lease on each mutation, so only stale sessions age
 # out. A live claim on a DIFFERENT non-terminal task blocks (unless --force).
-vault_root_check="$HOME/Documents/Personal/20-projects/hapax-cc-tasks"
+ROOT_HELPER="$SCRIPT_DIR/../hooks/scripts/cc-task-root.sh"
+if [[ ! -f "$ROOT_HELPER" ]]; then
+  echo "cc-claim: cc-task-root.sh missing next to the installed scripts. Next: restore hooks/scripts/cc-task-root.sh" >&2
+  exit 2
+fi
+# shellcheck source=../hooks/scripts/cc-task-root.sh
+. "$ROOT_HELPER"
+cc_task_root_resolve || exit $?
+vault_root_check="$CC_TASK_ROOT"
 now_epoch="$(date +%s 2>/dev/null || echo 0)"
 legacy_claim_file="$HOME/.cache/hapax/cc-active-task-$role"
 shopt -s nullglob
@@ -128,7 +136,7 @@ for cf in "$legacy_claim_file" "$HOME/.cache/hapax/cc-active-task-$role-"*; do
 done
 shopt -u nullglob
 
-vault_root="$HOME/Documents/Personal/20-projects/hapax-cc-tasks"
+vault_root="$CC_TASK_ROOT"
 note_path=""
 # Match `<task_id>-<descriptor>.md` (most tasks).
 for candidate in "$vault_root/active/$task_id-"*.md; do
