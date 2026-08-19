@@ -301,12 +301,19 @@ def _scan_transcript(path: Path, floor: datetime) -> list[Observation]:
 #: quiet estate does not silently drop the review floor. Measured 2026-08-19: ~$0.02 once
 #: the prompt cache is warm. A FRESH PROCESS taking the same path a reviewer would — which
 #: is why it is better evidence than this process's own liveness, and why it is not presence.
+#: The probe must request a model whose family can witness EVERY route it intends to mint.
+#: An earlier revision probed with Haiku, which cannot witness claude.review.opus — the one
+#: route the review floor depends on — so the probe could only ever have covered the route
+#: that mattered least. An Opus serve satisfies both `claude-opus*` and `claude-*`, so one
+#: probe covers both routes; probing per family would double the spend for nothing.
+PROBE_MODEL = "claude-opus-5"
+
 PROBE_ARGV = (
     "claude",
     "-p",
     "ok",
     "--model",
-    "claude-haiku-4-5-20251001",
+    PROBE_MODEL,
     "--output-format",
     "json",
     "--strict-mcp-config",
@@ -378,7 +385,13 @@ def probe(now: datetime, *, cwd: str = "/") -> Observation | None:
     if any(marker.search(_wall_text(record)) for marker in WALL_MARKERS):
         return Observation("wall", now, "active-probe", "provider-quota-refusal")
     if not record.get("is_error") and _served_tokens(record.get("usage")) > 0:
-        return Observation("served", now, "active-probe")
+        # Record the model the response ACTUALLY reports, never the one requested. The
+        # request is an intention; only the response is evidence, and a serve with no
+        # identifiable Anthropic model witnesses nothing (same rule as the passive path).
+        model = _anthropic_model(record)
+        if model is None:
+            return None
+        return Observation("served", now, "active-probe", model=model)
     return None
 
 

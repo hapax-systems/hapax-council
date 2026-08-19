@@ -113,6 +113,70 @@ class TestOnlyAnthropicServesWitnessTheSubscription:
         assert all("would_run" in r for r in planned)
 
 
+class TestProbeCarriesTheModelItObserved:
+    """Two review families independently flagged this: a probe with no model minted NOTHING.
+
+    Both routes fail the family-prefix check against `None`, both are skipped, no receipt is
+    written, and the no-receipt guard then exits 5 — so every idle run spent money, vouched
+    for nothing, and reported failure. Introduced by the model-family fix itself.
+    """
+
+    def _fake_run(self, model: str | None):
+        payload = {"is_error": False, "usage": {"input_tokens": 5, "output_tokens": 9}}
+        if model:
+            payload["modelUsage"] = {model: {"inputTokens": 5}}
+
+        class R:
+            stdout = json.dumps(payload)
+            stderr = ""
+
+        return lambda *a, **k: R()
+
+    def test_probe_records_the_model_from_the_response(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        for var in ("ANTHROPIC_BASE_URL", "ANTHROPIC_API_KEY", "ANTHROPIC_AUTH_TOKEN"):
+            monkeypatch.delenv(var, raising=False)
+        monkeypatch.setattr(obs.subprocess, "run", self._fake_run("claude-opus-5"))
+        ev = obs.probe(NOW)
+        assert ev is not None and ev.model == "claude-opus-5"
+
+    def test_probe_result_actually_mints_both_routes(
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+    ) -> None:
+        """The end-to-end property the bug broke: a probe must produce receipts."""
+        for var in ("ANTHROPIC_BASE_URL", "ANTHROPIC_API_KEY", "ANTHROPIC_AUTH_TOKEN"):
+            monkeypatch.delenv(var, raising=False)
+        monkeypatch.setattr(obs.subprocess, "run", self._fake_run("claude-opus-5"))
+        ev = obs.probe(NOW)
+        planned = obs.mint(
+            ev,
+            now=NOW,
+            route_ids=obs.DEFAULT_ROUTE_IDS,
+            stale_after_seconds=1800,
+            receipt_dir=tmp_path,
+            dry_run=True,
+        )
+        assert all("would_run" in r for r in planned), f"probe minted nothing: {planned}"
+
+    def test_probe_requests_a_model_that_can_witness_every_default_route(self) -> None:
+        """Haiku cannot witness claude.review.opus — the route the review floor needs."""
+        for route in obs.DEFAULT_ROUTE_IDS:
+            prefixes = obs.ROUTE_MODEL_PREFIXES.get(route)
+            if prefixes:
+                assert obs.PROBE_MODEL.startswith(prefixes), (
+                    f"PROBE_MODEL {obs.PROBE_MODEL} cannot witness {route}"
+                )
+
+    def test_probe_without_an_identifiable_model_is_not_evidence(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        for var in ("ANTHROPIC_BASE_URL", "ANTHROPIC_API_KEY", "ANTHROPIC_AUTH_TOKEN"):
+            monkeypatch.delenv(var, raising=False)
+        monkeypatch.setattr(obs.subprocess, "run", self._fake_run(None))
+        assert obs.probe(NOW) is None
+
+
 class TestFailedMintIsNotSuccess:
     def test_nonzero_writer_exit_is_a_failure(self) -> None:
         assert obs.mint_failed([{"route_id": "r", "returncode": 2, "stderr": "invalid"}])
