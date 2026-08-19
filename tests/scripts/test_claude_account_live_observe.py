@@ -177,6 +177,70 @@ class TestProbeCarriesTheModelItObserved:
         assert obs.probe(NOW) is None
 
 
+class TestPrefilterMatchesTheWallFields:
+    """The raw-line prefilter and _wall_text had drifted apart.
+
+    _wall_text reads api_error_status / subtype / terminal_reason / stop_reason, but the
+    prefilters admitted only lines containing usage / error / is_error. A live wall reported
+    through one of the others was discarded before parsing, and an older served record then
+    minted availability over the top of it.
+    """
+
+    @pytest.mark.parametrize("key", list(obs.WALL_BEARING_KEYS))
+    def test_every_wall_bearing_key_survives_the_prefilter(self, key: str) -> None:
+        assert obs._line_may_carry_evidence(json.dumps({key: "x"})), key
+
+    def test_a_line_with_no_evidence_keys_is_filtered_out(self) -> None:
+        assert not obs._line_may_carry_evidence(json.dumps({"type": "user", "cwd": "/tmp"}))
+
+    def test_api_error_status_only_wall_beats_an_older_serve(self, tmp_path: Path) -> None:
+        """The concrete case: a wall carrying no `error` field at all."""
+        # Deliberately carries NEITHER `error` NOR `is_error` — otherwise the old narrow
+        # prefilter would admit the line anyway and the test would not isolate the defect.
+        wall = {
+            "type": "result",
+            "timestamp": (NOW - timedelta(minutes=1)).isoformat().replace("+00:00", "Z"),
+            "api_error_status": "429 rate limit exceeded",
+        }
+        verdict, ev = _run(
+            tmp_path,
+            headless=[_result(NOW - timedelta(minutes=9)), json.dumps(wall)],
+        )
+        assert verdict == "walled", "a wall reported only via api_error_status must be seen"
+
+
+class TestProbeFailureIsNotAbsentEvidence:
+    """A probe that could not RUN is a broken instrument, not an observation of nothing."""
+
+    def test_missing_binary_reports_probe_failed(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        for var in ("ANTHROPIC_BASE_URL", "ANTHROPIC_API_KEY", "ANTHROPIC_AUTH_TOKEN"):
+            monkeypatch.delenv(var, raising=False)
+
+        def boom(*a, **k):
+            raise FileNotFoundError("claude")
+
+        monkeypatch.setattr(obs.subprocess, "run", boom)
+        ev = obs.probe(NOW)
+        assert ev is not None and ev.kind == "probe_failed"
+
+    def test_timeout_reports_probe_failed(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        for var in ("ANTHROPIC_BASE_URL", "ANTHROPIC_API_KEY", "ANTHROPIC_AUTH_TOKEN"):
+            monkeypatch.delenv(var, raising=False)
+
+        def slow(*a, **k):
+            raise obs.subprocess.TimeoutExpired(cmd="claude", timeout=180)
+
+        monkeypatch.setattr(obs.subprocess, "run", slow)
+        assert obs.probe(NOW).kind == "probe_failed"
+
+    def test_redirect_refusal_is_still_no_evidence_not_probe_failure(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Refusing on a contaminated env is a correct decision, not a broken instrument."""
+        monkeypatch.setenv("ANTHROPIC_BASE_URL", "https://not-the-subscription.invalid")
+        assert obs.probe(NOW) is None
+
+
 class TestFailedMintIsNotSuccess:
     def test_nonzero_writer_exit_is_a_failure(self) -> None:
         assert obs.mint_failed([{"route_id": "r", "returncode": 2, "stderr": "invalid"}])

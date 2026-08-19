@@ -34,17 +34,24 @@ Environment=PYTHONPATH=%h/.cache/hapax/source-activation/worktree
 # Pin PATH so the probe cannot resolve a different `claude` from an inherited manager
 # environment. Which binary answers is part of what is being measured.
 Environment=PATH=%h/.npm-global/bin:%h/.local/bin:/usr/local/bin:/usr/bin:/bin
-# 3 = quota wall observed, 4 = no evidence and no probe result. Both are intended
-# fail-closed outcomes, not failures of this unit. 5 (a receipt write FAILED) is
-# deliberately EXCLUDED: without that, a bad --route-id or an unwritable receipt dir leaves
-# systemd green forever while nothing is ever written — the precise silent lapse this unit
-# exists to end.
+# 3 = a quota wall was observed, 4 = nothing exercised the subscription and there was
+# nothing to observe. Both are correct fail-closed OBSERVATIONS, not failures of this unit.
+#
+# Deliberately EXCLUDED, because each means the instrument itself is broken and must not
+# read as health: 5 = a receipt write failed (a bad route-id or unwritable dir would
+# otherwise leave systemd green with nothing written), 7 = the probe could not run at all
+# (missing binary, timeout). Exit 4 is reserved for a completed observation that found no
+# evidence — never for a probe that never happened.
 SuccessExitStatus=0 3 4
 StandardOutput=journal
 StandardError=journal
 SyslogIdentifier=hapax-claude-account-live
 MemoryMax=512M
-TimeoutStartSec=300
+# Worst case is the idle path: up to 180s in the probe, then one admission-writer call per
+# route at 60s each, plus scanning. 300s was exactly that bound with nothing left over, so a
+# slow run could be killed after writing only some route receipts — a partial mint is worse
+# than none, because the routes that did write look vouched for.
+TimeoutStartSec=900
 # Killswitch: `systemctl --user mask hapax-claude-account-live-observe.timer`. Receipts
 # then lapse after stale_after and claude.review.opus holds — the review floor drops to
 # whatever other families are fresh. It never falls back to trusting an expired receipt.

@@ -167,6 +167,29 @@ def _served_tokens(usage: object) -> int:
     return total
 
 
+#: Every field a provider refusal can arrive in. The raw-line PREFILTERS are derived from
+#: this set rather than hardcoded, because they had already drifted apart: the filters
+#: admitted only lines containing "usage"/"error"/"is_error" while this function also reads
+#: api_error_status, subtype, terminal_reason and stop_reason. A live wall reported through
+#: one of those alone was discarded before it was ever parsed, and an older served record
+#: then minted availability over the top of it. One constant makes the drift unrepresentable.
+WALL_BEARING_KEYS: Final[tuple[str, ...]] = (
+    "api_error_status",
+    "error",
+    "subtype",
+    "terminal_reason",
+    "stop_reason",
+    "is_error",
+)
+#: Substrings that make a raw line worth parsing at all.
+_LINE_HINTS: Final[tuple[str, ...]] = ("usage", *WALL_BEARING_KEYS)
+
+
+def _line_may_carry_evidence(line: str) -> bool:
+    """Cheap prefilter over a raw JSONL line, kept in sync with WALL_BEARING_KEYS."""
+    return any(f'"{hint}"' in line for hint in _LINE_HINTS)
+
+
 def _wall_text(record: dict) -> str:
     """Only the narrow fields that can legitimately carry a provider refusal.
 
@@ -175,7 +198,9 @@ def _wall_text(record: dict) -> str:
     moment anyone discusses rate limits).
     """
     parts: list[str] = []
-    for key in ("api_error_status", "error", "subtype", "terminal_reason", "stop_reason"):
+    for key in WALL_BEARING_KEYS:
+        if key == "is_error":
+            continue  # handled below, paired with `result`
         value = record.get(key)
         if isinstance(value, str):
             parts.append(value)
@@ -223,7 +248,7 @@ def _scan_headless(path: Path, floor: datetime) -> list[Observation]:
         with path.open("r", encoding="utf-8", errors="replace") as fh:
             for line in fh:
                 line = line.strip()
-                if not line or '"usage"' not in line and '"is_error"' not in line:
+                if not line or not _line_may_carry_evidence(line):
                     continue
                 try:
                     record = json.loads(line)
@@ -273,7 +298,7 @@ def _scan_transcript(path: Path, floor: datetime) -> list[Observation]:
         with path.open("r", encoding="utf-8", errors="replace") as fh:
             for line in fh:
                 line = line.strip()
-                if not line or '"usage"' not in line and '"error"' not in line:
+                if not line or not _line_may_carry_evidence(line):
                     continue
                 try:
                     record = json.loads(line)
@@ -368,8 +393,13 @@ def probe(now: datetime, *, cwd: str = "/") -> Observation | None:
             timeout=PROBE_TIMEOUT_SECONDS,
             cwd=cwd,
         )
-    except (OSError, subprocess.TimeoutExpired):
-        return None
+    except (OSError, subprocess.TimeoutExpired) as exc:
+        # A probe that could not RUN is a broken instrument, not an absence of evidence.
+        # Collapsing the two made a missing `claude` binary or a timed-out request exit 4,
+        # which SuccessExitStatus accepts — so the unit would stay green forever while
+        # never observing anything. This is the same declined-vs-failed distinction the
+        # determination spine enforces; it belongs here too.
+        return Observation("probe_failed", now, "active-probe", f"{type(exc).__name__}: {exc}")
     blob = (proc.stdout or "").strip()
     try:
         record = json.loads(blob)
@@ -607,6 +637,15 @@ def main(argv: list[str] | None = None) -> int:
             "holding the route rather than minting availability"
         )
         rc = 3
+    elif verdict == "probe_failed":
+        # NOT exit 4. The instrument broke; nothing was observed either way. Exit 7 is
+        # outside SuccessExitStatus so a missing binary or a hung request surfaces instead
+        # of leaving the unit green while it silently observes nothing.
+        payload["hint"] = (
+            f"the active probe could not run ({evidence.detail if evidence else 'unknown'}); "
+            "this is a broken instrument, not an absence of evidence"
+        )
+        rc = 7
     else:
         payload["hint"] = (
             f"no served Claude response within {args.max_age_seconds}s; nothing exercised "
