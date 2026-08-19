@@ -63,6 +63,11 @@ printf 'OPENAI_API_KEY_PRESENT=%s\\n' "${{OPENAI_API_KEY:+yes}}" >> {env_file}
     env["XDG_CACHE_HOME"] = str(tmp_path / "cache")
     env["HOME"] = str(tmp_path / "home")
     env["HAPAX_REMOTE_TOKEN_HANDOFF_TTL_SECONDS"] = "1"
+    # Isolate launcher tests from admitted Gate-0B publication. This suite
+    # does not install claim-publication roots; without the killswitch the
+    # default cc-claim path fails and hapax-codex surfaces it as exit 8.
+    env["HAPAX_GATE0B_CLAIM_PUBLICATION_OFF"] = "1"
+    env["HAPAX_SESSION_ID"] = "0f9f9f9f-1111-2222-3333-444455556666"
     env.pop("CODEX_THREAD_NAME", None)
     env.pop("CODEX_ROLE", None)
     env.pop("CODEX_SESSION_NAME", None)
