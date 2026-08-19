@@ -25,6 +25,7 @@ worker path existed.
 from __future__ import annotations
 
 import fcntl
+import hashlib
 import json
 import os
 import tempfile
@@ -53,6 +54,74 @@ WORKER_AVAILABILITY_DEGRADE_CODES: frozenset[FailureCode] = frozenset(
 )
 
 
+#: Content-addressed store for externalised ``raw_signal`` payloads. Sibling of the
+#: ledger, so a reader that has one has the other.
+FAILURE_SIGNAL_BLOB_DIR = Path.home() / ".cache" / "hapax" / "failure-signals"
+
+#: Signals at or below this stay INLINE. Small payloads are worth more readable in
+#: the ledger than deduplicated, and the bloat is entirely in the large ones.
+RAW_SIGNAL_INLINE_MAX_BYTES = 4096
+
+
+def _externalise_raw_signal(dumped: dict) -> dict:
+    """Replace a large ``raw_signal`` with a content-addressed reference.
+
+    MEASURED 2026-08-19 on appendix: the ledger was **732.7 MB across 3,614
+    records**, and ``raw_signal`` accounted for **731.1 MB of it (99.8%)**. Of those
+    3,614 payloads only **11 were distinct** — a single 186,359-character string
+    repeated **3,589 times**, a 328x dedupe ratio. The ledger was re-embedding the
+    same error blob on every failure.
+
+    Content addressing collapses that to one file on disk plus a hash per record:
+    ~732 MB becomes well under 1 MB, with the payload still byte-for-byte
+    retrievable. **This is losslessness preserved by indirection, not truncation** —
+    the docstring contract of the caller is "one lossless line", and dropping bytes
+    would break it.
+
+    FORWARD-ONLY. Existing ledger lines are left exactly as they are; no history
+    rewrite. A reader must therefore handle BOTH shapes: an inline ``raw_signal``
+    string, or ``raw_signal_ref`` naming the blob.
+
+    FAIL-OPEN, and narrowing rather than widening: if the blob cannot be written,
+    the payload stays INLINE — the previous behaviour — and ``raw_signal_ref_error``
+    records why. That degrades to the status quo instead of silently dropping
+    evidence, and it is never silent.
+    """
+    raw = dumped.get("raw_signal")
+    if not isinstance(raw, str):
+        return dumped
+    encoded = raw.encode("utf-8", "replace")
+    if len(encoded) <= RAW_SIGNAL_INLINE_MAX_BYTES:
+        return dumped
+
+    digest = hashlib.sha256(encoded).hexdigest()
+    out = dict(dumped)
+    try:
+        FAILURE_SIGNAL_BLOB_DIR.mkdir(parents=True, exist_ok=True)
+        blob = FAILURE_SIGNAL_BLOB_DIR / f"{digest}.txt"
+        if not blob.exists():
+            # Atomic, and safe against concurrent writers of identical content:
+            # same digest means same bytes, so a racing rename is a no-op.
+            with tempfile.NamedTemporaryFile(
+                mode="wb", dir=FAILURE_SIGNAL_BLOB_DIR, delete=False
+            ) as tmp:
+                tmp.write(encoded)
+                tmp_path = Path(tmp.name)
+            os.replace(tmp_path, blob)
+    except OSError as exc:
+        # Keep the payload inline (status quo) and say so. Never blocks dispatch.
+        out["raw_signal_ref_error"] = f"{type(exc).__name__}: {exc}"
+        return out
+
+    out.pop("raw_signal", None)
+    out["raw_signal_ref"] = {
+        "sha256": digest,
+        "bytes": len(encoded),
+        "path": str(blob),
+    }
+    return out
+
+
 def append_failure_receipt_record(
     *,
     task_id: str,
@@ -75,7 +144,7 @@ def append_failure_receipt_record(
         "task_id": task_id,
         "lane": lane,
         "returncode": returncode,
-        **receipt.model_dump(),
+        **_externalise_raw_signal(receipt.model_dump()),
     }
     return append_jsonl(ledger_path or FAILURE_CLASSIFICATION_LEDGER, record, raising=False)
 
