@@ -258,6 +258,44 @@ def test_helper_unavailable_does_not_block_claimed_inscope_edit(tmp_path: Path, 
     )
 
 
+def test_missing_root_sibling_honors_hapax_cc_tasks_root(tmp_path: Path):
+    # Fallback must not ignore HAPAX_CC_TASKS_ROOT and read the default vault.
+    gate = _stage_gate(tmp_path, helper="absent")
+    alt = tmp_path / "alt-root"
+    _make_vault(tmp_path, task_id="t1", assigned="delta", scope="/tmp/x")
+    # Move the note into the override root; leave the default vault empty of t1.
+    default_note = tmp_path / "Documents/Personal/20-projects/hapax-cc-tasks/active/t1-t.md"
+    dest = alt / "active" / "t1-t.md"
+    dest.parent.mkdir(parents=True)
+    dest.write_text(default_note.read_text(encoding="utf-8"), encoding="utf-8")
+    default_note.unlink()
+    _claim(tmp_path, "delta", "t1")
+    result = _run(
+        gate,
+        {"tool_name": "Edit", "tool_input": {"file_path": "/tmp/x"}},
+        tmp_path,
+        role="delta",
+        extra_env={"HAPAX_CC_TASKS_ROOT": str(alt)},
+    )
+    assert result.returncode == 0, (
+        f"override root must be used when the sibling is missing; stderr={result.stderr}"
+    )
+
+
+def test_missing_root_sibling_refuses_relative_override(tmp_path: Path):
+    gate = _stage_gate(tmp_path, helper="absent")
+    note = _intake_note(tmp_path, "cc-tasks")
+    result = _run(
+        gate,
+        _candidate_write(note),
+        tmp_path,
+        role=None,
+        extra_env={"HAPAX_CC_TASKS_ROOT": "relative-root"},
+    )
+    assert result.returncode == 2, result.stderr
+    assert "not absolute" in result.stderr
+
+
 # --- Sanity: with the REAL helper present, behaviour is unchanged -----------------
 
 

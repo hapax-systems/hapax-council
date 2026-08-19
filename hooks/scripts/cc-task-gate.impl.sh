@@ -58,16 +58,43 @@ if [[ -f "$SCRIPT_DIR/cc-task-root.sh" ]]; then
   cc_task_root_resolve || exit $?
 else
   # Same class as a missing bootstrap helper: a mid-deploy / staged closure
-  # must not fail-close every mutation. Fall back to the personal-vault
-  # default the resolver would have built. hooks-doctor + post-merge-deploy
-  # still ship the sibling so production uses the resolver.
-  CC_TASK_ROOT="${HOME}/Documents/Personal/20-projects/hapax-cc-tasks"
-  CC_TASK_ROOT_SOURCE="missing_sibling_default"
-  if [[ -d "$CC_TASK_ROOT" ]]; then
-    CC_TASK_ROOT_EXISTS=1
+  # must not fail-close every mutation. Honor HAPAX_CC_TASKS_ROOT /
+  # PERSONAL_VAULT_PATH with the same absolute-directory rules as the
+  # resolver; only the unset case uses the personal-vault default.
+  # hooks-doctor + post-merge-deploy still ship the sibling so production
+  # uses the resolver.
+  _cc_fb="${HAPAX_CC_TASKS_ROOT:-}"
+  _cc_fb="${_cc_fb#"${_cc_fb%%[![:space:]]*}"}"
+  _cc_fb="${_cc_fb%"${_cc_fb##*[![:space:]]}"}"
+  if [[ -n "$_cc_fb" ]]; then
+    case "$_cc_fb" in
+      "~") _cc_fb="$HOME" ;;
+      "~/"*) _cc_fb="$HOME/${_cc_fb#\~/}" ;;
+    esac
+    case "$_cc_fb" in
+      /*)
+        if [[ ! -d "$_cc_fb" ]]; then
+          echo "cc-task-gate: cc-task-root.sh missing and HAPAX_CC_TASKS_ROOT is not a directory. Next: restore hooks/scripts/cc-task-root.sh" >&2
+          exit 2
+        fi
+        CC_TASK_ROOT="$_cc_fb"
+        ;;
+      *)
+        echo "cc-task-gate: cc-task-root.sh missing and HAPAX_CC_TASKS_ROOT is not absolute. Next: restore hooks/scripts/cc-task-root.sh" >&2
+        exit 2
+        ;;
+    esac
   else
-    CC_TASK_ROOT_EXISTS=0
+    _cc_fb="${PERSONAL_VAULT_PATH:-$HOME/Documents/Personal}"
+    _cc_fb="${_cc_fb#"${_cc_fb%%[![:space:]]*}"}"
+    _cc_fb="${_cc_fb%"${_cc_fb##*[![:space:]]}"}"
+    case "$_cc_fb" in
+      "~") _cc_fb="$HOME" ;;
+      "~/"*) _cc_fb="$HOME/${_cc_fb#\~/}" ;;
+    esac
+    CC_TASK_ROOT="${_cc_fb}/20-projects/hapax-cc-tasks"
   fi
+  unset _cc_fb
 fi
 
 # This gate's scope name for escape grants (a grant must cover this exact gate,
