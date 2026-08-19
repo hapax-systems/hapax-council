@@ -992,19 +992,10 @@ def test_hapax_cc_tasks_root_wins_over_the_home_default(tmp_path: Path) -> None:
     real = override / "active" / "override-root.md"
     real.write_text(decoy.read_text(encoding="utf-8"), encoding="utf-8")
 
-    env = os.environ.copy()
-    for leaked in _AMBIENT_IDENTITY_ENV:
-        env.pop(leaked, None)
-    env["HOME"] = str(home)
-    env["HAPAX_CC_TASKS_ROOT"] = str(override)
-    env["HAPAX_AGENT_ROLE"] = "cx-test"
-    env["HAPAX_AGENT_NAME"] = "cx-test"
-    result = subprocess.run(
-        ["bash", str(SCRIPT), "override-root"],
-        env=env,
-        text=True,
-        capture_output=True,
-        check=False,
+    result = _claim(
+        home,
+        "override-root",
+        extra_env={"HAPAX_CC_TASKS_ROOT": str(override)},
     )
 
     assert result.returncode == 0, result.stderr
