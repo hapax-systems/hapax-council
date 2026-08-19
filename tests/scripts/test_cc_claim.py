@@ -364,6 +364,36 @@ def test_explicit_read_only_intake_without_parent_spec_allows_claim(
     assert "status: claimed" in note.read_text(encoding="utf-8")
 
 
+def test_hapax_cc_tasks_root_wins_over_the_home_default(tmp_path: Path) -> None:
+    """The gate-path consumer must use the resolver, not a welded $HOME path."""
+    home = tmp_path / "home"
+    override = tmp_path / "elsewhere"
+    (override / "active").mkdir(parents=True)
+    (override / "closed").mkdir(parents=True)
+    decoy = _write_task(home, "active", "override-root")
+    real = override / "active" / "override-root.md"
+    real.write_text(decoy.read_text(encoding="utf-8"), encoding="utf-8")
+
+    env = os.environ.copy()
+    for leaked in _AMBIENT_IDENTITY_ENV:
+        env.pop(leaked, None)
+    env["HOME"] = str(home)
+    env["HAPAX_CC_TASKS_ROOT"] = str(override)
+    env["HAPAX_AGENT_ROLE"] = "cx-test"
+    env["HAPAX_AGENT_NAME"] = "cx-test"
+    result = subprocess.run(
+        ["bash", str(SCRIPT), "override-root"],
+        env=env,
+        text=True,
+        capture_output=True,
+        check=False,
+    )
+
+    assert result.returncode == 0, result.stderr
+    assert "status: claimed" in real.read_text(encoding="utf-8")
+    assert "status: offered" in decoy.read_text(encoding="utf-8")
+
+
 def test_assigned_to_unassigned_allows_claim(tmp_path: Path) -> None:
     home = tmp_path / "home"
     note = _write_task(home, "active", "unassigned-owner", assigned_to="unassigned")

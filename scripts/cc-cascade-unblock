@@ -21,6 +21,7 @@ if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
 from shared.blocked_witness import evaluate_blocked_witness  # noqa: E402
+from shared.cc_task_root import resolve_cc_task_root  # noqa: E402
 from shared.sdlc_lifecycle import (  # noqa: E402
     TASK_NON_FULFILLING_CLOSED_STATUSES,
     frontmatter_from_text,
@@ -28,7 +29,7 @@ from shared.sdlc_lifecycle import (  # noqa: E402
     task_closure_validity,
 )
 
-VAULT = Path.home() / "Documents/Personal/20-projects/hapax-cc-tasks"
+VAULT = resolve_cc_task_root().path
 ACTIVE = VAULT / "active"
 CLOSED = VAULT / "closed"
 

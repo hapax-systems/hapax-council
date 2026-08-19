@@ -703,6 +703,7 @@ GATE_CLOSURE_FILES=(
     hooks/scripts/cc-task-gate.impl.sh
     hooks/scripts/agent-role.sh
     hooks/scripts/escape-grant.sh
+    hooks/scripts/cc-task-root.sh
     hooks/scripts/hapax_check_enable_latch.sh
     hooks/scripts/cc-task-gate-bootstrap.py
     hooks/scripts/hooks-doctor.sh
