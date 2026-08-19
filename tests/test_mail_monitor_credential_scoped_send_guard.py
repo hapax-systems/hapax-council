@@ -54,6 +54,7 @@ licence.
 from __future__ import annotations
 
 import ast
+import os
 import tokenize
 from pathlib import Path
 from typing import Final
@@ -130,12 +131,69 @@ def _attr_chain(node: ast.AST) -> list[str]:
     return names
 
 
-def _loads_credentials(tree: ast.AST) -> bool:
+def _package_parts(path: Path, repo_root: Path) -> list[str]:
+    """The dotted package a module lives in, for resolving relative imports.
+
+    ``agents/mail_monitor/foo.py`` -> ``["agents", "mail_monitor"]``.
+    """
+    try:
+        rel = path.resolve().relative_to(repo_root.resolve())
+    except ValueError:
+        return []
+    return list(rel.parent.parts)
+
+
+def _absolute_import_targets(node: ast.ImportFrom, pkg_parts: list[str]) -> set[str]:
+    """Every dotted name an ``ImportFrom`` can bind, with relative levels resolved.
+
+    ``from .oauth import load_credentials`` inside ``agents/mail_monitor/`` means
+    ``agents.mail_monitor.oauth`` — invisible to a check that reads only
+    ``node.module``, which is how the first version missed it.
+    """
+    if node.level > 1:
+        base = pkg_parts[: len(pkg_parts) - (node.level - 1)]
+    elif node.level == 1:
+        base = pkg_parts
+    else:
+        base = []
+    prefix = base + (node.module.split(".") if node.module else [])
+    module = ".".join(prefix)
+    targets = {module} if module else set()
+    # ``from . import oauth`` binds the submodule through the alias, not .module
+    if prefix:
+        targets |= {".".join(prefix + [a.name]) for a in node.names}
+    return targets
+
+
+def _mail_resource_aliases(tree: ast.AST) -> set[str]:
+    """Names bound to a Gmail ``messages()``/``drafts()`` resource.
+
+    ``mr = service.users().messages()`` then ``mr.send(...)`` splits the chain across
+    two statements, so a check that inspects only the current chain sees nothing.
+    Chained rebinding (``a = ...messages(); b = a``) is followed to a fixpoint.
+    """
+    aliases: set[str] = set()
+    for _ in range(4):  # depth beyond this is not worth the complexity
+        grew = False
+        for node in ast.walk(tree):
+            if not isinstance(node, ast.Assign):
+                continue
+            chain = set(_attr_chain(node.value))
+            if not (MAIL_CHAIN_ANCHORS & chain or aliases & chain):
+                continue
+            for target in node.targets:
+                if isinstance(target, ast.Name) and target.id not in aliases:
+                    aliases.add(target.id)
+                    grew = True
+        if not grew:
+            break
+    return aliases
+
+
+def _loads_credentials(tree: ast.AST, pkg_parts: list[str]) -> bool:
     for node in ast.walk(tree):
-        if isinstance(node, ast.ImportFrom) and node.module:
-            if node.module in CREDENTIAL_MODULES:
-                return True
-            if node.module == "agents.mail_monitor" and any(a.name == "oauth" for a in node.names):
+        if isinstance(node, ast.ImportFrom):
+            if _absolute_import_targets(node, pkg_parts) & set(CREDENTIAL_MODULES):
                 return True
         elif isinstance(node, ast.Import):
             if any(a.name in CREDENTIAL_MODULES for a in node.names):
@@ -149,6 +207,7 @@ def _loads_credentials(tree: ast.AST) -> bool:
 def _send_vectors(tree: ast.AST) -> list[tuple[str, int]]:
     """Return (vector_name, line) for every send capability in the parsed source."""
     hits: list[tuple[str, int]] = []
+    aliases = _mail_resource_aliases(tree)
     for node in ast.walk(tree):
         if isinstance(node, ast.Import):
             for a in node.names:
@@ -165,8 +224,10 @@ def _send_vectors(tree: ast.AST) -> list[tuple[str, int]]:
                 if func.attr in SEND_FUNCS:
                     hits.append(("smtp-sendmail", node.lineno))
                 elif func.attr in {"send", "create"}:
-                    chain = _attr_chain(func)
-                    if MAIL_CHAIN_ANCHORS & set(chain):
+                    chain = set(_attr_chain(func))
+                    # `aliases` catches the two-statement form, where the anchor was
+                    # bound to a name in an earlier statement and is not in this chain.
+                    if MAIL_CHAIN_ANCHORS & chain or aliases & chain:
                         name = (
                             "gmail-api-drafts" if "drafts" in chain else "gmail-api-messages-send"
                         )
@@ -174,6 +235,55 @@ def _send_vectors(tree: ast.AST) -> list[tuple[str, int]]:
         elif isinstance(node, ast.Constant) and isinstance(node.value, str):
             if REST_SEND_FRAGMENT in node.value:
                 hits.append(("gmail-rest-send", node.lineno))
+    return hits
+
+
+SCRIPT_SUFFIXES: Final[frozenset[str]] = frozenset(
+    {".sh", ".bash", ".zsh", ".fish", ".js", ".mjs", ".ts", ".rb", ".pl", ".php"}
+)
+#: Cap on bytes read from a non-Python file. Credential + endpoint both appear near
+#: the top of any real sender; this stops the guard walking large data files.
+NON_PYTHON_READ_CAP: Final[int] = 256 * 1024
+
+
+def _is_script(path: Path) -> bool:
+    """A non-Python file that can execute: known suffix, or executable with a shebang."""
+    if path.suffix.lower() in SCRIPT_SUFFIXES:
+        return True
+    if path.suffix or not os.access(path, os.X_OK):
+        return False
+    try:
+        with path.open("rb") as fh:
+            return fh.read(2) == b"#!"
+    except OSError:
+        return False
+
+
+def _non_python_vectors(path: Path) -> list[tuple[str, int]]:
+    """Coarse text check for a shell/JS sender. Requires credential AND endpoint.
+
+    ``pass show mail-monitor/google-refresh-token`` piped into a ``curl`` against the
+    Gmail REST endpoint is a complete send vector that never enters the Python AST
+    path. This check is deliberately blunter than the AST one — it cannot know a
+    language's grammar — so it fires only when a credential literal and a send
+    endpoint BOTH appear in the same file, which keeps it from flagging every script
+    that merely mentions one of them.
+    """
+    try:
+        blob = path.read_bytes()[:NON_PYTHON_READ_CAP]
+    except OSError:
+        return []
+    if b"\x00" in blob:  # binary
+        return []
+    text = blob.decode("utf-8", "replace")
+    if not any(lit in text for lit in CREDENTIAL_LITERALS):
+        return []
+    hits: list[tuple[str, int]] = []
+    for lineno, line in enumerate(text.splitlines(), start=1):
+        if REST_SEND_FRAGMENT in line:
+            hits.append(("gmail-rest-send-nonpython", lineno))
+        elif "sendmail" in line or "/drafts/send" in line:
+            hits.append(("smtp-sendmail-nonpython", lineno))
     return hits
 
 
@@ -203,11 +313,22 @@ def scan(repo_root: Path = REPO_ROOT) -> dict[str, list[tuple[str, int]]]:
         except SyntaxError as exc:
             unparseable.append(f"{py_file}: SyntaxError: {exc}")
             continue
-        if not _loads_credentials(tree):
+        if not _loads_credentials(tree, _package_parts(py_file, repo_root)):
             continue
         hits = _send_vectors(tree)
         if hits:
             findings[str(py_file.relative_to(repo_root))] = hits
+
+    for other in sorted(repo_root.rglob("*")):
+        if other.suffix == ".py" or not other.is_file():
+            continue
+        if SKIP_DIR_PARTS & set(other.parts):
+            continue
+        if not _is_script(other):
+            continue
+        hits = _non_python_vectors(other)
+        if hits:
+            findings[str(other.relative_to(repo_root))] = hits
 
     if unparseable:
         # Fail loudly. The old guard swallowed UnicodeDecodeError, which made a
@@ -317,6 +438,77 @@ class TestCredentialScopedSendGuard:
             "from agents.mail_monitor.oauth import load_credentials\n"
             "sock.send(b'bytes')\nqueue.send(item)\n"
         )
+        assert scan(repo_root=tmp_path) == {}
+
+    def test_catches_relative_credential_import(self, tmp_path: Path) -> None:
+        """`from .oauth import ...` inside agents/mail_monitor is the same capability."""
+        pkg = tmp_path / "agents" / "mail_monitor"
+        pkg.mkdir(parents=True)
+        (pkg / "sender.py").write_text(
+            "from .oauth import load_credentials\n"
+            "service.users().messages().send(userId='me', body={})\n"
+        )
+        assert "agents/mail_monitor/sender.py" in scan(repo_root=tmp_path)
+
+    def test_catches_from_dot_import_oauth(self, tmp_path: Path) -> None:
+        pkg = tmp_path / "agents" / "mail_monitor"
+        pkg.mkdir(parents=True)
+        (pkg / "s2.py").write_text("from . import oauth\nservice.users().messages().send()\n")
+        assert "agents/mail_monitor/s2.py" in scan(repo_root=tmp_path)
+
+    def test_catches_parent_relative_import(self, tmp_path: Path) -> None:
+        pkg = tmp_path / "agents" / "mail_monitor" / "sub"
+        pkg.mkdir(parents=True)
+        (pkg / "s3.py").write_text(
+            "from ..oauth import load_credentials\nservice.users().messages().send()\n"
+        )
+        assert "agents/mail_monitor/sub/s3.py" in scan(repo_root=tmp_path)
+
+    def test_catches_aliased_message_resource(self, tmp_path: Path) -> None:
+        """The anchor is bound in an earlier statement, so it is not in the send chain."""
+        (tmp_path / "alias.py").write_text(
+            "from agents.mail_monitor.oauth import load_credentials\n"
+            "message_resource = service.users().messages()\n"
+            "message_resource.send(userId='me', body={})\n"
+        )
+        found = scan(repo_root=tmp_path)
+        assert "alias.py" in found
+        assert found["alias.py"][0][0] == "gmail-api-messages-send"
+
+    def test_catches_transitively_aliased_resource(self, tmp_path: Path) -> None:
+        (tmp_path / "alias2.py").write_text(
+            "from agents.mail_monitor.oauth import load_credentials\n"
+            "a = service.users().messages()\nb = a\nb.send()\n"
+        )
+        assert "alias2.py" in scan(repo_root=tmp_path)
+
+    def test_catches_shell_script_sender(self, tmp_path: Path) -> None:
+        """A shell sender never enters the AST path — .py-only scanning missed it."""
+        sh = tmp_path / "send.sh"
+        sh.write_text(
+            "#!/usr/bin/env bash\n"
+            "TOKEN=$(pass show mail-monitor/google-refresh-token)\n"
+            'curl -H "Authorization: Bearer $TOKEN" \\\n'
+            "  https://gmail.googleapis.com/gmail/v1/users/me/messages/send\n"
+        )
+        found = scan(repo_root=tmp_path)
+        assert "send.sh" in found
+        assert found["send.sh"][0][0] == "gmail-rest-send-nonpython"
+
+    def test_catches_extensionless_executable_sender(self, tmp_path: Path) -> None:
+        exe = tmp_path / "mailer"
+        exe.write_text(
+            "#!/bin/sh\npass show mail-monitor/google-client-secret\ncurl .../messages/send\n"
+        )
+        exe.chmod(0o755)
+        assert "mailer" in scan(repo_root=tmp_path)
+
+    def test_non_python_needs_both_credential_and_endpoint(self, tmp_path: Path) -> None:
+        """docs/specs/2026-04-25-mail-monitor.md names the credential and must not trip."""
+        (tmp_path / "doc.sh").write_text(
+            "#!/bin/sh\n# reads pass show mail-monitor/google-refresh-token\n"
+        )
+        (tmp_path / "unrelated.sh").write_text("#!/bin/sh\ncurl .../messages/send\n")
         assert scan(repo_root=tmp_path) == {}
 
     def test_catches_rest_send_and_drafts(self, tmp_path: Path) -> None:
