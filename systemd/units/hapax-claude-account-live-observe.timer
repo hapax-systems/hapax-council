@@ -1,0 +1,21 @@
+[Unit]
+Description=Observe account-live Claude quota every 10m (receipt stale_after=30m window)
+
+[Timer]
+# Fire shortly after boot so the first review dispatch of a fresh session sees a fresh
+# seat, then every 10 minutes — three fires inside the 30m stale_after, so a single
+# slipped or failed run cannot lapse the receipt.
+#
+# Cadence is the whole point of this unit. Measured 2026-08-19, when nothing scheduled
+# this: receipts appeared every ~55 minutes from 05:15z to 14:25z, then stopped. The
+# Claude and GLM review seats both went stale at 15:25:02z and the next review dispatch
+# found ZERO available families. The only symptom was a PR that could not be reviewed.
+OnBootSec=3min
+OnUnitActiveSec=10min
+AccuracySec=1min
+# Survive a suspend/downtime gap: run once on resume rather than waiting a full interval
+# with an already-expired receipt.
+Persistent=true
+
+[Install]
+WantedBy=timers.target

@@ -1,0 +1,42 @@
+[Unit]
+Description=Observe account-live Claude subscription quota (mechanical, no attestation)
+Documentation=file://%h/.cache/hapax/source-activation/worktree/scripts/hapax-claude-account-live-observe
+After=hapax-secrets.service
+# Deliberately NO OnFailure=notify-failure@%n.service. This unit exits non-zero as a
+# NORMAL outcome: 3 = a quota wall was observed, 4 = nothing exercised the subscription
+# and the probe could not observe either. Both are correct fail-closed results that hold
+# the route; paging on them would train the operator to ignore the notifier. A genuine
+# defect here looks like the timer not firing, which the paired timer's Persistent=true
+# and the receipt's own expiry already surface (the route simply holds).
+
+[Service]
+Type=oneshot
+# Harvests account-live evidence the estate ALREADY produces — headless lane results and
+# session transcripts — and hands it to scripts/hapax-claude-subscription-quota-admission,
+# which owns all sanitization and bounds. Reads metadata only (record type, timestamp,
+# token counts, error status); never prompt or response content, and never lane/tmux
+# presence. When nothing has exercised the subscription inside --max-age-seconds it makes
+# ONE bounded real request (~$0.02 warm) rather than letting a quiet estate silently drop
+# the review floor. Pass --no-probe to restrict to passive observation.
+#
+# --max-age-seconds 900 with the writer's TTL: the receipt is anchored to the OBSERVATION
+# time, not the mint time, so a 14-minute-old observation yields 14 fewer minutes of
+# freshness. Evidence age and TTL cannot compound.
+ExecStart=%h/.cache/hapax/source-activation/worktree/.venv/bin/python \
+    %h/.cache/hapax/source-activation/worktree/scripts/hapax-claude-account-live-observe \
+    --max-age-seconds 900 --stale-after-seconds 1800 --json
+WorkingDirectory=%h/.cache/hapax/source-activation/worktree
+Environment=HOME=%h
+Environment=PYTHONPATH=%h/.cache/hapax/source-activation/worktree
+EnvironmentFile=-/run/user/1000/hapax-secrets.env
+# 3 = quota wall observed, 4 = no evidence and no probe result. Both are intended
+# fail-closed outcomes, not failures of this unit.
+SuccessExitStatus=0 3 4
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=hapax-claude-account-live
+MemoryMax=512M
+TimeoutStartSec=300
+# Killswitch: `systemctl --user mask hapax-claude-account-live-observe.timer`. Receipts
+# then lapse after stale_after and claude.review.opus holds — the review floor drops to
+# whatever other families are fresh. It never falls back to trusting an expired receipt.

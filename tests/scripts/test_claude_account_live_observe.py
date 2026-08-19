@@ -237,6 +237,27 @@ class TestMintDelegatesToTheValidator:
         assert obs.OBSERVATION in argv
         assert not any("lane" in str(a) or "tmux" in str(a) for a in argv)
 
+    def test_receipt_is_anchored_to_observation_time_not_mint_time(self, tmp_path: Path) -> None:
+        """Otherwise stale evidence buys a full fresh window and the two compound.
+
+        The writer computes fresh_until = observed_at + stale_after. If mint time were
+        passed, a 25-minute-old observation plus a 60-minute TTL would produce a receipt
+        vouching for 85 minutes on the strength of one 25-minute-old response.
+        """
+        old = NOW - timedelta(minutes=25)
+        planned = obs.mint(
+            obs.Observation("served", old, "headless-result"),
+            now=NOW,
+            route_ids=("claude.review.opus",),
+            stale_after_seconds=3600,
+            receipt_dir=tmp_path,
+            dry_run=True,
+        )
+        argv = planned[0]["would_run"]
+        passed_now = argv[argv.index("--now") + 1]
+        assert passed_now == old.replace(microsecond=0).isoformat().replace("+00:00", "Z")
+        assert NOW.strftime("%Y%m%dt%H%M%Sz") not in " ".join(map(str, argv))
+
     def test_evidence_ref_carries_no_lane_identity(self) -> None:
         """LANE_PRESENCE_RE rejects lane names; the observer must never emit one."""
         import re

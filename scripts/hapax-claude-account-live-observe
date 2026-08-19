@@ -203,6 +203,56 @@ def _scan_transcript(path: Path, floor: datetime) -> list[Observation]:
     return out
 
 
+#: Bounded active probe, used ONLY when nothing exercised the subscription recently, so a
+#: quiet estate does not silently drop the review floor. Measured 2026-08-19: ~$0.02 once
+#: the prompt cache is warm. A FRESH PROCESS taking the same path a reviewer would — which
+#: is why it is better evidence than this process's own liveness, and why it is not presence.
+PROBE_ARGV = (
+    "claude",
+    "-p",
+    "ok",
+    "--model",
+    "claude-haiku-4-5-20251001",
+    "--output-format",
+    "json",
+    "--strict-mcp-config",
+    "--mcp-config",
+    '{"mcpServers":{}}',
+)
+PROBE_TIMEOUT_SECONDS = 180
+
+
+def probe(now: datetime, *, cwd: str = "/") -> Observation | None:
+    """Actively observe account-live by making one bounded real request."""
+    try:
+        proc = subprocess.run(
+            list(PROBE_ARGV),
+            capture_output=True,
+            text=True,
+            timeout=PROBE_TIMEOUT_SECONDS,
+            cwd=cwd,
+        )
+    except (OSError, subprocess.TimeoutExpired):
+        return None
+    blob = (proc.stdout or "").strip()
+    try:
+        record = json.loads(blob)
+    except ValueError:
+        # A non-JSON failure still carries the provider's refusal wording — this is exactly
+        # how codex reports its wall — so classify it rather than discarding it.
+        combined = f"{blob} {proc.stderr or ''}"
+        if any(marker.search(combined) for marker in WALL_MARKERS):
+            return Observation("wall", now, "active-probe", "provider-quota-refusal")
+        return None
+    if not isinstance(record, dict):
+        return None
+    if any(marker.search(_wall_text(record)) for marker in WALL_MARKERS):
+        return Observation("wall", now, "active-probe", "provider-quota-refusal")
+    if not record.get("is_error") and _served_tokens(record.get("usage")) > 0:
+        return Observation("served", now, "active-probe")
+    return None
+
+
 def _mtime(path: Path) -> datetime | None:
     try:
         return datetime.fromtimestamp(path.stat().st_mtime, tz=UTC)
@@ -259,8 +309,16 @@ def mint(
     receipt_dir: Path | None,
     dry_run: bool,
 ) -> list[dict]:
-    """Hand the observation to the existing admission writer — never bypass its validation."""
-    stamp = now.strftime("%Y%m%dt%H%M%Sz")
+    """Hand the observation to the existing admission writer — never bypass its validation.
+
+    The receipt is anchored to the OBSERVATION time, not the mint time. The writer computes
+    ``fresh_until = observed_at + stale_after``, so passing mint time would let a stale
+    observation buy a full fresh window: evidence up to ``max_age`` old plus a full TTL,
+    compounding into a receipt that vouches far past what was actually seen. Anchoring here
+    means a 14-minute-old observation yields 14 fewer minutes of freshness, automatically.
+    """
+    observed_at = evidence.at.replace(microsecond=0)
+    stamp = observed_at.strftime("%Y%m%dt%H%M%Sz")
     evidence_ref = f"{WITNESS_PREFIX}-{stamp}"
     results: list[dict] = []
     for route_id in route_ids:
@@ -276,7 +334,7 @@ def mint(
             "--stale-after-seconds",
             str(stale_after_seconds),
             "--now",
-            now.replace(microsecond=0).isoformat().replace("+00:00", "Z"),
+            observed_at.isoformat().replace("+00:00", "Z"),
             "--json",
         ]
         if receipt_dir is not None:
@@ -305,6 +363,13 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--receipt-dir", type=Path, default=None)
     parser.add_argument("--route-id", action="append", dest="route_ids")
     parser.add_argument("--now")
+    parser.add_argument(
+        "--probe",
+        action=argparse.BooleanOptionalAction,
+        default=True,
+        help="When no passive evidence exists, make ONE bounded real request to observe "
+        "account-live directly (~$0.02). --no-probe restricts to passive observation.",
+    )
     parser.add_argument("--dry-run", action="store_true")
     parser.add_argument("--json", action="store_true")
     args = parser.parse_args(argv)
@@ -321,6 +386,16 @@ def main(argv: list[str] | None = None) -> int:
         headless_glob=args.headless_glob,
         transcript_glob=args.transcript_glob,
     )
+
+    # A quiet estate is not an exhausted one. Passive evidence only exists when something
+    # happened to run; without a fallback, an idle hour silently drops the review floor —
+    # which is the exact failure this whole change exists to end. The probe is a fresh
+    # process making one bounded real request, so it observes what a reviewer would get.
+    # NOT used to override a wall: a detected wall is the live state and must stand.
+    if verdict == "no_evidence" and args.probe and not args.dry_run:
+        probed = probe(now)
+        if probed is not None:
+            verdict, evidence = probed.kind, probed
     payload: dict = {
         "verdict": verdict,
         "observed_at": evidence.at.isoformat().replace("+00:00", "Z") if evidence else None,
