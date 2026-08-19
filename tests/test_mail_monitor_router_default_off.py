@@ -44,14 +44,47 @@ def _load_app_with(flag_value: str | None):
     return importlib.reload(module)
 
 
+_MISSING = object()
+
+
 @pytest.fixture(autouse=True)
-def _restore_env() -> Iterator[None]:
-    original = os.environ.get(FLAG)
+def _restore_env_and_import_state() -> Iterator[None]:
+    """Undo BOTH mutations this module makes: the env flag and the import cache.
+
+    ``_load_app_with`` evicts and re-imports ``logos.api.app``, which replaces the
+    cached module object AND rebinds the ``app`` attribute on the ``logos.api``
+    package. Restoring only the env var leaves every later test in the session
+    importing a module built under whichever flag value ran last — verified: after
+    one call, module identity and the package attribute are both replaced.
+
+    ``tests/test_query_api.py:15`` does ``from logos.api.app import app`` and is a
+    live consumer of exactly that binding.
+    """
+    original_flag = os.environ.get(FLAG)
+    saved_modules = {
+        name: mod for name, mod in sys.modules.items() if name.startswith("logos.api.app")
+    }
+    api_pkg = sys.modules.get("logos.api")
+    saved_pkg_attr = getattr(api_pkg, "app", _MISSING) if api_pkg is not None else _MISSING
+
     yield
-    if original is None:
+
+    if original_flag is None:
         os.environ.pop(FLAG, None)
     else:
-        os.environ[FLAG] = original
+        os.environ[FLAG] = original_flag
+
+    for name in [m for m in sys.modules if m.startswith("logos.api.app")]:
+        del sys.modules[name]
+    sys.modules.update(saved_modules)
+
+    if api_pkg is not None:
+        if saved_pkg_attr is _MISSING:
+            # Nothing was bound before; a leftover binding is itself the pollution.
+            if hasattr(api_pkg, "app"):
+                delattr(api_pkg, "app")
+        else:
+            api_pkg.app = saved_pkg_attr
 
 
 def _routes(app) -> set[str]:
@@ -103,3 +136,27 @@ def test_gmail_webhook_present_when_explicitly_enabled(value: str) -> None:
     module = _load_app_with(value)
     assert GMAIL_WEBHOOK_PATH in _routes(module.app)
     assert module._MAIL_MONITOR_ENABLED is True
+
+
+def test_teardown_restores_the_import_cache() -> None:
+    """The fixture must undo the sys.modules mutation, not only the env var.
+
+    Driven directly, because a test cannot observe its own teardown. Without this
+    the leak is invisible here and only shows up as a confusing failure in whatever
+    test happens to import ``logos.api.app`` later in the session.
+    """
+    importlib.import_module("logos.api.app")
+    baseline_module = sys.modules["logos.api.app"]
+    api_pkg = sys.modules["logos.api"]
+    baseline_attr = api_pkg.app
+
+    fixture = _restore_env_and_import_state.__wrapped__()
+    next(fixture)  # setup: snapshot
+    _load_app_with("1")
+    assert sys.modules["logos.api.app"] is not baseline_module, "mutation did not occur"
+
+    with pytest.raises(StopIteration):
+        next(fixture)  # teardown: restore
+
+    assert sys.modules["logos.api.app"] is baseline_module
+    assert api_pkg.app is baseline_attr
