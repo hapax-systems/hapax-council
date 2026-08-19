@@ -1,0 +1,26 @@
+# Hapax-Auto-Enable: true
+# Without this marker `hapax-post-merge-deploy` installs the unit and never enables it. A
+# determination harness that is deployed-but-inert is strictly worse than none, because its
+# presence reads as coverage. Only 7 of 150 shipped timers carry the marker, so its absence
+# is the silent default.
+[Unit]
+Description=Run capability-property producers on cadence (one unit for all producers)
+
+[Timer]
+# Fires every 5 minutes; each PRODUCER declares its own cadence and the runner skips any that
+# are not due. So this interval is a floor, not a schedule — it only needs to be shorter than
+# the shortest declared cadence (currently 600s). A new producer with a tighter cadence needs
+# a row in config/determination-producers.json, not a new timer.
+#
+# The registry REFUSES a producer whose cadence is >= its evidence TTL, because that
+# guarantees a gap. That rule exists because agy's evidence lived 900s with nothing renewing
+# it: the review seat lapsed from 2026-08-17 and no artifact reported a problem.
+OnBootSec=4min
+OnUnitActiveSec=5min
+AccuracySec=30s
+# No Persistent=: systemd.timer(5) says it only has an effect with OnCalendar=, and on a
+# monotonic timer it is silently inert. After downtime a determination harness wants a FRESH
+# run, not a replayed one, which OnBootSec already provides.
+
+[Install]
+WantedBy=timers.target

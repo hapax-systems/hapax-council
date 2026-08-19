@@ -1,0 +1,38 @@
+[Unit]
+Description=Run declared capability-property producers on cadence and witness every run
+Documentation=file://%h/.cache/hapax/source-activation/worktree/scripts/hapax-determine
+# Deliberately NO EnvironmentFile and NO After=hapax-secrets.service. Producers that need a
+# credential resolve it themselves; the runner must not inject provider env into every
+# producer it launches. /run/user/1000/hapax-secrets.env carries ANTHROPIC_BASE_URL, and a
+# producer that measures "is the subscription serving" would then measure a proxy while
+# signing a subscription receipt.
+OnFailure=notify-failure@%n.service
+
+[Service]
+Type=oneshot
+# Reads config/determination-producers.json and runs each producer whose last run is older
+# than its declared cadence. Adding a capability property to the estate's determination
+# surface is a ROW in that file — no new script, no new unit. As of 2026-08-19 three separate
+# bespoke units had grown for this one shape and every new capability wanted a fourth.
+#
+# Appends a run receipt for EVERY run, including runs that produced nothing, so that
+# "the producer ran and correctly declined" and "the producer never ran" stop being the same
+# observable. That ambiguity is what let agy's review seat lapse from 2026-08-17 with nothing
+# reporting a problem.
+ExecStart=%h/.cache/hapax/source-activation/worktree/.venv/bin/python \
+    %h/.cache/hapax/source-activation/worktree/scripts/hapax-determine --json
+WorkingDirectory=%h/.cache/hapax/source-activation/worktree
+Environment=HOME=%h
+Environment=PYTHONPATH=%h/.cache/hapax/source-activation/worktree
+# Pin PATH: which binary a producer resolves is part of what it measures.
+Environment=PATH=%h/.npm-global/bin:%h/.local/bin:/usr/local/bin:/usr/bin:/bin
+# 5 = a producer FAILED, 6 = a liveness deficit (a producer is silent or never ran). Both are
+# harness problems and both must page — that is the entire purpose of this unit, so neither
+# belongs in SuccessExitStatus. A producer that DECLINED exits 0: healthy bad news.
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=hapax-determine
+MemoryMax=512M
+# Comfortably above the per-producer timeout (300s) times the current producer count, so a
+# single hung producer cannot make the whole run look like a harness failure.
+TimeoutStartSec=1200
