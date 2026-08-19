@@ -1,0 +1,365 @@
+#!/usr/bin/env python3
+"""Observe account-live Claude subscription quota MECHANICALLY, from real invocations.
+
+WHY THIS EXISTS
+
+``scripts/hapax-claude-subscription-quota-admission`` writes the receipt that makes a
+Claude review route quota-fresh, and its two allowed observations are:
+
+    subscription_quota_headroom_observed        <- "a real Claude invocation completed
+                                                   without a subscription quota wall"
+    operator_confirmed_subscription_headroom    <- an operator attestation
+
+The first is an OBSERVATION, not an attestation — the writer's own comment says so. But
+nothing in the estate ever produced it, so in practice every receipt came from a human
+saying "yes, there is headroom", on a cadence nothing scheduled. Measured 2026-08-19:
+receipts appeared every 55 minutes from 05:15z to 14:25z and then simply stopped. The
+15:20z one never happened, both Claude and GLM review seats went stale at 15:25:02z, and
+the next review dispatch found ZERO available families and could not review a PR. The
+only symptom was a PR that silently could not be reviewed.
+
+Account-live is a property of a capability. A property that only a human can report is a
+property the system cannot measure, and a measurement that lapses silently is worse than
+no measurement — the review floor drops without anything saying so.
+
+WHAT IS ACTUALLY OBSERVABLE
+
+A Claude invocation that returns token usage IS the subscription serving a request. That
+is a direct observation of account-live quota, and the estate already produces these
+constantly:
+
+  - ``~/.cache/hapax/claude-headless/*/output.jsonl``  headless lane results
+    (``is_error`` / ``api_error_status`` / ``usage``)
+  - ``~/.claude/projects/*/*.jsonl``                   session transcripts
+    (``assistant`` records with ``message.usage``)
+
+The comparable case is codex, whose quota state is read straight off its CLI
+("You've hit your usage limit ... try again at 10:29 PM") and whose ``reviewer_command``
+is literally ``codex exec``. Nobody attests codex. Claude is no less observable; it just
+had no observer.
+
+WHAT THIS IS NOT
+
+This reads METADATA ONLY — record type, timestamp, token counts, model id, error status.
+It never reads or persists prompt or response content, and it never uses lane, tmux, or
+session PRESENCE as evidence. Presence is exactly the defect the receipt validator's
+``LANE_PRESENCE_RE`` exists to reject, and this observer must not launder it: the
+evidence is a request that was SERVED, not a process that exists. A session sitting idle
+against an exhausted quota produces no recent usage record and therefore no receipt.
+
+Fail-closed. A wall observation newer than the newest served observation refuses to mint
+and exits non-zero, so the route stays held. No evidence in the window also refuses.
+"""
+
+from __future__ import annotations
+
+import argparse
+import json
+import os
+import re
+import subprocess
+import sys
+from datetime import UTC, datetime, timedelta
+from pathlib import Path
+
+REPO_ROOT = Path(__file__).resolve().parents[1]
+ADMISSION_WRITER = REPO_ROOT / "scripts" / "hapax-claude-subscription-quota-admission"
+
+#: The witness name the receipt validator's allowlist requires for this observation.
+WITNESS_PREFIX = "claude-subscription-headroom-observed"
+OBSERVATION = "subscription_quota_headroom_observed"
+DEFAULT_ROUTE_IDS = ("claude.review.opus", "claude.headless.full")
+
+DEFAULT_HEADLESS_GLOB = "~/.cache/hapax/claude-headless/*/output.jsonl"
+DEFAULT_TRANSCRIPT_GLOB = "~/.claude/projects/*/*.jsonl"
+
+#: How recent a served observation must be to stand as account-live evidence.
+DEFAULT_MAX_AGE_SECONDS = 1800
+#: Receipt lifetime. Deliberately short: an observation of "served at T" cannot vouch
+#: for a quota wall that appears at T+1h.
+DEFAULT_STALE_AFTER_SECONDS = 3600
+
+#: Markers that mean the SUBSCRIPTION refused for quota reasons. Kept narrow and
+#: anchored to provider wording: a generic "error" must never read as a quota wall,
+#: and (per the codex lesson) an AUTH failure must never be classified as one either.
+WALL_MARKERS = (
+    re.compile(r"usage limit", re.IGNORECASE),
+    re.compile(r"rate[_ -]?limit", re.IGNORECASE),
+    re.compile(r"\bquota\b.{0,40}\b(exceeded|exhausted)\b", re.IGNORECASE),
+    re.compile(r"resource[_ ]exhausted", re.IGNORECASE),
+)
+
+
+class Observation:
+    __slots__ = ("kind", "at", "source", "detail")
+
+    def __init__(self, kind: str, at: datetime, source: str, detail: str = "") -> None:
+        self.kind = kind  # "served" | "wall"
+        self.at = at
+        self.source = source
+        self.detail = detail
+
+
+def _parse_ts(value: object) -> datetime | None:
+    if not isinstance(value, str) or not value:
+        return None
+    try:
+        parsed = datetime.fromisoformat(value.replace("Z", "+00:00"))
+    except ValueError:
+        return None
+    if parsed.tzinfo is None:
+        parsed = parsed.replace(tzinfo=UTC)
+    return parsed.astimezone(UTC)
+
+
+def _served_tokens(usage: object) -> int:
+    """Total tokens a record proves were actually served."""
+    if not isinstance(usage, dict):
+        return 0
+    total = 0
+    for key in (
+        "input_tokens",
+        "output_tokens",
+        "cache_read_input_tokens",
+        "cache_creation_input_tokens",
+    ):
+        value = usage.get(key)
+        if isinstance(value, int) and value > 0:
+            total += value
+    return total
+
+
+def _wall_text(record: dict) -> str:
+    """Only the narrow fields that can legitimately carry a provider refusal.
+
+    Deliberately NOT the whole record: scanning arbitrary content would read model
+    output, which this observer must never do (and which would false-positive the
+    moment anyone discusses rate limits).
+    """
+    parts: list[str] = []
+    for key in ("api_error_status", "error", "subtype", "terminal_reason", "stop_reason"):
+        value = record.get(key)
+        if isinstance(value, str):
+            parts.append(value)
+    result = record.get("result")
+    if record.get("is_error") and isinstance(result, str):
+        parts.append(result[:400])
+    return " ".join(parts)
+
+
+def _scan_headless(path: Path, floor: datetime) -> list[Observation]:
+    """Headless lane results: is_error / api_error_status / usage."""
+    out: list[Observation] = []
+    try:
+        with path.open("r", encoding="utf-8", errors="replace") as fh:
+            for line in fh:
+                line = line.strip()
+                if not line or '"usage"' not in line and '"is_error"' not in line:
+                    continue
+                try:
+                    record = json.loads(line)
+                except ValueError:
+                    continue
+                if not isinstance(record, dict):
+                    continue
+                at = _parse_ts(record.get("timestamp")) or _mtime(path)
+                if at is None or at < floor:
+                    continue
+                text = _wall_text(record)
+                if any(marker.search(text) for marker in WALL_MARKERS):
+                    out.append(Observation("wall", at, "headless-result", "provider-quota-refusal"))
+                elif not record.get("is_error") and _served_tokens(record.get("usage")) > 0:
+                    out.append(Observation("served", at, "headless-result"))
+    except OSError:
+        return []
+    return out
+
+
+def _scan_transcript(path: Path, floor: datetime) -> list[Observation]:
+    """Session transcripts: assistant records carry message.usage per served response."""
+    out: list[Observation] = []
+    try:
+        with path.open("r", encoding="utf-8", errors="replace") as fh:
+            for line in fh:
+                line = line.strip()
+                if not line or '"usage"' not in line:
+                    continue
+                try:
+                    record = json.loads(line)
+                except ValueError:
+                    continue
+                if not isinstance(record, dict) or record.get("type") != "assistant":
+                    continue
+                at = _parse_ts(record.get("timestamp"))
+                if at is None or at < floor:
+                    continue
+                message = record.get("message")
+                if not isinstance(message, dict):
+                    continue
+                if _served_tokens(message.get("usage")) > 0:
+                    out.append(Observation("served", at, "session-transcript"))
+    except OSError:
+        return []
+    return out
+
+
+def _mtime(path: Path) -> datetime | None:
+    try:
+        return datetime.fromtimestamp(path.stat().st_mtime, tz=UTC)
+    except OSError:
+        return None
+
+
+def _recent_files(pattern: str, floor: datetime) -> list[Path]:
+    """Only files touched since the floor — avoids reading years of stale lane logs."""
+    expanded = Path(os.path.expanduser(pattern))
+    root = Path(expanded.anchor or "/")
+    try:
+        candidates = sorted(root.glob(str(expanded.relative_to(root))))
+    except (ValueError, OSError):
+        return []
+    keep: list[Path] = []
+    for candidate in candidates:
+        mtime = _mtime(candidate)
+        if mtime is not None and mtime >= floor:
+            keep.append(candidate)
+    return keep
+
+
+def observe(
+    *,
+    now: datetime,
+    max_age_seconds: int,
+    headless_glob: str,
+    transcript_glob: str,
+) -> tuple[str, Observation | None]:
+    """Return (verdict, evidence). verdict: served | walled | no_evidence."""
+    floor = now - timedelta(seconds=max_age_seconds)
+    found: list[Observation] = []
+    for path in _recent_files(headless_glob, floor):
+        found.extend(_scan_headless(path, floor))
+    for path in _recent_files(transcript_glob, floor):
+        found.extend(_scan_transcript(path, floor))
+    if not found:
+        return "no_evidence", None
+    newest = max(found, key=lambda o: o.at)
+    # A wall that is NEWER than the newest served response is the live state. Ordering
+    # matters: a served response from 20 minutes ago does not survive a wall 2 minutes ago.
+    if newest.kind == "wall":
+        return "walled", newest
+    return "served", newest
+
+
+def mint(
+    evidence: Observation,
+    *,
+    now: datetime,
+    route_ids: tuple[str, ...],
+    stale_after_seconds: int,
+    receipt_dir: Path | None,
+    dry_run: bool,
+) -> list[dict]:
+    """Hand the observation to the existing admission writer — never bypass its validation."""
+    stamp = now.strftime("%Y%m%dt%H%M%Sz")
+    evidence_ref = f"{WITNESS_PREFIX}-{stamp}"
+    results: list[dict] = []
+    for route_id in route_ids:
+        argv = [
+            sys.executable,
+            str(ADMISSION_WRITER),
+            "--observation",
+            OBSERVATION,
+            "--evidence-ref",
+            evidence_ref,
+            "--route-id",
+            route_id,
+            "--stale-after-seconds",
+            str(stale_after_seconds),
+            "--now",
+            now.replace(microsecond=0).isoformat().replace("+00:00", "Z"),
+            "--json",
+        ]
+        if receipt_dir is not None:
+            argv += ["--receipt-dir", str(receipt_dir)]
+        if dry_run:
+            results.append({"route_id": route_id, "would_run": argv[2:]})
+            continue
+        proc = subprocess.run(argv, capture_output=True, text=True, timeout=60)
+        results.append(
+            {
+                "route_id": route_id,
+                "returncode": proc.returncode,
+                "stdout": proc.stdout.strip()[:600],
+                "stderr": proc.stderr.strip()[:600],
+            }
+        )
+    return results
+
+
+def main(argv: list[str] | None = None) -> int:
+    parser = argparse.ArgumentParser(description=__doc__.split("\n\n")[0])
+    parser.add_argument("--max-age-seconds", type=int, default=DEFAULT_MAX_AGE_SECONDS)
+    parser.add_argument("--stale-after-seconds", type=int, default=DEFAULT_STALE_AFTER_SECONDS)
+    parser.add_argument("--headless-glob", default=DEFAULT_HEADLESS_GLOB)
+    parser.add_argument("--transcript-glob", default=DEFAULT_TRANSCRIPT_GLOB)
+    parser.add_argument("--receipt-dir", type=Path, default=None)
+    parser.add_argument("--route-id", action="append", dest="route_ids")
+    parser.add_argument("--now")
+    parser.add_argument("--dry-run", action="store_true")
+    parser.add_argument("--json", action="store_true")
+    args = parser.parse_args(argv)
+
+    now = _parse_ts(args.now) if args.now else datetime.now(UTC)
+    if now is None:
+        print("invalid --now; expected ISO-8601 UTC", file=sys.stderr)
+        return 2
+    route_ids = tuple(args.route_ids or DEFAULT_ROUTE_IDS)
+
+    verdict, evidence = observe(
+        now=now,
+        max_age_seconds=args.max_age_seconds,
+        headless_glob=args.headless_glob,
+        transcript_glob=args.transcript_glob,
+    )
+    payload: dict = {
+        "verdict": verdict,
+        "observed_at": evidence.at.isoformat().replace("+00:00", "Z") if evidence else None,
+        "source": evidence.source if evidence else None,
+        "route_ids": list(route_ids),
+    }
+
+    if verdict == "served":
+        payload["receipts"] = mint(
+            evidence,
+            now=now,
+            route_ids=route_ids,
+            stale_after_seconds=args.stale_after_seconds,
+            receipt_dir=args.receipt_dir,
+            dry_run=args.dry_run,
+        )
+        rc = 0
+    elif verdict == "walled":
+        payload["hint"] = (
+            "subscription refused for quota reasons more recently than it served; "
+            "holding the route rather than minting availability"
+        )
+        rc = 3
+    else:
+        payload["hint"] = (
+            f"no served Claude response within {args.max_age_seconds}s; nothing exercised "
+            "the subscription, so account-live cannot be observed (this is not evidence of "
+            "exhaustion — it is absence of evidence, and the route stays held)"
+        )
+        rc = 4
+
+    if args.json:
+        print(json.dumps(payload, indent=1))
+    else:
+        print(f"account-live: {verdict}" + (f" (at {payload['observed_at']})" if evidence else ""))
+        if payload.get("hint"):
+            print(f"  {payload['hint']}", file=sys.stderr)
+    return rc
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())
