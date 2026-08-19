@@ -315,13 +315,16 @@ def _write_private_file(path: Path, payload: bytes, *, mode: int = 0o600) -> Non
         try:
             tmp.unlink()
         except FileNotFoundError:
+            # Temp may already be gone after a prior cleanup race.
             pass
         except OSError:
+            # Best-effort unlink; re-raise the original admission error.
             pass
         raise
     try:
         tmp.unlink()
     except FileNotFoundError:
+        # Success-path cleanup: temp already consumed/unlinked.
         pass
     except OSError as exc:
         raise ExecutionAdmissionError(

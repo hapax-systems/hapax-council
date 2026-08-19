@@ -5,13 +5,13 @@ import json
 import os
 import stat
 import subprocess
+import sys
 from dataclasses import dataclass, replace
 from datetime import UTC, datetime
 from pathlib import Path
 
 import pytest
 
-import shared.gate0b_claim_publication_install as install_machinery
 from shared.execution_admission import (
     DEFAULT_EXECUTION_COMPOSITION_ROOT,
     ContentAddress,
@@ -44,6 +44,8 @@ from shared.sdlc_claim import (
     recover_claim_publications,
 )
 from shared.sdlc_task_store import ClaimDispatchBinding, resolve_task_note
+
+install_machinery = sys.modules["shared.gate0b_claim_publication_install"]
 
 
 @dataclass(frozen=True)

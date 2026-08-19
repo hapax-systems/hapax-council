@@ -2289,6 +2289,7 @@ def _claim_private_payload(path: Path, payload: bytes, *, overwrite: bool) -> No
                     if scratch.exists() or scratch.is_symlink():
                         scratch.unlink()
                 except OSError:
+                    # Best-effort temp cleanup; must not mask the primary failure.
                     pass
         raise ClaimPublicationError(
             "claim_publication_private_file_temp_exhausted",
@@ -3730,7 +3731,6 @@ def _apply_admitted_claim_publication_transaction(
         receipt_before_activation_plan.activation, publication_id
     )
     transaction_directory = root / publication_id
-    manifest_path = transaction_directory / "manifest.json"
     receipt_path = claim_publication_receipt_path(
         intent.cache_dir,
         intent.binding,
@@ -3775,7 +3775,6 @@ def _apply_admitted_claim_publication_transaction(
         )
         _ensure_claim_private_directory(receipt_directory)
 
-        phase = "preflight"
         try:
             phase = "pre_projection_preflight"
             _locked_preflight(intent, projections)
