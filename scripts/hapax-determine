@@ -1,0 +1,283 @@
+#!/usr/bin/env python3
+"""Run declared capability-property PRODUCERS on cadence, and witness every run.
+
+WHY THIS EXISTS
+
+Operator directive 2026-08-19: *"account-live is a fundamental property of a capability. In
+general, I should not have to intervene on any measurement of any property"*, solved with
+*"non-boutique solutions ... facilitated by our universal, non-boutique harness systems."*
+
+The estate's determination gap was never that properties are unmeasurable. Measured on
+2026-08-19, every quota property that mattered was already mechanically measurable, and one
+(``scripts/hapax-agy-quota-admission``) was rigorous enough that its receipt cannot be minted
+without a completed provider round trip. What was missing was **cadence**. agy's receipt
+lives 15 minutes; nothing renewed it; its receipts had been expired since 2026-08-17; the
+gemini review family silently left the review floor; and a PR could not be reviewed. Nothing
+reported any of it.
+
+Three separate bespoke units had grown for this one shape, and every new capability wanted a
+fourth. So the unit of extension here is a ROW in ``config/determination-producers.json``,
+not a script and not a timer.
+
+THE LOAD-BEARING PART
+
+A run receipt is appended for EVERY run, including runs that produced nothing. Without that,
+"the producer ran and correctly declined" and "the producer never ran" are the same
+observable — which is exactly the ambiguity that let the review floor drop unnoticed. A
+declined run is a healthy producer reporting bad news; a missing run is a broken harness.
+They must never look alike.
+
+This deliberately does NOT interpret evidence. Producers own their own semantics and write
+their own receipts; this owns scheduling, liveness, and the run ledger.
+"""
+
+from __future__ import annotations
+
+import argparse
+import json
+import os
+import subprocess
+import sys
+import time
+from datetime import UTC, datetime
+from pathlib import Path
+from typing import Any
+
+REPO_ROOT = Path(__file__).resolve().parents[1]
+DEFAULT_REGISTRY = REPO_ROOT / "config" / "determination-producers.json"
+DEFAULT_RUN_LEDGER = Path.home() / ".cache" / "hapax" / "determination" / "runs.jsonl"
+
+#: Cap on a single producer's runtime. A producer that hangs must not stall every other
+#: producer behind it — the harness's own liveness is the thing being protected.
+DEFAULT_PRODUCER_TIMEOUT_S = 300
+
+
+def _iso(ts: datetime) -> str:
+    return ts.astimezone(UTC).replace(microsecond=0).isoformat().replace("+00:00", "Z")
+
+
+def _parse_iso(value: object) -> datetime | None:
+    if not isinstance(value, str) or not value:
+        return None
+    try:
+        parsed = datetime.fromisoformat(value.replace("Z", "+00:00"))
+    except ValueError:
+        return None
+    return parsed if parsed.tzinfo else parsed.replace(tzinfo=UTC)
+
+
+def load_registry(path: Path) -> list[dict[str, Any]]:
+    data = json.loads(path.read_text(encoding="utf-8"))
+    producers = data.get("producers")
+    if not isinstance(producers, list):
+        raise ValueError(f"{path}: 'producers' must be a list")
+    seen: set[str] = set()
+    for p in producers:
+        pid = p.get("id")
+        if not isinstance(pid, str) or not pid:
+            raise ValueError(f"{path}: every producer needs a string id")
+        if pid in seen:
+            raise ValueError(f"{path}: duplicate producer id {pid!r}")
+        seen.add(pid)
+        if not isinstance(p.get("command"), list) or not p["command"]:
+            raise ValueError(f"{pid}: 'command' must be a non-empty list")
+        if not isinstance(p.get("cadence_seconds"), int) or p["cadence_seconds"] <= 0:
+            raise ValueError(f"{pid}: 'cadence_seconds' must be a positive int")
+        ttl = p.get("evidence_ttl_seconds")
+        if isinstance(ttl, int) and ttl > 0 and p["cadence_seconds"] >= ttl:
+            # A producer that runs no more often than its evidence lives guarantees gaps.
+            # This is precisely how agy lapsed, so it is an error, not a warning.
+            raise ValueError(
+                f"{pid}: cadence_seconds ({p['cadence_seconds']}) must be < "
+                f"evidence_ttl_seconds ({ttl}), or the evidence is guaranteed to lapse"
+            )
+    return producers
+
+
+def last_runs(ledger: Path) -> dict[str, dict[str, Any]]:
+    """Most recent run record per producer id. A truncated tail line is skipped, not fatal."""
+    out: dict[str, dict[str, Any]] = {}
+    try:
+        with ledger.open("r", encoding="utf-8", errors="replace") as fh:
+            for line in fh:
+                line = line.strip()
+                if not line:
+                    continue
+                try:
+                    rec = json.loads(line)
+                except ValueError:
+                    continue
+                pid = rec.get("producer_id")
+                if isinstance(pid, str):
+                    out[pid] = rec
+    except OSError:
+        return {}
+    return out
+
+
+def is_due(producer: dict[str, Any], last: dict[str, Any] | None, now: datetime) -> bool:
+    if last is None:
+        return True
+    at = _parse_iso(last.get("ran_at"))
+    if at is None:
+        return True
+    return (now - at).total_seconds() >= producer["cadence_seconds"]
+
+
+def run_producer(
+    producer: dict[str, Any], *, now: datetime, repo_root: Path, timeout: int
+) -> dict[str, Any]:
+    """Execute one producer and return its run record. Never raises on producer failure."""
+    argv = list(producer["command"])
+    exe = argv[0]
+    if not os.path.isabs(exe):
+        argv[0] = str(repo_root / exe)
+    started = time.monotonic()
+    record: dict[str, Any] = {
+        "ran_at": _iso(now),
+        "producer_id": producer["id"],
+        "property": producer.get("property"),
+        "subjects": producer.get("subjects") or [],
+        "provenance": producer.get("provenance"),
+        "host": os.uname().nodename,
+    }
+    try:
+        proc = subprocess.run(argv, capture_output=True, text=True, timeout=timeout)
+    except subprocess.TimeoutExpired:
+        record.update(outcome="timeout", returncode=None, duration_s=round(time.monotonic() - started, 2))
+        return record
+    except OSError as exc:
+        record.update(outcome="unlaunchable", returncode=None, error=f"{type(exc).__name__}: {exc}")
+        return record
+
+    rc = proc.returncode
+    success = set(producer.get("success_exit_codes") or [0])
+    declined = set(producer.get("declined_exit_codes") or [])
+    if rc in success:
+        outcome = "produced"
+    elif rc in declined:
+        # The producer ran correctly and had nothing to vouch for. This is HEALTHY, and it
+        # must be distinguishable from "did not run" — that ambiguity is the whole defect.
+        outcome = "declined"
+    else:
+        outcome = "failed"
+    record.update(
+        outcome=outcome,
+        returncode=rc,
+        duration_s=round(time.monotonic() - started, 2),
+        stderr=(proc.stderr or "").strip()[:500],
+    )
+    return record
+
+
+def append_run(ledger: Path, record: dict[str, Any]) -> None:
+    ledger.parent.mkdir(parents=True, exist_ok=True)
+    with ledger.open("a", encoding="utf-8") as fh:
+        fh.write(json.dumps(record, sort_keys=True) + "\n")
+
+
+def liveness(
+    producers: list[dict[str, Any]], runs: dict[str, dict[str, Any]], now: datetime
+) -> list[dict[str, Any]]:
+    """EXPECTED minus ACTUAL: producers that should have run recently and did not.
+
+    This is the reconciler the estate had no equivalent of. Silence was indistinguishable
+    from health, so a producer that stopped (or never existed) surfaced only when something
+    downstream failed for an unrelated-looking reason.
+    """
+    out: list[dict[str, Any]] = []
+    for p in producers:
+        last = runs.get(p["id"])
+        at = _parse_iso(last.get("ran_at")) if last else None
+        if at is None:
+            out.append({"producer_id": p["id"], "deficit": "never_ran"})
+            continue
+        age = (now - at).total_seconds()
+        # Two missed cadences is the alarm point: one is a slipped fire, two is a pattern.
+        if age > p["cadence_seconds"] * 2:
+            out.append(
+                {
+                    "producer_id": p["id"],
+                    "deficit": "producer_silent",
+                    "last_ran_at": last.get("ran_at"),
+                    "age_seconds": int(age),
+                    "cadence_seconds": p["cadence_seconds"],
+                }
+            )
+        elif last.get("outcome") in {"failed", "timeout", "unlaunchable"}:
+            out.append(
+                {
+                    "producer_id": p["id"],
+                    "deficit": f"last_run_{last.get('outcome')}",
+                    "returncode": last.get("returncode"),
+                }
+            )
+    return out
+
+
+def main(argv: list[str] | None = None) -> int:
+    parser = argparse.ArgumentParser(description=__doc__.split("\n\n")[0])
+    parser.add_argument("--registry", type=Path, default=DEFAULT_REGISTRY)
+    parser.add_argument("--run-ledger", type=Path, default=DEFAULT_RUN_LEDGER)
+    parser.add_argument("--repo-root", type=Path, default=REPO_ROOT)
+    parser.add_argument("--producer", action="append", dest="only", help="run only these ids")
+    parser.add_argument("--force", action="store_true", help="ignore cadence, run anyway")
+    parser.add_argument("--timeout", type=int, default=DEFAULT_PRODUCER_TIMEOUT_S)
+    parser.add_argument("--check", action="store_true", help="report liveness only; run nothing")
+    parser.add_argument("--now")
+    parser.add_argument("--json", action="store_true")
+    args = parser.parse_args(argv)
+
+    now = _parse_iso(args.now) if args.now else datetime.now(UTC)
+    if now is None:
+        print("invalid --now; expected ISO-8601 UTC", file=sys.stderr)
+        return 2
+    try:
+        producers = load_registry(args.registry)
+    except (OSError, ValueError) as exc:
+        print(f"registry unusable: {exc}", file=sys.stderr)
+        return 2
+
+    if args.only:
+        wanted = set(args.only)
+        unknown = wanted - {p["id"] for p in producers}
+        if unknown:
+            print(f"unknown producer id(s): {sorted(unknown)}", file=sys.stderr)
+            return 2
+        producers = [p for p in producers if p["id"] in wanted]
+
+    runs = last_runs(args.run_ledger)
+    payload: dict[str, Any] = {"now": _iso(now), "ran": [], "skipped": []}
+
+    if not args.check:
+        for p in producers:
+            if not args.force and not is_due(p, runs.get(p["id"]), now):
+                payload["skipped"].append({"producer_id": p["id"], "reason": "not_due"})
+                continue
+            record = run_producer(p, now=now, repo_root=args.repo_root, timeout=args.timeout)
+            append_run(args.run_ledger, record)
+            runs[p["id"]] = record
+            payload["ran"].append(record)
+
+    payload["liveness"] = liveness(producers, runs, now)
+
+    if args.json:
+        print(json.dumps(payload, indent=1, sort_keys=True))
+    else:
+        for r in payload["ran"]:
+            print(f"{r['producer_id']}: {r['outcome']} (rc={r.get('returncode')})")
+        for d in payload["liveness"]:
+            print(f"DEFICIT {d['producer_id']}: {d['deficit']}", file=sys.stderr)
+
+    # A producer that FAILED, or a liveness deficit, is a harness problem and must be
+    # visible. A producer that DECLINED is healthy and exits 0 — the distinction this
+    # whole tool exists to make.
+    if any(r["outcome"] in {"failed", "timeout", "unlaunchable"} for r in payload["ran"]):
+        return 5
+    if payload["liveness"]:
+        return 6
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())
