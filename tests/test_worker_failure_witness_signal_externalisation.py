@@ -174,6 +174,73 @@ class TestReadRawSignal:
             assert wfw.read_raw_signal(rec) is None
 
 
+class TestReaderConfinesTheRead:
+    """The reader must not resolve whatever path a ledger line carries.
+
+    Raised as unresolved-critical by the review team: the ledger is a plain JSONL file on
+    disk that anything can append to, and its entire purpose is to carry hostile provider
+    output. Content-addressing makes confinement free — the only legitimate path is
+    <blob dir>/<sha256>.txt.
+    """
+
+    def test_path_outside_the_blob_dir_is_refused(self, tmp_path: Path, _blob_dir: Path) -> None:
+        secret = tmp_path / "id_rsa"
+        secret.write_bytes(b"PRIVATE KEY MATERIAL")
+        digest = hashlib.sha256(b"PRIVATE KEY MATERIAL").hexdigest()
+        rec = {
+            "raw_signal_ref": {
+                "path": str(secret),
+                "sha256": digest,
+                "bytes": len(b"PRIVATE KEY MATERIAL"),
+            }
+        }
+        assert wfw.read_raw_signal(rec) is None, "read escaped the blob directory"
+
+    def test_traversal_into_the_blob_dir_is_refused(self, _blob_dir: Path) -> None:
+        outside = _blob_dir.parent / "elsewhere.txt"
+        outside.write_bytes(b"x")
+        digest = hashlib.sha256(b"x").hexdigest()
+        rec = {
+            "raw_signal_ref": {
+                "path": str(_blob_dir / ".." / "elsewhere.txt"),
+                "sha256": digest,
+                "bytes": 1,
+            }
+        }
+        assert wfw.read_raw_signal(rec) is None
+
+    def test_filename_must_be_the_declared_digest(self, _blob_dir: Path) -> None:
+        """A blob-dir file whose name is not its digest is not content-addressed."""
+        _blob_dir.mkdir(parents=True, exist_ok=True)
+        rogue = _blob_dir / "not-a-digest.txt"
+        rogue.write_bytes(b"y")
+        rec = {
+            "raw_signal_ref": {
+                "path": str(rogue),
+                "sha256": hashlib.sha256(b"y").hexdigest(),
+                "bytes": 1,
+            }
+        }
+        assert wfw.read_raw_signal(rec) is None
+
+    def test_ref_without_a_digest_is_refused(self, _blob_dir: Path) -> None:
+        """Verification fields are REQUIRED; an unverifiable ref must not be read."""
+        out = wfw._externalise_raw_signal({"raw_signal": BIG})
+        ref = dict(out["raw_signal_ref"])
+        ref.pop("sha256")
+        assert wfw.read_raw_signal({"raw_signal_ref": ref}) is None
+
+    def test_ref_without_a_length_is_refused(self, _blob_dir: Path) -> None:
+        out = wfw._externalise_raw_signal({"raw_signal": BIG})
+        ref = dict(out["raw_signal_ref"])
+        ref.pop("bytes")
+        assert wfw.read_raw_signal({"raw_signal_ref": ref}) is None
+
+    def test_the_legitimate_blob_still_reads(self, _blob_dir: Path) -> None:
+        out = wfw._externalise_raw_signal({"raw_signal": BIG})
+        assert wfw.read_raw_signal(out) == BIG
+
+
 def test_record_written_to_ledger_is_small(tmp_path: Path, _blob_dir: Path) -> None:
     """End-to-end: the ledger LINE must shrink, which is the whole point."""
     receipt = wfw.FailureReceipt(raw_signal=BIG)

@@ -172,19 +172,40 @@ def read_raw_signal(record: Mapping[str, object]) -> str | None:
     ref = record.get("raw_signal_ref")
     if not isinstance(ref, Mapping):
         return None
+
+    # The digest and length are REQUIRED, not optional. An earlier revision checked each
+    # only `if isinstance(...)`, so a ref carrying neither skipped verification entirely
+    # while the docstring claimed the reader verifies rather than trusts.
+    expected_sha = ref.get("sha256")
+    expected_bytes = ref.get("bytes")
+    if not isinstance(expected_sha, str) or not isinstance(expected_bytes, int):
+        return None
+
+    # CONFINE the read to the blob directory, and require the filename to be the digest it
+    # declares. Without this the reader resolves whatever `path` the record carries and
+    # returns its contents — an arbitrary-file-read reachable from a ledger line. The ledger
+    # is written by this module today, but it is a plain JSONL file on disk that anything can
+    # append to, and its whole purpose is to carry hostile provider output. Content-addressing
+    # makes the check free: the only legitimate path is <blob dir>/<sha256>.txt.
     path = ref.get("path")
     if not isinstance(path, str):
         return None
     try:
-        data = Path(path).read_bytes()
+        resolved = Path(path).resolve()
+        blob_dir = FAILURE_SIGNAL_BLOB_DIR.resolve()
+    except OSError:
+        return None
+    if resolved.parent != blob_dir or resolved.name != f"{expected_sha}.txt":
+        return None
+
+    try:
+        data = resolved.read_bytes()
     except OSError:
         return None
 
-    expected_bytes = ref.get("bytes")
-    if isinstance(expected_bytes, int) and len(data) != expected_bytes:
+    if len(data) != expected_bytes:
         return None
-    expected_sha = ref.get("sha256")
-    if isinstance(expected_sha, str) and hashlib.sha256(data).hexdigest() != expected_sha:
+    if hashlib.sha256(data).hexdigest() != expected_sha:
         return None
 
     return data.decode("utf-8", "surrogatepass")
