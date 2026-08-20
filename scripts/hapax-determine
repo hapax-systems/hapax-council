@@ -148,39 +148,56 @@ def run_producer(
         "subjects": producer.get("subjects") or [],
         "provenance": producer.get("provenance"),
         "host": os.uname().nodename,
-        # Which code produced this determination. `provenance` above says how the PROPERTY was
-        # established (mechanical/attested); this says which build of the spine established it.
-        # Without it a run ledger cannot be compared across a redeploy, and the activation
-        # symlink repoints ~7x/day, so "the ledger went green" is otherwise unreadable.
-        **adjudicator_identity().as_receipt(),
     }
+    # Which code produced this determination, stamped in a `finally` so it is measured AFTER the
+    # producer ran, on every exit including timeout and unlaunchable.
+    #
+    # Raised by codex-1: this used to be spread into the dict above, before a subprocess that may
+    # run for up to 300 seconds, while the module documents HEAD and cleanliness as measured when
+    # the receipt is written. A commit or working-tree change during the run therefore produced a
+    # receipt carrying pre-run state — the stale-identity defect this field exists to detect,
+    # in the code that writes the field.
+    #
+    # `provenance` above says how the PROPERTY was established (mechanical/attested); this says
+    # which checkout of the spine established it. Without it a run ledger cannot be compared
+    # across a redeploy, and the activation symlink repoints ~7x/day, so "the ledger went green"
+    # is otherwise unreadable.
     try:
-        proc = subprocess.run(argv, capture_output=True, text=True, timeout=timeout)
-    except subprocess.TimeoutExpired:
-        record.update(outcome="timeout", returncode=None, duration_s=round(time.monotonic() - started, 2))
-        return record
-    except OSError as exc:
-        record.update(outcome="unlaunchable", returncode=None, error=f"{type(exc).__name__}: {exc}")
-        return record
+        try:
+            proc = subprocess.run(argv, capture_output=True, text=True, timeout=timeout)
+        except subprocess.TimeoutExpired:
+            record.update(
+                outcome="timeout", returncode=None, duration_s=round(time.monotonic() - started, 2)
+            )
+            return record
+        except OSError as exc:
+            record.update(
+                outcome="unlaunchable", returncode=None, error=f"{type(exc).__name__}: {exc}"
+            )
+            return record
 
-    rc = proc.returncode
-    success = set(producer.get("success_exit_codes") or [0])
-    declined = set(producer.get("declined_exit_codes") or [])
-    if rc in success:
-        outcome = "produced"
-    elif rc in declined:
-        # The producer ran correctly and had nothing to vouch for. This is HEALTHY, and it
-        # must be distinguishable from "did not run" — that ambiguity is the whole defect.
-        outcome = "declined"
-    else:
-        outcome = "failed"
-    record.update(
-        outcome=outcome,
-        returncode=rc,
-        duration_s=round(time.monotonic() - started, 2),
-        stderr=(proc.stderr or "").strip()[:500],
-    )
-    return record
+        rc = proc.returncode
+        success = set(producer.get("success_exit_codes") or [0])
+        declined = set(producer.get("declined_exit_codes") or [])
+        if rc in success:
+            outcome = "produced"
+        elif rc in declined:
+            # The producer ran correctly and had nothing to vouch for. This is HEALTHY, and it
+            # must be distinguishable from "did not run" — that ambiguity is the whole defect.
+            outcome = "declined"
+        else:
+            outcome = "failed"
+        record.update(
+            outcome=outcome,
+            returncode=rc,
+            duration_s=round(time.monotonic() - started, 2),
+            stderr=(proc.stderr or "").strip()[:500],
+        )
+        return record
+    finally:
+        # Mutates the same dict the `return` above already evaluated, so every exit — including
+        # an exception this function does not catch — carries an identity measured after the run.
+        record.update(adjudicator_identity().as_receipt())
 
 
 def append_run(ledger: Path, record: dict[str, Any]) -> None:

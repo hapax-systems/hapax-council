@@ -230,12 +230,13 @@ def test_unknown_location_is_indeterminate_not_a_guess(tmp_path: Path) -> None:
     assert not record_identifies_its_checkout(ident.as_receipt())
 
 
-def test_a_failed_git_status_does_not_report_a_clean_tree(tmp_path: Path, monkeypatch) -> None:
+def test_an_empty_failure_buffer_is_not_a_clean_tree(tmp_path: Path, monkeypatch) -> None:
     """Raised by codex-1: failure to measure must not be rendered as a measurement.
 
-    An earlier version ignored `git status`'s return code, so a failed status produced empty
-    stdout, `bool("")` was False, and the identity reported a VERIFIED CLEAN tree — the exact
-    defect this module exists to prevent, committed inside it.
+    An earlier version ignored the return code, so a failed status produced empty stdout,
+    `bool("")` was False, and the identity reported a VERIFIED CLEAN tree — the exact defect this
+    module exists to prevent, committed inside it. The empty buffer is the trap: indistinguishable
+    from a clean tree unless the return code is read.
     """
     from shared import adjudicator_identity as mod
 
@@ -250,8 +251,8 @@ def test_a_failed_git_status_does_not_report_a_clean_tree(tmp_path: Path, monkey
     monkeypatch.setattr(mod.subprocess, "run", fake_run)
     ident = adjudicator_identity(str(tree / "shared" / "adjudicator_identity.py"))
 
-    assert ident.sha == _head(tree), "HEAD was measured successfully and must be reported"
-    assert ident.dirty is None, "cleanliness was NOT measured; None, never False"
+    assert ident.dirty is not False, "an empty buffer from a FAILED call is not a clean tree"
+    assert ident.sha is None, "and nothing was measured, since HEAD comes from the same snapshot"
     assert not record_identifies_its_checkout(ident.as_receipt())
 
 
@@ -261,56 +262,34 @@ def test_a_failed_git_status_does_not_report_a_clean_tree(tmp_path: Path, monkey
 
 
 @pytest.mark.parametrize(
-    ("failure", "expect_sha", "why"),
+    ("mode", "why"),
     [
+        ("returncode", "a git that reported failure measured nothing"),
         (
-            {"cmd": "rev-parse", "mode": "returncode"},
-            False,
-            "no HEAD could be read, so there is nothing to report",
+            "no_oid",
+            "output carrying working-tree entries but no `# branch.oid` — this parser did not "
+            "recognise it, and a partially-understood snapshot is not a measurement",
         ),
         (
-            {"cmd": "rev-parse", "mode": "malformed"},
-            False,
-            "rev-parse succeeded but did not return a sha — an unborn branch, a truncated "
-            "read. Nothing, rather than a malformed identity",
+            "unborn_oid",
+            "`# branch.oid (initial)` on an unborn branch: a real answer meaning there is no "
+            "commit, which must not become a malformed sha",
         ),
-        (
-            {"cmd": "rev-parse", "mode": "timeout"},
-            False,
-            "a timed-out rev-parse measured nothing",
-        ),
-        (
-            {"cmd": "rev-parse", "mode": "oserror"},
-            False,
-            "git could not be executed at all",
-        ),
-        (
-            {"cmd": "status", "mode": "returncode"},
-            True,
-            "HEAD was measured; only cleanliness was not",
-        ),
-        (
-            {"cmd": "status", "mode": "timeout"},
-            True,
-            "raised by codex-1: a status TIMEOUT used to fall to the outer handler and discard "
-            "an already-measured HEAD, while a nonzero status kept it — two spellings of one "
-            "condition giving different answers, the worse one throwing away evidence",
-        ),
-        (
-            {"cmd": "status", "mode": "oserror"},
-            True,
-            "same condition, same answer: keep the sha, refuse to characterise the tree",
-        ),
+        ("timeout", "a timed-out snapshot measured nothing"),
+        ("oserror", "git could not be executed at all"),
     ],
 )
-def test_every_git_failure_mode_degrades_the_same_way(
-    tmp_path: Path, monkeypatch, failure: dict, expect_sha: bool, why: str
+def test_every_git_failure_mode_degrades_to_unknown(
+    tmp_path: Path, monkeypatch, mode: str, why: str
 ) -> None:
     """Raised by codex-1: these branches sit on every receipt-writing path and had no coverage.
 
-    The invariant across all of them: a measurement that succeeded is kept, a measurement that
-    did not is reported as unknown, and nothing is ever reported as clean on the strength of an
-    empty buffer.
+    HEAD and cleanliness now come from ONE snapshot, so they cannot describe different states —
+    and equally, a snapshot that failed measured NEITHER. There is no case here where a sha
+    survives a failed call, because there is no second call it could have survived from.
+
+    The invariant: what could not be measured is reported unknown, and nothing is ever called
+    clean on the strength of an empty buffer.
     """
     from shared import adjudicator_identity as mod
 
@@ -318,12 +297,16 @@ def test_every_git_failure_mode_degrades_the_same_way(
     real_run = mod.subprocess.run
 
     def fake_run(args, **kwargs):
-        if failure["cmd"] in args:
-            if failure["mode"] == "returncode":
+        if "status" in args:
+            if mode == "returncode":
                 return subprocess.CompletedProcess(args, returncode=128, stdout="", stderr="boom")
-            if failure["mode"] == "malformed":
-                return subprocess.CompletedProcess(args, returncode=0, stdout="not-a-sha\n")
-            if failure["mode"] == "timeout":
+            if mode == "no_oid":
+                return subprocess.CompletedProcess(args, returncode=0, stdout="1 .M N... x\n")
+            if mode == "unborn_oid":
+                return subprocess.CompletedProcess(
+                    args, returncode=0, stdout="# branch.oid (initial)\n"
+                )
+            if mode == "timeout":
                 raise subprocess.TimeoutExpired(args, 5)
             raise OSError("git is not executable here")
         return real_run(args, **kwargs)
@@ -331,12 +314,47 @@ def test_every_git_failure_mode_degrades_the_same_way(
     monkeypatch.setattr(mod.subprocess, "run", fake_run)
     ident = adjudicator_identity(str(tree / "shared" / "adjudicator_identity.py"))
 
-    assert (ident.sha is not None) is expect_sha, why
+    assert ident.sha is None, why
     assert ident.dirty is not False, "nothing here measured a clean tree"
     assert not record_identifies_its_checkout(ident.as_receipt())
     assert ident.loaded_modules, (
         "even a receipt that could not identify its checkout knows what the process loaded; "
         "an empty list would state that nothing participated"
+    )
+
+
+def test_head_and_cleanliness_come_from_one_snapshot(tmp_path: Path, monkeypatch) -> None:
+    """Raised by codex-1: two subprocesses can describe two different checkout states.
+
+    Reading HEAD and then status separately does not check that HEAD stayed put. A checkout
+    moving from commit A to a clean commit B mid-measurement yields `(A, False)` — a verified
+    sha over a tree that was never measured clean, which `record_identifies_its_checkout` would
+    accept. Mutable checkouts are the threat this module exists for: the activation symlink
+    repoints ~7x/day and release trees are writable, so this race is live rather than notional.
+
+    Asserted by counting git invocations. One snapshot cannot disagree with itself; a design
+    that needs two reads can only detect the race, never remove it.
+    """
+    from shared import adjudicator_identity as mod
+
+    tree = _make_checkout(tmp_path / "tree", "tree")
+    expected_head = _head(tree)  # BEFORE the counter, or this test's own helper is counted
+    real_run = mod.subprocess.run
+    calls: list[tuple[str, ...]] = []
+
+    def counting_run(args, **kwargs):
+        calls.append(tuple(args))
+        return real_run(args, **kwargs)
+
+    monkeypatch.setattr(mod.subprocess, "run", counting_run)
+    ident = adjudicator_identity(str(tree / "shared" / "adjudicator_identity.py"))
+
+    assert ident.sha == expected_head
+    assert ident.dirty is False
+    git_calls = [c for c in calls if c and c[0] == "git"]
+    assert len(git_calls) == 1, (
+        f"HEAD and cleanliness must come from a single snapshot; {len(git_calls)} git calls "
+        f"leaves a window for the checkout to move between them: {git_calls}"
     )
 
 
@@ -858,6 +876,54 @@ def test_determination_run_record_carries_the_adjudicator() -> None:
     assert "adjudicator_source" in record
     assert record["provenance"] == "mechanical", (
         "provenance and adjudicator answer different questions and must both survive"
+    )
+
+
+def test_the_run_record_identity_is_measured_after_the_producer_ran(monkeypatch) -> None:
+    """Raised by codex-1: it used to be measured before a producer that may run 300 seconds.
+
+    The module documents HEAD and cleanliness as measured when the receipt is written. Stamping
+    them into the record before launching the subprocess meant a commit or working-tree change
+    during the run produced a receipt carrying pre-run state — the stale-identity defect this
+    field exists to detect, in the code that writes the field.
+
+    Asserted by ordering rather than by timing: the identity call must land after the producer
+    subprocess, on the ordinary path.
+    """
+    from datetime import UTC, datetime
+
+    module = _load_determine()
+    order: list[str] = []
+    real_identity = module.adjudicator_identity
+    real_run = module.subprocess.run
+
+    def tracking_identity(*a, **kw):
+        order.append("identity")
+        return real_identity(*a, **kw)
+
+    def tracking_run(args, **kwargs):
+        order.append("producer")
+        return real_run(args, **kwargs)
+
+    monkeypatch.setattr(module, "adjudicator_identity", tracking_identity)
+    monkeypatch.setattr(module.subprocess, "run", tracking_run)
+
+    record = module.run_producer(
+        {
+            "id": "probe",
+            "property": "p",
+            "subjects": [],
+            "provenance": "mechanical",
+            "command": ["/bin/true"],
+        },
+        now=datetime.now(UTC),
+        repo_root=REPO_ROOT,
+        timeout=10,
+    )
+
+    assert "adjudicator_source" in record, "the identity must still reach the record"
+    assert order.index("producer") < order.index("identity"), (
+        f"the identity must be measured AFTER the producer ran, not before it: {order}"
     )
 
 

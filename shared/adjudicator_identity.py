@@ -257,19 +257,31 @@ def record_identifies_its_checkout(record: Mapping[str, object]) -> bool:
 
 
 def _git_head(tree: Path) -> tuple[str | None, bool | None]:
-    """HEAD sha and dirtiness, where dirtiness may be UNKNOWN.
+    """HEAD sha and dirtiness, from ONE git snapshot, where dirtiness may be UNKNOWN.
 
     Returns ``(head, dirty)`` with ``dirty=None`` meaning "could not be determined".
 
-    Raised by codex-1 in review: an earlier version ignored ``git status``'s return code, so a
-    failed or timed-out status produced empty stdout, ``bool("")`` was False, and the identity
-    reported a **verified clean tree**. Failure to measure was rendered as a measurement — the
-    exact defect this module exists to prevent, committed inside it. ``dirty`` therefore has
-    three states, and callers must test ``is False`` rather than falsiness.
+    One invocation, deliberately. Raised by codex-1: reading HEAD and status as two separate
+    subprocesses does not check that HEAD stayed put between them, so a checkout moving from
+    commit A to a clean commit B mid-measurement returns ``(A, False)`` — a verified sha over a
+    tree that was never measured clean, accepted by ``record_identifies_its_checkout``. Mutable
+    checkouts are the threat this module exists for (the activation symlink repoints ~7x/day and
+    release trees are writable), so a race between the two reads defeats its central claim.
+
+    ``git status --porcelain=v2 --branch`` reports ``# branch.oid`` and the working-tree entries
+    from the same snapshot, so the pair cannot disagree. Bracketing two reads and degrading on
+    mismatch would also work and was the other option offered in review; one snapshot is chosen
+    because it removes the race rather than detecting it.
+
+    Earlier and still true: an even earlier version ignored the return code entirely, so a failed
+    status produced empty stdout, ``bool("")`` was False, and the identity reported a **verified
+    clean tree**. Failure to measure rendered as a measurement — the exact defect this module
+    exists to prevent, committed inside it. ``dirty`` therefore has three states and callers must
+    test ``is False`` rather than falsiness.
     """
     try:
-        sha = subprocess.run(
-            ["git", "-C", str(tree), "rev-parse", "HEAD"],
+        status = subprocess.run(
+            ["git", "-C", str(tree), "status", "--porcelain=v2", "--branch"],
             capture_output=True,
             text=True,
             timeout=5,
@@ -277,33 +289,23 @@ def _git_head(tree: Path) -> tuple[str | None, bool | None]:
         )
     except (OSError, subprocess.SubprocessError):
         return (None, None)
-    if sha.returncode != 0:
-        return (None, None)
-    head = sha.stdout.strip()
-    if not _SHA_RE.fullmatch(head):
-        # A rev-parse that succeeded but did not return a sha — an unborn branch, a truncated
-        # read. Nothing to report rather than a malformed identity.
+    if status.returncode != 0:
         return (None, None)
 
-    # Separate try, deliberately. Raised by codex-1: a single wrapper meant a `status` TIMEOUT
-    # fell to the outer handler and returned (None, None), discarding a HEAD that had already
-    # been measured — while a nonzero `status` returned (head, None). Two spellings of the same
-    # condition producing different answers, and the worse one silently threw away evidence.
-    try:
-        status = subprocess.run(
-            ["git", "-C", str(tree), "status", "--porcelain"],
-            capture_output=True,
-            text=True,
-            timeout=5,
-            check=False,
-        )
-    except (OSError, subprocess.SubprocessError):
-        return (head, None)
-    if status.returncode != 0:
-        # HEAD is known, cleanliness is not. Report the sha and refuse to characterise the tree,
-        # rather than inferring "clean" from an empty failure buffer.
-        return (head, None)
-    return (head, bool(status.stdout.strip()))
+    head: str | None = None
+    dirt = False
+    for line in status.stdout.splitlines():
+        if line.startswith("# branch.oid "):
+            candidate = line.removeprefix("# branch.oid ").strip()
+            head = candidate if _SHA_RE.fullmatch(candidate) else None
+        elif line and not line.startswith("#"):
+            dirt = True
+
+    if head is None:
+        # `# branch.oid (initial)` on an unborn branch, or output this parser does not
+        # recognise. Nothing to report rather than a malformed identity.
+        return (None, None)
+    return (head, dirt)
 
 
 def _relative_to_tree(path_text: str, tree: Path) -> str:
