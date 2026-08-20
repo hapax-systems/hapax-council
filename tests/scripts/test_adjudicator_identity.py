@@ -592,6 +592,35 @@ def test_determination_run_record_carries_the_adjudicator() -> None:
     )
 
 
+def test_a_clean_tree_does_not_rescue_code_the_commit_does_not_contain(monkeypatch) -> None:
+    """codex-1's attack, pinned: load from a modified tree, then restore a clean HEAD.
+
+    Reproduced live before this test was written. With the working tree restored, every
+    receipt field reads perfectly — `dirty` False, `adjudicator_sha` a real committed sha —
+    and the running process is still executing bytes that commit does not contain. Every
+    measurement in this module happens at receipt-write time, so nothing else can see it.
+
+    Substituting the import-time hash is the faithful stand-in for having loaded different
+    bytes, and it keeps the test from writing to its own source file, which would be a
+    genuinely dangerous thing for a test suite to do.
+    """
+    import shared.adjudicator_identity as mod
+
+    monkeypatch.setattr(mod, "_LOADED_SOURCE_SHA256", "0" * 64)
+    mod.adjudicator_identity.cache_clear()
+    receipt = mod.adjudicator_identity().as_receipt()
+
+    if receipt["adjudicator_sha"] is None:
+        pytest.skip("not running from a checkout; nothing to verify against")
+    assert receipt["adjudicator_source_matches_head"] is False, (
+        "the loaded bytes are not in the claimed commit and the receipt must say so"
+    )
+    assert not record_has_usable_adjudicator(receipt), (
+        "a clean tree and a real sha must not rescue a decision made by code that commit "
+        "does not contain — this is the misattribution the module exists to prevent"
+    )
+
+
 def _load_determine():
     """Import the extensionless `scripts/hapax-determine` as a module."""
     import importlib.machinery
