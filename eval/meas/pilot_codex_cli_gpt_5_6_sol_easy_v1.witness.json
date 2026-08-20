@@ -52,8 +52,9 @@
       "driver_codex_cli/v1 did not sandbox the deterministic exit predicate",
       "provider-managed model weights, serving version, and quantization are not independently published"
     ],
-    "superseded_safety_contract": "Use driver_codex_cli/v3 for future measurements; this witness preserves the already-completed v1 result only. v3 confines post-agent Git and scores a filtered diff in a clean parent checkout.",
-    "recheck": "uv run python eval/meas/driver_codex_cli.py --verify-result eval/meas/pilot_codex_cli_gpt_5_6_sol_easy_v1.witness.json"
+    "superseded_safety_contract": "Use driver_codex_cli/v4 for future measurements; this witness preserves the already-completed v1 result only. v4 externally confines agent reads, confines post-agent Git, scores a filtered diff in a clean parent checkout, and requires trusted pytest completion attestation.",
+    "recheck": "uv run python eval/meas/driver_codex_cli.py --verify-result eval/meas/pilot_codex_cli_gpt_5_6_sol_easy_v1.witness.json",
+    "artifact_sha256": "56ca6a60ab1fc28be929b9ffe9cfc9e7fd02d714746d363a7a60f54b33405128"
   },
   "selection": {
     "difficulty": "easy",
@@ -79,7 +80,9 @@
       "substrate-adapter-buildout-tranche-1",
       "outcome-learning-no-false-grounding-tests"
     ],
-    "tasks_source_sha256": "2a4f66c94910a53b37c9b0fc662712401c66e590e5d05fc9b3a492bbf2ff2102"
+    "tasks_source_sha256": "2a4f66c94910a53b37c9b0fc662712401c66e590e5d05fc9b3a492bbf2ff2102",
+    "task_set_sha256": "ac5be1fb7d058ec4b01ab0f2b3abd9c051b37d51ae5d544178d2e92e6a9f322f",
+    "commit_set_sha256": "86d6200fe74d71c30cd410047ae7e796a5542df6b7830d01a88b9cabe9cab74b"
   },
   "tasks": [
   {
@@ -368,7 +371,8 @@
         },
         "codex_returncode": 0,
         "codex_timed_out": false
-      }
+      },
+      "result_sha256": "063b41472a1cecbdd5f71a742bc9b63498d840998d81ac26da0e0f6338126cb8"
     },
     {
       "task_id": "mergewatcher-drain-merged-tasks-20260616",
@@ -395,7 +399,8 @@
         },
         "codex_returncode": 0,
         "codex_timed_out": false
-      }
+      },
+      "result_sha256": "24bf4d63b78d483c8e63d2bce0f6f992b1c50e2c68ecf8360843e82106d063ba"
     },
     {
       "task_id": "gemini-reviewer-diff-awareness-20260617",
@@ -422,7 +427,8 @@
         },
         "codex_returncode": 0,
         "codex_timed_out": false
-      }
+      },
+      "result_sha256": "ea5e5bc12c4da0e95082cee1f92fa5e1216168aaa454328758f1574a1c614014"
     },
     {
       "task_id": "p0-ledger-fail-open-rotation-20260617",
@@ -449,7 +455,8 @@
         },
         "codex_returncode": 0,
         "codex_timed_out": false
-      }
+      },
+      "result_sha256": "ac20b322e75c409f9f9d26c79be81d51e2fe525531163c34ed3c04b5c022ee26"
     },
     {
       "task_id": "cc-task-autoqueue-heavy-query-504-resilience-20260702",
@@ -476,7 +483,8 @@
         },
         "codex_returncode": 0,
         "codex_timed_out": false
-      }
+      },
+      "result_sha256": "568d2efc837ae4dddc88b84e4a8b569c72093e4fafd724a5d56532711f73069b"
     },
     {
       "task_id": "cross-surface-bluesky-active-canonical-update",
@@ -503,7 +511,8 @@
         },
         "codex_returncode": 0,
         "codex_timed_out": false
-      }
+      },
+      "result_sha256": "ee2cd91c1064807e507665e42d1c258b1cf86fde9a2245b08cd0c376eab5bc5a"
     },
     {
       "task_id": "infra-reconcile-activation-execstart-hotfix-20260606",
@@ -530,7 +539,8 @@
         },
         "codex_returncode": 0,
         "codex_timed_out": false
-      }
+      },
+      "result_sha256": "8fc28a5321c9efea18daf0bc9a9337ed27eaf8da3e9cd0063e8f65ddfb5adc3b"
     },
     {
       "task_id": "sdlc-quota-wall-reset-signal-preference-20260605",
@@ -557,7 +567,8 @@
         },
         "codex_returncode": 0,
         "codex_timed_out": false
-      }
+      },
+      "result_sha256": "73809d703bf007da5d62a33610a35e8f21d0293ff928c1abbb4b4bc84229f806"
     },
     {
       "task_id": "darkplaces-soak-gl-grace-20260620",
@@ -584,7 +595,8 @@
         },
         "codex_returncode": 0,
         "codex_timed_out": false
-      }
+      },
+      "result_sha256": "17f30bb045fff1999ae0773dc3b333867c8ab2e4eca6df78fd38184757dc75f7"
     },
     {
       "task_id": "cc-task-receipt-dir-default-20260808",
@@ -611,7 +623,8 @@
         },
         "codex_returncode": 0,
         "codex_timed_out": false
-      }
+      },
+      "result_sha256": "4f3ae2563407d55a8bfedb8b34c6ce08e3fa7e501ae917b9f6d4aa6a62c84974"
     },
     {
       "task_id": "cc-task-coordinator-admission-host-fix-20260703",
@@ -638,7 +651,8 @@
         },
         "codex_returncode": 0,
         "codex_timed_out": false
-      }
+      },
+      "result_sha256": "efa1fe788fe5147ebd1d25f56f818eb935295f32c40cb01098ea275587cbb25f"
     },
     {
       "task_id": "capability-adapter-api-executor-provider-gateway-coverage-20260619",
@@ -665,7 +679,8 @@
         },
         "codex_returncode": 0,
         "codex_timed_out": false
-      }
+      },
+      "result_sha256": "93ca05f995cb6b314d0633f1684286eca9590d7bfd0c3343ea8848b477af87ef"
     },
     {
       "task_id": "r31-bare-host-capability-observer-20260812",
@@ -692,7 +707,8 @@
         },
         "codex_returncode": 124,
         "codex_timed_out": true
-      }
+      },
+      "result_sha256": "5173844d036d945e99811e184dcd488594ac59184c167ebddcbf7ec8c0df06e9"
     },
     {
       "task_id": "cc-task-rdlc-publication-vehicle-selector-20260704",
@@ -719,7 +735,8 @@
         },
         "codex_returncode": 124,
         "codex_timed_out": true
-      }
+      },
+      "result_sha256": "5c991970f50a6e0b951913536bcbe74ee415baa3dba97e4d3dcb041de08ff467"
     },
     {
       "task_id": "sdlc-request-decompose-yaml-safe-writer-correction-20260520",
@@ -746,7 +763,8 @@
         },
         "codex_returncode": 0,
         "codex_timed_out": false
-      }
+      },
+      "result_sha256": "cab6e9792c832b272012208c961e03ebb7d65dd1b26face3bc962a0e69b3a924"
     },
     {
       "task_id": "deploy-plane-shallow-graft-guard-20260810",
@@ -773,7 +791,8 @@
         },
         "codex_returncode": 0,
         "codex_timed_out": false
-      }
+      },
+      "result_sha256": "e5cf61cdfd158c35641e724e33a385d734566d9e2fd209f1c4677c2b2624382b"
     },
     {
       "task_id": "sdlc-inv2-ledger-event-filter-and-stage-reconcile-20260606",
@@ -800,7 +819,8 @@
         },
         "codex_returncode": 0,
         "codex_timed_out": false
-      }
+      },
+      "result_sha256": "ff1fb24a49ba7aed717663a5839e668a59ac1d093bb9a3e762f20475f6aa4863"
     },
     {
       "task_id": "substrate-adapter-buildout-tranche-1",
@@ -827,7 +847,8 @@
         },
         "codex_returncode": 0,
         "codex_timed_out": false
-      }
+      },
+      "result_sha256": "0a6e13675fcdb2e64591542c0724ffe076efe5b73e08da6f4bcdc685fc86c832"
     },
     {
       "task_id": "outcome-learning-no-false-grounding-tests",
@@ -856,7 +877,8 @@
         },
         "codex_returncode": 0,
         "codex_timed_out": false
-      }
+      },
+      "result_sha256": "d36d8da4e6eed362675d5f6ba2551ef08622ac740b54ad3b14355aa55d79ae24"
     }
   ],
   "summary": {

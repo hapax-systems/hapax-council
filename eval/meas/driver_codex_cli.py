@@ -47,8 +47,13 @@ DEFAULT_TIMEOUT_SECONDS = 900
 PREDICATE_TIMEOUT_SECONDS = 600
 GITHUB_REPO = "hapax-systems/hapax-council"
 HARNESS_NAME = "codex-cli-agentic"
-DRIVER_VERSION = "driver_codex_cli/v3"
+DRIVER_VERSION = "driver_codex_cli/v4"
 DIRECT_API_35B_BASELINE = {"passed": 0, "total": 19, "pass_rate": 0.0}
+KNOWN_WITNESS_ARTIFACTS = {
+    "1991e186b3699fa87667ac09963ef542ac3587dadc5b7e31be49afa3a9c2f03c": (
+        "56ca6a60ab1fc28be929b9ffe9cfc9e7fd02d714746d363a7a60f54b33405128"
+    )
+}
 SCORING_DIFF_EXCLUDES = (
     "tests/**",
     "**/conftest.py",
@@ -60,6 +65,29 @@ SCORING_DIFF_EXCLUDES = (
     "sitecustomize.py",
     "usercustomize.py",
     "pytest.py",
+)
+SCORING_CONTROL_NAMES = frozenset(
+    {
+        "conftest.py",
+        "pyproject.toml",
+        "pytest.ini",
+        "pytest.py",
+        "setup.cfg",
+        "sitecustomize.py",
+        "tox.ini",
+        "usercustomize.py",
+    }
+)
+ATTESTED_RUNNER = Path(__file__).with_name("pytest_attested_runner.py")
+_NETWORK_ENV_KEYS = (
+    "HTTP_PROXY",
+    "HTTPS_PROXY",
+    "NO_PROXY",
+    "http_proxy",
+    "https_proxy",
+    "no_proxy",
+    "SSL_CERT_DIR",
+    "SSL_CERT_FILE",
 )
 
 LAMBDA_KEYS = (
@@ -95,17 +123,6 @@ Evaluation constraints:
 """
 
 _PATH_TOKEN = re.compile(r"(?:tests|shared|agents|scripts|systemd|docs)/[^\s;&|]+")
-_SECRET_ENV_KEYS = {
-    "ANTHROPIC_API_KEY",
-    "CODEX_ACCESS_TOKEN",
-    "CODEX_API_KEY",
-    "CONTEXT7_API_KEY",
-    "GEMINI_API_KEY",
-    "GITHUB_PERSONAL_ACCESS_TOKEN",
-    "OPENAI_API_KEY",
-    "SAKANA_API_KEY",
-    "TAVILY_API_KEY",
-}
 
 
 class DriverError(RuntimeError):
@@ -198,7 +215,13 @@ def load_tasks(tasks_path: Path = DEFAULT_TASKS) -> list[dict[str, Any]]:
     for line_number, line in enumerate(lines, 1):
         if not line.strip():
             continue
-        row = json.loads(line)
+        try:
+            row = json.loads(line)
+        except json.JSONDecodeError as exc:
+            raise DriverError(
+                f"{tasks_path}:{line_number}: malformed JSON: {exc.msg}. "
+                "Next action: repair that JSONL row and rerun task loading."
+            ) from exc
         if not isinstance(row, dict):
             raise DriverError(
                 f"{tasks_path}:{line_number}: task row is not an object. "
@@ -404,6 +427,114 @@ def install_merge_version_tests(repo: Path, workdir: Path, commits: CommitPair) 
     return installed
 
 
+def _git_blob_bytes(repo: Path, commit: str, relative: str) -> bytes:
+    result = subprocess.run(
+        ["git", "-C", str(repo), "show", f"{commit}:{relative}"],
+        capture_output=True,
+        timeout=120,
+        check=False,
+    )
+    if result.returncode != 0:
+        detail = result.stderr.decode(errors="replace").strip()[-500:]
+        raise DriverError(
+            f"cannot read trusted scoring control {relative}: {detail}. "
+            "Next action: discard the cell and verify its recorded commits."
+        )
+    return result.stdout
+
+
+def _read_regular_no_follow(workdir: Path, relative: Path) -> bytes:
+    """Read one scoring control without following agent-authored path links."""
+    if not hasattr(os, "O_NOFOLLOW"):
+        raise DriverError(
+            "this platform cannot enforce no-follow scoring-control verification. "
+            "Next action: run the harness on Linux with O_NOFOLLOW support."
+        )
+    directory_flags = os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW | os.O_CLOEXEC
+    descriptors: list[int] = []
+    try:
+        current = os.open(workdir, directory_flags)
+        descriptors.append(current)
+        for component in relative.parts[:-1]:
+            current = os.open(component, directory_flags, dir_fd=current)
+            descriptors.append(current)
+        metadata = os.stat(relative.name, dir_fd=current, follow_symlinks=False)
+        if not stat.S_ISREG(metadata.st_mode) or metadata.st_nlink != 1:
+            raise OSError("control is a symlink, hardlink, or non-regular file")
+        descriptor = os.open(
+            relative.name,
+            os.O_RDONLY | os.O_NOFOLLOW | os.O_CLOEXEC,
+            dir_fd=current,
+        )
+        with os.fdopen(descriptor, "rb") as handle:
+            return handle.read()
+    except OSError as exc:
+        raise DriverError(
+            f"unsafe scoring control {relative}: {exc}. "
+            "Next action: discard the cell; scoring controls must be regular parent-tree files."
+        ) from exc
+    finally:
+        for descriptor in reversed(descriptors):
+            os.close(descriptor)
+
+
+def verify_scoring_controls(
+    repo: Path,
+    workdir: Path,
+    commits: CommitPair,
+    predicate_files: Sequence[str],
+) -> dict[str, Any]:
+    """Prove pytest/config hooks equal the parent or an installed merge test."""
+    parent_paths = _checked_stdout(
+        ["git", "-C", str(repo), "ls-tree", "-r", "--name-only", commits.parent]
+    ).splitlines()
+    expected_sources = {
+        path: commits.parent
+        for path in parent_paths
+        if PurePosixPath(path).name in SCORING_CONTROL_NAMES
+    }
+    for path in predicate_files:
+        if PurePosixPath(path).name in SCORING_CONTROL_NAMES:
+            expected_sources[path] = commits.merge
+
+    actual_paths: set[str] = set()
+    for directory, directory_names, file_names in os.walk(workdir, followlinks=False):
+        relative_directory = Path(directory).relative_to(workdir)
+        if relative_directory == Path("."):
+            directory_names[:] = [name for name in directory_names if name != ".git"]
+        for name in file_names:
+            if name in SCORING_CONTROL_NAMES:
+                actual_paths.add((relative_directory / name).as_posix())
+    if actual_paths != set(expected_sources):
+        unexpected = sorted(actual_paths - set(expected_sources))
+        missing = sorted(set(expected_sources) - actual_paths)
+        raise DriverError(
+            f"scoring controls differ from trusted commits; unexpected={unexpected}, "
+            f"missing={missing}. Next action: discard the cell and inspect its filtered diff."
+        )
+
+    hashes: dict[str, dict[str, str]] = {}
+    for raw_path, source_commit in sorted(expected_sources.items()):
+        relative = _safe_repo_path(raw_path)
+        actual = _read_regular_no_follow(workdir, relative)
+        expected = _git_blob_bytes(repo, source_commit, raw_path)
+        if actual != expected:
+            raise DriverError(
+                f"scoring control {raw_path} does not match {source_commit}. "
+                "Next action: discard the cell and inspect its filtered diff."
+            )
+        hashes[raw_path] = {
+            "source_commit": source_commit,
+            "sha256": hashlib.sha256(actual).hexdigest(),
+        }
+    return {
+        "parent_tree": _checked_stdout(
+            ["git", "-C", str(repo), "rev-parse", f"{commits.parent}^{{tree}}"]
+        ),
+        "files": hashes,
+    }
+
+
 def exit_predicate_command(task: Mapping[str, Any]) -> list[str]:
     predicate = task.get("exit_predicate")
     if not isinstance(predicate, Mapping):
@@ -472,14 +603,29 @@ def predicate_sandbox_version() -> str:
     return result.stdout.strip()
 
 
+def attested_runner_sha256() -> str:
+    try:
+        content = ATTESTED_RUNNER.read_bytes()
+    except OSError as exc:
+        raise DriverError(
+            f"cannot read trusted pytest runner {ATTESTED_RUNNER}: {exc}. "
+            "Next action: restore the shipped attested runner and rerun."
+        ) from exc
+    return hashlib.sha256(content).hexdigest()
+
+
 def _cell_sandbox_command(
     inner_command: Sequence[str],
     workdir: Path,
     repo: Path,
     *,
     extra_environment: Mapping[str, str] | None = None,
+    readonly_mounts: Sequence[tuple[Path, Path]] = (),
+    writable_mounts: Sequence[tuple[Path, Path]] = (),
+    share_network: bool = False,
+    disable_nested_userns: bool = True,
 ) -> list[str]:
-    """Build a no-network, clear-environment command for post-agent work."""
+    """Build a minimal clear-environment sandbox around one cell checkout."""
     bubblewrap = _predicate_sandbox_binary()
     uv_binary = shutil.which("uv")
     if not uv_binary:
@@ -497,12 +643,13 @@ def _cell_sandbox_command(
     command = [
         str(bubblewrap),
         "--unshare-all",
-        "--unshare-user",
-        "--die-with-parent",
-        "--new-session",
-        "--disable-userns",
-        "--clearenv",
     ]
+    if share_network:
+        command.append("--share-net")
+    command.extend(["--unshare-user", "--die-with-parent", "--new-session"])
+    if disable_nested_userns:
+        command.append("--disable-userns")
+    command.append("--clearenv")
     created: set[Path] = set()
     for system_root in (Path("/usr"), Path("/bin"), Path("/lib"), Path("/lib64")):
         if system_root.exists():
@@ -529,6 +676,35 @@ def _cell_sandbox_command(
         )
         _add_sandbox_destination(command, python_runtime, created, include_destination=True)
         command.extend(["--ro-bind", str(python_runtime), str(python_runtime)])
+
+    for source, destination in readonly_mounts:
+        source = source.resolve()
+        if not source.exists():
+            raise DriverError(
+                f"sandbox read-only source is missing: {source}. "
+                "Next action: restore the required harness/runtime file and rerun."
+            )
+        if not destination.is_absolute():
+            raise DriverError(
+                f"sandbox destination is not absolute: {destination}. "
+                "Next action: repair the harness mount configuration."
+            )
+        _add_sandbox_destination(
+            command,
+            destination,
+            created,
+            include_destination=source.is_dir(),
+        )
+        command.extend(["--ro-bind", str(source), str(destination)])
+    for source, destination in writable_mounts:
+        source = source.resolve()
+        if not source.is_dir() or not destination.is_absolute():
+            raise DriverError(
+                f"invalid writable sandbox mount: {source} -> {destination}. "
+                "Next action: provide an existing directory and absolute sandbox path."
+            )
+        _add_sandbox_destination(command, destination, created, include_destination=True)
+        command.extend(["--bind", str(source), str(destination)])
 
     sandbox_home = Path("/home/meas")
     _add_sandbox_destination(command, sandbox_home, created, include_destination=True)
@@ -593,13 +769,81 @@ def _predicate_sandbox_command(
     )
 
 
-def evaluate_exit(
-    task: Mapping[str, Any],
+def _pytest_targets(task: Mapping[str, Any]) -> list[str]:
+    predicate = task.get("exit_predicate")
+    if not isinstance(predicate, Mapping):
+        return []
+    target = predicate.get("target")
+    if not isinstance(target, str):
+        return []
+    if predicate.get("kind") == "pytest":
+        return [target]
+    if predicate.get("kind") == "ruff+custom":
+        return re.findall(
+            r"(?:^|&&)\s*(?:uv\s+run\s+)?pytest\s+([^\s;&|]+)",
+            target,
+        )
+    return []
+
+
+def _attested_pytest_command(
+    target: str,
     workdir: Path,
-    repo: Path = DEFAULT_REPO,
-) -> dict[str, Any]:
-    """Run the deterministic predicate in a fail-closed Bubblewrap sandbox."""
-    command = _predicate_sandbox_command(task, workdir, repo)
+    repo: Path,
+    attestation_dir: Path,
+) -> list[str]:
+    return _cell_sandbox_command(
+        [
+            "python",
+            "/harness/pytest_attested_runner.py",
+            "/attestation/result.json",
+            target,
+        ],
+        workdir,
+        repo,
+        extra_environment={
+            "PYTEST_DISABLE_PLUGIN_AUTOLOAD": "1",
+            "PYTEST_ADDOPTS": "",
+            "PYTHONPATH": "/workspace",
+        },
+        readonly_mounts=[(ATTESTED_RUNNER, Path("/harness/pytest_attested_runner.py"))],
+        writable_mounts=[(attestation_dir, Path("/attestation"))],
+    )
+
+
+def _validate_completion_attestation(
+    path: Path,
+    *,
+    returncode: int,
+) -> str | None:
+    try:
+        raw = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError) as exc:
+        return f"pytest completion attestation is missing or malformed: {exc}"
+    if not isinstance(raw, Mapping):
+        return "pytest completion attestation root is not an object"
+    collected = raw.get("collected")
+    terminal = raw.get("terminal")
+    if (
+        raw.get("schema_version") != 1
+        or raw.get("completed") is not True
+        or raw.get("exit_code") != returncode
+        or not isinstance(collected, list)
+        or not collected
+        or len(set(collected)) != len(collected)
+        or not isinstance(terminal, Mapping)
+        or set(terminal) != set(collected)
+    ):
+        return "pytest completion attestation does not match the completed test lifecycle"
+    outcomes = list(terminal.values())
+    if any(outcome not in {"passed", "failed", "skipped"} for outcome in outcomes):
+        return "pytest completion attestation contains an invalid terminal outcome"
+    if returncode == 0 and "passed" not in outcomes:
+        return "pytest completed without any passing discriminating test"
+    return None
+
+
+def _run_predicate_command(command: Sequence[str]) -> tuple[int, bool, str, str]:
     try:
         result = subprocess.run(
             command,
@@ -608,26 +852,68 @@ def evaluate_exit(
             timeout=PREDICATE_TIMEOUT_SECONDS,
             check=False,
         )
-        returncode = result.returncode
-        stdout = _coerce_text(result.stdout)
-        stderr = _coerce_text(result.stderr)
-        timed_out = False
+        return (
+            result.returncode,
+            False,
+            _coerce_text(result.stdout),
+            _coerce_text(result.stderr),
+        )
     except subprocess.TimeoutExpired as exc:
-        returncode = 124
-        stdout = _coerce_text(exc.stdout)
-        stderr = _coerce_text(exc.stderr)
-        timed_out = True
+        return 124, True, _coerce_text(exc.stdout), _coerce_text(exc.stderr)
     except OSError as exc:
         raise DriverError(
             f"cannot execute the predicate sandbox: {exc}. "
             "Next action: repair bwrap and rerun the cell; no unsandboxed fallback is allowed."
         ) from exc
-    output = stdout + stderr
+
+
+def evaluate_exit(
+    task: Mapping[str, Any],
+    workdir: Path,
+    repo: Path = DEFAULT_REPO,
+) -> dict[str, Any]:
+    """Run the predicate and independently attest that hidden pytest items completed."""
+    predicate = task.get("exit_predicate")
+    kind = predicate.get("kind") if isinstance(predicate, Mapping) else None
+    output_parts: list[str] = []
+    returncode = 0
+    timed_out = False
+    completion_attested = False
+    if kind == "ruff+custom":
+        returncode, timed_out, stdout, stderr = _run_predicate_command(
+            _predicate_sandbox_command(task, workdir, repo)
+        )
+        output_parts.extend([stdout, stderr])
+    targets = _pytest_targets(task)
+    if returncode == 0 and not timed_out:
+        for target in targets:
+            with tempfile.TemporaryDirectory(prefix="meas-pytest-attestation-") as raw_dir:
+                attestation_dir = Path(raw_dir)
+                command = _attested_pytest_command(target, workdir, repo, attestation_dir)
+                test_returncode, test_timed_out, stdout, stderr = _run_predicate_command(command)
+                output_parts.extend([stdout, stderr])
+                attestation_error = _validate_completion_attestation(
+                    attestation_dir / "result.json",
+                    returncode=test_returncode,
+                )
+                if attestation_error:
+                    output_parts.append(f"\nHARNESS: {attestation_error}\n")
+                    returncode = test_returncode if test_returncode != 0 else 86
+                    timed_out = test_timed_out
+                    break
+                completion_attested = True
+                returncode = test_returncode
+                timed_out = test_timed_out
+                if returncode != 0 or timed_out:
+                    break
+    output = "".join(output_parts)
     return {
         "passed": returncode == 0 and not timed_out,
         "returncode": returncode,
         "timed_out": timed_out,
         "sandbox": "bubblewrap",
+        "completion_attested": completion_attested,
+        "pytest_targets": targets,
         "output_tail": output[-4_000:],
     }
 
@@ -643,10 +929,15 @@ def render_cell_prompt(task: Mapping[str, Any]) -> str:
     return CELL_PROMPT_TEMPLATE.format(work_item=work_item.strip(), exit_predicate=predicate)
 
 
-def build_codex_command(config: CodexRunConfig, workdir: Path) -> list[str]:
+def build_codex_command(
+    config: CodexRunConfig,
+    workdir: Path,
+    *,
+    codex_binary: str | None = None,
+) -> list[str]:
     """Build the non-interactive command with a closed, λ-recorded tool surface."""
     command = [
-        config.codex_binary,
+        codex_binary or config.codex_binary,
         "exec",
         "--ephemeral",
         "--ignore-user-config",
@@ -670,6 +961,110 @@ def build_codex_command(config: CodexRunConfig, workdir: Path) -> list[str]:
     return command
 
 
+def _codex_runtime_mount(config: CodexRunConfig) -> tuple[Path, Path, str]:
+    """Resolve a read-only Codex runtime mount and its sandbox-local executable."""
+    binary = shutil.which(config.codex_binary) or config.codex_binary
+    resolved = Path(binary).expanduser().resolve()
+    if not resolved.is_file():
+        raise DriverError(
+            f"Codex binary was not found: {config.codex_binary}. "
+            "Next action: install the Codex CLI or pass --codex-binary explicitly."
+        )
+    package_root = next(
+        (
+            parent
+            for parent in resolved.parents
+            if parent.name == "codex" and parent.parent.name == "@openai"
+        ),
+        None,
+    )
+    if package_root is not None:
+        native_binaries = sorted(
+            package_root.glob("node_modules/@openai/codex-*/vendor/*/bin/codex")
+        )
+        if len(native_binaries) == 1:
+            sandbox_root = Path("/opt/codex")
+            executable = sandbox_root / native_binaries[0].relative_to(package_root)
+            return package_root, sandbox_root, str(executable)
+    sandbox_binary = Path("/opt/bin/codex")
+    return resolved, sandbox_binary, str(sandbox_binary)
+
+
+def _codex_auth_file() -> Path:
+    codex_home = Path(os.environ.get("CODEX_HOME", str(Path.home() / ".codex")))
+    auth_file = codex_home / "auth.json"
+    if not auth_file.is_file():
+        raise DriverError(
+            f"Codex authentication file is missing under {codex_home}. "
+            "Next action: authenticate the Codex CLI, then rerun the measurement."
+        )
+    return auth_file
+
+
+def _agent_boundary_command(
+    inner_command: Sequence[str],
+    workdir: Path,
+    repo: Path,
+    *,
+    extra_environment: Mapping[str, str] | None = None,
+    readonly_mounts: Sequence[tuple[Path, Path]] = (),
+) -> list[str]:
+    """Apply the externally enforced cell-only read boundary used for Codex."""
+    return _cell_sandbox_command(
+        inner_command,
+        workdir,
+        repo,
+        extra_environment=extra_environment,
+        readonly_mounts=readonly_mounts,
+        share_network=True,
+        disable_nested_userns=False,
+    )
+
+
+def _agent_sandbox_command(
+    config: CodexRunConfig,
+    workdir: Path,
+    repo: Path = DEFAULT_REPO,
+) -> list[str]:
+    """Confine Codex reads to the cell while retaining provider network access."""
+    runtime_source, runtime_destination, executable = _codex_runtime_mount(config)
+    readonly_mounts: list[tuple[Path, Path]] = [
+        (runtime_source, runtime_destination),
+        (_codex_auth_file(), Path("/codex-home/auth.json")),
+    ]
+    for host_path in (
+        Path("/etc/resolv.conf"),
+        Path("/etc/hosts"),
+        Path("/etc/nsswitch.conf"),
+        Path("/etc/gai.conf"),
+        Path("/etc/ssl/certs"),
+    ):
+        if host_path.exists():
+            readonly_mounts.append((host_path, host_path))
+    environment = {
+        "CODEX_HOME": "/codex-home",
+        "CODEX_MANAGED_PACKAGE_ROOT": str(runtime_destination),
+        "HAPAX_CC_TASK_GATE": "0",
+        "PYTEST_DISABLE_PLUGIN_AUTOLOAD": "1",
+    }
+    for name in _NETWORK_ENV_KEYS:
+        value = os.environ.get(name)
+        if value:
+            environment[name] = value
+    inner_command = build_codex_command(
+        config,
+        Path("/workspace"),
+        codex_binary=executable,
+    )
+    return _agent_boundary_command(
+        inner_command,
+        workdir,
+        repo,
+        extra_environment=environment,
+        readonly_mounts=readonly_mounts,
+    )
+
+
 def _active_project_environment(repo: Path = DEFAULT_REPO) -> Path:
     interpreter_environment = Path(sys.executable).absolute().parent.parent
     if (interpreter_environment / "pyvenv.cfg").is_file():
@@ -678,16 +1073,16 @@ def _active_project_environment(repo: Path = DEFAULT_REPO) -> Path:
 
 
 def _codex_environment() -> dict[str, str]:
-    environment = os.environ.copy()
-    for name in _SECRET_ENV_KEYS:
-        environment.pop(name, None)
-    environment["NO_COLOR"] = "1"
-    environment["HAPAX_CC_TASK_GATE"] = "0"
-    project_environment = _active_project_environment()
-    environment["UV_PROJECT_ENVIRONMENT"] = str(project_environment)
-    environment["UV_NO_SYNC"] = "1"
-    environment["VIRTUAL_ENV"] = str(project_environment)
-    return environment
+    """Return the minimal host environment needed to launch Bubblewrap itself."""
+    return {"PATH": os.defpath, "NO_COLOR": "1"}
+
+
+def _redacted_transcript_command(command: Sequence[str]) -> list[str]:
+    redacted = list(command)
+    for index, token in enumerate(redacted[:-2]):
+        if token == "--setenv" and redacted[index + 1] in _NETWORK_ENV_KEYS:
+            redacted[index + 2] = "<redacted-environment-value>"
+    return redacted
 
 
 def _post_agent_git_command(*arguments: str) -> list[str]:
@@ -777,7 +1172,9 @@ def capture_cell_diff(workdir: Path, baseline: str) -> dict[str, Any]:
         workdir=workdir,
     )
     diff = _checked_post_agent_stdout(
-        _post_agent_git_command("diff", "--binary", "--no-ext-diff", baseline, "--"),
+        _post_agent_git_command(
+            "diff", "--binary", "--no-ext-diff", "--no-textconv", baseline, "--"
+        ),
         workdir=workdir,
         strip=False,
     )
@@ -803,7 +1200,7 @@ def driver(
     """Runner seam: execute Codex inside an already-prepared cell workdir."""
     config = config or CodexRunConfig()
     prompt = render_cell_prompt(task)
-    command = build_codex_command(config, workdir)
+    command = _agent_sandbox_command(config, workdir)
     baseline = _checked_stdout(["git", "-C", str(workdir), "rev-parse", "HEAD"])
     started = time.monotonic()
     timed_out = False
@@ -837,8 +1234,8 @@ def driver(
         stdout = ""
         stderr = ""
         error = (
-            f"cannot execute {config.codex_binary}: {exc}. "
-            "Next action: repair the Codex CLI installation and rerun the cell."
+            f"cannot execute the externally confined Codex process: {exc}. "
+            "Next action: repair the Codex CLI or Bubblewrap installation and rerun the cell."
         )
     seconds = round(time.monotonic() - started, 3)
     diff_record = capture_cell_diff(workdir, baseline)
@@ -850,7 +1247,7 @@ def driver(
         "transcript_ref": None,
         "transcript": {
             "format": "codex-exec-jsonl",
-            "command": command[:-1] + ["<prompt-from-stdin>"],
+            "command": _redacted_transcript_command(command[:-1]) + ["<prompt-from-stdin>"],
             "returncode": returncode,
             "timed_out": timed_out,
             "error": error,
@@ -892,11 +1289,21 @@ def lambda_config(
             "exec_output": "jsonl",
             "legacy_full_auto": False,
             "mcp": "disabled-by-ignore-user-config",
-            "sandbox": "workspace-write",
+            "sandbox": "bubblewrap-read-confined+workspace-write",
+            "agent_filesystem": {
+                "host_reads": "cell-and-explicit-runtime-mounts-only",
+                "network": "shared-for-provider-api",
+                "outer_sandbox": "bubblewrap",
+                "sandbox_version": sandbox_version,
+            },
             "codex_timeout_seconds": config.timeout_seconds,
             "exit_predicate": {
+                "completion_attestation": "trusted-pytest-lifecycle-v1",
+                "config": "/dev/null",
                 "environment": "cleared",
                 "network": "unshared",
+                "rootdir": "/workspace",
+                "runner_sha256": attested_runner_sha256(),
                 "sandbox": "bubblewrap",
                 "sandbox_version": sandbox_version,
                 "timeout_seconds": PREDICATE_TIMEOUT_SECONDS,
@@ -977,6 +1384,12 @@ def run_cell(
             prepare_cell_checkout(repo, commits.parent, scoring_workdir)
             apply_agent_diff_for_scoring(scoring_workdir, agent_diff)
             predicate_files = install_merge_version_tests(repo, scoring_workdir, commits)
+            scoring_controls = verify_scoring_controls(
+                repo,
+                scoring_workdir,
+                commits,
+                predicate_files,
+            )
             exit_result = evaluator(task, scoring_workdir, repo)
 
     cell = {
@@ -1007,6 +1420,7 @@ def run_cell(
             "parent": commits.parent,
             "merge": commits.merge,
             "predicate_files": predicate_files,
+            "scoring_controls": scoring_controls,
             "scoring_diff_excludes": list(SCORING_DIFF_EXCLUDES),
             "passed": passed,
             "exit": exit_result,
@@ -1136,6 +1550,10 @@ def render_result_note(
     codex_sandbox = tool_surface.get("sandbox", "unknown")
     predicate_boundary = (
         "The deterministic predicate ran in Bubblewrap with a cleared environment and "
+        "an unshared network namespace. A trusted lifecycle record had to show every "
+        "collected hidden pytest item reached a terminal report."
+        if predicate_surface.get("completion_attestation")
+        else "The deterministic predicate ran in Bubblewrap with a cleared environment and "
         "an unshared network namespace."
         if predicate_surface
         else "This legacy result predates recorded predicate-sandbox metadata."
@@ -1143,8 +1561,9 @@ def render_result_note(
     if tool_surface.get("scoring_diff_excludes"):
         checkout_boundary = (
             "Each cell used isolated agent and clean scoring checkouts at the authoritative "
-            f"PR parent. Codex edited under the `{codex_sandbox}` sandbox with user config, "
-            "MCP, and web search disabled. The harness captured JSONL stdout/stderr and the "
+            f"PR parent. Codex edited under the `{codex_sandbox}` boundary, externally limited "
+            "to cell/runtime reads, with user config, MCP, and web search disabled. The harness "
+            "captured JSONL stdout/stderr and the "
             "post-exec diff inside Bubblewrap, applied only solution-bearing paths to the "
             "scoring checkout, then installed merge-version tests through no-follow file "
             "descriptors."
@@ -1196,6 +1615,24 @@ def _canonical_hash(value: Any) -> str:
     return hashlib.sha256(encoded.encode()).hexdigest()
 
 
+def _result_integrity_hash(result: Mapping[str, Any]) -> str:
+    unsealed = {key: value for key, value in result.items() if key != "result_sha256"}
+    return _canonical_hash(unsealed)
+
+
+def _seal_result(result: dict[str, Any]) -> dict[str, Any]:
+    result["result_sha256"] = _result_integrity_hash(result)
+    return result
+
+
+def _artifact_integrity_hash(payload: Mapping[str, Any]) -> str:
+    unsealed = json.loads(json.dumps(payload))
+    witness = unsealed.get("witness")
+    if isinstance(witness, dict):
+        witness.pop("artifact_sha256", None)
+    return _canonical_hash(unsealed)
+
+
 def _selection_contract(
     tasks: Sequence[Mapping[str, Any]],
     commits: Mapping[str, CommitPair],
@@ -1243,13 +1680,14 @@ def _validated_resume_results(
     tasks: Mapping[str, Mapping[str, Any]],
 ) -> list[dict[str, Any]]:
     expected_top_level = {
-        "schema_version": 2,
+        "schema_version": 3,
         "driver": DRIVER_VERSION,
         "model": config.model,
         "reasoning_effort": config.reasoning_effort,
         "lambda_set": [expected_lambda],
         "lambda_config": fields,
         "selection": selection,
+        "tasks": [_task_contract(tasks[task_id]) for task_id in selection["task_ids"]],
     }
     for key, expected in expected_top_level.items():
         if existing.get(key) != expected:
@@ -1265,6 +1703,8 @@ def _validated_resume_results(
         task_id = str(result.get("task_id") or "")
         if task_id not in tasks or task_id in seen:
             raise _resume_error(f"unexpected or duplicate checkpointed task {task_id!r}")
+        if result.get("result_sha256") != _result_integrity_hash(result):
+            raise _resume_error(f"task {task_id} has a mismatched result seal")
         if result.get("lambda_hash") != expected_lambda or result.get("lambda_config") != fields:
             raise _resume_error(f"task {task_id} has a different λ configuration")
         cell_result = result.get("cell_result")
@@ -1293,12 +1733,19 @@ def _verification_error(detail: str) -> DriverError:
 
 
 def verify_result_payload(payload: Mapping[str, Any]) -> dict[str, Any]:
-    """Recompute the durable λ and aggregate result invariants."""
+    """Recompute λ, task/commit bindings, cell seals, and aggregate invariants."""
     fields = payload.get("lambda_config")
     results = payload.get("results")
-    if not isinstance(fields, Mapping) or not isinstance(results, list):
+    tasks = payload.get("tasks")
+    selection = payload.get("selection")
+    if (
+        not isinstance(fields, Mapping)
+        or not isinstance(results, list)
+        or not isinstance(tasks, list)
+        or not isinstance(selection, Mapping)
+    ):
         raise DriverError(
-            "result must contain lambda_config and a results list. "
+            "result must contain lambda_config, selection, embedded tasks, and results. "
             "Next action: point --verify-result at an unmodified pilot artifact."
         )
     expected_lambda = lambda_hash(fields)
@@ -1307,22 +1754,112 @@ def verify_result_payload(payload: Mapping[str, Any]) -> dict[str, Any]:
             "top-level λ hash does not match lambda_config. "
             "Next action: restore the original artifact; do not use this result."
         )
+    task_contracts: list[dict[str, Any]] = []
+    task_by_id: dict[str, Mapping[str, Any]] = {}
+    for task in tasks:
+        if not isinstance(task, Mapping):
+            raise _verification_error("embedded task row is not an object")
+        task_id = str(task.get("task_id") or "")
+        if not task_id or task_id in task_by_id:
+            raise _verification_error("embedded task IDs are missing or duplicated")
+        task_by_id[task_id] = task
+        task_contracts.append(_task_contract(task))
+    selected_ids = selection.get("task_ids")
+    if (
+        not isinstance(selected_ids, list)
+        or selected_ids != list(task_by_id)
+        or selection.get("requested") != len(selected_ids)
+    ):
+        raise _verification_error("selection does not match the embedded task order")
+    if selection.get("task_set_sha256") != _canonical_hash(task_contracts):
+        raise _verification_error("selection task hash does not match embedded contracts")
+
     seen: set[str] = set()
+    result_ids: list[str] = []
+    commit_rows: list[dict[str, str]] = []
     for result in results:
         if not isinstance(result, Mapping):
             raise _verification_error("result row is not an object")
         task_id = str(result.get("task_id") or "")
-        if not task_id or task_id in seen:
-            raise _verification_error("result task IDs are missing or duplicated")
+        if not task_id or task_id in seen or task_id not in task_by_id:
+            raise _verification_error("result task IDs are missing, duplicated, or unselected")
         if result.get("lambda_hash") != expected_lambda:
             raise _verification_error(f"result {task_id} has a mismatched λ hash")
+        if result.get("result_sha256") != _result_integrity_hash(result):
+            raise _verification_error(f"result {task_id} has a mismatched result seal")
+        cell = result.get("cell")
         cell_result = result.get("cell_result")
-        if not isinstance(cell_result, Mapping) or not isinstance(cell_result.get("passed"), bool):
+        if not isinstance(cell, Mapping) or not isinstance(cell_result, Mapping):
+            raise _verification_error(f"result {task_id} has no cell record")
+        if not isinstance(cell_result.get("passed"), bool):
             raise _verification_error(f"result {task_id} has no Boolean pass outcome")
         for commit_key in ("parent", "merge"):
             if not re.fullmatch(r"[0-9a-f]{40}", str(cell_result.get(commit_key) or "")):
                 raise _verification_error(f"result {task_id} has an invalid {commit_key} commit")
+        task = task_by_id[task_id]
+        for key in ("class", "difficulty", "pr"):
+            if cell_result.get(key) != task.get(key):
+                raise _verification_error(f"result {task_id} does not match task {key}")
+        exit_result = cell_result.get("exit")
+        codex_returncode = cell_result.get("codex_returncode")
+        codex_timed_out = cell_result.get("codex_timed_out")
+        if (
+            not isinstance(exit_result, Mapping)
+            or not isinstance(exit_result.get("passed"), bool)
+            or not isinstance(exit_result.get("returncode"), int)
+            or not isinstance(exit_result.get("timed_out"), bool)
+            or not isinstance(codex_returncode, int)
+            or not isinstance(codex_timed_out, bool)
+        ):
+            raise _verification_error(f"result {task_id} has incomplete execution status")
+        exit_passed = exit_result["returncode"] == 0 and not exit_result["timed_out"]
+        if exit_result["passed"] != exit_passed:
+            raise _verification_error(f"result {task_id} has inconsistent predicate status")
+        expected_passed = exit_passed and codex_returncode == 0 and not codex_timed_out
+        if cell_result["passed"] != expected_passed:
+            raise _verification_error(f"result {task_id} has inconsistent cell pass status")
+        transcript = cell.get("transcript")
+        if isinstance(transcript, Mapping) and (
+            transcript.get("returncode") != codex_returncode
+            or bool(transcript.get("timed_out")) != codex_timed_out
+        ):
+            raise _verification_error(f"result {task_id} transcript status does not match")
+        diff_sha256 = cell.get("diff_sha256")
+        diff_bytes = cell.get("diff_bytes")
+        if (
+            not re.fullmatch(r"[0-9a-f]{64}", str(diff_sha256 or ""))
+            or not isinstance(diff_bytes, int)
+            or diff_bytes < 0
+        ):
+            raise _verification_error(f"result {task_id} has invalid cell diff metadata")
+        if isinstance(cell.get("diff"), str):
+            diff = str(cell["diff"])
+            if (
+                len(diff.encode()) != diff_bytes
+                or hashlib.sha256(diff.encode()).hexdigest() != diff_sha256
+            ):
+                raise _verification_error(f"result {task_id} cell diff hash does not match")
+        if payload.get("driver") == DRIVER_VERSION:
+            expected_targets = _pytest_targets(task)
+            if (
+                exit_result.get("pytest_targets") != expected_targets
+                or (cell_result["passed"] and exit_result.get("completion_attested") is not True)
+                or not isinstance(cell_result.get("scoring_controls"), Mapping)
+            ):
+                raise _verification_error(f"result {task_id} lacks v4 completion/control evidence")
+        commit_rows.append(
+            {
+                "task_id": task_id,
+                "parent": str(cell_result["parent"]),
+                "merge": str(cell_result["merge"]),
+            }
+        )
         seen.add(task_id)
+        result_ids.append(task_id)
+    if result_ids != selected_ids:
+        raise _verification_error("result order does not match the selected task order")
+    if selection.get("commit_set_sha256") != _canonical_hash(commit_rows):
+        raise _verification_error("selection commit hash does not match cell commits")
     expected_summary = _summary(results)
     summary = payload.get("summary")
     if not isinstance(summary, Mapping):
@@ -1335,6 +1872,16 @@ def verify_result_payload(payload: Mapping[str, Any]) -> dict[str, Any]:
         baseline.get(key) != value for key, value in DIRECT_API_35B_BASELINE.items()
     ):
         raise _verification_error("result baseline metadata is missing or changed")
+    witness = payload.get("witness")
+    if isinstance(witness, Mapping):
+        source_hash = witness.get("source_result_sha256")
+        if not re.fullmatch(r"[0-9a-f]{64}", str(source_hash or "")):
+            raise _verification_error("witness source-result digest is invalid")
+        artifact_hash = witness.get("artifact_sha256")
+        if artifact_hash != _artifact_integrity_hash(payload):
+            raise _verification_error("witness artifact seal does not match its contents")
+        if KNOWN_WITNESS_ARTIFACTS.get(str(source_hash)) != artifact_hash:
+            raise _verification_error("witness is not a known source-result/artifact pair")
     return {
         "valid": True,
         "lambda_hash": expected_lambda,
@@ -1392,7 +1939,7 @@ def run_pilot(
     def checkpoint(completed_at: str | None = None) -> dict[str, Any]:
         updated_at = completed_at or _utc_now()
         payload = {
-            "schema_version": 2,
+            "schema_version": 3,
             "driver": DRIVER_VERSION,
             "model": config.model,
             "reasoning_effort": config.reasoning_effort,
@@ -1400,6 +1947,7 @@ def run_pilot(
             "updated_at": updated_at,
             "completed_at": completed_at,
             "selection": selection,
+            "tasks": [_task_contract(task) for task in tasks],
             "lambda_set": [expected_lambda],
             "lambda_config": fields,
             "results": results,
@@ -1424,7 +1972,7 @@ def run_pilot(
             binary_version=version,
             sandbox_version=sandbox_version,
         )
-        results.append(record)
+        results.append(_seal_result(record))
         completed_ids.add(task_id)
         checkpoint()
         result = record["cell_result"]
@@ -1466,7 +2014,13 @@ def _parser() -> argparse.ArgumentParser:
 def main(argv: Sequence[str] | None = None) -> int:
     args = _parser().parse_args(argv)
     if args.verify_result is not None:
-        raw_payload = json.loads(args.verify_result.read_text(encoding="utf-8"))
+        try:
+            raw_payload = json.loads(args.verify_result.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError) as exc:
+            raise DriverError(
+                f"cannot read result artifact {args.verify_result}: {exc}. "
+                "Next action: restore a valid pilot JSON file and rerun --verify-result."
+            ) from exc
         if not isinstance(raw_payload, Mapping):
             raise DriverError(
                 "result root is not an object. "
