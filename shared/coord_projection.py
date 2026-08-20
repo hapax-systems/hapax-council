@@ -3642,7 +3642,7 @@ def _entry_matches(state: _EntryState | None, payload: bytes | None, mode: int |
     return state.content == payload and state.mode == mode
 
 
-def _renameat2(
+def _renameat2_syscall(
     src_dir_fd: int,
     src_name: str,
     dst_dir_fd: int,
@@ -3652,10 +3652,7 @@ def _renameat2(
     libc = ctypes.CDLL(None, use_errno=True)
     function = getattr(libc, "renameat2", None)
     if function is None:
-        raise LifecycleTransitionError(
-            "transition_atomic_cas_unavailable",
-            "run lifecycle projection only on Linux with renameat2 support",
-        )
+        raise OSError(errno.ENOSYS, "renameat2 unavailable", f"{src_name}->{dst_name}")
     function.argtypes = [
         ctypes.c_int,
         ctypes.c_char_p,
@@ -3674,6 +3671,65 @@ def _renameat2(
     if result != 0:
         value = ctypes.get_errno()
         raise OSError(value, os.strerror(value), f"{src_name}->{dst_name}")
+
+
+def _renameat2_noreplace_fallback(
+    src_dir_fd: int,
+    src_name: str,
+    dst_dir_fd: int,
+    dst_name: str,
+) -> None:
+    # Atomic no-clobber: link fails with EEXIST if dst exists (verified on NFS4.2).
+    os.link(
+        src_name,
+        dst_name,
+        src_dir_fd=src_dir_fd,
+        dst_dir_fd=dst_dir_fd,
+        follow_symlinks=False,
+    )
+    os.unlink(src_name, dir_fd=src_dir_fd)
+
+
+def _renameat2_exchange_fallback(
+    src_dir_fd: int,
+    src_name: str,
+    dst_dir_fd: int,
+    dst_name: str,
+) -> None:
+    # Three-step EXCHANGE. A reader can observe dst_name absent between
+    # steps 1 and 2. Crash leaves both payloads under transaction-scoped names.
+    displaced = f".{dst_name}.exchange-displaced.{os.getpid()}.{secrets.token_hex(8)}"
+    os.rename(dst_name, displaced, src_dir_fd=src_dir_fd, dst_dir_fd=dst_dir_fd)
+    try:
+        os.rename(src_name, dst_name, src_dir_fd=src_dir_fd, dst_dir_fd=dst_dir_fd)
+    except OSError:
+        os.rename(displaced, dst_name, src_dir_fd=src_dir_fd, dst_dir_fd=dst_dir_fd)
+        raise
+    os.rename(displaced, src_name, src_dir_fd=src_dir_fd, dst_dir_fd=dst_dir_fd)
+
+
+def _renameat2(
+    src_dir_fd: int,
+    src_name: str,
+    dst_dir_fd: int,
+    dst_name: str,
+    flags: int,
+) -> None:
+    try:
+        _renameat2_syscall(src_dir_fd, src_name, dst_dir_fd, dst_name, flags)
+        return
+    except OSError as exc:
+        if exc.errno not in (errno.EINVAL, errno.ENOSYS):
+            raise
+        if src_dir_fd != dst_dir_fd:
+            raise
+        if flags == _RENAME_NOREPLACE:
+            _renameat2_noreplace_fallback(src_dir_fd, src_name, dst_dir_fd, dst_name)
+            return
+        if flags == _RENAME_EXCHANGE:
+            _renameat2_exchange_fallback(src_dir_fd, src_name, dst_dir_fd, dst_name)
+            return
+        raise
 
 
 def _write_scratch(dir_fd: int, name: str, payload: bytes, mode: int) -> _EntryState:

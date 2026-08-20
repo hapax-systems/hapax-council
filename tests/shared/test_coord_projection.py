@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import dataclasses
+import errno
 import hashlib
 import json
 import os
@@ -3232,3 +3233,185 @@ def test_read_only_fs_snapshot_refuses_unbounded_root_observation() -> None:
             snapshot.pin_absolute_dir(Path("/"), private_final=False)
 
     assert raised.value.reason_code == "fs_snapshot_root_observation_forbidden"
+
+
+_ORIGINAL_RENAMEAT2_SYSCALL = cp._renameat2_syscall
+
+
+def _einval_same_dir_syscall(
+    src_dir_fd: int,
+    src_name: str,
+    dst_dir_fd: int,
+    dst_name: str,
+    flags: int,
+) -> None:
+    # Journal promotion is a cross-directory directory rename on local disk.
+    # Inject EINVAL only for same-directory CAS, which is the NFS vault case.
+    if src_dir_fd != dst_dir_fd:
+        _ORIGINAL_RENAMEAT2_SYSCALL(src_dir_fd, src_name, dst_dir_fd, dst_name, flags)
+        return
+    raise OSError(errno.EINVAL, "Invalid argument", f"{src_name}->{dst_name}")
+
+
+def test_einval_fallback_update_commits(tmp_path: Path) -> None:
+    log = _log(tmp_path)
+    note = tmp_path / "vault" / "task-1.md"
+    note.parent.mkdir()
+    note.write_bytes(b"stage: S6\n")
+    projection = cp.FileProjection.capture(note, after=b"stage: S7\n")
+    with mock.patch.object(cp, "_renameat2_syscall", side_effect=_einval_same_dir_syscall):
+        cp.execute_lifecycle_transition(
+            event_log=log,
+            intent=_intent(),
+            projections=[projection],
+            transaction_root=tmp_path / "transactions",
+            lock_root=tmp_path / "locks",
+            timestamp="2026-07-11T15:00:00Z",
+        )
+    assert note.read_bytes() == b"stage: S7\n"
+
+
+def test_einval_fallback_create_commits(tmp_path: Path) -> None:
+    log = _log(tmp_path)
+    note = tmp_path / "vault" / "task-1.md"
+    note.parent.mkdir()
+    projection = cp.FileProjection.capture(note, after=b"created\n")
+    with mock.patch.object(cp, "_renameat2_syscall", side_effect=_einval_same_dir_syscall):
+        cp.execute_lifecycle_transition(
+            event_log=log,
+            intent=_intent(),
+            projections=[projection],
+            transaction_root=tmp_path / "transactions",
+            lock_root=tmp_path / "locks",
+            timestamp="2026-07-11T15:00:00Z",
+        )
+    assert note.read_bytes() == b"created\n"
+
+
+def test_einval_fallback_create_racing_eexist_is_precondition(tmp_path: Path) -> None:
+    log = _log(tmp_path)
+    note = tmp_path / "vault" / "task-1.md"
+    note.parent.mkdir()
+    projection = cp.FileProjection.capture(note, after=b"created by transition\n")
+    raced = False
+    original_link = os.link
+
+    def race_link(src: str, dst: str, **kwargs: object) -> None:
+        nonlocal raced
+        if not raced and kwargs.get("dst_dir_fd") is not None:
+            raced = True
+            note.write_bytes(b"racer\n")
+        original_link(src, dst, **kwargs)
+
+    with (
+        mock.patch.object(cp, "_renameat2_syscall", side_effect=_einval_same_dir_syscall),
+        mock.patch("os.link", side_effect=race_link),
+    ):
+        with pytest.raises(cp.LifecycleTransitionError, match="precondition_changed"):
+            cp.execute_lifecycle_transition(
+                event_log=log,
+                intent=_intent(),
+                projections=[projection],
+                transaction_root=tmp_path / "transactions",
+                lock_root=tmp_path / "locks",
+                timestamp="2026-07-11T15:00:00Z",
+            )
+    assert note.read_bytes() == b"racer\n"
+
+
+def test_einval_fallback_delete_commits(tmp_path: Path) -> None:
+    log = _log(tmp_path)
+    note = tmp_path / "vault" / "task-1.md"
+    note.parent.mkdir()
+    note.write_bytes(b"gone-soon\n")
+    projection = cp.FileProjection.capture(note, after=None)
+    with mock.patch.object(cp, "_renameat2_syscall", side_effect=_einval_same_dir_syscall):
+        cp.execute_lifecycle_transition(
+            event_log=log,
+            intent=_intent(),
+            projections=[projection],
+            transaction_root=tmp_path / "transactions",
+            lock_root=tmp_path / "locks",
+            timestamp="2026-07-11T15:00:00Z",
+        )
+    assert not note.exists()
+
+
+def test_einval_fallback_rollback_restores_preimage(tmp_path: Path) -> None:
+    log = _log(tmp_path)
+    note = tmp_path / "vault" / "task-1.md"
+    note.parent.mkdir()
+    note.write_bytes(b"stage: S6\n")
+    projection = cp.FileProjection.capture(note, after=b"stage: S7\n")
+
+    def crash(phase: str, index: int | None) -> None:
+        if phase == "after_projection":
+            raise RuntimeError("boom")
+
+    with mock.patch.object(cp, "_renameat2_syscall", side_effect=_einval_same_dir_syscall):
+        with pytest.raises(RuntimeError, match="boom"):
+            cp.execute_lifecycle_transition(
+                event_log=log,
+                intent=_intent(),
+                projections=[projection],
+                transaction_root=tmp_path / "transactions",
+                lock_root=tmp_path / "locks",
+                timestamp="2026-07-11T15:00:00Z",
+                failure_hook=crash,
+            )
+    assert note.read_bytes() == b"stage: S6\n"
+
+
+def test_renameat2_non_einval_still_raises(tmp_path: Path) -> None:
+    def eperm_syscall(*_args: object, **_kwargs: object) -> None:
+        raise OSError(errno.EPERM, "Operation not permitted")
+
+    src = tmp_path / "a"
+    dst = tmp_path / "b"
+    src.write_bytes(b"x")
+    dst.write_bytes(b"y")
+    fd = os.open(tmp_path, os.O_RDONLY | os.O_DIRECTORY)
+    try:
+        with mock.patch.object(cp, "_renameat2_syscall", side_effect=eperm_syscall):
+            with pytest.raises(OSError) as raised:
+                cp._renameat2(fd, "a", fd, "b", cp._RENAME_EXCHANGE)
+        assert raised.value.errno == errno.EPERM
+        assert src.read_bytes() == b"x"
+        assert dst.read_bytes() == b"y"
+    finally:
+        os.close(fd)
+
+
+def test_einval_fallback_on_vault_nfs_mount(tmp_path: Path) -> None:
+    vault = Path.home() / "Documents/Personal/20-projects/hapax-cc-tasks"
+    if not vault.is_dir():
+        pytest.skip("vault mount absent")
+    probe = subprocess.run(
+        ["findmnt", "-n", "-o", "FSTYPE", "-T", str(vault)],
+        check=False,
+        capture_output=True,
+        text=True,
+    )
+    if "nfs" not in probe.stdout.lower():
+        pytest.skip("vault is not NFS")
+    root = vault / f".coord-nfs-probe-{os.getpid()}"
+    root.mkdir()
+    try:
+        log = _log(tmp_path)
+        note = root / "task-1.md"
+        note.write_bytes(b"stage: S6\n")
+        projection = cp.FileProjection.capture(note, after=b"stage: S7\n")
+        cp.execute_lifecycle_transition(
+            event_log=log,
+            intent=_intent(),
+            projections=[projection],
+            transaction_root=tmp_path / "transactions",
+            lock_root=tmp_path / "locks",
+            timestamp="2026-07-11T15:00:00Z",
+        )
+        assert note.read_bytes() == b"stage: S7\n"
+    finally:
+        note = root / "task-1.md"
+        if note.exists():
+            note.unlink()
+        root.rmdir()
