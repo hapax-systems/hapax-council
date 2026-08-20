@@ -13,6 +13,40 @@ import pytest
 from eval.meas import driver_codex_cli as driver
 
 
+def _bubblewrap_usable() -> bool:
+    binary = shutil.which("bwrap")
+    if not binary:
+        return False
+    try:
+        result = subprocess.run(
+            [
+                binary,
+                "--unshare-all",
+                "--unshare-user",
+                "--disable-userns",
+                "--new-session",
+                "--ro-bind",
+                "/",
+                "/",
+                "--",
+                "/usr/bin/true",
+            ],
+            capture_output=True,
+            text=True,
+            timeout=10,
+            check=False,
+        )
+    except (OSError, subprocess.SubprocessError):
+        return False
+    return result.returncode == 0
+
+
+requires_bubblewrap = pytest.mark.skipif(
+    not _bubblewrap_usable(),
+    reason="Bubblewrap user namespaces are unavailable on this test host",
+)
+
+
 def _git(repo: Path, *args: str) -> str:
     result = subprocess.run(
         ["git", "-C", str(repo), *args],
@@ -50,6 +84,9 @@ def _source_repo(tmp_path: Path) -> tuple[Path, driver.CommitPair]:
     (tests / "test_module.py").write_text(
         "from module import VALUE\n\ndef test_value():\n    assert VALUE == 0\n",
         encoding="utf-8",
+    )
+    (repo / "pyproject.toml").write_text(
+        '[tool.pytest.ini_options]\npythonpath = ["."]\n', encoding="utf-8"
     )
     parent = _commit(repo, "parent")
     (repo / "module.py").write_text("VALUE = 1\n", encoding="utf-8")
@@ -92,17 +129,9 @@ def test_command_uses_current_workspace_write_surface() -> None:
     assert command[-1] == "-"
 
 
-def test_legacy_full_auto_is_explicit_and_lambda_visible() -> None:
-    config = driver.CodexRunConfig(legacy_full_auto=True)
-    command = driver.build_codex_command(config, Path("/cell"))
-    assert "--full-auto" in command
-    assert "--sandbox" not in command
-    assert (
-        driver.lambda_config(config, "codex-cli test", "bubblewrap test")["tool_surface_config"][
-            "legacy_full_auto"
-        ]
-        is True
-    )
+def test_removed_legacy_full_auto_flag_is_rejected() -> None:
+    with pytest.raises(SystemExit):
+        driver._parser().parse_args(["--legacy-full-auto"])
 
 
 def test_lambda_records_both_timeouts_and_predicate_sandbox() -> None:
@@ -118,6 +147,8 @@ def test_lambda_records_both_timeouts_and_predicate_sandbox() -> None:
         "sandbox_version": "bubblewrap 1.2",
         "timeout_seconds": driver.PREDICATE_TIMEOUT_SECONDS,
     }
+    assert surface["post_agent_git"]["sandbox"] == "bubblewrap"
+    assert surface["scoring_diff_excludes"] == list(driver.SCORING_DIFF_EXCLUDES)
 
 
 def test_prepare_checkout_excludes_post_parent_history(tmp_path: Path) -> None:
@@ -183,6 +214,7 @@ def test_merge_test_install_rejects_hardlinked_destination(tmp_path: Path) -> No
     assert outside.read_text(encoding="utf-8") == "outside stays unchanged\n"
 
 
+@requires_bubblewrap
 def test_exit_predicate_isolated_from_environment_and_host_paths(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -211,14 +243,12 @@ def test_exit_predicate_isolated_from_environment_and_host_paths(
     assert outside.read_text(encoding="utf-8") == "not visible\n"
 
 
+@requires_bubblewrap
 def test_sandboxed_pytest_predicate_uses_read_only_uv_environment(tmp_path: Path) -> None:
     repo, commits = _source_repo(tmp_path)
     cell = tmp_path / "cell"
     driver.prepare_cell_checkout(repo, commits.parent, cell)
     (cell / "module.py").write_text("VALUE = 1\n", encoding="utf-8")
-    (cell / "pyproject.toml").write_text(
-        '[tool.pytest.ini_options]\npythonpath = ["."]\n', encoding="utf-8"
-    )
     driver.install_merge_version_tests(repo, cell, commits)
 
     result = driver.evaluate_exit(_task(), cell, repo)
@@ -228,6 +258,7 @@ def test_sandboxed_pytest_predicate_uses_read_only_uv_environment(tmp_path: Path
     assert "1 passed" in result["output_tail"]
 
 
+@requires_bubblewrap
 def test_exit_predicate_timeout_preserves_bytes_output(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -247,6 +278,7 @@ def test_exit_predicate_timeout_preserves_bytes_output(
     assert "partial stdout" in result["output_tail"]
 
 
+@requires_bubblewrap
 def test_driver_captures_mocked_exec_transcript_and_diff(tmp_path: Path) -> None:
     repo, commits = _source_repo(tmp_path)
     cell = tmp_path / "cell"
@@ -277,6 +309,7 @@ def test_driver_captures_mocked_exec_transcript_and_diff(tmp_path: Path) -> None
     assert "Fix the implementation, not the tests" in observed["input"]
 
 
+@requires_bubblewrap
 def test_driver_timeout_preserves_partial_bytes(tmp_path: Path) -> None:
     repo, commits = _source_repo(tmp_path)
     cell = tmp_path / "cell"
@@ -302,6 +335,25 @@ def test_driver_timeout_preserves_partial_bytes(tmp_path: Path) -> None:
     assert outcome["transcript"]["stderr"] == "deadline\n"
 
 
+@requires_bubblewrap
+def test_post_agent_git_disables_model_controlled_executables(tmp_path: Path) -> None:
+    repo, commits = _source_repo(tmp_path)
+    cell = tmp_path / "cell"
+    driver.prepare_cell_checkout(repo, commits.parent, cell)
+    probe = cell / "model-git-probe.sh"
+    probe.write_text("#!/bin/sh\ntouch model-git-executed\nexit 0\n", encoding="utf-8")
+    probe.chmod(0o755)
+    _git(cell, "config", "core.fsmonitor", "./model-git-probe.sh")
+    _git(cell, "config", "diff.external", "./model-git-probe.sh")
+    (cell / "module.py").write_text("VALUE = 1\n", encoding="utf-8")
+
+    record = driver.capture_cell_diff(cell, commits.parent)
+
+    assert "+VALUE = 1" in record["diff"]
+    assert not (cell / "model-git-executed").exists()
+
+
+@requires_bubblewrap
 def test_run_cell_installs_merge_tests_after_executor(tmp_path: Path) -> None:
     repo, commits = _source_repo(tmp_path)
     saw_parent_test = False
@@ -314,7 +366,7 @@ def test_run_cell_installs_merge_tests_after_executor(tmp_path: Path) -> None:
         nonlocal saw_parent_test
         saw_parent_test = "VALUE == 0" in (workdir / "tests/test_module.py").read_text()
         (workdir / "module.py").write_text("VALUE = 1\n", encoding="utf-8")
-        diff = "module diff"
+        diff_record = driver.capture_cell_diff(workdir, commits.parent)
         return {
             "model": config.model,
             "harness": driver.HARNESS_NAME,
@@ -322,10 +374,7 @@ def test_run_cell_installs_merge_tests_after_executor(tmp_path: Path) -> None:
             "wh_milli": None,
             "transcript_ref": None,
             "transcript": {"returncode": 0, "stdout": "{}\n", "stderr": ""},
-            "diff": diff,
-            "diff_bytes": len(diff),
-            "diff_sha256": hashlib.sha256(diff.encode()).hexdigest(),
-            "git_status": [" M module.py"],
+            **diff_record,
         }
 
     def fake_evaluator(
@@ -352,6 +401,46 @@ def test_run_cell_installs_merge_tests_after_executor(tmp_path: Path) -> None:
     assert record["cell_result"]["predicate_files"] == ["tests/test_module.py"]
     assert record["lambda_hash"] == driver.lambda_hash(record["lambda_config"])
     assert record["cell"]["transcript"]["stdout"] == "{}\n"
+
+
+@requires_bubblewrap
+def test_run_cell_excludes_model_controlled_pytest_hooks_from_scoring(tmp_path: Path) -> None:
+    repo, commits = _source_repo(tmp_path)
+
+    def adversarial_executor(
+        task: driver.Mapping[str, Any],
+        workdir: Path,
+        config: driver.CodexRunConfig,
+    ) -> dict[str, Any]:
+        (workdir / "conftest.py").write_text(
+            "def pytest_sessionfinish(session):\n    session.exitstatus = 0\n",
+            encoding="utf-8",
+        )
+        (workdir / "tests/test_module.py").write_text(
+            "def test_forged():\n    assert True\n", encoding="utf-8"
+        )
+        diff_record = driver.capture_cell_diff(workdir, commits.parent)
+        return {
+            "model": config.model,
+            "harness": driver.HARNESS_NAME,
+            "seconds": 0.1,
+            "transcript": {"returncode": 0, "timed_out": False},
+            **diff_record,
+        }
+
+    record = driver.run_cell(
+        _task(),
+        repo=repo,
+        commits=commits,
+        executor=adversarial_executor,
+        binary_version="codex-cli test",
+        sandbox_version="bubblewrap test",
+    )
+
+    assert record["cell_result"]["passed"] is False
+    assert record["cell_result"]["exit"]["returncode"] == 1
+    assert "conftest.py" in record["cell"]["diff"]
+    assert "conftest.py" in record["cell_result"]["scoring_diff_excludes"]
 
 
 def test_run_cell_cannot_pass_after_codex_timeout(tmp_path: Path) -> None:
@@ -407,12 +496,14 @@ def test_result_note_names_measured_baseline() -> None:
         "completed_at": "2026-08-20T00:00:00Z",
         "model": "gpt-5.6-sol",
         "lambda_set": ["a" * 64],
+        "lambda_config": {"tool_surface_config": {"sandbox": "recorded-sandbox"}},
         "summary": {"passed": 7, "total": 19, "pass_rate": 7 / 19},
     }
     note = driver.render_result_note(payload)
     assert "7/19 (36.8%)" in note
     assert "0/19 (0.0%)" in note
     assert "provider-managed" in note
+    assert "`recorded-sandbox` sandbox" in note
 
 
 def test_partial_result_note_does_not_claim_baseline_comparison() -> None:
@@ -426,6 +517,25 @@ def test_partial_result_note_does_not_claim_baseline_comparison() -> None:
     assert "not directly comparable" in note
     assert "versus 0 of 19" not in note
     assert "--verify-result pilot-result.json" in note
+
+
+def test_current_result_note_names_clean_scoring_boundary() -> None:
+    payload = {
+        "updated_at": "2026-08-20T00:00:00Z",
+        "model": "gpt-5.6-sol",
+        "lambda_set": ["b" * 64],
+        "lambda_config": {
+            "tool_surface_config": {
+                "sandbox": "workspace-write",
+                "exit_predicate": {"sandbox": "bubblewrap"},
+                "scoring_diff_excludes": ["tests/**"],
+            }
+        },
+        "summary": driver._summary([]),
+    }
+    note = driver.render_result_note(payload)
+    assert "clean scoring checkouts" in note
+    assert "post-exec diff inside Bubblewrap" in note
 
 
 def _pilot_cell_runner(**kwargs: Any) -> dict[str, Any]:
@@ -556,6 +666,7 @@ def test_committed_pilot_witness_rechecks_11_of_19() -> None:
         "1991e186b3699fa87667ac09963ef542ac3587dadc5b7e31be49afa3a9c2f03c"
     )
     assert len(witness["selection"]["task_ids"]) == 19
+    assert [task["task_id"] for task in witness["tasks"]] == witness["selection"]["task_ids"]
     assert "cell.transcript.stdout" in witness["witness"]["redactions"]
 
 
@@ -564,3 +675,8 @@ def test_load_tasks_rejects_non_object_rows(tmp_path: Path) -> None:
     tasks.write_text(json.dumps(["not", "an", "object"]) + "\n", encoding="utf-8")
     with pytest.raises(driver.DriverError, match="not an object"):
         driver.load_tasks(tasks)
+
+
+def test_load_tasks_missing_path_has_next_action(tmp_path: Path) -> None:
+    with pytest.raises(driver.DriverError, match=r"Next action: pass --tasks"):
+        driver.load_tasks(tmp_path / "missing.jsonl")

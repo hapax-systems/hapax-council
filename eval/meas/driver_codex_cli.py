@@ -1,11 +1,12 @@
 #!/usr/bin/env python3
 """Codex CLI driver for the MEAS Tier-0 agentic-harness facet.
 
-Each measured cell gets an isolated, shallow Git checkout at the task PR's
-parent commit. Codex edits that checkout non-interactively. The driver captures
-the complete JSONL transcript and post-exec diff, installs the merge-version
-tests only after Codex exits, runs the deterministic exit predicate, and emits
-a complete lambda configuration plus its content hash in every cell record.
+Each measured cell gets isolated agent and scoring checkouts at the task PR's
+parent commit. Codex edits the first checkout non-interactively. The driver
+captures the complete JSONL transcript and post-exec diff in a sandbox, applies
+solution-bearing paths to the clean scoring checkout, installs merge-version
+tests only after Codex exits, runs the deterministic predicate in Bubblewrap,
+and emits a complete lambda configuration plus its content hash per cell.
 """
 
 from __future__ import annotations
@@ -46,8 +47,20 @@ DEFAULT_TIMEOUT_SECONDS = 900
 PREDICATE_TIMEOUT_SECONDS = 600
 GITHUB_REPO = "hapax-systems/hapax-council"
 HARNESS_NAME = "codex-cli-agentic"
-DRIVER_VERSION = "driver_codex_cli/v2"
+DRIVER_VERSION = "driver_codex_cli/v3"
 DIRECT_API_35B_BASELINE = {"passed": 0, "total": 19, "pass_rate": 0.0}
+SCORING_DIFF_EXCLUDES = (
+    "tests/**",
+    "**/conftest.py",
+    "conftest.py",
+    "pyproject.toml",
+    "pytest.ini",
+    "setup.cfg",
+    "tox.ini",
+    "sitecustomize.py",
+    "usercustomize.py",
+    "pytest.py",
+)
 
 LAMBDA_KEYS = (
     "model_weights_sha256",
@@ -115,7 +128,6 @@ class CodexRunConfig:
     model: str = DEFAULT_MODEL
     reasoning_effort: str = DEFAULT_REASONING_EFFORT
     timeout_seconds: int = DEFAULT_TIMEOUT_SECONDS
-    legacy_full_auto: bool = False
 
 
 CompletedTextProcess = subprocess.CompletedProcess[str]
@@ -176,7 +188,14 @@ def _checked_stdout(
 def load_tasks(tasks_path: Path = DEFAULT_TASKS) -> list[dict[str, Any]]:
     """Load the JSONL task set without accepting malformed non-object rows."""
     tasks: list[dict[str, Any]] = []
-    for line_number, line in enumerate(tasks_path.read_text(encoding="utf-8").splitlines(), 1):
+    try:
+        lines = tasks_path.read_text(encoding="utf-8").splitlines()
+    except OSError as exc:
+        raise DriverError(
+            f"cannot read task set {tasks_path}: {exc}. "
+            "Next action: pass --tasks with the governed tasks-v2.jsonl path."
+        ) from exc
+    for line_number, line in enumerate(lines, 1):
         if not line.strip():
             continue
         row = json.loads(line)
@@ -453,12 +472,14 @@ def predicate_sandbox_version() -> str:
     return result.stdout.strip()
 
 
-def _predicate_sandbox_command(
-    task: Mapping[str, Any],
+def _cell_sandbox_command(
+    inner_command: Sequence[str],
     workdir: Path,
     repo: Path,
+    *,
+    extra_environment: Mapping[str, str] | None = None,
 ) -> list[str]:
-    """Build a no-network, clear-environment predicate sandbox command."""
+    """Build a no-network, clear-environment command for post-agent work."""
     bubblewrap = _predicate_sandbox_binary()
     uv_binary = shutil.which("uv")
     if not uv_binary:
@@ -548,13 +569,28 @@ def _predicate_sandbox_command(
             "--setenv",
             "NO_COLOR",
             "1",
-            "--chdir",
-            "/workspace",
-            "--",
-            *exit_predicate_command(task),
         ]
     )
+    for name, value in (extra_environment or {}).items():
+        command.extend(["--setenv", name, value])
+    command.extend(["--chdir", "/workspace", "--", *inner_command])
     return command
+
+
+def _predicate_sandbox_command(
+    task: Mapping[str, Any],
+    workdir: Path,
+    repo: Path,
+) -> list[str]:
+    return _cell_sandbox_command(
+        exit_predicate_command(task),
+        workdir,
+        repo,
+        extra_environment={
+            "PYTEST_DISABLE_PLUGIN_AUTOLOAD": "1",
+            "PYTEST_ADDOPTS": "",
+        },
+    )
 
 
 def evaluate_exit(
@@ -629,10 +665,7 @@ def build_codex_command(config: CodexRunConfig, workdir: Path) -> list[str]:
         "-c",
         'web_search="disabled"',
     ]
-    if config.legacy_full_auto:
-        command.append("--full-auto")
-    else:
-        command.extend(["--sandbox", "workspace-write"])
+    command.extend(["--sandbox", "workspace-write"])
     command.append("-")
     return command
 
@@ -657,19 +690,101 @@ def _codex_environment() -> dict[str, str]:
     return environment
 
 
-def capture_cell_diff(workdir: Path, baseline: str) -> dict[str, Any]:
-    """Capture tracked, committed, deleted, and untracked model changes."""
-    intent = _run_text(["git", "-C", str(workdir), "add", "--intent-to-add", "--all"])
-    if intent.returncode != 0:
-        raise DriverError(
-            f"cannot stage intent-to-add entries: {intent.stderr.strip()[-500:]}. "
-            "Next action: discard the damaged cell checkout and rerun it."
-        )
-    diff = _checked_stdout(
-        ["git", "-C", str(workdir), "diff", "--binary", "--no-ext-diff", baseline, "--"],
-        timeout=300,
+def _post_agent_git_command(*arguments: str) -> list[str]:
+    """Build Git with executable config surfaces pinned off."""
+    return [
+        "git",
+        "-c",
+        "core.fsmonitor=false",
+        "-c",
+        "core.hooksPath=/dev/null",
+        "-c",
+        "diff.external=",
+        "-c",
+        "pager.status=false",
+        *arguments,
+    ]
+
+
+def _run_post_agent_command(
+    command: Sequence[str],
+    *,
+    workdir: Path,
+    input_text: str | None = None,
+    timeout: int = 300,
+) -> CompletedTextProcess:
+    """Run a post-agent command without host env, network, or filesystem access."""
+    sandbox_command = _cell_sandbox_command(
+        command,
+        workdir,
+        DEFAULT_REPO,
+        extra_environment={
+            "GIT_CONFIG_NOSYSTEM": "1",
+            "GIT_CONFIG_GLOBAL": "/dev/null",
+            "GIT_PAGER": "cat",
+            "GIT_OPTIONAL_LOCKS": "0",
+        },
     )
-    status = _checked_stdout(["git", "-C", str(workdir), "status", "--short"])
+    try:
+        return subprocess.run(
+            sandbox_command,
+            input=input_text,
+            capture_output=True,
+            text=True,
+            timeout=timeout,
+            check=False,
+        )
+    except subprocess.TimeoutExpired as exc:
+        raise DriverError(
+            f"post-agent command timed out after {timeout}s: {' '.join(command)}. "
+            "Next action: discard the cell and inspect its diff for pathological files."
+        ) from exc
+    except OSError as exc:
+        raise DriverError(
+            f"cannot execute the post-agent sandbox: {exc}. "
+            "Next action: repair bwrap and rerun; no host-side fallback is allowed."
+        ) from exc
+
+
+def _checked_post_agent_stdout(
+    command: Sequence[str],
+    *,
+    workdir: Path,
+    input_text: str | None = None,
+    timeout: int = 300,
+    strip: bool = True,
+) -> str:
+    result = _run_post_agent_command(
+        command,
+        workdir=workdir,
+        input_text=input_text,
+        timeout=timeout,
+    )
+    if result.returncode != 0:
+        detail = (result.stderr or result.stdout).strip()[-800:]
+        raise DriverError(
+            f"sandboxed post-agent command failed ({result.returncode}): "
+            f"{' '.join(command)}: {detail}. "
+            "Next action: discard the cell and inspect the captured transcript."
+        )
+    return result.stdout.strip() if strip else result.stdout
+
+
+def capture_cell_diff(workdir: Path, baseline: str) -> dict[str, Any]:
+    """Capture model changes with all Git operations confined to the cell sandbox."""
+    _checked_post_agent_stdout(
+        _post_agent_git_command("add", "--intent-to-add", "--all"),
+        workdir=workdir,
+    )
+    diff = _checked_post_agent_stdout(
+        _post_agent_git_command("diff", "--binary", "--no-ext-diff", baseline, "--"),
+        workdir=workdir,
+        strip=False,
+    )
+    status = _checked_post_agent_stdout(
+        _post_agent_git_command("status", "--short", "--no-ahead-behind"),
+        workdir=workdir,
+    )
     return {
         "diff": diff,
         "diff_bytes": len(diff.encode()),
@@ -712,7 +827,11 @@ def driver(
         returncode = 124
         stdout = _coerce_text(exc.stdout)
         stderr = _coerce_text(exc.stderr)
-        error = f"codex exec timed out after {config.timeout_seconds}s"
+        error = (
+            f"codex exec timed out after {config.timeout_seconds}s. "
+            "Next action: inspect the partial transcript/diff and retain the cell as a failure "
+            "or rerun it under a newly hashed timeout configuration."
+        )
     except OSError as exc:
         returncode = 127
         stdout = ""
@@ -771,9 +890,9 @@ def lambda_config(
             "approval_policy": "never",
             "ephemeral": True,
             "exec_output": "jsonl",
-            "legacy_full_auto": config.legacy_full_auto,
+            "legacy_full_auto": False,
             "mcp": "disabled-by-ignore-user-config",
-            "sandbox": "full-auto-compat" if config.legacy_full_auto else "workspace-write",
+            "sandbox": "workspace-write",
             "codex_timeout_seconds": config.timeout_seconds,
             "exit_predicate": {
                 "environment": "cleared",
@@ -782,11 +901,18 @@ def lambda_config(
                 "sandbox_version": sandbox_version,
                 "timeout_seconds": PREDICATE_TIMEOUT_SECONDS,
             },
+            "post_agent_git": {
+                "environment": "cleared",
+                "executable_config": "disabled",
+                "network": "unshared",
+                "sandbox": "bubblewrap",
+            },
+            "scoring_diff_excludes": list(SCORING_DIFF_EXCLUDES),
             "user_config": "ignored",
             "uv_environment": "driver-interpreter-no-sync",
             "web_search": "disabled",
         },
-        "context_mode": "agentic-parent-checkout+merge-tests-post-exec",
+        "context_mode": "agentic-parent-checkout+clean-score-checkout+merge-tests-post-exec",
     }
 
 
@@ -799,6 +925,24 @@ def lambda_hash(fields: Mapping[str, Any]) -> str:
         )
     canonical = json.dumps(dict(fields), sort_keys=True, separators=(",", ":"))
     return hashlib.sha256(canonical.encode()).hexdigest()
+
+
+def apply_agent_diff_for_scoring(workdir: Path, diff: str) -> None:
+    """Apply only solution-bearing model changes to a clean scoring checkout."""
+    if not diff.strip():
+        return
+    command = _post_agent_git_command(
+        "apply",
+        "--binary",
+        "--whitespace=nowarn",
+        *(f"--exclude={pattern}" for pattern in SCORING_DIFF_EXCLUDES),
+        "-",
+    )
+    _checked_post_agent_stdout(
+        command,
+        workdir=workdir,
+        input_text=diff,
+    )
 
 
 def run_cell(
@@ -824,11 +968,16 @@ def run_cell(
         )
 
     with tempfile.TemporaryDirectory(prefix="meas-codex-cell-") as raw_workdir:
-        workdir = Path(raw_workdir)
-        prepare_cell_checkout(repo, commits.parent, workdir)
-        outcome = executor(task=task, workdir=workdir, config=config)
-        predicate_files = install_merge_version_tests(repo, workdir, commits)
-        exit_result = evaluator(task, workdir, repo)
+        agent_workdir = Path(raw_workdir)
+        prepare_cell_checkout(repo, commits.parent, agent_workdir)
+        outcome = executor(task=task, workdir=agent_workdir, config=config)
+        agent_diff = str(outcome.get("diff") or "")
+        with tempfile.TemporaryDirectory(prefix="meas-codex-score-") as raw_scoring_workdir:
+            scoring_workdir = Path(raw_scoring_workdir)
+            prepare_cell_checkout(repo, commits.parent, scoring_workdir)
+            apply_agent_diff_for_scoring(scoring_workdir, agent_diff)
+            predicate_files = install_merge_version_tests(repo, scoring_workdir, commits)
+            exit_result = evaluator(task, scoring_workdir, repo)
 
     cell = {
         "model": outcome.get("model", config.model),
@@ -858,6 +1007,7 @@ def run_cell(
             "parent": commits.parent,
             "merge": commits.merge,
             "predicate_files": predicate_files,
+            "scoring_diff_excludes": list(SCORING_DIFF_EXCLUDES),
             "passed": passed,
             "exit": exit_result,
             "codex_returncode": codex_returncode,
@@ -981,15 +1131,30 @@ def render_result_note(
             f"with the {baseline.get('total')}-cell direct-API baseline."
         )
     recheck_target = result_path.name if result_path is not None else "pilot-result.json"
-    predicate_surface = (
-        payload.get("lambda_config", {}).get("tool_surface_config", {}).get("exit_predicate", {})
-    )
+    tool_surface = payload.get("lambda_config", {}).get("tool_surface_config", {})
+    predicate_surface = tool_surface.get("exit_predicate", {})
+    codex_sandbox = tool_surface.get("sandbox", "unknown")
     predicate_boundary = (
         "The deterministic predicate ran in Bubblewrap with a cleared environment and "
         "an unshared network namespace."
         if predicate_surface
         else "This legacy result predates recorded predicate-sandbox metadata."
     )
+    if tool_surface.get("scoring_diff_excludes"):
+        checkout_boundary = (
+            "Each cell used isolated agent and clean scoring checkouts at the authoritative "
+            f"PR parent. Codex edited under the `{codex_sandbox}` sandbox with user config, "
+            "MCP, and web search disabled. The harness captured JSONL stdout/stderr and the "
+            "post-exec diff inside Bubblewrap, applied only solution-bearing paths to the "
+            "scoring checkout, then installed merge-version tests through no-follow file "
+            "descriptors."
+        )
+    else:
+        checkout_boundary = (
+            "This legacy result used one isolated shallow checkout at the authoritative PR "
+            f"parent. Codex edited under the recorded `{codex_sandbox}` sandbox; clean "
+            "scoring-checkout isolation was not part of that historical λ."
+        )
     return f"""# MEAS Tier-0 Codex CLI pilot
 
 - Completed: {completed}
@@ -1005,10 +1170,7 @@ it does not isolate model quality from harness effects.
 
 ## Measurement boundary
 
-Each cell used an isolated shallow checkout at the authoritative PR parent. Codex
-edited under the workspace-write sandbox with user config, MCP, and web search
-disabled. The harness captured JSONL stdout/stderr and the post-exec diff, then
-installed merge-version tests through no-follow file descriptors. {predicate_boundary}
+{checkout_boundary} {predicate_boundary}
 The proprietary model's weight hash and serving quantization are not published; those
 λ fields say `provider-managed` rather than pretending a weights digest exists.
 
@@ -1123,6 +1285,13 @@ def _validated_resume_results(
     return results
 
 
+def _verification_error(detail: str) -> DriverError:
+    return DriverError(
+        f"{detail}. Next action: restore the original pilot artifact and rerun "
+        "--verify-result before relying on it."
+    )
+
+
 def verify_result_payload(payload: Mapping[str, Any]) -> dict[str, Any]:
     """Recompute the durable λ and aggregate result invariants."""
     fields = payload.get("lambda_config")
@@ -1141,31 +1310,31 @@ def verify_result_payload(payload: Mapping[str, Any]) -> dict[str, Any]:
     seen: set[str] = set()
     for result in results:
         if not isinstance(result, Mapping):
-            raise DriverError("result row is not an object; do not use this artifact")
+            raise _verification_error("result row is not an object")
         task_id = str(result.get("task_id") or "")
         if not task_id or task_id in seen:
-            raise DriverError("result task IDs are missing or duplicated; do not use this artifact")
+            raise _verification_error("result task IDs are missing or duplicated")
         if result.get("lambda_hash") != expected_lambda:
-            raise DriverError(f"result {task_id} has a mismatched λ hash; do not use it")
+            raise _verification_error(f"result {task_id} has a mismatched λ hash")
         cell_result = result.get("cell_result")
         if not isinstance(cell_result, Mapping) or not isinstance(cell_result.get("passed"), bool):
-            raise DriverError(f"result {task_id} has no Boolean pass outcome; do not use it")
+            raise _verification_error(f"result {task_id} has no Boolean pass outcome")
         for commit_key in ("parent", "merge"):
             if not re.fullmatch(r"[0-9a-f]{40}", str(cell_result.get(commit_key) or "")):
-                raise DriverError(f"result {task_id} has an invalid {commit_key} commit")
+                raise _verification_error(f"result {task_id} has an invalid {commit_key} commit")
         seen.add(task_id)
     expected_summary = _summary(results)
     summary = payload.get("summary")
     if not isinstance(summary, Mapping):
-        raise DriverError("result has no summary; do not use this artifact")
+        raise _verification_error("result has no summary")
     for key in ("passed", "total", "pass_rate"):
         if summary.get(key) != expected_summary[key]:
-            raise DriverError(f"summary {key} does not match the cell results")
+            raise _verification_error(f"summary {key} does not match the cell results")
     baseline = summary.get("direct_api_35b_baseline")
     if not isinstance(baseline, Mapping) or any(
         baseline.get(key) != value for key, value in DIRECT_API_35B_BASELINE.items()
     ):
-        raise DriverError("result baseline metadata is missing or changed")
+        raise _verification_error("result baseline metadata is missing or changed")
     return {
         "valid": True,
         "lambda_hash": expected_lambda,
@@ -1291,11 +1460,6 @@ def _parser() -> argparse.ArgumentParser:
     parser.add_argument("--model", default=DEFAULT_MODEL)
     parser.add_argument("--reasoning-effort", default=DEFAULT_REASONING_EFFORT)
     parser.add_argument("--timeout-seconds", type=int, default=DEFAULT_TIMEOUT_SECONDS)
-    parser.add_argument(
-        "--legacy-full-auto",
-        action="store_true",
-        help="Use deprecated --full-auto compatibility mode instead of workspace-write",
-    )
     return parser
 
 
@@ -1325,7 +1489,6 @@ def main(argv: Sequence[str] | None = None) -> int:
         model=args.model,
         reasoning_effort=args.reasoning_effort,
         timeout_seconds=args.timeout_seconds,
-        legacy_full_auto=args.legacy_full_auto,
     )
     payload = run_pilot(
         tasks,

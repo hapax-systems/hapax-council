@@ -38,6 +38,8 @@
     },
     "source_result_sha256": "1991e186b3699fa87667ac09963ef542ac3587dadc5b7e31be49afa3a9c2f03c",
     "tasks_source_sha256": "2a4f66c94910a53b37c9b0fc662712401c66e590e5d05fc9b3a492bbf2ff2102",
+    "historical_driver_commit": "641319e66dbdc064c9b05b4c9426eed45c05b72e",
+    "task_set_reconstruction": "jq -c '.tasks[]' eval/meas/pilot_codex_cli_gpt_5_6_sol_easy_v1.witness.json > /tmp/meas-easy-tasks-v1.jsonl",
     "redactions": [
       "cell.diff",
       "cell.transcript.stdout",
@@ -50,7 +52,7 @@
       "driver_codex_cli/v1 did not sandbox the deterministic exit predicate",
       "provider-managed model weights, serving version, and quantization are not independently published"
     ],
-    "superseded_safety_contract": "Use driver_codex_cli/v2 for future measurements; this witness preserves the already-completed v1 result only.",
+    "superseded_safety_contract": "Use driver_codex_cli/v3 for future measurements; this witness preserves the already-completed v1 result only. v3 confines post-agent Git and scores a filtered diff in a clean parent checkout.",
     "recheck": "uv run python eval/meas/driver_codex_cli.py --verify-result eval/meas/pilot_codex_cli_gpt_5_6_sol_easy_v1.witness.json"
   },
   "selection": {
@@ -79,6 +81,239 @@
     ],
     "tasks_source_sha256": "2a4f66c94910a53b37c9b0fc662712401c66e590e5d05fc9b3a492bbf2ff2102"
   },
+  "tasks": [
+  {
+    "task_id": "fix-inv2-ledger-ts-field-20260601",
+    "class": "build",
+    "difficulty": "easy",
+    "exit_predicate": {
+      "kind": "pytest",
+      "target": "tests/test_sdlc_invariants.py"
+    },
+    "pr": 3853,
+    "repo": "council",
+    "work_item": "Fix the INV-2 liveness false-positive in shared/sdlc_invariants.py by reading the 'ts' key the authority-case-ledger producer actually writes so tests/test_sdlc_invariants.py passes."
+  },
+  {
+    "task_id": "mergewatcher-drain-merged-tasks-20260616",
+    "class": "build",
+    "difficulty": "easy",
+    "exit_predicate": {
+      "kind": "pytest",
+      "target": "tests/test_cc_pr_merge_watcher.py"
+    },
+    "pr": 4160,
+    "repo": "council",
+    "work_item": "Make cc-pr-merge-watcher drain vault tasks whose PRs have merged instead of leaving them stuck so tests/test_cc_pr_merge_watcher.py passes."
+  },
+  {
+    "task_id": "gemini-reviewer-diff-awareness-20260617",
+    "class": "build",
+    "difficulty": "easy",
+    "exit_predicate": {
+      "kind": "pytest",
+      "target": "tests/test_review_team.py"
+    },
+    "pr": 4164,
+    "repo": "council",
+    "work_item": "Give the gemini reviewer diff-awareness through the review-lens registry (durable fix for phantom-syntax blocks) so tests/test_review_team.py passes."
+  },
+  {
+    "task_id": "p0-ledger-fail-open-rotation-20260617",
+    "class": "build",
+    "difficulty": "easy",
+    "exit_predicate": {
+      "kind": "pytest",
+      "target": "tests/test_p0_incident_intake.py"
+    },
+    "pr": 4165,
+    "repo": "council",
+    "work_item": "Make the P0 incident ledger fail-open with bounded rotation in shared/p0_incident_intake.py so IO failures stop re-flooding and tests/test_p0_incident_intake.py passes."
+  },
+  {
+    "task_id": "cc-task-autoqueue-heavy-query-504-resilience-20260702",
+    "class": "build",
+    "difficulty": "easy",
+    "exit_predicate": {
+      "kind": "pytest",
+      "target": "tests/test_cc_pr_autoqueue.py"
+    },
+    "pr": 4393,
+    "repo": "council",
+    "work_item": "Replace the heavy gh-pr-list backlog query in scripts/cc-pr-autoqueue.py with per-PR statusCheckRollup fetches so the merge pipeline survives 504s and tests/test_cc_pr_autoqueue.py passes."
+  },
+  {
+    "task_id": "cross-surface-bluesky-active-canonical-update",
+    "class": "build",
+    "difficulty": "easy",
+    "exit_predicate": {
+      "kind": "pytest",
+      "target": "tests/public_events/test_cross_surface_event_contract.py"
+    },
+    "pr": 2002,
+    "repo": "council",
+    "work_item": "Flip the bluesky reality surface in shared/cross_surface_event_contract.py from active_legacy to active_canonical so tests/public_events/test_cross_surface_event_contract.py passes."
+  },
+  {
+    "task_id": "infra-reconcile-activation-execstart-hotfix-20260606",
+    "class": "build",
+    "difficulty": "easy",
+    "exit_predicate": {
+      "kind": "pytest",
+      "target": "tests/test_infra_reconcile.py"
+    },
+    "pr": 3965,
+    "repo": "council",
+    "work_item": "Fix the hapax-infra-reconcile service ExecStart so the merged unit activates from the correct source path and tests/test_infra_reconcile.py passes."
+  },
+  {
+    "task_id": "sdlc-quota-wall-reset-signal-preference-20260605",
+    "class": "build",
+    "difficulty": "easy",
+    "exit_predicate": {
+      "kind": "pytest",
+      "target": "tests/shared/test_quota_wall.py"
+    },
+    "pr": 3914,
+    "repo": "council",
+    "work_item": "Preserve quota-reset evidence in quota-wall detection in shared/quota_wall.py so tests/shared/test_quota_wall.py passes."
+  },
+  {
+    "task_id": "darkplaces-soak-gl-grace-20260620",
+    "class": "build",
+    "difficulty": "easy",
+    "exit_predicate": {
+      "kind": "pytest",
+      "target": "tests/test_darkplaces_soak.py"
+    },
+    "pr": 4242,
+    "repo": "council",
+    "work_item": "Make the DarkPlaces soak monitor tolerate an empty GL_RENDERER at startup in shared/darkplaces_soak.py so the t=0 false-fail disappears and tests/test_darkplaces_soak.py passes."
+  },
+  {
+    "task_id": "cc-task-receipt-dir-default-20260808",
+    "class": "build",
+    "difficulty": "easy",
+    "exit_predicate": {
+      "kind": "pytest",
+      "target": "tests/shared/test_platform_capability_registry.py"
+    },
+    "pr": 4541,
+    "repo": "council",
+    "work_item": "Make the capability registry loader discover minted receipts from the default receipt dir without configuration in shared/platform_capability_registry.py so tests/shared/test_platform_capability_registry.py passes."
+  },
+  {
+    "task_id": "cc-task-coordinator-admission-host-fix-20260703",
+    "class": "build",
+    "difficulty": "easy",
+    "exit_predicate": {
+      "kind": "pytest",
+      "target": "tests/test_coordinator_admission_host.py"
+    },
+    "pr": 4396,
+    "repo": "council",
+    "work_item": "Gate coordinator dispatch admission on the dispatch target host's pressure instead of the local host in agents/coordinator/core.py so tests/test_coordinator_admission_host.py passes."
+  },
+  {
+    "task_id": "capability-adapter-api-executor-provider-gateway-coverage-20260619",
+    "class": "build",
+    "difficulty": "easy",
+    "exit_predicate": {
+      "kind": "pytest",
+      "target": "tests/test_executor_contract.py"
+    },
+    "pr": 4214,
+    "repo": "council",
+    "work_item": "Add the omitted provider_gateway entry to the api executor profile in scripts/executor_contract.py so tests/test_executor_contract.py passes."
+  },
+  {
+    "task_id": "r31-bare-host-capability-observer-20260812",
+    "class": "build",
+    "difficulty": "easy",
+    "exit_predicate": {
+      "kind": "pytest",
+      "target": "tests/shared/test_bare_host_capability_observer.py"
+    },
+    "pr": 4563,
+    "repo": "council",
+    "work_item": "Implement the bare-host capability observer in shared/bare_host_capability_observer.py that renders absent CLIs and unreachable hosts as distinct absence rows (never silently green) so tests/shared/test_bare_host_capability_observer.py passes.",
+    "discrimination": "verified-fails-at-parent"
+  },
+  {
+    "task_id": "cc-task-rdlc-publication-vehicle-selector-20260704",
+    "class": "build",
+    "difficulty": "easy",
+    "exit_predicate": {
+      "kind": "pytest",
+      "target": "tests/shared/test_rdlc_publication_vehicle_selector.py"
+    },
+    "pr": 4461,
+    "repo": "council",
+    "work_item": "Implement the RDLC publication vehicle selector in shared/rdlc_publication_vehicle_selector.py that chooses the publication vehicle from the experiment disposition receipt before publish-bus draft creation so tests/shared/test_rdlc_publication_vehicle_selector.py passes.",
+    "discrimination": "verified-fails-at-parent"
+  },
+  {
+    "task_id": "sdlc-request-decompose-yaml-safe-writer-correction-20260520",
+    "class": "build",
+    "difficulty": "easy",
+    "exit_predicate": {
+      "kind": "pytest",
+      "target": "tests/agents/test_request_decomposer.py"
+    },
+    "pr": 3630,
+    "repo": "council",
+    "work_item": "Make the request decomposer's writer emit YAML-safe cc-task frontmatter for scalar values containing colons and commas in agents/request_decomposer/writer.py so tests/agents/test_request_decomposer.py passes."
+  },
+  {
+    "task_id": "deploy-plane-shallow-graft-guard-20260810",
+    "class": "refactor",
+    "difficulty": "easy",
+    "exit_predicate": {
+      "kind": "ruff+custom",
+      "target": "uv run ruff check scripts/check-public-surface-claims.py && uv run pytest tests/scripts/test_check_public_surface_claims.py -q"
+    },
+    "pr": 4553,
+    "repo": "council",
+    "work_item": "Stop the public-surface gate in scripts/check-public-surface-claims.py from grafting the shallow clone it runs in (base-ref fetch must never graft a complete repository), keeping ruff clean and tests/scripts/test_check_public_surface_claims.py passing.",
+    "discrimination": "verified-fails-at-parent"
+  },
+  {
+    "task_id": "sdlc-inv2-ledger-event-filter-and-stage-reconcile-20260606",
+    "class": "refactor",
+    "difficulty": "easy",
+    "exit_predicate": {
+      "kind": "ruff+custom",
+      "target": "uv run ruff check shared/sdlc_invariants.py && uv run pytest tests/test_sdlc_invariants.py -q"
+    },
+    "pr": 3942,
+    "repo": "council",
+    "work_item": "Fix INV-2 authority-ledger event filtering and reconcile stale hotpatch stages in shared/sdlc_invariants.py so the notification loop stops, keeping ruff clean and tests/test_sdlc_invariants.py passing."
+  },
+  {
+    "task_id": "substrate-adapter-buildout-tranche-1",
+    "class": "docs-to-code",
+    "difficulty": "easy",
+    "exit_predicate": {
+      "kind": "pytest",
+      "target": "tests/docs/test_adapter_tranche_selection_memo_contract.py"
+    },
+    "pr": 2530,
+    "repo": "council",
+    "work_item": "Write the substrate-adapter buildout tranche-1 selection memo converting dormant or unwired surfaces into explicit adapters so tests/docs/test_adapter_tranche_selection_memo_contract.py passes."
+  },
+  {
+    "task_id": "outcome-learning-no-false-grounding-tests",
+    "class": "docs-to-code",
+    "difficulty": "easy",
+    "exit_predicate": {
+      "kind": "pytest",
+      "target": "tests/docs/test_capability_outcome_envelope_contract.py"
+    },
+    "pr": 2215,
+    "repo": "council",
+    "work_item": "Add the outcome-learning no-false-grounding fixtures and capability-outcome envelope (selected, commanded, inferred, stale, missing, and legacy events cannot satisfy verified success) so tests/docs/test_capability_outcome_envelope_contract.py passes."
+  }
+],
   "lambda_set": [
     "e403ed3d49090dbb8fa4c8e58949b25516fdb488c37a822a9bb43fa73755e0c1"
   ],
