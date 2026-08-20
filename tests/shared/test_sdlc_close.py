@@ -735,12 +735,11 @@ def test_terminal_close_applies_when_lifecycle_effects_are_default_deny(
     assert (fixture.vault / "closed" / fixture.note.name).is_file()
 
 
-def test_killswitch_close_does_not_hold_pre_gate0_echo_stub(
+def test_killswitch_env_does_not_bypass_pre_gate0_echo_stub(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     fixture = _fixture(tmp_path, monkeypatch)
-    _inject_trusted_echo_projection(fixture, monkeypatch)
     monkeypatch.setenv("HAPAX_GATE0B_CLAIM_PUBLICATION_OFF", "1")
     monkeypatch.setattr(
         sdlc_close,
@@ -748,10 +747,12 @@ def test_killswitch_close_does_not_hold_pre_gate0_echo_stub(
         _REAL_CLAIM_POSITION_RESOLVER,
     )
 
-    result = _close(fixture)
+    with pytest.raises(TerminalCloseError) as raised:
+        _close(fixture)
 
-    assert result.applied_event_id.endswith(".applied")
-    assert (fixture.vault / "closed" / fixture.note.name).is_file()
+    assert raised.value.reason_code == "canon_pre_gate0_claim_migration_required"
+    assert fixture.note.is_file()
+    assert not (fixture.vault / "closed" / fixture.note.name).exists()
 
 
 def test_terminal_close_recovers_complete_postimage_after_crash(

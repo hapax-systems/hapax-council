@@ -14,6 +14,7 @@ from pathlib import Path
 
 import yaml
 
+from shared.cc_task_root import cc_task_root
 from shared.coord_event_log import CoordEventLog, default_event_log
 from shared.coord_projection import (
     NO_GO_BOOLEANS,
@@ -57,8 +58,6 @@ from shared.sdlc_task_store import (
 )
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
-DEFAULT_VAULT = Path.home() / "Documents" / "Personal" / "20-projects" / "hapax-cc-tasks"
-DEFAULT_CACHE = Path.home() / ".cache" / "hapax"
 _CLAIM_PUB_PREFIX = "claim-pub-"
 _CLAIM_PUB_DIGEST_LEN = 64
 
@@ -76,42 +75,6 @@ def _claim_publication_journal_present(root: Path) -> bool:
         ):
             return True
     return False
-
-
-def _killswitch_claim_surfaces(
-    cache_dir: Path, role: str, session_id: str, task_id: str
-) -> tuple[tuple[str, Path, bytes, int, Path, bytes, int], ...]:
-    surfaces: list[tuple[str, Path, bytes, int, Path, bytes, int]] = []
-    for key in (role, f"{role}-{session_id}"):
-        claim_path = cache_dir / f"cc-active-task-{key}"
-        epoch_path = cache_dir / f"cc-claim-epoch-{key}"
-        if not claim_path.is_file() or not epoch_path.is_file():
-            continue
-        claim_content = claim_path.read_bytes()
-        if claim_content.decode("utf-8").strip() != task_id:
-            raise TerminalCloseError(
-                "claim_task_mismatch",
-                "bind every current claim cache to the exact task",
-                str(claim_path),
-            )
-        surfaces.append(
-            (
-                key,
-                claim_path,
-                claim_content,
-                _mode(claim_path),
-                epoch_path,
-                epoch_path.read_bytes(),
-                _mode(epoch_path),
-            )
-        )
-    if not surfaces:
-        raise TerminalCloseError(
-            "claim_cache_missing",
-            "restore the killswitch claim and epoch sidecars before close",
-            role,
-        )
-    return tuple(surfaces)
 
 
 def select_close_claim_journal_root(cache_dir: Path, *, home: Path | None = None) -> Path:
@@ -500,8 +463,8 @@ def close_task(
     session_id: str,
     retroactive: bool = False,
     debt_reason: str | None = None,
-    vault_root: Path = DEFAULT_VAULT,
-    cache_dir: Path = DEFAULT_CACHE,
+    vault_root: Path | None = None,
+    cache_dir: Path | None = None,
     relay_db: Path | None = None,
     dispatch_ledger: Path | None = None,
     event_log: CoordEventLog | None = None,
@@ -532,6 +495,8 @@ def close_task(
             "terminal_close_identity_missing",
             "bind the real lane and claim session before close",
         )
+    vault_root = vault_root if vault_root is not None else cc_task_root()
+    cache_dir = cache_dir if cache_dir is not None else (Path.home() / ".cache" / "hapax")
     event_log = event_log or default_event_log()
     lifecycle_inspection = inspect_lifecycle_transactions(
         task_id=task_id,
@@ -556,9 +521,6 @@ def close_task(
             "reconcile the inspected claim publication before close",
             ",".join(f"{item.publication_id}:{item.reason_code}" for item in held_claims),
         )
-    killswitch = os.environ.get("HAPAX_GATE0B_CLAIM_PUBLICATION_OFF") == "1"
-    applied_claim = None
-    leases: tuple = ()
     try:
         applied_claim = resolve_applied_claim_publication(
             vault_root=vault_root,
@@ -571,14 +533,7 @@ def close_task(
         snapshot = applied_claim.current_task
         leases = applied_claim.leases
     except (ClaimPublicationError, TaskStoreError) as exc:
-        if not killswitch:
-            raise TerminalCloseError(exc.reason_code, exc.repair_action, exc.detail) from exc
-        try:
-            snapshot = resolve_task_note(vault_root, task_id, state="active")
-        except TaskStoreError as note_exc:
-            raise TerminalCloseError(
-                note_exc.reason_code, note_exc.repair_action, note_exc.detail
-            ) from note_exc
+        raise TerminalCloseError(exc.reason_code, exc.repair_action, exc.detail) from exc
     frontmatter = snapshot.frontmatter
     try:
         current_stage = stage_token(str(frontmatter.get("stage") or ""))
@@ -588,33 +543,28 @@ def close_task(
             "restore exact S10 before terminal close",
         ) from exc
     authority_case = str(frontmatter.get("authority_case") or "").strip()
-    binding_matches = True if not leases else leases[0].binding.authority_case == authority_case
     if (
         current_stage != "S10"
         or str(frontmatter.get("status") or "") not in {"claimed", "in_progress"}
         or str(frontmatter.get("assigned_to") or "").strip() != actor
         or not authority_case
-        or not binding_matches
+        or leases[0].binding.authority_case != authority_case
     ):
         raise TerminalCloseError(
             "terminal_close_task_identity_mismatch",
             "make S10 task, lane, claim, session, and AuthorityCase agree",
         )
-    publication_owned = killswitch or (
-        applied_claim is not None and applied_claim.admission_consumption is not None
-    )
+    # resolve_claim_bound_canon_position is still the Gate-0A stub that always
+    # HOLDs. Admitted Gate 0B consumption is the ownership proof for this slice;
+    # the echo id is explicitly echo-absent so a later auditor does not treat it
+    # as a grounded MQ Echo.
+    publication_owned = applied_claim.admission_consumption is not None
     expected: ExpectedCanonEcho | None = None
     reconciliation = None
     if publication_owned:
-        if applied_claim is not None and applied_claim.admission_consumption is not None:
-            position_ref = applied_claim.admission_consumption.consumption_ref
-            echo_message_id = f"claim-publication:{applied_claim.receipt.publication_id}"
-        elif applied_claim is not None:
-            position_ref = f"claim-publication:{applied_claim.receipt.publication_id}"
-            echo_message_id = position_ref
-        else:
-            position_ref = f"claim-publication:killswitch:{task_id}"
-            echo_message_id = position_ref
+        assert applied_claim.admission_consumption is not None
+        position_ref = applied_claim.admission_consumption.consumption_ref
+        echo_message_id = f"echo-absent:{applied_claim.receipt.publication_id}"
     else:
         try:
             expected = resolve_claim_bound_canon_position(
@@ -676,62 +626,35 @@ def close_task(
             )
         position_ref = expected.position_ref
         echo_message_id = reconciliation.echo_message_id
-    if leases:
-        claim_vector = tuple(
-            {
-                "binding_mode": lease.binding_mode,
-                "binding_path": str(lease.binding_path),
-                "binding_sha256": _sha256(lease.binding_content),
-                "claim_key": lease.claim_key,
-                "claim_mode": lease.claim_mode,
-                "claim_path": str(lease.claim_path),
-                "claim_sha256": _sha256(lease.claim_content),
-                "epoch_mode": lease.epoch_mode,
-                "epoch_path": str(lease.epoch_path),
-                "epoch_sha256": _sha256(lease.epoch_content),
-            }
-            for lease in leases
-        )
-        killswitch_surfaces: tuple[tuple[Path, bytes, int], ...] = ()
-    else:
-        killswitch_surfaces = _killswitch_claim_surfaces(cache_dir, actor, session_id, task_id)
-        claim_vector = tuple(
-            {
-                "claim_key": key,
-                "claim_mode": claim_mode,
-                "claim_path": str(claim_path),
-                "claim_sha256": _sha256(claim_content),
-                "epoch_mode": epoch_mode,
-                "epoch_path": str(epoch_path),
-                "epoch_sha256": _sha256(epoch_content),
-            }
-            for (
-                key,
-                claim_path,
-                claim_content,
-                claim_mode,
-                epoch_path,
-                epoch_content,
-                epoch_mode,
-            ) in killswitch_surfaces
-        )
-    if applied_claim is not None:
-        claim_publication_proof = (
-            {
-                "kind": "receipt",
-                "mode": applied_claim.receipt_mode,
-                "path": str(applied_claim.receipt.receipt_path),
-                "sha256": _sha256(applied_claim.receipt_content),
-            },
-            {
-                "kind": "manifest",
-                "mode": applied_claim.manifest_mode,
-                "path": str(applied_claim.receipt.manifest_path),
-                "sha256": _sha256(applied_claim.manifest_content),
-            },
-        )
-    else:
-        claim_publication_proof = ()
+    claim_vector = tuple(
+        {
+            "binding_mode": lease.binding_mode,
+            "binding_path": str(lease.binding_path),
+            "binding_sha256": _sha256(lease.binding_content),
+            "claim_key": lease.claim_key,
+            "claim_mode": lease.claim_mode,
+            "claim_path": str(lease.claim_path),
+            "claim_sha256": _sha256(lease.claim_content),
+            "epoch_mode": lease.epoch_mode,
+            "epoch_path": str(lease.epoch_path),
+            "epoch_sha256": _sha256(lease.epoch_content),
+        }
+        for lease in leases
+    )
+    claim_publication_proof = (
+        {
+            "kind": "receipt",
+            "mode": applied_claim.receipt_mode,
+            "path": str(applied_claim.receipt.receipt_path),
+            "sha256": _sha256(applied_claim.receipt_content),
+        },
+        {
+            "kind": "manifest",
+            "mode": applied_claim.manifest_mode,
+            "path": str(applied_claim.receipt.manifest_path),
+            "sha256": _sha256(applied_claim.manifest_content),
+        },
+    )
     relay_vector = tuple(
         {
             "relay_mode": relay.mode,
@@ -841,34 +764,7 @@ def close_task(
                     after=None,
                 )
             )
-    if applied_claim is not None:
-        projections.extend(applied_claim.proof_projections())
-    else:
-        for (
-            _key,
-            claim_path,
-            claim_content,
-            claim_mode,
-            epoch_path,
-            epoch_content,
-            epoch_mode,
-        ) in killswitch_surfaces:
-            projections.append(
-                FileProjection.from_snapshot(
-                    claim_path,
-                    before=claim_content,
-                    before_mode=claim_mode,
-                    after=None,
-                )
-            )
-            projections.append(
-                FileProjection.from_snapshot(
-                    epoch_path,
-                    before=epoch_content,
-                    before_mode=epoch_mode,
-                    after=None,
-                )
-            )
+    projections.extend(applied_claim.proof_projections())
     for relay in relays:
         relay_document = dict(relay.document)
         relay_document.update(
@@ -923,15 +819,12 @@ def close_task(
                 state="active",
                 require_no_other_state=True,
             )
-            if applied_claim is not None:
-                current_leases = resolve_claim_leases(
-                    cache_dir,
-                    role=actor,
-                    session_id=session_id,
-                    task_id=task_id,
-                )
-            else:
-                current_leases = ()
+            current_leases = resolve_claim_leases(
+                cache_dir,
+                role=actor,
+                session_id=session_id,
+                task_id=task_id,
+            )
         except TaskStoreError as exc:
             raise TerminalCloseError(exc.reason_code, exc.repair_action, exc.detail) from exc
         if current_snapshot != snapshot or current_leases != leases:

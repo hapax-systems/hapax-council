@@ -3040,32 +3040,22 @@ def _validate_terminal_close_admission(
         or not admission.get("session_id")
         or not isinstance(claim_vector, list)
         or not claim_vector
+        or any(not isinstance(item, dict) or set(item) != claim_keys for item in claim_vector)
+        or not isinstance(claim_publication_proof, list)
+        or len(claim_publication_proof) != 2
         or any(
             not isinstance(item, dict)
-            or set(item)
-            not in (claim_keys, claim_keys - {"binding_mode", "binding_path", "binding_sha256"})
-            for item in claim_vector
+            or set(item) != proof_keys
+            or item.get("kind") not in {"manifest", "receipt"}
+            or not isinstance(item.get("path"), str)
+            or not Path(str(item.get("path"))).is_absolute()
+            or type(item.get("mode")) is not int
+            or re.fullmatch(r"[0-9a-f]{64}", str(item.get("sha256"))) is None
+            for item in claim_publication_proof
         )
-        or not isinstance(claim_publication_proof, list)
-        or len(claim_publication_proof) not in {0, 2}
-        or (
-            bool(claim_publication_proof)
-            and (
-                any(
-                    not isinstance(item, dict)
-                    or set(item) != proof_keys
-                    or item.get("kind") not in {"manifest", "receipt"}
-                    or not isinstance(item.get("path"), str)
-                    or not Path(str(item.get("path"))).is_absolute()
-                    or type(item.get("mode")) is not int
-                    or re.fullmatch(r"[0-9a-f]{64}", str(item.get("sha256"))) is None
-                    for item in claim_publication_proof
-                )
-                or {str(item.get("kind")) for item in claim_publication_proof}
-                != {"manifest", "receipt"}
-            )
-        )
+        or {str(item.get("kind")) for item in claim_publication_proof} != {"manifest", "receipt"}
         or not isinstance(relay_vector, list)
+        or not relay_vector
         or any(not isinstance(item, dict) or set(item) != relay_keys for item in relay_vector)
         or not valid_gate_evidence
         or admission.get("gate_refs") != expected_gate_refs
@@ -3225,14 +3215,6 @@ def _validate_terminal_admission_projection_bindings(
         )
     for index, item in enumerate(admission.get("claim_vector") or []):
         for prefix in ("claim", "epoch", "binding"):
-            if item.get(f"{prefix}_path") is None:
-                if prefix == "binding":
-                    continue
-                raise LifecycleTransitionError(
-                    "transition_terminal_admission_surface_unbound",
-                    "bind every admitted close surface to one exact transaction projection",
-                    f"claim_vector[{index}].{prefix}",
-                )
             require_bound(
                 path=item.get(f"{prefix}_path"),
                 mode=item.get(f"{prefix}_mode"),
@@ -3708,6 +3690,12 @@ def _renameat2_noreplace_fallback(
     os.unlink(src_name, dir_fd=src_dir_fd)
 
 
+def _exchange_displaced_name(dst_name: str) -> str:
+    """Deterministic mid-exchange name so crash recovery can find the preimage."""
+
+    return f".{dst_name}.exchange-displaced"
+
+
 def _renameat2_exchange_fallback(
     src_dir_fd: int,
     src_name: str,
@@ -3715,8 +3703,8 @@ def _renameat2_exchange_fallback(
     dst_name: str,
 ) -> None:
     # Three-step EXCHANGE. A reader can observe dst_name absent between
-    # steps 1 and 2. Crash leaves both payloads under transaction-scoped names.
-    displaced = f".{dst_name}.exchange-displaced.{os.getpid()}.{secrets.token_hex(8)}"
+    # steps 1 and 2. Crash leaves the preimage at a deterministic displaced name.
+    displaced = _exchange_displaced_name(dst_name)
     os.rename(dst_name, displaced, src_dir_fd=src_dir_fd, dst_dir_fd=dst_dir_fd)
     try:
         os.rename(src_name, dst_name, src_dir_fd=src_dir_fd, dst_dir_fd=dst_dir_fd)
@@ -4077,6 +4065,22 @@ def _cas_rollback(projection: FileProjection, scratch: _ProjectionScratch) -> bo
         if _entry_matches(current, projection.before, projection.before_mode):
             return True
         if not _entry_matches(current, projection.after, projection.after_mode):
+            if scratch.kind == "update" and current is None:
+                displaced_name = _exchange_displaced_name(name)
+                displaced = _entry_state_at(
+                    dir_fd,
+                    displaced_name,
+                    max_bytes=_MAX_LIFECYCLE_BLOB_BYTES,
+                )
+                if _entry_matches(displaced, projection.before, projection.before_mode):
+                    os.rename(
+                        displaced_name,
+                        name,
+                        src_dir_fd=dir_fd,
+                        dst_dir_fd=dir_fd,
+                    )
+                    os.fsync(dir_fd)
+                    return True
             return False
         scratch_state = _entry_state_at(
             dir_fd,
@@ -5463,7 +5467,11 @@ def _execute_lifecycle_transition(
 
     # Terminal close is the slice-2 admitted effect. Other lifecycle effects stay
     # default-deny until the spine lockstep release.
-    if terminal_close_admission is None:
+    if not (
+        terminal_close_admission is not None
+        and intent.from_stage == "S10"
+        and intent.to_stage == "S11"
+    ):
         _require_lifecycle_effect_activation()
     intent, ordered = _canonical_execution_inputs(intent, projections)
     _validate_terminal_close_admission(intent, terminal_close_admission)

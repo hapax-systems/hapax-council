@@ -154,9 +154,37 @@ EOF
   timeout 30 uv run --no-sync python scripts/cc-stage-advance "$task" S10_CLOSURE
   require_grep "stage: S10_CLOSURE" "$active/$task.md"
 
+  write_relay() {
+    local claim="$1"
+    mkdir -p "$sb/.cache/hapax/relay"
+    cat > "$sb/.cache/hapax/relay/alpha-status.yaml" <<RELAY
+role: alpha
+session_id: smoke-session-${smoke_mode}
+status: active
+current_claim: ${claim}
+task_id: ${claim}
+RELAY
+  }
+
   step "close"
-  timeout 30 uv run --no-sync bash scripts/cc-close "$task" --status done
-  require_file "$sb/Documents/Personal/20-projects/hapax-cc-tasks/closed/$task.md"
+  close_log="$sb/close-${smoke_mode}.log"
+  if [[ "$smoke_mode" == "killswitch" ]]; then
+    set +e
+    timeout 30 uv run --no-sync bash scripts/cc-close "$task" --status done >"$close_log" 2>&1
+    close_rc=$?
+    set -e
+    cat "$close_log"
+    if [[ "$close_rc" -eq 0 ]]; then
+      printf '[%s] killswitch close must refuse without an admitted publication\n' "$smoke_mode" >&2
+      exit 1
+    fi
+    require_grep "REFUSED" "$close_log"
+    require_file "$active/$task.md"
+  else
+    write_relay "$task"
+    timeout 30 uv run --no-sync bash scripts/cc-close "$task" --status done
+    require_file "$sb/Documents/Personal/20-projects/hapax-cc-tasks/closed/$task.md"
+  fi
 
   if [[ "$smoke_mode" == "default" ]]; then
     second_task="${task}-after-close"
@@ -201,6 +229,7 @@ EOF
     require_grep "stage: S10_CLOSURE" "$active/$second_task.md"
 
     step "close after-close claim"
+    write_relay "$second_task"
     timeout 30 uv run --no-sync bash scripts/cc-close "$second_task" --status done
     require_file "$sb/Documents/Personal/20-projects/hapax-cc-tasks/closed/$second_task.md"
   fi

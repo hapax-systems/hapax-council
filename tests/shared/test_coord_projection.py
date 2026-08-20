@@ -3337,6 +3337,45 @@ def test_einval_fallback_delete_commits(tmp_path: Path) -> None:
     assert not note.exists()
 
 
+def test_exchange_fallback_crash_between_steps_preserves_both_payloads(
+    tmp_path: Path,
+) -> None:
+    src = tmp_path / "scratch"
+    dst = tmp_path / "note.md"
+    src.write_bytes(b"after-image")
+    dst.write_bytes(b"before-image")
+    displaced = tmp_path / cp._exchange_displaced_name("note.md")
+    fd = os.open(tmp_path, os.O_RDONLY | os.O_DIRECTORY)
+    calls = {"n": 0}
+    real_rename = os.rename
+
+    def crash_after_displace(src_name: str, dst_name: str, **kwargs: object) -> None:
+        calls["n"] += 1
+        real_rename(src_name, dst_name, **kwargs)
+        if calls["n"] == 1:
+            raise RuntimeError("crash after displace")
+
+    try:
+        with mock.patch.object(cp.os, "rename", side_effect=crash_after_displace):
+            with pytest.raises(RuntimeError, match="crash after displace"):
+                cp._renameat2_exchange_fallback(fd, "scratch", fd, "note.md")
+        assert not dst.exists()
+        assert displaced.read_bytes() == b"before-image"
+        assert src.read_bytes() == b"after-image"
+        restored = cp.FileProjection.from_snapshot(
+            dst,
+            before=b"before-image",
+            before_mode=stat.S_IMODE(displaced.stat().st_mode),
+            after=b"after-image",
+            after_mode=stat.S_IMODE(src.stat().st_mode),
+        )
+        scratch = cp._scratch_for(restored, "txn-crash", 0)
+        assert cp._cas_rollback(restored, scratch) is True
+        assert dst.read_bytes() == b"before-image"
+    finally:
+        os.close(fd)
+
+
 def test_einval_fallback_rollback_restores_preimage(tmp_path: Path) -> None:
     log = _log(tmp_path)
     note = tmp_path / "vault" / "task-1.md"
