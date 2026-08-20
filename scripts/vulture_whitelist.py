@@ -5086,3 +5086,21 @@ _ = (evaluate_blocked_witness,)
 from shared.worker_failure_witness import read_raw_signal  # noqa: E402
 
 _ = (read_raw_signal,)
+
+# DETECTOR BLIND SPOT, not dead code. `record_identifies_its_checkout` has a real production
+# caller: scripts/hapax-determine reports which runs were recorded without a verified
+# adjudicator. Vulture cannot see it. SOURCE_PATHS in scripts/check-unused-functions.py
+# includes "scripts", but vulture only walks *.py, and 149 of the 260 extensionless files in
+# scripts/ are Python (shebang-measured, 2026-08-20). Pointed straight at
+# scripts/hapax-determine, vulture emits nothing at all — the file is never parsed.
+#
+# Every function whose only production caller lives in one of those 149 scripts is therefore
+# permanently reported unused, and this file is the only escape the gate offers. That makes
+# this file a mixture of two very different things — genuinely dead machinery, and live
+# machinery whose callers are invisible — which is why it is 5,000+ lines and unreadable as
+# evidence. Entries added here should say which they are. This one is the second kind.
+#
+# Tracked: cc-task `unused-function-gate-cannot-see-149-python-scripts-20260820`.
+from shared.adjudicator_identity import record_identifies_its_checkout  # noqa: E402
+
+_ = (record_identifies_its_checkout,)

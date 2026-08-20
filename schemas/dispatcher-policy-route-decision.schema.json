@@ -41,6 +41,53 @@
   ],
   "properties": {
     "decision_schema": {"const": 1},
+
+    "dimensional_route_receipt_schema": {
+      "description": "Marks the start of the DimensionalRouteReceipt fields, which write_route_decision_receipt FLATTENS into the row whenever a decision carries one — which the normal _decision() path always does. They were undeclared while additionalProperties is false, so every ordinary persisted row was invalid against this schema for as long as the flattening existed. Measured 2026-08-20: a live row from route-decisions.jsonl carries 48 keys, 15 of them undeclared. Raised by codex-1 and gemini-1 independently. Declared at their top-level types here; the nested structures are enforced by the pydantic model at write time, and this schema deliberately does not restate them rather than carrying a second copy that can drift.",
+      "const": 1
+    },
+    "routing_model_version": {"const": "capacity-dimensional-v1"},
+    "authority_case": {"type": "string"},
+    "decision": {"type": "string"},
+    "degraded_mode": {"type": "boolean"},
+    "degraded_authority_ref": {"type": ["string", "null"]},
+    "downstream_review_point": {"type": ["string", "null"]},
+    "selected_route_id": {"type": ["string", "null"]},
+    "candidates": {"type": "array"},
+    "candidate_snapshot_ref": {"type": "object"},
+    "confidence": {"type": "object"},
+    "demand_vector_ref": {"type": "object"},
+    "operator_constraints": {"type": "object"},
+    "review_requirement": {"type": "object"},
+    "stale_metadata": {"type": "array"},
+
+    "adjudicator_sha": {
+      "description": "Verified git HEAD of the checkout the deciding code was loaded from. Null when no checkout could be verified; never inferred from a directory name.",
+      "type": ["string", "null"],
+      "pattern": "^[0-9a-f]{40}$"
+    },
+    "adjudicator_source": {
+      "description": "How adjudicator_sha was established. Says WHERE the code was loaded from, not that the executed bytes belong to that commit.",
+      "enum": ["release_tree", "git_worktree", "indeterminate"]
+    },
+    "adjudicator_resolved_from": {
+      "description": "Resolved path the identity was determined from, recorded even when adjudicator_sha is null so the claim stays auditable.",
+      "type": ["string", "null"]
+    },
+    "adjudicator_dirty": {
+      "description": "Three-valued: true modified, false verified clean, null cleanliness could not be determined. Consumers must test `is false`, never falsiness.",
+      "type": ["boolean", "null"]
+    },
+    "adjudicator_loaded_modules": {
+      "description": "First-party modules the process had loaded. A coverage statement naming what participated, with no per-module verdict.",
+      "type": "array",
+      "items": {"type": "string"}
+    },
+    "adjudicator_declared_sha": {
+      "description": "The sha the deploy PATH claimed, kept separate from adjudicator_sha because release trees here are writable checkouts and can disagree with their own names.",
+      "type": ["string", "null"],
+      "pattern": "^[0-9a-f]{40}$"
+    },
     "decision_id": {
       "type": "string",
       "pattern": "^rd-[0-9TZ]+-[A-Za-z0-9_.-]+-[a-f0-9]{12}$"

@@ -44,6 +44,14 @@ from pathlib import Path
 from typing import Any
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
+if str(REPO_ROOT) not in sys.path:
+    sys.path.insert(0, str(REPO_ROOT))
+
+from shared.adjudicator_identity import (  # noqa: E402
+    adjudicator_identity,
+    record_identifies_its_checkout,
+)
+
 DEFAULT_REGISTRY = REPO_ROOT / "config" / "determination-producers.json"
 DEFAULT_RUN_LEDGER = Path.home() / ".cache" / "hapax" / "determination" / "runs.jsonl"
 
@@ -141,37 +149,73 @@ def run_producer(
         "provenance": producer.get("provenance"),
         "host": os.uname().nodename,
     }
+    # Which code produced this determination, stamped in a `finally` so it is measured AFTER the
+    # producer ran, on every exit including timeout and unlaunchable.
+    #
+    # Raised by codex-1: this used to be spread into the dict above, before a subprocess that may
+    # run for up to 300 seconds, while the module documents HEAD and cleanliness as measured when
+    # the receipt is written. A commit or working-tree change during the run therefore produced a
+    # receipt carrying pre-run state — the stale-identity defect this field exists to detect,
+    # in the code that writes the field.
+    #
+    # `provenance` above says how the PROPERTY was established (mechanical/attested); this says
+    # which checkout of the spine established it. Without it a run ledger cannot be compared
+    # across a redeploy, and the activation symlink repoints ~7x/day, so "the ledger went green"
+    # is otherwise unreadable.
     try:
-        proc = subprocess.run(argv, capture_output=True, text=True, timeout=timeout)
-    except subprocess.TimeoutExpired:
-        record.update(outcome="timeout", returncode=None, duration_s=round(time.monotonic() - started, 2))
-        return record
-    except OSError as exc:
-        record.update(outcome="unlaunchable", returncode=None, error=f"{type(exc).__name__}: {exc}")
-        return record
+        try:
+            proc = subprocess.run(argv, capture_output=True, text=True, timeout=timeout)
+        except subprocess.TimeoutExpired:
+            record.update(
+                outcome="timeout", returncode=None, duration_s=round(time.monotonic() - started, 2)
+            )
+            return record
+        except OSError as exc:
+            record.update(
+                outcome="unlaunchable", returncode=None, error=f"{type(exc).__name__}: {exc}"
+            )
+            return record
 
-    rc = proc.returncode
-    success = set(producer.get("success_exit_codes") or [0])
-    declined = set(producer.get("declined_exit_codes") or [])
-    if rc in success:
-        outcome = "produced"
-    elif rc in declined:
-        # The producer ran correctly and had nothing to vouch for. This is HEALTHY, and it
-        # must be distinguishable from "did not run" — that ambiguity is the whole defect.
-        outcome = "declined"
-    else:
-        outcome = "failed"
-    record.update(
-        outcome=outcome,
-        returncode=rc,
-        duration_s=round(time.monotonic() - started, 2),
-        stderr=(proc.stderr or "").strip()[:500],
-    )
-    return record
+        rc = proc.returncode
+        success = set(producer.get("success_exit_codes") or [0])
+        declined = set(producer.get("declined_exit_codes") or [])
+        if rc in success:
+            outcome = "produced"
+        elif rc in declined:
+            # The producer ran correctly and had nothing to vouch for. This is HEALTHY, and it
+            # must be distinguishable from "did not run" — that ambiguity is the whole defect.
+            outcome = "declined"
+        else:
+            outcome = "failed"
+        record.update(
+            outcome=outcome,
+            returncode=rc,
+            duration_s=round(time.monotonic() - started, 2),
+            stderr=(proc.stderr or "").strip()[:500],
+        )
+        return record
+    finally:
+        # Mutates the same dict the `return` above already evaluated, so every exit — including
+        # an exception this function does not catch — carries an identity measured after the run.
+        record.update(adjudicator_identity().as_receipt())
 
 
 def append_run(ledger: Path, record: dict[str, Any]) -> None:
+    """Append one run record, stamped with the identity of the code writing it.
+
+    Stamped HERE as well as in `run_producer`, and the two are not a duplicated guard: they
+    protect different artifacts. `run_producer` stamps the record it RETURNS, which `main` reads
+    to report runs whose checkout could not be identified; this stamps the row that reaches the
+    LEDGER, which is what a later reader compares across a redeploy.
+
+    The write path is the only place that sees every row, so it is the only place the invariant
+    "every run record names the code that produced it" can actually hold. The sibling defect on
+    the route ledger — identity merged only when an optional receipt happened to be present —
+    was raised by codex-1 and gemini-1 independently, and it is the same shape: a representation
+    added to a model with the writer left free to omit it.
+    """
     ledger.parent.mkdir(parents=True, exist_ok=True)
+    record = {**record, **adjudicator_identity().as_receipt()}
     with ledger.open("a", encoding="utf-8") as fh:
         fh.write(json.dumps(record, sort_keys=True) + "\n")
 
@@ -261,6 +305,20 @@ def main(argv: list[str] | None = None) -> int:
 
     payload["liveness"] = liveness(producers, runs, now)
 
+    # A determination whose CHECKOUT is unknown is not replayable: the next reader cannot tell a
+    # repair from a redeploy. Report it rather than let the receipt look complete. A diagnostic,
+    # not a veto — an unidentifiable run is still a run, and refusing to record it would lose the
+    # evidence entirely.
+    #
+    # Named for what it measures. codex-1 raised the previous name, `unidentified_runs` over
+    # `record_has_usable_adjudicator`: that read as "this run is unattributable", which is
+    # stronger than the check performs and made a passing run look fully attributed. Identifying
+    # the checkout is what this establishes; whether the executed bytes belong to that commit is
+    # not knowable from inside the process at all.
+    payload["runs_without_identified_checkout"] = [
+        r["producer_id"] for r in payload["ran"] if not record_identifies_its_checkout(r)
+    ]
+
     if args.json:
         print(json.dumps(payload, indent=1, sort_keys=True))
     else:
@@ -268,6 +326,13 @@ def main(argv: list[str] | None = None) -> int:
             print(f"{r['producer_id']}: {r['outcome']} (rc={r.get('returncode')})")
         for d in payload["liveness"]:
             print(f"DEFICIT {d['producer_id']}: {d['deficit']}", file=sys.stderr)
+        for pid in payload["runs_without_identified_checkout"]:
+            print(
+                f"UNIDENTIFIED CHECKOUT {pid}: no verified sha over a tree measured clean, so "
+                "this receipt cannot distinguish a repair from a redeploy. Next: re-run from a "
+                "committed, clean checkout, or `git -C <tree> status` to see what is modified.",
+                file=sys.stderr,
+            )
 
     # A producer that FAILED, or a liveness deficit, is a harness problem and must be
     # visible. A producer that DECLINED is healthy and exits 0 — the distinction this

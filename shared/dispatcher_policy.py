@@ -25,6 +25,7 @@ from typing import Any, Literal
 
 from pydantic import BaseModel, ConfigDict, Field, PrivateAttr, ValidationError, model_validator
 
+from shared.adjudicator_identity import adjudicator_identity
 from shared.agentic_trust_boundary import is_syntactically_typed_policy_evidence_reference
 from shared.capability_availability_guarantor import (
     CapabilityAvailabilityReceipt,
@@ -79,6 +80,13 @@ from shared.route_metadata_schema import (
     route_envelope_gate_enforced,
     stable_payload_hash,
 )
+
+# NOTE: a `register_decision_module(__file__)` call stood here, so this module and
+# hapax-determine could hash their own source at import and have it compared against the commit.
+# It was REMOVED after codex-1 showed the hash is a re-read: Python's loader has read and
+# compiled the file before any line of it runs, so no module can observe the bytes it was
+# compiled from. This module and its decision-bearing imports are still named in
+# `adjudicator_loaded_modules`; what is gone is the verdict that claimed to verify them.
 
 logger = logging.getLogger(__name__)
 
@@ -466,7 +474,50 @@ class DimensionalRouteReceipt(_PolicyModel):
     dimensional_route_receipt_schema: Literal[1] = DIMENSIONAL_ROUTE_RECEIPT_SCHEMA_VERSION
     decision_id: str
     created_at: datetime
+    #: The BASIS this decision was made under. Retained: it is a real fact about the model.
+    #: It is not a code identity, and was mistaken for one — it is the constant
+    #: "capacity-dimensional-v1" on 559 of 559 historical records, so it distinguishes
+    #: nothing. The adjudicator_* fields below carry what it was being read as.
     routing_model_version: Literal["capacity-dimensional-v1"] = ROUTING_MODEL_VERSION
+    #: WHICH CODE produced this decision, resolved from the loaded module's own path rather
+    #: than the activation symlink — the symlink repoints ~7x/day and would name the build
+    #: that runs next, not the one that decided. `adjudicator_source` says how strong the
+    #: `adjudicator_source` says only WHERE the code was loaded from — `release_tree` inside the
+    #: trusted releases root, `git_worktree` any other checkout, `indeterminate` (sha None)
+    #: refusing to guess.
+    #:
+    #: It does NOT establish that the build is determined, and an earlier version of this
+    #: comment claimed it did — raised by codex-1 as a stale claim that "invites consumers to
+    #: trust exactly the shortcut the implementation otherwise rejects". `release_tree` follows
+    #: from path containment plus a discoverable HEAD, and can accompany `adjudicator_dirty`
+    #: True. Nor does the full tuple establish attribution: `record_identifies_its_checkout`
+    #: establishes WHICH CHECKOUT and nothing about whether the executed bytes belong to that
+    #: commit, for reasons given at its definition.
+    #: See shared/adjudicator_identity.py.
+    adjudicator_sha: str | None = None
+    adjudicator_source: Literal["release_tree", "git_worktree", "indeterminate"] = "indeterminate"
+    adjudicator_resolved_from: str | None = None
+    #: True dirty, False verified clean, None cleanliness could not be determined. Three
+    #: states: a tree whose `git status` failed is not a clean tree. Consumers must test
+    #: `is False`, never falsiness.
+    adjudicator_dirty: bool | None = None
+    #: Every first-party module the process had loaded when this receipt was written, sorted and
+    #: repo-relative where they fall inside the checkout.
+    #:
+    #: A COVERAGE STATEMENT, not a verification — it names what participated so a reader can see
+    #: the scope of the decision rather than infer it. There is deliberately no per-module
+    #: verdict: four mechanisms claiming to verify loaded bytes against the commit were refuted
+    #: in review, because a Python process cannot observe the bytes it was compiled from.
+    #: See shared/adjudicator_identity.py.
+    #: A tuple, not a list: `_PolicyModel` is `frozen=True`, so Pydantic derives `__hash__` from
+    #: the field values and a list member makes every receipt unhashable. Raised by coderabbitai;
+    #: every other collection on this model is already a tuple.
+    adjudicator_loaded_modules: tuple[str, ...] = Field(default=())
+    #: What the deploy PATH claimed, kept beside the verified sha because they can disagree.
+    #: Release trees on this estate are writable git checkouts, so a directory name is a
+    #: claim; the live tree `45086a03…` carried a modified file while its path asserted a
+    #: clean commit. A receipt that reported only one of these would hide that.
+    adjudicator_declared_sha: str | None = None
     task_id: str
     authority_case: str
     decision: DispatchAction
@@ -1486,6 +1537,22 @@ def write_route_decision_receipt(
     payload = decision.model_dump(mode="json")
     if decision.dimensional_receipt is not None:
         payload.update(decision.dimensional_receipt.model_dump(mode="json"))
+    # The identity is stamped HERE, unconditionally, not inherited from an optional receipt.
+    #
+    # Raised independently by codex-1 and gemini-1: `dimensional_receipt` defaults to None, so a
+    # RouteDecision constructed directly or deserialized produced a ledger row with none of the
+    # six adjudicator fields. Every route decision was supposed to record which code made it, and
+    # in fact only the ones that happened to carry a dimensional receipt did.
+    #
+    # That is representation without enforcement — a field added to a model, and the writer left
+    # free to omit it — which is the defect this whole change set exists to remove. Building the
+    # representation and not the enforcement is the estate's characteristic failure, and it had
+    # reproduced itself inside the fix for it.
+    #
+    # The write path is the only place that sees every decision, so it is the only place the
+    # invariant can hold. Written after the receipt merge so it wins: the identity describes the
+    # code writing this row, and a receipt built earlier in the process cannot overrule that.
+    payload.update(adjudicator_identity().as_receipt())
     blob = (json.dumps(payload, sort_keys=True) + "\n").encode("utf-8")
     # ONE lock across rotate-then-append, and NO append without it.
     #
@@ -2615,6 +2682,9 @@ def _build_dimensional_route_receipt(
     return DimensionalRouteReceipt(
         decision_id=decision.decision_id,
         created_at=decision.created_at,
+        # Resolved at write time from this module's own location, so the receipt names the
+        # build that actually decided even if the activation symlink moves mid-run.
+        **adjudicator_identity().as_receipt(),
         task_id=request.task_id,
         authority_case=request.authority_case or "unknown",
         decision=decision.action,
