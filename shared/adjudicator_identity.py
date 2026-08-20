@@ -67,10 +67,14 @@ class AdjudicatorIdentity:
     #: ``git_worktree``; a dirty tree means the sha does NOT fully identify the code.
     dirty: bool = False
 
-    @property
-    def is_authoritative(self) -> bool:
-        """A clean release tree is the only identity that fully determines the code."""
-        return self.source == "release_tree"
+    # NOTE: an `is_authoritative` convenience property (`source == "release_tree"`) was written
+    # here and REMOVED before merge. The unused-function gate flagged it, correctly: nothing in
+    # production consumed it, only tests. The gate offered three remedies — remove it, give it
+    # a real call path, or add it to scripts/vulture_whitelist.py. Whitelisting a property
+    # invented and never consumed is exactly how that 5,088-line file became the estate's
+    # tombstone for built-and-unwired machinery, so it was removed. `source` already carries
+    # the distinction; a caller that needs the predicate can compare against it, and the
+    # divergence alarm that would genuinely want it is separate, unbuilt work.
 
     def as_receipt(self) -> dict[str, object]:
         """The shape written onto decisions and run records."""

@@ -46,7 +46,6 @@ def test_release_tree_path_is_authoritative() -> None:
     )
     assert ident.sha == sha
     assert ident.source == "release_tree"
-    assert ident.is_authoritative
     assert ident.dirty is False
 
 
@@ -82,7 +81,7 @@ def test_git_worktree_is_weaker_and_says_so() -> None:
     assert ident.source in {"git_worktree", "release_tree"}
     if ident.source == "git_worktree":
         assert SHA_RE.match(ident.sha or ""), "a git identity must carry a real HEAD sha"
-        assert not ident.is_authoritative, (
+        assert ident.source != "release_tree", (
             "a git worktree may be dirty, so its sha does not fully determine the code; only a "
             "release tree is authoritative"
         )
@@ -109,7 +108,6 @@ def test_unknown_location_is_indeterminate_not_a_guess(tmp_path: Path) -> None:
     ident = adjudicator_identity(str(stray))
     assert ident.sha is None
     assert ident.source == "indeterminate"
-    assert not ident.is_authoritative
     assert ident.resolved_from == str(stray.resolve()), (
         "even when the sha is unknown the resolved path must be recorded, so the claim is "
         "auditable rather than merely absent"
