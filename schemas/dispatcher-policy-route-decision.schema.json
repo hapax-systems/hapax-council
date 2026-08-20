@@ -41,6 +41,33 @@
   ],
   "properties": {
     "decision_schema": {"const": 1},
+    "adjudicator_sha": {
+      "description": "Verified git HEAD of the checkout the deciding code was loaded from. Null when no checkout could be verified; never inferred from a directory name.",
+      "type": ["string", "null"],
+      "pattern": "^[0-9a-f]{40}$"
+    },
+    "adjudicator_source": {
+      "description": "How adjudicator_sha was established. Says WHERE the code was loaded from, not that the executed bytes belong to that commit.",
+      "enum": ["release_tree", "git_worktree", "indeterminate"]
+    },
+    "adjudicator_resolved_from": {
+      "description": "Resolved path the identity was determined from, recorded even when adjudicator_sha is null so the claim stays auditable.",
+      "type": ["string", "null"]
+    },
+    "adjudicator_dirty": {
+      "description": "Three-valued: true modified, false verified clean, null cleanliness could not be determined. Consumers must test `is false`, never falsiness.",
+      "type": ["boolean", "null"]
+    },
+    "adjudicator_loaded_modules": {
+      "description": "First-party modules the process had loaded. A coverage statement naming what participated, with no per-module verdict.",
+      "type": "array",
+      "items": {"type": "string"}
+    },
+    "adjudicator_declared_sha": {
+      "description": "The sha the deploy PATH claimed, kept separate from adjudicator_sha because release trees here are writable checkouts and can disagree with their own names.",
+      "type": ["string", "null"],
+      "pattern": "^[0-9a-f]{40}$"
+    },
     "decision_id": {
       "type": "string",
       "pattern": "^rd-[0-9TZ]+-[A-Za-z0-9_.-]+-[a-f0-9]{12}$"

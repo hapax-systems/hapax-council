@@ -360,39 +360,71 @@ def test_ambient_git_variables_cannot_redirect_the_measurement(
     assert ident.sha == target_head, "the tree named in the receipt is the tree measured"
 
 
-def test_head_and_cleanliness_come_from_one_snapshot(tmp_path: Path, monkeypatch) -> None:
-    """Raised by codex-1: two subprocesses can describe two different checkout states.
+def test_a_head_that_moves_during_the_scan_degrades_cleanliness(
+    tmp_path: Path, monkeypatch
+) -> None:
+    """Raised by codex-1: one `git status` invocation is NOT an atomic snapshot.
 
-    Reading HEAD and then status separately does not check that HEAD stayed put. A checkout
-    moving from commit A to a clean commit B mid-measurement yields `(A, False)` — a verified
-    sha over a tree that was never measured clean, which `record_identifies_its_checkout` would
-    accept. Mutable checkouts are the threat this module exists for: the activation symlink
-    repoints ~7x/day and release trees are writable, so this race is live rather than notional.
+    Git resolves HEAD before it scans the worktree, so a concurrent checkout can produce OID A
+    paired with a scan of state B. One invocation narrows the window; it does not close it, and
+    an earlier version of the docstring claimed it did.
 
-    Asserted by counting git invocations. One snapshot cannot disagree with itself; a design
-    that needs two reads can only detect the race, never remove it.
+    Since the window cannot be removed it is detected: HEAD is read again after the status, and
+    a disagreement means the OID and the working-tree state describe different moments. The sha
+    was observed and is kept; the cleanliness cannot be paired with it and degrades to None.
+
+    Simulated by moving HEAD between the two reads, which is what a concurrent checkout does.
     """
     from shared import adjudicator_identity as mod
 
     tree = _make_checkout(tmp_path / "tree", "tree")
-    expected_head = _head(tree)  # BEFORE the counter, or this test's own helper is counted
     real_run = mod.subprocess.run
-    calls: list[tuple[str, ...]] = []
+    seen_status = {"yes": False}
 
-    def counting_run(args, **kwargs):
-        calls.append(tuple(args))
-        return real_run(args, **kwargs)
+    def racing_run(args, **kwargs):
+        result = real_run(args, **kwargs)
+        if "status" in args:
+            seen_status["yes"] = True
+            return result
+        if "rev-parse" in args and seen_status["yes"]:
+            # The bracketing read, after a checkout moved HEAD underneath the scan.
+            return subprocess.CompletedProcess(args, returncode=0, stdout="f" * 40 + "\n")
+        return result
 
-    monkeypatch.setattr(mod.subprocess, "run", counting_run)
+    monkeypatch.setattr(mod.subprocess, "run", racing_run)
+    ident = adjudicator_identity(str(tree / "shared" / "adjudicator_identity.py"))
+
+    assert ident.sha is not None, "the OID was observed and is still worth recording"
+    assert ident.dirty is None, (
+        "HEAD moved during the scan, so the working-tree state describes a different moment and "
+        "must not be paired with this sha as 'verified clean'"
+    )
+    assert not record_identifies_its_checkout(ident.as_receipt()), (
+        "and an unpairable measurement must not satisfy the checkout-identification predicate"
+    )
+
+
+def test_a_head_that_holds_still_yields_a_paired_measurement(tmp_path: Path) -> None:
+    """The positive counterpart: when HEAD does NOT move, the pairing stands.
+
+    Paired deliberately with the racing test above, because only the pair distinguishes
+    "degrades on a real race" from "degrades always". An implementation that returned
+    `dirty=None` unconditionally would satisfy that test and fail this one.
+
+    An earlier version of this test counted git invocations and asserted exactly one, on the
+    claim that a single `git status` is an atomic snapshot. codex-1 refuted the claim — git
+    resolves HEAD before scanning the worktree — so counting calls measured the implementation's
+    shape rather than the property anyone cares about. What matters is whether HEAD and the scan
+    describe the same moment, which is what this asserts.
+    """
+    tree = _make_checkout(tmp_path / "tree", "tree")
+    expected_head = _head(tree)
+
     ident = adjudicator_identity(str(tree / "shared" / "adjudicator_identity.py"))
 
     assert ident.sha == expected_head
-    assert ident.dirty is False
-    git_calls = [c for c in calls if c and c[0] == "git"]
-    assert len(git_calls) == 1, (
-        f"HEAD and cleanliness must come from a single snapshot; {len(git_calls)} git calls "
-        f"leaves a window for the checkout to move between them: {git_calls}"
-    )
+    assert ident.dirty is False, "HEAD was stable across the scan, so the pairing is sound"
+    assert record_identifies_its_checkout(ident.as_receipt())
 
 
 _MISSING = object()
@@ -982,6 +1014,51 @@ def test_the_public_writer_stamps_an_identity_on_every_row(tmp_path: Path) -> No
     assert row["adjudicator_source"] != "indeterminate" or row["adjudicator_sha"] is None, (
         "an indeterminate source must not be paired with a sha"
     )
+
+
+def test_a_written_row_validates_against_the_canonical_schema(tmp_path: Path) -> None:
+    """Raised by codex-1: making the writer stamp unconditionally BROKE the repo's own schema.
+
+    `schemas/dispatcher-policy-route-decision.schema.json` sets `additionalProperties: false` and
+    declared none of the six adjudicator fields, so every newly written row failed the canonical
+    contract. The existing contract test validates `RouteDecision.model_dump` rather than the
+    persisted writer output, which is exactly why it did not notice.
+
+    This validates the JSONL row on disk — the artifact the schema actually governs. A schema
+    test that does not read what the writer wrote is testing a different object.
+    """
+    from datetime import UTC, datetime
+
+    import jsonschema
+
+    from shared.dispatcher_policy import DispatchAction, RouteDecision, write_route_decision_receipt
+
+    schema = json.loads(
+        (REPO_ROOT / "schemas" / "dispatcher-policy-route-decision.schema.json").read_text()
+    )
+    decision = RouteDecision(
+        decision_id="rd-20260821T000000Z-t-cccccccccccc",
+        created_at=datetime(2026, 8, 21, tzinfo=UTC),
+        task_id="t",
+        lane="roleless",
+        route_id="glmcp.review.direct",
+        platform="glmcp",
+        mode="review",
+        profile="direct",
+        action=DispatchAction.HOLD,
+        policy_outcome="hold",
+        launch_allowed=False,
+        prompt_allowed=False,
+        quality_floor_satisfied=False,
+        authority_allowed=False,
+        reason_codes=("x",),
+        message="m",
+    )
+    path = write_route_decision_receipt(decision, ledger_dir=tmp_path)
+    row = json.loads(path.read_text().splitlines()[0])
+
+    assert "adjudicator_sha" in row, "the row under test must actually carry the new fields"
+    jsonschema.validate(instance=row, schema=schema)
 
 
 def test_a_route_receipt_stays_hashable() -> None:

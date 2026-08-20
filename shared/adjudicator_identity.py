@@ -350,9 +350,16 @@ def _git_head(tree: Path) -> tuple[str | None, bool | None]:
     release trees are writable), so a race between the two reads defeats its central claim.
 
     ``git status --porcelain=v2 --branch`` reports ``# branch.oid`` and the working-tree entries
-    from the same snapshot, so the pair cannot disagree. Bracketing two reads and degrading on
-    mismatch would also work and was the other option offered in review; one snapshot is chosen
-    because it removes the race rather than detecting it.
+    from one invocation, which narrows the window to that invocation. It does NOT close it:
+    codex-1 refuted the atomicity claim an earlier version of this comment made — git resolves
+    HEAD before it scans the worktree (``builtin/commit.c``), so a concurrent checkout can still
+    produce OID A paired with a scan of state B.
+
+    Since the window cannot be removed, it is DETECTED. HEAD is read before and after the
+    status, and if the two disagree the tree changed underneath the scan, so ``dirty`` degrades
+    to None: the sha was observed, the cleanliness cannot be paired with it. A move-and-move-back
+    within the window would defeat this, and that residual is stated rather than papered over —
+    an earlier version claimed the pair "cannot disagree", which was simply false.
 
     Earlier and still true: an even earlier version ignored the return code entirely, so a failed
     status produced empty stdout, ``bool("")`` was False, and the identity reported a **verified
@@ -398,6 +405,22 @@ def _git_head(tree: Path) -> tuple[str | None, bool | None]:
         # `# branch.oid (initial)` on an unborn branch, or output this parser does not
         # recognise. Nothing to report rather than a malformed identity.
         return (None, None)
+
+    # Bracket: did HEAD hold still for the duration of the scan? If it moved, the OID and the
+    # working-tree state describe different moments and must not be paired.
+    try:
+        after = subprocess.run(
+            ["git", "-C", str(tree), "rev-parse", "HEAD"],
+            capture_output=True,
+            text=True,
+            timeout=5,
+            check=False,
+            env=_git_env(),
+        )
+    except (OSError, subprocess.SubprocessError):
+        return (head, None)
+    if after.returncode != 0 or after.stdout.strip() != head:
+        return (head, None)
     return (head, dirt)
 
 
