@@ -49,7 +49,7 @@ if str(REPO_ROOT) not in sys.path:
 
 from shared.adjudicator_identity import (  # noqa: E402
     adjudicator_identity,
-    record_has_usable_adjudicator,
+    record_identifies_its_checkout,
 )
 
 DEFAULT_REGISTRY = REPO_ROOT / "config" / "determination-producers.json"
@@ -274,12 +274,18 @@ def main(argv: list[str] | None = None) -> int:
 
     payload["liveness"] = liveness(producers, runs, now)
 
-    # A determination the spine cannot attribute to a specific build is not replayable: the
-    # next reader cannot tell a repair from a redeploy. Report it rather than let the receipt
-    # look complete. This is a diagnostic, not a veto — an unidentifiable run is still a run,
-    # and refusing to record it would lose the evidence entirely.
-    payload["unidentified_runs"] = [
-        r["producer_id"] for r in payload["ran"] if not record_has_usable_adjudicator(r)
+    # A determination whose CHECKOUT is unknown is not replayable: the next reader cannot tell a
+    # repair from a redeploy. Report it rather than let the receipt look complete. A diagnostic,
+    # not a veto — an unidentifiable run is still a run, and refusing to record it would lose the
+    # evidence entirely.
+    #
+    # Named for what it measures. codex-1 raised the previous name, `unidentified_runs` over
+    # `record_has_usable_adjudicator`: that read as "this run is unattributable", which is
+    # stronger than the check performs and made a passing run look fully attributed. Identifying
+    # the checkout is what this establishes; whether the executed bytes belong to that commit is
+    # not knowable from inside the process at all.
+    payload["runs_without_identified_checkout"] = [
+        r["producer_id"] for r in payload["ran"] if not record_identifies_its_checkout(r)
     ]
 
     if args.json:
@@ -289,10 +295,11 @@ def main(argv: list[str] | None = None) -> int:
             print(f"{r['producer_id']}: {r['outcome']} (rc={r.get('returncode')})")
         for d in payload["liveness"]:
             print(f"DEFICIT {d['producer_id']}: {d['deficit']}", file=sys.stderr)
-        for pid in payload["unidentified_runs"]:
+        for pid in payload["runs_without_identified_checkout"]:
             print(
-                f"UNIDENTIFIED {pid}: run recorded without a verified adjudicator; this "
-                "receipt cannot distinguish a repair from a redeploy",
+                f"UNIDENTIFIED CHECKOUT {pid}: no verified sha over a tree measured clean, so "
+                "this receipt cannot distinguish a repair from a redeploy. Next: re-run from a "
+                "committed, clean checkout, or `git -C <tree> status` to see what is modified.",
                 file=sys.stderr,
             )
 

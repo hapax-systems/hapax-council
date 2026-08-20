@@ -48,8 +48,12 @@ captured BEFORE execution — the activation step recording the tree it deployed
 refusing to run a tree that has changed since. That is deploy-side work and is deliberately not
 attempted here.
 
-``record_has_usable_adjudicator`` is therefore **necessary but not sufficient** for attribution,
-and says so at its definition rather than leaving a reader to infer it.
+``record_identifies_its_checkout`` is named for what it establishes, and only that. It was once
+called ``record_has_usable_adjudicator`` and documented as necessary-but-not-sufficient, which
+codex-1 refuted: a limit written in a docstring that the only caller does not enforce is not a
+qualification, it is the same representation-without-enforcement defect this change set exists
+to remove, reappearing inside the fix for it. A name a caller can misuse is a worse guard than a
+paragraph nobody reads.
 
 ## Resolve from ``__file__``, not from the symlink
 
@@ -217,28 +221,31 @@ class AdjudicatorIdentity:
         }
 
 
-def record_has_usable_adjudicator(record: Mapping[str, object]) -> bool:
-    """Does this record identify the checkout that produced it? NECESSARY, NOT SUFFICIENT.
+def record_identifies_its_checkout(record: Mapping[str, object]) -> bool:
+    """Does this record name the checkout it was produced from, verifiably and cleanly?
 
     True means: a verified 40-hex sha, from a source that could verify it, over a tree measured
-    clean at receipt time.
+    clean at receipt time. That is exactly what answers the demand this module was written for —
+    two decisions three hours apart, made by different release trees, with nothing recording
+    that anything changed. Different checkout, different sha: a redeploy is now distinguishable
+    from a repair.
 
-    It does **not** mean the decision is attributable to that commit. Nothing in a Python
-    process can establish that the bytes it executed are the bytes a commit records — the loader
-    reads and compiles a module before any of its code runs, so every in-process check is a
-    re-read and can be defeated by modifying a file, loading it, and restoring it. Four
-    mechanisms claiming otherwise were refuted in review of this change; see the module
-    docstring. Attribution requires an immutable build identity captured before execution.
+    It does NOT mean the decision is attributable to that commit's contents, and the name says
+    ``identifies_its_checkout`` rather than ``has_usable_adjudicator`` for that reason. codex-1
+    raised the earlier name in review: a function documented as necessary-but-not-sufficient
+    whose only consumer treats it as sufficient is not qualified, it is misnamed. Documenting a
+    limit that the caller does not enforce is the exact defect this change set exists to remove,
+    and it had reappeared here.
 
-    This check exists to separate "the adjudicator is known" from "an adjudicator field
-    exists" — `routing_model_version` is present on 559 of 559 historical route decisions
-    carrying a constant, so the second was never evidence of the first. That is the whole of
-    what it certifies, and callers must not read more into it.
+    Nothing in a Python process can establish that the bytes it executed are the bytes a commit
+    records — the loader reads and compiles a module before any of its code runs, so every
+    in-process check is a re-read, defeatable by modifying a file, loading it, and restoring it.
+    Four mechanisms claiming otherwise were refuted in review; see the module docstring.
 
-    A record is NOT usable when it carries only a basis name, when the sha is absent, when the
-    source is ``indeterminate`` (including a release path nothing could confirm), when the tree
-    was dirty, or when **cleanliness could not be determined**. The test is ``is False``, not
-    falsiness: ``None`` means unknown and must not pass.
+    A record does NOT identify its checkout when it carries only a basis name, when the sha is
+    absent, when the source is ``indeterminate`` (including a release path nothing could
+    confirm), when the tree was dirty, or when **cleanliness could not be determined**. The test
+    is ``is False``, not falsiness: ``None`` means unknown and must not pass.
     """
     sha = record.get("adjudicator_sha")
     source = record.get("adjudicator_source")

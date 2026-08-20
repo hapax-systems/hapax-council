@@ -490,8 +490,9 @@ class DimensionalRouteReceipt(_PolicyModel):
     #: comment claimed it did — raised by codex-1 as a stale claim that "invites consumers to
     #: trust exactly the shortcut the implementation otherwise rejects". `release_tree` follows
     #: from path containment plus a discoverable HEAD, and can accompany `adjudicator_dirty`
-    #: True. Nor does the full tuple establish attribution: `record_has_usable_adjudicator` is
-    #: necessary but NOT sufficient, for reasons given at its definition.
+    #: True. Nor does the full tuple establish attribution: `record_identifies_its_checkout`
+    #: establishes WHICH CHECKOUT and nothing about whether the executed bytes belong to that
+    #: commit, for reasons given at its definition.
     #: See shared/adjudicator_identity.py.
     adjudicator_sha: str | None = None
     adjudicator_source: Literal["release_tree", "git_worktree", "indeterminate"] = "indeterminate"

@@ -6,7 +6,7 @@ as "the adjudicator is known". These pin the difference.
 
 They also pin the LIMIT, which is most of what this module learned. Four mechanisms claiming to
 verify that the loaded bytes match the commit were refuted in review; a Python process cannot
-observe the bytes it was compiled from. So `record_has_usable_adjudicator` is necessary and not
+observe the bytes it was compiled from. So `record_identifies_its_checkout` is necessary and not
 sufficient, and the tests below assert that scope rather than a stronger one.
 
 Every path here is built from a tmp_path-rooted HAPAX_SOURCE_ACTIVATE_STATE_DIR rather than the
@@ -28,7 +28,7 @@ import pytest
 from shared.adjudicator_identity import (
     AdjudicatorIdentity,
     adjudicator_identity,
-    record_has_usable_adjudicator,
+    record_identifies_its_checkout,
 )
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
@@ -96,7 +96,7 @@ def test_a_release_path_alone_is_a_claim_not_a_verified_identity(releases_root: 
     assert ident.declared_sha == sha, "the claim must be preserved, not discarded"
     assert ident.sha is None, "an unverifiable claim must not occupy the verified slot"
     assert ident.source == "indeterminate"
-    assert not record_has_usable_adjudicator(ident.as_receipt())
+    assert not record_identifies_its_checkout(ident.as_receipt())
 
 
 def test_the_release_layout_only_means_release_inside_the_trusted_root(
@@ -143,7 +143,7 @@ def test_the_trusted_root_follows_the_activators_own_configuration(releases_root
     assert ident.declared_sha == sha, "inside the trusted root the path's claim is recorded"
     assert ident.sha is None, "still unverified: there is no checkout behind this tree"
     assert ident.source == "indeterminate"
-    assert not record_has_usable_adjudicator(ident.as_receipt())
+    assert not record_identifies_its_checkout(ident.as_receipt())
 
 
 def test_identity_is_resolved_from_the_module_not_the_symlink(releases_root: Path) -> None:
@@ -202,13 +202,13 @@ def test_a_real_checkout_resolves_to_its_verified_head(tmp_path: Path) -> None:
     clean = adjudicator_identity(str(module))
     assert clean.sha == _head(tree)
     assert clean.dirty is False
-    assert record_has_usable_adjudicator(clean.as_receipt())
+    assert record_identifies_its_checkout(clean.as_receipt())
 
     (tree / "MARKER").write_text("modified after commit\n")
     dirty = adjudicator_identity(str(module))
     assert dirty.sha == _head(tree), "the sha is still recorded"
     assert dirty.dirty is True
-    assert not record_has_usable_adjudicator(dirty.as_receipt())
+    assert not record_identifies_its_checkout(dirty.as_receipt())
 
 
 def test_unknown_location_is_indeterminate_not_a_guess(tmp_path: Path) -> None:
@@ -227,7 +227,7 @@ def test_unknown_location_is_indeterminate_not_a_guess(tmp_path: Path) -> None:
     assert ident.source == "indeterminate"
     assert ident.declared_sha is None
     assert ident.resolved_from == str(stray), "where it came from is still recorded"
-    assert not record_has_usable_adjudicator(ident.as_receipt())
+    assert not record_identifies_its_checkout(ident.as_receipt())
 
 
 def test_a_failed_git_status_does_not_report_a_clean_tree(tmp_path: Path, monkeypatch) -> None:
@@ -252,7 +252,7 @@ def test_a_failed_git_status_does_not_report_a_clean_tree(tmp_path: Path, monkey
 
     assert ident.sha == _head(tree), "HEAD was measured successfully and must be reported"
     assert ident.dirty is None, "cleanliness was NOT measured; None, never False"
-    assert not record_has_usable_adjudicator(ident.as_receipt())
+    assert not record_identifies_its_checkout(ident.as_receipt())
 
 
 # --------------------------------------------------------------------------------------
@@ -289,7 +289,7 @@ def test_a_basis_name_constant_does_not_satisfy_the_check() -> None:
     559 of 559 route decisions carry `routing_model_version: "capacity-dimensional-v1"`. The
     field exists on every record and distinguishes none of them.
     """
-    assert not record_has_usable_adjudicator(
+    assert not record_identifies_its_checkout(
         {"routing_model_version": "capacity-dimensional-v1", "task_id": "t-1"}
     )
 
@@ -353,7 +353,7 @@ def test_a_basis_name_constant_does_not_satisfy_the_check() -> None:
     ],
 )
 def test_usable_adjudicator_check(record: dict, usable: bool, why: str) -> None:
-    assert record_has_usable_adjudicator(record) is usable, why
+    assert record_identifies_its_checkout(record) is usable, why
 
 
 #: The shape of a route decision as written for the 559 records preceding this change: an
@@ -372,7 +372,7 @@ def test_no_legacy_route_decision_shape_can_pass_the_check() -> None:
     """The negative case, witnessed in CI rather than only on the operator's host."""
     assert LEGACY_ROUTE_DECISION_SHAPES, "an empty fixture would make this test vacuous"
     for record in LEGACY_ROUTE_DECISION_SHAPES:
-        assert not record_has_usable_adjudicator(record), record
+        assert not record_identifies_its_checkout(record), record
 
 
 def test_live_route_decisions_are_measured_not_assumed() -> None:
@@ -392,7 +392,7 @@ def test_live_route_decisions_are_measured_not_assumed() -> None:
         pytest.skip("route-decision stream is empty")
 
     legacy = [r for r in records if "adjudicator_sha" not in r]
-    identified_legacy = [r for r in legacy if record_has_usable_adjudicator(r)]
+    identified_legacy = [r for r in legacy if record_identifies_its_checkout(r)]
     assert identified_legacy == [], (
         f"{len(identified_legacy)} of {len(legacy)} records that predate this field were "
         "reported as carrying a usable adjudicator identity"
@@ -737,11 +737,13 @@ def test_main_reports_unidentified_runs_in_its_json_payload(tmp_path: Path, caps
 
     assert rc == 0
     assert [r["producer_id"] for r in payload["ran"]] == ["probe"]
-    assert "unidentified_runs" in payload, "the key must exist even when the list is empty"
+    assert "runs_without_identified_checkout" in payload, (
+        "the key must exist even when the list is empty"
+    )
     ran = payload["ran"][0]
-    assert (ran["producer_id"] in payload["unidentified_runs"]) is (
-        not record_has_usable_adjudicator(ran)
-    ), "the payload must partition exactly on the usability check, not approximate it"
+    assert (ran["producer_id"] in payload["runs_without_identified_checkout"]) is (
+        not record_identifies_its_checkout(ran)
+    ), "the payload must partition exactly on the check, not approximate it"
 
 
 def test_main_names_an_unidentifiable_run_on_stderr(tmp_path: Path, capsys, monkeypatch) -> None:
@@ -751,7 +753,7 @@ def test_main_names_an_unidentifiable_run_on_stderr(tmp_path: Path, capsys, monk
     evidence entirely.
     """
     module = _load_determine()
-    monkeypatch.setattr(module, "record_has_usable_adjudicator", lambda record: False)
+    monkeypatch.setattr(module, "record_identifies_its_checkout", lambda record: False)
 
     rc = module.main(
         [
@@ -766,8 +768,12 @@ def test_main_names_an_unidentifiable_run_on_stderr(tmp_path: Path, capsys, monk
 
     assert rc == 0, "an unattributable run is still a run; this is a diagnostic, not a veto"
     assert "probe: produced" in captured.out, "the run must still be reported"
-    assert "UNIDENTIFIED probe" in captured.err
+    assert "UNIDENTIFIED CHECKOUT probe" in captured.err
     assert "repair from a redeploy" in captured.err
+    assert "Next:" in captured.err, (
+        "the executive_function axiom requires an error to carry its next action; a diagnostic "
+        "that names a problem and no remedy makes the operator the lookup table"
+    )
 
 
 def test_main_is_silent_when_every_run_is_identified(tmp_path: Path, capsys, monkeypatch) -> None:
@@ -777,7 +783,7 @@ def test_main_is_silent_when_every_run_is_identified(tmp_path: Path, capsys, mon
     that fires correctly, and only the pair can tell them apart.
     """
     module = _load_determine()
-    monkeypatch.setattr(module, "record_has_usable_adjudicator", lambda record: True)
+    monkeypatch.setattr(module, "record_identifies_its_checkout", lambda record: True)
 
     rc = module.main(
         [
@@ -806,4 +812,4 @@ def test_the_dataclass_defaults_do_not_assert_anything() -> None:
     assert ident.dirty is None, "unknown, not clean"
     assert ident.loaded_modules == ()
     assert ident.declared_sha is None
-    assert not record_has_usable_adjudicator(ident.as_receipt())
+    assert not record_identifies_its_checkout(ident.as_receipt())

@@ -5087,7 +5087,7 @@ from shared.worker_failure_witness import read_raw_signal  # noqa: E402
 
 _ = (read_raw_signal,)
 
-# DETECTOR BLIND SPOT, not dead code. `record_has_usable_adjudicator` has a real production
+# DETECTOR BLIND SPOT, not dead code. `record_identifies_its_checkout` has a real production
 # caller: scripts/hapax-determine reports which runs were recorded without a verified
 # adjudicator. Vulture cannot see it. SOURCE_PATHS in scripts/check-unused-functions.py
 # includes "scripts", but vulture only walks *.py, and 149 of the 260 extensionless files in
@@ -5101,6 +5101,6 @@ _ = (read_raw_signal,)
 # evidence. Entries added here should say which they are. This one is the second kind.
 #
 # Tracked: cc-task `unused-function-gate-cannot-see-149-python-scripts-20260820`.
-from shared.adjudicator_identity import record_has_usable_adjudicator  # noqa: E402
+from shared.adjudicator_identity import record_identifies_its_checkout  # noqa: E402
 
-_ = (record_has_usable_adjudicator,)
+_ = (record_identifies_its_checkout,)
