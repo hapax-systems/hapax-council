@@ -25,7 +25,12 @@ from typing import Any, Literal
 
 from pydantic import BaseModel, ConfigDict, Field, PrivateAttr, ValidationError, model_validator
 
-from shared.adjudicator_identity import adjudicator_identity
+from shared.adjudicator_identity import adjudicator_identity, register_adjudicator_module
+
+# This module computes the routes, so it is part of the code a route receipt claims to identify.
+# Registering at import is what puts it inside `adjudicator_source_matches_head`; without this
+# line the receipt would verify the provenance helper and stay silent about the decision itself.
+register_adjudicator_module(__file__)
 from shared.agentic_trust_boundary import is_syntactically_typed_policy_evidence_reference
 from shared.capability_availability_guarantor import (
     CapabilityAvailabilityReceipt,
@@ -491,6 +496,11 @@ class DimensionalRouteReceipt(_PolicyModel):
     #: False and the sha pointing at a commit that never executed. Only this field speaks to
     #: load time, so `record_has_usable_adjudicator` requires it `is True`.
     adjudicator_source_matches_head: bool | None = None
+    #: Exactly which modules `adjudicator_source_matches_head` covers, repo-relative and sorted.
+    #: The verdict spans every module that registered itself at import — this one included, since
+    #: it computes the routes. Recorded because a claim whose scope must be inferred from a field
+    #: name is how this defect class starts: a reader sees what was covered, not what was implied.
+    adjudicator_verified_modules: list[str] = Field(default_factory=list)
     #: What the deploy PATH claimed, kept beside the verified sha because they can disagree.
     #: Release trees on this estate are writable git checkouts, so a directory name is a
     #: claim; the live tree `45086a03…` carried a modified file while its path asserted a

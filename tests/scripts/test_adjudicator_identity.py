@@ -15,8 +15,10 @@ different code ran.
 from __future__ import annotations
 
 import json
+import os
 import re
 import subprocess
+import sys
 from pathlib import Path
 
 import pytest
@@ -273,6 +275,7 @@ def test_receipt_shape_is_serializable_and_complete() -> None:
         "adjudicator_resolved_from",
         "adjudicator_dirty",
         "adjudicator_source_matches_head",
+        "adjudicator_verified_modules",
         "adjudicator_declared_sha",
     }
     assert json.loads(json.dumps(receipt)) == receipt
@@ -306,6 +309,7 @@ def test_a_basis_name_constant_does_not_satisfy_the_check() -> None:
                 "adjudicator_source": "release_tree",
                 "adjudicator_dirty": False,
                 "adjudicator_source_matches_head": True,
+                "adjudicator_verified_modules": ["shared/adjudicator_identity.py"],
             },
             True,
             "verified sha over a clean tree whose loaded source matches that commit",
@@ -316,6 +320,7 @@ def test_a_basis_name_constant_does_not_satisfy_the_check() -> None:
                 "adjudicator_source": "git_worktree",
                 "adjudicator_dirty": False,
                 "adjudicator_source_matches_head": True,
+                "adjudicator_verified_modules": ["shared/adjudicator_identity.py"],
             },
             True,
             "verified sha over a clean tree whose loaded source matches that commit",
@@ -352,6 +357,19 @@ def test_a_basis_name_constant_does_not_satisfy_the_check() -> None:
             },
             False,
             "the process is executing code the claimed commit does not contain",
+        ),
+        (
+            {
+                "adjudicator_sha": "a" * 40,
+                "adjudicator_source": "release_tree",
+                "adjudicator_dirty": False,
+                "adjudicator_source_matches_head": True,
+                "adjudicator_verified_modules": [],
+            },
+            False,
+            "raised by codex-1 as 'only the helper is hashed, not the code that made the "
+            "decision': a match verdict over an empty set declares no scope, and an unscoped "
+            "claim is what made the first version of this field an over-claim",
         ),
         (
             {
@@ -592,6 +610,158 @@ def test_determination_run_record_carries_the_adjudicator() -> None:
     )
 
 
+#: Run in a SUBPROCESS so the module is genuinely imported through the symlink and the
+#: capture path executes for real. Raised by codex-1: the in-process test below substitutes
+#: `_LOADED_SOURCE_SHA256`, which exercises only the final comparison and would still pass if
+#: import-time capture or path anchoring were broken. Nothing covered the production
+#: no-argument symlink race, which is the defect the whole module was written for.
+_SYMLINK_RACE_PROBE = """
+import json, pathlib, sys
+link = pathlib.Path(sys.argv[1])
+repo = pathlib.Path(sys.argv[2])
+sys.path.insert(0, str(link))
+import shared.adjudicator_identity as mod   # imported THROUGH the symlink; capture happens here
+link.unlink()
+link.symlink_to(sys.argv[3])                # repoint AFTER load, before the receipt is written
+print(json.dumps(mod.adjudicator_identity().as_receipt()))
+"""
+
+
+#: The decision-code case, end to end. A participating module is modified, IMPORTED in that
+#: state, then restored to HEAD before the receipt is built — leaving a clean tree, a real
+#: committed sha, and a process running bytes that commit does not contain. Raised by codex-1:
+#: "either producer can be loaded while modified and then restored before the receipt is
+#: written; git status will report clean, the helper will match HEAD".
+_DECIDER_PROBE = """
+import json, pathlib, sys
+tree = pathlib.Path(sys.argv[1])
+sys.path.insert(0, str(tree))
+decider = tree / "shared" / "decider.py"
+original = decider.read_bytes()
+decider.write_bytes(original + b"\\n# the code that actually ran\\n")
+import shared.adjudicator_identity as mod
+import shared.decider                      # registers its MODIFIED bytes at import
+decider.write_bytes(original)              # restored: the tree is clean again
+print(json.dumps(mod.adjudicator_identity().as_receipt()))
+"""
+
+
+def test_a_modified_decision_module_is_caught_not_just_the_helper(tmp_path: Path) -> None:
+    """Verifying the provenance helper is not verifying the code that decided.
+
+    The first version of `source_matches_head` hashed only `adjudicator_identity.py`. A True
+    verdict therefore certified the machinery that answers the question while saying nothing
+    about `dispatcher_policy` or `hapax-determine`, which are what actually decide. Here a
+    second participating module is loaded modified and restored before the receipt is built:
+    the tree is clean, the sha is real, the helper matches, and the verdict must still be False.
+    """
+    tree = tmp_path / "tree"
+    tree.mkdir(parents=True)
+    run = lambda *a: subprocess.run(  # noqa: E731 - terse local helper, not exported
+        ["git", "-C", str(tree), *a], check=True, capture_output=True
+    )
+    run("init", "-q")
+    run("config", "user.email", "test@example.invalid")
+    run("config", "user.name", "test")
+    pkg = tree / "shared"
+    pkg.mkdir()
+    (pkg / "__init__.py").write_text("")
+    (pkg / "adjudicator_identity.py").write_text(
+        (REPO_ROOT / "shared" / "adjudicator_identity.py").read_text()
+    )
+    (pkg / "decider.py").write_text(
+        "from shared.adjudicator_identity import register_adjudicator_module\n"
+        "register_adjudicator_module(__file__)\n"
+    )
+    run("add", "-A")
+    run("commit", "-q", "-m", "decider")
+
+    probe = tmp_path / "probe.py"
+    probe.write_text(_DECIDER_PROBE)
+    result = subprocess.run(
+        [sys.executable, str(probe), str(tree)],
+        capture_output=True,
+        text=True,
+        check=False,
+        # Otherwise importing writes __pycache__ into the tree and `git status` reports the
+        # dirt the import itself created, hiding the condition under test behind a side effect.
+        env={**os.environ, "PYTHONDONTWRITEBYTECODE": "1"},
+    )
+    assert result.returncode == 0, result.stderr
+    receipt = json.loads(result.stdout)
+
+    assert receipt["adjudicator_dirty"] is False, "the tree was restored; it really is clean"
+    assert SHA_RE.match(receipt["adjudicator_sha"] or ""), "and the sha really is committed"
+    assert receipt["adjudicator_source_matches_head"] is False, (
+        "a decision module was loaded in a state this commit does not contain, and every other "
+        "field reads clean — only this one can see it"
+    )
+    assert not record_has_usable_adjudicator(receipt)
+
+
+def _release_checkout(root: Path, module_src: Path, marker: str) -> Path:
+    """A committed checkout holding a real copy of the module under test."""
+    root.mkdir(parents=True)
+    run = lambda *a: subprocess.run(  # noqa: E731 - terse local helper, not exported
+        ["git", "-C", str(root), *a], check=True, capture_output=True
+    )
+    run("init", "-q")
+    run("config", "user.email", "test@example.invalid")
+    run("config", "user.name", "test")
+    pkg = root / "shared"
+    pkg.mkdir()
+    (pkg / "__init__.py").write_text("")
+    (pkg / "adjudicator_identity.py").write_text(module_src.read_text())
+    (root / "MARKER").write_text(marker)  # differs per tree, so the commits differ
+    run("add", "-A")
+    run("commit", "-q", "-m", marker)
+    return root
+
+
+def test_a_symlink_repoint_after_load_cannot_relabel_the_identity(tmp_path: Path) -> None:
+    """The production race, exercised through the real capture path.
+
+    Two checkouts hold an IDENTICAL copy of this module at DIFFERENT commits — the case
+    codex-1 named: "if the helper file is unchanged across releases, its hash matches the new
+    HEAD and the false identity is accepted". The module is imported through a symlink pointing
+    at tree A, the symlink is repointed to tree B, and only then is the receipt built.
+
+    The identity must still name tree A. Resolving `__file__` a second time at receipt-build
+    would follow the moved link and name B — the original symlink defect, one layer down, and
+    invisible to any test that hands in an explicit path.
+    """
+    module_src = REPO_ROOT / "shared" / "adjudicator_identity.py"
+    tree_a = _release_checkout(tmp_path / "a", module_src, "tree-a")
+    tree_b = _release_checkout(tmp_path / "b", module_src, "tree-b")
+    head = lambda t: subprocess.run(  # noqa: E731
+        ["git", "-C", str(t), "rev-parse", "HEAD"], capture_output=True, text=True, check=True
+    ).stdout.strip()
+    sha_a, sha_b = head(tree_a), head(tree_b)
+    assert sha_a != sha_b, "the two trees must be distinguishable for this test to mean anything"
+
+    link = tmp_path / "worktree"
+    link.symlink_to(tree_a)
+    probe = tmp_path / "probe.py"
+    probe.write_text(_SYMLINK_RACE_PROBE)
+    result = subprocess.run(
+        [sys.executable, str(probe), str(link), str(REPO_ROOT), str(tree_b)],
+        capture_output=True,
+        text=True,
+        check=False,
+        env={**os.environ, "PYTHONDONTWRITEBYTECODE": "1"},
+    )
+    assert result.returncode == 0, result.stderr
+    receipt = json.loads(result.stdout)
+
+    assert receipt["adjudicator_sha"] == sha_a, (
+        "the receipt must name the tree the code was LOADED from; naming the repointed tree "
+        "would attribute the decision to code that never ran"
+    )
+    assert receipt["adjudicator_sha"] != sha_b
+    assert receipt["adjudicator_source_matches_head"] is True
+    assert "shared/adjudicator_identity.py" in receipt["adjudicator_verified_modules"]
+
+
 def test_a_clean_tree_does_not_rescue_code_the_commit_does_not_contain(monkeypatch) -> None:
     """codex-1's attack, pinned: load from a modified tree, then restore a clean HEAD.
 
@@ -606,7 +776,7 @@ def test_a_clean_tree_does_not_rescue_code_the_commit_does_not_contain(monkeypat
     """
     import shared.adjudicator_identity as mod
 
-    monkeypatch.setattr(mod, "_LOADED_SOURCE_SHA256", "0" * 64)
+    monkeypatch.setattr(mod, "_LOADED_MODULES", dict.fromkeys(mod._LOADED_MODULES, "0" * 64))
     mod.adjudicator_identity.cache_clear()
     receipt = mod.adjudicator_identity().as_receipt()
 

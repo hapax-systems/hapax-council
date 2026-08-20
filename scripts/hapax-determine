@@ -50,7 +50,13 @@ if str(REPO_ROOT) not in sys.path:
 from shared.adjudicator_identity import (  # noqa: E402
     adjudicator_identity,
     record_has_usable_adjudicator,
+    register_adjudicator_module,
 )
+
+# This script runs the producers, so it is part of the code a run record claims to identify.
+# Without this line the record would verify the provenance helper and stay silent about the
+# code that actually produced the determination.
+register_adjudicator_module(__file__)
 
 DEFAULT_REGISTRY = REPO_ROOT / "config" / "determination-producers.json"
 DEFAULT_RUN_LEDGER = Path.home() / ".cache" / "hapax" / "determination" / "runs.jsonl"

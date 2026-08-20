@@ -130,21 +130,53 @@ def _sha256_of(data: bytes) -> str:
     return hashlib.sha256(data).hexdigest()
 
 
-def _read_own_source() -> str | None:
-    """sha256 of this module's file, read at IMPORT — the moment its bytes became the code.
+#: Resolved path -> sha256 of its bytes, captured when that module was imported.
+#:
+#: The decision is not made by one file. `dispatcher_policy` computes routes and
+#: `hapax-determine` runs producers; hashing only this helper would verify the provenance
+#: machinery while saying nothing about the code that actually decided — raised by codex-1 as
+#: "only the helper is hashed, not the code that made the decision". Each participating module
+#: registers itself at its own import, because that is the only moment its bytes are known to
+#: be the bytes that will run.
+_LOADED_MODULES: dict[str, str] = {}
 
-    Every other measurement in this module happens when a receipt is written, which can be
-    arbitrarily long after the process loaded its code. This is the one value captured at load,
-    so it is the only anchor a later measurement can be checked against.
+
+def _capture(module_file: str) -> Path | None:
+    """Record a module's loaded bytes. Returns the resolved path it was recorded under.
+
+    Resolution happens HERE, once, at import. `adjudicator_identity` reuses the stored path
+    rather than resolving ``__file__`` again — raised by codex-1 as "import-time hashing still
+    does not pin the loaded tree": when the import path runs through the activation symlink, a
+    repoint between the two resolutions selects a different checkout, and a helper unchanged
+    across releases hashes equal to the new HEAD. That is the original symlink defect one layer
+    down, and it is defeated by not resolving twice.
+
+    Known limit, stated rather than papered over: the loader has already read the file, and this
+    re-reads it. A change landing between those two reads is invisible. Closing that would need
+    an import hook; the window is microseconds against the hours these receipts are read across,
+    and `source_matches_head` is not claimed to cover it.
     """
     try:
-        return _sha256_of(Path(__file__).resolve().read_bytes())
+        resolved = Path(module_file).resolve()
+        _LOADED_MODULES[str(resolved)] = _sha256_of(resolved.read_bytes())
     except OSError:
         return None
+    return resolved
 
 
-#: Captured at import. See ``_read_own_source``.
-_LOADED_SOURCE_SHA256 = _read_own_source()
+def register_adjudicator_module(module_file: str) -> None:
+    """Declare a module as part of the code whose identity a receipt asserts.
+
+    Called at import by every module that participates in a decision. Modules that do not
+    register are not covered, and the receipt says which ones were — see
+    ``adjudicator_modules_verified``. A silent narrowing would be the same defect this module
+    exists to prevent, so the scope of the claim travels with the claim.
+    """
+    _capture(module_file)
+
+
+#: Captured at import, once. See ``_capture``.
+_OWN_PATH = _capture(__file__)
 
 
 AdjudicatorSource = Literal["release_tree", "git_worktree", "indeterminate"]
@@ -182,6 +214,18 @@ class AdjudicatorIdentity:
     #: Verifying the loaded bytes against the commit closes that window for this module's own
     #: source; ``dirty`` still speaks for the rest of the tree, at measurement time.
     source_matches_head: bool | None = None
+    #: Exactly which modules ``source_matches_head`` covers, repo-relative and sorted.
+    #:
+    #: Raised by codex-1: the earlier version hashed only this helper, so a True verdict verified
+    #: the provenance machinery while saying nothing about `dispatcher_policy` or
+    #: `hapax-determine` — the code that actually decides. Either could be loaded modified and
+    #: restored before the receipt was written, and every field would still read clean.
+    #:
+    #: Participating modules now register at their own import and the verdict spans all of them.
+    #: The set travels with the claim because a claim whose scope must be inferred from a field
+    #: NAME is how this whole defect class starts: a reader can see what was covered instead of
+    #: assuming it was everything.
+    verified_modules: tuple[str, ...] = ()
     #: For a release tree, the sha its PATH claims. Recorded separately from ``sha`` because
     #: they can disagree: release trees on this estate are git checkouts and are WRITABLE, so
     #: the directory name is a claim, not a proof. Measured 2026-08-20: the live release tree
@@ -206,6 +250,7 @@ class AdjudicatorIdentity:
             "adjudicator_resolved_from": self.resolved_from,
             "adjudicator_dirty": self.dirty,
             "adjudicator_source_matches_head": self.source_matches_head,
+            "adjudicator_verified_modules": list(self.verified_modules),
             "adjudicator_declared_sha": self.declared_sha,
         }
 
@@ -236,7 +281,15 @@ def record_has_usable_adjudicator(record: Mapping[str, object]) -> bool:
     # tests are `is True`/`is False` rather than falsiness, because the absent field and the
     # unknown value are the same thing here — an older record that predates this check has not
     # passed it, and must not inherit a pass from a missing key.
-    return record.get("adjudicator_source_matches_head") is True
+    if record.get("adjudicator_source_matches_head") is not True:
+        return False
+    # A match verdict must name what it matched. This is not a second guard on the same hazard:
+    # the check above asks whether the loaded bytes agreed with the commit, this one asks
+    # whether the claim declares its own scope. A record asserting True over an empty set is
+    # self-contradictory, and accepting it would reinstate exactly the unscoped claim that
+    # made the previous version of this field an over-claim.
+    modules = record.get("adjudicator_verified_modules")
+    return isinstance(modules, (list, tuple)) and len(modules) > 0
 
 
 def _git_head(tree: Path) -> tuple[str | None, bool | None]:
@@ -279,22 +332,8 @@ def _git_head(tree: Path) -> tuple[str | None, bool | None]:
         return (None, None)
 
 
-def _loaded_source_matches(
-    tree: Path, head: str, resolved: Path, is_own_source: bool
-) -> bool | None:
-    """Is the source that was loaded the source the commit records?
-
-    Returns None when the question cannot be answered rather than guessing either way. That
-    includes the case that matters most for honesty: when ``adjudicator_identity`` was called
-    with an explicit ``module_file``, the bytes hashed at import belong to a DIFFERENT file, so
-    there is nothing here to verify and the answer is unknown — not True.
-    """
-    if not is_own_source or _LOADED_SOURCE_SHA256 is None:
-        return None
-    try:
-        relative = resolved.relative_to(tree)
-    except ValueError:
-        return None
+def _blob_sha256_at(tree: Path, head: str, relative: Path) -> str | None:
+    """sha256 of what ``head`` records at ``relative``, or None if it cannot be looked up."""
     try:
         blob = subprocess.run(
             ["git", "-C", str(tree), "cat-file", "blob", f"{head}:{relative.as_posix()}"],
@@ -305,11 +344,55 @@ def _loaded_source_matches(
     except (OSError, subprocess.SubprocessError):
         return None
     if blob.returncode != 0:
-        # The commit does not contain this path at all — a new file not yet committed, or a
-        # tree that does not correspond. Unknown, not False: "cannot look it up" and "looked it
+        # The commit does not contain this path at all — a file not yet committed, or a tree
+        # that does not correspond. Unknown, not mismatched: "cannot look it up" and "looked it
         # up and it differs" are different claims, and only the second justifies an alarm.
         return None
-    return _sha256_of(blob.stdout) == _LOADED_SOURCE_SHA256
+    return _sha256_of(blob.stdout)
+
+
+def _loaded_source_matches(
+    tree: Path, head: str, is_own_source: bool
+) -> tuple[bool | None, tuple[str, ...]]:
+    """Do the bytes every registered module LOADED match what ``head`` records for them?
+
+    Returns ``(verdict, verified_paths)``. True only when every registered module inside this
+    tree was looked up and matched; False as soon as one demonstrably differs; None when
+    anything could not be confirmed. ``verified_paths`` names exactly what the verdict covers,
+    repo-relative and sorted, so the scope of the claim is readable from the receipt rather than
+    inferred from the field's name.
+
+    When ``adjudicator_identity`` is called with an explicit ``module_file``, the answer is None:
+    that path was never loaded by this process, so a fixture cannot mint the strongest claim.
+    """
+    if not is_own_source:
+        return (None, ())
+
+    verified: list[str] = []
+    mismatched = False
+    unknown = False
+    for path_text, loaded_sha in sorted(_LOADED_MODULES.items()):
+        try:
+            relative = Path(path_text).relative_to(tree)
+        except ValueError:
+            # Registered from outside this checkout — not this tree's business, and not a
+            # mismatch. It is still absent from `verified`, which is where a reader sees it.
+            continue
+        committed = _blob_sha256_at(tree, head, relative)
+        if committed is None:
+            unknown = True
+        elif committed != loaded_sha:
+            mismatched = True
+        else:
+            verified.append(relative.as_posix())
+
+    if mismatched:
+        return (False, tuple(sorted(verified)))
+    if unknown or not verified:
+        # Not every participating module could be confirmed. A partial pass would be exactly
+        # the over-claim this field exists to retire.
+        return (None, tuple(sorted(verified)))
+    return (True, tuple(sorted(verified)))
 
 
 @lru_cache(maxsize=1)
@@ -324,10 +407,18 @@ def adjudicator_identity(module_file: str | None = None) -> AdjudicatorIdentity:
     identity describes a path this process never loaded, so ``source_matches_head`` stays None:
     a test fixture must not be able to mint the strongest available claim.
     """
-    resolved = Path(module_file or __file__).resolve()
+    is_own_source = module_file is None
+    # For the production path, reuse the path resolved at IMPORT. Resolving `__file__` again
+    # here would re-follow the activation symlink, and a repoint between the two resolutions
+    # selects a different checkout — the original symlink defect, one layer down. Falling back
+    # to a live resolve only when the import-time capture failed, where there is nothing to
+    # drift from.
+    if is_own_source:
+        resolved = _OWN_PATH if _OWN_PATH is not None else Path(__file__).resolve()
+    else:
+        resolved = Path(module_file).resolve()
     text = str(resolved)
     declared = _declared_release_sha(resolved)
-    is_own_source = module_file is None
 
     # Find the enclosing checkout, if any. The module lives at <root>/shared/<file>.py, but a
     # symlinked or relocated layout should still resolve rather than silently degrade.
@@ -335,6 +426,7 @@ def adjudicator_identity(module_file: str | None = None) -> AdjudicatorIdentity:
         if (candidate / ".git").exists():
             head, dirty = _git_head(candidate)
             if head is not None:
+                matches, verified_modules = _loaded_source_matches(candidate, head, is_own_source)
                 # A release path is a CLAIM about content, and release trees here are git
                 # checkouts that are writable. Verify rather than trust the directory name:
                 # report the sha that actually describes the tree, keep the claim alongside,
@@ -344,9 +436,8 @@ def adjudicator_identity(module_file: str | None = None) -> AdjudicatorIdentity:
                     source="release_tree" if declared else "git_worktree",
                     resolved_from=text,
                     dirty=dirty,
-                    source_matches_head=_loaded_source_matches(
-                        candidate, head, resolved, is_own_source
-                    ),
+                    source_matches_head=matches,
+                    verified_modules=verified_modules,
                     declared_sha=declared,
                 )
             break
