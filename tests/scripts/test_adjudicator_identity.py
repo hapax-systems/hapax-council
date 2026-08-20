@@ -62,6 +62,66 @@ def test_a_release_path_alone_is_a_claim_not_a_verified_identity() -> None:
     assert not record_has_usable_adjudicator(ident.as_receipt())
 
 
+def test_the_release_layout_only_means_release_inside_the_trusted_root(
+    tmp_path: Path, monkeypatch
+) -> None:
+    """Raised by coderabbitai: a substring is not a location.
+
+    The first implementation regex-searched for ``/source-activation/releases/<40-hex>``
+    anywhere in the resolved path, so ANY directory that happened to contain those components
+    was read as a deployed release — a scratch copy, an unpacked archive, a fixture tree. That
+    turns the estate's most load-bearing provenance claim into something any writable directory
+    can mint by choosing its own name.
+
+    Containment is checked against the root the activator actually writes
+    (``scripts/hapax-source-activate:34``), so the same layout outside that root carries no
+    authority and no ``declared_sha``: ``resolved_from`` keeps the full path for forensics,
+    while the untrusted sha is not surfaced in a field a reader would take as a claim of
+    deployment.
+    """
+    monkeypatch.setenv("HAPAX_SOURCE_ACTIVATE_STATE_DIR", str(tmp_path / "trusted"))
+    sha = "b" * 40
+    impostor = tmp_path / "elsewhere" / "source-activation" / "releases" / sha / "shared"
+    impostor.mkdir(parents=True)
+    module = impostor / "adjudicator_identity.py"
+    module.write_text("# a copy, not a deployment\n")
+
+    ident = adjudicator_identity(str(module))
+
+    assert ident.source != "release_tree", (
+        "a path outside the trusted releases root must not be classified as a deployed release"
+    )
+    assert ident.declared_sha is None, "an untrusted path's sha must not be surfaced as a claim"
+    assert str(module) == ident.resolved_from, "the full path is still recorded for forensics"
+
+
+def test_the_trusted_root_follows_the_activators_own_configuration(
+    tmp_path: Path, monkeypatch
+) -> None:
+    """The same layout INSIDE the trusted root does yield the claim — the check is location.
+
+    Paired with the test above so the pair pins a distinction rather than one half of it: if
+    containment were implemented as "always False" both the impostor assertion and this one
+    could not pass together. The root is read from the activator's own
+    ``HAPAX_SOURCE_ACTIVATE_STATE_DIR`` rather than a constant duplicated here, so this test
+    fails if the two ever disagree about where releases live.
+    """
+    state_dir = tmp_path / "trusted"
+    monkeypatch.setenv("HAPAX_SOURCE_ACTIVATE_STATE_DIR", str(state_dir))
+    sha = "c" * 40
+    tree = state_dir / "releases" / sha / "shared"
+    tree.mkdir(parents=True)
+    module = tree / "adjudicator_identity.py"
+    module.write_text("# a deployment, unverifiable — no checkout behind it\n")
+
+    ident = adjudicator_identity(str(module))
+
+    assert ident.declared_sha == sha, "inside the trusted root the path's claim is recorded"
+    assert ident.sha is None, "still unverified: there is no checkout behind this tree"
+    assert ident.source == "indeterminate"
+    assert not record_has_usable_adjudicator(ident.as_receipt())
+
+
 def test_identity_is_resolved_from_the_module_not_the_symlink() -> None:
     """The core design decision, pinned.
 

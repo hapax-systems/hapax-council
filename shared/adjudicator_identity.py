@@ -41,6 +41,14 @@ So the path sha is recorded as ``declared_sha`` and the *verified* HEAD as ``sha
 can see it. A release path with no verifiable checkout behind it yields ``sha=None``: the claim
 survives in ``declared_sha`` rather than being promoted into the verified slot.
 
+And the claim is only heard from one place. Raised by coderabbitai in review: the first
+implementation matched the release layout as a **substring of any path**, so any directory that
+named itself ``…/source-activation/releases/<40-hex>/…`` minted a ``release_tree`` verdict —
+a scratch copy, an unpacked archive, a test fixture. Deployment is a location, not a spelling,
+so containment is checked against the root the activator itself writes
+(``HAPAX_SOURCE_ACTIVATE_STATE_DIR``, ``scripts/hapax-source-activate:34``). The same layout
+elsewhere carries no claim at all.
+
 ## Indeterminate is a state, not a default
 
 Following the same rule established for supply freshness in this package: when the identity
@@ -51,6 +59,7 @@ a decision to the wrong tree is worse than one that says it does not know.
 
 from __future__ import annotations
 
+import os
 import re
 import subprocess
 from collections.abc import Mapping
@@ -59,9 +68,47 @@ from functools import lru_cache
 from pathlib import Path
 from typing import Literal
 
-#: ``.../source-activation/releases/<40-hex>/...`` — the deployed-release layout.
-_RELEASE_PATH_RE = re.compile(r"/source-activation/releases/([0-9a-f]{40})(?:/|$)")
 _SHA_RE = re.compile(r"[0-9a-f]{40}")
+
+
+def _trusted_releases_root() -> Path:
+    """The one directory whose layout is allowed to mean "deployed release".
+
+    ``scripts/hapax-source-activate:34`` defines the state dir as
+    ``${HAPAX_SOURCE_ACTIVATE_STATE_DIR:-$HOME/.cache/hapax/source-activation}`` and creates
+    release trees beneath ``releases/``. Reading the same variable keeps this function and the
+    activator from disagreeing about where releases live; it is the activator's own
+    configuration, not an escape hatch added for tests.
+    """
+    configured = os.environ.get("HAPAX_SOURCE_ACTIVATE_STATE_DIR")
+    base = (
+        Path(configured) if configured else Path.home() / ".cache" / "hapax" / "source-activation"
+    )
+    return (base / "releases").resolve()
+
+
+def _declared_release_sha(resolved: Path) -> str | None:
+    """The sha a path CLAIMS, but only from inside the trusted releases root.
+
+    Raised by coderabbitai in review: the earlier implementation regex-searched for
+    ``/source-activation/releases/<40-hex>`` **anywhere** in the path, so any copy, scratch
+    checkout, or archive that happened to contain those components — ``/tmp/x/source-activation/
+    releases/<sha>/shared/…`` — was classified ``release_tree`` and read as authoritative. A
+    substring is not a location. The layout only carries meaning inside the directory the
+    activator actually writes, so containment is checked against that root and the sha is taken
+    from the first component beneath it rather than matched loose.
+
+    Outside the root the answer is None, not the path's claim: ``resolved_from`` already records
+    the full path for forensics, and surfacing an untrusted sha in ``declared_sha`` would invite
+    a reader to trust exactly what this check exists to distrust.
+    """
+    try:
+        relative = resolved.relative_to(_trusted_releases_root())
+    except (ValueError, OSError, RuntimeError):
+        return None
+    head = relative.parts[0] if relative.parts else ""
+    return head if _SHA_RE.fullmatch(head) else None
+
 
 AdjudicatorSource = Literal["release_tree", "git_worktree", "indeterminate"]
 
@@ -185,7 +232,7 @@ def adjudicator_identity(module_file: str | None = None) -> AdjudicatorIdentity:
     """
     resolved = Path(module_file or __file__).resolve()
     text = str(resolved)
-    declared = match.group(1) if (match := _RELEASE_PATH_RE.search(text)) else None
+    declared = _declared_release_sha(resolved)
 
     # Find the enclosing checkout, if any. The module lives at <root>/shared/<file>.py, but a
     # symlinked or relocated layout should still resolve rather than silently degrade.
