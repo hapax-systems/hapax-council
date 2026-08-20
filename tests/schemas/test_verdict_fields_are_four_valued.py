@@ -163,9 +163,19 @@ def test_the_two_unknowns_have_distinct_codes() -> None:
 def test_both_unknowns_still_classify_as_stale() -> None:
     """The repair must not silently reclassify candidates from STALE to VETOED.
 
-    Two consumers gate on this membership to choose `CandidateStatus.STALE`. Splitting the
-    code without widening them would have changed dispatch behaviour as a side effect of a
-    diagnostics change — the same class of defect, introduced by its own fix.
+    `STALE_SUPPLY_FIELD_CODES` has two consumers and they do **different** things, which is
+    worth stating precisely because conflating them is how the reconstruction bug got missed:
+
+    - `_candidate_receipt` gates on this membership to choose `CandidateStatus.STALE`. That
+      is the classification path, covered here.
+    - `_receipt_stale_metadata` uses the same membership only as a *filter*, then
+      **reconstructs** `StaleMetadataReceipt` objects for the serialized receipt. That is a
+      separate path with its own failure mode — it is where `absent` was silently relabelled
+      `expired` — and it is covered by
+      `test_serialized_receipt_preserves_absent_through_reconstruction`, not by this test.
+
+    Splitting the code without widening the classification consumer would have changed
+    dispatch behaviour as a side effect of a diagnostics change.
     """
     assert SUPPLY_FIELD_ABSENT_CODE in STALE_SUPPLY_FIELD_CODES
     assert SUPPLY_FIELD_EXPIRED_CODE in STALE_SUPPLY_FIELD_CODES
