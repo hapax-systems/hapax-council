@@ -294,6 +294,107 @@ class StaleMetadataReceipt(_PolicyModel):
     observed_at: datetime | None = None
     stale_after: str | None = None
     effect: str
+    #: Which unknown this is. These are not the same defect and they do not have the same
+    #: repair: ``absent`` means no producer has ever written the field (build or wire one),
+    #: ``expired`` means a producer wrote it and the value aged out (refresh it). Collapsing
+    #: them is how a 94-day gap between the live capability-receipt store and the registry the
+    #: veto actually reads stayed invisible while both artifacts looked healthy alone.
+    #:
+    #: ``indeterminate`` is the third state and the DEFAULT: this receipt's provenance does
+    #: not say which of the two it is. It is not a synonym for ``expired``. Defaulting to
+    #: ``expired`` — as an earlier version of this field did — asserts a measurement that was
+    #: never made and sends a reader to refresh a producer that may never have existed, which
+    #: is the exact defect this field exists to prevent, one level down. Every construction
+    #: site must state what it actually knows; the default asserts nothing.
+    kind: Literal["absent", "expired", "indeterminate"] = "indeterminate"
+
+
+#: Veto codes for the two unknowns. ``STALE_SUPPLY_FIELD_CODES`` is the single source of
+#: truth for "this candidate is unknown rather than measured-bad"; every consumer that used
+#: to compare against the old single code must test membership here instead, or the
+#: STALE-vs-VETOED distinction silently changes when a new unknown kind is added.
+SUPPLY_FIELD_ABSENT_CODE = "supply_field_absent"
+SUPPLY_FIELD_EXPIRED_CODE = "supply_field_expired"
+#: The provenance does not say which unknown this is. Distinct from both measured outcomes and
+#: from the legacy code, so a reader is told "this was never determined" rather than being
+#: handed a repair instruction that may be wrong.
+SUPPLY_FIELD_FRESHNESS_INDETERMINATE_CODE = "supply_field_freshness_indeterminate"
+#: Retained so historical receipts and any out-of-tree consumer still classify as STALE.
+LEGACY_STALE_SUPPLY_FIELD_CODE = "stale_supply_field"
+STALE_SUPPLY_FIELD_CODES = frozenset(
+    {
+        SUPPLY_FIELD_ABSENT_CODE,
+        SUPPLY_FIELD_EXPIRED_CODE,
+        SUPPLY_FIELD_FRESHNESS_INDETERMINATE_CODE,
+        LEGACY_STALE_SUPPLY_FIELD_CODE,
+    }
+)
+
+#: Veto codes whose provenance does not determine absent-vs-expired. Mapping either of these
+#: to a definite kind would fabricate a measurement: the legacy code predates the distinction,
+#: and `capability_data_stale_or_unknown` says "or unknown" in its own name.
+INDETERMINATE_FRESHNESS_CODES = frozenset(
+    {
+        LEGACY_STALE_SUPPLY_FIELD_CODE,
+        "capability_data_stale_or_unknown",
+    }
+)
+
+
+def _freshness_kind_for_code(code: str) -> Literal["absent", "expired", "indeterminate"]:
+    """Map a veto code to what it actually determines about freshness.
+
+    Named and total rather than a ternary at the call site so every code has to be placed
+    deliberately: a new unknown-supply code that nobody classifies lands in ``indeterminate``,
+    which is honest, instead of silently inheriting whichever branch the ternary defaulted to.
+    """
+    if code == SUPPLY_FIELD_ABSENT_CODE:
+        return "absent"
+    if code == SUPPLY_FIELD_EXPIRED_CODE:
+        return "expired"
+    return "indeterminate"
+
+
+def _has_unknown_supply_veto(vetoes: Iterable[DimensionalVeto]) -> bool:
+    """True when any veto means "unknown" rather than "measured and bad".
+
+    Named rather than inlined because the classification it drives — STALE versus VETOED —
+    is behavioural, and an inline comparison against one code cannot be tested without
+    building a whole DispatchRequest. Mutation testing found exactly that hole: narrowing
+    this back to a single code changed candidate status with every test still green.
+    """
+    return any(veto.code in STALE_SUPPLY_FIELD_CODES for veto in vetoes)
+
+
+def _supply_field_veto(item: StaleMetadataReceipt) -> DimensionalVeto:
+    """Render one unknown-supply receipt as a veto that names its own repair.
+
+    Named rather than inlined so the absent/expired mapping is reachable by a test. The
+    previous inline form emitted one code for both branches, and nothing could observe the
+    collapse without constructing a whole DispatchRequest.
+    """
+    if item.kind == "absent":
+        code = SUPPLY_FIELD_ABSENT_CODE
+        message = (
+            f"{item.field} has never been written: no producer has emitted it "
+            "(repair: build or wire the producer)"
+        )
+    elif item.kind == "expired":
+        code = SUPPLY_FIELD_EXPIRED_CODE
+        message = f"{item.field} was measured and has expired (repair: refresh the producer)"
+    else:
+        code = SUPPLY_FIELD_FRESHNESS_INDETERMINATE_CODE
+        message = (
+            f"{item.field} is unusable but this receipt does not record whether it was "
+            "never written or has expired (repair: determine which before acting — do not "
+            "assume either)"
+        )
+    return DimensionalVeto(
+        code=code,
+        field=item.field,
+        evidence_ref=item.source_id,
+        message=message,
+    )
 
 
 class ConfidenceReceipt(_PolicyModel):
@@ -1966,24 +2067,13 @@ def _candidate_receipt(
     vetoes.extend(_dimensional_vetoes(request, checked_at=checked_at))
     stale_metadata = _stale_supply_metadata(request, checked_at=checked_at)
     if stale_metadata:
-        vetoes.extend(
-            DimensionalVeto(
-                code="stale_supply_field",
-                field=item.field,
-                evidence_ref=item.source_id,
-                message=f"{item.field} is stale or missing",
-            )
-            for item in stale_metadata
-            if item.effect == "veto"
-        )
+        vetoes.extend(_supply_field_veto(item) for item in stale_metadata if item.effect == "veto")
     scores = _score_candidate(request)
     aggregate = _aggregate_score(scores)
 
     if vetoes:
         status = (
-            CandidateStatus.STALE
-            if any(veto.code == "stale_supply_field" for veto in vetoes)
-            else CandidateStatus.VETOED
+            CandidateStatus.STALE if _has_unknown_supply_veto(vetoes) else CandidateStatus.VETOED
         )
         return DimensionalCandidateReceipt(
             route_id=request.route_id,
@@ -2177,6 +2267,7 @@ def _stale_supply_metadata(
                     field=f"capability_scores.{dimension}.observed_at",
                     stale_after=str(stale_after) if stale_after else None,
                     effect="veto",
+                    kind="absent",
                 )
             )
             continue
@@ -2193,6 +2284,7 @@ def _stale_supply_metadata(
                     observed_at=_coerce_utc(checked),
                     stale_after=str(stale_after),
                     effect="veto",
+                    kind="expired",
                 )
             )
     for tool in supply.tool_state:
@@ -2203,6 +2295,7 @@ def _stale_supply_metadata(
                     field=f"tool_state.{tool.tool_id}.observed_at",
                     stale_after=tool.stale_after,
                     effect="veto",
+                    kind="absent",
                 )
             )
             continue
@@ -2214,6 +2307,7 @@ def _stale_supply_metadata(
                     observed_at=_coerce_utc(tool.observed_at),
                     stale_after=tool.stale_after,
                     effect="veto",
+                    kind="expired",
                 )
             )
     return tuple(stale)
@@ -2633,9 +2727,17 @@ def _receipt_stale_metadata(
             source_id=veto.evidence_ref or candidate.route_id,
             field=veto.field,
             effect="veto",
+            # Recover the kind from the code, and only where the code determines it. Codes in
+            # INDETERMINATE_FRESHNESS_CODES do not: the legacy code predates the distinction
+            # and `capability_data_stale_or_unknown` says "or unknown" in its own name.
+            # Mapping those to "expired" — as an earlier revision did, deliberately — asserts
+            # a measurement nobody made and sends a reader to refresh a producer that may
+            # never have existed. That is this module's own defect reproduced one level down,
+            # which is why it is now a typed third state rather than a default.
+            kind=_freshness_kind_for_code(veto.code),
         )
         for veto in candidate.vetoes
-        if veto.code in {"stale_supply_field", "capability_data_stale_or_unknown"}
+        if veto.code in (STALE_SUPPLY_FIELD_CODES | {"capability_data_stale_or_unknown"})
     )
 
 
