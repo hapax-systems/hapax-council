@@ -52,7 +52,11 @@ from shared.dispatcher_policy import (
     CandidateStatus,
     DimensionalCandidateReceipt,
     DimensionalVeto,
+    DispatchAction,
+    DispatchRequest,
+    RouteDecision,
     StaleMetadataReceipt,
+    _build_dimensional_route_receipt,
     _has_unknown_supply_veto,
     _receipt_stale_metadata,
     _supply_field_veto,
@@ -142,6 +146,74 @@ def test_serialized_receipt_preserves_absent_through_reconstruction() -> None:
     assert by_kind == {"absent", "expired"}, (
         f"reconstruction collapsed the kinds to {by_kind}; a serialized route receipt would "
         "name the wrong repair for one of them"
+    )
+
+
+def test_absent_survives_the_real_receipt_build_and_json_serialization() -> None:
+    """Raised as Minor by coderabbitai on #4585, and the finding is correct.
+
+    `test_serialized_receipt_preserves_absent_through_reconstruction` calls
+    `_receipt_stale_metadata` directly. It never builds a `DimensionalRouteReceipt` and never
+    serializes, so a regression in `_build_dimensional_route_receipt` or in
+    `model_dump(mode="json")` passes it.
+
+    That is this session's own lesson recurring for a third time: the first suite covered only
+    the extracted helpers, the fix for that covered a *different* helper, and only an
+    end-to-end assertion closes the class. A mutation pass cannot surface this — it perturbs
+    what the tests already reach.
+
+    Note the reviewer labelled it a quick win; it is not. No other test in the tree constructs
+    a `DispatchRequest`, so this is the first. It is still worth doing, because it is the only
+    assertion here that would survive a rewrite of the reconstruction helper.
+    """
+    request = DispatchRequest(
+        task_id="verdict-fields-must-be-able-to-say-unknown-20260820",
+        lane="roleless",
+        platform="glmcp",
+        mode="review",
+        profile="direct",
+        route_id="glmcp.review.direct",
+        route_metadata_status="ok",
+    )
+    decision = RouteDecision(
+        decision_id="rd-20260820T090000Z-verdict-fields-aaaaaaaaaaaa",
+        created_at=datetime(2026, 8, 20, 9, 0, tzinfo=UTC),
+        task_id=request.task_id,
+        lane=request.lane,
+        route_id=request.route_id,
+        platform=request.platform,
+        mode=request.mode,
+        profile=request.profile,
+        action=DispatchAction.HOLD,
+        policy_outcome="hold",
+        launch_allowed=False,
+        prompt_allowed=False,
+        quality_floor_satisfied=False,
+        authority_allowed=False,
+        reason_codes=(SUPPLY_FIELD_ABSENT_CODE, SUPPLY_FIELD_EXPIRED_CODE),
+        message="unknown supply",
+    )
+    candidate = DimensionalCandidateReceipt(
+        route_id=request.route_id,
+        platform=request.platform,
+        status=CandidateStatus.STALE,
+        freshness_state="stale",
+        vetoes=(
+            _supply_field_veto(_receipt("absent")),
+            _supply_field_veto(_receipt("expired")),
+        ),
+    )
+
+    receipt = _build_dimensional_route_receipt(
+        decision, request, dimensional_candidates=(candidate,)
+    )
+    serialized = receipt.model_dump(mode="json")
+
+    kinds = {entry["kind"] for entry in serialized["stale_metadata"]}
+    assert kinds == {"absent", "expired"}, (
+        f"serialized stale_metadata carries kinds {kinds}; a consumer reading this receipt "
+        "would be told to refresh a producer that has never existed, or to build one that is "
+        "merely stale"
     )
 
 
