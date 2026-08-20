@@ -169,10 +169,18 @@ def register_adjudicator_module(module_file: str) -> None:
 
     Called at import by every module that participates in a decision. Modules that do not
     register are not covered, and the receipt says which ones were — see
-    ``adjudicator_modules_verified``. A silent narrowing would be the same defect this module
+    ``adjudicator_verified_modules``. A silent narrowing would be the same defect this module
     exists to prevent, so the scope of the claim travels with the claim.
+
+    Registering INVALIDATES any cached identity. Raised by codex-1: ``adjudicator_identity`` is
+    cached, so if it ran before a decider registered — a lazy import, an entry point that built
+    a receipt early — every later receipt would keep the narrower verified set and still read
+    usable. The cache was justified by "the answer cannot change within a process", and
+    registration makes that false. The honest response is to stop serving the stale answer, not
+    to keep the justification.
     """
     _capture(module_file)
+    adjudicator_identity.cache_clear()
 
 
 #: Captured at import, once. See ``_capture``.
@@ -226,6 +234,12 @@ class AdjudicatorIdentity:
     #: NAME is how this whole defect class starts: a reader can see what was covered instead of
     #: assuming it was everything.
     verified_modules: tuple[str, ...] = ()
+    #: Registered modules that could NOT be confirmed against ``sha``: loaded from a different
+    #: checkout, absent from the commit, or differing from it. Recorded because "could not
+    #: check" was previously expressed by skipping — and a skipped module is indistinguishable
+    #: from a verified one once the verdict is read. ``source_matches_head`` is True only when
+    #: this is empty; the two fields together are the coverage statement.
+    unverified_modules: tuple[str, ...] = ()
     #: For a release tree, the sha its PATH claims. Recorded separately from ``sha`` because
     #: they can disagree: release trees on this estate are git checkouts and are WRITABLE, so
     #: the directory name is a claim, not a proof. Measured 2026-08-20: the live release tree
@@ -251,6 +265,7 @@ class AdjudicatorIdentity:
             "adjudicator_dirty": self.dirty,
             "adjudicator_source_matches_head": self.source_matches_head,
             "adjudicator_verified_modules": list(self.verified_modules),
+            "adjudicator_unverified_modules": list(self.unverified_modules),
             "adjudicator_declared_sha": self.declared_sha,
         }
 
@@ -289,7 +304,13 @@ def record_has_usable_adjudicator(record: Mapping[str, object]) -> bool:
     # self-contradictory, and accepting it would reinstate exactly the unscoped claim that
     # made the previous version of this field an over-claim.
     modules = record.get("adjudicator_verified_modules")
-    return isinstance(modules, (list, tuple)) and len(modules) > 0
+    if not isinstance(modules, (list, tuple)) or not modules:
+        return False
+    # And it must have left nothing out. A record naming modules it could not confirm is
+    # reporting partial coverage, and partial coverage read as a pass is the defect that
+    # survived two review rounds in two different disguises.
+    unverified = record.get("adjudicator_unverified_modules")
+    return isinstance(unverified, (list, tuple)) and not unverified
 
 
 def _git_head(tree: Path) -> tuple[str | None, bool | None]:
@@ -353,46 +374,56 @@ def _blob_sha256_at(tree: Path, head: str, relative: Path) -> str | None:
 
 def _loaded_source_matches(
     tree: Path, head: str, is_own_source: bool
-) -> tuple[bool | None, tuple[str, ...]]:
+) -> tuple[bool | None, tuple[str, ...], tuple[str, ...]]:
     """Do the bytes every registered module LOADED match what ``head`` records for them?
 
-    Returns ``(verdict, verified_paths)``. True only when every registered module inside this
-    tree was looked up and matched; False as soon as one demonstrably differs; None when
-    anything could not be confirmed. ``verified_paths`` names exactly what the verdict covers,
-    repo-relative and sorted, so the scope of the claim is readable from the receipt rather than
-    inferred from the field's name.
+    Returns ``(verdict, verified, unverified)`` under one invariant, which is the whole point of
+    this function and is asserted directly by
+    ``test_a_true_verdict_means_nothing_was_left_unverified``:
+
+        verdict is True  <=>  unverified is empty and verified is non-empty
+
+    Two review rounds produced two separate ways for a True verdict to coexist with incomplete
+    coverage — a module registered after the identity was cached, and a module loaded from a
+    different checkout being skipped as "not this tree's business". Both were the same defect,
+    so the repair is the invariant rather than the two cases. Anything registered and not
+    confirmed lands in ``unverified`` and forces the verdict away from True; nothing is silently
+    dropped, because a silent drop is indistinguishable from a pass.
 
     When ``adjudicator_identity`` is called with an explicit ``module_file``, the answer is None:
     that path was never loaded by this process, so a fixture cannot mint the strongest claim.
     """
     if not is_own_source:
-        return (None, ())
+        return (None, (), tuple(sorted(_LOADED_MODULES)))
 
     verified: list[str] = []
+    unverified: list[str] = []
     mismatched = False
-    unknown = False
     for path_text, loaded_sha in sorted(_LOADED_MODULES.items()):
         try:
             relative = Path(path_text).relative_to(tree)
         except ValueError:
-            # Registered from outside this checkout — not this tree's business, and not a
-            # mismatch. It is still absent from `verified`, which is where a reader sees it.
+            # Registered from OUTSIDE this checkout: the decider may be running from a
+            # different tree than the helper, and this tree's HEAD says nothing about it.
+            # Recorded as unverified rather than skipped — "not checkable here" is a gap in
+            # coverage, not an exemption from it.
+            unverified.append(path_text)
             continue
         committed = _blob_sha256_at(tree, head, relative)
         if committed is None:
-            unknown = True
+            unverified.append(relative.as_posix())
         elif committed != loaded_sha:
             mismatched = True
+            unverified.append(relative.as_posix())
         else:
             verified.append(relative.as_posix())
 
+    verified_t, unverified_t = tuple(sorted(verified)), tuple(sorted(unverified))
     if mismatched:
-        return (False, tuple(sorted(verified)))
-    if unknown or not verified:
-        # Not every participating module could be confirmed. A partial pass would be exactly
-        # the over-claim this field exists to retire.
-        return (None, tuple(sorted(verified)))
-    return (True, tuple(sorted(verified)))
+        return (False, verified_t, unverified_t)
+    if unverified_t or not verified_t:
+        return (None, verified_t, unverified_t)
+    return (True, verified_t, unverified_t)
 
 
 @lru_cache(maxsize=1)
@@ -426,7 +457,9 @@ def adjudicator_identity(module_file: str | None = None) -> AdjudicatorIdentity:
         if (candidate / ".git").exists():
             head, dirty = _git_head(candidate)
             if head is not None:
-                matches, verified_modules = _loaded_source_matches(candidate, head, is_own_source)
+                matches, verified_modules, unverified_modules = _loaded_source_matches(
+                    candidate, head, is_own_source
+                )
                 # A release path is a CLAIM about content, and release trees here are git
                 # checkouts that are writable. Verify rather than trust the directory name:
                 # report the sha that actually describes the tree, keep the claim alongside,
@@ -438,6 +471,7 @@ def adjudicator_identity(module_file: str | None = None) -> AdjudicatorIdentity:
                     dirty=dirty,
                     source_matches_head=matches,
                     verified_modules=verified_modules,
+                    unverified_modules=unverified_modules,
                     declared_sha=declared,
                 )
             break

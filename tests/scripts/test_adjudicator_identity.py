@@ -276,6 +276,7 @@ def test_receipt_shape_is_serializable_and_complete() -> None:
         "adjudicator_dirty",
         "adjudicator_source_matches_head",
         "adjudicator_verified_modules",
+        "adjudicator_unverified_modules",
         "adjudicator_declared_sha",
     }
     assert json.loads(json.dumps(receipt)) == receipt
@@ -310,6 +311,7 @@ def test_a_basis_name_constant_does_not_satisfy_the_check() -> None:
                 "adjudicator_dirty": False,
                 "adjudicator_source_matches_head": True,
                 "adjudicator_verified_modules": ["shared/adjudicator_identity.py"],
+                "adjudicator_unverified_modules": [],
             },
             True,
             "verified sha over a clean tree whose loaded source matches that commit",
@@ -321,6 +323,7 @@ def test_a_basis_name_constant_does_not_satisfy_the_check() -> None:
                 "adjudicator_dirty": False,
                 "adjudicator_source_matches_head": True,
                 "adjudicator_verified_modules": ["shared/adjudicator_identity.py"],
+                "adjudicator_unverified_modules": [],
             },
             True,
             "verified sha over a clean tree whose loaded source matches that commit",
@@ -364,7 +367,22 @@ def test_a_basis_name_constant_does_not_satisfy_the_check() -> None:
                 "adjudicator_source": "release_tree",
                 "adjudicator_dirty": False,
                 "adjudicator_source_matches_head": True,
+                "adjudicator_verified_modules": ["shared/adjudicator_identity.py"],
+                "adjudicator_unverified_modules": ["/other-tree/shared/dispatcher_policy.py"],
+            },
+            False,
+            "raised by codex-1 as 'registered modules from another checkout are omitted from a "
+            "usable verdict': the record names a module it could not confirm, so its coverage "
+            "is partial — and partial coverage read as a pass is the whole defect",
+        ),
+        (
+            {
+                "adjudicator_sha": "a" * 40,
+                "adjudicator_source": "release_tree",
+                "adjudicator_dirty": False,
+                "adjudicator_source_matches_head": True,
                 "adjudicator_verified_modules": [],
+                "adjudicator_unverified_modules": [],
             },
             False,
             "raised by codex-1 as 'only the helper is hashed, not the code that made the "
@@ -760,6 +778,105 @@ def test_a_symlink_repoint_after_load_cannot_relabel_the_identity(tmp_path: Path
     assert receipt["adjudicator_sha"] != sha_b
     assert receipt["adjudicator_source_matches_head"] is True
     assert "shared/adjudicator_identity.py" in receipt["adjudicator_verified_modules"]
+
+
+def test_a_true_verdict_means_nothing_was_left_unverified(tmp_path: Path, monkeypatch) -> None:
+    """The invariant, asserted directly rather than case by case.
+
+        source_matches_head is True  <=>  unverified is empty and verified is non-empty
+
+    Two review rounds each found a different way for a True verdict to coexist with incomplete
+    coverage: a module registered after the identity was cached, and a module from another
+    checkout skipped as "not this tree's business". They are one defect wearing two costumes, so
+    this pins the property instead of the costumes — a third disguise fails here too.
+    """
+    import shared.adjudicator_identity as mod
+
+    outsider = str(tmp_path / "elsewhere" / "decider.py")
+    scenarios = {
+        "all registered modules present and matching": None,
+        "a module from another checkout": {outsider: "0" * 64},
+        "a registered module whose bytes differ from the commit": {
+            next(iter(mod._LOADED_MODULES)): "0" * 64
+        },
+    }
+    for label, extra in scenarios.items():
+        registry = dict(mod._LOADED_MODULES)
+        if extra:
+            registry.update(extra)
+        monkeypatch.setattr(mod, "_LOADED_MODULES", registry)
+        mod.adjudicator_identity.cache_clear()
+        ident = mod.adjudicator_identity()
+        if ident.sha is None:
+            pytest.skip("not running from a checkout")
+
+        # Completeness first. Without this the invariant below is satisfiable by DROPPING a
+        # module: skipping one leaves `unverified` empty and the verdict True, and the property
+        # still "holds" over a set that quietly shrank. Found by mutation — reinstating the
+        # silent skip left the invariant assertion green, which is the same vacuity this PR has
+        # already been caught by twice. Every registered module must land in exactly one list.
+        assert len(ident.verified_modules) + len(ident.unverified_modules) == len(registry), (
+            f"{len(registry)} modules registered but "
+            f"{len(ident.verified_modules)} + {len(ident.unverified_modules)} accounted for: "
+            f"one was dropped rather than reported, for: {label}"
+        )
+        assert (ident.source_matches_head is True) == (
+            not ident.unverified_modules and bool(ident.verified_modules)
+        ), f"invariant violated for: {label}"
+        assert record_has_usable_adjudicator(ident.as_receipt()) == (
+            ident.source_matches_head is True
+        ), f"usability must track the verdict, not approximate it: {label}"
+    mod.adjudicator_identity.cache_clear()
+
+
+def test_a_module_from_another_checkout_is_recorded_not_skipped(tmp_path: Path, monkeypatch):
+    """Raised by codex-1: skipping it let a True verdict cover only the helper.
+
+    A process can run the helper from tree A and its decider from tree B. Tree A's HEAD says
+    nothing about tree B's file, and the previous version treated that as "not this tree's
+    business" and dropped it — leaving a verdict that looked complete. A gap in coverage is not
+    an exemption from it.
+    """
+    import shared.adjudicator_identity as mod
+
+    outsider = str(tmp_path / "other-tree" / "shared" / "decider.py")
+    monkeypatch.setattr(mod, "_LOADED_MODULES", {**mod._LOADED_MODULES, outsider: "0" * 64})
+    mod.adjudicator_identity.cache_clear()
+    ident = mod.adjudicator_identity()
+    mod.adjudicator_identity.cache_clear()
+
+    if ident.sha is None:
+        pytest.skip("not running from a checkout")
+    assert outsider in ident.unverified_modules, "the omitted module must be named"
+    assert ident.source_matches_head is not True
+    assert not record_has_usable_adjudicator(ident.as_receipt())
+
+
+def test_registering_after_the_identity_was_cached_widens_the_claim(monkeypatch) -> None:
+    """Raised by codex-1: the cache outlived the fact it was justified by.
+
+    `adjudicator_identity` is cached because "the answer cannot change within a process".
+    Registration makes that false, and a decider that registers late — a lazy import, an entry
+    point that built a receipt early — would otherwise leave every later receipt carrying the
+    narrower verified set while still reading usable.
+    """
+    import shared.adjudicator_identity as mod
+
+    mod.adjudicator_identity.cache_clear()
+    before = mod.adjudicator_identity()
+    if before.sha is None:
+        pytest.skip("not running from a checkout")
+
+    latecomer = str(Path(mod.__file__).resolve().parent / "a_late_decider.py")
+    monkeypatch.setattr(mod, "_LOADED_MODULES", dict(mod._LOADED_MODULES))
+    mod.register_adjudicator_module(latecomer)  # the file does not exist: capture fails...
+    after = mod.adjudicator_identity()
+    mod.adjudicator_identity.cache_clear()
+
+    assert after is not before, (
+        "registration must invalidate the cached identity; otherwise the stale, narrower "
+        "verified set is served for the rest of the process"
+    )
 
 
 def test_a_clean_tree_does_not_rescue_code_the_commit_does_not_contain(monkeypatch) -> None:

@@ -480,8 +480,18 @@ class DimensionalRouteReceipt(_PolicyModel):
     #: WHICH CODE produced this decision, resolved from the loaded module's own path rather
     #: than the activation symlink — the symlink repoints ~7x/day and would name the build
     #: that runs next, not the one that decided. `adjudicator_source` says how strong the
-    #: claim is: `release_tree` fully determines the build, `git_worktree` may be dirty, and
-    #: `indeterminate` (sha None) refuses to guess. See shared/adjudicator_identity.py.
+    #: `adjudicator_source` says only WHERE the code was loaded from — `release_tree` inside the
+    #: trusted releases root, `git_worktree` any other checkout, `indeterminate` (sha None)
+    #: refusing to guess.
+    #:
+    #: It does NOT establish that the build is determined, and an earlier version of this
+    #: comment claimed it did — raised by codex-1 as a stale claim that "invites consumers to
+    #: trust exactly the shortcut the implementation otherwise rejects". `release_tree` follows
+    #: from path containment plus a discoverable HEAD, and can accompany `adjudicator_dirty`
+    #: True, `adjudicator_source_matches_head` False, or a non-empty
+    #: `adjudicator_unverified_modules`. Usability is the whole tuple, which is what
+    #: `record_has_usable_adjudicator` reads; no single field is a shortcut to it.
+    #: See shared/adjudicator_identity.py.
     adjudicator_sha: str | None = None
     adjudicator_source: Literal["release_tree", "git_worktree", "indeterminate"] = "indeterminate"
     adjudicator_resolved_from: str | None = None
@@ -501,6 +511,11 @@ class DimensionalRouteReceipt(_PolicyModel):
     #: it computes the routes. Recorded because a claim whose scope must be inferred from a field
     #: name is how this defect class starts: a reader sees what was covered, not what was implied.
     adjudicator_verified_modules: list[str] = Field(default_factory=list)
+    #: Registered modules that could NOT be confirmed against `adjudicator_sha` — loaded from a
+    #: different checkout, absent from the commit, or differing from it. `source_matches_head`
+    #: is True only when this is empty. Recorded because the alternative was to skip them, and
+    #: a skipped module is indistinguishable from a verified one once the verdict is read.
+    adjudicator_unverified_modules: list[str] = Field(default_factory=list)
     #: What the deploy PATH claimed, kept beside the verified sha because they can disagree.
     #: Release trees on this estate are writable git checkouts, so a directory name is a
     #: claim; the live tree `45086a03…` carried a modified file while its path asserted a
