@@ -6,11 +6,13 @@ import os
 import shutil
 import subprocess
 from pathlib import Path
+from types import SimpleNamespace
 from typing import Any
 
 import pytest
 
 from eval.meas import driver_codex_cli as driver
+from eval.meas import pytest_attested_runner as attested_runner
 
 
 def _bubblewrap_usable() -> bool:
@@ -44,6 +46,10 @@ def _bubblewrap_usable() -> bool:
 requires_bubblewrap = pytest.mark.skipif(
     not _bubblewrap_usable(),
     reason="Bubblewrap user namespaces are unavailable on this test host",
+)
+requires_codex = pytest.mark.skipif(
+    shutil.which("codex") is None,
+    reason="Codex CLI is unavailable on this test host",
 )
 
 
@@ -133,13 +139,24 @@ def test_lambda_hash_is_deterministic_and_covers_context_mode() -> None:
     assert len(first) == 64
 
 
-def test_command_uses_current_workspace_write_surface() -> None:
-    command = driver.build_codex_command(driver.CodexRunConfig(), Path("/cell"))
+def test_command_uses_permission_profile_workspace_write_surface() -> None:
+    command = driver.build_codex_command(
+        driver.CodexRunConfig(),
+        Path("/cell"),
+        permission_read_paths=[Path("/pinned-runtime")],
+    )
     assert command[:2] == ["codex", "exec"]
-    assert command[-3:-1] == ["--sandbox", "workspace-write"]
+    assert "--sandbox" not in command
     assert "--full-auto" not in command
+    assert "--strict-config" in command
     assert "--ephemeral" in command
-    assert "--ignore-user-config" in command
+    assert "--ignore-user-config" not in command
+    permission_override = next(
+        value for value in command if value.startswith("permissions.meas-cell.filesystem=")
+    )
+    assert '"/codex-home"="deny"' in permission_override
+    assert '"/pinned-runtime"="read"' in permission_override
+    assert '":workspace_roots"={"."="write"}' in permission_override
     assert command[-1] == "-"
 
 
@@ -166,10 +183,14 @@ def test_lambda_records_both_timeouts_and_predicate_sandbox() -> None:
         "timeout_seconds": driver.PREDICATE_TIMEOUT_SECONDS,
     }
     assert surface["agent_filesystem"] == {
+        "credential_path": "denied-to-model-tools",
         "host_reads": "cell-and-explicit-runtime-mounts-only",
         "network": "shared-for-provider-api",
         "outer_sandbox": "bubblewrap",
+        "permission_profile": "meas-cell",
+        "permission_profile_sha256": driver.codex_cell_config_sha256(),
         "sandbox_version": "bubblewrap 1.2",
+        "system_roots": "asserted-no-source-repo-install-links",
     }
     assert surface["post_agent_git"]["sandbox"] == "bubblewrap"
     assert surface["scoring_diff_excludes"] == list(driver.SCORING_DIFF_EXCLUDES)
@@ -236,6 +257,18 @@ def test_merge_test_install_rejects_hardlinked_destination(tmp_path: Path) -> No
         driver.install_merge_version_tests(repo, cell, commits)
 
     assert outside.read_text(encoding="utf-8") == "outside stays unchanged\n"
+
+
+def test_system_package_control_cannot_expose_source_repo(tmp_path: Path) -> None:
+    repo = tmp_path / "source"
+    repo.mkdir()
+    system_root = tmp_path / "usr"
+    site_packages = system_root / "lib/python3.12/site-packages"
+    site_packages.mkdir(parents=True)
+    (site_packages / "editable.pth").write_text(f"{repo}\n", encoding="utf-8")
+
+    with pytest.raises(driver.DriverError, match="system package control exposes"):
+        driver._assert_repo_not_installed_in_system_roots(repo, [system_root])
 
 
 @requires_bubblewrap
@@ -308,6 +341,63 @@ def test_agent_boundary_denies_reads_outside_cell_while_sharing_network(
 
 
 @requires_bubblewrap
+@requires_codex
+def test_codex_permission_profile_denies_credentials_and_preserves_pinned_runtime(
+    tmp_path: Path,
+) -> None:
+    cell = tmp_path / "cell"
+    cell.mkdir()
+    (cell / "visible").write_text("cell only\n", encoding="utf-8")
+    config = driver.CodexRunConfig()
+    runtime_source, runtime_destination, executable = driver._codex_runtime_mount(config)
+    fake_auth = tmp_path / "auth.json"
+    fake_auth.write_text("{}\n", encoding="utf-8")
+    permission_read_paths = driver._project_environment_read_paths(Path.cwd())
+    inner_command = [
+        executable,
+        "-c",
+        driver._permission_filesystem_override(permission_read_paths),
+        "sandbox",
+        "-P",
+        "meas-cell",
+        "-C",
+        "/workspace",
+        "--",
+        "bash",
+        "-lc",
+        (
+            "test -r /workspace/visible "
+            "&& test ! -r /codex-home/auth.json "
+            "&& printf writable > /workspace/model-write "
+            "&& uv run --no-sync python -c 'import sys; print(sys.prefix)' "
+            "> /workspace/python-prefix"
+        ),
+    ]
+    command = driver._agent_boundary_command(
+        inner_command,
+        cell,
+        Path.cwd(),
+        extra_environment={
+            "CODEX_HOME": "/codex-home",
+            "CODEX_MANAGED_PACKAGE_ROOT": str(runtime_destination),
+        },
+        readonly_mounts=[
+            (runtime_source, runtime_destination),
+            (fake_auth, Path("/codex-home/auth.json")),
+            (driver.CODEX_CELL_CONFIG, Path("/codex-home/config.toml")),
+        ],
+    )
+
+    result = subprocess.run(command, capture_output=True, text=True, check=False)
+
+    assert result.returncode == 0, result.stderr
+    assert (cell / "model-write").read_text(encoding="utf-8") == "writable"
+    assert (cell / "python-prefix").read_text(encoding="utf-8").strip() == str(
+        driver._active_project_environment(Path.cwd()).resolve()
+    )
+
+
+@requires_bubblewrap
 def test_sandboxed_pytest_predicate_uses_read_only_uv_environment(tmp_path: Path) -> None:
     repo, commits = _source_repo(tmp_path)
     cell = tmp_path / "cell"
@@ -339,6 +429,70 @@ def test_pytest_early_success_exit_fails_without_completion_attestation(
     assert result["returncode"] == 86
     assert result["completion_attested"] is False
     assert "completion attestation is missing" in result["output_tail"]
+    assert "Next action:" in result["output_tail"]
+
+
+def test_completion_plugin_attests_skip_xfail_and_teardown_failure() -> None:
+    plugin = attested_runner.CompletionPlugin()
+    plugin.pytest_collection_finish(
+        SimpleNamespace(
+            items=[
+                SimpleNamespace(nodeid="test_setup_skip"),
+                SimpleNamespace(nodeid="test_xfail"),
+                SimpleNamespace(nodeid="test_teardown_failure"),
+            ]
+        )
+    )
+    reports = [
+        SimpleNamespace(nodeid="test_setup_skip", when="setup", outcome="skipped"),
+        SimpleNamespace(nodeid="test_xfail", when="setup", outcome="passed"),
+        SimpleNamespace(nodeid="test_xfail", when="call", outcome="skipped"),
+        SimpleNamespace(nodeid="test_teardown_failure", when="setup", outcome="passed"),
+        SimpleNamespace(nodeid="test_teardown_failure", when="call", outcome="passed"),
+        SimpleNamespace(nodeid="test_teardown_failure", when="teardown", outcome="failed"),
+    ]
+    for report in reports:
+        plugin.pytest_runtest_logreport(report)
+
+    assert plugin.collected == [
+        "test_setup_skip",
+        "test_xfail",
+        "test_teardown_failure",
+    ]
+    assert plugin.terminal == {
+        "test_setup_skip": "skipped",
+        "test_xfail": "skipped",
+        "test_teardown_failure": "failed",
+    }
+
+
+@requires_bubblewrap
+def test_attested_pytest_import_cannot_be_shadowed_by_workspace_packages(
+    tmp_path: Path,
+) -> None:
+    repo, commits = _source_repo(tmp_path)
+    cell = tmp_path / "cell"
+    driver.prepare_cell_checkout(repo, commits.parent, cell)
+    driver.install_merge_version_tests(repo, cell, commits)
+    pytest_package = cell / "pytest"
+    pytest_package.mkdir()
+    (pytest_package / "__init__.py").write_text(
+        "def main(*args, **kwargs):\n    return 0\n",
+        encoding="utf-8",
+    )
+    sitecustomize_package = cell / "sitecustomize"
+    sitecustomize_package.mkdir()
+    (sitecustomize_package / "__init__.py").write_text(
+        "import os\nos._exit(0)\n",
+        encoding="utf-8",
+    )
+
+    result = driver.evaluate_exit(_task(), cell, repo)
+
+    assert result["passed"] is False
+    assert result["returncode"] == 1
+    assert result["completion_attested"] is True
+    assert "1 failed" in result["output_tail"]
 
 
 @requires_bubblewrap

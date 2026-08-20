@@ -1,0 +1,20 @@
+default_permissions = "meas-cell"
+
+[projects."/workspace"]
+trust_level = "untrusted"
+
+[permissions.meas-cell]
+extends = ":workspace"
+
+[permissions.meas-cell.filesystem]
+":root" = "deny"
+":minimal" = "read"
+"/opt/bin" = "read"
+"/opt/codex" = "read"
+"/codex-home" = "deny"
+
+[permissions.meas-cell.filesystem.":workspace_roots"]
+"." = "write"
+
+[permissions.meas-cell.network]
+enabled = false

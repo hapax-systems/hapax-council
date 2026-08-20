@@ -52,9 +52,9 @@
       "driver_codex_cli/v1 did not sandbox the deterministic exit predicate",
       "provider-managed model weights, serving version, and quantization are not independently published"
     ],
-    "superseded_safety_contract": "Use driver_codex_cli/v4 for future measurements; this witness preserves the already-completed v1 result only. v4 externally confines agent reads, confines post-agent Git, scores a filtered diff in a clean parent checkout, and requires trusted pytest completion attestation.",
+    "superseded_safety_contract": "Use driver_codex_cli/v5 for future measurements; this witness preserves the already-completed v1 result only. v5 externally confines agent reads, denies credential reads to model tools through a synthetic permission profile, confines post-agent Git, scores a filtered diff in a clean parent checkout, and imports the trusted pytest completion-attestation runner outside workspace import control.",
     "recheck": "uv run python eval/meas/driver_codex_cli.py --verify-result eval/meas/pilot_codex_cli_gpt_5_6_sol_easy_v1.witness.json",
-    "artifact_sha256": "56ca6a60ab1fc28be929b9ffe9cfc9e7fd02d714746d363a7a60f54b33405128"
+    "artifact_sha256": "efc4fdd63a5a63d2304fc68f27b4a69144580a4141f93dfa8905ed2317539fda"
   },
   "selection": {
     "difficulty": "easy",

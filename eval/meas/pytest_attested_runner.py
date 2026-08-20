@@ -6,6 +6,7 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import sys
 import tempfile
 from pathlib import Path
 from typing import Any
@@ -24,7 +25,11 @@ class CompletionPlugin:
         self.collected = [item.nodeid for item in session.items]
 
     def pytest_runtest_logreport(self, report: pytest.TestReport) -> None:
-        if report.when == "call" or (report.when == "setup" and report.outcome != "passed"):
+        if (
+            report.when == "call"
+            or (report.when == "setup" and report.outcome != "passed")
+            or (report.when == "teardown" and report.outcome != "passed")
+        ):
             self.terminal[report.nodeid] = report.outcome
 
 
@@ -50,6 +55,7 @@ def main() -> int:
     parser.add_argument("attestation", type=Path)
     parser.add_argument("target")
     args = parser.parse_args()
+    sys.path.insert(0, "/workspace")
     plugin = CompletionPlugin()
     exit_code = pytest.main(
         [

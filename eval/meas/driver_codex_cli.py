@@ -30,28 +30,19 @@ from datetime import UTC, datetime
 from pathlib import Path, PurePosixPath
 from typing import Any, Protocol
 
-DEFAULT_REPO = Path.home() / "projects" / "hapax-council"
-DEFAULT_TASKS = (
-    Path.home()
-    / "Documents"
-    / "Personal"
-    / "30-areas"
-    / "hapax"
-    / "workstream"
-    / "meas-tier0"
-    / "tasks-v2.jsonl"
-)
+DEFAULT_REPO = Path(__file__).resolve().parents[2]
+DEFAULT_TASKS = Path(os.environ.get("HAPAX_MEAS_TASKS", "tasks-v2.jsonl"))
 DEFAULT_MODEL = "gpt-5.6-sol"
 DEFAULT_REASONING_EFFORT = "ultra"
 DEFAULT_TIMEOUT_SECONDS = 900
 PREDICATE_TIMEOUT_SECONDS = 600
 GITHUB_REPO = "hapax-systems/hapax-council"
 HARNESS_NAME = "codex-cli-agentic"
-DRIVER_VERSION = "driver_codex_cli/v4"
+DRIVER_VERSION = "driver_codex_cli/v5"
 DIRECT_API_35B_BASELINE = {"passed": 0, "total": 19, "pass_rate": 0.0}
 KNOWN_WITNESS_ARTIFACTS = {
     "1991e186b3699fa87667ac09963ef542ac3587dadc5b7e31be49afa3a9c2f03c": (
-        "56ca6a60ab1fc28be929b9ffe9cfc9e7fd02d714746d363a7a60f54b33405128"
+        "efc4fdd63a5a63d2304fc68f27b4a69144580a4141f93dfa8905ed2317539fda"
     )
 }
 SCORING_DIFF_EXCLUDES = (
@@ -65,6 +56,9 @@ SCORING_DIFF_EXCLUDES = (
     "sitecustomize.py",
     "usercustomize.py",
     "pytest.py",
+    "pytest/**",
+    "sitecustomize/**",
+    "usercustomize/**",
 )
 SCORING_CONTROL_NAMES = frozenset(
     {
@@ -79,6 +73,7 @@ SCORING_CONTROL_NAMES = frozenset(
     }
 )
 ATTESTED_RUNNER = Path(__file__).with_name("pytest_attested_runner.py")
+CODEX_CELL_CONFIG = Path(__file__).with_name("codex_cell_config.toml")
 _NETWORK_ENV_KEYS = (
     "HTTP_PROXY",
     "HTTPS_PROXY",
@@ -581,6 +576,83 @@ def _add_sandbox_destination(
             created.add(directory)
 
 
+def _assert_repo_not_installed_in_system_roots(
+    repo: Path,
+    system_roots: Sequence[Path] = (Path("/usr"), Path("/bin"), Path("/lib"), Path("/lib64")),
+) -> None:
+    """Reject system-root bindings that expose an editable link to the source repo."""
+    resolved_repo = repo.resolve()
+    site_directories: set[Path] = set()
+    for raw_root in system_roots:
+        root = raw_root.resolve()
+        if resolved_repo == root or root in resolved_repo.parents:
+            raise DriverError(
+                f"source repository is under sandbox system root {root}. "
+                "Next action: move the repository outside system roots and rerun."
+            )
+        for pattern in (
+            "lib/python*/site-packages",
+            "lib/python*/dist-packages",
+            "local/lib/python*/site-packages",
+            "local/lib/python*/dist-packages",
+        ):
+            site_directories.update(path for path in root.glob(pattern) if path.is_dir())
+
+    repo_uri = resolved_repo.as_uri()
+    for site_directory in sorted(site_directories):
+        try:
+            entries = list(site_directory.iterdir())
+        except OSError as exc:
+            raise DriverError(
+                f"cannot inspect bound system package directory {site_directory}: {exc}. "
+                "Next action: repair directory access or use a clean runtime host."
+            ) from exc
+        for entry in entries:
+            if entry.is_symlink():
+                destination = entry.resolve()
+                if destination == resolved_repo or resolved_repo in destination.parents:
+                    raise DriverError(
+                        f"system package link exposes the source repository: {entry}. "
+                        "Next action: remove the editable system install and rerun."
+                    )
+            if entry.suffix in {".pth", ".egg-link"} and entry.is_file():
+                try:
+                    lines = entry.read_text(encoding="utf-8").splitlines()
+                except OSError as exc:
+                    raise DriverError(
+                        f"cannot inspect system package control {entry}: {exc}. "
+                        "Next action: repair file access or use a clean runtime host."
+                    ) from exc
+                for line in lines:
+                    candidate = line.strip()
+                    if not candidate or candidate.startswith(("#", "import ")):
+                        continue
+                    installed_path = Path(candidate)
+                    if not installed_path.is_absolute():
+                        installed_path = entry.parent / installed_path
+                    installed_path = installed_path.resolve()
+                    if installed_path == resolved_repo or resolved_repo in installed_path.parents:
+                        raise DriverError(
+                            f"system package control exposes the source repository: {entry}. "
+                            "Next action: remove the editable system install and rerun."
+                        )
+            if entry.name.endswith(".dist-info"):
+                direct_url = entry / "direct_url.json"
+                if direct_url.is_file():
+                    try:
+                        direct_url_text = direct_url.read_text(encoding="utf-8")
+                    except OSError as exc:
+                        raise DriverError(
+                            f"cannot inspect system package provenance {direct_url}: {exc}. "
+                            "Next action: repair file access or use a clean runtime host."
+                        ) from exc
+                    if repo_uri in direct_url_text:
+                        raise DriverError(
+                            f"system package provenance exposes the source repository: {direct_url}. "
+                            "Next action: remove the system install and rerun."
+                        )
+
+
 def _predicate_sandbox_binary() -> Path:
     binary = shutil.which("bwrap")
     if not binary:
@@ -614,6 +686,17 @@ def attested_runner_sha256() -> str:
     return hashlib.sha256(content).hexdigest()
 
 
+def codex_cell_config_sha256() -> str:
+    try:
+        content = CODEX_CELL_CONFIG.read_bytes()
+    except OSError as exc:
+        raise DriverError(
+            f"cannot read Codex cell permission profile {CODEX_CELL_CONFIG}: {exc}. "
+            "Next action: restore the shipped profile and rerun."
+        ) from exc
+    return hashlib.sha256(content).hexdigest()
+
+
 def _cell_sandbox_command(
     inner_command: Sequence[str],
     workdir: Path,
@@ -626,6 +709,7 @@ def _cell_sandbox_command(
     disable_nested_userns: bool = True,
 ) -> list[str]:
     """Build a minimal clear-environment sandbox around one cell checkout."""
+    _assert_repo_not_installed_in_system_roots(repo)
     bubblewrap = _predicate_sandbox_binary()
     uv_binary = shutil.which("uv")
     if not uv_binary:
@@ -795,6 +879,7 @@ def _attested_pytest_command(
     return _cell_sandbox_command(
         [
             "python",
+            "-I",
             "/harness/pytest_attested_runner.py",
             "/attestation/result.json",
             target,
@@ -804,7 +889,6 @@ def _attested_pytest_command(
         extra_environment={
             "PYTEST_DISABLE_PLUGIN_AUTOLOAD": "1",
             "PYTEST_ADDOPTS": "",
-            "PYTHONPATH": "/workspace",
         },
         readonly_mounts=[(ATTESTED_RUNNER, Path("/harness/pytest_attested_runner.py"))],
         writable_mounts=[(attestation_dir, Path("/attestation"))],
@@ -816,12 +900,16 @@ def _validate_completion_attestation(
     *,
     returncode: int,
 ) -> str | None:
+    next_action = (
+        "Next action: discard the cell, restore the trusted runner/control files, "
+        "and rerun the predicate."
+    )
     try:
         raw = json.loads(path.read_text(encoding="utf-8"))
     except (OSError, json.JSONDecodeError) as exc:
-        return f"pytest completion attestation is missing or malformed: {exc}"
+        return f"pytest completion attestation is missing or malformed: {exc}. {next_action}"
     if not isinstance(raw, Mapping):
-        return "pytest completion attestation root is not an object"
+        return f"pytest completion attestation root is not an object. {next_action}"
     collected = raw.get("collected")
     terminal = raw.get("terminal")
     if (
@@ -834,12 +922,15 @@ def _validate_completion_attestation(
         or not isinstance(terminal, Mapping)
         or set(terminal) != set(collected)
     ):
-        return "pytest completion attestation does not match the completed test lifecycle"
+        return (
+            "pytest completion attestation does not match the completed test lifecycle. "
+            f"{next_action}"
+        )
     outcomes = list(terminal.values())
     if any(outcome not in {"passed", "failed", "skipped"} for outcome in outcomes):
-        return "pytest completion attestation contains an invalid terminal outcome"
+        return f"pytest completion attestation contains an invalid terminal outcome. {next_action}"
     if returncode == 0 and "passed" not in outcomes:
-        return "pytest completed without any passing discriminating test"
+        return f"pytest completed without any passing discriminating test. {next_action}"
     return None
 
 
@@ -929,18 +1020,33 @@ def render_cell_prompt(task: Mapping[str, Any]) -> str:
     return CELL_PROMPT_TEMPLATE.format(work_item=work_item.strip(), exit_predicate=predicate)
 
 
+def _permission_filesystem_override(read_paths: Sequence[Path]) -> str:
+    entries: list[tuple[str, str]] = [
+        (":root", "deny"),
+        (":minimal", "read"),
+        ("/opt/bin", "read"),
+        ("/opt/codex", "read"),
+        ("/codex-home", "deny"),
+    ]
+    entries.extend((str(path.resolve()), "read") for path in read_paths)
+    rendered = ",".join(f"{json.dumps(path)}={json.dumps(access)}" for path, access in entries)
+    rendered += ',":workspace_roots"={"."="write"}'
+    return f"permissions.meas-cell.filesystem={{{rendered}}}"
+
+
 def build_codex_command(
     config: CodexRunConfig,
     workdir: Path,
     *,
     codex_binary: str | None = None,
+    permission_read_paths: Sequence[Path] = (),
 ) -> list[str]:
     """Build the non-interactive command with a closed, λ-recorded tool surface."""
     command = [
         codex_binary or config.codex_binary,
         "exec",
+        "--strict-config",
         "--ephemeral",
-        "--ignore-user-config",
         "--ignore-rules",
         "--json",
         "--color",
@@ -955,8 +1061,9 @@ def build_codex_command(
         'approval_policy="never"',
         "-c",
         'web_search="disabled"',
+        "-c",
+        _permission_filesystem_override(permission_read_paths),
     ]
-    command.extend(["--sandbox", "workspace-write"])
     command.append("-")
     return command
 
@@ -1031,6 +1138,7 @@ def _agent_sandbox_command(
     readonly_mounts: list[tuple[Path, Path]] = [
         (runtime_source, runtime_destination),
         (_codex_auth_file(), Path("/codex-home/auth.json")),
+        (CODEX_CELL_CONFIG, Path("/codex-home/config.toml")),
     ]
     for host_path in (
         Path("/etc/resolv.conf"),
@@ -1055,6 +1163,7 @@ def _agent_sandbox_command(
         config,
         Path("/workspace"),
         codex_binary=executable,
+        permission_read_paths=_project_environment_read_paths(repo),
     )
     return _agent_boundary_command(
         inner_command,
@@ -1070,6 +1179,26 @@ def _active_project_environment(repo: Path = DEFAULT_REPO) -> Path:
     if (interpreter_environment / "pyvenv.cfg").is_file():
         return interpreter_environment
     return repo / ".venv"
+
+
+def _project_environment_read_paths(repo: Path = DEFAULT_REPO) -> tuple[Path, ...]:
+    """Return only the environment paths model tools need for pinned checks."""
+    project_environment = _active_project_environment(repo).resolve()
+    paths = [project_environment]
+    interpreter = (project_environment / "bin/python").resolve()
+    try:
+        interpreter.relative_to(project_environment)
+    except ValueError:
+        python_runtime = next(
+            (
+                parent
+                for parent in interpreter.parents
+                if parent.name == "python" and parent.parent.name == "uv"
+            ),
+            interpreter.parent.parent,
+        )
+        paths.append(python_runtime)
+    return tuple(paths)
 
 
 def _codex_environment() -> dict[str, str]:
@@ -1288,13 +1417,17 @@ def lambda_config(
             "ephemeral": True,
             "exec_output": "jsonl",
             "legacy_full_auto": False,
-            "mcp": "disabled-by-ignore-user-config",
-            "sandbox": "bubblewrap-read-confined+workspace-write",
+            "mcp": "disabled-by-synthetic-config",
+            "sandbox": "bubblewrap-read-confined+permission-profile",
             "agent_filesystem": {
+                "credential_path": "denied-to-model-tools",
                 "host_reads": "cell-and-explicit-runtime-mounts-only",
                 "network": "shared-for-provider-api",
                 "outer_sandbox": "bubblewrap",
+                "permission_profile": "meas-cell",
+                "permission_profile_sha256": codex_cell_config_sha256(),
                 "sandbox_version": sandbox_version,
+                "system_roots": "asserted-no-source-repo-install-links",
             },
             "codex_timeout_seconds": config.timeout_seconds,
             "exit_predicate": {
@@ -1315,7 +1448,7 @@ def lambda_config(
                 "sandbox": "bubblewrap",
             },
             "scoring_diff_excludes": list(SCORING_DIFF_EXCLUDES),
-            "user_config": "ignored",
+            "user_config": "synthetic-read-only-measurement-profile",
             "uv_environment": "driver-interpreter-no-sync",
             "web_search": "disabled",
         },
@@ -1846,7 +1979,9 @@ def verify_result_payload(payload: Mapping[str, Any]) -> dict[str, Any]:
                 or (cell_result["passed"] and exit_result.get("completion_attested") is not True)
                 or not isinstance(cell_result.get("scoring_controls"), Mapping)
             ):
-                raise _verification_error(f"result {task_id} lacks v4 completion/control evidence")
+                raise _verification_error(
+                    f"result {task_id} lacks current completion/control evidence"
+                )
         commit_rows.append(
             {
                 "task_id": task_id,
