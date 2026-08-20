@@ -47,7 +47,10 @@ REPO_ROOT = Path(__file__).resolve().parents[1]
 if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
-from shared.adjudicator_identity import adjudicator_identity  # noqa: E402
+from shared.adjudicator_identity import (  # noqa: E402
+    adjudicator_identity,
+    record_has_usable_adjudicator,
+)
 
 DEFAULT_REGISTRY = REPO_ROOT / "config" / "determination-producers.json"
 DEFAULT_RUN_LEDGER = Path.home() / ".cache" / "hapax" / "determination" / "runs.jsonl"
@@ -271,6 +274,14 @@ def main(argv: list[str] | None = None) -> int:
 
     payload["liveness"] = liveness(producers, runs, now)
 
+    # A determination the spine cannot attribute to a specific build is not replayable: the
+    # next reader cannot tell a repair from a redeploy. Report it rather than let the receipt
+    # look complete. This is a diagnostic, not a veto — an unidentifiable run is still a run,
+    # and refusing to record it would lose the evidence entirely.
+    payload["unidentified_runs"] = [
+        r["producer_id"] for r in payload["ran"] if not record_has_usable_adjudicator(r)
+    ]
+
     if args.json:
         print(json.dumps(payload, indent=1, sort_keys=True))
     else:
@@ -278,6 +289,12 @@ def main(argv: list[str] | None = None) -> int:
             print(f"{r['producer_id']}: {r['outcome']} (rc={r.get('returncode')})")
         for d in payload["liveness"]:
             print(f"DEFICIT {d['producer_id']}: {d['deficit']}", file=sys.stderr)
+        for pid in payload["unidentified_runs"]:
+            print(
+                f"UNIDENTIFIED {pid}: run recorded without a verified adjudicator; this "
+                "receipt cannot distinguish a repair from a redeploy",
+                file=sys.stderr,
+            )
 
     # A producer that FAILED, or a liveness deficit, is a harness problem and must be
     # visible. A producer that DECLINED is healthy and exits 0 — the distinction this

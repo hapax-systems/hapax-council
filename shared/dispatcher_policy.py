@@ -481,6 +481,11 @@ class DimensionalRouteReceipt(_PolicyModel):
     adjudicator_source: Literal["release_tree", "git_worktree", "indeterminate"] = "indeterminate"
     adjudicator_resolved_from: str | None = None
     adjudicator_dirty: bool = False
+    #: What the deploy PATH claimed, kept beside the verified sha because they can disagree.
+    #: Release trees on this estate are writable git checkouts, so a directory name is a
+    #: claim; the live tree `45086a03…` carried a modified file while its path asserted a
+    #: clean commit. A receipt that reported only one of these would hide that.
+    adjudicator_declared_sha: str | None = None
     task_id: str
     authority_case: str
     decision: DispatchAction

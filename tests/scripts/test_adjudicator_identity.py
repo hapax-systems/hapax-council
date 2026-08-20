@@ -24,6 +24,7 @@ import pytest
 from shared.adjudicator_identity import (
     AdjudicatorIdentity,
     adjudicator_identity,
+    record_has_usable_adjudicator,
 )
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
@@ -38,15 +39,27 @@ def _clear_cache():
     adjudicator_identity.cache_clear()
 
 
-def test_release_tree_path_is_authoritative() -> None:
-    """A deployed release encodes its sha in the path; that is the strongest identity."""
+def test_a_release_path_alone_is_a_claim_not_a_verified_identity() -> None:
+    """Raised by codex-1 and confirmed by measurement: release trees here are WRITABLE.
+
+    At the time of writing, the live release tree `45086a03…` carried a modified
+    `scripts/hapax-determine` while its directory name asserted that commit. An earlier version
+    of this module read the sha out of the path and reported `dirty=False`, which would have
+    attributed a decision to a commit the running code did not match — defeating the exact
+    guarantee the module exists to provide.
+
+    A release path with nothing verifiable behind it therefore keeps its claim in
+    `declared_sha` and leaves `sha` None, rather than promoting an unverified name into the
+    verified slot.
+    """
     sha = "0" * 39 + "a"
     ident = adjudicator_identity(
         f"/home/hapax/.cache/hapax/source-activation/releases/{sha}/shared/adjudicator_identity.py"
     )
-    assert ident.sha == sha
-    assert ident.source == "release_tree"
-    assert ident.dirty is False
+    assert ident.declared_sha == sha, "the claim must be preserved, not discarded"
+    assert ident.sha is None, "an unverifiable claim must not occupy the verified slot"
+    assert ident.source == "indeterminate"
+    assert not record_has_usable_adjudicator(ident.as_receipt())
 
 
 def test_identity_is_resolved_from_the_module_not_the_symlink() -> None:
@@ -67,12 +80,13 @@ def test_identity_is_resolved_from_the_module_not_the_symlink() -> None:
     adjudicator_identity.cache_clear()
     id_b = adjudicator_identity(f"{base}/{b}/shared/adjudicator_identity.py")
 
-    assert id_a.sha == a
-    assert id_b.sha == b
-    assert id_a.sha != id_b.sha, (
+    assert id_a.declared_sha == a
+    assert id_b.declared_sha == b
+    assert id_a.declared_sha != id_b.declared_sha, (
         "two decisions made from different release trees must be distinguishable; this is the "
         "whole point of the field"
     )
+    assert id_a.resolved_from != id_b.resolved_from
 
 
 def test_git_worktree_is_weaker_and_says_so() -> None:
@@ -115,7 +129,11 @@ def test_unknown_location_is_indeterminate_not_a_guess(tmp_path: Path) -> None:
 
 
 def test_receipt_shape_is_serializable_and_complete() -> None:
-    """What gets written onto a decision must survive JSON and carry all four fields."""
+    """What gets written onto a decision must survive JSON and carry every field.
+
+    `adjudicator_declared_sha` is part of the shape precisely because it can disagree with
+    `adjudicator_sha`; a receipt that dropped it would hide the disagreement.
+    """
     ident = adjudicator_identity(
         "/home/hapax/.cache/hapax/source-activation/releases/" + "c" * 40 + "/shared/x.py"
     )
@@ -125,8 +143,11 @@ def test_receipt_shape_is_serializable_and_complete() -> None:
         "adjudicator_source",
         "adjudicator_resolved_from",
         "adjudicator_dirty",
+        "adjudicator_declared_sha",
     }
     assert json.loads(json.dumps(receipt)) == receipt
+    assert receipt["adjudicator_declared_sha"] == "c" * 40
+    assert receipt["adjudicator_sha"] is None
 
 
 def test_a_basis_name_constant_does_not_satisfy_the_check() -> None:
@@ -140,9 +161,61 @@ def test_a_basis_name_constant_does_not_satisfy_the_check() -> None:
         "decision_id": "rd-20260820T000000Z-legacy-aaaaaaaaaaaa",
         "routing_model_version": "capacity-dimensional-v1",
     }
-    assert "adjudicator_sha" not in legacy_record
-    assert not any(SHA_RE.match(str(value)) for value in legacy_record.values()), (
-        "no value in a legacy record is a code identity; the field name is not the thing"
+    assert not record_has_usable_adjudicator(legacy_record), (
+        "a record carrying only the basis-name constant must not count as identified; that "
+        "constant is on 559/559 historical records and distinguishes nothing"
+    )
+
+
+@pytest.mark.parametrize(
+    ("record", "usable", "why"),
+    [
+        ({"adjudicator_sha": "a" * 40, "adjudicator_source": "release_tree"}, True, "verified"),
+        ({"adjudicator_sha": "a" * 40, "adjudicator_source": "git_worktree"}, True, "verified"),
+        (
+            {
+                "adjudicator_sha": "a" * 40,
+                "adjudicator_source": "release_tree",
+                "adjudicator_dirty": True,
+            },
+            False,
+            "a dirty tree's HEAD does not determine the code that ran",
+        ),
+        (
+            {
+                "adjudicator_sha": None,
+                "adjudicator_source": "indeterminate",
+                "adjudicator_declared_sha": "b" * 40,
+            },
+            False,
+            "an unverified release path must not be promoted into the verified slot",
+        ),
+        ({"adjudicator_sha": "short", "adjudicator_source": "release_tree"}, False, "not a sha"),
+        ({}, False, "no fields at all"),
+    ],
+)
+def test_usable_adjudicator_check(record: dict, usable: bool, why: str) -> None:
+    assert record_has_usable_adjudicator(record) is usable, why
+
+
+def test_live_route_decisions_are_measured_not_assumed() -> None:
+    """Run the check over the real historical stream, if present on this host.
+
+    This is what makes the negative case evidence rather than assertion: the existing records
+    were written before this field existed, so they must fail the check.
+    """
+    stream = Path.home() / ".cache" / "hapax" / "orchestration" / "route-decisions.jsonl"
+    if not stream.is_file():
+        pytest.skip("no historical route-decision stream on this host")
+
+    records = [json.loads(line) for line in stream.read_text().splitlines() if line.strip()]
+    if not records:
+        pytest.skip("route-decision stream is empty")
+
+    identified = [r for r in records if record_has_usable_adjudicator(r)]
+    assert len(identified) < len(records), (
+        "every historical record predates this field; if they all pass, the check is not "
+        "checking anything"
     )
 
 
