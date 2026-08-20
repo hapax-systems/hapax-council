@@ -134,6 +134,39 @@ def _is_vendored(path: Path) -> bool:
     return False
 
 
+def _is_interpreter_module(name: str, module: object) -> bool:
+    """Built-in, frozen, or wholly vendored — the interpreter and its dependencies, not this code.
+
+    The only fileless modules that may be dropped. Everything else without a ``__file__`` is
+    reported by name: a namespace package backed by this repo participates in a decision exactly
+    as much as a plain module does, and silently omitting it would make partial coverage read as
+    complete.
+    """
+    if name in sys.builtin_module_names:
+        return True
+    origin = getattr(getattr(module, "__spec__", None), "origin", None)
+    if origin in ("built-in", "frozen"):
+        return True
+    # A fileless submodule of a vendored package is vendored — `typing.io` and `typing.re` are
+    # stdlib shims with no __file__ of their own. Decided by the parent rather than by a name
+    # list, so it does not go stale.
+    parent_name = name.rpartition(".")[0]
+    if parent_name:
+        parent_file = getattr(sys.modules.get(parent_name), "__file__", None)
+        try:
+            if parent_file and _is_vendored(Path(parent_file).resolve()):
+                return True
+        except (OSError, RuntimeError, TypeError, ValueError):
+            pass
+    try:
+        search_paths = list(getattr(module, "__path__", None) or [])
+        # A namespace package whose every location is vendored says nothing about this tree. One
+        # non-vendored location is enough to make it this estate's business.
+        return bool(search_paths) and all(_is_vendored(Path(p).resolve()) for p in search_paths)
+    except Exception:  # noqa: BLE001 - see the must-not-raise contract on the caller
+        return False
+
+
 def _first_party_loaded_modules() -> set[str]:
     """Every non-vendored module currently loaded.
 
@@ -169,6 +202,13 @@ def _first_party_loaded_modules() -> set[str]:
         try:
             file = getattr(module, "__file__", None)
             if not file:
+                if _is_interpreter_module(name, module):
+                    continue
+                # Fileless but not the interpreter: a repo-backed namespace package, a
+                # dynamically created module. Raised by codex-1 — these participate and used to
+                # disappear here, which makes omission look like complete coverage. Named rather
+                # than dropped, since there is no path to report.
+                found.add(f"<fileless module: {name}>")
                 continue
             try:
                 vendored = _is_vendored(Path(file).resolve())

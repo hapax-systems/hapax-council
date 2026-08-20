@@ -395,10 +395,13 @@ def test_head_and_cleanliness_come_from_one_snapshot(tmp_path: Path, monkeypatch
     )
 
 
+_MISSING = object()
+
+
 @pytest.mark.parametrize(
     "bad_file",
-    [42, object(), b"/bytes/path.py", ["/a/list.py"]],
-    ids=["int", "object", "bytes", "list"],
+    [42, object(), b"/bytes/path.py", ["/a/list.py"], None, "", _MISSING],
+    ids=["int", "object", "bytes", "list", "none", "empty", "absent"],
 )
 def test_a_hostile_sys_modules_entry_cannot_abort_a_receipt(tmp_path: Path, bad_file) -> None:
     """Raised by codex-1: `sys.modules` is a mutable mapping any library may write to.
@@ -416,7 +419,13 @@ def test_a_hostile_sys_modules_entry_cannot_abort_a_receipt(tmp_path: Path, bad_
 
     tree = _make_checkout(tmp_path / "tree", "tree")
     hostile = types.ModuleType("hostile_probe_module")
-    hostile.__file__ = bad_file
+    # Raised by codex-1: every earlier parameter here was TRUTHY, so this exercised exceptions
+    # from Path(file) and never the preceding `if not file` branch — the one that silently
+    # omitted the module. A test covering only the loud failure and not the quiet one leaves the
+    # actual critical untested. `types.ModuleType` has no `__file__` unless one is assigned, so
+    # the absent case is simply not setting it.
+    if bad_file is not _MISSING:
+        hostile.__file__ = bad_file
     sys.modules["hostile_probe_module"] = hostile
     try:
         ident = adjudicator_identity(str(tree / "shared" / "adjudicator_identity.py"))
