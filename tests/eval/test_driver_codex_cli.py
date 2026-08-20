@@ -2,6 +2,8 @@ from __future__ import annotations
 
 import hashlib
 import json
+import os
+import shutil
 import subprocess
 from pathlib import Path
 from typing import Any
@@ -72,7 +74,7 @@ def _task() -> dict[str, Any]:
 
 def test_lambda_hash_is_deterministic_and_covers_context_mode() -> None:
     config = driver.CodexRunConfig()
-    fields = driver.lambda_config(config, "codex-cli test")
+    fields = driver.lambda_config(config, "codex-cli test", "bubblewrap test")
     first = driver.lambda_hash(fields)
     assert first == driver.lambda_hash(fields)
     changed = dict(fields, context_mode="different")
@@ -96,9 +98,26 @@ def test_legacy_full_auto_is_explicit_and_lambda_visible() -> None:
     assert "--full-auto" in command
     assert "--sandbox" not in command
     assert (
-        driver.lambda_config(config, "codex-cli test")["tool_surface_config"]["legacy_full_auto"]
+        driver.lambda_config(config, "codex-cli test", "bubblewrap test")["tool_surface_config"][
+            "legacy_full_auto"
+        ]
         is True
     )
+
+
+def test_lambda_records_both_timeouts_and_predicate_sandbox() -> None:
+    config = driver.CodexRunConfig(timeout_seconds=321)
+    surface = driver.lambda_config(config, "codex-cli test", "bubblewrap 1.2")[
+        "tool_surface_config"
+    ]
+    assert surface["codex_timeout_seconds"] == 321
+    assert surface["exit_predicate"] == {
+        "environment": "cleared",
+        "network": "unshared",
+        "sandbox": "bubblewrap",
+        "sandbox_version": "bubblewrap 1.2",
+        "timeout_seconds": driver.PREDICATE_TIMEOUT_SECONDS,
+    }
 
 
 def test_prepare_checkout_excludes_post_parent_history(tmp_path: Path) -> None:
@@ -113,6 +132,119 @@ def test_prepare_checkout_excludes_post_parent_history(tmp_path: Path) -> None:
         check=False,
     )
     assert result.returncode != 0
+
+
+def test_merge_test_install_rejects_symlinked_parent(tmp_path: Path) -> None:
+    repo, commits = _source_repo(tmp_path)
+    cell = tmp_path / "cell"
+    driver.prepare_cell_checkout(repo, commits.parent, cell)
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    sentinel = outside / "test_module.py"
+    sentinel.write_text("outside stays unchanged\n", encoding="utf-8")
+    shutil.rmtree(cell / "tests")
+    (cell / "tests").symlink_to(outside, target_is_directory=True)
+
+    with pytest.raises(driver.DriverError, match="unsafe merge-version test parent"):
+        driver.install_merge_version_tests(repo, cell, commits)
+
+    assert sentinel.read_text(encoding="utf-8") == "outside stays unchanged\n"
+
+
+def test_merge_test_install_rejects_symlinked_destination(tmp_path: Path) -> None:
+    repo, commits = _source_repo(tmp_path)
+    cell = tmp_path / "cell"
+    driver.prepare_cell_checkout(repo, commits.parent, cell)
+    outside = tmp_path / "outside.py"
+    outside.write_text("outside stays unchanged\n", encoding="utf-8")
+    destination = cell / "tests/test_module.py"
+    destination.unlink()
+    destination.symlink_to(outside)
+
+    with pytest.raises(driver.DriverError, match="unsafe merge-version test destination"):
+        driver.install_merge_version_tests(repo, cell, commits)
+
+    assert outside.read_text(encoding="utf-8") == "outside stays unchanged\n"
+
+
+def test_merge_test_install_rejects_hardlinked_destination(tmp_path: Path) -> None:
+    repo, commits = _source_repo(tmp_path)
+    cell = tmp_path / "cell"
+    driver.prepare_cell_checkout(repo, commits.parent, cell)
+    outside = tmp_path / "outside.py"
+    outside.write_text("outside stays unchanged\n", encoding="utf-8")
+    destination = cell / "tests/test_module.py"
+    destination.unlink()
+    os.link(outside, destination)
+
+    with pytest.raises(driver.DriverError, match="unsafe merge-version test destination"):
+        driver.install_merge_version_tests(repo, cell, commits)
+
+    assert outside.read_text(encoding="utf-8") == "outside stays unchanged\n"
+
+
+def test_exit_predicate_isolated_from_environment_and_host_paths(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    cell = tmp_path / "cell"
+    cell.mkdir()
+    outside = tmp_path / "outside-secret"
+    outside.write_text("not visible\n", encoding="utf-8")
+    monkeypatch.setenv("MEAS_SANDBOX_SECRET", "must-not-leak")
+    task = {
+        **_task(),
+        "exit_predicate": {
+            "kind": "ruff+custom",
+            "target": (
+                'test -z "${MEAS_SANDBOX_SECRET:-}" '
+                f"&& test ! -e {outside} && printf sandboxed > marker"
+            ),
+        },
+    }
+
+    result = driver.evaluate_exit(task, cell, Path.cwd())
+
+    assert result["passed"] is True
+    assert result["sandbox"] == "bubblewrap"
+    assert (cell / "marker").read_text(encoding="utf-8") == "sandboxed"
+    assert outside.read_text(encoding="utf-8") == "not visible\n"
+
+
+def test_sandboxed_pytest_predicate_uses_read_only_uv_environment(tmp_path: Path) -> None:
+    repo, commits = _source_repo(tmp_path)
+    cell = tmp_path / "cell"
+    driver.prepare_cell_checkout(repo, commits.parent, cell)
+    (cell / "module.py").write_text("VALUE = 1\n", encoding="utf-8")
+    (cell / "pyproject.toml").write_text(
+        '[tool.pytest.ini_options]\npythonpath = ["."]\n', encoding="utf-8"
+    )
+    driver.install_merge_version_tests(repo, cell, commits)
+
+    result = driver.evaluate_exit(_task(), cell, repo)
+
+    assert result["passed"] is True
+    assert result["returncode"] == 0
+    assert "1 passed" in result["output_tail"]
+
+
+def test_exit_predicate_timeout_preserves_bytes_output(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    def timeout(*_args: Any, **_kwargs: Any) -> subprocess.CompletedProcess[str]:
+        raise subprocess.TimeoutExpired("bwrap", 600, output=b"partial stdout\n")
+
+    monkeypatch.setattr(driver.subprocess, "run", timeout)
+    result = driver.evaluate_exit(
+        {**_task(), "exit_predicate": {"kind": "ruff+custom", "target": "true"}},
+        tmp_path,
+        Path.cwd(),
+    )
+    assert result["passed"] is False
+    assert result["returncode"] == 124
+    assert result["timed_out"] is True
+    assert "partial stdout" in result["output_tail"]
 
 
 def test_driver_captures_mocked_exec_transcript_and_diff(tmp_path: Path) -> None:
@@ -143,6 +275,31 @@ def test_driver_captures_mocked_exec_transcript_and_diff(tmp_path: Path) -> None
     assert observed["env"]["UV_NO_SYNC"] == "1"
     assert observed["env"]["VIRTUAL_ENV"] == observed["env"]["UV_PROJECT_ENVIRONMENT"]
     assert "Fix the implementation, not the tests" in observed["input"]
+
+
+def test_driver_timeout_preserves_partial_bytes(tmp_path: Path) -> None:
+    repo, commits = _source_repo(tmp_path)
+    cell = tmp_path / "cell"
+    driver.prepare_cell_checkout(repo, commits.parent, cell)
+
+    def timeout(command: list[str], **_kwargs: Any) -> subprocess.CompletedProcess[str]:
+        raise subprocess.TimeoutExpired(
+            command,
+            1,
+            output=b'{"type":"partial"}\n',
+            stderr=b"deadline\n",
+        )
+
+    outcome = driver.driver(
+        task=_task(),
+        workdir=cell,
+        config=driver.CodexRunConfig(timeout_seconds=1),
+        process_runner=timeout,
+    )
+    assert outcome["transcript"]["returncode"] == 124
+    assert outcome["transcript"]["timed_out"] is True
+    assert outcome["transcript"]["stdout"] == '{"type":"partial"}\n'
+    assert outcome["transcript"]["stderr"] == "deadline\n"
 
 
 def test_run_cell_installs_merge_tests_after_executor(tmp_path: Path) -> None:
@@ -188,12 +345,49 @@ def test_run_cell_installs_merge_tests_after_executor(tmp_path: Path) -> None:
         executor=fake_executor,
         evaluator=fake_evaluator,
         binary_version="codex-cli test",
+        sandbox_version="bubblewrap test",
     )
     assert saw_parent_test is True
     assert record["cell_result"]["passed"] is True
     assert record["cell_result"]["predicate_files"] == ["tests/test_module.py"]
     assert record["lambda_hash"] == driver.lambda_hash(record["lambda_config"])
     assert record["cell"]["transcript"]["stdout"] == "{}\n"
+
+
+def test_run_cell_cannot_pass_after_codex_timeout(tmp_path: Path) -> None:
+    repo, commits = _source_repo(tmp_path)
+
+    def timed_out_executor(
+        task: driver.Mapping[str, Any],
+        workdir: Path,
+        config: driver.CodexRunConfig,
+    ) -> dict[str, Any]:
+        return {
+            "model": config.model,
+            "harness": driver.HARNESS_NAME,
+            "seconds": 1.0,
+            "transcript": {"returncode": 124, "timed_out": True},
+            "diff": "",
+            "diff_bytes": 0,
+            "diff_sha256": hashlib.sha256(b"").hexdigest(),
+            "git_status": [],
+        }
+
+    record = driver.run_cell(
+        _task(),
+        repo=repo,
+        commits=commits,
+        executor=timed_out_executor,
+        evaluator=lambda _task, _workdir, _repo: {
+            "passed": True,
+            "returncode": 0,
+            "output_tail": "passed",
+        },
+        binary_version="codex-cli test",
+        sandbox_version="bubblewrap test",
+    )
+    assert record["cell_result"]["passed"] is False
+    assert record["cell_result"]["codex_timed_out"] is True
 
 
 def test_dry_run_validates_task_and_merge_predicate(tmp_path: Path) -> None:
@@ -219,6 +413,150 @@ def test_result_note_names_measured_baseline() -> None:
     assert "7/19 (36.8%)" in note
     assert "0/19 (0.0%)" in note
     assert "provider-managed" in note
+
+
+def test_partial_result_note_does_not_claim_baseline_comparison() -> None:
+    payload = {
+        "completed_at": "2026-08-20T00:00:00Z",
+        "model": "gpt-5.6-sol",
+        "lambda_set": ["a" * 64],
+        "summary": driver._summary([{"cell_result": {"passed": True}} for _index in range(3)]),
+    }
+    note = driver.render_result_note(payload)
+    assert "not directly comparable" in note
+    assert "versus 0 of 19" not in note
+    assert "--verify-result pilot-result.json" in note
+
+
+def _pilot_cell_runner(**kwargs: Any) -> dict[str, Any]:
+    task = kwargs["task"] if "task" in kwargs else kwargs.get("task")
+    config = kwargs["config"]
+    commits = kwargs["commits"]
+    fields = driver.lambda_config(
+        config,
+        kwargs["binary_version"],
+        kwargs["sandbox_version"],
+    )
+    return {
+        "lambda_hash": driver.lambda_hash(fields),
+        "lambda_config": fields,
+        "task_id": task["task_id"],
+        "cell": {
+            "model": config.model,
+            "harness": driver.HARNESS_NAME,
+            "seconds": 0.1,
+            "transcript": {"returncode": 0, "timed_out": False},
+            "diff": "",
+            "diff_bytes": 0,
+            "diff_sha256": hashlib.sha256(b"").hexdigest(),
+        },
+        "cell_result": {
+            "class": task["class"],
+            "difficulty": task["difficulty"],
+            "pr": task["pr"],
+            "parent": commits.parent,
+            "merge": commits.merge,
+            "predicate_files": ["tests/test_module.py"],
+            "passed": True,
+            "exit": {"passed": True, "returncode": 0},
+            "codex_returncode": 0,
+            "codex_timed_out": False,
+            "git_status": [],
+        },
+    }
+
+
+def test_run_pilot_checkpoints_atomically_and_resumes(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(driver, "codex_binary_version", lambda _config: "codex-cli test")
+    monkeypatch.setattr(driver, "predicate_sandbox_version", lambda: "bubblewrap test")
+    commits = driver.CommitPair(parent="1" * 40, merge="2" * 40)
+    tasks = [_task(), {**_task(), "task_id": "cell-2", "pr": 2}]
+    output = tmp_path / "pilot.json"
+    calls = 0
+
+    def interrupted_runner(task: dict[str, Any], **kwargs: Any) -> dict[str, Any]:
+        nonlocal calls
+        calls += 1
+        if calls == 2:
+            raise RuntimeError("simulated interruption")
+        return _pilot_cell_runner(task=task, **kwargs)
+
+    with pytest.raises(RuntimeError, match="simulated interruption"):
+        driver.run_pilot(
+            tasks,
+            repo=tmp_path,
+            config=driver.CodexRunConfig(),
+            output_path=output,
+            resolver=lambda _task, _repo: commits,
+            cell_runner=interrupted_runner,
+        )
+    checkpoint = json.loads(output.read_text(encoding="utf-8"))
+    assert checkpoint["completed_at"] is None
+    assert [result["task_id"] for result in checkpoint["results"]] == ["cell-1"]
+
+    payload = driver.run_pilot(
+        tasks,
+        repo=tmp_path,
+        config=driver.CodexRunConfig(),
+        output_path=output,
+        resolver=lambda _task, _repo: commits,
+        cell_runner=lambda task, **kwargs: _pilot_cell_runner(task=task, **kwargs),
+    )
+    assert payload["schema_version"] == 2
+    assert payload["summary"]["passed"] == 2
+    assert [result["task_id"] for result in payload["results"]] == ["cell-1", "cell-2"]
+    assert driver.verify_result_payload(payload)["valid"] is True
+
+
+def test_run_pilot_rejects_incompatible_resume(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(driver, "codex_binary_version", lambda _config: "codex-cli test")
+    monkeypatch.setattr(driver, "predicate_sandbox_version", lambda: "bubblewrap test")
+    commits = driver.CommitPair(parent="1" * 40, merge="2" * 40)
+    output = tmp_path / "pilot.json"
+    driver.run_pilot(
+        [_task()],
+        repo=tmp_path,
+        config=driver.CodexRunConfig(),
+        output_path=output,
+        resolver=lambda _task, _repo: commits,
+        cell_runner=lambda task, **kwargs: _pilot_cell_runner(task=task, **kwargs),
+    )
+
+    changed_task = {**_task(), "work_item": "A different task contract."}
+    with pytest.raises(driver.DriverError, match="selection does not match"):
+        driver.run_pilot(
+            [changed_task],
+            repo=tmp_path,
+            config=driver.CodexRunConfig(),
+            output_path=output,
+            resolver=lambda _task, _repo: commits,
+            cell_runner=lambda task, **kwargs: _pilot_cell_runner(task=task, **kwargs),
+        )
+
+
+def test_committed_pilot_witness_rechecks_11_of_19() -> None:
+    witness_path = (
+        Path(__file__).parents[2] / "eval/meas/pilot_codex_cli_gpt_5_6_sol_easy_v1.witness.json"
+    )
+    witness = json.loads(witness_path.read_text(encoding="utf-8"))
+    verification = driver.verify_result_payload(witness)
+    assert verification == {
+        "valid": True,
+        "lambda_hash": "e403ed3d49090dbb8fa4c8e58949b25516fdb488c37a822a9bb43fa73755e0c1",
+        "passed": 11,
+        "total": 19,
+    }
+    assert witness["witness"]["source_result_sha256"] == (
+        "1991e186b3699fa87667ac09963ef542ac3587dadc5b7e31be49afa3a9c2f03c"
+    )
+    assert len(witness["selection"]["task_ids"]) == 19
+    assert "cell.transcript.stdout" in witness["witness"]["redactions"]
 
 
 def test_load_tasks_rejects_non_object_rows(tmp_path: Path) -> None:

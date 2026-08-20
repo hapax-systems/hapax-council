@@ -1,0 +1,637 @@
+{
+  "schema_version": 1,
+  "artifact_kind": "redacted-pilot-witness",
+  "driver": "driver_codex_cli/v1",
+  "model": "gpt-5.6-sol",
+  "reasoning_effort": "ultra",
+  "started_at": "2026-08-20T04:15:40.006142Z",
+  "updated_at": "2026-08-20T07:14:45.778500Z",
+  "completed_at": "2026-08-20T07:14:45.778500Z",
+  "invocation": [
+    "uv",
+    "run",
+    "python",
+    "eval/meas/driver_codex_cli.py",
+    "--repo",
+    "$PRIMARY_COUNCIL",
+    "--tasks",
+    "$OBSIDIAN_VAULT/30-areas/hapax/workstream/meas-tier0/tasks-v2.jsonl",
+    "--difficulty",
+    "easy",
+    "--limit",
+    "19",
+    "--model",
+    "gpt-5.6-sol",
+    "--reasoning-effort",
+    "ultra",
+    "--timeout-seconds",
+    "900",
+    "--output",
+    "$OBSIDIAN_VAULT/30-areas/hapax/workstream/meas-tier0/pilot-codex-cli-gpt-5.6-sol-easy-v1.json",
+    "--report",
+    "$OBSIDIAN_VAULT/30-areas/hapax/workstream/meas-tier0/pilot-codex-cli-gpt-5.6-sol-easy-v1.md"
+  ],
+  "witness": {
+    "path_placeholders": {
+      "PRIMARY_COUNCIL": "the primary hapax-council checkout",
+      "OBSIDIAN_VAULT": "the operator's Obsidian vault root"
+    },
+    "source_result_sha256": "1991e186b3699fa87667ac09963ef542ac3587dadc5b7e31be49afa3a9c2f03c",
+    "tasks_source_sha256": "2a4f66c94910a53b37c9b0fc662712401c66e590e5d05fc9b3a492bbf2ff2102",
+    "redactions": [
+      "cell.diff",
+      "cell.transcript.stdout",
+      "cell.transcript.stderr",
+      "cell.git_status",
+      "exit.output_tail"
+    ],
+    "historical_lambda_limitations": [
+      "driver_codex_cli/v1 did not include codex timeout_seconds in lambda_config",
+      "driver_codex_cli/v1 did not sandbox the deterministic exit predicate",
+      "provider-managed model weights, serving version, and quantization are not independently published"
+    ],
+    "superseded_safety_contract": "Use driver_codex_cli/v2 for future measurements; this witness preserves the already-completed v1 result only.",
+    "recheck": "uv run python eval/meas/driver_codex_cli.py --verify-result eval/meas/pilot_codex_cli_gpt_5_6_sol_easy_v1.witness.json"
+  },
+  "selection": {
+    "difficulty": "easy",
+    "requested": 19,
+    "task_ids": [
+      "fix-inv2-ledger-ts-field-20260601",
+      "mergewatcher-drain-merged-tasks-20260616",
+      "gemini-reviewer-diff-awareness-20260617",
+      "p0-ledger-fail-open-rotation-20260617",
+      "cc-task-autoqueue-heavy-query-504-resilience-20260702",
+      "cross-surface-bluesky-active-canonical-update",
+      "infra-reconcile-activation-execstart-hotfix-20260606",
+      "sdlc-quota-wall-reset-signal-preference-20260605",
+      "darkplaces-soak-gl-grace-20260620",
+      "cc-task-receipt-dir-default-20260808",
+      "cc-task-coordinator-admission-host-fix-20260703",
+      "capability-adapter-api-executor-provider-gateway-coverage-20260619",
+      "r31-bare-host-capability-observer-20260812",
+      "cc-task-rdlc-publication-vehicle-selector-20260704",
+      "sdlc-request-decompose-yaml-safe-writer-correction-20260520",
+      "deploy-plane-shallow-graft-guard-20260810",
+      "sdlc-inv2-ledger-event-filter-and-stage-reconcile-20260606",
+      "substrate-adapter-buildout-tranche-1",
+      "outcome-learning-no-false-grounding-tests"
+    ],
+    "tasks_source_sha256": "2a4f66c94910a53b37c9b0fc662712401c66e590e5d05fc9b3a492bbf2ff2102"
+  },
+  "lambda_set": [
+    "e403ed3d49090dbb8fa4c8e58949b25516fdb488c37a822a9bb43fa73755e0c1"
+  ],
+  "lambda_config": {
+    "context_mode": "agentic-parent-checkout+merge-tests-post-exec",
+    "decode_params": {
+      "model_reasoning_effort": "ultra"
+    },
+    "harness_binary_version": "codex-cli 0.148.0;driver_codex_cli/v1",
+    "model_weights_sha256": "unpublished-provider-managed:gpt-5.6-sol",
+    "prompt_template_sha256": "279281775e5272fafebe2e5801295f1575bb9e3a463532d78debae1bd4cdd7d6",
+    "quant_params": {
+      "provider_managed": true
+    },
+    "serving_stack": "openai-codex",
+    "serving_version": "provider-managed:gpt-5.6-sol",
+    "tool_surface_config": {
+      "approval_policy": "never",
+      "ephemeral": true,
+      "exec_output": "jsonl",
+      "legacy_full_auto": false,
+      "mcp": "disabled-by-ignore-user-config",
+      "sandbox": "workspace-write",
+      "user_config": "ignored",
+      "uv_environment": "driver-interpreter-no-sync",
+      "web_search": "disabled"
+    }
+  },
+  "results": [
+    {
+      "task_id": "fix-inv2-ledger-ts-field-20260601",
+      "lambda_hash": "e403ed3d49090dbb8fa4c8e58949b25516fdb488c37a822a9bb43fa73755e0c1",
+      "cell": {
+        "seconds": 656.571,
+        "diff_bytes": 548,
+        "diff_sha256": "30f63b7dc90254c194e979738c672430dee78341b458955f49dc664cc8e07577"
+      },
+      "cell_result": {
+        "class": "build",
+        "difficulty": "easy",
+        "pr": 3853,
+        "parent": "8c4b7e1165df8c73dde02ee8edf626957fcdc1db",
+        "merge": "256bb461a31e9504da97f587a83fe30cf2c2f729",
+        "predicate_files": [
+          "tests/test_sdlc_invariants.py"
+        ],
+        "passed": false,
+        "exit": {
+          "passed": false,
+          "returncode": 1,
+          "timed_out": false
+        },
+        "codex_returncode": 0,
+        "codex_timed_out": false
+      }
+    },
+    {
+      "task_id": "mergewatcher-drain-merged-tasks-20260616",
+      "lambda_hash": "e403ed3d49090dbb8fa4c8e58949b25516fdb488c37a822a9bb43fa73755e0c1",
+      "cell": {
+        "seconds": 664.857,
+        "diff_bytes": 2147,
+        "diff_sha256": "37d9aeea2ae13794d1c4f8918f929c9fdf2d2c8eb88467abcc7c374324d7d3eb"
+      },
+      "cell_result": {
+        "class": "build",
+        "difficulty": "easy",
+        "pr": 4160,
+        "parent": "260f6e0d131c7e64b3b2850d0d67b66682620483",
+        "merge": "117c57745c78723924938fbf0a6871a89b7978a4",
+        "predicate_files": [
+          "tests/test_cc_pr_merge_watcher.py"
+        ],
+        "passed": false,
+        "exit": {
+          "passed": false,
+          "returncode": 1,
+          "timed_out": false
+        },
+        "codex_returncode": 0,
+        "codex_timed_out": false
+      }
+    },
+    {
+      "task_id": "gemini-reviewer-diff-awareness-20260617",
+      "lambda_hash": "e403ed3d49090dbb8fa4c8e58949b25516fdb488c37a822a9bb43fa73755e0c1",
+      "cell": {
+        "seconds": 368.094,
+        "diff_bytes": 1172,
+        "diff_sha256": "eed18fdaa0c082cf9a789b20062ee5ce07cd5ddf02745200fcb6896798c9790c"
+      },
+      "cell_result": {
+        "class": "build",
+        "difficulty": "easy",
+        "pr": 4164,
+        "parent": "3ca1d4dfdf21484a137231704bcc5a5717182963",
+        "merge": "800cd81976dff1d93c04f6af9228ae5f38cddd53",
+        "predicate_files": [
+          "tests/test_review_team.py"
+        ],
+        "passed": false,
+        "exit": {
+          "passed": false,
+          "returncode": 1,
+          "timed_out": false
+        },
+        "codex_returncode": 0,
+        "codex_timed_out": false
+      }
+    },
+    {
+      "task_id": "p0-ledger-fail-open-rotation-20260617",
+      "lambda_hash": "e403ed3d49090dbb8fa4c8e58949b25516fdb488c37a822a9bb43fa73755e0c1",
+      "cell": {
+        "seconds": 658.621,
+        "diff_bytes": 4451,
+        "diff_sha256": "a7afc3be8b10b025936397fdbf8d71de999b359823054784e51bcc4cf5d52f10"
+      },
+      "cell_result": {
+        "class": "build",
+        "difficulty": "easy",
+        "pr": 4165,
+        "parent": "800cd81976dff1d93c04f6af9228ae5f38cddd53",
+        "merge": "a7476f2bf237bfb930251ea3b14c7a82b0a1eaaa",
+        "predicate_files": [
+          "tests/test_p0_incident_intake.py"
+        ],
+        "passed": false,
+        "exit": {
+          "passed": false,
+          "returncode": 1,
+          "timed_out": false
+        },
+        "codex_returncode": 0,
+        "codex_timed_out": false
+      }
+    },
+    {
+      "task_id": "cc-task-autoqueue-heavy-query-504-resilience-20260702",
+      "lambda_hash": "e403ed3d49090dbb8fa4c8e58949b25516fdb488c37a822a9bb43fa73755e0c1",
+      "cell": {
+        "seconds": 744.471,
+        "diff_bytes": 3777,
+        "diff_sha256": "63eb8aa044c65b52419d9ad044d06d8e7b7bc078c80fc8afa67ba460df87b12a"
+      },
+      "cell_result": {
+        "class": "build",
+        "difficulty": "easy",
+        "pr": 4393,
+        "parent": "91716156946dd507c1b93b6f6ecf17cc77eee4f5",
+        "merge": "1058d6b8f6854ca414a4bc4975cf99c08d64367b",
+        "predicate_files": [
+          "tests/test_cc_pr_autoqueue.py"
+        ],
+        "passed": true,
+        "exit": {
+          "passed": true,
+          "returncode": 0,
+          "timed_out": false
+        },
+        "codex_returncode": 0,
+        "codex_timed_out": false
+      }
+    },
+    {
+      "task_id": "cross-surface-bluesky-active-canonical-update",
+      "lambda_hash": "e403ed3d49090dbb8fa4c8e58949b25516fdb488c37a822a9bb43fa73755e0c1",
+      "cell": {
+        "seconds": 73.035,
+        "diff_bytes": 698,
+        "diff_sha256": "7e42919f73cf4f0f394e886a6ead9001b2b2dc949c240ada238d8a6e5f2b0471"
+      },
+      "cell_result": {
+        "class": "build",
+        "difficulty": "easy",
+        "pr": 2002,
+        "parent": "c97077035b5af81cbf2c9ecab2b4ab1e32e97d5b",
+        "merge": "985bd2015ee5c53ca2890c45adbf04498dc430e4",
+        "predicate_files": [
+          "tests/public_events/test_cross_surface_event_contract.py"
+        ],
+        "passed": true,
+        "exit": {
+          "passed": true,
+          "returncode": 0,
+          "timed_out": false
+        },
+        "codex_returncode": 0,
+        "codex_timed_out": false
+      }
+    },
+    {
+      "task_id": "infra-reconcile-activation-execstart-hotfix-20260606",
+      "lambda_hash": "e403ed3d49090dbb8fa4c8e58949b25516fdb488c37a822a9bb43fa73755e0c1",
+      "cell": {
+        "seconds": 273.943,
+        "diff_bytes": 518,
+        "diff_sha256": "1a2daed83db41edb8869acd28a3ea79bc05b2e5513e340e4696a59d27fe065e4"
+      },
+      "cell_result": {
+        "class": "build",
+        "difficulty": "easy",
+        "pr": 3965,
+        "parent": "e27dcf583aae1ead69321ef158c0fd070ce5dbe5",
+        "merge": "4162f4848a95fb825a11e995a8a7699b2c510ef9",
+        "predicate_files": [
+          "tests/test_infra_reconcile.py"
+        ],
+        "passed": true,
+        "exit": {
+          "passed": true,
+          "returncode": 0,
+          "timed_out": false
+        },
+        "codex_returncode": 0,
+        "codex_timed_out": false
+      }
+    },
+    {
+      "task_id": "sdlc-quota-wall-reset-signal-preference-20260605",
+      "lambda_hash": "e403ed3d49090dbb8fa4c8e58949b25516fdb488c37a822a9bb43fa73755e0c1",
+      "cell": {
+        "seconds": 285.839,
+        "diff_bytes": 930,
+        "diff_sha256": "390e23a7c898155e6504b74662fb4c7ace944bbaee477b82fcaf11360ddc9218"
+      },
+      "cell_result": {
+        "class": "build",
+        "difficulty": "easy",
+        "pr": 3914,
+        "parent": "b48992ca9f80ab84960bdc1e8ac35efd0f566536",
+        "merge": "0c5135daf0c6f604d135532cc7c013bf89f91c60",
+        "predicate_files": [
+          "tests/shared/test_quota_wall.py"
+        ],
+        "passed": false,
+        "exit": {
+          "passed": false,
+          "returncode": 1,
+          "timed_out": false
+        },
+        "codex_returncode": 0,
+        "codex_timed_out": false
+      }
+    },
+    {
+      "task_id": "darkplaces-soak-gl-grace-20260620",
+      "lambda_hash": "e403ed3d49090dbb8fa4c8e58949b25516fdb488c37a822a9bb43fa73755e0c1",
+      "cell": {
+        "seconds": 442.418,
+        "diff_bytes": 1052,
+        "diff_sha256": "f00bd692be762eb09e86c18cee6f9da3a18271b56deabcba2d6cd640d91e53e8"
+      },
+      "cell_result": {
+        "class": "build",
+        "difficulty": "easy",
+        "pr": 4242,
+        "parent": "190b47dffff2186a6f8017d01009c53c9c57159a",
+        "merge": "c36328a2e25ecb17b5e88022892442194982f0b4",
+        "predicate_files": [
+          "tests/test_darkplaces_soak.py"
+        ],
+        "passed": true,
+        "exit": {
+          "passed": true,
+          "returncode": 0,
+          "timed_out": false
+        },
+        "codex_returncode": 0,
+        "codex_timed_out": false
+      }
+    },
+    {
+      "task_id": "cc-task-receipt-dir-default-20260808",
+      "lambda_hash": "e403ed3d49090dbb8fa4c8e58949b25516fdb488c37a822a9bb43fa73755e0c1",
+      "cell": {
+        "seconds": 526.625,
+        "diff_bytes": 825,
+        "diff_sha256": "a9d4a25c83f0483f6e8209adde91c1e79186342dad8b0d68d4e478378a18a3a8"
+      },
+      "cell_result": {
+        "class": "build",
+        "difficulty": "easy",
+        "pr": 4541,
+        "parent": "22ef4eb7856d6bbf5cde0b6c19b3f6bd0f570024",
+        "merge": "65867b885ab9bf6c3b33dce72fa79770c3c6c11b",
+        "predicate_files": [
+          "tests/shared/test_platform_capability_registry.py"
+        ],
+        "passed": true,
+        "exit": {
+          "passed": true,
+          "returncode": 0,
+          "timed_out": false
+        },
+        "codex_returncode": 0,
+        "codex_timed_out": false
+      }
+    },
+    {
+      "task_id": "cc-task-coordinator-admission-host-fix-20260703",
+      "lambda_hash": "e403ed3d49090dbb8fa4c8e58949b25516fdb488c37a822a9bb43fa73755e0c1",
+      "cell": {
+        "seconds": 608.251,
+        "diff_bytes": 1494,
+        "diff_sha256": "2480e08211aa61dcfc4eaa2cda46e4b0d89effed89644777c72b0e55e66c5f98"
+      },
+      "cell_result": {
+        "class": "build",
+        "difficulty": "easy",
+        "pr": 4396,
+        "parent": "b8cb1bc5bc818b8e75c7bb5a4bb9cf38e8453b00",
+        "merge": "db05ee9cd32de0dfc3a5fe98de47fe719d0c159e",
+        "predicate_files": [
+          "tests/test_coordinator_admission_host.py"
+        ],
+        "passed": true,
+        "exit": {
+          "passed": true,
+          "returncode": 0,
+          "timed_out": false
+        },
+        "codex_returncode": 0,
+        "codex_timed_out": false
+      }
+    },
+    {
+      "task_id": "capability-adapter-api-executor-provider-gateway-coverage-20260619",
+      "lambda_hash": "e403ed3d49090dbb8fa4c8e58949b25516fdb488c37a822a9bb43fa73755e0c1",
+      "cell": {
+        "seconds": 489.898,
+        "diff_bytes": 491,
+        "diff_sha256": "6ebc991a14a6077132c48a9008a832c99e2ec6f2fd08f8cf88f68be03223ffe6"
+      },
+      "cell_result": {
+        "class": "build",
+        "difficulty": "easy",
+        "pr": 4214,
+        "parent": "8fe14b3212ccb5bed4019660986530ae2cc5fa80",
+        "merge": "a78667511ee84ddfa2484197e1823c733689cbe4",
+        "predicate_files": [
+          "tests/test_executor_contract.py"
+        ],
+        "passed": true,
+        "exit": {
+          "passed": true,
+          "returncode": 0,
+          "timed_out": false
+        },
+        "codex_returncode": 0,
+        "codex_timed_out": false
+      }
+    },
+    {
+      "task_id": "r31-bare-host-capability-observer-20260812",
+      "lambda_hash": "e403ed3d49090dbb8fa4c8e58949b25516fdb488c37a822a9bb43fa73755e0c1",
+      "cell": {
+        "seconds": 900.046,
+        "diff_bytes": 39401,
+        "diff_sha256": "33c9b4c695a6f3ff17b79ce7a01431538b0e50041a7eaed371c6467ae36ed31b"
+      },
+      "cell_result": {
+        "class": "build",
+        "difficulty": "easy",
+        "pr": 4563,
+        "parent": "dbaf8734ece6c81dd71a26bf925b0dd0f0548d4e",
+        "merge": "bdf2da7bf1d26dc33e5c9f0db7a802868bdb626e",
+        "predicate_files": [
+          "tests/shared/test_bare_host_capability_observer.py"
+        ],
+        "passed": false,
+        "exit": {
+          "passed": false,
+          "returncode": 2,
+          "timed_out": false
+        },
+        "codex_returncode": 124,
+        "codex_timed_out": true
+      }
+    },
+    {
+      "task_id": "cc-task-rdlc-publication-vehicle-selector-20260704",
+      "lambda_hash": "e403ed3d49090dbb8fa4c8e58949b25516fdb488c37a822a9bb43fa73755e0c1",
+      "cell": {
+        "seconds": 900.004,
+        "diff_bytes": 14806,
+        "diff_sha256": "8b7f4e4db93ec2aadf1a84a6c91bccac4bcc4575ef5b44a04f1a724e66e41673"
+      },
+      "cell_result": {
+        "class": "build",
+        "difficulty": "easy",
+        "pr": 4461,
+        "parent": "21b9e9153e98f82cc7b9c1adbb5cc86894c2a386",
+        "merge": "955cf0ae010c60675cd690486650864b902a2172",
+        "predicate_files": [
+          "tests/shared/test_rdlc_publication_vehicle_selector.py"
+        ],
+        "passed": false,
+        "exit": {
+          "passed": false,
+          "returncode": 2,
+          "timed_out": false
+        },
+        "codex_returncode": 124,
+        "codex_timed_out": true
+      }
+    },
+    {
+      "task_id": "sdlc-request-decompose-yaml-safe-writer-correction-20260520",
+      "lambda_hash": "e403ed3d49090dbb8fa4c8e58949b25516fdb488c37a822a9bb43fa73755e0c1",
+      "cell": {
+        "seconds": 650.234,
+        "diff_bytes": 3057,
+        "diff_sha256": "29acf2ac7a3168aa219dbe8a35d8d4abd69b11c5104b223dd25e448951524f6e"
+      },
+      "cell_result": {
+        "class": "build",
+        "difficulty": "easy",
+        "pr": 3630,
+        "parent": "170d9985fe846cac0138021ed5c38a00c3101467",
+        "merge": "1f28a5a15b525eb0c0fac7aa45baeefd82b5f5c4",
+        "predicate_files": [
+          "tests/agents/test_request_decomposer.py"
+        ],
+        "passed": true,
+        "exit": {
+          "passed": true,
+          "returncode": 0,
+          "timed_out": false
+        },
+        "codex_returncode": 0,
+        "codex_timed_out": false
+      }
+    },
+    {
+      "task_id": "deploy-plane-shallow-graft-guard-20260810",
+      "lambda_hash": "e403ed3d49090dbb8fa4c8e58949b25516fdb488c37a822a9bb43fa73755e0c1",
+      "cell": {
+        "seconds": 502.901,
+        "diff_bytes": 970,
+        "diff_sha256": "90b7bfa44f61ecc06c83c991a8730dcc4f52b53b618abf76f424b82be8552301"
+      },
+      "cell_result": {
+        "class": "refactor",
+        "difficulty": "easy",
+        "pr": 4553,
+        "parent": "46db30aec48ff9985f3374b95d46753642fe6b25",
+        "merge": "ab27fd571c07b4327a10c776bf3abcae0a16745b",
+        "predicate_files": [
+          "tests/scripts/test_check_public_surface_claims.py"
+        ],
+        "passed": true,
+        "exit": {
+          "passed": true,
+          "returncode": 0,
+          "timed_out": false
+        },
+        "codex_returncode": 0,
+        "codex_timed_out": false
+      }
+    },
+    {
+      "task_id": "sdlc-inv2-ledger-event-filter-and-stage-reconcile-20260606",
+      "lambda_hash": "e403ed3d49090dbb8fa4c8e58949b25516fdb488c37a822a9bb43fa73755e0c1",
+      "cell": {
+        "seconds": 838.664,
+        "diff_bytes": 1669,
+        "diff_sha256": "2fb969699aa5a2bb9530e676a3bf0818a66396c606b87fb2d898709f0b2645c6"
+      },
+      "cell_result": {
+        "class": "refactor",
+        "difficulty": "easy",
+        "pr": 3942,
+        "parent": "c26fb33e5d7bd1af85f11ed79d02b5d574db6b5b",
+        "merge": "93c739a752bc24e26071d14e5d699be5c8a1fbac",
+        "predicate_files": [
+          "tests/test_sdlc_invariants.py"
+        ],
+        "passed": true,
+        "exit": {
+          "passed": true,
+          "returncode": 0,
+          "timed_out": false
+        },
+        "codex_returncode": 0,
+        "codex_timed_out": false
+      }
+    },
+    {
+      "task_id": "substrate-adapter-buildout-tranche-1",
+      "lambda_hash": "e403ed3d49090dbb8fa4c8e58949b25516fdb488c37a822a9bb43fa73755e0c1",
+      "cell": {
+        "seconds": 329.487,
+        "diff_bytes": 0,
+        "diff_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+      },
+      "cell_result": {
+        "class": "docs-to-code",
+        "difficulty": "easy",
+        "pr": 2530,
+        "parent": "893186d9672a68586fb72e7dca66752bd4965caf",
+        "merge": "1739c44d9cdd45b3641eb9dc306a62739d162962",
+        "predicate_files": [
+          "tests/docs/test_adapter_tranche_selection_memo_contract.py"
+        ],
+        "passed": false,
+        "exit": {
+          "passed": false,
+          "returncode": 1,
+          "timed_out": false
+        },
+        "codex_returncode": 0,
+        "codex_timed_out": false
+      }
+    },
+    {
+      "task_id": "outcome-learning-no-false-grounding-tests",
+      "lambda_hash": "e403ed3d49090dbb8fa4c8e58949b25516fdb488c37a822a9bb43fa73755e0c1",
+      "cell": {
+        "seconds": 590.722,
+        "diff_bytes": 7133,
+        "diff_sha256": "e313a10ac773cf1e197bbbb5e68902c4289cc816ea8c01aa2b1ccb577428e3ae"
+      },
+      "cell_result": {
+        "class": "docs-to-code",
+        "difficulty": "easy",
+        "pr": 2215,
+        "parent": "3b8a312a98011abdbc34156990a47ccec884343a",
+        "merge": "3e6f6579130ce2bb2576784fb79f3dd7a50e083e",
+        "predicate_files": [
+          "tests/docs/test_capability_outcome_envelope_contract.py",
+          "tests/shared/test_affordance_outcome_adapter.py",
+          "tests/shared/test_capability_outcome.py"
+        ],
+        "passed": true,
+        "exit": {
+          "passed": true,
+          "returncode": 0,
+          "timed_out": false
+        },
+        "codex_returncode": 0,
+        "codex_timed_out": false
+      }
+    }
+  ],
+  "summary": {
+    "direct_api_35b_baseline": {
+      "pass_rate": 0.0,
+      "passed": 0,
+      "total": 19
+    },
+    "pass_rate": 0.578947,
+    "passed": 11,
+    "total": 19
+  }
+}
