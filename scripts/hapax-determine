@@ -201,7 +201,21 @@ def run_producer(
 
 
 def append_run(ledger: Path, record: dict[str, Any]) -> None:
+    """Append one run record, stamped with the identity of the code writing it.
+
+    Stamped HERE as well as in `run_producer`, and the two are not a duplicated guard: they
+    protect different artifacts. `run_producer` stamps the record it RETURNS, which `main` reads
+    to report runs whose checkout could not be identified; this stamps the row that reaches the
+    LEDGER, which is what a later reader compares across a redeploy.
+
+    The write path is the only place that sees every row, so it is the only place the invariant
+    "every run record names the code that produced it" can actually hold. The sibling defect on
+    the route ledger — identity merged only when an optional receipt happened to be present —
+    was raised by codex-1 and gemini-1 independently, and it is the same shape: a representation
+    added to a model with the writer left free to omit it.
+    """
     ledger.parent.mkdir(parents=True, exist_ok=True)
+    record = {**record, **adjudicator_identity().as_receipt()}
     with ledger.open("a", encoding="utf-8") as fh:
         fh.write(json.dumps(record, sort_keys=True) + "\n")
 

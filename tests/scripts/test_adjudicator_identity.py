@@ -920,6 +920,70 @@ def test_route_receipt_carries_the_adjudicator_alongside_the_basis_name() -> Non
         assert SHA_RE.match(serialized["adjudicator_sha"] or "")
 
 
+def test_the_public_writer_stamps_an_identity_on_every_row(tmp_path: Path) -> None:
+    """Raised independently by codex-1 and gemini-1, and it is the finding that mattered most.
+
+    `dimensional_receipt` defaults to None, and the writer merged the adjudicator fields only
+    when it was populated. So a RouteDecision constructed directly — or deserialized from an
+    older row — produced a ledger row with none of the six fields. Every route decision was
+    supposed to record which code made it; in fact only the ones that happened to carry a
+    dimensional receipt did.
+
+    That is representation without enforcement: a field added to a model, and the writer left
+    free to omit it. It is the defect this entire change set exists to remove, reproduced inside
+    the fix for it.
+
+    Asserted through the PUBLIC writer against the JSONL row on disk, because that is the only
+    surface where the invariant is observable. A test that builds a receipt and dumps the model
+    proves the model works and says nothing about what gets written.
+    """
+    from datetime import UTC, datetime
+
+    from shared.dispatcher_policy import DispatchAction, RouteDecision, write_route_decision_receipt
+
+    bare = RouteDecision(
+        decision_id="rd-20260821T000000Z-t-bbbbbbbbbbbb",
+        created_at=datetime(2026, 8, 21, tzinfo=UTC),
+        task_id="t",
+        lane="roleless",
+        route_id="glmcp.review.direct",
+        platform="glmcp",
+        mode="review",
+        profile="direct",
+        action=DispatchAction.HOLD,
+        policy_outcome="hold",
+        launch_allowed=False,
+        prompt_allowed=False,
+        quality_floor_satisfied=False,
+        authority_allowed=False,
+        reason_codes=("x",),
+        message="m",
+    )
+    assert bare.dimensional_receipt is None, "the case under test: no optional receipt attached"
+
+    path = write_route_decision_receipt(bare, ledger_dir=tmp_path)
+    rows = [json.loads(line) for line in path.read_text().splitlines() if line.strip()]
+    assert len(rows) == 1
+    row = rows[0]
+
+    for field in (
+        "adjudicator_sha",
+        "adjudicator_source",
+        "adjudicator_resolved_from",
+        "adjudicator_dirty",
+        "adjudicator_loaded_modules",
+        "adjudicator_declared_sha",
+    ):
+        assert field in row, (
+            f"a route decision written without a dimensional receipt carries no {field}; the "
+            "invariant is that EVERY written decision records which code made it"
+        )
+    assert row["adjudicator_loaded_modules"], "and says what participated"
+    assert row["adjudicator_source"] != "indeterminate" or row["adjudicator_sha"] is None, (
+        "an indeterminate source must not be paired with a sha"
+    )
+
+
 def test_a_route_receipt_stays_hashable() -> None:
     """Raised by coderabbitai: `_PolicyModel` is frozen, so Pydantic derives `__hash__`.
 
@@ -1088,6 +1152,28 @@ def test_every_run_outcome_carries_the_identity(command: list[str], expected_out
     for field in ("adjudicator_sha", "adjudicator_source", "adjudicator_loaded_modules"):
         assert field in record, f"{expected_outcome} records must carry {field}"
     assert record["adjudicator_loaded_modules"], "and must say what participated"
+
+
+def test_the_run_ledger_writer_stamps_an_identity_on_every_row(tmp_path: Path) -> None:
+    """The sibling of the route-ledger finding, fixed in the same place: the write path.
+
+    codex-1 and gemini-1 found that route decisions carried an identity only when an optional
+    receipt happened to be attached. The determination ledger has the same shape of exposure —
+    `append_run` takes any dict — so the invariant is enforced where every row passes, rather
+    than trusted to whatever built the record.
+    """
+    module = _load_determine()
+    ledger = tmp_path / "runs.jsonl"
+    module.append_run(ledger, {"producer_id": "handbuilt", "outcome": "produced"})
+
+    rows = [json.loads(line) for line in ledger.read_text().splitlines() if line.strip()]
+    assert len(rows) == 1
+    assert rows[0]["producer_id"] == "handbuilt"
+    for field in ("adjudicator_sha", "adjudicator_source", "adjudicator_loaded_modules"):
+        assert field in rows[0], (
+            f"a hand-built run record reached the ledger without {field}; the invariant is that "
+            "every written row names the code that produced it"
+        )
 
 
 def test_main_reports_unidentified_runs_in_its_json_payload(tmp_path: Path, capsys) -> None:

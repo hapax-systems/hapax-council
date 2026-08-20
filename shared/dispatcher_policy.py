@@ -1537,6 +1537,22 @@ def write_route_decision_receipt(
     payload = decision.model_dump(mode="json")
     if decision.dimensional_receipt is not None:
         payload.update(decision.dimensional_receipt.model_dump(mode="json"))
+    # The identity is stamped HERE, unconditionally, not inherited from an optional receipt.
+    #
+    # Raised independently by codex-1 and gemini-1: `dimensional_receipt` defaults to None, so a
+    # RouteDecision constructed directly or deserialized produced a ledger row with none of the
+    # six adjudicator fields. Every route decision was supposed to record which code made it, and
+    # in fact only the ones that happened to carry a dimensional receipt did.
+    #
+    # That is representation without enforcement — a field added to a model, and the writer left
+    # free to omit it — which is the defect this whole change set exists to remove. Building the
+    # representation and not the enforcement is the estate's characteristic failure, and it had
+    # reproduced itself inside the fix for it.
+    #
+    # The write path is the only place that sees every decision, so it is the only place the
+    # invariant can hold. Written after the receipt merge so it wins: the identity describes the
+    # code writing this row, and a receipt built earlier in the process cannot overrule that.
+    payload.update(adjudicator_identity().as_receipt())
     blob = (json.dumps(payload, sort_keys=True) + "\n").encode("utf-8")
     # ONE lock across rotate-then-append, and NO append without it.
     #
