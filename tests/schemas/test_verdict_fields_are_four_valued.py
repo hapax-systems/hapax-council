@@ -45,10 +45,12 @@ from __future__ import annotations
 from datetime import UTC, datetime, timedelta
 
 from shared.dispatcher_policy import (
+    INDETERMINATE_FRESHNESS_CODES,
     LEGACY_STALE_SUPPLY_FIELD_CODE,
     STALE_SUPPLY_FIELD_CODES,
     SUPPLY_FIELD_ABSENT_CODE,
     SUPPLY_FIELD_EXPIRED_CODE,
+    SUPPLY_FIELD_FRESHNESS_INDETERMINATE_CODE,
     CandidateStatus,
     DimensionalCandidateReceipt,
     DimensionalVeto,
@@ -57,6 +59,7 @@ from shared.dispatcher_policy import (
     RouteDecision,
     StaleMetadataReceipt,
     _build_dimensional_route_receipt,
+    _freshness_kind_for_code,
     _has_unknown_supply_veto,
     _receipt_stale_metadata,
     _supply_field_veto,
@@ -258,14 +261,46 @@ def test_historical_receipts_still_classify() -> None:
     assert LEGACY_STALE_SUPPLY_FIELD_CODE in STALE_SUPPLY_FIELD_CODES
 
 
-def test_receipt_kind_defaults_to_expired_not_absent() -> None:
-    """Absent is the stronger claim; a caller that forgets must not accidentally assert it.
+def test_receipt_kind_defaults_to_asserting_nothing() -> None:
+    """The default must assert NEITHER measurement. Replaces an earlier, wrong test.
 
-    Defaulting the other way would let an unmarked receipt claim "no producer has ever
-    written this", which routes a human to build a producer that already exists.
+    That earlier version asserted `kind == "expired"` by default, reasoning that absent was
+    the stronger claim so the default should be the weaker one. codex-1 refuted it on #4585
+    ("Ambiguous freshness is still serialized as expired"): between two measurements, there is
+    no weaker one. `expired` is a positive claim that a producer wrote the field and it aged
+    out, and defaulting to it sends a reader to refresh a producer that may never have
+    existed.
+
+    The honest default is a third state that asserts nothing, which is the same distinction
+    this whole module exists to make — applied to its own default rather than to supply
+    evidence. The prior test pinned the error in place, so the test changed, not just the code.
     """
     receipt = StaleMetadataReceipt(source_id="r", field="f", effect="veto")
-    assert receipt.kind == "expired"
+    assert receipt.kind == "indeterminate"
+
+
+def test_ambiguous_codes_are_not_resolved_to_a_measurement() -> None:
+    """Codes that do not determine the distinction must not be guessed into one."""
+    for code in INDETERMINATE_FRESHNESS_CODES:
+        assert _freshness_kind_for_code(code) == "indeterminate", (
+            f"{code} was resolved to a definite kind; it does not carry that information "
+            "and asserting it fabricates a measurement"
+        )
+    assert _freshness_kind_for_code(SUPPLY_FIELD_ABSENT_CODE) == "absent"
+    assert _freshness_kind_for_code(SUPPLY_FIELD_EXPIRED_CODE) == "expired"
+    assert _freshness_kind_for_code("some_code_nobody_has_classified_yet") == "indeterminate", (
+        "an unclassified code must land in indeterminate, not inherit a branch default"
+    )
+
+
+def test_indeterminate_serializes_as_its_own_code_and_says_so() -> None:
+    """An indeterminate receipt must not borrow either repair instruction."""
+    veto = _supply_field_veto(_receipt("indeterminate"))
+    assert veto.code == SUPPLY_FIELD_FRESHNESS_INDETERMINATE_CODE
+    assert veto.code not in {SUPPLY_FIELD_ABSENT_CODE, SUPPLY_FIELD_EXPIRED_CODE}
+    assert "does not record whether" in veto.message
+    assert "do not assume either" in veto.message
+    assert _has_unknown_supply_veto([veto]), "an indeterminate veto is still an unknown"
 
 
 def test_absent_and_expired_are_both_expressible() -> None:
