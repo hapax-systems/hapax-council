@@ -25,7 +25,7 @@ from typing import Any, Literal
 
 from pydantic import BaseModel, ConfigDict, Field, PrivateAttr, ValidationError, model_validator
 
-from shared.adjudicator_identity import adjudicator_identity, register_decision_module
+from shared.adjudicator_identity import adjudicator_identity
 from shared.agentic_trust_boundary import is_syntactically_typed_policy_evidence_reference
 from shared.capability_availability_guarantor import (
     CapabilityAvailabilityReceipt,
@@ -81,14 +81,12 @@ from shared.route_metadata_schema import (
     stable_payload_hash,
 )
 
-# This module computes the routes, so it is part of the code a route receipt identifies. It
-# registers only ITSELF: its decision-bearing imports above — capability_availability_guarantor,
-# platform_capability_registry, quota_spend_ledger, route_metadata_schema — have already been
-# loaded by the time any line here runs, so their loaded bytes are no longer observable. An
-# earlier version swept them by re-reading from disk; codex-1 refuted it, because re-read bytes
-# recorded as loaded bytes is a false claim of exactly the kind this field exists to prevent.
-# They are enumerated and reported as unverified instead. See register_decision_module.
-register_decision_module(__file__)
+# NOTE: a `register_decision_module(__file__)` call stood here, so this module and
+# hapax-determine could hash their own source at import and have it compared against the commit.
+# It was REMOVED after codex-1 showed the hash is a re-read: Python's loader has read and
+# compiled the file before any line of it runs, so no module can observe the bytes it was
+# compiled from. This module and its decision-bearing imports are still named in
+# `adjudicator_loaded_modules`; what is gone is the verdict that claimed to verify them.
 
 logger = logging.getLogger(__name__)
 
@@ -492,9 +490,8 @@ class DimensionalRouteReceipt(_PolicyModel):
     #: comment claimed it did — raised by codex-1 as a stale claim that "invites consumers to
     #: trust exactly the shortcut the implementation otherwise rejects". `release_tree` follows
     #: from path containment plus a discoverable HEAD, and can accompany `adjudicator_dirty`
-    #: True, `adjudicator_source_matches_head` False, or a non-empty
-    #: `adjudicator_unverified_modules`. Usability is the whole tuple, which is what
-    #: `record_has_usable_adjudicator` reads; no single field is a shortcut to it.
+    #: True. Nor does the full tuple establish attribution: `record_has_usable_adjudicator` is
+    #: necessary but NOT sufficient, for reasons given at its definition.
     #: See shared/adjudicator_identity.py.
     adjudicator_sha: str | None = None
     adjudicator_source: Literal["release_tree", "git_worktree", "indeterminate"] = "indeterminate"
@@ -503,23 +500,15 @@ class DimensionalRouteReceipt(_PolicyModel):
     #: states: a tree whose `git status` failed is not a clean tree. Consumers must test
     #: `is False`, never falsiness.
     adjudicator_dirty: bool | None = None
-    #: True when the bytes this process LOADED match the blob `adjudicator_sha` records at that
-    #: path; False when they differ; None when it could not be checked. The other fields are
-    #: measured when the receipt is written, which can be long after the code was loaded — a
-    #: tree can be modified, run, and restored to a clean HEAD, leaving `adjudicator_dirty`
-    #: False and the sha pointing at a commit that never executed. Only this field speaks to
-    #: load time, so `record_has_usable_adjudicator` requires it `is True`.
-    adjudicator_source_matches_head: bool | None = None
-    #: Exactly which modules `adjudicator_source_matches_head` covers, repo-relative and sorted.
-    #: The verdict spans every module that registered itself at import — this one included, since
-    #: it computes the routes. Recorded because a claim whose scope must be inferred from a field
-    #: name is how this defect class starts: a reader sees what was covered, not what was implied.
-    adjudicator_verified_modules: list[str] = Field(default_factory=list)
-    #: Registered modules that could NOT be confirmed against `adjudicator_sha` — loaded from a
-    #: different checkout, absent from the commit, or differing from it. `source_matches_head`
-    #: is True only when this is empty. Recorded because the alternative was to skip them, and
-    #: a skipped module is indistinguishable from a verified one once the verdict is read.
-    adjudicator_unverified_modules: list[str] = Field(default_factory=list)
+    #: Every first-party module the process had loaded when this receipt was written, sorted and
+    #: repo-relative where they fall inside the checkout.
+    #:
+    #: A COVERAGE STATEMENT, not a verification — it names what participated so a reader can see
+    #: the scope of the decision rather than infer it. There is deliberately no per-module
+    #: verdict: four mechanisms claiming to verify loaded bytes against the commit were refuted
+    #: in review, because a Python process cannot observe the bytes it was compiled from.
+    #: See shared/adjudicator_identity.py.
+    adjudicator_loaded_modules: list[str] = Field(default_factory=list)
     #: What the deploy PATH claimed, kept beside the verified sha because they can disagree.
     #: Release trees on this estate are writable git checkouts, so a directory name is a
     #: claim; the live tree `45086a03…` carried a modified file while its path asserted a

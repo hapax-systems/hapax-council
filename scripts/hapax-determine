@@ -50,14 +50,7 @@ if str(REPO_ROOT) not in sys.path:
 from shared.adjudicator_identity import (  # noqa: E402
     adjudicator_identity,
     record_has_usable_adjudicator,
-    register_decision_module,
 )
-
-# This script runs the producers, so it is part of the code a run record identifies. It
-# registers only itself: anything it imported earlier was loaded before this line and its
-# loaded bytes are no longer observable, so those modules are enumerated and reported as
-# unverified rather than credited from a re-read. See register_decision_module.
-register_decision_module(__file__)
 
 DEFAULT_REGISTRY = REPO_ROOT / "config" / "determination-producers.json"
 DEFAULT_RUN_LEDGER = Path.home() / ".cache" / "hapax" / "determination" / "runs.jsonl"
