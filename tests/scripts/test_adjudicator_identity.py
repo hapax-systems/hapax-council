@@ -404,6 +404,55 @@ def test_a_head_that_moves_during_the_scan_degrades_cleanliness(
     )
 
 
+@pytest.mark.parametrize(
+    "mode",
+    ["returncode", "timeout", "oserror", "mismatch"],
+)
+def test_a_failed_post_status_head_check_cannot_report_clean(
+    tmp_path: Path, monkeypatch, mode: str
+) -> None:
+    """Raised by codex-1: the bracketing read's OWN failure branches were untested.
+
+    The failure-mode table injects failures into `git status` only, and the race test covers a
+    successful rev-parse returning a different sha. So a regression that reported `dirty=False`
+    when the SECOND verification failed would keep the suite green, and
+    `record_identifies_its_checkout` would accept an unpaired measurement.
+
+    The invariant is the same whichever way that read fails: if it did not confirm HEAD held
+    still, the cleanliness cannot be paired with the sha. Not-confirmed and confirmed-different
+    are both "unknown" here — only a successful, matching read licenses the pairing.
+    """
+    from shared import adjudicator_identity as mod
+
+    tree = _make_checkout(tmp_path / "tree", "tree")
+    real_run = mod.subprocess.run
+    seen_status = {"yes": False}
+
+    def failing_bracket(args, **kwargs):
+        if "status" in args:
+            seen_status["yes"] = True
+            return real_run(args, **kwargs)
+        if "rev-parse" in args and seen_status["yes"]:
+            if mode == "returncode":
+                return subprocess.CompletedProcess(args, returncode=128, stdout="", stderr="boom")
+            if mode == "timeout":
+                raise subprocess.TimeoutExpired(args, 5)
+            if mode == "oserror":
+                raise OSError("git vanished between the two reads")
+            return subprocess.CompletedProcess(args, returncode=0, stdout="f" * 40 + "\n")
+        return real_run(args, **kwargs)
+
+    monkeypatch.setattr(mod.subprocess, "run", failing_bracket)
+    ident = adjudicator_identity(str(tree / "shared" / "adjudicator_identity.py"))
+
+    assert ident.sha is not None, "the OID was observed and is still worth recording"
+    assert ident.dirty is not False, (
+        f"the post-status HEAD check failed ({mode}), so nothing confirmed HEAD held still and "
+        "the tree must not be reported as verified clean"
+    )
+    assert not record_identifies_its_checkout(ident.as_receipt())
+
+
 def test_a_head_that_holds_still_yields_a_paired_measurement(tmp_path: Path) -> None:
     """The positive counterpart: when HEAD does NOT move, the pairing stands.
 

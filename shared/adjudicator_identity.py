@@ -338,16 +338,16 @@ def _git_env() -> dict[str, str]:
 
 
 def _git_head(tree: Path) -> tuple[str | None, bool | None]:
-    """HEAD sha and dirtiness, from ONE git snapshot, where dirtiness may be UNKNOWN.
+    """HEAD sha and dirtiness, PAIRED ONLY IF HEAD HELD STILL, where dirtiness may be UNKNOWN.
 
     Returns ``(head, dirty)`` with ``dirty=None`` meaning "could not be determined".
 
-    One invocation, deliberately. Raised by codex-1: reading HEAD and status as two separate
-    subprocesses does not check that HEAD stayed put between them, so a checkout moving from
-    commit A to a clean commit B mid-measurement returns ``(A, False)`` — a verified sha over a
-    tree that was never measured clean, accepted by ``record_identifies_its_checkout``. Mutable
-    checkouts are the threat this module exists for (the activation symlink repoints ~7x/day and
-    release trees are writable), so a race between the two reads defeats its central claim.
+    The hazard: reading HEAD and status without checking that HEAD stayed put between them lets
+    a checkout moving from commit A to a clean commit B mid-measurement return ``(A, False)`` —
+    a verified sha over a tree that was never measured clean, accepted by
+    ``record_identifies_its_checkout``. Mutable checkouts are the threat this module exists for
+    (the activation symlink repoints ~7x/day and release trees are writable), so this race is
+    live rather than notional.
 
     ``git status --porcelain=v2 --branch`` reports ``# branch.oid`` and the working-tree entries
     from one invocation, which narrows the window to that invocation. It does NOT close it:
