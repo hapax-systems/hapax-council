@@ -275,11 +275,21 @@ def _git_head(tree: Path) -> tuple[str | None, bool | None]:
             timeout=5,
             check=False,
         )
-        if sha.returncode != 0:
-            return (None, None)
-        head = sha.stdout.strip()
-        if not _SHA_RE.fullmatch(head):
-            return (None, None)
+    except (OSError, subprocess.SubprocessError):
+        return (None, None)
+    if sha.returncode != 0:
+        return (None, None)
+    head = sha.stdout.strip()
+    if not _SHA_RE.fullmatch(head):
+        # A rev-parse that succeeded but did not return a sha — an unborn branch, a truncated
+        # read. Nothing to report rather than a malformed identity.
+        return (None, None)
+
+    # Separate try, deliberately. Raised by codex-1: a single wrapper meant a `status` TIMEOUT
+    # fell to the outer handler and returned (None, None), discarding a HEAD that had already
+    # been measured — while a nonzero `status` returned (head, None). Two spellings of the same
+    # condition producing different answers, and the worse one silently threw away evidence.
+    try:
         status = subprocess.run(
             ["git", "-C", str(tree), "status", "--porcelain"],
             capture_output=True,
@@ -287,13 +297,13 @@ def _git_head(tree: Path) -> tuple[str | None, bool | None]:
             timeout=5,
             check=False,
         )
-        if status.returncode != 0:
-            # HEAD is known, cleanliness is not. Report the sha and refuse to characterise the
-            # tree, rather than inferring "clean" from an empty failure buffer.
-            return (head, None)
-        return (head, bool(status.stdout.strip()))
     except (OSError, subprocess.SubprocessError):
-        return (None, None)
+        return (head, None)
+    if status.returncode != 0:
+        # HEAD is known, cleanliness is not. Report the sha and refuse to characterise the tree,
+        # rather than inferring "clean" from an empty failure buffer.
+        return (head, None)
+    return (head, bool(status.stdout.strip()))
 
 
 def _relative_to_tree(path_text: str, tree: Path) -> str:
@@ -316,18 +326,52 @@ def adjudicator_identity(module_file: str | None = None) -> AdjudicatorIdentity:
 
     ``module_file`` exists for tests; production callers pass nothing and get the path resolved
     at import.
+
+    This function must not raise. It sits on every route-decision and determination write, so an
+    exception escaping here would stop the decision from being recorded at all — provenance
+    failing closed over the thing it is describing. Raised by codex-1: an earlier version, when
+    import-time resolution had already failed, retried ``Path(__file__).resolve()`` outside any
+    handler, so a persistent OSError escaped through every writer. That fallback also RETRIED the
+    operation that had just failed, which is the wrong direction on its face — failure paths
+    narrow, they do not widen. It is gone rather than wrapped.
     """
+    # Enumerated up front so it lands on EVERY branch. Raised by codex-1: the enumeration used
+    # to run only after successful git verification, so both indeterminate returns reported an
+    # empty list — the most uncertain receipts stating that nothing participated, which is not
+    # merely unverified but false. Omission read as fact, one more time.
+    loaded = _first_party_loaded_modules()
+
     if module_file is None:
-        resolved = _OWN_PATH if _OWN_PATH is not None else Path(__file__).resolve()
+        if _OWN_PATH is None:
+            return AdjudicatorIdentity(
+                sha=None,
+                source="indeterminate",
+                resolved_from=str(__file__),
+                loaded_modules=tuple(sorted(loaded)),
+            )
+        resolved = _OWN_PATH
     else:
-        resolved = Path(module_file).resolve()
+        try:
+            resolved = Path(module_file).resolve()
+        except (OSError, RuntimeError):
+            return AdjudicatorIdentity(
+                sha=None,
+                source="indeterminate",
+                resolved_from=str(module_file),
+                loaded_modules=tuple(sorted(loaded)),
+            )
+
     text = str(resolved)
     declared = _declared_release_sha(resolved)
 
     # Find the enclosing checkout, if any. The module lives at <root>/shared/<file>.py, but a
     # symlinked or relocated layout should still resolve rather than silently degrade.
     for candidate in (resolved.parent, *resolved.parents):
-        if (candidate / ".git").exists():
+        try:
+            is_checkout = (candidate / ".git").exists()
+        except OSError:
+            continue
+        if is_checkout:
             head, dirty = _git_head(candidate)
             if head is not None:
                 # A release path is a CLAIM about content, and release trees here are git
@@ -338,24 +382,19 @@ def adjudicator_identity(module_file: str | None = None) -> AdjudicatorIdentity:
                     source="release_tree" if declared else "git_worktree",
                     resolved_from=text,
                     dirty=dirty,
-                    loaded_modules=tuple(
-                        sorted(
-                            _relative_to_tree(p, candidate) for p in _first_party_loaded_modules()
-                        )
-                    ),
+                    loaded_modules=tuple(sorted(_relative_to_tree(p, candidate) for p in loaded)),
                     declared_sha=declared,
                 )
             break
 
-    if declared is not None:
-        # A release path with no verifiable checkout behind it: the name asserts a commit and
-        # nothing can confirm it. `sha` stays None — the claim is preserved in `declared_sha`
-        # where a reader can see it is unverified, rather than promoted into the verified slot.
-        return AdjudicatorIdentity(
-            sha=None,
-            source="indeterminate",
-            resolved_from=text,
-            declared_sha=declared,
-        )
-
-    return AdjudicatorIdentity(sha=None, source="indeterminate", resolved_from=text)
+    # No verifiable checkout. `sha` stays None — where a release path made a claim it is
+    # preserved in `declared_sha`, visibly unverified, rather than promoted into the verified
+    # slot. The loaded-module list is reported either way: what ran is knowable even when the
+    # tree it ran from is not.
+    return AdjudicatorIdentity(
+        sha=None,
+        source="indeterminate",
+        resolved_from=text,
+        loaded_modules=tuple(sorted(loaded)),
+        declared_sha=declared,
+    )

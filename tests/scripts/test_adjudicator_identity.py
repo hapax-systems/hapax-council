@@ -260,6 +260,124 @@ def test_a_failed_git_status_does_not_report_a_clean_tree(tmp_path: Path, monkey
 # --------------------------------------------------------------------------------------
 
 
+@pytest.mark.parametrize(
+    ("failure", "expect_sha", "why"),
+    [
+        (
+            {"cmd": "rev-parse", "mode": "returncode"},
+            False,
+            "no HEAD could be read, so there is nothing to report",
+        ),
+        (
+            {"cmd": "rev-parse", "mode": "malformed"},
+            False,
+            "rev-parse succeeded but did not return a sha — an unborn branch, a truncated "
+            "read. Nothing, rather than a malformed identity",
+        ),
+        (
+            {"cmd": "rev-parse", "mode": "timeout"},
+            False,
+            "a timed-out rev-parse measured nothing",
+        ),
+        (
+            {"cmd": "rev-parse", "mode": "oserror"},
+            False,
+            "git could not be executed at all",
+        ),
+        (
+            {"cmd": "status", "mode": "returncode"},
+            True,
+            "HEAD was measured; only cleanliness was not",
+        ),
+        (
+            {"cmd": "status", "mode": "timeout"},
+            True,
+            "raised by codex-1: a status TIMEOUT used to fall to the outer handler and discard "
+            "an already-measured HEAD, while a nonzero status kept it — two spellings of one "
+            "condition giving different answers, the worse one throwing away evidence",
+        ),
+        (
+            {"cmd": "status", "mode": "oserror"},
+            True,
+            "same condition, same answer: keep the sha, refuse to characterise the tree",
+        ),
+    ],
+)
+def test_every_git_failure_mode_degrades_the_same_way(
+    tmp_path: Path, monkeypatch, failure: dict, expect_sha: bool, why: str
+) -> None:
+    """Raised by codex-1: these branches sit on every receipt-writing path and had no coverage.
+
+    The invariant across all of them: a measurement that succeeded is kept, a measurement that
+    did not is reported as unknown, and nothing is ever reported as clean on the strength of an
+    empty buffer.
+    """
+    from shared import adjudicator_identity as mod
+
+    tree = _make_checkout(tmp_path / "tree", "tree")
+    real_run = mod.subprocess.run
+
+    def fake_run(args, **kwargs):
+        if failure["cmd"] in args:
+            if failure["mode"] == "returncode":
+                return subprocess.CompletedProcess(args, returncode=128, stdout="", stderr="boom")
+            if failure["mode"] == "malformed":
+                return subprocess.CompletedProcess(args, returncode=0, stdout="not-a-sha\n")
+            if failure["mode"] == "timeout":
+                raise subprocess.TimeoutExpired(args, 5)
+            raise OSError("git is not executable here")
+        return real_run(args, **kwargs)
+
+    monkeypatch.setattr(mod.subprocess, "run", fake_run)
+    ident = adjudicator_identity(str(tree / "shared" / "adjudicator_identity.py"))
+
+    assert (ident.sha is not None) is expect_sha, why
+    assert ident.dirty is not False, "nothing here measured a clean tree"
+    assert not record_identifies_its_checkout(ident.as_receipt())
+    assert ident.loaded_modules, (
+        "even a receipt that could not identify its checkout knows what the process loaded; "
+        "an empty list would state that nothing participated"
+    )
+
+
+def test_identity_never_raises_when_its_own_path_is_unresolvable(monkeypatch) -> None:
+    """Raised by codex-1: this function sits on every route and determination write.
+
+    An earlier version, when import-time resolution had already failed, retried
+    `Path(__file__).resolve()` outside any handler — so a persistent OSError escaped through
+    every writer and could stop the decision being recorded at all. Provenance failing closed
+    over the thing it describes is worse than provenance saying it does not know. The retry was
+    also a fallback that attempted MORE than the primary, which is the wrong direction on its
+    face.
+    """
+    from shared import adjudicator_identity as mod
+
+    monkeypatch.setattr(mod, "_OWN_PATH", None)
+    ident = adjudicator_identity()
+
+    assert ident.sha is None
+    assert ident.source == "indeterminate"
+    assert ident.resolved_from, "the path is still named, even unresolved"
+    assert ident.loaded_modules, "and what the process loaded is still reported"
+    assert not record_identifies_its_checkout(ident.as_receipt())
+
+
+def test_an_indeterminate_receipt_still_reports_what_participated(releases_root: Path) -> None:
+    """Raised by codex-1: the most uncertain receipts were the ones claiming nothing ran.
+
+    The enumeration used to run only after successful git verification, so both indeterminate
+    returns left `loaded_modules` empty. A receipt that cannot identify its checkout AND reports
+    an empty module list is not merely unverified, it is false — omission read as fact, which is
+    the defect this whole change set exists to remove.
+    """
+    ident = adjudicator_identity(str(releases_root / ("d" * 40) / "shared" / "x.py"))
+
+    assert ident.source == "indeterminate"
+    assert ident.sha is None
+    assert ident.declared_sha == "d" * 40, "the path's claim survives"
+    assert ident.loaded_modules, "and so does the record of what the process had loaded"
+
+
 def test_receipt_shape_is_serializable_and_complete(releases_root: Path) -> None:
     """What gets written onto a decision must survive JSON and carry every field.
 
