@@ -165,21 +165,36 @@ def _capture(module_file: str) -> Path | None:
     return resolved
 
 
-def _tree_root() -> Path | None:
-    """The checkout this module lives in, as ``<root>/shared/<file>.py`` implies."""
-    if _OWN_PATH is None or len(_OWN_PATH.parents) < 2:
-        return None
-    return _OWN_PATH.parents[1]
+def _is_vendored(path: Path) -> bool:
+    """Third-party or standard-library code, which this tree's HEAD says nothing about."""
+    if {".venv", "site-packages", "dist-packages"} & set(path.parts):
+        return True
+    for base in (sys.base_prefix, sys.base_exec_prefix):
+        try:
+            path.relative_to(Path(base).resolve())
+            return True
+        except (ValueError, OSError, RuntimeError):
+            continue
+    return False
 
 
-def _in_tree_loaded_modules(root: Path) -> set[str]:
-    """Every module currently loaded from inside ``root``, excluding vendored code.
+def _first_party_loaded_modules() -> set[str]:
+    """Every non-vendored module currently loaded, whether or not it is inside the tree.
 
-    Enumerated rather than declared. Manual registration cannot be complete: a dependency
-    added tomorrow does not know to register, and the coverage would narrow silently — which is
-    the defect this module exists to prevent, reproduced in its own registration scheme.
-    Deriving the set from ``sys.modules`` means a new import can only LOWER the verdict by
-    appearing unverified, never quietly shrink what the verdict ranges over.
+    Enumerated rather than declared. Manual registration cannot be complete: a dependency added
+    tomorrow does not know to register, and coverage would narrow silently — the defect this
+    module exists to prevent, reproduced in its own registration scheme.
+
+    Deliberately NOT filtered to the tree. An earlier version resolved each ``__file__`` and
+    dropped anything failing ``relative_to(root)``, which codex-1 refuted: an unregistered
+    module keeps a symlink-spelled ``__file__`` that is resolved only when the receipt is built,
+    so a repointed activation symlink makes it resolve into the NEW checkout, fail containment
+    against the original tree, and vanish from the enumeration entirely — leaving empty
+    unverified coverage and a usable receipt that omits code loaded through the old tree.
+
+    A module that cannot be placed is exactly the one that must be reported. Everything
+    first-party is returned here and classified downstream; nothing is dropped for failing to
+    fit.
     """
     found: set[str] = set()
     for module in list(sys.modules.values()):
@@ -188,12 +203,11 @@ def _in_tree_loaded_modules(root: Path) -> set[str]:
             continue
         try:
             resolved = Path(file).resolve()
-            resolved.relative_to(root)
-        except (ValueError, OSError, RuntimeError):
+        except (OSError, RuntimeError):
+            found.add(str(file))  # unresolvable is a reason to report, not to skip
             continue
-        if ".venv" in resolved.parts or "site-packages" in resolved.parts:
-            continue
-        found.add(str(resolved))
+        if not _is_vendored(resolved):
+            found.add(str(resolved))
     return found
 
 
@@ -450,7 +464,7 @@ def _loaded_source_matches(
     # Everything loaded from this tree is in scope whether or not it registered. A module that
     # never registered has no load-time hash, so it cannot be verified — but it CAN be named,
     # and naming it is the difference between partial coverage and coverage that looks total.
-    scope = dict.fromkeys(_in_tree_loaded_modules(tree), None) | dict(_LOADED_MODULES)
+    scope = dict.fromkeys(_first_party_loaded_modules(), None) | dict(_LOADED_MODULES)
     for path_text, loaded_sha in sorted(scope.items()):
         if loaded_sha is None:
             try:

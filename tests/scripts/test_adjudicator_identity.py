@@ -776,8 +776,13 @@ def test_a_symlink_repoint_after_load_cannot_relabel_the_identity(tmp_path: Path
         "would attribute the decision to code that never ran"
     )
     assert receipt["adjudicator_sha"] != sha_b
-    assert receipt["adjudicator_source_matches_head"] is True
-    assert "shared/adjudicator_identity.py" in receipt["adjudicator_verified_modules"]
+    assert "shared/adjudicator_identity.py" in receipt["adjudicator_verified_modules"], (
+        "the module loaded through the link must be verified against the tree it came from"
+    )
+    # NOT asserting the overall verdict is True. The probe script is itself first-party code
+    # that nothing observed loading, so it is correctly reported unverified and holds the
+    # verdict below True. That is the enumeration working, not a failure — and asserting True
+    # here would have meant weakening the enumeration to make a test pass.
 
 
 #: A dependency loaded MODIFIED, restored to its committed bytes, and only then registered by
@@ -796,6 +801,68 @@ dep.write_bytes(original)                  # restored to exactly what HEAD recor
 mod.register_decision_module(str(tree / "shared" / "importer.py"))
 print(json.dumps(mod.adjudicator_identity().as_receipt()))
 """
+
+
+#: An UNREGISTERED dependency imported through the symlink, with the link repointed before the
+#: receipt is built. Its `__file__` is still spelled through the link, so it resolves into the
+#: new checkout at measurement time.
+_UNREGISTERED_REPOINT_PROBE = """
+import json, pathlib, sys
+link = pathlib.Path(sys.argv[1])
+sys.path.insert(0, str(link))
+import shared.adjudicator_identity as mod   # registers itself at import
+import shared.dep                           # does NOT register
+link.unlink()
+link.symlink_to(sys.argv[2])                # repoint: dep's __file__ now resolves into tree B
+print(json.dumps(mod.adjudicator_identity().as_receipt()))
+"""
+
+
+def test_a_repoint_cannot_hide_an_unregistered_dependency(tmp_path: Path) -> None:
+    """Raised by codex-1: the enumeration had the same silent-drop it was added to fix.
+
+    Registered modules are pinned at import, but an unregistered one keeps a symlink-spelled
+    ``__file__`` that is resolved only when the receipt is built. The previous enumeration
+    filtered by ``relative_to(tree)``, so after a repoint that module resolved into the NEW
+    checkout, failed containment against the original tree, and vanished from the enumeration
+    entirely — leaving empty unverified coverage and a usable receipt that omitted code loaded
+    through the old tree.
+
+    Enumeration is now by first-party-ness rather than containment: a module that cannot be
+    placed is precisely the one that must be reported, so it lands in `unverified_modules` under
+    its full path.
+    """
+    module_src = REPO_ROOT / "shared" / "adjudicator_identity.py"
+    tree_a = _release_checkout(tmp_path / "a", module_src, "tree-a")
+    tree_b = _release_checkout(tmp_path / "b", module_src, "tree-b")
+    for tree in (tree_a, tree_b):
+        (tree / "shared" / "dep.py").write_text("VALUE = 1\n")
+        subprocess.run(["git", "-C", str(tree), "add", "-A"], check=True, capture_output=True)
+        subprocess.run(
+            ["git", "-C", str(tree), "commit", "-q", "-m", "dep"], check=True, capture_output=True
+        )
+
+    link = tmp_path / "worktree"
+    link.symlink_to(tree_a)
+    probe = tmp_path / "probe.py"
+    probe.write_text(_UNREGISTERED_REPOINT_PROBE)
+    result = subprocess.run(
+        [sys.executable, str(probe), str(link), str(tree_b)],
+        capture_output=True,
+        text=True,
+        check=False,
+        env={**os.environ, "PYTHONDONTWRITEBYTECODE": "1"},
+    )
+    assert result.returncode == 0, result.stderr
+    receipt = json.loads(result.stdout)
+
+    listed = " ".join(receipt["adjudicator_unverified_modules"])
+    assert "dep.py" in listed, (
+        "an unregistered dependency must remain visible after a repoint; dropping it leaves "
+        "empty unverified coverage over code the receipt never checked"
+    )
+    assert receipt["adjudicator_source_matches_head"] is not True
+    assert not record_has_usable_adjudicator(receipt)
 
 
 def test_a_dependency_whose_load_was_never_observed_is_not_credited(tmp_path: Path) -> None:
@@ -850,13 +917,21 @@ def test_a_dependency_whose_load_was_never_observed_is_not_credited(tmp_path: Pa
     assert not record_has_usable_adjudicator(receipt)
 
 
-def test_the_real_route_deciders_are_accounted_for() -> None:
-    """The four modules codex-1 named must appear in the receipt, one way or the other.
+def test_the_real_route_deciders_are_reported_unverified() -> None:
+    """The delivered guarantee, pinned exactly — not "verified or unverified, either is fine".
 
-    They execute "logic that directly determines routes" and they are imported before anything
-    can observe their load, so they cannot be verified from inside this process. What they can
-    be is VISIBLE: the requirement is that none of them is silently absent, because an absent
-    module is indistinguishable from a verified one once the verdict is read.
+    Raised by codex-1: the earlier version of this test accepted a decider in either list, so it
+    witnessed the gap rather than any required outcome. A test that cannot fail in either
+    direction is not evidence.
+
+    What this change actually delivers is narrower than "every participating module is verified"
+    and is asserted as such: these four execute route-determining logic, they are imported before
+    anything can observe their load, so they MUST appear as unverified and the strongest verdict
+    MUST be out of reach.
+
+    If load-time capture for dependencies ever lands — deploy-side build identity, an import
+    hook — this test will fail, and it should: the guarantee will have changed and saying so is
+    the point. It is not a test to quietly relax.
     """
     import shared.adjudicator_identity as mod
     import shared.dispatcher_policy  # noqa: F401 - imported for its registration side effect
@@ -867,18 +942,21 @@ def test_the_real_route_deciders_are_accounted_for() -> None:
     if ident.sha is None:
         pytest.skip("not running from a checkout")
 
-    accounted = {Path(p).name for p in (*ident.verified_modules, *ident.unverified_modules)}
+    unverified = {Path(p).name for p in ident.unverified_modules}
     for decider in (
-        "dispatcher_policy.py",
         "capability_availability_guarantor.py",
         "platform_capability_registry.py",
         "quota_spend_ledger.py",
         "route_metadata_schema.py",
     ):
-        assert decider in accounted, (
-            f"{decider} decides routes and is missing from the receipt entirely; a reader "
-            "would take the verdict as covering it"
+        assert decider in unverified, (
+            f"{decider} decides routes, is imported before anything can observe its load, and "
+            "must therefore be reported UNVERIFIED — not absent, and not credited"
         )
+    assert ident.source_matches_head is not True, (
+        "with decision code unverified, the strongest verdict must be out of reach"
+    )
+    assert not record_has_usable_adjudicator(ident.as_receipt())
 
 
 def test_a_true_verdict_means_nothing_was_left_unverified(tmp_path: Path, monkeypatch) -> None:
@@ -916,9 +994,7 @@ def test_a_true_verdict_means_nothing_was_left_unverified(tmp_path: Path, monkey
         # still "holds" over a set that quietly shrank. Found by mutation — reinstating the
         # silent skip left the invariant assertion green, which is the same vacuity this PR has
         # already been caught by twice. Every registered module must land in exactly one list.
-        in_scope = set(registry) | mod._in_tree_loaded_modules(
-            Path(mod.__file__).resolve().parents[1]
-        )
+        in_scope = set(registry) | mod._first_party_loaded_modules()
         assert len(ident.verified_modules) + len(ident.unverified_modules) == len(in_scope), (
             f"{len(in_scope)} modules in scope but "
             f"{len(ident.verified_modules)} + {len(ident.unverified_modules)} accounted for: "
