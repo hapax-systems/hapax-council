@@ -2930,6 +2930,16 @@ def lifecycle_transition_intent_ref(intent: LifecycleTransitionIntent) -> str:
     return f"transition-intent@sha256:{_sha256(_canonical_json_bytes(intent.to_record()))}"
 
 
+def _echo_receipt_ref_matches(echo_receipt_ref: object, echo_message_id: object) -> bool:
+    """Grounded Echo uses mq:<id>. Publication-owned skip uses echo-absent:<id> on both fields."""
+
+    if not isinstance(echo_receipt_ref, str) or not isinstance(echo_message_id, str):
+        return False
+    if echo_message_id.startswith("echo-absent:"):
+        return echo_receipt_ref == echo_message_id
+    return echo_receipt_ref == f"mq:{echo_message_id}"
+
+
 def _validate_terminal_close_admission(
     intent: LifecycleTransitionIntent,
     admission: Mapping[str, Any] | None,
@@ -3032,7 +3042,7 @@ def _validate_terminal_close_admission(
         or admission.get("authority_case") != intent.authority_case
         or admission.get("actor") != intent.actor
         or admission.get("position_ref") != intent.predecessor_position_ref
-        or f"mq:{admission.get('echo_message_id')}" != intent.echo_receipt_ref
+        or not _echo_receipt_ref_matches(intent.echo_receipt_ref, admission.get("echo_message_id"))
         or intent.evidence_type != "terminal_close_admission"
         or intent.evidence_summary != admission_ref
         or admission.get("final_status") not in {"done", "withdrawn", "superseded"}
@@ -4057,6 +4067,23 @@ def _finalize_rolled_back_scratch(
 
 def _cas_rollback(projection: FileProjection, scratch: _ProjectionScratch) -> bool:
     with _open_parent_dir(projection.path) as (dir_fd, name):
+        if scratch.kind == "create" and projection.before is None:
+            try:
+                dest_stat = os.stat(name, dir_fd=dir_fd, follow_symlinks=False)
+                scratch_stat = os.stat(
+                    scratch.path.name, dir_fd=dir_fd, follow_symlinks=False
+                )
+            except FileNotFoundError:
+                dest_stat = None
+            else:
+                if (
+                    stat.S_ISREG(dest_stat.st_mode)
+                    and dest_stat.st_ino == scratch_stat.st_ino
+                    and dest_stat.st_nlink >= 2
+                ):
+                    os.unlink(name, dir_fd=dir_fd)
+                    os.fsync(dir_fd)
+                    return True
         current = _entry_state_at(
             dir_fd,
             name,

@@ -3337,6 +3337,41 @@ def test_einval_fallback_delete_commits(tmp_path: Path) -> None:
     assert not note.exists()
 
 
+def test_noreplace_fallback_crash_between_link_and_unlink_restores_absence(
+    tmp_path: Path,
+) -> None:
+    src = tmp_path / "scratch"
+    dst = tmp_path / "created.md"
+    src.write_bytes(b"postimage")
+    fd = os.open(tmp_path, os.O_RDONLY | os.O_DIRECTORY)
+
+    def crash_unlink(name: str, **kwargs: object) -> None:
+        raise RuntimeError("crash after link")
+
+    try:
+        with mock.patch.object(cp.os, "unlink", side_effect=crash_unlink):
+            with pytest.raises(RuntimeError, match="crash after link"):
+                cp._renameat2_noreplace_fallback(fd, "scratch", fd, "created.md")
+        assert dst.read_bytes() == b"postimage"
+        assert src.read_bytes() == b"postimage"
+        projection = cp.FileProjection.from_snapshot(
+            dst,
+            before=None,
+            before_mode=None,
+            after=b"postimage",
+            after_mode=stat.S_IMODE(dst.stat().st_mode),
+        )
+        scratch = cp._scratch_for(projection, "txn-link-crash", 0)
+        # _scratch_for names a different scratch file; point rollback at the
+        # actual remaining source name from the fallback.
+        scratch = dataclasses.replace(scratch, path=src)
+        assert cp._cas_rollback(projection, scratch) is True
+        assert not dst.exists()
+        assert src.read_bytes() == b"postimage"
+    finally:
+        os.close(fd)
+
+
 def test_exchange_fallback_crash_between_steps_preserves_both_payloads(
     tmp_path: Path,
 ) -> None:

@@ -735,6 +735,41 @@ def test_terminal_close_applies_when_lifecycle_effects_are_default_deny(
     assert (fixture.vault / "closed" / fixture.note.name).is_file()
 
 
+def test_retroactive_watcher_binds_owning_claim_session(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    fixture = _fixture(tmp_path, monkeypatch)
+    _inject_trusted_echo_projection(fixture, monkeypatch)
+
+    result = close_task(
+        fixture.task_id,
+        final_status="done",
+        actor="watcher",
+        session_id="",
+        retroactive=True,
+        vault_root=fixture.vault,
+        cache_dir=fixture.cache,
+        relay_db=fixture.relay_db,
+        dispatch_ledger=fixture.dispatch_ledger,
+        event_log=fixture.event_log,
+    )
+
+    assert result.applied_event_id.endswith(".applied")
+    assert (fixture.vault / "closed" / fixture.note.name).is_file()
+
+
+def test_publication_owned_echo_receipt_is_not_an_mq_ref(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from shared.coord_projection import _echo_receipt_ref_matches
+
+    assert _echo_receipt_ref_matches("echo-absent:claim-pub-ab", "echo-absent:claim-pub-ab")
+    assert not _echo_receipt_ref_matches("mq:echo-absent:claim-pub-ab", "echo-absent:claim-pub-ab")
+    assert _echo_receipt_ref_matches("mq:real-echo", "real-echo")
+
+
 def test_killswitch_env_does_not_bypass_pre_gate0_echo_stub(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,

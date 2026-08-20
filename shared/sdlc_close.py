@@ -42,6 +42,7 @@ from shared.sdlc_claim import (
     ClaimPublicationError,
     inspect_claim_publications,
     resolve_applied_claim_publication,
+    resolve_applied_claim_publication_for_task,
 )
 from shared.sdlc_lifecycle import (
     acceptance_criteria_state,
@@ -75,6 +76,59 @@ def _claim_publication_journal_present(root: Path) -> bool:
         ):
             return True
     return False
+
+
+_SYNTHETIC_CLOSE_ACTORS = frozenset({"", "unknown", "watcher"})
+
+
+def _bind_close_identity(
+    *,
+    task_id: str,
+    actor: str,
+    session_id: str,
+    retroactive: bool,
+    vault_root: Path,
+    cache_dir: Path,
+) -> tuple[str, str]:
+    """Use the live lane/session, or for --retroactive bind the owning admitted claim."""
+
+    actor = (actor or "").strip()
+    session_id = (session_id or "").strip()
+    synthetic = actor in _SYNTHETIC_CLOSE_ACTORS or not session_id
+    if not synthetic:
+        return actor, session_id
+    if not retroactive:
+        raise TerminalCloseError(
+            "terminal_close_identity_missing",
+            "bind the real lane and claim session before close",
+            actor or "missing",
+        )
+    try:
+        snapshot = resolve_task_note(vault_root, task_id, state="active")
+    except TaskStoreError as exc:
+        raise TerminalCloseError(exc.reason_code, exc.repair_action, exc.detail) from exc
+    owner = str(snapshot.frontmatter.get("assigned_to") or "").strip()
+    if not owner or owner in _SYNTHETIC_CLOSE_ACTORS:
+        raise TerminalCloseError(
+            "terminal_close_identity_missing",
+            "restore assigned_to to the claiming lane, then rerun cc-close --retroactive",
+            owner or "unassigned",
+        )
+    try:
+        applied = resolve_applied_claim_publication_for_task(
+            vault_root=vault_root,
+            cache_dir=cache_dir,
+            role=owner,
+            task_id=task_id,
+            transaction_root=select_close_claim_journal_root(cache_dir),
+        )
+    except (ClaimPublicationError, TaskStoreError) as exc:
+        raise TerminalCloseError(
+            exc.reason_code,
+            "restore the owning lane's admitted claim publication, then rerun cc-close --retroactive",
+            exc.detail,
+        ) from exc
+    return owner, applied.leases[0].binding.session_id
 
 
 def select_close_claim_journal_root(cache_dir: Path, *, home: Path | None = None) -> Path:
@@ -490,13 +544,16 @@ def close_task(
     # refusals requires the override contract to exist FIRST, with its own review
     # — including how the signing authority is held, since a local key readable by
     # the lane the gate constrains is not a second factor on a single-user machine.
-    if not actor or actor == "unknown" or not session_id:
-        raise TerminalCloseError(
-            "terminal_close_identity_missing",
-            "bind the real lane and claim session before close",
-        )
     vault_root = vault_root if vault_root is not None else cc_task_root()
     cache_dir = cache_dir if cache_dir is not None else (Path.home() / ".cache" / "hapax")
+    actor, session_id = _bind_close_identity(
+        task_id=task_id,
+        actor=actor,
+        session_id=session_id,
+        retroactive=retroactive,
+        vault_root=vault_root,
+        cache_dir=cache_dir,
+    )
     event_log = event_log or default_event_log()
     lifecycle_inspection = inspect_lifecycle_transactions(
         task_id=task_id,
@@ -805,7 +862,11 @@ def close_task(
         },
         parent_spec=str(frontmatter.get("parent_spec") or "") or None,
         predecessor_position_ref=position_ref,
-        echo_receipt_ref=f"mq:{echo_message_id}",
+        echo_receipt_ref=(
+            echo_message_id
+            if echo_message_id.startswith("echo-absent:")
+            else f"mq:{echo_message_id}"
+        ),
         evidence_type="terminal_close_admission",
         evidence_summary=admission.admission_ref,
         origin="cc-close",
