@@ -336,6 +336,20 @@ def _default_done_gate_runner(
                 observed_at=observed_at,
             ),
         )
+    if retroactive:
+        # Merge (or other retroactive authority) is the close evidence.
+        # Pre-merge AC/receipt/rapid-close paperwork must not wedge drain.
+        return (
+            CloseGateEvidence(
+                gate="done-only-gates",
+                outcome="not_applicable",
+                task_id=snapshot.task_id,
+                note_sha256=snapshot.sha256,
+                authority_case=authority_case,
+                final_status=final_status,
+                observed_at=observed_at,
+            ),
+        )
     blockers: list[str] = []
     criteria = acceptance_criteria_state(snapshot.content.decode("utf-8"))
     if criteria.section_present and criteria.unchecked_items:

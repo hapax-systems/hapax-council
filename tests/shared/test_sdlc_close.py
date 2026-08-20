@@ -506,7 +506,7 @@ def test_done_gate_children_use_isolated_project_runtime(
         snapshot,
         "done",
         "4483",
-        True,
+        False,
         None,
     )
 
@@ -730,6 +730,78 @@ def test_terminal_close_applies_when_lifecycle_effects_are_default_deny(
     monkeypatch.setattr(coord_projection, "_LIFECYCLE_EFFECT_ACTIVATION", False)
 
     result = _close(fixture)
+
+    assert result.applied_event_id.endswith(".applied")
+    assert (fixture.vault / "closed" / fixture.note.name).is_file()
+
+
+def test_retroactive_done_gate_skips_paperwork_and_child_checkers(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    fixture = _fixture(tmp_path, monkeypatch, acceptance_receipt=False)
+    snapshot = resolve_task_note(fixture.vault, fixture.task_id, state="active")
+    calls: list[object] = []
+
+    def fake_run(*_args, **_kwargs):
+        calls.append(1)
+        return subprocess.CompletedProcess(["unused"], 0, stdout="", stderr="")
+
+    monkeypatch.setattr(sdlc_close.subprocess, "run", fake_run)
+
+    evidence = sdlc_close._default_done_gate_runner(
+        snapshot,
+        "done",
+        "4483",
+        True,
+        None,
+    )
+
+    assert [(item.gate, item.outcome) for item in evidence] == [
+        ("done-only-gates", "not_applicable")
+    ]
+    assert calls == []
+
+
+def test_non_retroactive_done_gate_still_requires_acceptance_receipt(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    fixture = _fixture(tmp_path, monkeypatch, acceptance_receipt=False)
+    snapshot = resolve_task_note(fixture.vault, fixture.task_id, state="active")
+
+    with pytest.raises(TerminalCloseError) as raised:
+        sdlc_close._default_done_gate_runner(
+            snapshot,
+            "done",
+            "4483",
+            False,
+            None,
+        )
+
+    assert raised.value.reason_code == "terminal_close_done_gate_refused"
+    assert "missing_acceptance_receipt" in (raised.value.detail or "")
+
+
+def test_retroactive_close_skips_premerge_paperwork_gates(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    fixture = _fixture(tmp_path, monkeypatch, acceptance_receipt=False)
+    _inject_trusted_echo_projection(fixture, monkeypatch)
+
+    result = close_task(
+        fixture.task_id,
+        final_status="done",
+        actor="watcher",
+        session_id="",
+        retroactive=True,
+        vault_root=fixture.vault,
+        cache_dir=fixture.cache,
+        relay_db=fixture.relay_db,
+        dispatch_ledger=fixture.dispatch_ledger,
+        event_log=fixture.event_log,
+    )
 
     assert result.applied_event_id.endswith(".applied")
     assert (fixture.vault / "closed" / fixture.note.name).is_file()
