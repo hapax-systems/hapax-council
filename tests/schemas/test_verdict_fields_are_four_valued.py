@@ -49,9 +49,12 @@ from shared.dispatcher_policy import (
     STALE_SUPPLY_FIELD_CODES,
     SUPPLY_FIELD_ABSENT_CODE,
     SUPPLY_FIELD_EXPIRED_CODE,
+    CandidateStatus,
+    DimensionalCandidateReceipt,
     DimensionalVeto,
     StaleMetadataReceipt,
     _has_unknown_supply_veto,
+    _receipt_stale_metadata,
     _supply_field_veto,
 )
 
@@ -108,6 +111,38 @@ def test_a_measured_failure_is_not_classified_as_unknown() -> None:
         message="supply 2 < demand 4",
     )
     assert not _has_unknown_supply_veto([measured])
+
+
+def test_serialized_receipt_preserves_absent_through_reconstruction() -> None:
+    """Raised as unresolved-critical by codex-1 and it was a real bug in this change.
+
+    `_receipt_stale_metadata` rebuilds `StaleMetadataReceipt` from the candidate's vetoes to
+    populate `stale_metadata`, which `write_route_decision_receipt` then serializes. It set no
+    `kind`, so the default applied — and because this change *widened* the filter to accept
+    `supply_field_absent`, an absent veto came out of reconstruction labelled `expired`.
+
+    That is worse than the defect being fixed: the old single code was ambiguous, this was
+    affirmatively wrong, and it pointed consumers at "refresh the producer" for a field no
+    producer has ever written.
+
+    The earlier tests all exercised the extracted helpers and never this path, which is why
+    the mutation pass did not catch it either. This one round-trips the real reconstruction.
+    """
+    candidate = DimensionalCandidateReceipt(
+        route_id="glmcp.review.direct",
+        platform="glmcp",
+        status=CandidateStatus.STALE,
+        freshness_state="stale",
+        vetoes=(
+            _supply_field_veto(_receipt("absent")),
+            _supply_field_veto(_receipt("expired")),
+        ),
+    )
+    by_kind = {r.kind for r in _receipt_stale_metadata(candidate)}
+    assert by_kind == {"absent", "expired"}, (
+        f"reconstruction collapsed the kinds to {by_kind}; a serialized route receipt would "
+        "name the wrong repair for one of them"
+    )
 
 
 def test_emitted_messages_name_their_repair() -> None:

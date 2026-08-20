@@ -2682,6 +2682,13 @@ def _receipt_stale_metadata(
             source_id=veto.evidence_ref or candidate.route_id,
             field=veto.field,
             effect="veto",
+            # Recover the kind from the code. Without this the default ("expired") is applied
+            # to a reconstructed absent veto, so the serialized route receipt carries
+            # kind="expired" for a field no producer has ever written — an affirmatively
+            # wrong repair instruction, which is worse than the ambiguous single code this
+            # change replaced. The legacy code and the generic capability-staleness code
+            # genuinely do not carry the distinction, so they stay "expired".
+            kind="absent" if veto.code == SUPPLY_FIELD_ABSENT_CODE else "expired",
         )
         for veto in candidate.vetoes
         if veto.code in (STALE_SUPPLY_FIELD_CODES | {"capability_data_stale_or_unknown"})
