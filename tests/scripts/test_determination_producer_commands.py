@@ -38,15 +38,33 @@ def _ids(producers: list[dict]) -> list[str]:
 def _repo_relative_target(producer: dict) -> Path | None:
     """The repo artifact argv[0] names, or None if it is not this tree's business.
 
-    Absolute paths (/bin/true) and bare names resolved through PATH belong to the deploying
-    host, not to the repo.
+    Only ABSOLUTE paths (``/bin/true``) belong to the deploying host. Everything else is a
+    repository artifact, because the runner resolves it as one:
+
+        # scripts/hapax-determine:131-132
+        if not os.path.isabs(exe):
+            argv[0] = str(repo_root / exe)
+
+    There is no PATH lookup anywhere in that path. An earlier version of this helper also
+    skipped bare names on the assumption they were PATH-resolved; a registry entry such as
+    ``["producer"]`` would then have been excluded from the very check this module exists to
+    perform, while the runner launched ``<repo>/producer``. Raised by coderabbitai on #4584
+    and verified against the runner.
+
+    Targets that escape the repository are rejected rather than skipped, so ``../`` segments
+    and symlink escapes cannot pass as repository artifacts.
     """
     command = producer.get("command")
     assert isinstance(command, list) and command, "command must be a non-empty list"
     argv0 = command[0]
-    if os.path.isabs(argv0) or "/" not in argv0:
+    if os.path.isabs(argv0):
         return None
-    return REPO_ROOT / argv0
+    target = (REPO_ROOT / argv0).resolve()
+    assert target.is_relative_to(REPO_ROOT), (
+        f"command target {argv0!r} resolves to {target}, outside the repository. The runner "
+        "would still launch it via repo_root; a producer command must not escape the tree."
+    )
+    return target
 
 
 @pytest.mark.parametrize("producer", _producers(), ids=_ids(_producers()))
@@ -54,7 +72,7 @@ class TestRegisteredCommandsAreRunnable:
     def test_command_target_exists(self, producer: dict) -> None:
         target = _repo_relative_target(producer)
         if target is None:
-            pytest.skip("argv[0] is absolute or PATH-resolved; not a repo artifact")
+            pytest.skip("argv[0] is absolute; the deploying host owns it, not this tree")
         assert target.is_file(), (
             f"registry points at {target.relative_to(REPO_ROOT)}, which is not in the tree — "
             "the spine will report this producer unlaunchable forever"
@@ -63,7 +81,7 @@ class TestRegisteredCommandsAreRunnable:
     def test_command_target_is_executable(self, producer: dict) -> None:
         target = _repo_relative_target(producer)
         if target is None:
-            pytest.skip("argv[0] is absolute or PATH-resolved; not a repo artifact")
+            pytest.skip("argv[0] is absolute; the deploying host owns it, not this tree")
         assert os.access(target, os.X_OK), (
             f"{target.relative_to(REPO_ROOT)} is not executable. The spine launches producers "
             "with subprocess.run(argv), so this raises PermissionError on any deploy that "
