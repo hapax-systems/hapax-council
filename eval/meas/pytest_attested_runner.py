@@ -64,6 +64,32 @@ def pytest_configure(config: pytest.Config) -> None:
         sys.path.insert(0, "/workspace")
 
 
+def _worker_setup_with_conftests(original_setup: Any) -> Any:
+    """Remove the controller-only conftest ban from each trusted worker invocation."""
+
+    def setup(controller: Any) -> Any:
+        original_params = controller.config.invocation_params
+        worker_args = tuple(
+            argument for argument in original_params.args if argument != "--noconftest"
+        )
+        if len(worker_args) != len(original_params.args) - 1:
+            raise RuntimeError(
+                "xdist worker invocation did not contain exactly one controller-only "
+                "--noconftest flag"
+            )
+        controller.config.invocation_params = pytest.Config.InvocationParams(
+            args=worker_args,
+            plugins=original_params.plugins,
+            dir=original_params.dir,
+        )
+        try:
+            return original_setup(controller)
+        finally:
+            controller.config.invocation_params = original_params
+
+    return setup
+
+
 def _trusted_runtime_origins(
     *,
     runtime_prefix: Path | None = None,
@@ -104,33 +130,50 @@ def run(target: str) -> int:
             flush=True,
         )
         return TRUST_FAILURE_EXIT_CODE
+    original_worker_sys_path = getattr(xdist_workermanage, "_sys_path", None)
+    worker_controller = getattr(xdist_workermanage, "WorkerController", None)
+    original_worker_setup = getattr(worker_controller, "setup", None)
+    if not isinstance(original_worker_sys_path, list) or not callable(original_worker_setup):
+        print(
+            "HARNESS: pytest-xdist worker setup API is incompatible with the pinned "
+            "controller/worker boundary. Next action: restore the locked pytest-xdist "
+            "version and rerun the predicate.",
+            file=sys.stderr,
+            flush=True,
+        )
+        return TRUST_FAILURE_EXIT_CODE
     worker_sys_path = ["/harness", *sys.path]
     xdist_workermanage._sys_path = worker_sys_path
+    worker_controller.setup = _worker_setup_with_conftests(original_worker_setup)
     sys.path.insert(0, "/harness")
-    sys.path.insert(1, "/workspace")
     sys.modules["pytest_attested_runner"] = sys.modules[__name__]
     plugin = CompletionPlugin()
-    exit_code = pytest.main(
-        [
-            target,
-            "-q",
-            "--no-header",
-            "-c",
-            "/dev/null",
-            "--rootdir=/workspace",
-            "--confcutdir=/workspace",
-            "-p",
-            "xdist.plugin",
-            "-p",
-            "pytest_attested_runner",
-            "-p",
-            "no:cacheprovider",
-            "--tx=popen//python=/harness/python-isolated",
-            "--dist=load",
-            "--max-worker-restart=0",
-        ],
-        plugins=[plugin],
-    )
+    try:
+        exit_code = pytest.main(
+            [
+                target,
+                "-q",
+                "--no-header",
+                "-c",
+                "/dev/null",
+                "--rootdir=/workspace",
+                "--confcutdir=/workspace",
+                "--noconftest",
+                "-p",
+                "xdist.plugin",
+                "-p",
+                "pytest_attested_runner",
+                "-p",
+                "no:cacheprovider",
+                "--tx=popen//python=/harness/python-isolated",
+                "--dist=load",
+                "--max-worker-restart=0",
+            ],
+            plugins=[plugin],
+        )
+    finally:
+        worker_controller.setup = original_worker_setup
+        xdist_workermanage._sys_path = original_worker_sys_path
     logical_exit_code = int(exit_code)
     payload = {
         "schema_version": 3,

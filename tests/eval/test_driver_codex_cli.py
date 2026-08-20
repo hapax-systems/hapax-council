@@ -80,7 +80,11 @@ def _commit(repo: Path, message: str) -> str:
     return _git(repo, "rev-parse", "HEAD")
 
 
-def _source_repo(tmp_path: Path) -> tuple[Path, driver.CommitPair]:
+def _source_repo(
+    tmp_path: Path,
+    *,
+    parent_conftest: str | None = None,
+) -> tuple[Path, driver.CommitPair]:
     repo = tmp_path / "source"
     repo.mkdir()
     _git(repo, "init", "--quiet")
@@ -94,6 +98,8 @@ def _source_repo(tmp_path: Path) -> tuple[Path, driver.CommitPair]:
     (repo / "pyproject.toml").write_text(
         '[tool.pytest.ini_options]\npythonpath = ["."]\n', encoding="utf-8"
     )
+    if parent_conftest is not None:
+        (repo / "conftest.py").write_text(parent_conftest, encoding="utf-8")
     parent = _commit(repo, "parent")
     (repo / "module.py").write_text("VALUE = 1\n", encoding="utf-8")
     (tests / "test_module.py").write_text(
@@ -176,6 +182,7 @@ def test_lambda_records_both_timeouts_and_predicate_sandbox() -> None:
         "completion_boundary": "xdist-controller+single-stderr-record",
         "confcutdir": "/workspace",
         "config": "/dev/null",
+        "controller_conftest": "disabled",
         "environment": "cleared",
         "network": "unshared",
         "plugin_autoload": "disabled",
@@ -188,6 +195,7 @@ def test_lambda_records_both_timeouts_and_predicate_sandbox() -> None:
         "sandbox": "bubblewrap",
         "sandbox_version": "bubblewrap 1.2",
         "timeout_seconds": driver.PREDICATE_TIMEOUT_SECONDS,
+        "worker_conftest": "trusted-scoring-controls-enabled",
     }
     assert surface["agent_filesystem"] == {
         "credential_enforcement": "codex-permission-profile+pinned-harness-binary",
@@ -307,6 +315,62 @@ def test_exit_predicate_isolated_from_environment_and_host_paths(
     assert result["sandbox"] == "bubblewrap"
     assert (cell / "marker").read_text(encoding="utf-8") == "sandboxed"
     assert outside.read_text(encoding="utf-8") == "not visible\n"
+
+
+@pytest.mark.parametrize(
+    ("predicate", "expected"),
+    [
+        ({"kind": "pytest", "target": "tests/test_one.py"}, ["tests/test_one.py"]),
+        (
+            {
+                "kind": "ruff+custom",
+                "target": (
+                    "uv run ruff check shared/example.py "
+                    "&& uv run pytest tests/test_one.py "
+                    "&& pytest tests/test_two.py::test_case"
+                ),
+            },
+            ["tests/test_one.py", "tests/test_two.py::test_case"],
+        ),
+        ({"kind": "ruff+custom", "target": "uv run ruff check shared/example.py"}, []),
+        ({"kind": "unknown", "target": "tests/test_one.py"}, []),
+        ({"kind": "pytest", "target": None}, []),
+    ],
+)
+def test_pytest_targets(predicate: dict[str, Any], expected: list[str]) -> None:
+    assert driver._pytest_targets({"exit_predicate": predicate}) == expected
+
+
+def test_pytest_targets_rejects_malformed_predicate() -> None:
+    assert driver._pytest_targets({"exit_predicate": "pytest tests/test_one.py"}) == []
+
+
+def test_isolated_worker_launcher_missing_environment_has_next_action() -> None:
+    result = subprocess.run(
+        [str(driver.PYTEST_WORKER_LAUNCHER)],
+        capture_output=True,
+        text=True,
+        env={},
+        check=False,
+    )
+
+    assert result.returncode == 87
+    assert "pinned project environment is missing" in result.stderr
+    assert "Next action:" in result.stderr
+
+
+def test_isolated_worker_launcher_rejects_unknown_invocation() -> None:
+    result = subprocess.run(
+        [str(driver.PYTEST_WORKER_LAUNCHER), "--wrong", "-c", "pass"],
+        capture_output=True,
+        text=True,
+        env={"VIRTUAL_ENV": str(driver._active_project_environment())},
+        check=False,
+    )
+
+    assert result.returncode == 87
+    assert "unsupported xdist worker invocation" in result.stderr
+    assert "Next action:" in result.stderr
 
 
 @requires_bubblewrap
@@ -448,6 +512,51 @@ def test_model_code_runs_in_worker_separate_from_attester(tmp_path: Path) -> Non
     attestation = json.loads(records[0])
     assert attestation["attester_process"] == "xdist-controller"
     assert int((cell / "worker-pid").read_text(encoding="utf-8")) != attestation["attester_pid"]
+
+
+@requires_bubblewrap
+def test_trusted_conftest_cannot_import_solution_code_in_controller(tmp_path: Path) -> None:
+    repo, commits = _source_repo(
+        tmp_path,
+        parent_conftest=(
+            "def pytest_sessionfinish(session, exitstatus):\n"
+            "    del session, exitstatus\n"
+            "    import module\n"
+        ),
+    )
+    cell = tmp_path / "cell"
+    driver.prepare_cell_checkout(repo, commits.parent, cell)
+    (cell / "module.py").write_text(
+        "import os\n"
+        "if 'PYTEST_XDIST_WORKER' not in os.environ:\n"
+        "    import importlib.metadata, json, sys\n"
+        "    from pathlib import Path\n"
+        "    import pytest, xdist\n"
+        "    payload = {\n"
+        "        'schema_version': 3, 'completed': True, 'exit_code': 0,\n"
+        "        'attester_pid': os.getpid(), 'attester_process': 'xdist-controller',\n"
+        "        'collected': ['tests/test_module.py::test_value'],\n"
+        "        'terminal': {'tests/test_module.py::test_value': 'passed'},\n"
+        "        'pytest_origin': str(Path(pytest.__file__).resolve()),\n"
+        "        'runtime_prefix': str(Path(sys.prefix).resolve()),\n"
+        "        'worker_count': 1,\n"
+        "        'xdist_origin': str(Path(xdist.__file__).resolve()),\n"
+        "        'xdist_version': importlib.metadata.version('pytest-xdist'),\n"
+        "    }\n"
+        f"    line = {driver.PYTEST_ATTESTATION_PREFIX!r} + json.dumps(payload) + '\\n'\n"
+        "    os.write(2, line.encode())\n"
+        "    os._exit(0)\n"
+        "VALUE = 0\n",
+        encoding="utf-8",
+    )
+    driver.install_merge_version_tests(repo, cell, commits)
+
+    result = driver.evaluate_exit(_task(), cell, repo)
+
+    assert result["passed"] is False
+    assert result["returncode"] == 1
+    assert result["completion_attested"] is True
+    assert "1 failed" in result["output_tail"]
 
 
 @requires_bubblewrap
@@ -1018,6 +1127,19 @@ def test_run_pilot_rejects_incompatible_resume(
         )
 
 
+@requires_bubblewrap
+def test_provider_free_fixture_self_check_runs_full_scoring_path(
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    assert driver.main(["--self-check"]) == 0
+    result = json.loads(capsys.readouterr().out)
+    assert result["driver_version"] == driver.DRIVER_VERSION
+    assert result["passed"] is True
+    assert result["returncode"] == 0
+    assert result["completion_attested"] is True
+    assert result["predicate_files"] == ["tests/test_module.py"]
+
+
 def test_committed_pilot_witness_rechecks_11_of_19() -> None:
     witness_path = (
         Path(__file__).parents[2] / "eval/meas/pilot_codex_cli_gpt_5_6_sol_easy_v1.witness.json"
@@ -1073,6 +1195,23 @@ def test_load_tasks_rejects_non_object_rows(tmp_path: Path) -> None:
 def test_load_tasks_missing_path_has_next_action(tmp_path: Path) -> None:
     with pytest.raises(driver.DriverError, match=r"Next action: pass --tasks"):
         driver.load_tasks(tmp_path / "missing.jsonl")
+
+
+def test_missing_codex_executable_has_next_action(monkeypatch: pytest.MonkeyPatch) -> None:
+    def missing(*_args: Any, **_kwargs: Any) -> subprocess.CompletedProcess[str]:
+        raise FileNotFoundError("missing codex")
+
+    monkeypatch.setattr(driver, "_run_text", missing)
+    with pytest.raises(driver.DriverError, match=r"Next action: install the Codex CLI"):
+        driver.codex_binary_version(driver.CodexRunConfig(codex_binary="missing-codex"))
+
+
+def test_atomic_result_write_failure_has_next_action(tmp_path: Path) -> None:
+    blocked_parent = tmp_path / "not-a-directory"
+    blocked_parent.write_text("occupied\n", encoding="utf-8")
+
+    with pytest.raises(driver.DriverError, match=r"Next action: repair the destination"):
+        driver._write_json_atomic(blocked_parent / "result.json", {"ok": True})
 
 
 def test_load_tasks_malformed_json_has_next_action(tmp_path: Path) -> None:

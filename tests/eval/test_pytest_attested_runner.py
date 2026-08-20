@@ -63,6 +63,46 @@ def test_runner_trust_failure_has_distinct_exit_and_no_record(
     assert runner.ATTESTATION_PREFIX not in captured.err
 
 
+def test_xdist_private_boundary_drift_fails_closed(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    runtime, pytest_origin, xdist_origin = _trusted_runtime(tmp_path)
+    monkeypatch.setattr(
+        runner,
+        "_trusted_runtime_origins",
+        lambda: (pytest_origin, xdist_origin, runtime),
+    )
+    monkeypatch.delattr(runner.xdist_workermanage, "_sys_path")
+
+    assert runner.run("tests/test_hidden.py") == runner.TRUST_FAILURE_EXIT_CODE
+    captured = capsys.readouterr()
+    assert "worker setup API is incompatible" in captured.err
+    assert "Next action:" in captured.err
+    assert runner.ATTESTATION_PREFIX not in captured.err
+
+
+def test_controller_only_conftest_flag_is_removed_from_worker_args(tmp_path: Path) -> None:
+    original_params = runner.pytest.Config.InvocationParams(
+        args=("tests/test_hidden.py", "--noconftest", "-q"),
+        plugins=None,
+        dir=tmp_path,
+    )
+    config = SimpleNamespace(invocation_params=original_params)
+    observed: list[tuple[str, ...]] = []
+
+    def original_setup(controller: Any) -> str:
+        observed.append(controller.config.invocation_params.args)
+        return "worker-started"
+
+    setup = runner._worker_setup_with_conftests(original_setup)
+
+    assert setup(SimpleNamespace(config=config)) == "worker-started"
+    assert observed == [("tests/test_hidden.py", "-q")]
+    assert config.invocation_params is original_params
+
+
 def test_zero_collection_record_is_emitted_but_rejected(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -148,7 +188,7 @@ def test_predicate_command_has_no_writable_attestation_mount(
     assert "writable_mounts" not in observed
 
 
-def test_committed_v1_witness_runs_published_v7_verifier(
+def test_committed_v1_witness_runs_published_v8_verifier(
     capsys: pytest.CaptureFixture[str],
 ) -> None:
     witness = (

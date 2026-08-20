@@ -25,7 +25,7 @@ import sys
 import tempfile
 import time
 from collections.abc import Callable, Iterable, Iterator, Mapping, Sequence
-from contextlib import contextmanager
+from contextlib import contextmanager, suppress
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path, PurePosixPath
@@ -39,11 +39,11 @@ DEFAULT_TIMEOUT_SECONDS = 900
 PREDICATE_TIMEOUT_SECONDS = 600
 GITHUB_REPO = "hapax-systems/hapax-council"
 HARNESS_NAME = "codex-cli-agentic"
-DRIVER_VERSION = "driver_codex_cli/v7"
+DRIVER_VERSION = "driver_codex_cli/v8"
 DIRECT_API_35B_BASELINE = {"passed": 0, "total": 19, "pass_rate": 0.0}
 KNOWN_WITNESS_ARTIFACTS = {
     "1991e186b3699fa87667ac09963ef542ac3587dadc5b7e31be49afa3a9c2f03c": (
-        "376ac73531dd5c2f581a1d174b633977f7e6149cf242bd9733a5de58e782051b"
+        "a3ef0188f7ae3c24818500f530d82080f53bbe7983062fe95d171472780f42b6"
     )
 }
 SCORING_DIFF_EXCLUDES = (
@@ -1472,7 +1472,13 @@ def driver(
 
 
 def codex_binary_version(config: CodexRunConfig) -> str:
-    result = _run_text([config.codex_binary, "--version"], timeout=30)
+    try:
+        result = _run_text([config.codex_binary, "--version"], timeout=30)
+    except OSError as exc:
+        raise DriverError(
+            f"cannot execute Codex binary {config.codex_binary}: {exc}. "
+            "Next action: install the Codex CLI or pass --codex-binary explicitly."
+        ) from exc
     if result.returncode != 0:
         raise DriverError(
             f"cannot read Codex version: {result.stderr.strip()[-500:]}. "
@@ -1521,6 +1527,7 @@ def lambda_config(
                 "completion_boundary": "xdist-controller+single-stderr-record",
                 "confcutdir": "/workspace",
                 "config": "/dev/null",
+                "controller_conftest": "disabled",
                 "environment": "cleared",
                 "network": "unshared",
                 "plugin_autoload": "disabled",
@@ -1533,6 +1540,7 @@ def lambda_config(
                 "sandbox": "bubblewrap",
                 "sandbox_version": sandbox_version,
                 "timeout_seconds": PREDICATE_TIMEOUT_SECONDS,
+                "worker_conftest": "trusted-scoring-controls-enabled",
             },
             "post_agent_git": {
                 "environment": "cleared",
@@ -1657,6 +1665,122 @@ def run_cell(
     }
 
 
+def run_fixture_self_check() -> dict[str, Any]:
+    """Exercise the complete scoring path with a local fixture and no provider call."""
+    with tempfile.TemporaryDirectory(prefix="meas-codex-self-check-") as raw_directory:
+        source_repo = Path(raw_directory) / "source"
+        source_repo.mkdir()
+        _checked_stdout(["git", "init", "--quiet", str(source_repo)])
+        (source_repo / "module.py").write_text("VALUE = 0\n", encoding="utf-8")
+        tests = source_repo / "tests"
+        tests.mkdir()
+        test_path = tests / "test_module.py"
+        test_path.write_text(
+            "from module import VALUE\n\n"
+            "def test_value(conftest_value):\n"
+            "    assert VALUE == 0\n"
+            "    assert conftest_value == 0\n",
+            encoding="utf-8",
+        )
+        (source_repo / "conftest.py").write_text(
+            "import os\n"
+            "if 'PYTEST_XDIST_WORKER' not in os.environ:\n"
+            "    raise RuntimeError('conftest executed in attestation controller')\n"
+            "import pytest\n"
+            "from module import VALUE\n\n"
+            "@pytest.fixture\n"
+            "def conftest_value():\n"
+            "    return VALUE\n",
+            encoding="utf-8",
+        )
+        (source_repo / "pyproject.toml").write_text(
+            '[tool.pytest.ini_options]\npythonpath = ["."]\n',
+            encoding="utf-8",
+        )
+
+        def commit(message: str) -> str:
+            _checked_stdout(["git", "-C", str(source_repo), "add", "--all"])
+            _checked_stdout(
+                [
+                    "git",
+                    "-c",
+                    "user.name=MEAS Fixture",
+                    "-c",
+                    "user.email=meas-fixture@example.invalid",
+                    "-C",
+                    str(source_repo),
+                    "commit",
+                    "--quiet",
+                    "-m",
+                    message,
+                ]
+            )
+            return _checked_stdout(["git", "-C", str(source_repo), "rev-parse", "HEAD"])
+
+        parent = commit("fixture parent")
+        (source_repo / "module.py").write_text("VALUE = 1\n", encoding="utf-8")
+        test_path.write_text(
+            "from module import VALUE\n\n"
+            "def test_value(conftest_value):\n"
+            "    assert VALUE == 1\n"
+            "    assert conftest_value == 1\n",
+            encoding="utf-8",
+        )
+        merge = commit("fixture merge")
+        task = {
+            "task_id": "provider-free-fixture",
+            "class": "build",
+            "difficulty": "fixture",
+            "pr": 1,
+            "work_item": "Set VALUE to one.",
+            "exit_predicate": {"kind": "pytest", "target": "tests/test_module.py"},
+        }
+
+        def fixture_executor(
+            *,
+            task: Mapping[str, Any],
+            workdir: Path,
+            config: CodexRunConfig,
+        ) -> dict[str, Any]:
+            del task
+            baseline = _checked_stdout(["git", "-C", str(workdir), "rev-parse", "HEAD"])
+            (workdir / "module.py").write_text("VALUE = 1\n", encoding="utf-8")
+            return {
+                "model": config.model,
+                "harness": HARNESS_NAME,
+                "seconds": 0.0,
+                "wh_milli": None,
+                "transcript_ref": None,
+                "transcript": {
+                    "format": "provider-free-fixture",
+                    "returncode": 0,
+                    "timed_out": False,
+                    "stdout": "",
+                    "stderr": "",
+                },
+                **capture_cell_diff(workdir, baseline),
+            }
+
+        record = run_cell(
+            task,
+            repo=source_repo,
+            commits=CommitPair(parent=parent, merge=merge),
+            executor=fixture_executor,
+            binary_version="provider-free-fixture",
+            sandbox_version=predicate_sandbox_version(),
+        )
+    exit_result = record["cell_result"]["exit"]
+    return {
+        "completion_attested": exit_result["completion_attested"],
+        "driver_version": DRIVER_VERSION,
+        "fixture": "clean-score-checkout+merge-test+worker-only-conftest+isolated-xdist",
+        "lambda_hash": record["lambda_hash"],
+        "passed": record["cell_result"]["passed"],
+        "predicate_files": record["cell_result"]["predicate_files"],
+        "returncode": exit_result["returncode"],
+    }
+
+
 def _target_paths(task: Mapping[str, Any]) -> list[str]:
     predicate = task.get("exit_predicate")
     if not isinstance(predicate, Mapping) or not isinstance(predicate.get("target"), str):
@@ -1712,23 +1836,32 @@ def dry_run_validate(
 
 
 def _write_json_atomic(path: Path, payload: Mapping[str, Any]) -> None:
-    path.parent.mkdir(parents=True, exist_ok=True)
-    encoded = json.dumps(payload, indent=2, sort_keys=True) + "\n"
-    with tempfile.NamedTemporaryFile(
-        mode="w",
-        encoding="utf-8",
-        dir=path.parent,
-        prefix=f".{path.name}.",
-        delete=False,
-    ) as handle:
-        handle.write(encoded)
-        handle.flush()
-        os.fsync(handle.fileno())
-        temporary = Path(handle.name)
+    temporary: Path | None = None
     try:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        encoded = json.dumps(payload, indent=2, sort_keys=True) + "\n"
+        with tempfile.NamedTemporaryFile(
+            mode="w",
+            encoding="utf-8",
+            dir=path.parent,
+            prefix=f".{path.name}.",
+            delete=False,
+        ) as handle:
+            temporary = Path(handle.name)
+            handle.write(encoded)
+            handle.flush()
+            os.fsync(handle.fileno())
         temporary.replace(path)
+    except OSError as exc:
+        raise DriverError(
+            f"cannot atomically write result artifact {path}: {exc}. "
+            "Next action: repair the destination directory permissions or free space, "
+            "then resume the pilot from its last valid checkpoint."
+        ) from exc
     finally:
-        temporary.unlink(missing_ok=True)
+        if temporary is not None:
+            with suppress(OSError):
+                temporary.unlink(missing_ok=True)
 
 
 def _summary(results: Sequence[Mapping[str, Any]]) -> dict[str, Any]:
@@ -2227,6 +2360,11 @@ def _parser() -> argparse.ArgumentParser:
     parser.add_argument("--limit", type=int)
     parser.add_argument("--dry-run", action="store_true")
     parser.add_argument(
+        "--self-check",
+        action="store_true",
+        help="Run one provider-free fixture through the complete scoring boundary, then exit",
+    )
+    parser.add_argument(
         "--verify-result",
         type=Path,
         help="Recompute λ and summary invariants for an existing result, then exit",
@@ -2242,6 +2380,10 @@ def _parser() -> argparse.ArgumentParser:
 
 def main(argv: Sequence[str] | None = None) -> int:
     args = _parser().parse_args(argv)
+    if args.self_check:
+        result = run_fixture_self_check()
+        print(json.dumps(result, indent=2, sort_keys=True))
+        return 0 if result["passed"] else 1
     if args.verify_result is not None:
         try:
             raw_payload = json.loads(args.verify_result.read_text(encoding="utf-8"))
