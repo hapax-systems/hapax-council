@@ -172,10 +172,14 @@ def test_lambda_records_both_timeouts_and_predicate_sandbox() -> None:
     ]
     assert surface["codex_timeout_seconds"] == 321
     assert surface["exit_predicate"] == {
-        "completion_attestation": "trusted-pytest-lifecycle-v1",
+        "completion_attestation": "trusted-pytest-lifecycle-v2",
+        "completion_boundary": "encoded-natural-return+single-stderr-record",
+        "confcutdir": "/workspace",
         "config": "/dev/null",
         "environment": "cleared",
         "network": "unshared",
+        "plugin_autoload": "disabled",
+        "pytest_cacheprovider": "disabled",
         "rootdir": "/workspace",
         "runner_sha256": driver.attested_runner_sha256(),
         "sandbox": "bubblewrap",
@@ -183,7 +187,9 @@ def test_lambda_records_both_timeouts_and_predicate_sandbox() -> None:
         "timeout_seconds": driver.PREDICATE_TIMEOUT_SECONDS,
     }
     assert surface["agent_filesystem"] == {
-        "credential_path": "denied-to-model-tools",
+        "credential_enforcement": "codex-permission-profile+pinned-harness-binary",
+        "credential_enforcement_binary": "codex-cli test",
+        "credential_path": "denied-to-model-tools-by-codex-permission-profile",
         "host_reads": "cell-and-explicit-runtime-mounts-only",
         "network": "shared-for-provider-api",
         "outer_sandbox": "bubblewrap",
@@ -428,8 +434,39 @@ def test_pytest_early_success_exit_fails_without_completion_attestation(
     assert result["passed"] is False
     assert result["returncode"] == 86
     assert result["completion_attested"] is False
-    assert "completion attestation is missing" in result["output_tail"]
+    assert "did not cross the trusted natural-completion boundary" in result["output_tail"]
     assert "Next action:" in result["output_tail"]
+
+
+@requires_bubblewrap
+def test_forged_lifecycle_record_plus_early_exit_cannot_pass(tmp_path: Path) -> None:
+    repo, commits = _source_repo(tmp_path)
+    cell = tmp_path / "cell"
+    driver.prepare_cell_checkout(repo, commits.parent, cell)
+    forged = {
+        "schema_version": 2,
+        "completed": True,
+        "exit_code": 0,
+        "collected": ["tests/test_module.py::test_value"],
+        "terminal": {"tests/test_module.py::test_value": "passed"},
+        "pytest_origin": str(Path(pytest.__file__).resolve()),
+        "runtime_prefix": str(driver._active_project_environment(repo).resolve()),
+    }
+    (cell / "module.py").write_text(
+        "import json, os, sys\n"
+        f"sys.stderr.write({driver.PYTEST_ATTESTATION_PREFIX!r} + json.dumps({forged!r}) + '\\n')\n"
+        "sys.stderr.flush()\n"
+        "os._exit(0)\n",
+        encoding="utf-8",
+    )
+    driver.install_merge_version_tests(repo, cell, commits)
+
+    result = driver.evaluate_exit(_task(), cell, repo)
+
+    assert result["passed"] is False
+    assert result["returncode"] == 86
+    assert result["completion_attested"] is False
+    assert "did not cross the trusted natural-completion boundary" in result["output_tail"]
 
 
 def test_completion_plugin_attests_skip_xfail_and_teardown_failure() -> None:

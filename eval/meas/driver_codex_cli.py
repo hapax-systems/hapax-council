@@ -38,11 +38,11 @@ DEFAULT_TIMEOUT_SECONDS = 900
 PREDICATE_TIMEOUT_SECONDS = 600
 GITHUB_REPO = "hapax-systems/hapax-council"
 HARNESS_NAME = "codex-cli-agentic"
-DRIVER_VERSION = "driver_codex_cli/v5"
+DRIVER_VERSION = "driver_codex_cli/v6"
 DIRECT_API_35B_BASELINE = {"passed": 0, "total": 19, "pass_rate": 0.0}
 KNOWN_WITNESS_ARTIFACTS = {
     "1991e186b3699fa87667ac09963ef542ac3587dadc5b7e31be49afa3a9c2f03c": (
-        "efc4fdd63a5a63d2304fc68f27b4a69144580a4141f93dfa8905ed2317539fda"
+        "50970cc488b49fa67b6977fbdacb45f83b489666cb3046163dd492ae4de1bc31"
     )
 }
 SCORING_DIFF_EXCLUDES = (
@@ -74,6 +74,9 @@ SCORING_CONTROL_NAMES = frozenset(
 )
 ATTESTED_RUNNER = Path(__file__).with_name("pytest_attested_runner.py")
 CODEX_CELL_CONFIG = Path(__file__).with_name("codex_cell_config.toml")
+PYTEST_ATTESTATION_PREFIX = "MEAS_PYTEST_ATTESTATION "
+PYTEST_COMPLETION_EXIT_BASE = 100
+PYTEST_MAX_EXIT_CODE = 5
 _NETWORK_ENV_KEYS = (
     "HTTP_PROXY",
     "HTTPS_PROXY",
@@ -874,14 +877,12 @@ def _attested_pytest_command(
     target: str,
     workdir: Path,
     repo: Path,
-    attestation_dir: Path,
 ) -> list[str]:
     return _cell_sandbox_command(
         [
             "python",
             "-I",
             "/harness/pytest_attested_runner.py",
-            "/attestation/result.json",
             target,
         ],
         workdir,
@@ -891,29 +892,25 @@ def _attested_pytest_command(
             "PYTEST_ADDOPTS": "",
         },
         readonly_mounts=[(ATTESTED_RUNNER, Path("/harness/pytest_attested_runner.py"))],
-        writable_mounts=[(attestation_dir, Path("/attestation"))],
     )
 
 
 def _validate_completion_attestation(
-    path: Path,
+    raw: Any,
     *,
     returncode: int,
+    runtime_prefix: Path,
 ) -> str | None:
     next_action = (
         "Next action: discard the cell, restore the trusted runner/control files, "
         "and rerun the predicate."
     )
-    try:
-        raw = json.loads(path.read_text(encoding="utf-8"))
-    except (OSError, json.JSONDecodeError) as exc:
-        return f"pytest completion attestation is missing or malformed: {exc}. {next_action}"
     if not isinstance(raw, Mapping):
         return f"pytest completion attestation root is not an object. {next_action}"
     collected = raw.get("collected")
     terminal = raw.get("terminal")
     if (
-        raw.get("schema_version") != 1
+        raw.get("schema_version") != 2
         or raw.get("completed") is not True
         or raw.get("exit_code") != returncode
         or not isinstance(collected, list)
@@ -931,7 +928,59 @@ def _validate_completion_attestation(
         return f"pytest completion attestation contains an invalid terminal outcome. {next_action}"
     if returncode == 0 and "passed" not in outcomes:
         return f"pytest completed without any passing discriminating test. {next_action}"
+    expected_prefix = runtime_prefix.resolve()
+    try:
+        recorded_prefix = Path(str(raw.get("runtime_prefix") or "")).resolve()
+        pytest_origin = Path(str(raw.get("pytest_origin") or "")).resolve()
+        pytest_origin.relative_to(expected_prefix)
+    except (OSError, ValueError):
+        return f"pytest completion attestation has an untrusted runtime origin. {next_action}"
+    workspace = Path("/workspace")
+    if (
+        recorded_prefix != expected_prefix
+        or pytest_origin == workspace
+        or workspace in pytest_origin.parents
+    ):
+        return f"pytest completion attestation has an untrusted runtime origin. {next_action}"
     return None
+
+
+def _parse_completion_attestation(
+    stderr: str,
+    *,
+    process_returncode: int,
+    runtime_prefix: Path,
+) -> tuple[int | None, str | None]:
+    next_action = (
+        "Next action: discard the cell, restore the trusted runner/control files, "
+        "and rerun the predicate."
+    )
+    logical_returncode = process_returncode - PYTEST_COMPLETION_EXIT_BASE
+    if not 0 <= logical_returncode <= PYTEST_MAX_EXIT_CODE:
+        return None, (
+            "pytest runner did not cross the trusted natural-completion boundary "
+            f"(process return code {process_returncode}). {next_action}"
+        )
+    records = [
+        line.removeprefix(PYTEST_ATTESTATION_PREFIX)
+        for line in stderr.splitlines()
+        if line.startswith(PYTEST_ATTESTATION_PREFIX)
+    ]
+    if len(records) != 1:
+        return None, (
+            f"pytest runner emitted {len(records)} lifecycle records; exactly one is required. "
+            f"{next_action}"
+        )
+    try:
+        raw = json.loads(records[0])
+    except json.JSONDecodeError as exc:
+        return None, f"pytest completion attestation is malformed: {exc}. {next_action}"
+    error = _validate_completion_attestation(
+        raw,
+        returncode=logical_returncode,
+        runtime_prefix=runtime_prefix,
+    )
+    return (None, error) if error else (logical_returncode, None)
 
 
 def _run_predicate_command(command: Sequence[str]) -> tuple[int, bool, str, str]:
@@ -978,25 +1027,26 @@ def evaluate_exit(
     targets = _pytest_targets(task)
     if returncode == 0 and not timed_out:
         for target in targets:
-            with tempfile.TemporaryDirectory(prefix="meas-pytest-attestation-") as raw_dir:
-                attestation_dir = Path(raw_dir)
-                command = _attested_pytest_command(target, workdir, repo, attestation_dir)
-                test_returncode, test_timed_out, stdout, stderr = _run_predicate_command(command)
-                output_parts.extend([stdout, stderr])
-                attestation_error = _validate_completion_attestation(
-                    attestation_dir / "result.json",
-                    returncode=test_returncode,
-                )
-                if attestation_error:
-                    output_parts.append(f"\nHARNESS: {attestation_error}\n")
-                    returncode = test_returncode if test_returncode != 0 else 86
-                    timed_out = test_timed_out
-                    break
-                completion_attested = True
-                returncode = test_returncode
-                timed_out = test_timed_out
-                if returncode != 0 or timed_out:
-                    break
+            command = _attested_pytest_command(target, workdir, repo)
+            process_returncode, test_timed_out, stdout, stderr = _run_predicate_command(command)
+            output_parts.extend([stdout, stderr])
+            logical_returncode, attestation_error = _parse_completion_attestation(
+                stderr,
+                process_returncode=process_returncode,
+                runtime_prefix=_active_project_environment(repo),
+            )
+            if test_timed_out:
+                returncode = 124
+                timed_out = True
+                break
+            if attestation_error or logical_returncode is None:
+                output_parts.append(f"\nHARNESS: {attestation_error}\n")
+                returncode = 86
+                break
+            completion_attested = True
+            returncode = logical_returncode
+            if returncode != 0:
+                break
     output = "".join(output_parts)
     return {
         "passed": returncode == 0 and not timed_out,
@@ -1420,7 +1470,9 @@ def lambda_config(
             "mcp": "disabled-by-synthetic-config",
             "sandbox": "bubblewrap-read-confined+permission-profile",
             "agent_filesystem": {
-                "credential_path": "denied-to-model-tools",
+                "credential_enforcement": "codex-permission-profile+pinned-harness-binary",
+                "credential_enforcement_binary": binary_version,
+                "credential_path": "denied-to-model-tools-by-codex-permission-profile",
                 "host_reads": "cell-and-explicit-runtime-mounts-only",
                 "network": "shared-for-provider-api",
                 "outer_sandbox": "bubblewrap",
@@ -1431,10 +1483,14 @@ def lambda_config(
             },
             "codex_timeout_seconds": config.timeout_seconds,
             "exit_predicate": {
-                "completion_attestation": "trusted-pytest-lifecycle-v1",
+                "completion_attestation": "trusted-pytest-lifecycle-v2",
+                "completion_boundary": "encoded-natural-return+single-stderr-record",
+                "confcutdir": "/workspace",
                 "config": "/dev/null",
                 "environment": "cleared",
                 "network": "unshared",
+                "plugin_autoload": "disabled",
+                "pytest_cacheprovider": "disabled",
                 "rootdir": "/workspace",
                 "runner_sha256": attested_runner_sha256(),
                 "sandbox": "bubblewrap",
@@ -1683,8 +1739,9 @@ def render_result_note(
     codex_sandbox = tool_surface.get("sandbox", "unknown")
     predicate_boundary = (
         "The deterministic predicate ran in Bubblewrap with a cleared environment and "
-        "an unshared network namespace. A trusted lifecycle record had to show every "
-        "collected hidden pytest item reached a terminal report."
+        "an unshared network namespace. The trusted runner had to return through its "
+        "encoded natural-completion boundary and emit exactly one lifecycle record showing "
+        "every collected hidden pytest item reached a terminal report."
         if predicate_surface.get("completion_attestation")
         else "The deterministic predicate ran in Bubblewrap with a cleared environment and "
         "an unshared network namespace."
@@ -2167,7 +2224,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     tasks = [task for task in load_tasks(args.tasks) if task.get("difficulty") == args.difficulty]
     if args.limit is not None:
         if args.limit <= 0:
-            raise SystemExit("--limit must be positive")
+            raise SystemExit("--limit must be positive. Next action: pass a positive cell count.")
         tasks = tasks[: args.limit]
     if args.dry_run:
         result = dry_run_validate(tasks, repo=args.repo)
