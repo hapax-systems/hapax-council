@@ -25,12 +25,7 @@ from typing import Any, Literal
 
 from pydantic import BaseModel, ConfigDict, Field, PrivateAttr, ValidationError, model_validator
 
-from shared.adjudicator_identity import adjudicator_identity, register_adjudicator_module
-
-# This module computes the routes, so it is part of the code a route receipt claims to identify.
-# Registering at import is what puts it inside `adjudicator_source_matches_head`; without this
-# line the receipt would verify the provenance helper and stay silent about the decision itself.
-register_adjudicator_module(__file__)
+from shared.adjudicator_identity import adjudicator_identity, register_decision_scope
 from shared.agentic_trust_boundary import is_syntactically_typed_policy_evidence_reference
 from shared.capability_availability_guarantor import (
     CapabilityAvailabilityReceipt,
@@ -85,6 +80,14 @@ from shared.route_metadata_schema import (
     route_envelope_gate_enforced,
     stable_payload_hash,
 )
+
+# AFTER the imports above, deliberately. This module computes the routes, and so does much of
+# what it imports: raised by codex-1, `capability_availability_guarantor`,
+# `platform_capability_registry`, `quota_spend_ledger` and `route_metadata_schema` all execute
+# logic that directly determines routes. Registering only this file would have verified the
+# dispatcher while leaving its deciders unchecked, so the call sweeps every in-tree module
+# already loaded. Placed here rather than beside the import so the sweep actually sees them.
+register_decision_scope(__file__)
 
 logger = logging.getLogger(__name__)
 

@@ -78,6 +78,7 @@ import hashlib
 import os
 import re
 import subprocess
+import sys
 from collections.abc import Mapping
 from dataclasses import dataclass
 from functools import lru_cache
@@ -164,23 +165,66 @@ def _capture(module_file: str) -> Path | None:
     return resolved
 
 
-def register_adjudicator_module(module_file: str) -> None:
-    """Declare a module as part of the code whose identity a receipt asserts.
+def _tree_root() -> Path | None:
+    """The checkout this module lives in, as ``<root>/shared/<file>.py`` implies."""
+    if _OWN_PATH is None or len(_OWN_PATH.parents) < 2:
+        return None
+    return _OWN_PATH.parents[1]
 
-    Called at import by every module that participates in a decision. Modules that do not
-    register are not covered, and the receipt says which ones were — see
-    ``adjudicator_verified_modules``. A silent narrowing would be the same defect this module
-    exists to prevent, so the scope of the claim travels with the claim.
 
-    Registering INVALIDATES any cached identity. Raised by codex-1: ``adjudicator_identity`` is
-    cached, so if it ran before a decider registered — a lazy import, an entry point that built
-    a receipt early — every later receipt would keep the narrower verified set and still read
-    usable. The cache was justified by "the answer cannot change within a process", and
-    registration makes that false. The honest response is to stop serving the stale answer, not
-    to keep the justification.
+def _in_tree_loaded_modules(root: Path) -> set[str]:
+    """Every module currently loaded from inside ``root``, excluding vendored code.
+
+    Enumerated rather than declared. Manual registration cannot be complete: a dependency
+    added tomorrow does not know to register, and the coverage would narrow silently — which is
+    the defect this module exists to prevent, reproduced in its own registration scheme.
+    Deriving the set from ``sys.modules`` means a new import can only LOWER the verdict by
+    appearing unverified, never quietly shrink what the verdict ranges over.
+    """
+    found: set[str] = set()
+    for module in list(sys.modules.values()):
+        file = getattr(module, "__file__", None)
+        if not file:
+            continue
+        try:
+            resolved = Path(file).resolve()
+            resolved.relative_to(root)
+        except (ValueError, OSError, RuntimeError):
+            continue
+        if ".venv" in resolved.parts or "site-packages" in resolved.parts:
+            continue
+        found.add(str(resolved))
+    return found
+
+
+def register_decision_scope(module_file: str) -> None:
+    """Declare the caller, and every in-tree module already loaded, as decision code.
+
+    Called by the modules that actually decide. The sweep is what makes this tractable: raised
+    by codex-1, `dispatcher_policy` alone pulls in `capability_availability_guarantor`,
+    `platform_capability_registry`, `quota_spend_ledger` and `route_metadata_schema`, all of
+    which "execute logic that directly determines routes". Registering each by hand would need
+    an edit in every one and would go stale on the next import.
+
+    Honest limit, because it is a real weakening: a dependency imported BEFORE this call is
+    captured after its own load rather than at it, so the window is the remainder of the
+    importing module's import rather than zero. Anything loaded after the sweep is not captured
+    at all and shows up as unverified, which is the correct direction to fail.
     """
     _capture(module_file)
+    root = _tree_root()
+    if root is not None:
+        for path in _in_tree_loaded_modules(root):
+            if path not in _LOADED_MODULES:
+                _capture(path)
     adjudicator_identity.cache_clear()
+
+
+# NOTE: a single-module `register_adjudicator_module` lived here and was REMOVED once the sweep
+# in `register_decision_scope` subsumed it. Nothing in production called it any more — only
+# tests — which is precisely the writer-with-no-production-caller pattern this change set exists
+# to make visible. Keeping it because a test used it, or whitelisting it past the unused-function
+# gate, would have been the same move that produced a 5,088-line suppression file.
 
 
 #: Captured at import, once. See ``_capture``.
@@ -399,7 +443,17 @@ def _loaded_source_matches(
     verified: list[str] = []
     unverified: list[str] = []
     mismatched = False
-    for path_text, loaded_sha in sorted(_LOADED_MODULES.items()):
+    # Everything loaded from this tree is in scope whether or not it registered. A module that
+    # never registered has no load-time hash, so it cannot be verified — but it CAN be named,
+    # and naming it is the difference between partial coverage and coverage that looks total.
+    scope = dict.fromkeys(_in_tree_loaded_modules(tree), None) | dict(_LOADED_MODULES)
+    for path_text, loaded_sha in sorted(scope.items()):
+        if loaded_sha is None:
+            try:
+                unverified.append(Path(path_text).relative_to(tree).as_posix())
+            except ValueError:
+                unverified.append(path_text)
+            continue
         try:
             relative = Path(path_text).relative_to(tree)
         except ValueError:
