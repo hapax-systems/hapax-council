@@ -237,7 +237,7 @@ def test_a_failed_git_status_does_not_report_a_clean_tree(tmp_path: Path, monkey
     stdout, `bool("")` was False, and the identity reported a VERIFIED CLEAN tree — the exact
     defect this module exists to prevent, committed inside it.
     """
-    import shared.adjudicator_identity as mod
+    from shared import adjudicator_identity as mod
 
     tree = _make_checkout(tmp_path / "tree", "tree")
     real_run = mod.subprocess.run
@@ -530,7 +530,7 @@ def test_the_loaded_module_list_names_the_real_route_deciders() -> None:
     participated, because a module absent from the receipt is indistinguishable from one that
     was checked.
     """
-    import shared.dispatcher_policy  # noqa: F401 - imported for the loaded-module enumeration
+    from shared import dispatcher_policy  # noqa: F401 - imported for its presence in sys.modules
 
     ident = adjudicator_identity()
     if ident.sha is None:
@@ -556,7 +556,7 @@ def test_vendored_code_is_not_reported_as_participating(tmp_path: Path) -> None:
     Paired with the test above so the two pin a boundary rather than one side of it: an
     enumeration that returned everything would satisfy that one and fail this.
     """
-    import shared.dispatcher_policy  # noqa: F401
+    from shared import dispatcher_policy  # noqa: F401 - imported for its presence in sys.modules
 
     ident = adjudicator_identity()
     if ident.sha is None:
