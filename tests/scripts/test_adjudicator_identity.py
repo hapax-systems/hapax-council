@@ -536,17 +536,22 @@ def test_the_loaded_module_list_names_the_real_route_deciders() -> None:
     if ident.sha is None:
         pytest.skip("not running from a checkout")
 
-    named = {Path(p).name for p in ident.loaded_modules}
+    # Repo-relative, not basenames. Raised by coderabbitai: reducing entries to `Path(p).name`
+    # means a file called `route_metadata_schema.py` in ANY package — including a fixture tree
+    # built earlier in the same session — satisfies the assertion. The property under test is
+    # that importing shared.dispatcher_policy puts THESE modules in scope, and a basename cannot
+    # witness that. Same weak-assertion family as the vacuous guards found earlier in this PR.
+    listed = set(ident.loaded_modules)
     for decider in (
-        "dispatcher_policy.py",
-        "capability_availability_guarantor.py",
-        "platform_capability_registry.py",
-        "quota_spend_ledger.py",
-        "route_metadata_schema.py",
+        "shared/dispatcher_policy.py",
+        "shared/capability_availability_guarantor.py",
+        "shared/platform_capability_registry.py",
+        "shared/quota_spend_ledger.py",
+        "shared/route_metadata_schema.py",
     ):
-        assert decider in named, (
+        assert decider in listed, (
             f"{decider} decides routes and is missing from the receipt entirely; a reader "
-            "cannot see that it participated"
+            f"cannot see that it participated. Listed: {sorted(listed)}"
         )
 
 
@@ -572,8 +577,8 @@ def test_vendored_code_is_not_reported_as_participating(tmp_path: Path) -> None:
 # --------------------------------------------------------------------------------------
 
 
-def test_route_receipt_carries_the_adjudicator_alongside_the_basis_name() -> None:
-    """Through the real build-and-serialize path, not a helper.
+def _dimensional_receipt():
+    """A receipt built through the REAL production path, not an extracted helper.
 
     Raised by coderabbitai on an earlier round: a test that exercises an extracted helper proves
     the helper works and says nothing about whether the receipt written to disk carries the
@@ -616,7 +621,12 @@ def test_route_receipt_carries_the_adjudicator_alongside_the_basis_name() -> Non
         message="m",
     )
 
-    serialized = _build_dimensional_route_receipt(decision, request).model_dump(mode="json")
+    return _build_dimensional_route_receipt(decision, request)
+
+
+def test_route_receipt_carries_the_adjudicator_alongside_the_basis_name() -> None:
+    """The wiring, end to end through serialization."""
+    serialized = _dimensional_receipt().model_dump(mode="json")
 
     assert serialized["routing_model_version"] == "capacity-dimensional-v1", (
         "the basis name is retained; it was never wrong, only misread"
@@ -648,6 +658,23 @@ def test_route_receipt_carries_the_adjudicator_alongside_the_basis_name() -> Non
     # their branch, so skipping the branch skipped the test.
     if expected.sha is not None:
         assert SHA_RE.match(serialized["adjudicator_sha"] or "")
+
+
+def test_a_route_receipt_stays_hashable() -> None:
+    """Raised by coderabbitai: `_PolicyModel` is frozen, so Pydantic derives `__hash__`.
+
+    A `list` field makes every `DimensionalRouteReceipt` unhashable, so `hash(receipt)` and any
+    set or dict-key use raises TypeError — a failure that appears in whatever code first puts a
+    receipt in a set, far from the field that caused it. Every other collection on the model is
+    already a tuple.
+    """
+    from shared.dispatcher_policy import DimensionalRouteReceipt
+
+    receipt = _dimensional_receipt()
+    assert isinstance(receipt, DimensionalRouteReceipt)
+    assert hash(receipt) == hash(receipt), "a frozen receipt must be usable as a key"
+    assert len({receipt, receipt}) == 1
+    assert isinstance(receipt.adjudicator_loaded_modules, tuple)
 
 
 def _load_determine():

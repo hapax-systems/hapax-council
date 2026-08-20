@@ -509,7 +509,10 @@ class DimensionalRouteReceipt(_PolicyModel):
     #: verdict: four mechanisms claiming to verify loaded bytes against the commit were refuted
     #: in review, because a Python process cannot observe the bytes it was compiled from.
     #: See shared/adjudicator_identity.py.
-    adjudicator_loaded_modules: list[str] = Field(default_factory=list)
+    #: A tuple, not a list: `_PolicyModel` is `frozen=True`, so Pydantic derives `__hash__` from
+    #: the field values and a list member makes every receipt unhashable. Raised by coderabbitai;
+    #: every other collection on this model is already a tuple.
+    adjudicator_loaded_modules: tuple[str, ...] = Field(default=())
     #: What the deploy PATH claimed, kept beside the verified sha because they can disagree.
     #: Release trees on this estate are writable git checkouts, so a directory name is a
     #: claim; the live tree `45086a03…` carried a modified file while its path asserted a
