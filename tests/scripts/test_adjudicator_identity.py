@@ -89,23 +89,43 @@ def test_identity_is_resolved_from_the_module_not_the_symlink() -> None:
     assert id_a.resolved_from != id_b.resolved_from
 
 
-def test_git_worktree_is_weaker_and_says_so() -> None:
-    """A development checkout is a real answer, but not an authoritative one."""
+def test_a_real_checkout_resolves_to_its_verified_head() -> None:
+    """Assert unconditionally against the environment's actual state.
+
+    An earlier version wrapped these assertions in `if ident.source == "git_worktree":`, so any
+    other source made the test pass having checked nothing. This is the third instance in these
+    PRs of a conditional inside an assertion swallowing the failure mode — the branch that gets
+    skipped is exactly the one the defect takes. Found here by grepping my own diff for the
+    shape rather than waiting for a reviewer to find it a fourth time.
+
+    The test environment is knowable, so it is asserted rather than branched on: these tests
+    run from a git checkout, whether or not that checkout also sits under a release path.
+    """
     ident = adjudicator_identity(str(REPO_ROOT / "shared" / "adjudicator_identity.py"))
-    assert ident.source in {"git_worktree", "release_tree"}
-    if ident.source == "git_worktree":
-        assert SHA_RE.match(ident.sha or ""), "a git identity must carry a real HEAD sha"
-        assert ident.source != "release_tree", (
-            "a git worktree may be dirty, so its sha does not fully determine the code; only a "
-            "release tree is authoritative"
-        )
-        head = subprocess.run(
-            ["git", "-C", str(REPO_ROOT), "rev-parse", "HEAD"],
-            capture_output=True,
-            text=True,
-            check=True,
-        ).stdout.strip()
-        assert ident.sha == head
+    head = subprocess.run(
+        ["git", "-C", str(REPO_ROOT), "rev-parse", "HEAD"],
+        capture_output=True,
+        text=True,
+        check=True,
+    ).stdout.strip()
+
+    assert ident.source in {"git_worktree", "release_tree"}, (
+        f"tests run from a checkout; got source={ident.source!r} at {ident.resolved_from}"
+    )
+    assert ident.sha == head, "the identity must be the tree's verified HEAD, not a path guess"
+    assert SHA_RE.match(ident.sha or "")
+    assert ident.dirty in (True, False, None)
+
+    dirty_files = subprocess.run(
+        ["git", "-C", str(REPO_ROOT), "status", "--porcelain"],
+        capture_output=True,
+        text=True,
+        check=True,
+    ).stdout.strip()
+    assert ident.dirty is bool(dirty_files), (
+        "dirtiness must reflect the tree that was actually inspected; reporting clean for a "
+        "modified tree is how a sha claims more than it knows"
+    )
 
 
 def test_unknown_location_is_indeterminate_not_a_guess(tmp_path: Path) -> None:
@@ -348,7 +368,12 @@ def test_route_receipt_carries_the_adjudicator_alongside_the_basis_name() -> Non
     )
     assert serialized["adjudicator_sha"] == expected.sha
     assert serialized["adjudicator_resolved_from"] == expected.resolved_from
-    if expected.source != "indeterminate":
+    assert serialized["adjudicator_dirty"] == expected.dirty
+    # Kept conditional deliberately and narrowly: the sha SHAPE is only assertable when a sha
+    # exists, and the unconditional equality checks above already pin the value in every case.
+    # This is the distinction the other conditionals lacked — they were the only assertion in
+    # their branch, so skipping the branch skipped the test.
+    if expected.sha is not None:
         assert SHA_RE.match(serialized["adjudicator_sha"] or "")
 
 
