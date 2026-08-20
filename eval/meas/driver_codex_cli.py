@@ -18,6 +18,7 @@ import json
 import os
 import re
 import secrets
+import shlex
 import shutil
 import stat
 import subprocess
@@ -39,11 +40,11 @@ DEFAULT_TIMEOUT_SECONDS = 900
 PREDICATE_TIMEOUT_SECONDS = 600
 GITHUB_REPO = "hapax-systems/hapax-council"
 HARNESS_NAME = "codex-cli-agentic"
-DRIVER_VERSION = "driver_codex_cli/v10"
+DRIVER_VERSION = "driver_codex_cli/v11"
 DIRECT_API_35B_BASELINE = {"passed": 0, "total": 19, "pass_rate": 0.0}
 KNOWN_WITNESS_ARTIFACTS = {
     "1991e186b3699fa87667ac09963ef542ac3587dadc5b7e31be49afa3a9c2f03c": (
-        "0d8a4ff6cdd44265fd6e257da49b63d07c9318aa4b98cf2e0eeb846a4028a504"
+        "b9ab2d81676853f168cf0841e5a482452fe781c3e400b5241449d2a7cd02a361"
     )
 }
 SCORING_DIFF_EXCLUDES = (
@@ -980,7 +981,7 @@ def _validate_completion_attestation(
         or raw.get("attester_process") != "xdist-controller"
         or raw.get("worker_count") != 1
         or raw.get("worker_integrity_guard")
-        != "plugin-registration-frozen+runtime-introspection-audit/v1"
+        != "plugin-registration-frozen+runtime-introspection-and-hook-mutation-audit/v2"
         or not isinstance(raw.get("attester_pid"), int)
         or raw.get("xdist_version") != pytest_xdist_version()
         or not isinstance(collected, list)
@@ -1575,7 +1576,7 @@ def lambda_config(
                 "pytest_cacheprovider": "disabled",
                 "pytest_execution": "one-isolated-xdist-worker",
                 "pytest_worker_integrity": (
-                    "plugin-registration-frozen+runtime-introspection-audit/v1"
+                    "plugin-registration-frozen+runtime-introspection-and-hook-mutation-audit/v2"
                 ),
                 "pytest_worker_launcher_sha256": pytest_worker_launcher_sha256(),
                 "pytest_xdist_version": pytest_xdist_version(),
@@ -1968,15 +1969,17 @@ def render_result_note(
             f"This partial run covers {total} cells and is not directly comparable "
             f"with the {baseline.get('total')}-cell direct-API baseline."
         )
-    recheck_target = result_path.name if result_path is not None else "pilot-result.json"
+    recheck_target = (
+        shlex.quote(str(result_path.resolve())) if result_path is not None else "pilot-result.json"
+    )
     tool_surface = payload.get("lambda_config", {}).get("tool_surface_config", {})
     predicate_surface = tool_surface.get("exit_predicate", {})
     codex_sandbox = tool_surface.get("sandbox", "unknown")
     predicate_boundary = (
         "The deterministic predicate ran in Bubblewrap with a cleared environment and "
         "an unshared network namespace and a read-only scoring checkout. Agent-changed "
-        "solution code ran in one xdist worker after plugin registration and runtime-frame "
-        "introspection were frozen; "
+        "solution code ran in one xdist worker after plugin registration, runtime-frame "
+        "introspection, and mutation of registered hook functions were frozen; "
         "the separate trusted controller had to emit exactly one lifecycle record showing "
         "every worker-collected hidden pytest item reached a terminal report."
         if predicate_surface.get("completion_attestation")

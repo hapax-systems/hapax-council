@@ -189,7 +189,9 @@ def test_lambda_records_both_timeouts_and_predicate_sandbox() -> None:
         "plugin_autoload": "disabled",
         "pytest_cacheprovider": "disabled",
         "pytest_execution": "one-isolated-xdist-worker",
-        "pytest_worker_integrity": ("plugin-registration-frozen+runtime-introspection-audit/v1"),
+        "pytest_worker_integrity": (
+            "plugin-registration-frozen+runtime-introspection-and-hook-mutation-audit/v2"
+        ),
         "pytest_worker_launcher_sha256": driver.pytest_worker_launcher_sha256(),
         "pytest_xdist_version": driver.pytest_xdist_version(),
         "rootdir": "/workspace",
@@ -557,7 +559,7 @@ def test_model_code_runs_in_worker_separate_from_attester(tmp_path: Path) -> Non
     attestation = json.loads(records[0])
     assert attestation["attester_process"] == "xdist-controller"
     assert attestation["worker_integrity_guard"] == (
-        "plugin-registration-frozen+runtime-introspection-audit/v1"
+        "plugin-registration-frozen+runtime-introspection-and-hook-mutation-audit/v2"
     )
 
 
@@ -588,7 +590,7 @@ def test_trusted_conftest_cannot_import_solution_code_in_controller(tmp_path: Pa
         "        'runtime_prefix': str(Path(sys.prefix).resolve()),\n"
         "        'worker_count': 1,\n"
         "        'worker_integrity_guard': "
-        "'plugin-registration-frozen+runtime-introspection-audit/v1',\n"
+        "'plugin-registration-frozen+runtime-introspection-and-hook-mutation-audit/v2',\n"
         "        'xdist_origin': str(Path(xdist.__file__).resolve()),\n"
         "        'xdist_version': importlib.metadata.version('pytest-xdist'),\n"
         "    }\n"
@@ -666,6 +668,59 @@ def test_worker_report_forgery_is_blocked_by_integrity_guard(tmp_path: Path) -> 
 
 
 @requires_bubblewrap
+def test_registered_pytest_hook_code_mutation_cannot_forge_pass(
+    tmp_path: Path,
+) -> None:
+    repo, commits = _source_repo(tmp_path)
+
+    def registered_hook_mutation_executor(
+        *,
+        task: driver.Mapping[str, Any],
+        workdir: Path,
+        config: driver.CodexRunConfig,
+    ) -> dict[str, Any]:
+        del task
+        (workdir / "module.py").write_text(
+            "from _pytest import runner\n\n"
+            "def forged_report(item, call):\n"
+            "    report = TestReport.from_item_and_call(item, call)\n"
+            "    report.outcome = 'passed'\n"
+            "    report.longrepr = None\n"
+            "    return report\n\n"
+            "runner.pytest_runtest_makereport.__code__ = forged_report.__code__\n"
+            "VALUE = 0\n",
+            encoding="utf-8",
+        )
+        diff_record = driver.capture_cell_diff(workdir, commits.parent)
+        return {
+            "model": config.model,
+            "harness": driver.HARNESS_NAME,
+            "seconds": 0.1,
+            "transcript": {"returncode": 0, "timed_out": False},
+            **diff_record,
+        }
+
+    record = driver.run_cell(
+        _task(),
+        repo=repo,
+        commits=commits,
+        executor=registered_hook_mutation_executor,
+        binary_version="codex-cli test",
+        sandbox_version="bubblewrap test",
+    )
+
+    assert record["cell_result"]["passed"] is False
+    assert record["cell_result"]["exit"]["returncode"] != 0
+    assert record["cell_result"]["exit"]["completion_attested"] is False
+    assert "worker function mutation is disabled" in record["cell_result"]["exit"][
+        "output_tail"
+    ]
+    assert (
+        record["cell_result"]["post_scoring_controls"] == record["cell_result"]["scoring_controls"]
+    )
+
+
+@requires_bubblewrap
 def test_pytest_early_success_exit_fails_without_completion_attestation(
     tmp_path: Path,
 ) -> None:
@@ -700,7 +755,9 @@ def test_forged_lifecycle_record_plus_early_exit_cannot_pass(tmp_path: Path) -> 
         "pytest_origin": str(Path(pytest.__file__).resolve()),
         "runtime_prefix": str(driver._active_project_environment(repo).resolve()),
         "worker_count": 1,
-        "worker_integrity_guard": ("plugin-registration-frozen+runtime-introspection-audit/v1"),
+        "worker_integrity_guard": (
+            "plugin-registration-frozen+runtime-introspection-and-hook-mutation-audit/v2"
+        ),
         "xdist_origin": str(Path(pytest.__file__).resolve()),
         "xdist_version": driver.pytest_xdist_version(),
     }
@@ -1134,6 +1191,20 @@ def test_partial_result_note_does_not_claim_baseline_comparison() -> None:
     assert "not directly comparable" in note
     assert "versus 0 of 19" not in note
     assert "--verify-result pilot-result.json" in note
+
+
+def test_result_note_preserves_usable_absolute_recheck_path(tmp_path: Path) -> None:
+    payload = {
+        "updated_at": "2026-08-20T00:00:00Z",
+        "model": "gpt-5.6-sol",
+        "lambda_set": ["a" * 64],
+        "summary": driver._summary([]),
+    }
+    result_path = tmp_path / "nested result" / "pilot-result.json"
+
+    note = driver.render_result_note(payload, result_path)
+
+    assert f"--verify-result '{result_path.resolve()}'" in note
 
 
 def test_current_result_note_names_clean_scoring_boundary() -> None:

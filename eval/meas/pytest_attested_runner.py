@@ -15,7 +15,9 @@ WORKSPACE = Path("/workspace")
 ATTESTATION_PREFIX = "MEAS_PYTEST_ATTESTATION "
 MAX_PYTEST_EXIT_CODE = 5
 TRUST_FAILURE_EXIT_CODE = 87
-WORKER_INTEGRITY_GUARD = "plugin-registration-frozen+runtime-introspection-audit/v1"
+WORKER_INTEGRITY_GUARD = (
+    "plugin-registration-frozen+runtime-introspection-and-hook-mutation-audit/v2"
+)
 _WORKER_GUARD_INSTALLED = False
 _BLOCKED_AUDIT_EVENTS = frozenset(
     {
@@ -28,6 +30,7 @@ _BLOCKED_AUDIT_EVENTS = frozenset(
         "sys.settrace",
     }
 )
+_BLOCKED_FUNCTION_ATTRIBUTES = frozenset({"__code__", "__defaults__", "__kwdefaults__"})
 
 
 def _outside_workspace_import_path(value: str) -> bool:
@@ -85,16 +88,25 @@ def pytest_configure(config: pytest.Config) -> None:
 
 
 def _worker_audit_hook(event: str, args: tuple[Any, ...]) -> None:
-    del args
     if event in _BLOCKED_AUDIT_EVENTS:
         raise RuntimeError(
             f"worker runtime introspection is disabled at the scoring boundary ({event}). "
             "Next action: remove pytest-runtime introspection from the solution and rerun."
         )
+    if (
+        event in {"object.__setattr__", "object.__delattr__"}
+        and len(args) >= 2
+        and args[1] in _BLOCKED_FUNCTION_ATTRIBUTES
+    ):
+        raise RuntimeError(
+            f"worker function mutation is disabled at the scoring boundary ({args[1]}). "
+            "Next action: remove runtime mutation of pytest hooks from the solution and "
+            "rerun."
+        )
 
 
 def _install_worker_integrity_guard(config: pytest.Config) -> None:
-    """Freeze new plugin registration before workspace test modules are imported."""
+    """Freeze plugin registration and function mutation before solution import."""
     global _WORKER_GUARD_INSTALLED
     if _WORKER_GUARD_INSTALLED:
         return
