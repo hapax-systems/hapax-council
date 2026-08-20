@@ -4070,9 +4070,7 @@ def _cas_rollback(projection: FileProjection, scratch: _ProjectionScratch) -> bo
         if scratch.kind == "create" and projection.before is None:
             try:
                 dest_stat = os.stat(name, dir_fd=dir_fd, follow_symlinks=False)
-                scratch_stat = os.stat(
-                    scratch.path.name, dir_fd=dir_fd, follow_symlinks=False
-                )
+                scratch_stat = os.stat(scratch.path.name, dir_fd=dir_fd, follow_symlinks=False)
             except FileNotFoundError:
                 dest_stat = None
             else:
