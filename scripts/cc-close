@@ -92,7 +92,18 @@ set +e
 (
   cd "$SCRIPT_DIR/.."
   HAPAX_AGENT_ROLE="$role" HAPAX_SESSION_ID="$session_id" \
-    "$PROJECT_PYTHON" -I -m shared.sdlc_close "${close_args[@]}"
+    "$PROJECT_PYTHON" -I - "$SCRIPT_DIR/.." "${close_args[@]}" <<'PYEOF'
+import sys
+from pathlib import Path
+
+repo_root = Path(sys.argv[1]).resolve()
+if str(repo_root) not in sys.path:
+    sys.path.insert(0, str(repo_root))
+
+from shared.sdlc_close import main
+
+raise SystemExit(main(sys.argv[2:]))
+PYEOF
 )
 close_rc=$?
 set -e

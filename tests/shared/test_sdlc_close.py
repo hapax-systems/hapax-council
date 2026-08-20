@@ -583,6 +583,108 @@ def test_terminal_close_real_ingress_holds_legacy_claim_publication(
     assert "legacy_claim_publication_consumption_required" in str(raised.value)
 
 
+def _gate0b_journal(home: Path, *, digest: str = "a" * 64) -> Path:
+    from shared.gate0b_claim_publication_install import default_claim_publication_roots
+
+    root = Path(default_claim_publication_roots(home=home).claim_transaction_root)
+    journal = root / f"claim-pub-{digest}"
+    journal.mkdir(parents=True)
+    journal.chmod(0o700)
+    (journal / "manifest.json").write_bytes(b"{}\n")
+    (journal / "manifest.json").chmod(0o600)
+    return root
+
+
+class _LifecycleComplete:
+    scope_complete = True
+    reason_codes: tuple[str, ...] = ()
+
+
+def _probe_close_observation_roots(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> dict[str, object]:
+    home = tmp_path / "home"
+    cache = tmp_path / "cache"
+    vault = tmp_path / "vault"
+    monkeypatch.setenv("HOME", str(home))
+    recorded: dict[str, object] = {}
+
+    def inspect_spy(**kwargs: object) -> tuple[object, ...]:
+        recorded["inspect"] = kwargs
+        return ()
+
+    def resolve_spy(**kwargs: object) -> object:
+        recorded["resolve"] = kwargs
+        raise sdlc_claim.ClaimPublicationError("probe_resolve", "probe", "probe")
+
+    monkeypatch.setattr(
+        sdlc_close, "inspect_lifecycle_transactions", lambda **_: _LifecycleComplete()
+    )
+    monkeypatch.setattr(sdlc_close, "inspect_claim_publications", inspect_spy)
+    monkeypatch.setattr(sdlc_close, "resolve_applied_claim_publication", resolve_spy)
+    with pytest.raises(TerminalCloseError) as raised:
+        close_task(
+            "task-observe-root",
+            actor="alpha",
+            session_id="session-observe",
+            vault_root=vault,
+            cache_dir=cache,
+        )
+    recorded["reason"] = raised.value.reason_code
+    recorded["cache"] = cache
+    recorded["home"] = home
+    return recorded
+
+
+def test_close_task_observes_gate0b_journal_root_when_admitted_journal_exists(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.delenv("HAPAX_GATE0B_CLAIM_PUBLICATION_OFF", raising=False)
+    home = tmp_path / "home"
+    monkeypatch.setenv("HOME", str(home))
+    gate0b = _gate0b_journal(home)
+    recorded = _probe_close_observation_roots(tmp_path, monkeypatch)
+    inspect_kwargs = recorded["inspect"]
+    resolve_kwargs = recorded["resolve"]
+    assert recorded["reason"] == "probe_resolve"
+    assert inspect_kwargs["transaction_root"] == gate0b
+    assert resolve_kwargs["transaction_root"] == gate0b
+    assert inspect_kwargs["cache_dir"] == recorded["cache"]
+
+
+def test_close_task_observes_cache_journal_root_when_gate0b_has_no_journal(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.delenv("HAPAX_GATE0B_CLAIM_PUBLICATION_OFF", raising=False)
+    recorded = _probe_close_observation_roots(tmp_path, monkeypatch)
+    cache = recorded["cache"]
+    inspect_kwargs = recorded["inspect"]
+    resolve_kwargs = recorded["resolve"]
+    assert recorded["reason"] == "probe_resolve"
+    assert inspect_kwargs["transaction_root"] == cache / "claim-publications"
+    assert resolve_kwargs["transaction_root"] == cache / "claim-publications"
+
+
+def test_close_task_killswitch_observes_cache_journal_root_even_with_gate0b_journal(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("HAPAX_GATE0B_CLAIM_PUBLICATION_OFF", "1")
+    home = tmp_path / "home"
+    monkeypatch.setenv("HOME", str(home))
+    _gate0b_journal(home, digest="c" * 64)
+    recorded = _probe_close_observation_roots(tmp_path, monkeypatch)
+    cache = recorded["cache"]
+    inspect_kwargs = recorded["inspect"]
+    resolve_kwargs = recorded["resolve"]
+    assert inspect_kwargs["transaction_root"] == cache / "claim-publications"
+    assert resolve_kwargs["transaction_root"] == cache / "claim-publications"
+    assert recorded["reason"] in {"probe_resolve", "task_note_not_found"}
+
+
 def test_terminal_close_real_ingress_holds_pre_gate0_claim_root(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -600,6 +702,56 @@ def test_terminal_close_real_ingress_holds_pre_gate0_claim_root(
     assert raised.value.reason_code == "canon_pre_gate0_claim_migration_required"
     assert fixture.note.is_file()
     assert not (fixture.vault / "closed" / fixture.note.name).exists()
+
+
+def test_terminal_close_creates_missing_closed_directory(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    fixture = _fixture(tmp_path, monkeypatch)
+    _inject_trusted_echo_projection(fixture, monkeypatch)
+    closed_dir = fixture.vault / "closed"
+    for child in closed_dir.iterdir():
+        child.unlink()
+    closed_dir.rmdir()
+
+    result = _close(fixture)
+
+    assert result.applied_event_id.endswith(".applied")
+    assert (fixture.vault / "closed" / fixture.note.name).is_file()
+
+
+def test_terminal_close_applies_when_lifecycle_effects_are_default_deny(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    fixture = _fixture(tmp_path, monkeypatch)
+    _inject_trusted_echo_projection(fixture, monkeypatch)
+    monkeypatch.setattr(coord_projection, "_LIFECYCLE_EFFECT_ACTIVATION", False)
+
+    result = _close(fixture)
+
+    assert result.applied_event_id.endswith(".applied")
+    assert (fixture.vault / "closed" / fixture.note.name).is_file()
+
+
+def test_killswitch_close_does_not_hold_pre_gate0_echo_stub(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    fixture = _fixture(tmp_path, monkeypatch)
+    _inject_trusted_echo_projection(fixture, monkeypatch)
+    monkeypatch.setenv("HAPAX_GATE0B_CLAIM_PUBLICATION_OFF", "1")
+    monkeypatch.setattr(
+        sdlc_close,
+        "resolve_claim_bound_canon_position",
+        _REAL_CLAIM_POSITION_RESOLVER,
+    )
+
+    result = _close(fixture)
+
+    assert result.applied_event_id.endswith(".applied")
+    assert (fixture.vault / "closed" / fixture.note.name).is_file()
 
 
 def test_terminal_close_recovers_complete_postimage_after_crash(
@@ -814,9 +966,10 @@ def test_debt_close_is_not_wedged_and_touches_no_state(tmp_path: Path) -> None:
 _REPO_ROOT = Path(__file__).resolve().parents[2]
 _ALLOWLIST = _REPO_ROOT / "config" / "new-module-allowlist.json"
 
-# Only the entries THIS landing added. The pre-existing ones are not this PR's
-# to police, and asserting on them would couple these tests to unrelated churn.
-_GATE0A_DORMANT_MODULES = ("shared.sdlc_close", "shared.methodology_dispatch_carrier")
+# Only the entries THIS landing added. shared.sdlc_close left the dormant set
+# when slice-2 re-landed cc-close onto it. methodology_dispatch_carrier is still
+# Gate-0A dormant. Pre-existing allowlist rows are not this PR's to police.
+_GATE0A_DORMANT_MODULES = ("shared.methodology_dispatch_carrier",)
 _SOURCE_DIRS = ("shared", "scripts", "agents", "hooks")
 
 

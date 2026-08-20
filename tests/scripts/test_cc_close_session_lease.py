@@ -1,13 +1,10 @@
-"""cc-close must clear the session-keyed lease, not just the legacy one.
+"""Unclaimed cc-close must not clear leases. Successful typed close still does.
 
-cc-claim (reform Phase 1, cluster 6) writes TWO claim files for a session:
-the legacy ``cc-active-task-<role>`` and the session-keyed
-``cc-active-task-<role>-<session_id>`` (agent-role.sh ``hapax_session_id``).
-cc-close historically removed only the legacy file, leaking the session-keyed
-lease until its 6h TTL — and the gate reads the session-keyed file FIRST, so it
-kept seeing the just-closed task. Regression coverage for reform finding
-#12/#13: cc-close must clear BOTH lease forms (the current session's only, and
-only when the file still names the task being closed).
+cc-claim writes both ``cc-active-task-<role>`` and
+``cc-active-task-<role>-<session_id>``. The bash rewriter cleared those files
+even without a claim publication. Slice-2 close is claim-bound: no publication,
+no mutation, including leases. Dual-lease clearing on a successful close is
+pinned by ``test_done_close_projects_every_terminal_surface_atomically``.
 """
 
 from __future__ import annotations
@@ -20,10 +17,6 @@ from pathlib import Path
 REPO_ROOT = Path(__file__).resolve().parents[2]
 SCRIPT = REPO_ROOT / "scripts" / "cc-close"
 
-# Identity env that agent-role.sh consults to resolve role / session id. The
-# session running pytest sets several of these (HAPAX_AGENT_NAME, CLAUDE_ROLE,
-# CLAUDE_CODE_SESSION_ID, ...); stripping them keeps the subprocess role/session
-# deterministic instead of leaking the harness lane's identity into the script.
 _IDENTITY_ENV = (
     "HAPAX_AGENT_NAME",
     "HAPAX_AGENT_ROLE",
@@ -86,9 +79,6 @@ def _run_close(
     env["HAPAX_AGENT_ROLE"] = role
     if session_id is not None:
         env["HAPAX_SESSION_ID"] = session_id
-    # --status withdrawn isolates the claim-clearing block (the done-only gates —
-    # rapid-close, AC checklist, PR-merge — are skipped; the claim clear runs for
-    # every terminal status).
     return subprocess.run(
         ["bash", str(SCRIPT), task_id, "--status", "withdrawn"],
         env=env,
@@ -98,7 +88,7 @@ def _run_close(
     )
 
 
-def test_cc_close_clears_both_legacy_and_session_keyed_lease(tmp_path: Path) -> None:
+def test_unclaimed_close_refuses_and_does_not_clear_leases(tmp_path: Path) -> None:
     home = tmp_path / "home"
     vault = _vault(home)
     _write_task(vault, "foo")
@@ -114,16 +104,15 @@ def test_cc_close_clears_both_legacy_and_session_keyed_lease(tmp_path: Path) -> 
 
     result = _run_close(home, "foo", role="eta", session_id="sess123")
 
-    assert result.returncode == 0, result.stderr
-    assert not legacy.exists(), f"legacy lease not cleared\nstdout={result.stdout}"
-    assert not legacy_sidecar.exists(), f"legacy epoch sidecar leaked\nstdout={result.stdout}"
-    assert not session.exists(), (
-        f"session-keyed lease leaked (finding #12/#13)\nstdout={result.stdout}"
-    )
-    assert not session_sidecar.exists(), f"session epoch sidecar leaked\nstdout={result.stdout}"
+    assert result.returncode != 0
+    assert "REFUSED" in result.stderr
+    assert legacy.read_text(encoding="utf-8") == "foo\n"
+    assert session.read_text(encoding="utf-8") == "foo\n"
+    assert legacy_sidecar.read_text(encoding="utf-8") == "1780000000 foo\n"
+    assert session_sidecar.read_text(encoding="utf-8") == "1780000000 foo\n"
 
 
-def test_cc_close_preserves_session_lease_naming_a_different_task(
+def test_unclaimed_close_preserves_session_lease_naming_a_different_task(
     tmp_path: Path,
 ) -> None:
     home = tmp_path / "home"
@@ -137,13 +126,14 @@ def test_cc_close_preserves_session_lease_naming_a_different_task(
 
     result = _run_close(home, "foo", role="eta", session_id="sess123")
 
-    assert result.returncode == 0, result.stderr
-    assert session.exists(), "a session lease for different work must not be clobbered"
-    assert sidecar.exists(), "a sidecar for different work must not be clobbered"
+    assert result.returncode != 0
     assert session.read_text(encoding="utf-8").strip() == "other-task"
+    assert sidecar.read_text(encoding="utf-8").strip() == "1780000000 other-task"
 
 
-def test_cc_close_without_session_id_still_clears_legacy(tmp_path: Path) -> None:
+def test_close_without_session_id_refuses_and_does_not_clear_legacy(
+    tmp_path: Path,
+) -> None:
     home = tmp_path / "home"
     vault = _vault(home)
     _write_task(vault, "foo")
@@ -153,5 +143,6 @@ def test_cc_close_without_session_id_still_clears_legacy(tmp_path: Path) -> None
 
     result = _run_close(home, "foo", role="eta", session_id=None)
 
-    assert result.returncode == 0, result.stderr
-    assert not legacy.exists(), f"legacy lease not cleared\nstdout={result.stdout}"
+    assert result.returncode == 2
+    assert "terminal_close_identity_missing" in result.stderr
+    assert legacy.read_text(encoding="utf-8") == "foo\n"
