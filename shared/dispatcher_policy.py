@@ -484,6 +484,13 @@ class DimensionalRouteReceipt(_PolicyModel):
     #: states: a tree whose `git status` failed is not a clean tree. Consumers must test
     #: `is False`, never falsiness.
     adjudicator_dirty: bool | None = None
+    #: True when the bytes this process LOADED match the blob `adjudicator_sha` records at that
+    #: path; False when they differ; None when it could not be checked. The other fields are
+    #: measured when the receipt is written, which can be long after the code was loaded — a
+    #: tree can be modified, run, and restored to a clean HEAD, leaving `adjudicator_dirty`
+    #: False and the sha pointing at a commit that never executed. Only this field speaks to
+    #: load time, so `record_has_usable_adjudicator` requires it `is True`.
+    adjudicator_source_matches_head: bool | None = None
     #: What the deploy PATH claimed, kept beside the verified sha because they can disagree.
     #: Release trees on this estate are writable git checkouts, so a directory name is a
     #: claim; the live tree `45086a03…` carried a modified file while its path asserted a

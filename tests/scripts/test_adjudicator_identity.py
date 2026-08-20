@@ -149,6 +149,55 @@ def test_identity_is_resolved_from_the_module_not_the_symlink() -> None:
     assert id_a.resolved_from != id_b.resolved_from
 
 
+def _make_checkout(root: Path, content: str) -> Path:
+    """A real git checkout with one commit, returning the module path inside it."""
+    root.mkdir(parents=True)
+    run = lambda *a: subprocess.run(  # noqa: E731 - terse local helper, not exported
+        ["git", "-C", str(root), *a], check=True, capture_output=True
+    )
+    run("init", "-q")
+    run("config", "user.email", "test@example.invalid")
+    run("config", "user.name", "test")
+    module = root / "shared" / "adjudicator_identity.py"
+    module.parent.mkdir(parents=True)
+    module.write_text(content)
+    run("add", "-A")
+    run("commit", "-q", "-m", content)
+    return module
+
+
+def test_two_real_trees_are_distinguishable_by_the_verified_sha(tmp_path: Path) -> None:
+    """Raised by codex-1: the test above pins `declared_sha`, not `adjudicator_sha`.
+
+    The exit predicate requires two records from different trees to be distinguishable **by
+    adjudicator_sha**. The path-only test cannot witness that — its trees are unverifiable, so
+    both shas are None, and `None != None` is false anyway. It demonstrated a real but different
+    property while leaving the required one unevidenced.
+
+    This builds two actual checkouts with different commits, so the field under the predicate is
+    the field under assertion.
+    """
+    module_a = _make_checkout(tmp_path / "tree-a", "# tree a\n")
+    module_b = _make_checkout(tmp_path / "tree-b", "# tree b\n")
+
+    id_a = adjudicator_identity(str(module_a))
+    adjudicator_identity.cache_clear()
+    id_b = adjudicator_identity(str(module_b))
+
+    assert SHA_RE.match(id_a.sha or ""), "a real checkout must yield a verified sha"
+    assert SHA_RE.match(id_b.sha or "")
+    assert id_a.sha != id_b.sha, (
+        "two decisions produced from different trees must be distinguishable by adjudicator_sha "
+        "— the predicate's actual requirement"
+    )
+    assert id_a.source == id_b.source == "git_worktree"
+    assert id_a.dirty is False and id_b.dirty is False, "freshly committed trees are clean"
+    assert id_a.source_matches_head is None, (
+        "an explicitly supplied module_file was never loaded by this process, so the strongest "
+        "claim must stay unknown rather than being minted by a fixture"
+    )
+
+
 def test_a_real_checkout_resolves_to_its_verified_head() -> None:
     """Assert unconditionally against the environment's actual state.
 
@@ -223,6 +272,7 @@ def test_receipt_shape_is_serializable_and_complete() -> None:
         "adjudicator_source",
         "adjudicator_resolved_from",
         "adjudicator_dirty",
+        "adjudicator_source_matches_head",
         "adjudicator_declared_sha",
     }
     assert json.loads(json.dumps(receipt)) == receipt
@@ -255,18 +305,53 @@ def test_a_basis_name_constant_does_not_satisfy_the_check() -> None:
                 "adjudicator_sha": "a" * 40,
                 "adjudicator_source": "release_tree",
                 "adjudicator_dirty": False,
+                "adjudicator_source_matches_head": True,
             },
             True,
-            "verified sha over a tree verified clean",
+            "verified sha over a clean tree whose loaded source matches that commit",
         ),
         (
             {
                 "adjudicator_sha": "a" * 40,
                 "adjudicator_source": "git_worktree",
                 "adjudicator_dirty": False,
+                "adjudicator_source_matches_head": True,
             },
             True,
-            "verified sha over a tree verified clean",
+            "verified sha over a clean tree whose loaded source matches that commit",
+        ),
+        (
+            {
+                "adjudicator_sha": "a" * 40,
+                "adjudicator_source": "release_tree",
+                "adjudicator_dirty": False,
+            },
+            False,
+            "raised by codex-1 as 'identity is measured from a mutable checkout after code "
+            "load': every other field is measured when the receipt is WRITTEN, so a tree can "
+            "be modified, run, and restored to a clean HEAD — dirty False, sha pointing at a "
+            "commit that never executed. A record that never checked its loaded source against "
+            "that commit has not answered the question, and absence is not a pass",
+        ),
+        (
+            {
+                "adjudicator_sha": "a" * 40,
+                "adjudicator_source": "release_tree",
+                "adjudicator_dirty": False,
+                "adjudicator_source_matches_head": None,
+            },
+            False,
+            "could-not-check is not checked-and-matched",
+        ),
+        (
+            {
+                "adjudicator_sha": "a" * 40,
+                "adjudicator_source": "release_tree",
+                "adjudicator_dirty": False,
+                "adjudicator_source_matches_head": False,
+            },
+            False,
+            "the process is executing code the claimed commit does not contain",
         ),
         (
             {
@@ -341,11 +426,42 @@ def test_a_failed_git_status_does_not_report_a_clean_tree(monkeypatch) -> None:
     )
 
 
+#: The shape of a route decision as written for the 559 records preceding this change: an
+#: adjudicator field that exists in name and carries zero bits. Held here, in the repo, because
+#: the live stream below is operator-local — raised by codex-1: a test that skips when the
+#: ledger is absent cannot durably witness the claim it exists to witness, so CI would have
+#: had no evidence for the central negative case at all.
+LEGACY_ROUTE_DECISION_SHAPES = [
+    {"routing_model_version": "capacity-dimensional-v1", "task_id": "t-1", "decision": "route"},
+    {"routing_model_version": "capacity-dimensional-v1", "task_id": "t-2", "blocked": True},
+    {"routing_model_version": "capacity-dimensional-v1", "adjudicator_sha": None},
+    {"routing_model_version": "capacity-dimensional-v1", "adjudicator_sha": ""},
+]
+
+
+def test_no_legacy_route_decision_shape_can_pass_the_check() -> None:
+    """The negative case, witnessed in CI rather than only on the operator's host.
+
+    Every one of these is a real historical shape: `routing_model_version` present on 559 of 559
+    records carrying the constant `"capacity-dimensional-v1"`, and none of the 48 keys holding a
+    40-hex sha. If any of them passes, the check has stopped distinguishing "an adjudicator
+    field exists" from "the adjudicator is known", which is the entire distinction it draws.
+    """
+    assert LEGACY_ROUTE_DECISION_SHAPES, "an empty fixture would make this test vacuous"
+    for record in LEGACY_ROUTE_DECISION_SHAPES:
+        assert not record_has_usable_adjudicator(record), record
+
+
 def test_live_route_decisions_are_measured_not_assumed() -> None:
     """Run the check over the real historical stream, if present on this host.
 
     This is what makes the negative case evidence rather than assertion: the existing records
     were written before this field existed, so they must fail the check.
+
+    Scoped to records that PREDATE the field — those with no `adjudicator_sha` key. Asserting
+    that nothing in the stream is identified would be correct today and wrong the moment this
+    lands, because the deployed spine will then write records that legitimately pass; a test
+    that must be deleted to let the feature work is not a guard, it is a countdown.
     """
     stream = Path.home() / ".cache" / "hapax" / "orchestration" / "route-decisions.jsonl"
     if not stream.is_file():
@@ -355,10 +471,11 @@ def test_live_route_decisions_are_measured_not_assumed() -> None:
     if not records:
         pytest.skip("route-decision stream is empty")
 
-    identified = [r for r in records if record_has_usable_adjudicator(r)]
-    assert len(identified) < len(records), (
-        "every historical record predates this field; if they all pass, the check is not "
-        "checking anything"
+    legacy = [r for r in records if "adjudicator_sha" not in r]
+    identified_legacy = [r for r in legacy if record_has_usable_adjudicator(r)]
+    assert identified_legacy == [], (
+        f"{len(identified_legacy)} of {len(legacy)} records that predate this field were "
+        "reported as carrying a usable adjudicator identity"
     )
 
 
@@ -473,6 +590,126 @@ def test_determination_run_record_carries_the_adjudicator() -> None:
     assert record["provenance"] == "mechanical", (
         "provenance and adjudicator answer different questions and must both survive"
     )
+
+
+def _load_determine():
+    """Import the extensionless `scripts/hapax-determine` as a module."""
+    import importlib.machinery
+    import importlib.util
+
+    loader = importlib.machinery.SourceFileLoader(
+        "hapax_determine_under_test", str(REPO_ROOT / "scripts" / "hapax-determine")
+    )
+    spec = importlib.util.spec_from_loader(loader.name, loader)
+    assert spec is not None
+    module = importlib.util.module_from_spec(spec)
+    loader.exec_module(module)
+    return module
+
+
+def _registry_with_one_producer(tmp_path: Path) -> Path:
+    registry = tmp_path / "producers.json"
+    registry.write_text(
+        json.dumps(
+            {
+                "producers": [
+                    {
+                        "id": "probe",
+                        "property": "p",
+                        "subjects": [],
+                        "provenance": "mechanical",
+                        "command": ["/bin/true"],
+                        "cadence_seconds": 300,
+                        "evidence_ttl_seconds": 3600,
+                    }
+                ]
+            }
+        )
+    )
+    return registry
+
+
+def test_main_reports_unidentified_runs_in_its_json_payload(tmp_path: Path, capsys) -> None:
+    """Raised by codex-1: the new behaviour had no test through `main` at all.
+
+    `run_producer` was covered, but the payload key, both branches of the usable/unusable
+    partition, and the stderr diagnostic were reachable only in production. A field nothing
+    exercises end to end is the estate's characteristic failure, and shipping it inside the
+    change that exists to name that failure would have been the sharpest possible instance.
+    """
+    module = _load_determine()
+    rc = module.main(
+        [
+            "--registry",
+            str(_registry_with_one_producer(tmp_path)),
+            "--run-ledger",
+            str(tmp_path / "runs.jsonl"),
+            "--force",
+            "--json",
+        ]
+    )
+    payload = json.loads(capsys.readouterr().out)
+
+    assert rc == 0
+    assert [r["producer_id"] for r in payload["ran"]] == ["probe"]
+    assert "unidentified_runs" in payload, "the key must exist even when the list is empty"
+    ran = payload["ran"][0]
+    assert (ran["producer_id"] in payload["unidentified_runs"]) is (
+        not record_has_usable_adjudicator(ran)
+    ), "the payload must partition exactly on the usability check, not approximate it"
+
+
+def test_main_names_an_unidentifiable_run_on_stderr(tmp_path: Path, capsys, monkeypatch) -> None:
+    """The text branch must say WHICH run it cannot attribute, and still exit 0.
+
+    An unidentifiable run is a diagnostic, not a veto — refusing to record it would lose the
+    evidence entirely. So the guard here is that the run is still reported and the exit code is
+    unchanged, while the operator is told the receipt cannot distinguish a repair from a
+    redeploy.
+    """
+    module = _load_determine()
+    monkeypatch.setattr(module, "record_has_usable_adjudicator", lambda record: False)
+
+    rc = module.main(
+        [
+            "--registry",
+            str(_registry_with_one_producer(tmp_path)),
+            "--run-ledger",
+            str(tmp_path / "runs.jsonl"),
+            "--force",
+        ]
+    )
+    captured = capsys.readouterr()
+
+    assert rc == 0, "an unattributable run is still a run; this is a diagnostic, not a veto"
+    assert "probe: produced" in captured.out, "the run must still be reported"
+    assert "UNIDENTIFIED probe" in captured.err
+    assert "repair from a redeploy" in captured.err
+
+
+def test_main_is_silent_when_every_run_is_identified(tmp_path: Path, capsys, monkeypatch) -> None:
+    """The other branch — otherwise the test above passes against a hardcoded warning.
+
+    Paired deliberately: a diagnostic that fires unconditionally is indistinguishable from one
+    that fires correctly, and only the pair can tell them apart.
+    """
+    module = _load_determine()
+    monkeypatch.setattr(module, "record_has_usable_adjudicator", lambda record: True)
+
+    rc = module.main(
+        [
+            "--registry",
+            str(_registry_with_one_producer(tmp_path)),
+            "--run-ledger",
+            str(tmp_path / "runs.jsonl"),
+            "--force",
+        ]
+    )
+    captured = capsys.readouterr()
+
+    assert rc == 0
+    assert "probe: produced" in captured.out
+    assert "UNIDENTIFIED" not in captured.err
 
 
 def test_identity_is_stable_within_a_process() -> None:

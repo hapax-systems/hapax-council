@@ -49,6 +49,21 @@ so containment is checked against the root the activator itself writes
 (``HAPAX_SOURCE_ACTIVATE_STATE_DIR``, ``scripts/hapax-source-activate:34``). The same layout
 elsewhere carries no claim at all.
 
+## The claim is about load time; every measurement happens later
+
+Raised by codex-1 in review, and the deepest form of this module's own subject. Resolving from
+``__file__`` fixes *which tree* is measured, but not *when*. The first measurement happens when
+a receipt is written, which can be arbitrarily long after the process loaded its code. In
+between, a tree can be modified, executed, and restored to a clean HEAD — at which point
+``dirty`` reports False, ``sha`` reports the clean commit, and the receipt confidently
+attributes the decision to code that never ran. Checkouts, rebases and lazy imports all open
+the same window, and since release trees here are writable it is not theoretical.
+
+So this module hashes its own source at IMPORT — the moment those bytes became the running
+code — and ``source_matches_head`` reports whether that hash equals the blob the claimed commit
+records at that path. It is the one field that speaks to load time; ``dirty`` still speaks for
+the rest of the tree, at measurement time. ``record_has_usable_adjudicator`` requires it.
+
 ## Indeterminate is a state, not a default
 
 Following the same rule established for supply freshness in this package: when the identity
@@ -59,6 +74,7 @@ a decision to the wrong tree is worse than one that says it does not know.
 
 from __future__ import annotations
 
+import hashlib
 import os
 import re
 import subprocess
@@ -110,6 +126,27 @@ def _declared_release_sha(resolved: Path) -> str | None:
     return head if _SHA_RE.fullmatch(head) else None
 
 
+def _sha256_of(data: bytes) -> str:
+    return hashlib.sha256(data).hexdigest()
+
+
+def _read_own_source() -> str | None:
+    """sha256 of this module's file, read at IMPORT — the moment its bytes became the code.
+
+    Every other measurement in this module happens when a receipt is written, which can be
+    arbitrarily long after the process loaded its code. This is the one value captured at load,
+    so it is the only anchor a later measurement can be checked against.
+    """
+    try:
+        return _sha256_of(Path(__file__).resolve().read_bytes())
+    except OSError:
+        return None
+
+
+#: Captured at import. See ``_read_own_source``.
+_LOADED_SOURCE_SHA256 = _read_own_source()
+
+
 AdjudicatorSource = Literal["release_tree", "git_worktree", "indeterminate"]
 
 
@@ -130,6 +167,21 @@ class AdjudicatorIdentity:
     #: Three states, not two: an unmeasurable tree is not a clean one. Test ``is False``, never
     #: falsiness, or None silently reads as clean and the sha claims more than it knows.
     dirty: bool | None = None
+    #: Does the source that was LOADED still match what ``sha`` claims?
+    #:
+    #: True when this module's bytes, hashed at import, equal the blob the reported commit
+    #: records at this path. False when they demonstrably differ — the process is executing code
+    #: the claimed commit does not contain. **None when it could not be checked**, which
+    #: includes every path where there is no commit to check against.
+    #:
+    #: Raised by codex-1 in review, and the deepest form of this module's own subject. Every
+    #: other measurement here happens when a receipt is WRITTEN; the claim being made is about
+    #: when the code was LOADED. Between the two, a tree can be modified, executed, and then
+    #: restored to a clean HEAD — at which point ``dirty`` reports False, ``sha`` reports the
+    #: clean commit, and the receipt confidently attributes the decision to code that never ran.
+    #: Verifying the loaded bytes against the commit closes that window for this module's own
+    #: source; ``dirty`` still speaks for the rest of the tree, at measurement time.
+    source_matches_head: bool | None = None
     #: For a release tree, the sha its PATH claims. Recorded separately from ``sha`` because
     #: they can disagree: release trees on this estate are git checkouts and are WRITABLE, so
     #: the directory name is a claim, not a proof. Measured 2026-08-20: the live release tree
@@ -153,6 +205,7 @@ class AdjudicatorIdentity:
             "adjudicator_source": self.source,
             "adjudicator_resolved_from": self.resolved_from,
             "adjudicator_dirty": self.dirty,
+            "adjudicator_source_matches_head": self.source_matches_head,
             "adjudicator_declared_sha": self.declared_sha,
         }
 
@@ -177,7 +230,13 @@ def record_has_usable_adjudicator(record: Mapping[str, object]) -> bool:
         return False
     if source not in ("release_tree", "git_worktree"):
         return False
-    return record.get("adjudicator_dirty") is False
+    if record.get("adjudicator_dirty") is not False:
+        return False
+    # The loaded source must match the commit being claimed, not merely coexist with it. Both
+    # tests are `is True`/`is False` rather than falsiness, because the absent field and the
+    # unknown value are the same thing here — an older record that predates this check has not
+    # passed it, and must not inherit a pass from a missing key.
+    return record.get("adjudicator_source_matches_head") is True
 
 
 def _git_head(tree: Path) -> tuple[str | None, bool | None]:
@@ -220,6 +279,39 @@ def _git_head(tree: Path) -> tuple[str | None, bool | None]:
         return (None, None)
 
 
+def _loaded_source_matches(
+    tree: Path, head: str, resolved: Path, is_own_source: bool
+) -> bool | None:
+    """Is the source that was loaded the source the commit records?
+
+    Returns None when the question cannot be answered rather than guessing either way. That
+    includes the case that matters most for honesty: when ``adjudicator_identity`` was called
+    with an explicit ``module_file``, the bytes hashed at import belong to a DIFFERENT file, so
+    there is nothing here to verify and the answer is unknown — not True.
+    """
+    if not is_own_source or _LOADED_SOURCE_SHA256 is None:
+        return None
+    try:
+        relative = resolved.relative_to(tree)
+    except ValueError:
+        return None
+    try:
+        blob = subprocess.run(
+            ["git", "-C", str(tree), "cat-file", "blob", f"{head}:{relative.as_posix()}"],
+            capture_output=True,
+            timeout=5,
+            check=False,
+        )
+    except (OSError, subprocess.SubprocessError):
+        return None
+    if blob.returncode != 0:
+        # The commit does not contain this path at all — a new file not yet committed, or a
+        # tree that does not correspond. Unknown, not False: "cannot look it up" and "looked it
+        # up and it differs" are different claims, and only the second justifies an alarm.
+        return None
+    return _sha256_of(blob.stdout) == _LOADED_SOURCE_SHA256
+
+
 @lru_cache(maxsize=1)
 def adjudicator_identity(module_file: str | None = None) -> AdjudicatorIdentity:
     """Identify the code this process is running.
@@ -228,11 +320,14 @@ def adjudicator_identity(module_file: str | None = None) -> AdjudicatorIdentity:
     relocated mid-run. That is the same property that makes ``__file__`` the correct source
     and the symlink the incorrect one.
 
-    ``module_file`` exists for tests; production callers pass nothing.
+    ``module_file`` exists for tests; production callers pass nothing. When it IS supplied the
+    identity describes a path this process never loaded, so ``source_matches_head`` stays None:
+    a test fixture must not be able to mint the strongest available claim.
     """
     resolved = Path(module_file or __file__).resolve()
     text = str(resolved)
     declared = _declared_release_sha(resolved)
+    is_own_source = module_file is None
 
     # Find the enclosing checkout, if any. The module lives at <root>/shared/<file>.py, but a
     # symlinked or relocated layout should still resolve rather than silently degrade.
@@ -249,6 +344,9 @@ def adjudicator_identity(module_file: str | None = None) -> AdjudicatorIdentity:
                     source="release_tree" if declared else "git_worktree",
                     resolved_from=text,
                     dirty=dirty,
+                    source_matches_head=_loaded_source_matches(
+                        candidate, head, resolved, is_own_source
+                    ),
                     declared_sha=declared,
                 )
             break
