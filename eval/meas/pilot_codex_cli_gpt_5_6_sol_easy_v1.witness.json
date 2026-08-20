@@ -52,10 +52,11 @@
       "driver_codex_cli/v1 did not sandbox the deterministic exit predicate",
       "provider-managed model weights, serving version, and quantization are not independently published"
     ],
-    "superseded_safety_contract": "Use driver_codex_cli/v8 for future measurements; this witness preserves the already-completed v1 result only. v8 externally confines agent reads, denies credential reads to model tools through a synthetic permission profile, confines post-agent Git, scores a filtered diff in a clean parent checkout, disables conftest loading in the attestation controller, and runs model-authored solution code plus trusted scoring conftests only in an isolated xdist worker.",
-    "verifier_contract": "The backward-compatible --verify-result implementation in driver_codex_cli/v8 verifies this exact v1 witness's seals and internal consistency without re-executing the historical provider run; tests/eval/test_driver_codex_cli.py invokes the committed witness recheck.",
+    "superseded_safety_contract": "Use driver_codex_cli/v9 for future measurements; this witness preserves the already-completed v1 result only. v9 externally confines agent reads, denies credential reads to model tools through a synthetic permission profile, confines post-agent Git, scores a filtered diff in a clean parent checkout, executes changed solution files only when they exactly match governed merge blobs, disables conftest loading in the attestation controller, and runs trusted parent/merge solution code plus trusted scoring conftests only in an isolated xdist worker.",
+    "verifier_contract": "The backward-compatible --verify-result implementation in driver_codex_cli/v9 verifies this exact v1 witness's seals and internal consistency without re-executing the historical provider run; tests/eval/test_driver_codex_cli.py invokes the committed witness recheck.",
+    "current_driver_measurement_status": "No provider-backed 19-cell pass rate has been measured for driver_codex_cli/v9; it is deferred to a separately authorized provider-spend follow-up tranche and the historical v1 rate is not a v9 performance claim.",
     "recheck": "uv run python eval/meas/driver_codex_cli.py --verify-result eval/meas/pilot_codex_cli_gpt_5_6_sol_easy_v1.witness.json",
-    "artifact_sha256": "a3ef0188f7ae3c24818500f530d82080f53bbe7983062fe95d171472780f42b6"
+    "artifact_sha256": "13f8b05e6aaf4d871bb3da286aaa5f3c4dbcd3f6ff343b8ca5872eced9cd5f55"
   },
   "selection": {
     "difficulty": "easy",

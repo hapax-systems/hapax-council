@@ -75,7 +75,8 @@ def _worker_setup_with_conftests(original_setup: Any) -> Any:
         if len(worker_args) != len(original_params.args) - 1:
             raise RuntimeError(
                 "xdist worker invocation did not contain exactly one controller-only "
-                "--noconftest flag"
+                "--noconftest flag. Next action: restore the locked pytest-xdist version "
+                "and rerun the predicate."
             )
         controller.config.invocation_params = pytest.Config.InvocationParams(
             args=worker_args,

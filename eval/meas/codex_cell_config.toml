@@ -17,4 +17,5 @@ extends = ":workspace"
 "." = "write"
 
 [permissions.meas-cell.network]
+# Denies model-tool network only; the outer Bubblewrap boundary owns provider-process networking.
 enabled = false

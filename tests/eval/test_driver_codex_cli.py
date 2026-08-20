@@ -194,6 +194,9 @@ def test_lambda_records_both_timeouts_and_predicate_sandbox() -> None:
         "runner_sha256": driver.attested_runner_sha256(),
         "sandbox": "bubblewrap",
         "sandbox_version": "bubblewrap 1.2",
+        "solution_execution_gate": (
+            "changed-files-exact-governed-merge-blobs;unchanged-files-parent-tree"
+        ),
         "timeout_seconds": driver.PREDICATE_TIMEOUT_SECONDS,
         "worker_conftest": "trusted-scoring-controls-enabled",
     }
@@ -557,6 +560,77 @@ def test_trusted_conftest_cannot_import_solution_code_in_controller(tmp_path: Pa
     assert result["returncode"] == 1
     assert result["completion_attested"] is True
     assert "1 failed" in result["output_tail"]
+
+
+@requires_bubblewrap
+def test_worker_report_forgery_is_rejected_before_solution_execution(tmp_path: Path) -> None:
+    repo, commits = _source_repo(tmp_path)
+    evaluator_called = False
+
+    def report_forging_executor(
+        *,
+        task: driver.Mapping[str, Any],
+        workdir: Path,
+        config: driver.CodexRunConfig,
+    ) -> dict[str, Any]:
+        del task
+        (workdir / "module.py").write_text(
+            "import inspect\n"
+            "import pytest\n\n"
+            "class ReportForger:\n"
+            "    @pytest.hookimpl(tryfirst=True, hookwrapper=True)\n"
+            "    def pytest_runtest_makereport(self, item, call):\n"
+            "        del item, call\n"
+            "        outcome = yield\n"
+            "        report = outcome.get_result()\n"
+            "        report.outcome = 'passed'\n"
+            "        report.longrepr = None\n\n"
+            "for frame_info in inspect.stack():\n"
+            "    config = frame_info.frame.f_locals.get('config')\n"
+            "    if hasattr(config, 'pluginmanager'):\n"
+            "        config.pluginmanager.register(ReportForger())\n"
+            "        break\n"
+            "VALUE = 0\n",
+            encoding="utf-8",
+        )
+        diff_record = driver.capture_cell_diff(workdir, commits.parent)
+        return {
+            "model": config.model,
+            "harness": driver.HARNESS_NAME,
+            "seconds": 0.1,
+            "transcript": {"returncode": 0, "timed_out": False},
+            **diff_record,
+        }
+
+    def forbidden_evaluator(
+        task: driver.Mapping[str, Any],
+        workdir: Path,
+        source_repo: Path,
+    ) -> dict[str, Any]:
+        del task, workdir, source_repo
+        nonlocal evaluator_called
+        evaluator_called = True
+        raise AssertionError("untrusted solution reached pytest")
+
+    record = driver.run_cell(
+        _task(),
+        repo=repo,
+        commits=commits,
+        executor=report_forging_executor,
+        evaluator=forbidden_evaluator,
+        binary_version="codex-cli test",
+        sandbox_version="bubblewrap test",
+    )
+
+    assert evaluator_called is False
+    assert record["cell_result"]["passed"] is False
+    assert record["cell_result"]["exit"]["returncode"] == driver.PROVENANCE_FAILURE_EXIT_CODE
+    assert record["cell_result"]["exit"]["completion_attested"] is False
+    assert record["cell_result"]["solution_provenance"]["matched"] is False
+    assert record["cell_result"]["solution_provenance"]["rejected_files"] == ["module.py"]
+    assert (
+        "do not execute its untrusted Python code" in record["cell_result"]["exit"]["output_tail"]
+    )
 
 
 @requires_bubblewrap
@@ -1138,6 +1212,7 @@ def test_provider_free_fixture_self_check_runs_full_scoring_path(
     assert result["returncode"] == 0
     assert result["completion_attested"] is True
     assert result["predicate_files"] == ["tests/test_module.py"]
+    assert result["solution_provenance_matched"] is True
 
 
 def test_committed_pilot_witness_rechecks_11_of_19() -> None:

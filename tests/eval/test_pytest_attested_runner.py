@@ -103,6 +103,31 @@ def test_controller_only_conftest_flag_is_removed_from_worker_args(tmp_path: Pat
     assert config.invocation_params is original_params
 
 
+@pytest.mark.parametrize(
+    "args",
+    [
+        ("tests/test_hidden.py", "-q"),
+        ("tests/test_hidden.py", "--noconftest", "--noconftest", "-q"),
+    ],
+)
+def test_worker_conftest_invocation_drift_has_next_action(
+    tmp_path: Path,
+    args: tuple[str, ...],
+) -> None:
+    original_params = runner.pytest.Config.InvocationParams(
+        args=args,
+        plugins=None,
+        dir=tmp_path,
+    )
+    config = SimpleNamespace(invocation_params=original_params)
+    setup = runner._worker_setup_with_conftests(lambda _controller: None)
+
+    with pytest.raises(RuntimeError, match=r"Next action: restore the locked pytest-xdist"):
+        setup(SimpleNamespace(config=config))
+
+    assert config.invocation_params is original_params
+
+
 def test_zero_collection_record_is_emitted_but_rejected(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -188,7 +213,7 @@ def test_predicate_command_has_no_writable_attestation_mount(
     assert "writable_mounts" not in observed
 
 
-def test_committed_v1_witness_runs_published_v8_verifier(
+def test_committed_v1_witness_runs_published_v9_verifier(
     capsys: pytest.CaptureFixture[str],
 ) -> None:
     witness = (

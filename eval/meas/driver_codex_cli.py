@@ -12,6 +12,7 @@ and emits a complete lambda configuration plus its content hash per cell.
 from __future__ import annotations
 
 import argparse
+import fnmatch
 import hashlib
 import importlib.metadata
 import json
@@ -39,11 +40,12 @@ DEFAULT_TIMEOUT_SECONDS = 900
 PREDICATE_TIMEOUT_SECONDS = 600
 GITHUB_REPO = "hapax-systems/hapax-council"
 HARNESS_NAME = "codex-cli-agentic"
-DRIVER_VERSION = "driver_codex_cli/v8"
+DRIVER_VERSION = "driver_codex_cli/v9"
+PROVENANCE_FAILURE_EXIT_CODE = 85
 DIRECT_API_35B_BASELINE = {"passed": 0, "total": 19, "pass_rate": 0.0}
 KNOWN_WITNESS_ARTIFACTS = {
     "1991e186b3699fa87667ac09963ef542ac3587dadc5b7e31be49afa3a9c2f03c": (
-        "a3ef0188f7ae3c24818500f530d82080f53bbe7983062fe95d171472780f42b6"
+        "13f8b05e6aaf4d871bb3da286aaa5f3c4dbcd3f6ff343b8ca5872eced9cd5f55"
     )
 }
 SCORING_DIFF_EXCLUDES = (
@@ -1539,6 +1541,9 @@ def lambda_config(
                 "runner_sha256": attested_runner_sha256(),
                 "sandbox": "bubblewrap",
                 "sandbox_version": sandbox_version,
+                "solution_execution_gate": (
+                    "changed-files-exact-governed-merge-blobs;unchanged-files-parent-tree"
+                ),
                 "timeout_seconds": PREDICATE_TIMEOUT_SECONDS,
                 "worker_conftest": "trusted-scoring-controls-enabled",
             },
@@ -1553,7 +1558,10 @@ def lambda_config(
             "uv_environment": "driver-interpreter-no-sync",
             "web_search": "disabled",
         },
-        "context_mode": "agentic-parent-checkout+clean-score-checkout+merge-tests-post-exec",
+        "context_mode": (
+            "agentic-parent-checkout+clean-score-checkout+trusted-source-provenance-gate+"
+            "merge-tests-post-exec"
+        ),
     }
 
 
@@ -1584,6 +1592,119 @@ def apply_agent_diff_for_scoring(workdir: Path, diff: str) -> None:
         workdir=workdir,
         input_text=diff,
     )
+
+
+def _scoring_path_excluded(raw_path: str) -> bool:
+    return any(fnmatch.fnmatchcase(raw_path, pattern) for pattern in SCORING_DIFF_EXCLUDES)
+
+
+def _trusted_merge_entry(repo: Path, merge: str, raw_path: str) -> tuple[str, bytes] | None:
+    result = _run_text(
+        ["git", "-C", str(repo), "ls-tree", "-z", merge, "--", raw_path],
+        timeout=120,
+    )
+    if result.returncode != 0:
+        raise DriverError(
+            f"cannot inspect trusted merge path {raw_path}: {result.stderr.strip()[-500:]}. "
+            "Next action: discard the cell and verify its recorded merge commit."
+        )
+    entries = [entry for entry in result.stdout.split("\0") if entry]
+    if not entries:
+        return None
+    if len(entries) != 1 or "\t" not in entries[0]:
+        raise DriverError(
+            f"ambiguous trusted merge entry for {raw_path}. "
+            "Next action: discard the cell and inspect the merge tree."
+        )
+    metadata, recorded_path = entries[0].split("\t", 1)
+    fields = metadata.split()
+    if recorded_path != raw_path or len(fields) != 3 or fields[1] != "blob":
+        raise DriverError(
+            f"unsupported trusted merge entry for {raw_path}. "
+            "Next action: remove the task from this benchmark or use a regular source file."
+        )
+    return fields[0], _git_blob_bytes(repo, merge, raw_path)
+
+
+def verify_solution_provenance(
+    repo: Path,
+    workdir: Path,
+    commits: CommitPair,
+) -> dict[str, Any]:
+    """Allow execution only when changed solution files are exact trusted merge blobs."""
+    _checked_post_agent_stdout(
+        _post_agent_git_command("add", "--intent-to-add", "--all"),
+        workdir=workdir,
+    )
+    raw_paths = _checked_post_agent_stdout(
+        _post_agent_git_command(
+            "diff",
+            "--name-only",
+            "-z",
+            commits.parent,
+            "--",
+        ),
+        workdir=workdir,
+        strip=False,
+    )
+    changed_paths = sorted(
+        path for path in raw_paths.split("\0") if path and not _scoring_path_excluded(path)
+    )
+    attested: dict[str, dict[str, Any]] = {}
+    rejected: list[str] = []
+    for raw_path in changed_paths:
+        relative = _safe_repo_path(raw_path)
+        expected = _trusted_merge_entry(repo, commits.merge, raw_path)
+        try:
+            metadata = os.lstat(workdir / relative)
+        except FileNotFoundError:
+            metadata = None
+        if metadata is None:
+            if expected is None:
+                attested[raw_path] = {"merge_state": "absent"}
+            else:
+                rejected.append(raw_path)
+            continue
+        if expected is None or not stat.S_ISREG(metadata.st_mode) or metadata.st_nlink != 1:
+            rejected.append(raw_path)
+            continue
+        expected_mode, expected_content = expected
+        actual_mode = "100755" if metadata.st_mode & stat.S_IXUSR else "100644"
+        try:
+            actual_content = _read_regular_no_follow(workdir, relative)
+        except DriverError:
+            rejected.append(raw_path)
+            continue
+        if actual_mode != expected_mode or actual_content != expected_content:
+            rejected.append(raw_path)
+            continue
+        attested[raw_path] = {
+            "merge_mode": expected_mode,
+            "sha256": hashlib.sha256(expected_content).hexdigest(),
+        }
+    return {
+        "matched": not rejected,
+        "policy": "changed-solution-files-must-match-governed-merge-blobs",
+        "attested_files": attested,
+        "rejected_files": rejected,
+    }
+
+
+def _provenance_failure_exit(task: Mapping[str, Any], rejected: Sequence[str]) -> dict[str, Any]:
+    targets = _pytest_targets(task)
+    return {
+        "passed": False,
+        "returncode": PROVENANCE_FAILURE_EXIT_CODE,
+        "timed_out": False,
+        "sandbox": "not-run-untrusted-solution",
+        "completion_attested": False,
+        "pytest_targets": targets,
+        "output_tail": (
+            "HARNESS: changed solution files are not exact governed merge blobs: "
+            f"{', '.join(rejected)}. Next action: retain the cell as a provenance-gate "
+            "failure; do not execute its untrusted Python code."
+        ),
+    }
 
 
 def run_cell(
@@ -1617,6 +1738,11 @@ def run_cell(
             scoring_workdir = Path(raw_scoring_workdir)
             prepare_cell_checkout(repo, commits.parent, scoring_workdir)
             apply_agent_diff_for_scoring(scoring_workdir, agent_diff)
+            solution_provenance = verify_solution_provenance(
+                repo,
+                scoring_workdir,
+                commits,
+            )
             predicate_files = install_merge_version_tests(repo, scoring_workdir, commits)
             scoring_controls = verify_scoring_controls(
                 repo,
@@ -1624,7 +1750,13 @@ def run_cell(
                 commits,
                 predicate_files,
             )
-            exit_result = evaluator(task, scoring_workdir, repo)
+            if solution_provenance["matched"]:
+                exit_result = evaluator(task, scoring_workdir, repo)
+            else:
+                exit_result = _provenance_failure_exit(
+                    task,
+                    solution_provenance["rejected_files"],
+                )
 
     cell = {
         "model": outcome.get("model", config.model),
@@ -1656,6 +1788,7 @@ def run_cell(
             "predicate_files": predicate_files,
             "scoring_controls": scoring_controls,
             "scoring_diff_excludes": list(SCORING_DIFF_EXCLUDES),
+            "solution_provenance": solution_provenance,
             "passed": passed,
             "exit": exit_result,
             "codex_returncode": codex_returncode,
@@ -1778,6 +1911,7 @@ def run_fixture_self_check() -> dict[str, Any]:
         "passed": record["cell_result"]["passed"],
         "predicate_files": record["cell_result"]["predicate_files"],
         "returncode": exit_result["returncode"],
+        "solution_provenance_matched": record["cell_result"]["solution_provenance"]["matched"],
     }
 
 
@@ -1909,7 +2043,9 @@ def render_result_note(
     codex_sandbox = tool_surface.get("sandbox", "unknown")
     predicate_boundary = (
         "The deterministic predicate ran in Bubblewrap with a cleared environment and "
-        "an unshared network namespace. Model-authored solution code ran in one xdist worker; "
+        "an unshared network namespace. Agent-changed solution files ran only after matching "
+        "the governed merge blobs byte-for-byte and mode-for-mode; unchanged files came from "
+        "the trusted parent tree. That code ran in one xdist worker; "
         "the separate trusted controller had to emit exactly one lifecycle record showing "
         "every worker-collected hidden pytest item reached a terminal report."
         if predicate_surface.get("completion_attestation")
