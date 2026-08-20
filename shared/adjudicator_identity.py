@@ -146,6 +146,12 @@ def _first_party_loaded_modules() -> set[str]:
 
     A module that cannot be placed is exactly the one that must be reported. Everything
     first-party is returned and classified downstream; nothing is dropped for failing to fit.
+
+    Reports ``__file__`` AS PYTHON RECORDED IT, resolving only to decide vendored-ness. Raised by
+    codex-1: resolving for the report re-follows the activation symlink at receipt time, so a
+    module imported through the link and then repointed is recorded under the NEW checkout — the
+    receipt naming a file that never participated. ``__file__`` is fixed at import and cannot
+    drift; the resolved form can, and does, roughly seven times a day on this estate.
     """
     found: set[str] = set()
     for module in list(sys.modules.values()):
@@ -153,12 +159,11 @@ def _first_party_loaded_modules() -> set[str]:
         if not file:
             continue
         try:
-            resolved = Path(file).resolve()
+            vendored = _is_vendored(Path(file).resolve())
         except (OSError, RuntimeError):
-            found.add(str(file))  # unresolvable is a reason to report, not to skip
-            continue
-        if not _is_vendored(resolved):
-            found.add(str(resolved))
+            vendored = False  # unresolvable is a reason to report, not to skip
+        if not vendored:
+            found.add(str(file))
     return found
 
 
@@ -256,6 +261,25 @@ def record_identifies_its_checkout(record: Mapping[str, object]) -> bool:
     return record.get("adjudicator_dirty") is False
 
 
+def _git_env() -> dict[str, str]:
+    """The environment with every ``GIT_*`` variable removed.
+
+    Raised independently by codex-1 and gemini-1: ``git -C <tree>`` does NOT override
+    ``GIT_DIR``, ``GIT_WORK_TREE``, ``GIT_INDEX_FILE`` and friends. A process carrying them —
+    most obviously anything running inside a git hook, which this estate does — measures the
+    AMBIENT repository while ``adjudicator_resolved_from`` still names this checkout. The
+    receipt then pairs one tree's path with another tree's clean HEAD, and
+    ``record_identifies_its_checkout`` returns True for the mismatched tuple: a false positive
+    in the one predicate this module exists to make trustworthy.
+
+    Everything ``GIT_*`` goes, rather than an allowlist of the known-dangerous ones. This code
+    needs none of them, and an allowlist would need extending every time git adds a variable —
+    a guard that silently narrows as the world changes is the failure mode this whole change
+    set is about.
+    """
+    return {k: v for k, v in os.environ.items() if not k.startswith("GIT_")}
+
+
 def _git_head(tree: Path) -> tuple[str | None, bool | None]:
     """HEAD sha and dirtiness, from ONE git snapshot, where dirtiness may be UNKNOWN.
 
@@ -281,11 +305,23 @@ def _git_head(tree: Path) -> tuple[str | None, bool | None]:
     """
     try:
         status = subprocess.run(
-            ["git", "-C", str(tree), "status", "--porcelain=v2", "--branch"],
+            [
+                "git",
+                "-C",
+                str(tree),
+                "status",
+                "--porcelain=v2",
+                "--branch",
+                # Explicit, so an ambient `status.showUntrackedFiles=no` cannot hide an untracked
+                # file that this process may well have imported. Same class of hazard as the
+                # environment below: configuration deciding what the snapshot means.
+                "--untracked-files=normal",
+            ],
             capture_output=True,
             text=True,
             timeout=5,
             check=False,
+            env=_git_env(),
         )
     except (OSError, subprocess.SubprocessError):
         return (None, None)

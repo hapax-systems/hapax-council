@@ -323,6 +323,43 @@ def test_every_git_failure_mode_degrades_to_unknown(
     )
 
 
+@pytest.mark.parametrize(
+    "variable", ["GIT_DIR", "GIT_WORK_TREE", "GIT_INDEX_FILE", "GIT_COMMON_DIR"]
+)
+def test_ambient_git_variables_cannot_redirect_the_measurement(
+    tmp_path: Path, monkeypatch, variable: str
+) -> None:
+    """Raised independently by codex-1 and gemini-1, and they are right.
+
+    `git -C <tree>` does NOT override `GIT_DIR` and friends. A process carrying them — anything
+    running inside a git hook, which this estate does — measures the AMBIENT repository while
+    `adjudicator_resolved_from` still names this checkout. The receipt then pairs one tree's path
+    with another tree's clean HEAD, and `record_identifies_its_checkout` returns True for the
+    mismatched tuple.
+
+    Here the ambient repository is a real, clean, DIFFERENT checkout, so a leak produces a
+    plausible-looking sha rather than an error — which is what makes it dangerous.
+    """
+    target = _make_checkout(tmp_path / "target", "target")
+    foreign = _make_checkout(tmp_path / "foreign", "foreign")
+    # BEFORE the env var is set: `_head` runs plain git and would itself be redirected by the
+    # very variable under test. The first run of this test failed on exactly that, which is a
+    # small demonstration of how quietly these variables reroute a measurement.
+    target_head, foreign_head = _head(target), _head(foreign)
+    assert target_head != foreign_head
+
+    monkeypatch.setenv(
+        variable, str(foreign / ".git") if variable != "GIT_WORK_TREE" else str(foreign)
+    )
+    ident = adjudicator_identity(str(target / "shared" / "adjudicator_identity.py"))
+
+    assert ident.sha != foreign_head, (
+        f"{variable} redirected the measurement to another repository; the receipt would pair "
+        "this checkout's path with a foreign tree's clean HEAD"
+    )
+    assert ident.sha == target_head, "the tree named in the receipt is the tree measured"
+
+
 def test_head_and_cleanliness_come_from_one_snapshot(tmp_path: Path, monkeypatch) -> None:
     """Raised by codex-1: two subprocesses can describe two different checkout states.
 
@@ -651,11 +688,21 @@ def test_a_repoint_cannot_hide_a_loaded_module(tmp_path: Path) -> None:
     link.symlink_to(tree_a)
     receipt = _run_probe(tmp_path, _REPOINT_ENUMERATION_PROBE, str(link), str(tree_b))
 
-    listed = " ".join(receipt["adjudicator_loaded_modules"])
-    assert "dep.py" in listed, (
+    dep_entries = [p for p in receipt["adjudicator_loaded_modules"] if p.endswith("dep.py")]
+    assert dep_entries, (
         "a loaded module must remain visible after a repoint; dropping it leaves coverage that "
         "reads as complete over code the receipt never saw"
     )
+    # Raised by codex-1: searching for the basename accepts a FALSE attribution. Resolving
+    # `__file__` when the receipt is written re-follows the link, so a module loaded through
+    # tree A gets recorded under tree B — a file that never participated, named as though it
+    # had. `__file__` is fixed at import; only the resolution drifts, so the raw value is
+    # reported and the entry must not point into the repointed tree.
+    for entry in dep_entries:
+        assert not entry.startswith(str(tree_b)), (
+            f"the receipt attributes {entry} to the repointed tree, but the module was loaded "
+            f"through {link}, which pointed at {tree_a} at the time"
+        )
 
 
 def test_the_loaded_module_list_names_the_real_route_deciders() -> None:
@@ -925,6 +972,45 @@ def test_the_run_record_identity_is_measured_after_the_producer_ran(monkeypatch)
     assert order.index("producer") < order.index("identity"), (
         f"the identity must be measured AFTER the producer ran, not before it: {order}"
     )
+
+
+@pytest.mark.parametrize(
+    ("command", "expected_outcome"),
+    [
+        (["/bin/true"], "produced"),
+        (["/bin/false"], "failed"),
+        (["/nonexistent-producer-binary"], "unlaunchable"),
+        (["/bin/sleep", "30"], "timeout"),
+    ],
+)
+def test_every_run_outcome_carries_the_identity(command: list[str], expected_outcome: str) -> None:
+    """Raised by codex-1: the `finally` promises identity on every exit; only one was tested.
+
+    A run that timed out or could not be launched is exactly when a reader most needs to know
+    which checkout produced the record — those are the records that get compared across a
+    redeploy while someone works out whether a repair took. An identity present only on the
+    happy path is absent where it matters.
+    """
+    from datetime import UTC, datetime
+
+    module = _load_determine()
+    record = module.run_producer(
+        {
+            "id": "probe",
+            "property": "p",
+            "subjects": [],
+            "provenance": "mechanical",
+            "command": command,
+        },
+        now=datetime.now(UTC),
+        repo_root=REPO_ROOT,
+        timeout=1,
+    )
+
+    assert record["outcome"] == expected_outcome
+    for field in ("adjudicator_sha", "adjudicator_source", "adjudicator_loaded_modules"):
+        assert field in record, f"{expected_outcome} records must carry {field}"
+    assert record["adjudicator_loaded_modules"], "and must say what participated"
 
 
 def test_main_reports_unidentified_runs_in_its_json_payload(tmp_path: Path, capsys) -> None:
