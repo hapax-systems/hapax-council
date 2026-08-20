@@ -15,6 +15,19 @@ WORKSPACE = Path("/workspace")
 ATTESTATION_PREFIX = "MEAS_PYTEST_ATTESTATION "
 MAX_PYTEST_EXIT_CODE = 5
 TRUST_FAILURE_EXIT_CODE = 87
+WORKER_INTEGRITY_GUARD = "plugin-registration-frozen+runtime-introspection-audit/v1"
+_WORKER_GUARD_INSTALLED = False
+_BLOCKED_AUDIT_EVENTS = frozenset(
+    {
+        "gc.get_objects",
+        "gc.get_referents",
+        "gc.get_referrers",
+        "sys._current_frames",
+        "sys._getframe",
+        "sys.setprofile",
+        "sys.settrace",
+    }
+)
 
 
 def _outside_workspace_import_path(value: str) -> bool:
@@ -39,6 +52,7 @@ class CompletionPlugin:
     def __init__(self) -> None:
         self.collected: list[str] = []
         self.terminal: dict[str, str] = {}
+        self.worker_integrity_guard = False
 
     def pytest_collection_finish(self, session: pytest.Session) -> None:
         local_items = [item.nodeid for item in session.items]
@@ -57,11 +71,70 @@ class CompletionPlugin:
         ):
             self.terminal[report.nodeid] = report.outcome
 
+    def pytest_testnodedown(self, node: Any, error: object | None) -> None:
+        workeroutput = getattr(node, "workeroutput", {})
+        self.worker_integrity_guard = error is None and (
+            workeroutput.get("meas_worker_integrity_guard") == WORKER_INTEGRITY_GUARD
+        )
+
 
 def pytest_configure(config: pytest.Config) -> None:
     """Expose the solution checkout only after pytest is trusted in the xdist worker."""
     if hasattr(config, "workerinput") and "/workspace" not in sys.path:
         sys.path.insert(0, "/workspace")
+
+
+def _worker_audit_hook(event: str, args: tuple[Any, ...]) -> None:
+    del args
+    if event in _BLOCKED_AUDIT_EVENTS:
+        raise RuntimeError(
+            f"worker runtime introspection is disabled at the scoring boundary ({event}). "
+            "Next action: remove pytest-runtime introspection from the solution and rerun."
+        )
+
+
+def _install_worker_integrity_guard(config: pytest.Config) -> None:
+    """Freeze new plugin registration before workspace test modules are imported."""
+    global _WORKER_GUARD_INSTALLED
+    if _WORKER_GUARD_INSTALLED:
+        return
+    plugin_manager = config.pluginmanager
+    manager_type = type(plugin_manager)
+    original_register = manager_type.register
+
+    def guarded_register(
+        manager: Any,
+        plugin: object,
+        name: str | None = None,
+    ) -> Any:
+        if manager is plugin_manager:
+            del plugin, name
+            raise RuntimeError(
+                "pytest plugin registration is frozen before solution import. "
+                "Next action: remove runtime pytest-hook registration from the solution "
+                "and rerun."
+            )
+        return original_register(manager, plugin, name)
+
+    manager_type.register = guarded_register
+    sys.addaudithook(_worker_audit_hook)
+    _WORKER_GUARD_INSTALLED = True
+
+
+def pytest_collection(session: pytest.Session) -> None:
+    """Seal worker pytest control surfaces before collection imports solution code."""
+    if os.environ.get("PYTEST_XDIST_WORKER"):
+        if "/workspace" not in sys.path:
+            sys.path.insert(0, "/workspace")
+        _install_worker_integrity_guard(session.config)
+
+
+def pytest_sessionfinish(session: pytest.Session, exitstatus: int) -> None:
+    del exitstatus
+    if os.environ.get("PYTEST_XDIST_WORKER") and hasattr(session.config, "workeroutput"):
+        session.config.workeroutput["meas_worker_integrity_guard"] = (
+            WORKER_INTEGRITY_GUARD if _WORKER_GUARD_INSTALLED else "missing"
+        )
 
 
 def _worker_setup_with_conftests(original_setup: Any) -> Any:
@@ -187,6 +260,9 @@ def run(target: str) -> int:
         "pytest_origin": str(pytest_origin),
         "runtime_prefix": str(runtime_prefix),
         "worker_count": 1,
+        "worker_integrity_guard": (
+            WORKER_INTEGRITY_GUARD if plugin.worker_integrity_guard else "missing"
+        ),
         "xdist_origin": str(xdist_origin),
         "xdist_version": importlib.metadata.version("pytest-xdist"),
     }

@@ -12,7 +12,6 @@ and emits a complete lambda configuration plus its content hash per cell.
 from __future__ import annotations
 
 import argparse
-import fnmatch
 import hashlib
 import importlib.metadata
 import json
@@ -40,12 +39,11 @@ DEFAULT_TIMEOUT_SECONDS = 900
 PREDICATE_TIMEOUT_SECONDS = 600
 GITHUB_REPO = "hapax-systems/hapax-council"
 HARNESS_NAME = "codex-cli-agentic"
-DRIVER_VERSION = "driver_codex_cli/v9"
-PROVENANCE_FAILURE_EXIT_CODE = 85
+DRIVER_VERSION = "driver_codex_cli/v10"
 DIRECT_API_35B_BASELINE = {"passed": 0, "total": 19, "pass_rate": 0.0}
 KNOWN_WITNESS_ARTIFACTS = {
     "1991e186b3699fa87667ac09963ef542ac3587dadc5b7e31be49afa3a9c2f03c": (
-        "13f8b05e6aaf4d871bb3da286aaa5f3c4dbcd3f6ff343b8ca5872eced9cd5f55"
+        "0d8a4ff6cdd44265fd6e257da49b63d07c9318aa4b98cf2e0eeb846a4028a504"
     )
 }
 SCORING_DIFF_EXCLUDES = (
@@ -560,6 +558,34 @@ def exit_predicate_command(task: Mapping[str, Any]) -> list[str]:
     )
 
 
+def _non_pytest_custom_predicate_command(task: Mapping[str, Any]) -> list[str]:
+    """Remove embedded pytest clauses so they run only through the attested worker."""
+    predicate = task.get("exit_predicate")
+    target = predicate.get("target") if isinstance(predicate, Mapping) else None
+    if not isinstance(target, str) or not target:
+        raise DriverError(
+            f"task {task.get('task_id')} has an invalid custom predicate. "
+            "Next action: repair the governed ruff+custom command."
+        )
+    retained: list[str] = []
+    for clause in (part.strip() for part in target.split("&&")):
+        if re.match(r"^(?:uv\s+run\s+)?pytest(?:\s|$)", clause):
+            if not re.fullmatch(r"(?:uv\s+run\s+)?pytest\s+[^;&|]+", clause):
+                raise DriverError(
+                    f"task {task.get('task_id')} has an ambiguous embedded pytest clause. "
+                    "Next action: express pytest as one simple &&-separated command."
+                )
+            continue
+        if clause:
+            retained.append(clause)
+    if not retained:
+        raise DriverError(
+            f"task {task.get('task_id')} has no non-pytest custom predicate clause. "
+            "Next action: use kind=pytest when no separate custom check is required."
+        )
+    return ["bash", "-lc", " && ".join(retained)]
+
+
 def _coerce_text(value: str | bytes | None) -> str:
     if isinstance(value, bytes):
         return value.decode(errors="replace")
@@ -735,6 +761,7 @@ def _cell_sandbox_command(
     writable_mounts: Sequence[tuple[Path, Path]] = (),
     share_network: bool = False,
     disable_nested_userns: bool = True,
+    workspace_writable: bool = True,
 ) -> list[str]:
     """Build a minimal clear-environment sandbox around one cell checkout."""
     _assert_repo_not_installed_in_system_roots(repo)
@@ -824,7 +851,7 @@ def _cell_sandbox_command(
         [
             "--dir",
             "/workspace",
-            "--bind",
+            "--bind" if workspace_writable else "--ro-bind",
             str(workdir.resolve()),
             "/workspace",
             "--proc",
@@ -870,14 +897,22 @@ def _predicate_sandbox_command(
     workdir: Path,
     repo: Path,
 ) -> list[str]:
+    predicate = task.get("exit_predicate")
+    kind = predicate.get("kind") if isinstance(predicate, Mapping) else None
+    inner_command = (
+        _non_pytest_custom_predicate_command(task)
+        if kind == "ruff+custom"
+        else exit_predicate_command(task)
+    )
     return _cell_sandbox_command(
-        exit_predicate_command(task),
+        inner_command,
         workdir,
         repo,
         extra_environment={
             "PYTEST_DISABLE_PLUGIN_AUTOLOAD": "1",
             "PYTEST_ADDOPTS": "",
         },
+        workspace_writable=False,
     )
 
 
@@ -920,6 +955,7 @@ def _attested_pytest_command(
             (ATTESTED_RUNNER, Path("/harness/pytest_attested_runner.py")),
             (PYTEST_WORKER_LAUNCHER, Path("/harness/python-isolated")),
         ],
+        workspace_writable=False,
     )
 
 
@@ -943,6 +979,8 @@ def _validate_completion_attestation(
         or raw.get("exit_code") != returncode
         or raw.get("attester_process") != "xdist-controller"
         or raw.get("worker_count") != 1
+        or raw.get("worker_integrity_guard")
+        != "plugin-registration-frozen+runtime-introspection-audit/v1"
         or not isinstance(raw.get("attester_pid"), int)
         or raw.get("xdist_version") != pytest_xdist_version()
         or not isinstance(collected, list)
@@ -1530,22 +1568,25 @@ def lambda_config(
                 "confcutdir": "/workspace",
                 "config": "/dev/null",
                 "controller_conftest": "disabled",
+                "custom_pytest": "removed-from-shell-and-run-only-through-attested-worker",
                 "environment": "cleared",
                 "network": "unshared",
                 "plugin_autoload": "disabled",
                 "pytest_cacheprovider": "disabled",
                 "pytest_execution": "one-isolated-xdist-worker",
+                "pytest_worker_integrity": (
+                    "plugin-registration-frozen+runtime-introspection-audit/v1"
+                ),
                 "pytest_worker_launcher_sha256": pytest_worker_launcher_sha256(),
                 "pytest_xdist_version": pytest_xdist_version(),
                 "rootdir": "/workspace",
                 "runner_sha256": attested_runner_sha256(),
                 "sandbox": "bubblewrap",
                 "sandbox_version": sandbox_version,
-                "solution_execution_gate": (
-                    "changed-files-exact-governed-merge-blobs;unchanged-files-parent-tree"
-                ),
+                "scoring_controls_postcheck": "byte-for-byte",
                 "timeout_seconds": PREDICATE_TIMEOUT_SECONDS,
                 "worker_conftest": "trusted-scoring-controls-enabled",
+                "workspace": "read-only",
             },
             "post_agent_git": {
                 "environment": "cleared",
@@ -1558,10 +1599,7 @@ def lambda_config(
             "uv_environment": "driver-interpreter-no-sync",
             "web_search": "disabled",
         },
-        "context_mode": (
-            "agentic-parent-checkout+clean-score-checkout+trusted-source-provenance-gate+"
-            "merge-tests-post-exec"
-        ),
+        "context_mode": "agentic-parent-checkout+clean-score-checkout+merge-tests-post-exec",
     }
 
 
@@ -1592,119 +1630,6 @@ def apply_agent_diff_for_scoring(workdir: Path, diff: str) -> None:
         workdir=workdir,
         input_text=diff,
     )
-
-
-def _scoring_path_excluded(raw_path: str) -> bool:
-    return any(fnmatch.fnmatchcase(raw_path, pattern) for pattern in SCORING_DIFF_EXCLUDES)
-
-
-def _trusted_merge_entry(repo: Path, merge: str, raw_path: str) -> tuple[str, bytes] | None:
-    result = _run_text(
-        ["git", "-C", str(repo), "ls-tree", "-z", merge, "--", raw_path],
-        timeout=120,
-    )
-    if result.returncode != 0:
-        raise DriverError(
-            f"cannot inspect trusted merge path {raw_path}: {result.stderr.strip()[-500:]}. "
-            "Next action: discard the cell and verify its recorded merge commit."
-        )
-    entries = [entry for entry in result.stdout.split("\0") if entry]
-    if not entries:
-        return None
-    if len(entries) != 1 or "\t" not in entries[0]:
-        raise DriverError(
-            f"ambiguous trusted merge entry for {raw_path}. "
-            "Next action: discard the cell and inspect the merge tree."
-        )
-    metadata, recorded_path = entries[0].split("\t", 1)
-    fields = metadata.split()
-    if recorded_path != raw_path or len(fields) != 3 or fields[1] != "blob":
-        raise DriverError(
-            f"unsupported trusted merge entry for {raw_path}. "
-            "Next action: remove the task from this benchmark or use a regular source file."
-        )
-    return fields[0], _git_blob_bytes(repo, merge, raw_path)
-
-
-def verify_solution_provenance(
-    repo: Path,
-    workdir: Path,
-    commits: CommitPair,
-) -> dict[str, Any]:
-    """Allow execution only when changed solution files are exact trusted merge blobs."""
-    _checked_post_agent_stdout(
-        _post_agent_git_command("add", "--intent-to-add", "--all"),
-        workdir=workdir,
-    )
-    raw_paths = _checked_post_agent_stdout(
-        _post_agent_git_command(
-            "diff",
-            "--name-only",
-            "-z",
-            commits.parent,
-            "--",
-        ),
-        workdir=workdir,
-        strip=False,
-    )
-    changed_paths = sorted(
-        path for path in raw_paths.split("\0") if path and not _scoring_path_excluded(path)
-    )
-    attested: dict[str, dict[str, Any]] = {}
-    rejected: list[str] = []
-    for raw_path in changed_paths:
-        relative = _safe_repo_path(raw_path)
-        expected = _trusted_merge_entry(repo, commits.merge, raw_path)
-        try:
-            metadata = os.lstat(workdir / relative)
-        except FileNotFoundError:
-            metadata = None
-        if metadata is None:
-            if expected is None:
-                attested[raw_path] = {"merge_state": "absent"}
-            else:
-                rejected.append(raw_path)
-            continue
-        if expected is None or not stat.S_ISREG(metadata.st_mode) or metadata.st_nlink != 1:
-            rejected.append(raw_path)
-            continue
-        expected_mode, expected_content = expected
-        actual_mode = "100755" if metadata.st_mode & stat.S_IXUSR else "100644"
-        try:
-            actual_content = _read_regular_no_follow(workdir, relative)
-        except DriverError:
-            rejected.append(raw_path)
-            continue
-        if actual_mode != expected_mode or actual_content != expected_content:
-            rejected.append(raw_path)
-            continue
-        attested[raw_path] = {
-            "merge_mode": expected_mode,
-            "sha256": hashlib.sha256(expected_content).hexdigest(),
-        }
-    return {
-        "matched": not rejected,
-        "policy": "changed-solution-files-must-match-governed-merge-blobs",
-        "attested_files": attested,
-        "rejected_files": rejected,
-    }
-
-
-def _provenance_failure_exit(task: Mapping[str, Any], rejected: Sequence[str]) -> dict[str, Any]:
-    targets = _pytest_targets(task)
-    return {
-        "passed": False,
-        "returncode": PROVENANCE_FAILURE_EXIT_CODE,
-        "timed_out": False,
-        "sandbox": "not-run-untrusted-solution",
-        "completion_attested": False,
-        "pytest_targets": targets,
-        "output_tail": (
-            "HARNESS: changed solution files are not exact governed merge blobs: "
-            f"{', '.join(rejected)}. Next action: retain the cell as a provenance-gate "
-            "failure; do not execute its untrusted Python code."
-        ),
-    }
 
 
 def run_cell(
@@ -1738,11 +1663,6 @@ def run_cell(
             scoring_workdir = Path(raw_scoring_workdir)
             prepare_cell_checkout(repo, commits.parent, scoring_workdir)
             apply_agent_diff_for_scoring(scoring_workdir, agent_diff)
-            solution_provenance = verify_solution_provenance(
-                repo,
-                scoring_workdir,
-                commits,
-            )
             predicate_files = install_merge_version_tests(repo, scoring_workdir, commits)
             scoring_controls = verify_scoring_controls(
                 repo,
@@ -1750,13 +1670,13 @@ def run_cell(
                 commits,
                 predicate_files,
             )
-            if solution_provenance["matched"]:
-                exit_result = evaluator(task, scoring_workdir, repo)
-            else:
-                exit_result = _provenance_failure_exit(
-                    task,
-                    solution_provenance["rejected_files"],
-                )
+            exit_result = evaluator(task, scoring_workdir, repo)
+            post_scoring_controls = verify_scoring_controls(
+                repo,
+                scoring_workdir,
+                commits,
+                predicate_files,
+            )
 
     cell = {
         "model": outcome.get("model", config.model),
@@ -1787,8 +1707,8 @@ def run_cell(
             "merge": commits.merge,
             "predicate_files": predicate_files,
             "scoring_controls": scoring_controls,
+            "post_scoring_controls": post_scoring_controls,
             "scoring_diff_excludes": list(SCORING_DIFF_EXCLUDES),
-            "solution_provenance": solution_provenance,
             "passed": passed,
             "exit": exit_result,
             "codex_returncode": codex_returncode,
@@ -1911,7 +1831,6 @@ def run_fixture_self_check() -> dict[str, Any]:
         "passed": record["cell_result"]["passed"],
         "predicate_files": record["cell_result"]["predicate_files"],
         "returncode": exit_result["returncode"],
-        "solution_provenance_matched": record["cell_result"]["solution_provenance"]["matched"],
     }
 
 
@@ -1998,6 +1917,18 @@ def _write_json_atomic(path: Path, payload: Mapping[str, Any]) -> None:
                 temporary.unlink(missing_ok=True)
 
 
+def _write_report(path: Path, content: str) -> None:
+    try:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(content, encoding="utf-8")
+    except OSError as exc:
+        raise DriverError(
+            f"cannot write pilot report {path}: {exc}. "
+            "Next action: repair the report destination permissions or free space, "
+            "then regenerate the report from the valid JSON checkpoint."
+        ) from exc
+
+
 def _summary(results: Sequence[Mapping[str, Any]]) -> dict[str, Any]:
     passed = sum(1 for result in results if result.get("cell_result", {}).get("passed"))
     baseline = dict(DIRECT_API_35B_BASELINE)
@@ -2043,9 +1974,9 @@ def render_result_note(
     codex_sandbox = tool_surface.get("sandbox", "unknown")
     predicate_boundary = (
         "The deterministic predicate ran in Bubblewrap with a cleared environment and "
-        "an unshared network namespace. Agent-changed solution files ran only after matching "
-        "the governed merge blobs byte-for-byte and mode-for-mode; unchanged files came from "
-        "the trusted parent tree. That code ran in one xdist worker; "
+        "an unshared network namespace and a read-only scoring checkout. Agent-changed "
+        "solution code ran in one xdist worker after plugin registration and runtime-frame "
+        "introspection were frozen; "
         "the separate trusted controller had to emit exactly one lifecycle record showing "
         "every worker-collected hidden pytest item reached a terminal report."
         if predicate_surface.get("completion_attestation")
@@ -2244,6 +2175,35 @@ def verify_result_payload(payload: Mapping[str, Any]) -> dict[str, Any]:
             "result must contain lambda_config, selection, embedded tasks, and results. "
             "Next action: point --verify-result at an unmodified pilot artifact."
         )
+    schema_version = payload.get("schema_version")
+    driver_version = payload.get("driver")
+    artifact_kind = payload.get("artifact_kind")
+    witness = payload.get("witness")
+    historical_witness = schema_version == 1 or driver_version != DRIVER_VERSION
+    if historical_witness:
+        if (
+            schema_version != 1
+            or artifact_kind != "redacted-pilot-witness"
+            or not isinstance(witness, Mapping)
+            or driver_version != "driver_codex_cli/v1"
+            or payload.get("model") != "gpt-5.6-sol"
+            or payload.get("reasoning_effort") != "ultra"
+        ):
+            raise _verification_error(
+                "historical pilot identity or required witness block is missing or changed"
+            )
+    elif schema_version != 3 or artifact_kind is not None or witness is not None:
+        raise _verification_error("current pilot artifact identity is inconsistent")
+    model = payload.get("model")
+    reasoning_effort = payload.get("reasoning_effort")
+    if (
+        not isinstance(model, str)
+        or fields.get("serving_version") != f"provider-managed:{model}"
+        or fields.get("model_weights_sha256") != f"unpublished-provider-managed:{model}"
+        or fields.get("decode_params") != {"model_reasoning_effort": reasoning_effort}
+        or not str(fields.get("harness_binary_version") or "").endswith(f";{driver_version}")
+    ):
+        raise _verification_error("driver, model, reasoning, or λ identity binding changed")
     expected_lambda = lambda_hash(fields)
     if payload.get("lambda_set") != [expected_lambda]:
         raise DriverError(
@@ -2341,6 +2301,7 @@ def verify_result_payload(payload: Mapping[str, Any]) -> dict[str, Any]:
                 exit_result.get("pytest_targets") != expected_targets
                 or (cell_result["passed"] and exit_result.get("completion_attested") is not True)
                 or not isinstance(cell_result.get("scoring_controls"), Mapping)
+                or cell_result.get("post_scoring_controls") != cell_result.get("scoring_controls")
             ):
                 raise _verification_error(
                     f"result {task_id} lacks current completion/control evidence"
@@ -2370,8 +2331,8 @@ def verify_result_payload(payload: Mapping[str, Any]) -> dict[str, Any]:
         baseline.get(key) != value for key, value in DIRECT_API_35B_BASELINE.items()
     ):
         raise _verification_error("result baseline metadata is missing or changed")
-    witness = payload.get("witness")
-    if isinstance(witness, Mapping):
+    if historical_witness:
+        assert isinstance(witness, Mapping)
         source_hash = witness.get("source_result_sha256")
         if not re.fullmatch(r"[0-9a-f]{64}", str(source_hash or "")):
             raise _verification_error("witness source-result digest is invalid")
@@ -2483,8 +2444,7 @@ def run_pilot(
     completed_at = _utc_now()
     payload = checkpoint(completed_at)
     if report_path is not None:
-        report_path.parent.mkdir(parents=True, exist_ok=True)
-        report_path.write_text(render_result_note(payload, output_path), encoding="utf-8")
+        _write_report(report_path, render_result_note(payload, output_path))
     return payload
 
 

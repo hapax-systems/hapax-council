@@ -183,22 +183,23 @@ def test_lambda_records_both_timeouts_and_predicate_sandbox() -> None:
         "confcutdir": "/workspace",
         "config": "/dev/null",
         "controller_conftest": "disabled",
+        "custom_pytest": "removed-from-shell-and-run-only-through-attested-worker",
         "environment": "cleared",
         "network": "unshared",
         "plugin_autoload": "disabled",
         "pytest_cacheprovider": "disabled",
         "pytest_execution": "one-isolated-xdist-worker",
+        "pytest_worker_integrity": ("plugin-registration-frozen+runtime-introspection-audit/v1"),
         "pytest_worker_launcher_sha256": driver.pytest_worker_launcher_sha256(),
         "pytest_xdist_version": driver.pytest_xdist_version(),
         "rootdir": "/workspace",
         "runner_sha256": driver.attested_runner_sha256(),
         "sandbox": "bubblewrap",
         "sandbox_version": "bubblewrap 1.2",
-        "solution_execution_gate": (
-            "changed-files-exact-governed-merge-blobs;unchanged-files-parent-tree"
-        ),
+        "scoring_controls_postcheck": "byte-for-byte",
         "timeout_seconds": driver.PREDICATE_TIMEOUT_SECONDS,
         "worker_conftest": "trusted-scoring-controls-enabled",
+        "workspace": "read-only",
     }
     assert surface["agent_filesystem"] == {
         "credential_enforcement": "codex-permission-profile+pinned-harness-binary",
@@ -298,6 +299,7 @@ def test_exit_predicate_isolated_from_environment_and_host_paths(
 ) -> None:
     cell = tmp_path / "cell"
     cell.mkdir()
+    (cell / "marker").write_text("sandboxed", encoding="utf-8")
     outside = tmp_path / "outside-secret"
     outside.write_text("not visible\n", encoding="utf-8")
     monkeypatch.setenv("MEAS_SANDBOX_SECRET", "must-not-leak")
@@ -307,7 +309,7 @@ def test_exit_predicate_isolated_from_environment_and_host_paths(
             "kind": "ruff+custom",
             "target": (
                 'test -z "${MEAS_SANDBOX_SECRET:-}" '
-                f"&& test ! -e {outside} && printf sandboxed > marker"
+                f'&& test ! -e {outside} && test "$(cat marker)" = sandboxed'
             ),
         },
     }
@@ -346,6 +348,46 @@ def test_pytest_targets(predicate: dict[str, Any], expected: list[str]) -> None:
 
 def test_pytest_targets_rejects_malformed_predicate() -> None:
     assert driver._pytest_targets({"exit_predicate": "pytest tests/test_one.py"}) == []
+
+
+def test_custom_predicate_removes_embedded_pytest_clause() -> None:
+    task = {
+        **_task(),
+        "exit_predicate": {
+            "kind": "ruff+custom",
+            "target": ("uv run ruff check shared/example.py && uv run pytest tests/test_one.py -q"),
+        },
+    }
+
+    assert driver._non_pytest_custom_predicate_command(task) == [
+        "bash",
+        "-lc",
+        "uv run ruff check shared/example.py",
+    ]
+
+
+def test_custom_predicate_sandbox_never_runs_embedded_pytest(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    task = {
+        **_task(),
+        "exit_predicate": {
+            "kind": "ruff+custom",
+            "target": ("uv run ruff check shared/example.py && uv run pytest tests/test_one.py -q"),
+        },
+    }
+
+    def passthrough(inner: list[str], *_args: Any, **_kwargs: Any) -> list[str]:
+        return inner
+
+    monkeypatch.setattr(driver, "_cell_sandbox_command", passthrough)
+
+    assert driver._predicate_sandbox_command(task, tmp_path, tmp_path) == [
+        "bash",
+        "-lc",
+        "uv run ruff check shared/example.py",
+    ]
 
 
 def test_isolated_worker_launcher_missing_environment_has_next_action() -> None:
@@ -496,8 +538,8 @@ def test_model_code_runs_in_worker_separate_from_attester(tmp_path: Path) -> Non
     driver.prepare_cell_checkout(repo, commits.parent, cell)
     (cell / "module.py").write_text(
         "import os\n"
-        "from pathlib import Path\n"
-        "Path('/workspace/worker-pid').write_text(str(os.getpid()))\n"
+        "if 'PYTEST_XDIST_WORKER' not in os.environ:\n"
+        "    raise RuntimeError('solution imported outside xdist worker')\n"
         "VALUE = 1\n",
         encoding="utf-8",
     )
@@ -514,7 +556,9 @@ def test_model_code_runs_in_worker_separate_from_attester(tmp_path: Path) -> Non
     assert len(records) == 1
     attestation = json.loads(records[0])
     assert attestation["attester_process"] == "xdist-controller"
-    assert int((cell / "worker-pid").read_text(encoding="utf-8")) != attestation["attester_pid"]
+    assert attestation["worker_integrity_guard"] == (
+        "plugin-registration-frozen+runtime-introspection-audit/v1"
+    )
 
 
 @requires_bubblewrap
@@ -543,6 +587,8 @@ def test_trusted_conftest_cannot_import_solution_code_in_controller(tmp_path: Pa
         "        'pytest_origin': str(Path(pytest.__file__).resolve()),\n"
         "        'runtime_prefix': str(Path(sys.prefix).resolve()),\n"
         "        'worker_count': 1,\n"
+        "        'worker_integrity_guard': "
+        "'plugin-registration-frozen+runtime-introspection-audit/v1',\n"
         "        'xdist_origin': str(Path(xdist.__file__).resolve()),\n"
         "        'xdist_version': importlib.metadata.version('pytest-xdist'),\n"
         "    }\n"
@@ -563,9 +609,8 @@ def test_trusted_conftest_cannot_import_solution_code_in_controller(tmp_path: Pa
 
 
 @requires_bubblewrap
-def test_worker_report_forgery_is_rejected_before_solution_execution(tmp_path: Path) -> None:
+def test_worker_report_forgery_is_blocked_by_integrity_guard(tmp_path: Path) -> None:
     repo, commits = _source_repo(tmp_path)
-    evaluator_called = False
 
     def report_forging_executor(
         *,
@@ -602,34 +647,21 @@ def test_worker_report_forgery_is_rejected_before_solution_execution(tmp_path: P
             **diff_record,
         }
 
-    def forbidden_evaluator(
-        task: driver.Mapping[str, Any],
-        workdir: Path,
-        source_repo: Path,
-    ) -> dict[str, Any]:
-        del task, workdir, source_repo
-        nonlocal evaluator_called
-        evaluator_called = True
-        raise AssertionError("untrusted solution reached pytest")
-
     record = driver.run_cell(
         _task(),
         repo=repo,
         commits=commits,
         executor=report_forging_executor,
-        evaluator=forbidden_evaluator,
         binary_version="codex-cli test",
         sandbox_version="bubblewrap test",
     )
 
-    assert evaluator_called is False
     assert record["cell_result"]["passed"] is False
-    assert record["cell_result"]["exit"]["returncode"] == driver.PROVENANCE_FAILURE_EXIT_CODE
+    assert record["cell_result"]["exit"]["returncode"] != 0
     assert record["cell_result"]["exit"]["completion_attested"] is False
-    assert record["cell_result"]["solution_provenance"]["matched"] is False
-    assert record["cell_result"]["solution_provenance"]["rejected_files"] == ["module.py"]
+    assert "completed test lifecycle" in record["cell_result"]["exit"]["output_tail"]
     assert (
-        "do not execute its untrusted Python code" in record["cell_result"]["exit"]["output_tail"]
+        record["cell_result"]["post_scoring_controls"] == record["cell_result"]["scoring_controls"]
     )
 
 
@@ -668,6 +700,7 @@ def test_forged_lifecycle_record_plus_early_exit_cannot_pass(tmp_path: Path) -> 
         "pytest_origin": str(Path(pytest.__file__).resolve()),
         "runtime_prefix": str(driver._active_project_environment(repo).resolve()),
         "worker_count": 1,
+        "worker_integrity_guard": ("plugin-registration-frozen+runtime-introspection-audit/v1"),
         "xdist_origin": str(Path(pytest.__file__).resolve()),
         "xdist_version": driver.pytest_xdist_version(),
     }
@@ -907,6 +940,46 @@ def test_run_cell_installs_merge_tests_after_executor(tmp_path: Path) -> None:
 
 
 @requires_bubblewrap
+def test_run_cell_accepts_correct_non_gold_implementation(tmp_path: Path) -> None:
+    repo, commits = _source_repo(tmp_path)
+
+    def alternative_executor(
+        *,
+        task: driver.Mapping[str, Any],
+        workdir: Path,
+        config: driver.CodexRunConfig,
+    ) -> dict[str, Any]:
+        del task
+        (workdir / "module.py").write_text(
+            "# Semantically correct but deliberately not the merge blob.\nVALUE = 1\n",
+            encoding="utf-8",
+        )
+        diff_record = driver.capture_cell_diff(workdir, commits.parent)
+        return {
+            "model": config.model,
+            "harness": driver.HARNESS_NAME,
+            "seconds": 0.1,
+            "transcript": {"returncode": 0, "timed_out": False},
+            **diff_record,
+        }
+
+    record = driver.run_cell(
+        _task(),
+        repo=repo,
+        commits=commits,
+        executor=alternative_executor,
+        binary_version="codex-cli test",
+        sandbox_version="bubblewrap test",
+    )
+
+    assert record["cell_result"]["passed"] is True
+    assert record["cell_result"]["exit"]["completion_attested"] is True
+    assert (
+        record["cell_result"]["scoring_controls"] == record["cell_result"]["post_scoring_controls"]
+    )
+
+
+@requires_bubblewrap
 def test_run_cell_excludes_model_controlled_pytest_hooks_from_scoring(tmp_path: Path) -> None:
     repo, commits = _source_repo(tmp_path)
 
@@ -1122,6 +1195,7 @@ def _pilot_cell_runner(**kwargs: Any) -> dict[str, Any]:
             "codex_returncode": 0,
             "codex_timed_out": False,
             "scoring_controls": {"parent_tree": "3" * 40, "files": {}},
+            "post_scoring_controls": {"parent_tree": "3" * 40, "files": {}},
             "git_status": [],
         },
     }
@@ -1212,7 +1286,6 @@ def test_provider_free_fixture_self_check_runs_full_scoring_path(
     assert result["returncode"] == 0
     assert result["completion_attested"] is True
     assert result["predicate_files"] == ["tests/test_module.py"]
-    assert result["solution_provenance_matched"] is True
 
 
 def test_committed_pilot_witness_rechecks_11_of_19() -> None:
@@ -1235,7 +1308,10 @@ def test_committed_pilot_witness_rechecks_11_of_19() -> None:
     assert "cell.transcript.stdout" in witness["witness"]["redactions"]
 
 
-def test_result_verifier_rejects_forged_pass_even_with_resealed_row() -> None:
+@pytest.mark.parametrize("remove_artifact_kind", [False, True])
+def test_result_verifier_rejects_coherent_forgery_without_witness_block(
+    remove_artifact_kind: bool,
+) -> None:
     witness_path = (
         Path(__file__).parents[2] / "eval/meas/pilot_codex_cli_gpt_5_6_sol_easy_v1.witness.json"
     )
@@ -1243,9 +1319,18 @@ def test_result_verifier_rejects_forged_pass_even_with_resealed_row() -> None:
     first = witness["results"][0]
     assert first["cell_result"]["passed"] is False
     first["cell_result"]["passed"] = True
+    first["cell_result"]["exit"] = {
+        "passed": True,
+        "returncode": 0,
+        "timed_out": False,
+    }
     driver._seal_result(first)
+    witness["summary"] = driver._summary(witness["results"])
+    witness.pop("witness")
+    if remove_artifact_kind:
+        witness.pop("artifact_kind")
 
-    with pytest.raises(driver.DriverError, match="inconsistent cell pass status"):
+    with pytest.raises(driver.DriverError, match="required witness block is missing or changed"):
         driver.verify_result_payload(witness)
 
 
@@ -1287,6 +1372,14 @@ def test_atomic_result_write_failure_has_next_action(tmp_path: Path) -> None:
 
     with pytest.raises(driver.DriverError, match=r"Next action: repair the destination"):
         driver._write_json_atomic(blocked_parent / "result.json", {"ok": True})
+
+
+def test_report_write_failure_has_next_action(tmp_path: Path) -> None:
+    blocked_parent = tmp_path / "not-a-directory"
+    blocked_parent.write_text("occupied\n", encoding="utf-8")
+
+    with pytest.raises(driver.DriverError, match=r"Next action: repair the report"):
+        driver._write_report(blocked_parent / "report.md", "report\n")
 
 
 def test_load_tasks_malformed_json_has_next_action(tmp_path: Path) -> None:

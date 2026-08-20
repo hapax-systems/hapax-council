@@ -83,6 +83,11 @@ def test_xdist_private_boundary_drift_fails_closed(
     assert runner.ATTESTATION_PREFIX not in captured.err
 
 
+def test_worker_runtime_introspection_guard_has_next_action() -> None:
+    with pytest.raises(RuntimeError, match=r"Next action: remove pytest-runtime introspection"):
+        runner._worker_audit_hook("sys._getframe", ())
+
+
 def test_controller_only_conftest_flag_is_removed_from_worker_args(tmp_path: Path) -> None:
     original_params = runner.pytest.Config.InvocationParams(
         args=("tests/test_hidden.py", "--noconftest", "-q"),
@@ -211,9 +216,10 @@ def test_predicate_command_has_no_writable_attestation_mount(
 
     assert "/attestation" not in command
     assert "writable_mounts" not in observed
+    assert observed["workspace_writable"] is False
 
 
-def test_committed_v1_witness_runs_published_v9_verifier(
+def test_committed_v1_witness_runs_published_v10_verifier(
     capsys: pytest.CaptureFixture[str],
 ) -> None:
     witness = (
