@@ -152,18 +152,32 @@ def _first_party_loaded_modules() -> set[str]:
     module imported through the link and then repointed is recorded under the NEW checkout — the
     receipt naming a file that never participated. ``__file__`` is fixed at import and cannot
     drift; the resolved form can, and does, roughly seven times a day on this estate.
+
+    This function MUST NOT RAISE. Raised by codex-1: ``sys.modules`` is a mutable mapping any
+    library may write to, and an entry whose ``__file__`` is not a path — ``__file__ = 42``
+    demonstrably raises TypeError from ``Path()`` — would propagate out of here. Route
+    construction calls it directly and ``run_producer`` calls it from a ``finally``, where an
+    exception would REPLACE the return value, so one unusual dependency could stop both route
+    and determination records from being written at all.
+
+    A module that cannot be described is recorded by name rather than skipped. Dropping it would
+    be the same omission-as-fact this function exists to prevent, and the marker is the honest
+    statement: something participated and could not be identified.
     """
     found: set[str] = set()
-    for module in list(sys.modules.values()):
-        file = getattr(module, "__file__", None)
-        if not file:
-            continue
+    for name, module in list(sys.modules.items()):
         try:
-            vendored = _is_vendored(Path(file).resolve())
-        except (OSError, RuntimeError):
-            vendored = False  # unresolvable is a reason to report, not to skip
-        if not vendored:
-            found.add(str(file))
+            file = getattr(module, "__file__", None)
+            if not file:
+                continue
+            try:
+                vendored = _is_vendored(Path(file).resolve())
+            except (OSError, RuntimeError):
+                vendored = False  # unresolvable is a reason to report, not to skip
+            if not vendored:
+                found.add(str(file))
+        except Exception:  # noqa: BLE001 - see the must-not-raise contract above
+            found.add(f"<unidentifiable module: {name}>")
     return found
 
 

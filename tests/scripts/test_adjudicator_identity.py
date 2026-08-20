@@ -395,6 +395,74 @@ def test_head_and_cleanliness_come_from_one_snapshot(tmp_path: Path, monkeypatch
     )
 
 
+@pytest.mark.parametrize(
+    "bad_file",
+    [42, object(), b"/bytes/path.py", ["/a/list.py"]],
+    ids=["int", "object", "bytes", "list"],
+)
+def test_a_hostile_sys_modules_entry_cannot_abort_a_receipt(tmp_path: Path, bad_file) -> None:
+    """Raised by codex-1: `sys.modules` is a mutable mapping any library may write to.
+
+    An entry whose `__file__` is not a path — `__file__ = 42` raises TypeError from `Path()` —
+    would propagate out of the enumeration. Route construction calls it directly and
+    `run_producer` calls it from a `finally`, where an exception REPLACES the return value. One
+    unusual dependency could therefore stop both route and determination records from being
+    written at all: provenance taking down the decision it exists to describe.
+
+    The module is recorded by name rather than skipped. Dropping it would be the same
+    omission-read-as-fact this function exists to prevent.
+    """
+    import types
+
+    tree = _make_checkout(tmp_path / "tree", "tree")
+    hostile = types.ModuleType("hostile_probe_module")
+    hostile.__file__ = bad_file
+    sys.modules["hostile_probe_module"] = hostile
+    try:
+        ident = adjudicator_identity(str(tree / "shared" / "adjudicator_identity.py"))
+    finally:
+        del sys.modules["hostile_probe_module"]
+
+    assert ident.sha, "the receipt is still produced"
+    listed = " ".join(ident.loaded_modules)
+    assert "hostile_probe_module" in listed, (
+        "a module that cannot be described must be named, not dropped — otherwise the coverage "
+        "statement quietly omits something that participated"
+    )
+
+
+def test_a_verified_release_tree_is_recognised_as_one(tmp_path: Path, monkeypatch) -> None:
+    """Raised by codex-1: the `release_tree` branch had no durable test.
+
+    Coverage existed for an unverifiable path inside the trusted releases root, and for verified
+    checkouts outside it — but never a real git checkout INSIDE the root, which is the shape
+    production actually runs from. That branch was supported only by a one-off live observation
+    and could have regressed to `git_worktree`, or lost the declared/verified pairing, without
+    the suite noticing.
+
+    The pairing is the point: `declared_sha` is what the directory NAME asserts, `sha` is what
+    git verified, and on this estate they can disagree because release trees are writable.
+    """
+    state_dir = tmp_path / "source-activation"
+    monkeypatch.setenv("HAPAX_SOURCE_ACTIVATE_STATE_DIR", str(state_dir))
+    claimed = "e" * 40
+    tree = _make_checkout(state_dir / "releases" / claimed, "release")
+    real_head = _head(tree)
+    assert real_head != claimed, "the path's claim and the verified HEAD must differ here"
+
+    ident = adjudicator_identity(str(tree / "shared" / "adjudicator_identity.py"))
+
+    assert ident.source == "release_tree", "a verified checkout inside the trusted root"
+    assert ident.sha == real_head, "sha is what git verified"
+    assert ident.declared_sha == claimed, "declared_sha is what the directory name asserted"
+    assert ident.sha != ident.declared_sha, (
+        "and the two are reported separately precisely because they can disagree — a release "
+        "tree here is a writable checkout, so its name is a claim rather than a proof"
+    )
+    assert ident.dirty is False
+    assert record_identifies_its_checkout(ident.as_receipt())
+
+
 def test_identity_never_raises_when_its_own_path_is_unresolvable(monkeypatch) -> None:
     """Raised by codex-1: this function sits on every route and determination write.
 
