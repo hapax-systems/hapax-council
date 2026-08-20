@@ -170,8 +170,39 @@ def test_a_basis_name_constant_does_not_satisfy_the_check() -> None:
 @pytest.mark.parametrize(
     ("record", "usable", "why"),
     [
-        ({"adjudicator_sha": "a" * 40, "adjudicator_source": "release_tree"}, True, "verified"),
-        ({"adjudicator_sha": "a" * 40, "adjudicator_source": "git_worktree"}, True, "verified"),
+        (
+            {
+                "adjudicator_sha": "a" * 40,
+                "adjudicator_source": "release_tree",
+                "adjudicator_dirty": False,
+            },
+            True,
+            "verified sha over a tree verified clean",
+        ),
+        (
+            {
+                "adjudicator_sha": "a" * 40,
+                "adjudicator_source": "git_worktree",
+                "adjudicator_dirty": False,
+            },
+            True,
+            "verified sha over a tree verified clean",
+        ),
+        (
+            {
+                "adjudicator_sha": "a" * 40,
+                "adjudicator_source": "release_tree",
+                "adjudicator_dirty": None,
+            },
+            False,
+            "cleanliness UNKNOWN is not cleanliness verified — raised by codex-1 as "
+            "'a failed git status is promoted to a verified clean identity'",
+        ),
+        (
+            {"adjudicator_sha": "a" * 40, "adjudicator_source": "release_tree"},
+            False,
+            "a record with no dirty field has not been verified clean; absence is not False",
+        ),
         (
             {
                 "adjudicator_sha": "a" * 40,
@@ -196,6 +227,38 @@ def test_a_basis_name_constant_does_not_satisfy_the_check() -> None:
 )
 def test_usable_adjudicator_check(record: dict, usable: bool, why: str) -> None:
     assert record_has_usable_adjudicator(record) is usable, why
+
+
+def test_a_failed_git_status_does_not_report_a_clean_tree(monkeypatch) -> None:
+    """codex-1: "A failed git status is promoted to a verified clean identity."
+
+    `git status --porcelain` returning non-zero produces empty stdout. An earlier version did
+    `bool(status.stdout.strip())` without checking the return code, so failure-to-measure was
+    rendered as measured-clean — this module's own defect, committed inside it, for the third
+    time in two PRs.
+    """
+    import subprocess as sp
+
+    from shared import adjudicator_identity as mod
+
+    real_run = sp.run
+
+    def fake_run(cmd, *args, **kwargs):
+        if "status" in cmd:
+            return sp.CompletedProcess(cmd, returncode=128, stdout="", stderr="fatal: bad object")
+        return real_run(cmd, *args, **kwargs)
+
+    monkeypatch.setattr(mod.subprocess, "run", fake_run)
+
+    head, dirty = mod._git_head(REPO_ROOT)
+    assert head is not None, "HEAD is still knowable when only status failed"
+    assert dirty is None, (
+        "a failed status must yield UNKNOWN cleanliness, not False; False is a claim that the "
+        "tree was inspected and found clean"
+    )
+    assert not record_has_usable_adjudicator(
+        {"adjudicator_sha": head, "adjudicator_source": "git_worktree", "adjudicator_dirty": dirty}
+    )
 
 
 def test_live_route_decisions_are_measured_not_assumed() -> None:

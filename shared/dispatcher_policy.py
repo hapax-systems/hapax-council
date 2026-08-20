@@ -480,7 +480,10 @@ class DimensionalRouteReceipt(_PolicyModel):
     adjudicator_sha: str | None = None
     adjudicator_source: Literal["release_tree", "git_worktree", "indeterminate"] = "indeterminate"
     adjudicator_resolved_from: str | None = None
-    adjudicator_dirty: bool = False
+    #: True dirty, False verified clean, None cleanliness could not be determined. Three
+    #: states: a tree whose `git status` failed is not a clean tree. Consumers must test
+    #: `is False`, never falsiness.
+    adjudicator_dirty: bool | None = None
     #: What the deploy PATH claimed, kept beside the verified sha because they can disagree.
     #: Release trees on this estate are writable git checkouts, so a directory name is a
     #: claim; the live tree `45086a03…` carried a modified file while its path asserted a

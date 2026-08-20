@@ -78,9 +78,11 @@ class AdjudicatorIdentity:
     #: The resolved filesystem path the determination was made from, always recorded so the
     #: claim is auditable even when ``sha`` is None.
     resolved_from: str
-    #: True when the tree had uncommitted modifications at resolution time. A dirty tree means
-    #: ``sha`` does NOT fully identify the running code, whatever the source.
-    dirty: bool = False
+    #: True when the tree had uncommitted modifications, False when it was verified clean, and
+    #: **None when cleanliness could not be determined** — a failed or timed-out ``git status``.
+    #: Three states, not two: an unmeasurable tree is not a clean one. Test ``is False``, never
+    #: falsiness, or None silently reads as clean and the sha claims more than it knows.
+    dirty: bool | None = None
     #: For a release tree, the sha its PATH claims. Recorded separately from ``sha`` because
     #: they can disagree: release trees on this estate are git checkouts and are WRITABLE, so
     #: the directory name is a claim, not a proof. Measured 2026-08-20: the live release tree
@@ -115,10 +117,12 @@ def record_has_usable_adjudicator(record: Mapping[str, object]) -> bool:
     historical route decisions carrying the constant ``"capacity-dimensional-v1"``, so
     "an adjudicator field exists" was never the same question as "the adjudicator is known".
 
-    Usable means: a verified 40-hex ``adjudicator_sha`` from a source that could verify it.
-    A record is NOT usable when it carries only a basis name, when the sha is absent, when the
-    source is ``indeterminate`` (including a release path nothing could confirm), or when the
-    tree was dirty — a dirty tree's HEAD does not determine the code that ran.
+    Usable means: a verified 40-hex ``adjudicator_sha`` from a source that could verify it,
+    over a tree verified clean. A record is NOT usable when it carries only a basis name, when
+    the sha is absent, when the source is ``indeterminate`` (including a release path nothing
+    could confirm), when the tree was dirty, or when **cleanliness could not be determined** —
+    a dirty tree's HEAD does not determine the code that ran, and neither does an unmeasured
+    one. The test is ``is False``, not falsiness: ``None`` means unknown and must not pass.
     """
     sha = record.get("adjudicator_sha")
     source = record.get("adjudicator_source")
@@ -126,11 +130,20 @@ def record_has_usable_adjudicator(record: Mapping[str, object]) -> bool:
         return False
     if source not in ("release_tree", "git_worktree"):
         return False
-    return record.get("adjudicator_dirty") is not True
+    return record.get("adjudicator_dirty") is False
 
 
-def _git_head(tree: Path) -> tuple[str | None, bool]:
-    """HEAD sha and dirtiness for a git worktree, or (None, False) if not one."""
+def _git_head(tree: Path) -> tuple[str | None, bool | None]:
+    """HEAD sha and dirtiness, where dirtiness may be UNKNOWN.
+
+    Returns ``(head, dirty)`` with ``dirty=None`` meaning "could not be determined".
+
+    Raised by codex-1 in review: an earlier version ignored ``git status``'s return code, so a
+    failed or timed-out status produced empty stdout, ``bool("")`` was False, and the identity
+    reported a **verified clean tree**. Failure to measure was rendered as a measurement — the
+    exact defect this module exists to prevent, committed inside it. `dirty` therefore has
+    three states, and callers must test ``is False`` rather than falsiness.
+    """
     try:
         sha = subprocess.run(
             ["git", "-C", str(tree), "rev-parse", "HEAD"],
@@ -140,10 +153,10 @@ def _git_head(tree: Path) -> tuple[str | None, bool]:
             check=False,
         )
         if sha.returncode != 0:
-            return (None, False)
+            return (None, None)
         head = sha.stdout.strip()
         if not re.fullmatch(r"[0-9a-f]{40}", head):
-            return (None, False)
+            return (None, None)
         status = subprocess.run(
             ["git", "-C", str(tree), "status", "--porcelain"],
             capture_output=True,
@@ -151,9 +164,13 @@ def _git_head(tree: Path) -> tuple[str | None, bool]:
             timeout=5,
             check=False,
         )
+        if status.returncode != 0:
+            # HEAD is known, cleanliness is not. Report the sha and refuse to characterise
+            # the tree, rather than inferring "clean" from an empty failure buffer.
+            return (head, None)
         return (head, bool(status.stdout.strip()))
     except (OSError, subprocess.SubprocessError):
-        return (None, False)
+        return (None, None)
 
 
 @lru_cache(maxsize=1)
