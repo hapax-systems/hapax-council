@@ -41,6 +41,26 @@
   ],
   "properties": {
     "decision_schema": {"const": 1},
+
+    "dimensional_route_receipt_schema": {
+      "description": "Marks the start of the DimensionalRouteReceipt fields, which write_route_decision_receipt FLATTENS into the row whenever a decision carries one — which the normal _decision() path always does. They were undeclared while additionalProperties is false, so every ordinary persisted row was invalid against this schema for as long as the flattening existed. Measured 2026-08-20: a live row from route-decisions.jsonl carries 48 keys, 15 of them undeclared. Raised by codex-1 and gemini-1 independently. Declared at their top-level types here; the nested structures are enforced by the pydantic model at write time, and this schema deliberately does not restate them rather than carrying a second copy that can drift.",
+      "const": 1
+    },
+    "routing_model_version": {"const": "capacity-dimensional-v1"},
+    "authority_case": {"type": "string"},
+    "decision": {"type": "string"},
+    "degraded_mode": {"type": "boolean"},
+    "degraded_authority_ref": {"type": ["string", "null"]},
+    "downstream_review_point": {"type": ["string", "null"]},
+    "selected_route_id": {"type": ["string", "null"]},
+    "candidates": {"type": "array"},
+    "candidate_snapshot_ref": {"type": "object"},
+    "confidence": {"type": "object"},
+    "demand_vector_ref": {"type": "object"},
+    "operator_constraints": {"type": "object"},
+    "review_requirement": {"type": "object"},
+    "stale_metadata": {"type": "array"},
+
     "adjudicator_sha": {
       "description": "Verified git HEAD of the checkout the deciding code was loaded from. Null when no checkout could be verified; never inferred from a directory name.",
       "type": ["string", "null"],

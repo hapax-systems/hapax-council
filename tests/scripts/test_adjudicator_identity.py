@@ -1143,6 +1143,26 @@ def test_a_written_row_validates_against_the_canonical_schema(tmp_path: Path) ->
     assert "adjudicator_sha" in row, "the row under test must actually carry the new fields"
     jsonschema.validate(instance=row, schema=schema)
 
+    # And the PRODUCTION shape, which is the one that was actually broken. Raised by codex-1 and
+    # gemini-1 independently: the normal `_decision()` path attaches a DimensionalRouteReceipt,
+    # whose fields the writer flattens into the row, and `additionalProperties: false` rejected
+    # all 15 of them. The bare decision above was the one shape that passed — my test had picked
+    # it, so it went green over a row nobody writes.
+    # `dimensional_receipt` is a PrivateAttr behind a read-only property
+    # (dispatcher_policy.py:622), so it is attached the way production attaches it rather than
+    # passed to the constructor.
+    full = RouteDecision(**decision.model_dump())
+    full._dimensional_receipt = _dimensional_receipt()
+    assert full.dimensional_receipt is not None
+    full_path = write_route_decision_receipt(full, ledger_dir=tmp_path / "full")
+    full_row = json.loads(full_path.read_text().splitlines()[0])
+
+    assert "dimensional_route_receipt_schema" in full_row, (
+        "the receipt must actually be flattened into the row, or this asserts nothing"
+    )
+    assert len(full_row) > len(row), "the production shape carries strictly more keys"
+    jsonschema.validate(instance=full_row, schema=schema)
+
 
 def test_a_route_receipt_stays_hashable() -> None:
     """Raised by coderabbitai: `_PolicyModel` is frozen, so Pydantic derives `__hash__`.
