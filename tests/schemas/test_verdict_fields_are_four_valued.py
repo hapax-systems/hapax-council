@@ -29,6 +29,15 @@ progress. Those nine need a derived-companion design and a separate, reviewed ch
 
 The reason codes are where the information was actually destroyed, they carry no truthiness
 semantics, and the branch that knows the answer already exists. That is what this pins.
+
+The nine schema fields are deferred, not dropped. The design they need — an additive
+four-valued companion per field with the boolean *derived* from it, so the 18 read sites keep
+working and the two cannot disagree — is carried by cc-task
+`schema-verdict-booleans-need-derived-companions-20260820`, together with the ordering note
+that `registry_freshness_green` / `quota_freshness_green` / `resource_freshness_green` have
+one assignment site each while `quality_floor_satisfied` and `authority_allowed` have 37 and
+28. This pointer lives here as well as in the task note so the deferral is visible from the
+code, not only from the vault.
 """
 
 from __future__ import annotations
