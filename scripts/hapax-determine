@@ -44,6 +44,11 @@ from pathlib import Path
 from typing import Any
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
+if str(REPO_ROOT) not in sys.path:
+    sys.path.insert(0, str(REPO_ROOT))
+
+from shared.adjudicator_identity import adjudicator_identity  # noqa: E402
+
 DEFAULT_REGISTRY = REPO_ROOT / "config" / "determination-producers.json"
 DEFAULT_RUN_LEDGER = Path.home() / ".cache" / "hapax" / "determination" / "runs.jsonl"
 
@@ -140,6 +145,11 @@ def run_producer(
         "subjects": producer.get("subjects") or [],
         "provenance": producer.get("provenance"),
         "host": os.uname().nodename,
+        # Which code produced this determination. `provenance` above says how the PROPERTY was
+        # established (mechanical/attested); this says which build of the spine established it.
+        # Without it a run ledger cannot be compared across a redeploy, and the activation
+        # symlink repoints ~7x/day, so "the ledger went green" is otherwise unreadable.
+        **adjudicator_identity().as_receipt(),
     }
     try:
         proc = subprocess.run(argv, capture_output=True, text=True, timeout=timeout)

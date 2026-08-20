@@ -25,6 +25,7 @@ from typing import Any, Literal
 
 from pydantic import BaseModel, ConfigDict, Field, PrivateAttr, ValidationError, model_validator
 
+from shared.adjudicator_identity import adjudicator_identity
 from shared.agentic_trust_boundary import is_syntactically_typed_policy_evidence_reference
 from shared.capability_availability_guarantor import (
     CapabilityAvailabilityReceipt,
@@ -466,7 +467,20 @@ class DimensionalRouteReceipt(_PolicyModel):
     dimensional_route_receipt_schema: Literal[1] = DIMENSIONAL_ROUTE_RECEIPT_SCHEMA_VERSION
     decision_id: str
     created_at: datetime
+    #: The BASIS this decision was made under. Retained: it is a real fact about the model.
+    #: It is not a code identity, and was mistaken for one — it is the constant
+    #: "capacity-dimensional-v1" on 559 of 559 historical records, so it distinguishes
+    #: nothing. The adjudicator_* fields below carry what it was being read as.
     routing_model_version: Literal["capacity-dimensional-v1"] = ROUTING_MODEL_VERSION
+    #: WHICH CODE produced this decision, resolved from the loaded module's own path rather
+    #: than the activation symlink — the symlink repoints ~7x/day and would name the build
+    #: that runs next, not the one that decided. `adjudicator_source` says how strong the
+    #: claim is: `release_tree` fully determines the build, `git_worktree` may be dirty, and
+    #: `indeterminate` (sha None) refuses to guess. See shared/adjudicator_identity.py.
+    adjudicator_sha: str | None = None
+    adjudicator_source: Literal["release_tree", "git_worktree", "indeterminate"] = "indeterminate"
+    adjudicator_resolved_from: str | None = None
+    adjudicator_dirty: bool = False
     task_id: str
     authority_case: str
     decision: DispatchAction
@@ -2615,6 +2629,9 @@ def _build_dimensional_route_receipt(
     return DimensionalRouteReceipt(
         decision_id=decision.decision_id,
         created_at=decision.created_at,
+        # Resolved at write time from this module's own location, so the receipt names the
+        # build that actually decided even if the activation symlink moves mid-run.
+        **adjudicator_identity().as_receipt(),
         task_id=request.task_id,
         authority_case=request.authority_case or "unknown",
         decision=decision.action,
