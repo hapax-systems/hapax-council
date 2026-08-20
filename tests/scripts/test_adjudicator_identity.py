@@ -688,8 +688,8 @@ def test_a_modified_decision_module_is_caught_not_just_the_helper(tmp_path: Path
         (REPO_ROOT / "shared" / "adjudicator_identity.py").read_text()
     )
     (pkg / "decider.py").write_text(
-        "from shared.adjudicator_identity import register_decision_scope\n"
-        "register_decision_scope(__file__)\n"
+        "from shared.adjudicator_identity import register_decision_module\n"
+        "register_decision_module(__file__)\n"
     )
     run("add", "-A")
     run("commit", "-q", "-m", "decider")
@@ -780,21 +780,94 @@ def test_a_symlink_repoint_after_load_cannot_relabel_the_identity(tmp_path: Path
     assert "shared/adjudicator_identity.py" in receipt["adjudicator_verified_modules"]
 
 
-def test_the_real_route_deciders_are_actually_in_scope() -> None:
-    """Raised by codex-1: nothing pinned that the modules that decide are covered.
+#: A dependency loaded MODIFIED, restored to its committed bytes, and only then registered by
+#: the importer. This is the probe codex-1 said was missing — without it the unsafe re-read
+#: stayed green, because every existing test had its fixture register during its own import.
+_REREAD_PROBE = """
+import json, pathlib, sys
+tree = pathlib.Path(sys.argv[1])
+sys.path.insert(0, str(tree))
+dep = tree / "shared" / "dep.py"
+original = dep.read_bytes()
+dep.write_bytes(original + b"\\n# the bytes that actually ran\\n")
+import shared.adjudicator_identity as mod
+import shared.dep                          # loaded MODIFIED; it does not register itself
+dep.write_bytes(original)                  # restored to exactly what HEAD records
+mod.register_decision_module(str(tree / "shared" / "importer.py"))
+print(json.dumps(mod.adjudicator_identity().as_receipt()))
+"""
 
-    These four are named in the finding as executing "logic that directly determines routes".
-    Under the previous design `dispatcher_policy` registered only itself, so a dependency could
-    be loaded modified and restored before the receipt was written — clean tree, registered
-    files matching HEAD, `source_matches_head` True, and the decision code not in that commit.
 
-    Asserted against the REAL import, not a fixture, because the property at issue is whether
-    production's import actually pulls them into scope.
+def test_a_dependency_whose_load_was_never_observed_is_not_credited(tmp_path: Path) -> None:
+    """Re-read bytes are not loaded bytes, even when they match the commit exactly.
+
+    Raised by codex-1 against my own previous fix. The sweep it refuted ran after a decider's
+    dependencies had imported and re-read them from disk, so a dependency loaded while modified
+    and restored beforehand was recorded by its RESTORED bytes — clean tree, `source_matches_head`
+    True, empty unverified set, usable identity, for code that did not make the decision. A false
+    positive, which is worse than the gap it closed.
+
+    Here the file on disk is byte-identical to HEAD at the moment of measurement, and the answer
+    must still be no, because what ran was something else and nothing observed it.
+    """
+    tree = tmp_path / "tree"
+    tree.mkdir(parents=True)
+    run = lambda *a: subprocess.run(  # noqa: E731 - terse local helper, not exported
+        ["git", "-C", str(tree), *a], check=True, capture_output=True
+    )
+    run("init", "-q")
+    run("config", "user.email", "test@example.invalid")
+    run("config", "user.name", "test")
+    pkg = tree / "shared"
+    pkg.mkdir()
+    (pkg / "__init__.py").write_text("")
+    (pkg / "adjudicator_identity.py").write_text(
+        (REPO_ROOT / "shared" / "adjudicator_identity.py").read_text()
+    )
+    (pkg / "dep.py").write_text("VALUE = 1\n")
+    (pkg / "importer.py").write_text("")
+    run("add", "-A")
+    run("commit", "-q", "-m", "dep")
+
+    probe = tmp_path / "probe.py"
+    probe.write_text(_REREAD_PROBE)
+    result = subprocess.run(
+        [sys.executable, str(probe), str(tree)],
+        capture_output=True,
+        text=True,
+        check=False,
+        env={**os.environ, "PYTHONDONTWRITEBYTECODE": "1"},
+    )
+    assert result.returncode == 0, result.stderr
+    receipt = json.loads(result.stdout)
+
+    assert receipt["adjudicator_dirty"] is False, "the file was restored; the tree really is clean"
+    assert "shared/dep.py" in receipt["adjudicator_unverified_modules"], (
+        "a module whose load was never observed must be NAMED as unverified, not credited "
+        "from a re-read that happens to match"
+    )
+    assert receipt["adjudicator_source_matches_head"] is not True
+    assert not record_has_usable_adjudicator(receipt)
+
+
+def test_the_real_route_deciders_are_accounted_for() -> None:
+    """The four modules codex-1 named must appear in the receipt, one way or the other.
+
+    They execute "logic that directly determines routes" and they are imported before anything
+    can observe their load, so they cannot be verified from inside this process. What they can
+    be is VISIBLE: the requirement is that none of them is silently absent, because an absent
+    module is indistinguishable from a verified one once the verdict is read.
     """
     import shared.adjudicator_identity as mod
     import shared.dispatcher_policy  # noqa: F401 - imported for its registration side effect
 
-    covered = {Path(p).name for p in mod._LOADED_MODULES}
+    mod.adjudicator_identity.cache_clear()
+    ident = mod.adjudicator_identity()
+    mod.adjudicator_identity.cache_clear()
+    if ident.sha is None:
+        pytest.skip("not running from a checkout")
+
+    accounted = {Path(p).name for p in (*ident.verified_modules, *ident.unverified_modules)}
     for decider in (
         "dispatcher_policy.py",
         "capability_availability_guarantor.py",
@@ -802,9 +875,9 @@ def test_the_real_route_deciders_are_actually_in_scope() -> None:
         "quota_spend_ledger.py",
         "route_metadata_schema.py",
     ):
-        assert decider in covered, (
-            f"{decider} decides routes but was never captured at load, so a receipt could "
-            "claim a commit its decision code does not belong to"
+        assert decider in accounted, (
+            f"{decider} decides routes and is missing from the receipt entirely; a reader "
+            "would take the verdict as covering it"
         )
 
 
@@ -843,8 +916,11 @@ def test_a_true_verdict_means_nothing_was_left_unverified(tmp_path: Path, monkey
         # still "holds" over a set that quietly shrank. Found by mutation — reinstating the
         # silent skip left the invariant assertion green, which is the same vacuity this PR has
         # already been caught by twice. Every registered module must land in exactly one list.
-        assert len(ident.verified_modules) + len(ident.unverified_modules) == len(registry), (
-            f"{len(registry)} modules registered but "
+        in_scope = set(registry) | mod._in_tree_loaded_modules(
+            Path(mod.__file__).resolve().parents[1]
+        )
+        assert len(ident.verified_modules) + len(ident.unverified_modules) == len(in_scope), (
+            f"{len(in_scope)} modules in scope but "
             f"{len(ident.verified_modules)} + {len(ident.unverified_modules)} accounted for: "
             f"one was dropped rather than reported, for: {label}"
         )
@@ -897,7 +973,7 @@ def test_registering_after_the_identity_was_cached_widens_the_claim(monkeypatch)
 
     latecomer = str(Path(mod.__file__).resolve().parent / "a_late_decider.py")
     monkeypatch.setattr(mod, "_LOADED_MODULES", dict(mod._LOADED_MODULES))
-    mod.register_decision_scope(latecomer)  # the file does not exist: capture fails...
+    mod.register_decision_module(latecomer)  # the file does not exist: capture fails...
     after = mod.adjudicator_identity()
     mod.adjudicator_identity.cache_clear()
 

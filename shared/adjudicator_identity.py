@@ -197,26 +197,30 @@ def _in_tree_loaded_modules(root: Path) -> set[str]:
     return found
 
 
-def register_decision_scope(module_file: str) -> None:
-    """Declare the caller, and every in-tree module already loaded, as decision code.
+def register_decision_module(module_file: str) -> None:
+    """Declare the CALLER as decision code, capturing its bytes as it is imported.
 
-    Called by the modules that actually decide. The sweep is what makes this tractable: raised
-    by codex-1, `dispatcher_policy` alone pulls in `capability_availability_guarantor`,
-    `platform_capability_registry`, `quota_spend_ledger` and `route_metadata_schema`, all of
-    which "execute logic that directly determines routes". Registering each by hand would need
-    an edit in every one and would go stale on the next import.
+    Only the caller. An earlier version also swept every in-tree module already in
+    ``sys.modules``, so that a decider would drag its dependencies into coverage without
+    per-module edits. codex-1 refuted it: the sweep runs *after* those dependencies imported and
+    re-reads them from disk, so a dependency loaded while modified and restored before the sweep
+    would be recorded by its restored bytes — yielding ``dirty=False``,
+    ``source_matches_head=True``, an empty unverified set, and a usable identity for code that
+    did not make the decision.
 
-    Honest limit, because it is a real weakening: a dependency imported BEFORE this call is
-    captured after its own load rather than at it, so the window is the remainder of the
-    importing module's import rather than zero. Anything loaded after the sweep is not captured
-    at all and shows up as unverified, which is the correct direction to fail.
+    That is a FALSE POSITIVE, which is strictly worse than the gap it was closing. The sweep
+    recorded bytes it never observed being loaded and labelled them loaded; this module exists
+    to stop receipts making exactly that kind of statement.
+
+    So capture happens only where load is observed. Everything else in the tree is enumerated
+    and reported as unverified — see ``_loaded_source_matches``. In practice that means
+    production receipts will read ``source_matches_head`` as None with the uncovered modules
+    named, which is the true state of affairs: this estate cannot yet attribute a decision to
+    its full decision code. Closing that needs an immutable build identity captured before
+    execution, which is deploy-side work and not something this module can do from inside the
+    process.
     """
     _capture(module_file)
-    root = _tree_root()
-    if root is not None:
-        for path in _in_tree_loaded_modules(root):
-            if path not in _LOADED_MODULES:
-                _capture(path)
     adjudicator_identity.cache_clear()
 
 

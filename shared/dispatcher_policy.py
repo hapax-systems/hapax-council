@@ -25,7 +25,7 @@ from typing import Any, Literal
 
 from pydantic import BaseModel, ConfigDict, Field, PrivateAttr, ValidationError, model_validator
 
-from shared.adjudicator_identity import adjudicator_identity, register_decision_scope
+from shared.adjudicator_identity import adjudicator_identity, register_decision_module
 from shared.agentic_trust_boundary import is_syntactically_typed_policy_evidence_reference
 from shared.capability_availability_guarantor import (
     CapabilityAvailabilityReceipt,
@@ -81,13 +81,14 @@ from shared.route_metadata_schema import (
     stable_payload_hash,
 )
 
-# AFTER the imports above, deliberately. This module computes the routes, and so does much of
-# what it imports: raised by codex-1, `capability_availability_guarantor`,
-# `platform_capability_registry`, `quota_spend_ledger` and `route_metadata_schema` all execute
-# logic that directly determines routes. Registering only this file would have verified the
-# dispatcher while leaving its deciders unchecked, so the call sweeps every in-tree module
-# already loaded. Placed here rather than beside the import so the sweep actually sees them.
-register_decision_scope(__file__)
+# This module computes the routes, so it is part of the code a route receipt identifies. It
+# registers only ITSELF: its decision-bearing imports above — capability_availability_guarantor,
+# platform_capability_registry, quota_spend_ledger, route_metadata_schema — have already been
+# loaded by the time any line here runs, so their loaded bytes are no longer observable. An
+# earlier version swept them by re-reading from disk; codex-1 refuted it, because re-read bytes
+# recorded as loaded bytes is a false claim of exactly the kind this field exists to prevent.
+# They are enumerated and reported as unverified instead. See register_decision_module.
+register_decision_module(__file__)
 
 logger = logging.getLogger(__name__)
 
