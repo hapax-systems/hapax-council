@@ -205,6 +205,21 @@ def _trusted_runtime_origins(
     return resolved["pytest"], resolved["xdist"], prefix
 
 
+def _write_attestation(payload: dict[str, Any]) -> None:
+    """Write one complete protocol record directly to the controller stderr fd."""
+    pending = (
+        ATTESTATION_PREFIX + json.dumps(payload, sort_keys=True, separators=(",", ":")) + "\n"
+    ).encode()
+    while pending:
+        written = os.write(2, pending)
+        if written <= 0:
+            raise RuntimeError(
+                "HARNESS: unable to write the pytest attestation record. "
+                "Next action: restore the controller stderr pipe and rerun the predicate."
+            )
+        pending = pending[written:]
+
+
 def run(target: str) -> int:
     try:
         pytest_origin, xdist_origin, runtime_prefix = _trusted_runtime_origins()
@@ -278,11 +293,7 @@ def run(target: str) -> int:
         "xdist_origin": str(xdist_origin),
         "xdist_version": importlib.metadata.version("pytest-xdist"),
     }
-    print(
-        ATTESTATION_PREFIX + json.dumps(payload, sort_keys=True, separators=(",", ":")),
-        file=sys.stderr,
-        flush=True,
-    )
+    _write_attestation(payload)
     if not 0 <= logical_exit_code <= MAX_PYTEST_EXIT_CODE:
         print(
             f"HARNESS: pytest returned unsupported exit code {logical_exit_code}. "

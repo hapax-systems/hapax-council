@@ -136,7 +136,7 @@ def test_worker_conftest_invocation_drift_has_next_action(
 def test_zero_collection_record_is_emitted_but_rejected(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
-    capsys: pytest.CaptureFixture[str],
+    capfd: pytest.CaptureFixture[str],
 ) -> None:
     runtime, pytest_origin, xdist_origin = _trusted_runtime(tmp_path)
     monkeypatch.setattr(
@@ -147,7 +147,7 @@ def test_zero_collection_record_is_emitted_but_rejected(
     monkeypatch.setattr(runner.pytest, "main", lambda *_args, **_kwargs: 5)
 
     process_returncode = runner.run("tests/test_hidden.py")
-    captured = capsys.readouterr()
+    captured = capfd.readouterr()
     record = _record(captured.err)
 
     assert process_returncode == 5
@@ -164,7 +164,7 @@ def test_zero_collection_record_is_emitted_but_rejected(
 def test_missing_terminal_report_is_emitted_but_rejected(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
-    capsys: pytest.CaptureFixture[str],
+    capfd: pytest.CaptureFixture[str],
 ) -> None:
     runtime, pytest_origin, xdist_origin = _trusted_runtime(tmp_path)
     monkeypatch.setattr(
@@ -188,7 +188,7 @@ def test_missing_terminal_report_is_emitted_but_rejected(
     monkeypatch.setattr(runner.pytest, "main", incomplete)
 
     process_returncode = runner.run("tests/test_hidden.py")
-    captured = capsys.readouterr()
+    captured = capfd.readouterr()
     record = _record(captured.err)
 
     assert record["terminal"] == {"test_one": "passed"}
@@ -219,7 +219,7 @@ def test_predicate_command_has_no_writable_attestation_mount(
     assert observed["workspace_writable"] is False
 
 
-def test_committed_v1_witness_runs_published_v10_verifier(
+def test_committed_v1_witness_runs_published_v11_verifier(
     capsys: pytest.CaptureFixture[str],
 ) -> None:
     witness = (

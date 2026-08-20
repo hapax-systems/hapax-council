@@ -712,9 +712,7 @@ def test_registered_pytest_hook_code_mutation_cannot_forge_pass(
     assert record["cell_result"]["passed"] is False
     assert record["cell_result"]["exit"]["returncode"] != 0
     assert record["cell_result"]["exit"]["completion_attested"] is False
-    assert "worker function mutation is disabled" in record["cell_result"]["exit"][
-        "output_tail"
-    ]
+    assert "worker function mutation is disabled" in record["cell_result"]["exit"]["output_tail"]
     assert (
         record["cell_result"]["post_scoring_controls"] == record["cell_result"]["scoring_controls"]
     )
