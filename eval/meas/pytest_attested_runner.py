@@ -16,9 +16,10 @@ ATTESTATION_PREFIX = "MEAS_PYTEST_ATTESTATION "
 MAX_PYTEST_EXIT_CODE = 5
 TRUST_FAILURE_EXIT_CODE = 87
 WORKER_INTEGRITY_GUARD = (
-    "plugin-registration-frozen+runtime-introspection-and-hook-mutation-audit/v2"
+    "early-runtime-introspection-and-hook-mutation-audit+collection-plugin-registration-freeze/v3"
 )
-_WORKER_GUARD_INSTALLED = False
+_WORKER_AUDIT_INSTALLED = False
+_WORKER_REGISTRATION_FROZEN = False
 _BLOCKED_AUDIT_EVENTS = frozenset(
     {
         "gc.get_objects",
@@ -31,6 +32,7 @@ _BLOCKED_AUDIT_EVENTS = frozenset(
     }
 )
 _BLOCKED_FUNCTION_ATTRIBUTES = frozenset({"__code__", "__defaults__", "__kwdefaults__"})
+_BLOCKED_FUNCTION_MUTATION_EVENTS = frozenset({"object.__setattr__", "object.__delattr__"})
 
 
 def _outside_workspace_import_path(value: str) -> bool:
@@ -87,29 +89,58 @@ def pytest_configure(config: pytest.Config) -> None:
         sys.path.insert(0, "/workspace")
 
 
-def _worker_audit_hook(event: str, args: tuple[Any, ...]) -> None:
-    if event in _BLOCKED_AUDIT_EVENTS:
-        raise RuntimeError(
+def _worker_audit_hook(
+    event: str,
+    args: tuple[Any, ...],
+    blocked_events: frozenset[str] = _BLOCKED_AUDIT_EVENTS,
+    blocked_attributes: frozenset[str] = _BLOCKED_FUNCTION_ATTRIBUTES,
+    mutation_events: frozenset[str] = _BLOCKED_FUNCTION_MUTATION_EVENTS,
+    error_type: type[RuntimeError] = RuntimeError,
+) -> None:
+    if event in blocked_events:
+        raise error_type(
             f"worker runtime introspection is disabled at the scoring boundary ({event}). "
             "Next action: remove pytest-runtime introspection from the solution and rerun."
         )
-    if (
-        event in {"object.__setattr__", "object.__delattr__"}
-        and len(args) >= 2
-        and args[1] in _BLOCKED_FUNCTION_ATTRIBUTES
-    ):
-        raise RuntimeError(
+    if event in mutation_events and args[1] in blocked_attributes:
+        raise error_type(
             f"worker function mutation is disabled at the scoring boundary ({args[1]}). "
             "Next action: remove runtime mutation of pytest hooks from the solution and "
             "rerun."
         )
 
 
-def _install_worker_integrity_guard(config: pytest.Config) -> None:
-    """Freeze plugin registration and function mutation before solution import."""
-    global _WORKER_GUARD_INSTALLED
-    if _WORKER_GUARD_INSTALLED:
+def _install_worker_audit_guard() -> None:
+    """Install the non-removable audit boundary before worker conftest import."""
+    global _WORKER_AUDIT_INSTALLED
+    if _WORKER_AUDIT_INSTALLED:
         return
+    sys.addaudithook(_worker_audit_hook)
+    _WORKER_AUDIT_INSTALLED = True
+
+
+@pytest.hookimpl(tryfirst=True)
+def pytest_load_initial_conftests(
+    early_config: pytest.Config,
+    parser: pytest.Parser,
+    args: list[str],
+) -> None:
+    """Seal mutation/introspection before a trusted conftest can import solution code."""
+    del early_config, parser, args
+    if os.environ.get("PYTEST_XDIST_WORKER"):
+        _install_worker_audit_guard()
+
+
+def _freeze_worker_plugin_registration(config: pytest.Config) -> None:
+    """Freeze new plugin registration before collection imports test modules."""
+    global _WORKER_REGISTRATION_FROZEN
+    if _WORKER_REGISTRATION_FROZEN:
+        return
+    if not _WORKER_AUDIT_INSTALLED:
+        raise RuntimeError(
+            "worker audit guard was not installed before conftest import. "
+            "Next action: restore the pinned pytest startup lifecycle and rerun."
+        )
     plugin_manager = config.pluginmanager
     manager_type = type(plugin_manager)
     original_register = manager_type.register
@@ -122,30 +153,31 @@ def _install_worker_integrity_guard(config: pytest.Config) -> None:
         if manager is plugin_manager:
             del plugin, name
             raise RuntimeError(
-                "pytest plugin registration is frozen before solution import. "
+                "pytest plugin registration is frozen before test-module collection. "
                 "Next action: remove runtime pytest-hook registration from the solution "
                 "and rerun."
             )
         return original_register(manager, plugin, name)
 
     manager_type.register = guarded_register
-    sys.addaudithook(_worker_audit_hook)
-    _WORKER_GUARD_INSTALLED = True
+    _WORKER_REGISTRATION_FROZEN = True
 
 
 def pytest_collection(session: pytest.Session) -> None:
-    """Seal worker pytest control surfaces before collection imports solution code."""
+    """Freeze plugin registration before collection imports test modules."""
     if os.environ.get("PYTEST_XDIST_WORKER"):
         if "/workspace" not in sys.path:
             sys.path.insert(0, "/workspace")
-        _install_worker_integrity_guard(session.config)
+        _freeze_worker_plugin_registration(session.config)
 
 
 def pytest_sessionfinish(session: pytest.Session, exitstatus: int) -> None:
     del exitstatus
     if os.environ.get("PYTEST_XDIST_WORKER") and hasattr(session.config, "workeroutput"):
         session.config.workeroutput["meas_worker_integrity_guard"] = (
-            WORKER_INTEGRITY_GUARD if _WORKER_GUARD_INSTALLED else "missing"
+            WORKER_INTEGRITY_GUARD
+            if _WORKER_AUDIT_INSTALLED and _WORKER_REGISTRATION_FROZEN
+            else "missing"
         )
 
 

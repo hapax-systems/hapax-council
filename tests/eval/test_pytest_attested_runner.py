@@ -219,7 +219,7 @@ def test_predicate_command_has_no_writable_attestation_mount(
     assert observed["workspace_writable"] is False
 
 
-def test_committed_v1_witness_runs_published_v11_verifier(
+def test_committed_v1_witness_runs_published_v12_verifier(
     capsys: pytest.CaptureFixture[str],
 ) -> None:
     witness = (

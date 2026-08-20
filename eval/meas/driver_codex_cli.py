@@ -40,11 +40,11 @@ DEFAULT_TIMEOUT_SECONDS = 900
 PREDICATE_TIMEOUT_SECONDS = 600
 GITHUB_REPO = "hapax-systems/hapax-council"
 HARNESS_NAME = "codex-cli-agentic"
-DRIVER_VERSION = "driver_codex_cli/v11"
+DRIVER_VERSION = "driver_codex_cli/v12"
 DIRECT_API_35B_BASELINE = {"passed": 0, "total": 19, "pass_rate": 0.0}
 KNOWN_WITNESS_ARTIFACTS = {
     "1991e186b3699fa87667ac09963ef542ac3587dadc5b7e31be49afa3a9c2f03c": (
-        "b9ab2d81676853f168cf0841e5a482452fe781c3e400b5241449d2a7cd02a361"
+        "b6ca937cc666ef58071645bec39335eb6996aca18aa1299d33bcddfd126431cf"
     )
 }
 SCORING_DIFF_EXCLUDES = (
@@ -981,7 +981,8 @@ def _validate_completion_attestation(
         or raw.get("attester_process") != "xdist-controller"
         or raw.get("worker_count") != 1
         or raw.get("worker_integrity_guard")
-        != "plugin-registration-frozen+runtime-introspection-and-hook-mutation-audit/v2"
+        != "early-runtime-introspection-and-hook-mutation-audit+"
+        "collection-plugin-registration-freeze/v3"
         or not isinstance(raw.get("attester_pid"), int)
         or raw.get("xdist_version") != pytest_xdist_version()
         or not isinstance(collected, list)
@@ -1576,7 +1577,8 @@ def lambda_config(
                 "pytest_cacheprovider": "disabled",
                 "pytest_execution": "one-isolated-xdist-worker",
                 "pytest_worker_integrity": (
-                    "plugin-registration-frozen+runtime-introspection-and-hook-mutation-audit/v2"
+                    "early-runtime-introspection-and-hook-mutation-audit+"
+                    "collection-plugin-registration-freeze/v3"
                 ),
                 "pytest_worker_launcher_sha256": pytest_worker_launcher_sha256(),
                 "pytest_xdist_version": pytest_xdist_version(),
@@ -1978,8 +1980,9 @@ def render_result_note(
     predicate_boundary = (
         "The deterministic predicate ran in Bubblewrap with a cleared environment and "
         "an unshared network namespace and a read-only scoring checkout. Agent-changed "
-        "solution code ran in one xdist worker after plugin registration, runtime-frame "
-        "introspection, and mutation of registered hook functions were frozen; "
+        "solution code ran in one xdist worker after runtime-frame introspection and "
+        "mutation of registered hook functions were frozen before conftest import, and "
+        "plugin registration was frozen before test-module collection; "
         "the separate trusted controller had to emit exactly one lifecycle record showing "
         "every worker-collected hidden pytest item reached a terminal report."
         if predicate_surface.get("completion_attestation")
