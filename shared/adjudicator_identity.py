@@ -157,6 +157,9 @@ def _is_interpreter_module(name: str, module: object) -> bool:
             if parent_file and _is_vendored(Path(parent_file).resolve()):
                 return True
         except (OSError, RuntimeError, TypeError, ValueError):
+            # The parent could not be classified, so it cannot vouch for this module either.
+            # Fall through and report it: unknown provenance is a reason to name a module, and
+            # returning True here would drop it on the strength of a failed check.
             pass
     try:
         search_paths = list(getattr(module, "__path__", None) or [])
