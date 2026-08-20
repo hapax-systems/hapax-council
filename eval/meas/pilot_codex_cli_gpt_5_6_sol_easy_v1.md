@@ -16,16 +16,18 @@ measured harness/model pair; it does not isolate model quality from harness effe
 ## Historical measurement boundary
 
 Each cell used an isolated shallow checkout at the authoritative PR parent. Codex
-edited under the workspace-write sandbox with user config, MCP, and web search
-disabled. The harness captured JSONL stdout/stderr and the post-exec diff, then
-installed merge-version tests and ran the deterministic predicate. The proprietary
-model's weight hash and serving quantization are not published; those λ fields say
-`provider-managed` rather than pretending a weights digest exists.
+edited through the historical `--full-auto` invocation, which selected the
+workspace-write sandbox; both surfaces were removed from the shipped v7 driver.
+User config, MCP, and web search were disabled. The harness captured JSONL
+stdout/stderr and the post-exec diff, then installed merge-version tests and ran the
+deterministic predicate. The proprietary model's weight hash and serving quantization
+are not published; those λ fields say `provider-managed` rather than pretending a
+weights digest exists.
 
-This result predates the v6 external agent-read boundary, clean scoring checkout,
-isolated predicate, pytest-origin check, and encoded natural-completion boundary.
+This result predates the v7 external agent-read boundary, clean scoring checkout,
+isolated predicate, pytest/xdist-origin checks, and controller/worker separation.
 It is retained as an explicitly historical v1 measurement, not represented as a
-measurement of the shipped v6 driver. The adjacent witness contains the redacted
+measurement of the shipped v7 driver. The adjacent witness contains the redacted
 19-cell evidence, task and commit contracts, λ, result seals, and artifact seal.
 
 ## Recheck

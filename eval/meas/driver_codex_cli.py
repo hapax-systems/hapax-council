@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import argparse
 import hashlib
+import importlib.metadata
 import json
 import os
 import re
@@ -38,11 +39,11 @@ DEFAULT_TIMEOUT_SECONDS = 900
 PREDICATE_TIMEOUT_SECONDS = 600
 GITHUB_REPO = "hapax-systems/hapax-council"
 HARNESS_NAME = "codex-cli-agentic"
-DRIVER_VERSION = "driver_codex_cli/v6"
+DRIVER_VERSION = "driver_codex_cli/v7"
 DIRECT_API_35B_BASELINE = {"passed": 0, "total": 19, "pass_rate": 0.0}
 KNOWN_WITNESS_ARTIFACTS = {
     "1991e186b3699fa87667ac09963ef542ac3587dadc5b7e31be49afa3a9c2f03c": (
-        "50970cc488b49fa67b6977fbdacb45f83b489666cb3046163dd492ae4de1bc31"
+        "376ac73531dd5c2f581a1d174b633977f7e6149cf242bd9733a5de58e782051b"
     )
 }
 SCORING_DIFF_EXCLUDES = (
@@ -73,9 +74,9 @@ SCORING_CONTROL_NAMES = frozenset(
     }
 )
 ATTESTED_RUNNER = Path(__file__).with_name("pytest_attested_runner.py")
+PYTEST_WORKER_LAUNCHER = Path(__file__).with_name("pytest_isolated_worker")
 CODEX_CELL_CONFIG = Path(__file__).with_name("codex_cell_config.toml")
 PYTEST_ATTESTATION_PREFIX = "MEAS_PYTEST_ATTESTATION "
-PYTEST_COMPLETION_EXIT_BASE = 100
 PYTEST_MAX_EXIT_CODE = 5
 _NETWORK_ENV_KEYS = (
     "HTTP_PROXY",
@@ -689,6 +690,28 @@ def attested_runner_sha256() -> str:
     return hashlib.sha256(content).hexdigest()
 
 
+def pytest_worker_launcher_sha256() -> str:
+    try:
+        content = PYTEST_WORKER_LAUNCHER.read_bytes()
+    except OSError as exc:
+        raise DriverError(
+            f"cannot read trusted pytest worker launcher {PYTEST_WORKER_LAUNCHER}: {exc}. "
+            "Next action: restore the shipped isolated worker launcher and rerun."
+        ) from exc
+    return hashlib.sha256(content).hexdigest()
+
+
+def pytest_xdist_version() -> str:
+    try:
+        return importlib.metadata.version("pytest-xdist")
+    except importlib.metadata.PackageNotFoundError as exc:
+        raise DriverError(
+            "pytest-xdist is required for controller/worker scoring isolation. "
+            "Next action: run the harness from the locked project environment with the "
+            "repository's ci extra installed."
+        ) from exc
+
+
 def codex_cell_config_sha256() -> str:
     try:
         content = CODEX_CELL_CONFIG.read_bytes()
@@ -891,7 +914,10 @@ def _attested_pytest_command(
             "PYTEST_DISABLE_PLUGIN_AUTOLOAD": "1",
             "PYTEST_ADDOPTS": "",
         },
-        readonly_mounts=[(ATTESTED_RUNNER, Path("/harness/pytest_attested_runner.py"))],
+        readonly_mounts=[
+            (ATTESTED_RUNNER, Path("/harness/pytest_attested_runner.py")),
+            (PYTEST_WORKER_LAUNCHER, Path("/harness/python-isolated")),
+        ],
     )
 
 
@@ -910,9 +936,13 @@ def _validate_completion_attestation(
     collected = raw.get("collected")
     terminal = raw.get("terminal")
     if (
-        raw.get("schema_version") != 2
+        raw.get("schema_version") != 3
         or raw.get("completed") is not True
         or raw.get("exit_code") != returncode
+        or raw.get("attester_process") != "xdist-controller"
+        or raw.get("worker_count") != 1
+        or not isinstance(raw.get("attester_pid"), int)
+        or raw.get("xdist_version") != pytest_xdist_version()
         or not isinstance(collected, list)
         or not collected
         or len(set(collected)) != len(collected)
@@ -932,7 +962,9 @@ def _validate_completion_attestation(
     try:
         recorded_prefix = Path(str(raw.get("runtime_prefix") or "")).resolve()
         pytest_origin = Path(str(raw.get("pytest_origin") or "")).resolve()
+        xdist_origin = Path(str(raw.get("xdist_origin") or "")).resolve()
         pytest_origin.relative_to(expected_prefix)
+        xdist_origin.relative_to(expected_prefix)
     except (OSError, ValueError):
         return f"pytest completion attestation has an untrusted runtime origin. {next_action}"
     workspace = Path("/workspace")
@@ -940,6 +972,8 @@ def _validate_completion_attestation(
         recorded_prefix != expected_prefix
         or pytest_origin == workspace
         or workspace in pytest_origin.parents
+        or xdist_origin == workspace
+        or workspace in xdist_origin.parents
     ):
         return f"pytest completion attestation has an untrusted runtime origin. {next_action}"
     return None
@@ -955,10 +989,10 @@ def _parse_completion_attestation(
         "Next action: discard the cell, restore the trusted runner/control files, "
         "and rerun the predicate."
     )
-    logical_returncode = process_returncode - PYTEST_COMPLETION_EXIT_BASE
+    logical_returncode = process_returncode
     if not 0 <= logical_returncode <= PYTEST_MAX_EXIT_CODE:
         return None, (
-            "pytest runner did not cross the trusted natural-completion boundary "
+            "pytest controller did not reach the trusted completion boundary "
             f"(process return code {process_returncode}). {next_action}"
         )
     records = [
@@ -1483,14 +1517,17 @@ def lambda_config(
             },
             "codex_timeout_seconds": config.timeout_seconds,
             "exit_predicate": {
-                "completion_attestation": "trusted-pytest-lifecycle-v2",
-                "completion_boundary": "encoded-natural-return+single-stderr-record",
+                "completion_attestation": "trusted-pytest-lifecycle-v3",
+                "completion_boundary": "xdist-controller+single-stderr-record",
                 "confcutdir": "/workspace",
                 "config": "/dev/null",
                 "environment": "cleared",
                 "network": "unshared",
                 "plugin_autoload": "disabled",
                 "pytest_cacheprovider": "disabled",
+                "pytest_execution": "one-isolated-xdist-worker",
+                "pytest_worker_launcher_sha256": pytest_worker_launcher_sha256(),
+                "pytest_xdist_version": pytest_xdist_version(),
                 "rootdir": "/workspace",
                 "runner_sha256": attested_runner_sha256(),
                 "sandbox": "bubblewrap",
@@ -1739,9 +1776,9 @@ def render_result_note(
     codex_sandbox = tool_surface.get("sandbox", "unknown")
     predicate_boundary = (
         "The deterministic predicate ran in Bubblewrap with a cleared environment and "
-        "an unshared network namespace. The trusted runner had to return through its "
-        "encoded natural-completion boundary and emit exactly one lifecycle record showing "
-        "every collected hidden pytest item reached a terminal report."
+        "an unshared network namespace. Model-authored solution code ran in one xdist worker; "
+        "the separate trusted controller had to emit exactly one lifecycle record showing "
+        "every worker-collected hidden pytest item reached a terminal report."
         if predicate_surface.get("completion_attestation")
         else "The deterministic predicate ran in Bubblewrap with a cleared environment and "
         "an unshared network namespace."

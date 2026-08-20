@@ -1,0 +1,13 @@
+#!/bin/sh
+set -eu
+
+if [ -z "${VIRTUAL_ENV:-}" ]; then
+    printf '%s\n' "pinned project environment is missing. Next action: run through the locked uv environment." >&2
+    exit 87
+fi
+if [ "$#" -ne 3 ] || [ "$1" != "-u" ] || [ "$2" != "-c" ]; then
+    printf '%s\n' "unsupported xdist worker invocation. Next action: restore the pinned pytest-xdist version and rerun." >&2
+    exit 87
+fi
+exec "$VIRTUAL_ENV/bin/python" -I "$1" "$2" \
+    "import sys;sys.path.insert(0,'/harness');$3"

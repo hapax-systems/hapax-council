@@ -52,10 +52,10 @@
       "driver_codex_cli/v1 did not sandbox the deterministic exit predicate",
       "provider-managed model weights, serving version, and quantization are not independently published"
     ],
-    "superseded_safety_contract": "Use driver_codex_cli/v6 for future measurements; this witness preserves the already-completed v1 result only. v6 externally confines agent reads, denies credential reads to model tools through a synthetic permission profile, confines post-agent Git, scores a filtered diff in a clean parent checkout, verifies pytest's runtime origin, and accepts a lifecycle record only after the trusted runner crosses an encoded natural-completion boundary.",
-    "verifier_contract": "The backward-compatible --verify-result implementation in driver_codex_cli/v6 verifies this exact v1 witness; tests/eval/test_driver_codex_cli.py invokes the committed witness recheck.",
+    "superseded_safety_contract": "Use driver_codex_cli/v7 for future measurements; this witness preserves the already-completed v1 result only. v7 externally confines agent reads, denies credential reads to model tools through a synthetic permission profile, confines post-agent Git, scores a filtered diff in a clean parent checkout, and runs model-authored solution code in an isolated xdist worker while a separate trusted controller records the lifecycle.",
+    "verifier_contract": "The backward-compatible --verify-result implementation in driver_codex_cli/v7 verifies this exact v1 witness; tests/eval/test_driver_codex_cli.py invokes the committed witness recheck.",
     "recheck": "uv run python eval/meas/driver_codex_cli.py --verify-result eval/meas/pilot_codex_cli_gpt_5_6_sol_easy_v1.witness.json",
-    "artifact_sha256": "50970cc488b49fa67b6977fbdacb45f83b489666cb3046163dd492ae4de1bc31"
+    "artifact_sha256": "376ac73531dd5c2f581a1d174b633977f7e6149cf242bd9733a5de58e782051b"
   },
   "selection": {
     "difficulty": "easy",

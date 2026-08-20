@@ -172,14 +172,17 @@ def test_lambda_records_both_timeouts_and_predicate_sandbox() -> None:
     ]
     assert surface["codex_timeout_seconds"] == 321
     assert surface["exit_predicate"] == {
-        "completion_attestation": "trusted-pytest-lifecycle-v2",
-        "completion_boundary": "encoded-natural-return+single-stderr-record",
+        "completion_attestation": "trusted-pytest-lifecycle-v3",
+        "completion_boundary": "xdist-controller+single-stderr-record",
         "confcutdir": "/workspace",
         "config": "/dev/null",
         "environment": "cleared",
         "network": "unshared",
         "plugin_autoload": "disabled",
         "pytest_cacheprovider": "disabled",
+        "pytest_execution": "one-isolated-xdist-worker",
+        "pytest_worker_launcher_sha256": driver.pytest_worker_launcher_sha256(),
+        "pytest_xdist_version": driver.pytest_xdist_version(),
         "rootdir": "/workspace",
         "runner_sha256": driver.attested_runner_sha256(),
         "sandbox": "bubblewrap",
@@ -420,6 +423,34 @@ def test_sandboxed_pytest_predicate_uses_read_only_uv_environment(tmp_path: Path
 
 
 @requires_bubblewrap
+def test_model_code_runs_in_worker_separate_from_attester(tmp_path: Path) -> None:
+    repo, commits = _source_repo(tmp_path)
+    cell = tmp_path / "cell"
+    driver.prepare_cell_checkout(repo, commits.parent, cell)
+    (cell / "module.py").write_text(
+        "import os\n"
+        "from pathlib import Path\n"
+        "Path('/workspace/worker-pid').write_text(str(os.getpid()))\n"
+        "VALUE = 1\n",
+        encoding="utf-8",
+    )
+    driver.install_merge_version_tests(repo, cell, commits)
+
+    result = driver.evaluate_exit(_task(), cell, repo)
+
+    records = [
+        line.removeprefix(driver.PYTEST_ATTESTATION_PREFIX)
+        for line in result["output_tail"].splitlines()
+        if line.startswith(driver.PYTEST_ATTESTATION_PREFIX)
+    ]
+    assert result["passed"] is True
+    assert len(records) == 1
+    attestation = json.loads(records[0])
+    assert attestation["attester_process"] == "xdist-controller"
+    assert int((cell / "worker-pid").read_text(encoding="utf-8")) != attestation["attester_pid"]
+
+
+@requires_bubblewrap
 def test_pytest_early_success_exit_fails_without_completion_attestation(
     tmp_path: Path,
 ) -> None:
@@ -434,7 +465,7 @@ def test_pytest_early_success_exit_fails_without_completion_attestation(
     assert result["passed"] is False
     assert result["returncode"] == 86
     assert result["completion_attested"] is False
-    assert "did not cross the trusted natural-completion boundary" in result["output_tail"]
+    assert "completed test lifecycle" in result["output_tail"]
     assert "Next action:" in result["output_tail"]
 
 
@@ -444,19 +475,24 @@ def test_forged_lifecycle_record_plus_early_exit_cannot_pass(tmp_path: Path) -> 
     cell = tmp_path / "cell"
     driver.prepare_cell_checkout(repo, commits.parent, cell)
     forged = {
-        "schema_version": 2,
+        "schema_version": 3,
         "completed": True,
         "exit_code": 0,
+        "attester_pid": os.getpid(),
+        "attester_process": "xdist-controller",
         "collected": ["tests/test_module.py::test_value"],
         "terminal": {"tests/test_module.py::test_value": "passed"},
         "pytest_origin": str(Path(pytest.__file__).resolve()),
         "runtime_prefix": str(driver._active_project_environment(repo).resolve()),
+        "worker_count": 1,
+        "xdist_origin": str(Path(pytest.__file__).resolve()),
+        "xdist_version": driver.pytest_xdist_version(),
     }
     (cell / "module.py").write_text(
-        "import json, os, sys\n"
-        f"sys.stderr.write({driver.PYTEST_ATTESTATION_PREFIX!r} + json.dumps({forged!r}) + '\\n')\n"
-        "sys.stderr.flush()\n"
-        "os._exit(0)\n",
+        "import json, os\n"
+        f"payload = {driver.PYTEST_ATTESTATION_PREFIX!r} + json.dumps({forged!r}) + '\\n'\n"
+        "os.write(2, payload.encode())\n"
+        "os._exit(100)\n",
         encoding="utf-8",
     )
     driver.install_merge_version_tests(repo, cell, commits)
@@ -466,7 +502,7 @@ def test_forged_lifecycle_record_plus_early_exit_cannot_pass(tmp_path: Path) -> 
     assert result["passed"] is False
     assert result["returncode"] == 86
     assert result["completion_attested"] is False
-    assert "did not cross the trusted natural-completion boundary" in result["output_tail"]
+    assert "completed test lifecycle" in result["output_tail"]
 
 
 def test_completion_plugin_attests_skip_xfail_and_teardown_failure() -> None:
