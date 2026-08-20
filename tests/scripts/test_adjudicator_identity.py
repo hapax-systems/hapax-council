@@ -521,6 +521,40 @@ def test_a_hostile_sys_modules_entry_cannot_abort_a_receipt(tmp_path: Path, bad_
     )
 
 
+def test_a_module_whose_path_will_not_resolve_is_still_reported(tmp_path: Path) -> None:
+    """An unresolvable `__file__` reaches a different handler than a wrong-typed one.
+
+    The hostile-type cases (int, object, bytes, list) raise TypeError from `Path()` and land in
+    the must-not-raise catch-all. A symlink loop raises RuntimeError from `.resolve()` inside
+    the vendored check instead, which is a separate branch: it cannot decide vendored-ness, and
+    the module must still be reported rather than dropped on a failed check.
+
+    Added by self-audit rather than by review. Four consecutive rounds found branches I had just
+    added and not covered, so the remaining uncovered one was worth finding myself.
+    """
+    import types
+
+    tree = _make_checkout(tmp_path / "tree", "tree")
+    loop_a, loop_b = tmp_path / "loop-a", tmp_path / "loop-b"
+    loop_a.symlink_to(loop_b)
+    loop_b.symlink_to(loop_a)
+
+    looping = types.ModuleType("looping_probe_module")
+    looping.__file__ = str(loop_a / "shared" / "thing.py")
+    sys.modules["looping_probe_module"] = looping
+    try:
+        ident = adjudicator_identity(str(tree / "shared" / "adjudicator_identity.py"))
+    finally:
+        del sys.modules["looping_probe_module"]
+
+    assert ident.sha, "the receipt is still produced"
+    listed = " ".join(ident.loaded_modules)
+    assert "loop-a" in listed or "looping_probe_module" in listed, (
+        "a module whose path cannot be resolved must still appear; dropping it on a failed "
+        "vendored check is the same omission-as-fact the enumeration exists to prevent"
+    )
+
+
 def test_a_verified_release_tree_is_recognised_as_one(tmp_path: Path, monkeypatch) -> None:
     """Raised by codex-1: the `release_tree` branch had no durable test.
 

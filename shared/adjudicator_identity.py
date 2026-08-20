@@ -355,11 +355,16 @@ def _git_head(tree: Path) -> tuple[str | None, bool | None]:
     HEAD before it scans the worktree (``builtin/commit.c``), so a concurrent checkout can still
     produce OID A paired with a scan of state B.
 
-    Since the window cannot be removed, it is DETECTED. HEAD is read before and after the
-    status, and if the two disagree the tree changed underneath the scan, so ``dirty`` degrades
-    to None: the sha was observed, the cleanliness cannot be paired with it. A move-and-move-back
-    within the window would defeat this, and that residual is stated rather than papered over —
-    an earlier version claimed the pair "cannot disagree", which was simply false.
+    Since the window cannot be removed, it is DETECTED. The status supplies the OID it began
+    with; a ``rev-parse`` afterwards asks whether HEAD is still there. If it is not — or if that
+    read fails, times out, or cannot run — nothing confirmed HEAD held still, so ``dirty``
+    degrades to None: the sha was observed, the cleanliness cannot be paired with it.
+
+    Two residuals, stated rather than papered over. A move-and-move-back inside the window is
+    invisible to this. And the check confirms only that HEAD is unchanged, not that the worktree
+    was untouched during the scan. An earlier version of this docstring claimed the pair "cannot
+    disagree", which was simply false, and the summary line claimed one invocation after the
+    implementation had grown a second.
 
     Earlier and still true: an even earlier version ignored the return code entirely, so a failed
     status produced empty stdout, ``bool("")`` was False, and the identity reported a **verified
