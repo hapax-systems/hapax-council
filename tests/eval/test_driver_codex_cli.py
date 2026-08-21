@@ -191,7 +191,7 @@ def test_lambda_records_both_timeouts_and_predicate_sandbox() -> None:
         "pytest_execution": "one-isolated-xdist-worker",
         "pytest_worker_integrity": (
             "early-runtime-introspection-and-hook-mutation-audit+"
-            "collection-plugin-registration-freeze+raw-worker-outcomes/v4"
+            "collection-plugin-registration-freeze+sealed-call-capture+raw-worker-outcomes/v5"
         ),
         "pytest_worker_launcher_sha256": driver.pytest_worker_launcher_sha256(),
         "pytest_xdist_version": driver.pytest_xdist_version(),
@@ -439,6 +439,17 @@ def test_isolated_worker_launcher_uses_isolated_harness_path() -> None:
     assert result.stdout.splitlines() == ["1", "/harness"]
 
 
+def test_worker_launcher_harness_path_matches_driver_mount_contract() -> None:
+    launcher = driver.PYTEST_WORKER_LAUNCHER.read_text(encoding="utf-8")
+    harness_root = str(driver.PYTEST_HARNESS_ROOT)
+
+    assert f"sys.path.insert(0,'{harness_root}')" in launcher
+    assert Path("/harness/pytest_attested_runner.py") == (
+        driver.PYTEST_HARNESS_ROOT / "pytest_attested_runner.py"
+    )
+    assert Path("/harness/python-isolated") == driver.PYTEST_HARNESS_ROOT / "python-isolated"
+
+
 @requires_bubblewrap
 def test_agent_boundary_denies_reads_outside_cell_while_sharing_network(
     tmp_path: Path,
@@ -579,7 +590,7 @@ def test_model_code_runs_in_worker_separate_from_attester(tmp_path: Path) -> Non
     assert attestation["attester_process"] == "xdist-controller"
     assert attestation["worker_integrity_guard"] == (
         "early-runtime-introspection-and-hook-mutation-audit+"
-        "collection-plugin-registration-freeze+raw-worker-outcomes/v4"
+        "collection-plugin-registration-freeze+sealed-call-capture+raw-worker-outcomes/v5"
     )
 
 
@@ -611,7 +622,7 @@ def test_trusted_conftest_cannot_import_solution_code_in_controller(tmp_path: Pa
         "        'worker_count': 1,\n"
         "        'worker_integrity_guard': "
         "'early-runtime-introspection-and-hook-mutation-audit+"
-        "collection-plugin-registration-freeze+raw-worker-outcomes/v4',\n"
+        "collection-plugin-registration-freeze+sealed-call-capture+raw-worker-outcomes/v5',\n"
         "        'xdist_origin': str(Path(xdist.__file__).resolve()),\n"
         "        'xdist_version': importlib.metadata.version('pytest-xdist'),\n"
         "    }\n"
@@ -794,6 +805,67 @@ def test_registered_pytest_hook_globals_mutation_cannot_forge_pass(
 
 
 @requires_bubblewrap
+def test_collection_import_cannot_replace_callinfo_capture_and_erase_failure(
+    tmp_path: Path,
+) -> None:
+    repo, commits = _source_repo(tmp_path, parent_conftest="from module import VALUE\n")
+
+    def callinfo_capture_mutation_executor(
+        *,
+        task: driver.Mapping[str, Any],
+        workdir: Path,
+        config: driver.CodexRunConfig,
+    ) -> dict[str, Any]:
+        del task
+        (workdir / "module.py").write_text(
+            "import time\n"
+            "from _pytest import runner\n\n"
+            "OriginalFromCall = runner.CallInfo.from_call\n\n"
+            "def swallowing_from_call(cls, func, when, reraise=None):\n"
+            "    if when != 'call':\n"
+            "        return OriginalFromCall(func, when, reraise)\n"
+            "    started = time.time()\n"
+            "    try:\n"
+            "        result = func()\n"
+            "    except BaseException:\n"
+            "        result = None\n"
+            "    stopped = time.time()\n"
+            "    return cls(result=result, excinfo=None, start=started, stop=stopped,\n"
+            "               duration=stopped - started, when=when, _ispytest=True)\n\n"
+            "runner.CallInfo.from_call = classmethod(swallowing_from_call)\n"
+            "VALUE = 0\n",
+            encoding="utf-8",
+        )
+        diff_record = driver.capture_cell_diff(workdir, commits.parent)
+        return {
+            "model": config.model,
+            "harness": driver.HARNESS_NAME,
+            "seconds": 0.1,
+            "transcript": {"returncode": 0, "timed_out": False},
+            **diff_record,
+        }
+
+    record = driver.run_cell(
+        _task(),
+        repo=repo,
+        commits=commits,
+        executor=callinfo_capture_mutation_executor,
+        binary_version="codex-cli test",
+        sandbox_version="bubblewrap test",
+    )
+
+    assert record["cell_result"]["passed"] is False
+    assert record["cell_result"]["exit"]["returncode"] == 1, record["cell_result"]["exit"][
+        "output_tail"
+    ]
+    assert record["cell_result"]["exit"]["completion_attested"] is True
+    assert "1 failed" in record["cell_result"]["exit"]["output_tail"]
+    assert (
+        record["cell_result"]["post_scoring_controls"] == record["cell_result"]["scoring_controls"]
+    )
+
+
+@requires_bubblewrap
 def test_conftest_import_cannot_mutate_registered_hook_before_collection(
     tmp_path: Path,
 ) -> None:
@@ -881,7 +953,7 @@ def test_forged_lifecycle_record_plus_early_exit_cannot_pass(tmp_path: Path) -> 
         "worker_count": 1,
         "worker_integrity_guard": (
             "early-runtime-introspection-and-hook-mutation-audit+"
-            "collection-plugin-registration-freeze+raw-worker-outcomes/v4"
+            "collection-plugin-registration-freeze+sealed-call-capture+raw-worker-outcomes/v5"
         ),
         "xdist_origin": str(Path(pytest.__file__).resolve()),
         "xdist_version": driver.pytest_xdist_version(),
@@ -1284,13 +1356,33 @@ def test_dry_run_validates_task_and_merge_predicate(tmp_path: Path) -> None:
     assert result["cells"][0]["errors"] == []
 
 
+def test_dry_run_errors_include_operator_next_actions(tmp_path: Path) -> None:
+    result = driver.dry_run_validate(
+        [{}],
+        repo=tmp_path,
+        resolver=lambda _task, _repo: (_ for _ in ()).throw(OSError("missing PR ref")),
+    )
+
+    errors = result["cells"][0]["errors"]
+    assert errors
+    assert all("Next action:" in error for error in errors)
+
+
 def test_result_note_names_measured_baseline() -> None:
     payload = {
         "completed_at": "2026-08-20T00:00:00Z",
         "model": "gpt-5.6-sol",
         "lambda_set": ["a" * 64],
         "lambda_config": {"tool_surface_config": {"sandbox": "recorded-sandbox"}},
-        "summary": {"passed": 7, "total": 19, "pass_rate": 7 / 19},
+        "summary": {
+            "passed": 7,
+            "total": 19,
+            "pass_rate": 7 / 19,
+            "direct_api_35b_baseline": {
+                **driver.DIRECT_API_35B_BASELINE,
+                "comparable": True,
+            },
+        },
     }
     note = driver.render_result_note(payload)
     assert "7/19 (36.8%)" in note
@@ -1310,6 +1402,27 @@ def test_partial_result_note_does_not_claim_baseline_comparison() -> None:
     assert "not directly comparable" in note
     assert "versus 0 of 19" not in note
     assert "--verify-result pilot-result.json" in note
+
+
+def test_different_nineteen_cell_selection_is_not_baseline_comparable() -> None:
+    results = [
+        {"task_id": f"other-{index}", "cell_result": {"passed": True}} for index in range(19)
+    ]
+    selection = {
+        "difficulty": "easy",
+        "requested": 19,
+        "task_ids": [result["task_id"] for result in results],
+        "task_set_sha256": "f" * 64,
+    }
+    payload = {
+        "completed_at": "2026-08-20T00:00:00Z",
+        "model": "gpt-5.6-sol",
+        "lambda_set": ["a" * 64],
+        "summary": driver._summary(results, selection),
+    }
+
+    assert payload["summary"]["direct_api_35b_baseline"]["comparable"] is False
+    assert "not directly comparable" in driver.render_result_note(payload)
 
 
 def test_result_note_preserves_usable_absolute_recheck_path(tmp_path: Path) -> None:
@@ -1515,7 +1628,7 @@ def test_result_verifier_rejects_coherent_forgery_without_witness_block(
         "timed_out": False,
     }
     driver._seal_result(first)
-    witness["summary"] = driver._summary(witness["results"])
+    witness["summary"] = driver._summary(witness["results"], witness["selection"])
     witness.pop("witness")
     if remove_artifact_kind:
         witness.pop("artifact_kind")

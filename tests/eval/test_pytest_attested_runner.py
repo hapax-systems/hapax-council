@@ -7,6 +7,7 @@ from types import SimpleNamespace
 from typing import Any
 
 import pytest
+from _pytest import runner as pytest_runner
 
 from eval.meas import driver_codex_cli as driver
 from eval.meas import pytest_attested_runner as runner
@@ -97,6 +98,25 @@ def test_raw_worker_outcome_hook_has_no_mutable_global_dependencies() -> None:
     ]
 
     assert global_loads == []
+
+
+def test_raw_worker_outcome_ignores_mutated_pytest_report_global() -> None:
+    report_globals = pytest_runner.pytest_runtest_makereport.__globals__
+    original_report = report_globals["TestReport"]
+    workeroutput: dict[str, Any] = {}
+    item = SimpleNamespace(
+        nodeid="tests/test_hidden.py::test_failure",
+        config=SimpleNamespace(workeroutput=workeroutput),
+    )
+    try:
+        report_globals["TestReport"] = object()
+        runner.pytest_runtest_makereport(
+            item,
+            SimpleNamespace(when="call", excinfo=RuntimeError("hidden failure")),
+        )
+        assert workeroutput["meas_raw_terminal"] == {"tests/test_hidden.py::test_failure": "failed"}
+    finally:
+        report_globals["TestReport"] = original_report
 
 
 def test_controller_only_conftest_flag_is_removed_from_worker_args(tmp_path: Path) -> None:
@@ -236,7 +256,7 @@ def test_predicate_command_has_no_writable_attestation_mount(
     assert observed["workspace_writable"] is False
 
 
-def test_committed_v1_witness_runs_published_v13_verifier(
+def test_committed_v1_witness_runs_published_v14_verifier(
     capsys: pytest.CaptureFixture[str],
 ) -> None:
     witness = (

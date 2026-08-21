@@ -8,7 +8,9 @@ import importlib.metadata
 import json
 import os
 import sys
+import time
 from pathlib import Path
+from types import FunctionType
 from typing import Any
 
 WORKSPACE = Path("/workspace")
@@ -17,9 +19,10 @@ MAX_PYTEST_EXIT_CODE = 5
 TRUST_FAILURE_EXIT_CODE = 87
 WORKER_INTEGRITY_GUARD = (
     "early-runtime-introspection-and-hook-mutation-audit+collection-plugin-registration-freeze+"
-    "raw-worker-outcomes/v4"
+    "sealed-call-capture+raw-worker-outcomes/v5"
 )
 _WORKER_AUDIT_INSTALLED = False
+_WORKER_CALL_CAPTURE_SEALED = False
 _WORKER_REGISTRATION_FROZEN = False
 _BLOCKED_AUDIT_EVENTS = frozenset(
     {
@@ -50,6 +53,8 @@ sys.path[:] = [entry for entry in sys.path if _outside_workspace_import_path(ent
 import pytest  # noqa: E402
 import xdist  # noqa: E402
 import xdist.workermanage as xdist_workermanage  # noqa: E402
+from _pytest import runner as pytest_runner  # noqa: E402
+from _pytest._code import ExceptionInfo  # noqa: E402
 
 
 class CompletionPlugin:
@@ -125,6 +130,98 @@ def _install_worker_audit_guard() -> None:
     _WORKER_AUDIT_INSTALLED = True
 
 
+def _clone_function(function: Any, global_overrides: dict[str, Any]) -> Any:
+    cloned_globals = function.__globals__.copy()
+    cloned_globals.update(global_overrides)
+    return FunctionType(
+        function.__code__,
+        cloned_globals,
+        function.__name__,
+        function.__defaults__,
+        function.__closure__,
+    )
+
+
+def _sealed_call_info_factory() -> object:
+    call_info_type = pytest_runner.CallInfo
+    exception_info_type = ExceptionInfo
+    object_new = object.__new__
+    object_setattr = object.__setattr__
+    wall_clock = time.time
+    duration_clock = time.perf_counter
+
+    def from_call(
+        func: Any,
+        when: str,
+        reraise: object = None,
+        base_exception: type[BaseException] = BaseException,
+        is_instance: Any = isinstance,
+        type_of: Any = type,
+    ) -> object:
+        started_at = wall_clock()
+        duration_start = duration_clock()
+        excinfo = None
+        try:
+            result = func()
+        except base_exception as error:
+            if reraise is not None and is_instance(error, reraise):
+                raise
+            traceback = error.__traceback__
+            excinfo = object_new(exception_info_type)
+            object_setattr(excinfo, "_excinfo", (type_of(error), error, traceback))
+            object_setattr(excinfo, "_striptext", "")
+            object_setattr(excinfo, "_traceback", None)
+            result = None
+        duration = duration_clock() - duration_start
+        call = object_new(call_info_type)
+        object_setattr(call, "start", started_at)
+        object_setattr(call, "stop", wall_clock())
+        object_setattr(call, "duration", duration)
+        object_setattr(call, "when", when)
+        object_setattr(call, "_result", result)
+        object_setattr(call, "excinfo", excinfo)
+        return call
+
+    class CallInfoFactory:
+        pass
+
+    factory = CallInfoFactory()
+    factory.from_call = from_call
+    return factory
+
+
+def _seal_worker_call_capture(config: pytest.Config) -> None:
+    """Detach pytest's call-capture chain from public module globals before imports."""
+    global _WORKER_CALL_CAPTURE_SEALED
+    if _WORKER_CALL_CAPTURE_SEALED:
+        return
+    sealed_call_and_report = _clone_function(
+        pytest_runner.call_and_report,
+        {"CallInfo": _sealed_call_info_factory()},
+    )
+    sealed_runtestprotocol = _clone_function(
+        pytest_runner.runtestprotocol,
+        {"call_and_report": sealed_call_and_report},
+    )
+    sealed_protocol_hook = _clone_function(
+        pytest_runner.pytest_runtest_protocol,
+        {"runtestprotocol": sealed_runtestprotocol},
+    )
+    hook_implementations = config.hook.pytest_runtest_protocol.get_hookimpls()
+    runner_implementations = [
+        implementation
+        for implementation in hook_implementations
+        if implementation.function is pytest_runner.pytest_runtest_protocol
+    ]
+    if len(runner_implementations) != 1:
+        raise RuntimeError(
+            "pytest runner call-capture hook identity drifted. "
+            "Next action: restore the pinned pytest version and rerun the predicate."
+        )
+    runner_implementations[0].function = sealed_protocol_hook
+    _WORKER_CALL_CAPTURE_SEALED = True
+
+
 @pytest.hookimpl(tryfirst=True)
 def pytest_load_initial_conftests(
     early_config: pytest.Config,
@@ -132,9 +229,10 @@ def pytest_load_initial_conftests(
     args: list[str],
 ) -> None:
     """Seal mutation/introspection before a trusted conftest can import solution code."""
-    del early_config, parser, args
+    del parser, args
     if os.environ.get("PYTEST_XDIST_WORKER"):
         _install_worker_audit_guard()
+        _seal_worker_call_capture(early_config)
 
 
 def _freeze_worker_plugin_registration(config: pytest.Config) -> None:
@@ -182,7 +280,11 @@ def pytest_sessionfinish(session: pytest.Session, exitstatus: int) -> None:
     if os.environ.get("PYTEST_XDIST_WORKER") and hasattr(session.config, "workeroutput"):
         session.config.workeroutput["meas_worker_integrity_guard"] = (
             WORKER_INTEGRITY_GUARD
-            if _WORKER_AUDIT_INSTALLED and _WORKER_REGISTRATION_FROZEN
+            if (
+                _WORKER_AUDIT_INSTALLED
+                and _WORKER_CALL_CAPTURE_SEALED
+                and _WORKER_REGISTRATION_FROZEN
+            )
             else "missing"
         )
 

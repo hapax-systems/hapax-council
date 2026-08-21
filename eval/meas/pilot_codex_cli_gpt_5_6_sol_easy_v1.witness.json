@@ -52,11 +52,11 @@
       "driver_codex_cli/v1 did not sandbox the deterministic exit predicate",
       "provider-managed model weights, serving version, and quantization are not independently published"
     ],
-    "superseded_safety_contract": "Use driver_codex_cli/v13 for future measurements; this witness preserves the already-completed v1 result only. v13 externally confines agent reads, denies credential reads to model tools through a synthetic permission profile, confines post-agent Git, scores a filtered diff in a clean parent checkout, mounts the predicate checkout read-only, freezes runtime introspection and mutation of registered hook functions before worker conftest import, freezes plugin registration before test-module collection, records raw worker outcomes without consulting mutable pytest report globals, disables conftest loading in the attestation controller, and re-verifies scoring controls after the predicate.",
-    "verifier_contract": "The backward-compatible --verify-result implementation in driver_codex_cli/v13 requires this exact historical witness identity and witness block, verifies its artifact/source pair plus driver/model/reasoning bindings, and checks cell/task/commit/result consistency without re-executing the provider run.",
-    "current_driver_measurement_status": "No provider-backed 19-cell pass rate has been measured for driver_codex_cli/v13; it is explicit acceptance work deferred to a separately authorized provider-spend follow-up tranche and the historical v1 rate is not a v13 performance claim.",
+    "superseded_safety_contract": "Use driver_codex_cli/v14 for future measurements; this witness preserves the already-completed v1 result only. v14 externally confines agent reads, denies credential reads to model tools through a synthetic permission profile, confines post-agent Git, scores a filtered diff in a clean parent checkout, mounts the predicate checkout read-only, freezes runtime introspection and mutation of registered hook functions before worker conftest import, detaches the registered call-capture chain from mutable public pytest globals before conftest import, freezes plugin registration before test-module collection, records raw worker outcomes without consulting mutable pytest report globals, disables conftest loading in the attestation controller, binds baseline comparability to the exact easy-task contract, and re-verifies scoring controls after the predicate.",
+    "verifier_contract": "The backward-compatible --verify-result implementation in driver_codex_cli/v14 requires this exact historical witness identity and witness block, verifies its artifact/source pair plus driver/model/reasoning bindings, checks cell/task/commit/result consistency without re-executing the provider run, and accepts the baseline comparison only for the exact recorded easy-task contract hash and task order.",
+    "current_driver_measurement_status": "No provider-backed 19-cell pass rate has been measured for driver_codex_cli/v14; it is explicit acceptance work deferred to a separately authorized provider-spend follow-up tranche and the historical v1 rate is not a v14 performance claim.",
     "recheck": "uv run python eval/meas/driver_codex_cli.py --verify-result eval/meas/pilot_codex_cli_gpt_5_6_sol_easy_v1.witness.json",
-    "artifact_sha256": "19d9518061519fe6c2da4c90e5b655ae75127c6950f2f42f06c9519625ddd1b1"
+    "artifact_sha256": "f79c38f6f6a733f42a8b78d04b71596d675ec458347342cadddcc037bfaa5a63"
   },
   "selection": {
     "difficulty": "easy",
@@ -885,8 +885,11 @@
   ],
   "summary": {
     "direct_api_35b_baseline": {
+      "comparable": true,
+      "difficulty": "easy",
       "pass_rate": 0.0,
       "passed": 0,
+      "task_set_sha256": "ac5be1fb7d058ec4b01ab0f2b3abd9c051b37d51ae5d544178d2e92e6a9f322f",
       "total": 19
     },
     "pass_rate": 0.578947,

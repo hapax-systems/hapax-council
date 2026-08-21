@@ -40,11 +40,17 @@ DEFAULT_TIMEOUT_SECONDS = 900
 PREDICATE_TIMEOUT_SECONDS = 600
 GITHUB_REPO = "hapax-systems/hapax-council"
 HARNESS_NAME = "codex-cli-agentic"
-DRIVER_VERSION = "driver_codex_cli/v13"
-DIRECT_API_35B_BASELINE = {"passed": 0, "total": 19, "pass_rate": 0.0}
+DRIVER_VERSION = "driver_codex_cli/v14"
+DIRECT_API_35B_BASELINE = {
+    "passed": 0,
+    "total": 19,
+    "pass_rate": 0.0,
+    "difficulty": "easy",
+    "task_set_sha256": "ac5be1fb7d058ec4b01ab0f2b3abd9c051b37d51ae5d544178d2e92e6a9f322f",
+}
 KNOWN_WITNESS_ARTIFACTS = {
     "1991e186b3699fa87667ac09963ef542ac3587dadc5b7e31be49afa3a9c2f03c": (
-        "19d9518061519fe6c2da4c90e5b655ae75127c6950f2f42f06c9519625ddd1b1"
+        "f79c38f6f6a733f42a8b78d04b71596d675ec458347342cadddcc037bfaa5a63"
     )
 }
 SCORING_DIFF_EXCLUDES = (
@@ -76,6 +82,7 @@ SCORING_CONTROL_NAMES = frozenset(
 )
 ATTESTED_RUNNER = Path(__file__).with_name("pytest_attested_runner.py")
 PYTEST_WORKER_LAUNCHER = Path(__file__).with_name("pytest_isolated_worker")
+PYTEST_HARNESS_ROOT = Path("/harness")
 CODEX_CELL_CONFIG = Path(__file__).with_name("codex_cell_config.toml")
 PYTEST_ATTESTATION_PREFIX = "MEAS_PYTEST_ATTESTATION "
 PYTEST_MAX_EXIT_CODE = 5
@@ -943,7 +950,7 @@ def _attested_pytest_command(
         [
             "python",
             "-I",
-            "/harness/pytest_attested_runner.py",
+            str(PYTEST_HARNESS_ROOT / "pytest_attested_runner.py"),
             target,
         ],
         workdir,
@@ -953,8 +960,8 @@ def _attested_pytest_command(
             "PYTEST_ADDOPTS": "",
         },
         readonly_mounts=[
-            (ATTESTED_RUNNER, Path("/harness/pytest_attested_runner.py")),
-            (PYTEST_WORKER_LAUNCHER, Path("/harness/python-isolated")),
+            (ATTESTED_RUNNER, PYTEST_HARNESS_ROOT / "pytest_attested_runner.py"),
+            (PYTEST_WORKER_LAUNCHER, PYTEST_HARNESS_ROOT / "python-isolated"),
         ],
         workspace_writable=False,
     )
@@ -982,7 +989,7 @@ def _validate_completion_attestation(
         or raw.get("worker_count") != 1
         or raw.get("worker_integrity_guard")
         != "early-runtime-introspection-and-hook-mutation-audit+"
-        "collection-plugin-registration-freeze+raw-worker-outcomes/v4"
+        "collection-plugin-registration-freeze+sealed-call-capture+raw-worker-outcomes/v5"
         or not isinstance(raw.get("attester_pid"), int)
         or raw.get("xdist_version") != pytest_xdist_version()
         or not isinstance(collected, list)
@@ -1578,7 +1585,8 @@ def lambda_config(
                 "pytest_execution": "one-isolated-xdist-worker",
                 "pytest_worker_integrity": (
                     "early-runtime-introspection-and-hook-mutation-audit+"
-                    "collection-plugin-registration-freeze+raw-worker-outcomes/v4"
+                    "collection-plugin-registration-freeze+sealed-call-capture+"
+                    "raw-worker-outcomes/v5"
                 ),
                 "pytest_worker_launcher_sha256": pytest_worker_launcher_sha256(),
                 "pytest_xdist_version": pytest_xdist_version(),
@@ -1860,21 +1868,39 @@ def dry_run_validate(
         task_id = str(task.get("task_id") or "")
         targets = _target_paths(task)
         if not task_id:
-            errors.append("missing task_id")
+            errors.append(
+                "missing task_id. Next action: add the task's stable task_id to the input row."
+            )
         if not isinstance(task.get("work_item"), str) or not str(task.get("work_item")).strip():
-            errors.append("missing work_item")
+            errors.append(
+                "missing work_item. Next action: add the implementation instruction to the input row."
+            )
         if not targets:
-            errors.append("no predicate target paths")
+            errors.append(
+                "no predicate target paths. Next action: add a supported exit_predicate target."
+            )
         missing_targets = [target for target in targets if not (repo / target).exists()]
         if missing_targets:
-            errors.append(f"missing current targets: {', '.join(missing_targets)}")
+            errors.append(
+                f"missing current targets: {', '.join(missing_targets)}. "
+                "Next action: correct the predicate target or restore it in the source checkout."
+            )
         commits: CommitPair | None = None
         try:
             commits = resolver(task, repo)
             if not merge_version_test_paths(repo, commits):
-                errors.append("merge changes no tests")
+                errors.append(
+                    "merge changes no tests. Next action: select a task whose merge commit adds or "
+                    "changes a discriminating test."
+                )
         except (DriverError, OSError, subprocess.SubprocessError) as exc:
-            errors.append(str(exc))
+            detail = str(exc)
+            if "Next action:" not in detail:
+                detail = (
+                    f"{detail}. Next action: repair the task's PR/commit metadata and rerun "
+                    "--dry-run."
+                )
+            errors.append(detail)
         rows.append(
             {
                 "task_id": task_id,
@@ -1932,10 +1958,21 @@ def _write_report(path: Path, content: str) -> None:
         ) from exc
 
 
-def _summary(results: Sequence[Mapping[str, Any]]) -> dict[str, Any]:
+def _summary(
+    results: Sequence[Mapping[str, Any]],
+    selection: Mapping[str, Any] | None = None,
+) -> dict[str, Any]:
     passed = sum(1 for result in results if result.get("cell_result", {}).get("passed"))
     baseline = dict(DIRECT_API_35B_BASELINE)
-    baseline["comparable"] = len(results) == baseline["total"]
+    selected_ids = selection.get("task_ids") if selection is not None else None
+    result_ids = [result.get("task_id") for result in results]
+    baseline["comparable"] = bool(
+        isinstance(selected_ids, list)
+        and result_ids == selected_ids
+        and selection.get("requested") == baseline["total"]
+        and selection.get("difficulty") == baseline["difficulty"]
+        and selection.get("task_set_sha256") == baseline["task_set_sha256"]
+    )
     return {
         "passed": passed,
         "total": len(results),
@@ -1959,7 +1996,7 @@ def render_result_note(
     model = payload.get("model", "unknown")
     completed = payload.get("completed_at") or payload.get("updated_at")
     baseline = summary.get("direct_api_35b_baseline", DIRECT_API_35B_BASELINE)
-    comparable = bool(baseline.get("comparable", total == baseline.get("total")))
+    comparable = baseline.get("comparable") is True
     if comparable:
         comparison = (
             f"The Codex CLI agentic harness passed {passed} of {total} easy cells, "
@@ -1982,8 +2019,10 @@ def render_result_note(
         "an unshared network namespace and a read-only scoring checkout. Agent-changed "
         "solution code ran in one xdist worker after runtime-frame introspection and "
         "mutation of registered hook functions were frozen before conftest import, and "
-        "plugin registration was frozen before test-module collection. Raw call outcomes "
-        "were recorded in the worker without consulting mutable pytest report globals; "
+        "plugin registration was frozen before test-module collection. Pytest's registered "
+        "call-capture chain was detached from mutable public globals before conftest import, "
+        "and raw call outcomes were recorded in the worker without consulting mutable pytest "
+        "report globals; "
         "the separate trusted controller had to emit exactly one lifecycle record showing "
         "every worker-collected hidden pytest item reached a terminal report."
         if predicate_surface.get("completion_attestation")
@@ -2326,7 +2365,7 @@ def verify_result_payload(payload: Mapping[str, Any]) -> dict[str, Any]:
         raise _verification_error("result order does not match the selected task order")
     if selection.get("commit_set_sha256") != _canonical_hash(commit_rows):
         raise _verification_error("selection commit hash does not match cell commits")
-    expected_summary = _summary(results)
+    expected_summary = _summary(results, selection)
     summary = payload.get("summary")
     if not isinstance(summary, Mapping):
         raise _verification_error("result has no summary")
@@ -2334,9 +2373,7 @@ def verify_result_payload(payload: Mapping[str, Any]) -> dict[str, Any]:
         if summary.get(key) != expected_summary[key]:
             raise _verification_error(f"summary {key} does not match the cell results")
     baseline = summary.get("direct_api_35b_baseline")
-    if not isinstance(baseline, Mapping) or any(
-        baseline.get(key) != value for key, value in DIRECT_API_35B_BASELINE.items()
-    ):
+    if baseline != expected_summary["direct_api_35b_baseline"]:
         raise _verification_error("result baseline metadata is missing or changed")
     if historical_witness:
         assert isinstance(witness, Mapping)
@@ -2417,7 +2454,7 @@ def run_pilot(
             "lambda_set": [expected_lambda],
             "lambda_config": fields,
             "results": results,
-            "summary": _summary(results),
+            "summary": _summary(results, selection),
         }
         _write_json_atomic(output_path, payload)
         return payload
