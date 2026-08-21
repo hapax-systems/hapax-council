@@ -300,10 +300,16 @@ _BARE_IDENTITY_ALLOWED = {
 _BARE_IDENTITY_RE = re.compile(r"hapax_agent_identity(?!_or_default)")
 
 
-def test_claim_plane_scripts_resolve_role_through_the_shared_resolver() -> None:
-    """Invariant 5, derived rather than enumerated: every shell script that touches a
-    ``cc-active-task-`` claim file resolves role through ``hapax_effective_role``, unless
-    it is on ``_BARE_IDENTITY_ALLOWED`` with a recorded reason.
+def test_claim_plane_scripts_never_bind_role_through_the_bare_identity_resolver() -> None:
+    """Invariant 5, derived rather than enumerated: no shell script that touches a
+    ``cc-active-task-`` claim file binds role through the bare ``hapax_agent_identity``,
+    unless it is on ``_BARE_IDENTITY_ALLOWED`` with a recorded reason.
+
+    The name states the NEGATIVE deliberately. An earlier name promised that every such
+    script "resolves role through the shared resolver", which is a stronger claim than
+    the scan makes — see the MATCHING and ROOT limits below. A test whose name overstates
+    its assertion is the same defect this file exists to catch, one level up: a rule
+    represented but not enforced.
 
     The claim plane has three participants and one fact — which role holds this claim.
     The WRITER (cc-claim) and the READER (cc-task-gate) always agreed; the RELEASER
