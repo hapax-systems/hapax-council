@@ -85,35 +85,6 @@ esac
 # an outcome — it only kept a second copy of the resolver's precedence list in a
 # file obliged to agree with it, which is how a releaser drifts from its writer.
 role="$(hapax_effective_role 2>/dev/null || true)"
-if [[ -z "$role" ]]; then
-  # FAIL CLOSED. The release block below is guarded on $role, so an empty role means
-  # the close would report success having released nothing — the silent strand this
-  # whole change exists to remove, arriving by a different route.
-  #
-  # This refuses UNCONDITIONALLY and inspects no shared state. Earlier revisions
-  # scanned the claim cache so they could refuse only when a lease actually named this
-  # task; review found a race in the classification, and then the same race on the
-  # read. cc-claim publishes an epoch sidecar and a claim file as two writes, so any
-  # point-in-time look can observe a half-published claim, and "no lease names this
-  # task" can go stale between the check and the close. That gap needs an atomic
-  # publication the claim plane does not have, and is tracked separately.
-  #
-  # So this asks only what the process can answer alone: can it identify its OWN
-  # lease? Without a role it cannot, and a close that cannot identify its own lease
-  # cannot release it. Refusing is the honest report of an unanswerable question, and
-  # it is the one shape here with no race in it.
-  #
-  # Cost, stated plainly: a session with neither a role signal nor a session id cannot
-  # close even when nothing is claimed. Every supported runtime exports one or the
-  # other — CLAUDE_CODE_SESSION_ID, CODEX_SESSION/CODEX_THREAD_ID, HAPAX_AGENT_NAME —
-  # so that is a bare shell, and the remedy is to say who it is.
-  #
-  # BOTH identifiers are named: cc-claim session-keys a lease when a session id
-  # exists, and the release loop can only clear that form when it knows the id. A
-  # role-only remedy would clear the legacy file and leave the canonical one.
-  echo "cc-close: cannot resolve this session's role, so it cannot tell which claim lease is its own, and a close that cannot release its own lease would strand this session behind the task it just closed. Next: re-run declaring the identity that made the claim — HAPAX_AGENT_ROLE=<role> HAPAX_SESSION_ID=<session_id> cc-close $task_id --status $final_status (omit HAPAX_SESSION_ID only if the claim was made without one)." >&2
-  exit 2
-fi
 
 ROOT_HELPER="$SCRIPT_DIR/../hooks/scripts/cc-task-root.sh"
 if [[ ! -f "$ROOT_HELPER" ]]; then
@@ -339,30 +310,51 @@ PYEOF
 # reads the session-keyed file FIRST, so it kept seeing the just-closed task
 # (reform finding #12/#13). Clear this session's lease forms, each only when its
 # head still names the closed task (never clobber a lease for other work).
-if [[ -n "$role" ]]; then
-  session_id=""
-  if declare -F hapax_session_id >/dev/null 2>&1; then
-    session_id="$(hapax_session_id 2>/dev/null || true)"
+# KEYED ON THE TASK, NOT ON THE CLOSER.
+#
+# This loop used to derive the keys to clear from the CLOSING session's identity —
+# cc-active-task-<role> and cc-active-task-<role>-<session_id>. That is only correct
+# when the closer is also the holder, and it silently released nothing whenever it was
+# not:
+#
+#   * a roleless session resolved no key at all, so the guard skipped the block and the
+#     holder's lease survived the close (the original defect in this row)
+#   * cc-pr-merge-watcher closes merged tasks under a SYNTHETIC role, which resolves to
+#     a key that owns nothing, so every unattended close left the real owner's lease
+#     behind and stranded them
+#
+# Both are the same mistake: asking "what is MY key?" when the question is "which lease
+# belongs to the task being closed?". The second is answerable directly and without
+# reference to who is asking — a lease names its task in its first line.
+#
+# This never clobbers other work: a file is removed only when its own content names the
+# task now being closed, which is a stronger test than the key match it replaces.
+claims_dir="${HAPAX_CC_CLAIMS_DIR:-$HOME/.cache/hapax}"
+cleared_claim=0
+shopt -s nullglob
+for claim_file in "$claims_dir"/cc-active-task-*; do
+  [[ -f "$claim_file" ]] || continue
+  if ! claim_head="$(head -n1 "$claim_file" 2>/dev/null)"; then
+    # Unreadable: it may or may not name this task, and we cannot tell. Say so on
+    # stderr rather than passing over it silently — an unreadable lease left behind
+    # will strand whoever holds it, and a warning is the difference between a
+    # puzzling block later and a named cause now.
+    echo "cc-close: WARNING could not read '$claim_file'; if it names '$task_id' it will survive this close and block the holder" >&2
+    continue
   fi
-  cleared_claim=0
-  for claim_key in \
-    "$role" \
-    ${session_id:+"$role-$session_id"}; do
-    claim_file="$HOME/.cache/hapax/cc-active-task-$claim_key"
-    if [[ -f "$claim_file" ]] &&
-       [[ "$(head -n1 "$claim_file" | tr -d '[:space:]')" == "$task_id" ]]; then
-      # The cc-claim-epoch sidecar carries the claim age for task_is_terminal;
-      # clear it with its claim file so a stale epoch can never mis-age a
-      # future claim. Explicit path construction — substring substitution on
-      # the full path would rewrite a parent-directory occurrence instead.
-      rm -f "$claim_file" "$HOME/.cache/hapax/cc-claim-epoch-$claim_key"
-      echo "cc-close: cleared claim file '$claim_file' (role '$role')"
-      cleared_claim=1
-    fi
-  done
-  if [[ "$cleared_claim" == 1 ]]; then
-    systemctl --user start hapax-cc-hygiene.service 2>/dev/null || true
-  fi
+  [[ "$(printf '%s' "$claim_head" | tr -d '[:space:]')" == "$task_id" ]] || continue
+  # The cc-claim-epoch sidecar carries the claim age for task_is_terminal; clear it
+  # with its claim file so a stale epoch can never mis-age a future claim. Explicit
+  # path construction — substring substitution on the full path would rewrite a
+  # parent-directory occurrence instead.
+  claim_key="${claim_file##*/cc-active-task-}"
+  rm -f "$claim_file" "$claims_dir/cc-claim-epoch-$claim_key"
+  echo "cc-close: cleared claim file '$claim_file' (names '$task_id')"
+  cleared_claim=1
+done
+shopt -u nullglob
+if [[ "$cleared_claim" == 1 ]]; then
+  systemctl --user start hapax-cc-hygiene.service 2>/dev/null || true
 fi
 
 # Best-effort request lifecycle reconciliation. `request-intake-consumer`
