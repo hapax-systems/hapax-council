@@ -275,7 +275,7 @@ class Decision:
     reasons: tuple[str, ...] = ()
     auto_arm: bool = False
     auto_arm_verified_checks: tuple[str, ...] = ()
-    expected_auto_merge_method: str = AUTOQUEUE_DEFAULT_MERGE_METHOD
+    expected_auto_merge_method: str | None = AUTOQUEUE_DEFAULT_MERGE_METHOD
 
     def as_dict(self) -> dict[str, Any]:
         out: dict[str, Any] = {
@@ -298,7 +298,10 @@ class Decision:
             out["auto_arm_verified_checks"] = list(self.auto_arm_verified_checks)
         if self.pr.auto_merge_enabled:
             out["auto_merge_method"] = self.pr.auto_merge_method
-        if self.expected_auto_merge_method != AUTOQUEUE_DEFAULT_MERGE_METHOD:
+        if (
+            self.expected_auto_merge_method is not None
+            and self.expected_auto_merge_method != AUTOQUEUE_DEFAULT_MERGE_METHOD
+        ):
             out["expected_auto_merge_method"] = self.expected_auto_merge_method
         if next_action := _decision_next_action(self.action, self.reasons):
             out["next_action"] = next_action
@@ -402,42 +405,52 @@ def _merge_method_operator_next_action(
 ) -> str:
     methods = _supported_merge_methods_label()
     return (
-        f"Verify active branch ruleset {ruleset_name} has a merge_queue rule with "
-        f"merge_method one of {methods} using `gh api repos/<repo>/rulesets`; "
+        f"Find active branch ruleset {ruleset_name} with "
+        f'`gh api repos/<repo>/rulesets --jq \'.[] | select(.name=="{ruleset_name}" '
+        'and .target=="branch" and .enforcement=="active") | .id\'`, then inspect '
+        "`gh api repos/<repo>/rulesets/<ruleset_id> --jq "
+        "'.rules[] | select(.type==\"merge_queue\") | .parameters.merge_method'` "
+        f"and verify one of {methods}; "
         "during a documented GitHub API or ruleset incident, rerun with "
         f"`--expected-merge-method <METHOD>` or {EXPECTED_MERGE_METHOD_OVERRIDE_ENV}=<METHOD>."
     )
 
 
 def _decision_next_action(action: str, reasons: tuple[str, ...]) -> str | None:
+    if any(
+        reason.startswith("auto_merge_method_unverified:expected_missing") for reason in reasons
+    ):
+        return _merge_method_operator_next_action()
     if action != "disable_auto_merge":
         return None
     if any(
         reason.startswith("auto_merge_method_mismatch")
         or reason.startswith("auto_merge_method_unverified:armed_missing")
+        or reason.startswith("auto_merge_method_unrecognized")
         for reason in reasons
     ):
         return (
-            "Auto-merge will be disabled this pass; the next reconciler pass will "
-            "re-arm with the verified merge queue method if the PR remains otherwise admissible."
+            "This decision disables auto-merge when run with --apply and the GitHub "
+            "command succeeds; after a successful disable, the next reconciler pass "
+            "will re-arm with the verified merge queue method if the PR remains otherwise "
+            "admissible."
         )
-    if any(
-        reason.startswith("auto_merge_method_unverified:expected_missing") for reason in reasons
-    ):
-        return _merge_method_operator_next_action()
     return None
 
 
 def _auto_merge_request_method(value: Any) -> str | None:
     if not isinstance(value, dict):
         return None
-    return _normalize_merge_method(value.get("mergeMethod") or value.get("merge_method"))
+    raw_method = _scalar(value.get("mergeMethod") or value.get("merge_method"))
+    if raw_method is None:
+        return None
+    return _normalize_merge_method(raw_method) or raw_method
 
 
 def _merge_method_mismatch_reason(
     pr: PullRequest,
     *,
-    expected_auto_merge_method: str,
+    expected_auto_merge_method: str | None,
 ) -> str | None:
     expected = _normalize_merge_method(expected_auto_merge_method)
     armed = _normalize_merge_method(pr.auto_merge_method)
@@ -445,10 +458,18 @@ def _merge_method_mismatch_reason(
         raw_expected = _scalar(expected_auto_merge_method) or "missing"
         return f"auto_merge_method_unverified:expected_missing:raw={raw_expected}"
     if armed is None:
+        raw_armed = _scalar(pr.auto_merge_method)
+        if raw_armed is not None:
+            return f"auto_merge_method_unrecognized:armed={raw_armed}:expected={expected}"
         return f"auto_merge_method_unverified:armed_missing:expected={expected}"
     if armed != expected:
         return f"auto_merge_method_mismatch:armed={armed}:expected={expected}"
     return None
+
+
+def _expected_merge_method_unverified_reason(source: str | None) -> str:
+    detail = _scalar(source) or "source_missing"
+    return f"auto_merge_method_unverified:expected_missing:source={detail}"
 
 
 def _int_or_none(value: Any) -> int | None:
@@ -507,14 +528,19 @@ def _gh_api_get_json(
         "Accept: application/vnd.github+json",
         path,
     ]
-    proc = runner(
-        cmd,
-        cwd=str(repo_root),
-        capture_output=True,
-        text=True,
-        check=False,
-        timeout=60,
-    )
+    try:
+        proc = runner(
+            cmd,
+            cwd=str(repo_root),
+            capture_output=True,
+            text=True,
+            check=False,
+            timeout=60,
+        )
+    except subprocess.TimeoutExpired:
+        return False, None, "gh_api_timeout:TimeoutExpired"
+    except OSError as exc:
+        return False, None, f"gh_api_invocation_error:{exc.__class__.__name__}"
     output = (proc.stdout or proc.stderr or "").strip()
     if proc.returncode != 0:
         return False, None, output or f"gh api failed rc={proc.returncode}"
@@ -1615,7 +1641,8 @@ def classify_pr(
     active_ci_repair_task_ids: tuple[str, ...] = (),
     storm_admission_active: bool = False,
     storm_reasons: tuple[str, ...] = (),
-    expected_auto_merge_method: str = AUTOQUEUE_DEFAULT_MERGE_METHOD,
+    expected_auto_merge_method: str | None = AUTOQUEUE_DEFAULT_MERGE_METHOD,
+    expected_auto_merge_method_source: str | None = None,
 ) -> Decision:
     reasons: list[str] = []
     if pr.is_draft:
@@ -1734,6 +1761,45 @@ def classify_pr(
             else:
                 reasons.append("release_auto_arm_ineligible:" + ",".join(arm.blockers))
 
+    expected_method_unverified = _normalize_merge_method(expected_auto_merge_method) is None
+    expected_method_unverified_reason = None
+    if expected_method_unverified:
+        expected_method_unverified_reason = _expected_merge_method_unverified_reason(
+            expected_auto_merge_method_source
+        )
+        if queued or pr.auto_merge_enabled or not reasons:
+            reasons.append(expected_method_unverified_reason)
+
+    if pr.auto_merge_enabled and expected_method_unverified:
+        return Decision(
+            pr=pr,
+            task=task,
+            tasks=matched_tasks,
+            action="disable_auto_merge",
+            reasons=tuple(reasons),
+            auto_arm=auto_arm,
+            auto_arm_verified_checks=auto_arm_verified_checks,
+            expected_auto_merge_method=expected_auto_merge_method,
+        )
+
+    if pr.auto_merge_enabled:
+        method_mismatch = _merge_method_mismatch_reason(
+            pr,
+            expected_auto_merge_method=expected_auto_merge_method,
+        )
+        if method_mismatch:
+            reasons.append(method_mismatch)
+            return Decision(
+                pr=pr,
+                task=task,
+                tasks=matched_tasks,
+                action="disable_auto_merge",
+                reasons=tuple(reasons),
+                auto_arm=auto_arm,
+                auto_arm_verified_checks=auto_arm_verified_checks,
+                expected_auto_merge_method=expected_auto_merge_method,
+            )
+
     if queued:
         if reasons:
             return Decision(
@@ -1773,21 +1839,6 @@ def classify_pr(
             expected_auto_merge_method=expected_auto_merge_method,
         )
     if pr.auto_merge_enabled:
-        method_mismatch = _merge_method_mismatch_reason(
-            pr,
-            expected_auto_merge_method=expected_auto_merge_method,
-        )
-        if method_mismatch:
-            return Decision(
-                pr=pr,
-                task=task,
-                tasks=matched_tasks,
-                action="disable_auto_merge",
-                reasons=(method_mismatch,),
-                auto_arm=auto_arm,
-                auto_arm_verified_checks=auto_arm_verified_checks,
-                expected_auto_merge_method=expected_auto_merge_method,
-            )
         return Decision(
             pr=pr,
             task=task,
@@ -2752,44 +2803,17 @@ def run_reconciler(
     if expected_auto_merge_method_override is not None:
         expected_auto_merge_method = _normalize_merge_method(expected_auto_merge_method_override)
         if expected_auto_merge_method is None:
-            report = {
-                "repo": repo,
-                "apply": apply,
-                "skipped": True,
-                "reason": "merge_queue_merge_method_indeterminate",
-                "detail": (
-                    "unsupported_auto_merge_method_override:"
-                    f"raw={_scalar(expected_auto_merge_method_override) or 'missing'}"
-                ),
-                "next_action": _merge_method_operator_next_action(),
-            }
-            return _finalize_reconciler_report(
-                report,
-                report_path=report_path,
-                admission_governor_path=admission_governor_path,
-                now=now,
+            merge_method_source = (
+                "unsupported_auto_merge_method_override:"
+                f"raw={_scalar(expected_auto_merge_method_override) or 'missing'}"
             )
-        merge_method_source = expected_auto_merge_method_source or "override"
+        else:
+            merge_method_source = expected_auto_merge_method_source or "override"
     else:
         expected_auto_merge_method, merge_method_source = fetch_merge_queue_merge_method(
             repo=repo,
             repo_root=repo_root,
             runner=runner,
-        )
-    if expected_auto_merge_method is None:
-        report = {
-            "repo": repo,
-            "apply": apply,
-            "skipped": True,
-            "reason": "merge_queue_merge_method_indeterminate",
-            "detail": merge_method_source,
-            "next_action": _merge_method_operator_next_action(),
-        }
-        return _finalize_reconciler_report(
-            report,
-            report_path=report_path,
-            admission_governor_path=admission_governor_path,
-            now=now,
         )
     prs = fetch_open_prs(repo=repo, repo_root=repo_root, limit=limit, runner=runner)
     preliminary_decisions = [
@@ -2802,6 +2826,7 @@ def run_reconciler(
             required_checks=required_checks,
             active_ci_repair_task_ids=active_ci_repair_task_ids,
             expected_auto_merge_method=expected_auto_merge_method,
+            expected_auto_merge_method_source=merge_method_source,
         )
         for pr in prs
     ]
@@ -2864,6 +2889,7 @@ def run_reconciler(
                 storm_admission_active=True,
                 storm_reasons=storm_mode.reasons,
                 expected_auto_merge_method=expected_auto_merge_method,
+                expected_auto_merge_method_source=merge_method_source,
             )
             for pr in prs
         ]
@@ -3087,6 +3113,10 @@ def run_reconciler(
         "merge_queue_merge_method": {
             "method": expected_auto_merge_method,
             "source": merge_method_source,
+            "indeterminate": expected_auto_merge_method is None,
+            "next_action": _merge_method_operator_next_action()
+            if expected_auto_merge_method is None
+            else None,
         },
         "storm_mode_enabled": storm_mode_enabled,
         "storm_mode": storm_mode.as_dict(repo=repo),
