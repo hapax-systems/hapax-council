@@ -14,12 +14,32 @@
 
 set -euo pipefail
 
-SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-ROLE_HELPER="$SCRIPT_DIR/../hooks/scripts/agent-role.sh"
-if [[ -f "$ROLE_HELPER" ]]; then
-  # shellcheck source=../hooks/scripts/agent-role.sh
-  . "$ROLE_HELPER"
+# Resolve through symlinks — cc-close is installed as ~/.local/bin/cc-close -> the
+# deployed worktree, and bash does NOT resolve symlinks for BASH_SOURCE. Without
+# this, SCRIPT_DIR was ~/.local/bin, ROLE_HELPER pointed at the nonexistent
+# ~/.local/hooks/scripts/agent-role.sh, and the helper was never sourced — so
+# through the entrypoint the operator actually invokes, NEITHER role resolver
+# existed and the claim-release block below could never run. cc-claim carries this
+# same resolution with a comment naming this exact hazard; cc-close did not, which
+# is why the release was dead through the installed path regardless of which
+# resolver it named.
+_cc_self="${BASH_SOURCE[0]}"
+if command -v readlink >/dev/null 2>&1; then
+  _cc_self="$(readlink -f "$_cc_self" 2>/dev/null || printf '%s' "$_cc_self")"
 fi
+SCRIPT_DIR="$(cd "$(dirname "$_cc_self")" && pwd)"
+ROLE_HELPER="$SCRIPT_DIR/../hooks/scripts/agent-role.sh"
+if [[ ! -f "$ROLE_HELPER" ]]; then
+  # Refuse rather than degrade. The previous behaviour — carry on with env-only
+  # role resolution — is precisely how the claim leaked: a close that cannot
+  # resolve its own role silently releases nothing and strands the session behind
+  # the task it just closed. A missing helper means a broken install, and saying
+  # so beats completing a close that only appears to have worked.
+  echo "cc-close: agent-role.sh not found next to the installed script (looked in $ROLE_HELPER). Without it the claim lease cannot be released and this close would strand the session. Next: repair the install (hapax-source-activate) or invoke scripts/cc-close from a complete checkout." >&2
+  exit 2
+fi
+# shellcheck source=../hooks/scripts/agent-role.sh
+. "$ROLE_HELPER"
 
 if [[ $# -lt 1 ]]; then
   echo "usage: cc-close <task_id> [--pr N] [--status done|withdrawn|superseded]" >&2
@@ -55,21 +75,13 @@ esac
 # resolving through the OTHER function, still found the lease and blocked every
 # subsequent mutation. Measured twice on 2026-08-21, both times after a clean
 # close, each needing an operator rescue.
-role=""
-if declare -F hapax_effective_role >/dev/null 2>&1; then
-  role="$(hapax_effective_role 2>/dev/null || true)"
-fi
-# The env cascade is reached ONLY when the resolver library is unavailable. It is
-# not an override: hapax_agent_identity, which hapax_effective_role calls first,
-# already reads exactly these names in exactly this order, so consulting them
-# ahead of the resolver changed no outcome and merely kept a second copy of the
-# resolver's own precedence list in a file that must agree with it. That
-# duplicate is how a releaser drifts from its writer — the defect above, one
-# ingredient earlier. Keep this reachable only on the no-helper path, and if the
-# resolver's precedence changes, delete this rather than syncing it.
-if [[ -z "$role" ]] && ! declare -F hapax_effective_role >/dev/null 2>&1; then
-  role="${HAPAX_AGENT_NAME:-${CODEX_THREAD_NAME:-${CODEX_SESSION_NAME:-${CODEX_SESSION:-${CODEX_ROLE:-${HAPAX_AGENT_ROLE:-${CLAUDE_ROLE:-}}}}}}}"
-fi
+# Sourcing agent-role.sh is now mandatory above, so this is the only role binding
+# in the file. The env cascade that used to sit here (HAPAX_AGENT_NAME,
+# CODEX_THREAD_NAME, ... CLAUDE_ROLE) is deleted rather than guarded: it read the
+# exact names hapax_agent_identity reads, in the exact order, so it never changed
+# an outcome — it only kept a second copy of the resolver's precedence list in a
+# file obliged to agree with it, which is how a releaser drifts from its writer.
+role="$(hapax_effective_role 2>/dev/null || true)"
 
 ROOT_HELPER="$SCRIPT_DIR/../hooks/scripts/cc-task-root.sh"
 if [[ ! -f "$ROOT_HELPER" ]]; then

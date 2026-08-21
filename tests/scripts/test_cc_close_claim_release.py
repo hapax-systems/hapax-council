@@ -93,7 +93,8 @@ def _env(home: Path, *, session_id: str | None = SESSION_ID) -> dict[str, str]:
     env.pop("HAPAX_SESSION_ID", None)
     env.pop("CLAUDE_CODE_SESSION_ID", None)
     env["HOME"] = str(home)
-    env["PATH"] = _SYSTEM_PATH
+    # Stub bin FIRST so the post-clear systemctl call can never reach live units.
+    env["PATH"] = f"{home / 'stubbin'}:{_SYSTEM_PATH}"
     # XDG_RUNTIME_DIR into the sandbox so the `systemctl --user start
     # hapax-cc-hygiene.service` that follows a successful clear cannot reach the
     # operator's real session bus. A test must not start live units.
@@ -104,11 +105,38 @@ def _env(home: Path, *, session_id: str | None = SESSION_ID) -> dict[str, str]:
     return env
 
 
+def _stub_bin(home: Path) -> Path:
+    """A stub ``systemctl`` shadowing the real one.
+
+    A successful claim release runs ``systemctl --user start
+    hapax-cc-hygiene.service``. Redirecting XDG_RUNTIME_DIR made that fail rather
+    than reach the operator's session bus, but nothing ASSERTED the isolation — the
+    test's containment was an unverified side effect of an env var, which is the
+    same "declared, not enforced" shape this row is about. The stub makes the call
+    observable and makes it impossible for a test run to touch live units.
+    """
+    bin_dir = home / "stubbin"
+    bin_dir.mkdir(parents=True, exist_ok=True)
+    stub = bin_dir / "systemctl"
+    stub.write_text(
+        '#!/usr/bin/env bash\nprintf "%s\\n" "$*" >> "$HOME/systemctl-calls.log"\nexit 0\n',
+        encoding="utf-8",
+    )
+    stub.chmod(stub.stat().st_mode | stat.S_IXUSR)
+    return bin_dir
+
+
+def _systemctl_calls(home: Path) -> list[str]:
+    log = home / "systemctl-calls.log"
+    return log.read_text(encoding="utf-8").splitlines() if log.is_file() else []
+
+
 def _vault(home: Path) -> Path:
     root = home / "Documents" / "Personal" / "20-projects" / "hapax-cc-tasks"
     (root / "active").mkdir(parents=True, exist_ok=True)
     (root / "closed").mkdir(parents=True, exist_ok=True)
     (home / "run").mkdir(parents=True, exist_ok=True)
+    _stub_bin(home)
     return root
 
 
@@ -234,16 +262,8 @@ def _divergent_cc_close(tmp_path: Path) -> Path:
     (root / "hooks").symlink_to(REPO_ROOT / "hooks", target_is_directory=True)
 
     text = CC_CLOSE.read_text(encoding="utf-8")
-    fixed = (
-        "if declare -F hapax_effective_role >/dev/null 2>&1; then\n"
-        '  role="$(hapax_effective_role 2>/dev/null || true)"\n'
-        "fi"
-    )
-    reverted = (
-        "if declare -F hapax_agent_identity >/dev/null 2>&1; then\n"
-        '  role="$(hapax_agent_identity 2>/dev/null || true)"\n'
-        "fi"
-    )
+    fixed = 'role="$(hapax_effective_role 2>/dev/null || true)"'
+    reverted = 'role="$(hapax_agent_identity 2>/dev/null || true)"'
     assert text.count(fixed) == 1, (
         "cc-close no longer binds role through hapax_effective_role exactly once — "
         "this mutation fixture is stale and is no longer proving anything"
@@ -314,6 +334,11 @@ def test_roleless_close_clears_its_own_lease(tmp_path: Path) -> None:
     assert _leases(home) == [], (
         f"lease artifacts leaked past the close: {[p.name for p in _leases(home)]}"
     )
+    # The hygiene kick is part of a successful release, and asserting it here also
+    # proves the stub — not the operator's session bus — received it.
+    assert any("hapax-cc-hygiene.service" in call for call in _systemctl_calls(home)), (
+        f"expected the post-clear hygiene kick, saw: {_systemctl_calls(home)}"
+    )
 
 
 def test_gate_permits_before_the_close_and_is_not_stranded_after(tmp_path: Path) -> None:
@@ -382,6 +407,75 @@ def test_gate_permits_before_the_close_and_is_not_stranded_after(tmp_path: Path)
     assert resumed.returncode == 0, (
         "gate refused an in-scope mutation under a freshly claimed task: the "
         f"close->reclaim->mutate cycle does not close\nstderr={resumed.stderr}"
+    )
+
+
+def test_the_installed_symlink_entrypoint_releases_the_claim(tmp_path: Path) -> None:
+    """cc-close is installed as ``~/.local/bin/cc-close`` -> the deployed worktree, and
+    bash does NOT resolve symlinks for ``BASH_SOURCE``. Invoked that way, SCRIPT_DIR was
+    the symlink's directory, ``agent-role.sh`` was never found, and NEITHER role resolver
+    existed — so the claim-release block could not run no matter which one it named.
+
+    Every other test here invokes cc-close by its real path, where the helper is
+    adjacent and the bug is invisible. That is the same blindness this whole row is
+    about: the suite exercised a path the operator does not use. This test drives the
+    entrypoint as installed.
+    """
+    home = tmp_path / "home"
+    vault = _vault(home)
+    _write_task(vault, str(home / "scratch.txt"))
+    bin_dir = tmp_path / "bin"
+    bin_dir.mkdir()
+    installed = bin_dir / "cc-close"
+    installed.symlink_to(CC_CLOSE)
+
+    assert _run_claim(home, TASK_ID).returncode == 0
+
+    result = _run_close(home, installed)
+
+    assert result.returncode == 0, (
+        f"cc-close failed when invoked through its installed symlink\n"
+        f"stdout={result.stdout}\nstderr={result.stderr}"
+    )
+    assert "cleared claim file" in result.stdout, (
+        "the symlinked entrypoint did not release the claim — SCRIPT_DIR is resolving "
+        f"to the symlink's directory again\nstdout={result.stdout}\nstderr={result.stderr}"
+    )
+    assert _leases(home) == [], (
+        f"lease artifacts leaked through the installed entrypoint: "
+        f"{[p.name for p in _leases(home)]}"
+    )
+
+
+def test_a_broken_install_refuses_instead_of_releasing_nothing(tmp_path: Path) -> None:
+    """With the resolver library absent, cc-close must REFUSE. The prior behaviour —
+    carry on with env-only resolution — is exactly how the lease leaked: a close that
+    cannot resolve its own role releases nothing and reports success, stranding the
+    session behind the task it just closed. Failure paths narrow; they do not widen.
+    """
+    home = tmp_path / "home"
+    vault = _vault(home)
+    _write_task(vault, str(home / "scratch.txt"))
+    assert _run_claim(home, TASK_ID).returncode == 0
+
+    # A checkout with the script but no hooks/scripts beside it.
+    broken = tmp_path / "broken" / "scripts"
+    broken.mkdir(parents=True)
+    orphan = broken / "cc-close"
+    orphan.write_text(CC_CLOSE.read_text(encoding="utf-8"), encoding="utf-8")
+
+    result = _run_close(home, orphan)
+
+    assert result.returncode != 0, (
+        "cc-close completed without its role resolver — it cannot have released the "
+        f"lease, so reporting success is the silent-strand behaviour\nstdout={result.stdout}"
+    )
+    assert "agent-role.sh not found" in result.stderr, (
+        f"refused, but not for the reason under test\nstderr={result.stderr}"
+    )
+    assert _leases(home) != [], (
+        "the lease should still be held after a refused close — the session keeps its "
+        "claim rather than losing it to a close that could not complete"
     )
 
 

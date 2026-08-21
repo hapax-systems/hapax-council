@@ -343,6 +343,12 @@ def test_claim_plane_scripts_resolve_role_through_the_shared_resolver() -> None:
     either calls the shared claim-key builder or it does not. Tracked by
     ``claim-key-has-a-builder-that-is-not-the-single-path-20260821``.
 
+    MATCHING LIMIT — comment stripping is line-prefix only, so a bare-resolver mention in
+    a TRAILING comment on a code line would still be flagged. Accepted rather than
+    patched: stripping mid-line ``#`` cannot distinguish a comment from a ``#`` inside a
+    string or a parameter expansion, and would trade a loud false positive for a silent
+    false negative.
+
     ROOT LIMIT — this scan covers SHELL participants under ``scripts/`` and
     ``hooks/scripts/`` only. It does not reach Python consumers (which do not source
     ``agent-role.sh`` and resolve role by other means) or any claim-plane script living
