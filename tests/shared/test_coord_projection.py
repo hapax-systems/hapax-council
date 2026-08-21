@@ -3448,6 +3448,42 @@ def test_noreplace_delete_crash_between_link_and_unlink_keeps_dest(
         os.close(fd)
 
 
+def test_exchange_fallback_crash_after_parking_dest_keeps_preimage(
+    tmp_path: Path,
+) -> None:
+    src = tmp_path / "scratch"
+    dst = tmp_path / "note.md"
+    displaced = tmp_path / cp._exchange_displaced_name("note.md")
+    src.write_bytes(b"after-image")
+    dst.write_bytes(b"before-image")
+    fd = os.open(tmp_path, os.O_RDONLY | os.O_DIRECTORY)
+
+    def crash_before_dest_unlink(name: str, **kwargs: object) -> None:
+        raise RuntimeError("crash before dest unlink")
+
+    try:
+        with mock.patch.object(cp.os, "unlink", side_effect=crash_before_dest_unlink):
+            with pytest.raises(RuntimeError, match="crash before dest unlink"):
+                cp._renameat2_exchange_fallback(fd, "scratch", fd, "note.md")
+        assert dst.read_bytes() == b"before-image"
+        assert displaced.read_bytes() == b"before-image"
+        restored = cp.FileProjection.from_snapshot(
+            dst,
+            before=b"before-image",
+            before_mode=stat.S_IMODE(dst.stat().st_mode),
+            after=b"after-image",
+            after_mode=stat.S_IMODE(src.stat().st_mode),
+        )
+        scratch = cp._scratch_for(restored, "txn-park-crash", 0)
+        scratch = dataclasses.replace(scratch, path=src)
+        assert cp._cas_rollback(restored, scratch) is True
+        assert dst.read_bytes() == b"before-image"
+        assert not displaced.exists()
+        assert src.read_bytes() == b"after-image"
+    finally:
+        os.close(fd)
+
+
 def test_exchange_fallback_crash_between_steps_preserves_both_payloads(
     tmp_path: Path,
 ) -> None:
@@ -3458,16 +3494,16 @@ def test_exchange_fallback_crash_between_steps_preserves_both_payloads(
     displaced = tmp_path / cp._exchange_displaced_name("note.md")
     fd = os.open(tmp_path, os.O_RDONLY | os.O_DIRECTORY)
     calls = {"n": 0}
-    real_rename = os.rename
+    real_unlink = os.unlink
 
-    def crash_after_displace(src_name: str, dst_name: str, **kwargs: object) -> None:
+    def crash_after_displace(name: str, **kwargs: object) -> None:
         calls["n"] += 1
-        real_rename(src_name, dst_name, **kwargs)
+        real_unlink(name, **kwargs)
         if calls["n"] == 1:
             raise RuntimeError("crash after displace")
 
     try:
-        with mock.patch.object(cp.os, "rename", side_effect=crash_after_displace):
+        with mock.patch.object(cp.os, "unlink", side_effect=crash_after_displace):
             with pytest.raises(RuntimeError, match="crash after displace"):
                 cp._renameat2_exchange_fallback(fd, "scratch", fd, "note.md")
         assert not dst.exists()
@@ -3497,11 +3533,18 @@ def test_exchange_fallback_crash_after_link_before_unlink_restores_preimage(
     displaced = tmp_path / cp._exchange_displaced_name("note.md")
     fd = os.open(tmp_path, os.O_RDONLY | os.O_DIRECTORY)
 
-    def crash_before_unlink(name: str, **kwargs: object) -> None:
+    real_unlink = os.unlink
+    calls = {"n": 0}
+
+    def crash_before_src_unlink(name: str, **kwargs: object) -> None:
+        calls["n"] += 1
+        if calls["n"] == 1:
+            real_unlink(name, **kwargs)
+            return
         raise RuntimeError("crash before unlink")
 
     try:
-        with mock.patch.object(cp.os, "unlink", side_effect=crash_before_unlink):
+        with mock.patch.object(cp.os, "unlink", side_effect=crash_before_src_unlink):
             with pytest.raises(RuntimeError, match="crash before unlink"):
                 cp._renameat2_exchange_fallback(fd, "scratch", fd, "note.md")
         assert dst.read_bytes() == b"after-image"
@@ -3534,13 +3577,16 @@ def test_exchange_fallback_crash_after_step_two_restores_preimage(
     displaced = tmp_path / cp._exchange_displaced_name("note.md")
     fd = os.open(tmp_path, os.O_RDONLY | os.O_DIRECTORY)
     real_unlink = os.unlink
+    calls = {"n": 0}
 
-    def crash_after_unlink(name: str, **kwargs: object) -> None:
+    def crash_after_src_unlink(name: str, **kwargs: object) -> None:
+        calls["n"] += 1
         real_unlink(name, **kwargs)
-        raise RuntimeError("crash after dest installed")
+        if calls["n"] == 2:
+            raise RuntimeError("crash after dest installed")
 
     try:
-        with mock.patch.object(cp.os, "unlink", side_effect=crash_after_unlink):
+        with mock.patch.object(cp.os, "unlink", side_effect=crash_after_src_unlink):
             with pytest.raises(RuntimeError, match="crash after dest installed"):
                 cp._renameat2_exchange_fallback(fd, "scratch", fd, "note.md")
         assert dst.read_bytes() == b"after-image"
@@ -3571,12 +3617,12 @@ def test_exchange_fallback_refuses_racer_created_destination(
     src.write_bytes(b"after-image")
     dst.write_bytes(b"before-image")
     fd = os.open(tmp_path, os.O_RDONLY | os.O_DIRECTORY)
-    real_rename = os.rename
+    real_unlink = os.unlink
     calls = {"n": 0}
 
-    def plant_racer(src_name: str, dst_name: str, **kwargs: object) -> None:
+    def plant_racer(name: str, **kwargs: object) -> None:
         calls["n"] += 1
-        real_rename(src_name, dst_name, **kwargs)
+        real_unlink(name, **kwargs)
         if calls["n"] == 1:
             racer = os.open(
                 "note.md",
@@ -3590,12 +3636,49 @@ def test_exchange_fallback_refuses_racer_created_destination(
                 os.close(racer)
 
     try:
-        with mock.patch.object(cp.os, "rename", side_effect=plant_racer):
+        with mock.patch.object(cp.os, "unlink", side_effect=plant_racer):
             with pytest.raises(OSError) as raised:
                 cp._renameat2_exchange_fallback(fd, "scratch", fd, "note.md")
         assert raised.value.errno == errno.EEXIST
         assert dst.read_bytes() == b"racer"
         assert displaced.read_bytes() == b"before-image"
+        assert src.read_bytes() == b"after-image"
+    finally:
+        os.close(fd)
+
+
+def test_exchange_fallback_refuses_racer_at_displaced_name(tmp_path: Path) -> None:
+    src = tmp_path / "scratch"
+    dst = tmp_path / "note.md"
+    displaced = tmp_path / cp._exchange_displaced_name("note.md")
+    src.write_bytes(b"after-image")
+    dst.write_bytes(b"before-image")
+    fd = os.open(tmp_path, os.O_RDONLY | os.O_DIRECTORY)
+    real_link = os.link
+    planted = {"n": 0}
+
+    def plant_displaced(src_name: str, dst_name: str, **kwargs: object) -> None:
+        planted["n"] += 1
+        if planted["n"] == 1:
+            racer = os.open(
+                cp._exchange_displaced_name("note.md"),
+                os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_CLOEXEC,
+                0o644,
+                dir_fd=fd,
+            )
+            try:
+                os.write(racer, b"racer")
+            finally:
+                os.close(racer)
+        real_link(src_name, dst_name, **kwargs)
+
+    try:
+        with mock.patch.object(cp.os, "link", side_effect=plant_displaced):
+            with pytest.raises(OSError) as raised:
+                cp._renameat2_exchange_fallback(fd, "scratch", fd, "note.md")
+        assert raised.value.errno == errno.EEXIST
+        assert dst.read_bytes() == b"before-image"
+        assert displaced.read_bytes() == b"racer"
         assert src.read_bytes() == b"after-image"
     finally:
         os.close(fd)

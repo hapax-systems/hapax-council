@@ -3721,7 +3721,16 @@ def _renameat2_exchange_fallback(
         pass
     else:
         raise OSError(errno.EEXIST, "exchange displaced name occupied", displaced)
-    os.rename(dst_name, displaced, src_dir_fd=src_dir_fd, dst_dir_fd=dst_dir_fd)
+    # NOREPLACE park: rename would clobber a racer that created `displaced`
+    # after the occupancy check.
+    os.link(
+        dst_name,
+        displaced,
+        src_dir_fd=src_dir_fd,
+        dst_dir_fd=dst_dir_fd,
+        follow_symlinks=False,
+    )
+    os.unlink(dst_name, dir_fd=src_dir_fd)
     try:
         # NOREPLACE install: a racer that created dest in the dest-absent window
         # must get EEXIST, not a silent clobber.
@@ -4118,6 +4127,24 @@ def _cas_rollback(projection: FileProjection, scratch: _ProjectionScratch) -> bo
                     os.fsync(dir_fd)
                     return True
         if scratch.kind == "update":
+            displaced_name = _exchange_displaced_name(name)
+            try:
+                dest_stat = os.stat(name, dir_fd=dir_fd, follow_symlinks=False)
+                displaced_stat = os.stat(displaced_name, dir_fd=dir_fd, follow_symlinks=False)
+            except FileNotFoundError:
+                dest_stat = None
+                displaced_stat = None
+            if (
+                dest_stat is not None
+                and displaced_stat is not None
+                and stat.S_ISREG(dest_stat.st_mode)
+                and dest_stat.st_ino == displaced_stat.st_ino
+                and dest_stat.st_nlink >= 2
+            ):
+                # Crash after parking dest onto displaced, before unlinking dest.
+                os.unlink(displaced_name, dir_fd=dir_fd)
+                os.fsync(dir_fd)
+                return True
             try:
                 dest_stat = os.stat(name, dir_fd=dir_fd, follow_symlinks=False)
                 scratch_stat = os.stat(scratch.path.name, dir_fd=dir_fd, follow_symlinks=False)
