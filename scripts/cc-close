@@ -23,11 +23,12 @@ set -euo pipefail
 # same resolution with a comment naming this exact hazard; cc-close did not, which
 # is why the release was dead through the installed path regardless of which
 # resolver it named.
-# No `command -v readlink` guard: a missing readlink makes the substitution fail,
-# which the `|| printf` fallback already handles identically. The guard added a
-# branch that could only be exercised by removing /usr/bin from PATH — which also
-# removes dirname, so any test of it died of something else. One path, reachable
-# and covered, beats two where one is untestable.
+# No `command -v readlink` guard. A missing readlink makes the substitution exit
+# non-zero, so `|| printf` yields the same VALUE the guard's else-branch produced —
+# the unresolved BASH_SOURCE — with the shell's diagnostic suppressed by 2>/dev/null.
+# Equivalent in result, not in mechanism. The guard added a branch reachable only by
+# removing /usr/bin from PATH, which also removes dirname, so every test of it died
+# of something else. One path, reachable and covered, beats two where one is not.
 _cc_self="$(readlink -f "${BASH_SOURCE[0]}" 2>/dev/null || printf '%s' "${BASH_SOURCE[0]}")"
 SCRIPT_DIR="$(cd "$(dirname "$_cc_self")" && pwd)"
 ROLE_HELPER="$SCRIPT_DIR/../hooks/scripts/agent-role.sh"
@@ -96,13 +97,32 @@ if [[ -z "$role" ]]; then
   # is no way to know which key to clear, and stopping beats stranding.
   shopt -s nullglob
   _unreleasable=()
-  for _claim in "$HOME/.cache/hapax/cc-active-task-"*; do
-    [[ -f "$_claim" ]] || continue
-    [[ "$(head -n1 "$_claim" | tr -d '[:space:]')" == "$task_id" ]] && _unreleasable+=("$_claim")
+  _unreadable=()
+  # BOTH lease forms. An epoch sidecar surviving alone is not cosmetic — it is what
+  # makes the next cc-claim HOLD, so a close that leaves one behind strands the
+  # session just as surely as a leaked claim file does.
+  for _lease in "$HOME/.cache/hapax/cc-active-task-"* "$HOME/.cache/hapax/cc-claim-epoch-"*; do
+    [[ -f "$_lease" ]] || continue
+    if ! _head="$(head -n1 "$_lease" 2>/dev/null)"; then
+      # Could not READ it. Treating that as "does not name this task" is absence
+      # read as a result — the exact move this whole change exists to remove. An
+      # unreadable lease is unknown, not absent.
+      _unreadable+=("$_lease")
+      continue
+    fi
+    # Claim files hold "<task_id>"; epoch sidecars hold "<epoch> <task_id>". Taking
+    # the last field reads both, and is a no-op when there is no space.
+    [[ "$(printf '%s' "${_head##* }" | tr -d '[:space:]')" == "$task_id" ]] &&
+      _unreleasable+=("$_lease")
   done
   shopt -u nullglob
-  if (( ${#_unreleasable[@]} > 0 )); then
-    echo "cc-close: cannot resolve this session's role, but ${#_unreleasable[@]} claim file(s) name '$task_id': ${_unreleasable[*]}. Closing now would leave them behind and the gate would block every later mutation. Next: run from the session that holds the claim, or remove the stale claim file(s) above if no session holds them." >&2
+  if (( ${#_unreadable[@]} > 0 || ${#_unreleasable[@]} > 0 )); then
+    if (( ${#_unreadable[@]} > 0 )); then
+      _why="could not read ${#_unreadable[@]} lease file(s), so whether they hold '$task_id' is unknown: ${_unreadable[*]}"
+    else
+      _why="${#_unreleasable[@]} lease file(s) name '$task_id': ${_unreleasable[*]}"
+    fi
+    echo "cc-close: cannot resolve this session's role, and $_why. Closing now would leave them behind and the gate would then block every later mutation. Next: rerun from the session that holds the claim, or sweep it with 'hapax-methodology-dispatch --sweep-stale-claims' if no session holds it." >&2
     exit 2
   fi
 fi

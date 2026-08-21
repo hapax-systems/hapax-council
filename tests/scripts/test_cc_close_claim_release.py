@@ -38,6 +38,8 @@ import subprocess
 import textwrap
 from pathlib import Path
 
+import pytest
+
 REPO_ROOT = Path(__file__).resolve().parents[2]
 CC_CLOSE = REPO_ROOT / "scripts" / "cc-close"
 CC_CLAIM = REPO_ROOT / "scripts" / "cc-claim"
@@ -572,15 +574,26 @@ def test_an_explicit_role_session_still_releases_after_the_cascade_deletion(
     assert _leases(home) == [], f"explicit-role lease leaked: {[p.name for p in _leases(home)]}"
 
 
+@pytest.mark.parametrize(
+    ("lease_name", "lease_body"),
+    [
+        ("cc-active-task-eta", "{task_id}\n"),
+        # The epoch sidecar alone is the residue a partially-cleared close leaves, and
+        # it is what makes the next cc-claim HOLD — so missing it here would let the
+        # guard pass over exactly the shape that caused the operator's interventions.
+        ("cc-claim-epoch-eta", "1780000000 {task_id}\n"),
+    ],
+    ids=["claim-file", "epoch-sidecar-only"],
+)
 def test_an_unresolvable_role_refuses_rather_than_closing_over_a_live_lease(
-    tmp_path: Path,
+    tmp_path: Path, lease_name: str, lease_body: str
 ) -> None:
     """The resolver can load and still fail to answer — a session with no role signal
     AND no session id. $role is then empty, the release block is guarded on it, and the
     close would silently leave the lease behind: the strand, by a third route.
 
     The refusal is conditional on a machine-checkable fact rather than on reasoning
-    about who might be running: refuse only when a claim file actually names this task.
+    about who might be running: refuse only when a lease actually names this task.
     """
     home = tmp_path / "home"
     vault = _vault(home)
@@ -589,8 +602,8 @@ def test_an_unresolvable_role_refuses_rather_than_closing_over_a_live_lease(
     # A lease naming this task, held by some other key this session cannot resolve.
     cache = home / ".cache" / "hapax"
     cache.mkdir(parents=True, exist_ok=True)
-    orphan = cache / "cc-active-task-eta"
-    orphan.write_text(f"{TASK_ID}\n", encoding="utf-8")
+    orphan = cache / lease_name
+    orphan.write_text(lease_body.format(task_id=TASK_ID), encoding="utf-8")
 
     env = _env(home, session_id=None)  # no role signal, no session id
     result = subprocess.run(
@@ -610,6 +623,46 @@ def test_an_unresolvable_role_refuses_rather_than_closing_over_a_live_lease(
         f"refused, but not for the reason under test\nstderr={result.stderr}"
     )
     assert orphan.exists(), "the unreleasable lease must be left intact for its owner"
+
+
+def test_an_unreadable_lease_refuses_rather_than_counting_as_absent(
+    tmp_path: Path,
+) -> None:
+    """A lease that cannot be READ is unknown, not absent. Treating an inspection
+    failure as "does not name this task" would let the close proceed over a lease it
+    never actually ruled out — absence read as a result, which is the move this whole
+    change exists to remove. Under it the guard would silently degrade to the original
+    silent-strand behaviour, on exactly the systems where something is already wrong.
+    """
+    home = tmp_path / "home"
+    vault = _vault(home)
+    _write_task(vault, str(home / "scratch.txt"))
+
+    cache = home / ".cache" / "hapax"
+    cache.mkdir(parents=True, exist_ok=True)
+    unreadable = cache / "cc-active-task-eta"
+    unreadable.write_text("some-other-task\n", encoding="utf-8")
+    unreadable.chmod(0o000)
+
+    try:
+        result = subprocess.run(
+            [_BASH, str(CC_CLOSE), TASK_ID, "--status", "withdrawn"],
+            env=_env(home, session_id=None),
+            cwd=str(home),
+            text=True,
+            capture_output=True,
+            check=False,
+        )
+    finally:
+        unreadable.chmod(0o600)  # so tmp_path cleanup can remove it
+
+    assert result.returncode != 0, (
+        "cc-close proceeded past a lease it could not read — it cannot know whether "
+        f"that lease names this task\nstdout={result.stdout}"
+    )
+    assert "could not read" in result.stderr, (
+        f"refused, but not for the unreadable-lease reason\nstderr={result.stderr}"
+    )
 
 
 def test_an_unresolvable_role_still_closes_when_no_lease_names_the_task(
