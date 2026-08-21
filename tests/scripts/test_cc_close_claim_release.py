@@ -594,6 +594,112 @@ def test_the_broken_install_refusal_names_a_repair_that_exists() -> None:
     )
 
 
+def test_an_unresolvable_role_refuses_instead_of_closing_over_a_lease(
+    tmp_path: Path,
+) -> None:
+    """FAIL CLOSED on an empty role, and do it without reading shared state.
+
+    The release block is guarded on ``$role``, so an empty role means the close reports
+    success having released nothing — the silent strand this row exists to remove,
+    arriving by a different route. The refusal is UNCONDITIONAL: earlier revisions
+    scanned the claim cache to refuse only when a lease named the task, and review found
+    a race in the classification and then the same race on the read, because cc-claim
+    publishes a lease as two writes. Reading nothing is the only shape here without a
+    race in it.
+    """
+    home = tmp_path / "home"
+    vault = _vault(home)
+    _write_task(vault, str(home / "scratch.txt"))
+    assert _run_claim(home, TASK_ID).returncode == 0
+    note = vault / "active" / f"{TASK_ID}.md"
+
+    result = subprocess.run(
+        [_BASH, str(CC_CLOSE), TASK_ID, "--status", "withdrawn"],
+        env=_env(home, session_id=None),
+        cwd=str(home),
+        text=True,
+        capture_output=True,
+        check=False,
+    )
+
+    assert result.returncode != 0, (
+        "cc-close closed the task while unable to identify its own lease — it cannot "
+        f"have released it\nstdout={result.stdout}"
+    )
+    assert "cannot tell which claim lease is its own" in result.stderr, (
+        f"refused, but not for the reason under test\nstderr={result.stderr}"
+    )
+    assert _leases(home) != [], "the lease must survive a close that could not run"
+    assert note.is_file(), (
+        "the task was moved out of active/ by a refused close — a refusal must happen "
+        "before any state change, or it leaves worse behind than it prevents"
+    )
+
+
+def test_the_refusals_named_remedy_actually_recovers(tmp_path: Path) -> None:
+    """The remedy is EXERCISED, not spell-checked.
+
+    Asserting a command name appears in the source proves the string exists, not that
+    following it works. The lease here is the CANONICAL session-keyed shape built by the
+    real writer — a role alone cannot release it, because the release loop needs the
+    session id to construct that key, so a remedy naming only the role would half-work.
+
+    Two constraints of the real cc-claim are load-bearing here, and both were learned by
+    it refusing this fixture: it will not issue a claim with no session id at all
+    ("relaunch through the governed session launcher"), and it rejects pid-shaped ids
+    ("pid-shaped session ids cannot own canonical claims"). A hand-seeded lease would
+    have hidden both — and the legacy no-session-id shape turns out not to be producible
+    by the writer at all, so it is not a shape this remedy needs to cover.
+    """
+    home = tmp_path / "home"
+    vault = _vault(home)
+    _write_task(vault, str(home / "scratch.txt"))
+
+    claim_env = _env(home, session_id="4f9a1c72-0b3d-4e51-9a77-2c6d8b41e0aa")
+    claim_env["HAPAX_AGENT_ROLE"] = "eta"
+    assert (
+        subprocess.run(
+            [_BASH, str(CC_CLAIM), TASK_ID],
+            env=claim_env,
+            cwd=str(home),
+            text=True,
+            capture_output=True,
+            check=False,
+        ).returncode
+        == 0
+    )
+    assert _leases(home) != []
+
+    refused = subprocess.run(
+        [_BASH, str(CC_CLOSE), TASK_ID, "--status", "withdrawn"],
+        env=_env(home, session_id=None),
+        cwd=str(home),
+        text=True,
+        capture_output=True,
+        check=False,
+    )
+    assert refused.returncode != 0, "expected a refusal to recover from"
+
+    # Exactly what the message says: declare the identity that made the claim.
+    recovered = subprocess.run(
+        [_BASH, str(CC_CLOSE), TASK_ID, "--status", "withdrawn"],
+        env=claim_env,
+        cwd=str(home),
+        text=True,
+        capture_output=True,
+        check=False,
+    )
+    assert recovered.returncode == 0, (
+        "following the remedy did not close the task — the message points at a dead "
+        f"end\nstdout={recovered.stdout}\nstderr={recovered.stderr}"
+    )
+    # Exit zero is not recovery: this row exists because a close returned success
+    # having released nothing.
+    assert _leases(home) == [], (
+        f"the remedy closed the task but left leases behind: {[p.name for p in _leases(home)]}"
+    )
+
+
 def test_the_release_runs_for_every_terminal_status(tmp_path: Path) -> None:
     """The release block is documented as running for every terminal status, but the
     coverage above drives only ``withdrawn`` (chosen because it skips the done-only
@@ -616,15 +722,21 @@ def test_the_release_runs_for_every_terminal_status(tmp_path: Path) -> None:
     )
 
 
-def test_the_divergent_resolver_strands_the_session(tmp_path: Path) -> None:
-    """(d): the mutation. Revert ONLY the resolver and the same cycle must strand — the
-    close reports success, the lease survives, and the gate then blocks the next
-    mutation with exactly the failure the operator hit twice. A test that stays green
-    when the fix is removed is documentation, not verification.
+def test_the_divergent_resolver_cannot_complete_a_roleless_close(tmp_path: Path) -> None:
+    """(d): the mutation. Revert ONLY the resolver and a roleless close must not succeed.
+    A test that stays green when the fix is removed is documentation, not verification.
 
-    The silent success is the point, and is why this cost two interventions: nothing at
-    close time indicates anything went wrong. The session finds out later, from an
-    unrelated command, by which time the cause is several steps behind it.
+    Note what the failure looks like now, and why the two changes are not two
+    mitigations of one hazard. On main, the divergent resolver produced a SILENT
+    success: exit 0, nothing released, and the session discovered the strand later when
+    the gate blocked an unrelated command — which is why it cost two interventions
+    rather than a retry.
+
+    The resolver fix makes a roleless close CORRECT. The empty-role refusal makes any
+    close that cannot identify its own lease LOUD. They address different conditions:
+    one is "the role resolved to the wrong thing", the other is "the role did not
+    resolve". Collapsing them is what the original code did, and it is why an
+    unanswerable question was silently answered "nothing to do".
     """
     home = tmp_path / "home"
     vault = _vault(home)
@@ -637,20 +749,15 @@ def test_the_divergent_resolver_strands_the_session(tmp_path: Path) -> None:
 
     result = _run_close(home, _divergent_cc_close(tmp_path))
 
-    assert result.returncode == 0, (
-        f"expected the SILENT success that made this defect costly\nstderr={result.stderr}"
+    assert result.returncode != 0, (
+        "the divergent resolver completed a roleless close — the mutation fixture no "
+        f"longer reproduces the defect\nstdout={result.stdout}"
     )
-    assert session_lease.exists(), (
-        "the divergent resolver did NOT leak the lease — the mutation fixture no "
-        "longer reproduces the defect, so the tests above are not pinned by it"
+    assert "cannot tell which claim lease is its own" in result.stderr, (
+        f"failed, but not for the reason under test\nstderr={result.stderr}"
     )
+    assert session_lease.exists(), "the lease must survive a close that could not run"
     assert "cleared claim file" not in result.stdout
-
-    after = _run_gate(home, target)
-    assert after.returncode == 2 and STRAND_MESSAGE in after.stderr, (
-        "expected the leaked lease to strand the session under the divergent "
-        f"resolver\nrc={after.returncode}\nstderr={after.stderr}"
-    )
 
 
 def test_leaked_lease_residue_deadlocks_the_next_claim(tmp_path: Path) -> None:
