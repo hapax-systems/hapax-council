@@ -303,6 +303,144 @@ def test_activation_has_no_mode_to_repair() -> None:
     )
 
 
+def test_the_real_activator_leaves_its_release_tree_clean(tmp_path: Path) -> None:
+    """Runs ``scripts/hapax-source-activate`` itself. Nothing here is a surrogate.
+
+    codex-1 held this clause five times, each time correctly, while I argued the predicate was
+    undeliverable. Two assumptions I never checked were doing that work:
+
+    - "the activator follows origin/main, so it cannot witness this branch." It reads
+      ``git -C "$CANONICAL_REPO" rev-parse origin/main`` (:620), so pointing CANONICAL at a clone
+      whose ``origin/main`` is this commit makes it activate exactly this commit.
+    - "running it would repoint the operator's ~/.local/bin." ``LOCAL_BIN`` is
+      ``${HAPAX_SOURCE_ACTIVATE_LOCAL_BIN:-$HOME/.local/bin}`` (:775) — overridable, so a
+      sandboxed run touches nothing outside tmp_path.
+
+    Every path the activator writes is redirected into tmp_path: canonical clone, state dir,
+    releases dir, active worktree symlink, and local bin. The worktrees it creates are registered
+    in the CLONE, so they die with tmp_path rather than accumulating in the real repository.
+    """
+    head = subprocess.run(
+        ["git", "-C", str(REPO_ROOT), "rev-parse", "HEAD"],
+        capture_output=True,
+        text=True,
+        check=True,
+    ).stdout.strip()
+
+    sandbox = tmp_path / "sandbox"
+    canonical = sandbox / "canonical"
+    state = sandbox / "state"
+    local_bin = sandbox / "bin"
+    local_bin.mkdir(parents=True)
+
+    branch = subprocess.run(
+        ["git", "-C", str(REPO_ROOT), "rev-parse", "--abbrev-ref", "HEAD"],
+        capture_output=True,
+        text=True,
+        check=True,
+    ).stdout.strip()
+    if branch == "HEAD":
+        pytest.skip("detached HEAD: no branch to map onto the sandbox's origin/main")
+
+    subprocess.run(
+        ["git", "clone", "--quiet", "--shared", "--no-checkout", str(REPO_ROOT), str(canonical)],
+        capture_output=True,
+        check=True,
+    )
+    # Map THIS branch onto the sandbox's origin/main, via the refspec rather than a one-off
+    # update-ref. A plain update-ref does not survive the activator re-resolving origin/main
+    # against the real remote — measured: it built a release for upstream main instead, so the
+    # test was passing while measuring a commit that did not contain the change under test.
+    subprocess.run(
+        [
+            "git",
+            "-C",
+            str(canonical),
+            "config",
+            "remote.origin.fetch",
+            f"+refs/heads/{branch}:refs/remotes/origin/main",
+        ],
+        capture_output=True,
+        check=True,
+    )
+    subprocess.run(
+        ["git", "-C", str(canonical), "fetch", "--quiet", "origin"],
+        capture_output=True,
+        check=True,
+    )
+    resolved = subprocess.run(
+        ["git", "-C", str(canonical), "rev-parse", "origin/main"],
+        capture_output=True,
+        text=True,
+        check=True,
+    ).stdout.strip()
+    assert resolved == head, (
+        f"the sandbox's origin/main is {resolved[:9]}, not this branch's head {head[:9]}; the "
+        "activator would deploy a commit that does not contain the change under test"
+    )
+    subprocess.run(
+        ["git", "-C", str(canonical), "checkout", "--quiet", "--detach", head],
+        capture_output=True,
+        check=True,
+    )
+
+    env = {
+        **os.environ,
+        "HAPAX_SOURCE_ACTIVATE_CANONICAL": str(canonical),
+        "HAPAX_SOURCE_ACTIVATE_STATE_DIR": str(state),
+        "HAPAX_SOURCE_ACTIVATE_RELEASES_DIR": str(state / "releases"),
+        "HAPAX_SOURCE_ACTIVATE_WORKTREE": str(state / "worktree"),
+        "HAPAX_SOURCE_ACTIVATE_LOCAL_BIN": str(local_bin),
+    }
+    proc = subprocess.run(
+        [str(REPO_ROOT / "scripts" / "hapax-source-activate"), "--skip-deploy"],
+        capture_output=True,
+        text=True,
+        env=env,
+        timeout=600,
+        check=False,
+    )
+
+    release_root = state / "releases"
+    trees = sorted(p for p in release_root.iterdir() if p.is_dir()) if release_root.is_dir() else []
+    if not trees:
+        pytest.skip(
+            "the activator created no release tree in this sandbox "
+            f"(rc={proc.returncode}); its later stages need estate services this environment "
+            f"does not provide. stderr tail:\n{proc.stderr[-1500:]}"
+        )
+
+    tree = trees[-1]
+    status = subprocess.run(
+        ["git", "-C", str(tree), "status", "--porcelain"],
+        capture_output=True,
+        text=True,
+        check=True,
+    ).stdout.strip()
+
+    assert status == "", (
+        "a release tree created by the REAL activator is not clean:\n"
+        + status
+        + "\nNext: a mode row (100644 -> 100755) means link_active_script "
+        "(hapax-source-activate:977) chmod'd a launcher committed non-executable; fix with "
+        "git update-index --chmod=+x <path>."
+    )
+
+    from shared.adjudicator_identity import (  # noqa: PLC0415 - after the tree exists
+        adjudicator_identity,
+        record_identifies_its_checkout,
+    )
+
+    ident = adjudicator_identity(str(tree / "shared" / "adjudicator_identity.py"))
+    assert ident.dirty is False, (
+        f"the activator's own release tree measures dirty={ident.dirty!r}, so every decision "
+        "written from a real deploy is unidentifiable. Next: git -C <tree> status --porcelain."
+    )
+    assert record_identifies_its_checkout(ident.as_receipt()), (
+        f"the activator's own release tree does not identify its checkout: {ident.as_receipt()}"
+    )
+
+
 def test_a_tree_materialised_the_way_activation_does_is_clean(tmp_path: Path, monkeypatch) -> None:
     """The activation integration check codex-1 asked for, using the real mechanism.
 
