@@ -17,7 +17,7 @@ from __future__ import annotations
 import json
 import os
 import subprocess
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 
 import pytest
 
@@ -200,6 +200,106 @@ def test_every_shebanged_script_is_committed_executable() -> None:
         "instead leaves the tree permanently dirty:\n  "
         + "\n  ".join(offenders)
         + "\nFix each with: git update-index --chmod=+x <path>"
+    )
+
+
+def _activation_managed_launchers(modes: dict[str, str]) -> list[str]:
+    """The paths ``prepare_active_runtime_surface`` hands to ``link_active_script``.
+
+    ``scripts/hapax-source-activate:1055-1061``::
+
+        for script in "$ACTIVE_WORKTREE"/scripts/hapax-*; do
+            link_active_script "$script" || return 1
+        done
+        for script in cc-claim cc-close; do
+            link_active_script "$ACTIVE_WORKTREE/scripts/$script" || return 1
+        done
+
+    Mirrored here rather than imported because the activator is bash. If that selection changes,
+    this list goes stale — which is a real risk and the reason both the glob and the explicit
+    pair are quoted above, so a reader can diff them by eye.
+    """
+    selected = []
+    for path in modes:
+        base = PurePosixPath(path).name
+        parent = str(PurePosixPath(path).parent)
+        if parent != "scripts":
+            continue
+        if base.startswith("hapax-") or base in {"cc-claim", "cc-close"}:
+            selected.append(path)
+    return sorted(selected)
+
+
+def test_the_scanner_raises_rather_than_reporting_no_shebang() -> None:
+    """Raised by codex-1: the scanner's own failure paths had no direct test.
+
+    ``_has_shebang`` used ``check=False`` and read stdout only, so any git failure produced an
+    empty buffer and the file was reported as non-shebanged — the gate answering "no defect"
+    when it could not look. It now uses ``check=True``, and this pins that: a path HEAD does not
+    contain must RAISE, not return False.
+
+    The distinction is the whole point of the fix. False means "looked, no shebang"; an exception
+    means "could not look". Collapsing the second into the first is how a gate goes quiet.
+    """
+    with pytest.raises(subprocess.CalledProcessError):
+        _has_shebang("scripts/definitely-not-a-tracked-path-9f3a2b")
+
+
+def test_non_blob_entries_are_excluded_by_mode_not_by_a_failed_read() -> None:
+    """Symlinks and gitlinks are skipped for what they ARE, not because reading them failed.
+
+    Also raised by codex-1. The scan must not depend on ``git show`` erroring to exclude entry
+    types that were never scripts — that would be the same "absence of a result read as a
+    result" defect, just relocated. ``_NON_BLOB_MODES`` names them explicitly, so the exclusion
+    is a decision rather than a side effect.
+    """
+    assert frozenset({"120000", "160000"}) == _NON_BLOB_MODES, (
+        "symlink (120000) and gitlink (160000) are the non-blob tree entry modes; if this set "
+        "changes the scan must be re-reasoned, not silently widened"
+    )
+    modes = _committed_modes()
+    assert all(m in {"100644", "100755"} | _NON_BLOB_MODES for m in modes.values()), (
+        f"unexpected tree entry mode under scripts/: {sorted(set(modes.values()))}. "
+        "Next: decide explicitly whether the new mode is a script before letting the scan see it."
+    )
+
+
+def test_activation_has_no_mode_to_repair() -> None:
+    """The activation mutation itself, witnessed by asserting it is a no-op.
+
+    Raised by codex-1 across several rounds: a test that materialises a worktree proves a raw
+    checkout is clean, and "cannot detect mutations made by activation". That was right, and the
+    mutation is now located precisely — ``scripts/hapax-source-activate:977``::
+
+        if [[ ! -x "$script" ]] && ! chmod +x "$script"; then
+
+    ``link_active_script`` chmods ``+x`` any managed launcher that is not already executable, and
+    ``prepare_active_runtime_surface`` hands it every ``scripts/hapax-*`` plus ``cc-claim`` and
+    ``cc-close``. That chmod is the entire cause of the dirt: a release tree materialises at HEAD's
+    modes, activation makes a non-executable launcher runnable, and the tree is dirty from then on.
+
+    The activator's own error text prescribes this fix — "next action: restore its executable Git
+    mode and rerun governed source activation". It has been asking for the committed mode all
+    along; nothing was reading the message.
+
+    So this asserts the condition under which activation cannot dirty anything: every path that
+    glob selects is ALREADY executable in HEAD, so the guard `[[ ! -x ]]` is false and the chmod
+    never runs. That is stronger than the previous test in the way that matters — it covers
+    ``cc-claim``, ``cc-close`` and every future ``hapax-*`` launcher, not only the one file whose
+    breakage happened to be noticed.
+    """
+    modes = _committed_modes()
+    managed = _activation_managed_launchers(modes)
+    assert managed, "the activator's launcher selection matched nothing; the mirror has gone stale"
+
+    would_be_chmodded = sorted(p for p in managed if modes[p] == "100644")
+
+    assert would_be_chmodded == [], (
+        "source activation would chmod +x these on every deploy (hapax-source-activate:977), "
+        "leaving the release tree permanently dirty and every decision written from it "
+        "unidentifiable:\n  "
+        + "\n  ".join(would_be_chmodded)
+        + "\nNext: git update-index --chmod=+x <path> for each, then commit."
     )
 
 
