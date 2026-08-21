@@ -639,6 +639,49 @@ def test_lifecycle_effects_default_deny_before_journal_event_or_projection(
     assert log.replay().events == ()
 
 
+def test_hollow_terminal_admission_is_refused_before_default_deny_skip(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    log = _log(tmp_path)
+    note = tmp_path / "vault" / "task-1.md"
+    note.parent.mkdir()
+    note.write_bytes(b"stage: S10\n")
+    projection = cp.FileProjection.capture(note, after=b"stage: S11\n")
+    monkeypatch.setattr(cp, "_LIFECYCLE_EFFECT_ACTIVATION", False)
+    order: list[str] = []
+    real_validate = cp._validate_terminal_close_admission
+    real_require = cp._require_lifecycle_effect_activation
+
+    def wrapped_validate(*args: object, **kwargs: object) -> None:
+        order.append("validate")
+        real_validate(*args, **kwargs)
+
+    def wrapped_require() -> None:
+        order.append("require")
+        real_require()
+
+    monkeypatch.setattr(cp, "_validate_terminal_close_admission", wrapped_validate)
+    monkeypatch.setattr(cp, "_require_lifecycle_effect_activation", wrapped_require)
+
+    with pytest.raises(cp.LifecycleTransitionError) as raised:
+        cp._execute_lifecycle_transition(
+            event_log=log,
+            intent=_intent(from_stage="S10", to_stage="S11"),
+            projections=[projection],
+            transaction_root=tmp_path / "transactions",
+            lock_root=tmp_path / "locks",
+            terminal_close_admission={"schema": "nope"},
+            locked_preflight=lambda: None,
+        )
+
+    assert raised.value.reason_code != "transition_effect_activation_unavailable"
+    assert order[0] == "validate"
+    assert "require" not in order
+    assert note.read_bytes() == b"stage: S10\n"
+    assert log.replay().events == ()
+
+
 def test_executor_rejects_bypassed_mutable_intent_before_any_effect(
     tmp_path: Path,
 ) -> None:
@@ -3407,6 +3450,66 @@ def test_exchange_fallback_crash_between_steps_preserves_both_payloads(
         scratch = cp._scratch_for(restored, "txn-crash", 0)
         assert cp._cas_rollback(restored, scratch) is True
         assert dst.read_bytes() == b"before-image"
+    finally:
+        os.close(fd)
+
+
+def test_exchange_fallback_crash_after_step_two_restores_preimage(
+    tmp_path: Path,
+) -> None:
+    src = tmp_path / "scratch"
+    dst = tmp_path / "note.md"
+    src.write_bytes(b"after-image")
+    dst.write_bytes(b"before-image")
+    displaced = tmp_path / cp._exchange_displaced_name("note.md")
+    fd = os.open(tmp_path, os.O_RDONLY | os.O_DIRECTORY)
+    calls = {"n": 0}
+    real_rename = os.rename
+
+    def crash_after_dest_installed(src_name: str, dst_name: str, **kwargs: object) -> None:
+        calls["n"] += 1
+        real_rename(src_name, dst_name, **kwargs)
+        if calls["n"] == 2:
+            raise RuntimeError("crash after dest installed")
+
+    try:
+        with mock.patch.object(cp.os, "rename", side_effect=crash_after_dest_installed):
+            with pytest.raises(RuntimeError, match="crash after dest installed"):
+                cp._renameat2_exchange_fallback(fd, "scratch", fd, "note.md")
+        assert dst.read_bytes() == b"after-image"
+        assert displaced.read_bytes() == b"before-image"
+        assert not src.exists()
+        restored = cp.FileProjection.from_snapshot(
+            dst,
+            before=b"before-image",
+            before_mode=stat.S_IMODE(displaced.stat().st_mode),
+            after=b"after-image",
+            after_mode=stat.S_IMODE(dst.stat().st_mode),
+        )
+        scratch = cp._scratch_for(restored, "txn-crash-step2", 0)
+        assert cp._cas_rollback(restored, scratch) is True
+        assert dst.read_bytes() == b"before-image"
+        assert not displaced.exists()
+        assert scratch.path.read_bytes() == b"after-image"
+    finally:
+        os.close(fd)
+
+
+def test_exchange_fallback_refuses_occupied_displaced_name(tmp_path: Path) -> None:
+    src = tmp_path / "scratch"
+    dst = tmp_path / "note.md"
+    displaced = tmp_path / cp._exchange_displaced_name("note.md")
+    src.write_bytes(b"after-image")
+    dst.write_bytes(b"before-image")
+    displaced.write_bytes(b"stale-preimage")
+    fd = os.open(tmp_path, os.O_RDONLY | os.O_DIRECTORY)
+    try:
+        with pytest.raises(OSError) as raised:
+            cp._renameat2_exchange_fallback(fd, "scratch", fd, "note.md")
+        assert raised.value.errno == errno.EEXIST
+        assert dst.read_bytes() == b"before-image"
+        assert displaced.read_bytes() == b"stale-preimage"
+        assert src.read_bytes() == b"after-image"
     finally:
         os.close(fd)
 

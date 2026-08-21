@@ -741,11 +741,11 @@ def test_retroactive_done_gate_skips_paperwork_and_child_checkers(
 ) -> None:
     fixture = _fixture(tmp_path, monkeypatch, acceptance_receipt=False)
     snapshot = resolve_task_note(fixture.vault, fixture.task_id, state="active")
-    calls: list[object] = []
+    calls: list[list[str]] = []
 
-    def fake_run(*_args, **_kwargs):
-        calls.append(1)
-        return subprocess.CompletedProcess(["unused"], 0, stdout="", stderr="")
+    def fake_run(command, *, env, **_kwargs):
+        calls.append(list(command))
+        return subprocess.CompletedProcess(command, 0, stdout="", stderr="")
 
     monkeypatch.setattr(sdlc_close.subprocess, "run", fake_run)
 
@@ -758,9 +758,32 @@ def test_retroactive_done_gate_skips_paperwork_and_child_checkers(
     )
 
     assert [(item.gate, item.outcome) for item in evidence] == [
-        ("done-only-gates", "not_applicable")
+        ("done-only-gates", "not_applicable"),
+        ("pr-merge", "pass"),
     ]
-    assert calls == []
+    assert len(calls) == 1
+    assert calls[0][-3:] == [str(snapshot.path), "--pr", "4483"]
+    assert all("artifact-disposition" not in part for cmd in calls for part in cmd)
+
+
+def test_retroactive_done_gate_refuses_without_merged_pr(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    fixture = _fixture(tmp_path, monkeypatch, acceptance_receipt=False)
+    snapshot = resolve_task_note(fixture.vault, fixture.task_id, state="active")
+
+    with pytest.raises(TerminalCloseError) as raised:
+        sdlc_close._default_done_gate_runner(
+            snapshot,
+            "done",
+            "",
+            True,
+            None,
+        )
+
+    assert raised.value.reason_code == "terminal_close_done_gate_refused"
+    assert raised.value.detail == "retroactive_merge_evidence_missing"
 
 
 def test_non_retroactive_done_gate_still_requires_acceptance_receipt(
@@ -789,12 +812,20 @@ def test_retroactive_close_skips_premerge_paperwork_gates(
 ) -> None:
     fixture = _fixture(tmp_path, monkeypatch, acceptance_receipt=False)
     _inject_trusted_echo_projection(fixture, monkeypatch)
+    monkeypatch.setattr(
+        sdlc_close.subprocess,
+        "run",
+        lambda command, *, env, **_kwargs: subprocess.CompletedProcess(
+            command, 0, stdout="", stderr=""
+        ),
+    )
 
     result = close_task(
         fixture.task_id,
         final_status="done",
         actor="watcher",
         session_id="",
+        pr="4483",
         retroactive=True,
         vault_root=fixture.vault,
         cache_dir=fixture.cache,
@@ -813,12 +844,20 @@ def test_retroactive_watcher_binds_owning_claim_session(
 ) -> None:
     fixture = _fixture(tmp_path, monkeypatch)
     _inject_trusted_echo_projection(fixture, monkeypatch)
+    monkeypatch.setattr(
+        sdlc_close.subprocess,
+        "run",
+        lambda command, *, env, **_kwargs: subprocess.CompletedProcess(
+            command, 0, stdout="", stderr=""
+        ),
+    )
 
     result = close_task(
         fixture.task_id,
         final_status="done",
         actor="watcher",
         session_id="",
+        pr="4483",
         retroactive=True,
         vault_root=fixture.vault,
         cache_dir=fixture.cache,

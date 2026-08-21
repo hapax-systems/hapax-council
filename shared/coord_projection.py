@@ -3715,6 +3715,12 @@ def _renameat2_exchange_fallback(
     # Three-step EXCHANGE. A reader can observe dst_name absent between
     # steps 1 and 2. Crash leaves the preimage at a deterministic displaced name.
     displaced = _exchange_displaced_name(dst_name)
+    try:
+        os.stat(displaced, dir_fd=dst_dir_fd, follow_symlinks=False)
+    except FileNotFoundError:
+        pass
+    else:
+        raise OSError(errno.EEXIST, "exchange displaced name occupied", displaced)
     os.rename(dst_name, displaced, src_dir_fd=src_dir_fd, dst_dir_fd=dst_dir_fd)
     try:
         os.rename(src_name, dst_name, src_dir_fd=src_dir_fd, dst_dir_fd=dst_dir_fd)
@@ -4087,6 +4093,29 @@ def _cas_rollback(projection: FileProjection, scratch: _ProjectionScratch) -> bo
             name,
             max_bytes=_MAX_LIFECYCLE_BLOB_BYTES,
         )
+        if scratch.kind == "update":
+            displaced_name = _exchange_displaced_name(name)
+            displaced = _entry_state_at(
+                dir_fd,
+                displaced_name,
+                max_bytes=_MAX_LIFECYCLE_BLOB_BYTES,
+            )
+            scratch_state = _entry_state_at(
+                dir_fd,
+                scratch.path.name,
+                max_bytes=_MAX_LIFECYCLE_BLOB_BYTES,
+            )
+            if (
+                _entry_matches(current, projection.after, projection.after_mode)
+                and _entry_matches(displaced, projection.before, projection.before_mode)
+                and scratch_state is None
+            ):
+                # Crash after EXCHANGE step 2: dest holds the postimage, the
+                # preimage sits at the displaced name, and src is gone.
+                os.rename(name, scratch.path.name, src_dir_fd=dir_fd, dst_dir_fd=dir_fd)
+                os.rename(displaced_name, name, src_dir_fd=dir_fd, dst_dir_fd=dir_fd)
+                os.fsync(dir_fd)
+                return True
         if _entry_matches(current, projection.before, projection.before_mode):
             return True
         if not _entry_matches(current, projection.after, projection.after_mode):
@@ -5491,15 +5520,16 @@ def _execute_lifecycle_transition(
     """Apply one exact lifecycle transition with strict receipts and CAS rollback."""
 
     # Terminal close is the slice-2 admitted effect. Other lifecycle effects stay
-    # default-deny until the spine lockstep release.
+    # default-deny until the spine lockstep release. Validate the admission
+    # before disarming that switch — a caller-supplied mapping is not proof.
+    intent, ordered = _canonical_execution_inputs(intent, projections)
+    _validate_terminal_close_admission(intent, terminal_close_admission)
     if not (
         terminal_close_admission is not None
         and intent.from_stage == "S10"
         and intent.to_stage == "S11"
     ):
         _require_lifecycle_effect_activation()
-    intent, ordered = _canonical_execution_inputs(intent, projections)
-    _validate_terminal_close_admission(intent, terminal_close_admission)
     if intent.from_stage == "S10" and intent.to_stage == "S11" and locked_preflight is None:
         raise LifecycleTransitionError(
             "transition_terminal_locked_preflight_missing",

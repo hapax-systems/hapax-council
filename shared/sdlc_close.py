@@ -336,34 +336,27 @@ def _default_done_gate_runner(
                 observed_at=observed_at,
             ),
         )
-    if retroactive:
-        # Merge (or other retroactive authority) is the close evidence.
-        # Pre-merge AC/receipt/rapid-close paperwork must not wedge drain.
-        return (
-            CloseGateEvidence(
-                gate="done-only-gates",
-                outcome="not_applicable",
-                task_id=snapshot.task_id,
-                note_sha256=snapshot.sha256,
-                authority_case=authority_case,
-                final_status=final_status,
-                observed_at=observed_at,
-            ),
+    if retroactive and not str(pr or "").strip():
+        raise TerminalCloseError(
+            "terminal_close_done_gate_refused",
+            "supply the merged PR number as retroactive close evidence",
+            "retroactive_merge_evidence_missing",
         )
     blockers: list[str] = []
-    criteria = acceptance_criteria_state(snapshot.content.decode("utf-8"))
-    if criteria.section_present and criteria.unchecked_items:
-        blockers.append("acceptance_criteria_incomplete")
-    if requires_acceptance_receipt(snapshot.frontmatter):
-        blockers.extend(acceptance_receipt_blockers(snapshot.frontmatter, snapshot.path))
-    claimed_at = snapshot.frontmatter.get("claimed_at")
-    if claimed_at and not retroactive and os.environ.get("HAPAX_RAPID_CLOSE_OFF") != "1":
-        try:
-            claimed = datetime.fromisoformat(str(claimed_at).replace("Z", "+00:00"))
-            if (datetime.now(UTC) - claimed.astimezone(UTC)).total_seconds() < 300:
-                blockers.append("rapid_close_requires_retroactive")
-        except ValueError:
-            blockers.append("claimed_at_malformed")
+    if not retroactive:
+        criteria = acceptance_criteria_state(snapshot.content.decode("utf-8"))
+        if criteria.section_present and criteria.unchecked_items:
+            blockers.append("acceptance_criteria_incomplete")
+        if requires_acceptance_receipt(snapshot.frontmatter):
+            blockers.extend(acceptance_receipt_blockers(snapshot.frontmatter, snapshot.path))
+        claimed_at = snapshot.frontmatter.get("claimed_at")
+        if claimed_at and os.environ.get("HAPAX_RAPID_CLOSE_OFF") != "1":
+            try:
+                claimed = datetime.fromisoformat(str(claimed_at).replace("Z", "+00:00"))
+                if (datetime.now(UTC) - claimed.astimezone(UTC)).total_seconds() < 300:
+                    blockers.append("rapid_close_requires_retroactive")
+            except ValueError:
+                blockers.append("claimed_at_malformed")
     if blockers:
         raise TerminalCloseError(
             "terminal_close_done_gate_refused",
@@ -400,25 +393,30 @@ def _default_done_gate_runner(
             ],
         )
     )
-    disposition = REPO_ROOT / "scripts" / "cc-task-artifact-disposition-check.py"
-    if not disposition.is_file():
-        raise TerminalCloseError(
-            "terminal_close_artifact_disposition_checker_missing",
-            "restore the governed artifact disposition checker before close",
-            str(disposition),
+    if not retroactive:
+        disposition = REPO_ROOT / "scripts" / "cc-task-artifact-disposition-check.py"
+        if not disposition.is_file():
+            raise TerminalCloseError(
+                "terminal_close_artifact_disposition_checker_missing",
+                "restore the governed artifact disposition checker before close",
+                str(disposition),
+            )
+        commands.append(
+            (
+                "artifact-disposition",
+                [
+                    sys.executable,
+                    "-I",
+                    str(disposition),
+                    str(snapshot.path),
+                    snapshot.task_id,
+                ],
+            )
         )
-    command = [
-        sys.executable,
-        "-I",
-        str(disposition),
-        str(snapshot.path),
-        snapshot.task_id,
-    ]
-    commands.append(("artifact-disposition", command))
     evidence = [
         CloseGateEvidence(
-            gate="task-close-internal",
-            outcome="pass",
+            gate="done-only-gates" if retroactive else "task-close-internal",
+            outcome="not_applicable" if retroactive else "pass",
             task_id=snapshot.task_id,
             note_sha256=snapshot.sha256,
             authority_case=authority_case,
