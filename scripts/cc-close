@@ -95,13 +95,14 @@ if [[ -z "$role" ]]; then
   # than reason about it: refuse only if a lease actually names this task. With no
   # such lease there is nothing to release and the close is safe; with one, there
   # is no way to know which key to clear, and stopping beats stranding.
+  _claims_dir="${HAPAX_CC_CLAIMS_DIR:-$HOME/.cache/hapax}"
   shopt -s nullglob
   _unreleasable=()
   _unreadable=()
-  # BOTH lease forms. An epoch sidecar surviving alone is not cosmetic — it is what
-  # makes the next cc-claim HOLD, so a close that leaves one behind strands the
-  # session just as surely as a leaked claim file does.
-  for _lease in "$HOME/.cache/hapax/cc-active-task-"* "$HOME/.cache/hapax/cc-claim-epoch-"*; do
+  _orphan_epochs=()
+
+  # Claim files: "<task_id>" on the first line.
+  for _lease in "$_claims_dir/cc-active-task-"*; do
     [[ -f "$_lease" ]] || continue
     if ! _head="$(head -n1 "$_lease" 2>/dev/null)"; then
       # Could not READ it. Treating that as "does not name this task" is absence
@@ -110,21 +111,49 @@ if [[ -z "$role" ]]; then
       _unreadable+=("$_lease")
       continue
     fi
-    # Claim files hold "<task_id>"; epoch sidecars hold "<epoch> <task_id>". Taking
-    # the last field reads both, and is a no-op when there is no space.
-    [[ "$(printf '%s' "${_head##* }" | tr -d '[:space:]')" == "$task_id" ]] &&
+    [[ "$(printf '%s' "$_head" | tr -d '[:space:]')" == "$task_id" ]] &&
       _unreleasable+=("$_lease")
   done
+
+  # Epoch sidecars: "<epoch> <task_id>". Parsed by FIELD POSITION rather than "last
+  # whitespace field", so a malformed body cannot be coerced into a match.
+  for _lease in "$_claims_dir/cc-claim-epoch-"*; do
+    [[ -f "$_lease" ]] || continue
+    if ! _head="$(head -n1 "$_lease" 2>/dev/null)"; then
+      _unreadable+=("$_lease")
+      continue
+    fi
+    read -r _epoch_field _task_field _extra <<<"$_head" || true
+    [[ -n "${_extra:-}" ]] && continue          # not the documented two-field shape
+    [[ "$_task_field" == "$task_id" ]] || continue
+    # An epoch sidecar naming THIS task with no sibling claim file is orphan residue
+    # of this task's own claim — exactly what a correct close removes alongside the
+    # claim file. Clear it rather than refusing over it: refusing here would name a
+    # remedy that does not exist, because sweep_stale_claims globs cc-active-task-*
+    # only and cannot reap an epoch sidecar. Doing the close's own job is not a
+    # widened failure path; leaving residue that HOLDs the next cc-claim is.
+    if [[ -f "$_claims_dir/cc-active-task-${_lease##*/cc-claim-epoch-}" ]]; then
+      _unreleasable+=("$_lease")
+    else
+      _orphan_epochs+=("$_lease")
+    fi
+  done
   shopt -u nullglob
+
   if (( ${#_unreadable[@]} > 0 || ${#_unreleasable[@]} > 0 )); then
     if (( ${#_unreadable[@]} > 0 )); then
       _why="could not read ${#_unreadable[@]} lease file(s), so whether they hold '$task_id' is unknown: ${_unreadable[*]}"
     else
       _why="${#_unreleasable[@]} lease file(s) name '$task_id': ${_unreleasable[*]}"
     fi
-    echo "cc-close: cannot resolve this session's role, and $_why. Closing now would leave them behind and the gate would then block every later mutation. Next: rerun from the session that holds the claim, or sweep it with 'hapax-methodology-dispatch --sweep-stale-claims' if no session holds it." >&2
+    echo "cc-close: cannot resolve this session's role, and $_why. Closing now would leave them behind and the gate would then block every later mutation. Next: rerun from the session that holds the claim, or reap it with 'hapax-methodology-dispatch --sweep-stale-claims' if no session holds it." >&2
     exit 2
   fi
+
+  for _lease in "${_orphan_epochs[@]}"; do
+    rm -f "$_lease"
+    echo "cc-close: removed orphan claim-epoch sidecar '$_lease' (named '$task_id', no claim file) — it would have HELD the next cc-claim"
+  done
 fi
 
 ROOT_HELPER="$SCRIPT_DIR/../hooks/scripts/cc-task-root.sh"

@@ -578,12 +578,11 @@ def test_an_explicit_role_session_still_releases_after_the_cascade_deletion(
     ("lease_name", "lease_body"),
     [
         ("cc-active-task-eta", "{task_id}\n"),
-        # The epoch sidecar alone is the residue a partially-cleared close leaves, and
-        # it is what makes the next cc-claim HOLD — so missing it here would let the
-        # guard pass over exactly the shape that caused the operator's interventions.
+        # An epoch sidecar that still HAS its claim-file sibling is a live-looking
+        # lease, not orphan residue — the sibling triggers the refusal.
         ("cc-claim-epoch-eta", "1780000000 {task_id}\n"),
     ],
-    ids=["claim-file", "epoch-sidecar-only"],
+    ids=["claim-file", "epoch-with-sibling"],
 )
 def test_an_unresolvable_role_refuses_rather_than_closing_over_a_live_lease(
     tmp_path: Path, lease_name: str, lease_body: str
@@ -604,6 +603,9 @@ def test_an_unresolvable_role_refuses_rather_than_closing_over_a_live_lease(
     cache.mkdir(parents=True, exist_ok=True)
     orphan = cache / lease_name
     orphan.write_text(lease_body.format(task_id=TASK_ID), encoding="utf-8")
+    if lease_name.startswith("cc-claim-epoch-"):
+        # The sibling is what makes this a live-looking lease rather than residue.
+        (cache / "cc-active-task-eta").write_text("some-other-task\n", encoding="utf-8")
 
     env = _env(home, session_id=None)  # no role signal, no session id
     result = subprocess.run(
@@ -623,6 +625,78 @@ def test_an_unresolvable_role_refuses_rather_than_closing_over_a_live_lease(
         f"refused, but not for the reason under test\nstderr={result.stderr}"
     )
     assert orphan.exists(), "the unreleasable lease must be left intact for its owner"
+
+
+def test_an_orphan_epoch_sidecar_is_cleared_not_refused_over(tmp_path: Path) -> None:
+    """An epoch sidecar naming this task with NO sibling claim file is orphan residue of
+    this task's own claim — precisely what a correct close removes alongside the claim
+    file. cc-close clears it.
+
+    Refusing instead would have named an impossible remedy: ``sweep_stale_claims`` globs
+    ``cc-active-task-*`` and cannot reap an epoch sidecar, so the refusal would have
+    pointed at a sweep that does nothing for the case it refused over — the sealed-exit
+    failure this row keeps meeting, reproduced inside its own fix.
+    """
+    home = tmp_path / "home"
+    vault = _vault(home)
+    _write_task(vault, str(home / "scratch.txt"))
+
+    cache = home / ".cache" / "hapax"
+    cache.mkdir(parents=True, exist_ok=True)
+    residue = cache / "cc-claim-epoch-eta"
+    residue.write_text(f"1780000000 {TASK_ID}\n", encoding="utf-8")
+
+    result = subprocess.run(
+        [_BASH, str(CC_CLOSE), TASK_ID, "--status", "withdrawn"],
+        env=_env(home, session_id=None),
+        cwd=str(home),
+        text=True,
+        capture_output=True,
+        check=False,
+    )
+
+    assert result.returncode == 0, (
+        f"cc-close refused over residue it could have cleared\nstderr={result.stderr}"
+    )
+    assert not residue.exists(), (
+        "the orphan epoch sidecar survived the close — it will HOLD the next cc-claim"
+    )
+    assert "orphan claim-epoch sidecar" in result.stdout, (
+        f"the removal was not announced\nstdout={result.stdout}"
+    )
+
+
+def test_a_readable_lease_naming_another_task_does_not_block_the_close(
+    tmp_path: Path,
+) -> None:
+    """The guard must key on WHICH task the lease names, not on any lease existing.
+    A lease for unrelated work is another session's business and is no reason to refuse
+    — nor to touch it."""
+    home = tmp_path / "home"
+    vault = _vault(home)
+    _write_task(vault, str(home / "scratch.txt"))
+
+    cache = home / ".cache" / "hapax"
+    cache.mkdir(parents=True, exist_ok=True)
+    other = cache / "cc-active-task-eta"
+    other.write_text("someone-elses-task\n", encoding="utf-8")
+
+    result = subprocess.run(
+        [_BASH, str(CC_CLOSE), TASK_ID, "--status", "withdrawn"],
+        env=_env(home, session_id=None),
+        cwd=str(home),
+        text=True,
+        capture_output=True,
+        check=False,
+    )
+
+    assert result.returncode == 0, (
+        "a lease naming unrelated work blocked the close — the guard has widened from "
+        f"'names this task' to 'any lease exists'\nstderr={result.stderr}"
+    )
+    assert other.exists() and other.read_text(encoding="utf-8").strip() == ("someone-elses-task"), (
+        "another session's lease was modified"
+    )
 
 
 def test_an_unreadable_lease_refuses_rather_than_counting_as_absent(
@@ -704,6 +778,17 @@ def test_the_broken_install_refusal_names_a_repair_that_exists() -> None:
     assert (REPO_ROOT / "scripts" / "hapax-source-activate").is_file(), (
         "cc-close's broken-install refusal names hapax-source-activate as the repair, "
         "but no such script exists — the remedy is fiction"
+    )
+    # The unresolvable-role refusal names a different remedy; hold it to the same bar,
+    # since an unasserted command name is exactly how a remedy rots into fiction.
+    assert "--sweep-stale-claims" in text, (
+        "the unresolvable-role refusal no longer names its reap path"
+    )
+    dispatch = REPO_ROOT / "scripts" / "hapax-methodology-dispatch"
+    assert dispatch.is_file(), "the named reap command's script does not exist"
+    assert "--sweep-stale-claims" in dispatch.read_text(encoding="utf-8"), (
+        "cc-close points at 'hapax-methodology-dispatch --sweep-stale-claims', but that "
+        "flag is not accepted by the script — the remedy is unreachable"
     )
 
 
