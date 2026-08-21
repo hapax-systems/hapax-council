@@ -61,6 +61,17 @@ first_existing_dir() {
   return 1
 }
 
+codex_default_model() {
+  # Resolution order: top-level config model, then latest-model fallback.
+  # CODEX_EXTRA is appended later, so trailing `-- -c model=...` still wins.
+  local helper="$COUNCIL_DIR/scripts/hapax-codex-default-model"
+  local config="${CODEX_CONFIG_FILE:-$HOME/.codex/config.toml}"
+  if [ -r "$helper" ] && command -v python3 >/dev/null 2>&1; then
+    python3 "$helper" "$config" 2>/dev/null && return 0
+  fi
+  printf '%s\n' "gpt-5.6-sol"
+}
+
 slugify() {
   printf '%s\n' "$1" | tr -cs 'A-Za-z0-9_.-' '-' | sed 's/^-//; s/-$//'
 }
@@ -1021,10 +1032,11 @@ if [ -n "$BOOTSTRAP_FILE" ] && [ "$explicit_codex_command" -eq 0 ]; then
   fi
 fi
 
+CODEX_DEFAULT_MODEL="$(codex_default_model)"
 CODEX_ARGS=(
   --dangerously-bypass-approvals-and-sandbox
   --cd "$WORKDIR"
-  -c 'model="gpt-5.5"'
+  -c "model=\"$CODEX_DEFAULT_MODEL\""
   -c 'model_reasoning_effort="xhigh"'
   -c 'approval_policy="never"'
   -c 'sandbox_mode="danger-full-access"'

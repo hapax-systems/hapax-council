@@ -18,6 +18,24 @@ def _write_executable(path: Path, body: str) -> None:
     path.chmod(0o755)
 
 
+def _write_codex_config(home: Path, model: str = "gpt-5.6-sol") -> None:
+    config_dir = home / ".codex"
+    config_dir.mkdir(parents=True, exist_ok=True)
+    (config_dir / "config.toml").write_text(
+        f'personality = "pragmatic"\nmodel = "{model}"\nmodel_reasoning_effort = "xhigh"\n',
+        encoding="utf-8",
+    )
+
+
+def _model_directives(args: str) -> list[str]:
+    parts = args.split()
+    directives = [index for index, part in enumerate(parts) if part.startswith("model=")]
+    for index in directives:
+        assert index > 0
+        assert parts[index - 1] == "-c"
+    return [parts[index] for index in directives]
+
+
 def _write_classifying_ssh(
     path: Path,
     log_path: Path,
@@ -207,6 +225,101 @@ exit 0
     sid = proof["session_id"]
     assert (cache / f"session-role-{sid}").read_text(encoding="utf-8") == "cx-amber\n"
     assert (cache / f"cc-active-task-cx-amber-{sid}").read_text(encoding="utf-8") == "task-x\n"
+
+
+def test_codex_headless_default_model_matches_codex_config_and_override_stays_last(
+    tmp_path: Path,
+) -> None:
+    home = tmp_path / "home"
+    (home / ".cache" / "hapax").mkdir(parents=True)
+    (home / "projects" / "hapax-mcp").mkdir(parents=True)
+    _write_codex_config(home, model="gpt-9.9-headless")
+    workdir = tmp_path / "worktree"
+    workdir.mkdir()
+
+    bin_dir = tmp_path / "bin"
+    args_file = tmp_path / "codex-args.txt"
+    _write_executable(
+        bin_dir / "codex",
+        f"""printf '%s\\n' "$*" > {args_file}
+exit 0
+""",
+    )
+
+    env = os.environ.copy()
+    env.pop("HAPAX_DISPATCH_HOST", None)
+    env.pop("HAPAX_DEFAULT_DISPATCH_HOST", None)
+    env.pop("HAPAX_DISPATCH_HOST_FALLBACK", None)
+    env.pop("CODEX_CONFIG_FILE", None)
+    env["HOME"] = str(home)
+    env["PATH"] = f"{bin_dir}:{env['PATH']}"
+    env["HAPAX_COUNCIL_DIR"] = str(REPO_ROOT)
+    env["HAPAX_CODEX_HEADLESS_ALLOW"] = "1"
+    env["HAPAX_CODEX_HEADLESS_WORKDIR"] = str(workdir)
+
+    result = subprocess.run(
+        [
+            str(SCRIPT),
+            "--task",
+            "task-x",
+            "--no-claim",
+            "--force",
+            "cx-amber",
+            "governed prompt",
+            "--",
+            "-c",
+            'model="gpt-5.override"',
+        ],
+        capture_output=True,
+        text=True,
+        env=env,
+        timeout=10,
+    )
+
+    assert result.returncode == 0, result.stderr
+    args = args_file.read_text(encoding="utf-8")
+    assert _model_directives(args) == ['model="gpt-9.9-headless"', 'model="gpt-5.override"']
+
+
+def test_codex_headless_falls_back_to_latest_model_without_codex_config(
+    tmp_path: Path,
+) -> None:
+    home = tmp_path / "home"
+    (home / ".cache" / "hapax").mkdir(parents=True)
+    (home / "projects" / "hapax-mcp").mkdir(parents=True)
+    workdir = tmp_path / "worktree"
+    workdir.mkdir()
+
+    bin_dir = tmp_path / "bin"
+    args_file = tmp_path / "codex-args.txt"
+    _write_executable(
+        bin_dir / "codex",
+        f"""printf '%s\\n' "$*" > {args_file}
+exit 0
+""",
+    )
+
+    env = os.environ.copy()
+    env.pop("HAPAX_DISPATCH_HOST", None)
+    env.pop("HAPAX_DEFAULT_DISPATCH_HOST", None)
+    env.pop("HAPAX_DISPATCH_HOST_FALLBACK", None)
+    env.pop("CODEX_CONFIG_FILE", None)
+    env["HOME"] = str(home)
+    env["PATH"] = f"{bin_dir}:{env['PATH']}"
+    env["HAPAX_COUNCIL_DIR"] = str(REPO_ROOT)
+    env["HAPAX_CODEX_HEADLESS_ALLOW"] = "1"
+    env["HAPAX_CODEX_HEADLESS_WORKDIR"] = str(workdir)
+
+    result = subprocess.run(
+        [str(SCRIPT), "--task", "task-x", "--no-claim", "--force", "cx-amber", "governed prompt"],
+        capture_output=True,
+        text=True,
+        env=env,
+        timeout=10,
+    )
+
+    assert result.returncode == 0, result.stderr
+    assert _model_directives(args_file.read_text(encoding="utf-8")) == ['model="gpt-5.6-sol"']
 
 
 def test_codex_headless_creates_missing_remote_default_worktree(tmp_path: Path) -> None:
