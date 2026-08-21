@@ -630,18 +630,23 @@ def test_the_guard_never_touches_an_epoch_sidecar(tmp_path: Path) -> None:
     ("lease_name", "lease_body"),
     [
         ("cc-active-task-eta", "{task_id}\n"),
+        # The CANONICAL shape. cc-claim session-keys a lease whenever a session id
+        # exists, so this — not the legacy form — is what a real blocked close faces.
+        ("cc-active-task-eta-sess9", "{task_id}\n"),
     ],
-    ids=["blocking-claim-file"],
+    ids=["legacy-claim-file", "session-keyed-claim-file"],
 )
 def test_the_named_remedy_actually_recovers_the_refused_close(
     tmp_path: Path, lease_name: str, lease_body: str
 ) -> None:
-    """The refusal's remedy is EXERCISED, not spell-checked.
+    """The refusal's remedy is EXERCISED, not spell-checked, against BOTH lease shapes.
 
     Asserting that a command name appears in the source proves the string exists, not
-    that following it works — and every earlier draft of this refusal named a reap tool
-    that could not touch its own case. So: provoke the refusal, then do exactly what the
-    message says (re-run naming a role) and require the close to succeed.
+    that following it works — and every earlier draft of this refusal named something
+    that could not touch its own case. The canonical shape is the session-keyed
+    ``cc-active-task-<role>-<session_id>``; a role alone cannot release it, because the
+    release loop needs the session id to build that key. A remedy covering only the
+    legacy form would half-work, which is the failure this row keeps meeting.
     """
     home = tmp_path / "home"
     vault = _vault(home)
@@ -661,9 +666,15 @@ def test_the_named_remedy_actually_recovers_the_refused_close(
     )
     assert refused.returncode != 0, f"expected a refusal to recover from\nstdout={refused.stdout}"
 
+    # Exactly what the message says: name the identity that holds the claim. The
+    # session id is supplied only when the lease carries one.
+    remedy_env = {**_env(home, session_id=None), "HAPAX_AGENT_ROLE": "eta"}
+    if lease_name.count("-") > 3:  # cc-active-task-<role>-<session_id>
+        remedy_env["HAPAX_SESSION_ID"] = lease_name.rsplit("-", 1)[-1]
+
     recovered = subprocess.run(
         [_BASH, str(CC_CLOSE), TASK_ID, "--status", "withdrawn"],
-        env={**_env(home, session_id=None), "HAPAX_AGENT_ROLE": "eta"},
+        env=remedy_env,
         cwd=str(home),
         text=True,
         capture_output=True,

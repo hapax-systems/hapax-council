@@ -122,7 +122,13 @@ if [[ -z "$role" ]]; then
   # killswitch is offered. A switch read from this process's own environment would be
   # unreachable from the session being refused, exactly the defect filed separately
   # about the gate's own bypass line.
-  echo "cc-close: cannot resolve this session's role, so it cannot tell which claim lease is its own, and a close that cannot release its own lease would strand this session behind the task it just closed. Next: re-run naming the role that holds the claim, e.g. HAPAX_AGENT_ROLE=<role> cc-close $task_id --status $final_status — with a role resolved, the normal release path clears that session's own leases." >&2
+  # BOTH identifiers are named, because a role alone does not cover the canonical
+  # lease shape. cc-claim writes cc-active-task-<role>-<session_id> when a session id
+  # exists and the legacy cc-active-task-<role> when it does not, and the release loop
+  # below can only clear the session-keyed form when it knows the session id. Naming
+  # only the role would clear the legacy file and leave the canonical one — a remedy
+  # that half-works, which is the failure this row keeps meeting.
+  echo "cc-close: cannot resolve this session's role, so it cannot tell which claim lease is its own, and a close that cannot release its own lease would strand this session behind the task it just closed. Next: re-run naming the identity that holds the claim — HAPAX_AGENT_ROLE=<role> HAPAX_SESSION_ID=<session_id> cc-close $task_id --status $final_status. The session id is the suffix of the lease file in ${HAPAX_CC_CLAIMS_DIR:-\$HOME/.cache/hapax} (cc-active-task-<role>-<session_id>); omit it only for a legacy cc-active-task-<role> lease, which has none." >&2
   exit 2
 fi
 
