@@ -554,11 +554,15 @@ def test_a_tree_materialised_the_way_activation_does_is_clean(tmp_path: Path, mo
     finally:
         # Registered worktrees outlive the tmp_path teardown and this estate caps them, so the
         # removal is not optional housekeeping.
+        #
+        # `remove --force` deregisters the worktree it removed, and nothing more is needed. A
+        # `worktree prune` used to follow it; coderabbitai flagged that as repository-wide, and
+        # on this host that is a real hazard rather than a tidiness point — prune operates on
+        # REPO_ROOT's whole administrative area and drops metadata for ANY worktree whose
+        # directory is momentarily unavailable. There are 96 registered worktrees here, several
+        # on removable or network paths. A test must not be able to deregister the operator's.
         subprocess.run(
             ["git", "-C", str(REPO_ROOT), "worktree", "remove", "--force", str(target)],
             capture_output=True,
             check=False,
-        )
-        subprocess.run(
-            ["git", "-C", str(REPO_ROOT), "worktree", "prune"], capture_output=True, check=False
         )
