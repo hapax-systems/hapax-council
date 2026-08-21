@@ -84,7 +84,6 @@ _ROLE_SIGNAL_ENV = (
     # they name. CODEX_THREAD_ID was missing and would have leaked through on a
     # Codex-run CI, where these tests would have passed without testing anything.
     "CODEX_THREAD_ID",
-    "CODEX_THREAD_NAME",
 )
 
 # A PATH without ~/.local/bin: `hapax-whoami` is an identity source of last
