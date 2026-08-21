@@ -32,6 +32,7 @@ from __future__ import annotations
 
 import json
 import os
+import shutil
 import stat
 import subprocess
 import textwrap
@@ -86,6 +87,10 @@ _ROLE_SIGNAL_ENV = (
 # resort inside hapax_agent_identity, and letting the operator's real one
 # answer would make "roleless" depend on the developer's window manager.
 _SYSTEM_PATH = "/usr/bin:/bin:/usr/sbin:/sbin"
+
+# Captured before any PATH narrowing so a test that removes /usr/bin from PATH can
+# still start a shell.
+_BASH = shutil.which("bash") or "/bin/bash"
 
 
 def _env(home: Path, *, session_id: str | None = SESSION_ID) -> dict[str, str]:
@@ -210,13 +215,18 @@ def _leases(home: Path) -> list[Path]:
 
 
 def _run_close(
-    home: Path, script: Path = CC_CLOSE, *, task_id: str = TASK_ID
+    home: Path,
+    script: Path = CC_CLOSE,
+    *,
+    task_id: str = TASK_ID,
+    status: str = "withdrawn",
 ) -> subprocess.CompletedProcess[str]:
-    # --status withdrawn isolates the claim-release block: the done-only gates
-    # (rapid-close, AC checklist, PR-merge evidence) are skipped, while the
-    # release runs for every terminal status.
+    # withdrawn is the default because it isolates the claim-release block: the
+    # done-only gates (rapid-close, AC checklist, PR-merge evidence) are skipped,
+    # while the release runs for every terminal status. See
+    # test_the_release_runs_for_every_terminal_status for the second witness.
     return subprocess.run(
-        ["bash", str(script), task_id, "--status", "withdrawn"],
+        ["bash", str(script), task_id, "--status", status],
         env=_env(home),
         cwd=str(home),  # not a git repo: no path-inferred role (FM-1)
         text=True,
@@ -476,6 +486,88 @@ def test_a_broken_install_refuses_instead_of_releasing_nothing(tmp_path: Path) -
     assert _leases(home) != [], (
         "the lease should still be held after a refused close — the session keeps its "
         "claim rather than losing it to a close that could not complete"
+    )
+
+
+def test_when_readlink_cannot_resolve_the_entrypoint_refuses(tmp_path: Path) -> None:
+    """The readlink fallback's other branch: ``readlink -f`` failing, so ``_cc_self``
+    keeps the unresolved symlink path and the helper is not found. The script must
+    REFUSE rather than proceed with no resolver — which is what makes that fallback safe
+    to have at all. It degrades to a loud failure, never to a close that silently
+    releases nothing.
+
+    A failing readlink stub is used rather than an emptied PATH: removing /usr/bin also
+    removes dirname, and the script then died earlier for an unrelated reason — a test
+    that fails for the wrong cause proves nothing about the branch it names.
+    """
+    home = tmp_path / "home"
+    vault = _vault(home)
+    _write_task(vault, str(home / "scratch.txt"))
+    assert _run_claim(home, TASK_ID).returncode == 0
+
+    bin_dir = tmp_path / "bin"
+    bin_dir.mkdir()
+    installed = bin_dir / "cc-close"
+    installed.symlink_to(CC_CLOSE)
+
+    failing = home / "stubbin" / "readlink"
+    failing.write_text("#!/usr/bin/env bash\nexit 1\n", encoding="utf-8")
+    failing.chmod(failing.stat().st_mode | stat.S_IXUSR)
+
+    result = subprocess.run(
+        [_BASH, str(installed), TASK_ID, "--status", "withdrawn"],
+        env=_env(home),
+        cwd=str(home),
+        text=True,
+        capture_output=True,
+        check=False,
+    )
+
+    assert result.returncode != 0, (
+        "cc-close proceeded through an unresolvable symlink with no role resolver — "
+        f"it cannot have released the lease\nstdout={result.stdout}"
+    )
+    assert "agent-role.sh not found" in result.stderr, (
+        f"refused, but not for the reason under test\nstderr={result.stderr}"
+    )
+    assert _leases(home) != [], "the lease must survive a refused close"
+
+
+def test_the_broken_install_refusal_names_a_repair_that_exists() -> None:
+    """An error that names an unreachable remedy costs the reader a full attempt cycle
+    to discover the exit is sealed — the failure mode this row met four times in one
+    session. So the repair this refusal points at must be a real artifact, asserted, not
+    a plausible-sounding string.
+    """
+    text = CC_CLOSE.read_text(encoding="utf-8")
+    assert "hapax-source-activate" in text, (
+        "the broken-install refusal no longer names its repair path"
+    )
+    assert (REPO_ROOT / "scripts" / "hapax-source-activate").is_file(), (
+        "cc-close's broken-install refusal names hapax-source-activate as the repair, "
+        "but no such script exists — the remedy is fiction"
+    )
+
+
+def test_the_release_runs_for_every_terminal_status(tmp_path: Path) -> None:
+    """The release block is documented as running for every terminal status, but the
+    coverage above drives only ``withdrawn`` (chosen because it skips the done-only
+    gates). A status-specific regression would therefore be invisible. ``superseded``
+    is the cheap second witness.
+    """
+    home = tmp_path / "home"
+    vault = _vault(home)
+    _write_task(vault, str(home / "scratch.txt"))
+    assert _run_claim(home, TASK_ID).returncode == 0
+
+    result = _run_close(home, status="superseded")
+
+    assert result.returncode == 0, result.stderr
+    assert "cleared claim file" in result.stdout, (
+        f"the release did not run under --status superseded\nstdout={result.stdout}"
+    )
+    assert _leases(home) == [], (
+        f"lease artifacts leaked past a superseded close: {[p.name for p in _leases(home)]}"
     )
 
 
