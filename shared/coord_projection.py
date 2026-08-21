@@ -3077,7 +3077,7 @@ def _validate_terminal_close_admission(
             or item.get("authority_case") != intent.authority_case
             or item.get("final_status") != admission.get("final_status")
             or item.get("note_sha256") != admission.get("note_sha256")
-            or item.get("outcome") not in {"pass", "not_applicable"}
+            or item.get("outcome") not in {"pass", "not_applicable", "skipped_retroactive"}
             for item in checked_gate_evidence
         )
         or not isinstance(admission.get("note_path"), str)
@@ -3696,6 +3696,33 @@ def _same_regular_inode(dir_fd: int, left: str, right: str) -> bool:
     )
 
 
+def _drop_extra_link(
+    dir_fd: int,
+    src_name: str,
+    peer_name: str,
+) -> None:
+    """Drop `src_name` only if it still names the extra link of `peer_name`.
+
+    Rename the source aside first. If a racer replaced the source pathname,
+    the parked name does not match the peer inode: put the replacement back
+    and HOLD. Do not unlink a racing replacement by pathname.
+    """
+    if not _same_regular_inode(dir_fd, src_name, peer_name):
+        raise OSError(errno.EEXIST, "destination raced after link", src_name)
+    parked = f".{src_name}.drop-link"
+    try:
+        os.stat(parked, dir_fd=dir_fd, follow_symlinks=False)
+    except FileNotFoundError:
+        pass
+    else:
+        raise OSError(errno.EEXIST, "drop-link name occupied", parked)
+    os.rename(src_name, parked, src_dir_fd=dir_fd, dst_dir_fd=dir_fd)
+    if not _same_regular_inode(dir_fd, parked, peer_name):
+        os.rename(parked, src_name, src_dir_fd=dir_fd, dst_dir_fd=dir_fd)
+        raise OSError(errno.EEXIST, "source raced before drop", src_name)
+    os.unlink(parked, dir_fd=dir_fd)
+
+
 def _link_then_unlink_src(
     src_dir_fd: int,
     src_name: str,
@@ -3709,9 +3736,9 @@ def _link_then_unlink_src(
         dst_dir_fd=dst_dir_fd,
         follow_symlinks=False,
     )
-    if src_dir_fd != dst_dir_fd or not _same_regular_inode(src_dir_fd, src_name, dst_name):
-        raise OSError(errno.EEXIST, "destination raced after link", dst_name)
-    os.unlink(src_name, dir_fd=src_dir_fd)
+    if src_dir_fd != dst_dir_fd:
+        raise OSError(errno.EXDEV, "link-unlink requires one directory", dst_name)
+    _drop_extra_link(src_dir_fd, src_name, dst_name)
 
 
 def _renameat2_noreplace_fallback(

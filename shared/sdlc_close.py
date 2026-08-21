@@ -347,6 +347,10 @@ def _default_done_gate_runner(
             "retroactive_merge_evidence_missing",
         )
     blockers: list[str] = []
+    # Rec 1 (operator 2026-08-20, #4586): --retroactive close uses the merged
+    # PR as the done evidence. AC / receipt / disposition stay live for
+    # ordinary close. Rapid-close already required --retroactive before this
+    # slice. Do not restore those paperwork gates here.
     if not retroactive:
         criteria = acceptance_criteria_state(snapshot.content.decode("utf-8"))
         if criteria.section_present and criteria.unchecked_items:
@@ -417,7 +421,7 @@ def _default_done_gate_runner(
         evidence = [
             CloseGateEvidence(
                 gate=gate,
-                outcome="not_applicable",
+                outcome="skipped_retroactive",
                 task_id=snapshot.task_id,
                 note_sha256=snapshot.sha256,
                 authority_case=authority_case,
@@ -641,6 +645,11 @@ def close_task(
             "terminal_close_task_identity_mismatch",
             "make S10 task, lane, claim, session, and AuthorityCase agree",
         )
+    # Rec 1 (operator 2026-08-20, #4586): Echo cutover is a follow-on. Close
+    # admission is applied Gate 0B publication ownership. Record the skip as
+    # echo-absent, never mq:. Killswitch (no admission_consumption) still HOLDs
+    # on the Gate-0A stub — restore HAPAX_GATE0B_CLAIM_PUBLICATION_OFF unset
+    # and an admitted publication before close.
     # resolve_claim_bound_canon_position is still the Gate-0A stub that always
     # HOLDs. Admitted Gate 0B consumption is the ownership proof for this slice;
     # the echo id is explicitly echo-absent so a later auditor does not treat it
@@ -661,7 +670,7 @@ def close_task(
         except (CanonEchoError, OSError, RuntimeError, ValueError) as exc:
             raise TerminalCloseError(
                 getattr(exc, "reason_code", "terminal_close_echo_unavailable"),
-                "repair the exact claim-bound S10 Echo before close",
+                "unset HAPAX_GATE0B_CLAIM_PUBLICATION_OFF and close with an admitted publication, or wait for the Echo cutover follow-on",
                 str(exc),
             ) from exc
     relays = _relay_snapshots(cache_dir, actor, session_id, task_id)
