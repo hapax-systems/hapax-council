@@ -23,10 +23,12 @@ set -euo pipefail
 # same resolution with a comment naming this exact hazard; cc-close did not, which
 # is why the release was dead through the installed path regardless of which
 # resolver it named.
-_cc_self="${BASH_SOURCE[0]}"
-if command -v readlink >/dev/null 2>&1; then
-  _cc_self="$(readlink -f "$_cc_self" 2>/dev/null || printf '%s' "$_cc_self")"
-fi
+# No `command -v readlink` guard: a missing readlink makes the substitution fail,
+# which the `|| printf` fallback already handles identically. The guard added a
+# branch that could only be exercised by removing /usr/bin from PATH — which also
+# removes dirname, so any test of it died of something else. One path, reachable
+# and covered, beats two where one is untestable.
+_cc_self="$(readlink -f "${BASH_SOURCE[0]}" 2>/dev/null || printf '%s' "${BASH_SOURCE[0]}")"
 SCRIPT_DIR="$(cd "$(dirname "$_cc_self")" && pwd)"
 ROLE_HELPER="$SCRIPT_DIR/../hooks/scripts/agent-role.sh"
 if [[ ! -f "$ROLE_HELPER" ]]; then
@@ -82,6 +84,28 @@ esac
 # an outcome — it only kept a second copy of the resolver's precedence list in a
 # file obliged to agree with it, which is how a releaser drifts from its writer.
 role="$(hapax_effective_role 2>/dev/null || true)"
+if [[ -z "$role" ]]; then
+  # The resolver loaded but could not answer — a session with neither a role signal
+  # nor a session id. Proceeding here is the silent close all over again: the
+  # release block below is guarded on $role, so it would be skipped and any lease
+  # naming this task would survive into the strand.
+  #
+  # The precondition is machine-checkable at the moment of use, so check it rather
+  # than reason about it: refuse only if a lease actually names this task. With no
+  # such lease there is nothing to release and the close is safe; with one, there
+  # is no way to know which key to clear, and stopping beats stranding.
+  shopt -s nullglob
+  _unreleasable=()
+  for _claim in "$HOME/.cache/hapax/cc-active-task-"*; do
+    [[ -f "$_claim" ]] || continue
+    [[ "$(head -n1 "$_claim" | tr -d '[:space:]')" == "$task_id" ]] && _unreleasable+=("$_claim")
+  done
+  shopt -u nullglob
+  if (( ${#_unreleasable[@]} > 0 )); then
+    echo "cc-close: cannot resolve this session's role, but ${#_unreleasable[@]} claim file(s) name '$task_id': ${_unreleasable[*]}. Closing now would leave them behind and the gate would block every later mutation. Next: run from the session that holds the claim, or remove the stale claim file(s) above if no session holds them." >&2
+    exit 2
+  fi
+fi
 
 ROOT_HELPER="$SCRIPT_DIR/../hooks/scripts/cc-task-root.sh"
 if [[ ! -f "$ROOT_HELPER" ]]; then

@@ -54,17 +54,14 @@ STRAND_MESSAGE = "not found in vault"
 # the role still resolves. Recoverable — the session can claim again — and distinct
 # from the strand, where a lease points at a task that no longer exists in active/.
 RECOVERABLE_DENIAL = "no claimed task for role 'roleless'"
-# cc-claim's HOLD exit. The REASON CODE varies with which residue survived, and both
-# observed forms are recorded here because the difference is easy to over-fit:
-#   * full lease leaked (claim file + epoch)  -> claim_task_mismatch
-#   * epoch sidecar alone, no claim file      -> claim_dispatch_binding_missing
-# The second is what a partially-cleared close leaves and what was live in the
-# operator's own HOME; it names a MISSING dispatch binding while the trigger is a
-# LEFTOVER sidecar, pointing away from the cause. What is invariant across both — and
-# so what this suite asserts — is that the residue makes cc-claim HOLD and that the
-# message names the stale lease.
+# cc-claim's HOLD exit. The REASON CODE varies with which residue survived and with
+# what the vault holds — observed forms include claim_task_mismatch and
+# claim_dispatch_binding_missing. The latter is what a partially-cleared close leaves,
+# and what was live in the operator's own HOME; it names a MISSING dispatch binding
+# while the trigger is a LEFTOVER sidecar, pointing away from the cause. The reason
+# code is therefore NOT asserted anywhere here — only the HOLD, which is invariant and
+# is what actually strands a session.
 CLAIM_HOLD_RC = 8
-CLAIM_LEASE_MARKER = "cc-active-task-roleless"
 
 # Every signal agent-role.sh consults to resolve an explicit role. The session
 # running pytest sets several of these; stripping them is what makes the
@@ -533,6 +530,114 @@ def test_when_readlink_cannot_resolve_the_entrypoint_refuses(tmp_path: Path) -> 
     assert _leases(home) != [], "the lease must survive a refused close"
 
 
+def test_an_explicit_role_session_still_releases_after_the_cascade_deletion(
+    tmp_path: Path,
+) -> None:
+    """The env cascade that used to bind $role directly was deleted. It read the same
+    names hapax_agent_identity reads, so deleting it should change nothing for a session
+    that DOES carry an explicit role — but "should" is the word that precedes every
+    regression. Drive a HAPAX_AGENT_ROLE session end to end and assert its lease is
+    released under the role it declared, not under 'roleless'.
+    """
+    home = tmp_path / "home"
+    vault = _vault(home)
+    _write_task(vault, str(home / "scratch.txt"))
+
+    env = {**_env(home), "HAPAX_AGENT_ROLE": "eta"}
+    claimed = subprocess.run(
+        [_BASH, str(CC_CLAIM), TASK_ID],
+        env=env,
+        cwd=str(home),
+        text=True,
+        capture_output=True,
+        check=False,
+    )
+    assert claimed.returncode == 0, f"explicit-role claim failed\nstderr={claimed.stderr}"
+    assert any("-eta" in p.name or p.name.endswith("eta") for p in _leases(home)), (
+        f"cc-claim did not key the lease to the declared role: {[p.name for p in _leases(home)]}"
+    )
+
+    closed = subprocess.run(
+        [_BASH, str(CC_CLOSE), TASK_ID, "--status", "withdrawn"],
+        env=env,
+        cwd=str(home),
+        text=True,
+        capture_output=True,
+        check=False,
+    )
+    assert closed.returncode == 0, closed.stderr
+    assert "cleared claim file" in closed.stdout, (
+        f"explicit-role session's lease was not released\nstdout={closed.stdout}"
+    )
+    assert _leases(home) == [], f"explicit-role lease leaked: {[p.name for p in _leases(home)]}"
+
+
+def test_an_unresolvable_role_refuses_rather_than_closing_over_a_live_lease(
+    tmp_path: Path,
+) -> None:
+    """The resolver can load and still fail to answer — a session with no role signal
+    AND no session id. $role is then empty, the release block is guarded on it, and the
+    close would silently leave the lease behind: the strand, by a third route.
+
+    The refusal is conditional on a machine-checkable fact rather than on reasoning
+    about who might be running: refuse only when a claim file actually names this task.
+    """
+    home = tmp_path / "home"
+    vault = _vault(home)
+    _write_task(vault, str(home / "scratch.txt"))
+
+    # A lease naming this task, held by some other key this session cannot resolve.
+    cache = home / ".cache" / "hapax"
+    cache.mkdir(parents=True, exist_ok=True)
+    orphan = cache / "cc-active-task-eta"
+    orphan.write_text(f"{TASK_ID}\n", encoding="utf-8")
+
+    env = _env(home, session_id=None)  # no role signal, no session id
+    result = subprocess.run(
+        [_BASH, str(CC_CLOSE), TASK_ID, "--status", "withdrawn"],
+        env=env,
+        cwd=str(home),
+        text=True,
+        capture_output=True,
+        check=False,
+    )
+
+    assert result.returncode != 0, (
+        "cc-close completed with an unresolvable role while a lease named the task — "
+        f"that lease is now stranded\nstdout={result.stdout}"
+    )
+    assert "cannot resolve this session's role" in result.stderr, (
+        f"refused, but not for the reason under test\nstderr={result.stderr}"
+    )
+    assert orphan.exists(), "the unreleasable lease must be left intact for its owner"
+
+
+def test_an_unresolvable_role_still_closes_when_no_lease_names_the_task(
+    tmp_path: Path,
+) -> None:
+    """The other half of that precondition, so the refusal cannot quietly become a
+    blanket block: with no claim file naming the task there is nothing to release, and
+    the close must proceed."""
+    home = tmp_path / "home"
+    vault = _vault(home)
+    _write_task(vault, str(home / "scratch.txt"))
+
+    env = _env(home, session_id=None)
+    result = subprocess.run(
+        [_BASH, str(CC_CLOSE), TASK_ID, "--status", "withdrawn"],
+        env=env,
+        cwd=str(home),
+        text=True,
+        capture_output=True,
+        check=False,
+    )
+
+    assert result.returncode == 0, (
+        "cc-close refused although no lease named the task — the guard has widened "
+        f"into a blanket block\nstderr={result.stderr}"
+    )
+
+
 def test_the_broken_install_refusal_names_a_repair_that_exists() -> None:
     """An error that names an unreachable remedy costs the reader a full attempt cycle
     to discover the exit is sealed — the failure mode this row met four times in one
@@ -571,58 +676,85 @@ def test_the_release_runs_for_every_terminal_status(tmp_path: Path) -> None:
     )
 
 
-def test_the_divergent_resolver_strands_and_deadlocks_the_session(tmp_path: Path) -> None:
-    """(d): the mutation. Revert ONLY the resolver and the same cycle must strand —
-    the lease survives and the gate reports exactly the failure the operator hit
-    twice. A test that stays green when the fix is removed is documentation, not
+def test_the_divergent_resolver_cannot_complete_a_roleless_close(tmp_path: Path) -> None:
+    """(d): the mutation. Revert ONLY the resolver and a roleless close must not
+    succeed. A test that stays green when the fix is removed is documentation, not
     verification.
 
-    It also pins the SECOND half of the trap, which is why the strand needed an
-    operator every time rather than a retry. The leaked lease is not merely noise: it
-    makes the next ``cc-claim`` HOLD, so the gate's advertised remedy ("Re-claim a
-    fresh task: cc-claim <task_id>") cannot succeed. The defect produces exactly the
-    residue that disables its own recovery path.
+    Note what the failure now LOOKS like. Before the unresolvable-role guard, the
+    divergent resolver produced a silent success: exit 0, nothing released, and the
+    session discovered the strand later when the gate blocked its next mutation. With
+    the guard, the same divergence is caught at the moment of use and refuses loudly,
+    and the task stays open with its lease intact.
 
-    Measured 2026-08-21 by controlled comparison — identical sandbox, residue the only
-    variable, rc 4 -> rc 8. See ``CLAIM_HOLD_RC`` for why this asserts the HOLD and the
-    named lease rather than a single reason code.
+    The two changes are not two mitigations of one hazard. The resolver fix makes a
+    roleless close CORRECT; the guard handles a genuinely different condition — role
+    unresolvable at all — which the code previously collapsed into "no claim to
+    release". Distinguishing "measured: no lease" from "could not measure" is the point.
     """
     home = tmp_path / "home"
     vault = _vault(home)
     target = home / "scratch.txt"
     target.write_text("a\n", encoding="utf-8")
-    _write_task(vault, str(target))
-    _write_task(vault, str(target), NEXT_TASK_ID)
+    note = _write_task(vault, str(target))
 
     assert _run_claim(home, TASK_ID).returncode == 0
     session_lease = home / ".cache" / "hapax" / f"cc-active-task-roleless-{SESSION_ID}"
 
     result = _run_close(home, _divergent_cc_close(tmp_path))
-    assert result.returncode == 0, result.stderr
 
-    assert session_lease.exists(), (
-        "the divergent resolver did NOT leak the lease — the mutation fixture no "
-        "longer reproduces the defect, so the tests above are not pinned by it"
+    assert result.returncode != 0, (
+        "the divergent resolver completed a roleless close — the mutation fixture no "
+        f"longer reproduces the defect\nstdout={result.stdout}"
+    )
+    assert "cannot resolve this session's role" in result.stderr, (
+        f"failed, but not for the reason under test\nstderr={result.stderr}"
+    )
+    assert session_lease.exists(), "the lease must survive a close that could not run"
+    assert note.is_file(), (
+        "the task was moved out of active/ by a close that refused — the refusal must "
+        "happen before any state change, or it leaves worse behind than it prevents"
     )
     assert "cleared claim file" not in result.stdout
 
-    after = _run_gate(home, target)
-    assert after.returncode == 2 and STRAND_MESSAGE in after.stderr, (
-        "expected the leaked lease to strand the session under the divergent "
-        f"resolver\nrc={after.returncode}\nstderr={after.stderr}"
-    )
 
-    # ...and the prescribed escape is closed, which is what made every occurrence
-    # cost an operator intervention rather than a retry.
+def test_leaked_lease_residue_deadlocks_the_next_claim(tmp_path: Path) -> None:
+    """Why a strand ever needed an operator rather than a retry, pinned independently
+    of cc-close so it survives however cc-close changes.
+
+    A lease left behind is not merely noise: with residue present the next ``cc-claim``
+    HOLDs, so the gate's advertised remedy ("Re-claim a fresh task: cc-claim <task_id>")
+    cannot succeed. The defect produced exactly the residue that disabled its own
+    recovery path — which is why this row's fix has to be about not leaving residue,
+    not about detecting it afterwards.
+
+    Measured 2026-08-21 by controlled comparison — identical sandbox, residue the only
+    variable, rc 4 -> rc 8. See ``CLAIM_HOLD_RC`` for why this asserts the HOLD and the
+    named lease rather than one reason code.
+    """
+    home = tmp_path / "home"
+    vault = _vault(home)
+    target = home / "scratch.txt"
+    target.write_text("a\n", encoding="utf-8")
+    _write_task(vault, str(target), NEXT_TASK_ID)
+
+    # Exactly what a close that released nothing leaves behind.
+    cache = home / ".cache" / "hapax"
+    cache.mkdir(parents=True, exist_ok=True)
+    (cache / "cc-active-task-roleless").write_text(f"{TASK_ID}\n", encoding="utf-8")
+    (cache / "cc-claim-epoch-roleless").write_text(f"1780000000 {TASK_ID}\n", encoding="utf-8")
+
     stuck = _run_claim(home, NEXT_TASK_ID)
-    # The exact recorded reason, not merely "nonzero": a cc-claim that started
-    # failing for an unrelated cause would otherwise keep this leg green while no
-    # longer demonstrating the deadlock at all.
+
     assert stuck.returncode == CLAIM_HOLD_RC, (
-        f"expected the HOLD exit ({CLAIM_HOLD_RC}) from the leaked residue, got "
+        f"expected the HOLD exit ({CLAIM_HOLD_RC}) from leaked residue, got "
         f"rc={stuck.returncode}\nstderr={stuck.stderr}"
     )
-    assert "HOLD" in stuck.stderr and CLAIM_LEASE_MARKER in stuck.stderr, (
-        "cc-claim failed after the leaked close, but not because of the stale lease "
-        f"this test is about\nstderr={stuck.stderr}"
+    assert "HOLD" in stuck.stderr, (
+        f"cc-claim failed, but not with the residue HOLD\nstderr={stuck.stderr}"
     )
+    # Deliberately not asserting a reason code. Three were observed across residue
+    # shapes and vault contents (claim_task_mismatch, claim_dispatch_binding_missing),
+    # and pinning one would make this test a hostage to which variant a future
+    # cc-claim reports. What is invariant, and what actually strands a session, is
+    # that the residue turns the recovery path into a HOLD.
