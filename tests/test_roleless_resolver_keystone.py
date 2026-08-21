@@ -299,6 +299,15 @@ _BARE_IDENTITY_ALLOWED = {
 # yields "roleless" and is not the divergence under test.
 _BARE_IDENTITY_RE = re.compile(r"hapax_agent_identity(?!_or_default)")
 
+# Floor for "the scan actually looked at something", so a scan that silently matched
+# nothing can never pass forever. Not a target: it is deliberately well BELOW the count
+# measured on 2026-08-21 (the writer cc-claim, the releaser cc-close, the four gates
+# cc-task-gate / authorization-packet-validator / pr-release-gate /
+# mcp-connector-mutator-gate, and cc-task-pr-link — nine). A floor set at the live count
+# would fail on any unrelated refactor that merges or retires a script, which trains
+# people to edit the number instead of reading the failure.
+_MIN_CLAIM_PLANE_SCRIPTS = 5
+
 
 def test_claim_plane_scripts_never_bind_role_through_the_bare_identity_resolver() -> None:
     """Invariant 5, derived rather than enumerated: no shell script that touches a
@@ -393,9 +402,11 @@ def test_claim_plane_scripts_never_bind_role_through_the_bare_identity_resolver(
                 wrong_resolver.append(rel)
 
     # A scan that silently matched nothing would pass forever. Pin that it looked.
-    assert scanned >= 5, (
-        f"claim-plane scan found only {scanned} scripts referencing cc-active-task- — "
-        "the scan roots or the marker changed and this test is no longer checking anything"
+    assert scanned >= _MIN_CLAIM_PLANE_SCRIPTS, (
+        f"claim-plane scan found only {scanned} scripts referencing cc-active-task-, "
+        f"below the {_MIN_CLAIM_PLANE_SCRIPTS} floor — the scan roots or the marker "
+        "changed and this test is no longer checking anything. Fix the scan, do not "
+        "lower the floor."
     )
     assert not wrong_resolver, (
         "claim-plane scripts bind role through the bare hapax_agent_identity, which "

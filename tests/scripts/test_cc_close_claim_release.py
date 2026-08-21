@@ -578,11 +578,9 @@ def test_an_explicit_role_session_still_releases_after_the_cascade_deletion(
     ("lease_name", "lease_body"),
     [
         ("cc-active-task-eta", "{task_id}\n"),
-        # An epoch sidecar that still HAS its claim-file sibling is a live-looking
-        # lease, not orphan residue — the sibling triggers the refusal.
-        ("cc-claim-epoch-eta", "1780000000 {task_id}\n"),
+        ("cc-active-task-theta", "{task_id}\n"),
     ],
-    ids=["claim-file", "epoch-with-sibling"],
+    ids=["claim-file", "claim-file-other-role"],
 )
 def test_an_unresolvable_role_refuses_rather_than_closing_over_a_live_lease(
     tmp_path: Path, lease_name: str, lease_body: str
@@ -603,9 +601,6 @@ def test_an_unresolvable_role_refuses_rather_than_closing_over_a_live_lease(
     cache.mkdir(parents=True, exist_ok=True)
     orphan = cache / lease_name
     orphan.write_text(lease_body.format(task_id=TASK_ID), encoding="utf-8")
-    if lease_name.startswith("cc-claim-epoch-"):
-        # The sibling is what makes this a live-looking lease rather than residue.
-        (cache / "cc-active-task-eta").write_text("some-other-task\n", encoding="utf-8")
 
     env = _env(home, session_id=None)  # no role signal, no session id
     result = subprocess.run(
@@ -627,15 +622,24 @@ def test_an_unresolvable_role_refuses_rather_than_closing_over_a_live_lease(
     assert orphan.exists(), "the unreleasable lease must be left intact for its owner"
 
 
-def test_an_orphan_epoch_sidecar_is_cleared_not_refused_over(tmp_path: Path) -> None:
-    """An epoch sidecar naming this task with NO sibling claim file is orphan residue of
-    this task's own claim — precisely what a correct close removes alongside the claim
-    file. cc-close clears it.
+def test_the_guard_never_touches_an_epoch_sidecar(tmp_path: Path) -> None:
+    """The guard REFUSES; it never deletes.
 
-    Refusing instead would have named an impossible remedy: ``sweep_stale_claims`` globs
-    ``cc-active-task-*`` and cannot reap an epoch sidecar, so the refusal would have
-    pointed at a sweep that does nothing for the case it refused over — the sealed-exit
-    failure this row keeps meeting, reproduced inside its own fix.
+    An earlier revision classified epoch sidecars and removed the ones it judged
+    orphaned (sidecar present, claim file absent). Three review seats independently
+    found the same race: cc-claim writes the sidecar and the claim file as two steps, so
+    "sidecar without claim file" is also what a claim being created right now looks
+    like. The guard would have deleted a live claim's sidecar.
+
+    No lock was added. A failure path that deletes files it does not own, justified by
+    an assumption about what other processes are doing rather than by anything checkable
+    at the moment of use, is a path that WIDENS — so it was removed. This test pins that
+    it stays removed: an epoch sidecar naming this task neither blocks the close nor is
+    modified by it.
+
+    Epoch residue is a real defect with a real consequence — it HOLDs the next cc-claim
+    — but closing does not create or worsen it, and the normal release path leaves it
+    too. It belongs to the claim-key builder work, not to a guard that can only refuse.
     """
     home = tmp_path / "home"
     vault = _vault(home)
@@ -643,8 +647,9 @@ def test_an_orphan_epoch_sidecar_is_cleared_not_refused_over(tmp_path: Path) -> 
 
     cache = home / ".cache" / "hapax"
     cache.mkdir(parents=True, exist_ok=True)
-    residue = cache / "cc-claim-epoch-eta"
-    residue.write_text(f"1780000000 {TASK_ID}\n", encoding="utf-8")
+    sidecar = cache / "cc-claim-epoch-eta"
+    body = f"1780000000 {TASK_ID}\n"
+    sidecar.write_text(body, encoding="utf-8")
 
     result = subprocess.run(
         [_BASH, str(CC_CLOSE), TASK_ID, "--status", "withdrawn"],
@@ -656,13 +661,12 @@ def test_an_orphan_epoch_sidecar_is_cleared_not_refused_over(tmp_path: Path) -> 
     )
 
     assert result.returncode == 0, (
-        f"cc-close refused over residue it could have cleared\nstderr={result.stderr}"
+        "an epoch sidecar blocked the close — the guard reads claim files, which are "
+        f"what the gate reads and what strands a session\nstderr={result.stderr}"
     )
-    assert not residue.exists(), (
-        "the orphan epoch sidecar survived the close — it will HOLD the next cc-claim"
-    )
-    assert "orphan claim-epoch sidecar" in result.stdout, (
-        f"the removal was not announced\nstdout={result.stdout}"
+    assert sidecar.exists() and sidecar.read_text(encoding="utf-8") == body, (
+        "the guard modified an epoch sidecar; it must only ever refuse, because "
+        "'sidecar without claim file' is indistinguishable from a claim mid-creation"
     )
 
 
@@ -703,12 +707,8 @@ def test_a_readable_lease_naming_another_task_does_not_block_the_close(
     ("lease_name", "lease_body"),
     [
         ("cc-active-task-eta", "{task_id}\n"),
-        # Malformed: not the documented "<epoch> <task_id>" shape, so what it names
-        # is UNKNOWN. Skipping it would be absence read as a result once more.
-        ("cc-claim-epoch-eta", "1780000000 {task_id} unexpected-third-field\n"),
-        ("cc-claim-epoch-eta", "no-epoch-field-at-all\n"),
     ],
-    ids=["blocking-claim-file", "epoch-extra-field", "epoch-single-field"],
+    ids=["blocking-claim-file"],
 )
 def test_the_named_remedy_actually_recovers_the_refused_close(
     tmp_path: Path, lease_name: str, lease_body: str
@@ -749,6 +749,13 @@ def test_the_named_remedy_actually_recovers_the_refused_close(
     assert recovered.returncode == 0, (
         "following the remedy the refusal names did not close the task — the message "
         f"points at a dead end\nstdout={recovered.stdout}\nstderr={recovered.stderr}"
+    )
+    # Exit zero is not recovery. The whole failure mode this row is about was a close
+    # that returned success having released nothing, so the recovery must be judged by
+    # the lease actually being gone.
+    assert not (cache / lease_name).exists(), (
+        "the remedy closed the task but left the blocking claim behind — the next "
+        f"mutation is still gated on it\nstdout={recovered.stdout}"
     )
 
 

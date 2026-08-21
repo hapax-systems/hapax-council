@@ -96,12 +96,29 @@ if [[ -z "$role" ]]; then
   # such lease there is nothing to release and the close is safe; with one, there
   # is no way to know which key to clear, and stopping beats stranding.
   _claims_dir="${HAPAX_CC_CLAIMS_DIR:-$HOME/.cache/hapax}"
+  # CLAIM FILES ONLY, deliberately.
+  #
+  # An earlier revision also classified cc-claim-epoch- sidecars and DELETED those it
+  # judged orphaned (sidecar present, claim file absent). Three review seats
+  # independently found the same race: cc-claim writes the epoch sidecar and the claim
+  # file as two steps, so "sidecar without claim file" is also what a claim being
+  # created RIGHT NOW looks like, and the close would delete a live claim's sidecar.
+  #
+  # There is no lock to add here. The deletion was a failure path that WIDENED — it
+  # made the guard do more than the close itself does, to files it does not own, and
+  # its safety rested on an assumption about what other processes were doing rather
+  # than on anything checkable at the moment of use. It is removed rather than
+  # serialized.
+  #
+  # What is left is exactly what causes the strand this row is about: the gate reads
+  # CLAIM FILES, so a claim file naming this task is what blocks every later mutation.
+  # Epoch residue is a real defect with a real consequence (it HOLDs the next
+  # cc-claim), but it is a separate one, it is not made worse by closing, and the
+  # normal release path leaves it too. It belongs to the claim-key builder work, not
+  # to a guard that only knows how to refuse.
   shopt -s nullglob
   _unreleasable=()
   _unknown=()
-  _orphan_epochs=()
-
-  # Claim files: "<task_id>" on the first line.
   for _lease in "$_claims_dir/cc-active-task-"*; do
     [[ -f "$_lease" ]] || continue
     if ! _head="$(head -n1 "$_lease" 2>/dev/null)"; then
@@ -114,64 +131,28 @@ if [[ -z "$role" ]]; then
     [[ "$(printf '%s' "$_head" | tr -d '[:space:]')" == "$task_id" ]] &&
       _unreleasable+=("$_lease")
   done
-
-  # Epoch sidecars: "<epoch> <task_id>". Parsed by FIELD POSITION rather than "last
-  # whitespace field", so a malformed body cannot be coerced into a match.
-  for _lease in "$_claims_dir/cc-claim-epoch-"*; do
-    [[ -f "$_lease" ]] || continue
-    if ! _head="$(head -n1 "$_lease" 2>/dev/null)"; then
-      _unknown+=("$_lease")
-      continue
-    fi
-    read -r _epoch_field _task_field _extra <<<"$_head" || true
-    if [[ -n "${_extra:-}" || -z "${_task_field:-}" ]]; then
-      # Not the documented "<epoch> <task_id>" shape. Skipping it would be absence
-      # read as a result once more: a lease whose body cannot be parsed is UNKNOWN,
-      # not proven-unrelated. Whether it names this task is exactly what we failed
-      # to determine.
-      _unknown+=("$_lease")
-      continue
-    fi
-    [[ "$_task_field" == "$task_id" ]] || continue
-    # An epoch sidecar naming THIS task with no sibling claim file is orphan residue
-    # of this task's own claim — exactly what a correct close removes alongside the
-    # claim file. Clear it rather than refusing over it: refusing here would name a
-    # remedy that does not exist, because sweep_stale_claims globs cc-active-task-*
-    # only and cannot reap an epoch sidecar. Doing the close's own job is not a
-    # widened failure path; leaving residue that HOLDs the next cc-claim is.
-    if [[ -f "$_claims_dir/cc-active-task-${_lease##*/cc-claim-epoch-}" ]]; then
-      _unreleasable+=("$_lease")
-    else
-      _orphan_epochs+=("$_lease")
-    fi
-  done
   shopt -u nullglob
 
   if (( ${#_unknown[@]} > 0 || ${#_unreleasable[@]} > 0 )); then
     if (( ${#_unknown[@]} > 0 )); then
-      _why="could not determine what ${#_unknown[@]} lease file(s) name — unreadable or malformed, so whether they hold '$task_id' is UNKNOWN rather than ruled out: ${_unknown[*]}"
+      _why="could not read ${#_unknown[@]} claim file(s), so whether they hold '$task_id' is UNKNOWN rather than ruled out: ${_unknown[*]}"
     else
       _why="${#_unreleasable[@]} lease file(s) name '$task_id': ${_unreleasable[*]}"
     fi
-    # The remedy names the condition's own cure, and one that always works. Every
-    # earlier draft pointed at a reap tool, and each time some case fell outside
-    # what that tool can touch: sweep_stale_claims globs cc-active-task-* only, so
-    # it cannot reap an epoch sidecar, an unreadable file, or a malformed one. A
-    # remedy that does not cover the case it is offered for is the sealed exit this
-    # row exists to stop reproducing.
+    # The remedy resolves the CONDITION, not the artifact. Earlier drafts pointed at
+    # a reap tool and each time some case fell outside what it can touch
+    # (sweep_stale_claims globs cc-active-task-* and skips unreadable files), which
+    # is the sealed-exit failure this row exists to stop reproducing.
     #
-    # Re-running with an explicit role resolves the CONDITION rather than the
-    # symptom: with a role, cc-close releases exactly its own keys through the
-    # normal path and this guard does not run at all. It needs no other tool, no
-    # privileges, and no operator.
-    echo "cc-close: cannot resolve this session's role, and $_why. Closing now would leave those leases behind, and the gate would then block every later mutation. Next: re-run naming the role that holds the claim, e.g. HAPAX_AGENT_ROLE=<role> cc-close $task_id --status $final_status — with a role resolved, the normal release path clears this session's own leases and this check does not apply." >&2
+    # Naming the role is the cure for the cause: with a role resolved, cc-close
+    # clears its own keys through the normal release path and this guard does not
+    # run at all. It needs no other tool, no privileges, and no operator — which is
+    # also why no env killswitch is offered. A switch the guard reads from its own
+    # process environment would be unreachable from the session being refused,
+    # exactly the defect filed separately about the gate's own bypass line.
+    echo "cc-close: cannot resolve this session's role, and $_why. Closing now would leave those claims behind, and the gate would then block every later mutation. Next: re-run naming the role that holds the claim, e.g. HAPAX_AGENT_ROLE=<role> cc-close $task_id --status $final_status — with a role resolved, the normal release path clears that session's own claims and this check does not apply." >&2
     exit 2
   fi
-
-  for _lease in "${_orphan_epochs[@]}"; do
-    rm -f "$_lease"
-    echo "cc-close: removed orphan claim-epoch sidecar '$_lease' (named '$task_id', no claim file) — it would have HELD the next cc-claim"
-  done
 fi
 
 ROOT_HELPER="$SCRIPT_DIR/../hooks/scripts/cc-task-root.sh"
