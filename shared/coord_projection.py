@@ -4100,6 +4100,23 @@ def _cas_rollback(projection: FileProjection, scratch: _ProjectionScratch) -> bo
                     os.unlink(name, dir_fd=dir_fd)
                     os.fsync(dir_fd)
                     return True
+        if scratch.kind == "delete":
+            try:
+                dest_stat = os.stat(name, dir_fd=dir_fd, follow_symlinks=False)
+                scratch_stat = os.stat(scratch.path.name, dir_fd=dir_fd, follow_symlinks=False)
+            except FileNotFoundError:
+                dest_stat = None
+            else:
+                if (
+                    stat.S_ISREG(dest_stat.st_mode)
+                    and dest_stat.st_ino == scratch_stat.st_ino
+                    and dest_stat.st_nlink >= 2
+                ):
+                    # Crash after link, before unlink: dest is still the live
+                    # name. Drop the extra scratch link so dest remains.
+                    os.unlink(scratch.path.name, dir_fd=dir_fd)
+                    os.fsync(dir_fd)
+                    return True
         current = _entry_state_at(
             dir_fd,
             name,
@@ -4160,12 +4177,19 @@ def _cas_rollback(projection: FileProjection, scratch: _ProjectionScratch) -> bo
                     max_bytes=_MAX_LIFECYCLE_BLOB_BYTES,
                 )
                 if _entry_matches(displaced, projection.before, projection.before_mode):
-                    os.rename(
-                        displaced_name,
-                        name,
-                        src_dir_fd=dir_fd,
-                        dst_dir_fd=dir_fd,
-                    )
+                    try:
+                        os.link(
+                            displaced_name,
+                            name,
+                            src_dir_fd=dir_fd,
+                            dst_dir_fd=dir_fd,
+                            follow_symlinks=False,
+                        )
+                    except OSError as exc:
+                        if exc.errno == errno.EEXIST:
+                            return False
+                        raise
+                    os.unlink(displaced_name, dir_fd=dir_fd)
                     os.fsync(dir_fd)
                     return True
             return False

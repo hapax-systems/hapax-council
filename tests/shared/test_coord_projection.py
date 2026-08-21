@@ -3415,6 +3415,39 @@ def test_noreplace_fallback_crash_between_link_and_unlink_restores_absence(
         os.close(fd)
 
 
+def test_noreplace_delete_crash_between_link_and_unlink_keeps_dest(
+    tmp_path: Path,
+) -> None:
+    dest = tmp_path / "note.md"
+    parked = tmp_path / "parked"
+    dest.write_bytes(b"before-image")
+    fd = os.open(tmp_path, os.O_RDONLY | os.O_DIRECTORY)
+
+    def crash_unlink(name: str, **kwargs: object) -> None:
+        raise RuntimeError("crash after link")
+
+    try:
+        with mock.patch.object(cp.os, "unlink", side_effect=crash_unlink):
+            with pytest.raises(RuntimeError, match="crash after link"):
+                cp._renameat2_noreplace_fallback(fd, "note.md", fd, "parked")
+        assert dest.read_bytes() == b"before-image"
+        assert parked.read_bytes() == b"before-image"
+        projection = cp.FileProjection.from_snapshot(
+            dest,
+            before=b"before-image",
+            before_mode=stat.S_IMODE(dest.stat().st_mode),
+            after=None,
+            after_mode=None,
+        )
+        scratch = cp._scratch_for(projection, "txn-del-link-crash", 0)
+        scratch = dataclasses.replace(scratch, path=parked)
+        assert cp._cas_rollback(projection, scratch) is True
+        assert dest.read_bytes() == b"before-image"
+        assert not parked.exists()
+    finally:
+        os.close(fd)
+
+
 def test_exchange_fallback_crash_between_steps_preserves_both_payloads(
     tmp_path: Path,
 ) -> None:
