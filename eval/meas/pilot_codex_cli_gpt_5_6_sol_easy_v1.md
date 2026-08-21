@@ -41,7 +41,7 @@ remains explicit acceptance work for that separately authorized follow-up tranch
 
 The provider-free v14 validation ran on `hapax-appendix` (Linux 6.18.32,
 Bubblewrap 0.11.2, Codex CLI 0.148.0). Both optional integration prerequisites were
-present: `uv run pytest -q tests/eval` reported **87 passed, 0 skipped**, and
+present: `uv run pytest -q tests/eval` reported **88 passed, 0 skipped**, and
 `--self-check` passed the real read-only Bubblewrap predicate and isolated-worker
 path. This validates the shipped control path; it does not measure a provider-backed
 v14 pass rate. On other hosts, the `requires_bubblewrap` and `requires_codex` markers

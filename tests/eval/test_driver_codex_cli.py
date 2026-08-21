@@ -1033,6 +1033,29 @@ def test_attested_pytest_import_cannot_be_shadowed_by_workspace_packages(
 
 
 @requires_bubblewrap
+def test_attested_worker_import_prefers_read_only_harness_over_workspace_decoy(
+    tmp_path: Path,
+) -> None:
+    repo, commits = _source_repo(tmp_path)
+    cell = tmp_path / "cell"
+    driver.prepare_cell_checkout(repo, commits.parent, cell)
+    (cell / "module.py").write_text("VALUE = 1\n", encoding="utf-8")
+    (cell / "pytest_attested_runner.py").write_text(
+        "raise RuntimeError('workspace attested-runner decoy imported')\n",
+        encoding="utf-8",
+    )
+    driver.install_merge_version_tests(repo, cell, commits)
+
+    result = driver.evaluate_exit(_task(), cell, repo)
+
+    assert result["passed"] is True
+    assert result["returncode"] == 0
+    assert result["completion_attested"] is True
+    assert "1 passed" in result["output_tail"]
+    assert "workspace attested-runner decoy" not in result["output_tail"]
+
+
+@requires_bubblewrap
 def test_exit_predicate_timeout_preserves_bytes_output(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,

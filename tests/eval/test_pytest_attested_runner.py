@@ -253,6 +253,16 @@ def test_predicate_command_has_no_writable_attestation_mount(
 
     assert "/attestation" not in command
     assert "writable_mounts" not in observed
+    assert observed["readonly_mounts"] == [
+        (
+            driver.ATTESTED_RUNNER,
+            driver.PYTEST_HARNESS_ROOT / "pytest_attested_runner.py",
+        ),
+        (
+            driver.PYTEST_WORKER_LAUNCHER,
+            driver.PYTEST_HARNESS_ROOT / "python-isolated",
+        ),
+    ]
     assert observed["workspace_writable"] is False
 
 
