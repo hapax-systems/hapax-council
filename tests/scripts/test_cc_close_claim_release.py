@@ -53,6 +53,17 @@ STRAND_MESSAGE = "not found in vault"
 # the role still resolves. Recoverable — the session can claim again — and distinct
 # from the strand, where a lease points at a task that no longer exists in active/.
 RECOVERABLE_DENIAL = "no claimed task for role 'roleless'"
+# cc-claim's HOLD exit. The REASON CODE varies with which residue survived, and both
+# observed forms are recorded here because the difference is easy to over-fit:
+#   * full lease leaked (claim file + epoch)  -> claim_task_mismatch
+#   * epoch sidecar alone, no claim file      -> claim_dispatch_binding_missing
+# The second is what a partially-cleared close leaves and what was live in the
+# operator's own HOME; it names a MISSING dispatch binding while the trigger is a
+# LEFTOVER sidecar, pointing away from the cause. What is invariant across both — and
+# so what this suite asserts — is that the residue makes cc-claim HOLD and that the
+# message names the stale lease.
+CLAIM_HOLD_RC = 8
+CLAIM_LEASE_MARKER = "cc-active-task-roleless"
 
 # Every signal agent-role.sh consults to resolve an explicit role. The session
 # running pytest sets several of these; stripping them is what makes the
@@ -224,12 +235,12 @@ def _divergent_cc_close(tmp_path: Path) -> Path:
 
     text = CC_CLOSE.read_text(encoding="utf-8")
     fixed = (
-        'if [[ -z "$role" ]] && declare -F hapax_effective_role >/dev/null 2>&1; then\n'
+        "if declare -F hapax_effective_role >/dev/null 2>&1; then\n"
         '  role="$(hapax_effective_role 2>/dev/null || true)"\n'
         "fi"
     )
     reverted = (
-        'if [[ -z "$role" ]] && declare -F hapax_agent_identity >/dev/null 2>&1; then\n'
+        "if declare -F hapax_agent_identity >/dev/null 2>&1; then\n"
         '  role="$(hapax_agent_identity 2>/dev/null || true)"\n'
         "fi"
     )
@@ -381,14 +392,14 @@ def test_the_divergent_resolver_strands_and_deadlocks_the_session(tmp_path: Path
     verification.
 
     It also pins the SECOND half of the trap, which is why the strand needed an
-    operator every time. The leaked lease is not merely noise: with a
-    ``cc-claim-epoch-`` sidecar left behind and no matching claim file, the next
-    ``cc-claim`` HOLDs with ``claim_dispatch_binding_missing`` — it reports a missing
-    dispatch binding while the actual trigger is the orphaned sidecar the failed close
-    left. So the defect produces exactly the residue that disables the recovery path,
-    and the gate's advertised remedy ("Re-claim a fresh task: cc-claim <task_id>")
-    cannot succeed. Measured 2026-08-21 by controlled comparison: identical sandbox,
-    one orphaned epoch sidecar the only difference, rc 4 -> rc 8.
+    operator every time rather than a retry. The leaked lease is not merely noise: it
+    makes the next ``cc-claim`` HOLD, so the gate's advertised remedy ("Re-claim a
+    fresh task: cc-claim <task_id>") cannot succeed. The defect produces exactly the
+    residue that disables its own recovery path.
+
+    Measured 2026-08-21 by controlled comparison — identical sandbox, residue the only
+    variable, rc 4 -> rc 8. See ``CLAIM_HOLD_RC`` for why this asserts the HOLD and the
+    named lease rather than a single reason code.
     """
     home = tmp_path / "home"
     vault = _vault(home)
@@ -418,7 +429,14 @@ def test_the_divergent_resolver_strands_and_deadlocks_the_session(tmp_path: Path
     # ...and the prescribed escape is closed, which is what made every occurrence
     # cost an operator intervention rather than a retry.
     stuck = _run_claim(home, NEXT_TASK_ID)
-    assert stuck.returncode != 0, (
-        "cc-claim recovered despite the leaked lease — if the escape works, the "
-        "strand is an annoyance rather than a deadlock and this test should say so"
+    # The exact recorded reason, not merely "nonzero": a cc-claim that started
+    # failing for an unrelated cause would otherwise keep this leg green while no
+    # longer demonstrating the deadlock at all.
+    assert stuck.returncode == CLAIM_HOLD_RC, (
+        f"expected the HOLD exit ({CLAIM_HOLD_RC}) from the leaked residue, got "
+        f"rc={stuck.returncode}\nstderr={stuck.stderr}"
+    )
+    assert "HOLD" in stuck.stderr and CLAIM_LEASE_MARKER in stuck.stderr, (
+        "cc-claim failed after the leaked close, but not because of the stale lease "
+        f"this test is about\nstderr={stuck.stderr}"
     )

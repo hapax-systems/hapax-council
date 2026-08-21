@@ -45,7 +45,6 @@ case "$final_status" in
   *) echo "cc-close: --status must be done, withdrawn, or superseded (got '$final_status')" >&2; exit 1 ;;
 esac
 
-role="${HAPAX_AGENT_NAME:-${CODEX_THREAD_NAME:-${CODEX_SESSION_NAME:-${CODEX_SESSION:-${CODEX_ROLE:-${HAPAX_AGENT_ROLE:-${CLAUDE_ROLE:-}}}}}}}"
 # Resolve the claiming role with hapax_effective_role — the SAME resolver the
 # WRITER (cc-claim) and the READER (cc-task-gate.impl.sh) both use. A roleless
 # session has no explicit identity but does have a session id, so
@@ -56,12 +55,20 @@ role="${HAPAX_AGENT_NAME:-${CODEX_THREAD_NAME:-${CODEX_SESSION_NAME:-${CODEX_SES
 # resolving through the OTHER function, still found the lease and blocked every
 # subsequent mutation. Measured twice on 2026-08-21, both times after a clean
 # close, each needing an operator rescue.
-# The env chain above stays as an explicit override, but it must never grow a
-# variable this resolver does not know about — hapax_agent_identity already
-# reads exactly those names in exactly that order, and a second copy that drifts
-# is one more way for the writer and the releaser to disagree.
-if [[ -z "$role" ]] && declare -F hapax_effective_role >/dev/null 2>&1; then
+role=""
+if declare -F hapax_effective_role >/dev/null 2>&1; then
   role="$(hapax_effective_role 2>/dev/null || true)"
+fi
+# The env cascade is reached ONLY when the resolver library is unavailable. It is
+# not an override: hapax_agent_identity, which hapax_effective_role calls first,
+# already reads exactly these names in exactly this order, so consulting them
+# ahead of the resolver changed no outcome and merely kept a second copy of the
+# resolver's own precedence list in a file that must agree with it. That
+# duplicate is how a releaser drifts from its writer — the defect above, one
+# ingredient earlier. Keep this reachable only on the no-helper path, and if the
+# resolver's precedence changes, delete this rather than syncing it.
+if [[ -z "$role" ]] && ! declare -F hapax_effective_role >/dev/null 2>&1; then
+  role="${HAPAX_AGENT_NAME:-${CODEX_THREAD_NAME:-${CODEX_SESSION_NAME:-${CODEX_SESSION:-${CODEX_ROLE:-${HAPAX_AGENT_ROLE:-${CLAUDE_ROLE:-}}}}}}}"
 fi
 
 ROOT_HELPER="$SCRIPT_DIR/../hooks/scripts/cc-task-root.sh"
