@@ -1710,7 +1710,16 @@ def test_queue_arms_with_verified_ruleset_merge_method(tmp_path: Path) -> None:
     assert report["merge_queue_merge_method"]["method"] == "REBASE"
     assert report["counts"]["queue"] == 1
     assert ["gh", "pr", "merge", "79", "--repo", "owner/repo", "--auto", "--rebase"] in runner.calls
-    assert ["gh", "pr", "merge", "79", "--repo", "owner/repo", "--auto", "--squash"] not in runner.calls
+    assert [
+        "gh",
+        "pr",
+        "merge",
+        "79",
+        "--repo",
+        "owner/repo",
+        "--auto",
+        "--squash",
+    ] not in runner.calls
 
 
 def test_gh_readonly_queue_ref_marks_pr_already_queued_when_graphql_empty(
