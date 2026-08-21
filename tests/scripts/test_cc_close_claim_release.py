@@ -44,6 +44,10 @@ GATE = REPO_ROOT / "hooks" / "scripts" / "cc-task-gate.impl.sh"
 TASK_ID = "roleless-close-cycle"
 SESSION_ID = "sess-roleless-e2e"
 STRAND_MESSAGE = "not found in vault"
+# The gate's post-close state for a session that closed correctly: no claim held, and
+# the role still resolves. Recoverable — the session can claim again — and distinct
+# from the strand, where a lease points at a task that no longer exists in active/.
+RECOVERABLE_DENIAL = "no claimed task for role 'roleless'"
 
 # Every signal agent-role.sh consults to resolve an explicit role. The session
 # running pytest sets several of these; stripping them is what makes the
@@ -109,6 +113,7 @@ def _write_task(vault_root: Path, scope_ref: str) -> Path:
             priority: p2
             authority_case: CASE-SYSTEM-INTEGRITY-20260611
             parent_spec: 30-areas/hapax/synthesis-representation-without-enforcement-2026-08-20.md
+            route_metadata_schema: 1
             stage: S6_IMPLEMENTING
             implementation_authorized: true
             source_mutation_authorized: true
@@ -274,9 +279,11 @@ def test_gate_permits_before_the_close_and_is_not_stranded_after(tmp_path: Path)
     PERMITS the in-scope mutation; once the task is closed the gate must not
     report the strand.
 
-    After a correct close the session holds no claim, so a protected mutation
-    may still be refused — but for the recoverable reason (no claim), never
-    because a lease points at a task that no longer exists in active/.
+    After a correct close the session holds no claim, so a protected mutation is
+    refused — but for the RECOVERABLE reason (no claim held, role still resolving),
+    never because a lease points at a task that no longer exists in active/. Both
+    the return code and that exact reason are asserted, so this leg cannot pass on
+    an unrelated failure or on a reworded strand message.
     """
     home = tmp_path / "home"
     vault = _vault(home)
@@ -295,6 +302,24 @@ def test_gate_permits_before_the_close_and_is_not_stranded_after(tmp_path: Path)
     assert closed.returncode == 0, closed.stderr
 
     after = _run_gate(home, target)
+    # Assert the CONCRETE post-close outcome, not merely the absence of a string.
+    # Absence alone accepted any denial at all — an unrelated earlier failure, or a
+    # reworded strand message, would have left this leg green while the session was
+    # just as stuck. (Raised independently by two review seats.)
+    #
+    # Measured post-close state: rc 2, "no claimed task for role 'roleless'". That is
+    # the RECOVERABLE denial and the assertion is deliberately on that exact reason:
+    # the session holds no claim, which is correct after a close, and the gate names
+    # the role — proving both that the lease was cleared and that the gate still
+    # resolves this session's identity rather than losing it.
+    assert after.returncode == 2, (
+        f"unexpected post-close gate outcome rc={after.returncode}; the recoverable "
+        f"denial is what this asserts\nstderr={after.stderr}"
+    )
+    assert RECOVERABLE_DENIAL in after.stderr, (
+        "gate did not report the recoverable no-claim state after the close — it "
+        f"failed for some other reason, so this leg proves nothing\nstderr={after.stderr}"
+    )
     assert STRAND_MESSAGE not in after.stderr, (
         "session is stranded behind its own closed task: the lease survived the "
         f"close and the gate still reads it\nstderr={after.stderr}"

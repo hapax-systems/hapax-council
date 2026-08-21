@@ -282,15 +282,17 @@ def test_roleless_session_does_not_share_role_keyed_claim_file(tmp_path: Path) -
 # ``hapax_agent_identity``. Each needs a recorded reason, because the bare resolver
 # returns EMPTY for a roleless session where ``hapax_effective_role`` returns the
 # literal "roleless" — the divergence that stranded two sessions on 2026-08-21.
+# Keyed by REPO-RELATIVE PATH, never bare filename: a future unrelated file that
+# happened to share a name would otherwise inherit the exemption silently.
 _BARE_IDENTITY_ALLOWED = {
     # A DISPLAY surface, not a claim decision: it prints an identity banner and
     # runs its own explicit cascade that ends in a deliberate default, so an
     # empty identity is a handled case rather than a skipped branch. Its roleless
     # output is pinned behaviorally by
     # test_session_context_proclaims_roleless_not_alpha_in_roleless_cwd above.
-    "session-context.sh",
+    "hooks/scripts/session-context.sh",
     # Defines both resolvers; naturally names them.
-    "agent-role.sh",
+    "hooks/scripts/agent-role.sh",
 }
 
 # ``hapax_agent_identity`` NOT followed by ``_or_default`` — the defaulting variant
@@ -318,13 +320,46 @@ def test_claim_plane_scripts_resolve_role_through_the_shared_resolver() -> None:
     defect was invisible to the test whose stated job was cross-consumer agreement. A new
     claim-plane script now fails this by default and has to justify itself into the
     allowlist.
+
+    RECORDED LIMIT — this scan asserts only the NEGATIVE (no bare-identity binding). A
+    review seat correctly observed that rejecting the wrong resolver is not the same as
+    requiring the right one: a new script with a hand-rolled env cascade and no resolver
+    call would pass. The positive was attempted and is NOT assertable by text scan, and
+    the failed attempt is worth recording so it is not retried blindly:
+
+    * "touches ``cc-active-task-``" over-selects — lane reapers, health checks and claim
+      audits sweep OTHER sessions' leases and correctly never resolve a self-role.
+    * narrowing to "also resolves a self-role" still over-selects — the spawners
+      (``hapax-claude``, ``hapax-vibe``, ``hapax-codex-headless``, ...) SET the env
+      cascade that everything else reads, and setting is textually indistinguishable
+      from reading.
+
+    Measured 2026-08-21 on the narrowed population: 7 scripts resolve through the shared
+    resolver, 7 do not, and all 7 of the latter are spawners or audits rather than
+    defects. A third discriminator would be the third guard on one hazard — the point at
+    which the shape, not the boundary, is wrong.
+
+    The positive closes one level down, where it is mechanically decidable: a script
+    either calls the shared claim-key builder or it does not. Tracked by
+    ``claim-key-has-a-builder-that-is-not-the-single-path-20260821``.
+
+    ROOT LIMIT — this scan covers SHELL participants under ``scripts/`` and
+    ``hooks/scripts/`` only. It does not reach Python consumers (which do not source
+    ``agent-role.sh`` and resolve role by other means) or any claim-plane script living
+    outside those two roots. Widening it is tracked by
+    ``claim-key-has-a-builder-that-is-not-the-single-path-20260821``, which addresses the
+    same gap at the level where it can actually be closed: one key builder, in both
+    languages, rather than one scan per convention.
     """
     roots = (REPO_ROOT / "scripts", REPO_ROOT / "hooks" / "scripts")
-    offenders: list[str] = []
+    wrong_resolver: list[str] = []
     scanned = 0
     for root in roots:
         for path in sorted(root.rglob("*")):
-            if not path.is_file() or path.name in _BARE_IDENTITY_ALLOWED:
+            if not path.is_file():
+                continue
+            rel = str(path.relative_to(REPO_ROOT))
+            if rel in _BARE_IDENTITY_ALLOWED:
                 continue
             try:
                 text = path.read_text(encoding="utf-8")
@@ -341,15 +376,15 @@ def test_claim_plane_scripts_resolve_role_through_the_shared_resolver() -> None:
                 line for line in text.splitlines() if not line.lstrip().startswith("#")
             )
             if _BARE_IDENTITY_RE.search(code):
-                offenders.append(str(path.relative_to(REPO_ROOT)))
+                wrong_resolver.append(rel)
 
     # A scan that silently matched nothing would pass forever. Pin that it looked.
     assert scanned >= 5, (
         f"claim-plane scan found only {scanned} scripts referencing cc-active-task- — "
         "the scan roots or the marker changed and this test is no longer checking anything"
     )
-    assert not offenders, (
+    assert not wrong_resolver, (
         "claim-plane scripts bind role through the bare hapax_agent_identity, which "
         "returns empty for a roleless session where hapax_effective_role returns "
-        f"'roleless' — the stranding divergence: {offenders}"
+        f"'roleless' — the stranding divergence: {wrong_resolver}"
     )
