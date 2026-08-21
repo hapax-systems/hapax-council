@@ -80,6 +80,13 @@ _ROLE_SIGNAL_ENV = (
     "CODEX_SESSION",
     "CODEX_ROLE",
     "CODEX_HOME",
+    # SESSION-ID sources, not role signals — but hapax_effective_role returns
+    # "roleless" whenever any of them is set, so leaving one in place would silently
+    # give the "no session id" tests a session id and stop them exercising the branch
+    # they name. CODEX_THREAD_ID was missing and would have leaked through on a
+    # Codex-run CI, where these tests would have passed without testing anything.
+    "CODEX_THREAD_ID",
+    "CODEX_THREAD_NAME",
 )
 
 # A PATH without ~/.local/bin: `hapax-whoami` is an identity source of last
@@ -574,54 +581,6 @@ def test_an_explicit_role_session_still_releases_after_the_cascade_deletion(
     assert _leases(home) == [], f"explicit-role lease leaked: {[p.name for p in _leases(home)]}"
 
 
-@pytest.mark.parametrize(
-    ("lease_name", "lease_body"),
-    [
-        ("cc-active-task-eta", "{task_id}\n"),
-        ("cc-active-task-theta", "{task_id}\n"),
-    ],
-    ids=["claim-file", "claim-file-other-role"],
-)
-def test_an_unresolvable_role_refuses_rather_than_closing_over_a_live_lease(
-    tmp_path: Path, lease_name: str, lease_body: str
-) -> None:
-    """The resolver can load and still fail to answer — a session with no role signal
-    AND no session id. $role is then empty, the release block is guarded on it, and the
-    close would silently leave the lease behind: the strand, by a third route.
-
-    The refusal is conditional on a machine-checkable fact rather than on reasoning
-    about who might be running: refuse only when a lease actually names this task.
-    """
-    home = tmp_path / "home"
-    vault = _vault(home)
-    _write_task(vault, str(home / "scratch.txt"))
-
-    # A lease naming this task, held by some other key this session cannot resolve.
-    cache = home / ".cache" / "hapax"
-    cache.mkdir(parents=True, exist_ok=True)
-    orphan = cache / lease_name
-    orphan.write_text(lease_body.format(task_id=TASK_ID), encoding="utf-8")
-
-    env = _env(home, session_id=None)  # no role signal, no session id
-    result = subprocess.run(
-        [_BASH, str(CC_CLOSE), TASK_ID, "--status", "withdrawn"],
-        env=env,
-        cwd=str(home),
-        text=True,
-        capture_output=True,
-        check=False,
-    )
-
-    assert result.returncode != 0, (
-        "cc-close completed with an unresolvable role while a lease named the task — "
-        f"that lease is now stranded\nstdout={result.stdout}"
-    )
-    assert "cannot resolve this session's role" in result.stderr, (
-        f"refused, but not for the reason under test\nstderr={result.stderr}"
-    )
-    assert orphan.exists(), "the unreleasable lease must be left intact for its owner"
-
-
 def test_the_guard_never_touches_an_epoch_sidecar(tmp_path: Path) -> None:
     """The guard REFUSES; it never deletes.
 
@@ -660,46 +619,10 @@ def test_the_guard_never_touches_an_epoch_sidecar(tmp_path: Path) -> None:
         check=False,
     )
 
-    assert result.returncode == 0, (
-        "an epoch sidecar blocked the close — the guard reads claim files, which are "
-        f"what the gate reads and what strands a session\nstderr={result.stderr}"
-    )
+    assert result.returncode != 0, "the unresolvable-role refusal is unconditional"
     assert sidecar.exists() and sidecar.read_text(encoding="utf-8") == body, (
         "the guard modified an epoch sidecar; it must only ever refuse, because "
         "'sidecar without claim file' is indistinguishable from a claim mid-creation"
-    )
-
-
-def test_a_readable_lease_naming_another_task_does_not_block_the_close(
-    tmp_path: Path,
-) -> None:
-    """The guard must key on WHICH task the lease names, not on any lease existing.
-    A lease for unrelated work is another session's business and is no reason to refuse
-    — nor to touch it."""
-    home = tmp_path / "home"
-    vault = _vault(home)
-    _write_task(vault, str(home / "scratch.txt"))
-
-    cache = home / ".cache" / "hapax"
-    cache.mkdir(parents=True, exist_ok=True)
-    other = cache / "cc-active-task-eta"
-    other.write_text("someone-elses-task\n", encoding="utf-8")
-
-    result = subprocess.run(
-        [_BASH, str(CC_CLOSE), TASK_ID, "--status", "withdrawn"],
-        env=_env(home, session_id=None),
-        cwd=str(home),
-        text=True,
-        capture_output=True,
-        check=False,
-    )
-
-    assert result.returncode == 0, (
-        "a lease naming unrelated work blocked the close — the guard has widened from "
-        f"'names this task' to 'any lease exists'\nstderr={result.stderr}"
-    )
-    assert other.exists() and other.read_text(encoding="utf-8").strip() == ("someone-elses-task"), (
-        "another session's lease was modified"
     )
 
 
@@ -759,69 +682,43 @@ def test_the_named_remedy_actually_recovers_the_refused_close(
     )
 
 
-def test_an_unreadable_lease_refuses_rather_than_counting_as_absent(
+def test_an_unresolvable_role_refuses_without_reading_the_claim_cache(
     tmp_path: Path,
 ) -> None:
-    """A lease that cannot be READ is unknown, not absent. Treating an inspection
-    failure as "does not name this task" would let the close proceed over a lease it
-    never actually ruled out — absence read as a result, which is the move this whole
-    change exists to remove. Under it the guard would silently degrade to the original
-    silent-strand behaviour, on exactly the systems where something is already wrong.
+    """The refusal is UNCONDITIONAL and inspects nothing.
+
+    Earlier revisions scanned the cache so they could refuse only when a lease actually
+    named this task. Review found a race in that classification, and then the same race
+    on the read once the deletion was gone: cc-claim publishes a sidecar and a claim
+    file as two steps, so any point-in-time look can observe a half-published claim and
+    "no lease names this task" can go stale between check and close. Closing that needs
+    a locking protocol the claim plane does not have.
+
+    So the guard asks something it can answer without reading shared state: can this
+    process know which lease is its own? Without a role it cannot. Refusing is not a
+    heuristic — it is the honest report of an unanswerable question, and it is the one
+    shape with no race in it.
     """
     home = tmp_path / "home"
     vault = _vault(home)
     _write_task(vault, str(home / "scratch.txt"))
+    # Nothing in the cache at all: the refusal must not depend on what is there.
+    assert _leases(home) == []
 
-    cache = home / ".cache" / "hapax"
-    cache.mkdir(parents=True, exist_ok=True)
-    unreadable = cache / "cc-active-task-eta"
-    unreadable.write_text("some-other-task\n", encoding="utf-8")
-    unreadable.chmod(0o000)
-
-    try:
-        result = subprocess.run(
-            [_BASH, str(CC_CLOSE), TASK_ID, "--status", "withdrawn"],
-            env=_env(home, session_id=None),
-            cwd=str(home),
-            text=True,
-            capture_output=True,
-            check=False,
-        )
-    finally:
-        unreadable.chmod(0o600)  # so tmp_path cleanup can remove it
-
-    assert result.returncode != 0, (
-        "cc-close proceeded past a lease it could not read — it cannot know whether "
-        f"that lease names this task\nstdout={result.stdout}"
-    )
-    assert "UNKNOWN rather than ruled out" in result.stderr, (
-        f"refused, but not for the unknown-lease reason\nstderr={result.stderr}"
-    )
-
-
-def test_an_unresolvable_role_still_closes_when_no_lease_names_the_task(
-    tmp_path: Path,
-) -> None:
-    """The other half of that precondition, so the refusal cannot quietly become a
-    blanket block: with no claim file naming the task there is nothing to release, and
-    the close must proceed."""
-    home = tmp_path / "home"
-    vault = _vault(home)
-    _write_task(vault, str(home / "scratch.txt"))
-
-    env = _env(home, session_id=None)
     result = subprocess.run(
         [_BASH, str(CC_CLOSE), TASK_ID, "--status", "withdrawn"],
-        env=env,
+        env=_env(home, session_id=None),
         cwd=str(home),
         text=True,
         capture_output=True,
         check=False,
     )
 
-    assert result.returncode == 0, (
-        "cc-close refused although no lease named the task — the guard has widened "
-        f"into a blanket block\nstderr={result.stderr}"
+    assert result.returncode != 0, (
+        f"cc-close closed a task while unable to identify its own lease\nstdout={result.stdout}"
+    )
+    assert "cannot tell which claim lease is its own" in result.stderr, (
+        f"refused, but not for the reason under test\nstderr={result.stderr}"
     )
 
 
