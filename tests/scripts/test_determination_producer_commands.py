@@ -109,27 +109,51 @@ def _committed_modes() -> dict[str, str]:
 
     ``_has_shebang`` already reads content from HEAD, so reading modes from HEAD also keeps both
     halves of this check on the same source rather than comparing across two.
+
+    Uses ``-z``. Raised by gemini-1: without it ``git ls-tree`` C-quotes any path containing a
+    space or special character, so the quoted name would be handed to ``git show``, which fails,
+    and the file would be silently dropped from the scan. A gate that quietly skips the entries
+    hardest to name is the omission-as-fact defect this whole change set is about, and it had
+    reproduced itself inside the gate.
     """
     out = subprocess.run(
-        ["git", "-C", str(REPO_ROOT), "ls-tree", "-r", "HEAD", "--", "scripts/"],
+        ["git", "-C", str(REPO_ROOT), "ls-tree", "-r", "-z", "HEAD", "--", "scripts/"],
         capture_output=True,
         text=True,
         check=True,
     ).stdout
     modes: dict[str, str] = {}
-    for line in out.splitlines():
-        meta, _, path = line.partition("\t")
+    for record in out.split("\0"):
+        if not record:
+            continue
+        meta, _, path = record.partition("\t")
         parts = meta.split()
         if parts and path:
             modes[path] = parts[0]
     return modes
 
 
+#: Tree entries that are not regular files: symlinks and gitlinks (submodules). Neither has a
+#: shebang to read, and neither is executed as a script, so they are excluded by MODE rather
+#: than by a failed read.
+_NON_BLOB_MODES = frozenset({"120000", "160000"})
+
+
 def _has_shebang(path: str) -> bool:
+    """Does HEAD's blob at ``path`` start with ``#!``? Raises if it cannot be read.
+
+    ``check=True``, deliberately. Raised by claude-1: with ``check=False`` any failure —
+    unreadable path, an entry type ``git show`` will not print — left stdout empty, the file was
+    treated as non-shebanged, and the gate degraded to a PASS. A gate that answers "no defect"
+    when it could not look is worse than one that is absent, because it is believed.
+
+    Callers must exclude non-blob entries first (see ``_NON_BLOB_MODES``); anything else that
+    fails here is a real surprise and should be loud.
+    """
     blob = subprocess.run(
         ["git", "-C", str(REPO_ROOT), "show", f"HEAD:{path}"],
         capture_output=True,
-        check=False,
+        check=True,
     ).stdout
     return blob[:2] == b"#!"
 
@@ -159,10 +183,15 @@ def test_every_shebanged_script_is_committed_executable() -> None:
     ``scripts/`` committed non-executable fails here, whichever one it is next time.
     """
     modes = _committed_modes()
+    assert modes, "the scan found no tracked files under scripts/, so it is asserting nothing"
+
     offenders = sorted(
         p
         for p, mode in modes.items()
-        if mode == "100644" and not Path(p).suffix and _has_shebang(p)
+        if mode not in _NON_BLOB_MODES
+        and mode == "100644"
+        and not Path(p).suffix
+        and _has_shebang(p)
     )
 
     assert offenders == [], (
@@ -172,3 +201,57 @@ def test_every_shebanged_script_is_committed_executable() -> None:
         + "\n  ".join(offenders)
         + "\nFix each with: git update-index --chmod=+x <path>"
     )
+
+
+def test_a_tree_materialised_the_way_activation_does_is_clean(tmp_path: Path) -> None:
+    """The activation integration check codex-1 asked for, using the real mechanism.
+
+    codex-1 blocked on this predicate clause with: "no fresh release produced by the
+    source-activation process is shown to remain clean and yield dirty=False... The supplied
+    evidence substitutes a clean working checkout and a synthetic release-classification test."
+    That was fair — both substitutes were one step away from the thing being claimed.
+
+    This uses the command the activator actually runs. ``scripts/hapax-source-activate:421``:
+
+        git -C "$CANONICAL_REPO" worktree add --detach "$candidate_worktree" "$sha" --quiet
+
+    and that script contains no ``chmod`` at any point, so a release tree materialises every file
+    at exactly the mode HEAD records. That is why the mode bit is the whole defect: with 100644 in
+    HEAD the tree is born non-executable, something downstream chmods it to run, and the tree is
+    permanently dirty thereafter.
+
+    Asserts both halves on a tree built that way: git reports it clean, AND the script is
+    executable on disk without anyone having chmod'd it.
+    """
+    target = tmp_path / "release-tree"
+    subprocess.run(
+        ["git", "-C", str(REPO_ROOT), "worktree", "add", "--detach", str(target), "HEAD"],
+        capture_output=True,
+        check=True,
+    )
+    try:
+        status = subprocess.run(
+            ["git", "-C", str(target), "status", "--porcelain"],
+            capture_output=True,
+            text=True,
+            check=True,
+        ).stdout.strip()
+
+        assert status == "", (
+            "a tree materialised the way activation materialises one is not clean:\n" + status
+        )
+        assert os.access(target / "scripts" / "hapax-determine", os.X_OK), (
+            "hapax-determine is not executable in a freshly materialised tree, so the deploy must "
+            "chmod it to run — which is precisely what makes every release tree dirty"
+        )
+    finally:
+        # Registered worktrees outlive the tmp_path teardown and this estate caps them, so the
+        # removal is not optional housekeeping.
+        subprocess.run(
+            ["git", "-C", str(REPO_ROOT), "worktree", "remove", "--force", str(target)],
+            capture_output=True,
+            check=False,
+        )
+        subprocess.run(
+            ["git", "-C", str(REPO_ROOT), "worktree", "prune"], capture_output=True, check=False
+        )
