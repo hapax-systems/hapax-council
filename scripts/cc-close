@@ -114,6 +114,32 @@ if [[ -z "$note_path" ]]; then
   exit 2
 fi
 
+# PRE-FLIGHT, before any state change.
+#
+# The claim release runs near the end, after the note has moved to closed/. Anything
+# it discovers there it can only warn about: refusing at that point would leave the
+# task closed AND its lease held, which is worse than either outcome alone. So the one
+# condition that would make the release incomplete — a claim file that cannot be read,
+# and therefore cannot be ruled in or out as naming this task — is checked HERE, while
+# refusing is still free.
+#
+# An earlier revision warned about it after the move and told the reader to re-run
+# cc-close. That retry is impossible: by then the task is in closed/ and cc-close
+# refuses with "not in active/". A remedy naming a sealed exit is the failure this row
+# exists to stop reproducing, and I reproduced it inside the fix.
+_claims_dir="$HOME/.cache/hapax"
+shopt -s nullglob
+_unreadable_leases=()
+for _lease in "$_claims_dir"/cc-active-task-*; do
+  [[ -f "$_lease" ]] || continue
+  head -n1 "$_lease" >/dev/null 2>&1 || _unreadable_leases+=("$_lease")
+done
+shopt -u nullglob
+if (( ${#_unreadable_leases[@]} > 0 )); then
+  echo "cc-close: ${#_unreadable_leases[@]} claim file(s) cannot be read, so whether they name '$task_id' is unknown: ${_unreadable_leases[*]}. Closing now could leave one of them behind and strand its holder, and the close is not reversible. Nothing has been changed. Next: fix their permissions, or remove them if no session holds them, then re-run cc-close for '$task_id'." >&2
+  exit 2
+fi
+
 if ! command -v python3 &>/dev/null; then
   echo "cc-close: python3 missing; cannot rewrite frontmatter" >&2
   exit 3
@@ -341,17 +367,12 @@ shopt -s nullglob
 for claim_file in "$claims_dir"/cc-active-task-*; do
   [[ -f "$claim_file" ]] || continue
   if ! claim_head="$(head -n1 "$claim_file" 2>/dev/null)"; then
-    # Unreadable: it may or may not name this task, and we cannot tell. Warn with a
-    # NEXT ACTION rather than passing over it silently — an unreadable lease that does
-    # name this task will survive and strand its holder, and the difference between a
-    # puzzling block later and a named cause now is this line.
-    #
-    # It warns rather than refuses because by this point the note has already moved to
-    # closed/. Refusing after a state change leaves the task closed AND the lease held,
-    # which is worse than either. Checking before the move is the right shape and needs
-    # the scan to happen earlier; that is deferred with the rest of the claim-plane
-    # ordering work rather than bolted on here.
-    echo "cc-close: WARNING could not read '$claim_file'. If it names '$task_id' it survives this close and will block its holder. Next: fix its permissions and re-run cc-close for '$task_id' (the release is idempotent), or remove it if no session holds it." >&2
+    # The pre-flight above already refused on unreadable leases while refusing was
+    # still free, so reaching here means one became unreadable during this run. Warn
+    # rather than refuse: the note has already moved, and refusing now would leave the
+    # task closed AND the lease held. This is the residual window the pre-flight cannot
+    # close, and closing it properly needs the claim plane to be readable atomically.
+    echo "cc-close: WARNING '$claim_file' became unreadable during the close; if it names '$task_id' it survives and will block its holder. Next: fix its permissions or remove it if no session holds it — the task is already closed, so cc-close cannot clear it now." >&2
     continue
   fi
   [[ "$(printf '%s' "$claim_head" | tr -d '[:space:]')" == "$task_id" ]] || continue

@@ -288,6 +288,32 @@ def _key_derived_cc_close(tmp_path: Path) -> Path:
     return dest
 
 
+def _divergent_resolver_cc_close(tmp_path: Path) -> Path:
+    """A copy with ONLY the role binding reverted to hapax_agent_identity.
+
+    With the release keyed on the task, this no longer strands anyone — but it is still
+    OBSERVABLE, because $role is what the close writes into the note's session log. A
+    roleless session records "roleless"; the divergent resolver records the anonymous
+    fallback. That gives the resolver a behavioural pin rather than only a source-text
+    scan in the keystone.
+    """
+    root = tmp_path / "divergentresolver"
+    (root / "scripts").mkdir(parents=True, exist_ok=True)
+    (root / "hooks").symlink_to(REPO_ROOT / "hooks", target_is_directory=True)
+
+    text = CC_CLOSE.read_text(encoding="utf-8")
+    fixed = 'role="$(hapax_effective_role 2>/dev/null || true)"'
+    reverted = 'role="$(hapax_agent_identity 2>/dev/null || true)"'
+    assert text.count(fixed) == 1, (
+        "cc-close no longer binds role through hapax_effective_role exactly once — this "
+        "mutation fixture is stale and is no longer proving anything"
+    )
+    dest = root / "scripts" / "cc-close"
+    dest.write_text(text.replace(fixed, reverted), encoding="utf-8")
+    dest.chmod(dest.stat().st_mode | stat.S_IXUSR)
+    return dest
+
+
 def _unresolved_symlink_cc_close(tmp_path: Path) -> Path:
     """A copy with ONLY the symlink resolution reverted, so the OTHER half of this
     change is pinned by a fixture too rather than by a behavioural test alone.
@@ -814,27 +840,25 @@ def test_keying_the_release_on_the_closer_strands_the_holder(tmp_path: Path) -> 
     )
 
 
-def test_an_unreadable_lease_warns_with_a_next_action_and_does_not_block_others(
-    tmp_path: Path,
-) -> None:
-    """The cleanup's own failure path, covered rather than assumed.
+def test_an_unreadable_lease_refuses_before_anything_is_changed(tmp_path: Path) -> None:
+    """A lease that cannot be read stops the close BEFORE the irreversible part.
 
-    A lease that cannot be read may or may not name this task; that is unknowable from
-    here. It must not pass silently — an unreadable lease that DOES name the task will
-    survive and strand its holder — so it warns, names the next action, and does not stop
-    the scan from releasing the leases it CAN read.
+    Whether such a file names this task is unknowable, and if it does, the close would
+    leave it behind and strand its holder. The close is not reversible — the note moves
+    to closed/ — so the check belongs where refusing is still free, and this asserts that
+    nothing changed: the note is still in active/ and the holder still holds its lease.
 
-    It warns rather than refuses because the note has already moved to closed/ by this
-    point, and refusing after a state change would leave the task closed and the lease
-    held, which is worse than either. Checking before the move is the right shape and is
-    deferred with the rest of the claim-plane ordering work.
+    An earlier revision warned about this AFTER the move and told the reader to re-run
+    cc-close. That retry is impossible: by then the task is in closed/ and cc-close
+    refuses with "not in active/". Two seats caught it — a remedy naming a sealed exit,
+    which is the failure this row exists to stop reproducing, reproduced inside its fix.
     """
     home = tmp_path / "home"
     vault = _vault(home)
-    _write_task(vault, str(home / "scratch.txt"))
+    note = _write_task(vault, str(home / "scratch.txt"))
     assert _run_claim(home, TASK_ID).returncode == 0
-    readable = _leases(home)
-    assert readable, "the holder's lease was not created"
+    held = _leases(home)
+    assert held, "the holder's lease was not created"
 
     cache = home / ".cache" / "hapax"
     unreadable = cache / "cc-active-task-theta"
@@ -846,17 +870,55 @@ def test_an_unreadable_lease_warns_with_a_next_action_and_does_not_block_others(
     finally:
         unreadable.chmod(0o600)  # so tmp_path cleanup can remove it
 
-    assert result.returncode == 0, result.stderr
-    assert "could not read" in result.stderr, (
-        f"the unreadable lease passed silently\nstderr={result.stderr}"
+    assert result.returncode != 0, (
+        f"cc-close completed over a lease it could not read\nstdout={result.stdout}"
     )
-    assert "Next:" in result.stderr, (
-        f"the warning names no action the reader can take\nstderr={result.stderr}"
+    assert "cannot be read" in result.stderr, (
+        f"refused, but not for the reason under test\nstderr={result.stderr}"
     )
-    # The readable leases were still released: one unreadable file must not stop the
-    # scan and strand everyone else.
-    for lease in readable:
-        assert not lease.exists(), f"{lease.name} survived because a sibling was unreadable"
+    assert "Nothing has been changed" in result.stderr
+    assert note.is_file(), (
+        "the task was moved out of active/ by a refused close — the refusal must happen "
+        "before any state change, or it leaves worse behind than it prevents"
+    )
+    for lease in held:
+        assert lease.exists(), f"{lease.name} was released by a close that refused"
+
+
+def test_the_resolver_choice_is_observable_in_the_session_log(tmp_path: Path) -> None:
+    """The resolver change, pinned behaviourally rather than by source text alone.
+
+    Keying the release on the task made the resolver no longer load-bearing for the
+    strand — $role now feeds only the line cc-close appends to the note's session log.
+    That line is still observable, and it is what a reader consults to see who closed a
+    task, so getting it wrong misattributes the record.
+
+    A roleless session must be recorded as ``roleless``. Under the divergent resolver the
+    identity is empty and the close falls back to the anonymous label, losing the fact
+    that this was a governed roleless session rather than an unidentified one.
+    """
+    home = tmp_path / "home"
+    vault = _vault(home)
+    _write_task(vault, str(home / "scratch.txt"))
+    assert _run_claim(home, TASK_ID).returncode == 0
+
+    assert _run_close(home).returncode == 0
+    logged = (vault / "closed" / f"{TASK_ID}.md").read_text(encoding="utf-8")
+    assert "roleless closed as withdrawn" in logged, (
+        f"the close did not record the roleless identity\n{logged[-400:]}"
+    )
+
+    # The mutation: same cycle, divergent resolver, anonymous attribution.
+    home2 = tmp_path / "home2"
+    vault2 = _vault(home2)
+    _write_task(vault2, str(home2 / "scratch.txt"))
+    assert _run_claim(home2, TASK_ID).returncode == 0
+    assert _run_close(home2, _divergent_resolver_cc_close(tmp_path)).returncode == 0
+    logged2 = (vault2 / "closed" / f"{TASK_ID}.md").read_text(encoding="utf-8")
+    assert "roleless closed as withdrawn" not in logged2, (
+        "the divergent resolver still recorded 'roleless' — the mutation fixture no "
+        f"longer reproduces the difference\n{logged2[-400:]}"
+    )
 
 
 def test_leaked_lease_residue_deadlocks_the_next_claim(tmp_path: Path) -> None:
