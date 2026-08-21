@@ -92,15 +92,26 @@ class TestRegisteredCommandsAreRunnable:
 
 
 def _committed_modes() -> dict[str, str]:
-    """Every tracked path under scripts/, mapped to its COMMITTED mode.
+    """Every tracked path under scripts/, mapped to its mode IN HEAD.
 
-    Deliberately not ``os.access``. The test above asks the filesystem, which answers about the
-    working copy — and a deploy that chmods on the way out makes that answer 755 while the commit
-    stays 644. The mode that survives ``git archive``, a fresh clone, or a container COPY is the
-    committed one, so that is what gets asserted here.
+    Three sources could answer "what mode is this file", and only one of them is the question:
+
+    - ``os.access`` asks the filesystem, which describes the working copy. A deploy that chmods
+      on the way out makes that answer 755 while the commit stays 644. That is what the
+      registered-producer check above uses, and why it could not have caught this defect.
+    - ``git ls-files -s`` asks the INDEX. A staged-but-uncommitted chmod reports 755 there while
+      HEAD still stores 644 — raised by coderabbitai, and it is the mistake that produced the
+      first version of this very commit: ``update-index --chmod=+x`` followed by ``git add -A``
+      reset the bit from disk, the commit went out 644, and an index-reading test would have
+      passed over it.
+    - ``git ls-tree -r HEAD`` asks the COMMITTED TREE, which is what ``git archive``, a fresh
+      clone and a container COPY all reproduce. That is the mode that reaches a deploy.
+
+    ``_has_shebang`` already reads content from HEAD, so reading modes from HEAD also keeps both
+    halves of this check on the same source rather than comparing across two.
     """
     out = subprocess.run(
-        ["git", "-C", str(REPO_ROOT), "ls-files", "-s", "scripts/"],
+        ["git", "-C", str(REPO_ROOT), "ls-tree", "-r", "HEAD", "--", "scripts/"],
         capture_output=True,
         text=True,
         check=True,
