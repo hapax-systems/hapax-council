@@ -4220,8 +4220,12 @@ def _cas_rollback(projection: FileProjection, scratch: _ProjectionScratch) -> bo
                 and dest_stat.st_nlink >= 2
             ):
                 # Crash after parking dest onto displaced, before unlinking dest.
+                # A drop-link extra may also be present (nlink>=3).
                 if not _same_regular_inode(dir_fd, name, displaced_name):
                     return False
+                drop = _drop_link_name(name)
+                if _same_regular_inode(dir_fd, name, drop):
+                    os.unlink(drop, dir_fd=dir_fd)
                 os.unlink(displaced_name, dir_fd=dir_fd)
                 os.fsync(dir_fd)
                 return True

@@ -427,6 +427,7 @@ def _default_done_gate_runner(
                 authority_case=authority_case,
                 final_status=final_status,
                 observed_at=observed_at,
+                command=("rec-1", "operator-2026-08-20", "pr-4586"),
             )
             for gate in (
                 "acceptance-criteria",

@@ -3504,6 +3504,31 @@ def test_cas_rollback_create_nlink2_unlinks_dest(tmp_path: Path) -> None:
     assert src.read_bytes() == b"postimage"
 
 
+def test_cas_rollback_update_drop_link_third_name_keeps_preimage(tmp_path: Path) -> None:
+    src = tmp_path / "scratch"
+    dst = tmp_path / "note.md"
+    displaced = tmp_path / cp._exchange_displaced_name("note.md")
+    drop = tmp_path / cp._drop_link_name("note.md")
+    src.write_bytes(b"after-image")
+    dst.write_bytes(b"before-image")
+    os.link(dst, displaced)
+    os.link(dst, drop)
+    restored = cp.FileProjection.from_snapshot(
+        dst,
+        before=b"before-image",
+        before_mode=stat.S_IMODE(dst.stat().st_mode),
+        after=b"after-image",
+        after_mode=stat.S_IMODE(src.stat().st_mode),
+    )
+    scratch = cp._scratch_for(restored, "txn-third-link", 0)
+    scratch = dataclasses.replace(scratch, path=src)
+    assert cp._cas_rollback(restored, scratch) is True
+    assert dst.read_bytes() == b"before-image"
+    assert not displaced.exists()
+    assert not drop.exists()
+    assert src.read_bytes() == b"after-image"
+
+
 def test_cas_rollback_delete_nlink2_keeps_dest(tmp_path: Path) -> None:
     dest = tmp_path / "note.md"
     parked = tmp_path / "parked"

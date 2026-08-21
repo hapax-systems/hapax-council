@@ -4,6 +4,9 @@
 # This wrapper has no independent mutation path. Every operational close enters
 # the shared claim-bound close transaction; admission failures leave task and
 # claim state byte-identical.
+# Rec 1 (#4586): --retroactive skips AC/receipt/disposition; merge is evidence.
+# Gate 0B killswitch (HAPAX_GATE0B_CLAIM_PUBLICATION_OFF=1) HOLDs close.
+# Recheck: uv run pytest tests/shared/test_sdlc_close.py tests/scripts/test_hapax_fsm_smoke.py
 #
 # Dispatch-staleness markers (must remain literal substrings of this file):
 #   frontmatter_task_id
@@ -37,9 +40,33 @@ debt_reason=""
 retroactive=false
 while [[ $# -gt 0 ]]; do
   case "$1" in
-    --pr) pr="${2:-}"; shift 2 ;;
-    --status) final_status="${2:-}"; shift 2 ;;
-    --debt) debt_reason="${2:-}"; shift 2 ;;
+    --pr)
+      if [[ $# -lt 2 ]]; then
+        echo "cc-close: --pr requires a merged PR number" >&2
+        echo "Next action: pass --pr N from the merged pull request, then retry." >&2
+        exit 1
+      fi
+      pr="$2"
+      shift 2
+      ;;
+    --status)
+      if [[ $# -lt 2 ]]; then
+        echo "cc-close: --status requires done, withdrawn, or superseded" >&2
+        echo "Next action: pass --status done (or withdrawn/superseded), then retry." >&2
+        exit 1
+      fi
+      final_status="$2"
+      shift 2
+      ;;
+    --debt)
+      if [[ $# -lt 2 ]]; then
+        echo "cc-close: --debt requires a reason string" >&2
+        echo "Next action: pass --debt \"reason\", then retry." >&2
+        exit 1
+      fi
+      debt_reason="$2"
+      shift 2
+      ;;
     # Threaded through to shared.sdlc_close (which declares --retroactive) rather
     # than refused here. cc-pr-merge-watcher builds automatic closes as
     #   cc-close <task> --pr <n> --retroactive
