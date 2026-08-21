@@ -203,7 +203,7 @@ def test_every_shebanged_script_is_committed_executable() -> None:
     )
 
 
-def test_a_tree_materialised_the_way_activation_does_is_clean(tmp_path: Path) -> None:
+def test_a_tree_materialised_the_way_activation_does_is_clean(tmp_path: Path, monkeypatch) -> None:
     """The activation integration check codex-1 asked for, using the real mechanism.
 
     codex-1 blocked on this predicate clause with: "no fresh release produced by the
@@ -220,10 +220,27 @@ def test_a_tree_materialised_the_way_activation_does_is_clean(tmp_path: Path) ->
     HEAD the tree is born non-executable, something downstream chmods it to run, and the tree is
     permanently dirty thereafter.
 
-    Asserts both halves on a tree built that way: git reports it clean, AND the script is
-    executable on disk without anyone having chmod'd it.
+    Asserts the predicate's own three clauses on a tree built that way: git reports it clean, the
+    adjudicator measures ``dirty=False``, and ``record_identifies_its_checkout()`` returns True.
+    Raised by codex-1 — an earlier version checked ``status`` and ``os.access`` but never
+    evaluated the identity, which is the clause the predicate actually names, so it asserted
+    everything around the claim and not the claim.
+
+    Materialised at ``<trusted releases root>/<sha>/`` so it is classified ``release_tree``
+    exactly as a deployed one is, rather than as an incidental checkout.
     """
-    target = tmp_path / "release-tree"
+    sha = subprocess.run(
+        ["git", "-C", str(REPO_ROOT), "rev-parse", "HEAD"],
+        capture_output=True,
+        text=True,
+        check=True,
+    ).stdout.strip()
+
+    state_dir = tmp_path / "source-activation"
+    monkeypatch.setenv("HAPAX_SOURCE_ACTIVATE_STATE_DIR", str(state_dir))
+    target = state_dir / "releases" / sha
+    target.parent.mkdir(parents=True)
+
     subprocess.run(
         ["git", "-C", str(REPO_ROOT), "worktree", "add", "--detach", str(target), "HEAD"],
         capture_output=True,
@@ -238,11 +255,40 @@ def test_a_tree_materialised_the_way_activation_does_is_clean(tmp_path: Path) ->
         ).stdout.strip()
 
         assert status == "", (
-            "a tree materialised the way activation materialises one is not clean:\n" + status
+            "a tree materialised the way activation materialises one is not clean:\n"
+            + status
+            + "\nNext: identify which committed mode or file differs from what the deploy needs; "
+            "a mode row (100644 -> 100755) means the file is committed non-executable."
         )
         assert os.access(target / "scripts" / "hapax-determine", os.X_OK), (
             "hapax-determine is not executable in a freshly materialised tree, so the deploy must "
-            "chmod it to run — which is precisely what makes every release tree dirty"
+            "chmod it to run — which is precisely what makes every release tree dirty. "
+            "Next: git update-index --chmod=+x scripts/hapax-determine, then commit."
+        )
+
+        # The predicate's own clause, measured on this tree rather than on a stand-in.
+        from shared.adjudicator_identity import (  # noqa: PLC0415 - deliberately after materialisation
+            adjudicator_identity,
+            record_identifies_its_checkout,
+        )
+
+        ident = adjudicator_identity(str(target / "shared" / "adjudicator_identity.py"))
+        receipt = ident.as_receipt()
+
+        assert ident.source == "release_tree", (
+            f"materialised under the trusted releases root but classified {ident.source!r}. "
+            "Next: check HAPAX_SOURCE_ACTIVATE_STATE_DIR and the releases/<sha>/ layout."
+        )
+        assert ident.sha == sha, "the identity must name the commit the tree was built from"
+        assert ident.dirty is False, (
+            f"the adjudicator measured dirty={ident.dirty!r} on a freshly materialised release "
+            "tree, so every decision written from a real deploy would be unidentifiable. "
+            "Next: run `git -C <tree> status --porcelain` to see what the deploy left modified."
+        )
+        assert record_identifies_its_checkout(receipt), (
+            "a freshly materialised release tree does not identify its own checkout, which is "
+            f"the whole point of the receipt. Measured: {receipt}. "
+            "Next: dirty must be False and the sha must be a verified 40-hex from a git source."
         )
     finally:
         # Registered worktrees outlive the tmp_path teardown and this estate caps them, so the
