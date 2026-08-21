@@ -39,9 +39,14 @@ from pathlib import Path
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 CC_CLOSE = REPO_ROOT / "scripts" / "cc-close"
+CC_CLAIM = REPO_ROOT / "scripts" / "cc-claim"
 GATE = REPO_ROOT / "hooks" / "scripts" / "cc-task-gate.impl.sh"
 
 TASK_ID = "roleless-close-cycle"
+# Deliberately NOT a prefix extension of TASK_ID: the vault lookup globs
+# active/<task_id>-*.md, so "roleless-close-cycle-next" would collide with
+# "roleless-close-cycle" (the class pinned by test_cc_close_prefix_collision.py).
+NEXT_TASK_ID = "roleless-recovery-work"
 SESSION_ID = "sess-roleless-e2e"
 STRAND_MESSAGE = "not found in vault"
 # The gate's post-close state for a session that closed correctly: no claim held, and
@@ -96,20 +101,21 @@ def _vault(home: Path) -> Path:
     return root
 
 
-def _write_task(vault_root: Path, scope_ref: str) -> Path:
-    """An authorized, roleless-claimed task — the shape the gate ACCEPTS, so the
-    pre-close leg of the cycle proves the gate permits rather than merely
-    failing differently."""
-    path = vault_root / "active" / f"{TASK_ID}.md"
+def _write_task(vault_root: Path, scope_ref: str, task_id: str = TASK_ID) -> Path:
+    """An authorized OFFERED task — claimable by the real cc-claim, and once claimed
+    the shape the gate ACCEPTS, so the pre-close leg proves the gate permits rather
+    than merely failing differently."""
+    path = vault_root / "active" / f"{task_id}.md"
     path.write_text(
         textwrap.dedent(
             f"""\
             ---
             type: cc-task
-            task_id: {TASK_ID}
-            title: "{TASK_ID}"
-            status: in_progress
-            assigned_to: roleless
+            task_id: {task_id}
+            title: "{task_id}"
+            status: offered
+            assigned_to: unassigned
+            claimable: true
             priority: p2
             authority_case: CASE-SYSTEM-INTEGRITY-20260611
             parent_spec: 30-areas/hapax/synthesis-representation-without-enforcement-2026-08-20.md
@@ -124,7 +130,7 @@ def _write_task(vault_root: Path, scope_ref: str) -> Path:
             pr:
             ---
 
-            # {TASK_ID}
+            # {task_id}
 
             ## Session log
             """
@@ -134,23 +140,34 @@ def _write_task(vault_root: Path, scope_ref: str) -> Path:
     return path
 
 
-def _seed_claim(home: Path, *, task_id: str = TASK_ID) -> dict[str, Path]:
-    """Both lease forms cc-claim writes: the legacy <role> file and the
-    session-keyed <role>-<sid> file, each with its cc-claim-epoch sidecar."""
+def _run_claim(home: Path, task_id: str) -> subprocess.CompletedProcess[str]:
+    """The REAL writer. The exit predicate calls for a claim->close cycle, and a
+    hand-seeded lease would only prove cc-close can delete files this test wrote —
+    not that it clears what cc-claim actually produces, in the forms cc-claim
+    actually produces them.
+
+    cc-claim issues a manual self-witnessed binding when no --dispatch-* flags are
+    given, so a roleless session can claim in a clean HOME without dispatch
+    machinery.
+    """
+    return subprocess.run(
+        ["bash", str(CC_CLAIM), task_id],
+        env=_env(home),
+        cwd=str(home),
+        text=True,
+        capture_output=True,
+        check=False,
+    )
+
+
+def _leases(home: Path) -> list[Path]:
+    """Every lease artifact present, whatever form the writer chose."""
     cache = home / ".cache" / "hapax"
-    cache.mkdir(parents=True, exist_ok=True)
-    files = {
-        "legacy": cache / "cc-active-task-roleless",
-        "legacy_epoch": cache / "cc-claim-epoch-roleless",
-        "session": cache / f"cc-active-task-roleless-{SESSION_ID}",
-        "session_epoch": cache / f"cc-claim-epoch-roleless-{SESSION_ID}",
-    }
-    for name, path in files.items():
-        if name.endswith("epoch"):
-            path.write_text(f"1780000000 {task_id}\n", encoding="utf-8")
-        else:
-            path.write_text(f"{task_id}\n", encoding="utf-8")
-    return files
+    if not cache.is_dir():
+        return []
+    return sorted(
+        p for p in cache.iterdir() if p.name.startswith(("cc-active-task-", "cc-claim-epoch-"))
+    )
 
 
 def _run_close(
@@ -258,7 +275,17 @@ def test_roleless_close_clears_its_own_lease(tmp_path: Path) -> None:
     home = tmp_path / "home"
     vault = _vault(home)
     _write_task(vault, str(home / "scratch.txt"))
-    files = _seed_claim(home)
+
+    claimed = _run_claim(home, TASK_ID)
+    assert claimed.returncode == 0, (
+        f"the real writer could not claim, so this proves nothing about what it "
+        f"writes\nstdout={claimed.stdout}\nstderr={claimed.stderr}"
+    )
+    written = _leases(home)
+    session_lease = home / ".cache" / "hapax" / f"cc-active-task-roleless-{SESSION_ID}"
+    assert session_lease in written, (
+        f"cc-claim did not write the session-keyed lease this test is about: {written}"
+    )
 
     result = _run_close(home)
 
@@ -266,12 +293,16 @@ def test_roleless_close_clears_its_own_lease(tmp_path: Path) -> None:
     assert "cleared claim file" in result.stdout, (
         f"close did not announce a claim release\nstdout={result.stdout}\nstderr={result.stderr}"
     )
-    assert str(files["session"]) in result.stdout, (
+    assert str(session_lease) in result.stdout, (
         f"close cleared something, but not the session-keyed lease the gate reads "
         f"FIRST\nstdout={result.stdout}"
     )
-    for name, path in files.items():
-        assert not path.exists(), f"{name} lease leaked past the close: {path}"
+    # Every artifact the real writer produced, not merely the ones this test knew
+    # to look for — a leftover epoch sidecar is not cosmetic: it is what makes the
+    # NEXT cc-claim HOLD (see the recovery test below).
+    assert _leases(home) == [], (
+        f"lease artifacts leaked past the close: {[p.name for p in _leases(home)]}"
+    )
 
 
 def test_gate_permits_before_the_close_and_is_not_stranded_after(tmp_path: Path) -> None:
@@ -290,7 +321,9 @@ def test_gate_permits_before_the_close_and_is_not_stranded_after(tmp_path: Path)
     target = home / "scratch.txt"
     target.write_text("a\n", encoding="utf-8")
     _write_task(vault, str(target))
-    _seed_claim(home)
+    _write_task(vault, str(target), NEXT_TASK_ID)
+
+    assert _run_claim(home, TASK_ID).returncode == 0
 
     before = _run_gate(home, target)
     assert before.returncode == 0, (
@@ -325,24 +358,52 @@ def test_gate_permits_before_the_close_and_is_not_stranded_after(tmp_path: Path)
         f"close and the gate still reads it\nstderr={after.stderr}"
     )
 
+    # RECOVERY — the point of the whole row. "Not stranded" is only meaningful if
+    # the session can actually resume, so claim the NEXT task with the real writer
+    # and mutate again. Without this leg a gate that refused everything forever
+    # would satisfy every assertion above.
+    recovered = _run_claim(home, NEXT_TASK_ID)
+    assert recovered.returncode == 0, (
+        "session could not claim new work after a clean close — the strand is gone "
+        f"but the deadlock is not\nstdout={recovered.stdout}\nstderr={recovered.stderr}"
+    )
+    resumed = _run_gate(home, target)
+    assert resumed.returncode == 0, (
+        "gate refused an in-scope mutation under a freshly claimed task: the "
+        f"close->reclaim->mutate cycle does not close\nstderr={resumed.stderr}"
+    )
 
-def test_the_divergent_resolver_reproduces_the_strand(tmp_path: Path) -> None:
-    """(d): the mutation. Revert ONLY the resolver and the same cycle must strand
-    — the lease survives and the gate reports exactly the failure the operator
-    hit twice. A test that stays green when the fix is removed is documentation,
-    not verification.
+
+def test_the_divergent_resolver_strands_and_deadlocks_the_session(tmp_path: Path) -> None:
+    """(d): the mutation. Revert ONLY the resolver and the same cycle must strand —
+    the lease survives and the gate reports exactly the failure the operator hit
+    twice. A test that stays green when the fix is removed is documentation, not
+    verification.
+
+    It also pins the SECOND half of the trap, which is why the strand needed an
+    operator every time. The leaked lease is not merely noise: with a
+    ``cc-claim-epoch-`` sidecar left behind and no matching claim file, the next
+    ``cc-claim`` HOLDs with ``claim_dispatch_binding_missing`` — it reports a missing
+    dispatch binding while the actual trigger is the orphaned sidecar the failed close
+    left. So the defect produces exactly the residue that disables the recovery path,
+    and the gate's advertised remedy ("Re-claim a fresh task: cc-claim <task_id>")
+    cannot succeed. Measured 2026-08-21 by controlled comparison: identical sandbox,
+    one orphaned epoch sidecar the only difference, rc 4 -> rc 8.
     """
     home = tmp_path / "home"
     vault = _vault(home)
     target = home / "scratch.txt"
     target.write_text("a\n", encoding="utf-8")
     _write_task(vault, str(target))
-    files = _seed_claim(home)
+    _write_task(vault, str(target), NEXT_TASK_ID)
+
+    assert _run_claim(home, TASK_ID).returncode == 0
+    session_lease = home / ".cache" / "hapax" / f"cc-active-task-roleless-{SESSION_ID}"
 
     result = _run_close(home, _divergent_cc_close(tmp_path))
     assert result.returncode == 0, result.stderr
 
-    assert files["session"].exists(), (
+    assert session_lease.exists(), (
         "the divergent resolver did NOT leak the lease — the mutation fixture no "
         "longer reproduces the defect, so the tests above are not pinned by it"
     )
@@ -352,4 +413,12 @@ def test_the_divergent_resolver_reproduces_the_strand(tmp_path: Path) -> None:
     assert after.returncode == 2 and STRAND_MESSAGE in after.stderr, (
         "expected the leaked lease to strand the session under the divergent "
         f"resolver\nrc={after.returncode}\nstderr={after.stderr}"
+    )
+
+    # ...and the prescribed escape is closed, which is what made every occurrence
+    # cost an operator intervention rather than a retry.
+    stuck = _run_claim(home, NEXT_TASK_ID)
+    assert stuck.returncode != 0, (
+        "cc-claim recovered despite the leaked lease — if the escape works, the "
+        "strand is an annoyance rather than a deadlock and this test should say so"
     )
