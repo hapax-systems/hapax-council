@@ -237,7 +237,11 @@ EOF
   step "recovery governor"
   timeout 30 uv run --no-sync python -m shared.recovery_governor --permit "lane:smoke-${smoke_mode}"
 
-  step "ok"
+  if [[ "$smoke_mode" == "killswitch" ]]; then
+    step "ok (close refused as designed)"
+  else
+    step "ok"
+  fi
 )
 
 if [[ "$mode" == "both" || "$mode" == "default" ]]; then

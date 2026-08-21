@@ -758,7 +758,9 @@ def test_retroactive_done_gate_skips_paperwork_and_child_checkers(
     )
 
     assert [(item.gate, item.outcome) for item in evidence] == [
-        ("premerge-paperwork", "not_applicable"),
+        ("acceptance-criteria", "not_applicable"),
+        ("acceptance-receipt", "not_applicable"),
+        ("artifact-disposition", "not_applicable"),
         ("pr-merge", "pass"),
     ]
     assert len(calls) == 1

@@ -413,17 +413,35 @@ def _default_done_gate_runner(
         if debt_reason:
             disposition_command.extend(["--debt", debt_reason])
         commands.append(("artifact-disposition", disposition_command))
-    evidence = [
-        CloseGateEvidence(
-            gate="premerge-paperwork" if retroactive else "task-close-internal",
-            outcome="not_applicable" if retroactive else "pass",
-            task_id=snapshot.task_id,
-            note_sha256=snapshot.sha256,
-            authority_case=authority_case,
-            final_status=final_status,
-            observed_at=observed_at,
-        )
-    ]
+    if retroactive:
+        evidence = [
+            CloseGateEvidence(
+                gate=gate,
+                outcome="not_applicable",
+                task_id=snapshot.task_id,
+                note_sha256=snapshot.sha256,
+                authority_case=authority_case,
+                final_status=final_status,
+                observed_at=observed_at,
+            )
+            for gate in (
+                "acceptance-criteria",
+                "acceptance-receipt",
+                "artifact-disposition",
+            )
+        ]
+    else:
+        evidence = [
+            CloseGateEvidence(
+                gate="task-close-internal",
+                outcome="pass",
+                task_id=snapshot.task_id,
+                note_sha256=snapshot.sha256,
+                authority_case=authority_case,
+                final_status=final_status,
+                observed_at=observed_at,
+            )
+        ]
     for name, command in commands:
         before_hash = _sha256(snapshot.path.read_bytes())
         result = subprocess.run(

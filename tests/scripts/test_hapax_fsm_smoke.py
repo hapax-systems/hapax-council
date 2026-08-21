@@ -39,4 +39,4 @@ def test_hapax_fsm_smoke_is_tracked_isolated_and_executable(tmp_path: Path) -> N
     assert "HAPAX_GATE0B_CLAIM_PUBLICATION_OFF=1" in killswitch_output
     assert "admitted publication applied" not in killswitch_output
     assert "[default] ok\n" in result.stdout
-    assert "[killswitch] ok\n" in result.stdout
+    assert "[killswitch] ok (close refused as designed)\n" in result.stdout
