@@ -369,10 +369,11 @@ def test_claim_plane_scripts_never_bind_role_through_the_bare_identity_resolver(
     ROOT LIMIT — this scan covers SHELL participants under ``scripts/`` and
     ``hooks/scripts/`` only. It does not reach Python consumers (which do not source
     ``agent-role.sh`` and resolve role by other means) or any claim-plane script living
-    outside those two roots. Widening it is tracked by
-    ``claim-key-has-a-builder-that-is-not-the-single-path-20260821``, which addresses the
-    same gap at the level where it can actually be closed: one key builder, in both
-    languages, rather than one scan per convention.
+    outside those two roots. Widening it belongs with giving ``hapax_agent_claim_key`` a
+    return shape its callers can use and routing every consumer through it, in both
+    languages — the level where this closes properly, as one builder rather than one
+    scan per convention. Described by the function rather than by a task id, for the
+    reason given just above: an id in a comment cannot be checked from here.
     """
     roots = (REPO_ROOT / "scripts", REPO_ROOT / "hooks" / "scripts")
     wrong_resolver: list[str] = []

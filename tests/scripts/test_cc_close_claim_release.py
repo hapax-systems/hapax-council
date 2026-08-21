@@ -287,6 +287,33 @@ def _divergent_cc_close(tmp_path: Path) -> Path:
     return dest
 
 
+def _unresolved_symlink_cc_close(tmp_path: Path) -> Path:
+    """A copy with ONLY the symlink resolution reverted, so the OTHER half of this
+    change is pinned by a fixture too rather than by a behavioural test alone.
+
+    Both changes now redden mechanically, and both carry a staleness guard that fails
+    loudly if the code shape moves out from under it.
+    """
+    root = tmp_path / "unresolved"
+    (root / "scripts").mkdir(parents=True, exist_ok=True)
+    (root / "hooks").symlink_to(REPO_ROOT / "hooks", target_is_directory=True)
+
+    text = CC_CLOSE.read_text(encoding="utf-8")
+    fixed = (
+        '_cc_self="$(readlink -f "${BASH_SOURCE[0]}" 2>/dev/null '
+        '|| printf \'%s\' "${BASH_SOURCE[0]}")"'
+    )
+    reverted = '_cc_self="${BASH_SOURCE[0]}"'
+    assert text.count(fixed) == 1, (
+        "cc-close no longer resolves its own path through readlink exactly once — this "
+        "mutation fixture is stale and is no longer proving anything"
+    )
+    dest = root / "scripts" / "cc-close"
+    dest.write_text(text.replace(fixed, reverted), encoding="utf-8")
+    dest.chmod(dest.stat().st_mode | stat.S_IXUSR)
+    return dest
+
+
 def test_a_roleless_session_resolves_to_roleless_not_empty(tmp_path: Path) -> None:
     """The precondition the whole cycle rests on, asserted rather than assumed:
     in this harness the two resolvers really do disagree."""
@@ -458,6 +485,39 @@ def test_the_installed_symlink_entrypoint_releases_the_claim(tmp_path: Path) -> 
         f"lease artifacts leaked through the installed entrypoint: "
         f"{[p.name for p in _leases(home)]}"
     )
+
+
+def test_without_symlink_resolution_the_installed_entrypoint_cannot_release(
+    tmp_path: Path,
+) -> None:
+    """The mutation for the OTHER half of this change, fixtured rather than inferred.
+
+    Revert only the readlink resolution and invoke through a symlink: SCRIPT_DIR becomes
+    the symlink's directory, agent-role.sh is not found beside it, and the close cannot
+    proceed. That is the dominant layer of this defect — through the entrypoint the
+    operator actually invokes, NEITHER role resolver existed, so the release block could
+    not run whichever function it named.
+    """
+    home = tmp_path / "home"
+    vault = _vault(home)
+    _write_task(vault, str(home / "scratch.txt"))
+    assert _run_claim(home, TASK_ID).returncode == 0
+
+    bin_dir = tmp_path / "bin"
+    bin_dir.mkdir()
+    installed = bin_dir / "cc-close"
+    installed.symlink_to(_unresolved_symlink_cc_close(tmp_path))
+
+    result = _run_close(home, installed)
+
+    assert result.returncode != 0, (
+        "the unresolved-symlink copy completed a close through its symlink — the "
+        f"mutation fixture no longer reproduces the defect\nstdout={result.stdout}"
+    )
+    assert "agent-role.sh not found" in result.stderr, (
+        f"failed, but not for the reason under test\nstderr={result.stderr}"
+    )
+    assert _leases(home) != [], "the lease must survive a close that could not run"
 
 
 def test_a_broken_install_refuses_instead_of_releasing_nothing(tmp_path: Path) -> None:
