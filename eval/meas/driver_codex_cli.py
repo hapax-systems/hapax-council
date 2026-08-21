@@ -40,7 +40,7 @@ DEFAULT_TIMEOUT_SECONDS = 900
 PREDICATE_TIMEOUT_SECONDS = 600
 GITHUB_REPO = "hapax-systems/hapax-council"
 HARNESS_NAME = "codex-cli-agentic"
-DRIVER_VERSION = "driver_codex_cli/v14"
+DRIVER_VERSION = "driver_codex_cli/v15"
 DIRECT_API_35B_BASELINE = {
     "passed": 0,
     "total": 19,
@@ -50,7 +50,7 @@ DIRECT_API_35B_BASELINE = {
 }
 KNOWN_WITNESS_ARTIFACTS = {
     "1991e186b3699fa87667ac09963ef542ac3587dadc5b7e31be49afa3a9c2f03c": (
-        "f79c38f6f6a733f42a8b78d04b71596d675ec458347342cadddcc037bfaa5a63"
+        "a142293bbab492ae8dd2340b42799fc15d5cec41085250aeaa57353bc9b6894f"
     )
 }
 SCORING_DIFF_EXCLUDES = (
@@ -989,7 +989,8 @@ def _validate_completion_attestation(
         or raw.get("worker_count") != 1
         or raw.get("worker_integrity_guard")
         != "early-runtime-introspection-and-hook-mutation-audit+"
-        "collection-plugin-registration-freeze+sealed-call-capture+raw-worker-outcomes/v5"
+        "collection-plugin-registration-freeze+sealed-call-capture+private-call-record+"
+        "raw-worker-outcomes/v6"
         or not isinstance(raw.get("attester_pid"), int)
         or raw.get("xdist_version") != pytest_xdist_version()
         or not isinstance(collected, list)
@@ -1586,7 +1587,7 @@ def lambda_config(
                 "pytest_worker_integrity": (
                     "early-runtime-introspection-and-hook-mutation-audit+"
                     "collection-plugin-registration-freeze+sealed-call-capture+"
-                    "raw-worker-outcomes/v5"
+                    "private-call-record+raw-worker-outcomes/v6"
                 ),
                 "pytest_worker_launcher_sha256": pytest_worker_launcher_sha256(),
                 "pytest_xdist_version": pytest_xdist_version(),

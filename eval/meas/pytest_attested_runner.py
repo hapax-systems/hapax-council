@@ -19,7 +19,7 @@ MAX_PYTEST_EXIT_CODE = 5
 TRUST_FAILURE_EXIT_CODE = 87
 WORKER_INTEGRITY_GUARD = (
     "early-runtime-introspection-and-hook-mutation-audit+collection-plugin-registration-freeze+"
-    "sealed-call-capture+raw-worker-outcomes/v5"
+    "sealed-call-capture+private-call-record+raw-worker-outcomes/v6"
 )
 _WORKER_AUDIT_INSTALLED = False
 _WORKER_CALL_CAPTURE_SEALED = False
@@ -143,12 +143,45 @@ def _clone_function(function: Any, global_overrides: dict[str, Any]) -> Any:
 
 
 def _sealed_call_info_factory() -> object:
-    call_info_type = pytest_runner.CallInfo
+    """Build a duck-typed call factory whose record type never enters public globals."""
     exception_info_type = ExceptionInfo
     object_new = object.__new__
+    object_getattr = object.__getattribute__
     object_setattr = object.__setattr__
     wall_clock = time.time
     duration_clock = time.perf_counter
+
+    class SealedCallInfo:
+        __slots__ = ("_excinfo", "_result", "duration", "start", "stop", "when")
+
+        def __init__(
+            self,
+            result: object,
+            excinfo: object,
+            start: float,
+            stop: float,
+            duration: float,
+            when: str,
+        ) -> None:
+            object_setattr(self, "_result", result)
+            object_setattr(self, "_excinfo", excinfo)
+            object_setattr(self, "start", start)
+            object_setattr(self, "stop", stop)
+            object_setattr(self, "duration", duration)
+            object_setattr(self, "when", when)
+
+        @property
+        def excinfo(self) -> object:
+            return object_getattr(self, "_excinfo")
+
+        @property
+        def result(self) -> object:
+            excinfo = object_getattr(self, "_excinfo")
+            if excinfo is not None:
+                raise AttributeError("failed call has no result")
+            return object_getattr(self, "_result")
+
+    sealed_call_info_type = SealedCallInfo
 
     def from_call(
         func: Any,
@@ -173,14 +206,14 @@ def _sealed_call_info_factory() -> object:
             object_setattr(excinfo, "_traceback", None)
             result = None
         duration = duration_clock() - duration_start
-        call = object_new(call_info_type)
-        object_setattr(call, "start", started_at)
-        object_setattr(call, "stop", wall_clock())
-        object_setattr(call, "duration", duration)
-        object_setattr(call, "when", when)
-        object_setattr(call, "_result", result)
-        object_setattr(call, "excinfo", excinfo)
-        return call
+        return sealed_call_info_type(
+            result=result,
+            excinfo=excinfo,
+            start=started_at,
+            stop=wall_clock(),
+            duration=duration,
+            when=when,
+        )
 
     class CallInfoFactory:
         pass

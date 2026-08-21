@@ -191,7 +191,8 @@ def test_lambda_records_both_timeouts_and_predicate_sandbox() -> None:
         "pytest_execution": "one-isolated-xdist-worker",
         "pytest_worker_integrity": (
             "early-runtime-introspection-and-hook-mutation-audit+"
-            "collection-plugin-registration-freeze+sealed-call-capture+raw-worker-outcomes/v5"
+            "collection-plugin-registration-freeze+sealed-call-capture+private-call-record+"
+            "raw-worker-outcomes/v6"
         ),
         "pytest_worker_launcher_sha256": driver.pytest_worker_launcher_sha256(),
         "pytest_xdist_version": driver.pytest_xdist_version(),
@@ -402,7 +403,7 @@ def test_isolated_worker_launcher_missing_environment_has_next_action() -> None:
         check=False,
     )
 
-    assert result.returncode == 87
+    assert result.returncode == 88
     assert "pinned project environment is missing" in result.stderr
     assert "Next action:" in result.stderr
 
@@ -416,7 +417,7 @@ def test_isolated_worker_launcher_rejects_unknown_invocation() -> None:
         check=False,
     )
 
-    assert result.returncode == 87
+    assert result.returncode == 89
     assert "unsupported xdist worker invocation" in result.stderr
     assert "Next action:" in result.stderr
 
@@ -427,7 +428,7 @@ def test_isolated_worker_launcher_uses_isolated_harness_path() -> None:
             str(driver.PYTEST_WORKER_LAUNCHER),
             "-u",
             "-c",
-            "print(sys.flags.isolated); print(sys.path[0])",
+            "print(sys.flags.isolated); print(sys.path[0]); print(sys.path[0] == '/harness')",
         ],
         capture_output=True,
         text=True,
@@ -436,7 +437,7 @@ def test_isolated_worker_launcher_uses_isolated_harness_path() -> None:
     )
 
     assert result.returncode == 0
-    assert result.stdout.splitlines() == ["1", "/harness"]
+    assert result.stdout.splitlines() == ["1", "/harness", "True"]
 
 
 def test_worker_launcher_harness_path_matches_driver_mount_contract() -> None:
@@ -590,7 +591,8 @@ def test_model_code_runs_in_worker_separate_from_attester(tmp_path: Path) -> Non
     assert attestation["attester_process"] == "xdist-controller"
     assert attestation["worker_integrity_guard"] == (
         "early-runtime-introspection-and-hook-mutation-audit+"
-        "collection-plugin-registration-freeze+sealed-call-capture+raw-worker-outcomes/v5"
+        "collection-plugin-registration-freeze+sealed-call-capture+private-call-record+"
+        "raw-worker-outcomes/v6"
     )
 
 
@@ -622,7 +624,8 @@ def test_trusted_conftest_cannot_import_solution_code_in_controller(tmp_path: Pa
         "        'worker_count': 1,\n"
         "        'worker_integrity_guard': "
         "'early-runtime-introspection-and-hook-mutation-audit+"
-        "collection-plugin-registration-freeze+sealed-call-capture+raw-worker-outcomes/v5',\n"
+        "collection-plugin-registration-freeze+sealed-call-capture+private-call-record+"
+        "raw-worker-outcomes/v6',\n"
         "        'xdist_origin': str(Path(xdist.__file__).resolve()),\n"
         "        'xdist_version': importlib.metadata.version('pytest-xdist'),\n"
         "    }\n"
@@ -866,6 +869,59 @@ def test_collection_import_cannot_replace_callinfo_capture_and_erase_failure(
 
 
 @requires_bubblewrap
+def test_collection_import_cannot_mutate_public_callinfo_type_and_erase_failure(
+    tmp_path: Path,
+) -> None:
+    repo, commits = _source_repo(tmp_path, parent_conftest="from module import VALUE\n")
+
+    def callinfo_type_mutation_executor(
+        *,
+        task: driver.Mapping[str, Any],
+        workdir: Path,
+        config: driver.CodexRunConfig,
+    ) -> dict[str, Any]:
+        del task
+        (workdir / "module.py").write_text(
+            "from _pytest import runner\n\n"
+            "OriginalGetAttribute = runner.CallInfo.__getattribute__\n\n"
+            "def hiding_getattribute(self, name):\n"
+            "    if name == 'excinfo':\n"
+            "        return None\n"
+            "    return OriginalGetAttribute(self, name)\n\n"
+            "runner.CallInfo.__getattribute__ = hiding_getattribute\n"
+            "VALUE = 0\n",
+            encoding="utf-8",
+        )
+        diff_record = driver.capture_cell_diff(workdir, commits.parent)
+        return {
+            "model": config.model,
+            "harness": driver.HARNESS_NAME,
+            "seconds": 0.1,
+            "transcript": {"returncode": 0, "timed_out": False},
+            **diff_record,
+        }
+
+    record = driver.run_cell(
+        _task(),
+        repo=repo,
+        commits=commits,
+        executor=callinfo_type_mutation_executor,
+        binary_version="codex-cli test",
+        sandbox_version="bubblewrap test",
+    )
+
+    assert record["cell_result"]["passed"] is False
+    assert record["cell_result"]["exit"]["returncode"] == 1, record["cell_result"]["exit"][
+        "output_tail"
+    ]
+    assert record["cell_result"]["exit"]["completion_attested"] is True
+    assert "1 failed" in record["cell_result"]["exit"]["output_tail"]
+    assert (
+        record["cell_result"]["post_scoring_controls"] == record["cell_result"]["scoring_controls"]
+    )
+
+
+@requires_bubblewrap
 def test_conftest_import_cannot_mutate_registered_hook_before_collection(
     tmp_path: Path,
 ) -> None:
@@ -953,7 +1009,8 @@ def test_forged_lifecycle_record_plus_early_exit_cannot_pass(tmp_path: Path) -> 
         "worker_count": 1,
         "worker_integrity_guard": (
             "early-runtime-introspection-and-hook-mutation-audit+"
-            "collection-plugin-registration-freeze+sealed-call-capture+raw-worker-outcomes/v5"
+            "collection-plugin-registration-freeze+sealed-call-capture+private-call-record+"
+            "raw-worker-outcomes/v6"
         ),
         "xdist_origin": str(Path(pytest.__file__).resolve()),
         "xdist_version": driver.pytest_xdist_version(),
