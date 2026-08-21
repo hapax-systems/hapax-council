@@ -412,6 +412,12 @@ class _FakeRunner:
         self.queued_prs: set[int] = set()
         self.queue_refs: list[str] = []
         self.merge_queue_method = "SQUASH"
+        self.rulesets_payload: Any | None = None
+        self.rulesets_error: str | None = None
+        self.rulesets_raw_stdout: str | None = None
+        self.ruleset_details: dict[int, Any] = {}
+        self.ruleset_detail_errors: dict[int, str] = {}
+        self.ruleset_detail_raw_stdout: dict[int, str] = {}
         self.fail_queue_refs = False
         self.calls: list[list[str]] = []
         self.fail_status_posts = False
@@ -485,28 +491,48 @@ class _FakeRunner:
                 rows = [row for row in rows if (row.get("head") or {}).get("ref") == branch]
             return subprocess.CompletedProcess(cmd, 0, json.dumps(rows), "")
         if path == "repos/owner/repo/rulesets":
-            payload = [
-                {
+            if self.rulesets_error is not None:
+                return subprocess.CompletedProcess(cmd, 1, "", self.rulesets_error)
+            if self.rulesets_raw_stdout is not None:
+                return subprocess.CompletedProcess(cmd, 0, self.rulesets_raw_stdout, "")
+            payload = self.rulesets_payload
+            if payload is None:
+                payload = [
+                    {
+                        "id": 16186443,
+                        "name": "main-merge-queue",
+                        "target": "branch",
+                        "enforcement": "active",
+                    }
+                ]
+            return subprocess.CompletedProcess(cmd, 0, json.dumps(payload), "")
+        ruleset_detail_match = re.fullmatch(r"repos/owner/repo/rulesets/(\d+)", path)
+        if ruleset_detail_match:
+            ruleset_id = int(ruleset_detail_match.group(1))
+            if ruleset_id in self.ruleset_detail_errors:
+                return subprocess.CompletedProcess(
+                    cmd, 1, "", self.ruleset_detail_errors[ruleset_id]
+                )
+            if ruleset_id in self.ruleset_detail_raw_stdout:
+                return subprocess.CompletedProcess(
+                    cmd, 0, self.ruleset_detail_raw_stdout[ruleset_id], ""
+                )
+            payload = self.ruleset_details.get(ruleset_id)
+            if payload is None and ruleset_id == 16186443:
+                payload = {
                     "id": 16186443,
                     "name": "main-merge-queue",
                     "target": "branch",
                     "enforcement": "active",
+                    "rules": [
+                        {
+                            "type": "merge_queue",
+                            "parameters": {"merge_method": self.merge_queue_method},
+                        }
+                    ],
                 }
-            ]
-            return subprocess.CompletedProcess(cmd, 0, json.dumps(payload), "")
-        if path == "repos/owner/repo/rulesets/16186443":
-            payload = {
-                "id": 16186443,
-                "name": "main-merge-queue",
-                "target": "branch",
-                "enforcement": "active",
-                "rules": [
-                    {
-                        "type": "merge_queue",
-                        "parameters": {"merge_method": self.merge_queue_method},
-                    }
-                ],
-            }
+            if payload is None:
+                return subprocess.CompletedProcess(cmd, 1, "", "ruleset not found")
             return subprocess.CompletedProcess(cmd, 0, json.dumps(payload), "")
         pull_match = re.fullmatch(r"repos/owner/repo/pulls/(\d+)", path)
         if pull_match:
@@ -1720,6 +1746,261 @@ def test_queue_arms_with_verified_ruleset_merge_method(tmp_path: Path) -> None:
         "--auto",
         "--squash",
     ] not in runner.calls
+
+
+def test_ruleset_lookup_requires_named_main_merge_queue(tmp_path: Path) -> None:
+    runner = _FakeRunner()
+    runner.rulesets_payload = [
+        {
+            "id": 99,
+            "name": "release-merge-queue",
+            "target": "branch",
+            "enforcement": "active",
+        }
+    ]
+    runner.ruleset_details[99] = {
+        "id": 99,
+        "name": "release-merge-queue",
+        "target": "branch",
+        "enforcement": "active",
+        "rules": [
+            {
+                "type": "merge_queue",
+                "parameters": {"merge_method": "MERGE"},
+            }
+        ],
+    }
+
+    method, source = autoqueue.fetch_merge_queue_merge_method(
+        repo="owner/repo",
+        repo_root=tmp_path,
+        runner=runner,
+    )
+
+    assert method is None
+    assert source == "active_named_merge_queue_ruleset_missing:main-merge-queue"
+    assert not any(
+        call[:5] == ["gh", "api", "--method", "GET", "-H"]
+        and call[6] == "repos/owner/repo/rulesets/99"
+        for call in runner.calls
+    )
+
+
+def test_run_reconciler_fails_closed_when_ruleset_lookup_fails(tmp_path: Path) -> None:
+    vault = _make_vault(tmp_path)
+    _write_task(vault, task_id="rulesets-api-down", pr=80)
+    runner = _FakeRunner()
+    runner.open_prs = [_pr(80)]
+    runner.rulesets_error = "rulesets unavailable"
+
+    report = autoqueue.run_reconciler(
+        repo="owner/repo",
+        repo_root=tmp_path,
+        vault_root=vault,
+        apply=True,
+        runner=runner,
+    )
+
+    assert report["skipped"] is True
+    assert report["reason"] == "merge_queue_merge_method_indeterminate"
+    assert report["detail"] == "rulesets_fetch_failed:rulesets unavailable"
+    assert "--expected-merge-method <METHOD>" in report["next_action"]
+    assert not any(call[:3] == ["gh", "pr", "merge"] for call in runner.calls)
+
+
+def test_run_reconciler_expected_method_override_is_reported_and_used(
+    tmp_path: Path,
+) -> None:
+    vault = _make_vault(tmp_path)
+    _write_task(vault, task_id="rulesets-override", pr=81)
+    runner = _FakeRunner()
+    runner.open_prs = [_pr(81)]
+    runner.rulesets_error = "rulesets unavailable"
+
+    report = autoqueue.run_reconciler(
+        repo="owner/repo",
+        repo_root=tmp_path,
+        vault_root=vault,
+        apply=True,
+        expected_auto_merge_method_override="rebase",
+        expected_auto_merge_method_source="override:test",
+        runner=runner,
+    )
+
+    assert report["merge_queue_merge_method"] == {"method": "REBASE", "source": "override:test"}
+    assert ["gh", "pr", "merge", "81", "--repo", "owner/repo", "--auto", "--rebase"] in runner.calls
+    assert not any(
+        call[:5] == ["gh", "api", "--method", "GET", "-H"]
+        and call[6] == "repos/owner/repo/rulesets"
+        for call in runner.calls
+    )
+
+
+def test_run_reconciler_rejects_unsupported_expected_method_override(
+    tmp_path: Path,
+) -> None:
+    vault = _make_vault(tmp_path)
+    _write_task(vault, task_id="bad-override", pr=82)
+    runner = _FakeRunner()
+    runner.open_prs = [_pr(82)]
+
+    report = autoqueue.run_reconciler(
+        repo="owner/repo",
+        repo_root=tmp_path,
+        vault_root=vault,
+        apply=True,
+        expected_auto_merge_method_override="FASTFORWARD",
+        expected_auto_merge_method_source="override:test",
+        runner=runner,
+    )
+
+    assert report["skipped"] is True
+    assert report["reason"] == "merge_queue_merge_method_indeterminate"
+    assert report["detail"] == "unsupported_auto_merge_method_override:raw=FASTFORWARD"
+    assert "MERGE,REBASE,SQUASH" in report["next_action"]
+    assert not any(call[:3] == ["gh", "pr", "merge"] for call in runner.calls)
+
+
+def test_ruleset_lookup_reports_invalid_json_payload(tmp_path: Path) -> None:
+    runner = _FakeRunner()
+    runner.rulesets_raw_stdout = "not json"
+
+    method, source = autoqueue.fetch_merge_queue_merge_method(
+        repo="owner/repo",
+        repo_root=tmp_path,
+        runner=runner,
+    )
+
+    assert method is None
+    assert source.startswith("rulesets_fetch_failed:invalid_json:")
+
+
+def test_ruleset_lookup_rejects_non_list_payload(tmp_path: Path) -> None:
+    runner = _FakeRunner()
+    runner.rulesets_payload = {"id": 16186443}
+
+    method, source = autoqueue.fetch_merge_queue_merge_method(
+        repo="owner/repo",
+        repo_root=tmp_path,
+        runner=runner,
+    )
+
+    assert method is None
+    assert source == "rulesets_payload_not_list:dict"
+
+
+def test_ruleset_lookup_reports_detail_fetch_failure(tmp_path: Path) -> None:
+    runner = _FakeRunner()
+    runner.ruleset_detail_errors[16186443] = "detail forbidden"
+
+    method, source = autoqueue.fetch_merge_queue_merge_method(
+        repo="owner/repo",
+        repo_root=tmp_path,
+        runner=runner,
+    )
+
+    assert method is None
+    assert source == "ruleset_detail_fetch_failed:main-merge-queue:detail forbidden"
+
+
+def test_ruleset_lookup_reports_missing_merge_queue_method(tmp_path: Path) -> None:
+    runner = _FakeRunner()
+    runner.ruleset_details[16186443] = {
+        "id": 16186443,
+        "name": "main-merge-queue",
+        "target": "branch",
+        "enforcement": "active",
+        "rules": [{"type": "required_status_checks", "parameters": {}}],
+    }
+
+    method, source = autoqueue.fetch_merge_queue_merge_method(
+        repo="owner/repo",
+        repo_root=tmp_path,
+        runner=runner,
+    )
+
+    assert method is None
+    assert source == "active_named_merge_queue_ruleset_method_missing:main-merge-queue"
+
+
+def test_ruleset_lookup_rejects_unsupported_merge_queue_method(tmp_path: Path) -> None:
+    runner = _FakeRunner()
+    runner.ruleset_details[16186443] = {
+        "id": 16186443,
+        "name": "main-merge-queue",
+        "target": "branch",
+        "enforcement": "active",
+        "rules": [
+            {
+                "type": "merge_queue",
+                "parameters": {"merge_method": "FASTFORWARD"},
+            }
+        ],
+    }
+
+    method, source = autoqueue.fetch_merge_queue_merge_method(
+        repo="owner/repo",
+        repo_root=tmp_path,
+        runner=runner,
+    )
+
+    assert method is None
+    assert source == (
+        "unsupported_auto_merge_method:raw=FASTFORWARD:ruleset=main-merge-queue:16186443"
+    )
+
+
+def test_already_auto_merge_enabled_without_armed_method_is_rearmed_next_pass(
+    tmp_path: Path,
+) -> None:
+    vault = _make_vault(tmp_path)
+    _write_task(vault, task_id="armed-method-missing", pr=83)
+    runner = _FakeRunner()
+    runner.open_prs = [_pr(83, auto_merge=True, auto_merge_method=None)]
+
+    report = autoqueue.run_reconciler(
+        repo="owner/repo",
+        repo_root=tmp_path,
+        vault_root=vault,
+        apply=True,
+        runner=runner,
+    )
+
+    decision = report["decisions"][0]
+    assert report["counts"]["disable_auto_merge"] == 1
+    assert decision["reasons"] == ["auto_merge_method_unverified:armed_missing:expected=SQUASH"]
+    assert "next reconciler pass will re-arm" in decision["next_action"]
+    assert [
+        "gh",
+        "pr",
+        "merge",
+        "83",
+        "--repo",
+        "owner/repo",
+        "--disable-auto",
+    ] in runner.calls
+
+
+def test_merge_pr_rejects_unsupported_expected_merge_method(tmp_path: Path) -> None:
+    pr = autoqueue._parse_pr(_pr(84))
+    assert pr is not None
+    runner = _FakeRunner()
+
+    ok, message = autoqueue.merge_pr(
+        autoqueue.Decision(
+            pr=pr,
+            action="queue",
+            expected_auto_merge_method="FASTFORWARD",
+        ),
+        repo="owner/repo",
+        repo_root=tmp_path,
+        runner=runner,
+    )
+
+    assert ok is False
+    assert message.startswith("unsupported_auto_merge_method:FASTFORWARD:next_action=")
+    assert "--expected-merge-method <METHOD>" in message
+    assert not any(call[:3] == ["gh", "pr", "merge"] for call in runner.calls)
 
 
 def test_gh_readonly_queue_ref_marks_pr_already_queued_when_graphql_empty(

@@ -18,8 +18,12 @@ Usage::
     uv run python scripts/cc-pr-autoqueue.py
     uv run python scripts/cc-pr-autoqueue.py --apply
     HAPAX_CC_PR_AUTOQUEUE_OFF=1 uv run python scripts/cc-pr-autoqueue.py --apply
+    uv run python scripts/cc-pr-autoqueue.py --apply --expected-merge-method SQUASH
+    HAPAX_CC_PR_AUTOQUEUE_EXPECTED_MERGE_METHOD=SQUASH uv run python scripts/cc-pr-autoqueue.py --apply
 
 Default mode is a dry-run report. ``--apply`` performs the GitHub mutation.
+``--expected-merge-method`` is a governed emergency bypass for rulesets API or
+configuration incidents; the report records the override source.
 """
 
 from __future__ import annotations
@@ -96,6 +100,7 @@ DEFAULT_REPORT_PATH = (
 )
 DEFAULT_ADMISSION_GOVERNOR_PATH = Path.home() / ".cache" / "hapax" / "pr-admission-governor.yaml"
 KILLSWITCH_ENVS = ("HAPAX_CC_PR_AUTOQUEUE_OFF", "HAPAX_CC_HYGIENE_OFF")
+EXPECTED_MERGE_METHOD_OVERRIDE_ENV = "HAPAX_CC_PR_AUTOQUEUE_EXPECTED_MERGE_METHOD"
 
 PASS_STATES = {"SUCCESS", "SKIPPED", "NEUTRAL"}
 # Ordinary queue admission treats skipped/neutral as non-failing, but mitigation
@@ -295,6 +300,8 @@ class Decision:
             out["auto_merge_method"] = self.pr.auto_merge_method
         if self.expected_auto_merge_method != AUTOQUEUE_DEFAULT_MERGE_METHOD:
             out["expected_auto_merge_method"] = self.expected_auto_merge_method
+        if next_action := _decision_next_action(self.action, self.reasons):
+            out["next_action"] = next_action
         return out
 
 
@@ -382,7 +389,43 @@ def _normalize_merge_method(value: Any) -> str | None:
         return "MERGE"
     if normalized in GITHUB_MERGE_METHOD_FLAGS:
         return normalized
-    return normalized
+    return None
+
+
+def _supported_merge_methods_label() -> str:
+    return ",".join(sorted(GITHUB_MERGE_METHOD_FLAGS))
+
+
+def _merge_method_operator_next_action(
+    *,
+    ruleset_name: str = AUTOQUEUE_MERGE_QUEUE_RULESET_NAME,
+) -> str:
+    methods = _supported_merge_methods_label()
+    return (
+        f"Verify active branch ruleset {ruleset_name} has a merge_queue rule with "
+        f"merge_method one of {methods} using `gh api repos/<repo>/rulesets`; "
+        "during a documented GitHub API or ruleset incident, rerun with "
+        f"`--expected-merge-method <METHOD>` or {EXPECTED_MERGE_METHOD_OVERRIDE_ENV}=<METHOD>."
+    )
+
+
+def _decision_next_action(action: str, reasons: tuple[str, ...]) -> str | None:
+    if action != "disable_auto_merge":
+        return None
+    if any(
+        reason.startswith("auto_merge_method_mismatch")
+        or reason.startswith("auto_merge_method_unverified:armed_missing")
+        for reason in reasons
+    ):
+        return (
+            "Auto-merge will be disabled this pass; the next reconciler pass will "
+            "re-arm with the verified merge queue method if the PR remains otherwise admissible."
+        )
+    if any(
+        reason.startswith("auto_merge_method_unverified:expected_missing") for reason in reasons
+    ):
+        return _merge_method_operator_next_action()
+    return None
 
 
 def _auto_merge_request_method(value: Any) -> str | None:
@@ -399,7 +442,8 @@ def _merge_method_mismatch_reason(
     expected = _normalize_merge_method(expected_auto_merge_method)
     armed = _normalize_merge_method(pr.auto_merge_method)
     if expected is None:
-        return "auto_merge_method_unverified:expected_missing"
+        raw_expected = _scalar(expected_auto_merge_method) or "missing"
+        return f"auto_merge_method_unverified:expected_missing:raw={raw_expected}"
     if armed is None:
         return f"auto_merge_method_unverified:armed_missing:expected={expected}"
     if armed != expected:
@@ -480,22 +524,25 @@ def _gh_api_get_json(
         return False, None, f"invalid_json:{exc.__class__.__name__}"
 
 
-def _merge_queue_method_from_ruleset(ruleset: Any) -> str | None:
+def _merge_queue_method_from_ruleset(ruleset: Any) -> tuple[str | None, str | None]:
     if not isinstance(ruleset, dict):
-        return None
+        return None, None
     rules = ruleset.get("rules")
     if not isinstance(rules, list):
-        return None
+        return None, None
     for rule in rules:
         if not isinstance(rule, dict) or rule.get("type") != "merge_queue":
             continue
         parameters = rule.get("parameters")
         if not isinstance(parameters, dict):
             continue
-        method = _normalize_merge_method(parameters.get("merge_method"))
+        raw_method = parameters.get("merge_method")
+        method = _normalize_merge_method(raw_method)
         if method:
-            return method
-    return None
+            return method, None
+        if raw_method_text := _scalar(raw_method):
+            return None, f"unsupported_auto_merge_method:raw={raw_method_text}"
+    return None, None
 
 
 def fetch_merge_queue_merge_method(
@@ -524,32 +571,37 @@ def fetch_merge_queue_merge_method(
         and item.get("target") == "branch"
         and item.get("enforcement") == "active"
     ]
-    active_branch_rulesets.sort(
-        key=lambda item: (
-            0 if _scalar(item.get("name")) == ruleset_name else 1,
-            _scalar(item.get("name")) or "",
-            str(item.get("id") or ""),
-        )
+    named_rulesets = sorted(
+        (item for item in active_branch_rulesets if _scalar(item.get("name")) == ruleset_name),
+        key=lambda item: str(item.get("id") or ""),
     )
-    for ruleset in active_branch_rulesets:
-        ruleset_id = ruleset.get("id")
-        ruleset_label = _scalar(ruleset.get("name")) or str(ruleset_id or "unknown")
-        method = _merge_queue_method_from_ruleset(ruleset)
-        if method:
-            return method, f"ruleset:{ruleset_label}:{ruleset_id or 'inline'}"
-        if ruleset_id is None:
-            continue
-        ok, detail, message = _gh_api_get_json(
-            f"repos/{repo}/rulesets/{ruleset_id}",
-            repo_root=repo_root,
-            runner=runner,
-        )
-        if not ok:
-            return None, f"ruleset_detail_fetch_failed:{ruleset_label}:{message}"
-        method = _merge_queue_method_from_ruleset(detail)
-        if method:
-            return method, f"ruleset:{ruleset_label}:{ruleset_id}"
-    return None, "active_merge_queue_ruleset_method_missing"
+    if not named_rulesets:
+        return None, f"active_named_merge_queue_ruleset_missing:{ruleset_name}"
+
+    ruleset = named_rulesets[0]
+    ruleset_id = ruleset.get("id")
+    ruleset_label = _scalar(ruleset.get("name")) or str(ruleset_id or "unknown")
+    method, method_error = _merge_queue_method_from_ruleset(ruleset)
+    if method:
+        return method, f"ruleset:{ruleset_label}:{ruleset_id or 'inline'}"
+    if method_error:
+        return None, f"{method_error}:ruleset={ruleset_label}:{ruleset_id or 'inline'}"
+    if ruleset_id is None:
+        return None, f"active_named_merge_queue_ruleset_method_missing:{ruleset_name}:id_missing"
+
+    ok, detail, message = _gh_api_get_json(
+        f"repos/{repo}/rulesets/{ruleset_id}",
+        repo_root=repo_root,
+        runner=runner,
+    )
+    if not ok:
+        return None, f"ruleset_detail_fetch_failed:{ruleset_label}:{message}"
+    method, method_error = _merge_queue_method_from_ruleset(detail)
+    if method:
+        return method, f"ruleset:{ruleset_label}:{ruleset_id}"
+    if method_error:
+        return None, f"{method_error}:ruleset={ruleset_label}:{ruleset_id}"
+    return None, f"active_named_merge_queue_ruleset_method_missing:{ruleset_name}"
 
 
 def _admission_governor_projection(path: Path, *, observed_at: datetime) -> dict[str, Any]:
@@ -1805,11 +1857,15 @@ def merge_pr(
         # GitHub's native merge queue then owns batching, speculative
         # gh-readonly-queue branches, auto-rebase, and bisect-on-failure — we no
         # longer issue a direct `--merge` (which raced the queue's own management).
-        merge_flag = GITHUB_MERGE_METHOD_FLAGS.get(
-            _normalize_merge_method(decision.expected_auto_merge_method) or ""
-        )
+        expected_method = _normalize_merge_method(decision.expected_auto_merge_method)
+        merge_flag = GITHUB_MERGE_METHOD_FLAGS.get(expected_method or "")
         if merge_flag is None:
-            return False, f"unsupported_auto_merge_method:{decision.expected_auto_merge_method}"
+            return (
+                False,
+                "unsupported_auto_merge_method:"
+                f"{decision.expected_auto_merge_method}:next_action="
+                f"{_merge_method_operator_next_action()}",
+            )
         cmd.extend(["--auto", merge_flag])
         if _decision_requires_head_guard(decision):
             boundary_blocker = _release_head_boundary_blocker(
@@ -2652,6 +2708,8 @@ def run_reconciler(
     auto_arm_ledger_path: Path | None = None,
     report_path: Path | None = None,
     admission_governor_path: Path = DEFAULT_ADMISSION_GOVERNOR_PATH,
+    expected_auto_merge_method_override: str | None = None,
+    expected_auto_merge_method_source: str | None = None,
     runner: Any = None,
 ) -> dict[str, Any]:
     now = datetime.now(UTC)
@@ -2691,11 +2749,33 @@ def run_reconciler(
             now=now,
         )
     queued_prs = queued_prs_snapshot
-    expected_auto_merge_method, merge_method_source = fetch_merge_queue_merge_method(
-        repo=repo,
-        repo_root=repo_root,
-        runner=runner,
-    )
+    if expected_auto_merge_method_override is not None:
+        expected_auto_merge_method = _normalize_merge_method(expected_auto_merge_method_override)
+        if expected_auto_merge_method is None:
+            report = {
+                "repo": repo,
+                "apply": apply,
+                "skipped": True,
+                "reason": "merge_queue_merge_method_indeterminate",
+                "detail": (
+                    "unsupported_auto_merge_method_override:"
+                    f"raw={_scalar(expected_auto_merge_method_override) or 'missing'}"
+                ),
+                "next_action": _merge_method_operator_next_action(),
+            }
+            return _finalize_reconciler_report(
+                report,
+                report_path=report_path,
+                admission_governor_path=admission_governor_path,
+                now=now,
+            )
+        merge_method_source = expected_auto_merge_method_source or "override"
+    else:
+        expected_auto_merge_method, merge_method_source = fetch_merge_queue_merge_method(
+            repo=repo,
+            repo_root=repo_root,
+            runner=runner,
+        )
     if expected_auto_merge_method is None:
         report = {
             "repo": repo,
@@ -2703,6 +2783,7 @@ def run_reconciler(
             "skipped": True,
             "reason": "merge_queue_merge_method_indeterminate",
             "detail": merge_method_source,
+            "next_action": _merge_method_operator_next_action(),
         }
         return _finalize_reconciler_report(
             report,
@@ -3070,6 +3151,14 @@ def main(argv: list[str] | None = None) -> int:
         help="Do not arm auto-merge for governed PRs with pending checks.",
     )
     parser.add_argument(
+        "--expected-merge-method",
+        help=(
+            "Governed emergency bypass for rulesets API/configuration incidents. "
+            "Must normalize to one of MERGE, REBASE, or SQUASH; source is recorded "
+            "in the report."
+        ),
+    )
+    parser.add_argument(
         "--required-check",
         action="append",
         dest="required_checks",
@@ -3148,6 +3237,14 @@ def main(argv: list[str] | None = None) -> int:
         format="%(asctime)s %(levelname)s %(name)s: %(message)s",
         stream=sys.stderr,
     )
+    expected_method_override = args.expected_merge_method or os.environ.get(
+        EXPECTED_MERGE_METHOD_OVERRIDE_ENV
+    )
+    expected_method_source = None
+    if args.expected_merge_method:
+        expected_method_source = "override:cli:--expected-merge-method"
+    elif expected_method_override:
+        expected_method_source = f"override:env:{EXPECTED_MERGE_METHOD_OVERRIDE_ENV}"
 
     report = run_reconciler(
         repo=args.repo,
@@ -3167,6 +3264,8 @@ def main(argv: list[str] | None = None) -> int:
         storm_recent_run_limit=args.storm_recent_run_limit,
         report_path=None if args.no_write_report else args.report_path,
         admission_governor_path=args.admission_governor_path,
+        expected_auto_merge_method_override=expected_method_override,
+        expected_auto_merge_method_source=expected_method_source,
     )
     print(json.dumps(report, indent=2, sort_keys=True))
     return 0
