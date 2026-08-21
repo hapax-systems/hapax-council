@@ -814,6 +814,51 @@ def test_keying_the_release_on_the_closer_strands_the_holder(tmp_path: Path) -> 
     )
 
 
+def test_an_unreadable_lease_warns_with_a_next_action_and_does_not_block_others(
+    tmp_path: Path,
+) -> None:
+    """The cleanup's own failure path, covered rather than assumed.
+
+    A lease that cannot be read may or may not name this task; that is unknowable from
+    here. It must not pass silently — an unreadable lease that DOES name the task will
+    survive and strand its holder — so it warns, names the next action, and does not stop
+    the scan from releasing the leases it CAN read.
+
+    It warns rather than refuses because the note has already moved to closed/ by this
+    point, and refusing after a state change would leave the task closed and the lease
+    held, which is worse than either. Checking before the move is the right shape and is
+    deferred with the rest of the claim-plane ordering work.
+    """
+    home = tmp_path / "home"
+    vault = _vault(home)
+    _write_task(vault, str(home / "scratch.txt"))
+    assert _run_claim(home, TASK_ID).returncode == 0
+    readable = _leases(home)
+    assert readable, "the holder's lease was not created"
+
+    cache = home / ".cache" / "hapax"
+    unreadable = cache / "cc-active-task-theta"
+    unreadable.write_text(f"{TASK_ID}\n", encoding="utf-8")
+    unreadable.chmod(0o000)
+
+    try:
+        result = _run_close(home)
+    finally:
+        unreadable.chmod(0o600)  # so tmp_path cleanup can remove it
+
+    assert result.returncode == 0, result.stderr
+    assert "could not read" in result.stderr, (
+        f"the unreadable lease passed silently\nstderr={result.stderr}"
+    )
+    assert "Next:" in result.stderr, (
+        f"the warning names no action the reader can take\nstderr={result.stderr}"
+    )
+    # The readable leases were still released: one unreadable file must not stop the
+    # scan and strand everyone else.
+    for lease in readable:
+        assert not lease.exists(), f"{lease.name} survived because a sibling was unreadable"
+
+
 def test_leaked_lease_residue_deadlocks_the_next_claim(tmp_path: Path) -> None:
     """Why a strand ever needed an operator rather than a retry, pinned independently
     of cc-close so it survives however cc-close changes.

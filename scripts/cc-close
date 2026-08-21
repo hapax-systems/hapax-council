@@ -329,17 +329,29 @@ PYEOF
 #
 # This never clobbers other work: a file is removed only when its own content names the
 # task now being closed, which is a stronger test than the key match it replaces.
-claims_dir="${HAPAX_CC_CLAIMS_DIR:-$HOME/.cache/hapax}"
+# NOT configurable. An earlier revision honoured HAPAX_CC_CLAIMS_DIR here, which
+# cc-claim (the writer) and cc-task-gate (the reader) do not read — so setting it would
+# have pointed the releaser at a directory the other two never use. That is this row's
+# own defect, three participants disagreeing about one fact, reintroduced inside its
+# fix. Only run_claim_sweep honours that variable; if the location is ever to become
+# configurable, all three must change together.
+claims_dir="$HOME/.cache/hapax"
 cleared_claim=0
 shopt -s nullglob
 for claim_file in "$claims_dir"/cc-active-task-*; do
   [[ -f "$claim_file" ]] || continue
   if ! claim_head="$(head -n1 "$claim_file" 2>/dev/null)"; then
-    # Unreadable: it may or may not name this task, and we cannot tell. Say so on
-    # stderr rather than passing over it silently — an unreadable lease left behind
-    # will strand whoever holds it, and a warning is the difference between a
-    # puzzling block later and a named cause now.
-    echo "cc-close: WARNING could not read '$claim_file'; if it names '$task_id' it will survive this close and block the holder" >&2
+    # Unreadable: it may or may not name this task, and we cannot tell. Warn with a
+    # NEXT ACTION rather than passing over it silently — an unreadable lease that does
+    # name this task will survive and strand its holder, and the difference between a
+    # puzzling block later and a named cause now is this line.
+    #
+    # It warns rather than refuses because by this point the note has already moved to
+    # closed/. Refusing after a state change leaves the task closed AND the lease held,
+    # which is worse than either. Checking before the move is the right shape and needs
+    # the scan to happen earlier; that is deferred with the rest of the claim-plane
+    # ordering work rather than bolted on here.
+    echo "cc-close: WARNING could not read '$claim_file'. If it names '$task_id' it survives this close and will block its holder. Next: fix its permissions and re-run cc-close for '$task_id' (the release is idempotent), or remove it if no session holds it." >&2
     continue
   fi
   [[ "$(printf '%s' "$claim_head" | tr -d '[:space:]')" == "$task_id" ]] || continue
