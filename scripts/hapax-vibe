@@ -4,6 +4,7 @@
 set -euo pipefail
 
 COUNCIL_DIR="${HAPAX_COUNCIL_DIR:-$HOME/projects/hapax-council}"
+TMUX_LANE_CONFIGURE="$COUNCIL_DIR/scripts/hapax-tmux-lane-configure"
 WORKTREE_ROOT="${HAPAX_VIBE_WORKTREE_ROOT:-$HOME/projects}"
 RELAY_DIR="${HAPAX_VIBE_RELAY_DIR:-$HOME/.cache/hapax/relay}"
 SPAWN_DIR="${HAPAX_VIBE_SPAWN_DIR:-${XDG_CACHE_HOME:-$HOME/.cache}/hapax/vibe-spawns}"
@@ -20,6 +21,24 @@ usage: hapax-vibe --session vbe-N [--task TASK_ID] [--cd DIR]
                   [--no-claim] [--force]
                   [--] [vibe args...]
 EOF
+}
+
+configure_hapax_tmux_lane() {
+  local tmux_bin="${1:-tmux}"
+  [ "${TMUX_LANE_PROFILE_SUPPORTED:-0}" = "1" ] || return 0
+  [ -x "$TMUX_LANE_CONFIGURE" ] || return 0
+  if ! "$TMUX_LANE_CONFIGURE" "$tmux_bin"; then
+    echo "hapax-vibe: warning: failed to apply Hapax tmux lane profile" >&2
+  fi
+}
+
+tmux_lane_profile_supported() {
+  local tmux_bin="${1:-tmux}" version=""
+  version="$("$tmux_bin" -V 2>/dev/null || true)"
+  case "$version" in
+    tmux\ *) return 0 ;;
+    *) return 1 ;;
+  esac
 }
 
 SESSION=""
@@ -393,6 +412,7 @@ spawn:
 EOF_SPAWN
 
 TMUX_NAME="hapax-vibe-$SESSION"
+TMUX_LANE_PROFILE_SUPPORTED=0
 
 write_runner() {
   local runner="$1"
@@ -424,6 +444,9 @@ case "$TERMINAL" in
   tmux)
     TMUX_BIN="$(command -v tmux || true)"
     [ -n "$TMUX_BIN" ] || { echo "hapax-vibe: tmux not found" >&2; exit 10; }
+    if tmux_lane_profile_supported "$TMUX_BIN"; then
+      TMUX_LANE_PROFILE_SUPPORTED=1
+    fi
     if "$TMUX_BIN" has-session -t "$TMUX_NAME" 2>/dev/null && [ "$FORCE" -ne 1 ]; then
       echo "hapax-vibe: tmux session already exists: $TMUX_NAME (use --force to recreate)" >&2
       exit 11
@@ -434,6 +457,7 @@ case "$TERMINAL" in
     RUNNER="$SPAWN_DIR/run-$stamp-$slug.sh"
     write_runner "$RUNNER"
     "$TMUX_BIN" new-session -d -s "$TMUX_NAME" -c "$WORKDIR" "$RUNNER"
+    configure_hapax_tmux_lane "$TMUX_BIN"
     echo "$TMUX_NAME"
     ;;
   foot)
@@ -441,6 +465,9 @@ case "$TERMINAL" in
     TMUX_BIN="$(command -v tmux || true)"
     [ -n "$FOOT_BIN" ] || { echo "hapax-vibe: foot/footclient not found" >&2; exit 10; }
     [ -n "$TMUX_BIN" ] || { echo "hapax-vibe: tmux required for foot mode" >&2; exit 10; }
+    if tmux_lane_profile_supported "$TMUX_BIN"; then
+      TMUX_LANE_PROFILE_SUPPORTED=1
+    fi
     RUNNER="$SPAWN_DIR/run-$stamp-$slug.sh"
     write_runner "$RUNNER"
     if "$TMUX_BIN" has-session -t "$TMUX_NAME" 2>/dev/null && [ "$FORCE" -eq 1 ]; then
@@ -449,6 +476,7 @@ case "$TERMINAL" in
     if ! "$TMUX_BIN" has-session -t "$TMUX_NAME" 2>/dev/null; then
       "$TMUX_BIN" new-session -d -s "$TMUX_NAME" -c "$WORKDIR" "$RUNNER"
     fi
+    configure_hapax_tmux_lane "$TMUX_BIN"
     "$FOOT_BIN" --app-id "hapax-vibe-$SESSION" --title "$SESSION (vibe)" \
       --working-directory "$WORKDIR" "$TMUX_BIN" attach-session -t "$TMUX_NAME"
     ;;
