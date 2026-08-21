@@ -3463,17 +3463,14 @@ def test_exchange_fallback_crash_after_step_two_restores_preimage(
     dst.write_bytes(b"before-image")
     displaced = tmp_path / cp._exchange_displaced_name("note.md")
     fd = os.open(tmp_path, os.O_RDONLY | os.O_DIRECTORY)
-    calls = {"n": 0}
-    real_rename = os.rename
+    real_unlink = os.unlink
 
-    def crash_after_dest_installed(src_name: str, dst_name: str, **kwargs: object) -> None:
-        calls["n"] += 1
-        real_rename(src_name, dst_name, **kwargs)
-        if calls["n"] == 2:
-            raise RuntimeError("crash after dest installed")
+    def crash_after_unlink(name: str, **kwargs: object) -> None:
+        real_unlink(name, **kwargs)
+        raise RuntimeError("crash after dest installed")
 
     try:
-        with mock.patch.object(cp.os, "rename", side_effect=crash_after_dest_installed):
+        with mock.patch.object(cp.os, "unlink", side_effect=crash_after_unlink):
             with pytest.raises(RuntimeError, match="crash after dest installed"):
                 cp._renameat2_exchange_fallback(fd, "scratch", fd, "note.md")
         assert dst.read_bytes() == b"after-image"
@@ -3491,6 +3488,45 @@ def test_exchange_fallback_crash_after_step_two_restores_preimage(
         assert dst.read_bytes() == b"before-image"
         assert not displaced.exists()
         assert scratch.path.read_bytes() == b"after-image"
+    finally:
+        os.close(fd)
+
+
+def test_exchange_fallback_refuses_racer_created_destination(
+    tmp_path: Path,
+) -> None:
+    src = tmp_path / "scratch"
+    dst = tmp_path / "note.md"
+    displaced = tmp_path / cp._exchange_displaced_name("note.md")
+    src.write_bytes(b"after-image")
+    dst.write_bytes(b"before-image")
+    fd = os.open(tmp_path, os.O_RDONLY | os.O_DIRECTORY)
+    real_rename = os.rename
+    calls = {"n": 0}
+
+    def plant_racer(src_name: str, dst_name: str, **kwargs: object) -> None:
+        calls["n"] += 1
+        real_rename(src_name, dst_name, **kwargs)
+        if calls["n"] == 1:
+            racer = os.open(
+                "note.md",
+                os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_CLOEXEC,
+                0o644,
+                dir_fd=fd,
+            )
+            try:
+                os.write(racer, b"racer")
+            finally:
+                os.close(racer)
+
+    try:
+        with mock.patch.object(cp.os, "rename", side_effect=plant_racer):
+            with pytest.raises(OSError) as raised:
+                cp._renameat2_exchange_fallback(fd, "scratch", fd, "note.md")
+        assert raised.value.errno == errno.EEXIST
+        assert dst.read_bytes() == b"racer"
+        assert displaced.read_bytes() == b"before-image"
+        assert src.read_bytes() == b"after-image"
     finally:
         os.close(fd)
 

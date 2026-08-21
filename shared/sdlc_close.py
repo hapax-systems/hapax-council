@@ -381,18 +381,16 @@ def _default_done_gate_runner(
             "restore the governed PR merge checker before close",
             str(merge_checker),
         )
-    commands.append(
-        (
-            "pr-merge",
-            [
-                sys.executable,
-                "-I",
-                str(merge_checker),
-                str(snapshot.path),
-                *(["--pr", pr] if pr else []),
-            ],
-        )
-    )
+    pr_repo = str(snapshot.frontmatter.get("pr_repo") or "").strip()
+    merge_command = [
+        sys.executable,
+        "-I",
+        str(merge_checker),
+        str(snapshot.path),
+        *(["--pr", pr] if pr else []),
+        *(["--repo", pr_repo] if pr_repo else []),
+    ]
+    commands.append(("pr-merge", merge_command))
     if not retroactive:
         disposition = REPO_ROOT / "scripts" / "cc-task-artifact-disposition-check.py"
         if not disposition.is_file():

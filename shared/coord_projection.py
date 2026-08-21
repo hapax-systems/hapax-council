@@ -3723,9 +3723,21 @@ def _renameat2_exchange_fallback(
         raise OSError(errno.EEXIST, "exchange displaced name occupied", displaced)
     os.rename(dst_name, displaced, src_dir_fd=src_dir_fd, dst_dir_fd=dst_dir_fd)
     try:
-        os.rename(src_name, dst_name, src_dir_fd=src_dir_fd, dst_dir_fd=dst_dir_fd)
+        # NOREPLACE install: a racer that created dest in the dest-absent window
+        # must get EEXIST, not a silent clobber.
+        os.link(
+            src_name,
+            dst_name,
+            src_dir_fd=src_dir_fd,
+            dst_dir_fd=dst_dir_fd,
+            follow_symlinks=False,
+        )
+        os.unlink(src_name, dir_fd=src_dir_fd)
     except OSError:
-        os.rename(displaced, dst_name, src_dir_fd=src_dir_fd, dst_dir_fd=dst_dir_fd)
+        try:
+            os.stat(dst_name, dir_fd=dst_dir_fd, follow_symlinks=False)
+        except FileNotFoundError:
+            os.rename(displaced, dst_name, src_dir_fd=src_dir_fd, dst_dir_fd=dst_dir_fd)
         raise
     os.rename(displaced, src_name, src_dir_fd=src_dir_fd, dst_dir_fd=dst_dir_fd)
 
@@ -4105,13 +4117,34 @@ def _cas_rollback(projection: FileProjection, scratch: _ProjectionScratch) -> bo
                 scratch.path.name,
                 max_bytes=_MAX_LIFECYCLE_BLOB_BYTES,
             )
+            try:
+                dest_stat = os.stat(name, dir_fd=dir_fd, follow_symlinks=False)
+                scratch_stat = os.stat(scratch.path.name, dir_fd=dir_fd, follow_symlinks=False)
+            except FileNotFoundError:
+                dest_stat = None
+                scratch_stat = None
+            if (
+                dest_stat is not None
+                and scratch_stat is not None
+                and stat.S_ISREG(dest_stat.st_mode)
+                and dest_stat.st_ino == scratch_stat.st_ino
+                and dest_stat.st_nlink >= 2
+                and _entry_matches(current, projection.after, projection.after_mode)
+                and _entry_matches(displaced, projection.before, projection.before_mode)
+            ):
+                # Crash after link, before unlink: dest and src share the
+                # postimage inode; preimage is still displaced.
+                os.unlink(name, dir_fd=dir_fd)
+                os.rename(displaced_name, name, src_dir_fd=dir_fd, dst_dir_fd=dir_fd)
+                os.fsync(dir_fd)
+                return True
             if (
                 _entry_matches(current, projection.after, projection.after_mode)
                 and _entry_matches(displaced, projection.before, projection.before_mode)
                 and scratch_state is None
             ):
-                # Crash after EXCHANGE step 2: dest holds the postimage, the
-                # preimage sits at the displaced name, and src is gone.
+                # Crash after unlink: dest holds the postimage, the preimage
+                # sits at the displaced name, and src is gone.
                 os.rename(name, scratch.path.name, src_dir_fd=dir_fd, dst_dir_fd=dir_fd)
                 os.rename(displaced_name, name, src_dir_fd=dir_fd, dst_dir_fd=dir_fd)
                 os.fsync(dir_fd)

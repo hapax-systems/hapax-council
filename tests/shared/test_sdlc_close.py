@@ -786,6 +786,31 @@ def test_retroactive_done_gate_refuses_without_merged_pr(
     assert raised.value.detail == "retroactive_merge_evidence_missing"
 
 
+def test_retroactive_done_gate_refuses_when_merge_checker_fails(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    fixture = _fixture(tmp_path, monkeypatch, acceptance_receipt=False)
+    snapshot = resolve_task_note(fixture.vault, fixture.task_id, state="active")
+
+    def fake_run(command, *, env, **_kwargs):
+        return subprocess.CompletedProcess(command, 2, stdout="", stderr="PR is OPEN")
+
+    monkeypatch.setattr(sdlc_close.subprocess, "run", fake_run)
+
+    with pytest.raises(TerminalCloseError) as raised:
+        sdlc_close._default_done_gate_runner(
+            snapshot,
+            "done",
+            "4483",
+            True,
+            None,
+        )
+
+    assert raised.value.reason_code == "terminal_close_pr-merge_refused"
+    assert "PR is OPEN" in (raised.value.detail or "")
+
+
 def test_non_retroactive_done_gate_still_requires_acceptance_receipt(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
