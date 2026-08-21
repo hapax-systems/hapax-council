@@ -16,6 +16,7 @@ from __future__ import annotations
 
 import json
 import os
+import subprocess
 from pathlib import Path
 
 import pytest
@@ -88,3 +89,75 @@ class TestRegisteredCommandsAreRunnable:
             "preserves the committed mode. Fix with: "
             f"git update-index --chmod=+x {target.relative_to(REPO_ROOT)}"
         )
+
+
+def _committed_modes() -> dict[str, str]:
+    """Every tracked path under scripts/, mapped to its COMMITTED mode.
+
+    Deliberately not ``os.access``. The test above asks the filesystem, which answers about the
+    working copy — and a deploy that chmods on the way out makes that answer 755 while the commit
+    stays 644. The mode that survives ``git archive``, a fresh clone, or a container COPY is the
+    committed one, so that is what gets asserted here.
+    """
+    out = subprocess.run(
+        ["git", "-C", str(REPO_ROOT), "ls-files", "-s", "scripts/"],
+        capture_output=True,
+        text=True,
+        check=True,
+    ).stdout
+    modes: dict[str, str] = {}
+    for line in out.splitlines():
+        meta, _, path = line.partition("\t")
+        parts = meta.split()
+        if parts and path:
+            modes[path] = parts[0]
+    return modes
+
+
+def _has_shebang(path: str) -> bool:
+    blob = subprocess.run(
+        ["git", "-C", str(REPO_ROOT), "show", f"HEAD:{path}"],
+        capture_output=True,
+        check=False,
+    ).stdout
+    return blob[:2] == b"#!"
+
+
+def test_every_shebanged_script_is_committed_executable() -> None:
+    """A file that declares an interpreter is meant to be run, so it must be committed runnable.
+
+    Widened from the registered-producer check above, which is where this defect class was first
+    caught (#4584: ``hapax-claude-account-live-observe`` merged 644 while its sibling was 755).
+    That test covers producers named in ``config/determination-producers.json``. It does not cover
+    ``scripts/hapax-determine`` — the RUNNER that launches those producers — so the gate written
+    for this exact defect sat one file away from the file that had it.
+
+    Measured 2026-08-21 by the provenance instrument landed in #4588, on its first live reading:
+    the deployed release tree reported ``dirty: True`` from a single mode change,
+    ``100644 -> 100755 scripts/hapax-determine``, identical blob. The deploy chmods it so it can
+    run, which makes every release tree dirty from creation — and
+    ``record_identifies_its_checkout`` requires ``dirty is False``, so every production decision
+    was unidentifiable for a one-line reason.
+
+    Scoped to EXTENSIONLESS files deliberately. A first draft asserted the property for every
+    shebanged file and flagged dozens of ``.py`` scripts — but a ``.py`` file is legitimately
+    invoked as ``python foo.py``, where the mode is irrelevant. An extensionless file exists
+    precisely to be run as a command, so for those the shebang is a promise the mode has to keep.
+
+    Asserts the class rather than the instance: any extensionless shebanged script under
+    ``scripts/`` committed non-executable fails here, whichever one it is next time.
+    """
+    modes = _committed_modes()
+    offenders = sorted(
+        p
+        for p, mode in modes.items()
+        if mode == "100644" and not Path(p).suffix and _has_shebang(p)
+    )
+
+    assert offenders == [], (
+        "these EXTENSIONLESS scripts declare an interpreter but are committed non-executable, so "
+        "a deploy that preserves committed modes cannot run them — and a deploy that chmods them "
+        "instead leaves the tree permanently dirty:\n  "
+        + "\n  ".join(offenders)
+        + "\nFix each with: git update-index --chmod=+x <path>"
+    )
