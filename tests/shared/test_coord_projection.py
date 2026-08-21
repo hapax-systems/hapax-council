@@ -3415,6 +3415,81 @@ def test_noreplace_fallback_crash_between_link_and_unlink_restores_absence(
         os.close(fd)
 
 
+def test_link_then_unlink_src_does_not_delete_raced_source(tmp_path: Path) -> None:
+    src = tmp_path / "note.md"
+    parked = tmp_path / ".note.md.exchange-displaced"
+    src.write_bytes(b"before-image")
+    fd = os.open(tmp_path, os.O_RDONLY | os.O_DIRECTORY)
+    real_link = os.link
+
+    def plant_racer(src_name: str, dst_name: str, **kwargs: object) -> None:
+        real_link(src_name, dst_name, **kwargs)
+        os.unlink(src_name, dir_fd=fd)
+        racer = os.open(
+            src_name,
+            os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_CLOEXEC,
+            0o644,
+            dir_fd=fd,
+        )
+        try:
+            os.write(racer, b"racer")
+        finally:
+            os.close(racer)
+
+    try:
+        with mock.patch.object(cp.os, "link", side_effect=plant_racer):
+            with pytest.raises(OSError) as raised:
+                cp._link_then_unlink_src(fd, "note.md", fd, parked.name)
+        assert raised.value.errno == errno.EEXIST
+        assert src.read_bytes() == b"racer"
+        assert parked.read_bytes() == b"before-image"
+    finally:
+        os.close(fd)
+
+
+def test_cas_rollback_update_relink_refuses_racer_at_dest(tmp_path: Path) -> None:
+    src = tmp_path / "scratch"
+    dst = tmp_path / "note.md"
+    displaced = tmp_path / cp._exchange_displaced_name("note.md")
+    src.write_bytes(b"after-image")
+    os.link(src, dst)
+    displaced.write_bytes(b"before-image")
+    fd = os.open(tmp_path, os.O_RDONLY | os.O_DIRECTORY)
+    real_unlink = os.unlink
+
+    def plant_after_dest_unlink(name: str, **kwargs: object) -> None:
+        real_unlink(name, **kwargs)
+        if name == "note.md":
+            racer = os.open(
+                "note.md",
+                os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_CLOEXEC,
+                0o644,
+                dir_fd=fd,
+            )
+            try:
+                os.write(racer, b"racer")
+            finally:
+                os.close(racer)
+
+    try:
+        restored = cp.FileProjection.from_snapshot(
+            dst,
+            before=b"before-image",
+            before_mode=stat.S_IMODE(displaced.stat().st_mode),
+            after=b"after-image",
+            after_mode=stat.S_IMODE(dst.stat().st_mode),
+        )
+        scratch = cp._scratch_for(restored, "txn-relink-racer", 0)
+        scratch = dataclasses.replace(scratch, path=src)
+        with mock.patch.object(cp.os, "unlink", side_effect=plant_after_dest_unlink):
+            assert cp._cas_rollback(restored, scratch) is False
+        assert dst.read_bytes() == b"racer"
+        assert displaced.read_bytes() == b"before-image"
+        assert src.read_bytes() == b"after-image"
+    finally:
+        os.close(fd)
+
+
 def test_noreplace_delete_crash_between_link_and_unlink_keeps_dest(
     tmp_path: Path,
 ) -> None:

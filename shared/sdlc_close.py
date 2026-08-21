@@ -320,7 +320,7 @@ def _default_done_gate_runner(
     final_status: str,
     pr: str,
     retroactive: bool,
-    _debt_reason: str | None,
+    debt_reason: str | None,
 ) -> tuple[CloseGateEvidence, ...]:
     observed_at = datetime.now(UTC).isoformat()
     authority_case = str(snapshot.frontmatter.get("authority_case") or "")
@@ -366,13 +366,10 @@ def _default_done_gate_runner(
     environment = os.environ.copy()
     environment.pop("PYTHONHOME", None)
     environment.pop("PYTHONPATH", None)
-    for key in (
-        "HAPAX_ACCEPTANCE_RECEIPT_GATE_OFF",
-        "HAPAX_ARTIFACT_DISPOSITION_GATE_OFF",
-        "HAPAX_CC_TASK_CLOSURE_GATE_OFF",
-        "HAPAX_PR_MERGE_GATE_OFF",
-    ):
-        environment.pop(key, None)
+    if retroactive:
+        # Merge is the retroactive close evidence; do not honor an OFF flag
+        # that would skip the only remaining checker.
+        environment.pop("HAPAX_PR_MERGE_GATE_OFF", None)
     commands: list[tuple[str, list[str]]] = []
     merge_checker = REPO_ROOT / "scripts" / "cc-close-pr-merge-check.py"
     if not merge_checker.is_file():
@@ -399,18 +396,16 @@ def _default_done_gate_runner(
                 "restore the governed artifact disposition checker before close",
                 str(disposition),
             )
-        commands.append(
-            (
-                "artifact-disposition",
-                [
-                    sys.executable,
-                    "-I",
-                    str(disposition),
-                    str(snapshot.path),
-                    snapshot.task_id,
-                ],
-            )
-        )
+        disposition_command = [
+            sys.executable,
+            "-I",
+            str(disposition),
+            str(snapshot.path),
+            snapshot.task_id,
+        ]
+        if debt_reason:
+            disposition_command.extend(["--debt", debt_reason])
+        commands.append(("artifact-disposition", disposition_command))
     evidence = [
         CloseGateEvidence(
             gate="done-only-gates" if retroactive else "task-close-internal",

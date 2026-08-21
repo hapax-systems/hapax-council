@@ -3683,13 +3683,25 @@ def _renameat2_syscall(
         raise OSError(value, os.strerror(value), f"{src_name}->{dst_name}")
 
 
-def _renameat2_noreplace_fallback(
+def _same_regular_inode(dir_fd: int, left: str, right: str) -> bool:
+    try:
+        left_stat = os.stat(left, dir_fd=dir_fd, follow_symlinks=False)
+        right_stat = os.stat(right, dir_fd=dir_fd, follow_symlinks=False)
+    except FileNotFoundError:
+        return False
+    return (
+        stat.S_ISREG(left_stat.st_mode)
+        and stat.S_ISREG(right_stat.st_mode)
+        and left_stat.st_ino == right_stat.st_ino
+    )
+
+
+def _link_then_unlink_src(
     src_dir_fd: int,
     src_name: str,
     dst_dir_fd: int,
     dst_name: str,
 ) -> None:
-    # Atomic no-clobber: link fails with EEXIST if dst exists (verified on NFS4.2).
     os.link(
         src_name,
         dst_name,
@@ -3697,7 +3709,19 @@ def _renameat2_noreplace_fallback(
         dst_dir_fd=dst_dir_fd,
         follow_symlinks=False,
     )
+    if src_dir_fd != dst_dir_fd or not _same_regular_inode(src_dir_fd, src_name, dst_name):
+        raise OSError(errno.EEXIST, "destination raced after link", dst_name)
     os.unlink(src_name, dir_fd=src_dir_fd)
+
+
+def _renameat2_noreplace_fallback(
+    src_dir_fd: int,
+    src_name: str,
+    dst_dir_fd: int,
+    dst_name: str,
+) -> None:
+    # Atomic no-clobber: link fails with EEXIST if dst exists (verified on NFS4.2).
+    _link_then_unlink_src(src_dir_fd, src_name, dst_dir_fd, dst_name)
 
 
 def _exchange_displaced_name(dst_name: str) -> str:
@@ -3722,26 +3746,13 @@ def _renameat2_exchange_fallback(
     else:
         raise OSError(errno.EEXIST, "exchange displaced name occupied", displaced)
     # NOREPLACE park: rename would clobber a racer that created `displaced`
-    # after the occupancy check.
-    os.link(
-        dst_name,
-        displaced,
-        src_dir_fd=src_dir_fd,
-        dst_dir_fd=dst_dir_fd,
-        follow_symlinks=False,
-    )
-    os.unlink(dst_name, dir_fd=src_dir_fd)
+    # after the occupancy check. Re-stat before unlink so a dest replacement
+    # is not deleted.
+    _link_then_unlink_src(src_dir_fd, dst_name, dst_dir_fd, displaced)
     try:
         # NOREPLACE install: a racer that created dest in the dest-absent window
         # must get EEXIST, not a silent clobber.
-        os.link(
-            src_name,
-            dst_name,
-            src_dir_fd=src_dir_fd,
-            dst_dir_fd=dst_dir_fd,
-            follow_symlinks=False,
-        )
-        os.unlink(src_name, dir_fd=src_dir_fd)
+        _link_then_unlink_src(src_dir_fd, src_name, dst_dir_fd, dst_name)
     except OSError:
         try:
             os.stat(dst_name, dir_fd=dst_dir_fd, follow_symlinks=False)
@@ -4106,6 +4117,8 @@ def _cas_rollback(projection: FileProjection, scratch: _ProjectionScratch) -> bo
                     and dest_stat.st_ino == scratch_stat.st_ino
                     and dest_stat.st_nlink >= 2
                 ):
+                    if not _same_regular_inode(dir_fd, name, scratch.path.name):
+                        return False
                     os.unlink(name, dir_fd=dir_fd)
                     os.fsync(dir_fd)
                     return True
@@ -4123,6 +4136,8 @@ def _cas_rollback(projection: FileProjection, scratch: _ProjectionScratch) -> bo
                 ):
                     # Crash after link, before unlink: dest is still the live
                     # name. Drop the extra scratch link so dest remains.
+                    if not _same_regular_inode(dir_fd, name, scratch.path.name):
+                        return False
                     os.unlink(scratch.path.name, dir_fd=dir_fd)
                     os.fsync(dir_fd)
                     return True
@@ -4142,6 +4157,8 @@ def _cas_rollback(projection: FileProjection, scratch: _ProjectionScratch) -> bo
                 and dest_stat.st_nlink >= 2
             ):
                 # Crash after parking dest onto displaced, before unlinking dest.
+                if not _same_regular_inode(dir_fd, name, displaced_name):
+                    return False
                 os.unlink(displaced_name, dir_fd=dir_fd)
                 os.fsync(dir_fd)
                 return True
@@ -4179,6 +4196,8 @@ def _cas_rollback(projection: FileProjection, scratch: _ProjectionScratch) -> bo
                     # Crash after link, before unlink: dest and src share the
                     # postimage inode. _entry_state_at rejects nlink!=1, so
                     # this repair must run first.
+                    if not _same_regular_inode(dir_fd, name, scratch.path.name):
+                        return False
                     os.unlink(name, dir_fd=dir_fd)
                     try:
                         os.link(
@@ -4192,6 +4211,8 @@ def _cas_rollback(projection: FileProjection, scratch: _ProjectionScratch) -> bo
                         if exc.errno == errno.EEXIST:
                             return False
                         raise
+                    if not _same_regular_inode(dir_fd, name, displaced_name):
+                        return False
                     os.unlink(displaced_name, dir_fd=dir_fd)
                     os.fsync(dir_fd)
                     return True

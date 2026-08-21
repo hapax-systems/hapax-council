@@ -811,6 +811,80 @@ def test_retroactive_done_gate_refuses_when_merge_checker_fails(
     assert "PR is OPEN" in (raised.value.detail or "")
 
 
+def test_debt_reason_is_forwarded_to_disposition_checker(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    fixture = _fixture(tmp_path, monkeypatch)
+    snapshot = resolve_task_note(fixture.vault, fixture.task_id, state="active")
+    calls: list[list[str]] = []
+
+    def fake_run(command, *, env, **_kwargs):
+        calls.append(list(command))
+        return subprocess.CompletedProcess(command, 0, stdout="", stderr="")
+
+    monkeypatch.setattr(sdlc_close.subprocess, "run", fake_run)
+
+    sdlc_close._default_done_gate_runner(
+        snapshot,
+        "done",
+        "4483",
+        False,
+        "service outage",
+    )
+
+    disposition = [cmd for cmd in calls if any("artifact-disposition" in part for part in cmd)]
+    assert len(disposition) == 1
+    assert disposition[0][-2:] == ["--debt", "service outage"]
+
+
+def test_retroactive_strips_only_merge_gate_off(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    fixture = _fixture(tmp_path, monkeypatch, acceptance_receipt=False)
+    snapshot = resolve_task_note(fixture.vault, fixture.task_id, state="active")
+    monkeypatch.setenv("HAPAX_PR_MERGE_GATE_OFF", "1")
+    monkeypatch.setenv("HAPAX_ARTIFACT_DISPOSITION_GATE_OFF", "1")
+    captured: list[dict[str, str]] = []
+
+    def fake_run(command, *, env, **_kwargs):
+        captured.append(dict(env))
+        return subprocess.CompletedProcess(command, 0, stdout="", stderr="")
+
+    monkeypatch.setattr(sdlc_close.subprocess, "run", fake_run)
+
+    sdlc_close._default_done_gate_runner(snapshot, "done", "4483", True, None)
+
+    assert captured
+    assert "HAPAX_PR_MERGE_GATE_OFF" not in captured[0]
+    assert captured[0].get("HAPAX_ARTIFACT_DISPOSITION_GATE_OFF") == "1"
+
+
+def test_non_retroactive_preserves_disposition_bypass_flag(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    fixture = _fixture(tmp_path, monkeypatch)
+    snapshot = resolve_task_note(fixture.vault, fixture.task_id, state="active")
+    monkeypatch.setenv("HAPAX_ARTIFACT_DISPOSITION_GATE_OFF", "1")
+    monkeypatch.setenv("HAPAX_PR_MERGE_GATE_OFF", "1")
+    captured: list[tuple[list[str], dict[str, str]]] = []
+
+    def fake_run(command, *, env, **_kwargs):
+        captured.append((list(command), dict(env)))
+        return subprocess.CompletedProcess(command, 0, stdout="", stderr="")
+
+    monkeypatch.setattr(sdlc_close.subprocess, "run", fake_run)
+
+    sdlc_close._default_done_gate_runner(snapshot, "done", "4483", False, None)
+
+    assert captured
+    for _command, environment in captured:
+        assert environment.get("HAPAX_ARTIFACT_DISPOSITION_GATE_OFF") == "1"
+        assert environment.get("HAPAX_PR_MERGE_GATE_OFF") == "1"
+
+
 def test_non_retroactive_done_gate_still_requires_acceptance_receipt(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
