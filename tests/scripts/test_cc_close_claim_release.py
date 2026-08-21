@@ -760,6 +760,55 @@ def test_the_refusals_named_remedy_actually_recovers(tmp_path: Path) -> None:
     )
 
 
+def test_the_automated_closer_still_closes_under_the_empty_role_refusal(
+    tmp_path: Path,
+) -> None:
+    """The production automated closer must not be caught by the new refusal.
+
+    ``cc-pr-merge-watcher`` closes merged tasks unattended, and its comment states an
+    assumption this change invalidates: "cc-close uses CLAUDE_ROLE only for the log line
+    (not gating)". It IS gating now, so if the watcher did not set a role its closes
+    would start failing — a silent production stall in the component that drains the
+    queue.
+
+    It does set one (``env.setdefault("CLAUDE_ROLE", role)``, a synthetic value), and
+    hapax_agent_identity reads CLAUDE_ROLE, so the role resolves and the refusal does not
+    fire. That is asserted here rather than reasoned about, because the reasoning depends
+    on a resolver precedence list that this very PR edited.
+
+    KNOWN LIMITATION, unchanged by this PR and recorded rather than fixed: a synthetic
+    role resolves to a key that owns nothing, so the watcher's close clears
+    cc-active-task-<synthetic> — which does not exist — and leaves the real owner's lease
+    in place. The release is keyed on who is CLOSING rather than on who HOLDS the task.
+    Fixing that means keying the release on the note's assigned_to, which is the
+    claim-key work, not this row.
+    """
+    home = tmp_path / "home"
+    vault = _vault(home)
+    _write_task(vault, str(home / "scratch.txt"))
+    assert _run_claim(home, TASK_ID).returncode == 0
+
+    watcher_env = _env(home, session_id=None)
+    watcher_env["CLAUDE_ROLE"] = "cc-pr-merge-watcher"
+    watcher_env["HAPAX_CC_TASK_CLOSURE_GATE_OFF"] = "1"
+    watcher_env["HAPAX_ACCEPTANCE_RECEIPT_GATE_OFF"] = "1"
+
+    result = subprocess.run(
+        [_BASH, str(CC_CLOSE), TASK_ID, "--status", "withdrawn", "--retroactive"],
+        env=watcher_env,
+        cwd=str(home),
+        text=True,
+        capture_output=True,
+        check=False,
+    )
+
+    assert result.returncode == 0, (
+        "the empty-role refusal caught the automated closer — merged tasks would stop "
+        f"draining\nstdout={result.stdout}\nstderr={result.stderr}"
+    )
+    assert "cannot tell which claim lease is its own" not in result.stderr
+
+
 def test_the_release_runs_for_every_terminal_status(tmp_path: Path) -> None:
     """The release block is documented as running for every terminal status, but the
     coverage above drives only ``withdrawn`` (chosen because it skips the done-only
