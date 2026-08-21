@@ -3696,6 +3696,10 @@ def _same_regular_inode(dir_fd: int, left: str, right: str) -> bool:
     )
 
 
+def _drop_link_name(src_name: str) -> str:
+    return f".{src_name}.drop-link"
+
+
 def _drop_extra_link(
     dir_fd: int,
     src_name: str,
@@ -3703,23 +3707,37 @@ def _drop_extra_link(
 ) -> None:
     """Drop `src_name` only if it still names the extra link of `peer_name`.
 
-    Rename the source aside first. If a racer replaced the source pathname,
-    the parked name does not match the peer inode: put the replacement back
-    and HOLD. Do not unlink a racing replacement by pathname.
+    Park via link (EEXIST if the drop-link name is occupied — no clobber).
+    If src was replaced after the peer check, the parked inode will not match
+    src: drop the parked extra and HOLD. Do not unlink a racing replacement.
     """
     if not _same_regular_inode(dir_fd, src_name, peer_name):
         raise OSError(errno.EEXIST, "destination raced after link", src_name)
-    parked = f".{src_name}.drop-link"
-    try:
-        os.stat(parked, dir_fd=dir_fd, follow_symlinks=False)
-    except FileNotFoundError:
-        pass
-    else:
-        raise OSError(errno.EEXIST, "drop-link name occupied", parked)
-    os.rename(src_name, parked, src_dir_fd=dir_fd, dst_dir_fd=dir_fd)
+    parked = _drop_link_name(src_name)
+    os.link(
+        src_name,
+        parked,
+        src_dir_fd=dir_fd,
+        dst_dir_fd=dir_fd,
+        follow_symlinks=False,
+    )
     if not _same_regular_inode(dir_fd, parked, peer_name):
-        os.rename(parked, src_name, src_dir_fd=dir_fd, dst_dir_fd=dir_fd)
+        try:
+            os.unlink(parked, dir_fd=dir_fd)
+        except FileNotFoundError:
+            pass
+        raise OSError(errno.EEXIST, "drop-link raced", parked)
+    if not _same_regular_inode(dir_fd, src_name, parked):
+        os.unlink(parked, dir_fd=dir_fd)
         raise OSError(errno.EEXIST, "source raced before drop", src_name)
+    nlink = os.stat(parked, dir_fd=dir_fd, follow_symlinks=False).st_nlink
+    os.unlink(src_name, dir_fd=dir_fd)
+    try:
+        parked_stat = os.stat(parked, dir_fd=dir_fd, follow_symlinks=False)
+    except FileNotFoundError as exc:
+        raise OSError(errno.EEXIST, "drop-link vanished", parked) from exc
+    if parked_stat.st_nlink != nlink - 1:
+        raise OSError(errno.EEXIST, "unlinked a replacement", src_name)
     os.unlink(parked, dir_fd=dir_fd)
 
 
@@ -4133,20 +4151,38 @@ def _finalize_rolled_back_scratch(
 def _cas_rollback(projection: FileProjection, scratch: _ProjectionScratch) -> bool:
     with _open_parent_dir(projection.path) as (dir_fd, name):
         if scratch.kind == "create" and projection.before is None:
+            extra_names = (
+                scratch.path.name,
+                _drop_link_name(scratch.path.name),
+                _drop_link_name(name),
+            )
             try:
                 dest_stat = os.stat(name, dir_fd=dir_fd, follow_symlinks=False)
-                scratch_stat = os.stat(scratch.path.name, dir_fd=dir_fd, follow_symlinks=False)
             except FileNotFoundError:
                 dest_stat = None
-            else:
-                if (
-                    stat.S_ISREG(dest_stat.st_mode)
-                    and dest_stat.st_ino == scratch_stat.st_ino
-                    and dest_stat.st_nlink >= 2
-                ):
-                    if not _same_regular_inode(dir_fd, name, scratch.path.name):
-                        return False
+            if (
+                dest_stat is not None
+                and stat.S_ISREG(dest_stat.st_mode)
+                and dest_stat.st_nlink >= 2
+            ):
+                for extra in extra_names:
+                    if extra == name:
+                        continue
+                    if not _same_regular_inode(dir_fd, name, extra):
+                        continue
                     os.unlink(name, dir_fd=dir_fd)
+                    if extra != scratch.path.name:
+                        try:
+                            os.stat(scratch.path.name, dir_fd=dir_fd, follow_symlinks=False)
+                        except FileNotFoundError:
+                            os.link(
+                                extra,
+                                scratch.path.name,
+                                src_dir_fd=dir_fd,
+                                dst_dir_fd=dir_fd,
+                                follow_symlinks=False,
+                            )
+                        os.unlink(extra, dir_fd=dir_fd)
                     os.fsync(dir_fd)
                     return True
         if scratch.kind == "delete":
