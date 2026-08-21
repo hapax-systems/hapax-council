@@ -60,6 +60,7 @@ else
 fi
 if [[ -z "$role" ]]; then
   echo "cc-close: cannot determine the claim-bound role" >&2
+  echo "Next action: export HAPAX_AGENT_ROLE to the claim lane, or rerun from the governed launcher, then retry." >&2
   exit 2
 fi
 

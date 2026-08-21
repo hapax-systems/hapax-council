@@ -3490,6 +3490,27 @@ def test_cas_rollback_update_relink_refuses_racer_at_dest(tmp_path: Path) -> Non
         os.close(fd)
 
 
+def test_cas_rollback_final_exchange_nlink_restores_preimage(tmp_path: Path) -> None:
+    src = tmp_path / "scratch"
+    dst = tmp_path / "note.md"
+    displaced = tmp_path / cp._exchange_displaced_name("note.md")
+    src.write_bytes(b"before-image")
+    os.link(src, displaced)
+    dst.write_bytes(b"after-image")
+    restored = cp.FileProjection.from_snapshot(
+        dst,
+        before=b"before-image",
+        before_mode=stat.S_IMODE(src.stat().st_mode),
+        after=b"after-image",
+        after_mode=stat.S_IMODE(dst.stat().st_mode),
+    )
+    scratch = cp._scratch_for(restored, "txn-final-nlink", 0)
+    scratch = dataclasses.replace(scratch, path=src)
+    assert cp._cas_rollback(restored, scratch) is True
+    assert dst.read_bytes() == b"before-image"
+    assert not displaced.exists()
+
+
 def test_noreplace_delete_crash_between_link_and_unlink_keeps_dest(
     tmp_path: Path,
 ) -> None:
@@ -3824,6 +3845,8 @@ def test_renameat2_non_einval_still_raises(tmp_path: Path) -> None:
 
 
 def test_einval_fallback_on_vault_nfs_mount(tmp_path: Path) -> None:
+    if os.environ.get("HAPAX_NFS_VAULT_PROBE") != "1":
+        pytest.skip("set HAPAX_NFS_VAULT_PROBE=1 to probe the live vault NFS mount")
     vault = Path.home() / "Documents/Personal/20-projects/hapax-cc-tasks"
     if not vault.is_dir():
         pytest.skip("vault mount absent")

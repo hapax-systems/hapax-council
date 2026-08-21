@@ -211,7 +211,11 @@ def _relay_snapshots(
 ) -> tuple[_RelaySnapshot, ...]:
     relay_dir = cache_dir / "relay"
     if not relay_dir.is_dir():
-        return ()
+        raise TerminalCloseError(
+            "terminal_close_relay_directory_missing",
+            "create the relay directory before close",
+            str(relay_dir),
+        )
     candidates = [
         relay_dir / f"{role}-status.yaml",
         relay_dir / f"{role}.yaml",
@@ -347,7 +351,10 @@ def _default_done_gate_runner(
         criteria = acceptance_criteria_state(snapshot.content.decode("utf-8"))
         if criteria.section_present and criteria.unchecked_items:
             blockers.append("acceptance_criteria_incomplete")
-        if requires_acceptance_receipt(snapshot.frontmatter):
+        if (
+            requires_acceptance_receipt(snapshot.frontmatter)
+            and os.environ.get("HAPAX_ACCEPTANCE_RECEIPT_GATE_OFF") != "1"
+        ):
             blockers.extend(acceptance_receipt_blockers(snapshot.frontmatter, snapshot.path))
         claimed_at = snapshot.frontmatter.get("claimed_at")
         if claimed_at and os.environ.get("HAPAX_RAPID_CLOSE_OFF") != "1":
@@ -408,7 +415,7 @@ def _default_done_gate_runner(
         commands.append(("artifact-disposition", disposition_command))
     evidence = [
         CloseGateEvidence(
-            gate="done-only-gates" if retroactive else "task-close-internal",
+            gate="premerge-paperwork" if retroactive else "task-close-internal",
             outcome="not_applicable" if retroactive else "pass",
             task_id=snapshot.task_id,
             note_sha256=snapshot.sha256,

@@ -4216,6 +4216,39 @@ def _cas_rollback(projection: FileProjection, scratch: _ProjectionScratch) -> bo
                     os.unlink(displaced_name, dir_fd=dir_fd)
                     os.fsync(dir_fd)
                     return True
+            try:
+                dest_stat = os.stat(name, dir_fd=dir_fd, follow_symlinks=False)
+                scratch_stat = os.stat(scratch.path.name, dir_fd=dir_fd, follow_symlinks=False)
+                displaced_stat = os.stat(displaced_name, dir_fd=dir_fd, follow_symlinks=False)
+            except FileNotFoundError:
+                dest_stat = None
+                scratch_stat = None
+                displaced_stat = None
+            if (
+                dest_stat is not None
+                and scratch_stat is not None
+                and displaced_stat is not None
+                and dest_stat.st_nlink == 1
+                and _same_regular_inode(dir_fd, scratch.path.name, displaced_name)
+                and scratch_stat.st_nlink >= 2
+            ):
+                dest_fd = os.open(
+                    name,
+                    os.O_RDONLY | os.O_CLOEXEC | os.O_NOFOLLOW | os.O_NOATIME,
+                    dir_fd=dir_fd,
+                )
+                try:
+                    dest_bytes = os.read(dest_fd, dest_stat.st_size)
+                finally:
+                    os.close(dest_fd)
+                if dest_bytes == projection.after:
+                    # Crash after parking displaced onto src, before unlinking
+                    # displaced. Drop the extra link so dest=after / src=before
+                    # can EXCHANGE below.
+                    if not _same_regular_inode(dir_fd, scratch.path.name, displaced_name):
+                        return False
+                    os.unlink(displaced_name, dir_fd=dir_fd)
+                    os.fsync(dir_fd)
         current = _entry_state_at(
             dir_fd,
             name,

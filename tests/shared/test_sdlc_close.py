@@ -758,12 +758,57 @@ def test_retroactive_done_gate_skips_paperwork_and_child_checkers(
     )
 
     assert [(item.gate, item.outcome) for item in evidence] == [
-        ("done-only-gates", "not_applicable"),
+        ("premerge-paperwork", "not_applicable"),
         ("pr-merge", "pass"),
     ]
     assert len(calls) == 1
     assert calls[0][-3:] == [str(snapshot.path), "--pr", "4483"]
     assert all("artifact-disposition" not in part for cmd in calls for part in cmd)
+
+
+def test_missing_relay_directory_is_named_refusal(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    fixture = _fixture(tmp_path, monkeypatch)
+    _inject_trusted_echo_projection(fixture, monkeypatch)
+    relay_dir = fixture.cache / "relay"
+    for path in relay_dir.iterdir():
+        path.unlink()
+    relay_dir.rmdir()
+
+    with pytest.raises(TerminalCloseError) as raised:
+        _close(fixture)
+
+    assert raised.value.reason_code == "terminal_close_relay_directory_missing"
+    assert fixture.note.is_file()
+
+
+def test_non_retroactive_honors_acceptance_receipt_gate_off(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    fixture = _fixture(tmp_path, monkeypatch, acceptance_receipt=False)
+    snapshot = resolve_task_note(fixture.vault, fixture.task_id, state="active")
+    monkeypatch.setenv("HAPAX_ACCEPTANCE_RECEIPT_GATE_OFF", "1")
+    monkeypatch.setattr(
+        sdlc_close.subprocess,
+        "run",
+        lambda command, *, env, **_kwargs: subprocess.CompletedProcess(
+            command, 0, stdout="", stderr=""
+        ),
+    )
+
+    evidence = sdlc_close._default_done_gate_runner(
+        snapshot,
+        "done",
+        "4483",
+        False,
+        None,
+    )
+
+    assert evidence[0].gate == "task-close-internal"
+    assert evidence[0].outcome == "pass"
 
 
 def test_retroactive_done_gate_refuses_without_merged_pr(
