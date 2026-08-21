@@ -333,33 +333,28 @@ def test_the_real_activator_leaves_its_release_tree_clean(tmp_path: Path) -> Non
     local_bin = sandbox / "bin"
     local_bin.mkdir(parents=True)
 
-    subprocess.run(
-        ["git", "clone", "--quiet", "--shared", "--no-checkout", str(REPO_ROOT), str(canonical)],
-        capture_output=True,
-        check=True,
-    )
-    # Map THIS commit onto the sandbox's origin/main through the refspec rather than a one-off
-    # update-ref. A plain update-ref does not survive the activator re-resolving origin/main —
-    # measured: it built a release for upstream main instead, so the test passed while measuring
-    # a commit that did not contain the change under test.
+    # The sandbox owns its own origin, a bare repo that ADVERTISES refs/heads/main at this
+    # commit. Raised by codex-1: the activator runs `git fetch origin main` explicitly
+    # (hapax-source-activate:619, :412), so pointing the clone at REPO_ROOT made the witness
+    # depend on REPO_ROOT happening to have a local `main` branch. A detached or shallow CI
+    # checkout — the merge queue's normal state, and the environment this test most needs to
+    # work in — need not advertise it, and the fetch would fail there while passing here.
     #
-    # Fetching `HEAD` rather than a named branch, so a detached checkout (CI's normal state) is
-    # witnessed like any other instead of skipping the test. Raised by codex-1: a skip path is a
-    # way for the witness to disappear without anyone noticing.
+    # `--shared` keeps this cheap: the bare repo borrows REPO_ROOT's objects rather than copying
+    # them, and only the ref is written.
+    bare = sandbox / "origin.git"
     subprocess.run(
-        [
-            "git",
-            "-C",
-            str(canonical),
-            "config",
-            "remote.origin.fetch",
-            "+HEAD:refs/remotes/origin/main",
-        ],
+        ["git", "clone", "--quiet", "--bare", "--shared", str(REPO_ROOT), str(bare)],
         capture_output=True,
         check=True,
     )
     subprocess.run(
-        ["git", "-C", str(canonical), "fetch", "--quiet", "origin"],
+        ["git", "-C", str(bare), "update-ref", "refs/heads/main", head],
+        capture_output=True,
+        check=True,
+    )
+    subprocess.run(
+        ["git", "clone", "--quiet", "--shared", "--no-checkout", str(bare), str(canonical)],
         capture_output=True,
         check=True,
     )
@@ -379,8 +374,26 @@ def test_the_real_activator_leaves_its_release_tree_clean(tmp_path: Path) -> Non
         check=True,
     )
 
+    # HOME is redirected, and that is not belt-and-braces.
+    #
+    # Raised by codex-1 as a live hazard: `active_config_dest` is hardcoded to
+    # "$HOME/.config/hapax/usb-topology-policy.json" (hapax-source-activate:795) with NO env
+    # override, and sync_active_config publishes it even under --skip-deploy. Redirecting only
+    # the activation-specific variables left the operator's real config reachable, so this test
+    # could publish an unmerged checkout into the live environment — under a task whose
+    # runtime_mutation_authorized is false.
+    #
+    # It did not, only because this branch does not modify that file and the sync no-ops on
+    # identical content (verified: the live file's mtime is months old and unchanged across six
+    # runs). A hazard that stayed inert by luck is still a hazard.
+    #
+    # Redirecting HOME closes every $HOME-derived path at once, including any added later, which
+    # an enumerated allowlist of variables cannot do.
+    home = sandbox / "home"
+    (home / ".config" / "hapax").mkdir(parents=True)
     env = {
         **os.environ,
+        "HOME": str(home),
         "HAPAX_SOURCE_ACTIVATE_CANONICAL": str(canonical),
         "HAPAX_SOURCE_ACTIVATE_STATE_DIR": str(state),
         "HAPAX_SOURCE_ACTIVATE_RELEASES_DIR": str(state / "releases"),
