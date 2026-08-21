@@ -46,8 +46,22 @@ case "$final_status" in
 esac
 
 role="${HAPAX_AGENT_NAME:-${CODEX_THREAD_NAME:-${CODEX_SESSION_NAME:-${CODEX_SESSION:-${CODEX_ROLE:-${HAPAX_AGENT_ROLE:-${CLAUDE_ROLE:-}}}}}}}"
-if [[ -z "$role" ]] && declare -F hapax_agent_identity >/dev/null 2>&1; then
-  role="$(hapax_agent_identity 2>/dev/null || true)"
+# Resolve the claiming role with hapax_effective_role — the SAME resolver the
+# WRITER (cc-claim) and the READER (cc-task-gate.impl.sh) both use. A roleless
+# session has no explicit identity but does have a session id, so
+# hapax_agent_identity returns EMPTY exactly where hapax_effective_role returns
+# `roleless`. Binding here with hapax_agent_identity left $role empty, which
+# skipped the claim-release block below entirely (its `[[ -n "$role" ]]` guard)
+# and stranded the session behind the task it had just closed: the gate,
+# resolving through the OTHER function, still found the lease and blocked every
+# subsequent mutation. Measured twice on 2026-08-21, both times after a clean
+# close, each needing an operator rescue.
+# The env chain above stays as an explicit override, but it must never grow a
+# variable this resolver does not know about — hapax_agent_identity already
+# reads exactly those names in exactly that order, and a second copy that drifts
+# is one more way for the writer and the releaser to disagree.
+if [[ -z "$role" ]] && declare -F hapax_effective_role >/dev/null 2>&1; then
+  role="$(hapax_effective_role 2>/dev/null || true)"
 fi
 
 ROOT_HELPER="$SCRIPT_DIR/../hooks/scripts/cc-task-root.sh"

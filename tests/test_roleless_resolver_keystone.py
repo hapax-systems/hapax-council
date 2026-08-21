@@ -27,6 +27,7 @@ Self-contained per project convention — no shared conftest fixtures.
 from __future__ import annotations
 
 import os
+import re
 import subprocess
 from pathlib import Path
 
@@ -274,4 +275,81 @@ def test_roleless_session_does_not_share_role_keyed_claim_file(tmp_path: Path) -
     assert "POISONED-CLAIM-ID" not in result.stdout, (
         "roleless session read the shared cc-active-task- claim file (empty-ROLE collision "
         f"not guarded): stdout={result.stdout!r}"
+    )
+
+
+# Scripts that touch the claim plane but deliberately bind role through the bare
+# ``hapax_agent_identity``. Each needs a recorded reason, because the bare resolver
+# returns EMPTY for a roleless session where ``hapax_effective_role`` returns the
+# literal "roleless" — the divergence that stranded two sessions on 2026-08-21.
+_BARE_IDENTITY_ALLOWED = {
+    # A DISPLAY surface, not a claim decision: it prints an identity banner and
+    # runs its own explicit cascade that ends in a deliberate default, so an
+    # empty identity is a handled case rather than a skipped branch. Its roleless
+    # output is pinned behaviorally by
+    # test_session_context_proclaims_roleless_not_alpha_in_roleless_cwd above.
+    "session-context.sh",
+    # Defines both resolvers; naturally names them.
+    "agent-role.sh",
+}
+
+# ``hapax_agent_identity`` NOT followed by ``_or_default`` — the defaulting variant
+# yields "roleless" and is not the divergence under test.
+_BARE_IDENTITY_RE = re.compile(r"hapax_agent_identity(?!_or_default)")
+
+
+def test_claim_plane_scripts_resolve_role_through_the_shared_resolver() -> None:
+    """Invariant 5, derived rather than enumerated: every shell script that touches a
+    ``cc-active-task-`` claim file resolves role through ``hapax_effective_role``, unless
+    it is on ``_BARE_IDENTITY_ALLOWED`` with a recorded reason.
+
+    The claim plane has three participants and one fact — which role holds this claim.
+    The WRITER (cc-claim) and the READER (cc-task-gate) always agreed; the RELEASER
+    (cc-close) bound through ``hapax_agent_identity``, which returns EMPTY exactly where
+    the shared resolver returns "roleless". cc-close guards its release block with
+    ``[[ -n "$role" ]]``, so the lease survived the close and the gate — reading through
+    the other resolver — blocked every later mutation with "claimed task not found in
+    vault". A session that finished its work correctly was left worse off than one that
+    abandoned it (measured twice, 2026-08-21, both recoveries operator-driven).
+
+    This is written as a scan with an allowlist rather than a list of known consumers on
+    purpose. The cross-consumer test above enumerates three gates, and cc-close was a
+    fourth consumer of the same fact that the enumeration simply did not mention — so the
+    defect was invisible to the test whose stated job was cross-consumer agreement. A new
+    claim-plane script now fails this by default and has to justify itself into the
+    allowlist.
+    """
+    roots = (REPO_ROOT / "scripts", REPO_ROOT / "hooks" / "scripts")
+    offenders: list[str] = []
+    scanned = 0
+    for root in roots:
+        for path in sorted(root.rglob("*")):
+            if not path.is_file() or path.name in _BARE_IDENTITY_ALLOWED:
+                continue
+            try:
+                text = path.read_text(encoding="utf-8")
+            except (UnicodeDecodeError, OSError):
+                continue
+            if "cc-active-task-" not in text:
+                continue
+            scanned += 1
+            # Comment lines are stripped before matching: the invariant is about
+            # CALL SITES, and a script that explains why it no longer uses the bare
+            # resolver would otherwise be flagged by its own explanation. (This
+            # test flagged cc-close on the comment documenting the fix.)
+            code = "\n".join(
+                line for line in text.splitlines() if not line.lstrip().startswith("#")
+            )
+            if _BARE_IDENTITY_RE.search(code):
+                offenders.append(str(path.relative_to(REPO_ROOT)))
+
+    # A scan that silently matched nothing would pass forever. Pin that it looked.
+    assert scanned >= 5, (
+        f"claim-plane scan found only {scanned} scripts referencing cc-active-task- — "
+        "the scan roots or the marker changed and this test is no longer checking anything"
+    )
+    assert not offenders, (
+        "claim-plane scripts bind role through the bare hapax_agent_identity, which "
+        "returns empty for a roleless session where hapax_effective_role returns "
+        f"'roleless' — the stranding divergence: {offenders}"
     )
