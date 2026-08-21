@@ -3487,6 +3487,43 @@ def test_exchange_fallback_crash_between_steps_preserves_both_payloads(
         os.close(fd)
 
 
+def test_exchange_fallback_crash_after_link_before_unlink_restores_preimage(
+    tmp_path: Path,
+) -> None:
+    src = tmp_path / "scratch"
+    dst = tmp_path / "note.md"
+    src.write_bytes(b"after-image")
+    dst.write_bytes(b"before-image")
+    displaced = tmp_path / cp._exchange_displaced_name("note.md")
+    fd = os.open(tmp_path, os.O_RDONLY | os.O_DIRECTORY)
+
+    def crash_before_unlink(name: str, **kwargs: object) -> None:
+        raise RuntimeError("crash before unlink")
+
+    try:
+        with mock.patch.object(cp.os, "unlink", side_effect=crash_before_unlink):
+            with pytest.raises(RuntimeError, match="crash before unlink"):
+                cp._renameat2_exchange_fallback(fd, "scratch", fd, "note.md")
+        assert dst.read_bytes() == b"after-image"
+        assert src.read_bytes() == b"after-image"
+        assert displaced.read_bytes() == b"before-image"
+        restored = cp.FileProjection.from_snapshot(
+            dst,
+            before=b"before-image",
+            before_mode=stat.S_IMODE(displaced.stat().st_mode),
+            after=b"after-image",
+            after_mode=stat.S_IMODE(dst.stat().st_mode),
+        )
+        scratch = cp._scratch_for(restored, "txn-crash-link", 0)
+        scratch = dataclasses.replace(scratch, path=src)
+        assert cp._cas_rollback(restored, scratch) is True
+        assert dst.read_bytes() == b"before-image"
+        assert not displaced.exists()
+        assert src.read_bytes() == b"after-image"
+    finally:
+        os.close(fd)
+
+
 def test_exchange_fallback_crash_after_step_two_restores_preimage(
     tmp_path: Path,
 ) -> None:

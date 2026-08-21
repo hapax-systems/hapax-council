@@ -4117,6 +4117,57 @@ def _cas_rollback(projection: FileProjection, scratch: _ProjectionScratch) -> bo
                     os.unlink(scratch.path.name, dir_fd=dir_fd)
                     os.fsync(dir_fd)
                     return True
+        if scratch.kind == "update":
+            try:
+                dest_stat = os.stat(name, dir_fd=dir_fd, follow_symlinks=False)
+                scratch_stat = os.stat(scratch.path.name, dir_fd=dir_fd, follow_symlinks=False)
+            except FileNotFoundError:
+                dest_stat = None
+                scratch_stat = None
+            if (
+                dest_stat is not None
+                and scratch_stat is not None
+                and stat.S_ISREG(dest_stat.st_mode)
+                and dest_stat.st_ino == scratch_stat.st_ino
+                and dest_stat.st_nlink >= 2
+            ):
+                dest_fd = os.open(
+                    name,
+                    os.O_RDONLY | os.O_CLOEXEC | os.O_NOFOLLOW | os.O_NOATIME,
+                    dir_fd=dir_fd,
+                )
+                try:
+                    dest_bytes = os.read(dest_fd, dest_stat.st_size)
+                finally:
+                    os.close(dest_fd)
+                displaced_name = _exchange_displaced_name(name)
+                displaced = _entry_state_at(
+                    dir_fd,
+                    displaced_name,
+                    max_bytes=_MAX_LIFECYCLE_BLOB_BYTES,
+                )
+                if dest_bytes == projection.after and _entry_matches(
+                    displaced, projection.before, projection.before_mode
+                ):
+                    # Crash after link, before unlink: dest and src share the
+                    # postimage inode. _entry_state_at rejects nlink!=1, so
+                    # this repair must run first.
+                    os.unlink(name, dir_fd=dir_fd)
+                    try:
+                        os.link(
+                            displaced_name,
+                            name,
+                            src_dir_fd=dir_fd,
+                            dst_dir_fd=dir_fd,
+                            follow_symlinks=False,
+                        )
+                    except OSError as exc:
+                        if exc.errno == errno.EEXIST:
+                            return False
+                        raise
+                    os.unlink(displaced_name, dir_fd=dir_fd)
+                    os.fsync(dir_fd)
+                    return True
         current = _entry_state_at(
             dir_fd,
             name,
@@ -4134,27 +4185,6 @@ def _cas_rollback(projection: FileProjection, scratch: _ProjectionScratch) -> bo
                 scratch.path.name,
                 max_bytes=_MAX_LIFECYCLE_BLOB_BYTES,
             )
-            try:
-                dest_stat = os.stat(name, dir_fd=dir_fd, follow_symlinks=False)
-                scratch_stat = os.stat(scratch.path.name, dir_fd=dir_fd, follow_symlinks=False)
-            except FileNotFoundError:
-                dest_stat = None
-                scratch_stat = None
-            if (
-                dest_stat is not None
-                and scratch_stat is not None
-                and stat.S_ISREG(dest_stat.st_mode)
-                and dest_stat.st_ino == scratch_stat.st_ino
-                and dest_stat.st_nlink >= 2
-                and _entry_matches(current, projection.after, projection.after_mode)
-                and _entry_matches(displaced, projection.before, projection.before_mode)
-            ):
-                # Crash after link, before unlink: dest and src share the
-                # postimage inode; preimage is still displaced.
-                os.unlink(name, dir_fd=dir_fd)
-                os.rename(displaced_name, name, src_dir_fd=dir_fd, dst_dir_fd=dir_fd)
-                os.fsync(dir_fd)
-                return True
             if (
                 _entry_matches(current, projection.after, projection.after_mode)
                 and _entry_matches(displaced, projection.before, projection.before_mode)
