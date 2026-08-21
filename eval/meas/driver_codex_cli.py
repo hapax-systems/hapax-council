@@ -40,11 +40,11 @@ DEFAULT_TIMEOUT_SECONDS = 900
 PREDICATE_TIMEOUT_SECONDS = 600
 GITHUB_REPO = "hapax-systems/hapax-council"
 HARNESS_NAME = "codex-cli-agentic"
-DRIVER_VERSION = "driver_codex_cli/v12"
+DRIVER_VERSION = "driver_codex_cli/v13"
 DIRECT_API_35B_BASELINE = {"passed": 0, "total": 19, "pass_rate": 0.0}
 KNOWN_WITNESS_ARTIFACTS = {
     "1991e186b3699fa87667ac09963ef542ac3587dadc5b7e31be49afa3a9c2f03c": (
-        "b6ca937cc666ef58071645bec39335eb6996aca18aa1299d33bcddfd126431cf"
+        "19d9518061519fe6c2da4c90e5b655ae75127c6950f2f42f06c9519625ddd1b1"
     )
 }
 SCORING_DIFF_EXCLUDES = (
@@ -975,14 +975,14 @@ def _validate_completion_attestation(
     collected = raw.get("collected")
     terminal = raw.get("terminal")
     if (
-        raw.get("schema_version") != 3
+        raw.get("schema_version") != 4
         or raw.get("completed") is not True
         or raw.get("exit_code") != returncode
         or raw.get("attester_process") != "xdist-controller"
         or raw.get("worker_count") != 1
         or raw.get("worker_integrity_guard")
         != "early-runtime-introspection-and-hook-mutation-audit+"
-        "collection-plugin-registration-freeze/v3"
+        "collection-plugin-registration-freeze+raw-worker-outcomes/v4"
         or not isinstance(raw.get("attester_pid"), int)
         or raw.get("xdist_version") != pytest_xdist_version()
         or not isinstance(collected, list)
@@ -998,8 +998,8 @@ def _validate_completion_attestation(
     outcomes = list(terminal.values())
     if any(outcome not in {"passed", "failed", "skipped"} for outcome in outcomes):
         return f"pytest completion attestation contains an invalid terminal outcome. {next_action}"
-    if returncode == 0 and "passed" not in outcomes:
-        return f"pytest completed without any passing discriminating test. {next_action}"
+    if returncode == 0 and any(outcome != "passed" for outcome in outcomes):
+        return f"pytest reported success with a non-passing raw worker outcome. {next_action}"
     expected_prefix = runtime_prefix.resolve()
     try:
         recorded_prefix = Path(str(raw.get("runtime_prefix") or "")).resolve()
@@ -1565,7 +1565,7 @@ def lambda_config(
             },
             "codex_timeout_seconds": config.timeout_seconds,
             "exit_predicate": {
-                "completion_attestation": "trusted-pytest-lifecycle-v3",
+                "completion_attestation": "trusted-pytest-lifecycle-v4",
                 "completion_boundary": "xdist-controller+single-stderr-record",
                 "confcutdir": "/workspace",
                 "config": "/dev/null",
@@ -1578,7 +1578,7 @@ def lambda_config(
                 "pytest_execution": "one-isolated-xdist-worker",
                 "pytest_worker_integrity": (
                     "early-runtime-introspection-and-hook-mutation-audit+"
-                    "collection-plugin-registration-freeze/v3"
+                    "collection-plugin-registration-freeze+raw-worker-outcomes/v4"
                 ),
                 "pytest_worker_launcher_sha256": pytest_worker_launcher_sha256(),
                 "pytest_xdist_version": pytest_xdist_version(),
@@ -1982,7 +1982,8 @@ def render_result_note(
         "an unshared network namespace and a read-only scoring checkout. Agent-changed "
         "solution code ran in one xdist worker after runtime-frame introspection and "
         "mutation of registered hook functions were frozen before conftest import, and "
-        "plugin registration was frozen before test-module collection; "
+        "plugin registration was frozen before test-module collection. Raw call outcomes "
+        "were recorded in the worker without consulting mutable pytest report globals; "
         "the separate trusted controller had to emit exactly one lifecycle record showing "
         "every worker-collected hidden pytest item reached a terminal report."
         if predicate_surface.get("completion_attestation")

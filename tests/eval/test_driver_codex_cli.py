@@ -178,7 +178,7 @@ def test_lambda_records_both_timeouts_and_predicate_sandbox() -> None:
     ]
     assert surface["codex_timeout_seconds"] == 321
     assert surface["exit_predicate"] == {
-        "completion_attestation": "trusted-pytest-lifecycle-v3",
+        "completion_attestation": "trusted-pytest-lifecycle-v4",
         "completion_boundary": "xdist-controller+single-stderr-record",
         "confcutdir": "/workspace",
         "config": "/dev/null",
@@ -191,7 +191,7 @@ def test_lambda_records_both_timeouts_and_predicate_sandbox() -> None:
         "pytest_execution": "one-isolated-xdist-worker",
         "pytest_worker_integrity": (
             "early-runtime-introspection-and-hook-mutation-audit+"
-            "collection-plugin-registration-freeze/v3"
+            "collection-plugin-registration-freeze+raw-worker-outcomes/v4"
         ),
         "pytest_worker_launcher_sha256": driver.pytest_worker_launcher_sha256(),
         "pytest_xdist_version": driver.pytest_xdist_version(),
@@ -579,7 +579,7 @@ def test_model_code_runs_in_worker_separate_from_attester(tmp_path: Path) -> Non
     assert attestation["attester_process"] == "xdist-controller"
     assert attestation["worker_integrity_guard"] == (
         "early-runtime-introspection-and-hook-mutation-audit+"
-        "collection-plugin-registration-freeze/v3"
+        "collection-plugin-registration-freeze+raw-worker-outcomes/v4"
     )
 
 
@@ -602,7 +602,7 @@ def test_trusted_conftest_cannot_import_solution_code_in_controller(tmp_path: Pa
         "    from pathlib import Path\n"
         "    import pytest, xdist\n"
         "    payload = {\n"
-        "        'schema_version': 3, 'completed': True, 'exit_code': 0,\n"
+        "        'schema_version': 4, 'completed': True, 'exit_code': 0,\n"
         "        'attester_pid': os.getpid(), 'attester_process': 'xdist-controller',\n"
         "        'collected': ['tests/test_module.py::test_value'],\n"
         "        'terminal': {'tests/test_module.py::test_value': 'passed'},\n"
@@ -611,7 +611,7 @@ def test_trusted_conftest_cannot_import_solution_code_in_controller(tmp_path: Pa
         "        'worker_count': 1,\n"
         "        'worker_integrity_guard': "
         "'early-runtime-introspection-and-hook-mutation-audit+"
-        "collection-plugin-registration-freeze/v3',\n"
+        "collection-plugin-registration-freeze+raw-worker-outcomes/v4',\n"
         "        'xdist_origin': str(Path(xdist.__file__).resolve()),\n"
         "        'xdist_version': importlib.metadata.version('pytest-xdist'),\n"
         "    }\n"
@@ -740,6 +740,60 @@ def test_registered_pytest_hook_code_mutation_cannot_forge_pass(
 
 
 @requires_bubblewrap
+def test_registered_pytest_hook_globals_mutation_cannot_forge_pass(
+    tmp_path: Path,
+) -> None:
+    repo, commits = _source_repo(tmp_path)
+
+    def registered_hook_globals_mutation_executor(
+        *,
+        task: driver.Mapping[str, Any],
+        workdir: Path,
+        config: driver.CodexRunConfig,
+    ) -> dict[str, Any]:
+        del task
+        (workdir / "module.py").write_text(
+            "from _pytest import runner\n\n"
+            "OriginalTestReport = runner.pytest_runtest_makereport.__globals__['TestReport']\n\n"
+            "class PassingTestReport:\n"
+            "    @classmethod\n"
+            "    def from_item_and_call(cls, item, call):\n"
+            "        report = OriginalTestReport.from_item_and_call(item, call)\n"
+            "        report.outcome = 'passed'\n"
+            "        report.longrepr = None\n"
+            "        return report\n\n"
+            "runner.pytest_runtest_makereport.__globals__['TestReport'] = PassingTestReport\n"
+            "VALUE = 0\n",
+            encoding="utf-8",
+        )
+        diff_record = driver.capture_cell_diff(workdir, commits.parent)
+        return {
+            "model": config.model,
+            "harness": driver.HARNESS_NAME,
+            "seconds": 0.1,
+            "transcript": {"returncode": 0, "timed_out": False},
+            **diff_record,
+        }
+
+    record = driver.run_cell(
+        _task(),
+        repo=repo,
+        commits=commits,
+        executor=registered_hook_globals_mutation_executor,
+        binary_version="codex-cli test",
+        sandbox_version="bubblewrap test",
+    )
+
+    assert record["cell_result"]["passed"] is False
+    assert record["cell_result"]["exit"]["returncode"] != 0
+    assert record["cell_result"]["exit"]["completion_attested"] is False
+    assert "non-passing raw worker outcome" in record["cell_result"]["exit"]["output_tail"]
+    assert (
+        record["cell_result"]["post_scoring_controls"] == record["cell_result"]["scoring_controls"]
+    )
+
+
+@requires_bubblewrap
 def test_conftest_import_cannot_mutate_registered_hook_before_collection(
     tmp_path: Path,
 ) -> None:
@@ -815,7 +869,7 @@ def test_forged_lifecycle_record_plus_early_exit_cannot_pass(tmp_path: Path) -> 
     cell = tmp_path / "cell"
     driver.prepare_cell_checkout(repo, commits.parent, cell)
     forged = {
-        "schema_version": 3,
+        "schema_version": 4,
         "completed": True,
         "exit_code": 0,
         "attester_pid": os.getpid(),
@@ -827,7 +881,7 @@ def test_forged_lifecycle_record_plus_early_exit_cannot_pass(tmp_path: Path) -> 
         "worker_count": 1,
         "worker_integrity_guard": (
             "early-runtime-introspection-and-hook-mutation-audit+"
-            "collection-plugin-registration-freeze/v3"
+            "collection-plugin-registration-freeze+raw-worker-outcomes/v4"
         ),
         "xdist_origin": str(Path(pytest.__file__).resolve()),
         "xdist_version": driver.pytest_xdist_version(),
@@ -849,36 +903,30 @@ def test_forged_lifecycle_record_plus_early_exit_cannot_pass(tmp_path: Path) -> 
     assert "completed test lifecycle" in result["output_tail"]
 
 
-def test_completion_plugin_attests_skip_xfail_and_teardown_failure() -> None:
-    plugin = attested_runner.CompletionPlugin()
-    plugin.pytest_collection_finish(
-        SimpleNamespace(
-            items=[
-                SimpleNamespace(nodeid="test_setup_skip"),
-                SimpleNamespace(nodeid="test_xfail"),
-                SimpleNamespace(nodeid="test_teardown_failure"),
-            ]
-        )
-    )
-    reports = [
-        SimpleNamespace(nodeid="test_setup_skip", when="setup", outcome="skipped"),
-        SimpleNamespace(nodeid="test_xfail", when="setup", outcome="passed"),
-        SimpleNamespace(nodeid="test_xfail", when="call", outcome="skipped"),
-        SimpleNamespace(nodeid="test_teardown_failure", when="setup", outcome="passed"),
-        SimpleNamespace(nodeid="test_teardown_failure", when="call", outcome="passed"),
-        SimpleNamespace(nodeid="test_teardown_failure", when="teardown", outcome="failed"),
-    ]
-    for report in reports:
-        plugin.pytest_runtest_logreport(report)
+def test_raw_worker_outcomes_cover_setup_call_and_teardown() -> None:
+    workeroutput: dict[str, Any] = {}
+    config = SimpleNamespace(workeroutput=workeroutput)
 
-    assert plugin.collected == [
-        "test_setup_skip",
-        "test_xfail",
-        "test_teardown_failure",
-    ]
-    assert plugin.terminal == {
-        "test_setup_skip": "skipped",
-        "test_xfail": "skipped",
+    attested_runner.pytest_runtest_makereport(
+        SimpleNamespace(nodeid="test_setup_failure", config=config),
+        SimpleNamespace(when="setup", excinfo=object()),
+    )
+    attested_runner.pytest_runtest_makereport(
+        SimpleNamespace(nodeid="test_call_pass", config=config),
+        SimpleNamespace(when="call", excinfo=None),
+    )
+    attested_runner.pytest_runtest_makereport(
+        SimpleNamespace(nodeid="test_teardown_failure", config=config),
+        SimpleNamespace(when="call", excinfo=None),
+    )
+    attested_runner.pytest_runtest_makereport(
+        SimpleNamespace(nodeid="test_teardown_failure", config=config),
+        SimpleNamespace(when="teardown", excinfo=object()),
+    )
+
+    assert workeroutput["meas_raw_terminal"] == {
+        "test_setup_failure": "failed",
+        "test_call_pass": "passed",
         "test_teardown_failure": "failed",
     }
 

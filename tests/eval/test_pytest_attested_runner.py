@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import dis
 import json
 from pathlib import Path
 from types import SimpleNamespace
@@ -86,6 +87,16 @@ def test_xdist_private_boundary_drift_fails_closed(
 def test_worker_runtime_introspection_guard_has_next_action() -> None:
     with pytest.raises(RuntimeError, match=r"Next action: remove pytest-runtime introspection"):
         runner._worker_audit_hook("sys._getframe", ())
+
+
+def test_raw_worker_outcome_hook_has_no_mutable_global_dependencies() -> None:
+    global_loads = [
+        instruction.argval
+        for instruction in dis.Bytecode(runner.pytest_runtest_makereport)
+        if instruction.opname == "LOAD_GLOBAL"
+    ]
+
+    assert global_loads == []
 
 
 def test_controller_only_conftest_flag_is_removed_from_worker_args(tmp_path: Path) -> None:
@@ -180,8 +191,14 @@ def test_missing_terminal_report_is_emitted_but_rejected(
                 items=[SimpleNamespace(nodeid="test_one"), SimpleNamespace(nodeid="test_two")]
             )
         )
-        plugin.pytest_runtest_logreport(
-            SimpleNamespace(nodeid="test_one", when="call", outcome="passed")
+        plugin.pytest_testnodedown(
+            SimpleNamespace(
+                workeroutput={
+                    "meas_raw_terminal": {"test_one": "passed"},
+                    "meas_worker_integrity_guard": runner.WORKER_INTEGRITY_GUARD,
+                }
+            ),
+            None,
         )
         return 0
 
@@ -219,7 +236,7 @@ def test_predicate_command_has_no_writable_attestation_mount(
     assert observed["workspace_writable"] is False
 
 
-def test_committed_v1_witness_runs_published_v12_verifier(
+def test_committed_v1_witness_runs_published_v13_verifier(
     capsys: pytest.CaptureFixture[str],
 ) -> None:
     witness = (

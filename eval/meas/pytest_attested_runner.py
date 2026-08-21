@@ -16,7 +16,8 @@ ATTESTATION_PREFIX = "MEAS_PYTEST_ATTESTATION "
 MAX_PYTEST_EXIT_CODE = 5
 TRUST_FAILURE_EXIT_CODE = 87
 WORKER_INTEGRITY_GUARD = (
-    "early-runtime-introspection-and-hook-mutation-audit+collection-plugin-registration-freeze/v3"
+    "early-runtime-introspection-and-hook-mutation-audit+collection-plugin-registration-freeze+"
+    "raw-worker-outcomes/v4"
 )
 _WORKER_AUDIT_INSTALLED = False
 _WORKER_REGISTRATION_FROZEN = False
@@ -56,7 +57,7 @@ class CompletionPlugin:
 
     def __init__(self) -> None:
         self.collected: list[str] = []
-        self.terminal: dict[str, str] = {}
+        self.worker_terminal: dict[str, str] = {}
         self.worker_integrity_guard = False
 
     def pytest_collection_finish(self, session: pytest.Session) -> None:
@@ -68,18 +69,14 @@ class CompletionPlugin:
         del node
         self.collected = list(ids)
 
-    def pytest_runtest_logreport(self, report: pytest.TestReport) -> None:
-        if (
-            report.when == "call"
-            or (report.when == "setup" and report.outcome != "passed")
-            or (report.when == "teardown" and report.outcome != "passed")
-        ):
-            self.terminal[report.nodeid] = report.outcome
-
     def pytest_testnodedown(self, node: Any, error: object | None) -> None:
         workeroutput = getattr(node, "workeroutput", {})
+        raw_terminal = workeroutput.get("meas_raw_terminal")
+        if isinstance(raw_terminal, dict):
+            self.worker_terminal = raw_terminal
         self.worker_integrity_guard = error is None and (
             workeroutput.get("meas_worker_integrity_guard") == WORKER_INTEGRITY_GUARD
+            and isinstance(raw_terminal, dict)
         )
 
 
@@ -87,6 +84,15 @@ def pytest_configure(config: pytest.Config) -> None:
     """Expose the solution checkout only after pytest is trusted in the xdist worker."""
     if hasattr(config, "workerinput") and "/workspace" not in sys.path:
         sys.path.insert(0, "/workspace")
+
+
+def pytest_runtest_makereport(item: pytest.Item, call: pytest.CallInfo[None]) -> None:
+    """Record raw worker call outcomes without consulting mutable pytest report globals."""
+    when = call.when
+    failed = call.excinfo is not None
+    if when == "call" or (when == "setup" and failed) or (when == "teardown" and failed):
+        terminal = item.config.workeroutput.setdefault("meas_raw_terminal", {})
+        terminal[item.nodeid] = "failed" if failed else "passed"
 
 
 def _worker_audit_hook(
@@ -309,11 +315,11 @@ def run(target: str) -> int:
         xdist_workermanage._sys_path = original_worker_sys_path
     logical_exit_code = int(exit_code)
     payload = {
-        "schema_version": 3,
+        "schema_version": 4,
         "completed": True,
         "exit_code": logical_exit_code,
         "collected": plugin.collected,
-        "terminal": plugin.terminal,
+        "terminal": plugin.worker_terminal,
         "attester_pid": os.getpid(),
         "attester_process": "xdist-controller",
         "pytest_origin": str(pytest_origin),
