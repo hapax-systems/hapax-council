@@ -1,0 +1,33 @@
+#!/usr/bin/env python3
+"""Print the governed default Codex model from a config TOML file."""
+
+from __future__ import annotations
+
+import sys
+import tomllib
+from pathlib import Path
+
+FALLBACK_MODEL = "gpt-5.6-sol"
+
+
+def configured_model(config_path: Path) -> str:
+    try:
+        with config_path.open("rb") as handle:
+            config = tomllib.load(handle)
+    except (OSError, tomllib.TOMLDecodeError):
+        return FALLBACK_MODEL
+
+    model = config.get("model")
+    if isinstance(model, str) and model.strip():
+        return model.strip()
+    return FALLBACK_MODEL
+
+
+def main(argv: list[str]) -> int:
+    config = Path(argv[1]).expanduser() if len(argv) > 1 else Path.home() / ".codex/config.toml"
+    print(configured_model(config))
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main(sys.argv))

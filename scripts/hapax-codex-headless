@@ -30,33 +30,14 @@ headless_allowed() {
 }
 
 codex_default_model() {
+  # Resolution order: top-level config model, then latest-model fallback.
+  # CODEX_EXTRA is appended later, so trailing `-- -c model=...` still wins.
+  local helper="$COUNCIL_DIR/scripts/hapax-codex-default-model"
   local config="${CODEX_CONFIG_FILE:-$HOME/.codex/config.toml}"
-  local model=""
-  if [ -r "$config" ]; then
-    model="$(awk '
-      /^[[:space:]]*\[/ { exit }
-      /^[[:space:]]*model[[:space:]]*=/ {
-        line = $0
-        sub(/^[^=]*=[[:space:]]*/, "", line)
-        sub(/[[:space:]]+#.*$/, "", line)
-        gsub(/^[[:space:]]+|[[:space:]]+$/, "", line)
-        if (line ~ /^"/) {
-          sub(/^"/, "", line)
-          sub(/".*$/, "", line)
-        } else if (line ~ /^'\''/) {
-          sub(/^'\''/, "", line)
-          sub(/'\''.*/, "", line)
-        }
-        print line
-        exit
-      }
-    ' "$config")"
+  if [ -r "$helper" ] && command -v python3 >/dev/null 2>&1; then
+    python3 "$helper" "$config" 2>/dev/null && return 0
   fi
-  if [ -n "$model" ]; then
-    printf '%s\n' "$model"
-  else
-    printf '%s\n' "gpt-5.6-sol"
-  fi
+  printf '%s\n' "gpt-5.6-sol"
 }
 
 relay_retired() {

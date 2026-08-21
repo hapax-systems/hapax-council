@@ -52,6 +52,7 @@ printf 'TAVILY_API_KEY=%s\\n' "${{TAVILY_API_KEY:-}}" >> {env_file}
     env.pop("HAPAX_AGENT_ROLE", None)
     env.pop("HAPAX_PARENT_AGENT_INTERFACE", None)
     env.pop("HAPAX_PARENT_AGENT_NAME", None)
+    env.pop("CODEX_CONFIG_FILE", None)
     return env, args_file, env_file
 
 
@@ -62,6 +63,15 @@ def _write_codex_config(home: Path, model: str = "gpt-5.6-sol") -> None:
         f'personality = "pragmatic"\nmodel = "{model}"\nmodel_reasoning_effort = "xhigh"\n',
         encoding="utf-8",
     )
+
+
+def _model_directives(args: str) -> list[str]:
+    parts = args.split()
+    directives = [index for index, part in enumerate(parts) if part.startswith("model=")]
+    for index in directives:
+        assert index > 0
+        assert parts[index - 1] == "-c"
+    return [parts[index] for index in directives]
 
 
 def _write_active_task(
@@ -205,7 +215,7 @@ def test_launcher_default_model_matches_codex_config_and_override_stays_last(
     tmp_path: Path,
 ) -> None:
     env, args_file, _env_file = _env_with_fake_codex(tmp_path)
-    _write_codex_config(Path(env["HOME"]))
+    _write_codex_config(Path(env["HOME"]), model="gpt-9.9-config")
 
     result = subprocess.run(
         [
@@ -230,9 +240,75 @@ def test_launcher_default_model_matches_codex_config_and_override_stays_last(
 
     assert result.returncode == 0, result.stderr
     args = args_file.read_text(encoding="utf-8")
-    default_index = args.index('model="gpt-5.6-sol"')
-    override_index = args.index('model="gpt-5.override"')
-    assert default_index < override_index
+    assert _model_directives(args) == ['model="gpt-9.9-config"', 'model="gpt-5.override"']
+
+
+def test_launcher_falls_back_to_latest_model_without_codex_config(tmp_path: Path) -> None:
+    env, args_file, _env_file = _env_with_fake_codex(tmp_path)
+
+    result = subprocess.run(
+        [
+            str(LAUNCHER),
+            "--session",
+            "cx-red",
+            "--slot",
+            "alpha",
+            "--cd",
+            str(REPO_ROOT),
+            "--",
+            "mcp",
+            "list",
+        ],
+        capture_output=True,
+        text=True,
+        env=env,
+        timeout=5,
+    )
+
+    assert result.returncode == 0, result.stderr
+    assert _model_directives(args_file.read_text(encoding="utf-8")) == ['model="gpt-5.6-sol"']
+
+
+def test_launcher_uses_config_file_override_with_toml_parser_edges(tmp_path: Path) -> None:
+    env, args_file, _env_file = _env_with_fake_codex(tmp_path)
+    config = tmp_path / "custom-codex.toml"
+    config.write_text(
+        "\n".join(
+            [
+                'personality = "pragmatic"',
+                "model = 'gpt-9.9#custom' # keep the hash inside the quoted value",
+                "[profiles.dev]",
+                'model = "wrong-nested-model"',
+                "",
+            ]
+        ),
+        encoding="utf-8",
+    )
+    env["CODEX_CONFIG_FILE"] = str(config)
+
+    result = subprocess.run(
+        [
+            str(LAUNCHER),
+            "--session",
+            "cx-red",
+            "--slot",
+            "alpha",
+            "--cd",
+            str(REPO_ROOT),
+            "--",
+            "mcp",
+            "list",
+        ],
+        capture_output=True,
+        text=True,
+        env=env,
+        timeout=5,
+    )
+
+    assert result.returncode == 0, result.stderr
+    assert _model_directives(args_file.read_text(encoding="utf-8")) == [
+        'model="gpt-9.9#custom"'
+    ]
 
 
 def test_launcher_blocks_wound_down_relay_without_force(tmp_path: Path) -> None:
