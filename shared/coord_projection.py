@@ -3746,9 +3746,9 @@ def _renameat2_exchange_fallback(
         try:
             os.stat(dst_name, dir_fd=dst_dir_fd, follow_symlinks=False)
         except FileNotFoundError:
-            os.rename(displaced, dst_name, src_dir_fd=src_dir_fd, dst_dir_fd=dst_dir_fd)
+            _renameat2_noreplace_fallback(src_dir_fd, displaced, dst_dir_fd, dst_name)
         raise
-    os.rename(displaced, src_name, src_dir_fd=src_dir_fd, dst_dir_fd=dst_dir_fd)
+    _renameat2_noreplace_fallback(src_dir_fd, displaced, dst_dir_fd, src_name)
 
 
 def _renameat2(
@@ -4219,8 +4219,13 @@ def _cas_rollback(projection: FileProjection, scratch: _ProjectionScratch) -> bo
             ):
                 # Crash after unlink: dest holds the postimage, the preimage
                 # sits at the displaced name, and src is gone.
-                os.rename(name, scratch.path.name, src_dir_fd=dir_fd, dst_dir_fd=dir_fd)
-                os.rename(displaced_name, name, src_dir_fd=dir_fd, dst_dir_fd=dir_fd)
+                try:
+                    _renameat2_noreplace_fallback(dir_fd, name, dir_fd, scratch.path.name)
+                    _renameat2_noreplace_fallback(dir_fd, displaced_name, dir_fd, name)
+                except OSError as exc:
+                    if exc.errno == errno.EEXIST:
+                        return False
+                    raise
                 os.fsync(dir_fd)
                 return True
         if _entry_matches(current, projection.before, projection.before_mode):
