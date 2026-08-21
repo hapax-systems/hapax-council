@@ -333,24 +333,19 @@ def test_the_real_activator_leaves_its_release_tree_clean(tmp_path: Path) -> Non
     local_bin = sandbox / "bin"
     local_bin.mkdir(parents=True)
 
-    branch = subprocess.run(
-        ["git", "-C", str(REPO_ROOT), "rev-parse", "--abbrev-ref", "HEAD"],
-        capture_output=True,
-        text=True,
-        check=True,
-    ).stdout.strip()
-    if branch == "HEAD":
-        pytest.skip("detached HEAD: no branch to map onto the sandbox's origin/main")
-
     subprocess.run(
         ["git", "clone", "--quiet", "--shared", "--no-checkout", str(REPO_ROOT), str(canonical)],
         capture_output=True,
         check=True,
     )
-    # Map THIS branch onto the sandbox's origin/main, via the refspec rather than a one-off
-    # update-ref. A plain update-ref does not survive the activator re-resolving origin/main
-    # against the real remote — measured: it built a release for upstream main instead, so the
-    # test was passing while measuring a commit that did not contain the change under test.
+    # Map THIS commit onto the sandbox's origin/main through the refspec rather than a one-off
+    # update-ref. A plain update-ref does not survive the activator re-resolving origin/main —
+    # measured: it built a release for upstream main instead, so the test passed while measuring
+    # a commit that did not contain the change under test.
+    #
+    # Fetching `HEAD` rather than a named branch, so a detached checkout (CI's normal state) is
+    # witnessed like any other instead of skipping the test. Raised by codex-1: a skip path is a
+    # way for the witness to disappear without anyone noticing.
     subprocess.run(
         [
             "git",
@@ -358,7 +353,7 @@ def test_the_real_activator_leaves_its_release_tree_clean(tmp_path: Path) -> Non
             str(canonical),
             "config",
             "remote.origin.fetch",
-            f"+refs/heads/{branch}:refs/remotes/origin/main",
+            "+HEAD:refs/remotes/origin/main",
         ],
         capture_output=True,
         check=True,
@@ -401,14 +396,29 @@ def test_the_real_activator_leaves_its_release_tree_clean(tmp_path: Path) -> Non
         check=False,
     )
 
+    # Activation must have COMPLETED, and must have reached the stage that mutates modes.
+    #
+    # Raised by codex-1, and it is the same defect this test exists to catch, one level in: with
+    # check=False and no return-code assertion, an activation dying after `git worktree add` but
+    # before `link_active_script` leaves a raw clean checkout that satisfies every assertion
+    # below. The witness would then be a worktree, not an activation — exactly the surrogate the
+    # earlier rounds kept producing.
+    assert proc.returncode == 0, (
+        f"source activation failed (rc={proc.returncode}), so nothing below witnesses a completed "
+        f"activation. stderr tail:\n{proc.stderr[-1500:]}"
+    )
+    published = sorted(p.name for p in local_bin.iterdir())
+    assert "hapax-determine" in published, (
+        "activation did not reach link_active_script (hapax-source-activate:977), the stage that "
+        f"chmods managed launchers — so its mode behaviour is unwitnessed. Published: {published[:8]}"
+    )
+
     release_root = state / "releases"
     trees = sorted(p for p in release_root.iterdir() if p.is_dir()) if release_root.is_dir() else []
-    if not trees:
-        pytest.skip(
-            "the activator created no release tree in this sandbox "
-            f"(rc={proc.returncode}); its later stages need estate services this environment "
-            f"does not provide. stderr tail:\n{proc.stderr[-1500:]}"
-        )
+    assert trees, (
+        f"activation reported success but created no release tree under {release_root}; "
+        "there is nothing to measure and a pass here would be vacuous"
+    )
 
     tree = trees[-1]
     status = subprocess.run(
