@@ -346,8 +346,10 @@ def test_claim_plane_scripts_never_bind_role_through_the_bare_identity_resolver(
     which the shape, not the boundary, is wrong.
 
     The positive closes one level down, where it is mechanically decidable: a script
-    either calls the shared claim-key builder or it does not. Tracked by
-    ``claim-key-has-a-builder-that-is-not-the-single-path-20260821``.
+    either calls the shared claim-key builder (``hapax_agent_claim_key``) or it does
+    not. That is deferred work, described here by what it is rather than by a task id —
+    an id cited in a comment is unverifiable from inside the test and rots silently,
+    while the named function is checkable by grep and fails loudly if it disappears.
 
     MATCHING LIMIT — comment stripping is line-prefix only, so a bare-resolver mention in
     a TRAILING comment on a code line would still be flagged. Accepted rather than

@@ -98,7 +98,7 @@ if [[ -z "$role" ]]; then
   _claims_dir="${HAPAX_CC_CLAIMS_DIR:-$HOME/.cache/hapax}"
   shopt -s nullglob
   _unreleasable=()
-  _unreadable=()
+  _unknown=()
   _orphan_epochs=()
 
   # Claim files: "<task_id>" on the first line.
@@ -108,7 +108,7 @@ if [[ -z "$role" ]]; then
       # Could not READ it. Treating that as "does not name this task" is absence
       # read as a result — the exact move this whole change exists to remove. An
       # unreadable lease is unknown, not absent.
-      _unreadable+=("$_lease")
+      _unknown+=("$_lease")
       continue
     fi
     [[ "$(printf '%s' "$_head" | tr -d '[:space:]')" == "$task_id" ]] &&
@@ -120,11 +120,18 @@ if [[ -z "$role" ]]; then
   for _lease in "$_claims_dir/cc-claim-epoch-"*; do
     [[ -f "$_lease" ]] || continue
     if ! _head="$(head -n1 "$_lease" 2>/dev/null)"; then
-      _unreadable+=("$_lease")
+      _unknown+=("$_lease")
       continue
     fi
     read -r _epoch_field _task_field _extra <<<"$_head" || true
-    [[ -n "${_extra:-}" ]] && continue          # not the documented two-field shape
+    if [[ -n "${_extra:-}" || -z "${_task_field:-}" ]]; then
+      # Not the documented "<epoch> <task_id>" shape. Skipping it would be absence
+      # read as a result once more: a lease whose body cannot be parsed is UNKNOWN,
+      # not proven-unrelated. Whether it names this task is exactly what we failed
+      # to determine.
+      _unknown+=("$_lease")
+      continue
+    fi
     [[ "$_task_field" == "$task_id" ]] || continue
     # An epoch sidecar naming THIS task with no sibling claim file is orphan residue
     # of this task's own claim — exactly what a correct close removes alongside the
@@ -140,13 +147,24 @@ if [[ -z "$role" ]]; then
   done
   shopt -u nullglob
 
-  if (( ${#_unreadable[@]} > 0 || ${#_unreleasable[@]} > 0 )); then
-    if (( ${#_unreadable[@]} > 0 )); then
-      _why="could not read ${#_unreadable[@]} lease file(s), so whether they hold '$task_id' is unknown: ${_unreadable[*]}"
+  if (( ${#_unknown[@]} > 0 || ${#_unreleasable[@]} > 0 )); then
+    if (( ${#_unknown[@]} > 0 )); then
+      _why="could not determine what ${#_unknown[@]} lease file(s) name — unreadable or malformed, so whether they hold '$task_id' is UNKNOWN rather than ruled out: ${_unknown[*]}"
     else
       _why="${#_unreleasable[@]} lease file(s) name '$task_id': ${_unreleasable[*]}"
     fi
-    echo "cc-close: cannot resolve this session's role, and $_why. Closing now would leave them behind and the gate would then block every later mutation. Next: rerun from the session that holds the claim, or reap it with 'hapax-methodology-dispatch --sweep-stale-claims' if no session holds it." >&2
+    # The remedy names the condition's own cure, and one that always works. Every
+    # earlier draft pointed at a reap tool, and each time some case fell outside
+    # what that tool can touch: sweep_stale_claims globs cc-active-task-* only, so
+    # it cannot reap an epoch sidecar, an unreadable file, or a malformed one. A
+    # remedy that does not cover the case it is offered for is the sealed exit this
+    # row exists to stop reproducing.
+    #
+    # Re-running with an explicit role resolves the CONDITION rather than the
+    # symptom: with a role, cc-close releases exactly its own keys through the
+    # normal path and this guard does not run at all. It needs no other tool, no
+    # privileges, and no operator.
+    echo "cc-close: cannot resolve this session's role, and $_why. Closing now would leave those leases behind, and the gate would then block every later mutation. Next: re-run naming the role that holds the claim, e.g. HAPAX_AGENT_ROLE=<role> cc-close $task_id --status $final_status — with a role resolved, the normal release path clears this session's own leases and this check does not apply." >&2
     exit 2
   fi
 

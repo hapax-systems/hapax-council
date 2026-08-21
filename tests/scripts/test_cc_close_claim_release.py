@@ -699,6 +699,59 @@ def test_a_readable_lease_naming_another_task_does_not_block_the_close(
     )
 
 
+@pytest.mark.parametrize(
+    ("lease_name", "lease_body"),
+    [
+        ("cc-active-task-eta", "{task_id}\n"),
+        # Malformed: not the documented "<epoch> <task_id>" shape, so what it names
+        # is UNKNOWN. Skipping it would be absence read as a result once more.
+        ("cc-claim-epoch-eta", "1780000000 {task_id} unexpected-third-field\n"),
+        ("cc-claim-epoch-eta", "no-epoch-field-at-all\n"),
+    ],
+    ids=["blocking-claim-file", "epoch-extra-field", "epoch-single-field"],
+)
+def test_the_named_remedy_actually_recovers_the_refused_close(
+    tmp_path: Path, lease_name: str, lease_body: str
+) -> None:
+    """The refusal's remedy is EXERCISED, not spell-checked.
+
+    Asserting that a command name appears in the source proves the string exists, not
+    that following it works — and every earlier draft of this refusal named a reap tool
+    that could not touch its own case. So: provoke the refusal, then do exactly what the
+    message says (re-run naming a role) and require the close to succeed.
+    """
+    home = tmp_path / "home"
+    vault = _vault(home)
+    _write_task(vault, str(home / "scratch.txt"))
+
+    cache = home / ".cache" / "hapax"
+    cache.mkdir(parents=True, exist_ok=True)
+    (cache / lease_name).write_text(lease_body.format(task_id=TASK_ID), encoding="utf-8")
+
+    refused = subprocess.run(
+        [_BASH, str(CC_CLOSE), TASK_ID, "--status", "withdrawn"],
+        env=_env(home, session_id=None),
+        cwd=str(home),
+        text=True,
+        capture_output=True,
+        check=False,
+    )
+    assert refused.returncode != 0, f"expected a refusal to recover from\nstdout={refused.stdout}"
+
+    recovered = subprocess.run(
+        [_BASH, str(CC_CLOSE), TASK_ID, "--status", "withdrawn"],
+        env={**_env(home, session_id=None), "HAPAX_AGENT_ROLE": "eta"},
+        cwd=str(home),
+        text=True,
+        capture_output=True,
+        check=False,
+    )
+    assert recovered.returncode == 0, (
+        "following the remedy the refusal names did not close the task — the message "
+        f"points at a dead end\nstdout={recovered.stdout}\nstderr={recovered.stderr}"
+    )
+
+
 def test_an_unreadable_lease_refuses_rather_than_counting_as_absent(
     tmp_path: Path,
 ) -> None:
@@ -734,8 +787,8 @@ def test_an_unreadable_lease_refuses_rather_than_counting_as_absent(
         "cc-close proceeded past a lease it could not read — it cannot know whether "
         f"that lease names this task\nstdout={result.stdout}"
     )
-    assert "could not read" in result.stderr, (
-        f"refused, but not for the unreadable-lease reason\nstderr={result.stderr}"
+    assert "UNKNOWN rather than ruled out" in result.stderr, (
+        f"refused, but not for the unknown-lease reason\nstderr={result.stderr}"
     )
 
 
@@ -779,17 +832,7 @@ def test_the_broken_install_refusal_names_a_repair_that_exists() -> None:
         "cc-close's broken-install refusal names hapax-source-activate as the repair, "
         "but no such script exists — the remedy is fiction"
     )
-    # The unresolvable-role refusal names a different remedy; hold it to the same bar,
-    # since an unasserted command name is exactly how a remedy rots into fiction.
-    assert "--sweep-stale-claims" in text, (
-        "the unresolvable-role refusal no longer names its reap path"
-    )
-    dispatch = REPO_ROOT / "scripts" / "hapax-methodology-dispatch"
-    assert dispatch.is_file(), "the named reap command's script does not exist"
-    assert "--sweep-stale-claims" in dispatch.read_text(encoding="utf-8"), (
-        "cc-close points at 'hapax-methodology-dispatch --sweep-stale-claims', but that "
-        "flag is not accepted by the script — the remedy is unreachable"
-    )
+    assert "HAPAX_AGENT_ROLE=" in text, "the unresolvable-role refusal no longer names its remedy"
 
 
 def test_the_release_runs_for_every_terminal_status(tmp_path: Path) -> None:
