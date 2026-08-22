@@ -6,14 +6,16 @@ import hashlib
 import json
 import os
 import re
+import secrets
 import subprocess
 import sys
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import UTC, datetime
 from pathlib import Path
 
 import yaml
 
+from shared.cc_task_root import cc_task_root
 from shared.coord_event_log import CoordEventLog, default_event_log
 from shared.coord_projection import (
     NO_GO_BOOLEANS,
@@ -24,6 +26,7 @@ from shared.coord_projection import (
     capture_coord_replay_snapshot,
     inspect_lifecycle_transactions,
 )
+from shared.gate0b_claim_publication_install import default_claim_publication_roots
 from shared.relay_lifecycle import (
     parse_relay_document,
     relay_status_values,
@@ -40,6 +43,7 @@ from shared.sdlc_claim import (
     ClaimPublicationError,
     inspect_claim_publications,
     resolve_applied_claim_publication,
+    resolve_applied_claim_publication_for_task,
 )
 from shared.sdlc_lifecycle import (
     acceptance_criteria_state,
@@ -56,8 +60,94 @@ from shared.sdlc_task_store import (
 )
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
-DEFAULT_VAULT = Path.home() / "Documents" / "Personal" / "20-projects" / "hapax-cc-tasks"
-DEFAULT_CACHE = Path.home() / ".cache" / "hapax"
+_CLAIM_PUB_PREFIX = "claim-pub-"
+_CLAIM_PUB_DIGEST_LEN = 64
+
+
+def _claim_publication_journal_present(root: Path) -> bool:
+    try:
+        names = os.listdir(root)
+    except OSError:
+        return False
+    for name in names:
+        if (
+            name.startswith(_CLAIM_PUB_PREFIX)
+            and len(name) == len(_CLAIM_PUB_PREFIX) + _CLAIM_PUB_DIGEST_LEN
+            and (root / name / "manifest.json").is_file()
+        ):
+            return True
+    return False
+
+
+_SYNTHETIC_CLOSE_ACTORS = frozenset({"", "unknown", "watcher"})
+
+
+def _bind_close_identity(
+    *,
+    task_id: str,
+    actor: str,
+    session_id: str,
+    retroactive: bool,
+    vault_root: Path,
+    cache_dir: Path,
+) -> tuple[str, str]:
+    """Use the live lane/session, or for --retroactive bind the owning admitted claim."""
+
+    actor = (actor or "").strip()
+    session_id = (session_id or "").strip()
+    synthetic = actor in _SYNTHETIC_CLOSE_ACTORS or not session_id
+    if not synthetic:
+        return actor, session_id
+    if not retroactive:
+        raise TerminalCloseError(
+            "terminal_close_identity_missing",
+            "bind the real lane and claim session before close",
+            actor or "missing",
+        )
+    try:
+        snapshot = resolve_task_note(vault_root, task_id, state="active")
+    except TaskStoreError as exc:
+        raise TerminalCloseError(exc.reason_code, exc.repair_action, exc.detail) from exc
+    owner = str(snapshot.frontmatter.get("assigned_to") or "").strip()
+    if not owner or owner in _SYNTHETIC_CLOSE_ACTORS:
+        raise TerminalCloseError(
+            "terminal_close_identity_missing",
+            "restore assigned_to to the claiming lane, then rerun cc-close --retroactive",
+            owner or "unassigned",
+        )
+    try:
+        applied = resolve_applied_claim_publication_for_task(
+            vault_root=vault_root,
+            cache_dir=cache_dir,
+            role=owner,
+            task_id=task_id,
+            transaction_root=select_close_claim_journal_root(cache_dir),
+        )
+    except (ClaimPublicationError, TaskStoreError) as exc:
+        raise TerminalCloseError(
+            exc.reason_code,
+            "restore the owning lane's admitted claim publication, then rerun cc-close --retroactive",
+            exc.detail,
+        ) from exc
+    return owner, applied.leases[0].binding.session_id
+
+
+def select_close_claim_journal_root(cache_dir: Path, *, home: Path | None = None) -> Path:
+    """Choose the close observation journal root without a second writer.
+
+    Gate 0B journals live under the installed transaction root. Killswitch and
+    pre-Gate-0B fixtures still write `cache_dir/claim-publications`. Presence of
+    a `claim-pub-*` manifest, or `HAPAX_GATE0B_CLAIM_PUBLICATION_OFF=1`, is
+    machine-checkable at the call.
+    """
+
+    gate0b = Path(default_claim_publication_roots(home=home).claim_transaction_root)
+    legacy = Path(cache_dir) / "claim-publications"
+    if os.environ.get("HAPAX_GATE0B_CLAIM_PUBLICATION_OFF") == "1":
+        return legacy
+    if _claim_publication_journal_present(gate0b):
+        return gate0b
+    return legacy
 
 
 class TerminalCloseError(RuntimeError):
@@ -121,6 +211,12 @@ def _relay_snapshots(
     task_id: str,
 ) -> tuple[_RelaySnapshot, ...]:
     relay_dir = cache_dir / "relay"
+    if not relay_dir.is_dir():
+        raise TerminalCloseError(
+            "terminal_close_relay_directory_missing",
+            "create the relay directory before close",
+            str(relay_dir),
+        )
     candidates = [
         relay_dir / f"{role}-status.yaml",
         relay_dir / f"{role}.yaml",
@@ -198,6 +294,8 @@ class CloseGateEvidence:
     final_status: str
     observed_at: str
     command: tuple[str, ...] = ()
+    reason_code: str = ""
+    authority_ref: str = ""
     returncode: int | None = None
     stdout_sha256: str | None = None
     stderr_sha256: str | None = None
@@ -205,6 +303,7 @@ class CloseGateEvidence:
     def to_record(self) -> dict[str, object]:
         return {
             "authority_case": self.authority_case,
+            "authority_ref": self.authority_ref,
             "command": list(self.command),
             "final_status": self.final_status,
             "gate": self.gate,
@@ -212,6 +311,7 @@ class CloseGateEvidence:
             "note_sha256": self.note_sha256,
             "observed_at": self.observed_at,
             "outcome": self.outcome,
+            "reason_code": self.reason_code,
             "returncode": self.returncode,
             "schema": "hapax.terminal-close-gate-evidence.v1",
             "stderr_sha256": self.stderr_sha256,
@@ -224,12 +324,43 @@ class CloseGateEvidence:
         return f"terminal-close-gate@sha256:{_sha256(_canonical_json_bytes(self.to_record()))}"
 
 
+def _require_current_claim_admission(consumption: object) -> None:
+    """Refuse close on expired or unparseable claim-time admission.
+
+    Echo/canon revalidation stays the follow-on cutover. This only checks
+    admission_consumption.valid_until against now.
+    """
+    raw = getattr(consumption, "valid_until", None)
+    if not raw:
+        raise TerminalCloseError(
+            "terminal_close_claim_admission_unfresh",
+            "reclaim so close reads a current admission_consumption.valid_until",
+            "valid_until_missing",
+        )
+    try:
+        until = datetime.fromisoformat(str(raw).replace("Z", "+00:00"))
+        if until.tzinfo is None:
+            until = until.replace(tzinfo=UTC)
+    except ValueError as exc:
+        raise TerminalCloseError(
+            "terminal_close_claim_admission_unfresh",
+            "reclaim so close reads a parseable admission_consumption.valid_until",
+            str(raw),
+        ) from exc
+    if datetime.now(UTC) >= until.astimezone(UTC):
+        raise TerminalCloseError(
+            "terminal_close_claim_admission_expired",
+            "reclaim the task so close uses current admission_consumption",
+            str(raw),
+        )
+
+
 def _default_done_gate_runner(
     snapshot: TaskNoteSnapshot,
     final_status: str,
     pr: str,
     retroactive: bool,
-    _debt_reason: str | None,
+    debt_reason: str | None,
 ) -> tuple[CloseGateEvidence, ...]:
     observed_at = datetime.now(UTC).isoformat()
     authority_case = str(snapshot.frontmatter.get("authority_case") or "")
@@ -245,20 +376,32 @@ def _default_done_gate_runner(
                 observed_at=observed_at,
             ),
         )
+    if retroactive and not str(pr or "").strip():
+        raise TerminalCloseError(
+            "terminal_close_done_gate_refused",
+            "supply the merged PR number as retroactive close evidence",
+            "retroactive_merge_evidence_missing",
+        )
     blockers: list[str] = []
-    criteria = acceptance_criteria_state(snapshot.content.decode("utf-8"))
-    if criteria.section_present and criteria.unchecked_items:
-        blockers.append("acceptance_criteria_incomplete")
-    if requires_acceptance_receipt(snapshot.frontmatter):
-        blockers.extend(acceptance_receipt_blockers(snapshot.frontmatter, snapshot.path))
-    claimed_at = snapshot.frontmatter.get("claimed_at")
-    if claimed_at and not retroactive:
-        try:
-            claimed = datetime.fromisoformat(str(claimed_at).replace("Z", "+00:00"))
-            if (datetime.now(UTC) - claimed.astimezone(UTC)).total_seconds() < 300:
-                blockers.append("rapid_close_requires_retroactive")
-        except ValueError:
-            blockers.append("claimed_at_malformed")
+    # Rec 1 (operator 2026-08-20, #4586): --retroactive close uses the merged
+    # PR as the done evidence. AC / receipt / disposition stay live for
+    # ordinary close. Rapid-close already required --retroactive before this
+    # slice. Do not restore those paperwork gates here.
+    receipt_off = os.environ.get("HAPAX_ACCEPTANCE_RECEIPT_GATE_OFF") == "1"
+    if not retroactive:
+        criteria = acceptance_criteria_state(snapshot.content.decode("utf-8"))
+        if criteria.section_present and criteria.unchecked_items:
+            blockers.append("acceptance_criteria_incomplete")
+        if requires_acceptance_receipt(snapshot.frontmatter) and not receipt_off:
+            blockers.extend(acceptance_receipt_blockers(snapshot.frontmatter, snapshot.path))
+        claimed_at = snapshot.frontmatter.get("claimed_at")
+        if claimed_at and os.environ.get("HAPAX_RAPID_CLOSE_OFF") != "1":
+            try:
+                claimed = datetime.fromisoformat(str(claimed_at).replace("Z", "+00:00"))
+                if (datetime.now(UTC) - claimed.astimezone(UTC)).total_seconds() < 300:
+                    blockers.append("rapid_close_requires_retroactive")
+            except ValueError:
+                blockers.append("claimed_at_malformed")
     if blockers:
         raise TerminalCloseError(
             "terminal_close_done_gate_refused",
@@ -268,13 +411,10 @@ def _default_done_gate_runner(
     environment = os.environ.copy()
     environment.pop("PYTHONHOME", None)
     environment.pop("PYTHONPATH", None)
-    for key in (
-        "HAPAX_ACCEPTANCE_RECEIPT_GATE_OFF",
-        "HAPAX_ARTIFACT_DISPOSITION_GATE_OFF",
-        "HAPAX_CC_TASK_CLOSURE_GATE_OFF",
-        "HAPAX_PR_MERGE_GATE_OFF",
-    ):
-        environment.pop(key, None)
+    if retroactive:
+        # Merge is the retroactive close evidence; do not honor an OFF flag
+        # that would skip the only remaining checker.
+        environment.pop("HAPAX_PR_MERGE_GATE_OFF", None)
     commands: list[tuple[str, list[str]]] = []
     merge_checker = REPO_ROOT / "scripts" / "cc-close-pr-merge-check.py"
     if not merge_checker.is_file():
@@ -283,78 +423,235 @@ def _default_done_gate_runner(
             "restore the governed PR merge checker before close",
             str(merge_checker),
         )
-    commands.append(
-        (
-            "pr-merge",
-            [
-                sys.executable,
-                "-I",
-                str(merge_checker),
-                str(snapshot.path),
-                *(["--pr", pr] if pr else []),
-            ],
-        )
-    )
-    disposition = REPO_ROOT / "scripts" / "cc-task-artifact-disposition-check.py"
-    if not disposition.is_file():
-        raise TerminalCloseError(
-            "terminal_close_artifact_disposition_checker_missing",
-            "restore the governed artifact disposition checker before close",
-            str(disposition),
-        )
-    command = [
+    pr_repo = str(snapshot.frontmatter.get("pr_repo") or "").strip()
+    merge_command = [
         sys.executable,
         "-I",
-        str(disposition),
+        str(merge_checker),
         str(snapshot.path),
-        snapshot.task_id,
+        *(["--pr", pr] if pr else []),
+        *(["--repo", pr_repo] if pr_repo else []),
     ]
-    commands.append(("artifact-disposition", command))
-    evidence = [
-        CloseGateEvidence(
-            gate="task-close-internal",
-            outcome="pass",
-            task_id=snapshot.task_id,
-            note_sha256=snapshot.sha256,
-            authority_case=authority_case,
-            final_status=final_status,
-            observed_at=observed_at,
-        )
-    ]
-    for name, command in commands:
-        before_hash = _sha256(snapshot.path.read_bytes())
-        result = subprocess.run(
-            command, env=environment, capture_output=True, text=True, check=False
-        )
-        after_hash = _sha256(snapshot.path.read_bytes())
-        if before_hash != snapshot.sha256 or after_hash != snapshot.sha256:
+    if not retroactive:
+        closure = REPO_ROOT / "scripts" / "cc-task-closure-check.py"
+        if not closure.is_file():
             raise TerminalCloseError(
-                "terminal_close_preflight_note_drift",
-                "rerun close against one stable exact note preimage",
-                name,
+                "terminal_close_task_closure_checker_missing",
+                "restore the governed closure checker before close",
+                str(closure),
             )
-        if result.returncode != 0:
+        commands.append(
+            (
+                "task-closure",
+                [sys.executable, "-I", str(closure), str(snapshot.path)],
+            )
+        )
+    commands.append(("pr-merge", merge_command))
+    ledger_copy: Path | None = None
+    ledger_src: Path | None = None
+    ledger_original: bytes | None = None
+    if not retroactive:
+        disposition = REPO_ROOT / "scripts" / "cc-task-artifact-disposition-check.py"
+        if not disposition.is_file():
             raise TerminalCloseError(
-                f"terminal_close_{name}_refused",
-                "satisfy the governed checker before retrying close",
-                result.stderr.strip() or str(result.returncode),
+                "terminal_close_artifact_disposition_checker_missing",
+                "restore the governed artifact disposition checker before close",
+                str(disposition),
             )
-        evidence.append(
+        # Checker may write the note. Always run against a copy so a refuse
+        # cannot leave residue on the live preimage. Success copies back.
+        disposition_preflight = snapshot.path.with_name(
+            f".{snapshot.path.name}.disposition-preflight.{os.getpid()}"
+        )
+        disposition_preflight.write_bytes(snapshot.path.read_bytes())
+        disposition_command = [
+            sys.executable,
+            "-I",
+            str(disposition),
+            str(disposition_preflight),
+            snapshot.task_id,
+        ]
+        if debt_reason:
+            disposition_command.extend(["--debt", debt_reason])
+        ledger_src = Path(
+            environment.get(
+                "HAPAX_ARTIFACT_LEDGER_PATH",
+                str(
+                    Path.home() / ".cache" / "hapax" / "document-pipeline" / "artifact-ledger.yaml"
+                ),
+            )
+        )
+        if (
+            not ledger_src.is_file()
+            and environment.get("HAPAX_ARTIFACT_DISPOSITION_GATE_OFF") != "1"
+        ):
+            raise TerminalCloseError(
+                "terminal_close_artifact_ledger_missing",
+                "create a well-formed artifact ledger before close",
+                str(ledger_src),
+            )
+        # Isolate the child from the live ledger even when the gate is OFF
+        # and no file exists, so a later debt write cannot create the global
+        # path during a still-refusable preflight.
+        ledger_copy = disposition_preflight.with_name(disposition_preflight.name + ".ledger.yaml")
+        if ledger_src.is_file():
+            ledger_original = ledger_src.read_bytes()
+            ledger_copy.write_bytes(ledger_original)
+        environment["HAPAX_ARTIFACT_LEDGER_PATH"] = str(ledger_copy)
+        commands.append(("artifact-disposition", disposition_command))
+    if retroactive:
+        evidence = [
             CloseGateEvidence(
-                gate=name,
+                gate=gate,
+                outcome="skipped_retroactive",
+                task_id=snapshot.task_id,
+                note_sha256=snapshot.sha256,
+                authority_case=authority_case,
+                final_status=final_status,
+                observed_at=observed_at,
+                command=("cc-close", "--retroactive", "--pr", str(pr)),
+                reason_code="rec_1_retroactive_merge_is_evidence",
+                authority_ref="",
+            )
+            for gate in (
+                "acceptance-criteria",
+                "acceptance-receipt",
+                "artifact-disposition",
+            )
+        ]
+    else:
+        evidence = [
+            CloseGateEvidence(
+                gate="task-close-internal",
                 outcome="pass",
                 task_id=snapshot.task_id,
                 note_sha256=snapshot.sha256,
                 authority_case=authority_case,
                 final_status=final_status,
-                observed_at=datetime.now(UTC).isoformat(),
-                command=tuple(command),
-                returncode=result.returncode,
-                stdout_sha256=_sha256(result.stdout.encode()),
-                stderr_sha256=_sha256(result.stderr.encode()),
+                observed_at=observed_at,
             )
-        )
-    return tuple(evidence)
+        ]
+        if receipt_off and requires_acceptance_receipt(snapshot.frontmatter):
+            evidence.append(
+                CloseGateEvidence(
+                    gate="acceptance-receipt",
+                    outcome="not_applicable",
+                    task_id=snapshot.task_id,
+                    note_sha256=snapshot.sha256,
+                    authority_case=authority_case,
+                    final_status=final_status,
+                    observed_at=observed_at,
+                    reason_code="HAPAX_ACCEPTANCE_RECEIPT_GATE_OFF",
+                    authority_ref="",
+                )
+            )
+    debt_preflight = next(
+        (
+            Path(command[3])
+            for name, command in commands
+            if name == "artifact-disposition" and command[3] != str(snapshot.path)
+        ),
+        None,
+    )
+    try:
+        for name, command in commands:
+            before_hash = _sha256(snapshot.path.read_bytes())
+            result = subprocess.run(
+                command, env=environment, capture_output=True, text=True, check=False
+            )
+            after_hash = _sha256(snapshot.path.read_bytes())
+            if (
+                name == "artifact-disposition"
+                and debt_preflight is not None
+                and result.returncode == 0
+            ):
+                copy_hash = _sha256(debt_preflight.read_bytes())
+                if copy_hash != after_hash:
+                    invocation = secrets.token_hex(8)
+                    after_path = snapshot.path.with_name(
+                        f".{snapshot.path.name}.close-after.{snapshot.sha256[:12]}.{invocation}"
+                    )
+                    cookie = snapshot.path.with_name(
+                        f".{snapshot.path.name}.close-invocation.{os.getpid()}"
+                    )
+                    cookie.write_text(invocation, encoding="utf-8")
+                    os.replace(debt_preflight, after_path)
+                    debt_preflight = None
+                if (
+                    result.returncode == 0
+                    and ledger_copy is not None
+                    and ledger_original is not None
+                    and ledger_src is not None
+                    and ledger_copy.is_file()
+                ):
+                    copy_bytes = ledger_copy.read_bytes()
+                    live = ledger_src.read_bytes() if ledger_src.is_file() else b""
+                    if live != ledger_original:
+                        raise TerminalCloseError(
+                            "terminal_close_artifact_ledger_drift",
+                            "rerun close against one stable artifact ledger preimage",
+                            str(ledger_src),
+                        )
+                    if copy_bytes != live:
+                        os.replace(ledger_copy, ledger_src)
+                        ledger_copy = None
+            elif before_hash != snapshot.sha256 or after_hash != snapshot.sha256:
+                raise TerminalCloseError(
+                    "terminal_close_preflight_note_drift",
+                    "rerun close against one stable exact note preimage",
+                    name,
+                )
+            if result.returncode != 0:
+                raise TerminalCloseError(
+                    f"terminal_close_{name}_refused",
+                    "satisfy the governed checker before retrying close",
+                    result.stderr.strip() or str(result.returncode),
+                )
+            hay = result.stderr or ""
+            if name == "artifact-disposition" and (
+                "failing open" in hay
+                or "refusing close" in hay
+                or "ledger missing" in hay
+                or "malformed" in hay
+            ):
+                raise TerminalCloseError(
+                    "terminal_close_artifact_disposition_refused",
+                    "restore a well-formed artifact ledger before close",
+                    result.stderr.strip(),
+                )
+            gate_off = (
+                (
+                    name == "artifact-disposition"
+                    and environment.get("HAPAX_ARTIFACT_DISPOSITION_GATE_OFF") == "1"
+                )
+                or (name == "pr-merge" and environment.get("HAPAX_PR_MERGE_GATE_OFF") == "1")
+                or (
+                    name == "task-closure"
+                    and environment.get("HAPAX_CC_TASK_CLOSURE_GATE_OFF") == "1"
+                )
+            )
+            evidence.append(
+                CloseGateEvidence(
+                    gate=name,
+                    outcome="not_applicable" if gate_off else "pass",
+                    task_id=snapshot.task_id,
+                    note_sha256=_sha256(snapshot.path.read_bytes()),
+                    authority_case=authority_case,
+                    final_status=final_status,
+                    observed_at=datetime.now(UTC).isoformat(),
+                    command=tuple(command),
+                    returncode=result.returncode,
+                    stdout_sha256=_sha256(result.stdout.encode()),
+                    stderr_sha256=_sha256(result.stderr.encode()),
+                )
+            )
+    finally:
+        if debt_preflight is not None:
+            debt_preflight.unlink(missing_ok=True)
+        if ledger_copy is not None:
+            ledger_copy.unlink(missing_ok=True)
+    live_sha = _sha256(snapshot.path.read_bytes())
+    return tuple(replace(item, note_sha256=live_sha) for item in evidence)
 
 
 @dataclass(frozen=True)
@@ -426,8 +723,8 @@ def close_task(
     session_id: str,
     retroactive: bool = False,
     debt_reason: str | None = None,
-    vault_root: Path = DEFAULT_VAULT,
-    cache_dir: Path = DEFAULT_CACHE,
+    vault_root: Path | None = None,
+    cache_dir: Path | None = None,
     relay_db: Path | None = None,
     dispatch_ledger: Path | None = None,
     event_log: CoordEventLog | None = None,
@@ -453,11 +750,16 @@ def close_task(
     # refusals requires the override contract to exist FIRST, with its own review
     # — including how the signing authority is held, since a local key readable by
     # the lane the gate constrains is not a second factor on a single-user machine.
-    if not actor or actor == "unknown" or not session_id:
-        raise TerminalCloseError(
-            "terminal_close_identity_missing",
-            "bind the real lane and claim session before close",
-        )
+    vault_root = vault_root if vault_root is not None else cc_task_root()
+    cache_dir = cache_dir if cache_dir is not None else (Path.home() / ".cache" / "hapax")
+    actor, session_id = _bind_close_identity(
+        task_id=task_id,
+        actor=actor,
+        session_id=session_id,
+        retroactive=retroactive,
+        vault_root=vault_root,
+        cache_dir=cache_dir,
+    )
     event_log = event_log or default_event_log()
     lifecycle_inspection = inspect_lifecycle_transactions(
         task_id=task_id,
@@ -469,7 +771,12 @@ def close_task(
             "reconcile the inspected lifecycle frontier before retrying",
             ",".join(lifecycle_inspection.reason_codes),
         )
-    claim_inspection = inspect_claim_publications(cache_dir=cache_dir, task_id=task_id)
+    transaction_root = select_close_claim_journal_root(cache_dir)
+    claim_inspection = inspect_claim_publications(
+        cache_dir=cache_dir,
+        transaction_root=transaction_root,
+        task_id=task_id,
+    )
     held_claims = [item for item in claim_inspection if item.disposition == "hold"]
     if held_claims:
         raise TerminalCloseError(
@@ -484,6 +791,7 @@ def close_task(
             role=actor,
             session_id=session_id,
             task_id=task_id,
+            transaction_root=transaction_root,
         )
         snapshot = applied_claim.current_task
         leases = applied_claim.leases
@@ -509,17 +817,35 @@ def close_task(
             "terminal_close_task_identity_mismatch",
             "make S10 task, lane, claim, session, and AuthorityCase agree",
         )
-    try:
-        expected = resolve_claim_bound_canon_position(
-            leases[0].binding,
-            stage_token="S10",
-        )
-    except (CanonEchoError, OSError, RuntimeError, ValueError) as exc:
-        raise TerminalCloseError(
-            getattr(exc, "reason_code", "terminal_close_echo_unavailable"),
-            "repair the exact claim-bound S10 Echo before close",
-            str(exc),
-        ) from exc
+    # Rec 1 (operator 2026-08-20, #4586): Echo cutover is a follow-on. Close
+    # admission is applied Gate 0B publication ownership. Record the skip as
+    # echo-absent, never mq:. Killswitch (no admission_consumption) still HOLDs
+    # on the Gate-0A stub — restore HAPAX_GATE0B_CLAIM_PUBLICATION_OFF unset
+    # and an admitted publication before close.
+    # resolve_claim_bound_canon_position is still the Gate-0A stub that always
+    # HOLDs. Admitted Gate 0B consumption is the ownership proof for this slice;
+    # the echo id is explicitly echo-absent so a later auditor does not treat it
+    # as a grounded MQ Echo.
+    publication_owned = applied_claim.admission_consumption is not None
+    expected: ExpectedCanonEcho | None = None
+    reconciliation = None
+    if publication_owned:
+        assert applied_claim.admission_consumption is not None
+        _require_current_claim_admission(applied_claim.admission_consumption)
+        position_ref = applied_claim.admission_consumption.consumption_ref
+        echo_message_id = f"echo-absent:{applied_claim.receipt.publication_id}"
+    else:
+        try:
+            expected = resolve_claim_bound_canon_position(
+                leases[0].binding,
+                stage_token="S10",
+            )
+        except (CanonEchoError, OSError, RuntimeError, ValueError) as exc:
+            raise TerminalCloseError(
+                getattr(exc, "reason_code", "terminal_close_echo_unavailable"),
+                "unset HAPAX_GATE0B_CLAIM_PUBLICATION_OFF, recover or publish an admitted Gate 0B journal (`cc-claim --recover-claim-publications`), then cc-close; or wait for the Echo cutover follow-on",
+                str(exc),
+            ) from exc
     relays = _relay_snapshots(cache_dir, actor, session_id, task_id)
     receipt_path = acceptance_receipt_path(snapshot.path, task_id)
     receipt_bytes = receipt_path.read_bytes() if receipt_path.is_file() else None
@@ -531,11 +857,47 @@ def close_task(
         retroactive,
         debt_reason,
     )
-    if snapshot.path.read_bytes() != snapshot.content:
+    live_note = snapshot.path.read_bytes()
+    if live_note != snapshot.content:
         raise TerminalCloseError(
             "terminal_close_preflight_note_drift",
             "rerun close against one stable exact note preimage",
         )
+    cookie = snapshot.path.with_name(f".{snapshot.path.name}.close-invocation.{os.getpid()}")
+    invocation = cookie.read_text(encoding="utf-8").strip() if cookie.is_file() else ""
+    if cookie.is_file():
+        cookie.unlink()
+    after_path = snapshot.path.with_name(
+        f".{snapshot.path.name}.close-after.{snapshot.sha256[:12]}.{invocation}"
+        if invocation
+        else f".{snapshot.path.name}.close-after.{snapshot.sha256[:12]}.missing"
+    )
+    note_after = None
+    if after_path.is_file():
+        raw = after_path.read_bytes()
+        after_path.unlink()
+        try:
+            text = raw.decode("utf-8")
+        except UnicodeDecodeError as exc:
+            raise TerminalCloseError(
+                "terminal_close_afterimage_unbound",
+                "rerun close; the staged after-image was not UTF-8",
+                str(exc),
+            ) from exc
+        declared = ""
+        for line in text.splitlines():
+            if line.startswith("id:"):
+                declared = line.split(":", 1)[1].strip().strip("'\"")
+                break
+            if line.startswith("task_id:") and not declared:
+                declared = line.split(":", 1)[1].strip().strip("'\"")
+        if declared != task_id:
+            raise TerminalCloseError(
+                "terminal_close_afterimage_unbound",
+                "rerun close; the staged after-image is not bound to this task",
+                declared or task_id,
+            )
+        note_after = raw
     observed_receipt = receipt_path.read_bytes() if receipt_path.is_file() else None
     observed_receipt_mode = _mode(receipt_path) if observed_receipt is not None else None
     if observed_receipt != receipt_bytes or observed_receipt_mode != receipt_mode:
@@ -544,28 +906,31 @@ def close_task(
             "rerun close against the exact acceptance receipt validated by the gates",
         )
     relay_db = relay_db or cache_dir / "relay" / "messages.db"
-    try:
-        rendered_payload = _render_expected_payload(expected)
-        reconciliation = reconcile_canon_echo(
-            relay_db,
-            expected,
-            rendered_payload=rendered_payload,
-            now=datetime.now(UTC),
-            expected_sender=actor,
-            expected_session_id=session_id,
-        )
-    except (CanonEchoError, OSError, RuntimeError, ValueError) as exc:
-        raise TerminalCloseError(
-            getattr(exc, "reason_code", "terminal_close_echo_unavailable"),
-            "repair the exact claim-bound S10 Echo before close",
-            str(exc),
-        ) from exc
-    if reconciliation.action != "grounded" or reconciliation.echo_message_id is None:
-        raise TerminalCloseError(
-            reconciliation.reason_code,
-            "supply the source-local immutable current relay projection required to ground the exact S10 Echo",
-            reconciliation.action,
-        )
+    if expected is not None:
+        try:
+            rendered_payload = _render_expected_payload(expected)
+            reconciliation = reconcile_canon_echo(
+                relay_db,
+                expected,
+                rendered_payload=rendered_payload,
+                now=datetime.now(UTC),
+                expected_sender=actor,
+                expected_session_id=session_id,
+            )
+        except (CanonEchoError, OSError, RuntimeError, ValueError) as exc:
+            raise TerminalCloseError(
+                getattr(exc, "reason_code", "terminal_close_echo_unavailable"),
+                "repair the exact claim-bound S10 Echo before close",
+                str(exc),
+            ) from exc
+        if reconciliation.action != "grounded" or reconciliation.echo_message_id is None:
+            raise TerminalCloseError(
+                reconciliation.reason_code,
+                "supply the source-local immutable current relay projection required to ground the exact S10 Echo",
+                reconciliation.action,
+            )
+        position_ref = expected.position_ref
+        echo_message_id = reconciliation.echo_message_id
     claim_vector = tuple(
         {
             "binding_mode": lease.binding_mode,
@@ -618,8 +983,8 @@ def close_task(
         claim_publication_proof=claim_publication_proof,
         claim_vector=claim_vector,
         relay_vector=relay_vector,
-        position_ref=expected.position_ref,
-        echo_message_id=reconciliation.echo_message_id,
+        position_ref=position_ref,
+        echo_message_id=echo_message_id,
         gate_evidence=gate_evidence,
     )
     admission_payload = admission.receipt_payload()
@@ -628,7 +993,7 @@ def close_task(
         / f"terminal-close-admission-{admission.admission_ref.rsplit(':', 1)[-1]}.json"
     )
     timestamp = datetime.now(UTC).strftime("%Y-%m-%dT%H:%M:%SZ")
-    postimage = snapshot.content.decode("utf-8")
+    postimage = (note_after or snapshot.content).decode("utf-8")
     for key, value in (
         ("stage", "S11"),
         ("status", final_status),
@@ -646,7 +1011,9 @@ def close_task(
         postimage = postimage.replace("## Session log\n", f"## Session log\n{log_line}", 1)
     else:
         postimage = postimage.rstrip("\n") + "\n\n## Session log\n" + log_line
-    closed_note = vault_root / "closed" / snapshot.path.name
+    closed_root = vault_root / "closed"
+    closed_root.mkdir(parents=True, exist_ok=True)
+    closed_note = closed_root / snapshot.path.name
     projections: list[FileProjection] = [
         FileProjection.from_snapshot(
             admission_path,
@@ -742,8 +1109,12 @@ def close_task(
             "cc_close_ready": (f"receipt:{admission.admission_ref}",),
         },
         parent_spec=str(frontmatter.get("parent_spec") or "") or None,
-        predecessor_position_ref=expected.position_ref,
-        echo_receipt_ref=f"mq:{reconciliation.echo_message_id}",
+        predecessor_position_ref=position_ref,
+        echo_receipt_ref=(
+            echo_message_id
+            if echo_message_id.startswith("echo-absent:")
+            else f"mq:{echo_message_id}"
+        ),
         evidence_type="terminal_close_admission",
         evidence_summary=admission.admission_ref,
         origin="cc-close",
@@ -782,23 +1153,25 @@ def close_task(
                 "terminal_close_locked_receipt_drift",
                 "rerun the done gates against the exact current acceptance receipt",
             )
-        current_expected = resolve_claim_bound_canon_position(
-            leases[0].binding,
-            stage_token="S10",
-        )
-        if current_expected != expected:
-            raise TerminalCloseError(
-                "terminal_close_locked_canon_position_drift",
-                "reconcile and Echo the new claim-bound position before close",
+        if expected is not None:
+            current_expected = resolve_claim_bound_canon_position(
+                leases[0].binding,
+                stage_token="S10",
             )
-        require_matching_canon_echo(
-            relay_db,
-            expected,
-            echo_message_id=reconciliation.echo_message_id,
-            now=datetime.now(UTC),
-            expected_sender=actor,
-            expected_session_id=session_id,
-        )
+            if current_expected != expected:
+                raise TerminalCloseError(
+                    "terminal_close_locked_canon_position_drift",
+                    "reconcile and Echo the new claim-bound position before close",
+                )
+            assert reconciliation is not None
+            require_matching_canon_echo(
+                relay_db,
+                expected,
+                echo_message_id=reconciliation.echo_message_id,
+                now=datetime.now(UTC),
+                expected_sender=actor,
+                expected_session_id=session_id,
+            )
 
     return _execute_terminal_close_transition(
         event_log=event_log,

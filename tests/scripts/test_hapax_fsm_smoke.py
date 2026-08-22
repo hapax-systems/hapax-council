@@ -34,9 +34,9 @@ def test_hapax_fsm_smoke_is_tracked_isolated_and_executable(tmp_path: Path) -> N
     assert "Gate-0B claim-publication root installed for first use" in default_output
     assert "admitted publication applied" in default_output
     assert "[default] claim after close" in default_output
-    assert "archived terminal dispatch-only claim residue" in default_output
+    assert "archived terminal dispatch-only claim residue" not in default_output
     assert "HAPAX_GATE0B_CLAIM_PUBLICATION_OFF=1" not in default_output
     assert "HAPAX_GATE0B_CLAIM_PUBLICATION_OFF=1" in killswitch_output
     assert "admitted publication applied" not in killswitch_output
     assert "[default] ok\n" in result.stdout
-    assert "[killswitch] ok\n" in result.stdout
+    assert "[killswitch] close-refused-as-designed\n" in result.stdout

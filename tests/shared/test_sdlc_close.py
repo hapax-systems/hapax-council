@@ -3,6 +3,7 @@ from __future__ import annotations
 import gc
 import hashlib
 import json
+import os
 import subprocess
 from dataclasses import dataclass
 from datetime import UTC, datetime
@@ -234,6 +235,15 @@ def _fixture(
         "HAPAX_PR_MERGE_GATE_OFF",
     ):
         monkeypatch.delenv(key, raising=False)
+    ledger = tmp_path / "artifact-ledger.yaml"
+    ledger.write_text(
+        "- artifact_id: fixture-unrelated\n"
+        "  class: receipt\n"
+        "  disposition: receipt_only\n"
+        "  task_id: other-task\n",
+        encoding="utf-8",
+    )
+    monkeypatch.setenv("HAPAX_ARTIFACT_LEDGER_PATH", str(ledger))
     note = active / f"{task_id}.md"
     note.write_text(
         f"""---
@@ -506,12 +516,13 @@ def test_done_gate_children_use_isolated_project_runtime(
         snapshot,
         "done",
         "4483",
-        True,
+        False,
         None,
     )
 
-    assert len(evidence) == 3
-    assert len(calls) == 2
+    assert len(evidence) == 4
+    assert len(calls) == 3
+    assert any("cc-task-closure-check.py" in part for command, _env in calls for part in command)
     for command, environment in calls:
         assert command[:2] == [sdlc_close.sys.executable, "-I"]
         assert "PYTHONPATH" not in environment
@@ -583,6 +594,108 @@ def test_terminal_close_real_ingress_holds_legacy_claim_publication(
     assert "legacy_claim_publication_consumption_required" in str(raised.value)
 
 
+def _gate0b_journal(home: Path, *, digest: str = "a" * 64) -> Path:
+    from shared.gate0b_claim_publication_install import default_claim_publication_roots
+
+    root = Path(default_claim_publication_roots(home=home).claim_transaction_root)
+    journal = root / f"claim-pub-{digest}"
+    journal.mkdir(parents=True)
+    journal.chmod(0o700)
+    (journal / "manifest.json").write_bytes(b"{}\n")
+    (journal / "manifest.json").chmod(0o600)
+    return root
+
+
+class _LifecycleComplete:
+    scope_complete = True
+    reason_codes: tuple[str, ...] = ()
+
+
+def _probe_close_observation_roots(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> dict[str, object]:
+    home = tmp_path / "home"
+    cache = tmp_path / "cache"
+    vault = tmp_path / "vault"
+    monkeypatch.setenv("HOME", str(home))
+    recorded: dict[str, object] = {}
+
+    def inspect_spy(**kwargs: object) -> tuple[object, ...]:
+        recorded["inspect"] = kwargs
+        return ()
+
+    def resolve_spy(**kwargs: object) -> object:
+        recorded["resolve"] = kwargs
+        raise sdlc_claim.ClaimPublicationError("probe_resolve", "probe", "probe")
+
+    monkeypatch.setattr(
+        sdlc_close, "inspect_lifecycle_transactions", lambda **_: _LifecycleComplete()
+    )
+    monkeypatch.setattr(sdlc_close, "inspect_claim_publications", inspect_spy)
+    monkeypatch.setattr(sdlc_close, "resolve_applied_claim_publication", resolve_spy)
+    with pytest.raises(TerminalCloseError) as raised:
+        close_task(
+            "task-observe-root",
+            actor="alpha",
+            session_id="session-observe",
+            vault_root=vault,
+            cache_dir=cache,
+        )
+    recorded["reason"] = raised.value.reason_code
+    recorded["cache"] = cache
+    recorded["home"] = home
+    return recorded
+
+
+def test_close_task_observes_gate0b_journal_root_when_admitted_journal_exists(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.delenv("HAPAX_GATE0B_CLAIM_PUBLICATION_OFF", raising=False)
+    home = tmp_path / "home"
+    monkeypatch.setenv("HOME", str(home))
+    gate0b = _gate0b_journal(home)
+    recorded = _probe_close_observation_roots(tmp_path, monkeypatch)
+    inspect_kwargs = recorded["inspect"]
+    resolve_kwargs = recorded["resolve"]
+    assert recorded["reason"] == "probe_resolve"
+    assert inspect_kwargs["transaction_root"] == gate0b
+    assert resolve_kwargs["transaction_root"] == gate0b
+    assert inspect_kwargs["cache_dir"] == recorded["cache"]
+
+
+def test_close_task_observes_cache_journal_root_when_gate0b_has_no_journal(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.delenv("HAPAX_GATE0B_CLAIM_PUBLICATION_OFF", raising=False)
+    recorded = _probe_close_observation_roots(tmp_path, monkeypatch)
+    cache = recorded["cache"]
+    inspect_kwargs = recorded["inspect"]
+    resolve_kwargs = recorded["resolve"]
+    assert recorded["reason"] == "probe_resolve"
+    assert inspect_kwargs["transaction_root"] == cache / "claim-publications"
+    assert resolve_kwargs["transaction_root"] == cache / "claim-publications"
+
+
+def test_close_task_killswitch_observes_cache_journal_root_even_with_gate0b_journal(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("HAPAX_GATE0B_CLAIM_PUBLICATION_OFF", "1")
+    home = tmp_path / "home"
+    monkeypatch.setenv("HOME", str(home))
+    _gate0b_journal(home, digest="c" * 64)
+    recorded = _probe_close_observation_roots(tmp_path, monkeypatch)
+    cache = recorded["cache"]
+    inspect_kwargs = recorded["inspect"]
+    resolve_kwargs = recorded["resolve"]
+    assert inspect_kwargs["transaction_root"] == cache / "claim-publications"
+    assert resolve_kwargs["transaction_root"] == cache / "claim-publications"
+    assert recorded["reason"] in {"probe_resolve", "task_note_not_found"}
+
+
 def test_terminal_close_real_ingress_holds_pre_gate0_claim_root(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -598,6 +711,473 @@ def test_terminal_close_real_ingress_holds_pre_gate0_claim_root(
         _close(fixture)
 
     assert raised.value.reason_code == "canon_pre_gate0_claim_migration_required"
+    assert fixture.note.is_file()
+    assert not (fixture.vault / "closed" / fixture.note.name).exists()
+
+
+def test_terminal_close_creates_missing_closed_directory(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    fixture = _fixture(tmp_path, monkeypatch)
+    _inject_trusted_echo_projection(fixture, monkeypatch)
+    closed_dir = fixture.vault / "closed"
+    for child in closed_dir.iterdir():
+        child.unlink()
+    closed_dir.rmdir()
+
+    result = _close(fixture)
+
+    assert result.applied_event_id.endswith(".applied")
+    assert (fixture.vault / "closed" / fixture.note.name).is_file()
+
+
+def test_terminal_close_applies_when_lifecycle_effects_are_default_deny(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    fixture = _fixture(tmp_path, monkeypatch)
+    _inject_trusted_echo_projection(fixture, monkeypatch)
+    monkeypatch.setattr(coord_projection, "_LIFECYCLE_EFFECT_ACTIVATION", False)
+
+    result = _close(fixture)
+
+    assert result.applied_event_id.endswith(".applied")
+    assert (fixture.vault / "closed" / fixture.note.name).is_file()
+
+
+def test_retroactive_done_gate_skips_paperwork_and_child_checkers(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    fixture = _fixture(tmp_path, monkeypatch, acceptance_receipt=False)
+    snapshot = resolve_task_note(fixture.vault, fixture.task_id, state="active")
+    calls: list[list[str]] = []
+
+    def fake_run(command, *, env, **_kwargs):
+        calls.append(list(command))
+        return subprocess.CompletedProcess(command, 0, stdout="", stderr="")
+
+    monkeypatch.setattr(sdlc_close.subprocess, "run", fake_run)
+
+    evidence = sdlc_close._default_done_gate_runner(
+        snapshot,
+        "done",
+        "4483",
+        True,
+        None,
+    )
+
+    assert [(item.gate, item.outcome) for item in evidence] == [
+        ("acceptance-criteria", "skipped_retroactive"),
+        ("acceptance-receipt", "skipped_retroactive"),
+        ("artifact-disposition", "skipped_retroactive"),
+        ("pr-merge", "pass"),
+    ]
+    assert evidence[0].command == ("cc-close", "--retroactive", "--pr", "4483")
+    assert evidence[0].reason_code == "rec_1_retroactive_merge_is_evidence"
+    assert evidence[0].authority_ref == ""
+    assert len(calls) == 1
+    assert calls[0][-3:] == [str(snapshot.path), "--pr", "4483"]
+    assert all("artifact-disposition" not in part for cmd in calls for part in cmd)
+
+
+def test_missing_relay_directory_is_named_refusal(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    fixture = _fixture(tmp_path, monkeypatch)
+    _inject_trusted_echo_projection(fixture, monkeypatch)
+    relay_dir = fixture.cache / "relay"
+    for path in relay_dir.iterdir():
+        path.unlink()
+    relay_dir.rmdir()
+
+    with pytest.raises(TerminalCloseError) as raised:
+        _close(fixture)
+
+    assert raised.value.reason_code == "terminal_close_relay_directory_missing"
+    assert fixture.note.is_file()
+
+
+def test_non_retroactive_honors_acceptance_receipt_gate_off(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    fixture = _fixture(tmp_path, monkeypatch, acceptance_receipt=False)
+    snapshot = resolve_task_note(fixture.vault, fixture.task_id, state="active")
+    monkeypatch.setenv("HAPAX_ACCEPTANCE_RECEIPT_GATE_OFF", "1")
+    monkeypatch.setattr(
+        sdlc_close.subprocess,
+        "run",
+        lambda command, *, env, **_kwargs: subprocess.CompletedProcess(
+            command, 0, stdout="", stderr=""
+        ),
+    )
+
+    evidence = sdlc_close._default_done_gate_runner(
+        snapshot,
+        "done",
+        "4483",
+        False,
+        None,
+    )
+
+    assert evidence[0].gate == "task-close-internal"
+    assert evidence[0].outcome == "pass"
+
+
+def test_retroactive_done_gate_refuses_without_merged_pr(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    fixture = _fixture(tmp_path, monkeypatch, acceptance_receipt=False)
+    snapshot = resolve_task_note(fixture.vault, fixture.task_id, state="active")
+
+    with pytest.raises(TerminalCloseError) as raised:
+        sdlc_close._default_done_gate_runner(
+            snapshot,
+            "done",
+            "",
+            True,
+            None,
+        )
+
+    assert raised.value.reason_code == "terminal_close_done_gate_refused"
+    assert raised.value.detail == "retroactive_merge_evidence_missing"
+
+
+def test_retroactive_done_gate_refuses_when_merge_checker_fails(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    fixture = _fixture(tmp_path, monkeypatch, acceptance_receipt=False)
+    snapshot = resolve_task_note(fixture.vault, fixture.task_id, state="active")
+
+    def fake_run(command, *, env, **_kwargs):
+        return subprocess.CompletedProcess(command, 2, stdout="", stderr="PR is OPEN")
+
+    monkeypatch.setattr(sdlc_close.subprocess, "run", fake_run)
+
+    with pytest.raises(TerminalCloseError) as raised:
+        sdlc_close._default_done_gate_runner(
+            snapshot,
+            "done",
+            "4483",
+            True,
+            None,
+        )
+
+    assert raised.value.reason_code == "terminal_close_pr-merge_refused"
+    assert "PR is OPEN" in (raised.value.detail or "")
+
+
+def test_debt_reason_is_forwarded_to_disposition_checker(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    fixture = _fixture(tmp_path, monkeypatch)
+    snapshot = resolve_task_note(fixture.vault, fixture.task_id, state="active")
+    calls: list[list[str]] = []
+
+    def fake_run(command, *, env, **_kwargs):
+        calls.append(list(command))
+        target = Path(command[3])
+        if command[-2:] == ["--debt", "service outage"]:
+            target.write_bytes(target.read_bytes() + b"\n# debt-applied\n")
+        return subprocess.CompletedProcess(command, 0, stdout="", stderr="")
+
+    monkeypatch.setattr(sdlc_close.subprocess, "run", fake_run)
+
+    sdlc_close._default_done_gate_runner(
+        snapshot,
+        "done",
+        "4483",
+        False,
+        "service outage",
+    )
+
+    disposition = [cmd for cmd in calls if any("artifact-disposition" in part for part in cmd)]
+    assert len(disposition) == 1
+    assert disposition[0][-2:] == ["--debt", "service outage"]
+    assert disposition[0][3] != str(snapshot.path)
+    assert b"debt-applied" not in snapshot.path.read_bytes()
+    cookie = snapshot.path.with_name(f".{snapshot.path.name}.close-invocation.{os.getpid()}")
+    assert cookie.is_file()
+    invocation = cookie.read_text(encoding="utf-8").strip()
+    after = snapshot.path.with_name(
+        f".{snapshot.path.name}.close-after.{snapshot.sha256[:12]}.{invocation}"
+    )
+    assert after.is_file()
+    assert b"debt-applied" in after.read_bytes()
+
+
+def test_disposition_debt_is_copied_back_to_the_live_ledger(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    fixture = _fixture(tmp_path, monkeypatch)
+    ledger = Path(os.environ["HAPAX_ARTIFACT_LEDGER_PATH"])
+    ledger.write_text(
+        "- artifact_id: fixture-unrelated\n"
+        "  class: receipt\n"
+        "  disposition: receipt_only\n"
+        "  task_id: other-task\n"
+        "- artifact_id: close-receipt\n"
+        "  class: receipt\n"
+        "  disposition: produced\n"
+        "  task_id: task-close\n",
+        encoding="utf-8",
+    )
+    snapshot = resolve_task_note(fixture.vault, fixture.task_id, state="active")
+    real_run = subprocess.run
+
+    def fake_run(command, *, env, **kwargs):
+        if any("cc-task-artifact-disposition-check.py" in part for part in command):
+            return real_run(command, env=env, **kwargs)
+        return subprocess.CompletedProcess(command, 0, stdout="", stderr="")
+
+    monkeypatch.setattr(sdlc_close.subprocess, "run", fake_run)
+
+    sdlc_close._default_done_gate_runner(snapshot, "done", "4483", False, None)
+
+    live = yaml.safe_load(ledger.read_text(encoding="utf-8"))
+    close_rows = [row for row in live if row.get("task_id") == "task-close"]
+    assert len(close_rows) == 1
+    assert close_rows[0].get("debt") is not None
+    leftovers = list(snapshot.path.parent.glob("*.ledger.yaml"))
+    assert leftovers == []
+
+
+def test_disposition_gate_off_isolates_missing_global_ledger(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    fixture = _fixture(tmp_path, monkeypatch)
+    monkeypatch.delenv("HAPAX_ARTIFACT_LEDGER_PATH", raising=False)
+    monkeypatch.setenv("HAPAX_ARTIFACT_DISPOSITION_GATE_OFF", "1")
+    snapshot = resolve_task_note(fixture.vault, fixture.task_id, state="active")
+    captured: list[dict[str, str]] = []
+
+    def fake_run(command, *, env, **_kwargs):
+        captured.append(dict(env))
+        return subprocess.CompletedProcess(command, 0, stdout="", stderr="")
+
+    monkeypatch.setattr(sdlc_close.subprocess, "run", fake_run)
+
+    sdlc_close._default_done_gate_runner(snapshot, "done", "4483", False, None)
+
+    default = Path.home() / ".cache" / "hapax" / "document-pipeline" / "artifact-ledger.yaml"
+    assert captured
+    for environment in captured:
+        isolated = environment.get("HAPAX_ARTIFACT_LEDGER_PATH", "")
+        assert isolated
+        assert isolated != str(default)
+        assert isolated.endswith(".ledger.yaml")
+    assert not default.exists()
+
+
+def test_expired_claim_admission_is_refused() -> None:
+    class _Expired:
+        valid_until = "2020-01-01T00:00:00Z"
+
+    with pytest.raises(TerminalCloseError) as raised:
+        sdlc_close._require_current_claim_admission(_Expired())
+
+    assert raised.value.reason_code == "terminal_close_claim_admission_expired"
+
+
+def test_current_claim_admission_is_accepted() -> None:
+    class _Current:
+        valid_until = "2099-01-01T00:00:00Z"
+
+    sdlc_close._require_current_claim_admission(_Current())
+
+
+def test_retroactive_strips_only_merge_gate_off(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    fixture = _fixture(tmp_path, monkeypatch, acceptance_receipt=False)
+    snapshot = resolve_task_note(fixture.vault, fixture.task_id, state="active")
+    monkeypatch.setenv("HAPAX_PR_MERGE_GATE_OFF", "1")
+    monkeypatch.setenv("HAPAX_ARTIFACT_DISPOSITION_GATE_OFF", "1")
+    captured: list[dict[str, str]] = []
+
+    def fake_run(command, *, env, **_kwargs):
+        captured.append(dict(env))
+        return subprocess.CompletedProcess(command, 0, stdout="", stderr="")
+
+    monkeypatch.setattr(sdlc_close.subprocess, "run", fake_run)
+
+    sdlc_close._default_done_gate_runner(snapshot, "done", "4483", True, None)
+
+    assert captured
+    assert "HAPAX_PR_MERGE_GATE_OFF" not in captured[0]
+    assert captured[0].get("HAPAX_ARTIFACT_DISPOSITION_GATE_OFF") == "1"
+
+
+def test_disposition_fail_open_is_refused(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    fixture = _fixture(tmp_path, monkeypatch)
+    snapshot = resolve_task_note(fixture.vault, fixture.task_id, state="active")
+
+    def fake_run(command, *, env, **_kwargs):
+        stderr = ""
+        if any("artifact-disposition" in part for part in command):
+            stderr = "warning: artifact ledger malformed (YAML parse error), failing open"
+        return subprocess.CompletedProcess(command, 0, stdout="", stderr=stderr)
+
+    monkeypatch.setattr(sdlc_close.subprocess, "run", fake_run)
+
+    with pytest.raises(TerminalCloseError) as raised:
+        sdlc_close._default_done_gate_runner(snapshot, "done", "4483", False, None)
+
+    assert raised.value.reason_code == "terminal_close_artifact_disposition_refused"
+
+
+def test_non_retroactive_preserves_disposition_bypass_flag(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    fixture = _fixture(tmp_path, monkeypatch)
+    snapshot = resolve_task_note(fixture.vault, fixture.task_id, state="active")
+    monkeypatch.setenv("HAPAX_ARTIFACT_DISPOSITION_GATE_OFF", "1")
+    monkeypatch.setenv("HAPAX_PR_MERGE_GATE_OFF", "1")
+    captured: list[tuple[list[str], dict[str, str]]] = []
+
+    def fake_run(command, *, env, **_kwargs):
+        captured.append((list(command), dict(env)))
+        return subprocess.CompletedProcess(command, 0, stdout="", stderr="")
+
+    monkeypatch.setattr(sdlc_close.subprocess, "run", fake_run)
+
+    evidence = sdlc_close._default_done_gate_runner(snapshot, "done", "4483", False, None)
+
+    assert captured
+    for _command, environment in captured:
+        assert environment.get("HAPAX_ARTIFACT_DISPOSITION_GATE_OFF") == "1"
+        assert environment.get("HAPAX_PR_MERGE_GATE_OFF") == "1"
+    assert any(
+        item.gate == "artifact-disposition" and item.outcome == "not_applicable"
+        for item in evidence
+    )
+
+
+def test_non_retroactive_done_gate_still_requires_acceptance_receipt(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    fixture = _fixture(tmp_path, monkeypatch, acceptance_receipt=False)
+    snapshot = resolve_task_note(fixture.vault, fixture.task_id, state="active")
+
+    with pytest.raises(TerminalCloseError) as raised:
+        sdlc_close._default_done_gate_runner(
+            snapshot,
+            "done",
+            "4483",
+            False,
+            None,
+        )
+
+    assert raised.value.reason_code == "terminal_close_done_gate_refused"
+    assert "missing_acceptance_receipt" in (raised.value.detail or "")
+
+
+def test_retroactive_close_skips_premerge_paperwork_gates(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    fixture = _fixture(tmp_path, monkeypatch, acceptance_receipt=False)
+    _inject_trusted_echo_projection(fixture, monkeypatch)
+    monkeypatch.setattr(
+        sdlc_close.subprocess,
+        "run",
+        lambda command, *, env, **_kwargs: subprocess.CompletedProcess(
+            command, 0, stdout="", stderr=""
+        ),
+    )
+
+    result = close_task(
+        fixture.task_id,
+        final_status="done",
+        actor="watcher",
+        session_id="",
+        pr="4483",
+        retroactive=True,
+        vault_root=fixture.vault,
+        cache_dir=fixture.cache,
+        relay_db=fixture.relay_db,
+        dispatch_ledger=fixture.dispatch_ledger,
+        event_log=fixture.event_log,
+    )
+
+    assert result.applied_event_id.endswith(".applied")
+    assert (fixture.vault / "closed" / fixture.note.name).is_file()
+
+
+def test_retroactive_watcher_binds_owning_claim_session(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    fixture = _fixture(tmp_path, monkeypatch)
+    _inject_trusted_echo_projection(fixture, monkeypatch)
+    monkeypatch.setattr(
+        sdlc_close.subprocess,
+        "run",
+        lambda command, *, env, **_kwargs: subprocess.CompletedProcess(
+            command, 0, stdout="", stderr=""
+        ),
+    )
+
+    result = close_task(
+        fixture.task_id,
+        final_status="done",
+        actor="watcher",
+        session_id="",
+        pr="4483",
+        retroactive=True,
+        vault_root=fixture.vault,
+        cache_dir=fixture.cache,
+        relay_db=fixture.relay_db,
+        dispatch_ledger=fixture.dispatch_ledger,
+        event_log=fixture.event_log,
+    )
+
+    assert result.applied_event_id.endswith(".applied")
+    assert (fixture.vault / "closed" / fixture.note.name).is_file()
+
+
+def test_publication_owned_echo_receipt_is_not_an_mq_ref(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from shared.coord_projection import _echo_receipt_ref_matches
+
+    assert _echo_receipt_ref_matches("echo-absent:claim-pub-ab", "echo-absent:claim-pub-ab")
+    assert not _echo_receipt_ref_matches("mq:echo-absent:claim-pub-ab", "echo-absent:claim-pub-ab")
+    assert _echo_receipt_ref_matches("mq:real-echo", "real-echo")
+
+
+def test_killswitch_env_does_not_bypass_pre_gate0_echo_stub(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    fixture = _fixture(tmp_path, monkeypatch)
+    monkeypatch.setenv("HAPAX_GATE0B_CLAIM_PUBLICATION_OFF", "1")
+    monkeypatch.setattr(
+        sdlc_close,
+        "resolve_claim_bound_canon_position",
+        _REAL_CLAIM_POSITION_RESOLVER,
+    )
+
+    with pytest.raises(TerminalCloseError) as raised:
+        _close(fixture)
+
+    assert raised.value.reason_code == "canon_pre_gate0_claim_migration_required"
+    assert "recover-claim-publications" in raised.value.repair_action
     assert fixture.note.is_file()
     assert not (fixture.vault / "closed" / fixture.note.name).exists()
 
@@ -814,9 +1394,10 @@ def test_debt_close_is_not_wedged_and_touches_no_state(tmp_path: Path) -> None:
 _REPO_ROOT = Path(__file__).resolve().parents[2]
 _ALLOWLIST = _REPO_ROOT / "config" / "new-module-allowlist.json"
 
-# Only the entries THIS landing added. The pre-existing ones are not this PR's
-# to police, and asserting on them would couple these tests to unrelated churn.
-_GATE0A_DORMANT_MODULES = ("shared.sdlc_close", "shared.methodology_dispatch_carrier")
+# Only the entries THIS landing added. shared.sdlc_close left the dormant set
+# when slice-2 re-landed cc-close onto it. methodology_dispatch_carrier is still
+# Gate-0A dormant. Pre-existing allowlist rows are not this PR's to police.
+_GATE0A_DORMANT_MODULES = ("shared.methodology_dispatch_carrier",)
 _SOURCE_DIRS = ("shared", "scripts", "agents", "hooks")
 
 
