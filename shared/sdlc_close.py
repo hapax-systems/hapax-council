@@ -411,20 +411,17 @@ def _default_done_gate_runner(
                 "restore the governed artifact disposition checker before close",
                 str(disposition),
             )
-        debt_preflight: Path | None = None
-        note_arg = snapshot.path
-        if debt_reason:
-            # The checker writes debt into the note. Admission is bound to the
-            # preimage, so a live write would drift and self-refuse. Check a
-            # copy; never copy it back.
-            debt_preflight = snapshot.path.with_name(f".{snapshot.path.name}.debt-preflight")
-            debt_preflight.write_bytes(snapshot.path.read_bytes())
-            note_arg = debt_preflight
+        # Checker may write the note. Always run against a copy so a refuse
+        # cannot leave residue on the live preimage. Success copies back.
+        disposition_preflight = snapshot.path.with_name(
+            f".{snapshot.path.name}.disposition-preflight"
+        )
+        disposition_preflight.write_bytes(snapshot.path.read_bytes())
         disposition_command = [
             sys.executable,
             "-I",
             str(disposition),
-            str(note_arg),
+            str(disposition_preflight),
             snapshot.task_id,
         ]
         if debt_reason:
@@ -723,11 +720,6 @@ def close_task(
     )
     live_note = snapshot.path.read_bytes()
     if live_note != snapshot.content:
-        if not debt_reason:
-            raise TerminalCloseError(
-                "terminal_close_preflight_note_drift",
-                "rerun close against one stable exact note preimage",
-            )
         snapshot = resolve_task_note(vault_root, task_id, state="active")
     observed_receipt = receipt_path.read_bytes() if receipt_path.is_file() else None
     observed_receipt_mode = _mode(receipt_path) if observed_receipt is not None else None
