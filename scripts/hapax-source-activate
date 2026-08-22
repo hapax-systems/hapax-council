@@ -493,14 +493,22 @@ tracked_quarantine_parent_has_symlink_ancestor() {
     local parent_dir
     local component
     local current
-    local -a components
+    local remaining
 
-    parent_dir="$(dirname -- "$rel")"
-    [[ "$parent_dir" == "." ]] && return 1
+    [[ "$rel" == */* ]] || return 1
+    parent_dir="${rel%/*}"
+    [[ -z "$parent_dir" || "$parent_dir" == "." ]] && return 1
 
     current="$payload_root"
-    IFS='/' read -r -a components <<< "$parent_dir"
-    for component in "${components[@]}"; do
+    remaining="$parent_dir"
+    while [[ -n "$remaining" ]]; do
+        if [[ "$remaining" == */* ]]; then
+            component="${remaining%%/*}"
+            remaining="${remaining#*/}"
+        else
+            component="$remaining"
+            remaining=""
+        fi
         [[ -z "$component" || "$component" == "." ]] && continue
         current="$current/$component"
         if [[ -L "$current" ]]; then
@@ -524,7 +532,11 @@ ensure_tracked_quarantine_parent_dir() {
             "refusing to write $payload_label $rel through symlink ancestor under $payload_root; refusing candidate reset" \
             "inspect $payload_root for symlink ancestors and retry after preserving or removing the unsafe quarantine destination"
     fi
-    parent_dir="$(dirname -- "$rel")"
+    if [[ "$rel" == */* ]]; then
+        parent_dir="${rel%/*}"
+    else
+        parent_dir="."
+    fi
     if ! mkdir -p "$payload_root/$parent_dir"; then
         return 1
     fi

@@ -2470,6 +2470,57 @@ def test_tracked_quarantine_refuses_symlink_ancestor_escape_before_reset(
     assert not (quarantine_path / "worktree" / "README.md" / "child.txt").exists()
 
 
+def test_tracked_quarantine_refuses_newline_symlink_ancestor_escape_before_reset(
+    tmp_path: Path,
+) -> None:
+    canonical, origin, _new_sha = _make_repos(tmp_path)
+    updater = tmp_path / "newline-symlink-updater"
+    _git(tmp_path, "clone", str(origin), str(updater))
+    _git(updater, "config", "user.email", "source-activate@example.test")
+    _git(updater, "config", "user.name", "Source Activate")
+    tracked_rel = Path("line\nbreak")
+    child_rel = tracked_rel / "child.txt"
+    _write(updater / tracked_rel, "tracked newline ancestor\n")
+    _git(updater, "add", str(tracked_rel))
+    _git(updater, "commit", "-m", "add newline ancestor")
+    _git(updater, "push", "origin", "main")
+
+    first = _run_activate(tmp_path, canonical)
+    assert first.returncode == 0, first.stderr
+
+    active_source = tmp_path / "active-source"
+    (active_source / tracked_rel).unlink()
+    _write(active_source / child_rel, "staged child payload\n")
+    _git(active_source, "add", "-A", ".")
+    shutil.rmtree(active_source / tracked_rel)
+    (active_source / tracked_rel).symlink_to("../..")
+    _write(tmp_path / "state" / "child.txt", "source payload through newline symlink\n")
+
+    second = _run_activate(tmp_path, canonical)
+
+    assert second.returncode == 2
+    assert "refusing to write tracked drift" in second.stderr
+    assert "through symlink ancestor" in second.stderr
+    assert "partial tracked quarantine payloads:" in second.stderr
+    assert (active_source / tracked_rel).is_symlink()
+    assert os.readlink(active_source / tracked_rel) == "../.."
+    assert (tmp_path / "state" / "child.txt").read_text(encoding="utf-8") == (
+        "source payload through newline symlink\n"
+    )
+    receipt = _current_receipt(tmp_path)
+    hygiene = receipt["source_hygiene"]
+    assert receipt["status"] == "failed"
+    assert receipt["message"] == "tracked drift quarantine write failed before reset"
+    assert hygiene["tracked_quarantine_count"] == 1
+    assert hygiene["tracked_quarantine_status"] == "partial"
+    quarantine_path = Path(hygiene["tracked_quarantine_path"])
+    worktree_payload = quarantine_path / "worktree" / tracked_rel
+    assert worktree_payload.is_symlink()
+    assert os.readlink(worktree_payload) == "../.."
+    assert not (quarantine_path.parent / "child.txt").exists()
+    assert not (quarantine_path / "worktree" / child_rel).exists()
+
+
 def test_activation_quarantines_unstaged_file_to_directory_replacement_before_reset(
     tmp_path: Path,
 ) -> None:
