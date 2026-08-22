@@ -21,6 +21,7 @@
 set -euo pipefail
 
 COUNCIL_DIR="${HAPAX_COUNCIL_DIR:-$HOME/projects/hapax-council}"
+TMUX_LANE_CONFIGURE="$COUNCIL_DIR/scripts/hapax-tmux-lane-configure"
 
 usage() {
   cat <<'EOF'
@@ -43,6 +44,24 @@ Defaults:
   - --continue/-c: resume the lane's previous session (claude --continue) —
     the restart/resume path, symmetric with hapax-kimi --continue
 EOF
+}
+
+configure_hapax_tmux_lane() {
+  local tmux_bin="${1:-tmux}"
+  [ "${TMUX_LANE_PROFILE_SUPPORTED:-0}" = "1" ] || return 0
+  [ -x "$TMUX_LANE_CONFIGURE" ] || return 0
+  if ! "$TMUX_LANE_CONFIGURE" "$tmux_bin"; then
+    echo "hapax-claude: warning: failed to apply Hapax tmux lane profile" >&2
+  fi
+}
+
+tmux_lane_profile_supported() {
+  local tmux_bin="${1:-tmux}" version=""
+  version="$("$tmux_bin" -V 2>/dev/null || true)"
+  case "$version" in
+    tmux\ *) return 0 ;;
+    *) return 1 ;;
+  esac
 }
 
 ROLE=""
@@ -272,6 +291,7 @@ if [ "${HAPAX_CLAUDE_SKIP_PERMS:-1}" = "1" ]; then
 fi
 
 TMUX_NAME="hapax-claude-$ROLE"
+TMUX_LANE_PROFILE_SUPPORTED=0
 
 if [ "$TERMINAL" != "none" ]; then
   TMUX_BIN="$(command -v tmux || true)"
@@ -282,6 +302,9 @@ if [ "$TERMINAL" != "none" ]; then
   if "$TMUX_BIN" has-session -t "$TMUX_NAME" 2>/dev/null && [ "$FORCE" -ne 1 ]; then
     echo "hapax-claude: tmux session already exists: $TMUX_NAME (pass --force to recreate)" >&2
     exit 11
+  fi
+  if tmux_lane_profile_supported "$TMUX_BIN"; then
+    TMUX_LANE_PROFILE_SUPPORTED=1
   fi
 fi
 
@@ -388,6 +411,7 @@ chmod 700 "$RUNNER"
 case "$TERMINAL" in
   tmux)
     "$TMUX_BIN" new-session -d -s "$TMUX_NAME" -c "$WORKDIR" "$RUNNER"
+    configure_hapax_tmux_lane "$TMUX_BIN"
     printf '%s\n' "$TMUX_NAME"
     ;;
   foot)
@@ -399,6 +423,7 @@ case "$TERMINAL" in
     if ! "$TMUX_BIN" has-session -t "$TMUX_NAME" 2>/dev/null; then
       "$TMUX_BIN" new-session -d -s "$TMUX_NAME" -c "$WORKDIR" "$RUNNER"
     fi
+    configure_hapax_tmux_lane "$TMUX_BIN"
     case "$(basename "$FOOT_BIN")" in
       footclient)
         "$FOOT_BIN" -E -N \

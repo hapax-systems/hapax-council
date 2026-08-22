@@ -1,0 +1,26 @@
+#!/usr/bin/env bash
+# Source the Hapax lane tmux profile into the current tmux server.
+
+set -euo pipefail
+
+TMUX_BIN="${1:-${TMUX_BIN:-tmux}}"
+if [ -z "$TMUX_BIN" ]; then
+  exit 0
+fi
+
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+COUNCIL_DIR="${HAPAX_COUNCIL_DIR:-$(cd "$SCRIPT_DIR/.." && pwd)}"
+PROFILE="${HAPAX_TMUX_LANE_PROFILE:-$COUNCIL_DIR/config/tmux/hapax-lane.conf}"
+
+if [ ! -f "$PROFILE" ]; then
+  exit 0
+fi
+
+if [ "${HAPAX_TMUX_LANE_PROFILE_FORCE:-0}" != "1" ]; then
+  loaded="$("$TMUX_BIN" show-options -gqv @hapax_lane_clipboard_profile_loaded 2>/dev/null || true)"
+  if [ "$loaded" = "1" ]; then
+    exit 0
+  fi
+fi
+
+"$TMUX_BIN" source-file -q "$PROFILE"
