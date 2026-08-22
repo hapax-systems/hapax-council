@@ -17,7 +17,6 @@ the transcript (`grep -n '"isCompactSummary":true'`), independently of this pars
 from __future__ import annotations
 
 import argparse
-import json
 import pathlib
 import sys
 
