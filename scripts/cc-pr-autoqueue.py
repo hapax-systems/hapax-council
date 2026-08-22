@@ -275,7 +275,7 @@ class Decision:
     reasons: tuple[str, ...] = ()
     auto_arm: bool = False
     auto_arm_verified_checks: tuple[str, ...] = ()
-    expected_auto_merge_method: str | None = AUTOQUEUE_DEFAULT_MERGE_METHOD
+    expected_auto_merge_method: str | None = None
 
     def as_dict(self) -> dict[str, Any]:
         out: dict[str, Any] = {
@@ -417,6 +417,27 @@ def _merge_method_operator_next_action(
 
 
 def _decision_next_action(action: str, reasons: tuple[str, ...]) -> str | None:
+    merge_method_reason = any(
+        reason.startswith("auto_merge_method_mismatch")
+        or reason.startswith("auto_merge_method_unverified")
+        or reason.startswith("auto_merge_method_unrecognized")
+        for reason in reasons
+    )
+    if action == "dequeue" and merge_method_reason:
+        if any(
+            reason.startswith("auto_merge_method_unverified:expected_missing") for reason in reasons
+        ):
+            return (
+                "This decision removes the PR from the native merge queue when run "
+                "with --apply; it does not disable auto-merge. Expected merge-method "
+                f"evidence is missing. {_merge_method_operator_next_action()}"
+            )
+        return (
+            "This decision removes the PR from the native merge queue when run with "
+            "--apply; it does not disable auto-merge. After a successful dequeue, "
+            "the next reconciler pass revalidates queue membership and armed "
+            "auto-merge state before choosing any disable or re-arm mutation."
+        )
     if any(
         reason.startswith("auto_merge_method_unverified:expected_missing") for reason in reasons
     ):
@@ -450,13 +471,11 @@ def _auto_merge_request_method(value: Any) -> str | None:
 def _merge_method_mismatch_reason(
     pr: PullRequest,
     *,
-    expected_auto_merge_method: str | None,
+    expected_auto_merge_method: str,
 ) -> str | None:
     expected = _normalize_merge_method(expected_auto_merge_method)
     armed = _normalize_merge_method(pr.auto_merge_method)
-    if expected is None:
-        raw_expected = _scalar(expected_auto_merge_method) or "missing"
-        return f"auto_merge_method_unverified:expected_missing:raw={raw_expected}"
+    assert expected is not None
     if armed is None:
         raw_armed = _scalar(pr.auto_merge_method)
         if raw_armed is not None:
@@ -1641,8 +1660,9 @@ def classify_pr(
     active_ci_repair_task_ids: tuple[str, ...] = (),
     storm_admission_active: bool = False,
     storm_reasons: tuple[str, ...] = (),
-    expected_auto_merge_method: str | None = AUTOQUEUE_DEFAULT_MERGE_METHOD,
+    expected_auto_merge_method: str | None = None,
     expected_auto_merge_method_source: str | None = None,
+    require_expected_auto_merge_method: bool = False,
 ) -> Decision:
     reasons: list[str] = []
     if pr.is_draft:
@@ -1761,44 +1781,23 @@ def classify_pr(
             else:
                 reasons.append("release_auto_arm_ineligible:" + ",".join(arm.blockers))
 
-    expected_method_unverified = _normalize_merge_method(expected_auto_merge_method) is None
+    expected_method = _normalize_merge_method(expected_auto_merge_method)
+    expected_method_unverified = expected_method is None
     expected_method_unverified_reason = None
-    if expected_method_unverified:
+    if expected_method_unverified and require_expected_auto_merge_method:
         expected_method_unverified_reason = _expected_merge_method_unverified_reason(
             expected_auto_merge_method_source
         )
         if queued or pr.auto_merge_enabled or not reasons:
             reasons.append(expected_method_unverified_reason)
 
-    if pr.auto_merge_enabled and expected_method_unverified:
-        return Decision(
-            pr=pr,
-            task=task,
-            tasks=matched_tasks,
-            action="disable_auto_merge",
-            reasons=tuple(reasons),
-            auto_arm=auto_arm,
-            auto_arm_verified_checks=auto_arm_verified_checks,
-            expected_auto_merge_method=expected_auto_merge_method,
-        )
-
-    if pr.auto_merge_enabled:
+    if pr.auto_merge_enabled and expected_method is not None:
         method_mismatch = _merge_method_mismatch_reason(
             pr,
-            expected_auto_merge_method=expected_auto_merge_method,
+            expected_auto_merge_method=expected_method,
         )
         if method_mismatch:
             reasons.append(method_mismatch)
-            return Decision(
-                pr=pr,
-                task=task,
-                tasks=matched_tasks,
-                action="disable_auto_merge",
-                reasons=tuple(reasons),
-                auto_arm=auto_arm,
-                auto_arm_verified_checks=auto_arm_verified_checks,
-                expected_auto_merge_method=expected_auto_merge_method,
-            )
 
     if queued:
         if reasons:
@@ -1821,7 +1820,7 @@ def classify_pr(
             expected_auto_merge_method=expected_auto_merge_method,
         )
     if reasons:
-        if pr.auto_merge_enabled:
+        if pr.auto_merge_enabled and not expected_method_unverified:
             return Decision(
                 pr=pr,
                 task=task,
@@ -1890,6 +1889,11 @@ def merge_pr(
     repo_root = repo_root or default_repo_root()
     graphql_args: list[str] | None = None
     if decision.action == "dequeue":
+        queued_prs = fetch_merge_queue_pr_numbers(repo=repo, repo_root=repo_root, runner=runner)
+        if queued_prs is None:
+            return False, "merge_queue_state_indeterminate:dequeue_revalidation_failed"
+        if decision.pr.number not in queued_prs:
+            return False, "pull_request_not_in_merge_queue:dequeue_revalidation_failed"
         if not decision.pr.node_id:
             return False, "missing_pull_request_node_id"
         query = "mutation($id:ID!){dequeuePullRequest(input:{id:$id}){clientMutationId}}"
@@ -2827,6 +2831,7 @@ def run_reconciler(
             active_ci_repair_task_ids=active_ci_repair_task_ids,
             expected_auto_merge_method=expected_auto_merge_method,
             expected_auto_merge_method_source=merge_method_source,
+            require_expected_auto_merge_method=True,
         )
         for pr in prs
     ]
@@ -2890,6 +2895,7 @@ def run_reconciler(
                 storm_reasons=storm_mode.reasons,
                 expected_auto_merge_method=expected_auto_merge_method,
                 expected_auto_merge_method_source=merge_method_source,
+                require_expected_auto_merge_method=True,
             )
             for pr in prs
         ]

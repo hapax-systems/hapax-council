@@ -140,7 +140,13 @@ class TestReviewTeamGate:
         pr = autoqueue._parse_pr(pr_payload)
         assert pr is not None
         tasks = autoqueue.load_task_notes(vault)
-        return autoqueue.classify_pr(pr, tasks=tasks, queued_prs=set())
+        return autoqueue.classify_pr(
+            pr,
+            tasks=tasks,
+            queued_prs=set(),
+            expected_auto_merge_method="SQUASH",
+            expected_auto_merge_method_source="test",
+        )
 
     def test_green_pr_without_dossier_is_blocked(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
@@ -1718,6 +1724,45 @@ def test_already_auto_merge_enabled_requires_matching_ruleset_method(tmp_path: P
     ] in runner.calls
 
 
+def test_queued_armed_pr_with_wrong_method_is_dequeued_before_disable(
+    tmp_path: Path,
+) -> None:
+    vault = _make_vault(tmp_path)
+    _write_task(vault, task_id="queued-wrong-method-armed", pr=4584)
+    runner = _FakeRunner()
+    runner.queued_prs = {4584}
+    runner.open_prs = [_pr(4584, auto_merge=True, auto_merge_method="MERGE")]
+
+    report = autoqueue.run_reconciler(
+        repo="owner/repo",
+        repo_root=tmp_path,
+        vault_root=vault,
+        apply=True,
+        runner=runner,
+    )
+
+    decision = report["decisions"][0]
+    assert report["counts"]["dequeue"] == 1
+    assert report["counts"]["disable_auto_merge"] == 0
+    assert decision["action"] == "dequeue"
+    assert "auto_merge_method_mismatch:armed=MERGE:expected=SQUASH" in decision["reasons"]
+    assert "does not disable auto-merge" in decision["next_action"]
+    assert "next reconciler pass will re-arm" not in decision["next_action"]
+    assert any(
+        call[:3] == ["gh", "api", "graphql"] and any("dequeuePullRequest" in part for part in call)
+        for call in runner.calls
+    )
+    assert [
+        "gh",
+        "pr",
+        "merge",
+        "4584",
+        "--repo",
+        "owner/repo",
+        "--disable-auto",
+    ] not in runner.calls
+
+
 def test_mismatched_auto_merge_method_converges_after_disable_next_pass(
     tmp_path: Path,
 ) -> None:
@@ -1783,6 +1828,22 @@ def test_already_auto_merge_enabled_reports_unsupported_armed_method(
         "auto_merge_method_unrecognized:armed=FASTFORWARD:expected=SQUASH"
     ]
     assert "This decision disables auto-merge when run with --apply" in decision["next_action"]
+
+
+def test_parse_pr_accepts_rest_auto_merge_method_shape() -> None:
+    pr = autoqueue._parse_pr(
+        {
+            **_pr(4586),
+            "autoMergeRequest": {
+                "enabled_at": "now",
+                "merge_method": "merge",
+            },
+        }
+    )
+
+    assert pr is not None
+    assert pr.auto_merge_enabled is True
+    assert pr.auto_merge_method == "MERGE"
 
 
 def test_queue_arms_with_verified_ruleset_merge_method(tmp_path: Path) -> None:
@@ -1883,7 +1944,7 @@ def test_run_reconciler_fails_closed_when_ruleset_lookup_fails(tmp_path: Path) -
     assert not any(call[:3] == ["gh", "pr", "merge"] for call in runner.calls)
 
 
-def test_run_reconciler_disables_armed_pr_when_ruleset_method_indeterminate(
+def test_run_reconciler_blocks_armed_pr_when_ruleset_method_indeterminate(
     tmp_path: Path,
 ) -> None:
     vault = _make_vault(tmp_path)
@@ -1902,8 +1963,9 @@ def test_run_reconciler_disables_armed_pr_when_ruleset_method_indeterminate(
 
     decision = report["decisions"][0]
     assert report["merge_queue_merge_method"]["indeterminate"] is True
-    assert report["counts"]["disable_auto_merge"] == 1
-    assert decision["action"] == "disable_auto_merge"
+    assert report["counts"]["blocked"] == 1
+    assert report["counts"]["disable_auto_merge"] == 0
+    assert decision["action"] == "blocked"
     assert decision["reasons"] == [
         "auto_merge_method_unverified:expected_missing:source=rulesets_fetch_failed:"
         "rulesets unavailable"
@@ -1919,7 +1981,50 @@ def test_run_reconciler_disables_armed_pr_when_ruleset_method_indeterminate(
         "--repo",
         "owner/repo",
         "--disable-auto",
-    ] in runner.calls
+    ] not in runner.calls
+
+
+def test_run_reconciler_dequeues_queued_armed_pr_when_ruleset_method_indeterminate(
+    tmp_path: Path,
+) -> None:
+    vault = _make_vault(tmp_path)
+    _write_task(vault, task_id="queued-armed-rulesets-api-down", pr=80)
+    runner = _FakeRunner()
+    runner.queued_prs = {80}
+    runner.open_prs = [_pr(80, auto_merge=True)]
+    runner.rulesets_error = "rulesets unavailable"
+
+    report = autoqueue.run_reconciler(
+        repo="owner/repo",
+        repo_root=tmp_path,
+        vault_root=vault,
+        apply=True,
+        runner=runner,
+    )
+
+    decision = report["decisions"][0]
+    assert report["merge_queue_merge_method"]["indeterminate"] is True
+    assert report["counts"]["dequeue"] == 1
+    assert report["counts"]["disable_auto_merge"] == 0
+    assert decision["action"] == "dequeue"
+    assert decision["reasons"] == [
+        "auto_merge_method_unverified:expected_missing:source=rulesets_fetch_failed:"
+        "rulesets unavailable"
+    ]
+    assert "does not disable auto-merge" in decision["next_action"]
+    assert any(
+        call[:3] == ["gh", "api", "graphql"] and any("dequeuePullRequest" in part for part in call)
+        for call in runner.calls
+    )
+    assert [
+        "gh",
+        "pr",
+        "merge",
+        "80",
+        "--repo",
+        "owner/repo",
+        "--disable-auto",
+    ] not in runner.calls
 
 
 def test_ruleset_method_indeterminate_preserves_unrelated_blockers(
@@ -2159,6 +2264,37 @@ def test_already_auto_merge_enabled_without_armed_method_is_rearmed_next_pass(
         "owner/repo",
         "--disable-auto",
     ] in runner.calls
+
+    runner.calls.clear()
+    runner.open_prs = [_pr(83, auto_merge=False)]
+    second_report = autoqueue.run_reconciler(
+        repo="owner/repo",
+        repo_root=tmp_path,
+        vault_root=vault,
+        apply=True,
+        runner=runner,
+    )
+
+    assert second_report["counts"]["queue"] == 1
+    assert ["gh", "pr", "merge", "83", "--repo", "owner/repo", "--auto", "--squash"] in runner.calls
+
+
+def test_merge_pr_rejects_missing_expected_merge_method(tmp_path: Path) -> None:
+    pr = autoqueue._parse_pr(_pr(84))
+    assert pr is not None
+    runner = _FakeRunner()
+
+    ok, message = autoqueue.merge_pr(
+        autoqueue.Decision(pr=pr, action="queue"),
+        repo="owner/repo",
+        repo_root=tmp_path,
+        runner=runner,
+    )
+
+    assert ok is False
+    assert message.startswith("unsupported_auto_merge_method:None:next_action=")
+    assert "--expected-merge-method <METHOD>" in message
+    assert not any(call[:3] == ["gh", "pr", "merge"] for call in runner.calls)
 
 
 def test_merge_pr_rejects_unsupported_expected_merge_method(tmp_path: Path) -> None:
@@ -5563,7 +5699,13 @@ def test_release_head_boundary_rejects_current_note_missing_cc_task_type(
     runner.open_prs = [_pr(743)]
 
     message = autoqueue._release_head_boundary_blocker(
-        autoqueue.Decision(pr=pr, task=task, tasks=(task,), action="queue"),
+        autoqueue.Decision(
+            pr=pr,
+            task=task,
+            tasks=(task,),
+            action="queue",
+            expected_auto_merge_method="SQUASH",
+        ),
         repo="owner/repo",
         repo_root=tmp_path,
         runner=runner,
@@ -6326,7 +6468,13 @@ def test_merge_pr_revalidates_current_release_authorization_before_head_locked_m
     runner.open_prs = [_pr(735)]
 
     ok, message = autoqueue.merge_pr(
-        autoqueue.Decision(pr=pr, task=task, tasks=(task,), action="queue"),
+        autoqueue.Decision(
+            pr=pr,
+            task=task,
+            tasks=(task,),
+            action="queue",
+            expected_auto_merge_method="SQUASH",
+        ),
         repo="owner/repo",
         repo_root=tmp_path,
         runner=runner,
@@ -6369,7 +6517,13 @@ def test_merge_pr_revalidates_current_release_authorized_head_before_merge(
     runner.open_prs = [_pr(736)]
 
     ok, message = autoqueue.merge_pr(
-        autoqueue.Decision(pr=pr, task=task, tasks=(task,), action="queue"),
+        autoqueue.Decision(
+            pr=pr,
+            task=task,
+            tasks=(task,),
+            action="queue",
+            expected_auto_merge_method="SQUASH",
+        ),
         repo="owner/repo",
         repo_root=tmp_path,
         runner=runner,
@@ -6410,7 +6564,13 @@ def test_head_guard_required_merge_fails_when_head_sha_missing(tmp_path: Path) -
     runner = _FakeRunner()
 
     ok, message = autoqueue.merge_pr(
-        autoqueue.Decision(pr=pr, task=task, tasks=(task,), action="queue"),
+        autoqueue.Decision(
+            pr=pr,
+            task=task,
+            tasks=(task,),
+            action="queue",
+            expected_auto_merge_method="SQUASH",
+        ),
         repo="owner/repo",
         repo_root=tmp_path,
         runner=runner,
