@@ -1,277 +1,370 @@
 #!/usr/bin/env bash
-# hapax-lane-reaper — recover dead lanes (bounded PID-kill) and clean worktrees.
+# hapax-lane-reaper -- project transitional lane inventory from bounded tmux metadata.
 #
-# Scans hapax-codex-cx-* and hapax-claude-* tmux sessions. A dead lane (shell
-# prompt, no worker process) silent past the MEASURED per-lineage tau is reaped
-# via a single PID-targeted os.kill(SIGTERM) — never a whole-session teardown —
-# and its merged worktree cleaned. Recovery is bounded: after a per-lane attempt cap the
-# reaper escalates (ntfy) and STOPS rather than looping. The tau comes from
-# ~/.cache/hapax/dispatch-service-time.json (shared with the coordinator +
-# idle-watchdog); --threshold/IDLE_THRESHOLD_MIN is the fixed fallback when the
-# cache is absent or HAPAX_DISPATCH_SCHEDULER_LEGACY=1.
-#
-# Usage:
-#   hapax-lane-reaper [--dry-run] [--threshold MINUTES]
-#
-# Run via timer: systemd/units/hapax-lane-reaper.timer (every 30 min)
+# This compatibility surface is observation-only in every mode. Direct tmux
+# metadata is intentionally not activation-grade. Reins owns the permanent,
+# runtime-agnostic observer and governed lifecycle successor.
 
 set -euo pipefail
+export LC_ALL=C
 
-# Fixed-threshold fallback (minutes) for legacy / no-cache mode; --threshold overrides.
-# (Previously `${1:-30}` which wrongly captured flags like --dry-run into the number.)
-IDLE_THRESHOLD_MIN=30
-DRY_RUN=0
-COUNCIL_DIR="${HAPAX_COUNCIL_DIR:-$HOME/projects/hapax-council}"
+readonly SESSION_FORMAT=$'#{session_id}\t#{q:session_name}\t#{session_activity}\t#{session_created}\t#{session_windows}'
+readonly PANE_FORMAT=$'#{session_id}\t#{pane_id}\t#{pane_pid}\t#{pane_dead}\t#{pane_active}'
+readonly CAPTURE_SENTINEL=$'\036'
+
+usage_error() {
+    printf 'lane-reaper: usage_error reason=%s next_action=run_hapax-lane-reaper_--help exit=64\n' \
+        "$1" >&2
+    exit 64
+}
+
+usage() {
+    printf '%s\n' \
+        'Usage: hapax-lane-reaper [--dry-run] [--threshold MINUTES] [--reap-lineage ID]' \
+        'Transitional status: observation-only and non-effectful; compatibility options are inert.' \
+        'Permanent successor: Reins runtime-agnostic observation and governed lifecycle control.' \
+        'Retirement predicate: Reins parity and source activation.'
+}
+
+hold() {
+    printf 'lane-reaper: projection state=HOLD scope=tmux operation=%s context=%s reason=tmux_observation_unavailable detail=%s next_action=verify_tmux_metadata_then_retry universal_observer_successor=required successor=Reins exit=69\n' \
+        "$1" "$2" "$3" >&2
+    exit 69
+}
+
+dry_run_seen=0
+threshold_seen=0
+lineage_seen=0
 
 while [[ $# -gt 0 ]]; do
     case "$1" in
-        --dry-run) DRY_RUN=1; shift ;;
-        --threshold) IDLE_THRESHOLD_MIN="$2"; shift 2 ;;
-        *) shift ;;
+        --help|-h)
+            [[ $# -eq 1 && "$dry_run_seen" -eq 0 && "$threshold_seen" -eq 0 && \
+                "$lineage_seen" -eq 0 ]] || usage_error help_must_be_only_argument
+            usage
+            exit 0
+            ;;
+        --dry-run)
+            [[ "$dry_run_seen" -eq 0 ]] || usage_error duplicate_option
+            dry_run_seen=1
+            shift
+            ;;
+        --threshold)
+            [[ "$threshold_seen" -eq 0 ]] || usage_error duplicate_option
+            [[ $# -ge 2 ]] || usage_error missing_operand
+            [[ "$2" =~ ^(0|[1-9][0-9]*)$ ]] || usage_error invalid_operand
+            threshold_seen=1
+            shift 2
+            ;;
+        --reap-lineage)
+            [[ "$lineage_seen" -eq 0 ]] || usage_error duplicate_option
+            [[ $# -ge 2 ]] || usage_error missing_operand
+            [[ "$2" =~ ^[A-Za-z0-9][A-Za-z0-9._-]*$ ]] || usage_error invalid_operand
+            lineage_seen=1
+            shift 2
+            ;;
+        -*)
+            usage_error unknown_argument
+            ;;
+        *)
+            usage_error positional_argument
+            ;;
     esac
 done
 
-log() { printf 'lane-reaper: %s\n' "$*" >&2; }
-
-# ─── RecoveryGovernor admission for the load-injecting reap action ────────────
-# bb-control-stability: the kill + worktree-cleanup + hygiene-sweep a reap
-# triggers is a recovery action; route it through the shared governor so a wave
-# of reaps can't storm the box, and so a session that keeps needing reaping
-# escalates via AIMD. The release-task path (load-free) stays ungated. Fail-open:
-# any non-{0,75,2} exit → PERMIT (the reaper never wedges on the governor).
-governor_repo() {
-    local repo
-    repo="$(cd "$(dirname "$0")/.." 2>/dev/null && pwd)"
-    [[ -d "$repo/shared" ]] || repo="${HOME}/projects/hapax-council"
-    echo "$repo"
+capture_tmux() {
+    local rc=0
+    # tmux 3.6b maps control delimiters to underscores in the C character
+    # locale. Keep shell ordering in C while preserving literal TAB argv bytes
+    # for the metadata subprocess. The suffix preserves trailing newlines; raw
+    # tmux errors remain in memory for classification and are never emitted.
+    LC_ALL=C.UTF-8 tmux "$@" 2>&1 || rc=$?
+    printf '%s' "$CAPTURE_SENTINEL"
+    return "$rc"
 }
-governor_permit() {
-    [[ "${HAPAX_RECOVERY_GOVERNOR_OFF:-}" == "1" ]] && return 0
-    local rc
-    (cd "$(governor_repo)" 2>/dev/null && python3 -m shared.recovery_governor --permit "$1" >/dev/null 2>&1)
-    rc=$?
-    case "$rc" in
-        0) return 0 ;;
-        75 | 2) return 1 ;;
-        *) return 0 ;;
+
+legacy_tmux_runtime_absent() {
+    local captured="$1" line
+
+    [[ "$captured" == *$'\n' ]] || return 1
+    line=${captured%$'\n'}
+    [[ "$line" != *$'\n'* ]] || return 1
+    case "$line" in
+        'no server running on '?*)
+            return 0
+            ;;
+        'error connecting to '?*' (No such file or directory)')
+            return 0
+            ;;
+        *)
+            return 1
+            ;;
     esac
 }
-governor_record() {
-    [[ "${HAPAX_RECOVERY_GOVERNOR_OFF:-}" == "1" ]] && return 0
-    (cd "$(governor_repo)" 2>/dev/null && python3 -m shared.recovery_governor --record "$1" "$2" >/dev/null 2>&1) || true
+
+split_five() {
+    local rest="$1"
+
+    [[ "$rest" == *$'\t'* ]] || return 1
+    field_1=${rest%%$'\t'*}
+    rest=${rest#*$'\t'}
+    [[ "$rest" == *$'\t'* ]] || return 1
+    field_2=${rest%%$'\t'*}
+    rest=${rest#*$'\t'}
+    [[ "$rest" == *$'\t'* ]] || return 1
+    field_3=${rest%%$'\t'*}
+    rest=${rest#*$'\t'}
+    [[ "$rest" == *$'\t'* ]] || return 1
+    field_4=${rest%%$'\t'*}
+    rest=${rest#*$'\t'}
+    [[ "$rest" != *$'\t'* ]] || return 1
+    field_5="$rest"
 }
 
-# ─── bb-dispatch-scheduler: measured tau timeout + bounded PID-targeted kill ───
-# The reap threshold is no longer a fixed 30m; it is the MEASURED per-lineage tau
-# the coordinator + idle-watchdog also read (one timeout, not three divergent
-# constants). The kill is a single PID-targeted SIGTERM (os.kill) — never a
-# whole-session or whole-process-group teardown, so the worker shuts down and
-# reaps its own children instead of the entire pane tree taking a HUP (the
-# exit-144 cascade lesson). HAPAX_DISPATCH_SCHEDULER_LEGACY=1 (or a missing cache)
-# reverts the THRESHOLD to the fixed minutes; the bounded-kill fix is permanent.
-DISPATCH_CACHE="${HAPAX_DISPATCH_SERVICE_TIME_CACHE:-$HOME/.cache/hapax/dispatch-service-time.json}"
-REAP_ATTEMPTS_DIR="${HAPAX_REAP_ATTEMPTS_DIR:-$HOME/.cache/hapax/lane-reap-attempts}"
-mkdir -p "$REAP_ATTEMPTS_DIR"
+canonical_nonnegative_decimal() {
+    [[ "$1" =~ ^(0|[1-9][0-9]*)$ ]]
+}
 
-reap_decide() {
-    # echo skip|reap|escalate for (role, progress_age_s, attempts). Legacy or an
-    # absent cache fall back to the fixed minutes so behavior is preserved until
-    # the recompute populates measured tau.
-    local role="$1" age="$2" attempts="$3"
-    local extra=()
-    if [[ "${HAPAX_DISPATCH_SCHEDULER_LEGACY:-}" == "1" || ! -f "$DISPATCH_CACHE" ]]; then
-        extra=(--tau-override "$((IDLE_THRESHOLD_MIN * 60))")
+canonical_positive_decimal() {
+    [[ "$1" =~ ^[1-9][0-9]*$ ]]
+}
+
+numeric_id_less_than() {
+    local left_number="${1:1}" right_number="${2:1}"
+
+    if [[ "${#left_number}" -lt "${#right_number}" ]]; then
+        return 0
     fi
-    (cd "$(governor_repo)" 2>/dev/null && python3 -m shared.dispatch_service_time \
-        --reap-decision --lineage "$role" --progress-age "$age" --attempts "$attempts" \
-        --cache "$DISPATCH_CACHE" "${extra[@]}" 2>/dev/null) || echo skip
-}
-
-target_pid_for() {
-    # the lane's worker process (deepest claude/node/codex child) or the pane shell.
-    local pane="$1" found="" cpid comm
-    for cpid in $(pgrep -P "$pane" 2>/dev/null || true); do
-        comm=$(ps -o comm= -p "$cpid" 2>/dev/null || true)
-        case "$comm" in claude | node | codex) found="$cpid" ;; esac
-    done
-    echo "${found:-$pane}"
-}
-
-reap_kill() {
-    # bounded recovery: a single PID-targeted SIGTERM via os.kill. Never a session
-    # or process-group teardown. ProcessLookupError == already gone (fine).
-    local pid="$1"
-    python3 -c "import os, signal, sys
-try:
-    os.kill(int(sys.argv[1]), signal.SIGTERM)
-except (ValueError, ProcessLookupError, PermissionError):
-    pass" "$pid" 2>/dev/null || true
-}
-
-reap_attempts() { cat "$REAP_ATTEMPTS_DIR/$1" 2>/dev/null || echo 0; }
-bump_reap_attempts() { echo "$(($(reap_attempts "$1") + 1))" >"$REAP_ATTEMPTS_DIR/$1"; }
-reset_reap_attempts() { rm -f "$REAP_ATTEMPTS_DIR/$1" 2>/dev/null || true; }
-
-# Keep the measured service-time cache warm on the reaper's already-scheduled cadence
-# (hourly), so the tau the coordinator + idle-watchdog + this reaper read is current.
-# Best-effort and bounded: a fold failure or slowness never blocks a reap. (A dedicated
-# Slice=hapax-sdlc.slice oneshot is the deploy follow-up; this populates it meanwhile.)
-recompute_cache_if_stale() {
-    local cache="$DISPATCH_CACHE" age=999999
-    if [[ -f "$cache" ]]; then
-        age=$(($(date +%s) - $(stat -c %Y "$cache" 2>/dev/null || echo 0)))
-        [[ "$age" -lt 3600 ]] && return 0
+    if [[ "${#left_number}" -gt "${#right_number}" ]]; then
+        return 1
     fi
-    (cd "$(governor_repo)" 2>/dev/null &&
-        timeout 60 python3 -m shared.dispatch_service_time --recompute --cache "$cache" >/dev/null 2>&1) || true
+    [[ "$left_number" < "$right_number" ]]
 }
-if [[ "$DRY_RUN" -eq 0 ]]; then
-    recompute_cache_if_stale
+
+swap_eligible_sessions() {
+    local left_index="$1" right_index="$2" swap_value
+
+    swap_value=${eligible_session_ids[left_index]}
+    eligible_session_ids[left_index]=${eligible_session_ids[right_index]}
+    eligible_session_ids[right_index]="$swap_value"
+    swap_value=${eligible_session_names[left_index]}
+    eligible_session_names[left_index]=${eligible_session_names[right_index]}
+    eligible_session_names[right_index]="$swap_value"
+    swap_value=${eligible_session_roles[left_index]}
+    eligible_session_roles[left_index]=${eligible_session_roles[right_index]}
+    eligible_session_roles[right_index]="$swap_value"
+}
+
+swap_panes() {
+    local left_index="$1" right_index="$2" swap_value
+
+    swap_value=${pane_ids[left_index]}
+    pane_ids[left_index]=${pane_ids[right_index]}
+    pane_ids[right_index]="$swap_value"
+    swap_value=${pane_pids[left_index]}
+    pane_pids[left_index]=${pane_pids[right_index]}
+    pane_pids[right_index]="$swap_value"
+    swap_value=${pane_dead[left_index]}
+    pane_dead[left_index]=${pane_dead[right_index]}
+    pane_dead[right_index]="$swap_value"
+    swap_value=${pane_active[left_index]}
+    pane_active[left_index]=${pane_active[right_index]}
+    pane_active[right_index]="$swap_value"
+}
+
+declare -a seen_session_ids=()
+declare -a seen_session_names=()
+declare -a eligible_session_ids=()
+declare -a eligible_session_names=()
+declare -a eligible_session_roles=()
+declare -a all_pane_ids=()
+declare -a lane_lines=()
+
+if session_capture=$(capture_tmux list-sessions -F "$SESSION_FORMAT"); then
+    session_rows=${session_capture%"$CAPTURE_SENTINEL"}
+    [[ -n "$session_rows" ]] || hold list-sessions none incoherent
+else
+    session_rc=$?
+    session_rows=${session_capture%"$CAPTURE_SENTINEL"}
+    if [[ "$session_rc" -eq 1 ]] && legacy_tmux_runtime_absent "$session_rows"; then
+        printf 'lane-reaper: projection state=UNKNOWN scope=inventory lane_count=unknown reason=legacy_tmux_runtime_absent next_action=none_until_Reins_activation universal_observer_successor=required successor=Reins exit=0\n' >&2
+        exit 0
+    fi
+    hold list-sessions none unavailable
 fi
 
-killed=0
-cleaned=0
-
-for session in $(tmux list-sessions -F '#{session_name}' 2>/dev/null | grep -E "^hapax-(codex-cx-|claude-)"); do
-    # Check if session has an active process beyond the shell
-    pane_pid=$(tmux list-panes -t "$session" -F '#{pane_pid}' 2>/dev/null | head -1)
-    [[ -z "$pane_pid" ]] && continue
-
-    role="${session#hapax-codex-}"
-    role="${role#hapax-claude-}"
-
-    # Count child processes (excluding the shell itself)
-    children=$(ps --ppid "$pane_pid" -o comm= 2>/dev/null | grep -cv "^fish$\|^bash$\|^zsh$\|^sh$" || echo 0)
-
-    # Check last output for stuck patterns (quota, rate limit, error loops)
-    last_output=$(tmux capture-pane -t "$session" -p 2>/dev/null | grep -v "^$" | tail -3)
-    is_stuck=0
-    if echo "$last_output" | grep -qi "rate.limit\|quota\|429\|Usage limit\|BLOCKED.*quota"; then
-        is_stuck=1
-    fi
-
-    if [[ "$children" -gt 0 && "$is_stuck" -eq 0 ]]; then
-        reset_reap_attempts "$role"  # lane is working again — clear the reap counter
-        continue  # Active process making progress — skip
-    fi
-
-    if [[ "$children" -gt 0 && "$is_stuck" -eq 1 ]]; then
-        # Stuck lane — release the task but DON'T kill the session
-        log "$session: STUCK (quota/rate-limit) — releasing task, keeping session"
-        claim_file="$HOME/.cache/hapax/cc-active-task-$role"
-        if [[ -f "$claim_file" ]]; then
-            claim=$(cat "$claim_file" | tr -d '[:space:]')
-            if [[ -n "$claim" ]]; then
-                for task_file in "$HOME/Documents/Personal/20-projects/hapax-cc-tasks/active/${claim}"*.md; do
-                    if [[ -f "$task_file" ]]; then
-                        sed -i "s/^status: claimed/status: offered/" "$task_file"
-                        sed -i "s/^status: in_progress/status: offered/" "$task_file"
-                        sed -i "s/^assigned_to: .*/assigned_to: unassigned/" "$task_file"
-                        log "  Released task: $claim → offered"
-                    fi
-                done
-            fi
-            rm -f "$claim_file"
-        fi
-        continue  # Don't kill — session may recover
-    fi
-
-    # Dead lane — shell prompt, no worker process. Reap candidacy is governed by the
-    # MEASURED per-lineage tau (not a fixed 30m): silence within tau -> skip (slow-but-
-    # live); past tau -> reap; past tau with attempts exhausted -> escalate + STOP so a
-    # genuinely-wedged lane is surfaced once, never reaped in an infinite loop.
-    last_activity=$(tmux display-message -t "$session" -p '#{session_activity}' 2>/dev/null || echo 0)
-    now=$(date +%s)
-    idle_sec=$(( now - last_activity ))
-
-    attempts=$(reap_attempts "$role")
-    decision=$(reap_decide "$role" "$idle_sec" "$attempts")
-    case "$decision" in
-        skip)
-            continue  # silence within tau — not a reap candidate this cycle
-            ;;
-        escalate)
-            log "$session: WEDGED — reaped ${attempts}x past tau without recovery; escalate + STOP"
-            curl -sf \
-                -d "lane-reaper: $role wedged — reaped ${attempts}x past tau without recovery; STOP (needs attention)" \
-                -H "Title: Lane wedged (reap cap)" -H "Priority: high" -H "Tags: warning,robot" \
-                "${HAPAX_NTFY_URL:-http://localhost:8092}/${HAPAX_NTFY_TOPIC:-hapax}" >/dev/null 2>&1 || true
-            # Governed incident record alongside the ntfy channel.
-            "$(dirname "$(readlink -f "$0")")/hapax-alert" high "Lane wedged (reap cap)" "$role wedged — reaped ${attempts}x past tau without recovery; STOP (needs attention)" --tag lane --record-only
-            continue
-            ;;
-    esac
-
-    log "$session: DEAD idle ${idle_sec}s (tau-governed reap, attempt $((attempts + 1)))"
-
-    # Check for uncommitted work in the session's worktree
-    worktree="$COUNCIL_DIR--$role"
-
-    if [[ -d "$worktree" ]]; then
-        uncommitted=$(git -C "$worktree" status --porcelain 2>/dev/null | wc -l)
-        branch=$(git -C "$worktree" symbolic-ref --short HEAD 2>/dev/null || echo "detached")
-        ahead=$(git -C "$worktree" rev-list --count main..HEAD 2>/dev/null || echo 0)
-
-        if [[ "$uncommitted" -gt 0 ]]; then
-            log "  WARNING: $worktree has $uncommitted uncommitted changes — NOT cleaning"
-        elif [[ "$ahead" -gt 0 ]]; then
-            # Check if branch was merged
-            merged=$(git -C "$COUNCIL_DIR" branch --merged main 2>/dev/null | grep -c "$branch" || echo 0)
-            if [[ "$merged" -gt 0 ]]; then
-                log "  Worktree $worktree: branch $branch merged, cleaning"
-                if [[ "$DRY_RUN" -eq 0 ]]; then
-                    git -C "$COUNCIL_DIR" worktree remove --force "$worktree" 2>/dev/null && ((cleaned++)) || true
-                fi
-            else
-                log "  Worktree $worktree: branch $branch has $ahead unpushed commits — NOT cleaning"
-            fi
-        else
-            log "  Worktree $worktree: clean, removing"
-            if [[ "$DRY_RUN" -eq 0 ]]; then
-                git -C "$COUNCIL_DIR" worktree remove --force "$worktree" 2>/dev/null && ((cleaned++)) || true
-            fi
-        fi
-    fi
-
-    # Clear stale claim file
-    claim_file="$HOME/.cache/hapax/cc-active-task-$role"
-    if [[ -f "$claim_file" ]]; then
-        claim=$(cat "$claim_file" | tr -d '[:space:]')
-        if [[ -n "$claim" ]]; then
-            # Release the task back to offered
-            for task_file in "$HOME/Documents/Personal/20-projects/hapax-cc-tasks/active/${claim}"*.md; do
-                if [[ -f "$task_file" ]]; then
-                    sed -i "s/^status: claimed/status: offered/" "$task_file"
-                    sed -i "s/^status: in_progress/status: offered/" "$task_file"
-                    sed -i "s/^assigned_to: .*/assigned_to: unassigned/" "$task_file"
-                    log "  Released task: $claim → offered"
-                fi
-            done
-        fi
-        rm -f "$claim_file"
-    fi
-
-    # Reap (governed: a reap is a recovery action). MUST-FIX: the kill is a single
-    # PID-targeted os.kill(SIGTERM) of the lane's worker (or its idle shell), NOT a
-    # whole-session teardown — the worker terminates gracefully and reaps its own
-    # children rather than the entire pane tree taking a HUP (bounded, no tree-kill).
-    if [[ "$DRY_RUN" -eq 0 ]]; then
-        if governor_permit "lane:$role"; then
-            reap_kill "$(target_pid_for "$pane_pid")" && ((killed++)) || true
-            bump_reap_attempts "$role"
-            governor_record "lane:$role" ok
-            log "  Reaped lane $session via os.kill (pid $(target_pid_for "$pane_pid"))"
-        else
-            log "  RecoveryGovernor deferred reap of $session (backoff/pressure); retry next cycle"
-        fi
+while [[ -n "$session_rows" ]]; do
+    if [[ "$session_rows" == *$'\n'* ]]; then
+        row=${session_rows%%$'\n'*}
+        session_rows=${session_rows#*$'\n'}
     else
-        log "  DRY RUN: would os.kill $(target_pid_for "$pane_pid") (lane $session)"
+        row="$session_rows"
+        session_rows=""
+    fi
+
+    [[ -n "$row" ]] || hold list-sessions none malformed
+    split_five "$row" || hold list-sessions none malformed
+    [[ "$field_1" =~ ^\$(0|[1-9][0-9]*)$ ]] || hold list-sessions none malformed
+    canonical_nonnegative_decimal "$field_3" || hold list-sessions none malformed
+    canonical_nonnegative_decimal "$field_4" || hold list-sessions none malformed
+    canonical_positive_decimal "$field_5" || hold list-sessions none malformed
+
+    for existing in "${seen_session_ids[@]}"; do
+        [[ "$existing" != "$field_1" ]] || hold list-sessions none incoherent
+    done
+    for existing in "${seen_session_names[@]}"; do
+        [[ "$existing" != "$field_2" ]] || hold list-sessions none incoherent
+    done
+    seen_session_ids+=("$field_1")
+    seen_session_names+=("$field_2")
+
+    if [[ "$field_2" =~ ^hapax-(codex-cx-|claude-)[A-Za-z0-9][A-Za-z0-9_-]*$ ]]; then
+        role=${field_2#hapax-codex-}
+        role=${role#hapax-claude-}
+        eligible_session_ids+=("$field_1")
+        eligible_session_names+=("$field_2")
+        eligible_session_roles+=("$role")
     fi
 done
 
-log "Done: killed=$killed cleaned=$cleaned"
+session_count=${#eligible_session_ids[@]}
+for ((left_index = 0; left_index < session_count; left_index++)); do
+    for ((right_index = left_index + 1; right_index < session_count; right_index++)); do
+        if numeric_id_less_than "${eligible_session_ids[right_index]}" "${eligible_session_ids[left_index]}"; then
+            swap_eligible_sessions "$left_index" "$right_index"
+        fi
+    done
+done
 
-if [[ "$DRY_RUN" -eq 0 && $(( killed + cleaned )) -gt 0 ]]; then
-    systemctl --user start hapax-cc-hygiene.service 2>/dev/null || true
-    log "Triggered hygiene sweep after cleanup"
+inventory_pane_count=0
+inventory_live_pane_count=0
+inventory_active_pane_count=0
+
+for ((session_index = 0; session_index < session_count; session_index++)); do
+    session_id=${eligible_session_ids[session_index]}
+    session_name=${eligible_session_names[session_index]}
+    session_role=${eligible_session_roles[session_index]}
+
+    if pane_capture=$(capture_tmux list-panes -s -t "$session_id" -F "$PANE_FORMAT"); then
+        pane_rows=${pane_capture%"$CAPTURE_SENTINEL"}
+    else
+        hold list-panes "session_id=$session_id" unavailable
+    fi
+    [[ -n "$pane_rows" ]] || hold list-panes "session_id=$session_id" incoherent
+
+    declare -a pane_ids=()
+    declare -a pane_pids=()
+    declare -a pane_dead=()
+    declare -a pane_active=()
+
+    while [[ -n "$pane_rows" ]]; do
+        if [[ "$pane_rows" == *$'\n'* ]]; then
+            row=${pane_rows%%$'\n'*}
+            pane_rows=${pane_rows#*$'\n'}
+        else
+            row="$pane_rows"
+            pane_rows=""
+        fi
+
+        [[ -n "$row" ]] || hold list-panes "session_id=$session_id" malformed
+        split_five "$row" || hold list-panes "session_id=$session_id" malformed
+        [[ "$field_1" =~ ^\$(0|[1-9][0-9]*)$ ]] || \
+            hold list-panes "session_id=$session_id" malformed
+        [[ "$field_2" =~ ^%(0|[1-9][0-9]*)$ ]] || \
+            hold list-panes "session_id=$session_id" malformed
+        canonical_positive_decimal "$field_3" || \
+            hold list-panes "session_id=$session_id" malformed
+        [[ "$field_4" =~ ^[01]$ ]] || hold list-panes "session_id=$session_id" malformed
+        [[ "$field_5" =~ ^[01]$ ]] || hold list-panes "session_id=$session_id" malformed
+        [[ "$field_1" == "$session_id" ]] || \
+            hold list-panes "session_id=$session_id" incoherent
+
+        for existing in "${all_pane_ids[@]}"; do
+            [[ "$existing" != "$field_2" ]] || \
+                hold list-panes "session_id=$session_id" incoherent
+        done
+        all_pane_ids+=("$field_2")
+        pane_ids+=("$field_2")
+        pane_pids+=("$field_3")
+        pane_dead+=("$field_4")
+        pane_active+=("$field_5")
+    done
+
+    pane_count=${#pane_ids[@]}
+    for ((left_index = 0; left_index < pane_count; left_index++)); do
+        for ((right_index = left_index + 1; right_index < pane_count; right_index++)); do
+            if numeric_id_less_than "${pane_ids[right_index]}" "${pane_ids[left_index]}"; then
+                swap_panes "$left_index" "$right_index"
+            fi
+        done
+    done
+
+    live_pane_count=0
+    active_pane_count=0
+    for ((pane_index = 0; pane_index < pane_count; pane_index++)); do
+        pane_id=${pane_ids[pane_index]}
+        pane_pid=${pane_pids[pane_index]}
+        dead_value=${pane_dead[pane_index]}
+        active_value=${pane_active[pane_index]}
+
+        if display_capture=$(capture_tmux display-message -p -t "$pane_id" "$PANE_FORMAT"); then
+            display_rows=${display_capture%"$CAPTURE_SENTINEL"}
+        else
+            hold display-message "session_id=$session_id,pane_id=$pane_id" unavailable
+        fi
+        [[ -n "$display_rows" ]] || \
+            hold display-message "session_id=$session_id,pane_id=$pane_id" malformed
+
+        if [[ "$display_rows" == *$'\n'* ]]; then
+            display_row=${display_rows%%$'\n'*}
+            display_remainder=${display_rows#*$'\n'}
+            [[ -z "$display_remainder" ]] || \
+                hold display-message "session_id=$session_id,pane_id=$pane_id" malformed
+        else
+            display_row="$display_rows"
+        fi
+        [[ -n "$display_row" ]] || \
+            hold display-message "session_id=$session_id,pane_id=$pane_id" malformed
+
+        split_five "$display_row" || \
+            hold display-message "session_id=$session_id,pane_id=$pane_id" malformed
+        [[ "$field_1" =~ ^\$(0|[1-9][0-9]*)$ ]] || \
+            hold display-message "session_id=$session_id,pane_id=$pane_id" malformed
+        [[ "$field_2" =~ ^%(0|[1-9][0-9]*)$ ]] || \
+            hold display-message "session_id=$session_id,pane_id=$pane_id" malformed
+        canonical_positive_decimal "$field_3" || \
+            hold display-message "session_id=$session_id,pane_id=$pane_id" malformed
+        [[ "$field_4" =~ ^[01]$ ]] || \
+            hold display-message "session_id=$session_id,pane_id=$pane_id" malformed
+        [[ "$field_5" =~ ^[01]$ ]] || \
+            hold display-message "session_id=$session_id,pane_id=$pane_id" malformed
+        [[ "$field_1" == "$session_id" && "$field_2" == "$pane_id" && \
+            "$field_3" == "$pane_pid" && "$field_4" == "$dead_value" && \
+            "$field_5" == "$active_value" ]] || \
+            hold display-message "session_id=$session_id,pane_id=$pane_id" incoherent
+
+        if [[ "$dead_value" -eq 0 ]]; then
+            live_pane_count=$((live_pane_count + 1))
+        fi
+        if [[ "$active_value" -eq 1 ]]; then
+            active_pane_count=$((active_pane_count + 1))
+        fi
+    done
+
+    inventory_pane_count=$((inventory_pane_count + pane_count))
+    inventory_live_pane_count=$((inventory_live_pane_count + live_pane_count))
+    inventory_active_pane_count=$((inventory_active_pane_count + active_pane_count))
+    lane_lines+=("lane-reaper: projection state=UNKNOWN scope=lane session_id=$session_id session_name=$session_name role=$session_role pane_count=$pane_count live_pane_count=$live_pane_count active_pane_count=$active_pane_count reason=direct_tmux_metadata_not_activation_grade universal_observer_successor=required successor=Reins")
+done
+
+for line in "${lane_lines[@]}"; do
+    printf '%s\n' "$line" >&2
+done
+
+if [[ "$session_count" -eq 0 ]]; then
+    printf 'lane-reaper: projection state=UNKNOWN scope=inventory lane_count=0 reason=valid_empty_inventory universal_observer_successor=required successor=Reins\n' >&2
+else
+    printf 'lane-reaper: projection state=UNKNOWN scope=inventory lane_count=%s pane_count=%s live_pane_count=%s active_pane_count=%s reason=direct_tmux_metadata_not_activation_grade universal_observer_successor=required successor=Reins\n' \
+        "$session_count" "$inventory_pane_count" "$inventory_live_pane_count" \
+        "$inventory_active_pane_count" >&2
 fi
