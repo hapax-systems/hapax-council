@@ -63,19 +63,19 @@ class TestGateLogic(unittest.TestCase):
             yaml.dump(entries, default_flow_style=False, sort_keys=False), encoding="utf-8"
         )
 
-    def test_no_ledger_file_passes(self) -> None:
+    def test_no_ledger_file_refuses(self) -> None:
         rc = disposition_check.gate(self.note_path, "test-task", ledger_path=self.ledger_path)
-        self.assertEqual(rc, 0)
+        self.assertEqual(rc, 2)
 
-    def test_empty_ledger_passes(self) -> None:
+    def test_empty_ledger_refuses(self) -> None:
         self.ledger_path.write_text("", encoding="utf-8")
         rc = disposition_check.gate(self.note_path, "test-task", ledger_path=self.ledger_path)
-        self.assertEqual(rc, 0)
+        self.assertEqual(rc, 2)
 
-    def test_malformed_ledger_passes(self) -> None:
+    def test_malformed_ledger_refuses(self) -> None:
         self.ledger_path.write_text(":::not yaml{{{", encoding="utf-8")
         rc = disposition_check.gate(self.note_path, "test-task", ledger_path=self.ledger_path)
-        self.assertEqual(rc, 0)
+        self.assertEqual(rc, 2)
 
     def test_no_entries_for_task_passes(self) -> None:
         self._write_ledger([_make_entry(task_id="other-task")])

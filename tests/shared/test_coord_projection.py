@@ -3706,11 +3706,10 @@ def test_cas_rollback_update_relink_refuses_racer_at_dest(tmp_path: Path) -> Non
     os.link(src, dst)
     displaced.write_bytes(b"before-image")
     fd = os.open(tmp_path, os.O_RDONLY | os.O_DIRECTORY)
-    real_unlink = os.unlink
+    real_link = os.link
 
-    def plant_after_dest_unlink(name: str, **kwargs: object) -> None:
-        real_unlink(name, **kwargs)
-        if name == "note.md":
+    def plant_dest_then_link(src_name: str, dst_name: str, **kwargs: object) -> None:
+        if dst_name == "note.md":
             racer = os.open(
                 "note.md",
                 os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_CLOEXEC,
@@ -3721,6 +3720,7 @@ def test_cas_rollback_update_relink_refuses_racer_at_dest(tmp_path: Path) -> Non
                 os.write(racer, b"racer")
             finally:
                 os.close(racer)
+        real_link(src_name, dst_name, **kwargs)
 
     try:
         restored = cp.FileProjection.from_snapshot(
@@ -3732,7 +3732,7 @@ def test_cas_rollback_update_relink_refuses_racer_at_dest(tmp_path: Path) -> Non
         )
         scratch = cp._scratch_for(restored, "txn-relink-racer", 0)
         scratch = dataclasses.replace(scratch, path=src)
-        with mock.patch.object(cp.os, "unlink", side_effect=plant_after_dest_unlink):
+        with mock.patch.object(cp.os, "link", side_effect=plant_dest_then_link):
             assert cp._cas_rollback(restored, scratch) is False
         assert dst.read_bytes() == b"racer"
         assert displaced.read_bytes() == b"before-image"

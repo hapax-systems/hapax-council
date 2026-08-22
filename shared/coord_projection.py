@@ -3707,7 +3707,11 @@ def _drop_src_name(src_name: str) -> str:
 
 
 def _drain_peer_aliases(dir_fd: int, keep_name: str) -> None:
-    """Drop every extra name that still shares keep_name's inode."""
+    """Drop every extra name that still shares keep_name's inode.
+
+    Rename each extra aside first. If the parked name is not keep's inode,
+    it is a racer: put it back and skip. Do not unlink a replacement.
+    """
     fcntl.flock(dir_fd, fcntl.LOCK_EX)
     try:
         try:
@@ -3717,8 +3721,17 @@ def _drain_peer_aliases(dir_fd: int, keep_name: str) -> None:
         for extra in names:
             if extra == keep_name:
                 continue
-            if _same_regular_inode(dir_fd, extra, keep_name):
-                os.unlink(extra, dir_fd=dir_fd)
+            if not _same_regular_inode(dir_fd, extra, keep_name):
+                continue
+            unique = f".{extra}.drain.{os.getpid()}.{secrets.token_hex(4)}"
+            try:
+                os.rename(extra, unique, src_dir_fd=dir_fd, dst_dir_fd=dir_fd)
+            except OSError:
+                continue
+            if not _same_regular_inode(dir_fd, unique, keep_name):
+                os.rename(unique, extra, src_dir_fd=dir_fd, dst_dir_fd=dir_fd)
+                continue
+            os.unlink(unique, dir_fd=dir_fd)
     finally:
         fcntl.flock(dir_fd, fcntl.LOCK_UN)
 

@@ -425,6 +425,29 @@ def _default_done_gate_runner(
         ]
         if debt_reason:
             disposition_command.extend(["--debt", debt_reason])
+        ledger_src = Path(
+            environment.get(
+                "HAPAX_ARTIFACT_LEDGER_PATH",
+                str(
+                    Path.home() / ".cache" / "hapax" / "document-pipeline" / "artifact-ledger.yaml"
+                ),
+            )
+        )
+        if (
+            not ledger_src.is_file()
+            and environment.get("HAPAX_ARTIFACT_DISPOSITION_GATE_OFF") != "1"
+        ):
+            raise TerminalCloseError(
+                "terminal_close_artifact_ledger_missing",
+                "create a well-formed artifact ledger before close",
+                str(ledger_src),
+            )
+        if ledger_src.is_file():
+            ledger_copy = disposition_preflight.with_name(
+                disposition_preflight.name + ".ledger.yaml"
+            )
+            ledger_copy.write_bytes(ledger_src.read_bytes())
+            environment["HAPAX_ARTIFACT_LEDGER_PATH"] = str(ledger_copy)
         commands.append(("artifact-disposition", disposition_command))
     if retroactive:
         evidence = [
@@ -523,15 +546,9 @@ def _default_done_gate_runner(
                     result.stderr.strip(),
                 )
             gate_off = (
-                (
-                    name == "artifact-disposition"
-                    and environment.get("HAPAX_ARTIFACT_DISPOSITION_GATE_OFF") == "1"
-                )
-                or (
-                    name == "pr-merge"
-                    and environment.get("HAPAX_PR_MERGE_GATE_OFF") == "1"
-                )
-            )
+                name == "artifact-disposition"
+                and environment.get("HAPAX_ARTIFACT_DISPOSITION_GATE_OFF") == "1"
+            ) or (name == "pr-merge" and environment.get("HAPAX_PR_MERGE_GATE_OFF") == "1")
             evidence.append(
                 CloseGateEvidence(
                     gate=name,
@@ -762,9 +779,7 @@ def close_task(
             "terminal_close_preflight_note_drift",
             "rerun close against one stable exact note preimage",
         )
-    cookie = snapshot.path.with_name(
-        f".{snapshot.path.name}.close-invocation.{os.getpid()}"
-    )
+    cookie = snapshot.path.with_name(f".{snapshot.path.name}.close-invocation.{os.getpid()}")
     invocation = cookie.read_text(encoding="utf-8").strip() if cookie.is_file() else ""
     if cookie.is_file():
         cookie.unlink()

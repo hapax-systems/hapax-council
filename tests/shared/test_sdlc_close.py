@@ -235,6 +235,9 @@ def _fixture(
         "HAPAX_PR_MERGE_GATE_OFF",
     ):
         monkeypatch.delenv(key, raising=False)
+    ledger = tmp_path / "artifact-ledger.yaml"
+    ledger.write_text("[]\n", encoding="utf-8")
+    monkeypatch.setenv("HAPAX_ARTIFACT_LEDGER_PATH", str(ledger))
     note = active / f"{task_id}.md"
     note.write_text(
         f"""---
@@ -892,9 +895,7 @@ def test_debt_reason_is_forwarded_to_disposition_checker(
     assert disposition[0][-2:] == ["--debt", "service outage"]
     assert disposition[0][3] != str(snapshot.path)
     assert b"debt-applied" not in snapshot.path.read_bytes()
-    cookie = snapshot.path.with_name(
-        f".{snapshot.path.name}.close-invocation.{os.getpid()}"
-    )
+    cookie = snapshot.path.with_name(f".{snapshot.path.name}.close-invocation.{os.getpid()}")
     assert cookie.is_file()
     invocation = cookie.read_text(encoding="utf-8").strip()
     after = snapshot.path.with_name(
@@ -964,9 +965,7 @@ def test_non_retroactive_preserves_disposition_bypass_flag(
 
     monkeypatch.setattr(sdlc_close.subprocess, "run", fake_run)
 
-    evidence = sdlc_close._default_done_gate_runner(
-        snapshot, "done", "4483", False, None
-    )
+    evidence = sdlc_close._default_done_gate_runner(snapshot, "done", "4483", False, None)
 
     assert captured
     for _command, environment in captured:
