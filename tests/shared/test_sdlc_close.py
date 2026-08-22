@@ -1046,6 +1046,7 @@ def test_killswitch_env_does_not_bypass_pre_gate0_echo_stub(
         _close(fixture)
 
     assert raised.value.reason_code == "canon_pre_gate0_claim_migration_required"
+    assert "recover-claim-publications" in raised.value.repair_action
     assert fixture.note.is_file()
     assert not (fixture.vault / "closed" / fixture.note.name).exists()
 

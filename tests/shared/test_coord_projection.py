@@ -3656,6 +3656,48 @@ def test_cas_rollback_delete_nlink2_keeps_dest(tmp_path: Path) -> None:
     assert not parked.exists()
 
 
+def test_drain_peer_aliases_leaves_a_replacement(tmp_path: Path) -> None:
+    keep = tmp_path / "note.md"
+    extra = tmp_path / cp._drop_src_name("note.md")
+    racer = tmp_path / "racer.md"
+    keep.write_bytes(b"keep")
+    os.link(keep, extra)
+    racer.write_bytes(b"racer")
+    fd = os.open(tmp_path, os.O_RDONLY | os.O_DIRECTORY)
+    try:
+        cp._drain_peer_aliases(fd, "note.md")
+        assert keep.read_bytes() == b"keep"
+        assert not extra.exists()
+        assert racer.read_bytes() == b"racer"
+    finally:
+        os.close(fd)
+
+
+def test_cas_rollback_update_three_link_park_restores_preimage(tmp_path: Path) -> None:
+    src = tmp_path / "scratch"
+    dst = tmp_path / "note.md"
+    displaced = tmp_path / cp._exchange_displaced_name("note.md")
+    drop = tmp_path / cp._drop_src_name("note.md")
+    src.write_bytes(b"after-image")
+    dst.write_bytes(b"before-image")
+    os.link(dst, displaced)
+    os.link(dst, drop)
+    restored = cp.FileProjection.from_snapshot(
+        dst,
+        before=b"before-image",
+        before_mode=stat.S_IMODE(dst.stat().st_mode),
+        after=b"after-image",
+        after_mode=stat.S_IMODE(src.stat().st_mode),
+    )
+    scratch = cp._scratch_for(restored, "txn-three-link", 0)
+    scratch = dataclasses.replace(scratch, path=src)
+    assert cp._cas_rollback(restored, scratch) is True
+    assert dst.read_bytes() == b"before-image"
+    assert not displaced.exists()
+    assert not drop.exists()
+    assert src.read_bytes() == b"after-image"
+
+
 def test_cas_rollback_update_relink_refuses_racer_at_dest(tmp_path: Path) -> None:
     src = tmp_path / "scratch"
     dst = tmp_path / "note.md"

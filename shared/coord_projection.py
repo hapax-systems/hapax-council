@@ -4300,9 +4300,13 @@ def _cas_rollback(projection: FileProjection, scratch: _ProjectionScratch) -> bo
                 # A drop-link extra may also be present (nlink>=3).
                 if not _same_regular_inode(dir_fd, name, displaced_name):
                     return False
-                drop = _drop_link_name(name)
-                if _same_regular_inode(dir_fd, name, drop):
-                    os.unlink(drop, dir_fd=dir_fd)
+                for extra in (
+                    _drop_link_name(name),
+                    _drop_src_name(name),
+                    _drop_src_name(scratch.path.name),
+                ):
+                    if _same_regular_inode(dir_fd, name, extra):
+                        os.unlink(extra, dir_fd=dir_fd)
                 os.unlink(displaced_name, dir_fd=dir_fd)
                 _drain_peer_aliases(dir_fd, name)
                 os.fsync(dir_fd)
@@ -4343,7 +4347,12 @@ def _cas_rollback(projection: FileProjection, scratch: _ProjectionScratch) -> bo
                     # this repair must run first.
                     if not _same_regular_inode(dir_fd, name, scratch.path.name):
                         return False
-                    os.unlink(name, dir_fd=dir_fd)
+                    try:
+                        _drop_extra_link(dir_fd, name, scratch.path.name)
+                    except OSError as exc:
+                        if exc.errno == errno.EEXIST:
+                            return False
+                        raise
                     try:
                         os.link(
                             displaced_name,
@@ -4356,9 +4365,7 @@ def _cas_rollback(projection: FileProjection, scratch: _ProjectionScratch) -> bo
                         if exc.errno == errno.EEXIST:
                             return False
                         raise
-                    if not _same_regular_inode(dir_fd, name, displaced_name):
-                        return False
-                    os.unlink(displaced_name, dir_fd=dir_fd)
+                    _drain_peer_aliases(dir_fd, name)
                     os.fsync(dir_fd)
                     return True
             try:

@@ -677,7 +677,7 @@ def close_task(
         except (CanonEchoError, OSError, RuntimeError, ValueError) as exc:
             raise TerminalCloseError(
                 getattr(exc, "reason_code", "terminal_close_echo_unavailable"),
-                "unset HAPAX_GATE0B_CLAIM_PUBLICATION_OFF and close with an admitted publication, or wait for the Echo cutover follow-on",
+                "unset HAPAX_GATE0B_CLAIM_PUBLICATION_OFF, recover or publish an admitted Gate 0B journal (`cc-claim --recover-claim-publications`), then cc-close; or wait for the Echo cutover follow-on",
                 str(exc),
             ) from exc
     relays = _relay_snapshots(cache_dir, actor, session_id, task_id)
