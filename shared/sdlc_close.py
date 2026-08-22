@@ -355,14 +355,12 @@ def _default_done_gate_runner(
     # PR as the done evidence. AC / receipt / disposition stay live for
     # ordinary close. Rapid-close already required --retroactive before this
     # slice. Do not restore those paperwork gates here.
+    receipt_off = os.environ.get("HAPAX_ACCEPTANCE_RECEIPT_GATE_OFF") == "1"
     if not retroactive:
         criteria = acceptance_criteria_state(snapshot.content.decode("utf-8"))
         if criteria.section_present and criteria.unchecked_items:
             blockers.append("acceptance_criteria_incomplete")
-        if (
-            requires_acceptance_receipt(snapshot.frontmatter)
-            and os.environ.get("HAPAX_ACCEPTANCE_RECEIPT_GATE_OFF") != "1"
-        ):
+        if requires_acceptance_receipt(snapshot.frontmatter) and not receipt_off:
             blockers.extend(acceptance_receipt_blockers(snapshot.frontmatter, snapshot.path))
         claimed_at = snapshot.frontmatter.get("claimed_at")
         if claimed_at and os.environ.get("HAPAX_RAPID_CLOSE_OFF") != "1":
@@ -459,6 +457,19 @@ def _default_done_gate_runner(
                 observed_at=observed_at,
             )
         ]
+        if receipt_off and requires_acceptance_receipt(snapshot.frontmatter):
+            evidence.append(
+                CloseGateEvidence(
+                    gate="acceptance-receipt",
+                    outcome="not_applicable",
+                    task_id=snapshot.task_id,
+                    note_sha256=snapshot.sha256,
+                    authority_case=authority_case,
+                    final_status=final_status,
+                    observed_at=observed_at,
+                    reason_code="HAPAX_ACCEPTANCE_RECEIPT_GATE_OFF",
+                )
+            )
     debt_preflight = next(
         (
             Path(command[3])
