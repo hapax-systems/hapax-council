@@ -54,6 +54,9 @@ def main() -> int:
 
     failures: list[str] = []
     checked_any = False
+    # Counted separately from checked_any: a negative-sweep transcript must never make the
+    # command look as though it verified the equality assertion.
+    groundtruth_checked = 0
 
     print("== equality against independently measured ground truth ==")
     for session_id, (want_count, want_positions) in GROUND_TRUTH.items():
@@ -62,6 +65,7 @@ def main() -> int:
             print(f"  {session_id[:8]}  SKIP (transcript not on this host)")
             continue
         checked_any = True
+        groundtruth_checked += 1
         result = parse_session(path, project_path=str(pathlib.Path.home()))
         positions = [e.record_position for e in result.compaction_events]
         got = len(result.compaction_events)
@@ -115,11 +119,21 @@ def main() -> int:
                 failures.append(f"{path.name}: parsed {len(result.compaction_events)} != raw {raw}")
     print(f"  {agreed} agree, {disagreed} disagree")
 
+    # The equality assertion is the load-bearing half. The sweeps are supporting evidence and
+    # must never stand in for it: without a pinned transcript this command has not rechecked
+    # anything, and saying PASSED would be the silent-pass it exists to prevent.
+    print()
+    if groundtruth_checked == 0:
+        print("NOT RECHECKED: no pinned ground-truth transcript on this host.")
+        print(f"  wanted one of: {', '.join(sorted(GROUND_TRUTH))}")
+        print("  The negative and agreement sweeps above cannot substitute for the equality")
+        print("  assertion. Re-run on a host holding a pinned transcript, or pin one here.")
+        return 0 if not failures else 1
+
     if not checked_any:
-        print("\nSKIP: no Claude Code transcripts on this host; nothing to recheck.")
+        print("SKIP: no Claude Code transcripts on this host; nothing to recheck.")
         return 0
 
-    print()
     if failures:
         print("FAILURES:")
         for f in failures:
