@@ -359,7 +359,12 @@ GLMCP_ADMISSION_CONTRACT_BY_ENDPOINT = {
 }
 # Keep this fail-closed. This receipt gates the direct GLM review route, so the
 # model must match scripts/hapax-glmcp-reviewer's Coding Plan adapter.
-GLMCP_ADMISSION_MODELS = frozenset({"glm-5.2"})
+#
+# Keep BOTH ids — see shared/quota_spend_ledger.py GLMCP_ADMISSION_MODELS. The
+# deployed copy of THIS script is a source-activation of main, so between landing
+# a model bump and running hapax-source-activate it still refuses the new id and
+# drops those receipts every 10-minute tick. The overlap is the transition path.
+GLMCP_ADMISSION_MODELS = frozenset({"glm-5.3", "glm-5.2"})
 GLMCP_ADMISSION_FIELDS = frozenset(
     {
         "billing_mode",
@@ -1466,7 +1471,7 @@ def active_glmcp_admission_receipts(
         if model not in GLMCP_ADMISSION_MODELS:
             reject(
                 path,
-                "model missing or unsupported; expected documented GLM review model id glm-5.2",
+                "model missing or unsupported; expected documented GLM review model id glm-5.3 or remapped glm-5.2",
             )
             continue
         receipt_evidence_ref = fields.get("evidence_ref", "").strip()
@@ -1676,7 +1681,7 @@ def active_glmcp_payg_spend_receipts(
         if fields.get("provider", "") != GLMCP_PAYG_BUDGET_PROVIDER:
             reject(path, "provider missing or unsupported")
             continue
-        if fields.get("model_or_engine", "") != "glm-5.2":
+        if fields.get("model_or_engine", "") not in GLMCP_ADMISSION_MODELS:
             reject(path, "model_or_engine missing or unsupported")
             continue
         if fields.get("estimated_cost_usd", "") != GLMCP_PAYG_ESTIMATED_COST_USD:
