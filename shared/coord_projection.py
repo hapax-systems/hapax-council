@@ -4270,6 +4270,11 @@ def _cas_rollback(projection: FileProjection, scratch: _ProjectionScratch) -> bo
                     read = _read_regular_bytes(dir_fd, extra, _MAX_LIFECYCLE_BLOB_BYTES)
                     if read is None or read[0] != projection.before:
                         continue
+                    if (
+                        projection.before_mode is not None
+                        and stat.S_IMODE(read[1].st_mode) != projection.before_mode
+                    ):
+                        continue
                     try:
                         os.link(
                             extra,

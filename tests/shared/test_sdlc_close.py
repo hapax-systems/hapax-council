@@ -871,6 +871,9 @@ def test_debt_reason_is_forwarded_to_disposition_checker(
 
     def fake_run(command, *, env, **_kwargs):
         calls.append(list(command))
+        target = Path(command[3])
+        if command[-2:] == ["--debt", "service outage"]:
+            target.write_bytes(target.read_bytes() + b"\n# debt-applied\n")
         return subprocess.CompletedProcess(command, 0, stdout="", stderr="")
 
     monkeypatch.setattr(sdlc_close.subprocess, "run", fake_run)
@@ -887,7 +890,7 @@ def test_debt_reason_is_forwarded_to_disposition_checker(
     assert len(disposition) == 1
     assert disposition[0][-2:] == ["--debt", "service outage"]
     assert disposition[0][3] != str(snapshot.path)
-    assert snapshot.path.read_bytes() == snapshot.content
+    assert b"debt-applied" in snapshot.path.read_bytes()
 
 
 def test_retroactive_strips_only_merge_gate_off(

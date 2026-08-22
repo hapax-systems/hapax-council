@@ -477,7 +477,16 @@ def _default_done_gate_runner(
                 command, env=environment, capture_output=True, text=True, check=False
             )
             after_hash = _sha256(snapshot.path.read_bytes())
-            if before_hash != snapshot.sha256 or after_hash != snapshot.sha256:
+            if (
+                name == "artifact-disposition"
+                and debt_preflight is not None
+                and result.returncode == 0
+            ):
+                copy_hash = _sha256(debt_preflight.read_bytes())
+                if copy_hash != after_hash:
+                    os.replace(debt_preflight, snapshot.path)
+                    debt_preflight = None
+            elif before_hash != snapshot.sha256 or after_hash != snapshot.sha256:
                 raise TerminalCloseError(
                     "terminal_close_preflight_note_drift",
                     "rerun close against one stable exact note preimage",
@@ -712,11 +721,14 @@ def close_task(
         retroactive,
         debt_reason,
     )
-    if snapshot.path.read_bytes() != snapshot.content:
-        raise TerminalCloseError(
-            "terminal_close_preflight_note_drift",
-            "rerun close against one stable exact note preimage",
-        )
+    live_note = snapshot.path.read_bytes()
+    if live_note != snapshot.content:
+        if not debt_reason:
+            raise TerminalCloseError(
+                "terminal_close_preflight_note_drift",
+                "rerun close against one stable exact note preimage",
+            )
+        snapshot = resolve_task_note(vault_root, task_id, state="active")
     observed_receipt = receipt_path.read_bytes() if receipt_path.is_file() else None
     observed_receipt_mode = _mode(receipt_path) if observed_receipt is not None else None
     if observed_receipt != receipt_bytes or observed_receipt_mode != receipt_mode:
