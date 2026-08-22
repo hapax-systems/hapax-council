@@ -3723,15 +3723,33 @@ def _drain_peer_aliases(dir_fd: int, keep_name: str) -> None:
         fcntl.flock(dir_fd, fcntl.LOCK_UN)
 
 
-def _hardlink_extra_names(live_name: str, scratch_name: str) -> tuple[str, ...]:
-    names = (
+def _hardlink_extra_names(
+    dir_fd: int,
+    live_name: str,
+    scratch_name: str,
+) -> tuple[str, ...]:
+    names = [
         scratch_name,
         _drop_link_name(scratch_name),
         _drop_src_name(scratch_name),
         _drop_link_name(live_name),
         _drop_src_name(live_name),
-    )
-    return tuple(name for name in names if name != live_name)
+    ]
+    try:
+        listed = os.listdir(dir_fd)
+    except OSError:
+        listed = []
+    for entry in listed:
+        if entry.endswith(".drop-src") or entry.endswith(".drop-link") or ".drop-src." in entry:
+            names.append(entry)
+    seen: dict[str, None] = {}
+    ordered: list[str] = []
+    for extra in names:
+        if extra == live_name or extra in seen:
+            continue
+        seen[extra] = None
+        ordered.append(extra)
+    return tuple(ordered)
 
 
 def _read_regular_bytes(
@@ -4207,7 +4225,7 @@ def _cas_rollback(projection: FileProjection, scratch: _ProjectionScratch) -> bo
                 dest_stat = None
             extras = [
                 extra
-                for extra in _hardlink_extra_names(name, scratch.path.name)
+                for extra in _hardlink_extra_names(dir_fd, name, scratch.path.name)
                 if _same_regular_inode(dir_fd, name, extra)
             ]
             if (
@@ -4244,11 +4262,11 @@ def _cas_rollback(projection: FileProjection, scratch: _ProjectionScratch) -> bo
                 dest_stat = None
             extras = [
                 extra
-                for extra in _hardlink_extra_names(name, scratch.path.name)
+                for extra in _hardlink_extra_names(dir_fd, name, scratch.path.name)
                 if _same_regular_inode(dir_fd, name, extra)
             ]
             if dest_stat is None and projection.before is not None:
-                for extra in _hardlink_extra_names(name, scratch.path.name):
+                for extra in _hardlink_extra_names(dir_fd, name, scratch.path.name):
                     read = _read_regular_bytes(dir_fd, extra, _MAX_LIFECYCLE_BLOB_BYTES)
                     if read is None or read[0] != projection.before:
                         continue
@@ -4295,6 +4313,9 @@ def _cas_rollback(projection: FileProjection, scratch: _ProjectionScratch) -> bo
                 and stat.S_ISREG(dest_stat.st_mode)
                 and dest_stat.st_ino == displaced_stat.st_ino
                 and dest_stat.st_nlink >= 2
+                and projection.before_mode is not None
+                and stat.S_IMODE(dest_stat.st_mode) == projection.before_mode
+                and stat.S_IMODE(displaced_stat.st_mode) == projection.before_mode
             ):
                 # Crash after parking dest onto displaced, before unlinking dest.
                 # A drop-link extra may also be present (nlink>=3).
@@ -4459,7 +4480,7 @@ def _cas_rollback(projection: FileProjection, scratch: _ProjectionScratch) -> bo
                         if exc.errno == errno.EEXIST:
                             return False
                         raise
-                    for extra in _hardlink_extra_names(name, scratch.path.name):
+                    for extra in _hardlink_extra_names(dir_fd, name, scratch.path.name):
                         if extra == name:
                             continue
                         if _same_regular_inode(dir_fd, name, extra):
