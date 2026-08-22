@@ -47,6 +47,11 @@ canonical_status_hash=""
 origin_sha="unknown"
 active_head="unknown"
 candidate_worktree=""
+candidate_existing_head=""
+candidate_replacement_needed=0
+candidate_replacement_reason=""
+candidate_reset_needed=0
+candidate_tracked_drift_detected=0
 active_source_target=""
 dependency_sync_status="not_started"
 dependency_sync_message=""
@@ -60,8 +65,14 @@ rollback_status="not_needed"
 rollback_message=""
 quarantined_untracked_count=0
 quarantined_untracked_path=""
+quarantined_untracked_status="none"
+untracked_quarantine_sweep_count=0
+quarantined_tracked_count=0
+quarantined_tracked_path=""
+quarantined_tracked_status="none"
 quarantined_symlink_count=0
 runtime_profile_link_count=0
+source_quarantine_path=""
 audio_critical_paths=(
     agents/studio_compositor/director_loop.py
     config/audio-routing.yaml
@@ -136,6 +147,9 @@ write_receipt() {
         "$previous_active_target" "$promoted_active_target" \
         "$rollback_status" "$rollback_message" \
         "$quarantined_untracked_count" "$quarantined_untracked_path" \
+        "$quarantined_untracked_status" \
+        "$quarantined_tracked_count" "$quarantined_tracked_path" \
+        "$quarantined_tracked_status" \
         "$quarantined_symlink_count" "$runtime_profile_link_count" \
         "$FORCE" "$FORCE_AUTHORITY" <<'PY'
 from __future__ import annotations
@@ -176,6 +190,10 @@ from pathlib import Path
     rollback_message,
     quarantined_untracked_count,
     quarantined_untracked_path,
+    quarantined_untracked_status,
+    quarantined_tracked_count,
+    quarantined_tracked_path,
+    quarantined_tracked_status,
     quarantined_symlink_count,
     runtime_profile_link_count,
     force,
@@ -224,6 +242,10 @@ record = {
     "source_hygiene": {
         "untracked_quarantine_count": int(quarantined_untracked_count),
         "untracked_quarantine_path": quarantined_untracked_path,
+        "untracked_quarantine_status": quarantined_untracked_status,
+        "tracked_quarantine_count": int(quarantined_tracked_count),
+        "tracked_quarantine_path": quarantined_tracked_path,
+        "tracked_quarantine_status": quarantined_tracked_status,
         "untracked_symlink_removed_count": int(quarantined_symlink_count),
         "runtime_profile_link_count": int(runtime_profile_link_count),
     },
@@ -403,14 +425,485 @@ candidate_path_for_sha() {
     printf '%s/%s\n' "$RELEASES_DIR" "$1"
 }
 
+ensure_source_quarantine_path() {
+    if [[ -n "$source_quarantine_path" ]]; then
+        return 0
+    fi
+
+    local stamp
+    local sha_fragment
+    if ! stamp="$(date -u +%Y%m%dT%H%M%SZ)"; then
+        return 1
+    fi
+    sha_fragment="${origin_sha:0:8}"
+    if [[ ! "$sha_fragment" =~ ^[0-9a-fA-F]{8}$ ]]; then
+        sha_fragment="unknown"
+    fi
+    if ! mkdir -p "$STATE_DIR/drift-quarantine"; then
+        return 1
+    fi
+    if ! source_quarantine_path="$(mktemp -d "$STATE_DIR/drift-quarantine/${stamp}-${sha_fragment}.XXXXXX")"; then
+        return 1
+    fi
+}
+
+create_clean_candidate_retirement_path() {
+    local sha="$1"
+    local stamp
+    local sha_fragment
+    if ! stamp="$(date -u +%Y%m%dT%H%M%SZ)"; then
+        return 1
+    fi
+    sha_fragment="${sha:0:8}"
+    if [[ ! "$sha_fragment" =~ ^[0-9a-fA-F]{8}$ ]]; then
+        sha_fragment="unknown"
+    fi
+    if ! mkdir -p "$STATE_DIR/candidate-retirement"; then
+        return 1
+    fi
+    mktemp -d "$STATE_DIR/candidate-retirement/${stamp}-${sha_fragment}.XXXXXX"
+}
+
+tracked_quarantine_fail_before_reset() {
+    local source_root="$1"
+    local receipt_message="$2"
+    local stderr_message="$3"
+    local next_action="$4"
+
+    if [[ "$quarantined_tracked_count" -gt 0 ]]; then
+        quarantined_tracked_status="partial"
+    else
+        quarantined_tracked_status="failed"
+        quarantined_tracked_path=""
+    fi
+    refresh_active_source_fields
+    write_receipt "failed" "not_started" "2" "$receipt_message"
+    echo "hapax-source-activate: $stderr_message" >&2
+    echo "hapax-source-activate: source root: $source_root" >&2
+    if [[ "$quarantined_tracked_status" == "partial" ]]; then
+        echo "hapax-source-activate: partial tracked quarantine payloads: $quarantined_tracked_path" >&2
+    fi
+    echo "hapax-source-activate: next action: $next_action" >&2
+    exit 2
+}
+
+untracked_quarantine_fail_before_sweep() {
+    local source_root="$1"
+    local receipt_message="$2"
+    local stderr_message="$3"
+    local next_action="$4"
+
+    if [[ "$quarantined_untracked_count" -gt 0 ]]; then
+        quarantined_untracked_status="partial"
+    else
+        quarantined_untracked_status="failed"
+        quarantined_untracked_path=""
+    fi
+    refresh_active_source_fields
+    write_receipt "failed" "not_started" "2" "$receipt_message"
+    echo "hapax-source-activate: $stderr_message" >&2
+    echo "hapax-source-activate: source root: $source_root" >&2
+    if [[ "$quarantined_untracked_status" == "partial" ]]; then
+        echo "hapax-source-activate: partial untracked quarantine payloads: $quarantined_untracked_path" >&2
+    fi
+    echo "hapax-source-activate: next action: $next_action" >&2
+    exit 2
+}
+
+candidate_has_tracked_drift() {
+    local source_root="$1"
+    local scan_file
+    local index_scan_file
+
+    if [[ ! -e "$source_root/.git" ]]; then
+        return 1
+    fi
+    if ! scan_file="$(mktemp "$STATE_DIR/tracked-drift-detect.XXXXXX")"; then
+        tracked_quarantine_fail_before_reset \
+            "$source_root" \
+            "tracked drift scan failed before reset" \
+            "failed to allocate tracked drift scan file for $source_root; refusing candidate refresh" \
+            "inspect $STATE_DIR permissions and retry after restoring temporary file creation"
+    fi
+    if ! index_scan_file="$(mktemp "$STATE_DIR/tracked-index-drift-detect.XXXXXX")"; then
+        rm -f "$scan_file"
+        tracked_quarantine_fail_before_reset \
+            "$source_root" \
+            "tracked drift scan failed before reset" \
+            "failed to allocate tracked index drift scan file for $source_root; refusing candidate refresh" \
+            "inspect $STATE_DIR permissions and retry after restoring temporary file creation"
+    fi
+    if ! git -C "$source_root" ls-files -z --modified --deleted > "$scan_file"; then
+        rm -f "$scan_file" "$index_scan_file"
+        tracked_quarantine_fail_before_reset \
+            "$source_root" \
+            "tracked drift scan failed before reset" \
+            "tracked drift scan failed for $source_root; refusing candidate refresh" \
+            "run git -C '$source_root' ls-files --modified --deleted and repair the candidate worktree before retrying"
+    fi
+    if ! git -C "$source_root" diff --cached --no-renames --name-only -z -- > "$index_scan_file"; then
+        rm -f "$scan_file" "$index_scan_file"
+        tracked_quarantine_fail_before_reset \
+            "$source_root" \
+            "tracked drift scan failed before reset" \
+            "tracked index drift scan failed for $source_root; refusing candidate refresh" \
+            "run git -C '$source_root' diff --cached --no-renames --name-only and repair the candidate index before retrying"
+    fi
+    if [[ -s "$scan_file" || -s "$index_scan_file" ]]; then
+        rm -f "$scan_file" "$index_scan_file"
+        return 0
+    fi
+    rm -f "$scan_file" "$index_scan_file"
+    return 1
+}
+
+quarantine_tracked_candidate_before_reset() {
+    local source_root="$1"
+    local rel
+    local scan_file
+    local index_scan_file
+    local index_entry_file
+    local sorted_scan_file
+    local tracked_root
+    local deleted_root
+    local index_root
+    local index_deleted_root
+    local index_record
+    local index_path
+    local -a tracked_paths
+    local -a cached_paths
+    local -a index_records
+    declare -A cached_path_set=()
+    declare -A index_entry_set=()
+
+    if [[ ! -e "$source_root/.git" ]]; then
+        return 0
+    fi
+    if ! scan_file="$(mktemp "$STATE_DIR/tracked-drift.XXXXXX")"; then
+        tracked_quarantine_fail_before_reset \
+            "$source_root" \
+            "tracked drift scan failed before reset" \
+            "failed to allocate tracked drift scan file for $source_root; refusing candidate reset" \
+            "inspect $STATE_DIR permissions and retry after restoring temporary file creation"
+    fi
+    if ! index_scan_file="$(mktemp "$STATE_DIR/tracked-index-drift.XXXXXX")"; then
+        rm -f "$scan_file"
+        tracked_quarantine_fail_before_reset \
+            "$source_root" \
+            "tracked drift scan failed before reset" \
+            "failed to allocate tracked index drift scan file for $source_root; refusing candidate reset" \
+            "inspect $STATE_DIR permissions and retry after restoring temporary file creation"
+    fi
+    if ! sorted_scan_file="$(mktemp "$STATE_DIR/tracked-drift-sorted.XXXXXX")"; then
+        rm -f "$scan_file" "$index_scan_file"
+        tracked_quarantine_fail_before_reset \
+            "$source_root" \
+            "tracked drift scan failed before reset" \
+            "failed to allocate tracked drift normalization file for $source_root; refusing candidate reset" \
+            "inspect $STATE_DIR permissions and retry after restoring temporary file creation"
+    fi
+    if ! index_entry_file="$(mktemp "$STATE_DIR/tracked-index-entries.XXXXXX")"; then
+        rm -f "$scan_file" "$index_scan_file" "$sorted_scan_file"
+        tracked_quarantine_fail_before_reset \
+            "$source_root" \
+            "tracked drift scan failed before reset" \
+            "failed to allocate tracked index entry scan file for $source_root; refusing candidate reset" \
+            "inspect $STATE_DIR permissions and retry after restoring temporary file creation"
+    fi
+    if ! git -C "$source_root" ls-files -z --modified --deleted > "$scan_file"; then
+        rm -f "$scan_file" "$index_scan_file" "$sorted_scan_file" "$index_entry_file"
+        tracked_quarantine_fail_before_reset \
+            "$source_root" \
+            "tracked drift scan failed before reset" \
+            "tracked drift scan failed for $source_root; refusing candidate reset" \
+            "run git -C '$source_root' ls-files --modified --deleted and repair the candidate worktree before retrying"
+    fi
+    if ! git -C "$source_root" diff --cached --no-renames --name-only -z -- > "$index_scan_file"; then
+        rm -f "$scan_file" "$index_scan_file" "$sorted_scan_file" "$index_entry_file"
+        tracked_quarantine_fail_before_reset \
+            "$source_root" \
+            "tracked drift scan failed before reset" \
+            "tracked index drift scan failed for $source_root; refusing candidate reset" \
+            "run git -C '$source_root' diff --cached --no-renames --name-only and repair the candidate index before retrying"
+    fi
+    if ! git -C "$source_root" ls-files -z --stage -- > "$index_entry_file"; then
+        rm -f "$scan_file" "$index_scan_file" "$sorted_scan_file" "$index_entry_file"
+        tracked_quarantine_fail_before_reset \
+            "$source_root" \
+            "tracked drift scan failed before reset" \
+            "tracked index entry scan failed for $source_root; refusing candidate reset" \
+            "run git -C '$source_root' ls-files --stage and repair the candidate index before retrying"
+    fi
+    if ! LC_ALL=C sort -zu "$scan_file" "$index_scan_file" > "$sorted_scan_file"; then
+        rm -f "$scan_file" "$index_scan_file" "$sorted_scan_file" "$index_entry_file"
+        tracked_quarantine_fail_before_reset \
+            "$source_root" \
+            "tracked drift scan failed before reset" \
+            "tracked drift path normalization failed for $source_root; refusing candidate reset" \
+            "run git -C '$source_root' ls-files --modified --deleted and git -C '$source_root' diff --cached --no-renames --name-only, then repair pathnames before retrying"
+    fi
+    if ! mapfile -d '' -t tracked_paths < "$sorted_scan_file"; then
+        rm -f "$scan_file" "$index_scan_file" "$sorted_scan_file" "$index_entry_file"
+        tracked_quarantine_fail_before_reset \
+            "$source_root" \
+            "tracked drift scan failed before reset" \
+            "failed to read tracked drift normalization file for $source_root; refusing candidate reset" \
+            "inspect $STATE_DIR permissions and retry after restoring temporary file reads"
+    fi
+    if ! mapfile -d '' -t cached_paths < "$index_scan_file"; then
+        rm -f "$scan_file" "$index_scan_file" "$sorted_scan_file" "$index_entry_file"
+        tracked_quarantine_fail_before_reset \
+            "$source_root" \
+            "tracked drift scan failed before reset" \
+            "failed to read tracked index drift scan file for $source_root; refusing candidate reset" \
+            "inspect $STATE_DIR permissions and retry after restoring temporary file reads"
+    fi
+    if ! mapfile -d '' -t index_records < "$index_entry_file"; then
+        rm -f "$scan_file" "$index_scan_file" "$sorted_scan_file" "$index_entry_file"
+        tracked_quarantine_fail_before_reset \
+            "$source_root" \
+            "tracked drift scan failed before reset" \
+            "failed to read tracked index entry scan file for $source_root; refusing candidate reset" \
+            "inspect $STATE_DIR permissions and retry after restoring temporary file reads"
+    fi
+    rm -f "$scan_file" "$index_scan_file" "$sorted_scan_file" "$index_entry_file"
+    if [[ "${#tracked_paths[@]}" -eq 0 ]]; then
+        return 0
+    fi
+    for rel in "${cached_paths[@]}"; do
+        [[ -z "$rel" ]] && continue
+        cached_path_set["$rel"]=1
+    done
+    for index_record in "${index_records[@]}"; do
+        index_path="${index_record#*$'\t'}"
+        [[ -z "$index_path" ]] && continue
+        index_entry_set["$index_path"]=1
+    done
+
+    if ! ensure_source_quarantine_path; then
+        tracked_quarantine_fail_before_reset \
+            "$source_root" \
+            "tracked drift quarantine setup failed before reset" \
+            "failed to create tracked drift quarantine root for $source_root; refusing candidate reset" \
+            "inspect $STATE_DIR/drift-quarantine permissions and retry after restoring quarantine writes"
+    fi
+    quarantined_tracked_path="$source_quarantine_path/.hapax-tracked"
+    tracked_root="$quarantined_tracked_path/worktree"
+    deleted_root="$quarantined_tracked_path/deleted"
+    index_root="$quarantined_tracked_path/index"
+    index_deleted_root="$quarantined_tracked_path/index-deleted"
+
+    for rel in "${tracked_paths[@]}"; do
+        [[ -z "$rel" ]] && continue
+        if [[ -e "$source_root/$rel" || -L "$source_root/$rel" ]]; then
+            if ! mkdir -p "$tracked_root/$(dirname -- "$rel")" \
+                || ! cp -a "$source_root/$rel" "$tracked_root/$rel"; then
+                tracked_quarantine_fail_before_reset \
+                    "$source_root" \
+                    "tracked drift quarantine write failed before reset" \
+                    "failed to preserve tracked drift $rel from $source_root; refusing candidate reset" \
+                    "inspect $quarantined_tracked_path permissions and retry after restoring quarantine writes"
+            fi
+        else
+            if ! mkdir -p "$deleted_root/$(dirname -- "$rel")" \
+                || ! printf 'deleted tracked path: %s\n' "$rel" > "$deleted_root/$rel"; then
+                tracked_quarantine_fail_before_reset \
+                    "$source_root" \
+                    "tracked drift quarantine write failed before reset" \
+                    "failed to preserve tracked deletion marker $rel from $source_root; refusing candidate reset" \
+                    "inspect $quarantined_tracked_path permissions and retry after restoring quarantine writes"
+            fi
+        fi
+        if [[ -n "${cached_path_set[$rel]+x}" ]]; then
+            if [[ -n "${index_entry_set[$rel]+x}" ]]; then
+                if ! mkdir -p "$index_root/$(dirname -- "$rel")" \
+                    || ! GIT_LITERAL_PATHSPECS=1 git -C "$source_root" checkout-index --force --prefix="$index_root/" -- "$rel"; then
+                    tracked_quarantine_fail_before_reset \
+                        "$source_root" \
+                        "tracked drift quarantine write failed before reset" \
+                        "failed to preserve tracked index drift $rel from $source_root; refusing candidate reset" \
+                        "inspect $quarantined_tracked_path permissions and retry after restoring quarantine writes"
+                fi
+            else
+                if ! mkdir -p "$index_deleted_root/$(dirname -- "$rel")" \
+                    || ! printf 'deleted staged path: %s\n' "$rel" > "$index_deleted_root/$rel"; then
+                    tracked_quarantine_fail_before_reset \
+                        "$source_root" \
+                        "tracked drift quarantine write failed before reset" \
+                        "failed to preserve tracked index deletion marker $rel from $source_root; refusing candidate reset" \
+                        "inspect $quarantined_tracked_path permissions and retry after restoring quarantine writes"
+                fi
+            fi
+        fi
+        quarantined_tracked_count=$((quarantined_tracked_count + 1))
+    done
+    quarantined_tracked_status="complete"
+
+    echo "hapax-source-activate: quarantined $quarantined_tracked_count tracked activation files to $quarantined_tracked_path" >&2
+    echo "hapax-source-activate: next action: recover tracked drift from worktree/ and index/ payloads; inspect deleted/ and index-deleted/ markers before replaying deletions" >&2
+}
+
+is_canonical_runtime_profile_link() {
+    local source_root="$1"
+    local rel="$2"
+    local path="$source_root/$rel"
+    [[ "$rel" == profiles/* ]] || return 1
+    [[ -L "$path" ]] || return 1
+    [[ -d "$CANONICAL_REPO/profiles" ]] || return 1
+
+    local target_real canonical_profiles_real
+    target_real="$(readlink -f "$path" 2>/dev/null || true)"
+    canonical_profiles_real="$(realpath -m "$CANONICAL_REPO/profiles")"
+    [[ -n "$target_real" && "$target_real" == "$canonical_profiles_real"/* ]]
+}
+
+quarantine_untracked_active_source() {
+    local source_root="${1:-$ACTIVE_WORKTREE}"
+    local rel
+    local -a untracked_paths
+    local local_bin
+    local base
+    local link_path
+    local link_target
+    local untracked_root
+    local destination
+    local scan_file
+    local -a quarantinable_paths=()
+    if ! scan_file="$(mktemp "$STATE_DIR/untracked-drift.XXXXXX")"; then
+        untracked_quarantine_fail_before_sweep \
+            "$source_root" \
+            "untracked drift scan failed before sweep" \
+            "failed to allocate untracked drift scan file for $source_root; refusing activation sweep" \
+            "inspect $STATE_DIR permissions and retry after restoring temporary file creation"
+    fi
+    if ! git -C "$source_root" ls-files --others --exclude-standard > "$scan_file"; then
+        rm -f "$scan_file"
+        untracked_quarantine_fail_before_sweep \
+            "$source_root" \
+            "untracked drift scan failed before sweep" \
+            "untracked drift scan failed for $source_root; refusing activation sweep" \
+            "run git -C '$source_root' ls-files --others --exclude-standard and repair the candidate worktree before retrying"
+    fi
+    if ! mapfile -t untracked_paths < "$scan_file"; then
+        rm -f "$scan_file"
+        untracked_quarantine_fail_before_sweep \
+            "$source_root" \
+            "untracked drift scan failed before sweep" \
+            "failed to read untracked drift scan file for $source_root; refusing activation sweep" \
+            "inspect $STATE_DIR permissions and retry after restoring temporary file reads"
+    fi
+    rm -f "$scan_file"
+    if [[ "${#untracked_paths[@]}" -eq 0 ]]; then
+        return 0
+    fi
+    for rel in "${untracked_paths[@]}"; do
+        [[ -z "$rel" ]] && continue
+        if is_canonical_runtime_profile_link "$source_root" "$rel"; then
+            continue
+        fi
+        quarantinable_paths+=("$rel")
+    done
+    if [[ "${#quarantinable_paths[@]}" -eq 0 ]]; then
+        if [[ "$quarantined_untracked_count" -eq 0 ]]; then
+            quarantined_untracked_status="skipped_runtime_profile"
+        fi
+        return 0
+    fi
+
+    if ! ensure_source_quarantine_path; then
+        untracked_quarantine_fail_before_sweep \
+            "$source_root" \
+            "untracked drift quarantine setup failed before sweep" \
+            "failed to create untracked drift quarantine root for $source_root; refusing activation sweep" \
+            "inspect $STATE_DIR/drift-quarantine permissions and retry after restoring quarantine writes"
+    fi
+    if [[ "$untracked_quarantine_sweep_count" -eq 0 ]]; then
+        untracked_root="$source_quarantine_path/.hapax-untracked"
+    else
+        untracked_root="$source_quarantine_path/.hapax-untracked-sweeps/$untracked_quarantine_sweep_count"
+    fi
+    untracked_quarantine_sweep_count=$((untracked_quarantine_sweep_count + 1))
+    if ! mkdir -p "$untracked_root"; then
+        untracked_quarantine_fail_before_sweep \
+            "$source_root" \
+            "untracked drift quarantine write failed before sweep" \
+            "failed to create untracked drift quarantine payload root for $source_root; refusing activation sweep" \
+            "inspect $source_quarantine_path permissions and retry after restoring quarantine writes"
+    fi
+
+    for rel in "${quarantinable_paths[@]}"; do
+        destination="$untracked_root/$rel"
+        if [[ -e "$destination" || -L "$destination" ]]; then
+            untracked_quarantine_fail_before_sweep \
+                "$source_root" \
+                "untracked drift quarantine write failed before sweep" \
+                "untracked drift quarantine destination already exists for $rel from $source_root; refusing activation sweep" \
+                "inspect $untracked_root and retry after preserving or removing the duplicate recovery destination"
+        fi
+        if ! mkdir -p "$untracked_root/$(dirname -- "$rel")" \
+            || ! mv "$source_root/$rel" "$destination"; then
+            untracked_quarantine_fail_before_sweep \
+                "$source_root" \
+                "untracked drift quarantine write failed before sweep" \
+                "failed to preserve untracked drift $rel from $source_root; refusing activation sweep" \
+                "inspect $untracked_root permissions and retry after restoring quarantine writes"
+        fi
+        if [[ -z "$quarantined_untracked_path" ]]; then
+            quarantined_untracked_path="$untracked_root"
+        elif [[ "$quarantined_untracked_path" != "$untracked_root" ]]; then
+            quarantined_untracked_path="$source_quarantine_path"
+        fi
+        quarantined_untracked_count=$((quarantined_untracked_count + 1))
+        case "$rel" in
+            scripts/hapax-*|scripts/cc-claim|scripts/cc-close)
+                local_bin="${HAPAX_SOURCE_ACTIVATE_LOCAL_BIN:-$HOME/.local/bin}"
+                base="$(basename "$rel")"
+                link_path="$local_bin/$base"
+                link_target="$(readlink "$link_path" 2>/dev/null || true)"
+                if [[ "$link_target" == "$source_root/$rel" || "$link_target" == "$ACTIVE_WORKTREE/$rel" ]]; then
+                    rm -f "$link_path"
+                    quarantined_symlink_count=$((quarantined_symlink_count + 1))
+                fi
+                ;;
+        esac
+    done
+    quarantined_untracked_status="complete"
+
+    echo "hapax-source-activate: quarantined $quarantined_untracked_count untracked activation files to $quarantined_untracked_path"
+    if [[ "$quarantined_symlink_count" -gt 0 ]]; then
+        echo "hapax-source-activate: removed $quarantined_symlink_count activation-owned symlinks to quarantined files"
+    fi
+}
+
 prepare_candidate_worktree() {
     local sha="$1"
+    local existing_head
     candidate_worktree="$(candidate_path_for_sha "$sha")"
+    candidate_existing_head=""
+    candidate_replacement_needed=0
+    candidate_replacement_reason=""
+    candidate_reset_needed=0
+    candidate_tracked_drift_detected=0
     mkdir -p "$RELEASES_DIR"
 
     if [[ -e "$candidate_worktree/.git" ]]; then
         git -C "$candidate_worktree" fetch origin main --quiet
-        git -C "$candidate_worktree" reset --hard "$sha" --quiet
+        existing_head="$(git -C "$candidate_worktree" rev-parse HEAD 2>/dev/null || true)"
+        candidate_existing_head="$existing_head"
+        if candidate_has_tracked_drift "$candidate_worktree"; then
+            candidate_tracked_drift_detected=1
+        fi
+        if [[ "$candidate_tracked_drift_detected" == "1" || "$existing_head" != "$sha" ]]; then
+            candidate_replacement_needed=1
+            if [[ "$candidate_tracked_drift_detected" == "1" ]]; then
+                candidate_replacement_reason="tracked drift detected"
+            else
+                candidate_replacement_reason="candidate head mismatch"
+                if [[ -n "$existing_head" ]]; then
+                    candidate_reset_needed=1
+                fi
+            fi
+        fi
     elif [[ -e "$candidate_worktree" ]] \
         && [[ -n "$(find "$candidate_worktree" -mindepth 1 -maxdepth 1 2>/dev/null | head -n 1)" ]]; then
         write_receipt "failed" "not_started" "2" "candidate release path exists but is not a git worktree"
@@ -419,15 +912,282 @@ prepare_candidate_worktree() {
     else
         git -C "$CANONICAL_REPO" worktree prune 2>/dev/null || true
         git -C "$CANONICAL_REPO" worktree add --detach "$candidate_worktree" "$sha" --quiet
+        candidate_existing_head="$sha"
+    fi
+
+    if [[ "$candidate_replacement_needed" == "1" ]]; then
+        return 0
     fi
 
     local candidate_head
-    candidate_head="$(git -C "$candidate_worktree" rev-parse HEAD)"
+    if ! candidate_head="$(git -C "$candidate_worktree" rev-parse HEAD)"; then
+        refresh_active_source_fields
+        write_receipt "failed" "not_started" "2" "candidate source head check failed"
+        echo "hapax-source-activate: failed to read candidate source head at $candidate_worktree" >&2
+        echo "hapax-source-activate: next action: inspect $candidate_worktree and retry after restoring git rev-parse consistency" >&2
+        exit 2
+    fi
     if [[ "$candidate_head" != "$sha" ]]; then
         write_receipt "failed" "not_started" "2" "candidate source head does not match origin/main"
         echo "hapax-source-activate: candidate source $candidate_head != origin/main $sha" >&2
         exit 2
     fi
+}
+
+reset_candidate_worktree_if_needed() {
+    local sha="$1"
+    local candidate_head
+    local previous_candidate="$candidate_worktree"
+    local previous_candidate_real
+    local reset_worktree
+    local retired_root
+    local retired_candidate
+    local tmp_link
+    if [[ "$candidate_reset_needed" != "1" ]]; then
+        return 0
+    fi
+    if [[ "$candidate_tracked_drift_detected" == "1" ]]; then
+        return 0
+    fi
+
+    if candidate_has_tracked_drift "$candidate_worktree"; then
+        candidate_tracked_drift_detected=1
+        quarantine_tracked_candidate_before_reset "$candidate_worktree"
+        candidate_replacement_reason="tracked drift quarantined before reset"
+        candidate_reset_needed=0
+        return 0
+    fi
+
+    # Scan-then-reset is not atomic on a mutable worktree, so reset a private
+    # worktree and move it into the deterministic candidate slot only after it
+    # is clean and verified.
+    if ! reset_worktree="$(mktemp -d "$RELEASES_DIR/.reset-${sha:0:8}.XXXXXX")"; then
+        refresh_active_source_fields
+        write_receipt "failed" "not_started" "2" "candidate reset worktree allocation failed"
+        echo "hapax-source-activate: failed to allocate private reset worktree under $RELEASES_DIR" >&2
+        echo "hapax-source-activate: next action: inspect $RELEASES_DIR permissions and retry after restoring temporary worktree creation" >&2
+        exit 2
+    fi
+    if ! rmdir "$reset_worktree"; then
+        refresh_active_source_fields
+        write_receipt "failed" "not_started" "2" "candidate reset worktree allocation failed"
+        echo "hapax-source-activate: failed to prepare private reset worktree path $reset_worktree" >&2
+        echo "hapax-source-activate: next action: inspect $RELEASES_DIR permissions and retry after removing stale reset worktree paths" >&2
+        exit 2
+    fi
+    if ! GIT_CONFIG_COUNT=1 \
+        GIT_CONFIG_KEY_0=core.hooksPath \
+        GIT_CONFIG_VALUE_0=/dev/null \
+        git -C "$CANONICAL_REPO" worktree add --detach "$reset_worktree" "$candidate_existing_head" --quiet; then
+        refresh_active_source_fields
+        write_receipt "failed" "not_started" "2" "candidate reset worktree creation failed"
+        echo "hapax-source-activate: failed to create private reset worktree at $reset_worktree from $candidate_existing_head" >&2
+        echo "hapax-source-activate: next action: inspect $RELEASES_DIR and retry after restoring git worktree add support" >&2
+        exit 2
+    fi
+
+    quarantine_untracked_active_source "$reset_worktree"
+
+    if candidate_has_tracked_drift "$reset_worktree"; then
+        quarantine_tracked_candidate_before_reset "$reset_worktree"
+    fi
+
+    if ! GIT_CONFIG_COUNT=1 \
+        GIT_CONFIG_KEY_0=core.hooksPath \
+        GIT_CONFIG_VALUE_0=/dev/null \
+        git -C "$reset_worktree" reset --hard --quiet "$sha"; then
+        refresh_active_source_fields
+        write_receipt "failed" "not_started" "2" "candidate source reset failed after clean drift scan"
+        echo "hapax-source-activate: failed to reset private candidate worktree $reset_worktree to $sha" >&2
+        echo "hapax-source-activate: next action: inspect $reset_worktree and retry after restoring git reset support" >&2
+        exit 2
+    fi
+    if ! candidate_head="$(git -C "$reset_worktree" rev-parse HEAD)"; then
+        refresh_active_source_fields
+        write_receipt "failed" "not_started" "2" "candidate source head check failed after reset"
+        echo "hapax-source-activate: failed to read candidate source head after reset at $reset_worktree" >&2
+        echo "hapax-source-activate: next action: inspect $reset_worktree and retry after restoring git rev-parse consistency" >&2
+        exit 2
+    fi
+    if [[ "$candidate_head" != "$sha" ]]; then
+        refresh_active_source_fields
+        write_receipt "failed" "not_started" "2" "candidate source head does not match origin/main after reset"
+        echo "hapax-source-activate: candidate source $candidate_head != origin/main $sha after reset" >&2
+        echo "hapax-source-activate: next action: inspect $reset_worktree and retry after restoring git reset consistency" >&2
+        exit 2
+    fi
+
+    if ! retired_root="$(create_clean_candidate_retirement_path "$sha")"; then
+        refresh_active_source_fields
+        write_receipt "failed" "not_started" "2" "candidate clean retirement setup failed"
+        echo "hapax-source-activate: failed to create clean candidate retirement root for $previous_candidate" >&2
+        echo "hapax-source-activate: next action: inspect $STATE_DIR/candidate-retirement permissions and retry after restoring retirement writes" >&2
+        exit 2
+    fi
+    retired_candidate="$retired_root/.hapax-retired-candidate"
+    if ! git -C "$CANONICAL_REPO" worktree move "$previous_candidate" "$retired_candidate"; then
+        refresh_active_source_fields
+        write_receipt "failed" "not_started" "2" "candidate retirement failed"
+        echo "hapax-source-activate: failed to retire reusable candidate $previous_candidate" >&2
+        echo "hapax-source-activate: next action: inspect $previous_candidate and $retired_candidate, then retry after restoring git worktree move support" >&2
+        exit 2
+    fi
+
+    refresh_active_source_fields
+    previous_candidate_real="$(realpath -m "$previous_candidate")"
+    if [[ "$active_source_target" == "$previous_candidate_real" ]]; then
+        tmp_link="${ACTIVE_WORKTREE}.retired.$$"
+        if ! rm -f "$tmp_link" \
+            || ! ln -s "$retired_candidate" "$tmp_link" \
+            || ! mv -Tf "$tmp_link" "$ACTIVE_WORKTREE"; then
+            restore_retired_candidate_after_retarget_failure "$previous_candidate" "$retired_candidate" "$tmp_link"
+            write_receipt "failed" "not_started" "2" "active source retired-candidate retarget failed"
+            echo "hapax-source-activate: failed to retarget active source to retired candidate $retired_candidate" >&2
+            if [[ "$rollback_status" == "restored_worktree" ]]; then
+                echo "hapax-source-activate: restored active source target to previous candidate $active_source_target" >&2
+            else
+                echo "hapax-source-activate: active source retarget rollback failed: $rollback_message" >&2
+            fi
+            echo "hapax-source-activate: next action: inspect $ACTIVE_WORKTREE, $previous_candidate, and $retired_candidate before retrying candidate reset replacement" >&2
+            exit 2
+        fi
+        refresh_active_source_fields
+    fi
+
+    if ! git -C "$CANONICAL_REPO" worktree move "$reset_worktree" "$previous_candidate"; then
+        refresh_active_source_fields
+        write_receipt "failed" "not_started" "2" "candidate reset worktree placement failed"
+        echo "hapax-source-activate: failed to move private reset worktree $reset_worktree into $previous_candidate" >&2
+        echo "hapax-source-activate: retired candidate remains at $retired_candidate" >&2
+        echo "hapax-source-activate: next action: inspect $reset_worktree, $retired_candidate, and $RELEASES_DIR permissions before retrying" >&2
+        exit 2
+    fi
+
+    candidate_replacement_needed=0
+    candidate_reset_needed=0
+    candidate_worktree="$previous_candidate"
+    echo "hapax-source-activate: reset private candidate worktree $reset_worktree to $sha and placed it at $candidate_worktree after $candidate_replacement_reason" >&2
+    echo "hapax-source-activate: next action: inspect retired candidate $retired_candidate before manual disposal" >&2
+    candidate_replacement_reason=""
+}
+
+restore_retired_candidate_after_retarget_failure() {
+    local previous_candidate="$1"
+    local retired_candidate="$2"
+    local tmp_link="$3"
+
+    rm -f "$tmp_link" 2>/dev/null || true
+    if git -C "$CANONICAL_REPO" worktree move "$retired_candidate" "$previous_candidate"; then
+        local rollback_link="${ACTIVE_WORKTREE}.rollback.$$"
+        if rm -f "$rollback_link" \
+            && ln -s "$previous_candidate" "$rollback_link" \
+            && mv -Tf "$rollback_link" "$ACTIVE_WORKTREE"; then
+            rollback_status="restored_worktree"
+            rollback_message="restored candidate worktree and active source target after active source retarget failure"
+            if [[ -n "$quarantined_untracked_path" ]]; then
+                rollback_message="$rollback_message; untracked payloads remain quarantined at $quarantined_untracked_path"
+            fi
+        else
+            rm -f "$rollback_link" 2>/dev/null || true
+            rollback_status="failed"
+            rollback_message="moved retired candidate back but failed to retarget active source after active source retarget failure"
+        fi
+    else
+        rollback_status="failed"
+        rollback_message="failed to move retired candidate back after active source retarget failure"
+    fi
+    refresh_active_source_fields
+}
+
+replace_candidate_worktree_if_needed() {
+    local sha="$1"
+    local previous_candidate="$candidate_worktree"
+    local retired_candidate
+    if [[ "$candidate_replacement_needed" != "1" ]]; then
+        return 0
+    fi
+
+    if ! ensure_source_quarantine_path; then
+        refresh_active_source_fields
+        write_receipt "failed" "not_started" "2" "candidate retirement quarantine setup failed"
+        echo "hapax-source-activate: failed to create candidate retirement quarantine root for $previous_candidate" >&2
+        echo "hapax-source-activate: next action: inspect $STATE_DIR/drift-quarantine permissions and retry after restoring quarantine writes" >&2
+        exit 2
+    fi
+    retired_candidate="$source_quarantine_path/.hapax-retired-candidate"
+
+    if ! git -C "$CANONICAL_REPO" worktree move "$previous_candidate" "$retired_candidate"; then
+        refresh_active_source_fields
+        write_receipt "failed" "not_started" "2" "candidate retirement failed"
+        echo "hapax-source-activate: failed to retire reusable candidate $previous_candidate" >&2
+        echo "hapax-source-activate: next action: inspect $previous_candidate and $retired_candidate, then retry after restoring git worktree move support" >&2
+        exit 2
+    fi
+
+    refresh_active_source_fields
+    if [[ "$active_source_target" == "$(realpath -m "$previous_candidate")" ]]; then
+        local tmp_link="${ACTIVE_WORKTREE}.retired.$$"
+        if ! rm -f "$tmp_link" \
+            || ! ln -s "$retired_candidate" "$tmp_link" \
+            || ! mv -Tf "$tmp_link" "$ACTIVE_WORKTREE"; then
+            restore_retired_candidate_after_retarget_failure "$previous_candidate" "$retired_candidate" "$tmp_link"
+            write_receipt "failed" "not_started" "2" "active source retired-candidate retarget failed"
+            echo "hapax-source-activate: failed to retarget active source to retired candidate $retired_candidate" >&2
+            if [[ "$rollback_status" == "restored_worktree" ]]; then
+                echo "hapax-source-activate: restored active source target to previous candidate $active_source_target" >&2
+                if [[ -n "$quarantined_untracked_path" ]]; then
+                    echo "hapax-source-activate: untracked payloads remain quarantined at $quarantined_untracked_path" >&2
+                fi
+            else
+                echo "hapax-source-activate: active source retarget rollback failed: $rollback_message" >&2
+            fi
+            echo "hapax-source-activate: next action: inspect $ACTIVE_WORKTREE, $previous_candidate, and $retired_candidate before retrying candidate replacement" >&2
+            exit 2
+        fi
+        refresh_active_source_fields
+    fi
+
+    if ! GIT_CONFIG_COUNT=1 \
+        GIT_CONFIG_KEY_0=core.hooksPath \
+        GIT_CONFIG_VALUE_0=/dev/null \
+        git -C "$CANONICAL_REPO" worktree add --detach "$previous_candidate" "$sha" --quiet; then
+        refresh_active_source_fields
+        write_receipt "failed" "not_started" "2" "candidate replacement worktree creation failed"
+        echo "hapax-source-activate: failed to create fresh candidate worktree at $previous_candidate for $sha" >&2
+        echo "hapax-source-activate: retired candidate remains at $retired_candidate" >&2
+        echo "hapax-source-activate: next action: inspect $retired_candidate and $RELEASES_DIR permissions, then retry after restoring git worktree add support" >&2
+        exit 2
+    fi
+    candidate_worktree="$previous_candidate"
+
+    quarantine_untracked_active_source "$candidate_worktree"
+
+    if candidate_has_tracked_drift "$candidate_worktree"; then
+        refresh_active_source_fields
+        write_receipt "failed" "not_started" "2" "replacement candidate tracked drift detected after creation"
+        echo "hapax-source-activate: replacement candidate has tracked drift after creation: $candidate_worktree" >&2
+        echo "hapax-source-activate: retained dirty replacement worktree at $candidate_worktree" >&2
+        echo "hapax-source-activate: next action: inspect $candidate_worktree for hook/writer drift before retrying replacement" >&2
+        exit 2
+    fi
+
+    local candidate_head
+    if ! candidate_head="$(git -C "$candidate_worktree" rev-parse HEAD)"; then
+        refresh_active_source_fields
+        write_receipt "failed" "not_started" "2" "replacement candidate source head check failed"
+        echo "hapax-source-activate: failed to read replacement candidate source head at $candidate_worktree" >&2
+        echo "hapax-source-activate: next action: inspect $candidate_worktree and retry after restoring git rev-parse consistency" >&2
+        exit 2
+    fi
+    if [[ "$candidate_head" != "$sha" ]]; then
+        refresh_active_source_fields
+        write_receipt "failed" "not_started" "2" "replacement candidate source head does not match origin/main"
+        echo "hapax-source-activate: replacement candidate source $candidate_head != origin/main $sha" >&2
+        echo "hapax-source-activate: next action: inspect $candidate_worktree and retry after restoring git worktree add/fetch consistency" >&2
+        exit 2
+    fi
+    echo "hapax-source-activate: replaced reusable candidate $previous_candidate with fresh worktree $candidate_worktree after $candidate_replacement_reason" >&2
+    echo "hapax-source-activate: next action: recover drift from $source_quarantine_path and inspect retired candidate $retired_candidate before manual disposal" >&2
 }
 
 health_probe_fail() {
@@ -625,7 +1385,7 @@ prepare_candidate_worktree "$origin_sha"
 
 refresh_active_source_fields
 candidate_real="$(realpath -m "$candidate_worktree")"
-if [[ "$active_source_target" != "$candidate_real" ]]; then
+if [[ "$active_source_target" != "$candidate_real" || "$candidate_replacement_needed" == "1" ]]; then
     if live_window_active; then
         refresh_active_source_fields
         write_receipt \
@@ -641,65 +1401,10 @@ else
     live_window_message="active source already points at candidate"
 fi
 
-quarantine_untracked_active_source() {
-    local source_root="${1:-$ACTIVE_WORKTREE}"
-    local rel
-    local -a untracked_paths
-    local local_bin
-    local base
-    local link_path
-    local link_target
-    mapfile -t untracked_paths < <(git -C "$source_root" ls-files --others --exclude-standard)
-    if [[ "${#untracked_paths[@]}" -eq 0 ]]; then
-        return 0
-    fi
-
-    local stamp
-    stamp="$(date -u +%Y%m%dT%H%M%SZ)"
-    quarantined_untracked_path="$STATE_DIR/untracked-quarantine/${stamp}-${origin_sha:0:8}"
-    mkdir -p "$quarantined_untracked_path"
-
-    for rel in "${untracked_paths[@]}"; do
-        [[ -z "$rel" ]] && continue
-        if is_canonical_runtime_profile_link "$source_root" "$rel"; then
-            continue
-        fi
-        mkdir -p "$quarantined_untracked_path/$(dirname "$rel")"
-        mv "$source_root/$rel" "$quarantined_untracked_path/$rel"
-        quarantined_untracked_count=$((quarantined_untracked_count + 1))
-        case "$rel" in
-            scripts/hapax-*|scripts/cc-claim|scripts/cc-close)
-                local_bin="${HAPAX_SOURCE_ACTIVATE_LOCAL_BIN:-$HOME/.local/bin}"
-                base="$(basename "$rel")"
-                link_path="$local_bin/$base"
-                link_target="$(readlink "$link_path" 2>/dev/null || true)"
-                if [[ "$link_target" == "$source_root/$rel" || "$link_target" == "$ACTIVE_WORKTREE/$rel" ]]; then
-                    rm -f "$link_path"
-                    quarantined_symlink_count=$((quarantined_symlink_count + 1))
-                fi
-                ;;
-        esac
-    done
-
-    echo "hapax-source-activate: quarantined $quarantined_untracked_count untracked activation files to $quarantined_untracked_path"
-    if [[ "$quarantined_symlink_count" -gt 0 ]]; then
-        echo "hapax-source-activate: removed $quarantined_symlink_count activation-owned symlinks to quarantined files"
-    fi
-}
-
-is_canonical_runtime_profile_link() {
-    local source_root="$1"
-    local rel="$2"
-    local path="$source_root/$rel"
-    [[ "$rel" == profiles/* ]] || return 1
-    [[ -L "$path" ]] || return 1
-    [[ -d "$CANONICAL_REPO/profiles" ]] || return 1
-
-    local target_real canonical_profiles_real
-    target_real="$(readlink -f "$path" 2>/dev/null || true)"
-    canonical_profiles_real="$(realpath -m "$CANONICAL_REPO/profiles")"
-    [[ -n "$target_real" && "$target_real" == "$canonical_profiles_real"/* ]]
-}
+if [[ "$candidate_tracked_drift_detected" == "1" ]]; then
+    quarantine_tracked_candidate_before_reset "$candidate_worktree"
+    candidate_replacement_reason="tracked drift quarantined"
+fi
 
 link_canonical_runtime_profiles() {
     local source_root="${1:-$ACTIVE_WORKTREE}"
@@ -732,6 +1437,8 @@ link_canonical_runtime_profiles() {
 }
 
 quarantine_untracked_active_source "$candidate_worktree"
+reset_candidate_worktree_if_needed "$origin_sha"
+replace_candidate_worktree_if_needed "$origin_sha"
 link_canonical_runtime_profiles "$candidate_worktree"
 
 sync_dependency_environment() {
