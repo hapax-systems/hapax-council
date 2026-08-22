@@ -468,6 +468,7 @@ def _default_done_gate_runner(
                     final_status=final_status,
                     observed_at=observed_at,
                     reason_code="HAPAX_ACCEPTANCE_RECEIPT_GATE_OFF",
+                    authority_ref="operator-2026-08-20/rec-1/pr-4586",
                 )
             )
     debt_preflight = next(
@@ -758,9 +759,25 @@ def close_task(
     after_path = snapshot.path.with_name(
         f".{snapshot.path.name}.close-after.{snapshot.sha256[:12]}"
     )
-    note_after = after_path.read_bytes() if after_path.is_file() else None
+    note_after = None
     if after_path.is_file():
+        raw = after_path.read_bytes()
         after_path.unlink()
+        try:
+            text = raw.decode("utf-8")
+        except UnicodeDecodeError as exc:
+            raise TerminalCloseError(
+                "terminal_close_afterimage_unbound",
+                "rerun close; the staged after-image was not UTF-8",
+                str(exc),
+            ) from exc
+        if task_id not in text:
+            raise TerminalCloseError(
+                "terminal_close_afterimage_unbound",
+                "rerun close; the staged after-image is not bound to this task",
+                task_id,
+            )
+        note_after = raw
     observed_receipt = receipt_path.read_bytes() if receipt_path.is_file() else None
     observed_receipt_mode = _mode(receipt_path) if observed_receipt is not None else None
     if observed_receipt != receipt_bytes or observed_receipt_mode != receipt_mode:
