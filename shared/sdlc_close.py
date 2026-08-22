@@ -776,6 +776,8 @@ def close_task(
             if line.startswith("id:"):
                 declared = line.split(":", 1)[1].strip().strip("'\"")
                 break
+            if line.startswith("task_id:") and not declared:
+                declared = line.split(":", 1)[1].strip().strip("'\"")
         if declared != task_id:
             raise TerminalCloseError(
                 "terminal_close_afterimage_unbound",
