@@ -6,6 +6,7 @@ import hashlib
 import json
 import os
 import re
+import secrets
 import subprocess
 import sys
 from dataclasses import dataclass, replace
@@ -493,9 +494,14 @@ def _default_done_gate_runner(
             ):
                 copy_hash = _sha256(debt_preflight.read_bytes())
                 if copy_hash != after_hash:
+                    invocation = secrets.token_hex(8)
                     after_path = snapshot.path.with_name(
-                        f".{snapshot.path.name}.close-after.{snapshot.sha256[:12]}"
+                        f".{snapshot.path.name}.close-after.{snapshot.sha256[:12]}.{invocation}"
                     )
+                    cookie = snapshot.path.with_name(
+                        f".{snapshot.path.name}.close-invocation"
+                    )
+                    cookie.write_text(invocation, encoding="utf-8")
                     os.replace(debt_preflight, after_path)
                     debt_preflight = None
             elif before_hash != snapshot.sha256 or after_hash != snapshot.sha256:
@@ -756,8 +762,14 @@ def close_task(
             "terminal_close_preflight_note_drift",
             "rerun close against one stable exact note preimage",
         )
+    cookie = snapshot.path.with_name(f".{snapshot.path.name}.close-invocation")
+    invocation = cookie.read_text(encoding="utf-8").strip() if cookie.is_file() else ""
+    if cookie.is_file():
+        cookie.unlink()
     after_path = snapshot.path.with_name(
-        f".{snapshot.path.name}.close-after.{snapshot.sha256[:12]}"
+        f".{snapshot.path.name}.close-after.{snapshot.sha256[:12]}.{invocation}"
+        if invocation
+        else f".{snapshot.path.name}.close-after.{snapshot.sha256[:12]}.missing"
     )
     note_after = None
     if after_path.is_file():
