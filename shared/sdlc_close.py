@@ -481,7 +481,10 @@ def _default_done_gate_runner(
             ):
                 copy_hash = _sha256(debt_preflight.read_bytes())
                 if copy_hash != after_hash:
-                    os.replace(debt_preflight, snapshot.path)
+                    after_path = snapshot.path.with_name(
+                        f".{snapshot.path.name}.close-after"
+                    )
+                    os.replace(debt_preflight, after_path)
                     debt_preflight = None
             elif before_hash != snapshot.sha256 or after_hash != snapshot.sha256:
                 raise TerminalCloseError(
@@ -721,7 +724,14 @@ def close_task(
     )
     live_note = snapshot.path.read_bytes()
     if live_note != snapshot.content:
-        snapshot = resolve_task_note(vault_root, task_id, state="active")
+        raise TerminalCloseError(
+            "terminal_close_preflight_note_drift",
+            "rerun close against one stable exact note preimage",
+        )
+    after_path = snapshot.path.with_name(f".{snapshot.path.name}.close-after")
+    note_after = after_path.read_bytes() if after_path.is_file() else None
+    if after_path.is_file():
+        after_path.unlink()
     observed_receipt = receipt_path.read_bytes() if receipt_path.is_file() else None
     observed_receipt_mode = _mode(receipt_path) if observed_receipt is not None else None
     if observed_receipt != receipt_bytes or observed_receipt_mode != receipt_mode:
@@ -817,7 +827,7 @@ def close_task(
         / f"terminal-close-admission-{admission.admission_ref.rsplit(':', 1)[-1]}.json"
     )
     timestamp = datetime.now(UTC).strftime("%Y-%m-%dT%H:%M:%SZ")
-    postimage = snapshot.content.decode("utf-8")
+    postimage = (note_after or snapshot.content).decode("utf-8")
     for key, value in (
         ("stage", "S11"),
         ("status", final_status),

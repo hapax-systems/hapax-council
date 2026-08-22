@@ -890,7 +890,10 @@ def test_debt_reason_is_forwarded_to_disposition_checker(
     assert len(disposition) == 1
     assert disposition[0][-2:] == ["--debt", "service outage"]
     assert disposition[0][3] != str(snapshot.path)
-    assert b"debt-applied" in snapshot.path.read_bytes()
+    assert b"debt-applied" not in snapshot.path.read_bytes()
+    after = snapshot.path.with_name(f".{snapshot.path.name}.close-after")
+    assert after.is_file()
+    assert b"debt-applied" in after.read_bytes()
 
 
 def test_retroactive_strips_only_merge_gate_off(
