@@ -293,6 +293,65 @@ def test_compaction_events_are_emitted_with_position():
     assert result.compaction_events[0].summary_chars == len("first summary")
 
 
+def test_assistant_compaction_summary_skips_tool_call_extraction():
+    """Pins `and not is_compact_summary` on the assistant branch.
+
+    Claude emits summaries as type "user" today, so without this the clause is inert:
+    removing it would fail nothing. A summary is generated prose and must never be
+    mined for tool calls, whatever record type carries it.
+    """
+    lines = [
+        {
+            "type": "assistant",
+            "uuid": "a1",
+            "parentUuid": None,
+            "sessionId": "sess-compact",
+            "timestamp": "2026-08-22T13:25:00.000Z",
+            "isCompactSummary": True,
+            "message": {
+                "role": "assistant",
+                "content": [
+                    {"type": "text", "text": "summary prose"},
+                    {"type": "tool_use", "name": "Bash", "input": {"command": "ls"}},
+                ],
+            },
+        }
+    ]
+    with tempfile.NamedTemporaryFile(suffix=".jsonl", mode="w", delete=False) as f:
+        _write_jsonl(lines, Path(f.name))
+        result = parse_session(Path(f.name), project_path="/tmp/test")
+
+    assert result.tool_calls == []
+    assert len(result.compaction_events) == 1
+    assert result.messages[0].role == "compaction_summary"
+
+
+def test_assistant_non_summary_still_extracts_tool_calls():
+    """The negative direction: the skip must not suppress ordinary assistant turns."""
+    lines = [
+        {
+            "type": "assistant",
+            "uuid": "a1",
+            "parentUuid": None,
+            "sessionId": "sess-plain",
+            "timestamp": "2026-08-22T13:25:00.000Z",
+            "message": {
+                "role": "assistant",
+                "content": [
+                    {"type": "tool_use", "name": "Bash", "input": {"command": "ls"}},
+                ],
+            },
+        }
+    ]
+    with tempfile.NamedTemporaryFile(suffix=".jsonl", mode="w", delete=False) as f:
+        _write_jsonl(lines, Path(f.name))
+        result = parse_session(Path(f.name), project_path="/tmp/test")
+
+    assert len(result.tool_calls) == 1
+    assert result.tool_calls[0].tool_name == "Bash"
+    assert result.compaction_events == []
+
+
 def test_session_without_compaction_emits_no_events():
     """The negative direction: the discriminator must not match ordinary turns."""
     lines = [
