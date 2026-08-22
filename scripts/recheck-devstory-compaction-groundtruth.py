@@ -18,6 +18,7 @@ from __future__ import annotations
 
 import argparse
 import pathlib
+import re
 import sys
 
 from agents.dev_story.parser import parse_session
@@ -38,11 +39,18 @@ def find_transcript(session_id: str) -> pathlib.Path | None:
     return None
 
 
+# Whitespace-tolerant: Claude's wire format emits `"isCompactSummary":true`, but any other
+# JSON encoder may space the colon. A byte-exact match would silently count zero and make
+# the agreement sweep vacuously pass.
+_MARKER_RE = re.compile(rb'"isCompactSummary"\s*:\s*true')
+
+
 def raw_marker_count(path: pathlib.Path) -> int:
-    return path.read_bytes().count(b'"isCompactSummary":true')
+    """Count compaction markers on the wire, independently of the parser."""
+    return len(_MARKER_RE.findall(path.read_bytes()))
 
 
-def main() -> int:
+def main(argv: list[str] | None = None) -> int:
     ap = argparse.ArgumentParser()
     ap.add_argument(
         "--negative-sample",
@@ -50,11 +58,16 @@ def main() -> int:
         default=25,
         help="how many marker-free transcripts to sweep for false positives",
     )
-    args = ap.parse_args()
+    ap.add_argument(
+        "--allow-missing-groundtruth",
+        action="store_true",
+        help="exit 0 when no pinned transcript is present. Off by default: absence of the "
+        "witness must not read as success.",
+    )
+    args = ap.parse_args(argv)
 
     failures: list[str] = []
-    checked_any = False
-    # Counted separately from checked_any: a negative-sweep transcript must never make the
+    # Counted on its own: a negative-sweep or agreement transcript must never make the
     # command look as though it verified the equality assertion.
     groundtruth_checked = 0
 
@@ -64,7 +77,6 @@ def main() -> int:
         if path is None:
             print(f"  {session_id[:8]}  SKIP (transcript not on this host)")
             continue
-        checked_any = True
         groundtruth_checked += 1
         result = parse_session(path, project_path=str(pathlib.Path.home()))
         positions = [e.record_position for e in result.compaction_events]
@@ -94,7 +106,6 @@ def main() -> int:
             except OSError:
                 continue
             swept += 1
-            checked_any = True
             result = parse_session(path, project_path=str(pathlib.Path.home()))
             if result.compaction_events:
                 failures.append(f"{path.name}: {len(result.compaction_events)} false positives")
@@ -110,7 +121,6 @@ def main() -> int:
                 continue
             if raw == 0:
                 continue
-            checked_any = True
             result = parse_session(path, project_path=str(pathlib.Path.home()))
             if len(result.compaction_events) == raw:
                 agreed += 1
@@ -127,18 +137,26 @@ def main() -> int:
         print("NOT RECHECKED: no pinned ground-truth transcript on this host.")
         print(f"  wanted one of: {', '.join(sorted(GROUND_TRUTH))}")
         print("  The negative and agreement sweeps above cannot substitute for the equality")
-        print("  assertion. Re-run on a host holding a pinned transcript, or pin one here.")
-        return 0 if not failures else 1
-
-    if not checked_any:
-        print("SKIP: no Claude Code transcripts on this host; nothing to recheck.")
-        return 0
+        print("  assertion.")
+        if args.allow_missing_groundtruth:
+            print("  --allow-missing-groundtruth was passed: exiting 0 WITHOUT a witness.")
+            return 1 if failures else 0
+        # Exit non-zero by default. A caller that treats absence as success must say so
+        # explicitly; otherwise CI reads "the witness never ran" as "the witness passed",
+        # which is the silent pass this command exists to prevent.
+        print("  Next action: run on a host holding a pinned transcript, add one to")
+        print("  GROUND_TRUTH, or pass --allow-missing-groundtruth to accept no witness.")
+        return 2
 
     if failures:
         print("FAILURES:")
         for f in failures:
             print(f"  - {f}")
+        print("  Next action: if the parser is correct, the pinned expectation is stale —")
+        print("  re-measure with: grep -n '\"isCompactSummary\":true' <transcript>")
+        print("  and update GROUND_TRUTH. Otherwise the discriminator has regressed.")
         return 1
+
     print("GROUND-TRUTH RECHECK PASSED")
     return 0
 
