@@ -8,7 +8,7 @@ import os
 import re
 import subprocess
 import sys
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import UTC, datetime
 from pathlib import Path
 
@@ -513,7 +513,8 @@ def _default_done_gate_runner(
     finally:
         if debt_preflight is not None:
             debt_preflight.unlink(missing_ok=True)
-    return tuple(evidence)
+    live_sha = _sha256(snapshot.path.read_bytes())
+    return tuple(replace(item, note_sha256=live_sha) for item in evidence)
 
 
 @dataclass(frozen=True)
