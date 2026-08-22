@@ -1,10 +1,11 @@
 #!/usr/bin/env python3
-"""Write passive GLMCP quota-admission and hold receipts.
+"""Probe GLMCP and write quota-admission or hold receipts.
 
-This command records local observations from sanctioned GLM Coding Plan usage.
-It does not call Z.ai, invoke Claude Code, read pass, or store prompt/output
-content. Positive receipts are short-lived witnesses for the quota telemetry
-writer; error receipts hold/back off without creating quota availability.
+With no subcommand, this command invokes the sanctioned GLMCP reviewer with a
+fixed smoke and mints a positive receipt only after a successful, schema-
+conformant provider round trip. The ``observe-success`` and ``observe-error``
+subcommands remain for recording already-observed, governed outcomes. No
+prompt/output content or secret values are persisted.
 """
 
 from __future__ import annotations
@@ -13,6 +14,7 @@ import argparse
 import json
 import os
 import re
+import subprocess
 import sys
 import tempfile
 from dataclasses import dataclass
@@ -69,9 +71,13 @@ MAX_STALE_AFTER_SECONDS = 3600
 DEFAULT_BACKOFF_SECONDS = 900
 DEFAULT_RESET_JITTER_SECONDS = 60
 DEFAULT_ROLE = "cx-glmcp"
+DEFAULT_REVIEWER_COMMAND = REPO_ROOT / "scripts" / "hapax-glmcp-reviewer"
+DEFAULT_SMOKE_TIMEOUT_SECONDS = 240
+SMOKE_COMMAND_REF = "scripts/hapax-glmcp-reviewer"
 ERROR_HINT = (
-    "next action: rerun with sanitized local observation metadata only; do not include "
-    "secret values, prompt text, response text, or account identifiers"
+    "next action: rerun after verifying GLMCP auth, Coding Plan quota, endpoint/model "
+    "availability, and reviewer output schema; do not include secret values, prompt text, "
+    "response text, or account identifiers"
 )
 
 SAFE_REF_RE = re.compile(r"\A[a-z0-9][a-z0-9_.+-]{2,239}\Z")
@@ -136,6 +142,79 @@ class ErrorObservation:
     action: str
     failure_code: FailureCode
     receipt_kind: str
+
+
+def _smoke_dossier(observed_at: datetime) -> str:
+    observed_ref = observed_at.strftime("%Y%m%dT%H%M%SZ").lower()
+    return "\n".join(
+        [
+            f"review_id: glmcp-route-admission-smoke-{observed_ref}",
+            "task: route admission smoke for glmcp.review.direct",
+            "lenses:",
+            "- smoke",
+            "diff --git a/glmcp-smoke.txt b/glmcp-smoke.txt",
+            "--- a/glmcp-smoke.txt",
+            "+++ b/glmcp-smoke.txt",
+            "@@ -0,0 +1 @@",
+            "+smoke",
+            "",
+            "Output contract:",
+            "Output exactly one fenced yaml block containing these top-level keys:",
+            "verdict: accept",
+            "findings: []",
+            "checklist: {}",
+            "",
+        ]
+    )
+
+
+def _smoke_stdout_valid(stdout: str) -> bool:
+    text = stdout.strip()
+    if not text.startswith("```yaml") or not text.endswith("```"):
+        return False
+    body = text.removeprefix("```yaml").removesuffix("```").strip()
+    lines = [line.rstrip() for line in body.splitlines() if line.strip()]
+    top_level = [line for line in lines if not line.startswith((" ", "\t"))]
+    allowed_top_level = {"verdict: accept", "findings: []", "checklist:", "checklist: {}"}
+    return (
+        "verdict: accept" in top_level
+        and "findings: []" in top_level
+        and ("checklist:" in top_level or "checklist: {}" in top_level)
+        and all(line in allowed_top_level for line in top_level)
+    )
+
+
+def _run_reviewer_smoke(args: argparse.Namespace, *, observed_at: datetime) -> None:
+    command = DEFAULT_REVIEWER_COMMAND.resolve()
+    if (
+        command.name != "hapax-glmcp-reviewer"
+        or not command.is_file()
+        or not os.access(command, os.X_OK)
+    ):
+        raise ValueError("sanctioned reviewer command must be executable")
+    env = dict(os.environ)
+    try:
+        result = subprocess.run(
+            [str(command)],
+            input=_smoke_dossier(observed_at),
+            capture_output=True,
+            text=True,
+            check=False,
+            cwd=REPO_ROOT,
+            env=env,
+            timeout=args.smoke_timeout_seconds,
+        )
+    except subprocess.TimeoutExpired as exc:
+        raise ValueError("sanctioned GLMCP reviewer smoke timed out") from exc
+    except OSError as exc:
+        raise ValueError(f"sanctioned GLMCP reviewer smoke failed to launch: {exc}") from exc
+    if result.returncode != 0:
+        raise ValueError(
+            "sanctioned GLMCP reviewer smoke failed; its exit code does not distinguish "
+            "quota wall from auth/config/provider failure; no healthy decline is recorded"
+        )
+    if not _smoke_stdout_valid(result.stdout):
+        raise ValueError("sanctioned GLMCP reviewer smoke produced invalid schema output")
 
 
 def _parse_utc(value: str) -> datetime | None:
@@ -411,6 +490,52 @@ def observe_success(args: argparse.Namespace) -> int:
     return 0
 
 
+def produce_admission(args: argparse.Namespace) -> int:
+    """Run the fixed smoke, then mint the receipt from that round trip only."""
+    observed_at = _now(args)
+    if not 60 <= args.stale_after_seconds <= MAX_STALE_AFTER_SECONDS:
+        raise ValueError(
+            f"--stale-after-seconds must be between 60 and {MAX_STALE_AFTER_SECONDS}"
+        )
+    if not 10 <= args.smoke_timeout_seconds <= 1800:
+        raise ValueError("--smoke-timeout-seconds must be between 10 and 1800")
+    _run_reviewer_smoke(args, observed_at=observed_at)
+    evidence_ref = _safe_reference(
+        f"glmcp-coding-plan-reviewer-smoke-{observed_at.strftime('%Y%m%dT%H%M%SZ').lower()}",
+        label="evidence ref",
+    )
+    name = _receipt_name(
+        args,
+        default="glmcp-quota-admission.yaml",
+        must_contain="glmcp-quota-admission",
+    )
+    path = args.receipt_dir / name
+    _write_flat_yaml_atomic(
+        path,
+        _success_fields(
+            observed_at=observed_at,
+            stale_after_seconds=args.stale_after_seconds,
+            evidence_ref=evidence_ref,
+            supported_tool=SUPPORTED_TOOL,
+            endpoint=CODING_PLAN_ENDPOINT,
+            model=MODEL,
+        ),
+    )
+    _print_summary(
+        args,
+        {
+            "path": str(path),
+            "receipt_kind": "admission",
+            "route_id": ROUTE_ID,
+            "smoke_command": SMOKE_COMMAND_REF,
+            "smoke_stdout_validated": True,
+            "observed_at": _iso(observed_at),
+            "stale_after_seconds": args.stale_after_seconds,
+        },
+    )
+    return 0
+
+
 def _error_fields(
     *,
     role: str,
@@ -507,7 +632,7 @@ def _print_summary(args: argparse.Namespace, summary: dict[str, object]) -> None
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         prog="hapax-glmcp-quota-admission",
-        description="Write passive GLMCP quota admission/hold receipts.",
+        description="Probe GLMCP and write quota admission/hold receipts.",
     )
     parser.add_argument(
         "--receipt-dir",
@@ -520,8 +645,20 @@ def build_parser() -> argparse.ArgumentParser:
     )
     parser.add_argument("--now", help="Observation time as ISO-8601 UTC (default: current UTC)")
     parser.add_argument("--json", action="store_true", help="Print a JSON summary")
+    parser.add_argument(
+        "--stale-after-seconds",
+        type=int,
+        default=DEFAULT_STALE_AFTER_SECONDS,
+        help=f"Positive receipt TTL, 1-{MAX_STALE_AFTER_SECONDS}s",
+    )
+    parser.add_argument(
+        "--smoke-timeout-seconds",
+        type=int,
+        default=DEFAULT_SMOKE_TIMEOUT_SECONDS,
+        help="Maximum time for the provider smoke round trip",
+    )
 
-    subparsers = parser.add_subparsers(dest="mode", required=True)
+    subparsers = parser.add_subparsers(dest="mode")
 
     success = subparsers.add_parser(
         "observe-success",
@@ -597,6 +734,8 @@ def main(argv: list[str] | None = None) -> int:
     parser = build_parser()
     args = parser.parse_args(argv)
     try:
+        if args.mode is None:
+            return produce_admission(args)
         return args.func(args)
     except ValueError as exc:
         print(f"hapax-glmcp-quota-admission: {exc}; {ERROR_HINT}", file=sys.stderr)
