@@ -72,6 +72,11 @@ class TestGateLogic(unittest.TestCase):
         rc = disposition_check.gate(self.note_path, "test-task", ledger_path=self.ledger_path)
         self.assertEqual(rc, 2)
 
+    def test_empty_list_ledger_refuses(self) -> None:
+        self.ledger_path.write_text("[]\n", encoding="utf-8")
+        rc = disposition_check.gate(self.note_path, "test-task", ledger_path=self.ledger_path)
+        self.assertEqual(rc, 2)
+
     def test_malformed_ledger_refuses(self) -> None:
         self.ledger_path.write_text(":::not yaml{{{", encoding="utf-8")
         rc = disposition_check.gate(self.note_path, "test-task", ledger_path=self.ledger_path)

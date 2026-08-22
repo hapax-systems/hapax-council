@@ -539,7 +539,13 @@ def _default_done_gate_runner(
                     "satisfy the governed checker before retrying close",
                     result.stderr.strip() or str(result.returncode),
                 )
-            if name == "artifact-disposition" and "failing open" in (result.stderr or ""):
+            hay = result.stderr or ""
+            if name == "artifact-disposition" and (
+                "failing open" in hay
+                or "refusing close" in hay
+                or "ledger missing" in hay
+                or "malformed" in hay
+            ):
                 raise TerminalCloseError(
                     "terminal_close_artifact_disposition_refused",
                     "restore a well-formed artifact ledger before close",

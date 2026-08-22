@@ -171,7 +171,7 @@ def gate(
     if ledger_path is None:
         ledger_path = _ledger_path()
     ledger = read_ledger(ledger_path)
-    if ledger is None:
+    if not ledger:
         print(
             "error: artifact ledger missing, empty, or malformed; refusing close",
             file=sys.stderr,
