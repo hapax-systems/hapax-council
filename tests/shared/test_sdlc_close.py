@@ -891,7 +891,9 @@ def test_debt_reason_is_forwarded_to_disposition_checker(
     assert disposition[0][-2:] == ["--debt", "service outage"]
     assert disposition[0][3] != str(snapshot.path)
     assert b"debt-applied" not in snapshot.path.read_bytes()
-    after = snapshot.path.with_name(f".{snapshot.path.name}.close-after")
+    after = snapshot.path.with_name(
+        f".{snapshot.path.name}.close-after.{snapshot.sha256[:12]}"
+    )
     assert after.is_file()
     assert b"debt-applied" in after.read_bytes()
 

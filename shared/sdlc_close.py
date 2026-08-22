@@ -482,7 +482,7 @@ def _default_done_gate_runner(
                 copy_hash = _sha256(debt_preflight.read_bytes())
                 if copy_hash != after_hash:
                     after_path = snapshot.path.with_name(
-                        f".{snapshot.path.name}.close-after"
+                        f".{snapshot.path.name}.close-after.{snapshot.sha256[:12]}"
                     )
                     os.replace(debt_preflight, after_path)
                     debt_preflight = None
@@ -504,14 +504,20 @@ def _default_done_gate_runner(
                     "restore a well-formed artifact ledger before close",
                     result.stderr.strip(),
                 )
-            disposition_off = (
-                name == "artifact-disposition"
-                and environment.get("HAPAX_ARTIFACT_DISPOSITION_GATE_OFF") == "1"
+            gate_off = (
+                (
+                    name == "artifact-disposition"
+                    and environment.get("HAPAX_ARTIFACT_DISPOSITION_GATE_OFF") == "1"
+                )
+                or (
+                    name == "pr-merge"
+                    and environment.get("HAPAX_PR_MERGE_GATE_OFF") == "1"
+                )
             )
             evidence.append(
                 CloseGateEvidence(
                     gate=name,
-                    outcome="not_applicable" if disposition_off else "pass",
+                    outcome="not_applicable" if gate_off else "pass",
                     task_id=snapshot.task_id,
                     note_sha256=_sha256(snapshot.path.read_bytes()),
                     authority_case=authority_case,
@@ -738,7 +744,9 @@ def close_task(
             "terminal_close_preflight_note_drift",
             "rerun close against one stable exact note preimage",
         )
-    after_path = snapshot.path.with_name(f".{snapshot.path.name}.close-after")
+    after_path = snapshot.path.with_name(
+        f".{snapshot.path.name}.close-after.{snapshot.sha256[:12]}"
+    )
     note_after = after_path.read_bytes() if after_path.is_file() else None
     if after_path.is_file():
         after_path.unlink()
