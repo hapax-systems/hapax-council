@@ -498,10 +498,20 @@ def _default_done_gate_runner(
                     "satisfy the governed checker before retrying close",
                     result.stderr.strip() or str(result.returncode),
                 )
+            if name == "artifact-disposition" and "failing open" in (result.stderr or ""):
+                raise TerminalCloseError(
+                    "terminal_close_artifact_disposition_refused",
+                    "restore a well-formed artifact ledger before close",
+                    result.stderr.strip(),
+                )
+            disposition_off = (
+                name == "artifact-disposition"
+                and environment.get("HAPAX_ARTIFACT_DISPOSITION_GATE_OFF") == "1"
+            )
             evidence.append(
                 CloseGateEvidence(
                     gate=name,
-                    outcome="pass",
+                    outcome="not_applicable" if disposition_off else "pass",
                     task_id=snapshot.task_id,
                     note_sha256=_sha256(snapshot.path.read_bytes()),
                     authority_case=authority_case,

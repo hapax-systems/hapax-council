@@ -919,6 +919,27 @@ def test_retroactive_strips_only_merge_gate_off(
     assert captured[0].get("HAPAX_ARTIFACT_DISPOSITION_GATE_OFF") == "1"
 
 
+def test_disposition_fail_open_is_refused(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    fixture = _fixture(tmp_path, monkeypatch)
+    snapshot = resolve_task_note(fixture.vault, fixture.task_id, state="active")
+
+    def fake_run(command, *, env, **_kwargs):
+        stderr = ""
+        if any("artifact-disposition" in part for part in command):
+            stderr = "warning: artifact ledger malformed (YAML parse error), failing open"
+        return subprocess.CompletedProcess(command, 0, stdout="", stderr=stderr)
+
+    monkeypatch.setattr(sdlc_close.subprocess, "run", fake_run)
+
+    with pytest.raises(TerminalCloseError) as raised:
+        sdlc_close._default_done_gate_runner(snapshot, "done", "4483", False, None)
+
+    assert raised.value.reason_code == "terminal_close_artifact_disposition_refused"
+
+
 def test_non_retroactive_preserves_disposition_bypass_flag(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -935,12 +956,18 @@ def test_non_retroactive_preserves_disposition_bypass_flag(
 
     monkeypatch.setattr(sdlc_close.subprocess, "run", fake_run)
 
-    sdlc_close._default_done_gate_runner(snapshot, "done", "4483", False, None)
+    evidence = sdlc_close._default_done_gate_runner(
+        snapshot, "done", "4483", False, None
+    )
 
     assert captured
     for _command, environment in captured:
         assert environment.get("HAPAX_ARTIFACT_DISPOSITION_GATE_OFF") == "1"
         assert environment.get("HAPAX_PR_MERGE_GATE_OFF") == "1"
+    assert any(
+        item.gate == "artifact-disposition" and item.outcome == "not_applicable"
+        for item in evidence
+    )
 
 
 def test_non_retroactive_done_gate_still_requires_acceptance_receipt(
