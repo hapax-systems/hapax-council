@@ -4186,22 +4186,26 @@ def _cas_rollback(projection: FileProjection, scratch: _ProjectionScratch) -> bo
                     os.fsync(dir_fd)
                     return True
         if scratch.kind == "delete":
+            extra_names = (
+                scratch.path.name,
+                _drop_link_name(scratch.path.name),
+                _drop_link_name(name),
+            )
             try:
                 dest_stat = os.stat(name, dir_fd=dir_fd, follow_symlinks=False)
-                scratch_stat = os.stat(scratch.path.name, dir_fd=dir_fd, follow_symlinks=False)
             except FileNotFoundError:
                 dest_stat = None
-            else:
-                if (
-                    stat.S_ISREG(dest_stat.st_mode)
-                    and dest_stat.st_ino == scratch_stat.st_ino
-                    and dest_stat.st_nlink >= 2
-                ):
-                    # Crash after link, before unlink: dest is still the live
-                    # name. Drop the extra scratch link so dest remains.
-                    if not _same_regular_inode(dir_fd, name, scratch.path.name):
-                        return False
-                    os.unlink(scratch.path.name, dir_fd=dir_fd)
+            if (
+                dest_stat is not None
+                and stat.S_ISREG(dest_stat.st_mode)
+                and dest_stat.st_nlink >= 2
+            ):
+                for extra in extra_names:
+                    if extra == name:
+                        continue
+                    if not _same_regular_inode(dir_fd, name, extra):
+                        continue
+                    os.unlink(extra, dir_fd=dir_fd)
                     os.fsync(dir_fd)
                     return True
         if scratch.kind == "update":

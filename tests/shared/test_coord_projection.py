@@ -3529,6 +3529,25 @@ def test_cas_rollback_update_drop_link_third_name_keeps_preimage(tmp_path: Path)
     assert src.read_bytes() == b"after-image"
 
 
+def test_cas_rollback_delete_drop_link_keeps_dest(tmp_path: Path) -> None:
+    dest = tmp_path / "note.md"
+    drop = tmp_path / cp._drop_link_name("note.md")
+    dest.write_bytes(b"before-image")
+    os.link(dest, drop)
+    projection = cp.FileProjection.from_snapshot(
+        dest,
+        before=b"before-image",
+        before_mode=stat.S_IMODE(dest.stat().st_mode),
+        after=None,
+        after_mode=None,
+    )
+    scratch = cp._scratch_for(projection, "txn-del-drop", 0)
+    scratch = dataclasses.replace(scratch, path=tmp_path / "parked")
+    assert cp._cas_rollback(projection, scratch) is True
+    assert dest.read_bytes() == b"before-image"
+    assert not drop.exists()
+
+
 def test_cas_rollback_delete_nlink2_keeps_dest(tmp_path: Path) -> None:
     dest = tmp_path / "note.md"
     parked = tmp_path / "parked"
