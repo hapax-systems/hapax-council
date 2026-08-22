@@ -3457,25 +3457,24 @@ def test_drop_extra_link_puts_post_check_racer_back(tmp_path: Path) -> None:
     src.write_bytes(b"before-image")
     os.link(src, peer)
     fd = os.open(tmp_path, os.O_RDONLY | os.O_DIRECTORY)
-    real_rename = os.rename
+    real_drain = cp._drain_peer_aliases
 
-    def steal_source_then_rename(src_name: str, dst_name: str, **kwargs: object) -> None:
-        if ".drop-src." in str(dst_name):
-            os.unlink(src_name, dir_fd=fd)
-            racer = os.open(
-                src_name,
-                os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_CLOEXEC,
-                0o644,
-                dir_fd=fd,
-            )
-            try:
-                os.write(racer, b"racer")
-            finally:
-                os.close(racer)
-        real_rename(src_name, dst_name, **kwargs)
+    def steal_source_then_drain(dir_fd: int, keep_name: str) -> None:
+        os.unlink("note.md", dir_fd=dir_fd)
+        racer = os.open(
+            "note.md",
+            os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_CLOEXEC,
+            0o644,
+            dir_fd=dir_fd,
+        )
+        try:
+            os.write(racer, b"racer")
+        finally:
+            os.close(racer)
+        real_drain(dir_fd, keep_name)
 
     try:
-        with mock.patch.object(cp.os, "rename", side_effect=steal_source_then_rename):
+        with mock.patch.object(cp, "_drain_peer_aliases", side_effect=steal_source_then_drain):
             with pytest.raises(OSError) as raised:
                 cp._drop_extra_link(fd, "note.md", "peer")
         assert raised.value.errno == errno.EEXIST

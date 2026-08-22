@@ -3708,15 +3708,19 @@ def _drop_src_name(src_name: str) -> str:
 
 def _drain_peer_aliases(dir_fd: int, keep_name: str) -> None:
     """Drop every extra name that still shares keep_name's inode."""
+    fcntl.flock(dir_fd, fcntl.LOCK_EX)
     try:
-        names = os.listdir(dir_fd)
-    except OSError:
-        return
-    for extra in names:
-        if extra == keep_name:
-            continue
-        if _same_regular_inode(dir_fd, extra, keep_name):
-            os.unlink(extra, dir_fd=dir_fd)
+        try:
+            names = os.listdir(dir_fd)
+        except OSError:
+            return
+        for extra in names:
+            if extra == keep_name:
+                continue
+            if _same_regular_inode(dir_fd, extra, keep_name):
+                os.unlink(extra, dir_fd=dir_fd)
+    finally:
+        fcntl.flock(dir_fd, fcntl.LOCK_UN)
 
 
 def _hardlink_extra_names(live_name: str, scratch_name: str) -> tuple[str, ...]:
@@ -3779,20 +3783,12 @@ def _drop_extra_link(
         except FileNotFoundError:
             pass
         raise OSError(errno.EEXIST, "drop-src raced", parked)
-    unique = f"{parked}.{os.getpid()}.{secrets.token_hex(4)}"
-    os.rename(src_name, unique, src_dir_fd=dir_fd, dst_dir_fd=dir_fd)
-    fcntl.flock(dir_fd, fcntl.LOCK_EX)
+    _drain_peer_aliases(dir_fd, peer_name)
     try:
-        if not _same_regular_inode(dir_fd, unique, parked):
-            os.rename(unique, src_name, src_dir_fd=dir_fd, dst_dir_fd=dir_fd)
-            os.unlink(parked, dir_fd=dir_fd)
-            raise OSError(errno.EEXIST, "source raced before drop", src_name)
-        os.unlink(unique, dir_fd=dir_fd)
-        if not _same_regular_inode(dir_fd, parked, peer_name):
-            raise OSError(errno.EEXIST, "peer raced before parked drop", parked)
-        os.unlink(parked, dir_fd=dir_fd)
-    finally:
-        fcntl.flock(dir_fd, fcntl.LOCK_UN)
+        os.stat(src_name, dir_fd=dir_fd, follow_symlinks=False)
+    except FileNotFoundError:
+        return
+    raise OSError(errno.EEXIST, "source raced before drop", src_name)
 
 
 def _link_then_unlink_src(
