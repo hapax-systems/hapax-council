@@ -438,7 +438,7 @@ def _default_done_gate_runner(
                 observed_at=observed_at,
                 command=("cc-close", "--retroactive", "--pr", str(pr)),
                 reason_code="rec_1_retroactive_merge_is_evidence",
-                authority_ref="operator-2026-08-20/rec-1/pr-4586",
+                authority_ref="",
             )
             for gate in (
                 "acceptance-criteria",
@@ -469,7 +469,7 @@ def _default_done_gate_runner(
                     final_status=final_status,
                     observed_at=observed_at,
                     reason_code="HAPAX_ACCEPTANCE_RECEIPT_GATE_OFF",
-                    authority_ref="operator-2026-08-20/rec-1/pr-4586",
+                    authority_ref="",
                 )
             )
     debt_preflight = next(
