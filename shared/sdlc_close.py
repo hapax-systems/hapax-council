@@ -324,6 +324,37 @@ class CloseGateEvidence:
         return f"terminal-close-gate@sha256:{_sha256(_canonical_json_bytes(self.to_record()))}"
 
 
+def _require_current_claim_admission(consumption: object) -> None:
+    """Refuse close on expired or unparseable claim-time admission.
+
+    Echo/canon revalidation stays the follow-on cutover. This only checks
+    admission_consumption.valid_until against now.
+    """
+    raw = getattr(consumption, "valid_until", None)
+    if not raw:
+        raise TerminalCloseError(
+            "terminal_close_claim_admission_unfresh",
+            "reclaim so close reads a current admission_consumption.valid_until",
+            "valid_until_missing",
+        )
+    try:
+        until = datetime.fromisoformat(str(raw).replace("Z", "+00:00"))
+        if until.tzinfo is None:
+            until = until.replace(tzinfo=UTC)
+    except ValueError as exc:
+        raise TerminalCloseError(
+            "terminal_close_claim_admission_unfresh",
+            "reclaim so close reads a parseable admission_consumption.valid_until",
+            str(raw),
+        ) from exc
+    if datetime.now(UTC) >= until.astimezone(UTC):
+        raise TerminalCloseError(
+            "terminal_close_claim_admission_expired",
+            "reclaim the task so close uses current admission_consumption",
+            str(raw),
+        )
+
+
 def _default_done_gate_runner(
     snapshot: TaskNoteSnapshot,
     final_status: str,
@@ -401,7 +432,24 @@ def _default_done_gate_runner(
         *(["--pr", pr] if pr else []),
         *(["--repo", pr_repo] if pr_repo else []),
     ]
+    if not retroactive:
+        closure = REPO_ROOT / "scripts" / "cc-task-closure-check.py"
+        if not closure.is_file():
+            raise TerminalCloseError(
+                "terminal_close_task_closure_checker_missing",
+                "restore the governed closure checker before close",
+                str(closure),
+            )
+        commands.append(
+            (
+                "task-closure",
+                [sys.executable, "-I", str(closure), str(snapshot.path)],
+            )
+        )
     commands.append(("pr-merge", merge_command))
+    ledger_copy: Path | None = None
+    ledger_src: Path | None = None
+    ledger_original: bytes | None = None
     if not retroactive:
         disposition = REPO_ROOT / "scripts" / "cc-task-artifact-disposition-check.py"
         if not disposition.is_file():
@@ -442,12 +490,14 @@ def _default_done_gate_runner(
                 "create a well-formed artifact ledger before close",
                 str(ledger_src),
             )
+        # Isolate the child from the live ledger even when the gate is OFF
+        # and no file exists, so a later debt write cannot create the global
+        # path during a still-refusable preflight.
+        ledger_copy = disposition_preflight.with_name(disposition_preflight.name + ".ledger.yaml")
         if ledger_src.is_file():
-            ledger_copy = disposition_preflight.with_name(
-                disposition_preflight.name + ".ledger.yaml"
-            )
-            ledger_copy.write_bytes(ledger_src.read_bytes())
-            environment["HAPAX_ARTIFACT_LEDGER_PATH"] = str(ledger_copy)
+            ledger_original = ledger_src.read_bytes()
+            ledger_copy.write_bytes(ledger_original)
+        environment["HAPAX_ARTIFACT_LEDGER_PATH"] = str(ledger_copy)
         commands.append(("artifact-disposition", disposition_command))
     if retroactive:
         evidence = [
@@ -527,6 +577,24 @@ def _default_done_gate_runner(
                     cookie.write_text(invocation, encoding="utf-8")
                     os.replace(debt_preflight, after_path)
                     debt_preflight = None
+                if (
+                    result.returncode == 0
+                    and ledger_copy is not None
+                    and ledger_original is not None
+                    and ledger_src is not None
+                    and ledger_copy.is_file()
+                ):
+                    copy_bytes = ledger_copy.read_bytes()
+                    live = ledger_src.read_bytes() if ledger_src.is_file() else b""
+                    if live != ledger_original:
+                        raise TerminalCloseError(
+                            "terminal_close_artifact_ledger_drift",
+                            "rerun close against one stable artifact ledger preimage",
+                            str(ledger_src),
+                        )
+                    if copy_bytes != live:
+                        os.replace(ledger_copy, ledger_src)
+                        ledger_copy = None
             elif before_hash != snapshot.sha256 or after_hash != snapshot.sha256:
                 raise TerminalCloseError(
                     "terminal_close_preflight_note_drift",
@@ -552,9 +620,16 @@ def _default_done_gate_runner(
                     result.stderr.strip(),
                 )
             gate_off = (
-                name == "artifact-disposition"
-                and environment.get("HAPAX_ARTIFACT_DISPOSITION_GATE_OFF") == "1"
-            ) or (name == "pr-merge" and environment.get("HAPAX_PR_MERGE_GATE_OFF") == "1")
+                (
+                    name == "artifact-disposition"
+                    and environment.get("HAPAX_ARTIFACT_DISPOSITION_GATE_OFF") == "1"
+                )
+                or (name == "pr-merge" and environment.get("HAPAX_PR_MERGE_GATE_OFF") == "1")
+                or (
+                    name == "task-closure"
+                    and environment.get("HAPAX_CC_TASK_CLOSURE_GATE_OFF") == "1"
+                )
+            )
             evidence.append(
                 CloseGateEvidence(
                     gate=name,
@@ -573,6 +648,8 @@ def _default_done_gate_runner(
     finally:
         if debt_preflight is not None:
             debt_preflight.unlink(missing_ok=True)
+        if ledger_copy is not None:
+            ledger_copy.unlink(missing_ok=True)
     live_sha = _sha256(snapshot.path.read_bytes())
     return tuple(replace(item, note_sha256=live_sha) for item in evidence)
 
@@ -754,6 +831,7 @@ def close_task(
     reconciliation = None
     if publication_owned:
         assert applied_claim.admission_consumption is not None
+        _require_current_claim_admission(applied_claim.admission_consumption)
         position_ref = applied_claim.admission_consumption.consumption_ref
         echo_message_id = f"echo-absent:{applied_claim.receipt.publication_id}"
     else:

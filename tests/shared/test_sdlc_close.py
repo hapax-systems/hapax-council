@@ -236,7 +236,13 @@ def _fixture(
     ):
         monkeypatch.delenv(key, raising=False)
     ledger = tmp_path / "artifact-ledger.yaml"
-    ledger.write_text("[]\n", encoding="utf-8")
+    ledger.write_text(
+        "- artifact_id: fixture-unrelated\n"
+        "  class: receipt\n"
+        "  disposition: receipt_only\n"
+        "  task_id: other-task\n",
+        encoding="utf-8",
+    )
     monkeypatch.setenv("HAPAX_ARTIFACT_LEDGER_PATH", str(ledger))
     note = active / f"{task_id}.md"
     note.write_text(
@@ -514,8 +520,9 @@ def test_done_gate_children_use_isolated_project_runtime(
         None,
     )
 
-    assert len(evidence) == 3
-    assert len(calls) == 2
+    assert len(evidence) == 4
+    assert len(calls) == 3
+    assert any("cc-task-closure-check.py" in part for command, _env in calls for part in command)
     for command, environment in calls:
         assert command[:2] == [sdlc_close.sys.executable, "-I"]
         assert "PYTHONPATH" not in environment
@@ -903,6 +910,88 @@ def test_debt_reason_is_forwarded_to_disposition_checker(
     )
     assert after.is_file()
     assert b"debt-applied" in after.read_bytes()
+
+
+def test_disposition_debt_is_copied_back_to_the_live_ledger(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    fixture = _fixture(tmp_path, monkeypatch)
+    ledger = Path(os.environ["HAPAX_ARTIFACT_LEDGER_PATH"])
+    ledger.write_text(
+        "- artifact_id: fixture-unrelated\n"
+        "  class: receipt\n"
+        "  disposition: receipt_only\n"
+        "  task_id: other-task\n"
+        "- artifact_id: close-receipt\n"
+        "  class: receipt\n"
+        "  disposition: produced\n"
+        "  task_id: task-close\n",
+        encoding="utf-8",
+    )
+    snapshot = resolve_task_note(fixture.vault, fixture.task_id, state="active")
+    real_run = subprocess.run
+
+    def fake_run(command, *, env, **kwargs):
+        if any("cc-task-artifact-disposition-check.py" in part for part in command):
+            return real_run(command, env=env, **kwargs)
+        return subprocess.CompletedProcess(command, 0, stdout="", stderr="")
+
+    monkeypatch.setattr(sdlc_close.subprocess, "run", fake_run)
+
+    sdlc_close._default_done_gate_runner(snapshot, "done", "4483", False, None)
+
+    live = yaml.safe_load(ledger.read_text(encoding="utf-8"))
+    close_rows = [row for row in live if row.get("task_id") == "task-close"]
+    assert len(close_rows) == 1
+    assert close_rows[0].get("debt") is not None
+    leftovers = list(snapshot.path.parent.glob("*.ledger.yaml"))
+    assert leftovers == []
+
+
+def test_disposition_gate_off_isolates_missing_global_ledger(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    fixture = _fixture(tmp_path, monkeypatch)
+    monkeypatch.delenv("HAPAX_ARTIFACT_LEDGER_PATH", raising=False)
+    monkeypatch.setenv("HAPAX_ARTIFACT_DISPOSITION_GATE_OFF", "1")
+    snapshot = resolve_task_note(fixture.vault, fixture.task_id, state="active")
+    captured: list[dict[str, str]] = []
+
+    def fake_run(command, *, env, **_kwargs):
+        captured.append(dict(env))
+        return subprocess.CompletedProcess(command, 0, stdout="", stderr="")
+
+    monkeypatch.setattr(sdlc_close.subprocess, "run", fake_run)
+
+    sdlc_close._default_done_gate_runner(snapshot, "done", "4483", False, None)
+
+    default = Path.home() / ".cache" / "hapax" / "document-pipeline" / "artifact-ledger.yaml"
+    assert captured
+    for environment in captured:
+        isolated = environment.get("HAPAX_ARTIFACT_LEDGER_PATH", "")
+        assert isolated
+        assert isolated != str(default)
+        assert isolated.endswith(".ledger.yaml")
+    assert not default.exists()
+
+
+def test_expired_claim_admission_is_refused() -> None:
+    class _Expired:
+        valid_until = "2020-01-01T00:00:00Z"
+
+    with pytest.raises(TerminalCloseError) as raised:
+        sdlc_close._require_current_claim_admission(_Expired())
+
+    assert raised.value.reason_code == "terminal_close_claim_admission_expired"
+
+
+def test_current_claim_admission_is_accepted() -> None:
+    class _Current:
+        valid_until = "2099-01-01T00:00:00Z"
+
+    sdlc_close._require_current_claim_admission(_Current())
 
 
 def test_retroactive_strips_only_merge_gate_off(

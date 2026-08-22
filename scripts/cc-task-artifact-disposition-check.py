@@ -78,11 +78,15 @@ def read_ledger(ledger_path: Path) -> list[dict] | None:
         data = yaml.safe_load(text)
     except yaml.YAMLError:
         print(
-            "warning: artifact ledger malformed (YAML parse error), failing open", file=sys.stderr
+            f"error: artifact ledger malformed at {ledger_path} (YAML parse error); refusing close",
+            file=sys.stderr,
         )
         return None
     if not isinstance(data, list):
-        print("warning: artifact ledger is not a list, failing open", file=sys.stderr)
+        print(
+            f"error: artifact ledger at {ledger_path} is not a list; refusing close",
+            file=sys.stderr,
+        )
         return None
     return data
 
@@ -173,7 +177,8 @@ def gate(
     ledger = read_ledger(ledger_path)
     if not ledger:
         print(
-            "error: artifact ledger missing, empty, or malformed; refusing close",
+            f"error: artifact ledger missing, empty, or malformed at {ledger_path}; "
+            "refusing close. Next: create or repair that ledger, then retry.",
             file=sys.stderr,
         )
         return 2

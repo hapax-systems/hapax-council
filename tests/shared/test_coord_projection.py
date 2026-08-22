@@ -3673,6 +3673,40 @@ def test_drain_peer_aliases_leaves_a_replacement(tmp_path: Path) -> None:
         os.close(fd)
 
 
+def test_drain_peer_aliases_restore_does_not_clobber_second_racer(tmp_path: Path) -> None:
+    keep = tmp_path / "note.md"
+    extra = tmp_path / "alias.md"
+    keep.write_bytes(b"keep")
+    os.link(keep, extra)
+    fd = os.open(tmp_path, os.O_RDONLY | os.O_DIRECTORY)
+    real_same = cp._same_regular_inode
+    real_rename = os.rename
+
+    def claim_then_replace(dir_fd: int, left: str, right: str) -> bool:
+        if left == "alias.md" and right == "note.md":
+            extra.unlink()
+            extra.write_bytes(b"racer1")
+            return True
+        return real_same(dir_fd, left, right)
+
+    def park_then_plant(src: str, dst: str, **kwargs: object) -> None:
+        real_rename(src, dst, **kwargs)
+        if ".drain." in str(dst):
+            extra.write_bytes(b"racer2")
+
+    try:
+        with mock.patch.object(cp, "_same_regular_inode", side_effect=claim_then_replace):
+            with mock.patch.object(cp.os, "rename", side_effect=park_then_plant):
+                cp._drain_peer_aliases(fd, "note.md")
+        assert keep.read_bytes() == b"keep"
+        assert extra.read_bytes() == b"racer2"
+        parked = [path for path in tmp_path.iterdir() if ".drain." in path.name]
+        assert len(parked) == 1
+        assert parked[0].read_bytes() == b"racer1"
+    finally:
+        os.close(fd)
+
+
 def test_cas_rollback_update_three_link_park_restores_preimage(tmp_path: Path) -> None:
     src = tmp_path / "scratch"
     dst = tmp_path / "note.md"

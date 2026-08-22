@@ -3706,11 +3706,33 @@ def _drop_src_name(src_name: str) -> str:
     return f".{src_name}.drop-src"
 
 
+def _restore_parked_name(dir_fd: int, parked: str, dest: str) -> None:
+    """Put parked back at dest without clobbering a racing replacement.
+
+    os.rename would overwrite dest. link fails with EEXIST instead.
+    """
+    try:
+        os.link(
+            parked,
+            dest,
+            src_dir_fd=dir_fd,
+            dst_dir_fd=dir_fd,
+            follow_symlinks=False,
+        )
+    except OSError:
+        return
+    try:
+        os.unlink(parked, dir_fd=dir_fd)
+    except OSError:
+        return
+
+
 def _drain_peer_aliases(dir_fd: int, keep_name: str) -> None:
     """Drop every extra name that still shares keep_name's inode.
 
     Rename each extra aside first. If the parked name is not keep's inode,
-    it is a racer: put it back and skip. Do not unlink a replacement.
+    it is a racer: put it back only when dest is still absent. Do not
+    unlink or rename-over a replacement.
     """
     fcntl.flock(dir_fd, fcntl.LOCK_EX)
     try:
@@ -3729,7 +3751,7 @@ def _drain_peer_aliases(dir_fd: int, keep_name: str) -> None:
             except OSError:
                 continue
             if not _same_regular_inode(dir_fd, unique, keep_name):
-                os.rename(unique, extra, src_dir_fd=dir_fd, dst_dir_fd=dir_fd)
+                _restore_parked_name(dir_fd, unique, extra)
                 continue
             os.unlink(unique, dir_fd=dir_fd)
     finally:
