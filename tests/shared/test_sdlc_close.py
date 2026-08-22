@@ -886,6 +886,8 @@ def test_debt_reason_is_forwarded_to_disposition_checker(
     disposition = [cmd for cmd in calls if any("artifact-disposition" in part for part in cmd)]
     assert len(disposition) == 1
     assert disposition[0][-2:] == ["--debt", "service outage"]
+    assert disposition[0][3] != str(snapshot.path)
+    assert snapshot.path.read_bytes() == snapshot.content
 
 
 def test_retroactive_strips_only_merge_gate_off(

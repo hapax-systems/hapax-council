@@ -411,11 +411,20 @@ def _default_done_gate_runner(
                 "restore the governed artifact disposition checker before close",
                 str(disposition),
             )
+        debt_preflight: Path | None = None
+        note_arg = snapshot.path
+        if debt_reason:
+            # The checker writes debt into the note. Admission is bound to the
+            # preimage, so a live write would drift and self-refuse. Check a
+            # copy; never copy it back.
+            debt_preflight = snapshot.path.with_name(f".{snapshot.path.name}.debt-preflight")
+            debt_preflight.write_bytes(snapshot.path.read_bytes())
+            note_arg = debt_preflight
         disposition_command = [
             sys.executable,
             "-I",
             str(disposition),
-            str(snapshot.path),
+            str(note_arg),
             snapshot.task_id,
         ]
         if debt_reason:
@@ -453,39 +462,51 @@ def _default_done_gate_runner(
                 observed_at=observed_at,
             )
         ]
-    for name, command in commands:
-        before_hash = _sha256(snapshot.path.read_bytes())
-        result = subprocess.run(
-            command, env=environment, capture_output=True, text=True, check=False
-        )
-        after_hash = _sha256(snapshot.path.read_bytes())
-        if before_hash != snapshot.sha256 or after_hash != snapshot.sha256:
-            raise TerminalCloseError(
-                "terminal_close_preflight_note_drift",
-                "rerun close against one stable exact note preimage",
-                name,
+    debt_preflight = next(
+        (
+            Path(command[3])
+            for name, command in commands
+            if name == "artifact-disposition" and command[3] != str(snapshot.path)
+        ),
+        None,
+    )
+    try:
+        for name, command in commands:
+            before_hash = _sha256(snapshot.path.read_bytes())
+            result = subprocess.run(
+                command, env=environment, capture_output=True, text=True, check=False
             )
-        if result.returncode != 0:
-            raise TerminalCloseError(
-                f"terminal_close_{name}_refused",
-                "satisfy the governed checker before retrying close",
-                result.stderr.strip() or str(result.returncode),
+            after_hash = _sha256(snapshot.path.read_bytes())
+            if before_hash != snapshot.sha256 or after_hash != snapshot.sha256:
+                raise TerminalCloseError(
+                    "terminal_close_preflight_note_drift",
+                    "rerun close against one stable exact note preimage",
+                    name,
+                )
+            if result.returncode != 0:
+                raise TerminalCloseError(
+                    f"terminal_close_{name}_refused",
+                    "satisfy the governed checker before retrying close",
+                    result.stderr.strip() or str(result.returncode),
+                )
+            evidence.append(
+                CloseGateEvidence(
+                    gate=name,
+                    outcome="pass",
+                    task_id=snapshot.task_id,
+                    note_sha256=snapshot.sha256,
+                    authority_case=authority_case,
+                    final_status=final_status,
+                    observed_at=datetime.now(UTC).isoformat(),
+                    command=tuple(command),
+                    returncode=result.returncode,
+                    stdout_sha256=_sha256(result.stdout.encode()),
+                    stderr_sha256=_sha256(result.stderr.encode()),
+                )
             )
-        evidence.append(
-            CloseGateEvidence(
-                gate=name,
-                outcome="pass",
-                task_id=snapshot.task_id,
-                note_sha256=snapshot.sha256,
-                authority_case=authority_case,
-                final_status=final_status,
-                observed_at=datetime.now(UTC).isoformat(),
-                command=tuple(command),
-                returncode=result.returncode,
-                stdout_sha256=_sha256(result.stdout.encode()),
-                stderr_sha256=_sha256(result.stderr.encode()),
-            )
-        )
+    finally:
+        if debt_preflight is not None:
+            debt_preflight.unlink(missing_ok=True)
     return tuple(evidence)
 
 
