@@ -771,11 +771,16 @@ def close_task(
                 "rerun close; the staged after-image was not UTF-8",
                 str(exc),
             ) from exc
-        if task_id not in text:
+        declared = ""
+        for line in text.splitlines():
+            if line.startswith("id:"):
+                declared = line.split(":", 1)[1].strip().strip("'\"")
+                break
+        if declared != task_id:
             raise TerminalCloseError(
                 "terminal_close_afterimage_unbound",
                 "rerun close; the staged after-image is not bound to this task",
-                task_id,
+                declared or task_id,
             )
         note_after = raw
     observed_receipt = receipt_path.read_bytes() if receipt_path.is_file() else None
