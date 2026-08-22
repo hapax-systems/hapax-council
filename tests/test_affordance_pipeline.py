@@ -587,7 +587,7 @@ class TestConsentGate:
 
         p = self._pipeline()
         cand = self._candidate(consent_required=True, person_id="guest", data_category="video")
-        registry = self._registry("jason_kleeberger", frozenset({"video"}))
+        registry = self._registry("principal-a1", frozenset({"video"}))
         with patch("shared.governance.consent.load_contracts", return_value=registry):
             assert p._consent_allows(cand) is False
 

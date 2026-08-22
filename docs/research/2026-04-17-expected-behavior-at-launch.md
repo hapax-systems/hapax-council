@@ -52,7 +52,7 @@ shipped and live. The production surface includes:
 - Stream-mode axis with 4 states (private / public / public_research /
   fortress).
 - 78 privacy-regression tests green (redaction + transition matrix).
-- 3 active consent contracts (`agatha`, `guest`, `simon`).
+- 3 active consent contracts (`principal-c1`, `guest`, `principal-c2`).
 - Mid-stream revocation cascade tested at e2e level.
 
 **Observability:**
@@ -263,7 +263,7 @@ the operator alone talking through material. Measurements:
 5. No journal stacktraces, no privacy-regression failures.
 
 If all five pass, run a public-mode rehearsal with a known-friendly
-audience member (`agatha` or `simon`, both have active broadcast
+audience member (`principal-c1` or `principal-c2`, both have active broadcast
 consent). Measurements add:
 
 6. Chat reactor fires on keyword hit (target §2.3).

@@ -33,7 +33,7 @@ Usage::
     archive-purge.py --condition <id> --confirm     # live
     archive-purge.py --condition <id> --confirm --reason "consent revocation"
     archive-purge.py --condition <id> --confirm \\
-        --consent-revoked-for simon --reason "guardian revoked simon's scope"
+        --consent-revoked-for principal-c2 --reason "guardian revoked principal-c2's scope"
 """
 
 from __future__ import annotations
