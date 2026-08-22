@@ -500,7 +500,7 @@ def _default_done_gate_runner(
                     gate=name,
                     outcome="pass",
                     task_id=snapshot.task_id,
-                    note_sha256=snapshot.sha256,
+                    note_sha256=_sha256(snapshot.path.read_bytes()),
                     authority_case=authority_case,
                     final_status=final_status,
                     observed_at=datetime.now(UTC).isoformat(),

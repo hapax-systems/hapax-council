@@ -4420,12 +4420,19 @@ def _cas_rollback(projection: FileProjection, scratch: _ProjectionScratch) -> bo
                 finally:
                     os.close(dest_fd)
                 if dest_bytes == projection.after:
-                    # Crash after parking displaced onto src, before unlinking
-                    # displaced. Drop the extra link so dest=after / src=before
-                    # can EXCHANGE below.
-                    if not _same_regular_inode(dir_fd, scratch.path.name, displaced_name):
-                        return False
-                    os.unlink(displaced_name, dir_fd=dir_fd)
+                    # Dest holds after; scratch may still share an extra
+                    # drop-src/displaced link. Drain those extras so
+                    # _entry_state_at can read nlink=1.
+                    for extra in (
+                        displaced_name,
+                        _drop_src_name(scratch.path.name),
+                        _drop_src_name(name),
+                        _drop_link_name(name),
+                    ):
+                        if extra == scratch.path.name:
+                            continue
+                        if _same_regular_inode(dir_fd, scratch.path.name, extra):
+                            os.unlink(extra, dir_fd=dir_fd)
                     os.fsync(dir_fd)
 
         def _state_or_none(entry_name: str):
