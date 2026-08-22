@@ -898,3 +898,371 @@ def test_directory_fsync_failure_has_next_action(
         sink_mod._fsync_directory(tmp_path)
 
     assert closed == [99]
+
+
+# ---------------------------------------------------------------------------
+# append_once: atomic idempotent Stage-0 append keyed by source_receipt_ref.
+# cc-task-money-rails-resource-receipt-ledger-20260630 (PR #4347) — prevents
+# the MonDLC realized-return projection from double-counting when a provider
+# retry or redelivery drives the same logical receipt through persist twice.
+# ---------------------------------------------------------------------------
+
+
+def _row_count(path: Path) -> int:
+    return len([ln for ln in path.read_text(encoding="utf-8").splitlines() if ln.strip()])
+
+
+def _once_kwargs(**overrides: Any) -> dict[str, Any]:
+    base: dict[str, Any] = dict(
+        stream_id="payment-event",
+        data_class="financial_receipt",
+        source_receipt_ref="receipt://payment/github_sponsors/abc/created",
+        payload={"rail": "github_sponsors", "amount_usd_cents": 500},
+        timestamp="2026-07-01T00:00:00Z",
+    )
+    base.update(overrides)
+    return base
+
+
+def test_append_once_reuses_row_for_identical_ref_and_payload(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    sink = _trusted_sink(tmp_path, monkeypatch)
+
+    first = sink.append_once(**_once_kwargs())
+    second = sink.append_once(**_once_kwargs())
+
+    assert first.row_hash == second.row_hash
+    path = sink.path_for_stream("payment-event")
+    assert _row_count(path) == 1
+    validation = sink_mod.validate_chain(path, stream_id="payment-event")
+    assert validation.valid is True
+    assert validation.row_count == 1
+
+
+def test_append_once_appends_distinct_source_refs(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    sink = _trusted_sink(tmp_path, monkeypatch)
+
+    a = sink.append_once(
+        **_once_kwargs(
+            source_receipt_ref="receipt://payment/x/created",
+            payload={"rail": "x", "n": 1},
+            timestamp="2026-07-01T00:00:00Z",
+        )
+    )
+    b = sink.append_once(
+        **_once_kwargs(
+            source_receipt_ref="receipt://payment/x/cancelled",
+            payload={"rail": "x", "n": 2},
+            timestamp="2026-07-01T00:00:01Z",
+        )
+    )
+
+    path = sink.path_for_stream("payment-event")
+    assert _row_count(path) == 2
+    assert b.prior_hash == a.row_hash  # still chained append-only
+
+
+def test_append_once_conflict_on_same_ref_different_payload(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    sink = _trusted_sink(tmp_path, monkeypatch)
+    ref = "receipt://payment/x/created"
+
+    sink.append_once(**_once_kwargs(source_receipt_ref=ref, payload={"amount": 500}))
+    with pytest.raises(sink_mod.DurableSinkReuseConflictError):
+        sink.append_once(**_once_kwargs(source_receipt_ref=ref, payload={"amount": 999}))
+
+    assert _row_count(sink.path_for_stream("payment-event")) == 1  # conflict never appends
+
+
+def test_append_once_conflict_on_same_ref_different_timestamp(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    sink = _trusted_sink(tmp_path, monkeypatch)
+    ref = "receipt://payment/x/created"
+    payload = {"amount": 500}
+
+    sink.append_once(
+        **_once_kwargs(source_receipt_ref=ref, payload=payload, timestamp="2026-07-01T00:00:00Z")
+    )
+    with pytest.raises(sink_mod.DurableSinkReuseConflictError):
+        sink.append_once(
+            **_once_kwargs(
+                source_receipt_ref=ref, payload=payload, timestamp="2026-07-01T00:00:09Z"
+            )
+        )
+
+    assert _row_count(sink.path_for_stream("payment-event")) == 1
+
+
+def test_append_once_holds_on_two_identical_committed_rows_leaving_stream_unchanged(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # Reachable ambiguous pre-existing state: two plain append() rows share the
+    # same source_receipt_ref AND identical stable semantics, differing only by
+    # chain position (prior_hash/row_hash). A later append_once carrying that same
+    # stable identity must fail closed — append_once cannot collapse, pick, delete,
+    # or infer between duplicate committed financial evidence — and must leave the
+    # ledger byte-for-byte, row-count, and chain-validation unchanged.
+    sink = _trusted_sink(tmp_path, monkeypatch)
+    ref = "receipt://payment/github_sponsors/dup/created"
+    payload = {"rail": "github_sponsors", "amount_usd_cents": 500}
+    ts = "2026-07-01T00:00:00Z"
+    common = dict(
+        stream_id="payment-event",
+        data_class="financial_receipt",
+        source_receipt_ref=ref,
+        payload=payload,
+        timestamp=ts,
+    )
+
+    first = sink.append(**common)
+    second = sink.append(**common)
+    # Same stable identity, differing only by append chain position.
+    assert sink_mod._row_identity(first.as_dict()) == sink_mod._row_identity(second.as_dict())
+    assert second.prior_hash == first.row_hash
+
+    path = sink.path_for_stream("payment-event")
+    before_bytes = path.read_bytes()
+    before_rows = _row_count(path)
+    before_validation = sink_mod.validate_chain(path, stream_id="payment-event")
+    assert before_rows == 2
+    assert before_validation.valid is True
+    assert before_validation.row_count == 2
+
+    with pytest.raises(sink_mod.DurableSinkReuseConflictError) as excinfo:
+        sink.append_once(**common)
+
+    message = str(excinfo.value)
+    # Accurate for this case: the rows do NOT differ in stable identity; the
+    # conflict is that more than one committed row exists for the ref.
+    assert "more than one committed row or a differing stable identity" in message
+    assert "repair or quarantine" in message
+    assert "collapse" in message  # explicit: will not collapse/pick/delete/infer
+
+    # Nothing appended, nothing rewritten: byte-for-byte, row count, and chain hold.
+    assert path.read_bytes() == before_bytes
+    assert _row_count(path) == 2
+    after_validation = sink_mod.validate_chain(path, stream_id="payment-event")
+    assert after_validation.valid is True
+    assert after_validation.row_count == 2
+    assert after_validation.tail_hash == before_validation.tail_hash
+
+
+def test_append_once_concurrent_identical_yields_one_row(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    import concurrent.futures
+    import threading
+
+    sink = _trusted_sink(tmp_path, monkeypatch)
+    workers = 8
+    barrier = threading.Barrier(workers)
+
+    def worker(_i: int) -> str:
+        barrier.wait()
+        return sink.append_once(
+            **_once_kwargs(source_receipt_ref="receipt://payment/race")
+        ).row_hash
+
+    with concurrent.futures.ThreadPoolExecutor(max_workers=workers) as ex:
+        hashes = list(ex.map(worker, range(workers)))
+
+    assert len(set(hashes)) == 1  # every concurrent caller reused the single row
+    assert _row_count(sink.path_for_stream("payment-event")) == 1
+
+
+def test_append_still_appends_duplicate_refs_unchanged(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # Regression guard: plain append() keeps its non-idempotent append-only contract.
+    sink = _trusted_sink(tmp_path, monkeypatch)
+    for _ in range(2):
+        sink.append(
+            stream_id="payment-event",
+            data_class="financial_receipt",
+            source_receipt_ref="receipt://payment/dup",
+            payload={"n": 1},
+            timestamp="2026-07-01T00:00:00Z",
+        )
+    assert _row_count(sink.path_for_stream("payment-event")) == 2
+
+
+def _sink_append_once_worker(
+    root_str: str,
+    source_receipt_ref: str,
+    payload_json: str,
+    timestamp: str,
+    result_queue: Any,
+) -> None:
+    """Spawn-safe child: append_once one receipt and report the outcome.
+
+    Re-establishes the trusted-mount override because a spawned child cannot
+    see the parent process's monkeypatch.
+    """
+
+    import json as _json
+
+    import shared.durable_jsonl_sink as _sink
+
+    _sink._mount_fstype_for_path = lambda _path: "btrfs"
+    try:
+        row = _sink.DurableJsonlSink(root_str).append_once(
+            stream_id="payment-event",
+            data_class="financial_receipt",
+            source_receipt_ref=source_receipt_ref,
+            payload=_json.loads(payload_json),
+            timestamp=timestamp,
+        )
+        result_queue.put(("ok", row.row_hash))
+    except _sink.DurableSinkReuseConflictError as exc:
+        result_queue.put(("conflict", str(exc)))
+    except Exception as exc:  # pragma: no cover - defensive surface
+        result_queue.put(("error", repr(exc)))
+
+
+def test_append_once_cross_process_identical_yields_one_row(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from multiprocessing import get_context
+
+    sink = _trusted_sink(tmp_path, monkeypatch)
+    root_str = str(sink.root)
+    ref = "receipt://payment/xproc/identical"
+    payload_json = json.dumps({"rail": "xproc", "amount_usd_cents": 500})
+    ts = "2026-07-01T00:00:00Z"
+
+    ctx = get_context("spawn")
+    result_queue = ctx.Queue()
+    procs = [
+        ctx.Process(
+            target=_sink_append_once_worker,
+            args=(root_str, ref, payload_json, ts, result_queue),
+        )
+        for _ in range(3)
+    ]
+    for proc in procs:
+        proc.start()
+    for proc in procs:
+        proc.join(timeout=60)
+    results = [result_queue.get(timeout=30) for _ in procs]
+
+    assert all(status == "ok" for status, _ in results), results
+    assert len({value for _, value in results}) == 1  # every process reused one row
+    assert _row_count(sink.path_for_stream("payment-event")) == 1
+
+
+def test_append_once_cross_process_distinct_refs_all_survive(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from multiprocessing import get_context
+
+    sink = _trusted_sink(tmp_path, monkeypatch)
+    root_str = str(sink.root)
+    ts = "2026-07-01T00:00:00Z"
+    refs = [f"receipt://payment/xproc/{i}" for i in range(4)]
+
+    ctx = get_context("spawn")
+    result_queue = ctx.Queue()
+    procs = [
+        ctx.Process(
+            target=_sink_append_once_worker,
+            args=(root_str, ref, json.dumps({"n": i}), ts, result_queue),
+        )
+        for i, ref in enumerate(refs)
+    ]
+    for proc in procs:
+        proc.start()
+    for proc in procs:
+        proc.join(timeout=60)
+    results = [result_queue.get(timeout=30) for _ in procs]
+
+    assert all(status == "ok" for status, _ in results), results
+    path = sink.path_for_stream("payment-event")
+    assert _row_count(path) == len(refs)  # all distinct receipts survive
+    validation = sink_mod.validate_chain(path, stream_id="payment-event")
+    assert validation.valid is True
+    assert validation.row_count == len(refs)
+
+
+def test_append_once_cross_process_conflict_refused(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from multiprocessing import get_context
+
+    sink = _trusted_sink(tmp_path, monkeypatch)
+    root_str = str(sink.root)
+    ref = "receipt://payment/xproc/conflict"
+    ts = "2026-07-01T00:00:00Z"
+
+    sink.append_once(
+        stream_id="payment-event",
+        data_class="financial_receipt",
+        source_receipt_ref=ref,
+        payload={"amount": 500},
+        timestamp=ts,
+    )
+
+    ctx = get_context("spawn")
+    result_queue = ctx.Queue()
+    proc = ctx.Process(
+        target=_sink_append_once_worker,
+        args=(root_str, ref, json.dumps({"amount": 999}), ts, result_queue),
+    )
+    proc.start()
+    proc.join(timeout=60)
+    status, detail = result_queue.get(timeout=30)
+
+    assert status == "conflict", (status, detail)
+    assert _row_count(sink.path_for_stream("payment-event")) == 1  # evidence never overwritten
+
+
+def test_append_once_ambiguous_commit_release_error_then_retry_reuses_one_row(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # The row commits durably, then the lock RELEASE reports an error, so the
+    # caller sees a DurableSinkAppendError even though the row is on disk. An
+    # idempotent retry reconciles to exactly one row — the ambiguous-commit
+    # window cannot double-count.
+    sink = _trusted_sink(tmp_path, monkeypatch)
+    real_flock = sink_mod.fcntl.flock
+    fail_release = {"on": True}
+
+    def flaky_flock(fd: int, op: int) -> None:
+        if op == sink_mod.fcntl.LOCK_UN and fail_release["on"]:
+            raise OSError("simulated lock release failure after commit")
+        real_flock(fd, op)
+
+    monkeypatch.setattr(sink_mod.fcntl, "flock", flaky_flock)
+    kwargs = _once_kwargs(source_receipt_ref="receipt://payment/ambiguous")
+
+    with pytest.raises(
+        sink_mod.DurableSinkAppendError, match="release durable sink lock.*next action"
+    ):
+        sink.append_once(**kwargs)
+
+    path = sink.path_for_stream("payment-event")
+    assert _row_count(path) == 1  # committed despite the ambiguous release
+
+    fail_release["on"] = False
+    reused = sink.append_once(**kwargs)
+    assert _row_count(path) == 1  # retry reuses; no second row
+    committed = json.loads(path.read_text(encoding="utf-8").splitlines()[0])
+    assert reused.row_hash == committed["row_hash"]
+
+
+def test_append_once_requires_explicit_timestamp(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    sink = _trusted_sink(tmp_path, monkeypatch)
+    with pytest.raises(sink_mod.DurableSinkValueError, match="deterministic timestamp"):
+        sink.append_once(
+            stream_id="payment-event",
+            data_class="financial_receipt",
+            source_receipt_ref="receipt://payment/no-ts",
+            payload={"n": 1},
+            timestamp="",
+        )

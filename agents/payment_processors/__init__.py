@@ -28,7 +28,9 @@ than blocking the others.
 
 from agents.payment_processors.event_log import (
     DEFAULT_PAYMENT_LOG_PATH,
+    PaymentEventRead,
     append_event,
+    read_payment_events,
     tail_events,
 )
 from agents.payment_processors.monetization_aggregator import (
@@ -39,7 +41,9 @@ from agents.payment_processors.monetization_aggregator import (
 __all__ = [
     "DEFAULT_PAYMENT_LOG_PATH",
     "MonetizationAggregator",
+    "PaymentEventRead",
     "append_event",
     "build_monetization_block",
+    "read_payment_events",
     "tail_events",
 ]
