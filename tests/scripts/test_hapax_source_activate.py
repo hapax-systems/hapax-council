@@ -1,5 +1,7 @@
 import json
 import os
+import shlex
+import shutil
 import subprocess
 import textwrap
 from pathlib import Path
@@ -26,6 +28,44 @@ def _write(path: Path, content: str, *, executable: bool = False) -> None:
     path.write_text(content, encoding="utf-8")
     if executable:
         path.chmod(0o755)
+
+
+def _fake_tool_bin(tmp_path: Path, name: str, body: str) -> Path:
+    fake_bin = tmp_path / f"fake-{name}-bin"
+    fake_bin.mkdir(exist_ok=True)
+    real_tool = shutil.which(name)
+    assert real_tool is not None
+    _write(
+        fake_bin / name,
+        textwrap.dedent(
+            f"""\
+            #!/usr/bin/env bash
+            {body.rstrip()}
+            exec {shlex.quote(real_tool)} "$@"
+            """
+        ),
+        executable=True,
+    )
+    return fake_bin
+
+
+def _bash_env_fail_nul_mapfile(tmp_path: Path, array_name: str, reason: str) -> Path:
+    bash_env = tmp_path / f"fail-{array_name}-mapfile.bash"
+    _write(
+        bash_env,
+        textwrap.dedent(
+            f"""\
+            mapfile() {{
+                if [[ "$1" == "-d" && "$2" == "" && "$3" == "-t" && "$4" == {shlex.quote(array_name)} ]]; then
+                    printf '%s\\n' {shlex.quote(f"forced {reason} read failure")} >&2
+                    return 76
+                fi
+                builtin mapfile "$@"
+            }}
+            """
+        ),
+    )
+    return bash_env
 
 
 def _make_repos(tmp_path: Path) -> tuple[Path, Path, str]:
@@ -216,6 +256,110 @@ def _current_receipt(tmp_path: Path) -> dict:
     return json.loads((tmp_path / "state" / "current.json").read_text(encoding="utf-8"))
 
 
+def _active_source_with_readme_drift(tmp_path: Path) -> tuple[Path, Path, str]:
+    canonical, _origin, new_sha = _make_repos(tmp_path)
+    first = _run_activate(tmp_path, canonical)
+    assert first.returncode == 0, first.stderr
+    active_source = tmp_path / "active-source"
+    _write(active_source / "README.md", "tracked drift before refusal\n")
+    return canonical, active_source, new_sha
+
+
+def _candidate_with_head_mismatch(tmp_path: Path) -> tuple[Path, Path, Path, str]:
+    canonical, _origin, new_sha = _make_repos(tmp_path)
+    first = _run_activate(tmp_path, canonical)
+    assert first.returncode == 0, first.stderr
+    active_source = tmp_path / "active-source"
+    previous_target = active_source.resolve()
+    previous_sha = _git(previous_target, "rev-parse", "HEAD~1")
+    _git(previous_target, "checkout", "--detach", previous_sha)
+    assert _git(previous_target, "rev-parse", "HEAD") != new_sha
+    return canonical, active_source, previous_target, new_sha
+
+
+def _assert_tracked_quarantine_failed(
+    result: subprocess.CompletedProcess[str],
+    tmp_path: Path,
+    *,
+    message: str,
+    stderr_fragment: str,
+) -> None:
+    assert result.returncode == 2
+    assert stderr_fragment in result.stderr
+    assert "next action:" in result.stderr
+    receipt = _current_receipt(tmp_path)
+    assert receipt["status"] == "failed"
+    assert receipt["exit_code"] == 2
+    assert receipt["message"] == message
+    assert receipt["source_hygiene"]["tracked_quarantine_count"] == 0
+    assert receipt["source_hygiene"]["tracked_quarantine_status"] == "failed"
+
+
+def _assert_untracked_quarantine_failed(
+    result: subprocess.CompletedProcess[str],
+    tmp_path: Path,
+    *,
+    message: str,
+    stderr_fragment: str,
+) -> None:
+    assert result.returncode == 2
+    assert stderr_fragment in result.stderr
+    assert "next action:" in result.stderr
+    receipt = _current_receipt(tmp_path)
+    assert receipt["status"] == "failed"
+    assert receipt["exit_code"] == 2
+    assert receipt["message"] == message
+    assert receipt["source_hygiene"]["untracked_quarantine_count"] == 0
+    assert receipt["source_hygiene"]["untracked_quarantine_status"] == "failed"
+
+
+def _seed_quarantine_root(quarantine_root: Path, name: str) -> Path:
+    path = quarantine_root / name
+    _write(path / "payload.txt", name)
+    return path
+
+
+def _extract_bash_function(name: str) -> str:
+    source = SCRIPT.read_text(encoding="utf-8")
+    start = source.index(f"{name}() {{")
+    end = source.index("\n}\n", start) + 3
+    return source[start:end]
+
+
+def test_quarantine_path_uses_unknown_when_origin_sha_is_unset(tmp_path: Path) -> None:
+    state_dir = tmp_path / "state"
+    driver = tmp_path / "call-ensure-source-quarantine-path"
+    _write(
+        driver,
+        textwrap.dedent(
+            f"""\
+            #!/usr/bin/env bash
+            set -euo pipefail
+            STATE_DIR={shlex.quote(str(state_dir))}
+            source_quarantine_path=""
+            origin_sha="unknown"
+            {_extract_bash_function("ensure_source_quarantine_path")}
+            ensure_source_quarantine_path
+            printf '%s\\n' "$source_quarantine_path"
+            """
+        ),
+        executable=True,
+    )
+
+    result = subprocess.run(
+        ["bash", str(driver)],
+        text=True,
+        capture_output=True,
+        check=False,
+    )
+
+    assert result.returncode == 0, result.stderr
+    quarantine_path = Path(result.stdout.strip())
+    assert quarantine_path.is_dir()
+    assert quarantine_path.parent == state_dir / "drift-quarantine"
+    assert "-unknown." in quarantine_path.name
+
+
 def test_activation_uses_clean_worktree_without_touching_dirty_canonical(tmp_path: Path) -> None:
     canonical, _origin, new_sha = _make_repos(tmp_path)
     before_head = _git(canonical, "rev-parse", "HEAD")
@@ -364,9 +508,3046 @@ def test_same_sha_rerun_writes_no_op_and_does_not_redeploy(tmp_path: Path) -> No
     receipt = _current_receipt(tmp_path)
     assert receipt["status"] == "no_op"
     assert receipt["deploy_status"] == "skipped_already_active"
+    assert receipt["source_hygiene"]["tracked_quarantine_count"] == 0
+    assert receipt["source_hygiene"]["tracked_quarantine_path"] == ""
+    assert receipt["source_hygiene"]["tracked_quarantine_status"] == "none"
+    assert not (tmp_path / "state" / "drift-quarantine").exists()
     history = (tmp_path / "state" / "source-activation.jsonl").read_text(encoding="utf-8")
     assert '"status": "completed"' in history
     assert '"status": "no_op"' in history
+
+
+def test_candidate_release_path_refuses_non_git_directory(tmp_path: Path) -> None:
+    canonical, _origin, new_sha = _make_repos(tmp_path)
+    candidate_path = tmp_path / "state" / "releases" / new_sha
+    _write(candidate_path / "stray.txt", "not a worktree\n")
+
+    result = _run_activate(tmp_path, canonical)
+
+    assert result.returncode == 2
+    assert "candidate release path exists but is not a git worktree" in result.stderr
+    assert not (tmp_path / "active-source").exists()
+    assert not (tmp_path / "deploy-record.txt").exists()
+    receipt = _current_receipt(tmp_path)
+    assert receipt["status"] == "failed"
+    assert receipt["message"] == "candidate release path exists but is not a git worktree"
+    assert receipt["candidate_source_path"] == str(candidate_path)
+
+
+def test_activation_quarantines_tracked_drift_before_candidate_reset(tmp_path: Path) -> None:
+    canonical, _origin, new_sha = _make_repos(tmp_path)
+
+    first = _run_activate(tmp_path, canonical)
+    assert first.returncode == 0, first.stderr
+
+    active_source = tmp_path / "active-source"
+    drift = active_source / "README.md"
+    _write(drift, "tracked drift that reset would destroy\n")
+
+    second = _run_activate(tmp_path, canonical)
+
+    assert second.returncode == 0, second.stderr
+    assert _git(active_source, "rev-parse", "HEAD") == new_sha
+    payloads = list(
+        (tmp_path / "state" / "drift-quarantine").glob("*/.hapax-tracked/worktree/README.md")
+    )
+    assert len(payloads) == 1
+    assert payloads[0].read_text(encoding="utf-8") == ("tracked drift that reset would destroy\n")
+    assert drift.read_text(encoding="utf-8") == "base\nnew origin main\n"
+    receipt = _current_receipt(tmp_path)
+    assert receipt["status"] == "no_op"
+    hygiene = receipt["source_hygiene"]
+    assert hygiene["tracked_quarantine_count"] == 1
+    assert hygiene["tracked_quarantine_status"] == "complete"
+    quarantine_path = Path(hygiene["tracked_quarantine_path"])
+    assert "drift-quarantine" in str(quarantine_path)
+    assert payloads[0] == quarantine_path / "worktree" / "README.md"
+    assert "recover tracked drift from worktree/ and index/ payloads" in second.stderr
+
+
+def test_activation_rotates_dirty_candidate_without_reset_race(tmp_path: Path) -> None:
+    canonical, _origin, new_sha = _make_repos(tmp_path)
+
+    first = _run_activate(tmp_path, canonical)
+    assert first.returncode == 0, first.stderr
+
+    active_source = tmp_path / "active-source"
+    previous_target = active_source.resolve()
+    _write(active_source / "README.md", "tracked drift before candidate rotation\n")
+    fake_bin = _fake_tool_bin(
+        tmp_path,
+        "git",
+        """
+        if [[ "$1" == "-C" && "$3" == "reset" && "$4" == "--hard" ]]; then
+            printf 'late drift that reset would destroy\\n' > "$2/LATE.md"
+            echo reset must not run for dirty reusable candidates >&2
+            exit 60
+        fi
+        """,
+    )
+
+    second = _run_activate(
+        tmp_path,
+        canonical,
+        env_overrides={"PATH": f"{fake_bin}:{os.environ['PATH']}"},
+    )
+
+    assert second.returncode == 0, second.stderr
+    assert active_source.resolve() == previous_target
+    assert _git(active_source, "rev-parse", "HEAD") == new_sha
+    assert (active_source / "README.md").read_text(encoding="utf-8") == ("base\nnew origin main\n")
+    assert not (previous_target / "LATE.md").exists()
+    receipt = _current_receipt(tmp_path)
+    hygiene = receipt["source_hygiene"]
+    assert hygiene["tracked_quarantine_count"] == 1
+    assert hygiene["tracked_quarantine_status"] == "complete"
+    assert Path(receipt["candidate_source_path"]) == previous_target
+    retired_target = Path(receipt["source_cutover"]["previous_active_target"])
+    assert retired_target != previous_target
+    assert (retired_target / "README.md").read_text(encoding="utf-8") == (
+        "tracked drift before candidate rotation\n"
+    )
+
+    third = _run_activate(
+        tmp_path,
+        canonical,
+        env_overrides={"PATH": f"{fake_bin}:{os.environ['PATH']}"},
+    )
+
+    assert third.returncode == 0, third.stderr
+    assert active_source.resolve() == previous_target
+    assert _git(active_source, "rev-parse", "HEAD") == new_sha
+    receipt = _current_receipt(tmp_path)
+    hygiene = receipt["source_hygiene"]
+    assert receipt["status"] == "no_op"
+    assert hygiene["tracked_quarantine_count"] == 0
+    assert hygiene["tracked_quarantine_status"] == "none"
+
+
+def test_clean_candidate_head_mismatch_uses_reset_path(tmp_path: Path) -> None:
+    canonical, active_source, previous_target, new_sha = _candidate_with_head_mismatch(tmp_path)
+    reset_record = tmp_path / "reset-record.txt"
+    fake_bin = _fake_tool_bin(
+        tmp_path,
+        "git",
+        """
+        if [[ "$1" == "-C" \
+            && "$3" == "reset" \
+            && "$4" == "--hard" ]]; then
+            if [[ "$2" == "$HAPAX_TEST_FORBIDDEN_RESET_TARGET" ]]; then
+                echo reusable candidate path must not be reset in place >&2
+                exit 60
+            fi
+            printf '%s\\n' "$*" >> "$HAPAX_TEST_RESET_RECORD"
+        fi
+        """,
+    )
+
+    second = _run_activate(
+        tmp_path,
+        canonical,
+        env_overrides={
+            "PATH": f"{fake_bin}:{os.environ['PATH']}",
+            "HAPAX_TEST_FORBIDDEN_RESET_TARGET": str(previous_target),
+            "HAPAX_TEST_RESET_RECORD": str(reset_record),
+        },
+    )
+
+    assert second.returncode == 0, second.stderr
+    assert "reset private candidate worktree" in second.stderr
+    reset_record_text = reset_record.read_text(encoding="utf-8")
+    assert "reset --hard" in reset_record_text
+    assert str(previous_target) not in reset_record_text
+    assert active_source.resolve() == previous_target
+    assert _git(active_source, "rev-parse", "HEAD") == new_sha
+    assert not (tmp_path / "state" / "drift-quarantine").exists()
+    assert (tmp_path / "state" / "candidate-retirement").exists()
+    receipt = _current_receipt(tmp_path)
+    hygiene = receipt["source_hygiene"]
+    assert hygiene["tracked_quarantine_count"] == 0
+    assert hygiene["tracked_quarantine_status"] == "none"
+
+
+def test_initial_candidate_head_command_failure_writes_receipt(tmp_path: Path) -> None:
+    canonical, _origin, new_sha = _make_repos(tmp_path)
+    candidate = tmp_path / "state" / "releases" / new_sha
+    fake_bin = _fake_tool_bin(
+        tmp_path,
+        "git",
+        """
+        if [[ "$1" == "-C" \
+            && "$2" == "$HAPAX_TEST_CANDIDATE_TARGET" \
+            && "$3" == "rev-parse" \
+            && "$4" == "HEAD" ]]; then
+            echo forced candidate head failure >&2
+            exit 68
+        fi
+        """,
+    )
+
+    result = _run_activate(
+        tmp_path,
+        canonical,
+        env_overrides={
+            "PATH": f"{fake_bin}:{os.environ['PATH']}",
+            "HAPAX_TEST_CANDIDATE_TARGET": str(candidate),
+        },
+    )
+
+    assert result.returncode == 2
+    assert "failed to read candidate source head" in result.stderr
+    assert "next action:" in result.stderr
+    receipt = _current_receipt(tmp_path)
+    assert receipt["status"] == "failed"
+    assert receipt["message"] == "candidate source head check failed"
+    assert receipt["candidate_source_path"] == str(candidate)
+    assert receipt["source_hygiene"]["tracked_quarantine_count"] == 0
+
+
+def test_late_tracked_drift_before_clean_reset_is_quarantined(
+    tmp_path: Path,
+) -> None:
+    canonical, active_source, previous_target, new_sha = _candidate_with_head_mismatch(tmp_path)
+    fake_bin = _fake_tool_bin(
+        tmp_path,
+        "git",
+        """
+        if [[ "$1" == "-C" \
+            && "$2" == "$HAPAX_TEST_RESET_TARGET" \
+            && "$3" == "ls-files" \
+            && "$4" == "--others" ]]; then
+            if [[ -f "$HAPAX_TEST_LATE_DRIFT_MARKER" ]]; then
+                exit 0
+            fi
+            touch "$HAPAX_TEST_LATE_DRIFT_MARKER"
+            printf 'late drift before reset\\n' > "$2/README.md"
+        fi
+        if [[ "$1" == "-C" \
+            && "$3" == "reset" \
+            && "$4" == "--hard" ]]; then
+            echo reset must not run after late tracked drift >&2
+            exit 60
+        fi
+        """,
+    )
+
+    second = _run_activate(
+        tmp_path,
+        canonical,
+        env_overrides={
+            "PATH": f"{fake_bin}:{os.environ['PATH']}",
+            "HAPAX_TEST_RESET_TARGET": str(previous_target),
+            "HAPAX_TEST_LATE_DRIFT_MARKER": str(tmp_path / "late-drift-injected"),
+        },
+    )
+
+    assert second.returncode == 0, second.stderr
+    assert "quarantined 1 tracked activation files" in second.stderr
+    assert "reset must not run after late tracked drift" not in second.stderr
+    assert active_source.resolve() == previous_target
+    assert _git(active_source, "rev-parse", "HEAD") == new_sha
+    assert (active_source / "README.md").read_text(encoding="utf-8") == ("base\nnew origin main\n")
+    receipt = _current_receipt(tmp_path)
+    hygiene = receipt["source_hygiene"]
+    assert hygiene["tracked_quarantine_count"] == 1
+    assert hygiene["tracked_quarantine_status"] == "complete"
+    quarantine_path = Path(hygiene["tracked_quarantine_path"])
+    assert (quarantine_path / "worktree" / "README.md").read_text(
+        encoding="utf-8"
+    ) == "late drift before reset\n"
+
+
+def test_private_reset_target_tracked_drift_is_quarantined_before_reset(
+    tmp_path: Path,
+) -> None:
+    canonical, active_source, previous_target, new_sha = _candidate_with_head_mismatch(tmp_path)
+    real_git = shutil.which("git")
+    assert real_git is not None
+    fake_bin = _fake_tool_bin(
+        tmp_path,
+        "git",
+        """
+        if [[ "$1" == "-C" \
+            && "$3" == "worktree" \
+            && "$4" == "add" \
+            && "$5" == "--detach" \
+            && "$6" == *"/.reset-"* ]]; then
+            if [[ "${GIT_CONFIG_KEY_0:-}" != "core.hooksPath" \
+                || "${GIT_CONFIG_VALUE_0:-}" != "/dev/null" ]]; then
+                echo private reset worktree add did not suppress hooks >&2
+                exit 72
+            fi
+            "$HAPAX_TEST_REAL_GIT" "$@"
+            rc=$?
+            if [[ "$rc" == "0" ]]; then
+                printf 'private reset target tracked drift\\n' > "$6/README.md"
+            fi
+            exit "$rc"
+        fi
+        """,
+    )
+
+    second = _run_activate(
+        tmp_path,
+        canonical,
+        env_overrides={
+            "PATH": f"{fake_bin}:{os.environ['PATH']}",
+            "HAPAX_TEST_REAL_GIT": real_git,
+        },
+    )
+
+    assert second.returncode == 0, second.stderr
+    assert "quarantined 1 tracked activation files" in second.stderr
+    assert active_source.resolve() == previous_target
+    assert _git(active_source, "rev-parse", "HEAD") == new_sha
+    assert (active_source / "README.md").read_text(encoding="utf-8") == ("base\nnew origin main\n")
+    receipt = _current_receipt(tmp_path)
+    hygiene = receipt["source_hygiene"]
+    assert hygiene["tracked_quarantine_count"] == 1
+    assert hygiene["tracked_quarantine_status"] == "complete"
+    quarantine_path = Path(hygiene["tracked_quarantine_path"])
+    assert (quarantine_path / "worktree" / "README.md").read_text(
+        encoding="utf-8"
+    ) == "private reset target tracked drift\n"
+
+
+def test_private_reset_target_untracked_drift_is_quarantined_before_reset(
+    tmp_path: Path,
+) -> None:
+    canonical, active_source, previous_target, new_sha = _candidate_with_head_mismatch(tmp_path)
+    real_git = shutil.which("git")
+    assert real_git is not None
+    fake_bin = _fake_tool_bin(
+        tmp_path,
+        "git",
+        """
+        if [[ "$1" == "-C" \
+            && "$3" == "worktree" \
+            && "$4" == "add" \
+            && "$5" == "--detach" \
+            && "$6" == *"/.reset-"* ]]; then
+            if [[ "${GIT_CONFIG_KEY_0:-}" != "core.hooksPath" \
+                || "${GIT_CONFIG_VALUE_0:-}" != "/dev/null" ]]; then
+                echo private reset worktree add did not suppress hooks >&2
+                exit 72
+            fi
+            "$HAPAX_TEST_REAL_GIT" "$@"
+            rc=$?
+            if [[ "$rc" == "0" ]]; then
+                mkdir -p "$6/notes"
+                printf 'private reset target untracked drift\\n' > "$6/notes/post-add.txt"
+            fi
+            exit "$rc"
+        fi
+        """,
+    )
+
+    second = _run_activate(
+        tmp_path,
+        canonical,
+        env_overrides={
+            "PATH": f"{fake_bin}:{os.environ['PATH']}",
+            "HAPAX_TEST_REAL_GIT": real_git,
+        },
+    )
+
+    assert second.returncode == 0, second.stderr
+    assert active_source.resolve() == previous_target
+    assert _git(active_source, "rev-parse", "HEAD") == new_sha
+    assert not (active_source / "notes" / "post-add.txt").exists()
+    receipt = _current_receipt(tmp_path)
+    hygiene = receipt["source_hygiene"]
+    assert hygiene["tracked_quarantine_count"] == 0
+    assert hygiene["tracked_quarantine_status"] == "none"
+    assert hygiene["untracked_quarantine_count"] == 1
+    assert hygiene["untracked_quarantine_status"] == "complete"
+    quarantine_path = Path(hygiene["untracked_quarantine_path"])
+    assert (quarantine_path / "notes" / "post-add.txt").read_text(
+        encoding="utf-8"
+    ) == "private reset target untracked drift\n"
+
+
+def test_private_reset_untracked_sweeps_namespace_same_relative_paths(
+    tmp_path: Path,
+) -> None:
+    canonical, active_source, previous_target, new_sha = _candidate_with_head_mismatch(tmp_path)
+    _write(active_source / "notes" / "collision.txt", "old candidate untracked drift\n")
+    real_git = shutil.which("git")
+    assert real_git is not None
+    fake_bin = _fake_tool_bin(
+        tmp_path,
+        "git",
+        """
+        if [[ "$1" == "-C" \
+            && "$3" == "worktree" \
+            && "$4" == "add" \
+            && "$5" == "--detach" \
+            && "$6" == *"/.reset-"* ]]; then
+            "$HAPAX_TEST_REAL_GIT" "$@"
+            rc=$?
+            if [[ "$rc" == "0" ]]; then
+                mkdir -p "$6/notes"
+                printf 'private reset post-add untracked drift\\n' > "$6/notes/collision.txt"
+            fi
+            exit "$rc"
+        fi
+        """,
+    )
+
+    second = _run_activate(
+        tmp_path,
+        canonical,
+        env_overrides={
+            "PATH": f"{fake_bin}:{os.environ['PATH']}",
+            "HAPAX_TEST_REAL_GIT": real_git,
+        },
+    )
+
+    assert second.returncode == 0, second.stderr
+    assert active_source.resolve() == previous_target
+    assert _git(active_source, "rev-parse", "HEAD") == new_sha
+    assert not (active_source / "notes" / "collision.txt").exists()
+    receipt = _current_receipt(tmp_path)
+    hygiene = receipt["source_hygiene"]
+    assert hygiene["untracked_quarantine_count"] == 2
+    assert hygiene["untracked_quarantine_status"] == "complete"
+    quarantine_root = Path(hygiene["untracked_quarantine_path"])
+    assert (quarantine_root / ".hapax-untracked" / "notes" / "collision.txt").read_text(
+        encoding="utf-8"
+    ) == "old candidate untracked drift\n"
+    assert (
+        quarantine_root / ".hapax-untracked-sweeps" / "1" / "notes" / "collision.txt"
+    ).read_text(encoding="utf-8") == "private reset post-add untracked drift\n"
+
+
+def test_private_reset_untracked_scan_failure_refuses_before_reset(
+    tmp_path: Path,
+) -> None:
+    canonical, active_source, previous_target, _new_sha = _candidate_with_head_mismatch(tmp_path)
+    real_git = shutil.which("git")
+    assert real_git is not None
+    fake_bin = _fake_tool_bin(
+        tmp_path,
+        "git",
+        """
+        if [[ "$1" == "-C" \
+            && "$3" == "worktree" \
+            && "$4" == "add" \
+            && "$5" == "--detach" \
+            && "$6" == *"/.reset-"* ]]; then
+            "$HAPAX_TEST_REAL_GIT" "$@"
+            rc=$?
+            if [[ "$rc" == "0" ]]; then
+                mkdir -p "$6/notes"
+                printf 'private reset untracked scan failure payload\\n' > "$6/notes/post-add.txt"
+            fi
+            exit "$rc"
+        fi
+        if [[ "$1" == "-C" \
+            && "$2" == *"/.reset-"* \
+            && "$3" == "ls-files" \
+            && "$4" == "--others" ]]; then
+            echo forced private reset untracked scan failure >&2
+            exit 73
+        fi
+        """,
+    )
+
+    second = _run_activate(
+        tmp_path,
+        canonical,
+        env_overrides={
+            "PATH": f"{fake_bin}:{os.environ['PATH']}",
+            "HAPAX_TEST_REAL_GIT": real_git,
+        },
+    )
+
+    assert second.returncode == 2
+    assert "untracked drift scan failed" in second.stderr
+    assert "next action:" in second.stderr
+    assert active_source.resolve() == previous_target
+    reset_worktrees = list((tmp_path / "state" / "releases").glob(".reset-*"))
+    assert len(reset_worktrees) == 1
+    assert (reset_worktrees[0] / "notes" / "post-add.txt").read_text(
+        encoding="utf-8"
+    ) == "private reset untracked scan failure payload\n"
+    _assert_untracked_quarantine_failed(
+        second,
+        tmp_path,
+        message="untracked drift scan failed before sweep",
+        stderr_fragment="untracked drift scan failed for",
+    )
+
+
+def test_clean_candidate_post_reset_head_command_failure_writes_receipt(
+    tmp_path: Path,
+) -> None:
+    canonical, active_source, previous_target, _new_sha = _candidate_with_head_mismatch(tmp_path)
+    fake_bin = _fake_tool_bin(
+        tmp_path,
+        "git",
+        """
+        if [[ "$1" == "-C" \
+            && "$2" == *"/.reset-"* \
+            && "$3" == "rev-parse" \
+            && "$4" == "HEAD" ]]; then
+            echo forced post-reset head failure >&2
+            exit 68
+        fi
+        """,
+    )
+
+    second = _run_activate(
+        tmp_path,
+        canonical,
+        env_overrides={
+            "PATH": f"{fake_bin}:{os.environ['PATH']}",
+        },
+    )
+
+    assert second.returncode == 2
+    assert "failed to read candidate source head after reset" in second.stderr
+    assert "next action:" in second.stderr
+    assert active_source.resolve() == previous_target
+    receipt = _current_receipt(tmp_path)
+    assert receipt["status"] == "failed"
+    assert receipt["message"] == "candidate source head check failed after reset"
+    hygiene = receipt["source_hygiene"]
+    assert hygiene["tracked_quarantine_count"] == 0
+    assert hygiene["tracked_quarantine_status"] == "none"
+
+
+def test_clean_candidate_post_reset_head_mismatch_writes_receipt(
+    tmp_path: Path,
+) -> None:
+    canonical, active_source, previous_target, _new_sha = _candidate_with_head_mismatch(tmp_path)
+    fake_bin = _fake_tool_bin(
+        tmp_path,
+        "git",
+        """
+        if [[ "$1" == "-C" \
+            && "$2" == *"/.reset-"* \
+            && "$3" == "rev-parse" \
+            && "$4" == "HEAD" ]]; then
+            echo 0000000000000000000000000000000000000000
+            exit 0
+        fi
+        """,
+    )
+
+    second = _run_activate(
+        tmp_path,
+        canonical,
+        env_overrides={
+            "PATH": f"{fake_bin}:{os.environ['PATH']}",
+        },
+    )
+
+    assert second.returncode == 2
+    assert "after reset" in second.stderr
+    assert "next action:" in second.stderr
+    assert active_source.resolve() == previous_target
+    receipt = _current_receipt(tmp_path)
+    assert receipt["status"] == "failed"
+    assert receipt["message"] == "candidate source head does not match origin/main after reset"
+    hygiene = receipt["source_hygiene"]
+    assert hygiene["tracked_quarantine_count"] == 0
+    assert hygiene["tracked_quarantine_status"] == "none"
+
+
+def test_dirty_candidate_rotation_respects_live_window(tmp_path: Path) -> None:
+    canonical, _origin, new_sha = _make_repos(tmp_path)
+
+    first = _run_activate(tmp_path, canonical)
+    assert first.returncode == 0, first.stderr
+
+    active_source = tmp_path / "active-source"
+    previous_target = active_source.resolve()
+    _write(active_source / "README.md", "tracked drift during live window\n")
+    live_flag = tmp_path / "livestream-active"
+    _write(live_flag, "on\n")
+
+    second = _run_activate(
+        tmp_path,
+        canonical,
+        env_overrides={"HAPAX_SOURCE_ACTIVATE_LIVE_FLAG": str(live_flag)},
+    )
+
+    assert second.returncode == 0, second.stderr
+    assert "unsafe live window is active" in second.stderr
+    assert active_source.resolve() == previous_target
+    assert _git(active_source, "rev-parse", "HEAD") == new_sha
+    assert (active_source / "README.md").read_text(encoding="utf-8") == (
+        "tracked drift during live window\n"
+    )
+    receipt = _current_receipt(tmp_path)
+    assert receipt["status"] == "held"
+    assert receipt["deploy_status"] == "skipped_live_window"
+    assert receipt["candidate_source_path"] == str(previous_target)
+    hygiene = receipt["source_hygiene"]
+    assert hygiene["tracked_quarantine_count"] == 0
+    assert hygiene["tracked_quarantine_status"] == "none"
+    assert not (tmp_path / "state" / "drift-quarantine").exists()
+
+    third = _run_activate(
+        tmp_path,
+        canonical,
+        env_overrides={"HAPAX_SOURCE_ACTIVATE_LIVE_FLAG": str(live_flag)},
+    )
+
+    assert third.returncode == 0, third.stderr
+    assert active_source.resolve() == previous_target
+    assert (active_source / "README.md").read_text(encoding="utf-8") == (
+        "tracked drift during live window\n"
+    )
+    receipt = _current_receipt(tmp_path)
+    assert receipt["status"] == "held"
+    hygiene = receipt["source_hygiene"]
+    assert hygiene["tracked_quarantine_count"] == 0
+    assert hygiene["tracked_quarantine_status"] == "none"
+    assert not (tmp_path / "state" / "drift-quarantine").exists()
+
+
+def test_dirty_candidate_replacement_failure_writes_receipt(tmp_path: Path) -> None:
+    canonical, _origin, _new_sha = _make_repos(tmp_path)
+
+    first = _run_activate(tmp_path, canonical)
+    assert first.returncode == 0, first.stderr
+
+    active_source = tmp_path / "active-source"
+    previous_target = active_source.resolve()
+    _write(active_source / "README.md", "tracked drift before add failure\n")
+    fake_bin = _fake_tool_bin(
+        tmp_path,
+        "git",
+        """
+        if [[ "$1" == "-C" \
+            && "$3" == "worktree" \
+            && "$4" == "add" \
+            && "$5" == "--detach" \
+            && "$6" == "$HAPAX_TEST_REPLACEMENT_TARGET" ]]; then
+            echo forced replacement worktree add failure >&2
+            exit 61
+        fi
+        """,
+    )
+
+    second = _run_activate(
+        tmp_path,
+        canonical,
+        env_overrides={
+            "PATH": f"{fake_bin}:{os.environ['PATH']}",
+            "HAPAX_TEST_REPLACEMENT_TARGET": str(previous_target),
+        },
+    )
+
+    assert second.returncode == 2
+    assert "failed to create fresh candidate worktree" in second.stderr
+    assert "retired candidate remains" in second.stderr
+    assert "next action:" in second.stderr
+    assert active_source.resolve() != previous_target
+    assert (active_source / "README.md").read_text(encoding="utf-8") == (
+        "tracked drift before add failure\n"
+    )
+    receipt = _current_receipt(tmp_path)
+    assert receipt["status"] == "failed"
+    assert receipt["message"] == "candidate replacement worktree creation failed"
+    assert receipt["active_source_target"] == str(active_source.resolve())
+    hygiene = receipt["source_hygiene"]
+    assert hygiene["tracked_quarantine_count"] == 1
+    assert hygiene["tracked_quarantine_status"] == "complete"
+
+
+def test_dirty_candidate_replacement_hook_drift_fails_before_promotion(
+    tmp_path: Path,
+) -> None:
+    canonical, _origin, _new_sha = _make_repos(tmp_path)
+
+    first = _run_activate(tmp_path, canonical)
+    assert first.returncode == 0, first.stderr
+    deploy_record = tmp_path / "deploy-record.txt"
+    deploy_record_before = deploy_record.read_text(encoding="utf-8")
+
+    active_source = tmp_path / "active-source"
+    previous_target = active_source.resolve()
+    _write(active_source / "README.md", "tracked drift before replacement hook drift\n")
+    real_git = shutil.which("git")
+    assert real_git is not None
+    fake_bin = _fake_tool_bin(
+        tmp_path,
+        "git",
+        """
+        if [[ "$1" == "-C" \
+            && "$3" == "worktree" \
+            && "$4" == "add" \
+            && "$5" == "--detach" \
+            && "$6" == "$HAPAX_TEST_REPLACEMENT_TARGET" ]]; then
+            if [[ "${GIT_CONFIG_KEY_0:-}" != "core.hooksPath" \
+                || "${GIT_CONFIG_VALUE_0:-}" != "/dev/null" ]]; then
+                echo replacement worktree add did not suppress hooks >&2
+                exit 72
+            fi
+            "$HAPAX_TEST_REAL_GIT" "$@"
+            rc=$?
+            if [[ "$rc" == "0" ]]; then
+                printf 'replacement hook tracked drift\\n' > "$6/README.md"
+            fi
+            exit "$rc"
+        fi
+        """,
+    )
+
+    second = _run_activate(
+        tmp_path,
+        canonical,
+        env_overrides={
+            "PATH": f"{fake_bin}:{os.environ['PATH']}",
+            "HAPAX_TEST_REAL_GIT": real_git,
+            "HAPAX_TEST_REPLACEMENT_TARGET": str(previous_target),
+        },
+    )
+
+    assert second.returncode == 2
+    assert "replacement candidate has tracked drift after creation" in second.stderr
+    assert "next action:" in second.stderr
+    assert active_source.resolve() != previous_target
+    assert (active_source / "README.md").read_text(encoding="utf-8") == (
+        "tracked drift before replacement hook drift\n"
+    )
+    assert previous_target.exists()
+    assert (previous_target / "README.md").read_text(encoding="utf-8") == (
+        "replacement hook tracked drift\n"
+    )
+    assert deploy_record.read_text(encoding="utf-8") == deploy_record_before
+    receipt = _current_receipt(tmp_path)
+    assert receipt["status"] == "failed"
+    assert receipt["message"] == "replacement candidate tracked drift detected after creation"
+    hygiene = receipt["source_hygiene"]
+    assert hygiene["tracked_quarantine_count"] == 1
+    assert hygiene["tracked_quarantine_status"] == "complete"
+
+
+def test_dirty_candidate_replacement_untracked_drift_is_quarantined_before_promotion(
+    tmp_path: Path,
+) -> None:
+    canonical, _origin, new_sha = _make_repos(tmp_path)
+
+    first = _run_activate(tmp_path, canonical)
+    assert first.returncode == 0, first.stderr
+
+    active_source = tmp_path / "active-source"
+    previous_target = active_source.resolve()
+    _write(active_source / "README.md", "tracked drift before replacement untracked drift\n")
+    real_git = shutil.which("git")
+    assert real_git is not None
+    fake_bin = _fake_tool_bin(
+        tmp_path,
+        "git",
+        """
+        if [[ "$1" == "-C" \
+            && "$3" == "worktree" \
+            && "$4" == "add" \
+            && "$5" == "--detach" \
+            && "$6" == "$HAPAX_TEST_REPLACEMENT_TARGET" ]]; then
+            if [[ "${GIT_CONFIG_KEY_0:-}" != "core.hooksPath" \
+                || "${GIT_CONFIG_VALUE_0:-}" != "/dev/null" ]]; then
+                echo replacement worktree add did not suppress hooks >&2
+                exit 72
+            fi
+            "$HAPAX_TEST_REAL_GIT" "$@"
+            rc=$?
+            if [[ "$rc" == "0" ]]; then
+                mkdir -p "$6/notes"
+                printf 'replacement candidate untracked drift\\n' > "$6/notes/post-add.txt"
+            fi
+            exit "$rc"
+        fi
+        """,
+    )
+
+    second = _run_activate(
+        tmp_path,
+        canonical,
+        env_overrides={
+            "PATH": f"{fake_bin}:{os.environ['PATH']}",
+            "HAPAX_TEST_REAL_GIT": real_git,
+            "HAPAX_TEST_REPLACEMENT_TARGET": str(previous_target),
+        },
+    )
+
+    assert second.returncode == 0, second.stderr
+    assert active_source.resolve() == previous_target
+    assert _git(active_source, "rev-parse", "HEAD") == new_sha
+    assert not (previous_target / "notes" / "post-add.txt").exists()
+    receipt = _current_receipt(tmp_path)
+    assert receipt["status"] == "no_op"
+    hygiene = receipt["source_hygiene"]
+    assert hygiene["tracked_quarantine_count"] == 1
+    assert hygiene["tracked_quarantine_status"] == "complete"
+    assert hygiene["untracked_quarantine_count"] == 1
+    assert hygiene["untracked_quarantine_status"] == "complete"
+    quarantine_path = Path(hygiene["untracked_quarantine_path"])
+    assert (quarantine_path / "notes" / "post-add.txt").read_text(
+        encoding="utf-8"
+    ) == "replacement candidate untracked drift\n"
+
+
+def test_dirty_candidate_replacement_untracked_sweeps_namespace_same_relative_paths(
+    tmp_path: Path,
+) -> None:
+    canonical, _origin, new_sha = _make_repos(tmp_path)
+
+    first = _run_activate(tmp_path, canonical)
+    assert first.returncode == 0, first.stderr
+
+    active_source = tmp_path / "active-source"
+    previous_target = active_source.resolve()
+    _write(active_source / "README.md", "tracked drift before replacement collision\n")
+    _write(active_source / "notes" / "collision.txt", "old replacement untracked drift\n")
+    real_git = shutil.which("git")
+    assert real_git is not None
+    fake_bin = _fake_tool_bin(
+        tmp_path,
+        "git",
+        """
+        if [[ "$1" == "-C" \
+            && "$3" == "worktree" \
+            && "$4" == "add" \
+            && "$5" == "--detach" \
+            && "$6" == "$HAPAX_TEST_REPLACEMENT_TARGET" ]]; then
+            "$HAPAX_TEST_REAL_GIT" "$@"
+            rc=$?
+            if [[ "$rc" == "0" ]]; then
+                mkdir -p "$6/notes"
+                printf 'fresh replacement untracked drift\\n' > "$6/notes/collision.txt"
+            fi
+            exit "$rc"
+        fi
+        """,
+    )
+
+    second = _run_activate(
+        tmp_path,
+        canonical,
+        env_overrides={
+            "PATH": f"{fake_bin}:{os.environ['PATH']}",
+            "HAPAX_TEST_REAL_GIT": real_git,
+            "HAPAX_TEST_REPLACEMENT_TARGET": str(previous_target),
+        },
+    )
+
+    assert second.returncode == 0, second.stderr
+    assert active_source.resolve() == previous_target
+    assert _git(active_source, "rev-parse", "HEAD") == new_sha
+    assert not (previous_target / "notes" / "collision.txt").exists()
+    receipt = _current_receipt(tmp_path)
+    hygiene = receipt["source_hygiene"]
+    assert hygiene["tracked_quarantine_count"] == 1
+    assert hygiene["tracked_quarantine_status"] == "complete"
+    assert hygiene["untracked_quarantine_count"] == 2
+    assert hygiene["untracked_quarantine_status"] == "complete"
+    quarantine_root = Path(hygiene["untracked_quarantine_path"])
+    assert (quarantine_root / ".hapax-untracked" / "notes" / "collision.txt").read_text(
+        encoding="utf-8"
+    ) == "old replacement untracked drift\n"
+    assert (
+        quarantine_root / ".hapax-untracked-sweeps" / "1" / "notes" / "collision.txt"
+    ).read_text(encoding="utf-8") == "fresh replacement untracked drift\n"
+
+
+def test_dirty_candidate_replacement_untracked_scan_failure_refuses_before_promotion(
+    tmp_path: Path,
+) -> None:
+    canonical, _origin, _new_sha = _make_repos(tmp_path)
+
+    first = _run_activate(tmp_path, canonical)
+    assert first.returncode == 0, first.stderr
+
+    active_source = tmp_path / "active-source"
+    previous_target = active_source.resolve()
+    _write(active_source / "README.md", "tracked drift before replacement scan failure\n")
+    real_git = shutil.which("git")
+    assert real_git is not None
+    scan_fail_marker = tmp_path / "replacement-worktree-added"
+    fake_bin = _fake_tool_bin(
+        tmp_path,
+        "git",
+        """
+        if [[ "$1" == "-C" \
+            && "$3" == "worktree" \
+            && "$4" == "add" \
+            && "$5" == "--detach" \
+            && "$6" == "$HAPAX_TEST_REPLACEMENT_TARGET" ]]; then
+            "$HAPAX_TEST_REAL_GIT" "$@"
+            rc=$?
+            if [[ "$rc" == "0" ]]; then
+                touch "$HAPAX_TEST_REPLACEMENT_SCAN_FAIL_MARKER"
+                mkdir -p "$6/notes"
+                printf 'replacement untracked scan failure payload\\n' > "$6/notes/post-add.txt"
+            fi
+            exit "$rc"
+        fi
+        if [[ "$1" == "-C" \
+            && "$2" == "$HAPAX_TEST_REPLACEMENT_TARGET" \
+            && "$3" == "ls-files" \
+            && "$4" == "--others" \
+            && -f "$HAPAX_TEST_REPLACEMENT_SCAN_FAIL_MARKER" ]]; then
+            echo forced replacement untracked scan failure >&2
+            exit 74
+        fi
+        """,
+    )
+
+    second = _run_activate(
+        tmp_path,
+        canonical,
+        env_overrides={
+            "PATH": f"{fake_bin}:{os.environ['PATH']}",
+            "HAPAX_TEST_REAL_GIT": real_git,
+            "HAPAX_TEST_REPLACEMENT_TARGET": str(previous_target),
+            "HAPAX_TEST_REPLACEMENT_SCAN_FAIL_MARKER": str(scan_fail_marker),
+        },
+    )
+
+    assert second.returncode == 2
+    assert "untracked drift scan failed" in second.stderr
+    assert "next action:" in second.stderr
+    assert active_source.resolve() != previous_target
+    assert (active_source / "README.md").read_text(encoding="utf-8") == (
+        "tracked drift before replacement scan failure\n"
+    )
+    assert (previous_target / "notes" / "post-add.txt").read_text(
+        encoding="utf-8"
+    ) == "replacement untracked scan failure payload\n"
+    receipt = _current_receipt(tmp_path)
+    hygiene = receipt["source_hygiene"]
+    assert hygiene["tracked_quarantine_count"] == 1
+    assert hygiene["tracked_quarantine_status"] == "complete"
+    assert hygiene["untracked_quarantine_count"] == 0
+    assert hygiene["untracked_quarantine_status"] == "failed"
+    assert receipt["message"] == "untracked drift scan failed before sweep"
+
+
+def test_clean_candidate_reset_failure_writes_receipt(tmp_path: Path) -> None:
+    canonical, active_source, previous_target, _new_sha = _candidate_with_head_mismatch(tmp_path)
+    fake_bin = _fake_tool_bin(
+        tmp_path,
+        "git",
+        """
+        if [[ "$1" == "-C" \
+            && "$3" == "reset" \
+            && "$4" == "--hard" ]]; then
+            echo forced reset failure >&2
+            exit 63
+        fi
+        """,
+    )
+
+    second = _run_activate(
+        tmp_path,
+        canonical,
+        env_overrides={
+            "PATH": f"{fake_bin}:{os.environ['PATH']}",
+        },
+    )
+
+    assert second.returncode == 2
+    assert "failed to reset private candidate worktree" in second.stderr
+    assert "next action:" in second.stderr
+    assert active_source.resolve() == previous_target
+    receipt = _current_receipt(tmp_path)
+    assert receipt["status"] == "failed"
+    assert receipt["message"] == "candidate source reset failed after clean drift scan"
+    hygiene = receipt["source_hygiene"]
+    assert hygiene["tracked_quarantine_count"] == 0
+    assert hygiene["tracked_quarantine_status"] == "none"
+
+
+def test_clean_candidate_reset_worktree_allocation_failure_writes_receipt(
+    tmp_path: Path,
+) -> None:
+    canonical, active_source, previous_target, _new_sha = _candidate_with_head_mismatch(tmp_path)
+    fake_bin = _fake_tool_bin(
+        tmp_path,
+        "mktemp",
+        """
+        if [[ "$1" == "-d" && "$2" == *"/.reset-"* ]]; then
+            echo forced reset worktree allocation failure >&2
+            exit 66
+        fi
+        """,
+    )
+
+    second = _run_activate(
+        tmp_path,
+        canonical,
+        env_overrides={"PATH": f"{fake_bin}:{os.environ['PATH']}"},
+    )
+
+    assert second.returncode == 2
+    assert "failed to allocate private reset worktree" in second.stderr
+    assert "next action:" in second.stderr
+    assert active_source.resolve() == previous_target
+    receipt = _current_receipt(tmp_path)
+    assert receipt["status"] == "failed"
+    assert receipt["message"] == "candidate reset worktree allocation failed"
+    assert receipt["source_hygiene"]["tracked_quarantine_count"] == 0
+
+
+def test_clean_candidate_reset_worktree_path_prepare_failure_writes_receipt(
+    tmp_path: Path,
+) -> None:
+    canonical, active_source, previous_target, _new_sha = _candidate_with_head_mismatch(tmp_path)
+    fake_bin = _fake_tool_bin(
+        tmp_path,
+        "rmdir",
+        """
+        if [[ "$1" == *"/.reset-"* ]]; then
+            echo forced reset worktree path prepare failure >&2
+            exit 67
+        fi
+        """,
+    )
+
+    second = _run_activate(
+        tmp_path,
+        canonical,
+        env_overrides={"PATH": f"{fake_bin}:{os.environ['PATH']}"},
+    )
+
+    assert second.returncode == 2
+    assert "failed to prepare private reset worktree path" in second.stderr
+    assert "next action:" in second.stderr
+    assert active_source.resolve() == previous_target
+    receipt = _current_receipt(tmp_path)
+    assert receipt["status"] == "failed"
+    assert receipt["message"] == "candidate reset worktree allocation failed"
+    assert receipt["source_hygiene"]["tracked_quarantine_count"] == 0
+
+
+def test_clean_candidate_reset_worktree_add_failure_writes_receipt(
+    tmp_path: Path,
+) -> None:
+    canonical, active_source, previous_target, _new_sha = _candidate_with_head_mismatch(tmp_path)
+    fake_bin = _fake_tool_bin(
+        tmp_path,
+        "git",
+        """
+        if [[ "$1" == "-C" \
+            && "$3" == "worktree" \
+            && "$4" == "add" \
+            && "$5" == "--detach" \
+            && "$6" == *"/.reset-"* ]]; then
+            echo forced private reset worktree add failure >&2
+            exit 68
+        fi
+        """,
+    )
+
+    second = _run_activate(
+        tmp_path,
+        canonical,
+        env_overrides={"PATH": f"{fake_bin}:{os.environ['PATH']}"},
+    )
+
+    assert second.returncode == 2
+    assert "failed to create private reset worktree" in second.stderr
+    assert "next action:" in second.stderr
+    assert active_source.resolve() == previous_target
+    receipt = _current_receipt(tmp_path)
+    assert receipt["status"] == "failed"
+    assert receipt["message"] == "candidate reset worktree creation failed"
+    assert receipt["source_hygiene"]["tracked_quarantine_count"] == 0
+
+
+def test_clean_candidate_reset_retirement_date_failure_writes_receipt(
+    tmp_path: Path,
+) -> None:
+    canonical, active_source, previous_target, _new_sha = _candidate_with_head_mismatch(tmp_path)
+    fake_bin = _fake_tool_bin(
+        tmp_path,
+        "date",
+        """
+        if [[ "$1" == "-u" ]]; then
+            echo forced retirement timestamp failure >&2
+            exit 70
+        fi
+        """,
+    )
+
+    second = _run_activate(
+        tmp_path,
+        canonical,
+        env_overrides={"PATH": f"{fake_bin}:{os.environ['PATH']}"},
+    )
+
+    assert second.returncode == 2
+    assert "failed to create clean candidate retirement root" in second.stderr
+    assert "next action:" in second.stderr
+    assert active_source.resolve() == previous_target
+    receipt = _current_receipt(tmp_path)
+    assert receipt["status"] == "failed"
+    assert receipt["message"] == "candidate clean retirement setup failed"
+    assert receipt["source_hygiene"]["tracked_quarantine_count"] == 0
+
+
+def test_clean_candidate_reset_retirement_root_failure_writes_receipt(
+    tmp_path: Path,
+) -> None:
+    canonical, active_source, previous_target, _new_sha = _candidate_with_head_mismatch(tmp_path)
+    fake_bin = _fake_tool_bin(
+        tmp_path,
+        "mkdir",
+        """
+        for arg in "$@"; do
+            if [[ "$arg" == *"/candidate-retirement" ]]; then
+                echo forced retirement root failure >&2
+                exit 71
+            fi
+        done
+        """,
+    )
+
+    second = _run_activate(
+        tmp_path,
+        canonical,
+        env_overrides={"PATH": f"{fake_bin}:{os.environ['PATH']}"},
+    )
+
+    assert second.returncode == 2
+    assert "failed to create clean candidate retirement root" in second.stderr
+    assert "next action:" in second.stderr
+    assert active_source.resolve() == previous_target
+    receipt = _current_receipt(tmp_path)
+    assert receipt["status"] == "failed"
+    assert receipt["message"] == "candidate clean retirement setup failed"
+    assert receipt["source_hygiene"]["tracked_quarantine_count"] == 0
+
+
+def test_clean_candidate_reset_retirement_allocation_failure_writes_receipt(
+    tmp_path: Path,
+) -> None:
+    canonical, active_source, previous_target, _new_sha = _candidate_with_head_mismatch(tmp_path)
+    fake_bin = _fake_tool_bin(
+        tmp_path,
+        "mktemp",
+        """
+        if [[ "$1" == "-d" && "$2" == *"/candidate-retirement/"* ]]; then
+            echo forced retirement allocation failure >&2
+            exit 72
+        fi
+        """,
+    )
+
+    second = _run_activate(
+        tmp_path,
+        canonical,
+        env_overrides={"PATH": f"{fake_bin}:{os.environ['PATH']}"},
+    )
+
+    assert second.returncode == 2
+    assert "failed to create clean candidate retirement root" in second.stderr
+    assert "next action:" in second.stderr
+    assert active_source.resolve() == previous_target
+    receipt = _current_receipt(tmp_path)
+    assert receipt["status"] == "failed"
+    assert receipt["message"] == "candidate clean retirement setup failed"
+    assert receipt["source_hygiene"]["tracked_quarantine_count"] == 0
+
+
+def test_clean_candidate_reset_retirement_move_failure_writes_receipt(
+    tmp_path: Path,
+) -> None:
+    canonical, active_source, previous_target, _new_sha = _candidate_with_head_mismatch(tmp_path)
+    fake_bin = _fake_tool_bin(
+        tmp_path,
+        "git",
+        """
+        if [[ "$1" == "-C" \
+            && "$3" == "worktree" \
+            && "$4" == "move" \
+            && "$5" == "$HAPAX_TEST_REPLACEMENT_TARGET" ]]; then
+            echo forced reset-path retirement move failure >&2
+            exit 69
+        fi
+        """,
+    )
+
+    second = _run_activate(
+        tmp_path,
+        canonical,
+        env_overrides={
+            "PATH": f"{fake_bin}:{os.environ['PATH']}",
+            "HAPAX_TEST_REPLACEMENT_TARGET": str(previous_target),
+        },
+    )
+
+    assert second.returncode == 2
+    assert "failed to retire reusable candidate" in second.stderr
+    assert "next action:" in second.stderr
+    assert active_source.resolve() == previous_target
+    assert previous_target.exists()
+    receipt = _current_receipt(tmp_path)
+    assert receipt["status"] == "failed"
+    assert receipt["message"] == "candidate retirement failed"
+    assert receipt["source_hygiene"]["tracked_quarantine_count"] == 0
+
+
+def test_clean_candidate_reset_active_retarget_failure_writes_receipt(
+    tmp_path: Path,
+) -> None:
+    canonical, active_source, previous_target, _new_sha = _candidate_with_head_mismatch(tmp_path)
+    fake_bin = _fake_tool_bin(
+        tmp_path,
+        "ln",
+        """
+        if [[ "$1" == "-s" && "$2" == *"/.hapax-retired-candidate" ]]; then
+            echo forced reset-path active retarget failure >&2
+            exit 70
+        fi
+        """,
+    )
+
+    second = _run_activate(
+        tmp_path,
+        canonical,
+        env_overrides={"PATH": f"{fake_bin}:{os.environ['PATH']}"},
+    )
+
+    assert second.returncode == 2
+    assert "failed to retarget active source to retired candidate" in second.stderr
+    assert "next action:" in second.stderr
+    assert active_source.resolve() == previous_target
+    assert previous_target.exists()
+    receipt = _current_receipt(tmp_path)
+    assert receipt["status"] == "failed"
+    assert receipt["message"] == "active source retired-candidate retarget failed"
+    assert receipt["source_cutover"]["rollback_status"] == "restored_worktree"
+    assert receipt["source_hygiene"]["tracked_quarantine_count"] == 0
+
+
+def test_clean_candidate_reset_final_placement_failure_writes_receipt(
+    tmp_path: Path,
+) -> None:
+    canonical, active_source, previous_target, _new_sha = _candidate_with_head_mismatch(tmp_path)
+    fake_bin = _fake_tool_bin(
+        tmp_path,
+        "git",
+        """
+        if [[ "$1" == "-C" \
+            && "$3" == "worktree" \
+            && "$4" == "move" \
+            && "$5" == *"/.reset-"* ]]; then
+            echo forced reset worktree final placement failure >&2
+            exit 71
+        fi
+        """,
+    )
+
+    second = _run_activate(
+        tmp_path,
+        canonical,
+        env_overrides={"PATH": f"{fake_bin}:{os.environ['PATH']}"},
+    )
+
+    assert second.returncode == 2
+    assert "failed to move private reset worktree" in second.stderr
+    assert "retired candidate remains" in second.stderr
+    assert "next action:" in second.stderr
+    assert active_source.resolve() != previous_target
+    assert not previous_target.exists()
+    receipt = _current_receipt(tmp_path)
+    assert receipt["status"] == "failed"
+    assert receipt["message"] == "candidate reset worktree placement failed"
+    assert receipt["source_hygiene"]["tracked_quarantine_count"] == 0
+
+
+def test_dirty_candidate_worktree_move_failure_writes_receipt(tmp_path: Path) -> None:
+    canonical, _origin, _new_sha = _make_repos(tmp_path)
+
+    first = _run_activate(tmp_path, canonical)
+    assert first.returncode == 0, first.stderr
+
+    active_source = tmp_path / "active-source"
+    previous_target = active_source.resolve()
+    _write(active_source / "README.md", "tracked drift before move failure\n")
+    fake_bin = _fake_tool_bin(
+        tmp_path,
+        "git",
+        """
+        if [[ "$1" == "-C" \
+            && "$3" == "worktree" \
+            && "$4" == "move" \
+            && "$5" == "$HAPAX_TEST_REPLACEMENT_TARGET" ]]; then
+            echo forced candidate worktree move failure >&2
+            exit 64
+        fi
+        """,
+    )
+
+    second = _run_activate(
+        tmp_path,
+        canonical,
+        env_overrides={
+            "PATH": f"{fake_bin}:{os.environ['PATH']}",
+            "HAPAX_TEST_REPLACEMENT_TARGET": str(previous_target),
+        },
+    )
+
+    assert second.returncode == 2
+    assert "failed to retire reusable candidate" in second.stderr
+    assert "next action:" in second.stderr
+    assert active_source.resolve() == previous_target
+    assert previous_target.exists()
+    receipt = _current_receipt(tmp_path)
+    assert receipt["status"] == "failed"
+    assert receipt["message"] == "candidate retirement failed"
+    hygiene = receipt["source_hygiene"]
+    assert hygiene["tracked_quarantine_count"] == 1
+    assert hygiene["tracked_quarantine_status"] == "complete"
+
+
+def test_candidate_retirement_setup_failure_after_disappearing_drift_writes_receipt(
+    tmp_path: Path,
+) -> None:
+    canonical, _origin, _new_sha = _make_repos(tmp_path)
+
+    first = _run_activate(tmp_path, canonical)
+    assert first.returncode == 0, first.stderr
+
+    active_source = tmp_path / "active-source"
+    previous_target = active_source.resolve()
+    scan_count = tmp_path / "tracked-scan-count.txt"
+    fake_git = _fake_tool_bin(
+        tmp_path,
+        "git",
+        """
+        if [[ "$1" == "-C" \
+            && "$2" == "$HAPAX_TEST_REPLACEMENT_TARGET" \
+            && "$3" == "ls-files" \
+            && "$4" == "-z" \
+            && "$5" == "--modified" \
+            && "$6" == "--deleted" ]]; then
+            count=0
+            if [[ -f "$HAPAX_TEST_SCAN_COUNT" ]]; then
+                count="$(cat "$HAPAX_TEST_SCAN_COUNT")"
+            fi
+            printf '%s\\n' "$((count + 1))" > "$HAPAX_TEST_SCAN_COUNT"
+            if [[ "$count" == "0" ]]; then
+                printf 'README.md\\0'
+                exit 0
+            fi
+        fi
+        """,
+    )
+    fake_date = _fake_tool_bin(
+        tmp_path,
+        "date",
+        """
+        if [[ "$1" == "-u" && "$2" == "+%Y%m%dT%H%M%SZ" ]]; then
+            echo forced retirement date failure >&2
+            exit 63
+        fi
+        """,
+    )
+
+    second = _run_activate(
+        tmp_path,
+        canonical,
+        env_overrides={
+            "PATH": f"{fake_git}:{fake_date}:{os.environ['PATH']}",
+            "HAPAX_TEST_REPLACEMENT_TARGET": str(previous_target),
+            "HAPAX_TEST_SCAN_COUNT": str(scan_count),
+        },
+    )
+
+    assert second.returncode == 2
+    assert "failed to create candidate retirement quarantine root" in second.stderr
+    assert "next action:" in second.stderr
+    assert active_source.resolve() == previous_target
+    assert previous_target.exists()
+    receipt = _current_receipt(tmp_path)
+    assert receipt["status"] == "failed"
+    assert receipt["message"] == "candidate retirement quarantine setup failed"
+    hygiene = receipt["source_hygiene"]
+    assert hygiene["tracked_quarantine_count"] == 0
+    assert hygiene["tracked_quarantine_status"] == "none"
+
+
+def test_dirty_candidate_active_retarget_failure_writes_receipt(tmp_path: Path) -> None:
+    canonical, _origin, _new_sha = _make_repos(tmp_path)
+
+    first = _run_activate(tmp_path, canonical)
+    assert first.returncode == 0, first.stderr
+
+    active_source = tmp_path / "active-source"
+    previous_target = active_source.resolve()
+    _write(active_source / "README.md", "tracked drift before retarget failure\n")
+    _write(active_source / "LOCAL.txt", "untracked payload before retarget failure\n")
+    fake_bin = _fake_tool_bin(
+        tmp_path,
+        "ln",
+        """
+        if [[ "$1" == "-s" && "$2" == *"/.hapax-retired-candidate" ]]; then
+            echo forced active retarget failure >&2
+            exit 62
+        fi
+        """,
+    )
+
+    second = _run_activate(
+        tmp_path,
+        canonical,
+        env_overrides={"PATH": f"{fake_bin}:{os.environ['PATH']}"},
+    )
+
+    assert second.returncode == 2
+    assert "failed to retarget active source to retired candidate" in second.stderr
+    assert "restored active source target to previous candidate" in second.stderr
+    assert "untracked payloads remain quarantined" in second.stderr
+    assert "next action:" in second.stderr
+    assert active_source.is_symlink()
+    assert active_source.resolve() == previous_target
+    assert previous_target.exists()
+    assert _git(active_source, "rev-parse", "HEAD")
+    assert (active_source / "README.md").read_text(encoding="utf-8") == (
+        "tracked drift before retarget failure\n"
+    )
+    assert not (active_source / "LOCAL.txt").exists()
+    receipt = _current_receipt(tmp_path)
+    assert receipt["status"] == "failed"
+    assert receipt["message"] == "active source retired-candidate retarget failed"
+    assert receipt["active_source_target"] == str(previous_target)
+    assert receipt["source_cutover"]["rollback_status"] == "restored_worktree"
+    assert "untracked payloads remain quarantined" in receipt["source_cutover"]["rollback_message"]
+    hygiene = receipt["source_hygiene"]
+    assert hygiene["tracked_quarantine_count"] == 1
+    assert hygiene["tracked_quarantine_status"] == "complete"
+    assert hygiene["untracked_quarantine_count"] == 1
+    assert hygiene["untracked_quarantine_status"] == "complete"
+    assert (
+        Path(hygiene["untracked_quarantine_path"], "LOCAL.txt").read_text(encoding="utf-8")
+        == "untracked payload before retarget failure\n"
+    )
+
+
+def test_dirty_candidate_active_retarget_rollback_retarget_failure_writes_receipt(
+    tmp_path: Path,
+) -> None:
+    canonical, _origin, _new_sha = _make_repos(tmp_path)
+
+    first = _run_activate(tmp_path, canonical)
+    assert first.returncode == 0, first.stderr
+
+    active_source = tmp_path / "active-source"
+    previous_target = active_source.resolve()
+    _write(active_source / "README.md", "tracked drift before rollback retarget failure\n")
+    fake_bin = _fake_tool_bin(
+        tmp_path,
+        "ln",
+        """
+        if [[ "$1" == "-s" && "$2" == *"/.hapax-retired-candidate" ]]; then
+            echo forced active retarget failure >&2
+            exit 62
+        fi
+        if [[ "$1" == "-s" && "$2" == "$HAPAX_TEST_REPLACEMENT_TARGET" ]]; then
+            echo forced rollback retarget failure >&2
+            exit 66
+        fi
+        """,
+    )
+
+    second = _run_activate(
+        tmp_path,
+        canonical,
+        env_overrides={
+            "PATH": f"{fake_bin}:{os.environ['PATH']}",
+            "HAPAX_TEST_REPLACEMENT_TARGET": str(previous_target),
+        },
+    )
+
+    assert second.returncode == 2
+    assert "active source retarget rollback failed" in second.stderr
+    assert "moved retired candidate back but failed to retarget" in second.stderr
+    assert "next action:" in second.stderr
+    assert active_source.is_symlink()
+    assert active_source.resolve() == previous_target
+    assert previous_target.exists()
+    receipt = _current_receipt(tmp_path)
+    assert receipt["status"] == "failed"
+    assert receipt["message"] == "active source retired-candidate retarget failed"
+    assert receipt["source_cutover"]["rollback_status"] == "failed"
+    assert (
+        "moved retired candidate back but failed to retarget"
+        in receipt["source_cutover"]["rollback_message"]
+    )
+    hygiene = receipt["source_hygiene"]
+    assert hygiene["tracked_quarantine_count"] == 1
+    assert hygiene["tracked_quarantine_status"] == "complete"
+
+
+def test_dirty_candidate_active_retarget_rollback_move_failure_writes_receipt(
+    tmp_path: Path,
+) -> None:
+    canonical, _origin, _new_sha = _make_repos(tmp_path)
+
+    first = _run_activate(tmp_path, canonical)
+    assert first.returncode == 0, first.stderr
+
+    active_source = tmp_path / "active-source"
+    previous_target = active_source.resolve()
+    _write(active_source / "README.md", "tracked drift before rollback move failure\n")
+    fake_ln = _fake_tool_bin(
+        tmp_path,
+        "ln",
+        """
+        if [[ "$1" == "-s" && "$2" == *"/.hapax-retired-candidate" ]]; then
+            echo forced active retarget failure >&2
+            exit 62
+        fi
+        """,
+    )
+    fake_git = _fake_tool_bin(
+        tmp_path,
+        "git",
+        """
+        if [[ "$1" == "-C" \
+            && "$3" == "worktree" \
+            && "$4" == "move" \
+            && "$5" == *"/.hapax-retired-candidate" ]]; then
+            echo forced rollback worktree move failure >&2
+            exit 67
+        fi
+        """,
+    )
+
+    second = _run_activate(
+        tmp_path,
+        canonical,
+        env_overrides={"PATH": f"{fake_ln}:{fake_git}:{os.environ['PATH']}"},
+    )
+
+    assert second.returncode == 2
+    assert "active source retarget rollback failed" in second.stderr
+    assert "failed to move retired candidate back" in second.stderr
+    assert "next action:" in second.stderr
+    assert active_source.is_symlink()
+    assert not previous_target.exists()
+    receipt = _current_receipt(tmp_path)
+    assert receipt["status"] == "failed"
+    assert receipt["message"] == "active source retired-candidate retarget failed"
+    assert receipt["source_cutover"]["rollback_status"] == "failed"
+    assert "failed to move retired candidate back" in receipt["source_cutover"]["rollback_message"]
+    hygiene = receipt["source_hygiene"]
+    assert hygiene["tracked_quarantine_count"] == 1
+    assert hygiene["tracked_quarantine_status"] == "complete"
+
+
+def test_replacement_candidate_head_mismatch_writes_receipt(tmp_path: Path) -> None:
+    canonical, _origin, _new_sha = _make_repos(tmp_path)
+
+    first = _run_activate(tmp_path, canonical)
+    assert first.returncode == 0, first.stderr
+
+    active_source = tmp_path / "active-source"
+    previous_target = active_source.resolve()
+    _write(active_source / "README.md", "tracked drift before replacement head mismatch\n")
+    fake_bin = _fake_tool_bin(
+        tmp_path,
+        "git",
+        """
+        if [[ "$1" == "-C" \
+            && "$2" == "$HAPAX_TEST_REPLACEMENT_TARGET" \
+            && "$3" == "rev-parse" \
+            && "$4" == "HEAD" ]]; then
+            echo 0000000000000000000000000000000000000000
+            exit 0
+        fi
+        """,
+    )
+
+    second = _run_activate(
+        tmp_path,
+        canonical,
+        env_overrides={
+            "PATH": f"{fake_bin}:{os.environ['PATH']}",
+            "HAPAX_TEST_REPLACEMENT_TARGET": str(previous_target),
+        },
+    )
+
+    assert second.returncode == 2
+    assert "replacement candidate source" in second.stderr
+    assert "next action:" in second.stderr
+    assert active_source.is_symlink()
+    assert active_source.resolve() != previous_target
+    assert previous_target.exists()
+    assert (active_source / "README.md").read_text(encoding="utf-8") == (
+        "tracked drift before replacement head mismatch\n"
+    )
+    receipt = _current_receipt(tmp_path)
+    assert receipt["status"] == "failed"
+    assert receipt["message"] == "replacement candidate source head does not match origin/main"
+    hygiene = receipt["source_hygiene"]
+    assert hygiene["tracked_quarantine_count"] == 1
+    assert hygiene["tracked_quarantine_status"] == "complete"
+
+
+def test_replacement_candidate_head_command_failure_writes_receipt(
+    tmp_path: Path,
+) -> None:
+    canonical, _origin, _new_sha = _make_repos(tmp_path)
+
+    first = _run_activate(tmp_path, canonical)
+    assert first.returncode == 0, first.stderr
+
+    active_source = tmp_path / "active-source"
+    previous_target = active_source.resolve()
+    _write(active_source / "README.md", "tracked drift before replacement head failure\n")
+    fake_bin = _fake_tool_bin(
+        tmp_path,
+        "git",
+        """
+        if [[ "$1" == "-C" \
+            && "$2" == "$HAPAX_TEST_REPLACEMENT_TARGET" \
+            && "$3" == "rev-parse" \
+            && "$4" == "HEAD" ]]; then
+            echo forced replacement head failure >&2
+            exit 65
+        fi
+        """,
+    )
+
+    second = _run_activate(
+        tmp_path,
+        canonical,
+        env_overrides={
+            "PATH": f"{fake_bin}:{os.environ['PATH']}",
+            "HAPAX_TEST_REPLACEMENT_TARGET": str(previous_target),
+        },
+    )
+
+    assert second.returncode == 2
+    assert "failed to read replacement candidate source head" in second.stderr
+    assert "next action:" in second.stderr
+    assert active_source.is_symlink()
+    assert active_source.resolve() != previous_target
+    assert previous_target.exists()
+    assert (active_source / "README.md").read_text(encoding="utf-8") == (
+        "tracked drift before replacement head failure\n"
+    )
+    receipt = _current_receipt(tmp_path)
+    assert receipt["status"] == "failed"
+    assert receipt["message"] == "replacement candidate source head check failed"
+    hygiene = receipt["source_hygiene"]
+    assert hygiene["tracked_quarantine_count"] == 1
+    assert hygiene["tracked_quarantine_status"] == "complete"
+
+
+def test_activation_quarantines_tracked_deletion_before_candidate_reset(tmp_path: Path) -> None:
+    canonical, _origin, new_sha = _make_repos(tmp_path)
+
+    first = _run_activate(tmp_path, canonical)
+    assert first.returncode == 0, first.stderr
+
+    active_source = tmp_path / "active-source"
+    drift = active_source / "README.md"
+    drift.unlink()
+
+    second = _run_activate(tmp_path, canonical)
+
+    assert second.returncode == 0, second.stderr
+    assert _git(active_source, "rev-parse", "HEAD") == new_sha
+    assert drift.read_text(encoding="utf-8") == "base\nnew origin main\n"
+    receipt = _current_receipt(tmp_path)
+    assert receipt["status"] == "no_op"
+    hygiene = receipt["source_hygiene"]
+    assert hygiene["tracked_quarantine_count"] == 1
+    quarantine_path = Path(hygiene["tracked_quarantine_path"])
+    assert (quarantine_path / "deleted" / "README.md").read_text(
+        encoding="utf-8"
+    ) == "deleted tracked path: README.md\n"
+
+
+def test_activation_quarantines_executable_mode_drift_before_candidate_reset(
+    tmp_path: Path,
+) -> None:
+    canonical, _origin, new_sha = _make_repos(tmp_path)
+
+    first = _run_activate(tmp_path, canonical)
+    assert first.returncode == 0, first.stderr
+
+    active_source = tmp_path / "active-source"
+    drift = active_source / "README.md"
+    _git(active_source, "config", "core.filemode", "true")
+    drift.chmod(drift.stat().st_mode | 0o111)
+    assert "README.md" in _git(active_source, "ls-files", "--modified")
+
+    second = _run_activate(tmp_path, canonical)
+
+    assert second.returncode == 0, second.stderr
+    assert _git(active_source, "rev-parse", "HEAD") == new_sha
+    receipt = _current_receipt(tmp_path)
+    hygiene = receipt["source_hygiene"]
+    assert hygiene["tracked_quarantine_count"] == 1
+    quarantine_path = Path(hygiene["tracked_quarantine_path"])
+    quarantined = quarantine_path / "worktree" / "README.md"
+    assert quarantined.stat().st_mode & 0o111
+    assert not drift.stat().st_mode & 0o111
+
+
+def test_activation_quarantines_staged_tracked_drift_before_candidate_reset(
+    tmp_path: Path,
+) -> None:
+    canonical, _origin, new_sha = _make_repos(tmp_path)
+
+    first = _run_activate(tmp_path, canonical)
+    assert first.returncode == 0, first.stderr
+
+    active_source = tmp_path / "active-source"
+    drift = active_source / "README.md"
+    _write(drift, "staged drift that ls-files modified misses\n")
+    _git(active_source, "add", "README.md")
+    assert _git(active_source, "ls-files", "--modified", "--deleted") == ""
+    assert _git(active_source, "diff", "--cached", "--name-only") == "README.md"
+
+    second = _run_activate(tmp_path, canonical)
+
+    assert second.returncode == 0, second.stderr
+    assert _git(active_source, "rev-parse", "HEAD") == new_sha
+    assert drift.read_text(encoding="utf-8") == "base\nnew origin main\n"
+    receipt = _current_receipt(tmp_path)
+    hygiene = receipt["source_hygiene"]
+    assert hygiene["tracked_quarantine_count"] == 1
+    quarantine_path = Path(hygiene["tracked_quarantine_path"])
+    assert (quarantine_path / "index" / "README.md").read_text(
+        encoding="utf-8"
+    ) == "staged drift that ls-files modified misses\n"
+
+
+def test_activation_quarantines_staged_path_containing_tab_before_candidate_reset(
+    tmp_path: Path,
+) -> None:
+    canonical, _origin, new_sha = _make_repos(tmp_path)
+
+    first = _run_activate(tmp_path, canonical)
+    assert first.returncode == 0, first.stderr
+
+    active_source = tmp_path / "active-source"
+    rel = Path("notes") / "tab\tpath.txt"
+    _write(active_source / rel, "staged tab path drift\n")
+    _git(active_source, "add", str(rel))
+
+    second = _run_activate(tmp_path, canonical)
+
+    assert second.returncode == 0, second.stderr
+    assert _git(active_source, "rev-parse", "HEAD") == new_sha
+    receipt = _current_receipt(tmp_path)
+    hygiene = receipt["source_hygiene"]
+    assert hygiene["tracked_quarantine_count"] == 1
+    assert hygiene["tracked_quarantine_status"] == "complete"
+    quarantine_path = Path(hygiene["tracked_quarantine_path"])
+    assert (quarantine_path / "index" / rel).read_text(encoding="utf-8") == (
+        "staged tab path drift\n"
+    )
+
+
+def test_activation_quarantines_staged_symlink_before_candidate_reset(
+    tmp_path: Path,
+) -> None:
+    canonical, _origin, new_sha = _make_repos(tmp_path)
+
+    first = _run_activate(tmp_path, canonical)
+    assert first.returncode == 0, first.stderr
+
+    active_source = tmp_path / "active-source"
+    rel = Path("config") / "readme-link"
+    (active_source / rel).symlink_to("../README.md")
+    _git(active_source, "add", str(rel))
+
+    second = _run_activate(tmp_path, canonical)
+
+    assert second.returncode == 0, second.stderr
+    assert _git(active_source, "rev-parse", "HEAD") == new_sha
+    receipt = _current_receipt(tmp_path)
+    hygiene = receipt["source_hygiene"]
+    assert hygiene["tracked_quarantine_count"] == 1
+    assert hygiene["tracked_quarantine_status"] == "complete"
+    quarantine_path = Path(hygiene["tracked_quarantine_path"])
+    index_payload = quarantine_path / "index" / rel
+    worktree_payload = quarantine_path / "worktree" / rel
+    assert index_payload.is_symlink()
+    assert os.readlink(index_payload) == "../README.md"
+    assert worktree_payload.is_symlink()
+    assert os.readlink(worktree_payload) == "../README.md"
+
+
+def test_activation_quarantines_staged_deletion_before_candidate_reset(
+    tmp_path: Path,
+) -> None:
+    canonical, _origin, new_sha = _make_repos(tmp_path)
+
+    first = _run_activate(tmp_path, canonical)
+    assert first.returncode == 0, first.stderr
+
+    active_source = tmp_path / "active-source"
+    drift = active_source / "README.md"
+    _git(active_source, "rm", "README.md")
+    assert _git(active_source, "ls-files", "--modified", "--deleted") == ""
+    assert _git(active_source, "diff", "--cached", "--name-only") == "README.md"
+
+    second = _run_activate(tmp_path, canonical)
+
+    assert second.returncode == 0, second.stderr
+    assert _git(active_source, "rev-parse", "HEAD") == new_sha
+    assert drift.read_text(encoding="utf-8") == "base\nnew origin main\n"
+    receipt = _current_receipt(tmp_path)
+    hygiene = receipt["source_hygiene"]
+    assert hygiene["tracked_quarantine_count"] == 1
+    quarantine_path = Path(hygiene["tracked_quarantine_path"])
+    assert (quarantine_path / "deleted" / "README.md").read_text(
+        encoding="utf-8"
+    ) == "deleted tracked path: README.md\n"
+    assert (quarantine_path / "index-deleted" / "README.md").read_text(
+        encoding="utf-8"
+    ) == "deleted staged path: README.md\n"
+
+
+def test_activation_quarantines_tabbed_staged_deletion_before_candidate_reset(
+    tmp_path: Path,
+) -> None:
+    canonical, origin, _new_sha = _make_repos(tmp_path)
+    updater = tmp_path / "tabbed-path-updater"
+    _git(tmp_path, "clone", str(origin), str(updater))
+    _git(updater, "config", "user.email", "source-activate@example.test")
+    _git(updater, "config", "user.name", "Source Activate")
+    rel = Path("notes") / "tab\ttracked.txt"
+    _write(updater / rel, "tracked tab path\n")
+    _git(updater, "add", str(rel))
+    _git(updater, "commit", "-m", "add tabbed tracked path")
+    _git(updater, "push", "origin", "main")
+    new_sha = _git(updater, "rev-parse", "HEAD")
+
+    first = _run_activate(tmp_path, canonical)
+    assert first.returncode == 0, first.stderr
+
+    active_source = tmp_path / "active-source"
+    _git(active_source, "rm", str(rel))
+
+    second = _run_activate(tmp_path, canonical)
+
+    assert second.returncode == 0, second.stderr
+    assert _git(active_source, "rev-parse", "HEAD") == new_sha
+    assert (active_source / rel).read_text(encoding="utf-8") == "tracked tab path\n"
+    receipt = _current_receipt(tmp_path)
+    hygiene = receipt["source_hygiene"]
+    assert hygiene["tracked_quarantine_count"] == 1
+    quarantine_path = Path(hygiene["tracked_quarantine_path"])
+    assert (quarantine_path / "deleted" / rel).read_text(encoding="utf-8") == (
+        f"deleted tracked path: {rel}\n"
+    )
+    assert (quarantine_path / "index-deleted" / rel).read_text(encoding="utf-8") == (
+        f"deleted staged path: {rel}\n"
+    )
+
+
+def test_activation_quarantines_both_sides_of_staged_rename_before_candidate_reset(
+    tmp_path: Path,
+) -> None:
+    canonical, _origin, new_sha = _make_repos(tmp_path)
+
+    first = _run_activate(tmp_path, canonical)
+    assert first.returncode == 0, first.stderr
+
+    active_source = tmp_path / "active-source"
+    _git(active_source, "config", "diff.renames", "true")
+    _git(active_source, "mv", "README.md", "RENAMED.md")
+    assert _git(active_source, "ls-files", "--modified", "--deleted") == ""
+    assert _git(active_source, "diff", "--cached", "--name-only").splitlines() == ["RENAMED.md"]
+    assert set(
+        _git(active_source, "diff", "--cached", "--no-renames", "--name-only").splitlines()
+    ) == {"README.md", "RENAMED.md"}
+
+    second = _run_activate(tmp_path, canonical)
+
+    assert second.returncode == 0, second.stderr
+    assert _git(active_source, "rev-parse", "HEAD") == new_sha
+    assert (active_source / "README.md").read_text(encoding="utf-8") == ("base\nnew origin main\n")
+    assert not (active_source / "RENAMED.md").exists()
+    receipt = _current_receipt(tmp_path)
+    hygiene = receipt["source_hygiene"]
+    assert hygiene["tracked_quarantine_count"] == 2
+    quarantine_path = Path(hygiene["tracked_quarantine_path"])
+    assert (quarantine_path / "deleted" / "README.md").read_text(
+        encoding="utf-8"
+    ) == "deleted tracked path: README.md\n"
+    assert (quarantine_path / "index-deleted" / "README.md").read_text(
+        encoding="utf-8"
+    ) == "deleted staged path: README.md\n"
+    assert (quarantine_path / "worktree" / "RENAMED.md").read_text(
+        encoding="utf-8"
+    ) == "base\nnew origin main\n"
+    assert (quarantine_path / "index" / "RENAMED.md").read_text(
+        encoding="utf-8"
+    ) == "base\nnew origin main\n"
+
+
+def test_activation_quarantines_staged_file_to_directory_replacement_before_reset(
+    tmp_path: Path,
+) -> None:
+    canonical, _origin, new_sha = _make_repos(tmp_path)
+
+    first = _run_activate(tmp_path, canonical)
+    assert first.returncode == 0, first.stderr
+
+    active_source = tmp_path / "active-source"
+    (active_source / "README.md").unlink()
+    _write(active_source / "README.md" / "child.txt", "replacement directory payload\n")
+    _git(active_source, "add", "-A", "README.md")
+    assert set(
+        _git(active_source, "diff", "--cached", "--no-renames", "--name-only").splitlines()
+    ) == {"README.md", "README.md/child.txt"}
+
+    second = _run_activate(tmp_path, canonical)
+
+    assert second.returncode == 0, second.stderr
+    assert _git(active_source, "rev-parse", "HEAD") == new_sha
+    assert (active_source / "README.md").read_text(encoding="utf-8") == ("base\nnew origin main\n")
+    receipt = _current_receipt(tmp_path)
+    hygiene = receipt["source_hygiene"]
+    assert hygiene["tracked_quarantine_count"] == 2
+    quarantine_path = Path(hygiene["tracked_quarantine_path"])
+    assert (quarantine_path / "index-deleted" / "README.md").read_text(
+        encoding="utf-8"
+    ) == "deleted staged path: README.md\n"
+    assert (quarantine_path / "index" / "README.md" / "child.txt").read_text(
+        encoding="utf-8"
+    ) == "replacement directory payload\n"
+
+
+def test_tracked_quarantine_refuses_symlink_ancestor_escape_before_reset(
+    tmp_path: Path,
+) -> None:
+    canonical, _origin, _new_sha = _make_repos(tmp_path)
+
+    first = _run_activate(tmp_path, canonical)
+    assert first.returncode == 0, first.stderr
+
+    active_source = tmp_path / "active-source"
+    (active_source / "README.md").unlink()
+    _write(active_source / "README.md" / "child.txt", "staged child payload\n")
+    _git(active_source, "add", "-A", "README.md")
+    assert set(
+        _git(active_source, "diff", "--cached", "--no-renames", "--name-only").splitlines()
+    ) == {"README.md", "README.md/child.txt"}
+
+    shutil.rmtree(active_source / "README.md")
+    (active_source / "README.md").symlink_to("../..")
+    _write(tmp_path / "state" / "child.txt", "source payload through symlink\n")
+
+    second = _run_activate(tmp_path, canonical)
+
+    assert second.returncode == 2
+    assert "refusing to write tracked drift README.md/child.txt through symlink ancestor" in (
+        second.stderr
+    )
+    assert "partial tracked quarantine payloads:" in second.stderr
+    assert (active_source / "README.md").is_symlink()
+    assert os.readlink(active_source / "README.md") == "../.."
+    assert (tmp_path / "state" / "child.txt").read_text(encoding="utf-8") == (
+        "source payload through symlink\n"
+    )
+    receipt = _current_receipt(tmp_path)
+    hygiene = receipt["source_hygiene"]
+    assert receipt["status"] == "failed"
+    assert receipt["message"] == "tracked drift quarantine write failed before reset"
+    assert hygiene["tracked_quarantine_count"] == 1
+    assert hygiene["tracked_quarantine_status"] == "partial"
+    quarantine_path = Path(hygiene["tracked_quarantine_path"])
+    worktree_payload = quarantine_path / "worktree" / "README.md"
+    assert worktree_payload.is_symlink()
+    assert os.readlink(worktree_payload) == "../.."
+    assert not (quarantine_path.parent / "child.txt").exists()
+    assert not (quarantine_path / "worktree" / "README.md" / "child.txt").exists()
+
+
+def test_tracked_quarantine_refuses_newline_symlink_ancestor_escape_before_reset(
+    tmp_path: Path,
+) -> None:
+    canonical, origin, _new_sha = _make_repos(tmp_path)
+    updater = tmp_path / "newline-symlink-updater"
+    _git(tmp_path, "clone", str(origin), str(updater))
+    _git(updater, "config", "user.email", "source-activate@example.test")
+    _git(updater, "config", "user.name", "Source Activate")
+    tracked_rel = Path("line\nbreak")
+    child_rel = tracked_rel / "child.txt"
+    _write(updater / tracked_rel, "tracked newline ancestor\n")
+    _git(updater, "add", str(tracked_rel))
+    _git(updater, "commit", "-m", "add newline ancestor")
+    _git(updater, "push", "origin", "main")
+
+    first = _run_activate(tmp_path, canonical)
+    assert first.returncode == 0, first.stderr
+
+    active_source = tmp_path / "active-source"
+    (active_source / tracked_rel).unlink()
+    _write(active_source / child_rel, "staged child payload\n")
+    _git(active_source, "add", "-A", ".")
+    shutil.rmtree(active_source / tracked_rel)
+    (active_source / tracked_rel).symlink_to("../..")
+    _write(tmp_path / "state" / "child.txt", "source payload through newline symlink\n")
+
+    second = _run_activate(tmp_path, canonical)
+
+    assert second.returncode == 2
+    assert "refusing to write tracked drift" in second.stderr
+    assert "through symlink ancestor" in second.stderr
+    assert "partial tracked quarantine payloads:" in second.stderr
+    assert (active_source / tracked_rel).is_symlink()
+    assert os.readlink(active_source / tracked_rel) == "../.."
+    assert (tmp_path / "state" / "child.txt").read_text(encoding="utf-8") == (
+        "source payload through newline symlink\n"
+    )
+    receipt = _current_receipt(tmp_path)
+    hygiene = receipt["source_hygiene"]
+    assert receipt["status"] == "failed"
+    assert receipt["message"] == "tracked drift quarantine write failed before reset"
+    assert hygiene["tracked_quarantine_count"] == 1
+    assert hygiene["tracked_quarantine_status"] == "partial"
+    quarantine_path = Path(hygiene["tracked_quarantine_path"])
+    worktree_payload = quarantine_path / "worktree" / tracked_rel
+    assert worktree_payload.is_symlink()
+    assert os.readlink(worktree_payload) == "../.."
+    assert not (quarantine_path.parent / "child.txt").exists()
+    assert not (quarantine_path / "worktree" / child_rel).exists()
+
+
+def test_activation_quarantines_unstaged_file_to_directory_replacement_before_reset(
+    tmp_path: Path,
+) -> None:
+    canonical, _origin, new_sha = _make_repos(tmp_path)
+
+    first = _run_activate(tmp_path, canonical)
+    assert first.returncode == 0, first.stderr
+
+    active_source = tmp_path / "active-source"
+    (active_source / "README.md").unlink()
+    _write(active_source / "README.md" / "child.txt", "unstaged replacement payload\n")
+    assert "README.md" in _git(active_source, "ls-files", "--modified", "--deleted")
+
+    second = _run_activate(tmp_path, canonical)
+
+    assert second.returncode == 0, second.stderr
+    assert _git(active_source, "rev-parse", "HEAD") == new_sha
+    assert (active_source / "README.md").read_text(encoding="utf-8") == ("base\nnew origin main\n")
+    receipt = _current_receipt(tmp_path)
+    hygiene = receipt["source_hygiene"]
+    assert hygiene["tracked_quarantine_count"] == 1
+    assert hygiene["tracked_quarantine_status"] == "complete"
+    quarantine_path = Path(hygiene["tracked_quarantine_path"])
+    assert (quarantine_path / "worktree" / "README.md" / "child.txt").read_text(
+        encoding="utf-8"
+    ) == "unstaged replacement payload\n"
+
+
+def test_activation_counts_multiple_tracked_drift_paths(tmp_path: Path) -> None:
+    canonical, _origin, new_sha = _make_repos(tmp_path)
+
+    first = _run_activate(tmp_path, canonical)
+    assert first.returncode == 0, first.stderr
+
+    active_source = tmp_path / "active-source"
+    _write(active_source / "README.md", "unstaged tracked drift\n")
+    _write(
+        active_source / "config" / "usb-topology-policy.json",
+        '{"known_absences": {"staged": true}}\n',
+    )
+    _git(active_source, "add", "config/usb-topology-policy.json")
+
+    second = _run_activate(tmp_path, canonical)
+
+    assert second.returncode == 0, second.stderr
+    assert _git(active_source, "rev-parse", "HEAD") == new_sha
+    receipt = _current_receipt(tmp_path)
+    hygiene = receipt["source_hygiene"]
+    assert hygiene["tracked_quarantine_count"] == 2
+    quarantine_path = Path(hygiene["tracked_quarantine_path"])
+    assert (quarantine_path / "worktree" / "README.md").read_text(
+        encoding="utf-8"
+    ) == "unstaged tracked drift\n"
+    assert (quarantine_path / "index" / "config" / "usb-topology-policy.json").read_text(
+        encoding="utf-8"
+    ) == '{"known_absences": {"staged": true}}\n'
+
+
+def test_tracked_quarantine_uses_bytewise_sort_for_distinct_cached_paths(
+    tmp_path: Path,
+) -> None:
+    canonical, _origin, new_sha = _make_repos(tmp_path)
+
+    first = _run_activate(tmp_path, canonical)
+    assert first.returncode == 0, first.stderr
+
+    active_source = tmp_path / "active-source"
+    _write(active_source / "Alpha.txt", "uppercase staged addition\n")
+    _write(active_source / "alpha.txt", "lowercase staged addition\n")
+    _git(active_source, "add", "Alpha.txt", "alpha.txt")
+    fake_bin = _fake_tool_bin(
+        tmp_path,
+        "sort",
+        """
+        if [[ "$1" == "-zu" && "${LC_ALL:-}" != "C" ]]; then
+            python3 - "$@" <<'PY'
+import sys
+from pathlib import Path
+
+records = []
+for arg in sys.argv[2:]:
+    for record in Path(arg).read_bytes().split(b"\\0"):
+        if record:
+            records.append(record)
+
+collapsed = {}
+for record in sorted(records, key=lambda item: item.lower()):
+    collapsed.setdefault(record.lower(), record)
+
+if collapsed:
+    sys.stdout.buffer.write(b"\\0".join(collapsed.values()) + b"\\0")
+PY
+            exit 0
+        fi
+        """,
+    )
+
+    second = _run_activate(
+        tmp_path,
+        canonical,
+        env_overrides={"PATH": f"{fake_bin}:{os.environ['PATH']}"},
+    )
+
+    assert second.returncode == 0, second.stderr
+    assert _git(active_source, "rev-parse", "HEAD") == new_sha
+    receipt = _current_receipt(tmp_path)
+    hygiene = receipt["source_hygiene"]
+    assert hygiene["tracked_quarantine_count"] == 2
+    quarantine_path = Path(hygiene["tracked_quarantine_path"])
+    assert (quarantine_path / "worktree" / "Alpha.txt").read_text(
+        encoding="utf-8"
+    ) == "uppercase staged addition\n"
+    assert (quarantine_path / "worktree" / "alpha.txt").read_text(
+        encoding="utf-8"
+    ) == "lowercase staged addition\n"
+    assert (quarantine_path / "index" / "Alpha.txt").read_text(
+        encoding="utf-8"
+    ) == "uppercase staged addition\n"
+    assert (quarantine_path / "index" / "alpha.txt").read_text(
+        encoding="utf-8"
+    ) == "lowercase staged addition\n"
+
+
+def test_activation_counts_partially_staged_path_once_while_preserving_both_payloads(
+    tmp_path: Path,
+) -> None:
+    canonical, _origin, new_sha = _make_repos(tmp_path)
+
+    first = _run_activate(tmp_path, canonical)
+    assert first.returncode == 0, first.stderr
+
+    active_source = tmp_path / "active-source"
+    _write(active_source / "README.md", "staged payload\n")
+    _git(active_source, "add", "README.md")
+    _write(active_source / "README.md", "worktree payload\n")
+
+    second = _run_activate(tmp_path, canonical)
+
+    assert second.returncode == 0, second.stderr
+    assert _git(active_source, "rev-parse", "HEAD") == new_sha
+    receipt = _current_receipt(tmp_path)
+    hygiene = receipt["source_hygiene"]
+    assert hygiene["tracked_quarantine_count"] == 1
+    quarantine_path = Path(hygiene["tracked_quarantine_path"])
+    assert (quarantine_path / "worktree" / "README.md").read_text(
+        encoding="utf-8"
+    ) == "worktree payload\n"
+    assert (quarantine_path / "index" / "README.md").read_text(
+        encoding="utf-8"
+    ) == "staged payload\n"
+
+
+def test_tracked_detection_refuses_when_scan_tempfile_allocation_fails(
+    tmp_path: Path,
+) -> None:
+    canonical, active_source, _new_sha = _active_source_with_readme_drift(tmp_path)
+    fake_bin = _fake_tool_bin(
+        tmp_path,
+        "mktemp",
+        """
+        if [[ "$1" == *"tracked-drift-detect."* ]]; then
+            echo forced detection scan tempfile failure >&2
+            exit 1
+        fi
+        """,
+    )
+
+    result = _run_activate(
+        tmp_path,
+        canonical,
+        env_overrides={"PATH": f"{fake_bin}:{os.environ['PATH']}"},
+    )
+
+    _assert_tracked_quarantine_failed(
+        result,
+        tmp_path,
+        message="tracked drift scan failed before reset",
+        stderr_fragment="failed to allocate tracked drift scan file",
+    )
+    assert (active_source / "README.md").read_text(encoding="utf-8") == (
+        "tracked drift before refusal\n"
+    )
+
+
+def test_tracked_detection_refuses_when_index_scan_tempfile_allocation_fails(
+    tmp_path: Path,
+) -> None:
+    canonical, active_source, _new_sha = _active_source_with_readme_drift(tmp_path)
+    fake_bin = _fake_tool_bin(
+        tmp_path,
+        "mktemp",
+        """
+        if [[ "$1" == *"tracked-index-drift-detect."* ]]; then
+            echo forced detection index scan tempfile failure >&2
+            exit 1
+        fi
+        """,
+    )
+
+    result = _run_activate(
+        tmp_path,
+        canonical,
+        env_overrides={"PATH": f"{fake_bin}:{os.environ['PATH']}"},
+    )
+
+    _assert_tracked_quarantine_failed(
+        result,
+        tmp_path,
+        message="tracked drift scan failed before reset",
+        stderr_fragment="failed to allocate tracked index drift scan file",
+    )
+    assert (active_source / "README.md").read_text(encoding="utf-8") == (
+        "tracked drift before refusal\n"
+    )
+
+
+def test_tracked_quarantine_refuses_when_scan_tempfile_allocation_fails(
+    tmp_path: Path,
+) -> None:
+    canonical, active_source, _new_sha = _active_source_with_readme_drift(tmp_path)
+    fake_bin = _fake_tool_bin(
+        tmp_path,
+        "mktemp",
+        """
+        if [[ "$*" == *"tracked-drift."* ]]; then
+            echo forced scan tempfile failure >&2
+            exit 1
+        fi
+        """,
+    )
+
+    result = _run_activate(
+        tmp_path,
+        canonical,
+        env_overrides={"PATH": f"{fake_bin}:{os.environ['PATH']}"},
+    )
+
+    _assert_tracked_quarantine_failed(
+        result,
+        tmp_path,
+        message="tracked drift scan failed before reset",
+        stderr_fragment="failed to allocate tracked drift scan file",
+    )
+    assert (active_source / "README.md").read_text(encoding="utf-8") == (
+        "tracked drift before refusal\n"
+    )
+
+
+def test_tracked_quarantine_refuses_when_index_scan_tempfile_allocation_fails(
+    tmp_path: Path,
+) -> None:
+    canonical, active_source, _new_sha = _active_source_with_readme_drift(tmp_path)
+    fake_bin = _fake_tool_bin(
+        tmp_path,
+        "mktemp",
+        """
+        if [[ "$*" == *"tracked-index-drift."* ]]; then
+            echo forced index scan tempfile failure >&2
+            exit 1
+        fi
+        """,
+    )
+
+    result = _run_activate(
+        tmp_path,
+        canonical,
+        env_overrides={"PATH": f"{fake_bin}:{os.environ['PATH']}"},
+    )
+
+    _assert_tracked_quarantine_failed(
+        result,
+        tmp_path,
+        message="tracked drift scan failed before reset",
+        stderr_fragment="failed to allocate tracked index drift scan file",
+    )
+    assert (active_source / "README.md").read_text(encoding="utf-8") == (
+        "tracked drift before refusal\n"
+    )
+
+
+def test_tracked_quarantine_refuses_when_index_entry_tempfile_allocation_fails(
+    tmp_path: Path,
+) -> None:
+    canonical, active_source, _new_sha = _active_source_with_readme_drift(tmp_path)
+    fake_bin = _fake_tool_bin(
+        tmp_path,
+        "mktemp",
+        """
+        if [[ "$*" == *"tracked-index-entries."* ]]; then
+            echo forced index entry tempfile failure >&2
+            exit 1
+        fi
+        """,
+    )
+
+    result = _run_activate(
+        tmp_path,
+        canonical,
+        env_overrides={"PATH": f"{fake_bin}:{os.environ['PATH']}"},
+    )
+
+    _assert_tracked_quarantine_failed(
+        result,
+        tmp_path,
+        message="tracked drift scan failed before reset",
+        stderr_fragment="failed to allocate tracked index entry scan file",
+    )
+    assert (active_source / "README.md").read_text(encoding="utf-8") == (
+        "tracked drift before refusal\n"
+    )
+
+
+def test_tracked_quarantine_refuses_when_sorted_tempfile_allocation_fails(
+    tmp_path: Path,
+) -> None:
+    canonical, active_source, _new_sha = _active_source_with_readme_drift(tmp_path)
+    fake_bin = _fake_tool_bin(
+        tmp_path,
+        "mktemp",
+        """
+        if [[ "$*" == *"tracked-drift-sorted."* ]]; then
+            echo forced sorted tempfile failure >&2
+            exit 1
+        fi
+        """,
+    )
+
+    result = _run_activate(
+        tmp_path,
+        canonical,
+        env_overrides={"PATH": f"{fake_bin}:{os.environ['PATH']}"},
+    )
+
+    _assert_tracked_quarantine_failed(
+        result,
+        tmp_path,
+        message="tracked drift scan failed before reset",
+        stderr_fragment="failed to allocate tracked drift normalization file",
+    )
+    assert (active_source / "README.md").read_text(encoding="utf-8") == (
+        "tracked drift before refusal\n"
+    )
+
+
+def test_tracked_quarantine_refuses_when_git_worktree_scan_fails(
+    tmp_path: Path,
+) -> None:
+    canonical, active_source, _new_sha = _active_source_with_readme_drift(tmp_path)
+    fake_bin = _fake_tool_bin(
+        tmp_path,
+        "git",
+        """
+        if [[ "${HAPAX_TEST_SOURCE_ROOT:-}" != "" \
+            && "$1" == "-C" \
+            && "$2" == "$HAPAX_TEST_SOURCE_ROOT" \
+            && "$3" == "ls-files" \
+            && "$4" == "-z" \
+            && "$5" == "--modified" \
+            && "$6" == "--deleted" ]]; then
+            echo forced worktree scan failure >&2
+            exit 41
+        fi
+        """,
+    )
+
+    result = _run_activate(
+        tmp_path,
+        canonical,
+        env_overrides={
+            "PATH": f"{fake_bin}:{os.environ['PATH']}",
+            "HAPAX_TEST_SOURCE_ROOT": str(active_source.resolve()),
+        },
+    )
+
+    _assert_tracked_quarantine_failed(
+        result,
+        tmp_path,
+        message="tracked drift scan failed before reset",
+        stderr_fragment="tracked drift scan failed",
+    )
+    assert (active_source / "README.md").read_text(encoding="utf-8") == (
+        "tracked drift before refusal\n"
+    )
+
+
+def test_tracked_quarantine_refuses_when_git_index_scan_fails(
+    tmp_path: Path,
+) -> None:
+    canonical, active_source, _new_sha = _active_source_with_readme_drift(tmp_path)
+    fake_bin = _fake_tool_bin(
+        tmp_path,
+        "git",
+        """
+        if [[ "${HAPAX_TEST_SOURCE_ROOT:-}" != "" \
+            && "$1" == "-C" \
+            && "$2" == "$HAPAX_TEST_SOURCE_ROOT" \
+            && "$3" == "diff" \
+            && "$4" == "--cached" \
+            && "$5" == "--no-renames" \
+            && "$6" == "--name-only" \
+            && "$7" == "-z" ]]; then
+            echo forced index scan failure >&2
+            exit 42
+        fi
+        """,
+    )
+
+    result = _run_activate(
+        tmp_path,
+        canonical,
+        env_overrides={
+            "PATH": f"{fake_bin}:{os.environ['PATH']}",
+            "HAPAX_TEST_SOURCE_ROOT": str(active_source.resolve()),
+        },
+    )
+
+    _assert_tracked_quarantine_failed(
+        result,
+        tmp_path,
+        message="tracked drift scan failed before reset",
+        stderr_fragment="tracked index drift scan failed",
+    )
+    assert (active_source / "README.md").read_text(encoding="utf-8") == (
+        "tracked drift before refusal\n"
+    )
+
+
+def test_tracked_quarantine_refuses_when_git_index_entry_scan_fails(
+    tmp_path: Path,
+) -> None:
+    canonical, active_source, _new_sha = _active_source_with_readme_drift(tmp_path)
+    fake_bin = _fake_tool_bin(
+        tmp_path,
+        "git",
+        """
+        if [[ "${HAPAX_TEST_SOURCE_ROOT:-}" != "" \
+            && "$1" == "-C" \
+            && "$2" == "$HAPAX_TEST_SOURCE_ROOT" \
+            && "$3" == "ls-files" \
+            && "$4" == "-z" \
+            && "$5" == "--stage" ]]; then
+            echo forced index entry scan failure >&2
+            exit 43
+        fi
+        """,
+    )
+
+    result = _run_activate(
+        tmp_path,
+        canonical,
+        env_overrides={
+            "PATH": f"{fake_bin}:{os.environ['PATH']}",
+            "HAPAX_TEST_SOURCE_ROOT": str(active_source.resolve()),
+        },
+    )
+
+    _assert_tracked_quarantine_failed(
+        result,
+        tmp_path,
+        message="tracked drift scan failed before reset",
+        stderr_fragment="tracked index entry scan failed",
+    )
+    assert (active_source / "README.md").read_text(encoding="utf-8") == (
+        "tracked drift before refusal\n"
+    )
+
+
+def test_tracked_quarantine_refuses_when_checkout_index_fails(tmp_path: Path) -> None:
+    canonical, active_source, _new_sha = _active_source_with_readme_drift(tmp_path)
+    _git(active_source, "add", "README.md")
+    _write(active_source / "README.md", "worktree payload after staged drift\n")
+    fake_bin = _fake_tool_bin(
+        tmp_path,
+        "git",
+        """
+        if [[ "${HAPAX_TEST_SOURCE_ROOT:-}" != "" \
+            && "$1" == "-C" \
+            && "$2" == "$HAPAX_TEST_SOURCE_ROOT" \
+            && "$3" == "checkout-index" ]]; then
+            echo forced checkout-index failure >&2
+            exit 44
+        fi
+        """,
+    )
+
+    result = _run_activate(
+        tmp_path,
+        canonical,
+        env_overrides={
+            "PATH": f"{fake_bin}:{os.environ['PATH']}",
+            "HAPAX_TEST_SOURCE_ROOT": str(active_source.resolve()),
+        },
+    )
+
+    _assert_tracked_quarantine_failed(
+        result,
+        tmp_path,
+        message="tracked drift quarantine write failed before reset",
+        stderr_fragment="failed to preserve tracked index drift README.md",
+    )
+    assert (active_source / "README.md").read_text(encoding="utf-8") == (
+        "worktree payload after staged drift\n"
+    )
+
+
+def test_tracked_quarantine_refuses_when_sort_fails(tmp_path: Path) -> None:
+    canonical, active_source, _new_sha = _active_source_with_readme_drift(tmp_path)
+    fake_bin = _fake_tool_bin(
+        tmp_path,
+        "sort",
+        """
+        if [[ "$1" == "-zu" ]]; then
+            echo forced sort failure >&2
+            exit 43
+        fi
+        """,
+    )
+
+    result = _run_activate(
+        tmp_path,
+        canonical,
+        env_overrides={"PATH": f"{fake_bin}:{os.environ['PATH']}"},
+    )
+
+    _assert_tracked_quarantine_failed(
+        result,
+        tmp_path,
+        message="tracked drift scan failed before reset",
+        stderr_fragment="tracked drift path normalization failed",
+    )
+    assert (active_source / "README.md").read_text(encoding="utf-8") == (
+        "tracked drift before refusal\n"
+    )
+
+
+def test_tracked_quarantine_refuses_when_sorted_scan_file_read_fails(
+    tmp_path: Path,
+) -> None:
+    canonical, active_source, _new_sha = _active_source_with_readme_drift(tmp_path)
+    bash_env = _bash_env_fail_nul_mapfile(
+        tmp_path,
+        "tracked_paths",
+        "tracked drift normalization",
+    )
+
+    result = _run_activate(
+        tmp_path,
+        canonical,
+        env_overrides={"BASH_ENV": str(bash_env)},
+    )
+
+    _assert_tracked_quarantine_failed(
+        result,
+        tmp_path,
+        message="tracked drift scan failed before reset",
+        stderr_fragment="failed to read tracked drift normalization file",
+    )
+    assert (active_source / "README.md").read_text(encoding="utf-8") == (
+        "tracked drift before refusal\n"
+    )
+
+
+def test_tracked_quarantine_refuses_when_index_scan_file_read_fails(
+    tmp_path: Path,
+) -> None:
+    canonical, active_source, _new_sha = _active_source_with_readme_drift(tmp_path)
+    _git(active_source, "add", "README.md")
+    bash_env = _bash_env_fail_nul_mapfile(
+        tmp_path,
+        "cached_paths",
+        "tracked index drift scan",
+    )
+
+    result = _run_activate(
+        tmp_path,
+        canonical,
+        env_overrides={"BASH_ENV": str(bash_env)},
+    )
+
+    _assert_tracked_quarantine_failed(
+        result,
+        tmp_path,
+        message="tracked drift scan failed before reset",
+        stderr_fragment="failed to read tracked index drift scan file",
+    )
+    assert (active_source / "README.md").read_text(encoding="utf-8") == (
+        "tracked drift before refusal\n"
+    )
+    assert _git(active_source, "diff", "--cached", "--name-only") == "README.md"
+
+
+def test_tracked_quarantine_refuses_when_index_entry_scan_file_read_fails(
+    tmp_path: Path,
+) -> None:
+    canonical, active_source, _new_sha = _active_source_with_readme_drift(tmp_path)
+    bash_env = _bash_env_fail_nul_mapfile(
+        tmp_path,
+        "index_records",
+        "tracked index entry scan",
+    )
+
+    result = _run_activate(
+        tmp_path,
+        canonical,
+        env_overrides={"BASH_ENV": str(bash_env)},
+    )
+
+    _assert_tracked_quarantine_failed(
+        result,
+        tmp_path,
+        message="tracked drift scan failed before reset",
+        stderr_fragment="failed to read tracked index entry scan file",
+    )
+    assert (active_source / "README.md").read_text(encoding="utf-8") == (
+        "tracked drift before refusal\n"
+    )
+
+
+def test_tracked_quarantine_refuses_when_quarantine_timestamp_fails(
+    tmp_path: Path,
+) -> None:
+    canonical, active_source, _new_sha = _active_source_with_readme_drift(tmp_path)
+    fake_bin = _fake_tool_bin(
+        tmp_path,
+        "date",
+        """
+        if [[ "$1" == "-u" ]]; then
+            echo forced date failure >&2
+            exit 50
+        fi
+        """,
+    )
+
+    result = _run_activate(
+        tmp_path,
+        canonical,
+        env_overrides={"PATH": f"{fake_bin}:{os.environ['PATH']}"},
+    )
+
+    _assert_tracked_quarantine_failed(
+        result,
+        tmp_path,
+        message="tracked drift quarantine setup failed before reset",
+        stderr_fragment="failed to create tracked drift quarantine root",
+    )
+    assert (active_source / "README.md").read_text(encoding="utf-8") == (
+        "tracked drift before refusal\n"
+    )
+
+
+def test_tracked_quarantine_refuses_when_quarantine_root_cannot_be_created(
+    tmp_path: Path,
+) -> None:
+    canonical, active_source, _new_sha = _active_source_with_readme_drift(tmp_path)
+    fake_bin = _fake_tool_bin(
+        tmp_path,
+        "mkdir",
+        """
+        for arg in "$@"; do
+            if [[ "$arg" == *"/drift-quarantine"* ]]; then
+                echo forced quarantine root failure >&2
+                exit 44
+            fi
+        done
+        """,
+    )
+
+    result = _run_activate(
+        tmp_path,
+        canonical,
+        env_overrides={"PATH": f"{fake_bin}:{os.environ['PATH']}"},
+    )
+
+    _assert_tracked_quarantine_failed(
+        result,
+        tmp_path,
+        message="tracked drift quarantine setup failed before reset",
+        stderr_fragment="failed to create tracked drift quarantine root",
+    )
+    assert (active_source / "README.md").read_text(encoding="utf-8") == (
+        "tracked drift before refusal\n"
+    )
+
+
+def test_tracked_quarantine_refuses_when_quarantine_directory_allocation_fails(
+    tmp_path: Path,
+) -> None:
+    canonical, active_source, _new_sha = _active_source_with_readme_drift(tmp_path)
+    fake_bin = _fake_tool_bin(
+        tmp_path,
+        "mktemp",
+        """
+        if [[ "$1" == "-d" && "$2" == *"/drift-quarantine/"* ]]; then
+            echo forced quarantine directory allocation failure >&2
+            exit 51
+        fi
+        """,
+    )
+
+    result = _run_activate(
+        tmp_path,
+        canonical,
+        env_overrides={"PATH": f"{fake_bin}:{os.environ['PATH']}"},
+    )
+
+    _assert_tracked_quarantine_failed(
+        result,
+        tmp_path,
+        message="tracked drift quarantine setup failed before reset",
+        stderr_fragment="failed to create tracked drift quarantine root",
+    )
+    assert (active_source / "README.md").read_text(encoding="utf-8") == (
+        "tracked drift before refusal\n"
+    )
+
+
+def test_tracked_quarantine_refuses_when_worktree_copy_fails(tmp_path: Path) -> None:
+    canonical, active_source, _new_sha = _active_source_with_readme_drift(tmp_path)
+    fake_bin = _fake_tool_bin(
+        tmp_path,
+        "cp",
+        """
+        for arg in "$@"; do
+            if [[ "$arg" == *"/.hapax-tracked/worktree/"* ]]; then
+                echo forced tracked copy failure >&2
+                exit 45
+            fi
+        done
+        """,
+    )
+
+    result = _run_activate(
+        tmp_path,
+        canonical,
+        env_overrides={"PATH": f"{fake_bin}:{os.environ['PATH']}"},
+    )
+
+    _assert_tracked_quarantine_failed(
+        result,
+        tmp_path,
+        message="tracked drift quarantine write failed before reset",
+        stderr_fragment="failed to preserve tracked drift README.md",
+    )
+    assert (active_source / "README.md").read_text(encoding="utf-8") == (
+        "tracked drift before refusal\n"
+    )
+
+
+def test_tracked_quarantine_marks_later_copy_failure_partial(tmp_path: Path) -> None:
+    canonical, _origin, _new_sha = _make_repos(tmp_path)
+    first = _run_activate(tmp_path, canonical)
+    assert first.returncode == 0, first.stderr
+    active_source = tmp_path / "active-source"
+    _write(active_source / "README.md", "first tracked drift before refusal\n")
+    _write(
+        active_source / "config" / "usb-topology-policy.json",
+        '{"known_absences": {"later": true}}\n',
+    )
+    fake_bin = _fake_tool_bin(
+        tmp_path,
+        "cp",
+        """
+        destination="${@: -1}"
+        if [[ "$destination" == *"/.hapax-tracked/worktree/config/usb-topology-policy.json" ]]; then
+            echo forced later tracked copy failure >&2
+            exit 56
+        fi
+        """,
+    )
+
+    result = _run_activate(
+        tmp_path,
+        canonical,
+        env_overrides={"PATH": f"{fake_bin}:{os.environ['PATH']}"},
+    )
+
+    assert result.returncode == 2
+    assert "failed to preserve tracked drift config/usb-topology-policy.json" in result.stderr
+    assert "partial tracked quarantine payloads:" in result.stderr
+    assert (active_source / "README.md").read_text(encoding="utf-8") == (
+        "first tracked drift before refusal\n"
+    )
+    assert (active_source / "config" / "usb-topology-policy.json").read_text(
+        encoding="utf-8"
+    ) == '{"known_absences": {"later": true}}\n'
+    receipt = _current_receipt(tmp_path)
+    hygiene = receipt["source_hygiene"]
+    assert hygiene["tracked_quarantine_count"] == 1
+    assert hygiene["tracked_quarantine_status"] == "partial"
+    quarantine_path = Path(hygiene["tracked_quarantine_path"])
+    assert (quarantine_path / "worktree" / "README.md").read_text(
+        encoding="utf-8"
+    ) == "first tracked drift before refusal\n"
+    assert not (quarantine_path / "worktree" / "config" / "usb-topology-policy.json").exists()
+
+
+def test_tracked_quarantine_refuses_when_worktree_payload_destination_collides(
+    tmp_path: Path,
+) -> None:
+    canonical, active_source, _new_sha = _active_source_with_readme_drift(tmp_path)
+    fake_bin = _fake_tool_bin(
+        tmp_path,
+        "cp",
+        """
+        destination="${@: -1}"
+        if [[ "$destination" == *"/.hapax-tracked/worktree/README.md" ]]; then
+            mkdir -p "$destination/child"
+            echo forced tracked nested destination collision >&2
+            exit 45
+        fi
+        """,
+    )
+
+    result = _run_activate(
+        tmp_path,
+        canonical,
+        env_overrides={"PATH": f"{fake_bin}:{os.environ['PATH']}"},
+    )
+
+    _assert_tracked_quarantine_failed(
+        result,
+        tmp_path,
+        message="tracked drift quarantine write failed before reset",
+        stderr_fragment="failed to preserve tracked drift README.md",
+    )
+    assert (active_source / "README.md").read_text(encoding="utf-8") == (
+        "tracked drift before refusal\n"
+    )
+
+
+def test_tracked_quarantine_refuses_when_deletion_marker_write_fails(
+    tmp_path: Path,
+) -> None:
+    canonical, _origin, _new_sha = _make_repos(tmp_path)
+    first = _run_activate(tmp_path, canonical)
+    assert first.returncode == 0, first.stderr
+    active_source = tmp_path / "active-source"
+    (active_source / "README.md").unlink()
+    fake_bin = _fake_tool_bin(
+        tmp_path,
+        "mkdir",
+        """
+        for arg in "$@"; do
+            if [[ "$arg" == *"/.hapax-tracked/deleted"* ]]; then
+                echo forced deletion marker failure >&2
+                exit 46
+            fi
+        done
+        """,
+    )
+
+    result = _run_activate(
+        tmp_path,
+        canonical,
+        env_overrides={"PATH": f"{fake_bin}:{os.environ['PATH']}"},
+    )
+
+    _assert_tracked_quarantine_failed(
+        result,
+        tmp_path,
+        message="tracked drift quarantine write failed before reset",
+        stderr_fragment="failed to preserve tracked deletion marker README.md",
+    )
+    assert not (active_source / "README.md").exists()
+
+
+def test_tracked_quarantine_refuses_when_index_checkout_fails(tmp_path: Path) -> None:
+    canonical, _origin, _new_sha = _make_repos(tmp_path)
+    first = _run_activate(tmp_path, canonical)
+    assert first.returncode == 0, first.stderr
+    active_source = tmp_path / "active-source"
+    _write(active_source / "README.md", "staged drift before refusal\n")
+    _git(active_source, "add", "README.md")
+    fake_bin = _fake_tool_bin(
+        tmp_path,
+        "git",
+        """
+        if [[ "${HAPAX_TEST_SOURCE_ROOT:-}" != "" \
+            && "$1" == "-C" \
+            && "$2" == "$HAPAX_TEST_SOURCE_ROOT" \
+            && "$3" == "checkout-index" ]]; then
+            echo forced index checkout failure >&2
+            exit 47
+        fi
+        """,
+    )
+
+    result = _run_activate(
+        tmp_path,
+        canonical,
+        env_overrides={
+            "PATH": f"{fake_bin}:{os.environ['PATH']}",
+            "HAPAX_TEST_SOURCE_ROOT": str(active_source.resolve()),
+        },
+    )
+
+    _assert_tracked_quarantine_failed(
+        result,
+        tmp_path,
+        message="tracked drift quarantine write failed before reset",
+        stderr_fragment="failed to preserve tracked index drift README.md",
+    )
+    assert (active_source / "README.md").read_text(encoding="utf-8") == (
+        "staged drift before refusal\n"
+    )
+
+
+def test_tracked_quarantine_refuses_when_index_deletion_marker_write_fails(
+    tmp_path: Path,
+) -> None:
+    canonical, _origin, _new_sha = _make_repos(tmp_path)
+    first = _run_activate(tmp_path, canonical)
+    assert first.returncode == 0, first.stderr
+    active_source = tmp_path / "active-source"
+    _git(active_source, "rm", "README.md")
+    fake_bin = _fake_tool_bin(
+        tmp_path,
+        "mkdir",
+        """
+        for arg in "$@"; do
+            if [[ "$arg" == *"/.hapax-tracked/index-deleted"* ]]; then
+                echo forced index deletion marker failure >&2
+                exit 48
+            fi
+        done
+        """,
+    )
+
+    result = _run_activate(
+        tmp_path,
+        canonical,
+        env_overrides={"PATH": f"{fake_bin}:{os.environ['PATH']}"},
+    )
+
+    _assert_tracked_quarantine_failed(
+        result,
+        tmp_path,
+        message="tracked drift quarantine write failed before reset",
+        stderr_fragment="failed to preserve tracked index deletion marker README.md",
+    )
+    assert not (active_source / "README.md").exists()
+
+
+def test_activation_uses_one_quarantine_root_for_tracked_and_untracked_drift(
+    tmp_path: Path,
+) -> None:
+    canonical, _origin, new_sha = _make_repos(tmp_path)
+
+    first = _run_activate(tmp_path, canonical)
+    assert first.returncode == 0, first.stderr
+
+    active_source = tmp_path / "active-source"
+    _write(active_source / "README.md", "tracked drift before reset\n")
+    _write(active_source / "notes" / "rogue.txt", "untracked drift before reset\n")
+
+    second = _run_activate(tmp_path, canonical)
+
+    assert second.returncode == 0, second.stderr
+    assert _git(active_source, "rev-parse", "HEAD") == new_sha
+    receipt = _current_receipt(tmp_path)
+    hygiene = receipt["source_hygiene"]
+    assert hygiene["tracked_quarantine_count"] == 1
+    assert hygiene["untracked_quarantine_count"] == 1
+    tracked_path = Path(hygiene["tracked_quarantine_path"])
+    untracked_path = Path(hygiene["untracked_quarantine_path"])
+    assert tracked_path.parent == untracked_path.parent
+    assert tracked_path.name == ".hapax-tracked"
+    assert untracked_path.name == ".hapax-untracked"
+    assert (tracked_path / "worktree" / "README.md").read_text(
+        encoding="utf-8"
+    ) == "tracked drift before reset\n"
+    assert (untracked_path / "notes" / "rogue.txt").read_text(encoding="utf-8") == (
+        "untracked drift before reset\n"
+    )
+
+
+def test_activation_keeps_untracked_reserved_paths_from_overwriting_tracked_quarantine(
+    tmp_path: Path,
+) -> None:
+    canonical, _origin, new_sha = _make_repos(tmp_path)
+
+    first = _run_activate(tmp_path, canonical)
+    assert first.returncode == 0, first.stderr
+
+    active_source = tmp_path / "active-source"
+    _write(active_source / "README.md", "tracked recovery payload\n")
+    _write(
+        active_source / ".hapax-tracked" / "worktree" / "README.md",
+        "untracked collision payload\n",
+    )
+
+    second = _run_activate(tmp_path, canonical)
+
+    assert second.returncode == 0, second.stderr
+    assert _git(active_source, "rev-parse", "HEAD") == new_sha
+    receipt = _current_receipt(tmp_path)
+    hygiene = receipt["source_hygiene"]
+    assert hygiene["tracked_quarantine_count"] == 1
+    assert hygiene["untracked_quarantine_count"] == 1
+    tracked_path = Path(hygiene["tracked_quarantine_path"])
+    untracked_path = Path(hygiene["untracked_quarantine_path"])
+    assert (tracked_path / "worktree" / "README.md").read_text(
+        encoding="utf-8"
+    ) == "tracked recovery payload\n"
+    assert (untracked_path / ".hapax-tracked" / "worktree" / "README.md").read_text(
+        encoding="utf-8"
+    ) == "untracked collision payload\n"
+
+
+def test_activation_preserves_existing_drift_quarantine_roots(tmp_path: Path) -> None:
+    canonical, _origin, _new_sha = _make_repos(tmp_path)
+
+    first = _run_activate(tmp_path, canonical)
+    assert first.returncode == 0, first.stderr
+
+    quarantine_root = tmp_path / "state" / "drift-quarantine"
+    old_root = _seed_quarantine_root(quarantine_root, "old-recovery-root")
+    active_source = tmp_path / "active-source"
+    _write(active_source / "README.md", "tracked drift before reset\n")
+
+    second = _run_activate(tmp_path, canonical)
+
+    assert second.returncode == 0, second.stderr
+    assert old_root.exists()
+    receipt = _current_receipt(tmp_path)
+    current_root = Path(receipt["source_hygiene"]["tracked_quarantine_path"]).parent
+    assert current_root.exists()
 
 
 def test_activation_quarantines_untracked_active_source_before_sweep(tmp_path: Path) -> None:
@@ -389,14 +3570,302 @@ def test_activation_quarantines_untracked_active_source_before_sweep(tmp_path: P
     assert not rogue.exists()
     assert not (local_bin / "hapax-rogue-untracked").exists()
     quarantined = list(
-        (tmp_path / "state" / "untracked-quarantine").glob("*/scripts/hapax-rogue-untracked")
+        (tmp_path / "state" / "drift-quarantine").glob(
+            "*/.hapax-untracked/scripts/hapax-rogue-untracked"
+        )
     )
     assert len(quarantined) == 1
     receipt = _current_receipt(tmp_path)
     assert receipt["status"] == "no_op"
     assert receipt["source_hygiene"]["untracked_quarantine_count"] == 1
     assert receipt["source_hygiene"]["untracked_symlink_removed_count"] == 1
-    assert "untracked-quarantine" in receipt["source_hygiene"]["untracked_quarantine_path"]
+    assert "drift-quarantine" in receipt["source_hygiene"]["untracked_quarantine_path"]
+
+
+def test_untracked_quarantine_refuses_when_quarantine_setup_fails(
+    tmp_path: Path,
+) -> None:
+    canonical, _origin, _new_sha = _make_repos(tmp_path)
+
+    first = _run_activate(tmp_path, canonical)
+    assert first.returncode == 0, first.stderr
+
+    active_source = tmp_path / "active-source"
+    rogue = active_source / "notes" / "rogue.txt"
+    _write(rogue, "untracked drift before refusal\n")
+    fake_bin = _fake_tool_bin(
+        tmp_path,
+        "date",
+        """
+        if [[ "$1" == "-u" ]]; then
+            echo forced date failure >&2
+            exit 52
+        fi
+        """,
+    )
+
+    second = _run_activate(
+        tmp_path,
+        canonical,
+        env_overrides={"PATH": f"{fake_bin}:{os.environ['PATH']}"},
+    )
+
+    assert second.returncode == 2
+    assert "failed to create untracked drift quarantine root" in second.stderr
+    assert "next action:" in second.stderr
+    assert rogue.read_text(encoding="utf-8") == "untracked drift before refusal\n"
+    receipt = _current_receipt(tmp_path)
+    assert receipt["status"] == "failed"
+    assert receipt["message"] == "untracked drift quarantine setup failed before sweep"
+    assert receipt["source_hygiene"]["untracked_quarantine_count"] == 0
+
+
+def test_untracked_quarantine_refuses_when_scan_tempfile_allocation_fails(
+    tmp_path: Path,
+) -> None:
+    canonical, _origin, _new_sha = _make_repos(tmp_path)
+
+    first = _run_activate(tmp_path, canonical)
+    assert first.returncode == 0, first.stderr
+
+    active_source = tmp_path / "active-source"
+    rogue = active_source / "notes" / "rogue.txt"
+    _write(rogue, "untracked drift before scan allocation refusal\n")
+    fake_bin = _fake_tool_bin(
+        tmp_path,
+        "mktemp",
+        """
+        if [[ "$1" == *"/untracked-drift."* ]]; then
+            echo forced untracked scan allocation failure >&2
+            exit 75
+        fi
+        """,
+    )
+
+    second = _run_activate(
+        tmp_path,
+        canonical,
+        env_overrides={"PATH": f"{fake_bin}:{os.environ['PATH']}"},
+    )
+
+    _assert_untracked_quarantine_failed(
+        second,
+        tmp_path,
+        message="untracked drift scan failed before sweep",
+        stderr_fragment="failed to allocate untracked drift scan file",
+    )
+    assert rogue.read_text(encoding="utf-8") == ("untracked drift before scan allocation refusal\n")
+
+
+def test_untracked_quarantine_refuses_when_scan_file_read_fails(
+    tmp_path: Path,
+) -> None:
+    canonical, _origin, _new_sha = _make_repos(tmp_path)
+
+    first = _run_activate(tmp_path, canonical)
+    assert first.returncode == 0, first.stderr
+
+    active_source = tmp_path / "active-source"
+    rogue = active_source / "notes" / "rogue.txt"
+    _write(rogue, "untracked drift before scan read refusal\n")
+    bash_env = tmp_path / "fail-untracked-mapfile.bash"
+    _write(
+        bash_env,
+        textwrap.dedent(
+            """\
+            mapfile() {
+                if [[ "$1" == "-t" && "$2" == "untracked_paths" ]]; then
+                    echo forced untracked scan read failure >&2
+                    return 76
+                fi
+                builtin mapfile "$@"
+            }
+            """
+        ),
+    )
+
+    second = _run_activate(
+        tmp_path,
+        canonical,
+        env_overrides={"BASH_ENV": str(bash_env)},
+    )
+
+    _assert_untracked_quarantine_failed(
+        second,
+        tmp_path,
+        message="untracked drift scan failed before sweep",
+        stderr_fragment="failed to read untracked drift scan file",
+    )
+    assert rogue.read_text(encoding="utf-8") == "untracked drift before scan read refusal\n"
+
+
+def test_untracked_quarantine_refuses_when_payload_root_creation_fails(
+    tmp_path: Path,
+) -> None:
+    canonical, _origin, _new_sha = _make_repos(tmp_path)
+
+    first = _run_activate(tmp_path, canonical)
+    assert first.returncode == 0, first.stderr
+
+    active_source = tmp_path / "active-source"
+    rogue = active_source / "notes" / "rogue.txt"
+    _write(rogue, "untracked drift before refusal\n")
+    fake_bin = _fake_tool_bin(
+        tmp_path,
+        "mkdir",
+        """
+        for arg in "$@"; do
+            if [[ "$arg" == *"/.hapax-untracked" ]]; then
+                echo forced untracked payload root failure >&2
+                exit 57
+            fi
+        done
+        """,
+    )
+
+    second = _run_activate(
+        tmp_path,
+        canonical,
+        env_overrides={"PATH": f"{fake_bin}:{os.environ['PATH']}"},
+    )
+
+    _assert_untracked_quarantine_failed(
+        second,
+        tmp_path,
+        message="untracked drift quarantine write failed before sweep",
+        stderr_fragment="failed to create untracked drift quarantine payload root",
+    )
+    assert rogue.read_text(encoding="utf-8") == "untracked drift before refusal\n"
+    receipt = _current_receipt(tmp_path)
+    assert receipt["source_hygiene"]["untracked_quarantine_path"] == ""
+
+
+def test_untracked_quarantine_refuses_when_parent_creation_fails(
+    tmp_path: Path,
+) -> None:
+    canonical, _origin, _new_sha = _make_repos(tmp_path)
+
+    first = _run_activate(tmp_path, canonical)
+    assert first.returncode == 0, first.stderr
+
+    active_source = tmp_path / "active-source"
+    rogue = active_source / "notes" / "rogue.txt"
+    _write(rogue, "untracked drift before refusal\n")
+    fake_bin = _fake_tool_bin(
+        tmp_path,
+        "mkdir",
+        """
+        for arg in "$@"; do
+            if [[ "$arg" == *"/.hapax-untracked/notes" ]]; then
+                echo forced untracked parent failure >&2
+                exit 58
+            fi
+        done
+        """,
+    )
+
+    second = _run_activate(
+        tmp_path,
+        canonical,
+        env_overrides={"PATH": f"{fake_bin}:{os.environ['PATH']}"},
+    )
+
+    _assert_untracked_quarantine_failed(
+        second,
+        tmp_path,
+        message="untracked drift quarantine write failed before sweep",
+        stderr_fragment="failed to preserve untracked drift notes/rogue.txt",
+    )
+    assert rogue.read_text(encoding="utf-8") == "untracked drift before refusal\n"
+    receipt = _current_receipt(tmp_path)
+    assert receipt["source_hygiene"]["untracked_quarantine_path"] == ""
+
+
+def test_untracked_quarantine_refuses_when_move_fails(
+    tmp_path: Path,
+) -> None:
+    canonical, _origin, _new_sha = _make_repos(tmp_path)
+
+    first = _run_activate(tmp_path, canonical)
+    assert first.returncode == 0, first.stderr
+
+    active_source = tmp_path / "active-source"
+    rogue = active_source / "notes" / "rogue.txt"
+    _write(rogue, "untracked drift before refusal\n")
+    fake_bin = _fake_tool_bin(
+        tmp_path,
+        "mv",
+        """
+        destination="${@: -1}"
+        if [[ "$destination" == *"/.hapax-untracked/notes/rogue.txt" ]]; then
+            echo forced untracked move failure >&2
+            exit 55
+        fi
+        """,
+    )
+
+    second = _run_activate(
+        tmp_path,
+        canonical,
+        env_overrides={"PATH": f"{fake_bin}:{os.environ['PATH']}"},
+    )
+
+    _assert_untracked_quarantine_failed(
+        second,
+        tmp_path,
+        message="untracked drift quarantine write failed before sweep",
+        stderr_fragment="failed to preserve untracked drift notes/rogue.txt",
+    )
+    assert rogue.read_text(encoding="utf-8") == "untracked drift before refusal\n"
+    receipt = _current_receipt(tmp_path)
+    assert receipt["source_hygiene"]["untracked_quarantine_path"] == ""
+
+
+def test_untracked_quarantine_marks_later_move_failure_partial(
+    tmp_path: Path,
+) -> None:
+    canonical, _origin, _new_sha = _make_repos(tmp_path)
+
+    first = _run_activate(tmp_path, canonical)
+    assert first.returncode == 0, first.stderr
+
+    active_source = tmp_path / "active-source"
+    first_rogue = active_source / "notes" / "alpha.txt"
+    second_rogue = active_source / "notes" / "zeta.txt"
+    _write(first_rogue, "first untracked drift before refusal\n")
+    _write(second_rogue, "second untracked drift before refusal\n")
+    fake_bin = _fake_tool_bin(
+        tmp_path,
+        "mv",
+        """
+        destination="${@: -1}"
+        if [[ "$destination" == *"/.hapax-untracked/notes/zeta.txt" ]]; then
+            echo forced later untracked move failure >&2
+            exit 59
+        fi
+        """,
+    )
+
+    second = _run_activate(
+        tmp_path,
+        canonical,
+        env_overrides={"PATH": f"{fake_bin}:{os.environ['PATH']}"},
+    )
+
+    assert second.returncode == 2
+    assert "failed to preserve untracked drift notes/zeta.txt" in second.stderr
+    assert "partial untracked quarantine payloads:" in second.stderr
+    assert not first_rogue.exists()
+    assert second_rogue.read_text(encoding="utf-8") == "second untracked drift before refusal\n"
+    receipt = _current_receipt(tmp_path)
+    hygiene = receipt["source_hygiene"]
+    assert hygiene["untracked_quarantine_count"] == 1
+    assert hygiene["untracked_quarantine_status"] == "partial"
+    quarantine_path = Path(hygiene["untracked_quarantine_path"])
+    assert (quarantine_path / "notes" / "alpha.txt").read_text(encoding="utf-8") == (
+        "first untracked drift before refusal\n"
+    )
+    assert not (quarantine_path / "notes" / "zeta.txt").exists()
 
 
 def test_activation_links_canonical_runtime_profiles_without_quarantining_them(
@@ -419,6 +3888,34 @@ def test_activation_links_canonical_runtime_profiles_without_quarantining_them(
     assert receipt["status"] == "no_op"
     assert receipt["source_hygiene"]["runtime_profile_link_count"] == 0
     assert receipt["source_hygiene"]["untracked_quarantine_count"] == 0
+    assert receipt["source_hygiene"]["untracked_quarantine_path"] == ""
+    assert receipt["source_hygiene"]["untracked_quarantine_status"] == "skipped_runtime_profile"
+    assert not (tmp_path / "state" / "drift-quarantine").exists()
+
+
+def test_activation_leaves_untracked_path_empty_when_only_runtime_profile_is_skipped(
+    tmp_path: Path,
+) -> None:
+    canonical, _origin, new_sha = _make_repos(tmp_path)
+    runtime_profile = canonical / "profiles" / "health-history.jsonl"
+    _write(runtime_profile, '{"status":"healthy"}\n')
+
+    first = _run_activate(tmp_path, canonical)
+    assert first.returncode == 0, first.stderr
+    active_source = tmp_path / "active-source"
+    _write(active_source / "README.md", "tracked drift before reset\n")
+
+    second = _run_activate(tmp_path, canonical)
+
+    assert second.returncode == 0, second.stderr
+    assert _git(active_source, "rev-parse", "HEAD") == new_sha
+    receipt = _current_receipt(tmp_path)
+    hygiene = receipt["source_hygiene"]
+    assert hygiene["tracked_quarantine_count"] == 1
+    assert "drift-quarantine" in hygiene["tracked_quarantine_path"]
+    assert hygiene["untracked_quarantine_count"] == 0
+    assert hygiene["untracked_quarantine_path"] == ""
+    assert hygiene["untracked_quarantine_status"] == "skipped_runtime_profile"
 
 
 def test_failed_deploy_writes_failed_receipt_without_last_success(tmp_path: Path) -> None:
