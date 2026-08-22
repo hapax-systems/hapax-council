@@ -2424,6 +2424,52 @@ def test_activation_quarantines_staged_file_to_directory_replacement_before_rese
     ) == "replacement directory payload\n"
 
 
+def test_tracked_quarantine_refuses_symlink_ancestor_escape_before_reset(
+    tmp_path: Path,
+) -> None:
+    canonical, _origin, _new_sha = _make_repos(tmp_path)
+
+    first = _run_activate(tmp_path, canonical)
+    assert first.returncode == 0, first.stderr
+
+    active_source = tmp_path / "active-source"
+    (active_source / "README.md").unlink()
+    _write(active_source / "README.md" / "child.txt", "staged child payload\n")
+    _git(active_source, "add", "-A", "README.md")
+    assert set(
+        _git(active_source, "diff", "--cached", "--no-renames", "--name-only").splitlines()
+    ) == {"README.md", "README.md/child.txt"}
+
+    shutil.rmtree(active_source / "README.md")
+    (active_source / "README.md").symlink_to("../..")
+    _write(tmp_path / "state" / "child.txt", "source payload through symlink\n")
+
+    second = _run_activate(tmp_path, canonical)
+
+    assert second.returncode == 2
+    assert "refusing to write tracked drift README.md/child.txt through symlink ancestor" in (
+        second.stderr
+    )
+    assert "partial tracked quarantine payloads:" in second.stderr
+    assert (active_source / "README.md").is_symlink()
+    assert os.readlink(active_source / "README.md") == "../.."
+    assert (tmp_path / "state" / "child.txt").read_text(encoding="utf-8") == (
+        "source payload through symlink\n"
+    )
+    receipt = _current_receipt(tmp_path)
+    hygiene = receipt["source_hygiene"]
+    assert receipt["status"] == "failed"
+    assert receipt["message"] == "tracked drift quarantine write failed before reset"
+    assert hygiene["tracked_quarantine_count"] == 1
+    assert hygiene["tracked_quarantine_status"] == "partial"
+    quarantine_path = Path(hygiene["tracked_quarantine_path"])
+    worktree_payload = quarantine_path / "worktree" / "README.md"
+    assert worktree_payload.is_symlink()
+    assert os.readlink(worktree_payload) == "../.."
+    assert not (quarantine_path.parent / "child.txt").exists()
+    assert not (quarantine_path / "worktree" / "README.md" / "child.txt").exists()
+
+
 def test_activation_quarantines_unstaged_file_to_directory_replacement_before_reset(
     tmp_path: Path,
 ) -> None:

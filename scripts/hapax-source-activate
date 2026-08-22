@@ -487,6 +487,56 @@ tracked_quarantine_fail_before_reset() {
     exit 2
 }
 
+tracked_quarantine_parent_has_symlink_ancestor() {
+    local payload_root="$1"
+    local rel="$2"
+    local parent_dir
+    local component
+    local current
+    local -a components
+
+    parent_dir="$(dirname -- "$rel")"
+    [[ "$parent_dir" == "." ]] && return 1
+
+    current="$payload_root"
+    IFS='/' read -r -a components <<< "$parent_dir"
+    for component in "${components[@]}"; do
+        [[ -z "$component" || "$component" == "." ]] && continue
+        current="$current/$component"
+        if [[ -L "$current" ]]; then
+            return 0
+        fi
+    done
+    return 1
+}
+
+ensure_tracked_quarantine_parent_dir() {
+    local source_root="$1"
+    local payload_root="$2"
+    local rel="$3"
+    local payload_label="$4"
+    local parent_dir
+
+    if tracked_quarantine_parent_has_symlink_ancestor "$payload_root" "$rel"; then
+        tracked_quarantine_fail_before_reset \
+            "$source_root" \
+            "tracked drift quarantine write failed before reset" \
+            "refusing to write $payload_label $rel through symlink ancestor under $payload_root; refusing candidate reset" \
+            "inspect $payload_root for symlink ancestors and retry after preserving or removing the unsafe quarantine destination"
+    fi
+    parent_dir="$(dirname -- "$rel")"
+    if ! mkdir -p "$payload_root/$parent_dir"; then
+        return 1
+    fi
+    if tracked_quarantine_parent_has_symlink_ancestor "$payload_root" "$rel"; then
+        tracked_quarantine_fail_before_reset \
+            "$source_root" \
+            "tracked drift quarantine write failed before reset" \
+            "refusing to write $payload_label $rel through symlink ancestor under $payload_root; refusing candidate reset" \
+            "inspect $payload_root for symlink ancestors and retry after preserving or removing the unsafe quarantine destination"
+    fi
+}
+
 untracked_quarantine_fail_before_sweep() {
     local source_root="$1"
     local receipt_message="$2"
@@ -696,7 +746,7 @@ quarantine_tracked_candidate_before_reset() {
     for rel in "${tracked_paths[@]}"; do
         [[ -z "$rel" ]] && continue
         if [[ -e "$source_root/$rel" || -L "$source_root/$rel" ]]; then
-            if ! mkdir -p "$tracked_root/$(dirname -- "$rel")" \
+            if ! ensure_tracked_quarantine_parent_dir "$source_root" "$tracked_root" "$rel" "tracked drift" \
                 || ! cp -a "$source_root/$rel" "$tracked_root/$rel"; then
                 tracked_quarantine_fail_before_reset \
                     "$source_root" \
@@ -705,7 +755,7 @@ quarantine_tracked_candidate_before_reset() {
                     "inspect $quarantined_tracked_path permissions and retry after restoring quarantine writes"
             fi
         else
-            if ! mkdir -p "$deleted_root/$(dirname -- "$rel")" \
+            if ! ensure_tracked_quarantine_parent_dir "$source_root" "$deleted_root" "$rel" "tracked deletion marker" \
                 || ! printf 'deleted tracked path: %s\n' "$rel" > "$deleted_root/$rel"; then
                 tracked_quarantine_fail_before_reset \
                     "$source_root" \
@@ -716,7 +766,7 @@ quarantine_tracked_candidate_before_reset() {
         fi
         if [[ -n "${cached_path_set[$rel]+x}" ]]; then
             if [[ -n "${index_entry_set[$rel]+x}" ]]; then
-                if ! mkdir -p "$index_root/$(dirname -- "$rel")" \
+                if ! ensure_tracked_quarantine_parent_dir "$source_root" "$index_root" "$rel" "tracked index drift" \
                     || ! GIT_LITERAL_PATHSPECS=1 git -C "$source_root" checkout-index --force --prefix="$index_root/" -- "$rel"; then
                     tracked_quarantine_fail_before_reset \
                         "$source_root" \
@@ -725,7 +775,7 @@ quarantine_tracked_candidate_before_reset() {
                         "inspect $quarantined_tracked_path permissions and retry after restoring quarantine writes"
                 fi
             else
-                if ! mkdir -p "$index_deleted_root/$(dirname -- "$rel")" \
+                if ! ensure_tracked_quarantine_parent_dir "$source_root" "$index_deleted_root" "$rel" "tracked index deletion marker" \
                     || ! printf 'deleted staged path: %s\n' "$rel" > "$index_deleted_root/$rel"; then
                     tracked_quarantine_fail_before_reset \
                         "$source_root" \
