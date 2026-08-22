@@ -19,7 +19,7 @@ if str(SCRIPTS) not in sys.path:
 
 import executor_contract as ec  # noqa: E402
 
-ALL_PLATFORMS = {"agy", "api", "glmcp", "claude", "codex", "vibe", "local_tool"}
+ALL_PLATFORMS = {"agy", "api", "glmcp", "claude", "codex", "vibe", "local_tool", "grok"}
 
 
 def test_registry_covers_all_runtimes() -> None:
@@ -53,6 +53,7 @@ def test_supports_route_rejects_unlaunchable_routes() -> None:
     assert not ec.supports_route("antigrav", "headless")
     assert not ec.supports_route("vibe", "interactive")
     assert not ec.supports_route("api", "headless")  # receipt metadata, not a launcher
+    assert not ec.supports_route("grok", "headless")  # required leaf, not launchable yet
     assert not ec.supports_route("codex", "interactive")  # tmux pane, not a dispatch route
     assert not ec.supports_route("unknown", "headless")
     # receipt-only is a dispatch validation mode, not an executor capability.
