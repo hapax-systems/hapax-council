@@ -3388,15 +3388,15 @@ def test_noreplace_fallback_crash_between_link_and_unlink_restores_absence(
     src.write_bytes(b"postimage")
     fd = os.open(tmp_path, os.O_RDONLY | os.O_DIRECTORY)
 
-    real_link = os.link
+    real_rename = os.rename
 
     def crash_before_drop(src_name: str, dst_name: str, **kwargs: object) -> None:
-        if str(dst_name).endswith(".drop-link"):
+        if str(dst_name).endswith(".drop-src"):
             raise RuntimeError("crash after link")
-        real_link(src_name, dst_name, **kwargs)
+        real_rename(src_name, dst_name, **kwargs)
 
     try:
-        with mock.patch.object(cp.os, "link", side_effect=crash_before_drop):
+        with mock.patch.object(cp.os, "rename", side_effect=crash_before_drop):
             with pytest.raises(RuntimeError, match="crash after link"):
                 cp._renameat2_noreplace_fallback(fd, "scratch", fd, "created.md")
         assert dst.read_bytes() == b"postimage"
@@ -3457,11 +3457,10 @@ def test_drop_extra_link_puts_post_check_racer_back(tmp_path: Path) -> None:
     src.write_bytes(b"before-image")
     os.link(src, peer)
     fd = os.open(tmp_path, os.O_RDONLY | os.O_DIRECTORY)
-    real_link = os.link
+    real_rename = os.rename
 
-    def steal_source_after_park_link(src_name: str, dst_name: str, **kwargs: object) -> None:
-        real_link(src_name, dst_name, **kwargs)
-        if str(dst_name).endswith(".drop-link"):
+    def steal_source_then_rename(src_name: str, dst_name: str, **kwargs: object) -> None:
+        if str(dst_name).endswith(".drop-src"):
             os.unlink(src_name, dir_fd=fd)
             racer = os.open(
                 src_name,
@@ -3473,9 +3472,10 @@ def test_drop_extra_link_puts_post_check_racer_back(tmp_path: Path) -> None:
                 os.write(racer, b"racer")
             finally:
                 os.close(racer)
+        real_rename(src_name, dst_name, **kwargs)
 
     try:
-        with mock.patch.object(cp.os, "link", side_effect=steal_source_after_park_link):
+        with mock.patch.object(cp.os, "rename", side_effect=steal_source_then_rename):
             with pytest.raises(OSError) as raised:
                 cp._drop_extra_link(fd, "note.md", "peer")
         assert raised.value.errno == errno.EEXIST
@@ -3502,6 +3502,50 @@ def test_cas_rollback_create_nlink2_unlinks_dest(tmp_path: Path) -> None:
     assert cp._cas_rollback(projection, scratch) is True
     assert not dst.exists()
     assert src.read_bytes() == b"postimage"
+
+
+def test_cas_rollback_create_nlink3_drops_all_extras(tmp_path: Path) -> None:
+    src = tmp_path / "scratch"
+    dst = tmp_path / "created.md"
+    drop = tmp_path / cp._drop_src_name("scratch")
+    src.write_bytes(b"postimage")
+    os.link(src, dst)
+    os.link(src, drop)
+    projection = cp.FileProjection.from_snapshot(
+        dst,
+        before=None,
+        before_mode=None,
+        after=b"postimage",
+        after_mode=stat.S_IMODE(dst.stat().st_mode),
+    )
+    scratch = cp._scratch_for(projection, "txn-create-nlink3", 0)
+    scratch = dataclasses.replace(scratch, path=src)
+    assert cp._cas_rollback(projection, scratch) is True
+    assert not dst.exists()
+    assert not drop.exists()
+    assert src.read_bytes() == b"postimage"
+
+
+def test_cas_rollback_delete_nlink3_drops_all_extras(tmp_path: Path) -> None:
+    dest = tmp_path / "note.md"
+    parked = tmp_path / "parked"
+    drop = tmp_path / cp._drop_link_name("note.md")
+    dest.write_bytes(b"before-image")
+    os.link(dest, parked)
+    os.link(dest, drop)
+    projection = cp.FileProjection.from_snapshot(
+        dest,
+        before=b"before-image",
+        before_mode=stat.S_IMODE(dest.stat().st_mode),
+        after=None,
+        after_mode=None,
+    )
+    scratch = cp._scratch_for(projection, "txn-del-nlink3", 0)
+    scratch = dataclasses.replace(scratch, path=parked)
+    assert cp._cas_rollback(projection, scratch) is True
+    assert dest.read_bytes() == b"before-image"
+    assert not parked.exists()
+    assert not drop.exists()
 
 
 def test_cas_rollback_update_drop_link_third_name_keeps_preimage(tmp_path: Path) -> None:
@@ -3639,15 +3683,15 @@ def test_noreplace_delete_crash_between_link_and_unlink_keeps_dest(
     dest.write_bytes(b"before-image")
     fd = os.open(tmp_path, os.O_RDONLY | os.O_DIRECTORY)
 
-    real_link = os.link
+    real_rename = os.rename
 
     def crash_before_drop(src_name: str, dst_name: str, **kwargs: object) -> None:
-        if str(dst_name).endswith(".drop-link"):
+        if str(dst_name).endswith(".drop-src"):
             raise RuntimeError("crash after link")
-        real_link(src_name, dst_name, **kwargs)
+        real_rename(src_name, dst_name, **kwargs)
 
     try:
-        with mock.patch.object(cp.os, "link", side_effect=crash_before_drop):
+        with mock.patch.object(cp.os, "rename", side_effect=crash_before_drop):
             with pytest.raises(RuntimeError, match="crash after link"):
                 cp._renameat2_noreplace_fallback(fd, "note.md", fd, "parked")
         assert dest.read_bytes() == b"before-image"
@@ -3678,15 +3722,15 @@ def test_exchange_fallback_crash_after_parking_dest_keeps_preimage(
     dst.write_bytes(b"before-image")
     fd = os.open(tmp_path, os.O_RDONLY | os.O_DIRECTORY)
 
-    real_link = os.link
+    real_rename = os.rename
 
     def crash_before_dest_drop(src_name: str, dst_name: str, **kwargs: object) -> None:
-        if str(dst_name).endswith(".drop-link"):
+        if str(dst_name).endswith(".drop-src"):
             raise RuntimeError("crash before dest unlink")
-        real_link(src_name, dst_name, **kwargs)
+        real_rename(src_name, dst_name, **kwargs)
 
     try:
-        with mock.patch.object(cp.os, "link", side_effect=crash_before_dest_drop):
+        with mock.patch.object(cp.os, "rename", side_effect=crash_before_dest_drop):
             with pytest.raises(RuntimeError, match="crash before dest unlink"):
                 cp._renameat2_exchange_fallback(fd, "scratch", fd, "note.md")
         assert dst.read_bytes() == b"before-image"
@@ -3723,7 +3767,7 @@ def test_exchange_fallback_crash_between_steps_preserves_both_payloads(
     def crash_after_displace(name: str, **kwargs: object) -> None:
         calls["n"] += 1
         real_unlink(name, **kwargs)
-        if calls["n"] == 2:
+        if calls["n"] == 1:
             raise RuntimeError("crash after displace")
 
     try:
@@ -3757,18 +3801,18 @@ def test_exchange_fallback_crash_after_link_before_unlink_restores_preimage(
     displaced = tmp_path / cp._exchange_displaced_name("note.md")
     fd = os.open(tmp_path, os.O_RDONLY | os.O_DIRECTORY)
 
-    real_link = os.link
+    real_rename = os.rename
     calls = {"n": 0}
 
     def crash_before_src_drop(src_name: str, dst_name: str, **kwargs: object) -> None:
-        if str(dst_name).endswith(".drop-link"):
+        if str(dst_name).endswith(".drop-src"):
             calls["n"] += 1
             if calls["n"] == 2:
                 raise RuntimeError("crash before unlink")
-        real_link(src_name, dst_name, **kwargs)
+        real_rename(src_name, dst_name, **kwargs)
 
     try:
-        with mock.patch.object(cp.os, "link", side_effect=crash_before_src_drop):
+        with mock.patch.object(cp.os, "rename", side_effect=crash_before_src_drop):
             with pytest.raises(RuntimeError, match="crash before unlink"):
                 cp._renameat2_exchange_fallback(fd, "scratch", fd, "note.md")
         assert dst.read_bytes() == b"after-image"
@@ -3806,7 +3850,7 @@ def test_exchange_fallback_crash_after_step_two_restores_preimage(
     def crash_after_src_unlink(name: str, **kwargs: object) -> None:
         calls["n"] += 1
         real_unlink(name, **kwargs)
-        if calls["n"] == 4:
+        if calls["n"] == 2:
             raise RuntimeError("crash after dest installed")
 
     try:

@@ -6,7 +6,9 @@
 # claim state byte-identical.
 # Rec 1 (#4586): --retroactive skips AC/receipt/disposition; merge is evidence.
 # Gate 0B killswitch (HAPAX_GATE0B_CLAIM_PUBLICATION_OFF=1) HOLDs close.
-# Recheck: uv run pytest tests/shared/test_sdlc_close.py tests/scripts/test_hapax_fsm_smoke.py
+# Killswitch release: unset HAPAX_GATE0B_CLAIM_PUBLICATION_OFF, cc-claim the
+# same task so an admitted publication exists, then cc-close.
+# Recheck: uv run pytest tests/shared/test_sdlc_close.py tests/shared/test_coord_projection.py tests/scripts/test_hapax_fsm_smoke.py tests/scripts/test_cc_close_isolated_runner.py
 #
 # Dispatch-staleness markers (must remain literal substrings of this file):
 #   frontmatter_task_id

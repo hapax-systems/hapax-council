@@ -763,7 +763,8 @@ def test_retroactive_done_gate_skips_paperwork_and_child_checkers(
         ("artifact-disposition", "skipped_retroactive"),
         ("pr-merge", "pass"),
     ]
-    assert evidence[0].command == ("rec-1", "operator-2026-08-20", "pr-4586")
+    assert evidence[0].command == ("cc-close", "--retroactive", "--pr", "4483")
+    assert evidence[0].reason_code == "rec_1_retroactive_merge_is_evidence"
     assert len(calls) == 1
     assert calls[0][-3:] == [str(snapshot.path), "--pr", "4483"]
     assert all("artifact-disposition" not in part for cmd in calls for part in cmd)

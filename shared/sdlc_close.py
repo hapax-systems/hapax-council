@@ -293,6 +293,7 @@ class CloseGateEvidence:
     final_status: str
     observed_at: str
     command: tuple[str, ...] = ()
+    reason_code: str = ""
     returncode: int | None = None
     stdout_sha256: str | None = None
     stderr_sha256: str | None = None
@@ -307,6 +308,7 @@ class CloseGateEvidence:
             "note_sha256": self.note_sha256,
             "observed_at": self.observed_at,
             "outcome": self.outcome,
+            "reason_code": self.reason_code,
             "returncode": self.returncode,
             "schema": "hapax.terminal-close-gate-evidence.v1",
             "stderr_sha256": self.stderr_sha256,
@@ -427,7 +429,8 @@ def _default_done_gate_runner(
                 authority_case=authority_case,
                 final_status=final_status,
                 observed_at=observed_at,
-                command=("rec-1", "operator-2026-08-20", "pr-4586"),
+                command=("cc-close", "--retroactive", "--pr", str(pr)),
+                reason_code="rec_1_retroactive_merge_is_evidence",
             )
             for gate in (
                 "acceptance-criteria",
