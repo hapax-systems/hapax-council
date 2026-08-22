@@ -765,6 +765,7 @@ def test_retroactive_done_gate_skips_paperwork_and_child_checkers(
     ]
     assert evidence[0].command == ("cc-close", "--retroactive", "--pr", "4483")
     assert evidence[0].reason_code == "rec_1_retroactive_merge_is_evidence"
+    assert evidence[0].authority_ref.endswith("#rec-1")
     assert len(calls) == 1
     assert calls[0][-3:] == [str(snapshot.path), "--pr", "4483"]
     assert all("artifact-disposition" not in part for cmd in calls for part in cmd)

@@ -294,6 +294,7 @@ class CloseGateEvidence:
     observed_at: str
     command: tuple[str, ...] = ()
     reason_code: str = ""
+    authority_ref: str = ""
     returncode: int | None = None
     stdout_sha256: str | None = None
     stderr_sha256: str | None = None
@@ -301,6 +302,7 @@ class CloseGateEvidence:
     def to_record(self) -> dict[str, object]:
         return {
             "authority_case": self.authority_case,
+            "authority_ref": self.authority_ref,
             "command": list(self.command),
             "final_status": self.final_status,
             "gate": self.gate,
@@ -431,6 +433,7 @@ def _default_done_gate_runner(
                 observed_at=observed_at,
                 command=("cc-close", "--retroactive", "--pr", str(pr)),
                 reason_code="rec_1_retroactive_merge_is_evidence",
+                authority_ref=("hapax/gate0b-slice2-cc-close-reland-design-2026-08-20.md#rec-1"),
             )
             for gate in (
                 "acceptance-criteria",

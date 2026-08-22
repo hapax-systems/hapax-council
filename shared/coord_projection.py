@@ -3020,6 +3020,7 @@ def _validate_terminal_close_admission(
     relay_vector = admission.get("relay_vector")
     gate_keys = {
         "authority_case",
+        "authority_ref",
         "command",
         "final_status",
         "gate",
@@ -3716,6 +3717,28 @@ def _hardlink_extra_names(live_name: str, scratch_name: str) -> tuple[str, ...]:
     return tuple(name for name in names if name != live_name)
 
 
+def _read_regular_bytes(
+    dir_fd: int,
+    name: str,
+    max_bytes: int,
+) -> tuple[bytes, os.stat_result] | None:
+    try:
+        info = os.stat(name, dir_fd=dir_fd, follow_symlinks=False)
+    except FileNotFoundError:
+        return None
+    if not stat.S_ISREG(info.st_mode) or info.st_size > max_bytes:
+        return None
+    fd = os.open(
+        name,
+        os.O_RDONLY | os.O_CLOEXEC | os.O_NOFOLLOW | os.O_NOATIME,
+        dir_fd=dir_fd,
+    )
+    try:
+        return os.read(fd, info.st_size), info
+    finally:
+        os.close(fd)
+
+
 def _drop_extra_link(
     dir_fd: int,
     src_name: str,
@@ -3723,24 +3746,33 @@ def _drop_extra_link(
 ) -> None:
     """Drop `src_name` only if it still names the extra link of `peer_name`.
 
-    Move the source aside with rename. If a racer replaced the source
-    pathname, the parked name is that replacement: move it back and HOLD.
-    Unlink-by-name after an inode check is not used — that window deletes
-    the replacement while the nlink-1 check still passes.
+    Occupy the deterministic parking name with link (EEXIST, no clobber).
+    Then rename the source to a unique sibling. If that sibling is not the
+    peer inode, it is a racer: put it back and HOLD.
     """
     if not _same_regular_inode(dir_fd, src_name, peer_name):
         raise OSError(errno.EEXIST, "destination raced after link", src_name)
     parked = _drop_src_name(src_name)
-    try:
-        os.stat(parked, dir_fd=dir_fd, follow_symlinks=False)
-    except FileNotFoundError:
-        pass
-    else:
-        raise OSError(errno.EEXIST, "drop-src name occupied", parked)
-    os.rename(src_name, parked, src_dir_fd=dir_fd, dst_dir_fd=dir_fd)
+    os.link(
+        src_name,
+        parked,
+        src_dir_fd=dir_fd,
+        dst_dir_fd=dir_fd,
+        follow_symlinks=False,
+    )
     if not _same_regular_inode(dir_fd, parked, peer_name):
-        os.rename(parked, src_name, src_dir_fd=dir_fd, dst_dir_fd=dir_fd)
+        try:
+            os.unlink(parked, dir_fd=dir_fd)
+        except FileNotFoundError:
+            pass
+        raise OSError(errno.EEXIST, "drop-src raced", parked)
+    unique = f"{parked}.{os.getpid()}.{secrets.token_hex(4)}"
+    os.rename(src_name, unique, src_dir_fd=dir_fd, dst_dir_fd=dir_fd)
+    if not _same_regular_inode(dir_fd, unique, parked):
+        os.rename(unique, src_name, src_dir_fd=dir_fd, dst_dir_fd=dir_fd)
+        os.unlink(parked, dir_fd=dir_fd)
         raise OSError(errno.EEXIST, "source raced before drop", src_name)
+    os.unlink(unique, dir_fd=dir_fd)
     os.unlink(parked, dir_fd=dir_fd)
 
 
@@ -4169,6 +4201,8 @@ def _cas_rollback(projection: FileProjection, scratch: _ProjectionScratch) -> bo
                 and dest_stat.st_nlink >= 2
                 and extras
             ):
+                if not _same_regular_inode(dir_fd, name, extras[0]):
+                    return False
                 os.unlink(name, dir_fd=dir_fd)
                 scratch_present = scratch.path.name in extras
                 for extra in extras:
@@ -4196,6 +4230,27 @@ def _cas_rollback(projection: FileProjection, scratch: _ProjectionScratch) -> bo
                 for extra in _hardlink_extra_names(name, scratch.path.name)
                 if _same_regular_inode(dir_fd, name, extra)
             ]
+            if dest_stat is None and projection.before is not None:
+                for extra in _hardlink_extra_names(name, scratch.path.name):
+                    read = _read_regular_bytes(dir_fd, extra, _MAX_LIFECYCLE_BLOB_BYTES)
+                    if read is None or read[0] != projection.before:
+                        continue
+                    try:
+                        os.link(
+                            extra,
+                            name,
+                            src_dir_fd=dir_fd,
+                            dst_dir_fd=dir_fd,
+                            follow_symlinks=False,
+                        )
+                    except OSError as exc:
+                        if exc.errno == errno.EEXIST:
+                            return False
+                        raise
+                    if extra != scratch.path.name:
+                        os.unlink(extra, dir_fd=dir_fd)
+                    os.fsync(dir_fd)
+                    return True
             if (
                 dest_stat is not None
                 and stat.S_ISREG(dest_stat.st_mode)
@@ -4203,6 +4258,8 @@ def _cas_rollback(projection: FileProjection, scratch: _ProjectionScratch) -> bo
                 and extras
             ):
                 for extra in extras:
+                    if not _same_regular_inode(dir_fd, name, extra):
+                        continue
                     os.unlink(extra, dir_fd=dir_fd)
                 os.fsync(dir_fd)
                 return True
@@ -4318,23 +4375,21 @@ def _cas_rollback(projection: FileProjection, scratch: _ProjectionScratch) -> bo
                         return False
                     os.unlink(displaced_name, dir_fd=dir_fd)
                     os.fsync(dir_fd)
-        current = _entry_state_at(
-            dir_fd,
-            name,
-            max_bytes=_MAX_LIFECYCLE_BLOB_BYTES,
-        )
+        def _state_or_none(entry_name: str):
+            try:
+                return _entry_state_at(
+                    dir_fd,
+                    entry_name,
+                    max_bytes=_MAX_LIFECYCLE_BLOB_BYTES,
+                )
+            except LifecycleTransitionError:
+                return None
+
+        current = _state_or_none(name)
         if scratch.kind == "update":
             displaced_name = _exchange_displaced_name(name)
-            displaced = _entry_state_at(
-                dir_fd,
-                displaced_name,
-                max_bytes=_MAX_LIFECYCLE_BLOB_BYTES,
-            )
-            scratch_state = _entry_state_at(
-                dir_fd,
-                scratch.path.name,
-                max_bytes=_MAX_LIFECYCLE_BLOB_BYTES,
-            )
+            displaced = _state_or_none(displaced_name)
+            scratch_state = _state_or_none(scratch.path.name)
             if (
                 _entry_matches(current, projection.after, projection.after_mode)
                 and _entry_matches(displaced, projection.before, projection.before_mode)
@@ -4355,16 +4410,19 @@ def _cas_rollback(projection: FileProjection, scratch: _ProjectionScratch) -> bo
             return True
         if not _entry_matches(current, projection.after, projection.after_mode):
             if scratch.kind == "update" and current is None:
-                displaced_name = _exchange_displaced_name(name)
-                displaced = _entry_state_at(
-                    dir_fd,
-                    displaced_name,
-                    max_bytes=_MAX_LIFECYCLE_BLOB_BYTES,
+                candidates = (
+                    _exchange_displaced_name(name),
+                    _drop_src_name(name),
+                    _drop_src_name(scratch.path.name),
+                    _drop_link_name(name),
                 )
-                if _entry_matches(displaced, projection.before, projection.before_mode):
+                for candidate in candidates:
+                    read = _read_regular_bytes(dir_fd, candidate, _MAX_LIFECYCLE_BLOB_BYTES)
+                    if read is None or read[0] != projection.before:
+                        continue
                     try:
                         os.link(
-                            displaced_name,
+                            candidate,
                             name,
                             src_dir_fd=dir_fd,
                             dst_dir_fd=dir_fd,
@@ -4374,7 +4432,11 @@ def _cas_rollback(projection: FileProjection, scratch: _ProjectionScratch) -> bo
                         if exc.errno == errno.EEXIST:
                             return False
                         raise
-                    os.unlink(displaced_name, dir_fd=dir_fd)
+                    for extra in _hardlink_extra_names(name, scratch.path.name):
+                        if extra == name:
+                            continue
+                        if _same_regular_inode(dir_fd, name, extra):
+                            os.unlink(extra, dir_fd=dir_fd)
                     os.fsync(dir_fd)
                     return True
             return False
