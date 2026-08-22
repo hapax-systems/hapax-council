@@ -1,13 +1,10 @@
 [Unit]
 # Hapax-Install-Scope: system
-Description=Reapply live Hapax OOM scores
+Description=Retired Hapax OOM score timer (must remain disabled)
 Documentation=https://github.com/hapax-systems/hapax-council/blob/main/systemd/README.md
 
 [Timer]
-OnBootSec=30s
-OnUnitActiveSec=30s
+OnBootSec=120s
+OnUnitActiveSec=120s
 AccuracySec=1s
 Unit=hapax-oom-score-enforce.service
-
-[Install]
-WantedBy=timers.target

@@ -6,6 +6,10 @@ import fcntl
 import hashlib
 import json
 import os
+import pwd
+import re
+import shlex
+import signal
 import subprocess
 import time
 from pathlib import Path
@@ -29,20 +33,40 @@ RECOVERY_BUNDLE_SOURCE_FILES = {
     "shared/p0_incident_intake.py": "def main():\n    return 0\n",
 }
 P0_USER_OOM_DROPINS = {
-    relative: (
-        "[Service]\nOOMScoreAdjust=100\n"
-        f"ExecStartPost=-/usr/local/bin/hapax-oom-score-trigger {unit}\n"
-    )
-    for relative, unit in {
+    relative: "[Service]\nOOMScoreAdjust=100\n"
+    for relative in {
         "systemd/units/pipewire.service.d/oom-protect.conf": "pipewire.service",
         "systemd/units/pipewire-pulse.service.d/oom-protect.conf": "pipewire-pulse.service",
         "systemd/units/wireplumber.service.d/oom-protect.conf": "wireplumber.service",
         "systemd/units/hapax-daimonion.service.d/oom-protect.conf": "hapax-daimonion.service",
         "systemd/units/studio-compositor.service.d/oom-protect.conf": "studio-compositor.service",
         "systemd/units/hapax-imagination.service.d/oom-protect.conf": "hapax-imagination.service",
-    }.items()
+    }
+}
+P0_PROTECTED_APP_UNITS = {
+    relative: (REPO_ROOT / relative).read_text(encoding="utf-8")
+    for relative in (
+        "systemd/units/hapax-daimonion.service",
+        "systemd/units/studio-compositor.service",
+        "systemd/units/hapax-imagination.service",
+    )
+}
+OOM_HOST_POLICY_FILES = {
+    relative: (REPO_ROOT / relative).read_text(encoding="utf-8")
+    for relative in (
+        "config/root-required/oom-host-profiles.tsv",
+        "config/root-required/oom-host-policy/appendix/app.slice.conf",
+        "config/root-required/oom-host-policy/appendix/user-1000.slice.conf",
+        "config/root-required/oom-host-policy/appendix/user@1000.service.conf",
+        "config/root-required/oom-host-policy/appendix/zram-generator.conf",
+        "config/root-required/oom-host-policy/podium/app.slice.conf",
+        "config/root-required/oom-host-policy/podium/user-1000.slice.conf",
+        "config/root-required/oom-host-policy/podium/user@1000.service.conf",
+        "config/root-required/oom-host-policy/podium/zram-generator.conf",
+    )
 }
 P0_OOM_AUDIT_FILES = {
+    **OOM_HOST_POLICY_FILES,
     "scripts/hapax-oom-policy-audit": "#!/usr/bin/env python3\n",
     "scripts/hapax-root-required-deploy-audit": "#!/usr/bin/env bash\n",
     "systemd/units/hapax-oom-policy-audit.service": (
@@ -57,12 +81,8 @@ P0_OOM_AUDIT_FILES = {
         "OnUnitActiveSec=5min\nUnit=hapax-oom-policy-audit.service\n"
     ),
     "systemd/units/hapax-root-required-deploy-audit.service": (
-        "[Unit]\nDescription=Root deploy audit\nOnFailure=notify-failure@%n.service\n"
-        "[Service]\nType=oneshot\n"
-        "TimeoutStartSec=2min\n"
-        "Environment=PATH=/usr/local/sbin:/usr/local/bin:/usr/bin:/bin\n"
-        "ExecStart=/usr/local/sbin/hapax-root-required-deploy-audit\n"
-    ),
+        REPO_ROOT / "systemd/units/hapax-root-required-deploy-audit.service"
+    ).read_text(encoding="utf-8"),
     "systemd/units/hapax-root-required-deploy-audit.timer": (
         "[Unit]\nDescription=Root deploy audit timer\n[Timer]\nOnBootSec=3min\n"
         "OnUnitActiveSec=10min\nUnit=hapax-root-required-deploy-audit.service\n"
@@ -73,12 +93,15 @@ ROOT_AUDIT_SOURCE_FILES = {
     "config/root-required/apcupsd-power-alerts.files": APCUPSD_PACKAGE_MANIFEST,
     "scripts/install-p0-oom-containment": "#!/usr/bin/env bash\n",
     "config/root-required/hapax-oom-score-enforce.sudoers": (
-        "hapax ALL=(root) NOPASSWD: /usr/local/sbin/hapax-oom-score-enforce --apply-unit pipewire.service\n"
+        "Cmnd_Alias HAPAX_ROOT_REQUIRED_AUDIT = /usr/bin/visudo -cf "
+        "/etc/sudoers.d/hapax-oom-score-enforce\n"
+        "hapax ALL=(root) NOPASSWD:NOSETENV: HAPAX_ROOT_REQUIRED_AUDIT\n"
     ),
     "scripts/install-apcupsd-power-alerts": "#!/usr/bin/env bash\n",
     "scripts/hapax-oom-score-enforce": "#!/usr/bin/env bash\necho enforcer\n",
     "scripts/hapax-oom-score-trigger": "#!/usr/bin/env bash\necho trigger\n",
     "scripts/hapax-root-failure-intake": "#!/usr/bin/env bash\necho root failure\n",
+    **P0_PROTECTED_APP_UNITS,
     **P0_OOM_AUDIT_FILES,
     "config/earlyoom/default": 'EARLYOOM_ARGS="--ignore recovery"\n',
     "systemd/system/system.slice.d/oom-containment.conf": (
@@ -119,13 +142,12 @@ ROOT_AUDIT_SOURCE_FILES = {
     ),
     "systemd/units/hapax-oom-score-enforce.service": (
         "[Unit]\n# Hapax-Install-Scope: system\n"
-        "OnFailure=hapax-root-failure-intake@%n.service\n"
-        "[Service]\nType=oneshot\nTimeoutStartSec=25s\n"
+        "[Service]\nType=oneshot\nTimeoutStartSec=5s\n"
         "ExecStart=/usr/local/sbin/hapax-oom-score-enforce --apply\n"
     ),
     "systemd/units/hapax-oom-score-enforce.timer": (
-        "[Unit]\n# Hapax-Install-Scope: system\n[Timer]\nOnBootSec=30s\n"
-        "OnUnitActiveSec=30s\nUnit=hapax-oom-score-enforce.service\n"
+        "[Unit]\n# Hapax-Install-Scope: system\n[Timer]\nOnBootSec=120s\n"
+        "OnUnitActiveSec=120s\nUnit=hapax-oom-score-enforce.service\n"
     ),
     "systemd/units/app.slice.d/oom-containment.conf": (
         "[Slice]\nMemoryHigh=72G\nMemoryMax=88G\nMemorySwapMax=8G\nMemoryLow=16G\nMemoryMin=8G\n"
@@ -149,6 +171,11 @@ ROOT_AUDIT_SOURCE_FILES = {
 }
 
 
+@pytest.fixture(autouse=True)
+def _isolate_root_required_mutation_paths(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("HAPAX_ROOT_REQUIRED_ISOLATED_TEST_ROOT", str(tmp_path))
+
+
 def _coverage(paths: list[str]) -> subprocess.CompletedProcess[str]:
     return subprocess.run(
         [str(SCRIPT), "--report-coverage-stdin"],
@@ -168,6 +195,231 @@ def _git(repo: Path, *args: str) -> str:
         check=True,
     )
     return result.stdout.strip()
+
+
+def _flock_identities(expected_lock: Path) -> set[tuple[int, int, int]]:
+    expected = expected_lock.stat()
+    identities = {(os.major(expected.st_dev), os.minor(expected.st_dev), expected.st_ino)}
+    try:
+        mount_lines = Path("/proc/self/mountinfo").read_text(encoding="utf-8").splitlines()
+    except OSError:
+        return identities
+
+    resolved = expected_lock.resolve()
+    best_depth = -1
+    best_device: tuple[int, int] | None = None
+    for line in mount_lines:
+        fields = line.partition(" - ")[0].split()
+        if len(fields) < 5:
+            continue
+        mountpoint = Path(
+            re.sub(
+                r"\\([0-7]{3})",
+                lambda match: chr(int(match.group(1), 8)),
+                fields[4],
+            )
+        )
+        if resolved != mountpoint and not resolved.is_relative_to(mountpoint):
+            continue
+        try:
+            major_raw, minor_raw = fields[2].split(":", 1)
+            device = (int(major_raw), int(minor_raw))
+        except ValueError:
+            continue
+        depth = len(mountpoint.parts)
+        if depth > best_depth:
+            best_depth = depth
+            best_device = device
+    if best_device is not None:
+        identities.add((*best_device, expected.st_ino))
+    return identities
+
+
+def _wait_for_flock_block(
+    process: subprocess.Popen[str], expected_lock: Path, *, timeout: float = 10
+) -> None:
+    expected_identities = _flock_identities(expected_lock)
+    deadline = time.monotonic() + timeout
+    while process.poll() is None and time.monotonic() < deadline:
+        descendants = {process.pid}
+        changed = True
+        while changed:
+            changed = False
+            for status_path in Path("/proc").glob("[0-9]*/status"):
+                try:
+                    fields = dict(
+                        line.split(":", 1) for line in status_path.read_text().splitlines()
+                    )
+                    pid = int(status_path.parent.name)
+                    ppid = int(fields["PPid"].strip())
+                except (OSError, KeyError, ValueError):
+                    continue
+                if ppid in descendants and pid not in descendants:
+                    descendants.add(pid)
+                    changed = True
+        try:
+            lock_lines = Path("/proc/locks").read_text(encoding="utf-8").splitlines()
+        except OSError:
+            lock_lines = []
+        for line in lock_lines:
+            fields = line.split()
+            if len(fields) < 7 or fields[1:3] != ["->", "FLOCK"]:
+                continue
+            try:
+                waiter_pid = int(fields[5])
+                major_raw, minor_raw, inode_raw = fields[6].split(":", 2)
+                identity = (int(major_raw, 16), int(minor_raw, 16), int(inode_raw))
+            except (ValueError, IndexError):
+                continue
+            if waiter_pid in descendants and identity in expected_identities:
+                return
+        time.sleep(0.01)
+    raise AssertionError(f"child did not reach the deterministic flock wait on {expected_lock}")
+
+
+def test_wait_for_flock_block_requires_expected_inode(tmp_path: Path) -> None:
+    expected = tmp_path / "expected.lock"
+    unrelated = tmp_path / "unrelated.lock"
+    expected.write_text("", encoding="utf-8")
+    unrelated.write_text("", encoding="utf-8")
+    blocker_fd = os.open(unrelated, os.O_RDWR)
+    fcntl.flock(blocker_fd, fcntl.LOCK_EX)
+    process = subprocess.Popen(
+        [
+            "/usr/bin/python3",
+            "-I",
+            "-S",
+            "-c",
+            (
+                "import fcntl, os, sys; "
+                "fd = os.open(sys.argv[1], os.O_RDWR); "
+                "fcntl.flock(fd, fcntl.LOCK_EX)"
+            ),
+            str(unrelated),
+        ],
+        text=True,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        start_new_session=True,
+    )
+    try:
+        _wait_for_flock_block(process, unrelated)
+        with pytest.raises(AssertionError, match="deterministic flock wait"):
+            _wait_for_flock_block(process, expected, timeout=0.2)
+    finally:
+        fcntl.flock(blocker_fd, fcntl.LOCK_UN)
+        os.close(blocker_fd)
+        if process.poll() is None:
+            _kill_process_group(process)
+
+
+def _kill_process_group(process: subprocess.Popen[str]) -> None:
+    try:
+        os.killpg(process.pid, signal.SIGKILL)
+    except ProcessLookupError:
+        return
+    process.wait(timeout=5)
+
+
+def _fake_git_with_show_failure(tmp_path: Path) -> Path:
+    bin_dir = tmp_path / "git-bin"
+    bin_dir.mkdir()
+    fake = bin_dir / "git"
+    fake.write_text(
+        "#!/usr/bin/env bash\n"
+        "set -euo pipefail\n"
+        "matched=0\n"
+        "previous=\n"
+        'for arg in "$@"; do\n'
+        '    if [ "$previous" = show ] && [ "$arg" = "$HAPAX_FAIL_GIT_SHOW_OBJECT" ]; then\n'
+        "        matched=1\n"
+        "        break\n"
+        "    fi\n"
+        '    previous="$arg"\n'
+        "done\n"
+        'if [ "$matched" = 1 ]; then\n'
+        "    count=0\n"
+        '    if [ -f "$HAPAX_FAIL_GIT_SHOW_COUNT_FILE" ]; then\n'
+        '        read -r count < "$HAPAX_FAIL_GIT_SHOW_COUNT_FILE"\n'
+        "    fi\n"
+        "    count=$((count + 1))\n"
+        '    printf \'%s\\n\' "$count" > "$HAPAX_FAIL_GIT_SHOW_COUNT_FILE"\n'
+        '    if [ "$count" -eq "$HAPAX_FAIL_GIT_SHOW_ON_COUNT" ]; then\n'
+        "        exit 86\n"
+        "    fi\n"
+        "fi\n"
+        'exec /usr/bin/git "$@"\n',
+        encoding="utf-8",
+    )
+    fake.chmod(0o755)
+    return bin_dir
+
+
+def _fake_git_with_ls_tree_failure(tmp_path: Path) -> Path:
+    bin_dir = tmp_path / "git-bin"
+    bin_dir.mkdir()
+    fake = bin_dir / "git"
+    fake.write_text(
+        "#!/usr/bin/env bash\n"
+        "set -euo pipefail\n"
+        "matched=0\n"
+        "subcommand=\n"
+        'for arg in "$@"; do\n'
+        '    if [ "$arg" = ls-tree ]; then\n'
+        "        subcommand=ls-tree\n"
+        '    elif [ "$subcommand" = ls-tree ] && [ "$arg" = "$HAPAX_FAIL_GIT_LS_TREE_PATH" ]; then\n'
+        "        matched=1\n"
+        "    fi\n"
+        "done\n"
+        'if [ "$matched" = 1 ]; then\n'
+        "    count=0\n"
+        '    if [ -f "$HAPAX_FAIL_GIT_LS_TREE_COUNT_FILE" ]; then\n'
+        '        read -r count < "$HAPAX_FAIL_GIT_LS_TREE_COUNT_FILE"\n'
+        "    fi\n"
+        "    count=$((count + 1))\n"
+        '    printf \'%s\\n\' "$count" > "$HAPAX_FAIL_GIT_LS_TREE_COUNT_FILE"\n'
+        '    if [ "$count" -eq "$HAPAX_FAIL_GIT_LS_TREE_ON_COUNT" ]; then\n'
+        "        exit 86\n"
+        "    fi\n"
+        "fi\n"
+        'exec /usr/bin/git "$@"\n',
+        encoding="utf-8",
+    )
+    fake.chmod(0o755)
+    return bin_dir
+
+
+def _post_merge_script_with_system_dir(
+    tmp_path: Path,
+    system_dir: Path,
+    *,
+    expected_uid: int | None = None,
+) -> Path:
+    staged = tmp_path / "hapax-post-merge-deploy"
+    source = SCRIPT.read_text(encoding="utf-8")
+    production_assignment = 'SYSTEMD_SYSTEM_DIR="/etc/systemd/system"'
+    production_uid = "SYSTEMD_SYSTEM_EXPECTED_UID=0"
+    production_trust_root = 'SYSTEMD_SYSTEM_TRUST_ROOT="/"'
+    assert source.count(production_assignment) == 1
+    assert source.count(production_uid) == 1
+    assert source.count(production_trust_root) == 1
+    staged.write_text(
+        source.replace(
+            production_assignment,
+            f"SYSTEMD_SYSTEM_DIR={shlex.quote(str(system_dir))}",
+        )
+        .replace(
+            production_uid,
+            f"SYSTEMD_SYSTEM_EXPECTED_UID={os.geteuid() if expected_uid is None else expected_uid}",
+        )
+        .replace(
+            production_trust_root,
+            f"SYSTEMD_SYSTEM_TRUST_ROOT={shlex.quote(str(system_dir))}",
+        ),
+        encoding="utf-8",
+    )
+    staged.chmod(0o755)
+    return staged
 
 
 def _repo_with_merge_commit(tmp_path: Path) -> tuple[Path, str]:
@@ -321,13 +573,15 @@ def _write_installed_recovery_bundle(dest: Path, source_ref: str, files: dict[st
 
 def _effective_safety_unit_show_script(system_dir: Path, user_dir: Path) -> str:
     lines: list[str] = []
+    canonical_home = pwd.getpwuid(os.getuid()).pw_dir
+    canonical_runtime = f"/run/user/{os.getuid()}"
     services = (
         (
             "system",
             "hapax-oom-score-enforce.service",
             system_dir / "hapax-oom-score-enforce.service",
             "/usr/local/sbin/hapax-oom-score-enforce --apply",
-            "hapax-root-failure-intake@hapax-oom-score-enforce.service.service",
+            "",
         ),
         (
             "user",
@@ -340,6 +594,9 @@ def _effective_safety_unit_show_script(system_dir: Path, user_dir: Path) -> str:
             "user",
             "hapax-root-required-deploy-audit.service",
             user_dir / "hapax-root-required-deploy-audit.service",
+            "/usr/bin/env -i "
+            f"HOME={canonical_home} XDG_RUNTIME_DIR={canonical_runtime} "
+            "PATH=/usr/local/sbin:/usr/local/bin:/usr/bin:/bin LANG=C LC_ALL=C "
             "/usr/local/sbin/hapax-root-required-deploy-audit",
             "notify-failure@hapax-root-required-deploy-audit.service.service",
         ),
@@ -349,6 +606,7 @@ def _effective_safety_unit_show_script(system_dir: Path, user_dir: Path) -> str:
         properties = {
             "FragmentPath": str(fragment),
             "DropInPaths": "",
+            "NeedDaemonReload": "no",
             "ExecStart": f"{{ path={exec_start.split()[0]} ; argv[]={exec_start} ; }}",
             "OnFailure": on_failure,
             "User": "",
@@ -358,33 +616,14 @@ def _effective_safety_unit_show_script(system_dir: Path, user_dir: Path) -> str:
                 f'if [ "$*" = "{prefix} {unit} -p {prop} --value" ]; '
                 f"then printf '%s\\n' '{value}'; fi\n"
             )
-    failure_unit = "hapax-root-failure-intake@hapax-oom-score-enforce.service.service"
-    failure_properties = {
-        "FragmentPath": str(system_dir / "hapax-root-failure-intake@.service"),
-        "DropInPaths": "",
-        "ExecStart": (
-            "{ path=/usr/local/sbin/hapax-root-failure-intake ; "
-            "argv[]=/usr/local/sbin/hapax-root-failure-intake "
-            "hapax-oom-score-enforce.service ; }"
-        ),
-        "User": "hapax",
-        "Environment": "PATH=/usr/local/sbin:/usr/local/bin:/usr/bin:/bin",
-        "StartLimitIntervalUSec": "1h",
-        "StartLimitBurst": "1",
-    }
-    for prop, value in failure_properties.items():
-        lines.append(
-            f'if [ "$*" = "show {failure_unit} -p {prop} --value" ]; '
-            f"then printf '%s\\n' '{value}'; fi\n"
-        )
     timers = (
         (
             "system",
             "hapax-oom-score-enforce.timer",
             system_dir / "hapax-oom-score-enforce.timer",
             "hapax-oom-score-enforce.service",
-            "30s",
-            "30s",
+            "120s",
+            "120s",
         ),
         (
             "user",
@@ -408,6 +647,7 @@ def _effective_safety_unit_show_script(system_dir: Path, user_dir: Path) -> str:
         properties = {
             "FragmentPath": str(fragment),
             "DropInPaths": "",
+            "NeedDaemonReload": "no",
             "Unit": target,
             "TimersMonotonic": (f"OnBootUSec={on_boot} OnUnitActiveUSec={on_active}"),
         }
@@ -425,6 +665,7 @@ def _root_audit_env(
     drift_rel: str | None = None,
     missing_source_rel: str | None = None,
 ) -> dict[str, str]:
+    tmp_path.mkdir(parents=True, exist_ok=True)
     source_root = tmp_path / "source"
     installed_source = tmp_path / "installed-source"
     root_defer = tmp_path / "no-deferrals"
@@ -440,6 +681,8 @@ def _root_audit_env(
     trigger_dest = tmp_path / "bin" / "hapax-oom-score-trigger"
     sudoers_dest = tmp_path / "etc" / "sudoers.d" / "hapax-oom-score-enforce"
     sudoers_reference_dest = tmp_path / "share" / "hapax-oom-score-enforce.sudoers"
+    profile_table_dest = tmp_path / "share" / "oom-host-profiles.tsv"
+    zram_generator_dest = tmp_path / "etc" / "systemd" / "zram-generator.conf"
     root_failure_dest = tmp_path / "sbin" / "hapax-root-failure-intake"
     oom_audit_dest = tmp_path / "sbin" / "hapax-oom-policy-audit"
     root_audit_dest = tmp_path / "sbin" / "hapax-root-required-deploy-audit"
@@ -448,7 +691,9 @@ def _root_audit_env(
     fake_systemctl = tmp_path / "root-audit-systemctl"
     fake_systemctl.write_text(
         "#!/usr/bin/env bash\n"
-        'if [ "$*" = "show hapax-oom-score-enforce.service -p TimeoutStartUSec --value" ]; then printf "25s\\n"; fi\n'
+        'if [ "$*" = "is-enabled hapax-oom-score-enforce.timer" ]; then printf "static\\n"; exit 0; fi\n'
+        'if [ "$*" = "is-active --quiet hapax-oom-score-enforce.timer" ]; then exit 1; fi\n'
+        'if [ "$*" = "show hapax-oom-score-enforce.service -p TimeoutStartUSec --value" ]; then printf "5s\\n"; fi\n'
         'if [ "$*" = "--user show hapax-oom-policy-audit.service -p TimeoutStartUSec --value" ]; then printf "2min\\n"; fi\n'
         'if [ "$*" = "--user show hapax-root-required-deploy-audit.service -p TimeoutStartUSec --value" ]; then printf "2min\\n"; fi\n'
         'if [ "$*" = "--user show hapax-oom-policy-audit.service -p Environment --value" ]; then printf "PATH=/usr/local/sbin:/usr/local/bin:/usr/bin:/bin\\n"; fi\n'
@@ -485,6 +730,7 @@ def _root_audit_env(
         "scripts/hapax-oom-score-enforce": enforcer_dest,
         "scripts/hapax-oom-score-trigger": trigger_dest,
         "config/root-required/hapax-oom-score-enforce.sudoers": sudoers_dest,
+        "config/root-required/oom-host-profiles.tsv": profile_table_dest,
         "scripts/hapax-root-failure-intake": root_failure_dest,
         "scripts/hapax-oom-policy-audit": oom_audit_dest,
         "scripts/hapax-root-required-deploy-audit": root_audit_dest,
@@ -541,6 +787,21 @@ def _root_audit_env(
                 dest.chmod(0o755)
             elif rel == "config/root-required/hapax-oom-score-enforce.sudoers":
                 dest.chmod(0o440)
+    selected_profile_dests = {
+        "config/root-required/oom-host-policy/appendix/app.slice.conf": (
+            user_dir / "app.slice.d" / "oom-containment.conf"
+        ),
+        "config/root-required/oom-host-policy/appendix/user-1000.slice.conf": (
+            system_dir / "user-1000.slice.d" / "oom-containment.conf"
+        ),
+        "config/root-required/oom-host-policy/appendix/user@1000.service.conf": (
+            system_dir / "user@1000.service.d" / "oom.conf"
+        ),
+        "config/root-required/oom-host-policy/appendix/zram-generator.conf": (zram_generator_dest),
+    }
+    for rel, dest in selected_profile_dests.items():
+        dest.parent.mkdir(parents=True, exist_ok=True)
+        dest.write_text(ROOT_AUDIT_SOURCE_FILES[rel], encoding="utf-8")
     sudoers_reference_dest.parent.mkdir(parents=True, exist_ok=True)
     sudoers_reference_dest.write_text(
         ROOT_AUDIT_SOURCE_FILES["config/root-required/hapax-oom-score-enforce.sudoers"],
@@ -574,6 +835,8 @@ def _root_audit_env(
         "HAPAX_OOM_TRIGGER_DEST": str(trigger_dest),
         "HAPAX_OOM_SUDOERS_DEST": str(sudoers_dest),
         "HAPAX_OOM_SUDOERS_REFERENCE_DEST": str(sudoers_reference_dest),
+        "HAPAX_OOM_PROFILE_TABLE_DEST": str(profile_table_dest),
+        "HAPAX_OOM_ZRAM_GENERATOR_DEST": str(zram_generator_dest),
         "HAPAX_OOM_SUDOERS_OWNER_UID": str(os.getuid()),
         "HAPAX_OOM_SUDOERS_OWNER_GID": str(os.getgid()),
         "HAPAX_ROOT_FAILURE_INTAKE_DEST": str(root_failure_dest),
@@ -593,6 +856,9 @@ def _root_audit_env(
         "HAPAX_ROOT_AUDIT_APCACCESS": str(fake_apcaccess),
         "HAPAX_ROOT_AUDIT_SUDO": str(fake_sudo),
         "HAPAX_ROOT_AUDIT_VISUDO": str(fake_visudo),
+        "HAPAX_ROOT_AUDIT_TEST_MODE": "1",
+        "HAPAX_ROOT_AUDIT_HOSTNAME": "hapax-appendix",
+        "HAPAX_ROOT_AUDIT_MEMTOTAL_KIB": str(60 * 1024**2),
         "HAPAX_TEST_ROOT_AUDIT_SUDO_CALLS": str(sudo_calls),
         "HAPAX_POST_MERGE_ROOT_DEFER_DIR": str(root_defer),
     }
@@ -770,6 +1036,64 @@ def _fake_systemctl(tmp_path: Path) -> tuple[Path, Path]:
     return bin_dir, calls
 
 
+def _fake_systemctl_with_system_witness(tmp_path: Path, system_dir: Path) -> tuple[Path, Path]:
+    calls = tmp_path / "systemctl-calls.txt"
+    bin_dir = tmp_path / "bin"
+    bin_dir.mkdir()
+    fake = bin_dir / "systemctl"
+    fake.write_text(
+        f"""#!/usr/bin/env bash
+set -euo pipefail
+printf '%s\n' "$*" >> "$HAPAX_SYSTEMCTL_CALLS"
+if [ "${{1:-}}" = show ]; then
+    unit="${{2:?}}"
+    path="{system_dir}/$unit"
+    case "$*" in
+        *" --property=LoadState,FragmentPath,DropInPaths,NeedDaemonReload --no-pager")
+            if [ -f "$path" ]; then
+                printf 'LoadState=loaded\nFragmentPath=%s\n' "$path"
+            else
+                printf 'LoadState=not-found\nFragmentPath=\n'
+            fi
+            printf 'DropInPaths='
+            separator=
+            for dropin in "$path.d"/*.conf; do
+                [ -f "$dropin" ] || continue
+                printf '%s%s' "$separator" "$dropin"
+                separator=' '
+            done
+            printf '\n'
+            marker="${{HAPAX_SYSTEMCTL_NEEDS_RELOAD_MARKER:-}}"
+            if [ -n "$marker" ] && [ -e "$marker" ]; then
+                printf 'NeedDaemonReload=yes\n'
+            else
+                printf 'NeedDaemonReload=no\n'
+            fi
+            ;;
+        *" -p LoadState --value") [ -f "$path" ] && printf 'loaded\n' || printf 'not-found\n' ;;
+        *" -p FragmentPath --value") [ ! -f "$path" ] || printf '%s\n' "$path" ;;
+        *" -p NeedDaemonReload --value")
+            marker="${{HAPAX_SYSTEMCTL_NEEDS_RELOAD_MARKER:-}}"
+            if [ -n "$marker" ] && [ -e "$marker" ]; then printf 'yes\n'; else printf 'no\n'; fi
+            ;;
+        *) exit 97 ;;
+    esac
+elif [ "${{1:-}}" = --user ] && [ "${{2:-}}" = show ]; then
+    case "$*" in
+        *" --property=LoadState,FragmentPath,ActiveState,SubState --no-pager")
+            printf 'LoadState=not-found\nFragmentPath=\nActiveState=inactive\nSubState=dead\n'
+            ;;
+        *) exit 97 ;;
+    esac
+fi
+exit 0
+""",
+        encoding="utf-8",
+    )
+    fake.chmod(0o755)
+    return bin_dir, calls
+
+
 def _fake_systemctl_with_inactive_coord(tmp_path: Path) -> tuple[Path, Path]:
     calls = tmp_path / "systemctl-calls.txt"
     bin_dir = tmp_path / "bin"
@@ -870,6 +1194,46 @@ def test_dry_run_writes_bounded_post_merge_trace(tmp_path: Path) -> None:
     assert records[-1]["avsdlc"]["runtime_media_witness_groups"] == ["hapax_scripts"]
 
 
+def test_trace_writer_takes_its_own_lock_for_dry_runs() -> None:
+    source = SCRIPT.read_text(encoding="utf-8")
+    trace_writer = source.split("record_post_merge_trace() {", 1)[1].split(
+        "\n}\n\ntrace_on_exit()", 1
+    )[0]
+
+    assert "fcntl.flock" in trace_writer
+    assert "LOCK_EX" in trace_writer
+
+
+def test_deploy_ignores_repository_replace_refs(tmp_path: Path) -> None:
+    path = "systemd/uncovered/replacement-hidden.conf"
+    repo, sha = _repo_with_linear_commit(tmp_path, {path: "hidden by replacement\n"})
+    parent = _git(repo, "rev-parse", f"{sha}^1")
+    replacement = _git(
+        repo,
+        "commit-tree",
+        f"{parent}^{{tree}}",
+        "-p",
+        parent,
+        "-m",
+        "replacement hides changed path",
+    )
+    _git(repo, "replace", sha, replacement)
+    assert _git(repo, "diff", "--name-only", f"{sha}^1", sha) == ""
+
+    env = {**os.environ, "REPO": str(repo)}
+    env.pop("GIT_NO_REPLACE_OBJECTS", None)
+    result = subprocess.run(
+        [str(SCRIPT), "--report-coverage", sha],
+        text=True,
+        capture_output=True,
+        check=False,
+        env=env,
+    )
+
+    assert result.returncode == 1
+    assert path in result.stderr
+
+
 def test_systemd_coverage_includes_dropins_presets_and_source_overrides() -> None:
     result = _coverage(
         [
@@ -903,7 +1267,7 @@ def test_systemd_coverage_includes_dropins_presets_and_source_overrides() -> Non
     assert "ok: all systemd/** paths" in result.stdout
 
 
-def test_p0_oom_deploy_uses_installer_without_restart_or_bulk_deferral_clear(
+def test_p0_oom_deploy_validates_and_stages_desired_evidence_without_runtime_mutation(
     tmp_path: Path,
 ) -> None:
     installer_calls = tmp_path / "oom-installer-calls.txt"
@@ -920,7 +1284,8 @@ def test_p0_oom_deploy_uses_installer_without_restart_or_bulk_deferral_clear(
         future_manifest_path: 'FUTURE_EARLYOOM_POLICY="enabled"\n',
         "scripts/install-p0-oom-containment": installer_body,
         "config/root-required/hapax-oom-score-enforce.sudoers": (
-            "hapax ALL=(root) NOPASSWD: /usr/local/sbin/hapax-oom-score-enforce --apply-unit pipewire.service\n"
+            "Cmnd_Alias HAPAX_ROOT_REQUIRED_AUDIT = /usr/bin/visudo -cf /etc/sudoers.d/hapax-oom-score-enforce\n"
+            "hapax ALL=(root) NOPASSWD:NOSETENV: HAPAX_ROOT_REQUIRED_AUDIT\n"
         ),
         "scripts/hapax-oom-score-enforce": "#!/usr/bin/env bash\nexit 0\n",
         "scripts/hapax-oom-score-trigger": "#!/usr/bin/env bash\nexit 0\n",
@@ -964,7 +1329,7 @@ def test_p0_oom_deploy_uses_installer_without_restart_or_bulk_deferral_clear(
             "[Unit]\n# Hapax-Install-Scope: system\n[Service]\nType=oneshot\nExecStart=/usr/local/sbin/hapax-oom-score-enforce --apply\n"
         ),
         "systemd/units/hapax-oom-score-enforce.timer": (
-            "[Unit]\n# Hapax-Install-Scope: system\n[Timer]\nOnBootSec=30s\nOnUnitActiveSec=30s\n"
+            "[Unit]\n# Hapax-Install-Scope: system\n[Timer]\nOnBootSec=120s\nOnUnitActiveSec=120s\n"
         ),
         **P0_OOM_AUDIT_FILES,
         "systemd/units/app.slice.d/oom-containment.conf": (
@@ -975,13 +1340,35 @@ def test_p0_oom_deploy_uses_installer_without_restart_or_bulk_deferral_clear(
             "MemoryLow=2G\nMemoryMin=1G\n"
         ),
         **P0_USER_OOM_DROPINS,
+        **P0_PROTECTED_APP_UNITS,
     }
     repo, sha = _repo_with_linear_commit(tmp_path, files)
+    hostile_python = tmp_path / "hostile-python"
+    hostile_python.mkdir()
+    (hostile_python / "sitecustomize.py").write_text(
+        "import os\n"
+        "import re\n"
+        "\n"
+        "_original_write = os.write\n"
+        "\n"
+        "def _substitute_sha(fd, payload):\n"
+        "    if re.fullmatch(rb'[0-9a-f]{40}\\n', payload):\n"
+        "        payload = b'f' * 40 + b'\\n'\n"
+        "    return _original_write(fd, payload)\n"
+        "\n"
+        "os.write = _substitute_sha\n",
+        encoding="utf-8",
+    )
     home = tmp_path / "home"
     bin_dir, systemctl_calls = _fake_systemctl(tmp_path)
     trace_path = tmp_path / "traces" / "post-merge-traces.jsonl"
     defer_dir = tmp_path / "root-required"
     installed_source = tmp_path / "root-state" / "current-source"
+    forged_receipt = (
+        home / ".local/state/hapax/root-required/installed-receipts/oom-containment.sha"
+    )
+    forged_receipt.parent.mkdir(parents=True)
+    forged_receipt.write_text(f"{sha}\n", encoding="utf-8")
     stale_deferral = defer_dir / "old-sha" / "oom-containment"
     stale_deferral.mkdir(parents=True)
     (stale_deferral / "RUNBOOK.txt").write_text("old deferred install\n", encoding="utf-8")
@@ -995,6 +1382,7 @@ def test_p0_oom_deploy_uses_installer_without_restart_or_bulk_deferral_clear(
         "HAPAX_POST_MERGE_TRACE_PATH": str(trace_path),
         "HAPAX_POST_MERGE_ROOT_DEFER_DIR": str(defer_dir),
         "HAPAX_ROOT_REQUIRED_INSTALLED_SOURCE_ROOT": str(installed_source),
+        "PYTHONPATH": str(hostile_python),
     }
 
     result = subprocess.run(
@@ -1006,7 +1394,26 @@ def test_p0_oom_deploy_uses_installer_without_restart_or_bulk_deferral_clear(
     )
 
     assert result.returncode == 0, result.stderr
-    assert "--install --verify-live" in installer_calls.read_text(encoding="utf-8")
+    installer_args = installer_calls.read_text(encoding="utf-8")
+    assert "--check --no-runtime" in installer_args
+    assert "--install" not in installer_args
+    assert "--verify-live" not in installer_args
+    deferred = defer_dir / sha / "oom-containment"
+    assert deferred.is_dir(), "a same-UID installed receipt must not suppress desired evidence"
+    assert (deferred / ".hapax-root-required-package-sha").read_text(
+        encoding="utf-8"
+    ).strip() == sha
+    desired_receipt = home / ".local/state/hapax/root-required/desired-receipts/oom-containment.sha"
+    assert desired_receipt.read_text(encoding="utf-8").strip() == sha
+    cursor = tmp_path / "traces/last-deployed-sha"
+    assert cursor.read_text(encoding="utf-8").strip() == sha
+    runbook = (deferred / "RUNBOOK.txt").read_text(encoding="utf-8")
+    assert "non-authoritative desired-state evidence" in runbook
+    assert "runtime-authorized root-broker" in runbook
+    assert "does not replace, stop, or otherwise reconcile an already installed" in runbook
+    assert "historical mutating semantics" in runbook
+    assert "sudo -v" not in runbook
+    assert "--install/--verify-live" in runbook
     assert stale_deferral.exists(), (
         "only an explicit staged RUNBOOK invocation may drain a deferral"
     )
@@ -1018,21 +1425,315 @@ def test_p0_oom_deploy_uses_installer_without_restart_or_bulk_deferral_clear(
     record = json.loads(trace_path.read_text(encoding="utf-8").splitlines()[-1])
     assert set(record["deploy_groups"]["oom_containment"]) == set(files)
     assert record["deploy_groups"]["systemd_dropins"] == []
+    assert record["status"] == "completed_with_runtime_deferral"
+    assert record["manual_deploy_needed"] is True
+    assert record["manual_deploy_executed"] is False
+    assert record["runtime_deferred"] == [f"oom-containment:{sha}"]
+    assert record["avsdlc"]["runtime_media_witness_required"] is False
+    assert record["avsdlc"]["runtime_media_witness_groups"] == []
+    assert "no manual deploys needed" not in result.stdout
 
 
-def test_root_packages_install_apcupsd_before_oom_recovery_verification(tmp_path: Path) -> None:
-    order = tmp_path / "install-order"
-    apcupsd_ready = tmp_path / "apcupsd-ready"
+def test_p0_oom_staging_rejects_non_normalized_manifest_path_before_receipt(
+    tmp_path: Path,
+) -> None:
+    manifest = (
+        "config/root-required/oom-containment.files\n"
+        "scripts/install-p0-oom-containment\n"
+        "scripts/../README.md\n"
+    )
+    repo, sha = _repo_with_linear_commit(
+        tmp_path,
+        {
+            "config/root-required/oom-containment.files": manifest,
+            "scripts/install-p0-oom-containment": "#!/usr/bin/env bash\nexit 0\n",
+            "README.md": "must not be staged through a non-normalized alias\n",
+        },
+    )
+    home = tmp_path / "home"
+
+    result = subprocess.run(
+        [str(SCRIPT), sha],
+        text=True,
+        capture_output=True,
+        check=False,
+        env={
+            **os.environ,
+            "HOME": str(home),
+            "REPO": str(repo),
+            "HAPAX_POST_MERGE_TRACE_PATH": str(tmp_path / "trace.jsonl"),
+        },
+    )
+
+    assert result.returncode == 2
+    assert "malformed root-required manifest entry" in result.stderr
+    assert not (
+        home / ".local/state/hapax/root-required/desired-receipts/oom-containment.sha"
+    ).exists()
+
+
+@pytest.mark.parametrize(
+    ("failed_path", "failed_occurrence", "expected_error", "trace_expected"),
+    (
+        (
+            "config/root-required/oom-containment.files",
+            1,
+            "refusing package classification",
+            False,
+        ),
+        (
+            "config/root-required/oom-containment.files",
+            2,
+            "refusing to publish an incomplete stage",
+            True,
+        ),
+        (
+            "config/root-required/oom-containment.files",
+            3,
+            "refusing to publish an incomplete stage",
+            True,
+        ),
+        (
+            "scripts/install-p0-oom-containment",
+            1,
+            "refusing to publish an incomplete stage",
+            True,
+        ),
+    ),
+    ids=(
+        "classification-manifest-read",
+        "staging-manifest-read",
+        "manifest-payload-read",
+        "source-payload-read",
+    ),
+)
+def test_p0_oom_staging_git_read_failure_cannot_publish_package_state(
+    tmp_path: Path,
+    failed_path: str,
+    failed_occurrence: int,
+    expected_error: str,
+    trace_expected: bool,
+) -> None:
+    manifest_path = "config/root-required/oom-containment.files"
+    installer_path = "scripts/install-p0-oom-containment"
+    manifest = f"{manifest_path}\n{installer_path}\n"
+    repo, sha = _repo_with_linear_commit(
+        tmp_path,
+        {
+            manifest_path: manifest,
+            installer_path: (
+                "#!/usr/bin/env bash\nprintf 'called\\n' > \"$HAPAX_STAGE_INSTALLER_CALLS\"\n"
+            ),
+        },
+    )
+    home = tmp_path / "home"
+    temp_root = tmp_path / "stages"
+    temp_root.mkdir()
+    defer_root = tmp_path / "deferred"
+    trace_path = tmp_path / "traces" / "post-merge-traces.jsonl"
+    installer_calls = tmp_path / "installer-calls"
+    count_file = tmp_path / "failed-show-count"
+    bin_dir = _fake_git_with_show_failure(tmp_path)
+
+    result = subprocess.run(
+        [str(SCRIPT), sha],
+        text=True,
+        capture_output=True,
+        check=False,
+        env={
+            **os.environ,
+            "HOME": str(home),
+            "PATH": f"{bin_dir}:{os.environ['PATH']}",
+            "REPO": str(repo),
+            "TMPDIR": str(temp_root),
+            "HAPAX_POST_MERGE_TRACE_PATH": str(trace_path),
+            "HAPAX_POST_MERGE_ROOT_DEFER_DIR": str(defer_root),
+            "HAPAX_STAGE_INSTALLER_CALLS": str(installer_calls),
+            "HAPAX_FAIL_GIT_SHOW_OBJECT": f"{sha}:{failed_path}",
+            "HAPAX_FAIL_GIT_SHOW_COUNT_FILE": str(count_file),
+            "HAPAX_FAIL_GIT_SHOW_ON_COUNT": str(failed_occurrence),
+        },
+    )
+
+    assert result.returncode == 2, (result.stdout, result.stderr)
+    assert expected_error in result.stderr
+    assert not installer_calls.exists()
+    assert not defer_root.exists()
+    assert not (
+        home / ".local/state/hapax/root-required/desired-receipts/oom-containment.sha"
+    ).exists()
+    assert not (trace_path.parent / "last-deployed-sha").exists()
+    assert not list(temp_root.rglob(".hapax-root-required-package-sha"))
+    assert trace_path.exists() is trace_expected
+    if trace_expected:
+        record = json.loads(trace_path.read_text(encoding="utf-8").splitlines()[-1])
+        assert record["status"] == "failed"
+        assert record["exit_code"] == 2
+
+
+@pytest.mark.parametrize("preexisting_receipt", (False, True))
+def test_p0_oom_semantic_validation_precedes_desired_receipt_publication(
+    tmp_path: Path,
+    preexisting_receipt: bool,
+) -> None:
+    files = {
+        relative: (REPO_ROOT / relative).read_text(encoding="utf-8")
+        for relative in (
+            line for line in OOM_PACKAGE_MANIFEST.splitlines() if line and not line.startswith("#")
+        )
+    }
+    profile = "config/root-required/oom-host-profiles.tsv"
+    files[profile] = files[profile].replace(
+        "hapax-appendix\t59\t61",
+        "hapax-appendix\t59\t124",
+        1,
+    )
+    repo, sha = _repo_with_linear_commit(tmp_path, files)
+    home = tmp_path / "home"
+    receipt = home / ".local/state/hapax/root-required/desired-receipts/oom-containment.sha"
+    if preexisting_receipt:
+        receipt.parent.mkdir(parents=True)
+        receipt.write_text("preserve-this-invalid-sentinel\n", encoding="utf-8")
+
+    result = subprocess.run(
+        [str(SCRIPT), sha],
+        text=True,
+        capture_output=True,
+        check=False,
+        env={
+            **os.environ,
+            "HOME": str(home),
+            "REPO": str(repo),
+            "HAPAX_POST_MERGE_TRACE_PATH": str(tmp_path / "trace.jsonl"),
+            "HAPAX_POST_MERGE_ROOT_DEFER_DIR": str(tmp_path / "deferrals"),
+        },
+        timeout=30,
+    )
+
+    assert result.returncode == 1
+    assert "host profile intervals overlap" in result.stderr
+    if preexisting_receipt:
+        assert receipt.read_text(encoding="utf-8") == "preserve-this-invalid-sentinel\n"
+    else:
+        assert not receipt.exists()
+
+
+@pytest.mark.parametrize("installed_state", ("mask", "historical-file"))
+def test_historical_local_judge_change_is_always_runtime_deferred(
+    tmp_path: Path,
+    installed_state: str,
+) -> None:
+    package_files = {
+        relative: (REPO_ROOT / relative).read_text(encoding="utf-8")
+        for relative in (
+            line for line in OOM_PACKAGE_MANIFEST.splitlines() if line and not line.startswith("#")
+        )
+    }
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    _git(repo, "init", "-b", "main")
+    _git(repo, "config", "user.email", "trace-test@example.test")
+    _git(repo, "config", "user.name", "Trace Test")
+    for relative, body in package_files.items():
+        path = repo / relative
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(body, encoding="utf-8")
+        if body.startswith("#!"):
+            path.chmod(0o755)
+    manifest = repo / "config/root-required/oom-containment.files"
+    manifest.write_text(
+        OOM_PACKAGE_MANIFEST + "systemd/units/hapax-local-judge.service\n",
+        encoding="utf-8",
+    )
+    historical_unit = repo / "systemd/units/hapax-local-judge.service"
+    historical_unit.parent.mkdir(parents=True, exist_ok=True)
+    historical_unit.write_text(
+        "[Service]\nExecStart=/usr/bin/docker run --name hapax-local-judge mutable\n",
+        encoding="utf-8",
+    )
+    _git(repo, "add", ".")
+    _git(repo, "commit", "-m", "historical judge package")
+
+    manifest.write_text(OOM_PACKAGE_MANIFEST, encoding="utf-8")
+    historical_unit.unlink()
+    _git(repo, "add", "-A")
+    _git(repo, "commit", "-m", "retire historical judge source")
+    sha = _git(repo, "rev-parse", "HEAD")
+
+    home = tmp_path / "home"
+    installed = home / ".config/systemd/user/hapax-local-judge.service"
+    installed.parent.mkdir(parents=True)
+    if installed_state == "mask":
+        installed.symlink_to("/dev/null")
+    else:
+        installed.write_text("installed historical bytes must be preserved\n", encoding="utf-8")
+    before = os.lstat(installed)
+    dropin = installed.with_name(f"{installed.name}.d") / "override.conf"
+    dropin.parent.mkdir()
+    dropin.write_text("[Service]\nRestart=always\n", encoding="utf-8")
+    bin_dir, systemctl_calls = _fake_systemctl(tmp_path)
+    trace_path = tmp_path / "trace.jsonl"
+
+    result = subprocess.run(
+        [str(SCRIPT), sha],
+        text=True,
+        capture_output=True,
+        check=False,
+        env={
+            **os.environ,
+            "HOME": str(home),
+            "PATH": f"{bin_dir}:{os.environ['PATH']}",
+            "REPO": str(repo),
+            "HAPAX_SYSTEMCTL_CALLS": str(systemctl_calls),
+            "HAPAX_POST_MERGE_TRACE_PATH": str(trace_path),
+            "HAPAX_POST_MERGE_ROOT_DEFER_DIR": str(tmp_path / "deferrals"),
+        },
+        timeout=30,
+    )
+
+    assert result.returncode == 0, result.stderr
+    after = os.lstat(installed)
+    assert (after.st_dev, after.st_ino, after.st_mode) == (
+        before.st_dev,
+        before.st_ino,
+        before.st_mode,
+    )
+    if installed_state == "mask":
+        assert installed.is_symlink()
+        assert os.readlink(installed) == "/dev/null"
+    else:
+        assert installed.read_text(encoding="utf-8") == (
+            "installed historical bytes must be preserved\n"
+        )
+    assert dropin.read_text(encoding="utf-8") == "[Service]\nRestart=always\n"
+    calls = systemctl_calls.read_text(encoding="utf-8") if systemctl_calls.exists() else ""
+    assert "hapax-local-judge.service" not in calls
+    record = json.loads(trace_path.read_text(encoding="utf-8").splitlines()[-1])
+    assert record["deploy_groups"]["systemd_units"] == []
+    assert record["manual_deploy_needed"] is True
+    assert record["manual_deploy_executed"] is False
+    assert record["status"] == "completed_with_runtime_deferral"
+    assert set(record["runtime_deferred"]) == {
+        "local-judge-retirement:systemd/units/hapax-local-judge.service",
+        f"oom-containment:{sha}",
+    }
+    assert record["avsdlc"]["runtime_media_witness_required"] is False
+    assert "no manual deploys needed" not in result.stdout
+
+
+def test_root_packages_check_apcupsd_before_oom_source_validation(tmp_path: Path) -> None:
+    order = tmp_path / "source-check-order"
+    apcupsd_checked = tmp_path / "apcupsd-checked"
     apcupsd_installer = (
         "#!/usr/bin/env bash\n"
         "set -euo pipefail\n"
         'printf "apcupsd\\n" >> "$HAPAX_ROOT_PACKAGE_ORDER"\n'
-        'touch "$HAPAX_APCUPSD_READY_WITNESS"\n'
+        'touch "$HAPAX_APCUPSD_CHECKED_WITNESS"\n'
     )
     oom_installer = (
         "#!/usr/bin/env bash\n"
         "set -euo pipefail\n"
-        '[ -f "$HAPAX_APCUPSD_READY_WITNESS" ] || { echo "apcupsd inactive" >&2; exit 42; }\n'
+        '[ -f "$HAPAX_APCUPSD_CHECKED_WITNESS" ] || { echo "apcupsd unchecked" >&2; exit 42; }\n'
         'printf "oom\\n" >> "$HAPAX_ROOT_PACKAGE_ORDER"\n'
     )
     files = {
@@ -1058,7 +1759,7 @@ def test_root_packages_install_apcupsd_before_oom_recovery_verification(tmp_path
             "HOME": str(tmp_path / "home"),
             "REPO": str(repo),
             "HAPAX_ROOT_PACKAGE_ORDER": str(order),
-            "HAPAX_APCUPSD_READY_WITNESS": str(apcupsd_ready),
+            "HAPAX_APCUPSD_CHECKED_WITNESS": str(apcupsd_checked),
             "HAPAX_POST_MERGE_TRACE_PATH": str(tmp_path / "trace.jsonl"),
         },
     )
@@ -1218,12 +1919,13 @@ def test_post_merge_squash_equivalence_rejects_git_mode_drift(tmp_path: Path) ->
 def test_concurrent_same_sha_root_required_oom_deploy_stages_complete_deferral(
     tmp_path: Path,
 ) -> None:
-    installer_body = "#!/usr/bin/env bash\nsleep 0.2\nexit 77\n"
+    installer_body = "#!/usr/bin/env bash\nsleep 0.2\nexit 0\n"
     files = {
         "config/root-required/oom-containment.files": OOM_PACKAGE_MANIFEST,
         "scripts/install-p0-oom-containment": installer_body,
         "config/root-required/hapax-oom-score-enforce.sudoers": (
-            "hapax ALL=(root) NOPASSWD: /usr/local/sbin/hapax-oom-score-enforce --apply-unit pipewire.service\n"
+            "Cmnd_Alias HAPAX_ROOT_REQUIRED_AUDIT = /usr/bin/visudo -cf /etc/sudoers.d/hapax-oom-score-enforce\n"
+            "hapax ALL=(root) NOPASSWD:NOSETENV: HAPAX_ROOT_REQUIRED_AUDIT\n"
         ),
         "scripts/hapax-oom-score-enforce": "#!/usr/bin/env bash\nexit 0\n",
         "scripts/hapax-oom-score-trigger": "#!/usr/bin/env bash\nexit 0\n",
@@ -1267,7 +1969,7 @@ def test_concurrent_same_sha_root_required_oom_deploy_stages_complete_deferral(
             "[Unit]\n# Hapax-Install-Scope: system\n[Service]\nType=oneshot\nExecStart=/usr/local/sbin/hapax-oom-score-enforce --apply\n"
         ),
         "systemd/units/hapax-oom-score-enforce.timer": (
-            "[Unit]\n# Hapax-Install-Scope: system\n[Timer]\nOnBootSec=30s\nOnUnitActiveSec=30s\n"
+            "[Unit]\n# Hapax-Install-Scope: system\n[Timer]\nOnBootSec=120s\nOnUnitActiveSec=120s\n"
         ),
         **P0_OOM_AUDIT_FILES,
         "systemd/units/app.slice.d/oom-containment.conf": (
@@ -1278,6 +1980,7 @@ def test_concurrent_same_sha_root_required_oom_deploy_stages_complete_deferral(
             "MemoryLow=2G\nMemoryMin=1G\n"
         ),
         **P0_USER_OOM_DROPINS,
+        **P0_PROTECTED_APP_UNITS,
         "systemd/units/hapax-demo.service": (
             "[Unit]\nDescription=Demo\n\n[Service]\nType=oneshot\nExecStart=/bin/true\n"
         ),
@@ -1327,17 +2030,21 @@ def test_concurrent_same_sha_root_required_oom_deploy_stages_complete_deferral(
         assert (deferred / rel).read_bytes() == (repo / rel).read_bytes()
     assert not list((defer_dir / sha).glob(".oom-containment.tmp.*"))
     runbook = (deferred / "RUNBOOK.txt").read_text(encoding="utf-8")
-    assert "sudo -v" in runbook
+    assert "non-authoritative desired-state evidence" in runbook
+    assert "runtime-authorized root-broker" in runbook
+    assert "sudo -v" not in runbook
     assert "root shell" not in runbook
     assert "HAPAX_OOM_INSTALL_SUDO=" not in runbook
-    assert "HAPAX_ROOT_REQUIRED_DRAIN_DIR=" in runbook
-    assert f"HAPAX_ROOT_REQUIRED_PACKAGE_SHA={sha}" in runbook
-    assert "HAPAX_ROOT_REQUIRED_INSTALLED_SOURCE_ROOT=" in runbook
-    assert "HAPAX_ROOT_REQUIRED_INSTALLED_RECEIPT_ROOT=" in runbook
-    assert "HAPAX_ROOT_REQUIRED_DESIRED_RECEIPT_ROOT=" in runbook
-    assert "HAPAX_ROOT_REQUIRED_GIT_REPO=" in runbook
+    assert "HAPAX_ROOT_REQUIRED_DRAIN_DIR=" not in runbook
+    assert "HAPAX_ROOT_REQUIRED_PACKAGE_SHA=" not in runbook
+    assert "HAPAX_ROOT_REQUIRED_INSTALLED_SOURCE_ROOT=" not in runbook
+    assert "HAPAX_ROOT_REQUIRED_INSTALLED_RECEIPT_ROOT=" not in runbook
+    assert "HAPAX_ROOT_REQUIRED_DESIRED_RECEIPT_ROOT=" not in runbook
+    assert "HAPAX_ROOT_REQUIRED_GIT_REPO=" not in runbook
     assert (home / ".config" / "systemd" / "user" / "hapax-demo.service").is_file()
-    assert "root-required oom-containment install deferred" in first_stdout + second_stdout
+    assert "root-required oom-containment desired-state package staged" in (
+        first_stdout + second_stdout
+    )
     desired = home / ".local/state/hapax/root-required/desired-receipts/oom-containment.sha"
     assert desired.read_text(encoding="utf-8").strip() == sha
 
@@ -1353,7 +2060,8 @@ def test_concurrent_same_sha_root_required_oom_deploy_stages_complete_deferral(
 
     assert audit_result.returncode == 1
     assert "root-required post-merge deploy deferrals pending" in audit_result.stderr
-    assert "--install --verify-live" in audit_result.stderr
+    assert "runtime-authorized root-broker" in audit_result.stderr
+    assert "install-p0-oom-containment --install --verify-live" not in audit_result.stderr
     (deferred / "RUNBOOK.txt").unlink()
     assert desired.read_text(encoding="utf-8").strip() == sha
 
@@ -1373,6 +2081,157 @@ def test_root_required_audit_fails_when_oom_enforcer_source_missing(tmp_path: Pa
     assert result.returncode == 1
     assert "root-required source missing" in result.stderr
     assert "next action:" in result.stderr
+
+
+def test_canonical_root_audit_refuses_every_state_and_tool_selector(
+    tmp_path: Path,
+) -> None:
+    source = ROOT_REQUIRED_AUDIT.read_text(encoding="utf-8")
+    selector_block = source.split("canonical_forbidden_selectors=(", 1)[1].split("\n)", 1)[0]
+    selectors = [line.strip() for line in selector_block.splitlines() if line.strip()]
+    assert len(selectors) >= 35
+    referenced_selectors = set(re.findall(r"\bHAPAX_[A-Z0-9_]*[A-Z0-9]\b", source))
+    internal_protocol = {
+        "HAPAX_ROOT_REQUIRED_LOCK_ANCHOR_FD",
+        "HAPAX_ROOT_REQUIRED_LOCK_FD",
+        "HAPAX_ROOT_REQUIRED_LOCK_HELD",
+        "HAPAX_ROOT_REQUIRED_LOCK_MODE",
+    }
+    assert referenced_selectors - internal_protocol == set(selectors)
+
+    staged = tmp_path / "hapax-root-required-deploy-audit"
+    staged.write_text(
+        source.replace("/usr/local/sbin/hapax-root-required-deploy-audit", str(staged)),
+        encoding="utf-8",
+    )
+    staged.chmod(0o755)
+    base_env = os.environ.copy()
+    for selector in selectors:
+        base_env.pop(selector, None)
+
+    for selector in selectors:
+        result = subprocess.run(
+            [str(staged)],
+            env=base_env | {selector: "/tmp/caller-controlled"},
+            capture_output=True,
+            text=True,
+            timeout=5,
+            check=False,
+        )
+        assert result.returncode == 2, (selector, result.stderr)
+        assert f"refuses production selector {selector}" in result.stderr
+
+
+def test_root_required_audit_snapshot_list_covers_complete_oom_manifest() -> None:
+    body = ROOT_REQUIRED_AUDIT.read_text(encoding="utf-8")
+    array = body.split("oom_package_files=(", 1)[1].split(")\napcupsd_package_files=", 1)[0]
+    entries = {
+        line for line in OOM_PACKAGE_MANIFEST.splitlines() if line and not line.startswith("#")
+    }
+
+    for relative in entries:
+        assert f"\n    {relative}\n" in array
+
+
+def test_root_required_audit_binds_profile_source_and_installed_table(tmp_path: Path) -> None:
+    env = _root_audit_env(tmp_path)
+    installed_profile = (
+        Path(env["HAPAX_ROOT_REQUIRED_INSTALLED_SOURCE_ROOT"])
+        / "config/root-required/oom-host-policy/appendix/app.slice.conf"
+    )
+    installed_profile.unlink()
+
+    result = subprocess.run(
+        [str(ROOT_REQUIRED_AUDIT)],
+        text=True,
+        capture_output=True,
+        check=False,
+        env=env,
+    )
+
+    assert result.returncode == 1
+    assert "installed source is not bound" in result.stderr
+    assert "runtime-authorized root-broker" in result.stderr
+
+    installed_drift = tmp_path / "installed-drift"
+    installed_drift.mkdir()
+    env = _root_audit_env(installed_drift)
+    Path(env["HAPAX_OOM_PROFILE_TABLE_DEST"]).write_text("stale\n", encoding="utf-8")
+    result = subprocess.run(
+        [str(ROOT_REQUIRED_AUDIT)],
+        text=True,
+        capture_output=True,
+        check=False,
+        env=env,
+    )
+
+    assert result.returncode == 1
+    assert "oom-host-profiles.tsv differs" in result.stderr
+    assert "runtime-authorized root-broker" in result.stderr
+
+
+def test_root_required_audit_compares_the_selected_host_policy_and_zram(
+    tmp_path: Path,
+) -> None:
+    env = _root_audit_env(tmp_path)
+    installed_root = Path(env["HAPAX_ROOT_REQUIRED_INSTALLED_SOURCE_ROOT"])
+    app_dest = Path(env["HAPAX_OOM_SYSTEMD_USER_DIR"]) / "app.slice.d" / "oom-containment.conf"
+    app_dest.write_text(
+        (installed_root / "config/root-required/oom-host-policy/podium/app.slice.conf").read_text(
+            encoding="utf-8"
+        ),
+        encoding="utf-8",
+    )
+
+    result = subprocess.run(
+        [str(ROOT_REQUIRED_AUDIT)],
+        text=True,
+        capture_output=True,
+        check=False,
+        env=env,
+    )
+
+    assert result.returncode == 1
+    assert "oom-host-policy/appendix/app.slice.conf differs" in result.stderr
+    assert str(app_dest) in result.stderr
+
+    podium_root = tmp_path / "podium"
+    podium_env = _root_audit_env(podium_root)
+    podium_env["HAPAX_ROOT_AUDIT_HOSTNAME"] = "hapax-podium"
+    podium_env["HAPAX_ROOT_AUDIT_MEMTOTAL_KIB"] = str(124 * 1024**2)
+    podium_installed = Path(podium_env["HAPAX_ROOT_REQUIRED_INSTALLED_SOURCE_ROOT"])
+    selected = {
+        "app.slice.conf": (
+            Path(podium_env["HAPAX_OOM_SYSTEMD_USER_DIR"]) / "app.slice.d" / "oom-containment.conf"
+        ),
+        "user-1000.slice.conf": (
+            Path(podium_env["HAPAX_OOM_SYSTEMD_SYSTEM_DIR"])
+            / "user-1000.slice.d"
+            / "oom-containment.conf"
+        ),
+        "user@1000.service.conf": (
+            Path(podium_env["HAPAX_OOM_SYSTEMD_SYSTEM_DIR"]) / "user@1000.service.d" / "oom.conf"
+        ),
+        "zram-generator.conf": Path(podium_env["HAPAX_OOM_ZRAM_GENERATOR_DEST"]),
+    }
+    for filename, destination in selected.items():
+        destination.write_text(
+            (podium_installed / "config/root-required/oom-host-policy/podium" / filename).read_text(
+                encoding="utf-8"
+            ),
+            encoding="utf-8",
+        )
+
+    podium_result = subprocess.run(
+        [str(ROOT_REQUIRED_AUDIT)],
+        text=True,
+        capture_output=True,
+        check=False,
+        env=podium_env,
+    )
+
+    assert podium_result.returncode == 0, podium_result.stderr
+    assert "NON-AUTHORITATIVE" in podium_result.stdout
 
 
 def test_root_required_audit_fails_when_canonical_audit_group_is_missing(
@@ -1414,7 +2273,8 @@ def test_root_required_audit_detects_oom_enforcer_drift(tmp_path: Path) -> None:
 
     assert result.returncode == 1
     assert "root-required install drift" in result.stderr
-    assert "install-p0-oom-containment --install --verify-live" in result.stderr
+    assert "runtime-authorized root-broker" in result.stderr
+    assert "install-p0-oom-containment --install --verify-live" not in result.stderr
 
 
 def test_root_required_audit_rejects_untrusted_root_artifact_owner(tmp_path: Path) -> None:
@@ -1519,7 +2379,8 @@ def test_root_required_audit_detects_stale_user_copy_of_system_unit(tmp_path: Pa
 
     assert result.returncode == 1
     assert "stale user-scope copy of system unit remains" in result.stderr
-    assert "install-p0-oom-containment --install --verify-live" in result.stderr
+    assert "runtime-authorized root-broker" in result.stderr
+    assert "install-p0-oom-containment --install --verify-live" not in result.stderr
 
 
 def test_root_required_audit_reads_sudoers_only_through_narrow_sudo(tmp_path: Path) -> None:
@@ -1559,7 +2420,8 @@ def test_root_required_audit_rejects_byte_identical_symlinked_install(tmp_path: 
 
     assert result.returncode == 1
     assert "install missing or not a regular stable copy" in result.stderr
-    assert "install-p0-oom-containment --install --verify-live" in result.stderr
+    assert "runtime-authorized root-broker" in result.stderr
+    assert "install-p0-oom-containment --install --verify-live" not in result.stderr
 
 
 def test_root_required_audit_rejects_nonexact_install_mode(tmp_path: Path) -> None:
@@ -1660,7 +2522,8 @@ def test_root_required_audit_detects_desired_package_not_installed(tmp_path: Pat
     assert result.returncode == 1
     assert "desired package is not installed" in result.stderr
     assert f"desired={desired_sha}" in result.stderr
-    assert "even if the cached RUNBOOK was lost" in result.stderr
+    assert "runtime-authorized root-broker" in result.stderr
+    assert "production OOM repair is unavailable" in result.stderr
 
 
 def test_root_required_audit_detects_nonexecutable_hook(tmp_path: Path) -> None:
@@ -1678,15 +2541,16 @@ def test_root_required_audit_detects_nonexecutable_hook(tmp_path: Path) -> None:
 
     assert result.returncode == 1
     assert "executable mode drift" in result.stderr
-    assert "install-apcupsd-power-alerts" in result.stderr
+    assert "separately runtime-authorized root-broker" in result.stderr
+    assert "production APC repair is unavailable" in result.stderr
 
 
-def test_root_required_audit_detects_disabled_enforcer_timer(tmp_path: Path) -> None:
+def test_root_required_audit_detects_enabled_retired_enforcer_timer(tmp_path: Path) -> None:
     env = _root_audit_env(tmp_path)
     fake_systemctl = Path(env["HAPAX_ROOT_AUDIT_SYSTEMCTL"])
     fake_systemctl.write_text(
         "#!/usr/bin/env bash\n"
-        'if [ "$*" = "is-enabled --quiet hapax-oom-score-enforce.timer" ]; then exit 1; fi\n'
+        'if [ "$*" = "is-enabled hapax-oom-score-enforce.timer" ]; then printf "enabled\\n"; exit 0; fi\n'
         "exit 0\n",
         encoding="utf-8",
     )
@@ -1701,8 +2565,8 @@ def test_root_required_audit_detects_disabled_enforcer_timer(tmp_path: Path) -> 
     )
 
     assert result.returncode == 1
-    assert "hapax-oom-score-enforce.timer is not enabled" in result.stderr
-    assert "enable --now" in result.stderr
+    assert "hapax-oom-score-enforce.timer UnitFileState=enabled, expected static" in result.stderr
+    assert "runtime-authorized root-broker" in result.stderr
 
 
 def test_root_required_audit_detects_stale_loaded_enforcer_timeout(tmp_path: Path) -> None:
@@ -1725,8 +2589,8 @@ def test_root_required_audit_detects_stale_loaded_enforcer_timeout(tmp_path: Pat
     )
 
     assert result.returncode == 1
-    assert "loaded TimeoutStartUSec=infinity, expected 25s" in result.stderr
-    assert "systemctl daemon-reload" in result.stderr
+    assert "loaded TimeoutStartUSec=infinity, expected 5s" in result.stderr
+    assert "runtime-authorized root-broker" in result.stderr
 
 
 def test_root_required_audit_detects_stale_loaded_user_audit_timeout(tmp_path: Path) -> None:
@@ -1734,7 +2598,7 @@ def test_root_required_audit_detects_stale_loaded_user_audit_timeout(tmp_path: P
     fake_systemctl = Path(env["HAPAX_ROOT_AUDIT_SYSTEMCTL"])
     fake_systemctl.write_text(
         "#!/usr/bin/env bash\n"
-        'if [ "$*" = "show hapax-oom-score-enforce.service -p TimeoutStartUSec --value" ]; then printf "25s\\n"; fi\n'
+        'if [ "$*" = "show hapax-oom-score-enforce.service -p TimeoutStartUSec --value" ]; then printf "5s\\n"; fi\n'
         'if [ "$*" = "--user show hapax-oom-policy-audit.service -p TimeoutStartUSec --value" ]; then printf "infinity\\n"; fi\n'
         'if [ "$*" = "--user show hapax-root-required-deploy-audit.service -p TimeoutStartUSec --value" ]; then printf "2min\\n"; fi\n'
         "exit 0\n",
@@ -1755,7 +2619,7 @@ def test_root_required_audit_detects_stale_loaded_user_audit_timeout(tmp_path: P
         "hapax-oom-policy-audit.service loaded TimeoutStartUSec=infinity, expected 2min"
         in result.stderr
     )
-    assert "systemctl --user daemon-reload" in result.stderr
+    assert "runtime-authorized root-broker" in result.stderr
 
 
 def test_root_required_audit_detects_inactive_earlyoom(tmp_path: Path) -> None:
@@ -1779,7 +2643,7 @@ def test_root_required_audit_detects_inactive_earlyoom(tmp_path: Path) -> None:
 
     assert result.returncode == 1
     assert "earlyoom.service is not active" in result.stderr
-    assert "enable --now earlyoom.service" in result.stderr
+    assert "runtime-authorized root-broker" in result.stderr
 
 
 def test_root_required_audit_detects_disabled_apcupsd(tmp_path: Path) -> None:
@@ -1803,7 +2667,8 @@ def test_root_required_audit_detects_disabled_apcupsd(tmp_path: Path) -> None:
 
     assert result.returncode == 1
     assert "apcupsd.service is not enabled" in result.stderr
-    assert "enable --now apcupsd.service" in result.stderr
+    assert "separately runtime-authorized root-broker" in result.stderr
+    assert "production APC repair is unavailable" in result.stderr
 
 
 def test_root_required_audit_detects_stale_loaded_upower_action(tmp_path: Path) -> None:
@@ -1848,7 +2713,9 @@ def test_root_required_audit_detects_stale_loaded_apcupsd_thresholds(tmp_path: P
     assert "expected 20" in result.stderr
 
 
-def test_root_required_audit_passes_when_oom_enforcer_matches(tmp_path: Path) -> None:
+def test_root_required_audit_clean_drift_result_is_explicitly_non_authoritative(
+    tmp_path: Path,
+) -> None:
     result = subprocess.run(
         [str(ROOT_REQUIRED_AUDIT)],
         text=True,
@@ -1859,6 +2726,61 @@ def test_root_required_audit_passes_when_oom_enforcer_matches(tmp_path: Path) ->
 
     assert result.returncode == 0, result.stderr
     assert "root-required post-merge deploy deferrals: none" in result.stdout
+    assert "NON-AUTHORITATIVE" in result.stdout
+    assert "same-UID receipts do not attest OOM runtime completion" in result.stdout
+
+
+def test_root_required_audit_fails_when_deferral_enumeration_fails(tmp_path: Path) -> None:
+    env = _root_audit_env(tmp_path)
+    unreadable = Path(env["HAPAX_POST_MERGE_ROOT_DEFER_DIR"]) / "unreadable"
+    unreadable.mkdir(parents=True)
+    unreadable.chmod(0)
+    try:
+        result = subprocess.run(
+            [str(ROOT_REQUIRED_AUDIT)],
+            text=True,
+            capture_output=True,
+            check=False,
+            env=env,
+        )
+    finally:
+        unreadable.chmod(0o700)
+
+    assert result.returncode != 0
+    assert "cannot enumerate root-required deploy deferrals" in result.stderr
+    assert "root-required post-merge deploy deferrals: none" not in result.stdout
+
+
+def test_root_required_audit_accepts_shipped_service_after_systemd_expansion(
+    tmp_path: Path,
+) -> None:
+    relative = "systemd/units/hapax-root-required-deploy-audit.service"
+    shipped = (REPO_ROOT / relative).read_text(encoding="utf-8")
+    assert P0_OOM_AUDIT_FILES[relative] == shipped
+    assert "HOME=%h" in shipped
+    assert "XDG_RUNTIME_DIR=%t" in shipped
+
+    result = subprocess.run(
+        [str(ROOT_REQUIRED_AUDIT)],
+        text=True,
+        capture_output=True,
+        check=False,
+        env=_root_audit_env(tmp_path),
+    )
+
+    assert result.returncode == 0, result.stderr
+
+
+def test_retired_oom_install_command_is_absent_from_recovery_surfaces() -> None:
+    for relative in (
+        "scripts/hapax-oom-score-enforce",
+        "scripts/hapax-post-merge-deploy",
+        "scripts/hapax-root-failure-intake",
+        "scripts/hapax-root-required-deploy-audit",
+        "systemd/README.md",
+    ):
+        body = (REPO_ROOT / relative).read_text(encoding="utf-8")
+        assert "install-p0-oom-containment --install --verify-live" not in body
 
 
 def test_root_required_audit_ignores_hostile_path(tmp_path: Path) -> None:
@@ -1920,22 +2842,15 @@ def test_root_required_audit_rejects_effective_service_dropin(tmp_path: Path) ->
     assert "override.conf" in result.stderr
 
 
-def test_root_required_audit_rejects_effective_failure_intake_dropin(
-    tmp_path: Path,
-) -> None:
+def test_root_required_audit_rejects_execstart_substring_with_extra_argv(tmp_path: Path) -> None:
     env = _root_audit_env(tmp_path)
     fake_systemctl = Path(env["HAPAX_ROOT_AUDIT_SYSTEMCTL"])
     baseline_systemctl = fake_systemctl.with_name("root-audit-systemctl-baseline")
     fake_systemctl.rename(baseline_systemctl)
-    failure_unit = "hapax-root-failure-intake@hapax-oom-score-enforce.service.service"
     fake_systemctl.write_text(
         "#!/usr/bin/env bash\n"
-        f'if [ "$*" = "show {failure_unit} -p DropInPaths --value" ]; then\n'
-        "  printf '%s\\n' '/etc/systemd/system/hapax-root-failure-intake@.service.d/override.conf'\n"
-        "  exit 0\n"
-        "fi\n"
-        f'if [ "$*" = "show {failure_unit} -p ExecStart --value" ]; then\n'
-        "  printf '%s\\n' '{ path=/usr/bin/true ; argv[]=/usr/bin/true ; }'\n"
+        'if [ "$*" = "--user show hapax-oom-policy-audit.service -p ExecStart --value" ]; then\n'
+        "  printf '%s\\n' '{ path=/usr/local/sbin/hapax-oom-policy-audit ; argv[]=/usr/local/sbin/hapax-oom-policy-audit --json --unreviewed ; }'\n"
         "  exit 0\n"
         "fi\n"
         f'exec "{baseline_systemctl!s}" "$@"\n',
@@ -1944,43 +2859,22 @@ def test_root_required_audit_rejects_effective_failure_intake_dropin(
     fake_systemctl.chmod(0o755)
 
     result = subprocess.run(
-        [str(ROOT_REQUIRED_AUDIT)],
-        text=True,
-        capture_output=True,
-        check=False,
-        env=env,
+        [str(ROOT_REQUIRED_AUDIT)], text=True, capture_output=True, check=False, env=env
     )
 
     assert result.returncode == 1
-    assert f"effective {failure_unit} unit-source drift" in result.stderr
-    assert "override.conf" in result.stderr
+    assert "effective hapax-oom-policy-audit.service ExecStart drift" in result.stderr
 
 
-@pytest.mark.parametrize(
-    ("property_name", "bad_value", "expected_error"),
-    [
-        ("ExecStart", "{ path=/usr/bin/true ; argv[]=/usr/bin/true ; }", "ExecStart drift"),
-        ("User", "root", "identity/limit drift"),
-        ("Environment", "PATH=/tmp/shadow", "identity/limit drift"),
-        ("StartLimitIntervalUSec", "infinity", "identity/limit drift"),
-        ("StartLimitBurst", "99", "identity/limit drift"),
-    ],
-)
-def test_root_required_audit_rejects_effective_failure_intake_property_drift(
-    tmp_path: Path,
-    property_name: str,
-    bad_value: str,
-    expected_error: str,
-) -> None:
+def test_root_required_audit_rejects_manager_reload_debt(tmp_path: Path) -> None:
     env = _root_audit_env(tmp_path)
     fake_systemctl = Path(env["HAPAX_ROOT_AUDIT_SYSTEMCTL"])
     baseline_systemctl = fake_systemctl.with_name("root-audit-systemctl-baseline")
     fake_systemctl.rename(baseline_systemctl)
-    failure_unit = "hapax-root-failure-intake@hapax-oom-score-enforce.service.service"
     fake_systemctl.write_text(
         "#!/usr/bin/env bash\n"
-        f'if [ "$*" = "show {failure_unit} -p {property_name} --value" ]; then\n'
-        f"  printf '%s\\n' '{bad_value}'\n"
+        'if [ "$*" = "--user show hapax-oom-policy-audit.service -p NeedDaemonReload --value" ]; then\n'
+        "  printf 'yes\\n'\n"
         "  exit 0\n"
         "fi\n"
         f'exec "{baseline_systemctl!s}" "$@"\n',
@@ -1989,15 +2883,21 @@ def test_root_required_audit_rejects_effective_failure_intake_property_drift(
     fake_systemctl.chmod(0o755)
 
     result = subprocess.run(
-        [str(ROOT_REQUIRED_AUDIT)],
-        text=True,
-        capture_output=True,
-        check=False,
-        env=env,
+        [str(ROOT_REQUIRED_AUDIT)], text=True, capture_output=True, check=False, env=env
     )
 
     assert result.returncode == 1
-    assert f"effective {failure_unit} {expected_error}" in result.stderr
+    assert "NeedDaemonReload=yes" in result.stderr
+
+
+def test_retired_enforcer_has_no_failure_intake_dependency() -> None:
+    service = (REPO_ROOT / "systemd/units/hapax-oom-score-enforce.service").read_text(
+        encoding="utf-8"
+    )
+    audit = ROOT_REQUIRED_AUDIT.read_text(encoding="utf-8")
+
+    assert "OnFailure=" not in service
+    assert "audit_effective_failure_intake_unit" not in audit
 
 
 @pytest.mark.parametrize(
@@ -2045,6 +2945,33 @@ def test_root_required_audit_rejects_effective_timer_drift(
     assert loaded_value in result.stderr
 
 
+def test_root_required_audit_normalizes_equivalent_timer_durations(tmp_path: Path) -> None:
+    env = _root_audit_env(tmp_path)
+    fake_systemctl = Path(env["HAPAX_ROOT_AUDIT_SYSTEMCTL"])
+    baseline_systemctl = fake_systemctl.with_name("root-audit-systemctl-baseline")
+    fake_systemctl.rename(baseline_systemctl)
+    fake_systemctl.write_text(
+        "#!/usr/bin/env bash\n"
+        'if [ "$*" = "show hapax-oom-score-enforce.timer -p TimersMonotonic --value" ]; then\n'
+        "  printf '%s\\n' 'OnBootUSec=2min OnUnitActiveUSec=2min'\n"
+        "  exit 0\n"
+        "fi\n"
+        f'exec "{baseline_systemctl!s}" "$@"\n',
+        encoding="utf-8",
+    )
+    fake_systemctl.chmod(0o755)
+
+    result = subprocess.run(
+        [str(ROOT_REQUIRED_AUDIT)],
+        text=True,
+        capture_output=True,
+        check=False,
+        env=env,
+    )
+
+    assert result.returncode == 0, result.stderr
+
+
 def test_root_required_audit_legacy_manifest_transition_is_fail_closed(tmp_path: Path) -> None:
     env = _root_audit_env(tmp_path)
     repo = Path(env["HAPAX_ROOT_REQUIRED_GIT_REPO"])
@@ -2082,6 +3009,63 @@ def test_root_required_audit_legacy_manifest_transition_is_fail_closed(tmp_path:
     assert accepted.returncode == 0, accepted.stderr
 
 
+def test_root_required_audit_ignores_repository_replace_refs(tmp_path: Path) -> None:
+    env = _root_audit_env(tmp_path)
+    repo = Path(env["HAPAX_ROOT_REQUIRED_GIT_REPO"])
+    receipt = Path(env["HAPAX_ROOT_REQUIRED_INSTALLED_RECEIPT_ROOT"]) / "oom-containment.sha"
+    original_sha = receipt.read_text(encoding="utf-8").strip()
+    relative = "scripts/install-p0-oom-containment"
+    replacement_body = (repo / relative).read_text(encoding="utf-8") + "# replacement bytes\n"
+    (repo / relative).write_text(replacement_body, encoding="utf-8")
+    _git(repo, "add", relative)
+    _git(repo, "commit", "-m", "replacement-only package bytes")
+    replacement_sha = _git(repo, "rev-parse", "HEAD")
+    _git(repo, "replace", original_sha, replacement_sha)
+    installed = Path(env["HAPAX_ROOT_REQUIRED_INSTALLED_SOURCE_ROOT"]) / relative
+    installed.write_text(replacement_body, encoding="utf-8")
+    installed.chmod(0o755)
+
+    result = subprocess.run(
+        [str(ROOT_REQUIRED_AUDIT)],
+        text=True,
+        capture_output=True,
+        check=False,
+        env=env,
+    )
+
+    assert result.returncode == 1
+    assert "installed source is not bound" in result.stderr
+    assert original_sha in result.stderr
+
+
+@pytest.mark.parametrize(
+    "selector",
+    (
+        "GIT_DIR",
+        "GIT_COMMON_DIR",
+        "GIT_OBJECT_DIRECTORY",
+        "GIT_ALTERNATE_OBJECT_DIRECTORIES",
+        "GIT_SHALLOW_FILE",
+    ),
+)
+def test_root_required_audit_ignores_ambient_git_repository_selectors(
+    tmp_path: Path,
+    selector: str,
+) -> None:
+    env = _root_audit_env(tmp_path)
+    env[selector] = str(tmp_path / "caller-selected-git-state")
+
+    result = subprocess.run(
+        [str(ROOT_REQUIRED_AUDIT)],
+        text=True,
+        capture_output=True,
+        check=False,
+        env=env,
+    )
+
+    assert result.returncode == 0, (selector, result.stderr)
+
+
 def test_root_required_audit_waits_for_shared_package_lock(tmp_path: Path) -> None:
     env = _root_audit_env(tmp_path)
     lock_path = Path(env["HAPAX_ROOT_REQUIRED_STATE_ROOT"]) / ".lock"
@@ -2101,6 +3085,57 @@ def test_root_required_audit_waits_for_shared_package_lock(tmp_path: Path) -> No
 
     stdout, stderr = audit.communicate(timeout=5)
     assert audit.returncode == 0, (stdout, stderr)
+
+
+@pytest.mark.parametrize("inherited_descriptor", (False, True))
+def test_root_required_audit_rejects_lock_path_replaced_while_waiting(
+    tmp_path: Path,
+    inherited_descriptor: bool,
+) -> None:
+    env = _root_audit_env(tmp_path)
+    lock = Path(env["HAPAX_ROOT_REQUIRED_STATE_ROOT"]) / ".lock"
+    lock.parent.mkdir(parents=True, exist_ok=True)
+    lock.write_text("", encoding="utf-8")
+    lock.chmod(0o600)
+    blocker_fd = os.open(lock, os.O_RDWR)
+    waiter_fd = os.open(lock, os.O_RDWR)
+    fcntl.flock(blocker_fd, fcntl.LOCK_EX)
+    env["HAPAX_ROOT_REQUIRED_LOCK_FILE"] = str(lock)
+    pass_fds: tuple[int, ...] = ()
+    anchor_fd = -1
+    if inherited_descriptor:
+        anchor_fd = os.open("/", os.O_RDONLY | os.O_DIRECTORY)
+        env["HAPAX_ROOT_REQUIRED_LOCK_FD"] = str(waiter_fd)
+        env["HAPAX_ROOT_REQUIRED_LOCK_ANCHOR_FD"] = str(anchor_fd)
+        env["HAPAX_ROOT_REQUIRED_LOCK_MODE"] = "shared"
+        pass_fds = (anchor_fd, waiter_fd)
+    audit = subprocess.Popen(
+        [str(ROOT_REQUIRED_AUDIT)],
+        text=True,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        env=env,
+        pass_fds=pass_fds,
+        start_new_session=True,
+    )
+    try:
+        _wait_for_flock_block(audit, lock)
+        replacement = lock.with_name("replacement.lock")
+        replacement.write_text("", encoding="utf-8")
+        replacement.chmod(0o600)
+        os.replace(replacement, lock)
+        fcntl.flock(blocker_fd, fcntl.LOCK_UN)
+        stdout, stderr = audit.communicate(timeout=10)
+    finally:
+        if audit.poll() is None:
+            _kill_process_group(audit)
+        if anchor_fd >= 0:
+            os.close(anchor_fd)
+        os.close(waiter_fd)
+        os.close(blocker_fd)
+
+    assert audit.returncode == 1, stdout
+    assert "lock identity changed while acquiring" in stderr
 
 
 @pytest.mark.parametrize("link_kind", ("symlink", "hardlink"))
@@ -2184,6 +3219,113 @@ def test_root_required_audit_rejects_symlinked_ups_log_parent(tmp_path: Path) ->
     assert lexical_parent.is_symlink()
 
 
+@pytest.mark.parametrize(
+    "selector",
+    (
+        "HAPAX_POST_MERGE_TRACE_PATH",
+        "HAPAX_POST_MERGE_LAST_DEPLOYED_SHA_PATH",
+        "HAPAX_POST_MERGE_SYSTEMD_PENDING_PATH",
+        "HAPAX_POST_MERGE_ROOT_DEFER_DIR",
+        "HAPAX_ROOT_REQUIRED_STATE_ROOT",
+        "HAPAX_ROOT_REQUIRED_INSTALLED_SOURCE_ROOT",
+        "HAPAX_ROOT_REQUIRED_INSTALLED_RECEIPT_ROOT",
+        "HAPAX_ROOT_REQUIRED_DESIRED_RECEIPT_ROOT",
+        "HAPAX_ROOT_REQUIRED_LOCK_FILE",
+    ),
+)
+def test_post_merge_real_deploy_rejects_caller_selected_state_domain(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    selector: str,
+) -> None:
+    repo, sha = _repo_with_linear_commit(
+        tmp_path,
+        {"scripts/hapax-demo": "#!/usr/bin/env bash\nexit 0\n"},
+    )
+    monkeypatch.delenv("HAPAX_ROOT_REQUIRED_ISOLATED_TEST_ROOT")
+    env = {
+        key: value
+        for key, value in os.environ.items()
+        if not key.startswith("HAPAX_ROOT_REQUIRED_") and not key.startswith("HAPAX_POST_MERGE_")
+    }
+    env.update(
+        {
+            "HOME": str(tmp_path / "spoofed-home"),
+            "REPO": str(repo),
+            selector: str(tmp_path / "caller-selected-state"),
+        }
+    )
+
+    result = subprocess.run(
+        [str(SCRIPT), sha],
+        text=True,
+        capture_output=True,
+        check=False,
+        env=env,
+    )
+
+    assert result.returncode == 2
+    assert selector in result.stderr
+    assert "caller-selected production state" in result.stderr
+    assert not (tmp_path / "spoofed-home/.local/bin/hapax-demo").exists()
+
+
+def test_post_merge_real_deploy_rejects_home_spoofing(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    repo, sha = _repo_with_linear_commit(
+        tmp_path,
+        {"scripts/hapax-demo": "#!/usr/bin/env bash\nexit 0\n"},
+    )
+    monkeypatch.delenv("HAPAX_ROOT_REQUIRED_ISOLATED_TEST_ROOT")
+    env = {
+        key: value
+        for key, value in os.environ.items()
+        if not key.startswith("HAPAX_ROOT_REQUIRED_") and not key.startswith("HAPAX_POST_MERGE_")
+    }
+    home = tmp_path / "spoofed-home"
+    env.update({"HOME": str(home), "REPO": str(repo)})
+
+    result = subprocess.run(
+        [str(SCRIPT), sha],
+        text=True,
+        capture_output=True,
+        check=False,
+        env=env,
+    )
+
+    assert result.returncode == 2
+    assert "HOME does not match NSS home" in result.stderr
+    assert not (home / ".local/bin/hapax-demo").exists()
+
+
+def test_post_merge_isolated_test_mode_rejects_state_path_escape(tmp_path: Path) -> None:
+    repo, sha = _repo_with_linear_commit(
+        tmp_path,
+        {"scripts/hapax-demo": "#!/usr/bin/env bash\nexit 0\n"},
+    )
+    escaped_lock = tmp_path.parent / f"{tmp_path.name}-escaped.lock"
+    env = {
+        **os.environ,
+        "HOME": str(tmp_path / "home"),
+        "REPO": str(repo),
+        "HAPAX_ROOT_REQUIRED_LOCK_FILE": str(escaped_lock),
+    }
+
+    result = subprocess.run(
+        [str(SCRIPT), sha],
+        text=True,
+        capture_output=True,
+        check=False,
+        env=env,
+    )
+
+    assert result.returncode == 2
+    assert "HAPAX_ROOT_REQUIRED_LOCK_FILE escapes isolated test root" in result.stderr
+    assert not escaped_lock.exists()
+
+
 @pytest.mark.parametrize("link_kind", ("symlink", "hardlink"))
 def test_post_merge_deploy_refuses_unsafe_shared_lock_before_mutation(
     tmp_path: Path,
@@ -2229,7 +3371,176 @@ def test_post_merge_deploy_refuses_unsafe_shared_lock_before_mutation(
     assert not (home / ".local/bin/hapax-demo").exists()
 
 
-def test_apcupsd_power_alert_deploy_uses_dedicated_installer(tmp_path: Path) -> None:
+@pytest.mark.parametrize("inherited_descriptor", (False, True))
+def test_post_merge_deploy_rejects_lock_path_replaced_while_waiting(
+    tmp_path: Path,
+    inherited_descriptor: bool,
+) -> None:
+    repo, sha = _repo_with_gate_closure_and_docs_commit(tmp_path)
+    canon = tmp_path / "canon"
+    calls = tmp_path / "hooks-doctor-calls.txt"
+    _seed_canonical_gate(repo, canon, stale=True)
+    env = _gate_reconcile_env(tmp_path, repo, canon, calls)
+    lock = tmp_path / "root-state" / ".lock"
+    lock.parent.mkdir(parents=True)
+    lock.write_text("", encoding="utf-8")
+    lock.chmod(0o600)
+    blocker_fd = os.open(lock, os.O_RDWR)
+    waiter_fd = os.open(lock, os.O_RDWR)
+    fcntl.flock(blocker_fd, fcntl.LOCK_EX)
+    env["HAPAX_ROOT_REQUIRED_LOCK_FILE"] = str(lock)
+    pass_fds: tuple[int, ...] = ()
+    anchor_fd = -1
+    if inherited_descriptor:
+        anchor_fd = os.open("/", os.O_RDONLY | os.O_DIRECTORY)
+        env["HAPAX_ROOT_REQUIRED_LOCK_FD"] = str(waiter_fd)
+        env["HAPAX_ROOT_REQUIRED_LOCK_ANCHOR_FD"] = str(anchor_fd)
+        env["HAPAX_ROOT_REQUIRED_LOCK_MODE"] = "exclusive"
+        pass_fds = (anchor_fd, waiter_fd)
+    deploy = subprocess.Popen(
+        [str(SCRIPT), sha],
+        text=True,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        env=env,
+        pass_fds=pass_fds,
+        start_new_session=True,
+    )
+    try:
+        _wait_for_flock_block(deploy, lock)
+        replacement = lock.with_name("replacement.lock")
+        replacement.write_text("", encoding="utf-8")
+        replacement.chmod(0o600)
+        os.replace(replacement, lock)
+        fcntl.flock(blocker_fd, fcntl.LOCK_UN)
+        stdout, stderr = deploy.communicate(timeout=10)
+    finally:
+        if deploy.poll() is None:
+            _kill_process_group(deploy)
+        if anchor_fd >= 0:
+            os.close(anchor_fd)
+        os.close(waiter_fd)
+        os.close(blocker_fd)
+
+    assert deploy.returncode == 1, stdout
+    assert "lock identity changed while acquiring" in stderr
+    assert not calls.exists()
+
+
+def test_post_merge_deploy_serializes_after_acquired_lock_path_is_replaced(
+    tmp_path: Path,
+) -> None:
+    repo, older_sha = _repo_with_gate_closure_and_docs_commit(tmp_path)
+    (repo / "README.md").write_text("newer deploy\n", encoding="utf-8")
+    _git(repo, "add", "README.md")
+    _git(repo, "commit", "-m", "newer deploy target")
+    newer_sha = _git(repo, "rev-parse", "HEAD")
+    older_parent = _git(repo, "rev-parse", f"{older_sha}^")
+    canon = tmp_path / "canon"
+    calls = tmp_path / "hooks-doctor-calls.txt"
+    _seed_canonical_gate(repo, canon, stale=False)
+    env = _gate_reconcile_env(tmp_path, repo, canon, calls)
+    state_root = tmp_path / "root-state"
+    lock = state_root / ".lock"
+    env["HAPAX_ROOT_REQUIRED_STATE_ROOT"] = str(state_root)
+    env["HAPAX_ROOT_REQUIRED_LOCK_FILE"] = str(lock)
+
+    marker = tmp_path / "older-inside-critical-section"
+    release = tmp_path / "release-older"
+    fake_bin = tmp_path / "git-bin"
+    fake_bin.mkdir()
+    fake_git = fake_bin / "git"
+    fake_git.write_text(
+        "#!/usr/bin/env bash\n"
+        "set -euo pipefail\n"
+        f'if [ "$*" = "diff --name-only {older_parent} {older_sha}" ]; then\n'
+        f"  : > {shlex.quote(str(marker))}\n"
+        f"  while [ ! -e {shlex.quote(str(release))} ]; do /usr/bin/sleep 0.01; done\n"
+        "fi\n"
+        'exec /usr/bin/git "$@"\n',
+        encoding="utf-8",
+    )
+    fake_git.chmod(0o755)
+    env["PATH"] = f"{fake_bin}:{env['PATH']}"
+
+    older = subprocess.Popen(
+        [str(SCRIPT), older_sha],
+        text=True,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        env=env,
+        start_new_session=True,
+    )
+    newer: subprocess.Popen[str] | None = None
+    try:
+        deadline = time.monotonic() + 10
+        while not marker.exists() and older.poll() is None and time.monotonic() < deadline:
+            time.sleep(0.01)
+        assert marker.exists(), "older deploy did not enter the locked critical section"
+        replacement = lock.with_name("replacement.lock")
+        replacement.write_text("", encoding="utf-8")
+        replacement.chmod(0o600)
+        os.replace(replacement, lock)
+        newer = subprocess.Popen(
+            [str(SCRIPT), newer_sha],
+            text=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            env=env,
+            start_new_session=True,
+        )
+        _wait_for_flock_block(newer, Path("/"))
+        assert not (tmp_path / "traces/last-deployed-sha").exists()
+    finally:
+        release.touch()
+        older_stdout, older_stderr = older.communicate(timeout=20)
+        if newer is not None:
+            newer_stdout, newer_stderr = newer.communicate(timeout=20)
+
+    assert older.returncode == 0, (older_stdout, older_stderr)
+    assert newer is not None
+    assert newer.returncode == 0, (newer_stdout, newer_stderr)
+    cursor = tmp_path / "traces/last-deployed-sha"
+    assert cursor.read_text(encoding="utf-8").strip() == newer_sha
+
+
+@pytest.mark.parametrize(
+    "script",
+    (SCRIPT, ROOT_REQUIRED_AUDIT),
+)
+def test_root_required_lock_helpers_use_isolated_python(script: Path) -> None:
+    source = script.read_text(encoding="utf-8")
+    lock_region = source[
+        source.index("acquire_inherited_root_required_lock()") : source.index(
+            "read_last_deployed_sha_under_lock()"
+            if script == SCRIPT
+            else "resolve_apcupsd_audit_log_identity()"
+        )
+    ]
+
+    assert "/usr/bin/python3 -I -S -" in lock_region
+    assert '/usr/bin/python3 - "$lock_fd"' not in lock_region
+
+
+@pytest.mark.parametrize(
+    "script",
+    (
+        SCRIPT,
+        ROOT_REQUIRED_AUDIT,
+        REPO_ROOT / "scripts" / "hapax-root-failure-intake",
+        REPO_ROOT / "scripts" / "install-apcupsd-power-alerts",
+    ),
+)
+def test_root_required_embedded_system_python_is_isolated(script: Path) -> None:
+    source = script.read_text(encoding="utf-8")
+
+    assert re.search(r"/usr/bin/python3\s+-(?:\s|$)", source) is None
+    assert re.search(r"(?:^|\s)python3\s+-(?:\s|$)", source, re.MULTILINE) is None
+
+
+def test_apcupsd_power_alert_deploy_stages_dedicated_package_for_root_broker(
+    tmp_path: Path,
+) -> None:
     installer_calls = tmp_path / "apcupsd-installer-calls.txt"
     installer_body = (
         "#!/usr/bin/env bash\n"
@@ -2259,6 +3570,7 @@ def test_apcupsd_power_alert_deploy_uses_dedicated_installer(tmp_path: Path) -> 
     home = tmp_path / "home"
     bin_dir, systemctl_calls = _fake_systemctl(tmp_path)
     trace_path = tmp_path / "traces" / "post-merge-traces.jsonl"
+    defer_dir = tmp_path / "root-required"
     env = {
         **os.environ,
         "HOME": str(home),
@@ -2267,6 +3579,7 @@ def test_apcupsd_power_alert_deploy_uses_dedicated_installer(tmp_path: Path) -> 
         "HAPAX_APCUPSD_INSTALL_CALLS": str(installer_calls),
         "HAPAX_SYSTEMCTL_CALLS": str(systemctl_calls),
         "HAPAX_POST_MERGE_TRACE_PATH": str(trace_path),
+        "HAPAX_POST_MERGE_ROOT_DEFER_DIR": str(defer_dir),
     }
 
     result = subprocess.run(
@@ -2278,9 +3591,74 @@ def test_apcupsd_power_alert_deploy_uses_dedicated_installer(tmp_path: Path) -> 
     )
 
     assert result.returncode == 0, result.stderr
-    assert "--install --verify-live" in installer_calls.read_text(encoding="utf-8")
+    installer_args = installer_calls.read_text(encoding="utf-8")
+    assert "--check" in installer_args
+    assert "--install" not in installer_args
+    assert "--verify-live" not in installer_args
+    deferred = defer_dir / sha / "apcupsd-power-alerts"
+    assert (deferred / future_manifest_path).read_text(encoding="utf-8") == "future hook\n"
+    runbook = (deferred / "RUNBOOK.txt").read_text(encoding="utf-8")
+    assert "non-authoritative desired-state evidence" in runbook
+    assert "separately runtime-authorized root-broker" in runbook
+    assert "sudo -v" not in runbook
+    assert "--install" not in runbook
+    assert "HAPAX_ROOT_REQUIRED_PACKAGE_SHA=" not in runbook
     record = json.loads(trace_path.read_text(encoding="utf-8").splitlines()[-1])
     assert set(record["deploy_groups"]["apcupsd_power_alerts"]) == set(files)
+    assert record["status"] == "completed_with_runtime_deferral"
+    assert record["runtime_deferred"] == [f"apcupsd-power-alerts:{sha}"]
+
+
+@pytest.mark.parametrize("preexisting_receipt", (False, True))
+def test_apcupsd_semantic_validation_precedes_desired_receipt_publication(
+    tmp_path: Path,
+    preexisting_receipt: bool,
+) -> None:
+    manifest_rel = "config/root-required/apcupsd-power-alerts.files"
+    installer_rel = "scripts/install-apcupsd-power-alerts"
+    installer_calls = tmp_path / "apcupsd-check-calls"
+    repo, sha = _repo_with_linear_commit(
+        tmp_path,
+        {
+            manifest_rel: f"{manifest_rel}\n{installer_rel}\n",
+            installer_rel: (
+                "#!/usr/bin/env bash\n"
+                "set -euo pipefail\n"
+                'printf \'%s\\n\' "$*" > "$HAPAX_APCUPSD_CHECK_CALLS"\n'
+                "exit 41\n"
+            ),
+        },
+    )
+    home = tmp_path / "home"
+    receipt = home / ".local/state/hapax/root-required/desired-receipts/apcupsd-power-alerts.sha"
+    previous = _git(repo, "rev-parse", f"{sha}^")
+    if preexisting_receipt:
+        receipt.parent.mkdir(parents=True)
+        receipt.write_text(f"{previous}\n", encoding="utf-8")
+
+    result = subprocess.run(
+        [str(SCRIPT), sha],
+        text=True,
+        capture_output=True,
+        check=False,
+        env={
+            **os.environ,
+            "HOME": str(home),
+            "REPO": str(repo),
+            "HAPAX_APCUPSD_CHECK_CALLS": str(installer_calls),
+            "HAPAX_POST_MERGE_TRACE_PATH": str(tmp_path / "trace.jsonl"),
+            "HAPAX_POST_MERGE_ROOT_DEFER_DIR": str(tmp_path / "deferrals"),
+        },
+    )
+
+    assert result.returncode == 41, (result.stdout, result.stderr)
+    assert "--check" in installer_calls.read_text(encoding="utf-8")
+    if preexisting_receipt:
+        assert receipt.read_text(encoding="utf-8") == f"{previous}\n"
+    else:
+        assert not receipt.exists()
+    assert not (tmp_path / "deferrals").exists()
+    assert not (tmp_path / "last-deployed-sha").exists()
 
 
 def test_generic_slice_dropin_deploy_uses_runtime_set_property_not_restart(
@@ -2408,6 +3786,202 @@ def test_generic_service_dropin_atomically_replaces_changed_destination_symlink(
     assert not deployed.is_symlink()
     calls = systemctl_calls.read_text(encoding="utf-8")
     assert "--user restart demo.service" in calls
+
+
+def test_system_scoped_base_routes_changed_dropin_to_runtime_deferral(tmp_path: Path) -> None:
+    unit_path = "systemd/units/demo-root.service"
+    dropin_path = f"{unit_path}.d/override.conf"
+    unit_body = (
+        "[Unit]\n# Hapax-Install-Scope: system\n[Service]\nType=oneshot\nExecStart=/usr/bin/true\n"
+    )
+    dropin_body = "[Service]\nEnvironment=DEMO=system\n"
+    repo, _ = _repo_with_linear_commit(
+        tmp_path,
+        {unit_path: unit_body},
+    )
+    source_dropin = repo / dropin_path
+    source_dropin.parent.mkdir()
+    source_dropin.write_text(dropin_body, encoding="utf-8")
+    _git(repo, "add", dropin_path)
+    _git(repo, "commit", "-m", "add system unit drop-in")
+    sha = _git(repo, "rev-parse", "HEAD")
+    home = tmp_path / "home"
+    stale_user_dropin = home / ".config/systemd/user/demo-root.service.d/override.conf"
+    stale_user_dropin.parent.mkdir(parents=True)
+    stale_user_dropin.write_text("[Service]\nEnvironment=DEMO=user\n", encoding="utf-8")
+    system_dir = tmp_path / "systemd-system"
+    system_dir.mkdir()
+    bin_dir, systemctl_calls = _fake_systemctl_with_system_witness(tmp_path, system_dir)
+    script = _post_merge_script_with_system_dir(tmp_path, system_dir)
+    trace_path = tmp_path / "traces/post-merge-traces.jsonl"
+    env = {
+        **os.environ,
+        "HOME": str(home),
+        "PATH": f"{bin_dir}:{os.environ['PATH']}",
+        "REPO": str(repo),
+        "HAPAX_SYSTEMCTL_CALLS": str(systemctl_calls),
+        "HAPAX_POST_MERGE_TRACE_PATH": str(trace_path),
+    }
+
+    result = subprocess.run(
+        [str(script), sha],
+        text=True,
+        capture_output=True,
+        check=False,
+        env=env,
+    )
+
+    assert result.returncode == 0, result.stderr
+    assert not stale_user_dropin.exists()
+    assert "--user restart demo-root.service" not in (
+        systemctl_calls.read_text(encoding="utf-8") if systemctl_calls.exists() else ""
+    )
+    record = json.loads(trace_path.read_text(encoding="utf-8").splitlines()[-1])
+    assert record["runtime_deferred"] == [f"systemd-system-dropin:{dropin_path}"]
+    assert record["deploy_groups"]["systemd_dropins"] == []
+    assert record["deploy_groups"]["systemd_system_dropins"] == [dropin_path]
+    pending_path = trace_path.parent / "systemd-runtime-pending.json"
+    assert json.loads(pending_path.read_text(encoding="utf-8"))["paths"] == [dropin_path]
+
+    (repo / "README.md").write_text("unrelated drop-in successor\n", encoding="utf-8")
+    _git(repo, "add", "README.md")
+    _git(repo, "commit", "-m", "unrelated drop-in successor")
+    successor_sha = _git(repo, "rev-parse", "HEAD")
+    (system_dir / "demo-root.service").write_text(unit_body, encoding="utf-8")
+    installed_dropin = system_dir / "demo-root.service.d/override.conf"
+    installed_dropin.parent.mkdir()
+    installed_dropin.write_text(dropin_body, encoding="utf-8")
+
+    converged = subprocess.run(
+        [str(script), successor_sha],
+        text=True,
+        capture_output=True,
+        check=False,
+        env=env,
+    )
+
+    assert converged.returncode == 0, converged.stderr
+    assert not pending_path.exists()
+    replay_record = json.loads(trace_path.read_text(encoding="utf-8").splitlines()[-1])
+    assert replay_record["changed_files"] == ["README.md"]
+    assert replay_record["systemd_runtime_replayed"] == [dropin_path]
+    assert replay_record["runtime_deferred"] == []
+
+
+def test_deleted_system_dropin_converges_with_absent_dropin_directory(
+    tmp_path: Path,
+) -> None:
+    unit_path = "systemd/units/demo-root.service"
+    dropin_path = f"{unit_path}.d/override.conf"
+    unit_body = (
+        "[Unit]\n# Hapax-Install-Scope: system\n[Service]\nType=oneshot\nExecStart=/usr/bin/true\n"
+    )
+    repo, _ = _repo_with_linear_commit(
+        tmp_path,
+        {
+            unit_path: unit_body,
+            dropin_path: "[Service]\nEnvironment=OLD=yes\n",
+        },
+    )
+    (repo / dropin_path).unlink()
+    _git(repo, "add", "-u")
+    _git(repo, "commit", "-m", "delete system drop-in")
+    sha = _git(repo, "rev-parse", "HEAD")
+
+    home = tmp_path / "home"
+    system_dir = tmp_path / "systemd-system"
+    system_dir.mkdir()
+    (system_dir / Path(unit_path).name).write_text(unit_body, encoding="utf-8")
+    assert not (system_dir / "demo-root.service.d").exists()
+    script = _post_merge_script_with_system_dir(tmp_path, system_dir)
+    bin_dir, systemctl_calls = _fake_systemctl_with_system_witness(tmp_path, system_dir)
+    trace_path = tmp_path / "traces/post-merge-traces.jsonl"
+
+    result = subprocess.run(
+        [str(script), sha],
+        text=True,
+        capture_output=True,
+        check=False,
+        env={
+            **os.environ,
+            "HOME": str(home),
+            "PATH": f"{bin_dir}:{os.environ['PATH']}",
+            "REPO": str(repo),
+            "HAPAX_SYSTEMCTL_CALLS": str(systemctl_calls),
+            "HAPAX_POST_MERGE_TRACE_PATH": str(trace_path),
+        },
+    )
+
+    assert result.returncode == 0, result.stderr
+    assert "exact file and system-manager witness" in result.stdout
+    record = json.loads(trace_path.read_text(encoding="utf-8").splitlines()[-1])
+    assert record["runtime_deferred"] == []
+    assert record["deploy_groups"]["systemd_system_dropins"] == [dropin_path]
+    assert not (trace_path.parent / "systemd-runtime-pending.json").exists()
+
+
+@pytest.mark.parametrize("hostile_state", ("writable", "mutated-during-query"))
+def test_system_unit_with_no_dropins_requires_stable_trusted_empty_directory(
+    tmp_path: Path,
+    hostile_state: str,
+) -> None:
+    unit_path = "systemd/units/demo-root.service"
+    old_body = (
+        "[Unit]\n# Hapax-Install-Scope: system\n[Service]\nType=oneshot\nExecStart=/usr/bin/true\n"
+    )
+    new_body = old_body.replace("/usr/bin/true", "/usr/bin/false")
+    repo, _ = _repo_with_linear_commit(tmp_path, {unit_path: old_body})
+    (repo / unit_path).write_text(new_body, encoding="utf-8")
+    _git(repo, "add", unit_path)
+    _git(repo, "commit", "-m", "change system unit without drop-ins")
+    sha = _git(repo, "rev-parse", "HEAD")
+
+    home = tmp_path / "home"
+    system_dir = tmp_path / "systemd-system"
+    system_dir.mkdir()
+    (system_dir / Path(unit_path).name).write_text(new_body, encoding="utf-8")
+    installed_dropin_dir = system_dir / "demo-root.service.d"
+    installed_dropin_dir.mkdir()
+    bin_dir, systemctl_calls = _fake_systemctl_with_system_witness(tmp_path, system_dir)
+    if hostile_state == "writable":
+        installed_dropin_dir.chmod(0o777)
+    else:
+        baseline = bin_dir / "systemctl-baseline"
+        (bin_dir / "systemctl").rename(baseline)
+        (bin_dir / "systemctl").write_text(
+            "#!/usr/bin/env bash\n"
+            "set -euo pipefail\n"
+            f'"{baseline}" "$@"\n'
+            'if [[ "$*" == "show demo-root.service --property='
+            'LoadState,FragmentPath,DropInPaths,NeedDaemonReload --no-pager" ]]; then\n'
+            f'  : > "{installed_dropin_dir}/transient"\n'
+            f'  /usr/bin/rm -f -- "{installed_dropin_dir}/transient"\n'
+            "fi\n",
+            encoding="utf-8",
+        )
+        (bin_dir / "systemctl").chmod(0o755)
+
+    trace_path = tmp_path / "traces/post-merge-traces.jsonl"
+    script = _post_merge_script_with_system_dir(tmp_path, system_dir)
+    result = subprocess.run(
+        [str(script), sha],
+        text=True,
+        capture_output=True,
+        check=False,
+        env={
+            **os.environ,
+            "HOME": str(home),
+            "PATH": f"{bin_dir}:{os.environ['PATH']}",
+            "REPO": str(repo),
+            "HAPAX_SYSTEMCTL_CALLS": str(systemctl_calls),
+            "HAPAX_POST_MERGE_TRACE_PATH": str(trace_path),
+        },
+    )
+
+    assert result.returncode == 0, result.stderr
+    assert "runtime deferred" in result.stderr
+    record = json.loads(trace_path.read_text(encoding="utf-8").splitlines()[-1])
+    assert record["runtime_deferred"] == [f"systemd-system:{unit_path}"]
 
 
 def test_generic_slice_dropin_rejects_symlink_with_removed_property(tmp_path: Path) -> None:
@@ -2767,28 +4341,315 @@ def test_systemd_coverage_still_flags_unknown_systemd_paths() -> None:
     assert "systemd/uncovered/example.conf" in result.stderr
 
 
-def test_system_scoped_units_skip_user_deploy_and_clean_stale_copy(tmp_path: Path) -> None:
+def test_system_scoped_units_defer_runtime_without_blocking_source_deploy(tmp_path: Path) -> None:
     unit_path = "systemd/units/hapax-l12-critical-usb-guard.service"
+    unit_body = (
+        "[Unit]\n"
+        "  # Hapax-Install-Scope : system  \n"
+        "Description=System scoped guard\n"
+        "\n"
+        "[Service]\n"
+        "Type=oneshot\n"
+        "ExecStart=/usr/local/bin/hapax-l12-critical-usb-guard\n"
+    )
     repo, sha = _repo_with_linear_commit(
         tmp_path,
-        {
-            unit_path: (
-                "[Unit]\n"
-                "# Hapax-Install-Scope: system\n"
-                "Description=System scoped guard\n"
-                "\n"
-                "[Service]\n"
-                "Type=oneshot\n"
-                "ExecStart=/usr/local/bin/hapax-l12-critical-usb-guard\n"
-            )
-        },
+        {unit_path: unit_body},
     )
     home = tmp_path / "home"
     stale_user_unit = home / ".config" / "systemd" / "user" / "hapax-l12-critical-usb-guard.service"
     stale_user_unit.parent.mkdir(parents=True)
     stale_user_unit.write_text("stale\n", encoding="utf-8")
-    bin_dir, systemctl_calls = _fake_systemctl(tmp_path)
     trace_path = tmp_path / "traces" / "post-merge-traces.jsonl"
+    cursor = tmp_path / "traces" / "last-deployed-sha"
+    system_dir = tmp_path / "systemd-system"
+    system_dir.mkdir()
+    bin_dir, systemctl_calls = _fake_systemctl_with_system_witness(tmp_path, system_dir)
+    script = _post_merge_script_with_system_dir(tmp_path, system_dir)
+    reload_marker = tmp_path / "system-needs-daemon-reload"
+    env = {
+        **os.environ,
+        "HOME": str(home),
+        "PATH": f"{bin_dir}:{os.environ['PATH']}",
+        "REPO": str(repo),
+        "HAPAX_SYSTEMCTL_CALLS": str(systemctl_calls),
+        "HAPAX_POST_MERGE_TRACE_PATH": str(trace_path),
+        "HAPAX_POST_MERGE_LAST_DEPLOYED_SHA_PATH": str(cursor),
+        "HAPAX_SYSTEMCTL_NEEDS_RELOAD_MARKER": str(reload_marker),
+    }
+
+    deferred = subprocess.run(
+        [str(script), sha],
+        text=True,
+        capture_output=True,
+        check=False,
+        env=env,
+    )
+
+    assert deferred.returncode == 0, deferred.stderr
+    assert "runtime deferred" in deferred.stderr
+    assert not stale_user_unit.exists()
+    assert cursor.read_text(encoding="utf-8").strip() == sha
+    deferred_record = json.loads(trace_path.read_text(encoding="utf-8").splitlines()[-1])
+    assert deferred_record["status"] == "completed_with_runtime_deferral"
+    assert deferred_record["runtime_deferred"] == [f"systemd-system:{unit_path}"]
+    pending_path = trace_path.parent / "systemd-runtime-pending.json"
+    assert json.loads(pending_path.read_text(encoding="utf-8")) == {
+        "schema_version": 1,
+        "paths": [unit_path],
+    }
+
+    (repo / "README.md").write_text("unrelated successor\n", encoding="utf-8")
+    _git(repo, "add", "README.md")
+    _git(repo, "commit", "-m", "unrelated successor")
+    successor_sha = _git(repo, "rev-parse", "HEAD")
+
+    (system_dir / Path(unit_path).name).write_text(unit_body, encoding="utf-8")
+    reload_marker.touch()
+    not_reloaded = subprocess.run(
+        [str(script), successor_sha],
+        text=True,
+        capture_output=True,
+        check=False,
+        env=env,
+    )
+
+    assert not_reloaded.returncode == 0
+    assert "system manager has not loaded" in not_reloaded.stderr
+    assert cursor.read_text(encoding="utf-8").strip() == successor_sha
+    replay_record = json.loads(trace_path.read_text(encoding="utf-8").splitlines()[-1])
+    assert replay_record["changed_files"] == ["README.md"]
+    assert replay_record["systemd_runtime_replayed"] == [unit_path]
+    assert json.loads(pending_path.read_text(encoding="utf-8"))["paths"] == [unit_path]
+
+    reload_marker.unlink()
+    result = subprocess.run(
+        [str(script), successor_sha],
+        text=True,
+        capture_output=True,
+        check=False,
+        env=env,
+    )
+
+    assert result.returncode == 0, result.stderr
+    assert "exact file and system-manager witness" in result.stdout
+    assert cursor.read_text(encoding="utf-8").strip() == successor_sha
+    assert not pending_path.exists()
+    calls = systemctl_calls.read_text(encoding="utf-8")
+    assert "--user disable --now hapax-l12-critical-usb-guard.service" in calls
+    assert "--user daemon-reload" in calls
+    record = json.loads(trace_path.read_text(encoding="utf-8").splitlines()[-1])
+    assert record["deploy_groups"]["systemd_system_units"] == [unit_path]
+    assert record["deploy_groups"]["systemd_units"] == []
+
+
+def test_changed_system_scoped_unit_records_deferral_until_exact_bytes_are_installed(
+    tmp_path: Path,
+) -> None:
+    unit_path = "systemd/units/hapax-system-demo.service"
+    old_body = (
+        "[Unit]\n# Hapax-Install-Scope: system\n[Service]\nType=oneshot\nExecStart=/usr/bin/true\n"
+    )
+    new_body = old_body.replace("/usr/bin/true", "/usr/bin/false")
+    repo, _ = _repo_with_linear_commit(tmp_path, {unit_path: old_body})
+    (repo / unit_path).write_text(new_body, encoding="utf-8")
+    _git(repo, "add", unit_path)
+    _git(repo, "commit", "-m", "change system unit")
+    sha = _git(repo, "rev-parse", "HEAD")
+    home = tmp_path / "home"
+    system_dir = tmp_path / "systemd-system"
+    system_dir.mkdir()
+    installed = system_dir / Path(unit_path).name
+    installed.write_text(old_body, encoding="utf-8")
+    script = _post_merge_script_with_system_dir(tmp_path, system_dir)
+    bin_dir, systemctl_calls = _fake_systemctl_with_system_witness(tmp_path, system_dir)
+    trace_path = tmp_path / "traces/post-merge-traces.jsonl"
+    cursor = tmp_path / "traces/last-deployed-sha"
+    env = {
+        **os.environ,
+        "HOME": str(home),
+        "PATH": f"{bin_dir}:{os.environ['PATH']}",
+        "REPO": str(repo),
+        "HAPAX_SYSTEMCTL_CALLS": str(systemctl_calls),
+        "HAPAX_POST_MERGE_TRACE_PATH": str(trace_path),
+        "HAPAX_POST_MERGE_LAST_DEPLOYED_SHA_PATH": str(cursor),
+    }
+
+    deferred = subprocess.run(
+        [str(script), sha], text=True, capture_output=True, check=False, env=env
+    )
+    assert deferred.returncode == 0, deferred.stderr
+    assert cursor.read_text(encoding="utf-8").strip() == sha
+    deferred_record = json.loads(trace_path.read_text(encoding="utf-8").splitlines()[-1])
+    assert deferred_record["status"] == "completed_with_runtime_deferral"
+
+    installed.write_text(new_body, encoding="utf-8")
+    converged = subprocess.run(
+        [str(script), sha], text=True, capture_output=True, check=False, env=env
+    )
+    assert converged.returncode == 0, converged.stderr
+    assert cursor.read_text(encoding="utf-8").strip() == sha
+
+
+@pytest.mark.parametrize(
+    "hostile_state",
+    ["owner", "mode", "hardlink", "ancestor-mode", "sibling-content"],
+)
+def test_system_manager_witness_rejects_untrusted_effective_unit_files(
+    tmp_path: Path,
+    hostile_state: str,
+) -> None:
+    unit_path = "systemd/units/hapax-system-demo.service"
+    dropin_path = f"{unit_path}.d/override.conf"
+    old_body = (
+        "[Unit]\n# Hapax-Install-Scope: system\n[Service]\nType=oneshot\nExecStart=/usr/bin/true\n"
+    )
+    new_body = old_body.replace("/usr/bin/true", "/usr/bin/false")
+    dropin_body = "[Service]\nEnvironment=PINNED=yes\n"
+    repo, _ = _repo_with_linear_commit(
+        tmp_path,
+        {unit_path: old_body, dropin_path: dropin_body},
+    )
+    (repo / unit_path).write_text(new_body, encoding="utf-8")
+    _git(repo, "add", unit_path)
+    _git(repo, "commit", "-m", "change exact system unit")
+    sha = _git(repo, "rev-parse", "HEAD")
+
+    home = tmp_path / "home"
+    system_dir = tmp_path / "systemd-system"
+    system_dir.mkdir()
+    installed = system_dir / Path(unit_path).name
+    installed.write_text(new_body, encoding="utf-8")
+    installed_dropin = system_dir / Path(dropin_path).relative_to("systemd/units")
+    installed_dropin.parent.mkdir()
+    installed_dropin.write_text(dropin_body, encoding="utf-8")
+
+    expected_uid = None
+    if hostile_state == "owner":
+        expected_uid = os.geteuid() + 1
+    elif hostile_state == "mode":
+        installed.chmod(0o664)
+    elif hostile_state == "hardlink":
+        os.link(installed, system_dir / "unexpected-hardlink")
+    elif hostile_state == "ancestor-mode":
+        system_dir.chmod(0o777)
+    elif hostile_state == "sibling-content":
+        installed_dropin.write_text("[Service]\nEnvironment=HOSTILE=yes\n", encoding="utf-8")
+    else:  # pragma: no cover - exhaustive parametrization guard
+        raise AssertionError(hostile_state)
+
+    script = _post_merge_script_with_system_dir(
+        tmp_path,
+        system_dir,
+        expected_uid=expected_uid,
+    )
+    bin_dir, systemctl_calls = _fake_systemctl_with_system_witness(tmp_path, system_dir)
+    trace_path = tmp_path / "traces/post-merge-traces.jsonl"
+    result = subprocess.run(
+        [str(script), sha],
+        text=True,
+        capture_output=True,
+        check=False,
+        env={
+            **os.environ,
+            "HOME": str(home),
+            "PATH": f"{bin_dir}:{os.environ['PATH']}",
+            "REPO": str(repo),
+            "HAPAX_SYSTEMCTL_CALLS": str(systemctl_calls),
+            "HAPAX_POST_MERGE_TRACE_PATH": str(trace_path),
+        },
+    )
+
+    assert result.returncode == 0, result.stderr
+    assert "runtime deferred" in result.stderr
+    record = json.loads(trace_path.read_text(encoding="utf-8").splitlines()[-1])
+    assert record["status"] == "completed_with_runtime_deferral"
+    assert record["runtime_deferred"] == [f"systemd-system:{unit_path}"]
+
+
+def test_system_scope_retirement_rechecks_user_filesystem_after_manager_query(
+    tmp_path: Path,
+) -> None:
+    unit_path = "systemd/units/hapax-system-race.service"
+    old_body = (
+        "[Unit]\n# Hapax-Install-Scope: system\n[Service]\nType=oneshot\nExecStart=/usr/bin/true\n"
+    )
+    new_body = old_body.replace("/usr/bin/true", "/usr/bin/false")
+    repo, _ = _repo_with_linear_commit(tmp_path, {unit_path: old_body})
+    (repo / unit_path).write_text(new_body, encoding="utf-8")
+    _git(repo, "add", unit_path)
+    _git(repo, "commit", "-m", "change system race unit")
+    sha = _git(repo, "rev-parse", "HEAD")
+
+    home = tmp_path / "home"
+    user_dir = home / ".config/systemd/user"
+    wants_dir = user_dir / "default.target.wants"
+    wants_dir.mkdir(parents=True)
+    system_dir = tmp_path / "systemd-system"
+    system_dir.mkdir()
+    (system_dir / Path(unit_path).name).write_text(new_body, encoding="utf-8")
+    script = _post_merge_script_with_system_dir(tmp_path, system_dir)
+    bin_dir, systemctl_calls = _fake_systemctl_with_system_witness(tmp_path, system_dir)
+    systemctl = bin_dir / "systemctl"
+    baseline = bin_dir / "systemctl-baseline"
+    systemctl.rename(baseline)
+    injected = wants_dir / Path(unit_path).name
+    systemctl.write_text(
+        "#!/usr/bin/env bash\n"
+        "set -euo pipefail\n"
+        f'if [ "$*" = "--user show {Path(unit_path).name} '
+        '--property=LoadState,FragmentPath,ActiveState,SubState --no-pager" ]; then\n'
+        f"  /usr/bin/ln -s /dev/null {shlex.quote(str(injected))}\n"
+        "fi\n"
+        f'exec {shlex.quote(str(baseline))} "$@"\n',
+        encoding="utf-8",
+    )
+    systemctl.chmod(0o755)
+    trace_path = tmp_path / "traces/post-merge-traces.jsonl"
+
+    result = subprocess.run(
+        [str(script), sha],
+        text=True,
+        capture_output=True,
+        check=False,
+        env={
+            **os.environ,
+            "HOME": str(home),
+            "PATH": f"{bin_dir}:{os.environ['PATH']}",
+            "REPO": str(repo),
+            "HAPAX_SYSTEMCTL_CALLS": str(systemctl_calls),
+            "HAPAX_POST_MERGE_TRACE_PATH": str(trace_path),
+        },
+    )
+
+    assert result.returncode != 0
+    assert "filesystem state changed across the manager absence witness" in result.stderr
+    assert injected.is_symlink()
+    assert not (trace_path.parent / "last-deployed-sha").exists()
+
+
+def test_system_to_user_scope_transition_defers_then_replays_after_system_absence(
+    tmp_path: Path,
+) -> None:
+    unit_path = "systemd/units/hapax-scope-transition.service"
+    system_body = (
+        "[Unit]\n# Hapax-Install-Scope: system\n[Service]\nType=oneshot\nExecStart=/usr/bin/true\n"
+    )
+    user_body = "[Service]\nType=oneshot\nExecStart=/usr/bin/true\n"
+    repo, _ = _repo_with_linear_commit(tmp_path, {unit_path: system_body})
+    (repo / unit_path).write_text(user_body, encoding="utf-8")
+    _git(repo, "add", unit_path)
+    _git(repo, "commit", "-m", "move unit to user scope")
+    sha = _git(repo, "rev-parse", "HEAD")
+    home = tmp_path / "home"
+    system_dir = tmp_path / "systemd-system"
+    system_dir.mkdir()
+    installed_system_unit = system_dir / Path(unit_path).name
+    installed_system_unit.write_text(system_body, encoding="utf-8")
+    script = _post_merge_script_with_system_dir(tmp_path, system_dir)
+    bin_dir, systemctl_calls = _fake_systemctl_with_system_witness(tmp_path, system_dir)
+    trace_path = tmp_path / "traces/post-merge-traces.jsonl"
+    pending_path = trace_path.parent / "systemd-runtime-pending.json"
     env = {
         **os.environ,
         "HOME": str(home),
@@ -2798,8 +4659,26 @@ def test_system_scoped_units_skip_user_deploy_and_clean_stale_copy(tmp_path: Pat
         "HAPAX_POST_MERGE_TRACE_PATH": str(trace_path),
     }
 
+    deferred = subprocess.run(
+        [str(script), sha],
+        text=True,
+        capture_output=True,
+        check=False,
+        env=env,
+    )
+
+    assert deferred.returncode == 0, deferred.stderr
+    assert "refusing user-manager publication" in deferred.stderr
+    assert not (home / ".config/systemd/user/hapax-scope-transition.service").exists()
+    assert json.loads(pending_path.read_text(encoding="utf-8"))["paths"] == [unit_path]
+
+    installed_system_unit.unlink()
+    (repo / "README.md").write_text("unrelated transition successor\n", encoding="utf-8")
+    _git(repo, "add", "README.md")
+    _git(repo, "commit", "-m", "unrelated transition successor")
+    successor_sha = _git(repo, "rev-parse", "HEAD")
     result = subprocess.run(
-        [str(SCRIPT), sha],
+        [str(script), successor_sha],
         text=True,
         capture_output=True,
         check=False,
@@ -2807,14 +4686,237 @@ def test_system_scoped_units_skip_user_deploy_and_clean_stale_copy(tmp_path: Pat
     )
 
     assert result.returncode == 0, result.stderr
-    assert "system-scoped systemd units changed" in result.stdout
-    assert not stale_user_unit.exists()
-    calls = systemctl_calls.read_text(encoding="utf-8")
-    assert "--user disable --now hapax-l12-critical-usb-guard.service" in calls
-    assert "--user daemon-reload" in calls
+    assert "system-to-user transition witness converged" in result.stdout
+    assert not pending_path.exists()
+    assert (home / ".config/systemd/user/hapax-scope-transition.service").read_text(
+        encoding="utf-8"
+    ) == user_body
+
+
+def test_pending_systemd_queue_conflict_preserves_concurrent_addition_and_removal(
+    tmp_path: Path,
+) -> None:
+    unit_path = "systemd/units/hapax-pending-a.service"
+    concurrent_path = "systemd/units/hapax-pending-b.service"
+    unit_body = (
+        "[Unit]\n# Hapax-Install-Scope: system\n[Service]\nType=oneshot\nExecStart=/usr/bin/true\n"
+    )
+    repo, _ = _repo_with_linear_commit(tmp_path, {unit_path: unit_body})
+    (repo / "README.md").write_text("unrelated replay trigger\n", encoding="utf-8")
+    _git(repo, "add", "README.md")
+    _git(repo, "commit", "-m", "unrelated replay trigger")
+    sha = _git(repo, "rev-parse", "HEAD")
+    home = tmp_path / "home"
+    system_dir = tmp_path / "systemd-system"
+    system_dir.mkdir()
+    (system_dir / Path(unit_path).name).write_text(unit_body, encoding="utf-8")
+    script = _post_merge_script_with_system_dir(tmp_path, system_dir)
+    bin_dir, systemctl_calls = _fake_systemctl_with_system_witness(tmp_path, system_dir)
+    real_systemctl = bin_dir / "systemctl-real"
+    (bin_dir / "systemctl").rename(real_systemctl)
+    manager_marker = tmp_path / "manager-witness-started"
+    manager_release = tmp_path / "manager-witness-release"
+    (bin_dir / "systemctl").write_text(
+        "#!/usr/bin/env bash\n"
+        "set -euo pipefail\n"
+        'if [ "${1:-}" = show ] && [ ! -e "$HAPAX_MANAGER_WITNESS_MARKER" ]; then\n'
+        '  : > "$HAPAX_MANAGER_WITNESS_MARKER"\n'
+        '  while [ ! -e "$HAPAX_MANAGER_WITNESS_RELEASE" ]; do /usr/bin/sleep 0.01; done\n'
+        "fi\n"
+        f'exec {shlex.quote(str(real_systemctl))} "$@"\n',
+        encoding="utf-8",
+    )
+    (bin_dir / "systemctl").chmod(0o755)
+    trace_path = tmp_path / "traces/post-merge-traces.jsonl"
+    pending_path = trace_path.parent / "systemd-runtime-pending.json"
+    pending_path.parent.mkdir(parents=True)
+    pending_path.write_text(
+        json.dumps({"schema_version": 1, "paths": [unit_path]}) + "\n",
+        encoding="utf-8",
+    )
+    pending_path.chmod(0o600)
+    env = {
+        **os.environ,
+        "HOME": str(home),
+        "PATH": f"{bin_dir}:{os.environ['PATH']}",
+        "REPO": str(repo),
+        "HAPAX_SYSTEMCTL_CALLS": str(systemctl_calls),
+        "HAPAX_POST_MERGE_TRACE_PATH": str(trace_path),
+        "HAPAX_MANAGER_WITNESS_MARKER": str(manager_marker),
+        "HAPAX_MANAGER_WITNESS_RELEASE": str(manager_release),
+    }
+
+    process = subprocess.Popen(
+        [str(script), sha],
+        text=True,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        env=env,
+    )
+    try:
+        deadline = time.monotonic() + 10
+        while (
+            not manager_marker.exists() and process.poll() is None and time.monotonic() < deadline
+        ):
+            time.sleep(0.01)
+        assert manager_marker.exists(), "deploy did not reach the system-manager witness"
+        pending_path.write_text(
+            json.dumps(
+                {"schema_version": 1, "paths": [unit_path, concurrent_path]},
+                sort_keys=True,
+                separators=(",", ":"),
+            )
+            + "\n",
+            encoding="utf-8",
+        )
+        pending_path.chmod(0o600)
+    finally:
+        manager_release.touch()
+        stdout, stderr = process.communicate(timeout=10)
+
+    assert process.returncode == 0, (stdout, stderr)
+    assert json.loads(pending_path.read_text(encoding="utf-8"))["paths"] == [
+        unit_path,
+        concurrent_path,
+    ]
+
+
+def test_deleted_system_scoped_unit_records_deferral_until_installed_copy_is_absent(
+    tmp_path: Path,
+) -> None:
+    unit_path = "systemd/units/hapax-system-demo.service"
+    unit_body = (
+        "[Unit]\n# Hapax-Install-Scope: system\n[Service]\nType=oneshot\nExecStart=/usr/bin/true\n"
+    )
+    repo, _ = _repo_with_linear_commit(tmp_path, {unit_path: unit_body})
+    (repo / unit_path).unlink()
+    _git(repo, "add", "-u")
+    _git(repo, "commit", "-m", "delete system unit")
+    sha = _git(repo, "rev-parse", "HEAD")
+    home = tmp_path / "home"
+    system_dir = tmp_path / "systemd-system"
+    system_dir.mkdir()
+    installed = system_dir / Path(unit_path).name
+    installed.write_text(unit_body, encoding="utf-8")
+    script = _post_merge_script_with_system_dir(tmp_path, system_dir)
+    bin_dir, systemctl_calls = _fake_systemctl_with_system_witness(tmp_path, system_dir)
+    trace_path = tmp_path / "traces/post-merge-traces.jsonl"
+    cursor = tmp_path / "traces/last-deployed-sha"
+    env = {
+        **os.environ,
+        "HOME": str(home),
+        "PATH": f"{bin_dir}:{os.environ['PATH']}",
+        "REPO": str(repo),
+        "HAPAX_SYSTEMCTL_CALLS": str(systemctl_calls),
+        "HAPAX_POST_MERGE_TRACE_PATH": str(trace_path),
+        "HAPAX_POST_MERGE_LAST_DEPLOYED_SHA_PATH": str(cursor),
+    }
+
+    deferred = subprocess.run(
+        [str(script), sha], text=True, capture_output=True, check=False, env=env
+    )
+    assert deferred.returncode == 0, deferred.stderr
+    assert cursor.read_text(encoding="utf-8").strip() == sha
+    deferred_record = json.loads(trace_path.read_text(encoding="utf-8").splitlines()[-1])
+    assert deferred_record["status"] == "completed_with_runtime_deferral"
+    pending_path = trace_path.parent / "systemd-runtime-pending.json"
+    assert json.loads(pending_path.read_text(encoding="utf-8"))["paths"] == [unit_path]
+
+    (repo / "README.md").write_text("successor after deletion\n", encoding="utf-8")
+    _git(repo, "add", "README.md")
+    _git(repo, "commit", "-m", "unrelated successor after deletion")
+    successor_sha = _git(repo, "rev-parse", "HEAD")
+
+    installed.unlink()
+    converged = subprocess.run(
+        [str(script), successor_sha], text=True, capture_output=True, check=False, env=env
+    )
+    assert converged.returncode == 0, converged.stderr
+    assert cursor.read_text(encoding="utf-8").strip() == successor_sha
+    assert not pending_path.exists()
+    replay_record = json.loads(trace_path.read_text(encoding="utf-8").splitlines()[-1])
+    assert replay_record["changed_files"] == ["README.md"]
+    assert replay_record["systemd_runtime_replayed"] == [unit_path]
+
+
+def test_malformed_system_scope_marker_is_refused(tmp_path: Path) -> None:
+    unit_path = "systemd/units/hapax-user-demo.service"
+    unit_body = (
+        "[Unit]\n# Hapax-Install-Scope: system disabled\n"
+        "[Service]\nType=oneshot\nExecStart=/usr/bin/true\n"
+    )
+    repo, sha = _repo_with_linear_commit(tmp_path, {unit_path: unit_body})
+    home = tmp_path / "home"
+    bin_dir, systemctl_calls = _fake_systemctl(tmp_path)
+    trace_path = tmp_path / "traces/post-merge-traces.jsonl"
+
+    result = subprocess.run(
+        [str(SCRIPT), sha],
+        text=True,
+        capture_output=True,
+        check=False,
+        env={
+            **os.environ,
+            "HOME": str(home),
+            "PATH": f"{bin_dir}:{os.environ['PATH']}",
+            "REPO": str(repo),
+            "HAPAX_SYSTEMCTL_CALLS": str(systemctl_calls),
+            "HAPAX_POST_MERGE_TRACE_PATH": str(trace_path),
+        },
+    )
+
+    assert result.returncode != 0
+    assert "malformed Hapax-Install-Scope marker" in result.stderr
+    assert not (home / ".config/systemd/user/hapax-user-demo.service").exists()
+    assert not (trace_path.parent / "last-deployed-sha").exists()
+
+
+def test_system_manager_witness_rejects_file_generation_change(tmp_path: Path) -> None:
+    unit_path = "systemd/units/hapax-system-demo.service"
+    unit_body = (
+        "[Unit]\n# Hapax-Install-Scope: system\n[Service]\nType=oneshot\nExecStart=/usr/bin/true\n"
+    )
+    repo, sha = _repo_with_linear_commit(tmp_path, {unit_path: unit_body})
+    home = tmp_path / "home"
+    system_dir = tmp_path / "systemd-system"
+    system_dir.mkdir()
+    installed = system_dir / Path(unit_path).name
+    installed.write_text(unit_body, encoding="utf-8")
+    script = _post_merge_script_with_system_dir(tmp_path, system_dir)
+    bin_dir, systemctl_calls = _fake_systemctl_with_system_witness(tmp_path, system_dir)
+    systemctl = bin_dir / "systemctl"
+    original = systemctl.read_text(encoding="utf-8")
+    mutation = f'printf "drifted\\n" > {shlex.quote(str(installed))}\n'
+    systemctl.write_text(
+        original.replace(
+            'if [ "${1:-}" = show ]; then\n',
+            f'if [ "${{1:-}}" = show ]; then\n{mutation}',
+            1,
+        ),
+        encoding="utf-8",
+    )
+    trace_path = tmp_path / "traces/post-merge-traces.jsonl"
+
+    result = subprocess.run(
+        [str(script), sha],
+        text=True,
+        capture_output=True,
+        check=False,
+        env={
+            **os.environ,
+            "HOME": str(home),
+            "PATH": f"{bin_dir}:{os.environ['PATH']}",
+            "REPO": str(repo),
+            "HAPAX_SYSTEMCTL_CALLS": str(systemctl_calls),
+            "HAPAX_POST_MERGE_TRACE_PATH": str(trace_path),
+        },
+    )
+
+    assert result.returncode == 0, result.stderr
+    assert "exact file and system-manager witness" not in result.stdout
     record = json.loads(trace_path.read_text(encoding="utf-8").splitlines()[-1])
-    assert record["deploy_groups"]["systemd_system_units"] == [unit_path]
-    assert record["deploy_groups"]["systemd_units"] == []
+    assert record["status"] == "completed_with_runtime_deferral"
+    assert record["runtime_deferred"] == [f"systemd-system:{unit_path}"]
 
 
 def test_user_scoped_units_still_deploy_to_user_dir(tmp_path: Path) -> None:
@@ -2865,6 +4967,163 @@ def test_user_scoped_units_still_deploy_to_user_dir(tmp_path: Path) -> None:
     record = json.loads(trace_path.read_text(encoding="utf-8").splitlines()[-1])
     assert record["deploy_groups"]["systemd_units"] == [unit_path]
     assert record["deploy_groups"]["systemd_system_units"] == []
+
+
+def test_systemd_scope_classification_git_failure_preserves_existing_unit(
+    tmp_path: Path,
+) -> None:
+    unit_path = "systemd/units/hapax-system-demo.service"
+    repo, sha = _repo_with_linear_commit(
+        tmp_path,
+        {
+            unit_path: (
+                "[Unit]\n"
+                "# Hapax-Install-Scope: system\n"
+                "[Service]\n"
+                "Type=oneshot\n"
+                "ExecStart=/usr/bin/true\n"
+            )
+        },
+    )
+    home = tmp_path / "home"
+    installed = home / ".config/systemd/user/hapax-system-demo.service"
+    installed.parent.mkdir(parents=True)
+    installed.write_text("prior user unit\n", encoding="utf-8")
+    systemctl_bin, systemctl_calls = _fake_systemctl(tmp_path)
+    git_bin = _fake_git_with_show_failure(tmp_path)
+    trace_path = tmp_path / "traces/post-merge-traces.jsonl"
+    cursor = tmp_path / "traces/last-deployed-sha"
+
+    result = subprocess.run(
+        [str(SCRIPT), sha],
+        text=True,
+        capture_output=True,
+        check=False,
+        env={
+            **os.environ,
+            "HOME": str(home),
+            "PATH": f"{git_bin}:{systemctl_bin}:{os.environ['PATH']}",
+            "REPO": str(repo),
+            "HAPAX_SYSTEMCTL_CALLS": str(systemctl_calls),
+            "HAPAX_POST_MERGE_TRACE_PATH": str(trace_path),
+            "HAPAX_POST_MERGE_LAST_DEPLOYED_SHA_PATH": str(cursor),
+            "HAPAX_FAIL_GIT_SHOW_OBJECT": f"{sha}:{unit_path}",
+            "HAPAX_FAIL_GIT_SHOW_COUNT_FILE": str(tmp_path / "git-show.count"),
+            "HAPAX_FAIL_GIT_SHOW_ON_COUNT": "1",
+        },
+    )
+
+    assert result.returncode != 0
+    assert "failed to read systemd unit while classifying install scope" in result.stderr
+    assert installed.read_text(encoding="utf-8") == "prior user unit\n"
+    assert not cursor.exists()
+
+
+def test_systemd_scope_reconciliation_git_failure_precedes_user_mutation(
+    tmp_path: Path,
+) -> None:
+    unit_path = "systemd/units/hapax-system-demo.service"
+    repo, sha = _repo_with_linear_commit(
+        tmp_path,
+        {
+            unit_path: (
+                "[Unit]\n"
+                "# Hapax-Install-Scope: system\n"
+                "[Service]\n"
+                "Type=oneshot\n"
+                "ExecStart=/usr/bin/true\n"
+            )
+        },
+    )
+    home = tmp_path / "home"
+    installed = home / ".config/systemd/user/hapax-system-demo.service"
+    installed.parent.mkdir(parents=True)
+    installed.write_text("prior user unit\n", encoding="utf-8")
+    systemctl_bin, systemctl_calls = _fake_systemctl(tmp_path)
+    git_bin = _fake_git_with_ls_tree_failure(tmp_path)
+    script = _post_merge_script_with_system_dir(tmp_path, tmp_path / "systemd-system")
+    trace_path = tmp_path / "traces/post-merge-traces.jsonl"
+    cursor = tmp_path / "traces/last-deployed-sha"
+
+    result = subprocess.run(
+        [str(script), sha],
+        text=True,
+        capture_output=True,
+        check=False,
+        env={
+            **os.environ,
+            "HOME": str(home),
+            "PATH": f"{git_bin}:{systemctl_bin}:{os.environ['PATH']}",
+            "REPO": str(repo),
+            "HAPAX_SYSTEMCTL_CALLS": str(systemctl_calls),
+            "HAPAX_POST_MERGE_TRACE_PATH": str(trace_path),
+            "HAPAX_POST_MERGE_LAST_DEPLOYED_SHA_PATH": str(cursor),
+            "HAPAX_FAIL_GIT_LS_TREE_PATH": unit_path,
+            "HAPAX_FAIL_GIT_LS_TREE_COUNT_FILE": str(tmp_path / "git-ls-tree.count"),
+            # Classification runs only after the lock re-exec; the second read
+            # is the authoritative reconciliation snapshot.
+            "HAPAX_FAIL_GIT_LS_TREE_ON_COUNT": "2",
+        },
+    )
+
+    assert result.returncode != 0
+    assert "failed to inspect system-scoped systemd unit Git entry" in result.stderr
+    assert installed.read_text(encoding="utf-8") == "prior user unit\n"
+    assert not systemctl_calls.exists()
+    assert not cursor.exists()
+
+
+def test_systemd_unit_git_show_failure_preserves_existing_bytes(
+    tmp_path: Path,
+) -> None:
+    unit_path = "systemd/units/hapax-user-demo.service"
+    repo, sha = _repo_with_linear_commit(
+        tmp_path,
+        {
+            unit_path: (
+                "[Unit]\n"
+                "Description=Replacement user unit\n"
+                "[Service]\n"
+                "Type=oneshot\n"
+                "ExecStart=/usr/bin/true\n"
+            )
+        },
+    )
+    home = tmp_path / "home"
+    installed = home / ".config/systemd/user/hapax-user-demo.service"
+    installed.parent.mkdir(parents=True)
+    installed.write_text("prior user unit\n", encoding="utf-8")
+    systemctl_bin, systemctl_calls = _fake_systemctl(tmp_path)
+    git_bin = _fake_git_with_show_failure(tmp_path)
+    trace_path = tmp_path / "traces/post-merge-traces.jsonl"
+    cursor = tmp_path / "traces/last-deployed-sha"
+
+    result = subprocess.run(
+        [str(SCRIPT), sha],
+        text=True,
+        capture_output=True,
+        check=False,
+        env={
+            **os.environ,
+            "HOME": str(home),
+            "PATH": f"{git_bin}:{systemctl_bin}:{os.environ['PATH']}",
+            "REPO": str(repo),
+            "HAPAX_SYSTEMCTL_CALLS": str(systemctl_calls),
+            "HAPAX_POST_MERGE_TRACE_PATH": str(trace_path),
+            "HAPAX_POST_MERGE_LAST_DEPLOYED_SHA_PATH": str(cursor),
+            "HAPAX_FAIL_GIT_SHOW_OBJECT": f"{sha}:{unit_path}",
+            "HAPAX_FAIL_GIT_SHOW_COUNT_FILE": str(tmp_path / "git-show.count"),
+            # Classification runs only after the lock re-exec; deployment is
+            # the second read.
+            "HAPAX_FAIL_GIT_SHOW_ON_COUNT": "2",
+        },
+    )
+
+    assert result.returncode != 0
+    assert "failed to materialize systemd unit" in result.stderr
+    assert installed.read_text(encoding="utf-8") == "prior user unit\n"
+    assert not list(installed.parent.glob(".hapax-user-demo.service.tmp.*"))
+    assert not cursor.exists()
 
 
 def test_watchdog_change_installs_commit_copy_to_local_bin(tmp_path: Path) -> None:
@@ -2949,6 +5208,84 @@ def test_preset_only_deploy_installs_and_starts_governed_intake_timers(
     assert "--user enable --now hapax-request-decompose.timer" in calls
     assert "--user enable --now hapax-cc-task-offer-ready.timer" in calls
     assert "preset-activated governed intake unit" in result.stdout
+
+
+def test_preset_only_unit_git_show_failure_preserves_existing_bytes(
+    tmp_path: Path,
+) -> None:
+    repo, sha = _repo_with_intake_units_then_preset_commit(tmp_path)
+    unit = "hapax-request-decompose.timer"
+    unit_path = f"systemd/units/{unit}"
+    home = tmp_path / "home"
+    installed = home / ".config/systemd/user" / unit
+    installed.parent.mkdir(parents=True)
+    installed.write_text("prior governed intake unit\n", encoding="utf-8")
+    systemctl_bin, systemctl_calls = _fake_systemctl(tmp_path)
+    git_bin = _fake_git_with_show_failure(tmp_path)
+    trace_path = tmp_path / "traces/post-merge-traces.jsonl"
+    cursor = tmp_path / "traces/last-deployed-sha"
+
+    result = subprocess.run(
+        [str(SCRIPT), sha],
+        text=True,
+        capture_output=True,
+        check=False,
+        env={
+            **os.environ,
+            "HOME": str(home),
+            "PATH": f"{git_bin}:{systemctl_bin}:{os.environ['PATH']}",
+            "REPO": str(repo),
+            "HAPAX_SYSTEMCTL_CALLS": str(systemctl_calls),
+            "HAPAX_POST_MERGE_TRACE_PATH": str(trace_path),
+            "HAPAX_POST_MERGE_LAST_DEPLOYED_SHA_PATH": str(cursor),
+            "HAPAX_FAIL_GIT_SHOW_OBJECT": f"{sha}:{unit_path}",
+            "HAPAX_FAIL_GIT_SHOW_COUNT_FILE": str(tmp_path / "git-show.count"),
+            "HAPAX_FAIL_GIT_SHOW_ON_COUNT": "1",
+        },
+    )
+
+    assert result.returncode != 0
+    assert "failed to materialize systemd unit" in result.stderr
+    assert installed.read_text(encoding="utf-8") == "prior governed intake unit\n"
+    assert not list(installed.parent.glob(f".{unit}.tmp.*"))
+    assert not cursor.exists()
+
+
+def test_user_preset_git_show_failure_preserves_existing_bytes(tmp_path: Path) -> None:
+    repo, sha = _repo_with_intake_units_then_preset_commit(tmp_path)
+    preset_path = "systemd/user-preset.d/hapax.preset"
+    home = tmp_path / "home"
+    installed = home / ".config/systemd/user-preset/hapax.preset"
+    installed.parent.mkdir(parents=True)
+    installed.write_text("prior preset bytes\n", encoding="utf-8")
+    systemctl_bin, systemctl_calls = _fake_systemctl(tmp_path)
+    git_bin = _fake_git_with_show_failure(tmp_path)
+    trace_path = tmp_path / "traces/post-merge-traces.jsonl"
+    cursor = tmp_path / "traces/last-deployed-sha"
+
+    result = subprocess.run(
+        [str(SCRIPT), sha],
+        text=True,
+        capture_output=True,
+        check=False,
+        env={
+            **os.environ,
+            "HOME": str(home),
+            "PATH": f"{git_bin}:{systemctl_bin}:{os.environ['PATH']}",
+            "REPO": str(repo),
+            "HAPAX_SYSTEMCTL_CALLS": str(systemctl_calls),
+            "HAPAX_POST_MERGE_TRACE_PATH": str(trace_path),
+            "HAPAX_POST_MERGE_LAST_DEPLOYED_SHA_PATH": str(cursor),
+            "HAPAX_FAIL_GIT_SHOW_OBJECT": f"{sha}:{preset_path}",
+            "HAPAX_FAIL_GIT_SHOW_COUNT_FILE": str(tmp_path / "git-show.count"),
+            "HAPAX_FAIL_GIT_SHOW_ON_COUNT": "1",
+        },
+    )
+
+    assert result.returncode != 0
+    assert installed.read_text(encoding="utf-8") == "prior preset bytes\n"
+    assert not list(installed.parent.glob(".hapax.preset.tmp.*"))
+    assert not cursor.exists()
 
 
 def test_preset_only_deploy_removes_stale_ready_offer_dropin(tmp_path: Path) -> None:
@@ -3910,12 +6247,13 @@ def test_hapax_script_deploy_atomically_replaces_hard_link_without_mutating_peer
     assert peer.read_text(encoding="utf-8") == "#!/usr/bin/env bash\necho prior peer\n"
 
 
-def test_deploy_rejects_commit_ranges_before_touching_targets() -> None:
+def test_deploy_rejects_commit_ranges_before_touching_targets(tmp_path: Path) -> None:
     result = subprocess.run(
         [str(SCRIPT), "HEAD..HEAD"],
         text=True,
         capture_output=True,
         check=False,
+        env={**os.environ, "HOME": str(tmp_path / "home"), "REPO": str(REPO_ROOT)},
     )
 
     assert result.returncode == 2
@@ -4494,6 +6832,12 @@ def test_gate_untouched_diff_redeploys_drifted_canonical_gate(tmp_path: Path) ->
     calls = tmp_path / "hooks-doctor-calls.txt"
     _seed_canonical_gate(repo, canon, stale=True)
     env = _gate_reconcile_env(tmp_path, repo, canon, calls)
+    receipt = tmp_path / "traces" / "last-deployed-sha"
+    receipt.parent.mkdir(parents=True)
+    receipt.write_text(f"{_git(repo, 'rev-parse', f'{sha}^')}\n", encoding="utf-8")
+    # Historical receipts were published 0644; admission accepts that
+    # non-writable-by-other mode and the transaction migrates it to 0600.
+    receipt.chmod(0o644)
 
     result = subprocess.run(
         [str(SCRIPT), sha],
@@ -4509,8 +6853,8 @@ def test_gate_untouched_diff_redeploys_drifted_canonical_gate(tmp_path: Path) ->
     assert (canon / "cc-task-gate.sh").read_text(encoding="utf-8") == (
         repo / "hooks" / "scripts" / "cc-task-gate.impl.sh"
     ).read_text(encoding="utf-8")
-    receipt = tmp_path / "traces" / "last-deployed-sha"
     assert receipt.read_text(encoding="utf-8").strip() == sha
+    assert receipt.stat().st_mode & 0o777 == 0o600
     record = json.loads(
         (tmp_path / "traces" / "post-merge-traces.jsonl")
         .read_text(encoding="utf-8")
@@ -4523,6 +6867,393 @@ def test_gate_untouched_diff_redeploys_drifted_canonical_gate(tmp_path: Path) ->
     assert record["manual_deploy_executed"] is True
     assert record["avsdlc"]["runtime_media_witness_required"] is True
     assert record["avsdlc"]["runtime_media_witness_groups"] == ["canonical_gate_closure"]
+
+
+def _repo_with_cursor_backlog(tmp_path: Path) -> tuple[Path, str, str, str]:
+    repo, cursor_sha = _repo_with_gate_closure_and_docs_commit(tmp_path)
+    script_path = repo / "scripts" / "hapax-backlog-demo"
+    script_path.parent.mkdir(exist_ok=True)
+    script_path.write_text("#!/usr/bin/env bash\necho backlog\n", encoding="utf-8")
+    script_path.chmod(0o755)
+    _git(repo, "add", "scripts/hapax-backlog-demo")
+    _git(repo, "commit", "-m", "add intermediate deployable script")
+    intermediate = _git(repo, "rev-parse", "HEAD")
+    (repo / "docs" / "later.md").parent.mkdir(exist_ok=True)
+    (repo / "docs" / "later.md").write_text("later target\n", encoding="utf-8")
+    _git(repo, "add", "docs/later.md")
+    _git(repo, "commit", "-m", "add later nondeployable change")
+    return repo, cursor_sha, intermediate, _git(repo, "rev-parse", "HEAD")
+
+
+def test_cursor_baseline_drives_cumulative_diff_without_explicit_since(tmp_path: Path) -> None:
+    repo, cursor_sha, _, target = _repo_with_cursor_backlog(tmp_path)
+    canon = tmp_path / "canon"
+    calls = tmp_path / "hooks-doctor-calls.txt"
+    _seed_canonical_gate(repo, canon, stale=False)
+    env = _gate_reconcile_env(tmp_path, repo, canon, calls)
+    cursor = tmp_path / "traces" / "last-deployed-sha"
+    cursor.parent.mkdir(parents=True)
+    cursor.write_text(f"{cursor_sha}\n", encoding="utf-8")
+    cursor.chmod(0o600)
+
+    result = subprocess.run(
+        [str(SCRIPT), target],
+        text=True,
+        capture_output=True,
+        check=False,
+        env=env,
+    )
+
+    assert result.returncode == 0, result.stderr
+    deployed = Path(env["HOME"]) / ".local/bin/hapax-backlog-demo"
+    assert deployed.is_file()
+    assert deployed.read_text(encoding="utf-8") == "#!/usr/bin/env bash\necho backlog\n"
+    assert cursor.read_text(encoding="utf-8").strip() == target
+
+
+def test_explicit_since_cannot_skip_past_trusted_cursor(tmp_path: Path) -> None:
+    repo, cursor_sha, intermediate, target = _repo_with_cursor_backlog(tmp_path)
+    canon = tmp_path / "canon"
+    calls = tmp_path / "hooks-doctor-calls.txt"
+    _seed_canonical_gate(repo, canon, stale=False)
+    env = _gate_reconcile_env(tmp_path, repo, canon, calls)
+    cursor = tmp_path / "traces" / "last-deployed-sha"
+    cursor.parent.mkdir(parents=True)
+    cursor.write_text(f"{cursor_sha}\n", encoding="utf-8")
+    cursor.chmod(0o600)
+
+    result = subprocess.run(
+        [str(SCRIPT), "--since", intermediate, target],
+        text=True,
+        capture_output=True,
+        check=False,
+        env=env,
+    )
+
+    assert result.returncode != 0
+    assert "does not match trusted deploy cursor" in result.stderr
+    assert not (Path(env["HOME"]) / ".local/bin/hapax-backlog-demo").exists()
+    assert cursor.read_text(encoding="utf-8").strip() == cursor_sha
+
+
+def test_explicit_since_without_cursor_must_be_target_ancestor(tmp_path: Path) -> None:
+    repo, _, intermediate, later = _repo_with_cursor_backlog(tmp_path)
+    canon = tmp_path / "canon"
+    calls = tmp_path / "hooks-doctor-calls.txt"
+    _seed_canonical_gate(repo, canon, stale=False)
+    env = _gate_reconcile_env(tmp_path, repo, canon, calls)
+
+    result = subprocess.run(
+        [str(SCRIPT), "--since", later, intermediate],
+        text=True,
+        capture_output=True,
+        check=False,
+        env=env,
+    )
+
+    assert result.returncode != 0
+    assert "is not an ancestor of deploy target" in result.stderr
+    assert not (Path(env["HOME"]) / ".local/bin/hapax-backlog-demo").exists()
+    assert not (tmp_path / "traces" / "last-deployed-sha").exists()
+
+
+def test_last_deployed_sha_failure_preserves_previous_cursor_and_records_failure(
+    tmp_path: Path,
+) -> None:
+    if os.geteuid() == 0:
+        pytest.skip("directory permission failure requires an unprivileged test user")
+    repo, sha = _repo_with_gate_closure_and_docs_commit(tmp_path)
+    canon = tmp_path / "canon"
+    calls = tmp_path / "hooks-doctor-calls.txt"
+    _seed_canonical_gate(repo, canon, stale=True)
+    env = _gate_reconcile_env(tmp_path, repo, canon, calls)
+    cursor_parent = tmp_path / "readonly-cursor"
+    cursor_parent.mkdir()
+    cursor = cursor_parent / "last-deployed-sha"
+    previous = _git(repo, "rev-parse", f"{sha}^")
+    cursor.write_text(f"{previous}\n", encoding="utf-8")
+    cursor.chmod(0o600)
+    cursor_parent.chmod(0o555)
+    env["HAPAX_POST_MERGE_LAST_DEPLOYED_SHA_PATH"] = str(cursor)
+
+    try:
+        result = subprocess.run(
+            [str(SCRIPT), sha],
+            text=True,
+            capture_output=True,
+            check=False,
+            env=env,
+        )
+    finally:
+        cursor_parent.chmod(0o755)
+
+    assert result.returncode != 0, (result.stdout, result.stderr)
+    assert "failed to publish last-deployed SHA" in result.stderr
+    assert cursor.read_text(encoding="utf-8").strip() == previous
+    assert not list(cursor_parent.glob(".last-deployed-sha.tmp.*"))
+    records = [
+        json.loads(line)
+        for line in Path(env["HAPAX_POST_MERGE_TRACE_PATH"])
+        .read_text(encoding="utf-8")
+        .splitlines()
+    ]
+    assert records[-1]["status"] == "failed"
+    assert records[-1]["exit_code"] == result.returncode
+
+
+def test_older_process_cannot_regress_cursor_after_newer_deploy_completes(
+    tmp_path: Path,
+) -> None:
+    repo, older_sha = _repo_with_gate_closure_and_docs_commit(tmp_path)
+    (repo / "README.md").write_text("newer deploy\n", encoding="utf-8")
+    _git(repo, "add", "README.md")
+    _git(repo, "commit", "-m", "newer deploy target")
+    newer_sha = _git(repo, "rev-parse", "HEAD")
+    canon = tmp_path / "canon"
+    calls = tmp_path / "hooks-doctor-calls.txt"
+    _seed_canonical_gate(repo, canon, stale=False)
+    env = _gate_reconcile_env(tmp_path, repo, canon, calls)
+
+    pause_marker = tmp_path / "older-resolve-paused"
+    release = tmp_path / "release-older-resolve"
+    count_file = tmp_path / "older-resolve-count"
+    fake_bin = tmp_path / "git-bin"
+    fake_bin.mkdir()
+    fake_git = fake_bin / "git"
+    fake_git.write_text(
+        "#!/usr/bin/env bash\n"
+        "set -euo pipefail\n"
+        f'if [[ "$*" == *"rev-parse --verify --quiet {older_sha}^{{commit}}"* ]]; then\n'
+        "  count=0\n"
+        f"  [ ! -f {shlex.quote(str(count_file))} ] || read -r count < {shlex.quote(str(count_file))}\n"
+        "  count=$((count + 1))\n"
+        f"  printf '%s\\n' \"$count\" > {shlex.quote(str(count_file))}\n"
+        '  if [ "$count" -eq 1 ]; then\n'
+        f"    : > {shlex.quote(str(pause_marker))}\n"
+        f"    while [ ! -e {shlex.quote(str(release))} ]; do /usr/bin/sleep 0.01; done\n"
+        "  fi\n"
+        "fi\n"
+        'exec /usr/bin/git "$@"\n',
+        encoding="utf-8",
+    )
+    fake_git.chmod(0o755)
+    env["PATH"] = f"{fake_bin}:{env['PATH']}"
+
+    older = subprocess.Popen(
+        [str(SCRIPT), older_sha],
+        text=True,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        env=env,
+    )
+    try:
+        deadline = time.monotonic() + 10
+        while not pause_marker.exists() and older.poll() is None and time.monotonic() < deadline:
+            time.sleep(0.01)
+        assert pause_marker.exists(), "older deploy did not reach the deterministic pre-lock pause"
+        newer = subprocess.run(
+            [str(SCRIPT), newer_sha],
+            text=True,
+            capture_output=True,
+            check=False,
+            env=env,
+            timeout=20,
+        )
+        assert newer.returncode == 0, newer.stderr
+        cursor = tmp_path / "traces/last-deployed-sha"
+        assert cursor.read_text(encoding="utf-8").strip() == newer_sha
+    finally:
+        release.touch()
+        older_stdout, older_stderr = older.communicate(timeout=20)
+
+    assert older.returncode != 0, older_stdout
+    assert "refusing stale deploy target" in older_stderr
+    assert cursor.read_text(encoding="utf-8").strip() == newer_sha
+
+
+def test_deploy_cursor_rejects_ancestry_divergence_before_mutation(tmp_path: Path) -> None:
+    repo, candidate = _repo_with_gate_closure_and_docs_commit(tmp_path)
+    parent = _git(repo, "rev-parse", f"{candidate}^")
+    _git(repo, "switch", "-c", "divergent-cursor", parent)
+    (repo / "divergent.txt").write_text("divergent\n", encoding="utf-8")
+    _git(repo, "add", "divergent.txt")
+    _git(repo, "commit", "-m", "divergent cursor")
+    divergent = _git(repo, "rev-parse", "HEAD")
+    canon = tmp_path / "canon"
+    calls = tmp_path / "hooks-doctor-calls.txt"
+    _seed_canonical_gate(repo, canon, stale=True)
+    env = _gate_reconcile_env(tmp_path, repo, canon, calls)
+    cursor = tmp_path / "traces/last-deployed-sha"
+    cursor.parent.mkdir(parents=True)
+    cursor.write_text(f"{divergent}\n", encoding="utf-8")
+    cursor.chmod(0o600)
+
+    result = subprocess.run(
+        [str(SCRIPT), candidate],
+        text=True,
+        capture_output=True,
+        check=False,
+        env=env,
+    )
+
+    assert result.returncode != 0
+    assert "refusing ancestry-divergent deploy target" in result.stderr
+    assert cursor.read_text(encoding="utf-8").strip() == divergent
+    assert not calls.exists(), "rejected target must not reach canonical-gate mutation"
+
+
+@pytest.mark.parametrize("hostile_state", ["group-writable", "hardlink", "symlink"])
+def test_deploy_cursor_rejects_unsafe_inode_before_mutation(
+    tmp_path: Path,
+    hostile_state: str,
+) -> None:
+    repo, candidate = _repo_with_gate_closure_and_docs_commit(tmp_path)
+    prior = _git(repo, "rev-parse", f"{candidate}^")
+    canon = tmp_path / "canon"
+    calls = tmp_path / "hooks-doctor-calls.txt"
+    _seed_canonical_gate(repo, canon, stale=True)
+    env = _gate_reconcile_env(tmp_path, repo, canon, calls)
+    cursor = tmp_path / "traces/last-deployed-sha"
+    cursor.parent.mkdir(parents=True)
+    cursor.write_text(f"{prior}\n", encoding="utf-8")
+    cursor.chmod(0o600)
+    if hostile_state == "group-writable":
+        cursor.chmod(0o620)
+    elif hostile_state == "hardlink":
+        os.link(cursor, cursor.with_name("cursor-hardlink"))
+    elif hostile_state == "symlink":
+        target = cursor.with_name("cursor-target")
+        cursor.rename(target)
+        cursor.symlink_to(target)
+    else:  # pragma: no cover - exhaustive parametrization guard
+        raise AssertionError(hostile_state)
+
+    result = subprocess.run(
+        [str(SCRIPT), candidate],
+        text=True,
+        capture_output=True,
+        check=False,
+        env=env,
+    )
+
+    assert result.returncode != 0
+    assert "refused unsafe deploy cursor" in result.stderr
+    assert not calls.exists(), "unsafe cursor must fail before canonical-gate mutation"
+
+
+def test_completion_trace_and_cursor_publish_under_one_trace_lock(tmp_path: Path) -> None:
+    repo, sha = _repo_with_gate_closure_and_docs_commit(tmp_path)
+    canon = tmp_path / "canon"
+    calls = tmp_path / "hooks-doctor-calls.txt"
+    _seed_canonical_gate(repo, canon, stale=False)
+    env = _gate_reconcile_env(tmp_path, repo, canon, calls)
+    marker = tmp_path / "trace-python-returned"
+    release = tmp_path / "release-trace-python"
+    python_bin = tmp_path / "bin" / "python3"
+    python_bin.parent.mkdir()
+    python_bin.write_text(
+        "#!/usr/bin/env bash\n"
+        "set -euo pipefail\n"
+        '/usr/bin/python3 "$@"\n'
+        "rc=$?\n"
+        'if [ "${HAPAX_PAUSE_AFTER_TRACE_PYTHON:-0}" = 1 ]; then\n'
+        '  : > "$HAPAX_TRACE_PYTHON_RETURNED_MARKER"\n'
+        '  while [ ! -e "$HAPAX_TRACE_PYTHON_RELEASE" ]; do /usr/bin/sleep 0.01; done\n'
+        "fi\n"
+        'exit "$rc"\n',
+        encoding="utf-8",
+    )
+    python_bin.chmod(0o755)
+    env["PATH"] = f"{python_bin.parent}:{env['PATH']}"
+    env["HAPAX_PAUSE_AFTER_TRACE_PYTHON"] = "1"
+    env["HAPAX_TRACE_PYTHON_RETURNED_MARKER"] = str(marker)
+    env["HAPAX_TRACE_PYTHON_RELEASE"] = str(release)
+    cursor = tmp_path / "traces/last-deployed-sha"
+
+    source = SCRIPT.read_text(encoding="utf-8")
+    transaction_start = source.index("def write_temp(")
+    transaction = source[transaction_start : source.index("PY\n}", transaction_start)]
+    assert (
+        transaction.index("fcntl.flock(lock_fd, fcntl.LOCK_EX)")
+        < transaction.index("os.replace(trace_temp, path)")
+        < transaction.index("os.replace(cursor_temp, cursor)")
+        < transaction.index("os.close(lock_fd)")
+    )
+
+    release.touch()
+    result = subprocess.run(
+        [str(SCRIPT), sha],
+        text=True,
+        capture_output=True,
+        check=False,
+        env=env,
+    )
+
+    assert result.returncode == 0, result.stderr
+    assert not marker.exists(), "transactional Python must ignore caller PATH"
+    assert cursor.read_text(encoding="utf-8").strip() == sha
+    trace = Path(env["HAPAX_POST_MERGE_TRACE_PATH"])
+    assert json.loads(trace.read_text(encoding="utf-8").splitlines()[-1])["sha"] == sha
+
+
+def test_empty_commit_dry_run_never_publishes_deploy_cursor(tmp_path: Path) -> None:
+    repo, sha = _repo_with_gate_closure_and_docs_commit(tmp_path)
+    _git(repo, "commit", "--allow-empty", "-m", "empty dry-run edge")
+    sha = _git(repo, "rev-parse", "HEAD")
+    canon = tmp_path / "canon"
+    calls = tmp_path / "hooks-doctor-calls.txt"
+    _seed_canonical_gate(repo, canon, stale=False)
+    env = _gate_reconcile_env(tmp_path, repo, canon, calls)
+    cursor = tmp_path / "traces/last-deployed-sha"
+
+    result = subprocess.run(
+        [str(SCRIPT), "--dry-run", sha],
+        text=True,
+        capture_output=True,
+        check=False,
+        env=env,
+    )
+
+    assert result.returncode == 0, result.stderr
+    assert not cursor.exists()
+    record = json.loads(Path(env["HAPAX_POST_MERGE_TRACE_PATH"]).read_text(encoding="utf-8"))
+    assert record["mode"] == "dry_run"
+    assert record["status"] == "no_changes"
+
+
+@pytest.mark.parametrize("empty_commit", [False, True], ids=["changed-files", "no-files"])
+def test_trace_failure_is_fatal_and_never_advances_writable_cursor(
+    tmp_path: Path, empty_commit: bool
+) -> None:
+    repo, sha = _repo_with_gate_closure_and_docs_commit(tmp_path)
+    if empty_commit:
+        _git(repo, "commit", "--allow-empty", "-m", "empty deploy edge")
+        sha = _git(repo, "rev-parse", "HEAD")
+    canon = tmp_path / "canon"
+    calls = tmp_path / "hooks-doctor-calls.txt"
+    _seed_canonical_gate(repo, canon, stale=False)
+    env = _gate_reconcile_env(tmp_path, repo, canon, calls)
+    trace_path = Path(env["HAPAX_POST_MERGE_TRACE_PATH"])
+    trace_path.mkdir(parents=True)
+    cursor = tmp_path / "cursor/last-deployed-sha"
+    cursor.parent.mkdir()
+    previous = _git(repo, "rev-parse", f"{sha}^")
+    cursor.write_text(f"{previous}\n", encoding="utf-8")
+    cursor.chmod(0o600)
+    env["HAPAX_POST_MERGE_LAST_DEPLOYED_SHA_PATH"] = str(cursor)
+
+    result = subprocess.run(
+        [str(SCRIPT), sha],
+        text=True,
+        capture_output=True,
+        check=False,
+        env=env,
+    )
+
+    assert result.returncode != 0
+    assert "failed to publish completion trace" in result.stderr
+    assert cursor.read_text(encoding="utf-8").strip() == previous
+    assert not list(cursor.parent.glob(".last-deployed-sha.tmp.*"))
 
 
 def test_dry_run_gate_drift_does_not_redeploy(tmp_path: Path) -> None:

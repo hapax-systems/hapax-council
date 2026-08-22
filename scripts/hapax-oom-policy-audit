@@ -4,14 +4,17 @@
 from __future__ import annotations
 
 import argparse
-import fcntl
+import ipaddress
 import json
 import os
-import stat
+import pwd
+import re
+import selectors
+import signal
+import socket
 import subprocess
 import sys
-from collections.abc import Iterator
-from contextlib import contextmanager
+import time
 from dataclasses import asdict, dataclass
 from pathlib import Path
 
@@ -22,25 +25,41 @@ BYTES_1G = 1024**3
 BYTES_2G = 2 * 1024**3
 BYTES_12G = 12 * 1024**3
 BYTES_24G = 24 * 1024**3
-BYTES_72G = 72 * 1024**3
-BYTES_80G = 80 * 1024**3
-BYTES_88G = 88 * 1024**3
-BYTES_96G = 96 * 1024**3
 BYTES_16G = 16 * 1024**3
 BYTES_8G = 8 * 1024**3
 BYTES_10G = 10 * 1024**3
 BYTES_20G = 20 * 1024**3
-NEXT_OOM_INSTALL = "next action: scripts/install-p0-oom-containment --install --verify-live"
+BYTES_512M = 512 * 1024**2
+BYTES_768M = 768 * 1024**2
+NEXT_OOM_ACTION = (
+    "next action: preserve the drift evidence and dispatch separately runtime-authorized "
+    "root-broker work; this source revision has no production install or authoritative "
+    "live-verification mode"
+)
 PROC_ROOT = Path(os.environ.get("HAPAX_OOM_AUDIT_PROC_ROOT", "/proc"))
 CGROUP_ROOT = Path(os.environ.get("HAPAX_OOM_AUDIT_CGROUP_ROOT", "/sys/fs/cgroup"))
-ROOT_REQUIRED_STATE_ROOT = Path(
-    os.environ.get(
-        "HAPAX_ROOT_REQUIRED_STATE_ROOT",
-        str(Path.home() / ".local/state/hapax/root-required"),
-    )
+SYS_ROOT = Path(os.environ.get("HAPAX_OOM_AUDIT_SYS_ROOT", "/sys"))
+SCRIPT_PATH = Path(__file__).resolve()
+REPO_ROOT = SCRIPT_PATH.parents[1] if len(SCRIPT_PATH.parents) > 1 else None
+SOURCE_PROFILE_TABLE = (
+    REPO_ROOT / "config/root-required/oom-host-profiles.tsv"
+    if REPO_ROOT is not None
+    else Path("/nonexistent/hapax-oom-host-profiles.tsv")
 )
-ROOT_REQUIRED_LOCK_FILE = Path(
-    os.environ.get("HAPAX_ROOT_REQUIRED_LOCK_FILE", str(ROOT_REQUIRED_STATE_ROOT / ".lock"))
+INSTALLED_AUDIT_PATH = Path("/usr/local/sbin/hapax-oom-policy-audit")
+INSTALLED_PROFILE_TABLE = Path("/usr/local/share/hapax/root-required/oom-host-profiles.tsv")
+TEST_ONLY_SELECTORS = frozenset(
+    {
+        "HAPAX_OOM_AUDIT_TEST_MODE",
+        "HAPAX_OOM_AUDIT_PROC_ROOT",
+        "HAPAX_OOM_AUDIT_CGROUP_ROOT",
+        "HAPAX_OOM_AUDIT_SYS_ROOT",
+        "HAPAX_OOM_AUDIT_MEMTOTAL_KIB",
+        "HAPAX_OOM_AUDIT_HOSTNAME",
+        "HAPAX_OOM_AUDIT_PROFILE_TABLE",
+        "HAPAX_OOM_AUDIT_DOCKER",
+        "HAPAX_SYSTEMCTL",
+    }
 )
 RECOVERY_SYSTEM_UNITS = {
     "apcupsd.service": -900,
@@ -51,12 +70,12 @@ RECOVERY_SYSTEM_UNITS = {
     "dbus-broker.service": -900,
 }
 PROTECTED_USER_UNITS = {
-    "pipewire.service": -900,
-    "pipewire-pulse.service": -900,
-    "wireplumber.service": -900,
-    "hapax-daimonion.service": -500,
-    "studio-compositor.service": -800,
-    "hapax-imagination.service": -800,
+    "pipewire.service": 100,
+    "pipewire-pulse.service": 100,
+    "wireplumber.service": 100,
+    "hapax-daimonion.service": 100,
+    "studio-compositor.service": 100,
+    "hapax-imagination.service": 100,
 }
 AUDIO_USER_UNITS = frozenset({"pipewire.service", "pipewire-pulse.service", "wireplumber.service"})
 PROTECTED_USER_UNIT_SLICES = {
@@ -75,6 +94,49 @@ PROTECTED_USER_UNIT_MEMORY = {
     "studio-compositor.service": {"MemoryLow": 6 * 1024**3, "MemoryMin": 3 * 1024**3},
     "hapax-imagination.service": {"MemoryLow": 6 * 1024**3, "MemoryMin": 3 * 1024**3},
 }
+APPENDIX_OPTIONAL_USER_UNITS = frozenset(
+    {
+        "hapax-daimonion.service",
+        "studio-compositor.service",
+        "hapax-imagination.service",
+    }
+)
+EXPECTED_HOST_PROFILES = {
+    "hapax-appendix": "appendix",
+    "hapax-podium": "podium",
+}
+LOCAL_DOCKER_HOST = "unix:///var/run/docker.sock"
+LOCAL_DOCKER_CONFIG = "/nonexistent/hapax-oom-policy-audit-docker"
+COMMAND_OUTPUT_LIMIT = 16 * 1024
+COMMAND_TIMEOUT_SECONDS = 10.0
+# Reserve one complete minimum Docker row so the row-overflow result is reachable
+# before the aggregate byte limiter (64-byte ID, tabs, 2-byte name, empty label, newline).
+DOCKER_INVENTORY_MIN_ROW_BYTES = 69
+DOCKER_INVENTORY_MAX_ROWS = COMMAND_OUTPUT_LIMIT // DOCKER_INVENTORY_MIN_ROW_BYTES - 1
+DOCKER_TARGET_MAX = 63
+DOCKER_INVENTORY_LINE_MAX = 512
+DOCKER_INSPECT_LINE_MAX = 16 * 1024
+GITHUB_MCP_IMAGE_DIGEST = "sha256:30197479d8036c7811892bc07e06f9a05c9ef3cdd79bc59f256d50647f95788c"
+GITHUB_MCP_IMAGE = f"ghcr.io/github/github-mcp-server@{GITHUB_MCP_IMAGE_DIGEST}"
+GITHUB_MCP_PATH = "/server/github-mcp-server"
+GITHUB_MCP_APP_LABEL = "org.hapax.github-mcp.app"
+GITHUB_MCP_APP_ID = "stdio-v1"
+GITHUB_MCP_UID_LABEL = "org.hapax.github-mcp.uid"
+GITHUB_MCP_LAUNCH_LABEL = "org.hapax.github-mcp.launch"
+GITHUB_MCP_LEASE_PID_LABEL = "org.hapax.github-mcp.lease-pid"
+GITHUB_MCP_LEASE_START_LABEL = "org.hapax.github-mcp.lease-start"
+GITHUB_MCP_LEASE_BOOT_LABEL = "org.hapax.github-mcp.lease-boot"
+GITHUB_MCP_IMAGE_LABELS = {
+    "io.modelcontextprotocol.server.name": "io.github.github/github-mcp-server",
+    "org.opencontainers.image.created": "2026-05-29T12:26:39.099Z",
+    "org.opencontainers.image.description": "GitHub's official MCP Server",
+    "org.opencontainers.image.licenses": "MIT",
+    "org.opencontainers.image.revision": "b5397f6e3305531a1c534b90b2d347a70fa84da9",
+    "org.opencontainers.image.source": "https://github.com/github/github-mcp-server",
+    "org.opencontainers.image.title": "github-mcp-server",
+    "org.opencontainers.image.url": "https://github.com/github/github-mcp-server",
+    "org.opencontainers.image.version": "1.1.2",
+}
 
 
 @dataclass
@@ -86,76 +148,322 @@ class Check:
     detail: str = ""
 
 
-class AuditLockError(RuntimeError):
+@dataclass(frozen=True)
+class HostMemoryPolicy:
+    hostname: str
+    profile: str
+    physical_bytes: int
+    app_memory_high: int
+    app_memory_max: int
+    uid_memory_high: int
+    uid_memory_max: int
+    zram_size: int
+    optional_user_units: frozenset[str]
+
+
+class HostPolicyError(RuntimeError):
     pass
 
 
-def _validate_lock_fd(fd: int) -> None:
-    try:
-        inode = os.fstat(fd)
-        path_inode = os.lstat(ROOT_REQUIRED_LOCK_FILE)
-    except OSError as exc:
-        raise AuditLockError(f"cannot inspect {ROOT_REQUIRED_LOCK_FILE}: {exc}") from exc
-    if (
-        not stat.S_ISREG(inode.st_mode)
-        or not stat.S_ISREG(path_inode.st_mode)
-        or (inode.st_dev, inode.st_ino) != (path_inode.st_dev, path_inode.st_ino)
-        or inode.st_uid != os.geteuid()
-        or inode.st_nlink != 1
-        or inode.st_mode & 0o022
-    ):
-        raise AuditLockError(
-            f"unsafe package lock {ROOT_REQUIRED_LOCK_FILE}; expected the caller-owned, "
-            "single-link, non-group-writable regular path inode"
+def _is_canonical_installed_audit() -> bool:
+    return SCRIPT_PATH == INSTALLED_AUDIT_PATH
+
+
+def _validate_test_mode_admission() -> None:
+    selected = sorted(name for name in TEST_ONLY_SELECTORS if name in os.environ)
+    test_mode = os.environ.get("HAPAX_OOM_AUDIT_TEST_MODE", "")
+    if _is_canonical_installed_audit() and selected:
+        raise HostPolicyError(
+            "canonical installed audit refuses every test selector; remove " + ", ".join(selected)
         )
-    os.fchmod(fd, 0o600)
-
-
-@contextmanager
-def shared_root_required_lock() -> Iterator[None]:
-    inherited = os.environ.get("HAPAX_ROOT_REQUIRED_LOCK_FD", "")
-    owns_fd = not inherited
-    if inherited:
-        try:
-            fd = int(inherited)
-        except ValueError as exc:
-            raise AuditLockError("invalid inherited package lock descriptor") from exc
-        if fd < 3:
-            raise AuditLockError("invalid inherited package lock descriptor")
-        lock_mode = os.environ.get("HAPAX_ROOT_REQUIRED_LOCK_MODE", "shared")
-        if lock_mode not in {"shared", "exclusive"}:
-            raise AuditLockError(f"invalid inherited package lock mode: {lock_mode}")
-    else:
-        ROOT_REQUIRED_LOCK_FILE.parent.mkdir(parents=True, exist_ok=True)
-        try:
-            fd = os.open(
-                ROOT_REQUIRED_LOCK_FILE,
-                os.O_CLOEXEC | os.O_CREAT | os.O_NOFOLLOW | os.O_RDWR,
-                0o600,
+    if test_mode not in {"", "1"}:
+        raise HostPolicyError("HAPAX_OOM_AUDIT_TEST_MODE must be exactly 1 when present")
+    if test_mode != "1":
+        selected = [name for name in selected if name != "HAPAX_OOM_AUDIT_TEST_MODE"]
+        if selected:
+            raise HostPolicyError(
+                "audit test selectors require source-only HAPAX_OOM_AUDIT_TEST_MODE=1: "
+                + ", ".join(selected)
             )
-        except OSError as exc:
-            raise AuditLockError(
-                f"cannot open safe package lock {ROOT_REQUIRED_LOCK_FILE}: {exc}"
-            ) from exc
-        lock_mode = "shared"
+
+
+def _profile_table_path() -> Path:
+    override = os.environ.get("HAPAX_OOM_AUDIT_PROFILE_TABLE", "").strip()
+    if override:
+        return Path(override)
+    if _is_canonical_installed_audit():
+        return INSTALLED_PROFILE_TABLE
+    return SOURCE_PROFILE_TABLE
+
+
+def _hostname() -> str:
+    override = os.environ.get("HAPAX_OOM_AUDIT_HOSTNAME", "").strip()
+    return (override or socket.gethostname()).split(".", 1)[0]
+
+
+def _memtotal_kib() -> int:
+    override = os.environ.get("HAPAX_OOM_AUDIT_MEMTOTAL_KIB", "").strip()
+    if override:
+        try:
+            value = int(override)
+        except ValueError as exc:
+            raise HostPolicyError("test MemTotal override must be an integer") from exc
+        if value <= 0:
+            raise HostPolicyError("test MemTotal override must be positive")
+        return value
     try:
-        _validate_lock_fd(fd)
-        fcntl.flock(fd, fcntl.LOCK_EX if lock_mode == "exclusive" else fcntl.LOCK_SH)
-        yield
-    finally:
-        if owns_fd:
-            os.close(fd)
+        lines = (PROC_ROOT / "meminfo").read_text(encoding="utf-8").splitlines()
+    except OSError as exc:
+        raise HostPolicyError(f"cannot read {PROC_ROOT / 'meminfo'}: {exc}") from exc
+    for line in lines:
+        fields = line.split()
+        if len(fields) >= 2 and fields[0] == "MemTotal:":
+            try:
+                value = int(fields[1])
+            except ValueError as exc:
+                raise HostPolicyError(f"invalid MemTotal line: {line}") from exc
+            if value > 0:
+                return value
+    raise HostPolicyError(f"positive MemTotal is absent from {PROC_ROOT / 'meminfo'}")
+
+
+def _memory_bytes(value: str, field: str) -> int:
+    match = re.fullmatch(r"([1-9][0-9]*)G", value)
+    if match is None:
+        raise HostPolicyError(f"invalid {field} value {value!r}; expected positive whole GiB")
+    return int(match.group(1)) * BYTES_1G
+
+
+def derive_host_policy() -> HostMemoryPolicy:
+    table = _profile_table_path()
+    try:
+        lines = table.read_text(encoding="utf-8").splitlines()
+    except OSError as exc:
+        raise HostPolicyError(f"cannot read host profile table {table}: {exc}") from exc
+
+    parsed: dict[str, tuple[int, int, HostMemoryPolicy]] = {}
+    profiles: set[str] = set()
+    intervals: list[tuple[int, int, str]] = []
+    for line_number, raw_line in enumerate(lines, 1):
+        if not raw_line or raw_line.startswith("#"):
+            continue
+        fields = raw_line.split("\t")
+        if len(fields) != 9:
+            raise HostPolicyError(f"{table}:{line_number}: expected exactly 9 fields")
+        hostname, minimum, maximum, profile, app_high, app_max, uid_high, uid_max, zram = fields
+        if hostname in parsed:
+            raise HostPolicyError(f"{table}:{line_number}: duplicate hostname {hostname}")
+        if not re.fullmatch(r"[a-z0-9][a-z0-9-]*", profile) or profile in profiles:
+            raise HostPolicyError(f"{table}:{line_number}: unsafe or duplicate profile {profile!r}")
+        try:
+            min_gib = int(minimum)
+            max_gib = int(maximum)
+            zram_mib = int(zram)
+        except ValueError as exc:
+            raise HostPolicyError(
+                f"{table}:{line_number}: interval and zram fields must be integers"
+            ) from exc
+        if min_gib <= 0 or max_gib < min_gib:
+            raise HostPolicyError(f"{table}:{line_number}: invalid inclusive MemTotal interval")
+        app_high_bytes = _memory_bytes(app_high, "app_high")
+        app_max_bytes = _memory_bytes(app_max, "app_max")
+        uid_high_bytes = _memory_bytes(uid_high, "uid_high")
+        uid_max_bytes = _memory_bytes(uid_max, "uid_max")
+        if not (app_high_bytes < app_max_bytes < min_gib * BYTES_1G):
+            raise HostPolicyError(
+                f"{table}:{line_number}: app ceilings must be ordered below interval floor"
+            )
+        if not (uid_high_bytes < uid_max_bytes < min_gib * BYTES_1G):
+            raise HostPolicyError(
+                f"{table}:{line_number}: UID ceilings must be ordered below interval floor"
+            )
+        if app_high_bytes > uid_high_bytes or app_max_bytes > uid_max_bytes:
+            raise HostPolicyError(
+                f"{table}:{line_number}: app ceilings must not exceed UID ceilings"
+            )
+        if zram_mib < 8192 or zram_mib * 2 > min_gib * 1024:
+            raise HostPolicyError(
+                f"{table}:{line_number}: zram must be at least 8192 MiB and no more than half the interval floor"
+            )
+        policy = HostMemoryPolicy(
+            hostname=hostname,
+            profile=profile,
+            physical_bytes=0,
+            app_memory_high=app_high_bytes,
+            app_memory_max=app_max_bytes,
+            uid_memory_high=uid_high_bytes,
+            uid_memory_max=uid_max_bytes,
+            zram_size=zram_mib * 1024**2,
+            optional_user_units=(
+                APPENDIX_OPTIONAL_USER_UNITS if profile == "appendix" else frozenset()
+            ),
+        )
+        parsed[hostname] = (min_gib, max_gib, policy)
+        profiles.add(profile)
+        intervals.append((min_gib, max_gib, hostname))
+
+    actual_mapping = {hostname: policy.profile for hostname, (_, _, policy) in parsed.items()}
+    if actual_mapping != EXPECTED_HOST_PROFILES:
+        raise HostPolicyError(
+            f"host profile set must be exactly {EXPECTED_HOST_PROFILES}, got {actual_mapping}"
+        )
+    for left, right in zip(sorted(intervals), sorted(intervals)[1:], strict=False):
+        if left[1] >= right[0]:
+            raise HostPolicyError(
+                f"host profile intervals overlap: {left[2]}={left[0]}..{left[1]} and "
+                f"{right[2]}={right[0]}..{right[1]}"
+            )
+
+    hostname = _hostname()
+    if hostname not in parsed:
+        raise HostPolicyError(f"unsupported canonical hostname {hostname!r}")
+    minimum, maximum, selected = parsed[hostname]
+    memtotal_kib = _memtotal_kib()
+    physical_gib = memtotal_kib // (1024**2)
+    if not minimum <= physical_gib <= maximum:
+        raise HostPolicyError(
+            f"{hostname} MemTotal={memtotal_kib} KiB floors to {physical_gib} GiB, outside "
+            f"admitted interval {minimum}..{maximum} GiB"
+        )
+    return HostMemoryPolicy(
+        hostname=selected.hostname,
+        profile=selected.profile,
+        physical_bytes=memtotal_kib * 1024,
+        app_memory_high=selected.app_memory_high,
+        app_memory_max=selected.app_memory_max,
+        uid_memory_high=selected.uid_memory_high,
+        uid_memory_max=selected.uid_memory_max,
+        zram_size=selected.zram_size,
+        optional_user_units=selected.optional_user_units,
+    )
 
 
 def _systemctl() -> str:
     return os.environ.get("HAPAX_SYSTEMCTL", "/usr/bin/systemctl")
 
 
-def _run(args: list[str]) -> subprocess.CompletedProcess[str]:
+def _docker() -> str:
+    return os.environ.get("HAPAX_OOM_AUDIT_DOCKER", "/usr/bin/docker")
+
+
+def _run(args: list[str], *, env: dict[str, str] | None = None) -> subprocess.CompletedProcess[str]:
     try:
-        return subprocess.run(args, capture_output=True, text=True, timeout=10, check=False)
-    except (FileNotFoundError, subprocess.TimeoutExpired) as exc:
+        process = subprocess.Popen(
+            args,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            env=env,
+            start_new_session=True,
+        )
+    except FileNotFoundError as exc:
         return subprocess.CompletedProcess(args=args, returncode=127, stdout="", stderr=str(exc))
+    assert process.stdout is not None
+    assert process.stderr is not None
+    selector = selectors.DefaultSelector()
+    selector.register(process.stdout, selectors.EVENT_READ, "stdout")
+    selector.register(process.stderr, selectors.EVENT_READ, "stderr")
+    buffers = {"stdout": bytearray(), "stderr": bytearray()}
+    total = 0
+    deadline = time.monotonic() + COMMAND_TIMEOUT_SECONDS
+    failure = ""
+    failure_rc = 0
+    try:
+        while selector.get_map():
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                failure = f"command timed out after {COMMAND_TIMEOUT_SECONDS:g}s"
+                failure_rc = 124
+                break
+            events = selector.select(remaining)
+            if not events:
+                continue
+            for key, _mask in events:
+                chunk = os.read(key.fd, min(8192, COMMAND_OUTPUT_LIMIT - total + 1))
+                if not chunk:
+                    selector.unregister(key.fileobj)
+                    continue
+                available = COMMAND_OUTPUT_LIMIT - total
+                if available > 0:
+                    buffers[key.data].extend(chunk[:available])
+                    total += min(len(chunk), available)
+                if len(chunk) > available:
+                    failure = f"command output exceeded {COMMAND_OUTPUT_LIMIT} bytes"
+                    failure_rc = 125
+                    break
+            if failure:
+                break
+    finally:
+        selector.close()
+
+    returncode = 0
+    if not failure:
+        remaining = max(0.0, deadline - time.monotonic())
+        try:
+            returncode = process.wait(timeout=remaining)
+        except subprocess.TimeoutExpired:
+            failure = f"command timed out after {COMMAND_TIMEOUT_SECONDS:g}s"
+            failure_rc = 124
+
+    if failure:
+        try:
+            os.killpg(process.pid, signal.SIGKILL)
+        except ProcessLookupError:
+            pass
+        try:
+            process.wait(timeout=1.0)
+        except subprocess.TimeoutExpired:
+            failure += "; killed process group did not reap within 1s"
+        for stream in (process.stdout, process.stderr):
+            stream.close()
+        stderr = buffers["stderr"].decode("utf-8", errors="replace")
+        if stderr and not stderr.endswith("\n"):
+            stderr += "\n"
+        stderr += failure
+        return subprocess.CompletedProcess(
+            args=args,
+            returncode=failure_rc,
+            stdout=buffers["stdout"].decode("utf-8", errors="replace"),
+            stderr=stderr,
+        )
+
+    try:
+        return subprocess.CompletedProcess(
+            args=args,
+            returncode=returncode,
+            stdout=buffers["stdout"].decode("utf-8", errors="replace"),
+            stderr=buffers["stderr"].decode("utf-8", errors="replace"),
+        )
+    finally:
+        process.stdout.close()
+        process.stderr.close()
+
+
+def _run_local_docker(args: list[str]) -> subprocess.CompletedProcess[str]:
+    env = {
+        "HOME": "/nonexistent",
+        "PATH": SAFE_PATH,
+        "LANG": "C",
+        "LC_ALL": "C",
+    }
+    return _run(
+        [
+            _docker(),
+            "--host",
+            LOCAL_DOCKER_HOST,
+            "--config",
+            LOCAL_DOCKER_CONFIG,
+            *args,
+        ],
+        env=env,
+    )
+
+
+def _docker_failure_summary(result: subprocess.CompletedProcess[str]) -> str:
+    if result.returncode == 124:
+        return f"timed out after {COMMAND_TIMEOUT_SECONDS:g}s"
+    if result.returncode == 125:
+        return f"output exceeded {COMMAND_OUTPUT_LIMIT} bytes"
+    return f"rc={result.returncode}"
 
 
 def _show(unit: str, properties: list[str], *, user: bool = False) -> dict[str, str]:
@@ -195,7 +503,7 @@ def audit_user_manager(uid: int) -> Check:
             "error",
             "100",
             "N/A",
-            f"{values['_error']}; {NEXT_OOM_INSTALL}",
+            f"{values['_error']}; {NEXT_OOM_ACTION}",
         )
     actual = values.get("OOMScoreAdjust", "")
     parsed = _int_value(actual)
@@ -205,7 +513,7 @@ def audit_user_manager(uid: int) -> Check:
             "error",
             "100",
             actual,
-            f"unparseable; {NEXT_OOM_INSTALL}",
+            f"unparseable; {NEXT_OOM_ACTION}",
         )
     if parsed != 100:
         return Check(
@@ -213,7 +521,7 @@ def audit_user_manager(uid: int) -> Check:
             "gap",
             "100",
             actual,
-            f"effective user@ score must match the packaged kill ordering exactly; {NEXT_OOM_INSTALL}",
+            f"effective user@ score must match the packaged kill ordering exactly; {NEXT_OOM_ACTION}",
         )
     return Check("user_manager_oom_score_adjust", "pass", "100", actual)
 
@@ -227,7 +535,7 @@ def audit_user_manager_live_score(uid: int) -> Check:
             "error",
             "100",
             "N/A",
-            f"{values['_error']}; {NEXT_OOM_INSTALL}",
+            f"{values['_error']}; {NEXT_OOM_ACTION}",
         )
     pid = values.get("MainPID", "0")
     if not pid or pid == "0":
@@ -236,12 +544,12 @@ def audit_user_manager_live_score(uid: int) -> Check:
             "gap",
             "100",
             pid,
-            f"user@ has no live MainPID to verify; {NEXT_OOM_INSTALL}",
+            f"user@ has no live MainPID to verify; {NEXT_OOM_ACTION}",
         )
     actual = _proc_oom_score(pid)
     actual_text = "N/A" if actual is None else str(actual)
     status = "pass" if actual == 100 else "gap"
-    detail = "" if status == "pass" else f"live user@ OOM score drifted; {NEXT_OOM_INSTALL}"
+    detail = "" if status == "pass" else f"live user@ OOM score drifted; {NEXT_OOM_ACTION}"
     return Check("user_manager_live_oom_score_adj", status, "100", actual_text, detail)
 
 
@@ -254,14 +562,14 @@ def audit_user_manager_policy(uid: int) -> Check:
             "error",
             "continue",
             "N/A",
-            f"{values['_error']}; {NEXT_OOM_INSTALL}",
+            f"{values['_error']}; {NEXT_OOM_ACTION}",
         )
     actual = values.get("OOMPolicy", "")
     status = "pass" if actual == "continue" else "gap"
     detail = (
         ""
         if status == "pass"
-        else f"user manager must survive descendant OOM kills; {NEXT_OOM_INSTALL}"
+        else f"user manager must survive descendant OOM kills; {NEXT_OOM_ACTION}"
     )
     return Check("user_manager_OOMPolicy", status, "continue", actual, detail)
 
@@ -271,7 +579,7 @@ def audit_recovery_system_units() -> list[Check]:
     for unit, expected in RECOVERY_SYSTEM_UNITS.items():
         values = _show(unit, ["OOMScoreAdjust", "MainPID"])
         if "_error" in values:
-            detail = f"{values['_error']}; {NEXT_OOM_INSTALL}"
+            detail = f"{values['_error']}; {NEXT_OOM_ACTION}"
             checks.extend(
                 [
                     Check(
@@ -297,7 +605,7 @@ def audit_recovery_system_units() -> list[Check]:
         configured_detail = (
             ""
             if configured_status == "pass"
-            else f"effective recovery-daemon OOM policy drifted; {NEXT_OOM_INSTALL}"
+            else f"effective recovery-daemon OOM policy drifted; {NEXT_OOM_ACTION}"
         )
         checks.append(
             Check(
@@ -317,7 +625,7 @@ def audit_recovery_system_units() -> list[Check]:
                     "gap",
                     str(expected),
                     "inactive",
-                    f"recovery daemon has no live main process; {NEXT_OOM_INSTALL}",
+                    f"recovery daemon has no live main process; {NEXT_OOM_ACTION}",
                 )
             )
             continue
@@ -328,7 +636,7 @@ def audit_recovery_system_units() -> list[Check]:
                     "error",
                     str(expected),
                     pid,
-                    f"unparseable recovery-daemon MainPID; {NEXT_OOM_INSTALL}",
+                    f"unparseable recovery-daemon MainPID; {NEXT_OOM_ACTION}",
                 )
             )
             continue
@@ -338,7 +646,7 @@ def audit_recovery_system_units() -> list[Check]:
         live_detail = (
             ""
             if live_status == "pass"
-            else f"live recovery-daemon OOM score drifted; {NEXT_OOM_INSTALL}"
+            else f"live recovery-daemon OOM score drifted; {NEXT_OOM_ACTION}"
         )
         checks.append(
             Check(
@@ -355,7 +663,7 @@ def audit_recovery_system_units() -> list[Check]:
 def audit_sshd_policy() -> list[Check]:
     values = _show("sshd.service", ["OOMScoreAdjust", "OOMPolicy", "MainPID"])
     if "_error" in values:
-        detail = f"{values['_error']}; {NEXT_OOM_INSTALL}"
+        detail = f"{values['_error']}; {NEXT_OOM_ACTION}"
         return [
             Check("sshd_effective_OOMScoreAdjust", "error", "0", "N/A", detail),
             Check("sshd_effective_OOMPolicy", "error", "continue", "N/A", detail),
@@ -367,14 +675,14 @@ def audit_sshd_policy() -> list[Check]:
     score_detail = (
         ""
         if score_status == "pass"
-        else f"effective sshd policy would be inherited by future sessions; {NEXT_OOM_INSTALL}"
+        else f"effective sshd policy would be inherited by future sessions; {NEXT_OOM_ACTION}"
     )
     policy = values.get("OOMPolicy", "")
     policy_status = "pass" if policy == "continue" else "gap"
     policy_detail = (
         ""
         if policy_status == "pass"
-        else f"sshd must remain available after a session OOM; {NEXT_OOM_INSTALL}"
+        else f"sshd must remain available after a session OOM; {NEXT_OOM_ACTION}"
     )
 
     pid = values.get("MainPID", "0")
@@ -384,7 +692,7 @@ def audit_sshd_policy() -> list[Check]:
     live_detail = (
         ""
         if live_status == "pass"
-        else f"sshd has no live neutral-score main process; {NEXT_OOM_INSTALL}"
+        else f"sshd has no live neutral-score main process; {NEXT_OOM_ACTION}"
     )
     return [
         Check("sshd_effective_OOMScoreAdjust", score_status, "0", score, score_detail),
@@ -393,10 +701,10 @@ def audit_sshd_policy() -> list[Check]:
     ]
 
 
-def audit_app_slice() -> list[Check]:
+def audit_app_slice(policy: HostMemoryPolicy) -> list[Check]:
     expected = {
-        "MemoryHigh": BYTES_72G,
-        "MemoryMax": BYTES_88G,
+        "MemoryHigh": policy.app_memory_high,
+        "MemoryMax": policy.app_memory_max,
         "MemorySwapMax": BYTES_8G,
         "MemoryLow": BYTES_16G,
         "MemoryMin": BYTES_8G,
@@ -404,7 +712,7 @@ def audit_app_slice() -> list[Check]:
     values = _show("app.slice", list(expected), user=True)
     if "_error" in values:
         return [
-            Check("app_slice", "error", "bounded", "N/A", f"{values['_error']}; {NEXT_OOM_INSTALL}")
+            Check("app_slice", "error", "bounded", "N/A", f"{values['_error']}; {NEXT_OOM_ACTION}")
         ]
     checks: list[Check] = []
     for key, target in expected.items():
@@ -414,7 +722,7 @@ def audit_app_slice() -> list[Check]:
         detail = (
             ""
             if status == "pass"
-            else f"app.slice aggregate RAM/swap backstop drifted; {NEXT_OOM_INSTALL}"
+            else f"app.slice aggregate RAM/swap backstop drifted; {NEXT_OOM_ACTION}"
         )
         checks.append(Check(f"app_slice_{key}", status, str(target), actual, detail))
     return checks
@@ -436,7 +744,7 @@ def audit_session_slice() -> list[Check]:
                 "error",
                 "protected",
                 "N/A",
-                f"{values['_error']}; {NEXT_OOM_INSTALL}",
+                f"{values['_error']}; {NEXT_OOM_ACTION}",
             )
         ]
     checks: list[Check] = []
@@ -447,7 +755,7 @@ def audit_session_slice() -> list[Check]:
         detail = (
             ""
             if status == "pass"
-            else f"session.slice audio ancestor reservation drifted; {NEXT_OOM_INSTALL}"
+            else f"session.slice audio ancestor reservation drifted; {NEXT_OOM_ACTION}"
         )
         checks.append(Check(f"session_slice_{key}", status, target_text, actual, detail))
     return checks
@@ -485,7 +793,7 @@ def _audit_direct_child_floor_composition(
                 "error",
                 "parent >= all direct children",
                 "N/A",
-                f"{parent['_error']}; {NEXT_OOM_INSTALL}",
+                f"{parent['_error']}; {NEXT_OOM_ACTION}",
             )
         ]
     control_group = parent.get("ControlGroup", "")
@@ -496,7 +804,7 @@ def _audit_direct_child_floor_composition(
                 "error",
                 "parent >= all direct children",
                 "N/A",
-                f"{unit} ControlGroup is empty; {NEXT_OOM_INSTALL}",
+                f"{unit} ControlGroup is empty; {NEXT_OOM_ACTION}",
             )
         ]
     checks: list[Check] = []
@@ -514,7 +822,7 @@ def _audit_direct_child_floor_composition(
             if status == "pass"
             else (
                 f"cgroup-v2 would proportionally dilute direct-child {key} floors or their "
-                f"effective cgroup values are unreadable; {NEXT_OOM_INSTALL}"
+                f"effective cgroup values are unreadable; {NEXT_OOM_ACTION}"
             )
         )
         checks.append(
@@ -542,10 +850,10 @@ def audit_user_child_floor_composition(uid: int) -> list[Check]:
     return checks
 
 
-def audit_system_memory_unit(unit: str) -> list[Check]:
+def audit_system_memory_unit(unit: str, policy: HostMemoryPolicy) -> list[Check]:
     expected = {
-        "MemoryHigh": BYTES_80G,
-        "MemoryMax": BYTES_96G,
+        "MemoryHigh": policy.uid_memory_high,
+        "MemoryMax": policy.uid_memory_max,
         "MemorySwapMax": BYTES_8G,
         "MemoryLow": BYTES_20G,
         "MemoryMin": BYTES_10G,
@@ -558,7 +866,7 @@ def audit_system_memory_unit(unit: str) -> list[Check]:
                 "error",
                 "bounded",
                 "N/A",
-                f"{values['_error']}; {NEXT_OOM_INSTALL}",
+                f"{values['_error']}; {NEXT_OOM_ACTION}",
             )
         ]
     checks: list[Check] = []
@@ -567,9 +875,7 @@ def audit_system_memory_unit(unit: str) -> list[Check]:
         parsed = _int_value(actual)
         status = "pass" if parsed == target else "gap"
         detail = (
-            ""
-            if status == "pass"
-            else f"{unit} aggregate memory policy drifted; {NEXT_OOM_INSTALL}"
+            "" if status == "pass" else f"{unit} aggregate memory policy drifted; {NEXT_OOM_ACTION}"
         )
         checks.append(Check(f"{unit}_{key}", status, str(target), actual, detail))
     return checks
@@ -591,7 +897,7 @@ def audit_system_slice_reservation() -> list[Check]:
                 "error",
                 "protected",
                 "N/A",
-                f"{values['_error']}; {NEXT_OOM_INSTALL}",
+                f"{values['_error']}; {NEXT_OOM_ACTION}",
             )
         ]
     checks: list[Check] = []
@@ -602,7 +908,7 @@ def audit_system_slice_reservation() -> list[Check]:
         detail = (
             ""
             if status == "pass"
-            else f"system.slice recovery-plane reservation drifted; {NEXT_OOM_INSTALL}"
+            else f"system.slice recovery-plane reservation drifted; {NEXT_OOM_ACTION}"
         )
         checks.append(Check(f"system_slice_{key}", status, target_text, actual, detail))
     return checks
@@ -624,7 +930,7 @@ def audit_user_slice_reservation() -> list[Check]:
                 "error",
                 "protected",
                 "N/A",
-                f"{values['_error']}; {NEXT_OOM_INSTALL}",
+                f"{values['_error']}; {NEXT_OOM_ACTION}",
             )
         ]
     checks: list[Check] = []
@@ -635,7 +941,7 @@ def audit_user_slice_reservation() -> list[Check]:
         detail = (
             ""
             if status == "pass"
-            else f"user.slice ancestor reservation drifted; {NEXT_OOM_INSTALL}"
+            else f"user.slice ancestor reservation drifted; {NEXT_OOM_ACTION}"
         )
         checks.append(Check(f"user_slice_{key}", status, target_text, actual, detail))
     return checks
@@ -685,32 +991,33 @@ def _cgroup_pids(cgroup: str) -> list[str]:
     return sorted(pids, key=int)
 
 
-def _protected_user_unit_memberships() -> dict[str, set[str]]:
-    protected: dict[str, set[str]] = {}
-    for unit in PROTECTED_USER_UNITS:
-        values = _show(
-            unit,
-            ["OOMScoreAdjust", "MainPID", "ControlGroup", "MemoryLow", "MemoryMin", "Slice"],
-            user=True,
-        )
-        cgroup = values.get("ControlGroup", "")
-        main_pid = values.get("MainPID", "0")
-        candidates = set(_cgroup_pids(cgroup))
-        if main_pid.isdigit() and main_pid != "0":
-            candidates.add(main_pid)
-        if cgroup.startswith("/"):
-            for pid in candidates:
-                protected.setdefault(pid, set()).add(cgroup)
-    return protected
+def _pid_matches_observed_unit_process_tree(pid: str, main_pid: str, cgroup: str, uid: int) -> bool:
+    if not pid.isdigit() or not main_pid.isdigit() or main_pid == "0" or not cgroup.startswith("/"):
+        return False
+    current = pid
+    seen: set[str] = set()
+    for _ in range(256):
+        if current in seen or not current.isdigit() or current == "0":
+            return False
+        seen.add(current)
+        if not _pid_matches_cgroup(current, cgroup):
+            return False
+        status = PROC_ROOT / current / "status"
+        if _status_field(status, "Uid") != str(uid):
+            return False
+        if current == main_pid:
+            return True
+        current = _status_field(status, "PPid")
+    return False
 
 
-def audit_protected_user_units() -> list[Check]:
+def audit_protected_user_units(policy: HostMemoryPolicy, uid: int) -> list[Check]:
     checks: list[Check] = []
-    enforcer_attempted = False
     for unit, expected in PROTECTED_USER_UNITS.items():
         values = _show(
             unit,
             [
+                "LoadState",
                 "OOMScoreAdjust",
                 "MainPID",
                 "ControlGroup",
@@ -721,6 +1028,27 @@ def audit_protected_user_units() -> list[Check]:
             ],
             user=True,
         )
+        if values.get("LoadState") == "not-found":
+            if unit in policy.optional_user_units:
+                checks.append(
+                    Check(
+                        f"user_unit_{unit}_availability",
+                        "pass",
+                        "optional on appendix",
+                        "not-found",
+                    )
+                )
+            else:
+                checks.append(
+                    Check(
+                        f"user_unit_{unit}_availability",
+                        "gap",
+                        "loaded",
+                        "not-found",
+                        f"required protected user unit is unavailable; {NEXT_OOM_ACTION}",
+                    )
+                )
+            continue
         if "_error" in values:
             checks.append(
                 Check(
@@ -728,7 +1056,7 @@ def audit_protected_user_units() -> list[Check]:
                     "gap",
                     str(expected),
                     "N/A",
-                    f"{values['_error']}; {NEXT_OOM_INSTALL}",
+                    f"{values['_error']}; {NEXT_OOM_ACTION}",
                 )
             )
             continue
@@ -739,8 +1067,8 @@ def audit_protected_user_units() -> list[Check]:
             ""
             if status == "pass"
             else (
-                "broadcast-critical user unit must start at the user manager's valid score 100; "
-                f"root applies live score {expected} after startup; {NEXT_OOM_INSTALL}"
+                "delegated user units must remain at the user manager's score 100; "
+                f"root-negative user scoring is retired; {NEXT_OOM_ACTION}"
             )
         )
         checks.append(Check(f"user_unit_{unit}_OOMScoreAdjust", status, "100", actual, detail))
@@ -752,7 +1080,7 @@ def audit_protected_user_units() -> list[Check]:
             if slice_status == "pass"
             else (
                 f"broadcast-critical reservation must remain below {slice_target} so its checked "
-                f"ancestor protection is effective; {NEXT_OOM_INSTALL}"
+                f"ancestor protection is effective; {NEXT_OOM_ACTION}"
             )
         )
         checks.append(
@@ -770,7 +1098,7 @@ def audit_protected_user_units() -> list[Check]:
             sandbox_detail = (
                 ""
                 if sandbox_status == "pass"
-                else f"audio service must retain its distro privilege boundary; {NEXT_OOM_INSTALL}"
+                else f"audio service must retain its distro privilege boundary; {NEXT_OOM_ACTION}"
             )
             checks.append(
                 Check(
@@ -787,7 +1115,7 @@ def audit_protected_user_units() -> list[Check]:
             memory_detail = (
                 ""
                 if memory_status == "pass"
-                else f"broadcast-critical user unit memory reservation drifted; {NEXT_OOM_INSTALL}"
+                else f"broadcast-critical user unit memory reservation drifted; {NEXT_OOM_ACTION}"
             )
             checks.append(
                 Check(
@@ -812,16 +1140,27 @@ def audit_protected_user_units() -> list[Check]:
                         "gap",
                         f"{control_group} or descendant",
                         ",".join(actual_cgroups) if actual_cgroups else "N/A",
-                        f"protected PID left or was reused outside its authoritative cgroup; {NEXT_OOM_INSTALL}",
+                        f"protected PID left or was reused outside its authoritative cgroup; {NEXT_OOM_ACTION}",
+                    )
+                )
+                continue
+            if not _pid_matches_observed_unit_process_tree(pid, main_pid, control_group, uid):
+                checks.append(
+                    Check(
+                        f"user_unit_{unit}_pid_{pid}_process_tree_identity",
+                        "gap",
+                        f"uid {uid} descendant of MainPID {main_pid}",
+                        f"uid={_status_field(PROC_ROOT / pid / 'status', 'Uid') or 'N/A'},"
+                        f"ppid={_status_field(PROC_ROOT / pid / 'status', 'PPid') or 'N/A'}",
+                        "reported user-manager cgroup/process-tree observation was inconsistent; "
+                        f"user-manager data remains non-authoritative; {NEXT_OOM_ACTION}",
                     )
                 )
                 continue
             live = _proc_oom_score(pid)
-            if live != expected and not enforcer_attempted:
-                enforcer_attempted = True
-                _run([_systemctl(), "start", "hapax-oom-score-enforce.service"])
-                live = _proc_oom_score(pid)
-            if not _pid_matches_cgroup(pid, control_group):
+            if not _pid_matches_cgroup(
+                pid, control_group
+            ) or not _pid_matches_observed_unit_process_tree(pid, main_pid, control_group, uid):
                 actual_cgroups = _proc_cgroups(pid)
                 checks.append(
                     Check(
@@ -829,7 +1168,7 @@ def audit_protected_user_units() -> list[Check]:
                         "gap",
                         f"{control_group} or descendant",
                         ",".join(actual_cgroups) if actual_cgroups else "N/A",
-                        f"protected PID moved during live-score readback; {NEXT_OOM_INSTALL}",
+                        f"protected PID moved or changed process-tree identity during live-score readback; {NEXT_OOM_ACTION}",
                     )
                 )
                 continue
@@ -838,7 +1177,7 @@ def audit_protected_user_units() -> list[Check]:
             live_detail = (
                 ""
                 if live_status == "pass"
-                else f"live broadcast-critical user unit OOM score drifted after enforcer retry; {NEXT_OOM_INSTALL}"
+                else f"live delegated user unit must remain at score 100; {NEXT_OOM_ACTION}"
             )
             checks.append(
                 Check(
@@ -861,7 +1200,7 @@ def audit_tmux_scopes() -> list[Check]:
                 "error",
                 "observable",
                 "N/A",
-                f"{(proc.stderr or proc.stdout).strip()}; {NEXT_OOM_INSTALL}",
+                f"{(proc.stderr or proc.stdout).strip()}; {NEXT_OOM_ACTION}",
             )
         ]
     scopes = [line.split()[0] for line in proc.stdout.splitlines() if "tmux-spawn-" in line]
@@ -875,7 +1214,7 @@ def audit_tmux_scopes() -> list[Check]:
                     "error",
                     "bounded-or-app-slice-backed",
                     "N/A",
-                    f"{values['_error']}; {NEXT_OOM_INSTALL}",
+                    f"{values['_error']}; {NEXT_OOM_ACTION}",
                 )
             )
             continue
@@ -894,7 +1233,7 @@ def audit_tmux_scopes() -> list[Check]:
             detail_parts.append(f"Slice={slice_name}")
         detail = ""
         if status == "gap" and detail_parts:
-            detail = f"tmux scope not bounded-or-app-slice-backed: {'; '.join(detail_parts)}; {NEXT_OOM_INSTALL}"
+            detail = f"tmux scope not bounded-or-app-slice-backed: {'; '.join(detail_parts)}; {NEXT_OOM_ACTION}"
         actual = ",".join(
             f"{key}={values.get(key, '')}"
             for key in ("MemoryHigh", "MemoryMax", "MemorySwapMax", "Slice")
@@ -903,16 +1242,6 @@ def audit_tmux_scopes() -> list[Check]:
             Check(f"tmux_scope_{scope}", status, "bounded-or-app-slice-backed", actual, detail)
         )
     return checks
-
-
-_ALLOWED_USER_PROTECTED_NAMES = {
-    "pipewire",
-    "pipewire-pulse",
-    "wireplumber",
-    "dbus-broker",
-    "dbus-daemon",
-    "systemd",
-}
 
 
 def _status_field(status: Path, key: str) -> str:
@@ -934,9 +1263,8 @@ def audit_residual_user_process_protection(uid: int) -> Check:
             "error",
             "observable",
             "N/A",
-            f"proc root unavailable; {NEXT_OOM_INSTALL}",
+            f"proc root unavailable; {NEXT_OOM_ACTION}",
         )
-    protected_memberships = _protected_user_unit_memberships()
     offenders: list[str] = []
     for adj in proc_root.glob("[0-9]*/oom_score_adj"):
         pid_dir = adj.parent
@@ -947,16 +1275,9 @@ def audit_residual_user_process_protection(uid: int) -> Check:
             score = int(adj.read_text(encoding="utf-8").strip())
         except (OSError, ValueError):
             continue
-        if score > -800:
-            continue
-        if any(
-            _pid_matches_cgroup(pid_dir.name, cgroup)
-            for cgroup in protected_memberships.get(pid_dir.name, set())
-        ):
+        if score >= 0:
             continue
         name = _status_field(status, "Name")
-        if name in _ALLOWED_USER_PROTECTED_NAMES:
-            continue
         offenders.append(f"{pid_dir.name}:{name}={score}")
     if offenders:
         shown = ",".join(offenders[:8])
@@ -964,16 +1285,1327 @@ def audit_residual_user_process_protection(uid: int) -> Check:
         return Check(
             "user_process_residual_oom_protection",
             "gap",
-            "no uid processes <= -800 outside allowlist",
+            "no observed uid processes with negative oom_score_adj",
             shown + extra,
-            f"stale inherited OOMScoreAdjust; {NEXT_OOM_INSTALL}",
+            f"root-granted or inherited negative OOM score remains after bridge retirement; {NEXT_OOM_ACTION}",
         )
     return Check(
         "user_process_residual_oom_protection",
         "pass",
-        "no uid processes <= -800 outside allowlist",
+        "no observed uid processes with negative oom_score_adj",
         "none",
+        "point-in-time observational scan only; it does not prove absence across fork or cgroup races",
     )
+
+
+def audit_zram(policy: HostMemoryPolicy) -> list[Check]:
+    checks: list[Check] = []
+    size_path = SYS_ROOT / "block/zram0/disksize"
+    try:
+        actual_size = int(size_path.read_text(encoding="utf-8").strip())
+    except (OSError, ValueError) as exc:
+        checks.append(
+            Check(
+                "zram_size",
+                "error",
+                str(policy.zram_size),
+                "N/A",
+                f"cannot read {size_path}: {exc}; {NEXT_OOM_ACTION}",
+            )
+        )
+    else:
+        checks.append(
+            Check(
+                "zram_size",
+                "pass" if actual_size == policy.zram_size else "gap",
+                str(policy.zram_size),
+                str(actual_size),
+                ""
+                if actual_size == policy.zram_size
+                else f"host zram size drifted; {NEXT_OOM_ACTION}",
+            )
+        )
+
+    compression_path = SYS_ROOT / "block/zram0/comp_algorithm"
+    try:
+        compression = compression_path.read_text(encoding="utf-8").strip()
+    except OSError as exc:
+        checks.append(
+            Check(
+                "zram_compression",
+                "error",
+                "zstd selected",
+                "N/A",
+                f"cannot read {compression_path}: {exc}; {NEXT_OOM_ACTION}",
+            )
+        )
+    else:
+        selected = next(
+            (
+                token[1:-1]
+                for token in compression.split()
+                if token.startswith("[") and token.endswith("]")
+            ),
+            "",
+        )
+        checks.append(
+            Check(
+                "zram_compression",
+                "pass" if selected == "zstd" else "gap",
+                "zstd",
+                selected or compression,
+                "" if selected == "zstd" else f"zram compression drifted; {NEXT_OOM_ACTION}",
+            )
+        )
+
+    swaps_path = PROC_ROOT / "swaps"
+    try:
+        swap_lines = swaps_path.read_text(encoding="utf-8").splitlines()
+    except OSError as exc:
+        checks.append(
+            Check(
+                "zram_swap_active",
+                "error",
+                "/dev/zram0 active",
+                "N/A",
+                f"cannot read {swaps_path}: {exc}; {NEXT_OOM_ACTION}",
+            )
+        )
+    else:
+        active = any(line.split()[:1] == ["/dev/zram0"] for line in swap_lines[1:])
+        checks.append(
+            Check(
+                "zram_swap_active",
+                "pass" if active else "gap",
+                "/dev/zram0 active",
+                "active" if active else "absent",
+                "" if active else f"zram swap activation drifted; {NEXT_OOM_ACTION}",
+            )
+        )
+    return checks
+
+
+def _docker_mcp_lease_is_live(
+    lease_pid: str,
+    lease_start: str,
+    lease_boot: str,
+    uid: int,
+) -> tuple[bool, str]:
+    if re.fullmatch(r"[1-9][0-9]*", lease_pid) is None:
+        return False, "lease PID is malformed"
+    if re.fullmatch(r"[1-9][0-9]*", lease_start) is None:
+        return False, "lease start time is malformed"
+    if (
+        re.fullmatch(
+            r"[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}",
+            lease_boot,
+        )
+        is None
+    ):
+        return False, "lease boot ID is malformed"
+    try:
+        live_boot = (PROC_ROOT / "sys/kernel/random/boot_id").read_text(encoding="utf-8").strip()
+        status_lines = (PROC_ROOT / lease_pid / "status").read_text(encoding="utf-8").splitlines()
+        stat_line = (PROC_ROOT / lease_pid / "stat").read_text(encoding="utf-8").strip()
+    except OSError:
+        return False, "lease process or boot identity is no longer observable"
+    uid_line = next((line for line in status_lines if line.startswith("Uid:\t")), "")
+    uid_fields = uid_line.split()
+    try:
+        stat_tail = stat_line.rsplit(") ", 1)[1].split()
+        process_state = stat_tail[0]
+        live_start = stat_tail[19]
+    except (IndexError, ValueError):
+        return False, "lease process identity is malformed"
+    if len(uid_fields) != 5 or not all(value.isdecimal() for value in uid_fields[1:]):
+        return False, "lease process UID identity is malformed"
+    if live_boot != lease_boot:
+        return False, "lease boot identity is stale"
+    if process_state == "Z":
+        return False, "lease process is a zombie"
+    if uid_fields[1] != str(uid):
+        return False, "lease process UID does not match the audited operator"
+    if live_start != lease_start:
+        return False, "lease PID was reused or its start identity drifted"
+    return True, ""
+
+
+def _same_json_value(actual: object, expected: object) -> bool:
+    if type(actual) is not type(expected):
+        return False
+    if isinstance(expected, dict):
+        assert isinstance(actual, dict)
+        return actual.keys() == expected.keys() and all(
+            _same_json_value(actual[key], value) for key, value in expected.items()
+        )
+    if isinstance(expected, list):
+        assert isinstance(actual, list)
+        return len(actual) == len(expected) and all(
+            _same_json_value(left, right) for left, right in zip(actual, expected, strict=True)
+        )
+    return actual == expected
+
+
+def _empty_json_value(value: object) -> bool:
+    return (
+        value is None or value is False or value == 0 or value == "" or value == [] or value == {}
+    )
+
+
+def _expected_github_mcp_labels(
+    uid: int,
+    launch_id: str,
+    lease_pid: str,
+    lease_start: str,
+    lease_boot: str,
+) -> dict[str, str]:
+    return {
+        **GITHUB_MCP_IMAGE_LABELS,
+        GITHUB_MCP_APP_LABEL: GITHUB_MCP_APP_ID,
+        GITHUB_MCP_UID_LABEL: str(uid),
+        GITHUB_MCP_LAUNCH_LABEL: launch_id,
+        GITHUB_MCP_LEASE_PID_LABEL: lease_pid,
+        GITHUB_MCP_LEASE_START_LABEL: lease_start,
+        GITHUB_MCP_LEASE_BOOT_LABEL: lease_boot,
+    }
+
+
+def _docker_mcp_host_config_matches(host: object, uid: int, launch_id: str) -> bool:
+    if not isinstance(host, dict) or re.fullmatch(rf"{uid}-[A-Za-z0-9]{{10}}", launch_id) is None:
+        return False
+    try:
+        account_home = pwd.getpwuid(uid).pw_dir
+    except KeyError:
+        return False
+    suffix = launch_id.removeprefix(f"{uid}-")
+    expected = {
+        "AutoRemove": True,
+        "BlkioWeight": 0,
+        "CapDrop": ["ALL"],
+        "Cgroup": "",
+        "CgroupParent": "",
+        "CgroupnsMode": "private",
+        "ConsoleSize": [0, 0],
+        "ContainerIDFile": str(
+            Path(account_home) / ".cache/hapax/mcp-logs" / f"github-mcp.{suffix}" / "container.cid"
+        ),
+        "CpuCount": 0,
+        "CpuPercent": 0,
+        "CpuPeriod": 0,
+        "CpuQuota": 0,
+        "CpuRealtimePeriod": 0,
+        "CpuRealtimeRuntime": 0,
+        "CpuShares": 0,
+        "CpusetCpus": "",
+        "CpusetMems": "",
+        "IOMaximumBandwidth": 0,
+        "IOMaximumIOps": 0,
+        "IpcMode": "private",
+        "Isolation": "",
+        "LogConfig": {"Config": {}, "Type": "none"},
+        "MaskedPaths": [
+            "/proc/acpi",
+            "/proc/asound",
+            "/proc/interrupts",
+            "/proc/kcore",
+            "/proc/keys",
+            "/proc/latency_stats",
+            "/proc/sched_debug",
+            "/proc/scsi",
+            "/proc/timer_list",
+            "/proc/timer_stats",
+            "/sys/devices/virtual/powercap",
+            "/sys/firmware",
+        ],
+        "Memory": BYTES_512M,
+        "MemoryReservation": 0,
+        "MemorySwap": BYTES_768M,
+        "NanoCpus": 0,
+        "NetworkMode": "bridge",
+        "OomScoreAdj": 0,
+        "PidMode": "",
+        "PidsLimit": 128,
+        "PortBindings": {},
+        "Privileged": False,
+        "PublishAllPorts": False,
+        "ReadonlyPaths": [
+            "/proc/bus",
+            "/proc/fs",
+            "/proc/irq",
+            "/proc/sys",
+            "/proc/sysrq-trigger",
+        ],
+        "ReadonlyRootfs": True,
+        "RestartPolicy": {"MaximumRetryCount": 0, "Name": "no"},
+        "Runtime": "runc",
+        "ShmSize": 64 * 1024**2,
+        "UTSMode": "private",
+        "UsernsMode": "",
+        "VolumeDriver": "",
+    }
+    if any(
+        key not in host or not _same_json_value(host[key], value) for key, value in expected.items()
+    ):
+        return False
+    nullable_empty_lists = {
+        "Binds",
+        "BlkioDeviceReadBps",
+        "BlkioDeviceReadIOps",
+        "BlkioDeviceWriteBps",
+        "BlkioDeviceWriteIOps",
+        "BlkioWeightDevice",
+        "CapAdd",
+        "DeviceCgroupRules",
+        "DeviceRequests",
+        "Devices",
+        "Dns",
+        "DnsOptions",
+        "DnsSearch",
+        "ExtraHosts",
+        "GroupAdd",
+        "Links",
+        "Ulimits",
+        "VolumesFrom",
+    }
+    if any(key not in host or host[key] not in (None, []) for key in nullable_empty_lists):
+        return False
+    if host.get("MemorySwappiness") is not None or host.get("OomKillDisable") not in (None, False):
+        return False
+    if host.get("SecurityOpt") not in (["no-new-privileges"], ["no-new-privileges:true"]):
+        return False
+    tmpfs = host.get("Tmpfs")
+    if not isinstance(tmpfs, dict) or set(tmpfs) != {"/tmp"}:
+        return False
+    tmpfs_options = tmpfs["/tmp"]
+    if (
+        not isinstance(tmpfs_options, str)
+        or len(tmpfs_options.split(",")) != 4
+        or set(tmpfs_options.split(",")) != {"rw", "noexec", "nosuid", "size=16m"}
+    ):
+        return False
+    known = (
+        set(expected)
+        | nullable_empty_lists
+        | {
+            "MemorySwappiness",
+            "OomKillDisable",
+            "SecurityOpt",
+            "Tmpfs",
+        }
+    )
+    return all(_empty_json_value(value) for key, value in host.items() if key not in known)
+
+
+def _docker_mcp_config_matches(
+    config: object,
+    container_id: str,
+    labels: dict[str, str],
+    process_args: list[str],
+    healthcheck: object,
+    shell: object,
+    on_build: object,
+    args_escaped: object,
+    mac_address: object,
+) -> bool:
+    if not isinstance(config, dict) or re.fullmatch(r"[0-9a-f]{64}", container_id) is None:
+        return False
+    config_probes = {
+        "ArgsEscaped": args_escaped,
+        "Healthcheck": healthcheck,
+        "MacAddress": mac_address,
+        "OnBuild": on_build,
+        "Shell": shell,
+    }
+    expected_probes = {
+        "ArgsEscaped": False,
+        "Healthcheck": None,
+        "MacAddress": "",
+        "OnBuild": None,
+        "Shell": None,
+    }
+    if config_probes != expected_probes:
+        return False
+    complete = dict(config)
+    for key, value in config_probes.items():
+        if key in complete and not _same_json_value(complete[key], value):
+            return False
+        complete[key] = value
+
+    token_prefix = "GITHUB_PERSONAL_ACCESS_TOKEN="
+    expected_env_prefix = [
+        "PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin",
+        "SSL_CERT_FILE=/etc/ssl/certs/ca-certificates.crt",
+    ]
+    env = complete.get("Env")
+    if (
+        not isinstance(env, list)
+        or len(env) != 3
+        or not all(isinstance(value, str) for value in env)
+        or env[:2] != expected_env_prefix
+        or not env[2].startswith(token_prefix)
+        or len(env[2]) == len(token_prefix)
+    ):
+        return False
+    normalized = dict(complete)
+    normalized["Env"] = [*expected_env_prefix, f"{token_prefix}<redacted>"]
+    expected = {
+        "ArgsEscaped": False,
+        "AttachStderr": True,
+        "AttachStdin": True,
+        "AttachStdout": True,
+        "Cmd": process_args,
+        "Domainname": "",
+        "Entrypoint": [GITHUB_MCP_PATH],
+        "Env": [*expected_env_prefix, f"{token_prefix}<redacted>"],
+        "ExposedPorts": {"8082/tcp": {}},
+        "Healthcheck": None,
+        "Hostname": container_id[:12],
+        "Image": GITHUB_MCP_IMAGE,
+        "Labels": labels,
+        "MacAddress": "",
+        "NetworkDisabled": False,
+        "OnBuild": None,
+        "OpenStdin": True,
+        "Shell": None,
+        "StdinOnce": True,
+        "StopSignal": "SIGTERM",
+        "StopTimeout": 1,
+        "Tty": False,
+        "User": "0",
+        "Volumes": None,
+        "WorkingDir": "/server",
+    }
+    for key, value in expected.items():
+        if key not in normalized or not _same_json_value(normalized[key], value):
+            return False
+    return all(_empty_json_value(value) for key, value in normalized.items() if key not in expected)
+
+
+def _docker_mcp_networks_match(networks: object) -> bool:
+    if not isinstance(networks, dict) or set(networks) != {"bridge"}:
+        return False
+    endpoint = networks["bridge"]
+    if not isinstance(endpoint, dict):
+        return False
+    expected = {
+        "Aliases": None,
+        "DNSNames": None,
+        "DriverOpts": None,
+        "GlobalIPv6Address": "",
+        "GlobalIPv6PrefixLen": 0,
+        "GwPriority": 0,
+        "IPAMConfig": None,
+        "IPv6Gateway": "",
+        "Links": None,
+    }
+    known = set(expected) | {
+        "EndpointID",
+        "Gateway",
+        "IPAddress",
+        "IPPrefixLen",
+        "MacAddress",
+        "NetworkID",
+    }
+    if set(endpoint) != known:
+        return False
+    if any(
+        key not in endpoint or not _same_json_value(endpoint[key], value)
+        for key, value in expected.items()
+    ):
+        return False
+    network_id = endpoint.get("NetworkID")
+    endpoint_id = endpoint.get("EndpointID")
+    if (
+        not isinstance(network_id, str)
+        or not isinstance(endpoint_id, str)
+        or re.fullmatch(r"[0-9a-f]{64}", network_id) is None
+        or re.fullmatch(r"[0-9a-f]{64}", endpoint_id) is None
+        or network_id == "0" * 64
+        or endpoint_id == "0" * 64
+        or network_id == endpoint_id
+    ):
+        return False
+    prefix = endpoint.get("IPPrefixLen")
+    ip_address = endpoint.get("IPAddress")
+    gateway_address = endpoint.get("Gateway")
+    if (
+        type(prefix) is not int
+        or not 1 <= prefix <= 30
+        or not isinstance(ip_address, str)
+        or not isinstance(gateway_address, str)
+    ):
+        return False
+    try:
+        address = ipaddress.IPv4Address(ip_address)
+        gateway = ipaddress.IPv4Address(gateway_address)
+        network = ipaddress.IPv4Network((address, prefix), strict=False)
+    except (ipaddress.AddressValueError, ipaddress.NetmaskValueError):
+        return False
+    if (
+        address == gateway
+        or address not in network
+        or gateway not in network
+        or address in {network.network_address, network.broadcast_address}
+        or gateway in {network.network_address, network.broadcast_address}
+        or any(
+            value.is_unspecified
+            or value.is_loopback
+            or value.is_link_local
+            or value.is_multicast
+            or value.is_reserved
+            for value in (address, gateway)
+        )
+    ):
+        return False
+    mac_address = endpoint.get("MacAddress")
+    if (
+        not isinstance(mac_address, str)
+        or re.fullmatch(r"[0-9a-f]{2}(?::[0-9a-f]{2}){5}", mac_address) is None
+    ):
+        return False
+    mac_octets = bytes.fromhex(mac_address.replace(":", ""))
+    return mac_octets[:2] == b"\x02\x42" and mac_octets[2:] == address.packed
+
+
+def _read_docker_inventory(
+    *, closing: bool
+) -> tuple[dict[str, str] | None, dict[str, str | None] | None, Check | None]:
+    check_name = "docker_oom_inventory_stable" if closing else "docker_oom_targets"
+    scope = "closing Docker" if closing else "Docker"
+    enumeration = _run_local_docker(
+        [
+            "ps",
+            "-a",
+            "--no-trunc",
+            "--format",
+            '{{.ID}}\t{{.Names}}\t{{.Label "org.hapax.github-mcp.app"}}'
+            '{{range split .Labels ","}}{{if eq . '
+            '"org.hapax.github-mcp.app="}}P{{end}}{{end}}',
+        ]
+    )
+    if enumeration.returncode != 0:
+        return (
+            None,
+            None,
+            Check(
+                check_name,
+                "error",
+                "closing local Docker inventory observable"
+                if closing
+                else "local Docker inventory observable",
+                "N/A",
+                f"{scope} enumeration failed: {_docker_failure_summary(enumeration)}; "
+                f"{NEXT_OOM_ACTION}",
+            ),
+        )
+
+    inventory_lines = enumeration.stdout.splitlines()
+    if len(inventory_lines) > DOCKER_INVENTORY_MAX_ROWS:
+        return (
+            None,
+            None,
+            Check(
+                check_name,
+                "error",
+                f"at most {DOCKER_INVENTORY_MAX_ROWS} inventory rows",
+                str(len(inventory_lines)),
+                f"{scope} inventory row bound exceeded; {NEXT_OOM_ACTION}",
+            ),
+        )
+
+    inventory: dict[str, str] = {}
+    app_labels: dict[str, str | None] = {}
+    seen_names: set[str] = set()
+    for raw_line in inventory_lines:
+        if not raw_line:
+            continue
+        if len(raw_line) > DOCKER_INVENTORY_LINE_MAX:
+            return (
+                None,
+                None,
+                Check(
+                    check_name,
+                    "error",
+                    f"inventory lines at most {DOCKER_INVENTORY_LINE_MAX} characters",
+                    f"length={len(raw_line)}",
+                    f"{scope} inventory line bound exceeded; {NEXT_OOM_ACTION}",
+                ),
+            )
+        fields = raw_line.split("\t")
+        if (
+            len(fields) != 3
+            or re.fullmatch(r"[0-9a-f]{64}", fields[0]) is None
+            or re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9_.-]+", fields[1]) is None
+        ):
+            return (
+                None,
+                None,
+                Check(
+                    check_name,
+                    "error",
+                    "full immutable IDs and exact names",
+                    "malformed",
+                    f"malformed {scope} inventory; {NEXT_OOM_ACTION}",
+                ),
+            )
+        container_id, name, app_label = fields
+        if container_id in inventory:
+            return (
+                None,
+                None,
+                Check(
+                    check_name,
+                    "error",
+                    "unique immutable IDs",
+                    "duplicate",
+                    f"duplicate {scope} ID in inventory; {NEXT_OOM_ACTION}",
+                ),
+            )
+        if name in seen_names:
+            return (
+                None,
+                None,
+                Check(
+                    check_name,
+                    "error",
+                    "unique exact names",
+                    "duplicate",
+                    f"duplicate {scope} name in inventory; {NEXT_OOM_ACTION}",
+                ),
+            )
+        seen_names.add(name)
+        inventory[container_id] = name
+        # The template appends P only for an exact empty-label token. A real
+        # value or unrelated-label spoof that collides with P fails the later
+        # immutable-ID inspect comparison rather than hiding a target.
+        app_labels[container_id] = "" if app_label == "P" else app_label or None
+    return inventory, app_labels, None
+
+
+def _docker_target_generation(
+    inventory: dict[str, str], app_labels: dict[str, str | None]
+) -> frozenset[tuple[str, str, str | None]]:
+    return frozenset(
+        (container_id, name, app_labels[container_id])
+        for container_id, name in inventory.items()
+        if name == "hapax-local-judge"
+        or app_labels[container_id] is not None
+        or name.startswith("hapax-github-mcp-")
+    )
+
+
+def audit_docker_limits(uid: int) -> list[Check]:
+    inventory, app_labels, inventory_error = _read_docker_inventory(closing=False)
+    if inventory_error is not None:
+        return [inventory_error]
+    assert inventory is not None
+    assert app_labels is not None
+    target_generation = _docker_target_generation(inventory, app_labels)
+
+    judge = next(
+        (
+            (container_id, name)
+            for container_id, name in inventory.items()
+            if name == "hapax-local-judge"
+        ),
+        None,
+    )
+    mcp_targets = [
+        (container_id, name)
+        for container_id, name in inventory.items()
+        if app_labels[container_id] is not None or name.startswith("hapax-github-mcp-")
+    ]
+
+    if len(mcp_targets) > DOCKER_TARGET_MAX:
+        return [
+            Check(
+                "docker_oom_targets",
+                "error",
+                f"at most {DOCKER_TARGET_MAX} OOM targets",
+                str(len(mcp_targets)),
+                f"Docker target count bound exceeded; {NEXT_OOM_ACTION}",
+            )
+        ]
+
+    checks: list[Check] = []
+    checks.append(
+        Check(
+            "docker_hapax-local-judge_retired",
+            "pass" if judge is None else "gap",
+            "absent",
+            "absent" if judge is None else judge[0],
+            "" if judge is None else f"historical local judge remains live; {NEXT_OOM_ACTION}",
+        )
+    )
+
+    checks.append(Check("docker_github_mcp_count", "pass", ">=0", str(len(mcp_targets))))
+    resolved_image_id: str | None = None
+    if mcp_targets:
+        image_inspect = _run_local_docker(
+            [
+                "image",
+                "inspect",
+                "--format",
+                '{{.Id}}{{range .RepoDigests}}{{printf "\\n%s" .}}{{end}}',
+                GITHUB_MCP_IMAGE,
+            ]
+        )
+        image_status = "error"
+        image_actual = "N/A"
+        image_detail = ""
+        if image_inspect.returncode != 0:
+            image_detail = (
+                "cannot resolve the pinned local image: "
+                f"{_docker_failure_summary(image_inspect)}; {NEXT_OOM_ACTION}"
+            )
+        else:
+            image_lines = image_inspect.stdout.splitlines()
+            if (
+                len(image_lines) < 2
+                or len(image_lines) > DOCKER_TARGET_MAX
+                or any(len(line) > DOCKER_INVENTORY_LINE_MAX for line in image_lines)
+                or re.fullmatch(r"sha256:[0-9a-f]{64}", image_lines[0]) is None
+            ):
+                image_detail = f"malformed bounded Docker image identity; {NEXT_OOM_ACTION}"
+                image_actual = "malformed"
+            else:
+                local_image_id = image_lines[0]
+                repo_digests = image_lines[1:]
+                reviewed_digest_present = GITHUB_MCP_IMAGE in repo_digests
+                image_actual = (
+                    "ConfigIDFormat=true,"
+                    f"ReviewedRepoDigestPresent={str(reviewed_digest_present).lower()}"
+                )
+                if reviewed_digest_present:
+                    resolved_image_id = local_image_id
+                    image_status = "pass"
+                else:
+                    image_status = "gap"
+                    image_detail = (
+                        "local image RepoDigests do not contain the exact reviewed reference; "
+                        f"{NEXT_OOM_ACTION}"
+                    )
+        checks.append(
+            Check(
+                "docker_github_mcp_image",
+                image_status,
+                f"RepoDigest={GITHUB_MCP_IMAGE},ConfigID=sha256:<64 lowercase hex>",
+                image_actual,
+                image_detail,
+            )
+        )
+    for target_index, (container_id, name) in enumerate(mcp_targets, start=1):
+        check_name = f"docker_github_mcp_target_{target_index}_limits"
+        inspected = _run_local_docker(
+            [
+                "inspect",
+                "--format",
+                (
+                    "{{json .Id}}\t{{json .Name}}\t{{json .Config.Labels}}\t"
+                    "{{json .HostConfig.Memory}}\t{{json .HostConfig.MemorySwap}}\t"
+                    "{{json .HostConfig.OomKillDisable}}\t{{json .Image}}\t"
+                    "{{json .Config.Image}}\t{{json .Path}}\t{{json .Args}}\t"
+                    "{{json .HostConfig.ReadonlyRootfs}}\t{{json .HostConfig.CapDrop}}\t"
+                    "{{json .HostConfig.SecurityOpt}}\t{{json .HostConfig.AutoRemove}}\t"
+                    "{{json .HostConfig.LogConfig.Type}}\t{{json .HostConfig.Tmpfs}}\t"
+                    "{{json .HostConfig.Binds}}\t{{json .Mounts}}\t"
+                    "{{json .HostConfig.Privileged}}\t{{json .HostConfig.CapAdd}}\t"
+                    "{{json .HostConfig.NetworkMode}}\t{{json .HostConfig.PidMode}}\t"
+                    "{{json .HostConfig.IpcMode}}\t{{json .HostConfig.Devices}}\t"
+                    "{{json .HostConfig.DeviceRequests}}\t{{json .HostConfig.PortBindings}}\t"
+                    "{{json .State.Status}}\t{{json .Config.StopTimeout}}\t"
+                    "{{len .Config.Labels}}\t{{json .Config.AttachStdin}}\t"
+                    "{{json .Config.AttachStdout}}\t{{json .Config.AttachStderr}}\t"
+                    "{{json .Config.OpenStdin}}\t{{json .Config.StdinOnce}}\t"
+                    "{{json .Config.Tty}}\t{{json .Config.User}}\t{{len .Config.Env}}\t"
+                    '"{{range .Config.Env}}{{if eq . '
+                    '"PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"'
+                    '}}P{{end}}{{end}}"\t'
+                    '"{{range .Config.Env}}{{if eq . '
+                    '"SSL_CERT_FILE=/etc/ssl/certs/ca-certificates.crt"'
+                    '}}S{{end}}{{end}}"\t'
+                    '"{{range .Config.Env}}{{if and (eq (printf "%.29s" .) '
+                    '"GITHUB_PERSONAL_ACCESS_TOKEN=") (gt (len .) 29)}}T{{end}}{{end}}"\t'
+                    "{{json .Config.WorkingDir}}\t{{json .Config.StopSignal}}\t"
+                    "{{json .Config.NetworkDisabled}}\t{{json .Config.ExposedPorts}}\t"
+                    "{{json .HostConfig.MemoryReservation}}\t"
+                    "{{json .HostConfig.OomScoreAdj}}\t{{json .HostConfig.LogConfig.Config}}\t"
+                    "{{json .HostConfig.UTSMode}}\t{{json .HostConfig.CgroupnsMode}}\t"
+                    "{{json .HostConfig.UsernsMode}}\t{{json .HostConfig.Runtime}}\t"
+                    "{{json .HostConfig.PidsLimit}}\t"
+                    "{{json .HostConfig.RestartPolicy.Name}}\t"
+                    "{{json .HostConfig.RestartPolicy.MaximumRetryCount}}\t"
+                    "{{json .HostConfig.NanoCpus}}\t{{json .HostConfig.CpuShares}}\t"
+                    "{{json .HostConfig.PublishAllPorts}}\t{{json .HostConfig.ShmSize}}\t"
+                    "{{json .HostConfig.Dns}}\t{{json .HostConfig.DnsOptions}}\t"
+                    "{{json .HostConfig.DnsSearch}}\t{{json .HostConfig.ExtraHosts}}\t"
+                    "{{json .HostConfig.Links}}\t{{json .HostConfig.GroupAdd}}\t"
+                    "{{json .HostConfig.VolumesFrom}}\t{{len .NetworkSettings.Networks}}\t"
+                    '"{{range $name, $_ := .NetworkSettings.Networks}}'
+                    '{{if eq $name "bridge"}}B{{end}}{{end}}"\t'
+                    "{{json .Config.Hostname}}\t{{json .Config.Domainname}}\t"
+                    "{{json .Config.Entrypoint}}\t{{json .Config.Cmd}}\t"
+                    "{{json .Config.Volumes}}\t{{json .NetworkSettings.Ports}}\t"
+                    "{{json .Config.Healthcheck}}\t{{json .Config.Shell}}\t"
+                    "{{json .Config.OnBuild}}\t{{json .Config.ArgsEscaped}}\t"
+                    "{{json .Config.MacAddress}}\t{{json .HostConfig}}\t{{json .Config}}\t"
+                    "{{json .NetworkSettings.Networks}}"
+                ),
+                container_id,
+            ]
+        )
+        if inspected.returncode != 0:
+            checks.append(
+                Check(
+                    check_name,
+                    "error",
+                    f"Memory={BYTES_512M},MemorySwap={BYTES_768M},OomKillDisable=false",
+                    "N/A",
+                    "Docker inspect failed for selected immutable target: "
+                    f"{_docker_failure_summary(inspected)}; {NEXT_OOM_ACTION}",
+                )
+            )
+            continue
+        try:
+            inspect_lines = inspected.stdout.splitlines()
+            if len(inspect_lines) != 1 or len(inspect_lines[0]) > DOCKER_INSPECT_LINE_MAX:
+                raise ValueError("expected one bounded Docker inspect line")
+            fields = inspect_lines[0].split("\t")
+            if len(fields) != 81:
+                raise ValueError("expected eighty-one formatted Docker inspect fields")
+            (
+                actual_id,
+                actual_name,
+                labels,
+                memory,
+                memory_swap,
+                oom_kill_disable,
+                image_id,
+                config_image,
+                process_path,
+                process_args,
+                readonly_rootfs,
+                cap_drop,
+                security_opt,
+                auto_remove,
+                log_driver,
+                tmpfs,
+                binds,
+                mounts,
+                privileged,
+                cap_add,
+                network_mode,
+                pid_mode,
+                ipc_mode,
+                devices,
+                device_requests,
+                port_bindings,
+                container_state,
+                stop_timeout,
+                label_count,
+                attach_stdin,
+                attach_stdout,
+                attach_stderr,
+                open_stdin,
+                stdin_once,
+                tty,
+                container_user,
+                env_count,
+                env_path_marker,
+                env_ssl_marker,
+                env_token_marker,
+                working_dir,
+                stop_signal,
+                network_disabled,
+                exposed_ports,
+                memory_reservation,
+                oom_score_adj,
+                log_config,
+                uts_mode,
+                cgroupns_mode,
+                userns_mode,
+                runtime,
+                pids_limit,
+                restart_name,
+                restart_max,
+                nano_cpus,
+                cpu_shares,
+                publish_all_ports,
+                shm_size,
+                dns,
+                dns_options,
+                dns_search,
+                extra_hosts,
+                links,
+                group_add,
+                volumes_from,
+                network_count,
+                bridge_network_marker,
+                hostname,
+                domainname,
+                entrypoint,
+                config_cmd,
+                volumes,
+                network_ports,
+                healthcheck,
+                shell,
+                on_build,
+                args_escaped,
+                config_mac_address,
+                host_config,
+                config,
+                networks,
+            ) = (json.loads(field) for field in fields)
+            if not all(
+                isinstance(value, str)
+                for value in (actual_id, actual_name, image_id, config_image, process_path)
+            ):
+                raise TypeError("Docker identity fields must be strings")
+            if type(memory) is not int or type(memory_swap) is not int:
+                raise TypeError("Docker memory fields must be integers")
+            if not isinstance(labels, dict) or not all(
+                isinstance(key, str) and isinstance(value, str) for key, value in labels.items()
+            ):
+                raise TypeError("Docker labels must be a string map")
+            if oom_kill_disable is not None and type(oom_kill_disable) is not bool:
+                raise TypeError("Docker OomKillDisable must be null or boolean")
+            if not isinstance(process_args, list) or not all(
+                isinstance(value, str) for value in process_args
+            ):
+                raise TypeError("Docker process arguments must be a string list")
+            if not isinstance(config_cmd, list) or not all(
+                isinstance(value, str) for value in config_cmd
+            ):
+                raise TypeError("Docker Config.Cmd must be a string list")
+            if not isinstance(entrypoint, list) or not all(
+                isinstance(value, str) for value in entrypoint
+            ):
+                raise TypeError("Docker entrypoint must be a string list")
+            if type(readonly_rootfs) is not bool or type(auto_remove) is not bool:
+                raise TypeError("Docker security booleans must be boolean")
+            if not isinstance(cap_drop, list) or not all(
+                isinstance(value, str) for value in cap_drop
+            ):
+                raise TypeError("Docker CapDrop must be a string list")
+            if not isinstance(security_opt, list) or not all(
+                isinstance(value, str) for value in security_opt
+            ):
+                raise TypeError("Docker SecurityOpt must be a string list")
+            if not isinstance(tmpfs, dict) or not all(
+                isinstance(key, str) and isinstance(value, str) for key, value in tmpfs.items()
+            ):
+                raise TypeError("Docker Tmpfs must be a string map")
+            if binds is not None and not isinstance(binds, list):
+                raise TypeError("Docker Binds must be null or a list")
+            if not isinstance(mounts, list) or not isinstance(devices, list):
+                raise TypeError("Docker mounts and devices must be lists")
+            if type(privileged) is not bool:
+                raise TypeError("Docker Privileged must be boolean")
+            if cap_add is not None and not isinstance(cap_add, list):
+                raise TypeError("Docker CapAdd must be null or a list")
+            if device_requests is not None and not isinstance(device_requests, list):
+                raise TypeError("Docker DeviceRequests must be null or a list")
+            if not isinstance(port_bindings, dict):
+                raise TypeError("Docker PortBindings must be a map")
+            if not all(
+                isinstance(value, str)
+                for value in (log_driver, network_mode, pid_mode, ipc_mode, container_state)
+            ):
+                raise TypeError("Docker runtime state fields must be strings")
+            if type(stop_timeout) is not int:
+                raise TypeError("Docker StopTimeout must be an integer")
+            if healthcheck is not None and not isinstance(healthcheck, dict):
+                raise TypeError("Docker Healthcheck must be null or a map")
+            if shell is not None and not isinstance(shell, list):
+                raise TypeError("Docker Shell must be null or a list")
+            if on_build is not None and not isinstance(on_build, list):
+                raise TypeError("Docker OnBuild must be null or a list")
+            if type(args_escaped) is not bool or not isinstance(config_mac_address, str):
+                raise TypeError("Docker ArgsEscaped and MacAddress have invalid types")
+            if not all(
+                type(value) is bool
+                for value in (
+                    attach_stdin,
+                    attach_stdout,
+                    attach_stderr,
+                    open_stdin,
+                    stdin_once,
+                    tty,
+                    network_disabled,
+                    publish_all_ports,
+                )
+            ):
+                raise TypeError("Docker stdio and network flags must be boolean")
+            if not all(
+                type(value) is int
+                for value in (
+                    label_count,
+                    env_count,
+                    memory_reservation,
+                    oom_score_adj,
+                    pids_limit,
+                    restart_max,
+                    nano_cpus,
+                    cpu_shares,
+                    shm_size,
+                    network_count,
+                )
+            ):
+                raise TypeError("Docker resource and cardinality fields must be integers")
+            if not all(
+                isinstance(value, str)
+                for value in (
+                    container_user,
+                    env_path_marker,
+                    env_ssl_marker,
+                    env_token_marker,
+                    working_dir,
+                    stop_signal,
+                    uts_mode,
+                    cgroupns_mode,
+                    userns_mode,
+                    runtime,
+                    restart_name,
+                    bridge_network_marker,
+                    hostname,
+                    domainname,
+                )
+            ):
+                raise TypeError("Docker immutable configuration fields must be strings")
+            if exposed_ports is not None and not isinstance(exposed_ports, dict):
+                raise TypeError("Docker ExposedPorts must be null or a map")
+            if log_config is not None and not isinstance(log_config, dict):
+                raise TypeError("Docker log configuration must be null or a map")
+            if volumes is not None and not isinstance(volumes, dict):
+                raise TypeError("Docker Config.Volumes must be null or a map")
+            if not isinstance(network_ports, dict):
+                raise TypeError("Docker network ports must be a map")
+            if not isinstance(host_config, dict):
+                raise TypeError("Docker HostConfig must be a map")
+            if not isinstance(config, dict) or not isinstance(networks, dict):
+                raise TypeError("Docker Config and network settings must be maps")
+            for value in (
+                dns,
+                dns_options,
+                dns_search,
+                extra_hosts,
+                links,
+                group_add,
+                volumes_from,
+            ):
+                if value is not None and not isinstance(value, list):
+                    raise TypeError("Docker network lists must be null or lists")
+        except (TypeError, ValueError, json.JSONDecodeError) as exc:
+            checks.append(
+                Check(
+                    check_name,
+                    "error",
+                    "one complete inspect record",
+                    "malformed",
+                    f"cannot parse Docker inspect for selected immutable target: {exc}; "
+                    f"{NEXT_OOM_ACTION}",
+                )
+            )
+            continue
+        launch_id = labels.get(GITHUB_MCP_LAUNCH_LABEL, "")
+        lease_pid = labels.get(GITHUB_MCP_LEASE_PID_LABEL, "")
+        lease_start = labels.get(GITHUB_MCP_LEASE_START_LABEL, "")
+        lease_boot = labels.get(GITHUB_MCP_LEASE_BOOT_LABEL, "")
+        expected_name = f"/hapax-github-mcp-{launch_id}"
+        labels_ok = (
+            labels.get(GITHUB_MCP_APP_LABEL) == GITHUB_MCP_APP_ID
+            and labels.get(GITHUB_MCP_UID_LABEL) == str(uid)
+            and re.fullmatch(rf"{uid}-[A-Za-z0-9]{{10}}", launch_id) is not None
+            and label_count == 15
+            and labels
+            == _expected_github_mcp_labels(uid, launch_id, lease_pid, lease_start, lease_boot)
+        )
+        snapshot_app_label = app_labels[container_id]
+        snapshot_label_ok = (
+            GITHUB_MCP_APP_LABEL not in labels
+            if snapshot_app_label is None
+            else labels.get(GITHUB_MCP_APP_LABEL) == snapshot_app_label
+        )
+        identity_ok = (
+            actual_id == container_id
+            and actual_name == f"/{name}"
+            and snapshot_label_ok
+            and labels_ok
+            and actual_name == expected_name
+        )
+        command_ok = (
+            resolved_image_id is not None
+            and image_id == resolved_image_id
+            and config_image == GITHUB_MCP_IMAGE
+            and process_path == GITHUB_MCP_PATH
+            and len(process_args) == 4
+            and process_args[:3] == ["stdio", "--log-file", "/tmp/github-mcp.log"]
+            and re.fullmatch(r"--(?:tools|toolsets)=[A-Za-z0-9_,.-]{1,1024}", process_args[3])
+            is not None
+            and attach_stdin is True
+            and attach_stdout is True
+            and attach_stderr is True
+            and open_stdin is True
+            and stdin_once is True
+            and tty is False
+            and container_user == "0"
+            and env_count == 3
+            and env_path_marker == "P"
+            and env_ssl_marker == "S"
+            and env_token_marker == "T"
+            and working_dir == "/server"
+            and stop_signal == "SIGTERM"
+            and hostname == container_id[:12]
+            and domainname == ""
+            and entrypoint == [GITHUB_MCP_PATH]
+            and config_cmd == process_args
+            and volumes is None
+            and healthcheck is None
+            and shell is None
+            and on_build is None
+            and args_escaped is False
+            and config_mac_address == ""
+            and _docker_mcp_config_matches(
+                config,
+                container_id,
+                labels,
+                process_args,
+                healthcheck,
+                shell,
+                on_build,
+                args_escaped,
+                config_mac_address,
+            )
+        )
+        limits_ok = (
+            memory == BYTES_512M
+            and memory_swap == BYTES_768M
+            and memory_reservation == 0
+            and oom_kill_disable in {None, False}
+            and oom_score_adj == 0
+            and pids_limit == 128
+            and nano_cpus == 0
+            and cpu_shares == 0
+        )
+        security_ok = (
+            readonly_rootfs is True
+            and cap_drop == ["ALL"]
+            and security_opt in (["no-new-privileges"], ["no-new-privileges:true"])
+            and auto_remove is True
+            and log_driver == "none"
+            and log_config in (None, {})
+            and set(tmpfs) == {"/tmp"}
+            and len(tmpfs["/tmp"].split(",")) == 4
+            and set(tmpfs["/tmp"].split(",")) == {"rw", "noexec", "nosuid", "size=16m"}
+            and binds is None
+            and mounts == []
+            and privileged is False
+            and cap_add is None
+            and network_mode == "bridge"
+            and pid_mode == ""
+            and ipc_mode == "private"
+            and uts_mode == "private"
+            and cgroupns_mode == "private"
+            and userns_mode == ""
+            and devices == []
+            and device_requests is None
+            and port_bindings == {}
+            and runtime == "runc"
+            and restart_name == "no"
+            and restart_max == 0
+            and publish_all_ports is False
+            and shm_size == 64 * 1024**2
+            and network_disabled is False
+            and exposed_ports == {"8082/tcp": {}}
+            and dns in (None, [])
+            and dns_options in (None, [])
+            and dns_search in (None, [])
+            and extra_hosts in (None, [])
+            and links in (None, [])
+            and group_add in (None, [])
+            and volumes_from in (None, [])
+            and network_count == 1
+            and bridge_network_marker == "B"
+            and network_ports == {"8082/tcp": None}
+            and _docker_mcp_networks_match(networks)
+            and _docker_mcp_host_config_matches(host_config, uid, launch_id)
+            and container_state
+            in {"created", "running", "restarting", "paused", "removing", "exited", "dead"}
+            and stop_timeout == 1
+        )
+        lease_live, lease_detail = _docker_mcp_lease_is_live(
+            lease_pid, lease_start, lease_boot, uid
+        )
+        converging = container_state == "removing" and lease_live
+        status = (
+            "pass"
+            if identity_ok and limits_ok and command_ok and security_ok and lease_live
+            else "gap"
+        )
+        safe_state = (
+            container_state
+            if container_state
+            in {"created", "running", "restarting", "paused", "removing", "exited", "dead"}
+            else "redacted"
+        )
+        actual = (
+            f"IdMatch={actual_id == container_id},NameMatch={actual_name == expected_name},"
+            f"SnapshotLabelMatch={snapshot_label_ok},LabelsMatch={labels_ok},"
+            f"LimitsMatch={limits_ok},CommandMatch={command_ok},SecurityMatch={security_ok},"
+            f"State={safe_state},LeaseLive={lease_live},Converging={converging}"
+        )
+        checks.append(
+            Check(
+                check_name,
+                status,
+                f"generated exact identity,Memory={BYTES_512M},"
+                f"MemorySwap={BYTES_768M},OomKillDisable=false,Image={GITHUB_MCP_IMAGE},"
+                "immutable labels, hardened security, live launch lease",
+                actual,
+                ""
+                if status == "pass"
+                else (
+                    "Docker identity, labels, image, command, limits, security, or launch lease "
+                    f"drifted{f': {lease_detail}' if not lease_live else ''}; {NEXT_OOM_ACTION}"
+                ),
+            )
+        )
+
+    closing_inventory, closing_app_labels, closing_inventory_error = _read_docker_inventory(
+        closing=True
+    )
+    if closing_inventory_error is not None:
+        checks.append(closing_inventory_error)
+        return checks
+    assert closing_inventory is not None
+    assert closing_app_labels is not None
+
+    final_inventory, final_app_labels, final_inventory_error = _read_docker_inventory(closing=True)
+    if final_inventory_error is not None:
+        checks.append(final_inventory_error)
+        return checks
+    assert final_inventory is not None
+    assert final_app_labels is not None
+
+    closing_target_count = max(
+        (
+            sum(
+                1
+                for container_id, name in bounded_inventory.items()
+                if bounded_app_labels[container_id] is not None
+                or name.startswith("hapax-github-mcp-")
+            )
+            for bounded_inventory, bounded_app_labels in (
+                (closing_inventory, closing_app_labels),
+                (final_inventory, final_app_labels),
+            )
+        )
+    )
+    if closing_target_count > DOCKER_TARGET_MAX:
+        checks.append(
+            Check(
+                "docker_oom_inventory_stable",
+                "error",
+                f"at most {DOCKER_TARGET_MAX} OOM targets",
+                str(closing_target_count),
+                f"closing Docker target count bound exceeded; {NEXT_OOM_ACTION}",
+            )
+        )
+        return checks
+
+    inventory_stable = (
+        _docker_target_generation(closing_inventory, closing_app_labels) == target_generation
+        and _docker_target_generation(final_inventory, final_app_labels) == target_generation
+    )
+    checks.append(
+        Check(
+            "docker_oom_inventory_stable",
+            "pass" if inventory_stable else "error",
+            "one stable complete Docker target inventory generation",
+            "stable" if inventory_stable else "changed",
+            ""
+            if inventory_stable
+            else f"Docker inventory changed during bounded audit; {NEXT_OOM_ACTION}",
+        )
+    )
+    return checks
+
+
+def audit_local_judge_unit() -> Check:
+    values = _show(
+        "hapax-local-judge.service",
+        ["LoadState", "UnitFileState", "ActiveState"],
+        user=True,
+    )
+    expected = {
+        "LoadState": "masked",
+        "UnitFileState": "masked",
+        "ActiveState": "inactive",
+    }
+    if "_error" in values:
+        return Check(
+            "local_judge_unit_retired",
+            "error",
+            ",".join(f"{key}={value}" for key, value in expected.items()),
+            "N/A",
+            f"cannot observe the historical local-judge unit: {values['_error']}; {NEXT_OOM_ACTION}",
+        )
+    actual = ",".join(f"{key}={values.get(key, 'N/A')}" for key in expected)
+    matches = all(values.get(key) == value for key, value in expected.items())
+    return Check(
+        "local_judge_unit_retired",
+        "pass" if matches else "gap",
+        ",".join(f"{key}={value}" for key, value in expected.items()),
+        actual,
+        ""
+        if matches
+        else f"historical local-judge unit is not fully masked and inactive; {NEXT_OOM_ACTION}",
+    )
+
+
+def audit_enforcer_timer() -> list[Check]:
+    timer = _show(
+        "hapax-oom-score-enforce.timer",
+        ["LoadState", "UnitFileState", "ActiveState"],
+    )
+    service = _show(
+        "hapax-oom-score-enforce.service",
+        ["LoadState", "ActiveState"],
+    )
+    checks: list[Check] = []
+    for key, expected in (
+        ("LoadState", "loaded"),
+        ("UnitFileState", "static"),
+        ("ActiveState", "inactive"),
+    ):
+        actual = timer.get(key, "N/A")
+        status = "pass" if actual == expected else "gap"
+        checks.append(
+            Check(
+                f"oom_enforcer_timer_{key}",
+                status,
+                expected,
+                actual,
+                ""
+                if status == "pass"
+                else f"retired root OOM timer must remain static and inactive; {NEXT_OOM_ACTION}",
+            )
+        )
+    for key, expected in (("LoadState", "loaded"), ("ActiveState", "inactive")):
+        actual = service.get(key, "N/A")
+        status = "pass" if actual == expected else "gap"
+        checks.append(
+            Check(
+                f"oom_enforcer_service_{key}",
+                status,
+                expected,
+                actual,
+                ""
+                if status == "pass"
+                else f"retired root OOM service must remain loaded but inactive; {NEXT_OOM_ACTION}",
+            )
+        )
+    return checks
 
 
 def format_human(checks: list[Check]) -> str:
@@ -993,44 +2625,65 @@ def main(argv: list[str] | None = None) -> int:
     args = parser.parse_args(argv)
 
     try:
-        with shared_root_required_lock():
-            checks = [
-                Check(
-                    "root_required_package_lock",
-                    "pass",
-                    "shared package lock held during readback",
-                    str(ROOT_REQUIRED_LOCK_FILE),
-                ),
-                audit_user_manager(args.uid),
-                audit_user_manager_policy(args.uid),
-                audit_user_manager_live_score(args.uid),
-                *audit_recovery_system_units(),
-                *audit_sshd_policy(),
-                *audit_system_slice_reservation(),
-                *audit_user_slice_reservation(),
-                *audit_system_memory_unit(f"user-{args.uid}.slice"),
-                *audit_system_memory_unit(f"user@{args.uid}.service"),
-                *audit_app_slice(),
-                *audit_session_slice(),
-                *audit_user_child_floor_composition(args.uid),
-                *audit_protected_user_units(),
-                audit_residual_user_process_protection(args.uid),
-                *audit_tmux_scopes(),
-            ]
-    except AuditLockError as exc:
+        _validate_test_mode_admission()
+        policy = derive_host_policy()
         checks = [
             Check(
-                "root_required_package_lock",
+                "audit_authority",
+                "pass",
+                "non-authoritative observational drift report",
+                "non-authoritative observational drift report",
+            ),
+            Check(
+                "host_memory_policy",
+                "pass",
+                "canonical hostname and admitted MemTotal interval",
+                f"{policy.hostname}:{policy.profile}:{policy.physical_bytes}",
+            ),
+            *audit_zram(policy),
+            audit_local_judge_unit(),
+            *audit_docker_limits(args.uid),
+            *audit_enforcer_timer(),
+            audit_user_manager(args.uid),
+            audit_user_manager_policy(args.uid),
+            audit_user_manager_live_score(args.uid),
+            *audit_recovery_system_units(),
+            *audit_sshd_policy(),
+            *audit_system_slice_reservation(),
+            *audit_user_slice_reservation(),
+            *audit_system_memory_unit(f"user-{args.uid}.slice", policy),
+            *audit_system_memory_unit(f"user@{args.uid}.service", policy),
+            *audit_app_slice(policy),
+            *audit_session_slice(),
+            *audit_user_child_floor_composition(args.uid),
+            *audit_protected_user_units(policy, args.uid),
+            audit_residual_user_process_protection(args.uid),
+            *audit_tmux_scopes(),
+        ]
+    except HostPolicyError as exc:
+        checks = [
+            Check(
+                "host_memory_policy",
                 "error",
-                "shared package lock held during readback",
-                str(ROOT_REQUIRED_LOCK_FILE),
-                f"{exc}; {NEXT_OOM_INSTALL}",
+                "canonical hostname and admitted MemTotal interval",
+                "N/A",
+                f"{exc}; {NEXT_OOM_ACTION}",
             )
         ]
     if args.json:
-        print(json.dumps({"checks": [asdict(check) for check in checks]}, indent=2, sort_keys=True))
+        print(
+            json.dumps(
+                {
+                    "authoritative": False,
+                    "checks": [asdict(check) for check in checks],
+                    "scope": "observational-live-drift",
+                },
+                indent=2,
+                sort_keys=True,
+            )
+        )
     else:
-        print(format_human(checks))
+        print("NON-AUTHORITATIVE observational-live-drift\n" + format_human(checks))
     return 1 if any(check.status in {"gap", "error"} for check in checks) else 0
 
 

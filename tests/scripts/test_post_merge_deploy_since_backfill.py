@@ -96,6 +96,7 @@ def _env(repo: Path, bin_dir: Path, tmp_path: Path) -> dict[str, str]:
             "HOME": str(home),
             "PATH": f"{bin_dir}:{env['PATH']}",
             "REPO": str(repo),
+            "HAPAX_ROOT_REQUIRED_ISOLATED_TEST_ROOT": str(tmp_path),
             "HAPAX_SYSTEMCTL_CALLS": str(tmp_path / "systemctl-calls.txt"),
             "HAPAX_POST_MERGE_TRACE_PATH": str(tmp_path / "traces" / "post-merge-traces.jsonl"),
         }

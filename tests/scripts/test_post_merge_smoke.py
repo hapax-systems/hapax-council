@@ -26,6 +26,12 @@ from pathlib import Path
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 SMOKE = REPO_ROOT / "scripts" / "hapax-post-merge-smoke"
+INSTALL_UNITS_PATH = "systemd/scripts/install-units.sh"
+
+
+def _install_units_source(*decommissioned_units: str) -> str:
+    entries = "".join(f"    {unit}\n" for unit in decommissioned_units)
+    return f"DECOMMISSIONED_UNITS=(\n{entries})\n"
 
 
 def _run(
@@ -72,6 +78,9 @@ def _make_repo(tmp_path: Path) -> Path:
     subprocess.run(["git", "config", "user.email", "t@x"], cwd=tmp_path, check=True)
     subprocess.run(["git", "config", "user.name", "T"], cwd=tmp_path, check=True)
     subprocess.run(["git", "config", "commit.gpgsign", "false"], cwd=tmp_path, check=True)
+    install_units = tmp_path / INSTALL_UNITS_PATH
+    install_units.parent.mkdir(parents=True, exist_ok=True)
+    install_units.write_text(_install_units_source())
     (tmp_path / ".gitkeep").write_text("")
     subprocess.run(["git", "add", "-A"], cwd=tmp_path, check=True)
     subprocess.run(["git", "commit", "-q", "-m", "baseline"], cwd=tmp_path, check=True, env=env)
@@ -113,11 +122,99 @@ class TestKillSwitch:
         result = _run("not-a-sha-deadbeef", cwd=repo)
         assert result.returncode == 0
 
+    def test_moving_ref_is_pinned_before_parent_and_diff_reads(self, tmp_path: Path) -> None:
+        repo = _make_repo(tmp_path)
+        service_sha = _commit_files(repo, {"systemd/units/pinned.service": "[Unit]\n"})
+        successor_sha = _commit_files(repo, {"README.md": "unrelated successor\n"})
+        subprocess.run(
+            ["git", "branch", "moving", service_sha],
+            cwd=repo,
+            check=True,
+            capture_output=True,
+        )
+        result = _run(
+            "moving",
+            cwd=repo,
+            extra_env={"HAPAX_SMOKE_MOVE_REF_TO": successor_sha},
+            stubs={
+                "git": r"""
+if [ "${1:-}" = rev-parse ] && [[ "$*" == *"moving^{commit}"* ]]; then
+    resolved="$(/usr/bin/git "$@")" || exit $?
+    /usr/bin/git update-ref refs/heads/moving "$HAPAX_SMOKE_MOVE_REF_TO"
+    printf '%s\n' "$resolved"
+    exit 0
+fi
+exec /usr/bin/git "$@"
+""",
+                "systemctl": "exit 3",
+            },
+        )
+
+        assert result.returncode == 0
+        assert "pinned.service not active" in result.stderr
+
 
 # ── Gate: services-restarted ───────────────────────────────────────
 
 
 class TestServicesRestartedGate:
+    def test_exact_sha_decommission_wins_when_worktree_removes_unit(self, tmp_path: Path) -> None:
+        repo = _make_repo(tmp_path)
+        unit = "retired-at-reviewed-sha.service"
+        sha = _commit_files(
+            repo,
+            {
+                INSTALL_UNITS_PATH: _install_units_source(unit),
+                f"systemd/units/{unit}": "[Unit]\n",
+            },
+        )
+        (repo / INSTALL_UNITS_PATH).write_text(_install_units_source())
+
+        result = _run(sha, cwd=repo, stubs={"systemctl": "exit 3"})
+
+        assert result.returncode == 0
+        assert "services-restarted" not in result.stderr
+        assert f"{unit} not active" not in result.stderr
+
+    def test_worktree_decommission_cannot_override_exact_sha(self, tmp_path: Path) -> None:
+        repo = _make_repo(tmp_path)
+        unit = "live-at-reviewed-sha.service"
+        sha = _commit_files(repo, {f"systemd/units/{unit}": "[Unit]\n"})
+        (repo / INSTALL_UNITS_PATH).write_text(_install_units_source(unit))
+
+        result = _run(sha, cwd=repo, stubs={"systemctl": "exit 3"})
+
+        assert result.returncode == 0
+        assert "services-restarted" in result.stderr
+        assert f"{unit} not active" in result.stderr
+
+    def test_missing_exact_sha_decommission_data_records_failure(self, tmp_path: Path) -> None:
+        repo = _make_repo(tmp_path)
+        (repo / INSTALL_UNITS_PATH).unlink()
+        sha = _commit_files(repo, {"systemd/units/foo.service": "[Unit]\n"})
+
+        result = _run(sha, cwd=repo, stubs={"systemctl": "exit 0"})
+
+        assert result.returncode == 0
+        assert "services-restarted" in result.stderr
+        assert "cannot read exact-SHA decommission data" in result.stderr
+
+    def test_malformed_exact_sha_decommission_data_records_failure(self, tmp_path: Path) -> None:
+        repo = _make_repo(tmp_path)
+        sha = _commit_files(
+            repo,
+            {
+                INSTALL_UNITS_PATH: "DECOMMISSIONED_UNITS=(foo.service)\n",
+                "systemd/units/foo.service": "[Unit]\n",
+            },
+        )
+
+        result = _run(sha, cwd=repo, stubs={"systemctl": "exit 0"})
+
+        assert result.returncode == 0
+        assert "services-restarted" in result.stderr
+        assert "cannot parse exact-SHA decommission data" in result.stderr
+
     def test_inactive_unit_records_failure(self, tmp_path: Path) -> None:
         repo = _make_repo(tmp_path)
         sha = _commit_files(repo, {"systemd/units/foo.service": "[Unit]\n"})
@@ -177,6 +274,43 @@ class TestServicesRestartedGate:
         assert result.returncode == 0
         assert "services-restarted" not in result.stderr
         assert "hapax-l12-critical-usb-guard.service" not in result.stderr
+
+    def test_indented_system_scope_marker_uses_system_classification(self, tmp_path: Path) -> None:
+        repo = _make_repo(tmp_path)
+        sha = _commit_files(
+            repo,
+            {
+                "systemd/units/indented-root.service": (
+                    "[Unit]\n  # Hapax-Install-Scope : system  \n"
+                    "[Service]\nExecStart=/usr/bin/true\n"
+                )
+            },
+        )
+
+        result = _run(sha, cwd=repo, stubs={"systemctl": "exit 3"})
+
+        assert result.returncode == 0
+        assert "services-restarted" not in result.stderr
+        assert "indented-root.service" not in result.stderr
+
+    def test_malformed_install_scope_marker_records_classification_failure(
+        self, tmp_path: Path
+    ) -> None:
+        repo = _make_repo(tmp_path)
+        sha = _commit_files(
+            repo,
+            {
+                "systemd/units/root-owned.service": (
+                    "[Unit]\n# Hapax-Install-Scope: system disabled\n"
+                    "[Service]\nExecStart=/usr/bin/true\n"
+                )
+            },
+        )
+        result = _run(sha, cwd=repo, stubs={"systemctl": "exit 0"})
+
+        assert result.returncode == 0
+        assert "services-restarted" in result.stderr
+        assert "invalid Hapax-Install-Scope" in result.stderr
 
     def test_successful_oneshot_inactive_unit_passes_silently(self, tmp_path: Path) -> None:
         repo = _make_repo(tmp_path)

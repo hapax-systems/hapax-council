@@ -275,6 +275,40 @@ class TestServiceProfileCompleteness:
             assert allocation.limit == expected_limit
             assert allocation.enforcement == Enforcement.HARD
 
+    def test_daimonion_profile_matches_effective_capacity_dropin(self):
+        allocation = DEFAULT_SERVICE_PROFILES["hapax-daimonion"].allocations[ResourceType.RAM]
+
+        assert allocation.limit == 16.0
+        assert allocation.enforcement == Enforcement.HARD
+
+    def test_delegated_broadcast_profiles_never_model_negative_oom_scores(self):
+        modeled_scores = {
+            name: profile.oom_score_adj
+            for name, profile in DEFAULT_SERVICE_PROFILES.items()
+            if profile.oom_score_adj is not None
+        }
+
+        protected_scores = {
+            name: modeled_scores.get(name)
+            for name in {
+                "hapax-daimonion",
+                "studio-compositor",
+                "pipewire",
+                "wireplumber",
+                "pipewire-pulse",
+                "hapax-imagination",
+            }
+        }
+        assert protected_scores == {
+            "hapax-daimonion": 100,
+            "studio-compositor": 100,
+            "pipewire": 100,
+            "wireplumber": 100,
+            "pipewire-pulse": 100,
+            "hapax-imagination": 100,
+        }
+        assert all(score >= 0 for score in modeled_scores.values())
+
 
 class TestContentionGroupConsistency:
     def test_gpu0_is_host_qualified_podium_5090(self):

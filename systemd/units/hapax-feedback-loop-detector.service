@@ -18,10 +18,9 @@ WatchdogSec=120s
 # Memory cap per cc-task spec.
 MemoryMax=200M
 
-# The detector reads from the existing parec capture; it must NOT be killed
-# under memory pressure ahead of less-load-bearing services. Default OOM
-# score (0) is fine — this is a safety service.
-OOMScoreAdjust=-100
+# The delegated user tree remains at the user-manager score. Cgroup memory
+# reservations, not root-only negative score grants, protect safety services.
+OOMScoreAdjust=100
 
 [Install]
 WantedBy=hapax.target

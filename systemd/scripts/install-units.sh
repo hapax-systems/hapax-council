@@ -10,9 +10,380 @@
 # Set ALLOW_NONSTANDARD_REPO=1 to override (for intentional testing).
 set -euo pipefail
 
+ORIGINAL_ARGS=("$@")
 REPO_DIR="$(cd "$(dirname "$0")/../units" && pwd)"
 PROJECT_DIR="$(cd "$(dirname "$0")/../.." && pwd)"
-DEST_DIR="${HOME}/.config/systemd/user"
+NSS_HOME=""
+DEST_DIR=""
+ROOT_REQUIRED_LOCK_FILE=""
+ROOT_REQUIRED_LOCK_ANCHOR=""
+
+configure_root_required_lock_domain() {
+    if ! NSS_HOME="$(/usr/bin/python3 -I -S - <<'PY'
+import os
+import pwd
+import sys
+
+try:
+    home = pwd.getpwuid(os.geteuid()).pw_dir
+except KeyError:
+    print("ERROR: current UID has no canonical NSS home", file=sys.stderr)
+    raise SystemExit(1)
+if not home or "\n" in home or len(home) > 4096 or not os.path.isabs(home):
+    print("ERROR: current UID has an invalid canonical NSS home", file=sys.stderr)
+    raise SystemExit(1)
+print(home)
+PY
+    )"; then
+        return 1
+    fi
+
+    if [ "${HAPAX_ROOT_REQUIRED_ISOLATED_TEST_ROOT+x}" != "x" ]; then
+        for selector in HAPAX_ROOT_REQUIRED_STATE_ROOT HAPAX_ROOT_REQUIRED_LOCK_FILE; do
+            if [[ -v "$selector" ]]; then
+                echo "ERROR: production refuses $selector" >&2
+                return 1
+            fi
+        done
+        if [ "$HOME" != "$NSS_HOME" ]; then
+            echo "ERROR: production HOME must exactly match canonical NSS home $NSS_HOME" >&2
+            return 1
+        fi
+        DEST_DIR="$NSS_HOME/.config/systemd/user"
+        ROOT_REQUIRED_LOCK_FILE="$NSS_HOME/.local/state/hapax/root-required/.lock"
+        ROOT_REQUIRED_LOCK_ANCHOR="$NSS_HOME"
+        return
+    fi
+
+    DEST_DIR="$HOME/.config/systemd/user"
+    ROOT_REQUIRED_LOCK_FILE="${HAPAX_ROOT_REQUIRED_LOCK_FILE:-$HOME/.local/state/hapax/root-required/.lock}"
+    /usr/bin/python3 -I -S - \
+        "$HAPAX_ROOT_REQUIRED_ISOLATED_TEST_ROOT" \
+        "$HOME" "$DEST_DIR" "$ROOT_REQUIRED_LOCK_FILE" <<'PY'
+from __future__ import annotations
+
+import os
+import stat
+import sys
+
+root, home, destination, lock = sys.argv[1:]
+if (
+    not root
+    or "\n" in root
+    or len(root) > 4096
+    or not os.path.isabs(root)
+):
+    print(
+        "ERROR: HAPAX_ROOT_REQUIRED_ISOLATED_TEST_ROOT must name an absolute directory",
+        file=sys.stderr,
+    )
+    raise SystemExit(1)
+try:
+    root_inode = os.lstat(root)
+except OSError as exc:
+    print(
+        f"ERROR: refused invalid isolated test root {root}: {exc}",
+        file=sys.stderr,
+    )
+    raise SystemExit(1) from exc
+if (
+    not stat.S_ISDIR(root_inode.st_mode)
+    or root_inode.st_uid != os.geteuid()
+    or root_inode.st_mode & 0o022
+    or os.path.realpath(root) != root
+):
+    print(
+        "ERROR: isolated test root must be a caller-owned, non-symlink directory "
+        "with no group/world write bits",
+        file=sys.stderr,
+    )
+    raise SystemExit(1)
+
+resolved_root = os.path.realpath(root)
+for label, path in (("home", home), ("destination", destination), ("lock", lock)):
+    if not path or "\n" in path or len(path) > 4096 or not os.path.isabs(path):
+        print(f"ERROR: isolated test {label} path is invalid", file=sys.stderr)
+        raise SystemExit(1)
+    lexical_path = os.path.abspath(path)
+    resolved_path = os.path.realpath(path)
+    try:
+        confined = (
+            lexical_path != root
+            and resolved_path != resolved_root
+            and os.path.commonpath((root, lexical_path)) == root
+            and os.path.commonpath((resolved_root, resolved_path)) == resolved_root
+        )
+    except ValueError:
+        confined = False
+    if not confined:
+        print(f"ERROR: isolated test {label} escapes {resolved_root}", file=sys.stderr)
+        raise SystemExit(1)
+PY
+    ROOT_REQUIRED_LOCK_ANCHOR="/"
+}
+
+acquire_inherited_root_required_lock() {
+    local lock_fd="${HAPAX_ROOT_REQUIRED_LOCK_FD:-}"
+    local anchor_fd="${HAPAX_ROOT_REQUIRED_LOCK_ANCHOR_FD:-}"
+    local isolated=0
+    [ "${HAPAX_ROOT_REQUIRED_ISOLATED_TEST_ROOT+x}" != "x" ] || isolated=1
+    if ! [[ "$lock_fd" =~ ^[0-9]+$ ]] || [ "$lock_fd" -lt 3 ] \
+        || ! [[ "$anchor_fd" =~ ^[0-9]+$ ]] || [ "$anchor_fd" -lt 3 ]; then
+        echo "ERROR: safe shared install lock descriptors are absent" >&2
+        return 1
+    fi
+    /usr/bin/python3 -I -S - "$lock_fd" "$anchor_fd" "$ROOT_REQUIRED_LOCK_FILE" \
+        "$ROOT_REQUIRED_LOCK_ANCHOR" "$isolated" <<'PY'
+from __future__ import annotations
+
+import fcntl
+import os
+import stat
+import sys
+
+fd = int(sys.argv[1])
+anchor_fd = int(sys.argv[2])
+lock_path = os.path.abspath(sys.argv[3])
+anchor_path = os.path.abspath(sys.argv[4])
+isolated = sys.argv[5] == "1"
+
+
+def valid(inode: os.stat_result) -> bool:
+    return (
+        stat.S_ISREG(inode.st_mode)
+        and inode.st_uid == os.geteuid()
+        and inode.st_nlink == 1
+        and not inode.st_mode & 0o022
+    )
+
+
+def validate_anchor() -> None:
+    inode = os.fstat(anchor_fd)
+    path_inode = os.lstat(anchor_path)
+    parent_path = os.path.dirname(anchor_path)
+    parent_inode = os.lstat(parent_path)
+    expected_anchor_uid = 0 if isolated else os.geteuid()
+    if isolated and anchor_path != "/":
+        raise OSError("isolated lock anchor must be the stable filesystem root")
+    if (
+        not stat.S_ISDIR(inode.st_mode)
+        or not stat.S_ISDIR(path_inode.st_mode)
+        or inode.st_uid != expected_anchor_uid
+        or path_inode.st_uid != expected_anchor_uid
+        or inode.st_mode & 0o022
+        or path_inode.st_mode & 0o022
+        or (inode.st_dev, inode.st_ino) != (path_inode.st_dev, path_inode.st_ino)
+        or os.path.realpath(anchor_path) != anchor_path
+    ):
+        raise OSError("stable lock anchor is not a trusted caller-owned directory")
+    if not isolated and (
+        not stat.S_ISDIR(parent_inode.st_mode)
+        or parent_inode.st_uid != 0
+        or parent_inode.st_mode & 0o022
+        or os.path.realpath(parent_path) != parent_path
+    ):
+        raise OSError("production lock anchor parent is replaceable by the caller")
+
+
+try:
+    validate_anchor()
+    fcntl.flock(anchor_fd, fcntl.LOCK_EX)
+    validate_anchor()
+except OSError as exc:
+    print(f"ERROR: refused unstable shared install lock anchor: {exc}", file=sys.stderr)
+    raise SystemExit(1) from exc
+
+
+try:
+    inode_before = os.fstat(fd)
+    path_before = os.lstat(lock_path)
+except OSError as exc:
+    print(
+        f"ERROR: refused invalid inherited shared install lock {lock_path}: {exc}",
+        file=sys.stderr,
+    )
+    raise SystemExit(1) from exc
+if (
+    not valid(inode_before)
+    or not valid(path_before)
+    or (inode_before.st_dev, inode_before.st_ino)
+    != (path_before.st_dev, path_before.st_ino)
+):
+    print(
+        f"ERROR: refused invalid inherited shared install lock {lock_path}; "
+        "expected one caller-owned, single-link, non-group/world-writable regular path inode",
+        file=sys.stderr,
+    )
+    raise SystemExit(1)
+
+fcntl.flock(fd, fcntl.LOCK_EX)
+os.fchmod(fd, 0o600)
+try:
+    inode_after = os.fstat(fd)
+    path_after = os.lstat(lock_path)
+except OSError as exc:
+    print(
+        f"ERROR: shared install lock path changed while acquiring {lock_path}: {exc}",
+        file=sys.stderr,
+    )
+    raise SystemExit(1) from exc
+if (
+    not valid(inode_after)
+    or not valid(path_after)
+    or (inode_after.st_dev, inode_after.st_ino)
+    != (path_after.st_dev, path_after.st_ino)
+    or (inode_before.st_dev, inode_before.st_ino)
+    != (inode_after.st_dev, inode_after.st_ino)
+):
+    print(
+        f"ERROR: shared install lock identity changed while acquiring {lock_path}",
+        file=sys.stderr,
+    )
+    raise SystemExit(1)
+PY
+}
+
+reexec_with_safe_root_required_lock() {
+    if [ -n "${HAPAX_ROOT_REQUIRED_LOCK_FD:-}" ] \
+        || [ -n "${HAPAX_ROOT_REQUIRED_LOCK_ANCHOR_FD:-}" ]; then
+        acquire_inherited_root_required_lock
+        return
+    fi
+    local isolated=0
+    [ "${HAPAX_ROOT_REQUIRED_ISOLATED_TEST_ROOT+x}" != "x" ] || isolated=1
+    exec /usr/bin/python3 -I -S - \
+        "$ROOT_REQUIRED_LOCK_ANCHOR" "$ROOT_REQUIRED_LOCK_FILE" "$isolated" \
+        "$0" "${ORIGINAL_ARGS[@]}" <<'PY'
+from __future__ import annotations
+
+import fcntl
+import os
+import stat
+import subprocess
+import sys
+
+anchor_path, requested_path, isolated_raw, script, *args = sys.argv[1:]
+anchor_path = os.path.abspath(anchor_path)
+isolated = isolated_raw == "1"
+if not requested_path or "\n" in requested_path or len(requested_path) > 4096:
+    print("ERROR: refused malformed shared install lock path", file=sys.stderr)
+    raise SystemExit(1)
+lock_path = os.path.abspath(requested_path)
+parent = os.path.dirname(lock_path)
+
+
+def validate_anchor(anchor_fd: int) -> None:
+    inode = os.fstat(anchor_fd)
+    path_inode = os.lstat(anchor_path)
+    parent_path = os.path.dirname(anchor_path)
+    parent_inode = os.lstat(parent_path)
+    expected_anchor_uid = 0 if isolated else os.geteuid()
+    if isolated and anchor_path != "/":
+        raise OSError("isolated lock anchor must be the stable filesystem root")
+    if (
+        not stat.S_ISDIR(inode.st_mode)
+        or not stat.S_ISDIR(path_inode.st_mode)
+        or inode.st_uid != expected_anchor_uid
+        or path_inode.st_uid != expected_anchor_uid
+        or inode.st_mode & 0o022
+        or path_inode.st_mode & 0o022
+        or (inode.st_dev, inode.st_ino) != (path_inode.st_dev, path_inode.st_ino)
+        or os.path.realpath(anchor_path) != anchor_path
+    ):
+        raise OSError("stable lock anchor is not a trusted caller-owned directory")
+    if not isolated and (
+        not stat.S_ISDIR(parent_inode.st_mode)
+        or parent_inode.st_uid != 0
+        or parent_inode.st_mode & 0o022
+        or os.path.realpath(parent_path) != parent_path
+    ):
+        raise OSError("production lock anchor parent is replaceable by the caller")
+
+
+try:
+    anchor_fd = os.open(
+        anchor_path,
+        os.O_CLOEXEC | os.O_DIRECTORY | os.O_NOFOLLOW | os.O_RDONLY,
+    )
+    validate_anchor(anchor_fd)
+    fcntl.flock(anchor_fd, fcntl.LOCK_EX)
+    validate_anchor(anchor_fd)
+    os.makedirs(parent, mode=0o700, exist_ok=True)
+    fd = os.open(
+        lock_path,
+        os.O_CLOEXEC | os.O_CREAT | os.O_NOFOLLOW | os.O_RDWR,
+        0o600,
+    )
+except OSError as exc:
+    print(
+        f"ERROR: refused unsafe shared install lock {lock_path}: {exc}",
+        file=sys.stderr,
+    )
+    raise SystemExit(1) from exc
+
+
+def valid(inode: os.stat_result) -> bool:
+    return (
+        stat.S_ISREG(inode.st_mode)
+        and inode.st_uid == os.geteuid()
+        and inode.st_nlink == 1
+        and not inode.st_mode & 0o022
+    )
+
+
+try:
+    inode_before = os.fstat(fd)
+    path_before = os.lstat(lock_path)
+    if (
+        not valid(inode_before)
+        or not valid(path_before)
+        or (inode_before.st_dev, inode_before.st_ino)
+        != (path_before.st_dev, path_before.st_ino)
+    ):
+        print(
+            f"ERROR: refused unsafe shared install lock inode {lock_path}; "
+            "expected one caller-owned, single-link, non-group/world-writable regular file",
+            file=sys.stderr,
+        )
+        raise SystemExit(1)
+    fcntl.flock(fd, fcntl.LOCK_EX)
+    os.fchmod(fd, 0o600)
+    inode_after = os.fstat(fd)
+    path_after = os.lstat(lock_path)
+    if (
+        not valid(inode_after)
+        or not valid(path_after)
+        or (inode_after.st_dev, inode_after.st_ino)
+        != (path_after.st_dev, path_after.st_ino)
+        or (inode_before.st_dev, inode_before.st_ino)
+        != (inode_after.st_dev, inode_after.st_ino)
+    ):
+        print(
+            f"ERROR: shared install lock identity changed while acquiring {lock_path}",
+            file=sys.stderr,
+        )
+        raise SystemExit(1)
+    env = os.environ.copy()
+    env.pop("HAPAX_ROOT_REQUIRED_LOCK_HELD", None)
+    env.pop("HAPAX_ROOT_REQUIRED_LOCK_MODE", None)
+    env["HAPAX_ROOT_REQUIRED_LOCK_FD"] = str(fd)
+    env["HAPAX_ROOT_REQUIRED_LOCK_ANCHOR_FD"] = str(anchor_fd)
+    env["HAPAX_ROOT_REQUIRED_LOCK_MODE"] = "exclusive"
+    result = subprocess.run(
+        [os.path.abspath(script), *args],
+        env=env,
+        pass_fds=(anchor_fd, fd),
+        check=False,
+    )
+    raise SystemExit(result.returncode)
+finally:
+    os.close(fd)
+    os.close(anchor_fd)
+PY
+}
+
+configure_root_required_lock_domain
+
 DECOMMISSIONED_UNITS=(
     # Retired 2026-06-07: superseded by the direct video50/video52 + UDP
     # ffmpeg media-source topology (#3819/#3827/#3837). The OBS V4L2 capture
@@ -45,6 +416,10 @@ DECOMMISSIONED_UNITS=(
     hapax-relay-heartbeat.service
     hapax-relay-heartbeat.timer
     hapax-youtube-viewer-count.timer
+    # Retired 2026-08-12: the historical local judge used a mutable image,
+    # mutable model bind, name-based removal, and no memory limit. Source omits
+    # the unit and the installed path stays masked until a trusted broker exists.
+    hapax-local-judge.service
     # Superseded 2026-05-02 by hapax-parametric-modulation-heartbeat.service.
     # Per memory `feedback_no_presets_use_parametric_modulation`: preset-pulse
     # heartbeats (PR #2239) are the wrong unit. Parametric modulation at the
@@ -114,13 +489,7 @@ if [ "$PROJECT_DIR" != "$EXPECTED_PRIMARY" ] && [ "${ALLOW_NONSTANDARD_REPO:-0}"
     exit 1
 fi
 
-# Ensure all optional dependency groups are installed.
-# Services run via `uv run` which uses the default venv — if optional
-# extras (sync-pipeline, logos-api, audio) aren't installed, agents
-# crash with ModuleNotFoundError at runtime.
-echo "Syncing venv with all extras..."
-(cd "$PROJECT_DIR" && uv sync --all-extras --quiet)
-echo "venv synced"
+reexec_with_safe_root_required_lock
 
 mkdir -p "$DEST_DIR"
 
@@ -135,8 +504,920 @@ is_decommissioned_unit() {
     return 1
 }
 
+LOCAL_JUDGE_CONFIG_ID="sha256:71de6ba513bcdb374a8ac597d78277ac78df1f484cdf929e1be01c60a42964af"
+LOCAL_JUDGE_IMAGE_DIGEST="sha256:841b199aed2649a748875b043b32fed2e8c2d4d87e1d563556817fb7fa44b72b"
+LOCAL_JUDGE_DOCKER_HOST="unix:///var/run/docker.sock"
+LOCAL_JUDGE_DOCKER_CONFIG="/nonexistent/hapax-local-judge-retirement"
+LOCAL_JUDGE_CONTAINER_ID=""
+LOCAL_JUDGE_EXACT_ID_MATCH=""
+LOCAL_JUDGE_IMAGE_RECORD=""
+LOCAL_JUDGE_PROFILE=""
+LOCAL_JUDGE_MANAGER_WITNESS=""
+LOCAL_JUDGE_TEST_MODE=0
+
+local_judge_docker() {
+    /usr/bin/env -i \
+        HOME="$HOME" LANG=C LC_ALL=C PATH=/usr/bin:/bin \
+        /usr/bin/timeout --signal=KILL 5s \
+            "$LOCAL_JUDGE_DOCKER_BIN" \
+            --host="$LOCAL_JUDGE_DOCKER_HOST" \
+            --config="$LOCAL_JUDGE_DOCKER_CONFIG" \
+            "$@"
+}
+
+local_judge_systemctl() {
+    /usr/bin/timeout --signal=KILL 5s \
+        "$LOCAL_JUDGE_SYSTEMCTL_BIN" --user "$@"
+}
+
+configure_local_judge_retirement_commands() {
+    local systemctl_override="${HAPAX_INSTALL_UNITS_RETIRE_SYSTEMCTL:-}"
+    local docker_override="${HAPAX_INSTALL_UNITS_RETIRE_DOCKER:-}"
+    LOCAL_JUDGE_TEST_MODE=0
+    if [ -n "$systemctl_override" ] || [ -n "$docker_override" ]; then
+        if [ "${ALLOW_NONSTANDARD_REPO:-0}" != "1" ] \
+            || [ -z "$systemctl_override" ] || [ -z "$docker_override" ]; then
+            echo "ERROR: local-judge retirement command overrides are paired test-only controls" >&2
+            return 1
+        fi
+        LOCAL_JUDGE_SYSTEMCTL_BIN="$systemctl_override"
+        LOCAL_JUDGE_DOCKER_BIN="$docker_override"
+        LOCAL_JUDGE_TEST_MODE=1
+    else
+        LOCAL_JUDGE_SYSTEMCTL_BIN="/usr/bin/systemctl"
+        LOCAL_JUDGE_DOCKER_BIN="/usr/bin/docker"
+    fi
+    if [ ! -x "$LOCAL_JUDGE_SYSTEMCTL_BIN" ]; then
+        echo "ERROR: local-judge retirement requires an executable pinned systemctl client" >&2
+        return 1
+    fi
+}
+
+query_local_judge_container_id() {
+    local output line count=0
+    if ! output="$(
+        local_judge_docker \
+            ps -aq --no-trunc --filter 'name=^/hapax-local-judge$' \
+            | /usr/bin/head -c 1025
+    )"; then
+        echo "ERROR: cannot enumerate the historical local-judge container from the pinned local Docker daemon" >&2
+        return 1
+    fi
+    if [ "${#output}" -gt 1024 ]; then
+        echo "ERROR: local-judge retirement Docker inventory exceeded its bound" >&2
+        return 1
+    fi
+
+    LOCAL_JUDGE_CONTAINER_ID=""
+    while IFS= read -r line; do
+        [ -n "$line" ] || continue
+        count=$((count + 1))
+        if ! [[ "$line" =~ ^[0-9a-f]{64}$ ]]; then
+            echo "ERROR: local-judge retirement received a malformed Docker inventory" >&2
+            return 1
+        fi
+        LOCAL_JUDGE_CONTAINER_ID="$line"
+    done <<< "$output"
+    if [ "$count" -gt 1 ]; then
+        echo "ERROR: local-judge retirement found multiple exact-name containers" >&2
+        return 1
+    fi
+}
+
+query_local_judge_exact_id() {
+    local container_id="$1" output
+    LOCAL_JUDGE_EXACT_ID_MATCH=""
+    if ! output="$(
+        local_judge_docker \
+            ps -aq --no-trunc --filter "id=$container_id" \
+            | /usr/bin/head -c 130
+    )"; then
+        return 1
+    fi
+    if [ -n "$output" ] && [ "$output" != "$container_id" ]; then
+        return 1
+    fi
+    LOCAL_JUDGE_EXACT_ID_MATCH="$output"
+}
+
+wait_for_local_judge_exact_id_absence() {
+    local container_id="$1" attempt
+    for attempt in {1..20}; do
+        if ! query_local_judge_exact_id "$container_id"; then
+            echo "ERROR: cannot prove exact local-judge container-ID disappearance" >&2
+            return 2
+        fi
+        if [ -z "$LOCAL_JUDGE_EXACT_ID_MATCH" ]; then
+            return 0
+        fi
+        [ "$attempt" -eq 20 ] || /usr/bin/sleep 0.1
+    done
+    echo "ERROR: exact local-judge container ID remained after bounded removal convergence" >&2
+    return 1
+}
+
+admit_local_judge_cleanup_host() {
+    local host os_name machine passwd_home passwd_record uid test_root
+    if [ "$LOCAL_JUDGE_TEST_MODE" -eq 1 ]; then
+        test_root="$(dirname "$HOME")"
+        if [ "$HOME" != "$test_root/home" ] \
+            || [ "$LOCAL_JUDGE_SYSTEMCTL_BIN" != "$test_root/bin/systemctl" ] \
+            || [ "$LOCAL_JUDGE_DOCKER_BIN" != "$test_root/bin/docker" ] \
+            || [ ! -f "$LOCAL_JUDGE_SYSTEMCTL_BIN" ] \
+            || [ ! -f "$LOCAL_JUDGE_DOCKER_BIN" ] \
+            || [ -L "$LOCAL_JUDGE_SYSTEMCTL_BIN" ] \
+            || [ -L "$LOCAL_JUDGE_DOCKER_BIN" ] \
+            || [ "$(/usr/bin/stat -c %u "$LOCAL_JUDGE_SYSTEMCTL_BIN")" != "$EUID" ] \
+            || [ "$(/usr/bin/stat -c %u "$LOCAL_JUDGE_DOCKER_BIN")" != "$EUID" ]; then
+            echo "ERROR: synthetic local-judge host facts require isolated owner-controlled test clients" >&2
+            return 1
+        fi
+        host="${HAPAX_INSTALL_UNITS_RETIRE_TEST_HOSTNAME:-}"
+        passwd_home="${HAPAX_INSTALL_UNITS_RETIRE_TEST_PASSWD_HOME:-}"
+        os_name="${HAPAX_INSTALL_UNITS_RETIRE_TEST_OS:-}"
+        machine="${HAPAX_INSTALL_UNITS_RETIRE_TEST_ARCH:-}"
+    else
+        if ! host="$(/usr/bin/hostname)" \
+            || ! os_name="$(/usr/bin/uname -s)" \
+            || ! machine="$(/usr/bin/uname -m)" \
+            || ! uid="$(/usr/bin/id -u)" \
+            || ! passwd_record="$(/usr/bin/getent passwd "$uid")"; then
+            echo "ERROR: cannot establish the local-judge destructive-cleanup host witness" >&2
+            return 1
+        fi
+        if [[ "$passwd_record" == *$'\n'* ]] \
+            || ! passwd_home="$(
+                /usr/bin/python3 -I -S - "$passwd_record" <<'PY'
+import sys
+
+parts = sys.argv[1].split(":")
+if len(parts) != 7 or not parts[5].startswith("/"):
+    raise SystemExit(1)
+print(parts[5])
+PY
+            )"; then
+            echo "ERROR: cannot establish the local-judge passwd HOME witness" >&2
+            return 1
+        fi
+    fi
+    if [ "$host" != "hapax-appendix" ] \
+        || [ "$passwd_home" != "$HOME" ] \
+        || [ "$os_name" != "Linux" ] \
+        || [ "$machine" != "x86_64" ]; then
+        echo "ERROR: local-judge destructive cleanup is admitted only on exact Appendix/passwd-HOME/linux-amd64" >&2
+        return 1
+    fi
+}
+
+query_local_judge_image_record() {
+    local output format
+    format='{{json .Id}}{{printf "\t"}}{{json .Os}}{{printf "\t"}}{{json .Architecture}}{{printf "\t"}}{{json .Config}}'
+    if ! output="$(
+        local_judge_docker image inspect --format "$format" "$LOCAL_JUDGE_CONFIG_ID" \
+            | /usr/bin/head -c 65537
+    )"; then
+        echo "ERROR: cannot inspect the exact historical local-judge image config" >&2
+        return 1
+    fi
+    if [ -z "$output" ] || [ "${#output}" -gt 65536 ] || [[ "$output" == *$'\n'* ]]; then
+        echo "ERROR: historical local-judge image record was malformed" >&2
+        return 1
+    fi
+    if ! /usr/bin/python3 -I -S - "$LOCAL_JUDGE_CONFIG_ID" 3<<<"$output" <<'PY'
+import json
+import os
+import sys
+
+expected_id = sys.argv[1]
+record = os.fdopen(3, encoding="utf-8").read()
+if not record.endswith("\n") or "\n" in record[:-1]:
+    raise SystemExit(1)
+record = record[:-1]
+try:
+    image_id, os_name, architecture, config = (
+        json.loads(field) for field in record.split("\t")
+    )
+except (TypeError, ValueError, json.JSONDecodeError):
+    raise SystemExit(1)
+valid = (
+    image_id == expected_id
+    and os_name == "linux"
+    and architecture == "amd64"
+    and isinstance(config, dict)
+    and config.get("Entrypoint") == ["/app/llama-server"]
+    and config.get("WorkingDir") == "/app"
+)
+raise SystemExit(0 if valid else 1)
+PY
+    then
+        echo "ERROR: exact historical image does not witness the pinned linux/amd64 config" >&2
+        return 1
+    fi
+    LOCAL_JUDGE_IMAGE_RECORD="$output"
+}
+
+validate_historical_local_judge_container() {
+    local container_id="$1" output format profile
+    format='{{json .Id}}{{printf "\t"}}{{json .Name}}{{printf "\t"}}{{json .Image}}{{printf "\t"}}{{json .Platform}}{{printf "\t"}}{{json .Path}}{{printf "\t"}}{{json .Args}}{{printf "\t"}}{{json .Config}}{{printf "\t"}}{{json .HostConfig}}{{printf "\t"}}{{json .Mounts}}{{printf "\t"}}{{json .NetworkSettings.Networks}}{{printf "\t"}}{{json .State}}'
+    if ! output="$(
+        local_judge_docker container inspect --format "$format" "$container_id" \
+            | /usr/bin/head -c 65537
+    )"; then
+        echo "ERROR: cannot inspect the captured historical local-judge container" >&2
+        return 1
+    fi
+    if [ -z "$output" ] || [ "${#output}" -gt 65536 ] || [[ "$output" == *$'\n'* ]]; then
+        echo "ERROR: historical local-judge container record was malformed" >&2
+        return 1
+    fi
+    if ! profile="$(
+        /usr/bin/python3 -I -S - \
+            "$container_id" "$HOME" "$LOCAL_JUDGE_CONFIG_ID" \
+            "$LOCAL_JUDGE_IMAGE_DIGEST" \
+            3<<<"$LOCAL_JUDGE_IMAGE_RECORD" 4<<<"$output" <<'PY'
+from __future__ import annotations
+
+import ipaddress
+import json
+import os
+import re
+import sys
+
+container_id, home, config_id, image_digest = sys.argv[1:]
+
+
+def read_record(fd: int) -> str:
+    value = os.fdopen(fd, encoding="utf-8").read()
+    if not value.endswith("\n") or "\n" in value[:-1]:
+        raise ValueError
+    return value[:-1]
+
+
+image_record = read_record(3)
+record = read_record(4)
+
+
+def decode_fields(value: str, count: int) -> list[object]:
+    fields = value.split("\t")
+    if len(fields) != count:
+        raise ValueError
+    return [json.loads(field) for field in fields]
+
+
+def empty(value: object) -> bool:
+    return value is None or value is False or value == 0 or value in ("", [], {})
+
+
+try:
+    image_id, image_os, image_arch, image_config = decode_fields(image_record, 4)
+    (
+        actual_id,
+        name,
+        actual_image,
+        platform,
+        path,
+        args,
+        config,
+        host,
+        mounts,
+        networks,
+        state,
+    ) = decode_fields(record, 11)
+except (TypeError, ValueError, json.JSONDecodeError):
+    raise SystemExit(1)
+
+if not all(isinstance(value, dict) for value in (image_config, config, host, networks, state)):
+    raise SystemExit(1)
+
+expected_args = [
+    "-m",
+    "/models/CompassVerifier-7B.Q5_K_M.gguf",
+    "-a",
+    "compassverifier-7b",
+    "-c",
+    "65536",
+    "-np",
+    "8",
+    "-cb",
+    "-ngl",
+    "99",
+    "--host",
+    "0.0.0.0",
+    "--port",
+    "5001",
+]
+expected_device_requests = [
+    {
+        "Capabilities": [["gpu"]],
+        "Count": 0,
+        "DeviceIDs": ["GPU-347222d9-00af-5a94-a365-c57c09dfddcd"],
+        "Driver": "",
+        "Options": {},
+    }
+]
+expected_ports = {"5001/tcp": [{"HostIp": "", "HostPort": "5001"}]}
+expected_exposed = dict(image_config.get("ExposedPorts") or {})
+expected_exposed["5001/tcp"] = {}
+
+inherited_keys = (
+    "User",
+    "Env",
+    "WorkingDir",
+    "Entrypoint",
+    "Labels",
+    "Healthcheck",
+    "StopSignal",
+    "Volumes",
+    "OnBuild",
+    "Shell",
+)
+required_config_keys = set(inherited_keys) | {
+    "Image",
+    "Cmd",
+    "AttachStdin",
+    "AttachStdout",
+    "AttachStderr",
+    "OpenStdin",
+    "StdinOnce",
+    "Tty",
+    "NetworkDisabled",
+    "ExposedPorts",
+    "Hostname",
+    "Domainname",
+    "MacAddress",
+    "StopTimeout",
+    "ArgsEscaped",
+}
+config_valid = (
+    required_config_keys.issubset(config)
+    and all(config.get(key) == image_config.get(key) for key in inherited_keys)
+    and config.get("Cmd") == expected_args
+    and config.get("AttachStdin") is False
+    and config.get("AttachStdout") is True
+    and config.get("AttachStderr") is True
+    and config.get("OpenStdin") is False
+    and config.get("StdinOnce") is False
+    and config.get("Tty") is False
+    and config.get("NetworkDisabled") is False
+    and config.get("ExposedPorts") == expected_exposed
+    and config.get("Hostname") == container_id[:12]
+    and config.get("Domainname") == ""
+    and config.get("MacAddress") in (None, "")
+    and config.get("StopTimeout") is None
+    and config.get("ArgsEscaped") in (None, False)
+)
+unknown_config_defaults = all(
+    empty(value) for key, value in config.items() if key not in required_config_keys
+)
+
+standard_masked = {
+    "/proc/acpi",
+    "/proc/asound",
+    "/proc/kcore",
+    "/proc/keys",
+    "/proc/latency_stats",
+    "/proc/scsi",
+    "/proc/timer_list",
+    "/proc/timer_stats",
+    "/sys/devices/virtual/powercap",
+    "/sys/firmware",
+}
+standard_readonly = {
+    "/proc/bus",
+    "/proc/fs",
+    "/proc/irq",
+    "/proc/sys",
+    "/proc/sysrq-trigger",
+}
+masked_paths = host.get("MaskedPaths")
+readonly_paths = host.get("ReadonlyPaths")
+baseline_host_valid = (
+    host.get("Privileged") is False
+    and empty(host.get("CapAdd"))
+    and empty(host.get("CapDrop"))
+    and empty(host.get("SecurityOpt"))
+    and host.get("ReadonlyRootfs") is False
+    and host.get("NetworkMode") in ("bridge", "default")
+    and host.get("PidMode") == ""
+    and host.get("IpcMode") in ("", "private")
+    and host.get("UTSMode") in ("", "private")
+    and host.get("CgroupnsMode") in ("", "private")
+    and host.get("UsernsMode") == ""
+    and host.get("Devices") == []
+    and host.get("DeviceRequests") == expected_device_requests
+    and host.get("PortBindings") == expected_ports
+    and host.get("PublishAllPorts") is False
+    and host.get("AutoRemove") is True
+    and host.get("MemoryReservation", 0) == 0
+    and host.get("OomKillDisable") in (None, False)
+    and host.get("OomScoreAdj", 0) == 0
+    and host.get("Runtime") == "runc"
+    and host.get("PidsLimit") in (None, 0)
+    and host.get("RestartPolicy") == {"Name": "no", "MaximumRetryCount": 0}
+    and host.get("NanoCpus", 0) == 0
+    and host.get("CpuShares", 0) == 0
+    and host.get("CpusetCpus", "") == ""
+    and host.get("CpusetMems", "") == ""
+    and host.get("ShmSize") == 67108864
+    and host.get("LogConfig") == {"Type": "json-file", "Config": {}}
+    and empty(host.get("Tmpfs"))
+    and empty(host.get("Dns"))
+    and empty(host.get("DnsOptions"))
+    and empty(host.get("DnsSearch"))
+    and empty(host.get("ExtraHosts"))
+    and empty(host.get("Links"))
+    and empty(host.get("GroupAdd"))
+    and empty(host.get("VolumesFrom"))
+    and host.get("Init") in (None, False)
+    and isinstance(masked_paths, list)
+    and standard_masked.issubset(masked_paths)
+    and isinstance(readonly_paths, list)
+    and standard_readonly.issubset(readonly_paths)
+    and empty(host.get("Sysctls"))
+    and empty(host.get("StorageOpt"))
+    and empty(host.get("Mounts"))
+    and host.get("ConsoleSize") in (None, [0, 0])
+)
+
+checked_host_keys = {
+    "Binds",
+    "Privileged",
+    "CapAdd",
+    "CapDrop",
+    "SecurityOpt",
+    "ReadonlyRootfs",
+    "NetworkMode",
+    "PidMode",
+    "IpcMode",
+    "UTSMode",
+    "CgroupnsMode",
+    "UsernsMode",
+    "Devices",
+    "DeviceRequests",
+    "PortBindings",
+    "PublishAllPorts",
+    "AutoRemove",
+    "Memory",
+    "MemorySwap",
+    "MemoryReservation",
+    "OomKillDisable",
+    "OomScoreAdj",
+    "Runtime",
+    "PidsLimit",
+    "RestartPolicy",
+    "NanoCpus",
+    "CpuShares",
+    "CpusetCpus",
+    "CpusetMems",
+    "ShmSize",
+    "LogConfig",
+    "Tmpfs",
+    "Dns",
+    "DnsOptions",
+    "DnsSearch",
+    "ExtraHosts",
+    "Links",
+    "GroupAdd",
+    "VolumesFrom",
+    "Init",
+    "MaskedPaths",
+    "ReadonlyPaths",
+    "Sysctls",
+    "StorageOpt",
+    "Mounts",
+    "ConsoleSize",
+}
+unknown_host_defaults = all(
+    empty(value) for key, value in host.items() if key not in checked_host_keys
+)
+
+bridge_endpoint_keys = {
+    "IPAMConfig",
+    "Links",
+    "Aliases",
+    "MacAddress",
+    "DriverOpts",
+    "GwPriority",
+    "NetworkID",
+    "EndpointID",
+    "Gateway",
+    "IPAddress",
+    "IPPrefixLen",
+    "IPv6Gateway",
+    "GlobalIPv6Address",
+    "GlobalIPv6PrefixLen",
+    "DNSNames",
+}
+
+
+def valid_bridge_endpoint(value: object) -> bool:
+    if not isinstance(value, dict) or set(value) != {"bridge"}:
+        return False
+    endpoint = value.get("bridge")
+    if not isinstance(endpoint, dict) or set(endpoint) != bridge_endpoint_keys:
+        return False
+    if any(
+        endpoint.get(key) is not None
+        for key in ("IPAMConfig", "Links", "Aliases", "DriverOpts", "DNSNames")
+    ):
+        return False
+    if type(endpoint.get("GwPriority")) is not int or endpoint["GwPriority"] != 0:
+        return False
+    if (
+        type(endpoint.get("GlobalIPv6PrefixLen")) is not int
+        or endpoint["GlobalIPv6PrefixLen"] != 0
+        or endpoint.get("IPv6Gateway") != ""
+        or endpoint.get("GlobalIPv6Address") != ""
+    ):
+        return False
+    network_id = endpoint.get("NetworkID")
+    endpoint_id = endpoint.get("EndpointID")
+    if (
+        not isinstance(network_id, str)
+        or not isinstance(endpoint_id, str)
+        or re.fullmatch(r"[0-9a-f]{64}", network_id) is None
+        or re.fullmatch(r"[0-9a-f]{64}", endpoint_id) is None
+        or network_id == "0" * 64
+        or endpoint_id == "0" * 64
+        or network_id == endpoint_id
+    ):
+        return False
+
+    prefix = endpoint.get("IPPrefixLen")
+    gateway_value = endpoint.get("Gateway")
+    address_value = endpoint.get("IPAddress")
+    if (
+        type(prefix) is not int
+        or not 1 <= prefix <= 30
+        or not isinstance(gateway_value, str)
+        or not isinstance(address_value, str)
+    ):
+        return False
+    try:
+        gateway = ipaddress.IPv4Address(gateway_value)
+        address = ipaddress.IPv4Address(address_value)
+        network = ipaddress.IPv4Network((address, prefix), strict=False)
+    except ipaddress.AddressValueError:
+        return False
+    if (
+        gateway.is_unspecified
+        or address.is_unspecified
+        or gateway == address
+        or gateway not in network
+        or gateway in (network.network_address, network.broadcast_address)
+        or address in (network.network_address, network.broadcast_address)
+        or any(
+            value.is_loopback
+            or value.is_link_local
+            or value.is_multicast
+            or value.is_reserved
+            for value in (gateway, address)
+        )
+    ):
+        return False
+
+    mac = endpoint.get("MacAddress")
+    if not isinstance(mac, str) or not re.fullmatch(
+        r"[0-9a-f]{2}(?::[0-9a-f]{2}){5}", mac
+    ):
+        return False
+    mac_octets = bytes.fromhex(mac.replace(":", ""))
+    return (
+        mac_octets[0] & 0b11 == 0b10
+        and mac_octets[:2] == b"\x02\x42"
+        and mac_octets[2:] == address.packed
+    )
+
+profiles = (
+    (
+        "mutable-uncapped-home",
+        "ghcr.io/ggml-org/llama.cpp:server-cuda",
+        f"{home}/models/compassverifier-7b",
+        0,
+        0,
+    ),
+    (
+        "mutable-capped-home",
+        "ghcr.io/ggml-org/llama.cpp:server-cuda",
+        f"{home}/models/compassverifier-7b",
+        4294967296,
+        6442450944,
+    ),
+    (
+        "pinned-capped-content",
+        f"ghcr.io/ggml-org/llama.cpp@{image_digest}",
+        "/store-fast/hapax-models/sha256/"
+        "d6d6fba56c25d2d0f1b2cc8ee261b209b77729510b3d770d43ccb6e741dff0db",
+        4294967296,
+        6442450944,
+    ),
+)
+matched_profile = ""
+for profile_name, config_image, source, memory, memory_swap in profiles:
+    expected_mounts = [
+        {
+            "Destination": "/models",
+            "Mode": "ro",
+            "Propagation": "rprivate",
+            "RW": False,
+            "Source": source,
+            "Type": "bind",
+        }
+    ]
+    if (
+        config.get("Image") == config_image
+        and host.get("Binds") == [f"{source}:/models:ro"]
+        and mounts == expected_mounts
+        and host.get("Memory", 0) == memory
+        and host.get("MemorySwap", 0) == memory_swap
+    ):
+        matched_profile = profile_name
+        break
+
+valid = (
+    image_id == config_id
+    and image_os == "linux"
+    and image_arch == "amd64"
+    and actual_id == container_id
+    and name == "/hapax-local-judge"
+    and actual_image == config_id
+    and platform == "linux"
+    and path == "/app/llama-server"
+    and args == expected_args
+    and config_valid
+    and unknown_config_defaults
+    and baseline_host_valid
+    and checked_host_keys.issubset(host)
+    and unknown_host_defaults
+    and valid_bridge_endpoint(networks)
+    and state.get("Status")
+    in {"created", "running", "restarting", "paused", "removing", "exited", "dead"}
+    and bool(matched_profile)
+)
+if not valid:
+    raise SystemExit(1)
+print(matched_profile)
+PY
+    )"; then
+        echo "ERROR: exact-name container does not match a complete historical local-judge profile; preserving it" >&2
+        return 1
+    fi
+    case "$profile" in
+        mutable-uncapped-home|mutable-capped-home|pinned-capped-content)
+            LOCAL_JUDGE_PROFILE="$profile"
+            ;;
+        *)
+            echo "ERROR: historical local-judge profile result was malformed" >&2
+            return 1
+            ;;
+    esac
+}
+
+local_judge_mask_generation() {
+    local dest="$1"
+    /usr/bin/python3 -I -S - "$dest" <<'PY'
+import os
+import stat
+import sys
+
+path = sys.argv[1]
+link = os.lstat(path)
+if not stat.S_ISLNK(link.st_mode) or os.readlink(path) != "/dev/null":
+    raise SystemExit(1)
+target = os.stat(path)
+null = os.stat("/dev/null")
+target_key = (target.st_dev, target.st_ino, target.st_mode, target.st_rdev)
+null_key = (null.st_dev, null.st_ino, null.st_mode, null.st_rdev)
+if target_key != null_key or not stat.S_ISCHR(target.st_mode):
+    raise SystemExit(1)
+print(
+    ":".join(
+        str(value)
+        for value in (
+            link.st_dev,
+            link.st_ino,
+            link.st_mode,
+            link.st_uid,
+            link.st_gid,
+            link.st_nlink,
+            link.st_mtime_ns,
+            link.st_ctime_ns,
+            *target_key,
+        )
+    )
+)
+PY
+}
+
+query_local_judge_manager_witness() {
+    local dest="$1" before after output witness
+    if ! before="$(local_judge_mask_generation "$dest")"; then
+        return 1
+    fi
+    if ! output="$(
+        local_judge_systemctl show hapax-local-judge.service \
+            -p LoadState -p UnitFileState -p ActiveState \
+            -p SubState -p MainPID -p ControlPID --no-pager \
+            | /usr/bin/head -c 1025
+    )"; then
+        return 1
+    fi
+    if ! after="$(local_judge_mask_generation "$dest")" \
+        || [ "$before" != "$after" ] || [ "${#output}" -gt 1024 ]; then
+        return 1
+    fi
+    if ! witness="$(/usr/bin/python3 -I -S - "$output" <<'PY'
+import sys
+
+expected = ("LoadState", "UnitFileState", "ActiveState", "SubState", "MainPID", "ControlPID")
+values = {}
+for line in sys.argv[1].splitlines():
+    if "=" not in line:
+        raise SystemExit(1)
+    key, value = line.split("=", 1)
+    if key not in expected or key in values or not value:
+        raise SystemExit(1)
+    values[key] = value
+if set(values) != set(expected) or len(values) != len(expected):
+    raise SystemExit(1)
+print("\t".join(values[key] for key in expected))
+PY
+    )"; then
+        return 1
+    fi
+    LOCAL_JUDGE_MANAGER_WITNESS="$witness"
+}
+
+local_judge_manager_is_quiesced() {
+    [ "$LOCAL_JUDGE_MANAGER_WITNESS" = $'masked\tmasked\tinactive\tdead\t0\t0' ]
+}
+
+wait_for_local_judge_manager_quiescence() {
+    local dest="$1" attempt
+    for attempt in {1..20}; do
+        if query_local_judge_manager_witness "$dest" \
+            && local_judge_manager_is_quiesced; then
+            return 0
+        fi
+        local_judge_systemctl kill --kill-who=all --signal=SIGKILL \
+            hapax-local-judge.service >/dev/null 2>&1 || true
+        local_judge_systemctl reset-failed \
+            hapax-local-judge.service >/dev/null 2>&1 || true
+        [ "$attempt" -eq 20 ] || /usr/bin/sleep 0.1
+    done
+    echo "ERROR: user manager did not converge to stable masked/masked/inactive/dead/0/0" >&2
+    return 1
+}
+
+require_final_local_judge_manager_witness() {
+    local dest="$1"
+    if ! query_local_judge_manager_witness "$dest" \
+        || ! local_judge_manager_is_quiesced; then
+        echo "ERROR: final user-manager witness is not stable masked/masked/inactive/dead/0/0" >&2
+        return 1
+    fi
+}
+
+install_local_judge_mask() {
+    local dest="$1"
+    /usr/bin/python3 -I -S - "$dest" <<'PY'
+from __future__ import annotations
+
+import os
+import secrets
+import sys
+
+dest = os.path.abspath(sys.argv[1])
+parent, name = os.path.split(dest)
+dir_fd = os.open(parent, os.O_RDONLY | os.O_DIRECTORY | os.O_CLOEXEC)
+tmp = f".{name}.mask.{os.getpid()}.{secrets.token_hex(8)}"
+try:
+    os.symlink("/dev/null", tmp, dir_fd=dir_fd)
+    os.replace(tmp, name, src_dir_fd=dir_fd, dst_dir_fd=dir_fd)
+    os.fsync(dir_fd)
+finally:
+    try:
+        os.unlink(tmp, dir_fd=dir_fd)
+    except FileNotFoundError:
+        pass
+    os.close(dir_fd)
+PY
+}
+
+retire_historical_local_judge() {
+    local name="hapax-local-judge.service"
+    local dest="$DEST_DIR/$name"
+    local manager_changed=0 wants_link before_id before_profile wait_rc
+    local dropin_dir="$DEST_DIR/${name}.d"
+    if ! configure_local_judge_retirement_commands; then
+        return 2
+    fi
+
+    # The manager transaction is independent of container cleanup. Mask first,
+    # then kill the loaded unit cgroup without invoking its name-based ExecStop.
+    local_judge_systemctl disable "$name" >/dev/null 2>&1 || true
+    if ! { [ -L "$dest" ] && [ "$(readlink "$dest")" = "/dev/null" ]; }; then
+        manager_changed=1
+        if ! rm -f -- "$dest" || ! install_local_judge_mask "$dest"; then
+            echo "ERROR: could not install the historical local-judge mask" >&2
+            return 2
+        fi
+    fi
+    for wants_link in "$DEST_DIR"/*.wants/"$name"; do
+        [ -e "$wants_link" ] || [ -L "$wants_link" ] || continue
+        manager_changed=1
+        if ! rm -f -- "$wants_link"; then
+            echo "ERROR: could not remove a historical local-judge wants link" >&2
+            return 2
+        fi
+    done
+    if [ -e "$dropin_dir" ] || [ -L "$dropin_dir" ]; then
+        manager_changed=1
+        if ! rm -rf -- "$dropin_dir"; then
+            echo "ERROR: could not remove historical local-judge drop-ins" >&2
+            return 2
+        fi
+    fi
+    if ! local_judge_systemctl daemon-reload >/dev/null; then
+        echo "ERROR: could not reload the user manager after local-judge masking" >&2
+        return 2
+    fi
+    local_judge_systemctl kill --kill-who=all --signal=SIGKILL "$name" >/dev/null 2>&1 || true
+    local_judge_systemctl reset-failed "$name" >/dev/null 2>&1 || true
+    if ! wait_for_local_judge_manager_quiescence "$dest"; then
+        return 2
+    fi
+
+    if [ ! -x "$LOCAL_JUDGE_DOCKER_BIN" ]; then
+        echo "ERROR: local-judge container cleanup requires an executable pinned Docker client" >&2
+        require_final_local_judge_manager_witness "$dest" || true
+        return 2
+    fi
+    if ! query_local_judge_container_id; then
+        require_final_local_judge_manager_witness "$dest" || true
+        return 2
+    fi
+    before_id="$LOCAL_JUDGE_CONTAINER_ID"
+    if [ -z "$before_id" ]; then
+        if ! require_final_local_judge_manager_witness "$dest"; then
+            return 2
+        fi
+        if [ "$manager_changed" -eq 0 ]; then
+            return 1
+        fi
+        echo "retired and masked historical local judge (container_id=absent)"
+        return 0
+    fi
+
+    if ! admit_local_judge_cleanup_host \
+        || ! query_local_judge_image_record \
+        || ! validate_historical_local_judge_container "$before_id"; then
+        require_final_local_judge_manager_witness "$dest" || true
+        return 2
+    fi
+    before_profile="$LOCAL_JUDGE_PROFILE"
+
+    # Container configuration is immutable, but disappearance is not. Reinspect
+    # the captured immutable ID immediately before passing that same ID to rm.
+    if ! validate_historical_local_judge_container "$before_id" \
+        || [ "$LOCAL_JUDGE_PROFILE" != "$before_profile" ]; then
+        echo "ERROR: captured local-judge identity changed or disappeared before removal; preserving all observed containers" >&2
+        require_final_local_judge_manager_witness "$dest" || true
+        return 2
+    fi
+    if ! local_judge_docker rm -f "$before_id" >/dev/null; then
+        echo "ERROR: could not remove the captured historical local-judge container ID" >&2
+        require_final_local_judge_manager_witness "$dest" || true
+        return 2
+    fi
+    wait_rc=0
+    wait_for_local_judge_exact_id_absence "$before_id" || wait_rc=$?
+    if [ "$wait_rc" -ne 0 ]; then
+        require_final_local_judge_manager_witness "$dest" || true
+        return 2
+    fi
+    if ! query_local_judge_container_id; then
+        require_final_local_judge_manager_witness "$dest" || true
+        return 2
+    fi
+    if [ -n "$LOCAL_JUDGE_CONTAINER_ID" ]; then
+        echo "ERROR: a replacement local-judge container appeared; preserving its immutable ID" >&2
+        require_final_local_judge_manager_witness "$dest" || true
+        return 2
+    fi
+    if ! require_final_local_judge_manager_witness "$dest"; then
+        return 2
+    fi
+    echo "retired and masked historical local judge (container_id=$before_id profile=$before_profile)"
+    return 0
+}
+
 remove_decommissioned_unit() {
     local name="$1"
+    if [ "$name" = "hapax-local-judge.service" ]; then
+        retire_historical_local_judge
+        return
+    fi
     local removed=0
     local dest="$DEST_DIR/$name"
     if [ -e "$dest" ] || [ -L "$dest" ]; then
@@ -162,9 +1443,26 @@ remove_decommissioned_unit() {
     [ "$removed" -eq 1 ]
 }
 
-system_install_scope_unit() {
-    grep -Eq '^[#;][[:space:]]*Hapax-Install-Scope:[[:space:]]*system[[:space:]]*$' "$1" || return 1
-    return 0
+UNIT_INSTALL_SCOPE=""
+classify_unit_install_scope() {
+    local path="$1" scope_marker_count system_marker_count
+    UNIT_INSTALL_SCOPE="user"
+    [ -f "$path" ] || return 0
+    scope_marker_count="$(
+        grep -Eic '^[[:blank:]]*[#;][[:blank:]]*Hapax-Install-Scope[[:blank:]]*:' "$path" || true
+    )"
+    system_marker_count="$(
+        grep -Eic '^[[:blank:]]*[#;][[:blank:]]*Hapax-Install-Scope[[:blank:]]*:[[:blank:]]*system[[:blank:]]*$' "$path" || true
+    )"
+    if [ "$scope_marker_count" -eq 0 ]; then
+        return 0
+    fi
+    if [ "$scope_marker_count" -eq 1 ] && [ "$system_marker_count" -eq 1 ]; then
+        UNIT_INSTALL_SCOPE="system"
+        return 0
+    fi
+    echo "ERROR: malformed Hapax-Install-Scope marker in $path (duplicate or unsupported value)" >&2
+    return 1
 }
 
 timer_enable_only() {
@@ -195,10 +1493,24 @@ dedicated_p0_oom_unit() {
 changed=0
 new_timers=()
 for retired_unit in "${DECOMMISSIONED_UNITS[@]}"; do
-    if remove_decommissioned_unit "$retired_unit"; then
-        changed=$((changed + 1))
-    fi
+    retirement_rc=0
+    remove_decommissioned_unit "$retired_unit" || retirement_rc=$?
+    case "$retirement_rc" in
+        0) changed=$((changed + 1)) ;;
+        1) ;;
+        *)
+            echo "ERROR: failed to retire $retired_unit" >&2
+            exit "$retirement_rc"
+            ;;
+    esac
 done
+
+# Retire stale units before dependency synchronization. Decommissioning must
+# remain reachable even when the project environment is currently unhealthy.
+# Services installed below run via `uv run`, so synchronize before linking them.
+echo "Syncing venv with all extras..."
+(cd "$PROJECT_DIR" && uv sync --all-extras --quiet)
+echo "venv synced"
 
 for unit in "$REPO_DIR"/*.service "$REPO_DIR"/*.timer "$REPO_DIR"/*.target "$REPO_DIR"/*.path "$REPO_DIR"/*.slice; do
     [ -f "$unit" ] || continue
@@ -212,7 +1524,10 @@ for unit in "$REPO_DIR"/*.service "$REPO_DIR"/*.timer "$REPO_DIR"/*.target "$REP
         echo "skipped dedicated P0 OOM unit: $name"
         continue
     fi
-    if system_install_scope_unit "$unit"; then
+    if ! classify_unit_install_scope "$unit"; then
+        exit 1
+    fi
+    if [ "$UNIT_INSTALL_SCOPE" = "system" ]; then
         systemctl --user disable --now "$name" >/dev/null 2>&1 || true
         if [ -e "$dest" ] || [ -L "$dest" ]; then
             rm -f "$dest"
@@ -225,6 +1540,12 @@ for unit in "$REPO_DIR"/*.service "$REPO_DIR"/*.timer "$REPO_DIR"/*.target "$REP
             changed=$((changed + 1))
             echo "removed stale user-scope wants link: $wants_link"
         done
+        stale_dropin_dir="$DEST_DIR/${name}.d"
+        if [ -e "$stale_dropin_dir" ] || [ -L "$stale_dropin_dir" ]; then
+            rm -rf -- "$stale_dropin_dir"
+            changed=$((changed + 1))
+            echo "removed stale user-scope drop-ins for system unit: ${name}.d"
+        fi
         echo "skipped system-scope unit: $name"
         continue
     fi
@@ -239,7 +1560,11 @@ for unit in "$REPO_DIR"/*.service "$REPO_DIR"/*.timer "$REPO_DIR"/*.target "$REP
     changed=$((changed + 1))
     # Track newly installed timers so we can enable them after daemon-reload.
     if [ "$is_new" -eq 1 ] && [[ "$name" == *.timer ]]; then
-        new_timers+=("$name")
+        if parked_unit "$unit"; then
+            echo "not queued for enable: parked timer $name"
+        else
+            new_timers+=("$name")
+        fi
     fi
 done
 
@@ -279,6 +1604,7 @@ if [ "${SKIP_TIMER_ENABLE:-0}" != "1" ]; then
     enabled_in_sweep=0
     for timer_file in "$REPO_DIR"/*.timer; do
         [ -f "$timer_file" ] || continue
+        parked_unit "$timer_file" && continue
         timer_name="$(basename "$timer_file")"
         # Skip if not linked yet — the symlink block above handles those.
         [ -L "$DEST_DIR/$timer_name" ] || continue
@@ -302,6 +1628,7 @@ if [ "${SKIP_TIMER_ENABLE:-0}" != "1" ]; then
     # immediately. Existing dormant timers handled by the sweep above
     # do NOT get --now; they fire on their next natural schedule.
     for timer in "${new_timers[@]}"; do
+        parked_unit "$REPO_DIR/$timer" && continue
         if timer_enable_only "$REPO_DIR/$timer"; then
             if systemctl --user enable "$timer" 2>/dev/null; then
                 echo "enabled: $timer (Hapax-Timer-Enable-Only; not started)"
@@ -431,6 +1758,19 @@ dropin_changed=0
 for dropin_dir in "$REPO_DIR"/*.service.d "$REPO_DIR"/*.timer.d "$REPO_DIR"/*.slice.d "$REPO_DIR"/*.scope.d; do
     [ -d "$dropin_dir" ] || continue
     svc_name="$(basename "$dropin_dir")"
+    base_unit="$REPO_DIR/${svc_name%.d}"
+    if ! classify_unit_install_scope "$base_unit"; then
+        exit 1
+    fi
+    if [ "$UNIT_INSTALL_SCOPE" = "system" ]; then
+        dest_dropin_dir="$DEST_DIR/$svc_name"
+        if [ -e "$dest_dropin_dir" ] || [ -L "$dest_dropin_dir" ]; then
+            rm -rf -- "$dest_dropin_dir"
+            dropin_changed=$((dropin_changed + 1))
+            echo "dropin-removed-system-scope: $svc_name"
+        fi
+        continue
+    fi
     for conf in "$dropin_dir"/*.conf; do
         [ -f "$conf" ] || continue
         conf_name="$(basename "$conf")"
