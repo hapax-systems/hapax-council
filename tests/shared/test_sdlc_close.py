@@ -3,6 +3,7 @@ from __future__ import annotations
 import gc
 import hashlib
 import json
+import os
 import subprocess
 from dataclasses import dataclass
 from datetime import UTC, datetime
@@ -891,7 +892,9 @@ def test_debt_reason_is_forwarded_to_disposition_checker(
     assert disposition[0][-2:] == ["--debt", "service outage"]
     assert disposition[0][3] != str(snapshot.path)
     assert b"debt-applied" not in snapshot.path.read_bytes()
-    cookie = snapshot.path.with_name(f".{snapshot.path.name}.close-invocation")
+    cookie = snapshot.path.with_name(
+        f".{snapshot.path.name}.close-invocation.{os.getpid()}"
+    )
     assert cookie.is_file()
     invocation = cookie.read_text(encoding="utf-8").strip()
     after = snapshot.path.with_name(

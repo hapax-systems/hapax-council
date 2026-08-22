@@ -413,7 +413,7 @@ def _default_done_gate_runner(
         # Checker may write the note. Always run against a copy so a refuse
         # cannot leave residue on the live preimage. Success copies back.
         disposition_preflight = snapshot.path.with_name(
-            f".{snapshot.path.name}.disposition-preflight"
+            f".{snapshot.path.name}.disposition-preflight.{os.getpid()}"
         )
         disposition_preflight.write_bytes(snapshot.path.read_bytes())
         disposition_command = [
@@ -499,7 +499,7 @@ def _default_done_gate_runner(
                         f".{snapshot.path.name}.close-after.{snapshot.sha256[:12]}.{invocation}"
                     )
                     cookie = snapshot.path.with_name(
-                        f".{snapshot.path.name}.close-invocation"
+                        f".{snapshot.path.name}.close-invocation.{os.getpid()}"
                     )
                     cookie.write_text(invocation, encoding="utf-8")
                     os.replace(debt_preflight, after_path)
@@ -762,7 +762,9 @@ def close_task(
             "terminal_close_preflight_note_drift",
             "rerun close against one stable exact note preimage",
         )
-    cookie = snapshot.path.with_name(f".{snapshot.path.name}.close-invocation")
+    cookie = snapshot.path.with_name(
+        f".{snapshot.path.name}.close-invocation.{os.getpid()}"
+    )
     invocation = cookie.read_text(encoding="utf-8").strip() if cookie.is_file() else ""
     if cookie.is_file():
         cookie.unlink()
