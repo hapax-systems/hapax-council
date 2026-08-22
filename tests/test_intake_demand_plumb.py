@@ -43,6 +43,27 @@ def test_parse_requirement_vector_zero_is_valid() -> None:
     assert _parse_requirement_vector(rv) == rv
 
 
+def test_parse_requirement_vector_accepts_partial_valid_subset() -> None:
+    # A PARTIAL vector (a subset of the canonical dims, all in range) is valid — it scores
+    # over its active dims (the focused-hot design). Only malformed frontmatter goes DARK.
+    rv = {"context_length": 4, "mutation_risk": 5}
+    assert _parse_requirement_vector(rv) == rv
+
+
+def test_parse_requirement_vector_rejects_unknown_dimension() -> None:
+    # An unknown key (not in REQUIREMENT_VECTOR_DIMENSIONS) rejects the WHOLE vector → DARK.
+    # (codex-1 finding #2: malformed frontmatter must not change ranking under blend>0.)
+    assert _parse_requirement_vector({"context_length": 4, "bogus_dimension": 3}) is None
+    assert _parse_requirement_vector({"totally_made_up": 5}) is None
+
+
+def test_parse_requirement_vector_rejects_out_of_range_score() -> None:
+    # Scores must be 0..5; <0 or >5 rejects the WHOLE vector → DARK.
+    assert _parse_requirement_vector({"context_length": 999}) is None
+    assert _parse_requirement_vector({"context_length": -1}) is None
+    assert _parse_requirement_vector({"context_length": 4, "mutation_risk": 6}) is None
+
+
 # --------------------------------------------------------- _parse_task (end-to-end)
 
 

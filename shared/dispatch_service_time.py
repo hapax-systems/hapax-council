@@ -434,9 +434,12 @@ def plan_dispatches(
     ``fit_blend`` (default ``0.0``) blends the intake ``fit_score`` (demand-shape
     magnitude) into the rank-key: the per-task key becomes ``composite_rank_key``
     over aged WSJF + ``fit_blend * fit_score``. ``0.0`` short-circuits to pure
-    WSJF (byte-identical to the pre-blend plan — the golden guarantee); a non-zero
-    blend is the operator's dial. ``_repair_cooled_plan`` MUST receive the same
-    ``fit_blend`` so the no-spin repair never reorders relative to the plan.
+    WSJF (byte-identical to the pre-blend plan — the golden guarantee). The live
+    caller clamps ``fit_blend`` to the task-spec's ``[0.0, 0.5)`` safe range at the
+    env gate (``_intake_fit_blend``); this planner accepts any finite float so the
+    composite contract stays unit-testable in isolation. ``_repair_cooled_plan``
+    MUST receive the same ``fit_blend`` so the no-spin repair never reorders
+    relative to the plan.
     """
     if legacy:
         return _plan_legacy(tasks, lanes, max_dispatches)

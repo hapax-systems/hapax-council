@@ -17,6 +17,7 @@ from __future__ import annotations
 
 import json
 import logging
+import math
 import os
 import subprocess
 from contextlib import ExitStack
@@ -26,6 +27,7 @@ from unittest.mock import MagicMock, patch
 import pytest
 
 from agents.coordinator.core import (
+    INTAKE_FIT_BLEND_ENV,
     SCHEDULER_LEGACY_ENV,
     Coordinator,
     LaneState,
@@ -190,6 +192,60 @@ class TestTickIntegration:
                 mock_run.return_value = dispatch_result
             coord.tick()
             return mock_run.call_count
+
+    def test_tick_passes_clamped_intake_fit_blend_to_planner(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        coord = self._make_coordinator()
+        captured: dict[str, float] = {}
+
+        def fake_plan_dispatches(
+            _tasks: list[QueueTask],
+            _lanes: list[QueueLane],
+            *,
+            fit_blend: float,
+            **_kwargs: object,
+        ) -> list[tuple[str, str]]:
+            captured["fit_blend"] = fit_blend
+            return []
+
+        def fake_repair_cooled_plan(
+            plan: list[tuple[str, str]],
+            _tasks: list[QueueTask],
+            _lanes: list[QueueLane],
+            *,
+            fit_blend: float,
+            **_kwargs: object,
+        ) -> tuple[list[tuple[str, str]], int]:
+            captured["repair_fit_blend"] = fit_blend
+            return plan, 0
+
+        monkeypatch.setenv(INTAKE_FIT_BLEND_ENV, "50")
+        with ExitStack() as stack:
+            stack.enter_context(patch.object(coord, "_scan_tasks", return_value=[TASK_A]))
+            stack.enter_context(
+                patch.object(coord, "_check_lanes", return_value=_make_lanes(LANE_ALPHA))
+            )
+            mock_admission = stack.enter_context(patch("agents.coordinator.core.admission_state"))
+            stack.enter_context(patch("agents.coordinator.core.SHM_DIR", tmp_path / "shm"))
+            stack.enter_context(
+                patch("agents.coordinator.core.SHM_FILE", tmp_path / "shm" / "state.json")
+            )
+            stack.enter_context(
+                patch("agents.coordinator.core.DISPATCH_TIMEOUT_LANDING_GRACE_S", 0.0)
+            )
+            stack.enter_context(
+                patch("agents.coordinator.core.plan_dispatches", side_effect=fake_plan_dispatches)
+            )
+            stack.enter_context(
+                patch.object(coord, "_repair_cooled_plan", side_effect=fake_repair_cooled_plan)
+            )
+            mock_admission.return_value = MagicMock(state="open")
+
+            coord.tick()
+
+        assert captured["fit_blend"] == math.nextafter(0.5, 0.0)
+        assert captured["repair_fit_blend"] == math.nextafter(0.5, 0.0)
 
     def test_deterministic_refusal_enters_cooldown_after_k(self, tmp_path: Path) -> None:
         """After K identical deterministic dispatch failures through tick(),
