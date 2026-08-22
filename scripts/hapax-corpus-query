@@ -1,0 +1,726 @@
+#!/usr/bin/env python3
+"""Query the plan/analysis corpus so a search returns the archipelago, not an island.
+
+The failure this exists to stop, observed repeatedly: a search finds one document about a
+topic, the reader treats it as the topic, and writes something wrong because three sibling
+documents -- a predecessor it supersedes, a parallel analysis of equal weight, a later
+refresh that retired it -- were never seen. Ripgrep answers "where does this string
+appear"; it does not answer "what is the full set of documents about this, in what order,
+and which of them are dead."
+
+Design commitments, each one a direct response to that failure:
+
+* **Never SILENTLY return one result.** A single-document answer to a corpus question is the
+  bug, so a result set below ``MIN_CLUSTER`` is backfilled from the vocabulary-neighbours of
+  what matched, labelled as such. Three cases cannot be backfilled and are therefore
+  *announced with their cause* rather than padded: zero matches, a corpus smaller than the
+  floor, and a match that shares no distinctive vocabulary with anything. The absolute form of
+  this claim ("never return one result") was shipped twice and reviewed as a critical both
+  times -- an undeclared exception to a headline commitment is worse than a declared limit.
+  See ``cluster()``, where it is enforced rather than described.
+* **Rank by density, not presence.** A document that mentions a term twice is not about it.
+  Hit-density separates the topic documents from the passing mentions.
+* **Surface supersession loudly.** ``status: retired`` / ``superseded`` and
+  ``supersedes_refs`` are printed with the result, not left for the reader to discover
+  after quoting a dead position.
+* **Show the neighbours.** ``--related`` takes a document and returns the others that share
+  its vocabulary, which is how you find the sibling nobody linked.
+
+This is deliberately an ad-hoc instrument. It is a flat index over markdown, not a
+knowledge graph, and it should be replaced by something with real provenance edges once the
+inflection/plan layer has a schema. It is committed rather than kept in a scratch directory
+because the failure it prevents recurs every session, and an instrument that is not to hand
+is an instrument that is not used.
+"""
+
+from __future__ import annotations
+
+import argparse
+import json
+import math
+import os
+import re
+import sys
+from collections import Counter
+from dataclasses import dataclass, field
+from datetime import UTC, datetime
+from pathlib import Path
+
+#: Where the plan/analysis corpus lives when nothing says otherwise. Overridable by
+#: ``HAPAX_CORPUS_ROOTS`` (os.pathsep-separated) or repeated ``--root``, so the tool is not
+#: welded to one operator's home directory: the vault path is this estate's convention, not
+#: a property of the instrument.
+DEFAULT_ROOTS = [
+    Path.home() / "Documents" / "Personal" / "30-areas" / "hapax",
+    Path.home() / "Documents" / "Personal" / "20-projects" / "hapax-requests",
+]
+
+CACHE_PATH = Path(
+    os.environ.get(
+        "HAPAX_CORPUS_INDEX",
+        str(Path.home() / ".cache" / "hapax" / "corpus" / "corpus-index.json"),
+    )
+)
+
+#: A corpus question answered with one document is the failure this tool exists to prevent,
+#: so the floor is a property of the output rather than advice in the docstring.
+MIN_CLUSTER = 3
+
+#: Below this length a term is matched only at a token boundary. "api" is a substring of
+#: "rapid" and "therapist"; counting those as topic hits inflates density for exactly the
+#: short acronym queries most likely to be typed.
+MIN_INTERIOR_SUBSTRING_LEN = 5
+
+#: How stale the index may be before the tool says so. Silence here is the failure mode:
+#: a stale index answers confidently about a corpus that has moved on.
+INDEX_STALE_AFTER_SECONDS = 6 * 3600
+
+#: Directories that are raw dumps rather than plans. They swamp the ranking with incidental
+#: term matches and answer a different question.
+#:
+#: `operator-corpus` was here until 2026-08-12, which meant this tool -- built specifically to
+#: stop research landing on one island -- excluded the island holding the operator's own
+#: verbatim stipulations. Only the bulk-raw subdirectories are skipped now; the curated
+#: records are indexed by ``_operator_records`` below.
+SKIP_DIR_PARTS = {
+    "lanebus",
+    "_archive-complete",
+    "prompt-histories",
+    "paste-cache",
+}
+
+TOKEN_RE = re.compile(r"[a-z][a-z0-9_-]{2,}")
+
+STOPWORDS = frozenset(
+    [
+        "the",
+        "and",
+        "for",
+        "that",
+        "this",
+        "with",
+        "from",
+        "have",
+        "has",
+        "not",
+        "are",
+        "was",
+        "were",
+        "will",
+        "would",
+        "should",
+        "could",
+        "can",
+        "may",
+        "might",
+        "must",
+        "shall",
+        "into",
+        "onto",
+        "over",
+        "under",
+        "above",
+        "below",
+        "when",
+        "where",
+        "which",
+        "who",
+        "whom",
+        "what",
+        "why",
+        "how",
+        "all",
+        "any",
+        "both",
+        "each",
+        "few",
+        "more",
+        "most",
+        "other",
+        "some",
+        "such",
+        "only",
+        "own",
+        "same",
+        "than",
+        "too",
+        "very",
+        "just",
+        "also",
+        "then",
+        "once",
+        "here",
+        "there",
+        "its",
+        "it's",
+        "about",
+        "against",
+        "between",
+        "through",
+        "during",
+        "before",
+        "after",
+        "because",
+        "while",
+        "until",
+        "they",
+        "them",
+        "their",
+        "there's",
+        "you",
+        "your",
+        "our",
+        "ours",
+        "out",
+        "off",
+        "per",
+        "via",
+        "etc",
+        "ie",
+        "eg",
+        "one",
+        "two",
+        "three",
+        "new",
+        "now",
+        "still",
+        "yet",
+        "been",
+        "being",
+        "does",
+        "did",
+        "done",
+        "make",
+        "made",
+        "use",
+        "used",
+        "using",
+        "uses",
+        "like",
+        "well",
+        "much",
+        "many",
+        "way",
+        "ways",
+        "thing",
+        "things",
+        "time",
+        "times",
+        "case",
+        "cases",
+        "doc",
+        "docs",
+        "file",
+        "files",
+        "line",
+        "lines",
+        "note",
+        "notes",
+        "page",
+        "pages",
+        "part",
+        "parts",
+    ]
+)
+
+RETIRED_STATUSES = {"retired", "superseded", "withdrawn", "obsolete", "dead", "replaced"}
+
+
+@dataclass
+class Doc:
+    path: str
+    name: str
+    title: str = ""
+    doc_type: str = ""
+    status: str = ""
+    created: str = ""
+    mtime: str = ""
+    supersedes: list[str] = field(default_factory=list)
+    tags: list[str] = field(default_factory=list)
+    size: int = 0
+    counts: dict[str, int] = field(default_factory=dict)
+    total_tokens: int = 0
+
+    @property
+    def is_dead(self) -> bool:
+        return self.status.strip().lower() in RETIRED_STATUSES
+
+
+def _frontmatter(text: str) -> dict[str, str]:
+    """Flat scalar frontmatter only. A real YAML parse is not worth the dependency here."""
+    if not text.startswith("---"):
+        return {}
+    end = text.find("\n---", 3)
+    if end == -1:
+        return {}
+    out: dict[str, str] = {}
+    for line in text[3:end].splitlines():
+        if not line or line[0].isspace() or ":" not in line:
+            continue
+        key, _, value = line.partition(":")
+        out[key.strip()] = value.strip().strip("\"'")
+    return out
+
+
+def _first_heading(text: str) -> str:
+    for line in text.splitlines():
+        if line.startswith("# "):
+            return line[2:].strip()
+    return ""
+
+
+def _supersedes(text: str) -> list[str]:
+    block = re.search(r"^supersedes_refs:\s*$((?:\n\s+-\s*.+)+)", text, re.M)
+    if not block:
+        return []
+    return [m.strip().strip("\"'") for m in re.findall(r"-\s*(.+)", block.group(1))]
+
+
+#: JSON capture records whose ``content`` field is operator prose. These are the id space that
+#: ``originating_inflection:`` edges on task rows already resolve against (``pli-<sha16>``), so
+#: indexing them makes an utterance reachable from the work it caused and vice versa.
+#:
+#: Measured 2026-08-12: 20 records, 7,925 characters of operator prose, previously unreachable
+#: by any search in the estate -- the tool globbed ``*.md`` and the operator's words are JSON.
+#: Narrowing SKIP_DIR_PARTS alone would NOT have surfaced them; it surfaces 7 markdown files,
+#: two of which are AGENTS.md and CLAUDE.md. The file extension was the actual barrier.
+OPERATOR_RECORD_DIRS = ("records", "inflection-captures", "alignments")
+OPERATOR_RECORD_CONTENT_KEYS = ("content", "text", "prompt", "utterance", "operator_text")
+
+
+def _operator_records(root: Path) -> list[Doc]:
+    """Index JSON capture records as documents, keyed by their content field."""
+    docs: list[Doc] = []
+    for sub in OPERATOR_RECORD_DIRS:
+        for path in sorted(root.rglob(f"{sub}/*.json")):
+            if SKIP_DIR_PARTS & set(path.parts):
+                continue
+            try:
+                payload = json.loads(path.read_text(encoding="utf-8", errors="replace"))
+            except (OSError, ValueError):
+                continue
+            if not isinstance(payload, dict):
+                continue
+            body = next(
+                (
+                    payload[k]
+                    for k in OPERATOR_RECORD_CONTENT_KEYS
+                    if isinstance(payload.get(k), str) and payload[k].strip()
+                ),
+                None,
+            )
+            if body is None:
+                continue
+            tokens = [t for t in TOKEN_RE.findall(body.lower()) if t not in STOPWORDS]
+            counts = Counter(tokens)
+            title = str(payload.get("record_id") or path.stem)
+            docs.append(
+                Doc(
+                    path=str(path),
+                    name=path.name,
+                    title=f"operator utterance — {body.strip()[:72]}",
+                    doc_type="operator-record",
+                    status=str(payload.get("status") or ""),
+                    created=str(payload.get("captured_at") or "")[:19],
+                    mtime="",
+                    supersedes=[],
+                    tags=[title],
+                    size=len(body),
+                    counts={w: c for w, c in counts.most_common(600)},
+                    total_tokens=max(len(tokens), 1),
+                )
+            )
+    return docs
+
+
+def build_index(roots: list[Path]) -> list[Doc]:
+    docs: list[Doc] = []
+    for root in roots:
+        if not root.is_dir():
+            continue
+        docs.extend(_operator_records(root))
+        for path in root.rglob("*.md"):
+            if SKIP_DIR_PARTS & set(path.parts):
+                continue
+            try:
+                text = path.read_text(encoding="utf-8", errors="replace")
+            except OSError:
+                continue
+            fm = _frontmatter(text)
+            tokens = [t for t in TOKEN_RE.findall(text.lower()) if t not in STOPWORDS]
+            counts = Counter(tokens)
+            try:
+                mtime = path.stat().st_mtime
+            except OSError:
+                mtime = 0.0
+            docs.append(
+                Doc(
+                    path=str(path),
+                    name=path.name,
+                    title=fm.get("title") or _first_heading(text),
+                    doc_type=fm.get("type", ""),
+                    status=fm.get("status", ""),
+                    created=fm.get("created_at", fm.get("created", "")),
+                    mtime=datetime.fromtimestamp(mtime, tz=UTC).strftime("%Y-%m-%d"),
+                    supersedes=_supersedes(text),
+                    tags=[
+                        t.strip() for t in fm.get("tags", "").strip("[]").split(",") if t.strip()
+                    ],
+                    size=len(text),
+                    counts={w: c for w, c in counts.most_common(600)},
+                    total_tokens=max(len(tokens), 1),
+                )
+            )
+    return docs
+
+
+#: Bumped whenever the on-disk index shape changes. An older index is discarded and
+#: rebuilt rather than half-read: a shape mismatch that loads is worse than one that fails.
+INDEX_SCHEMA = 2
+
+
+def save(
+    docs: list[Doc],
+    *,
+    path: Path = CACHE_PATH,
+    now: datetime | None = None,
+    roots: list[Path] | None = None,
+) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    payload = {
+        "schema": INDEX_SCHEMA,
+        "indexed_at": (now or datetime.now(UTC)).isoformat(),
+        # The roots the index was built FROM. Without this, an index built from corpus A
+        # answers queries the caller aimed at corpus B, silently — which is what
+        # HAPAX_CORPUS_ROOTS did before 2026-08-12: it was read only on the rebuild path,
+        # so setting it while a cache existed changed nothing at all.
+        "roots": sorted(str(r) for r in (roots or [])),
+        "docs": [d.__dict__ for d in docs],
+    }
+    path.write_text(json.dumps(payload, ensure_ascii=False), encoding="utf-8")
+
+
+def load(*, path: Path = CACHE_PATH) -> tuple[list[Doc], datetime | None, list[str]]:
+    """Return the indexed docs and when they were indexed.
+
+    An unreadable, malformed, or older-schema index yields ``([], None)`` -- the caller
+    rebuilds. Never partially decode: a doc list that loads but means something different is
+    the failure mode this schema field exists to prevent.
+    """
+    if not path.is_file():
+        return [], None, []
+    try:
+        raw = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return [], None, []
+    if not isinstance(raw, dict) or raw.get("schema") != INDEX_SCHEMA:
+        return [], None, []
+    try:
+        docs = [Doc(**item) for item in raw.get("docs", [])]
+    except TypeError:
+        return [], None, []
+    stamp: datetime | None = None
+    if isinstance(raw.get("indexed_at"), str):
+        try:
+            stamp = datetime.fromisoformat(raw["indexed_at"])
+        except ValueError:
+            stamp = None
+    recorded = raw.get("roots")
+    roots = [str(r) for r in recorded] if isinstance(recorded, list) else []
+    return docs, stamp, roots
+
+
+def staleness_warning(indexed_at: datetime | None, *, now: datetime | None = None) -> str | None:
+    """The message to print when the index is old enough to be answering about a past corpus."""
+    if indexed_at is None:
+        return None
+    age = ((now or datetime.now(UTC)) - indexed_at).total_seconds()
+    if age <= INDEX_STALE_AFTER_SECONDS:
+        return None
+    return (
+        f"index is {age / 3600:.1f}h old; documents written since then are invisible to this "
+        "query. Rerun with --reindex."
+    )
+
+
+def _term_matches(term: str, word: str) -> bool:
+    """Whether a query term counts as a hit on an indexed word.
+
+    Exact and prefix matches always count -- "quota" should find "quotas", "receipt" should
+    find "receipts". Interior substring matching is restricted to terms of at least
+    MIN_INTERIOR_SUBSTRING_LEN characters, because below that it stops discriminating:
+    "api" appears inside "rapid" and "therapist", "fsm" inside nothing useful, and a query
+    for a three-letter acronym otherwise ranks documents that never mention it.
+    """
+    if word == term or word.startswith(term):
+        return True
+    return len(term) >= MIN_INTERIOR_SUBSTRING_LEN and term in word
+
+
+def score(doc: Doc, terms: list[str]) -> float:
+    """Density, not presence: hits per thousand tokens, summed over matched terms.
+
+    Length-normalised so a 50 KB survey does not outrank a 5 KB document that is entirely
+    about the query.
+    """
+    total = 0
+    for term in terms:
+        for word, count in doc.counts.items():
+            if _term_matches(term, word):
+                total += count
+    return 1000.0 * total / doc.total_tokens if total else 0.0
+
+
+def related(doc: Doc, docs: list[Doc], limit: int) -> list[tuple[float, Doc]]:
+    """Cosine-ish overlap on distinctive vocabulary — finds the sibling nobody linked."""
+    mine = {w: c for w, c in doc.counts.items() if len(w) > 4}
+    if not mine:
+        return []
+    norm_a = math.sqrt(sum(c * c for c in mine.values()))
+    out = []
+    for other in docs:
+        if other.path == doc.path:
+            continue
+        theirs = {w: c for w, c in other.counts.items() if len(w) > 4}
+        shared = set(mine) & set(theirs)
+        if not shared:
+            continue
+        dot = sum(mine[w] * theirs[w] for w in shared)
+        norm_b = math.sqrt(sum(c * c for c in theirs.values()))
+        if norm_a and norm_b:
+            out.append((dot / (norm_a * norm_b), other))
+    out.sort(key=lambda pair: pair[0], reverse=True)
+    return out[:limit]
+
+
+def cluster(
+    rows: list[tuple[float, Doc]],
+    docs: list[Doc],
+    *,
+    limit: int,
+    exclude: set[str] | None = None,
+) -> tuple[list[tuple[float, Doc]], list[tuple[float, Doc]]]:
+    """Enforce the floor: return (matched, neighbours) where the two together are a cluster.
+
+    A one-document answer to a corpus question is the exact failure this tool exists to
+    prevent, so when the term search finds fewer than MIN_CLUSTER documents the shortfall is
+    made up from the vocabulary-neighbours of what *was* found -- the sibling nobody linked
+    is precisely what a narrow query misses.
+
+    Two boundaries are deliberate:
+
+    * **Zero matches stay zero.** Neighbours of nothing are nothing. A query that matches no
+      document gets told so, not handed an arbitrary cluster.
+    * **A corpus smaller than the floor is reported, not padded.** The caller says the floor
+      could not be met rather than implying it was.
+    * **A match with no vocabulary neighbours is also reported.** ``related()`` requires shared
+      tokens longer than four characters, so a document that overlaps nothing has no
+      neighbours to borrow even in a large corpus. Padding with unrelated documents would
+      defeat the purpose -- the floor exists so a reader sees the *archipelago*, and three
+      irrelevant documents are not one.
+
+    So the honest predicate is **"never SILENTLY return one result"**, not "never return one
+    result". A shortfall always exists as a possibility; what the tool guarantees is that it is
+    announced, with its cause, rather than passed off as a complete answer. The absolute form of
+    the claim was shipped once and reviewed as a critical, correctly: an undeclared exception to
+    a headline commitment is worse than a declared limit.
+    """
+    matched = rows[:limit]
+    if not matched or len(matched) >= MIN_CLUSTER:
+        return matched, []
+
+    # `exclude` covers the --related source document, which is not in `matched` (the matches
+    # ARE its neighbours) and would otherwise be eligible to backfill as a neighbour of its own
+    # neighbour. Listing a document as its own relative is not merely odd: it consumes a floor
+    # slot that should have gone to a genuinely distinct document.
+    seen = {doc.path for _, doc in matched} | set(exclude or ())
+    neighbours: list[tuple[float, Doc]] = []
+    for _, doc in matched:
+        for similarity, other in related(doc, docs, limit):
+            if other.path in seen:
+                continue
+            seen.add(other.path)
+            neighbours.append((similarity, other))
+            if len(matched) + len(neighbours) >= MIN_CLUSTER:
+                return matched, neighbours
+    return matched, neighbours
+
+
+def _render_row(rank: int, value: float, doc: Doc) -> bool:
+    flag = ""
+    if doc.is_dead:
+        flag = f"  ** {doc.status.upper()} **"
+    stamp = doc.created[:10] if doc.created else doc.mtime
+    print(f"\n{rank:2}. [{value:7.2f}] {stamp}  {doc.name}{flag}")
+    if doc.title:
+        print(f"      {doc.title[:96]}")
+    meta = [p for p in (doc.doc_type, doc.status, f"{doc.size // 1024}KB") if p]
+    if meta:
+        print(f"      {' · '.join(meta)}")
+    for ref in doc.supersedes:
+        print(f"      supersedes → {ref}")
+    return doc.is_dead
+
+
+def render(
+    rows: list[tuple[float, Doc]],
+    *,
+    header: str,
+    neighbours: list[tuple[float, Doc]] | None = None,
+    corpus_size: int | None = None,
+) -> None:
+    if not rows:
+        print("no matches — try broader terms, or rebuild with --reindex", file=sys.stderr)
+        return
+    neighbours = neighbours or []
+    print(header)
+    print("=" * len(header))
+    dead = sum(_render_row(rank, value, doc) for rank, (value, doc) in enumerate(rows, 1))
+
+    if neighbours:
+        label = (
+            f"\n-- below the floor of {MIN_CLUSTER}: nearest by shared vocabulary, "
+            "not by your terms --"
+        )
+        print(label)
+        dead += sum(
+            _render_row(rank, value, doc)
+            for rank, (value, doc) in enumerate(neighbours, len(rows) + 1)
+        )
+
+    total = len(rows) + len(neighbours)
+    print(f"\n{total} documents. Read the top {min(3, total)} before concluding anything.")
+    if total < MIN_CLUSTER:
+        # Name the cause. "Corpus too small" and "this document overlaps nothing" are different
+        # facts about the estate and lead to different next actions — index more, versus this
+        # topic is genuinely isolated. Collapsing them into one message loses the distinction
+        # that makes the warning actionable.
+        if corpus_size is not None and corpus_size < MIN_CLUSTER:
+            cause = f"the corpus holds only {corpus_size} document(s)"
+        else:
+            cause = (
+                "no other document shares enough distinctive vocabulary to be a neighbour"
+                f"{'' if corpus_size is None else f' (corpus holds {corpus_size})'}"
+            )
+        print(
+            f"Only {total} available — below the {MIN_CLUSTER}-document floor because {cause}. "
+            "Treat this as a corpus gap, not as a complete answer."
+        )
+    if dead:
+        print(f"{dead} carry a retired/superseded status — do not quote them as current.")
+
+
+def resolve_roots(explicit: list[str] | None) -> list[Path]:
+    """--root wins over HAPAX_CORPUS_ROOTS wins over the estate default."""
+    if explicit:
+        return [Path(r).expanduser() for r in explicit]
+    env = os.environ.get("HAPAX_CORPUS_ROOTS", "").strip()
+    if env:
+        return [Path(r).expanduser() for r in env.split(os.pathsep) if r.strip()]
+    return list(DEFAULT_ROOTS)
+
+
+def _related_miss_message(needle: str, docs: list[Doc]) -> str:
+    """Name a next action, not just the failure.
+
+    A bare "no indexed document matching X" leaves the caller unable to tell a typo from a
+    stale index from a document outside the roots -- three different fixes.
+    """
+    stem = re.split(r"[-_.]", needle.lower())
+    near = [
+        d.name
+        for d in docs
+        if any(part and part in d.name.lower() for part in stem if len(part) > 3)
+    ][:5]
+    if near:
+        return "no indexed document matching {!r}. Closest indexed names:\n  {}".format(
+            needle, "\n  ".join(near)
+        )
+    if not docs:
+        return (
+            f"no indexed document matching {needle!r}: the index is empty. "
+            "Rerun with --reindex, or point --root/HAPAX_CORPUS_ROOTS at the corpus."
+        )
+    return (
+        f"no indexed document matching {needle!r} among {len(docs)} indexed documents, and "
+        "no near-miss on the name. Either the file is outside the indexed roots (see --root) "
+        "or the index predates it (--reindex)."
+    )
+
+
+def main(argv: list[str] | None = None) -> int:
+    ap = argparse.ArgumentParser(description=__doc__)
+    ap.add_argument("terms", nargs="*", help="query terms (substring-matched against tokens)")
+    ap.add_argument("--reindex", action="store_true", help="rebuild the index before querying")
+    ap.add_argument(
+        "--related", metavar="FILENAME", help="find documents sharing this one's vocabulary"
+    )
+    ap.add_argument("--limit", type=int, default=12)
+    ap.add_argument("--all", action="store_true", help="include zero-score documents")
+    ap.add_argument(
+        "--root",
+        action="append",
+        metavar="DIR",
+        help="corpus root to index (repeatable). Overrides HAPAX_CORPUS_ROOTS and the default.",
+    )
+    ap.add_argument(
+        "--index",
+        metavar="PATH",
+        help=f"index file to use (default {CACHE_PATH}, or $HAPAX_CORPUS_INDEX)",
+    )
+    args = ap.parse_args(argv)
+
+    index_path = Path(args.index).expanduser() if args.index else CACHE_PATH
+    docs, indexed_at, indexed_roots = load(path=index_path)
+    requested = resolve_roots(args.root)
+    # An index built from corpus A cannot answer a query aimed at corpus B. Comparing the
+    # recorded roots catches BOTH --root and HAPAX_CORPUS_ROOTS; the previous condition
+    # tested `args.root` only, so the environment variable was documented as an override
+    # and silently did nothing whenever a cache already existed.
+    # No guard on `indexed_roots` being non-empty: an index that records no roots predates
+    # this field, so it cannot be shown to match, and an unverifiable match must rebuild
+    # rather than be trusted. Legacy indexes therefore rebuild once and self-heal.
+    roots_changed = sorted(str(r) for r in requested) != sorted(indexed_roots)
+    if args.reindex or not docs or roots_changed:
+        docs = build_index(requested)
+        save(docs, path=index_path, roots=requested)
+        print(f"indexed {len(docs)} documents -> {index_path}", file=sys.stderr)
+    else:
+        warning = staleness_warning(indexed_at)
+        if warning:
+            print(warning, file=sys.stderr)
+
+    if args.related:
+        match = next((d for d in docs if args.related in d.name), None)
+        if match is None:
+            print(_related_miss_message(args.related, docs), file=sys.stderr)
+            return 2
+        rows = related(match, docs, args.limit)
+        matched, neighbours = cluster(rows, docs, limit=args.limit, exclude={match.path})
+        render(
+            matched,
+            header=f"Neighbours of {match.name}",
+            neighbours=neighbours,
+            corpus_size=len(docs),
+        )
+        return 0
+
+    if not args.terms:
+        ap.error("give query terms, or --related FILENAME")
+
+    terms = [t.lower() for t in args.terms]
+    rows = [(score(d, terms), d) for d in docs]
+    rows = [r for r in rows if r[0] > 0 or args.all]
+    rows.sort(key=lambda pair: pair[0], reverse=True)
+    matched, neighbours = cluster(rows, docs, limit=args.limit)
+    render(
+        matched,
+        header=f"Corpus cluster for: {' '.join(terms)}",
+        neighbours=neighbours,
+        corpus_size=len(docs),
+    )
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())
