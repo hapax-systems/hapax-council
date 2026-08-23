@@ -42,6 +42,7 @@ if [[ -z "$HEALTH_MONITOR_REPO" ]]; then
 fi
 cd "$HEALTH_MONITOR_REPO"
 export HAPAX_HEALTH_MONITOR_ACTIVE_REPO="$HEALTH_MONITOR_REPO"
+export HAPAX_REINS_API="${HAPAX_REINS_API:-${HOME}/.local/share/reins/current/api}"
 
 UV="${HAPAX_UV:-${HOME}/.local/bin/uv}"
 

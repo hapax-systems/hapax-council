@@ -10,6 +10,7 @@ if [[ ! -e "${COUNCIL_ROOT}/.git" ]]; then
   exit 1
 fi
 cd "${COUNCIL_ROOT}"
+export HAPAX_REINS_API="${HAPAX_REINS_API:-${HOME}/.local/share/reins/current/api}"
 
 # Load credentials from reins FileStore via hapax-secret (not pass).
 pass_first_line() {
