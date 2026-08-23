@@ -1,8 +1,8 @@
 """Tests for ``shared.orcid.operator_orcid``.
 
 Covers the env-var fallback path added by the
-``orcid-config-write-automation`` cc-task plus the existing
-pass-store fallback.
+``orcid-config-write-automation`` cc-task plus the FileStore
+(`hapax-secret`) fallback.
 """
 
 from __future__ import annotations
@@ -23,7 +23,7 @@ class TestEnvVarFallback:
     def test_env_var_wins(self, monkeypatch):
         _clear_cache()
         monkeypatch.setenv(ORCID_ENV_VAR, "0009-0001-5146-4548")
-        # If pass were called it would error; the env var should win first.
+        # If hapax-secret were called it would error; the env var should win first.
         with patch.object(orcid_module.subprocess, "run") as mock_run:
             assert operator_orcid() == "0009-0001-5146-4548"
             mock_run.assert_not_called()
@@ -33,7 +33,7 @@ class TestEnvVarFallback:
         monkeypatch.setenv(ORCID_ENV_VAR, "  0009-0001-5146-4548  ")
         assert operator_orcid() == "0009-0001-5146-4548"
 
-    def test_empty_env_var_falls_back_to_pass(self, monkeypatch):
+    def test_empty_env_var_falls_back_to_hapax_secret(self, monkeypatch):
         _clear_cache()
         monkeypatch.setenv(ORCID_ENV_VAR, "")
         with patch.object(orcid_module.subprocess, "run") as mock_run:
@@ -47,8 +47,8 @@ class TestEnvVarFallback:
             mock_run.assert_called_once()
 
 
-class TestPassStoreFallback:
-    def test_pass_show_success(self, monkeypatch):
+class TestFileStoreFallback:
+    def test_hapax_secret_success(self, monkeypatch):
         _clear_cache()
         monkeypatch.delenv(ORCID_ENV_VAR, raising=False)
         with patch.object(orcid_module.subprocess, "run") as mock_run:
@@ -60,7 +60,7 @@ class TestPassStoreFallback:
             )
             assert operator_orcid() == "0009-0001-5146-4548"
 
-    def test_pass_show_failure_returns_none(self, monkeypatch):
+    def test_hapax_secret_failure_returns_none(self, monkeypatch):
         _clear_cache()
         monkeypatch.delenv(ORCID_ENV_VAR, raising=False)
         with patch.object(orcid_module.subprocess, "run") as mock_run:
@@ -72,7 +72,7 @@ class TestPassStoreFallback:
             )
             assert operator_orcid() is None
 
-    def test_pass_not_installed_returns_none(self, monkeypatch):
+    def test_hapax_secret_not_installed_returns_none(self, monkeypatch):
         _clear_cache()
         monkeypatch.delenv(ORCID_ENV_VAR, raising=False)
         with patch.object(
@@ -82,7 +82,7 @@ class TestPassStoreFallback:
         ):
             assert operator_orcid() is None
 
-    def test_pass_timeout_returns_none(self, monkeypatch):
+    def test_hapax_secret_timeout_returns_none(self, monkeypatch):
         _clear_cache()
         monkeypatch.delenv(ORCID_ENV_VAR, raising=False)
         with patch.object(
@@ -92,7 +92,7 @@ class TestPassStoreFallback:
         ):
             assert operator_orcid() is None
 
-    def test_pass_empty_stdout_returns_none(self, monkeypatch):
+    def test_hapax_secret_empty_stdout_returns_none(self, monkeypatch):
         _clear_cache()
         monkeypatch.delenv(ORCID_ENV_VAR, raising=False)
         with patch.object(orcid_module.subprocess, "run") as mock_run:

@@ -5,10 +5,10 @@ set -euo pipefail
 
 cd /home/hapax/projects/hapax-council
 
-# Load credentials from pass store (systemd sets PASSWORD_STORE_DIR + GNUPGHOME)
+# Load credentials from reins FileStore via hapax-secret (not pass).
 pass_first_line() {
     local name="$1"
-    pass show "$name" 2>/dev/null | sed -n '1p'
+    hapax-secret "$name" 2>/dev/null | sed -n '1p'
 }
 
 LITELLM_API_KEY="$(pass_first_line litellm/master-key || echo "changeme")"
@@ -17,7 +17,7 @@ LANGFUSE_SECRET_KEY="$(pass_first_line langfuse/secret-key || true)"
 export LITELLM_API_KEY
 export LANGFUSE_PUBLIC_KEY
 export LANGFUSE_SECRET_KEY
-# Tavily credentials are resolved inside shared.tavily_client from env/pass
+# Tavily credentials are resolved inside shared.tavily_client from env/FileStore
 # so the watchdog does not export them into the process supervisor boundary.
 
 PROFILES=/home/hapax/projects/hapax-council/profiles

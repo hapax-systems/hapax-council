@@ -53,16 +53,16 @@ if [[ ! -x "$UV" ]]; then
     exit 1
 fi
 
-# Load credentials from pass store (systemd sets PASSWORD_STORE_DIR + GNUPGHOME)
+# Load credentials from reins FileStore via hapax-secret (not pass).
 export LITELLM_API_KEY
-LITELLM_API_KEY=$(pass show litellm/master-key 2>/dev/null) || {
-    echo "WARN: Could not load LITELLM_API_KEY from pass" >&2
+LITELLM_API_KEY=$(hapax-secret litellm/master-key 2>/dev/null) || {
+    echo "WARN: Could not load LITELLM_API_KEY from hapax-secret" >&2
     export LITELLM_API_KEY="changeme"
 }
 export LANGFUSE_PUBLIC_KEY
-LANGFUSE_PUBLIC_KEY=$(pass show langfuse/public-key 2>/dev/null) || true
+LANGFUSE_PUBLIC_KEY=$(hapax-secret langfuse/public-key 2>/dev/null) || true
 export LANGFUSE_SECRET_KEY
-LANGFUSE_SECRET_KEY=$(pass show langfuse/secret-key 2>/dev/null) || true
+LANGFUSE_SECRET_KEY=$(hapax-secret langfuse/secret-key 2>/dev/null) || true
 
 # Run health check with timeout (exit codes: 0=healthy, 1=degraded, 2=failed — all valid)
 REPORT=""

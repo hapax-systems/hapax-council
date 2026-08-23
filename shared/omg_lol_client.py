@@ -2,7 +2,7 @@
 
 Single wrapper around the omg.lol REST API used by every omg.lol-
 writing daemon in the outreach / surface-publishing epic. Handles
-credential loading (`pass show omg-lol/api-key`), exponential-backoff
+credential loading (`hapax-secret omg-lol/api-key`), exponential-backoff
 retry on 5xx + 429, silent-skip on persistent 401/403, and per-call
 Prometheus accounting so `ytb-OMG9` infrastructure-observability can
 correlate traffic to upstream outcomes.
@@ -77,25 +77,28 @@ except ImportError:
 
 
 def _load_api_key(pass_key: str) -> str | None:
-    """Load the omg.lol API key from the operator's `pass` store.
+    """Load the omg.lol API key from reins FileStore via hapax-secret.
 
-    Returns None when `pass show` fails (no key, pass not initialized,
-    gpg-agent unavailable) — caller handles the disabled path.
+    Returns None when `hapax-secret` fails (no key, FileStore unreadable)
+    — caller handles the disabled path.
     """
     try:
         result = subprocess.run(
-            ["pass", "show", pass_key],
+            ["hapax-secret", pass_key],
             capture_output=True,
             text=True,
             timeout=5.0,
             check=False,
         )
     except (subprocess.TimeoutExpired, FileNotFoundError) as e:
-        log.warning("pass show failed (%s): %s", pass_key, e)
+        log.warning("hapax-secret failed (%s): %s", pass_key, e)
         return None
     if result.returncode != 0:
         log.warning(
-            "pass show returned %d for %s: %s", result.returncode, pass_key, result.stderr.strip()
+            "hapax-secret returned %d for %s: %s",
+            result.returncode,
+            pass_key,
+            result.stderr.strip(),
         )
         return None
     return result.stdout.strip() or None
