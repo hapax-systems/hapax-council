@@ -4768,6 +4768,8 @@ def _is_known_drain_lock_path(path: Path) -> bool:
     except OSError:
         return False
     return _regular_owned_drain_lock(metadata)
+
+
 _TRANSACTION_BLOB_RE = re.compile(r"^[0-9]{4}\.(?:before|after)$")
 _TRANSACTION_PHASE_PROJECTION_RE = re.compile(r"^phase-(?:prepared|applied|aborted)\.append\.json$")
 _MATERIALIZATION_PLAN_RE = re.compile(r"^(sdlc-txn-[0-9a-f]{64}\.attempt-[0-9]{4,})\.plan\.json$")
