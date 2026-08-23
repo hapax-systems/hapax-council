@@ -134,6 +134,15 @@ AUTOQUEUE_ADMISSION_CONTEXT = "hapax/autoqueue-admission"
 # it recurred silently for eleven weeks after being closed as resolved on 2026-06-04.
 ADMISSION_STATUS_CAP_REASON = "admission_status_cap_exhausted"
 
+# executive_function: an error names its next action. There is exactly one recovery, and it
+# is not free — a new head SHA invalidates the review dossier and forces a fresh quorum — so
+# the action has to be stated with its cost rather than implied.
+ADMISSION_STATUS_CAP_NEXT_ACTION = (
+    "next action: this head SHA cannot recover (statuses are not deletable). Push a new head "
+    "SHA — an empty commit suffices — then re-review, because a new SHA invalidates the "
+    "existing review dossier and requires a fresh family quorum"
+)
+
 
 def _is_status_cap_exhausted(output: str) -> bool:
     """True when GitHub refused the status write because the SHA+context cap is reached."""
@@ -2576,7 +2585,9 @@ def set_autoqueue_admission_status(
             # only recovery is a new head SHA, which invalidates the review dossier.
             # Named so the condition is visible as a state rather than buried in a
             # generic write error, as it was between 2026-06-04 and 2026-08-22.
-            return False, f"{ADMISSION_STATUS_CAP_REASON}: {output}"
+            return False, (
+                f"{ADMISSION_STATUS_CAP_REASON}: {ADMISSION_STATUS_CAP_NEXT_ACTION} :: {output}"
+            )
         return False, output or f"status write failed rc={proc.returncode}"
     return True, output
 
@@ -3055,6 +3066,12 @@ def run_reconciler(
                             "status_state": admission_status[0],
                             "ok": ok,
                             "message": message,
+                            # The cap is terminal wherever it occurs, not only on the positive
+                            # queue path. A receipt that names it on one path and not another
+                            # makes the same condition look like two different failures.
+                            "terminal_for_head_sha": (
+                                not ok and _is_status_cap_exhausted(message or "")
+                            ),
                         }
                     )
                     if not ok:
@@ -3062,7 +3079,11 @@ def run_reconciler(
                             _release_auto_arm_fail_closed_mutations(
                                 decision,
                                 message,
-                                reason_prefix="admission_status_write_failed",
+                                reason_prefix=(
+                                    ADMISSION_STATUS_CAP_REASON
+                                    if _is_status_cap_exhausted(message or "")
+                                    else "admission_status_write_failed"
+                                ),
                                 repo=repo,
                                 repo_root=repo_root,
                                 runner=runner,
@@ -3076,13 +3097,17 @@ def run_reconciler(
                 and not status_result[0]
             ):
                 assert admission_status is not None
-                cap_exhausted = ADMISSION_STATUS_CAP_REASON in (status_result[1] or "")
+                # Classify from GitHub's own response, using the same predicate the writer
+                # used — not by sniffing a prefix this code injected. Round-tripping a
+                # decision through a formatted string and parsing it back is how a typed
+                # condition becomes a stringly-typed one.
+                cap_exhausted = _is_status_cap_exhausted(status_result[1] or "")
                 if cap_exhausted:
                     LOG.error(
-                        "PR #%s: %s — this head SHA can never carry a fresh admission proof; "
-                        "recovery requires a new head SHA, which invalidates the review dossier",
+                        "PR #%s: %s — this head SHA can never carry a fresh admission proof. %s",
                         decision.pr.number,
                         ADMISSION_STATUS_CAP_REASON,
+                        ADMISSION_STATUS_CAP_NEXT_ACTION,
                     )
                 mutation_results.append(
                     {
@@ -3091,9 +3116,11 @@ def run_reconciler(
                         "status_state": admission_status[0],
                         "ok": False,
                         "terminal_for_head_sha": cap_exhausted,
+                        "terminal_reason": ADMISSION_STATUS_CAP_REASON if cap_exhausted else None,
+                        "next_action": ADMISSION_STATUS_CAP_NEXT_ACTION if cap_exhausted else None,
                         "message": (
-                            f"{ADMISSION_STATUS_CAP_REASON}; queue mutation skipped and this head "
-                            "SHA cannot recover — a new head SHA is required"
+                            f"{ADMISSION_STATUS_CAP_REASON}; queue mutation skipped. "
+                            f"{ADMISSION_STATUS_CAP_NEXT_ACTION}"
                             if cap_exhausted
                             else "admission status write failed; queue mutation skipped"
                         ),

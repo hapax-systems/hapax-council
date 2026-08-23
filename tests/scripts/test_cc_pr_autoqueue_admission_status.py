@@ -54,3 +54,71 @@ def test_ordinary_write_failures_are_not_cap_exhaustion():
 def test_reason_constant_is_stable():
     """The reason is a contract with downstream consumers; changing it is a breaking change."""
     assert autoqueue.ADMISSION_STATUS_CAP_REASON == "admission_status_cap_exhausted"
+
+
+def test_next_action_names_the_recovery_and_its_cost():
+    """executive_function: an error names its next action, and this recovery is not free."""
+    action = autoqueue.ADMISSION_STATUS_CAP_NEXT_ACTION
+    assert "new head SHA" in action
+    assert "review dossier" in action, "the recovery invalidates the review; that cost must be said"
+
+
+class _Proc:
+    def __init__(self, returncode: int, stdout: str = "", stderr: str = "") -> None:
+        self.returncode = returncode
+        self.stdout = stdout
+        self.stderr = stderr
+
+
+def _writer_result(monkeypatch, tmp_path, github_output: str, returncode: int = 1):
+    """Drive the real status writer with a stubbed gh call and no prior status."""
+    monkeypatch.setattr(autoqueue, "_latest_admission_status", lambda *a, **k: None)
+    monkeypatch.setattr(
+        autoqueue, "_admission_status_for", lambda decision: ("failure", "cc-pr-autoqueue: blocked")
+    )
+
+    class _PR:
+        head_sha = "a" * 40
+        number = 4556
+
+    class _Decision:
+        pr = _PR()
+
+    return autoqueue.set_autoqueue_admission_status(
+        _Decision(),
+        repo="o/r",
+        repo_root=tmp_path,
+        runner=lambda *a, **k: _Proc(returncode, stdout=github_output),
+    )
+
+
+def test_writer_surfaces_reason_and_next_action_on_cap(monkeypatch, tmp_path):
+    """The changed workflow, not just the predicate: a capped write must carry both."""
+    ok, message = _writer_result(monkeypatch, tmp_path, CAP_422)
+    assert ok is False
+    assert autoqueue.ADMISSION_STATUS_CAP_REASON in message
+    assert "new head SHA" in message
+    assert "maximum number of statuses" in message, (
+        "GitHub's own evidence must survive in the message"
+    )
+
+
+def test_writer_leaves_ordinary_failures_unlabelled(monkeypatch, tmp_path):
+    """The negative direction on the workflow, not merely on the predicate."""
+    ok, message = _writer_result(monkeypatch, tmp_path, '{"message":"Not Found","status":"404"}')
+    assert ok is False
+    assert autoqueue.ADMISSION_STATUS_CAP_REASON not in message
+    assert "new head SHA" not in message
+
+
+def test_caller_classifies_from_github_evidence_not_from_the_injected_prefix(monkeypatch, tmp_path):
+    """A message carrying only GitHub's text, with no injected prefix, is still classified.
+
+    Pins the fix for the review finding that terminal classification was re-derived by
+    substring-sniffing a prefix this code had itself added.
+    """
+    assert autoqueue._is_status_cap_exhausted(CAP_422) is True
+    ok, message = _writer_result(monkeypatch, tmp_path, CAP_422)
+    stripped = message.split("::", 1)[-1].strip()
+    assert autoqueue.ADMISSION_STATUS_CAP_REASON not in stripped
+    assert autoqueue._is_status_cap_exhausted(stripped) is True
