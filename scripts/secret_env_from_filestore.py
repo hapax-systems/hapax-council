@@ -81,7 +81,7 @@ def _first_line(raw: bytes) -> str:
 
 
 uid = os.getuid()
-out = Path(f"/run/user/{uid}/hapax-secrets.env")
+out = Path(os.environ.get("HAPAX_SECRETS_ENV_PATH", f"/run/user/{uid}/hapax-secrets.env"))
 lines: list[str] = []
 missing: list[str] = []
 for env_name, spec in REQUIRED.items():

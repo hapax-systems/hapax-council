@@ -1,5 +1,8 @@
 """Council hapax-secrets unit and watchdog copies use FileStore, not pass show."""
 
+import os
+import subprocess
+import sys
 from pathlib import Path
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
@@ -39,6 +42,42 @@ def test_migrated_watchdogs_pin_activation_worktree() -> None:
         assert "/home/hapax/" not in text, f"{name} still bakes an operator home path"
         assert "source-activation/worktree" in text or "SOURCE_ACTIVATION" in text
         assert "hapax-secret" in text
+
+
+def test_producer_writes_env_from_filestore(tmp_path, monkeypatch) -> None:
+    store_root = tmp_path / "secrets"
+    env_path = tmp_path / "hapax-secrets.env"
+    monkeypatch.setenv("REINS_SECRET_STORE", str(store_root))
+    monkeypatch.setenv("HAPAX_SECRETS_ENV_PATH", str(env_path))
+    monkeypatch.setenv("HAPAX_LITELLM_BASE_URL", "http://127.0.0.1:9")
+    pin = Path.home() / ".local/share/reins/current/api"
+    sys.path.insert(0, str(pin))
+    from k0.key_capture import FileStore
+
+    store = FileStore(root=store_root)
+    for name, value in (
+        ("litellm-master-key", b"lk"),
+        ("langfuse-public-key", b"pk"),
+        ("langfuse-secret-key", b"sk"),
+        ("api-huggingface", b"hf"),
+        ("api-mistral", b"mi"),
+        ("api-openai", b"oa"),
+        ("orcid-orcid", b"0000-0000-0000-0000"),
+    ):
+        store.put(name, value)
+    producer = REPO_ROOT / "scripts" / "secret_env_from_filestore.py"
+    result = subprocess.run(
+        [sys.executable, str(producer)],
+        check=False,
+        capture_output=True,
+        text=True,
+        env=os.environ.copy(),
+    )
+    assert result.returncode == 0, result.stderr
+    text = env_path.read_text(encoding="utf-8")
+    assert "LITELLM_API_KEY=lk" in text
+    assert "HAPAX_OPERATOR_ORCID=0000-0000-0000-0000" in text
+    assert "LITELLM_BASE_URL=http://127.0.0.1:9" in text
 
 
 def test_systemd_watchdogs_use_hapax_secret_not_pass_show() -> None:

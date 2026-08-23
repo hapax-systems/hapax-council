@@ -64,14 +64,20 @@ def operator_orcid() -> str | None:
             check=False,
         )
     except (subprocess.TimeoutExpired, FileNotFoundError) as e:
-        log.warning("hapax-secret %s failed: %s", ORCID_PASS_KEY, e)
+        log.warning(
+            "hapax-secret %s failed: %s. Next action: hapax-secret --where %s",
+            ORCID_PASS_KEY,
+            e,
+            ORCID_PASS_KEY,
+        )
         return None
     if result.returncode != 0:
         log.debug(
-            "hapax-secret %s returned %d: %s",
+            "hapax-secret %s returned %d: %s. Next action: hapax-secret --where %s",
             ORCID_PASS_KEY,
             result.returncode,
             result.stderr.strip(),
+            ORCID_PASS_KEY,
         )
         return None
     iD = result.stdout.strip().split("\n", 1)[0].strip()
