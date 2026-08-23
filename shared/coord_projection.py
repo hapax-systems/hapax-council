@@ -3768,10 +3768,8 @@ def _drain_peer_aliases(dir_fd: int, keep_name: str) -> None:
     finally:
         fcntl.flock(lock_fd, fcntl.LOCK_UN)
         os.close(lock_fd)
-        try:
-            os.unlink(lock_name, dir_fd=dir_fd)
-        except OSError:
-            pass
+        # Keep the lock pathname. Unlinking it lets a waiter lock the old
+        # inode while the next drain creates a new one.
 
 
 def _hardlink_extra_names(

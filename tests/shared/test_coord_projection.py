@@ -3703,7 +3703,6 @@ def test_drain_peer_aliases_restore_does_not_clobber_second_racer(tmp_path: Path
         parked = [path for path in tmp_path.iterdir() if ".drain." in path.name]
         assert len(parked) == 1
         assert parked[0].read_bytes() == b"racer1"
-        assert not (tmp_path / ".note.md.drain-lock").exists()
     finally:
         os.close(fd)
 
