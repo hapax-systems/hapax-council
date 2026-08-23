@@ -3050,6 +3050,31 @@ def run_reconciler(
                 now=now,
                 force_fresh_success=_decision_is_release_head_guard_subject(decision),
             )
+            # Classify the cap ONCE, for every action, before any per-action branching.
+            #
+            # Review finding (codex, 2026-08-23): the previous shape emitted the ERROR log and the
+            # full terminal receipt only on the queue / enable_auto_merge path; blocked and
+            # already_* carried the flag but never logged; and disable_auto_merge / dequeue fell
+            # through both branches and produced no terminal marker at all — while the status
+            # writer runs for all of them. The exit predicate demands that EVERY cap refusal be
+            # logged at ERROR and carried as terminal for the head SHA, so classifying per branch
+            # could only ever satisfy it per branch. This is the same defect one level up from the
+            # one the PR was opened to fix: the cap was named on the path being looked at.
+            status_cap_exhausted = bool(
+                status_result is not None
+                and not status_result[0]
+                and _is_status_cap_exhausted(status_result[1] or "")
+            )
+            if status_cap_exhausted:
+                LOG.error(
+                    "PR #%s: %s (action=%s) — this head SHA can never carry a fresh admission "
+                    "proof. %s",
+                    decision.pr.number,
+                    ADMISSION_STATUS_CAP_REASON,
+                    decision.action,
+                    ADMISSION_STATUS_CAP_NEXT_ACTION,
+                )
+
             if decision.action not in {
                 "queue",
                 "enable_auto_merge",
@@ -3069,8 +3094,12 @@ def run_reconciler(
                             # The cap is terminal wherever it occurs, not only on the positive
                             # queue path. A receipt that names it on one path and not another
                             # makes the same condition look like two different failures.
-                            "terminal_for_head_sha": (
-                                not ok and _is_status_cap_exhausted(message or "")
+                            "terminal_for_head_sha": status_cap_exhausted,
+                            "terminal_reason": (
+                                ADMISSION_STATUS_CAP_REASON if status_cap_exhausted else None
+                            ),
+                            "next_action": (
+                                ADMISSION_STATUS_CAP_NEXT_ACTION if status_cap_exhausted else None
                             ),
                         }
                     )
@@ -3097,18 +3126,11 @@ def run_reconciler(
                 and not status_result[0]
             ):
                 assert admission_status is not None
-                # Classify from GitHub's own response, using the same predicate the writer
-                # used — not by sniffing a prefix this code injected. Round-tripping a
-                # decision through a formatted string and parsing it back is how a typed
-                # condition becomes a stringly-typed one.
-                cap_exhausted = _is_status_cap_exhausted(status_result[1] or "")
-                if cap_exhausted:
-                    LOG.error(
-                        "PR #%s: %s — this head SHA can never carry a fresh admission proof. %s",
-                        decision.pr.number,
-                        ADMISSION_STATUS_CAP_REASON,
-                        ADMISSION_STATUS_CAP_NEXT_ACTION,
-                    )
+                # Classified above, once, from GitHub's own response and using the same predicate
+                # the writer used — not by sniffing a prefix this code injected. Round-tripping a
+                # decision through a formatted string and parsing it back is how a typed condition
+                # becomes a stringly-typed one.
+                cap_exhausted = status_cap_exhausted
                 mutation_results.append(
                     {
                         **decision.as_dict(),
@@ -3152,6 +3174,15 @@ def run_reconciler(
                     "ok": status_ok,
                     "message": status_message,
                 }
+                # dequeue and disable_auto_merge reach here rather than the early-return
+                # branch above, because their own mutation still has to run — folding them
+                # into that branch would `continue` past the dequeue itself. So the terminal
+                # marker has to be attached on this path too, or those two actions remain the
+                # only ones where a capped write leaves no terminal receipt.
+                if status_cap_exhausted:
+                    result["terminal_for_head_sha"] = True
+                    result["terminal_reason"] = ADMISSION_STATUS_CAP_REASON
+                    result["next_action"] = ADMISSION_STATUS_CAP_NEXT_ACTION
             mutation_results.append(result)
             if (
                 not ok

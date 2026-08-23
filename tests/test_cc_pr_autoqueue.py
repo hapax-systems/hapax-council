@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import importlib.util
 import json
+import logging
 import re
 import subprocess
 import sys
@@ -1137,6 +1138,166 @@ def test_does_not_queue_when_admission_status_write_fails(tmp_path: Path) -> Non
     assert report["mutations"][0]["ok"] is False
     assert report["mutations"][0]["admission_status"]["ok"] is False
     assert not any(call[:4] == ["gh", "pr", "merge", "142"] for call in runner.calls)
+
+
+_CAP_STDERR = (
+    "gh: Validation Failed (HTTP 422)\n"
+    "This SHA and context has reached the maximum number of statuses."
+)
+
+
+def _cap_the_status_writer(runner: Any) -> Any:
+    """Make every commit-status POST fail the way GitHub fails at the cap."""
+
+    def capped(cmd: list[str], **kwargs: Any) -> subprocess.CompletedProcess:
+        if cmd[:4] == ["gh", "api", "-X", "POST"] and "/statuses/" in cmd[4]:
+            return subprocess.CompletedProcess(cmd, 1, "", _CAP_STDERR)
+        return runner(cmd, **kwargs)
+
+    return capped
+
+
+def _status_mutations(report: dict[str, Any]) -> list[dict[str, Any]]:
+    return [m for m in report["mutations"] if m.get("action") == "set_admission_status"]
+
+
+def test_status_cap_is_terminal_on_every_action_not_only_the_queue_path(
+    tmp_path: Path, caplog: Any
+) -> None:
+    """The cap is one condition; a receipt that names it on one path invents two.
+
+    Review finding (codex, 2026-08-23): the ERROR and the full terminal receipt were
+    emitted only for queue / enable_auto_merge. blocked and already_* carried the flag
+    but never logged, and dequeue / disable_auto_merge fell through both branches and
+    produced no terminal marker at all — while the status writer runs for all of them.
+    The exit predicate requires EVERY cap refusal to be logged at ERROR and carried as
+    terminal for the head SHA, so classifying per branch could only satisfy it per branch.
+    """
+    vault = _make_vault(tmp_path)
+    # A PR that is already queued takes the non-queue branch, where the cap was silent.
+    _write_task(vault, task_id="task-a", pr=915)
+    runner = _FakeRunner()
+    runner.open_prs = [_pr(915)]
+    runner.queued_prs = {915}
+
+    with caplog.at_level(logging.ERROR):
+        report = autoqueue.run_reconciler(
+            repo="owner/repo",
+            repo_root=tmp_path,
+            vault_root=vault,
+            apply=True,
+            runner=_cap_the_status_writer(runner),
+        )
+
+    status_mutations = _status_mutations(report)
+    assert status_mutations, "the status writer ran, so it must leave a receipt"
+    capped = [m for m in status_mutations if m.get("terminal_for_head_sha")]
+    assert capped, "a capped write on a non-queue action must still be terminal"
+    assert capped[0]["terminal_reason"] == autoqueue.ADMISSION_STATUS_CAP_REASON
+    assert capped[0]["next_action"] == autoqueue.ADMISSION_STATUS_CAP_NEXT_ACTION
+    assert any(autoqueue.ADMISSION_STATUS_CAP_REASON in r.getMessage() for r in caplog.records), (
+        "every cap refusal must be logged at ERROR, not only the queue-path one"
+    )
+
+
+def test_status_cap_is_logged_once_and_names_the_action(tmp_path: Path, caplog: Any) -> None:
+    """One classification, one log line, and it says which action hit the cap.
+
+    Guards the hoist itself: if the classification is duplicated back into the branches
+    the message loses the action, and a reader cannot tell which path refused.
+    """
+    vault = _make_vault(tmp_path)
+    _write_task(vault, task_id="task-a", pr=916)
+    runner = _FakeRunner()
+    runner.open_prs = [_pr(916)]
+
+    with caplog.at_level(logging.ERROR):
+        autoqueue.run_reconciler(
+            repo="owner/repo",
+            repo_root=tmp_path,
+            vault_root=vault,
+            apply=True,
+            runner=_cap_the_status_writer(runner),
+        )
+
+    cap_lines = [
+        r.getMessage()
+        for r in caplog.records
+        if autoqueue.ADMISSION_STATUS_CAP_REASON in r.getMessage()
+    ]
+    assert len(cap_lines) == 1, f"expected exactly one cap ERROR, got {len(cap_lines)}"
+    assert "action=" in cap_lines[0]
+
+
+def test_status_cap_is_terminal_on_the_dequeue_path(tmp_path: Path, caplog: Any) -> None:
+    """dequeue and disable_auto_merge previously fell through BOTH branches.
+
+    This is the half of the finding the already_queued test does not reach: those two
+    actions were excluded from the non-queue branch and absent from the queue branch, so
+    a capped write during them produced no terminal marker anywhere. Verified by
+    mutation: restoring them to the exclusion set turns this test red while the
+    already_queued test stays green — which is why both exist.
+    """
+    vault = _make_vault(tmp_path)
+    _write_task(vault, task_id="queued", pr=918, authority_case=None)
+    runner = _FakeRunner()
+    runner.queued_prs = {918}
+    runner.open_prs = [_pr(918, merge_state="UNKNOWN", checks=[_check("lint")])]
+
+    with caplog.at_level(logging.ERROR):
+        report = autoqueue.run_reconciler(
+            repo="owner/repo",
+            repo_root=tmp_path,
+            vault_root=vault,
+            apply=True,
+            runner=_cap_the_status_writer(runner),
+        )
+
+    assert report["counts"]["dequeue"] == 1
+    # The marker rides on the dequeue result itself, not a separate set_admission_status
+    # mutation: dequeue must still perform its own action, so it cannot take the
+    # early-return branch that emits a standalone status receipt.
+    assert any(m.get("terminal_for_head_sha") for m in report["mutations"]), (
+        "a capped write during dequeue must be terminal for the head SHA"
+    )
+    assert any(
+        m.get("terminal_reason") == autoqueue.ADMISSION_STATUS_CAP_REASON
+        for m in report["mutations"]
+    ), "the dequeue receipt must name the cap as the terminal reason"
+    assert any(autoqueue.ADMISSION_STATUS_CAP_REASON in r.getMessage() for r in caplog.records), (
+        "a capped write during dequeue must be logged at ERROR"
+    )
+
+
+def test_ordinary_status_write_failure_is_not_marked_terminal(tmp_path: Path) -> None:
+    """The negative direction: only the cap is terminal.
+
+    Without this, hoisting the classification could mark every write failure terminal —
+    a strictly worse defect than the one being fixed, because a transient failure would
+    be reported as a SHA that can never recover.
+    """
+    vault = _make_vault(tmp_path)
+    _write_task(vault, task_id="task-a", pr=917)
+    runner = _FakeRunner()
+    runner.open_prs = [_pr(917)]
+
+    def transient(cmd: list[str], **kwargs: Any) -> subprocess.CompletedProcess:
+        if cmd[:4] == ["gh", "api", "-X", "POST"] and "/statuses/" in cmd[4]:
+            return subprocess.CompletedProcess(cmd, 1, "", "502 Bad Gateway")
+        return runner(cmd, **kwargs)
+
+    report = autoqueue.run_reconciler(
+        repo="owner/repo",
+        repo_root=tmp_path,
+        vault_root=vault,
+        apply=True,
+        runner=transient,
+    )
+
+    for m in report["mutations"]:
+        assert not m.get("terminal_for_head_sha"), (
+            "a transient write failure must not be reported as terminal for the head SHA"
+        )
 
 
 def test_enable_auto_merge_for_pending_governed_pr(tmp_path: Path) -> None:
