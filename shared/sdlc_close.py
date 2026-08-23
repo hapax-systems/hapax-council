@@ -324,28 +324,6 @@ class CloseGateEvidence:
         return f"terminal-close-gate@sha256:{_sha256(_canonical_json_bytes(self.to_record()))}"
 
 
-def _commit_isolated_ledger(
-    ledger_copy: Path,
-    ledger_src: Path,
-    ledger_original: bytes,
-) -> None:
-    """Install disposition debt only after the terminal close committed."""
-    if not ledger_copy.is_file():
-        return
-    copy_bytes = ledger_copy.read_bytes()
-    live = ledger_src.read_bytes() if ledger_src.is_file() else b""
-    if live != ledger_original:
-        raise TerminalCloseError(
-            "terminal_close_artifact_ledger_drift",
-            "rerun close against one stable artifact ledger preimage",
-            str(ledger_src),
-        )
-    if copy_bytes != live:
-        os.replace(ledger_copy, ledger_src)
-        return
-    ledger_copy.unlink(missing_ok=True)
-
-
 def _default_done_gate_runner(
     snapshot: TaskNoteSnapshot,
     final_status: str,

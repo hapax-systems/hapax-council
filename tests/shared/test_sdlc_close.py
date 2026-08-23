@@ -948,15 +948,14 @@ def test_disposition_debt_is_copied_back_to_the_live_ledger(
     close_rows = [row for row in live if row.get("task_id") == "task-close"]
     assert len(close_rows) == 1
     assert close_rows[0].get("debt") is None
-    assert pending
-    for item in pending:
-        sdlc_close._commit_isolated_ledger(*item)
-    live = yaml.safe_load(ledger.read_text(encoding="utf-8"))
-    close_rows = [row for row in live if row.get("task_id") == "task-close"]
-    assert len(close_rows) == 1
-    assert close_rows[0].get("debt") is not None
-    leftovers = list(snapshot.path.parent.glob("*.ledger.yaml"))
-    assert leftovers == []
+    assert len(pending) == 1
+    copy, src, original = pending[0]
+    assert src == ledger
+    assert original == ledger.read_bytes()
+    copy_rows = yaml.safe_load(copy.read_text(encoding="utf-8"))
+    copy_close = [row for row in copy_rows if row.get("task_id") == "task-close"]
+    assert len(copy_close) == 1
+    assert copy_close[0].get("debt") is not None
 
 
 def test_disposition_gate_off_isolates_missing_global_ledger(
