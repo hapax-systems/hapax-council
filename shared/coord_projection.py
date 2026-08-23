@@ -3724,7 +3724,12 @@ def _is_drain_target_name(name: str, keep_name: str) -> bool:
     return name.endswith((".transition-tmp", ".drop-src", ".drop-link"))
 
 
-def _park_and_drop_if_inode(dir_fd: int, name: str, expected_ino: int) -> bool:
+def _park_and_drop_if_inode(
+    dir_fd: int,
+    name: str,
+    expected_ino: int,
+    expected_bytes: bytes | None = None,
+) -> bool:
     """Rename name aside and unlink only if that inode is still expected_ino.
 
     Returns True when the name is gone. False if a racer was restored to name.
@@ -3743,6 +3748,11 @@ def _park_and_drop_if_inode(dir_fd: int, name: str, expected_ino: int) -> bool:
     if parked.st_ino != expected_ino:
         _restore_parked_name(dir_fd, unique, name)
         return False
+    if expected_bytes is not None:
+        read = _read_regular_bytes(dir_fd, unique, max(len(expected_bytes), 1))
+        if read is None or read[0] != expected_bytes:
+            _restore_parked_name(dir_fd, unique, name)
+            return False
     try:
         os.unlink(unique, dir_fd=dir_fd)
     except OSError:
@@ -4068,7 +4078,7 @@ def _unlink_exact_entry(
             "hold the transaction and preserve the unexpected scratch entry",
             name,
         )
-    if not _park_and_drop_if_inode(dir_fd, name, expected.inode):
+    if not _park_and_drop_if_inode(dir_fd, name, expected.inode, expected_bytes=expected.content):
         raise LifecycleTransitionError(
             "transition_projection_scratch_cleanup_failed",
             "hold the transaction until the exact scratch entry is absent",
@@ -4587,6 +4597,13 @@ def _cas_rollback(projection: FileProjection, scratch: _ProjectionScratch) -> bo
                         and stat.S_IMODE(read[1].st_mode) != projection.before_mode
                     ):
                         continue
+                    candidate_ino = read[1].st_ino
+                    try:
+                        again = os.stat(candidate, dir_fd=dir_fd, follow_symlinks=False)
+                    except OSError:
+                        continue
+                    if again.st_ino != candidate_ino:
+                        continue
                     try:
                         os.link(
                             candidate,
@@ -4599,6 +4616,11 @@ def _cas_rollback(projection: FileProjection, scratch: _ProjectionScratch) -> bo
                         if exc.errno == errno.EEXIST:
                             return False
                         raise
+                    restored = _read_regular_bytes(dir_fd, name, _MAX_LIFECYCLE_BLOB_BYTES)
+                    if restored is None or restored[0] != projection.before:
+                        if restored is not None:
+                            _park_and_drop_if_inode(dir_fd, name, restored[1].st_ino)
+                        return False
                     extras = tuple(
                         extra
                         for extra in _hardlink_extra_names(dir_fd, name, scratch.path.name)

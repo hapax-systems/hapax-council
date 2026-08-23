@@ -331,6 +331,7 @@ def _default_done_gate_runner(
     retroactive: bool,
     debt_reason: str | None,
     ledger_commit: list[tuple[Path, Path, bytes]] | None = None,
+    note_residue: list[Path] | None = None,
 ) -> tuple[CloseGateEvidence, ...]:
     observed_at = datetime.now(UTC).isoformat()
     authority_case = str(snapshot.frontmatter.get("authority_case") or "")
@@ -548,6 +549,8 @@ def _default_done_gate_runner(
                     cookie.write_text(invocation, encoding="utf-8")
                     os.replace(debt_preflight, after_path)
                     debt_preflight = None
+                    if note_residue is not None:
+                        note_residue.extend((after_path, cookie))
                 if (
                     result.returncode == 0
                     and ledger_copy is not None
@@ -813,6 +816,7 @@ def close_task(
     receipt_bytes = receipt_path.read_bytes() if receipt_path.is_file() else None
     receipt_mode = _mode(receipt_path) if receipt_bytes is not None else None
     ledger_commit: list[tuple[Path, Path, bytes]] = []
+    note_residue: list[Path] = []
     gate_evidence = _default_done_gate_runner(
         snapshot,
         final_status,
@@ -820,7 +824,9 @@ def close_task(
         retroactive,
         debt_reason,
         ledger_commit=ledger_commit,
+        note_residue=note_residue,
     )
+    close_committed = False
     try:
         live_note = snapshot.path.read_bytes()
         if live_note != snapshot.content:
@@ -1174,10 +1180,14 @@ def close_task(
             },
             locked_preflight=locked_preflight,
         )
+        close_committed = True
         return receipt
     finally:
         for copy, _src, _original in ledger_commit:
             copy.unlink(missing_ok=True)
+        if not close_committed:
+            for residue in note_residue:
+                residue.unlink(missing_ok=True)
 
 
 def main(argv: list[str] | None = None) -> int:
