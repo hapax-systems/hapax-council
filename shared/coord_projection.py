@@ -3864,6 +3864,8 @@ def _link_then_unlink_src(
     dst_dir_fd: int,
     dst_name: str,
 ) -> None:
+    if src_dir_fd != dst_dir_fd:
+        raise OSError(errno.EXDEV, "link-unlink requires one directory", dst_name)
     os.link(
         src_name,
         dst_name,
@@ -3871,8 +3873,6 @@ def _link_then_unlink_src(
         dst_dir_fd=dst_dir_fd,
         follow_symlinks=False,
     )
-    if src_dir_fd != dst_dir_fd:
-        raise OSError(errno.EXDEV, "link-unlink requires one directory", dst_name)
     _drop_extra_link(src_dir_fd, src_name, dst_name)
 
 
@@ -3910,7 +3910,7 @@ def _renameat2_exchange_fallback(
     # NOREPLACE park: rename would clobber a racer that created `displaced`
     # after the occupancy check. Re-stat before unlink so a dest replacement
     # is not deleted.
-    _link_then_unlink_src(src_dir_fd, dst_name, dst_dir_fd, displaced)
+    _link_then_unlink_src(dst_dir_fd, dst_name, dst_dir_fd, displaced)
     try:
         # NOREPLACE install: a racer that created dest in the dest-absent window
         # must get EEXIST, not a silent clobber.
@@ -4740,6 +4740,34 @@ def _open_existing_private_directory_fd(path: Path) -> int | None:
 
 _DRAIN_LOCK_NAME = ".drain-lock"
 _TRANSACTION_DIRECTORY_RE = re.compile(r"^sdlc-txn-[0-9a-f]{64}\.attempt-[0-9]{4,}$")
+
+
+def _regular_owned_drain_lock(metadata: os.stat_result) -> bool:
+    return (
+        stat.S_ISREG(metadata.st_mode)
+        and metadata.st_uid == os.geteuid()
+        and stat.S_IMODE(metadata.st_mode) == 0o600
+    )
+
+
+def _is_known_drain_lock_at(dir_fd: int, name: str) -> bool:
+    if name != _DRAIN_LOCK_NAME:
+        return False
+    try:
+        metadata = os.stat(name, dir_fd=dir_fd, follow_symlinks=False)
+    except OSError:
+        return False
+    return _regular_owned_drain_lock(metadata)
+
+
+def _is_known_drain_lock_path(path: Path) -> bool:
+    if path.name != _DRAIN_LOCK_NAME:
+        return False
+    try:
+        metadata = os.lstat(path)
+    except OSError:
+        return False
+    return _regular_owned_drain_lock(metadata)
 _TRANSACTION_BLOB_RE = re.compile(r"^[0-9]{4}\.(?:before|after)$")
 _TRANSACTION_PHASE_PROJECTION_RE = re.compile(r"^phase-(?:prepared|applied|aborted)\.append\.json$")
 _MATERIALIZATION_PLAN_RE = re.compile(r"^(sdlc-txn-[0-9a-f]{64}\.attempt-[0-9]{4,})\.plan\.json$")
@@ -4784,7 +4812,7 @@ def _transaction_manifest_paths(
     paths: list[Path] = []
     try:
         for name in sorted(os.listdir(root_fd)):
-            if name == _DRAIN_LOCK_NAME:
+            if _is_known_drain_lock_at(root_fd, name):
                 continue
             if allow_materialization_plans and _MATERIALIZATION_PLAN_RE.fullmatch(name):
                 continue
@@ -5105,7 +5133,7 @@ def _lifecycle_estate_usage(*roots: Path) -> tuple[int, int, int]:
                             + 2 * _MAX_LIFECYCLE_PHASE_BYTES
                         )
             for name in root_names:
-                if name == _DRAIN_LOCK_NAME:
+                if _is_known_drain_lock_at(root_fd, name):
                     continue
                 if root_index > 0 and _MATERIALIZATION_PLAN_RE.fullmatch(name):
                     continue
@@ -7306,7 +7334,7 @@ def _capture_lifecycle_journals(
                     )
                 )
             continue
-        if name == _DRAIN_LOCK_NAME:
+        if _is_known_drain_lock_path(directory.path / name):
             continue
         if _TRANSACTION_DIRECTORY_RE.fullmatch(name) is None:
             captured.append(
