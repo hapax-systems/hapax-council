@@ -4628,6 +4628,17 @@ def _cas_rollback(projection: FileProjection, scratch: _ProjectionScratch) -> bo
                     )
                     _drain_peer_aliases(dir_fd, name, extra_names=extras)
                     _drain_peer_aliases(dir_fd, name)
+                    restored = _read_regular_bytes(dir_fd, name, _MAX_LIFECYCLE_BLOB_BYTES)
+                    if restored is None or restored[0] != projection.before:
+                        return False
+                    if (
+                        projection.before_mode is not None
+                        and stat.S_IMODE(restored[1].st_mode) != projection.before_mode
+                    ):
+                        _park_and_drop_if_inode(dir_fd, name, restored[1].st_ino)
+                        return False
+                    if restored[1].st_nlink != 1:
+                        return False
                     os.fsync(dir_fd)
                     return True
             return False

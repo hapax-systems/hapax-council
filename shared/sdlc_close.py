@@ -817,17 +817,17 @@ def close_task(
     receipt_mode = _mode(receipt_path) if receipt_bytes is not None else None
     ledger_commit: list[tuple[Path, Path, bytes]] = []
     note_residue: list[Path] = []
-    gate_evidence = _default_done_gate_runner(
-        snapshot,
-        final_status,
-        pr,
-        retroactive,
-        debt_reason,
-        ledger_commit=ledger_commit,
-        note_residue=note_residue,
-    )
     close_committed = False
     try:
+        gate_evidence = _default_done_gate_runner(
+            snapshot,
+            final_status,
+            pr,
+            retroactive,
+            debt_reason,
+            ledger_commit=ledger_commit,
+            note_residue=note_residue,
+        )
         live_note = snapshot.path.read_bytes()
         if live_note != snapshot.content:
             raise TerminalCloseError(
