@@ -21,11 +21,20 @@ import logging
 import os
 import subprocess
 from functools import lru_cache
+from pathlib import Path
 
 log = logging.getLogger(__name__)
 
 ORCID_PASS_KEY = "orcid/orcid"
 ORCID_ENV_VAR = "HAPAX_OPERATOR_ORCID"
+
+
+def _hapax_secret_bin() -> str:
+    """Canonical reins install pin; HAPAX_SECRET overrides for tests."""
+    override = (os.environ.get("HAPAX_SECRET") or "").strip()
+    if override:
+        return override
+    return str(Path.home() / ".local" / "bin" / "hapax-secret")
 
 
 @lru_cache(maxsize=1)
@@ -57,7 +66,7 @@ def operator_orcid() -> str | None:
         return env_value
     try:
         result = subprocess.run(
-            ["hapax-secret", ORCID_PASS_KEY],
+            [_hapax_secret_bin(), ORCID_PASS_KEY],
             capture_output=True,
             text=True,
             timeout=5.0,

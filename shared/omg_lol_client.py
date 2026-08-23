@@ -19,9 +19,11 @@ added by mirroring the pattern of existing methods.
 from __future__ import annotations
 
 import logging
+import os
 import subprocess
 import time
 from dataclasses import dataclass
+from pathlib import Path
 from typing import Any
 
 import requests
@@ -76,15 +78,24 @@ except ImportError:
         log.debug("prometheus_client unavailable; metric dropped")
 
 
+def _hapax_secret_bin() -> str:
+    """Canonical reins install pin; HAPAX_SECRET overrides for tests."""
+    override = (os.environ.get("HAPAX_SECRET") or "").strip()
+    if override:
+        return override
+    return str(Path.home() / ".local" / "bin" / "hapax-secret")
+
+
 def _load_api_key(pass_key: str) -> str | None:
     """Load the omg.lol API key from reins FileStore via hapax-secret.
 
     Returns None when `hapax-secret` fails (no key, FileStore unreadable)
     — caller handles the disabled path.
     """
+    argv = [_hapax_secret_bin(), pass_key]
     try:
         result = subprocess.run(
-            ["hapax-secret", pass_key],
+            argv,
             capture_output=True,
             text=True,
             timeout=5.0,

@@ -34,8 +34,11 @@ def _fake_response(status: int, json_body: dict | None = None, text: str = "") -
 def _fake_pass_subprocess(monkeypatch: pytest.MonkeyPatch):
     """Stub out `hapax-secret` so the client gets a deterministic API key
     without touching the real FileStore."""
+    monkeypatch.delenv("HAPAX_SECRET", raising=False)
 
     def _fake_run(argv, **kwargs):
+        assert argv[0].endswith("/.local/bin/hapax-secret")
+        assert argv[1:] == ["omg-lol/api-key"]
         result = MagicMock()
         result.returncode = 0
         result.stdout = "fake-omg-lol-api-key\n"

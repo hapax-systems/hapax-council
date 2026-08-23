@@ -3,14 +3,22 @@
 
 Runs from the source-activation worktree. Imports FileStore from the reins
 install pin (~/.local/share/reins/current/api), not a mutable checkout.
+
+Validates FileStore prerequisites (.key present, backend is file, required
+names resolvable) before touching the destination env file. Writes via temp
++ os.replace so a failed run leaves the last valid environment in place.
 """
+
 from __future__ import annotations
 
 import os
 import sys
 from pathlib import Path
 
-_REINS_API = Path.home() / ".local/share/reins/current/api"
+_REINS_API = Path(
+    os.environ.get("HAPAX_REINS_API", "").strip()
+    or str(Path.home() / ".local/share/reins/current/api")
+)
 sys.path.insert(0, str(_REINS_API))
 try:
     from k0.key_capture import default_store
@@ -30,9 +38,17 @@ if store.backend_id != "file":
     )
     raise SystemExit(2)
 
-_LITELLM = os.environ.get(
-    "HAPAX_LITELLM_BASE_URL", "https://hapax-podium.tailf9491.ts.net:4000"
-)
+key_path = store.root / ".key"
+if not store.root.is_dir() or not key_path.is_file():
+    sys.stderr.write(
+        "secret_env_from_filestore: FileStore root or .key missing at "
+        f"{store.root}. Next action: enroll FileStore (reins#35) then "
+        "hapax-secret TTY put for required names; do not start this unit "
+        "until .key exists.\n"
+    )
+    raise SystemExit(2)
+
+_LITELLM = os.environ.get("HAPAX_LITELLM_BASE_URL", "https://hapax-podium.tailf9491.ts.net:4000")
 _LANGFUSE = os.environ.get("HAPAX_LANGFUSE_HOST", "http://127.0.0.1:3000")
 
 REQUIRED: dict[str, str] = {
@@ -70,9 +86,7 @@ LITERALS: dict[str, str] = {
     "HAPAX_MASTODON_INSTANCE_URL": os.environ.get(
         "HAPAX_MASTODON_INSTANCE_URL", "https://mastodon.social"
     ),
-    "HAPAX_BLUESKY_HANDLE": os.environ.get(
-        "HAPAX_BLUESKY_HANDLE", "hapax-oudepode.bsky.social"
-    ),
+    "HAPAX_BLUESKY_HANDLE": os.environ.get("HAPAX_BLUESKY_HANDLE", "hapax-oudepode.bsky.social"),
 }
 
 
@@ -82,14 +96,14 @@ def _first_line(raw: bytes) -> str:
 
 uid = os.getuid()
 out = Path(os.environ.get("HAPAX_SECRETS_ENV_PATH", f"/run/user/{uid}/hapax-secrets.env"))
-lines: list[str] = []
+resolved: dict[str, str] = {}
 missing: list[str] = []
 for env_name, spec in REQUIRED.items():
     val = store.get(spec)
     if val is None:
         missing.append(spec)
         continue
-    lines.append(f"{env_name}={_first_line(val)}")
+    resolved[env_name] = _first_line(val)
 if missing:
     sys.stderr.write(
         "secret_env_from_filestore: missing "
@@ -98,11 +112,10 @@ if missing:
     )
     raise SystemExit(2)
 
-litellm = store.get("litellm-master-key")
-assert litellm is not None
-litellm_text = _first_line(litellm)
+litellm_text = resolved["LITELLM_API_KEY"]
 LITERALS["ANTHROPIC_API_KEY"] = litellm_text
 LITERALS["ANTHROPIC_AUTH_TOKEN"] = litellm_text
+lines: list[str] = [f"{env_name}={resolved[env_name]}" for env_name in REQUIRED]
 for env_name, spec in OPTIONAL.items():
     val = store.get(spec)
     if val is None:
@@ -111,6 +124,14 @@ for env_name, spec in OPTIONAL.items():
 for env_name, value in LITERALS.items():
     lines.append(f"{env_name}={value}")
 
-out.write_text("\n".join(lines) + "\n")
-os.chmod(out, 0o600)
+out.parent.mkdir(parents=True, exist_ok=True)
+tmp = out.with_name(f".{out.name}.tmp")
+payload = "\n".join(lines) + "\n"
+try:
+    tmp.write_text(payload)
+    os.chmod(tmp, 0o600)
+    os.replace(tmp, out)
+except Exception:
+    tmp.unlink(missing_ok=True)
+    raise
 print(f"wrote {out} keys={len(lines)} backend={store.backend_id}")

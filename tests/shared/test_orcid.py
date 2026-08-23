@@ -10,6 +10,8 @@ from __future__ import annotations
 import subprocess
 from unittest.mock import patch
 
+import pytest
+
 import shared.orcid as orcid_module
 from shared.orcid import ORCID_ENV_VAR, operator_orcid
 
@@ -17,6 +19,11 @@ from shared.orcid import ORCID_ENV_VAR, operator_orcid
 def _clear_cache() -> None:
     """Reset the module-level lru_cache between tests."""
     operator_orcid.cache_clear()
+
+
+@pytest.fixture(autouse=True)
+def _unpin_hapax_secret_override(monkeypatch):
+    monkeypatch.delenv("HAPAX_SECRET", raising=False)
 
 
 class TestEnvVarFallback:
@@ -45,7 +52,9 @@ class TestEnvVarFallback:
             )
             assert operator_orcid() == "0009-0001-5146-4548"
             mock_run.assert_called_once()
-            assert mock_run.call_args.args[0][:1] == ["hapax-secret"]
+            argv = mock_run.call_args.args[0]
+            assert argv[0].endswith("/.local/bin/hapax-secret")
+            assert argv[1:] == ["orcid/orcid"]
 
 
 class TestFileStoreFallback:

@@ -11,11 +11,17 @@ if [[ ! -e "${COUNCIL_ROOT}/.git" ]]; then
 fi
 cd "${COUNCIL_ROOT}"
 export HAPAX_REINS_API="${HAPAX_REINS_API:-${HOME}/.local/share/reins/current/api}"
+export HAPAX_SECRET="${HAPAX_SECRET:-${HOME}/.local/bin/hapax-secret}"
+if [[ ! -x "${HAPAX_SECRET}" ]]; then
+  echo "ERROR: hapax-secret missing at ${HAPAX_SECRET}" >&2
+  echo "NEXT ACTION: install hapax-secret from reins (make install) or set HAPAX_SECRET" >&2
+  exit 1
+fi
 
-# Load credentials from reins FileStore via hapax-secret (not pass).
-export LITELLM_API_KEY=$(hapax-secret litellm/master-key 2>/dev/null || echo "changeme")
-export LANGFUSE_PUBLIC_KEY=$(hapax-secret langfuse/public-key 2>/dev/null || true)
-export LANGFUSE_SECRET_KEY=$(hapax-secret langfuse/secret-key 2>/dev/null || true)
+# Load credentials from reins FileStore via pinned hapax-secret (not PATH, not pass).
+export LITELLM_API_KEY=$("${HAPAX_SECRET}" litellm/master-key 2>/dev/null || echo "changeme")
+export LANGFUSE_PUBLIC_KEY=$("${HAPAX_SECRET}" langfuse/public-key 2>/dev/null || true)
+export LANGFUSE_SECRET_KEY=$("${HAPAX_SECRET}" langfuse/secret-key 2>/dev/null || true)
 
 PROFILES="${COUNCIL_ROOT}/profiles"
 UV="${HAPAX_UV:-${HOME}/.local/bin/uv}"
