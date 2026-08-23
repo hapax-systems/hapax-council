@@ -3706,6 +3706,24 @@ def _drop_src_name(src_name: str) -> str:
     return f".{src_name}.drop-src"
 
 
+_DRAIN_PARK_RE = re.compile(r"^\..+\.drain\.[0-9]+\.[0-9a-f]+$")
+
+
+def _is_drain_target_name(name: str, keep_name: str) -> bool:
+    """Only hidden transaction residue, never an external non-hidden hardlink."""
+    if not name.startswith("."):
+        return False
+    if name in {
+        _drop_src_name(keep_name),
+        _drop_link_name(keep_name),
+        _exchange_displaced_name(keep_name),
+    }:
+        return True
+    if _DRAIN_PARK_RE.fullmatch(name):
+        return True
+    return name.endswith((".transition-tmp", ".drop-src", ".drop-link"))
+
+
 def _restore_parked_name(dir_fd: int, parked: str, dest: str) -> None:
     """Put parked back at dest without clobbering a racing replacement.
 
@@ -3727,8 +3745,16 @@ def _restore_parked_name(dir_fd: int, parked: str, dest: str) -> None:
         return
 
 
-def _drain_peer_aliases(dir_fd: int, keep_name: str) -> None:
-    """Drop every extra name that still shares keep_name's inode.
+def _drain_peer_aliases(
+    dir_fd: int,
+    keep_name: str,
+    extra_names: tuple[str, ...] | None = None,
+) -> None:
+    """Drop extra names that still share keep_name's inode.
+
+    When extra_names is given, only those names are considered (link-unlink
+    of a known source). Otherwise only hidden transaction residue is
+    scanned, never an external non-hidden hardlink.
 
     Rename each extra aside first. If the parked name is not keep's inode,
     it is a racer: put it back only when dest is still absent. Do not
@@ -3747,13 +3773,19 @@ def _drain_peer_aliases(dir_fd: int, keep_name: str) -> None:
     )
     try:
         fcntl.flock(lock_fd, fcntl.LOCK_EX)
-        try:
-            names = os.listdir(dir_fd)
-        except OSError:
-            return
+        if extra_names is None:
+            try:
+                listed = os.listdir(dir_fd)
+            except OSError:
+                return
+            names = [
+                extra
+                for extra in listed
+                if extra not in {keep_name, lock_name} and _is_drain_target_name(extra, keep_name)
+            ]
+        else:
+            names = [extra for extra in extra_names if extra not in {keep_name, lock_name}]
         for extra in names:
-            if extra in {keep_name, lock_name}:
-                continue
             if not _same_regular_inode(dir_fd, extra, keep_name):
                 continue
             unique = f".{extra}.drain.{os.getpid()}.{secrets.token_hex(4)}"
@@ -3850,7 +3882,7 @@ def _drop_extra_link(
         except FileNotFoundError:
             pass
         raise OSError(errno.EEXIST, "drop-src raced", parked)
-    _drain_peer_aliases(dir_fd, peer_name)
+    _drain_peer_aliases(dir_fd, peer_name, extra_names=(src_name, parked))
     try:
         os.stat(src_name, dir_fd=dir_fd, follow_symlinks=False)
     except FileNotFoundError:

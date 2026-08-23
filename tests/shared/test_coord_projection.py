@@ -3706,9 +3706,23 @@ def test_drain_peer_aliases_leaves_a_replacement(tmp_path: Path) -> None:
         os.close(fd)
 
 
+def test_drain_peer_aliases_leaves_an_external_hardlink(tmp_path: Path) -> None:
+    keep = tmp_path / "note.md"
+    extra = tmp_path / "note.bak"
+    keep.write_bytes(b"keep")
+    os.link(keep, extra)
+    fd = os.open(tmp_path, os.O_RDONLY | os.O_DIRECTORY)
+    try:
+        cp._drain_peer_aliases(fd, "note.md")
+        assert keep.read_bytes() == b"keep"
+        assert extra.read_bytes() == b"keep"
+    finally:
+        os.close(fd)
+
+
 def test_drain_peer_aliases_restore_does_not_clobber_second_racer(tmp_path: Path) -> None:
     keep = tmp_path / "note.md"
-    extra = tmp_path / "alias.md"
+    extra = tmp_path / cp._drop_src_name("note.md")
     keep.write_bytes(b"keep")
     os.link(keep, extra)
     fd = os.open(tmp_path, os.O_RDONLY | os.O_DIRECTORY)
@@ -3716,7 +3730,7 @@ def test_drain_peer_aliases_restore_does_not_clobber_second_racer(tmp_path: Path
     real_rename = os.rename
 
     def claim_then_replace(dir_fd: int, left: str, right: str) -> bool:
-        if left == "alias.md" and right == "note.md":
+        if left == extra.name and right == "note.md":
             extra.unlink()
             extra.write_bytes(b"racer1")
             return True
