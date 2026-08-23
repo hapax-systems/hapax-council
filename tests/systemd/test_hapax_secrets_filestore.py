@@ -41,7 +41,8 @@ def test_hapax_secrets_unit_uses_filestore_not_pass() -> None:
     assert "install -m 600 /dev/null" not in text
     assert "ExecStartPre=" not in text
     assert "ExecStopPost=" not in text
-    assert "ExecStop=/bin/rm -f /run/user/%U/hapax-secrets.env" in text
+    assert "ExecStop=" not in text
+    assert "/bin/rm" not in text
 
 
 def test_migrated_watchdogs_pin_activation_worktree() -> None:

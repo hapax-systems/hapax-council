@@ -19,14 +19,14 @@ if [[ ! -x "${HAPAX_SECRET}" ]]; then
 fi
 
 # Load credentials from reins FileStore via pinned hapax-secret (not PATH, not pass).
-pass_first_line() {
+secret_first_line() {
     local name="$1"
     "${HAPAX_SECRET}" "$name" 2>/dev/null | sed -n '1p'
 }
 
-LITELLM_API_KEY="$(pass_first_line litellm/master-key || echo "changeme")"
-LANGFUSE_PUBLIC_KEY="$(pass_first_line langfuse/public-key || true)"
-LANGFUSE_SECRET_KEY="$(pass_first_line langfuse/secret-key || true)"
+LITELLM_API_KEY="$(secret_first_line litellm/master-key || echo "changeme")"
+LANGFUSE_PUBLIC_KEY="$(secret_first_line langfuse/public-key || true)"
+LANGFUSE_SECRET_KEY="$(secret_first_line langfuse/secret-key || true)"
 export LITELLM_API_KEY
 export LANGFUSE_PUBLIC_KEY
 export LANGFUSE_SECRET_KEY
