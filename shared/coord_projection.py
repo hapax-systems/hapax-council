@@ -3738,7 +3738,7 @@ def _drain_peer_aliases(dir_fd: int, keep_name: str) -> None:
     descriptors from _open_parent_dir are O_RDONLY; NFS maps flock to
     fcntl, which refuses LOCK_EX on a read-only fd.
     """
-    lock_name = f".{keep_name}.drain-lock"
+    lock_name = ".drain-lock"
     lock_fd = os.open(
         lock_name,
         os.O_RDWR | os.O_CREAT | os.O_CLOEXEC,
