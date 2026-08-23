@@ -127,6 +127,20 @@ HOLD_LABEL_RE = re.compile(
 )
 DEFAULT_REQUIRED_CHECKS = ("lint", "test", "typecheck", "web-build", "vscode-build")
 AUTOQUEUE_ADMISSION_CONTEXT = "hapax/autoqueue-admission"
+
+# GitHub caps commit statuses per (SHA, context) and does not permit deleting them, so a
+# head SHA that reaches the cap can never carry a fresh admission proof again. Named
+# separately from ordinary write failures because it is terminal for that SHA, and because
+# it recurred silently for eleven weeks after being closed as resolved on 2026-06-04.
+ADMISSION_STATUS_CAP_REASON = "admission_status_cap_exhausted"
+
+
+def _is_status_cap_exhausted(output: str) -> bool:
+    """True when GitHub refused the status write because the SHA+context cap is reached."""
+    lowered = output.lower()
+    return "maximum number of statuses" in lowered
+
+
 AUTOQUEUE_MERGE_QUEUE_RULESET_NAME = "main-merge-queue"
 AUTOQUEUE_DEFAULT_MERGE_METHOD = "SQUASH"
 GITHUB_MERGE_METHOD_FLAGS = {
@@ -2556,6 +2570,13 @@ def set_autoqueue_admission_status(
     )
     output = (proc.stdout or proc.stderr or "").strip()
     if proc.returncode != 0:
+        if _is_status_cap_exhausted(output):
+            # Distinct from an ordinary write failure, and not self-healing: statuses
+            # cannot be deleted, so this SHA can never carry a fresh proof again. The
+            # only recovery is a new head SHA, which invalidates the review dossier.
+            # Named so the condition is visible as a state rather than buried in a
+            # generic write error, as it was between 2026-06-04 and 2026-08-22.
+            return False, f"{ADMISSION_STATUS_CAP_REASON}: {output}"
         return False, output or f"status write failed rc={proc.returncode}"
     return True, output
 
@@ -3055,13 +3076,27 @@ def run_reconciler(
                 and not status_result[0]
             ):
                 assert admission_status is not None
+                cap_exhausted = ADMISSION_STATUS_CAP_REASON in (status_result[1] or "")
+                if cap_exhausted:
+                    LOG.error(
+                        "PR #%s: %s — this head SHA can never carry a fresh admission proof; "
+                        "recovery requires a new head SHA, which invalidates the review dossier",
+                        decision.pr.number,
+                        ADMISSION_STATUS_CAP_REASON,
+                    )
                 mutation_results.append(
                     {
                         **decision.as_dict(),
                         "action": "set_admission_status",
                         "status_state": admission_status[0],
                         "ok": False,
-                        "message": "admission status write failed; queue mutation skipped",
+                        "terminal_for_head_sha": cap_exhausted,
+                        "message": (
+                            f"{ADMISSION_STATUS_CAP_REASON}; queue mutation skipped and this head "
+                            "SHA cannot recover — a new head SHA is required"
+                            if cap_exhausted
+                            else "admission status write failed; queue mutation skipped"
+                        ),
                         "admission_status": {
                             "state": admission_status[0],
                             "ok": status_result[0],
