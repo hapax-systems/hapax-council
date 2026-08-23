@@ -91,14 +91,20 @@ def _load_api_key(pass_key: str) -> str | None:
             check=False,
         )
     except (subprocess.TimeoutExpired, FileNotFoundError) as e:
-        log.warning("hapax-secret failed (%s): %s", pass_key, e)
+        log.warning(
+            "hapax-secret failed (%s): %s. Next action: hapax-secret --where %s",
+            pass_key,
+            e,
+            pass_key,
+        )
         return None
     if result.returncode != 0:
         log.warning(
-            "hapax-secret returned %d for %s: %s",
+            "hapax-secret returned %d for %s: %s. Next action: hapax-secret --where %s",
             result.returncode,
             pass_key,
             result.stderr.strip(),
+            pass_key,
         )
         return None
     return result.stdout.strip() or None

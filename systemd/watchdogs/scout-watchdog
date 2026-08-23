@@ -3,7 +3,13 @@
 # Runs via systemd timer. Saves report and notifies on actionable findings.
 set -euo pipefail
 
-cd /home/hapax/projects/hapax-council
+COUNCIL_ROOT="${HAPAX_COUNCIL_ROOT:-${HOME}/.cache/hapax/source-activation/worktree}"
+if [[ ! -e "${COUNCIL_ROOT}/.git" ]]; then
+  echo "ERROR: council activation checkout missing at ${COUNCIL_ROOT}" >&2
+  echo "NEXT ACTION: run source activation or set HAPAX_COUNCIL_ROOT to that worktree" >&2
+  exit 1
+fi
+cd "${COUNCIL_ROOT}"
 
 # Load credentials from reins FileStore via hapax-secret (not pass).
 pass_first_line() {
@@ -20,8 +26,8 @@ export LANGFUSE_SECRET_KEY
 # Tavily credentials are resolved inside shared.tavily_client from env/FileStore
 # so the watchdog does not export them into the process supervisor boundary.
 
-PROFILES=/home/hapax/projects/hapax-council/profiles
-UV=/home/hapax/.local/bin/uv
+PROFILES="${COUNCIL_ROOT}/profiles"
+UV="${HAPAX_UV:-${HOME}/.local/bin/uv}"
 
 # Run horizon scan
 $UV run python -m agents.scout --save --notify 2>/dev/null || {

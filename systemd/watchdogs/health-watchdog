@@ -4,7 +4,7 @@
 # Sends to ntfy (mobile push) + notify-send (desktop) via shared.notify.
 set -euo pipefail
 
-SOURCE_ACTIVATION_STATE_DIR="${HAPAX_SOURCE_ACTIVATION_STATE_DIR:-/home/hapax/.cache/hapax/source-activation}"
+SOURCE_ACTIVATION_STATE_DIR="${HAPAX_SOURCE_ACTIVATION_STATE_DIR:-${HOME}/.cache/hapax/source-activation}"
 SOURCE_ACTIVATION_RELEASES_DIR="${HAPAX_SOURCE_ACTIVATION_RELEASES_DIR:-$SOURCE_ACTIVATION_STATE_DIR/releases}"
 SOURCE_ACTIVATION_REPO="${HAPAX_SOURCE_ACTIVATION_WORKTREE:-$SOURCE_ACTIVATION_STATE_DIR/worktree}"
 HEALTH_MONITOR_REPO=""
@@ -43,7 +43,7 @@ fi
 cd "$HEALTH_MONITOR_REPO"
 export HAPAX_HEALTH_MONITOR_ACTIVE_REPO="$HEALTH_MONITOR_REPO"
 
-UV="${HAPAX_UV:-/home/hapax/.local/bin/uv}"
+UV="${HAPAX_UV:-${HOME}/.local/bin/uv}"
 
 # Validate uv exists
 if [[ ! -x "$UV" ]]; then
@@ -57,6 +57,7 @@ fi
 export LITELLM_API_KEY
 LITELLM_API_KEY=$(hapax-secret litellm/master-key 2>/dev/null) || {
     echo "WARN: Could not load LITELLM_API_KEY from hapax-secret" >&2
+    echo "NEXT ACTION: hapax-secret --where litellm/master-key ; run hapax-secret to put if missing" >&2
     export LITELLM_API_KEY="changeme"
 }
 export LANGFUSE_PUBLIC_KEY

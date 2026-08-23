@@ -45,6 +45,7 @@ class TestEnvVarFallback:
             )
             assert operator_orcid() == "0009-0001-5146-4548"
             mock_run.assert_called_once()
+            assert mock_run.call_args.args[0][:1] == ["hapax-secret"]
 
 
 class TestFileStoreFallback:
