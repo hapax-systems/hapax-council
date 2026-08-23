@@ -525,6 +525,8 @@ def _default_done_gate_runner(
         ),
         None,
     )
+    staged_after: list[Path] = []
+    gates_ok = False
     try:
         for name, command in commands:
             before_hash = _sha256(snapshot.path.read_bytes())
@@ -549,6 +551,7 @@ def _default_done_gate_runner(
                     cookie.write_text(invocation, encoding="utf-8")
                     os.replace(debt_preflight, after_path)
                     debt_preflight = None
+                    staged_after.extend((after_path, cookie))
                     if note_residue is not None:
                         note_residue.extend((after_path, cookie))
                 if (
@@ -611,11 +614,15 @@ def _default_done_gate_runner(
                     stderr_sha256=_sha256(result.stderr.encode()),
                 )
             )
+        gates_ok = True
     finally:
         if debt_preflight is not None:
             debt_preflight.unlink(missing_ok=True)
         if ledger_copy is not None:
             ledger_copy.unlink(missing_ok=True)
+        if not gates_ok:
+            for residue in staged_after:
+                residue.unlink(missing_ok=True)
     live_sha = _sha256(snapshot.path.read_bytes())
     return tuple(replace(item, note_sha256=live_sha) for item in evidence)
 
