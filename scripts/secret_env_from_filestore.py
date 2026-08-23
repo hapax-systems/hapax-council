@@ -127,11 +127,19 @@ for env_name, value in LITERALS.items():
 out.parent.mkdir(parents=True, exist_ok=True)
 tmp = out.with_name(f".{out.name}.tmp")
 payload = "\n".join(lines) + "\n"
+# 0600 EnvironmentFile on /run/user tmpfs (systemd hapax-secrets.service).
+# Not durable storage; FileStore remains the store.
+fd = -1
 try:
-    tmp.write_text(payload)
-    os.chmod(tmp, 0o600)
+    tmp.unlink(missing_ok=True)
+    fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+    os.write(fd, payload.encode("utf-8"))  # codeql[py/clear-text-storage-sensitive-data]
+    os.close(fd)
+    fd = -1
     os.replace(tmp, out)
 except Exception:
+    if fd >= 0:
+        os.close(fd)
     tmp.unlink(missing_ok=True)
     raise
 print(f"wrote {out} keys={len(lines)} backend={store.backend_id}")
