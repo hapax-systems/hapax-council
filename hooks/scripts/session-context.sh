@@ -26,6 +26,17 @@ if [ -n "$HOOK_INPUT" ] && command -v jq >/dev/null 2>&1; then
   # Naming it without supplying the path made that unactionable: the hook consumes stdin,
   # so the reader cannot go and look at the payload themselves.
   TRANSCRIPT_PATH="$(printf '%s' "$HOOK_INPUT" | jq -r '.transcript_path // empty' 2>/dev/null || true)"
+  # This value is interpolated into injected context, so it is content, not just data:
+  # a path carrying newlines or markdown could append arbitrary text to a marker whose
+  # entire purpose is to be trustworthy about provenance. Accept only an absolute path
+  # built from ordinary path characters; anything else is dropped, and the sentence with
+  # it. Stripping the offending characters instead would be the wrong direction — it
+  # rewrites a path into one that was never supplied, and the injected text survives the
+  # strip anyway, just on one line. Reject, do not repair.
+  case "$TRANSCRIPT_PATH" in
+    /*) case "$TRANSCRIPT_PATH" in *[!A-Za-z0-9._/-]*) TRANSCRIPT_PATH="" ;; esac ;;
+    *) TRANSCRIPT_PATH="" ;;
+  esac
 fi
 
 # A compaction summary is agent-authored prose that occupies the position of the record it
@@ -37,7 +48,7 @@ if [ "$SESSION_SOURCE" = "compact" ]; then
   cat <<'COMPACT_MARKER'
 ## COMPACTION BOUNDARY — read before trusting anything you "remember"
 
-This session resumed from an auto-compaction. What you carry from before it is **your own
+This session resumed from a compaction. What you carry from before it is **your own
 generated summary, not the record**. Treat it as notes, not proof:
 
 - Where it says a step was done, a test passed, a PR merged, or a fix worked — **verify that
