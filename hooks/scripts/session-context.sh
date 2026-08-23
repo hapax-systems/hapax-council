@@ -19,8 +19,13 @@ if [ ! -t 0 ]; then
   HOOK_INPUT="$(timeout 2 cat 2>/dev/null || true)"
 fi
 SESSION_SOURCE=""
+TRANSCRIPT_PATH=""
 if [ -n "$HOOK_INPUT" ] && command -v jq >/dev/null 2>&1; then
   SESSION_SOURCE="$(printf '%s' "$HOOK_INPUT" | jq -r '.source // empty' 2>/dev/null || true)"
+  # The marker's one concrete recovery action is "prefer the transcript to the summary".
+  # Naming it without supplying the path made that unactionable: the hook consumes stdin,
+  # so the reader cannot go and look at the payload themselves.
+  TRANSCRIPT_PATH="$(printf '%s' "$HOOK_INPUT" | jq -r '.transcript_path // empty' 2>/dev/null || true)"
 fi
 
 # A compaction summary is agent-authored prose that occupies the position of the record it
@@ -43,10 +48,13 @@ generated summary, not the record**. Treat it as notes, not proof:
 - Your role/claim binding and your hook set are **not** re-established by compaction. Re-check
   them rather than assuming they carried.
 
-The full transcript is on disk at the path in this session's hook payload; prefer it to the summary
-for anything load-bearing.
-
 COMPACT_MARKER
+  # Emitted only when the payload actually supplied a path. An instruction to go and read
+  # something, with no way to find it, is worse than silence: it reads as a recovery route
+  # that exists.
+  if [ -n "$TRANSCRIPT_PATH" ]; then
+    printf 'The full transcript is on disk at %s — prefer it to the summary for anything\nload-bearing.\n\n' "$TRANSCRIPT_PATH"
+  fi
 fi
 
 echo '## System Context'
