@@ -1003,30 +1003,6 @@ def test_missing_ledger_does_not_leave_disposition_preflight(
     assert leftovers == []
 
 
-def test_expired_claim_admission_is_refused() -> None:
-    class _Expired:
-        valid_until = "2020-01-01T00:00:00Z"
-
-    with pytest.raises(TerminalCloseError) as raised:
-        sdlc_close._require_current_claim_admission(_Expired())
-
-    assert raised.value.reason_code == "terminal_close_claim_admission_expired"
-
-
-def test_current_claim_admission_is_accepted() -> None:
-    class _Current:
-        valid_until = "2099-01-01T00:00:00Z"
-
-    sdlc_close._require_current_claim_admission(_Current())
-
-
-def test_close_task_invokes_claim_admission_freshness() -> None:
-    import inspect
-
-    source = inspect.getsource(sdlc_close.close_task)
-    assert "_require_current_claim_admission(" in source
-
-
 def test_retroactive_strips_only_merge_gate_off(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,

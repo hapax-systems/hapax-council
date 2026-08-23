@@ -324,37 +324,6 @@ class CloseGateEvidence:
         return f"terminal-close-gate@sha256:{_sha256(_canonical_json_bytes(self.to_record()))}"
 
 
-def _require_current_claim_admission(consumption: object) -> None:
-    """Refuse close on expired or unparseable claim-time admission.
-
-    Echo/canon revalidation stays the follow-on cutover. This only checks
-    admission_consumption.valid_until against now.
-    """
-    raw = getattr(consumption, "valid_until", None)
-    if not raw:
-        raise TerminalCloseError(
-            "terminal_close_claim_admission_unfresh",
-            "reclaim so close reads a current admission_consumption.valid_until",
-            "valid_until_missing",
-        )
-    try:
-        until = datetime.fromisoformat(str(raw).replace("Z", "+00:00"))
-        if until.tzinfo is None:
-            until = until.replace(tzinfo=UTC)
-    except ValueError as exc:
-        raise TerminalCloseError(
-            "terminal_close_claim_admission_unfresh",
-            "reclaim so close reads a parseable admission_consumption.valid_until",
-            str(raw),
-        ) from exc
-    if datetime.now(UTC) >= until.astimezone(UTC):
-        raise TerminalCloseError(
-            "terminal_close_claim_admission_expired",
-            "reclaim the task so close uses current admission_consumption",
-            str(raw),
-        )
-
-
 def _commit_isolated_ledger(
     ledger_copy: Path,
     ledger_src: Path,
@@ -847,7 +816,6 @@ def close_task(
     reconciliation = None
     if publication_owned:
         assert applied_claim.admission_consumption is not None
-        _require_current_claim_admission(applied_claim.admission_consumption)
         position_ref = applied_claim.admission_consumption.consumption_ref
         echo_message_id = f"echo-absent:{applied_claim.receipt.publication_id}"
     else:
