@@ -20,7 +20,11 @@ def test_hapax_secrets_unit_uses_filestore_not_pass() -> None:
     text = UNIT.read_text(encoding="utf-8")
     producer = REPO_ROOT / "scripts" / "secret_env_from_filestore.py"
     assert producer.is_file()
-    assert "LITELLM_BASE_URL" in producer.read_text(encoding="utf-8")
+    producer_text = producer.read_text(encoding="utf-8")
+    assert "LITELLM_BASE_URL" in producer_text
+    assert "HAPAX_OPERATOR_ORCID" in producer_text
+    assert ".local/share/reins/current/api" in producer_text
+    assert "projects/reins/api" not in producer_text
     assert "pass show" not in text
     assert "PASSWORD_STORE_DIR" not in text
     assert "source-activation/worktree/scripts/secret_env_from_filestore.py" in text

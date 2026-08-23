@@ -35,10 +35,10 @@ def operator_orcid() -> str | None:
     Resolution order:
 
     1. ``$HAPAX_OPERATOR_ORCID`` env var — wins if non-empty. Set by
-       ``hapax-secrets.service`` (FileStore via
-       ``secret_env_from_filestore.py``) and consumed by services that
-       load ``/run/user/%U/hapax-secrets.env`` via ``EnvironmentFile=``,
-       or by ``scripts/configure-orcid.sh`` for one-time bootstrap.
+       ``hapax-secrets.service`` running ``scripts/secret_env_from_filestore.py``
+       (FileStore name ``orcid-orcid``) and consumed via
+       ``EnvironmentFile=/run/user/%U/hapax-secrets.env``, or by
+       ``scripts/configure-orcid.sh`` for one-time bootstrap.
     2. ``hapax-secret orcid/orcid`` — FileStore fallback for processes
        that don't have the env var loaded (interactive CLI, tests,
        ad-hoc scripts).
