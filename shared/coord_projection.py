@@ -3738,7 +3738,7 @@ def _drain_peer_aliases(dir_fd: int, keep_name: str) -> None:
     descriptors from _open_parent_dir are O_RDONLY; NFS maps flock to
     fcntl, which refuses LOCK_EX on a read-only fd.
     """
-    lock_name = ".drain-lock"
+    lock_name = _DRAIN_LOCK_NAME
     lock_fd = os.open(
         lock_name,
         os.O_RDWR | os.O_CREAT | os.O_CLOEXEC,
@@ -4738,6 +4738,7 @@ def _open_existing_private_directory_fd(path: Path) -> int | None:
         raise
 
 
+_DRAIN_LOCK_NAME = ".drain-lock"
 _TRANSACTION_DIRECTORY_RE = re.compile(r"^sdlc-txn-[0-9a-f]{64}\.attempt-[0-9]{4,}$")
 _TRANSACTION_BLOB_RE = re.compile(r"^[0-9]{4}\.(?:before|after)$")
 _TRANSACTION_PHASE_PROJECTION_RE = re.compile(r"^phase-(?:prepared|applied|aborted)\.append\.json$")
@@ -4783,6 +4784,8 @@ def _transaction_manifest_paths(
     paths: list[Path] = []
     try:
         for name in sorted(os.listdir(root_fd)):
+            if name == _DRAIN_LOCK_NAME:
+                continue
             if allow_materialization_plans and _MATERIALIZATION_PLAN_RE.fullmatch(name):
                 continue
             if _TRANSACTION_DIRECTORY_RE.fullmatch(name) is None:
@@ -5102,6 +5105,8 @@ def _lifecycle_estate_usage(*roots: Path) -> tuple[int, int, int]:
                             + 2 * _MAX_LIFECYCLE_PHASE_BYTES
                         )
             for name in root_names:
+                if name == _DRAIN_LOCK_NAME:
+                    continue
                 if root_index > 0 and _MATERIALIZATION_PLAN_RE.fullmatch(name):
                     continue
                 if _TRANSACTION_DIRECTORY_RE.fullmatch(name) is None:
@@ -7300,6 +7305,8 @@ def _capture_lifecycle_journals(
                         ),
                     )
                 )
+            continue
+        if name == _DRAIN_LOCK_NAME:
             continue
         if _TRANSACTION_DIRECTORY_RE.fullmatch(name) is None:
             captured.append(
