@@ -939,8 +939,18 @@ def test_disposition_debt_is_copied_back_to_the_live_ledger(
 
     monkeypatch.setattr(sdlc_close.subprocess, "run", fake_run)
 
-    sdlc_close._default_done_gate_runner(snapshot, "done", "4483", False, None)
+    pending: list[tuple[Path, Path, bytes]] = []
+    sdlc_close._default_done_gate_runner(
+        snapshot, "done", "4483", False, None, ledger_commit=pending
+    )
 
+    live = yaml.safe_load(ledger.read_text(encoding="utf-8"))
+    close_rows = [row for row in live if row.get("task_id") == "task-close"]
+    assert len(close_rows) == 1
+    assert close_rows[0].get("debt") is None
+    assert pending
+    for item in pending:
+        sdlc_close._commit_isolated_ledger(*item)
     live = yaml.safe_load(ledger.read_text(encoding="utf-8"))
     close_rows = [row for row in live if row.get("task_id") == "task-close"]
     assert len(close_rows) == 1
@@ -975,6 +985,22 @@ def test_disposition_gate_off_isolates_missing_global_ledger(
         assert isolated != str(default)
         assert isolated.endswith(".ledger.yaml")
     assert not default.exists()
+
+
+def test_missing_ledger_does_not_leave_disposition_preflight(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    fixture = _fixture(tmp_path, monkeypatch)
+    Path(os.environ["HAPAX_ARTIFACT_LEDGER_PATH"]).unlink()
+    snapshot = resolve_task_note(fixture.vault, fixture.task_id, state="active")
+    with pytest.raises(TerminalCloseError) as raised:
+        sdlc_close._default_done_gate_runner(snapshot, "done", "4483", False, None)
+    assert raised.value.reason_code == "terminal_close_artifact_ledger_missing"
+    leftovers = [
+        path for path in snapshot.path.parent.iterdir() if ".disposition-preflight." in path.name
+    ]
+    assert leftovers == []
 
 
 def test_expired_claim_admission_is_refused() -> None:

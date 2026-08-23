@@ -355,12 +355,35 @@ def _require_current_claim_admission(consumption: object) -> None:
         )
 
 
+def _commit_isolated_ledger(
+    ledger_copy: Path,
+    ledger_src: Path,
+    ledger_original: bytes,
+) -> None:
+    """Install disposition debt only after the terminal close committed."""
+    if not ledger_copy.is_file():
+        return
+    copy_bytes = ledger_copy.read_bytes()
+    live = ledger_src.read_bytes() if ledger_src.is_file() else b""
+    if live != ledger_original:
+        raise TerminalCloseError(
+            "terminal_close_artifact_ledger_drift",
+            "rerun close against one stable artifact ledger preimage",
+            str(ledger_src),
+        )
+    if copy_bytes != live:
+        os.replace(ledger_copy, ledger_src)
+        return
+    ledger_copy.unlink(missing_ok=True)
+
+
 def _default_done_gate_runner(
     snapshot: TaskNoteSnapshot,
     final_status: str,
     pr: str,
     retroactive: bool,
     debt_reason: str | None,
+    ledger_commit: list[tuple[Path, Path, bytes]] | None = None,
 ) -> tuple[CloseGateEvidence, ...]:
     observed_at = datetime.now(UTC).isoformat()
     authority_case = str(snapshot.frontmatter.get("authority_case") or "")
@@ -458,21 +481,6 @@ def _default_done_gate_runner(
                 "restore the governed artifact disposition checker before close",
                 str(disposition),
             )
-        # Checker may write the note. Always run against a copy so a refuse
-        # cannot leave residue on the live preimage. Success copies back.
-        disposition_preflight = snapshot.path.with_name(
-            f".{snapshot.path.name}.disposition-preflight.{os.getpid()}"
-        )
-        disposition_preflight.write_bytes(snapshot.path.read_bytes())
-        disposition_command = [
-            sys.executable,
-            "-I",
-            str(disposition),
-            str(disposition_preflight),
-            snapshot.task_id,
-        ]
-        if debt_reason:
-            disposition_command.extend(["--debt", debt_reason])
         ledger_src = Path(
             environment.get(
                 "HAPAX_ARTIFACT_LEDGER_PATH",
@@ -490,6 +498,22 @@ def _default_done_gate_runner(
                 "create a well-formed artifact ledger before close",
                 str(ledger_src),
             )
+        # Checker may write the note. Always run against a copy so a refuse
+        # cannot leave residue on the live preimage. Ledger copy-back waits
+        # until the terminal close commits.
+        disposition_preflight = snapshot.path.with_name(
+            f".{snapshot.path.name}.disposition-preflight.{os.getpid()}"
+        )
+        disposition_preflight.write_bytes(snapshot.path.read_bytes())
+        disposition_command = [
+            sys.executable,
+            "-I",
+            str(disposition),
+            str(disposition_preflight),
+            snapshot.task_id,
+        ]
+        if debt_reason:
+            disposition_command.extend(["--debt", debt_reason])
         # Isolate the child from the live ledger even when the gate is OFF
         # and no file exists, so a later debt write cannot create the global
         # path during a still-refusable preflight.
@@ -583,18 +607,10 @@ def _default_done_gate_runner(
                     and ledger_original is not None
                     and ledger_src is not None
                     and ledger_copy.is_file()
+                    and ledger_commit is not None
                 ):
-                    copy_bytes = ledger_copy.read_bytes()
-                    live = ledger_src.read_bytes() if ledger_src.is_file() else b""
-                    if live != ledger_original:
-                        raise TerminalCloseError(
-                            "terminal_close_artifact_ledger_drift",
-                            "rerun close against one stable artifact ledger preimage",
-                            str(ledger_src),
-                        )
-                    if copy_bytes != live:
-                        os.replace(ledger_copy, ledger_src)
-                        ledger_copy = None
+                    ledger_commit.append((ledger_copy, ledger_src, ledger_original))
+                    ledger_copy = None
             elif before_hash != snapshot.sha256 or after_hash != snapshot.sha256:
                 raise TerminalCloseError(
                     "terminal_close_preflight_note_drift",
@@ -850,12 +866,14 @@ def close_task(
     receipt_path = acceptance_receipt_path(snapshot.path, task_id)
     receipt_bytes = receipt_path.read_bytes() if receipt_path.is_file() else None
     receipt_mode = _mode(receipt_path) if receipt_bytes is not None else None
+    ledger_commit: list[tuple[Path, Path, bytes]] = []
     gate_evidence = _default_done_gate_runner(
         snapshot,
         final_status,
         pr,
         retroactive,
         debt_reason,
+        ledger_commit=ledger_commit,
     )
     live_note = snapshot.path.read_bytes()
     if live_note != snapshot.content:
@@ -1173,17 +1191,25 @@ def close_task(
                 expected_session_id=session_id,
             )
 
-    return _execute_terminal_close_transition(
-        event_log=event_log,
-        intent=intent,
-        projections=projections,
-        timestamp=timestamp,
-        terminal_close_admission={
-            **admission.to_record(),
-            "admission_ref": admission.admission_ref,
-        },
-        locked_preflight=locked_preflight,
-    )
+    try:
+        receipt = _execute_terminal_close_transition(
+            event_log=event_log,
+            intent=intent,
+            projections=projections,
+            timestamp=timestamp,
+            terminal_close_admission={
+                **admission.to_record(),
+                "admission_ref": admission.admission_ref,
+            },
+            locked_preflight=locked_preflight,
+        )
+    except Exception:
+        for copy, _src, _original in ledger_commit:
+            copy.unlink(missing_ok=True)
+        raise
+    for copy, src, original in ledger_commit:
+        _commit_isolated_ledger(copy, src, original)
+    return receipt
 
 
 def main(argv: list[str] | None = None) -> int:

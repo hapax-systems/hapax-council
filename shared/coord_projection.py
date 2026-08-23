@@ -3733,15 +3733,26 @@ def _drain_peer_aliases(dir_fd: int, keep_name: str) -> None:
     Rename each extra aside first. If the parked name is not keep's inode,
     it is a racer: put it back only when dest is still absent. Do not
     unlink or rename-over a replacement.
+
+    Exclusive flock is taken on a write-opened regular sibling. Directory
+    descriptors from _open_parent_dir are O_RDONLY; NFS maps flock to
+    fcntl, which refuses LOCK_EX on a read-only fd.
     """
-    fcntl.flock(dir_fd, fcntl.LOCK_EX)
+    lock_name = f".{keep_name}.drain-lock"
+    lock_fd = os.open(
+        lock_name,
+        os.O_RDWR | os.O_CREAT | os.O_CLOEXEC,
+        0o600,
+        dir_fd=dir_fd,
+    )
     try:
+        fcntl.flock(lock_fd, fcntl.LOCK_EX)
         try:
             names = os.listdir(dir_fd)
         except OSError:
             return
         for extra in names:
-            if extra == keep_name:
+            if extra in {keep_name, lock_name}:
                 continue
             if not _same_regular_inode(dir_fd, extra, keep_name):
                 continue
@@ -3755,7 +3766,12 @@ def _drain_peer_aliases(dir_fd: int, keep_name: str) -> None:
                 continue
             os.unlink(unique, dir_fd=dir_fd)
     finally:
-        fcntl.flock(dir_fd, fcntl.LOCK_UN)
+        fcntl.flock(lock_fd, fcntl.LOCK_UN)
+        os.close(lock_fd)
+        try:
+            os.unlink(lock_name, dir_fd=dir_fd)
+        except OSError:
+            pass
 
 
 def _hardlink_extra_names(
