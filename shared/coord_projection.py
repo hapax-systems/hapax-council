@@ -3816,13 +3816,6 @@ def _hardlink_extra_names(
         _drop_link_name(live_name),
         _drop_src_name(live_name),
     ]
-    try:
-        listed = os.listdir(dir_fd)
-    except OSError:
-        listed = []
-    for entry in listed:
-        if entry.endswith(".drop-src") or entry.endswith(".drop-link") or ".drop-src." in entry:
-            names.append(entry)
     seen: dict[str, None] = {}
     ordered: list[str] = []
     for extra in names:

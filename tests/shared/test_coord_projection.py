@@ -3603,6 +3603,28 @@ def test_cas_rollback_create_nlink3_drops_all_extras(tmp_path: Path) -> None:
     assert src.read_bytes() == b"postimage"
 
 
+def test_cas_rollback_create_leaves_unrelated_drop_src_suffix(tmp_path: Path) -> None:
+    src = tmp_path / "scratch"
+    dst = tmp_path / "created.md"
+    decoy = tmp_path / "unrelated.drop-src"
+    src.write_bytes(b"postimage")
+    os.link(src, dst)
+    os.link(src, decoy)
+    projection = cp.FileProjection.from_snapshot(
+        dst,
+        before=None,
+        before_mode=None,
+        after=b"postimage",
+        after_mode=stat.S_IMODE(dst.stat().st_mode),
+    )
+    scratch = cp._scratch_for(projection, "txn-create-decoy", 0)
+    scratch = dataclasses.replace(scratch, path=src)
+    assert cp._cas_rollback(projection, scratch) is True
+    assert not dst.exists()
+    assert decoy.read_bytes() == b"postimage"
+    assert src.read_bytes() == b"postimage"
+
+
 def test_cas_rollback_delete_nlink3_drops_all_extras(tmp_path: Path) -> None:
     dest = tmp_path / "note.md"
     parked = tmp_path / "parked"
