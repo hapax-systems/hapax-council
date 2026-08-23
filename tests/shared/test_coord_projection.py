@@ -3669,6 +3669,7 @@ def test_drain_peer_aliases_leaves_a_replacement(tmp_path: Path) -> None:
         assert keep.read_bytes() == b"keep"
         assert not extra.exists()
         assert racer.read_bytes() == b"racer"
+        assert (tmp_path / ".note.md.drain-lock").is_file()
     finally:
         os.close(fd)
 
