@@ -3724,6 +3724,33 @@ def _is_drain_target_name(name: str, keep_name: str) -> bool:
     return name.endswith((".transition-tmp", ".drop-src", ".drop-link"))
 
 
+def _park_and_drop_if_inode(dir_fd: int, name: str, expected_ino: int) -> bool:
+    """Rename name aside and unlink only if that inode is still expected_ino.
+
+    Returns True when the name is gone. False if a racer was restored to name.
+    """
+    unique = f".{name}.drain.{os.getpid()}.{secrets.token_hex(4)}"
+    try:
+        os.rename(name, unique, src_dir_fd=dir_fd, dst_dir_fd=dir_fd)
+    except FileNotFoundError:
+        return True
+    except OSError:
+        return False
+    try:
+        parked = os.stat(unique, dir_fd=dir_fd, follow_symlinks=False)
+    except OSError:
+        return False
+    if parked.st_ino != expected_ino:
+        _restore_parked_name(dir_fd, unique, name)
+        return False
+    try:
+        os.unlink(unique, dir_fd=dir_fd)
+    except OSError:
+        _restore_parked_name(dir_fd, unique, name)
+        return False
+    return True
+
+
 def _restore_parked_name(dir_fd: int, parked: str, dest: str) -> None:
     """Put parked back at dest without clobbering a racing replacement.
 
@@ -4310,7 +4337,9 @@ def _cas_rollback(projection: FileProjection, scratch: _ProjectionScratch) -> bo
             ):
                 if not _same_regular_inode(dir_fd, name, extras[0]):
                     return False
-                os.unlink(name, dir_fd=dir_fd)
+                keep_ino = dest_stat.st_ino
+                if not _park_and_drop_if_inode(dir_fd, name, keep_ino):
+                    return False
                 scratch_present = scratch.path.name in extras
                 for extra in extras:
                     if extra == scratch.path.name:
@@ -4324,7 +4353,7 @@ def _cas_rollback(projection: FileProjection, scratch: _ProjectionScratch) -> bo
                             follow_symlinks=False,
                         )
                         scratch_present = True
-                    os.unlink(extra, dir_fd=dir_fd)
+                    _drain_peer_aliases(dir_fd, scratch.path.name, extra_names=(extra,))
                 keep = scratch.path.name if scratch.path.name != name else extras[0]
                 _drain_peer_aliases(dir_fd, keep)
                 os.fsync(dir_fd)
@@ -4362,7 +4391,7 @@ def _cas_rollback(projection: FileProjection, scratch: _ProjectionScratch) -> bo
                             return False
                         raise
                     if extra != scratch.path.name:
-                        os.unlink(extra, dir_fd=dir_fd)
+                        _drain_peer_aliases(dir_fd, name, extra_names=(extra,))
                     os.fsync(dir_fd)
                     return True
             if (
@@ -4371,10 +4400,7 @@ def _cas_rollback(projection: FileProjection, scratch: _ProjectionScratch) -> bo
                 and dest_stat.st_nlink >= 2
                 and extras
             ):
-                for extra in extras:
-                    if not _same_regular_inode(dir_fd, name, extra):
-                        continue
-                    os.unlink(extra, dir_fd=dir_fd)
+                _drain_peer_aliases(dir_fd, name, extra_names=tuple(extras))
                 _drain_peer_aliases(dir_fd, name)
                 os.fsync(dir_fd)
                 return True
@@ -4400,14 +4426,13 @@ def _cas_rollback(projection: FileProjection, scratch: _ProjectionScratch) -> bo
                 # A drop-link extra may also be present (nlink>=3).
                 if not _same_regular_inode(dir_fd, name, displaced_name):
                     return False
-                for extra in (
+                extras = (
                     _drop_link_name(name),
                     _drop_src_name(name),
                     _drop_src_name(scratch.path.name),
-                ):
-                    if _same_regular_inode(dir_fd, name, extra):
-                        os.unlink(extra, dir_fd=dir_fd)
-                os.unlink(displaced_name, dir_fd=dir_fd)
+                    displaced_name,
+                )
+                _drain_peer_aliases(dir_fd, name, extra_names=extras)
                 _drain_peer_aliases(dir_fd, name)
                 os.fsync(dir_fd)
                 return True
@@ -4505,8 +4530,7 @@ def _cas_rollback(projection: FileProjection, scratch: _ProjectionScratch) -> bo
                     ):
                         if extra == scratch.path.name:
                             continue
-                        if _same_regular_inode(dir_fd, scratch.path.name, extra):
-                            os.unlink(extra, dir_fd=dir_fd)
+                        _drain_peer_aliases(dir_fd, scratch.path.name, extra_names=(extra,))
                     os.fsync(dir_fd)
 
         def _state_or_none(entry_name: str):
@@ -4571,11 +4595,12 @@ def _cas_rollback(projection: FileProjection, scratch: _ProjectionScratch) -> bo
                         if exc.errno == errno.EEXIST:
                             return False
                         raise
-                    for extra in _hardlink_extra_names(dir_fd, name, scratch.path.name):
-                        if extra == name:
-                            continue
-                        if _same_regular_inode(dir_fd, name, extra):
-                            os.unlink(extra, dir_fd=dir_fd)
+                    extras = tuple(
+                        extra
+                        for extra in _hardlink_extra_names(dir_fd, name, scratch.path.name)
+                        if extra != name
+                    )
+                    _drain_peer_aliases(dir_fd, name, extra_names=extras)
                     _drain_peer_aliases(dir_fd, name)
                     os.fsync(dir_fd)
                     return True
