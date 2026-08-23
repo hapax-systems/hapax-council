@@ -1191,6 +1191,31 @@ def close_task(
                 expected_session_id=session_id,
             )
 
+    for copy, src, original in ledger_commit:
+        if not copy.is_file():
+            continue
+        copy_bytes = copy.read_bytes()
+        live = src.read_bytes() if src.is_file() else b""
+        if live != original:
+            copy.unlink(missing_ok=True)
+            raise TerminalCloseError(
+                "terminal_close_artifact_ledger_drift",
+                "rerun close against one stable artifact ledger preimage",
+                str(src),
+            )
+        if copy_bytes == live:
+            copy.unlink(missing_ok=True)
+            continue
+        src_mode = _mode(src) if src.is_file() else 0o600
+        projections.append(
+            FileProjection.from_snapshot(
+                src,
+                before=original if src.is_file() else None,
+                before_mode=src_mode if src.is_file() else None,
+                after=copy_bytes,
+                after_mode=src_mode,
+            )
+        )
     try:
         receipt = _execute_terminal_close_transition(
             event_log=event_log,
@@ -1207,8 +1232,8 @@ def close_task(
         for copy, _src, _original in ledger_commit:
             copy.unlink(missing_ok=True)
         raise
-    for copy, src, original in ledger_commit:
-        _commit_isolated_ledger(copy, src, original)
+    for copy, _src, _original in ledger_commit:
+        copy.unlink(missing_ok=True)
     return receipt
 
 

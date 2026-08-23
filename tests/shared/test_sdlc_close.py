@@ -1020,6 +1020,13 @@ def test_current_claim_admission_is_accepted() -> None:
     sdlc_close._require_current_claim_admission(_Current())
 
 
+def test_close_task_invokes_claim_admission_freshness() -> None:
+    import inspect
+
+    source = inspect.getsource(sdlc_close.close_task)
+    assert "_require_current_claim_admission(" in source
+
+
 def test_retroactive_strips_only_merge_gate_off(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
