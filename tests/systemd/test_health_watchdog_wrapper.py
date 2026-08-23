@@ -160,6 +160,10 @@ def _base_env(
         else "#!/usr/bin/env sh\nexit 1\n"
     )
     _write_executable(bin_dir / "pass", pass_body)
+    fake_secret = _write_executable(
+        bin_dir / "hapax-secret",
+        "#!/usr/bin/env sh\nprintf 'fake-secret\\n'\n",
+    )
     _write_executable(
         bin_dir / "notify-send",
         """
@@ -179,6 +183,7 @@ def _base_env(
             "FAKE_NOTIFY_SEND_LOG": str(tmp_path / "notify-send.log"),
             "FAKE_UV_LOG": str(tmp_path / "uv.jsonl"),
             "HAPAX_UV": str(fake_uv),
+            "HAPAX_SECRET": str(fake_secret),
             "N8N_HEALTH_WEBHOOK_URL": "",
             "PATH": f"{bin_dir}:{env.get('PATH', '')}",
             "PYTHONPATH": f"{stub_root}:{env.get('PYTHONPATH', '')}",
