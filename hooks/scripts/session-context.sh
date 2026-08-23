@@ -9,6 +9,46 @@ if [ -f "$SCRIPT_DIR/agent-role.sh" ]; then
   . "$SCRIPT_DIR/agent-role.sh"
 fi
 
+# Read the hook payload. SessionStart supplies `.source` as one of
+# startup | resume | clear | compact | fork. Nothing in the estate read it before
+# 2026-08-22, so a session resumed from a generative compaction summary was
+# indistinguishable from a fresh one. Guarded: absent/!valid JSON, no jq, or a closed
+# stdin must all leave the hook behaving exactly as it did before.
+HOOK_INPUT=""
+if [ ! -t 0 ]; then
+  HOOK_INPUT="$(timeout 2 cat 2>/dev/null || true)"
+fi
+SESSION_SOURCE=""
+if [ -n "$HOOK_INPUT" ] && command -v jq >/dev/null 2>&1; then
+  SESSION_SOURCE="$(printf '%s' "$HOOK_INPUT" | jq -r '.source // empty' 2>/dev/null || true)"
+fi
+
+# A compaction summary is agent-authored prose that occupies the position of the record it
+# replaced. It carries no provenance and no confidence, and on this estate it compressed
+# 6,781,491 bytes into 23,694 (286:1) while quoting roughly half the operator's turns and
+# marking neither half. Claude Code does not mark it; kimi's harness does. This is the
+# buildable equivalent: mark the boundary, since the summariser is not ours to change.
+if [ "$SESSION_SOURCE" = "compact" ]; then
+  cat <<'COMPACT_MARKER'
+## COMPACTION BOUNDARY — read before trusting anything you "remember"
+
+This session resumed from an auto-compaction. What you carry from before it is **your own
+generated summary, not the record**. Treat it as notes, not proof:
+
+- Where it says a step was done, a test passed, a PR merged, or a fix worked — **verify that
+  yourself** before repeating it or building on it.
+- Operator statements survive compaction only as far as the summariser chose to quote them, and
+  nothing marks which half was dropped. Do not treat a paraphrase as an instruction.
+- A summary can assert content no source supports. If a claim matters, find its source.
+- Your role/claim binding and your hook set are **not** re-established by compaction. Re-check
+  them rather than assuming they carried.
+
+The full transcript is on disk at the path in this session's hook payload; prefer it to the summary
+for anything load-bearing.
+
+COMPACT_MARKER
+fi
+
 echo '## System Context'
 
 if declare -F hapax_agent_interface >/dev/null 2>&1; then
