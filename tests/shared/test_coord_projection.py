@@ -3325,6 +3325,7 @@ def test_einval_fallback_update_commits(tmp_path: Path) -> None:
             timestamp="2026-07-11T15:00:00Z",
         )
     assert note.read_bytes() == b"stage: S7\n"
+    assert (note.parent / ".drain-lock").is_file()
 
 
 def test_enosys_fallback_update_commits(tmp_path: Path) -> None:
