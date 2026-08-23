@@ -3296,6 +3296,19 @@ def _einval_same_dir_syscall(
     raise OSError(errno.EINVAL, "Invalid argument", f"{src_name}->{dst_name}")
 
 
+def _enosys_same_dir_syscall(
+    src_dir_fd: int,
+    src_name: str,
+    dst_dir_fd: int,
+    dst_name: str,
+    flags: int,
+) -> None:
+    if src_dir_fd != dst_dir_fd:
+        _ORIGINAL_RENAMEAT2_SYSCALL(src_dir_fd, src_name, dst_dir_fd, dst_name, flags)
+        return
+    raise OSError(errno.ENOSYS, "Function not implemented", f"{src_name}->{dst_name}")
+
+
 def test_einval_fallback_update_commits(tmp_path: Path) -> None:
     log = _log(tmp_path)
     note = tmp_path / "vault" / "task-1.md"
@@ -3303,6 +3316,24 @@ def test_einval_fallback_update_commits(tmp_path: Path) -> None:
     note.write_bytes(b"stage: S6\n")
     projection = cp.FileProjection.capture(note, after=b"stage: S7\n")
     with mock.patch.object(cp, "_renameat2_syscall", side_effect=_einval_same_dir_syscall):
+        cp.execute_lifecycle_transition(
+            event_log=log,
+            intent=_intent(),
+            projections=[projection],
+            transaction_root=tmp_path / "transactions",
+            lock_root=tmp_path / "locks",
+            timestamp="2026-07-11T15:00:00Z",
+        )
+    assert note.read_bytes() == b"stage: S7\n"
+
+
+def test_enosys_fallback_update_commits(tmp_path: Path) -> None:
+    log = _log(tmp_path)
+    note = tmp_path / "vault" / "task-1.md"
+    note.parent.mkdir()
+    note.write_bytes(b"stage: S6\n")
+    projection = cp.FileProjection.capture(note, after=b"stage: S7\n")
+    with mock.patch.object(cp, "_renameat2_syscall", side_effect=_enosys_same_dir_syscall):
         cp.execute_lifecycle_transition(
             event_log=log,
             intent=_intent(),
@@ -4172,4 +4203,7 @@ def test_einval_fallback_on_vault_nfs_mount(tmp_path: Path) -> None:
         note = root / "task-1.md"
         if note.exists():
             note.unlink()
+        lock = root / ".drain-lock"
+        if lock.exists():
+            lock.unlink()
         root.rmdir()
