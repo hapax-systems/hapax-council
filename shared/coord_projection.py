@@ -3748,7 +3748,11 @@ def _park_and_drop_if_inode(dir_fd: int, name: str, expected_ino: int) -> bool:
     except OSError:
         _restore_parked_name(dir_fd, unique, name)
         return False
-    return True
+    try:
+        os.stat(name, dir_fd=dir_fd, follow_symlinks=False)
+    except FileNotFoundError:
+        return True
+    return False
 
 
 def _restore_parked_name(dir_fd: int, parked: str, dest: str) -> None:
@@ -3812,18 +3816,13 @@ def _drain_peer_aliases(
             ]
         else:
             names = [extra for extra in extra_names if extra not in {keep_name, lock_name}]
+        try:
+            keep_stat = os.stat(keep_name, dir_fd=dir_fd, follow_symlinks=False)
+        except OSError:
+            return
+        keep_ino = keep_stat.st_ino
         for extra in names:
-            if not _same_regular_inode(dir_fd, extra, keep_name):
-                continue
-            unique = f".{extra}.drain.{os.getpid()}.{secrets.token_hex(4)}"
-            try:
-                os.rename(extra, unique, src_dir_fd=dir_fd, dst_dir_fd=dir_fd)
-            except OSError:
-                continue
-            if not _same_regular_inode(dir_fd, unique, keep_name):
-                _restore_parked_name(dir_fd, unique, extra)
-                continue
-            os.unlink(unique, dir_fd=dir_fd)
+            _park_and_drop_if_inode(dir_fd, extra, keep_ino)
     finally:
         fcntl.flock(lock_fd, fcntl.LOCK_UN)
         os.close(lock_fd)
@@ -4069,7 +4068,12 @@ def _unlink_exact_entry(
             "hold the transaction and preserve the unexpected scratch entry",
             name,
         )
-    os.unlink(name, dir_fd=dir_fd)
+    if not _park_and_drop_if_inode(dir_fd, name, expected.inode):
+        raise LifecycleTransitionError(
+            "transition_projection_scratch_cleanup_failed",
+            "hold the transaction until the exact scratch entry is absent",
+            name,
+        )
     os.fsync(dir_fd)
     if (
         _entry_state_at(

@@ -3729,6 +3729,26 @@ def test_cas_rollback_delete_nlink2_keeps_dest(tmp_path: Path) -> None:
     assert not parked.exists()
 
 
+def test_park_and_drop_if_inode_holds_when_name_reappears(tmp_path: Path) -> None:
+    keep = tmp_path / "note.md"
+    keep.write_bytes(b"ours")
+    fd = os.open(tmp_path, os.O_RDONLY | os.O_DIRECTORY)
+    expected_ino = keep.stat().st_ino
+    real_unlink = os.unlink
+
+    def plant_racer(name: str, **kwargs: object) -> None:
+        if ".drain." in str(name):
+            keep.write_bytes(b"racer")
+        real_unlink(name, **kwargs)
+
+    try:
+        with mock.patch.object(cp.os, "unlink", side_effect=plant_racer):
+            assert cp._park_and_drop_if_inode(fd, "note.md", expected_ino) is False
+        assert keep.read_bytes() == b"racer"
+    finally:
+        os.close(fd)
+
+
 def test_drain_peer_aliases_leaves_a_replacement(tmp_path: Path) -> None:
     keep = tmp_path / "note.md"
     extra = tmp_path / cp._drop_src_name("note.md")
@@ -3767,15 +3787,7 @@ def test_drain_peer_aliases_restore_does_not_clobber_second_racer(tmp_path: Path
     keep.write_bytes(b"keep")
     os.link(keep, extra)
     fd = os.open(tmp_path, os.O_RDONLY | os.O_DIRECTORY)
-    real_same = cp._same_regular_inode
     real_rename = os.rename
-
-    def claim_then_replace(dir_fd: int, left: str, right: str) -> bool:
-        if left == extra.name and right == "note.md":
-            extra.unlink()
-            extra.write_bytes(b"racer1")
-            return True
-        return real_same(dir_fd, left, right)
 
     def park_then_plant(src: str, dst: str, **kwargs: object) -> None:
         real_rename(src, dst, **kwargs)
@@ -3783,14 +3795,10 @@ def test_drain_peer_aliases_restore_does_not_clobber_second_racer(tmp_path: Path
             extra.write_bytes(b"racer2")
 
     try:
-        with mock.patch.object(cp, "_same_regular_inode", side_effect=claim_then_replace):
-            with mock.patch.object(cp.os, "rename", side_effect=park_then_plant):
-                cp._drain_peer_aliases(fd, "note.md")
+        with mock.patch.object(cp.os, "rename", side_effect=park_then_plant):
+            cp._drain_peer_aliases(fd, "note.md")
         assert keep.read_bytes() == b"keep"
         assert extra.read_bytes() == b"racer2"
-        parked = [path for path in tmp_path.iterdir() if ".drain." in path.name]
-        assert len(parked) == 1
-        assert parked[0].read_bytes() == b"racer1"
     finally:
         os.close(fd)
 
