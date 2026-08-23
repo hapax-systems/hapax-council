@@ -8,9 +8,10 @@ a terminal disposition appropriate for its authority ceiling.
 Exit codes:
 - 0: closure permitted (all dispositions satisfied, or bypassed)
 - 2: closure BLOCKED (gate-ceiling artifact lacks terminal disposition,
-  or ledger missing/empty/malformed)
+  or ledger missing/malformed)
 
-Missing/empty/malformed ledger is fail-closed.
+Missing or malformed ledger is fail-closed. A well-formed empty YAML
+list (`[]`) is an empty catalog and is permitted.
 
 Bypass: HAPAX_ARTIFACT_DISPOSITION_GATE_OFF=1
 

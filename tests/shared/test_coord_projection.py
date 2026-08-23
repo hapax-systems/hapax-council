@@ -3554,6 +3554,25 @@ def test_drop_extra_link_refuses_occupied_parking_name(tmp_path: Path) -> None:
         os.close(fd)
 
 
+def test_link_then_unlink_src_raises_exdev_before_link(tmp_path: Path) -> None:
+    left = tmp_path / "left"
+    right = tmp_path / "right"
+    left.mkdir()
+    right.mkdir()
+    (left / "src").write_bytes(b"payload")
+    fd_left = os.open(left, os.O_RDONLY | os.O_DIRECTORY)
+    fd_right = os.open(right, os.O_RDONLY | os.O_DIRECTORY)
+    try:
+        with pytest.raises(OSError) as raised:
+            cp._link_then_unlink_src(fd_left, "src", fd_right, "dst")
+        assert raised.value.errno == errno.EXDEV
+        assert not (right / "dst").exists()
+        assert (left / "src").read_bytes() == b"payload"
+    finally:
+        os.close(fd_left)
+        os.close(fd_right)
+
+
 def test_cas_rollback_update_dest_absent_drop_src_restores_preimage(
     tmp_path: Path,
 ) -> None:
