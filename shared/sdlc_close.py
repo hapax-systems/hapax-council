@@ -821,348 +821,348 @@ def close_task(
         debt_reason,
         ledger_commit=ledger_commit,
     )
-    live_note = snapshot.path.read_bytes()
-    if live_note != snapshot.content:
-        raise TerminalCloseError(
-            "terminal_close_preflight_note_drift",
-            "rerun close against one stable exact note preimage",
-        )
-    cookie = snapshot.path.with_name(f".{snapshot.path.name}.close-invocation.{os.getpid()}")
-    invocation = cookie.read_text(encoding="utf-8").strip() if cookie.is_file() else ""
-    if cookie.is_file():
-        cookie.unlink()
-    after_path = snapshot.path.with_name(
-        f".{snapshot.path.name}.close-after.{snapshot.sha256[:12]}.{invocation}"
-        if invocation
-        else f".{snapshot.path.name}.close-after.{snapshot.sha256[:12]}.missing"
-    )
-    note_after = None
-    if after_path.is_file():
-        raw = after_path.read_bytes()
-        after_path.unlink()
-        try:
-            text = raw.decode("utf-8")
-        except UnicodeDecodeError as exc:
+    try:
+        live_note = snapshot.path.read_bytes()
+        if live_note != snapshot.content:
             raise TerminalCloseError(
-                "terminal_close_afterimage_unbound",
-                "rerun close; the staged after-image was not UTF-8",
-                str(exc),
-            ) from exc
-        declared = ""
-        for line in text.splitlines():
-            if line.startswith("id:"):
-                declared = line.split(":", 1)[1].strip().strip("'\"")
-                break
-            if line.startswith("task_id:") and not declared:
-                declared = line.split(":", 1)[1].strip().strip("'\"")
-        if declared != task_id:
-            raise TerminalCloseError(
-                "terminal_close_afterimage_unbound",
-                "rerun close; the staged after-image is not bound to this task",
-                declared or task_id,
+                "terminal_close_preflight_note_drift",
+                "rerun close against one stable exact note preimage",
             )
-        note_after = raw
-    observed_receipt = receipt_path.read_bytes() if receipt_path.is_file() else None
-    observed_receipt_mode = _mode(receipt_path) if observed_receipt is not None else None
-    if observed_receipt != receipt_bytes or observed_receipt_mode != receipt_mode:
-        raise TerminalCloseError(
-            "terminal_close_preflight_receipt_drift",
-            "rerun close against the exact acceptance receipt validated by the gates",
+        cookie = snapshot.path.with_name(f".{snapshot.path.name}.close-invocation.{os.getpid()}")
+        invocation = cookie.read_text(encoding="utf-8").strip() if cookie.is_file() else ""
+        if cookie.is_file():
+            cookie.unlink()
+        after_path = snapshot.path.with_name(
+            f".{snapshot.path.name}.close-after.{snapshot.sha256[:12]}.{invocation}"
+            if invocation
+            else f".{snapshot.path.name}.close-after.{snapshot.sha256[:12]}.missing"
         )
-    relay_db = relay_db or cache_dir / "relay" / "messages.db"
-    if expected is not None:
-        try:
-            rendered_payload = _render_expected_payload(expected)
-            reconciliation = reconcile_canon_echo(
-                relay_db,
-                expected,
-                rendered_payload=rendered_payload,
-                now=datetime.now(UTC),
-                expected_sender=actor,
-                expected_session_id=session_id,
-            )
-        except (CanonEchoError, OSError, RuntimeError, ValueError) as exc:
+        note_after = None
+        if after_path.is_file():
+            raw = after_path.read_bytes()
+            after_path.unlink()
+            try:
+                text = raw.decode("utf-8")
+            except UnicodeDecodeError as exc:
+                raise TerminalCloseError(
+                    "terminal_close_afterimage_unbound",
+                    "rerun close; the staged after-image was not UTF-8",
+                    str(exc),
+                ) from exc
+            declared = ""
+            for line in text.splitlines():
+                if line.startswith("id:"):
+                    declared = line.split(":", 1)[1].strip().strip("'\"")
+                    break
+                if line.startswith("task_id:") and not declared:
+                    declared = line.split(":", 1)[1].strip().strip("'\"")
+            if declared != task_id:
+                raise TerminalCloseError(
+                    "terminal_close_afterimage_unbound",
+                    "rerun close; the staged after-image is not bound to this task",
+                    declared or task_id,
+                )
+            note_after = raw
+        observed_receipt = receipt_path.read_bytes() if receipt_path.is_file() else None
+        observed_receipt_mode = _mode(receipt_path) if observed_receipt is not None else None
+        if observed_receipt != receipt_bytes or observed_receipt_mode != receipt_mode:
             raise TerminalCloseError(
-                getattr(exc, "reason_code", "terminal_close_echo_unavailable"),
-                "repair the exact claim-bound S10 Echo before close",
-                str(exc),
-            ) from exc
-        if reconciliation.action != "grounded" or reconciliation.echo_message_id is None:
-            raise TerminalCloseError(
-                reconciliation.reason_code,
-                "supply the source-local immutable current relay projection required to ground the exact S10 Echo",
-                reconciliation.action,
+                "terminal_close_preflight_receipt_drift",
+                "rerun close against the exact acceptance receipt validated by the gates",
             )
-        position_ref = expected.position_ref
-        echo_message_id = reconciliation.echo_message_id
-    claim_vector = tuple(
-        {
-            "binding_mode": lease.binding_mode,
-            "binding_path": str(lease.binding_path),
-            "binding_sha256": _sha256(lease.binding_content),
-            "claim_key": lease.claim_key,
-            "claim_mode": lease.claim_mode,
-            "claim_path": str(lease.claim_path),
-            "claim_sha256": _sha256(lease.claim_content),
-            "epoch_mode": lease.epoch_mode,
-            "epoch_path": str(lease.epoch_path),
-            "epoch_sha256": _sha256(lease.epoch_content),
-        }
-        for lease in leases
-    )
-    claim_publication_proof = (
-        {
-            "kind": "receipt",
-            "mode": applied_claim.receipt_mode,
-            "path": str(applied_claim.receipt.receipt_path),
-            "sha256": _sha256(applied_claim.receipt_content),
-        },
-        {
-            "kind": "manifest",
-            "mode": applied_claim.manifest_mode,
-            "path": str(applied_claim.receipt.manifest_path),
-            "sha256": _sha256(applied_claim.manifest_content),
-        },
-    )
-    relay_vector = tuple(
-        {
-            "relay_mode": relay.mode,
-            "relay_path": str(relay.path),
-            "relay_sha256": _sha256(relay.content),
-        }
-        for relay in relays
-    )
-    admission = TerminalCloseAdmission(
-        task_id=task_id,
-        final_status=final_status,
-        actor=actor,
-        session_id=session_id,
-        authority_case=authority_case,
-        note_path=str(snapshot.path),
-        note_mode=snapshot.mode,
-        note_sha256=snapshot.sha256,
-        receipt_path=str(receipt_path) if receipt_bytes is not None else None,
-        receipt_mode=receipt_mode,
-        receipt_sha256=_sha256(receipt_bytes) if receipt_bytes is not None else None,
-        claim_publication_proof=claim_publication_proof,
-        claim_vector=claim_vector,
-        relay_vector=relay_vector,
-        position_ref=position_ref,
-        echo_message_id=echo_message_id,
-        gate_evidence=gate_evidence,
-    )
-    admission_payload = admission.receipt_payload()
-    admission_path = (
-        event_log.db_path.parent
-        / f"terminal-close-admission-{admission.admission_ref.rsplit(':', 1)[-1]}.json"
-    )
-    timestamp = datetime.now(UTC).strftime("%Y-%m-%dT%H:%M:%SZ")
-    postimage = (note_after or snapshot.content).decode("utf-8")
-    for key, value in (
-        ("stage", "S11"),
-        ("status", final_status),
-        ("completed_at", timestamp),
-        ("updated_at", timestamp),
-    ):
-        postimage = _frontmatter_set(postimage, key, value)
-    if pr:
-        postimage = _frontmatter_set(postimage, "pr", pr)
-    log_line = (
-        f"- {timestamp} {actor} closed as {final_status} "
-        f"(S10 -> S11; admission={admission.admission_ref}).\n"
-    )
-    if "## Session log\n" in postimage:
-        postimage = postimage.replace("## Session log\n", f"## Session log\n{log_line}", 1)
-    else:
-        postimage = postimage.rstrip("\n") + "\n\n## Session log\n" + log_line
-    closed_root = vault_root / "closed"
-    closed_root.mkdir(parents=True, exist_ok=True)
-    closed_note = closed_root / snapshot.path.name
-    projections: list[FileProjection] = [
-        FileProjection.from_snapshot(
-            admission_path,
-            before=None,
-            before_mode=None,
-            after=admission_payload,
-            after_mode=0o600,
-        ),
-        FileProjection.from_snapshot(
-            closed_note,
-            before=None,
-            before_mode=None,
-            after=postimage.encode("utf-8"),
-            after_mode=snapshot.mode,
-        ),
-        FileProjection.from_snapshot(
-            snapshot.path,
-            before=snapshot.content,
-            before_mode=snapshot.mode,
-            after=None,
-        ),
-    ]
-    if receipt_bytes is not None:
-        closed_receipt = vault_root / "closed" / receipt_path.name
-        projections.extend(
-            [
-                FileProjection.from_snapshot(
-                    closed_receipt,
-                    before=None,
-                    before_mode=None,
-                    after=receipt_bytes,
-                    after_mode=receipt_mode,
-                ),
-                FileProjection.from_snapshot(
-                    receipt_path,
-                    before=receipt_bytes,
-                    before_mode=receipt_mode,
-                    after=None,
-                ),
-            ]
+        relay_db = relay_db or cache_dir / "relay" / "messages.db"
+        if expected is not None:
+            try:
+                rendered_payload = _render_expected_payload(expected)
+                reconciliation = reconcile_canon_echo(
+                    relay_db,
+                    expected,
+                    rendered_payload=rendered_payload,
+                    now=datetime.now(UTC),
+                    expected_sender=actor,
+                    expected_session_id=session_id,
+                )
+            except (CanonEchoError, OSError, RuntimeError, ValueError) as exc:
+                raise TerminalCloseError(
+                    getattr(exc, "reason_code", "terminal_close_echo_unavailable"),
+                    "repair the exact claim-bound S10 Echo before close",
+                    str(exc),
+                ) from exc
+            if reconciliation.action != "grounded" or reconciliation.echo_message_id is None:
+                raise TerminalCloseError(
+                    reconciliation.reason_code,
+                    "supply the source-local immutable current relay projection required to ground the exact S10 Echo",
+                    reconciliation.action,
+                )
+            position_ref = expected.position_ref
+            echo_message_id = reconciliation.echo_message_id
+        claim_vector = tuple(
+            {
+                "binding_mode": lease.binding_mode,
+                "binding_path": str(lease.binding_path),
+                "binding_sha256": _sha256(lease.binding_content),
+                "claim_key": lease.claim_key,
+                "claim_mode": lease.claim_mode,
+                "claim_path": str(lease.claim_path),
+                "claim_sha256": _sha256(lease.claim_content),
+                "epoch_mode": lease.epoch_mode,
+                "epoch_path": str(lease.epoch_path),
+                "epoch_sha256": _sha256(lease.epoch_content),
+            }
+            for lease in leases
         )
-    for lease in leases:
-        for path, content, mode in (
-            (lease.claim_path, lease.claim_content, lease.claim_mode),
-            (lease.epoch_path, lease.epoch_content, lease.epoch_mode),
-            (lease.binding_path, lease.binding_content, lease.binding_mode),
+        claim_publication_proof = (
+            {
+                "kind": "receipt",
+                "mode": applied_claim.receipt_mode,
+                "path": str(applied_claim.receipt.receipt_path),
+                "sha256": _sha256(applied_claim.receipt_content),
+            },
+            {
+                "kind": "manifest",
+                "mode": applied_claim.manifest_mode,
+                "path": str(applied_claim.receipt.manifest_path),
+                "sha256": _sha256(applied_claim.manifest_content),
+            },
+        )
+        relay_vector = tuple(
+            {
+                "relay_mode": relay.mode,
+                "relay_path": str(relay.path),
+                "relay_sha256": _sha256(relay.content),
+            }
+            for relay in relays
+        )
+        admission = TerminalCloseAdmission(
+            task_id=task_id,
+            final_status=final_status,
+            actor=actor,
+            session_id=session_id,
+            authority_case=authority_case,
+            note_path=str(snapshot.path),
+            note_mode=snapshot.mode,
+            note_sha256=snapshot.sha256,
+            receipt_path=str(receipt_path) if receipt_bytes is not None else None,
+            receipt_mode=receipt_mode,
+            receipt_sha256=_sha256(receipt_bytes) if receipt_bytes is not None else None,
+            claim_publication_proof=claim_publication_proof,
+            claim_vector=claim_vector,
+            relay_vector=relay_vector,
+            position_ref=position_ref,
+            echo_message_id=echo_message_id,
+            gate_evidence=gate_evidence,
+        )
+        admission_payload = admission.receipt_payload()
+        admission_path = (
+            event_log.db_path.parent
+            / f"terminal-close-admission-{admission.admission_ref.rsplit(':', 1)[-1]}.json"
+        )
+        timestamp = datetime.now(UTC).strftime("%Y-%m-%dT%H:%M:%SZ")
+        postimage = (note_after or snapshot.content).decode("utf-8")
+        for key, value in (
+            ("stage", "S11"),
+            ("status", final_status),
+            ("completed_at", timestamp),
+            ("updated_at", timestamp),
         ):
+            postimage = _frontmatter_set(postimage, key, value)
+        if pr:
+            postimage = _frontmatter_set(postimage, "pr", pr)
+        log_line = (
+            f"- {timestamp} {actor} closed as {final_status} "
+            f"(S10 -> S11; admission={admission.admission_ref}).\n"
+        )
+        if "## Session log\n" in postimage:
+            postimage = postimage.replace("## Session log\n", f"## Session log\n{log_line}", 1)
+        else:
+            postimage = postimage.rstrip("\n") + "\n\n## Session log\n" + log_line
+        closed_root = vault_root / "closed"
+        closed_root.mkdir(parents=True, exist_ok=True)
+        closed_note = closed_root / snapshot.path.name
+        projections: list[FileProjection] = [
+            FileProjection.from_snapshot(
+                admission_path,
+                before=None,
+                before_mode=None,
+                after=admission_payload,
+                after_mode=0o600,
+            ),
+            FileProjection.from_snapshot(
+                closed_note,
+                before=None,
+                before_mode=None,
+                after=postimage.encode("utf-8"),
+                after_mode=snapshot.mode,
+            ),
+            FileProjection.from_snapshot(
+                snapshot.path,
+                before=snapshot.content,
+                before_mode=snapshot.mode,
+                after=None,
+            ),
+        ]
+        if receipt_bytes is not None:
+            closed_receipt = vault_root / "closed" / receipt_path.name
+            projections.extend(
+                [
+                    FileProjection.from_snapshot(
+                        closed_receipt,
+                        before=None,
+                        before_mode=None,
+                        after=receipt_bytes,
+                        after_mode=receipt_mode,
+                    ),
+                    FileProjection.from_snapshot(
+                        receipt_path,
+                        before=receipt_bytes,
+                        before_mode=receipt_mode,
+                        after=None,
+                    ),
+                ]
+            )
+        for lease in leases:
+            for path, content, mode in (
+                (lease.claim_path, lease.claim_content, lease.claim_mode),
+                (lease.epoch_path, lease.epoch_content, lease.epoch_mode),
+                (lease.binding_path, lease.binding_content, lease.binding_mode),
+            ):
+                projections.append(
+                    FileProjection.from_snapshot(
+                        path,
+                        before=content,
+                        before_mode=mode,
+                        after=None,
+                    )
+                )
+        projections.extend(applied_claim.proof_projections())
+        for relay in relays:
+            relay_document = dict(relay.document)
+            relay_document.update(
+                {
+                    "status": "idle",
+                    "current_claim": None,
+                    "task_id": None,
+                    "stage_token": None,
+                    "updated": timestamp,
+                    "last_task": {
+                        "close_admission_ref": admission.admission_ref,
+                        "disposition": final_status,
+                        "stage_token": "S11",
+                        "task_id": task_id,
+                    },
+                }
+            )
             projections.append(
                 FileProjection.from_snapshot(
-                    path,
-                    before=content,
-                    before_mode=mode,
-                    after=None,
+                    relay.path,
+                    before=relay.content,
+                    before_mode=relay.mode,
+                    after=yaml.safe_dump(relay_document, sort_keys=False).encode("utf-8"),
                 )
             )
-    projections.extend(applied_claim.proof_projections())
-    for relay in relays:
-        relay_document = dict(relay.document)
-        relay_document.update(
-            {
-                "status": "idle",
-                "current_claim": None,
-                "task_id": None,
-                "stage_token": None,
-                "updated": timestamp,
-                "last_task": {
-                    "close_admission_ref": admission.admission_ref,
-                    "disposition": final_status,
-                    "stage_token": "S11",
-                    "task_id": task_id,
-                },
-            }
+        no_go = {key: frontmatter.get(key) is True for key in sorted(NO_GO_BOOLEANS)}
+        intent = LifecycleTransitionIntent.create(
+            task_id=task_id,
+            from_stage="S10",
+            to_stage="S11",
+            edge_class="next",
+            authority_case=authority_case,
+            actor=actor,
+            no_go_snapshot=no_go,
+            guard_evidence={
+                "closure_receipts_present": (f"receipt:{admission.admission_ref}",),
+                "cc_close_ready": (f"receipt:{admission.admission_ref}",),
+            },
+            parent_spec=str(frontmatter.get("parent_spec") or "") or None,
+            predecessor_position_ref=position_ref,
+            echo_receipt_ref=(
+                echo_message_id
+                if echo_message_id.startswith("echo-absent:")
+                else f"mq:{echo_message_id}"
+            ),
+            evidence_type="terminal_close_admission",
+            evidence_summary=admission.admission_ref,
+            origin="cc-close",
         )
-        projections.append(
-            FileProjection.from_snapshot(
-                relay.path,
-                before=relay.content,
-                before_mode=relay.mode,
-                after=yaml.safe_dump(relay_document, sort_keys=False).encode("utf-8"),
-            )
-        )
-    no_go = {key: frontmatter.get(key) is True for key in sorted(NO_GO_BOOLEANS)}
-    intent = LifecycleTransitionIntent.create(
-        task_id=task_id,
-        from_stage="S10",
-        to_stage="S11",
-        edge_class="next",
-        authority_case=authority_case,
-        actor=actor,
-        no_go_snapshot=no_go,
-        guard_evidence={
-            "closure_receipts_present": (f"receipt:{admission.admission_ref}",),
-            "cc_close_ready": (f"receipt:{admission.admission_ref}",),
-        },
-        parent_spec=str(frontmatter.get("parent_spec") or "") or None,
-        predecessor_position_ref=position_ref,
-        echo_receipt_ref=(
-            echo_message_id
-            if echo_message_id.startswith("echo-absent:")
-            else f"mq:{echo_message_id}"
-        ),
-        evidence_type="terminal_close_admission",
-        evidence_summary=admission.admission_ref,
-        origin="cc-close",
-    )
 
-    def locked_preflight() -> None:
-        try:
-            current_snapshot = resolve_task_note(
-                vault_root,
-                task_id,
-                state="active",
-                require_no_other_state=True,
-            )
-            current_leases = resolve_claim_leases(
-                cache_dir,
-                role=actor,
-                session_id=session_id,
-                task_id=task_id,
-            )
-        except TaskStoreError as exc:
-            raise TerminalCloseError(exc.reason_code, exc.repair_action, exc.detail) from exc
-        if current_snapshot != snapshot or current_leases != leases:
-            raise TerminalCloseError(
-                "terminal_close_locked_position_drift",
-                "rerun close after task and claim identity stabilize",
-            )
-        if _relay_snapshots(cache_dir, actor, session_id, task_id) != relays:
-            raise TerminalCloseError(
-                "terminal_close_locked_relay_drift",
-                "rerun close after the owning relay stabilizes",
-            )
-        current_receipt = receipt_path.read_bytes() if receipt_path.is_file() else None
-        current_receipt_mode = _mode(receipt_path) if current_receipt is not None else None
-        if current_receipt != receipt_bytes or current_receipt_mode != receipt_mode:
-            raise TerminalCloseError(
-                "terminal_close_locked_receipt_drift",
-                "rerun the done gates against the exact current acceptance receipt",
-            )
-        if expected is not None:
-            current_expected = resolve_claim_bound_canon_position(
-                leases[0].binding,
-                stage_token="S10",
-            )
-            if current_expected != expected:
+        def locked_preflight() -> None:
+            try:
+                current_snapshot = resolve_task_note(
+                    vault_root,
+                    task_id,
+                    state="active",
+                    require_no_other_state=True,
+                )
+                current_leases = resolve_claim_leases(
+                    cache_dir,
+                    role=actor,
+                    session_id=session_id,
+                    task_id=task_id,
+                )
+            except TaskStoreError as exc:
+                raise TerminalCloseError(exc.reason_code, exc.repair_action, exc.detail) from exc
+            if current_snapshot != snapshot or current_leases != leases:
                 raise TerminalCloseError(
-                    "terminal_close_locked_canon_position_drift",
-                    "reconcile and Echo the new claim-bound position before close",
+                    "terminal_close_locked_position_drift",
+                    "rerun close after task and claim identity stabilize",
                 )
-            assert reconciliation is not None
-            require_matching_canon_echo(
-                relay_db,
-                expected,
-                echo_message_id=reconciliation.echo_message_id,
-                now=datetime.now(UTC),
-                expected_sender=actor,
-                expected_session_id=session_id,
-            )
+            if _relay_snapshots(cache_dir, actor, session_id, task_id) != relays:
+                raise TerminalCloseError(
+                    "terminal_close_locked_relay_drift",
+                    "rerun close after the owning relay stabilizes",
+                )
+            current_receipt = receipt_path.read_bytes() if receipt_path.is_file() else None
+            current_receipt_mode = _mode(receipt_path) if current_receipt is not None else None
+            if current_receipt != receipt_bytes or current_receipt_mode != receipt_mode:
+                raise TerminalCloseError(
+                    "terminal_close_locked_receipt_drift",
+                    "rerun the done gates against the exact current acceptance receipt",
+                )
+            if expected is not None:
+                current_expected = resolve_claim_bound_canon_position(
+                    leases[0].binding,
+                    stage_token="S10",
+                )
+                if current_expected != expected:
+                    raise TerminalCloseError(
+                        "terminal_close_locked_canon_position_drift",
+                        "reconcile and Echo the new claim-bound position before close",
+                    )
+                assert reconciliation is not None
+                require_matching_canon_echo(
+                    relay_db,
+                    expected,
+                    echo_message_id=reconciliation.echo_message_id,
+                    now=datetime.now(UTC),
+                    expected_sender=actor,
+                    expected_session_id=session_id,
+                )
 
-    for copy, src, original in ledger_commit:
-        if not copy.is_file():
-            continue
-        copy_bytes = copy.read_bytes()
-        live = src.read_bytes() if src.is_file() else b""
-        if live != original:
-            copy.unlink(missing_ok=True)
-            raise TerminalCloseError(
-                "terminal_close_artifact_ledger_drift",
-                "rerun close against one stable artifact ledger preimage",
-                str(src),
+        for copy, src, original in ledger_commit:
+            if not copy.is_file():
+                continue
+            copy_bytes = copy.read_bytes()
+            live = src.read_bytes() if src.is_file() else b""
+            if live != original:
+                copy.unlink(missing_ok=True)
+                raise TerminalCloseError(
+                    "terminal_close_artifact_ledger_drift",
+                    "rerun close against one stable artifact ledger preimage",
+                    str(src),
+                )
+            if copy_bytes == live:
+                copy.unlink(missing_ok=True)
+                continue
+            src_mode = _mode(src) if src.is_file() else 0o600
+            projections.append(
+                FileProjection.from_snapshot(
+                    src,
+                    before=original if src.is_file() else None,
+                    before_mode=src_mode if src.is_file() else None,
+                    after=copy_bytes,
+                    after_mode=src_mode,
+                )
             )
-        if copy_bytes == live:
-            copy.unlink(missing_ok=True)
-            continue
-        src_mode = _mode(src) if src.is_file() else 0o600
-        projections.append(
-            FileProjection.from_snapshot(
-                src,
-                before=original if src.is_file() else None,
-                before_mode=src_mode if src.is_file() else None,
-                after=copy_bytes,
-                after_mode=src_mode,
-            )
-        )
-    try:
         receipt = _execute_terminal_close_transition(
             event_log=event_log,
             intent=intent,
@@ -1174,13 +1174,10 @@ def close_task(
             },
             locked_preflight=locked_preflight,
         )
-    except Exception:
+        return receipt
+    finally:
         for copy, _src, _original in ledger_commit:
             copy.unlink(missing_ok=True)
-        raise
-    for copy, _src, _original in ledger_commit:
-        copy.unlink(missing_ok=True)
-    return receipt
 
 
 def main(argv: list[str] | None = None) -> int:
