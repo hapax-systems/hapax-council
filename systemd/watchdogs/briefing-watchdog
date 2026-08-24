@@ -2,14 +2,26 @@
 set -euo pipefail
 
 # Daily briefing generator — saves to profiles/briefing.md and sends notification
-cd /home/hapax/projects/hapax-council
+COUNCIL_ROOT="${HAPAX_COUNCIL_ROOT:-${HOME}/.cache/hapax/source-activation/worktree}"
+if [[ ! -e "${COUNCIL_ROOT}/.git" ]]; then
+  echo "ERROR: council activation checkout missing at ${COUNCIL_ROOT}" >&2
+  echo "NEXT ACTION: run source activation or set HAPAX_COUNCIL_ROOT to that worktree" >&2
+  exit 1
+fi
+cd "${COUNCIL_ROOT}"
+export HAPAX_REINS_API="${HAPAX_REINS_API:-${HOME}/.local/share/reins/current/api}"
+export HAPAX_SECRET="${HAPAX_SECRET:-${HOME}/.local/bin/hapax-secret}"
+if [[ ! -x "${HAPAX_SECRET}" ]]; then
+  echo "WARN: hapax-secret missing at ${HAPAX_SECRET}" >&2
+  echo "NEXT ACTION: install hapax-secret from reins (make install) or set HAPAX_SECRET" >&2
+fi
 
-# Load credentials from pass store (systemd sets PASSWORD_STORE_DIR + GNUPGHOME)
-export LITELLM_API_KEY=$(pass show litellm/master-key 2>/dev/null || echo "changeme")
-export LANGFUSE_PUBLIC_KEY=$(pass show langfuse/public-key 2>/dev/null || true)
-export LANGFUSE_SECRET_KEY=$(pass show langfuse/secret-key 2>/dev/null || true)
+# Load credentials from reins FileStore via pinned hapax-secret (not PATH, not pass).
+export LITELLM_API_KEY=$("${HAPAX_SECRET}" litellm/master-key 2>/dev/null || echo "changeme")
+export LANGFUSE_PUBLIC_KEY=$("${HAPAX_SECRET}" langfuse/public-key 2>/dev/null || true)
+export LANGFUSE_SECRET_KEY=$("${HAPAX_SECRET}" langfuse/secret-key 2>/dev/null || true)
 
-UV=/home/hapax/.local/bin/uv
+UV="${HAPAX_UV:-${HOME}/.local/bin/uv}"
 REPORT=$($UV run python -m agents.briefing --hours 24 --save --json 2>&1) || {
     echo "briefing-watchdog: briefing agent failed" >&2
     echo "$REPORT" >&2

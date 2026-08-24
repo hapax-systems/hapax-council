@@ -32,10 +32,13 @@ def _fake_response(status: int, json_body: dict | None = None, text: str = "") -
 
 @pytest.fixture(autouse=True)
 def _fake_pass_subprocess(monkeypatch: pytest.MonkeyPatch):
-    """Stub out `pass show` so the client gets a deterministic API key
-    without touching the real operator password store."""
+    """Stub out `hapax-secret` so the client gets a deterministic API key
+    without touching the real FileStore."""
+    monkeypatch.delenv("HAPAX_SECRET", raising=False)
 
     def _fake_run(argv, **kwargs):
+        assert argv[0].endswith("/.local/bin/hapax-secret")
+        assert argv[1:] == ["omg-lol/api-key"]
         result = MagicMock()
         result.returncode = 0
         result.stdout = "fake-omg-lol-api-key\n"
@@ -46,7 +49,7 @@ def _fake_pass_subprocess(monkeypatch: pytest.MonkeyPatch):
 
 
 class TestCredentialLoad:
-    def test_client_loads_api_key_from_pass(self) -> None:
+    def test_client_loads_api_key_from_hapax_secret(self) -> None:
         client = OmgLolClient()
         assert client.enabled is True
         assert client._api_key == "fake-omg-lol-api-key"
@@ -56,7 +59,7 @@ class TestCredentialLoad:
             result = MagicMock()
             result.returncode = 1
             result.stdout = ""
-            result.stderr = "pass: key not found"
+            result.stderr = "not found in FileStore"
             return result
 
         monkeypatch.setattr("shared.omg_lol_client.subprocess.run", _fail_run)

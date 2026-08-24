@@ -3,25 +3,37 @@
 # Runs via systemd timer. Saves report and notifies on actionable findings.
 set -euo pipefail
 
-cd /home/hapax/projects/hapax-council
+COUNCIL_ROOT="${HAPAX_COUNCIL_ROOT:-${HOME}/.cache/hapax/source-activation/worktree}"
+if [[ ! -e "${COUNCIL_ROOT}/.git" ]]; then
+  echo "ERROR: council activation checkout missing at ${COUNCIL_ROOT}" >&2
+  echo "NEXT ACTION: run source activation or set HAPAX_COUNCIL_ROOT to that worktree" >&2
+  exit 1
+fi
+cd "${COUNCIL_ROOT}"
+export HAPAX_REINS_API="${HAPAX_REINS_API:-${HOME}/.local/share/reins/current/api}"
+export HAPAX_SECRET="${HAPAX_SECRET:-${HOME}/.local/bin/hapax-secret}"
+if [[ ! -x "${HAPAX_SECRET}" ]]; then
+  echo "WARN: hapax-secret missing at ${HAPAX_SECRET}" >&2
+  echo "NEXT ACTION: install hapax-secret from reins (make install) or set HAPAX_SECRET" >&2
+fi
 
-# Load credentials from pass store (systemd sets PASSWORD_STORE_DIR + GNUPGHOME)
-pass_first_line() {
+# Load credentials from reins FileStore via pinned hapax-secret (not PATH, not pass).
+secret_first_line() {
     local name="$1"
-    pass show "$name" 2>/dev/null | sed -n '1p'
+    "${HAPAX_SECRET}" "$name" 2>/dev/null | sed -n '1p'
 }
 
-LITELLM_API_KEY="$(pass_first_line litellm/master-key || echo "changeme")"
-LANGFUSE_PUBLIC_KEY="$(pass_first_line langfuse/public-key || true)"
-LANGFUSE_SECRET_KEY="$(pass_first_line langfuse/secret-key || true)"
+LITELLM_API_KEY="$(secret_first_line litellm/master-key || echo "changeme")"
+LANGFUSE_PUBLIC_KEY="$(secret_first_line langfuse/public-key || true)"
+LANGFUSE_SECRET_KEY="$(secret_first_line langfuse/secret-key || true)"
 export LITELLM_API_KEY
 export LANGFUSE_PUBLIC_KEY
 export LANGFUSE_SECRET_KEY
-# Tavily credentials are resolved inside shared.tavily_client from env/pass
+# Tavily credentials are resolved inside shared.tavily_client from env/FileStore
 # so the watchdog does not export them into the process supervisor boundary.
 
-PROFILES=/home/hapax/projects/hapax-council/profiles
-UV=/home/hapax/.local/bin/uv
+PROFILES="${COUNCIL_ROOT}/profiles"
+UV="${HAPAX_UV:-${HOME}/.local/bin/uv}"
 
 # Run horizon scan
 $UV run python -m agents.scout --save --notify 2>/dev/null || {
