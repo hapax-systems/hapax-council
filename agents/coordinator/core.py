@@ -269,6 +269,54 @@ def _lane_dispatchable(lane: LaneState) -> bool:
     return not (lane.platform.lower() == "claude" and is_claude_operator_pool_role(lane.role))
 
 
+# Dispatch eligibility is a five-way AND. The tick log has only ever published the
+# product, so `idle_lanes=0` could not distinguish "every lane is working" from
+# "every lane is switched off" — opposite conditions demanding opposite responses.
+# Measured 2026-08-23: nine of eleven lanes passed four conjuncts and failed only
+# `dispatchable`, and the estate's own terrain map read that as a spent pool for a
+# day. Naming the failing conjuncts costs one list per lane and makes the zero
+# readable. This is observability only: eligibility itself is unchanged, and
+# `_lane_is_dispatch_eligible` is defined as the empty-exclusions case so the
+# predicate and its explanation cannot drift apart.
+def _lane_dispatch_exclusions(lane: LaneState) -> list[str]:
+    """Name every conjunct that disqualifies this lane, in evaluation order."""
+
+    exclusions: list[str] = []
+    if not lane.alive:
+        exclusions.append("not_alive")
+    if not lane.idle:
+        exclusions.append("not_idle")
+    if lane.claimed_task is not None:
+        exclusions.append("has_claimed_task")
+    if not lane.dispatch_ready:
+        exclusions.append("not_dispatch_ready")
+    if not _lane_dispatchable(lane):
+        exclusions.append("not_dispatchable")
+    return exclusions
+
+
+def _lane_is_dispatch_eligible(lane: LaneState) -> bool:
+    return not _lane_dispatch_exclusions(lane)
+
+
+def _format_exclusion_census(lanes: dict[str, LaneState]) -> str:
+    """`" no_idle_lanes_because=not_dispatchable:9,not_alive:1"`, or `""` if none.
+
+    Counts the FIRST failing conjunct per lane, not every one, so the census sums to
+    the number of excluded lanes and reads as a partition rather than a multiset.
+    """
+
+    counts: dict[str, int] = {}
+    for lane in lanes.values():
+        exclusions = _lane_dispatch_exclusions(lane)
+        if exclusions:
+            counts[exclusions[0]] = counts.get(exclusions[0], 0) + 1
+    if not counts:
+        return ""
+    census = ",".join(f"{reason}:{n}" for reason, n in sorted(counts.items()))
+    return f" no_idle_lanes_because={census}"
+
+
 @dataclass
 class CoordinatorState:
     """Full coordinator snapshot written to SHM each tick."""
@@ -325,30 +373,14 @@ class Coordinator:
             offered_tasks=len(offered),
             claimed_tasks=sum(1 for t in tasks if t.status in ("claimed", "in_progress")),
             lanes_alive=sum(1 for l in lanes.values() if l.alive),
-            lanes_idle=sum(
-                1
-                for l in lanes.values()
-                if l.idle
-                and l.alive
-                and l.claimed_task is None
-                and l.dispatch_ready
-                and _lane_dispatchable(l)
-            ),
+            lanes_idle=sum(1 for l in lanes.values() if _lane_is_dispatch_eligible(l)),
             lanes_total=len(lanes),
             task_status_counts=_task_status_counts(tasks),
             task_flow_counts=_task_flow_counts(tasks),
         )
 
         dispatches = 0
-        idle_lanes = [
-            l
-            for l in lanes.values()
-            if l.alive
-            and l.idle
-            and l.claimed_task is None
-            and l.dispatch_ready
-            and _lane_dispatchable(l)
-        ]
+        idle_lanes = [l for l in lanes.values() if _lane_is_dispatch_eligible(l)]
 
         # L3: pace the dispatch loop under CPU pressure. 'closed' dispatches
         # nothing this tick (tasks stay offered — queued, not dropped); 'paced'
@@ -533,7 +565,7 @@ class Coordinator:
         self._write_state(state, refusal_stats=refusal_stats)
 
         log.info(
-            "tick: offered=%d idle_lanes=%d dispatched=%d alive=%d/%d cooled=%d skipped=%d",
+            "tick: offered=%d idle_lanes=%d dispatched=%d alive=%d/%d cooled=%d skipped=%d%s",
             len(offered),
             state.lanes_idle,
             dispatches,
@@ -541,6 +573,10 @@ class Coordinator:
             state.lanes_total,
             refusal_stats.get("cooled_down", 0),
             skipped_cooldown,
+            # A zero with no attribution is the reading that misled this estate for a day.
+            # Only emitted when there is nothing to dispatch to, so a healthy tick is
+            # unchanged and the line does not grow noise on the common path.
+            _format_exclusion_census(lanes) if state.lanes_idle == 0 else "",
         )
 
     def _scan_tasks(self) -> list[Task]:
@@ -1717,6 +1753,28 @@ def _check_lane(lane: str | LaneDescriptor) -> LaneState:
         relay_idle = _relay_status_is_idle(relay_status)
         if relay_idle is not None and not state.claimed_task:
             state.idle = relay_idle
+        elif relay_idle is None and relay_status and not state.claimed_task:
+            # `_relay_status_is_idle` returns a genuine three-valued answer, and its
+            # None means "this lane published a state I cannot classify" — not
+            # "nothing to say". Dropping it here left `idle` at its field default of
+            # True, so an unrecognised status read as AVAILABLE FOR DISPATCH: the
+            # optimistic direction, chosen by omission rather than by decision. The
+            # vocabulary is open (20 distinct `status:` values across 49 live relay
+            # files, ten of them singletons), so this is reached in practice, not
+            # defensively. Failure paths narrow: an unclassifiable lane is withheld,
+            # never offered. A lane with no relay at all is untouched — this branch
+            # requires a status to have been published.
+            state.idle = False
+            # Logged rather than written to `dispatch_blocked_reason`: that field is
+            # owned by the dispatch-readiness path, and a second writer for one field
+            # is the mitigation-count smell. The exclusion census already reports
+            # `not_idle`; this line says which unrecognised token caused it.
+            log.info(
+                "lane %s: unclassified relay status %r — withheld from dispatch. "
+                "next_action=classify it in _relay_status_is_idle or retire the lane",
+                descriptor.role,
+                _normalized_status(relay_status),
+            )
 
     for active_task_file in _active_task_candidates(descriptor.role, descriptor.session):
         try:
@@ -1895,5 +1953,8 @@ def _lane_to_dict(lane: LaneState) -> dict:
         "stalled": lane.stalled,
         "dispatch_ready": lane.dispatch_ready,
         "dispatch_blocked_reason": lane.dispatch_blocked_reason,
+        # Empty list == eligible. Present so a reader of the snapshot can attribute
+        # `lanes_idle=0` without re-deriving the conjunction by hand.
+        "dispatch_exclusions": _lane_dispatch_exclusions(lane),
         "output_age_s": round(lane.output_age_s, 1) if lane.output_age_s != float("inf") else None,
     }

@@ -5,6 +5,7 @@ from __future__ import annotations
 import importlib.machinery
 import importlib.util
 import json
+import logging
 import os
 import sqlite3
 import subprocess
@@ -31,7 +32,10 @@ from agents.coordinator.core import (
     _dispatch_tool_blocker,
     _dispatch_worktree,
     _effective_platform_suitability,
+    _format_exclusion_census,
     _headless_task_from_argv,
+    _lane_dispatch_exclusions,
+    _lane_is_dispatch_eligible,
     _lane_to_dict,
     _live_headless_launcher,
     _parse_task,
@@ -1505,6 +1509,139 @@ retired_reason: clean exit
         assert lanes[role].pid_source == "pidfile"
         assert lanes[role].claimed_task == task_id
         assert lanes[role].idle is False
+
+
+class TestDispatchExclusionIsAttributed:
+    """`idle_lanes=0` is a five-way AND; publishing only the product hides the cause.
+
+    Measured 2026-08-23: nine of eleven lanes passed four conjuncts and failed only
+    `dispatchable`, and this estate's own terrain map read the resulting zero as "the
+    lane pool is spent" for a day. "Every lane is working" and "every lane is switched
+    off" produce the same number and demand opposite responses.
+    """
+
+    def _lane(self, **overrides) -> LaneState:
+        base = dict(
+            role="alpha",
+            session="s",
+            alive=True,
+            idle=True,
+            claimed_task=None,
+            dispatch_ready=True,
+            dispatchable=True,
+        )
+        base.update(overrides)
+        return LaneState(**base)
+
+    def test_an_eligible_lane_has_no_exclusions(self):
+        assert _lane_dispatch_exclusions(self._lane()) == []
+        assert _lane_is_dispatch_eligible(self._lane())
+
+    @pytest.mark.parametrize(
+        "overrides,expected",
+        [
+            ({"alive": False}, "not_alive"),
+            ({"idle": False}, "not_idle"),
+            ({"claimed_task": "t-1"}, "has_claimed_task"),
+            ({"dispatch_ready": False}, "not_dispatch_ready"),
+            ({"dispatchable": False}, "not_dispatchable"),
+        ],
+    )
+    def test_each_conjunct_names_itself(self, overrides, expected):
+        lane = self._lane(**overrides)
+        assert expected in _lane_dispatch_exclusions(lane)
+        assert not _lane_is_dispatch_eligible(lane)
+
+    def test_eligibility_is_defined_by_the_exclusions_so_they_cannot_drift(self):
+        """The predicate and its explanation must be one thing, not two that agree today."""
+        for overrides in ({}, {"alive": False}, {"idle": False}, {"dispatchable": False}):
+            lane = self._lane(**overrides)
+            assert _lane_is_dispatch_eligible(lane) == (not _lane_dispatch_exclusions(lane))
+
+    def test_census_attributes_the_zero_and_partitions_the_lanes(self):
+        """The measured 2026-08-23 shape: nine excluded only by `dispatchable`.
+
+        The doubly-excluded lane is load-bearing. Without it, counting the first
+        failing conjunct and counting every one give the same answer, so the
+        partition property would be asserted by a test that cannot see it — the
+        exact shape of coverage this change exists to correct.
+        """
+        lanes = {f"l{i}": self._lane(role=f"l{i}", dispatchable=False) for i in range(9)}
+        lanes["alpha"] = self._lane(role="alpha", alive=False)
+        lanes["mnemonic"] = self._lane(role="mnemonic", dispatch_ready=False)
+        # Fails two conjuncts: must be counted once, under the first.
+        lanes["both"] = self._lane(role="both", alive=False, dispatchable=False)
+        census = _format_exclusion_census(lanes)
+        assert "not_dispatchable:9" in census
+        assert "not_alive:2" in census, "the doubly-excluded lane counts under its FIRST conjunct"
+        assert "not_dispatch_ready:1" in census
+        # A partition: the counts sum to the number of excluded lanes, not to the
+        # number of failed conditions.
+        total = sum(int(part.split(":")[1]) for part in census.split("=")[1].split(","))
+        assert total == len(lanes) == 12
+
+    def test_census_is_empty_when_something_is_dispatchable(self):
+        assert _format_exclusion_census({"a": self._lane()}) == ""
+
+
+class TestUnclassifiedRelayStatusIsNotOfferedWork:
+    """An unrecognised lane state must not read as available for dispatch.
+
+    `_relay_status_is_idle` returns a real three-valued answer; its None means "this
+    lane published a state I cannot classify". The caller dropped that, leaving `idle`
+    at its field default of True — so the unknown resolved to the optimistic branch by
+    omission. The relay vocabulary is open (20 distinct `status:` values across 49 live
+    files, ten of them singletons), so this is reached in practice.
+    """
+
+    def _check(self, tmp_path: Path, body: str | None, role: str = "cx-probe") -> LaneState:
+        relay_dir = tmp_path / "relay"
+        relay_dir.mkdir()
+        if body is not None:
+            (relay_dir / f"{role}.yaml").write_text(body, encoding="utf-8")
+        cache_dir = tmp_path / "cache"
+        cache_dir.mkdir()
+        with (
+            patch("agents.coordinator.core.RELAY_DIR", relay_dir),
+            patch("agents.coordinator.core.CACHE_DIR", cache_dir),
+            patch("pathlib.Path.home", return_value=tmp_path),
+        ):
+            return _check_lane(
+                LaneDescriptor(role=role, session=f"hapax-codex-{role}", platform="codex")
+            )
+
+    def test_unclassifiable_status_withholds_the_lane(self, tmp_path: Path, caplog):
+        with caplog.at_level(logging.INFO, logger="agents.coordinator.core"):
+            state = self._check(
+                tmp_path,
+                "session: cx-probe\nplatform: codex\n"
+                "status: v21_fresh_route_admission_proof_recovery\ncurrent_claim: null\n",
+            )
+        assert state.idle is False, (
+            "a status the classifier cannot read must not leave the lane at its "
+            "optimistic default of idle=True"
+        )
+        assert not _lane_is_dispatch_eligible(state)
+        assert any("unclassified relay status" in r.getMessage() for r in caplog.records), (
+            "withholding a lane silently trades one unattributed state for another"
+        )
+
+    def test_a_classifiable_idle_status_is_still_idle(self, tmp_path: Path, caplog):
+        """The negative direction: this must not withhold every lane."""
+        with caplog.at_level(logging.INFO, logger="agents.coordinator.core"):
+            state = self._check(
+                tmp_path,
+                "session: cx-probe\nplatform: codex\nstatus: idle\ncurrent_claim: null\n",
+            )
+        assert state.idle is True
+        assert not any("unclassified relay status" in r.getMessage() for r in caplog.records)
+
+    def test_a_lane_with_no_relay_at_all_is_untouched(self, tmp_path: Path, caplog):
+        """No relay is not the same as an unreadable relay; only the latter is withheld."""
+        with caplog.at_level(logging.INFO, logger="agents.coordinator.core"):
+            state = self._check(tmp_path, None, role="cx-none")
+        assert state.idle is True
+        assert not any("unclassified relay status" in r.getMessage() for r in caplog.records)
 
 
 class TestCoordinatorState:
