@@ -129,10 +129,20 @@ case "$base_url" in
     ;;
 esac
 
-command -v pass >/dev/null 2>&1 || {
-  echo "hapax-glmcp-claude: pass is not on PATH; install pass or add it to PATH before using the glmcp/api-key secret." >&2
+# The Z.ai key has TWO possible homes and the launcher must survive it moving between them.
+# Measured 2026-08-26: appendix's `pass` held NO glmcp entry while podium's did, and the FileStore
+# behind `hapax-secret` held `glmcp-api-key` on both. This launcher demanded `pass` and so refused
+# to start on appendix — which silently retired the estate's sanctioned GLM harness on this host
+# and led to GLM being re-harnessed onto opencode instead of the lookup being repaired.
+#
+# `hapax-secret` is the SSOT the estate is migrating to (#4604); `pass` is the legacy per-host
+# store. This is a lookup across two known stores, not a widening fallback: both branches read one
+# secret and nothing else, each precondition is checkable at the moment of use (does this store
+# return a non-empty first line), and if neither yields the launcher refuses naming both.
+if ! command -v hapax-secret >/dev/null 2>&1 && ! command -v pass >/dev/null 2>&1; then
+  echo "hapax-glmcp-claude: neither 'hapax-secret' nor 'pass' is on PATH; one must hold the Z.ai API key." >&2
   exit 3
-}
+fi
 command -v claude >/dev/null 2>&1 || {
   echo "hapax-glmcp-claude: claude is not on PATH; install Claude Code or add the claude binary to PATH." >&2
   exit 4
@@ -147,20 +157,29 @@ case "$-" in
     ;;
 esac
 
-pass_error_file="$(mktemp -t hapax-glmcp-pass.XXXXXX)"
-auth_token="$(pass show "$secret_entry" 2>"$pass_error_file" | sed -n '1p')" || {
-  echo "hapax-glmcp-claude: failed to read pass entry '$secret_entry'; check: pass show '$secret_entry' >/dev/null" >&2
-  echo "hapax-glmcp-claude: pass returned an error; stderr was suppressed to avoid replaying secret-adjacent diagnostics." >&2
-  rm -f "$pass_error_file"
-  pass_error_file=""
-  exit 5
-}
-rm -f "$pass_error_file"
-pass_error_file=""
+# FileStore first, then pass. Both are read into a subshell whose stderr is discarded: a
+# secret-store diagnostic can echo the value or its neighbourhood, and this process is about to
+# exec Claude Code, so a leaked line would outlive the launcher.
+filestore_entry="${HAPAX_GLMCP_FILESTORE_ENTRY:-glmcp-api-key}"
+auth_token=""
+token_source=""
+
+if command -v hapax-secret >/dev/null 2>&1; then
+  auth_token="$(hapax-secret "$filestore_entry" 2>/dev/null | sed -n '1p')"
+  [[ -n "$auth_token" ]] && token_source="hapax-secret:$filestore_entry"
+fi
+
+if [[ -z "$auth_token" ]] && command -v pass >/dev/null 2>&1; then
+  auth_token="$(pass show "$secret_entry" 2>/dev/null | sed -n '1p')"
+  [[ -n "$auth_token" ]] && token_source="pass:$secret_entry"
+fi
 
 if [[ -z "$auth_token" ]]; then
-  echo "hapax-glmcp-claude: pass entry '$secret_entry' returned an empty first line; update the pass entry so line 1 is the Z.ai API key." >&2
-  exit 6
+  echo "hapax-glmcp-claude: no Z.ai API key found." >&2
+  echo "hapax-glmcp-claude: tried FileStore entry '$filestore_entry' (hapax-secret --list) and pass entry '$secret_entry' (pass ls)." >&2
+  echo "hapax-glmcp-claude: store stderr was suppressed to avoid replaying secret-adjacent diagnostics." >&2
+  echo "hapax-glmcp-claude: next action: hapax-secret put '$filestore_entry' at a TTY on the FileStore host." >&2
+  exit 5
 fi
 
 export ANTHROPIC_BASE_URL="$base_url"

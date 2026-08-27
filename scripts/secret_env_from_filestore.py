@@ -60,6 +60,11 @@ REQUIRED: dict[str, str] = {
     "OPENAI_API_KEY": "api-openai",
 }
 OPTIONAL: dict[str, str] = {
+    # GLM's Z.ai key. OPTIONAL rather than REQUIRED on purpose: this is a capability credential,
+    # and putting it in REQUIRED would make hapax-secrets.service refuse to start on any host with
+    # no GLM entitlement — fail-closed in the wrong place. When it is absent the GLM launcher falls
+    # back to its legacy `pass` lookup and only then refuses.
+    "HAPAX_GLMCP_API_KEY": "glmcp-api-key",
     "SOUNDCLOUD_CLIENT_ID": "soundcloud-client-id",
     "SOUNDCLOUD_CLIENT_SECRET": "soundcloud-client-secret",
     "HAPAX_SOUNDCLOUD_BANKED_URL": "soundcloud-banked-url-canonical",
