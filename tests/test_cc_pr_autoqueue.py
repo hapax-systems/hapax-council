@@ -741,9 +741,15 @@ def test_fetch_pr_release_evidence_falls_back_to_graphql_when_rest_pull_indeterm
         calls.append(list(cmd))
         if cmd[:5] == ["gh", "api", "--method", "GET", "-H"]:
             return subprocess.CompletedProcess(cmd, 1, "", "secondary rate limit")
-        if cmd[:3] == ["gh", "api", "rate_limit"]:
+        if cmd[:4] == ["gh", "api", "-i", "rate_limit"]:
             payload = {"resources": {"graphql": {"remaining": 1000, "reset": 1893456000}}}
-            return subprocess.CompletedProcess(cmd, 0, json.dumps(payload), "")
+            return subprocess.CompletedProcess(
+                cmd,
+                0,
+                "HTTP/2.0 200 OK\r\nX-Ratelimit-Limit: 5000\r\nX-Ratelimit-Remaining: 5000\r\nX-Ratelimit-Reset: 1893456000\r\nX-Ratelimit-Resource: core\r\n\r\n"
+                + json.dumps(payload),
+                "",
+            )
         if cmd[:3] == ["gh", "api", "graphql"]:
             payload = {
                 "data": {
@@ -809,9 +815,15 @@ def test_fetch_status_rollup_falls_back_to_graphql_when_rest_indeterminate(
 
     def runner(cmd: list[str], **_: Any) -> subprocess.CompletedProcess:
         calls.append(list(cmd))
-        if cmd[:3] == ["gh", "api", "rate_limit"]:
+        if cmd[:4] == ["gh", "api", "-i", "rate_limit"]:
             payload = {"resources": {"graphql": {"remaining": 1000, "reset": 1893456000}}}
-            return subprocess.CompletedProcess(cmd, 0, json.dumps(payload), "")
+            return subprocess.CompletedProcess(
+                cmd,
+                0,
+                "HTTP/2.0 200 OK\r\nX-Ratelimit-Limit: 5000\r\nX-Ratelimit-Remaining: 5000\r\nX-Ratelimit-Reset: 1893456000\r\nX-Ratelimit-Resource: core\r\n\r\n"
+                + json.dumps(payload),
+                "",
+            )
         if cmd[:3] == ["gh", "api", "graphql"]:
             payload = {
                 "data": {
@@ -1011,10 +1023,16 @@ def test_graphql_backoff_skips_autoqueue_reconciler(tmp_path: Path) -> None:
 
     class _LowGraphQLRunner(_FakeRunner):
         def __call__(self, cmd: list[str], **kwargs: Any) -> subprocess.CompletedProcess:
-            if cmd[:3] == ["gh", "api", "rate_limit"]:
+            if cmd[:4] == ["gh", "api", "-i", "rate_limit"]:
                 self.calls.append(list(cmd))
                 payload = {"resources": {"graphql": {"remaining": 0, "reset": 1893456000}}}
-                return subprocess.CompletedProcess(cmd, 0, json.dumps(payload), "")
+                return subprocess.CompletedProcess(
+                    cmd,
+                    0,
+                    "HTTP/2.0 200 OK\r\nX-Ratelimit-Limit: 5000\r\nX-Ratelimit-Remaining: 5000\r\nX-Ratelimit-Reset: 1893456000\r\nX-Ratelimit-Resource: core\r\n\r\n"
+                    + json.dumps(payload),
+                    "",
+                )
             return super().__call__(cmd, **kwargs)
 
     runner = _LowGraphQLRunner()

@@ -891,9 +891,9 @@ class _StuckRunner:
                 return subprocess.CompletedProcess(cmd, 0, json.dumps(payload), "")
             if re.fullmatch(r"repos/o/r/commits/sha-\d+/status", path):
                 return subprocess.CompletedProcess(cmd, 0, json.dumps({"statuses": []}), "")
-        if cmd[:3] == ["gh", "api", "rate_limit"]:
+        if cmd[:4] == ["gh", "api", "-i", "rate_limit"]:
             payload = {"resources": {"graphql": {"remaining": 1000, "reset": 1893456000}}}
-            return subprocess.CompletedProcess(cmd, 0, json.dumps(payload), "")
+            return subprocess.CompletedProcess(cmd, 0, "HTTP/2.0 200 OK\r\nX-Ratelimit-Limit: 5000\r\nX-Ratelimit-Remaining: 5000\r\nX-Ratelimit-Reset: 1893456000\r\nX-Ratelimit-Resource: core\r\n\r\n" + json.dumps(payload), "")
         if cmd[:3] == ["gh", "api", "graphql"]:
             nodes = [{"pullRequest": {"number": n}} for n in self.queued]
             payload = {"data": {"repository": {"mergeQueue": {"entries": {"nodes": nodes}}}}}
@@ -953,10 +953,10 @@ class TestStuckPRAlerter:
     def test_graphql_backoff_does_not_report_stuck(self, tmp_path: Path) -> None:
         class _LowGraphQLRunner(_StuckRunner):
             def __call__(self, cmd: list[str], **kwargs: Any) -> subprocess.CompletedProcess:
-                if cmd[:3] == ["gh", "api", "rate_limit"]:
+                if cmd[:4] == ["gh", "api", "-i", "rate_limit"]:
                     self.calls.append(list(cmd))
                     payload = {"resources": {"graphql": {"remaining": 0, "reset": 1893456000}}}
-                    return subprocess.CompletedProcess(cmd, 0, json.dumps(payload), "")
+                    return subprocess.CompletedProcess(cmd, 0, "HTTP/2.0 200 OK\r\nX-Ratelimit-Limit: 5000\r\nX-Ratelimit-Remaining: 5000\r\nX-Ratelimit-Reset: 1893456000\r\nX-Ratelimit-Resource: core\r\n\r\n" + json.dumps(payload), "")
                 return super().__call__(cmd, **kwargs)
 
         runner = _LowGraphQLRunner([_open_pr(75)], queued=())

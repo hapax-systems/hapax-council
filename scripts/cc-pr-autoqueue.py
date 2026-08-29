@@ -53,6 +53,7 @@ import review_team  # noqa: E402
 from github_pr_status import (  # noqa: E402
     GRAPHQL_BACKOFF_RC,
     REST_INDETERMINATE_CHECK_NAME,
+    RestPoolExhausted,
     fetch_status_check_rollup_rest,
     get_pull_rest,
     list_open_pr_statuses_rest,
@@ -960,14 +961,25 @@ def fetch_open_prs(
 ) -> list[PullRequest]:
     runner = runner or subprocess.run
     repo_root = repo_root or default_repo_root()
-    raw = list_open_pr_statuses_rest(
-        repo=repo,
-        repo_root=repo_root,
-        runner=runner,
-        limit=limit,
-        include_files=True,
-        include_review_decision=True,
-    )
+    try:
+        raw = list_open_pr_statuses_rest(
+            repo=repo,
+            repo_root=repo_root,
+            runner=runner,
+            limit=limit,
+            include_files=True,
+            include_review_decision=True,
+        )
+    except RestPoolExhausted as exc:
+        # Skip this cycle rather than spending a listing plus per-PR hydration into
+        # guaranteed 403s. Distinguished from the empty-scan warning below because the
+        # two mean different things: this one is "we did not look", not "nothing found".
+        LOG.warning(
+            "REST open PR scan skipped: %s (quota, not auth; resets in %ss)",
+            exc.reason,
+            exc.reset_in_seconds,
+        )
+        return []
     if not raw:
         LOG.warning("REST open PR scan returned no rows")
         return []

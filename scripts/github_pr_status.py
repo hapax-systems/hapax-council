@@ -656,6 +656,26 @@ def _pull_status_row_from_rest(
     }
 
 
+class RestPoolExhausted(RuntimeError):
+    """The REST pool has no headroom, measured before spending a call.
+
+    Carries the reset time so a caller can report *when*, not merely *that*. This is a
+    quota condition and never an auth one — `gh auth status` reports an exhausted pool as
+    "the token is invalid", which sends people to re-authenticate for nothing.
+    """
+
+    def __init__(self, reason: str, reset_epoch: int | None) -> None:
+        super().__init__(reason)
+        self.reason = reason
+        self.reset_epoch = reset_epoch
+
+    @property
+    def reset_in_seconds(self) -> int | None:
+        if self.reset_epoch is None:
+            return None
+        return max(0, self.reset_epoch - int(time.time()))
+
+
 def list_open_pr_statuses_rest(
     *,
     repo: str = DEFAULT_REPO,
@@ -667,7 +687,27 @@ def list_open_pr_statuses_rest(
     include_status: bool = True,
     hydrate_pull: bool = False,
     fail_on_indeterminate: bool = False,
+    respect_rate_pools: bool = True,
 ) -> list[dict[str, Any]]:
+    # The operational guard. This is the entry point all three fleet timers use
+    # (cc-pr-autoqueue, cc-pr-merge-watcher, cc-pr-review-dispatch), and one call here
+    # fans out into a listing plus a per-PR hydration — so a single cheap probe protects
+    # many requests.
+    #
+    # Refusing early is strictly better than proceeding: when `core` is measurably at
+    # zero, those requests are guaranteed 403s. Spending them produces the same failure
+    # more slowly, having burned the rate limit further and reported nothing useful about
+    # why. `RestPoolExhausted` names the pool and the reset.
+    #
+    # Fails OPEN by construction: `choose_transport` returns "rest" whenever headroom is
+    # unknown, so a probe failure, a network hiccup, or an old `gh` never blocks polling.
+    # Only a *measured* empty pool refuses.
+    if respect_rate_pools:
+        snapshot = rate_snapshot(repo_root=repo_root, runner=runner)
+        transport, reason = choose_transport(repo_root=repo_root, snapshot=snapshot)
+        if transport != "rest":
+            raise RestPoolExhausted(reason, snapshot.core.reset_epoch if snapshot.core else None)
+
     payload = list_pulls_rest(
         repo=repo,
         repo_root=repo_root,
@@ -750,9 +790,27 @@ def get_pr_status_rest(
     )
 
 
+#: Header/body separator in an ``gh api -i`` response: a blank line, CRLF or LF.
+#:
+#: HTTP puts ``\r\n\r\n`` on the wire. ``_run`` passes ``text=True``, whose universal-newline
+#: translation rewrites that to ``\n\n`` before we ever see it — measured 2026-08-29:
+#: ``text=True`` output contains ``\n\n`` and no ``\r\n\r\n``; ``text=False`` output is the
+#: reverse. So a bare ``partition("\n\n")`` does work today, but only because of a decoding
+#: side effect nothing in this module states or tests. One caller reading bytes would break
+#: it silently: no separator found, body empty, both pools ``None``, and the balancer
+#: degenerates to "rest" unconditionally while ``graphql_backoff`` becomes a permanent no-op.
+#: Matching both shapes removes the dependency instead of resting on it.
+_RATE_SECTION_SPLIT = re.compile(r"\r?\n\r?\n")
+
+
+def _split_head_body(stdout: str) -> tuple[str, str]:
+    parts = _RATE_SECTION_SPLIT.split(stdout, maxsplit=1)
+    return (parts[0], parts[1]) if len(parts) == 2 else (stdout, "")
+
+
 def _parse_rate_headers(stdout: str) -> dict[str, str]:
     """Split ``gh api -i`` output and return lowercased response headers."""
-    head, _, _ = stdout.partition("\n\n")
+    head, _ = _split_head_body(stdout)
     headers: dict[str, str] = {}
     for line in head.splitlines():
         if ":" in line and not line.startswith("HTTP"):
@@ -820,7 +878,7 @@ def rate_snapshot(
 
     stdout = proc.stdout or ""
     headers = _parse_rate_headers(stdout)
-    _, _, body = stdout.partition("\n\n")
+    _, body = _split_head_body(stdout)
     try:
         payload = json.loads(body or stdout or "null")
     except json.JSONDecodeError:

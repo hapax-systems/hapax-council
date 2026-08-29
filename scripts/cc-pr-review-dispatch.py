@@ -56,6 +56,7 @@ if str(SCRIPTS_DIR) not in sys.path:
 
 import review_team  # noqa: E402
 from github_pr_status import (  # noqa: E402
+    RestPoolExhausted,
     get_pull_rest,
     list_open_pr_statuses_rest,
     list_pull_files_rest,
@@ -3003,12 +3004,24 @@ def review_all_open_prs(
 ) -> list[dict[str, Any]]:
     repo_root = repo_root or REPO_ROOT
     gh_runner = gh_runner or subprocess.run
-    open_prs = list_open_pr_statuses_rest(
-        repo=repo,
-        repo_root=repo_root,
-        runner=gh_runner,
-        limit=100,
-    )
+    try:
+        open_prs = list_open_pr_statuses_rest(
+            repo=repo,
+            repo_root=repo_root,
+            runner=gh_runner,
+            limit=100,
+        )
+    except RestPoolExhausted as exc:
+        # Skip this scan rather than spending it into guaranteed 403s. Returning an empty
+        # result set is safe here — the next scan re-evaluates every open PR from scratch,
+        # so nothing is lost by sitting out a cycle. Logged loudly so an empty scan is
+        # never mistaken for "no PRs needed review".
+        LOG.warning(
+            "review-team dispatch scan skipped: %s (quota, not auth; resets in %ss)",
+            exc.reason,
+            exc.reset_in_seconds,
+        )
+        return []
     results: list[dict[str, Any]] = []
     for item in open_prs:
         if not isinstance(item, dict) or item.get("isDraft"):

@@ -6,6 +6,8 @@ import sys
 from pathlib import Path
 from typing import Any
 
+import pytest
+
 SCRIPTS = Path(__file__).resolve().parents[2] / "scripts"
 if str(SCRIPTS) not in sys.path:
     sys.path.insert(0, str(SCRIPTS))
@@ -78,7 +80,7 @@ class FakeRunner:
                 "X-Ratelimit-Reset: 1893456000\r\n"
                 "X-Ratelimit-Resource: core\r\n"
             )
-            return subprocess.CompletedProcess(cmd, 0, f"{head}\n{json.dumps(payload)}", "")
+            return subprocess.CompletedProcess(cmd, 0, f"{head}\r\n{json.dumps(payload)}", "")
         if cmd[:3] == ["gh", "api", "graphql"]:
             return subprocess.CompletedProcess(cmd, 0, '{"data":{}}', "")
         return subprocess.CompletedProcess(cmd, 1, "", "unexpected command")
@@ -637,7 +639,9 @@ def test_open_pr_status_snapshot_does_not_hydrate_list_rows_by_default(tmp_path:
     assert rows[0]["mergedAt"] is None
     assert rows[0]["updatedAt"] == "2026-07-05T15:00:00Z"
     assert rows[0]["url"] == "https://github.example/owner/repo/pull/9"
-    assert not any(call[6] == "repos/owner/repo/pulls/9" for call in runner.calls)
+    # Length-guarded: the rate probe (`gh api -i rate_limit`) is a 4-element call, so an
+    # unguarded call[6] raises IndexError rather than reporting the property under test.
+    assert not any(len(call) > 6 and call[6] == "repos/owner/repo/pulls/9" for call in runner.calls)
 
 
 def test_open_pr_status_snapshot_hydrates_list_rows_when_requested(tmp_path: Path) -> None:
@@ -694,7 +698,7 @@ def test_open_pr_status_snapshot_hydrates_list_rows_when_requested(tmp_path: Pat
     )
 
     assert rows[0]["mergeStateStatus"] == "BEHIND"
-    assert any(call[6] == "repos/owner/repo/pulls/9" for call in runner.calls)
+    assert any(len(call) > 6 and call[6] == "repos/owner/repo/pulls/9" for call in runner.calls)
 
 
 # --------------------------------------------------------------- rate pool balancing
@@ -733,7 +737,7 @@ def _rate_runner(
                     "X-Ratelimit-Reset: 1893456000\r\n"
                     "X-Ratelimit-Resource: core\r\n"
                 )
-            return subprocess.CompletedProcess(cmd, 0, f"{head}\n{json.dumps(payload)}", "")
+            return subprocess.CompletedProcess(cmd, 0, f"{head}\r\n{json.dumps(payload)}", "")
         return subprocess.CompletedProcess(cmd, 1, "", "unexpected command")
 
     return run
@@ -895,7 +899,7 @@ def test_failed_lookup_is_not_a_measurement_even_when_it_parses(tmp_path: Path) 
             "X-Ratelimit-Remaining: 0\r\n"
             "X-Ratelimit-Resource: core\r\n"
         )
-        return subprocess.CompletedProcess(cmd, 1, f"{head}\n{json.dumps(payload)}", "")
+        return subprocess.CompletedProcess(cmd, 1, f"{head}\r\n{json.dumps(payload)}", "")
 
     snapshot = github_pr_status.rate_snapshot(repo_root=tmp_path, runner=failing_but_parseable)
     assert snapshot.core is None, "a failed probe must not yield a headroom figure"
@@ -905,3 +909,122 @@ def test_failed_lookup_is_not_a_measurement_even_when_it_parses(tmp_path: Path) 
         repo_root=tmp_path, runner=failing_but_parseable
     )
     assert transport == "rest", "unknown headroom fails open; it does not divert traffic"
+
+
+def test_crlf_wire_format_parses_without_relying_on_newline_translation() -> None:
+    """The header/body split must not depend on `text=True`'s universal newlines.
+
+    HTTP puts CRLF CRLF on the wire. Measured 2026-08-29: `subprocess.run(text=True)`
+    rewrites that to LF LF before this module sees it, so a bare `partition` on the LF
+    form worked -- but only via a decoding side effect nothing stated or tested. A caller
+    reading bytes would have broken it silently: no separator, empty body, both pools
+    None, the balancer degenerating to "rest" unconditionally, and graphql_backoff
+    becoming a permanent no-op. Review finding (claude-1, critical); the described
+    production failure does not occur on the `text=True` path, but the unstated
+    dependency was real. This pins the raw shape directly.
+    """
+    payload = {
+        "resources": {
+            "core": {"remaining": 10, "limit": 5000, "reset": 1893456000},
+            "graphql": {"remaining": 4660, "limit": 5000, "reset": 1893456000},
+        }
+    }
+    raw = (
+        "HTTP/2.0 200 OK\r\n"
+        "X-Ratelimit-Limit: 5000\r\n"
+        "X-Ratelimit-Remaining: 10\r\n"
+        "X-Ratelimit-Resource: core\r\n"
+        "\r\n" + json.dumps(payload)
+    )
+
+    headers = github_pr_status._parse_rate_headers(raw)
+    assert headers["x-ratelimit-remaining"] == "10"
+    assert headers["x-ratelimit-resource"] == "core"
+
+    head, body = github_pr_status._split_head_body(raw)
+    assert "X-Ratelimit-Remaining" in head
+    assert json.loads(body)["resources"]["graphql"]["remaining"] == 4660
+
+    # The translated shape still works, so the fix is additive, not a swap.
+    _, body_lf = github_pr_status._split_head_body(raw.replace("\r\n", "\n"))
+    assert json.loads(body_lf)["resources"]["core"]["remaining"] == 10
+
+
+def test_exhausted_rest_refuses_before_spending_calls(tmp_path: Path) -> None:
+    """The operational guard: a request path consults the routing decision before calling.
+
+    `list_open_pr_statuses_rest` is what cc-pr-autoqueue, cc-pr-merge-watcher and
+    cc-pr-review-dispatch all use, and one call fans out into a listing plus per-PR
+    hydration. When core is measurably empty those requests are guaranteed 403s, so
+    refusing early is strictly better than spending them to fail slower. Review finding
+    (codex-1, critical): before this, the only caller of choose_transport was the
+    read-only diagnostic, so the operational path remained unguarded.
+    """
+    runner = _rate_runner(header_remaining=0, body_core=0, body_graphql=4660)
+    calls: list[list[str]] = []
+
+    def recording(cmd: list[str], **kwargs: Any) -> subprocess.CompletedProcess:
+        calls.append(list(cmd))
+        return runner(cmd, **kwargs)
+
+    with pytest.raises(github_pr_status.RestPoolExhausted) as excinfo:
+        github_pr_status.list_open_pr_statuses_rest(
+            repo="owner/repo", repo_root=tmp_path, runner=recording
+        )
+
+    assert "github_rest_below_floor" in excinfo.value.reason
+    assert excinfo.value.reset_epoch == 1893456000
+    assert not any(call[:4] == ["gh", "api", "--method", "GET"] for call in calls), (
+        "the listing must not be attempted once the pool is measured empty"
+    )
+
+
+def test_healthy_or_unknown_pool_never_blocks_polling(tmp_path: Path) -> None:
+    """Fail open. Only a MEASURED empty pool refuses; everything else proceeds."""
+
+    def healthy(cmd: list[str], **kwargs: Any) -> subprocess.CompletedProcess:
+        if cmd[:4] == ["gh", "api", "-i", "rate_limit"]:
+            return _rate_runner(header_remaining=4000, body_core=4000, body_graphql=4000)(
+                cmd, **kwargs
+            )
+        return subprocess.CompletedProcess(cmd, 0, json.dumps([]), "")
+
+    assert (
+        github_pr_status.list_open_pr_statuses_rest(
+            repo="owner/repo", repo_root=tmp_path, runner=healthy
+        )
+        == []
+    )
+
+    def probe_fails(cmd: list[str], **kwargs: Any) -> subprocess.CompletedProcess:
+        if cmd[:4] == ["gh", "api", "-i", "rate_limit"]:
+            return subprocess.CompletedProcess(cmd, 1, "", "network down")
+        return subprocess.CompletedProcess(cmd, 0, json.dumps([]), "")
+
+    assert (
+        github_pr_status.list_open_pr_statuses_rest(
+            repo="owner/repo", repo_root=tmp_path, runner=probe_fails
+        )
+        == []
+    ), "an unreachable probe must not stop the fleet timers"
+
+
+def test_rate_pool_guard_can_be_disabled_for_callers_that_manage_their_own(
+    tmp_path: Path,
+) -> None:
+    """`respect_rate_pools=False` preserves the pre-change contract exactly."""
+
+    def empty_pool(cmd: list[str], **kwargs: Any) -> subprocess.CompletedProcess:
+        if cmd[:4] == ["gh", "api", "-i", "rate_limit"]:
+            return _rate_runner(header_remaining=0, body_core=0, body_graphql=0)(cmd, **kwargs)
+        return subprocess.CompletedProcess(cmd, 0, json.dumps([]), "")
+
+    assert (
+        github_pr_status.list_open_pr_statuses_rest(
+            repo="owner/repo",
+            repo_root=tmp_path,
+            runner=empty_pool,
+            respect_rate_pools=False,
+        )
+        == []
+    )
