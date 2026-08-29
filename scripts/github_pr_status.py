@@ -880,33 +880,15 @@ def graphql_backoff(
     )
 
 
-def rest_backoff(
-    *,
-    repo_root: Path,
-    runner: Any = None,
-    min_remaining: int | None = None,
-) -> GraphQLBackoff | None:
-    """The symmetric guard for the REST (``core``) pool.
-
-    This did not exist. PR #4436 moved PR status polling from GraphQL onto REST to escape a
-    GraphQL rate limit, but the guard stayed on GraphQL — so the estate protected the pool it
-    had stopped using and left the pool it moved everything onto unprotected. Measured
-    2026-08-29: ``core`` 0/5000 exhausted while ``graphql`` held 4660/5000.
-
-    Returns the same shape as :func:`graphql_backoff` so callers treat exhaustion of either
-    pool identically; the ``reason`` names which pool.
-    """
-    min_remaining = DEFAULT_REST_MIN_REMAINING if min_remaining is None else max(0, min_remaining)
-    pool = rate_snapshot(repo_root=repo_root, runner=runner).core
-    if pool is None:
-        return None
-    if pool.remaining >= min_remaining:
-        return None
-    return GraphQLBackoff(
-        remaining=pool.remaining,
-        reset_epoch=pool.reset_epoch,
-        reason=f"github_rest_remaining_below_threshold:{pool.remaining}<{min_remaining}",
-    )
+# There is deliberately no `rest_backoff()`. A first draft added one as the symmetric twin of
+# `graphql_backoff`, and the unused-function gate flagged it — correctly, and for a better
+# reason than "no caller": `choose_transport` already applies DEFAULT_REST_MIN_REMAINING to
+# the core pool, so a separate REST guard would be a SECOND mitigation for the SAME hazard —
+# two guards over one pool that can disagree. The rule is to change the shape rather than
+# patch the boundary, so the twin was removed instead of being given a caller or whitelisted.
+#
+# `graphql_backoff` survives because it has a live consumer with different semantics —
+# `run_graphql_rate_aware` sleeps on it — not because symmetry is owed.
 
 
 def choose_transport(
