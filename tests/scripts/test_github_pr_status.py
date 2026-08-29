@@ -60,9 +60,25 @@ class FakeRunner:
                 ]
             }
             return subprocess.CompletedProcess(cmd, 0, json.dumps(payload), "")
-        if cmd[:3] == ["gh", "api", "rate_limit"]:
-            payload = {"resources": {"graphql": {"remaining": 0, "reset": 1893456000}}}
-            return subprocess.CompletedProcess(cmd, 0, json.dumps(payload), "")
+        if cmd[:4] == ["gh", "api", "-i", "rate_limit"]:
+            # `-i` so the rate probe reads RESPONSE HEADERS, which are what the API
+            # actually enforces. Measured 2026-08-29: the body reported
+            # `core: 4996/5000 remaining` while a real call returned 403 with
+            # `X-Ratelimit-Remaining: 0` for that same bucket.
+            payload = {
+                "resources": {
+                    "core": {"remaining": 4000, "limit": 5000, "reset": 1893456000},
+                    "graphql": {"remaining": 0, "limit": 5000, "reset": 1893456000},
+                }
+            }
+            head = (
+                "HTTP/2.0 200 OK\r\n"
+                "X-Ratelimit-Limit: 5000\r\n"
+                "X-Ratelimit-Remaining: 4000\r\n"
+                "X-Ratelimit-Reset: 1893456000\r\n"
+                "X-Ratelimit-Resource: core\r\n"
+            )
+            return subprocess.CompletedProcess(cmd, 0, f"{head}\n{json.dumps(payload)}", "")
         if cmd[:3] == ["gh", "api", "graphql"]:
             return subprocess.CompletedProcess(cmd, 0, '{"data":{}}', "")
         return subprocess.CompletedProcess(cmd, 1, "", "unexpected command")
@@ -679,3 +695,146 @@ def test_open_pr_status_snapshot_hydrates_list_rows_when_requested(tmp_path: Pat
 
     assert rows[0]["mergeStateStatus"] == "BEHIND"
     assert any(call[6] == "repos/owner/repo/pulls/9" for call in runner.calls)
+
+
+# --------------------------------------------------------------- rate pool balancing
+#
+# Context: PR #4436 moved PR status polling from GraphQL onto REST to escape a GraphQL rate
+# limit, but the guard stayed on GraphQL. Measured 2026-08-29: core 0/5000 exhausted while
+# graphql held 4660/5000 — the estate protected the pool it had stopped using.
+
+
+def _rate_runner(
+    *,
+    header_remaining: int | None,
+    body_core: int,
+    body_graphql: int,
+    limit: int = 5000,
+) -> Any:
+    """A runner whose header and body figures can be made to disagree on purpose."""
+
+    def run(cmd: list[str], **kwargs: Any) -> subprocess.CompletedProcess:
+        if cmd[:4] == ["gh", "api", "-i", "rate_limit"]:
+            payload = {
+                "resources": {
+                    "core": {"remaining": body_core, "limit": limit, "reset": 1893456000},
+                    "graphql": {
+                        "remaining": body_graphql,
+                        "limit": limit,
+                        "reset": 1893456000,
+                    },
+                }
+            }
+            head = "HTTP/2.0 200 OK\r\n"
+            if header_remaining is not None:
+                head += (
+                    f"X-Ratelimit-Limit: {limit}\r\n"
+                    f"X-Ratelimit-Remaining: {header_remaining}\r\n"
+                    "X-Ratelimit-Reset: 1893456000\r\n"
+                    "X-Ratelimit-Resource: core\r\n"
+                )
+            return subprocess.CompletedProcess(cmd, 0, f"{head}\n{json.dumps(payload)}", "")
+        return subprocess.CompletedProcess(cmd, 1, "", "unexpected command")
+
+    return run
+
+
+def test_core_headroom_prefers_headers_over_the_body(tmp_path: Path) -> None:
+    """The measured disagreement, pinned.
+
+    The endpoint body reported core 4996/5000 remaining at the same moment a real call
+    returned 403 with X-Ratelimit-Remaining: 0. A guard trusting the body would have
+    concluded there was headroom and spent a call straight into a 403.
+    """
+    snapshot = github_pr_status.rate_snapshot(
+        repo_root=tmp_path,
+        runner=_rate_runner(header_remaining=0, body_core=4996, body_graphql=4660),
+    )
+
+    assert snapshot.core is not None
+    assert snapshot.core.remaining == 0
+    assert snapshot.core.source == "header"
+
+
+def test_disagreement_resolves_pessimistically(tmp_path: Path) -> None:
+    """Over-reporting exhaustion costs a reroute; under-reporting spends into a 403."""
+    snapshot = github_pr_status.rate_snapshot(
+        repo_root=tmp_path,
+        runner=_rate_runner(header_remaining=4500, body_core=10, body_graphql=4660),
+    )
+
+    assert snapshot.core is not None
+    assert snapshot.core.remaining == 10, "the stricter of the two sources must win"
+
+
+def test_rest_backoff_exists_and_fires(tmp_path: Path) -> None:
+    """The symmetric guard that did not exist before this change."""
+    backoff = github_pr_status.rest_backoff(
+        repo_root=tmp_path,
+        runner=_rate_runner(header_remaining=3, body_core=3, body_graphql=4660),
+        min_remaining=500,
+    )
+
+    assert backoff is not None
+    assert "github_rest_remaining_below_threshold" in backoff.reason
+
+
+def test_exhausted_rest_routes_to_graphql(tmp_path: Path) -> None:
+    """The whole point: divert BEFORE spending, not after failing."""
+    transport, reason = github_pr_status.choose_transport(
+        repo_root=tmp_path,
+        runner=_rate_runner(header_remaining=0, body_core=0, body_graphql=4660),
+    )
+
+    assert transport == "graphql"
+    assert "github_rest_below_floor" in reason
+
+
+def test_both_pools_exhausted_returns_no_transport(tmp_path: Path) -> None:
+    """Neither pool is spendable; callers must refuse rather than pick a doomed one."""
+    transport, reason = github_pr_status.choose_transport(
+        repo_root=tmp_path,
+        runner=_rate_runner(header_remaining=0, body_core=0, body_graphql=0),
+    )
+
+    assert transport is None
+    assert "github_both_pools_below_floor" in reason
+
+
+def test_healthy_pools_send_work_to_the_roomier_one(tmp_path: Path) -> None:
+    """Balancing, not merely failover: the pools should drain together."""
+    transport, _ = github_pr_status.choose_transport(
+        repo_root=tmp_path,
+        runner=_rate_runner(header_remaining=1000, body_core=1000, body_graphql=4900),
+    )
+
+    assert transport == "graphql"
+
+
+def test_rest_wins_ties_preserving_post_4436_behaviour(tmp_path: Path) -> None:
+    """This change only ever diverts away from a pool measured to be in trouble."""
+    transport, _ = github_pr_status.choose_transport(
+        repo_root=tmp_path,
+        runner=_rate_runner(header_remaining=4000, body_core=4000, body_graphql=4000),
+    )
+
+    assert transport == "rest"
+
+
+def test_lookup_failure_fails_open_to_rest(tmp_path: Path) -> None:
+    """A network or auth hiccup must not be mistaken for confirmed exhaustion.
+
+    Preserves the contract graphql_backoff already documented, now applied to routing:
+    unknown headroom is not evidence of an empty pool.
+    """
+
+    def failing(cmd: list[str], **kwargs: Any) -> subprocess.CompletedProcess:
+        return subprocess.CompletedProcess(cmd, 1, "", "network down")
+
+    snapshot = github_pr_status.rate_snapshot(repo_root=tmp_path, runner=failing)
+    assert snapshot.core is None and snapshot.graphql is None
+
+    transport, _ = github_pr_status.choose_transport(repo_root=tmp_path, runner=failing)
+    assert transport == "rest"
+
+    assert github_pr_status.rest_backoff(repo_root=tmp_path, runner=failing) is None

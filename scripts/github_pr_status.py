@@ -24,6 +24,11 @@ DEFAULT_REPO = "hapax-systems/hapax-council"
 DEFAULT_CACHE_DIR = Path.home() / ".cache" / "hapax" / "pr-status"
 DEFAULT_CACHE_TTL_SECONDS = 60
 DEFAULT_GRAPHQL_MIN_REMAINING = 500
+# Symmetric floor for the REST (`core`) pool, which had no guard at all. Same value as the
+# GraphQL floor because the pools carry the same 5,000/hr limit today; both are overridable
+# (HAPAX_GITHUB_REST_MIN_REMAINING) so the threshold stays a parameter rather than a
+# constant buried in an implementation.
+DEFAULT_REST_MIN_REMAINING = 500
 DEFAULT_GRAPHQL_BACKOFF_MAX_SLEEP_SECONDS = 0
 DEFAULT_TIMEOUT_SECONDS = 60
 STATUS_CACHE_SCHEMA_VERSION = 2
@@ -45,6 +50,50 @@ class GraphQLBackoff:
         if self.reset_epoch is None:
             return None
         return max(0, self.reset_epoch - int(time.time()))
+
+
+@dataclass(frozen=True)
+class RatePool:
+    """Measured headroom for one GitHub rate-limit pool.
+
+    ``source`` records provenance, because the two available sources have been observed to
+    disagree. Measured 2026-08-29: ``gh api rate_limit`` reported ``core: 4996/5000
+    remaining`` at the same moment a real call returned ``403`` with
+    ``X-Ratelimit-Remaining: 0``, ``Used: 5000``, ``Resource: core``. Response headers are
+    what actually govern a call, so a body-sourced figure is weaker evidence and says so
+    rather than being silently treated as equivalent.
+    """
+
+    resource: str
+    remaining: int
+    limit: int
+    reset_epoch: int | None
+    source: str  # "header" (authoritative) | "body" (weaker)
+
+    @property
+    def fraction(self) -> float:
+        """Headroom as a share of the pool's own limit.
+
+        Routing compares fractions, not raw counts, so the decision stays correct if the
+        two pools are ever given different limits.
+        """
+        if self.limit <= 0:
+            return 0.0
+        return max(0.0, min(1.0, self.remaining / self.limit))
+
+    @property
+    def reset_in_seconds(self) -> int | None:
+        if self.reset_epoch is None:
+            return None
+        return max(0, self.reset_epoch - int(time.time()))
+
+
+@dataclass(frozen=True)
+class RateSnapshot:
+    """Both pools from a single probe, so a routing decision costs one call, not two."""
+
+    core: RatePool | None
+    graphql: RatePool | None
 
 
 def _env_int(name: str, default: int) -> int:
@@ -700,6 +749,104 @@ def get_pr_status_rest(
     )
 
 
+def _parse_rate_headers(stdout: str) -> dict[str, str]:
+    """Split ``gh api -i`` output and return lowercased response headers."""
+    head, _, _ = stdout.partition("\n\n")
+    headers: dict[str, str] = {}
+    for line in head.splitlines():
+        if ":" in line and not line.startswith("HTTP"):
+            key, _, value = line.partition(":")
+            headers[key.strip().lower()] = value.strip()
+    return headers
+
+
+def _pool_from_body(payload: Any, resource: str) -> RatePool | None:
+    if not isinstance(payload, dict):
+        return None
+    resources = payload.get("resources")
+    if not isinstance(resources, dict):
+        return None
+    entry = resources.get(resource)
+    if not isinstance(entry, dict):
+        return None
+    try:
+        remaining = int(entry.get("remaining"))
+        limit = int(entry.get("limit", 0))
+    except (TypeError, ValueError):
+        return None
+    try:
+        reset_epoch: int | None = int(entry.get("reset"))
+    except (TypeError, ValueError):
+        reset_epoch = None
+    return RatePool(
+        resource=resource,
+        remaining=remaining,
+        limit=limit,
+        reset_epoch=reset_epoch,
+        source="body",
+    )
+
+
+def rate_snapshot(
+    *,
+    repo_root: Path,
+    runner: Any = subprocess.run,
+) -> RateSnapshot:
+    """Probe both rate pools with one call.
+
+    ``core`` is taken from the response headers when they are present, because the headers
+    are what the API enforces. When the header and body figures disagree the **pessimistic**
+    one wins: over-reporting exhaustion costs at most an unnecessary reroute, while
+    under-reporting it spends a call into a 403. That asymmetry is the whole reason the
+    disagreement matters.
+
+    ``graphql`` has no cheap header source — only an actual GraphQL call returns GraphQL
+    headers — so it is body-sourced and labelled as such. Callers that need certainty about
+    GraphQL must make the call and read its headers.
+
+    A lookup failure yields ``RateSnapshot(None, None)`` so callers fail open, preserving
+    the pre-existing contract: a network or auth hiccup must not be mistaken for confirmed
+    exhaustion.
+    """
+    proc = _run(runner, ["gh", "api", "-i", "rate_limit"], repo_root=repo_root, timeout=30)
+    if getattr(proc, "returncode", 1) != 0:
+        return RateSnapshot(core=None, graphql=None)
+
+    stdout = proc.stdout or ""
+    headers = _parse_rate_headers(stdout)
+    _, _, body = stdout.partition("\n\n")
+    try:
+        payload = json.loads(body or stdout or "null")
+    except json.JSONDecodeError:
+        payload = None
+
+    core = _pool_from_body(payload, "core")
+    graphql = _pool_from_body(payload, "graphql")
+
+    if headers.get("x-ratelimit-resource") == "core":
+        try:
+            header_remaining = int(headers["x-ratelimit-remaining"])
+            header_limit = int(headers.get("x-ratelimit-limit", core.limit if core else 0))
+        except (KeyError, TypeError, ValueError):
+            header_remaining = None
+        else:
+            try:
+                header_reset: int | None = int(headers.get("x-ratelimit-reset"))
+            except (TypeError, ValueError):
+                header_reset = core.reset_epoch if core else None
+            # Pessimistic merge: never claim more headroom than the strictest source.
+            remaining = min(header_remaining, core.remaining) if core else header_remaining
+            core = RatePool(
+                resource="core",
+                remaining=remaining,
+                limit=header_limit or (core.limit if core else 0),
+                reset_epoch=header_reset,
+                source="header",
+            )
+
+    return RateSnapshot(core=core, graphql=graphql)
+
+
 def graphql_backoff(
     *,
     repo_root: Path,
@@ -715,31 +862,101 @@ def graphql_backoff(
     min_remaining = (
         DEFAULT_GRAPHQL_MIN_REMAINING if min_remaining is None else max(0, min_remaining)
     )
-    proc = _run(runner, ["gh", "api", "rate_limit"], repo_root=repo_root, timeout=30)
-    payload = _json_from_proc(proc)
-    resource = None
-    if isinstance(payload, dict):
-        resources = payload.get("resources")
-        if isinstance(resources, dict):
-            resource = resources.get("graphql")
-    if not isinstance(resource, dict):
+    pool = rate_snapshot(repo_root=repo_root, runner=runner).graphql
+    if pool is None:
         return None
-    try:
-        remaining = int(resource.get("remaining"))
-    except (TypeError, ValueError):
-        return None
-    reset_epoch: int | None
-    try:
-        reset_epoch = int(resource.get("reset"))
-    except (TypeError, ValueError):
-        reset_epoch = None
-    if remaining >= min_remaining:
+    if pool.remaining >= min_remaining:
         return None
     return GraphQLBackoff(
-        remaining=remaining,
-        reset_epoch=reset_epoch,
-        reason=f"github_graphql_remaining_below_threshold:{remaining}<{min_remaining}",
+        remaining=pool.remaining,
+        reset_epoch=pool.reset_epoch,
+        reason=f"github_graphql_remaining_below_threshold:{pool.remaining}<{min_remaining}",
     )
+
+
+def rest_backoff(
+    *,
+    repo_root: Path,
+    runner: Any = subprocess.run,
+    min_remaining: int | None = None,
+) -> GraphQLBackoff | None:
+    """The symmetric guard for the REST (``core``) pool.
+
+    This did not exist. PR #4436 moved PR status polling from GraphQL onto REST to escape a
+    GraphQL rate limit, but the guard stayed on GraphQL — so the estate protected the pool it
+    had stopped using and left the pool it moved everything onto unprotected. Measured
+    2026-08-29: ``core`` 0/5000 exhausted while ``graphql`` held 4660/5000.
+
+    Returns the same shape as :func:`graphql_backoff` so callers treat exhaustion of either
+    pool identically; the ``reason`` names which pool.
+    """
+    min_remaining = DEFAULT_REST_MIN_REMAINING if min_remaining is None else max(0, min_remaining)
+    pool = rate_snapshot(repo_root=repo_root, runner=runner).core
+    if pool is None:
+        return None
+    if pool.remaining >= min_remaining:
+        return None
+    return GraphQLBackoff(
+        remaining=pool.remaining,
+        reset_epoch=pool.reset_epoch,
+        reason=f"github_rest_remaining_below_threshold:{pool.remaining}<{min_remaining}",
+    )
+
+
+def choose_transport(
+    *,
+    repo_root: Path,
+    runner: Any = subprocess.run,
+    snapshot: RateSnapshot | None = None,
+    rest_min_remaining: int | None = None,
+    graphql_min_remaining: int | None = None,
+) -> tuple[str | None, str]:
+    """Pick REST or GraphQL by measured headroom, **before** spending the call.
+
+    Returns ``(transport, reason)`` where transport is ``"rest"``, ``"graphql"``, or
+    ``None`` when both pools are below their floors.
+
+    This is the difference between balancing and falling back. The three pre-existing
+    GraphQL call sites are fallbacks: they fire only after REST fails, and a path that
+    engages on failure cannot *prevent* exhaustion — it can only react to it. That is why
+    ``core`` reached 0/5000 while ``graphql`` sat at 4660/5000; the shape predicts it.
+
+    Ties and unknowns resolve to REST, preserving post-#4436 behaviour: this function only
+    ever diverts traffic away from a pool measured to be in trouble.
+    """
+    snapshot = snapshot or rate_snapshot(repo_root=repo_root, runner=runner)
+    rest_floor = (
+        DEFAULT_REST_MIN_REMAINING if rest_min_remaining is None else max(0, rest_min_remaining)
+    )
+    graphql_floor = (
+        DEFAULT_GRAPHQL_MIN_REMAINING
+        if graphql_min_remaining is None
+        else max(0, graphql_min_remaining)
+    )
+
+    core, graph = snapshot.core, snapshot.graphql
+    rest_ok = core is None or core.remaining >= rest_floor
+    graph_ok = graph is not None and graph.remaining >= graphql_floor
+
+    if not rest_ok and not graph_ok:
+        detail = (
+            f"core={core.remaining if core else '?'} graphql={graph.remaining if graph else '?'}"
+        )
+        return None, f"github_both_pools_below_floor:{detail}"
+    if not rest_ok:
+        return "graphql", (
+            f"github_rest_below_floor:{core.remaining}<{rest_floor}"
+            f";graphql_remaining={graph.remaining}"
+        )
+    if not graph_ok:
+        return "rest", "github_graphql_below_floor_or_unknown"
+    # Both healthy: send work to whichever pool has proportionally more room, so the two
+    # drain together instead of one hitting zero while the other idles.
+    if core is not None and graph.fraction > core.fraction:
+        return "graphql", (
+            f"github_graphql_has_more_headroom:{graph.fraction:.2f}>{core.fraction:.2f}"
+        )
+    return "rest", "github_rest_has_headroom"
 
 
 def run_graphql_rate_aware(
