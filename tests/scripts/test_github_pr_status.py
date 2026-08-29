@@ -840,6 +840,32 @@ def test_lookup_failure_fails_open_to_rest(tmp_path: Path) -> None:
     assert github_pr_status.rest_backoff(repo_root=tmp_path, runner=failing) is None
 
 
+def test_rate_subcommand_reports_pools_and_exits_nonzero_when_both_are_empty(
+    tmp_path: Path, monkeypatch: Any, capsys: Any
+) -> None:
+    """The diagnostic that would have made the 2026-08-29 diagnosis instant.
+
+    `gh auth status` claimed the token was invalid (it was not — the pool was empty) and
+    `gh api rate_limit` reported core headroom a real call contradicted. This subcommand
+    prints what actually governs, per pool, with provenance — and is `choose_transport`'s
+    static call path, so the routing primitive does not ship as whitelisted dead code.
+    """
+    monkeypatch.setattr(
+        github_pr_status.subprocess,
+        "run",
+        _rate_runner(header_remaining=0, body_core=0, body_graphql=0),
+    )
+
+    rc = github_pr_status.main(["rate", "--repo-root", str(tmp_path)])
+    payload = json.loads(capsys.readouterr().out)
+
+    assert rc == github_pr_status.GRAPHQL_BACKOFF_RC, "both pools empty must exit non-zero"
+    assert payload["transport"] is None
+    assert "github_both_pools_below_floor" in payload["reason"]
+    assert payload["core"]["source"] == "header"
+    assert payload["graphql"]["source"] == "body", "body-sourced figures say so"
+
+
 def test_failed_lookup_is_not_a_measurement_even_when_it_parses(tmp_path: Path) -> None:
     """A non-zero exit must be refused before its output is believed.
 

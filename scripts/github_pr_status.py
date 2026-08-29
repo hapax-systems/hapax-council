@@ -16,7 +16,7 @@ import re
 import subprocess
 import sys
 import time
-from dataclasses import dataclass
+from dataclasses import asdict, dataclass
 from pathlib import Path
 from typing import Any
 
@@ -790,7 +790,7 @@ def _pool_from_body(payload: Any, resource: str) -> RatePool | None:
 def rate_snapshot(
     *,
     repo_root: Path,
-    runner: Any = subprocess.run,
+    runner: Any = None,
 ) -> RateSnapshot:
     """Probe both rate pools with one call.
 
@@ -808,6 +808,11 @@ def rate_snapshot(
     the pre-existing contract: a network or auth hiccup must not be mistaken for confirmed
     exhaustion.
     """
+    # Late-bound so the module-level `subprocess.run` stays patchable. A
+    # `runner: Any = subprocess.run` default binds at def time, which silently makes a
+    # monkeypatched test issue a REAL network call — observed while writing the CLI test
+    # for this change.
+    runner = runner if runner is not None else subprocess.run
     proc = _run(runner, ["gh", "api", "-i", "rate_limit"], repo_root=repo_root, timeout=30)
     if getattr(proc, "returncode", 1) != 0:
         return RateSnapshot(core=None, graphql=None)
@@ -877,7 +882,7 @@ def graphql_backoff(
 def rest_backoff(
     *,
     repo_root: Path,
-    runner: Any = subprocess.run,
+    runner: Any = None,
     min_remaining: int | None = None,
 ) -> GraphQLBackoff | None:
     """The symmetric guard for the REST (``core``) pool.
@@ -906,7 +911,7 @@ def rest_backoff(
 def choose_transport(
     *,
     repo_root: Path,
-    runner: Any = subprocess.run,
+    runner: Any = None,
     snapshot: RateSnapshot | None = None,
     rest_min_remaining: int | None = None,
     graphql_min_remaining: int | None = None,
@@ -1036,7 +1041,31 @@ def main(argv: list[str] | None = None) -> int:
         help="Omit per-PR check/status rollups when only PR identity is needed.",
     )
 
+    rate_parser = subparsers.add_parser(
+        "rate",
+        help="Report both rate pools and which transport has headroom.",
+    )
+    rate_parser.add_argument("--repo-root", type=Path, default=Path.cwd())
+
     args = parser.parse_args(argv)
+    if args.command == "rate":
+        # The diagnostic that would have made 2026-08-29 instant: `gh auth status` said the
+        # token was invalid (it was not — the pool was empty) and `gh api rate_limit`
+        # reported core headroom that a real call contradicted. This prints what actually
+        # governs, per pool, with provenance.
+        snapshot = rate_snapshot(repo_root=args.repo_root)
+        transport, reason = choose_transport(repo_root=args.repo_root, snapshot=snapshot)
+        payload = {
+            "core": asdict(snapshot.core) if snapshot.core else None,
+            "graphql": asdict(snapshot.graphql) if snapshot.graphql else None,
+            "transport": transport,
+            "reason": reason,
+        }
+        json.dump(payload, sys.stdout, indent=2, sort_keys=True)
+        sys.stdout.write("\n")
+        # Exit non-zero when neither pool is spendable, so a caller can branch on it
+        # without parsing the payload.
+        return 0 if transport else GRAPHQL_BACKOFF_RC
     if args.command == "open-prs":
         include_status = not args.no_status
         if args.head:
