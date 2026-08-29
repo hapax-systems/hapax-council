@@ -283,6 +283,30 @@ for cf in "$legacy_claim_file" "$HOME/.cache/hapax/cc-active-task-$role-"*; do
   done
   [[ -n "$existing_note" ]] || continue
   existing_status="$(grep -oP '^status:\s*\K\S+' "$existing_note" 2>/dev/null || echo "unknown")"
+  # Retire a released lane's lease sidecars.
+  #
+  # Skipping the role-cap check is NOT sufficient to free a lane, and an earlier revision of
+  # this change shipped exactly that mistake. The canonical claim publication further down
+  # (see `claim_paths` / resolve_applied_claim_publication) resolves whatever
+  # cc-active-task/cc-claim-epoch/cc-claim-dispatch sidecars still exist against the NEW
+  # task and exits 8 with `claim_task_mismatch` — so the lane stayed blocked one layer
+  # deeper, and end-to-end tests now pin that. Releasing the role means the role becomes
+  # fresh: with no sidecars present, canonical publication is skipped and the new claim
+  # proceeds as a first claim.
+  #
+  # This mirrors the expired-lease reaping above, and is safe for the same reason: resume
+  # re-establishes a claim from the task note's `assigned_to`, not from these caches.
+  _cc_retire_released_lease() {
+    local cfile="$1" dir key
+    dir="$(dirname "$cfile")"
+    key="$(basename "$cfile")"
+    key="${key#cc-active-task-}"
+    rm -f \
+      "$dir/cc-active-task-$key" \
+      "$dir/cc-claim-epoch-$key" \
+      "$dir/cc-claim-dispatch-$key.json" 2>/dev/null || true
+    echo "cc-claim: retired released lease for '$existing_task' (status: $existing_status, key: $key)" >&2
+  }
   # Role-release vocabulary. MUST match shared/sdlc_lifecycle.TASK_ROLE_RELEASING_STATUSES
   # (pinned by tests/shared/test_sdlc_lifecycle.py::TestRoleReleaseVocabularyDrift).
   #
@@ -298,12 +322,20 @@ for cf in "$legacy_claim_file" "$HOME/.cache/hapax/cc-active-task-$role-"*; do
   # feedback loop rather than a capacity limit.
   case "$existing_status" in
     # terminal — fulfilling
-    done|completed|complete|closed|fulfilled|resolved) continue ;;
+    done|completed|complete|closed|fulfilled|resolved) \
+      _cc_retire_released_lease "$cf"; continue ;;
     # terminal — non-fulfilling
-    withdrawn|withdrawn_stale|superseded|closed_superseded|rejected|refused) continue ;;
-    not_applicable|deferred|closed_poisoned) continue ;;
+    withdrawn|withdrawn_stale|superseded|closed_superseded|rejected|refused) \
+      _cc_retire_released_lease "$cf"; continue ;;
+    not_applicable|deferred|closed_poisoned) \
+      _cc_retire_released_lease "$cf"; continue ;;
     # resumable — finished, awaiting the pipeline
-    pr_open|merge_queue|ci_green|ready|ready_for_review|review_ready|ready_for_merge) continue ;;
+    pr_open|merge_queue|ci_green|ready|ready_for_review|review_ready|ready_for_merge) \
+      _cc_retire_released_lease "$cf"; continue ;;
+    # post-merge and pre-work — declared 2026-08-29 after both were found live in the active
+    # corpus while belonging to no status set at all, which held their lanes permanently.
+    merged_awaiting_runtime_witness|backlog) \
+      _cc_retire_released_lease "$cf"; continue ;;
   esac
   echo "cc-claim: BLOCKED — role '$role' already has active task '$existing_task' (status: $existing_status)." >&2
   echo "  Next action: close it first with cc-close $existing_task if terminal, or resume that task instead." >&2

@@ -13,20 +13,35 @@ from typing import Any
 
 import yaml
 
-TASK_ACTIVE_STATUSES = frozenset(
-    {
-        "offered",
-        "claimed",
-        "in_progress",
-        "blocked",
-        "pr_open",
-        "ci_green",
-        "merge_queue",
-        "ready",
-        "ready_for_review",
-        "review_ready",
-        "ready_for_merge",
-    }
+#: Statuses observed in the live active corpus that this vocabulary did not declare.
+#:
+#: Found 2026-08-29 by scanning every active note: `merged_awaiting_runtime_witness` (1 task,
+#: PR #4042) and `backlog` (1 task) appeared in NO set — not active, not terminal, not
+#: resumable. A status in none of them is invisible to every consumer that enumerates by
+#: group and, because the cc-claim role cap releases only on a known-releasing status, it
+#: holds its lane permanently. Declaring them is not a new policy; it is recording statuses
+#: the corpus already carries.
+TASK_POST_MERGE_STATUSES = frozenset({"merged_awaiting_runtime_witness"})
+TASK_PRE_WORK_STATUSES = frozenset({"backlog"})
+
+TASK_ACTIVE_STATUSES = (
+    frozenset(
+        {
+            "offered",
+            "claimed",
+            "in_progress",
+            "blocked",
+            "pr_open",
+            "ci_green",
+            "merge_queue",
+            "ready",
+            "ready_for_review",
+            "review_ready",
+            "ready_for_merge",
+        }
+    )
+    | TASK_POST_MERGE_STATUSES
+    | TASK_PRE_WORK_STATUSES
 )
 
 TASK_FULFILLING_CLOSED_STATUSES = frozenset(
@@ -111,7 +126,17 @@ TASK_WORKER_HELD_STATUSES = frozenset({"claimed", "in_progress", "blocked"})
 #: statuses, and none of the resumable ones — which is exactly the per-consumer subset
 #: drift the "canonical semantic status groups" block above was written to end. Pinned by
 #: tests/shared/test_sdlc_lifecycle.py::TestRoleReleaseVocabularyDrift.
-TASK_ROLE_RELEASING_STATUSES = TASK_TERMINAL_STATUSES | TASK_RESUMABLE_STATUSES
+#: `merged_awaiting_runtime_witness` releases because the PR has already merged — the lane is
+#: waiting on a runtime observation, not working. `backlog` releases because the work has not
+#: started, so no lane is engaged; it is unheld in the same sense `offered` is. Both were cited
+#: as evidence in this change's own measurement while being absent from every set it shipped —
+#: a contradiction three reviewers caught (PR #4611, codex-1/codex-2/claude-1).
+TASK_ROLE_RELEASING_STATUSES = (
+    TASK_TERMINAL_STATUSES
+    | TASK_RESUMABLE_STATUSES
+    | TASK_POST_MERGE_STATUSES
+    | TASK_PRE_WORK_STATUSES
+)
 
 BLOCKED_DEPENDENCY_REASON_PREFIX = "waiting_for_closure_valid_dependencies:"
 BLOCKED_WITNESS_FIELDS = ("blocked_witness", "blocked_witness_path")

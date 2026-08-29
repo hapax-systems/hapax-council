@@ -969,10 +969,14 @@ class TestRoleReleaseVocabularyDrift:
         statuses: set[str] = set()
         for line in case_body.splitlines():
             stripped = line.strip()
-            if not stripped.endswith(") continue ;;"):
-                continue
-            statuses.update(stripped[: -len(") continue ;;")].split("|"))
-        return {s for s in statuses if s}
+            # Two shapes, because a release now also retires the lane's stale lease:
+            #   `pr_open|merge_queue) continue ;;`            (single line)
+            #   `pr_open|merge_queue) \` + retire + continue   (continued line)
+            for suffix in (") continue ;;", ") \\"):
+                if stripped.endswith(suffix):
+                    statuses.update(stripped[: -len(suffix)].split("|"))
+                    break
+        return {s.strip() for s in statuses if s.strip()}
 
     def test_bash_case_matches_the_ssot_exactly(self) -> None:
         assert self._bash_release_statuses() == set(TASK_ROLE_RELEASING_STATUSES)

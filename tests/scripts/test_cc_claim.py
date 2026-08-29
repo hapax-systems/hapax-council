@@ -6,6 +6,8 @@ import textwrap
 from datetime import UTC, datetime
 from pathlib import Path
 
+import pytest
+
 from shared.gate0b_claim_publication_install import (
     default_claim_publication_roots,
     install_claim_publication_composition,
@@ -1501,3 +1503,79 @@ def test_claim_refuses_note_without_closing_frontmatter(tmp_path: Path) -> None:
     cache_dir = home / ".cache" / "hapax"
     leaked = list(cache_dir.glob("cc-active-task-*")) if cache_dir.exists() else []
     assert leaked == [], f"claim caches must not be written on a failed stamp: {leaked}"
+
+
+# ----------------------------------------------------------------- role release, end to end
+#
+# Review finding (PR #4611, codex-1/codex-2 major): the role-release tests parsed the shell
+# case and asserted set membership without ever running cc-claim against existing ready-state
+# sidecars. They stayed green exactly where the downstream canonical-publication gate rejects.
+# These exercise the real path: claim A, move A to a releasing status, claim B.
+
+
+def _release_and_claim_next(
+    home: Path, *, first: str, second: str, released_status: str
+) -> subprocess.CompletedProcess:
+    """Claim `first`, transition it to `released_status`, then claim `second`."""
+    first_note = _write_task(home, "active", first)
+    _write_task(home, "active", second)
+
+    initial = _claim(home, first)
+    assert initial.returncode == 0, f"setup claim failed: {initial.stderr}"
+
+    text = first_note.read_text(encoding="utf-8")
+    assert "status: claimed" in text, text[:200]
+    first_note.write_text(
+        text.replace("status: claimed", f"status: {released_status}"), encoding="utf-8"
+    )
+
+    return _claim(home, second)
+
+
+@pytest.mark.parametrize(
+    "released_status",
+    ["pr_open", "merge_queue", "ready_for_review", "merged_awaiting_runtime_witness", "backlog"],
+)
+def test_released_status_frees_the_lane_for_a_new_claim(
+    tmp_path: Path, released_status: str
+) -> None:
+    """The predicate the whole change exists for: finished work must not hold a lane.
+
+    Asserts the SECOND task is actually claimed — not merely that the bash role-cap check was
+    bypassed. An earlier revision passed that check and still failed downstream, and reporting
+    the partial pass as success is precisely what this test exists to prevent.
+    """
+    home = tmp_path / "home"
+    result = _release_and_claim_next(
+        home, first="task-a", second="task-b", released_status=released_status
+    )
+
+    assert result.returncode == 0, (
+        f"a lane holding a {released_status} task must be free to claim new work.\n"
+        f"stdout: {result.stdout}\nstderr: {result.stderr}"
+    )
+    second_note = _task_root(home) / "active" / "task-b.md"
+    assert "status: claimed" in second_note.read_text(encoding="utf-8")
+
+
+@pytest.mark.parametrize("held_status", ["claimed", "in_progress", "blocked"])
+def test_worker_held_status_still_blocks_a_new_claim(tmp_path: Path, held_status: str) -> None:
+    """The cap must still bind while the lane is genuinely engaged."""
+    home = tmp_path / "home"
+    result = _release_and_claim_next(
+        home, first="task-a", second="task-b", released_status=held_status
+    )
+
+    assert result.returncode != 0, "a lane actually working a task must not take another"
+    assert "already has active task" in result.stderr
+
+
+def test_unknown_status_still_blocks_a_new_claim(tmp_path: Path) -> None:
+    """Fails closed: an unrecognised status holds the lane rather than releasing it."""
+    home = tmp_path / "home"
+    result = _release_and_claim_next(
+        home, first="task-a", second="task-b", released_status="not_a_real_status"
+    )
+
+    assert result.returncode != 0
+    assert "already has active task" in result.stderr
