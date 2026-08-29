@@ -838,3 +838,39 @@ def test_lookup_failure_fails_open_to_rest(tmp_path: Path) -> None:
     assert transport == "rest"
 
     assert github_pr_status.rest_backoff(repo_root=tmp_path, runner=failing) is None
+
+
+def test_failed_lookup_is_not_a_measurement_even_when_it_parses(tmp_path: Path) -> None:
+    """A non-zero exit must be refused before its output is believed.
+
+    An empty failure and a successful probe already converge on the same answer, so the
+    interesting case is a call that FAILS while still emitting well-formed content — gh
+    exits non-zero on a 403 and still prints a JSON body. Without the returncode check the
+    figures from a failed call would be treated as a measurement and could route real
+    traffic. This is the case that distinguishes the guard; mutation-verification showed
+    the empty-failure test alone did not pin it.
+    """
+
+    def failing_but_parseable(cmd: list[str], **kwargs: Any) -> subprocess.CompletedProcess:
+        payload = {
+            "resources": {
+                "core": {"remaining": 0, "limit": 5000, "reset": 1893456000},
+                "graphql": {"remaining": 4660, "limit": 5000, "reset": 1893456000},
+            }
+        }
+        head = (
+            "HTTP/2.0 403 Forbidden\r\n"
+            "X-Ratelimit-Limit: 5000\r\n"
+            "X-Ratelimit-Remaining: 0\r\n"
+            "X-Ratelimit-Resource: core\r\n"
+        )
+        return subprocess.CompletedProcess(cmd, 1, f"{head}\n{json.dumps(payload)}", "")
+
+    snapshot = github_pr_status.rate_snapshot(repo_root=tmp_path, runner=failing_but_parseable)
+    assert snapshot.core is None, "a failed probe must not yield a headroom figure"
+    assert snapshot.graphql is None
+
+    transport, _ = github_pr_status.choose_transport(
+        repo_root=tmp_path, runner=failing_but_parseable
+    )
+    assert transport == "rest", "unknown headroom fails open; it does not divert traffic"
