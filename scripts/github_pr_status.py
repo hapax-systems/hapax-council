@@ -24,10 +24,11 @@ DEFAULT_REPO = "hapax-systems/hapax-council"
 DEFAULT_CACHE_DIR = Path.home() / ".cache" / "hapax" / "pr-status"
 DEFAULT_CACHE_TTL_SECONDS = 60
 DEFAULT_GRAPHQL_MIN_REMAINING = 500
-# Symmetric floor for the REST (`core`) pool, which had no guard at all. Same value as the
-# GraphQL floor because the pools carry the same 5,000/hr limit today; both are overridable
-# (HAPAX_GITHUB_REST_MIN_REMAINING) so the threshold stays a parameter rather than a
-# constant buried in an implementation.
+# Floor for the REST (`core`) pool, which had no guard at all before this change. Applied by
+# `choose_transport`, which is the single decision point for REST exhaustion — see the note
+# above that function for why there is no separate `rest_backoff`. Same value as the GraphQL
+# floor because both pools carry the same 5,000/hr limit today; the two are independent
+# constants so a future divergence in limits does not require rediscovering this one.
 DEFAULT_REST_MIN_REMAINING = 500
 DEFAULT_GRAPHQL_BACKOFF_MAX_SLEEP_SECONDS = 0
 DEFAULT_TIMEOUT_SECONDS = 60

@@ -767,16 +767,21 @@ def test_disagreement_resolves_pessimistically(tmp_path: Path) -> None:
     assert snapshot.core.remaining == 10, "the stricter of the two sources must win"
 
 
-def test_rest_backoff_exists_and_fires(tmp_path: Path) -> None:
-    """The symmetric guard that did not exist before this change."""
-    backoff = github_pr_status.rest_backoff(
+def test_rest_floor_is_enforced_by_the_single_decision_point(tmp_path: Path) -> None:
+    """REST exhaustion is guarded once, inside choose_transport.
+
+    An earlier draft added a `rest_backoff()` twin of `graphql_backoff`. That would have been
+    a second mitigation for the same hazard — two guards that can disagree about one pool —
+    so it was removed rather than given a caller. This pins the floor at the one place it
+    lives, using the default rather than an explicit override.
+    """
+    transport, reason = github_pr_status.choose_transport(
         repo_root=tmp_path,
         runner=_rate_runner(header_remaining=3, body_core=3, body_graphql=4660),
-        min_remaining=500,
     )
 
-    assert backoff is not None
-    assert "github_rest_remaining_below_threshold" in backoff.reason
+    assert transport == "graphql"
+    assert f"<{github_pr_status.DEFAULT_REST_MIN_REMAINING}" in reason
 
 
 def test_exhausted_rest_routes_to_graphql(tmp_path: Path) -> None:
@@ -837,7 +842,7 @@ def test_lookup_failure_fails_open_to_rest(tmp_path: Path) -> None:
     transport, _ = github_pr_status.choose_transport(repo_root=tmp_path, runner=failing)
     assert transport == "rest"
 
-    assert github_pr_status.rest_backoff(repo_root=tmp_path, runner=failing) is None
+    assert github_pr_status.graphql_backoff(repo_root=tmp_path, runner=failing) is None
 
 
 def test_rate_subcommand_reports_pools_and_exits_nonzero_when_both_are_empty(
