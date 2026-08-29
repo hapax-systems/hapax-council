@@ -984,3 +984,31 @@ class TestStuckPRAlerter:
         runner = _StuckRunner([_open_pr(76)], queued=())
         count = watcher.alert_stuck_prs(repo="o/r", repo_root=tmp_path, runner=runner, dry_run=True)
         assert count == 1
+
+    def test_exhausted_rest_skips_the_cycle_instead_of_crashing(self, tmp_path: Path) -> None:
+        """Caller-level coverage for RestPoolExhausted (codex-1, major).
+
+        An uncaught exception here would crash the watcher service and mint a P0
+        "service failed" incident — worse than the exhaustion it reports. The cycle is
+        skipped with a warning instead; an empty result must never read as "no stuck PRs".
+        """
+
+        def exhausted(cmd: list[str], **_: Any) -> subprocess.CompletedProcess:
+            if cmd[:4] == ["gh", "api", "-i", "rate_limit"]:
+                head = (
+                    "HTTP/2.0 200 OK\r\n"
+                    "X-Ratelimit-Limit: 5000\r\n"
+                    "X-Ratelimit-Remaining: 0\r\n"
+                    "X-Ratelimit-Reset: 1893456000\r\n"
+                    "X-Ratelimit-Resource: core\r\n"
+                )
+                payload = {
+                    "resources": {
+                        "core": {"remaining": 0, "limit": 5000, "reset": 1893456000},
+                        "graphql": {"remaining": 4660, "limit": 5000, "reset": 1893456000},
+                    }
+                }
+                return subprocess.CompletedProcess(cmd, 0, f"{head}\r\n{json.dumps(payload)}", "")
+            raise AssertionError(f"no REST call may be spent once the pool is empty: {cmd}")
+
+        assert watcher.detect_stuck_prs(repo="o/r", repo_root=tmp_path, runner=exhausted) == []

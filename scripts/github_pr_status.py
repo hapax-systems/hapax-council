@@ -672,6 +672,13 @@ def rest_pool_blocked(
 
     A REST-only function has no GraphQL alternative to route to, so the only question that
     matters to it is whether REST itself is spendable. Preference is irrelevant here.
+
+    **It is nonetheless the same policy, evaluated once.** An earlier revision reimplemented
+    the floor here alongside `choose_transport`'s own copy, so the two could disagree —
+    core=400 with a chooser floor of 300 selects REST while a guard defaulting to 500 blocks
+    it. That is the two-mitigations-per-hazard smell this change removed `rest_backoff` for,
+    reintroduced in a different shape. `choose_transport` now delegates its REST test here,
+    so there is exactly one place the floor is applied.
     """
     floor = DEFAULT_REST_MIN_REMAINING if min_remaining is None else max(0, min_remaining)
     core = snapshot.core
@@ -899,16 +906,25 @@ def rate_snapshot(
     # for this change.
     runner = runner if runner is not None else subprocess.run
     proc = _run(runner, ["gh", "api", "-i", "rate_limit"], repo_root=repo_root, timeout=30)
-    if getattr(proc, "returncode", 1) != 0:
-        return RateSnapshot(core=None, graphql=None)
-
     stdout = proc.stdout or ""
+    ok = getattr(proc, "returncode", 1) == 0
+
+    # Headers are read even on a NONZERO exit. A 403 carrying `X-Ratelimit-Resource: core`
+    # and `X-Ratelimit-Remaining: 0` is GitHub telling us the pool is spent — that is the
+    # most direct evidence of exhaustion there is, and an earlier revision threw it away and
+    # failed open, then shipped a test codifying the discard. Transport-level rate headers
+    # are authoritative regardless of status code.
+    #
+    # The BODY is only rate data when the call succeeded: a 403's body is an error payload,
+    # not a rate_limit document. So headers survive failure; the body does not.
     headers = _parse_rate_headers(stdout)
-    _, body = _split_head_body(stdout)
-    try:
-        payload = json.loads(body or stdout or "null")
-    except json.JSONDecodeError:
-        payload = None
+    payload = None
+    if ok:
+        _, body = _split_head_body(stdout)
+        try:
+            payload = json.loads(body or stdout or "null")
+        except json.JSONDecodeError:
+            payload = None
 
     core = _pool_from_body(payload, "core")
     graphql = _pool_from_body(payload, "graphql")
@@ -1007,13 +1023,21 @@ def choose_transport(
     )
 
     core, graph = snapshot.core, snapshot.graphql
-    rest_ok = core is None or core.remaining >= rest_floor
-    graph_ok = graph is not None and graph.remaining >= graphql_floor
+    # One decision point for REST exhaustion: delegate rather than re-derive the floor.
+    rest_blocked = rest_pool_blocked(snapshot, min_remaining=rest_floor)
+    rest_ok = rest_blocked is None
+    graph_known = graph is not None
+    graph_ok = graph_known and graph.remaining >= graphql_floor
 
     if not rest_ok and not graph_ok:
-        detail = (
-            f"core={core.remaining if core else '?'} graphql={graph.remaining if graph else '?'}"
-        )
+        # Distinguish "both measured low" from "one measured low, the other unmeasured".
+        # Collapsing them let a known-low REST pool plus absent GraphQL telemetry report
+        # `both_pools_below_floor`, recording an inference as a measurement.
+        if not graph_known:
+            return None, (
+                f"github_rest_below_floor_graphql_unknown:core={core.remaining if core else '?'}"
+            )
+        detail = f"core={core.remaining if core else '?'} graphql={graph.remaining}"
         return None, f"github_both_pools_below_floor:{detail}"
     if not rest_ok:
         return "graphql", (

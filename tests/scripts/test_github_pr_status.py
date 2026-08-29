@@ -875,38 +875,114 @@ def test_rate_subcommand_reports_pools_and_exits_nonzero_when_both_are_empty(
     assert payload["graphql"]["source"] == "body", "body-sourced figures say so"
 
 
-def test_failed_lookup_is_not_a_measurement_even_when_it_parses(tmp_path: Path) -> None:
-    """A non-zero exit must be refused before its output is believed.
+def test_a_403_with_rate_headers_is_a_measurement_of_exhaustion(tmp_path: Path) -> None:
+    """Authoritative headers survive a nonzero exit; the body does not.
 
-    An empty failure and a successful probe already converge on the same answer, so the
-    interesting case is a call that FAILS while still emitting well-formed content — gh
-    exits non-zero on a 403 and still prints a JSON body. Without the returncode check the
-    figures from a failed call would be treated as a measurement and could route real
-    traffic. This is the case that distinguishes the guard; mutation-verification showed
-    the empty-failure test alone did not pin it.
+    Replaces an earlier test that asserted the opposite and **codified a regression**
+    (review finding codex-1, major). A 403 carrying `X-Ratelimit-Resource: core` and
+    `X-Ratelimit-Remaining: 0` is GitHub stating the pool is spent — the most direct
+    evidence of exhaustion available. Discarding it and failing open meant the guard
+    proceeded into the exact condition it exists to detect.
+
+    The distinction that matters: transport-level rate headers are authoritative whatever
+    the status code, while a 403's *body* is an error payload rather than a rate document.
     """
 
-    def failing_but_parseable(cmd: list[str], **kwargs: Any) -> subprocess.CompletedProcess:
-        payload = {
-            "resources": {
-                "core": {"remaining": 0, "limit": 5000, "reset": 1893456000},
-                "graphql": {"remaining": 4660, "limit": 5000, "reset": 1893456000},
-            }
-        }
+    def forbidden_with_headers(cmd: list[str], **kwargs: Any) -> subprocess.CompletedProcess:
         head = (
             "HTTP/2.0 403 Forbidden\r\n"
             "X-Ratelimit-Limit: 5000\r\n"
             "X-Ratelimit-Remaining: 0\r\n"
+            "X-Ratelimit-Used: 5000\r\n"
+            "X-Ratelimit-Reset: 1893456000\r\n"
             "X-Ratelimit-Resource: core\r\n"
         )
-        return subprocess.CompletedProcess(cmd, 1, f"{head}\r\n{json.dumps(payload)}", "")
+        body = json.dumps({"message": "API rate limit exceeded for user ID 418460."})
+        return subprocess.CompletedProcess(cmd, 1, f"{head}\r\n{body}", "")
 
-    snapshot = github_pr_status.rate_snapshot(repo_root=tmp_path, runner=failing_but_parseable)
-    assert snapshot.core is None, "a failed probe must not yield a headroom figure"
+    snapshot = github_pr_status.rate_snapshot(repo_root=tmp_path, runner=forbidden_with_headers)
+    assert snapshot.core is not None, "a 403's rate headers are evidence, not noise"
+    assert snapshot.core.remaining == 0
+    assert snapshot.core.source == "header"
+    # The error body must not be mistaken for rate data.
     assert snapshot.graphql is None
 
+    assert "github_rest_below_floor" in (github_pr_status.rest_pool_blocked(snapshot) or "")
+
+
+def test_unknown_graphql_is_not_reported_as_a_measured_empty_pool(tmp_path: Path) -> None:
+    """A reason code must not record an inference as a measurement (codex-1, major)."""
+
+    def rest_empty_graphql_absent(cmd: list[str], **kwargs: Any) -> subprocess.CompletedProcess:
+        head = (
+            "HTTP/2.0 200 OK\r\n"
+            "X-Ratelimit-Limit: 5000\r\n"
+            "X-Ratelimit-Remaining: 0\r\n"
+            "X-Ratelimit-Resource: core\r\n"
+        )
+        payload = {"resources": {"core": {"remaining": 0, "limit": 5000, "reset": 1}}}
+        return subprocess.CompletedProcess(cmd, 0, f"{head}\r\n{json.dumps(payload)}", "")
+
+    transport, reason = github_pr_status.choose_transport(
+        repo_root=tmp_path, runner=rest_empty_graphql_absent
+    )
+    assert transport is None
+    assert "graphql_unknown" in reason
+    assert "both_pools_below_floor" not in reason
+
+
+def test_rest_floor_has_exactly_one_decision_point(tmp_path: Path) -> None:
+    """choose_transport delegates its REST test rather than re-deriving the floor.
+
+    An earlier revision applied DEFAULT_REST_MIN_REMAINING in both places, so they could
+    disagree — the two-mitigations-per-hazard smell this change removed `rest_backoff` for,
+    reintroduced in another shape (codex-1, major).
+    """
+    snapshot = github_pr_status.rate_snapshot(
+        repo_root=tmp_path,
+        runner=_rate_runner(header_remaining=400, body_core=400, body_graphql=4900),
+    )
+    # One floor, passed through: at 400 a floor of 300 permits REST and 500 blocks it, and
+    # the guard and the chooser must agree at both settings.
+    assert github_pr_status.rest_pool_blocked(snapshot, min_remaining=300) is None
+    assert github_pr_status.rest_pool_blocked(snapshot, min_remaining=500) is not None
+
+    permissive, _ = github_pr_status.choose_transport(
+        repo_root=tmp_path, snapshot=snapshot, rest_min_remaining=300
+    )
+    strict, strict_reason = github_pr_status.choose_transport(
+        repo_root=tmp_path, snapshot=snapshot, rest_min_remaining=500
+    )
+    assert permissive == "graphql", "300 permits REST, so the roomier pool wins on preference"
+    assert strict == "graphql" and "below_floor" in strict_reason
+
+
+def test_failed_lookup_without_rate_headers_is_unknown_not_exhausted(tmp_path: Path) -> None:
+    """A failure carrying no rate headers is unknown headroom, and fails open.
+
+    **This replaces a test that asserted the opposite for a 403 WITH headers**, which
+    codified the discard of authoritative evidence (codex-1, major; see
+    `test_a_403_with_rate_headers_is_a_measurement_of_exhaustion`). The distinction is the
+    presence of transport-level rate headers, not the exit status:
+
+    - failure **with** `X-Ratelimit-*`  → measured exhaustion, refuse
+    - failure **without** them           → unknown, proceed
+
+    A gh crash, a network drop, or an old binary yields no headers and must never be
+    mistaken for an empty pool, since that would stop the fleet timers on a hiccup.
+    """
+
+    def failing_without_headers(cmd: list[str], **kwargs: Any) -> subprocess.CompletedProcess:
+        # An error body but no HTTP header block at all — what a transport failure looks like.
+        return subprocess.CompletedProcess(cmd, 1, '{"message":"could not resolve host"}', "")
+
+    snapshot = github_pr_status.rate_snapshot(repo_root=tmp_path, runner=failing_without_headers)
+    assert snapshot.core is None, "no headers means unknown, not measured"
+    assert snapshot.graphql is None
+    assert github_pr_status.rest_pool_blocked(snapshot) is None
+
     transport, _ = github_pr_status.choose_transport(
-        repo_root=tmp_path, runner=failing_but_parseable
+        repo_root=tmp_path, runner=failing_without_headers
     )
     assert transport == "rest", "unknown headroom fails open; it does not divert traffic"
 

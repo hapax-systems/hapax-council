@@ -7314,6 +7314,35 @@ def test_egress_revalidation_without_changed_files_holds_coverage_unevaluable(
     assert "egress_evidence_coverage_unevaluable:no_changed_files" in blockers
 
 
+def test_fetch_open_prs_skips_the_cycle_when_rest_is_exhausted(tmp_path: Path) -> None:
+    """Caller-level coverage for the RestPoolExhausted path (codex-1, major).
+
+    The lower-level test proved `list_open_pr_statuses_rest` raises; none proved the fleet
+    caller handles it. An uncaught exception here would crash the timer service and mint a
+    P0 "service failed" incident — strictly worse than the exhaustion it reports.
+    """
+
+    def exhausted(cmd: list[str], **_: Any) -> subprocess.CompletedProcess:
+        if cmd[:4] == ["gh", "api", "-i", "rate_limit"]:
+            head = (
+                "HTTP/2.0 200 OK\r\n"
+                "X-Ratelimit-Limit: 5000\r\n"
+                "X-Ratelimit-Remaining: 0\r\n"
+                "X-Ratelimit-Reset: 1893456000\r\n"
+                "X-Ratelimit-Resource: core\r\n"
+            )
+            payload = {
+                "resources": {
+                    "core": {"remaining": 0, "limit": 5000, "reset": 1893456000},
+                    "graphql": {"remaining": 4660, "limit": 5000, "reset": 1893456000},
+                }
+            }
+            return subprocess.CompletedProcess(cmd, 0, f"{head}\r\n{json.dumps(payload)}", "")
+        raise AssertionError(f"no REST call may be spent once the pool is empty: {cmd}")
+
+    assert autoqueue.fetch_open_prs(repo="owner/repo", repo_root=tmp_path, runner=exhausted) == []
+
+
 def test_canon_assessor_reports_armed_for_authorized_egress_task() -> None:
     # Round-16 glm/claude claimed the canon .armed read in the suppression
     # branch is dead for this class. It is not: armed reflects the frontmatter
