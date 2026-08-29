@@ -656,6 +656,32 @@ def _pull_status_row_from_rest(
     }
 
 
+def rest_pool_blocked(
+    snapshot: RateSnapshot,
+    *,
+    min_remaining: int | None = None,
+) -> str | None:
+    """Return a reason when a REST-only path must not spend, else ``None``.
+
+    **This is deliberately not ``choose_transport(...) != "rest"``.** That question is
+    "which pool should new work prefer", and it answers "graphql" whenever GraphQL has
+    proportionally more headroom — including when REST is entirely healthy. Refusing on
+    that answer would halt every REST caller on a mere *preference*: three reviewers
+    independently caught exactly that regression in an earlier revision, where a healthy
+    REST pool with a roomier GraphQL pool stopped all three fleet timers.
+
+    A REST-only function has no GraphQL alternative to route to, so the only question that
+    matters to it is whether REST itself is spendable. Preference is irrelevant here.
+    """
+    floor = DEFAULT_REST_MIN_REMAINING if min_remaining is None else max(0, min_remaining)
+    core = snapshot.core
+    if core is None:
+        return None  # unknown headroom is not exhaustion; fail open
+    if core.remaining >= floor:
+        return None
+    return f"github_rest_below_floor:{core.remaining}<{floor}"
+
+
 class RestPoolExhausted(RuntimeError):
     """The REST pool has no headroom, measured before spending a call.
 
@@ -704,9 +730,9 @@ def list_open_pr_statuses_rest(
     # Only a *measured* empty pool refuses.
     if respect_rate_pools:
         snapshot = rate_snapshot(repo_root=repo_root, runner=runner)
-        transport, reason = choose_transport(repo_root=repo_root, snapshot=snapshot)
-        if transport != "rest":
-            raise RestPoolExhausted(reason, snapshot.core.reset_epoch if snapshot.core else None)
+        blocked = rest_pool_blocked(snapshot)
+        if blocked is not None:
+            raise RestPoolExhausted(blocked, snapshot.core.reset_epoch if snapshot.core else None)
 
     payload = list_pulls_rest(
         repo=repo,

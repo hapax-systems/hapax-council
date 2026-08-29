@@ -1009,6 +1009,55 @@ def test_healthy_or_unknown_pool_never_blocks_polling(tmp_path: Path) -> None:
     ), "an unreachable probe must not stop the fleet timers"
 
 
+def test_healthy_rest_never_refuses_even_when_graphql_is_roomier(tmp_path: Path) -> None:
+    """A balancing *preference* must not halt a REST-only path.
+
+    Regression pinned: an earlier revision refused whenever `choose_transport` did not
+    answer "rest", but that function answers "graphql" whenever GraphQL has proportionally
+    more headroom — including with REST entirely healthy. All three reviewers caught it
+    independently: the guard would have stopped cc-pr-autoqueue, cc-pr-merge-watcher and
+    cc-pr-review-dispatch on a healthy pool.
+
+    A REST-only caller has no GraphQL alternative to route to, so only REST's own
+    spendability matters to it.
+    """
+    # REST healthy at 1000/5000; GraphQL roomier at 4900/5000 — choose_transport prefers
+    # graphql, and the REST path must proceed anyway.
+    runner = _rate_runner(header_remaining=1000, body_core=1000, body_graphql=4900)
+    transport, _ = github_pr_status.choose_transport(repo_root=tmp_path, runner=runner)
+    assert transport == "graphql", "fixture must actually exercise the preference case"
+
+    def healthy(cmd: list[str], **kwargs: Any) -> subprocess.CompletedProcess:
+        if cmd[:4] == ["gh", "api", "-i", "rate_limit"]:
+            return runner(cmd, **kwargs)
+        return subprocess.CompletedProcess(cmd, 0, json.dumps([]), "")
+
+    assert (
+        github_pr_status.list_open_pr_statuses_rest(
+            repo="owner/repo", repo_root=tmp_path, runner=healthy
+        )
+        == []
+    ), "a roomier GraphQL pool is a preference, not a reason to stop REST work"
+
+
+def test_rest_pool_blocked_only_reports_rest_exhaustion(tmp_path: Path) -> None:
+    """The predicate itself, independent of any caller."""
+    healthy = github_pr_status.rate_snapshot(
+        repo_root=tmp_path,
+        runner=_rate_runner(header_remaining=1000, body_core=1000, body_graphql=4900),
+    )
+    assert github_pr_status.rest_pool_blocked(healthy) is None
+
+    empty = github_pr_status.rate_snapshot(
+        repo_root=tmp_path,
+        runner=_rate_runner(header_remaining=0, body_core=0, body_graphql=4900),
+    )
+    assert "github_rest_below_floor" in (github_pr_status.rest_pool_blocked(empty) or "")
+
+    unknown = github_pr_status.RateSnapshot(core=None, graphql=None)
+    assert github_pr_status.rest_pool_blocked(unknown) is None, "unknown is not exhaustion"
+
+
 def test_rate_pool_guard_can_be_disabled_for_callers_that_manage_their_own(
     tmp_path: Path,
 ) -> None:
