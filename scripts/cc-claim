@@ -283,8 +283,27 @@ for cf in "$legacy_claim_file" "$HOME/.cache/hapax/cc-active-task-$role-"*; do
   done
   [[ -n "$existing_note" ]] || continue
   existing_status="$(grep -oP '^status:\s*\K\S+' "$existing_note" 2>/dev/null || echo "unknown")"
+  # Role-release vocabulary. MUST match shared/sdlc_lifecycle.TASK_ROLE_RELEASING_STATUSES
+  # (pinned by tests/shared/test_sdlc_lifecycle.py::TestRoleReleaseVocabularyDrift).
+  #
+  # Two groups release the lane:
+  #   terminal  — the work is over.
+  #   resumable — the work is DONE and waiting on the pipeline (pr_open, merge_queue,
+  #               ready-family). These are pipeline-held, not worker-held; the lane can
+  #               take other work and re-claim later via TASK_RESUMABLE_STATUSES.
+  #
+  # This list previously read `done|completed|closed|withdrawn|superseded` — five of the
+  # fifteen canonical terminal statuses and none of the resumable ones. Measured
+  # 2026-08-29, that held 43 lanes hostage to finished work awaiting review, which is a
+  # feedback loop rather than a capacity limit.
   case "$existing_status" in
-    done|completed|closed|withdrawn|superseded) continue ;;
+    # terminal — fulfilling
+    done|completed|complete|closed|fulfilled|resolved) continue ;;
+    # terminal — non-fulfilling
+    withdrawn|withdrawn_stale|superseded|closed_superseded|rejected|refused) continue ;;
+    not_applicable|deferred|closed_poisoned) continue ;;
+    # resumable — finished, awaiting the pipeline
+    pr_open|merge_queue|ci_green|ready|ready_for_review|review_ready|ready_for_merge) continue ;;
   esac
   echo "cc-claim: BLOCKED — role '$role' already has active task '$existing_task' (status: $existing_status)." >&2
   echo "  Next action: close it first with cc-close $existing_task if terminal, or resume that task instead." >&2

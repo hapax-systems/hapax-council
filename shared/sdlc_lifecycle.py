@@ -86,6 +86,33 @@ TASK_MERGE_READY_STATUSES = frozenset({"pr_open", "merge_queue"}) | TASK_READY_F
 #: A lane may RESUME (re-claim) an owned task in these states — not a fresh claim.
 TASK_RESUMABLE_STATUSES = TASK_MERGE_READY_STATUSES
 
+#: Statuses in which a task still occupies its ROLE's one-active-task slot.
+#:
+#: The distinction this encodes: `pr_open`, `merge_queue` and the ready-family are
+#: **pipeline-held**, not worker-held. The lane has finished; the system owes a verdict.
+#: Counting those against a *worker* capacity cap conflates "this item is not terminal"
+#: with "this worker is busy" — a boolean over a domain with three cases.
+#:
+#: Measured 2026-08-29, before this set existed: **43 role slots** across the active corpus
+#: were held by finished work (40 `pr_open`, plus `ready`, `ready_for_review`, and one
+#: `merged_awaiting_runtime_witness` — already merged and still holding a lane). That is a
+#: feedback loop, not a capacity limit: the merge queue backs up, workers stay nominally
+#: occupied, review throughput falls, and the queue backs up further. `idle_lanes=0`
+#: alongside `offered=432` is its observable signature.
+TASK_WORKER_HELD_STATUSES = frozenset({"claimed", "in_progress", "blocked"})
+
+#: The complement used by the cc-claim role-cap lease check: a held task in any of these
+#: states releases the role. Terminal states release because the work is over; resumable
+#: states release because the work is done and waiting on the pipeline — the lane can be
+#: given something else and re-claim later via TASK_RESUMABLE_STATUSES.
+#:
+#: `cc-claim`'s bash lease-check prelude MUST match this set. It previously hardcoded
+#: `done|completed|closed|withdrawn|superseded` — five of the fifteen canonical terminal
+#: statuses, and none of the resumable ones — which is exactly the per-consumer subset
+#: drift the "canonical semantic status groups" block above was written to end. Pinned by
+#: tests/shared/test_sdlc_lifecycle.py::TestRoleReleaseVocabularyDrift.
+TASK_ROLE_RELEASING_STATUSES = TASK_TERMINAL_STATUSES | TASK_RESUMABLE_STATUSES
+
 BLOCKED_DEPENDENCY_REASON_PREFIX = "waiting_for_closure_valid_dependencies:"
 BLOCKED_WITNESS_FIELDS = ("blocked_witness", "blocked_witness_path")
 _FRONTMATTER_NULL_SCALARS = frozenset({"", "null", "none", "~", "[]"})

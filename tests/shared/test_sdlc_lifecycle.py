@@ -25,8 +25,12 @@ from shared.sdlc_lifecycle import (
     SDLC_STAGE_METADATA,
     SDLC_STAGE_METADATA_PATH,
     STAGE_RE,
+    TASK_ACTIVE_STATUSES,
     TASK_CLAIMABLE_STATUSES,
     TASK_DISPATCHABLE_STATUSES,
+    TASK_ROLE_RELEASING_STATUSES,
+    TASK_TERMINAL_STATUSES,
+    TASK_WORKER_HELD_STATUSES,
     StageMetadataError,
     acceptance_receipt_blockers,
     acceptance_receipt_path,
@@ -937,3 +941,69 @@ class TestAcceptanceReceiptEnforcement:
         )
         frontmatter = frontmatter_from_text(note.read_text(encoding="utf-8"))
         assert acceptance_receipt_blockers(frontmatter, note) == ("missing_acceptance_receipt",)
+
+
+class TestRoleReleaseVocabularyDrift:
+    """Pin cc-claim's bash lease-check to TASK_ROLE_RELEASING_STATUSES.
+
+    The lease-check prelude runs *before* cc-claim's python section and answers a
+    different question — "does this role already hold another task?" — using its own
+    hardcoded case list. It had drifted to `done|completed|closed|withdrawn|superseded`:
+    five of the fifteen canonical terminal statuses, and none of the resumable ones.
+
+    The consequence was not cosmetic. `pr_open`, `merge_queue` and the ready-family are
+    **pipeline-held**, not worker-held: the lane has finished and the system owes a
+    verdict. Counting them against a worker capacity cap made every unmerged PR
+    permanently consume a lane — measured 2026-08-29 at **43 lanes** held by finished
+    work, which is a feedback loop (queue backs up, lanes stay occupied, review
+    throughput falls, queue backs up further) rather than a capacity limit.
+    """
+
+    def _bash_release_statuses(self) -> set[str]:
+        """Extract the statuses cc-claim's lease check treats as releasing the role."""
+        src = (REPO_ROOT / "scripts" / "cc-claim").read_text(encoding="utf-8")
+        marker = "Role-release vocabulary."
+        assert marker in src, "cc-claim lost its role-release marker comment"
+        after = src[src.index(marker) :]
+        case_body = after[after.index('case "$existing_status" in') : after.index("esac")]
+        statuses: set[str] = set()
+        for line in case_body.splitlines():
+            stripped = line.strip()
+            if not stripped.endswith(") continue ;;"):
+                continue
+            statuses.update(stripped[: -len(") continue ;;")].split("|"))
+        return {s for s in statuses if s}
+
+    def test_bash_case_matches_the_ssot_exactly(self) -> None:
+        assert self._bash_release_statuses() == set(TASK_ROLE_RELEASING_STATUSES)
+
+    def test_pipeline_held_states_release_the_role(self) -> None:
+        """The defect this set exists to fix: finished work must not hold a lane."""
+        for status in ("pr_open", "merge_queue", "ci_green", "ready_for_review"):
+            assert status in TASK_ROLE_RELEASING_STATUSES, (
+                f"{status} is pipeline-held — the lane is done and waiting on the system"
+            )
+
+    def test_worker_held_states_do_not_release_the_role(self) -> None:
+        """The cap must still bind while the lane is genuinely engaged."""
+        for status in TASK_WORKER_HELD_STATUSES:
+            assert status not in TASK_ROLE_RELEASING_STATUSES
+
+    def test_worker_held_and_releasing_partition_the_active_vocabulary(self) -> None:
+        """No active status may be both, and none may be neither — `offered` excepted.
+
+        `offered` is unheld by construction (TASK_CLAIMABLE_STATUSES), so it belongs to
+        neither group; every other active status must land in exactly one.
+        """
+        unclassified = (
+            set(TASK_ACTIVE_STATUSES)
+            - set(TASK_WORKER_HELD_STATUSES)
+            - set(TASK_ROLE_RELEASING_STATUSES)
+            - {"offered"}
+        )
+        assert not unclassified, f"active statuses in neither group: {sorted(unclassified)}"
+        assert not (set(TASK_WORKER_HELD_STATUSES) & set(TASK_ROLE_RELEASING_STATUSES))
+
+    def test_every_canonical_terminal_status_releases(self) -> None:
+        """The original drift: ten of fifteen terminal statuses did not release the role."""
+        assert set(TASK_TERMINAL_STATUSES) <= set(TASK_ROLE_RELEASING_STATUSES)
