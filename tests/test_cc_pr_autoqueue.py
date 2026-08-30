@@ -7356,6 +7356,16 @@ def _rate_only_runner(
                 ),
                 "",
             )
+        if cmd[:3] == ["gh", "api", "graphql"]:
+            # The native merge-queue probe. Already GraphQL before this change, and the
+            # reconciler skips on its own when it is indeterminate — so it has to succeed here
+            # or the cycle never reaches the listing decision under test.
+            return subprocess.CompletedProcess(
+                cmd,
+                0,
+                json.dumps({"data": {"repository": {"mergeQueue": {"entries": {"nodes": []}}}}}),
+                "",
+            )
         raise AssertionError(f"no REST call may be spent once the pool is empty: {cmd}")
 
     return run
@@ -7428,6 +7438,55 @@ def test_graphql_rows_are_not_rehydrated_through_the_exhausted_rest_pool(
     assert any(call[:3] == ["gh", "pr", "list"] for call in calls)
     assert not any(len(call) > 6 and str(call[6]).startswith("repos/") for call in calls), (
         f"no REST call may follow a GraphQL-routed listing: {calls}"
+    )
+
+
+def test_the_reconciler_skips_rather_than_reading_an_unavailable_listing_as_quiet(
+    tmp_path: Path,
+) -> None:
+    """The defect the routing change itself introduced, caught by codex.
+
+    `fetch_open_prs` grew a second return value and the reconciler kept reading only the first,
+    so `([], None)` — "we could not look" — was indistinguishable from "no open PRs", and every
+    decision below it would be made on absent evidence.
+    """
+
+    # GraphQL healthy so the merge-queue probe succeeds and the cycle reaches the listing —
+    # with both pools empty the reconciler skips earlier, on that probe, and never gets here.
+    # This runner does not police REST spend (a sibling test does); it only makes the listing
+    # fail, so the assertion is about what the reconciler concludes from that.
+    def listing_fails(cmd: list[str], **_: Any) -> subprocess.CompletedProcess:
+        if cmd[:4] == ["gh", "api", "-i", "rate_limit"]:
+            head = (
+                "HTTP/2.0 200 OK\r\nX-Ratelimit-Limit: 5000\r\n"
+                "X-Ratelimit-Remaining: 0\r\nX-Ratelimit-Reset: 1893456000\r\n"
+                "X-Ratelimit-Resource: core\r\n"
+            )
+            payload = {
+                "resources": {
+                    "core": {"remaining": 0, "limit": 5000, "reset": 1893456000},
+                    "graphql": {"remaining": 4660, "limit": 5000, "reset": 1893456000},
+                }
+            }
+            return subprocess.CompletedProcess(cmd, 0, f"{head}\r\n{json.dumps(payload)}", "")
+        if cmd[:3] == ["gh", "api", "graphql"]:
+            return subprocess.CompletedProcess(
+                cmd,
+                0,
+                json.dumps({"data": {"repository": {"mergeQueue": {"entries": {"nodes": []}}}}}),
+                "",
+            )
+        if cmd[:3] == ["gh", "pr", "list"]:
+            return subprocess.CompletedProcess(cmd, 1, "", "HTTP 504 Gateway Timeout")
+        return subprocess.CompletedProcess(cmd, 0, "[]", "")
+
+    report = autoqueue.run_reconciler(
+        repo="owner/repo", repo_root=tmp_path, vault_root=tmp_path, runner=listing_fails
+    )
+
+    assert report.get("skipped") is True
+    assert report.get("reason") == "open_pr_listing_unavailable", (
+        f"a failed listing must skip the cycle, not read as an empty estate: {report}"
     )
 
 

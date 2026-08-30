@@ -1520,6 +1520,44 @@ def test_a_measured_empty_rest_pool_is_not_an_eligible_fallback(tmp_path: Path) 
     assert open_pool.rest_available is True
 
 
+def test_the_rest_floor_has_an_operational_killswitch(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A gate on every fleet scan needs a way off that is not a deploy.
+
+    `HAPAX_GITHUB_REST_MIN_REMAINING=0` restores exactly the pre-change behaviour: nothing is
+    refused for measured exhaustion. An operator at 3am cannot edit and redeploy source.
+    """
+    empty_core = _BothTransportsRunner(rest_remaining=0, graphql_remaining=0)
+    snapshot = github_pr_status.rate_snapshot(repo_root=tmp_path, runner=empty_core)
+
+    assert github_pr_status.rest_pool_blocked(snapshot) is not None, "guarded by default"
+
+    monkeypatch.setenv(github_pr_status.REST_MIN_REMAINING_ENV, "0")
+    assert github_pr_status.rest_pool_blocked(snapshot) is None, (
+        "the documented killswitch must actually disable the floor"
+    )
+
+
+def test_a_failed_rest_listing_refuses_like_the_graphql_one(tmp_path: Path) -> None:
+    """The two transports must fail the same way for the same event.
+
+    GraphQL raised while REST quietly returned [] — so the identical failure produced a
+    refusal on one pool and a silent "no open PRs" on the other, depending only on which pool
+    happened to be roomier that minute.
+    """
+
+    def rest_listing_fails(cmd: list[str], **kwargs: Any) -> subprocess.CompletedProcess:
+        if cmd[:4] == ["gh", "api", "-i", "rate_limit"]:
+            return _BothTransportsRunner(rest_remaining=4000, graphql_remaining=10)(cmd, **kwargs)
+        return subprocess.CompletedProcess(cmd, 1, "", "boom")
+
+    with pytest.raises(github_pr_status.PrListingUnavailable):
+        github_pr_status.list_open_pr_statuses(
+            repo="owner/repo", repo_root=tmp_path, runner=rest_listing_fails
+        )
+
+
 def test_a_probe_timeout_fails_open_rather_than_crashing_the_timer(tmp_path: Path) -> None:
     """The fail-open promise is in `rate_snapshot`'s own docstring, and a raised exception broke it.
 

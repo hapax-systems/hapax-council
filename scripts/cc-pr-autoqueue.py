@@ -2871,6 +2871,32 @@ def run_reconciler(
             runner=runner,
         )
     prs, listing_route = fetch_open_prs(repo=repo, repo_root=repo_root, limit=limit, runner=runner)
+    if listing_route is None:
+        # The listing was unavailable, which is NOT "no open PRs" — and returning ([], None)
+        # made the two look identical to everything downstream. This is the defect the routing
+        # change itself introduced: `fetch_open_prs` grew a second return value, and the
+        # reconciler kept reading only the first. A cycle that could not look must skip, or it
+        # reports an empty estate and every decision below it is made on absent evidence.
+        LOG.warning(
+            "autoqueue reconcile skipped: open-PR listing unavailable "
+            "(this is 'we did not look', not 'nothing to do')"
+        )
+        report = {
+            "repo": repo,
+            "apply": apply,
+            "skipped": True,
+            "reason": "open_pr_listing_unavailable",
+            "detail": (
+                "both rate pools measured below their floors, or the listing itself failed; "
+                "no PR decisions attempted"
+            ),
+        }
+        return _finalize_reconciler_report(
+            report,
+            report_path=report_path,
+            admission_governor_path=admission_governor_path,
+            now=now,
+        )
     preliminary_decisions = [
         classify_pr(
             pr,

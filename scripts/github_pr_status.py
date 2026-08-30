@@ -35,7 +35,16 @@ DEFAULT_GRAPHQL_MIN_REMAINING = 500
 # `rest_pool_blocked` for why there is no separate `rest_backoff`. Same value as the GraphQL
 # floor because both pools carry the same 5,000/hr limit today; the two are independent
 # constants so a future divergence in limits does not require rediscovering this one.
+#
+# OPERATIONAL KILLSWITCH: ``HAPAX_GITHUB_REST_MIN_REMAINING=0`` disables the REST floor, so
+# nothing is ever refused for measured exhaustion and the fleet behaves exactly as it did
+# before this change. This gate now sits on every fleet scan, so it needs a documented way off
+# that does not require a deploy — a guard whose only escape is editing source is one an
+# operator cannot use at 3am. The GraphQL floor has the same escape via
+# ``HAPAX_GITHUB_GRAPHQL_MIN_REMAINING=0``.
 DEFAULT_REST_MIN_REMAINING = 500
+REST_MIN_REMAINING_ENV = "HAPAX_GITHUB_REST_MIN_REMAINING"
+GRAPHQL_MIN_REMAINING_ENV = "HAPAX_GITHUB_GRAPHQL_MIN_REMAINING"
 DEFAULT_GRAPHQL_BACKOFF_MAX_SLEEP_SECONDS = 0
 DEFAULT_TIMEOUT_SECONDS = 60
 STATUS_CACHE_SCHEMA_VERSION = 2
@@ -137,6 +146,16 @@ def _env_int(name: str, default: int) -> int:
         return int(raw)
     except ValueError:
         return default
+
+
+def _rest_floor() -> int:
+    """The REST floor in effect, honouring the operational override."""
+    return max(0, _env_int(REST_MIN_REMAINING_ENV, DEFAULT_REST_MIN_REMAINING))
+
+
+def _graphql_floor() -> int:
+    """The GraphQL floor in effect, honouring the operational override."""
+    return max(0, _env_int(GRAPHQL_MIN_REMAINING_ENV, DEFAULT_GRAPHQL_MIN_REMAINING))
 
 
 def _runner_uses_real_gh(runner: Any) -> bool:
@@ -713,7 +732,7 @@ def rest_pool_blocked(
     reintroduced in a different shape. `choose_transport` now delegates its REST test here,
     so there is exactly one place the floor is applied.
     """
-    floor = DEFAULT_REST_MIN_REMAINING if min_remaining is None else max(0, min_remaining)
+    floor = _rest_floor() if min_remaining is None else max(0, min_remaining)
     core = snapshot.core
     if core is None:
         return None  # unknown headroom is not exhaustion; fail open
@@ -763,10 +782,22 @@ def listing_unavailable_detail(exc: PrListingUnavailable) -> str:
             "`github_pr_status.py rate` and the fleet timer cadences."
         )
     return (
-        " (listing failed; NOT a quota condition). Next action: run "
-        "`gh auth status` and `gh pr list --repo <repo> --state open --limit 1`; a repeated "
-        "504 means the query is too large, an auth error means the token needs attention."
+        " (listing failed; cause not classified — this is NOT the measured-exhaustion case, "
+        "but the call itself may still have hit a limit). Next action: run `gh auth status` "
+        "and `gh pr list --repo <repo> --state open --limit 1`; a repeated 504 means the "
+        "query is too large, a 403/429 means a pool this probe does not measure, and an auth "
+        "error means the token needs attention."
     )
+
+
+class RestListingFailed(PrListingUnavailable):
+    """The REST listing did not come back. Symmetric with ``GraphQLListingFailed``.
+
+    Without this the two transports failed differently for the same event: GraphQL raised,
+    REST returned ``[]``. An empty list reads downstream as "no PRs need attention", so the
+    fleet path demands a determinate listing and converts an indeterminate one into a refusal.
+    Direct callers of ``list_open_pr_statuses_rest`` keep the older, laxer contract.
+    """
 
 
 class GraphQLListingFailed(PrListingUnavailable):
@@ -1071,8 +1102,8 @@ def list_open_pr_statuses(
     # That is the two-mitigations-per-hazard smell this change removed `rest_backoff` for,
     # reappearing one layer down. Direct callers of `list_open_pr_statuses_rest` keep their
     # own guard; this path has already spent its decision.
-    return (
-        list_open_pr_statuses_rest(
+    try:
+        rows = list_open_pr_statuses_rest(
             repo=repo,
             repo_root=repo_root,
             runner=runner,
@@ -1081,9 +1112,14 @@ def list_open_pr_statuses(
             include_review_decision=include_review_decision,
             include_status=include_status,
             respect_rate_pools=False,
-        ),
-        route,
-    )
+            # The fleet path demands a determinate listing. Without this the two transports
+            # fail differently for the same event — GraphQL raises, REST quietly returns [] —
+            # and an empty list is indistinguishable from "no open PRs".
+            fail_on_indeterminate=True,
+        )
+    except subprocess.SubprocessError as exc:
+        raise RestListingFailed(f"github_rest_listing_indeterminate:{exc}") from exc
+    return (rows, route)
 
 
 def list_pr_statuses_for_branch_rest(
@@ -1299,9 +1335,7 @@ def graphql_backoff(
     or auth hiccup must not be mistaken for confirmed GraphQL exhaustion.
     """
 
-    min_remaining = (
-        DEFAULT_GRAPHQL_MIN_REMAINING if min_remaining is None else max(0, min_remaining)
-    )
+    min_remaining = _graphql_floor() if min_remaining is None else max(0, min_remaining)
     pool = rate_snapshot(repo_root=repo_root, runner=runner).graphql
     if pool is None:
         return None
@@ -1347,13 +1381,9 @@ def choose_transport(
     ever diverts traffic away from a pool measured to be in trouble.
     """
     snapshot = snapshot or rate_snapshot(repo_root=repo_root, runner=runner)
-    rest_floor = (
-        DEFAULT_REST_MIN_REMAINING if rest_min_remaining is None else max(0, rest_min_remaining)
-    )
+    rest_floor = _rest_floor() if rest_min_remaining is None else max(0, rest_min_remaining)
     graphql_floor = (
-        DEFAULT_GRAPHQL_MIN_REMAINING
-        if graphql_min_remaining is None
-        else max(0, graphql_min_remaining)
+        _graphql_floor() if graphql_min_remaining is None else max(0, graphql_min_remaining)
     )
 
     core, graph = snapshot.core, snapshot.graphql
