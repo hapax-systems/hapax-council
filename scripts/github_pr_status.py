@@ -1093,6 +1093,66 @@ def list_open_pr_statuses_graphql(
     return out
 
 
+def get_pr_status_graphql(
+    pr_number: int | str,
+    *,
+    repo: str = DEFAULT_REPO,
+    repo_root: Path,
+    runner: Any = subprocess.run,
+    include_status: bool = True,
+) -> dict[str, Any] | None:
+    """One PR's status row over GraphQL, for hydration on a GraphQL-routed cycle.
+
+    The per-PR sibling of `list_open_pr_statuses_graphql`, and it exists for the same reason the
+    listing did: routing the bulk call and leaving the per-PR loop on REST spends the pool the
+    routing chose to spare. Returns ``None`` when the PR cannot be read, matching
+    `get_pr_status_rest`.
+    """
+    proc = _run(
+        runner,
+        [
+            "gh",
+            "pr",
+            "view",
+            str(pr_number),
+            "--repo",
+            repo,
+            "--json",
+            ",".join(_GRAPHQL_PR_LIST_FIELDS),
+        ],
+        repo_root=repo_root,
+    )
+    item = _json_from_proc(proc)
+    if not isinstance(item, dict) or item.get("number") is None:
+        return None
+    files = item.get("files") if isinstance(item.get("files"), list) else []
+    return {
+        "number": item.get("number"),
+        "id": item.get("id"),
+        "state": _upper_or_none(item.get("state")),
+        "title": item.get("title") or "",
+        "body": item.get("body") or "",
+        "url": item.get("url"),
+        "updatedAt": item.get("updatedAt"),
+        "mergedAt": item.get("mergedAt"),
+        "headRefName": str(item.get("headRefName") or ""),
+        "headRefOid": str(item.get("headRefOid") or ""),
+        "changedFiles": item.get("changedFiles") if item.get("changedFiles") is not None else None,
+        "files": files or None,
+        "isDraft": bool(item.get("isDraft")),
+        "labels": item.get("labels") if isinstance(item.get("labels"), list) else [],
+        "reviewDecision": _upper_or_none(item.get("reviewDecision")),
+        "autoMergeRequest": item.get("autoMergeRequest"),
+        "mergeStateStatus": _upper_or_none(item.get("mergeStateStatus")) or "UNKNOWN",
+        "statusCheckRollup": _status_check_rollup_graphql(
+            item.get("number"), repo=repo, repo_root=repo_root, runner=runner
+        )
+        if include_status
+        else [],
+        "transport": "graphql",
+    }
+
+
 def list_open_pr_statuses(
     *,
     repo: str = DEFAULT_REPO,
@@ -1162,7 +1222,7 @@ def list_open_pr_statuses(
                 raise
             LOG_GRAPHQL_FALLBACK = (
                 "github_pr_status: GraphQL listing failed; falling back to REST, which is "
-                "measured healthy"
+                "measured above its floor"
             )
             print(LOG_GRAPHQL_FALLBACK, file=sys.stderr)
             try:
@@ -1233,8 +1293,9 @@ def list_open_pr_statuses(
                     f"{graph_exc.reason}"
                 ) from exc
             print(
-                "github_pr_status: REST listing failed; falling back to GraphQL, which is "
-                "measured healthy",
+                "github_pr_status: REST listing failed; falling back to GraphQL, which is not "
+                "measured below its floor (it may be healthy or unmeasured — unknown is not "
+                "blocked, but it is also not evidence of health)",
                 file=sys.stderr,
             )
             return rows, ListingRoute(
@@ -1494,7 +1555,10 @@ def choose_transport(
     """Pick REST or GraphQL by measured headroom, **before** spending the call.
 
     Returns ``(transport, reason)`` where transport is ``"rest"``, ``"graphql"``, or
-    ``None`` when both pools are below their floors.
+    ``None`` — and ``None`` means both pools were **measured** below their floors. An
+    unmeasurable pool is not one of them: unknown is not blocked, so REST-below-floor with
+    absent GraphQL telemetry routes to GraphQL rather than refusing. Refusing requires a
+    measurement.
 
     This is the difference between balancing and falling back. The three pre-existing
     GraphQL call sites are fallbacks: they fire only after REST fails, and a path that

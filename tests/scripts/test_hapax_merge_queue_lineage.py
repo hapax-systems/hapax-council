@@ -256,6 +256,78 @@ def test_fetch_prs_uses_rest_status_shape(tmp_path: Path, monkeypatch: Any) -> N
     assert not any(call[:2] == ["gh", "pr"] for call in runner.calls)
 
 
+def test_hydration_uses_the_chosen_transport_and_records_what_it_could_not_reach(
+    tmp_path: Path,
+    monkeypatch: Any,
+) -> None:
+    """Executes the branch the enumeration test could only bless statically.
+
+    codex was right that naming `fetch_prs` as routed in a source-level list does not show that
+    it *routes*. Two behaviours are asserted here by running it: on a GraphQL-routed cycle with
+    REST healthy, per-PR hydration goes over GraphQL rather than back onto the pool the routing
+    chose to spare; and with REST measured empty, the PR is recorded as a gap rather than
+    fetched or silently dropped.
+    """
+    lineage = _load_lineage_module()
+
+    def runner_for(*, core: int, graphql: int, calls: list[list[str]]) -> Any:
+        def run(cmd: list[str], **_: Any) -> subprocess.CompletedProcess:
+            calls.append(list(cmd))
+            if cmd[:4] == ["gh", "api", "-i", "rate_limit"]:
+                head = (
+                    "HTTP/2.0 200 OK\r\nX-Ratelimit-Limit: 5000\r\n"
+                    f"X-Ratelimit-Remaining: {core}\r\nX-Ratelimit-Reset: 1893456000\r\n"
+                    "X-Ratelimit-Resource: core\r\n"
+                )
+                payload = {
+                    "resources": {
+                        "core": {"remaining": core, "limit": 5000, "reset": 1893456000},
+                        "graphql": {"remaining": graphql, "limit": 5000, "reset": 1893456000},
+                    }
+                }
+                return subprocess.CompletedProcess(cmd, 0, f"{head}\r\n{json.dumps(payload)}", "")
+            if cmd[:3] == ["gh", "pr", "list"]:
+                return subprocess.CompletedProcess(cmd, 0, "[]", "")
+            if cmd[:3] == ["gh", "pr", "view"]:
+                return subprocess.CompletedProcess(
+                    cmd,
+                    0,
+                    json.dumps(
+                        {
+                            "number": 4242,
+                            "state": "MERGED",
+                            "title": "t",
+                            "headRefName": "b",
+                            "headRefOid": "sha",
+                            "statusCheckRollup": [],
+                        }
+                    ),
+                    "",
+                )
+            return subprocess.CompletedProcess(cmd, 1, "", "unexpected")
+
+        return run
+
+    monkeypatch.setattr(lineage, "REPO_ROOT", tmp_path)
+
+    # GraphQL chosen because it is roomier; REST healthy. Hydration must not touch REST.
+    calls: list[list[str]] = []
+    monkeypatch.setattr(lineage.subprocess, "run", runner_for(core=1000, graphql=4900, calls=calls))
+    rows, unhydrated = lineage.fetch_prs(limit=10, repo=None, pr_numbers={4242})
+    assert [r["number"] for r in rows] == [4242]
+    assert unhydrated == []
+    assert not any(len(c) > 6 and str(c[6]).startswith("repos/") for c in calls), (
+        f"per-PR hydration must follow the cycle's transport: {calls}"
+    )
+
+    # REST measured empty: the PR is a recorded gap, not a fetch and not a silent drop.
+    calls = []
+    monkeypatch.setattr(lineage.subprocess, "run", runner_for(core=0, graphql=4900, calls=calls))
+    rows, unhydrated = lineage.fetch_prs(limit=10, repo=None, pr_numbers={4242})
+    assert [g["number"] for g in unhydrated] == [4242]
+    assert not any(len(c) > 6 and str(c[6]).startswith("repos/") for c in calls)
+
+
 def test_fetch_prs_fails_closed_when_open_pr_snapshot_is_indeterminate(
     tmp_path: Path,
     monkeypatch: Any,
