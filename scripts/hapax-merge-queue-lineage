@@ -162,7 +162,7 @@ def fetch_prs(
         # exclusively. `list_open_pr_statuses` already demands a determinate listing on the
         # fleet path and raises `RestListingFailed` rather than returning [], which is the same
         # fail-closed property `fail_on_indeterminate=True` was asking for here.
-        rows, _route = list_open_pr_statuses(
+        rows, route = list_open_pr_statuses(
             repo=repo_name,
             repo_root=REPO_ROOT,
             runner=subprocess.run,
@@ -183,6 +183,17 @@ def fetch_prs(
 
     seen = {int(pr["number"]) for pr in prs if pr.get("number") is not None}
     for number in sorted(pr_numbers - seen):
+        # Routing the listing and leaving this loop on REST spared one call and spent N. When the
+        # cycle chose GraphQL because REST is measured below its floor, hydrating here would put
+        # the traffic straight back on the empty pool — so on that path the PR is reported as
+        # unhydrated rather than fetched, and lineage records the gap instead of manufacturing it.
+        if route.rest_blocked:
+            print(
+                f"warning: PR #{number} not hydrated — REST measured below its floor "
+                f"({route.reason}); lineage row omitted rather than fetched from an empty pool",
+                file=sys.stderr,
+            )
+            continue
         pr = get_pr_status_rest(number, repo=repo_name, repo_root=REPO_ROOT, runner=subprocess.run)
         if pr is not None:
             prs.append(pr)

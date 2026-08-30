@@ -308,7 +308,11 @@ def cmd_drain(args: argparse.Namespace) -> int:
 
 def cmd_normal(args: argparse.Namespace) -> int:
     state = load_state()
-    open_count = len(query_open_prs())
+    # `len(query_open_prs())` reads an unavailable listing as zero. Fixing that in
+    # `current_throttle_decision` and leaving the other call sites is the sibling omission
+    # this workstream keeps repeating, so both counting sites use the measured pair.
+    _open_rows, _open_measured = query_open_prs_measured()
+    open_count = len(_open_rows) if _open_measured else ADVISORY_OPEN_PR_COUNT
     throttle = current_throttle_decision(open_count)
     can_clear = not throttle.frozen
     if not can_clear and not args.force:
@@ -386,7 +390,11 @@ def cmd_auto(args: argparse.Namespace) -> int:
     No-op (exit 0) for unrelated cases. Only acts when thresholds cross.
     """
     state = load_state()
-    open_count = len(query_open_prs())
+    # `len(query_open_prs())` reads an unavailable listing as zero. Fixing that in
+    # `current_throttle_decision` and leaving the other call sites is the sibling omission
+    # this workstream keeps repeating, so both counting sites use the measured pair.
+    _open_rows, _open_measured = query_open_prs_measured()
+    open_count = len(_open_rows) if _open_measured else ADVISORY_OPEN_PR_COUNT
     throttle = current_throttle_decision(open_count)
     mode = state["mode"]
 

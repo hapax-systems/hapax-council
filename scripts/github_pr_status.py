@@ -1095,8 +1095,8 @@ def list_open_pr_statuses(
         reason=reason,
     )
     if transport == "graphql":
-        return (
-            list_open_pr_statuses_graphql(
+        try:
+            rows = list_open_pr_statuses_graphql(
                 repo=repo,
                 repo_root=repo_root,
                 runner=runner,
@@ -1104,9 +1104,39 @@ def list_open_pr_statuses(
                 include_files=include_files,
                 include_review_decision=include_review_decision,
                 include_status=include_status,
-            ),
-            route,
-        )
+            )
+        except GraphQLListingFailed:
+            # A HEALTHY REST pool is a legitimate fallback; a measured-empty one is not. Without
+            # this, a persistently failing GraphQL listing — a 504 on a large query, say — made
+            # every fleet scan refuse forever while REST sat at full headroom, because
+            # `choose_transport` would keep picking the roomier pool and it would keep failing.
+            # That is a deadlock, not caution.
+            #
+            # The rule this restores is the one `fetch_pr` already applied per-PR and the
+            # listing did not: eligibility turns on `rest_blocked`, never on "we already tried
+            # something". Failure paths narrow to what is still *measurably* usable.
+            if route.rest_blocked:
+                raise
+            LOG_GRAPHQL_FALLBACK = (
+                "github_pr_status: GraphQL listing failed; falling back to REST, which is "
+                "measured healthy"
+            )
+            print(LOG_GRAPHQL_FALLBACK, file=sys.stderr)
+            rows = list_open_pr_statuses_rest(
+                repo=repo,
+                repo_root=repo_root,
+                runner=runner,
+                limit=limit,
+                include_files=include_files,
+                include_review_decision=include_review_decision,
+                include_status=include_status,
+                hydrate_pull=hydrate_pull,
+                respect_rate_pools=False,
+            )
+            return rows, ListingRoute(
+                transport="rest", rest_blocked=False, reason="graphql_listing_failed_rest_healthy"
+            )
+        return rows, route
     # The decision was made above, on a snapshot already taken. Letting the REST helper
     # re-probe would be a *second* rate decision on the same call — a fresh snapshot, taken
     # at a different moment, able to reach a different verdict than the one that routed here.

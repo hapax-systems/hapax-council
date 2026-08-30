@@ -1,6 +1,8 @@
 from __future__ import annotations
 
+import ast
 import json
+import re
 import subprocess
 import sys
 from pathlib import Path
@@ -1584,6 +1586,112 @@ def test_every_fleet_consumer_routes_its_open_pr_listing() -> None:
         "these fleet consumers poll open PRs without choosing a transport, so they drain one "
         f"pool while the other idles: {unrouted}"
     )
+
+
+def test_every_per_pr_rest_call_in_the_fleet_is_routed_or_named() -> None:
+    """The axis the first enumeration missed, which is why round 11 found three more siblings.
+
+    Listing the consumers that call the routed listing is one axis. The other is every REST call
+    *inside* each consumer — the per-PR work, which is N calls to the listing's one. Routing the
+    listing and leaving the loop spares almost nothing, and that is the mistake this workstream
+    made five times.
+
+    Every site below is either routed (guarded by the cycle's `route`) or **named here with a
+    reason**. A new unrouted REST call fails this test; a deliberately excluded one has to be
+    argued for in this list rather than left silent.
+    """
+    scripts = Path(__file__).resolve().parents[2] / "scripts"
+    rest_callers = re.compile(
+        r"\b(get_pull_rest|list_pull_files_rest|review_decision_rest|"
+        r"fetch_status_check_rollup_rest|get_pr_status_rest|list_pulls_rest|"
+        r"list_pulls_for_branch_rest)\("
+    )
+    # Sites excluded on purpose, each with why. These are NOT open-PR polling.
+    excluded = {
+        # The merge watcher's *close* path: it scans MERGED PRs since a durable cursor to close
+        # their cc-tasks. Different surface, different cadence, different failure mode from the
+        # open-PR poll — routing it is separate work, not an omission from this one.
+        ("cc-pr-merge-watcher.py", "_search_merged_pull_details_rest"),
+        ("cc-pr-merge-watcher.py", "fetch_merged_prs"),
+        ("cc-pr-merge-watcher.py", "_query_pr_state"),
+        ("cc-pr-merge-watcher.py", "_list_prs_for_branch"),
+        # Reached only on the REST path: `fetch_pr` returns early via `gh pr view` when the cycle
+        # chose GraphQL, so these never run on a GraphQL-routed cycle.
+        ("cc-pr-review-dispatch.py", "fetch_pr"),
+        # Reached only for REST-sourced rows; the caller skips re-hydration for GraphQL rows.
+        ("cc-pr-autoqueue.py", "_fetch_status_check_rollup"),
+    }
+    routed_by_route_param = {
+        ("cc-pr-autoqueue.py", "fetch_open_prs"),
+        ("cc-pr-autoqueue.py", "fetch_pr_release_evidence"),
+        ("hapax-merge-queue-lineage", "fetch_prs"),
+    }
+
+    unaccounted: list[str] = []
+    for name in (
+        "cc-pr-autoqueue.py",
+        "cc-pr-merge-watcher.py",
+        "cc-pr-review-dispatch.py",
+        "hapax-pr-admission",
+        "hapax-merge-queue-lineage",
+    ):
+        source = (scripts / name).read_text(encoding="utf-8")
+        tree = ast.parse(source)
+        for node in ast.walk(tree):
+            if not isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
+                continue
+            body = ast.get_source_segment(source, node) or ""
+            if not rest_callers.search(body):
+                continue
+            key = (name, node.name)
+            if key in excluded or key in routed_by_route_param:
+                continue
+            unaccounted.append(f"{name}:{node.name}")
+
+    assert unaccounted == [], (
+        "these functions spend REST without consulting the cycle's transport, and are not on the "
+        f"named-exclusion list: {unaccounted}"
+    )
+
+
+def test_a_failing_graphql_listing_falls_back_to_a_HEALTHY_rest_pool(tmp_path: Path) -> None:
+    """Eligibility turns on `rest_blocked`, never on "we already tried something".
+
+    Without this, a persistently failing GraphQL listing deadlocked every fleet scan while REST
+    sat at full headroom: `choose_transport` kept picking the roomier pool, the pool kept
+    failing, and the refusal was permanent. That is a deadlock, not caution — and it was mine,
+    from applying the fallback rule per-PR and not at the listing.
+    """
+
+    def graphql_broken(cmd: list[str], **kwargs: Any) -> subprocess.CompletedProcess:
+        if cmd[:3] == ["gh", "pr", "list"]:
+            return subprocess.CompletedProcess(cmd, 1, "", "HTTP 504")
+        # REST healthy and roomier-losing: graphql wins the choice, then fails.
+        return _BothTransportsRunner(rest_remaining=3000, graphql_remaining=4900)(cmd, **kwargs)
+
+    rows, route = github_pr_status.list_open_pr_statuses(
+        repo="owner/repo", repo_root=tmp_path, runner=graphql_broken
+    )
+
+    assert rows and rows[0]["number"] == 9, "a healthy REST pool must still serve the scan"
+    assert route.transport == "rest"
+    assert "graphql_listing_failed" in route.reason
+
+
+def test_a_failing_graphql_listing_still_refuses_when_rest_is_measured_empty(
+    tmp_path: Path,
+) -> None:
+    """The converse, and the reason the fallback is conditional rather than unconditional."""
+
+    def both_bad(cmd: list[str], **kwargs: Any) -> subprocess.CompletedProcess:
+        if cmd[:3] == ["gh", "pr", "list"]:
+            return subprocess.CompletedProcess(cmd, 1, "", "HTTP 504")
+        return _BothTransportsRunner(rest_remaining=0, graphql_remaining=4900)(cmd, **kwargs)
+
+    with pytest.raises(github_pr_status.GraphQLListingFailed):
+        github_pr_status.list_open_pr_statuses(
+            repo="owner/repo", repo_root=tmp_path, runner=both_bad
+        )
 
 
 def test_a_probe_timeout_fails_open_rather_than_crashing_the_timer(tmp_path: Path) -> None:
