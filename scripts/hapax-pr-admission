@@ -39,7 +39,7 @@ SCRIPTS_DIR = Path(__file__).resolve().parent
 if str(SCRIPTS_DIR) not in sys.path:
     sys.path.insert(0, str(SCRIPTS_DIR))
 
-from github_pr_status import PrListingUnavailable, list_open_pr_statuses_rest
+from github_pr_status import PrListingUnavailable, list_open_pr_statuses
 
 from shared.merge_queue_lineage import (
     DEFAULT_LEDGER_PATH,
@@ -107,42 +107,40 @@ def save_state(state: dict[str, Any]) -> None:
     tmp.replace(CONTROL_PATH)
 
 
-def query_open_prs() -> list[dict[str, Any]]:
-    """Return open PR status snapshots via REST/core, not GraphQL."""
+def query_open_prs_measured() -> tuple[list[dict[str, Any]], bool]:
+    """Open PR rows, plus whether the listing could be measured at all.
+
+    Routed rather than merely guarded. An earlier revision only stopped this consumer CRASHING
+    when the REST pool was measured empty, which left the admission timer polling REST
+    exclusively while GraphQL sat idle — the exact condition this change exists to end.
+
+    The pair exists because `[]` answers two different questions here: the list wants "no rows",
+    the count wants "no rows, and we looked". A separate availability probe would answer the
+    second by spending a whole second listing to learn what this call already knew.
+    """
     if not shutil.which("gh"):
-        return []
+        return [], False
     try:
-        return list_open_pr_statuses_rest(
+        rows, _route = list_open_pr_statuses(
             repo=DEFAULT_REPO,
             repo_root=REPO_ROOT,
             runner=subprocess.run,
             limit=100,
+            # REST list rows omit `mergeable_state`, so without this `classify_pr` loses BEHIND
+            # and BLOCKED. `gh pr list --json` returns mergeStateStatus natively, so the GraphQL
+            # path already has it — the flag applies to the REST path only.
             hydrate_pull=True,
         )
-    except (subprocess.SubprocessError, json.JSONDecodeError):
-        return []
-    except PrListingUnavailable:
-        # `list_open_pr_statuses_rest` gained a measured-exhaustion guard and this consumer was
-        # not updated with it, so a measured-empty REST pool raised straight through a handler
-        # that catches only subprocess and JSON errors — crashing admission to report a full
-        # rate pool. Returning [] matches what every other unavailable-listing case does here.
-        #
-        # It is the right value for the *list* and the wrong one for a *count* — see
-        # `current_throttle_decision`, which must not read an unavailable listing as "quiet".
-        return []
-
-
-def open_pr_listing_available() -> bool:
-    """Whether the open-PR listing can currently be measured at all."""
-    if not shutil.which("gh"):
-        return False
-    try:
-        list_open_pr_statuses_rest(
-            repo=DEFAULT_REPO, repo_root=REPO_ROOT, runner=subprocess.run, limit=1
-        )
     except (subprocess.SubprocessError, json.JSONDecodeError, PrListingUnavailable):
-        return False
-    return True
+        return [], False
+    return rows, True
+
+
+def query_open_prs() -> list[dict[str, Any]]:
+    """Open PR status snapshots. `[]` here means "no rows" OR "could not look" — callers that
+    need to tell those apart must use `query_open_prs_measured`."""
+    rows, _measured = query_open_prs_measured()
+    return rows
 
 
 def current_throttle_decision(open_count: int | None = None):
@@ -152,8 +150,8 @@ def current_throttle_decision(open_count: int | None = None):
     # bounded — open_pr_count is advisory-only and never triggers a freeze — but a measurement
     # that reads as a fact should not be manufactured from a failed call.)
     if open_count is None:
-        prs = query_open_prs()
-        prs_count = len(prs) if (prs or open_pr_listing_available()) else ADVISORY_OPEN_PR_COUNT
+        prs, measured = query_open_prs_measured()
+        prs_count = len(prs) if measured else ADVISORY_OPEN_PR_COUNT
     else:
         prs_count = open_count
     records = read_jsonl_records(MERGE_QUEUE_LEDGER_PATH)

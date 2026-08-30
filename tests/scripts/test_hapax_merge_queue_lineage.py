@@ -278,9 +278,14 @@ def test_fetch_prs_fails_closed_when_open_pr_snapshot_is_indeterminate(
     monkeypatch.setattr(lineage.subprocess, "run", IndeterminateRunner())
     monkeypatch.setattr(lineage, "REPO_ROOT", tmp_path)
 
+    # The invariant is fail-closed with an actionable message, not one exact wording. The
+    # listing is now routed, so an indeterminate REST result arrives as `RestListingFailed`
+    # rather than a bare SubprocessError, and the operator text comes from the shared formatter
+    # — "via REST" was never the load-bearing part.
     try:
         lineage.fetch_prs(limit=100, repo=None, pr_numbers=set())
     except RuntimeError as exc:
-        assert "open PR query indeterminate via REST" in str(exc)
+        assert "open PR query indeterminate" in str(exc)
+        assert "Next action" in str(exc), f"a fail-closed refusal must name a next action: {exc}"
     else:
         raise AssertionError("fetch_prs must not return a false-empty open PR set")

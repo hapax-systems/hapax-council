@@ -1059,8 +1059,14 @@ def list_open_pr_statuses(
     include_files: bool = False,
     include_review_decision: bool = False,
     include_status: bool = True,
+    hydrate_pull: bool = False,
 ) -> tuple[list[dict[str, Any]], ListingRoute]:
     """Choose the transport on measured headroom, **then** make the call.
+
+    ``hydrate_pull`` applies to the REST path only, and that asymmetry is not a gap: REST's
+    list rows omit ``mergeable_state``, so a per-PR fetch is what fills ``mergeStateStatus``.
+    ``gh pr list --json`` returns that field natively, so the GraphQL path already has it and
+    hydrating would be a second call for data it holds.
 
     This is the operational half of the change, and the reason the helper alone was not
     enough. `choose_transport` was reachable only from the diagnostic CLI, so a REST pool
@@ -1116,6 +1122,7 @@ def list_open_pr_statuses(
             include_files=include_files,
             include_review_decision=include_review_decision,
             include_status=include_status,
+            hydrate_pull=hydrate_pull,
             respect_rate_pools=False,
             # The fleet path demands a determinate listing. Without this the two transports
             # fail differently for the same event — GraphQL raises, REST quietly returns [] —

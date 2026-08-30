@@ -145,11 +145,16 @@ class TestClassifyPR:
         ]
         with (
             patch.object(gov_module.shutil, "which", return_value="/usr/bin/gh"),
-            patch.object(gov_module, "list_open_pr_statuses_rest", return_value=rows) as list_open,
+            patch.object(
+                gov_module, "list_open_pr_statuses", return_value=(rows, None)
+            ) as list_open,
         ):
             prs = gov_module.query_open_prs()
 
         assert prs == rows
+        # Still asserted after the switch to the routed listing: REST list rows omit
+        # `mergeable_state`, so without hydration `classify_pr` silently loses BEHIND and
+        # BLOCKED. The GraphQL path returns mergeStateStatus natively and ignores the flag.
         assert list_open.call_args.kwargs["hydrate_pull"] is True
         assert gov_module.classify_pr(prs[0]) == "failed"
 
@@ -426,15 +431,14 @@ def test_an_unavailable_listing_is_not_counted_as_a_quiet_fleet(gov_module, monk
         captured["open_pr_count"] = open_pr_count
         return SimpleNamespace(state="ok")
 
-    monkeypatch.setattr(gov_module, "query_open_prs", lambda: [])
     monkeypatch.setattr(gov_module, "decide_fleet_throttle", fake_decide)
     monkeypatch.setattr(gov_module, "read_jsonl_records", lambda path: [])
 
-    monkeypatch.setattr(gov_module, "open_pr_listing_available", lambda: False)
+    monkeypatch.setattr(gov_module, "query_open_prs_measured", lambda: ([], False))
     gov_module.current_throttle_decision()
     assert captured["open_pr_count"] == gov_module.ADVISORY_OPEN_PR_COUNT
 
     # A genuinely quiet fleet still reads as quiet.
-    monkeypatch.setattr(gov_module, "open_pr_listing_available", lambda: True)
+    monkeypatch.setattr(gov_module, "query_open_prs_measured", lambda: ([], True))
     gov_module.current_throttle_decision()
     assert captured["open_pr_count"] == 0

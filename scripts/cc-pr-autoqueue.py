@@ -2371,6 +2371,7 @@ def arm_release_for_task(
     repo: str = DEFAULT_REPO,
     repo_root: Path | None = None,
     runner: Any = None,
+    route: ListingRoute | None = None,
 ) -> tuple[bool, str]:
     """Authorize release for a stranded task on behalf of a dead lane (system).
 
@@ -2416,6 +2417,11 @@ def arm_release_for_task(
             repo=repo,
             repo_root=repo_root,
             runner=runner,
+            # The THIRD call site. `_release_head_boundary_blocker` and `merge_pr` were threaded
+            # two commits ago and this one was not, so auto-arm still revalidated a head over
+            # REST on a cycle routed away from it. Enumerating the callers would have found all
+            # three at once; fixing the two the review named found two.
+            route=route,
         )
         if not evidence_ok:
             if current_head_sha in {
@@ -3018,6 +3024,7 @@ def run_reconciler(
                         head_ref=decision.pr.head_ref,
                         expected_head_sha=decision.pr.head_sha,
                         require_route_metadata=require_route_metadata,
+                        route=listing_route,
                         changed_files=decision.pr.files,
                         changed_file_count=decision.pr.changed_files_count,
                         repo=repo,

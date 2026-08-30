@@ -30,7 +30,7 @@ from github_pr_status import (  # noqa: E402
     DEFAULT_REPO,
     PrListingUnavailable,
     get_pr_status_rest,
-    list_open_pr_statuses_rest,
+    list_open_pr_statuses,
     listing_unavailable_detail,
 )
 
@@ -158,15 +158,17 @@ def fetch_prs(
     """Fetch PR state for open holds and run-specific lineage correlation."""
     repo_name = repo or DEFAULT_REPO
     try:
-        prs = list(
-            list_open_pr_statuses_rest(
-                repo=repo_name,
-                repo_root=REPO_ROOT,
-                runner=subprocess.run,
-                limit=limit,
-                fail_on_indeterminate=True,
-            )
+        # Routed. This was guarded but never routed, so lineage collection kept polling REST
+        # exclusively. `list_open_pr_statuses` already demands a determinate listing on the
+        # fleet path and raises `RestListingFailed` rather than returning [], which is the same
+        # fail-closed property `fail_on_indeterminate=True` was asking for here.
+        rows, _route = list_open_pr_statuses(
+            repo=repo_name,
+            repo_root=REPO_ROOT,
+            runner=subprocess.run,
+            limit=limit,
         )
+        prs = list(rows)
     except (subprocess.SubprocessError, json.JSONDecodeError) as exc:
         raise RuntimeError(f"open PR query indeterminate via REST: {exc}") from exc
     except PrListingUnavailable as exc:

@@ -1557,6 +1557,35 @@ def test_a_failed_rest_listing_refuses_like_the_graphql_one(tmp_path: Path) -> N
         )
 
 
+def test_every_fleet_consumer_routes_its_open_pr_listing() -> None:
+    """The enumeration, pinned — because estimating this tail is what took ten review rounds.
+
+    Five consumers poll open PRs. Five review rounds each found the next one still on
+    `list_open_pr_statuses_rest`, and each time I fixed the one named and left its siblings,
+    because I priced the remainder instead of listing it. This asserts the list.
+
+    A new fleet consumer that reaches for the REST-only helper fails here rather than in a
+    review round — or, if it genuinely needs the unrouted helper, has to say so by name.
+    """
+    scripts = Path(__file__).resolve().parents[2] / "scripts"
+    fleet = [
+        "cc-pr-autoqueue.py",
+        "cc-pr-merge-watcher.py",
+        "cc-pr-review-dispatch.py",
+        "hapax-pr-admission",
+        "hapax-merge-queue-lineage",
+    ]
+    unrouted = [
+        name
+        for name in fleet
+        if "list_open_pr_statuses(" not in (scripts / name).read_text(encoding="utf-8")
+    ]
+    assert unrouted == [], (
+        "these fleet consumers poll open PRs without choosing a transport, so they drain one "
+        f"pool while the other idles: {unrouted}"
+    )
+
+
 def test_a_probe_timeout_fails_open_rather_than_crashing_the_timer(tmp_path: Path) -> None:
     """The fail-open promise is in `rate_snapshot`'s own docstring, and a raised exception broke it.
 
