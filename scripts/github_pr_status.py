@@ -25,8 +25,9 @@ DEFAULT_CACHE_DIR = Path.home() / ".cache" / "hapax" / "pr-status"
 DEFAULT_CACHE_TTL_SECONDS = 60
 DEFAULT_GRAPHQL_MIN_REMAINING = 500
 # Floor for the REST (`core`) pool, which had no guard at all before this change. Applied by
-# `choose_transport`, which is the single decision point for REST exhaustion — see the note
-# above that function for why there is no separate `rest_backoff`. Same value as the GraphQL
+# `rest_pool_blocked`, which is the single place this floor is evaluated; `choose_transport`
+# delegates its REST test there rather than keeping a second copy — see the note on
+# `rest_pool_blocked` for why there is no separate `rest_backoff`. Same value as the GraphQL
 # floor because both pools carry the same 5,000/hr limit today; the two are independent
 # constants so a future divergence in limits does not require rediscovering this one.
 DEFAULT_REST_MIN_REMAINING = 500
@@ -1055,7 +1056,13 @@ def choose_transport(
             f";graphql_remaining={graph.remaining}"
         )
     if not graph_ok:
-        return "rest", "github_graphql_below_floor_or_unknown"
+        # Same discipline as the both-blocked branch above, which this branch was missing:
+        # "measured below the floor" and "never measured" are different states, and a reason
+        # code that spells them the same way cannot be reconstructed later. The routing
+        # outcome is REST either way; the record of why is not.
+        if not graph_known:
+            return "rest", "github_graphql_unknown"
+        return "rest", f"github_graphql_below_floor:{graph.remaining}<{graphql_floor}"
     # Both healthy: send work to whichever pool has proportionally more room, so the two
     # drain together instead of one hitting zero while the other idles.
     if core is not None and graph.fraction > core.fraction:

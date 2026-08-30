@@ -952,6 +952,48 @@ def test_unknown_graphql_is_not_reported_as_a_measured_empty_pool(tmp_path: Path
     assert "both_pools_below_floor" not in reason
 
 
+def _healthy_rest_graphql(graphql_remaining: int | None) -> Any:
+    """REST healthy; GraphQL either measured at `graphql_remaining` or absent entirely."""
+
+    def run(cmd: list[str], **kwargs: Any) -> subprocess.CompletedProcess:
+        resources: dict[str, Any] = {"core": {"remaining": 4000, "limit": 5000, "reset": 1}}
+        if graphql_remaining is not None:
+            resources["graphql"] = {"remaining": graphql_remaining, "limit": 5000, "reset": 1}
+        head = (
+            "HTTP/2.0 200 OK\r\n"
+            "X-Ratelimit-Limit: 5000\r\n"
+            "X-Ratelimit-Remaining: 4000\r\n"
+            "X-Ratelimit-Resource: core\r\n"
+        )
+        payload = {"resources": resources}
+        return subprocess.CompletedProcess(cmd, 0, f"{head}\r\n{json.dumps(payload)}", "")
+
+    return run
+
+
+def test_graphql_low_and_graphql_unknown_get_different_reason_codes(tmp_path: Path) -> None:
+    """The same discipline as the both-blocked branch, which this branch was missing.
+
+    `github_graphql_below_floor_or_unknown` spelled two materially different states the same
+    way, so a later reader could not reconstruct whether GraphQL was measured low or never
+    measured at all (codex-1, minor). The routing outcome is REST either way; the record is
+    not. Both directions are asserted because a fix that emitted one code for both would
+    satisfy either assertion alone.
+    """
+    _, low_reason = github_pr_status.choose_transport(
+        repo_root=tmp_path, runner=_healthy_rest_graphql(3)
+    )
+    _, unknown_reason = github_pr_status.choose_transport(
+        repo_root=tmp_path, runner=_healthy_rest_graphql(None)
+    )
+
+    assert low_reason != unknown_reason, (
+        f"measured-low and never-measured must not share a reason code: {low_reason!r}"
+    )
+    assert "below_floor" in low_reason and "3<" in low_reason, low_reason
+    assert "unknown" in unknown_reason and "below_floor" not in unknown_reason, unknown_reason
+
+
 def test_rest_floor_has_exactly_one_decision_point(tmp_path: Path) -> None:
     """choose_transport delegates its REST test rather than re-deriving the floor.
 
