@@ -36,7 +36,9 @@ DEFAULT_GRAPHQL_MIN_REMAINING = 500
 # floor because both pools carry the same 5,000/hr limit today; the two are independent
 # constants so a future divergence in limits does not require rediscovering this one.
 #
-# OPERATIONAL KILLSWITCH: ``HAPAX_GITHUB_REST_MIN_REMAINING=0`` disables the REST floor, so
+# OPERATIONAL KILLSWITCH (recheck: `HAPAX_GITHUB_REST_MIN_REMAINING=0 python scripts/github_pr_status.py rate`
+# — the `core` pool must report no block):
+# ``HAPAX_GITHUB_REST_MIN_REMAINING=0`` disables the REST floor, so
 # nothing is ever refused for measured exhaustion and the fleet behaves exactly as it did
 # before this change. This gate now sits on every fleet scan, so it needs a documented way off
 # that does not require a deploy — a guard whose only escape is editing source is one an
@@ -703,6 +705,26 @@ def _pull_status_row_from_rest(
     }
 
 
+def graphql_pool_blocked(
+    snapshot: RateSnapshot,
+    *,
+    min_remaining: int | None = None,
+) -> str | None:
+    """Return a reason when a GraphQL-only path must not spend, else ``None``.
+
+    The mirror of `rest_pool_blocked`, and it exists for the same reason: the fallback decision
+    needs GraphQL eligibility, and deriving the floor a third time is how two guards over one
+    pool end up disagreeing. Unknown headroom is NOT blocked — same fail-open rule as REST.
+    """
+    floor = _graphql_floor() if min_remaining is None else max(0, min_remaining)
+    pool = snapshot.graphql
+    if pool is None:
+        return None
+    if pool.remaining < floor:
+        return f"github_graphql_below_floor:{pool.remaining}<{floor}"
+    return None
+
+
 def rest_pool_blocked(
     snapshot: RateSnapshot,
     *,
@@ -922,13 +944,19 @@ def _status_check_rollup_graphql(
     """
     if not number:
         return []
-    payload = _json_from_proc(
-        _run(
+    try:
+        proc = _run(
             runner,
             ["gh", "pr", "view", str(number), "--repo", repo, "--json", "statusCheckRollup"],
             repo_root=repo_root,
         )
-    )
+    except (subprocess.TimeoutExpired, OSError) as exc:
+        # Same boundary rule as the listing itself, one level down: callers catch
+        # `PrListingUnavailable`, so a raised TimeoutExpired here would crash the timer mid-scan
+        # instead of skipping the cycle. Fixing the listing and leaving its per-PR helper is the
+        # sibling omission this workstream keeps making.
+        raise GraphQLListingFailed(f"github_graphql_rollup_unavailable:pr={number}:{exc}") from exc
+    payload = _json_from_proc(proc)
     rollup = payload.get("statusCheckRollup") if isinstance(payload, dict) else None
     return rollup if isinstance(rollup, list) else []
 
@@ -1122,17 +1150,26 @@ def list_open_pr_statuses(
                 "measured healthy"
             )
             print(LOG_GRAPHQL_FALLBACK, file=sys.stderr)
-            rows = list_open_pr_statuses_rest(
-                repo=repo,
-                repo_root=repo_root,
-                runner=runner,
-                limit=limit,
-                include_files=include_files,
-                include_review_decision=include_review_decision,
-                include_status=include_status,
-                hydrate_pull=hydrate_pull,
-                respect_rate_pools=False,
-            )
+            try:
+                rows = list_open_pr_statuses_rest(
+                    repo=repo,
+                    repo_root=repo_root,
+                    runner=runner,
+                    limit=limit,
+                    include_files=include_files,
+                    include_review_decision=include_review_decision,
+                    include_status=include_status,
+                    hydrate_pull=hydrate_pull,
+                    respect_rate_pools=False,
+                    # The fallback needs the SAME determinacy the primary REST path has. I wrote
+                    # it without this, so a fallback that also failed returned [] — the
+                    # silent-empty defect, reproduced inside the fix for the deadlock.
+                    fail_on_indeterminate=True,
+                )
+            except subprocess.SubprocessError as rest_exc:
+                raise RestListingFailed(
+                    f"github_rest_fallback_indeterminate:{rest_exc}"
+                ) from rest_exc
             return rows, ListingRoute(
                 transport="rest", rest_blocked=False, reason="graphql_listing_failed_rest_healthy"
             )
@@ -1160,6 +1197,36 @@ def list_open_pr_statuses(
             fail_on_indeterminate=True,
         )
     except subprocess.SubprocessError as exc:
+        # Symmetric with the GraphQL branch above, and asymmetry here would have been arbitrary:
+        # whichever pool the chooser happened to prefer would be the only one that could fail
+        # the whole scan. Eligibility is the same test in both directions — a pool measured
+        # below its floor is out, a healthy one is in.
+        if graphql_pool_blocked(snapshot) is None:
+            try:
+                rows = list_open_pr_statuses_graphql(
+                    repo=repo,
+                    repo_root=repo_root,
+                    runner=runner,
+                    limit=limit,
+                    include_files=include_files,
+                    include_review_decision=include_review_decision,
+                    include_status=include_status,
+                )
+            except GraphQLListingFailed as graph_exc:
+                raise RestListingFailed(
+                    f"github_rest_listing_indeterminate:{exc}; graphql fallback also failed: "
+                    f"{graph_exc.reason}"
+                ) from exc
+            print(
+                "github_pr_status: REST listing failed; falling back to GraphQL, which is "
+                "measured healthy",
+                file=sys.stderr,
+            )
+            return rows, ListingRoute(
+                transport="graphql",
+                rest_blocked=route.rest_blocked,
+                reason="rest_listing_failed_graphql_healthy",
+            )
         raise RestListingFailed(f"github_rest_listing_indeterminate:{exc}") from exc
     return (rows, route)
 

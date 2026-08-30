@@ -379,6 +379,11 @@ def is_admission_allowed(branch: str | None) -> tuple[bool, str]:
 # Advisory open-PR count fed to the failure-rate policy. Open count alone is
 # NEVER a freeze (FM-3) — the only freeze is failure-rate based. The old
 # ``AUTO_FREEZE_THRESHOLD`` name implied a count freeze that no longer exists.
+# Used as the stand-in count when the open-PR listing could not be measured at all. It is the
+# same threshold the throttle policy calls "busy", so an unmeasurable fleet reads as busy rather
+# than quiet — the only direction that cannot understate load. It is advisory-only: a high open-PR
+# count never freezes admission (the merge queue serializes landings), so erring this way costs a
+# `busy` annotation and never a wrong freeze.
 ADVISORY_OPEN_PR_COUNT = 10
 AUTO_FREEZE_THRESHOLD = ADVISORY_OPEN_PR_COUNT  # deprecated alias
 

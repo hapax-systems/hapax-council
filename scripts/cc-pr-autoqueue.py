@@ -983,7 +983,7 @@ def fetch_open_prs(
         # guaranteed 403s. Distinguished from the empty-scan warning below because the
         # two mean different things: this one is "we did not look", not "nothing found".
         LOG.warning(
-            "REST open PR scan skipped: %s%s",
+            "open PR scan skipped: %s%s",
             exc.reason,
             listing_unavailable_detail(exc),
         )

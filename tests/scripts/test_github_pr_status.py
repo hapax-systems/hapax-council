@@ -1694,6 +1694,67 @@ def test_a_failing_graphql_listing_still_refuses_when_rest_is_measured_empty(
         )
 
 
+def test_a_failing_rest_fallback_refuses_instead_of_reading_as_empty(tmp_path: Path) -> None:
+    """The fallback needed the same determinacy as the path it falls back from.
+
+    I wrote the GraphQL→REST fallback without `fail_on_indeterminate`, so a fallback that also
+    failed returned `[]` — the silent-empty defect, reproduced inside the fix for the deadlock.
+    """
+
+    def both_listings_fail(cmd: list[str], **kwargs: Any) -> subprocess.CompletedProcess:
+        if cmd[:3] == ["gh", "pr", "list"]:
+            return subprocess.CompletedProcess(cmd, 1, "", "HTTP 504")
+        if cmd[:4] == ["gh", "api", "-i", "rate_limit"]:
+            return _BothTransportsRunner(rest_remaining=3000, graphql_remaining=4900)(cmd, **kwargs)
+        return subprocess.CompletedProcess(cmd, 1, "", "rest boom")
+
+    with pytest.raises(github_pr_status.PrListingUnavailable):
+        github_pr_status.list_open_pr_statuses(
+            repo="owner/repo", repo_root=tmp_path, runner=both_listings_fail
+        )
+
+
+def test_the_fallback_is_symmetric_when_rest_is_chosen_and_fails(tmp_path: Path) -> None:
+    """Whichever pool the chooser prefers must not be the only one able to fail the scan.
+
+    The GraphQL→REST direction was implemented and the REST→GraphQL one was not, which made the
+    asymmetry arbitrary: identical failures produced a refusal or a served scan depending only
+    on which pool happened to be roomier that minute.
+    """
+
+    def rest_broken(cmd: list[str], **kwargs: Any) -> subprocess.CompletedProcess:
+        if cmd[:5] == ["gh", "api", "--method", "GET", "-H"]:
+            return subprocess.CompletedProcess(cmd, 1, "", "rest boom")
+        # REST roomier, so it is chosen; then it fails, and GraphQL is healthy.
+        return _BothTransportsRunner(rest_remaining=4900, graphql_remaining=3000)(cmd, **kwargs)
+
+    rows, route = github_pr_status.list_open_pr_statuses(
+        repo="owner/repo", repo_root=tmp_path, runner=rest_broken
+    )
+
+    assert rows and rows[0]["number"] == 9
+    assert route.transport == "graphql"
+    assert "rest_listing_failed" in route.reason
+
+
+def test_a_per_pr_rollup_timeout_refuses_rather_than_escaping(tmp_path: Path) -> None:
+    """Same boundary rule as the listing, one level down.
+
+    Callers catch `PrListingUnavailable`; a raised TimeoutExpired from the per-PR rollup would
+    crash the timer mid-scan. Fixing the listing and leaving its helper is the sibling omission.
+    """
+
+    def rollup_times_out(cmd: list[str], **kwargs: Any) -> subprocess.CompletedProcess:
+        if cmd[:3] == ["gh", "pr", "view"]:
+            raise subprocess.TimeoutExpired(cmd, 60)
+        return _BothTransportsRunner(rest_remaining=0, graphql_remaining=4900)(cmd, **kwargs)
+
+    with pytest.raises(github_pr_status.GraphQLListingFailed):
+        github_pr_status.list_open_pr_statuses_graphql(
+            repo="owner/repo", repo_root=tmp_path, runner=rollup_times_out
+        )
+
+
 def test_a_probe_timeout_fails_open_rather_than_crashing_the_timer(tmp_path: Path) -> None:
     """The fail-open promise is in `rate_snapshot`'s own docstring, and a raised exception broke it.
 
