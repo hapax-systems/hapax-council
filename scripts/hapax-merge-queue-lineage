@@ -28,6 +28,7 @@ if str(SCRIPTS_DIR) not in sys.path:
 
 from github_pr_status import (  # noqa: E402
     DEFAULT_REPO,
+    PrListingUnavailable,
     get_pr_status_rest,
     list_open_pr_statuses_rest,
 )
@@ -167,6 +168,16 @@ def fetch_prs(
         )
     except (subprocess.SubprocessError, json.JSONDecodeError) as exc:
         raise RuntimeError(f"open PR query indeterminate via REST: {exc}") from exc
+    except PrListingUnavailable as exc:
+        # This consumer is deliberately fail-closed — an indeterminate listing must not read as
+        # "no open holds". A measured-empty pool is indeterminate for the same reason, so it
+        # raises the same way rather than escaping as an unhandled RuntimeError with a message
+        # that names no next action.
+        raise RuntimeError(
+            f"open PR query indeterminate: {exc.reason}. Next action: wait for the rate pool "
+            f"reset ({exc.reset_in_seconds}s) or rerun once `github_pr_status.py rate` "
+            f"reports headroom."
+        ) from exc
 
     seen = {int(pr["number"]) for pr in prs if pr.get("number") is not None}
     for number in sorted(pr_numbers - seen):

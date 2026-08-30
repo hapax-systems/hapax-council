@@ -39,7 +39,7 @@ SCRIPTS_DIR = Path(__file__).resolve().parent
 if str(SCRIPTS_DIR) not in sys.path:
     sys.path.insert(0, str(SCRIPTS_DIR))
 
-from github_pr_status import list_open_pr_statuses_rest
+from github_pr_status import PrListingUnavailable, list_open_pr_statuses_rest
 
 from shared.merge_queue_lineage import (
     DEFAULT_LEDGER_PATH,
@@ -120,6 +120,12 @@ def query_open_prs() -> list[dict[str, Any]]:
             hydrate_pull=True,
         )
     except (subprocess.SubprocessError, json.JSONDecodeError):
+        return []
+    except PrListingUnavailable:
+        # `list_open_pr_statuses_rest` gained a measured-exhaustion guard and this consumer was
+        # not updated with it, so a measured-empty REST pool raised straight through a handler
+        # that catches only subprocess and JSON errors — crashing admission to report a full
+        # rate pool. Returning [] matches what every other unavailable-listing case does here.
         return []
 
 

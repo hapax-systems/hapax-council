@@ -57,6 +57,7 @@ from github_pr_status import (  # noqa: E402
     fetch_status_check_rollup_rest,
     get_pull_rest,
     list_open_pr_statuses,
+    listing_unavailable_detail,
     rest_merge_state_status,
     run_graphql_rate_aware,
 )
@@ -975,9 +976,9 @@ def fetch_open_prs(
         # guaranteed 403s. Distinguished from the empty-scan warning below because the
         # two mean different things: this one is "we did not look", not "nothing found".
         LOG.warning(
-            "REST open PR scan skipped: %s (quota, not auth; resets in %ss)",
+            "REST open PR scan skipped: %s%s",
             exc.reason,
-            exc.reset_in_seconds,
+            listing_unavailable_detail(exc),
         )
         return []
     if not raw:

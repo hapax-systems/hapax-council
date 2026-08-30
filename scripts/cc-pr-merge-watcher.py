@@ -63,6 +63,7 @@ from github_pr_status import (  # noqa: E402
     list_open_pr_statuses,
     list_pulls_for_branch_rest,
     list_pulls_rest,
+    listing_unavailable_detail,
     rest_pull_state,
     run_graphql_rate_aware,
 )
@@ -962,9 +963,9 @@ def detect_stuck_prs(
         # guaranteed 403s. Loud, because an empty result is otherwise indistinguishable
         # from "no stuck PRs" — a silent wrong answer.
         LOG.warning(
-            "stuck-PR detection skipped: %s (quota, not auth; resets in %ss)",
+            "stuck-PR detection skipped: %s%s",
             exc.reason,
-            exc.reset_in_seconds,
+            listing_unavailable_detail(exc),
         )
         return []
     if not isinstance(prs, list):

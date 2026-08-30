@@ -4296,6 +4296,73 @@ def test_exhausted_rest_routes_the_review_scan_to_graphql(tmp_path: Path) -> Non
     )
 
 
+def test_graphql_routed_scan_does_not_begin_each_pr_on_rest(tmp_path: Path) -> None:
+    """Routing the listing is one call; the per-PR work is N. Only routing the one spares little.
+
+    The previous version of this coverage returned an empty listing, so there were no rows and
+    no per-PR path to observe — while `review_pr` was in fact calling `fetch_pr`, whose first
+    act was `get_pull_rest`. A fixture that avoids the failing path is the same defect it is
+    meant to catch, and this is the second time in this PR that exact shape got through.
+    """
+    calls: list[list[str]] = []
+    row = {
+        "number": 4610,
+        "isDraft": False,
+        "transport": "graphql",
+        "headRefOid": "deadbeef",
+    }
+
+    def runner(cmd: list[str], **_: Any) -> subprocess.CompletedProcess:
+        calls.append(list(cmd))
+        if cmd[:4] == ["gh", "api", "-i", "rate_limit"]:
+            head = (
+                "HTTP/2.0 200 OK\r\nX-Ratelimit-Limit: 5000\r\n"
+                "X-Ratelimit-Remaining: 0\r\nX-Ratelimit-Reset: 1893456000\r\n"
+                "X-Ratelimit-Resource: core\r\n"
+            )
+            payload = {
+                "resources": {
+                    "core": {"remaining": 0, "limit": 5000, "reset": 1893456000},
+                    "graphql": {"remaining": 4660, "limit": 5000, "reset": 1893456000},
+                }
+            }
+            return subprocess.CompletedProcess(cmd, 0, f"{head}\r\n{json.dumps(payload)}", "")
+        if cmd[:3] == ["gh", "pr", "list"]:
+            return subprocess.CompletedProcess(cmd, 0, json.dumps([row]), "")
+        if cmd[:3] == ["gh", "pr", "view"]:
+            return subprocess.CompletedProcess(
+                cmd,
+                0,
+                json.dumps(
+                    {
+                        "number": 4610,
+                        "title": "t",
+                        "body": "b",
+                        "baseRefName": "main",
+                        "baseRefOid": "base000",
+                        "headRefName": "feat/x",
+                        "headRefOid": "deadbeef",
+                        "changedFiles": 1,
+                        "isDraft": False,
+                        "files": [{"path": "scripts/example.py"}],
+                    }
+                ),
+                "",
+            )
+        if len(cmd) > 6 and str(cmd[6]).startswith("repos/"):
+            raise AssertionError(f"per-PR REST spend after a GraphQL-routed listing: {cmd}")
+        return subprocess.CompletedProcess(cmd, 1, "", "unhandled")
+
+    # review_pr will fail for other reasons (no vault note); the assertion under test is that
+    # nothing reached REST, which the runner enforces by raising.
+    dispatch.review_all_open_prs(
+        repo="owner/repo", repo_root=tmp_path, vault_root=tmp_path, gh_runner=runner
+    )
+
+    assert any(call[:3] == ["gh", "pr", "list"] for call in calls)
+    assert not any(len(call) > 6 and str(call[6]).startswith("repos/") for call in calls)
+
+
 def test_both_pools_exhausted_skips_the_review_scan(tmp_path: Path) -> None:
     """Caller-level coverage for RestPoolExhausted (codex-1, major).
 

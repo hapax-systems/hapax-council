@@ -60,6 +60,7 @@ from github_pr_status import (  # noqa: E402
     get_pull_rest,
     list_open_pr_statuses,
     list_pull_files_rest,
+    listing_unavailable_detail,
 )
 
 from shared import public_gate_receipts  # noqa: E402
@@ -968,7 +969,23 @@ def _fetch_pr_via_view(
     )
 
 
-def fetch_pr(pr_number: int, *, repo: str, repo_root: Path, runner: Any) -> PRInfo:
+def fetch_pr(
+    pr_number: int, *, repo: str, repo_root: Path, runner: Any, transport: str = "rest"
+) -> PRInfo:
+    """Fetch one PR's metadata, preferring the transport the cycle chose.
+
+    `gh pr view --json` is GraphQL-backed and already existed here — but only as a *fallback*
+    after REST failed, which is the shape `choose_transport` was written against: a path that
+    engages on failure can react to exhaustion but never prevent it. When the cycle measured
+    REST below its floor, this begins on GraphQL instead, and REST becomes the fallback.
+    """
+    if transport == "graphql":
+        try:
+            return _fetch_pr_via_view(pr_number, repo=repo, repo_root=repo_root, runner=runner)
+        except RuntimeError as exc:
+            LOG.warning(
+                "GraphQL pull fetch failed for PR #%d; falling back to REST: %s", pr_number, exc
+            )
     item = get_pull_rest(pr_number, repo=repo, repo_root=repo_root, runner=runner)
     if item is None:
         try:
@@ -1018,8 +1035,28 @@ def fetch_pr(pr_number: int, *, repo: str, repo_root: Path, runner: Any) -> PRIn
     )
 
 
-def fetch_pr_diff(pr_info: PRInfo, *, repo: str, repo_root: Path, runner: Any) -> str:
+def fetch_pr_diff(
+    pr_info: PRInfo, *, repo: str, repo_root: Path, runner: Any, transport: str = "rest"
+) -> str:
+    """Fetch the PR diff, avoiding the REST pool when the cycle measured it empty.
+
+    There is no GraphQL diff API — GraphQL cannot return a unified diff, and `gh pr diff`
+    goes to the REST diff media type — so "route to GraphQL" has no meaning here. The path
+    that actually spares the pool is the **local** one: `git fetch` speaks the git protocol,
+    which is a different quota entirely. It already existed as the last fallback; when REST
+    is measured empty it becomes the first choice.
+    """
     pr_number = pr_info.number
+    if transport == "graphql":
+        try:
+            return fetch_pr_diff_from_local(pr_info, repo_root=repo_root, runner=runner)
+        except RuntimeError as exc:
+            LOG.warning(
+                "local git diff unavailable for PR #%d with REST measured empty; "
+                "falling back to the REST diff endpoint: %s",
+                pr_number,
+                exc,
+            )
     try:
         return _run_gh(
             [
@@ -2541,8 +2578,14 @@ def review_pr(
     registry_path: Path | None = None,
     now_iso: str | None = None,
     route_blocked_families: dict[str, tuple[str, ...]] | None = None,
+    transport: str = "rest",
 ) -> dict[str, Any]:
-    """Constitute (and with ``apply``, dispatch) the review team for one PR."""
+    """Constitute (and with ``apply``, dispatch) the review team for one PR.
+
+    ``transport`` is the cycle's measured choice, decided once by the caller rather than
+    re-probed per PR: a per-call decision would cost a rate probe per PR and could disagree
+    with itself mid-scan.
+    """
 
     repo_root = repo_root or REPO_ROOT
     gh_runner = gh_runner or subprocess.run
@@ -2575,7 +2618,9 @@ def review_pr(
             "reason": truncate_context(f"{type(exc).__name__}: {exc}", limit=500),
         }
 
-    pr_info = fetch_pr(pr_number, repo=repo, repo_root=repo_root, runner=gh_runner)
+    pr_info = fetch_pr(
+        pr_number, repo=repo, repo_root=repo_root, runner=gh_runner, transport=transport
+    )
     if pr_info.is_draft:
         return {"status": "draft_skipped", "pr": pr_number}
     if not pr_info.files:
@@ -2802,7 +2847,11 @@ def review_pr(
         changed_source_excerpt_files, repo_root=repo_root, head_sha=pr_info.head_sha
     )
     reviewer_source_excerpts = prior_file_excerpts + changed_file_excerpts
-    diff = truncate_diff(fetch_pr_diff(pr_info, repo=repo, repo_root=repo_root, runner=gh_runner))
+    diff = truncate_diff(
+        fetch_pr_diff(
+            pr_info, repo=repo, repo_root=repo_root, runner=gh_runner, transport=transport
+        )
+    )
     task_note_text = "\n\n".join(
         f"## Linked task note: {path.name}\n\n{path.read_text(encoding='utf-8')}"
         for path, _, _ in keyed_matches
@@ -3017,11 +3066,20 @@ def review_all_open_prs(
         # so nothing is lost by sitting out a cycle. Logged loudly so an empty scan is
         # never mistaken for "no PRs needed review".
         LOG.warning(
-            "review-team dispatch scan skipped: %s (quota, not auth; resets in %ss)",
+            "review-team dispatch scan skipped: %s%s",
             exc.reason,
-            exc.reset_in_seconds,
+            listing_unavailable_detail(exc),
         )
         return []
+    # The cycle's transport, decided once. Every row from a GraphQL-routed listing carries it,
+    # so the per-PR work below begins on the same pool the listing chose. Routing only the
+    # bulk listing left each PR's metadata and diff starting on REST — the listing was one
+    # call and the per-PR work is N, so that spared almost nothing.
+    transport = (
+        "graphql"
+        if any(isinstance(item, dict) and item.get("transport") == "graphql" for item in open_prs)
+        else "rest"
+    )
     results: list[dict[str, Any]] = []
     for item in open_prs:
         if not isinstance(item, dict) or item.get("isDraft"):
@@ -3041,6 +3099,7 @@ def review_all_open_prs(
                     wake_dir=wake_dir,
                     send_runner=send_runner,
                     route_blocked_families=route_blocked_families,
+                    transport=transport,
                 )
             )
         except Exception as exc:  # noqa: BLE001 — one PR must not starve the scan

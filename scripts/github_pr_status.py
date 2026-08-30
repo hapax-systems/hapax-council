@@ -717,6 +717,27 @@ class PrListingUnavailable(RuntimeError):
         return max(0, self.reset_epoch - int(time.time()))
 
 
+def listing_unavailable_detail(exc: PrListingUnavailable) -> str:
+    """A log suffix that names what actually happened, and what to do about it.
+
+    The three fleet handlers each wrote ``"(quota, not auth; resets in %ss)"``. That is true
+    of exhaustion and false of a failed listing, which can be auth, malformed output, or a
+    504 — and it printed a null reset with no recovery action. Reason codes must name the
+    state they are actually in; one shared formatter keeps the three from drifting apart
+    again.
+    """
+    if isinstance(exc, RestPoolExhausted):
+        return (
+            f" (quota, not auth; resets in {exc.reset_in_seconds}s). "
+            "Next action: none — the next cycle proceeds once the pool refills."
+        )
+    return (
+        " (listing failed; NOT a quota condition). Next action: run "
+        "`gh auth status` and `gh pr list --repo <repo> --state open --limit 1`; a repeated "
+        "504 means the query is too large, an auth error means the token needs attention."
+    )
+
+
 class GraphQLListingFailed(PrListingUnavailable):
     """``gh pr list`` failed or returned something that is not a list of PRs.
 
@@ -1149,7 +1170,14 @@ def rate_snapshot(
     # monkeypatched test issue a REAL network call — observed while writing the CLI test
     # for this change.
     runner = runner if runner is not None else subprocess.run
-    proc = _run(runner, ["gh", "api", "-i", "rate_limit"], repo_root=repo_root, timeout=30)
+    try:
+        proc = _run(runner, ["gh", "api", "-i", "rate_limit"], repo_root=repo_root, timeout=30)
+    except (subprocess.TimeoutExpired, OSError):
+        # The fail-open promise is three paragraphs up, and a raised exception is the one way
+        # to break it: the probe is now on the path of every fleet scan, so a 30-second hang
+        # would crash the timer rather than proceed on unknown headroom. A probe that cannot
+        # answer means "unknown", which routes to REST exactly as before this change.
+        return RateSnapshot(core=None, graphql=None)
     stdout = proc.stdout or ""
     ok = getattr(proc, "returncode", 1) == 0
 

@@ -1443,6 +1443,46 @@ def test_both_pools_blocked_reports_when_not_merely_that(tmp_path: Path) -> None
     )
 
 
+def test_a_probe_timeout_fails_open_rather_than_crashing_the_timer(tmp_path: Path) -> None:
+    """The fail-open promise is in `rate_snapshot`'s own docstring, and a raised exception broke it.
+
+    The probe now runs on every fleet scan, so a 30-second hang would take down the timer
+    service rather than proceed on unknown headroom. Unknown routes to REST, exactly as before
+    this change — the documented behaviour, reached by a path the tests did not cover because
+    they only ever exercised nonzero return codes.
+    """
+
+    def times_out(cmd: list[str], **kwargs: Any) -> subprocess.CompletedProcess:
+        raise subprocess.TimeoutExpired(cmd, 30)
+
+    snapshot = github_pr_status.rate_snapshot(repo_root=tmp_path, runner=times_out)
+    assert snapshot.core is None and snapshot.graphql is None
+
+    transport, reason = github_pr_status.choose_transport(repo_root=tmp_path, runner=times_out)
+    assert transport == "rest", f"unknown headroom must fail open to REST, got {transport}"
+    assert "unknown" in reason
+
+
+def test_listing_failure_and_exhaustion_get_different_operator_text(tmp_path: Path) -> None:
+    """All three fleet handlers said "quota, not auth" for every case.
+
+    That is true of exhaustion and false of a failed listing, which can be auth, malformed
+    output, or a 504 — and it printed a null reset with no recovery action. One shared
+    formatter, so the three cannot drift apart again.
+    """
+    exhausted = github_pr_status.listing_unavailable_detail(
+        github_pr_status.RestPoolExhausted("core=0", None)
+    )
+    failed = github_pr_status.listing_unavailable_detail(
+        github_pr_status.GraphQLListingFailed("rc=1")
+    )
+
+    assert "quota, not auth" in exhausted
+    assert "quota" not in failed.replace("NOT a quota condition", "")
+    assert "gh auth status" in failed, "a failed listing must name a next action"
+    assert exhausted != failed
+
+
 def test_bulk_graphql_query_never_requests_status_check_rollup(tmp_path: Path) -> None:
     """Pins the constraint the pre-#4436 implementation paid for.
 
