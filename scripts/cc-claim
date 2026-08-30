@@ -290,10 +290,20 @@ for cf in "$legacy_claim_file" "$HOME/.cache/hapax/cc-active-task-$role-"*; do
   # the same defect one level deeper — the first revision skipped the role-cap check but
   # left canonical publication blocking, and this one freed fresh leases but left aged
   # ones held.
+  # Look in `closed/` as well as `active/`, and in that order — matching
+  # `_task_note_path_for_any_state` on the Python side, which this had silently diverged from.
+  # A task that reached a terminal status is usually MOVED to closed/, so an active/-only
+  # lookup finds no note for exactly the tasks most certain to have released the role: it
+  # falls through to the expiry HOLD, and a closed task holds a lane forever. That is the
+  # release-vs-expiry ordering defect again, arriving through the note lookup instead.
   existing_note=""
   existing_status="unknown"
   if [[ -n "$existing_task" && "$existing_task" != "$task_id" ]]; then
-    for c in "$vault_root_check/active/$existing_task-"*.md "$vault_root_check/active/$existing_task.md"; do
+    for c in \
+      "$vault_root_check/closed/$existing_task.md" \
+      "$vault_root_check/closed/$existing_task-"*.md \
+      "$vault_root_check/active/$existing_task.md" \
+      "$vault_root_check/active/$existing_task-"*.md; do
       [[ -f "$c" ]] && existing_note="$c" && break
     done
     if [[ -n "$existing_note" ]]; then
@@ -516,8 +526,19 @@ if canon_enforced:
         still finds the stale sidecars and ``resolve_applied_claim_publication`` exits 8
         with ``claim_task_mismatch``, so the lane stays blocked one layer deeper.
         """
+        # Scan EVERY session-keyed sidecar for this role, not just this session's.
+        #
+        # The bash role-cap loop globs `cc-active-task-<role>-*`, so it stops blocking on a
+        # released task claimed by any previous session — but this archival only knew about
+        # `{role, role-<this session>}`. The lane therefore came free at the cap and then
+        # failed at canonical publication with `claim_task_mismatch`, which is the very
+        # one-layer-deeper failure this function exists to prevent. Two scans over the same
+        # sidecars must not disagree about which ones exist.
         released: list[tuple[str, str, tuple[Path, ...]]] = []
-        for claim_key in sorted({role, f"{role}-{session_id}"}):
+        claim_keys = {role, f"{role}-{session_id}"}
+        for sidecar in cache_dir.glob(f"cc-active-task-{role}-*"):
+            claim_keys.add(sidecar.name[len("cc-active-task-") :])
+        for claim_key in sorted(claim_keys):
             claim_path = cache_dir / f"cc-active-task-{claim_key}"
             if not claim_path.exists():
                 continue

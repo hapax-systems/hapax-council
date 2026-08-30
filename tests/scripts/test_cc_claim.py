@@ -1657,6 +1657,37 @@ def test_expired_lease_on_a_worker_held_task_still_holds(tmp_path: Path) -> None
     assert "requires exact stale-lease release" in result.stderr
 
 
+def test_a_closed_task_releases_the_lane(tmp_path: Path) -> None:
+    """All three review families, unanimously: the release lookup only searched `active/`.
+
+    A task that reaches a terminal status is usually MOVED to `closed/`, so an active/-only
+    lookup finds no note for exactly the tasks most certain to have released the role — it
+    falls through to the expiry HOLD and a closed task holds a lane forever. The Python side
+    already searched both directories; the bash side had silently diverged from it.
+    """
+    home = tmp_path / "home"
+    first_note = _write_task(home, "active", "task-a")
+    _write_task(home, "active", "task-b")
+
+    assert _claim(home, "task-a").returncode == 0
+
+    closed_dir = _task_root(home) / "closed"
+    closed_dir.mkdir(parents=True, exist_ok=True)
+    first_note.write_text(
+        first_note.read_text(encoding="utf-8").replace("status: claimed", "status: done"),
+        encoding="utf-8",
+    )
+    first_note.rename(closed_dir / first_note.name)
+    _age_leases(home, seconds=21600 * 2)
+
+    result = _claim(home, "task-b")
+
+    assert result.returncode == 0, (
+        f"a task that was closed and moved out of active/ must free its lane.\n"
+        f"stdout: {result.stdout}\nstderr: {result.stderr}"
+    )
+
+
 def test_released_task_residue_is_archived_with_a_receipt(tmp_path: Path) -> None:
     """Retirement archives into task lineage; it does not `rm -f`.
 
