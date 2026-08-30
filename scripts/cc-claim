@@ -575,6 +575,18 @@ if canon_enforced:
         Without this, the bash loop's ``continue`` is not enough: ``claim_paths`` below
         still finds the stale sidecars and ``resolve_applied_claim_publication`` exits 8
         with ``claim_task_mismatch``, so the lane stays blocked one layer deeper.
+
+        **Reachable only on the admitted Gate-0B path, deliberately.** Under
+        ``HAPAX_GATE0B_CLAIM_PUBLICATION_OFF=1`` the legacy writer runs instead and no residue is
+        archived — because that path takes no role lock, and an unlocked archival is the race
+        three review families rejected here. The killswitch is an operator-authorized emergency
+        fallback whose own banner says to repair the admitted path and stop using it; giving it a
+        lockless copy of this machinery would make the unsafe path the more capable one.
+
+        **If a fail-closed HOLD wedges a lane**, the escape is in the HOLD message itself: it
+        names the exact files to archive and says operator approval is required. That is the
+        documented bypass — deliberately per-incident and explicit, rather than a standing
+        environment flag that would let the guard be switched off wholesale.
         """
         # Scan EVERY session-keyed sidecar for this role, not just this session's.
         #
