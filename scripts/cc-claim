@@ -397,6 +397,7 @@ claim_epoch="$(date +%s)"
 import hashlib
 import json
 import re
+import shutil
 import sys
 from datetime import datetime, timezone
 from pathlib import Path
@@ -612,8 +613,17 @@ if canon_enforced:
             for source in residue:
                 destination = lineage_dir / source.name
                 if destination.exists() and not source.exists():
+                    # Resumption, not a collision: a previous attempt moved this one and then
+                    # died. Anything else — both present, or neither — falls through to the move
+                    # so a genuine name clash surfaces instead of being skipped.
                     continue
-                source.replace(destination)
+                # `shutil.move`, not `Path.replace`. The sidecars live on /home and the vault is
+                # an NFS mount, so `os.rename` raises EXDEV on EVERY release on this estate —
+                # the archival would crash and permanently hold the lane it exists to free.
+                # Three review families caught it; my tests did not, because `tmp_path` puts
+                # source and destination on one filesystem, so the fixture could not reach the
+                # failure.
+                shutil.move(str(source), str(destination))
             (lineage_dir / "README.md").write_text(
                 "Archived claim residue for a task that released this role.\n"
                 f"task_id: {prior_task_id}\n"
@@ -726,7 +736,8 @@ if canon_enforced:
             lineage_dir.mkdir(parents=True, exist_ok=True)
             destination = lineage_dir / dispatch_path.name
             if not (destination.exists() and not dispatch_path.exists()):
-                dispatch_path.replace(destination)
+                # Cross-device safe, for the same reason as the released-residue archival above.
+                shutil.move(str(dispatch_path), str(destination))
             (lineage_dir / "README.md").write_text(
                 "Archived dispatch-only claim residue before a fresh admitted claim.\n"
                 f"task_id: {binding.task_id}\n"

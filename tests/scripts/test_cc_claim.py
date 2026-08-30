@@ -1,7 +1,9 @@
 import json
 import os
 import re
+import shutil
 import subprocess
+import tempfile
 import textwrap
 import time
 from datetime import UTC, datetime
@@ -1679,6 +1681,65 @@ def test_a_sidecar_naming_an_unknown_task_holds_rather_than_being_swept(tmp_path
     assert "has no note in active/ or closed/" in result.stderr
 
 
+def test_archival_survives_a_cross_filesystem_move(tmp_path: Path) -> None:
+    """Measured on this estate: the cache is on /dev/sda2 and the vault is an NFS mount.
+
+    `Path.replace` is `os.rename`, which raises EXDEV across devices — so the archival would
+    have crashed on EVERY release, permanently holding the lane it exists to free. Three review
+    families caught it; my tests did not, because `tmp_path` puts source and destination on one
+    filesystem and the fixture could not reach the failure.
+
+    This puts HOME and the vault on genuinely different devices, so the move really does cross
+    a filesystem boundary. An earlier attempt injected EXDEV through a `sitecustomize` shim on
+    PYTHONPATH — which never loaded, because cc-claim runs its Python with `-I` (isolated mode
+    ignores PYTHONPATH and sitecustomize). That test passed under mutation; this one does not.
+    """
+    home = tmp_path / "home"
+
+    # A second real filesystem, chosen by measurement rather than assumption. If the runner has
+    # only one, the test says so instead of passing vacuously.
+    candidates = [Path("/tmp"), Path("/dev/shm"), Path.home()]
+    home.mkdir(parents=True, exist_ok=True)
+    home_dev = home.stat().st_dev
+    other = next((c for c in candidates if c.is_dir() and c.stat().st_dev != home_dev), None)
+    if other is None:
+        pytest.skip(f"no second filesystem available to cross (home dev={home_dev})")
+
+    vault = Path(tempfile.mkdtemp(prefix="cc-claim-xdev-", dir=other))
+    try:
+        (vault / "active").mkdir(parents=True, exist_ok=True)
+        (vault / "closed").mkdir(parents=True, exist_ok=True)
+        assert vault.stat().st_dev != (home / ".cache").parent.stat().st_dev, (
+            "the fixture must actually straddle two devices or it tests nothing"
+        )
+
+        for task_id in ("task-a", "task-b"):
+            source = _write_task(home, "active", task_id)
+            (vault / "active" / f"{task_id}.md").write_text(
+                source.read_text(encoding="utf-8"), encoding="utf-8"
+            )
+
+        env = {"HAPAX_CC_TASKS_ROOT": str(vault)}
+        assert _claim(home, "task-a", extra_env=env).returncode == 0
+
+        note = vault / "active" / "task-a.md"
+        note.write_text(
+            note.read_text(encoding="utf-8").replace("status: claimed", "status: pr_open"),
+            encoding="utf-8",
+        )
+
+        result = _claim(home, "task-b", extra_env=env)
+
+        assert result.returncode == 0, (
+            "archival must survive a cross-device move — this is the live layout, not an edge "
+            f"case.\nstderr: {result.stderr}"
+        )
+        residue = list((vault / "_lineage" / "task-a").glob("released-claim-residue-*"))
+        assert residue, "the residue must reach lineage across a filesystem boundary"
+    finally:
+        shutil.rmtree(vault, ignore_errors=True)
+
+
 def test_released_residue_archival_is_idempotent(tmp_path: Path) -> None:
     """The recovery path was the one path that could not run.
 
@@ -1697,21 +1758,33 @@ def test_released_residue_archival_is_idempotent(tmp_path: Path) -> None:
     )
     assert _claim(home, "task-b").returncode == 0
 
-    # Pre-create a colliding lineage directory, as a partially-completed archival would leave.
-    lineage = _task_root(home) / "_lineage" / "task-a"
-    lineage.mkdir(parents=True, exist_ok=True)
-    for existing in lineage.glob("released-claim-residue-*"):
-        (existing / "stray.txt").write_text("partial", encoding="utf-8")
-
+    # Reconstruct what a crash MID-MOVE leaves: the directory exists, and one residue file has
+    # already been moved into it while its source is gone. An earlier version of this test only
+    # dropped a stray file beside the archive, which collides with nothing — it exercised the
+    # `mkdir(exist_ok=...)` path and never the per-file resumption the fix is actually about.
+    lineage = _task_root(home) / "_lineage" / "task-b"
+    cache = home / ".cache" / "hapax"
     second = _task_root(home) / "active" / "task-b.md"
     second.write_text(
         second.read_text(encoding="utf-8").replace("status: claimed", "status: pr_open"),
         encoding="utf-8",
     )
+    sidecars = sorted(cache.glob("cc-active-task-*"))
+    assert sidecars, "expected a live sidecar to simulate a half-finished archival"
+    partial = lineage / "released-claim-residue-partial"
+    partial.mkdir(parents=True, exist_ok=True)
+    (partial / sidecars[0].name).write_text(
+        sidecars[0].read_text(encoding="utf-8"), encoding="utf-8"
+    )
+
     result = _claim(home, "task-c")
 
     assert result.returncode == 0, (
-        f"archival must survive a pre-existing lineage directory.\nstderr: {result.stderr}"
+        "archival must resume over a half-finished archive rather than crashing on the "
+        f"directory its own previous attempt created.\nstderr: {result.stderr}"
+    )
+    assert list(lineage.glob("released-claim-residue-*")), (
+        "the residue must still reach lineage after resuming"
     )
 
 
