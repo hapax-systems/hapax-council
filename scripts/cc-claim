@@ -501,6 +501,54 @@ if canon_enforced:
             return "missing"
         return _frontmatter_scalar(task_path.read_text(encoding="utf-8"), "status") or "unknown"
 
+    _RELEASE_RECEIPT = "README.md"
+
+    def _write_release_receipt(
+        lineage_dir: Path,
+        prior_task_id: str,
+        claim_key: str,
+        current_task_id: str,
+        observed_at: str,
+        residue: "tuple[Path, ...]",
+    ) -> None:
+        """Write the receipt BEFORE the residue moves, so the archive is self-describing.
+
+        A crash between moves previously left files in lineage with nothing recording which
+        task they belonged to — and because the `cc-active-task` anchor had already moved, no
+        later run could recover it. Receipt-first makes the archive identify itself from its
+        first instant, which is what `_recover_archived_task_id` reads.
+        """
+        lineage_dir.mkdir(parents=True, exist_ok=True)
+        (lineage_dir / _RELEASE_RECEIPT).write_text(
+            "Archived claim residue for a task that released this role.\n"
+            f"task_id: {prior_task_id}\n"
+            f"claim_key: {claim_key}\n"
+            f"claimed_next: {current_task_id}\n"
+            f"archived_at: {observed_at}\n"
+            f"archived: {', '.join(source.name for source in residue)}\n"
+            "reason: the prior task reached a role-releasing status (terminal, "
+            "resumable/pipeline-held, post-merge, or pre-work), so its lease no "
+            "longer occupies the role cap.\n",
+            encoding="utf-8",
+        )
+
+    def _recover_archived_task_id(vault_root: Path, claim_key: str) -> str | None:
+        """Find the task a half-archived claim key belonged to, from a prior receipt."""
+        lineage_root = vault_root / "_lineage"
+        if not lineage_root.is_dir():
+            return None
+        for receipt in sorted(lineage_root.glob(f"*/released-claim-residue-*/{_RELEASE_RECEIPT}")):
+            try:
+                text = receipt.read_text(encoding="utf-8")
+            except OSError:
+                continue
+            if f"claim_key: {claim_key}\n" not in text:
+                continue
+            for line in text.splitlines():
+                if line.startswith("task_id: "):
+                    return line[len("task_id: ") :].strip() or None
+        return None
+
     def _archive_released_task_claim_residue(
         *,
         vault_root: Path,
@@ -538,11 +586,55 @@ if canon_enforced:
         # sidecars must not disagree about which ones exist.
         released: list[tuple[str, str, tuple[Path, ...]]] = []
         claim_keys = {role, f"{role}-{session_id}"}
-        for sidecar in cache_dir.glob(f"cc-active-task-{role}-*"):
-            claim_keys.add(sidecar.name[len("cc-active-task-") :])
+        # Collect from ALL THREE sidecar patterns, not just `cc-active-task-*`.
+        #
+        # Keying collection off the active-task file alone made a partial archival PERMANENT:
+        # move that one, crash, and on retry the key is invisible — so the epoch and dispatch
+        # sidecars are never archived, never removed, and canonical publication mismatches
+        # forever. The recovery path was unreachable from exactly the state it existed to
+        # recover. All three review families found it together.
+        for prefix, suffix in (
+            ("cc-active-task-", ""),
+            ("cc-claim-epoch-", ""),
+            ("cc-claim-dispatch-", ".json"),
+        ):
+            for sidecar in cache_dir.glob(f"{prefix}{role}*{suffix}"):
+                key = sidecar.name[len(prefix) :]
+                if suffix:
+                    key = key[: -len(suffix)]
+                claim_keys.add(key)
         for claim_key in sorted(claim_keys):
             claim_path = cache_dir / f"cc-active-task-{claim_key}"
+            siblings = [
+                cache_dir / f"cc-claim-epoch-{claim_key}",
+                cache_dir / f"cc-claim-dispatch-{claim_key}.json",
+            ]
             if not claim_path.exists():
+                epoch_path, dispatch_path = siblings
+                # A surviving EPOCH is the signature of a crash mid-archival. A surviving
+                # dispatch binding alone is not: a normal close removes active+epoch and leaves
+                # the dispatch spent leg, which `_archive_dispatch_only_claim_residue` already
+                # owns. Claiming it here would be a second mitigation for a hazard that has one,
+                # and the first version of this fix did exactly that — it HELD on the legitimate
+                # post-close state.
+                if not epoch_path.exists():
+                    continue
+                orphans = [s for s in siblings if s.exists()]
+                # The anchor is gone but residue remains — the signature of a crash mid-archival.
+                # Recover the task id from the receipt the previous attempt left, which is why
+                # the receipt is now written BEFORE any file moves.
+                recovered = _recover_archived_task_id(vault_root, claim_key)
+                if recovered is None:
+                    print(
+                        f"cc-claim: HOLD - claim key '{claim_key}' has residue "
+                        f"({', '.join(o.name for o in orphans)}) but no cc-active-task anchor and "
+                        "no release receipt naming its task. Next action: inspect those files to "
+                        f"identify the task, then with operator approval archive them under "
+                        f"{vault_root}/_lineage/<task_id>/ and rerun.",
+                        file=sys.stderr,
+                    )
+                    sys.exit(8)
+                released.append((claim_key, recovered, tuple(orphans)))
                 continue
             try:
                 prior_task_id = claim_path.read_text(encoding="utf-8").split("\n", 1)[0].strip()
@@ -610,6 +702,13 @@ if canon_enforced:
             # directory it had itself created, so the recovery path was the one path that could
             # not run. Each move is individually skippable for the same reason.
             lineage_dir.mkdir(parents=True, exist_ok=True)
+            # Receipt FIRST. A crash between moves used to leave files in lineage with nothing
+            # saying which task they belonged to — and since the anchor was already gone, no
+            # later run could work it out. Written before anything moves, the archive identifies
+            # itself from its first instant.
+            _write_release_receipt(
+                lineage_dir, prior_task_id, claim_key, current_task_id, observed_at, residue
+            )
             for source in residue:
                 destination = lineage_dir / source.name
                 if destination.exists() and not source.exists():
@@ -624,18 +723,6 @@ if canon_enforced:
                 # source and destination on one filesystem, so the fixture could not reach the
                 # failure.
                 shutil.move(str(source), str(destination))
-            (lineage_dir / "README.md").write_text(
-                "Archived claim residue for a task that released this role.\n"
-                f"task_id: {prior_task_id}\n"
-                f"claim_key: {claim_key}\n"
-                f"claimed_next: {current_task_id}\n"
-                f"archived_at: {observed_at}\n"
-                f"archived: {', '.join(source.name for source in residue)}\n"
-                "reason: the prior task reached a role-releasing status (terminal, "
-                "resumable/pipeline-held, post-merge, or pre-work), so its lease no "
-                "longer occupies the role cap.\n",
-                encoding="utf-8",
-            )
             archived.extend(str(lineage_dir / source.name) for source in residue)
         print(
             "cc-claim: archived released-task claim residue before fresh admitted claim: "

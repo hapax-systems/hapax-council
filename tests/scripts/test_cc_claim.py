@@ -1740,51 +1740,68 @@ def test_archival_survives_a_cross_filesystem_move(tmp_path: Path) -> None:
         shutil.rmtree(vault, ignore_errors=True)
 
 
-def test_released_residue_archival_is_idempotent(tmp_path: Path) -> None:
-    """The recovery path was the one path that could not run.
+def test_a_crash_mid_archival_can_be_resumed_rather_than_wedging_the_lane(tmp_path: Path) -> None:
+    """Reconstructs the crash instead of gesturing at it — all three families called the
+    previous version coverage theatre, and they were right.
 
-    `mkdir(exist_ok=False)` meant a retry after a partial move crashed on the directory the
-    previous attempt had itself created — so a half-finished archival could never be completed.
+    That version COPIED a sidecar into a stray directory, leaving the source in place. The real
+    state is different and much worse: the `cc-active-task` anchor has been MOVED and its epoch
+    sibling has not. Collection keyed off the anchor, so on retry the key was invisible — the
+    epoch and dispatch sidecars were never archived, never removed, and canonical publication
+    mismatched forever. **The recovery path was unreachable from the state it existed to
+    recover**, and a test that never produced that state could not see it.
     """
     home = tmp_path / "home"
     first_note = _write_task(home, "active", "task-a")
     _write_task(home, "active", "task-b")
-    _write_task(home, "active", "task-c")
 
     assert _claim(home, "task-a").returncode == 0
     first_note.write_text(
         first_note.read_text(encoding="utf-8").replace("status: claimed", "status: pr_open"),
         encoding="utf-8",
     )
-    assert _claim(home, "task-b").returncode == 0
 
-    # Reconstruct what a crash MID-MOVE leaves: the directory exists, and one residue file has
-    # already been moved into it while its source is gone. An earlier version of this test only
-    # dropped a stray file beside the archive, which collides with nothing — it exercised the
-    # `mkdir(exist_ok=...)` path and never the per-file resumption the fix is actually about.
-    lineage = _task_root(home) / "_lineage" / "task-b"
     cache = home / ".cache" / "hapax"
-    second = _task_root(home) / "active" / "task-b.md"
-    second.write_text(
-        second.read_text(encoding="utf-8").replace("status: claimed", "status: pr_open"),
+    anchors = sorted(cache.glob("cc-active-task-*"))
+    assert anchors, "setup claim published no anchor"
+    anchor = anchors[0]
+    claim_key = anchor.name[len("cc-active-task-") :]
+    epoch = cache / f"cc-claim-epoch-{claim_key}"
+    assert epoch.exists(), "the epoch sibling is what makes this crash residue rather than a close"
+
+    # The crash: receipt written, anchor MOVED, epoch left behind.
+    lineage = _task_root(home) / "_lineage" / "task-a" / "released-claim-residue-partial"
+    lineage.mkdir(parents=True, exist_ok=True)
+    (lineage / "README.md").write_text(
+        "Archived claim residue for a task that released this role.\n"
+        "task_id: task-a\n"
+        f"claim_key: {claim_key}\n"
+        "claimed_next: task-b\n"
+        "archived_at: partial\n",
         encoding="utf-8",
     )
-    sidecars = sorted(cache.glob("cc-active-task-*"))
-    assert sidecars, "expected a live sidecar to simulate a half-finished archival"
-    partial = lineage / "released-claim-residue-partial"
-    partial.mkdir(parents=True, exist_ok=True)
-    (partial / sidecars[0].name).write_text(
-        sidecars[0].read_text(encoding="utf-8"), encoding="utf-8"
-    )
+    shutil.move(str(anchor), str(lineage / anchor.name))
+    assert not anchor.exists() and epoch.exists(), "fixture must reproduce the wedge state"
 
-    result = _claim(home, "task-c")
+    result = _claim(home, "task-b")
 
     assert result.returncode == 0, (
-        "archival must resume over a half-finished archive rather than crashing on the "
-        f"directory its own previous attempt created.\nstderr: {result.stderr}"
+        "a half-finished archival must be resumable — the anchor is gone, so the task id has to "
+        f"come from the receipt the previous attempt wrote.\nstderr: {result.stderr}"
     )
-    assert list(lineage.glob("released-claim-residue-*")), (
-        "the residue must still reach lineage after resuming"
+
+    # Assert on the ARCHIVE, not on absence from the cache. Claiming task-b republishes sidecars
+    # at the very same paths, so `epoch.exists()` is true again immediately and says nothing
+    # about whether the stranded one was rescued — a first version of this assertion checked
+    # exactly that and reported a working mechanism as broken.
+    archived = {
+        f.name
+        for d in (_task_root(home) / "_lineage" / "task-a").iterdir()
+        if d.is_dir()
+        for f in d.iterdir()
+    }
+    assert f"cc-claim-epoch-{claim_key}" in archived, (
+        f"the stranded epoch sidecar must be rescued on the retry; archived: {sorted(archived)}"
     )
 
 
