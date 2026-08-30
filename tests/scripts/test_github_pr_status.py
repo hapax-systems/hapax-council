@@ -1592,6 +1592,82 @@ def test_every_fleet_consumer_routes_its_open_pr_listing() -> None:
     )
 
 
+def test_every_subprocess_boundary_is_normalised_or_named() -> None:
+    """The third axis, added after normalising the same boundary three times one site at a time.
+
+    `_run` can raise (TimeoutExpired, OSError). Every caller reachable from a fleet scan must
+    convert that into its own declared failure mode — a refusal, or the `None` its docstring
+    promises — because callers catch `PrListingUnavailable`, not arbitrary OS errors, and an
+    escaping exception kills the timer instead of skipping a cycle.
+
+    I fixed this in the listing, then in the per-PR rollup, then in `get_pr_status_graphql`,
+    each time only where the review pointed. Enumerating the callers takes one AST walk; the
+    list is short and it is now asserted.
+    """
+    source = (Path(__file__).resolve().parents[2] / "scripts" / "github_pr_status.py").read_text(
+        encoding="utf-8"
+    )
+    # Callers deliberately left raw, each with the reason it is safe.
+    raw_by_design = {
+        # The primitive itself: normalising here would hide the error from every caller.
+        "_run",
+        # Pre-existing REST plumbing. The fleet path wraps it — `list_open_pr_statuses` catches
+        # SubprocessError, and TimeoutExpired subclasses it — and direct callers keep the older
+        # contract they were written against.
+        "_rest_get_json",
+        # Pre-existing GraphQL runner with its own rc-based protocol (GRAPHQL_BACKOFF_RC); its
+        # callers check returncode rather than catching, and changing that is not this change.
+        "run_graphql_rate_aware",
+    }
+    # Structural, not textual. A first version grepped the function body for "TimeoutExpired"
+    # and passed under mutation — because the word appears in the COMMENT explaining why the
+    # guard is there. A test that greps for a word passes for any function that merely mentions
+    # it; this one asks the AST whether a handler actually catches the exception.
+    guards = {"TimeoutExpired", "OSError", "SubprocessError"}
+
+    def _handler_names(handler: ast.ExceptHandler) -> set[str]:
+        if handler.type is None:
+            return {"BareExcept"}
+        parts = handler.type.elts if isinstance(handler.type, ast.Tuple) else [handler.type]
+        names = set()
+        for part in parts:
+            while isinstance(part, ast.Attribute):
+                part = part.value if not isinstance(part.value, ast.Name) else part
+                if isinstance(part, ast.Attribute):
+                    names.add(part.attr)
+                    break
+            if isinstance(part, ast.Attribute):
+                names.add(part.attr)
+            elif isinstance(part, ast.Name):
+                names.add(part.id)
+        return names
+
+    def _calls_run(node: ast.AST) -> bool:
+        return any(
+            isinstance(sub, ast.Call) and isinstance(sub.func, ast.Name) and sub.func.id == "_run"
+            for sub in ast.walk(node)
+        )
+
+    unnormalised: list[str] = []
+    for node in ast.walk(ast.parse(source)):
+        if not isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
+            continue
+        if node.name in raw_by_design or not _calls_run(node):
+            continue
+        caught: set[str] = set()
+        for sub in ast.walk(node):
+            if isinstance(sub, ast.Try):
+                for handler in sub.handlers:
+                    caught |= _handler_names(handler)
+        if not (caught & guards):
+            unnormalised.append(node.name)
+
+    assert unnormalised == [], (
+        "these functions call `_run` without an except handler that catches a raised OS error, "
+        f"so one slow call kills the cycle instead of skipping it: {unnormalised}"
+    )
+
+
 def test_every_per_pr_rest_call_in_the_fleet_is_routed_or_named() -> None:
     """The axis the first enumeration missed, which is why round 11 found three more siblings.
 

@@ -1108,20 +1108,32 @@ def get_pr_status_graphql(
     routing chose to spare. Returns ``None`` when the PR cannot be read, matching
     `get_pr_status_rest`.
     """
-    proc = _run(
-        runner,
-        [
-            "gh",
-            "pr",
-            "view",
-            str(pr_number),
-            "--repo",
-            repo,
-            "--json",
-            ",".join(_GRAPHQL_PR_LIST_FIELDS),
-        ],
-        repo_root=repo_root,
-    )
+    try:
+        proc = _run(
+            runner,
+            [
+                "gh",
+                "pr",
+                "view",
+                str(pr_number),
+                "--repo",
+                repo,
+                "--json",
+                ",".join(_GRAPHQL_PR_LIST_FIELDS),
+            ],
+            repo_root=repo_root,
+        )
+    except (subprocess.TimeoutExpired, OSError) as exc:
+        # This function's own docstring promises `None` when the PR cannot be read, "matching
+        # get_pr_status_rest" — and then let a raised TimeoutExpired escape, aborting the whole
+        # lineage collection over one slow PR. Third time in this change that I normalised the
+        # boundary in one `_run` caller and left the next; the enumeration test below now holds
+        # the list so there is no fourth.
+        print(
+            f"github_pr_status: GraphQL status unavailable for PR #{pr_number} ({exc})",
+            file=sys.stderr,
+        )
+        return None
     item = _json_from_proc(proc)
     if not isinstance(item, dict) or item.get("number") is None:
         return None
@@ -1301,7 +1313,7 @@ def list_open_pr_statuses(
             return rows, ListingRoute(
                 transport="graphql",
                 rest_blocked=route.rest_blocked,
-                reason="rest_listing_failed_graphql_healthy",
+                reason="rest_listing_failed_graphql_not_blocked",
             )
         raise RestListingFailed(f"github_rest_listing_indeterminate:{exc}") from exc
     return (rows, route)
