@@ -7490,6 +7490,32 @@ def test_the_reconciler_skips_rather_than_reading_an_unavailable_listing_as_quie
     )
 
 
+def test_a_graphql_row_with_no_checks_keeps_an_empty_rollup_rather_than_asking_rest(
+    tmp_path: Path,
+) -> None:
+    """The fail-closed branch, tested directly rather than by implication.
+
+    A GraphQL row already made its own per-PR rollup call. When that comes back empty — no
+    checks, or an unfetchable rollup — `[]` IS the fail-closed value: it reads downstream as
+    "checks unknown / not green". Reaching for REST would spend the exhausted pool to arrive at
+    the same verdict, so the branch exists to not do that, and this witnesses it.
+    """
+    calls: list[list[str]] = []
+    row = {**_GRAPHQL_ROW, "number": 4611}
+
+    def no_checks(cmd: list[str], **kwargs: Any) -> subprocess.CompletedProcess:
+        if cmd[:3] == ["gh", "pr", "view"]:
+            return subprocess.CompletedProcess(cmd, 0, json.dumps({"statusCheckRollup": []}), "")
+        return _rate_only_runner(core=0, graphql=4660, calls=calls, rows=[row])(cmd, **kwargs)
+
+    prs, _route = autoqueue.fetch_open_prs(repo="owner/repo", repo_root=tmp_path, runner=no_checks)
+
+    assert len(prs) == 1
+    assert not any(len(call) > 6 and str(call[6]).startswith("repos/") for call in calls), (
+        f"an empty rollup on a GraphQL row must stay empty, not fall through to REST: {calls}"
+    )
+
+
 def test_fetch_open_prs_skips_the_cycle_when_both_pools_are_exhausted(tmp_path: Path) -> None:
     """Caller-level coverage for the RestPoolExhausted path (codex-1, major).
 

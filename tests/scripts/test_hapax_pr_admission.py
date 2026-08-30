@@ -410,3 +410,31 @@ class TestAutoCmd:
         loaded = gov_module.load_state()
         assert loaded["mode"] == "frozen"
         assert loaded["stable_ticks_observed"] == 0
+
+
+def test_an_unavailable_listing_is_not_counted_as_a_quiet_fleet(gov_module, monkeypatch) -> None:
+    """`len([])` would report zero open PRs on no evidence at all.
+
+    An unavailable listing is not a measurement of a quiet fleet. It drops the advisory `busy`
+    signal exactly when the estate is least able to check, so the unknown case errs toward busy
+    — the only direction that cannot understate load. (open_pr_count is advisory-only and never
+    triggers a freeze, so the blast radius is small; the manufactured measurement is the point.)
+    """
+    captured = {}
+
+    def fake_decide(records, *, open_pr_count, policy, now):
+        captured["open_pr_count"] = open_pr_count
+        return SimpleNamespace(state="ok")
+
+    monkeypatch.setattr(gov_module, "query_open_prs", lambda: [])
+    monkeypatch.setattr(gov_module, "decide_fleet_throttle", fake_decide)
+    monkeypatch.setattr(gov_module, "read_jsonl_records", lambda path: [])
+
+    monkeypatch.setattr(gov_module, "open_pr_listing_available", lambda: False)
+    gov_module.current_throttle_decision()
+    assert captured["open_pr_count"] == gov_module.ADVISORY_OPEN_PR_COUNT
+
+    # A genuinely quiet fleet still reads as quiet.
+    monkeypatch.setattr(gov_module, "open_pr_listing_available", lambda: True)
+    gov_module.current_throttle_decision()
+    assert captured["open_pr_count"] == 0
