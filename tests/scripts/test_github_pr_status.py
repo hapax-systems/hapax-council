@@ -949,7 +949,11 @@ def test_unknown_graphql_is_not_reported_as_a_measured_empty_pool(tmp_path: Path
     transport, reason = github_pr_status.choose_transport(
         repo_root=tmp_path, runner=rest_empty_graphql_absent
     )
-    assert transport is None
+    # The invariant this test was written for stands: the reason must not record an inference
+    # as a measurement. What changed is the ROUTING — all three review families found that
+    # refusing here deadlocked every fleet cycle, because unmeasurable is not the same as
+    # measured-empty and there was no evidence GraphQL could not serve the scan.
+    assert transport == "graphql", "unknown is not blocked; refusing needs a measurement"
     assert "graphql_unknown" in reason
     assert "both_pools_below_floor" not in reason
 

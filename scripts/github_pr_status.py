@@ -965,7 +965,9 @@ def _status_check_rollup_graphql(
         # cycle for every other PR in it.
         print(
             f"github_pr_status: rollup unavailable for PR #{number} ({exc}); "
-            "treating as checks-unknown",
+            "treating as checks-unknown (fail-closed: the PR reads as not-green and will not "
+            "merge). Next action: none if this clears next cycle; if one PR repeats, run "
+            f"`gh pr view {number} --json statusCheckRollup` to see what is timing out.",
             file=sys.stderr,
         )
         return []
@@ -1516,11 +1518,16 @@ def choose_transport(
     graph_ok = graph_known and graph.remaining >= graphql_floor
 
     if not rest_ok and not graph_ok:
-        # Distinguish "both measured low" from "one measured low, the other unmeasured".
-        # Collapsing them let a known-low REST pool plus absent GraphQL telemetry report
-        # `both_pools_below_floor`, recording an inference as a measurement.
         if not graph_known:
-            return None, (
+            # Unknown is not blocked, and treating it as blocked here was a deadlock: REST
+            # measured empty plus UNMEASURABLE GraphQL refused every fleet cycle forever, with
+            # no evidence that GraphQL could not serve it. Refusing needs a measurement, and
+            # there isn't one — so try the pool we cannot rule out. All three review families
+            # raised this together.
+            #
+            # `graphql_pool_blocked` states the same rule ("unknown headroom is NOT blocked");
+            # I wrote it there and left this branch, which is the sibling omission again.
+            return "graphql", (
                 f"github_rest_below_floor_graphql_unknown:core={core.remaining if core else '?'}"
             )
         detail = f"core={core.remaining if core else '?'} graphql={graph.remaining}"
@@ -1528,7 +1535,7 @@ def choose_transport(
     if not rest_ok:
         return "graphql", (
             f"github_rest_below_floor:{core.remaining}<{rest_floor}"
-            f";graphql_remaining={graph.remaining}"
+            f";graphql_remaining={graph.remaining if graph else '?'}"
         )
     if not graph_ok:
         # Same discipline as the both-blocked branch above, which this branch was missing:

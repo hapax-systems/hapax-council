@@ -241,8 +241,11 @@ def test_fetch_prs_uses_rest_status_shape(tmp_path: Path, monkeypatch: Any) -> N
     runner = RestRunner()
     monkeypatch.setattr(lineage.subprocess, "run", runner)
 
-    rows = lineage.fetch_prs(limit=100, repo=None, pr_numbers={3450})
+    rows, unhydrated = lineage.fetch_prs(limit=100, repo=None, pr_numbers={3450})
 
+    # Gaps come back separately: a synthetic row inside `rows` would be a fabricated
+    # measurement, since this list feeds every lineage record as real PR status.
+    assert unhydrated == []
     assert len(rows) == 1
     assert rows[0]["state"] == "OPEN"
     assert rows[0]["mergedAt"] is None

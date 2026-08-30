@@ -154,8 +154,13 @@ def fetch_prs(
     limit: int,
     repo: str | None,
     pr_numbers: set[int],
-) -> list[dict[str, Any]]:
-    """Fetch PR state for open holds and run-specific lineage correlation."""
+) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
+    """PR state for open holds and run correlation, plus the PRs that could not be hydrated.
+
+    The gaps are returned separately rather than mixed into the rows: a short result that looks
+    complete is the failure this reports, and a synthetic row inside the rows would be a
+    fabricated measurement — the same failure with the sign flipped.
+    """
     repo_name = repo or DEFAULT_REPO
     try:
         # Routed. This was guarded but never routed, so lineage collection kept polling REST
@@ -181,6 +186,7 @@ def fetch_prs(
             f"open PR query indeterminate: {exc.reason}{listing_unavailable_detail(exc)}"
         ) from exc
 
+    unhydrated: list[dict[str, Any]] = []
     seen = {int(pr["number"]) for pr in prs if pr.get("number") is not None}
     for number in sorted(pr_numbers - seen):
         # Routing the listing and leaving this loop on REST spared one call and spent N. When the
@@ -198,19 +204,31 @@ def fetch_prs(
                 f"({route.reason}); recorded as unhydrated rather than fetched from an empty pool",
                 file=sys.stderr,
             )
-            prs.append(
-                {
-                    "number": number,
-                    "hydration_state": "unhydrated",
-                    "hydration_skip_reason": route.reason,
-                }
-            )
+            # NOT into `prs`. That list is consumed as real PR status — it feeds
+            # `pr_by_number` and every lineage record — so a synthetic row there is a
+            # fabricated measurement, which is a worse failure than the silent gap it was
+            # meant to fix. The gap belongs in the artifact's own metadata.
+            unhydrated.append({"number": number, "reason": route.reason})
             continue
         pr = get_pr_status_rest(number, repo=repo_name, repo_root=REPO_ROOT, runner=subprocess.run)
         if pr is not None:
             prs.append(pr)
         else:
             print(f"warning: PR #{number} query failed via REST", file=sys.stderr)
+            unhydrated.append({"number": number, "reason": "rest_query_failed"})
+    return prs, unhydrated
+
+
+def _fetch_prs_recording_gaps(
+    sink: list[dict[str, Any]],
+    *,
+    limit: int,
+    repo: str | None,
+    pr_numbers: set[int],
+) -> list[dict[str, Any]]:
+    """`fetch_prs` with the gap list drained into ``sink``, so `collect` reads one value."""
+    prs, unhydrated = fetch_prs(limit=limit, repo=repo, pr_numbers=pr_numbers)
+    sink.extend(unhydrated)
     return prs
 
 
@@ -222,10 +240,12 @@ def collect(args: argparse.Namespace) -> int:
         if args.runs_json is not None
         else fetch_runs(limit=args.run_limit, repo=args.repo, include_jobs=not args.skip_jobs)
     )
+    unhydrated: list[dict[str, Any]] = []
     prs = (
         load_json_file(args.prs_json)
         if args.prs_json is not None
-        else fetch_prs(
+        else _fetch_prs_recording_gaps(
+            unhydrated,
             limit=args.pr_limit,
             repo=args.repo,
             pr_numbers={number for run in runs if (number := pr_number_from_run(run)) is not None},
@@ -244,6 +264,11 @@ def collect(args: argparse.Namespace) -> int:
         combined_records,
         open_prs=[pr for pr in prs if str(pr.get("state") or "").upper() == "OPEN"],
         observed_at=observed_at,
+    )
+    # Durable, and explicitly NOT a PR row. A consumer can now see which PRs were not measured
+    # and why, instead of inferring a clean run from a short one.
+    summary = summary.model_copy(
+        update={"unhydrated_prs": unhydrated, "hydration_complete": not unhydrated}
     )
     write_summary(args.summary_path, summary)
     print(f"merge queue lineage: wrote {len(records)} record(s) to {args.ledger_path}")
