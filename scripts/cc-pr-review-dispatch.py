@@ -58,7 +58,7 @@ import review_team  # noqa: E402
 from github_pr_status import (  # noqa: E402
     RestPoolExhausted,
     get_pull_rest,
-    list_open_pr_statuses_rest,
+    list_open_pr_statuses,
     list_pull_files_rest,
 )
 
@@ -3005,7 +3005,7 @@ def review_all_open_prs(
     repo_root = repo_root or REPO_ROOT
     gh_runner = gh_runner or subprocess.run
     try:
-        open_prs = list_open_pr_statuses_rest(
+        open_prs = list_open_pr_statuses(
             repo=repo,
             repo_root=repo_root,
             runner=gh_runner,

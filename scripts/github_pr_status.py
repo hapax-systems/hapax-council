@@ -770,6 +770,191 @@ def list_open_pr_statuses_rest(
     return out
 
 
+#: Fields the bulk ``gh pr list --json`` query requests.
+#:
+#: ``statusCheckRollup`` is deliberately absent, and this is not an oversight: it is the
+#: check-runs-per-PR field, and requesting it for the whole open-PR backlog makes the
+#: aggregate GraphQL response large enough that GitHub returns HTTP 504 — empirically
+#: deterministic at ~30 open PRs, per the pre-#4436 implementation this restores. That
+#: version then swallowed the 504 as an empty list and silently deadlocked the merge
+#: pipeline. It is fetched per-PR below instead, which always serves.
+_GRAPHQL_PR_LIST_FIELDS = (
+    "number",
+    "id",
+    "state",
+    "title",
+    "body",
+    "url",
+    "updatedAt",
+    "mergedAt",
+    "headRefName",
+    "headRefOid",
+    "changedFiles",
+    "files",
+    "isDraft",
+    "labels",
+    "reviewDecision",
+    "autoMergeRequest",
+    "mergeStateStatus",
+)
+
+
+def _status_check_rollup_graphql(
+    number: Any,
+    *,
+    repo: str,
+    repo_root: Path,
+    runner: Any,
+) -> list[dict[str, Any]]:
+    """One PR's rollup via a light ``gh pr view``. Fail-closed: unfetchable becomes ``[]``.
+
+    An empty rollup reads downstream as "checks unknown / not green", so a failure here
+    cannot cause a merge that the checks would have prevented.
+    """
+    if not number:
+        return []
+    payload = _json_from_proc(
+        _run(
+            runner,
+            ["gh", "pr", "view", str(number), "--repo", repo, "--json", "statusCheckRollup"],
+            repo_root=repo_root,
+        )
+    )
+    rollup = payload.get("statusCheckRollup") if isinstance(payload, dict) else None
+    return rollup if isinstance(rollup, list) else []
+
+
+def list_open_pr_statuses_graphql(
+    *,
+    repo: str = DEFAULT_REPO,
+    repo_root: Path,
+    runner: Any = subprocess.run,
+    limit: int = 100,
+    include_files: bool = False,
+    include_review_decision: bool = False,
+    include_status: bool = True,
+) -> list[dict[str, Any]]:
+    """The GraphQL half of the balancer: the same rows, off the other rate pool.
+
+    This is a restoration, not a new transport. `gh pr list --json` is GraphQL-backed and
+    is what the three fleet timers used until #4436 moved polling to REST; the row shape
+    every consumer reads is *this* shape, and `_pull_status_row_from_rest` is the adapter
+    written to imitate it. So the direction of risk runs opposite to the obvious guess —
+    the REST path is the translation, and it is the one already covered by tests.
+
+    `test_the_two_transports_agree_on_row_shape` pins the two against each other so a
+    divergence is a failing test rather than a field that silently reads ``None`` in the
+    autoqueue's merge decision.
+    """
+    proc = _run(
+        runner,
+        [
+            "gh",
+            "pr",
+            "list",
+            "--repo",
+            repo,
+            "--state",
+            "open",
+            "--limit",
+            str(limit),
+            "--json",
+            ",".join(_GRAPHQL_PR_LIST_FIELDS),
+        ],
+        repo_root=repo_root,
+    )
+    raw = _json_from_proc(proc)
+    if not isinstance(raw, list):
+        return []
+
+    out: list[dict[str, Any]] = []
+    for item in raw:
+        if not isinstance(item, dict):
+            continue
+        number = item.get("number")
+        files = item.get("files") if isinstance(item.get("files"), list) else []
+        changed_files = item.get("changedFiles")
+        if changed_files is None and files:
+            changed_files = len(files)
+        out.append(
+            {
+                "number": number,
+                "id": item.get("id"),
+                "state": _upper_or_none(item.get("state")),
+                "title": item.get("title") or "",
+                "body": item.get("body") or "",
+                "url": item.get("url"),
+                "updatedAt": item.get("updatedAt"),
+                "mergedAt": item.get("mergedAt"),
+                "headRefName": str(item.get("headRefName") or ""),
+                "headRefOid": str(item.get("headRefOid") or ""),
+                "changedFiles": changed_files,
+                "files": files if include_files else None,
+                "isDraft": bool(item.get("isDraft")),
+                "labels": item.get("labels") if isinstance(item.get("labels"), list) else [],
+                "reviewDecision": _upper_or_none(item.get("reviewDecision"))
+                if include_review_decision
+                else None,
+                "autoMergeRequest": item.get("autoMergeRequest"),
+                "mergeStateStatus": _upper_or_none(item.get("mergeStateStatus")) or "UNKNOWN",
+                "statusCheckRollup": _status_check_rollup_graphql(
+                    number, repo=repo, repo_root=repo_root, runner=runner
+                )
+                if include_status
+                else [],
+            }
+        )
+    return out
+
+
+def list_open_pr_statuses(
+    *,
+    repo: str = DEFAULT_REPO,
+    repo_root: Path,
+    runner: Any = subprocess.run,
+    limit: int = 100,
+    include_files: bool = False,
+    include_review_decision: bool = False,
+    include_status: bool = True,
+) -> list[dict[str, Any]]:
+    """Choose the transport on measured headroom, **then** make the call.
+
+    This is the operational half of the change, and the reason the helper alone was not
+    enough. `choose_transport` was reachable only from the diagnostic CLI, so a REST pool
+    measured at zero with GraphQL at 93% headroom made all three fleet timers sit out their
+    cycles — better than 403ing, but still a stall, and not the balancing the exit predicate
+    promises. Three independent review families said so before this existed.
+
+    ``None`` from `choose_transport` means both pools are measurably below their floors;
+    that is the one case where refusing is right, and it raises so callers keep their
+    existing skip-the-cycle handling for it.
+    """
+    transport, reason = choose_transport(repo_root=repo_root, runner=runner)
+    if transport is None:
+        raise RestPoolExhausted(reason, None)
+    if transport == "graphql":
+        return list_open_pr_statuses_graphql(
+            repo=repo,
+            repo_root=repo_root,
+            runner=runner,
+            limit=limit,
+            include_files=include_files,
+            include_review_decision=include_review_decision,
+            include_status=include_status,
+        )
+    # The REST path keeps its own guard: `choose_transport` and `rest_pool_blocked` share
+    # one floor (see `rest_pool_blocked`), so this cannot disagree with the choice above.
+    return list_open_pr_statuses_rest(
+        repo=repo,
+        repo_root=repo_root,
+        runner=runner,
+        limit=limit,
+        include_files=include_files,
+        include_review_decision=include_review_decision,
+        include_status=include_status,
+    )
+
+
 def list_pr_statuses_for_branch_rest(
     branch: str,
     *,
@@ -1186,6 +1371,11 @@ def main(argv: list[str] | None = None) -> int:
                 fail_on_indeterminate=True,
             )
         else:
+            # Deliberately NOT routed through `list_open_pr_statuses`. This diagnostic asks
+            # for `fail_on_indeterminate=True`, which is REST-specific strictness about
+            # incomplete check evidence and has no GraphQL analogue — routing it would drop
+            # that strictness silently on half its runs. It is also a hand-run command, so it
+            # is not the traffic the balancer exists to spread.
             rows = list_open_pr_statuses_rest(
                 repo=args.repo,
                 repo_root=args.repo_root,

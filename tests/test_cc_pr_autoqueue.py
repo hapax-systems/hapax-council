@@ -7314,33 +7314,71 @@ def test_egress_revalidation_without_changed_files_holds_coverage_unevaluable(
     assert "egress_evidence_coverage_unevaluable:no_changed_files" in blockers
 
 
-def test_fetch_open_prs_skips_the_cycle_when_rest_is_exhausted(tmp_path: Path) -> None:
-    """Caller-level coverage for the RestPoolExhausted path (codex-1, major).
+def _rate_only_runner(*, core: int, graphql: int, calls: list[list[str]] | None = None) -> Any:
+    """Serves rate_limit; records everything else and refuses REST spend."""
 
-    The lower-level test proved `list_open_pr_statuses_rest` raises; none proved the fleet
-    caller handles it. An uncaught exception here would crash the timer service and mint a
-    P0 "service failed" incident — strictly worse than the exhaustion it reports.
-    """
-
-    def exhausted(cmd: list[str], **_: Any) -> subprocess.CompletedProcess:
+    def run(cmd: list[str], **_: Any) -> subprocess.CompletedProcess:
+        if calls is not None:
+            calls.append(list(cmd))
         if cmd[:4] == ["gh", "api", "-i", "rate_limit"]:
             head = (
                 "HTTP/2.0 200 OK\r\n"
                 "X-Ratelimit-Limit: 5000\r\n"
-                "X-Ratelimit-Remaining: 0\r\n"
+                f"X-Ratelimit-Remaining: {core}\r\n"
                 "X-Ratelimit-Reset: 1893456000\r\n"
                 "X-Ratelimit-Resource: core\r\n"
             )
             payload = {
                 "resources": {
-                    "core": {"remaining": 0, "limit": 5000, "reset": 1893456000},
-                    "graphql": {"remaining": 4660, "limit": 5000, "reset": 1893456000},
+                    "core": {"remaining": core, "limit": 5000, "reset": 1893456000},
+                    "graphql": {"remaining": graphql, "limit": 5000, "reset": 1893456000},
                 }
             }
             return subprocess.CompletedProcess(cmd, 0, f"{head}\r\n{json.dumps(payload)}", "")
+        if cmd[:3] == ["gh", "pr", "list"]:
+            return subprocess.CompletedProcess(cmd, 0, "[]", "")
         raise AssertionError(f"no REST call may be spent once the pool is empty: {cmd}")
 
-    assert autoqueue.fetch_open_prs(repo="owner/repo", repo_root=tmp_path, runner=exhausted) == []
+    return run
+
+
+def test_fetch_open_prs_routes_to_graphql_when_rest_is_exhausted(tmp_path: Path) -> None:
+    """The predicate at the fleet caller: chosen before the call, not after a failure.
+
+    This test previously asserted the caller *skipped* the cycle. All three seated review
+    families called that a critical gap — an exhausted REST pool with GraphQL at 93%
+    headroom stalled the timer instead of using the healthy pool. Skipping is still correct
+    when both pools are empty, which the companion test below pins.
+    """
+    calls: list[list[str]] = []
+    rows = autoqueue.fetch_open_prs(
+        repo="owner/repo",
+        repo_root=tmp_path,
+        runner=_rate_only_runner(core=0, graphql=4660, calls=calls),
+    )
+
+    assert rows == []
+    assert any(call[:3] == ["gh", "pr", "list"] for call in calls), (
+        "an exhausted REST pool with healthy GraphQL must select GraphQL, not sit out"
+    )
+
+
+def test_fetch_open_prs_skips_the_cycle_when_both_pools_are_exhausted(tmp_path: Path) -> None:
+    """Caller-level coverage for the RestPoolExhausted path (codex-1, major).
+
+    The lower-level test proved the listing raises; none proved the fleet caller handles it.
+    An uncaught exception here would crash the timer service and mint a P0 "service failed"
+    incident — strictly worse than the exhaustion it reports. Routing must not become a way
+    to spend a pool that is also measurably empty.
+    """
+    assert (
+        autoqueue.fetch_open_prs(
+            repo="owner/repo",
+            repo_root=tmp_path,
+            runner=_rate_only_runner(core=0, graphql=0),
+        )
+        == []
+    )
 
 
 def test_canon_assessor_reports_armed_for_authorized_egress_task() -> None:

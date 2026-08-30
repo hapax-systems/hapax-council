@@ -56,7 +56,7 @@ from github_pr_status import (  # noqa: E402
     RestPoolExhausted,
     fetch_status_check_rollup_rest,
     get_pull_rest,
-    list_open_pr_statuses_rest,
+    list_open_pr_statuses,
     rest_merge_state_status,
     run_graphql_rate_aware,
 )
@@ -962,7 +962,7 @@ def fetch_open_prs(
     runner = runner or subprocess.run
     repo_root = repo_root or default_repo_root()
     try:
-        raw = list_open_pr_statuses_rest(
+        raw = list_open_pr_statuses(
             repo=repo,
             repo_root=repo_root,
             runner=runner,

@@ -1216,3 +1216,194 @@ def test_rate_pool_guard_can_be_disabled_for_callers_that_manage_their_own(
         )
         == []
     )
+
+
+# --------------------------------------------------- the operational half: actually routing
+#
+# Review finding at 4dd82a97, raised independently by all three seated families (gemini
+# critical, codex critical, claude major): `choose_transport` was reachable only from the
+# diagnostic CLI, so REST-below-floor with healthy GraphQL made all three fleet timers sit
+# out their cycles rather than selecting GraphQL. The exit predicate says "transport is
+# chosen before the call"; a tested helper with no operational caller does not satisfy it.
+
+
+class _BothTransportsRunner(FakeRunner):
+    """Serves the same PR over REST and over `gh pr list --json` (GraphQL-backed)."""
+
+    def __init__(self, *, rest_remaining: int, graphql_remaining: int) -> None:
+        super().__init__()
+        self.rest_remaining = rest_remaining
+        self.graphql_remaining = graphql_remaining
+
+    def __call__(self, cmd: list[str], **kwargs: Any) -> subprocess.CompletedProcess:
+        self.calls.append(list(cmd))
+        if cmd[:4] == ["gh", "api", "-i", "rate_limit"]:
+            payload = {
+                "resources": {
+                    "core": {"remaining": self.rest_remaining, "limit": 5000, "reset": 1},
+                    "graphql": {"remaining": self.graphql_remaining, "limit": 5000, "reset": 1},
+                }
+            }
+            head = (
+                "HTTP/2.0 200 OK\r\n"
+                f"X-Ratelimit-Remaining: {self.rest_remaining}\r\n"
+                "X-Ratelimit-Limit: 5000\r\n"
+                "X-Ratelimit-Resource: core\r\n"
+            )
+            return subprocess.CompletedProcess(cmd, 0, f"{head}\r\n{json.dumps(payload)}", "")
+        if cmd[:3] == ["gh", "pr", "list"]:
+            return subprocess.CompletedProcess(
+                cmd,
+                0,
+                json.dumps(
+                    [
+                        {
+                            "number": 9,
+                            "id": "PR_node",
+                            "state": "OPEN",
+                            "title": "REST PR",
+                            "body": "body",
+                            "url": "https://github.example/owner/repo/pull/9",
+                            "updatedAt": "2026-07-05T15:00:00Z",
+                            "mergedAt": None,
+                            "headRefName": "feat/rest",
+                            "headRefOid": "abc123",
+                            "changedFiles": 1,
+                            "files": [{"path": "scripts/example.py"}],
+                            "isDraft": False,
+                            "labels": [],
+                            "reviewDecision": "APPROVED",
+                            "autoMergeRequest": {"enabledBy": {"login": "bot"}},
+                            "mergeStateStatus": "CLEAN",
+                        }
+                    ]
+                ),
+                "",
+            )
+        if cmd[:3] == ["gh", "pr", "view"]:
+            return subprocess.CompletedProcess(cmd, 0, json.dumps({"statusCheckRollup": []}), "")
+        if cmd[:5] == ["gh", "api", "--method", "GET", "-H"]:
+            path = cmd[6]
+            pull = {
+                "number": 9,
+                "node_id": "PR_node",
+                "title": "REST PR",
+                "body": "body",
+                "head": {"ref": "feat/rest", "sha": "abc123"},
+                "draft": False,
+                "state": "open",
+                "merged_at": None,
+                "updated_at": "2026-07-05T15:00:00Z",
+                "html_url": "https://github.example/owner/repo/pull/9",
+                "auto_merge": {"enabled_by": {"login": "bot"}},
+                "mergeable_state": "clean",
+                "changed_files": 1,
+            }
+            if path == "repos/owner/repo/pulls":
+                return subprocess.CompletedProcess(cmd, 0, json.dumps([pull]), "")
+            if path == "repos/owner/repo/pulls/9":
+                return subprocess.CompletedProcess(cmd, 0, json.dumps(pull), "")
+            if path == "repos/owner/repo/pulls/9/files":
+                return subprocess.CompletedProcess(
+                    cmd, 0, json.dumps([{"filename": "scripts/example.py"}]), ""
+                )
+            if path == "repos/owner/repo/pulls/9/reviews":
+                return subprocess.CompletedProcess(
+                    cmd, 0, json.dumps([{"state": "approved", "user": {"login": "reviewer"}}]), ""
+                )
+        return super().__call__(cmd, **kwargs)
+
+
+def test_the_two_transports_agree_on_row_shape(tmp_path: Path) -> None:
+    """The guard that makes a divergence loud instead of silent.
+
+    Consumers read these rows by key; the autoqueue makes merge decisions from them. A field
+    present on one transport and missing on the other would not raise — it would read `None`
+    and quietly change a merge decision depending on which rate pool happened to be roomier.
+    That is the failure mode that made this work look expensive, and it is the one thing a
+    test can actually foreclose.
+    """
+    kwargs: dict[str, Any] = {
+        "repo": "owner/repo",
+        "repo_root": tmp_path,
+        "include_files": True,
+        "include_review_decision": True,
+    }
+    rest_rows = github_pr_status.list_open_pr_statuses_rest(
+        runner=_BothTransportsRunner(rest_remaining=4000, graphql_remaining=4000), **kwargs
+    )
+    graphql_rows = github_pr_status.list_open_pr_statuses_graphql(
+        runner=_BothTransportsRunner(rest_remaining=4000, graphql_remaining=4000), **kwargs
+    )
+
+    assert rest_rows and graphql_rows
+    assert set(rest_rows[0]) == set(graphql_rows[0]), (
+        "the two transports must produce the same keys; a consumer reads them by name.\n"
+        f"rest-only: {set(rest_rows[0]) - set(graphql_rows[0])}\n"
+        f"graphql-only: {set(graphql_rows[0]) - set(rest_rows[0])}"
+    )
+    # Not just the keys — the values a merge decision actually turns on.
+    for field in ("number", "state", "headRefOid", "mergeStateStatus", "reviewDecision", "isDraft"):
+        assert rest_rows[0][field] == graphql_rows[0][field], field
+
+
+def test_exhausted_rest_routes_the_fleet_listing_to_graphql(tmp_path: Path) -> None:
+    """The predicate, at the operational call: chosen before the call, not after a failure."""
+    runner = _BothTransportsRunner(rest_remaining=0, graphql_remaining=4660)
+
+    rows = github_pr_status.list_open_pr_statuses(
+        repo="owner/repo", repo_root=tmp_path, runner=runner
+    )
+
+    assert rows and rows[0]["number"] == 9
+    assert any(call[:3] == ["gh", "pr", "list"] for call in runner.calls), (
+        "an exhausted REST pool with healthy GraphQL must SELECT GraphQL, not skip the cycle"
+    )
+    assert not any(
+        len(call) > 6 and call[6].startswith("repos/owner/repo/pulls") for call in runner.calls
+    ), "nothing may be spent on the measured-empty pool"
+
+
+def test_healthy_rest_keeps_the_fleet_listing_on_rest(tmp_path: Path) -> None:
+    """Diversion happens only away from a pool measured to be in trouble."""
+    runner = _BothTransportsRunner(rest_remaining=4900, graphql_remaining=600)
+
+    rows = github_pr_status.list_open_pr_statuses(
+        repo="owner/repo", repo_root=tmp_path, runner=runner
+    )
+
+    assert rows and rows[0]["number"] == 9
+    assert any(len(call) > 6 and call[6] == "repos/owner/repo/pulls" for call in runner.calls), (
+        "healthy REST must stay on REST"
+    )
+    assert not any(call[:3] == ["gh", "pr", "list"] for call in runner.calls)
+
+
+def test_both_pools_blocked_still_refuses_the_cycle(tmp_path: Path) -> None:
+    """Routing must not become a way to spend a pool that is also measurably empty."""
+    runner = _BothTransportsRunner(rest_remaining=0, graphql_remaining=0)
+
+    with pytest.raises(github_pr_status.RestPoolExhausted):
+        github_pr_status.list_open_pr_statuses(repo="owner/repo", repo_root=tmp_path, runner=runner)
+
+
+def test_bulk_graphql_query_never_requests_status_check_rollup(tmp_path: Path) -> None:
+    """Pins the constraint the pre-#4436 implementation paid for.
+
+    `statusCheckRollup` in the bulk query makes the aggregate response large enough that
+    GitHub returns 504 — deterministic at ~30 open PRs — which the old code swallowed as an
+    empty list, silently deadlocking the merge pipeline. It is fetched per-PR instead.
+    """
+    assert "statusCheckRollup" not in github_pr_status._GRAPHQL_PR_LIST_FIELDS
+
+    runner = _BothTransportsRunner(rest_remaining=0, graphql_remaining=4660)
+    github_pr_status.list_open_pr_statuses_graphql(
+        repo="owner/repo", repo_root=tmp_path, runner=runner
+    )
+
+    bulk = [call for call in runner.calls if call[:3] == ["gh", "pr", "list"]]
+    assert bulk, "expected a bulk listing call"
+    assert all("statusCheckRollup" not in " ".join(call) for call in bulk)
+    assert any(call[:3] == ["gh", "pr", "view"] for call in runner.calls), (
+        "the rollup must still be fetched, just per-PR"
+    )

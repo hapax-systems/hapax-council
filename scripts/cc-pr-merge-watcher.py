@@ -60,7 +60,7 @@ from github_pr_status import (  # noqa: E402
     GRAPHQL_BACKOFF_RC,
     RestPoolExhausted,
     get_pull_rest,
-    list_open_pr_statuses_rest,
+    list_open_pr_statuses,
     list_pulls_for_branch_rest,
     list_pulls_rest,
     rest_pull_state,
@@ -956,7 +956,7 @@ def detect_stuck_prs(
     GitHub enqueues an armed+green PR within seconds, so absence from the queue
     is a real ejection rather than a transient."""
     try:
-        prs = list_open_pr_statuses_rest(repo=repo, repo_root=repo_root, runner=runner, limit=100)
+        prs = list_open_pr_statuses(repo=repo, repo_root=repo_root, runner=runner, limit=100)
     except RestPoolExhausted as exc:
         # Skip this cycle rather than spending a listing plus per-PR hydration into
         # guaranteed 403s. Loud, because an empty result is otherwise indistinguishable

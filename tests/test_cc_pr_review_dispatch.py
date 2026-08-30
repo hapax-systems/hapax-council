@@ -4247,7 +4247,56 @@ payg_fallback: false
         assert reviews[0]["verdict"] == "provider-outage"
 
 
-def test_exhausted_rest_skips_the_review_scan(tmp_path: Path) -> None:
+def _rate_only_runner(*, core: int, graphql: int, calls: list[list[str]] | None = None) -> Any:
+    """Serves rate_limit and the GraphQL listing; refuses REST spend."""
+
+    def run(cmd: list[str], **_: Any) -> subprocess.CompletedProcess:
+        if calls is not None:
+            calls.append(list(cmd))
+        if cmd[:4] == ["gh", "api", "-i", "rate_limit"]:
+            head = (
+                "HTTP/2.0 200 OK\r\n"
+                "X-Ratelimit-Limit: 5000\r\n"
+                f"X-Ratelimit-Remaining: {core}\r\n"
+                "X-Ratelimit-Reset: 1893456000\r\n"
+                "X-Ratelimit-Resource: core\r\n"
+            )
+            payload = {
+                "resources": {
+                    "core": {"remaining": core, "limit": 5000, "reset": 1893456000},
+                    "graphql": {"remaining": graphql, "limit": 5000, "reset": 1893456000},
+                }
+            }
+            return subprocess.CompletedProcess(cmd, 0, f"{head}\r\n{json.dumps(payload)}", "")
+        if cmd[:3] == ["gh", "pr", "list"]:
+            return subprocess.CompletedProcess(cmd, 0, "[]", "")
+        raise AssertionError(f"no REST call may be spent once the pool is empty: {cmd}")
+
+    return run
+
+
+def test_exhausted_rest_routes_the_review_scan_to_graphql(tmp_path: Path) -> None:
+    """This test previously asserted the scan was skipped.
+
+    All three seated review families called that a critical gap: REST at zero with GraphQL
+    at 93% headroom stalled review dispatch rather than using the healthy pool. Skipping
+    remains correct when both pools are empty — pinned below.
+    """
+    calls: list[list[str]] = []
+    assert (
+        dispatch.review_all_open_prs(
+            repo="owner/repo",
+            repo_root=tmp_path,
+            gh_runner=_rate_only_runner(core=0, graphql=4660, calls=calls),
+        )
+        == []
+    )
+    assert any(call[:3] == ["gh", "pr", "list"] for call in calls), (
+        "an exhausted REST pool with healthy GraphQL must select GraphQL, not sit out"
+    )
+
+
+def test_both_pools_exhausted_skips_the_review_scan(tmp_path: Path) -> None:
     """Caller-level coverage for RestPoolExhausted (codex-1, major).
 
     This module's tests were the ones the review flagged as unchanged. Skipping a scan is
@@ -4255,26 +4304,11 @@ def test_exhausted_rest_skips_the_review_scan(tmp_path: Path) -> None:
     by sitting out a cycle — but it must be a *deliberate* skip rather than a crash, and it
     must not spend a listing into guaranteed 403s.
     """
-
-    def exhausted(cmd: list[str], **_: Any) -> subprocess.CompletedProcess:
-        if cmd[:4] == ["gh", "api", "-i", "rate_limit"]:
-            head = (
-                "HTTP/2.0 200 OK\r\n"
-                "X-Ratelimit-Limit: 5000\r\n"
-                "X-Ratelimit-Remaining: 0\r\n"
-                "X-Ratelimit-Reset: 1893456000\r\n"
-                "X-Ratelimit-Resource: core\r\n"
-            )
-            payload = {
-                "resources": {
-                    "core": {"remaining": 0, "limit": 5000, "reset": 1893456000},
-                    "graphql": {"remaining": 4660, "limit": 5000, "reset": 1893456000},
-                }
-            }
-            return subprocess.CompletedProcess(cmd, 0, f"{head}\r\n{json.dumps(payload)}", "")
-        raise AssertionError(f"no REST call may be spent once the pool is empty: {cmd}")
-
     assert (
-        dispatch.review_all_open_prs(repo="owner/repo", repo_root=tmp_path, gh_runner=exhausted)
+        dispatch.review_all_open_prs(
+            repo="owner/repo",
+            repo_root=tmp_path,
+            gh_runner=_rate_only_runner(core=0, graphql=0),
+        )
         == []
     )
