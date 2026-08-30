@@ -1011,3 +1011,42 @@ class TestRoleReleaseVocabularyDrift:
     def test_every_canonical_terminal_status_releases(self) -> None:
         """The original drift: ten of fifteen terminal statuses did not release the role."""
         assert set(TASK_TERMINAL_STATUSES) <= set(TASK_ROLE_RELEASING_STATUSES)
+
+
+class TestActiveStatusWideningBlastRadius:
+    """Answers "untested downstream blast radius" by enumerating it (claude, major).
+
+    `TASK_ACTIVE_STATUSES` gained `backlog` and `merged_awaiting_runtime_witness`. The
+    enumeration is one consumer — `scripts/check-cc-task-vault-shape.py`, which flags any task
+    in `active/` whose status is not in the set — and the effect there is precisely the point:
+    both statuses were found on LIVE tasks in `active/` that belonged to no set at all, so the
+    shape check was flagging real work as malformed.
+    """
+
+    def test_the_two_widened_statuses_are_active(self) -> None:
+        assert "backlog" in TASK_ACTIVE_STATUSES
+        assert "merged_awaiting_runtime_witness" in TASK_ACTIVE_STATUSES
+
+    def test_widening_does_not_bleed_into_terminal_or_closed(self) -> None:
+        """Active and terminal must stay disjoint — the widening adds, it does not blur."""
+        for status in ("backlog", "merged_awaiting_runtime_witness"):
+            assert status not in TASK_TERMINAL_STATUSES, status
+
+    def test_the_vault_shape_check_is_the_only_consumer(self) -> None:
+        """Pins the enumeration, so a second consumer arrives as a failing test.
+
+        The finding was that the blast radius was unknown. It is one call site; a new one must
+        be considered against these two statuses rather than discovered in a review round.
+        """
+        repo_root = Path(__file__).resolve().parents[2]
+        consumers = sorted(
+            path.relative_to(repo_root).as_posix()
+            for path in repo_root.glob("scripts/**/*.py")
+            if "TASK_ACTIVE_STATUSES" in path.read_text(encoding="utf-8")
+        ) + sorted(
+            path.relative_to(repo_root).as_posix()
+            for path in repo_root.glob("shared/**/*.py")
+            if "TASK_ACTIVE_STATUSES" in path.read_text(encoding="utf-8")
+            and path.name != "sdlc_lifecycle.py"
+        )
+        assert consumers == ["scripts/check-cc-task-vault-shape.py"], consumers

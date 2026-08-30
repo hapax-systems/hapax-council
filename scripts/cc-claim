@@ -562,11 +562,19 @@ if canon_enforced:
                 # released the role — it is an absence of evidence, and skipping it silently
                 # leaves a stale projection for a task nobody can adjudicate. Same fail-closed
                 # rule as the unreadable sidecar above: refuse, and name the repair.
+                epoch_path = cache_dir / f"cc-claim-epoch-{claim_key}"
+                dispatch_path = cache_dir / f"cc-claim-dispatch-{claim_key}.json"
+                # Self-contained, because a fail-closed HOLD with no executable exit strands
+                # the lane permanently — and pointing at a runbook this change neither ships nor
+                # updates is not an exit. Same shape as the expired-claim HOLD above, which
+                # names its three files.
                 print(
                     f"cc-claim: HOLD - claim sidecar {claim_path} names task "
-                    f"'{prior_task_id}', which has no note in active/ or closed/. Next action: "
-                    "restore the task note, or with operator approval run the Manual "
-                    f"Stale-Lease Release runbook for claim_file='{claim_path}'.",
+                    f"'{prior_task_id}', which has no note in active/ or closed/, so there is no "
+                    "evidence it released this role. Next action: either restore the note at "
+                    f"{vault_root}/active/{prior_task_id}.md, or — with operator approval, once "
+                    "you have confirmed the task really is gone — archive exactly these three "
+                    f"files and rerun: '{claim_path}', '{epoch_path}', '{dispatch_path}'.",
                     file=sys.stderr,
                 )
                 sys.exit(8)
@@ -712,9 +720,13 @@ if canon_enforced:
                     f"{_safe_lineage_component(claim_key)}"
                 )
             )
-            lineage_dir.mkdir(parents=True, exist_ok=False)
+            # Same idempotency as the released-residue archival above: `exist_ok=False` made
+            # a retry crash on the directory the previous attempt created, so the recovery path
+            # was the one path that could not run.
+            lineage_dir.mkdir(parents=True, exist_ok=True)
             destination = lineage_dir / dispatch_path.name
-            dispatch_path.replace(destination)
+            if not (destination.exists() and not dispatch_path.exists()):
+                dispatch_path.replace(destination)
             (lineage_dir / "README.md").write_text(
                 "Archived dispatch-only claim residue before a fresh admitted claim.\n"
                 f"task_id: {binding.task_id}\n"
@@ -857,6 +869,17 @@ if canon_enforced:
                 current_task_id=task_id,
                 observed_at=_observed_at,
             )
+            # BOTH archivals, not just the one the review named. They mutate the same role's
+            # projections and differ only in which residue they collect, so locking one and
+            # leaving the other is the sibling omission — the adjacent function, at that.
+            _archive_dispatch_only_claim_residue(
+                vault_root=path.parent.parent,
+                cache_dir=cache_dir,
+                role=role,
+                session_id=session_id,
+                current_task_id=task_id,
+                observed_at=_observed_at,
+            )
     except ClaimPublicationError as exc:
         print(
             f"cc-claim: HOLD — {exc}. Next action: release the stale role claim-publication "
@@ -864,14 +887,6 @@ if canon_enforced:
             file=sys.stderr,
         )
         sys.exit(8)
-    _archive_dispatch_only_claim_residue(
-        vault_root=path.parent.parent,
-        cache_dir=cache_dir,
-        role=role,
-        session_id=session_id,
-        current_task_id=task_id,
-        observed_at=_observed_at,
-    )
     claim_paths = tuple(candidate for candidate in claim_paths if candidate.exists())
     if any(candidate.exists() for candidate in claim_paths):
         try:
