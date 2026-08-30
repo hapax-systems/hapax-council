@@ -467,6 +467,7 @@ if canon_enforced:
     from shared.sdlc_claim import (  # noqa: E402
         ClaimPublicationError,
         ClaimPublicationIntent,
+        claim_publication_role_lock,
         inspect_claim_publications,
         recover_claim_publications,
         resolve_applied_claim_publication,
@@ -555,9 +556,21 @@ if canon_enforced:
                 sys.exit(8)
             if not prior_task_id or prior_task_id == current_task_id:
                 continue
-            if _task_status_for_any_state(vault_root, prior_task_id) not in (
-                TASK_ROLE_RELEASING_STATUSES
-            ):
+            prior_status = _task_status_for_any_state(vault_root, prior_task_id)
+            if prior_status == "missing":
+                # A sidecar whose task note cannot be found is not evidence that the task
+                # released the role — it is an absence of evidence, and skipping it silently
+                # leaves a stale projection for a task nobody can adjudicate. Same fail-closed
+                # rule as the unreadable sidecar above: refuse, and name the repair.
+                print(
+                    f"cc-claim: HOLD - claim sidecar {claim_path} names task "
+                    f"'{prior_task_id}', which has no note in active/ or closed/. Next action: "
+                    "restore the task note, or with operator approval run the Manual "
+                    f"Stale-Lease Release runbook for claim_file='{claim_path}'.",
+                    file=sys.stderr,
+                )
+                sys.exit(8)
+            if prior_status not in TASK_ROLE_RELEASING_STATUSES:
                 continue
             residue = tuple(
                 candidate
@@ -584,9 +597,15 @@ if canon_enforced:
                     f"{_safe_lineage_component(claim_key)}"
                 )
             )
-            lineage_dir.mkdir(parents=True, exist_ok=False)
+            # Idempotent: `exist_ok=False` made a retry after a partial move crash on the
+            # directory it had itself created, so the recovery path was the one path that could
+            # not run. Each move is individually skippable for the same reason.
+            lineage_dir.mkdir(parents=True, exist_ok=True)
             for source in residue:
-                source.replace(lineage_dir / source.name)
+                destination = lineage_dir / source.name
+                if destination.exists() and not source.exists():
+                    continue
+                source.replace(destination)
             (lineage_dir / "README.md").write_text(
                 "Archived claim residue for a task that released this role.\n"
                 f"task_id: {prior_task_id}\n"
@@ -822,14 +841,29 @@ if canon_enforced:
         )
     )
     _observed_at = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
-    _archive_released_task_claim_residue(
-        vault_root=path.parent.parent,
-        cache_dir=cache_dir,
-        role=role,
-        session_id=session_id,
-        current_task_id=task_id,
-        observed_at=_observed_at,
-    )
+    # Under the SAME role lock publication uses. Both archivals mutate this role's claim
+    # projections, so running them unlocked let a concurrent resume publish role and session
+    # projections while this process moved them out from under it — all three review families
+    # named it independently. `claim_publication_role_lock` is an accessor for the existing
+    # lock, not a second one; a lock only the publication path could take is a lock every other
+    # path silently did without.
+    try:
+        with claim_publication_role_lock(role, lock_root=lock_root):
+            _archive_released_task_claim_residue(
+                vault_root=path.parent.parent,
+                cache_dir=cache_dir,
+                role=role,
+                session_id=session_id,
+                current_task_id=task_id,
+                observed_at=_observed_at,
+            )
+    except ClaimPublicationError as exc:
+        print(
+            f"cc-claim: HOLD — {exc}. Next action: release the stale role claim-publication "
+            "lock or retry once the active publisher exits.",
+            file=sys.stderr,
+        )
+        sys.exit(8)
     _archive_dispatch_only_claim_residue(
         vault_root=path.parent.parent,
         cache_dir=cache_dir,

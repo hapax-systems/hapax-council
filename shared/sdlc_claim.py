@@ -2416,14 +2416,44 @@ def _persist_admitted_receipt(
 
 
 @contextmanager
+def claim_publication_role_lock(
+    role: str,
+    *,
+    lock_root: Path | None,
+) -> Iterator[None]:
+    """Hold the role's claim-publication lock without needing a full intent.
+
+    The lock was reachable only through `_claim_publication_lock`, which requires a
+    `ClaimPublicationIntent` — so anything that mutates the same role's claim projections
+    *outside* a publication (residue archival, for one) had no way to take it and simply raced.
+    A lock only one code path can acquire is a lock the other paths silently do without.
+
+    Same file, same role digest, same timeout as publication itself; this is an accessor, not a
+    second lock, which is the distinction that keeps it from becoming a mitigation-per-hazard.
+    """
+    with _claim_publication_lock_for_role(role, lock_root=lock_root):
+        yield
+
+
+@contextmanager
 def _claim_publication_lock(
     intent: ClaimPublicationIntent,
     *,
     lock_root: Path | None,
 ) -> Iterator[None]:
+    with _claim_publication_lock_for_role(intent.role, lock_root=lock_root):
+        yield
+
+
+@contextmanager
+def _claim_publication_lock_for_role(
+    role: str,
+    *,
+    lock_root: Path | None,
+) -> Iterator[None]:
     root = _lock_root(lock_root)
     _ensure_claim_private_directory(root)
-    digest = _claim_publication_role_lock_digest(intent.role)
+    digest = _claim_publication_role_lock_digest(role)
     path = root / f"{digest}.lock"
     try:
         fd = os.open(

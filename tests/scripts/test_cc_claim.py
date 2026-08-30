@@ -1657,6 +1657,64 @@ def test_expired_lease_on_a_worker_held_task_still_holds(tmp_path: Path) -> None
     assert "requires exact stale-lease release" in result.stderr
 
 
+def test_a_sidecar_naming_an_unknown_task_holds_rather_than_being_swept(tmp_path: Path) -> None:
+    """Absence of evidence is not evidence of release.
+
+    A sidecar whose task note cannot be found in `active/` or `closed/` was silently skipped,
+    leaving a stale projection for a task nobody can adjudicate. Same fail-closed rule as the
+    unreadable sidecar — refuse, and name the repair.
+    """
+    home = tmp_path / "home"
+    first_note = _write_task(home, "active", "task-a")
+    _write_task(home, "active", "task-b")
+
+    assert _claim(home, "task-a").returncode == 0
+    first_note.unlink()  # the note vanishes; the sidecar still names it
+
+    result = _claim(home, "task-b")
+
+    assert result.returncode != 0, (
+        f"a sidecar naming a task with no note must HOLD.\nstderr: {result.stderr}"
+    )
+    assert "has no note in active/ or closed/" in result.stderr
+
+
+def test_released_residue_archival_is_idempotent(tmp_path: Path) -> None:
+    """The recovery path was the one path that could not run.
+
+    `mkdir(exist_ok=False)` meant a retry after a partial move crashed on the directory the
+    previous attempt had itself created — so a half-finished archival could never be completed.
+    """
+    home = tmp_path / "home"
+    first_note = _write_task(home, "active", "task-a")
+    _write_task(home, "active", "task-b")
+    _write_task(home, "active", "task-c")
+
+    assert _claim(home, "task-a").returncode == 0
+    first_note.write_text(
+        first_note.read_text(encoding="utf-8").replace("status: claimed", "status: pr_open"),
+        encoding="utf-8",
+    )
+    assert _claim(home, "task-b").returncode == 0
+
+    # Pre-create a colliding lineage directory, as a partially-completed archival would leave.
+    lineage = _task_root(home) / "_lineage" / "task-a"
+    lineage.mkdir(parents=True, exist_ok=True)
+    for existing in lineage.glob("released-claim-residue-*"):
+        (existing / "stray.txt").write_text("partial", encoding="utf-8")
+
+    second = _task_root(home) / "active" / "task-b.md"
+    second.write_text(
+        second.read_text(encoding="utf-8").replace("status: claimed", "status: pr_open"),
+        encoding="utf-8",
+    )
+    result = _claim(home, "task-c")
+
+    assert result.returncode == 0, (
+        f"archival must survive a pre-existing lineage directory.\nstderr: {result.stderr}"
+    )
+
+
 def test_a_closed_task_releases_the_lane(tmp_path: Path) -> None:
     """All three review families, unanimously: the release lookup only searched `active/`.
 
