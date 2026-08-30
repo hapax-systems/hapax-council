@@ -93,6 +93,7 @@ def load_state() -> dict[str, Any]:
     data.setdefault("exit_stable_ticks_required", DEFAULT_STABLE_TICKS)
     data.setdefault("stable_ticks_observed", 0)
     data.setdefault("allowed_existing_branches", [])
+    data.setdefault("branch_snapshot_unavailable", False)
     data.setdefault("allowed_exception_tokens", [])
     return data
 
@@ -200,7 +201,7 @@ def classify_pr(pr: dict[str, Any]) -> str:
 
 def cmd_status(args: argparse.Namespace) -> int:
     state = load_state()
-    prs = query_open_prs()
+    prs, measured = query_open_prs_measured()
     open_count = len(prs)
     by_class: dict[str, list[int]] = {}
     for pr in prs:
@@ -209,7 +210,9 @@ def cmd_status(args: argparse.Namespace) -> int:
     print(f"PR admission governor: mode = {state['mode']}")
     print(f"  Updated: {state['updated']}  set_by: {state['set_by']}")
     print(f"  Reason:  {state['reason']}")
-    print(f"  Open PRs: {open_count}")
+    # "0" and "we could not look" are different facts, and this line is the one an operator
+    # reads to decide whether the fleet is quiet.
+    print(f"  Open PRs: {open_count if measured else 'UNAVAILABLE (listing could not be read)'}")
     for cls in ("failed", "pending", "behind", "blocked", "green"):
         nums = by_class.get(cls, [])
         if nums:
@@ -282,13 +285,33 @@ def _print_merge_queue_summary() -> None:
             print(f"    - {pr}: {reason.kind} — {reason.reason}")
 
 
-def _snapshot_open_branches() -> list[str]:
-    return sorted({pr["headRefName"] for pr in query_open_prs()})
+def _snapshot_open_branches() -> list[str] | None:
+    """Open branches, or None when the listing could not be measured.
+
+    `freeze` and `drain` PERSIST this as `allowed_existing_branches` and `entry_open_pr_count`.
+    An unavailable listing would write "no open branches" into durable state — a baseline that
+    is wrong in the direction that blocks work, and that survives long after the pool recovers.
+    A transient miscount is recoverable; a persisted one is not, so this reports the difference
+    rather than flattening it to an empty list.
+    """
+    rows, measured = query_open_prs_measured()
+    if not measured:
+        return None
+    return sorted({pr["headRefName"] for pr in rows})
 
 
 def cmd_freeze_or_drain(args: argparse.Namespace, mode: str) -> int:
     state = load_state()
     snapshot = _snapshot_open_branches()
+    if snapshot is None:
+        print(
+            f"hapax-pr-admission: refusing to {mode} — the open-PR listing is unavailable, so "
+            "the branch snapshot and entry count would be recorded as empty. That baseline is "
+            "wrong in the direction that blocks work and persists past the outage. Next action: "
+            "rerun once `github_pr_status.py rate` reports headroom.",
+            file=sys.stderr,
+        )
+        return 2
     state.update(
         {
             "mode": mode,
@@ -389,6 +412,14 @@ def is_admission_allowed(branch: str | None) -> tuple[bool, str]:
         return True, "normal mode"
     if branch is not None and branch in state.get("allowed_existing_branches", []):
         return True, f"branch {branch} in snapshot"
+    if state.get("branch_snapshot_unavailable"):
+        # The freeze was taken on ledger evidence while the branch listing could not be read.
+        # An empty snapshot would then mean "nothing is grandfathered", which blocks in-flight
+        # work on absent evidence rather than on a measurement. Permit, and say why.
+        return True, (
+            f"mode is {state['mode']} but the branch snapshot was unavailable when it was "
+            "taken; existing branches are permitted rather than blocked on absent evidence"
+        )
     return False, f"mode is {state['mode']} and branch {branch!r} not in snapshot"
 
 
@@ -428,18 +459,31 @@ def cmd_auto(args: argparse.Namespace) -> int:
     # Auto-freeze trigger: rate-attributed, not raw open-PR count.
     if mode == "normal" and throttle.frozen:
         snapshot = _snapshot_open_branches()
+        # The freeze itself is warranted by the LEDGER's failure rate, not by the listing — so
+        # an unavailable listing must not suppress it. Deferring here would withhold a safety
+        # action during exactly the outage that might warrant it. What the listing decides is
+        # only the grandfathering BASELINE, and that is recorded as unknown rather than as an
+        # empty list, so `is_admission_allowed` can tell "no branches were open" from "we could
+        # not look" and permit in-flight work instead of blocking all of it.
         state.update(
             {
                 "mode": "frozen",
                 "set_by": "auto",
                 "reason": f"auto-freeze: {throttle.reason}",
-                "entry_open_pr_count": len(snapshot),
+                "entry_open_pr_count": len(snapshot) if snapshot is not None else None,
                 "stable_ticks_observed": 0,
-                "allowed_existing_branches": snapshot,
+                "allowed_existing_branches": snapshot or [],
+                "branch_snapshot_unavailable": snapshot is None,
             }
         )
         save_state(state)
-        print(f"AUTO-FREEZE: {throttle.reason}; snapshot {len(snapshot)} branches")
+        detail = (
+            f"snapshot {len(snapshot)} branches"
+            if snapshot is not None
+            else "branch snapshot UNAVAILABLE — existing branches are permitted rather than "
+            "blocked on absent evidence"
+        )
+        print(f"AUTO-FREEZE: {throttle.reason}; {detail}")
         return 0
 
     # Auto-clear trigger: auto-thaw immediately when the rate drops.

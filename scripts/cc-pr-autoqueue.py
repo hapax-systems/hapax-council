@@ -1122,20 +1122,30 @@ def _fetch_status_check_rollup_graphql(
         "statusCheckRollup{contexts(first:100){nodes{__typename ... on CheckRun{name status "
         "conclusion completedAt startedAt} ... on StatusContext{context state createdAt}}}}}}}}}}"
     )
-    proc = run_graphql_rate_aware(
-        [
-            "-f",
-            f"query={query}",
-            "-f",
-            f"owner={owner}",
-            "-f",
-            f"repo={name}",
-            "-F",
-            f"number={pr_number}",
-        ],
-        repo_root=repo_root,
-        runner=runner,
-    )
+    try:
+        proc = run_graphql_rate_aware(
+            [
+                "-f",
+                f"query={query}",
+                "-f",
+                f"owner={owner}",
+                "-f",
+                f"repo={name}",
+                "-F",
+                f"number={pr_number}",
+            ],
+            repo_root=repo_root,
+            runner=runner,
+        )
+    except (subprocess.TimeoutExpired, OSError) as exc:
+        # `run_graphql_rate_aware` has always been able to raise; what changed is that this path
+        # became the PRIMARY for release evidence on a GraphQL-routed cycle, so a boundary that
+        # was rarely reached is now on the hot path and would crash the whole reconcile. I did
+        # not introduce the raw boundary — I promoted it, which is its own kind of regression.
+        #
+        # Fail-closed, same as every other failure here: no evidence means no release.
+        LOG.warning("GraphQL release evidence unavailable for PR #%s: %s", pr_number, exc)
+        return False, "invalid_pr_release_evidence_payload", []
     if proc.returncode != 0:
         return False, "invalid_pr_release_evidence_payload", []
     try:

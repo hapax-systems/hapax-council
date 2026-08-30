@@ -311,8 +311,11 @@ class TestAutoCmd:
         with (
             patch.object(
                 gov_module,
-                "query_open_prs",
-                return_value=[{"number": i, "headRefName": f"branch-{i}"} for i in range(3)],
+                "query_open_prs_measured",
+                return_value=(
+                    [{"number": i, "headRefName": f"branch-{i}"} for i in range(3)],
+                    True,
+                ),
             ),
             patch.object(
                 gov_module,
@@ -442,3 +445,53 @@ def test_an_unavailable_listing_is_not_counted_as_a_quiet_fleet(gov_module, monk
     monkeypatch.setattr(gov_module, "query_open_prs_measured", lambda: ([], True))
     gov_module.current_throttle_decision()
     assert captured["open_pr_count"] == 0
+
+
+class TestAutoFreezeWithoutAListing:
+    """A freeze warranted by the LEDGER must not be suppressed by an unreadable listing."""
+
+    def test_auto_freeze_proceeds_and_marks_the_baseline_unknown(self, gov_module):
+        with (
+            patch.object(gov_module, "query_open_prs_measured", return_value=([], False)),
+            patch.object(
+                gov_module,
+                "current_throttle_decision",
+                return_value=_throttle(
+                    frozen=True,
+                    state="rate_freeze",
+                    reason="merge failure_rate 100% >= 50% over 4 runs",
+                    failure_rate=1.0,
+                    samples=4,
+                    open_pr_count=3,
+                ),
+            ),
+        ):
+            rc = gov_module.cmd_auto(type("NS", (), {})())
+
+        assert rc == 0
+        loaded = gov_module.load_state()
+        assert loaded["mode"] == "frozen", (
+            "the failure rate comes from the ledger, so an unreadable listing must not withhold "
+            "the freeze — that would suppress a safety action during the outage that warrants it"
+        )
+        assert loaded["branch_snapshot_unavailable"] is True
+        assert loaded["entry_open_pr_count"] is None, "an unmeasured count is None, never 0"
+
+    def test_an_unknown_baseline_permits_existing_branches_rather_than_blocking_all(
+        self, gov_module
+    ):
+        """The reason the flag exists rather than an empty list.
+
+        `allowed_existing_branches: []` under a freeze means "nothing is grandfathered", which
+        blocks in-flight work on ABSENT evidence rather than on a measurement.
+        """
+        gov_module.save_state(
+            {
+                "mode": "frozen",
+                "allowed_existing_branches": [],
+                "branch_snapshot_unavailable": True,
+            }
+        )
+        allowed, reason = gov_module.is_admission_allowed(branch="feat/in-flight")
+        assert allowed is True
+        assert "unavailable" in reason
