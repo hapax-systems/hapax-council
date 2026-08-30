@@ -1004,6 +1004,15 @@ def fetch_pr(
             )
     item = get_pull_rest(pr_number, repo=repo, repo_root=repo_root, runner=runner)
     if item is None:
+        if route is not None and route.transport == "graphql":
+            # `gh pr view` was already the PRIMARY on this cycle and it failed; retrying it here
+            # would repeat a call we know just failed, which is the "attempt more after a
+            # failure" shape the routing rules forbid.
+            raise RuntimeError(
+                f"both transports failed for PR #{pr_number}: `gh pr view` was tried first "
+                f"(cycle routed to GraphQL) and REST also returned nothing. Next action: check "
+                f"`gh auth status` and `github_pr_status.py rate`."
+            )
         try:
             LOG.warning(
                 "REST pull fetch failed for PR #%d; falling back to `gh pr view`",

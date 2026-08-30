@@ -1737,21 +1737,66 @@ def test_the_fallback_is_symmetric_when_rest_is_chosen_and_fails(tmp_path: Path)
     assert "rest_listing_failed" in route.reason
 
 
-def test_a_per_pr_rollup_timeout_refuses_rather_than_escaping(tmp_path: Path) -> None:
-    """Same boundary rule as the listing, one level down.
+def test_a_rollup_timeout_is_fail_closed_and_does_not_abort_the_scan(tmp_path: Path) -> None:
+    """Two families disagreed and gemini was right; this pins the resolution.
 
-    Callers catch `PrListingUnavailable`; a raised TimeoutExpired from the per-PR rollup would
-    crash the timer mid-scan. Fixing the listing and leaving its helper is the sibling omission.
+    codex: a raised exception escapes the refusal contract. gemini: raising aborts the whole
+    scan because ONE PR's rollup timed out, and this function promises fail-closed. Catching
+    satisfies both — `[]` reads as "checks unknown / not green", so it cannot cause a merge the
+    checks would have prevented, and the other PRs in the cycle still get scanned.
     """
+    seen: list[list[str]] = []
 
     def rollup_times_out(cmd: list[str], **kwargs: Any) -> subprocess.CompletedProcess:
+        seen.append(list(cmd))
         if cmd[:3] == ["gh", "pr", "view"]:
             raise subprocess.TimeoutExpired(cmd, 60)
         return _BothTransportsRunner(rest_remaining=0, graphql_remaining=4900)(cmd, **kwargs)
 
-    with pytest.raises(github_pr_status.GraphQLListingFailed):
-        github_pr_status.list_open_pr_statuses_graphql(
-            repo="owner/repo", repo_root=tmp_path, runner=rollup_times_out
+    rows = github_pr_status.list_open_pr_statuses_graphql(
+        repo="owner/repo", repo_root=tmp_path, runner=rollup_times_out
+    )
+
+    assert rows, "one PR's rollup timing out must not abort the listing"
+    assert rows[0]["statusCheckRollup"] == [], (
+        "an unfetchable rollup must read as checks-unknown, which is the fail-closed value"
+    )
+    assert any(call[:3] == ["gh", "pr", "view"] for call in seen)
+
+
+def test_the_rest_fallback_distinguishes_empty_from_failed(tmp_path: Path) -> None:
+    """Answers a review finding that did not reproduce, and guards it anyway.
+
+    The claim was that the REST fallback "may still collapse to an empty estate". It does not:
+    `fail_on_indeterminate=True` raises, and `TimeoutExpired` subclasses `SubprocessError` so it
+    is caught too. But an empty result and a failed one are one keystroke apart here, so both
+    directions are pinned rather than argued.
+    """
+
+    def graphql_fails_rest_empty(cmd: list[str], **kwargs: Any) -> subprocess.CompletedProcess:
+        if cmd[:3] == ["gh", "pr", "list"]:
+            return subprocess.CompletedProcess(cmd, 1, "", "HTTP 504")
+        if cmd[:5] == ["gh", "api", "--method", "GET", "-H"]:
+            return subprocess.CompletedProcess(cmd, 0, "[]", "")
+        return _BothTransportsRunner(rest_remaining=3000, graphql_remaining=4900)(cmd, **kwargs)
+
+    rows, route = github_pr_status.list_open_pr_statuses(
+        repo="owner/repo", repo_root=tmp_path, runner=graphql_fails_rest_empty
+    )
+    assert rows == [] and route.transport == "rest", (
+        "a genuinely empty REST fallback is a measurement, not a failure"
+    )
+
+    def graphql_fails_rest_times_out(cmd: list[str], **kwargs: Any) -> subprocess.CompletedProcess:
+        if cmd[:3] == ["gh", "pr", "list"]:
+            return subprocess.CompletedProcess(cmd, 1, "", "HTTP 504")
+        if cmd[:5] == ["gh", "api", "--method", "GET", "-H"]:
+            raise subprocess.TimeoutExpired(cmd, 60)
+        return _BothTransportsRunner(rest_remaining=3000, graphql_remaining=4900)(cmd, **kwargs)
+
+    with pytest.raises(github_pr_status.PrListingUnavailable):
+        github_pr_status.list_open_pr_statuses(
+            repo="owner/repo", repo_root=tmp_path, runner=graphql_fails_rest_times_out
         )
 
 

@@ -38,11 +38,13 @@ DEFAULT_GRAPHQL_MIN_REMAINING = 500
 #
 # OPERATIONAL KILLSWITCH (recheck: `HAPAX_GITHUB_REST_MIN_REMAINING=0 python scripts/github_pr_status.py rate`
 # — the `core` pool must report no block):
-# ``HAPAX_GITHUB_REST_MIN_REMAINING=0`` disables the REST floor, so
-# nothing is ever refused for measured exhaustion and the fleet behaves exactly as it did
-# before this change. This gate now sits on every fleet scan, so it needs a documented way off
-# that does not require a deploy — a guard whose only escape is editing source is one an
-# operator cannot use at 3am. The GraphQL floor has the same escape via
+# ``HAPAX_GITHUB_REST_MIN_REMAINING=0`` disables the REST floor, so nothing is refused for
+# measured REST exhaustion. It does NOT roll the change back: transport selection, the
+# GraphQL listing and the refusal contracts all still apply. It removes one guard, which is
+# the guard an operator would want removed when it is the thing in the way.
+#
+# It exists because this gate now sits on every fleet scan, and a guard whose only escape is
+# editing source is one an operator cannot use at 3am. The GraphQL floor has the same escape via
 # ``HAPAX_GITHUB_GRAPHQL_MIN_REMAINING=0``.
 DEFAULT_REST_MIN_REMAINING = 500
 REST_MIN_REMAINING_ENV = "HAPAX_GITHUB_REST_MIN_REMAINING"
@@ -951,11 +953,22 @@ def _status_check_rollup_graphql(
             repo_root=repo_root,
         )
     except (subprocess.TimeoutExpired, OSError) as exc:
-        # Same boundary rule as the listing itself, one level down: callers catch
-        # `PrListingUnavailable`, so a raised TimeoutExpired here would crash the timer mid-scan
-        # instead of skipping the cycle. Fixing the listing and leaving its per-PR helper is the
-        # sibling omission this workstream keeps making.
-        raise GraphQLListingFailed(f"github_graphql_rollup_unavailable:pr={number}:{exc}") from exc
+        # Two review families disagreed here, and the disagreement is worth recording. codex: a
+        # raised exception escapes the `PrListingUnavailable` contract and crashes the timer.
+        # gemini: this function promises FAIL-CLOSED, and raising aborts the whole scan because
+        # one PR's rollup timed out.
+        #
+        # gemini is right and my previous fix over-corrected — it broke this function's own
+        # stated contract to satisfy a different one. Catching satisfies both: `[]` reads
+        # downstream as "checks unknown / not green", so a rollup we could not fetch cannot
+        # cause a merge the checks would have prevented, and one slow PR no longer kills the
+        # cycle for every other PR in it.
+        print(
+            f"github_pr_status: rollup unavailable for PR #{number} ({exc}); "
+            "treating as checks-unknown",
+            file=sys.stderr,
+        )
+        return []
     payload = _json_from_proc(proc)
     rollup = payload.get("statusCheckRollup") if isinstance(payload, dict) else None
     return rollup if isinstance(rollup, list) else []

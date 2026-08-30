@@ -2892,7 +2892,9 @@ def run_reconciler(
         # reports an empty estate and every decision below it is made on absent evidence.
         LOG.warning(
             "autoqueue reconcile skipped: open-PR listing unavailable "
-            "(this is 'we did not look', not 'nothing to do')"
+            "(this is 'we did not look', not 'nothing to do'). Next action: none if the next "
+            "cycle proceeds; if it repeats, run `github_pr_status.py rate` and `gh auth status` "
+            "— a listing that fails with both pools healthy is not a quota condition."
         )
         report = {
             "repo": repo,

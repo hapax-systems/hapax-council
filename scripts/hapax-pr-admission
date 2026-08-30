@@ -151,6 +151,16 @@ def current_throttle_decision(open_count: int | None = None):
     # that reads as a fact should not be manufactured from a failed call.)
     if open_count is None:
         prs, measured = query_open_prs_measured()
+        if not measured:
+            # Say so. Substituting the advisory count is the right *number* and a misleading
+            # *label*: without this line an unmeasurable fleet is indistinguishable from a
+            # genuinely busy one, and the two call for opposite responses.
+            print(
+                "hapax-pr-admission: open-PR listing unavailable; using the advisory count "
+                f"({ADVISORY_OPEN_PR_COUNT}) so an unmeasurable fleet reads busy, not quiet. "
+                "This is NOT a measured open-PR count.",
+                file=sys.stderr,
+            )
         prs_count = len(prs) if measured else ADVISORY_OPEN_PR_COUNT
     else:
         prs_count = open_count
@@ -312,6 +322,12 @@ def cmd_normal(args: argparse.Namespace) -> int:
     # `current_throttle_decision` and leaving the other call sites is the sibling omission
     # this workstream keeps repeating, so both counting sites use the measured pair.
     _open_rows, _open_measured = query_open_prs_measured()
+    if not _open_measured:
+        print(
+            "hapax-pr-admission: open-PR listing unavailable; advisory count substituted "
+            "(not a measured count)",
+            file=sys.stderr,
+        )
     open_count = len(_open_rows) if _open_measured else ADVISORY_OPEN_PR_COUNT
     throttle = current_throttle_decision(open_count)
     can_clear = not throttle.frozen
@@ -399,6 +415,12 @@ def cmd_auto(args: argparse.Namespace) -> int:
     # `current_throttle_decision` and leaving the other call sites is the sibling omission
     # this workstream keeps repeating, so both counting sites use the measured pair.
     _open_rows, _open_measured = query_open_prs_measured()
+    if not _open_measured:
+        print(
+            "hapax-pr-admission: open-PR listing unavailable; advisory count substituted "
+            "(not a measured count)",
+            file=sys.stderr,
+        )
     open_count = len(_open_rows) if _open_measured else ADVISORY_OPEN_PR_COUNT
     throttle = current_throttle_decision(open_count)
     mode = state["mode"]
