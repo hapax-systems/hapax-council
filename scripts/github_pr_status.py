@@ -776,7 +776,10 @@ def listing_unavailable_detail(exc: PrListingUnavailable) -> str:
         # problem, not weather, and the operator is the only one who can look into what is
         # burning it. The routine case still needs nothing done, so say both.
         return (
-            f" (quota, not auth; resets in {exc.reset_in_seconds}s). "
+            # `reset_in_seconds` is None when no reset epoch was carried, and an f-string
+            # renders that as the literal "Nones" — a nonsense duration in the one message an
+            # operator actually reads.
+            f" (quota, not auth; {f'resets in {exc.reset_in_seconds}s' if exc.reset_in_seconds is not None else 'reset time unknown'}). "
             "Next action: none if this clears on the next cycle. If both pools stay below "
             "their floors across several resets, something is spending them — check "
             "`github_pr_status.py rate` and the fleet timer cadences."
@@ -957,23 +960,30 @@ def list_open_pr_statuses_graphql(
     divergence is a failing test rather than a field that silently reads ``None`` in the
     autoqueue's merge decision.
     """
-    proc = _run(
-        runner,
-        [
-            "gh",
-            "pr",
-            "list",
-            "--repo",
-            repo,
-            "--state",
-            "open",
-            "--limit",
-            str(limit),
-            "--json",
-            ",".join(_GRAPHQL_PR_LIST_FIELDS),
-        ],
-        repo_root=repo_root,
-    )
+    # `_run` can raise (a timeout, or gh missing), and a raised exception is outside the
+    # refusal contract this function documents: callers catch `PrListingUnavailable`, so an
+    # escaping TimeoutExpired would crash the timer rather than skip its cycle. Same shape as
+    # the probe's fail-open path — normalise at the boundary rather than at each caller.
+    try:
+        proc = _run(
+            runner,
+            [
+                "gh",
+                "pr",
+                "list",
+                "--repo",
+                repo,
+                "--state",
+                "open",
+                "--limit",
+                str(limit),
+                "--json",
+                ",".join(_GRAPHQL_PR_LIST_FIELDS),
+            ],
+            repo_root=repo_root,
+        )
+    except (subprocess.TimeoutExpired, OSError) as exc:
+        raise GraphQLListingFailed(f"github_graphql_listing_unavailable:{exc}") from exc
     # Refuse rather than return []. A failed listing and "no open PRs" are the same value and
     # different facts, and the merge pipeline acts on the difference. This is the exact way
     # the pre-#4436 implementation failed: it swallowed GitHub's 504 as an empty list and

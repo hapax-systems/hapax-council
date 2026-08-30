@@ -7490,6 +7490,24 @@ def test_the_reconciler_skips_rather_than_reading_an_unavailable_listing_as_quie
     )
 
 
+def test_a_quiet_estate_is_not_reported_as_an_unavailable_listing(tmp_path: Path) -> None:
+    """The mirror of the skip fix, and introduced by it.
+
+    A successful listing with zero rows is a genuinely quiet estate. Returning `None` for the
+    route made the reconciler skip on a CORRECT measurement — so having taught it not to read
+    unavailability as quiet, the same commit taught it to read quiet as unavailability.
+    """
+    prs, route = autoqueue.fetch_open_prs(
+        repo="owner/repo",
+        repo_root=tmp_path,
+        runner=_rate_only_runner(core=0, graphql=4660, rows=[]),
+    )
+
+    assert prs == []
+    assert route is not None, "a successful empty listing is a measurement, not a failure"
+    assert route.transport == "graphql"
+
+
 def test_a_graphql_row_with_no_checks_keeps_an_empty_rollup_rather_than_asking_rest(
     tmp_path: Path,
 ) -> None:

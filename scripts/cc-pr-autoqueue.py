@@ -989,8 +989,11 @@ def fetch_open_prs(
         )
         return [], None
     if not raw:
-        LOG.warning("REST open PR scan returned no rows")
-        return [], None
+        # A successful listing with zero rows is a genuinely quiet estate, NOT an unavailable
+        # one. Returning `None` here made the caller skip the cycle on a correct measurement —
+        # the mirror of the defect this route object exists to fix, introduced by fixing it.
+        LOG.info("open PR scan returned no rows (estate is quiet, listing succeeded)")
+        return [], route
     prs: list[PullRequest] = []
     for item in raw:
         if isinstance(item, dict):
@@ -1933,6 +1936,7 @@ def merge_pr(
     repo_root: Path | None = None,
     runner: Any = None,
     require_route_metadata: bool = True,
+    route: ListingRoute | None = None,
 ) -> tuple[bool, str]:
     runner = runner or subprocess.run
     repo_root = repo_root or default_repo_root()
@@ -1978,6 +1982,9 @@ def merge_pr(
                 repo=repo,
                 repo_root=repo_root,
                 runner=runner,
+                # The second call site. Threading only the first left the auto-arm
+                # revalidation re-entering REST on a cycle routed away from it.
+                route=route,
             )
             if boundary_blocker:
                 return False, boundary_blocker
@@ -3154,6 +3161,7 @@ def run_reconciler(
                 repo_root=repo_root,
                 runner=runner,
                 require_route_metadata=require_route_metadata,
+                route=listing_route,
             )
             result = {
                 **decision.as_dict(),
