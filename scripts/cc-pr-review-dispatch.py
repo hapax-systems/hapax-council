@@ -56,6 +56,7 @@ if str(SCRIPTS_DIR) not in sys.path:
 
 import review_team  # noqa: E402
 from github_pr_status import (  # noqa: E402
+    ListingRoute,
     PrListingUnavailable,
     get_pull_rest,
     list_open_pr_statuses,
@@ -970,7 +971,12 @@ def _fetch_pr_via_view(
 
 
 def fetch_pr(
-    pr_number: int, *, repo: str, repo_root: Path, runner: Any, transport: str = "rest"
+    pr_number: int,
+    *,
+    repo: str,
+    repo_root: Path,
+    runner: Any,
+    route: ListingRoute | None = None,
 ) -> PRInfo:
     """Fetch one PR's metadata, preferring the transport the cycle chose.
 
@@ -979,10 +985,20 @@ def fetch_pr(
     engages on failure can react to exhaustion but never prevent it. When the cycle measured
     REST below its floor, this begins on GraphQL instead, and REST becomes the fallback.
     """
-    if transport == "graphql":
+    if route is not None and route.transport == "graphql":
         try:
             return _fetch_pr_via_view(pr_number, repo=repo, repo_root=repo_root, runner=runner)
         except RuntimeError as exc:
+            if route.rest_blocked:
+                # REST was MEASURED below its floor. Falling back to it would attempt more
+                # after a failure than before it, and would recreate the failure-triggered
+                # routing this change exists to replace — with a pool already known empty.
+                raise RuntimeError(
+                    f"GraphQL pull fetch failed for PR #{pr_number} ({exc}) and REST is "
+                    f"measured below its floor ({route.reason}), so it is not an eligible "
+                    "fallback. Next action: retry once either pool recovers; "
+                    "`github_pr_status.py rate` reports both."
+                ) from exc
             LOG.warning(
                 "GraphQL pull fetch failed for PR #%d; falling back to REST: %s", pr_number, exc
             )
@@ -1036,7 +1052,12 @@ def fetch_pr(
 
 
 def fetch_pr_diff(
-    pr_info: PRInfo, *, repo: str, repo_root: Path, runner: Any, transport: str = "rest"
+    pr_info: PRInfo,
+    *,
+    repo: str,
+    repo_root: Path,
+    runner: Any,
+    route: ListingRoute | None = None,
 ) -> str:
     """Fetch the PR diff, avoiding the REST pool when the cycle measured it empty.
 
@@ -1047,13 +1068,19 @@ def fetch_pr_diff(
     is measured empty it becomes the first choice.
     """
     pr_number = pr_info.number
-    if transport == "graphql":
+    if route is not None and route.transport == "graphql":
         try:
             return fetch_pr_diff_from_local(pr_info, repo_root=repo_root, runner=runner)
         except RuntimeError as exc:
+            if route.rest_blocked:
+                raise RuntimeError(
+                    f"local git diff unavailable for PR #{pr_info.number} ({exc}) and REST is "
+                    f"measured below its floor ({route.reason}), so the REST diff endpoint is "
+                    "not an eligible fallback. Next action: ensure the PR ref can be fetched "
+                    "locally (`git fetch origin pull/N/head`), or retry once REST recovers."
+                ) from exc
             LOG.warning(
-                "local git diff unavailable for PR #%d with REST measured empty; "
-                "falling back to the REST diff endpoint: %s",
+                "local git diff unavailable for PR #%d; falling back to the REST diff endpoint: %s",
                 pr_number,
                 exc,
             )
@@ -2578,13 +2605,14 @@ def review_pr(
     registry_path: Path | None = None,
     now_iso: str | None = None,
     route_blocked_families: dict[str, tuple[str, ...]] | None = None,
-    transport: str = "rest",
+    route: ListingRoute | None = None,
 ) -> dict[str, Any]:
     """Constitute (and with ``apply``, dispatch) the review team for one PR.
 
-    ``transport`` is the cycle's measured choice, decided once by the caller rather than
-    re-probed per PR: a per-call decision would cost a rate probe per PR and could disagree
-    with itself mid-scan.
+    ``route`` is the cycle's measured decision, made once by the caller rather than re-probed
+    per PR: a per-call decision would cost a rate probe per PR and could disagree with itself
+    mid-scan. It also carries whether REST is *blocked*, which decides whether REST is eligible
+    as a fallback at all.
     """
 
     repo_root = repo_root or REPO_ROOT
@@ -2618,9 +2646,7 @@ def review_pr(
             "reason": truncate_context(f"{type(exc).__name__}: {exc}", limit=500),
         }
 
-    pr_info = fetch_pr(
-        pr_number, repo=repo, repo_root=repo_root, runner=gh_runner, transport=transport
-    )
+    pr_info = fetch_pr(pr_number, repo=repo, repo_root=repo_root, runner=gh_runner, route=route)
     if pr_info.is_draft:
         return {"status": "draft_skipped", "pr": pr_number}
     if not pr_info.files:
@@ -2848,9 +2874,7 @@ def review_pr(
     )
     reviewer_source_excerpts = prior_file_excerpts + changed_file_excerpts
     diff = truncate_diff(
-        fetch_pr_diff(
-            pr_info, repo=repo, repo_root=repo_root, runner=gh_runner, transport=transport
-        )
+        fetch_pr_diff(pr_info, repo=repo, repo_root=repo_root, runner=gh_runner, route=route)
     )
     task_note_text = "\n\n".join(
         f"## Linked task note: {path.name}\n\n{path.read_text(encoding='utf-8')}"
@@ -3054,7 +3078,7 @@ def review_all_open_prs(
     repo_root = repo_root or REPO_ROOT
     gh_runner = gh_runner or subprocess.run
     try:
-        open_prs = list_open_pr_statuses(
+        open_prs, route = list_open_pr_statuses(
             repo=repo,
             repo_root=repo_root,
             runner=gh_runner,
@@ -3071,15 +3095,9 @@ def review_all_open_prs(
             listing_unavailable_detail(exc),
         )
         return []
-    # The cycle's transport, decided once. Every row from a GraphQL-routed listing carries it,
-    # so the per-PR work below begins on the same pool the listing chose. Routing only the
-    # bulk listing left each PR's metadata and diff starting on REST — the listing was one
-    # call and the per-PR work is N, so that spared almost nothing.
-    transport = (
-        "graphql"
-        if any(isinstance(item, dict) and item.get("transport") == "graphql" for item in open_prs)
-        else "rest"
-    )
+    # The cycle's transport comes from the chooser, not from scanning rows for a stamp. Routing
+    # only the bulk listing spared almost nothing anyway — the listing is one call and the
+    # per-PR work below is N — so `route` is threaded all the way down.
     results: list[dict[str, Any]] = []
     for item in open_prs:
         if not isinstance(item, dict) or item.get("isDraft"):
@@ -3099,7 +3117,7 @@ def review_all_open_prs(
                     wake_dir=wake_dir,
                     send_runner=send_runner,
                     route_blocked_families=route_blocked_families,
-                    transport=transport,
+                    route=route,
                 )
             )
         except Exception as exc:  # noqa: BLE001 — one PR must not starve the scan

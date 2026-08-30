@@ -957,7 +957,9 @@ def detect_stuck_prs(
     GitHub enqueues an armed+green PR within seconds, so absence from the queue
     is a real ejection rather than a transient."""
     try:
-        prs = list_open_pr_statuses(repo=repo, repo_root=repo_root, runner=runner, limit=100)
+        prs, _route = list_open_pr_statuses(
+            repo=repo, repo_root=repo_root, runner=runner, limit=100
+        )
     except PrListingUnavailable as exc:
         # Skip this cycle rather than spending a listing plus per-PR hydration into
         # guaranteed 403s. Loud, because an empty result is otherwise indistinguishable

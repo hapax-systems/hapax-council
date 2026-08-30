@@ -1351,7 +1351,7 @@ def test_exhausted_rest_routes_the_fleet_listing_to_graphql(tmp_path: Path) -> N
     """The predicate, at the operational call: chosen before the call, not after a failure."""
     runner = _BothTransportsRunner(rest_remaining=0, graphql_remaining=4660)
 
-    rows = github_pr_status.list_open_pr_statuses(
+    rows, route = github_pr_status.list_open_pr_statuses(
         repo="owner/repo", repo_root=tmp_path, runner=runner
     )
 
@@ -1368,7 +1368,7 @@ def test_healthy_rest_keeps_the_fleet_listing_on_rest(tmp_path: Path) -> None:
     """Diversion happens only away from a pool measured to be in trouble."""
     runner = _BothTransportsRunner(rest_remaining=4900, graphql_remaining=600)
 
-    rows = github_pr_status.list_open_pr_statuses(
+    rows, route = github_pr_status.list_open_pr_statuses(
         repo="owner/repo", repo_root=tmp_path, runner=runner
     )
 
@@ -1420,6 +1420,38 @@ def test_a_failed_graphql_listing_refuses_instead_of_reading_as_an_empty_estate(
         )
 
 
+@pytest.mark.parametrize(
+    ("payload", "why"),
+    [
+        ("[null]", "a null row parses fine and would silently vanish"),
+        ('[{"title": "no number"}]', "a row with no identity cannot be safely omitted"),
+    ],
+)
+def test_a_malformed_row_refuses_rather_than_shrinking_the_estate(
+    tmp_path: Path, payload: str, why: str
+) -> None:
+    """Skipping a bad row rebuilds the silent-empty failure one level down.
+
+    Rejecting only the top-level payload was not enough: `[null]` is a valid JSON list, yields
+    no rows, and reads downstream as "no open PRs" — the exact deadlock `GraphQLListingFailed`
+    was introduced to prevent. A row we cannot identify is not a PR we can drop from a merge
+    decision.
+    """
+
+    def rows(cmd: list[str], **kwargs: Any) -> subprocess.CompletedProcess:
+        if cmd[:3] == ["gh", "pr", "list"]:
+            return subprocess.CompletedProcess(cmd, 0, payload, "")
+        return subprocess.CompletedProcess(cmd, 0, "", "")
+
+    with pytest.raises(github_pr_status.GraphQLListingFailed):
+        (
+            github_pr_status.list_open_pr_statuses_graphql(
+                repo="owner/repo", repo_root=tmp_path, runner=rows
+            ),
+            why,
+        )
+
+
 def test_a_failed_listing_is_caught_by_the_same_handler_as_exhaustion(tmp_path: Path) -> None:
     """Both mean "skip the cycle", so both must be reachable by one `except`.
 
@@ -1441,6 +1473,51 @@ def test_both_pools_blocked_reports_when_not_merely_that(tmp_path: Path) -> None
         "the refusal must carry a reset time; both pools measured empty is not actionable "
         "without a when"
     )
+
+
+def test_the_chooser_returns_its_decision_rather_than_leaving_it_to_be_inferred(
+    tmp_path: Path,
+) -> None:
+    """The decision must survive an EMPTY listing, which is where inference broke.
+
+    An earlier revision let callers recover the cycle's transport by scanning rows for a
+    `transport` stamp. With zero open PRs there are no rows, so a GraphQL-routed cycle read as
+    "rest" — the predicate holding by coincidence of data rather than by construction.
+    """
+
+    def empty_listing(cmd: list[str], **kwargs: Any) -> subprocess.CompletedProcess:
+        if cmd[:3] == ["gh", "pr", "list"]:
+            return subprocess.CompletedProcess(cmd, 0, "[]", "")
+        return _BothTransportsRunner(rest_remaining=0, graphql_remaining=4660)(cmd, **kwargs)
+
+    rows, route = github_pr_status.list_open_pr_statuses(
+        repo="owner/repo", repo_root=tmp_path, runner=empty_listing
+    )
+
+    assert rows == []
+    assert route.transport == "graphql", (
+        "an empty listing has no rows to infer from; the decision must come from the chooser"
+    )
+    assert route.rest_blocked is True
+    assert route.rest_available is False
+
+
+def test_a_measured_empty_rest_pool_is_not_an_eligible_fallback(tmp_path: Path) -> None:
+    """Failure paths narrow. Falling back to a pool measured empty attempts more, not less.
+
+    `rest_blocked` exists to make that decidable at the point of fallback rather than
+    re-derived — the route carries it, so a GraphQL failure on a blocked-REST cycle refuses
+    instead of recreating the failure-triggered routing this change replaced.
+    """
+    blocked = github_pr_status.ListingRoute(
+        transport="graphql", rest_blocked=True, reason="core=0<500"
+    )
+    open_pool = github_pr_status.ListingRoute(
+        transport="graphql", rest_blocked=False, reason="github_graphql_has_more_headroom"
+    )
+
+    assert blocked.rest_available is False
+    assert open_pool.rest_available is True
 
 
 def test_a_probe_timeout_fails_open_rather_than_crashing_the_timer(tmp_path: Path) -> None:

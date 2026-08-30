@@ -53,6 +53,7 @@ import review_team  # noqa: E402
 from github_pr_status import (  # noqa: E402
     GRAPHQL_BACKOFF_RC,
     REST_INDETERMINATE_CHECK_NAME,
+    ListingRoute,
     PrListingUnavailable,
     fetch_status_check_rollup_rest,
     get_pull_rest,
@@ -959,11 +960,17 @@ def fetch_open_prs(
     repo_root: Path | None = None,
     limit: int = 100,
     runner: Any = None,
-) -> list[PullRequest]:
+) -> tuple[list[PullRequest], ListingRoute | None]:
+    """Open PRs plus the cycle's transport decision.
+
+    The decision is returned rather than left for the caller to infer from row stamps: an
+    empty GraphQL-routed listing has no rows to inspect, so inference silently read "rest".
+    ``None`` means the listing was unavailable and the cycle is skipping.
+    """
     runner = runner or subprocess.run
     repo_root = repo_root or default_repo_root()
     try:
-        raw = list_open_pr_statuses(
+        raw, route = list_open_pr_statuses(
             repo=repo,
             repo_root=repo_root,
             runner=runner,
@@ -980,10 +987,10 @@ def fetch_open_prs(
             exc.reason,
             listing_unavailable_detail(exc),
         )
-        return []
+        return [], None
     if not raw:
         LOG.warning("REST open PR scan returned no rows")
-        return []
+        return [], None
     prs: list[PullRequest] = []
     for item in raw:
         if isinstance(item, dict):
@@ -1032,7 +1039,7 @@ def fetch_open_prs(
             pr = _parse_pr(item)
             if pr is not None:
                 prs.append(pr)
-    return prs
+    return prs, route
 
 
 def _fetch_status_check_rollup(
@@ -1164,9 +1171,25 @@ def fetch_pr_release_evidence(
     repo: str = DEFAULT_REPO,
     repo_root: Path | None = None,
     runner: Any = None,
+    route: ListingRoute | None = None,
 ) -> tuple[bool, str, set[str]]:
+    """Release evidence for one PR, on the transport the cycle chose.
+
+    An apply cycle reaches this per actionable PR, so beginning unconditionally on REST meant
+    a cycle routed AWAY from REST still spent it N times before falling back. The GraphQL path
+    already existed here as a post-failure fallback; when the cycle measured REST below its
+    floor it becomes the primary instead.
+    """
     runner = runner or subprocess.run
     repo_root = repo_root or default_repo_root()
+    if route is not None and route.transport == "graphql":
+        primary = _fetch_pr_release_evidence_graphql(
+            pr_number, repo=repo, repo_root=repo_root, runner=runner
+        )
+        if primary[0] or route.rest_blocked:
+            # A measured-empty REST pool is not an eligible fallback, so a GraphQL failure is
+            # the answer rather than a reason to spend REST anyway.
+            return primary
     payload = get_pull_rest(pr_number, repo=repo, repo_root=repo_root, runner=runner)
     if not isinstance(payload, dict):
         fallback = _fetch_pr_release_evidence_graphql(
@@ -2163,6 +2186,7 @@ def _release_head_boundary_blocker(
     repo_root: Path | None = None,
     runner: Any = None,
     release_authorization_waivers: list[str] | None = None,
+    route: ListingRoute | None = None,
 ) -> str | None:
     if decision.action not in {
         "queue",
@@ -2216,6 +2240,7 @@ def _release_head_boundary_blocker(
         repo=repo,
         repo_root=repo_root,
         runner=runner,
+        route=route,
     )
     if not evidence_ok:
         if current_head_sha in {
@@ -2845,7 +2870,7 @@ def run_reconciler(
             repo_root=repo_root,
             runner=runner,
         )
-    prs = fetch_open_prs(repo=repo, repo_root=repo_root, limit=limit, runner=runner)
+    prs, listing_route = fetch_open_prs(repo=repo, repo_root=repo_root, limit=limit, runner=runner)
     preliminary_decisions = [
         classify_pr(
             pr,
@@ -3005,6 +3030,7 @@ def run_reconciler(
                     repo_root=repo_root,
                     runner=runner,
                     release_authorization_waivers=release_authorization_waivers,
+                    route=listing_route,
                 )
                 if head_blocker is not None:
                     mutation_results.append(

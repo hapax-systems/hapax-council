@@ -126,11 +126,36 @@ def query_open_prs() -> list[dict[str, Any]]:
         # not updated with it, so a measured-empty REST pool raised straight through a handler
         # that catches only subprocess and JSON errors — crashing admission to report a full
         # rate pool. Returning [] matches what every other unavailable-listing case does here.
+        #
+        # It is the right value for the *list* and the wrong one for a *count* — see
+        # `current_throttle_decision`, which must not read an unavailable listing as "quiet".
         return []
 
 
+def open_pr_listing_available() -> bool:
+    """Whether the open-PR listing can currently be measured at all."""
+    if not shutil.which("gh"):
+        return False
+    try:
+        list_open_pr_statuses_rest(
+            repo=DEFAULT_REPO, repo_root=REPO_ROOT, runner=subprocess.run, limit=1
+        )
+    except (subprocess.SubprocessError, json.JSONDecodeError, PrListingUnavailable):
+        return False
+    return True
+
+
 def current_throttle_decision(open_count: int | None = None):
-    prs_count = len(query_open_prs()) if open_count is None else open_count
+    # An unavailable listing is not evidence of a quiet fleet. `len([])` would report zero open
+    # PRs and drop the advisory `busy` signal on no evidence at all; the advisory count errs the
+    # other way, which is the only direction that cannot understate load. (The consequence is
+    # bounded — open_pr_count is advisory-only and never triggers a freeze — but a measurement
+    # that reads as a fact should not be manufactured from a failed call.)
+    if open_count is None:
+        prs = query_open_prs()
+        prs_count = len(prs) if (prs or open_pr_listing_available()) else ADVISORY_OPEN_PR_COUNT
+    else:
+        prs_count = open_count
     records = read_jsonl_records(MERGE_QUEUE_LEDGER_PATH)
     return decide_fleet_throttle(
         records,

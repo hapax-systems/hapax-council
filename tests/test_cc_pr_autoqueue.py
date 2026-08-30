@@ -977,7 +977,7 @@ def test_fetch_open_prs_uses_rest_core_not_gh_pr_list(tmp_path: Path) -> None:
     runner = _FakeRunner()
     runner.open_prs = [_pr(42)]
 
-    prs = autoqueue.fetch_open_prs(repo="owner/repo", repo_root=tmp_path, runner=runner)
+    prs, _route = autoqueue.fetch_open_prs(repo="owner/repo", repo_root=tmp_path, runner=runner)
 
     assert [pr.number for pr in prs] == [42]
     assert any(
@@ -1002,7 +1002,7 @@ def test_empty_rest_reviews_do_not_synthesize_review_required(tmp_path: Path) ->
     runner = EmptyReviewsRunner()
     runner.open_prs = [_pr(42)]
 
-    prs = autoqueue.fetch_open_prs(repo="owner/repo", repo_root=tmp_path, runner=runner)
+    prs, _route = autoqueue.fetch_open_prs(repo="owner/repo", repo_root=tmp_path, runner=runner)
     assert prs[0].review_decision is None
 
     report = autoqueue.run_reconciler(
@@ -7394,7 +7394,7 @@ def test_fetch_open_prs_routes_to_graphql_when_rest_is_exhausted(tmp_path: Path)
     when both pools are empty, which the companion test below pins.
     """
     calls: list[list[str]] = []
-    rows = autoqueue.fetch_open_prs(
+    rows, _route = autoqueue.fetch_open_prs(
         repo="owner/repo",
         repo_root=tmp_path,
         runner=_rate_only_runner(core=0, graphql=4660, calls=calls),
@@ -7418,7 +7418,7 @@ def test_graphql_rows_are_not_rehydrated_through_the_exhausted_rest_pool(
     uses a real row and lets the runner raise on any REST call.
     """
     calls: list[list[str]] = []
-    prs = autoqueue.fetch_open_prs(
+    prs, _route = autoqueue.fetch_open_prs(
         repo="owner/repo",
         repo_root=tmp_path,
         runner=_rate_only_runner(core=0, graphql=4660, calls=calls, rows=[_GRAPHQL_ROW]),
@@ -7439,14 +7439,12 @@ def test_fetch_open_prs_skips_the_cycle_when_both_pools_are_exhausted(tmp_path: 
     incident — strictly worse than the exhaustion it reports. Routing must not become a way
     to spend a pool that is also measurably empty.
     """
-    assert (
-        autoqueue.fetch_open_prs(
-            repo="owner/repo",
-            repo_root=tmp_path,
-            runner=_rate_only_runner(core=0, graphql=0),
-        )
-        == []
+    prs, route = autoqueue.fetch_open_prs(
+        repo="owner/repo",
+        repo_root=tmp_path,
+        runner=_rate_only_runner(core=0, graphql=0),
     )
+    assert prs == [] and route is None
 
 
 def test_canon_assessor_reports_armed_for_authorized_egress_task() -> None:

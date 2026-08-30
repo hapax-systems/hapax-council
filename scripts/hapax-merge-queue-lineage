@@ -31,6 +31,7 @@ from github_pr_status import (  # noqa: E402
     PrListingUnavailable,
     get_pr_status_rest,
     list_open_pr_statuses_rest,
+    listing_unavailable_detail,
 )
 
 from shared.merge_queue_lineage import (  # noqa: E402
@@ -171,12 +172,11 @@ def fetch_prs(
     except PrListingUnavailable as exc:
         # This consumer is deliberately fail-closed — an indeterminate listing must not read as
         # "no open holds". A measured-empty pool is indeterminate for the same reason, so it
-        # raises the same way rather than escaping as an unhandled RuntimeError with a message
-        # that names no next action.
+        # raises rather than escaping as an unhandled RuntimeError. The detail comes from the
+        # shared formatter: exhaustion and a failed listing need different operator text, and
+        # hardcoding rate-limit phrasing here would mislabel every non-quota failure.
         raise RuntimeError(
-            f"open PR query indeterminate: {exc.reason}. Next action: wait for the rate pool "
-            f"reset ({exc.reset_in_seconds}s) or rerun once `github_pr_status.py rate` "
-            f"reports headroom."
+            f"open PR query indeterminate: {exc.reason}{listing_unavailable_detail(exc)}"
         ) from exc
 
     seen = {int(pr["number"]) for pr in prs if pr.get("number") is not None}

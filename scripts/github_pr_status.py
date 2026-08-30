@@ -103,6 +103,32 @@ class RateSnapshot:
     graphql: RatePool | None
 
 
+@dataclass(frozen=True)
+class ListingRoute:
+    """One cycle's transport decision, returned rather than reconstructed.
+
+    An earlier revision let callers infer the cycle's transport by scanning the returned rows
+    for ``transport == "graphql"``. That worked only because every GraphQL row happens to be
+    stamped, and it silently degraded to REST for an empty listing — so the "chosen before the
+    call" predicate held *by coincidence of data rather than by construction*. The decision is
+    the chooser's output; it belongs in the return value.
+
+    ``rest_blocked`` is the part that changes behaviour rather than merely recording it. When
+    REST is measured below its floor it is **not an eligible fallback**: falling back to a pool
+    known to be empty attempts more after a failure than before it, which is the failure-paths-
+    narrow rule, and it recreates exactly the failure-triggered routing this change replaced.
+    """
+
+    transport: str  # "rest" | "graphql"
+    rest_blocked: bool
+    reason: str
+
+    @property
+    def rest_available(self) -> bool:
+        """Whether REST may be used at all — as a primary path or as a fallback."""
+        return not self.rest_blocked
+
+
 def _env_int(name: str, default: int) -> int:
     raw = os.environ.get(name)
     if raw is None:
@@ -727,9 +753,14 @@ def listing_unavailable_detail(exc: PrListingUnavailable) -> str:
     again.
     """
     if isinstance(exc, RestPoolExhausted):
+        # "Next action: none" was wrong: a pool that stays empty across cycles is a spend
+        # problem, not weather, and the operator is the only one who can look into what is
+        # burning it. The routine case still needs nothing done, so say both.
         return (
             f" (quota, not auth; resets in {exc.reset_in_seconds}s). "
-            "Next action: none — the next cycle proceeds once the pool refills."
+            "Next action: none if this clears on the next cycle. If both pools stay below "
+            "their floors across several resets, something is spending them — check "
+            "`github_pr_status.py rate` and the fleet timer cadences."
         )
     return (
         " (listing failed; NOT a quota condition). Next action: run "
@@ -928,10 +959,20 @@ def list_open_pr_statuses_graphql(
         )
 
     out: list[dict[str, Any]] = []
-    for item in raw:
+    for index, item in enumerate(raw):
+        # Skipping a bad row rebuilds the silent-empty failure one level down: a payload of
+        # `[null]` parses fine, yields no rows, and reads downstream as "no open PRs" — the
+        # exact deadlock `GraphQLListingFailed` was added to prevent. A row we cannot identify
+        # is not a PR we can safely omit from a merge decision.
         if not isinstance(item, dict):
-            continue
+            raise GraphQLListingFailed(
+                f"github_graphql_listing_malformed:row {index} is {type(item).__name__}, not an object"
+            )
         number = item.get("number")
+        if number is None:
+            raise GraphQLListingFailed(
+                f"github_graphql_listing_malformed:row {index} has no `number`"
+            )
         files = item.get("files") if isinstance(item.get("files"), list) else []
         changed_files = item.get("changedFiles")
         if changed_files is None and files:
@@ -982,7 +1023,7 @@ def list_open_pr_statuses(
     include_files: bool = False,
     include_review_decision: bool = False,
     include_status: bool = True,
-) -> list[dict[str, Any]]:
+) -> tuple[list[dict[str, Any]], ListingRoute]:
     """Choose the transport on measured headroom, **then** make the call.
 
     This is the operational half of the change, and the reason the helper alone was not
@@ -1006,15 +1047,23 @@ def list_open_pr_statuses(
             if pool is not None and pool.reset_epoch is not None
         ]
         raise RestPoolExhausted(reason, min(resets) if resets else None)
+    route = ListingRoute(
+        transport=transport,
+        rest_blocked=rest_pool_blocked(snapshot) is not None,
+        reason=reason,
+    )
     if transport == "graphql":
-        return list_open_pr_statuses_graphql(
-            repo=repo,
-            repo_root=repo_root,
-            runner=runner,
-            limit=limit,
-            include_files=include_files,
-            include_review_decision=include_review_decision,
-            include_status=include_status,
+        return (
+            list_open_pr_statuses_graphql(
+                repo=repo,
+                repo_root=repo_root,
+                runner=runner,
+                limit=limit,
+                include_files=include_files,
+                include_review_decision=include_review_decision,
+                include_status=include_status,
+            ),
+            route,
         )
     # The decision was made above, on a snapshot already taken. Letting the REST helper
     # re-probe would be a *second* rate decision on the same call — a fresh snapshot, taken
@@ -1022,15 +1071,18 @@ def list_open_pr_statuses(
     # That is the two-mitigations-per-hazard smell this change removed `rest_backoff` for,
     # reappearing one layer down. Direct callers of `list_open_pr_statuses_rest` keep their
     # own guard; this path has already spent its decision.
-    return list_open_pr_statuses_rest(
-        repo=repo,
-        repo_root=repo_root,
-        runner=runner,
-        limit=limit,
-        include_files=include_files,
-        include_review_decision=include_review_decision,
-        include_status=include_status,
-        respect_rate_pools=False,
+    return (
+        list_open_pr_statuses_rest(
+            repo=repo,
+            repo_root=repo_root,
+            runner=runner,
+            limit=limit,
+            include_files=include_files,
+            include_review_decision=include_review_decision,
+            include_status=include_status,
+            respect_rate_pools=False,
+        ),
+        route,
     )
 
 
