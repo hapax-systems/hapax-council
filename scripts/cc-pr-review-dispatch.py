@@ -56,7 +56,7 @@ if str(SCRIPTS_DIR) not in sys.path:
 
 import review_team  # noqa: E402
 from github_pr_status import (  # noqa: E402
-    RestPoolExhausted,
+    PrListingUnavailable,
     get_pull_rest,
     list_open_pr_statuses,
     list_pull_files_rest,
@@ -3011,7 +3011,7 @@ def review_all_open_prs(
             runner=gh_runner,
             limit=100,
         )
-    except RestPoolExhausted as exc:
+    except PrListingUnavailable as exc:
         # Skip this scan rather than spending it into guaranteed 403s. Returning an empty
         # result set is safe here — the next scan re-evaluates every open PR from scratch,
         # so nothing is lost by sitting out a cycle. Logged loudly so an empty scan is

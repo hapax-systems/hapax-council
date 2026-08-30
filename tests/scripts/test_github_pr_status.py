@@ -1387,6 +1387,62 @@ def test_both_pools_blocked_still_refuses_the_cycle(tmp_path: Path) -> None:
         github_pr_status.list_open_pr_statuses(repo="owner/repo", repo_root=tmp_path, runner=runner)
 
 
+def test_a_failed_graphql_listing_refuses_instead_of_reading_as_an_empty_estate(
+    tmp_path: Path,
+) -> None:
+    """ "We did not look" and "nothing found" are the same value and different facts.
+
+    This is the precise way the pre-#4436 implementation failed: it swallowed GitHub's 504 as
+    an empty list, and an empty list reads downstream as "no PRs need attention" — silently
+    deadlocking the merge pipeline. The first version of this function documented that hazard
+    in a comment and then reproduced it three lines later, which is what codex caught.
+    """
+
+    def failing_list(cmd: list[str], **kwargs: Any) -> subprocess.CompletedProcess:
+        if cmd[:3] == ["gh", "pr", "list"]:
+            return subprocess.CompletedProcess(cmd, 1, "", "HTTP 504 Gateway Timeout")
+        return subprocess.CompletedProcess(cmd, 0, "", "")
+
+    with pytest.raises(github_pr_status.GraphQLListingFailed) as excinfo:
+        github_pr_status.list_open_pr_statuses_graphql(
+            repo="owner/repo", repo_root=tmp_path, runner=failing_list
+        )
+    assert "504" in str(excinfo.value)
+
+    def malformed_list(cmd: list[str], **kwargs: Any) -> subprocess.CompletedProcess:
+        if cmd[:3] == ["gh", "pr", "list"]:
+            return subprocess.CompletedProcess(cmd, 0, json.dumps({"message": "nope"}), "")
+        return subprocess.CompletedProcess(cmd, 0, "", "")
+
+    with pytest.raises(github_pr_status.GraphQLListingFailed):
+        github_pr_status.list_open_pr_statuses_graphql(
+            repo="owner/repo", repo_root=tmp_path, runner=malformed_list
+        )
+
+
+def test_a_failed_listing_is_caught_by_the_same_handler_as_exhaustion(tmp_path: Path) -> None:
+    """Both mean "skip the cycle", so both must be reachable by one `except`.
+
+    The three fleet callers each catch `PrListingUnavailable`. If a failed GraphQL listing were
+    outside that hierarchy it would escape and crash the timer service — mint a P0 "service
+    failed" incident to report a listing that did not come back.
+    """
+    assert issubclass(github_pr_status.GraphQLListingFailed, github_pr_status.PrListingUnavailable)
+    assert issubclass(github_pr_status.RestPoolExhausted, github_pr_status.PrListingUnavailable)
+
+
+def test_both_pools_blocked_reports_when_not_merely_that(tmp_path: Path) -> None:
+    """A refusal without a reset time tells an operator nothing they can act on."""
+    runner = _BothTransportsRunner(rest_remaining=0, graphql_remaining=0)
+
+    with pytest.raises(github_pr_status.RestPoolExhausted) as excinfo:
+        github_pr_status.list_open_pr_statuses(repo="owner/repo", repo_root=tmp_path, runner=runner)
+    assert excinfo.value.reset_epoch is not None, (
+        "the refusal must carry a reset time; both pools measured empty is not actionable "
+        "without a when"
+    )
+
+
 def test_bulk_graphql_query_never_requests_status_check_rollup(tmp_path: Path) -> None:
     """Pins the constraint the pre-#4436 implementation paid for.
 

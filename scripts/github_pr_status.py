@@ -1,10 +1,15 @@
 #!/usr/bin/env python3
-"""GitHub PR/status helpers that keep routine polling off GraphQL.
+"""GitHub PR/status helpers that spread routine polling across both rate pools.
 
-The GitHub CLI implements many ``gh pr`` status fields through GraphQL.  Fleet
-timers should use REST/core for routine status polling and reserve GraphQL for
-operations that have no REST replacement, such as native merge-queue metadata
-or the dequeue mutation.
+REST/``core`` and GraphQL are **separate** quotas. Polling everything through one of
+them drains it while the other idles — measured 2026-08-29 at ``core`` 0/5000 with
+``graphql`` 4660/5000 — so ``list_open_pr_statuses`` measures both and picks the
+roomier pool *before* spending the call. Ties and unknown headroom resolve to REST,
+which is the post-#4436 default, so traffic only ever diverts away from a pool
+measured to be in trouble.
+
+Some operations still have no REST replacement (native merge-queue metadata, the
+dequeue mutation) and remain GraphQL regardless.
 """
 
 from __future__ import annotations
@@ -654,6 +659,7 @@ def _pull_status_row_from_rest(
         )
         if include_status and status_ref
         else [],
+        "transport": "rest",
     }
 
 
@@ -690,15 +696,16 @@ def rest_pool_blocked(
     return f"github_rest_below_floor:{core.remaining}<{floor}"
 
 
-class RestPoolExhausted(RuntimeError):
-    """The REST pool has no headroom, measured before spending a call.
+class PrListingUnavailable(RuntimeError):
+    """The open-PR listing could not be obtained. **"We did not look", never "nothing found".**
 
-    Carries the reset time so a caller can report *when*, not merely *that*. This is a
-    quota condition and never an auth one — `gh auth status` reports an exhausted pool as
-    "the token is invalid", which sends people to re-authenticate for nothing.
+    Both subclasses mean a caller must skip its cycle rather than act on an empty list. That
+    distinction is the whole point: an empty result that reads as "no PRs need attention"
+    silently deadlocks the merge pipeline, which is exactly how the pre-#4436 implementation
+    failed when GitHub 504'd its bulk query.
     """
 
-    def __init__(self, reason: str, reset_epoch: int | None) -> None:
+    def __init__(self, reason: str, reset_epoch: int | None = None) -> None:
         super().__init__(reason)
         self.reason = reason
         self.reset_epoch = reset_epoch
@@ -708,6 +715,27 @@ class RestPoolExhausted(RuntimeError):
         if self.reset_epoch is None:
             return None
         return max(0, self.reset_epoch - int(time.time()))
+
+
+class GraphQLListingFailed(PrListingUnavailable):
+    """``gh pr list`` failed or returned something that is not a list of PRs.
+
+    Distinct from exhaustion: the pool had headroom and the call still did not produce
+    rows. Falling back to REST here would *widen* the failure path — attempting more after
+    a failure than before it — so this refuses instead, and the caller skips the cycle.
+    """
+
+
+class RestPoolExhausted(PrListingUnavailable):
+    """The REST pool has no headroom, measured before spending a call.
+
+    Carries the reset time so a caller can report *when*, not merely *that*. This is a
+    quota condition and never an auth one — `gh auth status` reports an exhausted pool as
+    "the token is invalid", which sends people to re-authenticate for nothing.
+    """
+
+    def __init__(self, reason: str, reset_epoch: int | None) -> None:
+        super().__init__(reason, reset_epoch)
 
 
 def list_open_pr_statuses_rest(
@@ -863,9 +891,20 @@ def list_open_pr_statuses_graphql(
         ],
         repo_root=repo_root,
     )
+    # Refuse rather than return []. A failed listing and "no open PRs" are the same value and
+    # different facts, and the merge pipeline acts on the difference. This is the exact way
+    # the pre-#4436 implementation failed: it swallowed GitHub's 504 as an empty list and
+    # silently deadlocked. Documenting that hazard three paragraphs up and then reproducing it
+    # is what the review caught here.
+    if proc.returncode != 0:
+        raise GraphQLListingFailed(
+            f"github_graphql_listing_failed:rc={proc.returncode}:{(proc.stderr or '').strip()[:200]}"
+        )
     raw = _json_from_proc(proc)
     if not isinstance(raw, list):
-        return []
+        raise GraphQLListingFailed(
+            f"github_graphql_listing_malformed:expected list, got {type(raw).__name__}"
+        )
 
     out: list[dict[str, Any]] = []
     for item in raw:
@@ -902,6 +941,12 @@ def list_open_pr_statuses_graphql(
                 )
                 if include_status
                 else [],
+                # Provenance, and it is load-bearing rather than decorative. A consumer that
+                # re-hydrates each row over REST would spend the very pool the routing exists
+                # to spare — one call moved, nothing saved. The tag lets a consumer skip work
+                # this transport has already done, and mirrors `RatePool.source`: a value is
+                # not usable without knowing where it came from.
+                "transport": "graphql",
             }
         )
     return out
@@ -929,9 +974,17 @@ def list_open_pr_statuses(
     that is the one case where refusing is right, and it raises so callers keep their
     existing skip-the-cycle handling for it.
     """
-    transport, reason = choose_transport(repo_root=repo_root, runner=runner)
+    snapshot = rate_snapshot(repo_root=repo_root, runner=runner)
+    transport, reason = choose_transport(repo_root=repo_root, runner=runner, snapshot=snapshot)
     if transport is None:
-        raise RestPoolExhausted(reason, None)
+        # Carry the reset time. "Both pools are empty" without a *when* tells an operator
+        # nothing they can act on, and this is the one path that reaches them as a warning.
+        resets = [
+            pool.reset_epoch
+            for pool in (snapshot.core, snapshot.graphql)
+            if pool is not None and pool.reset_epoch is not None
+        ]
+        raise RestPoolExhausted(reason, min(resets) if resets else None)
     if transport == "graphql":
         return list_open_pr_statuses_graphql(
             repo=repo,
@@ -942,8 +995,12 @@ def list_open_pr_statuses(
             include_review_decision=include_review_decision,
             include_status=include_status,
         )
-    # The REST path keeps its own guard: `choose_transport` and `rest_pool_blocked` share
-    # one floor (see `rest_pool_blocked`), so this cannot disagree with the choice above.
+    # The decision was made above, on a snapshot already taken. Letting the REST helper
+    # re-probe would be a *second* rate decision on the same call — a fresh snapshot, taken
+    # at a different moment, able to reach a different verdict than the one that routed here.
+    # That is the two-mitigations-per-hazard smell this change removed `rest_backoff` for,
+    # reappearing one layer down. Direct callers of `list_open_pr_statuses_rest` keep their
+    # own guard; this path has already spent its decision.
     return list_open_pr_statuses_rest(
         repo=repo,
         repo_root=repo_root,
@@ -952,6 +1009,7 @@ def list_open_pr_statuses(
         include_files=include_files,
         include_review_decision=include_review_decision,
         include_status=include_status,
+        respect_rate_pools=False,
     )
 
 

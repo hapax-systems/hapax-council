@@ -58,7 +58,7 @@ if str(SCRIPTS_DIR) not in sys.path:
 
 from github_pr_status import (  # noqa: E402
     GRAPHQL_BACKOFF_RC,
-    RestPoolExhausted,
+    PrListingUnavailable,
     get_pull_rest,
     list_open_pr_statuses,
     list_pulls_for_branch_rest,
@@ -957,7 +957,7 @@ def detect_stuck_prs(
     is a real ejection rather than a transient."""
     try:
         prs = list_open_pr_statuses(repo=repo, repo_root=repo_root, runner=runner, limit=100)
-    except RestPoolExhausted as exc:
+    except PrListingUnavailable as exc:
         # Skip this cycle rather than spending a listing plus per-PR hydration into
         # guaranteed 403s. Loud, because an empty result is otherwise indistinguishable
         # from "no stuck PRs" — a silent wrong answer.

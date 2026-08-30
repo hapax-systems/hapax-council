@@ -53,7 +53,7 @@ import review_team  # noqa: E402
 from github_pr_status import (  # noqa: E402
     GRAPHQL_BACKOFF_RC,
     REST_INDETERMINATE_CHECK_NAME,
-    RestPoolExhausted,
+    PrListingUnavailable,
     fetch_status_check_rollup_rest,
     get_pull_rest,
     list_open_pr_statuses,
@@ -970,7 +970,7 @@ def fetch_open_prs(
             include_files=True,
             include_review_decision=True,
         )
-    except RestPoolExhausted as exc:
+    except PrListingUnavailable as exc:
         # Skip this cycle rather than spending a listing plus per-PR hydration into
         # guaranteed 403s. Distinguished from the empty-scan warning below because the
         # two mean different things: this one is "we did not look", not "nothing found".
@@ -987,11 +987,16 @@ def fetch_open_prs(
     for item in raw:
         if isinstance(item, dict):
             rest_pr = None
-            try:
-                number = int(item.get("number"))
-                rest_pr = get_pull_rest(number, repo=repo, repo_root=repo_root, runner=runner)
-            except (TypeError, ValueError):
-                rest_pr = None
+            # Rows fetched over GraphQL already carry mergeStateStatus and a per-PR rollup, so
+            # re-hydrating them through REST would spend the pool the routing exists to spare —
+            # one call moved and nothing saved, which is what the review found. Only REST rows
+            # need this pass.
+            if item.get("transport") != "graphql":
+                try:
+                    number = int(item.get("number"))
+                    rest_pr = get_pull_rest(number, repo=repo, repo_root=repo_root, runner=runner)
+                except (TypeError, ValueError):
+                    rest_pr = None
             item["mergeStateStatus"] = (
                 rest_merge_state_status(rest_pr)
                 if rest_pr is not None
@@ -1007,6 +1012,14 @@ def fetch_open_prs(
                 and not _rollup_is_rest_indeterminate(fallback_rollup)
             ):
                 item["statusCheckRollup"] = fallback_rollup
+            elif item.get("transport") == "graphql":
+                # A GraphQL row already made its own per-PR rollup call. An empty result here
+                # means no checks or an unfetchable rollup, and `[]` is the fail-closed value
+                # either way — it reads downstream as "checks unknown / not green". Reaching
+                # for REST would spend the exhausted pool to reach the same verdict.
+                item["statusCheckRollup"] = (
+                    fallback_rollup if isinstance(fallback_rollup, list) else []
+                )
             else:
                 item["statusCheckRollup"] = _fetch_status_check_rollup(
                     item.get("number"),

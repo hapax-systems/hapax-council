@@ -7314,8 +7314,14 @@ def test_egress_revalidation_without_changed_files_holds_coverage_unevaluable(
     assert "egress_evidence_coverage_unevaluable:no_changed_files" in blockers
 
 
-def _rate_only_runner(*, core: int, graphql: int, calls: list[list[str]] | None = None) -> Any:
-    """Serves rate_limit; records everything else and refuses REST spend."""
+def _rate_only_runner(
+    *,
+    core: int,
+    graphql: int,
+    calls: list[list[str]] | None = None,
+    rows: list[dict[str, Any]] | None = None,
+) -> Any:
+    """Serves rate_limit and the GraphQL listing; refuses REST spend."""
 
     def run(cmd: list[str], **_: Any) -> subprocess.CompletedProcess:
         if calls is not None:
@@ -7336,10 +7342,47 @@ def _rate_only_runner(*, core: int, graphql: int, calls: list[list[str]] | None 
             }
             return subprocess.CompletedProcess(cmd, 0, f"{head}\r\n{json.dumps(payload)}", "")
         if cmd[:3] == ["gh", "pr", "list"]:
-            return subprocess.CompletedProcess(cmd, 0, "[]", "")
+            return subprocess.CompletedProcess(cmd, 0, json.dumps(rows or []), "")
+        if cmd[:3] == ["gh", "pr", "view"]:
+            return subprocess.CompletedProcess(
+                cmd,
+                0,
+                json.dumps(
+                    {
+                        "statusCheckRollup": [
+                            {"name": "lint", "state": "SUCCESS", "__typename": "CheckRun"}
+                        ]
+                    }
+                ),
+                "",
+            )
         raise AssertionError(f"no REST call may be spent once the pool is empty: {cmd}")
 
     return run
+
+
+#: One realistic GraphQL row. Returning `[]` was how the first version of these tests hid the
+#: defect the review then found: routing the listing proves nothing if the per-PR work that
+#: follows still goes to REST, and with no rows there is no per-PR work to observe.
+_GRAPHQL_ROW = {
+    "number": 4610,
+    "id": "PR_node",
+    "state": "OPEN",
+    "title": "a real row",
+    "body": "",
+    "url": "https://github.example/o/r/pull/4610",
+    "updatedAt": "2026-08-30T00:00:00Z",
+    "mergedAt": None,
+    "headRefName": "feat/x",
+    "headRefOid": "deadbeef",
+    "changedFiles": 1,
+    "files": [{"path": "scripts/example.py"}],
+    "isDraft": False,
+    "labels": [],
+    "reviewDecision": "APPROVED",
+    "autoMergeRequest": None,
+    "mergeStateStatus": "CLEAN",
+}
 
 
 def test_fetch_open_prs_routes_to_graphql_when_rest_is_exhausted(tmp_path: Path) -> None:
@@ -7360,6 +7403,31 @@ def test_fetch_open_prs_routes_to_graphql_when_rest_is_exhausted(tmp_path: Path)
     assert rows == []
     assert any(call[:3] == ["gh", "pr", "list"] for call in calls), (
         "an exhausted REST pool with healthy GraphQL must select GraphQL, not sit out"
+    )
+
+
+def test_graphql_rows_are_not_rehydrated_through_the_exhausted_rest_pool(
+    tmp_path: Path,
+) -> None:
+    """Routing one call is worthless if the per-PR work that follows still goes to REST.
+
+    The first version of this coverage returned an empty listing, so there were no rows and
+    no per-PR path to observe — and `fetch_open_prs` was in fact calling `get_pull_rest` for
+    every row plus a REST check-runs fallback. That is a test whose fixture avoided the very
+    path that would have failed, which is the same shape as the defect it missed. This one
+    uses a real row and lets the runner raise on any REST call.
+    """
+    calls: list[list[str]] = []
+    prs = autoqueue.fetch_open_prs(
+        repo="owner/repo",
+        repo_root=tmp_path,
+        runner=_rate_only_runner(core=0, graphql=4660, calls=calls, rows=[_GRAPHQL_ROW]),
+    )
+
+    assert len(prs) == 1, f"the routed listing must still produce usable rows: {prs}"
+    assert any(call[:3] == ["gh", "pr", "list"] for call in calls)
+    assert not any(len(call) > 6 and str(call[6]).startswith("repos/") for call in calls), (
+        f"no REST call may follow a GraphQL-routed listing: {calls}"
     )
 
 
