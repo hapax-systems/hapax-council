@@ -965,17 +965,17 @@ class TestRoleReleaseVocabularyDrift:
         marker = "Role-release vocabulary."
         assert marker in src, "cc-claim lost its role-release marker comment"
         after = src[src.index(marker) :]
-        case_body = after[after.index('case "$existing_status" in') : after.index("esac")]
+        # The vocabulary lives in the `_cc_role_release_status` predicate. It was previously
+        # inlined as `case "$existing_status" in` in the claim loop; it moved out when the
+        # release decision was hoisted above the lease-expiry check, because a released task
+        # frees the role whether or not its lease also aged out.
+        case_body = after[after.index('case "$1" in') : after.index("esac")]
         statuses: set[str] = set()
         for line in case_body.splitlines():
             stripped = line.strip()
-            # Two shapes, because a release now also retires the lane's stale lease:
-            #   `pr_open|merge_queue) continue ;;`            (single line)
-            #   `pr_open|merge_queue) \` + retire + continue   (continued line)
-            for suffix in (") continue ;;", ") \\"):
-                if stripped.endswith(suffix):
-                    statuses.update(stripped[: -len(suffix)].split("|"))
-                    break
+            suffix = ") return 0 ;;"
+            if stripped.endswith(suffix):
+                statuses.update(stripped[: -len(suffix)].split("|"))
         return {s.strip() for s in statuses if s.strip()}
 
     def test_bash_case_matches_the_ssot_exactly(self) -> None:

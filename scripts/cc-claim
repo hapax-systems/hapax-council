@@ -243,11 +243,73 @@ cc_task_root_resolve || exit $?
 vault_root_check="$CC_TASK_ROOT"
 now_epoch="$(date +%s 2>/dev/null || echo 0)"
 legacy_claim_file="$HOME/.cache/hapax/cc-active-task-$role"
+
+# Role-release vocabulary. MUST match shared/sdlc_lifecycle.TASK_ROLE_RELEASING_STATUSES
+# (pinned by tests/shared/test_sdlc_lifecycle.py::TestRoleReleaseVocabularyDrift).
+#
+# Two groups release the lane:
+#   terminal  — the work is over.
+#   resumable — the work is DONE and waiting on the pipeline (pr_open, merge_queue,
+#               ready-family). These are pipeline-held, not worker-held; the lane can
+#               take other work and re-claim later via TASK_RESUMABLE_STATUSES.
+#
+# This list previously read `done|completed|closed|withdrawn|superseded` — five of the
+# fifteen canonical terminal statuses and none of the resumable ones. Measured
+# 2026-08-29, that held 43 lanes hostage to finished work awaiting review, which is a
+# feedback loop rather than a capacity limit.
+_cc_role_release_status() {
+  case "$1" in
+    # terminal — fulfilling
+    done|completed|complete|closed|fulfilled|resolved) return 0 ;;
+    # terminal — non-fulfilling
+    withdrawn|withdrawn_stale|superseded|closed_superseded|rejected|refused) return 0 ;;
+    not_applicable|deferred|closed_poisoned) return 0 ;;
+    # resumable — finished, awaiting the pipeline
+    pr_open|merge_queue|ci_green|ready|ready_for_review|review_ready|ready_for_merge) return 0 ;;
+    # post-merge and pre-work — declared 2026-08-29 after both were found live in the
+    # active corpus while belonging to no status set at all, which held their lanes
+    # permanently.
+    merged_awaiting_runtime_witness|backlog) return 0 ;;
+  esac
+  return 1
+}
+
 shopt -s nullglob
 for cf in "$legacy_claim_file" "$HOME/.cache/hapax/cc-active-task-$role-"*; do
   [[ -f "$cf" ]] || continue
   existing_task="$(head -n1 "$cf" | tr -d '[:space:]' || true)"
   cf_mtime="$(stat -c %Y "$cf" 2>/dev/null || echo "$now_epoch")"
+
+  # Resolve the prior task's status BEFORE any age-based decision.
+  #
+  # Release is a property of the TASK, not of the lease's age: a task that is done or
+  # pipeline-held is released whether or not its lease also expired. An earlier revision
+  # of this change tested expiry first, so in canonical mode every lease older than the
+  # TTL took the HOLD path at the top of this loop and the release case below was
+  # unreachable for exactly the aged, pre-existing sidecars that most need it. That is
+  # the same defect one level deeper — the first revision skipped the role-cap check but
+  # left canonical publication blocking, and this one freed fresh leases but left aged
+  # ones held.
+  existing_note=""
+  existing_status="unknown"
+  if [[ -n "$existing_task" && "$existing_task" != "$task_id" ]]; then
+    for c in "$vault_root_check/active/$existing_task-"*.md "$vault_root_check/active/$existing_task.md"; do
+      [[ -f "$c" ]] && existing_note="$c" && break
+    done
+    if [[ -n "$existing_note" ]]; then
+      existing_status="$(grep -oP '^status:\s*\K\S+' "$existing_note" 2>/dev/null || echo "unknown")"
+    fi
+  fi
+
+  # A released prior task does not occupy the role cap. The sidecars themselves are NOT
+  # removed here: archival happens on the Python side under the Gate-0B claim-publication
+  # lock, where it is transactional, receipted into task lineage, and fails closed. An
+  # earlier revision `rm -f`'d them from this loop — unlocked, unreceipted, and a second
+  # mitigation for a hazard `_archive_dispatch_only_claim_residue` already owns.
+  if [[ -n "$existing_note" ]] && _cc_role_release_status "$existing_status"; then
+    continue
+  fi
+
   if (( now_epoch - cf_mtime > lease_ttl )); then
     if [[ "$canon_enforced" == "1" && "$cf" == "$legacy_claim_file" && -n "$session_claim_file" && -f "$session_claim_file" ]]; then
       session_existing_task="$(head -n1 "$session_claim_file" | tr -d '[:space:]' || true)"
@@ -277,66 +339,7 @@ for cf in "$legacy_claim_file" "$HOME/.cache/hapax/cc-active-task-$role-"*; do
     continue
   fi
   [[ -n "$existing_task" && "$existing_task" != "$task_id" ]] || continue
-  existing_note=""
-  for c in "$vault_root_check/active/$existing_task-"*.md "$vault_root_check/active/$existing_task.md"; do
-    [[ -f "$c" ]] && existing_note="$c" && break
-  done
   [[ -n "$existing_note" ]] || continue
-  existing_status="$(grep -oP '^status:\s*\K\S+' "$existing_note" 2>/dev/null || echo "unknown")"
-  # Retire a released lane's lease sidecars.
-  #
-  # Skipping the role-cap check is NOT sufficient to free a lane, and an earlier revision of
-  # this change shipped exactly that mistake. The canonical claim publication further down
-  # (see `claim_paths` / resolve_applied_claim_publication) resolves whatever
-  # cc-active-task/cc-claim-epoch/cc-claim-dispatch sidecars still exist against the NEW
-  # task and exits 8 with `claim_task_mismatch` — so the lane stayed blocked one layer
-  # deeper, and end-to-end tests now pin that. Releasing the role means the role becomes
-  # fresh: with no sidecars present, canonical publication is skipped and the new claim
-  # proceeds as a first claim.
-  #
-  # This mirrors the expired-lease reaping above, and is safe for the same reason: resume
-  # re-establishes a claim from the task note's `assigned_to`, not from these caches.
-  _cc_retire_released_lease() {
-    local cfile="$1" dir key
-    dir="$(dirname "$cfile")"
-    key="$(basename "$cfile")"
-    key="${key#cc-active-task-}"
-    rm -f \
-      "$dir/cc-active-task-$key" \
-      "$dir/cc-claim-epoch-$key" \
-      "$dir/cc-claim-dispatch-$key.json" 2>/dev/null || true
-    echo "cc-claim: retired released lease for '$existing_task' (status: $existing_status, key: $key)" >&2
-  }
-  # Role-release vocabulary. MUST match shared/sdlc_lifecycle.TASK_ROLE_RELEASING_STATUSES
-  # (pinned by tests/shared/test_sdlc_lifecycle.py::TestRoleReleaseVocabularyDrift).
-  #
-  # Two groups release the lane:
-  #   terminal  — the work is over.
-  #   resumable — the work is DONE and waiting on the pipeline (pr_open, merge_queue,
-  #               ready-family). These are pipeline-held, not worker-held; the lane can
-  #               take other work and re-claim later via TASK_RESUMABLE_STATUSES.
-  #
-  # This list previously read `done|completed|closed|withdrawn|superseded` — five of the
-  # fifteen canonical terminal statuses and none of the resumable ones. Measured
-  # 2026-08-29, that held 43 lanes hostage to finished work awaiting review, which is a
-  # feedback loop rather than a capacity limit.
-  case "$existing_status" in
-    # terminal — fulfilling
-    done|completed|complete|closed|fulfilled|resolved) \
-      _cc_retire_released_lease "$cf"; continue ;;
-    # terminal — non-fulfilling
-    withdrawn|withdrawn_stale|superseded|closed_superseded|rejected|refused) \
-      _cc_retire_released_lease "$cf"; continue ;;
-    not_applicable|deferred|closed_poisoned) \
-      _cc_retire_released_lease "$cf"; continue ;;
-    # resumable — finished, awaiting the pipeline
-    pr_open|merge_queue|ci_green|ready|ready_for_review|review_ready|ready_for_merge) \
-      _cc_retire_released_lease "$cf"; continue ;;
-    # post-merge and pre-work — declared 2026-08-29 after both were found live in the active
-    # corpus while belonging to no status set at all, which held their lanes permanently.
-    merged_awaiting_runtime_witness|backlog) \
-      _cc_retire_released_lease "$cf"; continue ;;
-  esac
   echo "cc-claim: BLOCKED — role '$role' already has active task '$existing_task' (status: $existing_status)." >&2
   echo "  Next action: close it first with cc-close $existing_task if terminal, or resume that task instead." >&2
   if [[ "$canon_enforced" == "0" ]]; then
@@ -415,6 +418,7 @@ if str(repo_root) not in sys.path:
 from shared.sdlc_lifecycle import (  # noqa: E402
     TASK_CLAIMABLE_STATUSES,
     TASK_RESUMABLE_STATUSES,
+    TASK_ROLE_RELEASING_STATUSES,
     TASK_TERMINAL_STATUSES,
     blocked_reason_from_frontmatter,
     blocked_witness_from_frontmatter,
@@ -484,6 +488,102 @@ if canon_enforced:
         if task_path is None:
             return "missing"
         return _frontmatter_scalar(task_path.read_text(encoding="utf-8"), "status") or "unknown"
+
+    def _archive_released_task_claim_residue(
+        *,
+        vault_root: Path,
+        cache_dir: Path,
+        role: str,
+        session_id: str,
+        current_task_id: str,
+        observed_at: str,
+    ) -> None:
+        """Archive the lease sidecars of a prior task that has released this role.
+
+        The bash role-cap loop above stops *blocking* on a released prior task; it does
+        not remove anything. Removal belongs here for three reasons the earlier revision
+        got wrong by doing an unlocked ``rm -f`` in bash:
+
+        * this runs inside the Gate-0B claim-publication section, so it cannot race a
+          concurrent resume that is publishing role and session projections;
+        * it archives into task lineage with a receipt instead of deleting, so a release
+          decision stays reconstructable;
+        * it fails closed. A sidecar it cannot read, or a partial set it cannot account
+          for, HOLDs rather than being swept away — ``rm -f ... || true`` reported success
+          after failure and could not tell a clean retirement from a broken one.
+
+        Without this, the bash loop's ``continue`` is not enough: ``claim_paths`` below
+        still finds the stale sidecars and ``resolve_applied_claim_publication`` exits 8
+        with ``claim_task_mismatch``, so the lane stays blocked one layer deeper.
+        """
+        released: list[tuple[str, str, tuple[Path, ...]]] = []
+        for claim_key in sorted({role, f"{role}-{session_id}"}):
+            claim_path = cache_dir / f"cc-active-task-{claim_key}"
+            if not claim_path.exists():
+                continue
+            try:
+                prior_task_id = claim_path.read_text(encoding="utf-8").split("\n", 1)[0].strip()
+            except (OSError, UnicodeDecodeError) as exc:
+                print(
+                    f"cc-claim: HOLD - unreadable claim sidecar {claim_path} ({exc}). "
+                    "Next action: inspect the file to recover its task id, then with "
+                    "operator approval run the Manual Stale-Lease Release runbook for "
+                    f"claim_file='{claim_path}' before retrying.",
+                    file=sys.stderr,
+                )
+                sys.exit(8)
+            if not prior_task_id or prior_task_id == current_task_id:
+                continue
+            if _task_status_for_any_state(vault_root, prior_task_id) not in (
+                TASK_ROLE_RELEASING_STATUSES
+            ):
+                continue
+            residue = tuple(
+                candidate
+                for candidate in (
+                    claim_path,
+                    cache_dir / f"cc-claim-epoch-{claim_key}",
+                    cache_dir / f"cc-claim-dispatch-{claim_key}.json",
+                )
+                if candidate.exists()
+            )
+            released.append((claim_key, prior_task_id, residue))
+
+        if not released:
+            return
+        lineage_root = vault_root / "_lineage"
+        archived: list[str] = []
+        for claim_key, prior_task_id, residue in released:
+            lineage_dir = (
+                lineage_root
+                / _safe_lineage_component(prior_task_id)
+                / (
+                    "released-claim-residue-"
+                    f"{_safe_lineage_component(observed_at)}-"
+                    f"{_safe_lineage_component(claim_key)}"
+                )
+            )
+            lineage_dir.mkdir(parents=True, exist_ok=False)
+            for source in residue:
+                source.replace(lineage_dir / source.name)
+            (lineage_dir / "README.md").write_text(
+                "Archived claim residue for a task that released this role.\n"
+                f"task_id: {prior_task_id}\n"
+                f"claim_key: {claim_key}\n"
+                f"claimed_next: {current_task_id}\n"
+                f"archived_at: {observed_at}\n"
+                f"archived: {', '.join(source.name for source in residue)}\n"
+                "reason: the prior task reached a role-releasing status (terminal, "
+                "resumable/pipeline-held, post-merge, or pre-work), so its lease no "
+                "longer occupies the role cap.\n",
+                encoding="utf-8",
+            )
+            archived.extend(str(lineage_dir / source.name) for source in residue)
+        print(
+            "cc-claim: archived released-task claim residue before fresh admitted claim: "
+            + ", ".join(archived),
+            file=sys.stderr,
+        )
 
     def _archive_dispatch_only_claim_residue(
         *,
@@ -700,13 +800,22 @@ if canon_enforced:
             cache_dir / f"cc-claim-dispatch-{key}.json",
         )
     )
+    _observed_at = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
+    _archive_released_task_claim_residue(
+        vault_root=path.parent.parent,
+        cache_dir=cache_dir,
+        role=role,
+        session_id=session_id,
+        current_task_id=task_id,
+        observed_at=_observed_at,
+    )
     _archive_dispatch_only_claim_residue(
         vault_root=path.parent.parent,
         cache_dir=cache_dir,
         role=role,
         session_id=session_id,
         current_task_id=task_id,
-        observed_at=datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ"),
+        observed_at=_observed_at,
     )
     claim_paths = tuple(candidate for candidate in claim_paths if candidate.exists())
     if any(candidate.exists() for candidate in claim_paths):
