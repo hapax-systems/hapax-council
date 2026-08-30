@@ -1499,7 +1499,6 @@ def test_the_chooser_returns_its_decision_rather_than_leaving_it_to_be_inferred(
         "an empty listing has no rows to infer from; the decision must come from the chooser"
     )
     assert route.rest_blocked is True
-    assert route.rest_available is False
 
 
 def test_a_measured_empty_rest_pool_is_not_an_eligible_fallback(tmp_path: Path) -> None:
@@ -1516,8 +1515,8 @@ def test_a_measured_empty_rest_pool_is_not_an_eligible_fallback(tmp_path: Path) 
         transport="graphql", rest_blocked=False, reason="github_graphql_has_more_headroom"
     )
 
-    assert blocked.rest_available is False
-    assert open_pool.rest_available is True
+    assert blocked.rest_blocked is True
+    assert open_pool.rest_blocked is False
 
 
 def test_the_rest_floor_has_an_operational_killswitch(

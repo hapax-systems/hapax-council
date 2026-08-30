@@ -132,11 +132,6 @@ class ListingRoute:
     rest_blocked: bool
     reason: str
 
-    @property
-    def rest_available(self) -> bool:
-        """Whether REST may be used at all — as a primary path or as a fallback."""
-        return not self.rest_blocked
-
 
 def _env_int(name: str, default: int) -> int:
     raw = os.environ.get(name)
