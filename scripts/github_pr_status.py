@@ -934,20 +934,30 @@ def rate_snapshot(
             header_remaining = int(headers["x-ratelimit-remaining"])
             header_limit = int(headers.get("x-ratelimit-limit", core.limit if core else 0))
         except (KeyError, TypeError, ValueError):
-            header_remaining = None
+            # Nothing to unwind: only the ``else`` branch reads the parsed header values,
+            # so a parse failure simply leaves ``core`` as the body-derived pool.
+            pass
         else:
             try:
                 header_reset: int | None = int(headers.get("x-ratelimit-reset"))
             except (TypeError, ValueError):
                 header_reset = core.reset_epoch if core else None
             # Pessimistic merge: never claim more headroom than the strictest source.
-            remaining = min(header_remaining, core.remaining) if core else header_remaining
+            # The label must follow the winning figure. Labelling a body-derived number
+            # "header" would overstate its evidence in the one case the two disagree —
+            # which is the case this merge exists for.
+            if core is not None and core.remaining < header_remaining:
+                remaining = core.remaining
+                remaining_source = "body"
+            else:
+                remaining = header_remaining
+                remaining_source = "header"
             core = RatePool(
                 resource="core",
                 remaining=remaining,
                 limit=header_limit or (core.limit if core else 0),
                 reset_epoch=header_reset,
-                source="header",
+                source=remaining_source,
             )
 
     return RateSnapshot(core=core, graphql=graphql)

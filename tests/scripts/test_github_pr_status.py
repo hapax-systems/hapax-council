@@ -769,6 +769,27 @@ def test_disagreement_resolves_pessimistically(tmp_path: Path) -> None:
 
     assert snapshot.core is not None
     assert snapshot.core.remaining == 10, "the stricter of the two sources must win"
+    assert snapshot.core.source == "body", (
+        "provenance must follow the winning figure — labelling this 'header' would "
+        "claim authoritative evidence for a body-derived number, in the exact case "
+        "the two sources disagree"
+    )
+
+
+def test_header_wins_and_keeps_its_authoritative_label(tmp_path: Path) -> None:
+    """The converse of the pessimistic merge: when the header is stricter, it is also the label.
+
+    Pinned separately because a fix that always said "body" would satisfy the
+    disagreement test above while destroying the provenance distinction entirely.
+    """
+    snapshot = github_pr_status.rate_snapshot(
+        repo_root=tmp_path,
+        runner=_rate_runner(header_remaining=7, body_core=4000, body_graphql=4660),
+    )
+
+    assert snapshot.core is not None
+    assert snapshot.core.remaining == 7, "the stricter of the two sources must win"
+    assert snapshot.core.source == "header"
 
 
 def test_rest_floor_is_enforced_by_the_single_decision_point(tmp_path: Path) -> None:
