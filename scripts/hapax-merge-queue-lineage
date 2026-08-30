@@ -190,46 +190,64 @@ def fetch_prs(
     unhydrated: list[dict[str, Any]] = []
     seen = {int(pr["number"]) for pr in prs if pr.get("number") is not None}
     for number in sorted(pr_numbers - seen):
-        # Routing the listing and leaving this loop on REST spared one call and spent N. When the
-        # cycle chose GraphQL because REST is measured below its floor, hydrating here would put
-        # the traffic straight back on the empty pool — so on that path the PR is reported as
-        # unhydrated rather than fetched, and lineage records the gap instead of manufacturing it.
-        if route is not None and route.transport == "graphql" and not route.rest_blocked:
-            # The cycle chose GraphQL while REST is healthy — so hydrate over GraphQL rather
-            # than putting the per-PR traffic back on the pool the routing chose to spare.
-            # Guarding only `rest_blocked` covered the empty-pool case and left this one, which
-            # is the "routed the listing, left the loop" mistake one notch subtler.
+        # Hydrate on the transport the cycle chose. The previous revision required
+        # `not route.rest_blocked` before using the GraphQL hydrator, which refused GraphQL in
+        # exactly the case it exists for — REST measured empty — and recorded a gap instead.
+        # All three review families named the inversion together, and the test I wrote asserted
+        # it rather than catching it.
+        #
+        # `rest_blocked` decides ELIGIBILITY OF THE FALLBACK, never of the primary. That is the
+        # same rule the listing uses; applying it to the primary was the mistake.
+        use_graphql = route is not None and route.transport == "graphql"
+        rest_available = route is None or not route.rest_blocked
+
+        if use_graphql:
             pr = get_pr_status_graphql(
                 number, repo=repo_name, repo_root=REPO_ROOT, runner=subprocess.run
             )
             if pr is not None:
                 prs.append(pr)
-            else:
-                print(f"warning: PR #{number} query failed via GraphQL", file=sys.stderr)
-                unhydrated.append({"number": number, "reason": "graphql_query_failed"})
-            continue
-        if route is not None and route.rest_blocked:
-            # Record the gap IN THE ARTIFACT, not only on stderr. Skipping silently produces a
-            # lineage result that looks complete and is not — the same silent-empty class this
-            # change spent ten review rounds removing from the listing, reappearing in the
-            # output rather than the input. A consumer can now see which PRs were not measured
-            # and why, instead of inferring a clean run from a short one.
+                continue
+            if not rest_available:
+                # GraphQL failed and REST is measured empty: nothing eligible remains, so record
+                # the gap IN THE ARTIFACT rather than putting traffic on a pool known to be
+                # spent. Skipping silently would produce a lineage result that looks complete
+                # and is not — and a synthetic row in `prs` would be worse still, since that
+                # list feeds every lineage record as real PR status.
+                print(
+                    f"warning: PR #{number} not hydrated — GraphQL query failed and REST is "
+                    f"measured below its floor ({route.reason}). Next action: rerun once "
+                    "`github_pr_status.py rate` shows headroom; the lineage row is marked "
+                    "unhydrated rather than guessed.",
+                    file=sys.stderr,
+                )
+                unhydrated.append({"number": number, "reason": "graphql_failed_rest_blocked"})
+                continue
             print(
-                f"warning: PR #{number} not hydrated — REST measured below its floor "
-                f"({route.reason}); recorded as unhydrated rather than fetched from an empty pool",
+                f"warning: PR #{number} GraphQL hydration failed; falling back to REST, which "
+                "is measured above its floor",
                 file=sys.stderr,
             )
-            # NOT into `prs`. That list is consumed as real PR status — it feeds
-            # `pr_by_number` and every lineage record — so a synthetic row there is a
-            # fabricated measurement, which is a worse failure than the silent gap it was
-            # meant to fix. The gap belongs in the artifact's own metadata.
+
+        if not rest_available:
+            print(
+                f"warning: PR #{number} not hydrated — REST measured below its floor "
+                f"({route.reason}) and no GraphQL route was chosen for this cycle. Next action: "
+                "rerun once `github_pr_status.py rate` shows headroom.",
+                file=sys.stderr,
+            )
             unhydrated.append({"number": number, "reason": route.reason})
             continue
+
         pr = get_pr_status_rest(number, repo=repo_name, repo_root=REPO_ROOT, runner=subprocess.run)
         if pr is not None:
             prs.append(pr)
         else:
-            print(f"warning: PR #{number} query failed via REST", file=sys.stderr)
+            print(
+                f"warning: PR #{number} query failed via REST. Next action: check "
+                "`gh auth status`; the lineage row is marked unhydrated rather than guessed.",
+                file=sys.stderr,
+            )
             unhydrated.append({"number": number, "reason": "rest_query_failed"})
     return prs, unhydrated
 

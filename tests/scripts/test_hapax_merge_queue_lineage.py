@@ -320,12 +320,61 @@ def test_hydration_uses_the_chosen_transport_and_records_what_it_could_not_reach
         f"per-PR hydration must follow the cycle's transport: {calls}"
     )
 
-    # REST measured empty: the PR is a recorded gap, not a fetch and not a silent drop.
+    # REST measured EMPTY and GraphQL healthy — the case the GraphQL hydrator exists for.
+    #
+    # This assertion previously read `unhydrated == [4242]`, which ENCODED the bug: the
+    # hydrator required `not rest_blocked`, so it refused GraphQL in exactly the situation it
+    # was built for and recorded a gap instead. All three review families caught the inversion;
+    # the test had blessed it. A gap is correct only when nothing eligible remains.
     calls = []
     monkeypatch.setattr(lineage.subprocess, "run", runner_for(core=0, graphql=4900, calls=calls))
     rows, unhydrated = lineage.fetch_prs(limit=10, repo=None, pr_numbers={4242})
-    assert [g["number"] for g in unhydrated] == [4242]
+    assert [r["number"] for r in rows] == [4242], (
+        "an exhausted REST pool is the reason to USE the GraphQL hydrator, not to skip it"
+    )
+    assert unhydrated == []
     assert not any(len(c) > 6 and str(c[6]).startswith("repos/") for c in calls)
+
+
+def test_a_gap_is_recorded_only_when_nothing_eligible_remains(
+    tmp_path: Path,
+    monkeypatch: Any,
+) -> None:
+    """The converse, and the reason the fix is not simply "always try GraphQL".
+
+    A gap is the right answer when the chosen transport fails AND the other pool is measured
+    empty. It is the wrong answer whenever an eligible pool is left untried — which is what the
+    inverted guard produced.
+    """
+    lineage = _load_lineage_module()
+    monkeypatch.setattr(lineage, "REPO_ROOT", tmp_path)
+
+    def both_unusable(cmd: list[str], **_: Any) -> subprocess.CompletedProcess:
+        if cmd[:4] == ["gh", "api", "-i", "rate_limit"]:
+            head = (
+                "HTTP/2.0 200 OK\r\nX-Ratelimit-Limit: 5000\r\n"
+                "X-Ratelimit-Remaining: 0\r\nX-Ratelimit-Reset: 1893456000\r\n"
+                "X-Ratelimit-Resource: core\r\n"
+            )
+            payload = {
+                "resources": {
+                    "core": {"remaining": 0, "limit": 5000, "reset": 1893456000},
+                    "graphql": {"remaining": 4900, "limit": 5000, "reset": 1893456000},
+                }
+            }
+            return subprocess.CompletedProcess(cmd, 0, f"{head}\r\n{json.dumps(payload)}", "")
+        if cmd[:3] == ["gh", "pr", "list"]:
+            return subprocess.CompletedProcess(cmd, 0, "[]", "")
+        # GraphQL hydration fails; REST is measured empty, so nothing eligible remains.
+        return subprocess.CompletedProcess(cmd, 1, "", "boom")
+
+    monkeypatch.setattr(lineage.subprocess, "run", both_unusable)
+    rows, unhydrated = lineage.fetch_prs(limit=10, repo=None, pr_numbers={4242})
+
+    assert rows == []
+    assert [g["reason"] for g in unhydrated] == ["graphql_failed_rest_blocked"], (
+        "the gap must name WHY nothing was eligible, not merely that a row is missing"
+    )
 
 
 def test_fetch_prs_fails_closed_when_open_pr_snapshot_is_indeterminate(
