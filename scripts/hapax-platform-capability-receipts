@@ -18,6 +18,8 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
+import yaml
+
 REPO_ROOT = Path(__file__).resolve().parents[1]
 if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
@@ -465,6 +467,107 @@ def tool_state(routes: list[PlatformCapabilityRoute]) -> list[ToolEvidence]:
     return [by_tool[tool_id] for tool_id in sorted(by_tool)]
 
 
+#: Where the estate's own quota producers write. `hapax-claude-account-live-observe` (10-minute
+#: timer) and the per-platform `*-quota-admission` scripts land here; `shared/quota_wall.py` and
+#: `shared/sdlc_pressure_gate.py` already read it.
+QUOTA_RECEIPT_DIR = Path.home() / ".cache" / "hapax" / "relay" / "receipts"
+
+
+def _fresh_quota_receipt(path: Path, *, route_ids: set[str], now: datetime) -> dict[str, Any] | None:
+    """A quota receipt from `path` if it is fresh, positive, and for one of these routes.
+
+    Refuses lane-presence evidence explicitly. The receipt carries
+    `lane_presence_used_as_quota_evidence`, and the estate's standing rule is that a lane existing
+    is not evidence its quota has headroom — accepting it would rebuild the attestation-in-disguise
+    this whole path exists to remove.
+    """
+    try:
+        doc = yaml.safe_load(path.read_text(encoding="utf-8"))
+    except (OSError, yaml.YAMLError):
+        return None
+    if not isinstance(doc, dict) or doc.get("route_id") not in route_ids:
+        return None
+    if doc.get("lane_presence_used_as_quota_evidence") is True:
+        return None
+    if doc.get("status") != "quota_available":
+        return None
+    # **PyYAML parses an ISO timestamp into a `datetime`, not a `str`.** The first version tested
+    # `isinstance(observed_raw, str)` and therefore rejected every well-formed receipt on disk —
+    # reporting quota unobservable for exactly the reason it was meant to fix. Accept both, and
+    # normalise a naive datetime to UTC rather than assuming tzinfo is present.
+    observed_raw = doc.get("observed_at")
+    stale_seconds = doc.get("stale_after_seconds")
+    if not isinstance(stale_seconds, int):
+        return None
+    if isinstance(observed_raw, datetime):
+        observed = observed_raw if observed_raw.tzinfo else observed_raw.replace(tzinfo=UTC)
+    elif isinstance(observed_raw, str):
+        try:
+            observed = parse_utc(observed_raw)
+        except ValueError:
+            return None
+    else:
+        return None
+    if (now - observed).total_seconds() > stale_seconds:
+        return None
+    doc["_observed"] = observed
+    return doc
+
+
+def observe_quota(
+    platform: str, routes: list[PlatformCapabilityRoute], *, now: datetime
+) -> SurfaceEvidence:
+    """Quota status read from the estate's own receipts — not hardcoded.
+
+    **This was a literal.** `quota` was constructed as UNOBSERVABLE with
+    `account_live_quota_receipt_absent` unconditionally, for every platform, on every run. No lookup
+    existed. So every one of the 16 declared routes reported its quota unobservable while
+    `hapax-claude-account-live-observe` wrote fresh, positive, mechanically-obtained receipts every
+    ten minutes — 6,917 of them on disk when this was found.
+
+    That inverts the estate's own recorded failure. The 2026-08-19 rule says *"account-live is a
+    fundamental property of a capability... I should not have to intervene on any measurement"*, and
+    diagnosed the hazard as **an allowed observation with no producer**, which degrades into an
+    operator attestation. Here the producer exists and runs; the CONSUMER was the stub. The symptom
+    is identical — a property reported unobservable that is in fact observed — and a hardcoded
+    verdict is worse than a missing one, because it cannot come back.
+
+    Fails closed: no fresh positive receipt for any of this platform's routes yields UNOBSERVABLE
+    with the original reason code, which is the honest state when nothing has been observed.
+    """
+    route_ids = {route.route_id for route in routes}
+    best: tuple[datetime, dict[str, Any], Path] | None = None
+    if QUOTA_RECEIPT_DIR.is_dir():
+        for path in QUOTA_RECEIPT_DIR.glob("*quota*admission*.yaml"):
+            doc = _fresh_quota_receipt(path, route_ids=route_ids, now=now)
+            if doc is None:
+                continue
+            observed = doc["_observed"]
+            if best is None or observed > best[0]:
+                best = (observed, doc, path)
+    if best is None:
+        return surface_evidence(
+            status=EvidenceStatus.UNOBSERVABLE,
+            source="local_receipt_probe",
+            observed_at=now,
+            stale_after="15m",
+            evidence_refs=[f"local:{platform}:quota-probe:unobservable"],
+            reason_codes=["account_live_quota_receipt_absent"],
+        )
+    observed, doc, path = best
+    return surface_evidence(
+        status=EvidenceStatus.OBSERVED,
+        source="local_receipt_probe",
+        observed_at=observed,
+        stale_after=f"{doc['stale_after_seconds']}s",
+        evidence_refs=[
+            f"local:{display_path(path)}:quota-admission:{doc.get('evidence_ref', 'unnamed')}",
+            f"platform-capability-registry:{doc['route_id']}:quota:observed",
+        ],
+        reason_codes=[],
+    )
+
+
 def surface_evidence(
     *,
     status: EvidenceStatus,
@@ -568,15 +671,7 @@ def build_receipt(
             f"local:{item.path}:executable:{str(item.executable).lower()}",
         )
     ]
-    quota_reason = "account_live_quota_receipt_absent"
-    quota = surface_evidence(
-        status=EvidenceStatus.UNOBSERVABLE,
-        source="local_receipt_probe",
-        observed_at=observed_at,
-        stale_after="15m",
-        evidence_refs=[f"local:{platform}:quota-probe:unobservable"],
-        reason_codes=[quota_reason],
-    )
+    quota = observe_quota(platform, routes, now=observed_at)
     provider_refs = provider_doc_refs(routes)
     if not provider_refs:
         provider_refs = [f"platform-capability-registry:{platform}:provider-docs:absent"]

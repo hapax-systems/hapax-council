@@ -12,6 +12,8 @@ import sys
 import time
 from datetime import UTC, datetime
 from pathlib import Path
+
+import yaml
 from typing import TYPE_CHECKING
 from unittest.mock import patch
 
@@ -2020,3 +2022,128 @@ def test_live_read_path_defaults_receipt_dir_to_env_for_opus(tmp_path: Path) -> 
 
     assert decision.action is DispatchAction.LAUNCH
     assert "policy_launch" in decision.reason_codes
+
+
+def _quota_receipt(path: Path, **overrides: object) -> Path:
+    body: dict[str, object] = {
+        "schema": "hapax.claude_quota_admission.v1",
+        "status": "quota_available",
+        "route_id": "claude.headless.full",
+        "observation": "subscription_quota_headroom_observed",
+        "observed_at": "2026-09-01T23:10:17Z",
+        "stale_after_seconds": 1800,
+        "evidence_ref": "claude-subscription-headroom-observed-20260901t231017z",
+        "account_live_quota_observed": True,
+        "lane_presence_used_as_quota_evidence": False,
+    }
+    body.update(overrides)
+    lines = []
+    for key, value in body.items():
+        if isinstance(value, bool):
+            value = "true" if value else "false"
+        lines.append(f"{key}: {value}")
+    path.write_text("\n".join(lines) + "\n", encoding="utf-8")
+    return path
+
+
+class _Route:
+    def __init__(self, route_id: str) -> None:
+        self.route_id = route_id
+
+
+class TestQuotaIsReadNotHardcoded:
+    """`quota` was a LITERAL: UNOBSERVABLE for every platform on every run, with no lookup at all.
+
+    Meanwhile `hapax-claude-account-live-observe` writes fresh, positive, mechanically-obtained
+    receipts every ten minutes — 6,917 were on disk when this was found. So all 16 declared routes
+    reported quota unobservable for a property that was in fact continuously observed.
+
+    This inverts the estate's 2026-08-19 rule, which diagnosed *an allowed observation with no
+    producer* degrading into an operator attestation. Here the producer exists and runs; the
+    CONSUMER was the stub — and a hardcoded verdict is worse than a missing one, because it cannot
+    come back.
+    """
+
+    def _module(self, tmp_path: Path):
+        module = runpy.run_path(str(SCRIPT), run_name="__test__")
+        # **Patch `__globals__`, not the returned dict.** `runpy.run_path` hands back a COPY of the
+        # module globals, so assigning into it never reaches the functions — they keep resolving
+        # `QUOTA_RECEIPT_DIR` to the real `~/.cache/hapax/relay/receipts`. The first version did
+        # that and two tests "passed" by reading the operator's live receipts, which is coverage
+        # theatre pointed at production state.
+        module["observe_quota"].__globals__["QUOTA_RECEIPT_DIR"] = tmp_path
+        return module
+
+    def test_a_fresh_positive_receipt_is_observed(self, tmp_path: Path) -> None:
+        module = self._module(tmp_path)
+        _quota_receipt(tmp_path / "claude-quota-admission-a.yaml")
+        result = module["observe_quota"](
+            "claude",
+            [_Route("claude.headless.full")],
+            now=datetime(2026, 9, 1, 23, 15, 0, tzinfo=UTC),
+        )
+        assert result.status.value == "observed", result.reason_codes
+        assert any("quota-admission" in ref for ref in result.evidence_refs)
+
+    def test_a_stale_receipt_is_not_observed(self, tmp_path: Path) -> None:
+        module = self._module(tmp_path)
+        _quota_receipt(tmp_path / "claude-quota-admission-b.yaml", stale_after_seconds=60)
+        result = module["observe_quota"](
+            "claude",
+            [_Route("claude.headless.full")],
+            now=datetime(2026, 9, 1, 23, 59, 0, tzinfo=UTC),
+        )
+        assert result.status.value == "unobservable"
+        assert "account_live_quota_receipt_absent" in result.reason_codes
+
+    def test_lane_presence_evidence_is_refused(self, tmp_path: Path) -> None:
+        """A lane existing is not evidence its quota has headroom.
+
+        Accepting it would rebuild the attestation-in-disguise this path exists to remove; the
+        receipt carries the flag precisely so a consumer can refuse it.
+        """
+        module = self._module(tmp_path)
+        _quota_receipt(
+            tmp_path / "claude-quota-admission-c.yaml",
+            lane_presence_used_as_quota_evidence=True,
+        )
+        result = module["observe_quota"](
+            "claude",
+            [_Route("claude.headless.full")],
+            now=datetime(2026, 9, 1, 23, 15, 0, tzinfo=UTC),
+        )
+        assert result.status.value == "unobservable", (
+            "lane presence must never be accepted as quota evidence"
+        )
+
+    def test_another_routes_receipt_is_not_borrowed(self, tmp_path: Path) -> None:
+        module = self._module(tmp_path)
+        _quota_receipt(tmp_path / "other-quota-admission.yaml", route_id="glmcp.review.direct")
+        result = module["observe_quota"](
+            "claude",
+            [_Route("claude.headless.full")],
+            now=datetime(2026, 9, 1, 23, 15, 0, tzinfo=UTC),
+        )
+        assert result.status.value == "unobservable"
+
+    def test_a_yaml_parsed_datetime_is_accepted(self, tmp_path: Path) -> None:
+        """PyYAML turns an ISO timestamp into a `datetime`, not a `str`.
+
+        The first version of this lookup tested `isinstance(observed_at, str)` and therefore
+        rejected every well-formed receipt on disk — reporting quota unobservable for exactly the
+        reason it was written to fix. The receipts are unquoted timestamps, so this is the normal
+        case, not an edge one.
+        """
+        module = self._module(tmp_path)
+        path = tmp_path / "claude-quota-admission-d.yaml"
+        _quota_receipt(path)
+        parsed = yaml.safe_load(path.read_text(encoding="utf-8"))
+        assert isinstance(parsed["observed_at"], datetime), (
+            "fixture must reproduce YAML's datetime coercion, or this test proves nothing"
+        )
+        result = module["observe_quota"](
+            "claude",
+            [_Route("claude.headless.full")],
+            now=datetime(2026, 9, 1, 23, 15, 0, tzinfo=UTC),
+        )
+        assert result.status.value == "observed"
