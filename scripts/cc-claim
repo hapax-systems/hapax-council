@@ -516,7 +516,9 @@ if canon_enforced:
         A crash between moves previously left files in lineage with nothing recording which
         task they belonged to — and because the `cc-active-task` anchor had already moved, no
         later run could recover it. Receipt-first makes the archive identify itself from its
-        first instant, which is what `_recover_archived_task_id` reads.
+        first instant, which is what `_interrupted_release_archivals` reads. Its `archived:` line
+        is load-bearing for that: it names the exact sidecars this archival set out to move, and
+        without it a receipt could not be tied to the residue actually left behind.
         """
         lineage_dir.mkdir(parents=True, exist_ok=True)
         (lineage_dir / _RELEASE_RECEIPT).write_text(
@@ -532,22 +534,56 @@ if canon_enforced:
             encoding="utf-8",
         )
 
-    def _recover_archived_task_id(vault_root: Path, claim_key: str) -> str | None:
-        """Find the task a half-archived claim key belonged to, from a prior receipt."""
+    def _interrupted_release_archivals(
+        vault_root: Path, claim_key: str, present: "tuple[Path, ...]"
+    ) -> "list[tuple[str, Path]]":
+        """Receipts whose archival of exactly THIS residue demonstrably did not finish.
+
+        Replaces a lookup that took the first receipt mentioning `claim_key`. **Claim keys are
+        `role` and `role-session`, and both are reused across tasks**, so "first receipt with this
+        key" can name a different task entirely: after task A archives, task B can be interrupted
+        between its epoch and dispatch moves, and a later claim for task C would then read A's
+        receipt, archive B's residue under A's lineage, and proceed while B is still claimed. The
+        claim key is not an identifier of the archival — it is an identifier of the LANE.
+
+        Two further conditions make a receipt identify the residue in front of us:
+
+        * the receipt's `archived:` list must COVER the sidecars still sitting in the cache — it
+          records exactly which files that archival set out to move; and
+        * the receipt's own lineage directory must still be MISSING them. A completed archival has
+          the files at the destination. Only an interrupted one leaves them at the source.
+
+        Returns every match rather than the first, so the caller can fail closed on ambiguity
+        instead of choosing. Nothing here decides; it reports what the evidence supports.
+        """
         lineage_root = vault_root / "_lineage"
-        if not lineage_root.is_dir():
-            return None
+        if not lineage_root.is_dir() or not present:
+            return []
+        present_names = {path.name for path in present}
+        matches: list[tuple[str, Path]] = []
         for receipt in sorted(lineage_root.glob(f"*/released-claim-residue-*/{_RELEASE_RECEIPT}")):
             try:
                 text = receipt.read_text(encoding="utf-8")
             except OSError:
                 continue
-            if f"claim_key: {claim_key}\n" not in text:
-                continue
+            fields: dict[str, str] = {}
             for line in text.splitlines():
-                if line.startswith("task_id: "):
-                    return line[len("task_id: ") :].strip() or None
-        return None
+                key, sep, value = line.partition(": ")
+                if sep:
+                    fields.setdefault(key.strip(), value.strip())
+            if fields.get("claim_key") != claim_key:
+                continue
+            task_id = fields.get("task_id") or ""
+            archived = {name.strip() for name in fields.get("archived", "").split(",") if name.strip()}
+            if not task_id or not archived:
+                continue
+            if not present_names <= archived:
+                continue
+            lineage_dir = receipt.parent
+            if any((lineage_dir / name).exists() for name in present_names):
+                continue  # the move completed; this residue is not from this archival
+            matches.append((task_id, lineage_dir))
+        return matches
 
     def _archive_released_task_claim_residue(
         *,
@@ -623,19 +659,49 @@ if canon_enforced:
             ]
             if not claim_path.exists():
                 epoch_path, dispatch_path = siblings
-                # A surviving EPOCH is the signature of a crash mid-archival. A surviving
-                # dispatch binding alone is not: a normal close removes active+epoch and leaves
-                # the dispatch spent leg, which `_archive_dispatch_only_claim_residue` already
-                # owns. Claiming it here would be a second mitigation for a hazard that has one,
-                # and the first version of this fix did exactly that — it HELD on the legitimate
-                # post-close state.
-                if not epoch_path.exists():
-                    continue
                 orphans = [s for s in siblings if s.exists()]
+                if not orphans:
+                    continue
+                # **A bare dispatch sidecar has THREE possible causes, and this was a boolean.**
+                #
+                # The previous revision read "epoch gone" as proof of a normal close, whose spent
+                # dispatch leg `_archive_dispatch_only_claim_residue` legitimately owns. That is
+                # true of a normal close and NOT true in general: release archival moves
+                # active -> epoch -> dispatch, so a crash between the second and third moves leaves
+                # no anchor, no epoch, and a bare dispatch sidecar — a file state IDENTICAL to a
+                # normal close. The dispatch-only archiver then rejects `pr_open` and ready-family
+                # tasks as non-terminal, so every retry HOLDs and the work is wedged permanently.
+                # Two review families found this independently.
+                #
+                # The states are distinguished by the RECEIPT, which is written before any file
+                # moves precisely so the archive is self-describing:
+                #
+                #   epoch present                      -> crash mid-archival
+                #   epoch absent, receipt claims these -> crash AFTER the epoch move
+                #   epoch absent, no such receipt      -> normal close; not ours
+                #
+                # This is not a second mitigation for the hazard the dispatch-only archiver owns:
+                # it is the discriminator that decides WHICH hazard is present, and its precondition
+                # is machine-checkable at the moment of use rather than asserted about the past.
+                interrupted = _interrupted_release_archivals(vault_root, claim_key, tuple(orphans))
+                if not epoch_path.exists() and not interrupted:
+                    continue
+                if len(interrupted) > 1:
+                    print(
+                        f"cc-claim: HOLD - claim key '{claim_key}' has residue "
+                        f"({', '.join(o.name for o in orphans)}) matching "
+                        f"{len(interrupted)} unfinished release archivals "
+                        f"({', '.join(task for task, _ in interrupted)}). Claim keys are reused "
+                        "across tasks, so this cannot be resolved by picking one. Next action: "
+                        "inspect those receipts, decide which archival the residue belongs to, "
+                        "and with operator approval complete that move by hand before rerunning.",
+                        file=sys.stderr,
+                    )
+                    sys.exit(8)
                 # The anchor is gone but residue remains — the signature of a crash mid-archival.
                 # Recover the task id from the receipt the previous attempt left, which is why
                 # the receipt is now written BEFORE any file moves.
-                recovered = _recover_archived_task_id(vault_root, claim_key)
+                recovered = interrupted[0][0] if interrupted else None
                 if recovered is None:
                     print(
                         f"cc-claim: HOLD - claim key '{claim_key}' has residue "

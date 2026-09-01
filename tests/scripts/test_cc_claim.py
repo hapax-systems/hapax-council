@@ -1777,7 +1777,13 @@ def test_a_crash_mid_archival_can_be_resumed_rather_than_wedging_the_lane(tmp_pa
         "task_id: task-a\n"
         f"claim_key: {claim_key}\n"
         "claimed_next: task-b\n"
-        "archived_at: partial\n",
+        "archived_at: partial\n"
+        # The real writer always emits this line and recovery now requires it: a claim key is
+        # reused across tasks, so it identifies the LANE, not the archival. `archived:` names the
+        # exact sidecars this archival set out to move, which is what ties a receipt to the residue
+        # actually left behind. The fixture omitted it and so was not reproducing a real receipt.
+        f"archived: {anchor.name}, cc-claim-epoch-{claim_key}, "
+        f"cc-claim-dispatch-{claim_key}.json\n",
         encoding="utf-8",
     )
     shutil.move(str(anchor), str(lineage / anchor.name))
@@ -1908,3 +1914,132 @@ def test_unreadable_claim_sidecar_holds_instead_of_being_swept(tmp_path: Path) -
         "a HOLD on unreadable residue must archive nothing at all; "
         f"these were swept anyway: {archived}"
     )
+
+
+def test_a_crash_after_the_epoch_move_is_resumable_not_permanently_wedged(
+    tmp_path: Path,
+) -> None:
+    """A bare dispatch sidecar is not proof of a normal close.
+
+    Found independently by two review families. Release archival moves
+    active -> epoch -> dispatch. A crash between the second and third moves leaves no anchor, no
+    epoch, and a bare dispatch sidecar — **a file state identical to a normal close**. The previous
+    revision read "epoch gone" as proof of a close and skipped, so the residue fell through to the
+    dispatch-only archiver, which rejects `pr_open` as non-terminal. Every retry then HOLDs and the
+    work is wedged permanently, with no path out.
+
+    The discriminator is the receipt, which is written before any file moves precisely so the
+    archive is self-describing.
+    """
+    home = tmp_path / "home"
+    first_note = _write_task(home, "active", "task-a")
+    _write_task(home, "active", "task-b")
+
+    assert _claim(home, "task-a").returncode == 0
+    first_note.write_text(
+        first_note.read_text(encoding="utf-8").replace("status: claimed", "status: pr_open"),
+        encoding="utf-8",
+    )
+
+    cache = home / ".cache" / "hapax"
+    anchors = sorted(cache.glob("cc-active-task-*"))
+    assert anchors, "setup claim published no anchor"
+    anchor = anchors[0]
+    claim_key = anchor.name[len("cc-active-task-") :]
+    epoch = cache / f"cc-claim-epoch-{claim_key}"
+    dispatch = cache / f"cc-claim-dispatch-{claim_key}.json"
+    assert epoch.exists() and dispatch.exists(), "setup did not publish the full residue set"
+
+    lineage = _task_root(home) / "_lineage" / "task-a" / "released-claim-residue-partial"
+    lineage.mkdir(parents=True, exist_ok=True)
+    (lineage / "README.md").write_text(
+        "Archived claim residue for a task that released this role.\n"
+        "task_id: task-a\n"
+        f"claim_key: {claim_key}\n"
+        "claimed_next: task-b\n"
+        "archived_at: partial\n"
+        f"archived: {anchor.name}, {epoch.name}, {dispatch.name}\n",
+        encoding="utf-8",
+    )
+    # The crash: receipt written, anchor AND epoch moved, dispatch left behind. This is the
+    # state the previous revision could not tell from a normal close.
+    shutil.move(str(anchor), str(lineage / anchor.name))
+    shutil.move(str(epoch), str(lineage / epoch.name))
+    assert not anchor.exists() and not epoch.exists() and dispatch.exists(), (
+        "fixture must reproduce a bare dispatch sidecar with the epoch already archived"
+    )
+
+    result = _claim(home, "task-b")
+
+    assert result.returncode == 0, (
+        "a crash AFTER the epoch move must still be resumable; the receipt names the residue.\n"
+        f"stderr: {result.stderr}"
+    )
+    archived_names = {
+        f.name
+        for d in (_task_root(home) / "_lineage" / "task-a").iterdir()
+        if d.is_dir()
+        for f in d.iterdir()
+    }
+    assert dispatch.name in archived_names, (
+        "the stranded dispatch binding must be rescued on the retry; "
+        f"archived: {sorted(archived_names)}"
+    )
+
+
+def test_reused_claim_keys_do_not_let_recovery_sweep_another_tasks_residue(
+    tmp_path: Path,
+) -> None:
+    """Two unfinished archivals under one claim key must HOLD, not pick the first.
+
+    Claim keys are `role` and `role-session` and both are reused across tasks, so a claim key
+    identifies the LANE, not the archival. Taking the first receipt that mentions the key let a
+    later claim misattribute one task's residue to another, archive it under the wrong lineage,
+    and proceed while that task was still claimed. Ambiguity here has to fail closed: there is no
+    evidence available at this point that could choose correctly.
+    """
+    home = tmp_path / "home"
+    first_note = _write_task(home, "active", "task-a")
+    _write_task(home, "active", "task-b")
+
+    assert _claim(home, "task-a").returncode == 0
+    first_note.write_text(
+        first_note.read_text(encoding="utf-8").replace("status: claimed", "status: pr_open"),
+        encoding="utf-8",
+    )
+
+    cache = home / ".cache" / "hapax"
+    anchor = sorted(cache.glob("cc-active-task-*"))[0]
+    claim_key = anchor.name[len("cc-active-task-") :]
+    epoch = cache / f"cc-claim-epoch-{claim_key}"
+    dispatch = cache / f"cc-claim-dispatch-{claim_key}.json"
+
+    lineage_root = _task_root(home) / "_lineage"
+    # TWO unfinished archivals, different tasks, same reused claim key, both naming this residue
+    # and neither holding it. Nothing distinguishes them from here.
+    for task in ("task-a", "older-task"):
+        d = lineage_root / task / f"released-claim-residue-{task}"
+        d.mkdir(parents=True, exist_ok=True)
+        (d / "README.md").write_text(
+            "Archived claim residue for a task that released this role.\n"
+            f"task_id: {task}\n"
+            f"claim_key: {claim_key}\n"
+            "claimed_next: task-b\n"
+            f"archived_at: {task}\n"
+            f"archived: {anchor.name}, {epoch.name}, {dispatch.name}\n",
+            encoding="utf-8",
+        )
+    shutil.move(
+        str(anchor), str(lineage_root / "task-a" / "released-claim-residue-task-a" / anchor.name)
+    )
+    assert not anchor.exists() and epoch.exists()
+
+    result = _claim(home, "task-b")
+
+    assert result.returncode != 0, (
+        "two candidate archivals under one reused claim key must HOLD rather than picking one.\n"
+        f"stdout: {result.stdout}\nstderr: {result.stderr}"
+    )
+    assert "unfinished release archivals" in result.stderr, result.stderr
+    # Fail-closed means nothing moved: a wrong choice would file this residue under the wrong task.
+    assert epoch.exists(), "a HOLD on ambiguous residue must archive nothing"
