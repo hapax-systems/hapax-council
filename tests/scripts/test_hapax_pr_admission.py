@@ -495,3 +495,54 @@ class TestAutoFreezeWithoutAListing:
         allowed, reason = gov_module.is_admission_allowed(branch="feat/in-flight")
         assert allowed is True
         assert "unavailable" in reason
+
+    def test_an_unknown_baseline_still_blocks_new_pr_creation(self, gov_module):
+        """The grandfather covers in-flight work; it must not cover CREATION.
+
+        `branch=None` is this function's documented signal for new PR creation, and the guard
+        returned True unconditionally — so an auto-freeze taken during a listing outage went on
+        admitting new PRs, which is the case a freeze exists for. A failure path that permits MORE
+        than the measured path is not a fallback; nothing was in flight, so absent evidence cannot
+        be the excuse. Found by review.
+        """
+        gov_module.save_state(
+            {
+                "mode": "frozen",
+                "allowed_existing_branches": [],
+                "branch_snapshot_unavailable": True,
+            }
+        )
+        allowed, _reason = gov_module.is_admission_allowed(branch=None)
+        assert allowed is False, (
+            "a freeze taken on an unavailable snapshot must still block new PR creation"
+        )
+
+    def test_a_stale_unavailable_flag_does_not_relax_a_later_measured_freeze(self, gov_module):
+        """The flag was write-once, so one bad minute disabled every later freeze.
+
+        Nothing cleared it — not a return to normal, not auto-clear, not a subsequent manual
+        freeze taken with a perfectly good snapshot. The relaxation therefore outlived the outage
+        that justified it and kept admitting work under freezes that had measured their baseline.
+        """
+        gov_module.save_state(
+            {
+                "mode": "frozen",
+                "allowed_existing_branches": [],
+                "branch_snapshot_unavailable": True,
+            }
+        )
+        # A later freeze whose snapshot DID read must record the flag as cleared.
+        state = gov_module.load_state()
+        state.update(
+            {
+                "mode": "frozen",
+                "allowed_existing_branches": ["feat/known"],
+                "branch_snapshot_unavailable": False,
+            }
+        )
+        gov_module.save_state(state)
+
+        allowed, reason = gov_module.is_admission_allowed(branch="feat/unknown")
+        assert allowed is False, (
+            f"a measured freeze must block a branch outside its snapshot; got {reason}"
+        )

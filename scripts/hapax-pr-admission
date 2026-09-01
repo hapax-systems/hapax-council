@@ -320,6 +320,11 @@ def cmd_freeze_or_drain(args: argparse.Namespace, mode: str) -> int:
             "entry_open_pr_count": len(snapshot),
             "stable_ticks_observed": 0,
             "allowed_existing_branches": snapshot,
+            # Reaching here means the snapshot READ — the refusal above is the only other exit.
+            # Without this the flag was write-once: an outage-era `True` survived into a later,
+            # properly-measured freeze and kept relaxing it, so one bad minute disabled every
+            # subsequent freeze until the state file was edited by hand.
+            "branch_snapshot_unavailable": False,
         }
     )
     save_state(state)
@@ -369,6 +374,9 @@ def cmd_normal(args: argparse.Namespace) -> int:
             "stable_ticks_observed": 0,
             "allowed_existing_branches": [],
             "allowed_exception_tokens": [],
+            # Returning to normal retires the freeze this flag qualified. Left set, the relaxation
+            # was carried forward into whatever freeze came next.
+            "branch_snapshot_unavailable": False,
         }
     )
     save_state(state)
@@ -412,10 +420,21 @@ def is_admission_allowed(branch: str | None) -> tuple[bool, str]:
         return True, "normal mode"
     if branch is not None and branch in state.get("allowed_existing_branches", []):
         return True, f"branch {branch} in snapshot"
-    if state.get("branch_snapshot_unavailable"):
+    if state.get("branch_snapshot_unavailable") and branch is not None:
         # The freeze was taken on ledger evidence while the branch listing could not be read.
         # An empty snapshot would then mean "nothing is grandfathered", which blocks in-flight
         # work on absent evidence rather than on a measurement. Permit, and say why.
+        #
+        # **`branch is not None` is the whole guard.** This returned True unconditionally, and
+        # `branch=None` is this function's documented signal for NEW PR CREATION — the paradigm
+        # case a freeze exists to stop. Grandfathering it meant an auto-freeze taken during a
+        # listing outage admitted new PRs, which is not a narrowed failure path but a wider one:
+        # the fallback permitted MORE than the measured path would have. Found by review.
+        #
+        # An unrecognised branch name is still permitted, and that is deliberate rather than
+        # overlooked: the rationale — do not block in-flight work on absent evidence — applies to
+        # any branch that may have pre-existed, and nothing here can tell which did. Creation is
+        # the case where absent evidence cannot be an excuse, because nothing was in flight.
         return True, (
             f"mode is {state['mode']} but the branch snapshot was unavailable when it was "
             "taken; existing branches are permitted rather than blocked on absent evidence"
@@ -496,6 +515,8 @@ def cmd_auto(args: argparse.Namespace) -> int:
                 "stable_ticks_observed": 0,
                 "allowed_existing_branches": [],
                 "allowed_exception_tokens": [],
+                # Same as the manual clear: the flag qualified a freeze that is now retired.
+                "branch_snapshot_unavailable": False,
             }
         )
         save_state(state)
