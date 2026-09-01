@@ -413,3 +413,55 @@ def test_fetch_prs_fails_closed_when_open_pr_snapshot_is_indeterminate(
         assert "Next action" in str(exc), f"a fail-closed refusal must name a next action: {exc}"
     else:
         raise AssertionError("fetch_prs must not return a false-empty open PR set")
+
+
+def test_a_raised_rest_hydration_failure_records_a_gap_instead_of_aborting_collection(
+    tmp_path: Path,
+    monkeypatch: Any,
+) -> None:
+    """A REST hydration that RAISES must produce the gap, not abort the run.
+
+    Found by two review families. The gap path handled a `None` return and nothing else, so a
+    timeout or an unrunnable `gh` propagated out of `fetch_prs` and killed `collect` **before the
+    unhydrated receipt was written** — leaving lineage output silently stale, which is the exact
+    outcome the receipt exists to prevent. The GraphQL hydrator had already been normalised; this
+    REST fallback sat outside any handler, so the boundary was fixed on one side only.
+
+    The existing tests could not see it: every one drives failure through a nonzero
+    `CompletedProcess`, which is a RETURN. None of them raises.
+    """
+    lineage = _load_lineage_module()
+    monkeypatch.setattr(lineage, "REPO_ROOT", tmp_path)
+
+    def rest_healthy_then_gh_vanishes(cmd: list[str], **_: Any) -> subprocess.CompletedProcess:
+        if cmd[:4] == ["gh", "api", "-i", "rate_limit"]:
+            head = (
+                "HTTP/2.0 200 OK\r\nX-Ratelimit-Limit: 5000\r\n"
+                "X-Ratelimit-Remaining: 4000\r\nX-Ratelimit-Reset: 1893456000\r\n"
+                "X-Ratelimit-Resource: core\r\n"
+            )
+            payload = {
+                "resources": {
+                    "core": {"remaining": 4000, "limit": 5000, "reset": 1893456000},
+                    "graphql": {"remaining": 10, "limit": 5000, "reset": 1893456000},
+                }
+            }
+            return subprocess.CompletedProcess(cmd, 0, f"{head}\r\n{json.dumps(payload)}", "")
+        # Only the PER-PR hydration call fails to execute. The listing must succeed, or the run
+        # refuses earlier for an unrelated reason and this test would pass without exercising the
+        # hydration boundary at all.
+        if any("pulls/4242" in str(part) for part in cmd):
+            raise FileNotFoundError(2, "No such file or directory: 'gh'")
+        if cmd[:3] == ["gh", "pr", "list"]:
+            return subprocess.CompletedProcess(cmd, 0, "[]", "")
+        return subprocess.CompletedProcess(cmd, 0, "[]", "")
+
+    monkeypatch.setattr(lineage.subprocess, "run", rest_healthy_then_gh_vanishes)
+
+    rows, unhydrated = lineage.fetch_prs(limit=10, repo=None, pr_numbers={4242})
+
+    assert rows == []
+    assert [g["reason"] for g in unhydrated] == ["rest_query_unavailable"], (
+        "a raised REST failure must be recorded as a gap that names why, not propagated; "
+        f"got {unhydrated}"
+    )

@@ -239,7 +239,23 @@ def fetch_prs(
             unhydrated.append({"number": number, "reason": route.reason})
             continue
 
-        pr = get_pr_status_rest(number, repo=repo_name, repo_root=REPO_ROOT, runner=subprocess.run)
+        # The gap path handled a `None` RETURN and not a RAISE, so a timeout or an unrunnable `gh`
+        # aborted `collect` outright — before the unhydrated receipt this loop exists to produce
+        # was ever written, leaving lineage output silently stale. The GraphQL hydrator above was
+        # already normalised; this REST fallback was left outside any handler, which is the same
+        # boundary fixed on one side only. Two review families named it.
+        try:
+            pr = get_pr_status_rest(
+                number, repo=repo_name, repo_root=REPO_ROOT, runner=subprocess.run
+            )
+        except (subprocess.SubprocessError, OSError) as exc:
+            print(
+                f"warning: PR #{number} REST hydration could not run ({exc}). Next action: check "
+                "`gh auth status`; the lineage row is marked unhydrated rather than guessed.",
+                file=sys.stderr,
+            )
+            unhydrated.append({"number": number, "reason": "rest_query_unavailable"})
+            continue
         if pr is not None:
             prs.append(pr)
         else:

@@ -161,6 +161,21 @@ def _runner_uses_real_gh(runner: Any) -> bool:
     return runner is subprocess.run
 
 
+class RestTransportUnavailable(subprocess.SubprocessError):
+    """`gh` could not be executed at all for a REST call.
+
+    **Subclasses `SubprocessError` deliberately**, because that is the type the REST listing
+    handlers already catch. `subprocess.TimeoutExpired` subclasses it too, which is why timeouts
+    were correctly routed to `PrListingUnavailable` and the GraphQL fallback — but **`OSError` does
+    not**, so a missing or unexecutable `gh` escaped those handlers entirely and killed fleet
+    consumers instead of refusing or trying the other transport. Two review families found it.
+
+    Normalising at the one place that issues REST subprocesses keeps this a single mitigation
+    rather than a second `except` bolted onto each call site, and preserves the distinction the
+    handlers depend on: a refusal, never a silent empty listing.
+    """
+
+
 def _run(
     runner: Any,
     cmd: list[str],
@@ -274,7 +289,13 @@ def _rest_get_json(
     ]
     for key, value in (fields or {}).items():
         cmd.extend(["-f", f"{key}={value}"])
-    proc = _run(runner, cmd, repo_root=repo_root, timeout=timeout)
+    try:
+        proc = _run(runner, cmd, repo_root=repo_root, timeout=timeout)
+    except OSError as exc:
+        # NOT caught-and-returned-as-None: `None` here means "no data", and a transport that could
+        # not run is a different fact. Collapsing them is the silent-empty defect this module
+        # already refuses elsewhere — an empty listing is indistinguishable from "no open PRs".
+        raise RestTransportUnavailable(f"gh REST invocation failed for {path}: {exc}") from exc
     return _json_from_proc(proc)
 
 

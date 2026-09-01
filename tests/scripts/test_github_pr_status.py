@@ -1563,6 +1563,36 @@ def test_a_failed_rest_listing_refuses_like_the_graphql_one(tmp_path: Path) -> N
         )
 
 
+def test_an_unrunnable_gh_refuses_instead_of_escaping_as_an_os_error(tmp_path: Path) -> None:
+    """A `gh` that cannot be executed must refuse, not kill the caller.
+
+    Found by two review families. The REST listing handlers catch `subprocess.SubprocessError`;
+    `TimeoutExpired` subclasses it, so timeouts were routed correctly — but **`OSError` subclasses
+    neither**, so a missing or unexecutable `gh` sailed past both handlers, past
+    `PrListingUnavailable`, and past the GraphQL fallback, crashing fleet consumers that catch only
+    the declared failure mode. Three earlier passes over this exact boundary missed it because the
+    structural test exempted `_rest_get_json` on the premise that wrapping already covered it.
+
+    The distinction being pinned is refusal versus crash, NOT refusal versus empty: returning
+    `None` here would have collapsed "transport unavailable" into "no open PRs", which is the
+    silent-empty defect this module refuses everywhere else.
+    """
+
+    def gh_is_not_installed(cmd: list[str], **kwargs: Any) -> subprocess.CompletedProcess:
+        if cmd[:4] == ["gh", "api", "-i", "rate_limit"]:
+            return _BothTransportsRunner(rest_remaining=4000, graphql_remaining=10)(cmd, **kwargs)
+        raise FileNotFoundError(2, "No such file or directory: 'gh'")
+
+    with pytest.raises(github_pr_status.PrListingUnavailable):
+        github_pr_status.list_open_pr_statuses(
+            repo="owner/repo", repo_root=tmp_path, runner=gh_is_not_installed
+        )
+
+    # The normalised type stays catchable by the handlers that already existed, which is the whole
+    # reason it subclasses SubprocessError rather than introducing a parallel hierarchy.
+    assert issubclass(github_pr_status.RestTransportUnavailable, subprocess.SubprocessError)
+
+
 def test_every_fleet_consumer_routes_its_open_pr_listing() -> None:
     """The enumeration, pinned — because estimating this tail is what took ten review rounds.
 
@@ -1611,10 +1641,14 @@ def test_every_subprocess_boundary_is_normalised_or_named() -> None:
     raw_by_design = {
         # The primitive itself: normalising here would hide the error from every caller.
         "_run",
-        # Pre-existing REST plumbing. The fleet path wraps it — `list_open_pr_statuses` catches
-        # SubprocessError, and TimeoutExpired subclasses it — and direct callers keep the older
-        # contract they were written against.
-        "_rest_get_json",
+        # `_rest_get_json` WAS exempted here, on the premise that "the fleet path wraps it —
+        # `list_open_pr_statuses` catches SubprocessError, and TimeoutExpired subclasses it". That
+        # is true of timeouts and FALSE of OSError, which subclasses neither: a missing or
+        # unexecutable `gh` escaped both REST listing handlers, bypassed PrListingUnavailable and
+        # the GraphQL fallback, and killed fleet consumers. Two review families found it, and this
+        # exemption is what let it survive three earlier passes over the same boundary — the test
+        # asserting the invariant carried the false premise that hid its violation.
+        # It now normalises to RestTransportUnavailable and is no longer exempt.
         # Pre-existing GraphQL runner with its own rc-based protocol (GRAPHQL_BACKOFF_RC); its
         # callers check returncode rather than catching, and changing that is not this change.
         "run_graphql_rate_aware",
