@@ -379,6 +379,7 @@ def _pr(
     review_decision: str | None = None,
     auto_merge: bool = False,
     auto_merge_method: str | None = "SQUASH",
+    author: str | None = None,
 ) -> dict[str, Any]:
     file_list = ["shared/foo.py"] if files is None else files
     auto_merge_request: dict[str, Any] | None = None
@@ -393,6 +394,7 @@ def _pr(
         "body": body,
         "headRefName": branch or f"feat/{number}",
         "headRefOid": f"sha-{number}",
+        "author": {"login": author} if author else None,
         "changedFiles": len(file_list) if changed_files_count is None else changed_files_count,
         "files": [{"path": path} for path in file_list],
         "isDraft": draft,
@@ -7304,3 +7306,179 @@ def test_canon_assessor_reports_armed_for_authorized_egress_task() -> None:
     from shared.sdlc_lifecycle import assess_release_auto_arm as canon_assess
 
     assert canon_assess(_egress_armed_frontmatter()).armed is True
+
+
+# ------------------------------------------------------------------ machine-authored admission
+#
+# A cc-task binds a change to a ROUTED DEMAND. An automated producer has a standing policy instead,
+# so `missing_cc_task_link` reported the wrong fact for 14 of 55 open PRs — it says somebody forgot,
+# when dependabot has no task by construction and never will.
+#
+# The exemption REPLACES the acceptance predicate rather than removing it, because the review-team
+# quorum gate lives inside `_task_blockers` and runs only when a task matched: "no task" already
+# meant "no review requirement", so dropping the task-link reason alone would have relaxed two gates
+# while appearing to relax one.
+
+
+def _producer(
+    tmp_path: Path,
+    *,
+    login: str = "app/dependabot",
+    scope: list[str] | None = None,
+    requires_review: bool = False,
+) -> Path:
+    path = tmp_path / "machine-authors.yaml"
+    path.write_text(
+        "schema: hapax.machine-authors.v1\nproducers:\n"
+        f'  - logins: ["{login}"]\n'
+        f"    display_name: {login.split('/')[-1]}\n"
+        "    path_scope:\n"
+        + "".join(f'      - "{p}"\n' for p in (scope or ["**/package.json", "**/uv.lock"]))
+        + f"    requires_review: {str(requires_review).lower()}\n",
+        encoding="utf-8",
+    )
+    return path
+
+
+def test_a_declared_producer_in_scope_is_not_blocked_for_a_missing_task_link(
+    tmp_path: Path,
+) -> None:
+    """The whole point: a dependency bump has no routed demand, so it has no task to link."""
+    producers = autoqueue.load_machine_producers(_producer(tmp_path))
+    producer = producers["app/dependabot"]
+    pr = autoqueue._parse_pr(_pr(1, files=["package.json", "uv.lock"], author="app/dependabot"))
+    assert pr is not None and pr.author_login == "app/dependabot"
+    assert autoqueue.machine_producer_blockers(producer, pr) == []
+
+
+def test_a_declared_producer_out_of_scope_is_still_blocked_and_names_the_paths(
+    tmp_path: Path,
+) -> None:
+    """The supply-chain guard, and the single mitigation for it.
+
+    A producer that steps outside its declared scope is what compromise or misconfiguration looks
+    like from here. `.github/**` is in no auto-admit scope deliberately: **CI cannot be the
+    acceptance predicate for a change to CI**, and a workflow is exactly where a change can
+    exfiltrate secrets or disable the checks that would have caught it.
+    """
+    producer = autoqueue.load_machine_producers(_producer(tmp_path))["app/dependabot"]
+    pr = autoqueue._parse_pr(
+        _pr(2, files=["package.json", ".github/workflows/ci.yml"], author="app/dependabot")
+    )
+    blockers = autoqueue.machine_producer_blockers(producer, pr)
+    assert any(b.startswith("machine_author_out_of_scope:") for b in blockers), blockers
+    assert ".github/workflows/ci.yml" in blockers[0], blockers
+
+
+def test_a_lookalike_login_is_not_a_declared_producer(tmp_path: Path) -> None:
+    """Matching is EQUALITY. `app/dependabot-evil` is a different principal, and a prefix or
+    substring match would admit it silently — the substring-for-judgement defect this estate has
+    already removed from three other gates."""
+    producers = autoqueue.load_machine_producers(_producer(tmp_path))
+    assert producers.get("app/dependabot-evil") is None
+    assert producers.get("dependabot") is None
+    assert producers.get("app/dependabot") is not None
+
+
+def test_a_machine_pr_with_any_failing_check_is_blocked_even_if_it_is_not_required(
+    tmp_path: Path,
+) -> None:
+    """CI is a machine PR's ENTIRE acceptance predicate, so the required subset is the wrong bar.
+
+    Measured against the live queue on 2026-09-01: #4515 was failing `egress-boundary-pin` and
+    `all-green`, #4527 was failing `rust-check` on a Cargo bump. None of those is in
+    `required_checks` (lint/test/typecheck/web-build/vscode-build), so the ordinary filter dropped
+    them and both PRs reported NO blockers — they would have merged red. Every unit test was green
+    at the time; only running the policy against reality found it.
+    """
+    producer = autoqueue.load_machine_producers(_producer(tmp_path))["app/dependabot"]
+    red = autoqueue._parse_pr(
+        _pr(
+            5,
+            files=["package.json"],
+            author="app/dependabot",
+            checks=[{"name": "rust-check", "conclusion": "FAILURE"}],
+        )
+    )
+    blockers = autoqueue.machine_producer_blockers(producer, red)
+    assert any(b.startswith("machine_author_checks_failing:") for b in blockers), blockers
+    assert "rust-check" in blockers[0]
+
+    pending = autoqueue._parse_pr(
+        _pr(
+            6,
+            files=["package.json"],
+            author="app/dependabot",
+            checks=[{"name": "test", "status": "IN_PROGRESS"}],
+        )
+    )
+    assert any(
+        b.startswith("machine_author_checks_pending:")
+        for b in autoqueue.machine_producer_blockers(producer, pending)
+    ), "not yet green is not green"
+
+
+def test_one_producer_is_recognised_under_every_transport_name_it_presents() -> None:
+    """The SHIPPED policy must recognise dependabot on both transports.
+
+    Measured 2026-09-01: the REST pulls API reports `dependabot[bot]` while
+    `gh pr list --json author` reports `app/dependabot` — same bot, same PRs, two strings. Under
+    strict equality a single-name declaration recognised it on one transport and not the other, so
+    the exemption would have applied or not depending on which rate-limit pool had headroom that
+    minute. The first live run of this policy found exactly that: 0 machine-author reasons against
+    14 dependabot PRs.
+
+    This reads the real config on purpose. A fixture would pass while the shipped declaration was
+    wrong, which is the failure that actually happened.
+    """
+    producers = autoqueue.load_machine_producers()
+    rest = producers.get("dependabot[bot]")
+    graphql = producers.get("app/dependabot")
+    assert rest is not None, "REST reports dependabot[bot]; the policy must declare it"
+    assert graphql is not None, "gh/GraphQL reports app/dependabot; the policy must declare it too"
+    assert rest is graphql, "both names must resolve to ONE producer, not two policies"
+    assert not any(p.startswith(".github/") for p in rest.path_scope), (
+        "CI cannot be the acceptance predicate for a change to CI"
+    )
+
+
+def test_a_producer_requiring_review_is_blocked_without_a_dossier(tmp_path: Path) -> None:
+    """Per-producer, so a future producer that emits authored logic is gated normally.
+
+    A version bump carries no authored logic and CI decides it. A codegen or refactor bot does, and
+    declares `requires_review: true`.
+    """
+    producer = autoqueue.load_machine_producers(
+        _producer(tmp_path, login="app/codegen-bot", requires_review=True)
+    )["app/codegen-bot"]
+    pr = autoqueue._parse_pr(_pr(3, files=["package.json"], author="app/codegen-bot"))
+    assert autoqueue.machine_producer_blockers(producer, pr) == [
+        "machine_author_requires_review:codegen-bot"
+    ]
+    assert autoqueue.machine_producer_blockers(producer, pr, has_quorum_accept_dossier=True) == []
+
+
+def test_an_unreadable_policy_admits_nothing(tmp_path: Path) -> None:
+    """Failure direction. An absent or malformed policy must yield NO producers, so every PR keeps
+    the ordinary human requirements — never a silent blanket exemption."""
+    assert autoqueue.load_machine_producers(tmp_path / "does-not-exist.yaml") == {}
+    bad = tmp_path / "bad.yaml"
+    bad.write_text('producers: [{login: "app/x"}]\n', encoding="utf-8")  # no path_scope
+    assert autoqueue.load_machine_producers(bad) == {}, (
+        "a producer with no declared scope is not a producer with unlimited scope"
+    )
+
+
+def test_an_unknown_file_list_is_not_an_in_scope_file_list(tmp_path: Path) -> None:
+    """`files is None` means the diff could not be read, which is not evidence it is in scope.
+
+    Admitting on an unreadable file set would make the exemption unbounded exactly when the
+    transport is degraded — a bound reported as a verdict, in the place it would cost most.
+    """
+    producer = autoqueue.load_machine_producers(_producer(tmp_path))["app/dependabot"]
+    payload = _pr(4, author="app/dependabot")
+    payload["files"] = None
+    pr = autoqueue._parse_pr(payload)
+    assert autoqueue.machine_producer_blockers(producer, pr) == [
+        "machine_author_file_list_unavailable:dependabot"
+    ]

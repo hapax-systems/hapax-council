@@ -581,6 +581,10 @@ def _pull_status_row_from_rest(
         "mergedAt": pull.get("merged_at"),
         "headRefName": head_ref,
         "headRefOid": sha,
+        # Carried so admission can tell a routed human change from a declared automated producer.
+        # Additive: existing consumers ignore it. Shaped `{"login": ...}` to match what
+        # `gh pr list --json author` returns, so the two transports agree on the field.
+        "author": pull.get("user"),
         "changedFiles": changed_files,
         "files": _files_payload_from_rest(files) if include_files else None,
         "isDraft": bool(pull.get("draft")),

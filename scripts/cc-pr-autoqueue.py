@@ -29,6 +29,7 @@ configuration incidents; the report records the override source.
 from __future__ import annotations
 
 import argparse
+import fnmatch
 import json
 import logging
 import os
@@ -243,6 +244,148 @@ class PullRequest:
     auto_merge_enabled: bool
     auto_merge_method: str | None
     check_summary: CheckSummary
+    #: Login of the PR's author, or None when the transport did not report one. Used ONLY to
+    #: recognise a declared automated producer; absence is treated as "not a declared producer",
+    #: which is the safe direction — an unknown author gets the ordinary human requirements.
+    author_login: str | None = None
+
+
+MACHINE_AUTHORS_PATH = Path(__file__).resolve().parents[1] / "config" / "machine-authors.yaml"
+
+
+def _author_login(item: Any) -> str | None:
+    """Login from either transport's author shape, or None.
+
+    REST reports `user: {login}` and `gh pr list --json author` reports `author: {login}`; the REST
+    mapper in `github_pr_status` normalises to `author`, and both are read here so a transport
+    change cannot silently drop the field and turn every producer into an unrecognised one.
+    """
+    for key in ("author", "user"):
+        value = item.get(key) if isinstance(item, dict) else None
+        if isinstance(value, dict) and value.get("login"):
+            return str(value["login"])
+    return None
+
+
+@dataclass(frozen=True)
+class MachineProducer:
+    """A declared automated producer and the scope it may change without a routed demand."""
+
+    logins: tuple[str, ...]
+    display_name: str
+    path_scope: tuple[str, ...]
+    requires_review: bool
+
+
+def load_machine_producers(path: Path | None = None) -> dict[str, MachineProducer]:
+    """Declared producers, keyed by EXACT login.
+
+    Keyed by equality on purpose. A prefix or substring match would admit `app/dependabot-evil` as
+    `app/dependabot`, and substring-for-judgement is a defect this estate has already removed from
+    three other gates. An unreadable or absent file yields NO producers, so the failure direction
+    is "everything keeps the ordinary human requirements" rather than a silent blanket exemption.
+
+    **One producer may declare several logins, because one principal has different names on
+    different transports.** Measured 2026-09-01: REST reports `dependabot[bot]` and
+    `gh pr list --json author` reports `app/dependabot` for the same bot on the same PRs. Under
+    strict equality a single-name declaration would recognise the producer on one transport and not
+    the other, so the exemption would apply or not depending on which pool had headroom.
+    """
+    source = path or MACHINE_AUTHORS_PATH
+    try:
+        raw = yaml.safe_load(source.read_text(encoding="utf-8")) or {}
+    except (OSError, yaml.YAMLError):
+        return {}
+    out: dict[str, MachineProducer] = {}
+    for entry in raw.get("producers") or []:
+        if not isinstance(entry, dict):
+            continue
+        declared = entry.get("logins")
+        if isinstance(declared, str):
+            declared = [declared]
+        logins = tuple(str(x).strip() for x in (declared or []) if str(x).strip())
+        scope = entry.get("path_scope")
+        # A producer with no declared scope is NOT a producer with unlimited scope. Skipping it
+        # leaves its PRs on the ordinary path, which is the direction that cannot over-admit.
+        if not logins or not isinstance(scope, list) or not scope:
+            continue
+        producer = MachineProducer(
+            logins=logins,
+            display_name=str(entry.get("display_name") or logins[0]),
+            path_scope=tuple(str(p) for p in scope if str(p).strip()),
+            requires_review=bool(entry.get("requires_review", True)),
+        )
+        for login in logins:
+            out[login] = producer
+    return out
+
+
+def _path_in_scope(path: str, patterns: tuple[str, ...]) -> bool:
+    """Does `path` fall inside a declared scope?
+
+    `fnmatch` alone gets `**/x` wrong for a repository-root file: its `*` happily crosses `/`, but
+    `**/package.json` still requires the literal separator, so a top-level `package.json` does NOT
+    match and would be reported out-of-scope. Writing both `package.json` and `**/package.json` into
+    every declaration would push that trap onto whoever adds the next producer, so the recursive
+    form is given its documented meaning here instead: `**/x` matches `x` at any depth including
+    the root.
+    """
+    for pattern in patterns:
+        if fnmatch.fnmatch(path, pattern):
+            return True
+        if pattern.startswith("**/") and fnmatch.fnmatch(path, pattern[3:]):
+            return True
+    return False
+
+
+def machine_producer_blockers(
+    producer: MachineProducer,
+    pr: PullRequest,
+    *,
+    has_quorum_accept_dossier: bool = False,
+) -> list[str]:
+    """Why this producer's PR is NOT admissible without a cc-task link. Empty means it is.
+
+    This REPLACES the task-link predicate rather than removing it. The task link's real job is to
+    bind a change to a routed demand and its acceptance record; a producer has a standing policy
+    instead of a routed demand, so its acceptance predicate is: it changed only what it is
+    authorised to change, and its checks pass. Required checks are evaluated elsewhere and are
+    untouched by this.
+    """
+    reasons: list[str] = []
+    if pr.files is None:
+        # Never admit on an unknown file set. "We could not read the diff" is not "the diff is in
+        # scope", and confusing the two is the bound-reported-as-a-verdict error that would make
+        # this exemption unbounded exactly when the transport is degraded.
+        reasons.append(f"machine_author_file_list_unavailable:{producer.display_name}")
+        return reasons
+    outside = sorted(path for path in pr.files if not _path_in_scope(path, producer.path_scope))
+    if outside:
+        reasons.append(
+            f"machine_author_out_of_scope:{producer.display_name}:" + ",".join(outside[:5])
+        )
+    # **EVERY check, not the required subset.** The ordinary path blocks only on `required_checks`
+    # (here: lint/test/typecheck/web-build/vscode-build), which is right for a human PR whose
+    # acceptance record lives in its task. A machine PR has no such record — CI *is* its entire
+    # acceptance predicate — so filtering to a subset would admit exactly the failures that matter.
+    # Measured 2026-09-01 against the live queue: #4515 was failing `egress-boundary-pin` and
+    # `all-green`, #4527 was failing `rust-check` on a Cargo bump, and none of the three is a
+    # required check, so both reported no blockers and would have merged red. Found only by running
+    # the policy against reality; the unit tests were all green.
+    if pr.check_summary.failed:
+        reasons.append(
+            f"machine_author_checks_failing:{producer.display_name}:"
+            + ",".join(sorted(pr.check_summary.failed)[:5])
+        )
+    if pr.check_summary.pending:
+        # Not yet green is not green. Blocking here only delays; admitting here merges unverified.
+        reasons.append(
+            f"machine_author_checks_pending:{producer.display_name}:"
+            + ",".join(sorted(pr.check_summary.pending)[:5])
+        )
+    if producer.requires_review and not has_quorum_accept_dossier:
+        reasons.append(f"machine_author_requires_review:{producer.display_name}")
+    return reasons
 
 
 @dataclass(frozen=True)
@@ -948,6 +1091,7 @@ def _parse_pr(item: dict[str, Any]) -> PullRequest | None:
         auto_merge_enabled=bool(item.get("autoMergeRequest")),
         auto_merge_method=_auto_merge_request_method(item.get("autoMergeRequest")),
         check_summary=summarize_checks(item.get("statusCheckRollup") or []),
+        author_login=_author_login(item),
     )
 
 
@@ -1702,7 +1846,22 @@ def classify_pr(
     matched_tasks = tuple(matches)
     task: TaskNote | None = matches[0] if len(matches) == 1 else None
     if not matches:
-        if TASK_NOTE_PARSE_FAILURES:
+        # **A declared automated producer has no routed demand, so it has no task BY CONSTRUCTION.**
+        # `missing_cc_task_link` asserted somebody forgot; for dependabot that is simply false, and
+        # it was a permanent block on 14 of 55 open PRs while the default branch carried 68
+        # dependency vulnerabilities those PRs would partly close.
+        #
+        # This is NOT a bare exemption. The review-team quorum gate lives inside `_task_blockers`
+        # below, which runs only when a task matched — so "no task" already meant "no review
+        # requirement", and simply dropping the task-link reason would have relaxed TWO gates while
+        # appearing to relax one. `machine_producer_blockers` supplies the replacement predicate:
+        # the producer changed only what it is authorised to change, and (unless it declares
+        # `requires_review: false`) it has a quorum-accept dossier. Required checks are computed
+        # above this branch and are unaffected either way.
+        producer = load_machine_producers().get(pr.author_login or "")
+        if producer is not None:
+            reasons.extend(machine_producer_blockers(producer, pr))
+        elif TASK_NOTE_PARSE_FAILURES:
             broken = ",".join(name for name, _ in TASK_NOTE_PARSE_FAILURES[:4])
             reasons.append(
                 f"missing_cc_task_link (NOTE: {len(TASK_NOTE_PARSE_FAILURES)} unparseable task note(s): {broken} — fix or run scripts/cc-task-lint)"

@@ -1,0 +1,93 @@
+# Declared automated producers, and what each is authorised to change without a cc-task link.
+#
+# WHY THIS EXISTS
+# ---------------
+# A cc-task binds a change to a ROUTED DEMAND and carries its acceptance record. A change produced
+# by a standing automated policy has no routed demand — nobody decided this particular bump — so
+# requiring a per-change record demands a record of a decision that was never made. Dependabot will
+# never open a cc-task, so `missing_cc_task_link` was a permanent block reporting the wrong fact:
+# it says somebody forgot, when the truth is that this PR class has no task BY CONSTRUCTION.
+#
+# Stated without any estate noun, which is the test a design has to pass here: *a change produced
+# by a declared automated producer, rather than by a routed demand, is admitted against that
+# producer's declared acceptance predicate instead of against a per-change record.*
+#
+# THE HAZARD THIS MUST NOT CREATE
+# -------------------------------
+# The review-team quorum gate lives inside `_task_blockers`, which runs only when a PR matches a
+# task. **So "no task" currently means "no review requirement at all"** — the comment above that
+# gate claims every PR admits only with a quorum-accept dossier, and that sentence is false for a
+# PR with no task. Exempting the task link on its own would therefore not relax one requirement,
+# it would silently drop two, and 12 dependency bumps would merge with no review of any kind.
+#
+# An exemption here is a REPLACEMENT of the acceptance predicate, never a removal of one.
+# `path_scope` is that replacement: a producer may be admitted on its checks alone only for changes
+# inside the scope it is authorised to touch. A change outside falls out of the exemption and is
+# blocked — which is precisely what a misconfigured or compromised producer looks like from here.
+#
+# WHY `.github/**` IS IN NO AUTO-ADMIT SCOPE
+# ------------------------------------------
+# Dependabot does bump action versions under `.github/workflows/`, and those paths are NOT in any
+# `path_scope` below. The reason is not that they are likelier to be wrong; it is that
+# **CI cannot be the acceptance predicate for a change to CI.** Admitting a workflow edit because
+# the workflows passed is circular, and a workflow is exactly where a change can exfiltrate secrets
+# or disable the checks that would have caught it. Such PRs still open — they simply need a
+# decision that is not self-certifying. Measured 2026-09-01: 0 of the 14 blocked dependabot PRs
+# touched `.github/`, so this costs nothing today and is the line that matters when it does.
+#
+# ADDING A PRODUCER
+# -----------------
+# Declare `logins` EXACTLY. Matching is equality, never prefix or substring, because
+# `dependabot-anything` is a different principal that a substring match would silently admit — the
+# same substring-for-judgement defect this estate has removed from three other gates.
+#
+# **`logins` is a LIST because one principal has different names on different transports.**
+# Measured 2026-09-01: the REST pulls API reports `dependabot[bot]`, while
+# `gh pr list --json author` reports `app/dependabot` — same bot, same PRs, two strings. A single
+# `login` field silently recognised the producer on one transport and not the other, which under
+# strict equality means the exemption would apply or not depending on which pool had headroom that
+# minute. Normalising the two into one canonical form was the alternative and is worse: it would
+# invent an identity neither API returns and bury the discrepancy where the next transport change
+# would resurface it. List every form the producer actually presents.
+#
+# Give a producer the narrowest `path_scope` that covers its real output, and set
+# `requires_review: true` unless its output contains no authored logic. A producer that WRITES CODE
+# — a codegen bot, a refactor bot, a docs generator that emits prose we would stand behind — has
+# authored logic and must be reviewed. A producer that only moves version numbers does not, and
+# spending scarce review capacity on lockfile diffs starves the work that needs it.
+
+schema: hapax.machine-authors.v1
+declared_at: "2026-09-01"
+
+producers:
+  - logins:
+      - "dependabot[bot]"   # REST: GET /repos/{o}/{r}/pulls -> user.login
+      - "app/dependabot"    # GraphQL / `gh pr list --json author` -> author.login
+    display_name: dependabot
+    # Manifests and lockfiles only. Everything else this producer emits — notably `.github/**` —
+    # falls outside and is blocked rather than auto-admitted.
+    path_scope:
+      - "**/Cargo.toml"
+      - "**/Cargo.lock"
+      - "**/package.json"
+      - "**/package-lock.json"
+      - "**/pnpm-lock.yaml"
+      - "**/yarn.lock"
+      - "**/pyproject.toml"
+      - "**/uv.lock"
+      - "**/poetry.lock"
+      - "**/requirements.txt"
+      - "**/requirements-dev.txt"
+      - "**/go.mod"
+      - "**/go.sum"
+    # A version bump carries no authored logic, so a reviewer has nothing to assess that CI does not
+    # already decide. The required checks ARE the acceptance predicate, and they are evaluated
+    # OUTSIDE the task path, so this exemption does not touch them.
+    requires_review: false
+    # EVERY check green, not merely the declared required subset. A human PR's acceptance record
+    # lives in its task, so blocking on `required_checks` alone is right there. A machine PR has no
+    # such record — CI is its whole acceptance predicate — and the required set here is only
+    # lint/test/typecheck/web-build/vscode-build. Measured 2026-09-01: two dependabot PRs were red
+    # on `egress-boundary-pin`, `all-green` and `rust-check`, none of which is required, and both
+    # would have merged red under a required-subset rule.
+    acceptance: all_checks_green
