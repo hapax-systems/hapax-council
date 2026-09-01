@@ -555,6 +555,23 @@ if canon_enforced:
 
         Returns every match rather than the first, so the caller can fail closed on ambiguity
         instead of choosing. Nothing here decides; it reports what the evidence supports.
+
+        **Stale receipts accumulate, and the residual risk is a WEDGE, not a wrong sweep.** A
+        receipt whose archival later completed into a different lineage directory (the directory
+        name carries `observed_at`) keeps satisfying the destination-missing test forever. Review
+        raised this as a stale receipt authorising a sweep of a newer live claim. Two things bound
+        it, and both are structural rather than assertions about timing:
+
+        * the caller reaches this only when the `cc-active-task` anchor is GONE, so a live claim —
+          which by definition has its anchor — is not on this path at all; and
+        * receipts are written BEFORE any file moves, so an interrupted archival always leaves its
+          own receipt. A stale receipt plus the current one is two matches, and the caller HOLDs on
+          more than one rather than choosing.
+
+        So the reachable failure is a HOLD naming the exact files and asking for operator approval,
+        which is the direction a fail-closed guard should err in. Recorded rather than mitigated
+        further: a third guard for the same hazard is the design smell, and the honest fix if this
+        ever wedges in practice is receipt retirement at completion, not more matching rules here.
         """
         lineage_root = vault_root / "_lineage"
         if not lineage_root.is_dir() or not present:
