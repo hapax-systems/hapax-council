@@ -650,6 +650,17 @@ if canon_enforced:
                 key = sidecar.name[len(prefix) :]
                 if suffix:
                     key = key[: -len(suffix)]
+                # **The glob has no role boundary; this is the boundary.** `{role}*` matches any
+                # role having this one as a PREFIX — collecting `cx-red` also collects
+                # `cx-redwood`'s sidecars, which would then be archived while only the `cx-red`
+                # publication lock is held, racing a legitimate `cx-redwood` publish or resume.
+                # The bash cap above scans the exact role and `role-*` only, so the glob was
+                # strictly wider than the thing it feeds. Found by external review.
+                #
+                # The valid keys are exactly the two minted at the top of this function: the bare
+                # role, and `role-session`. Anything else belongs to a different lane.
+                if key != role and not key.startswith(f"{role}-"):
+                    continue
                 claim_keys.add(key)
         for claim_key in sorted(claim_keys):
             claim_path = cache_dir / f"cc-active-task-{claim_key}"

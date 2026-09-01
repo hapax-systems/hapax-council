@@ -1916,6 +1916,64 @@ def test_unreadable_claim_sidecar_holds_instead_of_being_swept(tmp_path: Path) -
     )
 
 
+def test_a_role_does_not_collect_a_prefix_siblings_sidecars(tmp_path: Path) -> None:
+    """`cx-red` must not collect `cx-redwood`. Found by external review.
+
+    Residue collection globs `{prefix}{role}*`, which has no role boundary: any role having this
+    one as a prefix matches. Those foreign projections would then be archived while only THIS
+    role's publication lock is held, racing a legitimate publish or resume on the other lane. The
+    bash role cap scans the exact role and `role-*` only, so the glob was strictly wider than the
+    thing it feeds.
+    """
+    home = tmp_path / "home"
+    note = _write_task(home, "active", "task-a")
+    _write_task(home, "active", "task-b")
+    assert _claim(home, "task-a").returncode == 0
+    note.write_text(
+        note.read_text(encoding="utf-8").replace("status: claimed", "status: pr_open"),
+        encoding="utf-8",
+    )
+
+    cache = home / ".cache" / "hapax"
+    # The role is `cx-test` (see `_claim`'s env). Deriving it by splitting on "-" yields `cx`, so
+    # the foreign name never collided and the first version of this test passed under mutation —
+    # coverage theatre, caught by breaking the guard.
+    role = "cx-test"
+    assert (cache / f"cc-active-task-{role}").exists(), "fixture role changed; update this test"
+    # A DIFFERENT lane whose name merely starts with this role's name — and whose task is a REAL,
+    # RELEASABLE row. Two earlier versions of this test stayed green under mutation: the first
+    # derived `role` by splitting on "-" (getting `cx`, so the names never collided), and the
+    # second pointed the foreign anchor at a task that did not exist, so archival declined for an
+    # unrelated reason. The sweep only engages on a resolvable task in a role-releasing state, so
+    # the hazard is only reachable when the foreign lane looks exactly like legitimate residue.
+    foreign_note = _write_task(home, "active", "task-foreign")
+    foreign_note.write_text(
+        foreign_note.read_text(encoding="utf-8").replace("status: offered", "status: pr_open"),
+        encoding="utf-8",
+    )
+    foreign = cache / f"cc-active-task-{role}wood"
+    foreign.write_text("task-foreign\n", encoding="utf-8")
+    foreign_epoch = cache / f"cc-claim-epoch-{role}wood"
+    foreign_epoch.write_text("epoch\n", encoding="utf-8")
+
+    result = _claim(home, "task-b")
+
+    assert foreign.exists(), (
+        f"'{role}wood' is a different lane; its anchor must not be swept by '{role}'.\n"
+        f"stderr: {result.stderr}"
+    )
+    assert foreign_epoch.exists(), "nor its epoch sidecar"
+    lineage = _task_root(home) / "_lineage"
+    swept = (
+        [p.name for d in lineage.glob("*/*") if d.is_dir() for p in d.iterdir()]
+        if lineage.exists()
+        else []
+    )
+    assert not any(f"{role}wood" in n for n in swept), (
+        f"a foreign lane's residue was archived under this role's lock: {swept}"
+    )
+
+
 def test_a_crash_after_the_epoch_move_is_resumable_not_permanently_wedged(
     tmp_path: Path,
 ) -> None:
