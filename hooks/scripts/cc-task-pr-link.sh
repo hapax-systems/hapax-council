@@ -309,6 +309,54 @@ if m:
             # Already linked to another PR — preserve existing value, exit silently.
             sys.exit(0)
 
+# --- THE RELATION TEST. There was none, and its absence is a measured, recurring defect. ---
+#
+# This hook links THE PR JUST CREATED to WHATEVER TASK THE ROLE HOLDS. Nothing checked that the two
+# had anything to do with each other. For a short work task that is right; for a long-lived row — a
+# `kind: research` programme held for days across many PRs — every PR opened in that window becomes
+# a candidate.
+#
+# Measured on this estate, three times on one row:
+#   2026-08-23  operator manually cleared a wrong `pr: 4602` from mnemonic-contract-program
+#   2026-08-24  this hook attached #4605 — a one-line velocity fix with its OWN task — and every
+#               blocker autoqueue reported on #4605 was that research programme's unmet acceptance
+#   2026-09-01  cleared again; within hours this hook attached #4612, which also has its own task
+#
+# **And clearing the field is what re-opens the door.** The idempotency guard above protects a row
+# from being OVERWRITTEN, never from wrongly ACQUIRING — so nulling `pr:` to repair a bad link makes
+# that row the next eligible target. Repairing the instance re-armed the mechanism.
+#
+# The harm is precise: a PR bound to two tasks inherits the other task's blockers, so a ready PR is
+# held on acceptance criteria belonging to work it does not contain.
+#
+# The test: refuse when another active task already declares this PR in this repository. It is
+# fully machine-checkable here and covers both observed incidents, because in both the PR had a
+# correctly-formed row of its own. It deliberately does NOT try to decide which row *deserves* the
+# PR — that is a judgement this hook has no evidence for, and guessing is how it got here.
+vault_active = note_path.parent
+for other in sorted(vault_active.glob("*.md")):
+    if other == note_path:
+        continue
+    try:
+        other_text = other.read_text(encoding="utf-8")
+    except OSError:
+        continue
+    head = other_text.split("\n---", 1)[0]
+    om = re.search(r"^pr:\s*(.*)$", head, flags=re.MULTILINE)
+    if not om or om.group(1).strip() != str(pr_number):
+        continue
+    orm = re.search(r"^pr_repo:\s*(.*)$", head, flags=re.MULTILINE)
+    if orm and orm.group(1).strip().strip("\"'") != pr_repo:
+        continue  # same number, different repository — not the same PR
+    print(
+        f"cc-task-pr-link: REFUSING to link PR #{pr_number} to '{note_path.stem}' — "
+        f"'{other.stem}' already declares it. Binding one PR to two tasks makes it inherit the "
+        f"other task's blockers. Next action: if this row really owns the PR, clear the link on "
+        f"the other row first.",
+        file=sys.stderr,
+    )
+    sys.exit(0)
+
 now = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
 
 # Replace pr / branch / status frontmatter lines (single-substitution each).

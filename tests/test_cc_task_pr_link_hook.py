@@ -226,6 +226,76 @@ class TestIdempotency:
         assert "status: claimed" in text
         assert "status: pr_open" not in text
 
+    def test_refuses_a_pr_another_active_task_already_declares(self, tmp_path: Path) -> None:
+        """A PR must not be bound to two tasks. Measured defect, three occurrences on one row.
+
+        The hook links the PR just created to whatever task the role holds, and nothing tested that
+        the two were related. On a long-lived `kind: research` row held for days, every PR opened in
+        that window is a candidate. 2026-08-24 it attached #4605 — a one-line velocity fix with its
+        own correctly-formed row — and every blocker autoqueue then reported on #4605 was that
+        research programme's unmet acceptance criteria. Cleared 2026-09-01; within hours it attached
+        #4612, which also had its own row.
+
+        Note WHY clearing did not help: the idempotency guard protects a row from being OVERWRITTEN,
+        never from wrongly ACQUIRING, so nulling `pr:` to repair a bad link makes that row the next
+        eligible target. Repairing the instance re-armed the mechanism.
+        """
+        _vault, note = _make_vault(tmp_path, task_id="research-row", pr=None, status="in_progress")
+        owner = note.parent / "velocity-fix-test-task.md"
+        owner.write_text(
+            '---\ntype: cc-task\ntask_id: velocity-fix\ntitle: "Owns the PR"\n'
+            "status: pr_open\nassigned_to: beta\npriority: normal\n"
+            "branch: fix/velocity\npr: 4605\npr_repo: ryanklee/hapax-council\n"
+            "created_at: 2026-04-26T00:00:00Z\nupdated_at: 2026-04-26T00:00:00Z\n---\n\n"
+            "# Owns the PR\n\n## Session log\n",
+            encoding="utf-8",
+        )
+        _write_claim(tmp_path, "beta", "research-row")
+
+        result = _run_hook(
+            bash_cmd="gh pr create",
+            bash_output="https://github.com/ryanklee/hapax-council/pull/4605",
+            home=tmp_path,
+        )
+
+        assert result.returncode == 0, "a refusal is not an error; the hook must not fail the turn"
+        text = note.read_text(encoding="utf-8")
+        assert "pr: 4605" not in text, (
+            "the research row must NOT acquire a PR another task already declares"
+        )
+        assert "pr: null" in text
+        assert "status: in_progress" in text, "and must not advance status on a refused link"
+        assert "pr: 4605" in owner.read_text(encoding="utf-8"), "a refusal moves nothing"
+
+    def test_still_links_when_no_other_task_declares_the_pr(self, tmp_path: Path) -> None:
+        """The guard must not break the ordinary case it sits in front of.
+
+        A same-numbered PR in a DIFFERENT repository is not the same PR — this estate has closed the
+        wrong task twice that way — so `pr_repo` participates in the comparison.
+        """
+        _vault, note = _make_vault(tmp_path, task_id="test-001", pr=None, status="claimed")
+        foreign = note.parent / "foreign-repo-task.md"
+        foreign.write_text(
+            '---\ntype: cc-task\ntask_id: foreign\ntitle: "Same number, other repo"\n'
+            "status: pr_open\nassigned_to: beta\npriority: normal\n"
+            "branch: x\npr: 4242\npr_repo: hapax-systems/reins\n"
+            "created_at: 2026-04-26T00:00:00Z\nupdated_at: 2026-04-26T00:00:00Z\n---\n\n"
+            "# Foreign\n\n## Session log\n",
+            encoding="utf-8",
+        )
+        _write_claim(tmp_path, "beta", "test-001")
+
+        result = _run_hook(
+            bash_cmd="gh pr create",
+            bash_output="https://github.com/ryanklee/hapax-council/pull/4242",
+            home=tmp_path,
+        )
+
+        assert result.returncode == 0
+        assert "pr: 4242" in note.read_text(encoding="utf-8"), (
+            "a same-numbered PR in another repository must not block a legitimate link"
+        )
+
     def test_matching_existing_pr_still_advances_status(self, tmp_path: Path) -> None:
         _vault, note = _make_vault(
             tmp_path,
