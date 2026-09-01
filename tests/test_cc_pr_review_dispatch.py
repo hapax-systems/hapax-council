@@ -4379,3 +4379,30 @@ def test_both_pools_exhausted_skips_the_review_scan(tmp_path: Path) -> None:
         )
         == []
     )
+
+
+def test_a_raised_gh_failure_is_normalised_so_the_fallback_handlers_see_it(tmp_path: Path) -> None:
+    """`_run_gh` must convert a RAISED failure, not only a nonzero return code.
+
+    Found by external review. `runner` can raise `subprocess.TimeoutExpired` or `OSError` (a
+    missing or unexecutable `gh`), and neither is a `RuntimeError` — so both sailed past all EIGHT
+    `except RuntimeError` handlers in this module, skipping the transport fallback they guard and
+    surfacing as a per-PR error that can starve that PR every cycle.
+
+    Normalised at the primitive rather than by widening eight handlers: one mitigation at the
+    boundary, not eight for the same hazard. It still RAISES — returning an empty string here would
+    read as "gh said nothing", which is the silent-empty defect this fleet refuses elsewhere.
+    """
+
+    def gh_is_not_installed(cmd, **kwargs):
+        raise FileNotFoundError(2, "No such file or directory: 'gh'")
+
+    with pytest.raises(RuntimeError) as excinfo:
+        dispatch._run_gh(["gh", "pr", "view"], repo_root=tmp_path, runner=gh_is_not_installed)
+    assert "could not run" in str(excinfo.value)
+
+    def gh_times_out(cmd, **kwargs):
+        raise subprocess.TimeoutExpired(cmd, 120)
+
+    with pytest.raises(RuntimeError):
+        dispatch._run_gh(["gh", "pr", "view"], repo_root=tmp_path, runner=gh_times_out)

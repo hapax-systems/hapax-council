@@ -414,6 +414,18 @@ def is_admission_allowed(branch: str | None) -> tuple[bool, str]:
     """Library entry point used by hooks and CI.
 
     Returns (allowed, reason). branch=None tests admission of new PR creation.
+
+    **REPRESENTATION, NOT THE ENFORCEMENT PATH — verified 2026-09-01.** The docstring above says
+    "used by hooks", and no hook calls it: `hooks/scripts/pr-admission-gate.sh` reads
+    `pr-admission-governor.yaml` directly, blocks `gh pr create` and `gh pr ready` UNCONDITIONALLY
+    whenever mode is drain/frozen, and never consults `branch_snapshot_unavailable`. Two searches
+    (call sites, and the hook's own source) find only tests calling this.
+
+    So the enforced behaviour is STRICTER than this function describes, and a reviewer reading only
+    this function will mis-state what the governor does — which is how a residual finding was filed
+    against a bypass that production cannot reach. Keep this function correct anyway: it is the
+    stated contract, CI may adopt it, and a permissive library beside a strict hook is a trap for
+    whoever wires the two together. But do not mistake tightening it for tightening the estate.
     """
     state = load_state()
     if state["mode"] == "normal":

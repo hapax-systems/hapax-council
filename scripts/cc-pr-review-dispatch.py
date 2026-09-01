@@ -898,9 +898,24 @@ class PRInfo:
 
 
 def _run_gh(cmd: list[str], *, repo_root: Path, runner: Any, timeout: int = 120) -> str:
-    proc = runner(
-        cmd, cwd=str(repo_root), capture_output=True, text=True, check=False, timeout=timeout
-    )
+    """Run a `gh` command, normalising EVERY failure to RuntimeError.
+
+    A nonzero return code was already converted; a RAISED failure was not. `runner` can raise
+    `subprocess.TimeoutExpired` or `OSError` (a missing or unexecutable `gh`), and neither is a
+    `RuntimeError` — so both sailed past all **eight** `except RuntimeError` handlers in this
+    module, skipping the transport fallback they guard and surfacing as a per-PR error that can
+    starve that PR every cycle. Found by external review.
+
+    Normalising here rather than widening those eight handlers is deliberate: one mitigation at the
+    boundary, not eight for the same hazard. The distinction the handlers depend on is preserved —
+    this still raises, and never returns an empty string that would read as "gh said nothing".
+    """
+    try:
+        proc = runner(
+            cmd, cwd=str(repo_root), capture_output=True, text=True, check=False, timeout=timeout
+        )
+    except (subprocess.SubprocessError, OSError) as exc:
+        raise RuntimeError(f"{' '.join(cmd[:3])} could not run: {exc}") from exc
     if proc.returncode != 0:
         raise RuntimeError(
             f"{' '.join(cmd[:3])} failed (rc={proc.returncode}): {proc.stderr.strip()[:300]}"
