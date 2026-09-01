@@ -130,12 +130,29 @@ def resolve_ref(path_ref: str) -> Path:
     return REPO_ROOT / expanded
 
 
-def launcher_command_path(route: PlatformCapabilityRoute) -> Path:
+def launcher_command_path(route: PlatformCapabilityRoute) -> Path | None:
+    """The wrapper's executable, or None when the route declares no wrapper.
+
+    **A route with no sanctioned wrapper is a real, correct state** — it is precisely why such a
+    route is blocked, and `claude.review.fable` is declared exactly that way rather than naming a
+    wrapper it does not have. This function used to crash on it: `shlex.split("")` returns `[]`, so
+    `[0]` raised IndexError, and the handler for that IndexError re-ran the identical operation
+    (`.split()[0]`) on the same empty string and raised again, uncaught. A failure path that repeats
+    what just failed is not a fallback.
+
+    Returning None makes the absence representable, which is what the caller actually needs: it can
+    report "no wrapper declared" instead of dying while observing a blocked route.
+    """
     try:
-        command = shlex.split(route.sanctioned_wrapper)[0]
-    except (IndexError, ValueError):
-        command = route.sanctioned_wrapper.split()[0]
-    return resolve_ref(command)
+        parts = shlex.split(route.sanctioned_wrapper or "")
+    except ValueError:
+        # Unbalanced quotes in the declaration. Fall back to naive splitting rather than refusing —
+        # the point here is to locate a file, and a malformed wrapper string is still evidence
+        # about a wrapper that was declared.
+        parts = (route.sanctioned_wrapper or "").split()
+    if not parts:
+        return None
+    return resolve_ref(parts[0])
 
 
 def sha256_file(path: Path) -> str | None:
@@ -415,6 +432,10 @@ def observe_codex_exec_auth(*, enabled: bool, timeout: float) -> tuple[list[str]
 
 def observe_wrapper(route: PlatformCapabilityRoute) -> WrapperEvidence:
     path = launcher_command_path(route)
+    if path is None:
+        # No wrapper declared. Report it as absent rather than crashing: `exists=False` is the
+        # honest observation, and it is what keeps such a route blocked rather than unobservable.
+        return WrapperEvidence(path="", exists=False, executable=False, sha256=None)
     return WrapperEvidence(
         path=display_path(path),
         exists=path.exists(),

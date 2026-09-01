@@ -72,6 +72,11 @@ REQUIRED_ROUTE_IDS = frozenset(
         "claude.headless.opus",
         "claude.headless.sonnet",
         "claude.review.opus",
+        # Fable 5.1, declared 2026-09-01. Listed here — not merely appended to `routes` — because
+        # this set is what makes a route intentional: the registry refuses any route absent from it,
+        # so a route cannot be added quietly. Declared BLOCKED pending a sanctioned wrapper and its
+        # receipts; a correctly-blocked route is a real result, an undeclared reachable model is not.
+        "claude.review.fable",
         "claude.interactive.full",
         "codex.headless.full",
         "codex.headless.spark",
@@ -156,6 +161,10 @@ class Profile(StrEnum):
     API_FRONTIER = "api_frontier"
     DETERMINISTIC = "deterministic"
     DIRECT = "direct"
+    # Fable is its own profile, not a variant of `opus`. The two differ in exactly the way this
+    # registry treats as identity — a different model with a different measured shape — and folding
+    # fable under `opus` would let a route's profile disagree with its own execution_descriptor.
+    FABLE = "fable"
     FLASH = "flash"
     FULL = "full"
     HAIKU = "haiku"
@@ -217,6 +226,17 @@ class ModelId(StrEnum):
     CLAUDE_SONNET_5 = "claude-sonnet-5"
     CLAUDE_HAIKU_4_5 = "claude-haiku-4-5"
     CLAUDE_FABLE_5 = "claude-fable-5"
+    # Released 2026-09-01. A DISTINCT enum member, never a rename of `claude-fable-5`: the two are
+    # different capabilities under this registry's own rule that configuration is identity, and
+    # rows measured against 5 must not silently re-label as 5.1. Pin the dated id, never the
+    # `fable` alias — the alias now resolves to 5.1 and will resolve to something else later.
+    CLAUDE_FABLE_5_1 = "claude-fable-5-1"
+    # **The estate's own default was unnameable here.** `~/.claude/settings.json` sets
+    # `model: opus[1m]`, which resolves to `claude-opus-5[1m]`, and a run pinned to another model
+    # was measured on 2026-09-01 with ~70% of its output produced by it via a dispatched subagent.
+    # A registry that cannot name the model that actually ran cannot record a mixed execution, so
+    # the omission was not cosmetic: it made the most common real observation unrepresentable.
+    CLAUDE_OPUS_5 = "claude-opus-5"
     GPT_5_5 = "gpt-5.5"
     GPT_5_3_CODEX_SPARK = "gpt-5.3-codex-spark"
     GPT_OSS_120B = "gpt-oss-120b"

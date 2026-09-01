@@ -35,6 +35,16 @@ class ObservedExecution:
 
     models: frozenset[str] = frozenset()
     fallback_events: tuple[FallbackEvent, ...] = ()
+    #: Every reasoning-effort level observed across assistant turns.
+    #:
+    #: Claude Code 2.1.257 records a top-level ``effort`` on every assistant record (verified
+    #: 2026-09-01: 153 assistant records across four transcripts, all carrying it). Nothing read it.
+    #: That mattered from the moment effort became adjustable MID-CONVERSATION in Fable 5.1: this
+    #: estate's own definition makes configuration constitutive of capability identity, so a run
+    #: whose effort changed partway is two capabilities wearing one label — the same drift class as
+    #: two models, one field over. Empty when the transcript predates the field, which is a
+    #: different fact from "effort never changed" and is why `drifted` does not read it.
+    efforts: frozenset[str] = frozenset()
     turn_count: int = 0
     source_path: str = ""
     #: The client transcript is NOT provider-side attestation; a gateway/usage API is.
@@ -45,8 +55,27 @@ class ObservedExecution:
     @property
     def drifted(self) -> bool:
         """True when execution left a single sanctioned model: >1 model observed, or any
-        silent fallback occurred."""
+        silent fallback occurred.
+
+        **Deliberately does NOT include effort.** An older transcript carries no ``effort`` field
+        at all, so an absent-or-single value cannot distinguish "effort held" from "effort was
+        never recorded" — and folding an unmeasurable into a drift verdict would make every legacy
+        transcript read as clean on a question nobody asked it. `effort_drifted` is separate and
+        answers only where the evidence exists.
+        """
         return len(self.models) > 1 or bool(self.fallback_events)
+
+    @property
+    def effort_drifted(self) -> bool:
+        """True when MORE THAN ONE effort level served one session.
+
+        Fable 5.1 made effort adjustable mid-conversation. Under this estate's definition —
+        capability identity is model x harness x config x credential location — that means identity
+        is no longer constant within a unit of work, and a measurement taken across the change is
+        of two capabilities under one name. Absence of the field yields False, because silence is
+        not evidence of stability; read `efforts` to tell the two apart.
+        """
+        return len(self.efforts) > 1
 
 
 def _model_of_assistant_turn(record: dict) -> str | None:
@@ -92,6 +121,7 @@ def observe_claude_transcript(path: str | Path) -> ObservedExecution:
     """
     p = Path(path)
     models: set[str] = set()
+    efforts: set[str] = set()
     fallbacks: list[FallbackEvent] = []
     turns = 0
     malformed = 0
@@ -116,6 +146,12 @@ def observe_claude_transcript(path: str | Path) -> ObservedExecution:
                 if model is not None:
                     models.add(model)
                     turns += 1
+                    # Top-level on the assistant record, beside `message.model`. Only collected for
+                    # turns that actually served, so a hook/tool-injected record cannot contribute
+                    # an effort level no model ran at.
+                    effort = record.get("effort")
+                    if isinstance(effort, str) and effort:
+                        efforts.add(effort)
                 fallback = _fallback_of_record(record)
                 if fallback is not None:
                     fallbacks.append(fallback)
@@ -131,6 +167,7 @@ def observe_claude_transcript(path: str | Path) -> ObservedExecution:
 
     return ObservedExecution(
         models=frozenset(models),
+        efforts=frozenset(efforts),
         fallback_events=tuple(fallbacks),
         turn_count=turns,
         source_path=str(p),
