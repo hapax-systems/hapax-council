@@ -12,10 +12,10 @@ import sys
 import time
 from datetime import UTC, datetime
 from pathlib import Path
-
-import yaml
 from typing import TYPE_CHECKING
 from unittest.mock import patch
+
+import yaml
 
 from shared.dispatcher_policy import (
     DispatchAction,

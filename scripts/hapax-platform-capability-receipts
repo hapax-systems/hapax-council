@@ -473,7 +473,9 @@ def tool_state(routes: list[PlatformCapabilityRoute]) -> list[ToolEvidence]:
 QUOTA_RECEIPT_DIR = Path.home() / ".cache" / "hapax" / "relay" / "receipts"
 
 
-def _fresh_quota_receipt(path: Path, *, route_ids: set[str], now: datetime) -> dict[str, Any] | None:
+def _fresh_quota_receipt(
+    path: Path, *, route_ids: set[str], now: datetime
+) -> dict[str, Any] | None:
     """A quota receipt from `path` if it is fresh, positive, and for one of these routes.
 
     Refuses lane-presence evidence explicitly. The receipt carries
