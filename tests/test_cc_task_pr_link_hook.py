@@ -272,6 +272,10 @@ class TestIdempotency:
         assert "pr: null" in text
         assert "status: in_progress" in text, "and must not advance status on a refused link"
         assert "pr: 4605" in owner.read_text(encoding="utf-8"), "a refusal moves nothing"
+        # The refusal names both tasks and the next action (exit predicate: BOTH refusals do).
+        assert "REFUSING to link PR #4605 to 'research-row-test-task'" in result.stderr
+        assert "'velocity-fix-test-task' already declares it" in result.stderr
+        assert "Next action:" in result.stderr
 
     def test_still_links_when_no_other_task_declares_the_pr(self, tmp_path: Path) -> None:
         """The guard must not break the ordinary case it sits in front of.
@@ -301,6 +305,59 @@ class TestIdempotency:
         assert "pr: 4242" in note.read_text(encoding="utf-8"), (
             "a same-numbered PR in another repository must not block a legitimate link"
         )
+
+    def test_a_bare_number_on_another_row_is_not_a_link_and_does_not_block(
+        self, tmp_path: Path
+    ) -> None:
+        """Repository contract: `pr:` without `pr_repo:` is not a link. A row carrying only the
+        number therefore declares no PR, so it cannot be the conflicting task (review finding on
+        #4613: the first version treated a missing pr_repo as "same repository" and refused)."""
+        _vault, note = _make_vault(tmp_path, task_id="test-001", pr=None, status="claimed")
+        bare = note.parent / "bare-number-task.md"
+        bare.write_text(
+            '---\ntype: cc-task\ntask_id: bare\ntitle: "Number only, no repository"\n'
+            "status: pr_open\nassigned_to: beta\npriority: normal\n"
+            "branch: x\npr: 4242\n"
+            "created_at: 2026-04-26T00:00:00Z\nupdated_at: 2026-04-26T00:00:00Z\n---\n\n"
+            "# Bare\n\n## Session log\n",
+            encoding="utf-8",
+        )
+        _write_claim(tmp_path, "beta", "test-001")
+
+        result = _run_hook(
+            bash_cmd="gh pr create",
+            bash_output="https://github.com/ryanklee/hapax-council/pull/4242",
+            home=tmp_path,
+        )
+
+        assert result.returncode == 0
+        assert "pr: 4242" in note.read_text(encoding="utf-8")
+        assert "REFUSING" not in result.stderr
+
+    def test_repository_names_compare_case_insensitively(self, tmp_path: Path) -> None:
+        """GitHub owner/name are case-insensitive: `RyanKlee/Hapax-Council` is the same repository
+        as `ryanklee/hapax-council`, so a differently capitalised declaration still conflicts."""
+        _vault, note = _make_vault(tmp_path, task_id="research-row", pr=None, status="in_progress")
+        owner = note.parent / "capitalised-owner-task.md"
+        owner.write_text(
+            '---\ntype: cc-task\ntask_id: capitalised\ntitle: "Owns the PR"\n'
+            "status: pr_open\nassigned_to: beta\npriority: normal\n"
+            'branch: x\npr: 4605\npr_repo: "RyanKlee/Hapax-Council"\n'
+            "created_at: 2026-04-26T00:00:00Z\nupdated_at: 2026-04-26T00:00:00Z\n---\n\n"
+            "# Owner\n\n## Session log\n",
+            encoding="utf-8",
+        )
+        _write_claim(tmp_path, "beta", "research-row")
+
+        result = _run_hook(
+            bash_cmd="gh pr create",
+            bash_output="https://github.com/ryanklee/hapax-council/pull/4605",
+            home=tmp_path,
+        )
+
+        assert result.returncode == 0
+        assert "pr: 4605" not in note.read_text(encoding="utf-8")
+        assert "'capitalised-owner-task' already declares it" in result.stderr
 
     def test_matching_existing_pr_still_advances_status(self, tmp_path: Path) -> None:
         _vault, note = _make_vault(

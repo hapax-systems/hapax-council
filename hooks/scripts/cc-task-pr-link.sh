@@ -355,7 +355,19 @@ for other in sorted(vault_active.glob("*.md")):
     if not om or om.group(1).strip() != str(pr_number):
         continue
     orm = re.search(r"^pr_repo:\s*(.*)$", head, flags=re.MULTILINE)
-    if orm and orm.group(1).strip().strip("\"'") != pr_repo:
+    if not orm or not orm.group(1).strip().strip("\"'"):
+        # A bare number is not a link (repository contract: `pr:` MUST carry `pr_repo:`), so a
+        # row without one declares no PR and cannot be the conflicting task (review finding on
+        # #4613: treating "missing" as "same repository" refused legitimate links).
+        continue
+
+    def _norm_repo(value: str) -> str:
+        cleaned = value.strip().strip("\"'").strip("/")
+        if cleaned.endswith(".git"):
+            cleaned = cleaned[: -len(".git")]
+        return cleaned.lower()  # GitHub owner/name are case-insensitive
+
+    if _norm_repo(orm.group(1)) != _norm_repo(pr_repo):
         continue  # same number, different repository — not the same PR
     print(
         f"cc-task-pr-link: REFUSING to link PR #{pr_number} to '{note_path.stem}' — "
