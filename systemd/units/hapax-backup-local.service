@@ -1,12 +1,15 @@
 [Unit]
-Description=Hapax Local Backup (restic)
+Description=Dump PostgreSQL/Qdrant/n8n and back up system state to NAS with restic
 After=network-online.target
+RequiresMountsFor=/store/llm-data /mnt/nas/backups/restic
+ConditionPathIsMountPoint=/store
+ConditionPathIsMountPoint=/mnt/nas
 OnFailure=notify-failure@%n.service
 
 [Service]
 Type=oneshot
-ExecStart=/home/hapax/projects/hapax-council/scripts/hapax-backup-local
-WorkingDirectory=/home/hapax/projects/hapax-council
+ExecStart=%h/.cache/hapax/source-activation/worktree/scripts/hapax-backup-local
+WorkingDirectory=%h/.cache/hapax/source-activation/worktree
 Environment=PATH=/home/hapax/.local/bin:/usr/local/bin:/usr/bin:/bin
 Environment=HOME=/home/hapax
 Environment=GNUPGHOME=/home/hapax/.gnupg

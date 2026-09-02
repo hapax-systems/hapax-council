@@ -1,12 +1,14 @@
 [Unit]
-Description=Hapax Remote Backup (restic → B2)
+Description=Dump PostgreSQL/Qdrant/n8n, back up system state to B2, and publish the DR script
 After=network-online.target
+RequiresMountsFor=/store/llm-data
+ConditionPathIsMountPoint=/store
 OnFailure=notify-failure@%n.service
 
 [Service]
 Type=oneshot
-ExecStart=/home/hapax/projects/hapax-council/scripts/hapax-backup-remote
-WorkingDirectory=/home/hapax/projects/hapax-council
+ExecStart=%h/.cache/hapax/source-activation/worktree/scripts/hapax-backup-remote
+WorkingDirectory=%h/.cache/hapax/source-activation/worktree
 Environment=PATH=/home/hapax/.local/bin:/usr/local/bin:/usr/bin:/bin
 Environment=HOME=/home/hapax
 Environment=GNUPGHOME=/home/hapax/.gnupg

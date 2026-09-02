@@ -19,15 +19,16 @@ set -euo pipefail
 #   Option A — GitHub (authenticate via browser):
 #     sudo pacman -S git github-cli
 #     gh auth login              # browser OAuth, no SSH key needed
-#     gh repo clone ryanklee/distro-work
-#     ./distro-work/hapax-cachyos-restore.sh
+#     gh repo clone hapax-systems/hapax-council
+#     ./hapax-council/scripts/hapax-cachyos-restore
 #
 #   Option B — B2 (needs key ID + app key):
 #     sudo pacman -S rclone
 #     rclone config create b2 b2 account YOUR_KEY_ID key YOUR_APP_KEY
-#     rclone copy b2:hapax-backups/dr-scripts/hapax-cachyos-restore.sh .
-#     chmod +x hapax-cachyos-restore.sh
-#     ./hapax-cachyos-restore.sh
+#     DR_OBJECT_NAME="hapax-cachyos-restore.sh"
+#     rclone copyto "b2:hapax-backups/dr-scripts/${DR_OBJECT_NAME}" "./${DR_OBJECT_NAME}"
+#     chmod +x "${DR_OBJECT_NAME}"
+#     "./${DR_OBJECT_NAME}"
 #
 #   Option C — USB stick (copy script before wiping)
 #
@@ -44,6 +45,72 @@ ok()   { echo -e "${GREEN}[OK]${NC} $1"; }
 warn() { echo -e "${YELLOW}[WARN]${NC} $1"; }
 fail() { echo -e "${RED}[FAIL]${NC} $1"; }
 ask()  { read -rp "$1: " "$2"; }
+
+DR_OBJECT_NAME="hapax-cachyos-restore.sh"
+RESTORE_DUMP_RELATIVE_PATHS=(
+    "store/llm-data/backup-dumps-remote"
+    "store/llm-data/backup-dumps-local"
+)
+
+find_restore_dump_dir() {
+    local restore_root="$1" relative_path candidate
+
+    for relative_path in "${RESTORE_DUMP_RELATIVE_PATHS[@]}"; do
+        candidate="$restore_root/$relative_path"
+        if [[ -d "$candidate" ]]; then
+            printf '%s\n' "$candidate"
+            return 0
+        fi
+    done
+
+    fail "No database dump directory found. Searched:" >&2
+    for relative_path in "${RESTORE_DUMP_RELATIVE_PATHS[@]}"; do
+        printf '  - %s/%s\n' "$restore_root" "$relative_path" >&2
+    done
+    return 1
+}
+
+restore_n8n_workflows() {
+    local dump_dir="$1"
+    local workflow_dump="$dump_dir/n8n-workflows.json"
+    local container_dump="/tmp/n8n-workflows.json"
+
+    [[ -f "$workflow_dump" ]] || return 0
+
+    log "Importing n8n workflows..."
+    if ! sudo docker cp "$workflow_dump" "n8n:$container_dump"; then
+        fail "Could not copy n8n workflow export into the n8n container" >&2
+        return 1
+    fi
+    if ! sudo docker exec n8n n8n import:workflow --input="$container_dump"; then
+        fail "n8n workflow import failed" >&2
+        return 1
+    fi
+    ok "n8n workflows imported"
+}
+
+case "${1:-}" in
+    --print-dr-object-name)
+        printf '%s\n' "$DR_OBJECT_NAME"
+        exit 0
+        ;;
+    --resolve-dump-dir)
+        if [[ $# -ne 2 ]]; then
+            fail "Usage: $0 --resolve-dump-dir RESTORE_ROOT" >&2
+            exit 2
+        fi
+        find_restore_dump_dir "$2"
+        exit $?
+        ;;
+    --import-n8n-workflows)
+        if [[ $# -ne 2 ]]; then
+            fail "Usage: $0 --import-n8n-workflows DUMP_DIR" >&2
+            exit 2
+        fi
+        restore_n8n_workflows "$2"
+        exit $?
+        ;;
+esac
 
 # ─── Phase 0: Collect secrets ───────────────────────────────────────────────
 log "=== Phase 0: Collect recovery secrets ==="
@@ -608,10 +675,12 @@ if ! mount | grep -q "tmpfs on /tmp"; then
 fi
 
 # ─── Phase 12: Docker stack ────────────────────────────────────────────────
-log "=== Phase 12: Start Docker stack + restore databases ==="
+log "=== Phase 12: Start Docker stack + restore PostgreSQL, Qdrant, and n8n workflows ==="
 
-DUMP="$RESTORE_DIR/tmp/hapax-backup-dumps-remote"
-[[ ! -d "$DUMP" ]] && DUMP="$RESTORE_DIR/tmp/hapax-backup-dumps"
+if ! DUMP=$(find_restore_dump_dir "$RESTORE_DIR"); then
+    exit 1
+fi
+ok "Using database dumps: $DUMP"
 
 if [[ -f ~/llm-stack/docker-compose.yml ]]; then
     log "Starting Docker stack..."
@@ -653,6 +722,11 @@ if [[ -f ~/llm-stack/docker-compose.yml ]]; then
                 ok "Qdrant: $coll" || warn "Qdrant: $coll failed"
         done
     fi
+
+    # Restore n8n workflows only when the producer's export is present.
+    if ! restore_n8n_workflows "$DUMP"; then
+        exit 1
+    fi
     cd ~
 fi
 
@@ -679,9 +753,8 @@ mkdir -p ~/projects
 # Repos with remotes (clone from GitHub)
 # Try SSH first, fall back to gh (uses OAuth token from gh auth login)
 declare -A REPOS=(
-    [distro-work]="ryanklee/distro-work"
     [hapax-constitution]="ryanklee/hapax-constitution"
-    [hapax-council]="ryanklee/hapax-council"
+    [hapax-council]="hapax-systems/hapax-council"
     [hapax-officium]="ryanklee/hapax-officium"
     [hapax-watch]="ryanklee/hapax-watch"
     [hapax-mcp]="ryanklee/hapax-mcp"
@@ -827,7 +900,8 @@ echo "  6. Verify: pass show api/anthropic"
 echo "  7. Verify: claude --version && claude plugins list"
 echo "  8. cd ~/projects/hapax-council && uv sync"
 echo "  9. systemctl --user start logos-api && systemctl --user start hapax-daimonion"
-echo " 10. First local backup: ~/.local/bin/hapax-backup-local.sh"
+echo " 10. Verify n8n workflows: docker exec n8n n8n list:workflow"
+echo " 11. First local backup: ~/.cache/hapax/source-activation/worktree/scripts/hapax-backup-local"
 echo ""
 log "Verification:"
 echo "  nvidia-smi                    # GPU"

@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import json
+import re
 import subprocess
 from pathlib import Path
 
@@ -10,6 +12,8 @@ SCRIPT = REPO / "systemd" / "scripts" / "backup.sh"
 UNITS = REPO / "systemd" / "units"
 MANIFESTS = REPO / "agents" / "manifests"
 RUNBOOK = REPO / "docs" / "runbooks" / "llm-stack-backup-reconciliation.md"
+INFRA_REGISTRY = REPO / "config" / "infrastructure" / "host-storage-registry.json"
+EXPECTED_TIMERS = REPO / "systemd" / "expected-timers.yaml"
 
 
 def _unit_value(text: str, section: str, key: str) -> str | None:
@@ -33,7 +37,7 @@ def test_llm_backup_script_is_deprecated_receipt() -> None:
     assert "DEPRECATED" in text
     assert "hapax-backup-local.service" in text
     assert "hapax-backup-gdrive-critical.service" in text
-    assert "hapax-backup-remote.service" not in text
+    assert "hapax-backup-remote.service" in text
     assert "docs/runbooks/llm-stack-backup-reconciliation.md" in text
     assert "pg_dump" not in text
     assert "ragdb" not in text
@@ -67,21 +71,22 @@ def test_llm_backup_unit_uses_source_controlled_receipt() -> None:
 
 
 def test_backup_tier_units_execute_source_controlled_scripts() -> None:
-    """The Tier-1 (local) and B2 (remote) backup scripts live in this repository. Until 2026-09-02
-    the units executed them out of the working copy of an archived, read-only repository, so three
-    backup fixes had nowhere to land. The units point here, the scripts exist, are executable and
-    parse, the DR restore script sits beside the remote script, and no live surface names the old
-    repository."""
+    """Backup units execute only the governed source-activation worktree."""
     archived_repo = "-".join(("distro", "work"))
-    # The unit's absolute checkout path, built here so this fixture line is not itself a home
-    # path in an added line for the scan-before-push hook.
-    checkout = "/".join(("", "home", "hapax", "projects", "hapax-council"))
+    activation_root = "%h/.cache/hapax/source-activation/worktree"
+    mutable_project_path = re.compile(r"(?:~|/home/[^/]+)/projects(?:/|$)")
     for lane in ("local", "remote"):
         text = (UNITS / f"hapax-backup-{lane}.service").read_text()
         exec_start = _unit_value(text, "Service", "ExecStart")
-        assert exec_start == f"{checkout}/scripts/hapax-backup-{lane}", lane
-        assert _unit_value(text, "Service", "WorkingDirectory") == checkout
+        assert exec_start == f"{activation_root}/scripts/hapax-backup-{lane}", lane
+        assert _unit_value(text, "Service", "WorkingDirectory") == activation_root
+        assert not mutable_project_path.search(text), lane
         assert archived_repo not in text, lane
+        assert _unit_value(text, "Unit", "RequiresMountsFor"), lane
+        mount_conditions = _unit_value(text, "Unit", "ConditionPathIsMountPoint")
+        assert mount_conditions is not None and "/store" in mount_conditions, lane
+        if lane == "local":
+            assert "/mnt/nas" in mount_conditions
         script = REPO / "scripts" / f"hapax-backup-{lane}"
         assert script.is_file(), script
         assert script.stat().st_mode & 0o111, f"{script} must be executable"
@@ -95,6 +100,7 @@ def test_backup_tier_units_execute_source_controlled_scripts() -> None:
     dr = REPO / "scripts" / "hapax-cachyos-restore"
     assert dr.is_file() and dr.stat().st_mode & 0o111, dr
     subprocess.run(["bash", "-n", str(dr)], check=True, capture_output=True, timeout=10)
+    assert archived_repo not in dr.read_text()
 
 
 def test_backup_manifests_name_canonical_lanes() -> None:
@@ -107,13 +113,18 @@ def test_backup_manifests_name_canonical_lanes() -> None:
     assert llm["outputs"] == ["Deprecation receipt in the systemd journal"]
     assert "backup_local" in llm["peers"]
     assert "backup_gdrive_critical" in llm["peers"]
-    assert "backup_remote" not in llm["peers"]
+    assert "backup_remote" in llm["peers"]
     assert "/mnt/nas/backups/restic" in local["outputs"][0]
     assert "PostgreSQL" in local["purpose"]
     assert "Qdrant" in local["purpose"]
-    assert remote["schedule"]["type"] == "on-demand"
-    assert remote["schedule"]["interval"] == "retired"
-    assert "retired" in remote["purpose"].lower()
+    assert remote["schedule"] == {
+        "type": "timer",
+        "systemd_unit": "hapax-backup-remote.timer",
+        "interval": "daily",
+    }
+    assert remote["autonomy"] == "full"
+    assert "live daily" in remote["purpose"].lower()
+    assert "must not" not in remote["decision_scope"].lower()
     assert gdrive["schedule"]["systemd_unit"] == "hapax-backup-gdrive-critical.timer"
     assert "rclone:gdrive:hapax-backups/restic-critical" in gdrive["narrative"]
     assert "prune" in gdrive["decision_scope"]
@@ -131,8 +142,30 @@ def test_reconciliation_runbook_documents_restore_path() -> None:
         "$HOME/llm-stack/",
         "scripts/hapax-backup-watchdog",
         "rclone:gdrive:hapax-backups/restic-critical",
-        "hapax-backup-remote.timer` should be installed",
+        "hapax-backup-remote.timer",
+        "/store/llm-data/backup-dumps-local",
+        "/store/llm-data/backup-dumps-remote",
+        "hapax-cachyos-restore.sh",
+        "## Recheck",
     ]:
         assert expected in text
 
     assert "No obsolete `ragdb` database assumption" in text
+    assert "-".join(("distro", "work")) not in text
+
+
+def test_backup_remote_policy_is_live_daily_everywhere() -> None:
+    manifest = yaml.safe_load((MANIFESTS / "backup_remote.yaml").read_text())
+    registry = json.loads(INFRA_REGISTRY.read_text())
+    expected_timers = yaml.safe_load(EXPECTED_TIMERS.read_text())["timers"]
+    policy = next(
+        row for row in registry["backup_policies"] if row["store_id"] == "b2-restic-offsite"
+    )
+
+    assert manifest["schedule"]["type"] == "timer"
+    assert manifest["schedule"]["interval"] == "daily"
+    assert manifest["schedule"]["systemd_unit"] == "hapax-backup-remote.timer"
+    assert policy["cadence"] == "daily"
+    assert policy["intended_state"] == "enabled"
+    assert policy["next_action"] is None
+    assert expected_timers["backup_remote"] == "hapax-backup-remote.timer"

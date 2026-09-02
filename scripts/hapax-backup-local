@@ -3,7 +3,7 @@ set -euo pipefail
 
 # Tier 1: Daily backup to NAS restic repo (was /store, migrated 2026-05-11)
 # Scope: configs, secrets, state — everything that's hard to recreate
-# Schedule: daily at 04:00 via systemd timer
+# Schedule: daily at 03:00 via systemd timer
 # Runs as user (not root). Database state captured via API dumps.
 # Repo on Synology DS425+ NAS via NFS for true DR (separate physical device).
 
@@ -12,6 +12,41 @@ export RESTIC_PASSWORD="$(pass show backups/restic-password)"
 export RESTIC_REPOSITORY="$REPO"
 
 log() { echo "[$(date -Iseconds)] $1"; }
+
+snapshot_qdrant() {
+    local collection_response collection_names coll snapshot_response snap_name
+
+    if ! collection_response=$(curl -sf http://127.0.0.1:6333/collections); then
+        log "FATAL: failed to list Qdrant collections"
+        return 1
+    fi
+    if ! collection_names=$(jq -er \
+        '.result.collections | if length == 0 then error("no collections") else .[].name end' \
+        <<< "$collection_response" 2>/dev/null); then
+        log "FATAL: Qdrant collection list was empty or invalid"
+        return 1
+    fi
+
+    while IFS= read -r coll; do
+        if ! snapshot_response=$(curl -sf -X POST \
+            "http://127.0.0.1:6333/collections/${coll}/snapshots"); then
+            log "FATAL: failed to create Qdrant snapshot for $coll"
+            return 1
+        fi
+        if ! snap_name=$(jq -er \
+            '.result.name | select(type == "string" and length > 0)' \
+            <<< "$snapshot_response" 2>/dev/null); then
+            log "FATAL: Qdrant returned no snapshot name for $coll"
+            return 1
+        fi
+        if ! curl -sf \
+            "http://127.0.0.1:6333/collections/${coll}/snapshots/${snap_name}" \
+            -o "$DUMP_DIR/qdrant/${coll}.snapshot"; then
+            log "FATAL: failed to download Qdrant snapshot for $coll"
+            return 1
+        fi
+    done <<< "$collection_names"
+}
 
 # Remove stale locks left by a prior interrupted run — a recurring exit-11 cause
 # (e.g. a backup killed mid-run, or the 2026-06-03 disk failure mid-backup).
@@ -56,13 +91,7 @@ log "PostgreSQL dump OK: ${_pg_size} bytes, terminator present"
 
 # Qdrant snapshots via REST API
 log "Snapshotting Qdrant collections..."
-for coll in $(curl -sf http://127.0.0.1:6333/collections | jq -r '.result.collections[].name' 2>/dev/null); do
-    snap_name=$(curl -sf -X POST "http://127.0.0.1:6333/collections/${coll}/snapshots" | jq -r '.result.name' 2>/dev/null)
-    if [[ -n "$snap_name" && "$snap_name" != "null" ]]; then
-        curl -sf "http://127.0.0.1:6333/collections/${coll}/snapshots/${snap_name}" \
-            -o "$DUMP_DIR/qdrant/${coll}.snapshot" 2>/dev/null || log "WARN: qdrant snapshot failed for $coll"
-    fi
-done
+snapshot_qdrant
 
 # n8n export (if n8n CLI available in container)
 docker exec n8n n8n export:workflow --all --output=/tmp/n8n-workflows.json 2>/dev/null && \
