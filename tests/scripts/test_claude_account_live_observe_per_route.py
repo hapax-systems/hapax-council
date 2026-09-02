@@ -138,6 +138,47 @@ class TestEachRouteUsesItsOwnFamily:
         )
         assert verdict == "walled" and newest.kind == "wall"
 
+    def test_a_serve_older_than_a_newer_wall_is_not_resurrected_by_another_family(
+        self, tmp_path: Path
+    ) -> None:
+        """opus serve t0, wall t1, fable serve t2: the account is served (t2 is newest) but the
+        t0 opus serve predates the wall and must not vouch for the opus review route. A Fable
+        response cannot witness Opus availability after an Opus refusal (review finding, #4615)."""
+        verdict, newest, found = _observe_all(
+            tmp_path,
+            transcript=[
+                _served(NOW - timedelta(minutes=9), "claude-opus-5"),
+                _served(NOW - timedelta(minutes=1), "claude-fable-5-1"),
+            ],
+            headless=[_wall(NOW - timedelta(minutes=5))],
+        )
+        assert verdict == "served" and newest.model == "claude-fable-5-1"
+        by_route = obs.evidence_by_route(found, ROUTES)
+        assert by_route["claude.review.opus"] is None, "pre-wall opus serve resurrected"
+        assert by_route["claude.headless.full"] is not None
+        assert by_route["claude.headless.full"].at == NOW - timedelta(minutes=1)
+        planned = _plan(tmp_path, newest, found)
+        assert "would_run" not in planned["claude.review.opus"], planned["claude.review.opus"]
+        assert "would_run" in planned["claude.headless.full"]
+
+    def test_a_serve_after_the_newest_wall_still_vouches_for_its_route(
+        self, tmp_path: Path
+    ) -> None:
+        """Control for the test above: the same wall, but the opus serve postdates it."""
+        verdict, newest, found = _observe_all(
+            tmp_path,
+            transcript=[
+                _served(NOW - timedelta(minutes=3), "claude-opus-5"),
+                _served(NOW - timedelta(minutes=1), "claude-fable-5-1"),
+            ],
+            headless=[_wall(NOW - timedelta(minutes=5))],
+        )
+        assert verdict == "served"
+        by_route = obs.evidence_by_route(found, ROUTES)
+        assert by_route["claude.review.opus"] is not None
+        assert by_route["claude.review.opus"].at == NOW - timedelta(minutes=3)
+        assert "would_run" in _plan(tmp_path, newest, found)["claude.review.opus"]
+
     def test_evidence_by_route_picks_the_freshest_in_family_not_the_first(
         self, tmp_path: Path
     ) -> None:

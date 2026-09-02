@@ -517,13 +517,21 @@ def evidence_by_route(
     because a different family happened to answer last. Ties resolve to the first scanned,
     which is immaterial: same family, same instant, same evidence.
     """
+    # A wall is an account-level refusal. A serve that PRECEDES the newest wall cannot witness
+    # availability after it, whatever family answered later: opus serve at t0, wall at t1, fable
+    # serve at t2 makes the account "served" (t2 is newest) but must not resurrect the t0 opus
+    # serve as evidence for the opus review route (review finding on #4615, three families).
+    walls = [o.at for o in found if o.kind == "wall"]
+    newest_wall = max(walls) if walls else None
     by_route: dict[str, Observation | None] = {}
     for route_id in route_ids:
         prefixes = ROUTE_MODEL_PREFIXES.get(route_id)
         eligible = [
             o
             for o in found
-            if o.kind == "served" and (not prefixes or (o.model or "").startswith(prefixes))
+            if o.kind == "served"
+            and (not prefixes or (o.model or "").startswith(prefixes))
+            and (newest_wall is None or o.at > newest_wall)
         ]
         by_route[route_id] = max(eligible, key=lambda o: o.at) if eligible else None
     return by_route
