@@ -104,6 +104,41 @@ class TestWatchdogScript:
         assert result.returncode == 1
         assert "NO postgres-all.sql" in result.stdout
 
+    def test_dump_check_ignores_the_snapshot_header_line(self, tmp_path):
+        """`restic ls --long` prints `snapshot <id> of [paths]` first. Since the dump is a
+        top-level manifest path, that header names it; the size parse must read the file entry,
+        not the header (measured 2026-09-02: "could not parse dump size" on a good snapshot)."""
+        text = SCRIPT.read_text()
+        start = text.index("check_postgres_dump_in_snapshot() {")
+        end = text.index("\n}\n", start) + 3
+        bin_dir = tmp_path / "bin"
+        bin_dir.mkdir()
+        (bin_dir / "pass").write_text("#!/usr/bin/env bash\necho secret\n", encoding="utf-8")
+        (bin_dir / "restic").write_text(
+            "#!/usr/bin/env bash\n"
+            'echo "snapshot 911d1922 of [/vault/a.md /store/postgres-dumps/postgres-all.sql] filtered by [] at 2026-09-02 14:30:04):"\n'
+            'echo "-rw-r--r--  1000  1000 6702143009 2026-09-02 14:30:04 /store/postgres-dumps/postgres-all.sql"\n',
+            encoding="utf-8",
+        )
+        (bin_dir / "pass").chmod(0o755)
+        (bin_dir / "restic").chmod(0o755)
+        probe = tmp_path / "probe.sh"
+        probe.write_text(
+            "#!/usr/bin/env bash\nset -euo pipefail\n"
+            "FAILURES=()\nlog() { printf '%s\\n' \"$*\"; }\n"
+            + text[start:end]
+            + "check_postgres_dump_in_snapshot repo lbl entry\n"
+            + 'printf "%s\\n" "${FAILURES[@]}"\n'
+            + "exit ${#FAILURES[@]}\n",
+            encoding="utf-8",
+        )
+        probe.chmod(0o755)
+        env = {**__import__("os").environ, "PATH": f"{bin_dir}:{__import__('os').environ['PATH']}"}
+        result = subprocess.run([str(probe)], capture_output=True, text=True, timeout=10, env=env)
+        assert result.returncode == 0, result.stdout + result.stderr
+        assert "postgres dump present, 6702143009 bytes" in result.stdout
+        assert "could not parse dump size" not in result.stdout
+
     def test_script_bash_syntax_valid(self):
         result = subprocess.run(
             ["bash", "-n", str(SCRIPT)],

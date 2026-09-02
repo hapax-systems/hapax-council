@@ -121,7 +121,10 @@ check_postgres_dump_in_snapshot() {
     }
     [[ -z "$pw" ]] && { FAILURES+=("$label: dump-check restic password empty"); return; }
     local listing
-    listing="$(RESTIC_REPOSITORY="$repo" RESTIC_PASSWORD="$pw" restic ls --long latest 2>/dev/null | grep -F "postgres-all.sql" | head -1)" || true
+    # File entries only (mode bits first): `restic ls --long` prints a `snapshot … of [paths]`
+    # header, and since the dump became a top-level manifest path that header contains its name
+    # too — measured 2026-09-02: the size parse read a path and reported "could not parse dump size".
+    listing="$(RESTIC_REPOSITORY="$repo" RESTIC_PASSWORD="$pw" restic ls --long latest 2>/dev/null | grep -E '^-' | grep -F "postgres-all.sql" | head -1)" || true
     [[ -z "$listing" ]] && { FAILURES+=("$label: newest snapshot contains NO postgres-all.sql"); return; }
     local size
     size="$(echo "$listing" | tr -s " " | cut -d" " -f4)"

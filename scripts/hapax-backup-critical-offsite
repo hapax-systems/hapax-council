@@ -122,7 +122,8 @@ materialize_validated_dump() {
         exit 1
     }
     local listing snap_path
-    listing="$(RESTIC_REPOSITORY="$TIER1_REPO" RESTIC_PASSWORD="$password" restic ls --long latest 2>/dev/null | grep -F "postgres-all.sql" | head -1)" || true
+    # File entries only: the `snapshot … of [paths]` header line can name the dump too.
+    listing="$(RESTIC_REPOSITORY="$TIER1_REPO" RESTIC_PASSWORD="$password" restic ls --long latest 2>/dev/null | grep -E '^-' | grep -F "postgres-all.sql" | head -1)" || true
     [[ -n "$listing" ]] || {
         echo "ERROR: Tier-1 latest snapshot contains no postgres-all.sql" >&2
         echo "Next: run hapax-backup-local so NAS holds a validated dump" >&2
