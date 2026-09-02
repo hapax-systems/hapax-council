@@ -329,3 +329,28 @@ def test_invariant_empty_sanctioned_set_fails_closed() -> None:
     v = check_execution_invariant(obs, frozenset())
     assert v.admissible is False
     assert v.unsanctioned_models == frozenset({"claude-opus-4-8"})
+
+
+def test_invariant_verdict_carries_effort_drift_without_changing_status() -> None:
+    """R7: a consumer of the verdict must be able to refuse a one-effort label for a two-effort run.
+
+    The status stays model-based (the five CEI terminal states are about models); the effort
+    facts ride alongside so a measurement row is not labelled with a mixture.
+    """
+    two_efforts = ObservedExecution(
+        models=frozenset({"claude-fable-5-1"}),
+        turn_count=2,
+        efforts=frozenset({"high", "low"}),
+    )
+    v = check_execution_invariant(two_efforts, frozenset({"claude-fable-5-1"}))
+    assert v.admissible is True, "effort drift is a separate verdict from model drift"
+    assert v.observed_efforts == frozenset({"high", "low"})
+    assert v.effort_drifted is True
+
+    one_effort = ObservedExecution(
+        models=frozenset({"claude-fable-5-1"}), turn_count=2, efforts=frozenset({"high"})
+    )
+    assert (
+        check_execution_invariant(one_effort, frozenset({"claude-fable-5-1"})).effort_drifted
+        is False
+    )

@@ -1,5 +1,5 @@
 {
-  "count": 191,
+  "count": 192,
   "records": {
     "agy.review.direct": {
       "fingerprint": "4ea797143ee0282ae82de6de2fa3a874990802f455005825b9eaf48a87da9e68",
@@ -244,6 +244,10 @@
     "claude.interactive.full": {
       "fingerprint": "5a5e9a788462e3d9a75b8e5a5cca811f8821145594eb79832f363aa38b3e1e2d",
       "inventory_disposition": "admitted_supply"
+    },
+    "claude.review.fable": {
+      "inventory_disposition": "admitted_supply",
+      "fingerprint": "82fa2f607db5c0868899898f19e71657aafa5eb2410e986643ed751ff4affb44"
     },
     "claude.review.opus": {
       "fingerprint": "f8774dd2963fb932a63435ad68e06ec015f2384a277ef88bab0ffeed706a791c",

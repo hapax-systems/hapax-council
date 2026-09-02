@@ -249,6 +249,12 @@ class ExecutionInvariantVerdict:
     sanctioned_models: frozenset[str] = frozenset()
     unsanctioned_models: frozenset[str] = frozenset()
     unsanctioned_fallbacks: tuple[FallbackEvent, ...] = ()
+    #: R7: effort is part of execution identity. Carried on the verdict so a measurement row
+    #: can refuse to label a run with one effort when the transcript shows two. It does not
+    #: change ``status`` — the five CEI terminal states are about models — but a consumer that
+    #: reads only ``admissible`` and ignores this field is measuring a mixture.
+    observed_efforts: frozenset[str] = frozenset()
+    effort_drifted: bool = False
 
     @property
     def admissible(self) -> bool:
@@ -290,4 +296,6 @@ def check_execution_invariant(
         sanctioned_models=sanctioned_set,
         unsanctioned_models=unsanctioned_models,
         unsanctioned_fallbacks=unsanctioned_fallbacks,
+        observed_efforts=observed.efforts,
+        effort_drifted=observed.effort_drifted,
     )
