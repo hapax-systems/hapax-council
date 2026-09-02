@@ -5111,6 +5111,8 @@ _ = (record_identifies_its_checkout,)
 # legacy field names and back. DETECTOR BLIND SPOT, not dead code.
 from agents.deliberative_council.models import (  # noqa: E402
     CouncilVerdict as _CouncilVerdict,
+)
+from agents.deliberative_council.models import (
     PhaseOneResult as _PhaseOneResult,
 )
 
