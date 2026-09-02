@@ -347,11 +347,14 @@ class TestCriticalOffsiteSystemdUnits:
         assert unit["Service"]["Type"] == ["oneshot"]
         exec_start = unit["Service"]["ExecStart"][0]
         assert "scripts/hapax-backup-critical-offsite" in exec_start
-        assert unit["Service"]["Environment"][-2:] == [
-            # An entry NAME in the secret store, not a value; the entropy detector cannot tell.
-            "HAPAX_CRITICAL_OFFSITE_RESTIC_PASSWORD_ENTRY=cloudflare/r2/restic-password",  # pragma: allowlist secret
-            "RESTIC_CACHE_DIR=/store/llm-data/restic-cache/critical-offsite",
-        ]
+        assert (
+            unit["Service"]["Environment"][-2:]
+            == [
+                # An entry NAME in the secret store, not a value; the entropy detector cannot tell.
+                "HAPAX_CRITICAL_OFFSITE_RESTIC_PASSWORD_ENTRY=cloudflare/r2/restic-password",  # pragma: allowlist secret
+                "RESTIC_CACHE_DIR=/store/llm-data/restic-cache/critical-offsite",
+            ]
+        )
         assert unit["Service"]["MemoryHigh"] == ["1G"]
         assert unit["Service"]["MemoryMax"] == ["2G"]
         assert unit["Service"]["CPUQuota"] == ["25%"]
