@@ -32,6 +32,16 @@ from googleapiclient.discovery import build as discovery_build
 
 log = logging.getLogger(__name__)
 
+
+class GoogleCredentialsUnavailable(RuntimeError):
+    """No usable Google credential exists and the interactive consent flow is disabled.
+
+    Raised by :func:`build_service` for unattended callers so a missing or
+    unrefreshable token surfaces as a failed unit naming its remedy, never as a
+    process parked forever on a browser consent flow nobody will answer.
+    """
+
+
 TOKEN_PASS_KEY = "google/token"
 CLIENT_SECRET_PASS_KEY = "google/client-secret"
 
@@ -121,8 +131,6 @@ def get_google_credentials(
     daemons should pass ``interactive=False`` so a missing token logs
     a warning rather than hanging on browser-flow blocking IO.
     """
-    from google_auth_oauthlib.flow import InstalledAppFlow
-
     creds = _load_token_from_pass(scopes, pass_key=pass_key)
     if creds:
         if creds.valid:
@@ -146,6 +154,10 @@ def get_google_credentials(
 
     # No valid token — run OAuth flow with all known scopes
     # so a single consent covers Drive, Calendar, Gmail, etc.
+    # Imported here, not at the top of the function: unattended callers never
+    # reach the consent flow and must not need google_auth_oauthlib installed.
+    from google_auth_oauthlib.flow import InstalledAppFlow
+
     all_scopes = list(set(scopes) | set(ALL_SCOPES))
     client_json = subprocess.check_output(
         ["pass", "show", CLIENT_SECRET_PASS_KEY],
@@ -163,7 +175,22 @@ def build_service(
     scopes: list[str],
     *,
     pass_key: str = TOKEN_PASS_KEY,
+    interactive: bool = True,
 ):
-    """Build an authenticated Google API service client."""
-    creds = get_google_credentials(scopes, pass_key=pass_key)
+    """Build an authenticated Google API service client.
+
+    ``interactive=False`` is for unattended callers (systemd daemons, the
+    daimonion tools). When no usable token exists the call refuses with
+    :class:`GoogleCredentialsUnavailable`, naming the pass key and the consent
+    command, instead of blocking on a browser flow or building an
+    unauthenticated client.
+    """
+    creds = get_google_credentials(scopes, pass_key=pass_key, interactive=interactive)
+    if creds is None:
+        raise GoogleCredentialsUnavailable(
+            f"No usable Google credential for {api} {version} at pass key "
+            f"{pass_key!r} and the interactive consent flow is disabled. "
+            "Next action: mint the token once, interactively, on this host: "
+            f"uv run python scripts/mint-google-token.py --pass-key {pass_key}"
+        )
     return discovery_build(api, version, credentials=creds)
