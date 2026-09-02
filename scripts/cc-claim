@@ -274,6 +274,20 @@ _cc_role_release_status() {
   return 1
 }
 
+# The resumable subset of the above: statuses a lane can RE-CLAIM without changing them
+# (cc-claim's resume path). A task in one of these is free of workers by default — that is
+# the whole point of #4611 — but a RESUMED one is worker-held again while its status stays
+# exactly here. The status is therefore one value for two states; the `cc-claim-resumed-<key>`
+# marker the resume path writes next to the anchor is the discriminator (codex critical on
+# #4611: a freshly resumed ready-state task was treated as lane-free).
+_cc_role_resumable_status() {
+  case "$1" in
+    pr_open|merge_queue|ci_green|ready|ready_for_review|review_ready|ready_for_merge) return 0 ;;
+    merged_awaiting_runtime_witness|backlog) return 0 ;;
+  esac
+  return 1
+}
+
 shopt -s nullglob
 for cf in "$legacy_claim_file" "$HOME/.cache/hapax/cc-active-task-$role-"*; do
   [[ -f "$cf" ]] || continue
@@ -334,8 +348,24 @@ for cf in "$legacy_claim_file" "$HOME/.cache/hapax/cc-active-task-$role-"*; do
   # lock, where it is transactional, receipted into task lineage, and fails closed. An
   # earlier revision `rm -f`'d them from this loop — unlocked, unreceipted, and a second
   # mitigation for a hazard `_archive_dispatch_only_claim_residue` already owns.
+  #
+  # A RESUMED task is the exception: its status stays in the resumable set by design while a
+  # worker holds the lane again. The resume path stamps `cc-claim-resumed-<key>` naming the
+  # task; when that marker names THIS anchor's task and the lease is still live, the lane is
+  # busy and falls through to the BLOCKED message below. A marker for another task (a reused
+  # key) is inert, and an expired lease releases a resumed lane the same way it releases any
+  # other dead session's.
+  resumed_marker="$HOME/.cache/hapax/cc-claim-resumed-${cf##*/cc-active-task-}"
+  existing_resumed=0
+  if [[ -f "$resumed_marker" ]] && [[ "$(head -n1 "$resumed_marker" | tr -d '[:space:]')" == "$existing_task" ]]; then
+    existing_resumed=1
+  fi
   if [[ -n "$existing_note" ]] && _cc_role_release_status "$existing_status"; then
-    continue
+    if (( existing_resumed == 1 )) && _cc_role_resumable_status "$existing_status" && (( now_epoch - cf_mtime <= lease_ttl )); then
+      : # resumed and worker-held: not released; handled below
+    else
+      continue
+    fi
   fi
 
   if (( now_epoch - cf_mtime > lease_ttl )); then
@@ -368,8 +398,13 @@ for cf in "$legacy_claim_file" "$HOME/.cache/hapax/cc-active-task-$role-"*; do
   fi
   [[ -n "$existing_task" && "$existing_task" != "$task_id" ]] || continue
   [[ -n "$existing_note" ]] || continue
-  echo "cc-claim: BLOCKED — role '$role' already has active task '$existing_task' (status: $existing_status)." >&2
-  echo "  Next action: close it first with cc-close $existing_task if terminal, or resume that task instead." >&2
+  if (( existing_resumed == 1 )); then
+    echo "cc-claim: BLOCKED — role '$role' already has active task '$existing_task' (status: $existing_status, RESUMED by a live session — worker-held, not pipeline-held)." >&2
+    echo "  Next action: let that session finish or close it with cc-close $existing_task; the lane frees when its lease expires or the task reaches a terminal status." >&2
+  else
+    echo "cc-claim: BLOCKED — role '$role' already has active task '$existing_task' (status: $existing_status)." >&2
+    echo "  Next action: close it first with cc-close $existing_task if terminal, or resume that task instead." >&2
+  fi
   if [[ "$canon_enforced" == "0" ]]; then
     echo "  Legacy fallback only: cc-claim --force $task_id" >&2
   fi
@@ -529,11 +564,35 @@ if canon_enforced:
                 parts = text.strip().split(None, 1)
                 if len(parts) == 2 and parts[1].strip():
                     named.add(parts[1].strip())
-            elif name.startswith("cc-active-task-"):
+            elif name.startswith("cc-active-task-") or name.startswith("cc-claim-resumed-"):
+                # Both are single-line task-id files; the resumed marker is written by the
+                # resume path only (see `_write_resumed_marker`) and names the same task.
                 first = text.split("\n", 1)[0].strip()
                 if first:
                     named.add(first)
         return named
+
+    def _residue_identity(residue: tuple[Path, ...] | list[Path]) -> dict[str, str]:
+        """What identifies THIS residue beyond its file names, which lanes reuse.
+
+        `epoch`: the epoch sidecar's first line ("<epoch> <task_id>") — a claim epoch is minted
+        per publication, so two publications of the same task by the same lane differ here.
+        `dispatch_sha256`: the dispatch sidecar's content hash. Either is `absent` when the
+        sidecar is not present or unreadable; absence is recorded, never fabricated.
+        """
+        identity = {"epoch": "absent", "dispatch_sha256": "absent"}
+        for path in residue:
+            try:
+                data = path.read_bytes()
+            except OSError:
+                continue
+            if path.name.startswith("cc-claim-epoch-"):
+                first = data.decode("utf-8", "replace").split("\n", 1)[0].strip()
+                if first:
+                    identity["epoch"] = first
+            elif path.name.startswith("cc-claim-dispatch-"):
+                identity["dispatch_sha256"] = hashlib.sha256(data).hexdigest()
+        return identity
 
     def _task_note_paths_by_state(vault_root: Path, observed_task_id: str) -> dict[str, Path]:
         """The task's note in each state directory it appears in — never "the first one".
@@ -591,6 +650,14 @@ if canon_enforced:
         is load-bearing for that: it names the exact sidecars this archival set out to move, and
         without it a receipt could not be tied to the residue actually left behind.
         """
+        # **Names are not identities.** Claim keys AND file names are reused across publications
+        # of the same task by the same lane, so `archived:` alone cannot tell this residue from
+        # the residue a later re-claim of the same task leaves behind (codex critical on #4611,
+        # one level deeper than the task-id check). The receipt therefore records what the
+        # residue itself carries — the per-publication claim epoch and the dispatch content hash —
+        # and `_interrupted_release_archivals` requires them to agree before it will attribute
+        # residue to this receipt. Absent sidecars are written as `absent`, not guessed.
+        identity = _residue_identity(residue)
         lineage_dir.mkdir(parents=True, exist_ok=True)
         (lineage_dir / _RELEASE_RECEIPT).write_text(
             "Archived claim residue for a task that released this role.\n"
@@ -599,6 +666,8 @@ if canon_enforced:
             f"claimed_next: {current_task_id}\n"
             f"archived_at: {observed_at}\n"
             f"archived: {', '.join(source.name for source in residue)}\n"
+            f"epoch: {identity['epoch']}\n"
+            f"dispatch_sha256: {identity['dispatch_sha256']}\n"
             "reason: the prior task reached a role-releasing status (terminal, "
             "resumable/pipeline-held, post-merge, or pre-work), so its lease no "
             "longer occupies the role cap.\n",
@@ -648,6 +717,7 @@ if canon_enforced:
         if not lineage_root.is_dir() or not present:
             return []
         present_names = {path.name for path in present}
+        present_identity = _residue_identity(present)
         matches: list[tuple[str, Path]] = []
         for receipt in sorted(lineage_root.glob(f"*/released-claim-residue-*/{_RELEASE_RECEIPT}")):
             try:
@@ -666,6 +736,21 @@ if canon_enforced:
             if not task_id or not archived:
                 continue
             if not present_names <= archived:
+                continue
+            # **Bind on what the residue IS, not what it is called.** A receipt that recorded
+            # the residue's claim epoch / dispatch hash must match the residue in front of us on
+            # every field both sides carry; a receipt for an earlier publication of the SAME
+            # task by the SAME lane then fails to match instead of sweeping the newer one.
+            # A receipt without these fields (pre-identity format) is matched by names only, as
+            # before — it can still be caught by the task-id check downstream, never by this.
+            identity_mismatch = False
+            for field in ("epoch", "dispatch_sha256"):
+                recorded = fields.get(field)
+                observed = present_identity[field]
+                if recorded and recorded != "absent" and observed != "absent" and recorded != observed:
+                    identity_mismatch = True
+                    break
+            if identity_mismatch:
                 continue
             lineage_dir = receipt.parent
             if any((lineage_dir / name).exists() for name in present_names):
@@ -720,7 +805,8 @@ if canon_enforced:
         # failed at canonical publication with `claim_task_mismatch`, which is the very
         # one-layer-deeper failure this function exists to prevent. Two scans over the same
         # sidecars must not disagree about which ones exist.
-        released: list[tuple[str, str, tuple[Path, ...]]] = []
+        # (claim key, prior task id, residue, lineage dir of an INTERRUPTED archival to resume or None)
+        released: list[tuple[str, str, tuple[Path, ...], Path | None]] = []
         claim_keys = {role, f"{role}-{session_id}"}
         # Collect from ALL THREE sidecar patterns, not just `cc-active-task-*`.
         #
@@ -755,9 +841,16 @@ if canon_enforced:
                 # #4611). The suffix must be a canonical session id — the UUID every launcher
                 # mints — not merely something after a hyphen.
                 if key != role:
-                    suffix = key[len(role) + 1 :] if key.startswith(f"{role}-") else ""
+                    # Its own name: this used to be `suffix`, which is the OUTER loop's
+                    # filename-extension variable. Reusing it clobbered the extension after the
+                    # first session-keyed sidecar, so every later `cc-claim-dispatch-*.json` had
+                    # a UUID-length slice cut off its key instead of `.json` — corrupt keys,
+                    # excluded from `claim_keys`, and older sessions' claims left usable while a
+                    # new claim proceeded (codex critical on #4611).
+                    session_suffix = key[len(role) + 1 :] if key.startswith(f"{role}-") else ""
                     if not re.fullmatch(
-                        r"[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}", suffix
+                        r"[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}",
+                        session_suffix,
                     ):
                         continue
                 claim_keys.add(key)
@@ -845,7 +938,10 @@ if canon_enforced:
                         file=sys.stderr,
                     )
                     sys.exit(8)
-                released.append((claim_key, recovered, tuple(orphans)))
+                # Carry the receipt's OWN lineage directory so the retry completes THAT archival
+                # instead of opening a second timestamped one (codex major on #4611: retries
+                # split one archival across directories and accumulated stale receipts).
+                released.append((claim_key, recovered, tuple(orphans), interrupted[0][1]))
                 continue
             try:
                 prior_task_id = claim_path.read_text(encoding="utf-8").split("\n", 1)[0].strip()
@@ -909,22 +1005,29 @@ if canon_enforced:
                 )
                 if candidate.exists()
             )
-            released.append((claim_key, prior_task_id, residue))
+            released.append((claim_key, prior_task_id, residue, None))
 
         if not released:
             return
         lineage_root = vault_root / "_lineage"
         archived: list[str] = []
-        for claim_key, prior_task_id, residue in released:
-            lineage_dir = (
-                lineage_root
-                / _safe_lineage_component(prior_task_id)
-                / (
-                    "released-claim-residue-"
-                    f"{_safe_lineage_component(observed_at)}-"
-                    f"{_safe_lineage_component(claim_key)}"
+        for claim_key, prior_task_id, residue, resume_dir in released:
+            if resume_dir is not None:
+                # Resuming an interrupted archival: its receipt already exists and already names
+                # the FULL residue that archival set out to move. Rewriting it here with only
+                # what is left would shrink `archived:` — the reduced-receipt hazard review
+                # named — so the original receipt stands and only the moves are completed.
+                lineage_dir = resume_dir
+            else:
+                lineage_dir = (
+                    lineage_root
+                    / _safe_lineage_component(prior_task_id)
+                    / (
+                        "released-claim-residue-"
+                        f"{_safe_lineage_component(observed_at)}-"
+                        f"{_safe_lineage_component(claim_key)}"
+                    )
                 )
-            )
             # Idempotent: `exist_ok=False` made a retry after a partial move crash on the
             # directory it had itself created, so the recovery path was the one path that could
             # not run. Each move is individually skippable for the same reason.
@@ -933,9 +1036,10 @@ if canon_enforced:
             # saying which task they belonged to — and since the anchor was already gone, no
             # later run could work it out. Written before anything moves, the archive identifies
             # itself from its first instant.
-            _write_release_receipt(
-                lineage_dir, prior_task_id, claim_key, current_task_id, observed_at, residue
-            )
+            if resume_dir is None:
+                _write_release_receipt(
+                    lineage_dir, prior_task_id, claim_key, current_task_id, observed_at, residue
+                )
             for source in residue:
                 destination = lineage_dir / source.name
                 if destination.exists() and not source.exists():
@@ -1357,6 +1461,32 @@ else:
     sys.exit(4)
 
 
+def _stamp_resumed_marker(
+    cache_dir: Path, role: str, session_id: str, task_id: str, mode: str
+) -> None:
+    """Record, next to the claim anchor, whether this publication is a RESUME.
+
+    A resumed task keeps its pipeline status (`pr_open`, `merge_queue`, `ready`, …) by design,
+    while a worker is again holding the lane. The status alone therefore cannot tell
+    "finished, waiting on the pipeline" (lane free) from "resumed and worker-held" (lane busy),
+    and the bash role-cap loop had only the status to go on — it released a freshly resumed
+    lane to a second session (codex critical on #4611). The marker is the missing third value.
+
+    Shape: `cc-claim-resumed-<claim key>`, single line, the task id — so a stale marker for a
+    different task under a reused key is inert (the cap loop compares it to the anchor's task),
+    and the anchor stays single-line for the consumers that read its whole content as the id.
+    A non-resume claim REMOVES the marker for its keys, so a resume never outlives the claim
+    that follows it. Written after publication, so a failed publication leaves no marker.
+    """
+    keys = (role, f"{role}-{session_id}") if session_id else (role,)
+    for key in keys:
+        marker = cache_dir / f"cc-claim-resumed-{key}"
+        if mode == "resume":
+            marker.write_text(f"{task_id}\n", encoding="utf-8")
+        else:
+            marker.unlink(missing_ok=True)
+
+
 def _frontmatter_lines(note_text: str) -> list[str]:
     if not note_text.startswith("---"):
         return []
@@ -1770,6 +1900,7 @@ if not canon_enforced:
     else:
         print(result_message)
         print(f"cc-claim: wrote ~/.cache/hapax/cc-active-task-{role}")
+    _stamp_resumed_marker(cache_dir, role, session_id, task_id, claim_mode)
     sys.exit(0)
 
 try:
@@ -1852,6 +1983,7 @@ print(
     "cc-claim: admitted publication applied "
     f"(publication={receipt.publication_id}, receipt={receipt.receipt_hash})"
 )
+_stamp_resumed_marker(cache_dir, role, session_id, task_id, claim_mode)
 PYEOF
 
 exit 0
