@@ -301,10 +301,22 @@ text = note_path.read_text(encoding="utf-8")
 # A matching existing value is safe and should still drive the status/branch/log
 # transition. This covers sessions that pre-populate `pr:` before the PostToolUse
 # hook observes `gh pr create`.
+def _pr_scalar(raw: str) -> str:
+    """The PR number as written in frontmatter, normalised: quotes and a trailing comment dropped.
+
+    `pr: "4605"` and `pr: 4605 # owner` are the same link as `pr: 4605` (review finding on #4613,
+    round 4: comparing the raw text let a quoted value bypass the duplicate-link refusal).
+    """
+    value = raw.split("#", 1)[0].strip()
+    while len(value) >= 2 and value[0] == value[-1] and value[0] in "\"'":
+        value = value[1:-1].strip()
+    return value
+
+
 m = re.search(r"^pr:\s*(.*)$", text, flags=re.MULTILINE)
 if m:
-    existing = m.group(1).strip()
-    if existing and existing.lower() not in ("null", "none", "~", '""', "''"):
+    existing = _pr_scalar(m.group(1))
+    if existing and existing.lower() not in ("null", "none", "~"):
         if existing != str(pr_number):
             # Already linked to another PR — preserve the existing value and SAY SO. A silent exit
             # here hid, for weeks, which PR a row was actually bound to (review finding on #4613:
@@ -373,7 +385,7 @@ for other in sorted(vault_active.glob("*.md")):
         continue
     head = other_text.split("\n---", 1)[0]
     om = re.search(r"^pr:\s*(.*)$", head, flags=re.MULTILINE)
-    if not om or om.group(1).strip() != str(pr_number):
+    if not om or _pr_scalar(om.group(1)) != str(pr_number):
         continue
     orm = re.search(r"^pr_repo:\s*(.*)$", head, flags=re.MULTILINE)
     if not orm or not orm.group(1).strip().strip("\"'"):

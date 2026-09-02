@@ -283,6 +283,33 @@ class TestIdempotency:
         assert "REFUSING" not in result.stderr
         assert "status: pr_open" in note.read_text(encoding="utf-8")
 
+    @pytest.mark.parametrize("scalar", ['"4605"', "'4605'", "4605 # owns it", '"4605" # owner'])
+    def test_quoted_or_commented_pr_scalars_are_the_same_link(
+        self, tmp_path: Path, scalar: str
+    ) -> None:
+        """`pr: "4605"` and `pr: 4605 # owner` declare #4605 (review finding on #4613, round 4):
+        comparing the raw text let valid YAML forms bypass the duplicate-link refusal."""
+        _vault, note = _make_vault(tmp_path, task_id="research-row", pr=None, status="in_progress")
+        owner = note.parent / "velocity-fix-test-task.md"
+        owner.write_text(
+            '---\ntype: cc-task\ntask_id: velocity-fix\ntitle: "Owns the PR"\n'
+            "status: pr_open\nassigned_to: beta\npriority: normal\n"
+            f"branch: fix/velocity\npr: {scalar}\npr_repo: ryanklee/hapax-council\n"
+            "created_at: 2026-04-26T00:00:00Z\nupdated_at: 2026-04-26T00:00:00Z\n---\n\n"
+            "# Owns the PR\n\n## Session log\n",
+            encoding="utf-8",
+        )
+        _write_claim(tmp_path, "beta", "research-row")
+        result = _run_hook(
+            bash_cmd="gh pr create",
+            bash_output="https://github.com/ryanklee/hapax-council/pull/4605",
+            home=tmp_path,
+        )
+        assert result.returncode == 0
+        assert "pr: 4605" not in note.read_text(encoding="utf-8")
+        assert "REFUSING" in result.stderr
+        assert "velocity-fix" in result.stderr
+
     def test_refuses_a_pr_another_active_task_already_declares(self, tmp_path: Path) -> None:
         """A PR must not be bound to two tasks. Measured defect, three occurrences on one row.
 
