@@ -277,6 +277,14 @@ _cc_role_release_status() {
 shopt -s nullglob
 for cf in "$legacy_claim_file" "$HOME/.cache/hapax/cc-active-task-$role-"*; do
   [[ -f "$cf" ]] || continue
+  # `cc-active-task-$role-*` has no role boundary: for role `cx-red` it also matches the
+  # legitimate role `cx-red-operator-email`'s sidecars (codex critical on #4611, mirrored
+  # from the Python scan). Only the bare legacy key and `role-<canonical session uuid>` are
+  # this role's; every live sidecar in the estate has that shape (measured 2026-09-02).
+  if [[ "$cf" != "$legacy_claim_file" ]]; then
+    cf_suffix="${cf##*/cc-active-task-$role-}"
+    [[ "$cf_suffix" =~ ^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$ ]] || continue
+  fi
   existing_task="$(head -n1 "$cf" | tr -d '[:space:]' || true)"
   cf_mtime="$(stat -c %Y "$cf" 2>/dev/null || echo "$now_epoch")"
 
@@ -299,13 +307,23 @@ for cf in "$legacy_claim_file" "$HOME/.cache/hapax/cc-active-task-$role-"*; do
   existing_note=""
   existing_status="unknown"
   if [[ -n "$existing_task" && "$existing_task" != "$task_id" ]]; then
-    for c in \
-      "$vault_root_check/closed/$existing_task.md" \
-      "$vault_root_check/closed/$existing_task-"*.md \
-      "$vault_root_check/active/$existing_task.md" \
-      "$vault_root_check/active/$existing_task-"*.md; do
-      [[ -f "$c" ]] && existing_note="$c" && break
+    # Look in BOTH directories and refuse to pick by order. A task with a note in closed/ AND
+    # active/ is a duplicate identity: reading the terminal copy first freed the lane while
+    # the active copy still said `claimed` (codex critical on #4611; 41 such twins measured
+    # 2026-09-02). The Python resolver HOLDs on the same condition; the two must not diverge.
+    existing_closed=""
+    existing_active=""
+    for c in "$vault_root_check/closed/$existing_task.md" "$vault_root_check/closed/$existing_task-"*.md; do
+      [[ -f "$c" ]] && existing_closed="$c" && break
     done
+    for c in "$vault_root_check/active/$existing_task.md" "$vault_root_check/active/$existing_task-"*.md; do
+      [[ -f "$c" ]] && existing_active="$c" && break
+    done
+    if [[ -n "$existing_closed" && -n "$existing_active" ]]; then
+      echo "cc-claim: HOLD - prior task '$existing_task' (from $cf) has a note in BOTH '$existing_closed' and '$existing_active'. A duplicate identity cannot be resolved by directory order. Next action: decide which copy is authoritative, mark the other 'status: superseded' (or move it out of active/) with operator approval, and rerun." >&2
+      exit 8
+    fi
+    existing_note="${existing_closed:-$existing_active}"
     if [[ -n "$existing_note" ]]; then
       existing_status="$(grep -oP '^status:\s*\K\S+' "$existing_note" 2>/dev/null || echo "unknown")"
     fi
@@ -484,21 +502,74 @@ if canon_enforced:
     def _safe_lineage_component(value: str) -> str:
         return re.sub(r"[^A-Za-z0-9._:-]+", "_", value).strip("._:-")[:160] or "unknown"
 
-    def _task_note_path_for_any_state(vault_root: Path, observed_task_id: str) -> Path | None:
+    def _residue_task_ids(residue: tuple[Path, ...] | list[Path]) -> set[str]:
+        """The task id each claim sidecar names in its own content.
+
+        `cc-active-task-*`: first line is the task id. `cc-claim-epoch-*`: "<epoch> <task_id>".
+        `cc-claim-dispatch-*.json`: the `task_id` field. An unreadable or unparseable sidecar
+        contributes nothing — the caller compares what IS named against the receipt, and an
+        empty set means nothing could be checked, which is not a mismatch.
+        """
+        named: set[str] = set()
+        for path in residue:
+            try:
+                text = path.read_text(encoding="utf-8")
+            except (OSError, UnicodeDecodeError):
+                continue
+            name = path.name
+            if name.startswith("cc-claim-dispatch-"):
+                try:
+                    payload = json.loads(text)
+                except ValueError:
+                    continue
+                task = payload.get("task_id") if isinstance(payload, dict) else None
+                if isinstance(task, str) and task.strip():
+                    named.add(task.strip())
+            elif name.startswith("cc-claim-epoch-"):
+                parts = text.strip().split(None, 1)
+                if len(parts) == 2 and parts[1].strip():
+                    named.add(parts[1].strip())
+            elif name.startswith("cc-active-task-"):
+                first = text.split("\n", 1)[0].strip()
+                if first:
+                    named.add(first)
+        return named
+
+    def _task_note_paths_by_state(vault_root: Path, observed_task_id: str) -> dict[str, Path]:
+        """The task's note in each state directory it appears in — never "the first one".
+
+        A task id is supposed to live in exactly one of ``closed/`` and ``active/``. When it is
+        in BOTH — measured 2026-09-02: 41 such twins, the active copies restored from a July
+        snapshot beside their closed ``done`` originals — resolving closed-first silently reads
+        the terminal copy, archives a live claim and admits another task, while the active copy
+        still says ``claimed``. Duplicate identities are reported, so the caller can HOLD.
+        """
+        found: dict[str, Path] = {}
         for subdir in ("closed", "active"):
             root = vault_root / subdir
             exact = root / f"{observed_task_id}.md"
             if exact.is_file():
-                return exact
+                found[subdir] = exact
+                continue
             for candidate in sorted(root.glob(f"{observed_task_id}-*.md")):
                 if candidate.is_file():
-                    return candidate
-        return None
+                    found[subdir] = candidate
+                    break
+        return found
+
+    def _task_note_path_for_any_state(vault_root: Path, observed_task_id: str) -> Path | None:
+        found = _task_note_paths_by_state(vault_root, observed_task_id)
+        if len(found) > 1:
+            return None  # ambiguous; `_task_status_for_any_state` says so and the caller HOLDs
+        return next(iter(found.values()), None)
 
     def _task_status_for_any_state(vault_root: Path, observed_task_id: str) -> str:
-        task_path = _task_note_path_for_any_state(vault_root, observed_task_id)
-        if task_path is None:
+        found = _task_note_paths_by_state(vault_root, observed_task_id)
+        if not found:
             return "missing"
+        if len(found) > 1:
+            return "ambiguous"
+        task_path = next(iter(found.values()))
         return _frontmatter_scalar(task_path.read_text(encoding="utf-8"), "status") or "unknown"
 
     _RELEASE_RECEIPT = "README.md"
@@ -675,9 +746,20 @@ if canon_enforced:
                 # strictly wider than the thing it feeds. Found by external review.
                 #
                 # The valid keys are exactly the two minted at the top of this function: the bare
-                # role, and `role-session`. Anything else belongs to a different lane.
-                if key != role and not key.startswith(f"{role}-"):
-                    continue
+                # role, and `role-<session>`. Anything else belongs to a different lane.
+                #
+                # **`role-` as a prefix is not a boundary either.** Role names carry hyphens, so
+                # for role `cx-red` the sidecars of the legitimate role `cx-red-operator-email`
+                # satisfied `startswith("cx-red-")` and could be archived while only the
+                # `cx-red` lock was held, racing that lane's publication (codex critical on
+                # #4611). The suffix must be a canonical session id — the UUID every launcher
+                # mints — not merely something after a hyphen.
+                if key != role:
+                    suffix = key[len(role) + 1 :] if key.startswith(f"{role}-") else ""
+                    if not re.fullmatch(
+                        r"[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}", suffix
+                    ):
+                        continue
                 claim_keys.add(key)
         for claim_key in sorted(claim_keys):
             claim_path = cache_dir / f"cc-active-task-{claim_key}"
@@ -730,6 +812,29 @@ if canon_enforced:
                 # Recover the task id from the receipt the previous attempt left, which is why
                 # the receipt is now written BEFORE any file moves.
                 recovered = interrupted[0][0] if interrupted else None
+                # **Bind the residue's own contents to the receipt.** A release can write receipt
+                # A, crash before moving, then complete on retry into a different timestamped
+                # lineage directory — leaving A eligible forever. A later Gate-0B publication
+                # that crashes after writing its epoch/dispatch sidecars but before activation
+                # then has A as its sole match, and the NEWER lane's residue would be archived
+                # under the OLD task (codex critical on #4611). The sidecars name their task
+                # (epoch: "<epoch> <task_id>"; dispatch: `task_id`); if any disagrees with the
+                # receipt, identity is ambiguous and this HOLDs rather than choosing.
+                if recovered is not None:
+                    named = _residue_task_ids(orphans)
+                    if named and named != {recovered}:
+                        print(
+                            f"cc-claim: HOLD - claim key '{claim_key}' residue "
+                            f"({', '.join(o.name for o in orphans)}) names task(s) "
+                            f"{sorted(named)} but the only matching release receipt names "
+                            f"'{recovered}'. The residue is not this receipt's; a newer "
+                            "publication may have crashed before activation. Next action: "
+                            "inspect the sidecars and the receipt, decide which task owns the "
+                            "residue, and with operator approval archive it under that task's "
+                            f"lineage in {vault_root}/_lineage/ before rerunning.",
+                            file=sys.stderr,
+                        )
+                        sys.exit(8)
                 if recovered is None:
                     print(
                         f"cc-claim: HOLD - claim key '{claim_key}' has residue "
@@ -756,6 +861,22 @@ if canon_enforced:
             if not prior_task_id or prior_task_id == current_task_id:
                 continue
             prior_status = _task_status_for_any_state(vault_root, prior_task_id)
+            if prior_status == "ambiguous":
+                # The task has a note in BOTH closed/ and active/. Resolving by directory order
+                # read the terminal copy, archived a live claim and admitted another task while
+                # the active copy still said `claimed` (codex critical on #4611; 41 such twins
+                # measured 2026-09-02). Duplicate identities HOLD; nothing here can adjudicate.
+                notes = _task_note_paths_by_state(vault_root, prior_task_id)
+                print(
+                    f"cc-claim: HOLD - claim sidecar {claim_path} names task "
+                    f"'{prior_task_id}', which has a note in BOTH "
+                    f"{notes.get('closed')} and {notes.get('active')}. A duplicate identity "
+                    "cannot be resolved by directory order. Next action: decide which copy is "
+                    "authoritative, mark the other `status: superseded` (or move it out of "
+                    "active/) with operator approval, and rerun.",
+                    file=sys.stderr,
+                )
+                sys.exit(8)
             if prior_status == "missing":
                 # A sidecar whose task note cannot be found is not evidence that the task
                 # released the role — it is an absence of evidence, and skipping it silently
