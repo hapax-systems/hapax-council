@@ -321,6 +321,12 @@ jobs:
             git fetch --quiet origin "$PUSH_BEFORE_SHA" || true
             uv run python scripts/check-producer-consumers.py --diff-range "$PUSH_BEFORE_SHA..HEAD"
           fi
+      # W1b consumer-side direction. Whole-tree and intentionally report-only:
+      # the follow-on row must explicitly authorise the named arm before this
+      # may become a required failure context. CI has no operator vault/frame.
+      - name: consumer-side-producer-binding-report
+        if: needs.post_merge_duplicate_filter.outputs.duplicate_merge_group != 'true' && needs.docs_only_filter.outputs.docs_only != 'true'
+        run: uv run python scripts/check-producer-consumers.py --consumer-side
       # system-dynamics map freshness gate. The architecture map
       # (docs/architecture/system-dynamics-map.* + schemas/system-dynamics-map/)
       # is codebase-derived, so any structural change can stale it. Its currency
