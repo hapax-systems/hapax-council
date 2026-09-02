@@ -1,0 +1,87 @@
+#!/usr/bin/env bash
+# Refresh the GLM review seat: one real sanctioned reviewer round-trip, a witness (schema v1:
+# no prompt, output or secret persisted), the passive admission receipt, the telemetry writer.
+# Prints states only. Exit non-zero if the round-trip fails — no receipt is minted then.
+set -euo pipefail
+H="${HAPAX_COUNCIL:-$HOME/projects/hapax-council}"
+WDIR="$HOME/.cache/hapax/glmcp-admission-witness"
+mkdir -p "$WDIR"
+ts="$(date -u +%Y%m%dT%H%M%SZ)"
+ref="glmcp-reviewer-roundtrip-ok-$(echo "$ts" | tr 'A-Z' 'a-z')"
+endpoint="${HAPAX_GLMCP_REVIEW_BASE_URL:-https://api.z.ai/api/coding/paas/v4}"
+# The admission CLI on main accepts exactly glm-5.2 (#4568, unmerged, moves the seat to glm-5.3).
+# The systemd user environment may carry a different HAPAX_GLMCP_REVIEW_MODEL; pin the round-trip
+# to the model the receipt will name, so witness and receipt describe the call that was made.
+model="glm-5.2"
+export HAPAX_GLMCP_REVIEW_MODEL="$model"
+
+# 0. freshness guard: the passive receipt lives 15 minutes (stale_after_seconds: 900). The timer
+#    fires every 5 minutes; refreshing whenever the receipt is older than 5 keeps its age under
+#    ~10 minutes at all times, so it never lapses between two autoqueue cycles (measured 2026-08-04:
+#    a receipt that lapsed mid-queue dequeued a green PR). ~1 round-trip per 5–10 min.
+RCPT="$HOME/.cache/hapax/relay/receipts/glmcp-quota-admission.yaml"
+if [[ -f "$RCPT" ]]; then
+  obs="$(grep -m1 -E '^observed_at:' "$RCPT" | awk '{print $2}')"
+  if [[ -n "$obs" ]]; then
+    age=$(( $(date -u +%s) - $(date -u -d "$obs" +%s 2>/dev/null || echo 0) ))
+    if (( age >= 0 && age < 300 )); then
+      echo "glm seat fresh (${age}s old); no round-trip"
+      exit 0
+    fi
+  fi
+fi
+
+# 1. round-trip: a fixed one-line blind-review probe; output is counted, never stored. Two
+#    attempts 10 s apart: a single transient provider error (measured 2026-09-02 15:36, exit 1 and
+#    0 bytes, then exit 0 a minute later) must not leave the seat to lapse.
+rc=1; bytes=0
+ERR="$(mktemp -p "${TMPDIR:-/tmp}" glm-seat-err.XXXXXX)"
+trap 'rm -f "$ERR"' EXIT
+for attempt in 1 2 3; do
+  set +e
+  bytes="$(printf 'Blind review smoke. Reply with exactly: OK\n' \
+    | HAPAX_GLMCP_REVIEW_TIMEOUT_SECONDS=120 HAPAX_GLMCP_REVIEW_MAX_TOKENS=16 \
+      timeout 180 "$H/scripts/hapax-glmcp-reviewer" 2>"$ERR" | wc -c)"
+  rc=${PIPESTATUS[1]:-$?}
+  set -e
+  echo "roundtrip attempt $attempt: exit=$rc output_bytes=$bytes endpoint=$endpoint model=$model"
+  if [[ "$rc" -eq 0 && "$bytes" -gt 0 ]]; then break; fi
+  # Why it failed, sanitised (a guard's error text is a disclosure channel): first two lines,
+  # anything key/token/secret/bearer-shaped redacted. Measured 2026-09-02 16:05: two consecutive
+  # failures lapsed the seat for five minutes and the autoqueue dequeued a green PR inside them.
+  sed -E 's/(api[_-]?key|token|secret|password|bearer)[^[:space:]]*/\1<redacted>/Ig' "$ERR" \
+    | grep -vE '^\s*$' | head -2 | cut -c1-200 | sed 's/^/  reviewer stderr: /'
+  [[ "$attempt" -lt 3 ]] && sleep 15
+done
+if [[ "$rc" -ne 0 || "$bytes" -eq 0 ]]; then
+  echo "glm seat NOT refreshed: reviewer round-trip failed (exit $rc, $bytes bytes). Next: read the reviewer's stderr by hand; do not mint." >&2
+  exit 2
+fi
+
+# 2. witness (schema v1), same shape as the 2026-08-04 witnesses.
+cat > "$WDIR/$ref.yaml" <<EOF
+schema: hapax.glmcp_admission_witness.v1
+witness_ref: $ref
+host: $(hostname)
+observed_at: $(date -u +%Y-%m-%dT%H:%M:%SZ)
+supported_tool: hapax-glmcp-reviewer
+endpoint: $endpoint
+model: $model
+invocation_exit_code: $rc
+prompt_or_output_persisted: false
+secret_value_persisted: false
+EOF
+echo "witness: $WDIR/$ref.yaml"
+
+# 3. passive admission receipt, 4. telemetry writer.
+"$H/scripts/hapax-glmcp-quota-admission" observe-success \
+  --evidence-ref "$ref" --supported-tool hapax-glmcp-reviewer --endpoint "$endpoint" --model "$model" \
+  | sed 's/\x1b\[[0-9;]*m//g' | tail -3
+"$H/scripts/hapax-quota-telemetry-writer" 2>&1 | sed 's/\x1b\[[0-9;]*m//g' | grep -iE "glmcp|wrote" | tail -3 | cut -c1-200
+
+# 5. what the dispatcher will now see.
+L="$HOME/.cache/hapax/orchestration/quota-spend-ledger-live.json"
+if [[ -f "$L" ]] && command -v jq >/dev/null; then
+  jq -r '.. | objects | select(has("platform") and (.platform|tostring|test("glm"))) | "\(.platform): \(.status // .state // .admission // "?") \(.observed_at // .checked_at // "")"' "$L" 2>/dev/null | head -3
+  jq -r '(.platforms // .providers // {}) | to_entries[]? | select(.key|test("glm")) | "\(.key): \((.value.status // .value.state // .value.admission // .value) | tostring | .[0:140])"' "$L" 2>/dev/null | head -3
+fi
