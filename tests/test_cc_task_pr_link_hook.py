@@ -225,6 +225,12 @@ class TestIdempotency:
         assert "pr: 200" not in text
         assert "status: claimed" in text
         assert "status: pr_open" not in text
+        # The refusal is not silent: it names the row, both PRs, and the next action (the
+        # exit predicate requires BOTH refusal paths to name the conflicting task).
+        assert "REFUSING to overwrite 'test-001-test-task'" in result.stderr
+        assert "already declares PR #100" in result.stderr
+        assert "PR #200 is a different PR" in result.stderr
+        assert "Next action:" in result.stderr
 
     def test_refuses_a_pr_another_active_task_already_declares(self, tmp_path: Path) -> None:
         """A PR must not be bound to two tasks. Measured defect, three occurrences on one row.

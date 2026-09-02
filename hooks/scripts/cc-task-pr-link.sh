@@ -306,7 +306,16 @@ if m:
     existing = m.group(1).strip()
     if existing and existing.lower() not in ("null", "none", "~", '""', "''"):
         if existing != str(pr_number):
-            # Already linked to another PR — preserve existing value, exit silently.
+            # Already linked to another PR — preserve the existing value and SAY SO. A silent exit
+            # here hid, for weeks, which PR a row was actually bound to (review finding on #4613:
+            # both refusals must name the conflicting task/PR and the next action).
+            print(
+                f"cc-task-pr-link: REFUSING to overwrite '{note_path.stem}' — it already declares "
+                f"PR #{existing}, and PR #{pr_number} is a different PR. Next action: if this row "
+                f"really owns #{pr_number}, clear `pr:` on the row (and move #{existing} to its own "
+                f"row) before re-linking; otherwise mint a row for #{pr_number}.",
+                file=sys.stderr,
+            )
             sys.exit(0)
 
 # --- THE RELATION TEST. There was none, and its absence is a measured, recurring defect. ---
