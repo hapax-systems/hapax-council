@@ -6,6 +6,13 @@ set -euo pipefail
 # The scripts this calls come from the activation worktree (main, activated by the governed loop),
 # never from a mutable development checkout (review finding on #4624).
 H="${HAPAX_COUNCIL:-$HOME/.cache/hapax/source-activation/worktree}"
+ACTIVATION_ROOT="$HOME/.cache/hapax/source-activation/worktree"
+# An inherited HAPAX_COUNCIL must not redirect governance-sensitive receipt minting to a mutable
+# tree (review finding on #4624, round 2): refuse any other root unless a test says so explicitly.
+if [[ "$H" != "$ACTIVATION_ROOT" && "${HAPAX_GLMCP_SEAT_ROOT_OVERRIDE:-0}" != "1" ]]; then
+  echo "glm seat refresh REFUSED: HAPAX_COUNCIL=$H is not the activation worktree ($ACTIVATION_ROOT); the receipt chain must not run from a mutable tree. Next: unset HAPAX_COUNCIL for this unit, or set HAPAX_GLMCP_SEAT_ROOT_OVERRIDE=1 in a test harness." >&2
+  exit 4
+fi
 WDIR="$HOME/.cache/hapax/glmcp-admission-witness"
 mkdir -p "$WDIR"
 ts="$(date -u +%Y%m%dT%H%M%SZ)"
@@ -17,19 +24,20 @@ endpoint="${HAPAX_GLMCP_REVIEW_BASE_URL:-https://api.z.ai/api/coding/paas/v4}"
 model="glm-5.2"
 export HAPAX_GLMCP_REVIEW_MODEL="$model"
 
-# 0. freshness guard: the passive receipt lives 15 minutes (stale_after_seconds: 900). The timer
-#    fires every 5 minutes; refreshing whenever the receipt is older than 5 keeps its age under
-#    ~10 minutes at all times, so it never lapses between two autoqueue cycles (measured 2026-08-04:
-#    a receipt that lapsed mid-queue dequeued a green PR). ~1 round-trip per 5–10 min.
-RCPT="$HOME/.cache/hapax/relay/receipts/glmcp-quota-admission.yaml"
-if [[ -f "$RCPT" ]]; then
-  # A malformed receipt (no observed_at) must fall through to a real round-trip, not wedge every
-  # timer run at this grep under errexit (review finding on #4624).
-  obs="$(grep -m1 -E '^observed_at:' "$RCPT" | awk '{print $2}' || true)"
-  if [[ -n "$obs" ]]; then
-    age=$(( $(date -u +%s) - $(date -u -d "$obs" +%s 2>/dev/null || echo 0) ))
-    if (( age >= 0 && age < 300 )); then
-      echo "glm seat fresh (${age}s old); no round-trip"
+# 0. freshness guard — asks the SAME source the dispatcher trusts: the live quota ledger the
+#    telemetry writer validated, never the raw receipt. A receipt with the wrong schema, model or
+#    status looked "fresh" to a receipt-age check while the writer rejected it, which recreates
+#    the silent blocked-family condition this producer exists to prevent (review finding on #4624,
+#    round 2). The passive receipt lives 15 minutes; refreshing whenever fewer than 10 remain keeps
+#    the seat's age under ~5–10 minutes so it never lapses between two autoqueue cycles (measured
+#    2026-08-04: a receipt that lapsed mid-queue dequeued a green PR). ~1 round-trip per 5–10 min.
+L="$HOME/.cache/hapax/orchestration/quota-spend-ledger-live.json"
+if [[ -f "$L" ]] && command -v jq >/dev/null; then
+  until="$(jq -r '[.quota_snapshots[]? | select(.route_id == "glmcp.review.direct" and .subscription_quota_state == "fresh") | .fresh_until | select(. != null)] | max // empty' "$L" 2>/dev/null || true)"
+  if [[ -n "$until" ]]; then
+    remaining=$(( $(date -u -d "$until" +%s 2>/dev/null || echo 0) - $(date -u +%s) ))
+    if (( remaining > 600 )); then
+      echo "glm seat fresh per the live ledger (${remaining}s remain); no round-trip"
       exit 0
     fi
   fi
@@ -87,7 +95,7 @@ EOF
 echo "witness: $WDIR/$ref.yaml"
 
 # 3. passive admission receipt, 4. telemetry writer.
-"$H/scripts/hapax-glmcp-quota-admission" observe-success \
+timeout 60 "$H/scripts/hapax-glmcp-quota-admission" observe-success \
   --evidence-ref "$ref" --supported-tool hapax-glmcp-reviewer --endpoint "$endpoint" --model "$model" \
   | sed 's/\x1b\[[0-9;]*m//g' | tail -3
 # The writer's own diagnostics are printed, never filtered away: exit 3 means the live ledger was
@@ -95,7 +103,7 @@ echo "witness: $WDIR/$ref.yaml"
 # (review finding on #4624). The admission receipt is already minted at this point, so the seat
 # IS refreshed; only an outright writer failure is fatal, and it names its next action.
 set +e
-"$H/scripts/hapax-quota-telemetry-writer" >"$WOUT" 2>&1
+timeout 120 "$H/scripts/hapax-quota-telemetry-writer" >"$WOUT" 2>&1
 writer_rc=$?
 set -e
 sed 's/\x1b\[[0-9;]*m//g' "$WOUT" | grep -vE '^\s*$' | tail -4 | cut -c1-200 || true

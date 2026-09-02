@@ -13,8 +13,12 @@ Environment=HOME=/home/hapax
 Environment=PATH=/home/hapax/.local/bin:/usr/local/bin:/usr/bin:/bin
 Environment=GNUPGHOME=/home/hapax/.gnupg
 Environment=PASSWORD_STORE_DIR=/home/hapax/.password-store
-# Three attempts of up to 180 s plus two 15 s pauses, then the admission and telemetry writers:
-# the budget the script can spend is ~600 s, so the unit must not kill it earlier than that.
-TimeoutStartSec=660
+# Three attempts of up to 180 s plus two 15 s pauses, then the admission writer (60 s) and the
+# telemetry writer (120 s): 750 s is the budget the script can spend, so the unit must not kill
+# it earlier than that.
+TimeoutStartSec=780
+# The receipt chain runs the activation worktree and nothing else: pinned here so an inherited
+# user-manager HAPAX_COUNCIL cannot redirect governance-sensitive code to a mutable tree.
+Environment=HAPAX_COUNCIL=%h/.cache/hapax/source-activation/worktree
 MemoryMax=512M
 SyslogIdentifier=hapax-glmcp-seat-refresh
