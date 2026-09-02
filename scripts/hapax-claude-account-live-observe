@@ -462,16 +462,71 @@ def observe(
         found.extend(_scan_headless(path, floor))
     for path in _recent_files(transcript_glob, floor):
         found.extend(_scan_transcript(path, floor))
+    verdict, newest, _found = _verdict(found)
+    return verdict, newest
+
+
+def observe_all(
+    *,
+    now: datetime,
+    max_age_seconds: int,
+    headless_glob: str,
+    transcript_glob: str,
+) -> tuple[str, Observation | None, list[Observation]]:
+    """``observe`` plus every observation inside the window, so routes can pick their own.
+
+    The account-level verdict (served / walled / no_evidence) is a property of the NEWEST
+    observation. Which observation may vouch for a given ROUTE is not: measured 2026-09-02,
+    every 10-minute cycle for ~24h logged ``claude.review.opus: skipped model-family-mismatch,
+    observed_model: claude-fable-5-1`` — the newest serve was a Fable run, so the opus review
+    route was never minted although opus serves sat minutes older inside the same window.
+    A new model family arriving had silently starved a route. The per-route choice lives in
+    ``evidence_by_route``; this function only stops discarding the evidence it needs.
+    """
+    floor = now - timedelta(seconds=max_age_seconds)
+    found: list[Observation] = []
+    for path in _recent_files(headless_glob, floor):
+        found.extend(_scan_headless(path, floor))
+    for path in _recent_files(transcript_glob, floor):
+        found.extend(_scan_transcript(path, floor))
+    return _verdict(found)
+
+
+def _verdict(found: list[Observation]) -> tuple[str, Observation | None, list[Observation]]:
     if not found:
-        return "no_evidence", None
+        return "no_evidence", None, []
     # A wall that is NEWER than the newest served response is the live state: a served
     # response from 20 minutes ago does not survive a wall 2 minutes ago. On an exact tie
     # the wall wins — `max` returns the FIRST maximal element, so without the second key a
     # tie silently resolves to whichever the scan happened to emit first.
     newest = max(found, key=lambda o: (o.at, o.kind == "wall"))
     if newest.kind == "wall":
-        return "walled", newest
-    return "served", newest
+        return "walled", newest, found
+    return "served", newest, found
+
+
+def evidence_by_route(
+    found: list[Observation],
+    route_ids: tuple[str, ...],
+) -> dict[str, Observation | None]:
+    """For each route, the newest SERVED observation in that route's own model family.
+
+    A wall still wins for the whole account — callers only reach this after ``_verdict`` said
+    ``served`` — but inside a served window each route is vouched for by the freshest serve
+    that could actually witness it, never by a serve from another family and never by nothing
+    because a different family happened to answer last. Ties resolve to the first scanned,
+    which is immaterial: same family, same instant, same evidence.
+    """
+    by_route: dict[str, Observation | None] = {}
+    for route_id in route_ids:
+        prefixes = ROUTE_MODEL_PREFIXES.get(route_id)
+        eligible = [
+            o
+            for o in found
+            if o.kind == "served" and (not prefixes or (o.model or "").startswith(prefixes))
+        ]
+        by_route[route_id] = max(eligible, key=lambda o: o.at) if eligible else None
+    return by_route
 
 
 def mint(
@@ -482,8 +537,13 @@ def mint(
     stale_after_seconds: int,
     receipt_dir: Path | None,
     dry_run: bool,
+    evidence_by_route: Mapping[str, Observation | None] | None = None,
 ) -> list[dict]:
     """Hand the observation to the existing admission writer — never bypass its validation.
+
+    ``evidence_by_route`` (from ``evidence_by_route()``) lets each route be minted from the
+    freshest serve in its OWN family. Without it every route is judged against the single
+    ``evidence`` observation, which is how a Fable serve starved the opus review route.
 
     The receipt is anchored to the OBSERVATION time, not the mint time. The writer computes
     ``fresh_until = observed_at + stale_after``, so passing mint time would let a stale
@@ -491,25 +551,41 @@ def mint(
     compounding into a receipt that vouches far past what was actually seen. Anchoring here
     means a 14-minute-old observation yields 14 fewer minutes of freshness, automatically.
     """
-    observed_at = evidence.at.replace(microsecond=0)
-    stamp = observed_at.strftime("%Y%m%dt%H%M%Sz")
-    evidence_ref = f"{WITNESS_PREFIX}-{stamp}"
     results: list[dict] = []
     for route_id in route_ids:
+        route_evidence = evidence
+        if evidence_by_route is not None:
+            route_evidence = evidence_by_route.get(route_id)
+            if route_evidence is None:
+                # No serve in this route's family inside the window. Distinct from a family
+                # mismatch: nothing was seen that could vouch, rather than the wrong thing.
+                results.append(
+                    {
+                        "route_id": route_id,
+                        "skipped": "no-serve-in-model-family",
+                        "observed_model": evidence.model,
+                    }
+                )
+                continue
         # Mint a route ONLY from evidence in its own model family. A Haiku serve does not
         # witness claude.review.opus — and the moment the Opus entitlement is exhausted is
         # exactly when cheap models keep answering, so fanning one observation across both
-        # routes is wrong precisely when it matters most.
+        # routes is wrong precisely when it matters most. Kept as a guard even when
+        # ``evidence_by_route`` already selected by family: the receipt must never depend on
+        # the selector and the guard agreeing by accident.
         prefixes = ROUTE_MODEL_PREFIXES.get(route_id)
-        if prefixes and not (evidence.model or "").startswith(prefixes):
+        if prefixes and not (route_evidence.model or "").startswith(prefixes):
             results.append(
                 {
                     "route_id": route_id,
                     "skipped": "model-family-mismatch",
-                    "observed_model": evidence.model,
+                    "observed_model": route_evidence.model,
                 }
             )
             continue
+        observed_at = route_evidence.at.replace(microsecond=0)
+        stamp = observed_at.strftime("%Y%m%dt%H%M%Sz")
+        evidence_ref = f"{WITNESS_PREFIX}-{stamp}"
         argv = [
             sys.executable,
             str(ADMISSION_WRITER),
@@ -533,7 +609,9 @@ def mint(
         try:
             proc = subprocess.run(argv, capture_output=True, text=True, timeout=60)
         except (OSError, subprocess.TimeoutExpired) as exc:
-            results.append({"route_id": route_id, "returncode": -1, "stderr": f"{type(exc).__name__}: {exc}"})
+            results.append(
+                {"route_id": route_id, "returncode": -1, "stderr": f"{type(exc).__name__}: {exc}"}
+            )
             continue
         results.append(
             {
@@ -584,7 +662,7 @@ def main(argv: list[str] | None = None) -> int:
         return 2
     route_ids = tuple(args.route_ids or DEFAULT_ROUTE_IDS)
 
-    verdict, evidence = observe(
+    verdict, evidence, found = observe_all(
         now=now,
         max_age_seconds=args.max_age_seconds,
         headless_glob=args.headless_glob,
@@ -599,7 +677,7 @@ def main(argv: list[str] | None = None) -> int:
     if verdict == "no_evidence" and args.probe and not args.dry_run:
         probed = probe(now)
         if probed is not None:
-            verdict, evidence = probed.kind, probed
+            verdict, evidence, found = probed.kind, probed, [probed]
     payload: dict = {
         "verdict": verdict,
         "observed_at": evidence.at.isoformat().replace("+00:00", "Z") if evidence else None,
@@ -608,6 +686,7 @@ def main(argv: list[str] | None = None) -> int:
     }
 
     if verdict == "served":
+        by_route = evidence_by_route(found, route_ids)
         payload["receipts"] = mint(
             evidence,
             now=now,
@@ -615,8 +694,12 @@ def main(argv: list[str] | None = None) -> int:
             stale_after_seconds=args.stale_after_seconds,
             receipt_dir=args.receipt_dir,
             dry_run=args.dry_run,
+            evidence_by_route=by_route,
         )
         payload["observed_model"] = evidence.model
+        payload["observed_model_by_route"] = {
+            route_id: (o.model if o else None) for route_id, o in by_route.items()
+        }
         if not args.dry_run and mint_failed(payload["receipts"]):
             payload["hint"] = (
                 "observation succeeded but at least one receipt write FAILED — the route is "
@@ -624,9 +707,7 @@ def main(argv: list[str] | None = None) -> int:
                 "surfaces instead of leaving systemd green with no receipts."
             )
             rc = 5
-        elif not args.dry_run and not any(
-            r.get("returncode") == 0 for r in payload["receipts"]
-        ):
+        elif not args.dry_run and not any(r.get("returncode") == 0 for r in payload["receipts"]):
             payload["hint"] = "every route was skipped; no receipt was written"
             rc = 5
         else:
