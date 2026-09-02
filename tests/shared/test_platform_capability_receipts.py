@@ -2355,6 +2355,36 @@ class TestQuotaIsPerRouteAndLedgerBacked:
         # now 23:15Z: 300 s left on the receipt, 900 s left on the ledger snapshot
         assert result.stale_after == "300s"
 
+    def test_an_untyped_provenance_ref_from_the_validator_is_typed_not_fatal(
+        self, tmp_path: Path
+    ) -> None:
+        """Measured 2026-09-02 18:12 CDT on this consumer's first activated run: the ledger validator
+        returned its provenance entry `scripts/hapax-quota-telemetry-writer` among the refs,
+        SurfaceEvidence refused the bare path, and every platform's refresh died with it."""
+        ledger = _quota_ledger_fresh_for(tmp_path, {"claude.headless.full": "fresh"})
+        module = self._module(tmp_path, ledger)
+        globals_ = module["_ledger_fresh_routes"].__globals__
+        real = globals_["subscription_quota_state_for_route"]
+
+        def with_provenance(ledger_obj, route_id, *, now=None):
+            state, refs = real(ledger_obj, route_id, now=now)
+            return state, [*refs, "scripts/hapax-quota-telemetry-writer"]
+
+        globals_["subscription_quota_state_for_route"] = with_provenance
+        try:
+            _quota_receipt(tmp_path / "claude-quota-admission.yaml")
+            result = module["observe_quota"](
+                "claude", [_Route("claude.headless.full")], now=self.NOW
+            )
+        finally:
+            globals_["subscription_quota_state_for_route"] = real
+        assert result.status.value == "observed", result.reason_codes
+        assert (
+            "quota-spend-ledger:generated_from:scripts/hapax-quota-telemetry-writer"
+            in result.evidence_refs
+        )
+        assert "scripts/hapax-quota-telemetry-writer" not in result.evidence_refs
+
     def test_the_agy_review_route_is_observed_from_its_own_receipt_and_ledger_snapshot(
         self, tmp_path: Path
     ) -> None:

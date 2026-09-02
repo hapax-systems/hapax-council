@@ -24,6 +24,9 @@ REPO_ROOT = Path(__file__).resolve().parents[1]
 if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
+from shared.agentic_trust_boundary import (
+    is_syntactically_typed_policy_evidence_reference,  # noqa: E402
+)
 from shared.platform_capability_receipts import (  # noqa: E402
     DEFAULT_PLATFORM_CAPABILITY_RECEIPT_DIR,
     PLATFORM_CAPABILITY_RECEIPT_DIR_ENV,
@@ -533,8 +536,25 @@ def _ledger_fresh_routes(
             for snapshot in ledger.quota_snapshots
             if snapshot.route_id == route_id and snapshot.fresh_until is not None
         ]
-        fresh[route_id] = (tuple(refs), min(bounds) if bounds else None)
+        fresh[route_id] = (
+            tuple(_typed_evidence_ref(ref) for ref in refs),
+            min(bounds) if bounds else None,
+        )
     return fresh, True
+
+
+def _typed_evidence_ref(ref: str) -> str:
+    """The validator's references in the form ``SurfaceEvidence`` accepts.
+
+    ``subscription_quota_state_for_route`` returns the ledger's provenance entries (its
+    ``generated_from``, e.g. ``scripts/hapax-quota-telemetry-writer``) alongside the admission
+    evidence. A bare path carries no namespace and ``SurfaceEvidence`` refuses it — measured
+    2026-09-02 18:12 CDT on this consumer's first activated run, which crashed on exactly that
+    entry and took every platform's refresh down with it. Provenance is typed as provenance.
+    """
+    if is_syntactically_typed_policy_evidence_reference(ref):
+        return ref
+    return f"quota-spend-ledger:generated_from:{ref}"
 
 
 def _fresh_quota_receipt(
@@ -638,7 +658,9 @@ def observe_quota(
         )
         unobserved_refs = [f"local:{platform}:quota-probe:unobservable"]
         if best_by_route and not ledger_readable:
-            unobserved_refs.append(f"quota-spend-ledger:{display_path(QUOTA_LEDGER_LIVE)}:unreadable")
+            unobserved_refs.append(
+                f"quota-spend-ledger:{display_path(QUOTA_LEDGER_LIVE)}:unreadable"
+            )
         return surface_evidence(
             status=EvidenceStatus.UNOBSERVABLE,
             source="local_receipt_probe",
