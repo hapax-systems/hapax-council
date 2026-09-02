@@ -198,6 +198,24 @@ def test_generated_hash_bearing_artifacts_are_exempt_from_entropy_only_findings(
     assert r3.returncode == 1, r3.stderr  # the exemption is entropy-only; keywords still count
 
 
+def test_systemd_unit_files_may_carry_absolute_home_paths_but_nothing_else_may(tmp_path):
+    """A unit's ExecStart is absolute by systemd's contract; the same line anywhere else is
+    still new exposure. Only the home-path detector is suspended under systemd/units/."""
+    repo = _repo(tmp_path)
+    base = _git(repo, "rev-parse", "HEAD")
+    # Built at runtime so this fixture line is not itself a home path in an added line.
+    line = (
+        "ExecStart=" + "/".join(("", "home", "someone", "projects", "x", "scripts", "job")) + "\n"
+    )
+    tip = _commit(repo, "systemd/units/job.service", "[Service]\n" + line)
+    r = _run(repo, "origin", f"refs/heads/main {tip} refs/heads/main {base}\n")
+    assert r.returncode == 0, r.stderr
+    tip2 = _commit(repo, "scripts/job-install.sh", line)
+    r = _run(repo, "origin", f"refs/heads/main {tip2} refs/heads/main {tip}\n")
+    assert r.returncode == 1
+    assert "home path in 1 added line(s): scripts/job-install.sh" in r.stderr
+
+
 def test_deletion_pushes_nothing_and_passes(tmp_path):
     repo = _repo(tmp_path)
     base = _git(repo, "rev-parse", "HEAD")
