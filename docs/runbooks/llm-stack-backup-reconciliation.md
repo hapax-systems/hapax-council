@@ -18,7 +18,8 @@ Critical offsite safety baseline:
 
 - Timer: `hapax-backup-critical-offsite.timer`
 - Service: `hapax-backup-critical-offsite.service`
-- Script: `$HOME/projects/hapax-council/scripts/hapax-backup-critical-offsite`
+- Script: `%h/.cache/hapax/source-activation/worktree/scripts/hapax-backup-critical-offsite`
+  (the governed activation worktree; the source is `scripts/hapax-backup-critical-offsite`)
 - Restic repository: `rclone:r2:hapax-restic-critical`
 - Cache: `/store/llm-data/restic-cache/critical-offsite`
 
@@ -35,17 +36,31 @@ lane.
 
 ## Cutover on podium (2026-09-02)
 
-Run the repository's unit installer from the primary checkout so every unit is
-linked from the canonical source tree; do not hand-create the replacement
-symlinks.
+The unit runs its script from the governed source-activation worktree
+(`~/.cache/hapax/source-activation/worktree`), never from a development
+checkout. On podium that worktree is deliberately HELD by the operator
+(`~/.cache/hapax/source-activation/HOLD`, 2026-08-18: podium source activation is
+an operator ratify-line), so it will not carry this unit's script until the hold
+is released. Two steps, in order:
+
+1. Release the hold (an operator ratify-line, not a script's decision): remove
+   `~/.cache/hapax/source-activation/HOLD`, let `hapax-source-activate.timer`
+   bring the worktree to main, and confirm with
+   `git -C ~/.cache/hapax/source-activation/worktree log -1 --oneline`.
+2. Install the units from that worktree; do not hand-create symlinks and do not
+   run the installer from a development checkout:
 
 ```bash
 systemctl --user disable --now hapax-backup-gdrive-critical.timer
 rm -rf ~/.config/systemd/user/hapax-backup-gdrive-critical.service.d ~/.config/systemd/user/hapax-backup-watchdog.service.d/20-r2.conf
 rm -f ~/.config/systemd/user/hapax-backup-gdrive-critical.{service,timer}
-cd ~/projects/hapax-council && systemd/scripts/install-units.sh
+cd ~/.cache/hapax/source-activation/worktree && systemd/scripts/install-units.sh
 systemctl --user daemon-reload && systemctl --user enable --now hapax-backup-critical-offsite.timer
 ```
+
+Until step 1 happens, the R2 lane keeps running under the secret-free
+`20-r2.conf` drop-ins that carried the 2026-09-02 switch (they name pass entries,
+never values); step 2 removes them.
 
 The `rclone:gdrive:` remote and the Drive restic repository at
 `rclone:gdrive:hapax-backups/restic-critical` are retired. Snapshots carrying
