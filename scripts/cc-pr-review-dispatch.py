@@ -1187,12 +1187,27 @@ def fetch_pr_diff_from_local(pr_info: PRInfo, *, repo_root: Path, runner: Any) -
         repo_root=repo_root,
         runner=runner,
     ).strip()
-    if merge_base != pr_info.base_sha:
+    if not merge_base:
         raise RuntimeError(
-            f"local git diff fallback for PR #{pr_info.number} cannot prove head contains "
-            f"the current PR base {pr_info.base_sha[:12]}; merge-base was "
-            f"{merge_base[:12]}. Next action: fetch the GitHub PR diff endpoint or "
-            "update the PR branch to the current base before review dispatch."
+            f"local git diff fallback for PR #{pr_info.number}: head {head[:12]} and the current "
+            f"PR base {pr_info.base_sha[:12]} share no merge base locally. Next action: fetch "
+            f"pull/{pr_info.number}/head and origin/{base_ref} before review dispatch."
+        )
+    if merge_base != pr_info.base_sha:
+        # A PR whose base has moved on since it branched — the NORMAL shape of a PR behind main
+        # — has a merge base older than the current base tip. The previous revision raised
+        # here, and with REST measured empty every such PR produced a per-cycle error instead
+        # of a dossier: reviews deadlocked on exactly the PRs that most needed them. Found by
+        # review on #4610. GitHub's own PR diff is `merge-base(base, head)..head` (the
+        # three-dot diff), so pinning to the merge base IS the endpoint's semantics; the pin is
+        # recorded below so the dossier states which base it reviewed against.
+        LOG.info(
+            "PR #%d is behind %s: reviewing head %s against merge base %s (current base %s)",
+            pr_info.number,
+            base_ref,
+            head[:12],
+            merge_base[:12],
+            pr_info.base_sha[:12],
         )
     diff = _run_gh(
         ["git", "diff", "--no-ext-diff", "--find-renames", f"{merge_base}..{head}"],

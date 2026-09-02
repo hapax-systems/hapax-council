@@ -1731,7 +1731,7 @@ checklist:
         assert "fetch pull/42/head before review dispatch" in message
         assert not any(call[:2] == ["git", "diff"] for call in gh.calls)
 
-    def test_local_git_diff_fallback_rejects_head_missing_current_base(
+    def test_local_git_diff_fallback_reviews_a_behind_pr_against_its_merge_base(
         self, tmp_path: Path
     ) -> None:
         repo_root = tmp_path / "repo"
@@ -1786,26 +1786,33 @@ checklist:
                 return super().__call__(cmd, **kwargs)
 
         gh = DivergedBaseGh(base_sha=current_base_sha, head_sha=head_sha, files=["shared/foo.py"])
-        with pytest.raises(RuntimeError) as excinfo:
-            dispatch.fetch_pr_diff_from_local(
-                dispatch.PRInfo(
-                    number=42,
-                    title="PR 42",
-                    body="body",
-                    base_ref="main",
-                    base_sha=current_base_sha,
-                    head_ref="feat/42",
-                    head_sha=head_sha,
-                    changed_file_count=1,
-                    is_draft=False,
-                    files=("shared/foo.py",),
-                ),
-                repo_root=repo_root,
-                runner=gh,
-            )
+        # A PR behind main is the NORMAL shape of a PR: its merge base with the current base tip
+        # is older than that tip. GitHub's diff endpoint reviews `merge-base(base, head)..head`;
+        # the local path must do the same instead of refusing. Refusing here, with REST measured
+        # empty, produced a per-cycle error instead of a dossier for every behind PR (#4610 review).
+        diff = dispatch.fetch_pr_diff_from_local(
+            dispatch.PRInfo(
+                number=42,
+                title="PR 42",
+                body="body",
+                base_ref="main",
+                base_sha=current_base_sha,
+                head_ref="feat/42",
+                head_sha=head_sha,
+                changed_file_count=1,
+                is_draft=False,
+                files=("shared/foo.py",),
+            ),
+            repo_root=repo_root,
+            runner=gh,
+        )
 
-        assert "cannot prove head contains" in str(excinfo.value)
-        assert not any(call[:2] == ["git", "diff"] for call in gh.calls)
+        assert "+value = 'head'" in diff and "-value = 'base'" in diff
+        assert "current-base" not in diff, "the base's later commit is not the PR's change"
+        diff_calls = [call for call in gh.calls if call[:2] == ["git", "diff"]]
+        assert diff_calls and diff_calls[0][-1] == f"{base_sha}..{head_sha}", (
+            "the diff must be pinned to the merge base, which is the original base commit here"
+        )
 
     def test_rest_pull_failure_names_recheck_action(self, tmp_path: Path) -> None:
         class MissingPullGh(FakeGh):

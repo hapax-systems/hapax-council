@@ -447,6 +447,56 @@ def test_an_unavailable_listing_is_not_counted_as_a_quiet_fleet(gov_module, monk
     assert captured["open_pr_count"] == 0
 
 
+class TestManualFreezeWithoutAListing:
+    """An EXPLICIT freeze or drain must activate the gate even when the listing cannot be read.
+
+    The previous revision refused (exit 2) and returned before `save_state`, so a governor in
+    `normal` stayed `normal` and kept admitting NEW PRs through the outage — the paradigm case
+    a freeze exists to stop. It now writes the same unknown-baseline representation `cmd_auto`
+    uses, under which existing branches are permitted and new PR creation is refused.
+    Found by review on #4610.
+    """
+
+    def test_manual_freeze_activates_with_an_unknown_baseline(self, gov_module, capsys):
+        args = type("NS", (), {"reason": "operator freeze during a listing outage"})()
+        with patch.object(gov_module, "query_open_prs_measured", return_value=([], False)):
+            rc = gov_module.cmd_freeze(args)
+
+        assert rc == 0, "an explicit freeze is not refused because the listing is unavailable"
+        loaded = gov_module.load_state()
+        assert loaded["mode"] == "frozen"
+        assert loaded["branch_snapshot_unavailable"] is True
+        assert loaded["entry_open_pr_count"] is None, "an unmeasured count is None, never 0"
+        assert loaded["allowed_existing_branches"] == []
+        assert "UNAVAILABLE" in capsys.readouterr().err
+
+        allowed, _reason = gov_module.is_admission_allowed(None)
+        assert allowed is False, "new PR creation is refused under the frozen unknown baseline"
+        allowed, _reason = gov_module.is_admission_allowed("feat/in-flight")
+        assert allowed is True, (
+            "an in-flight branch is permitted rather than blocked on absent evidence"
+        )
+
+    def test_manual_drain_activates_with_an_unknown_baseline(self, gov_module):
+        args = type("NS", (), {"reason": "operator drain during a listing outage"})()
+        with patch.object(gov_module, "query_open_prs_measured", return_value=([], False)):
+            rc = gov_module.cmd_drain(args)
+        assert rc == 0
+        loaded = gov_module.load_state()
+        assert loaded["mode"] == "drain" and loaded["branch_snapshot_unavailable"] is True
+
+    def test_measured_freeze_still_records_the_snapshot(self, gov_module):
+        args = type("NS", (), {"reason": "measured"})()
+        rows = [{"headRefName": "feat/a"}, {"headRefName": "feat/b"}]
+        with patch.object(gov_module, "query_open_prs_measured", return_value=(rows, True)):
+            rc = gov_module.cmd_freeze(args)
+        assert rc == 0
+        loaded = gov_module.load_state()
+        assert loaded["allowed_existing_branches"] == ["feat/a", "feat/b"]
+        assert loaded["entry_open_pr_count"] == 2
+        assert loaded["branch_snapshot_unavailable"] is False
+
+
 class TestAutoFreezeWithoutAListing:
     """A freeze warranted by the LEDGER must not be suppressed by an unreadable listing."""
 

@@ -303,33 +303,42 @@ def _snapshot_open_branches() -> list[str] | None:
 def cmd_freeze_or_drain(args: argparse.Namespace, mode: str) -> int:
     state = load_state()
     snapshot = _snapshot_open_branches()
-    if snapshot is None:
-        print(
-            f"hapax-pr-admission: refusing to {mode} — the open-PR listing is unavailable, so "
-            "the branch snapshot and entry count would be recorded as empty. That baseline is "
-            "wrong in the direction that blocks work and persists past the outage. Next action: "
-            "rerun once `github_pr_status.py rate` reports headroom.",
-            file=sys.stderr,
-        )
-        return 2
+    # An explicit freeze/drain must ACTIVATE the gate even when the branch listing cannot be
+    # read. The previous revision refused (exit 2) and returned before `save_state`, so if the
+    # governor was `normal` it stayed `normal` and kept admitting NEW PRs through an outage —
+    # a fail-open on the paradigm case a freeze exists to stop. Found by review on #4610.
+    #
+    # `cmd_auto` already has the safe representation for exactly this state: mode set,
+    # `allowed_existing_branches` empty, `branch_snapshot_unavailable: True`, entry count None.
+    # `check_admission` then grandfathers existing branches (it cannot tell which were in
+    # flight) while still refusing `branch=None`, i.e. new PR creation. That is narrower than
+    # the measured path, never wider — the direction a fallback must err in.
     state.update(
         {
             "mode": mode,
             "set_by": _role_from_env(),
             "reason": args.reason,
-            "entry_open_pr_count": len(snapshot),
+            "entry_open_pr_count": len(snapshot) if snapshot is not None else None,
             "stable_ticks_observed": 0,
-            "allowed_existing_branches": snapshot,
-            # Reaching here means the snapshot READ — the refusal above is the only other exit.
-            # Without this the flag was write-once: an outage-era `True` survived into a later,
-            # properly-measured freeze and kept relaxing it, so one bad minute disabled every
-            # subsequent freeze until the state file was edited by hand.
-            "branch_snapshot_unavailable": False,
+            "allowed_existing_branches": snapshot or [],
+            # True only when the listing could not be read THIS time. Without the explicit
+            # False on the measured path the flag was write-once: an outage-era `True` survived
+            # into a later, properly-measured freeze and kept relaxing it.
+            "branch_snapshot_unavailable": snapshot is None,
         }
     )
     save_state(state)
     print(f"PR admission governor: mode set to {mode} by {state['set_by']}")
     print(f"  Reason: {args.reason}")
+    if snapshot is None:
+        print(
+            "  Branch snapshot UNAVAILABLE — the open-PR listing could not be read. New PR "
+            "creation is refused; existing branches are permitted rather than blocked on absent "
+            "evidence. Rerun once `github_pr_status.py rate` reports headroom to record the "
+            "snapshot.",
+            file=sys.stderr,
+        )
+        return 0
     print(f"  Snapshot of {len(snapshot)} open branches:")
     for b in snapshot:
         print(f"    {b}")
