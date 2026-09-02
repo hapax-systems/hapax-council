@@ -2563,6 +2563,129 @@ def _latest_admission_status(
     return None
 
 
+_GRAPHQL_STATUS_STATES = {"success", "failure", "pending", "error", "expected"}
+
+
+def _latest_admission_status_graphql(
+    head_sha: str,
+    *,
+    repo: str,
+    repo_root: Path,
+    runner: Any,
+) -> tuple[str | None, tuple[str, str, datetime | None] | None]:
+    """GraphQL twin of ``_latest_admission_status`` for a cycle routed off REST.
+
+    Returns ``(repository_node_id, current_status)``. The node id is what the
+    ``createCommitStatus`` mutation needs, so one read serves both the idempotency
+    decision and the write. ``(None, None)`` means the pool refused or the payload
+    was not the shape asked for — the caller then fails closed rather than falling
+    back to the exhausted REST pool, which is the deadlock this exists to remove.
+    """
+    owner, name = repo.split("/", 1)
+    query = (
+        "query($owner:String!,$repo:String!,$sha:GitObjectID!,$ctx:String!){"
+        "repository(owner:$owner,name:$repo){id object(oid:$sha){... on Commit{"
+        "status{context(name:$ctx){state description createdAt}}}}}}"
+    )
+    try:
+        proc = run_graphql_rate_aware(
+            [
+                "-f",
+                f"query={query}",
+                "-f",
+                f"owner={owner}",
+                "-f",
+                f"repo={name}",
+                "-f",
+                f"sha={head_sha}",
+                "-f",
+                f"ctx={AUTOQUEUE_ADMISSION_CONTEXT}",
+            ],
+            repo_root=repo_root,
+            runner=runner,
+        )
+    except (subprocess.TimeoutExpired, OSError) as exc:
+        LOG.warning("GraphQL admission status read unavailable for %s: %s", head_sha, exc)
+        return None, None
+    if proc.returncode != 0:
+        return None, None
+    try:
+        payload = json.loads(proc.stdout or "{}")
+    except json.JSONDecodeError:
+        return None, None
+    repository = payload.get("data", {}).get("repository") if isinstance(payload, dict) else None
+    if not isinstance(repository, dict):
+        return None, None
+    repository_id = _scalar(repository.get("id"))
+    if not repository_id:
+        return None, None
+    commit = repository.get("object")
+    status = commit.get("status") if isinstance(commit, dict) else None
+    context = status.get("context") if isinstance(status, dict) else None
+    if not isinstance(context, dict):
+        return repository_id, None  # readable, and no status of ours on this SHA yet
+    return repository_id, (
+        str(context.get("state") or "").lower(),  # GraphQL enums are upper-case; REST is lower
+        str(context.get("description") or ""),
+        _parse_status_created_at(context.get("createdAt")),
+    )
+
+
+def _create_admission_status_graphql(
+    repository_id: str,
+    head_sha: str,
+    state: str,
+    description: str,
+    *,
+    repo_root: Path,
+    runner: Any,
+) -> tuple[bool, str]:
+    """``createCommitStatus`` — the REST POST's GraphQL twin, on the pool the cycle is on."""
+    if state not in _GRAPHQL_STATUS_STATES:
+        return False, f"unsupported_status_state:{state}"
+    mutation = (
+        "mutation($repo:ID!,$sha:GitObjectID!,$state:StatusState!,$ctx:String!,$desc:String!){"
+        "createCommitStatus(input:{repositoryId:$repo,sha:$sha,state:$state,context:$ctx,"
+        "description:$desc}){commitStatus{state}}}"
+    )
+    try:
+        proc = run_graphql_rate_aware(
+            [
+                "-f",
+                f"query={mutation}",
+                "-f",
+                f"repo={repository_id}",
+                "-f",
+                f"sha={head_sha}",
+                "-f",
+                f"state={state.upper()}",
+                "-f",
+                f"ctx={AUTOQUEUE_ADMISSION_CONTEXT}",
+                "-f",
+                f"desc={description}",
+            ],
+            repo_root=repo_root,
+            runner=runner,
+        )
+    except (subprocess.TimeoutExpired, OSError) as exc:
+        return False, f"graphql status write unavailable: {exc}"
+    output = (proc.stdout or proc.stderr or "").strip()
+    if proc.returncode != 0:
+        return False, output or f"graphql status write failed rc={proc.returncode}"
+    try:
+        payload = json.loads(proc.stdout or "{}")
+    except json.JSONDecodeError:
+        return False, "invalid_graphql_status_write_payload"
+    written = (
+        payload.get("data", {}).get("createCommitStatus", {}).get("commitStatus")
+        if isinstance(payload, dict)
+        else None
+    )
+    if not isinstance(written, dict):
+        return False, "invalid_graphql_status_write_payload"
+    return True, output
+
+
 def set_autoqueue_admission_status(
     decision: Decision,
     *,
@@ -2571,6 +2694,7 @@ def set_autoqueue_admission_status(
     runner: Any = None,
     now: datetime | None = None,
     force_fresh_success: bool = False,
+    route: str | None = None,
 ) -> tuple[bool, str] | None:
     """Write the server-visible autoqueue admission proof for a PR head SHA.
 
@@ -2588,9 +2712,23 @@ def set_autoqueue_admission_status(
     if not decision.pr.head_sha:
         return False, "missing_head_sha"
     state, description = status
-    current = _latest_admission_status(
-        decision.pr.head_sha, repo=repo, repo_root=repo_root, runner=runner
-    )
+    # **Stay on the pool the cycle is on.** When the listing was routed to GraphQL because
+    # REST is below its floor, an unguarded REST GET here (and the REST POST after it) fails,
+    # and the apply loop then SKIPS the queue mutation — the incident condition stalled the
+    # live autoqueue while spending N calls against the exhausted pool (codex critical on
+    # #4610). There is no REST fallback from the GraphQL branch on purpose: the precondition
+    # for a fallback (REST has budget) is exactly what the route decision said is false.
+    repository_id: str | None = None
+    if route == "graphql":
+        repository_id, current = _latest_admission_status_graphql(
+            decision.pr.head_sha, repo=repo, repo_root=repo_root, runner=runner
+        )
+        if repository_id is None:
+            return False, "graphql_admission_status_read_failed"
+    else:
+        current = _latest_admission_status(
+            decision.pr.head_sha, repo=repo, repo_root=repo_root, runner=runner
+        )
     if current is not None:
         cur_state, cur_description, cur_created = current
         if cur_state == state == "failure":
@@ -2607,6 +2745,16 @@ def set_autoqueue_admission_status(
         )
         if unchanged and fresh and not (force_fresh_success and state == "success"):
             return True, "unchanged"
+    if route == "graphql":
+        assert repository_id is not None
+        return _create_admission_status_graphql(
+            repository_id,
+            decision.pr.head_sha,
+            state,
+            description,
+            repo_root=repo_root,
+            runner=runner,
+        )
     cmd = [
         "gh",
         "api",
@@ -2689,6 +2837,7 @@ def _release_auto_arm_fail_closed_mutations(
     repo_root: Path,
     runner: Any,
     now: datetime,
+    route: str | None = None,
 ) -> list[dict[str, Any]]:
     fail_decision = _release_auto_arm_fail_closed_decision(
         decision,
@@ -2706,6 +2855,7 @@ def _release_auto_arm_fail_closed_mutations(
         repo_root=repo_root,
         runner=runner,
         now=now,
+        route=route,
     )
     if fail_status_result is not None:
         if fail_status is None:
@@ -3061,6 +3211,7 @@ def run_reconciler(
                                 repo_root=repo_root,
                                 runner=runner,
                                 now=now,
+                                route=listing_route,
                             )
                         )
                         continue
@@ -3102,6 +3253,7 @@ def run_reconciler(
                             repo_root=repo_root,
                             runner=runner,
                             now=now,
+                            route=listing_route,
                         )
                     )
                     continue
@@ -3121,6 +3273,7 @@ def run_reconciler(
                 runner=runner,
                 now=now,
                 force_fresh_success=_decision_is_release_head_guard_subject(decision),
+                route=listing_route,
             )
             if decision.action not in {
                 "queue",
@@ -3150,6 +3303,7 @@ def run_reconciler(
                                 repo_root=repo_root,
                                 runner=runner,
                                 now=now,
+                                route=listing_route,
                             )
                         )
                 continue
@@ -3211,6 +3365,7 @@ def run_reconciler(
                         repo_root=repo_root,
                         runner=runner,
                         now=now,
+                        route=listing_route,
                     )
                 )
 

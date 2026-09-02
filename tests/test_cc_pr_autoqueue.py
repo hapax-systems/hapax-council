@@ -7558,3 +7558,152 @@ def test_canon_assessor_reports_armed_for_authorized_egress_task() -> None:
     from shared.sdlc_lifecycle import assess_release_auto_arm as canon_assess
 
     assert canon_assess(_egress_armed_frontmatter()).armed is True
+
+
+# --- #4610 second round: the admission status write stays on the pool the cycle is on -------
+#
+# codex critical (dossier 2026-09-02): every apply decision called set_autoqueue_admission_status,
+# whose first act was an unguarded REST GET and whose write was a REST POST. On a cycle routed to
+# GraphQL because REST is below its floor, both failed and the apply loop skipped the queue
+# mutation — the incident condition stalled the live autoqueue while spending N calls against the
+# exhausted pool. These pin the GraphQL twin and the absence of any REST fallback from it.
+
+
+def _graphql_only_runner(
+    calls: list[list[str]],
+    *,
+    status: tuple[str, str, str] | None = None,
+    repository_id: str = "R_kgDOtest",
+    graphql_read_ok: bool = True,
+) -> Any:
+    """Serves rate_limit (REST below floor, GraphQL healthy) and GraphQL; refuses every REST call."""
+
+    def runner(cmd: list[str], **_: Any) -> subprocess.CompletedProcess:
+        calls.append(list(cmd))
+        if cmd[:4] == ["gh", "api", "-i", "rate_limit"]:
+            payload = {
+                "resources": {
+                    "core": {"remaining": 3, "reset": 1893456000},
+                    "graphql": {"remaining": 4000, "reset": 1893456000},
+                }
+            }
+            return subprocess.CompletedProcess(
+                cmd,
+                0,
+                "HTTP/2.0 200 OK\r\nX-Ratelimit-Limit: 5000\r\nX-Ratelimit-Remaining: 3\r\n"
+                "X-Ratelimit-Reset: 1893456000\r\nX-Ratelimit-Resource: core\r\n\r\n"
+                + json.dumps(payload),
+                "",
+            )
+        if cmd[:3] == ["gh", "api", "graphql"]:
+            query = next((arg for arg in cmd if arg.startswith("query=")), "")
+            if "createCommitStatus" in query:
+                return subprocess.CompletedProcess(
+                    cmd,
+                    0,
+                    json.dumps({"data": {"createCommitStatus": {"commitStatus": {"state": "SUCCESS"}}}}),
+                    "",
+                )
+            if not graphql_read_ok:
+                return subprocess.CompletedProcess(cmd, 1, "", "graphql read failed")
+            context = (
+                None
+                if status is None
+                else {"state": status[0].upper(), "description": status[1], "createdAt": status[2]}
+            )
+            payload = {
+                "data": {
+                    "repository": {
+                        "id": repository_id,
+                        "object": {"status": {"context": context}},
+                    }
+                }
+            }
+            return subprocess.CompletedProcess(cmd, 0, json.dumps(payload), "")
+        return subprocess.CompletedProcess(cmd, 1, "", "REST refused: core pool below floor")
+
+    return runner
+
+
+def _graphql_mutations(calls: list[list[str]]) -> list[list[str]]:
+    return [
+        call
+        for call in calls
+        if call[:3] == ["gh", "api", "graphql"]
+        and any(arg.startswith("query=mutation") for arg in call)
+    ]
+
+
+def _rest_status_calls(calls: list[list[str]]) -> list[list[str]]:
+    return [call for call in calls if any("/statuses" in arg for arg in call)]
+
+
+def test_admission_status_graphql_route_reads_and_writes_without_rest(tmp_path: Path) -> None:
+    decision = _admission_decision()
+    calls: list[list[str]] = []
+    result = autoqueue.set_autoqueue_admission_status(
+        decision,
+        repo="owner/repo",
+        repo_root=tmp_path,
+        runner=_graphql_only_runner(calls),
+        route="graphql",
+    )
+
+    assert result is not None and result[0], result
+    assert _rest_status_calls(calls) == [], "a GraphQL-routed cycle must not touch the REST pool"
+    mutations = _graphql_mutations(calls)
+    assert len(mutations) == 1
+    mutation = mutations[0]
+    assert "state=SUCCESS" in mutation and f"ctx={autoqueue.AUTOQUEUE_ADMISSION_CONTEXT}" in mutation
+    assert "repo=R_kgDOtest" in mutation and "sha=sha-50" in mutation
+
+
+def test_admission_status_graphql_route_is_idempotent_when_unchanged_and_fresh(
+    tmp_path: Path,
+) -> None:
+    decision = _admission_decision()
+    state, description = autoqueue._admission_status_for(decision)
+    calls: list[list[str]] = []
+    now = datetime(2026, 6, 2, 0, 5, tzinfo=UTC)
+    result = autoqueue.set_autoqueue_admission_status(
+        decision,
+        repo="owner/repo",
+        repo_root=tmp_path,
+        runner=_graphql_only_runner(calls, status=(state, description, "2026-06-02T00:00:00Z")),
+        now=now,
+        route="graphql",
+    )
+
+    assert result == (True, "unchanged")
+    assert _graphql_mutations(calls) == []
+    assert _rest_status_calls(calls) == []
+
+
+def test_admission_status_graphql_read_failure_fails_closed_without_rest_fallback(
+    tmp_path: Path,
+) -> None:
+    """No REST fallback from the GraphQL branch: REST being below floor is why we are here."""
+    decision = _admission_decision()
+    calls: list[list[str]] = []
+    result = autoqueue.set_autoqueue_admission_status(
+        decision,
+        repo="owner/repo",
+        repo_root=tmp_path,
+        runner=_graphql_only_runner(calls, graphql_read_ok=False),
+        route="graphql",
+    )
+
+    assert result == (False, "graphql_admission_status_read_failed")
+    assert _rest_status_calls(calls) == []
+    assert _graphql_mutations(calls) == []
+
+
+def test_admission_status_rest_route_still_posts_over_rest(tmp_path: Path) -> None:
+    """The REST path is untouched when the cycle was routed to REST."""
+    decision = _admission_decision()
+    runner = _FakeRunner()
+    result = autoqueue.set_autoqueue_admission_status(
+        decision, repo="owner/repo", repo_root=tmp_path, runner=runner, route="rest"
+    )
+    assert result is not None and result[0]
+    assert len(_admission_posts(runner)) == 1
