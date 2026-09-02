@@ -4558,6 +4558,18 @@ def test_admission_status_write_deferral_names_only_transport_responses() -> Non
         )
         == "github_unavailable"
     )
+    # ...and the whole 5xx class, not a list of the usual suspects (round 3).
+    for code in ("501", "505", "599"):
+        assert autoqueue._admission_status_write_deferral_class(f"HTTP {code}: upstream") == (
+            "github_unavailable"
+        )
+        assert (
+            autoqueue._admission_status_write_deferral_class(
+                f'{{"message": "x", "status": "{code}"}}'
+            )
+            == "github_unavailable"
+        )
+    assert autoqueue._admission_status_write_deferral_class("HTTP 404: Not Found") is None
     assert autoqueue._admission_status_write_deferral_class("status post failed") is None
     assert autoqueue._admission_status_write_deferral_class("") is None
     assert (

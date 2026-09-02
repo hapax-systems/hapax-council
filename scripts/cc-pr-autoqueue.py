@@ -2607,9 +2607,10 @@ def _admission_status_write_deferral_class(message: str) -> str | None:
     lowered = (message or "").lower()
     if "rate limit" in lowered or '"status": "429"' in lowered or "http 429" in lowered:
         return "github_rate_limit"
-    for code in ("500", "502", "503", "504"):
-        if f'"status": "{code}"' in lowered or f"http {code}" in lowered:
-            return "github_unavailable"
+    # Any 5xx, not a list of the usual ones (review finding on #4627, round 3): a 501 or a 599
+    # is exactly as much about the transport window as a 502.
+    if re.search(r'"status":\s*"5\d\d"|\bhttp 5\d\d\b', lowered):
+        return "github_unavailable"
     return None
 
 
