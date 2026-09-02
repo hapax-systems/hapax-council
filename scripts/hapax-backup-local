@@ -1,0 +1,176 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+# Tier 1: Daily backup to NAS restic repo (was /store, migrated 2026-05-11)
+# Scope: configs, secrets, state — everything that's hard to recreate
+# Schedule: daily at 04:00 via systemd timer
+# Runs as user (not root). Database state captured via API dumps.
+# Repo on Synology DS425+ NAS via NFS for true DR (separate physical device).
+
+REPO="/mnt/nas/backups/restic"
+export RESTIC_PASSWORD="$(pass show backups/restic-password)"
+export RESTIC_REPOSITORY="$REPO"
+
+log() { echo "[$(date -Iseconds)] $1"; }
+
+# Remove stale locks left by a prior interrupted run — a recurring exit-11 cause
+# (e.g. a backup killed mid-run, or the 2026-06-03 disk failure mid-backup).
+restic unlock 2>/dev/null || true
+
+log "Starting Tier 1 (local) backup"
+
+# Pre-flight: dump databases for consistent backup
+DUMP_DIR="${HAPAX_BACKUP_DUMP_DIR:-/store/llm-data/backup-dumps-local}"  # disk, not tmpfs: tmpfs is charged to this service's memory cgroup (MemoryHigh) and throttles the job to a crawl (measured 2026-09-02)
+rm -rf "$DUMP_DIR"
+mkdir -p "$DUMP_DIR/qdrant"
+trap 'rm -rf "$DUMP_DIR"' EXIT
+
+# PostgreSQL dump via Docker
+log "Dumping PostgreSQL..."
+# GATED 2026-08-18 (claude/infra). A failed dump must NOT be committed as a
+# successful backup. Prior form was:
+#   docker exec postgres pg_dumpall -U hapax 2>/dev/null \
+#       > "$DUMP_DIR/postgres-all.sql" || log "WARN: postgres dump failed"
+# Three defects in one line: the redirect truncated the file before the command
+# ran; 2>/dev/null discarded the reason; `|| log` defeated `set -euo pipefail`.
+# $DUMP_DIR was then handed to restic regardless, so a broken dump shipped as a
+# green backup. Audit of 32 snapshots: 21 valid, 6 zero-byte, 1 absent,
+# 4 truncated mid-COPY -- and all 11 bad ones passed every existing check,
+# because nothing ever opened the file. Gate on the artifact, not the theory.
+PG_DUMP="$DUMP_DIR/postgres-all.sql"
+PG_ERR="$DUMP_DIR/postgres-all.err"
+if ! docker exec postgres pg_dumpall -U hapax > "$PG_DUMP" 2>"$PG_ERR"; then
+    log "FATAL: pg_dumpall exited non-zero: $(tail -c 300 "$PG_ERR" 2>/dev/null)"
+    exit 1
+fi
+if ! tail -c 200 "$PG_DUMP" | grep -q "PostgreSQL database cluster dump complete"; then
+    log "FATAL: dump lacks completion terminator (truncated); size=$(stat -c%s "$PG_DUMP" 2>/dev/null)"
+    exit 1
+fi
+_pg_size=$(stat -c%s "$PG_DUMP")
+if [[ "$_pg_size" -lt 1000000000 ]]; then
+    log "FATAL: dump implausibly small: ${_pg_size} bytes (floor 1000000000)"
+    exit 1
+fi
+log "PostgreSQL dump OK: ${_pg_size} bytes, terminator present"
+
+# Qdrant snapshots via REST API
+log "Snapshotting Qdrant collections..."
+for coll in $(curl -sf http://127.0.0.1:6333/collections | jq -r '.result.collections[].name' 2>/dev/null); do
+    snap_name=$(curl -sf -X POST "http://127.0.0.1:6333/collections/${coll}/snapshots" | jq -r '.result.name' 2>/dev/null)
+    if [[ -n "$snap_name" && "$snap_name" != "null" ]]; then
+        curl -sf "http://127.0.0.1:6333/collections/${coll}/snapshots/${snap_name}" \
+            -o "$DUMP_DIR/qdrant/${coll}.snapshot" 2>/dev/null || log "WARN: qdrant snapshot failed for $coll"
+    fi
+done
+
+# n8n export (if n8n CLI available in container)
+docker exec n8n n8n export:workflow --all --output=/tmp/n8n-workflows.json 2>/dev/null && \
+    docker cp n8n:/tmp/n8n-workflows.json "$DUMP_DIR/n8n-workflows.json" 2>/dev/null || \
+    log "WARN: n8n workflow export failed"
+
+# Docker volume metadata (for DR reference — what volumes exist and their config)
+log "Capturing Docker volume metadata..."
+docker volume ls --format '{{.Name}}' > "$DUMP_DIR/docker-volumes.txt" 2>/dev/null || true
+docker volume ls -q 2>/dev/null | while read -r vol; do
+    docker volume inspect "$vol" 2>/dev/null
+done > "$DUMP_DIR/docker-volume-inspect.json" 2>/dev/null || true
+
+# Package lists
+pacman -Qe > "$DUMP_DIR/pacman-explicit.txt" 2>/dev/null || true
+pacman -Qm > "$DUMP_DIR/pacman-aur.txt" 2>/dev/null || true
+flatpak list --app --columns=application,origin > "$DUMP_DIR/flatpak-apps.txt" 2>/dev/null || true
+
+# Git dirty state for all project repos
+log "Capturing git repo state..."
+for repo in ~/projects/*/; do
+    if [[ -d "$repo/.git" ]]; then
+        name=$(basename "$repo")
+        git -C "$repo" stash list > "$DUMP_DIR/git-stash-${name}.txt" 2>/dev/null || true
+        git -C "$repo" diff > "$DUMP_DIR/git-diff-${name}.patch" 2>/dev/null || true
+        git -C "$repo" diff --cached > "$DUMP_DIR/git-staged-${name}.patch" 2>/dev/null || true
+        git -C "$repo" log --oneline -5 > "$DUMP_DIR/git-log-${name}.txt" 2>/dev/null || true
+    fi
+done
+
+log "Running restic backup..."
+restic backup \
+    --verbose \
+    --tag "tier1-local" \
+    "$DUMP_DIR" \
+    "$HOME/.config/fish/" \
+    "$HOME/.gitconfig" \
+    "$HOME/.config/hypr/" \
+    "$HOME/.config/waybar/" \
+    "$HOME/.config/foot/" \
+    "$HOME/.config/fuzzel/" \
+    "$HOME/.config/mako/" \
+    "$HOME/.config/kanshi/" \
+    "$HOME/.config/starship.toml" \
+    "$HOME/.config/environment.d/" \
+    "$HOME/.config/systemd/user/" \
+    "$HOME/.config/autostart/" \
+    "$HOME/.config/aichat/" \
+    "$HOME/.config/mods/" \
+    "$HOME/.config/gtk-3.0/" \
+    "$HOME/.config/gtk-4.0/" \
+    "$HOME/.config/qt6ct/" \
+    "$HOME/.config/rclone/" \
+    "$HOME/.config/hapax-daimonion/" \
+    "$HOME/.config/wireplumber/" \
+    "$HOME/.config/pipewire/" \
+    "$HOME/.local/state/wireplumber/" \
+    "$HOME/.config/gh/" \
+    "$HOME/.config/atuin/" \
+    "$HOME/.config/fabric/" \
+    "$HOME/.claude/" \
+    "$HOME/.local/bin/" \
+    "$HOME/.local/share/atuin/" \
+    "$HOME/.local/share/hapax-daimonion/" \
+    "$HOME/.local/share/keyrings/" \
+    "$HOME/models/" \
+    "$HOME/.gnupg/" \
+    "$HOME/.password-store/" \
+    "$HOME/.ssh/" \
+    "$HOME/.local/share/fonts/" \
+    "$HOME/llm-stack/" \
+    "$HOME/Documents/Personal/" \
+    "$HOME/RESOURCE-CONSTITUTION-2026-06-08.md" \
+    "$HOME/resource-constitution.yaml" \
+    /etc/fstab \
+    /etc/docker/daemon.json \
+    /etc/bluetooth/main.conf \
+    /etc/udev/rules.d/ \
+    /etc/sysctl.d/ \
+    /etc/NetworkManager/conf.d/ \
+    /etc/systemd/journald.conf.d/ \
+    /etc/modprobe.d/ \
+    --exclude="*.pyc" \
+    --exclude="__pycache__" \
+    --exclude=".venv" \
+    --exclude="node_modules" \
+    --exclude=".cache" \
+    --exclude="*.sock" \
+    --exclude="*.lock" \
+    --exclude="llm-stack/comfyui"
+
+log "Applying retention policy (7 daily, 4 weekly, 3 monthly)..."
+# --group-by host,tags, NOT the default host,paths: every change to the path
+# list above would otherwise mint a fresh retention group with its own full
+# allowance and freeze the previous one forever. Measured 2026-08-18: 6 groups,
+# 33 snapshots, 0 removed, under a policy that reads as ~14.
+# --keep-within 120d holds the pre-existing backlog so landing this fix removes
+# nothing today; it ages out gradually instead. Purging it sooner is an operator
+# decision, not a side effect of correcting the grouping.
+restic forget \
+    --group-by host,tags \
+    --keep-within 120d \
+    --keep-daily 7 \
+    --keep-weekly 4 \
+    --keep-monthly 3 \
+    --prune
+
+log "Tier 1 backup complete"
+restic snapshots --latest 1
+
+notify-send -u low "Backup" "Tier 1 (local) backup complete" 2>/dev/null || true

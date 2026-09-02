@@ -10,7 +10,10 @@ Tier 1 local coverage:
 
 - Timer: `hapax-backup-local.timer`
 - Service: `hapax-backup-local.service`
-- Script: `$HOME/projects/distro-work/hapax-backup-local.sh`
+- Script: `scripts/hapax-backup-local` (source-controlled here since 2026-09-02; the former
+  `distro-work` repository is archived and read-only — its three unpushed backup fixes, including
+  the tmpfs-to-disk dump directory change, were carried over with the scripts; `hapax-backup-remote`
+  and the DR restore script `hapax-cachyos-restore` moved with it)
 - Restic repository: `/mnt/nas/backups/restic`
 - Staging: `/tmp/hapax-backup-dumps`
 

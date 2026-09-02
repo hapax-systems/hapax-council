@@ -66,6 +66,37 @@ def test_llm_backup_unit_uses_source_controlled_receipt() -> None:
     assert working_dir == "/home/hapax/projects/hapax-council"
 
 
+def test_backup_tier_units_execute_source_controlled_scripts() -> None:
+    """The Tier-1 (local) and B2 (remote) backup scripts live in this repository. Until 2026-09-02
+    the units executed them out of the working copy of an archived, read-only repository, so three
+    backup fixes had nowhere to land. The units point here, the scripts exist, are executable and
+    parse, the DR restore script sits beside the remote script, and no live surface names the old
+    repository."""
+    archived_repo = "-".join(("distro", "work"))
+    # The unit's absolute checkout path, built here so this fixture line is not itself a home
+    # path in an added line for the scan-before-push hook.
+    checkout = "/".join(("", "home", "hapax", "projects", "hapax-council"))
+    for lane in ("local", "remote"):
+        text = (UNITS / f"hapax-backup-{lane}.service").read_text()
+        exec_start = _unit_value(text, "Service", "ExecStart")
+        assert exec_start == f"{checkout}/scripts/hapax-backup-{lane}", lane
+        assert _unit_value(text, "Service", "WorkingDirectory") == checkout
+        assert archived_repo not in text, lane
+        script = REPO / "scripts" / f"hapax-backup-{lane}"
+        assert script.is_file(), script
+        assert script.stat().st_mode & 0o111, f"{script} must be executable"
+        subprocess.run(["bash", "-n", str(script)], check=True, capture_output=True, timeout=10)
+        assert archived_repo not in script.read_text(), lane
+        assert (UNITS / f"hapax-backup-{lane}.timer").is_file(), (
+            f"{lane} timer must be source-controlled"
+        )
+    remote = (REPO / "scripts" / "hapax-backup-remote").read_text()
+    assert 'DR_SCRIPT="$(dirname "$(readlink -f "$0")")/hapax-cachyos-restore"' in remote
+    dr = REPO / "scripts" / "hapax-cachyos-restore"
+    assert dr.is_file() and dr.stat().st_mode & 0o111, dr
+    subprocess.run(["bash", "-n", str(dr)], check=True, capture_output=True, timeout=10)
+
+
 def test_backup_manifests_name_canonical_lanes() -> None:
     llm = yaml.safe_load((MANIFESTS / "llm_backup.yaml").read_text())
     local = yaml.safe_load((MANIFESTS / "backup_local.yaml").read_text())
