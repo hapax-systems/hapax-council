@@ -2068,6 +2068,26 @@ def _quota_ledger_fresh_for(
     payload = json.loads(QUOTA_LEDGER.read_text(encoding="utf-8"))
     payload["ledger_id"] = "quota-spend-ledger-test-live"
     payload["captured_at"] = captured_at
+    # The ledger's own validator (subscription_quota_state_for_route) is what the consumer now
+    # trusts, so the fixture must satisfy it: telemetry-writer provenance, the expected provider
+    # for receipt-bounded routes, and an admission evidence reference in the writer's own shape.
+    payload["generated_from"] = list(
+        dict.fromkeys([*payload.get("generated_from", []), "scripts/hapax-quota-telemetry-writer"])
+    )
+
+    def _refs(route_id: str, state: str) -> list[str]:
+        if state != "fresh":
+            return [f"test:ledger:{route_id}:{state}"]
+        # The validator's witness pattern requires a `-YYYYMMDDtHHMMSSz` stamp on both the receipt
+        # label and the witness, exactly as the admission writer stamps them.
+        stamp = captured_at.replace("-", "").replace(":", "").lower()
+        label = f"claude-subscription-quota-admission-{route_id.replace('.', '-')}-{stamp}.yaml"
+        return [
+            f"relay-receipt:{label}:witness:claude-subscription-headroom-observed-{stamp}"
+            f":observation:subscription_quota_headroom_observed"
+            f":observed_at:{captured_at}:fresh_until:{fresh_until}:account-live-quota:observed"
+        ]
+
     payload["quota_snapshots"] = [
         {
             "quota_snapshot_schema": 1,
@@ -2075,10 +2095,10 @@ def _quota_ledger_fresh_for(
             "captured_at": captured_at,
             "fresh_until": fresh_until if state == "fresh" else None,
             "route_id": route_id,
-            "provider": "anthropic-claude-code-subscription",
+            "provider": "anthropic-claude-subscription",
             "capacity_pool": "subscription_quota",
             "subscription_quota_state": state,
-            "evidence_refs": [f"test:ledger:{route_id}:{state}"],
+            "evidence_refs": _refs(route_id, state),
             "operator_visible_reason": f"test fixture: {route_id} {state}",
         }
         for route_id, state in routes.items()
@@ -2237,9 +2257,12 @@ class TestQuotaIsPerRouteAndLedgerBacked:
         refs = list(result.evidence_refs)
         assert "platform-capability-registry:claude.headless.full:quota:observed" in refs
         assert "platform-capability-registry:claude.headless.opus:quota:observed" not in refs
-        assert any(
-            ref.startswith("quota-spend-ledger:quota-test-claude-headless-full:") for ref in refs
-        )
+        # The references are the ledger validator's (redacted) plus a bare presence marker for
+        # the relay receipt — never the raw receipt's path or its self-declared evidence_ref.
+        assert "local:claude:quota-admission-receipt:claude.headless.full:present" in refs
+        assert any(ref.startswith("relay-receipt:") for ref in refs)
+        raw_evidence_ref = "claude-subscription-headroom-observed-20260901t231017z"  # receipt's own
+        assert not any(ref.startswith("local:~") or raw_evidence_ref in ref for ref in refs)
 
     def test_a_receipt_the_ledger_does_not_confirm_is_not_observed(self, tmp_path: Path) -> None:
         ledger = _quota_ledger_fresh_for(tmp_path, {"claude.headless.full": "exhausted"})
@@ -2276,6 +2299,18 @@ class TestQuotaIsPerRouteAndLedgerBacked:
         _quota_receipt(tmp_path / "claude-quota-admission.yaml", stale_after_seconds=10**9)
         result = module["observe_quota"]("claude", [_Route("claude.headless.full")], now=self.NOW)
         assert result.status.value == "unobservable"
+
+    def test_a_corrupt_receipt_is_rejected_without_aborting_the_refresh(
+        self, tmp_path: Path
+    ) -> None:
+        """One receipt with invalid UTF-8 used to raise UnicodeDecodeError out of the observer
+        and crash the timer; it is now rejected fail-closed while a good sibling still counts."""
+        ledger = _quota_ledger_fresh_for(tmp_path, {"claude.headless.full": "fresh"})
+        module = self._module(tmp_path, ledger)
+        (tmp_path / "corrupt-quota-admission.yaml").write_bytes(b"route_id: \xff\xfe\n")
+        _quota_receipt(tmp_path / "claude-quota-admission.yaml")
+        result = module["observe_quota"]("claude", [_Route("claude.headless.full")], now=self.NOW)
+        assert result.status.value == "observed"
 
     def test_observed_stale_after_is_bounded_by_the_ledger_freshness(self, tmp_path: Path) -> None:
         # fixture ledger: fresh_until 23:30Z; now 23:15Z -> 900 s remain, below the receipt's TTL

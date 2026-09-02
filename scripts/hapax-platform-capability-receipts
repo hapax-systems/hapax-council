@@ -48,6 +48,7 @@ from shared.quota_spend_ledger import (  # noqa: E402
     QuotaSpendLedgerError,
     SubscriptionQuotaState,
     load_quota_spend_ledger,
+    subscription_quota_state_for_route,
 )
 
 BINARY_BY_PLATFORM = {
@@ -502,31 +503,37 @@ QUOTA_RECEIPT_MAX_STALE_SECONDS = 3600
 QUOTA_RECEIPT_FUTURE_SKEW_SECONDS = 60
 
 
-def _ledger_fresh_routes(*, now: datetime) -> tuple[dict[str, tuple[str, datetime, tuple[str, ...]]], bool]:
-    """Routes the live ledger currently reports as ``fresh``: route_id -> (snapshot_id, fresh_until, refs).
+def _ledger_fresh_routes(
+    route_ids: set[str], *, now: datetime
+) -> tuple[dict[str, tuple[tuple[str, ...], datetime | None]], bool]:
+    """Routes the live ledger's own fail-closed validator reports FRESH: route_id -> (refs, bound).
 
-    The second value is False when the ledger is missing or invalid — the honest state is then
-    ``quota_telemetry_unknown``, never a guess from raw receipts alone.
+    The state comes from ``subscription_quota_state_for_route`` — the ledger's validator, which
+    enforces capacity pool, expected provider, telemetry-writer provenance, sanitised admission
+    evidence and the PAYG spend gate — never from a snapshot's raw ``subscription_quota_state``
+    (review finding on #4616). ``refs`` are the validator's redacted evidence references. ``bound``
+    is the earliest ``fresh_until`` among the route's subscription snapshots, used only to cap the
+    receipt's stale_after. The second value is False when the ledger is missing or invalid — the
+    honest state is then ``quota_telemetry_unknown``, never a guess from raw receipts alone.
     """
     try:
         ledger = load_quota_spend_ledger(QUOTA_LEDGER_LIVE)
     except (OSError, ValueError, QuotaSpendLedgerError):
         return {}, False
-    fresh: dict[str, tuple[str, datetime, tuple[str, ...]]] = {}
-    for snapshot in ledger.quota_snapshots:
-        if snapshot.subscription_quota_state is not SubscriptionQuotaState.FRESH:
+    fresh: dict[str, tuple[tuple[str, ...], datetime | None]] = {}
+    for route_id in sorted(route_ids):
+        try:
+            state, refs = subscription_quota_state_for_route(ledger, route_id, now=now)
+        except (ValueError, QuotaSpendLedgerError):
             continue
-        if snapshot.fresh_until is None or snapshot.fresh_until <= now:
+        if state is not SubscriptionQuotaState.FRESH:
             continue
-        if snapshot.captured_at > now:
-            continue
-        current = fresh.get(snapshot.route_id)
-        if current is None or snapshot.fresh_until > current[1]:
-            fresh[snapshot.route_id] = (
-                snapshot.snapshot_id,
-                snapshot.fresh_until,
-                tuple(snapshot.evidence_refs),
-            )
+        bounds = [
+            snapshot.fresh_until
+            for snapshot in ledger.quota_snapshots
+            if snapshot.route_id == route_id and snapshot.fresh_until is not None
+        ]
+        fresh[route_id] = (tuple(refs), min(bounds) if bounds else None)
     return fresh, True
 
 
@@ -542,7 +549,9 @@ def _fresh_quota_receipt(
     """
     try:
         doc = yaml.safe_load(path.read_text(encoding="utf-8"))
-    except (OSError, yaml.YAMLError):
+    except (OSError, ValueError, yaml.YAMLError):
+        # ValueError covers UnicodeDecodeError: one corrupt receipt is rejected, it does not
+        # abort the refresh (review finding on #4616).
         return None
     if not isinstance(doc, dict) or doc.get("route_id") not in route_ids:
         return None
@@ -615,8 +624,8 @@ def observe_quota(
             current = best_by_route.get(route_id)
             if current is None or observed > current[0]:
                 best_by_route[route_id] = (observed, doc, path)
-    ledger_fresh, ledger_readable = _ledger_fresh_routes(now=now)
-    # Observed only where the receipt AND the validated ledger snapshot agree on the route.
+    ledger_fresh, ledger_readable = _ledger_fresh_routes(route_ids, now=now)
+    # Observed only where a fresh relay receipt AND the ledger's validator agree on the route.
     observed_routes = sorted(route_id for route_id in best_by_route if route_id in ledger_fresh)
     if not observed_routes:
         # No fresh receipt for any route: the producer wrote nothing — receipt absent. Receipts
@@ -640,23 +649,26 @@ def observe_quota(
         )
     evidence_refs: list[str] = []
     observed_at = min(best_by_route[route_id][0] for route_id in observed_routes)
-    stale_seconds = min(
-        min(
-            int(best_by_route[route_id][1]["stale_after_seconds"]),
-            max(1, int((ledger_fresh[route_id][1] - now).total_seconds())),
-        )
-        for route_id in observed_routes
-    )
+    stale_candidates: list[int] = []
     for route_id in observed_routes:
-        _observed, doc, path = best_by_route[route_id]
-        snapshot_id, _fresh_until, _refs = ledger_fresh[route_id]
+        stale_candidates.append(int(best_by_route[route_id][1]["stale_after_seconds"]))
+        bound = ledger_fresh[route_id][1]
+        if bound is not None:
+            stale_candidates.append(max(1, int((bound - now).total_seconds())))
+    stale_seconds = min(stale_candidates)
+    for route_id in observed_routes:
+        # Nothing from the raw receipt is copied into the platform receipt (review finding on
+        # #4616): the ledger's validator already vouched for the route and its references are
+        # redacted; the relay receipt contributes only the fact that it exists and is fresh.
+        validator_refs, _bound = ledger_fresh[route_id]
+        evidence_refs.extend(validator_refs)
         evidence_refs.extend(
             [
-                f"local:{display_path(path)}:quota-admission:{doc.get('evidence_ref', 'unnamed')}",
-                f"quota-spend-ledger:{snapshot_id}:{route_id}:fresh",
+                f"local:{platform}:quota-admission-receipt:{route_id}:present",
                 f"platform-capability-registry:{route_id}:quota:observed",
             ]
         )
+    evidence_refs = list(dict.fromkeys(evidence_refs))
     return surface_evidence(
         status=EvidenceStatus.OBSERVED,
         source="local_receipt_probe",
@@ -830,14 +842,14 @@ def known_unknowns_for(platform: str) -> list[str]:
     elif platform == "glmcp":
         unknowns.extend(
             [
-                "GLMCP quota freshness is admitted by short-lived quota-spend-ledger receipts; this local receipt only checks wrapper/config/docs/resource surfaces.",
+                "GLMCP quota freshness is admitted by short-lived quota-spend-ledger receipts; this local receipt reports quota observed for a route only when a fresh relay admission receipt AND the ledger's validator both vouch for that route, and checks wrapper/config/docs/resource surfaces otherwise.",
                 "GLMCP receipt refresh may read the pass-backed secret to verify wrapper availability; it records only redacted metadata and never persists the secret value.",
             ]
         )
     elif platform == "codex":
         unknowns.insert(
             0,
-            "Account-live subscription quota is not exposed by the local receipt probe.",
+            "Account-live subscription quota is observed by this receipt only when a fresh relay admission receipt AND a fresh validated quota-spend-ledger snapshot both name a route; it is unobservable otherwise, never assumed.",
         )
         unknowns.append(
             "Codex exec-auth probe runs a bounded saved-login codex exec sentinel on the effective dispatch host; it never injects or persists bearer tokens."
@@ -845,7 +857,7 @@ def known_unknowns_for(platform: str) -> list[str]:
     else:
         unknowns.insert(
             0,
-            "Account-live subscription quota is not exposed by the local receipt probe.",
+            "Account-live subscription quota is observed by this receipt only when a fresh relay admission receipt AND a fresh validated quota-spend-ledger snapshot both name a route; it is unobservable otherwise, never assumed.",
         )
         unknowns.append(
             "Receipt command records config paths and existence only; it never reads secret values."
