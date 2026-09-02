@@ -232,6 +232,57 @@ class TestIdempotency:
         assert "PR #200 is a different PR" in result.stderr
         assert "Next action:" in result.stderr
 
+    def test_same_number_in_another_repository_is_not_the_same_pr(self, tmp_path: Path) -> None:
+        """PR numbers are per repository (review finding on #4613, round 3).
+
+        A row bound to #100 in hapax-spine must not be rebound to #100 in hapax-council: the
+        number-only guard let the link fall through and then replaced ``pr_repo`` silently, which
+        is the same-numbered cross-repository confusion that closed the wrong task twice in August.
+        """
+        _vault, note = _make_vault(tmp_path, task_id="test-001", pr="100", status="claimed")
+        note.write_text(
+            note.read_text(encoding="utf-8").replace(
+                "pr: 100\n", "pr: 100\npr_repo: ryanklee/hapax-spine\n", 1
+            ),
+            encoding="utf-8",
+        )
+        _write_claim(tmp_path, "beta", "test-001")
+        result = _run_hook(
+            bash_cmd="gh pr create",
+            bash_output="https://github.com/ryanklee/hapax-council/pull/100",
+            home=tmp_path,
+        )
+        assert result.returncode == 0
+        text = note.read_text(encoding="utf-8")
+        assert "pr: 100" in text
+        assert "pr_repo: ryanklee/hapax-spine" in text
+        assert "hapax-council" not in text
+        assert "status: claimed" in text
+        assert "REFUSING to overwrite 'test-001-test-task'" in result.stderr
+        assert "PR #100 in ryanklee/hapax-spine" in result.stderr
+        assert "PR #100 in ryanklee/hapax-council" in result.stderr
+        assert "same number" in result.stderr
+        assert "Next action:" in result.stderr
+
+    def test_same_number_in_the_same_repository_completes_the_link(self, tmp_path: Path) -> None:
+        """The control for the guard above: the same PR in the same repository is not a conflict."""
+        _vault, note = _make_vault(tmp_path, task_id="test-001", pr="100", status="claimed")
+        note.write_text(
+            note.read_text(encoding="utf-8").replace(
+                "pr: 100\n", "pr: 100\npr_repo: RyanKlee/Hapax-Council\n", 1
+            ),
+            encoding="utf-8",
+        )
+        _write_claim(tmp_path, "beta", "test-001")
+        result = _run_hook(
+            bash_cmd="gh pr create",
+            bash_output="https://github.com/ryanklee/hapax-council/pull/100",
+            home=tmp_path,
+        )
+        assert result.returncode == 0
+        assert "REFUSING" not in result.stderr
+        assert "status: pr_open" in note.read_text(encoding="utf-8")
+
     def test_refuses_a_pr_another_active_task_already_declares(self, tmp_path: Path) -> None:
         """A PR must not be bound to two tasks. Measured defect, three occurrences on one row.
 

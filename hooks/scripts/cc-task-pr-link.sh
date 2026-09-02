@@ -317,6 +317,27 @@ if m:
                 file=sys.stderr,
             )
             sys.exit(0)
+        # Same number is not the same PR: numbers are per repository, and this estate has closed
+        # the wrong task on a same-numbered council PR twice (review finding on #4613, round 3).
+        # A row that already declares #N in repository A must not be rebound to #N in repository B.
+        rm = re.search(r"^pr_repo:\s*(.*)$", text, flags=re.MULTILINE)
+        existing_repo = rm.group(1).strip().strip("\"'") if rm else ""
+
+        def _norm_repo_value(value: str) -> str:
+            cleaned = value.strip().strip("\"'").strip("/")
+            if cleaned.endswith(".git"):
+                cleaned = cleaned[: -len(".git")]
+            return cleaned.lower()
+
+        if existing_repo and _norm_repo_value(existing_repo) != _norm_repo_value(pr_repo):
+            print(
+                f"cc-task-pr-link: REFUSING to overwrite '{note_path.stem}' — it already declares "
+                f"PR #{existing} in {existing_repo}, and PR #{pr_number} in {pr_repo} is a "
+                f"different PR with the same number. Next action: mint a row for "
+                f"{pr_repo}#{pr_number}; this row keeps {existing_repo}#{existing}.",
+                file=sys.stderr,
+            )
+            sys.exit(0)
 
 # --- THE RELATION TEST. There was none, and its absence is a measured, recurring defect. ---
 #
