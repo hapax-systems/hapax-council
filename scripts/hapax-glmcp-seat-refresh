@@ -31,8 +31,8 @@ if [[ -f "$RCPT" ]]; then
   fi
 fi
 
-# 1. round-trip: a fixed one-line blind-review probe; output is counted, never stored. Two
-#    attempts 10 s apart: a single transient provider error (measured 2026-09-02 15:36, exit 1 and
+# 1. round-trip: a fixed one-line blind-review probe; output is counted, never stored. Three
+#    attempts 15 s apart: transient provider errors (measured 2026-09-02 15:36 and 16:03 — exit 1,
 #    0 bytes, then exit 0 a minute later) must not leave the seat to lapse.
 rc=1; bytes=0
 ERR="$(mktemp -p "${TMPDIR:-/tmp}" glm-seat-err.XXXXXX)"
