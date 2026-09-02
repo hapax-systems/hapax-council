@@ -427,6 +427,7 @@ class _FakeRunner:
         self.fail_queue_refs = False
         self.calls: list[list[str]] = []
         self.fail_status_posts = False
+        self.status_post_failure_message = "status post failed"
         # head_sha -> existing commit statuses (most-recent-first), for the G3
         # read-before-write idempotency check in set_autoqueue_admission_status.
         self.head_statuses: dict[str, list[dict[str, Any]]] = {}
@@ -620,7 +621,7 @@ class _FakeRunner:
             return subprocess.CompletedProcess(cmd, 0, '{"data":{"dequeuePullRequest":{}}}', "")
         if cmd[:4] == ["gh", "api", "-X", "POST"] and "/statuses/" in cmd[4]:
             if self.fail_status_posts:
-                return subprocess.CompletedProcess(cmd, 1, "", "status post failed")
+                return subprocess.CompletedProcess(cmd, 1, "", self.status_post_failure_message)
             return subprocess.CompletedProcess(cmd, 0, '{"state":"ok"}', "")
         if cmd[:3] == ["gh", "api", "graphql"]:
             nodes = [{"pullRequest": {"number": number}} for number in sorted(self.queued_prs)]
@@ -4529,6 +4530,94 @@ def test_already_auto_merge_auto_arm_failure_disables_auto_merge_and_overwrites_
         for item in report["mutations"]
     )
     assert ["gh", "pr", "merge", "714", "--repo", "owner/repo", "--disable-auto"] in runner.calls
+
+
+def test_admission_status_write_deferral_names_only_transport_responses() -> None:
+    """A rate-limit or 5xx body is about the window, not the PR; anything else is not deferrable."""
+    rate_limited = (
+        '{"message": "API rate limit exceeded for user ID 418460. If you reach out to GitHub '
+        'Support for help, please include the request ID ...", "status": "403"}'
+    )
+    assert autoqueue._admission_status_write_deferral_class(rate_limited) == "github_rate_limit"
+    assert (
+        autoqueue._admission_status_write_deferral_class(
+            '{"message": "You have exceeded a secondary rate limit.", "status": "403"}'
+        )
+        == "github_rate_limit"
+    )
+    assert autoqueue._admission_status_write_deferral_class("HTTP 503: Service Unavailable") == (
+        "github_unavailable"
+    )
+    assert autoqueue._admission_status_write_deferral_class("status post failed") is None
+    assert autoqueue._admission_status_write_deferral_class("") is None
+    assert (
+        autoqueue._admission_status_write_deferral_class(
+            '{"message": "Validation Failed", "status": "422"}'
+        )
+        is None
+    )
+
+
+def test_already_queued_status_write_rate_limited_holds_instead_of_dequeuing(
+    tmp_path: Path,
+) -> None:
+    """Measured 2026-09-02 22:33Z: REST `core` hit its limit, the reconciler could not re-write
+    the admission status it had written a cycle earlier, and it dequeued #4616 (then #4615) on
+    `admission_status_write_failed:API rate limit exceeded`. The admission on the head still
+    stood; the write succeeds at the reset with nothing changed. A transport response must hold
+    the queue state, never mutate it."""
+    vault = _make_vault(tmp_path)
+    note = _write_task(
+        vault,
+        task_id="queued-status-write-rate-limited",
+        status="pr_open",
+        pr=718,
+        extra_frontmatter={
+            **_eligible_arm_extra(),
+            "risk_flags": {
+                "governance_sensitive": True,
+            },
+        },
+    )
+    _write_governance_review_dossier(vault, "queued-status-write-rate-limited", 718)
+    runner = _FakeRunner()
+    runner.queued_prs = {718}
+    runner.open_prs = [_pr(718, checks=_governance_mitigation_checks())]
+    runner.fail_status_posts = True
+    runner.status_post_failure_message = (
+        '{"message": "API rate limit exceeded for user ID 418460. If you reach out to GitHub '
+        "Support for help, please include the request ID A814:2D863E:31C7568:A2C7C50:6A98A43D "
+        'and timestamp 2026-09-02 22:33:33 UTC.", "status": "403"}'
+    )
+
+    report = autoqueue.run_reconciler(
+        repo="owner/repo",
+        repo_root=tmp_path,
+        vault_root=vault,
+        apply=True,
+        runner=runner,
+        auto_arm_ledger_path=tmp_path / "ledger.jsonl",
+    )
+
+    assert "release_authorized: true" in note.read_text(encoding="utf-8")
+    hold = next(
+        item for item in report["mutations"] if item["pr"] == 718 and item["action"] == "hold"
+    )
+    assert hold["ok"] is True
+    assert hold["reasons"] == ["admission_status_write_deferred:github_rate_limit"]
+    assert not any(
+        item["pr"] == 718 and item["action"] == "dequeue" for item in report["mutations"]
+    )
+    assert not any(
+        item["pr"] == 718
+        and item["action"] == "set_admission_status"
+        and item.get("status_state") == "failure"
+        for item in report["mutations"]
+    )
+    assert not any(
+        call[:3] == ["gh", "api", "graphql"] and any("dequeuePullRequest" in part for part in call)
+        for call in runner.calls
+    )
 
 
 def test_already_queued_status_write_failure_still_dequeues(
