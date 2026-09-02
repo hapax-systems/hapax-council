@@ -147,6 +147,30 @@ def test_scripts_dir_carries_no_other_git_hook_name():
     assert present == {"pre-push"}, present
 
 
+def test_pre_existing_finding_in_a_changed_file_is_not_new_exposure(tmp_path):
+    """A keyword-shaped line the remote already has must not make an unrelated edit unpushable;
+    a NEW keyword-shaped line in the same file must. Measured 2026-09-02: the first real push
+    through this hook was refused for a test fixture that has been on main for weeks."""
+    repo = _repo(tmp_path)
+    # The keyword names are assembled at runtime so THIS file carries no keyword-shaped line
+    # (the hook scans its own pull request's diff; the fixture must exist only inside tmp_path).
+    keyword_a = "OPENAI_" + "API_" + "KEY"
+    keyword_b = "CODEX_" + "API_" + "KEY"
+    fixture = f'env["{keyword_a}"] = "test-key-value-not-real"\n'
+    base = _commit(repo, "fixture.py", fixture + "x = 1\n")
+    # Unrelated edit below the pre-existing line: passes.
+    tip = _commit(repo, "fixture.py", fixture + "x = 2\n")
+    r = _run(repo, "origin", f"refs/heads/main {tip} refs/heads/main {base}\n")
+    assert r.returncode == 0, r.stderr
+    # A second keyword-shaped line ADDED: refused, and the file is named.
+    tip2 = _commit(
+        repo, "fixture.py", fixture + "x = 2\n" + f'env["{keyword_b}"] = "another-test-value"\n'
+    )
+    r2 = _run(repo, "origin", f"refs/heads/main {tip2} refs/heads/main {tip}\n")
+    assert r2.returncode == 1, r2.stderr
+    assert "secret-shaped: fixture.py" in r2.stderr
+
+
 def test_deletion_pushes_nothing_and_passes(tmp_path):
     repo = _repo(tmp_path)
     base = _git(repo, "rev-parse", "HEAD")
