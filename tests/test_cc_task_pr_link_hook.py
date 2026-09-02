@@ -286,8 +286,12 @@ class TestIdempotency:
         assert "status: pr_open" in note.read_text(encoding="utf-8")
 
     @pytest.mark.parametrize("scalar", ['"4605"', "'4605'", "4605 # owns it", '"4605" # owner'])
+    @pytest.mark.parametrize(
+        "repo_scalar",
+        ["ryanklee/hapax-council", "ryanklee/hapax-council # owner", '"ryanklee/hapax-council"'],
+    )
     def test_quoted_or_commented_pr_scalars_are_the_same_link(
-        self, tmp_path: Path, scalar: str
+        self, tmp_path: Path, scalar: str, repo_scalar: str
     ) -> None:
         """`pr: "4605"` and `pr: 4605 # owner` declare #4605 (review finding on #4613, round 4):
         comparing the raw text let valid YAML forms bypass the duplicate-link refusal."""
@@ -296,7 +300,7 @@ class TestIdempotency:
         owner.write_text(
             '---\ntype: cc-task\ntask_id: velocity-fix\ntitle: "Owns the PR"\n'
             "status: pr_open\nassigned_to: beta\npriority: normal\n"
-            f"branch: fix/velocity\npr: {scalar}\npr_repo: ryanklee/hapax-council\n"
+            f"branch: fix/velocity\npr: {scalar}\npr_repo: {repo_scalar}\n"
             "created_at: 2026-04-26T00:00:00Z\nupdated_at: 2026-04-26T00:00:00Z\n---\n\n"
             "# Owns the PR\n\n## Session log\n",
             encoding="utf-8",

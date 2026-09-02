@@ -336,7 +336,7 @@ if m:
         existing_repo = rm.group(1).strip().strip("\"'") if rm else ""
 
         def _norm_repo_value(value: str) -> str:
-            cleaned = value.strip().strip("\"'").strip("/")
+            cleaned = value.split("#", 1)[0].strip().strip("\"'").strip("/")
             if cleaned.endswith(".git"):
                 cleaned = cleaned[: -len(".git")]
             return cleaned.lower()
@@ -395,7 +395,7 @@ for other in sorted(vault_active.glob("*.md")):
         continue
 
     def _norm_repo(value: str) -> str:
-        cleaned = value.strip().strip("\"'").strip("/")
+        cleaned = value.split("#", 1)[0].strip().strip("\"'").strip("/")
         if cleaned.endswith(".git"):
             cleaned = cleaned[: -len(".git")]
         return cleaned.lower()  # GitHub owner/name are case-insensitive
