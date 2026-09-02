@@ -1,18 +1,20 @@
 [Unit]
-Description=Keep the GLM review seat admitted: one sanctioned reviewer round-trip when the passive admission receipt is older than 10 minutes (it lives 15)
+Description=Keep the GLM review seat admitted: one sanctioned reviewer round-trip when the passive admission receipt is older than 5 minutes (it lives 15)
 # The receipt chain: reviewer round-trip (exit 0) -> witness yaml (no prompt/output/secret persisted)
 # -> hapax-glmcp-quota-admission observe-success -> hapax-quota-telemetry-writer -> live ledger the
 # review dispatcher and the autoqueue read. Measured 2026-09-02: with no refresher the seat had been
 # expired since 4 August and every review dossier was refused as "blocked route family seated".
-# The script lives in the council checkout; the host runs it from there.
+# The script runs from the governed source-activation worktree (main), never a mutable checkout.
 
 [Service]
 Type=oneshot
-ExecStart=/home/hapax/projects/hapax-council/scripts/hapax-glmcp-seat-refresh
+ExecStart=%h/.cache/hapax/source-activation/worktree/scripts/hapax-glmcp-seat-refresh
 Environment=HOME=/home/hapax
 Environment=PATH=/home/hapax/.local/bin:/usr/local/bin:/usr/bin:/bin
 Environment=GNUPGHOME=/home/hapax/.gnupg
 Environment=PASSWORD_STORE_DIR=/home/hapax/.password-store
-TimeoutStartSec=240
+# Three attempts of up to 180 s plus two 15 s pauses, then the admission and telemetry writers:
+# the budget the script can spend is ~600 s, so the unit must not kill it earlier than that.
+TimeoutStartSec=660
 MemoryMax=512M
 SyslogIdentifier=hapax-glmcp-seat-refresh

@@ -1,5 +1,5 @@
 [Unit]
-Description=Every 5 minutes: keep the GLM review seat admitted (the service skips when the receipt is under 10 minutes old)
+Description=Every 5 minutes: keep the GLM review seat admitted (the service skips when the receipt is under 5 minutes older 10 minutes old)
 
 [Timer]
 OnBootSec=2min
