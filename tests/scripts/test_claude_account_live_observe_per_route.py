@@ -179,6 +179,56 @@ class TestEachRouteUsesItsOwnFamily:
         assert by_route["claude.review.opus"].at == NOW - timedelta(minutes=3)
         assert "would_run" in _plan(tmp_path, newest, found)["claude.review.opus"]
 
+    def test_main_entry_point_mints_per_route_from_mixed_family_observations(
+        self, tmp_path: Path, capsys
+    ) -> None:
+        """Review finding: every regression test composed observe_all/evidence_by_route/mint by
+        hand, so main() could stop passing route-specific evidence and stay green. This runs the
+        deployed entry point on the interleaving case and reads its JSON."""
+        hdir = tmp_path / "headless" / "lane"
+        tdir = tmp_path / "projects" / "proj"
+        hdir.mkdir(parents=True)
+        tdir.mkdir(parents=True)
+        (tdir / "session.jsonl").write_text(
+            "\n".join(
+                [
+                    _served(NOW - timedelta(minutes=9), "claude-opus-5"),
+                    _served(NOW - timedelta(minutes=1), "claude-fable-5-1"),
+                ]
+            )
+            + "\n"
+        )
+        (hdir / "output.jsonl").write_text(_wall(NOW - timedelta(minutes=5)) + "\n")
+        rc = obs.main(
+            [
+                "--transcript-glob",
+                str(tmp_path / "projects" / "*" / "*.jsonl"),
+                "--headless-glob",
+                str(tmp_path / "headless" / "*" / "output.jsonl"),
+                "--now",
+                NOW.isoformat().replace("+00:00", "Z"),
+                "--max-age-seconds",
+                "1800",
+                "--route-id",
+                "claude.review.opus",
+                "--route-id",
+                "claude.headless.full",
+                "--receipt-dir",
+                str(tmp_path / "receipts"),
+                "--no-probe",
+                "--dry-run",
+                "--json",
+            ]
+        )
+        assert rc == 0
+        payload = json.loads(capsys.readouterr().out)
+        assert payload["verdict"] == "served"
+        assert payload["observed_model_by_route"]["claude.headless.full"] == "claude-fable-5-1"
+        assert payload["observed_model_by_route"]["claude.review.opus"] is None
+        by_route = {r["route_id"]: r for r in payload["receipts"]}
+        assert "would_run" in by_route["claude.headless.full"]
+        assert "would_run" not in by_route["claude.review.opus"], by_route["claude.review.opus"]
+
     def test_evidence_by_route_picks_the_freshest_in_family_not_the_first(
         self, tmp_path: Path
     ) -> None:
