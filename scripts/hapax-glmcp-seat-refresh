@@ -17,7 +17,11 @@ WDIR="$HOME/.cache/hapax/glmcp-admission-witness"
 mkdir -p "$WDIR"
 ts="$(date -u +%Y%m%dT%H%M%SZ)"
 ref="glmcp-reviewer-roundtrip-ok-$(echo "$ts" | tr 'A-Z' 'a-z')"
-endpoint="${HAPAX_GLMCP_REVIEW_BASE_URL:-https://api.z.ai/api/coding/paas/v4}"
+# The probe measures the Coding Plan seat and nothing else, so the endpoint is the Coding Plan
+# endpoint, pinned — an inherited HAPAX_GLMCP_REVIEW_BASE_URL must not redirect the sanctioned
+# probe and mint a receipt for a call that never reached the plan (review finding on #4624).
+endpoint="https://api.z.ai/api/coding/paas/v4"
+export HAPAX_GLMCP_REVIEW_BASE_URL="$endpoint"
 # The admission CLI on main accepts exactly glm-5.2 (#4568, unmerged, moves the seat to glm-5.3).
 # The systemd user environment may carry a different HAPAX_GLMCP_REVIEW_MODEL; pin the round-trip
 # to the model the receipt will name, so witness and receipt describe the call that was made.

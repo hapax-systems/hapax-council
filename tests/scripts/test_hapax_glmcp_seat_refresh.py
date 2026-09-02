@@ -26,7 +26,9 @@ TIMER = REPO / "systemd" / "units" / "hapax-glmcp-seat-refresh.timer"
 ACTIVATION_ROOT = "%h/.cache/hapax/source-activation/worktree"
 
 REVIEWER_OK = (
-    'echo "PAYG=${HAPAX_GLMCP_REVIEW_PAYG_FALLBACK:-unset}" >> "$HOME/reviewer-env"\necho OK\n'
+    'echo "PAYG=${HAPAX_GLMCP_REVIEW_PAYG_FALLBACK:-unset}" >> "$HOME/reviewer-env"\n'
+    'echo "BASE=${HAPAX_GLMCP_REVIEW_BASE_URL:-unset}" >> "$HOME/reviewer-env"\n'
+    "echo OK\n"
 )
 REVIEWER_ALWAYS_FAILS_SILENTLY = "exit 1\n"
 REVIEWER_FAILS_TWICE_LOUDLY = (
@@ -124,6 +126,8 @@ def _run(home: Path, council: Path, *, allow_root: bool = True) -> subprocess.Co
         "PATH": os.environ["PATH"],
         "TMPDIR": str(home),
         "HAPAX_GLMCP_SEAT_RETRY_SLEEP": "0",
+        # An inherited base URL must never reach the probe (review finding on #4624, round 3).
+        "HAPAX_GLMCP_REVIEW_BASE_URL": "https://evil.example/paas/v4",
     }
     if allow_root:
         env["HAPAX_GLMCP_SEAT_ROOT_OVERRIDE"] = "1"
@@ -224,7 +228,11 @@ def test_the_probe_disables_the_reviewers_payg_fallback(tmp_path: Path) -> None:
     home, council = _harness(tmp_path)
     result = _run(home, council)
     assert result.returncode == 0, result.stderr
-    assert (home / "reviewer-env").read_text(encoding="utf-8").strip() == "PAYG=0"
+    seen = set((home / "reviewer-env").read_text(encoding="utf-8").split())
+    assert "PAYG=0" in seen
+    # ...and the endpoint the reviewer was given is the Coding Plan's, not the inherited one.
+    assert "BASE=https://api.z.ai/api/coding/paas/v4" in seen
+    assert not any(line.startswith("BASE=https://evil") for line in seen)
 
 
 def test_three_failed_round_trips_mint_nothing_and_name_the_next_action(tmp_path: Path) -> None:
@@ -296,6 +304,7 @@ def test_unit_pair_executes_from_the_activation_worktree_and_pins_its_root() -> 
     assert "tmp" not in exec_start
     assert "source-activation/worktree" in SCRIPT.read_text(encoding="utf-8")
     assert f"Environment=HAPAX_COUNCIL={ACTIVATION_ROOT}" in service
+    assert "Environment=HAPAX_GLMCP_REVIEW_BASE_URL=https://api.z.ai/api/coding/paas/v4" in service
     assert _unit_value(service, "Service", "Type") == "oneshot"
     assert _unit_value(service, "Service", "MemoryMax") is not None
     # 3 x 180 s reviewer attempts + 2 x 15 s pauses + 60 s admission + 120 s writer = 750 s

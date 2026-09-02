@@ -20,5 +20,7 @@ TimeoutStartSec=780
 # The receipt chain runs the activation worktree and nothing else: pinned here so an inherited
 # user-manager HAPAX_COUNCIL cannot redirect governance-sensitive code to a mutable tree.
 Environment=HAPAX_COUNCIL=%h/.cache/hapax/source-activation/worktree
+# The probe measures the Coding Plan seat: its endpoint is pinned here as well as in the script.
+Environment=HAPAX_GLMCP_REVIEW_BASE_URL=https://api.z.ai/api/coding/paas/v4
 MemoryMax=512M
 SyslogIdentifier=hapax-glmcp-seat-refresh
