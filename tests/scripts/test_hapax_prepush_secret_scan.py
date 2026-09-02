@@ -3,6 +3,7 @@ and honours only an explicit local exemption. Runs detect-secrets for real (via 
 
 from __future__ import annotations
 
+import hashlib
 import shutil
 import subprocess
 import sys
@@ -38,6 +39,7 @@ def _repo(tmp_path: Path) -> Path:
 
 
 def _commit(repo: Path, name: str, text: str) -> str:
+    (repo / name).parent.mkdir(parents=True, exist_ok=True)
     (repo / name).write_text(text)
     _git(repo, "add", "-A")
     _git(repo, "commit", "-q", "-m", f"add {name}")
@@ -169,6 +171,31 @@ def test_pre_existing_finding_in_a_changed_file_is_not_new_exposure(tmp_path):
     r2 = _run(repo, "origin", f"refs/heads/main {tip2} refs/heads/main {tip}\n")
     assert r2.returncode == 1, r2.stderr
     assert "secret-shaped: fixture.py" in r2.stderr
+
+
+def test_generated_hash_bearing_artifacts_are_exempt_from_entropy_only_findings(tmp_path):
+    """A re-materialized architecture map adds fresh hex digests; those are not secrets. The same
+    digest in any other path is still refused, and a keyword on the generated path still is."""
+    repo = _repo(tmp_path)
+    base = _git(repo, "rev-parse", "HEAD")
+    # Computed, not literal: this file's own push must not carry a high-entropy hex line.
+    digest = hashlib.sha256(b"content digest, not a secret").hexdigest()
+    line = f'{{"digest": "{digest}"}}\n'
+    generated = "docs/architecture/system-dynamics-map.lock.json"
+    (repo / "docs" / "architecture").mkdir(parents=True)
+    tip = _commit(repo, generated, line)
+    r = _run(repo, "origin", f"refs/heads/main {tip} refs/heads/main {base}\n")
+    assert r.returncode == 0, r.stderr
+
+    tip2 = _commit(repo, "notes/digest.json", line)  # same content, ordinary path: refused
+    r2 = _run(repo, "origin", f"refs/heads/main {tip2} refs/heads/main {tip}\n")
+    assert r2.returncode == 1, r2.stderr
+    assert "secret-shaped: notes/digest.json" in r2.stderr
+
+    keyword = "OPENAI_" + "API_" + "KEY"
+    tip3 = _commit(repo, generated, line + f'{{"{keyword}": "not-a-real-value-either"}}\n')
+    r3 = _run(repo, "origin", f"refs/heads/main {tip3} refs/heads/main {tip2}\n")
+    assert r3.returncode == 1, r3.stderr  # the exemption is entropy-only; keywords still count
 
 
 def test_deletion_pushes_nothing_and_passes(tmp_path):
