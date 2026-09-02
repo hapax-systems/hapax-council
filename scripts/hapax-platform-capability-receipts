@@ -42,6 +42,13 @@ from shared.platform_capability_registry import (  # noqa: E402
     PlatformCapabilityRoute,
     load_platform_capability_registry_for_dispatch,
 )
+from shared.quota_spend_ledger import (  # noqa: E402
+    DEFAULT_QUOTA_SPEND_LEDGER_LIVE,
+    QUOTA_SPEND_LEDGER_LIVE_ENV,
+    QuotaSpendLedgerError,
+    SubscriptionQuotaState,
+    load_quota_spend_ledger,
+)
 
 BINARY_BY_PLATFORM = {
     "agy": "agy",
@@ -132,12 +139,23 @@ def resolve_ref(path_ref: str) -> Path:
     return REPO_ROOT / expanded
 
 
-def launcher_command_path(route: PlatformCapabilityRoute) -> Path:
+def launcher_command_path(route: PlatformCapabilityRoute) -> Path | None:
+    """The sanctioned wrapper's command path, or None when the route declares no wrapper.
+
+    A blank ``sanctioned_wrapper`` used to fall through ``shlex.split(...)[0]`` into a second,
+    equally failing ``.split()[0]`` and raise IndexError out of the observer. No wrapper is a
+    legitimate declared state (review finding on #4616); it is reported as missing, not crashed on.
+    """
+    wrapper = (route.sanctioned_wrapper or "").strip()
+    if not wrapper:
+        return None
     try:
-        command = shlex.split(route.sanctioned_wrapper)[0]
-    except (IndexError, ValueError):
-        command = route.sanctioned_wrapper.split()[0]
-    return resolve_ref(command)
+        parts = shlex.split(wrapper)
+    except ValueError:
+        parts = wrapper.split()
+    if not parts:
+        return None
+    return resolve_ref(parts[0])
 
 
 def sha256_file(path: Path) -> str | None:
@@ -417,6 +435,9 @@ def observe_codex_exec_auth(*, enabled: bool, timeout: float) -> tuple[list[str]
 
 def observe_wrapper(route: PlatformCapabilityRoute) -> WrapperEvidence:
     path = launcher_command_path(route)
+    if path is None:
+        # No sanctioned wrapper declared: observed as missing, with nothing to hash.
+        return WrapperEvidence(path="", exists=False, executable=False, sha256=None)
     return WrapperEvidence(
         path=display_path(path),
         exists=path.exists(),
@@ -471,6 +492,42 @@ def tool_state(routes: list[PlatformCapabilityRoute]) -> list[ToolEvidence]:
 #: timer) and the per-platform `*-quota-admission` scripts land here; `shared/quota_wall.py` and
 #: `shared/sdlc_pressure_gate.py` already read it.
 QUOTA_RECEIPT_DIR = Path.home() / ".cache" / "hapax" / "relay" / "receipts"
+# The live quota-spend ledger is the VALIDATED projection of those receipts (the telemetry writer
+# rejects malformed, expired and lane-presence receipts before a snapshot exists). Quota is
+# observed for a route only when a fresh positive receipt AND a fresh ledger snapshot both name it.
+QUOTA_LEDGER_LIVE = Path(
+    os.environ.get(QUOTA_SPEND_LEDGER_LIVE_ENV, "").strip() or DEFAULT_QUOTA_SPEND_LEDGER_LIVE
+)
+QUOTA_RECEIPT_MAX_STALE_SECONDS = 3600
+QUOTA_RECEIPT_FUTURE_SKEW_SECONDS = 60
+
+
+def _ledger_fresh_routes(*, now: datetime) -> tuple[dict[str, tuple[str, datetime, tuple[str, ...]]], bool]:
+    """Routes the live ledger currently reports as ``fresh``: route_id -> (snapshot_id, fresh_until, refs).
+
+    The second value is False when the ledger is missing or invalid — the honest state is then
+    ``quota_telemetry_unknown``, never a guess from raw receipts alone.
+    """
+    try:
+        ledger = load_quota_spend_ledger(QUOTA_LEDGER_LIVE)
+    except (OSError, ValueError, QuotaSpendLedgerError):
+        return {}, False
+    fresh: dict[str, tuple[str, datetime, tuple[str, ...]]] = {}
+    for snapshot in ledger.quota_snapshots:
+        if snapshot.subscription_quota_state is not SubscriptionQuotaState.FRESH:
+            continue
+        if snapshot.fresh_until is None or snapshot.fresh_until <= now:
+            continue
+        if snapshot.captured_at > now:
+            continue
+        current = fresh.get(snapshot.route_id)
+        if current is None or snapshot.fresh_until > current[1]:
+            fresh[snapshot.route_id] = (
+                snapshot.snapshot_id,
+                snapshot.fresh_until,
+                tuple(snapshot.evidence_refs),
+            )
+    return fresh, True
 
 
 def _fresh_quota_receipt(
@@ -499,7 +556,11 @@ def _fresh_quota_receipt(
     # normalise a naive datetime to UTC rather than assuming tzinfo is present.
     observed_raw = doc.get("observed_at")
     stale_seconds = doc.get("stale_after_seconds")
-    if not isinstance(stale_seconds, int):
+    # A receipt's own TTL is bounded: the admission writers use 900–1800 s. Anything above an hour
+    # is a receipt that could vouch for quota it never observed (review finding on #4616).
+    if not isinstance(stale_seconds, int) or isinstance(stale_seconds, bool):
+        return None
+    if stale_seconds <= 0 or stale_seconds > QUOTA_RECEIPT_MAX_STALE_SECONDS:
         return None
     if isinstance(observed_raw, datetime):
         observed = observed_raw if observed_raw.tzinfo else observed_raw.replace(tzinfo=UTC)
@@ -510,7 +571,10 @@ def _fresh_quota_receipt(
             return None
     else:
         return None
-    if (now - observed).total_seconds() > stale_seconds:
+    age = (now - observed).total_seconds()
+    if age < -QUOTA_RECEIPT_FUTURE_SKEW_SECONDS:
+        return None  # a future-dated receipt has observed nothing yet
+    if age > stale_seconds:
         return None
     doc["_observed"] = observed
     return doc
@@ -538,34 +602,67 @@ def observe_quota(
     with the original reason code, which is the honest state when nothing has been observed.
     """
     route_ids = {route.route_id for route in routes}
-    best: tuple[datetime, dict[str, Any], Path] | None = None
+    # Per route, the newest fresh positive receipt (review finding on #4616: one route's receipt
+    # used to mark the whole platform observed).
+    best_by_route: dict[str, tuple[datetime, dict[str, Any], Path]] = {}
     if QUOTA_RECEIPT_DIR.is_dir():
         for path in QUOTA_RECEIPT_DIR.glob("*quota*admission*.yaml"):
             doc = _fresh_quota_receipt(path, route_ids=route_ids, now=now)
             if doc is None:
                 continue
+            route_id = str(doc["route_id"])
             observed = doc["_observed"]
-            if best is None or observed > best[0]:
-                best = (observed, doc, path)
-    if best is None:
+            current = best_by_route.get(route_id)
+            if current is None or observed > current[0]:
+                best_by_route[route_id] = (observed, doc, path)
+    ledger_fresh, ledger_readable = _ledger_fresh_routes(now=now)
+    # Observed only where the receipt AND the validated ledger snapshot agree on the route.
+    observed_routes = sorted(route_id for route_id in best_by_route if route_id in ledger_fresh)
+    if not observed_routes:
+        # No fresh receipt for any route: the producer wrote nothing — receipt absent. Receipts
+        # present but the validated ledger unreadable: telemetry unknown. Receipts present and the
+        # ledger readable but not fresh for those routes: the admission is absent per the ledger.
+        reason = (
+            "quota_telemetry_unknown"
+            if best_by_route and not ledger_readable
+            else "account_live_quota_receipt_absent"
+        )
+        unobserved_refs = [f"local:{platform}:quota-probe:unobservable"]
+        if best_by_route and not ledger_readable:
+            unobserved_refs.append(f"quota-spend-ledger:{display_path(QUOTA_LEDGER_LIVE)}:unreadable")
         return surface_evidence(
             status=EvidenceStatus.UNOBSERVABLE,
             source="local_receipt_probe",
             observed_at=now,
             stale_after="15m",
-            evidence_refs=[f"local:{platform}:quota-probe:unobservable"],
-            reason_codes=["account_live_quota_receipt_absent"],
+            evidence_refs=unobserved_refs,
+            reason_codes=[reason],
         )
-    observed, doc, path = best
+    evidence_refs: list[str] = []
+    observed_at = min(best_by_route[route_id][0] for route_id in observed_routes)
+    stale_seconds = min(
+        min(
+            int(best_by_route[route_id][1]["stale_after_seconds"]),
+            max(1, int((ledger_fresh[route_id][1] - now).total_seconds())),
+        )
+        for route_id in observed_routes
+    )
+    for route_id in observed_routes:
+        _observed, doc, path = best_by_route[route_id]
+        snapshot_id, _fresh_until, _refs = ledger_fresh[route_id]
+        evidence_refs.extend(
+            [
+                f"local:{display_path(path)}:quota-admission:{doc.get('evidence_ref', 'unnamed')}",
+                f"quota-spend-ledger:{snapshot_id}:{route_id}:fresh",
+                f"platform-capability-registry:{route_id}:quota:observed",
+            ]
+        )
     return surface_evidence(
         status=EvidenceStatus.OBSERVED,
         source="local_receipt_probe",
-        observed_at=observed,
-        stale_after=f"{doc['stale_after_seconds']}s",
-        evidence_refs=[
-            f"local:{display_path(path)}:quota-admission:{doc.get('evidence_ref', 'unnamed')}",
-            f"platform-capability-registry:{doc['route_id']}:quota:observed",
-        ],
+        observed_at=observed_at,
+        stale_after=f"{stale_seconds}s",
+        evidence_refs=evidence_refs,
         reason_codes=[],
     )
 

@@ -297,6 +297,12 @@ def _mark_platform_receipt_account_live_quota_observed(
             [
                 *quota.get("evidence_refs", []),
                 f"test:{platform}:account-live-quota:observed",
+                # The producer names every route it observed; the consumer honours only named
+                # routes (#4616). This helper simulates a receipt that observed all of them.
+                *(
+                    f"platform-capability-registry:{route_id}:quota:observed"
+                    for route_id in payload.get("routes", [])
+                ),
             ]
         )
     )
@@ -2046,6 +2052,42 @@ def _quota_receipt(path: Path, **overrides: object) -> Path:
     return path
 
 
+def _quota_ledger_fresh_for(
+    tmp_path: Path,
+    routes: dict[str, str],
+    *,
+    captured_at: str = "2026-09-01T23:00:00Z",
+    fresh_until: str = "2026-09-01T23:30:00Z",
+) -> Path:
+    """A live-ledger fixture whose quota snapshots cover exactly ``routes`` (route_id -> state).
+
+    The receipts consumer observes quota for a route only when a fresh positive relay receipt AND a
+    fresh validated ledger snapshot both name it (#4616), so tests that want "observed" must
+    provide both halves.
+    """
+    payload = json.loads(QUOTA_LEDGER.read_text(encoding="utf-8"))
+    payload["ledger_id"] = "quota-spend-ledger-test-live"
+    payload["captured_at"] = captured_at
+    payload["quota_snapshots"] = [
+        {
+            "quota_snapshot_schema": 1,
+            "snapshot_id": f"quota-test-{route_id.replace('.', '-')}",
+            "captured_at": captured_at,
+            "fresh_until": fresh_until if state == "fresh" else None,
+            "route_id": route_id,
+            "provider": "anthropic-claude-code-subscription",
+            "capacity_pool": "subscription_quota",
+            "subscription_quota_state": state,
+            "evidence_refs": [f"test:ledger:{route_id}:{state}"],
+            "operator_visible_reason": f"test fixture: {route_id} {state}",
+        }
+        for route_id, state in routes.items()
+    ]
+    target = tmp_path / "quota-spend-ledger-live.json"
+    target.write_text(json.dumps(payload, indent=2, sort_keys=True), encoding="utf-8")
+    return target
+
+
 class _Route:
     def __init__(self, route_id: str) -> None:
         self.route_id = route_id
@@ -2072,6 +2114,10 @@ class TestQuotaIsReadNotHardcoded:
         # that and two tests "passed" by reading the operator's live receipts, which is coverage
         # theatre pointed at production state.
         module["observe_quota"].__globals__["QUOTA_RECEIPT_DIR"] = tmp_path
+        # And the validated ledger half (#4616): a fresh snapshot for the route these tests use.
+        module["observe_quota"].__globals__["QUOTA_LEDGER_LIVE"] = _quota_ledger_fresh_for(
+            tmp_path, {"claude.headless.full": "fresh"}
+        )
         return module
 
     def test_a_fresh_positive_receipt_is_observed(self, tmp_path: Path) -> None:
@@ -2147,3 +2193,108 @@ class TestQuotaIsReadNotHardcoded:
             now=datetime(2026, 9, 1, 23, 15, 0, tzinfo=UTC),
         )
         assert result.status.value == "observed"
+
+
+class _WrapperRoute:
+    def __init__(self, route_id: str, sanctioned_wrapper: str) -> None:
+        self.route_id = route_id
+        self.sanctioned_wrapper = sanctioned_wrapper
+
+
+class TestQuotaIsPerRouteAndLedgerBacked:
+    """Three review findings on #4616, each unanimous across glm, codex and gemini (2026-09-02):
+
+    1. `observe_quota` read raw admission YAML and never consulted the live quota-spend ledger the
+       exit predicate mandates, so a receipt the ledger had rejected could still mark quota observed.
+    2. One route's fresh receipt marked the WHOLE platform observed, clearing quota blockers for
+       sibling routes it never saw.
+    3. `launcher_command_path` re-ran a failing `split()[0]` and raised for a route with no
+       sanctioned wrapper instead of reporting None.
+    """
+
+    NOW = datetime(2026, 9, 1, 23, 15, 0, tzinfo=UTC)
+
+    def _module(self, tmp_path: Path, ledger: Path | None):
+        module = runpy.run_path(str(SCRIPT), run_name="__test__")
+        module["observe_quota"].__globals__["QUOTA_RECEIPT_DIR"] = tmp_path
+        module["observe_quota"].__globals__["QUOTA_LEDGER_LIVE"] = ledger or (
+            tmp_path / "no-such-ledger.json"
+        )
+        return module
+
+    def test_one_routes_receipt_does_not_observe_its_siblings(self, tmp_path: Path) -> None:
+        ledger = _quota_ledger_fresh_for(
+            tmp_path, {"claude.headless.full": "fresh", "claude.headless.opus": "fresh"}
+        )
+        module = self._module(tmp_path, ledger)
+        _quota_receipt(tmp_path / "claude-quota-admission.yaml")  # claude.headless.full only
+        result = module["observe_quota"](
+            "claude",
+            [_Route("claude.headless.full"), _Route("claude.headless.opus")],
+            now=self.NOW,
+        )
+        assert result.status.value == "observed"
+        refs = list(result.evidence_refs)
+        assert "platform-capability-registry:claude.headless.full:quota:observed" in refs
+        assert "platform-capability-registry:claude.headless.opus:quota:observed" not in refs
+        assert any(
+            ref.startswith("quota-spend-ledger:quota-test-claude-headless-full:") for ref in refs
+        )
+
+    def test_a_receipt_the_ledger_does_not_confirm_is_not_observed(self, tmp_path: Path) -> None:
+        ledger = _quota_ledger_fresh_for(tmp_path, {"claude.headless.full": "exhausted"})
+        module = self._module(tmp_path, ledger)
+        _quota_receipt(tmp_path / "claude-quota-admission.yaml")
+        result = module["observe_quota"]("claude", [_Route("claude.headless.full")], now=self.NOW)
+        assert result.status.value == "unobservable"
+        assert result.reason_codes == ["account_live_quota_receipt_absent"]
+
+    def test_receipts_without_a_readable_ledger_are_telemetry_unknown(self, tmp_path: Path) -> None:
+        module = self._module(tmp_path, ledger=None)
+        _quota_receipt(tmp_path / "claude-quota-admission.yaml")
+        result = module["observe_quota"]("claude", [_Route("claude.headless.full")], now=self.NOW)
+        assert result.status.value == "unobservable"
+        assert result.reason_codes == ["quota_telemetry_unknown"]
+        assert any(ref.endswith(":unreadable") for ref in result.evidence_refs)
+
+    def test_no_receipt_at_all_is_receipt_absent_whatever_the_ledger(self, tmp_path: Path) -> None:
+        module = self._module(tmp_path, ledger=None)
+        result = module["observe_quota"]("claude", [_Route("claude.headless.full")], now=self.NOW)
+        assert result.status.value == "unobservable"
+        assert result.reason_codes == ["account_live_quota_receipt_absent"]
+
+    def test_a_future_dated_receipt_is_refused(self, tmp_path: Path) -> None:
+        ledger = _quota_ledger_fresh_for(tmp_path, {"claude.headless.full": "fresh"})
+        module = self._module(tmp_path, ledger)
+        _quota_receipt(tmp_path / "claude-quota-admission.yaml", observed_at="2026-09-01T23:45:00Z")
+        result = module["observe_quota"]("claude", [_Route("claude.headless.full")], now=self.NOW)
+        assert result.status.value == "unobservable"
+
+    def test_an_unbounded_ttl_is_refused(self, tmp_path: Path) -> None:
+        ledger = _quota_ledger_fresh_for(tmp_path, {"claude.headless.full": "fresh"})
+        module = self._module(tmp_path, ledger)
+        _quota_receipt(tmp_path / "claude-quota-admission.yaml", stale_after_seconds=10**9)
+        result = module["observe_quota"]("claude", [_Route("claude.headless.full")], now=self.NOW)
+        assert result.status.value == "unobservable"
+
+    def test_observed_stale_after_is_bounded_by_the_ledger_freshness(self, tmp_path: Path) -> None:
+        # fixture ledger: fresh_until 23:30Z; now 23:15Z -> 900 s remain, below the receipt's TTL
+        ledger = _quota_ledger_fresh_for(tmp_path, {"claude.headless.full": "fresh"})
+        module = self._module(tmp_path, ledger)
+        _quota_receipt(tmp_path / "claude-quota-admission.yaml", stale_after_seconds=3600)
+        result = module["observe_quota"]("claude", [_Route("claude.headless.full")], now=self.NOW)
+        assert result.status.value == "observed"
+        assert result.stale_after == "900s"
+
+    def test_no_sanctioned_wrapper_is_none_not_an_exception(self, tmp_path: Path) -> None:
+        module = self._module(tmp_path, ledger=None)
+        assert module["launcher_command_path"](_WrapperRoute("x.y", "")) is None
+        assert module["launcher_command_path"](_WrapperRoute("x.y", "   ")) is None
+        evidence = module["observe_wrapper"](_WrapperRoute("x.y", ""))
+        assert evidence.exists is False and evidence.executable is False
+        assert evidence.sha256 is None
+
+    def test_a_declared_wrapper_still_resolves(self, tmp_path: Path) -> None:
+        module = self._module(tmp_path, ledger=None)
+        path = module["launcher_command_path"](_WrapperRoute("x.y", "scripts/hapax-claude --x"))
+        assert path is not None and path.name == "hapax-claude"
