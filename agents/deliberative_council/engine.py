@@ -293,7 +293,37 @@ async def run_phase1(
     results_or_none = await asyncio.gather(
         *(_run_one(alias, i) for i, alias in enumerate(config.model_aliases))
     )
-    return [r for r in results_or_none if r is not None]
+    results = [r for r in results_or_none if r is not None]
+    return _apply_reviewable_argument_requirement(
+        results,
+        required=inp.requires_reviewable_argument,
+        failures_out=failures_out,
+    )
+
+
+def _apply_reviewable_argument_requirement(
+    results: list[PhaseOneResult],
+    *,
+    required: bool,
+    failures_out: list[MemberFailure] | None,
+) -> list[PhaseOneResult]:
+    """Apply the opt-in evidence gate without assigning weight to process trace."""
+    if not required:
+        return results
+
+    admitted: list[PhaseOneResult] = []
+    for result in results:
+        if any(finding.strip() for finding in result.evidentiary_rationale):
+            admitted.append(result)
+            continue
+        if failures_out is not None:
+            failures_out.append(
+                MemberFailure(
+                    model_alias=result.model_alias,
+                    reason="EmptyEvidentiaryRationale",
+                )
+            )
+    return admitted
 
 
 def _assess_health(
@@ -376,6 +406,56 @@ def _capability_admission_receipt_fields(
     }
 
 
+def _phase1_transcript(results: list[PhaseOneResult]) -> list[dict[str, object]]:
+    return [
+        {
+            "model": result.model_alias,
+            "rationale": result.rationale,
+            "tool_calls": result.tool_calls_log,
+        }
+        for result in results
+    ]
+
+
+def _dossier_sections(
+    phase1_results: list[PhaseOneResult],
+    evidence_matrix: EvidenceMatrix | None,
+    receipt: dict[str, object],
+) -> dict[str, object]:
+    """Build the evidence, process, and execution piles without conflating them."""
+    research_findings = [
+        finding for result in phase1_results for finding in result.evidentiary_rationale
+    ]
+    phase1_transcript = receipt.get("phase1_transcript") or _phase1_transcript(phase1_results)
+    member_execution = [
+        {"model_alias": result.model_alias, **result.execution_receipt} for result in phase1_results
+    ]
+    complete_receipt = {**receipt, "member_execution": member_execution}
+    return {
+        # Legacy verdict fields remain populated.
+        "research_findings": research_findings,
+        "evidence_matrix": evidence_matrix,
+        "receipt": complete_receipt,
+        # Named dossier sections make the different epistemic roles explicit.
+        "evidentiary_rationale": {
+            "research_findings": research_findings,
+            "evidence_matrix": (
+                evidence_matrix.model_dump(mode="json") if evidence_matrix is not None else None
+            ),
+        },
+        "process_trace": {
+            "oracle_weight": 0,
+            "optional": True,
+            "member_rationales": [
+                {"model": result.model_alias, "rationale": result.rationale}
+                for result in phase1_results
+            ],
+            "phase1_transcript": phase1_transcript,
+        },
+        "execution_receipt": complete_receipt,
+    }
+
+
 async def deliberate(
     inp: CouncilInput,
     mode: CouncilMode,
@@ -418,12 +498,27 @@ async def _deliberate_inner(
             inp = inp.model_copy(update={"source_context": ctx})
 
     input_hash = hashlib.sha256(
-        json.dumps({"text": inp.text, "source_ref": inp.source_ref}, sort_keys=True).encode()
+        json.dumps(
+            {
+                "text": inp.text,
+                "source_ref": inp.source_ref,
+                "requires_reviewable_argument": inp.requires_reviewable_argument,
+            },
+            sort_keys=True,
+        ).encode()
     ).hexdigest()
     cache_policy = cache_policy_for_aliases(config.model_aliases)
 
     failed_members: list[MemberFailure] = []
     phase1_results = await run_phase1(inp, rubric, config, failures_out=failed_members)
+    # Keep this boundary check even though run_phase1 applies it for real member
+    # calls: alternate/test providers of PhaseOneResult must obey the same
+    # aggregation contract. An empty process_trace is deliberately irrelevant.
+    phase1_results = _apply_reviewable_argument_requirement(
+        phase1_results,
+        required=inp.requires_reviewable_argument,
+        failures_out=failed_members,
+    )
     failed_members_payload = [
         {"model_alias": f.model_alias, "reason": f.reason} for f in failed_members
     ]
@@ -450,17 +545,20 @@ async def _deliberate_inner(
             confidence_bands={},
             convergence_status=ConvergenceStatus.REFUSED,
             disagreement_log=[f"Council refused: {reason}"],
-            research_findings=[f for r in phase1_results for f in r.research_findings],
-            evidence_matrix=None,
-            receipt={
-                "input_hash": input_hash,
-                "refused": True,
-                "refusal_reason": reason,
-                "council_health": health_payload,
-                "failed_members": failed_members_payload,
-                "cache_policy": cache_policy,
-                **_capability_admission_receipt_fields(capability_admission_events),
-            },
+            **_dossier_sections(
+                phase1_results,
+                None,
+                {
+                    "input_hash": input_hash,
+                    "refused": True,
+                    "refusal_reason": reason,
+                    "council_health": health_payload,
+                    "failed_members": failed_members_payload,
+                    "cache_policy": cache_policy,
+                    **_capability_admission_receipt_fields(capability_admission_events),
+                    "phase1_transcript": _phase1_transcript(phase1_results),
+                },
+            ),
         )
 
     if should_shortcircuit(phase1_results, config.shortcircuit_iqr_threshold):
@@ -472,23 +570,23 @@ async def _deliberate_inner(
             confidence_bands={k: v.confidence_band for k, v in agg.items()},
             convergence_status=_fold_overall(agg),
             disagreement_log=[],
-            research_findings=[f for r in phase1_results for f in r.research_findings],
-            evidence_matrix=None,
-            receipt={
-                "input_hash": input_hash,
-                "shortcircuited": True,
-                "council_health": health_payload,
-                "models_used": [r.model_alias for r in phase1_results],
-                "served_models": [r.served_model for r in phase1_results],
-                "ruler_substituted": (health_payload.get("served_substitutions") or 0) > 0,
-                "failed_members": failed_members_payload,
-                "cache_policy": cache_policy,
-                **_capability_admission_receipt_fields(capability_admission_events),
-                "phases_completed": [1],
-                "phase1_transcript": [
-                    {"model": r.model_alias, "tool_calls": r.tool_calls_log} for r in phase1_results
-                ],
-            },
+            **_dossier_sections(
+                phase1_results,
+                None,
+                {
+                    "input_hash": input_hash,
+                    "shortcircuited": True,
+                    "council_health": health_payload,
+                    "models_used": [r.model_alias for r in phase1_results],
+                    "served_models": [r.served_model for r in phase1_results],
+                    "ruler_substituted": (health_payload.get("served_substitutions") or 0) > 0,
+                    "failed_members": failed_members_payload,
+                    "cache_policy": cache_policy,
+                    **_capability_admission_receipt_fields(capability_admission_events),
+                    "phases_completed": [1],
+                    "phase1_transcript": _phase1_transcript(phase1_results),
+                },
+            ),
         )
 
     # Phase 2: Evidence matrix (epistemic) or Alternative Framing Matrix (narrative)
@@ -518,45 +616,47 @@ async def _deliberate_inner(
         disagreement_log=[
             f"{a}: IQR={v.iqr:.1f} values={v.values}" for a, v in agg.items() if v.iqr > 1.0
         ],
-        research_findings=[f for r in phase1_results for f in r.research_findings],
-        evidence_matrix=evidence_matrix,
         adversarial_exchanges=tuple(adversarial_exchanges),
-        receipt={
-            "input_hash": input_hash,
-            "shortcircuited": False,
-            "council_health": health_payload,
-            "models_used": [r.model_alias for r in phase1_results],
-            "served_models": [r.served_model for r in phase1_results],
-            "ruler_substituted": (health_payload.get("served_substitutions") or 0) > 0,
-            "failed_members": failed_members_payload,
-            "cache_policy": cache_policy,
-            **_capability_admission_receipt_fields(capability_admission_events),
-            "phases_completed": [1, 2, 3, 4, 5],
-            "phase1_transcript": [
-                {"model": r.model_alias, "tool_calls": r.tool_calls_log} for r in phase1_results
-            ],
-            "phase2_transcript": {
-                "built_by": evidence_matrix.built_by if evidence_matrix else None,
-                "contested_axes": (list(evidence_matrix.axes.keys()) if evidence_matrix else []),
+        **_dossier_sections(
+            phase1_results,
+            evidence_matrix,
+            {
+                "input_hash": input_hash,
+                "shortcircuited": False,
+                "council_health": health_payload,
+                "models_used": [r.model_alias for r in phase1_results],
+                "served_models": [r.served_model for r in phase1_results],
+                "ruler_substituted": (health_payload.get("served_substitutions") or 0) > 0,
+                "failed_members": failed_members_payload,
+                "cache_policy": cache_policy,
+                **_capability_admission_receipt_fields(capability_admission_events),
+                "phases_completed": [1, 2, 3, 4, 5],
+                "phase1_transcript": _phase1_transcript(phase1_results),
+                "phase2_transcript": {
+                    "built_by": evidence_matrix.built_by if evidence_matrix else None,
+                    "contested_axes": (
+                        list(evidence_matrix.axes.keys()) if evidence_matrix else []
+                    ),
+                },
+                "phase3_transcript": [
+                    {
+                        "axis": e.axis,
+                        "high_scorer": e.high_scorer,
+                        "high_score": e.high_score,
+                        "low_scorer": e.low_scorer,
+                        "low_score": e.low_score,
+                    }
+                    for e in adversarial_exchanges
+                ],
+                "phase4_transcript": [
+                    {"model": r.model_alias, "scores": r.scores} for r in final_results
+                ],
+                "phase5_convergence": {
+                    a: {"status": v.status.value, "iqr": v.iqr, "score": v.score}
+                    for a, v in agg.items()
+                },
             },
-            "phase3_transcript": [
-                {
-                    "axis": e.axis,
-                    "high_scorer": e.high_scorer,
-                    "high_score": e.high_score,
-                    "low_scorer": e.low_scorer,
-                    "low_score": e.low_score,
-                }
-                for e in adversarial_exchanges
-            ],
-            "phase4_transcript": [
-                {"model": r.model_alias, "scores": r.scores} for r in final_results
-            ],
-            "phase5_convergence": {
-                a: {"status": v.status.value, "iqr": v.iqr, "score": v.score}
-                for a, v in agg.items()
-            },
-        },
+        ),
     )
 
 

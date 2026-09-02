@@ -52,8 +52,11 @@ def phase1_system_prompt(rubric: Rubric, seed: int | None = None) -> str:
         f"## Rubric Axes\n\n{axis_block}\n\n"
         "## Scoring Instructions\n\n"
         f"1. Score each axis {axes[0].min_score}-{axes[0].max_score}.\n"
-        "2. For each score, provide a 1-2 sentence rationale.\n"
-        "3. List any research findings (files checked, evidence found or not found).\n\n"
+        "2. You may provide a concise score justification in rationale; do not "
+        "reconstruct or narrate private reasoning. This optional process trace has zero "
+        "oracle weight.\n"
+        "3. List inspectable evidence in research_findings: claims checked with source "
+        "references, tests run with observed results, and relevant counter-evidence.\n\n"
         "Respond in JSON:\n"
         '{"scores": {"axis_name": int, ...}, '
         '"rationale": {"axis_name": "...", ...}, '
@@ -64,7 +67,10 @@ def phase1_system_prompt(rubric: Rubric, seed: int | None = None) -> str:
 RESEARCH_SYSTEM_PROMPT = (
     "You are a council member. Your role is to investigate source material "
     "using your research tools and gather evidence before scoring.\n\n"
-    "Use tools to verify claims, check sources, and gather evidence. "
+    "Use tools to verify claims and report inspectable evidence. Each finding should "
+    "identify the claim checked, its source reference or test and observed result, and "
+    "relevant counter-evidence (including that none was found when applicable). Do not "
+    "reconstruct or narrate private reasoning. "
     "Report your findings as a JSON list:\n"
     '{"research_findings": ["finding 1", "finding 2", ...]}'
 )
@@ -100,8 +106,11 @@ def _phase1_prompt_sections(
         "## Instructions\n\n"
         "1. Use your research tools to investigate the source_ref before scoring.\n"
         f"2. Score each axis {axes[0].min_score}-{axes[0].max_score}.\n"
-        "3. For each score, provide a 1-2 sentence rationale.\n"
-        "4. List any research findings (files checked, evidence found or not found).\n\n"
+        "3. You may provide a concise score justification in rationale; do not "
+        "reconstruct or narrate private reasoning. This optional process trace has zero "
+        "oracle weight.\n"
+        "4. List inspectable evidence in research_findings: claims checked with source "
+        "references, tests run with observed results, and relevant counter-evidence.\n\n"
         "Respond in JSON:\n"
         '{"scores": {"axis_name": int, ...}, '
         '"rationale": {"axis_name": "...", ...}, '

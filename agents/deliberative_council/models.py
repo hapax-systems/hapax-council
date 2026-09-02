@@ -3,7 +3,7 @@ from __future__ import annotations
 from enum import StrEnum
 from typing import Annotated, Any
 
-from pydantic import BaseModel, ConfigDict, Field, create_model
+from pydantic import BaseModel, ConfigDict, Field, create_model, model_validator
 
 
 class CouncilMode(StrEnum):
@@ -45,6 +45,10 @@ class CouncilInput(BaseModel):
     source_ref: str = Field(min_length=1)
     source_context: str = Field(default="")
     metadata: dict[str, Any] = Field(default_factory=dict)
+    # Most council requests judge a panel without requiring every member to
+    # publish an argument. Callers that need a reviewable argument can opt in;
+    # only then is an evidence-free member result invalid.
+    requires_reviewable_argument: bool = False
 
 
 class CouncilConfig(BaseModel):
@@ -106,12 +110,60 @@ class CouncilConfig(BaseModel):
 class PhaseOneResult(BaseModel):
     model_config = ConfigDict(frozen=True)
 
+    @model_validator(mode="before")
+    @classmethod
+    def _populate_dossier_sections(cls, data: Any) -> Any:
+        """Keep the new dossier vocabulary and legacy member fields in sync."""
+        if not isinstance(data, dict):
+            return data
+        values = dict(data)
+
+        if "evidentiary_rationale" not in values:
+            values["evidentiary_rationale"] = list(values.get("research_findings") or [])
+        elif "research_findings" not in values:
+            values["research_findings"] = list(values.get("evidentiary_rationale") or [])
+
+        if "process_trace" not in values:
+            values["process_trace"] = dict(values.get("rationale") or {})
+        elif "rationale" not in values:
+            values["rationale"] = dict(values.get("process_trace") or {})
+
+        if "execution_receipt" not in values:
+            values["execution_receipt"] = {
+                "served_model": values.get("served_model", ""),
+                "capability_id": values.get("capability_id", ""),
+                "route_id": values.get("route_id", ""),
+                "capability_admission_action": values.get("capability_admission_action", ""),
+                "capability_receipt_refs": list(values.get("capability_receipt_refs") or ()),
+            }
+        else:
+            execution = values.get("execution_receipt") or {}
+            for field in (
+                "served_model",
+                "capability_id",
+                "route_id",
+                "capability_admission_action",
+                "capability_receipt_refs",
+            ):
+                if field not in values and field in execution:
+                    values[field] = execution[field]
+        return values
+
     model_alias: str
     capability_id: str = ""
     route_id: str = ""
     capability_admission_action: str = ""
     capability_receipt_refs: tuple[str, ...] = ()
     scores: dict[str, int]
+    # Inspectable claims, source references, test observations, and
+    # counter-evidence. This is the member content that can carry oracle weight.
+    evidentiary_rationale: list[str] = Field(default_factory=list)
+    # Optional narration/score notes. It is retained for auditability but has
+    # zero oracle weight and may be empty without invalidating the member.
+    process_trace: dict[str, str] = Field(default_factory=dict)
+    # Route/model/admission provenance for this member execution.
+    execution_receipt: dict[str, Any] = Field(default_factory=dict)
+    # Legacy names remain populated and readable for existing consumers.
     rationale: dict[str, str]
     research_findings: list[str] = Field(default_factory=list)
     tool_calls_log: list[str] = Field(default_factory=list)
@@ -263,6 +315,39 @@ class PhaseFourResult(BaseModel):
 class CouncilVerdict(BaseModel):
     model_config = ConfigDict(frozen=True)
 
+    @model_validator(mode="before")
+    @classmethod
+    def _populate_dossier_sections(cls, data: Any) -> Any:
+        """Make legacy verdict construction serialize the three dossier piles too."""
+        if not isinstance(data, dict):
+            return data
+        values = dict(data)
+        receipt = values.get("receipt") or values.get("execution_receipt") or {}
+        findings = list(values.get("research_findings") or [])
+        matrix = values.get("evidence_matrix")
+
+        if "evidentiary_rationale" not in values:
+            values["evidentiary_rationale"] = {
+                "research_findings": findings,
+                "evidence_matrix": matrix,
+            }
+        elif "research_findings" not in values:
+            values["research_findings"] = list(
+                values["evidentiary_rationale"].get("research_findings") or []
+            )
+        if "process_trace" not in values:
+            values["process_trace"] = {
+                "oracle_weight": 0,
+                "optional": True,
+                "member_rationales": [],
+                "phase1_transcript": receipt.get("phase1_transcript", []),
+            }
+        if "execution_receipt" not in values:
+            values["execution_receipt"] = receipt
+        elif "receipt" not in values:
+            values["receipt"] = values["execution_receipt"]
+        return values
+
     scores: dict[str, int | None]
     confidence_bands: dict[str, tuple[int, int]]
     convergence_status: ConvergenceStatus
@@ -271,6 +356,11 @@ class CouncilVerdict(BaseModel):
     evidence_matrix: EvidenceMatrix | None
     adversarial_exchanges: tuple[AdversarialExchange, ...] = ()
     receipt: dict[str, Any] = Field(default_factory=dict)
+    # Durable dossier sections. The legacy fields above remain first-class and
+    # readable; engine verdicts populate both vocabularies.
+    evidentiary_rationale: dict[str, Any] = Field(default_factory=dict)
+    process_trace: dict[str, Any] = Field(default_factory=dict)
+    execution_receipt: dict[str, Any] = Field(default_factory=dict)
 
 
 class NarrativeVerdictStatus(StrEnum):
