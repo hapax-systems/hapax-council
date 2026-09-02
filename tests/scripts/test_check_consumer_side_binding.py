@@ -175,6 +175,95 @@ def test_non_python_producer_downgrades_cache_finding(gate, tmp_path: Path) -> N
     assert "scripts/producer.sh" in matches[0].detail
 
 
+def test_dynamic_root_read_with_same_basename_writer_is_downgraded(gate, tmp_path: Path) -> None:
+    _write(
+        tmp_path,
+        "shared/consumer.py",
+        "def load_metadata(root, name):\n"
+        "    return (root / 'nested' / f'{name}.metadata.json').read_text()\n",
+    )
+    _write(
+        tmp_path,
+        "tests/writer.py",
+        "def write_metadata(root, name):\n"
+        "    (root / 'elsewhere' / f'{name}.metadata.json').write_text('{}')\n",
+    )
+    report = gate.analyse_consumer_side(tmp_path, [])
+    matches = [
+        finding
+        for finding in report.findings
+        if finding.reader.pattern == "*/nested/*.metadata.json"
+    ]
+    assert [finding.kind for finding in matches] == ["consumer-reads-artifact-under-dynamic-root"]
+    assert matches[0].writers[0].pattern == "*/elsewhere/*.metadata.json"
+
+
+def test_dynamic_root_read_without_same_basename_writer_stays_unwritten(
+    gate, tmp_path: Path
+) -> None:
+    _write(
+        tmp_path,
+        "shared/consumer.py",
+        "def load_metadata(root, name):\n"
+        "    return (root / 'nested' / f'{name}.metadata.json').read_text()\n",
+    )
+    report = gate.analyse_consumer_side(tmp_path, [])
+    matches = [
+        finding
+        for finding in report.findings
+        if finding.reader.pattern == "*/nested/*.metadata.json"
+    ]
+    assert [finding.kind for finding in matches] == ["consumer-reads-unwritten-artifact"]
+    assert (
+        matches[0].detail == "searched=python-writers, non-python-mentions, docs, config, systemd"
+    )
+
+
+def test_runbook_only_mention_is_documented_elsewhere(gate, tmp_path: Path) -> None:
+    _write(
+        tmp_path,
+        "shared/consumer.py",
+        "from pathlib import Path\n"
+        "STATUS = Path('/dev/shm/hapax-external/status.json')\n"
+        "def load_status():\n"
+        "    return STATUS.read_text()\n",
+    )
+    _write(
+        tmp_path,
+        "docs/runbooks/external-status.md",
+        "The remote sensor publishes `/dev/shm/hapax-external/status.json`.\n",
+    )
+    report = gate.analyse_consumer_side(tmp_path, [])
+    matches = [
+        finding
+        for finding in report.findings
+        if finding.reader.pattern == "/dev/shm/hapax-external/status.json"
+    ]
+    assert [finding.kind for finding in matches] == ["consumer-reads-artifact-documented-elsewhere"]
+    assert "docs/runbooks/external-status.md" in matches[0].detail
+
+
+def test_undocumented_shared_memory_read_stays_unwritten(gate, tmp_path: Path) -> None:
+    _write(
+        tmp_path,
+        "shared/consumer.py",
+        "from pathlib import Path\n"
+        "STATUS = Path('/dev/shm/hapax-external/status.json')\n"
+        "def load_status():\n"
+        "    return STATUS.read_text()\n",
+    )
+    report = gate.analyse_consumer_side(tmp_path, [])
+    matches = [
+        finding
+        for finding in report.findings
+        if finding.reader.pattern == "/dev/shm/hapax-external/status.json"
+    ]
+    assert [finding.kind for finding in matches] == ["consumer-reads-unwritten-artifact"]
+    assert (
+        matches[0].detail == "searched=python-writers, non-python-mentions, docs, config, systemd"
+    )
+
+
 def test_pairing_requires_specific_directory_and_stem_identity(gate, tmp_path: Path) -> None:
     _write(
         tmp_path,

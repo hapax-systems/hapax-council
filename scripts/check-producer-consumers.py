@@ -478,7 +478,9 @@ CONSUMER_SIDE_ARM = "HAPAX_CONSUMER_SIDE_PRODUCER_BINDING_GATE=1"
 CONSUMER_SIDE_REPORT_LIMIT = 25
 CONSUMER_SIDE_KINDS = (
     "consumer-reads-unwritten-artifact",
+    "consumer-reads-artifact-under-dynamic-root",
     "consumer-reads-artifact-with-non-python-producer",
+    "consumer-reads-artifact-documented-elsewhere",
     "consumer-producer-path-mismatch",
     "consumer-reads-decayed-producer",
 )
@@ -818,8 +820,10 @@ def _resolve_path_expr(
     )
 
 
-def _iter_python_sources(repo_root: Path) -> list[Path]:
-    files = set(_iter_python_files(repo_root))
+def _iter_python_sources(repo_root: Path, *, tests_only: bool = False) -> list[Path]:
+    files = set(_iter_python_files(repo_root, include_tests=tests_only))
+    if tests_only:
+        return sorted(path for path in files if _is_test_path(path.relative_to(repo_root)))
     scripts = repo_root / "scripts"
     if scripts.is_dir():
         for candidate in scripts.rglob("*"):
@@ -1175,9 +1179,11 @@ def _module_imports(tree: ast.Module) -> frozenset[str]:
 
 def collect_artifact_accesses(
     repo_root: Path,
+    *,
+    tests_only: bool = False,
 ) -> tuple[list[ArtifactAccess], int, dict[Path, frozenset[str]]]:
     parsed: list[tuple[Path, ast.Module]] = []
-    for source_path in _iter_python_sources(repo_root):
+    for source_path in _iter_python_sources(repo_root, tests_only=tests_only):
         relative = source_path.relative_to(repo_root)
         tree = _parse(_read(source_path), relative)
         if tree is not None:
@@ -1394,7 +1400,30 @@ def _non_python_source_paths(repo_root: Path, tracked: frozenset[str]) -> list[P
             continue
         if not candidate.is_file() or candidate.suffix == ".py":
             continue
-        if relative.parts[:1] in {("scripts",), ("systemd",)} or candidate.suffix in suffixes:
+        # Unit files declare an external process and are evidence about the
+        # estate, not an implementation of the producer in this repository.
+        if relative.parts[:1] == ("systemd",):
+            continue
+        if relative.parts[:1] == ("scripts",) or candidate.suffix in suffixes:
+            output.append(candidate)
+    return sorted(output)
+
+
+def _documented_elsewhere_source_paths(repo_root: Path, tracked: frozenset[str]) -> list[Path]:
+    config_suffixes = {".json", ".yaml", ".yml", ".toml"}
+    candidates = (repo_root / item for item in tracked) if tracked else repo_root.rglob("*")
+    output: list[Path] = []
+    for candidate in candidates:
+        try:
+            relative = candidate.relative_to(repo_root)
+        except ValueError:
+            continue
+        if not candidate.is_file():
+            continue
+        is_runbook = relative.parts[:2] == ("docs", "runbooks") and candidate.suffix == ".md"
+        is_config = relative.parts[:1] == ("config",) and candidate.suffix in config_suffixes
+        is_systemd = relative.parts[:1] == ("systemd",)
+        if is_runbook or is_config or is_systemd:
             output.append(candidate)
     return sorted(output)
 
@@ -1425,6 +1454,28 @@ def _non_python_mentions(
             if len(matches) == 3:
                 break
     return tuple(matches)
+
+
+def _dynamic_root_basename(pattern: str) -> str | None:
+    path = PurePosixPath(pattern)
+    if not any("*" in part for part in path.parts[:-1]):
+        return None
+    basename = path.name
+    fixed_stem = path.stem.replace("*", "").strip("._-")
+    if "*" in basename and not fixed_stem:
+        return None
+    return basename
+
+
+def _dynamic_root_writers(pattern: str, writes: list[ArtifactAccess]) -> list[ArtifactAccess]:
+    basename = _dynamic_root_basename(pattern)
+    if basename is None:
+        return []
+    return [
+        writer
+        for writer in writes
+        if fnmatch.fnmatchcase(PurePosixPath(writer.pattern).name, basename)
+    ]
 
 
 def _group_reads(reads: list[ArtifactAccess]) -> dict[str, tuple[ArtifactAccess, ...]]:
@@ -1533,8 +1584,14 @@ def analyse_consumer_side(
 ) -> ConsumerSideReport:
     tracked = _git_tracked_paths(repo_root)
     accesses, unresolved, imports_by_path = collect_artifact_accesses(repo_root)
+    # The dynamic-root kind states an instrumentation bound, not that a live
+    # producer exists.  Test fixtures are therefore valid writer evidence for
+    # the brief's "ANY writer in the tree" rule, but remain excluded from live
+    # matching, mismatch, decay, and unresolved counts below.
+    test_accesses, _, _ = collect_artifact_accesses(repo_root, tests_only=True)
     reads = [item for item in accesses if item.action == "read"]
     writes = [item for item in accesses if item.action == "write"]
+    writes_anywhere = writes + [item for item in test_accesses if item.action == "write"]
     findings: list[ConsumerSideFinding] = []
     pairs: list[ArtifactPair] = []
     exclusions = Counter({name: 0 for name in CONSUMER_SIDE_EXCLUSIONS})
@@ -1550,22 +1607,37 @@ def analyse_consumer_side(
     non_python_sources = [
         (path, _read(path)) for path in _non_python_source_paths(repo_root, tracked)
     ]
+    documented_sources = [
+        (path, _read(path)) for path in _documented_elsewhere_source_paths(repo_root, tracked)
+    ]
     for pattern, reader_sites in _group_reads(included_reads).items():
         representative = reader_sites[0]
         matching = [writer for writer in writes if _patterns_match(pattern, writer.pattern)]
         if not matching:
-            mentions = _non_python_mentions(pattern, non_python_sources, repo_root)
-            if mentions:
+            dynamic_writers = _dynamic_root_writers(pattern, writes_anywhere)
+            producer_mentions = _non_python_mentions(pattern, non_python_sources, repo_root)
+            documented_mentions = _non_python_mentions(pattern, documented_sources, repo_root)
+            if dynamic_writers:
+                kind = "consumer-reads-artifact-under-dynamic-root"
+                detail = "same-basename-writer"
+                nearest = _nearest_writers(representative, dynamic_writers)
+            elif producer_mentions:
                 kind = "consumer-reads-artifact-with-non-python-producer"
-                detail = f"non-python-mentions={','.join(mentions)}"
+                detail = f"non-python-mentions={','.join(producer_mentions)}"
+                nearest = _nearest_writers(representative, writes)
+            elif documented_mentions:
+                kind = "consumer-reads-artifact-documented-elsewhere"
+                detail = f"documented-elsewhere={','.join(documented_mentions)}"
+                nearest = _nearest_writers(representative, writes)
             else:
                 kind = "consumer-reads-unwritten-artifact"
-                detail = ""
+                detail = "searched=python-writers, non-python-mentions, docs, config, systemd"
+                nearest = _nearest_writers(representative, writes)
             findings.append(
                 ConsumerSideFinding(
                     kind,
                     reader_sites[:3],
-                    _nearest_writers(representative, writes),
+                    nearest,
                     f"{kind}:{pattern}",
                     detail,
                     reader_total=len(reader_sites),
@@ -1739,8 +1811,12 @@ def print_consumer_side_report(report: ConsumerSideReport, report_path: Path) ->
         "consumer-side counts: "
         f"findings={len(report.findings)} "
         f"consumer-reads-unwritten-artifact={counts['consumer-reads-unwritten-artifact']} "
+        "consumer-reads-artifact-under-dynamic-root="
+        f"{counts['consumer-reads-artifact-under-dynamic-root']} "
         "consumer-reads-artifact-with-non-python-producer="
         f"{counts['consumer-reads-artifact-with-non-python-producer']} "
+        "consumer-reads-artifact-documented-elsewhere="
+        f"{counts['consumer-reads-artifact-documented-elsewhere']} "
         f"consumer-producer-path-mismatch={counts['consumer-producer-path-mismatch']} "
         f"consumer-reads-decayed-producer={counts['consumer-reads-decayed-producer']} "
         f"allowlisted={len(report.allowlisted)} "
