@@ -19,6 +19,7 @@ def run_backup(
     lane: str,
     *,
     qdrant_mode: str,
+    n8n_mode: str = "success",
 ) -> tuple[subprocess.CompletedProcess[str], list[str]]:
     fake_bin = tmp_path / "bin"
     fake_home = tmp_path / "home"
@@ -32,8 +33,18 @@ def run_backup(
         fake_bin,
         "docker",
         """
-if [ "${1:-}" = exec ] && [ "${2:-}" = postgres ]; then
+printf 'docker %s\n' "$*" >> "$COMMAND_LOG"
+if [ "${1:-}" = exec ] && [ "${2:-}" = postgres ] && [ "${3:-}" = pg_dumpall ]; then
     printf '%s\n' 'stub PostgreSQL dump'
+elif [ "${1:-}" = exec ] && [ "${2:-}" = n8n ]; then
+    if [ "$N8N_MODE" = export-fail ]; then
+        exit 9
+    fi
+elif [ "${1:-}" = cp ] && [ "${2:-}" = n8n:/tmp/n8n-workflows.json ]; then
+    if [ "$N8N_MODE" = copy-fail ]; then
+        exit 10
+    fi
+    printf '%s\n' '[{"id":"test-workflow"}]' > "$3"
 fi
 exit 0
 """,
@@ -134,6 +145,7 @@ esac
             "HOME": str(fake_home),
             "PATH": f"{fake_bin}:/usr/bin:/bin",
             "QDRANT_MODE": qdrant_mode,
+            "N8N_MODE": n8n_mode,
         }
     )
     result = subprocess.run(

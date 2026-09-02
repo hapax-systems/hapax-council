@@ -47,10 +47,54 @@ fail() { echo -e "${RED}[FAIL]${NC} $1"; }
 ask()  { read -rp "$1: " "$2"; }
 
 DR_OBJECT_NAME="hapax-cachyos-restore.sh"
+RESTORE_ROOT="/var/tmp/hapax-restore"
+POSTGRES_SUPERUSER="${HAPAX_POSTGRES_SUPERUSER:-hapax}"
 RESTORE_DUMP_RELATIVE_PATHS=(
     "store/llm-data/backup-dumps-remote"
     "store/llm-data/backup-dumps-local"
 )
+
+prepare_restore_root() {
+    local restore_root="$1"
+
+    rm -rf -- "$restore_root"
+    mkdir -p -- "$restore_root"
+}
+
+current_filesystem_type() {
+    local path="$1"
+
+    findmnt -n -o FSTYPE --target "$path" 2>/dev/null || true
+}
+
+record_tmpfs_mount() {
+    local tmp_path="$1" fstab_path="$2"
+    local entry="tmpfs $tmp_path tmpfs defaults,noatime,size=8G 0 0"
+
+    if ! awk -v target="$tmp_path" \
+        '$1 == "tmpfs" && $2 == target && $3 == "tmpfs" { found = 1 } END { exit !found }' \
+        "$fstab_path"; then
+        printf '%s\n' "$entry" | sudo tee -a "$fstab_path" > /dev/null
+    fi
+}
+
+mount_tmpfs_at() {
+    local tmp_path="$1"
+
+    sudo mount -t tmpfs -o defaults,noatime,size=8G tmpfs "$tmp_path"
+}
+
+ensure_tmpfs_tmp() {
+    local tmp_path="${1:-/tmp}" fstab_path="${2:-/etc/fstab}"
+
+    if [[ "$(current_filesystem_type "$tmp_path")" == "tmpfs" ]]; then
+        return 0
+    fi
+
+    record_tmpfs_mount "$tmp_path" "$fstab_path"
+    mount_tmpfs_at "$tmp_path"
+    ok "tmpfs $tmp_path"
+}
 
 find_restore_dump_dir() {
     local restore_root="$1" relative_path candidate
@@ -75,19 +119,81 @@ restore_n8n_workflows() {
     local workflow_dump="$dump_dir/n8n-workflows.json"
     local container_dump="/tmp/n8n-workflows.json"
 
-    [[ -f "$workflow_dump" ]] || return 0
+    if [[ ! -s "$workflow_dump" ]]; then
+        fail "Required n8n workflow export is missing or empty: $workflow_dump; restore a complete snapshot, then rerun Phase 12" >&2
+        return 1
+    fi
 
     log "Importing n8n workflows..."
     if ! sudo docker cp "$workflow_dump" "n8n:$container_dump"; then
-        fail "Could not copy n8n workflow export into the n8n container" >&2
+        fail "Could not copy n8n workflow export into the n8n container; check 'docker logs n8n', then rerun Phase 12" >&2
         return 1
     fi
     if ! sudo docker exec n8n n8n import:workflow --input="$container_dump"; then
-        fail "n8n workflow import failed" >&2
+        fail "n8n workflow import failed; check 'docker logs n8n', then rerun Phase 12" >&2
         return 1
     fi
     ok "n8n workflows imported"
 }
+
+wait_for_postgresql() {
+    local attempt
+
+    log "Waiting for PostgreSQL as $POSTGRES_SUPERUSER..."
+    for attempt in $(seq 1 30); do
+        if sudo docker exec postgres pg_isready -U "$POSTGRES_SUPERUSER" > /dev/null 2>&1; then
+            return 0
+        fi
+        sleep 2
+    done
+
+    fail "PostgreSQL did not become ready for role $POSTGRES_SUPERUSER; check 'docker logs postgres', then rerun Phase 12" >&2
+    return 1
+}
+
+restore_postgresql() {
+    local dump_dir="$1"
+    local postgres_dump="$dump_dir/postgres-all.sql"
+
+    if [[ ! -s "$postgres_dump" ]]; then
+        fail "Required PostgreSQL dump is missing or empty: $postgres_dump; restore a complete snapshot, then rerun Phase 12" >&2
+        return 1
+    fi
+    if ! sudo docker exec -i postgres psql -U "$POSTGRES_SUPERUSER" -v ON_ERROR_STOP=1 \
+        < "$postgres_dump" > /dev/null; then
+        fail "PostgreSQL import failed for $postgres_dump as role $POSTGRES_SUPERUSER; check 'docker logs postgres', then rerun Phase 12" >&2
+        return 1
+    fi
+    ok "PostgreSQL restored"
+}
+
+restore_qdrant_snapshots() {
+    local dump_dir="$1"
+    local qdrant_dump_dir="$dump_dir/qdrant"
+    local snap coll
+    local snapshots=("$qdrant_dump_dir/"*.snapshot)
+
+    if [[ ! -d "$qdrant_dump_dir" || ! -f "${snapshots[0]}" ]]; then
+        fail "Required Qdrant snapshots are missing: $qdrant_dump_dir/*.snapshot; restore a complete snapshot, then rerun Phase 12" >&2
+        return 1
+    fi
+
+    for snap in "${snapshots[@]}"; do
+        coll=$(basename "$snap" .snapshot)
+        if ! curl -sf -X POST \
+            "http://127.0.0.1:6333/collections/${coll}/snapshots/upload" \
+            -H 'Content-Type: multipart/form-data' \
+            -F "snapshot=@${snap}" > /dev/null; then
+            fail "Qdrant snapshot upload failed for collection $coll from $snap; check Qdrant health, then rerun Phase 12" >&2
+            return 1
+        fi
+        ok "Qdrant: $coll"
+    done
+}
+
+if [[ "${BASH_SOURCE[0]}" != "$0" ]]; then
+    return 0
+fi
 
 case "${1:-}" in
     --print-dr-object-name)
@@ -169,16 +275,14 @@ ok "Backup accessible"
 # ─── Phase 2: Restore from backup ──────────────────────────────────────────
 log "=== Phase 2: Restore files from B2 ==="
 
-RESTORE_DIR="/tmp/hapax-restore"
-rm -rf "$RESTORE_DIR"
-mkdir -p "$RESTORE_DIR"
+prepare_restore_root "$RESTORE_ROOT"
 
 log "Restoring latest snapshot..."
-restic restore latest --target "$RESTORE_DIR" --no-lock --verbose 2>&1 | tail -3
+restic restore latest --target "$RESTORE_ROOT" --no-lock --verbose 2>&1 | tail -3
 ok "Snapshot restored"
 
 # Determine restored home path (username may differ)
-RHOME=$(find "$RESTORE_DIR/home" -maxdepth 1 -mindepth 1 -type d | head -1)
+RHOME=$(find "$RESTORE_ROOT/home" -maxdepth 1 -mindepth 1 -type d | head -1)
 if [[ -z "$RHOME" ]]; then
     fail "No home directory found in backup!"
     exit 1
@@ -307,7 +411,7 @@ fi
 fc-cache -f 2>/dev/null && ok "Font cache rebuilt" || true
 
 # Models (Piper TTS)
-for d in "$RESTORE_DIR/home"/*/models; do
+for d in "$RESTORE_ROOT/home"/*/models; do
     if [[ -d "$d" ]]; then
         cp -a "$d" ~/
         ok "~/models"
@@ -316,7 +420,7 @@ for d in "$RESTORE_DIR/home"/*/models; do
 done
 
 # llm-stack (full directory)
-for d in "$RESTORE_DIR/home"/*/llm-stack; do
+for d in "$RESTORE_ROOT/home"/*/llm-stack; do
     if [[ -d "$d" ]]; then
         mkdir -p ~/llm-stack
         cp -a "$d"/* ~/llm-stack/
@@ -328,7 +432,7 @@ done
 # ─── Phase 5: System configs ───────────────────────────────────────────────
 log "=== Phase 5: Restore system configuration ==="
 
-RETC="$RESTORE_DIR/etc"
+RETC="$RESTORE_ROOT/etc"
 
 # Save restored fstab for reference (UUIDs will differ)
 [[ -f "$RETC/fstab" ]] && sudo cp "$RETC/fstab" /etc/fstab.restored
@@ -667,17 +771,14 @@ else
     warn "No unmounted SATA drive found — skipping"
 fi
 
-# tmpfs for /tmp
-if ! mount | grep -q "tmpfs on /tmp"; then
-    echo "tmpfs /tmp tmpfs defaults,noatime,size=8G 0 0" | sudo tee -a /etc/fstab
-    sudo mount -t tmpfs -o defaults,noatime,size=8G tmpfs /tmp
-    ok "tmpfs /tmp"
-fi
+# The restored tree lives under /var/tmp, so installing tmpfs on /tmp cannot
+# hide the snapshot before database recovery.
+ensure_tmpfs_tmp
 
 # ─── Phase 12: Docker stack ────────────────────────────────────────────────
 log "=== Phase 12: Start Docker stack + restore PostgreSQL, Qdrant, and n8n workflows ==="
 
-if ! DUMP=$(find_restore_dump_dir "$RESTORE_DIR"); then
+if ! DUMP=$(find_restore_dump_dir "$RESTORE_ROOT"); then
     exit 1
 fi
 ok "Using database dumps: $DUMP"
@@ -691,18 +792,8 @@ if [[ -f ~/llm-stack/docker-compose.yml ]]; then
     sudo docker compose up -d 2>&1 | tail -5
     ok "Docker stack starting"
 
-    # Wait for postgres
-    log "Waiting for PostgreSQL..."
-    for i in $(seq 1 30); do
-        sudo docker exec postgres pg_isready -U postgres > /dev/null 2>&1 && break
-        sleep 2
-    done
-
-    # Restore PostgreSQL
-    if [[ -f "$DUMP/postgres-all.sql" ]]; then
-        sudo docker exec -i postgres psql -U postgres < "$DUMP/postgres-all.sql" > /dev/null 2>&1 && \
-            ok "PostgreSQL restored" || warn "PostgreSQL restore had errors (may be OK)"
-    fi
+    wait_for_postgresql
+    restore_postgresql "$DUMP"
 
     # Wait for Qdrant
     log "Waiting for Qdrant..."
@@ -711,17 +802,7 @@ if [[ -f ~/llm-stack/docker-compose.yml ]]; then
         sleep 2
     done
 
-    # Restore Qdrant
-    if [[ -d "$DUMP/qdrant" ]]; then
-        for snap in "$DUMP/qdrant/"*.snapshot; do
-            [[ ! -f "$snap" ]] && continue
-            coll=$(basename "$snap" .snapshot)
-            curl -sf -X POST "http://127.0.0.1:6333/collections/${coll}/snapshots/upload" \
-                -H 'Content-Type: multipart/form-data' \
-                -F "snapshot=@${snap}" > /dev/null 2>&1 && \
-                ok "Qdrant: $coll" || warn "Qdrant: $coll failed"
-        done
-    fi
+    restore_qdrant_snapshots "$DUMP"
 
     # Restore n8n workflows only when the producer's export is present.
     if ! restore_n8n_workflows "$DUMP"; then

@@ -10,6 +10,7 @@ set -euo pipefail
 REPO="/mnt/nas/backups/restic"
 export RESTIC_PASSWORD="$(pass show backups/restic-password)"
 export RESTIC_REPOSITORY="$REPO"
+POSTGRES_SUPERUSER="${HAPAX_POSTGRES_SUPERUSER:-hapax}"
 
 log() { echo "[$(date -Iseconds)] $1"; }
 
@@ -17,35 +18,55 @@ snapshot_qdrant() {
     local collection_response collection_names coll snapshot_response snap_name
 
     if ! collection_response=$(curl -sf http://127.0.0.1:6333/collections); then
-        log "FATAL: failed to list Qdrant collections"
+        log "FATAL: failed to list Qdrant collections; check Qdrant health, then rerun the backup"
         return 1
     fi
     if ! collection_names=$(jq -er \
         '.result.collections | if length == 0 then error("no collections") else .[].name end' \
         <<< "$collection_response" 2>/dev/null); then
-        log "FATAL: Qdrant collection list was empty or invalid"
+        log "FATAL: Qdrant collection list was empty or invalid; inspect the collections API, then rerun the backup"
         return 1
     fi
 
     while IFS= read -r coll; do
         if ! snapshot_response=$(curl -sf -X POST \
             "http://127.0.0.1:6333/collections/${coll}/snapshots"); then
-            log "FATAL: failed to create Qdrant snapshot for $coll"
+            log "FATAL: failed to create Qdrant snapshot for $coll; check Qdrant health, then rerun the backup"
             return 1
         fi
         if ! snap_name=$(jq -er \
             '.result.name | select(type == "string" and length > 0)' \
             <<< "$snapshot_response" 2>/dev/null); then
-            log "FATAL: Qdrant returned no snapshot name for $coll"
+            log "FATAL: Qdrant returned no snapshot name for $coll; inspect the snapshot API response, then rerun the backup"
             return 1
         fi
         if ! curl -sf \
             "http://127.0.0.1:6333/collections/${coll}/snapshots/${snap_name}" \
             -o "$DUMP_DIR/qdrant/${coll}.snapshot"; then
-            log "FATAL: failed to download Qdrant snapshot for $coll"
+            log "FATAL: failed to download Qdrant snapshot for $coll; check Qdrant storage, then rerun the backup"
             return 1
         fi
     done <<< "$collection_names"
+}
+
+export_n8n_workflows() {
+    local workflow_dump="$DUMP_DIR/n8n-workflows.json"
+    local export_errors="$DUMP_DIR/n8n-workflows.err"
+
+    if ! docker exec n8n n8n export:workflow --all \
+        --output=/tmp/n8n-workflows.json 2> "$export_errors"; then
+        log "FATAL: n8n workflow export failed; check 'docker logs n8n', then rerun the backup"
+        return 1
+    fi
+    if ! docker cp n8n:/tmp/n8n-workflows.json "$workflow_dump" 2>> "$export_errors"; then
+        log "FATAL: could not copy n8n workflow export to $workflow_dump; check the n8n container, then rerun the backup"
+        return 1
+    fi
+    if [[ ! -s "$workflow_dump" ]]; then
+        log "FATAL: n8n workflow export is missing or empty at $workflow_dump; check the n8n CLI, then rerun the backup"
+        return 1
+    fi
+    rm -f "$export_errors"
 }
 
 # Remove stale locks left by a prior interrupted run — a recurring exit-11 cause
@@ -74,7 +95,7 @@ log "Dumping PostgreSQL..."
 # because nothing ever opened the file. Gate on the artifact, not the theory.
 PG_DUMP="$DUMP_DIR/postgres-all.sql"
 PG_ERR="$DUMP_DIR/postgres-all.err"
-if ! docker exec postgres pg_dumpall -U hapax > "$PG_DUMP" 2>"$PG_ERR"; then
+if ! docker exec postgres pg_dumpall -U "$POSTGRES_SUPERUSER" > "$PG_DUMP" 2>"$PG_ERR"; then
     log "FATAL: pg_dumpall exited non-zero: $(tail -c 300 "$PG_ERR" 2>/dev/null)"
     exit 1
 fi
@@ -93,10 +114,9 @@ log "PostgreSQL dump OK: ${_pg_size} bytes, terminator present"
 log "Snapshotting Qdrant collections..."
 snapshot_qdrant
 
-# n8n export (if n8n CLI available in container)
-docker exec n8n n8n export:workflow --all --output=/tmp/n8n-workflows.json 2>/dev/null && \
-    docker cp n8n:/tmp/n8n-workflows.json "$DUMP_DIR/n8n-workflows.json" 2>/dev/null || \
-    log "WARN: n8n workflow export failed"
+# n8n workflows are part of the declared backup. A missing export is a broken
+# backup, so do not invoke restic unless the file was materialized.
+export_n8n_workflows
 
 # Docker volume metadata (for DR reference — what volumes exist and their config)
 log "Capturing Docker volume metadata..."
