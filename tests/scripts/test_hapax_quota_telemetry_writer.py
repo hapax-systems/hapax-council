@@ -341,7 +341,7 @@ def _glmcp_payg_spend(
 ) -> None:
     task_hash_line = f"task_hash: {task_hash}\n" if task_hash is not None else ""
     (relay / name).write_text(
-        f"""schema: hapax.glmcp_payg_spend.v1
+        f"""schema: hapax.glmcp_payg_spend.v2
 status: spend_estimated
 spend_id: {spend_id}
 task_id: {task_id}
@@ -354,6 +354,15 @@ model_or_engine: glm-5.2
 model_id: z_ai-glm-5.2
 effort: none
 quantization: not_applicable
+effort_provenance: absent
+wall_latency_ms: absent
+ttfb_ms: absent
+input_tokens: absent
+output_tokens: absent
+compute_unit_status: absent
+compute_unit_value: absent
+compute_unit_provenance: absent
+tokens_do_not_explain_latency: absent
 auth_surface: api_key
 quality_floor: frontier_review_required
 quality_preservation_reason: receipt-bounded GLMCP review fallback after Coding Plan quota wall

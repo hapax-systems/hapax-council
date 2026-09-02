@@ -22,6 +22,7 @@ from shared.quota_spend_ledger import (
     BudgetLifecycleState,
     DependencyState,
     Effort,
+    EffortProvenance,
     ModelId,
     PaidApiBudgetState,
     PaidRouteRequest,
@@ -300,7 +301,7 @@ def _add_glmcp_payg_spend_receipt(
 ) -> None:
     payload["spend_receipts"].append(
         {
-            "spend_receipt_schema": 1,
+            "spend_receipt_schema": 2,
             "spend_id": spend_id,
             "task_id": task_id,
             "authority_case": "CASE-CAPACITY-ROUTING-GLMCP-PAYG-TEST",
@@ -463,7 +464,7 @@ def test_cap_exhaustion_refuses_paid_route() -> None:
     payload = _active_budget_payload()
     payload["spend_receipts"] = [
         {
-            "spend_receipt_schema": 1,
+            "spend_receipt_schema": 2,
             "spend_id": "spend-20260509T203000Z-cap-used",
             "task_id": "capacity-routing-quota-spend-ledger",
             "authority_case": "CASE-CAPACITY-ROUTING-001",
@@ -502,7 +503,7 @@ def test_per_task_cap_sums_existing_spend_for_same_task_only() -> None:
     budget["per_task_cap_usd"] = "2.00"
     payload["spend_receipts"] = [
         {
-            "spend_receipt_schema": 1,
+            "spend_receipt_schema": 2,
             "spend_id": "spend-20260517T073000Z-task-a-used",
             "task_id": "capacity-routing-quota-spend-ledger",
             "authority_case": "CASE-CAPACITY-ROUTING-001",
@@ -527,7 +528,7 @@ def test_per_task_cap_sums_existing_spend_for_same_task_only() -> None:
             "support_artifact_authority": "none",
         },
         {
-            "spend_receipt_schema": 1,
+            "spend_receipt_schema": 2,
             "spend_id": "spend-20260517T073500Z-task-b-used",
             "task_id": "other-task",
             "authority_case": "CASE-CAPACITY-ROUTING-001",
@@ -577,7 +578,7 @@ def test_reconciled_zero_actual_spend_counts_zero_against_caps() -> None:
     budget["per_task_cap_usd"] = "0.05"
     payload["spend_receipts"] = [
         {
-            "spend_receipt_schema": 1,
+            "spend_receipt_schema": 2,
             "spend_id": "spend-20260517T073000Z-zero-actual",
             "task_id": "capacity-routing-quota-spend-ledger",
             "authority_case": "CASE-CAPACITY-ROUTING-001",
@@ -1160,7 +1161,7 @@ def test_overdue_reconciliation_freezes_otherwise_valid_budget() -> None:
     payload = _active_budget_payload()
     payload["spend_receipts"] = [
         {
-            "spend_receipt_schema": 1,
+            "spend_receipt_schema": 2,
             "spend_id": "spend-20260509T203000Z-unreconciled",
             "task_id": "capacity-routing-quota-spend-ledger",
             "authority_case": "CASE-CAPACITY-ROUTING-001",
@@ -2070,11 +2071,12 @@ def test_spend_receipt_meters_effort_and_structured_model_id() -> None:
     """effort defaults to NONE and model_id to None (free-text model_or_engine is retained), and a
     receipt can record a structured dated model_id + the effort the spend was incurred at — so the
     spend plane keys on the same execution axes the route descriptor does."""
-    ledger = QuotaSpendLedger.model_validate(
-        json.loads(QUOTA_SPEND_LEDGER_FIXTURES.read_text(encoding="utf-8"))
-    )
+    fixture = json.loads(QUOTA_SPEND_LEDGER_FIXTURES.read_text(encoding="utf-8"))
+    fixture["spend_receipts"][0].pop("effort_provenance")
+    ledger = QuotaSpendLedger.model_validate(fixture)
     base = ledger.spend_receipts[0]
     assert base.effort is Effort.NONE
+    assert base.effort_provenance is EffortProvenance.ABSENT
     assert base.model_id is None  # legacy receipts carry only free-text model_or_engine
 
     payload = base.model_dump(mode="json")
@@ -2084,3 +2086,53 @@ def test_spend_receipt_meters_effort_and_structured_model_id() -> None:
     assert metered.model_id is ModelId.CLAUDE_OPUS_4_8
     assert metered.effort is Effort.XHIGH
     assert metered.model_or_engine == base.model_or_engine  # free-text identity retained alongside
+
+
+def test_spend_receipt_schema_2_renders_resource_absence_and_rejects_zero_default() -> None:
+    ledger = QuotaSpendLedger.model_validate(
+        json.loads(QUOTA_SPEND_LEDGER_FIXTURES.read_text(encoding="utf-8"))
+    )
+    receipt = ledger.spend_receipts[0]
+
+    assert receipt.spend_receipt_schema == 2
+    assert receipt.compute_unit_value is None
+    payload = receipt.model_dump(mode="json")
+    assert payload["compute_unit_status"] == "absent"
+    assert payload["compute_unit_value"] == "absent"
+    assert payload["compute_unit_provenance"] == "absent"
+    assert payload["wall_latency_ms"] == "absent"
+    assert payload["ttfb_ms"] == "absent"
+    assert payload["input_tokens"] == "absent"
+    assert payload["output_tokens"] == "absent"
+
+    payload["compute_unit_value"] = "0"
+    with pytest.raises(ValidationError, match="absent compute unit cannot carry a value"):
+        SpendReceipt.model_validate(payload)
+
+
+def test_spend_receipt_derives_tokens_do_not_explain_latency_only_with_both_inputs() -> None:
+    """The pre-registered inequality is
+    ``wall_latency_ms > TOKENS_DO_NOT_EXPLAIN_LATENCY_WALL_THRESHOLD_MS`` AND
+    ``output_tokens < TOKENS_DO_NOT_EXPLAIN_LATENCY_OUTPUT_TOKEN_THRESHOLD``.
+    """
+    ledger = QuotaSpendLedger.model_validate(
+        json.loads(QUOTA_SPEND_LEDGER_FIXTURES.read_text(encoding="utf-8"))
+    )
+    payload = ledger.spend_receipts[0].model_dump(mode="json")
+    payload["wall_latency_ms"] = 30_001
+    payload["output_tokens"] = 127
+    high_wall_low_output = SpendReceipt.model_validate(payload)
+    assert high_wall_low_output.tokens_do_not_explain_latency is True
+
+    payload["wall_latency_ms"] = "absent"
+    wall_absent = SpendReceipt.model_validate(payload)
+    assert wall_absent.tokens_do_not_explain_latency is None
+    assert wall_absent.model_dump(mode="json")["tokens_do_not_explain_latency"] == "absent"
+
+
+def test_spend_receipt_has_no_latency_inferred_depth_or_step_field() -> None:
+    assert not {
+        field_name
+        for field_name in SpendReceipt.model_fields
+        if "depth" in field_name or "step" in field_name
+    }

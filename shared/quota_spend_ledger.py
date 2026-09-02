@@ -36,6 +36,8 @@ DEFAULT_QUOTA_SPEND_LEDGER_LIVE = (
 )
 
 PAID_CAPACITY_POOLS = frozenset({"api_paid_spend", "bootstrap_budget", "incident_override"})
+TOKENS_DO_NOT_EXPLAIN_LATENCY_WALL_THRESHOLD_MS = 30_000
+TOKENS_DO_NOT_EXPLAIN_LATENCY_OUTPUT_TOKEN_THRESHOLD = 128
 CLAUDE_RECEIPT_BOUNDED_SUBSCRIPTION_ROUTES = frozenset(
     {"claude.headless.full", "claude.review.opus"}
 )
@@ -222,6 +224,22 @@ class Effort(StrEnum):
     HIGH = "high"
     XHIGH = "xhigh"
     MAX = "max"
+
+
+class ComputeUnitStatus(StrEnum):
+    REPORTED = "reported"
+    ABSENT = "absent"
+
+
+class ComputeUnitProvenance(StrEnum):
+    PROVIDER_FIELD = "provider_field"
+    ABSENT = "absent"
+
+
+class EffortProvenance(StrEnum):
+    REQUESTED = "requested"
+    OBSERVED = "observed"
+    ABSENT = "absent"
 
 
 class ModelId(StrEnum):
@@ -434,7 +452,7 @@ class TransitionBudget(StrictModel):
 class SpendReceipt(StrictModel):
     """Estimated or reconciled spend event under a transition budget."""
 
-    spend_receipt_schema: Literal[1] = 1
+    spend_receipt_schema: Literal[2] = 2
     spend_id: str = Field(pattern=r"^spend-\d{8}T\d{6}Z-[a-z0-9_.:-]+$")
     task_id: str = Field(min_length=1)
     task_hash: str | None = Field(default=None, pattern=r"^sha256:[0-9a-f]{64}$")
@@ -451,6 +469,15 @@ class SpendReceipt(StrictModel):
     model_id: ModelId | None = None
     effort: Effort = Effort.NONE
     quantization: Quantization = Quantization.NOT_APPLICABLE
+    effort_provenance: EffortProvenance = EffortProvenance.ABSENT
+    wall_latency_ms: int | None = Field(default=None, ge=0)
+    ttfb_ms: int | None = Field(default=None, ge=0)
+    input_tokens: int | None = Field(default=None, ge=0)
+    output_tokens: int | None = Field(default=None, ge=0)
+    compute_unit_status: ComputeUnitStatus = ComputeUnitStatus.ABSENT
+    compute_unit_value: str | None = Field(default=None, min_length=1)
+    compute_unit_provenance: ComputeUnitProvenance = ComputeUnitProvenance.ABSENT
+    tokens_do_not_explain_latency: bool | None = None
     auth_surface: AuthSurface
     quality_floor: str = Field(min_length=1)
     quality_preservation_reason: str = Field(min_length=1)
@@ -465,6 +492,24 @@ class SpendReceipt(StrictModel):
     reconciliation_reason: str | None = None
     artifact_refs: tuple[str, ...] = Field(default=())
     support_artifact_authority: SupportArtifactAuthority = SupportArtifactAuthority.NONE
+
+    @model_validator(mode="before")
+    @classmethod
+    def _normalize_rendered_absence(cls, data: Any) -> Any:
+        if not isinstance(data, dict):
+            return data
+        payload = dict(data)
+        for field_name in (
+            "wall_latency_ms",
+            "ttfb_ms",
+            "input_tokens",
+            "output_tokens",
+            "compute_unit_value",
+            "tokens_do_not_explain_latency",
+        ):
+            if payload.get(field_name) == "absent":
+                payload[field_name] = None
+        return payload
 
     @model_validator(mode="after")
     def _receipt_contract(self) -> Self:
@@ -500,6 +545,29 @@ class SpendReceipt(StrictModel):
                 raise ValueError(f"{self.spend_id} frozen/refused spend cannot claim actual cost")
             if self.reconciled_at is None or not self.reconciliation_reason:
                 raise ValueError(f"{self.spend_id} frozen/refused spend requires review evidence")
+        if self.compute_unit_status is ComputeUnitStatus.ABSENT:
+            if self.compute_unit_value is not None:
+                raise ValueError(f"{self.spend_id} absent compute unit cannot carry a value")
+            if self.compute_unit_provenance is not ComputeUnitProvenance.ABSENT:
+                raise ValueError(f"{self.spend_id} absent compute unit requires absent provenance")
+        else:
+            if self.compute_unit_value is None:
+                raise ValueError(f"{self.spend_id} reported compute unit requires a value")
+            if self.compute_unit_provenance is not ComputeUnitProvenance.PROVIDER_FIELD:
+                raise ValueError(
+                    f"{self.spend_id} reported compute unit requires provider_field provenance"
+                )
+        tokens_do_not_explain_latency = None
+        if self.wall_latency_ms is not None and self.output_tokens is not None:
+            tokens_do_not_explain_latency = (
+                self.wall_latency_ms > TOKENS_DO_NOT_EXPLAIN_LATENCY_WALL_THRESHOLD_MS
+                and self.output_tokens < TOKENS_DO_NOT_EXPLAIN_LATENCY_OUTPUT_TOKEN_THRESHOLD
+            )
+        object.__setattr__(
+            self,
+            "tokens_do_not_explain_latency",
+            tokens_do_not_explain_latency,
+        )
         _reject_private_or_identity_refs(
             _refs(
                 self.spend_id,
@@ -513,6 +581,7 @@ class SpendReceipt(StrictModel):
                 self.model_id.value if self.model_id is not None else None,
                 self.effort.value,
                 self.quantization.value,
+                self.compute_unit_value,
                 self.quality_floor,
                 self.quality_preservation_reason,
                 self.reconciliation_reason,
@@ -523,10 +592,20 @@ class SpendReceipt(StrictModel):
         return self
 
     @model_serializer(mode="wrap")
-    def _serialize_without_empty_task_hash(self, handler: Any) -> dict[str, Any]:
+    def _serialize_receipt(self, handler: Any) -> dict[str, Any]:
         payload = handler(self)
         if payload.get("task_hash") is None:
             payload.pop("task_hash", None)
+        for field_name in (
+            "wall_latency_ms",
+            "ttfb_ms",
+            "input_tokens",
+            "output_tokens",
+            "compute_unit_value",
+            "tokens_do_not_explain_latency",
+        ):
+            if payload.get(field_name) is None:
+                payload[field_name] = "absent"
         return payload
 
     def cost_against_cap(self) -> Decimal:

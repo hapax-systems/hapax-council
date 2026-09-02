@@ -223,6 +223,47 @@ def test_capacity_pool_positive_control() -> None:
     assert not _is_modeled("quantization", {"model_or_engine", "cost_usd"})
 
 
+def test_spend_receipt_field_set_is_pinned() -> None:
+    assert set(SpendReceipt.model_fields) == {
+        "spend_receipt_schema",
+        "spend_id",
+        "task_id",
+        "task_hash",
+        "authority_case",
+        "route_id",
+        "capacity_pool",
+        "budget_id",
+        "provider",
+        "model_or_engine",
+        "model_id",
+        "effort",
+        "quantization",
+        "effort_provenance",
+        "wall_latency_ms",
+        "ttfb_ms",
+        "input_tokens",
+        "output_tokens",
+        "compute_unit_status",
+        "compute_unit_value",
+        "compute_unit_provenance",
+        "tokens_do_not_explain_latency",
+        "auth_surface",
+        "quality_floor",
+        "quality_preservation_reason",
+        "spend_reason",
+        "estimated_cost_usd",
+        "actual_cost_usd",
+        "cap_remaining_usd",
+        "created_at",
+        "reconcile_by",
+        "reconciliation_state",
+        "reconciled_at",
+        "reconciliation_reason",
+        "artifact_refs",
+        "support_artifact_authority",
+    }
+
+
 def test_route_ids_stay_three_segment() -> None:
     """Anti-explosion invariant: capability knobs (effort/context/fast) must live in a
     descriptor keyed BY route_id, never folded into route_id — so route_id stays the

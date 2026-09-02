@@ -92,7 +92,7 @@ def _payg_reservation(module: ModuleType, path: str = "glmcp-payg-spend-test.yam
         path=Path(path),
         spend_receipt=module.SpendReceipt.model_validate(
             {
-                "spend_receipt_schema": 1,
+                "spend_receipt_schema": 2,
                 "spend_id": "spend-20260706T140430Z-glmcp-payg-review-test",
                 "task_id": "cc-task-glmcp-review-seat-glm52-model-contract-20260706",
                 "authority_case": "CASE-CAPACITY-ROUTING-GLMCP-PAYG-20260706",
@@ -1326,6 +1326,9 @@ def test_call_glm_malformed_payg_response_keeps_spend_pending(
     receipt_body = next(receipt_dir.glob("glmcp-payg-spend-*.yaml")).read_text(encoding="utf-8")
     assert "status: spend_estimated" in receipt_body
     assert "reconciliation_state: pending" in receipt_body
+    assert "compute_unit_status: absent" in receipt_body
+    assert "compute_unit_value: absent" in receipt_body
+    assert "ttfb_ms: absent" in receipt_body
 
 
 def test_payg_spend_receipt_omits_secret_prompt_and_output(
@@ -1401,7 +1404,7 @@ def test_payg_spend_receipt_omits_secret_prompt_and_output(
     assert reservation.path.parent == tmp_path
     assert reservation.spend_receipt.budget_id == "tb-20260706-zai-glmcp-payg-review"
     assert reservation.spend_receipt.estimated_cost_usd is not None
-    assert "schema: hapax.glmcp_payg_spend.v1" in receipt
+    assert "schema: hapax.glmcp_payg_spend.v2" in receipt
     assert "status: spend_estimated" in receipt
     assert "task_id: cc-task-glmcp-review-seat-glm52-model-contract-20260706" in receipt
     assert "actual_cost_usd:" not in receipt
