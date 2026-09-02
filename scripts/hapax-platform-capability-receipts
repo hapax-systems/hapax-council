@@ -14,7 +14,7 @@ import shutil
 import socket
 import subprocess
 import sys
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any
 
@@ -651,7 +651,12 @@ def observe_quota(
     observed_at = min(best_by_route[route_id][0] for route_id in observed_routes)
     stale_candidates: list[int] = []
     for route_id in observed_routes:
-        stale_candidates.append(int(best_by_route[route_id][1]["stale_after_seconds"]))
+        # The platform receipt is dated from its own generation, so it may carry only what is LEFT
+        # of the raw receipt's lifetime, never the raw receipt's full TTL (review finding on
+        # #4616: a receipt observed 890 s into a 900 s TTL was being renewed for another 900 s).
+        raw_observed, raw_doc, _path = best_by_route[route_id]
+        raw_expiry = raw_observed + timedelta(seconds=int(raw_doc["stale_after_seconds"]))
+        stale_candidates.append(max(1, int((raw_expiry - now).total_seconds())))
         bound = ledger_fresh[route_id][1]
         if bound is not None:
             stale_candidates.append(max(1, int((bound - now).total_seconds())))

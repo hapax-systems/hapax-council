@@ -2065,6 +2065,10 @@ def _quota_ledger_fresh_for(
     fresh validated ledger snapshot both name it (#4616), so tests that want "observed" must
     provide both halves.
     """
+    from shared.quota_spend_ledger import (
+        RECEIPT_BOUNDED_SUBSCRIPTION_PROVIDERS as _expected_providers,
+    )
+
     payload = json.loads(QUOTA_LEDGER.read_text(encoding="utf-8"))
     payload["ledger_id"] = "quota-spend-ledger-test-live"
     payload["captured_at"] = captured_at
@@ -2081,6 +2085,15 @@ def _quota_ledger_fresh_for(
         # The validator's witness pattern requires a `-YYYYMMDDtHHMMSSz` stamp on both the receipt
         # label and the witness, exactly as the admission writer stamps them.
         stamp = captured_at.replace("-", "").replace(":", "").lower()
+        if route_id.startswith("agy."):
+            # The validator's agy shape: an agy-quota-admission label, exactly one safe witness,
+            # the sanctioned reviewer tool and model, and both timestamps.
+            return [
+                f"relay-receipt:agy-quota-admission-{stamp}.yaml"
+                f":witness:agy-headroom-observed-{stamp}"
+                f":supported_tool:hapax-agy-reviewer:model:gemini-3.1-pro-high"
+                f":observed_at:{captured_at}:fresh_until:{fresh_until}"
+            ]
         label = f"claude-subscription-quota-admission-{route_id.replace('.', '-')}-{stamp}.yaml"
         return [
             f"relay-receipt:{label}:witness:claude-subscription-headroom-observed-{stamp}"
@@ -2095,7 +2108,8 @@ def _quota_ledger_fresh_for(
             "captured_at": captured_at,
             "fresh_until": fresh_until if state == "fresh" else None,
             "route_id": route_id,
-            "provider": "anthropic-claude-subscription",
+            # The validator expects each receipt-bounded route's own provider (agy is not claude).
+            "provider": _expected_providers.get(route_id, "anthropic-claude-subscription"),
             "capacity_pool": "subscription_quota",
             "subscription_quota_state": state,
             "evidence_refs": _refs(route_id, state),
@@ -2320,6 +2334,46 @@ class TestQuotaIsPerRouteAndLedgerBacked:
         result = module["observe_quota"]("claude", [_Route("claude.headless.full")], now=self.NOW)
         assert result.status.value == "observed"
         assert result.stale_after == "900s"
+
+    def test_observed_stale_after_is_what_is_left_of_the_raw_receipts_lifetime(
+        self, tmp_path: Path
+    ) -> None:
+        """A receipt 15 min into a 20 min TTL vouches for 5 more minutes, not another 20.
+
+        The platform receipt is dated from its own generation, so carrying the raw receipt's full
+        TTL renewed quota past the moment anyone last observed it (review finding on #4616).
+        """
+        ledger = _quota_ledger_fresh_for(tmp_path, {"claude.headless.full": "fresh"})
+        module = self._module(tmp_path, ledger)
+        _quota_receipt(
+            tmp_path / "claude-quota-admission.yaml",
+            observed_at="2026-09-01T23:00:00Z",
+            stale_after_seconds=1200,
+        )
+        result = module["observe_quota"]("claude", [_Route("claude.headless.full")], now=self.NOW)
+        assert result.status.value == "observed"
+        # now 23:15Z: 300 s left on the receipt, 900 s left on the ledger snapshot
+        assert result.stale_after == "300s"
+
+    def test_the_agy_review_route_is_observed_from_its_own_receipt_and_ledger_snapshot(
+        self, tmp_path: Path
+    ) -> None:
+        """The exit predicate names agy as well as claude, and agy has its own provider and
+        evidence shape in the ledger's validator (review finding on #4616)."""
+        ledger = _quota_ledger_fresh_for(tmp_path, {"agy.review.direct": "fresh"})
+        module = self._module(tmp_path, ledger)
+        _quota_receipt(
+            tmp_path / "agy-quota-admission.yaml",
+            schema="hapax.agy_quota_admission.v1",
+            route_id="agy.review.direct",
+            evidence_ref="agy-headroom-observed-20260901t231017z",
+        )
+        result = module["observe_quota"]("agy", [_Route("agy.review.direct")], now=self.NOW)
+        assert result.status.value == "observed", result.reason_codes
+        assert (
+            "platform-capability-registry:agy.review.direct:quota:observed" in result.evidence_refs
+        )
+        assert "local:agy:quota-admission-receipt:agy.review.direct:present" in result.evidence_refs
 
     def test_no_sanctioned_wrapper_is_none_not_an_exception(self, tmp_path: Path) -> None:
         module = self._module(tmp_path, ledger=None)
