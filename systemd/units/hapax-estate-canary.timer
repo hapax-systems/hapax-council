@@ -1,0 +1,11 @@
+[Unit]
+Description=Write hourly estate-store detector canaries
+Documentation=https://github.com/hapax-systems/hapax-council/blob/main/docs/runbooks/estate-store-registration-stage1.md
+
+[Timer]
+OnCalendar=*-*-* *:05:00
+Persistent=true
+Unit=hapax-estate-canary.service
+
+[Install]
+WantedBy=timers.target

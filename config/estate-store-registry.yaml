@@ -1,0 +1,291 @@
+schema: hapax.estate-store-registry/v1
+stage: report-only
+policy:
+  unregistered_action: flag-only
+  vendor_root_action: flag-only
+  reports_path: "{home}/.cache/hapax/estate-registration/reports"
+  runtime_registration_path: "{home}/.cache/hapax/estate-registration/registrations"
+  canary_state_path: "{home}/.cache/hapax/estate-registration/canaries"
+hosts:
+  appendix:
+    aliases: [appendix, hapax-appendix]
+    peer: podium
+    ssh_target: hapax-appendix
+  podium:
+    aliases: [podium, hapax-podium]
+    peer: appendix
+    ssh_target: hapax-podium
+scan_roots:
+  - id: home-top-level
+    kind: directory
+    path: "{home}"
+    depth: 1
+  - id: vault-hapax-top-level
+    kind: directory
+    path: "{vault}/30-areas/hapax"
+    depth: 1
+  - id: store-roots
+    kind: directory-glob
+    path: "/store*"
+    depth: 2
+  - id: estate-mount-roots
+    kind: mountinfo
+    include_prefixes: ["{home}", /store, /mnt]
+  - id: docker-volumes
+    kind: directory
+    path: /var/lib/docker/volumes
+    depth: 1
+
+# Every existing store below is grandfathered evidence, not an operator blessing.
+# A consumer must name itself and receives only the entries that list it.
+stores:
+  - id: claude-code-vendor-root
+    writers: [Claude Code]
+    hosts: ["*"]
+    locator: "{home}/.claude"
+    locator_kind: filesystem
+    class: vendor-root
+    action: flag-only
+    lifecycle: grandfathered
+    discovery_evidence: REGISTRATION-AT-PRODUCTION.md §1a (transcripts and cwd-keyed memory)
+    consumers: [census, pillar-matcher]
+  - id: claude-code-project-stores
+    writers: [Claude Code]
+    hosts: ["*"]
+    locator: "{home}/.claude/projects/*"
+    locator_kind: filesystem-glob
+    class: vendor-root
+    action: flag-only
+    lifecycle: grandfathered
+    discovery_evidence: REGISTRATION-AT-PRODUCTION.md §1a (project transcript and memory stores)
+    consumers: [census, pillar-matcher]
+  - id: codex-vendor-root
+    writers: [codex]
+    hosts: ["*"]
+    locator: "{home}/.codex"
+    locator_kind: filesystem
+    class: vendor-root
+    action: flag-only
+    lifecycle: grandfathered
+    discovery_evidence: REGISTRATION-AT-PRODUCTION.md §1a (history, sessions, goals database)
+    consumers: [census]
+  - id: kimi-vendor-root
+    writers: [kimi]
+    hosts: ["*"]
+    locator: "{home}/.kimi-code"
+    locator_kind: filesystem
+    class: vendor-root
+    action: flag-only
+    lifecycle: grandfathered
+    discovery_evidence: REGISTRATION-AT-PRODUCTION.md §1a (sessions, logs, telemetry, cron)
+    consumers: [census]
+  - id: opencode-vendor-root
+    writers: [opencode]
+    hosts: ["*"]
+    locator: "{home}/.local/share/opencode"
+    locator_kind: filesystem
+    class: vendor-root
+    action: flag-only
+    lifecycle: grandfathered
+    discovery_evidence: REGISTRATION-AT-PRODUCTION.md §1a (sqlite, tool output, snapshots)
+    consumers: [census]
+  - id: gemini-vendor-root
+    writers: [gemini]
+    hosts: ["*"]
+    locator: "{home}/.gemini"
+    locator_kind: filesystem
+    class: vendor-root
+    action: flag-only
+    lifecycle: grandfathered
+    discovery_evidence: REGISTRATION-AT-PRODUCTION.md §1a (projects and antigravity-cli state)
+    consumers: [census]
+  - id: grok-vendor-root
+    writers: [grok]
+    hosts: ["*"]
+    locator: "{home}/.grok"
+    locator_kind: filesystem
+    class: vendor-root
+    action: flag-only
+    lifecycle: grandfathered
+    discovery_evidence: REGISTRATION-AT-PRODUCTION.md §1a (sessions and campaign state)
+    consumers: [census]
+  - id: vault-git-mirror
+    writers: [vault-git-snapshot.timer]
+    hosts: [appendix]
+    locator: "{home}/backups/vault.git"
+    locator_kind: filesystem
+    class: systemd-writer
+    action: flag-only
+    lifecycle: grandfathered
+    discovery_evidence: REGISTRATION-AT-PRODUCTION.md §1b (appendix bare mirror)
+    consumers: [census]
+  - id: coordination-cache
+    writers: [hapax-coord-feed-mirror.timer, hapax-coordinator.service]
+    hosts: ["*"]
+    locator: "{home}/.cache/hapax/coord"
+    locator_kind: filesystem
+    class: systemd-writer
+    action: flag-only
+    lifecycle: grandfathered
+    discovery_evidence: REGISTRATION-AT-PRODUCTION.md §1b (coordination mirror and lane state)
+    consumers: [census, brief-dispatch, task-intake]
+  - id: hapax-runtime-cache
+    writers: [hapax systemd writer fleet]
+    hosts: ["*"]
+    locator: "{home}/.cache/hapax"
+    locator_kind: filesystem
+    class: systemd-writer
+    action: flag-only
+    lifecycle: grandfathered
+    discovery_evidence: REGISTRATION-AT-PRODUCTION.md §1b (telemetry, receipts, and queues)
+    consumers: [census, brief-dispatch, task-intake]
+  - id: estate-registration-runtime
+    writers: [hapax-estate-canary.service, hapax-estate-drift-sweep.service]
+    hosts: [appendix, podium]
+    locator: "{home}/.cache/hapax/estate-registration"
+    locator_kind: filesystem
+    class: systemd-writer
+    action: flag-only
+    lifecycle: grandfathered
+    discovery_evidence: registration-at-production Stage 1 accepted build artifact
+    consumers: [census, drift-sweep]
+  - id: frame-todo
+    writers: [hapax-todo-refresh.timer]
+    hosts: ["*"]
+    locator: "{vault}/30-areas/hapax/frame/TODO.md"
+    locator_kind: filesystem
+    class: systemd-writer
+    action: flag-only
+    lifecycle: grandfathered
+    discovery_evidence: REGISTRATION-AT-PRODUCTION.md §1b (frame TODO writer)
+    consumers: [assemble, brief-dispatch]
+  - id: podium-netconsole-log
+    writers: [podium-netconsole-listener.service]
+    hosts: [podium]
+    locator: "{home}/podium-netconsole.log"
+    locator_kind: filesystem
+    class: systemd-writer
+    action: flag-only
+    lifecycle: grandfathered
+    discovery_evidence: REGISTRATION-AT-PRODUCTION.md §1b (unbounded netconsole append)
+    consumers: [census]
+  - id: wear-os-state
+    writers: [hapax-watch-backup.timer]
+    hosts: [appendix]
+    locator: "{home}/hapax-edge"
+    locator_kind: filesystem
+    class: systemd-writer
+    action: flag-only
+    lifecycle: grandfathered
+    discovery_evidence: REGISTRATION-AT-PRODUCTION.md §1b (wear-OS state rsync)
+    consumers: [census]
+  - id: vault
+    writers: [agent shell, vault-context-writer, hapax-vault-coherence, vault-git-snapshot]
+    hosts: [appendix, podium]
+    locator: "{vault}"
+    locator_kind: filesystem
+    class: vault
+    action: flag-only
+    lifecycle: grandfathered
+    discovery_evidence: REGISTRATION-AT-PRODUCTION.md §1c/§1e (NFS4 vault and agent free-write zone)
+    consumers: [census, assemble, brief-dispatch, pillar-matcher, task-intake]
+  - id: vault-hapax-free-write-root
+    writers: [agent shell]
+    hosts: [appendix, podium]
+    locator: "{vault}/30-areas/hapax"
+    locator_kind: filesystem
+    class: agent-free-write
+    action: flag-only
+    lifecycle: grandfathered
+    discovery_evidence: REGISTRATION-AT-PRODUCTION.md §1c (existing top-level areas; per-entry manifest pending grandfather capture)
+    consumers: [census, assemble, brief-dispatch, pillar-matcher, task-intake]
+  - id: lanebus-store-root
+    writers: [agent shell]
+    hosts: [appendix, podium]
+    locator: "{vault}/30-areas/hapax/lanebus"
+    locator_kind: filesystem
+    class: agent-free-write
+    action: flag-only
+    lifecycle: grandfathered
+    discovery_evidence: REGISTRATION-AT-PRODUCTION.md §1c (lane-authored markdown bus)
+    consumers: [census, assemble, brief-dispatch, task-intake]
+  - id: appendix-minio
+    writers: [appendix docker stack]
+    hosts: [appendix]
+    locator: "{home}/llm-stack/data/minio"
+    locator_kind: filesystem
+    class: container-object-store
+    action: flag-only
+    lifecycle: grandfathered
+    discovery_evidence: REGISTRATION-AT-PRODUCTION.md §1d (loop-mounted MinIO xfs)
+    consumers: [census]
+  - id: podium-minio
+    writers: [podium MinIO]
+    hosts: [podium]
+    locator: /store/llm-data/minio
+    locator_kind: filesystem
+    class: container-object-store
+    action: flag-only
+    lifecycle: grandfathered
+    discovery_evidence: REGISTRATION-AT-PRODUCTION.md §1d (second MinIO store)
+    consumers: [census]
+  - id: docker-volumes
+    writers: [docker containers]
+    hosts: [appendix, podium]
+    locator: /var/lib/docker/volumes/*
+    locator_kind: filesystem-glob
+    class: container-object-store
+    action: flag-only
+    lifecycle: grandfathered
+    discovery_evidence: REGISTRATION-AT-PRODUCTION.md §1d (container volume stores)
+    consumers: [census]
+  - id: google-sync-upstream
+    writers: [Google services]
+    hosts: [off-estate]
+    locator: off-estate://google
+    locator_kind: external
+    class: off-estate
+    action: flag-only
+    lifecycle: grandfathered
+    discovery_evidence: REGISTRATION-AT-PRODUCTION.md §1f (Drive, Gmail, and Calendar upstream writes)
+    consumers: [census]
+  - id: github-upstream
+    writers: [GitHub]
+    hosts: [off-estate]
+    locator: off-estate://github/hapax-council
+    locator_kind: external
+    class: off-estate
+    action: flag-only
+    lifecycle: grandfathered
+    discovery_evidence: REGISTRATION-AT-PRODUCTION.md §1f (council refs)
+    consumers: [census]
+  - id: publication-upstreams
+    writers: [bluesky, mastodon, soundcloud]
+    hosts: [off-estate]
+    locator: off-estate://publication-targets
+    locator_kind: external
+    class: off-estate
+    action: flag-only
+    lifecycle: grandfathered
+    discovery_evidence: REGISTRATION-AT-PRODUCTION.md §1f (weblog targets)
+    consumers: [census, brief-dispatch]
+  - id: embodied-upstreams
+    writers: [phone, watch, spoken]
+    hosts: [off-estate]
+    locator: off-estate://embodied-surfaces
+    locator_kind: external
+    class: off-estate
+    action: flag-only
+    lifecycle: grandfathered
+    discovery_evidence: REGISTRATION-AT-PRODUCTION.md §1f (phone, watch, and spoken writes)
+    consumers: [census]
+  - id: synology-internal-jobs
+    writers: [Synology]
+    hosts: [nas]
+    locator: absent
+    locator_kind: absent
+    class: known-gap
+    action: flag-only
+    lifecycle: known-gap
+    discovery_evidence: REGISTRATION-AT-PRODUCTION.md §1g (jobs not yet inventoried; no measured path)
+    consumers: [census]

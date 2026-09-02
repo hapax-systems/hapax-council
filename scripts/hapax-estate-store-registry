@@ -1,0 +1,152 @@
+#!/usr/bin/env python3
+"""Report-only estate store registry, canary, and drift-sweep CLI."""
+
+from __future__ import annotations
+
+import argparse
+import json
+import sys
+from pathlib import Path
+
+import yaml
+
+REPO_ROOT = Path(__file__).resolve().parent.parent
+if str(REPO_ROOT) not in sys.path:
+    sys.path.insert(0, str(REPO_ROOT))
+
+from shared.estate_registration import (
+    RegistrationError,
+    export_canary_health,
+    grandfather_fragment,
+    originate_canaries,
+    run_peer_command,
+    sweep,
+)
+from shared.estate_store_registry import (
+    DEFAULT_REGISTRY_PATH,
+    RegistryError,
+    enumerate_stores,
+    load_registry,
+)
+
+
+def _parser() -> argparse.ArgumentParser:
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument(
+        "command",
+        choices=(
+            "list",
+            "originate",
+            "export-canary",
+            "check-peer",
+            "sweep",
+            "sweep-peer",
+            "grandfather",
+        ),
+    )
+    parser.add_argument("--registry", type=Path, default=DEFAULT_REGISTRY_PATH)
+    parser.add_argument("--host", help="declared host id or alias; defaults to hostname")
+    parser.add_argument("--home", type=Path, default=Path.home())
+    parser.add_argument("--consumer")
+    parser.add_argument("--report-root", type=Path)
+    parser.add_argument("--output", type=Path)
+    parser.add_argument("--json", action="store_true")
+    return parser
+
+
+def _print(value: object, *, as_json: bool) -> None:
+    if as_json:
+        print(json.dumps(value, indent=2, sort_keys=True))
+    else:
+        print(yaml.safe_dump(value, sort_keys=False).rstrip())
+
+
+def main(argv: list[str] | None = None) -> int:
+    args = _parser().parse_args(argv)
+    try:
+        registry = load_registry(args.registry)
+        host_id = registry.host_id(args.host)
+        if args.command == "list":
+            if not args.consumer:
+                raise RegistrationError(
+                    "list requires --consumer; remedy: name the consuming program"
+                )
+            stores = [
+                {
+                    "id": store.id,
+                    "locator": store.locator,
+                    "locator_kind": store.locator_kind,
+                    "class": store.store_class,
+                    "lifecycle": store.lifecycle,
+                    "discovery_evidence": store.discovery_evidence,
+                }
+                for store in enumerate_stores(
+                    registry, consumer=args.consumer, host=host_id, home=args.home
+                )
+            ]
+            _print(
+                {
+                    "schema": "hapax.estate-consumer-enumeration/v1",
+                    "consumer": args.consumer,
+                    "host": host_id,
+                    "stores": stores,
+                },
+                as_json=args.json,
+            )
+            return 0
+        if args.command == "originate":
+            _print(originate_canaries(registry, host_id=host_id, home=args.home), as_json=args.json)
+            return 0
+        if args.command == "export-canary":
+            _print(
+                export_canary_health(registry=registry, host_id=host_id, home=args.home),
+                as_json=args.json,
+            )
+            return 0
+        if args.command in {"check-peer", "sweep-peer"}:
+            remote_command = "export-canary" if args.command == "check-peer" else "sweep"
+            result = run_peer_command(registry, host_id=host_id, command=remote_command)
+            print(result.stdout, end="")
+            return 0
+        if args.command == "sweep":
+            result = sweep(
+                registry,
+                host_id=host_id,
+                home=args.home,
+                report_root=args.report_root,
+            )
+            _print(
+                {
+                    "report_path": result.report_path,
+                    "finding_count": len(result.findings),
+                    "scan_error_count": len(result.scan_errors),
+                    "flagged_canary_ids": list(result.flagged_canary_ids),
+                    "missed_canary_ids": list(result.missed_canary_ids),
+                    "detector_incident_path": result.detector_incident_path,
+                },
+                as_json=args.json,
+            )
+            return 2 if result.scan_errors else 0
+        fragment = grandfather_fragment(registry, host_id=host_id, home=args.home)
+        if args.output is None:
+            raise RegistrationError(
+                "grandfather requires --output; remedy: name a reviewable file inside the current worktree"
+            )
+        if not args.output.resolve().is_relative_to(REPO_ROOT.resolve()):
+            raise RegistrationError(
+                "grandfather output must stay inside the current worktree; "
+                "remedy: choose a worktree-relative report path"
+            )
+        args.output.parent.mkdir(parents=True, exist_ok=True)
+        args.output.write_text(yaml.safe_dump(fragment, sort_keys=False), encoding="utf-8")
+        _print(
+            {"output": str(args.output), "store_count": len(fragment["stores"])}, as_json=args.json
+        )
+        return 0
+    except (RegistrationError, RegistryError) as exc:
+        print(f"hapax-estate-store-registry: {exc}", file=sys.stderr)
+        return 2
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

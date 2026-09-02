@@ -1,0 +1,11 @@
+[Unit]
+Description=Check the peer host's estate-store canary once per hour
+Documentation=https://github.com/hapax-systems/hapax-council/blob/main/docs/runbooks/estate-store-registration-stage1.md
+
+[Timer]
+OnCalendar=*-*-* *:20:00
+Persistent=true
+Unit=hapax-estate-canary-peer-check.service
+
+[Install]
+WantedBy=timers.target
