@@ -39,10 +39,10 @@ def test_runbook_cutover_installs_from_the_activation_worktree_and_names_the_hol
     activation worktree does not advance on its own (the operator's HOLD ratify-line)."""
     runbook = RUNBOOK.read_text(encoding="utf-8")
     cutover = runbook.split("## Cutover on podium", 1)[1]
-    assert (
-        "cd ~/.cache/hapax/source-activation/worktree && systemd/scripts/install-units.sh"
-        in cutover
-    )
+    # The installer refuses every root but the primary checkout, so the cutover must not invoke
+    # it at all (review finding on #4622, round 3): the governed deploy installs the units.
+    assert "install-units.sh" not in cutover.split("```bash", 1)[1].split("```", 1)[0]
+    assert "hapax-source-activate" in cutover
     assert "cd ~/projects/hapax-council" not in cutover
     assert "HOLD" in cutover
     assert "$HOME/projects/hapax-council/scripts/hapax-backup-critical-offsite" not in runbook

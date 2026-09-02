@@ -47,15 +47,19 @@ is released. Two steps, in order:
    `~/.cache/hapax/source-activation/HOLD`, let `hapax-source-activate.timer`
    bring the worktree to main, and confirm with
    `git -C ~/.cache/hapax/source-activation/worktree log -1 --oneline`.
-2. Install the units from that worktree; do not hand-create symlinks and do not
-   run the installer from a development checkout:
+2. Let the governed deploy install the units. `hapax-source-activate` installs every
+   merged unit, conf and script itself as part of the deploy (it does not call
+   `systemd/scripts/install-units.sh`, which refuses to run from anything but the
+   primary checkout). Do not hand-create symlinks and do not run the installer from
+   any worktree. What remains is retiring the old unit and its drop-ins, then
+   enabling the new timer:
 
 ```bash
 systemctl --user disable --now hapax-backup-gdrive-critical.timer
 rm -rf ~/.config/systemd/user/hapax-backup-gdrive-critical.service.d ~/.config/systemd/user/hapax-backup-watchdog.service.d/20-r2.conf
 rm -f ~/.config/systemd/user/hapax-backup-gdrive-critical.{service,timer}
-cd ~/.cache/hapax/source-activation/worktree && systemd/scripts/install-units.sh
 systemctl --user daemon-reload && systemctl --user enable --now hapax-backup-critical-offsite.timer
+systemctl --user show hapax-backup-critical-offsite.service -p FragmentPath -p ExecStart
 ```
 
 Until step 1 happens, the R2 lane keeps running under the secret-free
