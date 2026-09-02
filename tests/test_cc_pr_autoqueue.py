@@ -7601,7 +7601,9 @@ def _graphql_only_runner(
                 return subprocess.CompletedProcess(
                     cmd,
                     0,
-                    json.dumps({"data": {"createCommitStatus": {"commitStatus": {"state": "SUCCESS"}}}}),
+                    json.dumps(
+                        {"data": {"createCommitStatus": {"commitStatus": {"state": "SUCCESS"}}}}
+                    ),
                     "",
                 )
             if not graphql_read_ok:
@@ -7654,7 +7656,9 @@ def test_admission_status_graphql_route_reads_and_writes_without_rest(tmp_path: 
     mutations = _graphql_mutations(calls)
     assert len(mutations) == 1
     mutation = mutations[0]
-    assert "state=SUCCESS" in mutation and f"ctx={autoqueue.AUTOQUEUE_ADMISSION_CONTEXT}" in mutation
+    assert (
+        "state=SUCCESS" in mutation and f"ctx={autoqueue.AUTOQUEUE_ADMISSION_CONTEXT}" in mutation
+    )
     assert "repo=R_kgDOtest" in mutation and "sha=sha-50" in mutation
 
 
