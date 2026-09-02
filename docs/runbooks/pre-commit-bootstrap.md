@@ -68,3 +68,28 @@ scope.
 cannot ship in a PR — only the config and this bootstrap can. Run the
 install once per clone, and again after any `git config` change that affects
 hook resolution.
+
+## Scan before push (`scripts/pre-push`) — opt in once per clone
+
+Added 2026-09-02 (operator-accepted rule: no push leaves a clone without a detect-secrets
+scan plus a `/home/` grep over the new commits). Unlike the pre-commit hook above, the pre-push
+hook IS committed — `scripts/pre-push` is a repo-versioned git hook — so a clone opts in with one
+config line and every worktree of that clone shares it:
+
+```
+git config core.hooksPath "$(git rev-parse --show-toplevel)/scripts"
+```
+
+Use the absolute form (as above) rather than the relative `scripts`: a relative path resolves per
+worktree, and a worktree on a branch that predates the hook would silently run nothing.
+
+What it does: for each ref being pushed, it scans only the lines the push ADDS (diff against the
+remote tip, or the empty tree for a new branch) with detect-secrets `--all-files`, a vendor-key
+prefix regex (Anthropic, xAI, Hugging Face, GitLab, …), and an absolute-home-path check; it
+prints finding TYPES and counts, never values, and refuses with a remedy. Entropy-only findings on
+the codebase-derived `docs/architecture/system-dynamics-map*` files are not secrets and are
+skipped there.
+
+Exempting a private mirror (the only sanctioned exemption): `git config --add
+hapax.prepushScan.skipRemote <remote-name>`. There is no in-script bypass; if the hook refuses a
+line the remote already has, the hook is wrong — fix it, do not `--no-verify`.
