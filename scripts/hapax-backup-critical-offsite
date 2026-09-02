@@ -1,16 +1,16 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-# Bounded critical-artifact offsite backup while broad Tier 2 B2 is blocked.
+# Bounded critical off-site artifact backup.
 # This script does not create live database dumps, create Qdrant snapshots,
 # upload live MinIO backing stores, or run destructive restic prune. It does
 # require a producer-validated Postgres dump already on a durable path — the
-# offsite lane previously shipped zero dumps.
+# critical off-site lane previously shipped zero dumps.
 
-REPO="${HAPAX_GDRIVE_CRITICAL_REPO:-rclone:gdrive:hapax-backups/restic-critical}"
-PASSWORD_ENTRY="${HAPAX_GDRIVE_CRITICAL_RESTIC_PASSWORD_ENTRY:-backblaze/restic-password}"
-CACHE_DIR="${RESTIC_CACHE_DIR:-/store/llm-data/restic-cache/gdrive-critical}"
-WORK_DIR="${HAPAX_GDRIVE_CRITICAL_WORK_DIR:-/store/llm-data/gdrive-critical-backup}"
+REPO="${HAPAX_CRITICAL_OFFSITE_REPO:-rclone:r2:hapax-restic-critical}"
+PASSWORD_ENTRY="${HAPAX_CRITICAL_OFFSITE_RESTIC_PASSWORD_ENTRY:-cloudflare/r2/restic-password}"
+CACHE_DIR="${RESTIC_CACHE_DIR:-/store/llm-data/restic-cache/critical-offsite}"
+WORK_DIR="${HAPAX_CRITICAL_OFFSITE_WORK_DIR:-/store/llm-data/critical-offsite-backup}"
 POSTGRES_PITR_DIR="${HAPAX_POSTGRES_PITR_DIR:-/store/llm-data/postgres-pitr}"
 # Durable copy of the producer-validated dump. Not /tmp: hapax-backup-local
 # trap-cleans that path on EXIT. A missing file fails the run.
@@ -26,7 +26,8 @@ VAULT_BUNDLE_DIR="${HAPAX_VAULT_BUNDLE_DIR:-/store/llm-data/vault-bundles}"
 # the manifest covered every other critical artefact and not the one whose loss is unrecoverable.
 SECRET_STORE_DIR="${HAPAX_SECRET_STORE_DIR:-/mnt/nas/archive/hapax-preservation/secret-store}"
 
-# Conservative Google Drive/rclone defaults. Operators may tune these by env.
+# Conservative rclone defaults (kept from the Drive era; R2 tolerates more).
+# Operators may tune these by env.
 export RCLONE_TRANSFERS="${RCLONE_TRANSFERS:-1}"
 export RCLONE_CHECKERS="${RCLONE_CHECKERS:-4}"
 export RCLONE_RETRIES="${RCLONE_RETRIES:-6}"
@@ -47,10 +48,10 @@ if [[ $# -gt 0 ]]; then
             ;;
         -h|--help)
             cat <<'EOF'
-hapax-backup-gdrive-critical
+hapax-backup-critical-offsite
 
 Modes:
-  --backup             Back up bounded critical artifacts (default).
+  --backup             Back up bounded critical off-site artifacts (default).
   --verify-only        Read-only snapshot/check verification.
   --retention-dry-run  Show retention result without prune/delete.
 
@@ -248,24 +249,24 @@ backup() {
     manifest="$(build_manifest "$run_dir")"
 
     mapfile -t backup_paths < "$manifest"
-    log "Running bounded GDrive critical backup"
+    log "Running bounded critical off-site backup"
     run_restic backup \
         --verbose \
         --retry-lock 30m \
-        --tag gdrive-critical \
+        --tag critical-offsite \
         --tag critical-artifacts \
-        --tag "gdrive-critical-$(date -u +%Y%m%d)" \
+        --tag "critical-offsite-$(date -u +%Y%m%d)" \
         "${backup_paths[@]}"
 
     log "Running read-only post-backup repository check"
     run_restic check --no-lock
-    log "Latest GDrive critical snapshots"
+    log "Latest critical off-site snapshots"
     run_restic snapshots --no-lock --latest 3
 }
 
 verify_only() {
     require_non_root_workdir
-    log "Verifying GDrive critical repo without creating locks"
+    log "Verifying critical off-site repo without creating locks"
     run_restic snapshots --no-lock --latest 3
     run_restic check --no-lock
 }

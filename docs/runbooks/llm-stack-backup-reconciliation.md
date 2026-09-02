@@ -16,19 +16,41 @@ Tier 1 local coverage:
 
 Critical offsite safety baseline:
 
-- Timer: `hapax-backup-gdrive-critical.timer`
-- Service: `hapax-backup-gdrive-critical.service`
-- Script: `$HOME/projects/hapax-council/scripts/hapax-backup-gdrive-critical`
-- Restic repository: `rclone:gdrive:hapax-backups/restic-critical`
-- Cache: `/store/llm-data/restic-cache/gdrive-critical`
+- Timer: `hapax-backup-critical-offsite.timer`
+- Service: `hapax-backup-critical-offsite.service`
+- Script: `$HOME/projects/hapax-council/scripts/hapax-backup-critical-offsite`
+- Restic repository: `rclone:r2:hapax-restic-critical`
+- Cache: `/store/llm-data/restic-cache/critical-offsite`
 
-The GDrive critical lane is the bounded critical-artifact offsite baseline
-after the broad Backblaze B2 remote lane was retired by operator policy on
-2026-06-06. It backs up already-materialized Postgres PITR
-artifacts, latest Qdrant snapshot files, and selected vault evidence/SOP files.
-It does not create new Qdrant snapshots, dump databases into `/tmp`, upload live
-MinIO backing stores, or run destructive prune. Retention is
-`--retention-dry-run` only unless a later governed task changes policy.
+The critical off-site lane is the bounded critical-artifact baseline in
+Cloudflare R2. It backs up already-materialized Postgres PITR artifacts, latest
+Qdrant snapshot files, and selected vault evidence/SOP files. It does not create
+new Qdrant snapshots, dump databases into `/tmp`, upload live MinIO backing
+stores, or run destructive prune. Retention is `--retention-dry-run` only unless
+a later governed task changes policy.
+
+A separate `hapax-backup-remote.timer` continues to run daily against
+`b2:hapax-backups/restic`. It is independent of the bounded critical off-site
+lane.
+
+## Cutover on podium (2026-09-02)
+
+Run the repository's unit installer from the primary checkout so every unit is
+linked from the canonical source tree; do not hand-create the replacement
+symlinks.
+
+```bash
+systemctl --user disable --now hapax-backup-gdrive-critical.timer
+rm -rf ~/.config/systemd/user/hapax-backup-gdrive-critical.service.d ~/.config/systemd/user/hapax-backup-watchdog.service.d/20-r2.conf
+rm -f ~/.config/systemd/user/hapax-backup-gdrive-critical.{service,timer}
+cd ~/projects/hapax-council && systemd/scripts/install-units.sh
+systemctl --user daemon-reload && systemctl --user enable --now hapax-backup-critical-offsite.timer
+```
+
+The `rclone:gdrive:` remote and the Drive restic repository at
+`rclone:gdrive:hapax-backups/restic-critical` are retired. Snapshots carrying
+the old `gdrive-critical` tag exist only in that dead Drive repository; the R2
+repository uses `critical-offsite` tags.
 
 Both lanes stage service-native artifacts before restic runs:
 
@@ -46,9 +68,8 @@ Both lanes stage service-native artifacts before restic runs:
 successfully, writes no backup artifacts, does not read secrets, and points at
 the Tier 1/Tier 2 lanes above.
 
-Backblaze B2 broad remote backup is retained only as historical context; no
-`hapax-backup-remote.timer` should be installed, enabled, or expected by health
-policy unless a later governed task reinstates it.
+Backblaze B2 broad remote backup remains a separate daily off-site lane at
+`b2:hapax-backups/restic`; this compatibility receipt does not invoke it.
 
 This intentionally removes the stale standalone script assumptions:
 
@@ -59,8 +80,8 @@ This intentionally removes the stale standalone script assumptions:
 
 ## Restore Path
 
-1. Restore the chosen restic snapshot from the Tier 1 local repo or the GDrive
-   critical repo into a staging directory.
+1. Restore the chosen restic snapshot from the Tier 1 local repo or the critical
+   off-site R2 repo into a staging directory.
 2. Restore `$HOME/llm-stack/` configuration from the restored filesystem tree.
 3. Restore PostgreSQL from the staged `postgres-all.sql` dump, or use the
    separately governed PITR lane when a point-in-time restore is required.

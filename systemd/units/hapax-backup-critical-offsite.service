@@ -1,5 +1,5 @@
 [Unit]
-Description=Hapax GDrive Critical Offsite Backup (restic)
+Description=Hapax Critical Off-site Backup (restic)
 After=network-online.target
 Wants=network-online.target
 OnFailure=notify-failure@%n.service
@@ -8,16 +8,16 @@ ConditionPathExists=%h/.config/rclone/rclone.conf
 
 [Service]
 Type=oneshot
-ExecStart=/home/hapax/projects/hapax-council/scripts/hapax-backup-gdrive-critical
+ExecStart=/home/hapax/projects/hapax-council/scripts/hapax-backup-critical-offsite
 WorkingDirectory=/home/hapax/projects/hapax-council
 Environment=PATH=/home/hapax/.local/bin:/usr/local/bin:/usr/bin:/bin
 Environment=HOME=/home/hapax
 Environment=GNUPGHOME=/home/hapax/.gnupg
 Environment=PASSWORD_STORE_DIR=/home/hapax/.password-store
-Environment=HAPAX_GDRIVE_CRITICAL_RESTIC_PASSWORD_ENTRY=backblaze/restic-password
-Environment=RESTIC_CACHE_DIR=/store/llm-data/restic-cache/gdrive-critical
+Environment=HAPAX_CRITICAL_OFFSITE_RESTIC_PASSWORD_ENTRY=cloudflare/r2/restic-password
+Environment=RESTIC_CACHE_DIR=/store/llm-data/restic-cache/critical-offsite
 MemoryHigh=1G
 MemoryMax=2G
 CPUQuota=25%
 TimeoutStartSec=2h
-SyslogIdentifier=hapax-backup-gdrive-critical
+SyslogIdentifier=hapax-backup-critical-offsite
