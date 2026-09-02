@@ -112,6 +112,41 @@ def test_exemption_only_by_explicit_local_config(tmp_path):
     assert _run(repo, "origin", refs).returncode == 1  # exemption is per remote name, not global
 
 
+GIT_HOOK_NAMES = {
+    "applypatch-msg",
+    "pre-applypatch",
+    "post-applypatch",
+    "pre-commit",
+    "pre-merge-commit",
+    "prepare-commit-msg",
+    "commit-msg",
+    "post-commit",
+    "pre-rebase",
+    "post-checkout",
+    "post-merge",
+    "pre-push",
+    "pre-receive",
+    "update",
+    "proc-receive",
+    "post-receive",
+    "post-update",
+    "push-to-checkout",
+    "pre-auto-gc",
+    "post-rewrite",
+    "sendemail-validate",
+    "fsmonitor-watchman",
+    "reference-transaction",
+    "post-index-change",
+}
+
+
+def test_scripts_dir_carries_no_other_git_hook_name():
+    """`core.hooksPath scripts` makes git execute ANY file in scripts/ that carries a hook name.
+    Only pre-push may exist there; a future scripts/post-merge would silently become a hook."""
+    present = {p.name for p in SCRIPT.parent.iterdir()} & GIT_HOOK_NAMES
+    assert present == {"pre-push"}, present
+
+
 def test_deletion_pushes_nothing_and_passes(tmp_path):
     repo = _repo(tmp_path)
     base = _git(repo, "rev-parse", "HEAD")
