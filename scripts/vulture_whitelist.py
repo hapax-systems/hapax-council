@@ -5104,3 +5104,26 @@ _ = (read_raw_signal,)
 from shared.adjudicator_identity import record_identifies_its_checkout  # noqa: E402
 
 _ = (record_identifies_its_checkout,)
+
+# DETECTOR BLIND SPOT, not dead code (the second kind, see above). Every one of these has a real
+# production caller in scripts/hapax-estate-store-registry — an extensionless Python script that
+# vulture never parses (registry --list, canary originate/export, peer-check, sweep, grandfather).
+# Registration-at-production Stage 1 (report-only), 2026-09-02; task row
+# `registration-at-production-stage1-20260902`.
+from shared.estate_registration import (  # noqa: E402
+    export_canary_health,
+    grandfather_fragment,
+    originate_canaries,
+    run_peer_command,
+    sweep,
+)
+from shared.estate_store_registry import enumerate_stores  # noqa: E402
+
+_ = (
+    export_canary_health,
+    grandfather_fragment,
+    originate_canaries,
+    run_peer_command,
+    sweep,
+    enumerate_stores,
+)
