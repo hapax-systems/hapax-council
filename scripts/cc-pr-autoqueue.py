@@ -2607,7 +2607,7 @@ def _admission_status_write_deferral_class(message: str) -> str | None:
     lowered = (message or "").lower()
     if "rate limit" in lowered or '"status": "429"' in lowered or "http 429" in lowered:
         return "github_rate_limit"
-    for code in ("502", "503", "504"):
+    for code in ("500", "502", "503", "504"):
         if f'"status": "{code}"' in lowered or f"http {code}" in lowered:
             return "github_unavailable"
     return None

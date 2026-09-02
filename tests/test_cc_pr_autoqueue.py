@@ -4548,6 +4548,16 @@ def test_admission_status_write_deferral_names_only_transport_responses() -> Non
     assert autoqueue._admission_status_write_deferral_class("HTTP 503: Service Unavailable") == (
         "github_unavailable"
     )
+    # HTTP 500 is the 5xx GitHub actually returns most (review finding on #4627).
+    assert autoqueue._admission_status_write_deferral_class("HTTP 500: Internal Server Error") == (
+        "github_unavailable"
+    )
+    assert (
+        autoqueue._admission_status_write_deferral_class(
+            '{"message": "Server Error", "status": "500"}'
+        )
+        == "github_unavailable"
+    )
     assert autoqueue._admission_status_write_deferral_class("status post failed") is None
     assert autoqueue._admission_status_write_deferral_class("") is None
     assert (
