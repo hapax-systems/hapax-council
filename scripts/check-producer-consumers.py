@@ -47,7 +47,7 @@ import subprocess
 import sys
 import tomllib
 from collections import Counter
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path, PurePosixPath
 
 import yaml
@@ -542,6 +542,9 @@ class ConsumerSideReport:
     unresolvable: int
     exclusions: dict[str, int]
     errors: tuple[str, ...] = ()
+    # Calls whose callee this scanner does not model but whose argument resolved to a path
+    # (review finding on #4626, round 5): they are reported by callee, never silently absent.
+    unrecognised_path_calls: dict[str, int] = field(default_factory=dict)
 
 
 @dataclass(frozen=True)
@@ -551,6 +554,40 @@ class PathFunction:
     return_expr: ast.expr
     module_values: dict[str, str]
     path: Path
+
+
+class PathFunctionTable(dict[str, PathFunction]):
+    """Path helpers keyed by their qualified name (``module.function``).
+
+    A repository-global table keyed by bare function name let a later module's ``artifact_path``
+    overwrite an earlier module's, so calls in the earlier module resolved through an unrelated
+    return expression (review finding on #4626, round 5). Resolution now prefers the calling
+    module's own helper, then a helper of an imported module, then an exact qualified name, and
+    falls back to a bare name only when exactly one helper in the tree carries it.
+    """
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.imports_by_path: dict[Path, frozenset[str]] = {}
+
+    def register(self, relative: Path, name: str, function: PathFunction) -> None:
+        self[f"{_module_name(relative)}.{name}"] = function
+
+    def resolve(self, name: str, calling_path: Path) -> PathFunction | None:
+        short = name.rsplit(".", 1)[-1]
+        own = self.get(f"{_module_name(calling_path)}.{short}")
+        if own is not None:
+            return own
+        for imported in self.imports_by_path.get(calling_path, frozenset()):
+            candidate = self.get(f"{imported}.{short}")
+            if candidate is None and imported.endswith(f".{short}"):
+                candidate = self.get(imported)
+            if candidate is not None:
+                return candidate
+        if "." in name and name in self:
+            return self[name]
+        matches = [function for key, function in self.items() if key.rsplit(".", 1)[-1] == short]
+        return matches[0] if len(matches) == 1 else None
 
 
 def _dotted_name(node: ast.expr) -> str | None:
@@ -775,7 +812,11 @@ def _resolve_path_expr(
         if base is not None and new_name is not None:
             return _join_pattern(str(PurePosixPath(base).parent), new_name, repo_root)
 
-    function = path_functions.get(name) or path_functions.get(name.rsplit(".", 1)[-1])
+    function = (
+        path_functions.resolve(name, path)
+        if isinstance(path_functions, PathFunctionTable)
+        else (path_functions.get(name) or path_functions.get(name.rsplit(".", 1)[-1]))
+    )
     if function is None:
         return None
     bound = dict(function.module_values)
@@ -867,85 +908,6 @@ def _module_values(
         if not changed:
             break
     return values
-
-
-def _scope_values(
-    node: ast.Module | ast.FunctionDef | ast.AsyncFunctionDef,
-    module_values: dict[str, str],
-    path: Path,
-    repo_root: Path,
-    path_functions: dict[str, PathFunction],
-) -> dict[str, str]:
-    values = dict(module_values)
-    if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
-        defaults = _function_defaults(node)
-        for arg in [*node.args.posonlyargs, *node.args.args, *node.args.kwonlyargs]:
-            values[arg.arg] = "*"
-        for name, default in defaults.items():
-            resolved = _resolve_path_expr(default, values, path, repo_root, path_functions)
-            if resolved is not None:
-                values[name] = resolved
-    assignments = _scope_assignments(node)
-    for _ in range(2):
-        changed = False
-        for assignment in assignments:
-            targets = (
-                assignment.targets if isinstance(assignment, ast.Assign) else [assignment.target]
-            )
-            resolved = _resolve_path_expr(assignment.value, values, path, repo_root, path_functions)
-            if resolved is None:
-                continue
-            for target in targets:
-                if isinstance(target, ast.Name) and values.get(target.id) != resolved:
-                    values[target.id] = resolved
-                    changed = True
-        if not changed:
-            break
-    return values
-
-
-class _ScopeAssignmentVisitor(ast.NodeVisitor):
-    def __init__(self) -> None:
-        self.assignments: list[ast.Assign | ast.AnnAssign] = []
-
-    def visit_Assign(self, node: ast.Assign) -> None:
-        self.assignments.append(node)
-
-    def visit_AnnAssign(self, node: ast.AnnAssign) -> None:
-        self.assignments.append(node)
-
-    def visit_FunctionDef(self, node: ast.FunctionDef) -> None:
-        return
-
-    def visit_AsyncFunctionDef(self, node: ast.AsyncFunctionDef) -> None:
-        return
-
-    def visit_ClassDef(self, node: ast.ClassDef) -> None:
-        return
-
-    def visit_Lambda(self, node: ast.Lambda) -> None:
-        return
-
-    def visit_ListComp(self, node: ast.ListComp) -> None:
-        return
-
-    def visit_SetComp(self, node: ast.SetComp) -> None:
-        return
-
-    def visit_DictComp(self, node: ast.DictComp) -> None:
-        return
-
-    def visit_GeneratorExp(self, node: ast.GeneratorExp) -> None:
-        return
-
-
-def _scope_assignments(
-    node: ast.Module | ast.FunctionDef | ast.AsyncFunctionDef,
-) -> list[ast.Assign | ast.AnnAssign]:
-    visitor = _ScopeAssignmentVisitor()
-    for statement in node.body:
-        visitor.visit(statement)
-    return visitor.assignments
 
 
 def _artifact_family(name: str) -> str:
@@ -1054,25 +1016,81 @@ def _record_access(
     accesses.append(ArtifactAccess(action, pattern, path, call.lineno, family, operation))
 
 
-def _scan_scope(
-    node: ast.Module | ast.FunctionDef | ast.AsyncFunctionDef,
-    module_values: dict[str, str],
+def _classify_call(
+    call: ast.Call,
+    values: dict[str, str],
     path: Path,
     repo_root: Path,
     path_functions: dict[str, PathFunction],
     accesses: list[ArtifactAccess],
     unresolved: list[int],
+    unrecognised: Counter[str],
+    context_family: str,
 ) -> None:
-    values = _scope_values(node, module_values, path, repo_root, path_functions)
-    context = node.name if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)) else path.stem
-    context_family = _artifact_family(context)
-    for call in _scope_calls(node):
-        name = _function_name(call)
-        short_name = name.rsplit(".", 1)[-1]
-        if isinstance(call.func, ast.Attribute) and call.func.attr in {
-            "read_text",
-            "read_bytes",
-        }:
+    name = _function_name(call)
+    short_name = name.rsplit(".", 1)[-1]
+    if isinstance(call.func, ast.Attribute) and call.func.attr in {
+        "read_text",
+        "read_bytes",
+    }:
+        _record_access(
+            accesses,
+            unresolved,
+            action="read",
+            expression=call.func.value,
+            call=call,
+            values=values,
+            path=path,
+            repo_root=repo_root,
+            path_functions=path_functions,
+            family=context_family,
+            operation=call.func.attr,
+        )
+    elif isinstance(call.func, ast.Attribute) and call.func.attr in {
+        "write_text",
+        "write_bytes",
+    }:
+        _record_access(
+            accesses,
+            unresolved,
+            action="write",
+            expression=call.func.value,
+            call=call,
+            values=values,
+            path=path,
+            repo_root=repo_root,
+            path_functions=path_functions,
+            family=context_family,
+            operation=call.func.attr,
+        )
+    elif short_name == "open":
+        expression = (
+            call.func.value
+            if isinstance(call.func, ast.Attribute)
+            else _call_argument(call, 0, "file")
+        )
+        _record_access(
+            accesses,
+            unresolved,
+            action=_open_effect(call),
+            expression=expression,
+            call=call,
+            values=values,
+            path=path,
+            repo_root=repo_root,
+            path_functions=path_functions,
+            family=context_family,
+            operation="open",
+        )
+    elif isinstance(call.func, ast.Attribute) and call.func.attr in {"glob", "rglob"}:
+        suffix = _resolve_path_expr(
+            _call_argument(call, 0), values, path, repo_root, path_functions
+        )
+        if suffix is None:
+            unresolved[0] += 1
+        else:
+            if call.func.attr == "rglob" and not suffix.startswith("**/"):
+                suffix = f"**/{suffix}"
             _record_access(
                 accesses,
                 unresolved,
@@ -1085,127 +1103,233 @@ def _scan_scope(
                 path_functions=path_functions,
                 family=context_family,
                 operation=call.func.attr,
+                append=suffix,
             )
-        elif isinstance(call.func, ast.Attribute) and call.func.attr in {
-            "write_text",
-            "write_bytes",
-        }:
+    elif name in {"os.replace", "os.rename"}:
+        _record_access(
+            accesses,
+            unresolved,
+            action="write",
+            expression=_call_argument(call, 1, "dst"),
+            call=call,
+            values=values,
+            path=path,
+            repo_root=repo_root,
+            path_functions=path_functions,
+            family=context_family,
+            operation=short_name,
+        )
+    elif isinstance(call.func, ast.Attribute) and call.func.attr in {"replace", "rename"}:
+        _record_access(
+            accesses,
+            unresolved,
+            action="write",
+            expression=_call_argument(call, 0, "target"),
+            call=call,
+            values=values,
+            path=path,
+            repo_root=repo_root,
+            path_functions=path_functions,
+            family=context_family,
+            operation=call.func.attr,
+        )
+    elif name.startswith("shutil.copy"):
+        _record_access(
+            accesses,
+            unresolved,
+            action="write",
+            expression=_call_argument(call, 1, "dst"),
+            call=call,
+            values=values,
+            path=path,
+            repo_root=repo_root,
+            path_functions=path_functions,
+            family=context_family,
+            operation=short_name,
+        )
+    elif short_name == "load_claim_dispatch_binding" or (
+        short_name == "_load_json_object" and path == Path("shared/platform_capability_registry.py")
+    ):
+        argument = _call_argument(call, 0, "path")
+        if argument is not None:
             _record_access(
                 accesses,
                 unresolved,
-                action="write",
-                expression=call.func.value,
+                action="read",
+                expression=argument,
                 call=call,
                 values=values,
                 path=path,
                 repo_root=repo_root,
                 path_functions=path_functions,
-                family=context_family,
-                operation=call.func.attr,
-            )
-        elif short_name == "open":
-            expression = (
-                call.func.value
-                if isinstance(call.func, ast.Attribute)
-                else _call_argument(call, 0, "file")
-            )
-            _record_access(
-                accesses,
-                unresolved,
-                action=_open_effect(call),
-                expression=expression,
-                call=call,
-                values=values,
-                path=path,
-                repo_root=repo_root,
-                path_functions=path_functions,
-                family=context_family,
-                operation="open",
-            )
-        elif isinstance(call.func, ast.Attribute) and call.func.attr in {"glob", "rglob"}:
-            suffix = _resolve_path_expr(
-                _call_argument(call, 0), values, path, repo_root, path_functions
-            )
-            if suffix is None:
-                unresolved[0] += 1
-            else:
-                if call.func.attr == "rglob" and not suffix.startswith("**/"):
-                    suffix = f"**/{suffix}"
-                _record_access(
-                    accesses,
-                    unresolved,
-                    action="read",
-                    expression=call.func.value,
-                    call=call,
-                    values=values,
-                    path=path,
-                    repo_root=repo_root,
-                    path_functions=path_functions,
-                    family=context_family,
-                    operation=call.func.attr,
-                    append=suffix,
-                )
-        elif name in {"os.replace", "os.rename"}:
-            _record_access(
-                accesses,
-                unresolved,
-                action="write",
-                expression=_call_argument(call, 1, "dst"),
-                call=call,
-                values=values,
-                path=path,
-                repo_root=repo_root,
-                path_functions=path_functions,
-                family=context_family,
+                family=_artifact_family(short_name),
                 operation=short_name,
             )
-        elif isinstance(call.func, ast.Attribute) and call.func.attr in {"replace", "rename"}:
-            _record_access(
+    elif name in FILE_BACKED_APIS:
+        # A file-backed API this scanner models as an access (review finding on #4626, round 5:
+        # sqlite3.connect fell through without an access and without an unresolvable count).
+        action, position, keyword = FILE_BACKED_APIS[name]
+        if action == "mode":
+            action = _open_effect(call)
+        _record_access(
+            accesses,
+            unresolved,
+            action=action,
+            expression=_call_argument(call, position, keyword),
+            call=call,
+            values=values,
+            path=path,
+            repo_root=repo_root,
+            path_functions=path_functions,
+            family=context_family,
+            operation=name,
+        )
+    elif _looks_like_file_api(name) and any(
+        _useful_pattern(_resolve_path_expr(argument, values, path, repo_root, path_functions))
+        for argument in (*call.args, *(keyword.value for keyword in call.keywords))
+    ):
+        # Not modelled, but handed a resolvable path: counted by callee so the report's silence
+        # about it is never mistaken for absence.
+        unrecognised[name] += 1
+
+
+# Callee -> (action, positional index of the path, keyword name). "mode" reads the mode argument
+# the way open() does (zipfile.ZipFile / tarfile.open take it second).
+FILE_BACKED_APIS: dict[str, tuple[str, int, str]] = {
+    "sqlite3.connect": ("read", 0, "database"),
+    "shelve.open": ("read", 0, "filename"),
+    "dbm.open": ("read", 0, "file"),
+    "zipfile.ZipFile": ("mode", 0, "file"),
+    "tarfile.open": ("mode", 0, "name"),
+}
+_FILE_API_HINTS = (
+    "open",
+    "load",
+    "read",
+    "connect",
+    "parse",
+    "dump",
+    "save",
+    "write",
+    "fetch",
+    "import",
+    "export",
+    "pickle",
+    "yaml",
+    "json",
+    "toml",
+    "csv",
+    "sqlite",
+    "db",
+)
+
+
+def _looks_like_file_api(name: str) -> bool:
+    lowered = name.lower()
+    if lowered in {"str", "repr", "print", "path", "purepath", "pureposixpath", "len"}:
+        return False
+    return any(hint in lowered for hint in _FILE_API_HINTS)
+
+
+def _statement_calls(statement: ast.stmt) -> list[ast.Call]:
+    """Calls in a statement's own expressions — not in its nested statements or nested scopes."""
+    visitor = _ScopeCallVisitor()
+    for child in ast.iter_child_nodes(statement):
+        if isinstance(child, (ast.stmt, ast.ExceptHandler, ast.match_case)):
+            continue
+        visitor.visit(child)
+    return visitor.calls
+
+
+def _flatten_statement(statement: ast.stmt):
+    """A statement and, in source order, every statement nested in it within the same scope."""
+    if isinstance(statement, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)):
+        return
+    yield statement
+    for attribute in ("body", "orelse", "finalbody"):
+        for child in getattr(statement, attribute, None) or []:
+            yield from _flatten_statement(child)
+    for handler in getattr(statement, "handlers", None) or []:
+        for child in handler.body:
+            yield from _flatten_statement(child)
+    for case in getattr(statement, "cases", None) or []:
+        for child in case.body:
+            yield from _flatten_statement(child)
+
+
+def _scope_statements(node: ast.Module | ast.FunctionDef | ast.AsyncFunctionDef):
+    for statement in node.body:
+        yield from _flatten_statement(statement)
+
+
+def _apply_assignment(
+    statement: ast.Assign | ast.AnnAssign,
+    values: dict[str, str],
+    path: Path,
+    repo_root: Path,
+    path_functions: dict[str, PathFunction],
+) -> None:
+    targets = statement.targets if isinstance(statement, ast.Assign) else [statement.target]
+    resolved = _resolve_path_expr(statement.value, values, path, repo_root, path_functions)
+    for target in targets:
+        if not isinstance(target, ast.Name):
+            continue
+        # A name rebound to something this scanner cannot resolve stops meaning its old path
+        # (the old fixpoint kept the old value and resolved every later read through it).
+        values[target.id] = resolved if resolved is not None else "*"
+
+
+def _scope_initial_values(
+    node: ast.Module | ast.FunctionDef | ast.AsyncFunctionDef,
+    module_values: dict[str, str],
+    path: Path,
+    repo_root: Path,
+    path_functions: dict[str, PathFunction],
+) -> dict[str, str]:
+    if not isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
+        # Module scope executes top to bottom: a read before an assignment sees nothing.
+        return {}
+    values = dict(module_values)
+    for arg in [*node.args.posonlyargs, *node.args.args, *node.args.kwonlyargs]:
+        values[arg.arg] = "*"
+    for name, default in _function_defaults(node).items():
+        resolved = _resolve_path_expr(default, values, path, repo_root, path_functions)
+        if resolved is not None:
+            values[name] = resolved
+    return values
+
+
+def _scan_scope(
+    node: ast.Module | ast.FunctionDef | ast.AsyncFunctionDef,
+    module_values: dict[str, str],
+    path: Path,
+    repo_root: Path,
+    path_functions: dict[str, PathFunction],
+    accesses: list[ArtifactAccess],
+    unresolved: list[int],
+    unrecognised: Counter[str],
+) -> None:
+    values = _scope_initial_values(node, module_values, path, repo_root, path_functions)
+    context = node.name if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)) else path.stem
+    context_family = _artifact_family(context)
+    # Source order is the semantics: a read sees the assignments above it, never one below
+    # (review finding on #4626, round 5: one final value map resolved an earlier read of
+    # orphan.json through a later reassignment to written.json and the orphan vanished).
+    for statement in _scope_statements(node):
+        for call in _statement_calls(statement):
+            _classify_call(
+                call,
+                values,
+                path,
+                repo_root,
+                path_functions,
                 accesses,
                 unresolved,
-                action="write",
-                expression=_call_argument(call, 0, "target"),
-                call=call,
-                values=values,
-                path=path,
-                repo_root=repo_root,
-                path_functions=path_functions,
-                family=context_family,
-                operation=call.func.attr,
+                unrecognised,
+                context_family,
             )
-        elif name.startswith("shutil.copy"):
-            _record_access(
-                accesses,
-                unresolved,
-                action="write",
-                expression=_call_argument(call, 1, "dst"),
-                call=call,
-                values=values,
-                path=path,
-                repo_root=repo_root,
-                path_functions=path_functions,
-                family=context_family,
-                operation=short_name,
-            )
-        elif short_name == "load_claim_dispatch_binding" or (
-            short_name == "_load_json_object"
-            and path == Path("shared/platform_capability_registry.py")
-        ):
-            argument = _call_argument(call, 0, "path")
-            if argument is not None:
-                _record_access(
-                    accesses,
-                    unresolved,
-                    action="read",
-                    expression=argument,
-                    call=call,
-                    values=values,
-                    path=path,
-                    repo_root=repo_root,
-                    path_functions=path_functions,
-                    family=_artifact_family(short_name),
-                    operation=short_name,
-                )
+        if isinstance(statement, (ast.Assign, ast.AnnAssign)):
+            _apply_assignment(statement, values, path, repo_root, path_functions)
 
 
 def _iter_function_scopes(
@@ -1216,13 +1340,37 @@ def _iter_function_scopes(
     ]
 
 
-def _module_imports(tree: ast.Module) -> frozenset[str]:
+def _module_imports(
+    tree: ast.Module, module_name: str = "", *, is_package: bool = False
+) -> frozenset[str]:
+    """Module names a file imports, as the importing module would resolve them.
+
+    ``from .writer import write_widget`` in ``pkg/reader.py`` names ``pkg.writer``; ``from pkg
+    import writer`` may name the submodule ``pkg.writer`` as well as ``pkg``. Both were recorded
+    as the bare ``writer`` / ``pkg`` before, so a reader never paired with the producer it
+    imported (review finding on #4626, round 5). Imported names are recorded as candidate
+    submodules; an extra candidate never pairs with anything unless a module of that name exists.
+    """
     imports: set[str] = set()
+    parts = module_name.split(".") if module_name else []
     for node in ast.walk(tree):
         if isinstance(node, ast.Import):
             imports.update(alias.name for alias in node.names)
-        elif isinstance(node, ast.ImportFrom) and node.module:
-            imports.add(node.module)
+        elif isinstance(node, ast.ImportFrom):
+            if node.level:
+                drop = node.level - 1 if is_package else node.level
+                base = ".".join(parts[: max(len(parts) - drop, 0)])
+            else:
+                base = ""
+            module = ".".join(part for part in (base, node.module or "") if part)
+            if module:
+                imports.add(module)
+            for alias in node.names:
+                if alias.name == "*":
+                    continue
+                candidate = ".".join(part for part in (module, alias.name) if part)
+                if candidate:
+                    imports.add(candidate)
     return frozenset(imports)
 
 
@@ -1230,7 +1378,7 @@ def collect_artifact_accesses(
     repo_root: Path,
     *,
     tests_only: bool = False,
-) -> tuple[list[ArtifactAccess], int, dict[Path, frozenset[str]]]:
+) -> tuple[list[ArtifactAccess], int, dict[Path, frozenset[str]], dict[str, int]]:
     parsed: list[tuple[Path, ast.Module]] = []
     for source_path in _iter_python_sources(repo_root, tests_only=tests_only):
         relative = source_path.relative_to(repo_root)
@@ -1238,8 +1386,14 @@ def collect_artifact_accesses(
         if tree is not None:
             parsed.append((relative, tree))
 
-    path_functions: dict[str, PathFunction] = {}
-    imports_by_path = {relative: _module_imports(tree) for relative, tree in parsed}
+    path_functions = PathFunctionTable()
+    imports_by_path = {
+        relative: _module_imports(
+            tree, _module_name(relative), is_package=relative.name == "__init__.py"
+        )
+        for relative, tree in parsed
+    }
+    path_functions.imports_by_path = imports_by_path
     module_values_by_path: dict[Path, dict[str, str]] = {}
     for relative, tree in parsed:
         module_values_by_path[relative] = _module_values(tree, relative, repo_root, path_functions)
@@ -1255,12 +1409,15 @@ def collect_artifact_accesses(
                     arg.arg
                     for arg in [*node.args.posonlyargs, *node.args.args, *node.args.kwonlyargs]
                 )
-                path_functions[node.name] = PathFunction(
-                    params, _function_defaults(node), return_expr, values, relative
+                path_functions.register(
+                    relative,
+                    node.name,
+                    PathFunction(params, _function_defaults(node), return_expr, values, relative),
                 )
 
     accesses: list[ArtifactAccess] = []
     unresolved = [0]
+    unrecognised: Counter[str] = Counter()
     for relative, tree in parsed:
         values = module_values_by_path[relative]
         _scan_scope(
@@ -1271,6 +1428,7 @@ def collect_artifact_accesses(
             path_functions,
             accesses,
             unresolved,
+            unrecognised,
         )
         for node in _iter_function_scopes(tree):
             _scan_scope(
@@ -1281,9 +1439,10 @@ def collect_artifact_accesses(
                 path_functions,
                 accesses,
                 unresolved,
+                unrecognised,
             )
     unique = list(dict.fromkeys(accesses))
-    return unique, unresolved[0], imports_by_path
+    return unique, unresolved[0], imports_by_path, dict(sorted(unrecognised.items()))
 
 
 def _glob_has_artifact_identity(pattern: str) -> bool:
@@ -1629,12 +1788,12 @@ def analyse_consumer_side(
     mass_path: Path | None = None,
 ) -> ConsumerSideReport:
     tracked = _git_tracked_paths(repo_root)
-    accesses, unresolved, imports_by_path = collect_artifact_accesses(repo_root)
+    accesses, unresolved, imports_by_path, unrecognised = collect_artifact_accesses(repo_root)
     # The dynamic-root kind states an instrumentation bound, not that a live
     # producer exists.  Test fixtures are therefore valid writer evidence for
     # the brief's "ANY writer in the tree" rule, but remain excluded from live
     # matching, mismatch, decay, and unresolved counts below.
-    test_accesses, _, _ = collect_artifact_accesses(repo_root, tests_only=True)
+    test_accesses, _, _, _ = collect_artifact_accesses(repo_root, tests_only=True)
     reads = [item for item in accesses if item.action == "read"]
     writes = [item for item in accesses if item.action == "write"]
     writes_anywhere = writes + [item for item in test_accesses if item.action == "write"]
@@ -1750,7 +1909,14 @@ def analyse_consumer_side(
             visible.append(finding)
         else:
             allowed.append((finding, entry))
-    return ConsumerSideReport(visible, allowed, unique_pairs, unresolved, dict(exclusions))
+    return ConsumerSideReport(
+        visible,
+        allowed,
+        unique_pairs,
+        unresolved,
+        dict(exclusions),
+        unrecognised_path_calls=unrecognised,
+    )
 
 
 def _writer_label(writer: ArtifactAccess) -> str:
@@ -1803,6 +1969,7 @@ def _report_json(report: ConsumerSideReport) -> dict[str, object]:
             "allowlisted": len(report.allowlisted),
             "exclusions": report.exclusions,
             "unresolvable": report.unresolvable,
+            "unrecognised_path_calls": report.unrecognised_path_calls,
             "errors": len(report.errors),
             "report_only": True,
         },
@@ -1879,7 +2046,8 @@ def print_consumer_side_report(report: ConsumerSideReport, report_path: Path) ->
         f"committed-in-repository={report.exclusions['committed-in-repository']} "
         f"system-path={report.exclusions['system-path']} "
         f"corpus-walk={report.exclusions['corpus-walk']} "
-        f"unresolvable={report.unresolvable}"
+        f"unresolvable={report.unresolvable} "
+        f"unrecognised-path-calls={sum(report.unrecognised_path_calls.values())}"
     )
     printed_by_kind: Counter[str] = Counter()
     for finding, entry in report.allowlisted:
