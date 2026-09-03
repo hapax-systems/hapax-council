@@ -13,7 +13,7 @@ import subprocess
 import sys
 import time
 from collections.abc import Callable
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
@@ -263,6 +263,10 @@ class Validation:
     task: TaskNote | None = None
     parent_spec_path: Path | None = None
     exempt_read_only: bool = False
+    #: the frame epoch whose verdicts this validation consulted, so an ADMITTED dispatch's receipt
+    #: shows the frame was read (a guard visible only when it refuses is presence, not use)
+    frame_epoch: str | None = None
+    frame_decayed_members: tuple[str, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -1039,7 +1043,7 @@ def _validate_system_drain(
     return Validation(True, f"system-drain eligible ({why})", task, None, exempt_read_only=True)
 
 
-def frame_verdict_refusal(fields: dict[str, Any]) -> str | None:
+def frame_verdict_refusal(fields: dict[str, Any]) -> tuple[str | None, str | None, tuple[str, ...]]:
     """The frame's verdicts, consulted here because governed dispatch is the work-selection
     dominator for every worker whose only launch path is this script (FRAME-PRODUCER §B2).
 
@@ -1055,11 +1059,14 @@ def frame_verdict_refusal(fields: dict[str, Any]) -> str | None:
     except frame_verdicts.FrameVerdictsUnavailable as exc:
         return (
             "frame verdicts unavailable at the work-selection point: "
-            f"{exc.reason}. Next: {exc.remedy}"
+            f"{exc.reason}. Next: {exc.remedy}",
+            None,
+            (),
         )
+    decayed = tuple(sorted({m.member_id for m in verdicts.decayed}))
     refs = _operator_gate_mutation_scope_refs(fields)
     if not refs:
-        return None
+        return None, verdicts.epoch, decayed
     scope = frame_verdicts.scope_within_decayed(
         refs,
         verdicts,
@@ -1067,13 +1074,17 @@ def frame_verdict_refusal(fields: dict[str, Any]) -> str | None:
         vault_root=Path.home() / "Documents" / "Personal",
     )
     if not scope.all_inside:
-        return None
+        return None, verdicts.epoch, decayed
     detail = "; ".join(f"{m.ref} lies in {m.member_id} ({m.relation})" for m in scope.matches)
     return (
-        f"frame epoch {verdicts.epoch} marks every declared mutation surface out of "
-        f"accountability: {detail}. Next: re-declare mutation_scope_refs on a live surface, or "
-        "re-witness the member in frame/procedure/declaration/mass.yaml and re-run the frame "
-        "producer"
+        (
+            f"frame epoch {verdicts.epoch} marks every declared mutation surface out of "
+            f"accountability: {detail}. Next: re-declare mutation_scope_refs on a live surface, or "
+            "re-witness the member in frame/procedure/declaration/mass.yaml and re-run the frame "
+            "producer"
+        ),
+        verdicts.epoch,
+        decayed,
     )
 
 
@@ -1179,11 +1190,13 @@ def validate_task(
         if not ok:
             return Validation(False, reason, task, parent_spec_path, exempt)
 
-    frame_refusal = frame_verdict_refusal(fields)
+    frame_refusal, frame_epoch, frame_decayed = frame_verdict_refusal(fields)
     if frame_refusal is not None:
-        return Validation(False, frame_refusal, task, parent_spec_path, exempt)
+        return Validation(
+            False, frame_refusal, task, parent_spec_path, exempt, frame_epoch, frame_decayed
+        )
 
-    return Validation(True, "eligible", task, parent_spec_path, exempt)
+    return Validation(True, "eligible", task, parent_spec_path, exempt, frame_epoch, frame_decayed)
 
 
 def build_prompt(
@@ -1304,6 +1317,8 @@ def write_receipt(
         if validation.parent_spec_path
         else None,
         "exempt_read_only": validation.exempt_read_only,
+        "frame_epoch": validation.frame_epoch,
+        "frame_decayed_members": list(validation.frame_decayed_members),
         "launched": launched,
         "launch_returncode": launch_returncode,
         "prompt": prompt,
@@ -2029,13 +2044,7 @@ def run_system_drain(args: argparse.Namespace, task_root: Path) -> int:
             mode=args.mode,
             profile=args.profile,
             route=None,
-            validation=Validation(
-                False,
-                reason,
-                validation.task,
-                validation.parent_spec_path,
-                validation.exempt_read_only,
-            ),
+            validation=replace(validation, ok=False, reason=reason),
             prompt=None,
             launched=False,
             launch_returncode=rc,
@@ -2286,13 +2295,7 @@ def main(argv: list[str] | None = None) -> int:
                 ok = False
                 reason = metadata_reason
         if not ok:
-            blocked = Validation(
-                False,
-                reason,
-                validation.task,
-                validation.parent_spec_path,
-                validation.exempt_read_only,
-            )
+            blocked = replace(validation, ok=False, reason=reason)
             if not args.no_receipt:
                 write_receipt(
                     task_id=args.task,
@@ -2313,13 +2316,7 @@ def main(argv: list[str] | None = None) -> int:
         assert route is not None
         if args.launch:
             reason = "receipt-only mode does not launch lanes"
-            blocked = Validation(
-                False,
-                reason,
-                validation.task,
-                validation.parent_spec_path,
-                validation.exempt_read_only,
-            )
+            blocked = replace(validation, ok=False, reason=reason)
             if not args.no_receipt:
                 write_receipt(
                     task_id=args.task,
@@ -2433,13 +2430,7 @@ def main(argv: list[str] | None = None) -> int:
     if selected_route is None:
         reason = _unsupported_selected_route_reason(route_decision)
         assert reason is not None
-        blocked = Validation(
-            False,
-            reason,
-            validation.task,
-            validation.parent_spec_path,
-            validation.exempt_read_only,
-        )
+        blocked = replace(validation, ok=False, reason=reason)
         if not args.no_receipt:
             write_receipt(
                 task_id=args.task,
@@ -2504,13 +2495,7 @@ def main(argv: list[str] | None = None) -> int:
         )
     if not durable_binding.ok and args.launch:
         reason = f"durable MQ authority binding required: {durable_binding.reason}"
-        blocked = Validation(
-            False,
-            reason,
-            validation.task,
-            validation.parent_spec_path,
-            validation.exempt_read_only,
-        )
+        blocked = replace(validation, ok=False, reason=reason)
         if not args.no_receipt:
             write_receipt(
                 task_id=args.task,
@@ -2637,13 +2622,7 @@ def main(argv: list[str] | None = None) -> int:
                 rc = dispatch_launch.launch_returncode
             except AuthorityViolation as exc:
                 reason = f"capability adapter launch refused: {exc}"
-                blocked = Validation(
-                    False,
-                    reason,
-                    validation.task,
-                    validation.parent_spec_path,
-                    validation.exempt_read_only,
-                )
+                blocked = replace(validation, ok=False, reason=reason)
                 if not args.no_receipt:
                     write_receipt(
                         task_id=args.task,
@@ -2663,13 +2642,7 @@ def main(argv: list[str] | None = None) -> int:
                 return 10
             except CoordDispatchError as exc:
                 reason = f"atomic dispatch launch failed: {exc.reason}"
-                blocked = Validation(
-                    False,
-                    reason,
-                    validation.task,
-                    validation.parent_spec_path,
-                    validation.exempt_read_only,
-                )
+                blocked = replace(validation, ok=False, reason=reason)
                 if not args.no_receipt:
                     write_receipt(
                         task_id=args.task,
