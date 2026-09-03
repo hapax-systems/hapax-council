@@ -1,7 +1,9 @@
 """Tests for hapax-backup-watchdog script and systemd units."""
 
+import os
 import pathlib
 import subprocess
+from datetime import UTC, datetime, timedelta
 
 REPO_ROOT = pathlib.Path(__file__).resolve().parents[2]
 SCRIPT = REPO_ROOT / "scripts" / "hapax-backup-watchdog"
@@ -104,6 +106,97 @@ class TestWatchdogScript:
         result = subprocess.run([str(probe)], capture_output=True, text=True, timeout=10, env=env)
         assert result.returncode == 1
         assert "NO postgres-all.sql" in result.stdout
+
+    @staticmethod
+    def _run_b2_failure(tmp_path: pathlib.Path, mode: str) -> subprocess.CompletedProcess[str]:
+        bin_dir = tmp_path / "bin"
+        qdrant_dir = tmp_path / "qdrant"
+        bin_dir.mkdir()
+        qdrant_dir.mkdir()
+        for index in range(5):
+            (qdrant_dir / f"collection-{index}").mkdir()
+
+        (bin_dir / "pass").write_text(
+            "#!/bin/sh\nprintf '%s\\n' test-password\n",
+            encoding="utf-8",
+        )
+        (bin_dir / "restic").write_text(
+            """#!/bin/sh
+set -eu
+is_b2=0
+[ "${RESTIC_REPOSITORY:-}" = b2 ] && is_b2=1
+case "${1:-}" in
+    snapshots)
+        if [ "$is_b2" = 1 ] && [ "$B2_MODE" = inaccessible ]; then
+            exit 11
+        fi
+        if [ "$is_b2" = 1 ] && [ "$B2_MODE" = stale ]; then
+            printf '[{"time":"%s"}]\n' "$STALE_TIME"
+        else
+            printf '[{"time":"%s"}]\n' "$RECENT_TIME"
+        fi
+        ;;
+    check)
+        if [ "$is_b2" = 1 ] && [ "$B2_MODE" = corrupt ]; then
+            exit 12
+        fi
+        ;;
+    ls)
+        if [ "$is_b2" = 1 ] && [ "$B2_MODE" = dump-less ]; then
+            exit 0
+        fi
+        printf '%s\n' '-rw-r--r-- 0 0 1000 2026-09-02 00:00:00 /dump/postgres-all.sql'
+        ;;
+esac
+""",
+            encoding="utf-8",
+        )
+        for command in ("pass", "restic"):
+            (bin_dir / command).chmod(0o755)
+        for command in ("curl", "notify-send"):
+            (bin_dir / command).write_text("#!/bin/sh\nexit 0\n", encoding="utf-8")
+            (bin_dir / command).chmod(0o755)
+        alert = tmp_path / "hapax-alert"
+        alert.write_text("#!/bin/sh\nexit 0\n", encoding="utf-8")
+        alert.chmod(0o755)
+
+        now = datetime.now(UTC)
+        env = os.environ.copy()
+        env.update(
+            {
+                "B2_MODE": mode,
+                "HAPAX_ALERT_BIN": str(alert),
+                "HAPAX_GDRIVE_CRITICAL_REPO": "gdrive",
+                "HAPAX_POSTGRES_DUMP_MIN_BYTES": "100",
+                "HAPAX_QDRANT_SNAP_DIR": str(qdrant_dir),
+                "HAPAX_TIER1_REPO": "tier1",
+                "HAPAX_TIER2_B2_REPO": "b2",
+                "PATH": f"{bin_dir}:/usr/bin:/bin",
+                "RECENT_TIME": now.isoformat(),
+                "STALE_TIME": (now - timedelta(hours=72)).isoformat(),
+            }
+        )
+        return subprocess.run(
+            [str(SCRIPT)],
+            capture_output=True,
+            text=True,
+            timeout=10,
+            env=env,
+        )
+
+    def test_b2_watchdog_executes_failure_paths(self, tmp_path):
+        expected = {
+            "stale": "Tier2-B2: latest snapshot is",
+            "inaccessible": "Tier2-B2: cannot read snapshots",
+            "corrupt": "Tier2-B2: restic check failed",
+            "dump-less": "Tier2-B2: newest snapshot contains NO postgres-all.sql",
+        }
+        for mode, message in expected.items():
+            case_dir = tmp_path / mode
+            case_dir.mkdir()
+            result = self._run_b2_failure(case_dir, mode)
+            assert result.returncode == 1, (mode, result.stdout, result.stderr)
+            assert message in result.stdout, (mode, result.stdout)
 
     def test_script_bash_syntax_valid(self):
         result = subprocess.run(

@@ -27,10 +27,12 @@ set -euo pipefail
 #     rclone config create b2 b2 account YOUR_KEY_ID key YOUR_APP_KEY
 #     DR_OBJECT_NAME="hapax-cachyos-restore.sh"
 #     rclone copyto "b2:hapax-backups/dr-scripts/${DR_OBJECT_NAME}" "./${DR_OBJECT_NAME}"
+#     rclone copyto "b2:hapax-backups/dr-scripts/host-storage-registry.json" "./host-storage-registry.json"
 #     chmod +x "${DR_OBJECT_NAME}"
-#     "./${DR_OBJECT_NAME}"
+#     HAPAX_HOST_STORAGE_REGISTRY="$PWD/host-storage-registry.json" "./${DR_OBJECT_NAME}"
 #
-#   Option C — USB stick (copy script before wiping)
+#   Option C — USB stick (copy the script and host-storage-registry.json before wiping,
+#     then set HAPAX_HOST_STORAGE_REGISTRY to the copied registry path)
 #
 # YOU NEED TO KNOW:
 #   1. Restic encryption password
@@ -49,10 +51,81 @@ ask()  { read -rp "$1: " "$2"; }
 DR_OBJECT_NAME="hapax-cachyos-restore.sh"
 RESTORE_ROOT="/var/tmp/hapax-restore"
 POSTGRES_SUPERUSER="${HAPAX_POSTGRES_SUPERUSER:-hapax}"
+POSTGRES_INITIAL_DATABASE="${HAPAX_POSTGRES_INITIAL_DATABASE:-$POSTGRES_SUPERUSER}"
+SCRIPT_DIR="$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")"
+HOST_STORAGE_REGISTRY="${HAPAX_HOST_STORAGE_REGISTRY:-$SCRIPT_DIR/../config/infrastructure/host-storage-registry.json}"
+BACKUP_STORAGE_POLICY_IDS=("local-nas-restic" "b2-restic-offsite")
+BACKUP_STORAGE_ROOTS=()
 RESTORE_DUMP_RELATIVE_PATHS=(
     "store/llm-data/backup-dumps-remote"
     "store/llm-data/backup-dumps-local"
 )
+
+load_backup_storage_roots() {
+    local registry_path="${1:-$HOST_STORAGE_REGISTRY}"
+    local roots
+
+    if [[ ! -s "$registry_path" ]]; then
+        fail "Canonical host storage registry is missing or empty: $registry_path; fetch the recovery companion object, then rerun Phase 11" >&2
+        return 1
+    fi
+    if ! roots=$(jq -er \
+        --arg local_policy "${BACKUP_STORAGE_POLICY_IDS[0]}" \
+        --arg remote_policy "${BACKUP_STORAGE_POLICY_IDS[1]}" '
+        [.backup_policies[]
+            | select(.store_id == $local_policy or .store_id == $remote_policy)
+            | .required_mount_roots[]]
+        | unique
+        | if length == 0 then error("no required mount roots") else .[] end
+    ' "$registry_path" 2>/dev/null); then
+        fail "Could not read backup storage roots from $registry_path; repair backup_policies.required_mount_roots, then rerun Phase 11" >&2
+        return 1
+    fi
+
+    mapfile -t BACKUP_STORAGE_ROOTS <<< "$roots"
+}
+
+policy_storage_roots() {
+    local policy_id="$1" registry_path="${2:-$HOST_STORAGE_REGISTRY}"
+
+    jq -er --arg policy_id "$policy_id" '
+        [.backup_policies[]
+            | select(.store_id == $policy_id)
+            | .required_mount_roots[]]
+        | unique
+        | if length == 0 then error("policy has no required mount roots") else .[] end
+    ' "$registry_path"
+}
+
+target_storage_path() {
+    local canonical_root="$1" target_root="${2:-}"
+
+    printf '%s%s\n' "${target_root%/}" "$canonical_root"
+}
+
+ensure_backup_storage_roots() {
+    local target_root="${1:-}"
+    local canonical_root target
+
+    for canonical_root in "${BACKUP_STORAGE_ROOTS[@]}"; do
+        target="$(target_storage_path "$canonical_root" "$target_root")"
+        if ! sudo mkdir -p -- "$target"; then
+            fail "Required backup storage root $canonical_root could not be created at $target; repair the target filesystem, then rerun Phase 11" >&2
+            return 1
+        fi
+        if ! mountpoint -q "$target"; then
+            if ! sudo mount "$target"; then
+                fail "Required backup storage root $canonical_root could not be mounted at $target; restore its canonical mount entry, then rerun Phase 11" >&2
+                return 1
+            fi
+        fi
+        if ! mountpoint -q "$target"; then
+            fail "Required backup storage root $canonical_root is still not a mount point at $target; inspect findmnt, then rerun Phase 11" >&2
+            return 1
+        fi
+        ok "Backup storage root mounted: $canonical_root"
+    done
+}
 
 prepare_restore_root() {
     local restore_root="$1"
@@ -159,8 +232,42 @@ restore_postgresql() {
         fail "Required PostgreSQL dump is missing or empty: $postgres_dump; restore a complete snapshot, then rerun Phase 12" >&2
         return 1
     fi
-    if ! sudo docker exec -i postgres psql -U "$POSTGRES_SUPERUSER" -v ON_ERROR_STOP=1 \
-        < "$postgres_dump" > /dev/null; then
+    # pg_dumpall includes CREATE ROLE and CREATE DATABASE for bootstrap objects
+    # that the fresh container has already created. Replaying either one under
+    # ON_ERROR_STOP aborts before data restore. Filter only those two CREATE
+    # statements; retain their ALTER/\connect content and every other statement.
+    if ! awk \
+        -v role="$POSTGRES_SUPERUSER" \
+        -v initial_database="$POSTGRES_INITIAL_DATABASE" '
+        BEGIN {
+            quoted_role = role
+            gsub(/"/, "\"\"", quoted_role)
+            quoted_role = "\"" quoted_role "\""
+            quoted_database = initial_database
+            gsub(/"/, "\"\"", quoted_database)
+            quoted_database = "\"" quoted_database "\""
+        }
+        {
+            candidate = $0
+            if (sub(/^[[:space:]]*CREATE[[:space:]]+ROLE[[:space:]]+/, "", candidate)) {
+                sub(/[[:space:]]*;[[:space:]]*$/, "", candidate)
+                if (candidate == role || candidate == quoted_role) {
+                    next
+                }
+            }
+            candidate = $0
+            if (sub(/^[[:space:]]*CREATE[[:space:]]+DATABASE[[:space:]]+/, "", candidate)) {
+                sub(/[[:space:]].*$/, "", candidate)
+                sub(/;$/, "", candidate)
+                if (candidate == initial_database || candidate == quoted_database) {
+                    next
+                }
+            }
+            print
+        }
+    ' "$postgres_dump" \
+        | sudo docker exec -i postgres psql -U "$POSTGRES_SUPERUSER" -v ON_ERROR_STOP=1 \
+            > /dev/null; then
         fail "PostgreSQL import failed for $postgres_dump as role $POSTGRES_SUPERUSER; check 'docker logs postgres', then rerun Phase 12" >&2
         return 1
     fi
@@ -215,6 +322,15 @@ case "${1:-}" in
         fi
         restore_n8n_workflows "$2"
         exit $?
+        ;;
+    --print-storage-roots)
+        if [[ $# -gt 2 ]]; then
+            fail "Usage: $0 --print-storage-roots [HOST_STORAGE_REGISTRY]" >&2
+            exit 2
+        fi
+        load_backup_storage_roots "${2:-$HOST_STORAGE_REGISTRY}"
+        printf '%s\n' "${BACKUP_STORAGE_ROOTS[@]}"
+        exit 0
         ;;
 esac
 
@@ -720,8 +836,35 @@ ok "SMART monitoring enabled"
 
 ok "System services configured"
 
-# ─── Phase 11: SATA drive ──────────────────────────────────────────────────
-log "=== Phase 11: SATA drive setup ==="
+# ─── Phase 11: Canonical backup storage roots ──────────────────────────────
+log "=== Phase 11: Canonical backup storage setup ==="
+
+load_backup_storage_roots "$HOST_STORAGE_REGISTRY"
+if ! STORE_ROOT=$(policy_storage_roots "b2-restic-offsite" "$HOST_STORAGE_REGISTRY"); then
+    fail "Could not resolve the B2 staging root from $HOST_STORAGE_REGISTRY; repair its backup policy, then rerun Phase 11" >&2
+    exit 1
+fi
+if [[ "$STORE_ROOT" == *$'\n'* ]]; then
+    fail "B2 staging policy resolved more than one storage root; repair b2-restic-offsite in $HOST_STORAGE_REGISTRY, then rerun Phase 11" >&2
+    exit 1
+fi
+if ! TIER1_STORAGE_ROOTS=$(policy_storage_roots "local-nas-restic" "$HOST_STORAGE_REGISTRY"); then
+    fail "Could not resolve Tier 1 storage roots from $HOST_STORAGE_REGISTRY; repair its backup policy, then rerun Phase 11" >&2
+    exit 1
+fi
+TIER1_STORAGE_ROOT=""
+while IFS= read -r canonical_root; do
+    [[ "$canonical_root" == "$STORE_ROOT" ]] && continue
+    if [[ -n "$TIER1_STORAGE_ROOT" ]]; then
+        fail "Tier 1 policy resolved multiple non-staging roots; repair local-nas-restic in $HOST_STORAGE_REGISTRY, then rerun Phase 11" >&2
+        exit 1
+    fi
+    TIER1_STORAGE_ROOT="$canonical_root"
+done <<< "$TIER1_STORAGE_ROOTS"
+if [[ -z "$TIER1_STORAGE_ROOT" ]]; then
+    fail "Tier 1 policy has no repository mount root distinct from $STORE_ROOT; repair local-nas-restic in $HOST_STORAGE_REGISTRY, then rerun Phase 11" >&2
+    exit 1
+fi
 
 # Detect SATA drive
 SATA_DEV=""
@@ -737,39 +880,30 @@ if [[ -n "$SATA_DEV" ]]; then
     if lsblk "$SATA_DEV" | grep -q part; then
         log "SATA drive already partitioned"
     else
-        log "Partitioning $SATA_DEV (600G docker + rest data)..."
+        log "Partitioning $SATA_DEV for canonical storage root $STORE_ROOT..."
         sudo parted "$SATA_DEV" --script mklabel gpt
-        sudo parted "$SATA_DEV" --script mkpart docker ext4 1MiB 600GiB
-        sudo parted "$SATA_DEV" --script mkpart data ext4 600GiB 100%
-        sudo mkfs.ext4 -L docker "${SATA_DEV}1"
-        sudo mkfs.ext4 -L data "${SATA_DEV}2"
+        sudo parted "$SATA_DEV" --script mkpart store ext4 1MiB 100%
+        sudo mkfs.ext4 -L store "${SATA_DEV}1"
         ok "SATA drive partitioned"
     fi
 
-    # Ensure mountpoints exist
-    sudo mkdir -p /var/lib/docker /data /data/backups/restic
+    sudo mkdir -p "$STORE_ROOT"
 
-    # Add fstab entries if not already present
-    DOCKER_UUID=$(sudo blkid -s UUID -o value "${SATA_DEV}1")
-    DATA_UUID=$(sudo blkid -s UUID -o value "${SATA_DEV}2")
-
-    if [[ -n "$DOCKER_UUID" ]] && ! grep -q "$DOCKER_UUID" /etc/fstab; then
-        echo "UUID=${DOCKER_UUID} /var/lib/docker ext4 defaults,noatime,commit=60 0 2" | sudo tee -a /etc/fstab
-        ok "Added /var/lib/docker to fstab"
+    STORE_UUID=$(sudo blkid -s UUID -o value "${SATA_DEV}1")
+    if [[ -z "$STORE_UUID" ]]; then
+        fail "Required backup storage root $STORE_ROOT has no filesystem UUID on ${SATA_DEV}1; inspect blkid, then rerun Phase 11" >&2
+        exit 1
     fi
-    if [[ -n "$DATA_UUID" ]] && ! grep -q "$DATA_UUID" /etc/fstab; then
-        echo "UUID=${DATA_UUID} /data ext4 defaults,noatime,commit=60 0 2" | sudo tee -a /etc/fstab
-        ok "Added /data to fstab"
+    if ! awk -v target="$STORE_ROOT" '$2 == target { found = 1 } END { exit !found }' /etc/fstab; then
+        printf 'UUID=%s %s ext4 defaults,noatime,commit=60 0 2\n' "$STORE_UUID" "$STORE_ROOT" \
+            | sudo tee -a /etc/fstab > /dev/null
+        ok "Added $STORE_ROOT to fstab"
     fi
-
-    # Mount if not already mounted
-    mountpoint -q /var/lib/docker || sudo mount /var/lib/docker 2>/dev/null || warn "/var/lib/docker mount failed"
-    mountpoint -q /data || sudo mount /data 2>/dev/null || warn "/data mount failed"
-    sudo mkdir -p /data/backups/restic
-    ok "SATA drive mounted"
 else
-    warn "No unmounted SATA drive found — skipping"
+    log "No unmounted SATA drive found; validating existing canonical storage mounts"
 fi
+
+ensure_backup_storage_roots
 
 # The restored tree lives under /var/tmp, so installing tmpfs on /tmp cannot
 # hide the snapshot before database recovery.
@@ -898,14 +1032,22 @@ fi
 # ─── Phase 14: Local backup repo ───────────────────────────────────────────
 log "=== Phase 14: Initialize local backup repo ==="
 
-if [[ -d /data ]]; then
-    mkdir -p /data/backups/restic
-    RESTIC_PASSWORD="$RESTIC_PASSWORD" restic -r /data/backups/restic init 2>/dev/null || \
-        ok "Local restic repo already initialized"
-    ok "Local backup repo ready at /data/backups/restic"
-else
-    warn "/data not mounted — local backup skipped"
+LOCAL_RESTIC_REPO="$TIER1_STORAGE_ROOT/backups/restic"
+if ! mountpoint -q "$TIER1_STORAGE_ROOT"; then
+    fail "Required backup storage root $TIER1_STORAGE_ROOT is not mounted; rerun Phase 11 before initializing Tier 1" >&2
+    exit 1
 fi
+if ! mkdir -p "$LOCAL_RESTIC_REPO"; then
+    fail "Could not create Tier 1 repository at $LOCAL_RESTIC_REPO; repair the $TIER1_STORAGE_ROOT mount, then rerun Phase 14" >&2
+    exit 1
+fi
+if ! RESTIC_PASSWORD="$RESTIC_PASSWORD" restic -r "$LOCAL_RESTIC_REPO" snapshots --no-lock > /dev/null 2>&1; then
+    if ! RESTIC_PASSWORD="$RESTIC_PASSWORD" restic -r "$LOCAL_RESTIC_REPO" init; then
+        fail "Could not initialize Tier 1 repository at $LOCAL_RESTIC_REPO; inspect restic and the $TIER1_STORAGE_ROOT mount, then rerun Phase 14" >&2
+        exit 1
+    fi
+fi
+ok "Local backup repo ready at $LOCAL_RESTIC_REPO"
 
 # ─── Phase 15: Enable user services & timers ───────────────────────────────
 log "=== Phase 15: Enable systemd user services & timers ==="

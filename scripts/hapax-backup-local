@@ -96,16 +96,16 @@ log "Dumping PostgreSQL..."
 PG_DUMP="$DUMP_DIR/postgres-all.sql"
 PG_ERR="$DUMP_DIR/postgres-all.err"
 if ! docker exec postgres pg_dumpall -U "$POSTGRES_SUPERUSER" > "$PG_DUMP" 2>"$PG_ERR"; then
-    log "FATAL: pg_dumpall exited non-zero: $(tail -c 300 "$PG_ERR" 2>/dev/null)"
+    log "FATAL: pg_dumpall exited non-zero: $(tail -c 300 "$PG_ERR" 2>/dev/null); inspect 'docker logs postgres', then rerun the backup"
     exit 1
 fi
 if ! tail -c 200 "$PG_DUMP" | grep -q "PostgreSQL database cluster dump complete"; then
-    log "FATAL: dump lacks completion terminator (truncated); size=$(stat -c%s "$PG_DUMP" 2>/dev/null)"
+    log "FATAL: dump lacks completion terminator (truncated); size=$(stat -c%s "$PG_DUMP" 2>/dev/null); check free space and the postgres container, then rerun the backup"
     exit 1
 fi
 _pg_size=$(stat -c%s "$PG_DUMP")
 if [[ "$_pg_size" -lt 1000000000 ]]; then
-    log "FATAL: dump implausibly small: ${_pg_size} bytes (floor 1000000000)"
+    log "FATAL: dump implausibly small: ${_pg_size} bytes (floor 1000000000); verify the expected databases exist, then rerun the backup"
     exit 1
 fi
 log "PostgreSQL dump OK: ${_pg_size} bytes, terminator present"

@@ -1,6 +1,7 @@
 [Unit]
 Description=Dump PostgreSQL/Qdrant/n8n and back up system state to NAS with restic
-After=network-online.target
+After=network-online.target hapax-source-activate.service
+Wants=network-online.target hapax-source-activate.service
 RequiresMountsFor=/store/llm-data /mnt/nas/backups/restic
 ConditionPathIsMountPoint=/store
 ConditionPathIsMountPoint=/mnt/nas
@@ -8,6 +9,7 @@ OnFailure=notify-failure@%n.service
 
 [Service]
 Type=oneshot
+ExecCondition=/usr/bin/jq -e '.active_source_head == .origin_main_sha and (.status == "completed" or .status == "completed_skip_deploy" or .status == "no_op")' %h/.cache/hapax/source-activation/current.json
 ExecStart=%h/.cache/hapax/source-activation/worktree/scripts/hapax-backup-local
 WorkingDirectory=%h/.cache/hapax/source-activation/worktree
 Environment=PATH=/home/hapax/.local/bin:/usr/local/bin:/usr/bin:/bin

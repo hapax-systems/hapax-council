@@ -198,6 +198,206 @@ restore_postgresql "$2"
     ]
 
 
+def test_postgres_import_filters_only_preexisting_superuser_from_pg_dumpall(
+    tmp_path: Path,
+) -> None:
+    dump_dir = tmp_path / "dump"
+    dump_dir.mkdir()
+    postgres_dump = dump_dir / "postgres-all.sql"
+    postgres_dump.write_text(
+        """--
+-- PostgreSQL database cluster dump
+--
+
+SET default_transaction_read_only = off;
+
+--
+-- Roles
+--
+
+CREATE ROLE hapax;
+ALTER ROLE hapax WITH SUPERUSER INHERIT CREATEROLE CREATEDB LOGIN;
+CREATE ROLE app_reader;
+ALTER ROLE app_reader WITH NOSUPERUSER INHERIT NOCREATEROLE NOCREATEDB NOLOGIN;
+
+--
+-- Database creation
+--
+
+CREATE DATABASE hapax WITH TEMPLATE = template0 OWNER = hapax;
+ALTER DATABASE hapax OWNER TO hapax;
+\\connect hapax
+CREATE TABLE public.restore_probe (id integer);
+CREATE DATABASE app WITH TEMPLATE = template0 OWNER = hapax;
+
+-- PostgreSQL database cluster dump complete
+""",
+        encoding="utf-8",
+    )
+    fake_bin = tmp_path / "bin"
+    fake_bin.mkdir()
+    command_log = tmp_path / "sudo.log"
+    psql_input = tmp_path / "psql-input.sql"
+    sudo = fake_bin / "sudo"
+    sudo.write_text(
+        """#!/bin/sh
+set -eu
+printf '%s\n' "$*" >> "$COMMAND_LOG"
+case "$*" in
+    *" pg_isready "*) exit 0 ;;
+    *" psql "*)
+        cat > "$PSQL_INPUT"
+        if grep -Fxq 'CREATE ROLE hapax;' "$PSQL_INPUT" \
+            || grep -Eq '^CREATE DATABASE hapax([ ;])' "$PSQL_INPUT"; then
+            printf '%s\n' 'ERROR: bootstrap role or database already exists' >&2
+            exit 7
+        fi
+        grep -Fq 'CREATE DATABASE app' "$PSQL_INPUT"
+        exit 0
+        ;;
+esac
+exit 0
+""",
+        encoding="utf-8",
+    )
+    sudo.chmod(0o755)
+    probe = tmp_path / "postgres-restore.sh"
+    probe.write_text(
+        """#!/usr/bin/env bash
+set -euo pipefail
+source "$1"
+wait_for_postgresql
+restore_postgresql "$2"
+""",
+        encoding="utf-8",
+    )
+    probe.chmod(0o755)
+    env = os.environ.copy()
+    env.update(
+        {
+            "COMMAND_LOG": str(command_log),
+            "PATH": f"{fake_bin}:/usr/bin:/bin",
+            "PSQL_INPUT": str(psql_input),
+        }
+    )
+
+    result = subprocess.run(
+        [str(probe), str(RESTORE_SCRIPT), str(dump_dir)],
+        capture_output=True,
+        text=True,
+        env=env,
+        timeout=5,
+    )
+
+    assert result.returncode == 0, result.stderr
+    restored_sql = psql_input.read_text(encoding="utf-8")
+    assert "CREATE ROLE hapax;" not in restored_sql
+    assert "ALTER ROLE hapax WITH SUPERUSER" in restored_sql
+    assert "CREATE DATABASE hapax" not in restored_sql
+    assert "ALTER DATABASE hapax OWNER TO hapax" in restored_sql
+    assert "\\connect hapax" in restored_sql
+    assert "CREATE ROLE app_reader;" in restored_sql
+    assert "CREATE DATABASE app" in restored_sql
+    assert command_log.read_text(encoding="utf-8").splitlines() == [
+        "docker exec postgres pg_isready -U hapax",
+        "docker exec -i postgres psql -U hapax -v ON_ERROR_STOP=1",
+    ]
+
+
+def _ensure_storage_roots(
+    tmp_path: Path,
+    *,
+    fail_root: str = "",
+) -> tuple[subprocess.CompletedProcess[str], Path, list[str]]:
+    fake_root = tmp_path / "fake-root"
+    fake_bin = tmp_path / "bin"
+    command_log = tmp_path / "mount-commands.log"
+    fake_bin.mkdir()
+    sudo = fake_bin / "sudo"
+    sudo.write_text(
+        """#!/bin/sh
+set -eu
+printf '%s\n' "$*" >> "$COMMAND_LOG"
+case "${1:-}" in
+    mkdir) shift; exec /usr/bin/mkdir "$@" ;;
+    mount)
+        target=$2
+        if [ -n "$MOUNT_FAIL_ROOT" ]; then
+            case "$target" in
+                *"$MOUNT_FAIL_ROOT") exit 32 ;;
+            esac
+        fi
+        : > "$target/.mounted"
+        ;;
+esac
+""",
+        encoding="utf-8",
+    )
+    sudo.chmod(0o755)
+    mountpoint = fake_bin / "mountpoint"
+    mountpoint.write_text(
+        """#!/bin/sh
+set -eu
+[ "${1:-}" = -q ]
+[ -f "$2/.mounted" ]
+""",
+        encoding="utf-8",
+    )
+    mountpoint.chmod(0o755)
+    probe = tmp_path / "storage-roots.sh"
+    probe.write_text(
+        """#!/usr/bin/env bash
+set -euo pipefail
+source "$1"
+load_backup_storage_roots "$2"
+ensure_backup_storage_roots "$3"
+""",
+        encoding="utf-8",
+    )
+    probe.chmod(0o755)
+    registry = RESTORE_SCRIPT.parents[1] / "config/infrastructure/host-storage-registry.json"
+    env = os.environ.copy()
+    env.update(
+        {
+            "COMMAND_LOG": str(command_log),
+            "MOUNT_FAIL_ROOT": fail_root,
+            "PATH": f"{fake_bin}:/usr/bin:/bin",
+        }
+    )
+    result = subprocess.run(
+        [str(probe), str(RESTORE_SCRIPT), str(registry), str(fake_root)],
+        capture_output=True,
+        text=True,
+        env=env,
+        timeout=5,
+    )
+    commands = command_log.read_text(encoding="utf-8").splitlines()
+    return result, fake_root, commands
+
+
+def test_restore_creates_and_mounts_registry_storage_roots_under_fake_root(
+    tmp_path: Path,
+) -> None:
+    result, fake_root, commands = _ensure_storage_roots(tmp_path)
+
+    assert result.returncode == 0, result.stderr
+    assert (fake_root / "store/.mounted").is_file()
+    assert (fake_root / "mnt/nas/.mounted").is_file()
+    assert not (fake_root / "data").exists()
+    assert f"mount {fake_root}/store" in commands
+    assert f"mount {fake_root}/mnt/nas" in commands
+    restore_text = RESTORE_SCRIPT.read_text(encoding="utf-8")
+    assert "/data/backups/restic" not in restore_text
+    assert 'LOCAL_RESTIC_REPO="$TIER1_STORAGE_ROOT/backups/restic"' in restore_text
+
+
+def test_restore_fails_loudly_naming_unmountable_registry_root(tmp_path: Path) -> None:
+    result, _fake_root, _commands = _ensure_storage_roots(tmp_path, fail_root="/mnt/nas")
+
+    assert result.returncode != 0
+    assert "Required backup storage root /mnt/nas could not be mounted" in result.stderr
+
+
 def test_qdrant_upload_failure_is_fatal_and_names_collection(tmp_path: Path) -> None:
     dump_dir = tmp_path / "dump"
     qdrant_dir = dump_dir / "qdrant"

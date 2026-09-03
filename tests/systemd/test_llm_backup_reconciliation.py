@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import re
+import shlex
 import subprocess
 from pathlib import Path
 
@@ -80,6 +81,12 @@ def test_backup_tier_units_execute_source_controlled_scripts() -> None:
         exec_start = _unit_value(text, "Service", "ExecStart")
         assert exec_start == f"{activation_root}/scripts/hapax-backup-{lane}", lane
         assert _unit_value(text, "Service", "WorkingDirectory") == activation_root
+        assert "hapax-source-activate.service" in (_unit_value(text, "Unit", "Wants") or "")
+        assert "hapax-source-activate.service" in (_unit_value(text, "Unit", "After") or "")
+        exec_condition = _unit_value(text, "Service", "ExecCondition")
+        assert exec_condition is not None
+        assert "source-activation/current.json" in exec_condition
+        assert ".active_source_head == .origin_main_sha" in exec_condition
         assert not mutable_project_path.search(text), lane
         assert archived_repo not in text, lane
         assert _unit_value(text, "Unit", "RequiresMountsFor"), lane
@@ -96,11 +103,49 @@ def test_backup_tier_units_execute_source_controlled_scripts() -> None:
             f"{lane} timer must be source-controlled"
         )
     remote = (REPO / "scripts" / "hapax-backup-remote").read_text()
-    assert 'DR_SCRIPT="$(dirname "$(readlink -f "$0")")/hapax-cachyos-restore"' in remote
+    assert 'SCRIPT_DIR="$(dirname "$(readlink -f "$0")")"' in remote
+    assert 'DR_SCRIPT="$SCRIPT_DIR/hapax-cachyos-restore"' in remote
     dr = REPO / "scripts" / "hapax-cachyos-restore"
     assert dr.is_file() and dr.stat().st_mode & 0o111, dr
     subprocess.run(["bash", "-n", str(dr)], check=True, capture_output=True, timeout=10)
     assert archived_repo not in dr.read_text()
+
+
+def test_backup_tier_units_refuse_stale_activation_receipt(tmp_path: Path) -> None:
+    receipt = tmp_path / ".cache/hapax/source-activation/current.json"
+    receipt.parent.mkdir(parents=True)
+
+    for lane in ("local", "remote"):
+        text = (UNITS / f"hapax-backup-{lane}.service").read_text()
+        exec_condition = _unit_value(text, "Service", "ExecCondition")
+        assert exec_condition is not None
+        command = shlex.split(exec_condition.replace("%h", str(tmp_path)))
+
+        receipt.write_text(
+            json.dumps(
+                {
+                    "status": "completed",
+                    "active_source_head": "old-sha",
+                    "origin_main_sha": "new-sha",
+                }
+            ),
+            encoding="utf-8",
+        )
+        stale = subprocess.run(command, capture_output=True, text=True, timeout=5)
+        assert stale.returncode != 0, lane
+
+        receipt.write_text(
+            json.dumps(
+                {
+                    "status": "completed",
+                    "active_source_head": "new-sha",
+                    "origin_main_sha": "new-sha",
+                }
+            ),
+            encoding="utf-8",
+        )
+        current = subprocess.run(command, capture_output=True, text=True, timeout=5)
+        assert current.returncode == 0, (lane, current.stderr)
 
 
 def test_backup_manifests_name_canonical_lanes() -> None:
@@ -169,3 +214,27 @@ def test_backup_remote_policy_is_live_daily_everywhere() -> None:
     assert policy["intended_state"] == "enabled"
     assert policy["next_action"] is None
     assert expected_timers["backup_remote"] == "hapax-backup-remote.timer"
+
+
+def test_backup_storage_roots_have_one_canonical_registry_table() -> None:
+    registry = json.loads(INFRA_REGISTRY.read_text())
+    policies = {row["store_id"]: row for row in registry["backup_policies"]}
+
+    assert policies["local-nas-restic"]["required_mount_roots"] == [
+        "/store",
+        "/mnt/nas",
+    ]
+    assert policies["b2-restic-offsite"]["required_mount_roots"] == ["/store"]
+
+    result = subprocess.run(
+        [
+            str(REPO / "scripts" / "hapax-cachyos-restore"),
+            "--print-storage-roots",
+            str(INFRA_REGISTRY),
+        ],
+        check=True,
+        capture_output=True,
+        text=True,
+        timeout=10,
+    )
+    assert result.stdout.splitlines() == ["/mnt/nas", "/store"]

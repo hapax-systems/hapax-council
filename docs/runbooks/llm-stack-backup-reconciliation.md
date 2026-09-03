@@ -22,6 +22,7 @@ Tier 2 Backblaze B2 coverage:
 - Restic repository: `rclone:b2:hapax-backups/restic`
 - Staging: `/store/llm-data/backup-dumps-remote`
 - Recovery bootstrap object: `b2:hapax-backups/dr-scripts/hapax-cachyos-restore.sh`
+- Recovery storage registry: `b2:hapax-backups/dr-scripts/host-storage-registry.json`
 
 The operator reinstated B2 as a live daily offsite lane on 2026-09-02. It
 creates its own database and workflow exports; it does not consume Tier 1's
@@ -46,7 +47,11 @@ The Tier 1 and B2 producer lanes stage service-native artifacts before restic
 runs:
 
 - PostgreSQL: `pg_dumpall` from the live `postgres` container with the current
-  service user, written as `postgres-all.sql`.
+  service user, written as `postgres-all.sql`. Bare-metal restore omits only
+  the fresh cluster's pre-existing initialization-superuser `CREATE ROLE` and
+  empty initialization-database `CREATE DATABASE` statements, then replays the
+  remaining `ALTER`, `\connect`, schema/data, and other database statements
+  with `ON_ERROR_STOP=1`.
 - Qdrant: per-collection snapshots from the REST snapshot API.
 - n8n: workflow export through the n8n container.
 - Docker: volume inventory and inspect metadata for disaster recovery.
@@ -81,9 +86,12 @@ This intentionally removes the stale standalone script assumptions:
 7. Verify backup freshness with `scripts/hapax-backup-watchdog`.
 
 For bare-metal B2 recovery, download
-`b2:hapax-backups/dr-scripts/hapax-cachyos-restore.sh`; that script searches the
-restored `/store/llm-data/backup-dumps-remote` and
-`/store/llm-data/backup-dumps-local` paths and exits non-zero if neither exists.
+`b2:hapax-backups/dr-scripts/hapax-cachyos-restore.sh` and its companion
+`b2:hapax-backups/dr-scripts/host-storage-registry.json`. The script reads the
+canonical `/store` and `/mnt/nas` requirements from that registry, refuses to
+continue unless both roots are mount points, searches the restored
+`/store/llm-data/backup-dumps-remote` and
+`/store/llm-data/backup-dumps-local` paths, and exits non-zero if neither exists.
 
 `scripts/hapax-restore-verify` remains available for historical standalone
 `backup.sh` directory layouts. It is not the producer for the current
@@ -98,14 +106,20 @@ bash -n scripts/hapax-backup-local scripts/hapax-backup-remote scripts/hapax-cac
 shellcheck -S warning scripts/hapax-backup-local scripts/hapax-backup-remote scripts/hapax-cachyos-restore
 uv run pytest -q tests/scripts/test_hapax_backup_local.py tests/scripts/test_hapax_backup_remote.py tests/scripts/test_hapax_cachyos_restore.py tests/systemd/test_llm_backup_reconciliation.py tests/test_infra_drift.py tests/test_agent_registry.py
 systemd-analyze --user verify systemd/units/hapax-backup-local.service systemd/units/hapax-backup-remote.service
+set -o pipefail
+rclone cat b2:hapax-backups/dr-scripts/hapax-cachyos-restore.sh | cmp -s scripts/hapax-cachyos-restore -
+rclone cat b2:hapax-backups/dr-scripts/host-storage-registry.json | cmp -s config/infrastructure/host-storage-registry.json -
 ```
 
-After the governed source-activation deploy completes, record the active source
-and loaded-unit evidence without reading credentials:
+The source checks above do not satisfy the deployed-runtime clause. At this PR
+head that clause remains pending until after merge and governed source
+activation; do not close the task or claim runtime success from static tests.
+After activation completes, record the actual command output in the PR/task
+receipt without reading credentials:
 
 ```bash
 git -C ~/.cache/hapax/source-activation/worktree rev-parse HEAD
-systemctl --user show hapax-backup-local.service hapax-backup-remote.service -p FragmentPath -p ExecStart -p Result -p ExecMainStatus
+systemctl --user show hapax-backup-local.service hapax-backup-remote.service -p FragmentPath -p ExecCondition -p ExecStart -p Result -p ExecMainStatus
 systemctl --user list-timers hapax-backup-local.timer hapax-backup-remote.timer
 journalctl --user -u hapax-backup-local.service -u hapax-backup-remote.service --since today --no-pager
 ```

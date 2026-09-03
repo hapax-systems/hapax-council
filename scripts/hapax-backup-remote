@@ -88,16 +88,16 @@ log "Dumping PostgreSQL..."
 PG_DUMP="$DUMP_DIR/postgres-all.sql"
 PG_ERR="$DUMP_DIR/postgres-all.err"
 if ! docker exec postgres pg_dumpall -U "$POSTGRES_SUPERUSER" > "$PG_DUMP" 2>"$PG_ERR"; then
-    log "FATAL: pg_dumpall exited non-zero: $(tail -c 300 "$PG_ERR" 2>/dev/null)"
+    log "FATAL: pg_dumpall exited non-zero: $(tail -c 300 "$PG_ERR" 2>/dev/null); inspect 'docker logs postgres', then rerun the backup"
     exit 1
 fi
 if ! tail -c 200 "$PG_DUMP" | grep -q "PostgreSQL database cluster dump complete"; then
-    log "FATAL: dump lacks completion terminator (truncated); size=$(stat -c%s "$PG_DUMP" 2>/dev/null)"
+    log "FATAL: dump lacks completion terminator (truncated); size=$(stat -c%s "$PG_DUMP" 2>/dev/null); check free space and the postgres container, then rerun the backup"
     exit 1
 fi
 _pg_size=$(stat -c%s "$PG_DUMP")
 if [[ "$_pg_size" -lt 1000000000 ]]; then
-    log "FATAL: dump implausibly small: ${_pg_size} bytes (floor 1000000000)"
+    log "FATAL: dump implausibly small: ${_pg_size} bytes (floor 1000000000); verify the expected databases exist, then rerun the backup"
     exit 1
 fi
 log "PostgreSQL dump OK: ${_pg_size} bytes, terminator present"
@@ -220,7 +220,9 @@ restic forget \
 # completed above. It fails because DR readiness is part of this lane's job, and
 # a refusal naming its own remedy beats a silent WARN.
 # The DR script lives beside this one now (the scripts' former repository is archived, read-only).
-DR_SCRIPT="$(dirname "$(readlink -f "$0")")/hapax-cachyos-restore"
+SCRIPT_DIR="$(dirname "$(readlink -f "$0")")"
+DR_SCRIPT="$SCRIPT_DIR/hapax-cachyos-restore"
+HOST_STORAGE_REGISTRY="$(readlink -f "$SCRIPT_DIR/../config/infrastructure/host-storage-registry.json")"
 log "Uploading DR restore script to B2..."
 if [[ ! -x "$DR_SCRIPT" ]]; then
     log "FATAL: DR script missing at $DR_SCRIPT — bare-metal recovery cannot"
@@ -228,13 +230,23 @@ if [[ ! -x "$DR_SCRIPT" ]]; then
     log "       the script, then re-run."
     exit 1
 fi
+if [[ ! -s "$HOST_STORAGE_REGISTRY" ]]; then
+    log "FATAL: host storage registry missing at $HOST_STORAGE_REGISTRY — bare-metal recovery cannot resolve canonical mount roots; restore the registry, then re-run"
+    exit 1
+fi
 DR_OBJECT_NAME=$("$DR_SCRIPT" --print-dr-object-name)
 DR_OBJECT_URI="b2:hapax-backups/dr-scripts/${DR_OBJECT_NAME}"
 if ! rclone copyto "$DR_SCRIPT" "$DR_OBJECT_URI"; then
-    log "FATAL: DR script upload failed — B2 still holds the stale copy"
+    log "FATAL: DR script upload failed — B2 still holds the stale copy; inspect the rclone B2 remote, then rerun the backup"
     exit 1
 fi
 ok "DR script uploaded: $DR_OBJECT_URI"
+STORAGE_REGISTRY_OBJECT_URI="b2:hapax-backups/dr-scripts/host-storage-registry.json"
+if ! rclone copyto "$HOST_STORAGE_REGISTRY" "$STORAGE_REGISTRY_OBJECT_URI"; then
+    log "FATAL: host storage registry upload failed — B2 recovery has stale mount roots; inspect the rclone B2 remote, then rerun the backup"
+    exit 1
+fi
+ok "Host storage registry uploaded: $STORAGE_REGISTRY_OBJECT_URI"
 
 log "Tier 2 backup complete"
 restic snapshots --latest 1
