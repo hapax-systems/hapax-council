@@ -39,8 +39,8 @@ Recheck the B2 lane's claims on podium:
 ```bash
 systemctl --user list-timers hapax-backup-remote.timer --no-pager
 systemctl --user status hapax-backup-remote.service --no-pager | head -5
-RESTIC_PASSWORD_COMMAND='pass show backblaze/restic-password' \
-  restic -r rclone:b2:hapax-backups/restic snapshots --latest 1
+export RESTIC_PASSWORD_COMMAND='pass show backblaze/restic-password'  # pragma: allowlist secret
+restic -r rclone:b2:hapax-backups/restic snapshots --latest 1
 ~/.cache/hapax/source-activation/worktree/scripts/hapax-backup-watchdog 2>&1 | grep Tier2-B2
 ```
 
