@@ -14,6 +14,8 @@ import os
 import subprocess
 from pathlib import Path
 
+import pytest
+
 REPO_ROOT = Path(__file__).resolve().parent.parent
 HOOK = REPO_ROOT / "hooks" / "scripts" / "cc-task-pr-link.sh"
 
@@ -225,6 +227,276 @@ class TestIdempotency:
         assert "pr: 200" not in text
         assert "status: claimed" in text
         assert "status: pr_open" not in text
+        # The refusal is not silent: it names the row, both PRs, and the next action (the
+        # exit predicate requires BOTH refusal paths to name the conflicting task).
+        assert "REFUSING to overwrite 'test-001-test-task'" in result.stderr
+        assert "already declares PR #100" in result.stderr
+        assert "PR #200 is a different PR" in result.stderr
+        assert "Next action:" in result.stderr
+
+    def test_same_number_in_another_repository_is_not_the_same_pr(self, tmp_path: Path) -> None:
+        """PR numbers are per repository (review finding on #4613, round 3).
+
+        A row bound to #100 in hapax-spine must not be rebound to #100 in hapax-council: the
+        number-only guard let the link fall through and then replaced ``pr_repo`` silently, which
+        is the same-numbered cross-repository confusion that closed the wrong task twice in August.
+        """
+        _vault, note = _make_vault(tmp_path, task_id="test-001", pr="100", status="claimed")
+        note.write_text(
+            note.read_text(encoding="utf-8").replace(
+                "pr: 100\n", "pr: 100\npr_repo: ryanklee/hapax-spine\n", 1
+            ),
+            encoding="utf-8",
+        )
+        _write_claim(tmp_path, "beta", "test-001")
+        result = _run_hook(
+            bash_cmd="gh pr create",
+            bash_output="https://github.com/ryanklee/hapax-council/pull/100",
+            home=tmp_path,
+        )
+        assert result.returncode == 0
+        text = note.read_text(encoding="utf-8")
+        assert "pr: 100" in text
+        assert "pr_repo: ryanklee/hapax-spine" in text
+        assert "hapax-council" not in text
+        assert "status: claimed" in text
+        assert "REFUSING to overwrite 'test-001-test-task'" in result.stderr
+        assert "PR #100 in ryanklee/hapax-spine" in result.stderr
+        assert "PR #100 in ryanklee/hapax-council" in result.stderr
+        assert "same number" in result.stderr
+        assert "Next action:" in result.stderr
+
+    @pytest.mark.parametrize("nullish", ["null", "~", "None", '""'])
+    def test_a_nullish_pr_repo_is_unset_not_a_conflicting_repository(
+        self, tmp_path: Path, nullish: str
+    ) -> None:
+        """Round six: `pr_repo: null` was compared as the repository named "null" and refused
+        the same PR in the same repository as a cross-repository conflict."""
+        _vault, note = _make_vault(tmp_path, task_id="test-001", pr="100", status="claimed")
+        note.write_text(
+            note.read_text(encoding="utf-8").replace(
+                "pr: 100\n", f"pr: 100\npr_repo: {nullish}\n", 1
+            ),
+            encoding="utf-8",
+        )
+        _write_claim(tmp_path, "beta", "test-001")
+        result = _run_hook(
+            bash_cmd="gh pr create",
+            bash_output="https://github.com/ryanklee/hapax-council/pull/100",
+            home=tmp_path,
+        )
+        assert result.returncode == 0
+        assert "REFUSING" not in result.stderr
+        text = note.read_text(encoding="utf-8")
+        assert "status: pr_open" in text
+        assert "pr_repo: ryanklee/hapax-council" in text
+
+    def test_same_number_in_the_same_repository_completes_the_link(self, tmp_path: Path) -> None:
+        """The control for the guard above: the same PR in the same repository is not a conflict."""
+        _vault, note = _make_vault(tmp_path, task_id="test-001", pr="100", status="claimed")
+        note.write_text(
+            note.read_text(encoding="utf-8").replace(
+                "pr: 100\n", "pr: 100\npr_repo: RyanKlee/Hapax-Council\n", 1
+            ),
+            encoding="utf-8",
+        )
+        _write_claim(tmp_path, "beta", "test-001")
+        result = _run_hook(
+            bash_cmd="gh pr create",
+            bash_output="https://github.com/ryanklee/hapax-council/pull/100",
+            home=tmp_path,
+        )
+        assert result.returncode == 0
+        assert "REFUSING" not in result.stderr
+        assert "status: pr_open" in note.read_text(encoding="utf-8")
+
+    @pytest.mark.parametrize("scalar", ['"4605"', "'4605'", "4605 # owns it", '"4605" # owner'])
+    @pytest.mark.parametrize(
+        "repo_scalar",
+        ["ryanklee/hapax-council", "ryanklee/hapax-council # owner", '"ryanklee/hapax-council"'],
+    )
+    def test_quoted_or_commented_pr_scalars_are_the_same_link(
+        self, tmp_path: Path, scalar: str, repo_scalar: str
+    ) -> None:
+        """`pr: "4605"` and `pr: 4605 # owner` declare #4605 (review finding on #4613, round 4):
+        comparing the raw text let valid YAML forms bypass the duplicate-link refusal."""
+        _vault, note = _make_vault(tmp_path, task_id="research-row", pr=None, status="in_progress")
+        owner = note.parent / "velocity-fix-test-task.md"
+        owner.write_text(
+            '---\ntype: cc-task\ntask_id: velocity-fix\ntitle: "Owns the PR"\n'
+            "status: pr_open\nassigned_to: beta\npriority: normal\n"
+            f"branch: fix/velocity\npr: {scalar}\npr_repo: {repo_scalar}\n"
+            "created_at: 2026-04-26T00:00:00Z\nupdated_at: 2026-04-26T00:00:00Z\n---\n\n"
+            "# Owns the PR\n\n## Session log\n",
+            encoding="utf-8",
+        )
+        _write_claim(tmp_path, "beta", "research-row")
+        result = _run_hook(
+            bash_cmd="gh pr create",
+            bash_output="https://github.com/ryanklee/hapax-council/pull/4605",
+            home=tmp_path,
+        )
+        assert result.returncode == 0
+        assert "pr: 4605" not in note.read_text(encoding="utf-8")
+        assert "REFUSING" in result.stderr
+        assert "velocity-fix" in result.stderr
+
+    def test_an_unreadable_active_row_refuses_the_link_instead_of_being_skipped(
+        self, tmp_path: Path
+    ) -> None:
+        """Round six: `except OSError: continue` skipped a row the hook could not rule out as the
+        PR's owner — fail-open on the one check that prevents a duplicate binding."""
+        _vault, note = _make_vault(tmp_path, task_id="research-row", pr=None, status="in_progress")
+        unreadable = note.parent / "opaque-owner-test-task.md"
+        unreadable.write_text(
+            '---\ntype: cc-task\ntask_id: opaque-owner\ntitle: "Might own the PR"\n'
+            "status: pr_open\nassigned_to: beta\npriority: normal\n"
+            "branch: fix/opaque\npr: 4605\npr_repo: ryanklee/hapax-council\n"
+            "created_at: 2026-04-26T00:00:00Z\nupdated_at: 2026-04-26T00:00:00Z\n---\n",
+            encoding="utf-8",
+        )
+        unreadable.chmod(0)
+        _write_claim(tmp_path, "beta", "research-row")
+        try:
+            result = _run_hook(
+                bash_cmd="gh pr create",
+                bash_output="https://github.com/ryanklee/hapax-council/pull/4605",
+                home=tmp_path,
+            )
+        finally:
+            unreadable.chmod(0o644)
+        assert result.returncode == 0
+        assert "pr: 4605" not in note.read_text(encoding="utf-8")
+        assert "REFUSING to link PR #4605" in result.stderr
+        assert "opaque-owner-test-task" in result.stderr
+        assert "Next action:" in result.stderr
+
+    def test_refuses_a_pr_another_active_task_already_declares(self, tmp_path: Path) -> None:
+        """A PR must not be bound to two tasks. Measured defect, three occurrences on one row.
+
+        The hook links the PR just created to whatever task the role holds, and nothing tested that
+        the two were related. On a long-lived `kind: research` row held for days, every PR opened in
+        that window is a candidate. 2026-08-24 it attached #4605 — a one-line velocity fix with its
+        own correctly-formed row — and every blocker autoqueue then reported on #4605 was that
+        research programme's unmet acceptance criteria. Cleared 2026-09-01; within hours it attached
+        #4612, which also had its own row.
+
+        Note WHY clearing did not help: the idempotency guard protects a row from being OVERWRITTEN,
+        never from wrongly ACQUIRING, so nulling `pr:` to repair a bad link makes that row the next
+        eligible target. Repairing the instance re-armed the mechanism.
+        """
+        _vault, note = _make_vault(tmp_path, task_id="research-row", pr=None, status="in_progress")
+        owner = note.parent / "velocity-fix-test-task.md"
+        owner.write_text(
+            '---\ntype: cc-task\ntask_id: velocity-fix\ntitle: "Owns the PR"\n'
+            "status: pr_open\nassigned_to: beta\npriority: normal\n"
+            "branch: fix/velocity\npr: 4605\npr_repo: ryanklee/hapax-council\n"
+            "created_at: 2026-04-26T00:00:00Z\nupdated_at: 2026-04-26T00:00:00Z\n---\n\n"
+            "# Owns the PR\n\n## Session log\n",
+            encoding="utf-8",
+        )
+        _write_claim(tmp_path, "beta", "research-row")
+
+        result = _run_hook(
+            bash_cmd="gh pr create",
+            bash_output="https://github.com/ryanklee/hapax-council/pull/4605",
+            home=tmp_path,
+        )
+
+        assert result.returncode == 0, "a refusal is not an error; the hook must not fail the turn"
+        text = note.read_text(encoding="utf-8")
+        assert "pr: 4605" not in text, (
+            "the research row must NOT acquire a PR another task already declares"
+        )
+        assert "pr: null" in text
+        assert "status: in_progress" in text, "and must not advance status on a refused link"
+        assert "pr: 4605" in owner.read_text(encoding="utf-8"), "a refusal moves nothing"
+        # The refusal names both tasks and the next action (exit predicate: BOTH refusals do).
+        assert "REFUSING to link PR #4605 to 'research-row-test-task'" in result.stderr
+        assert "'velocity-fix-test-task' already declares it" in result.stderr
+        assert "Next action:" in result.stderr
+
+    def test_still_links_when_no_other_task_declares_the_pr(self, tmp_path: Path) -> None:
+        """The guard must not break the ordinary case it sits in front of.
+
+        A same-numbered PR in a DIFFERENT repository is not the same PR — this estate has closed the
+        wrong task twice that way — so `pr_repo` participates in the comparison.
+        """
+        _vault, note = _make_vault(tmp_path, task_id="test-001", pr=None, status="claimed")
+        foreign = note.parent / "foreign-repo-task.md"
+        foreign.write_text(
+            '---\ntype: cc-task\ntask_id: foreign\ntitle: "Same number, other repo"\n'
+            "status: pr_open\nassigned_to: beta\npriority: normal\n"
+            "branch: x\npr: 4242\npr_repo: hapax-systems/reins\n"
+            "created_at: 2026-04-26T00:00:00Z\nupdated_at: 2026-04-26T00:00:00Z\n---\n\n"
+            "# Foreign\n\n## Session log\n",
+            encoding="utf-8",
+        )
+        _write_claim(tmp_path, "beta", "test-001")
+
+        result = _run_hook(
+            bash_cmd="gh pr create",
+            bash_output="https://github.com/ryanklee/hapax-council/pull/4242",
+            home=tmp_path,
+        )
+
+        assert result.returncode == 0
+        assert "pr: 4242" in note.read_text(encoding="utf-8"), (
+            "a same-numbered PR in another repository must not block a legitimate link"
+        )
+
+    def test_a_bare_number_on_another_row_is_not_a_link_and_does_not_block(
+        self, tmp_path: Path
+    ) -> None:
+        """Repository contract: `pr:` without `pr_repo:` is not a link. A row carrying only the
+        number therefore declares no PR, so it cannot be the conflicting task (review finding on
+        #4613: the first version treated a missing pr_repo as "same repository" and refused)."""
+        _vault, note = _make_vault(tmp_path, task_id="test-001", pr=None, status="claimed")
+        bare = note.parent / "bare-number-task.md"
+        bare.write_text(
+            '---\ntype: cc-task\ntask_id: bare\ntitle: "Number only, no repository"\n'
+            "status: pr_open\nassigned_to: beta\npriority: normal\n"
+            "branch: x\npr: 4242\n"
+            "created_at: 2026-04-26T00:00:00Z\nupdated_at: 2026-04-26T00:00:00Z\n---\n\n"
+            "# Bare\n\n## Session log\n",
+            encoding="utf-8",
+        )
+        _write_claim(tmp_path, "beta", "test-001")
+
+        result = _run_hook(
+            bash_cmd="gh pr create",
+            bash_output="https://github.com/ryanklee/hapax-council/pull/4242",
+            home=tmp_path,
+        )
+
+        assert result.returncode == 0
+        assert "pr: 4242" in note.read_text(encoding="utf-8")
+        assert "REFUSING" not in result.stderr
+
+    def test_repository_names_compare_case_insensitively(self, tmp_path: Path) -> None:
+        """GitHub owner/name are case-insensitive: `RyanKlee/Hapax-Council` is the same repository
+        as `ryanklee/hapax-council`, so a differently capitalised declaration still conflicts."""
+        _vault, note = _make_vault(tmp_path, task_id="research-row", pr=None, status="in_progress")
+        owner = note.parent / "capitalised-owner-task.md"
+        owner.write_text(
+            '---\ntype: cc-task\ntask_id: capitalised\ntitle: "Owns the PR"\n'
+            "status: pr_open\nassigned_to: beta\npriority: normal\n"
+            'branch: x\npr: 4605\npr_repo: "RyanKlee/Hapax-Council"\n'
+            "created_at: 2026-04-26T00:00:00Z\nupdated_at: 2026-04-26T00:00:00Z\n---\n\n"
+            "# Owner\n\n## Session log\n",
+            encoding="utf-8",
+        )
+        _write_claim(tmp_path, "beta", "research-row")
+
+        result = _run_hook(
+            bash_cmd="gh pr create",
+            bash_output="https://github.com/ryanklee/hapax-council/pull/4605",
+            home=tmp_path,
+        )
+
+        assert result.returncode == 0
+        assert "pr: 4605" not in note.read_text(encoding="utf-8")
+        assert "'capitalised-owner-task' already declares it" in result.stderr
 
     def test_matching_existing_pr_still_advances_status(self, tmp_path: Path) -> None:
         _vault, note = _make_vault(
