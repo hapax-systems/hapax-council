@@ -13,15 +13,15 @@ Environment=HOME=/home/hapax
 Environment=PATH=/home/hapax/.local/bin:/usr/local/bin:/usr/bin:/bin
 Environment=GNUPGHOME=/home/hapax/.gnupg
 Environment=PASSWORD_STORE_DIR=/home/hapax/.password-store
-# Three attempts of up to 180 s plus two 15 s pauses, then the admission writer (60 s) and the
-# telemetry writer (120 s): 750 s is the budget the script can spend, so the unit must not kill
-# it earlier than that.
-TimeoutStartSec=780
+# Three attempts of up to 180 s plus two 15 s pauses, then the admission writer (60 s), the
+# telemetry writer (120 s, ledger only), the glmcp receipt refresh (60 s) and two validated reads
+# (15 s each): 840 s is the budget the script can spend, so the unit must not kill it earlier.
+TimeoutStartSec=900
 # The receipt chain runs the activation worktree, the Coding Plan endpoint and the Coding Plan
 # credential, and nothing else. systemd does NOT expand specifiers such as %h inside Environment=
 # (measured 2026-09-02: `Environment=X=%h/y` arrives as the literal `%h/y`), so the pins live in
 # the script's own defaults; this line removes the inherited user-manager values that could
 # override them (UnsetEnvironment= applies after every Environment= source).
-UnsetEnvironment=HAPAX_COUNCIL HAPAX_GLMCP_REVIEW_BASE_URL HAPAX_GLMCP_REVIEW_SECRET_ENTRY HAPAX_GLMCP_REVIEW_ALLOW_SECRET_ENTRY_OVERRIDE HAPAX_GLMCP_SEAT_ROOT_OVERRIDE HAPAX_PLATFORM_CAPABILITY_RECEIPT_DIR HAPAX_QUOTA_SPEND_LEDGER_LIVE
+UnsetEnvironment=HAPAX_COUNCIL HAPAX_GLMCP_REVIEW_BASE_URL HAPAX_GLMCP_REVIEW_SECRET_ENTRY HAPAX_GLMCP_REVIEW_ALLOW_SECRET_ENTRY_OVERRIDE HAPAX_GLMCP_SEAT_ROOT_OVERRIDE HAPAX_PLATFORM_CAPABILITY_RECEIPT_DIR HAPAX_QUOTA_SPEND_LEDGER_LIVE HAPAX_RELAY_RECEIPT_DIR
 MemoryMax=512M
 SyslogIdentifier=hapax-glmcp-seat-refresh

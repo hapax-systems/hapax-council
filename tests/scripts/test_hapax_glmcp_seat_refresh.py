@@ -16,11 +16,13 @@ import json
 import os
 import re
 import subprocess
+import sys
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
 REPO = Path(__file__).resolve().parents[2]
 SCRIPT = REPO / "scripts" / "hapax-glmcp-seat-refresh"
+RECEIPTS_SCRIPT = REPO / "scripts" / "hapax-platform-capability-receipts"
 SERVICE = REPO / "systemd" / "units" / "hapax-glmcp-seat-refresh.service"
 TIMER = REPO / "systemd" / "units" / "hapax-glmcp-seat-refresh.timer"
 ACTIVATION_ROOT = "%h/.cache/hapax/source-activation/worktree"
@@ -63,6 +65,78 @@ def _stub(path: Path, body: str) -> None:
     path.chmod(0o755)
 
 
+def _glmcp_receipt_json(
+    *,
+    status: str,
+    remaining: int,
+    age: int,
+    now: datetime,
+    receipt_stale: bool = False,
+) -> str:
+    """A complete glmcp platform-capability receipt built through the production model.
+
+    The dispatcher reads this document through its loader (schema, platform, skew, duration syntax,
+    freshness), and since round 8 so does the seat refresher, so the fixture must be a receipt the
+    loader accepts — not three fields in a dict (review finding on #4624, round 8). The quota
+    surface was observed ``age`` seconds ago with ``remaining`` seconds of stale_after left at that
+    moment; the receipt itself lives 24 h so that only the quota surface decides freshness.
+    """
+    from shared.platform_capability_receipts import (
+        CliEvidence,
+        EvidenceStatus,
+        PlatformCapabilityReceipt,
+        ProviderDocsEvidence,
+        SurfaceEvidence,
+        WrapperEvidence,
+    )
+
+    observed = now - timedelta(seconds=age)
+    observed_ok = status == "observed"
+    quota = SurfaceEvidence(
+        status=EvidenceStatus(status),
+        source="local_receipt_probe",
+        observed_at=observed,
+        stale_after=f"{remaining}s",
+        evidence_refs=["local:glmcp:quota-admission-receipt:glmcp.review.direct:present"]
+        if observed_ok
+        else [],
+        reason_codes=[] if observed_ok else ["account_live_quota_receipt_absent"],
+    )
+    # ``receipt_stale`` makes the RECEIPT stale (observed two hours ago, lives one hour) while its
+    # quota surface still reads fresh: exactly the document a field-picking guard would trust and
+    # the dispatcher's loader drops.
+    receipt = PlatformCapabilityReceipt(
+        receipt_id=f"test-glmcp-{int(observed.timestamp())}",
+        platform="glmcp",
+        routes=["glmcp.review.direct"],
+        observed_at=(now - timedelta(hours=2)) if receipt_stale else observed,
+        stale_after="1h" if receipt_stale else "24h",
+        cli=CliEvidence(binary="hapax-glmcp-reviewer", available=True, version="test"),
+        wrapper=WrapperEvidence(
+            path="scripts/hapax-glmcp-reviewer", exists=True, executable=True, sha256="abc123"
+        ),
+        capability=SurfaceEvidence(
+            status=EvidenceStatus.OBSERVED,
+            source="test",
+            observed_at=observed,
+            stale_after="24h",
+            evidence_refs=["test:glmcp:capability"],
+        ),
+        resource=SurfaceEvidence(
+            status=EvidenceStatus.OBSERVED,
+            source="test",
+            observed_at=observed,
+            stale_after="24h",
+            evidence_refs=["test:glmcp:resource"],
+        ),
+        quota=quota,
+        provider_docs=ProviderDocsEvidence(
+            refs=["test:glmcp:provider-docs"], fetched_at=observed, stale_after="30d"
+        ),
+    )
+    return json.dumps(receipt.model_dump(mode="json"))
+
+
 def _harness(
     tmp_path: Path,
     *,
@@ -73,13 +147,19 @@ def _harness(
     receipt_remaining: int = 0,
     receipt_age: int = 0,
     relay_receipt_observed_ago: int | None = None,
+    refreshed_remaining: int | None = 900,
+    malformed_receipt: bool = False,
+    receipt_stale: bool = False,
 ) -> tuple[Path, Path]:
-    """A throwaway HOME plus a fake council root whose three scripts record what they were asked.
+    """A throwaway HOME plus a fake council root whose scripts record what they were asked.
 
     ``receipt_status`` writes the dispatcher's own glmcp platform-capability receipt with that quota
     status, generated ``receipt_age`` seconds ago and carrying ``receipt_remaining`` seconds of
     stale_after at generation. ``relay_receipt_observed_ago`` writes a raw admission receipt (the
-    thing the guard must NOT trust on its own).
+    thing the guard must NOT trust on its own). ``refreshed_remaining`` is what the stubbed
+    capability-receipt refresh leaves on disk after the writer (None: it leaves the old receipt).
+    ``malformed_receipt`` writes the pre-round-8 three-field document the loader rejects. The
+    receipts script's ``--show`` is the real one, run against this HOME's receipt directory.
     """
     home = tmp_path / "home"
     council = tmp_path / "council"
@@ -91,34 +171,62 @@ def _harness(
     _stub(scripts / "hapax-glmcp-reviewer", reviewer)
     _stub(
         scripts / "hapax-glmcp-quota-admission",
-        f'printf "%s\\n" "$*" >> "$HOME/admission-calls"\necho "receipt ok"\nexit {admission_rc}\n',
+        'printf "%s\\n" "$*" >> "$HOME/admission-calls"\n'
+        'printf "admission %s\\n" "$*" >> "$HOME/calls"\n'
+        f'echo "receipt ok"\nexit {admission_rc}\n',
     )
     _stub(
         scripts / "hapax-quota-telemetry-writer",
-        f'echo "wrote live ledger"\necho "capability receipts DEGRADED for one provider"\nexit {writer_rc}\n',
+        'printf "writer %s\\n" "$*" >> "$HOME/calls"\n'
+        'echo "wrote live ledger"\necho "capability receipts DEGRADED for one provider"\n'
+        f"exit {writer_rc}\n",
+    )
+    _stub(
+        scripts / "hapax-platform-capability-receipts",
+        'printf "receipts %s\\n" "$*" >> "$HOME/calls"\n'
+        'case " $* " in\n'
+        '  *" --show "*) exec "$HAPAX_TEST_PYTHON" "$HAPAX_TEST_RECEIPTS_SCRIPT" "$@" ;;\n'
+        "  *)\n"
+        '    if [ -f "$HOME/refreshed-receipt.json" ]; then\n'
+        '      cp "$HOME/refreshed-receipt.json" "$HOME/.cache/hapax/platform-capability-receipts/glmcp.json"\n'
+        "    fi\n"
+        '    echo "glmcp: wrote (stub)"\n'
+        '    exit "${HAPAX_TEST_RECEIPTS_RC:-0}"\n'
+        "    ;;\n"
+        "esac\n",
     )
     now = datetime.now(UTC)
-    if receipt_status is not None:
-        # The quota surface is built through the production model so the fixture can only carry
-        # fields a real receipt carries (review finding on #4624: a fabricated `generated_at` let
-        # the guard pass tests while every real receipt read as stale).
-        from shared.platform_capability_receipts import EvidenceStatus, SurfaceEvidence
-
-        observed = now - timedelta(seconds=receipt_age)
-        quota = SurfaceEvidence(
-            status=EvidenceStatus(receipt_status),
-            source="local_receipt_probe",
-            observed_at=observed,
-            stale_after=f"{receipt_remaining}s",
-            evidence_refs=["local:glmcp:quota-admission-receipt:glmcp.review.direct:present"]
-            if receipt_status == "observed"
-            else [],
-            reason_codes=[]
-            if receipt_status == "observed"
-            else ["account_live_quota_receipt_absent"],
-        ).model_dump(mode="json")
-        receipt = {"platform": "glmcp", "observed_at": quota["observed_at"], "quota": quota}
-        (receipts_dir / "glmcp.json").write_text(json.dumps(receipt), encoding="utf-8")
+    if malformed_receipt:
+        (receipts_dir / "glmcp.json").write_text(
+            json.dumps(
+                {
+                    "platform": "glmcp",
+                    "observed_at": now.strftime("%Y-%m-%dT%H:%M:%SZ"),
+                    "quota": {
+                        "status": "observed",
+                        "observed_at": now.strftime("%Y-%m-%dT%H:%M:%SZ"),
+                        "stale_after": "900s",
+                    },
+                }
+            ),
+            encoding="utf-8",
+        )
+    elif receipt_status is not None:
+        (receipts_dir / "glmcp.json").write_text(
+            _glmcp_receipt_json(
+                status=receipt_status,
+                remaining=receipt_remaining,
+                age=receipt_age,
+                now=now,
+                receipt_stale=receipt_stale,
+            ),
+            encoding="utf-8",
+        )
+    if refreshed_remaining is not None:
+        (home / "refreshed-receipt.json").write_text(
+            _glmcp_receipt_json(status="observed", remaining=refreshed_remaining, age=1, now=now),
+            encoding="utf-8",
+        )
     if relay_receipt_observed_ago is not None:
         observed = now - timedelta(seconds=relay_receipt_observed_ago)
         (
@@ -131,13 +239,19 @@ def _harness(
     return home, council
 
 
-def _run(home: Path, council: Path, *, allow_root: bool = True) -> subprocess.CompletedProcess[str]:
+def _run(
+    home: Path, council: Path, *, allow_root: bool = True, receipts_rc: int = 0
+) -> subprocess.CompletedProcess[str]:
     env = {
         "HOME": str(home),
         "HAPAX_COUNCIL": str(council),
         "PATH": os.environ["PATH"],
         "TMPDIR": str(home),
         "HAPAX_GLMCP_SEAT_RETRY_SLEEP": "0",
+        # The stubbed receipts script delegates --show to the real one, in this interpreter.
+        "HAPAX_TEST_PYTHON": sys.executable,
+        "HAPAX_TEST_RECEIPTS_SCRIPT": str(RECEIPTS_SCRIPT),
+        "HAPAX_TEST_RECEIPTS_RC": str(receipts_rc),
         # Inherited values that must never reach the probe (review findings on #4624, rounds 3–4).
         "HAPAX_GLMCP_REVIEW_BASE_URL": "https://evil.example/paas/v4",
         "HAPAX_GLMCP_REVIEW_SECRET_ENTRY": "glmcp/someone-elses-key",  # pragma: allowlist secret
@@ -372,17 +486,156 @@ def test_unit_pair_executes_from_the_activation_worktree_and_strips_inherited_ov
         # the receipt and ledger writers honour these; the seat must read where they wrote
         "HAPAX_PLATFORM_CAPABILITY_RECEIPT_DIR",
         "HAPAX_QUOTA_SPEND_LEDGER_LIVE",
+        # the admission writer and the telemetry writer both honour this one; an inherited value
+        # would mint the admission somewhere the ledger never reads (review finding, round 8)
+        "HAPAX_RELAY_RECEIPT_DIR",
     ):
         assert name in unset.split(), name
     assert _unit_value(service, "Service", "Type") == "oneshot"
     assert _unit_value(service, "Service", "MemoryMax") is not None
-    assert int(_unit_value(service, "Service", "TimeoutStartSec") or 0) >= 750
+    assert int(_unit_value(service, "Service", "TimeoutStartSec") or 0) >= 840
     # ...and the budget is only a budget if every step in it is bounded.
     script = SCRIPT.read_text(encoding="utf-8")
     assert 'timeout 180 "$H/scripts/hapax-glmcp-reviewer"' in script
     assert 'timeout 60 "$H/scripts/hapax-glmcp-quota-admission"' in script
-    assert 'timeout 120 "$H/scripts/hapax-quota-telemetry-writer"' in script
+    assert 'timeout 120 "$H/scripts/hapax-quota-telemetry-writer" --skip-receipts' in script
+    assert 'timeout 60 "$H/scripts/hapax-platform-capability-receipts" --platform glmcp' in script
+    assert 'timeout 30 "$H/scripts/hapax-platform-capability-receipts" --show' in script
     assert "5 minutes" in (_unit_value(service, "Unit", "Description") or "")
     timer = TIMER.read_text(encoding="utf-8")
     assert _unit_value(timer, "Install", "WantedBy") == "timers.target"
     assert "5 minutes" in (_unit_value(timer, "Unit", "Description") or "")
+
+
+# ---------------------------------------------------------------------------
+# Round 8 (review findings on #4624): the writer's default run refreshed every capability receipt
+# BEFORE rebuilding the ledger — so the glmcp receipt it minted carried the previous seat's
+# remaining lifetime and the freshness shortcut never fired (measured 2026-09-03: 30 round-trips
+# in 36 runs, zero "no round-trip") — and spent a Codex exec-auth sentinel on every call. The
+# writer now runs ledger-only, the glmcp receipt is derived from the fresh ledger afterwards, and
+# the seat counts as refreshed only when the dispatcher's loader accepts that receipt.
+# ---------------------------------------------------------------------------
+
+
+def _calls(home: Path) -> list[str]:
+    return (home / "calls").read_text(encoding="utf-8").splitlines()
+
+
+def test_writer_runs_ledger_only_and_the_glm_receipt_is_derived_afterwards(
+    tmp_path: Path,
+) -> None:
+    home, council = _harness(tmp_path)
+    result = _run(home, council)
+    assert result.returncode == 0, result.stderr
+    calls = _calls(home)
+    writer = [c for c in calls if c.startswith("writer ")]
+    assert writer == ["writer --skip-receipts"], calls
+    refresh = [c for c in calls if c.startswith("receipts ") and "--show" not in c]
+    assert refresh == ["receipts --platform glmcp"], calls
+    assert not any("--all" in c or "--codex-exec-auth-probe" in c for c in calls), calls
+    assert calls.index(writer[0]) < calls.index(refresh[0])
+    assert "glm seat visible to the dispatcher" in result.stdout
+
+
+def test_a_seat_the_dispatcher_cannot_see_after_the_refresh_is_a_failure(tmp_path: Path) -> None:
+    """The stubbed refresh leaves the old receipt (50 s left): a writer exit of zero is not a seat."""
+    home, council = _harness(
+        tmp_path,
+        receipt_status="observed",
+        receipt_remaining=900,
+        receipt_age=850,
+        refreshed_remaining=None,
+    )
+    result = _run(home, council)
+    assert result.returncode == 6
+    assert "glm seat NOT visible" in result.stderr
+    assert "--show --platform glmcp" in result.stderr
+    assert "Next:" in result.stderr
+    assert (home / "admission-calls").exists()
+
+
+def test_a_failed_glm_receipt_refresh_after_minting_is_loud(tmp_path: Path) -> None:
+    home, council = _harness(tmp_path)
+    result = _run(home, council, receipts_rc=1)
+    assert result.returncode == 6
+    assert "could not be refreshed from the new ledger" in result.stderr
+    assert "Next:" in result.stderr
+
+
+def test_a_receipt_the_dispatchers_loader_rejects_does_not_skip_the_round_trip(
+    tmp_path: Path,
+) -> None:
+    """Three plausible fields in a JSON file are not a receipt; the guard reads through the loader."""
+    home, council = _harness(tmp_path, malformed_receipt=True)
+    result = _run(home, council)
+    assert result.returncode == 0, result.stderr
+    assert "no round-trip" not in result.stdout
+    assert (home / "admission-calls").exists()
+
+
+def test_a_stale_receipt_with_a_fresh_looking_quota_surface_does_not_skip(tmp_path: Path) -> None:
+    """The receipt itself expired an hour ago; its quota surface still says 900 s. A guard that
+    picked the quota fields out of the JSON would skip; the dispatcher's loader drops the receipt,
+    so the seat round-trips."""
+    home, council = _harness(
+        tmp_path,
+        receipt_status="observed",
+        receipt_remaining=900,
+        receipt_age=5,
+        receipt_stale=True,
+    )
+    result = _run(home, council)
+    assert result.returncode == 0, result.stderr
+    assert "no round-trip" not in result.stdout
+    assert (home / "admission-calls").exists()
+
+
+def test_show_reports_the_accepted_receipt_and_rejects_a_malformed_one(tmp_path: Path) -> None:
+    receipts_dir = tmp_path / "receipts"
+    receipts_dir.mkdir()
+    now = datetime.now(UTC)
+    (receipts_dir / "glmcp.json").write_text(
+        _glmcp_receipt_json(status="observed", remaining=900, age=5, now=now), encoding="utf-8"
+    )
+    shown = subprocess.run(
+        [
+            sys.executable,
+            str(RECEIPTS_SCRIPT),
+            "--show",
+            "--platform",
+            "glmcp",
+            "--json",
+            "--receipt-dir",
+            str(receipts_dir),
+        ],
+        capture_output=True,
+        text=True,
+        timeout=60,
+    )
+    assert shown.returncode == 0, shown.stderr
+    payload = json.loads(shown.stdout)
+    (row,) = payload["receipts"]
+    assert row["accepted"] is True
+    assert row["quota"]["status"] == "observed"
+    assert row["quota"]["stale_after"] == "900s"
+
+    (receipts_dir / "glmcp.json").write_text('{"platform": "glmcp", "quota": {}}', encoding="utf-8")
+    rejected = subprocess.run(
+        [
+            sys.executable,
+            str(RECEIPTS_SCRIPT),
+            "--show",
+            "--platform",
+            "glmcp",
+            "--json",
+            "--receipt-dir",
+            str(receipts_dir),
+        ],
+        capture_output=True,
+        text=True,
+        timeout=60,
+    )
+    assert rejected.returncode == 1
+    (row,) = json.loads(rejected.stdout)["receipts"]
+    assert row["accepted"] is False
+    assert row["reason"].startswith("receipt_invalid")

@@ -42,25 +42,41 @@ export HAPAX_GLMCP_REVIEW_MODEL="$model"
 #    every ten minutes, so this guard can only over-refresh, never under-refresh. Refreshing whenever
 #    fewer than 10 minutes remain keeps the seat from lapsing between two autoqueue cycles (measured
 #    2026-08-04: a receipt that lapsed mid-queue dequeued a green PR).
-R="$HOME/.cache/hapax/platform-capability-receipts/glmcp.json"
-if [[ -f "$R" ]] && command -v jq >/dev/null; then
-  # The receipt's quota surface is a SurfaceEvidence: status, observed_at, stale_after (what was
-  # LEFT of the seat's lifetime when the receipt was written). Round 5 read a `generated_at` the
-  # receipt does not carry, so every run looked stale and round-tripped (review finding on #4624).
-  read -r q_status q_observed q_stale < <(jq -r '[(.quota.status // "?"), (.quota.observed_at // "?"), (.quota.stale_after // "?")] | join(" ")' "$R" 2>/dev/null || echo "? ? ?")
-  if [[ "$q_status" == "observed" && "$q_observed" != "?" ]]; then
-    case "$q_stale" in
-      *s) stale_s="${q_stale%s}" ;;
-      *m) stale_s=$(( ${q_stale%m} * 60 )) ;;
-      *h) stale_s=$(( ${q_stale%h} * 3600 )) ;;
-      *) stale_s=0 ;;
-    esac
-    remaining=$(( $(date -u -d "$q_observed" +%s 2>/dev/null || echo 0) + stale_s - $(date -u +%s) ))
-    if (( remaining > 600 )); then
-      echo "glm seat fresh per the dispatcher's receipt (${remaining}s remain); no round-trip"
-      exit 0
-    fi
+#    The receipt is read through the dispatcher's own loader (`--show`: schema, platform, skew,
+#    duration syntax and freshness are validated there), never by picking fields out of the JSON —
+#    a document the dispatcher rejects must not make this guard skip (review finding on #4624,
+#    round 8). `seat_remaining_seconds` prints the seconds left on the accepted receipt's quota
+#    surface, or nothing when the dispatcher would not accept it.
+seat_remaining_seconds() {
+  local shown q_status q_observed q_stale stale_s show_err
+  # The loader's own refusal is the diagnosis when the seat is not visible; one sanitised line of
+  # it reaches the journal instead of being swallowed (measured 2026-09-03 18:49Z: the check said
+  # "(none)" and nothing said why).
+  show_err="$(mktemp -p "${TMPDIR:-/tmp}" glm-seat-show.XXXXXX)"
+  if ! shown="$(timeout 30 "$H/scripts/hapax-platform-capability-receipts" --show --platform glmcp --json 2>"$show_err")"; then
+    sed -E 's/(api[_-]?key|token|secret|password|bearer)([[:space:]]*[:=]?[[:space:]]*)[^[:space:]]*/\1<redacted>/Ig' "$show_err" \
+      | grep -vE '^\s*$' | tail -1 | cut -c1-200 | sed 's/^/  --show: /' >&2 || true
+    rm -f "$show_err"
+    return 1
   fi
+  rm -f "$show_err"
+  read -r q_status q_observed q_stale < <(printf '%s' "$shown" | jq -r '
+    (.receipts[] | select(.platform == "glmcp")) as $r
+    | if $r.accepted != true then empty else
+        [($r.quota.status // "?"), ($r.quota.observed_at // "?"), ($r.quota.stale_after // "?")] | join(" ")
+      end' 2>/dev/null || true)
+  [[ "${q_status:-}" == "observed" && -n "${q_observed:-}" && "$q_observed" != "?" ]] || return 1
+  case "$q_stale" in
+    *s) stale_s="${q_stale%s}" ;;
+    *m) stale_s=$(( ${q_stale%m} * 60 )) ;;
+    *h) stale_s=$(( ${q_stale%h} * 3600 )) ;;
+    *) stale_s=0 ;;
+  esac
+  echo $(( $(date -u -d "$q_observed" +%s 2>/dev/null || echo 0) + stale_s - $(date -u +%s) ))
+}
+if remaining="$(seat_remaining_seconds)" && (( remaining > 600 )); then
+  echo "glm seat fresh per the dispatcher's receipt (${remaining}s remain); no round-trip"
+  exit 0
 fi
 
 # 1. round-trip: a fixed one-line blind-review probe; output is counted, never stored. Three
@@ -129,12 +145,15 @@ if [[ "$admission_rc" -ne 0 ]]; then
   echo "glm seat NOT admitted: hapax-glmcp-quota-admission exited $admission_rc after a successful round-trip (witness $WDIR/$ref.yaml). Next: run $H/scripts/hapax-glmcp-quota-admission observe-success --evidence-ref $ref --supported-tool hapax-glmcp-reviewer --endpoint $endpoint --model $model by hand and read its output." >&2
   exit 5
 fi
-# The writer's own diagnostics are printed, never filtered away: exit 3 means the live ledger was
-# written but the ancillary capability-receipt refresh degraded, which the journal must show
-# (review finding on #4624). The admission receipt is already minted at this point, so the seat
-# IS refreshed; only an outright writer failure is fatal, and it names its next action.
+# The writer rebuilds the live ledger from the relay receipts — LEDGER ONLY. Its default run
+# refreshes every platform's capability receipt first (against the ledger it has not yet rebuilt,
+# so a glmcp receipt minted there carries the PREVIOUS seat's remaining lifetime) and spends a
+# real Codex exec-auth sentinel on every call; neither belongs in a five-minute GLM timer (review
+# finding on #4624, round 8). The glmcp receipt is derived from the fresh ledger below instead.
+# The writer's own diagnostics are printed, never filtered away. The admission receipt is already
+# minted at this point; a writer failure is fatal and names its next action.
 set +e
-timeout 120 "$H/scripts/hapax-quota-telemetry-writer" >"$WOUT" 2>&1
+timeout 120 "$H/scripts/hapax-quota-telemetry-writer" --skip-receipts >"$WOUT" 2>&1
 writer_rc=$?
 set -e
 sed 's/\x1b\[[0-9;]*m//g' "$WOUT" | grep -vE '^\s*$' | tail -4 | cut -c1-200 || true
@@ -154,9 +173,21 @@ case "$writer_rc" in
     ;;
 esac
 
-# 5. what the dispatcher will now see.
-L="$HOME/.cache/hapax/orchestration/quota-spend-ledger-live.json"
-if [[ -f "$L" ]] && command -v jq >/dev/null; then
-  jq -r '.. | objects | select(has("platform") and (.platform|tostring|test("glm"))) | "\(.platform): \(.status // .state // .admission // "?") \(.observed_at // .checked_at // "")"' "$L" 2>/dev/null | head -3
-  jq -r '(.platforms // .providers // {}) | to_entries[]? | select(.key|test("glm")) | "\(.key): \((.value.status // .value.state // .value.admission // .value) | tostring | .[0:140])"' "$L" 2>/dev/null | head -3
+# 5. the dispatcher's glmcp receipt, derived from the ledger that now carries the new admission,
+#    then read back through the dispatcher's loader. A writer exit of zero proves the ledger was
+#    written, not that the seat became visible; only the accepted receipt does (review finding on
+#    #4624, round 8).
+set +e
+timeout 60 "$H/scripts/hapax-platform-capability-receipts" --platform glmcp >"$WOUT" 2>&1
+receipts_rc=$?
+set -e
+sed 's/\x1b\[[0-9;]*m//g' "$WOUT" | grep -vE '^\s*$' | tail -2 | cut -c1-200 || true
+if [[ "$receipts_rc" -ne 0 ]]; then
+  echo "glm seat NOT visible: the glmcp capability receipt could not be refreshed from the new ledger (exit $receipts_rc) after the admission was minted. Next: run $H/scripts/hapax-platform-capability-receipts --platform glmcp by hand and read why." >&2
+  exit 6
 fi
+if ! remaining="$(seat_remaining_seconds)" || (( remaining <= 600 )); then
+  echo "glm seat NOT visible: the dispatcher's glmcp receipt does not carry an accepted, observed quota surface with more than 600 s left (${remaining:-none}) after the admission was minted and the ledger rebuilt. Next: run $H/scripts/hapax-platform-capability-receipts --show --platform glmcp and compare its reason with the relay receipt in \$HOME/.cache/hapax/relay/receipts." >&2
+  exit 6
+fi
+echo "glm seat visible to the dispatcher: ${remaining}s remain on the accepted glmcp receipt"

@@ -29,10 +29,14 @@ from shared.platform_capability_receipts import (  # noqa: E402
     ConfigEvidence,
     EvidenceStatus,
     PlatformCapabilityReceipt,
+    PlatformCapabilityReceiptError,
     ProviderDocsEvidence,
     SurfaceEvidence,
     ToolEvidence,
     WrapperEvidence,
+    ensure_utc,
+    load_platform_capability_receipt,
+    load_platform_capability_receipts,
     receipt_reference,
 )
 from shared.platform_capability_registry import (  # noqa: E402
@@ -706,6 +710,75 @@ def positive_float_env_default(name: str, default: float) -> float:
     return value
 
 
+def show_receipts(
+    *,
+    platforms: list[str],
+    receipt_dir: Path,
+    now: datetime,
+    as_json: bool,
+) -> int:
+    """Print the validated quota surface of each stored receipt; never probe, never write.
+
+    A consumer that wants to know what the dispatcher will see must read the receipt through the
+    dispatcher's own loader (schema, platform, future skew, duration syntax, freshness), not pick
+    three fields out of the JSON (review finding on #4624, round 8). ``accepted`` is exactly the
+    plural loader's verdict — the one the writer and the dispatcher apply.
+    """
+
+    if not platforms:
+        print("--show needs at least one --platform", file=sys.stderr)
+        return 2
+    # The plural loader is the dispatcher's read: it raises on any malformed file in the directory,
+    # and then the dispatcher sees no receipt at all — so that is what this reports, not a crash.
+    directory_error: str | None = None
+    try:
+        accepted_receipts = load_platform_capability_receipts(receipt_dir, now=now)
+    except (PlatformCapabilityReceiptError, ValueError, OSError) as exc:
+        accepted_receipts = {}
+        directory_error = f"receipt_dir_unloadable:{type(exc).__name__}"
+    rows: list[dict[str, Any]] = []
+    all_ok = True
+    for platform in platforms:
+        path = receipt_dir / f"{platform}.json"
+        row: dict[str, Any] = {"platform": platform, "path": str(path), "accepted": False}
+        try:
+            receipt = load_platform_capability_receipt(path)
+        except FileNotFoundError:
+            row["reason"] = "receipt_absent"
+        except (PlatformCapabilityReceiptError, ValueError, OSError) as exc:
+            row["reason"] = f"receipt_invalid:{type(exc).__name__}"
+        else:
+            accepted = accepted_receipts.get(platform)
+            row["accepted"] = accepted is not None and accepted.receipt_id == receipt.receipt_id
+            row["receipt_id"] = receipt.receipt_id
+            row["observed_at"] = iso_z(ensure_utc(receipt.observed_at))
+            row["stale_after"] = receipt.stale_after
+            row["quota"] = receipt.quota.model_dump(mode="json")
+            if not row["accepted"]:
+                row["reason"] = directory_error or "receipt_stale_or_superseded"
+        all_ok = all_ok and bool(row["accepted"])
+        rows.append(row)
+    payload = {
+        "ok": all_ok,
+        "checked_at": iso_z(now),
+        "receipt_dir": str(receipt_dir),
+        "directory_error": directory_error,
+        "receipts": rows,
+    }
+    if as_json:
+        print(json.dumps(payload, indent=2, sort_keys=True))
+    else:
+        for row in rows:
+            quota = row.get("quota") or {}
+            print(
+                f"{row['platform']}: accepted={row['accepted']} "
+                f"quota={quota.get('status', '?')} observed_at={quota.get('observed_at', '?')} "
+                f"stale_after={quota.get('stale_after', '?')}"
+                + (f" reason={row['reason']}" if row.get("reason") else "")
+            )
+    return 0 if all_ok else 1
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--registry", type=Path, default=PLATFORM_CAPABILITY_REGISTRY)
@@ -751,9 +824,25 @@ def main(argv: list[str] | None = None) -> int:
         ),
     )
     parser.add_argument("--json", action="store_true")
+    parser.add_argument(
+        "--show",
+        action="store_true",
+        help=(
+            "Read-only: load the stored receipt for each selected platform through the same "
+            "loader the dispatcher uses and print its validated quota surface. No probe runs and "
+            "nothing is written. Exit 1 when any selected receipt is absent, malformed or stale."
+        ),
+    )
     args = parser.parse_args(argv)
 
     observed_at = parse_utc(args.now) if args.now else datetime.now(UTC).replace(microsecond=0)
+    if args.show:
+        return show_receipts(
+            platforms=[platform.lower() for platform in args.platform],
+            receipt_dir=args.receipt_dir,
+            now=observed_at,
+            as_json=args.json,
+        )
     registry, non_supply_observation_errors = load_platform_capability_registry_for_dispatch(
         args.registry,
         now=observed_at,
