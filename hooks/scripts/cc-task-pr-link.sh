@@ -381,8 +381,18 @@ for other in sorted(vault_active.glob("*.md")):
         continue
     try:
         other_text = other.read_text(encoding="utf-8")
-    except OSError:
-        continue
+    except OSError as exc:
+        # An unreadable row is a row this hook cannot rule out as the PR's owner. Skipping it
+        # would be fail-open on exactly the check that exists to prevent a duplicate binding
+        # (review finding on #4613, round 6): refuse, name the row, and leave the link unmade.
+        print(
+            f"cc-task-pr-link: REFUSING to link PR #{pr_number} to '{note_path.stem}' — the active "
+            f"task '{other.stem}' could not be read ({exc.__class__.__name__}), so this hook cannot "
+            "tell whether it already owns the PR. Next action: make that row readable (or move it "
+            "out of active/) and re-link.",
+            file=sys.stderr,
+        )
+        sys.exit(0)
     head = other_text.split("\n---", 1)[0]
     om = re.search(r"^pr:\s*(.*)$", head, flags=re.MULTILINE)
     if not om or _pr_scalar(om.group(1)) != str(pr_number):

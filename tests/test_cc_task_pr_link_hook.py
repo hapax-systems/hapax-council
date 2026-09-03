@@ -316,6 +316,36 @@ class TestIdempotency:
         assert "REFUSING" in result.stderr
         assert "velocity-fix" in result.stderr
 
+    def test_an_unreadable_active_row_refuses_the_link_instead_of_being_skipped(
+        self, tmp_path: Path
+    ) -> None:
+        """Round six: `except OSError: continue` skipped a row the hook could not rule out as the
+        PR's owner — fail-open on the one check that prevents a duplicate binding."""
+        _vault, note = _make_vault(tmp_path, task_id="research-row", pr=None, status="in_progress")
+        unreadable = note.parent / "opaque-owner-test-task.md"
+        unreadable.write_text(
+            '---\ntype: cc-task\ntask_id: opaque-owner\ntitle: "Might own the PR"\n'
+            "status: pr_open\nassigned_to: beta\npriority: normal\n"
+            "branch: fix/opaque\npr: 4605\npr_repo: ryanklee/hapax-council\n"
+            "created_at: 2026-04-26T00:00:00Z\nupdated_at: 2026-04-26T00:00:00Z\n---\n",
+            encoding="utf-8",
+        )
+        unreadable.chmod(0)
+        _write_claim(tmp_path, "beta", "research-row")
+        try:
+            result = _run_hook(
+                bash_cmd="gh pr create",
+                bash_output="https://github.com/ryanklee/hapax-council/pull/4605",
+                home=tmp_path,
+            )
+        finally:
+            unreadable.chmod(0o644)
+        assert result.returncode == 0
+        assert "pr: 4605" not in note.read_text(encoding="utf-8")
+        assert "REFUSING to link PR #4605" in result.stderr
+        assert "opaque-owner-test-task" in result.stderr
+        assert "Next action:" in result.stderr
+
     def test_refuses_a_pr_another_active_task_already_declares(self, tmp_path: Path) -> None:
         """A PR must not be bound to two tasks. Measured defect, three occurrences on one row.
 
