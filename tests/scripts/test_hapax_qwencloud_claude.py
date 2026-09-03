@@ -30,7 +30,7 @@ def bench(tmp_path: Path) -> tuple[Path, dict[str, str]]:
     (bin_dir / "hapax-secret").write_text(
         "#!/usr/bin/env bash\n"
         'if [ "$1" = "--where" ]; then echo filestore; exit 0; fi\n'
-        'if [ "$1" = "qwencloud/apikey" ]; then echo "sk-sp-FAKE-PLAN-KEY-0000"; exit 0; fi\n'
+        'if [ "$1" = "qwencloud/apikey" ]; then echo "fixture-plan-key-0000"; exit 0; fi\n'
         "exit 1\n",
         encoding="utf-8",
     )
@@ -60,13 +60,13 @@ def test_the_client_runs_isolated_with_the_key_only_in_its_environment(bench) ->
     seen = json.loads(record.read_text())
     assert seen["argv"] == ["-p", "Reply with exactly: OK", "--output-format", "json"]
     assert seen["env"]["ANTHROPIC_BASE_URL"] == OFFICIAL
-    assert seen["env"]["ANTHROPIC_AUTH_TOKEN"] == "sk-sp-FAKE-PLAN-KEY-0000"
+    assert seen["env"]["ANTHROPIC_AUTH_TOKEN"] == "fixture-plan-key-0000"
     assert seen["env"]["ANTHROPIC_MODEL"] == "qwen3.7-plus"
     assert seen["env"]["ANTHROPIC_DEFAULT_HAIKU_MODEL"] == "qwen3.7-plus"
     assert seen["env"]["HOME"] != env["HOME"], "the client must not see the real HOME"
     assert not Path(seen["env"]["HOME"]).exists(), "the isolated HOME is removed after the run"
-    assert "sk-sp-FAKE" not in " ".join(seen["argv"])
-    assert "sk-sp-FAKE" not in proc.stderr
+    assert "fixture-plan-key" not in " ".join(seen["argv"])
+    assert "fixture-plan-key" not in proc.stderr
     assert "TMPDIR" not in seen["env"] or seen["env"].get("TMPDIR") != env["TMPDIR"]
     assert json.loads(proc.stdout)["result"] == "OK"
 

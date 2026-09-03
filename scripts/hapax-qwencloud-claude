@@ -42,7 +42,7 @@ if [[ "${1:-}" == "--check" ]]; then
   shift
 fi
 
-secret_name="qwencloud/apikey"
+secret_name="qwencloud/apikey"  # pragma: allowlist secret
 official_base_url="https://token-plan.ap-southeast-1.maas.aliyuncs.com/apps/anthropic"
 base_url="${HAPAX_QWENCLOUD_ANTHROPIC_BASE_URL:-$official_base_url}"
 model="${HAPAX_QWENCLOUD_MODEL:-qwen3.7-plus}"
@@ -90,7 +90,7 @@ if $check_only; then
   exit 0
 fi
 
-key="$(hapax-secret "$secret_name" 2>/dev/null || true)"
+key="$(hapax-secret "$secret_name" 2>/dev/null || true)"  # pragma: allowlist secret
 if [[ -z "$key" ]]; then
   echo "hapax-qwencloud-claude: secret '$secret_name' read back empty; re-store it with hapax-secret" >&2
   exit 4
