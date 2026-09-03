@@ -1,0 +1,388 @@
+#!/usr/bin/env python3
+"""hapax-recruit — one entry point that recruits any entitled capacity for one headless brief.
+
+Operator ruling 2026-09-03: every model available through entitlement is live and recruitable
+as capacity *before* the spine routes and recruits for us, and regardless of proper onboarding.
+This is that layer, and no more: it knows each capacity's measured working shape (the roster
+`capability-audit/RECRUITABLE-CAPACITY-ROSTER-2026-09-03.md`), runs one brief through it, and
+writes a receipt of what actually ran. Admission, quota receipts and route selection stay the
+spine's job; a receipt here is a *measurement* of a run, not an admission of one.
+
+Stated with no estate noun: a recruiter takes a brief, a capacity name and a working directory,
+runs the capacity in the one shape measured to work headlessly, captures its answer, and records
+what ran — identity as reported by the capacity itself, never inferred — so a later reader can
+tell a run that happened from a run that was believed to happen.
+
+    hapax-recruit <capacity> --brief FILE --out FILE [--cwd DIR] [--timeout S] [--model M]
+    hapax-recruit --list
+
+Capacities: codex · grok · kimi · agy · claude · glmcp · local:qwen36 · local:gptoss · local:gemma3
+
+Exit codes: 0 answered · 2 refused (arguments, cwd rule, missing binary) · 3 the capacity failed
+· 4 timeout. Every non-zero exit still writes the receipt when the run started.
+"""
+
+from __future__ import annotations
+
+import argparse
+import hashlib
+import json
+import os
+import re
+import shutil
+import subprocess
+import sys
+import urllib.error
+import urllib.request
+from dataclasses import dataclass
+from datetime import UTC, datetime
+from pathlib import Path
+
+INSTRUMENT_REV = "hapax-recruit/1"
+REPO_ROOT = Path(__file__).resolve().parents[1]
+GLMCP_WRAPPER_ENV = "HAPAX_RECRUIT_GLMCP_WRAPPER"
+LOCAL_ENDPOINTS = {
+    # roster rows measured serving on appendix 2026-09-03; OpenAI-compatible llama.cpp servers
+    "local:qwen36": ("http://localhost:5000/v1", "qwen3.6-35b-a3b"),
+    "local:gptoss": ("http://localhost:5001/v1", "gpt-oss-20b"),
+    "local:gemma3": ("http://localhost:5002/v1", "gemma-3-4b"),
+}
+CAPACITIES = ("codex", "grok", "kimi", "agy", "claude", "glmcp", *LOCAL_ENDPOINTS)
+SHAPES = {
+    "codex": "codex exec --sandbox read-only -C <cwd:git checkout> -o <out> <brief> < /dev/null",
+    "grok": "grok -p <brief> --cwd <cwd>  (reads inside cwd only)",
+    "kimi": "kimi -p <brief> --output-format text  (session trailer stripped)",
+    "agy": "agy --print=<brief> --print-timeout <S>s  (prompt-only; headless reads are denied)",
+    "claude": "claude -p <brief> --output-format json [--model M]  (modelUsage recorded)",
+    "glmcp": "scripts/hapax-glmcp-claude -p <brief> --output-format json  (Claude Code on the GLM plan)",
+    "local:qwen36": "POST http://localhost:5000/v1/chat/completions  (a model, not an agent)",
+    "local:gptoss": "POST http://localhost:5001/v1/chat/completions",
+    "local:gemma3": "POST http://localhost:5002/v1/chat/completions",
+}
+_SECRETISH = re.compile(
+    r"(api[_-]?key|token|secret|password|bearer)([\s]*[:=]?[\s]*)[^\s]*", re.IGNORECASE
+)
+_KIMI_TRAILER = re.compile(r"^To resume this session\b")
+
+
+class Refusal(Exception):
+    """A run that must not start; the message names the remedy."""
+
+
+@dataclass
+class RunResult:
+    answer: str
+    exit_code: int | str
+    stdout_bytes: int
+    stderr_tail: str
+    models_reported: list[str]
+
+
+def _redact(text: str) -> str:
+    return _SECRETISH.sub(r"\1<redacted>", text)
+
+
+def _now() -> datetime:
+    return datetime.now(UTC)
+
+
+def _iso(moment: datetime) -> str:
+    return moment.strftime("%Y-%m-%dT%H:%M:%SZ")
+
+
+def _require_binary(name: str) -> str:
+    found = shutil.which(name)
+    if found is None:
+        raise Refusal(f"{name} is not on PATH; install it or fix PATH, then retry")
+    return found
+
+
+def _is_git_checkout(cwd: Path) -> bool:
+    proc = subprocess.run(
+        ["git", "-C", str(cwd), "rev-parse", "--is-inside-work-tree"],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    return proc.returncode == 0 and proc.stdout.strip() == "true"
+
+
+def _run(
+    argv: list[str], *, cwd: Path, timeout: int, stdin_closed: bool = True
+) -> tuple[int | str, str, str]:
+    try:
+        proc = subprocess.run(
+            argv,
+            cwd=str(cwd),
+            stdin=subprocess.DEVNULL if stdin_closed else None,
+            capture_output=True,
+            text=True,
+            timeout=timeout,
+            check=False,
+        )
+    except subprocess.TimeoutExpired as exc:
+        out = exc.stdout.decode() if isinstance(exc.stdout, bytes) else (exc.stdout or "")
+        err = exc.stderr.decode() if isinstance(exc.stderr, bytes) else (exc.stderr or "")
+        return "timeout", out, err
+    return proc.returncode, proc.stdout, proc.stderr
+
+
+def _strip_kimi(text: str, brief: str) -> str:
+    first_brief_line = brief.strip().splitlines()[0].strip() if brief.strip() else ""
+    kept: list[str] = []
+    for line in text.splitlines():
+        stripped = line.strip()
+        if stripped.startswith("kimi version") or _KIMI_TRAILER.match(stripped):
+            continue
+        if stripped.startswith("• "):
+            stripped = stripped[2:]
+        if first_brief_line and stripped == first_brief_line:
+            continue  # the echoed prompt
+        kept.append(stripped)
+    return "\n".join(kept).strip() + ("\n" if kept else "")
+
+
+def _parse_claude_json(stdout: str) -> tuple[str, list[str]]:
+    """Claude Code's --output-format json: the answer is `result`; served identity is `modelUsage`."""
+    try:
+        payload = json.loads(stdout)
+    except json.JSONDecodeError:
+        return stdout, []
+    if isinstance(payload, list):  # stream-json style arrays end with the result object
+        payload = next((item for item in reversed(payload) if isinstance(item, dict)), {})
+    if not isinstance(payload, dict):
+        return stdout, []
+    answer = payload.get("result")
+    usage = payload.get("modelUsage")
+    models = sorted(usage) if isinstance(usage, dict) else []
+    return (answer if isinstance(answer, str) else stdout), models
+
+
+def recruit_cli(
+    capacity: str,
+    brief: str,
+    *,
+    cwd: Path,
+    out: Path,
+    timeout: int,
+    model: str | None,
+    allow_untrusted_cwd: bool,
+) -> RunResult:
+    if capacity == "codex":
+        binary = _require_binary("codex")
+        argv = [binary, "exec", "--sandbox", "read-only", "-C", str(cwd), "-o", str(out)]
+        if not _is_git_checkout(cwd):
+            if not allow_untrusted_cwd:
+                raise Refusal(
+                    f"codex refuses a cwd that is not a git checkout ({cwd}); point --cwd at a "
+                    "checkout, or pass --allow-untrusted-cwd to add --skip-git-repo-check "
+                    "explicitly (the roster measured this refusal on 2026-09-03)"
+                )
+            argv.append("--skip-git-repo-check")
+        if model:
+            argv += ["--model", model]
+        argv.append(brief)
+        code, stdout, stderr = _run(argv, cwd=cwd, timeout=timeout)
+        answer = out.read_text(encoding="utf-8") if out.is_file() else stdout
+        reported = re.findall(r"^model:\s*(\S+)", stdout + "\n" + stderr, flags=re.MULTILINE)
+        return RunResult(answer, code, len(stdout), stderr[-400:], sorted(set(reported)))
+    if capacity == "grok":
+        binary = _require_binary("grok")
+        argv = [binary, "-p", brief, "--cwd", str(cwd)]
+        code, stdout, stderr = _run(argv, cwd=cwd, timeout=timeout)
+        return RunResult(stdout, code, len(stdout), stderr[-400:], [])
+    if capacity == "kimi":
+        binary = _require_binary("kimi")
+        argv = [binary, "-p", brief, "--output-format", "text"]
+        code, stdout, stderr = _run(argv, cwd=cwd, timeout=timeout)
+        return RunResult(_strip_kimi(stdout, brief), code, len(stdout), stderr[-400:], [])
+    if capacity == "agy":
+        binary = _require_binary("agy")
+        argv = [binary, f"--print={brief}", "--print-timeout", f"{timeout}s"]
+        code, stdout, stderr = _run(argv, cwd=cwd, timeout=timeout + 15)
+        return RunResult(stdout, code, len(stdout), stderr[-400:], [])
+    if capacity in ("claude", "glmcp"):
+        if capacity == "claude":
+            binary = _require_binary("claude")
+        else:
+            wrapper = Path(
+                os.environ.get(GLMCP_WRAPPER_ENV) or REPO_ROOT / "scripts" / "hapax-glmcp-claude"
+            )
+            if not wrapper.is_file():
+                raise Refusal(
+                    f"GLM wrapper {wrapper} is missing; set {GLMCP_WRAPPER_ENV} or restore it"
+                )
+            binary = str(wrapper)
+        argv = [binary, "-p", brief, "--output-format", "json"]
+        if model and capacity == "claude":
+            argv += ["--model", model]
+        code, stdout, stderr = _run(argv, cwd=cwd, timeout=timeout)
+        answer, models = _parse_claude_json(stdout)
+        return RunResult(answer, code, len(stdout), stderr[-400:], models)
+    raise Refusal(f"unknown capacity {capacity!r}; one of: {', '.join(CAPACITIES)}")
+
+
+def recruit_local(capacity: str, brief: str, *, timeout: int, model: str | None) -> RunResult:
+    base, default_model = LOCAL_ENDPOINTS[capacity]
+    body = json.dumps(
+        {
+            "model": model or default_model,
+            "messages": [{"role": "user", "content": brief}],
+            "temperature": 0,
+        }
+    ).encode("utf-8")
+    request = urllib.request.Request(
+        f"{base}/chat/completions", data=body, headers={"Content-Type": "application/json"}
+    )
+    try:
+        with urllib.request.urlopen(request, timeout=timeout) as response:
+            payload = json.loads(response.read().decode("utf-8"))
+    except urllib.error.URLError as exc:
+        return RunResult("", 3, 0, f"endpoint {base} unreachable: {exc}"[-400:], [])
+    except TimeoutError:
+        return RunResult("", "timeout", 0, f"endpoint {base} timed out after {timeout}s", [])
+    choices = payload.get("choices") if isinstance(payload, dict) else None
+    answer = ""
+    if isinstance(choices, list) and choices and isinstance(choices[0], dict):
+        message = choices[0].get("message") or {}
+        answer = str(message.get("content") or "")
+    served = payload.get("model") if isinstance(payload, dict) else None
+    return RunResult(answer, 0 if answer else 3, len(answer), "", [served] if served else [])
+
+
+def write_receipt(
+    path: Path,
+    *,
+    capacity: str,
+    brief: str,
+    cwd: Path | None,
+    out: Path,
+    started: datetime,
+    ended: datetime,
+    result: RunResult | None,
+    refusal: str | None,
+    model_requested: str | None,
+) -> None:
+    receipt = {
+        "instrument_rev": INSTRUMENT_REV,
+        "capacity": capacity,
+        "shape": SHAPES[capacity],
+        "cwd": str(cwd) if cwd is not None else None,
+        "brief_sha256": hashlib.sha256(brief.encode("utf-8")).hexdigest(),
+        "brief_bytes": len(brief.encode("utf-8")),
+        "out": str(out),
+        "started_at": _iso(started),
+        "ended_at": _iso(ended),
+        "wall_s": round((ended - started).total_seconds(), 3),
+        "model_requested": model_requested,
+        # identity is what the capacity REPORTED; "absent" is a value, never a guess
+        "models_reported": result.models_reported
+        if result and result.models_reported
+        else "absent",
+        "exit_code": result.exit_code if result else None,
+        "output_bytes": len(result.answer.encode("utf-8")) if result else 0,
+        "stdout_bytes": result.stdout_bytes if result else 0,
+        "stderr_tail": _redact(result.stderr_tail) if result else "",
+        "refusal": refusal,
+    }
+    path.write_text(json.dumps(receipt, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+
+
+def main(argv: list[str] | None = None) -> int:
+    parser = argparse.ArgumentParser(prog="hapax-recruit", description=__doc__.split("\n\n")[0])
+    parser.add_argument("capacity", nargs="?", choices=CAPACITIES)
+    parser.add_argument("--brief", type=Path, help="file holding the prompt")
+    parser.add_argument("--out", type=Path, help="answer file; the receipt is <out>.receipt.json")
+    parser.add_argument("--cwd", type=Path, default=None, help="working directory (default: .)")
+    parser.add_argument("--timeout", type=int, default=900)
+    parser.add_argument(
+        "--model", default=None, help="passed through where the capacity accepts it"
+    )
+    parser.add_argument("--allow-untrusted-cwd", action="store_true")
+    parser.add_argument("--list", action="store_true", help="print the roster shapes and exit")
+    args = parser.parse_args(argv)
+
+    if args.list:
+        for name in CAPACITIES:
+            print(f"{name:14s} {SHAPES[name]}")
+        return 0
+    if not args.capacity or args.brief is None or args.out is None:
+        print(
+            "hapax-recruit: <capacity> --brief FILE --out FILE are required (or --list)",
+            file=sys.stderr,
+        )
+        return 2
+    if not args.brief.is_file():
+        print(f"hapax-recruit: brief {args.brief} is not a file", file=sys.stderr)
+        return 2
+    brief = args.brief.read_text(encoding="utf-8")
+    if not brief.strip():
+        print(f"hapax-recruit: brief {args.brief} is empty", file=sys.stderr)
+        return 2
+    cwd = (args.cwd or Path.cwd()).resolve()
+    if not cwd.is_dir():
+        print(f"hapax-recruit: cwd {cwd} is not a directory", file=sys.stderr)
+        return 2
+    args.out.parent.mkdir(parents=True, exist_ok=True)
+    receipt_path = args.out.with_name(args.out.name + ".receipt.json")
+
+    started = _now()
+    result: RunResult | None = None
+    refusal: str | None = None
+    try:
+        if args.capacity in LOCAL_ENDPOINTS:
+            result = recruit_local(args.capacity, brief, timeout=args.timeout, model=args.model)
+        else:
+            result = recruit_cli(
+                args.capacity,
+                brief,
+                cwd=cwd,
+                out=args.out,
+                timeout=args.timeout,
+                model=args.model,
+                allow_untrusted_cwd=args.allow_untrusted_cwd,
+            )
+    except Refusal as exc:
+        refusal = str(exc)
+    ended = _now()
+    write_receipt(
+        receipt_path,
+        capacity=args.capacity,
+        brief=brief,
+        cwd=None if args.capacity in LOCAL_ENDPOINTS else cwd,
+        out=args.out,
+        started=started,
+        ended=ended,
+        result=result,
+        refusal=refusal,
+        model_requested=args.model,
+    )
+    if refusal is not None:
+        print(f"hapax-recruit: REFUSED — {refusal} (receipt: {receipt_path})", file=sys.stderr)
+        return 2
+    assert result is not None
+    args.out.write_text(result.answer, encoding="utf-8")
+    if result.exit_code == "timeout":
+        print(
+            f"hapax-recruit: {args.capacity} timed out after {args.timeout}s; partial output kept "
+            f"(receipt: {receipt_path})",
+            file=sys.stderr,
+        )
+        return 4
+    if result.exit_code != 0:
+        print(
+            f"hapax-recruit: {args.capacity} exited {result.exit_code}; stderr tail: "
+            f"{_redact(result.stderr_tail).strip()[-200:]} (receipt: {receipt_path})",
+            file=sys.stderr,
+        )
+        return 3
+    served = ", ".join(result.models_reported) if result.models_reported else "absent"
+    print(
+        f"hapax-recruit: {args.capacity} answered ({len(result.answer)} chars, models reported: "
+        f"{served}) -> {args.out}; receipt {receipt_path}"
+    )
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())
