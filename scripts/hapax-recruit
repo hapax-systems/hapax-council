@@ -41,13 +41,19 @@ from pathlib import Path
 INSTRUMENT_REV = "hapax-recruit/1"
 REPO_ROOT = Path(__file__).resolve().parents[1]
 GLMCP_WRAPPER_ENV = "HAPAX_RECRUIT_GLMCP_WRAPPER"
+QWENCLOUD_WRAPPER_ENV = "HAPAX_RECRUIT_QWENCLOUD_WRAPPER"
+#: Claude Code driven by a session-scoped wrapper: (env override, default wrapper path)
+WRAPPED_CLAUDE = {
+    "glmcp": (GLMCP_WRAPPER_ENV, "scripts/hapax-glmcp-claude"),
+    "qwencloud": (QWENCLOUD_WRAPPER_ENV, "scripts/hapax-qwencloud-claude"),
+}
 LOCAL_ENDPOINTS = {
     # roster rows measured serving on appendix 2026-09-03; OpenAI-compatible llama.cpp servers
     "local:qwen36": ("http://localhost:5000/v1", "qwen3.6-35b-a3b"),
     "local:gptoss": ("http://localhost:5001/v1", "gpt-oss-20b"),
     "local:gemma3": ("http://localhost:5002/v1", "gemma-3-4b"),
 }
-CAPACITIES = ("codex", "grok", "kimi", "agy", "claude", "glmcp", *LOCAL_ENDPOINTS)
+CAPACITIES = ("codex", "grok", "kimi", "agy", "claude", "glmcp", "qwencloud", *LOCAL_ENDPOINTS)
 SHAPES = {
     "codex": "codex exec --sandbox read-only -C <cwd:git checkout> -o <out> <brief> < /dev/null",
     "grok": "grok -p <brief> --cwd <cwd>  (reads inside cwd only)",
@@ -55,6 +61,7 @@ SHAPES = {
     "agy": "agy --print=<brief> --print-timeout <S>s  (prompt-only; headless reads are denied)",
     "claude": "claude -p <brief> --output-format json [--model M]  (modelUsage recorded)",
     "glmcp": "scripts/hapax-glmcp-claude -p <brief> --output-format json  (Claude Code on the GLM plan)",
+    "qwencloud": "scripts/hapax-qwencloud-claude -p <brief> --output-format json  (Claude Code on the Qwen Cloud plan)",
     "local:qwen36": "POST http://localhost:5000/v1/chat/completions  (a model, not an agent)",
     "local:gptoss": "POST http://localhost:5001/v1/chat/completions",
     "local:gemma3": "POST http://localhost:5002/v1/chat/completions",
@@ -201,16 +208,15 @@ def recruit_cli(
         argv = [binary, f"--print={brief}", "--print-timeout", f"{timeout}s"]
         code, stdout, stderr = _run(argv, cwd=cwd, timeout=timeout + 15)
         return RunResult(stdout, code, len(stdout), stderr[-400:], [])
-    if capacity in ("claude", "glmcp"):
+    if capacity == "claude" or capacity in WRAPPED_CLAUDE:
         if capacity == "claude":
             binary = _require_binary("claude")
         else:
-            wrapper = Path(
-                os.environ.get(GLMCP_WRAPPER_ENV) or REPO_ROOT / "scripts" / "hapax-glmcp-claude"
-            )
+            env_name, default = WRAPPED_CLAUDE[capacity]
+            wrapper = Path(os.environ.get(env_name) or REPO_ROOT / default)
             if not wrapper.is_file():
                 raise Refusal(
-                    f"GLM wrapper {wrapper} is missing; set {GLMCP_WRAPPER_ENV} or restore it"
+                    f"{capacity} wrapper {wrapper} is missing; set {env_name} or restore it"
                 )
             binary = str(wrapper)
         argv = [binary, "-p", brief, "--output-format", "json"]

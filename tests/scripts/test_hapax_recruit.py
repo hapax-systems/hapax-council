@@ -234,6 +234,27 @@ def test_glmcp_shape_uses_the_wrapper_binding(bench, tmp_path: Path, monkeypatch
     assert "missing" in _receipt(out)["refusal"]
 
 
+def test_qwencloud_shape_uses_its_own_wrapper_binding(bench, tmp_path: Path, monkeypatch) -> None:
+    module, bin_dir, brief, out = bench
+    wrapper = _stub(
+        bin_dir,
+        "fake-qwencloud",
+        "print(json.dumps({'result': 'OK', 'modelUsage': {'qwen3.7-plus': {}}}))\n",
+    )
+    monkeypatch.setenv(module.QWENCLOUD_WRAPPER_ENV, str(wrapper))
+
+    rc = module.main(["qwencloud", "--brief", str(brief), "--out", str(out)])
+
+    assert rc == 0
+    assert _calls(bin_dir, "fake-qwencloud")[0]["argv"] == [
+        "-p",
+        brief.read_text(),
+        "--output-format",
+        "json",
+    ]
+    assert _receipt(out)["models_reported"] == ["qwen3.7-plus"]
+
+
 def test_capacity_failure_and_timeout_keep_a_receipt(
     bench, capsys: pytest.CaptureFixture[str]
 ) -> None:
