@@ -22,26 +22,39 @@ ref="glmcp-reviewer-roundtrip-ok-$(echo "$ts" | tr 'A-Z' 'a-z')"
 # probe and mint a receipt for a call that never reached the plan (review finding on #4624).
 endpoint="https://api.z.ai/api/coding/paas/v4"
 export HAPAX_GLMCP_REVIEW_BASE_URL="$endpoint"
+# Likewise the credential: the seat belongs to the Coding Plan's own entry. An inherited
+# HAPAX_GLMCP_REVIEW_SECRET_ENTRY (or the override that permits alternates) could mint this
+# receipt for another credential (review finding on #4624, round 4).
+export HAPAX_GLMCP_REVIEW_SECRET_ENTRY="glmcp/api-key"  # pragma: allowlist secret
+unset HAPAX_GLMCP_REVIEW_ALLOW_SECRET_ENTRY_OVERRIDE  # pragma: allowlist secret
 # The admission CLI on main accepts exactly glm-5.2 (#4568, unmerged, moves the seat to glm-5.3).
 # The systemd user environment may carry a different HAPAX_GLMCP_REVIEW_MODEL; pin the round-trip
 # to the model the receipt will name, so witness and receipt describe the call that was made.
 model="glm-5.2"
 export HAPAX_GLMCP_REVIEW_MODEL="$model"
 
-# 0. freshness guard — asks the SAME source the dispatcher trusts: the live quota ledger the
-#    telemetry writer validated, never the raw receipt. A receipt with the wrong schema, model or
-#    status looked "fresh" to a receipt-age check while the writer rejected it, which recreates
-#    the silent blocked-family condition this producer exists to prevent (review finding on #4624,
-#    round 2). The passive receipt lives 15 minutes; refreshing whenever fewer than 10 remain keeps
-#    the seat's age under ~5–10 minutes so it never lapses between two autoqueue cycles (measured
-#    2026-08-04: a receipt that lapsed mid-queue dequeued a green PR). ~1 round-trip per 5–10 min.
-L="$HOME/.cache/hapax/orchestration/quota-spend-ledger-live.json"
-if [[ -f "$L" ]] && command -v jq >/dev/null; then
-  until="$(jq -r '[.quota_snapshots[]? | select(.route_id == "glmcp.review.direct" and .subscription_quota_state == "fresh") | .fresh_until | select(. != null)] | max // empty' "$L" 2>/dev/null || true)"
-  if [[ -n "$until" ]]; then
-    remaining=$(( $(date -u -d "$until" +%s 2>/dev/null || echo 0) - $(date -u +%s) ))
+# 0. freshness guard — reads the dispatcher's OWN artifact: the glmcp platform-capability receipt
+#    that hapax-platform-capability-receipts writes only when a fresh relay receipt AND the ledger's
+#    fail-closed validator both vouch for glmcp.review.direct (#4616). Neither the raw relay receipt
+#    nor the ledger's raw fields are consulted here: both have looked "fresh" while the validator
+#    (and therefore the dispatcher) said otherwise (review findings on #4624, rounds 2 and 4). The
+#    receipt's stale_after is what is LEFT of the seat's lifetime at generation; it is regenerated
+#    every ten minutes, so this guard can only over-refresh, never under-refresh. Refreshing whenever
+#    fewer than 10 minutes remain keeps the seat from lapsing between two autoqueue cycles (measured
+#    2026-08-04: a receipt that lapsed mid-queue dequeued a green PR).
+R="$HOME/.cache/hapax/platform-capability-receipts/glmcp.json"
+if [[ -f "$R" ]] && command -v jq >/dev/null; then
+  read -r q_status q_generated q_stale < <(jq -r '[(.quota.status // "?"), (.generated_at // "?"), (.quota.stale_after // "?")] | join(" ")' "$R" 2>/dev/null || echo "? ? ?")
+  if [[ "$q_status" == "observed" && "$q_generated" != "?" ]]; then
+    case "$q_stale" in
+      *s) stale_s="${q_stale%s}" ;;
+      *m) stale_s=$(( ${q_stale%m} * 60 )) ;;
+      *h) stale_s=$(( ${q_stale%h} * 3600 )) ;;
+      *) stale_s=0 ;;
+    esac
+    remaining=$(( $(date -u -d "$q_generated" +%s 2>/dev/null || echo 0) + stale_s - $(date -u +%s) ))
     if (( remaining > 600 )); then
-      echo "glm seat fresh per the live ledger (${remaining}s remain); no round-trip"
+      echo "glm seat fresh per the dispatcher's receipt (${remaining}s remain); no round-trip"
       exit 0
     fi
   fi

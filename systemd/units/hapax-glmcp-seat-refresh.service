@@ -17,10 +17,11 @@ Environment=PASSWORD_STORE_DIR=/home/hapax/.password-store
 # telemetry writer (120 s): 750 s is the budget the script can spend, so the unit must not kill
 # it earlier than that.
 TimeoutStartSec=780
-# The receipt chain runs the activation worktree and nothing else: pinned here so an inherited
-# user-manager HAPAX_COUNCIL cannot redirect governance-sensitive code to a mutable tree.
-Environment=HAPAX_COUNCIL=%h/.cache/hapax/source-activation/worktree
-# The probe measures the Coding Plan seat: its endpoint is pinned here as well as in the script.
-Environment=HAPAX_GLMCP_REVIEW_BASE_URL=https://api.z.ai/api/coding/paas/v4
+# The receipt chain runs the activation worktree, the Coding Plan endpoint and the Coding Plan
+# credential, and nothing else. systemd does NOT expand specifiers such as %h inside Environment=
+# (measured 2026-09-02: `Environment=X=%h/y` arrives as the literal `%h/y`), so the pins live in
+# the script's own defaults; this line removes the inherited user-manager values that could
+# override them (UnsetEnvironment= applies after every Environment= source).
+UnsetEnvironment=HAPAX_COUNCIL HAPAX_GLMCP_REVIEW_BASE_URL HAPAX_GLMCP_REVIEW_SECRET_ENTRY HAPAX_GLMCP_REVIEW_ALLOW_SECRET_ENTRY_OVERRIDE HAPAX_GLMCP_SEAT_ROOT_OVERRIDE
 MemoryMax=512M
 SyslogIdentifier=hapax-glmcp-seat-refresh

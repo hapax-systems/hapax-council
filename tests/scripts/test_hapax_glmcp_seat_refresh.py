@@ -6,8 +6,8 @@ producer; `hapax-glmcp-seat-refresh.timer` runs it every five minutes.
 
 These tests RUN the script against stubbed reviewer / admission / telemetry-writer scripts in a
 throwaway HOME (review finding on #4624: text greps of the script were not behaviour tests), so
-the freshness guard, the root guard, the retry loop, the no-mint-on-failure rule, the PAYG guard,
-the redaction and the writer's exit-code handling are each exercised through the real code path
+the freshness guard, the root guard, the pins, the retry loop, the no-mint-on-failure rule, the
+redaction and the writer's exit-code handling are each exercised through the real code path
 without a network call."""
 
 from __future__ import annotations
@@ -28,6 +28,8 @@ ACTIVATION_ROOT = "%h/.cache/hapax/source-activation/worktree"
 REVIEWER_OK = (
     'echo "PAYG=${HAPAX_GLMCP_REVIEW_PAYG_FALLBACK:-unset}" >> "$HOME/reviewer-env"\n'
     'echo "BASE=${HAPAX_GLMCP_REVIEW_BASE_URL:-unset}" >> "$HOME/reviewer-env"\n'
+    'echo "SECRET=${HAPAX_GLMCP_REVIEW_SECRET_ENTRY:-unset}" >> "$HOME/reviewer-env"\n'  # pragma: allowlist secret
+    'echo "OVERRIDE=${HAPAX_GLMCP_REVIEW_ALLOW_SECRET_ENTRY_OVERRIDE:-unset}" >> "$HOME/reviewer-env"\n'  # pragma: allowlist secret
     "echo OK\n"
 )
 REVIEWER_ALWAYS_FAILS_SILENTLY = "exit 1\n"
@@ -66,13 +68,16 @@ def _harness(
     *,
     reviewer: str = REVIEWER_OK,
     writer_rc: int = 0,
-    ledger_fresh_for: int | None = None,
-    receipt_observed_ago: int | None = None,
+    receipt_status: str | None = None,
+    receipt_remaining: int = 0,
+    receipt_age: int = 0,
+    relay_receipt_observed_ago: int | None = None,
 ) -> tuple[Path, Path]:
     """A throwaway HOME plus a fake council root whose three scripts record what they were asked.
 
-    ``ledger_fresh_for`` writes a live quota ledger whose glmcp snapshot is fresh for that many
-    seconds; ``receipt_observed_ago`` writes a raw admission receipt observed that long ago (the
+    ``receipt_status`` writes the dispatcher's own glmcp platform-capability receipt with that quota
+    status, generated ``receipt_age`` seconds ago and carrying ``receipt_remaining`` seconds of
+    stale_after at generation. ``relay_receipt_observed_ago`` writes a raw admission receipt (the
     thing the guard must NOT trust on its own).
     """
     home = tmp_path / "home"
@@ -80,7 +85,8 @@ def _harness(
     scripts = council / "scripts"
     scripts.mkdir(parents=True)
     (home / ".cache" / "hapax" / "relay" / "receipts").mkdir(parents=True)
-    (home / ".cache" / "hapax" / "orchestration").mkdir(parents=True)
+    receipts_dir = home / ".cache" / "hapax" / "platform-capability-receipts"
+    receipts_dir.mkdir(parents=True)
     _stub(scripts / "hapax-glmcp-reviewer", reviewer)
     _stub(
         scripts / "hapax-glmcp-quota-admission",
@@ -91,24 +97,16 @@ def _harness(
         f'echo "wrote live ledger"\necho "capability receipts DEGRADED for one provider"\nexit {writer_rc}\n',
     )
     now = datetime.now(UTC)
-    if ledger_fresh_for is not None:
-        ledger = {
-            "ledger_id": "quota-spend-ledger-test-live",
-            "quota_snapshots": [
-                {
-                    "route_id": "glmcp.review.direct",
-                    "subscription_quota_state": "fresh",
-                    "fresh_until": (now + timedelta(seconds=ledger_fresh_for)).strftime(
-                        "%Y-%m-%dT%H:%M:%SZ"
-                    ),
-                }
-            ],
+    if receipt_status is not None:
+        generated = now - timedelta(seconds=receipt_age)
+        receipt = {
+            "platform": "glmcp",
+            "generated_at": generated.strftime("%Y-%m-%dT%H:%M:%SZ"),
+            "quota": {"status": receipt_status, "stale_after": f"{receipt_remaining}s"},
         }
-        (home / ".cache" / "hapax" / "orchestration" / "quota-spend-ledger-live.json").write_text(
-            json.dumps(ledger), encoding="utf-8"
-        )
-    if receipt_observed_ago is not None:
-        observed = now - timedelta(seconds=receipt_observed_ago)
+        (receipts_dir / "glmcp.json").write_text(json.dumps(receipt), encoding="utf-8")
+    if relay_receipt_observed_ago is not None:
+        observed = now - timedelta(seconds=relay_receipt_observed_ago)
         (
             home / ".cache" / "hapax" / "relay" / "receipts" / "glmcp-quota-admission.yaml"
         ).write_text(
@@ -126,8 +124,10 @@ def _run(home: Path, council: Path, *, allow_root: bool = True) -> subprocess.Co
         "PATH": os.environ["PATH"],
         "TMPDIR": str(home),
         "HAPAX_GLMCP_SEAT_RETRY_SLEEP": "0",
-        # An inherited base URL must never reach the probe (review finding on #4624, round 3).
+        # Inherited values that must never reach the probe (review findings on #4624, rounds 3–4).
         "HAPAX_GLMCP_REVIEW_BASE_URL": "https://evil.example/paas/v4",
+        "HAPAX_GLMCP_REVIEW_SECRET_ENTRY": "glmcp/someone-elses-key",  # pragma: allowlist secret
+        "HAPAX_GLMCP_REVIEW_ALLOW_SECRET_ENTRY_OVERRIDE": "1",  # pragma: allowlist secret
     }
     if allow_root:
         env["HAPAX_GLMCP_SEAT_ROOT_OVERRIDE"] = "1"
@@ -147,8 +147,8 @@ def test_script_exists_is_executable_and_parses() -> None:
 
 
 def test_refresh_threshold_keeps_the_receipt_under_its_15_minute_life() -> None:
-    """The receipt's stale_after_seconds is 900. The timer fires every 300 s; refreshing whenever
-    fewer than 600 s remain on the ledger's snapshot bounds the seat's age below ~600 s, so it
+    """The seat's admission receipt lives 900 s. The timer fires every 300 s; refreshing whenever
+    fewer than 600 s remain on the dispatcher's receipt bounds the seat's age below ~600 s, so it
     never lapses between two autoqueue cycles (measured 2026-08-04: a lapse mid-queue dequeued a
     green PR)."""
     text = SCRIPT.read_text(encoding="utf-8")
@@ -159,8 +159,10 @@ def test_refresh_threshold_keeps_the_receipt_under_its_15_minute_life() -> None:
     assert on_unit_active == "5min"
 
 
-def test_a_ledger_snapshot_with_time_to_spare_skips_the_round_trip(tmp_path: Path) -> None:
-    home, council = _harness(tmp_path, ledger_fresh_for=12 * 60)
+def test_a_dispatcher_receipt_with_time_to_spare_skips_the_round_trip(tmp_path: Path) -> None:
+    home, council = _harness(
+        tmp_path, receipt_status="observed", receipt_remaining=900, receipt_age=60
+    )
     result = _run(home, council)
     assert result.returncode == 0, result.stderr
     assert "no round-trip" in result.stdout
@@ -168,25 +170,42 @@ def test_a_ledger_snapshot_with_time_to_spare_skips_the_round_trip(tmp_path: Pat
     assert _witnesses(home) == []
 
 
-def test_a_ledger_snapshot_about_to_lapse_round_trips(tmp_path: Path) -> None:
-    home, council = _harness(tmp_path, ledger_fresh_for=4 * 60)
+def test_a_dispatcher_receipt_about_to_lapse_round_trips(tmp_path: Path) -> None:
+    # generated 600 s ago with 900 s to live: 300 s remain, under the 600 s threshold
+    home, council = _harness(
+        tmp_path, receipt_status="observed", receipt_remaining=900, receipt_age=600
+    )
     result = _run(home, council)
     assert result.returncode == 0, result.stderr
     assert "roundtrip attempt 1: exit=0" in result.stdout
     assert (home / "admission-calls").exists()
 
 
-def test_a_raw_receipt_alone_no_longer_counts_as_fresh(tmp_path: Path) -> None:
-    """A receipt the telemetry writer rejected (wrong schema, model or status) used to look fresh
-    to a receipt-age check; only the ledger the dispatcher trusts may say the seat is fresh."""
-    home, council = _harness(tmp_path, receipt_observed_ago=60)
+def test_an_unobservable_dispatcher_receipt_round_trips_whatever_its_age(tmp_path: Path) -> None:
+    """The dispatcher's receipt says the seat is NOT admitted: a fresh raw relay receipt beside it
+    changes nothing (the validator rejected it, so the dispatcher rejects it)."""
+    home, council = _harness(
+        tmp_path,
+        receipt_status="unobservable",
+        receipt_remaining=900,
+        receipt_age=10,
+        relay_receipt_observed_ago=30,
+    )
     result = _run(home, council)
     assert result.returncode == 0, result.stderr
     assert "no round-trip" not in result.stdout
     assert (home / "admission-calls").exists()
 
 
-def test_no_ledger_round_trips(tmp_path: Path) -> None:
+def test_a_raw_relay_receipt_alone_no_longer_counts_as_fresh(tmp_path: Path) -> None:
+    home, council = _harness(tmp_path, relay_receipt_observed_ago=60)
+    result = _run(home, council)
+    assert result.returncode == 0, result.stderr
+    assert "no round-trip" not in result.stdout
+    assert (home / "admission-calls").exists()
+
+
+def test_no_dispatcher_receipt_round_trips(tmp_path: Path) -> None:
     home, council = _harness(tmp_path)
     result = _run(home, council)
     assert result.returncode == 0, result.stderr
@@ -206,7 +225,9 @@ def test_a_root_other_than_the_activation_worktree_is_refused(tmp_path: Path) ->
 
 
 def test_a_stale_seat_round_trips_writes_a_witness_and_mints(tmp_path: Path) -> None:
-    home, council = _harness(tmp_path, ledger_fresh_for=60)
+    home, council = _harness(
+        tmp_path, receipt_status="observed", receipt_remaining=900, receipt_age=850
+    )
     result = _run(home, council)
     assert result.returncode == 0, result.stderr
     assert "roundtrip attempt 1: exit=0" in result.stdout
@@ -217,22 +238,27 @@ def test_a_stale_seat_round_trips_writes_a_witness_and_mints(tmp_path: Path) -> 
     assert "prompt_or_output_persisted: false" in witness
     assert "secret_value_persisted: false" in witness
     assert "model: glm-5.2" in witness
+    assert "endpoint: https://api.z.ai/api/coding/paas/v4" in witness
     calls = (home / "admission-calls").read_text(encoding="utf-8")
     assert "observe-success --evidence-ref glmcp-reviewer-roundtrip-ok-" in calls
     assert "--supported-tool hapax-glmcp-reviewer" in calls
+    assert "--endpoint https://api.z.ai/api/coding/paas/v4" in calls
     assert "--model glm-5.2" in calls
 
 
-def test_the_probe_disables_the_reviewers_payg_fallback(tmp_path: Path) -> None:
-    """An exhausted Coding Plan answered by API credit must not mint a Coding Plan receipt."""
+def test_the_probe_pins_payg_off_the_endpoint_and_the_credential(tmp_path: Path) -> None:
+    """An exhausted Coding Plan answered by API credit, another endpoint, or another credential
+    must not mint a Coding Plan receipt — whatever the inherited environment says."""
     home, council = _harness(tmp_path)
     result = _run(home, council)
     assert result.returncode == 0, result.stderr
     seen = set((home / "reviewer-env").read_text(encoding="utf-8").split())
     assert "PAYG=0" in seen
-    # ...and the endpoint the reviewer was given is the Coding Plan's, not the inherited one.
     assert "BASE=https://api.z.ai/api/coding/paas/v4" in seen
+    assert "SECRET=glmcp/api-key" in seen  # pragma: allowlist secret
+    assert "OVERRIDE=unset" in seen
     assert not any(line.startswith("BASE=https://evil") for line in seen)
+    assert not any("someone-elses" in line for line in seen)
 
 
 def test_three_failed_round_trips_mint_nothing_and_name_the_next_action(tmp_path: Path) -> None:
@@ -292,22 +318,32 @@ def test_model_is_pinned_to_what_the_admission_cli_accepts() -> None:
     assert 'export HAPAX_GLMCP_REVIEW_MODEL="$model"' in text
 
 
-def test_unit_pair_executes_from_the_activation_worktree_and_pins_its_root() -> None:
-    """A unit that runs a mutable development checkout is a finding (review on #4624): the
-    estate's convention is the governed source-activation worktree, the script's own default root
-    must agree with the unit, and the unit pins HAPAX_COUNCIL so an inherited user-manager value
-    cannot redirect the receipt chain."""
+def test_unit_pair_executes_from_the_activation_worktree_and_strips_inherited_overrides() -> None:
+    """A unit that runs a mutable development checkout is a finding (review on #4624); the
+    estate's convention is the governed source-activation worktree. The pins live in the script's
+    defaults because systemd does not expand specifiers inside Environment= (measured
+    2026-09-02: `Environment=X=%h/y` arrives literally), and the unit strips the inherited
+    user-manager values that could override them."""
     service = SERVICE.read_text(encoding="utf-8")
     exec_start = _unit_value(service, "Service", "ExecStart") or ""
     assert exec_start == f"{ACTIVATION_ROOT}/scripts/hapax-glmcp-seat-refresh"
     assert "projects" not in exec_start
     assert "tmp" not in exec_start
     assert "source-activation/worktree" in SCRIPT.read_text(encoding="utf-8")
-    assert f"Environment=HAPAX_COUNCIL={ACTIVATION_ROOT}" in service
-    assert "Environment=HAPAX_GLMCP_REVIEW_BASE_URL=https://api.z.ai/api/coding/paas/v4" in service
+    for line in service.splitlines():
+        if line.startswith("Environment="):
+            assert "%" not in line, f"specifiers are not expanded in Environment=: {line}"
+    unset = _unit_value(service, "Service", "UnsetEnvironment") or ""
+    for name in (
+        "HAPAX_COUNCIL",
+        "HAPAX_GLMCP_REVIEW_BASE_URL",
+        "HAPAX_GLMCP_REVIEW_SECRET_ENTRY",  # pragma: allowlist secret
+        "HAPAX_GLMCP_REVIEW_ALLOW_SECRET_ENTRY_OVERRIDE",  # pragma: allowlist secret
+        "HAPAX_GLMCP_SEAT_ROOT_OVERRIDE",
+    ):
+        assert name in unset.split(), name
     assert _unit_value(service, "Service", "Type") == "oneshot"
     assert _unit_value(service, "Service", "MemoryMax") is not None
-    # 3 x 180 s reviewer attempts + 2 x 15 s pauses + 60 s admission + 120 s writer = 750 s
     assert int(_unit_value(service, "Service", "TimeoutStartSec") or 0) >= 750
     # ...and the budget is only a budget if every step in it is bounded.
     script = SCRIPT.read_text(encoding="utf-8")
