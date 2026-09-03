@@ -68,6 +68,7 @@ def _harness(
     *,
     reviewer: str = REVIEWER_OK,
     writer_rc: int = 0,
+    admission_rc: int = 0,
     receipt_status: str | None = None,
     receipt_remaining: int = 0,
     receipt_age: int = 0,
@@ -90,7 +91,7 @@ def _harness(
     _stub(scripts / "hapax-glmcp-reviewer", reviewer)
     _stub(
         scripts / "hapax-glmcp-quota-admission",
-        'printf "%s\\n" "$*" >> "$HOME/admission-calls"\necho "receipt ok"\n',
+        f'printf "%s\\n" "$*" >> "$HOME/admission-calls"\necho "receipt ok"\nexit {admission_rc}\n',
     )
     _stub(
         scripts / "hapax-quota-telemetry-writer",
@@ -98,12 +99,25 @@ def _harness(
     )
     now = datetime.now(UTC)
     if receipt_status is not None:
-        generated = now - timedelta(seconds=receipt_age)
-        receipt = {
-            "platform": "glmcp",
-            "generated_at": generated.strftime("%Y-%m-%dT%H:%M:%SZ"),
-            "quota": {"status": receipt_status, "stale_after": f"{receipt_remaining}s"},
-        }
+        # The quota surface is built through the production model so the fixture can only carry
+        # fields a real receipt carries (review finding on #4624: a fabricated `generated_at` let
+        # the guard pass tests while every real receipt read as stale).
+        from shared.platform_capability_receipts import EvidenceStatus, SurfaceEvidence
+
+        observed = now - timedelta(seconds=receipt_age)
+        quota = SurfaceEvidence(
+            status=EvidenceStatus(receipt_status),
+            source="local_receipt_probe",
+            observed_at=observed,
+            stale_after=f"{receipt_remaining}s",
+            evidence_refs=["local:glmcp:quota-admission-receipt:glmcp.review.direct:present"]
+            if receipt_status == "observed"
+            else [],
+            reason_codes=[]
+            if receipt_status == "observed"
+            else ["account_live_quota_receipt_absent"],
+        ).model_dump(mode="json")
+        receipt = {"platform": "glmcp", "observed_at": quota["observed_at"], "quota": quota}
         (receipts_dir / "glmcp.json").write_text(json.dumps(receipt), encoding="utf-8")
     if relay_receipt_observed_ago is not None:
         observed = now - timedelta(seconds=relay_receipt_observed_ago)
@@ -299,6 +313,19 @@ def test_writer_degradation_is_printed_and_the_seat_still_counts_as_refreshed(
     assert "capability receipts DEGRADED for one provider" in result.stdout
     assert "capability receipts degraded (exit 3)" in result.stdout
     assert (home / "admission-calls").exists()
+
+
+def test_admission_failure_after_a_good_round_trip_is_loud_and_names_the_next_action(
+    tmp_path: Path,
+) -> None:
+    """Under errexit a failed admission write used to end the script with no line at all."""
+    home, council = _harness(tmp_path, admission_rc=1)
+    result = _run(home, council)
+    assert result.returncode == 5
+    assert "NOT admitted" in result.stderr
+    assert "observe-success --evidence-ref glmcp-reviewer-roundtrip-ok-" in result.stderr
+    assert "Next:" in result.stderr
+    assert len(_witnesses(home)) == 1
 
 
 def test_writer_failure_after_minting_is_loud_and_names_the_next_action(tmp_path: Path) -> None:

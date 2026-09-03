@@ -44,15 +44,18 @@ export HAPAX_GLMCP_REVIEW_MODEL="$model"
 #    2026-08-04: a receipt that lapsed mid-queue dequeued a green PR).
 R="$HOME/.cache/hapax/platform-capability-receipts/glmcp.json"
 if [[ -f "$R" ]] && command -v jq >/dev/null; then
-  read -r q_status q_generated q_stale < <(jq -r '[(.quota.status // "?"), (.generated_at // "?"), (.quota.stale_after // "?")] | join(" ")' "$R" 2>/dev/null || echo "? ? ?")
-  if [[ "$q_status" == "observed" && "$q_generated" != "?" ]]; then
+  # The receipt's quota surface is a SurfaceEvidence: status, observed_at, stale_after (what was
+  # LEFT of the seat's lifetime when the receipt was written). Round 5 read a `generated_at` the
+  # receipt does not carry, so every run looked stale and round-tripped (review finding on #4624).
+  read -r q_status q_observed q_stale < <(jq -r '[(.quota.status // "?"), (.quota.observed_at // "?"), (.quota.stale_after // "?")] | join(" ")' "$R" 2>/dev/null || echo "? ? ?")
+  if [[ "$q_status" == "observed" && "$q_observed" != "?" ]]; then
     case "$q_stale" in
       *s) stale_s="${q_stale%s}" ;;
       *m) stale_s=$(( ${q_stale%m} * 60 )) ;;
       *h) stale_s=$(( ${q_stale%h} * 3600 )) ;;
       *) stale_s=0 ;;
     esac
-    remaining=$(( $(date -u -d "$q_generated" +%s 2>/dev/null || echo 0) + stale_s - $(date -u +%s) ))
+    remaining=$(( $(date -u -d "$q_observed" +%s 2>/dev/null || echo 0) + stale_s - $(date -u +%s) ))
     if (( remaining > 600 )); then
       echo "glm seat fresh per the dispatcher's receipt (${remaining}s remain); no round-trip"
       exit 0
@@ -112,9 +115,20 @@ EOF
 echo "witness: $WDIR/$ref.yaml"
 
 # 3. passive admission receipt, 4. telemetry writer.
+# A failed admission write must say so and name the next action, never die silently under errexit
+# (review finding on #4624, round 5): the witness is already on disk, so the operator can re-run
+# observe-success by hand with the same evidence ref.
+set +e
 timeout 60 "$H/scripts/hapax-glmcp-quota-admission" observe-success \
   --evidence-ref "$ref" --supported-tool hapax-glmcp-reviewer --endpoint "$endpoint" --model "$model" \
-  | sed 's/\x1b\[[0-9;]*m//g' | tail -3
+  >"$WOUT" 2>&1
+admission_rc=$?
+set -e
+sed 's/\x1b\[[0-9;]*m//g' "$WOUT" | grep -vE '^\s*$' | tail -3 | cut -c1-200 || true
+if [[ "$admission_rc" -ne 0 ]]; then
+  echo "glm seat NOT admitted: hapax-glmcp-quota-admission exited $admission_rc after a successful round-trip (witness $WDIR/$ref.yaml). Next: run $H/scripts/hapax-glmcp-quota-admission observe-success --evidence-ref $ref --supported-tool hapax-glmcp-reviewer --endpoint $endpoint --model $model by hand and read its output." >&2
+  exit 5
+fi
 # The writer's own diagnostics are printed, never filtered away: exit 3 means the live ledger was
 # written but the ancillary capability-receipt refresh degraded, which the journal must show
 # (review finding on #4624). The admission receipt is already minted at this point, so the seat
