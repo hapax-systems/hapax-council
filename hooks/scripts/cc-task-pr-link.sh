@@ -333,7 +333,11 @@ if m:
         # the wrong task on a same-numbered council PR twice (review finding on #4613, round 3).
         # A row that already declares #N in repository A must not be rebound to #N in repository B.
         rm = re.search(r"^pr_repo:\s*(.*)$", text, flags=re.MULTILINE)
-        existing_repo = rm.group(1).strip().strip("\"'") if rm else ""
+        existing_repo = _pr_scalar(rm.group(1)) if rm else ""
+        if existing_repo.lower() in ("null", "none", "~"):
+            # `pr_repo: null` is unset, not a repository named "null" (review finding on #4613,
+            # round 6): it must never read as a conflicting repository.
+            existing_repo = ""
 
         def _norm_repo_value(value: str) -> str:
             cleaned = value.split("#", 1)[0].strip().strip("\"'").strip("/")

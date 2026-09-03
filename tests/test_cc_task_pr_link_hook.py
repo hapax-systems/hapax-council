@@ -266,6 +266,31 @@ class TestIdempotency:
         assert "same number" in result.stderr
         assert "Next action:" in result.stderr
 
+    @pytest.mark.parametrize("nullish", ["null", "~", "None", '""'])
+    def test_a_nullish_pr_repo_is_unset_not_a_conflicting_repository(
+        self, tmp_path: Path, nullish: str
+    ) -> None:
+        """Round six: `pr_repo: null` was compared as the repository named "null" and refused
+        the same PR in the same repository as a cross-repository conflict."""
+        _vault, note = _make_vault(tmp_path, task_id="test-001", pr="100", status="claimed")
+        note.write_text(
+            note.read_text(encoding="utf-8").replace(
+                "pr: 100\n", f"pr: 100\npr_repo: {nullish}\n", 1
+            ),
+            encoding="utf-8",
+        )
+        _write_claim(tmp_path, "beta", "test-001")
+        result = _run_hook(
+            bash_cmd="gh pr create",
+            bash_output="https://github.com/ryanklee/hapax-council/pull/100",
+            home=tmp_path,
+        )
+        assert result.returncode == 0
+        assert "REFUSING" not in result.stderr
+        text = note.read_text(encoding="utf-8")
+        assert "status: pr_open" in text
+        assert "pr_repo: ryanklee/hapax-council" in text
+
     def test_same_number_in_the_same_repository_completes_the_link(self, tmp_path: Path) -> None:
         """The control for the guard above: the same PR in the same repository is not a conflict."""
         _vault, note = _make_vault(tmp_path, task_id="test-001", pr="100", status="claimed")
