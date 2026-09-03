@@ -31,6 +31,7 @@ from executor_contract import (  # noqa: E402
     supports_route,
 )
 
+from shared import frame_verdicts
 from shared.capability_adapter_protocol import (
     AgyAdapter,
     AuthorityViolation,
@@ -1038,6 +1039,44 @@ def _validate_system_drain(
     return Validation(True, f"system-drain eligible ({why})", task, None, exempt_read_only=True)
 
 
+def frame_verdict_refusal(fields: dict[str, Any]) -> str | None:
+    """The frame's verdicts, consulted here because governed dispatch is the work-selection
+    dominator for every worker whose only launch path is this script (FRAME-PRODUCER §B2).
+
+    Refuses (1) when the verdict set cannot be consulted — absent, stale, malformed — naming
+    the producer, and (2) when every declared mutation surface lies inside a member the newest
+    epoch marks scope-exited, superseded or discharged: work on a surface out of accountability
+    is the ad hoc expediency the reduction exists to end. A scope partly inside a decayed member
+    is admitted (moving things out of one is legitimate work). No declared scope: nothing for
+    this reader to judge; the route-metadata gate owns that refusal.
+    """
+    try:
+        verdicts = frame_verdicts.load_frame_verdicts()
+    except frame_verdicts.FrameVerdictsUnavailable as exc:
+        return (
+            "frame verdicts unavailable at the work-selection point: "
+            f"{exc.reason}. Next: {exc.remedy}"
+        )
+    refs = _operator_gate_mutation_scope_refs(fields)
+    if not refs:
+        return None
+    scope = frame_verdicts.scope_within_decayed(
+        refs,
+        verdicts,
+        council_root=REPO_ROOT_FOR_IMPORTS,
+        vault_root=Path.home() / "Documents" / "Personal",
+    )
+    if not scope.all_inside:
+        return None
+    detail = "; ".join(f"{m.ref} lies in {m.member_id} ({m.relation})" for m in scope.matches)
+    return (
+        f"frame epoch {verdicts.epoch} marks every declared mutation surface out of "
+        f"accountability: {detail}. Next: re-declare mutation_scope_refs on a live surface, or "
+        "re-witness the member in frame/procedure/declaration/mass.yaml and re-run the frame "
+        "producer"
+    )
+
+
 def validate_task(
     *,
     task_id: str,
@@ -1139,6 +1178,10 @@ def validate_task(
         ok, reason = check_worktree_cc_task_tool_guards(lane_worktree(lane, platform))
         if not ok:
             return Validation(False, reason, task, parent_spec_path, exempt)
+
+    frame_refusal = frame_verdict_refusal(fields)
+    if frame_refusal is not None:
+        return Validation(False, frame_refusal, task, parent_spec_path, exempt)
 
     return Validation(True, "eligible", task, parent_spec_path, exempt)
 

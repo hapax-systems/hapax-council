@@ -4553,3 +4553,216 @@ def test_policy_rollback_help_documents_retirement() -> None:
     # The old help claimed legacy full-profile routes "may launch" — that is now
     # false (rollback HOLDs). Guard against the stale promise regressing.
     assert "may launch" not in help_text
+
+
+# ── The frame's verdicts at the work-selection dominator ───────────────────────────────────
+
+
+def _frame_procedure_root(root: Path, *, decayed_root: Path | None, age_s: int = 0) -> Path:
+    """One epoch and a two-member mass; `decayed_root` is the location of the member the epoch
+    marks scope_exited (None: the same member, verdict FALSE)."""
+    stamp = (datetime.now(UTC) - timedelta(seconds=age_s)).strftime("%Y%m%dT%H%M%SZ")
+    epoch = root / "_runs" / "epochs" / f"{stamp}-deadbeef"
+    epoch.mkdir(parents=True)
+    (epoch / "elements.json").write_text(
+        json.dumps(
+            [
+                {
+                    "id": "frame:relevance-report",
+                    "kind": "relevance_report",
+                    "payload": {
+                        "verdicts": [
+                            {
+                                "subject": {"member_id": "legacy-surface"},
+                                "relation": "scope_exited",
+                                "verdict": decayed_root is not None,
+                                "projection": "frame-reduction",
+                            }
+                        ]
+                    },
+                }
+            ]
+        ),
+        encoding="utf-8",
+    )
+    (root / "declaration").mkdir()
+    member_root = decayed_root if decayed_root is not None else root / "unused"
+    (root / "declaration" / "mass.yaml").write_text(
+        "members:\n"
+        "  - id: legacy-surface\n"
+        "    location:\n"
+        f"      path: {member_root}\n"
+        '      patterns: ["*"]\n'
+        "  - id: live-surface\n"
+        "    location:\n"
+        f"      path: {root / 'live'}\n",
+        encoding="utf-8",
+    )
+    return root
+
+
+def _dispatch_up_to_the_adapter(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+    module: ModuleType,
+    *,
+    mutation_scope_refs: str,
+    frame_root: Path,
+) -> tuple[int, str]:
+    """Run main() on a governed codex task admitted all the way to the launch adapter, which
+    refuses with a fixture message; a BLOCKED before that line is validate_task's."""
+    _worktree(tmp_path / "worktree")
+    spec = _spec(tmp_path / "isap-test.md")
+    _task(
+        tmp_path / "tasks",
+        "governed-build",
+        _governed_source_frontmatter(
+            spec,
+            mutation_scope_refs=mutation_scope_refs,
+            allowed_platforms="[codex]",
+            required_mode="headless",
+            required_profile="full",
+        ),
+        route_metadata_defaults=False,
+    )
+    (tmp_path / "home" / ".cache" / "hapax" / "stage0-durable-sink").mkdir(parents=True)
+    args = (
+        "--task",
+        "governed-build",
+        "--lane",
+        "cx-green",
+        "--platform",
+        "codex",
+        "--mode",
+        "headless",
+        "--launch",
+    )
+    mq_db, message_id = _maybe_write_durable_mq_binding(tmp_path, args)
+    assert message_id is not None
+
+    monkeypatch.setenv("HOME", str(tmp_path / "home"))
+    monkeypatch.setenv("HAPAX_CC_TASK_ROOT", str(tmp_path / "tasks"))
+    monkeypatch.setenv("HAPAX_DISPATCH_WORKTREE", str(tmp_path / "worktree"))
+    monkeypatch.setenv("HAPAX_ORCHESTRATION_LEDGER_DIR", str(tmp_path / "ledger"))
+    monkeypatch.setenv("HAPAX_PLATFORM_CAPABILITY_REGISTRY", str(_fresh_registry(tmp_path)))
+    monkeypatch.setenv("HAPAX_PLATFORM_CAPABILITY_RECEIPT_DIR", str(tmp_path / "platform-receipts"))
+    monkeypatch.setenv(
+        "HAPAX_QUOTA_SPEND_LEDGER", str(_fresh_claude_subscription_quota_ledger(tmp_path))
+    )
+    monkeypatch.setenv("HAPAX_COORD_LEDGER_DB", str(tmp_path / "coord" / "ledger.db"))
+    monkeypatch.setenv("HAPAX_COORD_JSONL_MIRROR", str(tmp_path / "coord" / "ledger.jsonl"))
+    monkeypatch.setenv("HAPAX_COORD_SPOOL_DIR", str(tmp_path / "coord" / "spool"))
+    monkeypatch.setenv("HAPAX_RELAY_MQ_DB", str(mq_db))
+    monkeypatch.setenv("HAPAX_METHODOLOGY_DISPATCH_MESSAGE_ID", message_id)
+    monkeypatch.setenv("HAPAX_DISPATCH_CLAIM_SWEEP", "0")
+    monkeypatch.setenv("HAPAX_FRAME_PROCEDURE_ROOT", str(frame_root))
+    monkeypatch.setattr(module, "_await_sdlc_admission", lambda args: None)
+
+    class RefusingAdapter:
+        def launch(self, *, decision, request, launch_callable):
+            raise module.AuthorityViolation("fixture refusal")
+
+    monkeypatch.setattr(module, "_worker_adapter_for_launch", lambda platform: RefusingAdapter())
+
+    rc = module.main(list(args))
+    return rc, capsys.readouterr().err
+
+
+def test_dispatch_refuses_work_whose_whole_scope_lies_in_a_decayed_member(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """The work-selection dominator reads the frame's verdicts and refuses on them
+    (CONSOLIDATION-20260902 §4a-3(iii)): a task whose every mutation surface lies inside a
+    member the newest epoch marks scope_exited is BLOCKED, naming the member, the relation and
+    the remedy — before any route, quota or adapter decision."""
+    module = _dispatcher_module()
+    frame_root = _frame_procedure_root(
+        tmp_path / "frame", decayed_root=module.REPO_ROOT_FOR_IMPORTS / "legacy-surface"
+    )
+
+    rc, err = _dispatch_up_to_the_adapter(
+        tmp_path,
+        monkeypatch,
+        capsys,
+        module,
+        mutation_scope_refs="[legacy-surface/old.py, legacy-surface/deeper/**]",
+        frame_root=frame_root,
+    )
+
+    assert rc == 10
+    assert "BLOCKED: frame epoch " in err
+    assert "marks every declared mutation surface out of accountability" in err
+    assert "legacy-surface/old.py lies in legacy-surface (scope_exited)" in err
+    assert "re-declare mutation_scope_refs" in err
+    assert "fixture refusal" not in err
+
+
+def test_dispatch_admits_work_outside_decayed_members_and_work_partly_inside(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    module = _dispatcher_module()
+    frame_root = _frame_procedure_root(
+        tmp_path / "frame", decayed_root=module.REPO_ROOT_FOR_IMPORTS / "legacy-surface"
+    )
+
+    rc, err = _dispatch_up_to_the_adapter(
+        tmp_path,
+        monkeypatch,
+        capsys,
+        module,
+        mutation_scope_refs="[legacy-surface/old.py, scripts/live.py]",
+        frame_root=frame_root,
+    )
+
+    assert rc == 10
+    assert "BLOCKED: capability adapter launch refused: fixture refusal" in err
+    assert "out of accountability" not in err
+
+
+def test_dispatch_admits_work_when_the_member_is_not_decayed(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    module = _dispatcher_module()
+    frame_root = _frame_procedure_root(tmp_path / "frame", decayed_root=None)
+
+    rc, err = _dispatch_up_to_the_adapter(
+        tmp_path,
+        monkeypatch,
+        capsys,
+        module,
+        mutation_scope_refs="[legacy-surface/old.py]",
+        frame_root=frame_root,
+    )
+
+    assert rc == 10
+    assert "BLOCKED: capability adapter launch refused: fixture refusal" in err
+
+
+def test_dispatch_refuses_when_the_frame_verdicts_are_stale_naming_the_producer(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """An epoch older than two iterations of the producer's cadence is not a verdict set; the
+    dominator refuses every dispatch and says which producer to run rather than admitting work
+    against verdicts nobody has renewed."""
+    module = _dispatcher_module()
+    frame_root = _frame_procedure_root(
+        tmp_path / "frame",
+        decayed_root=None,
+        age_s=module.frame_verdicts.FRAME_EPOCH_MAX_AGE_S + 60,
+    )
+
+    rc, err = _dispatch_up_to_the_adapter(
+        tmp_path,
+        monkeypatch,
+        capsys,
+        module,
+        mutation_scope_refs="[scripts/live.py]",
+        frame_root=frame_root,
+    )
+
+    assert rc == 10
+    assert "BLOCKED: frame verdicts unavailable at the work-selection point" in err
+    assert "the producer has stopped" in err
+    assert "hapax-frame-iteration" in err
+    assert "fixture refusal" not in err

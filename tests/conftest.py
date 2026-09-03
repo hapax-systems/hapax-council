@@ -9,7 +9,10 @@ Local files: profiles/operator.json, profiles/demo-personas.yaml, hapaxromana pa
 from __future__ import annotations
 
 import importlib
+import json
+import os
 import sys
+from datetime import UTC, datetime
 from pathlib import Path
 
 import pytest
@@ -34,6 +37,46 @@ def _isolate_turn_timing_witness(tmp_path, monkeypatch):
         return _vw.record_turn_timing(**kwargs)
 
     monkeypatch.setattr("agents.hapax_daimonion.turn_budget.record_turn_timing", _redirected)
+
+
+@pytest.fixture(autouse=True, scope="session")
+def _frame_verdicts_default_root(tmp_path_factory: pytest.TempPathFactory):
+    """Every governed-dispatch validation consults the frame's verdicts (shared/frame_verdicts.py)
+    and refuses when they are absent or stale. Tests run without the vault, so the session gets a
+    fresh verdict set in which nothing is decayed; a test that wants a decayed member or a stale
+    epoch sets HAPAX_FRAME_PROCEDURE_ROOT itself (a function-scoped monkeypatch wins)."""
+    root = tmp_path_factory.mktemp("frame-procedure")
+    epoch = root / "_runs" / "epochs" / f"{datetime.now(UTC).strftime('%Y%m%dT%H%M%SZ')}-00000000"
+    epoch.mkdir(parents=True)
+    (epoch / "elements.json").write_text(
+        json.dumps(
+            [
+                {
+                    "id": "frame:relevance-report",
+                    "kind": "relevance_report",
+                    "payload": {
+                        "verdicts": [
+                            {
+                                "subject": {"member_id": "nothing"},
+                                "relation": "scope_exited",
+                                "verdict": False,
+                            }
+                        ]
+                    },
+                }
+            ]
+        ),
+        encoding="utf-8",
+    )
+    (root / "declaration").mkdir()
+    (root / "declaration" / "mass.yaml").write_text("members: []\n", encoding="utf-8")
+    previous = os.environ.get("HAPAX_FRAME_PROCEDURE_ROOT")
+    os.environ["HAPAX_FRAME_PROCEDURE_ROOT"] = str(root)
+    yield
+    if previous is None:
+        os.environ.pop("HAPAX_FRAME_PROCEDURE_ROOT", None)
+    else:
+        os.environ["HAPAX_FRAME_PROCEDURE_ROOT"] = previous
 
 
 # Packages that require optional extras
