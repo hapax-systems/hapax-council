@@ -2816,6 +2816,26 @@ def _release_auto_arm_write_ok(ok: bool, message: str) -> bool:
     return ok or message == "note_unchanged"
 
 
+def _admission_status_write_deferral_class(message: str) -> str | None:
+    """Name why a failed admission-status write says nothing about the PR, or None if it might.
+
+    A GitHub rate-limit (403 "API rate limit exceeded", secondary limit, 429) or 5xx response is a
+    property of the transport window, not of the pull request: the admission already recorded on
+    the head still stands, and the same write succeeds at the next reset with nothing changed on
+    our side. Treating it as a failed governance write removed two admitted PRs from the merge
+    queue on 2026-09-02 (#4615, #4616) — a 403 became a lost merge. Everything that is not one of
+    these documented transport responses keeps the fail-closed path.
+    """
+    lowered = (message or "").lower()
+    if "rate limit" in lowered or '"status": "429"' in lowered or "http 429" in lowered:
+        return "github_rate_limit"
+    # Any 5xx, not a list of the usual ones (review finding on #4627, round 3): a 501 or a 599
+    # is exactly as much about the transport window as a 502.
+    if re.search(r'"status":\s*"5\d\d"|\bhttp 5\d\d\b', lowered):
+        return "github_unavailable"
+    return None
+
+
 def _remove_admitted_pr_for_release_auto_arm_failure(
     decision: Decision,
     *,
@@ -3294,18 +3314,37 @@ def run_reconciler(
                         }
                     )
                     if not ok:
-                        mutation_results.extend(
-                            _release_auto_arm_fail_closed_mutations(
-                                decision,
-                                message,
-                                reason_prefix="admission_status_write_failed",
-                                repo=repo,
-                                repo_root=repo_root,
-                                runner=runner,
-                                now=now,
-                                route=listing_route,
+                        deferral = _admission_status_write_deferral_class(message)
+                        if deferral is not None:
+                            # The write failed for a reason that is not about this PR (see
+                            # _admission_status_write_deferral_class): hold the queue state and
+                            # let the next cycle write the same status. Failure paths narrow —
+                            # no mutation is the only safe act on evidence about the transport.
+                            mutation_results.append(
+                                {
+                                    **decision.as_dict(),
+                                    "action": "hold",
+                                    "ok": True,
+                                    "reasons": [f"admission_status_write_deferred:{deferral}"],
+                                    "message": (
+                                        "admission status write failed on a transport response; "
+                                        "queue state held for the next cycle"
+                                    ),
+                                }
                             )
-                        )
+                        else:
+                            mutation_results.extend(
+                                _release_auto_arm_fail_closed_mutations(
+                                    decision,
+                                    message,
+                                    reason_prefix="admission_status_write_failed",
+                                    repo=repo,
+                                    repo_root=repo_root,
+                                    runner=runner,
+                                    now=now,
+                                    route=listing_route,
+                                )
+                            )
                 continue
             if (
                 decision.action in {"queue", "enable_auto_merge"}
