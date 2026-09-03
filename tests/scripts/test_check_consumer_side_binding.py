@@ -578,6 +578,60 @@ def test_default_mass_path_preserves_current_symlink(gate, tmp_path: Path) -> No
     assert gate._default_mass_path(logical_frame) == mass
 
 
+def test_json_report_records_the_head_it_measured(tmp_path: Path) -> None:
+    """A report that does not say which tree it describes cannot be consulted by anything later
+    (the dominator consumer refused to read one without a head — L-170); the report now carries
+    the commit, the dirty flag, the frame epoch it was given and the decayed members it used."""
+    subprocess.run(["git", "init", "-q"], cwd=tmp_path, check=True)
+    subprocess.run(["git", "config", "user.email", "t@t"], cwd=tmp_path, check=True)
+    subprocess.run(["git", "config", "user.name", "t"], cwd=tmp_path, check=True)
+    _write(
+        tmp_path,
+        "shared/consumer.py",
+        "from pathlib import Path\n"
+        "REPO_ROOT = Path(__file__).resolve().parents[1]\n"
+        "ARTIFACT = REPO_ROOT / 'artifacts' / 'orphan.json'\n"
+        "def load():\n"
+        "    return ARTIFACT.read_text()\n",
+    )
+    subprocess.run(["git", "add", "-A"], cwd=tmp_path, check=True)
+    subprocess.run(["git", "commit", "-qm", "fixture"], cwd=tmp_path, check=True)
+    head = subprocess.run(
+        ["git", "rev-parse", "HEAD"], cwd=tmp_path, capture_output=True, text=True, check=True
+    ).stdout.strip()
+    epoch = tmp_path / "procedure" / "_runs" / "epochs" / "20260903T204725Z-d693f20c"
+    epoch.mkdir(parents=True)
+    (epoch / "elements.json").write_text(
+        json.dumps([{"id": "r", "payload": {"verdicts": []}}]), encoding="utf-8"
+    )
+    (tmp_path / "procedure" / "declaration").mkdir()
+    (tmp_path / "procedure" / "declaration" / "mass.yaml").write_text("members: []\n")
+
+    result = subprocess.run(
+        [
+            sys.executable,
+            str(SCRIPT_PATH),
+            "--consumer-side",
+            "--frame",
+            str(epoch / "elements.json"),
+        ],
+        cwd=tmp_path,
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+
+    assert result.returncode == 0, result.stderr
+    payload = json.loads((tmp_path / ".consumer-side-report.json").read_text(encoding="utf-8"))
+    measured = payload["measured"]
+    assert measured["head"] == head
+    assert measured["dirty"] is False
+    assert measured["generated_at"].endswith("Z")
+    assert measured["instrument_rev"] == "check-producer-consumers/consumer-side/1"
+    assert measured["frame"]["epoch"] == "20260903T204725Z-d693f20c"
+    assert measured["frame"]["decayed_members"] == []
+
+
 def test_console_caps_each_finding_kind_and_points_to_json(tmp_path: Path) -> None:
     for index in range(26):
         _write(
