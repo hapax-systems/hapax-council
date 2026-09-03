@@ -4692,6 +4692,11 @@ def test_dispatch_refuses_work_whose_whole_scope_lies_in_a_decayed_member(
 
     assert rc == 10
     assert "BLOCKED: frame epoch " in err
+    records = [
+        json.loads(line)
+        for line in (tmp_path / "ledger" / "methodology-dispatch.jsonl").read_text().splitlines()
+    ]
+    assert records[-1]["ok"] is False and records[-1]["frame_epoch"].endswith("-deadbeef")
     assert "marks every declared mutation surface out of accountability" in err
     assert "legacy-surface/old.py lies in legacy-surface (scope_exited)" in err
     assert "re-declare mutation_scope_refs" in err
@@ -4718,6 +4723,13 @@ def test_dispatch_admits_work_outside_decayed_members_and_work_partly_inside(
     assert rc == 10
     assert "BLOCKED: capability adapter launch refused: fixture refusal" in err
     assert "out of accountability" not in err
+    # the ADMITTED path's receipt says which epoch it consulted: use, not presence
+    records = [
+        json.loads(line)
+        for line in (tmp_path / "ledger" / "methodology-dispatch.jsonl").read_text().splitlines()
+    ]
+    assert records[-1]["frame_epoch"].endswith("-deadbeef")
+    assert records[-1]["frame_decayed_members"] == ["legacy-surface"]
 
 
 def test_dispatch_admits_work_when_the_member_is_not_decayed(
