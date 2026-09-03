@@ -6,6 +6,7 @@ import importlib.util
 import json
 import subprocess
 import sys
+from dataclasses import replace
 from pathlib import Path
 
 import pytest
@@ -431,6 +432,97 @@ def test_unresolvable_paths_are_counted(gate, tmp_path: Path) -> None:
     assert report.unresolvable >= 1
 
 
+def test_nested_scope_assignment_does_not_resolve_outer_read(gate, tmp_path: Path) -> None:
+    _write(
+        tmp_path,
+        "shared/consumer.py",
+        "from pathlib import Path\n"
+        "def load_artifact():\n"
+        "    def configure_inner_scope():\n"
+        "        artifact = Path('artifacts/inner-only.json')\n"
+        "        return artifact\n"
+        "    return artifact.read_text()\n",
+    )
+    report = gate.analyse_consumer_side(tmp_path, [])
+    assert report.unresolvable == 1
+    assert not any(
+        finding.reader.pattern == "artifacts/inner-only.json" for finding in report.findings
+    )
+
+
+def test_same_scope_assignment_resolves_read_as_unwritten(gate, tmp_path: Path) -> None:
+    _write(
+        tmp_path,
+        "shared/consumer.py",
+        "from pathlib import Path\n"
+        "def load_artifact():\n"
+        "    artifact = Path('artifacts/same-scope.json')\n"
+        "    return artifact.read_text()\n",
+    )
+    report = gate.analyse_consumer_side(tmp_path, [])
+    matches = [
+        finding
+        for finding in report.findings
+        if finding.reader.pattern == "artifacts/same-scope.json"
+    ]
+    assert report.unresolvable == 0
+    assert [finding.kind for finding in matches] == ["consumer-reads-unwritten-artifact"]
+
+
+def test_nested_package_module_import_pairs_reader_with_writer(gate, tmp_path: Path) -> None:
+    _write(
+        tmp_path,
+        "pkg/sub/mod.py",
+        "from pathlib import Path\n"
+        "ARTIFACT = Path('artifacts/package-state.json')\n"
+        "def write_package_state():\n"
+        "    ARTIFACT.write_text('{}')\n",
+    )
+    _write(
+        tmp_path,
+        "shared/consumer.py",
+        "from pathlib import Path\n"
+        "from pkg.sub.mod import write_package_state\n"
+        "ARTIFACT = Path('artifacts/package-state.json')\n"
+        "def load_package_state():\n"
+        "    return ARTIFACT.read_text()\n",
+    )
+    report = gate.analyse_consumer_side(tmp_path, [])
+    assert gate._module_name(Path("pkg/sub/mod.py")) == "pkg.sub.mod"
+    assert any(
+        pair.reader.path == Path("shared/consumer.py")
+        and pair.writer.path == Path("pkg/sub/mod.py")
+        for pair in report.pairs
+    )
+
+
+def test_package_init_writer_is_named_and_paired_as_package(gate, tmp_path: Path) -> None:
+    _write(
+        tmp_path,
+        "pkg/__init__.py",
+        "from pathlib import Path\n"
+        "ARTIFACT = Path('artifacts/package-init-state.json')\n"
+        "def write_package_init_state():\n"
+        "    ARTIFACT.write_text('{}')\n",
+    )
+    _write(
+        tmp_path,
+        "shared/consumer.py",
+        "from pathlib import Path\n"
+        "from pkg import write_package_init_state\n"
+        "ARTIFACT = Path('artifacts/package-init-state.json')\n"
+        "def load_package_init_state():\n"
+        "    return ARTIFACT.read_text()\n",
+    )
+    report = gate.analyse_consumer_side(tmp_path, [])
+    assert gate._module_name(Path("pkg/__init__.py")) == "pkg"
+    assert any(
+        pair.reader.path == Path("shared/consumer.py")
+        and pair.writer.path == Path("pkg/__init__.py")
+        for pair in report.pairs
+    )
+
+
 def test_frame_marks_matching_producer_as_decayed(gate, tmp_path: Path) -> None:
     _write(
         tmp_path,
@@ -512,6 +604,53 @@ def test_console_caps_each_finding_kind_and_points_to_json(tmp_path: Path) -> No
     payload = json.loads(report_path.read_text(encoding="utf-8"))
     assert payload["summary"]["findings_by_kind"]["consumer-reads-unwritten-artifact"] == 26
     assert len(payload["findings"]) == 26
+
+
+def test_unwritable_json_report_path_is_report_only(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    blocked_parent = tmp_path / "not-a-directory"
+    blocked_parent.write_text("blocks report directory creation", encoding="utf-8")
+    report_path = blocked_parent / "consumer-side-report.json"
+    monkeypatch.setenv("RUNNER_TEMP", str(blocked_parent))
+
+    result = subprocess.run(
+        [sys.executable, str(SCRIPT_PATH), "--consumer-side"],
+        cwd=tmp_path,
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+
+    assert result.returncode == 0
+    assert f"[REPORT-ERROR] {report_path}:" in result.stdout
+    assert "consumer-side counts:" in result.stdout
+    assert "consumer-side gate is REPORT-ONLY" in result.stdout
+
+
+def test_nonserialisable_finding_is_a_report_only_json_error(
+    gate,
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    _unwritten_repo(tmp_path)
+    report = gate.analyse_consumer_side(tmp_path, [])
+    report.findings[0] = replace(report.findings[0], detail=object())
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setattr(gate, "analyse_consumer_side", lambda *_args, **_kwargs: report)
+
+    result = gate.run_consumer_side(gate.build_parser().parse_args(["--consumer-side"]))
+    output = capsys.readouterr().out
+
+    assert result == 0
+    assert (
+        f"[REPORT-ERROR] {tmp_path / '.consumer-side-report.json'}: "
+        "Object of type object is not JSON serializable"
+    ) in output
+    assert "[REPORT] consumer-reads-unwritten-artifact" in output
+    assert "consumer-side gate is REPORT-ONLY" in output
 
 
 def _assert_report_only_error(

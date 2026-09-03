@@ -885,7 +885,7 @@ def _scope_values(
             resolved = _resolve_path_expr(default, values, path, repo_root, path_functions)
             if resolved is not None:
                 values[name] = resolved
-    assignments = [item for item in ast.walk(node) if isinstance(item, (ast.Assign, ast.AnnAssign))]
+    assignments = _scope_assignments(node)
     for _ in range(2):
         changed = False
         for assignment in assignments:
@@ -902,6 +902,50 @@ def _scope_values(
         if not changed:
             break
     return values
+
+
+class _ScopeAssignmentVisitor(ast.NodeVisitor):
+    def __init__(self) -> None:
+        self.assignments: list[ast.Assign | ast.AnnAssign] = []
+
+    def visit_Assign(self, node: ast.Assign) -> None:
+        self.assignments.append(node)
+
+    def visit_AnnAssign(self, node: ast.AnnAssign) -> None:
+        self.assignments.append(node)
+
+    def visit_FunctionDef(self, node: ast.FunctionDef) -> None:
+        return
+
+    def visit_AsyncFunctionDef(self, node: ast.AsyncFunctionDef) -> None:
+        return
+
+    def visit_ClassDef(self, node: ast.ClassDef) -> None:
+        return
+
+    def visit_Lambda(self, node: ast.Lambda) -> None:
+        return
+
+    def visit_ListComp(self, node: ast.ListComp) -> None:
+        return
+
+    def visit_SetComp(self, node: ast.SetComp) -> None:
+        return
+
+    def visit_DictComp(self, node: ast.DictComp) -> None:
+        return
+
+    def visit_GeneratorExp(self, node: ast.GeneratorExp) -> None:
+        return
+
+
+def _scope_assignments(
+    node: ast.Module | ast.FunctionDef | ast.AsyncFunctionDef,
+) -> list[ast.Assign | ast.AnnAssign]:
+    visitor = _ScopeAssignmentVisitor()
+    for statement in node.body:
+        visitor.visit(statement)
+    return visitor.assignments
 
 
 def _artifact_family(name: str) -> str:
@@ -1809,6 +1853,13 @@ def write_consumer_side_json(report: ConsumerSideReport, path: Path) -> None:
     path.write_text(json.dumps(_report_json(report), indent=2) + "\n", encoding="utf-8")
 
 
+def _write_consumer_side_json_report_only(report: ConsumerSideReport, path: Path) -> None:
+    try:
+        write_consumer_side_json(report, path)
+    except (OSError, TypeError, ValueError) as exc:
+        print(f"[REPORT-ERROR] {path}: {exc}")
+
+
 def print_consumer_side_report(report: ConsumerSideReport, report_path: Path) -> None:
     counts = Counter(finding.kind for finding in report.findings)
     print(
@@ -1864,6 +1915,7 @@ def print_consumer_side_report(report: ConsumerSideReport, report_path: Path) ->
 def run_consumer_side(args: argparse.Namespace) -> int:
     repo_root = Path.cwd()
     report_path = _report_output_path(repo_root)
+    analysis_error: str | None = None
     try:
         allowlist = load_allowlist(args.allowlist)
         report = analyse_consumer_side(
@@ -1873,24 +1925,18 @@ def run_consumer_side(args: argparse.Namespace) -> int:
             mass_path=args.mass,
         )
     except (AllowlistError, OSError, ValueError, json.JSONDecodeError, yaml.YAMLError) as exc:
-        error = f"consumer-side analysis incomplete: {exc}"
+        analysis_error = f"consumer-side analysis incomplete: {exc}"
         report = ConsumerSideReport(
             [],
             [],
             [],
             0,
             {name: 0 for name in CONSUMER_SIDE_EXCLUSIONS},
-            (error,),
+            (analysis_error,),
         )
-        write_consumer_side_json(report, report_path)
-        print(f"[REPORT-ERROR] {error}")
-        print(f"consumer-side full JSON report: {report_path}")
-        print(
-            "consumer-side gate is REPORT-ONLY until a follow-on row authorises it; "
-            f"proposed arm {CONSUMER_SIDE_ARM} is intentionally not implemented"
-        )
-        return 0
-    write_consumer_side_json(report, report_path)
+    _write_consumer_side_json_report_only(report, report_path)
+    if analysis_error is not None:
+        print(f"[REPORT-ERROR] {analysis_error}")
     print_consumer_side_report(report, report_path)
     return 0
 
@@ -1959,10 +2005,6 @@ def base_content(base: str | None, path: Path) -> str | None:
 
 
 # ── Gate core ─────────────────────────────────────────────────────────
-
-
-def _module_name(path: Path) -> str:
-    return ".".join(path.with_suffix("").parts)
 
 
 def collect_refusals(
