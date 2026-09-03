@@ -541,6 +541,7 @@ class ConsumerSideReport:
     pairs: list[ArtifactPair]
     unresolvable: int
     exclusions: dict[str, int]
+    errors: tuple[str, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -563,6 +564,10 @@ def _dotted_name(node: ast.expr) -> str | None:
 
 def _normalise_pattern(value: str, repo_root: Path) -> str:
     value = value.replace("\\", "/")
+    if value == "$HOME":
+        value = "~"
+    elif value.startswith("$HOME/"):
+        value = "~/" + value[len("$HOME/") :]
     home = Path.home().as_posix()
     root = repo_root.resolve().as_posix()
     if value == root:
@@ -1247,6 +1252,8 @@ def _glob_has_artifact_identity(pattern: str) -> bool:
 
 
 def _patterns_match(left: str, right: str) -> bool:
+    left = _normalise_pattern(left, Path.cwd())
+    right = _normalise_pattern(right, Path.cwd())
     if left == right:
         return True
     for pattern in (left, right):
@@ -1254,19 +1261,7 @@ def _patterns_match(left: str, right: str) -> bool:
         # that a specific JSON consumer has a producer merely by sharing a suffix.
         if "*" in pattern and not _glob_has_artifact_identity(pattern):
             return False
-    if fnmatch.fnmatch(left, right) or fnmatch.fnmatch(right, left):
-        return True
-    if "*" not in left and "*" not in right:
-        return False
-    left_prefix = left.split("*", 1)[0].rstrip("/")
-    right_prefix = right.split("*", 1)[0].rstrip("/")
-    return bool(
-        left_prefix
-        and right_prefix
-        and (
-            left_prefix.startswith(right_prefix + "/") or right_prefix.startswith(left_prefix + "/")
-        )
-    )
+    return fnmatch.fnmatch(left, right) or fnmatch.fnmatch(right, left)
 
 
 def _nearest_writers(
@@ -1474,7 +1469,8 @@ def _dynamic_root_writers(pattern: str, writes: list[ArtifactAccess]) -> list[Ar
     return [
         writer
         for writer in writes
-        if fnmatch.fnmatchcase(PurePosixPath(writer.pattern).name, basename)
+        if not any(marker in PurePosixPath(writer.pattern).name for marker in "*?[")
+        and fnmatch.fnmatchcase(PurePosixPath(writer.pattern).name, basename)
     ]
 
 
@@ -1538,7 +1534,10 @@ def load_decayed_members(
     mass_path: Path,
     repo_root: Path,
 ) -> list[DecayedMember]:
-    frame = json.loads(frame_path.read_text(encoding="utf-8"))
+    try:
+        frame = json.loads(frame_path.read_text(encoding="utf-8"))
+    except json.JSONDecodeError as exc:
+        raise ValueError(f"frame {frame_path} contains malformed JSON: {exc}") from exc
     if not isinstance(frame, list):
         raise ValueError(f"frame {frame_path} must contain a JSON list")
     verdicts: list[dict[str, object]] = []
@@ -1561,7 +1560,10 @@ def load_decayed_members(
         ):
             decay.setdefault(str(subject["member_id"]), set()).add(relation)
 
-    mass = yaml.safe_load(mass_path.read_text(encoding="utf-8"))
+    try:
+        mass = yaml.safe_load(mass_path.read_text(encoding="utf-8"))
+    except yaml.YAMLError as exc:
+        raise ValueError(f"mass {mass_path} contains malformed YAML: {exc}") from exc
     if not isinstance(mass, dict) or not isinstance(mass.get("members"), list):
         raise ValueError(f"mass {mass_path} must contain a members list")
     members: list[DecayedMember] = []
@@ -1757,8 +1759,10 @@ def _report_json(report: ConsumerSideReport) -> dict[str, object]:
             "allowlisted": len(report.allowlisted),
             "exclusions": report.exclusions,
             "unresolvable": report.unresolvable,
+            "errors": len(report.errors),
             "report_only": True,
         },
+        "errors": list(report.errors),
         "findings": [
             {
                 "kind": finding.kind,
@@ -1859,6 +1863,7 @@ def print_consumer_side_report(report: ConsumerSideReport, report_path: Path) ->
 
 def run_consumer_side(args: argparse.Namespace) -> int:
     repo_root = Path.cwd()
+    report_path = _report_output_path(repo_root)
     try:
         allowlist = load_allowlist(args.allowlist)
         report = analyse_consumer_side(
@@ -1868,13 +1873,23 @@ def run_consumer_side(args: argparse.Namespace) -> int:
             mass_path=args.mass,
         )
     except (AllowlistError, OSError, ValueError, json.JSONDecodeError, yaml.YAMLError) as exc:
-        print(f"[REPORT-ERROR] consumer-side analysis incomplete: {exc}")
+        error = f"consumer-side analysis incomplete: {exc}"
+        report = ConsumerSideReport(
+            [],
+            [],
+            [],
+            0,
+            {name: 0 for name in CONSUMER_SIDE_EXCLUSIONS},
+            (error,),
+        )
+        write_consumer_side_json(report, report_path)
+        print(f"[REPORT-ERROR] {error}")
+        print(f"consumer-side full JSON report: {report_path}")
         print(
             "consumer-side gate is REPORT-ONLY until a follow-on row authorises it; "
             f"proposed arm {CONSUMER_SIDE_ARM} is intentionally not implemented"
         )
         return 0
-    report_path = _report_output_path(repo_root)
     write_consumer_side_json(report, report_path)
     print_consumer_side_report(report, report_path)
     return 0

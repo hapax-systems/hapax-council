@@ -175,7 +175,95 @@ def test_non_python_producer_downgrades_cache_finding(gate, tmp_path: Path) -> N
     assert "scripts/producer.sh" in matches[0].detail
 
 
+def test_pattern_matching_normalises_home_and_separators(gate) -> None:
+    assert gate._patterns_match(r"$HOME\cache\wanted.json", "~/cache/wanted.json")
+
+
+def test_glob_reader_rejects_same_directory_wrong_extension_writer(gate, tmp_path: Path) -> None:
+    _write(
+        tmp_path,
+        "shared/consumer.py",
+        "from pathlib import Path\n"
+        "def load_cache():\n"
+        "    return list(Path('cache').glob('*.json'))\n",
+    )
+    _write(
+        tmp_path,
+        "shared/writer.py",
+        "from pathlib import Path\n"
+        "def write_cache():\n"
+        "    Path('cache/unrelated.txt').write_text('unrelated')\n",
+    )
+    report = gate.analyse_consumer_side(tmp_path, [])
+    matches = [item for item in report.findings if item.reader.pattern == "cache/*.json"]
+    assert [item.kind for item in matches] == ["consumer-reads-unwritten-artifact"]
+
+
+def test_fixed_reader_rejects_same_directory_incompatible_writer_glob(gate, tmp_path: Path) -> None:
+    _write(
+        tmp_path,
+        "shared/consumer.py",
+        "from pathlib import Path\n"
+        "def load_cache():\n"
+        "    return Path('cache/wanted.json').read_text()\n",
+    )
+    _write(
+        tmp_path,
+        "shared/writer.py",
+        "from pathlib import Path\n"
+        "def write_cache(name):\n"
+        "    (Path('cache') / f'{name}.txt').write_text('unrelated')\n",
+    )
+    report = gate.analyse_consumer_side(tmp_path, [])
+    matches = [item for item in report.findings if item.reader.pattern == "cache/wanted.json"]
+    assert [item.kind for item in matches] == ["consumer-reads-unwritten-artifact"]
+
+
+def test_fixed_reader_rejects_same_directory_different_fixed_basename(gate, tmp_path: Path) -> None:
+    _write(
+        tmp_path,
+        "shared/consumer.py",
+        "from pathlib import Path\n"
+        "def load_cache():\n"
+        "    return Path('cache/wanted.json').read_text()\n",
+    )
+    _write(
+        tmp_path,
+        "shared/writer.py",
+        "from pathlib import Path\n"
+        "def write_cache():\n"
+        "    Path('cache/other.json').write_text('unrelated')\n",
+    )
+    report = gate.analyse_consumer_side(tmp_path, [])
+    matches = [item for item in report.findings if item.reader.pattern == "cache/wanted.json"]
+    assert [item.kind for item in matches] == ["consumer-reads-unwritten-artifact"]
+
+
 def test_dynamic_root_read_with_same_basename_writer_is_downgraded(gate, tmp_path: Path) -> None:
+    _write(
+        tmp_path,
+        "shared/consumer.py",
+        "def load_metadata(root):\n"
+        "    return (root / 'nested' / 'wanted.metadata.json').read_text()\n",
+    )
+    _write(
+        tmp_path,
+        "tests/writer.py",
+        "from pathlib import Path\n"
+        "def write_metadata():\n"
+        "    Path('elsewhere/wanted.metadata.json').write_text('{}')\n",
+    )
+    report = gate.analyse_consumer_side(tmp_path, [])
+    matches = [
+        finding
+        for finding in report.findings
+        if finding.reader.pattern == "*/nested/wanted.metadata.json"
+    ]
+    assert [finding.kind for finding in matches] == ["consumer-reads-artifact-under-dynamic-root"]
+    assert matches[0].writers[0].pattern == "elsewhere/wanted.metadata.json"
+
+
+def test_dynamic_root_reader_rejects_wildcard_basename_writer(gate, tmp_path: Path) -> None:
     _write(
         tmp_path,
         "shared/consumer.py",
@@ -194,8 +282,7 @@ def test_dynamic_root_read_with_same_basename_writer_is_downgraded(gate, tmp_pat
         for finding in report.findings
         if finding.reader.pattern == "*/nested/*.metadata.json"
     ]
-    assert [finding.kind for finding in matches] == ["consumer-reads-artifact-under-dynamic-root"]
-    assert matches[0].writers[0].pattern == "*/elsewhere/*.metadata.json"
+    assert [finding.kind for finding in matches] == ["consumer-reads-unwritten-artifact"]
 
 
 def test_dynamic_root_read_without_same_basename_writer_stays_unwritten(
@@ -206,6 +293,13 @@ def test_dynamic_root_read_without_same_basename_writer_stays_unwritten(
         "shared/consumer.py",
         "def load_metadata(root, name):\n"
         "    return (root / 'nested' / f'{name}.metadata.json').read_text()\n",
+    )
+    _write(
+        tmp_path,
+        "tests/writer.py",
+        "from pathlib import Path\n"
+        "def write_metadata():\n"
+        "    Path('nested/unrelated.txt').write_text('unrelated')\n",
     )
     report = gate.analyse_consumer_side(tmp_path, [])
     matches = [
@@ -418,6 +512,84 @@ def test_console_caps_each_finding_kind_and_points_to_json(tmp_path: Path) -> No
     payload = json.loads(report_path.read_text(encoding="utf-8"))
     assert payload["summary"]["findings_by_kind"]["consumer-reads-unwritten-artifact"] == 26
     assert len(payload["findings"]) == 26
+
+
+def _assert_report_only_error(
+    result: subprocess.CompletedProcess[str], report_path: Path, bad_path: Path
+) -> None:
+    assert result.returncode == 0
+    error_lines = [line for line in result.stdout.splitlines() if line.startswith("[REPORT-ERROR]")]
+    assert len(error_lines) == 1
+    assert str(bad_path) in error_lines[0]
+    payload = json.loads(report_path.read_text(encoding="utf-8"))
+    assert payload["summary"]["errors"] == 1
+    assert len(payload["errors"]) == 1
+    assert str(bad_path) in payload["errors"][0]
+
+
+def test_malformed_frame_is_a_recorded_report_only_error(tmp_path: Path) -> None:
+    frame = tmp_path / "malformed-frame.json"
+    mass = tmp_path / "mass.yaml"
+    frame.write_text("{not-json", encoding="utf-8")
+    mass.write_text("members: []\n", encoding="utf-8")
+    result = subprocess.run(
+        [
+            sys.executable,
+            str(SCRIPT_PATH),
+            "--consumer-side",
+            "--frame",
+            str(frame),
+            "--mass",
+            str(mass),
+        ],
+        cwd=tmp_path,
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    _assert_report_only_error(result, tmp_path / ".consumer-side-report.json", frame)
+
+
+def test_malformed_mass_is_a_recorded_report_only_error(tmp_path: Path) -> None:
+    frame = tmp_path / "frame.json"
+    mass = tmp_path / "malformed-mass.yaml"
+    frame.write_text("[]\n", encoding="utf-8")
+    mass.write_text("members: [\n", encoding="utf-8")
+    result = subprocess.run(
+        [
+            sys.executable,
+            str(SCRIPT_PATH),
+            "--consumer-side",
+            "--frame",
+            str(frame),
+            "--mass",
+            str(mass),
+        ],
+        cwd=tmp_path,
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    _assert_report_only_error(result, tmp_path / ".consumer-side-report.json", mass)
+
+
+def test_malformed_allowlist_is_a_recorded_report_only_error(tmp_path: Path) -> None:
+    allowlist = tmp_path / "malformed-allowlist.json"
+    allowlist.write_text("{not-json", encoding="utf-8")
+    result = subprocess.run(
+        [
+            sys.executable,
+            str(SCRIPT_PATH),
+            "--consumer-side",
+            "--allowlist",
+            str(allowlist),
+        ],
+        cwd=tmp_path,
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    _assert_report_only_error(result, tmp_path / ".consumer-side-report.json", allowlist)
 
 
 def test_real_tree_names_both_known_consumer_side_instances(gate) -> None:
