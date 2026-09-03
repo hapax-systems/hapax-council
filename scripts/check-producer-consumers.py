@@ -43,11 +43,12 @@ import ast
 import fnmatch
 import json
 import os
+import re
 import subprocess
 import sys
 import tomllib
 from collections import Counter
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from pathlib import Path, PurePosixPath
 
 import yaml
@@ -575,17 +576,29 @@ class PathFunctionTable(dict[str, PathFunction]):
 
     def resolve(self, name: str, calling_path: Path) -> PathFunction | None:
         short = name.rsplit(".", 1)[-1]
+        imports = self.imports_by_path.get(calling_path, frozenset())
+        if "." in name:
+            # A qualified call names its module: the exact key, or the qualifier mapped through
+            # the caller's imports. It never falls back to the caller's own helper of the same
+            # name (review finding on #4626, round 6: other.artifact_path() resolved locally).
+            if name in self:
+                return self[name]
+            qualifier = name.rsplit(".", 1)[0]
+            for imported in imports:
+                if imported == qualifier or imported.endswith(f".{qualifier}"):
+                    candidate = self.get(f"{imported}.{short}")
+                    if candidate is not None:
+                        return candidate
+            return None
         own = self.get(f"{_module_name(calling_path)}.{short}")
         if own is not None:
             return own
-        for imported in self.imports_by_path.get(calling_path, frozenset()):
+        for imported in imports:
             candidate = self.get(f"{imported}.{short}")
             if candidate is None and imported.endswith(f".{short}"):
                 candidate = self.get(imported)
             if candidate is not None:
                 return candidate
-        if "." in name and name in self:
-            return self[name]
         matches = [function for key, function in self.items() if key.rsplit(".", 1)[-1] == short]
         return matches[0] if len(matches) == 1 else None
 
@@ -941,6 +954,17 @@ def _useful_pattern(pattern: str | None) -> bool:
     )
 
 
+def _mode_effect(call: ast.Call, position: int) -> str:
+    """Read/write from a mode argument at ``position`` (or ``mode=``), as tarfile.open and
+    zipfile.ZipFile take it; ``_open_effect`` reads Path.open's first argument instead."""
+    mode_node: ast.expr | None = call.args[position] if len(call.args) > position else None
+    for keyword in call.keywords:
+        if keyword.arg == "mode":
+            mode_node = keyword.value
+    mode = mode_node.value if isinstance(mode_node, ast.Constant) else "r"
+    return "write" if isinstance(mode, str) and any(flag in mode for flag in "wax") else "read"
+
+
 def _open_effect(call: ast.Call) -> str:
     mode_node: ast.expr | None = None
     if isinstance(call.func, ast.Attribute) and call.func.attr == "open":
@@ -1029,7 +1053,28 @@ def _classify_call(
 ) -> None:
     name = _function_name(call)
     short_name = name.rsplit(".", 1)[-1]
-    if isinstance(call.func, ast.Attribute) and call.func.attr in {
+    if name in FILE_BACKED_APIS:
+        # A file-backed API this scanner models as an access (review finding on #4626, round 5:
+        # sqlite3.connect fell through without an access and without an unresolvable count). It
+        # is tested first: shelve.open, dbm.open and tarfile.open end in "open", and the generic
+        # open branch below would read the module object as the path (round 6).
+        action, position, keyword = FILE_BACKED_APIS[name]
+        if action == "mode":
+            action = _mode_effect(call, position + 1)
+        _record_access(
+            accesses,
+            unresolved,
+            action=action,
+            expression=_call_argument(call, position, keyword),
+            call=call,
+            values=values,
+            path=path,
+            repo_root=repo_root,
+            path_functions=path_functions,
+            family=context_family,
+            operation=name,
+        )
+    elif isinstance(call.func, ast.Attribute) and call.func.attr in {
         "read_text",
         "read_bytes",
     }:
@@ -1165,25 +1210,6 @@ def _classify_call(
                 family=_artifact_family(short_name),
                 operation=short_name,
             )
-    elif name in FILE_BACKED_APIS:
-        # A file-backed API this scanner models as an access (review finding on #4626, round 5:
-        # sqlite3.connect fell through without an access and without an unresolvable count).
-        action, position, keyword = FILE_BACKED_APIS[name]
-        if action == "mode":
-            action = _open_effect(call)
-        _record_access(
-            accesses,
-            unresolved,
-            action=action,
-            expression=_call_argument(call, position, keyword),
-            call=call,
-            values=values,
-            path=path,
-            repo_root=repo_root,
-            path_functions=path_functions,
-            family=context_family,
-            operation=name,
-        )
     elif _looks_like_file_api(name) and any(
         _useful_pattern(_resolve_path_expr(argument, values, path, repo_root, path_functions))
         for argument in (*call.args, *(keyword.value for keyword in call.keywords))
@@ -1241,27 +1267,6 @@ def _statement_calls(statement: ast.stmt) -> list[ast.Call]:
     return visitor.calls
 
 
-def _flatten_statement(statement: ast.stmt):
-    """A statement and, in source order, every statement nested in it within the same scope."""
-    if isinstance(statement, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)):
-        return
-    yield statement
-    for attribute in ("body", "orelse", "finalbody"):
-        for child in getattr(statement, attribute, None) or []:
-            yield from _flatten_statement(child)
-    for handler in getattr(statement, "handlers", None) or []:
-        for child in handler.body:
-            yield from _flatten_statement(child)
-    for case in getattr(statement, "cases", None) or []:
-        for child in case.body:
-            yield from _flatten_statement(child)
-
-
-def _scope_statements(node: ast.Module | ast.FunctionDef | ast.AsyncFunctionDef):
-    for statement in node.body:
-        yield from _flatten_statement(statement)
-
-
 def _apply_assignment(
     statement: ast.Assign | ast.AnnAssign,
     values: dict[str, str],
@@ -1299,6 +1304,139 @@ def _scope_initial_values(
     return values
 
 
+_MAX_BRANCH_STATES = 8
+
+
+def _fork(states: list[dict[str, str]]) -> list[dict[str, str]]:
+    return [dict(state) for state in states]
+
+
+def _merge_states(states: list[dict[str, str]]) -> list[dict[str, str]]:
+    """Distinct value maps after a branching statement, capped so paths cannot explode.
+
+    Beyond the cap the maps collapse into one in which every name the branches disagree on is
+    unresolved ("*"): a read below then counts as unresolvable instead of resolving through a guess.
+    """
+    distinct: dict[tuple[tuple[str, str], ...], dict[str, str]] = {}
+    for state in states:
+        distinct.setdefault(tuple(sorted(state.items())), state)
+    merged = list(distinct.values())
+    if len(merged) <= _MAX_BRANCH_STATES:
+        return merged
+    names = set().union(*(state.keys() for state in merged))
+    collapsed: dict[str, str] = {}
+    for name in names:
+        values = {state.get(name) for state in merged}
+        collapsed[name] = values.pop() if len(values) == 1 and None not in values else "*"
+    return [collapsed]
+
+
+class _BlockScanner:
+    """Walk one lexical scope in source order, carrying every branch's value map separately.
+
+    Mutually exclusive branches used to be flattened into one shared value map, so a read after
+    an if/else saw only the else branch's assignment (review finding on #4626, round 6). Each
+    branch now forks the states it entered with and the states are merged after the statement, so
+    a read below sees every value the name can hold. A call is classified once per state; an
+    access is recorded for each distinct pattern, and a call counts as unresolvable only when no
+    state resolves it.
+    """
+
+    def __init__(
+        self,
+        *,
+        path: Path,
+        repo_root: Path,
+        path_functions: dict[str, PathFunction],
+        accesses: list[ArtifactAccess],
+        unresolved: list[int],
+        unrecognised: Counter[str],
+        context_family: str,
+    ) -> None:
+        self.path = path
+        self.repo_root = repo_root
+        self.path_functions = path_functions
+        self.accesses = accesses
+        self.unresolved = unresolved
+        self.unrecognised = unrecognised
+        self.context_family = context_family
+
+    def scan_block(
+        self, statements: list[ast.stmt], states: list[dict[str, str]]
+    ) -> list[dict[str, str]]:
+        for statement in statements:
+            states = self._scan_statement(statement, states)
+        return states
+
+    def _classify(self, call: ast.Call, states: list[dict[str, str]]) -> None:
+        before = len(self.accesses)
+        unresolved_in_every_state = bool(states)
+        flagged: set[str] = set()
+        for state in states:
+            local_unresolved = [0]
+            local_unrecognised: Counter[str] = Counter()
+            _classify_call(
+                call,
+                state,
+                self.path,
+                self.repo_root,
+                self.path_functions,
+                self.accesses,
+                local_unresolved,
+                local_unrecognised,
+                self.context_family,
+            )
+            if not local_unresolved[0]:
+                unresolved_in_every_state = False
+            flagged.update(local_unrecognised)
+        if len(self.accesses) == before and unresolved_in_every_state:
+            self.unresolved[0] += 1
+        for name in flagged:
+            self.unrecognised[name] += 1
+
+    def _scan_statement(
+        self, statement: ast.stmt, states: list[dict[str, str]]
+    ) -> list[dict[str, str]]:
+        if isinstance(statement, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)):
+            return states
+        for call in _statement_calls(statement):
+            self._classify(call, states)
+        if isinstance(statement, (ast.Assign, ast.AnnAssign)):
+            for state in states:
+                _apply_assignment(statement, state, self.path, self.repo_root, self.path_functions)
+            return states
+        if isinstance(statement, ast.If):
+            taken = self.scan_block(statement.body, _fork(states))
+            not_taken = (
+                self.scan_block(statement.orelse, _fork(states))
+                if statement.orelse
+                else _fork(states)
+            )
+            return _merge_states(taken + not_taken)
+        if isinstance(statement, (ast.For, ast.AsyncFor, ast.While)):
+            looped = self.scan_block(statement.body, _fork(states))
+            after = _merge_states(_fork(states) + looped)
+            return self.scan_block(statement.orelse, after) if statement.orelse else after
+        if isinstance(statement, (ast.With, ast.AsyncWith)):
+            return self.scan_block(statement.body, states)
+        if isinstance(statement, (ast.Try, getattr(ast, "TryStar", ast.Try))):
+            body_states = self.scan_block(statement.body, _fork(states))
+            handler_states: list[dict[str, str]] = []
+            for handler in statement.handlers:
+                handler_states += self.scan_block(handler.body, _fork(states))
+            else_states = (
+                self.scan_block(statement.orelse, body_states) if statement.orelse else body_states
+            )
+            merged = _merge_states(else_states + handler_states)
+            return self.scan_block(statement.finalbody, merged) if statement.finalbody else merged
+        if isinstance(statement, ast.Match):
+            case_states: list[dict[str, str]] = []
+            for case in statement.cases:
+                case_states += self.scan_block(case.body, _fork(states))
+            return _merge_states(case_states + _fork(states))
+        return states
+
+
 def _scan_scope(
     node: ast.Module | ast.FunctionDef | ast.AsyncFunctionDef,
     module_values: dict[str, str],
@@ -1309,27 +1447,21 @@ def _scan_scope(
     unresolved: list[int],
     unrecognised: Counter[str],
 ) -> None:
-    values = _scope_initial_values(node, module_values, path, repo_root, path_functions)
+    initial = _scope_initial_values(node, module_values, path, repo_root, path_functions)
     context = node.name if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)) else path.stem
-    context_family = _artifact_family(context)
     # Source order is the semantics: a read sees the assignments above it, never one below
-    # (review finding on #4626, round 5: one final value map resolved an earlier read of
-    # orphan.json through a later reassignment to written.json and the orphan vanished).
-    for statement in _scope_statements(node):
-        for call in _statement_calls(statement):
-            _classify_call(
-                call,
-                values,
-                path,
-                repo_root,
-                path_functions,
-                accesses,
-                unresolved,
-                unrecognised,
-                context_family,
-            )
-        if isinstance(statement, (ast.Assign, ast.AnnAssign)):
-            _apply_assignment(statement, values, path, repo_root, path_functions)
+    # (review finding on #4626, round 5), and every branch above it, not just the last one
+    # (round 6) — see _BlockScanner.
+    scanner = _BlockScanner(
+        path=path,
+        repo_root=repo_root,
+        path_functions=path_functions,
+        accesses=accesses,
+        unresolved=unresolved,
+        unrecognised=unrecognised,
+        context_family=_artifact_family(context),
+    )
+    scanner.scan_block(list(node.body), [initial])
 
 
 def _iter_function_scopes(
@@ -1454,6 +1586,41 @@ def _glob_has_artifact_identity(pattern: str) -> bool:
     return fixed_directory or bool(fixed_stem)
 
 
+def _glob_regex(pattern: str) -> re.Pattern[str]:
+    """A glob as a regex whose `*` and `?` stop at `/` (only `**` crosses directories).
+
+    fnmatch lets `*` match `/`, so `cache/*.json` matched `cache/sub/wanted.json`, a file that
+    Path("cache").glob("*.json") can never read (review finding on #4626, round 6).
+    """
+    out: list[str] = []
+    i = 0
+    while i < len(pattern):
+        char = pattern[i]
+        if pattern.startswith("**", i):
+            out.append(".*")
+            i += 2
+            continue
+        if char == "*":
+            out.append("[^/]*")
+        elif char == "?":
+            out.append("[^/]")
+        elif char == "[":
+            close = pattern.find("]", i + 1)
+            if close == -1:
+                out.append(re.escape(char))
+            else:
+                out.append(pattern[i : close + 1])
+                i = close
+        else:
+            out.append(re.escape(char))
+        i += 1
+    return re.compile("^" + "".join(out) + "$")
+
+
+def _glob_match(text: str, pattern: str) -> bool:
+    return _glob_regex(pattern).match(text) is not None
+
+
 def _patterns_match(left: str, right: str) -> bool:
     left = _normalise_pattern(left, Path.cwd())
     right = _normalise_pattern(right, Path.cwd())
@@ -1464,7 +1631,34 @@ def _patterns_match(left: str, right: str) -> bool:
         # that a specific JSON consumer has a producer merely by sharing a suffix.
         if "*" in pattern and not _glob_has_artifact_identity(pattern):
             return False
-    return fnmatch.fnmatch(left, right) or fnmatch.fnmatch(right, left)
+    return _glob_match(left, right) or _glob_match(right, left)
+
+
+def _dedupe_findings(findings: list[ConsumerSideFinding]) -> list[ConsumerSideFinding]:
+    """One finding per (kind, key); decayed-producer findings merge their reader sites.
+
+    Decay analysis emitted one finding per reader x writer x member x relation, and identity-based
+    deduplication kept them apart (review finding on #4626, round 6). Readers of one pattern are
+    now a single finding whose reader_count is the number of distinct sites.
+    """
+    merged: dict[tuple[str, str], ConsumerSideFinding] = {}
+    order: list[tuple[str, str]] = []
+    for finding in findings:
+        slot = (finding.kind, finding.key)
+        prior = merged.get(slot)
+        if prior is None:
+            merged[slot] = finding
+            order.append(slot)
+            continue
+        if finding.kind != "consumer-reads-decayed-producer":
+            continue
+        readers = tuple(dict.fromkeys((*prior.readers, *finding.readers)))
+        writers = tuple(dict.fromkeys((*prior.writers, *finding.writers)))
+        details = "; ".join(dict.fromkeys(part for part in (prior.detail, finding.detail) if part))
+        merged[slot] = replace(
+            prior, readers=readers, writers=writers, detail=details, reader_total=len(readers)
+        )
+    return [merged[slot] for slot in order]
 
 
 def _nearest_writers(
@@ -1506,7 +1700,7 @@ def _pattern_is_committed(pattern: str, tracked: frozenset[str]) -> bool:
         if parts:
             candidates.append(PurePosixPath(*parts).as_posix())
     return any(
-        fnmatch.fnmatchcase(path, candidate)
+        _glob_match(path, candidate)
         for path in tracked
         for candidate in candidates
         if not candidate.startswith(("/", "~/"))
@@ -1894,7 +2088,7 @@ def analyse_consumer_side(
                         )
                     )
 
-    unique_findings = list(dict.fromkeys(findings))
+    unique_findings = _dedupe_findings(findings)
     unique_pairs = list(dict.fromkeys(pairs))
     visible: list[ConsumerSideFinding] = []
     allowed: list[tuple[ConsumerSideFinding, AllowlistEntry]] = []
@@ -2024,7 +2218,10 @@ def _write_consumer_side_json_report_only(report: ConsumerSideReport, path: Path
     try:
         write_consumer_side_json(report, path)
     except (OSError, TypeError, ValueError) as exc:
-        print(f"[REPORT-ERROR] {path}: {exc}")
+        print(
+            f"[REPORT-ERROR] {path}: {exc}; next action: pass a writable --json-report path "
+            "(a directory under ~/.cache/hapax works) and rerun; the gate stays report-only"
+        )
 
 
 def print_consumer_side_report(report: ConsumerSideReport, report_path: Path) -> None:
@@ -2104,7 +2301,10 @@ def run_consumer_side(args: argparse.Namespace) -> int:
         )
     _write_consumer_side_json_report_only(report, report_path)
     if analysis_error is not None:
-        print(f"[REPORT-ERROR] {analysis_error}")
+        print(
+            f"[REPORT-ERROR] {analysis_error}; next action: repair or drop the input the message "
+            "names (--frame, --mass or the allowlist) and rerun; the gate stays report-only"
+        )
     print_consumer_side_report(report, report_path)
     return 0
 
