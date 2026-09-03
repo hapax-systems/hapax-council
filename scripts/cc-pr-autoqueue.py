@@ -2563,9 +2563,6 @@ def _latest_admission_status(
     return None
 
 
-_GRAPHQL_STATUS_STATES = {"success", "failure", "pending", "error", "expected"}
-
-
 def _latest_admission_status_graphql(
     head_sha: str,
     *,
@@ -2575,9 +2572,9 @@ def _latest_admission_status_graphql(
 ) -> tuple[str | None, tuple[str, str, datetime | None] | None]:
     """GraphQL twin of ``_latest_admission_status`` for a cycle routed off REST.
 
-    Returns ``(repository_node_id, current_status)``. The node id is what the
-    ``createCommitStatus`` mutation needs, so one read serves both the idempotency
-    decision and the write. ``(None, None)`` means the pool refused or the payload
+    Returns ``(repository_node_id, current_status)``. The node id proves the read reached the repository; commit statuses have no GraphQL
+    mutation (GitHub's schema defines none), so the write itself stays on REST and is
+    deferred while that pool is below its floor. ``(None, None)`` means the pool refused or the payload
     was not the shape asked for — the caller then fails closed rather than falling
     back to the exhausted REST pool, which is the deadlock this exists to remove.
     """
@@ -2631,61 +2628,6 @@ def _latest_admission_status_graphql(
     )
 
 
-def _create_admission_status_graphql(
-    repository_id: str,
-    head_sha: str,
-    state: str,
-    description: str,
-    *,
-    repo_root: Path,
-    runner: Any,
-) -> tuple[bool, str]:
-    """``createCommitStatus`` — the REST POST's GraphQL twin, on the pool the cycle is on."""
-    if state not in _GRAPHQL_STATUS_STATES:
-        return False, f"unsupported_status_state:{state}"
-    mutation = (
-        "mutation($repo:ID!,$sha:GitObjectID!,$state:StatusState!,$ctx:String!,$desc:String!){"
-        "createCommitStatus(input:{repositoryId:$repo,sha:$sha,state:$state,context:$ctx,"
-        "description:$desc}){commitStatus{state}}}"
-    )
-    try:
-        proc = run_graphql_rate_aware(
-            [
-                "-f",
-                f"query={mutation}",
-                "-f",
-                f"repo={repository_id}",
-                "-f",
-                f"sha={head_sha}",
-                "-f",
-                f"state={state.upper()}",
-                "-f",
-                f"ctx={AUTOQUEUE_ADMISSION_CONTEXT}",
-                "-f",
-                f"desc={description}",
-            ],
-            repo_root=repo_root,
-            runner=runner,
-        )
-    except (subprocess.TimeoutExpired, OSError) as exc:
-        return False, f"graphql status write unavailable: {exc}"
-    output = (proc.stdout or proc.stderr or "").strip()
-    if proc.returncode != 0:
-        return False, output or f"graphql status write failed rc={proc.returncode}"
-    try:
-        payload = json.loads(proc.stdout or "{}")
-    except json.JSONDecodeError:
-        return False, "invalid_graphql_status_write_payload"
-    written = (
-        payload.get("data", {}).get("createCommitStatus", {}).get("commitStatus")
-        if isinstance(payload, dict)
-        else None
-    )
-    if not isinstance(written, dict):
-        return False, "invalid_graphql_status_write_payload"
-    return True, output
-
-
 def set_autoqueue_admission_status(
     decision: Decision,
     *,
@@ -2694,7 +2636,7 @@ def set_autoqueue_admission_status(
     runner: Any = None,
     now: datetime | None = None,
     force_fresh_success: bool = False,
-    route: str | None = None,
+    route: ListingRoute | str | None = None,
 ) -> tuple[bool, str] | None:
     """Write the server-visible autoqueue admission proof for a PR head SHA.
 
@@ -2719,7 +2661,19 @@ def set_autoqueue_admission_status(
     # #4610). There is no REST fallback from the GraphQL branch on purpose: the precondition
     # for a fallback (REST has budget) is exactly what the route decision said is false.
     repository_id: str | None = None
-    if route == "graphql":
+    # The cycle's route arrives as the ListingRoute the listing chose (transport, whether REST is
+    # below its floor, and why) — every caller passes `route=listing_route` — or as a bare
+    # transport string. Until round 9 of #4610 this compared the OBJECT against "graphql", which
+    # never matched, so every cycle stayed on REST however empty that pool was measured to be.
+    if isinstance(route, ListingRoute):
+        transport = route.transport
+        rest_blocked = route.rest_blocked
+        route_reason = route.reason
+    else:
+        transport = route or "rest"
+        rest_blocked = transport == "graphql"
+        route_reason = ""
+    if transport == "graphql":
         repository_id, current = _latest_admission_status_graphql(
             decision.pr.head_sha, repo=repo, repo_root=repo_root, runner=runner
         )
@@ -2745,15 +2699,16 @@ def set_autoqueue_admission_status(
         )
         if unchanged and fresh and not (force_fresh_success and state == "success"):
             return True, "unchanged"
-    if route == "graphql":
-        assert repository_id is not None
-        return _create_admission_status_graphql(
-            repository_id,
-            decision.pr.head_sha,
-            state,
-            description,
-            repo_root=repo_root,
-            runner=runner,
+    if rest_blocked:
+        # Commit statuses have no GraphQL mutation — GitHub's schema defines none, and the
+        # `createCommitStatus` call this branch used to make was invented (review finding on
+        # #4610, round 9). The write waits for the REST pool to clear its floor. The message
+        # says "rate limit" so `_admission_status_write_deferral_class` files it as a
+        # transport-window deferral, not as a verdict on the pull request.
+        return (
+            False,
+            "admission status write deferred: GitHub commit statuses are REST-only and the core "
+            f"REST pool is below its floor (rate limit; {route_reason or 'no reason recorded'})",
         )
     cmd = [
         "gh",

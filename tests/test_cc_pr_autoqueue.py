@@ -7707,16 +7707,6 @@ def _graphql_only_runner(
                 "",
             )
         if cmd[:3] == ["gh", "api", "graphql"]:
-            query = next((arg for arg in cmd if arg.startswith("query=")), "")
-            if "createCommitStatus" in query:
-                return subprocess.CompletedProcess(
-                    cmd,
-                    0,
-                    json.dumps(
-                        {"data": {"createCommitStatus": {"commitStatus": {"state": "SUCCESS"}}}}
-                    ),
-                    "",
-                )
             if not graphql_read_ok:
                 return subprocess.CompletedProcess(cmd, 1, "", "graphql read failed")
             context = (
@@ -7751,7 +7741,70 @@ def _rest_status_calls(calls: list[list[str]]) -> list[list[str]]:
     return [call for call in calls if any("/statuses" in arg for arg in call)]
 
 
-def test_admission_status_graphql_route_reads_and_writes_without_rest(tmp_path: Path) -> None:
+def _graphql_route(*, rest_blocked: bool = True) -> Any:
+    return autoqueue.ListingRoute(
+        transport="graphql",
+        rest_blocked=rest_blocked,
+        reason="core 3/5000 below floor 100" if rest_blocked else "core 4800/5000",
+    )
+
+
+def test_graphql_routed_cycle_reads_via_graphql_and_defers_the_rest_only_write(
+    tmp_path: Path,
+) -> None:
+    """Commit statuses have no GraphQL mutation. A cycle routed to GraphQL because REST is
+    below its floor reads the current status through GraphQL and, needing a write, defers it
+    as a transport-window deferral — it never posts to REST and never invents a mutation.
+
+    Review finding on #4610, round 9: the previous revision compared the ListingRoute OBJECT
+    against the string "graphql" (unreachable branch) and then called a `createCommitStatus`
+    mutation that GitHub's schema does not define.
+    """
+    decision = _admission_decision()
+    calls: list[list[str]] = []
+    result = autoqueue.set_autoqueue_admission_status(
+        decision,
+        repo="owner/repo",
+        repo_root=tmp_path,
+        runner=_graphql_only_runner(calls),
+        route=_graphql_route(rest_blocked=True),
+    )
+
+    assert result is not None and result[0] is False, result
+    assert autoqueue._admission_status_write_deferral_class(result[1]) == "github_rate_limit"
+    assert "below floor 100" in result[1]
+    assert _rest_status_calls(calls) == [], "a GraphQL-routed cycle must not touch the REST pool"
+    assert _graphql_mutations(calls) == [], "there is no commit-status mutation to send"
+    assert [c for c in calls if c[:3] == ["gh", "api", "graphql"]], "the read goes via GraphQL"
+
+
+def test_graphql_routed_cycle_with_rest_headroom_writes_through_rest(tmp_path: Path) -> None:
+    """The route object says whether REST is actually below its floor; when it is not, the
+    read still goes through GraphQL and the write goes to the only endpoint that exists."""
+    decision = _admission_decision()
+    calls: list[list[str]] = []
+    graphql = _graphql_only_runner(calls)
+
+    def runner(cmd: list[str], **kwargs: Any) -> subprocess.CompletedProcess:
+        if cmd[:4] == ["gh", "api", "-X", "POST"] and "/statuses/" in " ".join(cmd):
+            calls.append(list(cmd))
+            return subprocess.CompletedProcess(cmd, 0, json.dumps({"state": "success"}), "")
+        return graphql(cmd, **kwargs)
+
+    result = autoqueue.set_autoqueue_admission_status(
+        decision,
+        repo="owner/repo",
+        repo_root=tmp_path,
+        runner=runner,
+        route=_graphql_route(rest_blocked=False),
+    )
+
+    assert result is not None and result[0], result
+    assert len(_rest_status_calls(calls)) == 1
+    assert _graphql_mutations(calls) == []
+
+
+def test_a_bare_graphql_transport_string_still_defers_the_write(tmp_path: Path) -> None:
     decision = _admission_decision()
     calls: list[list[str]] = []
     result = autoqueue.set_autoqueue_admission_status(
@@ -7762,15 +7815,9 @@ def test_admission_status_graphql_route_reads_and_writes_without_rest(tmp_path: 
         route="graphql",
     )
 
-    assert result is not None and result[0], result
-    assert _rest_status_calls(calls) == [], "a GraphQL-routed cycle must not touch the REST pool"
-    mutations = _graphql_mutations(calls)
-    assert len(mutations) == 1
-    mutation = mutations[0]
-    assert (
-        "state=SUCCESS" in mutation and f"ctx={autoqueue.AUTOQUEUE_ADMISSION_CONTEXT}" in mutation
-    )
-    assert "repo=R_kgDOtest" in mutation and "sha=sha-50" in mutation
+    assert result is not None and result[0] is False, result
+    assert autoqueue._admission_status_write_deferral_class(result[1]) == "github_rate_limit"
+    assert _rest_status_calls(calls) == []
 
 
 def test_admission_status_graphql_route_is_idempotent_when_unchanged_and_fresh(

@@ -1075,6 +1075,28 @@ def fetch_pr(
     )
 
 
+_GITHUB_DIFF_BASE = "merge-base(base, head), as computed by GitHub"
+
+
+class PrDiff(str):
+    """A unified diff that knows what it was computed against.
+
+    A plain ``str`` everywhere a diff is consumed (truncation, prompt rendering); the two
+    attributes let the reviewer prompt state the comparison base and the transport. Review
+    on #4610 asked for that once the local fallback stopped requiring the PR's recorded base
+    sha to equal the local base tip.
+    """
+
+    comparison_base: str
+    source: str
+
+    def __new__(cls, text: str, *, source: str, comparison_base: str = "") -> PrDiff:
+        diff = super().__new__(cls, text)
+        diff.source = source
+        diff.comparison_base = comparison_base
+        return diff
+
+
 def fetch_pr_diff(
     pr_info: PRInfo,
     *,
@@ -1082,7 +1104,7 @@ def fetch_pr_diff(
     repo_root: Path,
     runner: Any,
     route: ListingRoute | None = None,
-) -> str:
+) -> PrDiff:
     """Fetch the PR diff, avoiding the REST pool when the cycle measured it empty.
 
     There is no GraphQL diff API — GraphQL cannot return a unified diff, and `gh pr diff`
@@ -1109,7 +1131,7 @@ def fetch_pr_diff(
                 exc,
             )
     try:
-        return _run_gh(
+        text = _run_gh(
             [
                 "gh",
                 "api",
@@ -1122,6 +1144,7 @@ def fetch_pr_diff(
             repo_root=repo_root,
             runner=runner,
         )
+        return PrDiff(text, source="github-rest", comparison_base=_GITHUB_DIFF_BASE)
     except RuntimeError as exc:
         LOG.warning(
             "REST diff fetch failed for PR #%d; falling back to `gh pr diff`: %s",
@@ -1129,11 +1152,12 @@ def fetch_pr_diff(
             exc,
         )
         try:
-            return _run_gh(
+            text = _run_gh(
                 ["gh", "pr", "diff", str(pr_number), "--repo", repo],
                 repo_root=repo_root,
                 runner=runner,
             )
+            return PrDiff(text, source="gh-pr-diff", comparison_base=_GITHUB_DIFF_BASE)
         except RuntimeError as diff_exc:
             LOG.warning(
                 "`gh pr diff` failed for PR #%d; falling back to local git diff: %s",
@@ -1143,7 +1167,7 @@ def fetch_pr_diff(
             return fetch_pr_diff_from_local(pr_info, repo_root=repo_root, runner=runner)
 
 
-def fetch_pr_diff_from_local(pr_info: PRInfo, *, repo_root: Path, runner: Any) -> str:
+def fetch_pr_diff_from_local(pr_info: PRInfo, *, repo_root: Path, runner: Any) -> PrDiff:
     """Build a pinned local PR diff when GitHub diff endpoints are unavailable."""
     base_ref = pr_info.base_ref or "main"
     remote_base = f"origin/{base_ref}"
@@ -1159,13 +1183,42 @@ def fetch_pr_diff_from_local(pr_info: PRInfo, *, repo_root: Path, runner: Any) -
             "prove the current PR head. Next action: restore GitHub PR metadata access or "
             "fetch PR metadata with headRefOid/head.sha before review dispatch."
         )
-    _ensure_local_ref_at_sha(
-        remote_base,
-        expected_sha=pr_info.base_sha,
-        fetch_ref=base_ref,
-        repo_root=repo_root,
-        runner=runner,
-    )
+    # Refresh the base branch over the git protocol (a different quota from REST) and require
+    # the base sha the PR metadata records to be an ANCESTOR of the local tip, not equal to it.
+    # REST's `base.sha` is the tip at the PR's last update and GraphQL's `baseRefOid` the tip at
+    # query time, so equality refused every PR whose base had moved on since — the dispatch
+    # timer's "expected PR base" failures on 2026-09-03 for this very PR. A local tip that is
+    # BEHIND the recorded base (fetch failed, or the base was rewritten) still refuses, because
+    # the merge base below would then be older than the one GitHub's diff endpoint uses.
+    try:
+        _run_gh(
+            ["git", "fetch", "--quiet", "origin", base_ref],
+            repo_root=repo_root,
+            runner=runner,
+            timeout=180,
+        )
+    except RuntimeError as exc:
+        LOG.warning(
+            "could not refresh origin/%s before the local diff of PR #%d: %s",
+            base_ref,
+            pr_info.number,
+            exc,
+        )
+    _ensure_local_ref(remote_base, fetch_ref=base_ref, repo_root=repo_root, runner=runner)
+    if pr_info.base_sha:
+        try:
+            _run_gh(
+                ["git", "merge-base", "--is-ancestor", pr_info.base_sha, remote_base],
+                repo_root=repo_root,
+                runner=runner,
+            )
+        except RuntimeError as exc:
+            raise RuntimeError(
+                f"local git diff fallback for PR #{pr_info.number}: {remote_base} is behind the "
+                f"base {pr_info.base_sha[:12]} the PR records (or that base was rewritten), so a "
+                "local merge base would be older than GitHub's. Next action: `git fetch origin "
+                f"{base_ref}` and retry. ({exc})"
+            ) from exc
 
     head = pr_info.head_sha
     _ensure_local_ref(
@@ -1183,14 +1236,15 @@ def fetch_pr_diff_from_local(pr_info: PRInfo, *, repo_root: Path, runner: Any) -
         )
 
     merge_base = _run_gh(
-        ["git", "merge-base", pr_info.base_sha, head],
+        ["git", "merge-base", remote_base, head],
         repo_root=repo_root,
         runner=runner,
     ).strip()
     if not merge_base:
         raise RuntimeError(
             f"local git diff fallback for PR #{pr_info.number}: head {head[:12]} and the current "
-            f"PR base {pr_info.base_sha[:12]} share no merge base locally. Next action: fetch "
+            f"base {remote_base} ({pr_info.base_sha[:12]} per PR metadata) share no merge base "
+            "locally. Next action: fetch "
             f"pull/{pr_info.number}/head and origin/{base_ref} before review dispatch."
         )
     if merge_base != pr_info.base_sha:
@@ -1220,7 +1274,7 @@ def fetch_pr_diff_from_local(pr_info: PRInfo, *, repo_root: Path, runner: Any) -
             f"local git diff for PR #{pr_info.number} was empty between "
             f"{remote_base} and {head[:12]}; next action: fetch PR head/base and retry"
         )
-    return diff
+    return PrDiff(diff, source="local-git", comparison_base=merge_base)
 
 
 def _resolve_local_ref(ref: str, *, repo_root: Path, runner: Any) -> str | None:
@@ -1242,34 +1296,6 @@ def _local_commit_object_exists(ref: str, *, repo_root: Path, runner: Any) -> bo
     except RuntimeError:
         return False
     return True
-
-
-def _ensure_local_ref_at_sha(
-    ref: str,
-    *,
-    expected_sha: str,
-    fetch_ref: str,
-    repo_root: Path,
-    runner: Any,
-) -> None:
-    actual_sha = _resolve_local_ref(ref, repo_root=repo_root, runner=runner)
-    if actual_sha == expected_sha:
-        return
-
-    _run_gh(
-        ["git", "fetch", "--quiet", "origin", f"{fetch_ref}:refs/remotes/origin/{fetch_ref}"],
-        repo_root=repo_root,
-        runner=runner,
-        timeout=180,
-    )
-    actual_sha = _resolve_local_ref(ref, repo_root=repo_root, runner=runner)
-    if actual_sha != expected_sha:
-        actual_label = (actual_sha or "missing")[:12]
-        raise RuntimeError(
-            f"local ref {ref} resolved to {actual_label}, expected PR base "
-            f"{expected_sha[:12]}; next action: fetch the PR base ref from origin and "
-            "retry review dispatch after the local base matches the PR metadata."
-        )
 
 
 def _ensure_local_ref(
@@ -1383,6 +1409,8 @@ def render_reviewer_prompt(
     diff: str,
     prior_criticals: list[dict[str, Any]],
     prior_file_excerpts: str = "",
+    diff_source: str = "",
+    comparison_base: str = "",
 ) -> str:
     prior_block = ""
     if prior_criticals:
@@ -1402,6 +1430,8 @@ def render_reviewer_prompt(
             "title": pr_info.title,
             "branch": pr_info.head_ref,
             "head_sha": pr_info.head_sha,
+            "diff_source": diff_source or "unrecorded",
+            "comparison_base": comparison_base or "unrecorded",
             "linked_cc_task": task_id,
             "team_class": team_class,
             "changed_files": list(pr_info.files),
@@ -2912,9 +2942,8 @@ def review_pr(
         changed_source_excerpt_files, repo_root=repo_root, head_sha=pr_info.head_sha
     )
     reviewer_source_excerpts = prior_file_excerpts + changed_file_excerpts
-    diff = truncate_diff(
-        fetch_pr_diff(pr_info, repo=repo, repo_root=repo_root, runner=gh_runner, route=route)
-    )
+    pr_diff = fetch_pr_diff(pr_info, repo=repo, repo_root=repo_root, runner=gh_runner, route=route)
+    diff = truncate_diff(pr_diff)
     task_note_text = "\n\n".join(
         f"## Linked task note: {path.name}\n\n{path.read_text(encoding='utf-8')}"
         for path, _, _ in keyed_matches
@@ -2924,6 +2953,8 @@ def review_pr(
         render_reviewer_prompt(
             seat=seat,
             pr_info=pr_info,
+            diff_source=pr_diff.source,
+            comparison_base=pr_diff.comparison_base,
             task_id=task_ids[0] if len(task_ids) == 1 else ", ".join(task_ids),
             team_class=team_class,
             lenses=lenses,
