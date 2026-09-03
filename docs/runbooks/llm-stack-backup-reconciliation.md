@@ -30,9 +30,13 @@ new Qdrant snapshots, dump databases into `/tmp`, upload live MinIO backing
 stores, or run destructive prune. Retention is `--retention-dry-run` only unless
 a later governed task changes policy.
 
-A separate `hapax-backup-remote.timer` continues to run daily against
-`b2:hapax-backups/restic`. It is independent of the bounded critical off-site
-lane.
+The broad Backblaze B2 remote backup is not part of this lane. It was retired by
+operator policy on 2026-06-06 (registry `b2-restic-offsite`: retired), and its
+return as a daily `hapax-backup-remote.timer` is a separate change,
+`backup-scripts-into-council-20260902` (#4623), which carries the timer, the unit,
+the manifest and the registry row together. The repository `b2:hapax-backups/restic`
+still holds the snapshots the retired lane wrote; restoring from it works as
+documented below, but nothing on this branch writes to it.
 
 ## Cutover on podium (2026-09-02)
 
@@ -87,8 +91,8 @@ Both lanes stage service-native artifacts before restic runs:
 successfully, writes no backup artifacts, does not read secrets, and points at
 the Tier 1/Tier 2 lanes above.
 
-Backblaze B2 broad remote backup remains a separate daily off-site lane at
-`b2:hapax-backups/restic`; this compatibility receipt does not invoke it.
+The broad Backblaze B2 remote backup is retired on this branch (its return is
+#4623); this compatibility receipt does not invoke it.
 
 This intentionally removes the stale standalone script assumptions:
 

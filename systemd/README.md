@@ -465,8 +465,8 @@ and system files.
 
 The critical off-site lane is intentionally narrower. It backs up already
 materialized Postgres PITR artifacts, latest Qdrant snapshot files, and selected
-vault evidence/SOP artifacts. The broad Backblaze B2 backup remains a separate
-daily lane. The critical off-site lane does
+vault evidence/SOP artifacts. The broad Backblaze B2 backup is retired on this
+branch (2026-06-06); its return as a daily lane is #4623. The critical off-site lane does
 not create Qdrant snapshots, dump databases into `/tmp`, upload live MinIO, or
 run destructive restic prune.
 

@@ -113,12 +113,19 @@ def test_backup_surfaces_have_no_retired_critical_provider_names() -> None:
     old_job_name = "-".join(("gdrive", "critical"))
     old_env_name = "_".join(("GDRIVE", "CRITICAL"))
     old_repo_name = "".join(("gdrive", ":hapax-backups"))
+    # The only permitted occurrences of the old job name are two historical vault-artifact
+    # FILENAMES the critical lane still backs up (evidence written in June 2026 under the old
+    # name); they may appear in exactly one place — the evidence list of the live script — and the
+    # exemption is asserted, not applied silently (review finding on #4622, round 6: the previous
+    # form stripped the names before checking and could have hidden a live use).
     allowed_vault_evidence_names = {
         f"{old_job_name}-offsite-bootstrap-proof-2026-06-05.md",
         f"{old_job_name}-offsite-source-automation-plan-2026-06-05.md",
     }
+    evidence_list_owner = REPO / "scripts" / "hapax-backup-critical-offsite"
     forbidden = (old_job_name, old_env_name, old_repo_name)
     failures: list[str] = []
+    exempted: set[str] = set()
 
     for relative_root in (
         "scripts",
@@ -131,9 +138,20 @@ def test_backup_surfaces_have_no_retired_critical_provider_names() -> None:
                 continue
             text = path.read_text(encoding="utf-8", errors="replace")
             for allowed in allowed_vault_evidence_names:
-                text = text.replace(allowed, "")
+                if allowed in text:
+                    if path == evidence_list_owner:
+                        exempted.add(allowed)
+                        text = text.replace(allowed, "")
+                    else:
+                        failures.append(
+                            f"{path.relative_to(REPO)}: {allowed} (only the evidence list may name it)"
+                        )
             for old_name in forbidden:
                 if old_name in text:
                     failures.append(f"{path.relative_to(REPO)}: {old_name}")
 
     assert not failures, "Retired critical backup names remain:\n" + "\n".join(failures)
+    assert exempted == allowed_vault_evidence_names, (
+        "the exemption must match the evidence list exactly; drop a name here when the artifact "
+        f"is renamed: {sorted(allowed_vault_evidence_names - exempted)}"
+    )
