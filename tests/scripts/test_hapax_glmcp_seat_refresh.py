@@ -304,14 +304,16 @@ def test_transient_failures_are_retried_and_the_reviewers_stderr_is_redacted(
 def test_writer_degradation_is_printed_and_the_seat_still_counts_as_refreshed(
     tmp_path: Path,
 ) -> None:
-    """Exit 3 from the telemetry writer means the live ledger was written and an ancillary
-    receipt refresh degraded; the receipt is already minted, so the run is a success that SAYS
-    what degraded instead of filtering it out and then failing on pipefail."""
+    """Exit 3 from the telemetry writer means the live ledger was written but the capability
+    receipt refresh degraded — and since round 6 that receipt is what the dispatcher (and this
+    guard) read, so the seat is NOT visible: a failure that prints the writer's diagnostics and
+    names the next action (review finding on #4624, round 6)."""
     home, council = _harness(tmp_path, writer_rc=3)
     result = _run(home, council)
-    assert result.returncode == 0, result.stderr
+    assert result.returncode == 6
     assert "capability receipts DEGRADED for one provider" in result.stdout
-    assert "capability receipts degraded (exit 3)" in result.stdout
+    assert "glm seat NOT visible" in result.stderr
+    assert "hapax-platform-capability-receipts --platform glmcp" in result.stderr
     assert (home / "admission-calls").exists()
 
 
@@ -367,6 +369,9 @@ def test_unit_pair_executes_from_the_activation_worktree_and_strips_inherited_ov
         "HAPAX_GLMCP_REVIEW_SECRET_ENTRY",  # pragma: allowlist secret
         "HAPAX_GLMCP_REVIEW_ALLOW_SECRET_ENTRY_OVERRIDE",  # pragma: allowlist secret
         "HAPAX_GLMCP_SEAT_ROOT_OVERRIDE",
+        # the receipt and ledger writers honour these; the seat must read where they wrote
+        "HAPAX_PLATFORM_CAPABILITY_RECEIPT_DIR",
+        "HAPAX_QUOTA_SPEND_LEDGER_LIVE",
     ):
         assert name in unset.split(), name
     assert _unit_value(service, "Service", "Type") == "oneshot"

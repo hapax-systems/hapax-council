@@ -22,6 +22,6 @@ TimeoutStartSec=780
 # (measured 2026-09-02: `Environment=X=%h/y` arrives as the literal `%h/y`), so the pins live in
 # the script's own defaults; this line removes the inherited user-manager values that could
 # override them (UnsetEnvironment= applies after every Environment= source).
-UnsetEnvironment=HAPAX_COUNCIL HAPAX_GLMCP_REVIEW_BASE_URL HAPAX_GLMCP_REVIEW_SECRET_ENTRY HAPAX_GLMCP_REVIEW_ALLOW_SECRET_ENTRY_OVERRIDE HAPAX_GLMCP_SEAT_ROOT_OVERRIDE
+UnsetEnvironment=HAPAX_COUNCIL HAPAX_GLMCP_REVIEW_BASE_URL HAPAX_GLMCP_REVIEW_SECRET_ENTRY HAPAX_GLMCP_REVIEW_ALLOW_SECRET_ENTRY_OVERRIDE HAPAX_GLMCP_SEAT_ROOT_OVERRIDE HAPAX_PLATFORM_CAPABILITY_RECEIPT_DIR HAPAX_QUOTA_SPEND_LEDGER_LIVE
 MemoryMax=512M
 SyslogIdentifier=hapax-glmcp-seat-refresh

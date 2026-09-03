@@ -140,7 +140,14 @@ set -e
 sed 's/\x1b\[[0-9;]*m//g' "$WOUT" | grep -vE '^\s*$' | tail -4 | cut -c1-200 || true
 case "$writer_rc" in
   0) ;;
-  3) echo "telemetry writer: live ledger written, capability receipts degraded (exit 3); the seat is refreshed" ;;
+  3)
+    # Since round 6 the dispatcher's glmcp platform receipt IS what this script (and the
+    # dispatcher) read for freshness. Exit 3 means that receipt refresh degraded, so the seat is
+    # NOT visible even though the ledger was written: a failure with its next action, never a
+    # success (review finding on #4624, round 6).
+    echo "glm seat NOT visible: the telemetry writer wrote the live ledger but the capability-receipt refresh degraded (exit 3), so the dispatcher's glmcp receipt was not renewed. Next: run $H/scripts/hapax-platform-capability-receipts --platform glmcp by hand and read why." >&2
+    exit 6
+    ;;
   *)
     echo "telemetry writer failed (exit $writer_rc) AFTER the admission receipt was minted: the seat is refreshed but the live ledger may be stale. Next: run $H/scripts/hapax-quota-telemetry-writer by hand and read its output." >&2
     exit 3
