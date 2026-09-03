@@ -12,7 +12,8 @@ set -euo pipefail
 #      - NVIDIA open modules selected in installer
 #      - User account created (same username)
 #      - Network connected
-#   2. SATA drive: Phase 11 handles partitioning OR mounting if already partitioned
+#   2. Store disk: Phase 11 mounts the filesystem the storage registry names (by UUID);
+#      a replacement disk is formatted only when named in RESTORE_STORE_DEVICE and empty
 #
 # HOW TO GET THIS SCRIPT (pick one):
 #
@@ -295,6 +296,111 @@ restore_qdrant_snapshots() {
             return 1
         fi
         ok "Qdrant: $coll"
+    done
+}
+
+store_partition_path() {
+    # First partition of a whole disk, by the naming rule of its path family.
+    local disk="$1"
+    case "$disk" in
+        /dev/disk/by-*/*) printf '%s-part1\n' "$disk" ;;
+        *nvme*|*mmcblk*|*loop*) printf '%sp1\n' "$disk" ;;
+        *) printf '%s1\n' "$disk" ;;
+    esac
+}
+
+store_filesystem_identity() {
+    # Prints "uuid<TAB>serial<TAB>by_id" for the registry mount record that carries the store
+    # root on the host that owns the B2 staging policy. Fails when the registry has no such record.
+    local store_root="$1" registry_path="${2:-$HOST_STORAGE_REGISTRY}"
+
+    jq -er --arg root "$store_root" --arg policy "${BACKUP_STORAGE_POLICY_IDS[1]}" '
+        . as $doc
+        | (first($doc.backup_policies[] | select(.store_id == $policy) | .target_host)) as $host
+        | ([$doc.mounts[]
+            | select(.target_host == $host and any((.mountpoints // [])[]; . == $root))] | first) as $m
+        | if $m == null then error("no mount record for " + $root + " on " + $host) else . end
+        | ($m.device_ref.serial // "") as $serial
+        | (([$doc.devices[]
+            | select(.target_host == $host and .serial == $serial)
+            | (.by_id // [])[0]] | first) // "") as $by_id
+        | [($m.uuid // ""), $serial, $by_id] | @tsv
+    ' "$registry_path"
+}
+
+provision_store_root() {
+    # Mount the canonical store filesystem the registry names, or provision the replacement disk
+    # the operator names — and nothing else. Every refusal names its next action.
+    local store_root="$1" registry_path="${2:-$HOST_STORAGE_REGISTRY}"
+    local replacement="${3:-}" fstab_path="${4:-/etc/fstab}" target_root="${5:-}"
+    local identity uuid serial by_id device signatures kind target
+
+    if ! identity=$(store_filesystem_identity "$store_root" "$registry_path" 2>/dev/null); then
+        fail "The registry has no mount record for $store_root on the B2 staging host; add mounts[] with its uuid and device_ref.serial to $registry_path, then rerun Phase 11" >&2
+        return 1
+    fi
+    IFS=$'\t' read -r uuid serial by_id <<< "$identity"
+    if [[ -z "$uuid" ]]; then
+        fail "The registry mount record for $store_root has no filesystem UUID; repair it in $registry_path, then rerun Phase 11" >&2
+        return 1
+    fi
+
+    if device=$(sudo blkid -U "$uuid" 2>/dev/null) && [[ -n "$device" ]]; then
+        ok "Canonical $store_root filesystem present: UUID=$uuid on $device (serial ${serial:-unrecorded})"
+    elif [[ -n "$replacement" ]]; then
+        kind=$(lsblk -dno TYPE "$replacement" 2>/dev/null | tr -d '[:space:]' || true)
+        if [[ "$kind" != "disk" ]]; then
+            fail "RESTORE_STORE_DEVICE=$replacement is not a whole disk on this host (lsblk type: ${kind:-none}); name the replacement by its /dev/disk/by-id path, then rerun Phase 11" >&2
+            return 1
+        fi
+        signatures=$(lsblk -no FSTYPE,PTTYPE "$replacement" 2>/dev/null | tr -d '[:space:]' || true)
+        if [[ -n "$signatures" ]]; then
+            fail "RESTORE_STORE_DEVICE=$replacement already carries a filesystem or partition table ($signatures); this script never formats a disk that holds data — if it truly is the replacement, wipe it deliberately with wipefs, then rerun Phase 11" >&2
+            return 1
+        fi
+        log "Provisioning replacement disk $replacement for canonical storage root $store_root..."
+        sudo parted "$replacement" --script mklabel gpt
+        sudo parted "$replacement" --script mkpart store ext4 1MiB 100%
+        sudo udevadm settle >/dev/null 2>&1 || true
+        device="$(store_partition_path "$replacement")"
+        sudo mkfs.ext4 -L store "$device"
+        uuid=$(sudo blkid -s UUID -o value "$device")
+        if [[ -z "$uuid" ]]; then
+            fail "Required backup storage root $store_root has no filesystem UUID on $device after mkfs; inspect blkid, then rerun Phase 11" >&2
+            return 1
+        fi
+        ok "Replacement disk provisioned: UUID=$uuid on $device"
+        warn "The registry still records the old filesystem (serial ${serial:-unrecorded}, by-id ${by_id:-unrecorded}); update its mount and device records after the restore so the next restore finds this disk without RESTORE_STORE_DEVICE"
+    else
+        fail "The canonical $store_root filesystem (UUID $uuid, expected on ${by_id:-an unrecorded disk}, serial ${serial:-unrecorded}) is not present on this host, and nothing is formatted on a guess. If that disk was replaced, rerun Phase 11 with RESTORE_STORE_DEVICE=/dev/disk/by-id/<the empty replacement disk>; if it is installed, check cabling and blkid, then rerun Phase 11" >&2
+        return 1
+    fi
+
+    target="$(target_storage_path "$store_root" "$target_root")"
+    sudo mkdir -p -- "$target"
+    if ! awk -v target="$store_root" '$1 !~ /^#/ && $2 == target { found = 1 } END { exit !found }' "$fstab_path"; then
+        printf 'UUID=%s %s ext4 defaults,noatime,commit=60 0 2\n' "$uuid" "$store_root" \
+            | sudo tee -a "$fstab_path" > /dev/null
+        ok "Added $store_root to $fstab_path"
+    fi
+}
+
+carry_network_mount_entries() {
+    # Network filesystems carry no host-local UUID, so their restored fstab lines are valid as
+    # they are; copy the ones for required backup roots that the live fstab does not have yet.
+    local restored_fstab="$1" fstab_path="${2:-/etc/fstab}"
+    local canonical_root line
+
+    [[ -s "$restored_fstab" ]] || return 0
+    for canonical_root in "${BACKUP_STORAGE_ROOTS[@]}"; do
+        if awk -v target="$canonical_root" '$1 !~ /^#/ && $2 == target { found = 1 } END { exit !found }' "$fstab_path"; then
+            continue
+        fi
+        line=$(awk -v target="$canonical_root" '$1 !~ /^#/ && $2 == target && $3 ~ /^(nfs|nfs4|cifs|smb3)$/ { print; exit }' "$restored_fstab")
+        if [[ -n "$line" ]]; then
+            printf '%s\n' "$line" | sudo tee -a "$fstab_path" > /dev/null
+            ok "Carried the network mount for $canonical_root from the restored fstab"
+        fi
     done
 }
 
@@ -866,42 +972,18 @@ if [[ -z "$TIER1_STORAGE_ROOT" ]]; then
     exit 1
 fi
 
-# Detect SATA drive
-SATA_DEV=""
-for dev in /dev/sda /dev/sdb; do
-    if [[ -b "$dev" ]] && ! mount | grep -q "$dev"; then
-        SATA_DEV="$dev"
-        break
-    fi
-done
-
-if [[ -n "$SATA_DEV" ]]; then
-    log "Found SATA drive: $SATA_DEV"
-    if lsblk "$SATA_DEV" | grep -q part; then
-        log "SATA drive already partitioned"
-    else
-        log "Partitioning $SATA_DEV for canonical storage root $STORE_ROOT..."
-        sudo parted "$SATA_DEV" --script mklabel gpt
-        sudo parted "$SATA_DEV" --script mkpart store ext4 1MiB 100%
-        sudo mkfs.ext4 -L store "${SATA_DEV}1"
-        ok "SATA drive partitioned"
-    fi
-
-    sudo mkdir -p "$STORE_ROOT"
-
-    STORE_UUID=$(sudo blkid -s UUID -o value "${SATA_DEV}1")
-    if [[ -z "$STORE_UUID" ]]; then
-        fail "Required backup storage root $STORE_ROOT has no filesystem UUID on ${SATA_DEV}1; inspect blkid, then rerun Phase 11" >&2
-        exit 1
-    fi
-    if ! awk -v target="$STORE_ROOT" '$2 == target { found = 1 } END { exit !found }' /etc/fstab; then
-        printf 'UUID=%s %s ext4 defaults,noatime,commit=60 0 2\n' "$STORE_UUID" "$STORE_ROOT" \
-            | sudo tee -a /etc/fstab > /dev/null
-        ok "Added $STORE_ROOT to fstab"
-    fi
-else
-    log "No unmounted SATA drive found; validating existing canonical storage mounts"
+# Provision the canonical B2 staging root from the registry's identity — never from a guessed
+# kernel name. Podium carries two identical SATA disks at /dev/sda and /dev/sdb, and the second
+# holds a whole-disk filesystem with no partition table: the old rule "first unmounted disk with
+# no partitions → mklabel + mkfs" would have formatted it. Nothing is formatted unless the operator
+# names the replacement disk in RESTORE_STORE_DEVICE and it carries no signature (#4623, round 5).
+if ! provision_store_root "$STORE_ROOT" "$HOST_STORAGE_REGISTRY" "${RESTORE_STORE_DEVICE:-}" /etc/fstab ""; then
+    exit 1
 fi
+
+# Phase 5 saved the restored fstab beside the live one. Network filesystems (the NAS root) carry
+# no host-local UUID, so their lines are valid as restored; carry them before mounting the roots.
+carry_network_mount_entries /etc/fstab.restored /etc/fstab
 
 ensure_backup_storage_roots
 
