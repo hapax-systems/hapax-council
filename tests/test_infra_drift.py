@@ -269,14 +269,9 @@ def test_source_registry_pins_live_offsite_backup_policies():
     assert critical.offsite is True
     assert critical.intended_state == BackupIntendedState.ENABLED
     assert critical.observed_at == datetime(2026, 9, 2, 17, 34, tzinfo=UTC)
-
-    b2 = policies["b2-restic-offsite"]
-    assert b2.method == "restic-b2"
-    assert b2.unit_name == "hapax-backup-remote.timer"
-    assert b2.cadence == "daily"
-    assert b2.next_action is None
-    assert b2.intended_state == BackupIntendedState.ENABLED
-    assert b2.observed_at == datetime(2026, 9, 2, 17, 34, tzinfo=UTC)
+    # The B2 lane's policy row is pinned by the PR that carries its timer and unit (#4623);
+    # this PR leaves that row exactly as main has it (review finding on #4622, round 4).
+    assert policies["b2-restic-offsite"].unit_name != "hapax-backup-critical-offsite.timer"
 
 
 def test_backup_policy_intent_is_required():

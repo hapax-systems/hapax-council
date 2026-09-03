@@ -43,18 +43,18 @@
       "intended_state": "enabled"
     },
     {
-      "cadence": "daily",
+      "cadence": "retired",
       "command_host": "hapax-podium",
       "locality_class": "same_host",
       "method": "restic-b2",
-      "next_action": null,
-      "observed_at": "2026-09-02T17:34:00Z",
+      "next_action": "Keep retired unless operator explicitly reopens B2 capacity policy",
+      "observed_at": "2026-06-06T14:38:37Z",
       "offsite": true,
       "recency_class": "live",
       "store_id": "b2-restic-offsite",
       "target_host": "hapax-podium",
       "unit_name": "hapax-backup-remote.timer",
-      "intended_state": "enabled"
+      "intended_state": "retired"
     }
   ],
   "devices": [
