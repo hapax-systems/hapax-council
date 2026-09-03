@@ -41,7 +41,7 @@ export HAPAX_GLMCP_REVIEW_MODEL="$model"
 #    receipt's stale_after is what is LEFT of the seat's lifetime at generation; it is regenerated
 #    every ten minutes, so this guard can only over-refresh, never under-refresh. Refreshing whenever
 #    fewer than 10 minutes remain keeps the seat from lapsing between two autoqueue cycles (measured
-#    2026-08-04: a receipt that lapsed mid-queue dequeued a green PR).
+#    2026-08-04: a receipt that lapsed mid-queue dequeued a green PR); the threshold is derived below.
 #    The receipt is read through the dispatcher's own loader (`--show`: schema, platform, skew,
 #    duration syntax and freshness are validated there), never by picking fields out of the JSON —
 #    a document the dispatcher rejects must not make this guard skip (review finding on #4624,
@@ -74,7 +74,18 @@ seat_remaining_seconds() {
   esac
   echo $(( $(date -u -d "$q_observed" +%s 2>/dev/null || echo 0) + stale_s - $(date -u +%s) ))
 }
-if remaining="$(seat_remaining_seconds)" && (( remaining > 600 )); then
+# The guard's threshold composes the timer period with the chain's worst case: OnUnitActiveSec
+# counts from the previous ACTIVATION, so after a skip the next chance to refresh is one period
+# later, and from that moment three attempts of 180 s with two 15 s pauses may all be needed
+# before the admission is minted. A skip is therefore safe only when the seat outlives
+# period + envelope = 300 + 570 = 870 s (review finding on #4624, round 8: a skip at 634 s left
+# 334 s for a 570 s envelope). With a 900 s seat the skip fires only inside the first 30 s after
+# a mint — i.e. when the dispatcher itself just refreshed the seat — and never lets it lapse.
+SEAT_REFRESH_THRESHOLD_S=870
+# After a refresh the seat is "visible" when the dispatcher's loader accepts the receipt and it
+# outlives one timer period, so the next tick cannot find it lapsed.
+SEAT_VISIBLE_MIN_S=300
+if remaining="$(seat_remaining_seconds)" && (( remaining > SEAT_REFRESH_THRESHOLD_S )); then
   echo "glm seat fresh per the dispatcher's receipt (${remaining}s remain); no round-trip"
   exit 0
 fi
@@ -186,8 +197,8 @@ if [[ "$receipts_rc" -ne 0 ]]; then
   echo "glm seat NOT visible: the glmcp capability receipt could not be refreshed from the new ledger (exit $receipts_rc) after the admission was minted. Next: run $H/scripts/hapax-platform-capability-receipts --platform glmcp by hand and read why." >&2
   exit 6
 fi
-if ! remaining="$(seat_remaining_seconds)" || (( remaining <= 600 )); then
-  echo "glm seat NOT visible: the dispatcher's glmcp receipt does not carry an accepted, observed quota surface with more than 600 s left (${remaining:-none}) after the admission was minted and the ledger rebuilt. Next: run $H/scripts/hapax-platform-capability-receipts --show --platform glmcp and compare its reason with the relay receipt in \$HOME/.cache/hapax/relay/receipts." >&2
+if ! remaining="$(seat_remaining_seconds)" || (( remaining <= SEAT_VISIBLE_MIN_S )); then
+  echo "glm seat NOT visible: the dispatcher's glmcp receipt does not carry an accepted, observed quota surface with more than ${SEAT_VISIBLE_MIN_S} s left (${remaining:-none}) after the admission was minted and the ledger rebuilt. Next: run $H/scripts/hapax-platform-capability-receipts --show --platform glmcp and compare its reason with the relay receipt in \$HOME/.cache/hapax/relay/receipts." >&2
   exit 6
 fi
 echo "glm seat visible to the dispatcher: ${remaining}s remain on the accepted glmcp receipt"

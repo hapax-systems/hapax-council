@@ -274,22 +274,40 @@ def test_script_exists_is_executable_and_parses() -> None:
     subprocess.run(["bash", "-n", str(SCRIPT)], check=True, capture_output=True, timeout=10)
 
 
-def test_refresh_threshold_keeps_the_receipt_under_its_15_minute_life() -> None:
-    """The seat's admission receipt lives 900 s. The timer fires every 300 s; refreshing whenever
-    fewer than 600 s remain on the dispatcher's receipt bounds the seat's age below ~600 s, so it
-    never lapses between two autoqueue cycles (measured 2026-08-04: a lapse mid-queue dequeued a
-    green PR)."""
-    text = SCRIPT.read_text(encoding="utf-8")
-    m = re.search(r"remaining > (\d+)", text)
-    assert m, "freshness guard missing"
-    assert int(m.group(1)) >= 600
+def test_refresh_threshold_composes_period_envelope_and_seat_life() -> None:
+    """OnUnitActiveSec counts from the previous activation, so after a skip the next refresh can
+    start one period later and may need the whole retry envelope before it mints. The guard may
+    skip only when the seat outlives period + envelope; and it must still be able to skip at all
+    inside a 900 s seat, or it is dead code (review finding on #4624, round 8)."""
+    script = SCRIPT.read_text(encoding="utf-8")
+    threshold = int(re.search(r"^SEAT_REFRESH_THRESHOLD_S=(\d+)$", script, re.M).group(1))
+    visible_min = int(re.search(r"^SEAT_VISIBLE_MIN_S=(\d+)$", script, re.M).group(1))
+    attempt_timeout = int(
+        re.search(r'timeout (\d+) "\$H/scripts/hapax-glmcp-reviewer"', script).group(1)
+    )
+    retry_sleep = int(
+        re.search(r'retry_sleep="\$\{HAPAX_GLMCP_SEAT_RETRY_SLEEP:-(\d+)\}"', script).group(1)
+    )
+    attempts = len(re.findall(r"for attempt in ([0-9 ]+); do", script)) and len(
+        re.search(r"for attempt in ([0-9 ]+); do", script).group(1).split()
+    )
     on_unit_active = _unit_value(TIMER.read_text(encoding="utf-8"), "Timer", "OnUnitActiveSec")
     assert on_unit_active == "5min"
+    period = 300
+    envelope = attempts * attempt_timeout + (attempts - 1) * retry_sleep
+    seat_life = 900  # DEFAULT_STALE_AFTER_SECONDS of hapax-glmcp-quota-admission
+    assert envelope == 570
+    assert threshold >= period + envelope, (threshold, period, envelope)
+    assert threshold < seat_life, "a threshold at or past the seat's life can never skip"
+    assert visible_min >= period, "a refreshed seat must outlive one period"
+    assert "remaining > SEAT_REFRESH_THRESHOLD_S" in script
+    assert "remaining <= SEAT_VISIBLE_MIN_S" in script
 
 
 def test_a_dispatcher_receipt_with_time_to_spare_skips_the_round_trip(tmp_path: Path) -> None:
+    # 890 s remain: inside the 30 s window after a mint in which a skip is provably safe.
     home, council = _harness(
-        tmp_path, receipt_status="observed", receipt_remaining=900, receipt_age=60
+        tmp_path, receipt_status="observed", receipt_remaining=900, receipt_age=10
     )
     result = _run(home, council)
     assert result.returncode == 0, result.stderr
@@ -299,7 +317,7 @@ def test_a_dispatcher_receipt_with_time_to_spare_skips_the_round_trip(tmp_path: 
 
 
 def test_a_dispatcher_receipt_about_to_lapse_round_trips(tmp_path: Path) -> None:
-    # generated 600 s ago with 900 s to live: 300 s remain, under the 600 s threshold
+    # generated 600 s ago with 900 s to live: 300 s remain, under the 870 s threshold
     home, council = _harness(
         tmp_path, receipt_status="observed", receipt_remaining=900, receipt_age=600
     )
