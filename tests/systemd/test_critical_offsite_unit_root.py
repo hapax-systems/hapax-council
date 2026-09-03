@@ -47,3 +47,15 @@ def test_runbook_cutover_installs_from_the_activation_worktree_and_names_the_hol
     assert "HOLD" in cutover
     assert "$HOME/projects/hapax-council/scripts/hapax-backup-critical-offsite" not in runbook
     assert f"{ACTIVATION_ROOT}/scripts/hapax-backup-critical-offsite" in runbook
+
+
+def test_the_watchdog_unit_this_change_touches_executes_from_the_activation_worktree() -> None:
+    """Round four (all three families): the watchdog script changed in this PR, and its unit
+    still ran the mutable checkout. Every unit a change touches follows the convention."""
+    service = (REPO / "systemd" / "units" / "hapax-backup-watchdog.service").read_text(
+        encoding="utf-8"
+    )
+    exec_start = _unit_value(service, "Service", "ExecStart") or ""
+    assert exec_start == f"{ACTIVATION_ROOT}/scripts/hapax-backup-watchdog"
+    assert _unit_value(service, "Service", "WorkingDirectory") == ACTIVATION_ROOT
+    assert "projects" not in service
