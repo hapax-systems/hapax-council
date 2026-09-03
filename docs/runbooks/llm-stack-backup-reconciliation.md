@@ -25,8 +25,24 @@ Tier 2 Backblaze B2 coverage:
 - Recovery storage registry: `b2:hapax-backups/dr-scripts/host-storage-registry.json`
 
 The operator reinstated B2 as a live daily offsite lane on 2026-09-02. It
-creates its own database and workflow exports; it does not consume Tier 1's
-staging directory, so the two producers remain independent failure domains.
+creates its own database and workflow exports and does not consume Tier 1's
+staging directory. That is a separate *staging path*, not a separate failure
+domain: both producers run on hapax-podium, stage under the same `/store`
+filesystem, and depend on the same PostgreSQL, Qdrant, `pass` store and
+source-activation tree, so a host-, store- or database-level fault stops both
+on the same day. What is independent is the destination — the NAS repository
+and the B2 repository fail separately — and the cross-host copy is the critical
+off-site lane below.
+
+Recheck the B2 lane's claims on podium:
+
+```bash
+systemctl --user list-timers hapax-backup-remote.timer --no-pager
+systemctl --user status hapax-backup-remote.service --no-pager | head -5
+RESTIC_PASSWORD_COMMAND='pass show backblaze/restic-password' \
+  restic -r rclone:b2:hapax-backups/restic snapshots --latest 1
+~/.cache/hapax/source-activation/worktree/scripts/hapax-backup-watchdog 2>&1 | grep Tier2-B2
+```
 
 Critical offsite safety baseline:
 

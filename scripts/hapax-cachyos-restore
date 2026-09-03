@@ -473,16 +473,21 @@ if ! command -v paru &>/dev/null; then
     ok "paru installed"
 fi
 
-# Configure rclone
+# Configure rclone. The config carries the B2 application key: it is created under umask 077 and
+# pinned to 0600, never left at the ambient umask (a 022 umask made it world-readable — review
+# finding on #4623, round 5).
 mkdir -p ~/.config/rclone
+chmod 700 ~/.config/rclone
 if ! rclone listremotes 2>/dev/null | grep -q '^b2:'; then
-    cat > ~/.config/rclone/rclone.conf <<RCLONE
+    (umask 077; cat > ~/.config/rclone/rclone.conf <<RCLONE
 [b2]
 type = b2
 account = ${B2_KEY_ID}
 key = ${B2_APP_KEY}
 RCLONE
-    ok "rclone configured for B2"
+    )
+    chmod 600 ~/.config/rclone/rclone.conf
+    ok "rclone configured for B2 (config mode 0600)"
 fi
 
 # Verify backup access

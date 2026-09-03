@@ -227,3 +227,13 @@ carry_network_mount_entries "$3" "$4"
     assert lines.count("192.168.68.71:/volume1/backups /mnt/nas nfs defaults,_netdev 0 0") == 1
     assert "UUID=0000-old /store ext4 defaults 0 2" not in lines
     assert not any("nas-media" in line for line in lines)
+
+
+def test_rclone_config_is_written_private() -> None:
+    """The rclone config carries the B2 application key; a 022 umask left it 0644 (review finding
+    on #4623, round 5). The write runs under umask 077 and the file is pinned to 0600."""
+    text = RESTORE_SCRIPT.read_text(encoding="utf-8")
+    block = text[text.index("# Configure rclone") : text.index("# Verify backup access")]
+    assert "(umask 077; cat > ~/.config/rclone/rclone.conf <<RCLONE" in block
+    assert "chmod 600 ~/.config/rclone/rclone.conf" in block
+    assert "chmod 700 ~/.config/rclone" in block
