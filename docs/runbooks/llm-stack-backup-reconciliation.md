@@ -45,30 +45,56 @@ The unit runs its script from the governed source-activation worktree
 checkout. On podium that worktree is deliberately HELD by the operator
 (`~/.cache/hapax/source-activation/HOLD`, 2026-08-18: podium source activation is
 an operator ratify-line), so it will not carry this unit's script until the hold
-is released. Two steps, in order:
+is released.
 
-1. Release the hold (an operator ratify-line, not a script's decision): remove
-   `~/.cache/hapax/source-activation/HOLD`, let `hapax-source-activate.timer`
-   bring the worktree to main, and confirm with
-   `git -C ~/.cache/hapax/source-activation/worktree log -1 --oneline`.
-2. Let the governed deploy install the units. `hapax-source-activate` installs every
-   merged unit, conf and script itself as part of the deploy (it does not call
-   `systemd/scripts/install-units.sh`, which refuses to run from anything but the
-   primary checkout). Do not hand-create symlinks and do not run the installer from
-   any worktree. What remains is retiring the old unit and its drop-ins, then
-   enabling the new timer:
+The rename is a fail-closed cutover, not two independent operator steps. Source
+activation installs an unmarked new timer with `enable --now`, so the old timer
+and any in-flight old service must be stopped, removed, and witnessed absent
+before removing `HOLD`. Do not remove `HOLD` separately. Run the complete block;
+any failed retirement witness exits before source activation can enable the new
+timer. The first two commands also make a partially attempted cutover safe to
+retry by stopping the new lane before inspecting the old one.
+
+`hapax-source-activate` installs every merged unit, conf and script itself as
+part of the deploy (it does not call `systemd/scripts/install-units.sh`, which
+refuses to run from anything but the primary checkout). Do not hand-create
+symlinks and do not run the installer from any worktree.
 
 ```bash
-systemctl --user disable --now hapax-backup-gdrive-critical.timer
-rm -rf ~/.config/systemd/user/hapax-backup-gdrive-critical.service.d ~/.config/systemd/user/hapax-backup-watchdog.service.d/20-r2.conf
+set -euo pipefail
+
+systemctl --user disable --now hapax-backup-critical-offsite.timer 2>/dev/null || true
+systemctl --user stop hapax-backup-critical-offsite.service 2>/dev/null || true
+systemctl --user disable --now hapax-backup-gdrive-critical.timer 2>/dev/null || true
+systemctl --user stop hapax-backup-gdrive-critical.service 2>/dev/null || true
+rm -rf ~/.config/systemd/user/hapax-backup-gdrive-critical.service.d ~/.config/systemd/user/hapax-backup-gdrive-critical.timer.d ~/.config/systemd/user/hapax-backup-watchdog.service.d/20-r2.conf
 rm -f ~/.config/systemd/user/hapax-backup-gdrive-critical.{service,timer}
-systemctl --user daemon-reload && systemctl --user enable --now hapax-backup-critical-offsite.timer
+systemctl --user daemon-reload
+
+for unit in hapax-backup-gdrive-critical.timer hapax-backup-gdrive-critical.service; do
+    load_state="$(systemctl --user show "$unit" -p LoadState --value)"
+    active_state="$(systemctl --user show "$unit" -p ActiveState --value)"
+    if [ "$load_state" != "not-found" ] || [ "$active_state" != "inactive" ]; then
+        echo "REFUSED: $unit retirement is not witnessed (load=$load_state active=$active_state)" >&2
+        exit 1
+    fi
+done
+if systemctl --user is-enabled --quiet hapax-backup-gdrive-critical.timer; then
+    echo "REFUSED: hapax-backup-gdrive-critical.timer is still enabled" >&2
+    exit 1
+fi
+
+rm -f ~/.cache/hapax/source-activation/HOLD
+systemctl --user start hapax-source-activate.service
+git -C ~/.cache/hapax/source-activation/worktree log -1 --oneline
+systemctl --user is-enabled --quiet hapax-backup-critical-offsite.timer
+systemctl --user is-active --quiet hapax-backup-critical-offsite.timer
 systemctl --user show hapax-backup-critical-offsite.service -p FragmentPath -p ExecStart
 ```
 
-Until step 1 happens, the R2 lane keeps running under the secret-free
+Until this guarded cutover runs, the R2 lane keeps running under the secret-free
 `20-r2.conf` drop-ins that carried the 2026-09-02 switch (they name pass entries,
-never values); step 2 removes them.
+never values). The cutover stops that old lane before removing the drop-ins.
 
 The `rclone:gdrive:` remote and the Drive restic repository at
 `rclone:gdrive:hapax-backups/restic-critical` are retired. Snapshots carrying

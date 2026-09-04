@@ -49,6 +49,54 @@ def test_runbook_cutover_installs_from_the_activation_worktree_and_names_the_hol
     assert f"{ACTIVATION_ROOT}/scripts/hapax-backup-critical-offsite" in runbook
 
 
+def test_runbook_retires_and_witnesses_the_old_lane_before_source_activation() -> None:
+    """The renamed timer auto-starts when source activation deploys it, so the old timer and
+    any in-flight old service must be gone before the HOLD is released."""
+    runbook = RUNBOOK.read_text(encoding="utf-8")
+    cutover = runbook.split("## Cutover on podium", 1)[1]
+    commands = cutover.split("```bash", 1)[1].split("```", 1)[0]
+
+    retire_timer = commands.index(
+        "systemctl --user disable --now hapax-backup-gdrive-critical.timer"
+    )
+    retire_service = commands.index("systemctl --user stop hapax-backup-gdrive-critical.service")
+    remove_timer = commands.index(
+        "rm -f ~/.config/systemd/user/hapax-backup-gdrive-critical.{service,timer}"
+    )
+    remove_service_dropins = commands.index(
+        "~/.config/systemd/user/hapax-backup-gdrive-critical.service.d"
+    )
+    remove_timer_dropins = commands.index(
+        "~/.config/systemd/user/hapax-backup-gdrive-critical.timer.d"
+    )
+    reload_units = commands.index("systemctl --user daemon-reload")
+    witness_load_state = commands.index("LoadState")
+    witness_active_state = commands.index("ActiveState")
+    refuse_cutover = commands.index("exit 1")
+    witness_disabled = commands.index(
+        "systemctl --user is-enabled --quiet hapax-backup-gdrive-critical.timer"
+    )
+    release_hold = commands.index("rm -f ~/.cache/hapax/source-activation/HOLD")
+    activate_source = commands.index("systemctl --user start hapax-source-activate.service")
+
+    assert (
+        max(
+            retire_timer,
+            retire_service,
+            remove_timer,
+            remove_service_dropins,
+            remove_timer_dropins,
+        )
+        < reload_units
+    )
+    assert reload_units < min(witness_load_state, witness_active_state, refuse_cutover)
+    assert (
+        max(witness_load_state, witness_active_state, refuse_cutover, witness_disabled)
+        < release_hold
+    )
+    assert release_hold < activate_source
+
+
 def test_the_watchdog_unit_this_change_touches_executes_from_the_activation_worktree() -> None:
     """Round four (all three families): the watchdog script changed in this PR, and its unit
     still ran the mutable checkout. Every unit a change touches follows the convention."""
