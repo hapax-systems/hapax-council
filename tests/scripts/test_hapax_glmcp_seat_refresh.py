@@ -294,7 +294,7 @@ def _envelope(tmp_path: Path) -> dict[str, int]:
     return json.loads(proc.stdout)
 
 
-def test_refresh_threshold_is_derived_from_every_stage_and_a_tick_cannot_lapse(
+def test_refresh_threshold_is_derived_from_every_stage_and_a_skip_cannot_lapse(
     tmp_path: Path,
 ) -> None:
     """Review finding on #4624, round 9: the threshold covered the timer period and the reviewer
@@ -302,33 +302,42 @@ def test_refresh_threshold_is_derived_from_every_stage_and_a_tick_cannot_lapse(
     the ledger writer, the receipt refresh and the read-back also finish, and AccuracySec can delay
     the activation. The script now derives the threshold from every stage and refuses to run when
     the sum no longer fits inside the seat's life; this test recomputes the sum from the printed
-    stage constants and checks both invariants against the unit files."""
+    stage constants and checks all three invariants against the unit files."""
     e = _envelope(tmp_path)
     review = (
         e["review_attempts"] * e["review_attempt_timeout_s"]
         + (e["review_attempts"] - 1) * e["review_retry_sleep_s"]
     )
-    chain = (
-        e["timer_accuracy_s"]
-        + e["show_timeout_s"]  # the next run's initial freshness read
+    service = (
+        e["show_timeout_s"]  # the next run's initial freshness read
         + review
         + e["admission_timeout_s"]
         + e["writer_timeout_s"]
         + e["receipts_timeout_s"]
         + e["show_timeout_s"]
     )
+    chain = e["timer_accuracy_s"] + service
+    post_mint_tail = e["writer_timeout_s"] + e["receipts_timeout_s"] + e["show_timeout_s"]
     assert e["review_envelope_s"] == review
+    assert e["service_envelope_s"] == service
     assert e["chain_envelope_s"] == chain
-    assert e["seat_refresh_threshold_s"] == e["timer_period_s"] + chain
+    assert e["post_mint_tail_s"] == post_mint_tail
+    assert e["seat_refresh_threshold_s"] == e["timer_inactive_delay_s"] + chain
+    assert e["overrun_renewal_envelope_s"] == post_mint_tail + e["seat_refresh_threshold_s"]
     assert e["review_attempts"] == 3
     # a skip must be possible at all inside the seat's life, or the guard is dead code
     assert e["seat_refresh_threshold_s"] < e["seat_life_s"]
-    # a routine tick starts with seat_life - period left; the whole chain must fit inside it
-    assert chain <= e["seat_life_s"] - e["timer_period_s"], (chain, e)
-    assert e["seat_visible_min_s"] >= e["timer_period_s"]
+    # Even a prior run which minted before its worst-case tail must leave enough life for the
+    # completion-relative delay and the entire next renewal.
+    assert e["overrun_renewal_envelope_s"] < e["seat_life_s"], e
+    assert e["seat_visible_min_s"] == e["seat_refresh_threshold_s"]
     assert e["review_inner_timeout_s"] < e["review_attempt_timeout_s"]
     timer = TIMER.read_text(encoding="utf-8")
-    assert _unit_value(timer, "Timer", "OnUnitActiveSec") == "5min" and e["timer_period_s"] == 300
+    assert _unit_value(timer, "Timer", "OnUnitActiveSec") is None
+    assert (
+        _unit_value(timer, "Timer", "OnUnitInactiveSec") == "30s"
+        and e["timer_inactive_delay_s"] == 30
+    )
     assert _unit_value(timer, "Timer", "AccuracySec") == "30s" and e["timer_accuracy_s"] == 30
     script = SCRIPT.read_text(encoding="utf-8")
     assert "remaining > SEAT_REFRESH_THRESHOLD_S" in script
@@ -342,11 +351,67 @@ def test_refresh_threshold_is_derived_from_every_stage_and_a_tick_cannot_lapse(
         assert f'timeout "${stage}"' in script, stage
 
 
+def test_an_overrunning_oneshot_cannot_consume_the_next_activation(tmp_path: Path) -> None:
+    """Replay the review's overrun on the production budgets and timer wire semantics.
+
+    The prior service starts 300 s before the old periodic firing, mints 180 s before it, and
+    remains active for its bounded post-mint tail. OnUnitActiveSec consumes the firing; its next
+    period plus a worst-case renewal exposes a lapse. OnUnitInactiveSec has no firing while the
+    service is active and schedules only after completion, so the same path renews before expiry.
+    """
+    e = _envelope(tmp_path)
+    timer = TIMER.read_text(encoding="utf-8")
+
+    def seconds(value: str) -> int:
+        for suffix, multiplier in (("min", 60), ("s", 1)):
+            if value.endswith(suffix):
+                return int(value.removesuffix(suffix)) * multiplier
+        raise AssertionError(f"unsupported timer duration: {value}")
+
+    def next_start(timer_text: str, previous_start: int, previous_finish: int) -> int:
+        """Apply systemd's active-relative vs inactive-relative timer semantics to one overrun."""
+        accuracy = seconds(_unit_value(timer_text, "Timer", "AccuracySec") or "")
+        active_delay = _unit_value(timer_text, "Timer", "OnUnitActiveSec")
+        inactive_delay = _unit_value(timer_text, "Timer", "OnUnitInactiveSec")
+        assert (active_delay is None) != (inactive_delay is None), timer_text
+        if inactive_delay is not None:
+            trigger = previous_finish + seconds(inactive_delay)
+        else:
+            period = seconds(active_delay or "")
+            trigger = previous_start + period
+            while trigger < previous_finish:
+                trigger += period  # an elapse while active is consumed, not queued
+        return trigger + accuracy
+
+    old_period_s = 300
+    missed_firing_at = 0
+    previous_start_at = missed_firing_at - old_period_s
+    receipt_minted_at = missed_firing_at - 180
+    previous_finish_at = receipt_minted_at + e["post_mint_tail_s"]
+    receipt_expires_at = receipt_minted_at + e["seat_life_s"]
+    assert previous_start_at < receipt_minted_at < missed_firing_at < previous_finish_at
+    assert previous_finish_at - previous_start_at <= e["service_envelope_s"]
+
+    # The removed OnUnitActiveSec wiring consumes t=0 because the target is active, then waits for
+    # its next period. Include AccuracySec and a full service-to-visible envelope on both paths.
+    old_timer = timer.replace("OnUnitInactiveSec=30s", "OnUnitActiveSec=5min")
+    old_next_start_at = next_start(old_timer, previous_start_at, previous_finish_at)
+    old_next_visible_at = old_next_start_at + e["service_envelope_s"]
+    assert old_next_visible_at > receipt_expires_at  # reproduces the review's lapse
+
+    new_next_start_at = next_start(timer, previous_start_at, previous_finish_at)
+    assert new_next_start_at == (
+        previous_finish_at + e["timer_inactive_delay_s"] + e["timer_accuracy_s"]
+    )
+    new_next_visible_at = new_next_start_at + e["service_envelope_s"]
+    assert new_next_visible_at < receipt_expires_at
+
+
 def test_an_unsafe_envelope_is_refused_and_names_every_term(tmp_path: Path) -> None:
     home, council = _harness(tmp_path)
     unsafe_script = tmp_path / "unsafe-seat-refresh"
     unsafe_script.write_text(
-        SCRIPT.read_text(encoding="utf-8").replace("WRITER_TIMEOUT_S=120", "WRITER_TIMEOUT_S=151"),
+        SCRIPT.read_text(encoding="utf-8").replace("WRITER_TIMEOUT_S=120", "WRITER_TIMEOUT_S=166"),
         encoding="utf-8",
     )
     proc = subprocess.run(
@@ -364,9 +429,11 @@ def test_an_unsafe_envelope_is_refused_and_names_every_term(tmp_path: Path) -> N
     assert proc.returncode == 7, proc.stderr
     for term in (
         "SEAT_REFRESH_THRESHOLD_S",
+        "OVERRUN_RENEWAL_ENVELOPE_S",
+        "POST_MINT_TAIL_S",
         "CHAIN_ENVELOPE_S",
         "REVIEW_ENVELOPE_S",
-        "TIMER_PERIOD_S",
+        "TIMER_INACTIVE_DELAY_S",
         "TIMER_ACCURACY_S",
         "initial SHOW_TIMEOUT_S",
         "REVIEW_ATTEMPTS",
@@ -494,7 +561,7 @@ def test_a_receipt_between_the_old_and_new_thresholds_is_refreshed(tmp_path: Pat
         + e["receipts_timeout_s"]
         + e["show_timeout_s"]
     )
-    new_threshold = e["timer_period_s"] + expected_chain
+    new_threshold = e["timer_inactive_delay_s"] + expected_chain
     old_threshold = new_threshold - e["show_timeout_s"]
     remaining = (old_threshold + new_threshold) // 2
     assert old_threshold < remaining < new_threshold
@@ -732,10 +799,10 @@ def test_unit_pair_executes_from_the_activation_worktree_and_strips_inherited_ov
         'timeout "${SHOW_TIMEOUT_S:-30}" "$H/scripts/hapax-platform-capability-receipts" --show'
         in script
     )
-    assert "5 minutes" in (_unit_value(service, "Unit", "Description") or "")
+    assert "older than 5 minutes" in (_unit_value(service, "Unit", "Description") or "")
     timer = TIMER.read_text(encoding="utf-8")
     assert _unit_value(timer, "Install", "WantedBy") == "timers.target"
-    assert "5 minutes" in (_unit_value(timer, "Unit", "Description") or "")
+    assert "After each completion" in (_unit_value(timer, "Unit", "Description") or "")
 
 
 # ---------------------------------------------------------------------------
@@ -783,6 +850,19 @@ def test_a_seat_the_dispatcher_cannot_see_after_the_refresh_is_a_failure(tmp_pat
     assert "--show --platform glmcp" in result.stderr
     assert "Next:" in result.stderr
     assert (home / "admission-calls").exists()
+
+
+def test_a_new_receipt_without_a_full_next_renewal_window_is_refused(tmp_path: Path) -> None:
+    """A refresh is not success when its receipt cannot survive the delay plus the next run."""
+    e = _envelope(tmp_path / "envelope")
+    home, council = _harness(
+        tmp_path / "run",
+        refreshed_remaining=e["seat_refresh_threshold_s"],
+    )
+    result = _run(home, council)
+    assert result.returncode == 6
+    assert f"more than {e['seat_refresh_threshold_s']} s left" in result.stderr
+    assert "glm seat visible to the dispatcher" not in result.stdout
 
 
 def test_a_failed_glm_receipt_refresh_after_minting_is_loud(tmp_path: Path) -> None:

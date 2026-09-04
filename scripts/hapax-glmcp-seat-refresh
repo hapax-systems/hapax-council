@@ -88,19 +88,19 @@ seat_remaining_seconds() {
   echo $(( $(date -u -d "$q_observed" +%s 2>/dev/null || echo 0) + stale_s - $(date -u +%s) ))
 }
 # The guard's threshold is DERIVED from every stage a replacement receipt passes through before the
-# dispatcher can see it (review finding on #4624, round 9: the hand-written 870 covered the timer
-# period and the reviewer retries only, so a routine tick that starts with ~600 s left could lapse
-# during a refresh whose admission, ledger and receipt stages take up to 240 s more). OnUnitActiveSec
-# counts from the previous ACTIVATION, so after a skip the next refresh can start one period later;
-# AccuracySec can delay that activation; the next run must spend one SHOW_TIMEOUT_S discovering the
-# old receipt's remaining life before it can decide to refresh. Then the reviewer attempts, the
-# admission mint, the ledger writer, the receipt refresh and the final visibility read-back must all
-# finish before the old receipt lapses. Two invariants, both checked at run time rather than promised
-# in prose:
-#   skip is safe      only when  remaining > period + chain envelope
-#   a tick never lapses only when  chain envelope < seat life - period
+# dispatcher can see it. The timer uses OnUnitInactiveSec: unlike OnUnitActiveSec, its clock cannot
+# elapse while this oneshot is active and consume an activation (review finding on #4624, round 10).
+# After a skip, the next run begins after the inactive delay plus AccuracySec, spends one
+# SHOW_TIMEOUT_S discovering the old receipt's remaining life, then must finish the reviewer,
+# admission mint, ledger writer, receipt refresh and final visibility read-back before that receipt
+# lapses. A successful prior run can mint its admission before its writer/receipt/read-back tail, so
+# the overrun invariant also includes that tail before the completion-relative timer starts. Three
+# invariants are checked at run time rather than promised in prose:
+#   skip is safe            only when remaining > inactive delay + chain envelope
+#   a refreshed seat is safe only when its visible remainder exceeds that same threshold
+#   an overrun is safe      only when prior post-mint tail + delay + next chain < seat life
 # If a stage timeout below is ever raised until the sums no longer fit, the script refuses to run.
-TIMER_PERIOD_S=300              # hapax-glmcp-seat-refresh.timer OnUnitActiveSec=5min
+TIMER_INACTIVE_DELAY_S=30        # hapax-glmcp-seat-refresh.timer OnUnitInactiveSec=30s
 TIMER_ACCURACY_S=30             # hapax-glmcp-seat-refresh.timer AccuracySec=30s
 REVIEW_ATTEMPTS=3
 REVIEW_ATTEMPT_TIMEOUT_S=60     # outer `timeout` around the reviewer; measured round-trips take ~4 s
@@ -112,20 +112,24 @@ RECEIPTS_TIMEOUT_S=60
 SHOW_TIMEOUT_S=30
 SEAT_LIFE_S=900                 # DEFAULT_STALE_AFTER_SECONDS of hapax-glmcp-quota-admission
 REVIEW_ENVELOPE_S=$(( REVIEW_ATTEMPTS * REVIEW_ATTEMPT_TIMEOUT_S + (REVIEW_ATTEMPTS - 1) * REVIEW_RETRY_SLEEP_S ))
-CHAIN_ENVELOPE_S=$(( TIMER_ACCURACY_S + SHOW_TIMEOUT_S + REVIEW_ENVELOPE_S + ADMISSION_TIMEOUT_S + WRITER_TIMEOUT_S + RECEIPTS_TIMEOUT_S + SHOW_TIMEOUT_S ))
-SEAT_REFRESH_THRESHOLD_S=$(( TIMER_PERIOD_S + CHAIN_ENVELOPE_S ))
-# After a refresh the seat is "visible" when the dispatcher's loader accepts the receipt and it
-# outlives one timer period, so the next tick cannot find it lapsed.
-SEAT_VISIBLE_MIN_S=$TIMER_PERIOD_S
-if (( SEAT_REFRESH_THRESHOLD_S >= SEAT_LIFE_S )); then
-  echo "glm seat refresh REFUSED: SEAT_REFRESH_THRESHOLD_S=${SEAT_REFRESH_THRESHOLD_S}s does not fit inside SEAT_LIFE_S=${SEAT_LIFE_S}s. CHAIN_ENVELOPE_S=${CHAIN_ENVELOPE_S}s and REVIEW_ENVELOPE_S=${REVIEW_ENVELOPE_S}s come from: TIMER_PERIOD_S=${TIMER_PERIOD_S}s + TIMER_ACCURACY_S=${TIMER_ACCURACY_S}s + initial SHOW_TIMEOUT_S=${SHOW_TIMEOUT_S}s + REVIEW_ATTEMPTS=${REVIEW_ATTEMPTS} * REVIEW_ATTEMPT_TIMEOUT_S=${REVIEW_ATTEMPT_TIMEOUT_S}s + (REVIEW_ATTEMPTS - 1) * REVIEW_RETRY_SLEEP_S=${REVIEW_RETRY_SLEEP_S}s + ADMISSION_TIMEOUT_S=${ADMISSION_TIMEOUT_S}s + WRITER_TIMEOUT_S=${WRITER_TIMEOUT_S}s + RECEIPTS_TIMEOUT_S=${RECEIPTS_TIMEOUT_S}s + final SHOW_TIMEOUT_S=${SHOW_TIMEOUT_S}s. Next: shorten a stage timeout or the timer period in this script and its unit, then retry." >&2
+SERVICE_ENVELOPE_S=$(( SHOW_TIMEOUT_S + REVIEW_ENVELOPE_S + ADMISSION_TIMEOUT_S + WRITER_TIMEOUT_S + RECEIPTS_TIMEOUT_S + SHOW_TIMEOUT_S ))
+CHAIN_ENVELOPE_S=$(( TIMER_ACCURACY_S + SERVICE_ENVELOPE_S ))
+POST_MINT_TAIL_S=$(( WRITER_TIMEOUT_S + RECEIPTS_TIMEOUT_S + SHOW_TIMEOUT_S ))
+SEAT_REFRESH_THRESHOLD_S=$(( TIMER_INACTIVE_DELAY_S + CHAIN_ENVELOPE_S ))
+OVERRUN_RENEWAL_ENVELOPE_S=$(( POST_MINT_TAIL_S + SEAT_REFRESH_THRESHOLD_S ))
+# A refresh is visible only if the accepted receipt can survive the completion-relative delay and
+# one complete worst-case next run. A guard that cannot establish this refuses success.
+SEAT_VISIBLE_MIN_S=$SEAT_REFRESH_THRESHOLD_S
+if (( SEAT_REFRESH_THRESHOLD_S >= SEAT_LIFE_S || OVERRUN_RENEWAL_ENVELOPE_S >= SEAT_LIFE_S )); then
+  echo "glm seat refresh REFUSED: the completion-relative schedule does not fit inside SEAT_LIFE_S=${SEAT_LIFE_S}s. SEAT_REFRESH_THRESHOLD_S=${SEAT_REFRESH_THRESHOLD_S}s, OVERRUN_RENEWAL_ENVELOPE_S=${OVERRUN_RENEWAL_ENVELOPE_S}s, POST_MINT_TAIL_S=${POST_MINT_TAIL_S}s, CHAIN_ENVELOPE_S=${CHAIN_ENVELOPE_S}s and REVIEW_ENVELOPE_S=${REVIEW_ENVELOPE_S}s come from: TIMER_INACTIVE_DELAY_S=${TIMER_INACTIVE_DELAY_S}s + TIMER_ACCURACY_S=${TIMER_ACCURACY_S}s + initial SHOW_TIMEOUT_S=${SHOW_TIMEOUT_S}s + REVIEW_ATTEMPTS=${REVIEW_ATTEMPTS} * REVIEW_ATTEMPT_TIMEOUT_S=${REVIEW_ATTEMPT_TIMEOUT_S}s + (REVIEW_ATTEMPTS - 1) * REVIEW_RETRY_SLEEP_S=${REVIEW_RETRY_SLEEP_S}s + ADMISSION_TIMEOUT_S=${ADMISSION_TIMEOUT_S}s + WRITER_TIMEOUT_S=${WRITER_TIMEOUT_S}s + RECEIPTS_TIMEOUT_S=${RECEIPTS_TIMEOUT_S}s + final SHOW_TIMEOUT_S=${SHOW_TIMEOUT_S}s. Next: shorten a stage timeout or the inactive delay in this script and its unit, then retry." >&2
   exit 7
 fi
 if [[ "${1:-}" == "--envelope" ]]; then
-  printf '{"timer_period_s":%d,"timer_accuracy_s":%d,"review_attempts":%d,"review_attempt_timeout_s":%d,"review_inner_timeout_s":%d,"review_retry_sleep_s":%d,"admission_timeout_s":%d,"writer_timeout_s":%d,"receipts_timeout_s":%d,"show_timeout_s":%d,"seat_life_s":%d,"review_envelope_s":%d,"chain_envelope_s":%d,"seat_refresh_threshold_s":%d,"seat_visible_min_s":%d}\n' \
-    "$TIMER_PERIOD_S" "$TIMER_ACCURACY_S" "$REVIEW_ATTEMPTS" "$REVIEW_ATTEMPT_TIMEOUT_S" "$REVIEW_INNER_TIMEOUT_S" "$REVIEW_RETRY_SLEEP_S" \
+  printf '{"timer_inactive_delay_s":%d,"timer_accuracy_s":%d,"review_attempts":%d,"review_attempt_timeout_s":%d,"review_inner_timeout_s":%d,"review_retry_sleep_s":%d,"admission_timeout_s":%d,"writer_timeout_s":%d,"receipts_timeout_s":%d,"show_timeout_s":%d,"seat_life_s":%d,"review_envelope_s":%d,"service_envelope_s":%d,"chain_envelope_s":%d,"post_mint_tail_s":%d,"seat_refresh_threshold_s":%d,"overrun_renewal_envelope_s":%d,"seat_visible_min_s":%d}\n' \
+    "$TIMER_INACTIVE_DELAY_S" "$TIMER_ACCURACY_S" "$REVIEW_ATTEMPTS" "$REVIEW_ATTEMPT_TIMEOUT_S" "$REVIEW_INNER_TIMEOUT_S" "$REVIEW_RETRY_SLEEP_S" \
     "$ADMISSION_TIMEOUT_S" "$WRITER_TIMEOUT_S" "$RECEIPTS_TIMEOUT_S" "$SHOW_TIMEOUT_S" "$SEAT_LIFE_S" \
-    "$REVIEW_ENVELOPE_S" "$CHAIN_ENVELOPE_S" "$SEAT_REFRESH_THRESHOLD_S" "$SEAT_VISIBLE_MIN_S"
+    "$REVIEW_ENVELOPE_S" "$SERVICE_ENVELOPE_S" "$CHAIN_ENVELOPE_S" "$POST_MINT_TAIL_S" \
+    "$SEAT_REFRESH_THRESHOLD_S" "$OVERRUN_RENEWAL_ENVELOPE_S" "$SEAT_VISIBLE_MIN_S"
   exit 0
 fi
 if remaining="$(seat_remaining_seconds)" && (( remaining > SEAT_REFRESH_THRESHOLD_S )); then
@@ -208,8 +212,8 @@ fi
 # The writer rebuilds the live ledger from the relay receipts — LEDGER ONLY. Its default run
 # refreshes every platform's capability receipt first (against the ledger it has not yet rebuilt,
 # so a glmcp receipt minted there carries the PREVIOUS seat's remaining lifetime) and spends a
-# real Codex exec-auth sentinel on every call; neither belongs in a five-minute GLM timer (review
-# finding on #4624, round 8). The glmcp receipt is derived from the fresh ledger below instead.
+# real Codex exec-auth sentinel on every call; neither belongs in this completion-driven GLM timer
+# (review finding on #4624, round 8). The glmcp receipt is derived from the fresh ledger below.
 # The writer's own diagnostics are printed, never filtered away. The admission receipt is already
 # minted at this point; a writer failure is fatal and names its next action.
 set +e

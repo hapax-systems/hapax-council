@@ -1,9 +1,13 @@
 [Unit]
-Description=Every 5 minutes: keep the GLM review seat admitted (the service skips when the receipt is under 5 minutes older 10 minutes old)
+Description=After each completion: keep the GLM review seat admitted (the service skips while a full renewal still fits)
 
 [Timer]
 OnBootSec=2min
-OnUnitActiveSec=5min
+# Schedule from the service becoming inactive, not from its activation. A successful refresh can
+# consume up to 540 s, so OnUnitActiveSec=5min could elapse while the oneshot was still active and
+# systemd would consume that activation without restarting it. This directive cannot elapse while
+# the target is active; AccuracySec makes the completion-to-next-start delay at most 60 s.
+OnUnitInactiveSec=30s
 AccuracySec=30s
 Persistent=false
 
