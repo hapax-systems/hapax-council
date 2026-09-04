@@ -7860,6 +7860,37 @@ def test_admission_status_graphql_read_failure_fails_closed_without_rest_fallbac
     assert _graphql_mutations(calls) == []
 
 
+def test_admission_status_graphql_read_failure_falls_back_when_rest_is_eligible(
+    tmp_path: Path,
+) -> None:
+    """A roomier GraphQL pool is a preference, not evidence that REST is blocked."""
+    decision = _admission_decision()
+    calls: list[list[str]] = []
+    graphql = _graphql_only_runner(calls, graphql_read_ok=False)
+
+    def runner(cmd: list[str], **kwargs: Any) -> subprocess.CompletedProcess:
+        if cmd[:3] == ["gh", "api", "repos/owner/repo/commits/deadbeef/statuses"]:
+            calls.append(list(cmd))
+            return subprocess.CompletedProcess(cmd, 0, "[]", "")
+        if cmd[:4] == ["gh", "api", "-X", "POST"] and "/statuses/" in " ".join(cmd):
+            calls.append(list(cmd))
+            return subprocess.CompletedProcess(cmd, 0, json.dumps({"state": "success"}), "")
+        return graphql(cmd, **kwargs)
+
+    result = autoqueue.set_autoqueue_admission_status(
+        decision,
+        repo="owner/repo",
+        repo_root=tmp_path,
+        runner=runner,
+        route=_graphql_route(rest_blocked=False),
+    )
+
+    assert result is not None and result[0], result
+    assert any(call[:3] == ["gh", "api", "graphql"] for call in calls)
+    assert len(_rest_status_calls(calls)) == 2, "eligible REST must carry the read and write"
+    assert _graphql_mutations(calls) == []
+
+
 def test_admission_status_rest_route_still_posts_over_rest(tmp_path: Path) -> None:
     """The REST path is untouched when the cycle was routed to REST."""
     decision = _admission_decision()

@@ -2572,11 +2572,11 @@ def _latest_admission_status_graphql(
 ) -> tuple[str | None, tuple[str, str, datetime | None] | None]:
     """GraphQL twin of ``_latest_admission_status`` for a cycle routed off REST.
 
-    Returns ``(repository_node_id, current_status)``. The node id proves the read reached the repository; commit statuses have no GraphQL
-    mutation (GitHub's schema defines none), so the write itself stays on REST and is
-    deferred while that pool is below its floor. ``(None, None)`` means the pool refused or the payload
-    was not the shape asked for — the caller then fails closed rather than falling
-    back to the exhausted REST pool, which is the deadlock this exists to remove.
+    Returns ``(repository_node_id, current_status)``. The node id proves the read reached the
+    repository; commit statuses have no GraphQL mutation (GitHub's schema defines none), so the
+    write itself stays on REST and is deferred while that pool is below its floor. ``(None,
+    None)`` means the pool refused or the payload was not the shape asked for — the caller then
+    either uses independently eligible REST or fails closed when REST is measured blocked.
     """
     owner, name = repo.split("/", 1)
     query = (
@@ -2654,12 +2654,11 @@ def set_autoqueue_admission_status(
     if not decision.pr.head_sha:
         return False, "missing_head_sha"
     state, description = status
-    # **Stay on the pool the cycle is on.** When the listing was routed to GraphQL because
-    # REST is below its floor, an unguarded REST GET here (and the REST POST after it) fails,
-    # and the apply loop then SKIPS the queue mutation — the incident condition stalled the
-    # live autoqueue while spending N calls against the exhausted pool (codex critical on
-    # #4610). There is no REST fallback from the GraphQL branch on purpose: the precondition
-    # for a fallback (REST has budget) is exactly what the route decision said is false.
+    # **Stay off a measured-blocked pool.** When the listing was routed to GraphQL because REST
+    # is below its floor, an unguarded REST GET here (and the REST POST after it) fails, and the
+    # apply loop then skips the queue mutation. But a GraphQL route may also mean only that
+    # GraphQL has proportionally more headroom. In that case REST remains an eligible fallback
+    # if the preferred GraphQL read fails.
     repository_id: str | None = None
     # The cycle's route arrives as the ListingRoute the listing chose (transport, whether REST is
     # below its floor, and why) — every caller passes `route=listing_route` — or as a bare
@@ -2678,7 +2677,11 @@ def set_autoqueue_admission_status(
             decision.pr.head_sha, repo=repo, repo_root=repo_root, runner=runner
         )
         if repository_id is None:
-            return False, "graphql_admission_status_read_failed"
+            if rest_blocked:
+                return False, "graphql_admission_status_read_failed"
+            current = _latest_admission_status(
+                decision.pr.head_sha, repo=repo, repo_root=repo_root, runner=runner
+            )
     else:
         current = _latest_admission_status(
             decision.pr.head_sha, repo=repo, repo_root=repo_root, runner=runner

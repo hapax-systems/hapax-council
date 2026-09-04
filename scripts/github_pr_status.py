@@ -1095,9 +1095,14 @@ def list_open_pr_statuses_graphql(
                 f"github_graphql_listing_malformed:row {index} is {type(item).__name__}, not an object"
             )
         number = item.get("number")
-        if number is None:
+        # Match the strict REST fleet path. ``bool`` needs an explicit rejection because it
+        # subclasses ``int``; empty strings, zero, and other coercible values are likewise not
+        # identities GitHub can assign. Letting any of them through can turn a non-empty response
+        # into an omitted row downstream, recreating the successful-empty listing this boundary
+        # is meant to prevent.
+        if isinstance(number, bool) or not isinstance(number, int) or number <= 0:
             raise GraphQLListingFailed(
-                f"github_graphql_listing_malformed:row {index} has no `number`"
+                f"github_graphql_listing_malformed:row {index} has no usable `number`"
             )
         files = item.get("files") if isinstance(item.get("files"), list) else []
         changed_files = item.get("changedFiles")

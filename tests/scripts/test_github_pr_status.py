@@ -1431,6 +1431,9 @@ def test_a_failed_graphql_listing_refuses_instead_of_reading_as_an_empty_estate(
     [
         ("[null]", "a null row parses fine and would silently vanish"),
         ('[{"title": "no number"}]', "a row with no identity cannot be safely omitted"),
+        ('[{"number": ""}]', "an empty identity is not a PR number"),
+        ('[{"number": 0}]', "zero is not a GitHub PR number"),
+        ('[{"number": true}]', "a boolean is an integer subclass but not a PR number"),
     ],
 )
 def test_a_malformed_row_refuses_rather_than_shrinking_the_estate(
@@ -1452,7 +1455,7 @@ def test_a_malformed_row_refuses_rather_than_shrinking_the_estate(
     with pytest.raises(github_pr_status.GraphQLListingFailed):
         (
             github_pr_status.list_open_pr_statuses_graphql(
-                repo="owner/repo", repo_root=tmp_path, runner=rows
+                repo="owner/repo", repo_root=tmp_path, runner=rows, include_status=False
             ),
             why,
         )
