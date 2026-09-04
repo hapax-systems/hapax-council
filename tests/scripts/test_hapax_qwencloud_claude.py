@@ -11,6 +11,35 @@ import pytest
 
 WRAPPER = Path(__file__).resolve().parents[2] / "scripts" / "hapax-qwencloud-claude"
 OFFICIAL = "https://token-plan.ap-southeast-1.maas.aliyuncs.com/apps/anthropic"
+FAKE_KEY = "fixture-plan-key-0000"  # pragma: allowlist secret
+_SECURE_CLIENT_LAUNCH = """        result = subprocess.run(
+            ["claude", *claude_args],
+            env=client_env,
+            check=False,
+        )
+"""
+
+
+def _mutate_credential_into_env_argv(source: str) -> str:
+    insecure_launch = """        result = subprocess.run(
+            [
+                "env",
+                "-i",
+                *[f"{name}={value}" for name, value in client_env.items()],
+                "claude",
+                *claude_args,
+            ],
+            env=client_env,
+            check=False,
+        )
+"""
+    assert _SECURE_CLIENT_LAUNCH in source
+    return source.replace(_SECURE_CLIENT_LAUNCH, insecure_launch, 1)
+
+
+REGISTERED_MUTATIONS = {
+    "credential-in-env-argv": _mutate_credential_into_env_argv,
+}
 
 
 @pytest.fixture
@@ -22,7 +51,9 @@ def bench(tmp_path: Path) -> tuple[Path, dict[str, str]]:
     (bin_dir / "claude").write_text(
         "#!/usr/bin/env python3\n"
         "import json, os, sys\n"
-        f"json.dump({{'argv': sys.argv[1:], 'env': dict(os.environ)}}, open({str(record)!r}, 'w'))\n"
+        "parent_argv = open(f'/proc/{os.getppid()}/cmdline', 'rb').read().rstrip(b'\\0').split(b'\\0')\n"
+        "parent_argv = [part.decode(errors='replace') for part in parent_argv]\n"
+        f"json.dump({{'argv': sys.argv[1:], 'parent_argv': parent_argv, 'env': dict(os.environ)}}, open({str(record)!r}, 'w'))\n"
         "print(json.dumps({'result': 'OK', 'modelUsage': {os.environ.get('ANTHROPIC_MODEL', '?'): {}}}))\n",
         encoding="utf-8",
     )
@@ -35,6 +66,15 @@ def bench(tmp_path: Path) -> tuple[Path, dict[str, str]]:
         encoding="utf-8",
     )
     (bin_dir / "hapax-secret").chmod(0o755)
+    argv_spy = record.with_name("env-argv.json")
+    (bin_dir / "env").write_text(
+        "#!/usr/bin/env python3\n"
+        "import json, os, sys\n"
+        f"json.dump(sys.argv[1:], open({str(argv_spy)!r}, 'w'))\n"
+        "os.execv('/usr/bin/env', ['env', *sys.argv[1:]])\n",
+        encoding="utf-8",
+    )
+    (bin_dir / "env").chmod(0o755)
     env = {
         "PATH": f"{bin_dir}{os.pathsep}{os.environ.get('PATH', '')}",
         "HOME": str(tmp_path / "real-home"),
@@ -45,10 +85,31 @@ def bench(tmp_path: Path) -> tuple[Path, dict[str, str]]:
     return record, env
 
 
-def _run(env: dict[str, str], *args: str) -> subprocess.CompletedProcess[str]:
+def _run_wrapper(
+    wrapper: Path, env: dict[str, str], *args: str
+) -> subprocess.CompletedProcess[str]:
     return subprocess.run(
-        [str(WRAPPER), *args], env=env, capture_output=True, text=True, check=False, timeout=60
+        [str(wrapper), *args],
+        env=env,
+        capture_output=True,
+        text=True,
+        check=False,
+        timeout=60,
     )
+
+
+def _run(env: dict[str, str], *args: str) -> subprocess.CompletedProcess[str]:
+    return _run_wrapper(WRAPPER, env, *args)
+
+
+def _assert_no_credential_in_process_argv(record: Path) -> None:
+    seen = json.loads(record.read_text())
+    observed_argv = [seen["argv"], seen["parent_argv"]]
+    argv_spy = record.with_name("env-argv.json")
+    if argv_spy.exists():
+        observed_argv.append(json.loads(argv_spy.read_text()))
+    if any(FAKE_KEY in argument for argv in observed_argv for argument in argv):
+        raise AssertionError("credential appeared in a wrapper child process argument vector")
 
 
 def test_the_client_runs_isolated_with_the_key_only_in_its_environment(bench) -> None:
@@ -69,6 +130,35 @@ def test_the_client_runs_isolated_with_the_key_only_in_its_environment(bench) ->
     assert "fixture-plan-key" not in proc.stderr
     assert "TMPDIR" not in seen["env"] or seen["env"].get("TMPDIR") != env["TMPDIR"]
     assert json.loads(proc.stdout)["result"] == "OK"
+
+
+def test_the_key_never_appears_in_wrapper_or_intermediate_process_argv(bench) -> None:
+    record, env = bench
+
+    proc = _run(env, "-p", "x")
+
+    assert proc.returncode == 0, proc.stderr
+    assert json.loads(record.read_text())["env"]["ANTHROPIC_AUTH_TOKEN"] == FAKE_KEY
+    _assert_no_credential_in_process_argv(record)
+
+
+def test_registered_credential_argv_mutation_turns_the_regression_red(
+    bench, tmp_path: Path
+) -> None:
+    record, env = bench
+    mutant = tmp_path / "hapax-qwencloud-claude-mutant"
+    source = WRAPPER.read_text(encoding="utf-8")
+    mutant.write_text(REGISTERED_MUTATIONS["credential-in-env-argv"](source), encoding="utf-8")
+    mutant.chmod(0o755)
+
+    proc = _run_wrapper(mutant, env, "-p", "x")
+
+    assert proc.returncode == 0, proc.stderr
+    assert json.loads(record.read_text())["env"]["ANTHROPIC_AUTH_TOKEN"] == FAKE_KEY
+    with pytest.raises(
+        AssertionError, match="credential appeared in a wrapper child process argument vector"
+    ):
+        _assert_no_credential_in_process_argv(record)
 
 
 def test_check_reports_without_reading_the_key(bench) -> None:

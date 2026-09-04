@@ -1,21 +1,42 @@
-#!/usr/bin/env bash
-# hapax-qwencloud-claude - run Claude Code, a client the Qwen Cloud Coding Plan lists, against the
-# plan's Anthropic-compatible endpoint, for one invocation.
-#
-# The plan's terms allow its keys only inside listed interactive clients (Claude Code is one) and
-# forbid curl, Postman and server-side scripts. This wrapper therefore never calls the endpoint
-# itself: it configures Claude Code for one run — isolated HOME, clean environment, the key read
-# from the FileStore at exec time and handed over only as an environment variable — and mediates.
-# It does not edit ~/.claude/settings.json and never writes the key to disk or to argv.
-#
-# Measured 2026-09-03 23:0xZ: the endpoint below answered `qwen3.7-plus` → "OK" in 3.7 s API time.
-# The `coding-intl.dashscope.aliyuncs.com` hosts probed on 2026-09-02 are NOT this plan's hosts;
-# their 401s were about the host, not the key (packet QWENCLOUD-ONBOARDING-20260902 §6).
-set -euo pipefail
+#!/usr/bin/env python3
+"""Run Claude Code against the Qwen Cloud Coding Plan for one invocation.
 
-usage() {
-  cat <<'EOF'
-usage: hapax-qwencloud-claude [--check] [claude args...]
+The plan key is read from the FileStore at runtime and reaches Claude only in
+the environment mapping passed to ``subprocess.run``. It is never written to
+disk, interpolated into a shell command, or included in a process argument.
+"""
+
+from __future__ import annotations
+
+import os
+import shutil
+import subprocess
+import sys
+import tempfile
+from collections.abc import Sequence
+
+SECRET_NAME = "qwencloud/apikey"  # pragma: allowlist secret
+OFFICIAL_BASE_URL = "https://token-plan.ap-southeast-1.maas.aliyuncs.com/apps/anthropic"
+DEFAULT_MODEL = "qwen3.7-plus"
+PLAN_MODELS = frozenset(
+    {
+        "qwen3.7-plus",
+        "qwen3.6-plus",
+        "qwen3.5-plus",
+        "qwen3-max-2026-01-23",
+        "qwen3-coder-next",
+        "qwen3-coder-plus",
+        "glm-5",
+        "glm-4.7",
+        "kimi-k2.5",
+        "MiniMax-M2.5",
+    }
+)
+
+
+def usage() -> None:
+    print(
+        """usage: hapax-qwencloud-claude [--check] [claude args...]
 Runs Claude Code against the Qwen Cloud Coding Plan's Anthropic-compatible endpoint for this
 invocation only. The plan key is read from the FileStore (hapax-secret) at runtime.
 Defaults:
@@ -28,87 +49,135 @@ Environment overrides:
   HAPAX_QWENCLOUD_ALLOW_NON_PLAN_MODEL=1      allow a model id outside the documented catalogue
   HAPAX_QWENCLOUD_ALLOW_BASE_URL_OVERRIDE=1   allow a reviewed endpoint override
 Recheck:
-  hapax-qwencloud-claude --check
-EOF
-}
+  hapax-qwencloud-claude --check"""
+    )
 
-if [[ "${1:-}" == "--help" || "${1:-}" == "-h" ]]; then
-  usage
-  exit 0
-fi
-check_only=false
-if [[ "${1:-}" == "--check" ]]; then
-  check_only=true
-  shift
-fi
 
-secret_name="qwencloud/apikey"  # pragma: allowlist secret
-official_base_url="https://token-plan.ap-southeast-1.maas.aliyuncs.com/apps/anthropic"
-base_url="${HAPAX_QWENCLOUD_ANTHROPIC_BASE_URL:-$official_base_url}"
-model="${HAPAX_QWENCLOUD_MODEL:-qwen3.7-plus}"
+def _error(message: str) -> None:
+    print(f"hapax-qwencloud-claude: {message}", file=sys.stderr)
 
-case "$base_url" in
-  "$official_base_url"|"$official_base_url/") ;;
-  *)
-    if [[ "${HAPAX_QWENCLOUD_ALLOW_BASE_URL_OVERRIDE:-0}" != "1" ]]; then
-      echo "hapax-qwencloud-claude: refusing base URL '$base_url'; expected $official_base_url" >&2
-      echo "Set HAPAX_QWENCLOUD_ALLOW_BASE_URL_OVERRIDE=1 only after reviewing the endpoint that will receive the plan key." >&2
-      exit 2
-    fi
-    ;;
-esac
 
-# The plan's catalogue as the stored key listed it on 2026-09-02 (packet §2); a model outside it is
-# refused so a typo never spends the plan's shared pool on a fallback nobody chose.
-case "$model" in
-  qwen3.7-plus|qwen3.6-plus|qwen3.5-plus|qwen3-max-2026-01-23|qwen3-coder-next|qwen3-coder-plus|glm-5|glm-4.7|kimi-k2.5|MiniMax-M2.5) ;;
-  *)
-    if [[ "${HAPAX_QWENCLOUD_ALLOW_NON_PLAN_MODEL:-0}" != "1" ]]; then
-      echo "hapax-qwencloud-claude: refusing model '$model'; not in the plan's documented catalogue" >&2
-      echo "Set HAPAX_QWENCLOUD_ALLOW_NON_PLAN_MODEL=1 only after rechecking the plan's model list." >&2
-      exit 2
-    fi
-    ;;
-esac
+def _secret_output(*args: str) -> str:
+    result = subprocess.run(
+        ["hapax-secret", *args],
+        check=False,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.DEVNULL,
+        text=True,
+    )
+    return result.stdout.strip()
 
-if ! command -v claude >/dev/null 2>&1; then
-  echo "hapax-qwencloud-claude: claude is not on PATH; install Claude Code, then retry" >&2
-  exit 3
-fi
-if ! command -v hapax-secret >/dev/null 2>&1; then
-  echo "hapax-qwencloud-claude: hapax-secret is not on PATH; the plan key lives in the FileStore" >&2
-  exit 3
-fi
-if [[ -z "$(hapax-secret --where "$secret_name" 2>/dev/null || true)" ]]; then
-  echo "hapax-qwencloud-claude: secret '$secret_name' is absent; store the plan's sk-sp- key with hapax-secret (TTY put), then retry" >&2
-  exit 4
-fi
 
-if $check_only; then
-  version="$(env -u ANTHROPIC_BASE_URL -u ANTHROPIC_AUTH_TOKEN claude --version 2>/dev/null | head -1 || true)"
-  echo "hapax-qwencloud-claude: ok — client ${version:-claude}, endpoint $base_url, model $model, secret $secret_name present"
-  exit 0
-fi
+def _validate_overrides(base_url: str, model: str) -> bool:
+    if base_url not in {OFFICIAL_BASE_URL, f"{OFFICIAL_BASE_URL}/"}:
+        if os.environ.get("HAPAX_QWENCLOUD_ALLOW_BASE_URL_OVERRIDE", "0") != "1":
+            _error(f"refusing base URL '{base_url}'; expected {OFFICIAL_BASE_URL}")
+            _error(
+                "Set HAPAX_QWENCLOUD_ALLOW_BASE_URL_OVERRIDE=1 only after reviewing the "
+                "endpoint that will receive the plan key."
+            )
+            return False
 
-key="$(hapax-secret "$secret_name" 2>/dev/null || true)"  # pragma: allowlist secret
-if [[ -z "$key" ]]; then
-  echo "hapax-qwencloud-claude: secret '$secret_name' read back empty; re-store it with hapax-secret" >&2
-  exit 4
-fi
+    if model not in PLAN_MODELS:
+        if os.environ.get("HAPAX_QWENCLOUD_ALLOW_NON_PLAN_MODEL", "0") != "1":
+            _error(f"refusing model '{model}'; not in the plan's documented catalogue")
+            _error(
+                "Set HAPAX_QWENCLOUD_ALLOW_NON_PLAN_MODEL=1 only after rechecking the "
+                "plan's model list."
+            )
+            return False
+    return True
 
-iso_home="$(mktemp -d "${TMPDIR:-/tmp}/hapax-qwencloud-claude.XXXXXX")"
-cleanup() { rm -rf "$iso_home"; }
-trap cleanup EXIT HUP INT TERM
 
-set +e
-env -i \
-  HOME="$iso_home" PATH="$PATH" TERM="${TERM:-dumb}" LANG="${LANG:-C.UTF-8}" \
-  ANTHROPIC_BASE_URL="$base_url" ANTHROPIC_AUTH_TOKEN="$key" \
-  ANTHROPIC_MODEL="$model" ANTHROPIC_SMALL_FAST_MODEL="$model" \
-  ANTHROPIC_DEFAULT_OPUS_MODEL="$model" ANTHROPIC_DEFAULT_SONNET_MODEL="$model" \
-  ANTHROPIC_DEFAULT_HAIKU_MODEL="$model" \
-  CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC=1 DISABLE_TELEMETRY=1 DISABLE_AUTOUPDATER=1 \
-  claude "$@"
-rc=$?
-set -e
-exit "$rc"
+def _check(base_url: str, model: str) -> int:
+    check_env = os.environ.copy()
+    check_env.pop("ANTHROPIC_BASE_URL", None)
+    check_env.pop("ANTHROPIC_AUTH_TOKEN", None)
+    version_result = subprocess.run(
+        ["claude", "--version"],
+        env=check_env,
+        check=False,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.DEVNULL,
+        text=True,
+    )
+    version = version_result.stdout.splitlines()[0] if version_result.stdout else "claude"
+    print(
+        f"hapax-qwencloud-claude: ok — client {version}, endpoint {base_url}, "
+        f"model {model}, secret {SECRET_NAME} present"
+    )
+    return 0
+
+
+def _client_environment(iso_home: str, base_url: str, model: str, key: str) -> dict[str, str]:
+    return {
+        "HOME": iso_home,
+        "PATH": os.environ.get("PATH", os.defpath),
+        "TERM": os.environ.get("TERM") or "dumb",
+        "LANG": os.environ.get("LANG") or "C.UTF-8",
+        "ANTHROPIC_BASE_URL": base_url,
+        "ANTHROPIC_AUTH_TOKEN": key,
+        "ANTHROPIC_MODEL": model,
+        "ANTHROPIC_SMALL_FAST_MODEL": model,
+        "ANTHROPIC_DEFAULT_OPUS_MODEL": model,
+        "ANTHROPIC_DEFAULT_SONNET_MODEL": model,
+        "ANTHROPIC_DEFAULT_HAIKU_MODEL": model,
+        "CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC": "1",
+        "DISABLE_TELEMETRY": "1",
+        "DISABLE_AUTOUPDATER": "1",
+    }
+
+
+def main(argv: Sequence[str] | None = None) -> int:
+    claude_args = list(sys.argv[1:] if argv is None else argv)
+    if claude_args and claude_args[0] in {"--help", "-h"}:
+        usage()
+        return 0
+
+    check_only = bool(claude_args and claude_args[0] == "--check")
+    if check_only:
+        claude_args.pop(0)
+
+    base_url = os.environ.get("HAPAX_QWENCLOUD_ANTHROPIC_BASE_URL") or OFFICIAL_BASE_URL
+    model = os.environ.get("HAPAX_QWENCLOUD_MODEL") or DEFAULT_MODEL
+    if not _validate_overrides(base_url, model):
+        return 2
+
+    if shutil.which("claude") is None:
+        _error("claude is not on PATH; install Claude Code, then retry")
+        return 3
+    if shutil.which("hapax-secret") is None:
+        _error("hapax-secret is not on PATH; the plan key lives in the FileStore")
+        return 3
+    if not _secret_output("--where", SECRET_NAME):
+        _error(
+            f"secret '{SECRET_NAME}' is absent; store the plan's sk-sp- key with "
+            "hapax-secret (TTY put), then retry"
+        )
+        return 4
+
+    if check_only:
+        return _check(base_url, model)
+
+    key = _secret_output(SECRET_NAME)  # pragma: allowlist secret
+    if not key:
+        _error(f"secret '{SECRET_NAME}' read back empty; re-store it with hapax-secret")
+        return 4
+
+    iso_home = tempfile.mkdtemp(
+        prefix="hapax-qwencloud-claude.", dir=os.environ.get("TMPDIR", "/tmp")
+    )
+    try:
+        client_env = _client_environment(iso_home, base_url, model, key)
+        result = subprocess.run(
+            ["claude", *claude_args],
+            env=client_env,
+            check=False,
+        )
+        return result.returncode if result.returncode >= 0 else 128 - result.returncode
+    finally:
+        shutil.rmtree(iso_home)
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())
