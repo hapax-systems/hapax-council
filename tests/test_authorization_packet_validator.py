@@ -209,7 +209,48 @@ def _drop_grant(
 
 
 def _honored(tmp_path: Path) -> list[dict]:
+    # `_ledger_records` is the module-level reader defined above; a review that read only
+    # this diff took it for undefined.
     return [r for r in _ledger_records(tmp_path) if r.get("kind") == "escape_grant_honored"]
+
+
+WRITE_GATE = REPO_ROOT / "hooks" / "scripts" / "cc-task-gate.sh"
+
+
+def _run_write_gate(
+    command: str, *, tmp_path: Path, extra_env: dict[str, str]
+) -> subprocess.CompletedProcess:
+    """The gate that runs BEFORE this one in the production PreToolUse chain.
+
+    The shim resolves the deployed canonical impl first and falls back to the co-located
+    `cc-task-gate.impl.sh`; with HOME pointed at the fixture there is no canonical, so the
+    committed impl runs and the chain is hermetic.
+    """
+    payload = {"tool_name": "Bash", "tool_input": {"command": command}, "session_id": "t"}
+    env = os.environ.copy()
+    env["HOME"] = str(tmp_path)
+    env["CLAUDE_ROLE"] = "beta"
+    for key in (
+        "HAPAX_AGENT_ROLE",
+        "CODEX_ROLE",
+        "HAPAX_METHODOLOGY_EMERGENCY",
+        "HAPAX_COORD_DIR",
+        "HAPAX_COORD_GRANT_DIR",
+        "HAPAX_COORD_GRANT_KEY",
+        "HAPAX_METHODOLOGY_LEDGER",
+        "HAPAX_CANONICAL_HOOKS",
+        "XDG_CACHE_HOME",
+    ):
+        env.pop(key, None)
+    env.update(extra_env)
+    return subprocess.run(
+        [str(WRITE_GATE)],
+        input=json.dumps(payload),
+        capture_output=True,
+        text=True,
+        env=env,
+        timeout=15,
+    )
 
 
 class TestEscapeGrant:
@@ -232,6 +273,30 @@ class TestEscapeGrant:
         _drop_grant(tmp_path, scope="*")
         result = _run("git push -u origin HEAD", tmp_path=tmp_path, extra_env=env)
         assert result.returncode == 0, result.stderr
+
+    def test_a_validator_only_grant_cannot_unblock_a_real_push(self, tmp_path: Path) -> None:
+        """Review finding (2026-09-04): scopes are exact and cc-task-gate runs FIRST in the
+        production chain, so a grant minted for this gate alone never reaches it on a real
+        push — the write gate refuses before this one is consulted. The runbook therefore
+        says: mint scope `*` for a no-claim push. This pins both halves of the chain."""
+        env = _grant_env(tmp_path)
+        _drop_grant(tmp_path, scope=_THIS_GATE)
+        first = _run_write_gate("git push -u origin HEAD", tmp_path=tmp_path, extra_env=env)
+        assert first.returncode != 0, (
+            "cc-task-gate must still refuse a no-claim push under a validator-only grant: "
+            f"{first.stderr}"
+        )
+        assert "escape grant honored" not in first.stderr
+
+    def test_a_wildcard_grant_passes_the_whole_chain(self, tmp_path: Path) -> None:
+        env = _grant_env(tmp_path)
+        _drop_grant(tmp_path, scope="*")
+        first = _run_write_gate("git push -u origin HEAD", tmp_path=tmp_path, extra_env=env)
+        assert first.returncode == 0, f"cc-task-gate must honour a `*` grant: {first.stderr}"
+        second = _run("git push -u origin HEAD", tmp_path=tmp_path, extra_env=env)
+        assert second.returncode == 0, f"the validator must honour it too: {second.stderr}"
+        gates = sorted({r.get("gate") for r in _honored(tmp_path)})
+        assert "authorization-packet-validator" in gates, gates
 
     def test_grant_for_the_write_gate_leaves_this_gate_closed(self, tmp_path: Path) -> None:
         # Scope is exact: a grant minted for cc-task-gate says nothing about releases.
