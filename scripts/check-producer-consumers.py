@@ -773,6 +773,7 @@ _MAX_PATH_EXPR_VARIANTS = 8
 _PATH_VALUE_PREFIX = "\0path-value:"
 _LEXICAL_SCOPE_KEY = "\0lexical-scope"
 _IMPORT_ALIAS_PREFIX = "\0import-alias:"
+_VALUE_ALTERNATIVES_PREFIX = "\0value-alternatives:"
 
 
 def _path_value_key(name: str) -> str:
@@ -809,6 +810,53 @@ def _import_aliases(values: dict[str, str]) -> dict[str, str]:
         for key, target in values.items()
         if key.startswith(_IMPORT_ALIAS_PREFIX)
     }
+
+
+def _value_alternatives_key(name: str) -> str:
+    return f"{_VALUE_ALTERNATIVES_PREFIX}{name}"
+
+
+def _set_value_alternatives(
+    values: dict[str, str], name: str, alternatives: set[str | None]
+) -> None:
+    ordered = sorted(alternatives, key=lambda item: (item is None, item or ""))
+    values[_value_alternatives_key(name)] = json.dumps(ordered)
+
+
+def _clear_value_alternatives(values: dict[str, str], name: str) -> None:
+    values.pop(_value_alternatives_key(name), None)
+
+
+def _value_alternatives(values: dict[str, str], name: str) -> tuple[str | None, ...] | None:
+    encoded = values.get(_value_alternatives_key(name))
+    if encoded is None:
+        return None
+    decoded = json.loads(encoded)
+    return tuple(item if isinstance(item, str) else None for item in decoded)
+
+
+def _expand_value_alternative_states(
+    node: ast.expr, values: dict[str, str]
+) -> list[dict[str, str]]:
+    """Expand only abstract bindings referenced by ``node`` into concrete value states."""
+    referenced = sorted({item.id for item in ast.walk(node) if isinstance(item, ast.Name)})
+    expanded = [dict(values)]
+    for name in referenced:
+        alternatives = _value_alternatives(values, name)
+        if alternatives is None:
+            continue
+        next_states: list[dict[str, str]] = []
+        for state in expanded:
+            for alternative in alternatives:
+                concrete = dict(state)
+                _clear_value_alternatives(concrete, name)
+                if alternative is None:
+                    concrete.pop(name, None)
+                else:
+                    concrete[name] = alternative
+                next_states.append(concrete)
+        expanded = next_states
+    return expanded
 
 
 def _first_conditional_expression_path(
@@ -900,8 +948,9 @@ def _resolve_path_expr_variants(
 ) -> tuple[str | None, ...]:
     expressions, truncated = _conditional_expr_variants(node)
     variants = [
-        _resolve_path_expr(expression, values, path, repo_root, path_functions)
+        _resolve_path_expr(expression, state, path, repo_root, path_functions)
         for expression in expressions
+        for state in _expand_value_alternative_states(expression, values)
     ]
     if truncated or not expressions:
         variants.append(None)
@@ -1718,31 +1767,43 @@ def _apply_assignment(
     path_functions: dict[str, PathFunction],
 ) -> list[dict[str, str]]:
     targets = statement.targets if isinstance(statement, ast.Assign) else [statement.target]
+    assigned = dict(values)
+    is_path = (
+        isinstance(statement, ast.AnnAssign) and _is_path_annotation(statement.annotation)
+    ) or _is_path_valued_expr(statement.value, assigned, path, path_functions)
     expressions, truncated = _conditional_expr_variants(statement.value)
-    assignments: list[dict[str, str]] = []
+    resolved_values: set[str | None] = set()
     for expression in expressions:
-        assigned = dict(values)
-        resolved = _resolve_path_expr(expression, assigned, path, repo_root, path_functions)
-        is_path = (
-            isinstance(statement, ast.AnnAssign) and _is_path_annotation(statement.annotation)
-        ) or _is_path_valued_expr(expression, assigned, path, path_functions)
-        for target in targets:
-            if not isinstance(target, ast.Name):
-                continue
-            # A name rebound to something this scanner cannot resolve stops meaning its old path
-            # (the old fixpoint kept the old value and resolved every later read through it).
-            assigned[target.id] = resolved if resolved is not None else "*"
-            _set_path_value(assigned, target.id, is_path)
-            _set_import_alias(assigned, target.id, None)
-        assignments.append(assigned)
+        tentative = _resolve_path_expr(expression, values, path, repo_root, path_functions)
+        abstract_names = {
+            item.id
+            for item in ast.walk(expression)
+            if isinstance(item, ast.Name) and _value_alternatives(values, item.id) is not None
+        }
+        if abstract_names and (
+            len(abstract_names) == 1 or is_path or _looks_like_artifact_pattern(tentative)
+        ):
+            resolved_values.update(
+                _resolve_path_expr(expression, state, path, repo_root, path_functions)
+                for state in _expand_value_alternative_states(expression, values)
+            )
+        else:
+            resolved_values.add(tentative)
     if truncated or not expressions:
-        assigned = dict(values)
-        for target in targets:
-            if isinstance(target, ast.Name):
-                assigned[target.id] = "*"
-                _set_path_value(assigned, target.id, False)
-        assignments.append(assigned)
-    return assignments
+        resolved_values.add(None)
+    for target in targets:
+        if not isinstance(target, ast.Name):
+            continue
+        # A name rebound to something this scanner cannot resolve stops meaning its old path
+        # (the old fixpoint kept the old value and resolved every later read through it).
+        resolved = next(iter(resolved_values)) if len(resolved_values) == 1 else None
+        assigned[target.id] = resolved if resolved is not None else "*"
+        _set_path_value(assigned, target.id, is_path)
+        _set_import_alias(assigned, target.id, None)
+        _clear_value_alternatives(assigned, target.id)
+        if len(resolved_values) > 1:
+            _set_value_alternatives(assigned, target.id, resolved_values)
+    return [assigned]
 
 
 def _scope_initial_values(
@@ -1758,13 +1819,23 @@ def _scope_initial_values(
         return {}
     values = dict(module_values)
     _set_lexical_scope(values, lexical_prefixes)
-    for arg in [*node.args.posonlyargs, *node.args.args, *node.args.kwonlyargs]:
+    parameters = [*node.args.posonlyargs, *node.args.args, *node.args.kwonlyargs]
+    if node.args.vararg is not None:
+        parameters.append(node.args.vararg)
+    if node.args.kwarg is not None:
+        parameters.append(node.args.kwarg)
+    for arg in parameters:
         values[arg.arg] = "*"
         _set_path_value(values, arg.arg, _is_path_annotation(arg.annotation))
+        # Parameters are bindings in the function's lexical scope.  A module import with the
+        # same name is no longer the callee used by calls in this scope.
+        _set_import_alias(values, arg.arg, None)
+        _clear_value_alternatives(values, arg.arg)
     for name, default in _function_defaults(node).items():
         resolved = _resolve_path_expr(default, values, path, repo_root, path_functions)
         if resolved is not None:
             values[name] = resolved
+            _clear_value_alternatives(values, name)
     return values
 
 
@@ -1776,10 +1847,11 @@ def _fork(states: list[dict[str, str]]) -> list[dict[str, str]]:
 
 
 def _merge_states(states: list[dict[str, str]]) -> list[dict[str, str]]:
-    """Distinct value maps after a branching statement, capped so paths cannot explode.
+    """Deduplicate branch maps, joining excess maps without losing known values.
 
-    Beyond the cap the maps collapse into one in which every name the branches disagree on is
-    unresolved ("*"): a read below then counts as unresolvable instead of resolving through a guess.
+    Once the disjunctive-state cap is reached, each user binding keeps the union of its concrete
+    alternatives as metadata.  A later expression expands just the alternatives it references.
+    This bounds intermediate cross-products without deleting a statically known read pattern.
     """
     distinct: dict[tuple[tuple[str, str], ...], dict[str, str]] = {}
     for state in states:
@@ -1787,11 +1859,40 @@ def _merge_states(states: list[dict[str, str]]) -> list[dict[str, str]]:
     merged = list(distinct.values())
     if len(merged) <= _MAX_BRANCH_STATES:
         return merged
-    names = set().union(*(state.keys() for state in merged))
+
+    internal_names = {
+        name
+        for state in merged
+        for name in state
+        if name.startswith("\0") and not name.startswith(_VALUE_ALTERNATIVES_PREFIX)
+    }
     collapsed: dict[str, str] = {}
-    for name in names:
-        values = {state.get(name) for state in merged}
-        collapsed[name] = values.pop() if len(values) == 1 and None not in values else "*"
+    for name in internal_names:
+        alternatives = {state.get(name) for state in merged}
+        if len(alternatives) == 1 and None not in alternatives:
+            value = alternatives.pop()
+            assert value is not None
+            collapsed[name] = value
+
+    user_names = {name for state in merged for name in state if not name.startswith("\0")}
+    user_names.update(
+        name.removeprefix(_VALUE_ALTERNATIVES_PREFIX)
+        for state in merged
+        for name in state
+        if name.startswith(_VALUE_ALTERNATIVES_PREFIX)
+    )
+    for name in user_names:
+        alternatives: set[str | None] = set()
+        for state in merged:
+            abstract = _value_alternatives(state, name)
+            alternatives.update(abstract if abstract is not None else (state.get(name),))
+        if len(alternatives) == 1 and None not in alternatives:
+            value = alternatives.pop()
+            assert value is not None
+            collapsed[name] = value
+        else:
+            collapsed[name] = "*"
+            _set_value_alternatives(collapsed, name, alternatives)
     return [collapsed]
 
 
@@ -1830,11 +1931,12 @@ class _BlockScanner:
         statements: list[ast.stmt],
         states: list[dict[str, str]],
         exception_states: list[dict[str, str]] | None = None,
+        exit_states: list[dict[str, str]] | None = None,
     ) -> list[dict[str, str]]:
         for statement in statements:
             if not states:
                 break
-            states = self._scan_statement(statement, states, exception_states)
+            states = self._scan_statement(statement, states, exception_states, exit_states)
         return states
 
     def _classify(self, call: ast.Call, states: list[dict[str, str]]) -> None:
@@ -1867,17 +1969,32 @@ class _BlockScanner:
         statement: ast.stmt,
         states: list[dict[str, str]],
         exception_states: list[dict[str, str]] | None = None,
+        exit_states: list[dict[str, str]] | None = None,
     ) -> list[dict[str, str]]:
-        if isinstance(statement, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)):
-            for state in states:
-                _set_import_alias(state, statement.name, None)
-            return states
         if exception_states is not None and _statement_may_raise(statement):
             # An assignment's right-hand side runs before its target is rebound.  Handlers see
             # the state entering the raising statement, never its normal post-state.
             exception_states.extend(_fork(states))
         for call in _statement_calls(statement):
             self._classify(call, states)
+        if isinstance(statement, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)):
+            if isinstance(statement, ast.ClassDef):
+                # Bases and decorators above run in the enclosing scope.  A class body also runs
+                # immediately, but its bindings live in a fresh namespace and cannot continue
+                # into the enclosing block.
+                class_exceptions: list[dict[str, str]] = []
+                class_exits: list[dict[str, str]] = []
+                self.scan_block(
+                    statement.body,
+                    _fork(states),
+                    class_exceptions,
+                    class_exits,
+                )
+                if exception_states is not None and (class_exceptions or class_exits):
+                    exception_states.extend(_fork(states))
+            for state in states:
+                _set_import_alias(state, statement.name, None)
+            return states
         if isinstance(statement, (ast.Import, ast.ImportFrom)):
             bindings = _import_bindings(
                 [statement],
@@ -1899,52 +2016,92 @@ class _BlockScanner:
                 )
             return _merge_states(assigned)
         if isinstance(statement, ast.If):
-            taken = self.scan_block(statement.body, _fork(states), exception_states)
+            taken = self.scan_block(statement.body, _fork(states), exception_states, exit_states)
             not_taken = (
-                self.scan_block(statement.orelse, _fork(states), exception_states)
+                self.scan_block(statement.orelse, _fork(states), exception_states, exit_states)
                 if statement.orelse
                 else _fork(states)
             )
             return _merge_states(taken + not_taken)
         if isinstance(statement, (ast.For, ast.AsyncFor, ast.While)):
-            looped = self.scan_block(statement.body, _fork(states), exception_states)
+            looped = self.scan_block(statement.body, _fork(states), exception_states, exit_states)
             after = _merge_states(_fork(states) + looped)
             return (
-                self.scan_block(statement.orelse, after, exception_states)
+                self.scan_block(statement.orelse, after, exception_states, exit_states)
                 if statement.orelse
                 else after
             )
         if isinstance(statement, (ast.With, ast.AsyncWith)):
-            return self.scan_block(statement.body, states, exception_states)
+            return self.scan_block(statement.body, states, exception_states, exit_states)
         if isinstance(statement, (ast.Try, getattr(ast, "TryStar", ast.Try))):
             body_exception_states: list[dict[str, str]] = []
-            body_states = self.scan_block(statement.body, _fork(states), body_exception_states)
+            body_exit_states: list[dict[str, str]] = []
+            body_states = self.scan_block(
+                statement.body,
+                _fork(states),
+                body_exception_states,
+                body_exit_states,
+            )
             if exception_states is not None:
                 # A typed inner handler may not catch every exception its body can raise.
                 exception_states.extend(_fork(body_exception_states))
             handler_inputs = _merge_states(body_exception_states)
             handler_states: list[dict[str, str]] = []
+            handler_exit_states: list[dict[str, str]] = []
             for handler in statement.handlers:
                 handler_states += self.scan_block(
-                    handler.body, _fork(handler_inputs), exception_states
+                    handler.body,
+                    _fork(handler_inputs),
+                    exception_states,
+                    handler_exit_states,
                 )
+            else_exit_states: list[dict[str, str]] = []
             else_states = (
-                self.scan_block(statement.orelse, body_states, exception_states)
+                self.scan_block(
+                    statement.orelse,
+                    body_states,
+                    exception_states,
+                    else_exit_states,
+                )
                 if statement.orelse
                 else body_states
             )
             merged = _merge_states(else_states + handler_states)
-            return (
-                self.scan_block(statement.finalbody, merged, exception_states)
-                if statement.finalbody
-                else merged
+            abrupt = _merge_states(body_exit_states + handler_exit_states + else_exit_states)
+            if not statement.finalbody:
+                if exit_states is not None:
+                    exit_states.extend(abrupt)
+                return merged
+
+            continued = self.scan_block(
+                statement.finalbody,
+                merged,
+                exception_states,
+                exit_states,
             )
+            # ``finally`` runs on returns and raises as well.  Scan those states for accesses,
+            # but never turn their completion into normal continuation after the try statement.
+            final_exit_states: list[dict[str, str]] = []
+            abrupt_after_finally = self.scan_block(
+                statement.finalbody,
+                abrupt,
+                exception_states,
+                final_exit_states,
+            )
+            if exit_states is not None:
+                exit_states.extend(abrupt_after_finally)
+                exit_states.extend(final_exit_states)
+            return continued
         if isinstance(statement, ast.Match):
             case_states: list[dict[str, str]] = []
             for case in statement.cases:
-                case_states += self.scan_block(case.body, _fork(states), exception_states)
+                case_states += self.scan_block(
+                    case.body, _fork(states), exception_states, exit_states
+                )
             return _merge_states(case_states + _fork(states))
         if isinstance(statement, (ast.Return, ast.Raise)):
+            if exit_states is not None:
+                exit_states.extend(_fork(states))
             return []
         return states
 
@@ -2568,7 +2725,9 @@ def _default_mass_path(frame_path: Path) -> Path:
         candidate = parent / "declaration" / "mass.yaml"
         if candidate.is_file():
             return candidate
-    return logical_path.parents[2] / "declaration" / "mass.yaml"
+    # ``Path.parent`` saturates at the filesystem root.  Keeping the established three-level
+    # fallback without indexing ``parents`` lets shallow but valid frame paths stay report-only.
+    return logical_path.parent.parent.parent / "declaration" / "mass.yaml"
 
 
 def _declared_pattern(value: str, repo_root: Path) -> str:

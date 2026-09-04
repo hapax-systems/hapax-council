@@ -604,6 +604,30 @@ def test_default_mass_path_preserves_current_symlink(gate, tmp_path: Path) -> No
     assert gate._default_mass_path(logical_frame) == mass
 
 
+def test_shallow_frame_path_preserves_report_only_error_contract(
+    gate,
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    frame = Path("/tmp/elements.json")
+    observed: dict[str, Path] = {}
+
+    def fail_loading(_frame: Path, mass: Path, _repo_root: Path):
+        observed["mass"] = mass
+        raise OSError(f"missing mass {mass}")
+
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setattr(gate, "load_decayed_members", fail_loading)
+    args = gate.build_parser().parse_args(["--consumer-side", "--frame", str(frame)])
+
+    assert gate.run_consumer_side(args) == 0
+    output = capsys.readouterr().out
+    assert observed["mass"] == Path("/declaration/mass.yaml")
+    assert "[REPORT-ERROR] consumer-side analysis incomplete:" in output
+    assert "consumer-side gate is REPORT-ONLY" in output
+
+
 def test_json_report_records_the_head_it_measured(tmp_path: Path) -> None:
     """A report that does not say which tree it describes cannot be consulted by anything later
     (the dominator consumer refused to read one without a head — L-170); the report now carries

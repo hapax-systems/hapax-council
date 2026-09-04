@@ -175,7 +175,7 @@ def test_except_handler_does_not_see_state_after_the_last_raising_statement(
     assert "artifacts/after-read.json" not in patterns
 
 
-def test_too_many_branch_states_collapse_to_unresolvable_not_a_guess(gate, tmp_path: Path) -> None:
+def test_every_known_pattern_survives_the_branch_state_cap(gate, tmp_path: Path) -> None:
     branches = "".join(
         f"    if flags[{i}]:\n        artifact = Path('artifacts/branch-{i}.json')\n"
         for i in range(12)
@@ -190,13 +190,116 @@ def test_too_many_branch_states_collapse_to_unresolvable_not_a_guess(gate, tmp_p
         + "    return artifact.read_text()\n",
     )
     report = gate.analyse_consumer_side(tmp_path, [])
-    # Past the cap the divergent name collapses to unresolved; branches below the collapse fork
-    # again from that state. Every pattern the read reports must be a value a branch really
-    # assigned — the cap may lose values, it may never invent one — and nothing crashes.
     real = {"artifacts/start.json", *(f"artifacts/branch-{i}.json" for i in range(12))}
-    reported = _unwritten_patterns(report, "shared/consumer.py")
-    assert reported <= real
-    assert reported or report.unresolvable >= 1
+    assert _unwritten_patterns(report, "shared/consumer.py") == real
+    assert report.unresolvable == 0
+
+
+def test_branch_state_join_keeps_bare_string_read_patterns(gate, tmp_path: Path) -> None:
+    branches = "".join(f"    if flags[{i}]:\n        artifact = 'branch-{i}'\n" for i in range(12))
+    _write(
+        tmp_path,
+        "shared/consumer.py",
+        "def load_state(flags):\n"
+        "    artifact = 'start'\n" + branches + "    return open(artifact).read()\n",
+    )
+    report = gate.analyse_consumer_side(tmp_path, [])
+    expected = {"start", *(f"branch-{i}" for i in range(12))}
+    assert _unwritten_patterns(report, "shared/consumer.py") == expected
+    assert report.unresolvable == 0
+
+
+@pytest.mark.parametrize(
+    ("definition", "pattern"),
+    [
+        (
+            "def load(value=Path('artifacts/function-default.json').read_text()):\n"
+            "    return value\n",
+            "artifacts/function-default.json",
+        ),
+        (
+            "async def load(value=Path('artifacts/async-default.json').read_text()):\n"
+            "    return value\n",
+            "artifacts/async-default.json",
+        ),
+        (
+            "@Path('artifacts/decorator.json').read_text()\ndef load():\n    return None\n",
+            "artifacts/decorator.json",
+        ),
+        (
+            "class Load(Path('artifacts/class-base.json').read_text()):\n    pass\n",
+            "artifacts/class-base.json",
+        ),
+        (
+            "class Load:\n    state = Path('artifacts/class-body.json').read_text()\n",
+            "artifacts/class-body.json",
+        ),
+    ],
+)
+def test_definition_time_reads_are_scanned(
+    gate, tmp_path: Path, definition: str, pattern: str
+) -> None:
+    _write(tmp_path, "shared/consumer.py", "from pathlib import Path\n" + definition)
+    report = gate.analyse_consumer_side(tmp_path, [])
+    assert pattern in _unwritten_patterns(report, "shared/consumer.py")
+    assert report.unresolvable == 0
+
+
+def test_unresolved_definition_time_read_increments_the_count(gate, tmp_path: Path) -> None:
+    _write(
+        tmp_path,
+        "shared/consumer.py",
+        "def load(value=artifact.read_text()):\n    return value\n",
+    )
+    report = gate.analyse_consumer_side(tmp_path, [])
+    assert report.unresolvable == 1
+
+
+@pytest.mark.parametrize("exit_statement", ["return 1", "raise RuntimeError"])
+def test_finally_read_is_scanned_after_abrupt_try_exit(
+    gate, tmp_path: Path, exit_statement: str
+) -> None:
+    _write(
+        tmp_path,
+        "shared/consumer.py",
+        "from pathlib import Path\n"
+        "def load():\n"
+        "    try:\n"
+        f"        {exit_statement}\n"
+        "    finally:\n"
+        "        Path('artifacts/finally.json').read_text()\n",
+    )
+    report = gate.analyse_consumer_side(tmp_path, [])
+    assert "artifacts/finally.json" in _unwritten_patterns(report, "shared/consumer.py")
+    assert report.unresolvable == 0
+
+
+def test_function_parameter_shadows_imported_transfer_alias(gate, tmp_path: Path) -> None:
+    _write(
+        tmp_path,
+        "shared/consumer.py",
+        "from pathlib import Path\n"
+        "from shutil import copy2 as duplicate\n"
+        "SOURCE = Path('artifacts/source.json')\n"
+        "DESTINATION = Path('artifacts/destination.json')\n"
+        "def invoke_callback(duplicate):\n"
+        "    duplicate(SOURCE, DESTINATION)\n"
+        "def load_destination():\n"
+        "    return DESTINATION.read_text()\n",
+    )
+    accesses, unresolved, _imports, _unrecognised = gate.collect_artifact_accesses(tmp_path)
+    assert not any(
+        access.operation == "copy2"
+        and access.pattern
+        in {
+            "artifacts/source.json",
+            "artifacts/destination.json",
+        }
+        for access in accesses
+    )
+    report = gate.analyse_consumer_side(tmp_path, [])
+    assert "artifacts/destination.json" in _unwritten_patterns(report, "shared/consumer.py")
+    assert unresolved == 0
 
 
 def test_a_consumer_glob_does_not_match_a_writer_in_a_subdirectory(gate, tmp_path: Path) -> None:
