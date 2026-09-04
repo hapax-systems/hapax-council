@@ -1,10 +1,15 @@
 import json
 import os
 import re
+import shutil
 import subprocess
+import tempfile
 import textwrap
+import time
 from datetime import UTC, datetime
 from pathlib import Path
+
+import pytest
 
 from shared.gate0b_claim_publication_install import (
     default_claim_publication_roots,
@@ -1501,3 +1506,598 @@ def test_claim_refuses_note_without_closing_frontmatter(tmp_path: Path) -> None:
     cache_dir = home / ".cache" / "hapax"
     leaked = list(cache_dir.glob("cc-active-task-*")) if cache_dir.exists() else []
     assert leaked == [], f"claim caches must not be written on a failed stamp: {leaked}"
+
+
+# ----------------------------------------------------------------- role release, end to end
+#
+# Review finding (PR #4611, codex-1/codex-2 major): the role-release tests parsed the shell
+# case and asserted set membership without ever running cc-claim against existing ready-state
+# sidecars. They stayed green exactly where the downstream canonical-publication gate rejects.
+# These exercise the real path: claim A, move A to a releasing status, claim B.
+
+
+def _release_and_claim_next(
+    home: Path, *, first: str, second: str, released_status: str
+) -> subprocess.CompletedProcess:
+    """Claim `first`, transition it to `released_status`, then claim `second`."""
+    first_note = _write_task(home, "active", first)
+    _write_task(home, "active", second)
+
+    initial = _claim(home, first)
+    assert initial.returncode == 0, f"setup claim failed: {initial.stderr}"
+
+    text = first_note.read_text(encoding="utf-8")
+    assert "status: claimed" in text, text[:200]
+    first_note.write_text(
+        text.replace("status: claimed", f"status: {released_status}"), encoding="utf-8"
+    )
+
+    return _claim(home, second)
+
+
+@pytest.mark.parametrize(
+    "released_status",
+    ["pr_open", "merge_queue", "ready_for_review", "merged_awaiting_runtime_witness", "backlog"],
+)
+def test_released_status_frees_the_lane_for_a_new_claim(
+    tmp_path: Path, released_status: str
+) -> None:
+    """The predicate the whole change exists for: finished work must not hold a lane.
+
+    Asserts the SECOND task is actually claimed — not merely that the bash role-cap check was
+    bypassed. An earlier revision passed that check and still failed downstream, and reporting
+    the partial pass as success is precisely what this test exists to prevent.
+    """
+    home = tmp_path / "home"
+    result = _release_and_claim_next(
+        home, first="task-a", second="task-b", released_status=released_status
+    )
+
+    assert result.returncode == 0, (
+        f"a lane holding a {released_status} task must be free to claim new work.\n"
+        f"stdout: {result.stdout}\nstderr: {result.stderr}"
+    )
+    second_note = _task_root(home) / "active" / "task-b.md"
+    assert "status: claimed" in second_note.read_text(encoding="utf-8")
+
+
+@pytest.mark.parametrize("held_status", ["claimed", "in_progress", "blocked"])
+def test_worker_held_status_still_blocks_a_new_claim(tmp_path: Path, held_status: str) -> None:
+    """The cap must still bind while the lane is genuinely engaged."""
+    home = tmp_path / "home"
+    result = _release_and_claim_next(
+        home, first="task-a", second="task-b", released_status=held_status
+    )
+
+    assert result.returncode != 0, "a lane actually working a task must not take another"
+    assert "already has active task" in result.stderr
+
+
+def test_unknown_status_still_blocks_a_new_claim(tmp_path: Path) -> None:
+    """Fails closed: an unrecognised status holds the lane rather than releasing it."""
+    home = tmp_path / "home"
+    result = _release_and_claim_next(
+        home, first="task-a", second="task-b", released_status="not_a_real_status"
+    )
+
+    assert result.returncode != 0
+    assert "already has active task" in result.stderr
+
+
+# ------------------------------------------------------- aged leases, and where residue goes
+#
+# Review finding (PR #4611, codex-1 critical + major): the tests above claim A and immediately
+# claim B, so the lease is always fresh. Lease expiry is evaluated in the same loop, and an
+# earlier revision evaluated it FIRST — so every lease older than the six-hour TTL took the
+# canonical HOLD path and the release case was unreachable for exactly the aged, pre-existing
+# sidecars that most need it. The suite stayed green on that critical because it never aged a
+# lease. These do.
+
+
+def _age_leases(home: Path, *, seconds: int) -> None:
+    """Backdate every claim sidecar so the next cc-claim sees an expired lease."""
+    cache_dir = home / ".cache" / "hapax"
+    stale = time.time() - seconds
+    aged = 0
+    for sidecar in cache_dir.glob("cc-active-task-*"):
+        os.utime(sidecar, (stale, stale))
+        aged += 1
+    assert aged, f"no claim sidecars to age under {cache_dir} — the setup claim did not publish"
+
+
+@pytest.mark.parametrize("released_status", ["pr_open", "done", "merged_awaiting_runtime_witness"])
+def test_expired_lease_on_a_released_task_still_frees_the_lane(
+    tmp_path: Path, released_status: str
+) -> None:
+    """Release is a property of the TASK, not of the lease's age.
+
+    A task that is finished or pipeline-held is released whether or not its lease also
+    aged out. Ageing the lease past the TTL must not resurrect the role cap.
+    """
+    home = tmp_path / "home"
+    first_note = _write_task(home, "active", "task-a")
+    _write_task(home, "active", "task-b")
+
+    initial = _claim(home, "task-a")
+    assert initial.returncode == 0, f"setup claim failed: {initial.stderr}"
+    first_note.write_text(
+        first_note.read_text(encoding="utf-8").replace(
+            "status: claimed", f"status: {released_status}"
+        ),
+        encoding="utf-8",
+    )
+    _age_leases(home, seconds=21600 * 2)
+
+    result = _claim(home, "task-b")
+
+    assert result.returncode == 0, (
+        f"an AGED lease on a {released_status} task must still free the lane.\n"
+        f"stdout: {result.stdout}\nstderr: {result.stderr}"
+    )
+    assert "status: claimed" in (_task_root(home) / "active" / "task-b.md").read_text(
+        encoding="utf-8"
+    )
+
+
+def test_expired_lease_on_a_worker_held_task_still_holds(tmp_path: Path) -> None:
+    """The converse, and the reason this is not a blanket "expired means free".
+
+    Failure paths narrow; they do not widen. An aged lease on genuinely engaged work must
+    still take the canonical stale-lease HOLD, which requires an exact operator release.
+    """
+    home = tmp_path / "home"
+    _write_task(home, "active", "task-a")
+    _write_task(home, "active", "task-b")
+
+    initial = _claim(home, "task-a")
+    assert initial.returncode == 0, f"setup claim failed: {initial.stderr}"
+    _age_leases(home, seconds=21600 * 2)
+
+    result = _claim(home, "task-b")
+
+    assert result.returncode != 0, "an aged lease on in-progress work must not self-release"
+    assert "requires exact stale-lease release" in result.stderr
+
+
+def test_a_sidecar_naming_an_unknown_task_holds_rather_than_being_swept(tmp_path: Path) -> None:
+    """Absence of evidence is not evidence of release.
+
+    A sidecar whose task note cannot be found in `active/` or `closed/` was silently skipped,
+    leaving a stale projection for a task nobody can adjudicate. Same fail-closed rule as the
+    unreadable sidecar — refuse, and name the repair.
+    """
+    home = tmp_path / "home"
+    first_note = _write_task(home, "active", "task-a")
+    _write_task(home, "active", "task-b")
+
+    assert _claim(home, "task-a").returncode == 0
+    first_note.unlink()  # the note vanishes; the sidecar still names it
+
+    result = _claim(home, "task-b")
+
+    assert result.returncode != 0, (
+        f"a sidecar naming a task with no note must HOLD.\nstderr: {result.stderr}"
+    )
+    assert "has no note in active/ or closed/" in result.stderr
+
+
+def test_archival_survives_a_cross_filesystem_move(tmp_path: Path) -> None:
+    """Measured on this estate: the cache is on /dev/sda2 and the vault is an NFS mount.
+
+    `Path.replace` is `os.rename`, which raises EXDEV across devices — so the archival would
+    have crashed on EVERY release, permanently holding the lane it exists to free. Three review
+    families caught it; my tests did not, because `tmp_path` puts source and destination on one
+    filesystem and the fixture could not reach the failure.
+
+    This puts HOME and the vault on genuinely different devices, so the move really does cross
+    a filesystem boundary. An earlier attempt injected EXDEV through a `sitecustomize` shim on
+    PYTHONPATH — which never loaded, because cc-claim runs its Python with `-I` (isolated mode
+    ignores PYTHONPATH and sitecustomize). That test passed under mutation; this one does not.
+    """
+    home = tmp_path / "home"
+
+    # A second real filesystem, chosen by measurement rather than assumption. If the runner has
+    # only one, the test says so instead of passing vacuously.
+    candidates = [Path("/tmp"), Path("/dev/shm"), Path.home()]
+    home.mkdir(parents=True, exist_ok=True)
+    home_dev = home.stat().st_dev
+    other = next((c for c in candidates if c.is_dir() and c.stat().st_dev != home_dev), None)
+    if other is None:
+        pytest.skip(f"no second filesystem available to cross (home dev={home_dev})")
+
+    vault = Path(tempfile.mkdtemp(prefix="cc-claim-xdev-", dir=other))
+    try:
+        (vault / "active").mkdir(parents=True, exist_ok=True)
+        (vault / "closed").mkdir(parents=True, exist_ok=True)
+        assert vault.stat().st_dev != (home / ".cache").parent.stat().st_dev, (
+            "the fixture must actually straddle two devices or it tests nothing"
+        )
+
+        for task_id in ("task-a", "task-b"):
+            source = _write_task(home, "active", task_id)
+            (vault / "active" / f"{task_id}.md").write_text(
+                source.read_text(encoding="utf-8"), encoding="utf-8"
+            )
+
+        env = {"HAPAX_CC_TASKS_ROOT": str(vault)}
+        assert _claim(home, "task-a", extra_env=env).returncode == 0
+
+        note = vault / "active" / "task-a.md"
+        note.write_text(
+            note.read_text(encoding="utf-8").replace("status: claimed", "status: pr_open"),
+            encoding="utf-8",
+        )
+
+        result = _claim(home, "task-b", extra_env=env)
+
+        assert result.returncode == 0, (
+            "archival must survive a cross-device move — this is the live layout, not an edge "
+            f"case.\nstderr: {result.stderr}"
+        )
+        residue = list((vault / "_lineage" / "task-a").glob("released-claim-residue-*"))
+        assert residue, "the residue must reach lineage across a filesystem boundary"
+    finally:
+        shutil.rmtree(vault, ignore_errors=True)
+
+
+def test_a_crash_mid_archival_can_be_resumed_rather_than_wedging_the_lane(tmp_path: Path) -> None:
+    """Reconstructs the crash instead of gesturing at it — all three families called the
+    previous version coverage theatre, and they were right.
+
+    That version COPIED a sidecar into a stray directory, leaving the source in place. The real
+    state is different and much worse: the `cc-active-task` anchor has been MOVED and its epoch
+    sibling has not. Collection keyed off the anchor, so on retry the key was invisible — the
+    epoch and dispatch sidecars were never archived, never removed, and canonical publication
+    mismatched forever. **The recovery path was unreachable from the state it existed to
+    recover**, and a test that never produced that state could not see it.
+    """
+    home = tmp_path / "home"
+    first_note = _write_task(home, "active", "task-a")
+    _write_task(home, "active", "task-b")
+
+    assert _claim(home, "task-a").returncode == 0
+    first_note.write_text(
+        first_note.read_text(encoding="utf-8").replace("status: claimed", "status: pr_open"),
+        encoding="utf-8",
+    )
+
+    cache = home / ".cache" / "hapax"
+    anchors = sorted(cache.glob("cc-active-task-*"))
+    assert anchors, "setup claim published no anchor"
+    anchor = anchors[0]
+    claim_key = anchor.name[len("cc-active-task-") :]
+    epoch = cache / f"cc-claim-epoch-{claim_key}"
+    assert epoch.exists(), "the epoch sibling is what makes this crash residue rather than a close"
+
+    # The crash: receipt written, anchor MOVED, epoch left behind.
+    lineage = _task_root(home) / "_lineage" / "task-a" / "released-claim-residue-partial"
+    lineage.mkdir(parents=True, exist_ok=True)
+    (lineage / "README.md").write_text(
+        "Archived claim residue for a task that released this role.\n"
+        "task_id: task-a\n"
+        f"claim_key: {claim_key}\n"
+        "claimed_next: task-b\n"
+        "archived_at: partial\n"
+        # The real writer always emits this line and recovery now requires it: a claim key is
+        # reused across tasks, so it identifies the LANE, not the archival. `archived:` names the
+        # exact sidecars this archival set out to move, which is what ties a receipt to the residue
+        # actually left behind. The fixture omitted it and so was not reproducing a real receipt.
+        f"archived: {anchor.name}, cc-claim-epoch-{claim_key}, "
+        f"cc-claim-dispatch-{claim_key}.json\n",
+        encoding="utf-8",
+    )
+    shutil.move(str(anchor), str(lineage / anchor.name))
+    assert not anchor.exists() and epoch.exists(), "fixture must reproduce the wedge state"
+
+    result = _claim(home, "task-b")
+
+    assert result.returncode == 0, (
+        "a half-finished archival must be resumable — the anchor is gone, so the task id has to "
+        f"come from the receipt the previous attempt wrote.\nstderr: {result.stderr}"
+    )
+
+    # Assert on the ARCHIVE, not on absence from the cache. Claiming task-b republishes sidecars
+    # at the very same paths, so `epoch.exists()` is true again immediately and says nothing
+    # about whether the stranded one was rescued — a first version of this assertion checked
+    # exactly that and reported a working mechanism as broken.
+    archived = {
+        f.name
+        for d in (_task_root(home) / "_lineage" / "task-a").iterdir()
+        if d.is_dir()
+        for f in d.iterdir()
+    }
+    assert f"cc-claim-epoch-{claim_key}" in archived, (
+        f"the stranded epoch sidecar must be rescued on the retry; archived: {sorted(archived)}"
+    )
+
+
+def test_a_closed_task_releases_the_lane(tmp_path: Path) -> None:
+    """All three review families, unanimously: the release lookup only searched `active/`.
+
+    A task that reaches a terminal status is usually MOVED to `closed/`, so an active/-only
+    lookup finds no note for exactly the tasks most certain to have released the role — it
+    falls through to the expiry HOLD and a closed task holds a lane forever. The Python side
+    already searched both directories; the bash side had silently diverged from it.
+    """
+    home = tmp_path / "home"
+    first_note = _write_task(home, "active", "task-a")
+    _write_task(home, "active", "task-b")
+
+    assert _claim(home, "task-a").returncode == 0
+
+    closed_dir = _task_root(home) / "closed"
+    closed_dir.mkdir(parents=True, exist_ok=True)
+    first_note.write_text(
+        first_note.read_text(encoding="utf-8").replace("status: claimed", "status: done"),
+        encoding="utf-8",
+    )
+    first_note.rename(closed_dir / first_note.name)
+    _age_leases(home, seconds=21600 * 2)
+
+    result = _claim(home, "task-b")
+
+    assert result.returncode == 0, (
+        f"a task that was closed and moved out of active/ must free its lane.\n"
+        f"stdout: {result.stdout}\nstderr: {result.stderr}"
+    )
+
+
+def test_released_task_residue_is_archived_with_a_receipt(tmp_path: Path) -> None:
+    """Retirement archives into task lineage; it does not `rm -f`.
+
+    An earlier revision deleted the three sidecars from the bash loop with
+    ``rm -f ... 2>/dev/null || true`` — unlocked, unreceipted, and reporting success after a
+    failed delete. Removal now happens inside the Gate-0B publication section, so this pins
+    both halves: the cache is clear of the prior key, AND the release is reconstructable.
+    """
+    home = tmp_path / "home"
+    result = _release_and_claim_next(
+        home, first="task-a", second="task-b", released_status="pr_open"
+    )
+    assert result.returncode == 0, f"stdout: {result.stdout}\nstderr: {result.stderr}"
+
+    lineage = _task_root(home) / "_lineage" / "task-a"
+    residue_dirs = list(lineage.glob("released-claim-residue-*"))
+    assert residue_dirs, (
+        f"released-task residue must be archived under {lineage}, not deleted.\n"
+        f"stderr: {result.stderr}"
+    )
+
+    receipt = (residue_dirs[0] / "README.md").read_text(encoding="utf-8")
+    assert "task_id: task-a" in receipt
+    assert "claimed_next: task-b" in receipt
+    assert "cc-active-task-" in receipt
+
+    archived_names = {path.name for path in residue_dirs[0].iterdir()}
+    assert any(name.startswith("cc-active-task-") for name in archived_names), archived_names
+
+
+def test_unreadable_claim_sidecar_holds_instead_of_being_swept(tmp_path: Path) -> None:
+    """Fails closed on residue it cannot account for.
+
+    A sidecar that cannot be read is not evidence that the lane is free. The earlier
+    ``rm -f`` swallowed exactly this case; archival must HOLD instead.
+    """
+    home = tmp_path / "home"
+    first_note = _write_task(home, "active", "task-a")
+    _write_task(home, "active", "task-b")
+
+    initial = _claim(home, "task-a")
+    assert initial.returncode == 0, f"setup claim failed: {initial.stderr}"
+    first_note.write_text(
+        first_note.read_text(encoding="utf-8").replace("status: claimed", "status: pr_open"),
+        encoding="utf-8",
+    )
+
+    cache_dir = home / ".cache" / "hapax"
+    sidecars = sorted(cache_dir.glob("cc-active-task-*"))
+    assert sidecars, "setup claim published no sidecar"
+    sidecars[0].write_bytes(b"\xff\xfe\x00not-utf-8")
+
+    result = _claim(home, "task-b")
+
+    assert result.returncode != 0, (
+        "an unreadable claim sidecar must HOLD, not be swept away.\n"
+        f"stdout: {result.stdout}\nstderr: {result.stderr}"
+    )
+    assert "unreadable claim sidecar" in result.stderr
+
+    # The load-bearing assertion, and the reason the two above are not enough. Both of them
+    # stay green if the unreadable sidecar is merely SKIPPED: the message still prints, and
+    # the claim still fails later with claim_cache_missing — the same exit code, for an
+    # unrelated reason. What separates fail-closed from fail-open is that a HOLD archives
+    # NOTHING. Skipping lets the sibling key's residue be swept while the malformed one is
+    # left behind, which is exactly the partial-sweep hazard this must refuse.
+    lineage = _task_root(home) / "_lineage"
+    archived = list(lineage.glob("*/released-claim-residue-*")) if lineage.exists() else []
+    assert archived == [], (
+        "a HOLD on unreadable residue must archive nothing at all; "
+        f"these were swept anyway: {archived}"
+    )
+
+
+def test_a_role_does_not_collect_a_prefix_siblings_sidecars(tmp_path: Path) -> None:
+    """`cx-red` must not collect `cx-redwood`. Found by external review.
+
+    Residue collection globs `{prefix}{role}*`, which has no role boundary: any role having this
+    one as a prefix matches. Those foreign projections would then be archived while only THIS
+    role's publication lock is held, racing a legitimate publish or resume on the other lane. The
+    bash role cap scans the exact role and `role-*` only, so the glob was strictly wider than the
+    thing it feeds.
+    """
+    home = tmp_path / "home"
+    note = _write_task(home, "active", "task-a")
+    _write_task(home, "active", "task-b")
+    assert _claim(home, "task-a").returncode == 0
+    note.write_text(
+        note.read_text(encoding="utf-8").replace("status: claimed", "status: pr_open"),
+        encoding="utf-8",
+    )
+
+    cache = home / ".cache" / "hapax"
+    # The role is `cx-test` (see `_claim`'s env). Deriving it by splitting on "-" yields `cx`, so
+    # the foreign name never collided and the first version of this test passed under mutation —
+    # coverage theatre, caught by breaking the guard.
+    role = "cx-test"
+    assert (cache / f"cc-active-task-{role}").exists(), "fixture role changed; update this test"
+    # A DIFFERENT lane whose name merely starts with this role's name — and whose task is a REAL,
+    # RELEASABLE row. Two earlier versions of this test stayed green under mutation: the first
+    # derived `role` by splitting on "-" (getting `cx`, so the names never collided), and the
+    # second pointed the foreign anchor at a task that did not exist, so archival declined for an
+    # unrelated reason. The sweep only engages on a resolvable task in a role-releasing state, so
+    # the hazard is only reachable when the foreign lane looks exactly like legitimate residue.
+    foreign_note = _write_task(home, "active", "task-foreign")
+    foreign_note.write_text(
+        foreign_note.read_text(encoding="utf-8").replace("status: offered", "status: pr_open"),
+        encoding="utf-8",
+    )
+    foreign = cache / f"cc-active-task-{role}wood"
+    foreign.write_text("task-foreign\n", encoding="utf-8")
+    foreign_epoch = cache / f"cc-claim-epoch-{role}wood"
+    foreign_epoch.write_text("epoch\n", encoding="utf-8")
+
+    result = _claim(home, "task-b")
+
+    assert foreign.exists(), (
+        f"'{role}wood' is a different lane; its anchor must not be swept by '{role}'.\n"
+        f"stderr: {result.stderr}"
+    )
+    assert foreign_epoch.exists(), "nor its epoch sidecar"
+    lineage = _task_root(home) / "_lineage"
+    swept = (
+        [p.name for d in lineage.glob("*/*") if d.is_dir() for p in d.iterdir()]
+        if lineage.exists()
+        else []
+    )
+    assert not any(f"{role}wood" in n for n in swept), (
+        f"a foreign lane's residue was archived under this role's lock: {swept}"
+    )
+
+
+def test_a_crash_after_the_epoch_move_is_resumable_not_permanently_wedged(
+    tmp_path: Path,
+) -> None:
+    """A bare dispatch sidecar is not proof of a normal close.
+
+    Found independently by two review families. Release archival moves
+    active -> epoch -> dispatch. A crash between the second and third moves leaves no anchor, no
+    epoch, and a bare dispatch sidecar — **a file state identical to a normal close**. The previous
+    revision read "epoch gone" as proof of a close and skipped, so the residue fell through to the
+    dispatch-only archiver, which rejects `pr_open` as non-terminal. Every retry then HOLDs and the
+    work is wedged permanently, with no path out.
+
+    The discriminator is the receipt, which is written before any file moves precisely so the
+    archive is self-describing.
+    """
+    home = tmp_path / "home"
+    first_note = _write_task(home, "active", "task-a")
+    _write_task(home, "active", "task-b")
+
+    assert _claim(home, "task-a").returncode == 0
+    first_note.write_text(
+        first_note.read_text(encoding="utf-8").replace("status: claimed", "status: pr_open"),
+        encoding="utf-8",
+    )
+
+    cache = home / ".cache" / "hapax"
+    anchors = sorted(cache.glob("cc-active-task-*"))
+    assert anchors, "setup claim published no anchor"
+    anchor = anchors[0]
+    claim_key = anchor.name[len("cc-active-task-") :]
+    epoch = cache / f"cc-claim-epoch-{claim_key}"
+    dispatch = cache / f"cc-claim-dispatch-{claim_key}.json"
+    assert epoch.exists() and dispatch.exists(), "setup did not publish the full residue set"
+
+    lineage = _task_root(home) / "_lineage" / "task-a" / "released-claim-residue-partial"
+    lineage.mkdir(parents=True, exist_ok=True)
+    (lineage / "README.md").write_text(
+        "Archived claim residue for a task that released this role.\n"
+        "task_id: task-a\n"
+        f"claim_key: {claim_key}\n"
+        "claimed_next: task-b\n"
+        "archived_at: partial\n"
+        f"archived: {anchor.name}, {epoch.name}, {dispatch.name}\n",
+        encoding="utf-8",
+    )
+    # The crash: receipt written, anchor AND epoch moved, dispatch left behind. This is the
+    # state the previous revision could not tell from a normal close.
+    shutil.move(str(anchor), str(lineage / anchor.name))
+    shutil.move(str(epoch), str(lineage / epoch.name))
+    assert not anchor.exists() and not epoch.exists() and dispatch.exists(), (
+        "fixture must reproduce a bare dispatch sidecar with the epoch already archived"
+    )
+
+    result = _claim(home, "task-b")
+
+    assert result.returncode == 0, (
+        "a crash AFTER the epoch move must still be resumable; the receipt names the residue.\n"
+        f"stderr: {result.stderr}"
+    )
+    archived_names = {
+        f.name
+        for d in (_task_root(home) / "_lineage" / "task-a").iterdir()
+        if d.is_dir()
+        for f in d.iterdir()
+    }
+    assert dispatch.name in archived_names, (
+        "the stranded dispatch binding must be rescued on the retry; "
+        f"archived: {sorted(archived_names)}"
+    )
+
+
+def test_reused_claim_keys_do_not_let_recovery_sweep_another_tasks_residue(
+    tmp_path: Path,
+) -> None:
+    """Two unfinished archivals under one claim key must HOLD, not pick the first.
+
+    Claim keys are `role` and `role-session` and both are reused across tasks, so a claim key
+    identifies the LANE, not the archival. Taking the first receipt that mentions the key let a
+    later claim misattribute one task's residue to another, archive it under the wrong lineage,
+    and proceed while that task was still claimed. Ambiguity here has to fail closed: there is no
+    evidence available at this point that could choose correctly.
+    """
+    home = tmp_path / "home"
+    first_note = _write_task(home, "active", "task-a")
+    _write_task(home, "active", "task-b")
+
+    assert _claim(home, "task-a").returncode == 0
+    first_note.write_text(
+        first_note.read_text(encoding="utf-8").replace("status: claimed", "status: pr_open"),
+        encoding="utf-8",
+    )
+
+    cache = home / ".cache" / "hapax"
+    anchor = sorted(cache.glob("cc-active-task-*"))[0]
+    claim_key = anchor.name[len("cc-active-task-") :]
+    epoch = cache / f"cc-claim-epoch-{claim_key}"
+    dispatch = cache / f"cc-claim-dispatch-{claim_key}.json"
+
+    lineage_root = _task_root(home) / "_lineage"
+    # TWO unfinished archivals, different tasks, same reused claim key, both naming this residue
+    # and neither holding it. Nothing distinguishes them from here.
+    for task in ("task-a", "older-task"):
+        d = lineage_root / task / f"released-claim-residue-{task}"
+        d.mkdir(parents=True, exist_ok=True)
+        (d / "README.md").write_text(
+            "Archived claim residue for a task that released this role.\n"
+            f"task_id: {task}\n"
+            f"claim_key: {claim_key}\n"
+            "claimed_next: task-b\n"
+            f"archived_at: {task}\n"
+            f"archived: {anchor.name}, {epoch.name}, {dispatch.name}\n",
+            encoding="utf-8",
+        )
+    shutil.move(
+        str(anchor), str(lineage_root / "task-a" / "released-claim-residue-task-a" / anchor.name)
+    )
+    assert not anchor.exists() and epoch.exists()
+
+    result = _claim(home, "task-b")
+
+    assert result.returncode != 0, (
+        "two candidate archivals under one reused claim key must HOLD rather than picking one.\n"
+        f"stdout: {result.stdout}\nstderr: {result.stderr}"
+    )
+    assert "unfinished release archivals" in result.stderr, result.stderr
+    # Fail-closed means nothing moved: a wrong choice would file this residue under the wrong task.
+    assert epoch.exists(), "a HOLD on ambiguous residue must archive nothing"

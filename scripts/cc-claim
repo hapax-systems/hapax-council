@@ -243,11 +243,131 @@ cc_task_root_resolve || exit $?
 vault_root_check="$CC_TASK_ROOT"
 now_epoch="$(date +%s 2>/dev/null || echo 0)"
 legacy_claim_file="$HOME/.cache/hapax/cc-active-task-$role"
+
+# Role-release vocabulary. MUST match shared/sdlc_lifecycle.TASK_ROLE_RELEASING_STATUSES
+# (pinned by tests/shared/test_sdlc_lifecycle.py::TestRoleReleaseVocabularyDrift).
+#
+# Two groups release the lane:
+#   terminal  — the work is over.
+#   resumable — the work is DONE and waiting on the pipeline (pr_open, merge_queue,
+#               ready-family). These are pipeline-held, not worker-held; the lane can
+#               take other work and re-claim later via TASK_RESUMABLE_STATUSES.
+#
+# This list previously read `done|completed|closed|withdrawn|superseded` — five of the
+# fifteen canonical terminal statuses and none of the resumable ones. Measured
+# 2026-08-29, that held 43 lanes hostage to finished work awaiting review, which is a
+# feedback loop rather than a capacity limit.
+_cc_role_release_status() {
+  case "$1" in
+    # terminal — fulfilling
+    done|completed|complete|closed|fulfilled|resolved) return 0 ;;
+    # terminal — non-fulfilling
+    withdrawn|withdrawn_stale|superseded|closed_superseded|rejected|refused) return 0 ;;
+    not_applicable|deferred|closed_poisoned) return 0 ;;
+    # resumable — finished, awaiting the pipeline
+    pr_open|merge_queue|ci_green|ready|ready_for_review|review_ready|ready_for_merge) return 0 ;;
+    # post-merge and pre-work — declared 2026-08-29 after both were found live in the
+    # active corpus while belonging to no status set at all, which held their lanes
+    # permanently.
+    merged_awaiting_runtime_witness|backlog) return 0 ;;
+  esac
+  return 1
+}
+
+# The resumable subset of the above: statuses a lane can RE-CLAIM without changing them
+# (cc-claim's resume path). A task in one of these is free of workers by default — that is
+# the whole point of #4611 — but a RESUMED one is worker-held again while its status stays
+# exactly here. The status is therefore one value for two states; the `cc-claim-resumed-<key>`
+# marker the resume path writes next to the anchor is the discriminator (codex critical on
+# #4611: a freshly resumed ready-state task was treated as lane-free).
+_cc_role_resumable_status() {
+  case "$1" in
+    pr_open|merge_queue|ci_green|ready|ready_for_review|review_ready|ready_for_merge) return 0 ;;
+    merged_awaiting_runtime_witness|backlog) return 0 ;;
+  esac
+  return 1
+}
+
 shopt -s nullglob
 for cf in "$legacy_claim_file" "$HOME/.cache/hapax/cc-active-task-$role-"*; do
   [[ -f "$cf" ]] || continue
+  # `cc-active-task-$role-*` has no role boundary: for role `cx-red` it also matches the
+  # legitimate role `cx-red-operator-email`'s sidecars (codex critical on #4611, mirrored
+  # from the Python scan). Only the bare legacy key and `role-<canonical session uuid>` are
+  # this role's; every live sidecar in the estate has that shape (measured 2026-09-02).
+  if [[ "$cf" != "$legacy_claim_file" ]]; then
+    cf_suffix="${cf##*/cc-active-task-$role-}"
+    [[ "$cf_suffix" =~ ^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$ ]] || continue
+  fi
   existing_task="$(head -n1 "$cf" | tr -d '[:space:]' || true)"
   cf_mtime="$(stat -c %Y "$cf" 2>/dev/null || echo "$now_epoch")"
+
+  # Resolve the prior task's status BEFORE any age-based decision.
+  #
+  # Release is a property of the TASK, not of the lease's age: a task that is done or
+  # pipeline-held is released whether or not its lease also expired. An earlier revision
+  # of this change tested expiry first, so in canonical mode every lease older than the
+  # TTL took the HOLD path at the top of this loop and the release case below was
+  # unreachable for exactly the aged, pre-existing sidecars that most need it. That is
+  # the same defect one level deeper — the first revision skipped the role-cap check but
+  # left canonical publication blocking, and this one freed fresh leases but left aged
+  # ones held.
+  # Look in `closed/` as well as `active/`, and in that order — matching
+  # `_task_note_path_for_any_state` on the Python side, which this had silently diverged from.
+  # A task that reached a terminal status is usually MOVED to closed/, so an active/-only
+  # lookup finds no note for exactly the tasks most certain to have released the role: it
+  # falls through to the expiry HOLD, and a closed task holds a lane forever. That is the
+  # release-vs-expiry ordering defect again, arriving through the note lookup instead.
+  existing_note=""
+  existing_status="unknown"
+  if [[ -n "$existing_task" && "$existing_task" != "$task_id" ]]; then
+    # Look in BOTH directories and refuse to pick by order. A task with a note in closed/ AND
+    # active/ is a duplicate identity: reading the terminal copy first freed the lane while
+    # the active copy still said `claimed` (codex critical on #4611; 41 such twins measured
+    # 2026-09-02). The Python resolver HOLDs on the same condition; the two must not diverge.
+    existing_closed=""
+    existing_active=""
+    for c in "$vault_root_check/closed/$existing_task.md" "$vault_root_check/closed/$existing_task-"*.md; do
+      [[ -f "$c" ]] && existing_closed="$c" && break
+    done
+    for c in "$vault_root_check/active/$existing_task.md" "$vault_root_check/active/$existing_task-"*.md; do
+      [[ -f "$c" ]] && existing_active="$c" && break
+    done
+    if [[ -n "$existing_closed" && -n "$existing_active" ]]; then
+      echo "cc-claim: HOLD - prior task '$existing_task' (from $cf) has a note in BOTH '$existing_closed' and '$existing_active'. A duplicate identity cannot be resolved by directory order. Next action: decide which copy is authoritative, mark the other 'status: superseded' (or move it out of active/) with operator approval, and rerun." >&2
+      exit 8
+    fi
+    existing_note="${existing_closed:-$existing_active}"
+    if [[ -n "$existing_note" ]]; then
+      existing_status="$(grep -oP '^status:\s*\K\S+' "$existing_note" 2>/dev/null || echo "unknown")"
+    fi
+  fi
+
+  # A released prior task does not occupy the role cap. The sidecars themselves are NOT
+  # removed here: archival happens on the Python side under the Gate-0B claim-publication
+  # lock, where it is transactional, receipted into task lineage, and fails closed. An
+  # earlier revision `rm -f`'d them from this loop — unlocked, unreceipted, and a second
+  # mitigation for a hazard `_archive_dispatch_only_claim_residue` already owns.
+  #
+  # A RESUMED task is the exception: its status stays in the resumable set by design while a
+  # worker holds the lane again. The resume path stamps `cc-claim-resumed-<key>` naming the
+  # task; when that marker names THIS anchor's task and the lease is still live, the lane is
+  # busy and falls through to the BLOCKED message below. A marker for another task (a reused
+  # key) is inert, and an expired lease releases a resumed lane the same way it releases any
+  # other dead session's.
+  resumed_marker="$HOME/.cache/hapax/cc-claim-resumed-${cf##*/cc-active-task-}"
+  existing_resumed=0
+  if [[ -f "$resumed_marker" ]] && [[ "$(head -n1 "$resumed_marker" | tr -d '[:space:]')" == "$existing_task" ]]; then
+    existing_resumed=1
+  fi
+  if [[ -n "$existing_note" ]] && _cc_role_release_status "$existing_status"; then
+    if (( existing_resumed == 1 )) && _cc_role_resumable_status "$existing_status" && (( now_epoch - cf_mtime <= lease_ttl )); then
+      : # resumed and worker-held: not released; handled below
+    else
+      continue
+    fi
+  fi
+
   if (( now_epoch - cf_mtime > lease_ttl )); then
     if [[ "$canon_enforced" == "1" && "$cf" == "$legacy_claim_file" && -n "$session_claim_file" && -f "$session_claim_file" ]]; then
       session_existing_task="$(head -n1 "$session_claim_file" | tr -d '[:space:]' || true)"
@@ -277,17 +397,14 @@ for cf in "$legacy_claim_file" "$HOME/.cache/hapax/cc-active-task-$role-"*; do
     continue
   fi
   [[ -n "$existing_task" && "$existing_task" != "$task_id" ]] || continue
-  existing_note=""
-  for c in "$vault_root_check/active/$existing_task-"*.md "$vault_root_check/active/$existing_task.md"; do
-    [[ -f "$c" ]] && existing_note="$c" && break
-  done
   [[ -n "$existing_note" ]] || continue
-  existing_status="$(grep -oP '^status:\s*\K\S+' "$existing_note" 2>/dev/null || echo "unknown")"
-  case "$existing_status" in
-    done|completed|closed|withdrawn|superseded) continue ;;
-  esac
-  echo "cc-claim: BLOCKED — role '$role' already has active task '$existing_task' (status: $existing_status)." >&2
-  echo "  Next action: close it first with cc-close $existing_task if terminal, or resume that task instead." >&2
+  if (( existing_resumed == 1 )); then
+    echo "cc-claim: BLOCKED — role '$role' already has active task '$existing_task' (status: $existing_status, RESUMED by a live session — worker-held, not pipeline-held)." >&2
+    echo "  Next action: let that session finish or close it with cc-close $existing_task; the lane frees when its lease expires or the task reaches a terminal status." >&2
+  else
+    echo "cc-claim: BLOCKED — role '$role' already has active task '$existing_task' (status: $existing_status)." >&2
+    echo "  Next action: close it first with cc-close $existing_task if terminal, or resume that task instead." >&2
+  fi
   if [[ "$canon_enforced" == "0" ]]; then
     echo "  Legacy fallback only: cc-claim --force $task_id" >&2
   fi
@@ -333,6 +450,7 @@ claim_epoch="$(date +%s)"
 import hashlib
 import json
 import re
+import shutil
 import sys
 from datetime import datetime, timezone
 from pathlib import Path
@@ -364,6 +482,7 @@ if str(repo_root) not in sys.path:
 from shared.sdlc_lifecycle import (  # noqa: E402
     TASK_CLAIMABLE_STATUSES,
     TASK_RESUMABLE_STATUSES,
+    TASK_ROLE_RELEASING_STATUSES,
     TASK_TERMINAL_STATUSES,
     blocked_reason_from_frontmatter,
     blocked_witness_from_frontmatter,
@@ -402,6 +521,7 @@ if canon_enforced:
     from shared.sdlc_claim import (  # noqa: E402
         ClaimPublicationError,
         ClaimPublicationIntent,
+        claim_publication_role_lock,
         inspect_claim_publications,
         recover_claim_publications,
         resolve_applied_claim_publication,
@@ -417,22 +537,529 @@ if canon_enforced:
     def _safe_lineage_component(value: str) -> str:
         return re.sub(r"[^A-Za-z0-9._:-]+", "_", value).strip("._:-")[:160] or "unknown"
 
-    def _task_note_path_for_any_state(vault_root: Path, observed_task_id: str) -> Path | None:
+    def _residue_task_ids(residue: tuple[Path, ...] | list[Path]) -> set[str]:
+        """The task id each claim sidecar names in its own content.
+
+        `cc-active-task-*`: first line is the task id. `cc-claim-epoch-*`: "<epoch> <task_id>".
+        `cc-claim-dispatch-*.json`: the `task_id` field. An unreadable or unparseable sidecar
+        contributes nothing — the caller compares what IS named against the receipt, and an
+        empty set means nothing could be checked, which is not a mismatch.
+        """
+        named: set[str] = set()
+        for path in residue:
+            try:
+                text = path.read_text(encoding="utf-8")
+            except (OSError, UnicodeDecodeError):
+                continue
+            name = path.name
+            if name.startswith("cc-claim-dispatch-"):
+                try:
+                    payload = json.loads(text)
+                except ValueError:
+                    continue
+                task = payload.get("task_id") if isinstance(payload, dict) else None
+                if isinstance(task, str) and task.strip():
+                    named.add(task.strip())
+            elif name.startswith("cc-claim-epoch-"):
+                parts = text.strip().split(None, 1)
+                if len(parts) == 2 and parts[1].strip():
+                    named.add(parts[1].strip())
+            elif name.startswith("cc-active-task-") or name.startswith("cc-claim-resumed-"):
+                # Both are single-line task-id files; the resumed marker is written by the
+                # resume path only (see `_write_resumed_marker`) and names the same task.
+                first = text.split("\n", 1)[0].strip()
+                if first:
+                    named.add(first)
+        return named
+
+    def _residue_identity(residue: tuple[Path, ...] | list[Path]) -> dict[str, str]:
+        """What identifies THIS residue beyond its file names, which lanes reuse.
+
+        `epoch`: the epoch sidecar's first line ("<epoch> <task_id>") — a claim epoch is minted
+        per publication, so two publications of the same task by the same lane differ here.
+        `dispatch_sha256`: the dispatch sidecar's content hash. Either is `absent` when the
+        sidecar is not present or unreadable; absence is recorded, never fabricated.
+        """
+        identity = {"epoch": "absent", "dispatch_sha256": "absent"}
+        for path in residue:
+            try:
+                data = path.read_bytes()
+            except OSError:
+                continue
+            if path.name.startswith("cc-claim-epoch-"):
+                first = data.decode("utf-8", "replace").split("\n", 1)[0].strip()
+                if first:
+                    identity["epoch"] = first
+            elif path.name.startswith("cc-claim-dispatch-"):
+                identity["dispatch_sha256"] = hashlib.sha256(data).hexdigest()
+        return identity
+
+    def _task_note_paths_by_state(vault_root: Path, observed_task_id: str) -> dict[str, Path]:
+        """The task's note in each state directory it appears in — never "the first one".
+
+        A task id is supposed to live in exactly one of ``closed/`` and ``active/``. When it is
+        in BOTH — measured 2026-09-02: 41 such twins, the active copies restored from a July
+        snapshot beside their closed ``done`` originals — resolving closed-first silently reads
+        the terminal copy, archives a live claim and admits another task, while the active copy
+        still says ``claimed``. Duplicate identities are reported, so the caller can HOLD.
+        """
+        found: dict[str, Path] = {}
         for subdir in ("closed", "active"):
             root = vault_root / subdir
             exact = root / f"{observed_task_id}.md"
             if exact.is_file():
-                return exact
+                found[subdir] = exact
+                continue
             for candidate in sorted(root.glob(f"{observed_task_id}-*.md")):
                 if candidate.is_file():
-                    return candidate
-        return None
+                    found[subdir] = candidate
+                    break
+        return found
+
+    def _task_note_path_for_any_state(vault_root: Path, observed_task_id: str) -> Path | None:
+        found = _task_note_paths_by_state(vault_root, observed_task_id)
+        if len(found) > 1:
+            return None  # ambiguous; `_task_status_for_any_state` says so and the caller HOLDs
+        return next(iter(found.values()), None)
 
     def _task_status_for_any_state(vault_root: Path, observed_task_id: str) -> str:
-        task_path = _task_note_path_for_any_state(vault_root, observed_task_id)
-        if task_path is None:
+        found = _task_note_paths_by_state(vault_root, observed_task_id)
+        if not found:
             return "missing"
+        if len(found) > 1:
+            return "ambiguous"
+        task_path = next(iter(found.values()))
         return _frontmatter_scalar(task_path.read_text(encoding="utf-8"), "status") or "unknown"
+
+    _RELEASE_RECEIPT = "README.md"
+
+    def _write_release_receipt(
+        lineage_dir: Path,
+        prior_task_id: str,
+        claim_key: str,
+        current_task_id: str,
+        observed_at: str,
+        residue: "tuple[Path, ...]",
+    ) -> None:
+        """Write the receipt BEFORE the residue moves, so the archive is self-describing.
+
+        A crash between moves previously left files in lineage with nothing recording which
+        task they belonged to — and because the `cc-active-task` anchor had already moved, no
+        later run could recover it. Receipt-first makes the archive identify itself from its
+        first instant, which is what `_interrupted_release_archivals` reads. Its `archived:` line
+        is load-bearing for that: it names the exact sidecars this archival set out to move, and
+        without it a receipt could not be tied to the residue actually left behind.
+        """
+        # **Names are not identities.** Claim keys AND file names are reused across publications
+        # of the same task by the same lane, so `archived:` alone cannot tell this residue from
+        # the residue a later re-claim of the same task leaves behind (codex critical on #4611,
+        # one level deeper than the task-id check). The receipt therefore records what the
+        # residue itself carries — the per-publication claim epoch and the dispatch content hash —
+        # and `_interrupted_release_archivals` requires them to agree before it will attribute
+        # residue to this receipt. Absent sidecars are written as `absent`, not guessed.
+        identity = _residue_identity(residue)
+        lineage_dir.mkdir(parents=True, exist_ok=True)
+        (lineage_dir / _RELEASE_RECEIPT).write_text(
+            "Archived claim residue for a task that released this role.\n"
+            f"task_id: {prior_task_id}\n"
+            f"claim_key: {claim_key}\n"
+            f"claimed_next: {current_task_id}\n"
+            f"archived_at: {observed_at}\n"
+            f"archived: {', '.join(source.name for source in residue)}\n"
+            f"epoch: {identity['epoch']}\n"
+            f"dispatch_sha256: {identity['dispatch_sha256']}\n"
+            "reason: the prior task reached a role-releasing status (terminal, "
+            "resumable/pipeline-held, post-merge, or pre-work), so its lease no "
+            "longer occupies the role cap.\n",
+            encoding="utf-8",
+        )
+
+    def _interrupted_release_archivals(
+        vault_root: Path, claim_key: str, present: "tuple[Path, ...]"
+    ) -> "list[tuple[str, Path]]":
+        """Receipts whose archival of exactly THIS residue demonstrably did not finish.
+
+        Replaces a lookup that took the first receipt mentioning `claim_key`. **Claim keys are
+        `role` and `role-session`, and both are reused across tasks**, so "first receipt with this
+        key" can name a different task entirely: after task A archives, task B can be interrupted
+        between its epoch and dispatch moves, and a later claim for task C would then read A's
+        receipt, archive B's residue under A's lineage, and proceed while B is still claimed. The
+        claim key is not an identifier of the archival — it is an identifier of the LANE.
+
+        Two further conditions make a receipt identify the residue in front of us:
+
+        * the receipt's `archived:` list must COVER the sidecars still sitting in the cache — it
+          records exactly which files that archival set out to move; and
+        * the receipt's own lineage directory must still be MISSING them. A completed archival has
+          the files at the destination. Only an interrupted one leaves them at the source.
+
+        Returns every match rather than the first, so the caller can fail closed on ambiguity
+        instead of choosing. Nothing here decides; it reports what the evidence supports.
+
+        **Stale receipts accumulate, and the residual risk is a WEDGE, not a wrong sweep.** A
+        receipt whose archival later completed into a different lineage directory (the directory
+        name carries `observed_at`) keeps satisfying the destination-missing test forever. Review
+        raised this as a stale receipt authorising a sweep of a newer live claim. Two things bound
+        it, and both are structural rather than assertions about timing:
+
+        * the caller reaches this only when the `cc-active-task` anchor is GONE, so a live claim —
+          which by definition has its anchor — is not on this path at all; and
+        * receipts are written BEFORE any file moves, so an interrupted archival always leaves its
+          own receipt. A stale receipt plus the current one is two matches, and the caller HOLDs on
+          more than one rather than choosing.
+
+        So the reachable failure is a HOLD naming the exact files and asking for operator approval,
+        which is the direction a fail-closed guard should err in. Recorded rather than mitigated
+        further: a third guard for the same hazard is the design smell, and the honest fix if this
+        ever wedges in practice is receipt retirement at completion, not more matching rules here.
+        """
+        lineage_root = vault_root / "_lineage"
+        if not lineage_root.is_dir() or not present:
+            return []
+        present_names = {path.name for path in present}
+        present_identity = _residue_identity(present)
+        matches: list[tuple[str, Path]] = []
+        for receipt in sorted(lineage_root.glob(f"*/released-claim-residue-*/{_RELEASE_RECEIPT}")):
+            try:
+                text = receipt.read_text(encoding="utf-8")
+            except OSError:
+                continue
+            fields: dict[str, str] = {}
+            for line in text.splitlines():
+                key, sep, value = line.partition(": ")
+                if sep:
+                    fields.setdefault(key.strip(), value.strip())
+            if fields.get("claim_key") != claim_key:
+                continue
+            task_id = fields.get("task_id") or ""
+            archived = {name.strip() for name in fields.get("archived", "").split(",") if name.strip()}
+            if not task_id or not archived:
+                continue
+            if not present_names <= archived:
+                continue
+            # **Bind on what the residue IS, not what it is called.** A receipt that recorded
+            # the residue's claim epoch / dispatch hash must match the residue in front of us on
+            # every field both sides carry; a receipt for an earlier publication of the SAME
+            # task by the SAME lane then fails to match instead of sweeping the newer one.
+            # A receipt without these fields (pre-identity format) is matched by names only, as
+            # before — it can still be caught by the task-id check downstream, never by this.
+            identity_mismatch = False
+            for field in ("epoch", "dispatch_sha256"):
+                recorded = fields.get(field)
+                observed = present_identity[field]
+                if recorded and recorded != "absent" and observed != "absent" and recorded != observed:
+                    identity_mismatch = True
+                    break
+            if identity_mismatch:
+                continue
+            lineage_dir = receipt.parent
+            if any((lineage_dir / name).exists() for name in present_names):
+                continue  # the move completed; this residue is not from this archival
+            matches.append((task_id, lineage_dir))
+        return matches
+
+    def _archive_released_task_claim_residue(
+        *,
+        vault_root: Path,
+        cache_dir: Path,
+        role: str,
+        session_id: str,
+        current_task_id: str,
+        observed_at: str,
+    ) -> None:
+        """Archive the lease sidecars of a prior task that has released this role.
+
+        The bash role-cap loop above stops *blocking* on a released prior task; it does
+        not remove anything. Removal belongs here for three reasons the earlier revision
+        got wrong by doing an unlocked ``rm -f`` in bash:
+
+        * this runs inside the Gate-0B claim-publication section, so it cannot race a
+          concurrent resume that is publishing role and session projections;
+        * it archives into task lineage with a receipt instead of deleting, so a release
+          decision stays reconstructable;
+        * it fails closed. A sidecar it cannot read, or a partial set it cannot account
+          for, HOLDs rather than being swept away — ``rm -f ... || true`` reported success
+          after failure and could not tell a clean retirement from a broken one.
+
+        Without this, the bash loop's ``continue`` is not enough: ``claim_paths`` below
+        still finds the stale sidecars and ``resolve_applied_claim_publication`` exits 8
+        with ``claim_task_mismatch``, so the lane stays blocked one layer deeper.
+
+        **Reachable only on the admitted Gate-0B path, deliberately.** Under
+        ``HAPAX_GATE0B_CLAIM_PUBLICATION_OFF=1`` the legacy writer runs instead and no residue is
+        archived — because that path takes no role lock, and an unlocked archival is the race
+        three review families rejected here. The killswitch is an operator-authorized emergency
+        fallback whose own banner says to repair the admitted path and stop using it; giving it a
+        lockless copy of this machinery would make the unsafe path the more capable one.
+
+        **If a fail-closed HOLD wedges a lane**, the escape is in the HOLD message itself: it
+        names the exact files to archive and says operator approval is required. That is the
+        documented bypass — deliberately per-incident and explicit, rather than a standing
+        environment flag that would let the guard be switched off wholesale.
+        """
+        # Scan EVERY session-keyed sidecar for this role, not just this session's.
+        #
+        # The bash role-cap loop globs `cc-active-task-<role>-*`, so it stops blocking on a
+        # released task claimed by any previous session — but this archival only knew about
+        # `{role, role-<this session>}`. The lane therefore came free at the cap and then
+        # failed at canonical publication with `claim_task_mismatch`, which is the very
+        # one-layer-deeper failure this function exists to prevent. Two scans over the same
+        # sidecars must not disagree about which ones exist.
+        # (claim key, prior task id, residue, lineage dir of an INTERRUPTED archival to resume or None)
+        released: list[tuple[str, str, tuple[Path, ...], Path | None]] = []
+        claim_keys = {role, f"{role}-{session_id}"}
+        # Collect from ALL THREE sidecar patterns, not just `cc-active-task-*`.
+        #
+        # Keying collection off the active-task file alone made a partial archival PERMANENT:
+        # move that one, crash, and on retry the key is invisible — so the epoch and dispatch
+        # sidecars are never archived, never removed, and canonical publication mismatches
+        # forever. The recovery path was unreachable from exactly the state it existed to
+        # recover. All three review families found it together.
+        for prefix, suffix in (
+            ("cc-active-task-", ""),
+            ("cc-claim-epoch-", ""),
+            ("cc-claim-dispatch-", ".json"),
+        ):
+            for sidecar in cache_dir.glob(f"{prefix}{role}*{suffix}"):
+                key = sidecar.name[len(prefix) :]
+                if suffix:
+                    key = key[: -len(suffix)]
+                # **The glob has no role boundary; this is the boundary.** `{role}*` matches any
+                # role having this one as a PREFIX — collecting `cx-red` also collects
+                # `cx-redwood`'s sidecars, which would then be archived while only the `cx-red`
+                # publication lock is held, racing a legitimate `cx-redwood` publish or resume.
+                # The bash cap above scans the exact role and `role-*` only, so the glob was
+                # strictly wider than the thing it feeds. Found by external review.
+                #
+                # The valid keys are exactly the two minted at the top of this function: the bare
+                # role, and `role-<session>`. Anything else belongs to a different lane.
+                #
+                # **`role-` as a prefix is not a boundary either.** Role names carry hyphens, so
+                # for role `cx-red` the sidecars of the legitimate role `cx-red-operator-email`
+                # satisfied `startswith("cx-red-")` and could be archived while only the
+                # `cx-red` lock was held, racing that lane's publication (codex critical on
+                # #4611). The suffix must be a canonical session id — the UUID every launcher
+                # mints — not merely something after a hyphen.
+                if key != role:
+                    # Its own name: this used to be `suffix`, which is the OUTER loop's
+                    # filename-extension variable. Reusing it clobbered the extension after the
+                    # first session-keyed sidecar, so every later `cc-claim-dispatch-*.json` had
+                    # a UUID-length slice cut off its key instead of `.json` — corrupt keys,
+                    # excluded from `claim_keys`, and older sessions' claims left usable while a
+                    # new claim proceeded (codex critical on #4611).
+                    session_suffix = key[len(role) + 1 :] if key.startswith(f"{role}-") else ""
+                    if not re.fullmatch(
+                        r"[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}",
+                        session_suffix,
+                    ):
+                        continue
+                claim_keys.add(key)
+        for claim_key in sorted(claim_keys):
+            claim_path = cache_dir / f"cc-active-task-{claim_key}"
+            siblings = [
+                cache_dir / f"cc-claim-epoch-{claim_key}",
+                cache_dir / f"cc-claim-dispatch-{claim_key}.json",
+            ]
+            if not claim_path.exists():
+                epoch_path, dispatch_path = siblings
+                orphans = [s for s in siblings if s.exists()]
+                if not orphans:
+                    continue
+                # **A bare dispatch sidecar has THREE possible causes, and this was a boolean.**
+                #
+                # The previous revision read "epoch gone" as proof of a normal close, whose spent
+                # dispatch leg `_archive_dispatch_only_claim_residue` legitimately owns. That is
+                # true of a normal close and NOT true in general: release archival moves
+                # active -> epoch -> dispatch, so a crash between the second and third moves leaves
+                # no anchor, no epoch, and a bare dispatch sidecar — a file state IDENTICAL to a
+                # normal close. The dispatch-only archiver then rejects `pr_open` and ready-family
+                # tasks as non-terminal, so every retry HOLDs and the work is wedged permanently.
+                # Two review families found this independently.
+                #
+                # The states are distinguished by the RECEIPT, which is written before any file
+                # moves precisely so the archive is self-describing:
+                #
+                #   epoch present                      -> crash mid-archival
+                #   epoch absent, receipt claims these -> crash AFTER the epoch move
+                #   epoch absent, no such receipt      -> normal close; not ours
+                #
+                # This is not a second mitigation for the hazard the dispatch-only archiver owns:
+                # it is the discriminator that decides WHICH hazard is present, and its precondition
+                # is machine-checkable at the moment of use rather than asserted about the past.
+                interrupted = _interrupted_release_archivals(vault_root, claim_key, tuple(orphans))
+                if not epoch_path.exists() and not interrupted:
+                    continue
+                if len(interrupted) > 1:
+                    print(
+                        f"cc-claim: HOLD - claim key '{claim_key}' has residue "
+                        f"({', '.join(o.name for o in orphans)}) matching "
+                        f"{len(interrupted)} unfinished release archivals "
+                        f"({', '.join(task for task, _ in interrupted)}). Claim keys are reused "
+                        "across tasks, so this cannot be resolved by picking one. Next action: "
+                        "inspect those receipts, decide which archival the residue belongs to, "
+                        "and with operator approval complete that move by hand before rerunning.",
+                        file=sys.stderr,
+                    )
+                    sys.exit(8)
+                # The anchor is gone but residue remains — the signature of a crash mid-archival.
+                # Recover the task id from the receipt the previous attempt left, which is why
+                # the receipt is now written BEFORE any file moves.
+                recovered = interrupted[0][0] if interrupted else None
+                # **Bind the residue's own contents to the receipt.** A release can write receipt
+                # A, crash before moving, then complete on retry into a different timestamped
+                # lineage directory — leaving A eligible forever. A later Gate-0B publication
+                # that crashes after writing its epoch/dispatch sidecars but before activation
+                # then has A as its sole match, and the NEWER lane's residue would be archived
+                # under the OLD task (codex critical on #4611). The sidecars name their task
+                # (epoch: "<epoch> <task_id>"; dispatch: `task_id`); if any disagrees with the
+                # receipt, identity is ambiguous and this HOLDs rather than choosing.
+                if recovered is not None:
+                    named = _residue_task_ids(orphans)
+                    if named and named != {recovered}:
+                        print(
+                            f"cc-claim: HOLD - claim key '{claim_key}' residue "
+                            f"({', '.join(o.name for o in orphans)}) names task(s) "
+                            f"{sorted(named)} but the only matching release receipt names "
+                            f"'{recovered}'. The residue is not this receipt's; a newer "
+                            "publication may have crashed before activation. Next action: "
+                            "inspect the sidecars and the receipt, decide which task owns the "
+                            "residue, and with operator approval archive it under that task's "
+                            f"lineage in {vault_root}/_lineage/ before rerunning.",
+                            file=sys.stderr,
+                        )
+                        sys.exit(8)
+                if recovered is None:
+                    print(
+                        f"cc-claim: HOLD - claim key '{claim_key}' has residue "
+                        f"({', '.join(o.name for o in orphans)}) but no cc-active-task anchor and "
+                        "no release receipt naming its task. Next action: inspect those files to "
+                        f"identify the task, then with operator approval archive them under "
+                        f"{vault_root}/_lineage/<task_id>/ and rerun.",
+                        file=sys.stderr,
+                    )
+                    sys.exit(8)
+                # Carry the receipt's OWN lineage directory so the retry completes THAT archival
+                # instead of opening a second timestamped one (codex major on #4611: retries
+                # split one archival across directories and accumulated stale receipts).
+                released.append((claim_key, recovered, tuple(orphans), interrupted[0][1]))
+                continue
+            try:
+                prior_task_id = claim_path.read_text(encoding="utf-8").split("\n", 1)[0].strip()
+            except (OSError, UnicodeDecodeError) as exc:
+                print(
+                    f"cc-claim: HOLD - unreadable claim sidecar {claim_path} ({exc}). "
+                    "Next action: inspect the file to recover its task id, then with "
+                    "operator approval run the Manual Stale-Lease Release runbook for "
+                    f"claim_file='{claim_path}' before retrying.",
+                    file=sys.stderr,
+                )
+                sys.exit(8)
+            if not prior_task_id or prior_task_id == current_task_id:
+                continue
+            prior_status = _task_status_for_any_state(vault_root, prior_task_id)
+            if prior_status == "ambiguous":
+                # The task has a note in BOTH closed/ and active/. Resolving by directory order
+                # read the terminal copy, archived a live claim and admitted another task while
+                # the active copy still said `claimed` (codex critical on #4611; 41 such twins
+                # measured 2026-09-02). Duplicate identities HOLD; nothing here can adjudicate.
+                notes = _task_note_paths_by_state(vault_root, prior_task_id)
+                print(
+                    f"cc-claim: HOLD - claim sidecar {claim_path} names task "
+                    f"'{prior_task_id}', which has a note in BOTH "
+                    f"{notes.get('closed')} and {notes.get('active')}. A duplicate identity "
+                    "cannot be resolved by directory order. Next action: decide which copy is "
+                    "authoritative, mark the other `status: superseded` (or move it out of "
+                    "active/) with operator approval, and rerun.",
+                    file=sys.stderr,
+                )
+                sys.exit(8)
+            if prior_status == "missing":
+                # A sidecar whose task note cannot be found is not evidence that the task
+                # released the role — it is an absence of evidence, and skipping it silently
+                # leaves a stale projection for a task nobody can adjudicate. Same fail-closed
+                # rule as the unreadable sidecar above: refuse, and name the repair.
+                epoch_path = cache_dir / f"cc-claim-epoch-{claim_key}"
+                dispatch_path = cache_dir / f"cc-claim-dispatch-{claim_key}.json"
+                # Self-contained, because a fail-closed HOLD with no executable exit strands
+                # the lane permanently — and pointing at a runbook this change neither ships nor
+                # updates is not an exit. Same shape as the expired-claim HOLD above, which
+                # names its three files.
+                print(
+                    f"cc-claim: HOLD - claim sidecar {claim_path} names task "
+                    f"'{prior_task_id}', which has no note in active/ or closed/, so there is no "
+                    "evidence it released this role. Next action: either restore the note at "
+                    f"{vault_root}/active/{prior_task_id}.md, or — with operator approval, once "
+                    "you have confirmed the task really is gone — archive exactly these three "
+                    f"files and rerun: '{claim_path}', '{epoch_path}', '{dispatch_path}'.",
+                    file=sys.stderr,
+                )
+                sys.exit(8)
+            if prior_status not in TASK_ROLE_RELEASING_STATUSES:
+                continue
+            residue = tuple(
+                candidate
+                for candidate in (
+                    claim_path,
+                    cache_dir / f"cc-claim-epoch-{claim_key}",
+                    cache_dir / f"cc-claim-dispatch-{claim_key}.json",
+                )
+                if candidate.exists()
+            )
+            released.append((claim_key, prior_task_id, residue, None))
+
+        if not released:
+            return
+        lineage_root = vault_root / "_lineage"
+        archived: list[str] = []
+        for claim_key, prior_task_id, residue, resume_dir in released:
+            if resume_dir is not None:
+                # Resuming an interrupted archival: its receipt already exists and already names
+                # the FULL residue that archival set out to move. Rewriting it here with only
+                # what is left would shrink `archived:` — the reduced-receipt hazard review
+                # named — so the original receipt stands and only the moves are completed.
+                lineage_dir = resume_dir
+            else:
+                lineage_dir = (
+                    lineage_root
+                    / _safe_lineage_component(prior_task_id)
+                    / (
+                        "released-claim-residue-"
+                        f"{_safe_lineage_component(observed_at)}-"
+                        f"{_safe_lineage_component(claim_key)}"
+                    )
+                )
+            # Idempotent: `exist_ok=False` made a retry after a partial move crash on the
+            # directory it had itself created, so the recovery path was the one path that could
+            # not run. Each move is individually skippable for the same reason.
+            lineage_dir.mkdir(parents=True, exist_ok=True)
+            # Receipt FIRST. A crash between moves used to leave files in lineage with nothing
+            # saying which task they belonged to — and since the anchor was already gone, no
+            # later run could work it out. Written before anything moves, the archive identifies
+            # itself from its first instant.
+            if resume_dir is None:
+                _write_release_receipt(
+                    lineage_dir, prior_task_id, claim_key, current_task_id, observed_at, residue
+                )
+            for source in residue:
+                destination = lineage_dir / source.name
+                if destination.exists() and not source.exists():
+                    # Resumption, not a collision: a previous attempt moved this one and then
+                    # died. Anything else — both present, or neither — falls through to the move
+                    # so a genuine name clash surfaces instead of being skipped.
+                    continue
+                # `shutil.move`, not `Path.replace`. The sidecars live on /home and the vault is
+                # an NFS mount, so `os.rename` raises EXDEV on EVERY release on this estate —
+                # the archival would crash and permanently hold the lane it exists to free.
+                # Three review families caught it; my tests did not, because `tmp_path` puts
+                # source and destination on one filesystem, so the fixture could not reach the
+                # failure.
+                shutil.move(str(source), str(destination))
+            archived.extend(str(lineage_dir / source.name) for source in residue)
+        print(
+            "cc-claim: archived released-task claim residue before fresh admitted claim: "
+            + ", ".join(archived),
+            file=sys.stderr,
+        )
 
     def _archive_dispatch_only_claim_residue(
         *,
@@ -521,9 +1148,14 @@ if canon_enforced:
                     f"{_safe_lineage_component(claim_key)}"
                 )
             )
-            lineage_dir.mkdir(parents=True, exist_ok=False)
+            # Same idempotency as the released-residue archival above: `exist_ok=False` made
+            # a retry crash on the directory the previous attempt created, so the recovery path
+            # was the one path that could not run.
+            lineage_dir.mkdir(parents=True, exist_ok=True)
             destination = lineage_dir / dispatch_path.name
-            dispatch_path.replace(destination)
+            if not (destination.exists() and not dispatch_path.exists()):
+                # Cross-device safe, for the same reason as the released-residue archival above.
+                shutil.move(str(dispatch_path), str(destination))
             (lineage_dir / "README.md").write_text(
                 "Archived dispatch-only claim residue before a fresh admitted claim.\n"
                 f"task_id: {binding.task_id}\n"
@@ -649,14 +1281,41 @@ if canon_enforced:
             cache_dir / f"cc-claim-dispatch-{key}.json",
         )
     )
-    _archive_dispatch_only_claim_residue(
-        vault_root=path.parent.parent,
-        cache_dir=cache_dir,
-        role=role,
-        session_id=session_id,
-        current_task_id=task_id,
-        observed_at=datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ"),
-    )
+    _observed_at = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
+    # Under the SAME role lock publication uses. Both archivals mutate this role's claim
+    # projections, so running them unlocked let a concurrent resume publish role and session
+    # projections while this process moved them out from under it — all three review families
+    # named it independently. `claim_publication_role_lock` is an accessor for the existing
+    # lock, not a second one; a lock only the publication path could take is a lock every other
+    # path silently did without.
+    try:
+        with claim_publication_role_lock(role, lock_root=lock_root):
+            _archive_released_task_claim_residue(
+                vault_root=path.parent.parent,
+                cache_dir=cache_dir,
+                role=role,
+                session_id=session_id,
+                current_task_id=task_id,
+                observed_at=_observed_at,
+            )
+            # BOTH archivals, not just the one the review named. They mutate the same role's
+            # projections and differ only in which residue they collect, so locking one and
+            # leaving the other is the sibling omission — the adjacent function, at that.
+            _archive_dispatch_only_claim_residue(
+                vault_root=path.parent.parent,
+                cache_dir=cache_dir,
+                role=role,
+                session_id=session_id,
+                current_task_id=task_id,
+                observed_at=_observed_at,
+            )
+    except ClaimPublicationError as exc:
+        print(
+            f"cc-claim: HOLD — {exc}. Next action: release the stale role claim-publication "
+            "lock or retry once the active publisher exits.",
+            file=sys.stderr,
+        )
+        sys.exit(8)
     claim_paths = tuple(candidate for candidate in claim_paths if candidate.exists())
     if any(candidate.exists() for candidate in claim_paths):
         try:
@@ -800,6 +1459,32 @@ else:
         file=sys.stderr,
     )
     sys.exit(4)
+
+
+def _stamp_resumed_marker(
+    cache_dir: Path, role: str, session_id: str, task_id: str, mode: str
+) -> None:
+    """Record, next to the claim anchor, whether this publication is a RESUME.
+
+    A resumed task keeps its pipeline status (`pr_open`, `merge_queue`, `ready`, …) by design,
+    while a worker is again holding the lane. The status alone therefore cannot tell
+    "finished, waiting on the pipeline" (lane free) from "resumed and worker-held" (lane busy),
+    and the bash role-cap loop had only the status to go on — it released a freshly resumed
+    lane to a second session (codex critical on #4611). The marker is the missing third value.
+
+    Shape: `cc-claim-resumed-<claim key>`, single line, the task id — so a stale marker for a
+    different task under a reused key is inert (the cap loop compares it to the anchor's task),
+    and the anchor stays single-line for the consumers that read its whole content as the id.
+    A non-resume claim REMOVES the marker for its keys, so a resume never outlives the claim
+    that follows it. Written after publication, so a failed publication leaves no marker.
+    """
+    keys = (role, f"{role}-{session_id}") if session_id else (role,)
+    for key in keys:
+        marker = cache_dir / f"cc-claim-resumed-{key}"
+        if mode == "resume":
+            marker.write_text(f"{task_id}\n", encoding="utf-8")
+        else:
+            marker.unlink(missing_ok=True)
 
 
 def _frontmatter_lines(note_text: str) -> list[str]:
@@ -1215,6 +1900,7 @@ if not canon_enforced:
     else:
         print(result_message)
         print(f"cc-claim: wrote ~/.cache/hapax/cc-active-task-{role}")
+    _stamp_resumed_marker(cache_dir, role, session_id, task_id, claim_mode)
     sys.exit(0)
 
 try:
@@ -1297,6 +1983,7 @@ print(
     "cc-claim: admitted publication applied "
     f"(publication={receipt.publication_id}, receipt={receipt.receipt_hash})"
 )
+_stamp_resumed_marker(cache_dir, role, session_id, task_id, claim_mode)
 PYEOF
 
 exit 0
