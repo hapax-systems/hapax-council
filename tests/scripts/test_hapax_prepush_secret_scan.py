@@ -152,11 +152,69 @@ def test_vendor_key_prefix_cannot_be_allowlisted_by_inline_pragma(tmp_path, monk
     assert fake not in r2.stderr and fake not in r2.stdout
 
 
+def test_detector_nonzero_exit_with_valid_json_refuses_push(tmp_path, monkeypatch):
+    """A parseable detector payload is not a completed scan when the process failed."""
+    fake_bin = tmp_path / "detector-bin"
+    fake_bin.mkdir()
+    fake_detector = fake_bin / "detect-secrets"
+    fake_detector.write_text("#!/bin/sh\nprintf '%s\\n' '{\"results\": {}}'\nexit 9\n")
+    fake_detector.chmod(0o755)
+    monkeypatch.setenv("PATH", f"{fake_bin}:{os.environ['PATH']}")
+
+    repo = _repo(tmp_path)
+    base = _git(repo, "rev-parse", "HEAD")
+    tip = _commit(repo, "scan-me.txt", "ordinary content\n")
+
+    r = _run(repo, "origin", f"refs/heads/main {tip} refs/heads/main {base}\n")
+
+    assert r.returncode == 3, r.stderr
+    assert "detect-secrets failed with exit status 9" in r.stderr
+
+
+def test_detector_json_without_results_refuses_push(tmp_path, monkeypatch):
+    """A successful process must still return the documented results object."""
+    fake_bin = tmp_path / "detector-bin"
+    fake_bin.mkdir()
+    fake_detector = fake_bin / "detect-secrets"
+    fake_detector.write_text("#!/bin/sh\nprintf '%s\\n' '{}'\n")
+    fake_detector.chmod(0o755)
+    monkeypatch.setenv("PATH", f"{fake_bin}:{os.environ['PATH']}")
+
+    repo = _repo(tmp_path)
+    base = _git(repo, "rev-parse", "HEAD")
+    tip = _commit(repo, "scan-me.txt", "ordinary content\n")
+
+    r = _run(repo, "origin", f"refs/heads/main {tip} refs/heads/main {base}\n")
+
+    assert r.returncode == 3, r.stderr
+    assert "detect-secrets response has no results object" in r.stderr
+
+
 def test_new_branch_scans_everything_not_nothing(tmp_path):
     """Remote sha all-zero and no remote default branch known → base is the empty tree."""
     repo = _repo(tmp_path)
     tip = _commit(repo, "leak.txt", "path /home/other/secret-store\n")
     r = _run(repo, "origin", f"refs/heads/feature {tip} refs/heads/feature {ZERO}\n")
+    assert r.returncode == 1, r.stderr
+    assert "home path" in r.stderr
+
+
+def test_new_branch_to_foreign_remote_does_not_inherit_origin_base(tmp_path, monkeypatch):
+    """A target with no known base must not borrow an unrelated remote's branch tip."""
+    fake_bin = tmp_path / "detector-bin"
+    fake_bin.mkdir()
+    fake_detector = fake_bin / "detect-secrets"
+    fake_detector.write_text("#!/bin/sh\nprintf '%s\\n' '{\"results\": {}}'\n")
+    fake_detector.chmod(0o755)
+    monkeypatch.setenv("PATH", f"{fake_bin}:{os.environ['PATH']}")
+
+    repo = _repo(tmp_path)
+    line = "path " + "/".join(("", "home", "someone", "secret-store")) + "\n"
+    tip = _commit(repo, "leak.txt", line)
+    _git(repo, "update-ref", "refs/remotes/origin/main", tip)
+
+    r = _run(repo, "mirror", f"refs/heads/feature {tip} refs/heads/feature {ZERO}\n")
+
     assert r.returncode == 1, r.stderr
     assert "home path" in r.stderr
 
