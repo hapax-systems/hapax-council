@@ -36,9 +36,10 @@ REVIEWER_OK = (
     "echo OK\n"
 )
 REVIEWER_ALWAYS_FAILS_SILENTLY = "exit 1\n"
+REVIEWER_FAILS_WITH_OUTPUT = "echo NOT_OK\nexit 23\n"
 REVIEWER_FAILS_TWICE_LOUDLY = (
     'n=$(cat "$HOME/attempts" 2>/dev/null || echo 0); n=$((n + 1)); echo "$n" > "$HOME/attempts"\n'
-    'if [ "$n" -lt 2 ]; then\n'
+    'if [ "$n" -lt 3 ]; then\n'
     '  echo "Authorization: Bearer abc123" >&2\n'
     '  echo "api_key = zzz9" >&2\n'
     "  exit 1\n"
@@ -309,6 +310,7 @@ def test_refresh_threshold_is_derived_from_every_stage_and_a_tick_cannot_lapse(
     )
     chain = (
         e["timer_accuracy_s"]
+        + e["show_timeout_s"]  # the next run's initial freshness read
         + review
         + e["admission_timeout_s"]
         + e["writer_timeout_s"]
@@ -318,6 +320,7 @@ def test_refresh_threshold_is_derived_from_every_stage_and_a_tick_cannot_lapse(
     assert e["review_envelope_s"] == review
     assert e["chain_envelope_s"] == chain
     assert e["seat_refresh_threshold_s"] == e["timer_period_s"] + chain
+    assert e["review_attempts"] == 3
     # a skip must be possible at all inside the seat's life, or the guard is dead code
     assert e["seat_refresh_threshold_s"] < e["seat_life_s"]
     # a routine tick starts with seat_life - period left; the whole chain must fit inside it
@@ -337,6 +340,45 @@ def test_refresh_threshold_is_derived_from_every_stage_and_a_tick_cannot_lapse(
         "REVIEW_ATTEMPT_TIMEOUT_S",
     ):
         assert f'timeout "${stage}"' in script, stage
+
+
+def test_an_unsafe_envelope_is_refused_and_names_every_term(tmp_path: Path) -> None:
+    home, council = _harness(tmp_path)
+    unsafe_script = tmp_path / "unsafe-seat-refresh"
+    unsafe_script.write_text(
+        SCRIPT.read_text(encoding="utf-8").replace("WRITER_TIMEOUT_S=120", "WRITER_TIMEOUT_S=151"),
+        encoding="utf-8",
+    )
+    proc = subprocess.run(
+        ["bash", str(unsafe_script), "--envelope"],
+        env={
+            "HOME": str(home),
+            "HAPAX_COUNCIL": str(council),
+            "PATH": os.environ["PATH"],
+            "HAPAX_GLMCP_SEAT_ROOT_OVERRIDE": "1",
+        },
+        capture_output=True,
+        text=True,
+        timeout=30,
+    )
+    assert proc.returncode == 7, proc.stderr
+    for term in (
+        "SEAT_REFRESH_THRESHOLD_S",
+        "CHAIN_ENVELOPE_S",
+        "REVIEW_ENVELOPE_S",
+        "TIMER_PERIOD_S",
+        "TIMER_ACCURACY_S",
+        "initial SHOW_TIMEOUT_S",
+        "REVIEW_ATTEMPTS",
+        "REVIEW_ATTEMPT_TIMEOUT_S",
+        "REVIEW_RETRY_SLEEP_S",
+        "ADMISSION_TIMEOUT_S",
+        "WRITER_TIMEOUT_S",
+        "RECEIPTS_TIMEOUT_S",
+        "final SHOW_TIMEOUT_S",
+        "SEAT_LIFE_S",
+    ):
+        assert term in proc.stderr, (term, proc.stderr)
 
 
 def test_a_hostile_retry_override_is_refused_before_any_round_trip(tmp_path: Path) -> None:
@@ -427,12 +469,42 @@ def test_a_dispatcher_receipt_with_time_to_spare_skips_the_round_trip(tmp_path: 
 
 
 def test_a_dispatcher_receipt_about_to_lapse_round_trips(tmp_path: Path) -> None:
-    # generated 600 s ago with 900 s to live: 300 s remain, under the 870 s threshold
+    # generated 600 s ago with 900 s to live: 300 s remain, under the derived threshold
     home, council = _harness(
         tmp_path, receipt_status="observed", receipt_remaining=900, receipt_age=600
     )
     result = _run(home, council)
     assert result.returncode == 0, result.stderr
+    assert "roundtrip attempt 1: exit=0" in result.stdout
+    assert (home / "admission-calls").exists()
+
+
+def test_a_receipt_between_the_old_and_new_thresholds_is_refreshed(tmp_path: Path) -> None:
+    """The next activation's initial --show can consume another SHOW_TIMEOUT_S. A receipt in that
+    exact interval was skipped by the old threshold even though the following run could not finish
+    the chain before it lapsed."""
+    e = _envelope(tmp_path / "envelope")
+    expected_chain = (
+        e["timer_accuracy_s"]
+        + e["show_timeout_s"]
+        + e["review_attempts"] * e["review_attempt_timeout_s"]
+        + (e["review_attempts"] - 1) * e["review_retry_sleep_s"]
+        + e["admission_timeout_s"]
+        + e["writer_timeout_s"]
+        + e["receipts_timeout_s"]
+        + e["show_timeout_s"]
+    )
+    new_threshold = e["timer_period_s"] + expected_chain
+    old_threshold = new_threshold - e["show_timeout_s"]
+    remaining = (old_threshold + new_threshold) // 2
+    assert old_threshold < remaining < new_threshold
+
+    home, council = _harness(
+        tmp_path / "run", receipt_status="observed", receipt_remaining=remaining, receipt_age=0
+    )
+    result = _run(home, council)
+    assert result.returncode == 0, result.stderr
+    assert "no round-trip" not in result.stdout
     assert "roundtrip attempt 1: exit=0" in result.stdout
     assert (home / "admission-calls").exists()
 
@@ -522,10 +594,26 @@ def test_three_failed_round_trips_mint_nothing_and_name_the_next_action(tmp_path
     home, council = _harness(tmp_path, reviewer=REVIEWER_ALWAYS_FAILS_SILENTLY)
     result = _run(home, council)
     assert result.returncode == 2
-    assert "roundtrip attempt 2: exit=1" in result.stdout
-    assert "roundtrip attempt 3" not in result.stdout, "two attempts by design (round 9)"
+    assert "roundtrip attempt 3: exit=1" in result.stdout
+    assert result.stdout.count("roundtrip attempt") == 3
     assert "glm seat NOT refreshed" in result.stderr
     assert "do not mint" in result.stderr
+    assert _witnesses(home) == []
+    assert not (home / "admission-calls").exists()
+
+
+def test_a_failed_round_trip_that_emits_output_mints_nothing_and_names_its_exit(
+    tmp_path: Path,
+) -> None:
+    """PIPESTATUS must be captured in the shell that ran the pipeline, before counting output."""
+    script = SCRIPT.read_text(encoding="utf-8")
+    assert 'bytes="$(printf' not in script
+    assert "rc=${PIPESTATUS[1]}" in script
+    home, council = _harness(tmp_path, reviewer=REVIEWER_FAILS_WITH_OUTPUT)
+    result = _run(home, council)
+    assert result.returncode == 2
+    assert "roundtrip attempt 3: exit=23 output_bytes=7" in result.stdout
+    assert "reviewer round-trip failed (exit 23, 7 bytes)" in result.stderr
     assert _witnesses(home) == []
     assert not (home / "admission-calls").exists()
 
@@ -536,7 +624,7 @@ def test_transient_failures_are_retried_and_the_reviewers_stderr_is_redacted(
     home, council = _harness(tmp_path, reviewer=REVIEWER_FAILS_TWICE_LOUDLY)
     result = _run(home, council)
     assert result.returncode == 0, result.stderr
-    assert "roundtrip attempt 2: exit=0" in result.stdout
+    assert "roundtrip attempt 3: exit=0" in result.stdout
     assert "Bearer<redacted>" in result.stdout
     assert "api_key<redacted>" in result.stdout
     assert "abc123" not in result.stdout + result.stderr
@@ -590,7 +678,9 @@ def test_model_is_pinned_to_what_the_admission_cli_accepts() -> None:
     assert 'export HAPAX_GLMCP_REVIEW_MODEL="$model"' in text
 
 
-def test_unit_pair_executes_from_the_activation_worktree_and_strips_inherited_overrides() -> None:
+def test_unit_pair_executes_from_the_activation_worktree_and_strips_inherited_overrides(
+    tmp_path: Path,
+) -> None:
     """A unit that runs a mutable development checkout is a finding (review on #4624); the
     estate's convention is the governed source-activation worktree. The pins live in the script's
     defaults because systemd does not expand specifiers inside Environment= (measured
@@ -622,7 +712,10 @@ def test_unit_pair_executes_from_the_activation_worktree_and_strips_inherited_ov
         assert name in unset.split(), name
     assert _unit_value(service, "Service", "Type") == "oneshot"
     assert _unit_value(service, "Service", "MemoryMax") is not None
-    assert int(_unit_value(service, "Service", "TimeoutStartSec") or 0) >= 840
+    service_budget = int(_unit_value(service, "Service", "TimeoutStartSec") or 0)
+    envelope = _envelope(tmp_path)
+    bounded_runtime = envelope["chain_envelope_s"] - envelope["timer_accuracy_s"]
+    assert service_budget >= bounded_runtime
     # ...and the budget is only a budget if every step in it is bounded.
     script = SCRIPT.read_text(encoding="utf-8")
     assert 'timeout "$REVIEW_ATTEMPT_TIMEOUT_S" "$H/scripts/hapax-glmcp-reviewer"' in script

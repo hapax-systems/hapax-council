@@ -40,8 +40,8 @@ export HAPAX_GLMCP_REVIEW_MODEL="$model"
 #    (and therefore the dispatcher) said otherwise (review findings on #4624, rounds 2 and 4). The
 #    receipt's stale_after is what is LEFT of the seat's lifetime at generation; it is regenerated
 #    every ten minutes, so this guard can only over-refresh, never under-refresh. Refreshing whenever
-#    fewer than 10 minutes remain keeps the seat from lapsing between two autoqueue cycles (measured
-#    2026-08-04: a receipt that lapsed mid-queue dequeued a green PR); the threshold is derived below.
+#    fewer than the derived threshold remain keeps the seat from lapsing between two autoqueue
+#    cycles (measured 2026-08-04: a receipt that lapsed mid-queue dequeued a green PR).
 #    The receipt is read through the dispatcher's own loader (`--show`: schema, platform, skew,
 #    duration syntax and freshness are validated there), never by picking fields out of the JSON —
 #    a document the dispatcher rejects must not make this guard skip (review finding on #4624,
@@ -92,17 +92,19 @@ seat_remaining_seconds() {
 # period and the reviewer retries only, so a routine tick that starts with ~600 s left could lapse
 # during a refresh whose admission, ledger and receipt stages take up to 240 s more). OnUnitActiveSec
 # counts from the previous ACTIVATION, so after a skip the next refresh can start one period later;
-# AccuracySec can delay that activation; then the reviewer attempts, the admission mint, the ledger
-# writer, the receipt refresh and the visibility read-back must all finish before the old receipt
-# lapses. Two invariants, both checked at run time rather than promised in prose:
+# AccuracySec can delay that activation; the next run must spend one SHOW_TIMEOUT_S discovering the
+# old receipt's remaining life before it can decide to refresh. Then the reviewer attempts, the
+# admission mint, the ledger writer, the receipt refresh and the final visibility read-back must all
+# finish before the old receipt lapses. Two invariants, both checked at run time rather than promised
+# in prose:
 #   skip is safe      only when  remaining > period + chain envelope
-#   a tick never lapses only when  chain envelope <= seat life - period
+#   a tick never lapses only when  chain envelope < seat life - period
 # If a stage timeout below is ever raised until the sums no longer fit, the script refuses to run.
 TIMER_PERIOD_S=300              # hapax-glmcp-seat-refresh.timer OnUnitActiveSec=5min
 TIMER_ACCURACY_S=30             # hapax-glmcp-seat-refresh.timer AccuracySec=30s
-REVIEW_ATTEMPTS=2
-REVIEW_ATTEMPT_TIMEOUT_S=105    # outer `timeout` around the reviewer; measured round-trips take ~4 s
-REVIEW_INNER_TIMEOUT_S=90       # the reviewer's own HTTP budget, inside the outer timeout
+REVIEW_ATTEMPTS=3
+REVIEW_ATTEMPT_TIMEOUT_S=60     # outer `timeout` around the reviewer; measured round-trips take ~4 s
+REVIEW_INNER_TIMEOUT_S=55       # the reviewer's own HTTP budget, inside the outer timeout
 REVIEW_RETRY_SLEEP_S=30
 ADMISSION_TIMEOUT_S=60
 WRITER_TIMEOUT_S=120
@@ -110,13 +112,13 @@ RECEIPTS_TIMEOUT_S=60
 SHOW_TIMEOUT_S=30
 SEAT_LIFE_S=900                 # DEFAULT_STALE_AFTER_SECONDS of hapax-glmcp-quota-admission
 REVIEW_ENVELOPE_S=$(( REVIEW_ATTEMPTS * REVIEW_ATTEMPT_TIMEOUT_S + (REVIEW_ATTEMPTS - 1) * REVIEW_RETRY_SLEEP_S ))
-CHAIN_ENVELOPE_S=$(( TIMER_ACCURACY_S + REVIEW_ENVELOPE_S + ADMISSION_TIMEOUT_S + WRITER_TIMEOUT_S + RECEIPTS_TIMEOUT_S + SHOW_TIMEOUT_S ))
+CHAIN_ENVELOPE_S=$(( TIMER_ACCURACY_S + SHOW_TIMEOUT_S + REVIEW_ENVELOPE_S + ADMISSION_TIMEOUT_S + WRITER_TIMEOUT_S + RECEIPTS_TIMEOUT_S + SHOW_TIMEOUT_S ))
 SEAT_REFRESH_THRESHOLD_S=$(( TIMER_PERIOD_S + CHAIN_ENVELOPE_S ))
 # After a refresh the seat is "visible" when the dispatcher's loader accepts the receipt and it
 # outlives one timer period, so the next tick cannot find it lapsed.
 SEAT_VISIBLE_MIN_S=$TIMER_PERIOD_S
-if (( CHAIN_ENVELOPE_S > SEAT_LIFE_S - TIMER_PERIOD_S )); then
-  echo "glm seat refresh REFUSED: the chain envelope (${CHAIN_ENVELOPE_S}s) exceeds seat life minus the timer period ($(( SEAT_LIFE_S - TIMER_PERIOD_S ))s), so a routine tick could lapse the seat mid-refresh. Next: shorten a stage timeout or the timer period in this script and its unit, then retry." >&2
+if (( SEAT_REFRESH_THRESHOLD_S >= SEAT_LIFE_S )); then
+  echo "glm seat refresh REFUSED: SEAT_REFRESH_THRESHOLD_S=${SEAT_REFRESH_THRESHOLD_S}s does not fit inside SEAT_LIFE_S=${SEAT_LIFE_S}s. CHAIN_ENVELOPE_S=${CHAIN_ENVELOPE_S}s and REVIEW_ENVELOPE_S=${REVIEW_ENVELOPE_S}s come from: TIMER_PERIOD_S=${TIMER_PERIOD_S}s + TIMER_ACCURACY_S=${TIMER_ACCURACY_S}s + initial SHOW_TIMEOUT_S=${SHOW_TIMEOUT_S}s + REVIEW_ATTEMPTS=${REVIEW_ATTEMPTS} * REVIEW_ATTEMPT_TIMEOUT_S=${REVIEW_ATTEMPT_TIMEOUT_S}s + (REVIEW_ATTEMPTS - 1) * REVIEW_RETRY_SLEEP_S=${REVIEW_RETRY_SLEEP_S}s + ADMISSION_TIMEOUT_S=${ADMISSION_TIMEOUT_S}s + WRITER_TIMEOUT_S=${WRITER_TIMEOUT_S}s + RECEIPTS_TIMEOUT_S=${RECEIPTS_TIMEOUT_S}s + final SHOW_TIMEOUT_S=${SHOW_TIMEOUT_S}s. Next: shorten a stage timeout or the timer period in this script and its unit, then retry." >&2
   exit 7
 fi
 if [[ "${1:-}" == "--envelope" ]]; then
@@ -136,8 +138,9 @@ fi
 #    0 bytes, then exit 0 a minute later) must not leave the seat to lapse.
 rc=1; bytes=0
 ERR="$(mktemp -p "${TMPDIR:-/tmp}" glm-seat-err.XXXXXX)"
+OUT="$(mktemp -p "${TMPDIR:-/tmp}" glm-seat-out.XXXXXX)"
 WOUT="$(mktemp -p "${TMPDIR:-/tmp}" glm-seat-writer.XXXXXX)"
-trap 'rm -f "$ERR" "$WOUT"' EXIT
+trap 'rm -f "$ERR" "$OUT" "$WOUT"' EXIT
 # Tests set this to 0; the unit's budget (TimeoutStartSec) is sized for the default.
 retry_sleep="${HAPAX_GLMCP_SEAT_RETRY_SLEEP:-$REVIEW_RETRY_SLEEP_S}"
 if ! [[ "$retry_sleep" =~ ^[0-9]+$ ]] || (( retry_sleep > REVIEW_RETRY_SLEEP_S )); then
@@ -149,11 +152,12 @@ for (( attempt = 1; attempt <= REVIEW_ATTEMPTS; attempt++ )); do
   # PAYG fallback OFF: this probe measures the Coding Plan seat and nothing else. With the
   # reviewer's default fallback on, an exhausted plan answered by API credit would exit 0 and
   # mint a Coding Plan receipt for quota that does not exist (review finding on #4624).
-  bytes="$(printf 'Blind review smoke. Reply with exactly: OK\n' \
+  printf 'Blind review smoke. Reply with exactly: OK\n' \
     | HAPAX_GLMCP_REVIEW_TIMEOUT_SECONDS="$REVIEW_INNER_TIMEOUT_S" HAPAX_GLMCP_REVIEW_MAX_TOKENS=16 \
       HAPAX_GLMCP_REVIEW_PAYG_FALLBACK=0 \
-      timeout "$REVIEW_ATTEMPT_TIMEOUT_S" "$H/scripts/hapax-glmcp-reviewer" 2>"$ERR" | wc -c)"
-  rc=${PIPESTATUS[1]:-$?}
+      timeout "$REVIEW_ATTEMPT_TIMEOUT_S" "$H/scripts/hapax-glmcp-reviewer" >"$OUT" 2>"$ERR"
+  rc=${PIPESTATUS[1]}
+  bytes="$(wc -c < "$OUT")"
   set -e
   echo "roundtrip attempt $attempt: exit=$rc output_bytes=$bytes endpoint=$endpoint model=$model"
   if [[ "$rc" -eq 0 && "$bytes" -gt 0 ]]; then break; fi
