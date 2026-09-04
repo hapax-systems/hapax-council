@@ -14,7 +14,7 @@ from __future__ import annotations
 
 import json
 import os
-import re
+import shutil
 import subprocess
 import sys
 from datetime import UTC, datetime, timedelta
@@ -25,6 +25,7 @@ SCRIPT = REPO / "scripts" / "hapax-glmcp-seat-refresh"
 RECEIPTS_SCRIPT = REPO / "scripts" / "hapax-platform-capability-receipts"
 SERVICE = REPO / "systemd" / "units" / "hapax-glmcp-seat-refresh.service"
 TIMER = REPO / "systemd" / "units" / "hapax-glmcp-seat-refresh.timer"
+UNIT = REPO / "systemd" / "units" / "hapax-glmcp-seat-refresh.service"
 ACTIVATION_ROOT = "%h/.cache/hapax/source-activation/worktree"
 
 REVIEWER_OK = (
@@ -37,7 +38,7 @@ REVIEWER_OK = (
 REVIEWER_ALWAYS_FAILS_SILENTLY = "exit 1\n"
 REVIEWER_FAILS_TWICE_LOUDLY = (
     'n=$(cat "$HOME/attempts" 2>/dev/null || echo 0); n=$((n + 1)); echo "$n" > "$HOME/attempts"\n'
-    'if [ "$n" -lt 3 ]; then\n'
+    'if [ "$n" -lt 2 ]; then\n'
     '  echo "Authorization: Bearer abc123" >&2\n'
     '  echo "api_key = zzz9" >&2\n'
     "  exit 1\n"
@@ -274,34 +275,143 @@ def test_script_exists_is_executable_and_parses() -> None:
     subprocess.run(["bash", "-n", str(SCRIPT)], check=True, capture_output=True, timeout=10)
 
 
-def test_refresh_threshold_composes_period_envelope_and_seat_life() -> None:
-    """OnUnitActiveSec counts from the previous activation, so after a skip the next refresh can
-    start one period later and may need the whole retry envelope before it mints. The guard may
-    skip only when the seat outlives period + envelope; and it must still be able to skip at all
-    inside a 900 s seat, or it is dead code (review finding on #4624, round 8)."""
+def _envelope(tmp_path: Path) -> dict[str, int]:
+    home, council = _harness(tmp_path)
+    proc = subprocess.run(
+        ["bash", str(SCRIPT), "--envelope"],
+        env={
+            "HOME": str(home),
+            "HAPAX_COUNCIL": str(council),
+            "PATH": os.environ["PATH"],
+            "HAPAX_GLMCP_SEAT_ROOT_OVERRIDE": "1",
+        },
+        capture_output=True,
+        text=True,
+        timeout=30,
+    )
+    assert proc.returncode == 0, proc.stderr
+    return json.loads(proc.stdout)
+
+
+def test_refresh_threshold_is_derived_from_every_stage_and_a_tick_cannot_lapse(
+    tmp_path: Path,
+) -> None:
+    """Review finding on #4624, round 9: the threshold covered the timer period and the reviewer
+    retries only, while a replacement receipt is not dispatcher-visible until the admission mint,
+    the ledger writer, the receipt refresh and the read-back also finish, and AccuracySec can delay
+    the activation. The script now derives the threshold from every stage and refuses to run when
+    the sum no longer fits inside the seat's life; this test recomputes the sum from the printed
+    stage constants and checks both invariants against the unit files."""
+    e = _envelope(tmp_path)
+    review = (
+        e["review_attempts"] * e["review_attempt_timeout_s"]
+        + (e["review_attempts"] - 1) * e["review_retry_sleep_s"]
+    )
+    chain = (
+        e["timer_accuracy_s"]
+        + review
+        + e["admission_timeout_s"]
+        + e["writer_timeout_s"]
+        + e["receipts_timeout_s"]
+        + e["show_timeout_s"]
+    )
+    assert e["review_envelope_s"] == review
+    assert e["chain_envelope_s"] == chain
+    assert e["seat_refresh_threshold_s"] == e["timer_period_s"] + chain
+    # a skip must be possible at all inside the seat's life, or the guard is dead code
+    assert e["seat_refresh_threshold_s"] < e["seat_life_s"]
+    # a routine tick starts with seat_life - period left; the whole chain must fit inside it
+    assert chain <= e["seat_life_s"] - e["timer_period_s"], (chain, e)
+    assert e["seat_visible_min_s"] >= e["timer_period_s"]
+    assert e["review_inner_timeout_s"] < e["review_attempt_timeout_s"]
+    timer = TIMER.read_text(encoding="utf-8")
+    assert _unit_value(timer, "Timer", "OnUnitActiveSec") == "5min" and e["timer_period_s"] == 300
+    assert _unit_value(timer, "Timer", "AccuracySec") == "30s" and e["timer_accuracy_s"] == 30
     script = SCRIPT.read_text(encoding="utf-8")
-    threshold = int(re.search(r"^SEAT_REFRESH_THRESHOLD_S=(\d+)$", script, re.M).group(1))
-    visible_min = int(re.search(r"^SEAT_VISIBLE_MIN_S=(\d+)$", script, re.M).group(1))
-    attempt_timeout = int(
-        re.search(r'timeout (\d+) "\$H/scripts/hapax-glmcp-reviewer"', script).group(1)
-    )
-    retry_sleep = int(
-        re.search(r'retry_sleep="\$\{HAPAX_GLMCP_SEAT_RETRY_SLEEP:-(\d+)\}"', script).group(1)
-    )
-    attempts = len(re.findall(r"for attempt in ([0-9 ]+); do", script)) and len(
-        re.search(r"for attempt in ([0-9 ]+); do", script).group(1).split()
-    )
-    on_unit_active = _unit_value(TIMER.read_text(encoding="utf-8"), "Timer", "OnUnitActiveSec")
-    assert on_unit_active == "5min"
-    period = 300
-    envelope = attempts * attempt_timeout + (attempts - 1) * retry_sleep
-    seat_life = 900  # DEFAULT_STALE_AFTER_SECONDS of hapax-glmcp-quota-admission
-    assert envelope == 570
-    assert threshold >= period + envelope, (threshold, period, envelope)
-    assert threshold < seat_life, "a threshold at or past the seat's life can never skip"
-    assert visible_min >= period, "a refreshed seat must outlive one period"
     assert "remaining > SEAT_REFRESH_THRESHOLD_S" in script
     assert "remaining <= SEAT_VISIBLE_MIN_S" in script
+    for stage in (
+        "ADMISSION_TIMEOUT_S",
+        "WRITER_TIMEOUT_S",
+        "RECEIPTS_TIMEOUT_S",
+        "REVIEW_ATTEMPT_TIMEOUT_S",
+    ):
+        assert f'timeout "${stage}"' in script, stage
+
+
+def test_a_hostile_retry_override_is_refused_before_any_round_trip(tmp_path: Path) -> None:
+    """The retry sleep is a test-only knob; an inherited value could stretch the envelope past the
+    threshold and the unit's budget (review finding on #4624, round 9)."""
+    for hostile in ("abc", "999", "-1"):
+        home, council = _harness(tmp_path / hostile.strip("-"))
+        env = {
+            "HOME": str(home),
+            "HAPAX_COUNCIL": str(council),
+            "PATH": os.environ["PATH"],
+            "HAPAX_GLMCP_SEAT_ROOT_OVERRIDE": "1",
+            "HAPAX_GLMCP_SEAT_RETRY_SLEEP": hostile,
+        }
+        proc = subprocess.run(
+            ["bash", str(SCRIPT)], env=env, capture_output=True, text=True, timeout=60
+        )
+        assert proc.returncode == 7, (hostile, proc.stderr)
+        assert "HAPAX_GLMCP_SEAT_RETRY_SLEEP" in proc.stderr and "unset it" in proc.stderr
+        calls = (home / "calls").read_text() if (home / "calls").exists() else ""
+        assert not any(line.startswith(("admission", "writer")) for line in calls.splitlines())
+        assert "roundtrip attempt" not in proc.stdout, "no reviewer call may run"
+
+
+def test_the_unit_unsets_the_retry_override() -> None:
+    unit = UNIT.read_text(encoding="utf-8")
+    unset = _unit_value(unit, "Service", "UnsetEnvironment") or ""
+    assert "HAPAX_GLMCP_SEAT_RETRY_SLEEP" in unset.split()
+
+
+def test_missing_jq_is_named_rather_than_read_as_a_stale_seat(tmp_path: Path) -> None:
+    """A broken parser used to look exactly like a stale receipt and trigger a provider call every
+    five minutes without saying why (review finding on #4624, round 9)."""
+    home, council = _harness(
+        tmp_path, receipt_status="observed", receipt_remaining=900, receipt_age=10
+    )
+    bin_dir = tmp_path / "bin-without-jq"
+    bin_dir.mkdir()
+    for tool in (
+        "bash",
+        "timeout",
+        "date",
+        "sed",
+        "grep",
+        "head",
+        "cut",
+        "tr",
+        "mktemp",
+        "rm",
+        "wc",
+        "printf",
+        "hostname",
+        "cat",
+        "mkdir",
+        "python3",
+    ):
+        real = shutil.which(tool)
+        if real:
+            (bin_dir / tool).symlink_to(real)
+    env = {
+        "HOME": str(home),
+        "HAPAX_COUNCIL": str(council),
+        "PATH": str(bin_dir),
+        "TMPDIR": str(home),
+        "HAPAX_GLMCP_SEAT_ROOT_OVERRIDE": "1",
+        "HAPAX_GLMCP_SEAT_RETRY_SLEEP": "0",
+        "HAPAX_TEST_PYTHON": sys.executable,
+        "HAPAX_TEST_RECEIPTS_SCRIPT": str(RECEIPTS_SCRIPT),
+        "HAPAX_TEST_RECEIPTS_RC": "0",
+    }
+    proc = subprocess.run(
+        ["bash", str(SCRIPT)], env=env, capture_output=True, text=True, timeout=120
+    )
+    assert "jq is not on PATH" in proc.stderr, proc.stderr
+    assert proc.returncode != 0
 
 
 def test_a_dispatcher_receipt_with_time_to_spare_skips_the_round_trip(tmp_path: Path) -> None:
@@ -412,7 +522,8 @@ def test_three_failed_round_trips_mint_nothing_and_name_the_next_action(tmp_path
     home, council = _harness(tmp_path, reviewer=REVIEWER_ALWAYS_FAILS_SILENTLY)
     result = _run(home, council)
     assert result.returncode == 2
-    assert "roundtrip attempt 3: exit=1" in result.stdout
+    assert "roundtrip attempt 2: exit=1" in result.stdout
+    assert "roundtrip attempt 3" not in result.stdout, "two attempts by design (round 9)"
     assert "glm seat NOT refreshed" in result.stderr
     assert "do not mint" in result.stderr
     assert _witnesses(home) == []
@@ -425,7 +536,7 @@ def test_transient_failures_are_retried_and_the_reviewers_stderr_is_redacted(
     home, council = _harness(tmp_path, reviewer=REVIEWER_FAILS_TWICE_LOUDLY)
     result = _run(home, council)
     assert result.returncode == 0, result.stderr
-    assert "roundtrip attempt 3: exit=0" in result.stdout
+    assert "roundtrip attempt 2: exit=0" in result.stdout
     assert "Bearer<redacted>" in result.stdout
     assert "api_key<redacted>" in result.stdout
     assert "abc123" not in result.stdout + result.stderr
@@ -514,11 +625,11 @@ def test_unit_pair_executes_from_the_activation_worktree_and_strips_inherited_ov
     assert int(_unit_value(service, "Service", "TimeoutStartSec") or 0) >= 840
     # ...and the budget is only a budget if every step in it is bounded.
     script = SCRIPT.read_text(encoding="utf-8")
-    assert 'timeout 180 "$H/scripts/hapax-glmcp-reviewer"' in script
-    assert 'timeout 60 "$H/scripts/hapax-glmcp-quota-admission"' in script
-    assert 'timeout 120 "$H/scripts/hapax-quota-telemetry-writer" --skip-receipts' in script
-    assert 'timeout 60 "$H/scripts/hapax-platform-capability-receipts" --platform glmcp' in script
-    assert 'timeout 30 "$H/scripts/hapax-platform-capability-receipts" --show' in script
+    assert 'timeout "$REVIEW_ATTEMPT_TIMEOUT_S" "$H/scripts/hapax-glmcp-reviewer"' in script
+    assert 'timeout "$ADMISSION_TIMEOUT_S" "$H/scripts/hapax-glmcp-quota-admission"' in script
+    assert 'timeout "$WRITER_TIMEOUT_S" "$H/scripts/hapax-quota-telemetry-writer" --skip-receipts' in script
+    assert 'timeout "$RECEIPTS_TIMEOUT_S" "$H/scripts/hapax-platform-capability-receipts" --platform glmcp' in script
+    assert 'timeout "${SHOW_TIMEOUT_S:-30}" "$H/scripts/hapax-platform-capability-receipts" --show' in script
     assert "5 minutes" in (_unit_value(service, "Unit", "Description") or "")
     timer = TIMER.read_text(encoding="utf-8")
     assert _unit_value(timer, "Install", "WantedBy") == "timers.target"
