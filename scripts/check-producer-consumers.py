@@ -1002,15 +1002,6 @@ class _ScopeCallVisitor(ast.NodeVisitor):
         return
 
 
-def _scope_calls(node: ast.Module | ast.FunctionDef | ast.AsyncFunctionDef) -> list[ast.Call]:
-    visitor = _ScopeCallVisitor()
-    for statement in node.body:
-        if isinstance(statement, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)):
-            continue
-        visitor.visit(statement)
-    return visitor.calls
-
-
 def _call_argument(call: ast.Call, position: int, keyword_name: str = "") -> ast.expr | None:
     if len(call.args) > position:
         return call.args[position]
