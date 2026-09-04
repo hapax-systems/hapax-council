@@ -25,6 +25,8 @@ def _procedure_root(
     verdicts: list[dict[str, object]],
     at: datetime = NOW,
     epoch_suffix: str = "d693f20c",
+    make_current: bool = True,
+    swapped: bool = True,
 ) -> Path:
     epoch = root / "_runs" / "epochs" / f"{_stamp(at)}-{epoch_suffix}"
     epoch.mkdir(parents=True, exist_ok=True)
@@ -74,6 +76,12 @@ def _procedure_root(
         ),
         encoding="utf-8",
     )
+    (epoch / "publish.json").write_text(
+        json.dumps({"epoch": epoch.name, "swapped": swapped, "reason": "test fixture"}),
+        encoding="utf-8",
+    )
+    if make_current:
+        (root / "_runs" / "current").symlink_to(Path("epochs") / epoch.name)
     return root
 
 
@@ -100,6 +108,83 @@ def test_latest_epoch_is_the_newest_parseable_dir_that_carries_elements(tmp_path
 
     assert chosen is not None and chosen.name == "20260903T204725Z-d693f20c"
     assert fv.epoch_produced_at(chosen.name) == datetime(2026, 9, 3, 20, 47, 25, tzinfo=UTC)
+
+
+def test_loader_uses_the_accepted_current_epoch_not_a_newer_rejected_attempt(
+    tmp_path: Path,
+) -> None:
+    members = [{"id": "m", "location": {"path": str(tmp_path / "m")}}]
+    root = _procedure_root(
+        tmp_path,
+        members=members,
+        verdicts=[_verdict("m", "scope_exited", False)],
+        at=NOW - timedelta(minutes=5),
+        epoch_suffix="aaaaaaaa",
+    )
+    accepted = (root / "_runs" / "current").resolve()
+    _procedure_root(
+        root,
+        members=members,
+        verdicts=[_verdict("m", "scope_exited", True)],
+        at=NOW,
+        epoch_suffix="bbbbbbbb",
+        make_current=False,
+        swapped=False,
+    )
+
+    verdicts = fv.load_frame_verdicts(root, now=NOW)
+
+    assert verdicts.epoch == accepted.name
+    assert verdicts.decayed == ()
+
+
+def test_a_fresh_rejected_attempt_does_not_reset_the_current_epochs_freshness(
+    tmp_path: Path,
+) -> None:
+    members = [{"id": "m", "location": {"path": str(tmp_path / "m")}}]
+    root = _procedure_root(
+        tmp_path,
+        members=members,
+        verdicts=[],
+        at=NOW - timedelta(seconds=fv.FRAME_EPOCH_MAX_AGE_S + 1),
+        epoch_suffix="aaaaaaaa",
+    )
+    _procedure_root(
+        root,
+        members=members,
+        verdicts=[],
+        at=NOW,
+        epoch_suffix="bbbbbbbb",
+        make_current=False,
+        swapped=False,
+    )
+
+    with pytest.raises(fv.FrameVerdictsUnavailable, match="current frame epoch.*older"):
+        fv.load_frame_verdicts(root, now=NOW)
+
+
+@pytest.mark.parametrize(
+    ("receipt", "message"),
+    [
+        (None, "publish.json is missing"),
+        ({"epoch": "wrong", "swapped": True}, "names epoch"),
+        ({"epoch": f"{_stamp(NOW)}-d693f20c", "swapped": False}, "was not accepted"),
+    ],
+    ids=["missing", "wrong-epoch", "not-swapped"],
+)
+def test_current_epoch_requires_its_acceptance_receipt(
+    tmp_path: Path, receipt: dict[str, object] | None, message: str
+) -> None:
+    members = [{"id": "m", "location": {"path": str(tmp_path / "m")}}]
+    root = _procedure_root(tmp_path, members=members, verdicts=[])
+    publish_path = root / "_runs" / "current" / "publish.json"
+    if receipt is None:
+        publish_path.unlink()
+    else:
+        publish_path.write_text(json.dumps(receipt), encoding="utf-8")
+
+    with pytest.raises(fv.FrameVerdictsUnavailable, match=message):
+        fv.load_frame_verdicts(root, now=NOW)
 
 
 def test_missing_root_or_epoch_refuse_with_the_producer_named(tmp_path: Path) -> None:
@@ -194,7 +279,7 @@ def test_only_true_verdicts_under_decay_relations_decay_a_member(tmp_path: Path)
     assert verdicts.unmatchable == ()
 
 
-def test_non_filesystem_members_are_reported_unmatchable(tmp_path: Path) -> None:
+def test_scheme_qualified_members_are_matched_by_uri_containment(tmp_path: Path) -> None:
     members = [
         {"id": "prs", "location": {"path": "gh://hapax-systems", "endpoints": ["x"]}},
         {
@@ -215,12 +300,53 @@ def test_non_filesystem_members_are_reported_unmatchable(tmp_path: Path) -> None
 
     verdicts = fv.load_frame_verdicts(root, now=NOW)
 
-    assert verdicts.unmatchable == ("prs", "podium-arm")
+    assert verdicts.unmatchable == ()
     mixed = [m for m in verdicts.decayed if m.member_id == "mixed"]
     assert mixed and mixed[0].roots == ((tmp_path / "mixed").resolve(),)
-    assert not any(
-        m.roots or m.files for m in verdicts.decayed if m.member_id in ("prs", "podium-arm")
-    ), "a member with no filesystem location can match no ref"
+    council, vault = tmp_path / "council", tmp_path / "vault"
+    council.mkdir()
+    vault.mkdir()
+    podium = fv.scope_within_decayed(
+        ["podium:.local/share/opencode/x"],
+        verdicts,
+        council_root=council,
+        vault_root=vault,
+    )
+    assert podium.all_inside
+    assert podium.matches[0].member_id == "podium-arm"
+    github = fv.scope_within_decayed(
+        ["gh://hapax-systems/frame-consumer"],
+        verdicts,
+        council_root=council,
+        vault_root=vault,
+    )
+    assert github.all_inside
+    assert github.matches[0].member_id == "prs"
+    assert not fv.scope_within_decayed(
+        ["podium:.local/share/opencode-neighbor/x"],
+        verdicts,
+        council_root=council,
+        vault_root=vault,
+    ).all_inside
+
+
+def test_a_decayed_member_without_a_containable_location_refuses_scope_comparison(
+    tmp_path: Path,
+) -> None:
+    members = [{"id": "mystery", "location": {"endpoints": ["undisclosed"]}}]
+    verdicts = fv.load_frame_verdicts(
+        _procedure_root(tmp_path, members=members, verdicts=[_verdict("mystery", "scope_exited")]),
+        now=NOW,
+    )
+
+    assert verdicts.unmatchable == ("mystery",)
+    with pytest.raises(fv.NonCanonicalScopeRef, match="mystery.*no containable"):
+        fv.scope_within_decayed(
+            ["scripts/x.py"],
+            verdicts,
+            council_root=tmp_path / "council",
+            vault_root=tmp_path / "vault",
+        )
 
 
 def test_scope_matching_by_containment_patterns_files_and_wildcard_tails(tmp_path: Path) -> None:

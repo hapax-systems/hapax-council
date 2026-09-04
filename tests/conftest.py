@@ -88,6 +88,11 @@ def _frame_verdicts_default_root(tmp_path_factory: pytest.TempPathFactory):
         ),
         encoding="utf-8",
     )
+    (epoch / "publish.json").write_text(
+        json.dumps({"epoch": epoch.name, "swapped": True, "reason": "test fixture"}),
+        encoding="utf-8",
+    )
+    (root / "_runs" / "current").symlink_to(Path("epochs") / epoch.name)
     previous = os.environ.get("HAPAX_FRAME_PROCEDURE_ROOT")
     os.environ["HAPAX_FRAME_PROCEDURE_ROOT"] = str(root)
     yield

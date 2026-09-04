@@ -7,17 +7,18 @@ verdict set that is absent or older than its producer's cadence refuses too, nam
 run. That is the whole architecture. Everything below it is a binding, declared here so it can be
 swapped:
 
-- the verdict set is the newest epoch of the frame procedure (``_runs/epochs/<ts>-<id>/elements.json``),
-  produced by ``hapax-frame-iteration.timer`` every :data:`FRAME_ITERATION_CADENCE_S`;
+- the verdict set is the accepted epoch selected by the frame procedure's atomic
+  ``_runs/current`` pointer, produced by ``hapax-frame-iteration.timer`` every
+  :data:`FRAME_ITERATION_CADENCE_S`;
 - the surfaces are the members of the procedure's ``declaration/mass.yaml`` and their declared
   filesystem locations;
 - the effect surface of a unit of work is its task row's ``mutation_scope_refs``;
 - "out of accountability" is a TRUE verdict under one of :data:`DECAY_RELATIONS`, the same seven
   relations the producer uses to regionise a member as decayed.
 
-Members whose location is not a filesystem path (``gh://``, ``podium:``, any host-qualified or
-scheme-qualified root) cannot contain a filesystem ref; they are reported as unmatchable rather
-than silently treated as empty, so a verdict about them is never mistaken for "nothing matched".
+Filesystem and scheme-qualified surfaces are separate namespaces. Scheme-qualified declarations
+(``gh://``, ``podium:``) are compared structurally by scheme, authority and path segments; a
+comparison that cannot be parsed refuses rather than being treated as outside the decayed member.
 """
 
 from __future__ import annotations
@@ -80,7 +81,7 @@ _WILDCARD = re.compile(r"[*?\[]")
 
 
 class NonCanonicalScopeRef(ValueError):
-    """A declared ref cannot be contained by any member because it climbs out of its own tree."""
+    """A declared scope cannot be compared safely with the frame's member locations."""
 
 
 class FrameVerdictsUnavailable(RuntimeError):
@@ -99,6 +100,18 @@ class DecayedMember:
     roots: tuple[Path, ...]
     patterns: tuple[str, ...]
     files: tuple[Path, ...]
+    qualified_roots: tuple[QualifiedLocation, ...] = ()
+    qualified_files: tuple[QualifiedLocation, ...] = ()
+
+
+@dataclass(frozen=True)
+class QualifiedLocation:
+    """A scheme-qualified surface split into containment-significant components."""
+
+    scheme: str
+    authority: str | None
+    absolute_path: bool
+    parts: tuple[str, ...]
 
 
 @dataclass(frozen=True)
@@ -107,8 +120,8 @@ class FrameVerdicts:
     elements_path: Path
     produced_at: datetime
     decayed: tuple[DecayedMember, ...]
-    #: decayed members whose declared location is not a filesystem path — a verdict this reader
-    #: cannot apply to a ref, stated rather than dropped
+    #: decayed members with no filesystem or qualified root/file. Any declared scope is
+    #: undecidable against these members and therefore refuses in :func:`scope_within_decayed`.
     unmatchable: tuple[str, ...]
 
 
@@ -156,6 +169,7 @@ def epoch_produced_at(name: str) -> datetime | None:
 
 
 def latest_epoch_dir(procedure_root: Path) -> Path | None:
+    """Return the newest persisted attempt, for history/diagnostics rather than consumption."""
     epochs = procedure_root / "_runs" / "epochs"
     if not epochs.is_dir():
         return None
@@ -171,38 +185,153 @@ def latest_epoch_dir(procedure_root: Path) -> Path | None:
     return max(candidates, key=lambda child: child.name)
 
 
+def current_epoch_dir(procedure_root: Path) -> Path:
+    """Resolve and validate the producer's accepted-current publication pointer.
+
+    Every attempted epoch is durable, including attempts rejected for coverage regression. The
+    producer makes an epoch govern only by atomically moving ``_runs/current`` and recording a
+    matching ``publish.json`` receipt whose ``swapped`` field is true. Both facts are required: a
+    missing/broken pointer or contradictory receipt is damaged guard input, never permission to
+    choose another epoch.
+    """
+    runs = procedure_root / "_runs"
+    current = runs / "current"
+    if not (current.exists() or current.is_symlink()):
+        raise FrameVerdictsUnavailable(f"no frame epoch is published at {current}")
+    try:
+        epoch_dir = current.resolve(strict=True)
+        epochs = (runs / "epochs").resolve(strict=True)
+    except OSError as exc:
+        raise FrameVerdictsUnavailable(
+            f"published frame pointer {current} is broken or unreadable: {exc}"
+        ) from exc
+    if not epoch_dir.is_dir() or epoch_dir.parent != epochs:
+        raise FrameVerdictsUnavailable(
+            f"published frame pointer {current} resolves outside the epoch directory {epochs}"
+        )
+    if epoch_produced_at(epoch_dir.name) is None:
+        raise FrameVerdictsUnavailable(
+            f"published frame pointer {current} names invalid epoch {epoch_dir.name!r}"
+        )
+
+    publish_path = epoch_dir / "publish.json"
+    if not publish_path.is_file():
+        raise FrameVerdictsUnavailable(f"current epoch {epoch_dir.name} publish.json is missing")
+    try:
+        receipt = json.loads(publish_path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError) as exc:
+        raise FrameVerdictsUnavailable(f"{publish_path} is unreadable or malformed: {exc}") from exc
+    if not isinstance(receipt, dict):
+        raise FrameVerdictsUnavailable(f"{publish_path} must contain a JSON object")
+    if receipt.get("epoch") != epoch_dir.name:
+        raise FrameVerdictsUnavailable(
+            f"{publish_path} names epoch {receipt.get('epoch')!r}, not current {epoch_dir.name!r}"
+        )
+    if receipt.get("swapped") is not True:
+        raise FrameVerdictsUnavailable(
+            f"current epoch {epoch_dir.name} was not accepted for publication according to "
+            f"{publish_path}"
+        )
+    return epoch_dir
+
+
+def _qualified_location(raw: str, *, scope_ref: bool = False) -> tuple[QualifiedLocation, bool]:
+    """Parse one scheme-qualified declaration or scope without lossy URI normalisation."""
+    text = raw.strip()
+    match = _NON_FILESYSTEM_ROOT.match(text)
+    if match is None:
+        raise NonCanonicalScopeRef(f"{raw!r} is not scheme-qualified")
+    if "\\" in text or "?" in text or "#" in text or "%" in text:
+        raise NonCanonicalScopeRef(
+            f"scheme-qualified ref {raw!r} uses escaping, a query or a fragment; containment is "
+            "undecidable"
+        )
+    scheme, remainder = text.split(":", 1)
+    authority: str | None = None
+    absolute_path = remainder.startswith("/")
+    path = remainder
+    if remainder.startswith("//"):
+        authority_and_path = remainder[2:]
+        authority, separator, path_tail = authority_and_path.partition("/")
+        if not authority:
+            raise NonCanonicalScopeRef(
+                f"scheme-qualified ref {raw!r} has an empty authority; containment is undecidable"
+            )
+        authority = authority.casefold()
+        path = path_tail if separator else ""
+        absolute_path = True
+    elif absolute_path:
+        path = remainder[1:]
+    if "//" in path:
+        raise NonCanonicalScopeRef(
+            f"scheme-qualified ref {raw!r} has an empty path segment; containment is undecidable"
+        )
+
+    dirlike = text.endswith("/")
+    parts = [part for part in path.split("/") if part]
+    if any(part in (".", "..") for part in parts):
+        raise NonCanonicalScopeRef(
+            f"scheme-qualified ref {raw!r} contains a '.' or '..' path segment"
+        )
+    if scope_ref:
+        while parts and _WILDCARD.search(parts[-1]):
+            parts.pop()
+            dirlike = True
+    if any(_WILDCARD.search(part) for part in parts):
+        raise NonCanonicalScopeRef(
+            f"scheme-qualified ref {raw!r} has a wildcard before its tail; containment is "
+            "undecidable"
+        )
+    return QualifiedLocation(scheme.casefold(), authority, absolute_path, tuple(parts)), dirlike
+
+
 def _member_location(
     member: dict[str, object],
-) -> tuple[tuple[Path, ...], tuple[str, ...], tuple[Path, ...], bool]:
-    """Filesystem roots, file patterns, explicit files, and whether any root was non-filesystem."""
+) -> tuple[
+    tuple[Path, ...],
+    tuple[str, ...],
+    tuple[Path, ...],
+    tuple[QualifiedLocation, ...],
+    tuple[QualifiedLocation, ...],
+]:
+    """Filesystem and scheme-qualified roots/files plus the member's file patterns."""
     location = member.get("location")
     if not isinstance(location, dict):
-        return (), (), (), False
+        return (), (), (), (), ()
     raw_roots: list[str] = []
     if isinstance(location.get("path"), str):
         raw_roots.append(str(location["path"]))
     if isinstance(location.get("roots"), list):
         raw_roots.extend(str(item) for item in location["roots"] if isinstance(item, str))
     roots: list[Path] = []
-    foreign = False
+    qualified_roots: list[QualifiedLocation] = []
     for raw in raw_roots:
+        raw = raw.strip()
         if _NON_FILESYSTEM_ROOT.match(raw):
-            foreign = True
+            qualified_roots.append(_qualified_location(raw)[0])
             continue
         roots.append(Path(raw).expanduser().resolve())
     patterns = location.get("patterns")
     globs = tuple(str(item) for item in patterns) if isinstance(patterns, list) else ()
     files_raw = location.get("files")
-    files = (
-        tuple(
-            Path(str(item)).expanduser().resolve()
-            for item in files_raw
-            if isinstance(item, str) and not _NON_FILESYSTEM_ROOT.match(item)
-        )
-        if isinstance(files_raw, list)
-        else ()
+    files: list[Path] = []
+    qualified_files: list[QualifiedLocation] = []
+    if isinstance(files_raw, list):
+        for item in files_raw:
+            if not isinstance(item, str):
+                continue
+            item = item.strip()
+            if _NON_FILESYSTEM_ROOT.match(item):
+                qualified_files.append(_qualified_location(item)[0])
+            else:
+                files.append(Path(item).expanduser().resolve())
+    return (
+        tuple(roots),
+        globs,
+        tuple(files),
+        tuple(qualified_roots),
+        tuple(qualified_files),
     )
-    return tuple(roots), globs, files, foreign
 
 
 def load_frame_verdicts(
@@ -211,7 +340,7 @@ def load_frame_verdicts(
     now: datetime | None = None,
     max_age_s: int = FRAME_EPOCH_MAX_AGE_S,
 ) -> FrameVerdicts:
-    """Read the newest epoch's verdicts and the mass they are about; refuse when either is unusable.
+    """Read the accepted current epoch and the mass it is about; refuse when either is unusable.
 
     Refusal, never a default: an absent procedure root, no epoch, an epoch older than
     ``max_age_s``, malformed elements or mass, or verdict rows missing altogether each raise
@@ -224,18 +353,14 @@ def load_frame_verdicts(
             f"frame procedure root {root} does not exist (set {FRAME_PROCEDURE_ROOT_ENV} or "
             "restore the vault)"
         )
-    epoch_dir = latest_epoch_dir(root)
-    if epoch_dir is None:
-        raise FrameVerdictsUnavailable(
-            f"no frame epoch with an elements.json under {root / '_runs' / 'epochs'}"
-        )
+    epoch_dir = current_epoch_dir(root)
     produced_at = epoch_produced_at(epoch_dir.name)
-    assert produced_at is not None  # latest_epoch_dir only returns parseable names
+    assert produced_at is not None  # current_epoch_dir only returns a parseable epoch
     current = now if now is not None else datetime.now(UTC)
     age = current - produced_at
     if age > timedelta(seconds=max_age_s):
         raise FrameVerdictsUnavailable(
-            f"latest frame epoch {epoch_dir.name} is {int(age.total_seconds()) // 60} min old, "
+            f"current frame epoch {epoch_dir.name} is {int(age.total_seconds()) // 60} min old, "
             f"older than {max_age_s // 60} min (two iterations of a "
             f"{FRAME_ITERATION_CADENCE_S // 60}-min cadence); the producer has stopped"
         )
@@ -450,10 +575,25 @@ def load_frame_verdicts(
     for member_id, member in members_by_id.items():
         if member_id not in decay:
             continue
-        roots, patterns, files, foreign = _member_location(member)
+        try:
+            roots, patterns, files, qualified_roots, qualified_files = _member_location(member)
+        except NonCanonicalScopeRef as exc:
+            raise FrameVerdictsUnavailable(
+                f"member {member_id!r} has an uncontainable scheme-qualified location: {exc}"
+            ) from exc
         for relation in sorted(decay[member_id]):
-            decayed.append(DecayedMember(member_id, relation, roots, patterns, files))
-        if foreign and not roots and not files:
+            decayed.append(
+                DecayedMember(
+                    member_id,
+                    relation,
+                    roots,
+                    patterns,
+                    files,
+                    qualified_roots,
+                    qualified_files,
+                )
+            )
+        if not roots and not files and not qualified_roots and not qualified_files:
             unmatchable.append(member_id)
     return FrameVerdicts(
         epoch=epoch_dir.name,
@@ -583,6 +723,32 @@ def ref_within_member(path: Path, dirlike: bool, member: DecayedMember) -> bool:
     return False
 
 
+def qualified_ref_within_member(
+    ref: QualifiedLocation, dirlike: bool, member: DecayedMember
+) -> bool:
+    """Whether a parsed scheme-qualified ref is contained by one decayed member."""
+    if ref in member.qualified_files:
+        return True
+    for root in member.qualified_roots:
+        same_namespace = (
+            ref.scheme == root.scheme
+            and ref.authority == root.authority
+            and ref.absolute_path == root.absolute_path
+        )
+        if not same_namespace or ref.parts[: len(root.parts)] != root.parts:
+            continue
+        if not member.patterns or ref.parts == root.parts:
+            return True
+        relative_parts = ref.parts[len(root.parts) :]
+        relative = "/".join(relative_parts)
+        if dirlike:
+            return True
+        name = relative_parts[-1] if relative_parts else ""
+        if any(_pattern_matches(relative, name, pattern) for pattern in member.patterns):
+            return True
+    return False
+
+
 def _repo_relative_candidates(
     ref: str, verdicts: FrameVerdicts, *, council_root: Path
 ) -> list[Path]:
@@ -624,8 +790,29 @@ def scope_within_decayed(
 ) -> ScopeVerdict:
     matches: list[ScopeMatch] = []
     outside: list[str] = []
-    for ref in refs:
-        if not str(ref).strip():
+    declared_refs = [str(ref) for ref in refs if str(ref).strip()]
+    if declared_refs and verdicts.unmatchable:
+        raise NonCanonicalScopeRef(
+            "decayed member(s) "
+            f"{list(verdicts.unmatchable)} have no containable declared location; the scope "
+            "cannot be compared safely"
+        )
+    for ref in declared_refs:
+        text = str(ref).strip()
+        if _NON_FILESYSTEM_ROOT.match(text):
+            qualified_ref, dirlike = _qualified_location(text, scope_ref=True)
+            hit = next(
+                (
+                    member
+                    for member in verdicts.decayed
+                    if qualified_ref_within_member(qualified_ref, dirlike, member)
+                ),
+                None,
+            )
+            if hit is None:
+                outside.append(str(ref))
+            else:
+                matches.append(ScopeMatch(str(ref), hit.member_id, hit.relation))
             continue
         path, dirlike = resolve_scope_ref(
             str(ref), council_root=council_root, vault_root=vault_root

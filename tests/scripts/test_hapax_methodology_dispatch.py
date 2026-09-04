@@ -4560,7 +4560,7 @@ def test_policy_rollback_help_documents_retirement() -> None:
 # ── The frame's verdicts at the work-selection dominator ───────────────────────────────────
 
 
-def _frame_procedure_root(root: Path, *, decayed_root: Path | None, age_s: int = 0) -> Path:
+def _frame_procedure_root(root: Path, *, decayed_root: Path | str | None, age_s: int = 0) -> Path:
     """One epoch and a two-member mass; `decayed_root` is the location of the member the epoch
     marks scope_exited (None: the same member, verdict FALSE)."""
     stamp = (datetime.now(UTC) - timedelta(seconds=age_s)).strftime("%Y%m%dT%H%M%SZ")
@@ -4617,6 +4617,11 @@ def _frame_procedure_root(root: Path, *, decayed_root: Path | None, age_s: int =
         ),
         encoding="utf-8",
     )
+    (epoch / "publish.json").write_text(
+        json.dumps({"epoch": epoch.name, "swapped": True, "reason": "test fixture"}),
+        encoding="utf-8",
+    )
+    (root / "_runs" / "current").symlink_to(Path("epochs") / epoch.name)
     return root
 
 
@@ -4693,7 +4698,7 @@ def test_dispatch_refuses_work_whose_whole_scope_lies_in_a_decayed_member(
 ) -> None:
     """The work-selection dominator reads the frame's verdicts and refuses on them
     (CONSOLIDATION-20260902 §4a-3(iii)): a task whose every mutation surface lies inside a
-    member the newest epoch marks scope_exited is BLOCKED, naming the member, the relation and
+    member the accepted current epoch marks scope_exited is BLOCKED, naming the member, the relation and
     the remedy — before any route, quota or adapter decision."""
     module = _dispatcher_module()
     frame_root = _frame_procedure_root(
@@ -4719,6 +4724,29 @@ def test_dispatch_refuses_work_whose_whole_scope_lies_in_a_decayed_member(
     assert "marks every declared mutation surface out of accountability" in err
     assert "legacy-surface/old.py lies in legacy-surface (scope_exited)" in err
     assert "re-declare mutation_scope_refs" in err
+    assert "fixture refusal" not in err
+
+
+def test_dispatch_refuses_scheme_qualified_scope_in_a_decayed_member(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    module = _dispatcher_module()
+    frame_root = _frame_procedure_root(
+        tmp_path / "frame", decayed_root="podium:.local/share/opencode"
+    )
+
+    rc, err = _dispatch_up_to_the_adapter(
+        tmp_path,
+        monkeypatch,
+        capsys,
+        module,
+        mutation_scope_refs="[podium:.local/share/opencode/x]",
+        frame_root=frame_root,
+    )
+
+    assert rc == 10
+    assert "marks every declared mutation surface out of accountability" in err
+    assert "podium:.local/share/opencode/x lies in legacy-surface (scope_exited)" in err
     assert "fixture refusal" not in err
 
 
