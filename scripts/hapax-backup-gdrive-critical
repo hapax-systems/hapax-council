@@ -22,6 +22,9 @@ QDRANT_SNAPSHOT_DIR="${HAPAX_QDRANT_SNAPSHOT_DIR:-/store/llm-data/qdrant-snapsho
 HAPAX_VAULT_DIR="${HAPAX_VAULT_DIR:-$HOME/Documents/Personal/30-areas/hapax}"
 # Bundle must not live inside the vault it bundles (recursive growth).
 VAULT_BUNDLE_DIR="${HAPAX_VAULT_BUNDLE_DIR:-/store/llm-data/vault-bundles}"
+# The gpg-encrypted secret-store archive (ciphertext; passphrase lives elsewhere). Added 2026-09-02:
+# the manifest covered every other critical artefact and not the one whose loss is unrecoverable.
+SECRET_STORE_DIR="${HAPAX_SECRET_STORE_DIR:-/mnt/nas/archive/hapax-preservation/secret-store}"
 
 # Conservative Google Drive/rclone defaults. Operators may tune these by env.
 export RCLONE_TRANSFERS="${RCLONE_TRANSFERS:-1}"
@@ -224,6 +227,7 @@ build_manifest() {
     append_latest_qdrant_snapshots "$manifest"
     append_vault_evidence "$manifest"
     append_if_exists "$VAULT_BUNDLE_DIR" "$manifest"
+    append_if_exists "$SECRET_STORE_DIR" "$manifest"
 
     sort -u "$manifest" -o "$manifest"
     if [[ ! -s "$manifest" ]]; then
