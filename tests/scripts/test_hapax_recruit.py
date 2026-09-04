@@ -7,15 +7,22 @@ import importlib.machinery
 import importlib.util
 import json
 import os
+import re
+import signal
 import subprocess
 import sys
 import threading
+import time
 from pathlib import Path
 from types import ModuleType
 
 import pytest
 
 SCRIPT = Path(__file__).resolve().parents[2] / "scripts" / "hapax-recruit"
+_LEGACY_SECRETISH = re.compile(
+    r"(api[_-]?key|token|secret|password|bearer)([\s]*[:=]?[\s]*)[^\s]*",
+    re.IGNORECASE,
+)
 
 
 def _module() -> ModuleType:
@@ -63,6 +70,60 @@ def bench(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> tuple[ModuleType, 
 
 def _receipt(out: Path) -> dict:
     return json.loads(out.with_name(out.name + ".receipt.json").read_text())
+
+
+def _mutate_to_legacy_redaction(module: ModuleType, monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(module, "_SECRETISH", _LEGACY_SECRETISH)
+
+
+def _mutate_to_kill_only_child(module: ModuleType, monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(module.os, "killpg", module.os.kill)
+
+
+REGISTERED_MUTATIONS = {
+    "legacy-redaction-regex": _mutate_to_legacy_redaction,
+    "timeout-kill-only-child": _mutate_to_kill_only_child,
+}
+
+
+def _assert_redacted(module: ModuleType, diagnostic: str, canary: str) -> None:
+    redacted = module._redact(diagnostic)
+    assert canary not in redacted
+    assert "<redacted>" in redacted
+
+
+def _spawn_descendant_wrapper(bin_dir: Path, pid_file: Path) -> Path:
+    return _stub(
+        bin_dir,
+        "descendant-wrapper",
+        "import subprocess, time\n"
+        "child = subprocess.Popen(\n"
+        "    [sys.executable, '-c', 'import time; time.sleep(30)'],\n"
+        "    stdout=subprocess.DEVNULL,\n"
+        "    stderr=subprocess.DEVNULL,\n"
+        ")\n"
+        f"with open({str(pid_file)!r}, 'w') as fh:\n"
+        "    json.dump({'pid': child.pid, 'pgid': os.getpgrp()}, fh)\n"
+        "print('wrapper ready', flush=True)\n"
+        "time.sleep(30)\n",
+    )
+
+
+def _wait_for_pid_absent(pid: int, timeout: float = 1.0) -> bool:
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline:
+        if not Path(f"/proc/{pid}").exists():
+            return True
+        time.sleep(0.01)
+    return not Path(f"/proc/{pid}").exists()
+
+
+def _assert_timeout_group_cleanup(rc: int, receipt: dict, grandchild_pid: int) -> None:
+    assert rc == 4
+    assert receipt["exit_code"] == "timeout"
+    assert receipt["process_group_killed"] is True
+    assert receipt["process_group_any_member_survived"] is False
+    assert _wait_for_pid_absent(grandchild_pid), "timed-out wrapper left its grandchild alive"
 
 
 def test_codex_shape_reads_the_output_file_and_closes_stdin(bench, tmp_path: Path) -> None:
@@ -255,28 +316,105 @@ def test_qwencloud_shape_uses_its_own_wrapper_binding(bench, tmp_path: Path, mon
     assert _receipt(out)["models_reported"] == ["qwen3.7-plus"]
 
 
-def test_capacity_failure_and_timeout_keep_a_receipt(
-    bench, capsys: pytest.CaptureFixture[str]
+@pytest.mark.parametrize(
+    ("diagnostic", "canary"),
+    [
+        ('{"api_key": "FAKE_JSON_CREDENTIAL"}', "FAKE_JSON_CREDENTIAL"),  # pragma: allowlist secret
+        ("password: 'FAKE YAML CREDENTIAL'", "FAKE YAML CREDENTIAL"),  # pragma: allowlist secret
+        ("api_key: FAKE_COLON_CREDENTIAL", "FAKE_COLON_CREDENTIAL"),
+        ("token=FAKE_EQUALS_CREDENTIAL", "FAKE_EQUALS_CREDENTIAL"),
+        ("Bearer FAKE_BEARER_CREDENTIAL", "FAKE_BEARER_CREDENTIAL"),
+        ("Authorization: Basic FAKE_AUTH_CREDENTIAL", "FAKE_AUTH_CREDENTIAL"),
+    ],
+    ids=["json", "yaml", "key-colon-value", "key-equals-value", "bearer", "authorization"],
+)
+def test_capacity_failure_redacts_every_diagnostic_form_from_receipt_and_terminal(
+    bench,
+    capsys: pytest.CaptureFixture[str],
+    diagnostic: str,
+    canary: str,
 ) -> None:
     module, bin_dir, brief, out = bench
     _stub(
         bin_dir,
         "grok",
-        "print('half an answer'); print('api_key=sk-secret-value', file=sys.stderr); sys.exit(7)\n",
+        f"print('half an answer'); print({diagnostic!r}, file=sys.stderr); sys.exit(7)\n",
     )
     rc = module.main(["grok", "--brief", str(brief), "--out", str(out)])
     assert rc == 3
     receipt = _receipt(out)
     assert receipt["exit_code"] == 7
-    assert (
-        "sk-secret-value" not in receipt["stderr_tail"] and "<redacted>" in receipt["stderr_tail"]
-    )
-    assert "sk-secret-value" not in capsys.readouterr().err
+    assert canary not in json.dumps(receipt)
+    assert "<redacted>" in receipt["stderr_tail"]
+    assert canary not in capsys.readouterr().err
 
-    _stub(bin_dir, "kimi", "import time; print('working', flush=True); time.sleep(5)\n")
-    rc = module.main(["kimi", "--brief", str(brief), "--out", str(out), "--timeout", "1"])
-    assert rc == 4
-    assert _receipt(out)["exit_code"] == "timeout"
+
+def test_registered_legacy_regex_mutation_turns_the_json_case_red(
+    bench, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    module, _bin_dir, _brief, _out = bench
+    diagnostic = '{"api_key": "FAKE_JSON_MUTATION_CANARY"}'  # pragma: allowlist secret
+    canary = "FAKE_JSON_MUTATION_CANARY"
+
+    _assert_redacted(module, diagnostic, canary)
+    REGISTERED_MUTATIONS["legacy-redaction-regex"](module, monkeypatch)
+    with pytest.raises(AssertionError):
+        _assert_redacted(module, diagnostic, canary)
+
+
+def test_refusal_redacts_exception_receipt_and_terminal_at_the_guard_boundary(
+    bench, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    module, _bin_dir, brief, out = bench
+    canary = "FAKE_REFUSAL_CREDENTIAL"
+
+    def refuse(_name: str) -> str:
+        refusal = module.Refusal(f"Authorization: Bearer {canary}")
+        assert canary not in str(refusal)
+        raise refusal
+
+    monkeypatch.setattr(module, "_require_binary", refuse)
+    rc = module.main(["grok", "--brief", str(brief), "--out", str(out)])
+
+    assert rc == 2
+    assert canary not in json.dumps(_receipt(out))
+    assert canary not in capsys.readouterr().err
+
+
+def test_timeout_kills_wrapper_process_group_and_records_no_survivor(
+    bench, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    module, bin_dir, brief, out = bench
+    pid_file = tmp_path / "descendant.json"
+    wrapper = _spawn_descendant_wrapper(bin_dir, pid_file)
+    monkeypatch.setenv(module.QWENCLOUD_WRAPPER_ENV, str(wrapper))
+
+    rc = module.main(["qwencloud", "--brief", str(brief), "--out", str(out), "--timeout", "1"])
+
+    grandchild_pid = json.loads(pid_file.read_text())["pid"]
+    _assert_timeout_group_cleanup(rc, _receipt(out), grandchild_pid)
+
+
+def test_registered_child_only_kill_mutation_leaves_the_grandchild_alive(
+    bench, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    module, bin_dir, brief, out = bench
+    pid_file = tmp_path / "mutated-descendant.json"
+    wrapper = _spawn_descendant_wrapper(bin_dir, pid_file)
+    monkeypatch.setenv(module.QWENCLOUD_WRAPPER_ENV, str(wrapper))
+    real_killpg = os.killpg
+    REGISTERED_MUTATIONS["timeout-kill-only-child"](module, monkeypatch)
+
+    rc = module.main(["qwencloud", "--brief", str(brief), "--out", str(out), "--timeout", "1"])
+    process = json.loads(pid_file.read_text())
+    try:
+        assert _receipt(out)["process_group_any_member_survived"] is True
+        assert Path(f"/proc/{process['pid']}").exists()
+        with pytest.raises(AssertionError):
+            _assert_timeout_group_cleanup(rc, _receipt(out), process["pid"])
+    finally:
+        real_killpg(process["pgid"], signal.SIGKILL)
+        assert _wait_for_pid_absent(process["pid"])
 
 
 def test_local_endpoint_posts_an_openai_chat_completion_and_records_the_served_model(

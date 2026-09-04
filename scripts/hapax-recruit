@@ -30,8 +30,10 @@ import json
 import os
 import re
 import shutil
+import signal
 import subprocess
 import sys
+import time
 import urllib.error
 import urllib.request
 from dataclasses import dataclass
@@ -67,13 +69,32 @@ SHAPES = {
     "local:gemma3": "POST http://localhost:5002/v1/chat/completions",
 }
 _SECRETISH = re.compile(
-    r"(api[_-]?key|token|secret|password|bearer)([\s]*[:=]?[\s]*)[^\s]*", re.IGNORECASE
+    r"""
+    (
+        ["']?\bauthorization["']?\s*:\s*(?:(?:basic|bearer)\s+)?
+        |
+        ["']?(?:api[_-]?key|token|secret|password)["']?\s*[:=]\s*
+        |
+        \bbearer\s+
+    )
+    (?:
+        "[^"\r\n]*"
+        |
+        '[^'\r\n]*'
+        |
+        [^\s,;}\]"'\r\n]+
+    )
+    """,
+    re.IGNORECASE | re.VERBOSE,
 )
 _KIMI_TRAILER = re.compile(r"^To resume this session\b")
 
 
 class Refusal(Exception):
     """A run that must not start; the message names the remedy."""
+
+    def __init__(self, message: str) -> None:
+        super().__init__(_redact(message))
 
 
 @dataclass
@@ -83,6 +104,13 @@ class RunResult:
     stdout_bytes: int
     stderr_tail: str
     models_reported: list[str]
+    process_group_killed: bool = False
+    process_group_any_member_survived: bool | None = None
+
+    def __post_init__(self) -> None:
+        # Subprocess diagnostics cross every guard disclosure surface (receipt,
+        # terminal, and any future logger) through this boundary exactly once.
+        self.stderr_tail = _redact(self.stderr_tail)
 
 
 def _redact(text: str) -> str:
@@ -104,6 +132,29 @@ def _require_binary(name: str) -> str:
     return found
 
 
+def _process_group_has_live_members(process_group_id: int) -> bool:
+    """Return whether a non-zombie member remains able to execute after cleanup."""
+    proc_root = Path("/proc")
+    if proc_root.is_dir():
+        for stat_path in proc_root.glob("[0-9]*/stat"):
+            try:
+                fields = stat_path.read_text(encoding="utf-8").rsplit(")", 1)[1].split()
+                state, member_group = fields[0], int(fields[2])
+            except (FileNotFoundError, IndexError, PermissionError, ValueError):
+                continue
+            if member_group == process_group_id and state != "Z":
+                return True
+        return False
+
+    try:
+        os.killpg(process_group_id, 0)
+    except ProcessLookupError:
+        return False
+    except PermissionError:
+        return True
+    return True
+
+
 def _is_git_checkout(cwd: Path) -> bool:
     proc = subprocess.run(
         ["git", "-C", str(cwd), "rev-parse", "--is-inside-work-tree"],
@@ -116,22 +167,33 @@ def _is_git_checkout(cwd: Path) -> bool:
 
 def _run(
     argv: list[str], *, cwd: Path, timeout: int, stdin_closed: bool = True
-) -> tuple[int | str, str, str]:
+) -> tuple[int | str, str, str, bool, bool | None]:
+    process = subprocess.Popen(
+        argv,
+        cwd=str(cwd),
+        stdin=subprocess.DEVNULL if stdin_closed else None,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=True,
+        start_new_session=True,
+    )
     try:
-        proc = subprocess.run(
-            argv,
-            cwd=str(cwd),
-            stdin=subprocess.DEVNULL if stdin_closed else None,
-            capture_output=True,
-            text=True,
-            timeout=timeout,
-            check=False,
-        )
-    except subprocess.TimeoutExpired as exc:
-        out = exc.stdout.decode() if isinstance(exc.stdout, bytes) else (exc.stdout or "")
-        err = exc.stderr.decode() if isinstance(exc.stderr, bytes) else (exc.stderr or "")
-        return "timeout", out, err
-    return proc.returncode, proc.stdout, proc.stderr
+        stdout, stderr = process.communicate(timeout=timeout)
+    except subprocess.TimeoutExpired:
+        group_killed = False
+        try:
+            os.killpg(process.pid, signal.SIGKILL)
+            group_killed = True
+        except ProcessLookupError:
+            pass
+        stdout, stderr = process.communicate()
+
+        deadline = time.monotonic() + 0.5
+        while _process_group_has_live_members(process.pid) and time.monotonic() < deadline:
+            time.sleep(0.01)
+        member_survived = _process_group_has_live_members(process.pid)
+        return "timeout", stdout, stderr, group_killed, member_survived
+    return process.returncode, stdout, stderr, False, None
 
 
 def _strip_kimi(text: str, brief: str) -> str:
@@ -189,25 +251,47 @@ def recruit_cli(
         if model:
             argv += ["--model", model]
         argv.append(brief)
-        code, stdout, stderr = _run(argv, cwd=cwd, timeout=timeout)
+        code, stdout, stderr, group_killed, member_survived = _run(argv, cwd=cwd, timeout=timeout)
         answer = out.read_text(encoding="utf-8") if out.is_file() else stdout
         reported = re.findall(r"^model:\s*(\S+)", stdout + "\n" + stderr, flags=re.MULTILINE)
-        return RunResult(answer, code, len(stdout), stderr[-400:], sorted(set(reported)))
+        return RunResult(
+            answer,
+            code,
+            len(stdout),
+            stderr[-400:],
+            sorted(set(reported)),
+            group_killed,
+            member_survived,
+        )
     if capacity == "grok":
         binary = _require_binary("grok")
         argv = [binary, "-p", brief, "--cwd", str(cwd)]
-        code, stdout, stderr = _run(argv, cwd=cwd, timeout=timeout)
-        return RunResult(stdout, code, len(stdout), stderr[-400:], [])
+        code, stdout, stderr, group_killed, member_survived = _run(argv, cwd=cwd, timeout=timeout)
+        return RunResult(
+            stdout, code, len(stdout), stderr[-400:], [], group_killed, member_survived
+        )
     if capacity == "kimi":
         binary = _require_binary("kimi")
         argv = [binary, "-p", brief, "--output-format", "text"]
-        code, stdout, stderr = _run(argv, cwd=cwd, timeout=timeout)
-        return RunResult(_strip_kimi(stdout, brief), code, len(stdout), stderr[-400:], [])
+        code, stdout, stderr, group_killed, member_survived = _run(argv, cwd=cwd, timeout=timeout)
+        return RunResult(
+            _strip_kimi(stdout, brief),
+            code,
+            len(stdout),
+            stderr[-400:],
+            [],
+            group_killed,
+            member_survived,
+        )
     if capacity == "agy":
         binary = _require_binary("agy")
         argv = [binary, f"--print={brief}", "--print-timeout", f"{timeout}s"]
-        code, stdout, stderr = _run(argv, cwd=cwd, timeout=timeout + 15)
-        return RunResult(stdout, code, len(stdout), stderr[-400:], [])
+        code, stdout, stderr, group_killed, member_survived = _run(
+            argv, cwd=cwd, timeout=timeout + 15
+        )
+        return RunResult(
+            stdout, code, len(stdout), stderr[-400:], [], group_killed, member_survived
+        )
     if capacity == "claude" or capacity in WRAPPED_CLAUDE:
         if capacity == "claude":
             binary = _require_binary("claude")
@@ -222,9 +306,17 @@ def recruit_cli(
         argv = [binary, "-p", brief, "--output-format", "json"]
         if model and capacity == "claude":
             argv += ["--model", model]
-        code, stdout, stderr = _run(argv, cwd=cwd, timeout=timeout)
+        code, stdout, stderr, group_killed, member_survived = _run(argv, cwd=cwd, timeout=timeout)
         answer, models = _parse_claude_json(stdout)
-        return RunResult(answer, code, len(stdout), stderr[-400:], models)
+        return RunResult(
+            answer,
+            code,
+            len(stdout),
+            stderr[-400:],
+            models,
+            group_killed,
+            member_survived,
+        )
     raise Refusal(f"unknown capacity {capacity!r}; one of: {', '.join(CAPACITIES)}")
 
 
@@ -288,8 +380,12 @@ def write_receipt(
         "exit_code": result.exit_code if result else None,
         "output_bytes": len(result.answer.encode("utf-8")) if result else 0,
         "stdout_bytes": result.stdout_bytes if result else 0,
-        "stderr_tail": _redact(result.stderr_tail) if result else "",
+        "stderr_tail": result.stderr_tail if result else "",
         "refusal": refusal,
+        "process_group_killed": result.process_group_killed if result else False,
+        "process_group_any_member_survived": (
+            result.process_group_any_member_survived if result else None
+        ),
     }
     path.write_text(json.dumps(receipt, indent=2, sort_keys=True) + "\n", encoding="utf-8")
 
@@ -378,7 +474,7 @@ def main(argv: list[str] | None = None) -> int:
     if result.exit_code != 0:
         print(
             f"hapax-recruit: {args.capacity} exited {result.exit_code}; stderr tail: "
-            f"{_redact(result.stderr_tail).strip()[-200:]} (receipt: {receipt_path})",
+            f"{result.stderr_tail.strip()[-200:]} (receipt: {receipt_path})",
             file=sys.stderr,
         )
         return 3
