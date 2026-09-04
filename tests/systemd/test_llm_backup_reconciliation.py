@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import json
 import re
-import shlex
 import subprocess
 from pathlib import Path
 
@@ -83,10 +82,7 @@ def test_backup_tier_units_execute_source_controlled_scripts() -> None:
         assert _unit_value(text, "Service", "WorkingDirectory") == activation_root
         assert "hapax-source-activate.service" in (_unit_value(text, "Unit", "Wants") or "")
         assert "hapax-source-activate.service" in (_unit_value(text, "Unit", "After") or "")
-        exec_condition = _unit_value(text, "Service", "ExecCondition")
-        assert exec_condition is not None
-        assert "source-activation/current.json" in exec_condition
-        assert ".active_source_head == .origin_main_sha" in exec_condition
+        assert _unit_value(text, "Service", "ExecCondition") is None
         assert not mutable_project_path.search(text), lane
         assert archived_repo not in text, lane
         assert _unit_value(text, "Unit", "RequiresMountsFor"), lane
@@ -111,41 +107,19 @@ def test_backup_tier_units_execute_source_controlled_scripts() -> None:
     assert archived_repo not in dr.read_text()
 
 
-def test_backup_tier_units_refuse_stale_activation_receipt(tmp_path: Path) -> None:
-    receipt = tmp_path / ".cache/hapax/source-activation/current.json"
-    receipt.parent.mkdir(parents=True)
+def test_activation_hold_does_not_skip_backup_producers_or_watchdog() -> None:
+    """A HOLD keeps the last activated release live; it must not disable backup health."""
+    for unit_name in (
+        "hapax-backup-local.service",
+        "hapax-backup-remote.service",
+        "hapax-backup-watchdog.service",
+    ):
+        text = (UNITS / unit_name).read_text()
 
-    for lane in ("local", "remote"):
-        text = (UNITS / f"hapax-backup-{lane}.service").read_text()
-        exec_condition = _unit_value(text, "Service", "ExecCondition")
-        assert exec_condition is not None
-        command = shlex.split(exec_condition.replace("%h", str(tmp_path)))
-
-        receipt.write_text(
-            json.dumps(
-                {
-                    "status": "completed",
-                    "active_source_head": "old-sha",
-                    "origin_main_sha": "new-sha",
-                }
-            ),
-            encoding="utf-8",
-        )
-        stale = subprocess.run(command, capture_output=True, text=True, timeout=5)
-        assert stale.returncode != 0, lane
-
-        receipt.write_text(
-            json.dumps(
-                {
-                    "status": "completed",
-                    "active_source_head": "new-sha",
-                    "origin_main_sha": "new-sha",
-                }
-            ),
-            encoding="utf-8",
-        )
-        current = subprocess.run(command, capture_output=True, text=True, timeout=5)
-        assert current.returncode == 0, (lane, current.stderr)
+        assert "hapax-source-activate.service" in (_unit_value(text, "Unit", "Wants") or "")
+        assert "hapax-source-activate.service" in (_unit_value(text, "Unit", "After") or "")
+        assert _unit_value(text, "Service", "ExecCondition") is None
+        assert _unit_value(text, "Unit", "OnFailure") == "notify-failure@%n.service"
 
 
 def test_backup_watchdog_executes_only_governed_source_activation() -> None:
@@ -160,10 +134,7 @@ def test_backup_watchdog_executes_only_governed_source_activation() -> None:
     assert _unit_value(text, "Service", "WorkingDirectory") == activation_root
     assert "hapax-source-activate.service" in (_unit_value(text, "Unit", "Wants") or "")
     assert "hapax-source-activate.service" in (_unit_value(text, "Unit", "After") or "")
-    exec_condition = _unit_value(text, "Service", "ExecCondition")
-    assert exec_condition is not None
-    assert "source-activation/current.json" in exec_condition
-    assert ".active_source_head == .origin_main_sha" in exec_condition
+    assert _unit_value(text, "Service", "ExecCondition") is None
     assert not mutable_project_path.search(text)
 
 

@@ -449,7 +449,8 @@ def test_phase_12_orchestration_fails_when_compose_configuration_is_missing(
         """#!/usr/bin/env bash
 set -euo pipefail
 source "$1"
-restore_database_services "$2"
+DUMP=$(find_restore_dump_dir "$2")
+restore_database_services "$DUMP"
 """,
         encoding="utf-8",
     )
@@ -469,7 +470,9 @@ restore_database_services "$2"
     assert "Using database dumps" in result.stdout
     assert f"Required Docker Compose configuration is missing: {missing_compose}" in result.stderr
     assert "restore llm-stack/docker-compose.yml" in result.stderr
-    assert 'restore_database_services "$RESTORE_ROOT"' in RESTORE_SCRIPT.read_text(encoding="utf-8")
+    script = RESTORE_SCRIPT.read_text(encoding="utf-8")
+    assert 'DUMP=$(find_restore_dump_dir "$RESTORE_ROOT")' in script
+    assert 'restore_database_services "$DUMP"' in script
 
 
 def test_restore_reports_the_canonical_dr_object_name() -> None:
@@ -493,7 +496,11 @@ def _run_full_restore(
     tmp_path: Path,
     *,
     fail_enable_unit: str = "",
+    fail_pass_insert_entry: str = "",
+    fail_pass_list: bool = False,
     fail_verify_unit: str = "",
+    mismatch_pass_show_entry: str = "",
+    omit_restore_dump: bool = False,
     report_state_unit: str = "",
     reported_state: str = "enabled",
 ) -> tuple[subprocess.CompletedProcess[str], list[str], Path]:
@@ -504,6 +511,7 @@ def _run_full_restore(
     fake_bin = tmp_path / "bin"
     bash_env = tmp_path / "bash-env"
     command_log = tmp_path / "commands.log"
+    pass_state = tmp_path / "pass-state"
     registry = tmp_path / "host-storage-registry.json"
     home.mkdir()
     fake_bin.mkdir()
@@ -541,6 +549,12 @@ def _run_full_restore(
         ),
         encoding="utf-8",
     )
+    rclone_config = home / ".config" / "rclone" / "rclone.conf"
+    rclone_config.parent.mkdir(parents=True)
+    rclone_config.write_text("active-b2-config\n", encoding="utf-8")
+    stale_pass_entry = pass_state / "backups" / "restic-password"
+    stale_pass_entry.parent.mkdir(parents=True)
+    stale_pass_entry.write_text("stale\n", encoding="utf-8")
 
     _write_executable(
         fake_bin / "restic",
@@ -555,14 +569,19 @@ if [ "${1:-}" = restore ]; then
         fi
         shift
     done
-    dump="$target/store/llm-data/backup-dumps-remote"
     home_seg=home
-    mkdir -p "$target/${home_seg}/backup-user/llm-stack" "$dump/qdrant" "$dump/git-bundles"
+    backed_up_rclone="$target/${home_seg}/backup-user/.config/rclone/rclone.conf"
+    mkdir -p "$target/${home_seg}/backup-user/llm-stack" "$(dirname "$backed_up_rclone")"
     printf '%s\n' 'services: {}' > "$target/${home_seg}/backup-user/llm-stack/docker-compose.yml"
-    printf '%s\n' 'SELECT 1;' > "$dump/postgres-all.sql"
-    printf '%s\n' '{}' > "$dump/n8n-workflows.json"
-    printf '%s\n' 'snapshot' > "$dump/qdrant/restore-test.snapshot"
-    printf '%s\n' 'bundle' > "$dump/git-bundles/obsidian-hapax.bundle"
+    printf '%s\n' 'stale-b2-config' > "$backed_up_rclone"
+    if [ "${OMIT_RESTORE_DUMP:-0}" != 1 ]; then
+        dump="$target/store/llm-data/backup-dumps-remote"
+        mkdir -p "$dump/qdrant" "$dump/git-bundles"
+        printf '%s\n' 'SELECT 1;' > "$dump/postgres-all.sql"
+        printf '%s\n' '{}' > "$dump/n8n-workflows.json"
+        printf '%s\n' 'snapshot' > "$dump/qdrant/restore-test.snapshot"
+        printf '%s\n' 'bundle' > "$dump/git-bundles/obsidian-hapax.bundle"
+    fi
 fi
 exit 0
 """,
@@ -618,6 +637,39 @@ exit 0
     _write_executable(fake_bin / "pacman", "#!/bin/sh\nexit 1\n")
     _write_executable(fake_bin / "rclone", "#!/bin/sh\nprintf '%s\\n' 'b2:'\n")
     _write_executable(fake_bin / "rustup", "#!/bin/sh\nprintf '%s\\n' stable\n")
+    _write_executable(
+        fake_bin / "pass",
+        """#!/bin/sh
+set -eu
+printf 'pass %s\n' "$*" >> "$COMMAND_LOG"
+case "${1:-}" in
+    ls)
+        [ "${FAIL_PASS_LIST:-0}" != 1 ]
+        ;;
+    insert)
+        entry=
+        force=0
+        for argument in "$@"; do
+            [ "$argument" != -f ] || force=1
+            entry=$argument
+        done
+        [ "$entry" != "${FAIL_PASS_INSERT_ENTRY:-}" ] || exit 9
+        destination="$PASS_STATE/$entry"
+        if [ -e "$destination" ] && [ "$force" != 1 ]; then exit 10; fi
+        mkdir -p "$(dirname "$destination")"
+        cat > "$destination"
+        ;;
+    show)
+        entry=${2:-}
+        if [ "$entry" = "${MISMATCH_PASS_SHOW_ENTRY:-}" ]; then
+            printf '%s\n' stale
+        else
+            cat "$PASS_STATE/$entry"
+        fi
+        ;;
+esac
+""",
+    )
     passthrough_commands = (
         "aichat",
         "claude",
@@ -631,7 +683,6 @@ exit 0
         "mods",
         "ollama",
         "paru",
-        "pass",
         "pipx",
         "pnpm",
         "sleep",
@@ -649,6 +700,7 @@ exit 0
                 "git",
                 "mountpoint",
                 "pacman",
+                "pass",
                 "rclone",
                 "restic",
                 "rustup",
@@ -667,11 +719,16 @@ exit 0
             "BASH_ENV": str(bash_env),
             "COMMAND_LOG": str(command_log),
             "FAIL_ENABLE_UNIT": fail_enable_unit,
+            "FAIL_PASS_INSERT_ENTRY": fail_pass_insert_entry,
+            "FAIL_PASS_LIST": "1" if fail_pass_list else "0",
             "FAIL_VERIFY_UNIT": fail_verify_unit,
             "HAPAX_HOST_STORAGE_REGISTRY": str(registry),
             "HAPAX_RESTORE_ROOT": str(restore_root),
             "HOME": str(home),
+            "MISMATCH_PASS_SHOW_ENTRY": mismatch_pass_show_entry,
+            "OMIT_RESTORE_DUMP": "1" if omit_restore_dump else "0",
             "PATH": f"{fake_bin}:/usr/bin:/bin",
+            "PASS_STATE": str(pass_state),
             "RESTIC_PASSWORD": "restore-test-password",  # pragma: allowlist secret
             "RESTORE_FAKE_BIN": str(fake_bin),
             "REPORT_STATE_UNIT": report_state_unit,
@@ -708,9 +765,68 @@ def test_full_restore_carries_resolved_artifacts_through_phase_16(tmp_path: Path
         "hapax-secrets.service",
         "hapax-backup-local.timer",
         "hapax-backup-remote.timer",
+        "hapax-backup-watchdog.timer",
     ):
         assert f"--user enable {unit}" in commands
         assert f"--user is-enabled {unit}" in commands
+    assert not any("rclone-gdrive-drop.timer" in command for command in commands)
+    home_segment = "home"
+    restored_rclone_config = tmp_path / home_segment / ".config" / "rclone" / "rclone.conf"
+    assert restored_rclone_config.read_text(encoding="utf-8") == "active-b2-config\n"
+    for entry in (
+        "backblaze/key-id",
+        "backblaze/app-key",
+        "backblaze/restic-password",
+        "backups/restic-password",
+    ):
+        assert f"pass insert -f -e {entry}" in commands
+        assert f"pass show {entry}" in commands
+
+
+def test_full_restore_fails_with_named_paths_when_dump_inputs_are_missing(
+    tmp_path: Path,
+) -> None:
+    result, _commands, restore_root = _run_full_restore(tmp_path, omit_restore_dump=True)
+
+    assert result.returncode != 0
+    assert "No database dump directory found. Searched:" in result.stderr
+    for relative_path in DUMP_PATHS:
+        assert str(restore_root / relative_path) in result.stderr
+    assert "Phase 13" not in result.stdout
+    assert "CachyOS Restore Complete" not in result.stdout
+
+
+@pytest.mark.parametrize(
+    ("failure_options", "message"),
+    [
+        pytest.param(
+            {"fail_pass_list": True},
+            "Password store is unavailable",
+            id="unavailable-store",
+        ),
+        pytest.param(
+            {"fail_pass_insert_entry": "backblaze/app-key"},
+            "Could not store backup credential backblaze/app-key",
+            id="insert-failure",
+        ),
+        pytest.param(
+            {"mismatch_pass_show_entry": "backups/restic-password"},
+            "Backup credential backups/restic-password did not match after pass insert",
+            id="readback-mismatch",
+        ),
+    ],
+)
+def test_full_restore_refuses_success_without_witnessed_credentials(
+    tmp_path: Path,
+    failure_options: dict[str, object],
+    message: str,
+) -> None:
+    result, _commands, _restore_root = _run_full_restore(tmp_path, **failure_options)
+
+    assert result.returncode != 0
+    assert message in result.stderr
+    assert "Backup credentials stored and verified in pass" not in result.stdout
+    assert "CachyOS Restore Complete" not in result.stdout
 
 
 @pytest.mark.parametrize(
@@ -718,6 +834,7 @@ def test_full_restore_carries_resolved_artifacts_through_phase_16(tmp_path: Path
     [
         pytest.param("hapax-secrets.service", "service", id="service"),
         pytest.param("hapax-backup-remote.timer", "timer", id="backup-timer"),
+        pytest.param("hapax-backup-watchdog.timer", "timer", id="watchdog-timer"),
     ],
 )
 def test_full_restore_refuses_completion_when_user_unit_enable_fails(

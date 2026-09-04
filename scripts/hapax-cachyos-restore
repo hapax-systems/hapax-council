@@ -334,15 +334,50 @@ restore_docker_stack() {
 }
 
 restore_database_services() {
-    local restore_root="$1"
+    local dump_dir="$1"
 
-    # Phase 13 also consumes git bundles and dirty-tree patches from this directory. Keep the
-    # resolved path in the main shell instead of hiding it in a function-local variable.
-    if ! DUMP=$(find_restore_dump_dir "$restore_root"); then
+    ok "Using database dumps: $dump_dir"
+    restore_docker_stack "$dump_dir"
+}
+
+store_backup_credentials() {
+    local entries=(
+        backblaze/key-id
+        backblaze/app-key
+        backblaze/restic-password
+        backups/restic-password
+    )
+    local values=(
+        "$B2_KEY_ID"
+        "$B2_APP_KEY"
+        "$RESTIC_PASSWORD"
+        "$RESTIC_PASSWORD"
+    )
+    local entry observed index
+
+    if ! pass ls > /dev/null 2>&1; then
+        fail "Password store is unavailable; initialize or unlock pass, then rerun Phase 3" >&2
         return 1
     fi
-    ok "Using database dumps: $DUMP"
-    restore_docker_stack "$DUMP"
+    ok "pass store verified"
+
+    for index in "${!entries[@]}"; do
+        entry="${entries[$index]}"
+        if ! printf '%s\n' "${values[$index]}" | pass insert -f -e "$entry" > /dev/null 2>&1; then
+            fail "Could not store backup credential $entry in pass; initialize or unlock pass, then rerun Phase 3" >&2
+            return 1
+        fi
+        if ! observed=$(pass show "$entry" 2>/dev/null); then
+            fail "Could not read back backup credential $entry from pass; repair the password store, then rerun Phase 3" >&2
+            return 1
+        fi
+        if [[ "$observed" != "${values[$index]}" ]]; then
+            fail "Backup credential $entry did not match after pass insert; repair the password store, then rerun Phase 3" >&2
+            return 1
+        fi
+    done
+
+    ok "Backup credentials stored and verified in pass"
 }
 
 store_partition_path() {
@@ -595,15 +630,9 @@ chmod 700 ~/.gnupg ~/.ssh 2>/dev/null || true
 chmod 600 ~/.gnupg/* ~/.ssh/id_* 2>/dev/null || true
 chmod 644 ~/.ssh/*.pub ~/.ssh/known_hosts 2>/dev/null || true
 
-# Verify pass
-pass ls > /dev/null 2>&1 && ok "pass store verified" || warn "pass may need GPG passphrase unlock"
-
-# Store B2 creds in pass
-echo "$B2_KEY_ID" | pass insert -e backblaze/key-id 2>/dev/null || true
-echo "$B2_APP_KEY" | pass insert -e backblaze/app-key 2>/dev/null || true
-echo "$RESTIC_PASSWORD" | pass insert -e backblaze/restic-password 2>/dev/null || true
-echo "$RESTIC_PASSWORD" | pass insert -e backups/restic-password 2>/dev/null || true
-ok "Backup credentials stored in pass"
+# Producers read these exact entries at startup. Overwrite stale values and read each one back before
+# claiming that credential recovery succeeded.
+store_backup_credentials
 
 # ─── Phase 4: User configs ─────────────────────────────────────────────────
 log "=== Phase 4: Restore user configuration ==="
@@ -620,7 +649,7 @@ fi
 
 # XDG config dirs NOT covered by dotfiles
 for d in foot fuzzel mako kanshi environment.d aichat mods autostart \
-         gtk-3.0 gtk-4.0 qt6ct rclone hapax-daimonion wireplumber pipewire gh atuin fabric; do
+         gtk-3.0 gtk-4.0 qt6ct hapax-daimonion wireplumber pipewire gh atuin fabric; do
     if [[ -d "$RHOME/.config/$d" ]]; then
         mkdir -p ~/.config
         rm -rf ~/.config/"$d"
@@ -1045,7 +1074,13 @@ ensure_tmpfs_tmp
 # ─── Phase 12: Docker stack ────────────────────────────────────────────────
 log "=== Phase 12: Start Docker stack + restore PostgreSQL, Qdrant, and n8n workflows ==="
 
-restore_database_services "$RESTORE_ROOT"
+# Phase 13 consumes git bundles and dirty-tree patches from this same directory. Resolve it once in
+# the orchestration shell, fail with find_restore_dump_dir's named-paths message, and retain it for
+# every later phase.
+if ! DUMP=$(find_restore_dump_dir "$RESTORE_ROOT"); then
+    exit 1
+fi
+restore_database_services "$DUMP"
 
 # ─── Phase 12b: Ollama models ────────────────────────────────────────────
 log "=== Phase 12b: Pull Ollama models ==="
@@ -1194,7 +1229,7 @@ done
 
 # Timers
 TIMERS=(
-    hapax-backup-local hapax-backup-remote
+    hapax-backup-local hapax-backup-remote hapax-backup-watchdog
     health-monitor stack-maintenance
     daily-briefing digest profile-update
     audio-processor av-correlator
@@ -1204,7 +1239,7 @@ TIMERS=(
     git-sync langfuse-sync stimmung-sync weather-sync
     health-connect-parse obsidian-sync youtube-sync
     cache-cleanup dev-story-index disk-space-check flow-journal
-    gpg-keyboxd-watchdog mixer-keepalive rclone-gdrive-drop
+    gpg-keyboxd-watchdog mixer-keepalive
     screen-context storage-arbiter tmp-monitor
     video-processor video-retention vram-watchdog
 )
