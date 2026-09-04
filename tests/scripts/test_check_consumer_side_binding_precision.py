@@ -130,7 +130,7 @@ def test_sqlite_connect_is_a_modelled_read(gate, tmp_path: Path) -> None:
     assert report.unrecognised_path_calls == {}
 
 
-def test_an_unmodelled_callee_handed_a_path_is_counted_by_name(gate, tmp_path: Path) -> None:
+def test_an_unmodelled_callee_handed_a_path_is_reported_and_compared(gate, tmp_path: Path) -> None:
     _write(
         tmp_path,
         "shared/consumer.py",
@@ -140,9 +140,143 @@ def test_an_unmodelled_callee_handed_a_path_is_counted_by_name(gate, tmp_path: P
         "def load_state():\n"
         "    return custom.load_blob(STATE)\n",
     )
+    _write(
+        tmp_path,
+        "shared/writer.py",
+        "from pathlib import Path\n"
+        "STATE = Path('cache/state.bin')\n"
+        "def save_state():\n"
+        "    STATE.write_bytes(b'data')\n",
+    )
     report = gate.analyse_consumer_side(tmp_path, [])
+    # This used to assert that the resolved path was absent. That contradicted the scanner's
+    # no-silent-read contract: an unknown callee must retain the pattern and producer comparison.
     assert report.unrecognised_path_calls == {"custom.load_blob": 1}
-    assert not any(finding.reader.pattern == "cache/state.bin" for finding in report.findings)
+    matches = [
+        finding
+        for finding in report.findings
+        if finding.reader.pattern == "cache/state.bin"
+        and finding.kind == "consumer-reads-through-unmodelled-api"
+    ]
+    assert len(matches) == 1
+    assert matches[0].reader.modelled is False
+    assert matches[0].writers[0].path == Path("shared/writer.py")
+    assert "producer-match=yes" in matches[0].detail
+
+
+def test_unmodelled_file_api_detection_does_not_match_substrings_in_object_names(gate) -> None:
+    assert gate._looks_like_file_api("custom.load_blob") is True
+    assert gate._looks_like_file_reader("custom.load_blob") is True
+    assert gate._looks_like_file_reader("custom.save_blob") is False
+    assert gate._looks_like_file_api("payload.get") is False
+    assert gate._looks_like_file_api("threading.Thread") is False
+    assert gate._looks_like_file_api("parser.add_argument") is False
+    assert gate._looks_like_file_api("json.loads") is False
+
+
+def test_unmodelled_read_without_a_writer_is_reported_once_under_its_own_kind(
+    gate, tmp_path: Path
+) -> None:
+    _write(
+        tmp_path,
+        "shared/consumer.py",
+        "from pathlib import Path\n"
+        "import custom\n"
+        "STATE = Path('cache/orphan.bin')\n"
+        "def load_state():\n"
+        "    return custom.load_blob(STATE)\n",
+    )
+    report = gate.analyse_consumer_side(tmp_path, [])
+    matches = [
+        finding for finding in report.findings if finding.reader.pattern == "cache/orphan.bin"
+    ]
+    assert [finding.kind for finding in matches] == ["consumer-reads-through-unmodelled-api"]
+    assert matches[0].reader_count == 1
+    assert "producer-match=no" in matches[0].detail
+
+
+@pytest.mark.parametrize(
+    "statement",
+    [
+        "os.replace(SOURCE, DESTINATION)",
+        "os.rename(SOURCE, DESTINATION)",
+        "SOURCE.replace(DESTINATION)",
+        "SOURCE.rename(DESTINATION)",
+        "shutil.copy2(SOURCE, DESTINATION)",
+    ],
+)
+def test_copy_and_rename_record_source_reads_and_destination_writes(
+    gate, tmp_path: Path, statement: str
+) -> None:
+    _write(
+        tmp_path,
+        "shared/transfer.py",
+        "import os, shutil\n"
+        "from pathlib import Path\n"
+        "SOURCE = Path('artifacts/unwritten-source.bin')\n"
+        "DESTINATION = Path('artifacts/copied-output.bin')\n"
+        f"def transfer():\n    {statement}\n",
+    )
+    accesses, unresolved, _imports, _unrecognised = gate.collect_artifact_accesses(tmp_path)
+    effects = {(access.action, access.pattern) for access in accesses}
+    assert ("read", "artifacts/unwritten-source.bin") in effects
+    assert ("write", "artifacts/copied-output.bin") in effects
+    assert unresolved == 0
+    report = gate.analyse_consumer_side(tmp_path, [])
+    source_findings = [
+        finding
+        for finding in report.findings
+        if finding.reader.pattern == "artifacts/unwritten-source.bin"
+    ]
+    assert [finding.kind for finding in source_findings] == ["consumer-reads-unwritten-artifact"]
+
+
+@pytest.mark.parametrize(
+    "statement",
+    [
+        "os.rename(source, DESTINATION)",
+        "source.rename(DESTINATION)",
+        "shutil.copy(source, DESTINATION)",
+    ],
+)
+def test_unresolved_copy_and_rename_sources_increment_the_count(
+    gate, tmp_path: Path, statement: str
+) -> None:
+    _write(
+        tmp_path,
+        "shared/transfer.py",
+        "import os, shutil\n"
+        "from pathlib import Path\n"
+        "DESTINATION = Path('artifacts/copied-output.bin')\n"
+        f"def transfer(source: Path):\n    {statement}\n",
+    )
+    accesses, unresolved, _imports, _unrecognised = gate.collect_artifact_accesses(tmp_path)
+    assert unresolved == 1
+    assert any(
+        access.action == "write" and access.pattern == "artifacts/copied-output.bin"
+        for access in accesses
+    )
+
+
+def test_string_replace_never_fabricates_an_artifact_writer(gate, tmp_path: Path) -> None:
+    _write(
+        tmp_path,
+        "shared/consumer.py",
+        "from pathlib import Path\n"
+        "def rewrite_text(text):\n"
+        "    return text.replace('config/orphan.json', 'x')\n"
+        "def load_orphan():\n"
+        "    return Path('config/orphan.json').read_text()\n",
+    )
+    accesses, _unresolved, _imports, _unrecognised = gate.collect_artifact_accesses(tmp_path)
+    assert not any(
+        access.action == "write" and access.operation == "replace" for access in accesses
+    )
+    report = gate.analyse_consumer_side(tmp_path, [])
+    assert (
+        Path("shared/consumer.py"),
+        "config/orphan.json",
+    ) in _unwritten(report)
 
 
 def test_relative_import_pairs_the_reader_with_its_writer(gate, tmp_path: Path) -> None:

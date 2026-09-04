@@ -9,6 +9,7 @@ were not deduplicated by read pattern; report errors named no next action.
 from __future__ import annotations
 
 import importlib.util
+import subprocess
 import sys
 from pathlib import Path
 
@@ -81,6 +82,37 @@ def test_a_read_after_if_without_else_keeps_the_fall_through_value(gate, tmp_pat
     )
 
 
+def test_a_conditional_read_expression_reports_both_branch_patterns(gate, tmp_path: Path) -> None:
+    _write(
+        tmp_path,
+        "shared/consumer.py",
+        "from pathlib import Path\n"
+        "def load_state(flag):\n"
+        "    return (Path('artifacts/left.json') if flag else "
+        "Path('artifacts/right.json')).read_text()\n",
+    )
+    report = gate.analyse_consumer_side(tmp_path, [])
+    assert {"artifacts/left.json", "artifacts/right.json"} <= _unwritten_patterns(
+        report, "shared/consumer.py"
+    )
+    assert report.unresolvable == 0
+
+
+def test_a_partly_unresolved_conditional_read_counts_the_unknown_branch(
+    gate, tmp_path: Path
+) -> None:
+    _write(
+        tmp_path,
+        "shared/consumer.py",
+        "from pathlib import Path\n"
+        "def load_state(flag, choose):\n"
+        "    return (Path('artifacts/known.json') if flag else choose()).read_text()\n",
+    )
+    report = gate.analyse_consumer_side(tmp_path, [])
+    assert "artifacts/known.json" in _unwritten_patterns(report, "shared/consumer.py")
+    assert report.unresolvable == 1
+
+
 def test_try_except_and_loops_fork_the_value_state(gate, tmp_path: Path) -> None:
     _write(
         tmp_path,
@@ -101,6 +133,29 @@ def test_try_except_and_loops_fork_the_value_state(gate, tmp_path: Path) -> None
         "artifacts/handled.json",
         "artifacts/looped.json",
     } <= _unwritten_patterns(report, "shared/consumer.py")
+
+
+def test_except_handler_sees_path_state_reached_inside_the_try(gate, tmp_path: Path) -> None:
+    _write(
+        tmp_path,
+        "shared/consumer.py",
+        "from pathlib import Path\n"
+        "def load_state():\n"
+        "    try:\n"
+        "        artifact = Path('artifacts/fallback.json')\n"
+        "        value = Path('artifacts/primary.json').read_text()\n"
+        "        artifact = Path('artifacts/after-read.json')\n"
+        "        return value\n"
+        "    except OSError:\n"
+        "        return artifact.read_text()\n",
+    )
+    report = gate.analyse_consumer_side(tmp_path, [])
+    assert {
+        "artifacts/primary.json",
+        "artifacts/fallback.json",
+        "artifacts/after-read.json",
+    } <= _unwritten_patterns(report, "shared/consumer.py")
+    assert report.unresolvable == 0
 
 
 def test_too_many_branch_states_collapse_to_unresolvable_not_a_guess(gate, tmp_path: Path) -> None:
@@ -150,6 +205,91 @@ def test_a_consumer_glob_does_not_match_a_writer_in_a_subdirectory(gate, tmp_pat
     assert gate._patterns_match("cache/*.json", "cache/sub/wanted.json") is False
     assert gate._patterns_match("cache/**/*.json", "cache/sub/wanted.json") is True
     assert gate._patterns_match("cache/*.json", "cache/wanted.json") is True
+
+
+def test_negated_glob_class_has_shell_semantics_and_rejects_the_excluded_name(gate) -> None:
+    assert gate._patterns_match("cache/[!a].json", "cache/b.json") is True
+    assert gate._patterns_match("cache/[!a].json", "cache/a.json") is False
+
+
+def test_invalid_glob_range_is_a_reported_no_match(
+    gate, capsys: pytest.CaptureFixture[str]
+) -> None:
+    assert gate._patterns_match("cache/[z-a].json", "cache/z.json") is False
+    output = capsys.readouterr().out
+    assert "[REPORT-ERROR] glob pattern 'cache/[z-a].json'" in output
+    assert "next action:" in output
+
+
+def test_invalid_glob_range_preserves_the_report_only_command_contract(tmp_path: Path) -> None:
+    _write(
+        tmp_path,
+        "shared/consumer.py",
+        "from pathlib import Path\n"
+        "def load_state():\n"
+        "    return list(Path('cache').glob('[z-a].json'))\n",
+    )
+    _write(
+        tmp_path,
+        "shared/writer.py",
+        "from pathlib import Path\ndef save_state():\n    Path('cache/z.json').write_text('{}')\n",
+    )
+    result = subprocess.run(
+        [sys.executable, str(SCRIPT_PATH), "--consumer-side"],
+        cwd=tmp_path,
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    assert result.returncode == 0, result.stderr
+    assert "[REPORT-ERROR] glob pattern 'cache/[z-a].json'" in result.stdout
+    assert "consumer-side gate is REPORT-ONLY" in result.stdout
+
+
+def test_lambda_body_reads_are_scanned(gate, tmp_path: Path) -> None:
+    _write(
+        tmp_path,
+        "shared/consumer.py",
+        "from pathlib import Path\n"
+        "load_later = lambda: Path('artifacts/lambda-orphan.json').read_text()\n",
+    )
+    report = gate.analyse_consumer_side(tmp_path, [])
+    assert "artifacts/lambda-orphan.json" in _unwritten_patterns(report, "shared/consumer.py")
+    assert report.unresolvable == 0
+
+
+def test_unresolved_lambda_body_read_increments_the_count(gate, tmp_path: Path) -> None:
+    _write(
+        tmp_path,
+        "shared/consumer.py",
+        "load_later = lambda artifact: artifact.read_text()\n",
+    )
+    report = gate.analyse_consumer_side(tmp_path, [])
+    assert report.unresolvable == 1
+
+
+def test_nested_helpers_cannot_replace_a_module_level_path_helper(gate, tmp_path: Path) -> None:
+    _write(
+        tmp_path,
+        "shared/consumer.py",
+        "from pathlib import Path\n"
+        "def artifact_path():\n"
+        "    return Path('artifacts/module.json')\n"
+        "class Shadow:\n"
+        "    def artifact_path(self):\n"
+        "        return Path('artifacts/method.json')\n"
+        "def enclosing():\n"
+        "    def artifact_path():\n"
+        "        return Path('artifacts/nested.json')\n"
+        "    return artifact_path\n"
+        "def load_state():\n"
+        "    return artifact_path().read_text()\n",
+    )
+    report = gate.analyse_consumer_side(tmp_path, [])
+    patterns = _unwritten_patterns(report, "shared/consumer.py")
+    assert "artifacts/module.json" in patterns
+    assert "artifacts/method.json" not in patterns
+    assert "artifacts/nested.json" not in patterns
 
 
 @pytest.mark.parametrize(

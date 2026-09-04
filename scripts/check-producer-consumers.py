@@ -40,6 +40,7 @@ from __future__ import annotations
 
 import argparse
 import ast
+import copy
 import fnmatch
 import json
 import os
@@ -480,6 +481,7 @@ CONSUMER_SIDE_ARM = "HAPAX_CONSUMER_SIDE_PRODUCER_BINDING_GATE=1"
 CONSUMER_SIDE_REPORT_LIMIT = 25
 CONSUMER_SIDE_KINDS = (
     "consumer-reads-unwritten-artifact",
+    "consumer-reads-through-unmodelled-api",
     "consumer-reads-artifact-under-dynamic-root",
     "consumer-reads-artifact-with-non-python-producer",
     "consumer-reads-artifact-documented-elsewhere",
@@ -502,6 +504,7 @@ class ArtifactAccess:
     lineno: int
     family: str
     operation: str
+    modelled: bool = True
 
 
 @dataclass(frozen=True)
@@ -545,7 +548,8 @@ class ConsumerSideReport:
     exclusions: dict[str, int]
     errors: tuple[str, ...] = ()
     # Calls whose callee this scanner does not model but whose argument resolved to a path
-    # (review finding on #4626, round 5): they are reported by callee, never silently absent.
+    # (review finding on #4626, round 5). Read-shaped calls also produce a finding; the counter
+    # retains every such call so unsupported write APIs remain visible without fabricating writes.
     unrecognised_path_calls: dict[str, int] = field(default_factory=dict)
     # What this report measured (review finding on #4626, round 8, and the dominator consumer's
     # own need): a report with no head is unusable by any later reader, because nothing says
@@ -560,6 +564,13 @@ class PathFunction:
     return_expr: ast.expr
     module_values: dict[str, str]
     path: Path
+    returns_path: bool = False
+
+
+@dataclass(frozen=True)
+class LexicalScope:
+    qualname: str
+    node: ast.FunctionDef | ast.AsyncFunctionDef | ast.Lambda
 
 
 class PathFunctionTable(dict[str, PathFunction]):
@@ -576,8 +587,8 @@ class PathFunctionTable(dict[str, PathFunction]):
         super().__init__()
         self.imports_by_path: dict[Path, frozenset[str]] = {}
 
-    def register(self, relative: Path, name: str, function: PathFunction) -> None:
-        self[f"{_module_name(relative)}.{name}"] = function
+    def register(self, relative: Path, qualname: str, function: PathFunction) -> None:
+        self[f"{_module_name(relative)}.{qualname}"] = function
 
     def resolve(self, name: str, calling_path: Path) -> PathFunction | None:
         short = name.rsplit(".", 1)[-1]
@@ -598,14 +609,18 @@ class PathFunctionTable(dict[str, PathFunction]):
         own = self.get(f"{_module_name(calling_path)}.{short}")
         if own is not None:
             return own
+        imported_candidates: dict[str, PathFunction] = {}
         for imported in imports:
             candidate = self.get(f"{imported}.{short}")
             if candidate is None and imported.endswith(f".{short}"):
                 candidate = self.get(imported)
             if candidate is not None:
-                return candidate
-        matches = [function for key, function in self.items() if key.rsplit(".", 1)[-1] == short]
-        return matches[0] if len(matches) == 1 else None
+                imported_candidates[str(candidate.path)] = candidate
+        if len(imported_candidates) == 1:
+            return next(iter(imported_candidates.values()))
+        # A repository-global bare-name fallback can bind a caller to a nested method in an
+        # unrelated module. Local and imported helpers above are the only sound bare bindings.
+        return None
 
 
 def _dotted_name(node: ast.expr) -> str | None:
@@ -660,8 +675,32 @@ def _function_name(call: ast.Call) -> str:
 
 
 def _return_expression(node: ast.FunctionDef | ast.AsyncFunctionDef) -> ast.expr | None:
-    returns = [item.value for item in ast.walk(node) if isinstance(item, ast.Return) and item.value]
-    return returns[0] if len(returns) == 1 else None
+    """Return the sole expression in this function, excluding nested lexical scopes."""
+
+    class _OwnReturnVisitor(ast.NodeVisitor):
+        def __init__(self) -> None:
+            self.returns: list[ast.expr] = []
+
+        def visit_Return(self, item: ast.Return) -> None:
+            if item.value is not None:
+                self.returns.append(item.value)
+
+        def visit_FunctionDef(self, item: ast.FunctionDef) -> None:
+            return
+
+        def visit_AsyncFunctionDef(self, item: ast.AsyncFunctionDef) -> None:
+            return
+
+        def visit_Lambda(self, item: ast.Lambda) -> None:
+            return
+
+        def visit_ClassDef(self, item: ast.ClassDef) -> None:
+            return
+
+    visitor = _OwnReturnVisitor()
+    for statement in node.body:
+        visitor.visit(statement)
+    return visitor.returns[0] if len(visitor.returns) == 1 else None
 
 
 def _function_defaults(
@@ -680,6 +719,115 @@ def _function_defaults(
         }
     )
     return defaults
+
+
+_MAX_PATH_EXPR_VARIANTS = 8
+_PATH_VALUE_PREFIX = "\0path-value:"
+
+
+def _path_value_key(name: str) -> str:
+    return f"{_PATH_VALUE_PREFIX}{name}"
+
+
+def _set_path_value(values: dict[str, str], name: str, is_path: bool) -> None:
+    key = _path_value_key(name)
+    if is_path:
+        values[key] = "1"
+    else:
+        values.pop(key, None)
+
+
+def _first_if_expression_path(
+    node: ast.AST, path: tuple[tuple[str, int | None], ...] = ()
+) -> tuple[tuple[str, int | None], ...] | None:
+    if isinstance(node, ast.IfExp):
+        return path
+    for field_name in node._fields:
+        value = getattr(node, field_name)
+        if isinstance(value, ast.AST):
+            found = _first_if_expression_path(value, (*path, (field_name, None)))
+            if found is not None:
+                return found
+        elif isinstance(value, list):
+            for index, item in enumerate(value):
+                if not isinstance(item, ast.AST):
+                    continue
+                found = _first_if_expression_path(item, (*path, (field_name, index)))
+                if found is not None:
+                    return found
+    return None
+
+
+def _ast_node_at(node: ast.AST, path: tuple[tuple[str, int | None], ...]) -> ast.AST:
+    current = node
+    for field_name, index in path:
+        value = getattr(current, field_name)
+        current = value if index is None else value[index]
+    return current
+
+
+def _replace_ast_node(
+    node: ast.expr,
+    path: tuple[tuple[str, int | None], ...],
+    replacement: ast.expr,
+) -> ast.expr:
+    if not path:
+        return copy.deepcopy(replacement)
+    result = copy.deepcopy(node)
+    current: ast.AST = result
+    for field_name, index in path[:-1]:
+        value = getattr(current, field_name)
+        current = value if index is None else value[index]
+    field_name, index = path[-1]
+    if index is None:
+        setattr(current, field_name, copy.deepcopy(replacement))
+    else:
+        getattr(current, field_name)[index] = copy.deepcopy(replacement)
+    return result
+
+
+def _conditional_expr_variants(node: ast.expr | None) -> tuple[list[ast.expr], bool]:
+    """Expand conditional expressions without ever selecting just one possible branch."""
+    if node is None:
+        return [], False
+    pending = [node]
+    resolved: list[ast.expr] = []
+    truncated = False
+    while pending:
+        expression = pending.pop()
+        conditional_path = _first_if_expression_path(expression)
+        if conditional_path is None:
+            resolved.append(expression)
+            continue
+        conditional = _ast_node_at(expression, conditional_path)
+        assert isinstance(conditional, ast.IfExp)
+        if len(pending) + len(resolved) + 2 > _MAX_PATH_EXPR_VARIANTS:
+            truncated = True
+            continue
+        pending.extend(
+            (
+                _replace_ast_node(expression, conditional_path, conditional.orelse),
+                _replace_ast_node(expression, conditional_path, conditional.body),
+            )
+        )
+    return resolved, truncated
+
+
+def _resolve_path_expr_variants(
+    node: ast.expr | None,
+    values: dict[str, str],
+    path: Path,
+    repo_root: Path,
+    path_functions: dict[str, PathFunction],
+) -> tuple[str | None, ...]:
+    expressions, truncated = _conditional_expr_variants(node)
+    variants = [
+        _resolve_path_expr(expression, values, path, repo_root, path_functions)
+        for expression in expressions
+    ]
+    if truncated or not expressions:
+        variants.append(None)
+    return tuple(dict.fromkeys(variants))
 
 
 def _resolve_path_expr(
@@ -744,7 +892,9 @@ def _resolve_path_expr(
         right = _resolve_path_expr(
             node.orelse, values, path, repo_root, path_functions, depth=depth + 1
         )
-        return left if left == right else left or right
+        # Access and assignment callers expand conditional expressions before resolving them.
+        # Any other caller must fail closed instead of silently choosing one possible path.
+        return left if left == right else None
     if isinstance(node, ast.Attribute):
         base = _resolve_path_expr(
             node.value, values, path, repo_root, path_functions, depth=depth + 1
@@ -884,6 +1034,60 @@ def _resolve_path_expr(
     )
 
 
+def _is_path_annotation(node: ast.expr | None) -> bool:
+    name = _dotted_name(node) if node is not None else None
+    return bool(name and name.rsplit(".", 1)[-1] == "Path")
+
+
+def _is_path_valued_expr(
+    node: ast.expr | None,
+    values: dict[str, str],
+    path: Path,
+    path_functions: dict[str, PathFunction],
+    *,
+    depth: int = 0,
+) -> bool:
+    """Whether an expression is modelled as a pathlib path, never merely path-shaped text."""
+    if node is None or depth > 12:
+        return False
+    if isinstance(node, ast.Name):
+        return _path_value_key(node.id) in values
+    if isinstance(node, ast.BinOp) and isinstance(node.op, ast.Div):
+        return _is_path_valued_expr(node.left, values, path, path_functions, depth=depth + 1)
+    if isinstance(node, ast.IfExp):
+        return _is_path_valued_expr(
+            node.body, values, path, path_functions, depth=depth + 1
+        ) and _is_path_valued_expr(node.orelse, values, path, path_functions, depth=depth + 1)
+    if isinstance(node, ast.BoolOp) and isinstance(node.op, ast.Or):
+        return bool(node.values) and all(
+            _is_path_valued_expr(item, values, path, path_functions, depth=depth + 1)
+            for item in node.values
+        )
+    if isinstance(node, ast.Attribute):
+        return node.attr == "parent" and _is_path_valued_expr(
+            node.value, values, path, path_functions, depth=depth + 1
+        )
+    if not isinstance(node, ast.Call):
+        return False
+    name = _function_name(node)
+    if name in {"Path", "pathlib.Path", "Path.home", "pathlib.Path.home"}:
+        return True
+    if isinstance(node.func, ast.Attribute) and node.func.attr in {
+        "expanduser",
+        "absolute",
+        "resolve",
+        "with_suffix",
+        "with_name",
+    }:
+        return _is_path_valued_expr(node.func.value, values, path, path_functions, depth=depth + 1)
+    function = (
+        path_functions.resolve(name, path)
+        if isinstance(path_functions, PathFunctionTable)
+        else (path_functions.get(name) or path_functions.get(name.rsplit(".", 1)[-1]))
+    )
+    return bool(function and function.returns_path)
+
+
 def _iter_python_sources(repo_root: Path, *, tests_only: bool = False) -> list[Path]:
     files = set(_iter_python_files(repo_root, include_tests=tests_only))
     if tests_only:
@@ -917,10 +1121,17 @@ def _module_values(
                 assignment.targets if isinstance(assignment, ast.Assign) else [assignment.target]
             )
             resolved = _resolve_path_expr(assignment.value, values, path, repo_root, path_functions)
-            if resolved is None:
-                continue
+            is_path = (
+                isinstance(assignment, ast.AnnAssign) and _is_path_annotation(assignment.annotation)
+            ) or _is_path_valued_expr(assignment.value, values, path, path_functions)
             for target in targets:
-                if isinstance(target, ast.Name) and values.get(target.id) != resolved:
+                if not isinstance(target, ast.Name):
+                    continue
+                marker_changed = (_path_value_key(target.id) in values) != is_path
+                _set_path_value(values, target.id, is_path)
+                if marker_changed:
+                    changed = True
+                if resolved is not None and values.get(target.id) != resolved:
                     values[target.id] = resolved
                     changed = True
         if not changed:
@@ -956,6 +1167,18 @@ def _useful_pattern(pattern: str | None) -> bool:
         and pattern.isprintable()
         and pattern not in {"*", ".", "~"}
         and pattern.strip("*/.")
+    )
+
+
+def _looks_like_artifact_pattern(pattern: str | None) -> bool:
+    if not _useful_pattern(pattern) or pattern is None or any(char.isspace() for char in pattern):
+        return False
+    path = PurePosixPath(pattern)
+    return (
+        pattern.startswith(("/", "~/", "./", "../"))
+        or "/" in pattern
+        or bool(path.suffix)
+        or any(marker in pattern for marker in "*?[")
     )
 
 
@@ -1025,15 +1248,18 @@ def _record_access(
     family: str,
     operation: str,
     append: str | None = None,
+    modelled: bool = True,
 ) -> None:
-    pattern = _resolve_path_expr(expression, values, path, repo_root, path_functions)
-    if pattern is not None and append is not None:
-        pattern = _join_pattern(pattern, append, repo_root)
-    if not _useful_pattern(pattern):
-        unresolved[0] += 1
-        return
-    assert pattern is not None
-    accesses.append(ArtifactAccess(action, pattern, path, call.lineno, family, operation))
+    for pattern in _resolve_path_expr_variants(expression, values, path, repo_root, path_functions):
+        if pattern is not None and append is not None:
+            pattern = _join_pattern(pattern, append, repo_root)
+        if not _useful_pattern(pattern):
+            unresolved[0] += 1
+            continue
+        assert pattern is not None
+        accesses.append(
+            ArtifactAccess(action, pattern, path, call.lineno, family, operation, modelled)
+        )
 
 
 def _classify_call(
@@ -1150,6 +1376,19 @@ def _classify_call(
         _record_access(
             accesses,
             unresolved,
+            action="read",
+            expression=_call_argument(call, 0, "src"),
+            call=call,
+            values=values,
+            path=path,
+            repo_root=repo_root,
+            path_functions=path_functions,
+            family=context_family,
+            operation=short_name,
+        )
+        _record_access(
+            accesses,
+            unresolved,
             action="write",
             expression=_call_argument(call, 1, "dst"),
             call=call,
@@ -1160,7 +1399,24 @@ def _classify_call(
             family=context_family,
             operation=short_name,
         )
-    elif isinstance(call.func, ast.Attribute) and call.func.attr in {"replace", "rename"}:
+    elif (
+        isinstance(call.func, ast.Attribute)
+        and call.func.attr in {"replace", "rename"}
+        and _is_path_valued_expr(call.func.value, values, path, path_functions)
+    ):
+        _record_access(
+            accesses,
+            unresolved,
+            action="read",
+            expression=call.func.value,
+            call=call,
+            values=values,
+            path=path,
+            repo_root=repo_root,
+            path_functions=path_functions,
+            family=context_family,
+            operation=call.func.attr,
+        )
         _record_access(
             accesses,
             unresolved,
@@ -1175,6 +1431,19 @@ def _classify_call(
             operation=call.func.attr,
         )
     elif name.startswith("shutil.copy"):
+        _record_access(
+            accesses,
+            unresolved,
+            action="read",
+            expression=_call_argument(call, 0, "src"),
+            call=call,
+            values=values,
+            path=path,
+            repo_root=repo_root,
+            path_functions=path_functions,
+            family=context_family,
+            operation=short_name,
+        )
         _record_access(
             accesses,
             unresolved,
@@ -1206,13 +1475,36 @@ def _classify_call(
                 family=_artifact_family(short_name),
                 operation=short_name,
             )
-    elif _looks_like_file_api(name) and any(
-        _useful_pattern(_resolve_path_expr(argument, values, path, repo_root, path_functions))
-        for argument in (*call.args, *(keyword.value for keyword in call.keywords))
-    ):
-        # Not modelled, but handed a resolvable path: counted by callee so the report's silence
-        # about it is never mistaken for absence.
-        unrecognised[name] += 1
+    elif _looks_like_file_api(name):
+        # An unknown signature cannot tell us which argument is the path. Retain the first
+        # modelled Path expression (or strongly path-shaped literal); a read-shaped callee keeps
+        # that expression as an explicitly unmodelled read. Merely resolvable prose is not a file:
+        # parser.add_argument("description"), for example, must not manufacture artifact reads.
+        for argument in (*call.args, *(keyword.value for keyword in call.keywords)):
+            patterns = _resolve_path_expr_variants(
+                argument, values, path, repo_root, path_functions
+            )
+            if not _is_path_valued_expr(argument, values, path, path_functions) and not any(
+                _looks_like_artifact_pattern(pattern) for pattern in patterns
+            ):
+                continue
+            if _looks_like_file_reader(name):
+                _record_access(
+                    accesses,
+                    unresolved,
+                    action="read",
+                    expression=argument,
+                    call=call,
+                    values=values,
+                    path=path,
+                    repo_root=repo_root,
+                    path_functions=path_functions,
+                    family=_artifact_family(short_name),
+                    operation=name,
+                    modelled=False,
+                )
+            unrecognised[name] += 1
+            break
 
 
 # Callee -> (action, positional index of the path, keyword name). "mode" reads the mode argument
@@ -1237,12 +1529,22 @@ _FILE_API_HINTS = (
     "import",
     "export",
     "pickle",
-    "yaml",
-    "json",
-    "toml",
-    "csv",
-    "sqlite",
-    "db",
+)
+_FILE_READER_HINTS = frozenset(
+    {"open", "load", "read", "connect", "parse", "fetch", "import", "pickle"}
+)
+_IN_MEMORY_APIS = frozenset(
+    {
+        "json.dump",
+        "json.dumps",
+        "json.load",
+        "json.loads",
+        "tomllib.load",
+        "yaml.dump",
+        "yaml.load",
+        "yaml.safe_dump",
+        "yaml.safe_load",
+    }
 )
 
 
@@ -1250,7 +1552,19 @@ def _looks_like_file_api(name: str) -> bool:
     lowered = name.lower()
     if lowered in {"str", "repr", "print", "path", "purepath", "pureposixpath", "len"}:
         return False
-    return any(hint in lowered for hint in _FILE_API_HINTS)
+    if lowered in _IN_MEMORY_APIS or lowered.startswith(("argparse.", "importlib.")):
+        return False
+    short = lowered.rsplit(".", 1)[-1].strip("_")
+    if short in {"dumps", "loads", "model_dump"}:
+        return False
+    tokens = {token for token in short.split("_") if token}
+    return bool(tokens.intersection(_FILE_API_HINTS))
+
+
+def _looks_like_file_reader(name: str) -> bool:
+    short = name.lower().rsplit(".", 1)[-1].strip("_")
+    tokens = {token for token in short.split("_") if token}
+    return bool(tokens.intersection(_FILE_READER_HINTS))
 
 
 def _statement_calls(statement: ast.stmt) -> list[ast.Call]:
@@ -1269,30 +1583,48 @@ def _apply_assignment(
     path: Path,
     repo_root: Path,
     path_functions: dict[str, PathFunction],
-) -> None:
+) -> list[dict[str, str]]:
     targets = statement.targets if isinstance(statement, ast.Assign) else [statement.target]
-    resolved = _resolve_path_expr(statement.value, values, path, repo_root, path_functions)
-    for target in targets:
-        if not isinstance(target, ast.Name):
-            continue
-        # A name rebound to something this scanner cannot resolve stops meaning its old path
-        # (the old fixpoint kept the old value and resolved every later read through it).
-        values[target.id] = resolved if resolved is not None else "*"
+    expressions, truncated = _conditional_expr_variants(statement.value)
+    assignments: list[dict[str, str]] = []
+    for expression in expressions:
+        assigned = dict(values)
+        resolved = _resolve_path_expr(expression, assigned, path, repo_root, path_functions)
+        is_path = (
+            isinstance(statement, ast.AnnAssign) and _is_path_annotation(statement.annotation)
+        ) or _is_path_valued_expr(expression, assigned, path, path_functions)
+        for target in targets:
+            if not isinstance(target, ast.Name):
+                continue
+            # A name rebound to something this scanner cannot resolve stops meaning its old path
+            # (the old fixpoint kept the old value and resolved every later read through it).
+            assigned[target.id] = resolved if resolved is not None else "*"
+            _set_path_value(assigned, target.id, is_path)
+        assignments.append(assigned)
+    if truncated or not expressions:
+        assigned = dict(values)
+        for target in targets:
+            if isinstance(target, ast.Name):
+                assigned[target.id] = "*"
+                _set_path_value(assigned, target.id, False)
+        assignments.append(assigned)
+    return assignments
 
 
 def _scope_initial_values(
-    node: ast.Module | ast.FunctionDef | ast.AsyncFunctionDef,
+    node: ast.Module | ast.FunctionDef | ast.AsyncFunctionDef | ast.Lambda,
     module_values: dict[str, str],
     path: Path,
     repo_root: Path,
     path_functions: dict[str, PathFunction],
 ) -> dict[str, str]:
-    if not isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
+    if isinstance(node, ast.Module):
         # Module scope executes top to bottom: a read before an assignment sees nothing.
         return {}
     values = dict(module_values)
     for arg in [*node.args.posonlyargs, *node.args.args, *node.args.kwonlyargs]:
         values[arg.arg] = "*"
+        _set_path_value(values, arg.arg, _is_path_annotation(arg.annotation))
     for name, default in _function_defaults(node).items():
         resolved = _resolve_path_expr(default, values, path, repo_root, path_functions)
         if resolved is not None:
@@ -1334,8 +1666,8 @@ class _BlockScanner:
     an if/else saw only the else branch's assignment (review finding on #4626, round 6). Each
     branch now forks the states it entered with and the states are merged after the statement, so
     a read below sees every value the name can hold. A call is classified once per state; an
-    access is recorded for each distinct pattern, and a call counts as unresolvable only when no
-    state resolves it.
+    access is recorded for each distinct pattern, and each unresolved access slot is counted even
+    when another branch or argument resolves.
     """
 
     def __init__(
@@ -1365,8 +1697,8 @@ class _BlockScanner:
         return states
 
     def _classify(self, call: ast.Call, states: list[dict[str, str]]) -> None:
-        before = len(self.accesses)
-        unresolved_in_every_state = bool(states)
+        call_accesses: list[ArtifactAccess] = []
+        unresolved_slots = 0
         flagged: set[str] = set()
         for state in states:
             local_unresolved = [0]
@@ -1377,16 +1709,15 @@ class _BlockScanner:
                 self.path,
                 self.repo_root,
                 self.path_functions,
-                self.accesses,
+                call_accesses,
                 local_unresolved,
                 local_unrecognised,
                 self.context_family,
             )
-            if not local_unresolved[0]:
-                unresolved_in_every_state = False
+            unresolved_slots = max(unresolved_slots, local_unresolved[0])
             flagged.update(local_unrecognised)
-        if len(self.accesses) == before and unresolved_in_every_state:
-            self.unresolved[0] += 1
+        self.accesses.extend(dict.fromkeys(call_accesses))
+        self.unresolved[0] += unresolved_slots
         for name in flagged:
             self.unrecognised[name] += 1
 
@@ -1398,9 +1729,14 @@ class _BlockScanner:
         for call in _statement_calls(statement):
             self._classify(call, states)
         if isinstance(statement, (ast.Assign, ast.AnnAssign)):
+            assigned: list[dict[str, str]] = []
             for state in states:
-                _apply_assignment(statement, state, self.path, self.repo_root, self.path_functions)
-            return states
+                assigned.extend(
+                    _apply_assignment(
+                        statement, state, self.path, self.repo_root, self.path_functions
+                    )
+                )
+            return _merge_states(assigned)
         if isinstance(statement, ast.If):
             taken = self.scan_block(statement.body, _fork(states))
             not_taken = (
@@ -1416,10 +1752,15 @@ class _BlockScanner:
         if isinstance(statement, (ast.With, ast.AsyncWith)):
             return self.scan_block(statement.body, states)
         if isinstance(statement, (ast.Try, getattr(ast, "TryStar", ast.Try))):
-            body_states = self.scan_block(statement.body, _fork(states))
+            body_states = _fork(states)
+            reachable_body_states: list[dict[str, str]] = []
+            for body_statement in statement.body:
+                body_states = self._scan_statement(body_statement, body_states)
+                reachable_body_states += _fork(body_states)
+            handler_inputs = _merge_states(reachable_body_states or _fork(states))
             handler_states: list[dict[str, str]] = []
             for handler in statement.handlers:
-                handler_states += self.scan_block(handler.body, _fork(states))
+                handler_states += self.scan_block(handler.body, _fork(handler_inputs))
             else_states = (
                 self.scan_block(statement.orelse, body_states) if statement.orelse else body_states
             )
@@ -1434,7 +1775,7 @@ class _BlockScanner:
 
 
 def _scan_scope(
-    node: ast.Module | ast.FunctionDef | ast.AsyncFunctionDef,
+    node: ast.Module | ast.FunctionDef | ast.AsyncFunctionDef | ast.Lambda,
     module_values: dict[str, str],
     path: Path,
     repo_root: Path,
@@ -1444,7 +1785,12 @@ def _scan_scope(
     unrecognised: Counter[str],
 ) -> None:
     initial = _scope_initial_values(node, module_values, path, repo_root, path_functions)
-    context = node.name if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)) else path.stem
+    if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
+        context = node.name
+    elif isinstance(node, ast.Lambda):
+        context = "lambda"
+    else:
+        context = path.stem
     # Source order is the semantics: a read sees the assignments above it, never one below
     # (review finding on #4626, round 5), and every branch above it, not just the last one
     # (round 6) — see _BlockScanner.
@@ -1457,15 +1803,53 @@ def _scan_scope(
         unrecognised=unrecognised,
         context_family=_artifact_family(context),
     )
-    scanner.scan_block(list(node.body), [initial])
+    if isinstance(node, ast.Lambda):
+        visitor = _ScopeCallVisitor()
+        visitor.visit(node.body)
+        for call in visitor.calls:
+            scanner._classify(call, [initial])
+    else:
+        scanner.scan_block(list(node.body), [initial])
 
 
 def _iter_function_scopes(
     tree: ast.Module,
-) -> list[ast.FunctionDef | ast.AsyncFunctionDef]:
-    return [
-        node for node in ast.walk(tree) if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef))
-    ]
+) -> list[LexicalScope]:
+    """Lexical scopes with stable qualified names; no nested helper can replace a top-level one."""
+
+    class _LexicalScopeVisitor(ast.NodeVisitor):
+        def __init__(self) -> None:
+            self.prefix: list[str] = []
+            self.scopes: list[LexicalScope] = []
+
+        def _visit_named(self, node: ast.FunctionDef | ast.AsyncFunctionDef | ast.ClassDef) -> None:
+            qualname = ".".join((*self.prefix, node.name))
+            if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
+                self.scopes.append(LexicalScope(qualname, node))
+            self.prefix.append(node.name)
+            self.generic_visit(node)
+            self.prefix.pop()
+
+        def visit_FunctionDef(self, node: ast.FunctionDef) -> None:
+            self._visit_named(node)
+
+        def visit_AsyncFunctionDef(self, node: ast.AsyncFunctionDef) -> None:
+            self._visit_named(node)
+
+        def visit_ClassDef(self, node: ast.ClassDef) -> None:
+            self._visit_named(node)
+
+        def visit_Lambda(self, node: ast.Lambda) -> None:
+            label = f"<lambda>@{node.lineno}:{node.col_offset}"
+            qualname = ".".join((*self.prefix, label))
+            self.scopes.append(LexicalScope(qualname, node))
+            self.prefix.append(label)
+            self.generic_visit(node)
+            self.prefix.pop()
+
+    visitor = _LexicalScopeVisitor()
+    visitor.visit(tree)
+    return visitor.scopes
 
 
 def _module_imports(
@@ -1529,7 +1913,10 @@ def collect_artifact_accesses(
         for relative, tree in parsed:
             values = _module_values(tree, relative, repo_root, path_functions)
             module_values_by_path[relative] = values
-            for node in _iter_function_scopes(tree):
+            for scope in _iter_function_scopes(tree):
+                node = scope.node
+                if isinstance(node, ast.Lambda):
+                    continue
                 return_expr = _return_expression(node)
                 if return_expr is None:
                     continue
@@ -1539,8 +1926,15 @@ def collect_artifact_accesses(
                 )
                 path_functions.register(
                     relative,
-                    node.name,
-                    PathFunction(params, _function_defaults(node), return_expr, values, relative),
+                    scope.qualname,
+                    PathFunction(
+                        params,
+                        _function_defaults(node),
+                        return_expr,
+                        values,
+                        relative,
+                        _is_path_valued_expr(return_expr, values, relative, path_functions),
+                    ),
                 )
 
     accesses: list[ArtifactAccess] = []
@@ -1558,9 +1952,9 @@ def collect_artifact_accesses(
             unresolved,
             unrecognised,
         )
-        for node in _iter_function_scopes(tree):
+        for scope in _iter_function_scopes(tree):
             _scan_scope(
-                node,
+                scope.node,
                 values,
                 relative,
                 repo_root,
@@ -1582,6 +1976,53 @@ def _glob_has_artifact_identity(pattern: str) -> bool:
     return fixed_directory or bool(fixed_stem)
 
 
+_REPORTED_GLOB_ERRORS: set[tuple[str, str]] = set()
+
+
+def _report_glob_error(pattern: str, detail: str) -> None:
+    issue = (pattern, detail)
+    if issue in _REPORTED_GLOB_ERRORS:
+        return
+    _REPORTED_GLOB_ERRORS.add(issue)
+    print(
+        f"[REPORT-ERROR] glob pattern {pattern!r}: {detail}; treating it as a no-match; "
+        "next action: correct or remove the bracket expression and rerun; "
+        "the gate stays report-only"
+    )
+
+
+def _glob_class(pattern: str, start: int) -> tuple[str, int]:
+    """Translate one shell-style bracket expression and return (regex, next index)."""
+    close = start + 1
+    if close < len(pattern) and pattern[close] == "!":
+        close += 1
+    if close < len(pattern) and pattern[close] == "]":
+        close += 1
+    while close < len(pattern) and pattern[close] != "]":
+        close += 1
+    if close >= len(pattern):
+        return re.escape("["), start + 1
+
+    fragment = pattern[start : close + 1]
+    if "/" in fragment:
+        _report_glob_error(pattern, f"character class {fragment!r} contains a path separator")
+        return "(?!)", close + 1
+    translated = fnmatch.translate(fragment)
+    match = re.fullmatch(r"\(\?s:(.*)\)\\[zZ]", translated)
+    if match is None:
+        _report_glob_error(pattern, f"character class {fragment!r} could not be translated")
+        return "(?!)", close + 1
+    body = match.group(1)
+    if body == "(?!)":
+        _report_glob_error(pattern, f"character class {fragment!r} has no valid range")
+    elif body == ".":
+        body = "[^/]"
+    elif body.startswith("[^"):
+        # A negated glob class still cannot consume a directory separator.
+        body = "[^/" + body[2:]
+    return body, close + 1
+
+
 def _glob_regex(pattern: str) -> re.Pattern[str]:
     """A glob as a regex whose `*` and `?` stop at `/` (only `**` crosses directories).
 
@@ -1601,16 +2042,18 @@ def _glob_regex(pattern: str) -> re.Pattern[str]:
         elif char == "?":
             out.append("[^/]")
         elif char == "[":
-            close = pattern.find("]", i + 1)
-            if close == -1:
-                out.append(re.escape(char))
-            else:
-                out.append(pattern[i : close + 1])
-                i = close
+            translated, i = _glob_class(pattern, i)
+            out.append(translated)
+            continue
         else:
             out.append(re.escape(char))
         i += 1
-    return re.compile("^" + "".join(out) + "$")
+    expression = "^" + "".join(out) + "$"
+    try:
+        return re.compile(expression)
+    except re.error as exc:
+        _report_glob_error(pattern, f"translated regular expression is invalid ({exc})")
+        return re.compile(r"(?!)")
 
 
 def _glob_match(text: str, pattern: str) -> bool:
@@ -2050,7 +2493,24 @@ def analyse_consumer_side(
     for pattern, reader_sites in _group_reads(included_reads).items():
         representative = reader_sites[0]
         matching = [writer for writer in writes if _patterns_match(pattern, writer.pattern)]
-        if not matching:
+        unmodelled = tuple(reader for reader in reader_sites if not reader.modelled)
+        if unmodelled:
+            kind = "consumer-reads-through-unmodelled-api"
+            callees = ",".join(sorted({reader.operation for reader in unmodelled}))
+            detail = f"callees={callees} producer-match={'yes' if matching else 'no'}"
+            modelled = tuple(reader for reader in reader_sites if reader.modelled)
+            reported_sites = (*unmodelled, *modelled)
+            findings.append(
+                ConsumerSideFinding(
+                    kind,
+                    reported_sites[:3],
+                    tuple(matching[:3]) or _nearest_writers(representative, writes),
+                    f"{kind}:{pattern}",
+                    detail,
+                    reader_total=len(reader_sites),
+                )
+            )
+        elif not matching:
             dynamic_writers = _dynamic_root_writers(pattern, writes_anywhere)
             producer_mentions = _non_python_mentions(pattern, non_python_sources, repo_root)
             documented_mentions = _non_python_mentions(pattern, documented_sources, repo_root)
@@ -2162,11 +2622,16 @@ def _finding_line(finding: ConsumerSideFinding) -> str:
     readers = ",".join(f"{reader.path}:{reader.lineno}" for reader in finding.readers[:3])
     candidates = ", ".join(_writer_label(item) for item in finding.writers[:3]) or "none"
     detail = f" {finding.detail}" if finding.detail else ""
+    next_action = (
+        "model the named callee's file-access semantics, then rerun"
+        if finding.kind == "consumer-reads-through-unmodelled-api"
+        else "bind the consumer to a live producer output or add a reasoned "
+        "kind=consumer_side allowlist entry"
+    )
     return (
         f"[REPORT] {finding.kind} readers={finding.reader_count} reader-sites={readers} "
         f"read={finding.reader.pattern} nearest-writers={candidates}{detail} "
-        "next-action=bind the consumer to a live producer output or add a reasoned "
-        "kind=consumer_side allowlist entry"
+        f"next-action={next_action}"
     )
 
 
@@ -2192,6 +2657,7 @@ def _access_json(access: ArtifactAccess) -> dict[str, object]:
         "line": access.lineno,
         "family": access.family,
         "operation": access.operation,
+        "modelled": access.modelled,
     }
 
 
@@ -2272,6 +2738,8 @@ def print_consumer_side_report(report: ConsumerSideReport, report_path: Path) ->
         "consumer-side counts: "
         f"findings={len(report.findings)} "
         f"consumer-reads-unwritten-artifact={counts['consumer-reads-unwritten-artifact']} "
+        "consumer-reads-through-unmodelled-api="
+        f"{counts['consumer-reads-through-unmodelled-api']} "
         "consumer-reads-artifact-under-dynamic-root="
         f"{counts['consumer-reads-artifact-under-dynamic-root']} "
         "consumer-reads-artifact-with-non-python-producer="
