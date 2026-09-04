@@ -26,6 +26,7 @@ from __future__ import annotations
 
 import json
 import logging
+import shlex
 import subprocess
 
 from googleapiclient.discovery import build as discovery_build
@@ -66,6 +67,11 @@ ALL_SCOPES = [
     "https://www.googleapis.com/auth/youtube.readonly",
     "https://www.googleapis.com/auth/youtube.force-ssl",
 ]
+
+
+def _consent_scopes(scopes: list[str]) -> list[str]:
+    """Return every requested and shared scope once, in deterministic order."""
+    return list(dict.fromkeys([*scopes, *ALL_SCOPES]))
 
 
 def _load_token_from_pass(scopes: list[str], pass_key: str = TOKEN_PASS_KEY):
@@ -158,7 +164,7 @@ def get_google_credentials(
     # reach the consent flow and must not need google_auth_oauthlib installed.
     from google_auth_oauthlib.flow import InstalledAppFlow
 
-    all_scopes = list(set(scopes) | set(ALL_SCOPES))
+    all_scopes = _consent_scopes(scopes)
     client_json = subprocess.check_output(
         ["pass", "show", CLIENT_SECRET_PASS_KEY],
         stderr=subprocess.DEVNULL,
@@ -187,10 +193,22 @@ def build_service(
     """
     creds = get_google_credentials(scopes, pass_key=pass_key, interactive=interactive)
     if creds is None:
+        mint_command = shlex.join(
+            [
+                "uv",
+                "run",
+                "python",
+                "scripts/mint-google-token.py",
+                "--pass-key",
+                pass_key,
+                "--scopes",
+                *_consent_scopes(scopes),
+            ]
+        )
         raise GoogleCredentialsUnavailable(
             f"No usable Google credential for {api} {version} at pass key "
             f"{pass_key!r} and the interactive consent flow is disabled. "
             "Next action: mint the token once, interactively, on this host: "
-            f"uv run python scripts/mint-google-token.py --pass-key {pass_key}"
+            f"{mint_command}"
         )
     return discovery_build(api, version, credentials=creds)

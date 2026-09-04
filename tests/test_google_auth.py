@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import re
+import shlex
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
@@ -93,6 +94,40 @@ def test_non_interactive_build_service_refuses_instead_of_building_an_unauthenti
     assert "'google/token'" in message
     assert "Next action" in message
     assert "scripts/mint-google-token.py --pass-key google/token" in message
+
+
+def _recovery_command_argv(message: str) -> list[str]:
+    """Extract the shell-safe recovery command from an auth refusal."""
+    marker = "Next action: mint the token once, interactively, on this host: "
+    return shlex.split(message.split(marker, maxsplit=1)[1])
+
+
+def test_shared_token_recovery_command_explicitly_requests_every_shared_scope():
+    """Recovery must not replace ``google/token`` with YouTube-only credentials."""
+    from shared.google_auth import ALL_SCOPES, GoogleCredentialsUnavailable, build_service
+
+    with patch("shared.google_auth._load_token_from_pass", return_value=None):
+        with pytest.raises(GoogleCredentialsUnavailable) as excinfo:
+            build_service("drive", "v3", [_DRIVE_RO], interactive=False)
+
+    command = _recovery_command_argv(str(excinfo.value))
+    scopes_index = command.index("--scopes")
+    assert command[scopes_index + 1 :] == ALL_SCOPES
+
+
+def test_recovery_command_scopes_match_the_interactive_consent_union():
+    """The suggested mint command must retain requested scopes beyond ``ALL_SCOPES``."""
+    from shared.google_auth import ALL_SCOPES, GoogleCredentialsUnavailable, build_service
+
+    requested_scopes = [_DRIVE_RO, "https://www.googleapis.com/auth/example.extra"]
+    with patch("shared.google_auth._load_token_from_pass", return_value=None):
+        with pytest.raises(GoogleCredentialsUnavailable) as excinfo:
+            build_service("example", "v1", requested_scopes, interactive=False)
+
+    command = _recovery_command_argv(str(excinfo.value))
+    scopes_index = command.index("--scopes")
+    expected_scopes = list(dict.fromkeys([*requested_scopes, *ALL_SCOPES]))
+    assert command[scopes_index + 1 :] == expected_scopes
 
 
 def test_unattended_google_callers_use_the_shared_client_non_interactively():
