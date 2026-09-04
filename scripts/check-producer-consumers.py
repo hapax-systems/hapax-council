@@ -49,6 +49,7 @@ import sys
 import tomllib
 from collections import Counter
 from dataclasses import dataclass, field, replace
+from datetime import UTC, datetime
 from pathlib import Path, PurePosixPath
 
 import yaml
@@ -546,6 +547,10 @@ class ConsumerSideReport:
     # Calls whose callee this scanner does not model but whose argument resolved to a path
     # (review finding on #4626, round 5): they are reported by callee, never silently absent.
     unrecognised_path_calls: dict[str, int] = field(default_factory=dict)
+    # What this report measured (review finding on #4626, round 8, and the dominator consumer's
+    # own need): a report with no head is unusable by any later reader, because nothing says
+    # which tree it describes.
+    measured: dict[str, object] = field(default_factory=dict)
 
 
 @dataclass(frozen=True)
@@ -1974,6 +1979,48 @@ def load_decayed_members(
     return members
 
 
+def _git_head(repo_root: Path) -> tuple[str | None, bool | None]:
+    """The commit the tree is at and whether it is dirty; (None, None) when it is not a checkout."""
+    try:
+        head = subprocess.run(
+            ["git", "-C", str(repo_root), "rev-parse", "HEAD"],
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+        if head.returncode != 0:
+            return None, None
+        status = subprocess.run(
+            ["git", "-C", str(repo_root), "status", "--porcelain", "--untracked-files=no"],
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+        dirty = bool(status.stdout.strip()) if status.returncode == 0 else None
+        return head.stdout.strip() or None, dirty
+    except OSError:
+        return None, None
+
+
+def measured_provenance(
+    repo_root: Path, frame_path: Path | None, decayed_members: list[str]
+) -> dict[str, object]:
+    head, dirty = _git_head(repo_root)
+    epoch = frame_path.expanduser().absolute().parent.name if frame_path is not None else None
+    return {
+        "instrument_rev": "check-producer-consumers/consumer-side/1",
+        "generated_at": datetime.now(UTC).strftime("%Y-%m-%dT%H:%M:%SZ"),
+        "repo_root": str(repo_root),
+        "head": head,
+        "dirty": dirty,
+        "frame": {
+            "elements": str(frame_path) if frame_path is not None else None,
+            "epoch": epoch,
+            "decayed_members": sorted(set(decayed_members)),
+        },
+    }
+
+
 def analyse_consumer_side(
     repo_root: Path,
     allowlist: list[AllowlistEntry],
@@ -2068,9 +2115,11 @@ def analyse_consumer_side(
                 )
             )
 
+    decayed_member_ids: list[str] = []
     if frame_path is not None:
         resolved_mass = mass_path or _default_mass_path(frame_path)
         for member in load_decayed_members(frame_path, resolved_mass, repo_root):
+            decayed_member_ids.append(member.member_id)
             for writer in writes:
                 if not any(_patterns_match(writer.pattern, pattern) for pattern in member.patterns):
                     continue
@@ -2110,6 +2159,7 @@ def analyse_consumer_side(
         unresolved,
         dict(exclusions),
         unrecognised_path_calls=unrecognised,
+        measured=measured_provenance(repo_root, frame_path, decayed_member_ids),
     )
 
 
@@ -2157,6 +2207,7 @@ def _access_json(access: ArtifactAccess) -> dict[str, object]:
 def _report_json(report: ConsumerSideReport) -> dict[str, object]:
     counts = Counter(finding.kind for finding in report.findings)
     return {
+        "measured": report.measured,
         "summary": {
             "findings": len(report.findings),
             "findings_by_kind": {kind: counts[kind] for kind in CONSUMER_SIDE_KINDS},
