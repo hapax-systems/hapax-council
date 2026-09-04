@@ -2115,18 +2115,25 @@ def _apply_receipt_to_route_payload(
     quota_stale_after = (
         receipt.stale_after if quota_unobservable_nonblocking else receipt.quota.stale_after
     )
+    # A platform receipt's quota evidence names the routes it actually observed
+    # (`platform-capability-registry:<route_id>:quota:observed`). An OBSERVED receipt that does not
+    # name THIS route is, for this route, an absent observation — one route's fresh receipt must
+    # not clear the quota blockers of its siblings (review finding on #4616).
+    quota_observed_for_route = _receipt_quota_names_route(receipt, route_payload)
+    if receipt.quota.status is EvidenceStatus.OBSERVED and not quota_observed_for_route:
+        quota_reason_codes = ["account_live_quota_receipt_absent"]
     _apply_surface(
         freshness,
         "quota",
         checked_at=observed_at,
         stale_after=quota_stale_after,
         evidence_refs=[*receipt.quota.evidence_refs, receipt_ref],
-        reason_codes=quota_reason_codes
-        if receipt.quota.status is not EvidenceStatus.OBSERVED
-        else [],
+        reason_codes=quota_reason_codes if not quota_observed_for_route else [],
         removable_reasons=_quota_unobservable_removable_reasons(route_payload)
         if quota_unobservable_nonblocking
-        else _quota_receipt_removable_reasons(route_payload),
+        else (
+            _quota_receipt_removable_reasons(route_payload) if quota_observed_for_route else set()
+        ),
     )
     _apply_surface(
         freshness,
@@ -2151,15 +2158,15 @@ def _apply_receipt_to_route_payload(
             score["evidence_refs"] = list(
                 dict.fromkeys([*score.get("evidence_refs", []), receipt_ref])
             )
-    if receipt.quota.status is EvidenceStatus.OBSERVED:
+    if quota_observed_for_route:
         route_payload.setdefault("telemetry", {})["quota_source"] = QuotaSource.MANUAL.value
 
     if capability_status is not EvidenceStatus.OBSERVED:
         top_blockers.extend(capability_reason_codes)
     if resource_status is not EvidenceStatus.OBSERVED:
         top_blockers.extend(resource_reason_codes)
-    if receipt.quota.status is not EvidenceStatus.OBSERVED and not quota_unobservable_nonblocking:
-        top_blockers.extend(receipt.quota.reason_codes)
+    if not quota_observed_for_route and not quota_unobservable_nonblocking:
+        top_blockers.extend(quota_reason_codes)
 
     removable_top_blockers = {"provider_docs_evidence_absent"}
     if capability_status is EvidenceStatus.OBSERVED:
@@ -2168,7 +2175,7 @@ def _apply_receipt_to_route_payload(
         removable_top_blockers.update(_resource_receipt_removable_reasons(route_payload))
     if quota_unobservable_nonblocking:
         removable_top_blockers.update(_quota_unobservable_removable_reasons(route_payload))
-    elif receipt.quota.status is EvidenceStatus.OBSERVED:
+    elif quota_observed_for_route:
         removable_top_blockers.update(_observed_quota_receipt_removable_reasons(route_payload))
     quota_admission_fresh, quota_admission_refs = _route_specific_quota_admission_fresh(
         route_payload,
@@ -2361,6 +2368,23 @@ def _quota_receipt_removable_reasons(route_payload: dict[str, Any]) -> set[str]:
     ):
         return {"quota_telemetry_unknown"}
     return {"account_live_quota_receipt_absent", "quota_telemetry_unknown"}
+
+
+def _receipt_quota_names_route(
+    receipt: PlatformCapabilityReceipt, route_payload: dict[str, Any]
+) -> bool:
+    """True when the receipt's quota surface is OBSERVED and its evidence names this route.
+
+    The receipts producer writes one ``platform-capability-registry:<route_id>:quota:observed``
+    reference per route it actually saw a fresh receipt AND a fresh ledger snapshot for. A receipt
+    that is OBSERVED for a sibling route is not an observation of this one.
+    """
+    if receipt.quota.status is not EvidenceStatus.OBSERVED:
+        return False
+    route_id = str(route_payload.get("route_id") or "")
+    if not route_id:
+        return False
+    return f"platform-capability-registry:{route_id}:quota:observed" in receipt.quota.evidence_refs
 
 
 def _observed_quota_receipt_removable_reasons(route_payload: dict[str, Any]) -> set[str]:
