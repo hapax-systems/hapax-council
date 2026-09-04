@@ -1,3 +1,6 @@
+# Hapax-Parked: true
+# Stage 1 registers at production but must not activate on merge: the post-merge deploy
+# enables unmarked new timers immediately, and activation is a deliberate step after merge.
 [Unit]
 Description=Check the peer host's estate-store canary once per hour
 Documentation=https://github.com/hapax-systems/hapax-council/blob/main/docs/runbooks/estate-store-registration-stage1.md
