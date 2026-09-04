@@ -12,8 +12,8 @@ swapped:
 - the surfaces are the members of the procedure's ``declaration/mass.yaml`` and their declared
   filesystem locations;
 - the effect surface of a unit of work is its task row's ``mutation_scope_refs``;
-- "out of accountability" is a TRUE verdict under one of :data:`DECAY_RELATIONS`, the same three
-  relations the consumer-side producer scanner treats as producer decay.
+- "out of accountability" is a TRUE verdict under one of :data:`DECAY_RELATIONS`, the same seven
+  relations the producer uses to regionise a member as decayed.
 
 Members whose location is not a filesystem path (``gh://``, ``podium:``, any host-qualified or
 scheme-qualified root) cannot contain a filesystem ref; they are reported as unmatchable rather
@@ -65,6 +65,8 @@ DECAY_RELATIONS = frozenset(
 )
 #: The producer's model relations: a TRUE selects which decay model applies and never decays.
 MODEL_RELATIONS = frozenset({"never_relevant", "composition_only", "periodic", "deferred"})
+ALL_RELATIONS = DECAY_RELATIONS | MODEL_RELATIONS
+VERDICT_STATES = frozenset({"TRUE", "FALSE", "UNKNOWN", "UNEVALUABLE"})
 
 PRODUCER_REMEDY = (
     "run the frame producer — `systemctl --user start hapax-frame-iteration.service`, or from "
@@ -187,13 +189,13 @@ def _member_location(
         if _NON_FILESYSTEM_ROOT.match(raw):
             foreign = True
             continue
-        roots.append(Path(raw).expanduser().absolute())
+        roots.append(Path(raw).expanduser().resolve())
     patterns = location.get("patterns")
     globs = tuple(str(item) for item in patterns) if isinstance(patterns, list) else ()
     files_raw = location.get("files")
     files = (
         tuple(
-            Path(str(item)).expanduser().absolute()
+            Path(str(item)).expanduser().resolve()
             for item in files_raw
             if isinstance(item, str) and not _NON_FILESYSTEM_ROOT.match(item)
         )
@@ -246,76 +248,43 @@ def load_frame_verdicts(
         ) from exc
     if not isinstance(elements, list):
         raise FrameVerdictsUnavailable(f"{elements_path} must contain a JSON list of elements")
-    rows: list[dict[str, object]] = []
-    malformed = 0
-    for element in elements:
-        payload = element.get("payload") if isinstance(element, dict) else None
-        verdicts = payload.get("verdicts") if isinstance(payload, dict) else None
-        if isinstance(verdicts, list):
-            for row in verdicts:
-                if isinstance(row, dict):
-                    rows.append(row)
-                else:
-                    malformed += 1
-    if malformed:
-        # Skipping a malformed row empties the decayed set and the guard admits everything — failing
-        # open at the one point it exists to fail closed (review finding, four families,
-        # 2026-09-04). A report this reader cannot read whole is a report it must not act on.
-        raise FrameVerdictsUnavailable(
-            f"{elements_path} carries {malformed} verdict row(s) this reader cannot parse; a "
-            "partially readable report would silently shrink the decayed set"
+    reports: list[list[object]] = []
+    for index, element in enumerate(elements):
+        if not isinstance(element, dict):
+            raise FrameVerdictsUnavailable(
+                f"{elements_path} element {index} is not a JSON object; the epoch is only "
+                "partially readable"
+            )
+        payload = element.get("payload")
+        is_relevance_report = (
+            element.get("kind") == "relevance_report"
+            or element.get("id") == "frame:relevance-report"
+            or isinstance(payload, dict)
+            and "verdicts" in payload
         )
-    if not rows:
+        if not is_relevance_report:
+            continue
+        verdicts = payload.get("verdicts") if isinstance(payload, dict) else None
+        if not isinstance(verdicts, list):
+            raise FrameVerdictsUnavailable(
+                f"{elements_path} relevance report element {index} has no verdicts list"
+            )
+        reports.append(verdicts)
+    if not reports:
         raise FrameVerdictsUnavailable(
             f"{elements_path} carries no verdict rows (no element has payload.verdicts); the "
             "epoch is not a frame-reduction run"
         )
-    decay: dict[str, set[str]] = {}
-    unknown_true: set[str] = set()
-    for row in rows:
-        subject = row.get("subject")
-        relation = str(row.get("relation") or "")
-        verdict = row.get("verdict")
-        is_true = verdict is True or str(verdict).upper() == "TRUE"
-        if not relation:
-            raise FrameVerdictsUnavailable(
-                f"{elements_path} carries a verdict row with no relation; this reader cannot tell "
-                "whether it decays a member"
-            )
-        if is_true and relation not in DECAY_RELATIONS and relation not in MODEL_RELATIONS:
-            unknown_true.add(relation)
-        if (
-            isinstance(subject, dict)
-            and isinstance(subject.get("member_id"), str)
-            and relation in DECAY_RELATIONS
-            and is_true
-        ):
-            decay.setdefault(str(subject["member_id"]), set()).add(relation)
-    if unknown_true:
-        # The producer gained a relation this reader does not classify. Guessing either way is a
-        # decision about accountability made by omission, so it refuses and names the relation.
+    if len(reports) != 1:
         raise FrameVerdictsUnavailable(
-            f"{elements_path} carries TRUE verdicts under relation(s) "
-            f"{sorted(unknown_true)} that this reader does not classify as decay or model; the "
-            "producer's relation set has moved"
+            f"{elements_path} carries {len(reports)} relevance reports; this reader cannot choose "
+            "which verdict set governs"
         )
-
-    coverage_path = epoch_dir / "coverage.json"
-    epoch_identities: dict[str, str] = {}
-    if coverage_path.is_file():
-        try:
-            coverage_rows = json.loads(coverage_path.read_text(encoding="utf-8"))
-        except (OSError, json.JSONDecodeError) as exc:
-            raise FrameVerdictsUnavailable(
-                f"{coverage_path} is unreadable or malformed: {exc}; the verdicts cannot be bound "
-                "to the declaration they were computed against"
-            ) from exc
-        if isinstance(coverage_rows, list):
-            for row in coverage_rows:
-                if isinstance(row, dict) and isinstance(row.get("member_id"), str):
-                    identity = row.get("member_declaration_identity")
-                    if isinstance(identity, str) and identity:
-                        epoch_identities[row["member_id"]] = identity
+    rows = reports[0]
+    if not rows:
+        raise FrameVerdictsUnavailable(
+            f"{elements_path} relevance report has an empty verdicts list"
+        )
 
     mass_path = root / "declaration" / "mass.yaml"
     try:
@@ -325,37 +294,167 @@ def load_frame_verdicts(
     members = mass.get("members") if isinstance(mass, dict) else None
     if not isinstance(members, list):
         raise FrameVerdictsUnavailable(f"{mass_path} must declare a members list")
-
     exclusions = mass.get("exclusions") or []
+    if not isinstance(exclusions, list):
+        raise FrameVerdictsUnavailable(f"{mass_path} exclusions must be a list when declared")
+    mass_projection = mass.get("projection")
+    if not isinstance(mass_projection, str) or not mass_projection:
+        raise FrameVerdictsUnavailable(
+            f"{mass_path} has no non-empty projection; relevance verdicts are projection-relative"
+        )
+    members_by_id: dict[str, dict[str, object]] = {}
+    for index, member in enumerate(members):
+        if not isinstance(member, dict):
+            raise FrameVerdictsUnavailable(
+                f"{mass_path} member {index} is not a mapping; the current mass is only partially "
+                "readable"
+            )
+        member_id = member.get("id")
+        if not isinstance(member_id, str) or not member_id.strip():
+            raise FrameVerdictsUnavailable(f"{mass_path} member {index} has no non-empty string id")
+        if member_id in members_by_id:
+            raise FrameVerdictsUnavailable(
+                f"{mass_path} declares duplicate member id {member_id!r}"
+            )
+        members_by_id[member_id] = member
+
+    coverage_path = epoch_dir / "coverage.json"
+    if not coverage_path.is_file():
+        raise FrameVerdictsUnavailable(
+            f"{coverage_path} is missing; the verdicts cannot be bound to the declaration they "
+            "were computed against"
+        )
+    epoch_identities: dict[str, str] = {}
+    try:
+        coverage_rows = json.loads(coverage_path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError) as exc:
+        raise FrameVerdictsUnavailable(
+            f"{coverage_path} is unreadable or malformed: {exc}; the verdicts cannot be bound "
+            "to the declaration they were computed against"
+        ) from exc
+    if not isinstance(coverage_rows, list):
+        raise FrameVerdictsUnavailable(
+            f"{coverage_path} must contain a JSON list with one binding per declared member"
+        )
+    for index, row in enumerate(coverage_rows):
+        if not isinstance(row, dict):
+            raise FrameVerdictsUnavailable(f"{coverage_path} row {index} is not a JSON object")
+        member_id = row.get("member_id")
+        identity = row.get("member_declaration_identity")
+        if not isinstance(member_id, str) or not member_id.strip():
+            raise FrameVerdictsUnavailable(
+                f"{coverage_path} row {index} has no non-empty string member_id"
+            )
+        if not isinstance(identity, str) or not identity:
+            raise FrameVerdictsUnavailable(
+                f"{coverage_path} row {index} for {member_id!r} has no declaration identity"
+            )
+        if member_id in epoch_identities:
+            raise FrameVerdictsUnavailable(
+                f"{coverage_path} carries duplicate bindings for member {member_id!r}"
+            )
+        epoch_identities[member_id] = identity
+    declared_ids = set(members_by_id)
+    covered_ids = set(epoch_identities)
+    if covered_ids != declared_ids:
+        missing = sorted(declared_ids - covered_ids)
+        extra = sorted(covered_ids - declared_ids)
+        raise FrameVerdictsUnavailable(
+            f"{coverage_path} does not bind exactly the current mass; missing members={missing}, "
+            f"undeclared members={extra}"
+        )
+    drifted = sorted(
+        member_id
+        for member_id, member in members_by_id.items()
+        if epoch_identities[member_id] != _member_declaration_identity(member, exclusions)
+    )
+    if drifted:
+        raise FrameVerdictsUnavailable(
+            f"frame epoch {epoch_dir.name} cannot be bound to the current mass; declaration "
+            f"identity changed for member(s) {drifted}"
+        )
+
+    decay: dict[str, set[str]] = {}
+    seen_verdicts: set[tuple[str, str]] = set()
+    for index, raw_row in enumerate(rows):
+        if not isinstance(raw_row, dict):
+            raise FrameVerdictsUnavailable(
+                f"{elements_path} verdict row {index} is not a JSON object; a partially readable "
+                "report would silently shrink the decayed set"
+            )
+        subject = raw_row.get("subject")
+        if not isinstance(subject, dict):
+            raise FrameVerdictsUnavailable(
+                f"{elements_path} verdict row {index} has no subject object"
+            )
+        member_id = subject.get("member_id")
+        if not isinstance(member_id, str) or not member_id.strip():
+            raise FrameVerdictsUnavailable(
+                f"{elements_path} verdict row {index} has no non-empty string subject.member_id"
+            )
+        if member_id not in members_by_id:
+            raise FrameVerdictsUnavailable(
+                f"{elements_path} verdict row {index} names undeclared member {member_id!r}"
+            )
+        relation = raw_row.get("relation")
+        if not isinstance(relation, str) or not relation:
+            raise FrameVerdictsUnavailable(
+                f"{elements_path} verdict row {index} has no non-empty string relation"
+            )
+        if relation not in ALL_RELATIONS:
+            raise FrameVerdictsUnavailable(
+                f"{elements_path} verdict row {index} uses relation {relation!r} that this reader "
+                "does not classify as decay or model; the producer's relation set has moved"
+            )
+        verdict = raw_row.get("verdict")
+        if isinstance(verdict, bool):
+            verdict_state = "TRUE" if verdict else "FALSE"
+        elif isinstance(verdict, str) and verdict.upper() in VERDICT_STATES:
+            verdict_state = verdict.upper()
+        else:
+            raise FrameVerdictsUnavailable(
+                f"{elements_path} verdict row {index} for {member_id!r}/{relation} has invalid "
+                f"verdict {verdict!r}"
+            )
+        projection = raw_row.get("projection")
+        if not isinstance(projection, str) or not projection:
+            raise FrameVerdictsUnavailable(
+                f"{elements_path} verdict row {index} for {member_id!r}/{relation} has no "
+                "non-empty projection"
+            )
+        if projection != mass_projection:
+            raise FrameVerdictsUnavailable(
+                f"{elements_path} verdict row {index} for {member_id!r}/{relation} uses projection "
+                f"{projection!r}, not the current mass projection {mass_projection!r}"
+            )
+        key = (member_id, relation)
+        if key in seen_verdicts:
+            raise FrameVerdictsUnavailable(
+                f"{elements_path} carries duplicate verdicts for {member_id!r}/{relation}"
+            )
+        seen_verdicts.add(key)
+        if relation in DECAY_RELATIONS and verdict_state == "TRUE":
+            decay.setdefault(member_id, set()).add(relation)
+    expected_verdicts = {
+        (member_id, relation) for member_id in members_by_id for relation in ALL_RELATIONS
+    }
+    if seen_verdicts != expected_verdicts:
+        missing = sorted(expected_verdicts - seen_verdicts)
+        raise FrameVerdictsUnavailable(
+            f"{elements_path} verdict matrix is incomplete; missing {len(missing)} member/relation "
+            f"row(s), including {missing[:5]}"
+        )
+
     decayed: list[DecayedMember] = []
     unmatchable: list[str] = []
-    unbound: list[str] = []
-    seen: set[str] = set()
-    for member in members:
-        if not isinstance(member, dict):
-            continue
-        member_id = str(member.get("id"))
+    for member_id, member in members_by_id.items():
         if member_id not in decay:
-            continue
-        seen.add(member_id)
-        # The verdict was computed against the member as the epoch declared it. If the declaration
-        # has moved since, applying the verdict would decay a surface nobody witnessed (review
-        # finding, glm and codex, 2026-09-04). The identity is the producer's own, recomputed here
-        # by the same rule; a test pins that it reproduces a real epoch's recorded value.
-        epoch_identity = epoch_identities.get(member_id)
-        if epoch_identity and epoch_identity != _member_declaration_identity(member, exclusions):
-            unbound.append(member_id)
             continue
         roots, patterns, files, foreign = _member_location(member)
         for relation in sorted(decay[member_id]):
             decayed.append(DecayedMember(member_id, relation, roots, patterns, files))
         if foreign and not roots and not files:
             unmatchable.append(member_id)
-    # A verdict about a member the mass no longer declares is still a verdict; it cannot be
-    # matched, and saying so beats dropping it. A member whose declaration moved since the epoch is
-    # named separately, because the remedy differs: re-run the producer.
-    unmatchable.extend(sorted(set(decay) - seen))
-    unmatchable.extend(sorted(unbound))
     return FrameVerdicts(
         epoch=epoch_dir.name,
         elements_path=elements_path,
@@ -492,13 +591,13 @@ def _repo_relative_candidates(
     In production the dispatcher runs from the activation worktree, while the mass declares council
     members at the canonical checkout, so a ref like `scripts/x.py` resolved against the running
     tree could never match — the guard would have been inert exactly where it runs (review finding,
-    codex, 2026-09-04). A repo-relative ref is therefore also tried under each declared root whose
-    basename matches the running checkout's repository name.
+    codex, 2026-09-04). A repo-relative ref is therefore also tried under each declared member's
+    containing git checkout. Repository identity cannot come from ``council_root.name``: a deployed
+    source activation resolves to ``releases/<sha>`` and that basename is the release hash.
     """
     text = ref.strip().replace("\\", "/")
     if text.startswith("/") or text.startswith("~"):
         return []
-    repo_name = council_root.name
     segments = [segment for segment in text.split("/") if segment not in ("", ".")]
     while segments and _WILDCARD.search(segments[-1]):
         segments.pop()
@@ -507,13 +606,13 @@ def _repo_relative_candidates(
     relative = Path(*segments)
     roots: set[Path] = set()
     for member in verdicts.decayed:
-        for root in member.roots:
-            for candidate in (root, *root.parents):
-                if candidate.name == repo_name:
-                    roots.add(candidate)
+        for location in (*member.roots, *member.files):
+            for candidate in (location, *location.parents):
+                if (candidate / ".git").exists():
+                    roots.add(candidate.resolve())
                     break
-    roots.discard(council_root)
-    return [root / relative for root in sorted(roots)]
+    roots.discard(council_root.resolve())
+    return [(root / relative).resolve() for root in sorted(roots)]
 
 
 def scope_within_decayed(

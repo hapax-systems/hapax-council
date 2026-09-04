@@ -12,7 +12,9 @@ from pathlib import Path
 from types import ModuleType, SimpleNamespace
 
 import pytest
+import yaml
 
+from shared import frame_verdicts as fv
 from shared.platform_capability_registry import PlatformCapabilityRegistry
 from shared.quota_spend_ledger import QUOTA_SPEND_LEDGER_FIXTURES
 from shared.relay_mq import send_message
@@ -4564,38 +4566,55 @@ def _frame_procedure_root(root: Path, *, decayed_root: Path | None, age_s: int =
     stamp = (datetime.now(UTC) - timedelta(seconds=age_s)).strftime("%Y%m%dT%H%M%SZ")
     epoch = root / "_runs" / "epochs" / f"{stamp}-deadbeef"
     epoch.mkdir(parents=True)
+    member_root = decayed_root if decayed_root is not None else root / "unused"
+    members = [
+        {
+            "id": "legacy-surface",
+            "location": {"path": str(member_root), "patterns": ["*"]},
+        },
+        {"id": "live-surface", "location": {"path": str(root / "live")}},
+    ]
+    verdicts = [
+        {
+            "subject": {"member_id": member["id"]},
+            "relation": relation,
+            "verdict": (
+                decayed_root is not None
+                if member["id"] == "legacy-surface" and relation == "scope_exited"
+                else "UNKNOWN"
+            ),
+            "projection": "frame-reduction",
+        }
+        for member in members
+        for relation in sorted(fv.ALL_RELATIONS)
+    ]
     (epoch / "elements.json").write_text(
         json.dumps(
             [
                 {
                     "id": "frame:relevance-report",
                     "kind": "relevance_report",
-                    "payload": {
-                        "verdicts": [
-                            {
-                                "subject": {"member_id": "legacy-surface"},
-                                "relation": "scope_exited",
-                                "verdict": decayed_root is not None,
-                                "projection": "frame-reduction",
-                            }
-                        ]
-                    },
+                    "payload": {"verdicts": verdicts},
                 }
             ]
         ),
         encoding="utf-8",
     )
     (root / "declaration").mkdir()
-    member_root = decayed_root if decayed_root is not None else root / "unused"
     (root / "declaration" / "mass.yaml").write_text(
-        "members:\n"
-        "  - id: legacy-surface\n"
-        "    location:\n"
-        f"      path: {member_root}\n"
-        '      patterns: ["*"]\n'
-        "  - id: live-surface\n"
-        "    location:\n"
-        f"      path: {root / 'live'}\n",
+        yaml.safe_dump({"projection": "frame-reduction", "members": members}),
+        encoding="utf-8",
+    )
+    (epoch / "coverage.json").write_text(
+        json.dumps(
+            [
+                {
+                    "member_id": member["id"],
+                    "member_declaration_identity": fv._member_declaration_identity(member, []),
+                }
+                for member in members
+            ]
+        ),
         encoding="utf-8",
     )
     return root
@@ -4778,3 +4797,32 @@ def test_dispatch_refuses_when_the_frame_verdicts_are_stale_naming_the_producer(
     assert "the producer has stopped" in err
     assert "hapax-frame-iteration" in err
     assert "fixture refusal" not in err
+
+
+def test_dispatch_maps_release_activation_refs_to_the_canonical_repository(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The deployed script resolves through source-activation/releases/<sha>; the release hash is
+    not the repository identity and must not prevent a canonical member from matching."""
+    module = _dispatcher_module()
+    canonical = tmp_path / "projects" / "hapax-council"
+    activation = (
+        tmp_path / "source-activation" / "releases" / "43b8c76a31"  # pragma: allowlist secret
+    )  # pragma: allowlist secret
+    (canonical / ".git").mkdir(parents=True)
+    (canonical / "legacy-surface").mkdir()
+    (activation / "legacy-surface").mkdir(parents=True)
+    assert activation.name != canonical.name
+    monkeypatch.setattr(module, "REPO_ROOT_FOR_IMPORTS", activation)
+    frame_root = _frame_procedure_root(
+        tmp_path / "frame", decayed_root=canonical / "legacy-surface"
+    )
+    monkeypatch.setenv("HAPAX_FRAME_PROCEDURE_ROOT", str(frame_root))
+
+    refusal, epoch, decayed = module.frame_verdict_refusal(
+        {"mutation_scope_refs": ["legacy-surface/old.py"]}
+    )
+
+    assert refusal is not None and "out of accountability" in refusal
+    assert epoch is not None and epoch.endswith("-deadbeef")
+    assert decayed == ("legacy-surface",)

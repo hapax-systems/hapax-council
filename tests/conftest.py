@@ -17,6 +17,8 @@ from pathlib import Path
 
 import pytest
 
+from shared import frame_verdicts as fv
+
 
 @pytest.fixture(autouse=True)
 def _isolate_turn_timing_witness(tmp_path, monkeypatch):
@@ -48,6 +50,7 @@ def _frame_verdicts_default_root(tmp_path_factory: pytest.TempPathFactory):
     root = tmp_path_factory.mktemp("frame-procedure")
     epoch = root / "_runs" / "epochs" / f"{datetime.now(UTC).strftime('%Y%m%dT%H%M%SZ')}-00000000"
     epoch.mkdir(parents=True)
+    member = {"id": "nothing", "location": {"path": str(root / "nothing")}}
     (epoch / "elements.json").write_text(
         json.dumps(
             [
@@ -58,9 +61,11 @@ def _frame_verdicts_default_root(tmp_path_factory: pytest.TempPathFactory):
                         "verdicts": [
                             {
                                 "subject": {"member_id": "nothing"},
-                                "relation": "scope_exited",
-                                "verdict": False,
+                                "relation": relation,
+                                "verdict": "FALSE" if relation == "scope_exited" else "UNKNOWN",
+                                "projection": "frame-reduction",
                             }
+                            for relation in sorted(fv.ALL_RELATIONS)
                         ]
                     },
                 }
@@ -69,7 +74,20 @@ def _frame_verdicts_default_root(tmp_path_factory: pytest.TempPathFactory):
         encoding="utf-8",
     )
     (root / "declaration").mkdir()
-    (root / "declaration" / "mass.yaml").write_text("members: []\n", encoding="utf-8")
+    (root / "declaration" / "mass.yaml").write_text(
+        json.dumps({"projection": "frame-reduction", "members": [member]}), encoding="utf-8"
+    )
+    (epoch / "coverage.json").write_text(
+        json.dumps(
+            [
+                {
+                    "member_id": "nothing",
+                    "member_declaration_identity": fv._member_declaration_identity(member, []),
+                }
+            ]
+        ),
+        encoding="utf-8",
+    )
     previous = os.environ.get("HAPAX_FRAME_PROCEDURE_ROOT")
     os.environ["HAPAX_FRAME_PROCEDURE_ROOT"] = str(root)
     yield

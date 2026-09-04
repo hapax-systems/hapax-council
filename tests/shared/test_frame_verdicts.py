@@ -28,6 +28,22 @@ def _procedure_root(
 ) -> Path:
     epoch = root / "_runs" / "epochs" / f"{_stamp(at)}-{epoch_suffix}"
     epoch.mkdir(parents=True, exist_ok=True)
+    complete_verdicts = list(verdicts)
+    present = {
+        (subject.get("member_id"), row.get("relation"))
+        for row in verdicts
+        if isinstance(row, dict)
+        and isinstance((subject := row.get("subject")), dict)
+        and isinstance(subject.get("member_id"), str)
+        and isinstance(row.get("relation"), str)
+    }
+    for member in members:
+        member_id = member.get("id") if isinstance(member, dict) else None
+        if not isinstance(member_id, str):
+            continue
+        for relation in sorted(fv.ALL_RELATIONS):
+            if (member_id, relation) not in present:
+                complete_verdicts.append(_verdict(member_id, relation, "UNKNOWN"))
     (epoch / "elements.json").write_text(
         json.dumps(
             [
@@ -35,7 +51,7 @@ def _procedure_root(
                 {
                     "id": "frame:relevance-report",
                     "kind": "relevance_report",
-                    "payload": {"verdicts": verdicts},
+                    "payload": {"verdicts": complete_verdicts},
                 },
             ]
         ),
@@ -43,7 +59,20 @@ def _procedure_root(
     )
     (root / "declaration").mkdir(exist_ok=True)
     (root / "declaration" / "mass.yaml").write_text(
-        yaml.safe_dump({"members": members}), encoding="utf-8"
+        yaml.safe_dump({"projection": "frame-reduction", "members": members}), encoding="utf-8"
+    )
+    (epoch / "coverage.json").write_text(
+        json.dumps(
+            [
+                {
+                    "member_id": member["id"],
+                    "member_declaration_identity": fv._member_declaration_identity(member, []),
+                }
+                for member in members
+                if isinstance(member, dict) and isinstance(member.get("id"), str)
+            ]
+        ),
+        encoding="utf-8",
     )
     return root
 
@@ -151,7 +180,6 @@ def test_only_true_verdicts_under_decay_relations_decay_a_member(tmp_path: Path)
             _verdict("ticking", "periodic", True),  # a §6 relation, not a decay
             _verdict("healthy", "scope_exited", False),
             _verdict("healthy", "discharged", "false"),
-            {"relation": "scope_exited", "verdict": True},  # no subject: ignored
         ],
     )
 
@@ -166,7 +194,7 @@ def test_only_true_verdicts_under_decay_relations_decay_a_member(tmp_path: Path)
     assert verdicts.unmatchable == ()
 
 
-def test_non_filesystem_and_undeclared_members_are_reported_unmatchable(tmp_path: Path) -> None:
+def test_non_filesystem_members_are_reported_unmatchable(tmp_path: Path) -> None:
     members = [
         {"id": "prs", "location": {"path": "gh://hapax-systems", "endpoints": ["x"]}},
         {
@@ -182,15 +210,14 @@ def test_non_filesystem_and_undeclared_members_are_reported_unmatchable(tmp_path
             _verdict("prs", "discharged"),
             _verdict("podium-arm", "scope_exited"),
             _verdict("mixed", "superseded"),
-            _verdict("vanished", "scope_exited"),  # decayed, but no longer in the mass
         ],
     )
 
     verdicts = fv.load_frame_verdicts(root, now=NOW)
 
-    assert verdicts.unmatchable == ("prs", "podium-arm", "vanished")
+    assert verdicts.unmatchable == ("prs", "podium-arm")
     mixed = [m for m in verdicts.decayed if m.member_id == "mixed"]
-    assert mixed and mixed[0].roots == ((tmp_path / "mixed").absolute(),)
+    assert mixed and mixed[0].roots == ((tmp_path / "mixed").resolve(),)
     assert not any(
         m.roots or m.files for m in verdicts.decayed if m.member_id in ("prs", "podium-arm")
     ), "a member with no filesystem location can match no ref"
@@ -252,13 +279,13 @@ def test_resolve_scope_ref_prefers_an_existing_council_path_then_the_vault(tmp_p
     (vault / "30-areas").mkdir(parents=True)
 
     path, dirlike = fv.resolve_scope_ref("scripts/x.py", council_root=council, vault_root=vault)
-    assert path == (council / "scripts" / "x.py").absolute() and not dirlike
+    assert path == (council / "scripts" / "x.py").resolve() and not dirlike
     path, dirlike = fv.resolve_scope_ref("30-areas/**/*.md", council_root=council, vault_root=vault)
-    assert path == (vault / "30-areas").absolute() and dirlike
+    assert path == (vault / "30-areas").resolve() and dirlike
     path, dirlike = fv.resolve_scope_ref("scripts", council_root=council, vault_root=vault)
-    assert path == (council / "scripts").absolute() and dirlike
+    assert path == (council / "scripts").resolve() and dirlike
     path, _ = fv.resolve_scope_ref("nowhere/y.py", council_root=council, vault_root=vault)
-    assert path == (council / "nowhere" / "y.py").absolute()
+    assert path == (council / "nowhere" / "y.py").resolve()
 
 
 # ── Round 2 on #4629: the six criticals four review families raised ──────────────────────────
@@ -312,16 +339,127 @@ def test_a_malformed_verdict_row_refuses_instead_of_shrinking_the_decayed_set(
         encoding="utf-8",
     )
 
-    with pytest.raises(fv.FrameVerdictsUnavailable, match="cannot parse"):
+    with pytest.raises(fv.FrameVerdictsUnavailable, match="not a JSON object"):
         fv.load_frame_verdicts(root, now=NOW)
 
 
-def test_a_true_verdict_under_an_unknown_relation_refuses(tmp_path: Path) -> None:
+@pytest.mark.parametrize(
+    ("row", "message"),
+    [
+        (
+            {"relation": "scope_exited", "verdict": True, "projection": "frame-reduction"},
+            "subject object",
+        ),
+        (
+            {
+                "subject": [],
+                "relation": "scope_exited",
+                "verdict": True,
+                "projection": "frame-reduction",
+            },
+            "subject object",
+        ),
+        (
+            {
+                "subject": {},
+                "relation": "scope_exited",
+                "verdict": True,
+                "projection": "frame-reduction",
+            },
+            "subject.member_id",
+        ),
+        (
+            {
+                "subject": {"member_id": 7},
+                "relation": "scope_exited",
+                "verdict": True,
+                "projection": "frame-reduction",
+            },
+            "subject.member_id",
+        ),
+        (
+            {
+                "subject": {"member_id": "m"},
+                "relation": "scope_exited",
+                "projection": "frame-reduction",
+            },
+            "invalid verdict",
+        ),
+        (
+            {
+                "subject": {"member_id": "m"},
+                "relation": "scope_exited",
+                "verdict": "maybe",
+                "projection": "frame-reduction",
+            },
+            "invalid verdict",
+        ),
+        (
+            {
+                "subject": {"member_id": "m"},
+                "relation": "scope_exited",
+                "verdict": True,
+            },
+            "non-empty projection",
+        ),
+        (
+            {
+                "subject": {"member_id": "m"},
+                "relation": "scope_exited",
+                "verdict": True,
+                "projection": "another-purpose",
+            },
+            "not the current mass projection",
+        ),
+    ],
+    ids=[
+        "missing-subject",
+        "non-object-subject",
+        "missing-member-id",
+        "non-string-member-id",
+        "missing-verdict",
+        "invalid-verdict",
+        "missing-projection",
+        "wrong-projection",
+    ],
+)
+def test_malformed_verdict_dictionaries_refuse(
+    tmp_path: Path, row: dict[str, object], message: str
+) -> None:
+    members = [{"id": "m", "location": {"path": str(tmp_path / "m")}}]
+    root = _procedure_root(tmp_path, members=members, verdicts=[row])
+
+    with pytest.raises(fv.FrameVerdictsUnavailable, match=message):
+        fv.load_frame_verdicts(root, now=NOW)
+
+
+def test_an_incomplete_or_duplicate_verdict_matrix_refuses(tmp_path: Path) -> None:
+    members = [{"id": "m", "location": {"path": str(tmp_path / "m")}}]
+    root = _procedure_root(tmp_path, members=members, verdicts=[])
+    epoch = fv.latest_epoch_dir(root)
+    assert epoch is not None
+    elements = json.loads((epoch / "elements.json").read_text(encoding="utf-8"))
+    rows = elements[1]["payload"]["verdicts"]
+    removed = rows.pop()
+    (epoch / "elements.json").write_text(json.dumps(elements), encoding="utf-8")
+
+    with pytest.raises(fv.FrameVerdictsUnavailable, match="verdict matrix is incomplete"):
+        fv.load_frame_verdicts(root, now=NOW)
+
+    rows.append(removed)
+    rows.append(dict(removed))
+    (epoch / "elements.json").write_text(json.dumps(elements), encoding="utf-8")
+    with pytest.raises(fv.FrameVerdictsUnavailable, match="duplicate verdicts"):
+        fv.load_frame_verdicts(root, now=NOW)
+
+
+@pytest.mark.parametrize("value", [True, False, "UNKNOWN"])
+def test_a_verdict_under_an_unknown_relation_refuses(tmp_path: Path, value: object) -> None:
     """The producer's relation set can grow; a reader that silently ignores what it does not
     classify decides accountability by omission."""
     members = [{"id": "m", "location": {"path": str(tmp_path / "m")}}]
     root = _procedure_root(
-        tmp_path, members=members, verdicts=[_verdict("m", "invented_relation", True)]
+        tmp_path, members=members, verdicts=[_verdict("m", "invented_relation", value)]
     )
 
     with pytest.raises(fv.FrameVerdictsUnavailable, match="does not classify"):
@@ -357,7 +495,7 @@ def test_a_ref_that_climbs_out_of_its_tree_is_refused(tmp_path: Path) -> None:
         fv.resolve_scope_ref("scripts/../../elsewhere/x.py", council_root=council, vault_root=vault)
 
 
-def test_a_symlinked_directory_cannot_carry_a_ref_inside_a_member(tmp_path: Path) -> None:
+def test_a_symlinked_member_root_and_ref_resolve_to_the_same_surface(tmp_path: Path) -> None:
     council, vault = tmp_path / "c", tmp_path / "v"
     real = tmp_path / "outside"
     (real / "deep").mkdir(parents=True)
@@ -374,8 +512,28 @@ def test_a_symlinked_directory_cannot_carry_a_ref_inside_a_member(tmp_path: Path
         ["legacy/deep/x.py"], verdicts, council_root=council, vault_root=vault
     )
 
-    # the ref resolves to its real location, which is outside the member's declared root
-    assert scope.outside == ("legacy/deep/x.py",), scope
+    assert scope.all_inside, scope
+    assert verdicts.decayed[0].roots == (real.resolve(),)
+
+
+def test_a_symlinked_explicit_member_file_and_ref_resolve_to_the_same_file(tmp_path: Path) -> None:
+    council, vault = tmp_path / "c", tmp_path / "v"
+    real = tmp_path / "outside" / "real.py"
+    real.parent.mkdir(parents=True)
+    real.write_text("pass\n", encoding="utf-8")
+    council.mkdir()
+    vault.mkdir()
+    (council / "alias.py").symlink_to(real)
+    members = [{"id": "one-file", "location": {"files": [str(council / "alias.py")]}}]
+    verdicts = fv.load_frame_verdicts(
+        _procedure_root(tmp_path, members=members, verdicts=[_verdict("one-file", "scope_exited")]),
+        now=NOW,
+    )
+
+    scope = fv.scope_within_decayed(["alias.py"], verdicts, council_root=council, vault_root=vault)
+
+    assert scope.all_inside, scope
+    assert verdicts.decayed[0].files == (real.resolve(),)
 
 
 def test_a_verdict_is_not_applied_to_a_member_redeclared_since_the_epoch(tmp_path: Path) -> None:
@@ -394,14 +552,85 @@ def test_a_verdict_is_not_applied_to_a_member_redeclared_since_the_epoch(tmp_pat
 
     (root / "declaration" / "mass.yaml").write_text(
         yaml.safe_dump(
-            {"members": [{"id": "m", "location": {"path": str(tmp_path / "elsewhere")}}]}
+            {
+                "projection": "frame-reduction",
+                "members": [{"id": "m", "location": {"path": str(tmp_path / "elsewhere")}}],
+            }
         ),
         encoding="utf-8",
     )
-    moved = fv.load_frame_verdicts(root, now=NOW)
+    with pytest.raises(fv.FrameVerdictsUnavailable, match="declaration identity changed.*'m'"):
+        fv.load_frame_verdicts(root, now=NOW)
 
-    assert moved.decayed == ()
-    assert "m" in moved.unmatchable
+
+def test_identity_drift_on_a_non_decayed_member_also_refuses(tmp_path: Path) -> None:
+    members = [
+        {"id": "decayed", "location": {"path": str(tmp_path / "gone")}},
+        {"id": "healthy", "location": {"path": str(tmp_path / "live")}},
+    ]
+    root = _procedure_root(
+        tmp_path,
+        members=members,
+        verdicts=[
+            _verdict("decayed", "scope_exited", True),
+            _verdict("healthy", "scope_exited", False),
+        ],
+    )
+    members[1]["location"] = {"path": str(tmp_path / "moved")}
+    (root / "declaration" / "mass.yaml").write_text(
+        yaml.safe_dump({"projection": "frame-reduction", "members": members}), encoding="utf-8"
+    )
+
+    with pytest.raises(fv.FrameVerdictsUnavailable, match="declaration identity changed.*healthy"):
+        fv.load_frame_verdicts(root, now=NOW)
+
+
+@pytest.mark.parametrize(
+    ("mutation", "message"),
+    [
+        ("missing-file", "is missing"),
+        ("non-list", "must contain a JSON list"),
+        ("non-object-row", "row 0 is not a JSON object"),
+        ("missing-identity", "has no declaration identity"),
+        ("partial", "missing members=.*healthy"),
+        ("extra", "undeclared members=.*vanished"),
+        ("duplicate", "duplicate bindings"),
+    ],
+)
+def test_coverage_must_bind_every_current_member_exactly_once(
+    tmp_path: Path, mutation: str, message: str
+) -> None:
+    members = [
+        {"id": "decayed", "location": {"path": str(tmp_path / "gone")}},
+        {"id": "healthy", "location": {"path": str(tmp_path / "live")}},
+    ]
+    root = _procedure_root(
+        tmp_path, members=members, verdicts=[_verdict("decayed", "scope_exited", True)]
+    )
+    epoch = fv.latest_epoch_dir(root)
+    assert epoch is not None
+    coverage_path = epoch / "coverage.json"
+    coverage = json.loads(coverage_path.read_text(encoding="utf-8"))
+    if mutation == "missing-file":
+        coverage_path.unlink()
+    elif mutation == "non-list":
+        coverage_path.write_text(json.dumps({"coverage": coverage}), encoding="utf-8")
+    elif mutation == "non-object-row":
+        coverage_path.write_text(json.dumps(["bad row", *coverage[1:]]), encoding="utf-8")
+    elif mutation == "missing-identity":
+        coverage[0].pop("member_declaration_identity")
+        coverage_path.write_text(json.dumps(coverage), encoding="utf-8")
+    elif mutation == "partial":
+        coverage_path.write_text(json.dumps(coverage[:1]), encoding="utf-8")
+    elif mutation == "extra":
+        coverage.append({"member_id": "vanished", "member_declaration_identity": "declaration:x"})
+        coverage_path.write_text(json.dumps(coverage), encoding="utf-8")
+    elif mutation == "duplicate":
+        coverage.append(dict(coverage[0]))
+        coverage_path.write_text(json.dumps(coverage), encoding="utf-8")
+
+    with pytest.raises(fv.FrameVerdictsUnavailable, match=message):
+        fv.load_frame_verdicts(root, now=NOW)
 
 
 def test_member_declaration_identity_matches_a_real_epoch() -> None:
@@ -435,9 +664,11 @@ def test_a_repo_relative_ref_matches_a_member_declared_at_another_checkout(tmp_p
     canonical checkout; a ref resolved only against the running tree could never match, leaving the
     guard inert exactly where it runs."""
     canonical = tmp_path / "projects" / "hapax-council"
-    running = tmp_path / "activation" / "hapax-council"
+    running = tmp_path / "source-activation" / "releases" / "43b8c76a31"  # pragma: allowlist secret
+    (canonical / ".git").mkdir(parents=True)
     (canonical / "legacy").mkdir(parents=True)
     (running / "legacy").mkdir(parents=True)
+    assert canonical.name != running.name
     members = [{"id": "legacy", "location": {"path": str(canonical / "legacy")}}]
     verdicts = fv.load_frame_verdicts(
         _procedure_root(tmp_path, members=members, verdicts=[_verdict("legacy", "scope_exited")]),
