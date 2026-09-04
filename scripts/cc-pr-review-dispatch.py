@@ -1058,14 +1058,21 @@ def fetch_pr_diff_from_local(pr_info: PRInfo, *, repo_root: Path, runner: Any) -
     """Build a pinned local PR diff when GitHub diff endpoints are unavailable."""
     base_ref = pr_info.base_ref or "main"
     remote_base = f"origin/{base_ref}"
+    if not pr_info.base_sha:
+        raise RuntimeError(
+            f"PR #{pr_info.number} base SHA is unavailable; local git diff fallback cannot "
+            "prove the current PR base. Next action: restore GitHub PR metadata access or "
+            "fetch PR metadata with baseRefOid/base.sha before review dispatch."
+        )
     if not pr_info.head_sha:
         raise RuntimeError(
             f"PR #{pr_info.number} head SHA is unavailable; local git diff fallback cannot "
             "prove the current PR head. Next action: restore GitHub PR metadata access or "
             "fetch PR metadata with headRefOid/head.sha before review dispatch."
         )
-    _ensure_local_ref(
+    pinned_base = _ensure_local_ref_at_sha(
         remote_base,
+        expected_sha=pr_info.base_sha,
         fetch_ref=base_ref,
         repo_root=repo_root,
         runner=runner,
@@ -1088,7 +1095,7 @@ def fetch_pr_diff_from_local(pr_info: PRInfo, *, repo_root: Path, runner: Any) -
 
     try:
         merge_base = _run_gh(
-            ["git", "merge-base", remote_base, head],
+            ["git", "merge-base", pinned_base, head],
             repo_root=repo_root,
             runner=runner,
         ).strip()
@@ -1138,6 +1145,49 @@ def _local_commit_object_exists(ref: str, *, repo_root: Path, runner: Any) -> bo
     except RuntimeError:
         return False
     return True
+
+
+def _ensure_local_ref_at_sha(
+    ref: str,
+    *,
+    expected_sha: str,
+    fetch_ref: str,
+    repo_root: Path,
+    runner: Any,
+) -> str:
+    actual_sha = _resolve_local_ref(ref, repo_root=repo_root, runner=runner)
+    if actual_sha == expected_sha:
+        return expected_sha
+
+    try:
+        _run_gh(
+            [
+                "git",
+                "fetch",
+                "--quiet",
+                "origin",
+                f"+refs/heads/{fetch_ref}:refs/remotes/origin/{fetch_ref}",
+            ],
+            repo_root=repo_root,
+            runner=runner,
+            timeout=180,
+        )
+    except RuntimeError as exc:
+        raise RuntimeError(
+            f"local ref {ref} cannot establish the current PR base at "
+            f"{expected_sha[:12]}; fetching the base ref failed. Next action: restore "
+            "origin access and retry review dispatch."
+        ) from exc
+
+    actual_sha = _resolve_local_ref(ref, repo_root=repo_root, runner=runner)
+    if actual_sha != expected_sha:
+        actual_label = (actual_sha or "missing")[:12]
+        raise RuntimeError(
+            f"local ref {ref} resolved to {actual_label}, expected current PR base "
+            f"{expected_sha[:12]}; freshness cannot be established. Next action: refresh "
+            "PR metadata and the base ref, then retry review dispatch."
+        )
+    return expected_sha
 
 
 def _ensure_local_ref(
