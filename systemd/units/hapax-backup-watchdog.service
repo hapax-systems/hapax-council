@@ -1,12 +1,14 @@
 [Unit]
 Description=Hapax Backup Health Watchdog
-After=network-online.target
+After=network-online.target hapax-source-activate.service
+Wants=network-online.target hapax-source-activate.service
 OnFailure=notify-failure@%n.service
 
 [Service]
 Type=oneshot
-ExecStart=/home/hapax/projects/hapax-council/scripts/hapax-backup-watchdog
-WorkingDirectory=/home/hapax/projects/hapax-council
+ExecCondition=/usr/bin/jq -e '.active_source_head == .origin_main_sha and (.status == "completed" or .status == "completed_skip_deploy" or .status == "no_op")' %h/.cache/hapax/source-activation/current.json
+ExecStart=%h/.cache/hapax/source-activation/worktree/scripts/hapax-backup-watchdog
+WorkingDirectory=%h/.cache/hapax/source-activation/worktree
 Environment=PATH=/home/hapax/.local/bin:/usr/local/bin:/usr/bin:/bin
 Environment=HOME=/home/hapax
 Environment=GNUPGHOME=/home/hapax/.gnupg

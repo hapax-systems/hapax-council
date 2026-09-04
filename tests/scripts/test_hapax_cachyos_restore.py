@@ -433,6 +433,42 @@ restore_qdrant_snapshots "$2"
     assert "Qdrant snapshot upload failed for collection test-collection" in result.stderr
 
 
+def test_phase_12_orchestration_fails_when_compose_configuration_is_missing(
+    tmp_path: Path,
+) -> None:
+    restore_root = tmp_path / "restore"
+    (restore_root / DUMP_PATHS[0]).mkdir(parents=True)
+    home = tmp_path / "home"
+    home.mkdir()
+    missing_compose = home / "llm-stack/docker-compose.yml"
+    probe = tmp_path / "phase-12.sh"
+    probe.write_text(
+        """#!/usr/bin/env bash
+set -euo pipefail
+source "$1"
+restore_database_services "$2"
+""",
+        encoding="utf-8",
+    )
+    probe.chmod(0o755)
+    env = os.environ.copy()
+    env["HOME"] = str(home)
+
+    result = subprocess.run(
+        [str(probe), str(RESTORE_SCRIPT), str(restore_root)],
+        capture_output=True,
+        text=True,
+        env=env,
+        timeout=5,
+    )
+
+    assert result.returncode != 0
+    assert "Using database dumps" in result.stdout
+    assert f"Required Docker Compose configuration is missing: {missing_compose}" in result.stderr
+    assert "restore llm-stack/docker-compose.yml" in result.stderr
+    assert 'restore_database_services "$RESTORE_ROOT"' in RESTORE_SCRIPT.read_text(encoding="utf-8")
+
+
 def test_restore_reports_the_canonical_dr_object_name() -> None:
     result = subprocess.run(
         [str(RESTORE_SCRIPT), "--print-dr-object-name"],

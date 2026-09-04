@@ -148,6 +148,25 @@ def test_backup_tier_units_refuse_stale_activation_receipt(tmp_path: Path) -> No
         assert current.returncode == 0, (lane, current.stderr)
 
 
+def test_backup_watchdog_executes_only_governed_source_activation() -> None:
+    """The scheduled verifier must observe the same code activated for its producers."""
+    text = (UNITS / "hapax-backup-watchdog.service").read_text()
+    activation_root = "%h/.cache/hapax/source-activation/worktree"
+    mutable_project_path = re.compile(r"(?:~|/home/[^/]+|%h)/projects(?:/|$)")
+
+    assert _unit_value(text, "Service", "ExecStart") == (
+        f"{activation_root}/scripts/hapax-backup-watchdog"
+    )
+    assert _unit_value(text, "Service", "WorkingDirectory") == activation_root
+    assert "hapax-source-activate.service" in (_unit_value(text, "Unit", "Wants") or "")
+    assert "hapax-source-activate.service" in (_unit_value(text, "Unit", "After") or "")
+    exec_condition = _unit_value(text, "Service", "ExecCondition")
+    assert exec_condition is not None
+    assert "source-activation/current.json" in exec_condition
+    assert ".active_source_head == .origin_main_sha" in exec_condition
+    assert not mutable_project_path.search(text)
+
+
 def test_backup_manifests_name_canonical_lanes() -> None:
     llm = yaml.safe_load((MANIFESTS / "llm_backup.yaml").read_text())
     local = yaml.safe_load((MANIFESTS / "backup_local.yaml").read_text())

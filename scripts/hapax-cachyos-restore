@@ -299,6 +299,51 @@ restore_qdrant_snapshots() {
     done
 }
 
+restore_docker_stack() {
+    local dump_dir="$1"
+    local compose_file="$HOME/llm-stack/docker-compose.yml"
+    local compose_dir
+
+    if [[ ! -f "$compose_file" ]]; then
+        fail "Required Docker Compose configuration is missing: $compose_file; restore llm-stack/docker-compose.yml from the recovery snapshot, then rerun Phase 12" >&2
+        return 1
+    fi
+    compose_dir="$(dirname "$compose_file")"
+
+    log "Starting Docker stack..."
+    cd "$compose_dir"
+    set +u; source .envrc 2>/dev/null || true; set -u
+    sudo systemctl restart docker 2>/dev/null
+    # Use sudo — docker group not active until re-login
+    sudo docker compose -f "$compose_file" up -d 2>&1 | tail -5
+    ok "Docker stack starting"
+
+    wait_for_postgresql
+    restore_postgresql "$dump_dir"
+
+    # Wait for Qdrant
+    log "Waiting for Qdrant..."
+    for _attempt in $(seq 1 30); do
+        curl -sf http://127.0.0.1:6333/healthz > /dev/null 2>&1 && break
+        sleep 2
+    done
+
+    restore_qdrant_snapshots "$dump_dir"
+    restore_n8n_workflows "$dump_dir"
+    cd "$HOME"
+}
+
+restore_database_services() {
+    local restore_root="$1"
+    local dump_dir
+
+    if ! dump_dir=$(find_restore_dump_dir "$restore_root"); then
+        return 1
+    fi
+    ok "Using database dumps: $dump_dir"
+    restore_docker_stack "$dump_dir"
+}
+
 store_partition_path() {
     # First partition of a whole disk, by the naming rule of its path family.
     local disk="$1"
@@ -999,38 +1044,7 @@ ensure_tmpfs_tmp
 # ─── Phase 12: Docker stack ────────────────────────────────────────────────
 log "=== Phase 12: Start Docker stack + restore PostgreSQL, Qdrant, and n8n workflows ==="
 
-if ! DUMP=$(find_restore_dump_dir "$RESTORE_ROOT"); then
-    exit 1
-fi
-ok "Using database dumps: $DUMP"
-
-if [[ -f ~/llm-stack/docker-compose.yml ]]; then
-    log "Starting Docker stack..."
-    cd ~/llm-stack
-    set +u; source .envrc 2>/dev/null || true; set -u
-    sudo systemctl restart docker 2>/dev/null
-    # Use sudo — docker group not active until re-login
-    sudo docker compose up -d 2>&1 | tail -5
-    ok "Docker stack starting"
-
-    wait_for_postgresql
-    restore_postgresql "$DUMP"
-
-    # Wait for Qdrant
-    log "Waiting for Qdrant..."
-    for i in $(seq 1 30); do
-        curl -sf http://127.0.0.1:6333/healthz > /dev/null 2>&1 && break
-        sleep 2
-    done
-
-    restore_qdrant_snapshots "$DUMP"
-
-    # Restore n8n workflows only when the producer's export is present.
-    if ! restore_n8n_workflows "$DUMP"; then
-        exit 1
-    fi
-    cd ~
-fi
+restore_database_services "$RESTORE_ROOT"
 
 # ─── Phase 12b: Ollama models ────────────────────────────────────────────
 log "=== Phase 12b: Pull Ollama models ==="
