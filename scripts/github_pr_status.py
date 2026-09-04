@@ -844,11 +844,21 @@ class RestListingFailed(PrListingUnavailable):
 
 
 class GraphQLListingFailed(PrListingUnavailable):
-    """``gh pr list`` failed or returned something that is not a list of PRs.
+    """A GraphQL fleet listing could not produce complete, determinate PR rows.
 
-    Distinct from exhaustion: the pool had headroom and the call still did not produce
-    rows. Falling back to REST here would *widen* the failure path — attempting more after
-    a failure than before it — so this refuses instead, and the caller skips the cycle.
+    Distinct from exhaustion: the GraphQL pool had headroom, but its bulk listing or a row's
+    merge-gating evidence failed. The routed caller retries only when REST is independently
+    eligible; otherwise this refusal reaches the fleet consumer and the cycle is skipped loudly.
+    """
+
+
+class GraphQLRollupFailed(GraphQLListingFailed):
+    """One PR's GraphQL status rollup was not a determinate list.
+
+    This subclasses ``GraphQLListingFailed`` because a fleet listing is not complete when any
+    row's merge-gating evidence could not be fetched. The distinction remains available to
+    single-PR consumers, while the fleet router can use its existing healthy-REST fallback for
+    either a bulk-list failure or a per-row rollup failure.
     """
 
 
@@ -960,10 +970,11 @@ def _status_check_rollup_graphql(
     repo_root: Path,
     runner: Any,
 ) -> list[dict[str, Any]]:
-    """One PR's rollup via a light ``gh pr view``. Fail-closed: unfetchable becomes ``[]``.
+    """One PR's rollup via a light ``gh pr view``.
 
-    An empty rollup reads downstream as "checks unknown / not green", so a failure here
-    cannot cause a merge that the checks would have prevented.
+    A real empty rollup and an unfetchable rollup are materially different facts. The latter
+    raises so the fleet router can retry on eligible REST or explicitly refuse the cycle; it
+    must never masquerade as a successfully hydrated PR with no checks.
     """
     if not number:
         return []
@@ -974,27 +985,30 @@ def _status_check_rollup_graphql(
             repo_root=repo_root,
         )
     except (subprocess.TimeoutExpired, OSError) as exc:
-        # Two review families disagreed here, and the disagreement is worth recording. codex: a
-        # raised exception escapes the `PrListingUnavailable` contract and crashes the timer.
-        # gemini: this function promises FAIL-CLOSED, and raising aborts the whole scan because
-        # one PR's rollup timed out.
-        #
-        # gemini is right and my previous fix over-corrected — it broke this function's own
-        # stated contract to satisfy a different one. Catching satisfies both: `[]` reads
-        # downstream as "checks unknown / not green", so a rollup we could not fetch cannot
-        # cause a merge the checks would have prevented, and one slow PR no longer kills the
-        # cycle for every other PR in it.
-        print(
-            f"github_pr_status: rollup unavailable for PR #{number} ({exc}); "
-            "treating as checks-unknown (fail-closed: the PR reads as not-green and will not "
-            "merge). Next action: none if this clears next cycle; if one PR repeats, run "
-            f"`gh pr view {number} --json statusCheckRollup` to see what is timing out.",
-            file=sys.stderr,
+        raise GraphQLRollupFailed(f"github_graphql_rollup_unavailable:pr={number}:{exc}") from exc
+    if proc.returncode != 0:
+        raise GraphQLRollupFailed(
+            f"github_graphql_rollup_failed:pr={number}:rc={proc.returncode}:"
+            f"{(proc.stderr or '').strip()[:200]}"
         )
-        return []
-    payload = _json_from_proc(proc)
-    rollup = payload.get("statusCheckRollup") if isinstance(payload, dict) else None
-    return rollup if isinstance(rollup, list) else []
+    try:
+        payload = json.loads(proc.stdout or "null")
+    except json.JSONDecodeError as exc:
+        raise GraphQLRollupFailed(
+            f"github_graphql_rollup_malformed:pr={number}:invalid_json"
+        ) from exc
+    if not isinstance(payload, dict):
+        raise GraphQLRollupFailed(
+            f"github_graphql_rollup_malformed:pr={number}:expected object, "
+            f"got {type(payload).__name__}"
+        )
+    rollup = payload.get("statusCheckRollup")
+    if not isinstance(rollup, list):
+        raise GraphQLRollupFailed(
+            f"github_graphql_rollup_malformed:pr={number}:statusCheckRollup expected list, "
+            f"got {type(rollup).__name__}"
+        )
+    return rollup
 
 
 def list_open_pr_statuses_graphql(
@@ -1159,6 +1173,23 @@ def get_pr_status_graphql(
     if not isinstance(item, dict) or item.get("number") is None:
         return None
     files = item.get("files") if isinstance(item.get("files"), list) else []
+    try:
+        rollup = (
+            _status_check_rollup_graphql(
+                item.get("number"), repo=repo, repo_root=repo_root, runner=runner
+            )
+            if include_status
+            else []
+        )
+    except GraphQLRollupFailed as exc:
+        # A single-PR hydration has no listing-level router around it. Preserve this function's
+        # ``None``-on-unreadable contract so lineage can use eligible REST or record an explicit
+        # unhydrated gap when REST is measured empty.
+        print(
+            f"github_pr_status: GraphQL status unavailable for PR #{pr_number} ({exc.reason})",
+            file=sys.stderr,
+        )
+        return None
     return {
         "number": item.get("number"),
         "id": item.get("id"),
@@ -1177,11 +1208,7 @@ def get_pr_status_graphql(
         "reviewDecision": _upper_or_none(item.get("reviewDecision")),
         "autoMergeRequest": item.get("autoMergeRequest"),
         "mergeStateStatus": _upper_or_none(item.get("mergeStateStatus")) or "UNKNOWN",
-        "statusCheckRollup": _status_check_rollup_graphql(
-            item.get("number"), repo=repo, repo_root=repo_root, runner=runner
-        )
-        if include_status
-        else [],
+        "statusCheckRollup": rollup,
         "transport": "graphql",
     }
 

@@ -1851,31 +1851,117 @@ def test_the_fallback_is_symmetric_when_rest_is_chosen_and_fails(tmp_path: Path)
     assert "rest_listing_failed" in route.reason
 
 
-def test_a_rollup_timeout_is_fail_closed_and_does_not_abort_the_scan(tmp_path: Path) -> None:
-    """Two families disagreed and gemini was right; this pins the resolution.
+@pytest.mark.parametrize("failure", ["timeout", "nonzero", "malformed_json", "malformed_shape"])
+def test_an_indeterminate_graphql_rollup_falls_back_to_a_healthy_rest_pool(
+    tmp_path: Path, failure: str
+) -> None:
+    """A rollup transport failure is not the same fact as a PR with no checks.
 
-    codex: a raised exception escapes the refusal contract. gemini: raising aborts the whole
-    scan because ONE PR's rollup timed out, and this function promises fail-closed. Catching
-    satisfies both — `[]` reads as "checks unknown / not green", so it cannot cause a merge the
-    checks would have prevented, and the other PRs in the cycle still get scanned.
+    Returning ``[]`` for either one leaves the routed GraphQL listing looking successful, so
+    the fleet never invokes its healthy-REST fallback. Autoqueue then blocks every PR on absent
+    evidence while REST sits idle, and lineage can record the incomplete rows as hydrated.
+
+    The four failure shapes are deliberately one contract: timeout, nonzero exit, invalid JSON,
+    and a payload whose rollup is not a list must all make the GraphQL scan indeterminate. The
+    fleet-level router can then retry the complete scan on REST, which was measured healthy.
     """
     seen: list[list[str]] = []
 
-    def rollup_times_out(cmd: list[str], **kwargs: Any) -> subprocess.CompletedProcess:
+    def rollup_is_indeterminate(cmd: list[str], **kwargs: Any) -> subprocess.CompletedProcess:
         seen.append(list(cmd))
+        if cmd[:3] == ["gh", "pr", "view"]:
+            if failure == "timeout":
+                raise subprocess.TimeoutExpired(cmd, 60)
+            if failure == "nonzero":
+                return subprocess.CompletedProcess(cmd, 1, "", "HTTP 504")
+            if failure == "malformed_json":
+                return subprocess.CompletedProcess(cmd, 0, "not-json", "")
+            return subprocess.CompletedProcess(
+                cmd, 0, json.dumps({"statusCheckRollup": {"not": "a list"}}), ""
+            )
+        return _BothTransportsRunner(rest_remaining=3000, graphql_remaining=4900)(cmd, **kwargs)
+
+    rows, route = github_pr_status.list_open_pr_statuses(
+        repo="owner/repo", repo_root=tmp_path, runner=rollup_is_indeterminate
+    )
+
+    assert rows and rows[0]["transport"] == "rest"
+    assert rows[0]["statusCheckRollup"], "the eligible REST retry must hydrate the real rollup"
+    assert route.transport == "rest"
+    assert route.reason == "graphql_listing_failed_rest_healthy"
+    assert any(call[:3] == ["gh", "pr", "view"] for call in seen)
+
+
+def test_an_indeterminate_graphql_rollup_refuses_when_rest_is_measured_empty(
+    tmp_path: Path,
+) -> None:
+    """When no alternate pool is eligible, expose the gap instead of fabricating ``[]``."""
+
+    def rollup_times_out(cmd: list[str], **kwargs: Any) -> subprocess.CompletedProcess:
         if cmd[:3] == ["gh", "pr", "view"]:
             raise subprocess.TimeoutExpired(cmd, 60)
         return _BothTransportsRunner(rest_remaining=0, graphql_remaining=4900)(cmd, **kwargs)
 
-    rows = github_pr_status.list_open_pr_statuses_graphql(
-        repo="owner/repo", repo_root=tmp_path, runner=rollup_times_out
+    with pytest.raises(github_pr_status.GraphQLRollupFailed):
+        github_pr_status.list_open_pr_statuses(
+            repo="owner/repo", repo_root=tmp_path, runner=rollup_times_out
+        )
+
+
+def test_a_real_empty_graphql_rollup_remains_a_determinate_result(tmp_path: Path) -> None:
+    """The new indeterminate state must not erase the legitimate "no checks" state."""
+    seen: list[list[str]] = []
+
+    def no_checks(cmd: list[str], **kwargs: Any) -> subprocess.CompletedProcess:
+        seen.append(list(cmd))
+        if cmd[:3] == ["gh", "pr", "view"]:
+            return subprocess.CompletedProcess(cmd, 0, json.dumps({"statusCheckRollup": []}), "")
+        return _BothTransportsRunner(rest_remaining=3000, graphql_remaining=4900)(cmd, **kwargs)
+
+    rows, route = github_pr_status.list_open_pr_statuses(
+        repo="owner/repo", repo_root=tmp_path, runner=no_checks
     )
 
-    assert rows, "one PR's rollup timing out must not abort the listing"
-    assert rows[0]["statusCheckRollup"] == [], (
-        "an unfetchable rollup must read as checks-unknown, which is the fail-closed value"
+    assert rows and rows[0]["transport"] == "graphql"
+    assert rows[0]["statusCheckRollup"] == []
+    assert route.transport == "graphql"
+    assert not any(len(call) > 6 and call[6] == "repos/owner/repo/pulls" for call in seen), (
+        "a genuine empty rollup must not spend the fallback pool"
     )
-    assert any(call[:3] == ["gh", "pr", "view"] for call in seen)
+
+
+def test_single_pr_graphql_hydration_does_not_return_an_incomplete_row(tmp_path: Path) -> None:
+    """Lineage must receive ``None`` so it can retry or record an unhydrated gap."""
+    seen: list[list[str]] = []
+
+    def rollup_times_out(cmd: list[str], **_: Any) -> subprocess.CompletedProcess:
+        seen.append(list(cmd))
+        if cmd[:3] != ["gh", "pr", "view"]:
+            return subprocess.CompletedProcess(cmd, 1, "", "unexpected")
+        if cmd[-1] == "statusCheckRollup":
+            raise subprocess.TimeoutExpired(cmd, 60)
+        return subprocess.CompletedProcess(
+            cmd,
+            0,
+            json.dumps(
+                {
+                    "number": 9,
+                    "state": "OPEN",
+                    "title": "PR",
+                    "headRefName": "feat/graphql",
+                    "headRefOid": "abc123",
+                    "mergeStateStatus": "CLEAN",
+                }
+            ),
+            "",
+        )
+
+    row = github_pr_status.get_pr_status_graphql(
+        9, repo="owner/repo", repo_root=tmp_path, runner=rollup_times_out
+    )
+
+    assert row is None, "an incomplete row would make lineage report hydration_complete=true"
+    assert len([call for call in seen if call[:3] == ["gh", "pr", "view"]]) == 2
 
 
 def test_the_rest_fallback_distinguishes_empty_from_failed(tmp_path: Path) -> None:
