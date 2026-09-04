@@ -10,7 +10,7 @@ from __future__ import annotations
 import json
 import os
 import re
-from collections.abc import Iterable
+from collections.abc import Iterable, Mapping
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from enum import StrEnum
@@ -30,6 +30,7 @@ from shared.agentic_trust_boundary import (
 from shared.capability_surface_delta import (
     CapabilitySurfaceDelta as CapabilitySurfaceDeltaSignal,
 )
+from shared.execution_observer import ExecutionInvariantVerdict
 from shared.platform_capability_receipts import (
     DEFAULT_PLATFORM_CAPABILITY_RECEIPT_DIR,
     PLATFORM_CAPABILITY_RECEIPT_DIR_ENV,
@@ -911,6 +912,21 @@ class PlatformCapabilityRoute(StrictModel):
         if self.route_id != expected:
             raise ValueError(f"route_id must equal platform.mode.profile: {expected}")
 
+        # Empty is the explicit no-wrapper sentinel for a route that is known but not yet
+        # launchable. It is valid only when the route is blocked and names that exact remedy;
+        # otherwise an omitted executable could silently reach the supply plane.
+        if self.sanctioned_wrapper == "":
+            if self.route_state is not RouteState.BLOCKED:
+                raise ValueError("a route without a sanctioned wrapper must be blocked")
+            if not any(
+                reason == "sanctioned_wrapper_absent"
+                or reason.endswith("_sanctioned_wrapper_absent")
+                for reason in self.blocked_reasons
+            ):
+                raise ValueError(
+                    "a route without a sanctioned wrapper must name sanctioned_wrapper_absent"
+                )
+
         if any(
             is_agentic_trust_supply_evidence_reference(identity)
             for identity in (
@@ -1406,6 +1422,7 @@ def check_route_freshness(
     route: PlatformCapabilityRoute,
     *,
     now: datetime | None = None,
+    execution_verdict: ExecutionInvariantVerdict | None = None,
 ) -> RouteFreshnessCheck:
     checked_now = ensure_utc(now or datetime.now(UTC))
     errors: list[str] = []
@@ -1418,6 +1435,18 @@ def check_route_freshness(
 
     if route.route_state is RouteState.BLOCKED:
         errors.extend(f"{route.route_id}: blocked: {reason}" for reason in route.blocked_reasons)
+
+    if execution_verdict is not None and execution_verdict.effort_drifted:
+        # A session observed at multiple effort levels is not evidence for the registry's one
+        # declared effort leaf. Keep the route's general availability intact, but refuse this
+        # freshness decision so callers cannot label the mixed execution as one capability.
+        effort_drift_reason = "execution_effort_drift_observed"
+        blocked_reasons.append(effort_drift_reason)
+        observed = ",".join(sorted(execution_verdict.observed_efforts)) or "unknown"
+        errors.append(
+            f"{route.route_id}: {effort_drift_reason}: observed_efforts={observed}; "
+            "next action: discard mixed-effort evidence or measure each effort separately"
+        )
 
     for surface in FRESHNESS_SURFACES:
         errors.extend(
@@ -1462,11 +1491,16 @@ def check_registry_freshness(
     *,
     route_ids: Iterable[str] | None = None,
     now: datetime | None = None,
+    execution_verdicts: Mapping[str, ExecutionInvariantVerdict] | None = None,
 ) -> RegistryFreshnessCheck:
     checked_now = ensure_utc(now or datetime.now(UTC))
     route_map = registry.route_map()
     checks: list[RouteFreshnessCheck] = []
     normalized_ids = [normalize_route_id(route_id) for route_id in route_ids] if route_ids else None
+    normalized_verdicts = {
+        normalize_route_id(route_id): verdict
+        for route_id, verdict in (execution_verdicts or {}).items()
+    }
 
     for route_id in normalized_ids or sorted(route_map):
         route = route_map.get(route_id)
@@ -1480,7 +1514,13 @@ def check_registry_freshness(
                 )
             )
             continue
-        checks.append(check_route_freshness(route, now=checked_now))
+        checks.append(
+            check_route_freshness(
+                route,
+                now=checked_now,
+                execution_verdict=normalized_verdicts.get(route_id),
+            )
+        )
 
     return RegistryFreshnessCheck(
         ok=all(check.ok for check in checks),

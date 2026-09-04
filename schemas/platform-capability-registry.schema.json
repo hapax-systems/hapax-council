@@ -743,7 +743,12 @@
         "mode": {"$ref": "#/$defs/mode"},
         "profile": {"$ref": "#/$defs/profile"},
         "launcher": {"$ref": "#/$defs/non_agentic_trust_supply_identity"},
-        "sanctioned_wrapper": {"$ref": "#/$defs/non_agentic_trust_supply_identity"},
+        "sanctioned_wrapper": {
+          "oneOf": [
+            {"$ref": "#/$defs/non_agentic_trust_supply_identity"},
+            {"const": ""}
+          ]
+        },
         "summary": {"type": "string", "minLength": 1},
         "notes": {"type": "string", "minLength": 1},
         "route_state": {"$ref": "#/$defs/route_state"},
@@ -797,7 +802,27 @@
           "type": "array",
           "items": {"type": "string", "minLength": 1}
         }
-      }
+      },
+      "allOf": [
+        {
+          "if": {
+            "properties": {"sanctioned_wrapper": {"const": ""}},
+            "required": ["sanctioned_wrapper"]
+          },
+          "then": {
+            "properties": {
+              "route_state": {"const": "blocked"},
+              "blocked_reasons": {
+                "contains": {
+                  "type": "string",
+                  "pattern": "(^|_)sanctioned_wrapper_absent$"
+                },
+                "minContains": 1
+              }
+            }
+          }
+        }
+      ]
     }
   }
 }

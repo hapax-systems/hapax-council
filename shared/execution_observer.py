@@ -240,9 +240,12 @@ UNSUPPORTED_EXECUTION_OBSERVER = "unsupported_execution_observer"
 
 @dataclass(frozen=True)
 class ExecutionInvariantVerdict:
-    """The verdict of ``observed ⊆ sanctioned``. Only ``execution_invariant_satisfied`` is
-    admissible — every other state fails closed (governed use must not proceed / a work
-    product is tainted) until a reauthorization receipt sanctions the observed execution."""
+    """The verdict of ``observed ⊆ sanctioned``.
+
+    ``execution_invariant_satisfied`` is admissible only when the observed effort also stayed
+    stable. Every other state fails closed (governed use must not proceed / a work product is
+    tainted) until a reauthorization receipt sanctions the observed execution.
+    """
 
     status: str
     observed_models: frozenset[str] = frozenset()
@@ -251,14 +254,14 @@ class ExecutionInvariantVerdict:
     unsanctioned_fallbacks: tuple[FallbackEvent, ...] = ()
     #: R7: effort is part of execution identity. Carried on the verdict so a measurement row
     #: can refuse to label a run with one effort when the transcript shows two. It does not
-    #: change ``status`` — the five CEI terminal states are about models — but a consumer that
-    #: reads only ``admissible`` and ignores this field is measuring a mixture.
+    #: change ``status`` — the five CEI terminal states are about models — while ``admissible``
+    #: still fails closed so a consumer cannot measure the mixed execution as one capability.
     observed_efforts: frozenset[str] = frozenset()
     effort_drifted: bool = False
 
     @property
     def admissible(self) -> bool:
-        return self.status == EXECUTION_INVARIANT_SATISFIED
+        return self.status == EXECUTION_INVARIANT_SATISFIED and not self.effort_drifted
 
 
 def check_execution_invariant(
