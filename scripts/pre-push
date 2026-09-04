@@ -1,11 +1,10 @@
 #!/usr/bin/env bash
 # git pre-push hook — scan-before-push (operator-accepted rule, 2026-09-02).
 #
-# This file is named for git's hook protocol and lives in scripts/ so that it is REPO-VERSIONED
-# (uniform scope of effect, every clone that opts in gets the same rule). A clone opts in with:
-#     git config core.hooksPath scripts
-# which git resolves relative to each worktree's top level, so one setting covers all worktrees.
-# No push leaves an opted-in clone without a detect-secrets + home-path scan of the new commits.
+# This file is named for git's hook protocol and lives in scripts/ as the version-controlled source.
+# scripts/install-git-hooks.sh copies it beside pre-commit in <git-common-dir>/hooks, which covers
+# every worktree without core.hooksPath masking the other hook. No push leaves an installed clone
+# without a detect-secrets + home-path scan of the new commits.
 # Exemptions only by `git config --add hapax.prepushScan.skipRemote <remote-name>` (private mirrors).
 set -euo pipefail
 root="$(git rev-parse --show-toplevel)"

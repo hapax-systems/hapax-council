@@ -4,6 +4,7 @@ and honours only an explicit local exemption. Runs detect-secrets for real (via 
 from __future__ import annotations
 
 import hashlib
+import os
 import shutil
 import subprocess
 import sys
@@ -12,6 +13,8 @@ from pathlib import Path
 import pytest
 
 SCRIPT = Path(__file__).resolve().parents[2] / "scripts" / "hapax-prepush-secret-scan"
+HOOK_INSTALLER = Path(__file__).resolve().parents[2] / "scripts" / "install-git-hooks.sh"
+PRE_PUSH_HOOK = Path(__file__).resolve().parents[2] / "scripts" / "pre-push"
 ZERO = "0" * 40
 
 pytestmark = pytest.mark.skipif(
@@ -124,8 +127,15 @@ def test_detect_secrets_staging_preserves_distinct_repository_paths(tmp_path):
     assert fake not in r.stderr and fake not in r.stdout
 
 
-def test_vendor_key_prefixes_detect_secrets_does_not_know(tmp_path):
-    """Anthropic-shaped keys are not in detect-secrets 1.5.0's plugin set; the hook's own regex is."""
+def test_vendor_key_prefix_cannot_be_allowlisted_by_inline_pragma(tmp_path, monkeypatch):
+    """The independent vendor predicate still refuses keys detect-secrets does not flag."""
+    fake_bin = tmp_path / "detector-bin"
+    fake_bin.mkdir()
+    fake_detector = fake_bin / "detect-secrets"
+    fake_detector.write_text("#!/bin/sh\nprintf '%s\\n' '{\"results\": {}}'\n")
+    fake_detector.chmod(0o755)
+    monkeypatch.setenv("PATH", f"{fake_bin}:{os.environ['PATH']}")
+
     repo = _repo(tmp_path)
     base = _git(repo, "rev-parse", "HEAD")
     fake = "sk-ant-" + "api03-" + "Q" * 40  # shape only; not a key
@@ -134,10 +144,12 @@ def test_vendor_key_prefixes_detect_secrets_does_not_know(tmp_path):
     assert r.returncode == 1, r.stderr
     assert "vendor-key-shaped in 1 added line(s): env.txt" in r.stderr
     assert fake not in r.stderr
-    # the allowlist pragma is honoured for the regex detector too
+    # A detect-secrets pragma must not bypass the independent vendor-prefix predicate.
     tip2 = _commit(repo, "env.txt", f"EXAMPLE={fake}  # pragma: allowlist secret\n")
     r2 = _run(repo, "origin", f"refs/heads/main {tip2} refs/heads/main {tip}\n")
-    assert r2.returncode == 0, r2.stderr
+    assert r2.returncode == 1, r2.stderr
+    assert "vendor-key-shaped in 1 added line(s): env.txt" in r2.stderr
+    assert fake not in r2.stderr and fake not in r2.stdout
 
 
 def test_new_branch_scans_everything_not_nothing(tmp_path):
@@ -188,11 +200,70 @@ GIT_HOOK_NAMES = {
 }
 
 
-def test_scripts_dir_carries_no_other_git_hook_name():
-    """`core.hooksPath scripts` makes git execute ANY file in scripts/ that carries a hook name.
-    Only pre-push may exist there; a future scripts/post-merge would silently become a hook."""
+def test_scripts_dir_carries_only_the_versioned_pre_push_hook():
+    """The installer copies the sole versioned hook into Git's shared hook directory."""
     present = {p.name for p in SCRIPT.parent.iterdir()} & GIT_HOOK_NAMES
     assert present == {"pre-push"}, present
+
+
+def test_hook_installer_composes_pre_commit_and_pre_push_in_common_dir(tmp_path, monkeypatch):
+    """Installing pre-push must preserve pre-commit in the shared common Git hook directory."""
+    repo = _repo(tmp_path)
+    scripts = repo / "scripts"
+    scripts.mkdir()
+    shutil.copy2(HOOK_INSTALLER, scripts / HOOK_INSTALLER.name)
+    shutil.copy2(PRE_PUSH_HOOK, scripts / PRE_PUSH_HOOK.name)
+    (repo / ".pre-commit-config.yaml").write_text("repos: []\n")
+
+    # Stand in for pre-commit itself so this test checks our composition without installing tools.
+    fake_bin = tmp_path / "bin"
+    fake_bin.mkdir()
+    fake_pre_commit = fake_bin / "pre-commit"
+    fake_pre_commit.write_text(
+        """#!/usr/bin/env python3
+import subprocess
+import sys
+from pathlib import Path
+
+if sys.argv[1] == "validate-config":
+    raise SystemExit(0)
+if sys.argv[1:3] == ["install", "--install-hooks"]:
+    common = Path(subprocess.check_output(
+        ["git", "rev-parse", "--path-format=absolute", "--git-common-dir"], text=True
+    ).strip())
+    hook = common / "hooks" / "pre-commit"
+    hook.parent.mkdir(parents=True, exist_ok=True)
+    hook.write_text("#!/bin/sh\\nexit 0\\n")
+    hook.chmod(0o755)
+    raise SystemExit(0)
+raise SystemExit(2)
+"""
+    )
+    fake_pre_commit.chmod(0o755)
+    monkeypatch.setenv("PATH", f"{fake_bin}:{os.environ['PATH']}")
+
+    run = subprocess.run(
+        ["bash", str(scripts / HOOK_INSTALLER.name)],
+        cwd=repo,
+        capture_output=True,
+        text=True,
+    )
+
+    assert run.returncode == 0, run.stderr
+    common_hooks = (
+        Path(_git(repo, "rev-parse", "--path-format=absolute", "--git-common-dir")) / "hooks"
+    )
+    assert (common_hooks / "pre-commit").stat().st_mode & 0o111
+    assert (common_hooks / "pre-push").stat().st_mode & 0o111
+    assert (common_hooks / "pre-push").read_bytes() == (scripts / "pre-push").read_bytes()
+    assert (
+        subprocess.run(
+            ["git", "-C", str(repo), "config", "--get", "core.hooksPath"],
+            capture_output=True,
+            text=True,
+        ).returncode
+        == 1
+    )
 
 
 def test_pre_existing_finding_in_a_changed_file_is_not_new_exposure(tmp_path):
