@@ -1058,21 +1058,14 @@ def fetch_pr_diff_from_local(pr_info: PRInfo, *, repo_root: Path, runner: Any) -
     """Build a pinned local PR diff when GitHub diff endpoints are unavailable."""
     base_ref = pr_info.base_ref or "main"
     remote_base = f"origin/{base_ref}"
-    if not pr_info.base_sha:
-        raise RuntimeError(
-            f"PR #{pr_info.number} base SHA is unavailable; local git diff fallback cannot "
-            "prove the current PR base. Next action: restore GitHub PR metadata access or "
-            "fetch PR metadata with baseRefOid/base.sha before review dispatch."
-        )
     if not pr_info.head_sha:
         raise RuntimeError(
             f"PR #{pr_info.number} head SHA is unavailable; local git diff fallback cannot "
             "prove the current PR head. Next action: restore GitHub PR metadata access or "
             "fetch PR metadata with headRefOid/head.sha before review dispatch."
         )
-    _ensure_local_ref_at_sha(
+    _ensure_local_ref(
         remote_base,
-        expected_sha=pr_info.base_sha,
         fetch_ref=base_ref,
         repo_root=repo_root,
         runner=runner,
@@ -1093,17 +1086,24 @@ def fetch_pr_diff_from_local(pr_info: PRInfo, *, repo_root: Path, runner: Any) -
             f"access or fetch pull/{pr_info.number}/head before review dispatch."
         )
 
-    merge_base = _run_gh(
-        ["git", "merge-base", pr_info.base_sha, head],
-        repo_root=repo_root,
-        runner=runner,
-    ).strip()
-    if merge_base != pr_info.base_sha:
+    try:
+        merge_base = _run_gh(
+            ["git", "merge-base", remote_base, head],
+            repo_root=repo_root,
+            runner=runner,
+        ).strip()
+    except RuntimeError as exc:
         raise RuntimeError(
-            f"local git diff fallback for PR #{pr_info.number} cannot prove head contains "
-            f"the current PR base {pr_info.base_sha[:12]}; merge-base was "
-            f"{merge_base[:12]}. Next action: fetch the GitHub PR diff endpoint or "
-            "update the PR branch to the current base before review dispatch."
+            f"local git diff fallback for PR #{pr_info.number} cannot compute a merge-base "
+            f"between {remote_base} and head {head[:12]}; the refs may be missing or the "
+            "histories unrelated. Next action: fetch the PR head and base refs, then retry "
+            "review dispatch."
+        ) from exc
+    if not merge_base:
+        raise RuntimeError(
+            f"local git diff fallback for PR #{pr_info.number} computed no merge-base "
+            f"between {remote_base} and head {head[:12]}; refusing to review an unproven "
+            "diff. Next action: fetch the PR head and base refs, then retry review dispatch."
         )
     diff = _run_gh(
         ["git", "diff", "--no-ext-diff", "--find-renames", f"{merge_base}..{head}"],
@@ -1138,34 +1138,6 @@ def _local_commit_object_exists(ref: str, *, repo_root: Path, runner: Any) -> bo
     except RuntimeError:
         return False
     return True
-
-
-def _ensure_local_ref_at_sha(
-    ref: str,
-    *,
-    expected_sha: str,
-    fetch_ref: str,
-    repo_root: Path,
-    runner: Any,
-) -> None:
-    actual_sha = _resolve_local_ref(ref, repo_root=repo_root, runner=runner)
-    if actual_sha == expected_sha:
-        return
-
-    _run_gh(
-        ["git", "fetch", "--quiet", "origin", f"{fetch_ref}:refs/remotes/origin/{fetch_ref}"],
-        repo_root=repo_root,
-        runner=runner,
-        timeout=180,
-    )
-    actual_sha = _resolve_local_ref(ref, repo_root=repo_root, runner=runner)
-    if actual_sha != expected_sha:
-        actual_label = (actual_sha or "missing")[:12]
-        raise RuntimeError(
-            f"local ref {ref} resolved to {actual_label}, expected PR base "
-            f"{expected_sha[:12]}; next action: fetch the PR base ref from origin and "
-            "retry review dispatch after the local base matches the PR metadata."
-        )
 
 
 def _ensure_local_ref(
