@@ -589,6 +589,18 @@ def list_pulls_rest(
             fields=fields,
             limit=limit,
         )
+    if fail_on_indeterminate:
+        for index, item in enumerate(payload):
+            if not isinstance(item, dict):
+                raise subprocess.SubprocessError(
+                    f"REST pull list indeterminate for {repo}: row {index} is "
+                    f"{type(item).__name__}, not an object"
+                )
+            number = item.get("number")
+            if isinstance(number, bool) or not isinstance(number, int) or number <= 0:
+                raise subprocess.SubprocessError(
+                    f"REST pull list indeterminate for {repo}: row {index} has no usable `number`"
+                )
     return [item for item in payload if isinstance(item, dict)]
 
 

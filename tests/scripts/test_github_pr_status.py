@@ -1828,6 +1828,49 @@ def test_a_failing_rest_fallback_refuses_instead_of_reading_as_empty(tmp_path: P
         )
 
 
+@pytest.mark.parametrize("route", ["primary", "fallback"])
+@pytest.mark.parametrize(
+    "payload",
+    [
+        [None],
+        [{"title": "missing number"}],
+        [{"number": ""}],
+        [{"number": 0}],
+        [{"number": True}],
+    ],
+)
+def test_malformed_rest_rows_refuse_the_fleet_listing(
+    tmp_path: Path, route: str, payload: list[Any]
+) -> None:
+    """A parsed REST list is determinate only when every row identifies a real PR.
+
+    Filtering ``[null]`` to ``[]`` reports a quiet estate, while passing a dict with no
+    usable ``number`` onward fabricates a status row that no consumer can act on. Both the
+    REST primary and GraphQL-to-REST fallback request strict listing semantics, so both must
+    refuse these payloads rather than shrinking the observed estate.
+    """
+    if route == "primary":
+        rest_remaining, graphql_remaining = 4900, 0
+    else:
+        rest_remaining, graphql_remaining = 3000, 4900
+
+    def malformed_rest(cmd: list[str], **kwargs: Any) -> subprocess.CompletedProcess:
+        if cmd[:3] == ["gh", "pr", "list"]:
+            return subprocess.CompletedProcess(cmd, 1, "", "HTTP 504")
+        if cmd[:5] == ["gh", "api", "--method", "GET", "-H"] and cmd[6] == "repos/owner/repo/pulls":
+            return subprocess.CompletedProcess(cmd, 0, json.dumps(payload), "")
+        return _BothTransportsRunner(
+            rest_remaining=rest_remaining, graphql_remaining=graphql_remaining
+        )(cmd, **kwargs)
+
+    with pytest.raises(github_pr_status.RestListingFailed) as excinfo:
+        github_pr_status.list_open_pr_statuses(
+            repo="owner/repo", repo_root=tmp_path, runner=malformed_rest
+        )
+
+    assert "row 0" in excinfo.value.reason
+
+
 def test_the_fallback_is_symmetric_when_rest_is_chosen_and_fails(tmp_path: Path) -> None:
     """Whichever pool the chooser prefers must not be the only one able to fail the scan.
 
