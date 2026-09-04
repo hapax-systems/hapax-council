@@ -788,10 +788,12 @@ async def _run_phase3(
             matrix_summary = f"Least inconsistent score: {em_axis.least_inconsistent_score}"
 
         if mode == CouncilMode.INTAKE:
+            high_findings = "; ".join(high_result.evidentiary_rationale) or "none"
+            low_findings = "; ".join(low_result.evidentiary_rationale) or "none"
             prompt = (
                 f"You are evaluating a work request on axis '{axis}'.\n\n"
-                f"One evaluator scored {high_score}/5: {high_result.rationale.get(axis, '')}\n"
-                f"Another scored {low_score}/5: {low_result.rationale.get(axis, '')}\n\n"
+                f"One evaluator scored {high_score}/5. Inspectable evidence: {high_findings}\n"
+                f"Another scored {low_score}/5. Inspectable evidence: {low_findings}\n\n"
                 f"Evidence matrix: {matrix_summary}\n\n"
                 "TASK: Role-play as a task creator trying to decompose this request.\n"
                 "What specific cc-tasks would you create for this axis?\n"
@@ -804,18 +806,15 @@ async def _run_phase3(
                 text=text,
                 axis=axis,
                 your_score=high_score,
-                your_rationale=high_result.rationale.get(axis, ""),
                 opponent_score=low_score,
-                opponent_rationale=low_result.rationale.get(axis, ""),
             )
         else:
             prompt = phase3_adversarial_prompt(
                 axis=axis,
                 your_score=high_score,
-                your_rationale=high_result.rationale.get(axis, ""),
                 opponent_score=low_score,
-                opponent_rationale=low_result.rationale.get(axis, ""),
-                opponent_findings=low_result.research_findings,
+                your_findings=high_result.evidentiary_rationale,
+                opponent_findings=low_result.evidentiary_rationale,
                 evidence_matrix_summary=matrix_summary,
             )
 
@@ -829,7 +828,10 @@ async def _run_phase3(
                     high_score=high_score,
                     low_scorer=low_alias,
                     low_score=low_score,
-                    challenge_text=f"Low scorer ({low_alias}) rationale: {low_result.rationale.get(axis, '')}",
+                    challenge_text=(
+                        f"Low scorer ({low_alias}) inspectable findings: "
+                        f"{'; '.join(low_result.evidentiary_rationale) or 'none'}"
+                    ),
                     response_text=raw[:2000],
                 )
             )

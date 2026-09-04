@@ -2,7 +2,10 @@
 
 from __future__ import annotations
 
+import json
 from unittest.mock import patch
+
+import pytest
 
 from agents.deliberative_council.engine import _assess_health, deliberate
 from agents.deliberative_council.models import (
@@ -153,3 +156,80 @@ def test_prompts_request_inspectable_evidence_not_reasoning_narration() -> None:
     assert "private reasoning" in scoring_prompt
     assert "zero oracle weight" in scoring_prompt
     assert "counter-evidence" in RESEARCH_SYSTEM_PROMPT
+
+
+@pytest.mark.parametrize(
+    "mode",
+    (CouncilMode.DISCONFIRMATION, CouncilMode.INTAKE, CouncilMode.NARRATIVE),
+)
+async def test_process_trace_cannot_influence_final_oracle_output(mode: CouncilMode) -> None:
+    """Phase 3-5 must be invariant when only a member's process trace changes."""
+    canary = "PROCESS-TRACE-CANARY"
+    scores = (1, 1, 5, 5)
+
+    def panel(low_trace: str) -> list[PhaseOneResult]:
+        return [
+            PhaseOneResult(
+                model_alias=alias,
+                scores={"a": score},
+                evidentiary_rationale=[f"stable inspectable evidence from {alias}"],
+                process_trace={"a": low_trace} if alias == _ALIASES[0] else {},
+            )
+            for alias, score in zip(_ALIASES, scores, strict=True)
+        ]
+
+    matrix = EvidenceMatrix(
+        axes={"a": EvidenceMatrixAxis(axis="a", least_inconsistent_score=3)},
+        built_by="opus",
+    )
+
+    async def trace_sensitive_member(_member, prompt):
+        if "You are revising your scores" not in prompt:
+            trace_seen = canary in prompt
+            return (
+                json.dumps(
+                    {
+                        "revised_score": 3,
+                        "response": f"phase-3 trace_seen={trace_seen}",
+                    }
+                ),
+                [],
+                "",
+            )
+
+        revised_score = 5 if "trace_seen=True" in prompt else 2
+        return (
+            json.dumps(
+                {
+                    "revised_scores": {"a": revised_score},
+                    "revision_rationale": {},
+                    "changed_axes": ["a"],
+                }
+            ),
+            [],
+            "",
+        )
+
+    async def run(results: list[PhaseOneResult]):
+        with (
+            patch("agents.deliberative_council.engine.run_phase1", return_value=results),
+            patch("agents.deliberative_council.engine._run_phase2", return_value=matrix),
+            patch(
+                "agents.deliberative_council.engine._call_member",
+                side_effect=trace_sensitive_member,
+            ),
+        ):
+            return await deliberate(
+                _input(),
+                mode,
+                EpistemicQualityRubric(),
+                _config(),
+            )
+
+    baseline = await run(panel("ordinary optional narration"))
+    changed_trace = await run(panel(canary))
+
+    assert baseline.scores == changed_trace.scores == {"a": 2}
+    assert baseline.confidence_bands == changed_trace.confidence_bands
+    assert baseline.convergence_status == changed_trace.convergence_status
+    assert baseline.adversarial_exchanges == changed_trace.adversarial_exchanges

@@ -141,17 +141,17 @@ def phase1_prompt_parts(
 def phase3_adversarial_prompt(
     axis: str,
     your_score: int,
-    your_rationale: str,
     opponent_score: int,
-    opponent_rationale: str,
+    your_findings: list[str],
     opponent_findings: list[str],
     evidence_matrix_summary: str,
 ) -> str:
+    your_findings_text = ", ".join(your_findings) if your_findings else "none"
     findings_text = ", ".join(opponent_findings) if opponent_findings else "none"
     return (
         f"You scored '{axis}' as {your_score}. Another council member scored it {opponent_score}.\n\n"
-        f"**Their rationale:** {opponent_rationale}\n\n"
-        f"**Their research findings:** {findings_text}\n\n"
+        f"**Your inspectable research findings:** {your_findings_text}\n\n"
+        f"**Their inspectable research findings:** {findings_text}\n\n"
         f"**Evidence matrix summary:** {evidence_matrix_summary}\n\n"
         "This is an adversarial challenge. Respond to the strongest points in their argument. Either:\n"
         "- Defend your score with specific counter-evidence\n"
@@ -208,13 +208,10 @@ def phase3_audience_simulation_prompt(
     text: str,
     axis: str,
     your_score: int,
-    your_rationale: str,
     opponent_score: int,
-    opponent_rationale: str,
 ) -> str:
     return (
         f"You scored '{axis}' as {your_score}. Another member scored it {opponent_score}.\n\n"
-        f"**Their rationale:** {opponent_rationale}\n\n"
         "## Audience Simulation Challenge\n\n"
         "Model a naive listener encountering this segment linearly at speech pace. "
         "Report:\n"
