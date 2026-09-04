@@ -301,13 +301,129 @@ text = note_path.read_text(encoding="utf-8")
 # A matching existing value is safe and should still drive the status/branch/log
 # transition. This covers sessions that pre-populate `pr:` before the PostToolUse
 # hook observes `gh pr create`.
+def _pr_scalar(raw: str) -> str:
+    """The PR number as written in frontmatter, normalised: quotes and a trailing comment dropped.
+
+    `pr: "4605"` and `pr: 4605 # owner` are the same link as `pr: 4605` (review finding on #4613,
+    round 4: comparing the raw text let a quoted value bypass the duplicate-link refusal).
+    """
+    value = raw.split("#", 1)[0].strip()
+    while len(value) >= 2 and value[0] == value[-1] and value[0] in "\"'":
+        value = value[1:-1].strip()
+    return value
+
+
 m = re.search(r"^pr:\s*(.*)$", text, flags=re.MULTILINE)
 if m:
-    existing = m.group(1).strip()
-    if existing and existing.lower() not in ("null", "none", "~", '""', "''"):
+    existing = _pr_scalar(m.group(1))
+    if existing and existing.lower() not in ("null", "none", "~"):
         if existing != str(pr_number):
-            # Already linked to another PR — preserve existing value, exit silently.
+            # Already linked to another PR — preserve the existing value and SAY SO. A silent exit
+            # here hid, for weeks, which PR a row was actually bound to (review finding on #4613:
+            # both refusals must name the conflicting task/PR and the next action).
+            print(
+                f"cc-task-pr-link: REFUSING to overwrite '{note_path.stem}' — it already declares "
+                f"PR #{existing}, and PR #{pr_number} is a different PR. Next action: if this row "
+                f"really owns #{pr_number}, clear `pr:` on the row (and move #{existing} to its own "
+                f"row) before re-linking; otherwise mint a row for #{pr_number}.",
+                file=sys.stderr,
+            )
             sys.exit(0)
+        # Same number is not the same PR: numbers are per repository, and this estate has closed
+        # the wrong task on a same-numbered council PR twice (review finding on #4613, round 3).
+        # A row that already declares #N in repository A must not be rebound to #N in repository B.
+        rm = re.search(r"^pr_repo:\s*(.*)$", text, flags=re.MULTILINE)
+        existing_repo = _pr_scalar(rm.group(1)) if rm else ""
+        if existing_repo.lower() in ("null", "none", "~"):
+            # `pr_repo: null` is unset, not a repository named "null" (review finding on #4613,
+            # round 6): it must never read as a conflicting repository.
+            existing_repo = ""
+
+        def _norm_repo_value(value: str) -> str:
+            cleaned = value.split("#", 1)[0].strip().strip("\"'").strip("/")
+            if cleaned.endswith(".git"):
+                cleaned = cleaned[: -len(".git")]
+            return cleaned.lower()
+
+        if existing_repo and _norm_repo_value(existing_repo) != _norm_repo_value(pr_repo):
+            print(
+                f"cc-task-pr-link: REFUSING to overwrite '{note_path.stem}' — it already declares "
+                f"PR #{existing} in {existing_repo}, and PR #{pr_number} in {pr_repo} is a "
+                f"different PR with the same number. Next action: mint a row for "
+                f"{pr_repo}#{pr_number}; this row keeps {existing_repo}#{existing}.",
+                file=sys.stderr,
+            )
+            sys.exit(0)
+
+# --- THE RELATION TEST. There was none, and its absence is a measured, recurring defect. ---
+#
+# This hook links THE PR JUST CREATED to WHATEVER TASK THE ROLE HOLDS. Nothing checked that the two
+# had anything to do with each other. For a short work task that is right; for a long-lived row — a
+# `kind: research` programme held for days across many PRs — every PR opened in that window becomes
+# a candidate.
+#
+# Measured on this estate, three times on one row:
+#   2026-08-23  operator manually cleared a wrong `pr: 4602` from mnemonic-contract-program
+#   2026-08-24  this hook attached #4605 — a one-line velocity fix with its OWN task — and every
+#               blocker autoqueue reported on #4605 was that research programme's unmet acceptance
+#   2026-09-01  cleared again; within hours this hook attached #4612, which also has its own task
+#
+# **And clearing the field is what re-opens the door.** The idempotency guard above protects a row
+# from being OVERWRITTEN, never from wrongly ACQUIRING — so nulling `pr:` to repair a bad link makes
+# that row the next eligible target. Repairing the instance re-armed the mechanism.
+#
+# The harm is precise: a PR bound to two tasks inherits the other task's blockers, so a ready PR is
+# held on acceptance criteria belonging to work it does not contain.
+#
+# The test: refuse when another active task already declares this PR in this repository. It is
+# fully machine-checkable here and covers both observed incidents, because in both the PR had a
+# correctly-formed row of its own. It deliberately does NOT try to decide which row *deserves* the
+# PR — that is a judgement this hook has no evidence for, and guessing is how it got here.
+vault_active = note_path.parent
+for other in sorted(vault_active.glob("*.md")):
+    if other == note_path:
+        continue
+    try:
+        other_text = other.read_text(encoding="utf-8")
+    except OSError as exc:
+        # An unreadable row is a row this hook cannot rule out as the PR's owner. Skipping it
+        # would be fail-open on exactly the check that exists to prevent a duplicate binding
+        # (review finding on #4613, round 6): refuse, name the row, and leave the link unmade.
+        print(
+            f"cc-task-pr-link: REFUSING to link PR #{pr_number} to '{note_path.stem}' — the active "
+            f"task '{other.stem}' could not be read ({exc.__class__.__name__}), so this hook cannot "
+            "tell whether it already owns the PR. Next action: make that row readable (or move it "
+            "out of active/) and re-link.",
+            file=sys.stderr,
+        )
+        sys.exit(0)
+    head = other_text.split("\n---", 1)[0]
+    om = re.search(r"^pr:\s*(.*)$", head, flags=re.MULTILINE)
+    if not om or _pr_scalar(om.group(1)) != str(pr_number):
+        continue
+    orm = re.search(r"^pr_repo:\s*(.*)$", head, flags=re.MULTILINE)
+    if not orm or not orm.group(1).strip().strip("\"'"):
+        # A bare number is not a link (repository contract: `pr:` MUST carry `pr_repo:`), so a
+        # row without one declares no PR and cannot be the conflicting task (review finding on
+        # #4613: treating "missing" as "same repository" refused legitimate links).
+        continue
+
+    def _norm_repo(value: str) -> str:
+        cleaned = value.split("#", 1)[0].strip().strip("\"'").strip("/")
+        if cleaned.endswith(".git"):
+            cleaned = cleaned[: -len(".git")]
+        return cleaned.lower()  # GitHub owner/name are case-insensitive
+
+    if _norm_repo(orm.group(1)) != _norm_repo(pr_repo):
+        continue  # same number, different repository — not the same PR
+    print(
+        f"cc-task-pr-link: REFUSING to link PR #{pr_number} to '{note_path.stem}' — "
+        f"'{other.stem}' already declares it. Binding one PR to two tasks makes it inherit the "
+        f"other task's blockers. Next action: if this row really owns the PR, clear the link on "
+        f"the other row first.",
+        file=sys.stderr,
+    )
+    sys.exit(0)
 
 now = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
 

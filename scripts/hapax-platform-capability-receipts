@@ -14,14 +14,19 @@ import shutil
 import socket
 import subprocess
 import sys
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any
+
+import yaml
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
+from shared.agentic_trust_boundary import (
+    is_syntactically_typed_policy_evidence_reference,  # noqa: E402
+)
 from shared.platform_capability_receipts import (  # noqa: E402
     DEFAULT_PLATFORM_CAPABILITY_RECEIPT_DIR,
     PLATFORM_CAPABILITY_RECEIPT_DIR_ENV,
@@ -39,6 +44,14 @@ from shared.platform_capability_registry import (  # noqa: E402
     PLATFORM_CAPABILITY_REGISTRY,
     PlatformCapabilityRoute,
     load_platform_capability_registry_for_dispatch,
+)
+from shared.quota_spend_ledger import (  # noqa: E402
+    DEFAULT_QUOTA_SPEND_LEDGER_LIVE,
+    QUOTA_SPEND_LEDGER_LIVE_ENV,
+    QuotaSpendLedgerError,
+    SubscriptionQuotaState,
+    load_quota_spend_ledger,
+    subscription_quota_state_for_route,
 )
 
 BINARY_BY_PLATFORM = {
@@ -130,12 +143,23 @@ def resolve_ref(path_ref: str) -> Path:
     return REPO_ROOT / expanded
 
 
-def launcher_command_path(route: PlatformCapabilityRoute) -> Path:
+def launcher_command_path(route: PlatformCapabilityRoute) -> Path | None:
+    """The sanctioned wrapper's command path, or None when the route declares no wrapper.
+
+    A blank ``sanctioned_wrapper`` used to fall through ``shlex.split(...)[0]`` into a second,
+    equally failing ``.split()[0]`` and raise IndexError out of the observer. No wrapper is a
+    legitimate declared state (review finding on #4616); it is reported as missing, not crashed on.
+    """
+    wrapper = (route.sanctioned_wrapper or "").strip()
+    if not wrapper:
+        return None
     try:
-        command = shlex.split(route.sanctioned_wrapper)[0]
-    except (IndexError, ValueError):
-        command = route.sanctioned_wrapper.split()[0]
-    return resolve_ref(command)
+        parts = shlex.split(wrapper)
+    except ValueError:
+        parts = wrapper.split()
+    if not parts:
+        return None
+    return resolve_ref(parts[0])
 
 
 def sha256_file(path: Path) -> str | None:
@@ -415,6 +439,9 @@ def observe_codex_exec_auth(*, enabled: bool, timeout: float) -> tuple[list[str]
 
 def observe_wrapper(route: PlatformCapabilityRoute) -> WrapperEvidence:
     path = launcher_command_path(route)
+    if path is None:
+        # No sanctioned wrapper declared: observed as missing, with nothing to hash.
+        return WrapperEvidence(path="", exists=False, executable=False, sha256=None)
     return WrapperEvidence(
         path=display_path(path),
         exists=path.exists(),
@@ -463,6 +490,220 @@ def tool_state(routes: list[PlatformCapabilityRoute]) -> list[ToolEvidence]:
                 ),
             )
     return [by_tool[tool_id] for tool_id in sorted(by_tool)]
+
+
+#: Where the estate's own quota producers write. `hapax-claude-account-live-observe` (10-minute
+#: timer) and the per-platform `*-quota-admission` scripts land here; `shared/quota_wall.py` and
+#: `shared/sdlc_pressure_gate.py` already read it.
+QUOTA_RECEIPT_DIR = Path.home() / ".cache" / "hapax" / "relay" / "receipts"
+# The live quota-spend ledger is the VALIDATED projection of those receipts (the telemetry writer
+# rejects malformed, expired and lane-presence receipts before a snapshot exists). Quota is
+# observed for a route only when a fresh positive receipt AND a fresh ledger snapshot both name it.
+QUOTA_LEDGER_LIVE = Path(
+    os.environ.get(QUOTA_SPEND_LEDGER_LIVE_ENV, "").strip() or DEFAULT_QUOTA_SPEND_LEDGER_LIVE
+)
+QUOTA_RECEIPT_MAX_STALE_SECONDS = 3600
+QUOTA_RECEIPT_FUTURE_SKEW_SECONDS = 60
+
+
+def _ledger_fresh_routes(
+    route_ids: set[str], *, now: datetime
+) -> tuple[dict[str, tuple[tuple[str, ...], datetime | None]], bool]:
+    """Routes the live ledger's own fail-closed validator reports FRESH: route_id -> (refs, bound).
+
+    The state comes from ``subscription_quota_state_for_route`` — the ledger's validator, which
+    enforces capacity pool, expected provider, telemetry-writer provenance, sanitised admission
+    evidence and the PAYG spend gate — never from a snapshot's raw ``subscription_quota_state``
+    (review finding on #4616). ``refs`` are the validator's redacted evidence references. ``bound``
+    is the earliest ``fresh_until`` among the route's subscription snapshots, used only to cap the
+    receipt's stale_after. The second value is False when the ledger is missing or invalid — the
+    honest state is then ``quota_telemetry_unknown``, never a guess from raw receipts alone.
+    """
+    try:
+        ledger = load_quota_spend_ledger(QUOTA_LEDGER_LIVE)
+    except (OSError, ValueError, QuotaSpendLedgerError):
+        return {}, False
+    fresh: dict[str, tuple[tuple[str, ...], datetime | None]] = {}
+    for route_id in sorted(route_ids):
+        try:
+            state, refs = subscription_quota_state_for_route(ledger, route_id, now=now)
+        except (ValueError, QuotaSpendLedgerError):
+            continue
+        if state is not SubscriptionQuotaState.FRESH:
+            continue
+        bounds = [
+            snapshot.fresh_until
+            for snapshot in ledger.quota_snapshots
+            if snapshot.route_id == route_id and snapshot.fresh_until is not None
+        ]
+        fresh[route_id] = (
+            tuple(_typed_evidence_ref(ref) for ref in refs),
+            min(bounds) if bounds else None,
+        )
+    return fresh, True
+
+
+def _typed_evidence_ref(ref: str) -> str:
+    """The validator's references in the form ``SurfaceEvidence`` accepts.
+
+    ``subscription_quota_state_for_route`` returns the ledger's provenance entries (its
+    ``generated_from``, e.g. ``scripts/hapax-quota-telemetry-writer``) alongside the admission
+    evidence. A bare path carries no namespace and ``SurfaceEvidence`` refuses it — measured
+    2026-09-02 18:12 CDT on this consumer's first activated run, which crashed on exactly that
+    entry and took every platform's refresh down with it. Provenance is typed as provenance.
+    """
+    if is_syntactically_typed_policy_evidence_reference(ref):
+        return ref
+    return f"quota-spend-ledger:generated_from:{ref}"
+
+
+def _fresh_quota_receipt(
+    path: Path, *, route_ids: set[str], now: datetime
+) -> dict[str, Any] | None:
+    """A quota receipt from `path` if it is fresh, positive, and for one of these routes.
+
+    Refuses lane-presence evidence explicitly. The receipt carries
+    `lane_presence_used_as_quota_evidence`, and the estate's standing rule is that a lane existing
+    is not evidence its quota has headroom — accepting it would rebuild the attestation-in-disguise
+    this whole path exists to remove.
+    """
+    try:
+        doc = yaml.safe_load(path.read_text(encoding="utf-8"))
+    except (OSError, ValueError, yaml.YAMLError):
+        # ValueError covers UnicodeDecodeError: one corrupt receipt is rejected, it does not
+        # abort the refresh (review finding on #4616).
+        return None
+    if not isinstance(doc, dict) or doc.get("route_id") not in route_ids:
+        return None
+    if doc.get("lane_presence_used_as_quota_evidence") is True:
+        return None
+    if doc.get("status") != "quota_available":
+        return None
+    # **PyYAML parses an ISO timestamp into a `datetime`, not a `str`.** The first version tested
+    # `isinstance(observed_raw, str)` and therefore rejected every well-formed receipt on disk —
+    # reporting quota unobservable for exactly the reason it was meant to fix. Accept both, and
+    # normalise a naive datetime to UTC rather than assuming tzinfo is present.
+    observed_raw = doc.get("observed_at")
+    stale_seconds = doc.get("stale_after_seconds")
+    # A receipt's own TTL is bounded: the admission writers use 900–1800 s. Anything above an hour
+    # is a receipt that could vouch for quota it never observed (review finding on #4616).
+    if not isinstance(stale_seconds, int) or isinstance(stale_seconds, bool):
+        return None
+    if stale_seconds <= 0 or stale_seconds > QUOTA_RECEIPT_MAX_STALE_SECONDS:
+        return None
+    if isinstance(observed_raw, datetime):
+        observed = observed_raw if observed_raw.tzinfo else observed_raw.replace(tzinfo=UTC)
+    elif isinstance(observed_raw, str):
+        try:
+            observed = parse_utc(observed_raw)
+        except ValueError:
+            return None
+    else:
+        return None
+    age = (now - observed).total_seconds()
+    if age < -QUOTA_RECEIPT_FUTURE_SKEW_SECONDS:
+        return None  # a future-dated receipt has observed nothing yet
+    if age > stale_seconds:
+        return None
+    doc["_observed"] = observed
+    return doc
+
+
+def observe_quota(
+    platform: str, routes: list[PlatformCapabilityRoute], *, now: datetime
+) -> SurfaceEvidence:
+    """Quota status read from the estate's own receipts — not hardcoded.
+
+    **This was a literal.** `quota` was constructed as UNOBSERVABLE with
+    `account_live_quota_receipt_absent` unconditionally, for every platform, on every run. No lookup
+    existed. So every one of the 16 declared routes reported its quota unobservable while
+    `hapax-claude-account-live-observe` wrote fresh, positive, mechanically-obtained receipts every
+    ten minutes — 6,917 of them on disk when this was found.
+
+    That inverts the estate's own recorded failure. The 2026-08-19 rule says *"account-live is a
+    fundamental property of a capability... I should not have to intervene on any measurement"*, and
+    diagnosed the hazard as **an allowed observation with no producer**, which degrades into an
+    operator attestation. Here the producer exists and runs; the CONSUMER was the stub. The symptom
+    is identical — a property reported unobservable that is in fact observed — and a hardcoded
+    verdict is worse than a missing one, because it cannot come back.
+
+    Fails closed: no fresh positive receipt for any of this platform's routes yields UNOBSERVABLE
+    with the original reason code, which is the honest state when nothing has been observed.
+    """
+    route_ids = {route.route_id for route in routes}
+    # Per route, the newest fresh positive receipt (review finding on #4616: one route's receipt
+    # used to mark the whole platform observed).
+    best_by_route: dict[str, tuple[datetime, dict[str, Any], Path]] = {}
+    if QUOTA_RECEIPT_DIR.is_dir():
+        for path in QUOTA_RECEIPT_DIR.glob("*quota*admission*.yaml"):
+            doc = _fresh_quota_receipt(path, route_ids=route_ids, now=now)
+            if doc is None:
+                continue
+            route_id = str(doc["route_id"])
+            observed = doc["_observed"]
+            current = best_by_route.get(route_id)
+            if current is None or observed > current[0]:
+                best_by_route[route_id] = (observed, doc, path)
+    ledger_fresh, ledger_readable = _ledger_fresh_routes(route_ids, now=now)
+    # Observed only where a fresh relay receipt AND the ledger's validator agree on the route.
+    observed_routes = sorted(route_id for route_id in best_by_route if route_id in ledger_fresh)
+    if not observed_routes:
+        # No fresh receipt for any route: the producer wrote nothing — receipt absent. Receipts
+        # present but the validated ledger unreadable: telemetry unknown. Receipts present and the
+        # ledger readable but not fresh for those routes: the admission is absent per the ledger.
+        reason = (
+            "quota_telemetry_unknown"
+            if best_by_route and not ledger_readable
+            else "account_live_quota_receipt_absent"
+        )
+        unobserved_refs = [f"local:{platform}:quota-probe:unobservable"]
+        if best_by_route and not ledger_readable:
+            unobserved_refs.append(
+                f"quota-spend-ledger:{display_path(QUOTA_LEDGER_LIVE)}:unreadable"
+            )
+        return surface_evidence(
+            status=EvidenceStatus.UNOBSERVABLE,
+            source="local_receipt_probe",
+            observed_at=now,
+            stale_after="15m",
+            evidence_refs=unobserved_refs,
+            reason_codes=[reason],
+        )
+    evidence_refs: list[str] = []
+    observed_at = min(best_by_route[route_id][0] for route_id in observed_routes)
+    stale_candidates: list[int] = []
+    for route_id in observed_routes:
+        # The platform receipt is dated from its own generation, so it may carry only what is LEFT
+        # of the raw receipt's lifetime, never the raw receipt's full TTL (review finding on
+        # #4616: a receipt observed 890 s into a 900 s TTL was being renewed for another 900 s).
+        raw_observed, raw_doc, _path = best_by_route[route_id]
+        raw_expiry = raw_observed + timedelta(seconds=int(raw_doc["stale_after_seconds"]))
+        stale_candidates.append(max(1, int((raw_expiry - now).total_seconds())))
+        bound = ledger_fresh[route_id][1]
+        if bound is not None:
+            stale_candidates.append(max(1, int((bound - now).total_seconds())))
+    stale_seconds = min(stale_candidates)
+    for route_id in observed_routes:
+        # Nothing from the raw receipt is copied into the platform receipt (review finding on
+        # #4616): the ledger's validator already vouched for the route and its references are
+        # redacted; the relay receipt contributes only the fact that it exists and is fresh.
+        validator_refs, _bound = ledger_fresh[route_id]
+        evidence_refs.extend(validator_refs)
+        evidence_refs.extend(
+            [
+                f"local:{platform}:quota-admission-receipt:{route_id}:present",
+                f"platform-capability-registry:{route_id}:quota:observed",
+            ]
+        )
+    evidence_refs = list(dict.fromkeys(evidence_refs))
+    return surface_evidence(
+        status=EvidenceStatus.OBSERVED,
+        source="local_receipt_probe",
+        observed_at=observed_at,
+        stale_after=f"{stale_seconds}s",
+        evidence_refs=evidence_refs,
+        reason_codes=[],
+    )
 
 
 def surface_evidence(
@@ -568,15 +809,7 @@ def build_receipt(
             f"local:{item.path}:executable:{str(item.executable).lower()}",
         )
     ]
-    quota_reason = "account_live_quota_receipt_absent"
-    quota = surface_evidence(
-        status=EvidenceStatus.UNOBSERVABLE,
-        source="local_receipt_probe",
-        observed_at=observed_at,
-        stale_after="15m",
-        evidence_refs=[f"local:{platform}:quota-probe:unobservable"],
-        reason_codes=[quota_reason],
-    )
+    quota = observe_quota(platform, routes, now=observed_at)
     provider_refs = provider_doc_refs(routes)
     if not provider_refs:
         provider_refs = [f"platform-capability-registry:{platform}:provider-docs:absent"]
@@ -636,14 +869,14 @@ def known_unknowns_for(platform: str) -> list[str]:
     elif platform == "glmcp":
         unknowns.extend(
             [
-                "GLMCP quota freshness is admitted by short-lived quota-spend-ledger receipts; this local receipt only checks wrapper/config/docs/resource surfaces.",
+                "GLMCP quota freshness is admitted by short-lived quota-spend-ledger receipts; this local receipt reports quota observed for a route only when a fresh relay admission receipt AND the ledger's validator both vouch for that route, and checks wrapper/config/docs/resource surfaces otherwise.",
                 "GLMCP receipt refresh may read the pass-backed secret to verify wrapper availability; it records only redacted metadata and never persists the secret value.",
             ]
         )
     elif platform == "codex":
         unknowns.insert(
             0,
-            "Account-live subscription quota is not exposed by the local receipt probe.",
+            "Account-live subscription quota is observed by this receipt only when a fresh relay admission receipt AND a fresh validated quota-spend-ledger snapshot both name a route; it is unobservable otherwise, never assumed.",
         )
         unknowns.append(
             "Codex exec-auth probe runs a bounded saved-login codex exec sentinel on the effective dispatch host; it never injects or persists bearer tokens."
@@ -651,7 +884,7 @@ def known_unknowns_for(platform: str) -> list[str]:
     else:
         unknowns.insert(
             0,
-            "Account-live subscription quota is not exposed by the local receipt probe.",
+            "Account-live subscription quota is observed by this receipt only when a fresh relay admission receipt AND a fresh validated quota-spend-ledger snapshot both name a route; it is unobservable otherwise, never assumed.",
         )
         unknowns.append(
             "Receipt command records config paths and existence only; it never reads secret values."
