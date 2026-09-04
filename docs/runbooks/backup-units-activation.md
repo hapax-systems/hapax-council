@@ -1,4 +1,4 @@
-# PR #4623 activation note
+# Activating the backup units through governed source activation
 
 Replace the earlier “pull the checkout on podium” step with the governed
 source-activation flow below. Do not run either backup unit from a mutable
