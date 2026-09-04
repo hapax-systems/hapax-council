@@ -46,6 +46,7 @@ from .models import (
     MemberFailure,
     PhaseOneResult,
     build_phase1_model,
+    sanitize_execution_receipt,
 )
 from .prompts import (
     RESEARCH_SYSTEM_PROMPT,
@@ -417,28 +418,6 @@ def _phase1_transcript(results: list[PhaseOneResult]) -> list[dict[str, object]]
     ]
 
 
-_EXECUTION_RECEIPT_FIELDS = frozenset(
-    {
-        "input_hash",
-        "refused",
-        "refusal_reason",
-        "shortcircuited",
-        "council_health",
-        "models_used",
-        "served_models",
-        "ruler_substituted",
-        "failed_members",
-        "cache_policy",
-        "capability_admissions",
-        "route_resource_admission",
-        "capability_receipt_refs",
-        "capability_admission_source",
-        "capability_admission_call_count",
-        "phases_completed",
-    }
-)
-
-
 def _dossier_sections(
     phase1_results: list[PhaseOneResult],
     evidence_matrix: EvidenceMatrix | None,
@@ -456,10 +435,7 @@ def _dossier_sections(
     # The legacy receipt retains the historical phase transcripts.  The named
     # execution pile is fail-closed: only fields classified as execution or
     # provenance may enter it, so new process fields cannot leak by default.
-    execution_receipt = {
-        key: value for key, value in receipt.items() if key in _EXECUTION_RECEIPT_FIELDS
-    }
-    execution_receipt["member_execution"] = member_execution
+    execution_receipt = sanitize_execution_receipt(complete_receipt)
     return {
         # Legacy verdict fields remain populated.
         "research_findings": research_findings,

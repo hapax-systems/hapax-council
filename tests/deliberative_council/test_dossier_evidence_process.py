@@ -13,6 +13,7 @@ from agents.deliberative_council.models import (
     CouncilConfig,
     CouncilInput,
     CouncilMode,
+    CouncilVerdict,
     EvidenceMatrix,
     EvidenceMatrixAxis,
     PhaseOneResult,
@@ -134,8 +135,9 @@ async def test_serialized_dossier_has_three_sections_and_legacy_names() -> None:
     assert dossier["evidentiary_rationale"]["evidence_matrix"] == dossier["evidence_matrix"]
     assert dossier["process_trace"]["oracle_weight"] == 0
     assert dossier["process_trace"]["optional"] is True
-    assert dossier["execution_receipt"].items() <= dossier["receipt"].items()
+    assert dossier["execution_receipt"]["oracle_weight"] == 0
     assert "phase1_transcript" not in dossier["execution_receipt"]
+    assert dossier["execution_receipt"]["member_execution"][0]["oracle_weight"] == 0
     assert dossier["execution_receipt"]["member_execution"][0]["served_model"] == "served-opus"
     assert dossier["execution_receipt"]["member_execution"][0]["capability_receipt_refs"] == [
         "admission:opus"
@@ -147,6 +149,102 @@ async def test_serialized_dossier_has_three_sections_and_legacy_names() -> None:
     assert results[0].research_findings == results[0].evidentiary_rationale
     assert results[0].rationale == results[0].process_trace
     assert results[0].served_model == results[0].execution_receipt["served_model"]
+    assert results[0].execution_receipt["oracle_weight"] == 0
+
+
+def test_legacy_verdict_receipt_is_sanitized_into_execution_receipt() -> None:
+    canary = "LEGACY-PROCESS-CANARY"
+    legacy_receipt = {
+        "input_hash": "fake-hash",
+        "phase1_transcript": [{"rationale": canary}],
+        "phase2_transcript": {"narration": canary},
+        "unclassified_future_field": canary,
+        "oracle_weight": 9,
+        "member_execution": [
+            {
+                "model_alias": "fake-member",
+                "served_model": "served-fake",
+                "phase1_transcript": [{"rationale": canary}],
+                "oracle_weight": 9,
+            }
+        ],
+    }
+
+    verdict = CouncilVerdict(
+        scores={},
+        confidence_bands={},
+        convergence_status=ConvergenceStatus.REFUSED,
+        disagreement_log=[],
+        research_findings=[],
+        evidence_matrix=None,
+        receipt=legacy_receipt,
+    )
+
+    assert verdict.receipt == legacy_receipt
+    assert verdict.process_trace["phase1_transcript"] == legacy_receipt["phase1_transcript"]
+    assert verdict.execution_receipt == {
+        "input_hash": "fake-hash",
+        "member_execution": [
+            {
+                "model_alias": "fake-member",
+                "served_model": "served-fake",
+                "oracle_weight": 0,
+            }
+        ],
+        "oracle_weight": 0,
+    }
+    assert canary not in json.dumps(verdict.execution_receipt)
+
+
+def test_legacy_member_fields_build_a_sanitized_execution_receipt() -> None:
+    canary = "LEGACY-MEMBER-PROCESS-CANARY"
+    member = PhaseOneResult(
+        model_alias="fake-member",
+        scores={"a": 4},
+        rationale={"a": canary},
+        research_findings=["fake-source.md supports the claim"],
+        served_model="served-fake",
+        capability_receipt_refs=("admission:fake",),
+    )
+
+    assert member.execution_receipt == {
+        "served_model": "served-fake",
+        "capability_receipt_refs": ("admission:fake",),
+        "oracle_weight": 0,
+    }
+    assert canary in json.dumps(member.process_trace)
+    assert canary not in json.dumps(member.execution_receipt)
+
+
+def test_explicit_execution_receipts_are_sanitized_at_both_model_levels() -> None:
+    canary = "EXPLICIT-PROCESS-CANARY"
+    unsafe_execution = {
+        "served_model": "served-fake",
+        "phase1_transcript": [{"rationale": canary}],
+        "oracle_weight": 9,
+    }
+    member = PhaseOneResult(
+        model_alias="fake-member",
+        scores={"a": 4},
+        rationale={"a": canary},
+        execution_receipt=unsafe_execution,
+    )
+    verdict = CouncilVerdict(
+        scores={},
+        confidence_bands={},
+        convergence_status=ConvergenceStatus.REFUSED,
+        disagreement_log=[],
+        research_findings=[],
+        evidence_matrix=None,
+        execution_receipt=unsafe_execution,
+    )
+
+    expected = {"served_model": "served-fake", "oracle_weight": 0}
+    assert member.execution_receipt == expected
+    assert verdict.execution_receipt == expected
+    assert verdict.receipt == expected
+    assert canary not in json.dumps(member.execution_receipt)
+    assert canary not in json.dumps(verdict.execution_receipt)
 
 
 async def test_execution_receipt_excludes_process_trace() -> None:

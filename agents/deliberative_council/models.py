@@ -5,6 +5,62 @@ from typing import Annotated, Any
 
 from pydantic import BaseModel, ConfigDict, Field, create_model, model_validator
 
+EXECUTION_RECEIPT_FIELDS = frozenset(
+    {
+        "oracle_weight",
+        "input_hash",
+        "refused",
+        "refusal_reason",
+        "shortcircuited",
+        "council_health",
+        "models_used",
+        "served_models",
+        "ruler_substituted",
+        "failed_members",
+        "cache_policy",
+        "capability_admissions",
+        "route_resource_admission",
+        "capability_receipt_refs",
+        "capability_admission_source",
+        "capability_admission_call_count",
+        "phases_completed",
+        "member_execution",
+        "model_alias",
+        "served_model",
+        "capability_id",
+        "route_id",
+        "capability_admission_action",
+    }
+)
+
+
+def sanitize_execution_receipt(receipt: Any) -> dict[str, Any]:
+    """Return only execution/provenance fields, explicitly carrying no oracle weight."""
+    source = receipt if isinstance(receipt, dict) else {}
+    sanitized = {
+        key: value
+        for key, value in source.items()
+        if key in EXECUTION_RECEIPT_FIELDS and key != "member_execution"
+    }
+    members = source.get("member_execution")
+    if isinstance(members, (list, tuple)):
+        sanitized["member_execution"] = [
+            {
+                **{
+                    key: value
+                    for key, value in member.items()
+                    if key in EXECUTION_RECEIPT_FIELDS and key != "member_execution"
+                },
+                "oracle_weight": 0,
+            }
+            for member in members
+            if isinstance(member, dict)
+        ]
+    # A caller cannot promote execution provenance into evidence by supplying a
+    # different value for this marker.
+    sanitized["oracle_weight"] = 0
+    return sanitized
+
 
 class CouncilMode(StrEnum):
     LABELING = "labeling"
@@ -128,25 +184,30 @@ class PhaseOneResult(BaseModel):
         elif "rationale" not in values:
             values["rationale"] = dict(values.get("process_trace") or {})
 
+        execution_source = values.get("execution_receipt")
         if "execution_receipt" not in values:
-            values["execution_receipt"] = {
-                "served_model": values.get("served_model", ""),
-                "capability_id": values.get("capability_id", ""),
-                "route_id": values.get("route_id", ""),
-                "capability_admission_action": values.get("capability_admission_action", ""),
-                "capability_receipt_refs": list(values.get("capability_receipt_refs") or ()),
+            execution_source = {
+                field: values[field]
+                for field in (
+                    "served_model",
+                    "capability_id",
+                    "route_id",
+                    "capability_admission_action",
+                    "capability_receipt_refs",
+                )
+                if field in values
             }
-        else:
-            execution = values.get("execution_receipt") or {}
-            for field in (
-                "served_model",
-                "capability_id",
-                "route_id",
-                "capability_admission_action",
-                "capability_receipt_refs",
-            ):
-                if field not in values and field in execution:
-                    values[field] = execution[field]
+        execution = sanitize_execution_receipt(execution_source)
+        values["execution_receipt"] = execution
+        for field in (
+            "served_model",
+            "capability_id",
+            "route_id",
+            "capability_admission_action",
+            "capability_receipt_refs",
+        ):
+            if field not in values and field in execution:
+                values[field] = execution[field]
         return values
 
     model_alias: str
@@ -323,6 +384,7 @@ class CouncilVerdict(BaseModel):
             return data
         values = dict(data)
         receipt = values.get("receipt") or values.get("execution_receipt") or {}
+        receipt_for_process = receipt if isinstance(receipt, dict) else {}
         findings = list(values.get("research_findings") or [])
         matrix = values.get("evidence_matrix")
 
@@ -340,11 +402,11 @@ class CouncilVerdict(BaseModel):
                 "oracle_weight": 0,
                 "optional": True,
                 "member_rationales": [],
-                "phase1_transcript": receipt.get("phase1_transcript", []),
+                "phase1_transcript": receipt_for_process.get("phase1_transcript", []),
             }
-        if "execution_receipt" not in values:
-            values["execution_receipt"] = receipt
-        elif "receipt" not in values:
+        execution_source = values.get("execution_receipt", receipt)
+        values["execution_receipt"] = sanitize_execution_receipt(execution_source)
+        if "receipt" not in values:
             values["receipt"] = values["execution_receipt"]
         return values
 
