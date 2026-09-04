@@ -94,6 +94,74 @@ def _plan(tmp_path: Path, evidence, found) -> dict[str, dict]:
 
 
 class TestEachRouteUsesItsOwnFamily:
+    def test_main_probes_for_missing_review_family_without_replacing_passive_headless_evidence(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys
+    ) -> None:
+        """Measured defect: a continuous Fable serve must not suppress the Opus probe."""
+        hdir = tmp_path / "headless" / "lane"
+        tdir = tmp_path / "projects" / "proj"
+        hdir.mkdir(parents=True)
+        tdir.mkdir(parents=True)
+        passive_at = NOW - timedelta(minutes=1)
+        (hdir / "output.jsonl").write_text("")
+        (tdir / "session.jsonl").write_text(_served(passive_at, "claude-fable-5-1") + "\n")
+        probe_calls: list[datetime] = []
+        mint_route_evidence: dict[str, object] = {}
+
+        def fake_probe(now: datetime):
+            probe_calls.append(now)
+            return obs.Observation(
+                "served",
+                now,
+                "active-probe",
+                model="claude-opus-5",
+                scrubbed_env=obs.PROBE_ENV_SCRUBBED,
+            )
+
+        def fake_mint(evidence, **kwargs):
+            mint_route_evidence.update(kwargs["evidence_by_route"])
+            return [{"route_id": route_id, "returncode": 0} for route_id in kwargs["route_ids"]]
+
+        monkeypatch.setattr(obs, "probe", fake_probe)
+        monkeypatch.setattr(obs, "mint", fake_mint)
+
+        rc = obs.main(
+            [
+                "--transcript-glob",
+                str(tmp_path / "projects" / "*" / "*.jsonl"),
+                "--headless-glob",
+                str(tmp_path / "headless" / "*" / "output.jsonl"),
+                "--now",
+                NOW.isoformat().replace("+00:00", "Z"),
+                "--max-age-seconds",
+                "1800",
+                "--route-id",
+                "claude.review.opus",
+                "--route-id",
+                "claude.headless.full",
+                "--receipt-dir",
+                str(tmp_path / "receipts"),
+                "--probe",
+                "--json",
+            ]
+        )
+
+        assert rc == 0
+        assert probe_calls == [NOW], "passive Fable evidence must not suppress the Opus probe"
+        assert mint_route_evidence["claude.review.opus"].source == "active-probe"
+        assert mint_route_evidence["claude.headless.full"].source == "session-transcript"
+        assert mint_route_evidence["claude.headless.full"].at == passive_at
+        payload = json.loads(capsys.readouterr().out)
+        assert payload["probe"]["requested_for_routes"] == ["claude.review.opus"]
+        assert payload["probe"]["reason"] == (
+            "requested route lacked in-model-family served evidence inside the window"
+        )
+        assert payload["probe"]["witnessed_routes"] == ["claude.review.opus"]
+        assert payload["observed_model_by_route"] == {
+            "claude.review.opus": "claude-opus-5",
+            "claude.headless.full": "claude-fable-5-1",
+        }
+
     def test_fable_serve_newer_than_opus_serve_still_mints_the_opus_review_route(
         self, tmp_path: Path
     ) -> None:
