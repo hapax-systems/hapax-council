@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import os
 import subprocess
 from pathlib import Path
@@ -83,7 +84,9 @@ find_restore_dump_dir "$restore_root"
     assert result.stdout.splitlines()[-1] == str(expected_dump)
     assert not (fake_root / "tmp/restored-tree-that-mount-must-hide").exists()
     assert expected_dump.is_dir()
-    assert 'RESTORE_ROOT="/var/tmp/hapax-restore"' in RESTORE_SCRIPT.read_text(encoding="utf-8")
+    assert 'RESTORE_ROOT="${HAPAX_RESTORE_ROOT:-/var/tmp/hapax-restore}"' in (
+        RESTORE_SCRIPT.read_text(encoding="utf-8")
+    )
 
 
 def _n8n_import(
@@ -479,3 +482,288 @@ def test_restore_reports_the_canonical_dr_object_name() -> None:
     )
 
     assert result.stdout.strip() == "hapax-cachyos-restore.sh"
+
+
+def _write_executable(path: Path, text: str) -> None:
+    path.write_text(text, encoding="utf-8")
+    path.chmod(0o755)
+
+
+def _run_full_restore(
+    tmp_path: Path,
+    *,
+    fail_enable_unit: str = "",
+    fail_verify_unit: str = "",
+    report_state_unit: str = "",
+    reported_state: str = "enabled",
+) -> tuple[subprocess.CompletedProcess[str], list[str], Path]:
+    home = tmp_path / "home"
+    restore_root = tmp_path / "restore-root"
+    store_root = tmp_path / "store"
+    tier1_root = tmp_path / "nas"
+    fake_bin = tmp_path / "bin"
+    bash_env = tmp_path / "bash-env"
+    command_log = tmp_path / "commands.log"
+    registry = tmp_path / "host-storage-registry.json"
+    home.mkdir()
+    fake_bin.mkdir()
+    registry.write_text(
+        json.dumps(
+            {
+                "backup_policies": [
+                    {
+                        "store_id": "local-nas-restic",
+                        "target_host": "restore-host",
+                        "required_mount_roots": [str(store_root), str(tier1_root)],
+                    },
+                    {
+                        "store_id": "b2-restic-offsite",
+                        "target_host": "restore-host",
+                        "required_mount_roots": [str(store_root)],
+                    },
+                ],
+                "mounts": [
+                    {
+                        "target_host": "restore-host",
+                        "mountpoints": [str(store_root)],
+                        "uuid": "restore-test-uuid",
+                        "device_ref": {"serial": "restore-test-serial"},
+                    }
+                ],
+                "devices": [
+                    {
+                        "target_host": "restore-host",
+                        "serial": "restore-test-serial",
+                        "by_id": ["/dev/disk/by-id/restore-test-disk"],
+                    }
+                ],
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    _write_executable(
+        fake_bin / "restic",
+        """#!/bin/sh
+set -eu
+if [ "${1:-}" = restore ]; then
+    target=
+    while [ "$#" -gt 0 ]; do
+        if [ "$1" = --target ]; then
+            target=$2
+            break
+        fi
+        shift
+    done
+    dump="$target/store/llm-data/backup-dumps-remote"
+    home_seg=home
+    mkdir -p "$target/${home_seg}/backup-user/llm-stack" "$dump/qdrant" "$dump/git-bundles"
+    printf '%s\n' 'services: {}' > "$target/${home_seg}/backup-user/llm-stack/docker-compose.yml"
+    printf '%s\n' 'SELECT 1;' > "$dump/postgres-all.sql"
+    printf '%s\n' '{}' > "$dump/n8n-workflows.json"
+    printf '%s\n' 'snapshot' > "$dump/qdrant/restore-test.snapshot"
+    printf '%s\n' 'bundle' > "$dump/git-bundles/obsidian-hapax.bundle"
+fi
+exit 0
+""",
+    )
+    _write_executable(
+        fake_bin / "sudo",
+        """#!/bin/sh
+set -eu
+case "${1:-}" in
+    mkdir)
+        shift
+        exec /usr/bin/mkdir "$@"
+        ;;
+    blkid)
+        printf '%s\n' /dev/restore-test
+        ;;
+    docker)
+        case " $* " in
+            *" psql "*) cat > /dev/null ;;
+        esac
+        ;;
+    tee)
+        cat > /dev/null
+        ;;
+esac
+exit 0
+""",
+    )
+    _write_executable(
+        fake_bin / "systemctl",
+        """#!/bin/sh
+set -eu
+printf '%s\n' "$*" >> "$COMMAND_LOG"
+case " $* " in
+    *" enable $FAIL_ENABLE_UNIT ") exit 7 ;;
+    *" is-enabled $FAIL_VERIFY_UNIT ") exit 8 ;;
+    *" is-enabled $REPORT_STATE_UNIT ") printf '%s\n' "$REPORTED_STATE" ;;
+    *" is-enabled "*) printf '%s\n' enabled ;;
+esac
+exit 0
+""",
+    )
+    _write_executable(
+        fake_bin / "git",
+        """#!/bin/sh
+set -eu
+printf 'git %s\n' "$*" >> "$COMMAND_LOG"
+exit 0
+""",
+    )
+    _write_executable(fake_bin / "mountpoint", "#!/bin/sh\nexit 0\n")
+    _write_executable(fake_bin / "curl", "#!/bin/sh\nexit 0\n")
+    _write_executable(fake_bin / "pacman", "#!/bin/sh\nexit 1\n")
+    _write_executable(fake_bin / "rclone", "#!/bin/sh\nprintf '%s\\n' 'b2:'\n")
+    _write_executable(fake_bin / "rustup", "#!/bin/sh\nprintf '%s\\n' stable\n")
+    passthrough_commands = (
+        "aichat",
+        "claude",
+        "fabric",
+        "fc-cache",
+        "fish",
+        "flatpak",
+        "fnm",
+        "gh",
+        "go",
+        "mods",
+        "ollama",
+        "paru",
+        "pass",
+        "pipx",
+        "pnpm",
+        "sleep",
+        "uv",
+        "wpctl",
+    )
+    for command in passthrough_commands:
+        _write_executable(fake_bin / command, "#!/bin/sh\nexit 0\n")
+    bash_env.write_text(
+        "\n".join(
+            f'{command}() {{ "$RESTORE_FAKE_BIN/{command}" "$@"; }}'
+            for command in (
+                *passthrough_commands,
+                "curl",
+                "git",
+                "mountpoint",
+                "pacman",
+                "rclone",
+                "restic",
+                "rustup",
+                "sudo",
+                "systemctl",
+            )
+        ),
+        encoding="utf-8",
+    )
+
+    env = os.environ.copy()
+    env.update(
+        {
+            "B2_APP_KEY": "restore-test-app-key",
+            "B2_KEY_ID": "restore-test-key-id",
+            "BASH_ENV": str(bash_env),
+            "COMMAND_LOG": str(command_log),
+            "FAIL_ENABLE_UNIT": fail_enable_unit,
+            "FAIL_VERIFY_UNIT": fail_verify_unit,
+            "HAPAX_HOST_STORAGE_REGISTRY": str(registry),
+            "HAPAX_RESTORE_ROOT": str(restore_root),
+            "HOME": str(home),
+            "PATH": f"{fake_bin}:/usr/bin:/bin",
+            "RESTIC_PASSWORD": "restore-test-password",  # pragma: allowlist secret
+            "RESTORE_FAKE_BIN": str(fake_bin),
+            "REPORT_STATE_UNIT": report_state_unit,
+            "REPORTED_STATE": reported_state,
+            "SHELL": "/bin/bash",
+            "USER": "restore-test-user",
+        }
+    )
+    result = subprocess.run(
+        [str(RESTORE_SCRIPT)],
+        capture_output=True,
+        text=True,
+        env=env,
+        timeout=20,
+    )
+    commands = command_log.read_text(encoding="utf-8").splitlines() if command_log.exists() else []
+    return result, commands, restore_root
+
+
+def test_full_restore_carries_resolved_artifacts_through_phase_16(tmp_path: Path) -> None:
+    result, commands, restore_root = _run_full_restore(tmp_path)
+    dump = restore_root / DUMP_PATHS[0]
+
+    assert result.returncode == 0, result.stderr
+    for phase in ("Phase 0", "Phase 13", "Phase 14", "Phase 15", "Phase 16"):
+        assert phase in result.stdout
+    assert "CachyOS Restore Complete" in result.stdout
+    assert any(
+        command == f"git clone {dump}/git-bundles/obsidian-hapax.bundle "
+        f"{tmp_path}/{'home'}/projects/obsidian-hapax"
+        for command in commands
+    )
+    for unit in (
+        "hapax-secrets.service",
+        "hapax-backup-local.timer",
+        "hapax-backup-remote.timer",
+    ):
+        assert f"--user enable {unit}" in commands
+        assert f"--user is-enabled {unit}" in commands
+
+
+@pytest.mark.parametrize(
+    ("failed_unit", "unit_kind"),
+    [
+        pytest.param("hapax-secrets.service", "service", id="service"),
+        pytest.param("hapax-backup-remote.timer", "timer", id="backup-timer"),
+    ],
+)
+def test_full_restore_refuses_completion_when_user_unit_enable_fails(
+    tmp_path: Path,
+    failed_unit: str,
+    unit_kind: str,
+) -> None:
+    result, commands, _restore_root = _run_full_restore(
+        tmp_path,
+        fail_enable_unit=failed_unit,
+    )
+
+    assert result.returncode != 0
+    assert f"Could not enable systemd user {unit_kind} {failed_unit}" in result.stderr
+    assert f"--user enable {failed_unit}" in commands
+    assert f"--user is-enabled {failed_unit}" not in commands
+    assert "CachyOS Restore Complete" not in result.stdout
+
+
+def test_full_restore_refuses_completion_when_backup_timer_state_is_unknown(
+    tmp_path: Path,
+) -> None:
+    unconfirmed_unit = "hapax-backup-remote.timer"
+    result, commands, _restore_root = _run_full_restore(
+        tmp_path,
+        fail_verify_unit=unconfirmed_unit,
+    )
+
+    assert result.returncode != 0
+    assert f"could not determine whether user timer {unconfirmed_unit} is enabled" in result.stderr
+    assert f"--user enable {unconfirmed_unit}" in commands
+    assert f"--user is-enabled {unconfirmed_unit}" in commands
+    assert "CachyOS Restore Complete" not in result.stdout
+
+
+def test_full_restore_refuses_completion_without_persistent_timer_install_link(
+    tmp_path: Path,
+) -> None:
+    unit = "hapax-backup-remote.timer"
+    result, commands, _restore_root = _run_full_restore(
+        tmp_path,
+        report_state_unit=unit,
+        reported_state="static",
+    )
+
+    assert result.returncode != 0
+    assert f"reports user timer {unit} as static, not enabled" in result.stderr
+    assert f"--user enable {unit}" in commands
+    assert "CachyOS Restore Complete" not in result.stdout

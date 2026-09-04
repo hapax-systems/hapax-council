@@ -50,7 +50,7 @@ fail() { echo -e "${RED}[FAIL]${NC} $1"; }
 ask()  { read -rp "$1: " "$2"; }
 
 DR_OBJECT_NAME="hapax-cachyos-restore.sh"
-RESTORE_ROOT="/var/tmp/hapax-restore"
+RESTORE_ROOT="${HAPAX_RESTORE_ROOT:-/var/tmp/hapax-restore}"
 POSTGRES_SUPERUSER="${HAPAX_POSTGRES_SUPERUSER:-hapax}"
 POSTGRES_INITIAL_DATABASE="${HAPAX_POSTGRES_INITIAL_DATABASE:-$POSTGRES_SUPERUSER}"
 SCRIPT_DIR="$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")"
@@ -335,13 +335,14 @@ restore_docker_stack() {
 
 restore_database_services() {
     local restore_root="$1"
-    local dump_dir
 
-    if ! dump_dir=$(find_restore_dump_dir "$restore_root"); then
+    # Phase 13 also consumes git bundles and dirty-tree patches from this directory. Keep the
+    # resolved path in the main shell instead of hiding it in a function-local variable.
+    if ! DUMP=$(find_restore_dump_dir "$restore_root"); then
         return 1
     fi
-    ok "Using database dumps: $dump_dir"
-    restore_docker_stack "$dump_dir"
+    ok "Using database dumps: $DUMP"
+    restore_docker_stack "$DUMP"
 }
 
 store_partition_path() {
@@ -1153,7 +1154,29 @@ ok "Local backup repo ready at $LOCAL_RESTIC_REPO"
 # ─── Phase 15: Enable user services & timers ───────────────────────────────
 log "=== Phase 15: Enable systemd user services & timers ==="
 
-systemctl --user daemon-reload
+if ! systemctl --user daemon-reload; then
+    fail "Could not reload the systemd user manager; verify 'systemctl --user status', then rerun Phase 15" >&2
+    exit 1
+fi
+
+enable_systemd_user_unit() {
+    local unit="$1" unit_kind="$2" label="$3"
+    local enabled_state
+
+    if ! systemctl --user enable "$unit"; then
+        fail "Could not enable systemd user $unit_kind $unit; verify the unit is installed and 'systemctl --user status' works, then rerun Phase 15" >&2
+        return 1
+    fi
+    if ! enabled_state=$(systemctl --user is-enabled "$unit"); then
+        fail "Systemd could not determine whether user $unit_kind $unit is enabled; inspect 'systemctl --user is-enabled $unit', then rerun Phase 15" >&2
+        return 1
+    fi
+    if [[ "$enabled_state" != "enabled" ]]; then
+        fail "Systemd reports user $unit_kind $unit as ${enabled_state:-unknown}, not enabled; repair its install link, then rerun Phase 15" >&2
+        return 1
+    fi
+    ok "$unit_kind: $label"
+}
 
 # Core services
 SERVICES=(
@@ -1166,7 +1189,7 @@ SERVICES=(
     llm-stack llm-stack-analytics
 )
 for svc in "${SERVICES[@]}"; do
-    systemctl --user enable "$svc.service" 2>/dev/null && ok "service: $svc" || true
+    enable_systemd_user_unit "$svc.service" service "$svc"
 done
 
 # Timers
@@ -1186,7 +1209,7 @@ TIMERS=(
     video-processor video-retention vram-watchdog
 )
 for timer in "${TIMERS[@]}"; do
-    systemctl --user enable "$timer.timer" 2>/dev/null && ok "timer: $timer" || true
+    enable_systemd_user_unit "$timer.timer" timer "$timer"
 done
 
 # Set Yeti capture gain to 73% (+8dB) — persisted by WirePlumber state after first set
