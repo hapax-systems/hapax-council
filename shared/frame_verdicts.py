@@ -76,10 +76,6 @@ class DecayedMember:
     patterns: tuple[str, ...]
     files: tuple[Path, ...]
 
-    @property
-    def matchable(self) -> bool:
-        return bool(self.roots or self.files)
-
 
 @dataclass(frozen=True)
 class FrameVerdicts:

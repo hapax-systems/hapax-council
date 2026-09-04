@@ -191,7 +191,9 @@ def test_non_filesystem_and_undeclared_members_are_reported_unmatchable(tmp_path
     assert verdicts.unmatchable == ("prs", "podium-arm", "vanished")
     mixed = [m for m in verdicts.decayed if m.member_id == "mixed"]
     assert mixed and mixed[0].roots == ((tmp_path / "mixed").absolute(),)
-    assert not any(m.matchable for m in verdicts.decayed if m.member_id in ("prs", "podium-arm"))
+    assert not any(
+        m.roots or m.files for m in verdicts.decayed if m.member_id in ("prs", "podium-arm")
+    ), "a member with no filesystem location can match no ref"
 
 
 def test_scope_matching_by_containment_patterns_files_and_wildcard_tails(tmp_path: Path) -> None:

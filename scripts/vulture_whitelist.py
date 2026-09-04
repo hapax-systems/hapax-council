@@ -5104,3 +5104,17 @@ _ = (read_raw_signal,)
 from shared.adjudicator_identity import record_identifies_its_checkout  # noqa: E402
 
 _ = (record_identifies_its_checkout,)
+
+# frame_verdicts: the work-selection dominator consults the frame's accountability verdicts from
+# scripts/hapax-methodology-dispatch — an extensionless script vulture never parses (see the note
+# at the end of this file). load_frame_verdicts and scope_within_decayed are called there, in
+# validate_task's frame_verdict_refusal; this is the second kind of entry — live machinery whose
+# only production caller is invisible to the scanner.
+from shared.frame_verdicts import (  # noqa: E402
+    load_frame_verdicts as _load_frame_verdicts,
+)
+from shared.frame_verdicts import (  # noqa: E402
+    scope_within_decayed as _scope_within_decayed,
+)
+
+_ = (_load_frame_verdicts, _scope_within_decayed)
