@@ -134,7 +134,8 @@ async def test_serialized_dossier_has_three_sections_and_legacy_names() -> None:
     assert dossier["evidentiary_rationale"]["evidence_matrix"] == dossier["evidence_matrix"]
     assert dossier["process_trace"]["oracle_weight"] == 0
     assert dossier["process_trace"]["optional"] is True
-    assert dossier["execution_receipt"] == dossier["receipt"]
+    assert dossier["execution_receipt"].items() <= dossier["receipt"].items()
+    assert "phase1_transcript" not in dossier["execution_receipt"]
     assert dossier["execution_receipt"]["member_execution"][0]["served_model"] == "served-opus"
     assert dossier["execution_receipt"]["member_execution"][0]["capability_receipt_refs"] == [
         "admission:opus"
@@ -146,6 +147,25 @@ async def test_serialized_dossier_has_three_sections_and_legacy_names() -> None:
     assert results[0].research_findings == results[0].evidentiary_rationale
     assert results[0].rationale == results[0].process_trace
     assert results[0].served_model == results[0].execution_receipt["served_model"]
+
+
+async def test_execution_receipt_excludes_process_trace() -> None:
+    canary = "PROCESS-TRACE-MUST-NOT-BE-AN-EXECUTION-RECEIPT"
+    results = [_member(alias) for alias in _ALIASES]
+    results[0] = results[0].model_copy(
+        update={"process_trace": {"a": canary}, "rationale": {"a": canary}}
+    )
+
+    with patch("agents.deliberative_council.engine.run_phase1", return_value=results):
+        verdict = await deliberate(
+            _input(), CouncilMode.DISCONFIRMATION, EpistemicQualityRubric(), _config()
+        )
+
+    dossier = verdict.model_dump(mode="json")
+    assert canary in json.dumps(dossier["process_trace"])
+    assert "phase1_transcript" in dossier["receipt"]
+    assert "phase1_transcript" not in dossier["execution_receipt"]
+    assert canary not in json.dumps(dossier["execution_receipt"])
 
 
 def test_prompts_request_inspectable_evidence_not_reasoning_narration() -> None:
