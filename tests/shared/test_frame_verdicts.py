@@ -259,3 +259,194 @@ def test_resolve_scope_ref_prefers_an_existing_council_path_then_the_vault(tmp_p
     assert path == (council / "scripts").absolute() and dirlike
     path, _ = fv.resolve_scope_ref("nowhere/y.py", council_root=council, vault_root=vault)
     assert path == (council / "nowhere" / "y.py").absolute()
+
+
+# ── Round 2 on #4629: the six criticals four review families raised ──────────────────────────
+
+
+def test_a_double_star_pattern_does_not_match_every_path_under_the_root(tmp_path: Path) -> None:
+    """`**` crosses `/` and `*` does not; the previous implementation returned True for any pattern
+    merely containing `**`, so a member declaring `docs/**/*.md` decayed its whole root."""
+    root = tmp_path / "m"
+    members = [{"id": "docs", "location": {"path": str(root), "patterns": ["docs/**/*.md"]}}]
+    verdicts = fv.load_frame_verdicts(
+        _procedure_root(tmp_path, members=members, verdicts=[_verdict("docs", "scope_exited")]),
+        now=NOW,
+    )
+    member = verdicts.decayed[0]
+
+    assert fv.ref_within_member(root / "docs" / "a" / "b.md", False, member)
+    assert fv.ref_within_member(root / "docs" / "b.md", False, member)
+    assert not fv.ref_within_member(root / "scripts" / "x.py", False, member)
+    assert not fv.ref_within_member(root / "docs" / "a" / "b.py", False, member)
+    # A pattern WITHOUT a separator matches by name at any depth — that is the reader's own
+    # semantics (the mass declares `patterns: ["*.md"]` over whole trees and counts thousands of
+    # files under them). A pattern WITH a separator is anchored at the root, and there `*` does not
+    # cross one.
+    flat = fv.DecayedMember("s", "scope_exited", (root,), ("*.md",), ())
+    assert fv.ref_within_member(root / "a.md", False, flat)
+    assert fv.ref_within_member(root / "sub" / "a.md", False, flat)
+    anchored = fv.DecayedMember("s", "scope_exited", (root,), ("docs/*.md",), ())
+    assert fv.ref_within_member(root / "docs" / "a.md", False, anchored)
+    assert not fv.ref_within_member(root / "docs" / "sub" / "a.md", False, anchored)
+
+
+def test_a_malformed_verdict_row_refuses_instead_of_shrinking_the_decayed_set(
+    tmp_path: Path,
+) -> None:
+    """Skipping an unparseable row empties the decayed set and the guard admits everything —
+    failing open at the one point it exists to fail closed."""
+    members = [{"id": "m", "location": {"path": str(tmp_path / "m")}}]
+    root = _procedure_root(tmp_path, members=members, verdicts=[_verdict("m", "scope_exited")])
+    epoch = fv.latest_epoch_dir(root)
+    assert epoch is not None
+    (epoch / "elements.json").write_text(
+        json.dumps(
+            [
+                {
+                    "id": "frame:relevance-report",
+                    "payload": {"verdicts": [_verdict("m", "scope_exited"), "not a row"]},
+                }
+            ]
+        ),
+        encoding="utf-8",
+    )
+
+    with pytest.raises(fv.FrameVerdictsUnavailable, match="cannot parse"):
+        fv.load_frame_verdicts(root, now=NOW)
+
+
+def test_a_true_verdict_under_an_unknown_relation_refuses(tmp_path: Path) -> None:
+    """The producer's relation set can grow; a reader that silently ignores what it does not
+    classify decides accountability by omission."""
+    members = [{"id": "m", "location": {"path": str(tmp_path / "m")}}]
+    root = _procedure_root(
+        tmp_path, members=members, verdicts=[_verdict("m", "invented_relation", True)]
+    )
+
+    with pytest.raises(fv.FrameVerdictsUnavailable, match="does not classify"):
+        fv.load_frame_verdicts(root, now=NOW)
+
+
+def test_the_decay_set_is_the_producers_seven_not_a_private_three(tmp_path: Path) -> None:
+    assert {
+        "superseded",
+        "discharged",
+        "scope_exited",
+        "absorbed",
+        "contradicted",
+        "context_lost",
+        "unconsulted",
+    } == fv.DECAY_RELATIONS
+    members = [{"id": "m", "location": {"path": str(tmp_path / "m")}}]
+    root = _procedure_root(
+        tmp_path, members=members, verdicts=[_verdict("m", "context_lost", True)]
+    )
+
+    verdicts = fv.load_frame_verdicts(root, now=NOW)
+
+    assert [(m.member_id, m.relation) for m in verdicts.decayed] == [("m", "context_lost")]
+
+
+def test_a_ref_that_climbs_out_of_its_tree_is_refused(tmp_path: Path) -> None:
+    council, vault = tmp_path / "c", tmp_path / "v"
+    (council / "scripts").mkdir(parents=True)
+    vault.mkdir()
+
+    with pytest.raises(fv.NonCanonicalScopeRef, match=r"\.\."):
+        fv.resolve_scope_ref("scripts/../../elsewhere/x.py", council_root=council, vault_root=vault)
+
+
+def test_a_symlinked_directory_cannot_carry_a_ref_inside_a_member(tmp_path: Path) -> None:
+    council, vault = tmp_path / "c", tmp_path / "v"
+    real = tmp_path / "outside"
+    (real / "deep").mkdir(parents=True)
+    council.mkdir()
+    vault.mkdir()
+    (council / "legacy").symlink_to(real)
+    members = [{"id": "legacy", "location": {"path": str(council / "legacy")}}]
+    verdicts = fv.load_frame_verdicts(
+        _procedure_root(tmp_path, members=members, verdicts=[_verdict("legacy", "scope_exited")]),
+        now=NOW,
+    )
+
+    scope = fv.scope_within_decayed(
+        ["legacy/deep/x.py"], verdicts, council_root=council, vault_root=vault
+    )
+
+    # the ref resolves to its real location, which is outside the member's declared root
+    assert scope.outside == ("legacy/deep/x.py",), scope
+
+
+def test_a_verdict_is_not_applied_to_a_member_redeclared_since_the_epoch(tmp_path: Path) -> None:
+    """The verdict was computed against the member as the epoch declared it; applying it to a
+    member since re-pointed would decay a surface nobody witnessed."""
+    members = [{"id": "m", "location": {"path": str(tmp_path / "m"), "patterns": ["*.py"]}}]
+    root = _procedure_root(tmp_path, members=members, verdicts=[_verdict("m", "scope_exited")])
+    epoch = fv.latest_epoch_dir(root)
+    assert epoch is not None
+    matching = fv._member_declaration_identity(members[0], [])
+    (epoch / "coverage.json").write_text(
+        json.dumps([{"member_id": "m", "member_declaration_identity": matching}]),
+        encoding="utf-8",
+    )
+    assert [m.member_id for m in fv.load_frame_verdicts(root, now=NOW).decayed] == ["m"]
+
+    (root / "declaration" / "mass.yaml").write_text(
+        yaml.safe_dump(
+            {"members": [{"id": "m", "location": {"path": str(tmp_path / "elsewhere")}}]}
+        ),
+        encoding="utf-8",
+    )
+    moved = fv.load_frame_verdicts(root, now=NOW)
+
+    assert moved.decayed == ()
+    assert "m" in moved.unmatchable
+
+
+def test_member_declaration_identity_matches_a_real_epoch() -> None:
+    """The identity is the producer's own rule, copied because the producer lives in another tree.
+    This pins that the copy still reproduces a real epoch's recorded value."""
+    procedure = Path.home() / "Documents/Personal/30-areas/hapax/frame/procedure"
+    coverage_files = (
+        sorted((procedure / "_runs" / "epochs").glob("*/coverage.json"), reverse=True)
+        if (procedure / "_runs" / "epochs").is_dir()
+        else []
+    )
+    if not coverage_files:
+        pytest.skip("no local frame epoch to check the identity rule against")
+    rows = json.loads(coverage_files[0].read_text(encoding="utf-8"))
+    mass = yaml.safe_load((procedure / "declaration" / "mass.yaml").read_text(encoding="utf-8"))
+    by_id = {m["id"]: m for m in mass["members"]}
+    exclusions = mass.get("exclusions") or []
+    checked = 0
+    for row in rows:
+        recorded = row.get("member_declaration_identity")
+        member = by_id.get(row.get("member_id"))
+        if not recorded or member is None:
+            continue
+        assert fv._member_declaration_identity(member, exclusions) == recorded, row["member_id"]
+        checked += 1
+    assert checked, "no member could be checked — the coverage rows carry no identities"
+
+
+def test_a_repo_relative_ref_matches_a_member_declared_at_another_checkout(tmp_path: Path) -> None:
+    """In production the dispatcher runs from the activation worktree while the mass declares the
+    canonical checkout; a ref resolved only against the running tree could never match, leaving the
+    guard inert exactly where it runs."""
+    canonical = tmp_path / "projects" / "hapax-council"
+    running = tmp_path / "activation" / "hapax-council"
+    (canonical / "legacy").mkdir(parents=True)
+    (running / "legacy").mkdir(parents=True)
+    members = [{"id": "legacy", "location": {"path": str(canonical / "legacy")}}]
+    verdicts = fv.load_frame_verdicts(
+        _procedure_root(tmp_path, members=members, verdicts=[_verdict("legacy", "scope_exited")]),
+        now=NOW,
+    )
+
+    scope = fv.scope_within_decayed(
+        ["legacy/old.py"], verdicts, council_root=running, vault_root=tmp_path / "vault"
+    )
+
+    assert scope.all_inside, scope
+    assert scope.matches[0].member_id == "legacy"

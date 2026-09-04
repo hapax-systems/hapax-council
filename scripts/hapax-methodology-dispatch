@@ -1067,12 +1067,21 @@ def frame_verdict_refusal(fields: dict[str, Any]) -> tuple[str | None, str | Non
     refs = _operator_gate_mutation_scope_refs(fields)
     if not refs:
         return None, verdicts.epoch, decayed
-    scope = frame_verdicts.scope_within_decayed(
-        refs,
-        verdicts,
-        council_root=REPO_ROOT_FOR_IMPORTS,
-        vault_root=Path.home() / "Documents" / "Personal",
-    )
+    try:
+        scope = frame_verdicts.scope_within_decayed(
+            refs,
+            verdicts,
+            council_root=REPO_ROOT_FOR_IMPORTS,
+            vault_root=Path.home() / "Documents" / "Personal",
+        )
+    except frame_verdicts.NonCanonicalScopeRef as exc:
+        # A ref that climbs out of its own tree cannot be contained by any member, so no verdict
+        # about it means anything. Refuse the task rather than admit it unchecked.
+        return (
+            f"declared mutation scope is not containable: {exc}",
+            verdicts.epoch,
+            decayed,
+        )
     if not scope.all_inside:
         return None, verdicts.epoch, decayed
     detail = "; ".join(f"{m.ref} lies in {m.member_id} ({m.relation})" for m in scope.matches)
