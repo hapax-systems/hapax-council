@@ -36,6 +36,8 @@ DEFAULT_QUOTA_SPEND_LEDGER_LIVE = (
 )
 
 PAID_CAPACITY_POOLS = frozenset({"api_paid_spend", "bootstrap_budget", "incident_override"})
+LEGACY_SPEND_RECEIPT_SCHEMA = 1
+CURRENT_SPEND_RECEIPT_SCHEMA = 2
 TOKENS_DO_NOT_EXPLAIN_LATENCY_WALL_THRESHOLD_MS = 30_000
 TOKENS_DO_NOT_EXPLAIN_LATENCY_OUTPUT_TOKEN_THRESHOLD = 128
 CLAUDE_RECEIPT_BOUNDED_SUBSCRIPTION_ROUTES = frozenset(
@@ -499,6 +501,14 @@ class SpendReceipt(StrictModel):
         if not isinstance(data, dict):
             return data
         payload = dict(data)
+        # Schema 1 allowed this discriminator to be omitted because it defaulted
+        # to 1. Upgrade both explicit and implicit schema-1 receipts in memory;
+        # every historical spend field remains untouched and schema-2-only
+        # resource fields take their typed absence defaults below.
+        if payload.get("spend_receipt_schema", LEGACY_SPEND_RECEIPT_SCHEMA) == (
+            LEGACY_SPEND_RECEIPT_SCHEMA
+        ):
+            payload["spend_receipt_schema"] = CURRENT_SPEND_RECEIPT_SCHEMA
         for field_name in (
             "wall_latency_ms",
             "ttfb_ms",

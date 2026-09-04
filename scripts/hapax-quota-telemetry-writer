@@ -406,7 +406,11 @@ GLMCP_ADMISSION_RECOVERY_HINT = (
     "prompt_or_output_persisted=false, billing_mode, and endpoint-matched payg_fallback, "
     "then rerun writer; PAYG receipts also require an active paid-spend budget gate"
 )
+GLMCP_PAYG_SPEND_RECEIPT_SCHEMA_V1 = "hapax.glmcp_payg_spend.v1"
 GLMCP_PAYG_SPEND_RECEIPT_SCHEMA = "hapax.glmcp_payg_spend.v2"
+GLMCP_PAYG_SPEND_RECEIPT_SCHEMAS = frozenset(
+    {GLMCP_PAYG_SPEND_RECEIPT_SCHEMA_V1, GLMCP_PAYG_SPEND_RECEIPT_SCHEMA}
+)
 GLMCP_PAYG_SPEND_RECEIPT_GLOB = "*glmcp-payg-spend*.yaml"
 GLMCP_PAYG_SPEND_SAFE_RECEIPT_NAME_RE = re.compile(
     r"\A[a-z0-9_.+-]*glmcp-payg-spend[a-z0-9_.+-]*\.yaml\Z"
@@ -1644,9 +1648,12 @@ def active_glmcp_payg_spend_receipts(
         if parse_error is not None:
             reject(path, parse_error)
             continue
-        if fields.get("schema", "") != GLMCP_PAYG_SPEND_RECEIPT_SCHEMA:
+        relay_schema = fields.get("schema", "")
+        if relay_schema not in GLMCP_PAYG_SPEND_RECEIPT_SCHEMAS:
             reject(
-                path, f"schema missing or unsupported; expected {GLMCP_PAYG_SPEND_RECEIPT_SCHEMA}"
+                path,
+                "schema missing or unsupported; expected one of "
+                f"{sorted(GLMCP_PAYG_SPEND_RECEIPT_SCHEMAS)}",
             )
             continue
         if fields.get("status", "") not in {"spend_estimated", "spend_reconciled"}:
@@ -1755,7 +1762,9 @@ def active_glmcp_payg_spend_receipts(
         if isinstance(task_hash, str) and not GLMCP_PAYG_SPEND_TASK_HASH_RE.fullmatch(task_hash):
             _warn_stripped_glmcp_payg_spend_task_hash(path, task_hash)
             receipt_payload.pop("task_hash", None)
-        receipt_payload["spend_receipt_schema"] = 2
+        receipt_payload["spend_receipt_schema"] = (
+            1 if relay_schema == GLMCP_PAYG_SPEND_RECEIPT_SCHEMA_V1 else 2
+        )
         try:
             receipts.append(SpendReceipt.model_validate(receipt_payload))
         except (ValueError, TypeError) as exc:

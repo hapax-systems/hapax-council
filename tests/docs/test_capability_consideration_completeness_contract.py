@@ -30,8 +30,11 @@ import sys
 from datetime import UTC, datetime
 from pathlib import Path
 
+import yaml
+
 REPO_ROOT = Path(__file__).resolve().parents[2]
 SCRIPTS = REPO_ROOT / "scripts"
+PR_4621_SCOPE_AMENDMENT = REPO_ROOT / "docs" / "runbooks" / "pr-4621-receipt-schema-2.md"
 for p in (REPO_ROOT, SCRIPTS):
     if str(p) not in sys.path:
         sys.path.insert(0, str(p))
@@ -261,6 +264,37 @@ def test_spend_receipt_field_set_is_pinned() -> None:
         "reconciliation_reason",
         "artifact_refs",
         "support_artifact_authority",
+    }
+
+
+def test_pr_4621_scope_amendment_names_the_complete_t1_mutation_surface() -> None:
+    text = PR_4621_SCOPE_AMENDMENT.read_text(encoding="utf-8")
+    amendment = yaml.safe_load(text.split("---", 2)[1])
+
+    assert amendment["task_ids"] == [
+        "receipt-resource-vector-absent-not-zero-20260902",
+        "compute-unit-absent-never-inferred-20260902",
+    ]
+    assert amendment["authority_case"] == "CASE-CAPABILITY-ROUTING-001"
+    assert amendment["parent_spec"] == (
+        "30-areas/hapax/frame/RESEARCH-latent-recurrent-reasoning-20260902.md"
+    )
+    assert amendment["risk_tier"] == "T1"
+    assert amendment["source_mutation_authorized"] is True
+    assert amendment["runtime_mutation_authorized"] is False
+    assert amendment["provider_spend_authorized"] is False
+    assert set(amendment["mutation_scope_refs"]) == {
+        "config/quota-spend-ledger-fixtures.json",
+        "docs/runbooks/pr-4621-receipt-schema-2.md",
+        "scripts/hapax-glmcp-reviewer",
+        "scripts/hapax-quota-telemetry-writer",
+        "scripts/vulture_whitelist.py",
+        "shared/quota_spend_ledger.py",
+        "tests/docs/test_capability_consideration_completeness_contract.py",
+        "tests/scripts/test_hapax_glmcp_reviewer.py",
+        "tests/scripts/test_hapax_quota_telemetry_writer.py",
+        "tests/shared/test_platform_capability_registry.py",
+        "tests/shared/test_quota_spend_ledger.py",
     }
 
 

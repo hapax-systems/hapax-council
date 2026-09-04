@@ -2110,6 +2110,38 @@ def test_spend_receipt_schema_2_renders_resource_absence_and_rejects_zero_defaul
         SpendReceipt.model_validate(payload)
 
 
+def test_spend_receipt_schema_1_upgrades_losslessly_and_unknown_schema_fails_closed() -> None:
+    payload = json.loads(QUOTA_SPEND_LEDGER_FIXTURES.read_text(encoding="utf-8"))["spend_receipts"][
+        0
+    ]
+    payload["spend_receipt_schema"] = 1
+    for field_name in (
+        "effort_provenance",
+        "wall_latency_ms",
+        "ttfb_ms",
+        "input_tokens",
+        "output_tokens",
+        "compute_unit_status",
+        "compute_unit_value",
+        "compute_unit_provenance",
+        "tokens_do_not_explain_latency",
+    ):
+        payload.pop(field_name)
+
+    migrated = SpendReceipt.model_validate(payload)
+
+    assert migrated.spend_receipt_schema == 2
+    assert migrated.spend_id == payload["spend_id"]
+    assert str(migrated.estimated_cost_usd) == "2.00"
+    rendered = migrated.model_dump(mode="json")
+    assert rendered["compute_unit_value"] == "absent"
+    assert rendered["wall_latency_ms"] == "absent"
+
+    payload["spend_receipt_schema"] = 3
+    with pytest.raises(ValidationError, match="Input should be 2"):
+        SpendReceipt.model_validate(payload)
+
+
 def test_spend_receipt_derives_tokens_do_not_explain_latency_only_with_both_inputs() -> None:
     """The pre-registered inequality is
     ``wall_latency_ms > TOKENS_DO_NOT_EXPLAIN_LATENCY_WALL_THRESHOLD_MS`` AND

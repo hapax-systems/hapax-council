@@ -1501,6 +1501,21 @@ def test_payg_spend_reservation_appends_to_live_ledger(
         (REPO_ROOT / "config" / "quota-spend-ledger-fixtures.json").read_text(encoding="utf-8")
     )
     payload["captured_at"] = "2026-07-06T14:05:00Z"
+    legacy_receipt = payload["spend_receipts"][0]
+    legacy_receipt["spend_receipt_schema"] = 1
+    for field_name in (
+        "effort_provenance",
+        "wall_latency_ms",
+        "ttfb_ms",
+        "input_tokens",
+        "output_tokens",
+        "compute_unit_status",
+        "compute_unit_value",
+        "compute_unit_provenance",
+        "tokens_do_not_explain_latency",
+    ):
+        legacy_receipt.pop(field_name)
+    legacy_spend_id = legacy_receipt["spend_id"]
     ledger.write_text(json.dumps(payload), encoding="utf-8")
     reservation = _payg_reservation(module)
 
@@ -1510,9 +1525,15 @@ def test_payg_spend_reservation_appends_to_live_ledger(
     )
 
     loaded = module.load_quota_spend_ledger(ledger)
-    assert reservation.spend_receipt.spend_id in {
-        receipt.spend_id for receipt in loaded.spend_receipts
+    loaded_ids = {receipt.spend_id for receipt in loaded.spend_receipts}
+    assert loaded_ids >= {legacy_spend_id, reservation.spend_receipt.spend_id}
+    persisted_receipts = {
+        receipt["spend_id"]: receipt
+        for receipt in json.loads(ledger.read_text(encoding="utf-8"))["spend_receipts"]
     }
+    assert persisted_receipts[legacy_spend_id]["estimated_cost_usd"] == "2.00"
+    assert persisted_receipts[legacy_spend_id]["spend_receipt_schema"] == 2
+    assert persisted_receipts[legacy_spend_id]["compute_unit_value"] == "absent"
     decision = module.evaluate_paid_route_eligibility(
         loaded,
         module._payg_budget_request(),
