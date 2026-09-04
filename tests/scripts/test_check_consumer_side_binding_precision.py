@@ -196,6 +196,72 @@ def test_unmodelled_read_without_a_writer_is_reported_once_under_its_own_kind(
 
 
 @pytest.mark.parametrize(
+    ("imports", "statement", "operation", "action"),
+    [
+        ("import io", "io.open('artifacts/data.json')", "io.open", "read"),
+        (
+            "from io import open as open_file",
+            "open_file('artifacts/data.json')",
+            "io.open",
+            "read",
+        ),
+        (
+            "import arbitrary_module",
+            "arbitrary_module.open(Path('artifacts/data.json'))",
+            "arbitrary_module.open",
+            "read",
+        ),
+        ("", "Path('artifacts/data.json').open('w')", "Path.open", "write"),
+    ],
+)
+def test_open_uses_the_mode_position_for_the_kind_of_callee(
+    gate,
+    tmp_path: Path,
+    imports: str,
+    statement: str,
+    operation: str,
+    action: str,
+) -> None:
+    _write(
+        tmp_path,
+        "shared/opening.py",
+        f"from pathlib import Path\n{imports}\ndef use_artifact():\n    return {statement}\n",
+    )
+    accesses, unresolved, _imports, _unrecognised = gate.collect_artifact_accesses(tmp_path)
+    matches = [
+        access
+        for access in accesses
+        if access.pattern == "artifacts/data.json" and access.operation == operation
+    ]
+    assert [(access.action, access.pattern) for access in matches] == [
+        (action, "artifacts/data.json")
+    ]
+    assert unresolved == 0
+
+
+def test_or_path_expression_keeps_every_resolvable_branch(gate, tmp_path: Path) -> None:
+    _write(
+        tmp_path,
+        "shared/consumer.py",
+        "import os\n"
+        "from pathlib import Path\n"
+        "def load_state():\n"
+        "    artifact = Path(os.getenv('ARTIFACT', 'artifacts/custom.json') "
+        "or 'artifacts/default.json')\n"
+        "    return artifact.read_text()\n",
+    )
+    report = gate.analyse_consumer_side(tmp_path, [])
+    assert {
+        "artifacts/custom.json",
+        "artifacts/default.json",
+    } <= {
+        finding.reader.pattern
+        for finding in report.findings
+        if finding.kind == "consumer-reads-unwritten-artifact"
+    }
+
+
+@pytest.mark.parametrize(
     "statement",
     [
         "os.replace(SOURCE, DESTINATION)",
@@ -229,6 +295,60 @@ def test_copy_and_rename_record_source_reads_and_destination_writes(
         if finding.reader.pattern == "artifacts/unwritten-source.bin"
     ]
     assert [finding.kind for finding in source_findings] == ["consumer-reads-unwritten-artifact"]
+
+
+@pytest.mark.parametrize(
+    ("import_statement", "call"),
+    [
+        ("from shutil import copy2", "copy2(SOURCE, DESTINATION)"),
+        ("from shutil import copy as duplicate", "duplicate(SOURCE, DESTINATION)"),
+        ("from os import replace", "replace(SOURCE, DESTINATION)"),
+        ("from os import rename as move", "move(SOURCE, DESTINATION)"),
+        ("import shutil as transfer", "transfer.copyfile(SOURCE, DESTINATION)"),
+    ],
+)
+def test_imported_transfer_aliases_record_both_effects(
+    gate, tmp_path: Path, import_statement: str, call: str
+) -> None:
+    _write(
+        tmp_path,
+        "shared/transfer.py",
+        f"{import_statement}\n"
+        "from pathlib import Path\n"
+        "SOURCE = Path('artifacts/unwritten-source.bin')\n"
+        "DESTINATION = Path('artifacts/copied-output.bin')\n"
+        f"def transfer_artifact():\n    {call}\n",
+    )
+    accesses, unresolved, _imports, _unrecognised = gate.collect_artifact_accesses(tmp_path)
+    effects = {(access.action, access.pattern) for access in accesses}
+    assert ("read", "artifacts/unwritten-source.bin") in effects
+    assert ("write", "artifacts/copied-output.bin") in effects
+    assert unresolved == 0
+
+
+def test_function_local_transfer_alias_does_not_leak_to_a_sibling_scope(
+    gate, tmp_path: Path
+) -> None:
+    _write(
+        tmp_path,
+        "shared/transfer.py",
+        "from pathlib import Path\n"
+        "SOURCE = Path('artifacts/unwritten-source.bin')\n"
+        "DESTINATION = Path('artifacts/copied-output.bin')\n"
+        "def transfer_artifact():\n"
+        "    from shutil import copy2 as duplicate\n"
+        "    duplicate(SOURCE, DESTINATION)\n"
+        "def duplicate(source, destination):\n"
+        "    return None\n"
+        "def unrelated():\n"
+        "    duplicate(SOURCE, Path('artifacts/not-an-output.bin'))\n",
+    )
+    accesses, unresolved, _imports, _unrecognised = gate.collect_artifact_accesses(tmp_path)
+    effects = {(access.action, access.pattern) for access in accesses}
+    assert ("read", "artifacts/unwritten-source.bin") in effects
+    assert ("write", "artifacts/copied-output.bin") in effects
+    assert ("write", "artifacts/not-an-output.bin") not in effects
+    assert unresolved == 0
 
 
 @pytest.mark.parametrize(

@@ -466,7 +466,10 @@ def is_allowlisted(
     kind: str | None = None,
 ) -> AllowlistEntry | None:
     for entry in entries:
-        if kind is not None and entry.kind != kind:
+        # Kinds are separate authority domains.  In particular, the producer-side caller uses
+        # ``kind=None`` for the original untyped entries; that must not turn a consumer-side exit
+        # into a wildcard exemption for a producer refusal.
+        if entry.kind != kind:
             continue
         if fnmatch.fnmatch(key, entry.pattern) or fnmatch.fnmatch(str(path), entry.pattern):
             return entry
@@ -565,12 +568,14 @@ class PathFunction:
     module_values: dict[str, str]
     path: Path
     returns_path: bool = False
+    lexical_prefixes: tuple[str, ...] = ()
 
 
 @dataclass(frozen=True)
 class LexicalScope:
     qualname: str
     node: ast.FunctionDef | ast.AsyncFunctionDef | ast.Lambda
+    lexical_prefixes: tuple[str, ...]
 
 
 class PathFunctionTable(dict[str, PathFunction]):
@@ -578,37 +583,80 @@ class PathFunctionTable(dict[str, PathFunction]):
 
     A repository-global table keyed by bare function name let a later module's ``artifact_path``
     overwrite an earlier module's, so calls in the earlier module resolved through an unrelated
-    return expression (review finding on #4626, round 5). Resolution now prefers the calling
-    module's own helper, then a helper of an imported module, then an exact qualified name, and
-    falls back to a bare name only when exactly one helper in the tree carries it.
+    return expression (review finding on #4626, round 5). Resolution now follows lexical scope,
+    then the calling module and explicit import bindings; it never guesses via an unrelated bare
+    helper elsewhere in the tree.
     """
 
     def __init__(self) -> None:
         super().__init__()
         self.imports_by_path: dict[Path, frozenset[str]] = {}
+        self.aliases_by_path: dict[Path, dict[str, str]] = {}
 
     def register(self, relative: Path, qualname: str, function: PathFunction) -> None:
         self[f"{_module_name(relative)}.{qualname}"] = function
 
-    def resolve(self, name: str, calling_path: Path) -> PathFunction | None:
+    def canonical_name(
+        self,
+        name: str,
+        calling_path: Path,
+        lexical_prefixes: tuple[str, ...] = (),
+        aliases: dict[str, str] | None = None,
+    ) -> str:
+        """Resolve the import binding used by a call without guessing through shadowing."""
+        if not name:
+            return name
+        head, separator, tail = name.partition(".")
+        bindings = self.aliases_by_path.get(calling_path, {}) if aliases is None else aliases
+        if head in bindings:
+            target = bindings[head]
+            if not target:  # An assignment in this scope shadows the imported binding.
+                return name
+            return f"{target}.{tail}" if separator else target
+        module = _module_name(calling_path)
+        if not separator:
+            # A lexically local or module-level helper shadows a same-named import.
+            local_keys = [f"{module}.{prefix}.{head}" for prefix in lexical_prefixes]
+            if any(key in self for key in (*local_keys, f"{module}.{head}")):
+                return name
+        return name
+
+    def resolve(
+        self,
+        name: str,
+        calling_path: Path,
+        lexical_prefixes: tuple[str, ...] = (),
+        aliases: dict[str, str] | None = None,
+    ) -> PathFunction | None:
         short = name.rsplit(".", 1)[-1]
         imports = self.imports_by_path.get(calling_path, frozenset())
         if "." in name:
             # A qualified call names its module: the exact key, or the qualifier mapped through
             # the caller's imports. It never falls back to the caller's own helper of the same
             # name (review finding on #4626, round 6: other.artifact_path() resolved locally).
-            if name in self:
-                return self[name]
-            qualifier = name.rsplit(".", 1)[0]
+            canonical = self.canonical_name(name, calling_path, lexical_prefixes, aliases)
+            if canonical in self:
+                return self[canonical]
+            qualifier = canonical.rsplit(".", 1)[0]
             for imported in imports:
                 if imported == qualifier or imported.endswith(f".{qualifier}"):
                     candidate = self.get(f"{imported}.{short}")
                     if candidate is not None:
                         return candidate
             return None
-        own = self.get(f"{_module_name(calling_path)}.{short}")
+        module = _module_name(calling_path)
+        for prefix in lexical_prefixes:
+            lexical = self.get(f"{module}.{prefix}.{short}")
+            if lexical is not None:
+                return lexical
+        own = self.get(f"{module}.{short}")
         if own is not None:
             return own
+        canonical = self.canonical_name(name, calling_path, lexical_prefixes, aliases)
+        if canonical != name:
+            imported = self.get(canonical)
+            if imported is not None:
+                return imported
         imported_candidates: dict[str, PathFunction] = {}
         for imported in imports:
             candidate = self.get(f"{imported}.{short}")
@@ -723,6 +771,8 @@ def _function_defaults(
 
 _MAX_PATH_EXPR_VARIANTS = 8
 _PATH_VALUE_PREFIX = "\0path-value:"
+_LEXICAL_SCOPE_KEY = "\0lexical-scope"
+_IMPORT_ALIAS_PREFIX = "\0import-alias:"
 
 
 def _path_value_key(name: str) -> str:
@@ -737,22 +787,48 @@ def _set_path_value(values: dict[str, str], name: str, is_path: bool) -> None:
         values.pop(key, None)
 
 
-def _first_if_expression_path(
+def _set_lexical_scope(values: dict[str, str], prefixes: tuple[str, ...]) -> None:
+    if prefixes:
+        values[_LEXICAL_SCOPE_KEY] = "|".join(prefixes)
+    else:
+        values.pop(_LEXICAL_SCOPE_KEY, None)
+
+
+def _lexical_scope(values: dict[str, str]) -> tuple[str, ...]:
+    encoded = values.get(_LEXICAL_SCOPE_KEY, "")
+    return tuple(part for part in encoded.split("|") if part)
+
+
+def _set_import_alias(values: dict[str, str], name: str, target: str | None) -> None:
+    values[f"{_IMPORT_ALIAS_PREFIX}{name}"] = target or ""
+
+
+def _import_aliases(values: dict[str, str]) -> dict[str, str]:
+    return {
+        key.removeprefix(_IMPORT_ALIAS_PREFIX): target
+        for key, target in values.items()
+        if key.startswith(_IMPORT_ALIAS_PREFIX)
+    }
+
+
+def _first_conditional_expression_path(
     node: ast.AST, path: tuple[tuple[str, int | None], ...] = ()
 ) -> tuple[tuple[str, int | None], ...] | None:
-    if isinstance(node, ast.IfExp):
+    if isinstance(node, ast.IfExp) or (
+        isinstance(node, ast.BoolOp) and isinstance(node.op, ast.Or)
+    ):
         return path
     for field_name in node._fields:
         value = getattr(node, field_name)
         if isinstance(value, ast.AST):
-            found = _first_if_expression_path(value, (*path, (field_name, None)))
+            found = _first_conditional_expression_path(value, (*path, (field_name, None)))
             if found is not None:
                 return found
         elif isinstance(value, list):
             for index, item in enumerate(value):
                 if not isinstance(item, ast.AST):
                     continue
-                found = _first_if_expression_path(item, (*path, (field_name, index)))
+                found = _first_conditional_expression_path(item, (*path, (field_name, index)))
                 if found is not None:
                     return found
     return None
@@ -787,7 +863,7 @@ def _replace_ast_node(
 
 
 def _conditional_expr_variants(node: ast.expr | None) -> tuple[list[ast.expr], bool]:
-    """Expand conditional expressions without ever selecting just one possible branch."""
+    """Expand conditional and ``or`` expressions without selecting one possible branch."""
     if node is None:
         return [], False
     pending = [node]
@@ -795,20 +871,22 @@ def _conditional_expr_variants(node: ast.expr | None) -> tuple[list[ast.expr], b
     truncated = False
     while pending:
         expression = pending.pop()
-        conditional_path = _first_if_expression_path(expression)
+        conditional_path = _first_conditional_expression_path(expression)
         if conditional_path is None:
             resolved.append(expression)
             continue
         conditional = _ast_node_at(expression, conditional_path)
-        assert isinstance(conditional, ast.IfExp)
-        if len(pending) + len(resolved) + 2 > _MAX_PATH_EXPR_VARIANTS:
+        if isinstance(conditional, ast.IfExp):
+            alternatives = (conditional.body, conditional.orelse)
+        else:
+            assert isinstance(conditional, ast.BoolOp) and isinstance(conditional.op, ast.Or)
+            alternatives = tuple(conditional.values)
+        if len(pending) + len(resolved) + len(alternatives) > _MAX_PATH_EXPR_VARIANTS:
             truncated = True
             continue
         pending.extend(
-            (
-                _replace_ast_node(expression, conditional_path, conditional.orelse),
-                _replace_ast_node(expression, conditional_path, conditional.body),
-            )
+            _replace_ast_node(expression, conditional_path, alternative)
+            for alternative in reversed(alternatives)
         )
     return resolved, truncated
 
@@ -878,13 +956,13 @@ def _resolve_path_expr(
             return _normalise_pattern(left + right, repo_root)
         return _join_pattern(left, right, repo_root)
     if isinstance(node, ast.BoolOp) and isinstance(node.op, ast.Or):
-        for item in reversed(node.values):
-            resolved = _resolve_path_expr(
-                item, values, path, repo_root, path_functions, depth=depth + 1
-            )
-            if resolved is not None:
-                return resolved
-        return None
+        resolved = [
+            _resolve_path_expr(item, values, path, repo_root, path_functions, depth=depth + 1)
+            for item in node.values
+        ]
+        # Access and assignment callers expand ``or`` first.  A nested caller that cannot carry
+        # variants must refuse an ambiguous choice instead of silently selecting one branch.
+        return resolved[0] if resolved and all(item == resolved[0] for item in resolved) else None
     if isinstance(node, ast.IfExp):
         left = _resolve_path_expr(
             node.body, values, path, repo_root, path_functions, depth=depth + 1
@@ -981,13 +1059,14 @@ def _resolve_path_expr(
             return _join_pattern(str(PurePosixPath(base).parent), new_name, repo_root)
 
     function = (
-        path_functions.resolve(name, path)
+        path_functions.resolve(name, path, _lexical_scope(values), _import_aliases(values))
         if isinstance(path_functions, PathFunctionTable)
         else (path_functions.get(name) or path_functions.get(name.rsplit(".", 1)[-1]))
     )
     if function is None:
         return None
     bound = dict(function.module_values)
+    _set_lexical_scope(bound, function.lexical_prefixes)
     for parameter, default in function.defaults.items():
         resolved = _resolve_path_expr(
             default,
@@ -1081,7 +1160,7 @@ def _is_path_valued_expr(
     }:
         return _is_path_valued_expr(node.func.value, values, path, path_functions, depth=depth + 1)
     function = (
-        path_functions.resolve(name, path)
+        path_functions.resolve(name, path, _lexical_scope(values), _import_aliases(values))
         if isinstance(path_functions, PathFunctionTable)
         else (path_functions.get(name) or path_functions.get(name.rsplit(".", 1)[-1]))
     )
@@ -1110,6 +1189,9 @@ def _module_values(
     path_functions: dict[str, PathFunction],
 ) -> dict[str, str]:
     values = _module_constants(tree)
+    if isinstance(path_functions, PathFunctionTable):
+        for name, target in path_functions.aliases_by_path.get(path, {}).items():
+            _set_import_alias(values, name, target)
     values["__file__"] = path.as_posix()
     assignments: list[ast.Assign | ast.AnnAssign] = [
         node for node in tree.body if isinstance(node, (ast.Assign, ast.AnnAssign))
@@ -1193,18 +1275,9 @@ def _mode_effect(call: ast.Call, position: int) -> str:
     return "write" if isinstance(mode, str) and any(flag in mode for flag in "wax") else "read"
 
 
-def _open_effect(call: ast.Call) -> str:
-    mode_node: ast.expr | None = None
-    if isinstance(call.func, ast.Attribute) and call.func.attr == "open":
-        if call.args:
-            mode_node = call.args[0]
-    elif len(call.args) > 1:
-        mode_node = call.args[1]
-    for keyword in call.keywords:
-        if keyword.arg == "mode":
-            mode_node = keyword.value
-    mode = mode_node.value if isinstance(mode_node, ast.Constant) else "r"
-    return "write" if isinstance(mode, str) and any(flag in mode for flag in "wax") else "read"
+def _open_effect(call: ast.Call, *, path_method: bool) -> str:
+    """Classify open without confusing a module function's path with ``Path.open``'s mode."""
+    return _mode_effect(call, 0 if path_method else 1)
 
 
 class _ScopeCallVisitor(ast.NodeVisitor):
@@ -1273,7 +1346,14 @@ def _classify_call(
     unrecognised: Counter[str],
     context_family: str,
 ) -> None:
-    name = _function_name(call)
+    raw_name = _function_name(call)
+    name = (
+        path_functions.canonical_name(
+            raw_name, path, _lexical_scope(values), _import_aliases(values)
+        )
+        if isinstance(path_functions, PathFunctionTable)
+        else raw_name
+    )
     short_name = name.rsplit(".", 1)[-1]
     if name in FILE_BACKED_APIS:
         # A file-backed API this scanner models as an access (review finding on #4626, round 5:
@@ -1331,15 +1411,21 @@ def _classify_call(
             operation=call.func.attr,
         )
     elif short_name == "open":
-        expression = (
-            call.func.value
-            if isinstance(call.func, ast.Attribute)
-            else _call_argument(call, 0, "file")
+        receiver = call.func.value if isinstance(call.func, ast.Attribute) else None
+        path_method = receiver is not None and _is_path_valued_expr(
+            receiver, values, path, path_functions
         )
+        known_function = name in {"open", "builtins.open", "codecs.open", "io.open"}
+        expression = receiver if path_method else _call_argument(call, 0, "file")
+        operation = "Path.open" if path_method else name
         _record_access(
             accesses,
             unresolved,
-            action=_open_effect(call),
+            # An unknown ``obj.open`` signature cannot authorize a writer.  Retaining it as an
+            # unmodelled read is conservative: it remains visible and cannot suppress an orphan.
+            action=_open_effect(call, path_method=path_method)
+            if known_function or path_method
+            else "read",
             expression=expression,
             call=call,
             values=values,
@@ -1347,8 +1433,11 @@ def _classify_call(
             repo_root=repo_root,
             path_functions=path_functions,
             family=context_family,
-            operation="open",
+            operation=operation,
+            modelled=known_function or path_method,
         )
+        if not known_function and not path_method:
+            unrecognised[name] += 1
     elif isinstance(call.func, ast.Attribute) and call.func.attr in {"glob", "rglob"}:
         suffix = _resolve_path_expr(
             _call_argument(call, 0), values, path, repo_root, path_functions
@@ -1372,7 +1461,7 @@ def _classify_call(
                 operation=call.func.attr,
                 append=suffix,
             )
-    elif name in {"os.replace", "os.rename"}:
+    elif name in {"os.replace", "os.rename", "os.renames"}:
         _record_access(
             accesses,
             unresolved,
@@ -1430,7 +1519,13 @@ def _classify_call(
             family=context_family,
             operation=call.func.attr,
         )
-    elif name.startswith("shutil.copy"):
+    elif name in {
+        "shutil.copy",
+        "shutil.copy2",
+        "shutil.copyfile",
+        "shutil.copytree",
+        "shutil.move",
+    }:
         _record_access(
             accesses,
             unresolved,
@@ -1577,6 +1672,44 @@ def _statement_calls(statement: ast.stmt) -> list[ast.Call]:
     return visitor.calls
 
 
+_POTENTIALLY_RAISING_EXPRESSIONS = (
+    ast.Attribute,
+    ast.Await,
+    ast.BinOp,
+    ast.Compare,
+    ast.DictComp,
+    ast.GeneratorExp,
+    ast.ListComp,
+    ast.SetComp,
+    ast.Starred,
+    ast.Subscript,
+    ast.UnaryOp,
+    ast.YieldFrom,
+)
+
+
+def _statement_may_raise(statement: ast.stmt) -> bool:
+    """Whether the statement can transfer control to its enclosing exception handler.
+
+    Only the statement's own expressions count here; nested statement bodies contribute their
+    predecessor states while they are scanned.  The analysis is deliberately conservative, but
+    constants, names, and ordinary binding statements do not invent an exception edge.
+    """
+    if isinstance(statement, (ast.Raise, ast.Assert, ast.Import, ast.ImportFrom)):
+        return True
+    if _statement_calls(statement):
+        return True
+    for child in ast.iter_child_nodes(statement):
+        if isinstance(child, (ast.stmt, ast.ExceptHandler, ast.match_case)):
+            continue
+        if any(
+            isinstance(descendant, _POTENTIALLY_RAISING_EXPRESSIONS)
+            for descendant in ast.walk(child)
+        ):
+            return True
+    return False
+
+
 def _apply_assignment(
     statement: ast.Assign | ast.AnnAssign,
     values: dict[str, str],
@@ -1600,6 +1733,7 @@ def _apply_assignment(
             # (the old fixpoint kept the old value and resolved every later read through it).
             assigned[target.id] = resolved if resolved is not None else "*"
             _set_path_value(assigned, target.id, is_path)
+            _set_import_alias(assigned, target.id, None)
         assignments.append(assigned)
     if truncated or not expressions:
         assigned = dict(values)
@@ -1617,11 +1751,13 @@ def _scope_initial_values(
     path: Path,
     repo_root: Path,
     path_functions: dict[str, PathFunction],
+    lexical_prefixes: tuple[str, ...],
 ) -> dict[str, str]:
     if isinstance(node, ast.Module):
         # Module scope executes top to bottom: a read before an assignment sees nothing.
         return {}
     values = dict(module_values)
+    _set_lexical_scope(values, lexical_prefixes)
     for arg in [*node.args.posonlyargs, *node.args.args, *node.args.kwonlyargs]:
         values[arg.arg] = "*"
         _set_path_value(values, arg.arg, _is_path_annotation(arg.annotation))
@@ -1690,10 +1826,15 @@ class _BlockScanner:
         self.context_family = context_family
 
     def scan_block(
-        self, statements: list[ast.stmt], states: list[dict[str, str]]
+        self,
+        statements: list[ast.stmt],
+        states: list[dict[str, str]],
+        exception_states: list[dict[str, str]] | None = None,
     ) -> list[dict[str, str]]:
         for statement in statements:
-            states = self._scan_statement(statement, states)
+            if not states:
+                break
+            states = self._scan_statement(statement, states, exception_states)
         return states
 
     def _classify(self, call: ast.Call, states: list[dict[str, str]]) -> None:
@@ -1722,12 +1863,32 @@ class _BlockScanner:
             self.unrecognised[name] += 1
 
     def _scan_statement(
-        self, statement: ast.stmt, states: list[dict[str, str]]
+        self,
+        statement: ast.stmt,
+        states: list[dict[str, str]],
+        exception_states: list[dict[str, str]] | None = None,
     ) -> list[dict[str, str]]:
         if isinstance(statement, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)):
+            for state in states:
+                _set_import_alias(state, statement.name, None)
             return states
+        if exception_states is not None and _statement_may_raise(statement):
+            # An assignment's right-hand side runs before its target is rebound.  Handlers see
+            # the state entering the raising statement, never its normal post-state.
+            exception_states.extend(_fork(states))
         for call in _statement_calls(statement):
             self._classify(call, states)
+        if isinstance(statement, (ast.Import, ast.ImportFrom)):
+            bindings = _import_bindings(
+                [statement],
+                _module_name(self.path),
+                is_package=self.path.name == "__init__.py",
+            )
+            imported = _fork(states)
+            for state in imported:
+                for name, target in bindings.items():
+                    _set_import_alias(state, name, target)
+            return imported
         if isinstance(statement, (ast.Assign, ast.AnnAssign)):
             assigned: list[dict[str, str]] = []
             for state in states:
@@ -1738,39 +1899,53 @@ class _BlockScanner:
                 )
             return _merge_states(assigned)
         if isinstance(statement, ast.If):
-            taken = self.scan_block(statement.body, _fork(states))
+            taken = self.scan_block(statement.body, _fork(states), exception_states)
             not_taken = (
-                self.scan_block(statement.orelse, _fork(states))
+                self.scan_block(statement.orelse, _fork(states), exception_states)
                 if statement.orelse
                 else _fork(states)
             )
             return _merge_states(taken + not_taken)
         if isinstance(statement, (ast.For, ast.AsyncFor, ast.While)):
-            looped = self.scan_block(statement.body, _fork(states))
+            looped = self.scan_block(statement.body, _fork(states), exception_states)
             after = _merge_states(_fork(states) + looped)
-            return self.scan_block(statement.orelse, after) if statement.orelse else after
+            return (
+                self.scan_block(statement.orelse, after, exception_states)
+                if statement.orelse
+                else after
+            )
         if isinstance(statement, (ast.With, ast.AsyncWith)):
-            return self.scan_block(statement.body, states)
+            return self.scan_block(statement.body, states, exception_states)
         if isinstance(statement, (ast.Try, getattr(ast, "TryStar", ast.Try))):
-            body_states = _fork(states)
-            reachable_body_states: list[dict[str, str]] = []
-            for body_statement in statement.body:
-                body_states = self._scan_statement(body_statement, body_states)
-                reachable_body_states += _fork(body_states)
-            handler_inputs = _merge_states(reachable_body_states or _fork(states))
+            body_exception_states: list[dict[str, str]] = []
+            body_states = self.scan_block(statement.body, _fork(states), body_exception_states)
+            if exception_states is not None:
+                # A typed inner handler may not catch every exception its body can raise.
+                exception_states.extend(_fork(body_exception_states))
+            handler_inputs = _merge_states(body_exception_states)
             handler_states: list[dict[str, str]] = []
             for handler in statement.handlers:
-                handler_states += self.scan_block(handler.body, _fork(handler_inputs))
+                handler_states += self.scan_block(
+                    handler.body, _fork(handler_inputs), exception_states
+                )
             else_states = (
-                self.scan_block(statement.orelse, body_states) if statement.orelse else body_states
+                self.scan_block(statement.orelse, body_states, exception_states)
+                if statement.orelse
+                else body_states
             )
             merged = _merge_states(else_states + handler_states)
-            return self.scan_block(statement.finalbody, merged) if statement.finalbody else merged
+            return (
+                self.scan_block(statement.finalbody, merged, exception_states)
+                if statement.finalbody
+                else merged
+            )
         if isinstance(statement, ast.Match):
             case_states: list[dict[str, str]] = []
             for case in statement.cases:
-                case_states += self.scan_block(case.body, _fork(states))
+                case_states += self.scan_block(case.body, _fork(states), exception_states)
             return _merge_states(case_states + _fork(states))
+        if isinstance(statement, (ast.Return, ast.Raise)):
+            return []
         return states
 
 
@@ -1783,8 +1958,11 @@ def _scan_scope(
     accesses: list[ArtifactAccess],
     unresolved: list[int],
     unrecognised: Counter[str],
+    lexical_prefixes: tuple[str, ...] = (),
 ) -> None:
-    initial = _scope_initial_values(node, module_values, path, repo_root, path_functions)
+    initial = _scope_initial_values(
+        node, module_values, path, repo_root, path_functions, lexical_prefixes
+    )
     if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
         context = node.name
     elif isinstance(node, ast.Lambda):
@@ -1820,15 +1998,20 @@ def _iter_function_scopes(
     class _LexicalScopeVisitor(ast.NodeVisitor):
         def __init__(self) -> None:
             self.prefix: list[str] = []
+            self.function_prefixes: list[str] = []
             self.scopes: list[LexicalScope] = []
 
         def _visit_named(self, node: ast.FunctionDef | ast.AsyncFunctionDef | ast.ClassDef) -> None:
             qualname = ".".join((*self.prefix, node.name))
             if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
-                self.scopes.append(LexicalScope(qualname, node))
+                lexical_prefixes = (qualname, *reversed(self.function_prefixes))
+                self.scopes.append(LexicalScope(qualname, node, lexical_prefixes))
+                self.function_prefixes.append(qualname)
             self.prefix.append(node.name)
             self.generic_visit(node)
             self.prefix.pop()
+            if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
+                self.function_prefixes.pop()
 
         def visit_FunctionDef(self, node: ast.FunctionDef) -> None:
             self._visit_named(node)
@@ -1842,10 +2025,13 @@ def _iter_function_scopes(
         def visit_Lambda(self, node: ast.Lambda) -> None:
             label = f"<lambda>@{node.lineno}:{node.col_offset}"
             qualname = ".".join((*self.prefix, label))
-            self.scopes.append(LexicalScope(qualname, node))
+            lexical_prefixes = (qualname, *reversed(self.function_prefixes))
+            self.scopes.append(LexicalScope(qualname, node, lexical_prefixes))
+            self.function_prefixes.append(qualname)
             self.prefix.append(label)
             self.generic_visit(node)
             self.prefix.pop()
+            self.function_prefixes.pop()
 
     visitor = _LexicalScopeVisitor()
     visitor.visit(tree)
@@ -1886,6 +2072,50 @@ def _module_imports(
     return frozenset(imports)
 
 
+def _import_bindings(
+    statements: list[ast.stmt], module_name: str = "", *, is_package: bool = False
+) -> dict[str, str]:
+    """Local import binding -> canonical dotted name for call provenance."""
+    aliases: dict[str, str] = {}
+    parts = module_name.split(".") if module_name else []
+    for node in statements:
+        if isinstance(node, ast.Import):
+            for alias in node.names:
+                local = alias.asname or alias.name.split(".", 1)[0]
+                target = alias.name if alias.asname else alias.name.split(".", 1)[0]
+                aliases[local] = target
+        elif isinstance(node, ast.ImportFrom):
+            if node.level:
+                drop = node.level - 1 if is_package else node.level
+                base = ".".join(parts[: max(len(parts) - drop, 0)])
+            else:
+                base = ""
+            module = ".".join(part for part in (base, node.module or "") if part)
+            for alias in node.names:
+                if alias.name == "*":
+                    continue
+                local = alias.asname or alias.name
+                aliases[local] = ".".join(part for part in (module, alias.name) if part)
+    return aliases
+
+
+def _module_aliases(
+    tree: ast.Module, module_name: str = "", *, is_package: bool = False
+) -> dict[str, str]:
+    """Top-level import bindings inherited by functions after module initialization."""
+    aliases: dict[str, str] = {}
+    for statement in tree.body:
+        aliases.update(_import_bindings([statement], module_name, is_package=is_package))
+        if isinstance(statement, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)):
+            aliases[statement.name] = ""
+        elif isinstance(statement, (ast.Assign, ast.AnnAssign)):
+            targets = statement.targets if isinstance(statement, ast.Assign) else [statement.target]
+            for target in targets:
+                if isinstance(target, ast.Name):
+                    aliases[target.id] = ""
+    return aliases
+
+
 def collect_artifact_accesses(
     repo_root: Path,
     *,
@@ -1906,6 +2136,12 @@ def collect_artifact_accesses(
         for relative, tree in parsed
     }
     path_functions.imports_by_path = imports_by_path
+    path_functions.aliases_by_path = {
+        relative: _module_aliases(
+            tree, _module_name(relative), is_package=relative.name == "__init__.py"
+        )
+        for relative, tree in parsed
+    }
     module_values_by_path: dict[Path, dict[str, str]] = {}
     for relative, tree in parsed:
         module_values_by_path[relative] = _module_values(tree, relative, repo_root, path_functions)
@@ -1924,6 +2160,8 @@ def collect_artifact_accesses(
                     arg.arg
                     for arg in [*node.args.posonlyargs, *node.args.args, *node.args.kwonlyargs]
                 )
+                function_values = dict(values)
+                _set_lexical_scope(function_values, scope.lexical_prefixes)
                 path_functions.register(
                     relative,
                     scope.qualname,
@@ -1931,9 +2169,12 @@ def collect_artifact_accesses(
                         params,
                         _function_defaults(node),
                         return_expr,
-                        values,
+                        function_values,
                         relative,
-                        _is_path_valued_expr(return_expr, values, relative, path_functions),
+                        _is_path_valued_expr(
+                            return_expr, function_values, relative, path_functions
+                        ),
+                        scope.lexical_prefixes,
                     ),
                 )
 
@@ -1962,6 +2203,7 @@ def collect_artifact_accesses(
                 accesses,
                 unresolved,
                 unrecognised,
+                scope.lexical_prefixes,
             )
     unique = list(dict.fromkeys(accesses))
     return unique, unresolved[0], imports_by_path, dict(sorted(unrecognised.items()))
@@ -2464,14 +2706,8 @@ def analyse_consumer_side(
 ) -> ConsumerSideReport:
     tracked = _git_tracked_paths(repo_root)
     accesses, unresolved, imports_by_path, unrecognised = collect_artifact_accesses(repo_root)
-    # The dynamic-root kind states an instrumentation bound, not that a live
-    # producer exists.  Test fixtures are therefore valid writer evidence for
-    # the brief's "ANY writer in the tree" rule, but remain excluded from live
-    # matching, mismatch, decay, and unresolved counts below.
-    test_accesses, _, _, _ = collect_artifact_accesses(repo_root, tests_only=True)
     reads = [item for item in accesses if item.action == "read"]
     writes = [item for item in accesses if item.action == "write"]
-    writes_anywhere = writes + [item for item in test_accesses if item.action == "write"]
     findings: list[ConsumerSideFinding] = []
     pairs: list[ArtifactPair] = []
     exclusions = Counter({name: 0 for name in CONSUMER_SIDE_EXCLUSIONS})
@@ -2511,7 +2747,9 @@ def analyse_consumer_side(
                 )
             )
         elif not matching:
-            dynamic_writers = _dynamic_root_writers(pattern, writes_anywhere)
+            # Classification evidence is live evidence: a fixture under tests/ cannot downgrade
+            # an absent producer into the weaker dynamic-root finding.
+            dynamic_writers = _dynamic_root_writers(pattern, writes)
             producer_mentions = _non_python_mentions(pattern, non_python_sources, repo_root)
             documented_mentions = _non_python_mentions(pattern, documented_sources, repo_root)
             if dynamic_writers:

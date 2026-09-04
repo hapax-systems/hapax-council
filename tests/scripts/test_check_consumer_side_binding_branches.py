@@ -135,27 +135,44 @@ def test_try_except_and_loops_fork_the_value_state(gate, tmp_path: Path) -> None
     } <= _unwritten_patterns(report, "shared/consumer.py")
 
 
-def test_except_handler_sees_path_state_reached_inside_the_try(gate, tmp_path: Path) -> None:
+def test_except_handler_sees_state_entering_the_raising_assignment(gate, tmp_path: Path) -> None:
+    _write(
+        tmp_path,
+        "shared/consumer.py",
+        "from pathlib import Path\n"
+        "def load_state(choose):\n"
+        "    artifact = Path('artifacts/fallback.json')\n"
+        "    try:\n"
+        "        artifact = choose()\n"
+        "    except OSError:\n"
+        "        return artifact.read_text()\n"
+        "    return ''\n",
+    )
+    report = gate.analyse_consumer_side(tmp_path, [])
+    assert "artifacts/fallback.json" in _unwritten_patterns(report, "shared/consumer.py")
+
+
+def test_except_handler_does_not_see_state_after_the_last_raising_statement(
+    gate, tmp_path: Path
+) -> None:
     _write(
         tmp_path,
         "shared/consumer.py",
         "from pathlib import Path\n"
         "def load_state():\n"
+        "    artifact = Path('artifacts/fallback.json')\n"
         "    try:\n"
-        "        artifact = Path('artifacts/fallback.json')\n"
-        "        value = Path('artifacts/primary.json').read_text()\n"
+        "        Path('artifacts/primary.json').read_text()\n"
         "        artifact = Path('artifacts/after-read.json')\n"
-        "        return value\n"
         "    except OSError:\n"
-        "        return artifact.read_text()\n",
+        "        return artifact.read_text()\n"
+        "    return ''\n",
     )
     report = gate.analyse_consumer_side(tmp_path, [])
-    assert {
-        "artifacts/primary.json",
-        "artifacts/fallback.json",
-        "artifacts/after-read.json",
-    } <= _unwritten_patterns(report, "shared/consumer.py")
-    assert report.unresolvable == 0
+    patterns = _unwritten_patterns(report, "shared/consumer.py")
+    assert "artifacts/fallback.json" in patterns
+    assert "artifacts/primary.json" in patterns
+    assert "artifacts/after-read.json" not in patterns
 
 
 def test_too_many_branch_states_collapse_to_unresolvable_not_a_guess(gate, tmp_path: Path) -> None:
@@ -290,6 +307,26 @@ def test_nested_helpers_cannot_replace_a_module_level_path_helper(gate, tmp_path
     assert "artifacts/module.json" in patterns
     assert "artifacts/method.json" not in patterns
     assert "artifacts/nested.json" not in patterns
+
+
+def test_nested_caller_resolves_its_lexically_nearest_path_helper(gate, tmp_path: Path) -> None:
+    _write(
+        tmp_path,
+        "shared/consumer.py",
+        "from pathlib import Path\n"
+        "def artifact_path():\n"
+        "    return Path('artifacts/module.json')\n"
+        "def load_state():\n"
+        "    def artifact_path():\n"
+        "        return Path('artifacts/nested-orphan.json')\n"
+        "    return artifact_path().read_text()\n"
+        "def write_module_state():\n"
+        "    artifact_path().write_text('{}')\n",
+    )
+    report = gate.analyse_consumer_side(tmp_path, [])
+    patterns = _unwritten_patterns(report, "shared/consumer.py")
+    assert "artifacts/nested-orphan.json" in patterns
+    assert "artifacts/module.json" not in patterns
 
 
 @pytest.mark.parametrize(

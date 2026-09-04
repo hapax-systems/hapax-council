@@ -240,7 +240,7 @@ def test_fixed_reader_rejects_same_directory_different_fixed_basename(gate, tmp_
     assert [item.kind for item in matches] == ["consumer-reads-unwritten-artifact"]
 
 
-def test_dynamic_root_read_with_same_basename_writer_is_downgraded(gate, tmp_path: Path) -> None:
+def test_dynamic_root_read_with_only_a_test_writer_stays_unwritten(gate, tmp_path: Path) -> None:
     _write(
         tmp_path,
         "shared/consumer.py",
@@ -250,6 +250,32 @@ def test_dynamic_root_read_with_same_basename_writer_is_downgraded(gate, tmp_pat
     _write(
         tmp_path,
         "tests/writer.py",
+        "from pathlib import Path\n"
+        "def write_metadata():\n"
+        "    Path('elsewhere/wanted.metadata.json').write_text('{}')\n",
+    )
+    report = gate.analyse_consumer_side(tmp_path, [])
+    matches = [
+        finding
+        for finding in report.findings
+        if finding.reader.pattern == "*/nested/wanted.metadata.json"
+    ]
+    assert [finding.kind for finding in matches] == ["consumer-reads-unwritten-artifact"]
+    assert not matches[0].writers
+
+
+def test_dynamic_root_read_with_live_same_basename_writer_is_downgraded(
+    gate, tmp_path: Path
+) -> None:
+    _write(
+        tmp_path,
+        "shared/consumer.py",
+        "def load_metadata(root):\n"
+        "    return (root / 'nested' / 'wanted.metadata.json').read_text()\n",
+    )
+    _write(
+        tmp_path,
+        "shared/writer.py",
         "from pathlib import Path\n"
         "def write_metadata():\n"
         "    Path('elsewhere/wanted.metadata.json').write_text('{}')\n",
