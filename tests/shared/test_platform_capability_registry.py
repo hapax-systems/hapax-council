@@ -711,7 +711,11 @@ def _make_agy_receipt(
     quota_reason_codes: list[str] | None = None,
 ) -> PlatformCapabilityReceipt:
     if quota_status is EvidenceStatus.OBSERVED:
-        quota_refs = quota_refs or ["test:agy:route-specific-quota"]
+        quota_refs = quota_refs or [
+            "test:agy:route-specific-quota",
+            # the producer names each observed route (#4616); an unnamed route is unobserved
+            "platform-capability-registry:agy.review.direct:quota:observed",
+        ]
         quota_reason_codes = quota_reason_codes or []
     else:
         quota_refs = quota_refs or ["test:agy:quota-unobservable"]
@@ -1043,7 +1047,13 @@ def test_claude_observed_platform_quota_receipt_does_not_clear_live_admission_bl
                 source="test",
                 observed_at=observed_at,
                 stale_after="15m",
-                evidence_refs=["test:claude:observed-platform-quota"],
+                # The producer names every route it observed; a receipt that names none is,
+                # per route, an absent observation (#4616). This test is about the route-specific
+                # admission staying required even when the platform receipt names the route.
+                evidence_refs=[
+                    "test:claude:observed-platform-quota",
+                    "platform-capability-registry:claude.headless.full:quota:observed",
+                ],
                 reason_codes=[],
             )
         }
@@ -1060,6 +1070,68 @@ def test_claude_observed_platform_quota_receipt_does_not_clear_live_admission_bl
         "test:claude:observed-platform-quota"
         in route["freshness"]["evidence"]["quota"]["evidence_refs"]
     )
+
+
+def test_a_platform_receipt_naming_one_route_does_not_observe_its_siblings(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    """Review finding on #4616: one route's fresh receipt used to clear the quota blockers of
+    every route on the platform. The producer now names each observed route; the consumer treats
+    an OBSERVED receipt that does not name a route as an absent observation for that route."""
+    monkeypatch.setenv("HAPAX_QUOTA_SPEND_LEDGER_LIVE", str(tmp_path / "missing-live.json"))
+    observed_at = datetime(2026, 5, 9, 20, 0, tzinfo=UTC)
+    now = datetime(2026, 5, 9, 20, 1, tzinfo=UTC)
+
+    def _receipt_naming(*route_ids: str):
+        return _make_receipt(observed_at=observed_at).model_copy(
+            update={
+                "quota": SurfaceEvidence(
+                    status=EvidenceStatus.OBSERVED,
+                    source="test",
+                    observed_at=observed_at,
+                    stale_after="15m",
+                    evidence_refs=[
+                        "test:claude:observed-platform-quota",
+                        *(
+                            f"platform-capability-registry:{route_id}:quota:observed"
+                            for route_id in route_ids
+                        ),
+                    ],
+                    reason_codes=[],
+                )
+            }
+        )
+
+    def _sonnet() -> dict[str, Any]:
+        payload = _payload()
+        route = _route_payload(payload, "claude.headless.sonnet")
+        route["blocked_reasons"] = [
+            "account_live_quota_receipt_absent",
+            "quota_telemetry_unknown",
+        ]
+        route["freshness"]["evidence"]["quota"]["blocked_reasons"] = [
+            "account_live_quota_receipt_absent",
+            "quota_telemetry_unknown",
+        ]
+        return route
+
+    # A receipt that observed only claude.headless.full: the sonnet route stays quota-blocked.
+    unnamed = _sonnet()
+    _apply_receipt_to_route_payload(unnamed, _receipt_naming("claude.headless.full"), now=now)
+    assert "account_live_quota_receipt_absent" in unnamed["blocked_reasons"]
+    assert (
+        "account_live_quota_receipt_absent"
+        in (unnamed["freshness"]["evidence"]["quota"]["blocked_reasons"])
+    )
+
+    # The same receipt naming the sonnet route clears its quota blockers (control).
+    named = _sonnet()
+    _apply_receipt_to_route_payload(named, _receipt_naming("claude.headless.sonnet"), now=now)
+    assert "account_live_quota_receipt_absent" not in named["blocked_reasons"]
+    assert "quota_telemetry_unknown" not in named["blocked_reasons"]
+    assert named["freshness"]["evidence"]["quota"]["blocked_reasons"] == []
+    assert named["telemetry"]["quota_source"] == "manual"
 
 
 def test_loader_applies_route_authority_receipts_after_platform_receipts(tmp_path: Path) -> None:
@@ -1209,7 +1281,10 @@ def test_agy_observed_route_quota_receipt_does_not_admit_review_route(
         _make_agy_receipt(
             observed_at=receipt_time,
             quota_status=EvidenceStatus.OBSERVED,
-            quota_refs=["test:agy:route-quota-observed"],
+            quota_refs=[
+                "test:agy:route-quota-observed",
+                "platform-capability-registry:agy.review.direct:quota:observed",
+            ],
         ),
     )
 
@@ -1247,7 +1322,10 @@ def test_agy_observed_route_quota_receipt_injects_missing_route_specific_blocker
         _make_agy_receipt(
             observed_at=datetime(2026, 7, 5, 14, 51, tzinfo=UTC),
             quota_status=EvidenceStatus.OBSERVED,
-            quota_refs=["test:agy:route-quota-observed"],
+            quota_refs=[
+                "test:agy:route-quota-observed",
+                "platform-capability-registry:agy.review.direct:quota:observed",
+            ],
         ),
     )
 
