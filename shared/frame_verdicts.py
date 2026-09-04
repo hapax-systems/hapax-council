@@ -102,6 +102,8 @@ class DecayedMember:
     files: tuple[Path, ...]
     qualified_roots: tuple[QualifiedLocation, ...] = ()
     qualified_files: tuple[QualifiedLocation, ...] = ()
+    excluded_roots: tuple[Path, ...] = ()
+    excluded_prefixes: tuple[Path, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -235,7 +237,9 @@ def current_epoch_dir(procedure_root: Path) -> Path:
     return epoch_dir
 
 
-def _qualified_location(raw: str, *, scope_ref: bool = False) -> tuple[QualifiedLocation, bool]:
+def _qualified_location(
+    raw: str, *, scope_ref: bool = False
+) -> tuple[QualifiedLocation, bool, str | None]:
     """Parse one scheme-qualified declaration or scope without lossy URI normalisation."""
     text = raw.strip()
     match = _NON_FILESYSTEM_ROOT.match(text)
@@ -273,16 +277,59 @@ def _qualified_location(raw: str, *, scope_ref: bool = False) -> tuple[Qualified
         raise NonCanonicalScopeRef(
             f"scheme-qualified ref {raw!r} contains a '.' or '..' path segment"
         )
+    scope_pattern: str | None = None
     if scope_ref:
-        while parts and _WILDCARD.search(parts[-1]):
-            parts.pop()
+        wildcard_at = next(
+            (index for index, part in enumerate(parts) if _WILDCARD.search(part)), None
+        )
+        if wildcard_at is not None:
+            scope_pattern = "/".join(parts[wildcard_at:])
+            parts = parts[:wildcard_at]
             dirlike = True
     if any(_WILDCARD.search(part) for part in parts):
         raise NonCanonicalScopeRef(
             f"scheme-qualified ref {raw!r} has a wildcard before its tail; containment is "
             "undecidable"
         )
-    return QualifiedLocation(scheme.casefold(), authority, absolute_path, tuple(parts)), dirlike
+    return (
+        QualifiedLocation(scheme.casefold(), authority, absolute_path, tuple(parts)),
+        dirlike,
+        scope_pattern,
+    )
+
+
+def _exclusion_locations(
+    exclusions: list[object], *, declaration_dir: Path
+) -> tuple[tuple[Path, ...], tuple[Path, ...]]:
+    """Resolve the producer's ordinary containment and trailing-``*`` prefix exclusions."""
+    roots: list[Path] = []
+    prefixes: list[Path] = []
+    for index, exclusion in enumerate(exclusions):
+        if not isinstance(exclusion, dict):
+            raise FrameVerdictsUnavailable(
+                f"mass exclusion {index} is not a mapping; its effective surface is undecidable"
+            )
+        paths = exclusion.get("paths")
+        if not isinstance(paths, list) or not paths:
+            raise FrameVerdictsUnavailable(
+                f"mass exclusion {index} has no non-empty paths list; its effective surface is "
+                "undecidable"
+            )
+        for raw in paths:
+            if not isinstance(raw, str) or not raw:
+                raise FrameVerdictsUnavailable(
+                    f"mass exclusion {index} contains a non-string or empty path; its effective "
+                    "surface is undecidable"
+                )
+            prefix = raw.endswith("*")
+            text = raw[:-1] if prefix else raw
+            path = Path(text)
+            base = declaration_dir / path if not path.is_absolute() else path
+            if prefix:
+                prefixes.append(base.parent.resolve() / base.name)
+            else:
+                roots.append(base.resolve())
+    return tuple(roots), tuple(prefixes)
 
 
 def _member_location(
@@ -498,6 +545,9 @@ def load_frame_verdicts(
             f"frame epoch {epoch_dir.name} cannot be bound to the current mass; declaration "
             f"identity changed for member(s) {drifted}"
         )
+    excluded_roots, excluded_prefixes = _exclusion_locations(
+        exclusions, declaration_dir=mass_path.parent
+    )
 
     decay: dict[str, set[str]] = {}
     seen_verdicts: set[tuple[str, str]] = set()
@@ -591,6 +641,8 @@ def load_frame_verdicts(
                     files,
                     qualified_roots,
                     qualified_files,
+                    excluded_roots,
+                    excluded_prefixes,
                 )
             )
         if not roots and not files and not qualified_roots and not qualified_files:
@@ -604,28 +656,35 @@ def load_frame_verdicts(
     )
 
 
-def resolve_scope_ref(ref: str, *, council_root: Path, vault_root: Path) -> tuple[Path, bool]:
-    """A declared ref as an absolute path plus whether it names a directory-like surface.
-
-    A trailing wildcard segment (``scripts/**``, ``docs/*.md``) is stripped and marks the ref as
-    directory-like. Relative refs are tried against the council checkout and then the vault; a
-    ref that exists under neither resolves under the council root and will simply not match.
-    """
+def _filesystem_scope_parts(ref: str) -> tuple[list[str], str | None, bool]:
+    """Split a filesystem ref into its literal path prefix and unmodified glob tail."""
     text = ref.strip().replace("\\", "/")
-    dirlike = text.endswith("/")
     segments = [segment for segment in text.split("/") if segment not in ("", ".")]
-    absolute = text.startswith("/")
     if any(segment == ".." for segment in segments):
-        # A ref that climbs out of its own tree cannot be contained by a member, and normalising it
-        # silently would let `scripts/../../elsewhere/x.py` read as inside `scripts/` (review
-        # finding, four families, 2026-09-04). Refuse the ref rather than guess what it meant.
         raise NonCanonicalScopeRef(
             f"mutation_scope_ref {ref!r} contains a '..' segment; declare the surface it actually "
             "names, without climbing out of it"
         )
-    while segments and _WILDCARD.search(segments[-1]):
-        segments.pop()
-        dirlike = True
+    wildcard_at = next(
+        (index for index, segment in enumerate(segments) if _WILDCARD.search(segment)), None
+    )
+    if wildcard_at is None:
+        return segments, None, text.endswith("/")
+    return segments[:wildcard_at], "/".join(segments[wildcard_at:]), True
+
+
+def resolve_scope_ref(ref: str, *, council_root: Path, vault_root: Path) -> tuple[Path, bool]:
+    """A declared ref as an absolute path plus whether it names a directory-like surface.
+
+    A wildcard tail (``scripts/**``, ``docs/**/generated/*.md``) is preserved by
+    :func:`scope_within_decayed` but stripped from the literal path resolved here. Relative refs are
+    tried against the council checkout and then the vault; a ref that exists under neither resolves
+    under the council root and will simply not match.
+    """
+    text = ref.strip().replace("\\", "/")
+    segments, scope_pattern, dirlike = _filesystem_scope_parts(ref)
+    absolute = text.startswith("/")
+    dirlike = dirlike or scope_pattern is not None
     joined = ("/" if absolute else "") + "/".join(segments)
     path = Path(joined).expanduser() if joined else Path(".")
     if not path.is_absolute():
@@ -703,19 +762,223 @@ def _pattern_matches(relative: str, name: str, pattern: str) -> bool:
     return fnmatch.fnmatchcase(name, pattern)
 
 
-def ref_within_member(path: Path, dirlike: bool, member: DecayedMember) -> bool:
-    if any(path == file for file in member.files):
+def _glob_segments(pattern: str) -> tuple[str, ...]:
+    segments = tuple(part for part in pattern.strip("/").split("/") if part)
+    if segments and segments[-1] == "**":
+        return (*segments, "*")
+    return segments
+
+
+def _normalise_member_pattern(pattern: str) -> str:
+    pattern = pattern.strip().replace("\\", "/").strip("/")
+    if "/" not in pattern:
+        pattern = f"**/{pattern}"
+    if pattern.endswith("/**"):
+        pattern += "/*"
+    return pattern
+
+
+def _segment_pattern_covers(member_pattern: str, scope_pattern: str) -> bool:
+    """A deliberately small, sound proof that one segment glob contains another."""
+    if member_pattern == "*" or member_pattern == scope_pattern:
         return True
+    if not _WILDCARD.search(scope_pattern):
+        return fnmatch.fnmatchcase(scope_pattern, member_pattern)
+    return False
+
+
+def _glob_pattern_covers(member_pattern: str, scope_pattern: str) -> bool:
+    """Prove glob-language containment for the path shapes the declaration uses.
+
+    ``**`` is handled as a whole-segment Kleene star. Segment-glob containment is intentionally
+    conservative: equality, a universal member ``*``, and literal scope segments are decidable.
+    More elaborate overlapping glob languages are left to the fail-closed caller.
+    """
+    member_segments = _glob_segments(_normalise_member_pattern(member_pattern))
+    scope_segments = _glob_segments(scope_pattern)
+    memo: dict[tuple[int, int], bool] = {}
+
+    def covers(member_at: int, scope_at: int) -> bool:
+        key = (member_at, scope_at)
+        if key in memo:
+            return memo[key]
+        if member_at == len(member_segments):
+            result = scope_at == len(scope_segments)
+        elif member_segments[member_at] == "**":
+            if member_at + 1 == len(member_segments):
+                result = True
+            else:
+                result = covers(member_at + 1, scope_at) or (
+                    scope_at < len(scope_segments) and covers(member_at, scope_at + 1)
+                )
+        elif scope_at == len(scope_segments) or scope_segments[scope_at] == "**":
+            result = False
+        else:
+            result = _segment_pattern_covers(
+                member_segments[member_at], scope_segments[scope_at]
+            ) and covers(member_at + 1, scope_at + 1)
+        memo[key] = result
+        return result
+
+    return covers(0, 0)
+
+
+def _segment_witnesses(pattern: str) -> tuple[str, ...]:
+    out: list[str] = []
+    index = 0
+    while index < len(pattern):
+        char = pattern[index]
+        if char == "*":
+            out.append("scope")
+        elif char == "?":
+            out.append("x")
+        elif char == "[":
+            close = pattern.find("]", index + 1)
+            if close != -1:
+                choices = pattern[index + 1 : close].lstrip("!^")
+                out.append(choices[0] if choices else "x")
+                index = close
+            else:
+                out.append("[")
+        else:
+            out.append(char)
+        index += 1
+    primary = "".join(out) or "scope"
+    candidates = [primary]
+    if pattern == "*":
+        candidates.extend(("scope.py", "scope.md"))
+    return tuple(dict.fromkeys(c for c in candidates if fnmatch.fnmatchcase(c, pattern)))
+
+
+def _glob_witnesses(pattern: str) -> tuple[str, ...]:
+    paths: list[tuple[str, ...]] = [()]
+    for segment in _glob_segments(pattern):
+        if segment == "**":
+            expansions = ((), ("scope",), ("scope", "nested"))
+        else:
+            expansions = tuple((witness,) for witness in _segment_witnesses(segment))
+        paths = [(*prefix, *suffix) for prefix in paths for suffix in expansions][:64]
+    return tuple("/".join(parts) for parts in paths if parts)
+
+
+def _scope_glob_covered(scope_pattern: str, member_patterns: tuple[str, ...]) -> bool:
+    if any(_glob_pattern_covers(pattern, scope_pattern) for pattern in member_patterns):
+        return True
+    normalised = tuple(_normalise_member_pattern(pattern) for pattern in member_patterns)
+    for witness in _glob_witnesses(scope_pattern):
+        if not any(_glob_to_regex(pattern).match(witness) for pattern in normalised):
+            return False
+    raise NonCanonicalScopeRef(
+        f"scope glob {scope_pattern!r} overlaps member patterns {list(member_patterns)!r}, but "
+        "whole-surface containment cannot be decided safely"
+    )
+
+
+def _path_is_excluded(path: Path, member: DecayedMember) -> bool:
+    if any(path == root or root in path.parents for root in member.excluded_roots):
+        return True
+    text = str(path)
+    return any(text.startswith(str(prefix)) for prefix in member.excluded_prefixes)
+
+
+def _glob_intersects_subtree(scope_pattern: str, relative_prefix: str) -> bool | None:
+    """Whether a scope glob has a path at or below one concrete exclusion prefix."""
+    prefix = tuple(part for part in relative_prefix.split("/") if part)
+    regex = _glob_to_regex(scope_pattern)
+    candidates = [relative_prefix]
+    candidates.extend(
+        f"{relative_prefix}/{tail}" if relative_prefix else tail
+        for tail in ("scope", "scope.py", "scope.md", "nested/scope.md")
+    )
+    if any(candidate and regex.match(candidate) for candidate in candidates):
+        return True
+    if any(
+        witness == relative_prefix or witness.startswith(relative_prefix + "/")
+        for witness in _glob_witnesses(scope_pattern)
+    ):
+        return True
+
+    segments = _glob_segments(scope_pattern)
+    if "**" not in segments:
+        if len(prefix) > len(segments):
+            return False
+        for concrete, pattern in zip(prefix, segments, strict=False):
+            if not fnmatch.fnmatchcase(concrete, pattern):
+                return False
+        witnesses = [
+            *prefix,
+            *(_segment_witnesses(pattern)[0] for pattern in segments[len(prefix) :]),
+        ]
+        return bool(regex.match("/".join(witnesses)))
+
+    for concrete, pattern in zip(prefix, segments, strict=False):
+        if pattern == "**" or _WILDCARD.search(pattern):
+            break
+        if concrete != pattern:
+            return False
+    return None
+
+
+def _scope_intersects_exclusions(path: Path, scope_pattern: str, member: DecayedMember) -> bool:
+    if _path_is_excluded(path, member):
+        return True
+    undecidable = False
+    for root in member.excluded_roots:
+        if path not in root.parents:
+            continue
+        state = _glob_intersects_subtree(scope_pattern, root.relative_to(path).as_posix())
+        if state is True:
+            return True
+        undecidable = undecidable or state is None
+    for prefix in member.excluded_prefixes:
+        parent = prefix.parent
+        if path != parent and path not in parent.parents:
+            continue
+        relative = prefix.relative_to(path)
+        for suffix in ("", "scope", "-scope"):
+            state = _glob_intersects_subtree(
+                scope_pattern, relative.with_name(relative.name + suffix).as_posix()
+            )
+            if state is True:
+                return True
+            undecidable = undecidable or state is None
+    if undecidable:
+        raise NonCanonicalScopeRef(
+            f"scope glob {scope_pattern!r} cannot be compared safely with the mass exclusions"
+        )
+    return False
+
+
+def _scope_pattern_from_base(relative: str, scope_pattern: str | None) -> str:
+    tail = scope_pattern or "**/*"
+    return "/".join(part for part in (relative, tail) if part)
+
+
+def ref_within_member(
+    path: Path,
+    dirlike: bool,
+    member: DecayedMember,
+    *,
+    scope_pattern: str | None = None,
+) -> bool:
+    broad = dirlike or scope_pattern is not None
+    if any(path == file for file in member.files):
+        return not broad and not _path_is_excluded(path, member)
     for root in member.roots:
         if path != root and root not in path.parents:
             continue
-        if not member.patterns or path == root:
-            return True
         relative = "" if path == root else path.relative_to(root).as_posix()
-        if dirlike:
-            # A directory-like ref names a surface, not a file: it is inside the member when any
-            # declared pattern could match something beneath it. `docs/` under a member declaring
-            # `*.md` is inside; it is not a licence to match a differently-rooted directory.
+        if broad:
+            member_scope_pattern = _scope_pattern_from_base(relative, scope_pattern)
+            if member.patterns and not _scope_glob_covered(member_scope_pattern, member.patterns):
+                continue
+            exclusion_scope_pattern = _scope_pattern_from_base("", scope_pattern)
+            if _scope_intersects_exclusions(path, exclusion_scope_pattern, member):
+                continue
+            return True
+        if _path_is_excluded(path, member):
+            continue
+        if not member.patterns or path == root:
             return True
         for pattern in member.patterns:
             if _pattern_matches(relative, path.name, pattern):
@@ -724,11 +987,16 @@ def ref_within_member(path: Path, dirlike: bool, member: DecayedMember) -> bool:
 
 
 def qualified_ref_within_member(
-    ref: QualifiedLocation, dirlike: bool, member: DecayedMember
+    ref: QualifiedLocation,
+    dirlike: bool,
+    member: DecayedMember,
+    *,
+    scope_pattern: str | None = None,
 ) -> bool:
     """Whether a parsed scheme-qualified ref is contained by one decayed member."""
+    broad = dirlike or scope_pattern is not None
     if ref in member.qualified_files:
-        return True
+        return not broad
     for root in member.qualified_roots:
         same_namespace = (
             ref.scheme == root.scheme
@@ -737,11 +1005,14 @@ def qualified_ref_within_member(
         )
         if not same_namespace or ref.parts[: len(root.parts)] != root.parts:
             continue
-        if not member.patterns or ref.parts == root.parts:
-            return True
         relative_parts = ref.parts[len(root.parts) :]
         relative = "/".join(relative_parts)
-        if dirlike:
+        if broad:
+            member_scope_pattern = _scope_pattern_from_base(relative, scope_pattern)
+            if member.patterns and not _scope_glob_covered(member_scope_pattern, member.patterns):
+                continue
+            return True
+        if not member.patterns or ref.parts == root.parts:
             return True
         name = relative_parts[-1] if relative_parts else ""
         if any(_pattern_matches(relative, name, pattern) for pattern in member.patterns):
@@ -764,9 +1035,7 @@ def _repo_relative_candidates(
     text = ref.strip().replace("\\", "/")
     if text.startswith("/") or text.startswith("~"):
         return []
-    segments = [segment for segment in text.split("/") if segment not in ("", ".")]
-    while segments and _WILDCARD.search(segments[-1]):
-        segments.pop()
+    segments, _, _ = _filesystem_scope_parts(ref)
     if not segments:
         return []
     relative = Path(*segments)
@@ -800,12 +1069,14 @@ def scope_within_decayed(
     for ref in declared_refs:
         text = str(ref).strip()
         if _NON_FILESYSTEM_ROOT.match(text):
-            qualified_ref, dirlike = _qualified_location(text, scope_ref=True)
+            qualified_ref, dirlike, scope_pattern = _qualified_location(text, scope_ref=True)
             hit = next(
                 (
                     member
                     for member in verdicts.decayed
-                    if qualified_ref_within_member(qualified_ref, dirlike, member)
+                    if qualified_ref_within_member(
+                        qualified_ref, dirlike, member, scope_pattern=scope_pattern
+                    )
                 ),
                 None,
             )
@@ -817,6 +1088,7 @@ def scope_within_decayed(
         path, dirlike = resolve_scope_ref(
             str(ref), council_root=council_root, vault_root=vault_root
         )
+        _, scope_pattern, _ = _filesystem_scope_parts(str(ref))
         candidates = [
             path,
             *_repo_relative_candidates(str(ref), verdicts, council_root=council_root),
@@ -826,7 +1098,7 @@ def scope_within_decayed(
                 member
                 for member in verdicts.decayed
                 for candidate in candidates
-                if ref_within_member(candidate, dirlike, member)
+                if ref_within_member(candidate, dirlike, member, scope_pattern=scope_pattern)
             ),
             None,
         )

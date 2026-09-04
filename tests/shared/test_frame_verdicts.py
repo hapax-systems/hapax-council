@@ -23,11 +23,13 @@ def _procedure_root(
     *,
     members: list[dict[str, object]],
     verdicts: list[dict[str, object]],
+    exclusions: list[dict[str, object]] | None = None,
     at: datetime = NOW,
     epoch_suffix: str = "d693f20c",
     make_current: bool = True,
     swapped: bool = True,
 ) -> Path:
+    declared_exclusions = exclusions or []
     epoch = root / "_runs" / "epochs" / f"{_stamp(at)}-{epoch_suffix}"
     epoch.mkdir(parents=True, exist_ok=True)
     complete_verdicts = list(verdicts)
@@ -61,14 +63,23 @@ def _procedure_root(
     )
     (root / "declaration").mkdir(exist_ok=True)
     (root / "declaration" / "mass.yaml").write_text(
-        yaml.safe_dump({"projection": "frame-reduction", "members": members}), encoding="utf-8"
+        yaml.safe_dump(
+            {
+                "projection": "frame-reduction",
+                "members": members,
+                "exclusions": declared_exclusions,
+            }
+        ),
+        encoding="utf-8",
     )
     (epoch / "coverage.json").write_text(
         json.dumps(
             [
                 {
                     "member_id": member["id"],
-                    "member_declaration_identity": fv._member_declaration_identity(member, []),
+                    "member_declaration_identity": fv._member_declaration_identity(
+                        member, declared_exclusions
+                    ),
                 }
                 for member in members
                 if isinstance(member, dict) and isinstance(member.get("id"), str)
@@ -373,7 +384,7 @@ def test_scope_matching_by_containment_patterns_files_and_wildcard_tails(tmp_pat
     def scope(*refs: str) -> fv.ScopeVerdict:
         return fv.scope_within_decayed(refs, verdicts, council_root=council, vault_root=vault)
 
-    inside = scope("legacy/a.py", "legacy/**", "30-areas/old/x.md", "config/dead.yaml")
+    inside = scope("legacy/a.py", "legacy/**/*.py", "30-areas/old/x.md", "config/dead.yaml")
     assert inside.all_inside
     assert [(m.member_id, m.relation) for m in inside.matches] == [
         ("legacy-code", "scope_exited"),
@@ -384,8 +395,9 @@ def test_scope_matching_by_containment_patterns_files_and_wildcard_tails(tmp_pat
 
     # a non-.py file under legacy/ is not the member's declared surface
     assert scope("legacy/README.md").outside == ("legacy/README.md",)
-    # a directory-like ref under a patterned member counts (the surface lives under it)
-    assert scope("legacy/sub/").all_inside
+    # Broad directory and wildcard refs also name non-.py files, so they are only partly inside.
+    assert scope("legacy/**").outside == ("legacy/**",)
+    assert scope("legacy/sub/").outside == ("legacy/sub/",)
     # partly inside: admitted (moving things out of a decayed member is legitimate work)
     mixed = scope("legacy/a.py", "scripts/live.py")
     assert not mixed.all_inside and mixed.outside == ("scripts/live.py",)
@@ -442,6 +454,109 @@ def test_a_double_star_pattern_does_not_match_every_path_under_the_root(tmp_path
     anchored = fv.DecayedMember("s", "scope_exited", (root,), ("docs/*.md",), ())
     assert fv.ref_within_member(root / "docs" / "a.md", False, anchored)
     assert not fv.ref_within_member(root / "docs" / "sub" / "a.md", False, anchored)
+
+
+def test_patterned_member_requires_the_entire_directory_or_wildcard_scope(tmp_path: Path) -> None:
+    """A scope is inside only when every path it can name satisfies a member pattern."""
+    council = tmp_path / "council"
+    vault = tmp_path / "vault"
+    (council / "docs").mkdir(parents=True)
+    (council / "scripts").mkdir()
+    vault.mkdir()
+    members = [
+        {
+            "id": "docs",
+            "location": {"path": str(council), "patterns": ["docs/**/*.md"]},
+        }
+    ]
+    verdicts = fv.load_frame_verdicts(
+        _procedure_root(
+            tmp_path / "procedure", members=members, verdicts=[_verdict("docs", "scope_exited")]
+        ),
+        now=NOW,
+    )
+
+    def scope(ref: str) -> fv.ScopeVerdict:
+        return fv.scope_within_decayed([ref], verdicts, council_root=council, vault_root=vault)
+
+    assert scope("docs/**/*.md").all_inside
+    assert scope("docs/guides/*.md").all_inside
+    assert scope("scripts/**").outside == ("scripts/**",)
+    assert scope("docs/**/*.py").outside == ("docs/**/*.py",)
+    assert scope("docs/").outside == ("docs/",)
+
+
+def test_an_undecidable_pattern_union_refuses_instead_of_admitting(tmp_path: Path) -> None:
+    council = tmp_path / "council"
+    (council / "docs").mkdir(parents=True)
+    members = [
+        {
+            "id": "samples",
+            "location": {
+                "path": str(council),
+                "patterns": ["docs/scope", "docs/scope.py", "docs/scope.md"],
+            },
+        }
+    ]
+    verdicts = fv.load_frame_verdicts(
+        _procedure_root(
+            tmp_path / "procedure",
+            members=members,
+            verdicts=[_verdict("samples", "scope_exited")],
+        ),
+        now=NOW,
+    )
+
+    with pytest.raises(fv.NonCanonicalScopeRef, match="cannot be decided safely"):
+        fv.scope_within_decayed(
+            ["docs/*"], verdicts, council_root=council, vault_root=tmp_path / "vault"
+        )
+
+
+def test_mass_exclusions_are_subtracted_from_every_decayed_member(tmp_path: Path) -> None:
+    """The consumer uses the producer's effective surface, including exact and prefix exclusions."""
+    frame = tmp_path / "frame"
+    procedure = frame / "procedure"
+    frame.mkdir()
+    members = [{"id": "vault-frame", "location": {"path": str(frame), "patterns": ["*.md"]}}]
+    exclusions = [
+        {"id": "coord", "paths": ["../../LOG.md"]},
+        {"id": "runs", "paths": ["../_runs*"]},
+    ]
+    verdicts = fv.load_frame_verdicts(
+        _procedure_root(
+            procedure,
+            members=members,
+            verdicts=[_verdict("vault-frame", "scope_exited")],
+            exclusions=exclusions,
+        ),
+        now=NOW,
+    )
+    council = tmp_path / "council"
+    council.mkdir()
+
+    def scope(ref: Path) -> fv.ScopeVerdict:
+        return fv.scope_within_decayed(
+            [str(ref)], verdicts, council_root=council, vault_root=tmp_path
+        )
+
+    assert scope(frame / "MASS.md").all_inside
+    assert scope(frame / "LOG.md").outside == (str(frame / "LOG.md"),)
+    prefixed = procedure / "_runs-next" / "receipt.md"
+    assert scope(prefixed).outside == (str(prefixed),)
+
+
+def test_an_unreadable_mass_exclusion_refuses_instead_of_disappearing(tmp_path: Path) -> None:
+    members = [{"id": "m", "location": {"path": str(tmp_path / "m")}}]
+    root = _procedure_root(
+        tmp_path / "procedure",
+        members=members,
+        verdicts=[_verdict("m", "scope_exited")],
+        exclusions=[{"id": "broken", "paths": [7]}],
+    )
+
+    with pytest.raises(fv.FrameVerdictsUnavailable, match="effective surface is undecidable"):
+        fv.load_frame_verdicts(root, now=NOW)
 
 
 def test_a_malformed_verdict_row_refuses_instead_of_shrinking_the_decayed_set(
