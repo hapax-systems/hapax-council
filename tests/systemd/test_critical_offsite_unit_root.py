@@ -59,3 +59,13 @@ def test_the_watchdog_unit_this_change_touches_executes_from_the_activation_work
     assert exec_start == f"{ACTIVATION_ROOT}/scripts/hapax-backup-watchdog"
     assert _unit_value(service, "Service", "WorkingDirectory") == ACTIVATION_ROOT
     assert "projects" not in service
+
+
+def test_the_llm_backup_unit_this_change_touches_executes_from_the_activation_worktree() -> None:
+    """The compatibility receipt changed in this PR, so its live consumer must use the same
+    governed source root as the critical off-site and watchdog consumers."""
+    service = (REPO / "systemd" / "units" / "llm-backup.service").read_text(encoding="utf-8")
+    exec_start = _unit_value(service, "Service", "ExecStart") or ""
+    assert exec_start == f"{ACTIVATION_ROOT}/systemd/scripts/backup.sh"
+    assert _unit_value(service, "Service", "WorkingDirectory") == ACTIVATION_ROOT
+    assert "projects" not in service

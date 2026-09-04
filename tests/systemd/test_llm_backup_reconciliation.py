@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import subprocess
 from pathlib import Path
 
@@ -10,6 +11,8 @@ SCRIPT = REPO / "systemd" / "scripts" / "backup.sh"
 UNITS = REPO / "systemd" / "units"
 MANIFESTS = REPO / "agents" / "manifests"
 RUNBOOK = REPO / "docs" / "runbooks" / "llm-stack-backup-reconciliation.md"
+REGISTRY = REPO / "config" / "infrastructure" / "host-storage-registry.json"
+ACTIVATION_ROOT = "%h/.cache/hapax/source-activation/worktree"
 
 
 def _unit_value(text: str, section: str, key: str) -> str | None:
@@ -54,16 +57,16 @@ def test_llm_backup_receipt_writes_no_legacy_artifacts(tmp_path: Path) -> None:
     assert not legacy_target.exists()
 
 
-def test_llm_backup_unit_uses_source_controlled_receipt() -> None:
+def test_llm_backup_unit_uses_activated_source_controlled_receipt() -> None:
     text = (UNITS / "llm-backup.service").read_text()
     exec_start = _unit_value(text, "Service", "ExecStart")
     working_dir = _unit_value(text, "Service", "WorkingDirectory")
 
-    assert exec_start is not None
-    assert "/home/hapax/projects/hapax-council/systemd/scripts/backup.sh" in exec_start
+    assert exec_start == f"{ACTIVATION_ROOT}/systemd/scripts/backup.sh"
     assert "/home/hapax/Scripts/setup" not in exec_start
     assert "llm-stack-scripts" not in exec_start
-    assert working_dir == "/home/hapax/projects/hapax-council"
+    assert working_dir == ACTIVATION_ROOT
+    assert "projects" not in text, "a mutable development checkout is not a production root"
 
 
 def test_backup_manifests_name_canonical_lanes() -> None:
@@ -71,6 +74,12 @@ def test_backup_manifests_name_canonical_lanes() -> None:
     local = yaml.safe_load((MANIFESTS / "backup_local.yaml").read_text())
     remote = yaml.safe_load((MANIFESTS / "backup_remote.yaml").read_text())
     critical_offsite = yaml.safe_load((MANIFESTS / "backup_critical_offsite.yaml").read_text())
+    registry = json.loads(REGISTRY.read_text())
+    b2_policy = next(
+        policy
+        for policy in registry["backup_policies"]
+        if policy["store_id"] == "b2-restic-offsite"
+    )
 
     assert "Deprecated compatibility receipt" in llm["purpose"]
     assert llm["outputs"] == ["Deprecation receipt in the systemd journal"]
@@ -83,6 +92,13 @@ def test_backup_manifests_name_canonical_lanes() -> None:
     assert remote["schedule"]["type"] == "on-demand"
     assert remote["schedule"]["interval"] == "retired"
     assert "retired" in remote["purpose"].lower()
+    assert b2_policy["cadence"] == "retired"
+    assert b2_policy["intended_state"] == "retired"
+    assert "backblaze b2" in llm["narrative"].lower()
+    assert "retired on this branch" in llm["narrative"].lower()
+    assert "remains a separate daily lane" not in llm["narrative"].lower()
+    assert "#4623" in llm["narrative"]
+    assert "retired" in remote["narrative"].lower()
     assert critical_offsite["schedule"]["systemd_unit"] == "hapax-backup-critical-offsite.timer"
     assert "rclone:r2:hapax-restic-critical" in critical_offsite["narrative"]
     assert critical_offsite["capabilities"] == ["restic_backup", "s3_upload"]
@@ -107,6 +123,25 @@ def test_reconciliation_runbook_documents_restore_path() -> None:
         assert expected in text
 
     assert "No obsolete `ragdb` database assumption" in text
+
+
+def test_runbook_declares_review_discovered_source_mutations() -> None:
+    text = RUNBOOK.read_text()
+    scope = text.split("## Review-discovered mutation scope", 1)[1].split(
+        "This intentionally removes", 1
+    )[0]
+
+    assert "critical-offsite-backend-neutral-20260902" in scope
+    for path in (
+        "systemd/units/hapax-backup-watchdog.service",
+        "agents/manifests/backup_remote.yaml",
+        "systemd/expected-timers.yaml",
+        "tests/systemd/test_critical_offsite_unit_root.py",
+    ):
+        assert f"`{path}`" in scope
+    assert "repository source mutations only" in scope
+    assert "does not authorize" in scope
+    assert "live runtime state" in scope
 
 
 def test_backup_surfaces_have_no_retired_critical_provider_names() -> None:

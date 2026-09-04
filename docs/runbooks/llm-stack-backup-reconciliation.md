@@ -94,6 +94,24 @@ the Tier 1/Tier 2 lanes above.
 The broad Backblaze B2 remote backup is retired on this branch (its return is
 #4623); this compatibility receipt does not invoke it.
 
+## Review-discovered mutation scope
+
+Task `critical-offsite-backend-neutral-20260902` also scopes the following
+source mutations discovered while tracing the renamed lane through its live
+consumers:
+
+- `systemd/units/hapax-backup-watchdog.service` — pin the changed watchdog's
+  consumer to the governed activation worktree.
+- `agents/manifests/backup_remote.yaml` — keep the retired B2 lane's live
+  manifest consistent with the storage registry.
+- `systemd/expected-timers.yaml` — keep the retired-timer policy commentary
+  provider-neutral.
+- `tests/systemd/test_critical_offsite_unit_root.py` — pin the activation roots
+  of every service whose script this task changes.
+
+These are repository source mutations only. This declaration does not authorize
+changes to installed units, enabled timers, or any other live runtime state.
+
 This intentionally removes the stale standalone script assumptions:
 
 - No per-database `pg_dump` list.

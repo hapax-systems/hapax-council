@@ -42,4 +42,4 @@ narrative: |
   the retired standalone LLM-stack backup script. It does not create backup
   artifacts. Canonical LLM-stack data protection is owned by the Tier 1 local
   backup plus the bounded critical off-site lane. Broad Backblaze B2 remote
-  backup remains a separate daily lane.
+  backup is retired on this branch; its proposed return as a daily lane is #4623.
