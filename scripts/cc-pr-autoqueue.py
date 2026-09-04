@@ -251,6 +251,9 @@ class PullRequest:
 
 
 MACHINE_AUTHORS_PATH = Path(__file__).resolve().parents[1] / "config" / "machine-authors.yaml"
+# `github_pr_status.list_pull_files_rest` stops after 3,000 entries. The PullRequest model does not
+# carry transport provenance, so a list at that boundary cannot prove it was not capped.
+MACHINE_AUTHOR_FILE_LIST_LIMIT = 3000
 
 
 def _author_login(item: Any) -> str | None:
@@ -323,6 +326,10 @@ def load_machine_producers(path: Path | None = None) -> dict[str, MachineProduce
 def _path_in_scope(path: str, patterns: tuple[str, ...]) -> bool:
     """Does `path` fall inside a declared scope?
 
+    `.github/**` is never eligible for machine auto-admission. CI cannot certify a change to its
+    own acceptance predicate, and recursive manifest patterns such as `**/package.json` otherwise
+    match manifests inside repository-local actions.
+
     `fnmatch` alone gets `**/x` wrong for a repository-root file: its `*` happily crosses `/`, but
     `**/package.json` still requires the literal separator, so a top-level `package.json` does NOT
     match and would be reported out-of-scope. Writing both `package.json` and `**/package.json` into
@@ -330,6 +337,8 @@ def _path_in_scope(path: str, patterns: tuple[str, ...]) -> bool:
     form is given its documented meaning here instead: `**/x` matches `x` at any depth including
     the root.
     """
+    if path == ".github" or path.startswith(".github/"):
+        return False
     for pattern in patterns:
         if fnmatch.fnmatch(path, pattern):
             return True
@@ -358,6 +367,27 @@ def machine_producer_blockers(
         # scope", and confusing the two is the bound-reported-as-a-verdict error that would make
         # this exemption unbounded exactly when the transport is degraded.
         reasons.append(f"machine_author_file_list_unavailable:{producer.display_name}")
+        return reasons
+    if pr.changed_files_count is None:
+        # The file list is only a complete authorization boundary when the transport also reports
+        # how many files the PR changes. Without that independent count, a capped response and a
+        # complete response are indistinguishable.
+        reasons.append(f"machine_author_file_count_unavailable:{producer.display_name}")
+        return reasons
+    if len(pr.files) != pr.changed_files_count:
+        # REST file enumeration is capped and parsing drops malformed entries. Either can leave a
+        # plausible-looking allowed subset, so any disagreement refuses instead of applying scope
+        # policy to evidence known to be incomplete.
+        reasons.append(
+            f"machine_author_file_list_incomplete:{producer.display_name}:"
+            f"{len(pr.files)}/{pr.changed_files_count}"
+        )
+        return reasons
+    if len(pr.files) >= MACHINE_AUTHOR_FILE_LIST_LIMIT:
+        reasons.append(
+            f"machine_author_file_list_at_limit:{producer.display_name}:"
+            f"{MACHINE_AUTHOR_FILE_LIST_LIMIT}"
+        )
         return reasons
     outside = sorted(path for path in pr.files if not _path_in_scope(path, producer.path_scope))
     if outside:

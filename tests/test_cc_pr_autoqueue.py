@@ -7481,6 +7481,27 @@ def test_a_declared_producer_out_of_scope_is_still_blocked_and_names_the_paths(
     assert ".github/workflows/ci.yml" in blockers[0], blockers
 
 
+def test_recursive_manifest_scope_does_not_admit_a_manifest_beneath_github() -> None:
+    """Recursive manifest globs must not let repository-local CI certify itself.
+
+    This exercises the effective match against the shipped policy: checking only that no pattern
+    string starts with `.github/` misses that fnmatch(`.github/actions/x/package.json`,
+    `**/package.json`) is true.
+    """
+    producer = autoqueue.load_machine_producers()["app/dependabot"]
+    pr = autoqueue._parse_pr(
+        _pr(
+            2,
+            files=[".github/actions/setup-tool/package.json"],
+            author="app/dependabot",
+        )
+    )
+    assert pr is not None
+    assert autoqueue.machine_producer_blockers(producer, pr) == [
+        "machine_author_out_of_scope:dependabot:.github/actions/setup-tool/package.json"
+    ]
+
+
 def test_a_lookalike_login_is_not_a_declared_producer(tmp_path: Path) -> None:
     """Matching is EQUALITY. `app/dependabot-evil` is a different principal, and a prefix or
     substring match would admit it silently — the substring-for-judgement defect this estate has
@@ -7592,4 +7613,57 @@ def test_an_unknown_file_list_is_not_an_in_scope_file_list(tmp_path: Path) -> No
     pr = autoqueue._parse_pr(payload)
     assert autoqueue.machine_producer_blockers(producer, pr) == [
         "machine_author_file_list_unavailable:dependabot"
+    ]
+
+
+def test_a_truncated_allowed_file_list_is_not_complete_scope_evidence(tmp_path: Path) -> None:
+    """An allowed prefix of a larger diff cannot satisfy the every-file scope predicate."""
+    producer = autoqueue.load_machine_producers(_producer(tmp_path))["app/dependabot"]
+    pr = autoqueue._parse_pr(
+        _pr(
+            7,
+            files=["package.json"],
+            changed_files_count=3001,
+            author="app/dependabot",
+        )
+    )
+    assert pr is not None
+    assert autoqueue.machine_producer_blockers(producer, pr) == [
+        "machine_author_file_list_incomplete:dependabot:1/3001"
+    ]
+
+
+def test_a_file_list_at_the_rest_cap_is_not_complete_scope_evidence(tmp_path: Path) -> None:
+    """An exact cap-sized list is ambiguous when the independent count was synthesized from it."""
+    producer = autoqueue.load_machine_producers(_producer(tmp_path))["app/dependabot"]
+    files = [f"package-{index}/package.json" for index in range(3000)]
+    pr = autoqueue._parse_pr(_pr(10, files=files, author="app/dependabot"))
+    assert pr is not None and pr.changed_files_count == len(pr.files) == 3000
+    assert autoqueue.machine_producer_blockers(producer, pr) == [
+        "machine_author_file_list_at_limit:dependabot:3000"
+    ]
+
+
+def test_a_malformed_file_entry_cannot_disappear_into_an_allowed_subset(tmp_path: Path) -> None:
+    """Parser filtering must become a count mismatch, never evidence that every file is allowed."""
+    producer = autoqueue.load_machine_producers(_producer(tmp_path))["app/dependabot"]
+    payload = _pr(8, files=["package.json"], author="app/dependabot")
+    payload["changedFiles"] = 2
+    payload["files"].append({"filename": ".github/workflows/hidden.yml"})
+    pr = autoqueue._parse_pr(payload)
+    assert pr is not None and pr.files == ("package.json",)
+    assert autoqueue.machine_producer_blockers(producer, pr) == [
+        "machine_author_file_list_incomplete:dependabot:1/2"
+    ]
+
+
+def test_an_unknown_changed_file_count_refuses_machine_admission(tmp_path: Path) -> None:
+    """Without the independent total, the guard cannot distinguish complete from capped."""
+    producer = autoqueue.load_machine_producers(_producer(tmp_path))["app/dependabot"]
+    payload = _pr(9, files=["package.json"], author="app/dependabot")
+    payload["changedFiles"] = None
+    pr = autoqueue._parse_pr(payload)
+    assert pr is not None
+    assert autoqueue.machine_producer_blockers(producer, pr) == [
+        "machine_author_file_count_unavailable:dependabot"
     ]

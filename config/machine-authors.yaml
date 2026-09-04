@@ -64,8 +64,9 @@ producers:
       - "dependabot[bot]"   # REST: GET /repos/{o}/{r}/pulls -> user.login
       - "app/dependabot"    # GraphQL / `gh pr list --json author` -> author.login
     display_name: dependabot
-    # Manifests and lockfiles only. Everything else this producer emits — notably `.github/**` —
-    # falls outside and is blocked rather than auto-admitted.
+    # Manifests and lockfiles only. The matcher applies an unconditional `.github/**` deny before
+    # these recursive globs, so a manifest inside a repository-local action cannot be admitted by
+    # the same CI surface it changes.
     path_scope:
       - "**/Cargo.toml"
       - "**/Cargo.lock"
