@@ -83,12 +83,18 @@ git config core.hooksPath "$(git rev-parse --show-toplevel)/scripts"
 Use the absolute form (as above) rather than the relative `scripts`: a relative path resolves per
 worktree, and a worktree on a branch that predates the hook would silently run nothing.
 
-What it does: for each ref being pushed, it scans only the lines the push ADDS (diff against the
-remote tip, or the empty tree for a new branch) with detect-secrets `--all-files`, a vendor-key
-prefix regex (Anthropic, xAI, Hugging Face, GitLab, …), and an absolute-home-path check; it
-prints finding TYPES and counts, never values, and refuses with a remedy. Entropy-only findings on
-the codebase-derived `docs/architecture/system-dynamics-map*` files are not secrets and are
-skipped there.
+What it does: for each ref being pushed, it enumerates every commit not reachable from the remote
+tip (or the known remote default branch for a new ref) and scans the lines each commit ADDS against
+its first parent. Root commits are compared with the empty tree. The detectors are detect-secrets
+`--all-files`, a vendor-key prefix regex (Anthropic, xAI, Hugging Face, GitLab, …), and an
+absolute-home-path check; the hook prints finding TYPES and counts, never values, and refuses with
+a remedy. Entropy-only findings on the codebase-derived
+`docs/architecture/system-dynamics-map*` files are not secrets and are skipped there.
+
+There is no path-based exemption from the absolute-home-path check, including under
+`systemd/units/`, and the detector has no line-level allowlist. A unit that needs an
+operator-specific path must be parameterized. Recheck the predicate and per-commit behavior with
+`uv run pytest tests/scripts/test_hapax_prepush_secret_scan.py -q`.
 
 Exempting a private mirror (the only sanctioned exemption): `git config --add
 hapax.prepushScan.skipRemote <remote-name>`. There is no in-script bypass; if the hook refuses a

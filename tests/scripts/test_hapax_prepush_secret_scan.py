@@ -78,6 +78,52 @@ def test_clean_push_passes(tmp_path):
     assert r.returncode == 0, r.stderr
 
 
+def test_intermediate_commit_finding_is_scanned_even_when_tip_removes_it(tmp_path):
+    """Every commit transferred by the push is scanned, not only the base-to-tip diff."""
+    repo = _repo(tmp_path)
+    base = _git(repo, "rev-parse", "HEAD")
+    fake = "AKIA" + "QWERASDFZXCV1234"  # AWS access-key shape; obviously not a real key
+    _commit(repo, "transient.txt", f"AWS_ACCESS_KEY_ID={fake}\n")
+    tip = _commit(repo, "transient.txt", "redacted before branch tip\n")
+
+    r = _run(repo, "origin", f"refs/heads/main {tip} refs/heads/main {base}\n")
+
+    assert r.returncode == 1, r.stderr
+    assert "secret-shaped: transient.txt" in r.stderr
+    assert fake not in r.stderr and fake not in r.stdout
+
+
+def test_detect_secrets_scans_a_filename_containing_whitespace(tmp_path):
+    repo = _repo(tmp_path)
+    base = _git(repo, "rev-parse", "HEAD")
+    fake = "AKIA" + "MNBVCXZLKJHG1234"  # AWS access-key shape; obviously not a real key
+    tip = _commit(repo, "leak file.txt", f"AWS_ACCESS_KEY_ID={fake}\n")
+
+    r = _run(repo, "origin", f"refs/heads/main {tip} refs/heads/main {base}\n")
+
+    assert r.returncode == 1, r.stderr
+    assert "secret-shaped: leak file.txt" in r.stderr
+    assert fake not in r.stderr and fake not in r.stdout
+
+
+def test_detect_secrets_staging_preserves_distinct_repository_paths(tmp_path):
+    repo = _repo(tmp_path)
+    base = _git(repo, "rev-parse", "HEAD")
+    fake = "AKIA" + "POIUYTREWQLK1234"  # AWS access-key shape; obviously not a real key
+    (repo / "a").mkdir()
+    (repo / "a" / "b").write_text(f"AWS_ACCESS_KEY_ID={fake}\n")
+    (repo / "a__b").write_text("benign content that must not overwrite a/b\n")
+    _git(repo, "add", "-A")
+    _git(repo, "commit", "-q", "-m", "add collision pair")
+    tip = _git(repo, "rev-parse", "HEAD")
+
+    r = _run(repo, "origin", f"refs/heads/main {tip} refs/heads/main {base}\n")
+
+    assert r.returncode == 1, r.stderr
+    assert "secret-shaped: a/b" in r.stderr
+    assert fake not in r.stderr and fake not in r.stdout
+
+
 def test_vendor_key_prefixes_detect_secrets_does_not_know(tmp_path):
     """Anthropic-shaped keys are not in detect-secrets 1.5.0's plugin set; the hook's own regex is."""
     repo = _repo(tmp_path)
@@ -198,9 +244,8 @@ def test_generated_hash_bearing_artifacts_are_exempt_from_entropy_only_findings(
     assert r3.returncode == 1, r3.stderr  # the exemption is entropy-only; keywords still count
 
 
-def test_systemd_unit_files_may_carry_absolute_home_paths_but_nothing_else_may(tmp_path):
-    """A unit's ExecStart is absolute by systemd's contract; the same line anywhere else is
-    still new exposure. Only the home-path detector is suspended under systemd/units/."""
+def test_systemd_unit_files_have_no_home_path_exemption(tmp_path):
+    """The configured private-mirror exception is the only home-path bypass."""
     repo = _repo(tmp_path)
     base = _git(repo, "rev-parse", "HEAD")
     # Built at runtime so this fixture line is not itself a home path in an added line.
@@ -209,11 +254,8 @@ def test_systemd_unit_files_may_carry_absolute_home_paths_but_nothing_else_may(t
     )
     tip = _commit(repo, "systemd/units/job.service", "[Service]\n" + line)
     r = _run(repo, "origin", f"refs/heads/main {tip} refs/heads/main {base}\n")
-    assert r.returncode == 0, r.stderr
-    tip2 = _commit(repo, "scripts/job-install.sh", line)
-    r = _run(repo, "origin", f"refs/heads/main {tip2} refs/heads/main {tip}\n")
     assert r.returncode == 1
-    assert "home path in 1 added line(s): scripts/job-install.sh" in r.stderr
+    assert "home path in 1 added line(s): systemd/units/job.service" in r.stderr
 
 
 def test_deletion_pushes_nothing_and_passes(tmp_path):
