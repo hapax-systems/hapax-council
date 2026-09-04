@@ -458,6 +458,7 @@ class SpendReceipt(StrictModel):
     spend_id: str = Field(pattern=r"^spend-\d{8}T\d{6}Z-[a-z0-9_.:-]+$")
     task_id: str = Field(min_length=1)
     task_hash: str | None = Field(default=None, pattern=r"^sha256:[0-9a-f]{64}$")
+    run_id: str | None = Field(default=None, pattern=r"^run-[a-z0-9][a-z0-9_.:-]*$")
     authority_case: str = Field(min_length=1)
     route_id: str = Field(min_length=1)
     capacity_pool: CapacityPool
@@ -561,6 +562,8 @@ class SpendReceipt(StrictModel):
             if self.compute_unit_provenance is not ComputeUnitProvenance.ABSENT:
                 raise ValueError(f"{self.spend_id} absent compute unit requires absent provenance")
         else:
+            if self.run_id is None:
+                raise ValueError(f"{self.spend_id} reported compute unit requires run_id")
             if self.compute_unit_value is None:
                 raise ValueError(f"{self.spend_id} reported compute unit requires a value")
             if self.compute_unit_provenance is not ComputeUnitProvenance.PROVIDER_FIELD:
@@ -583,6 +586,7 @@ class SpendReceipt(StrictModel):
                 self.spend_id,
                 self.task_id,
                 self.task_hash,
+                self.run_id,
                 self.authority_case,
                 self.route_id,
                 self.budget_id,
@@ -606,6 +610,8 @@ class SpendReceipt(StrictModel):
         payload = handler(self)
         if payload.get("task_hash") is None:
             payload.pop("task_hash", None)
+        if payload.get("run_id") is None:
+            payload.pop("run_id", None)
         for field_name in (
             "wall_latency_ms",
             "ttfb_ms",
@@ -636,6 +642,51 @@ class SpendReceipt(StrictModel):
 
     def is_frozen_refused(self) -> bool:
         return self.reconciliation_state is SpendReconciliationState.FROZEN_REFUSED
+
+
+class ComputeUnitDriftEvent(StrictModel):
+    """A provider-reported compute unit changed inside one explicitly joined run."""
+
+    classification: Literal["r7_compute_unit_drift"] = "r7_compute_unit_drift"
+    run_id: str = Field(pattern=r"^run-[a-z0-9][a-z0-9_.:-]*$")
+    compute_unit_values: tuple[str, ...] = Field(min_length=2)
+    spend_receipt_ids: tuple[str, ...] = Field(min_length=2)
+
+
+def classify_reported_compute_unit_drift(
+    receipts: tuple[SpendReceipt, ...],
+) -> tuple[ComputeUnitDriftEvent, ...]:
+    """Classify R7 only inside an explicit run; cross-run changes are not R7."""
+
+    reported_by_run: dict[str, list[SpendReceipt]] = {}
+    for receipt in receipts:
+        if receipt.compute_unit_status is not ComputeUnitStatus.REPORTED:
+            continue
+        # SpendReceipt rejects reported values without this join key, so a
+        # reported unit can never silently escape the within-run comparison.
+        assert receipt.run_id is not None
+        reported_by_run.setdefault(receipt.run_id, []).append(receipt)
+
+    events: list[ComputeUnitDriftEvent] = []
+    for run_id, run_receipts in sorted(reported_by_run.items()):
+        values = tuple(
+            sorted(
+                {
+                    receipt.compute_unit_value
+                    for receipt in run_receipts
+                    if receipt.compute_unit_value is not None
+                }
+            )
+        )
+        if len(values) > 1:
+            events.append(
+                ComputeUnitDriftEvent(
+                    run_id=run_id,
+                    compute_unit_values=values,
+                    spend_receipt_ids=tuple(sorted(receipt.spend_id for receipt in run_receipts)),
+                )
+            )
+    return tuple(events)
 
 
 class ProviderDependencyRecord(StrictModel):
@@ -1009,6 +1060,14 @@ class QuotaSpendLedger(StrictModel):
         for receipt in self.spend_receipts:
             if receipt.budget_id and receipt.budget_id not in budget_ids:
                 raise ValueError(f"{receipt.spend_id} references unknown budget")
+        compute_unit_drifts = classify_reported_compute_unit_drift(self.spend_receipts)
+        if compute_unit_drifts:
+            details = "; ".join(
+                f"{event.classification}:{event.run_id} "
+                f"receipts={','.join(event.spend_receipt_ids)}"
+                for event in compute_unit_drifts
+            )
+            raise ValueError(details)
         for decision in self.spend_gate_decisions:
             if decision.budget_id and decision.budget_id not in budget_ids:
                 raise ValueError(f"{decision.decision_id} references unknown budget")

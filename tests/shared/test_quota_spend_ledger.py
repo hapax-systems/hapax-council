@@ -20,6 +20,9 @@ from shared.quota_spend_ledger import (
     ArtifactProvenanceRecord,
     BootstrapDependencyState,
     BudgetLifecycleState,
+    ComputeUnitDriftEvent,
+    ComputeUnitProvenance,
+    ComputeUnitStatus,
     DependencyState,
     Effort,
     EffortProvenance,
@@ -35,6 +38,7 @@ from shared.quota_spend_ledger import (
     SupportArtifactAuthority,
     SupportArtifactDisposition,
     build_dashboard,
+    classify_reported_compute_unit_drift,
     evaluate_paid_route_eligibility,
     has_successful_task_scoped_glmcp_payg_review_spend,
     load_quota_spend_ledger,
@@ -2168,3 +2172,88 @@ def test_spend_receipt_has_no_latency_inferred_depth_or_step_field() -> None:
         for field_name in SpendReceipt.model_fields
         if "depth" in field_name or "step" in field_name
     }
+
+
+def _reported_compute_receipt(
+    *,
+    spend_id: str,
+    run_id: str | None,
+    compute_unit_value: str,
+) -> SpendReceipt:
+    payload = json.loads(QUOTA_SPEND_LEDGER_FIXTURES.read_text(encoding="utf-8"))["spend_receipts"][
+        0
+    ]
+    payload.update(
+        {
+            "spend_id": spend_id,
+            "run_id": run_id,
+            "compute_unit_status": "reported",
+            "compute_unit_value": compute_unit_value,
+            "compute_unit_provenance": "provider_field",
+        }
+    )
+    return SpendReceipt.model_validate(payload)
+
+
+def test_reported_compute_unit_requires_run_id_for_r7_comparison() -> None:
+    with pytest.raises(ValidationError, match="reported compute unit requires run_id"):
+        _reported_compute_receipt(
+            spend_id="spend-20260509T193001Z-compute-without-run",
+            run_id=None,
+            compute_unit_value="reasoning_items:7",
+        )
+
+
+def test_same_run_reported_compute_unit_change_is_classified_and_rejected_as_r7() -> None:
+    receipts = (
+        _reported_compute_receipt(
+            spend_id="spend-20260509T193001Z-compute-run-first",
+            run_id="run-compute-fixture-001",
+            compute_unit_value="reasoning_items:7",
+        ),
+        _reported_compute_receipt(
+            spend_id="spend-20260509T193002Z-compute-run-second",
+            run_id="run-compute-fixture-001",
+            compute_unit_value="reasoning_items:11",
+        ),
+    )
+
+    events = classify_reported_compute_unit_drift(receipts)
+    assert events[0].classification == "r7_compute_unit_drift"
+    assert events == (
+        ComputeUnitDriftEvent(
+            run_id="run-compute-fixture-001",
+            compute_unit_values=("reasoning_items:11", "reasoning_items:7"),
+            spend_receipt_ids=(
+                "spend-20260509T193001Z-compute-run-first",
+                "spend-20260509T193002Z-compute-run-second",
+            ),
+        ),
+    )
+
+    payload = _payload()
+    payload["spend_receipts"] = [receipt.model_dump(mode="json") for receipt in receipts]
+    with pytest.raises(ValidationError, match="r7_compute_unit_drift.*run-compute-fixture-001"):
+        QuotaSpendLedger.model_validate(payload)
+
+
+def test_reported_compute_unit_changes_across_runs_are_not_r7_drift() -> None:
+    receipts = (
+        _reported_compute_receipt(
+            spend_id="spend-20260509T193001Z-compute-run-a",
+            run_id="run-compute-fixture-a",
+            compute_unit_value="reasoning_items:7",
+        ),
+        _reported_compute_receipt(
+            spend_id="spend-20260509T193002Z-compute-run-b",
+            run_id="run-compute-fixture-b",
+            compute_unit_value="reasoning_items:11",
+        ),
+    )
+
+    assert all(receipt.compute_unit_status is ComputeUnitStatus.REPORTED for receipt in receipts)
+    assert all(
+        receipt.compute_unit_provenance is ComputeUnitProvenance.PROVIDER_FIELD
+        for receipt in receipts
+    )
+    assert classify_reported_compute_unit_drift(receipts) == ()

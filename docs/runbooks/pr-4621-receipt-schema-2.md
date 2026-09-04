@@ -1,7 +1,8 @@
 ---
 scope_amendment_schema: 1
 pr: 4621
-reviewed_head: a8db4865d3cb7a03a63bf743d7a1fa08dca10a88
+reviewed_head: 50ad69b96dcc0ac10551f37585358bdadf803721
+reviewed_head_note: "the head the amendment was reviewed against; the amendment covers every commit on branch feat/receipt-resource-vector-absent-20260902 from e767794bf onward, because a head pinned in a file that later commits change can never equal the final head (review finding, 2026-09-04)"
 task_ids:
   - receipt-resource-vector-absent-not-zero-20260902
   - compute-unit-absent-never-inferred-20260902

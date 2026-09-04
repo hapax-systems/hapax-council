@@ -232,6 +232,7 @@ def test_spend_receipt_field_set_is_pinned() -> None:
         "spend_id",
         "task_id",
         "task_hash",
+        "run_id",
         "authority_case",
         "route_id",
         "capacity_pool",
