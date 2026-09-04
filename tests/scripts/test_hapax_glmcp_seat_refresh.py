@@ -627,9 +627,18 @@ def test_unit_pair_executes_from_the_activation_worktree_and_strips_inherited_ov
     script = SCRIPT.read_text(encoding="utf-8")
     assert 'timeout "$REVIEW_ATTEMPT_TIMEOUT_S" "$H/scripts/hapax-glmcp-reviewer"' in script
     assert 'timeout "$ADMISSION_TIMEOUT_S" "$H/scripts/hapax-glmcp-quota-admission"' in script
-    assert 'timeout "$WRITER_TIMEOUT_S" "$H/scripts/hapax-quota-telemetry-writer" --skip-receipts' in script
-    assert 'timeout "$RECEIPTS_TIMEOUT_S" "$H/scripts/hapax-platform-capability-receipts" --platform glmcp' in script
-    assert 'timeout "${SHOW_TIMEOUT_S:-30}" "$H/scripts/hapax-platform-capability-receipts" --show' in script
+    assert (
+        'timeout "$WRITER_TIMEOUT_S" "$H/scripts/hapax-quota-telemetry-writer" --skip-receipts'
+        in script
+    )
+    assert (
+        'timeout "$RECEIPTS_TIMEOUT_S" "$H/scripts/hapax-platform-capability-receipts" --platform glmcp'
+        in script
+    )
+    assert (
+        'timeout "${SHOW_TIMEOUT_S:-30}" "$H/scripts/hapax-platform-capability-receipts" --show'
+        in script
+    )
     assert "5 minutes" in (_unit_value(service, "Unit", "Description") or "")
     timer = TIMER.read_text(encoding="utf-8")
     assert _unit_value(timer, "Install", "WantedBy") == "timers.target"
