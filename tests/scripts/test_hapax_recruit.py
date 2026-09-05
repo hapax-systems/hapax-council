@@ -21,6 +21,7 @@ from pathlib import Path
 from types import ModuleType
 
 import pytest
+import yaml
 
 SCRIPT = Path(__file__).resolve().parents[2] / "scripts" / "hapax-recruit"
 _LEGACY_SECRETISH = re.compile(
@@ -82,6 +83,196 @@ def _receipt(out: Path) -> dict:
     return json.loads(out.with_name(out.name + ".receipt.json").read_text())
 
 
+def _yaml_loader_oracle(text):
+    """Load bounded synthetic fixtures only; never expand aliases, including cycles."""
+    if len(text.encode("utf-8")) > 8192:
+        raise ValueError("oracle fixture exceeds 8192 bytes")
+    depth = 0
+    for token in yaml.scan(text):
+        if isinstance(token, yaml.tokens.AliasToken):
+            raise ValueError("oracle refuses aliases")
+        if isinstance(
+            token,
+            (
+                yaml.tokens.FlowSequenceStartToken,
+                yaml.tokens.FlowMappingStartToken,
+                yaml.tokens.BlockSequenceStartToken,
+                yaml.tokens.BlockMappingStartToken,
+            ),
+        ):
+            depth += 1
+            if depth > 32:
+                raise ValueError("oracle fixture exceeds 32 collection levels")
+        elif isinstance(
+            token,
+            (
+                yaml.tokens.FlowSequenceEndToken,
+                yaml.tokens.FlowMappingEndToken,
+                yaml.tokens.BlockEndToken,
+            ),
+        ):
+            depth -= 1
+    pending = [yaml.safe_load(text)]
+    # Independent key policy: labels and environment-style prefixes, not arbitrary
+    # substrings of keys. In particular, a literal BOM or '?' changes key identity.
+    credential_key = re.compile(
+        r"(?:[a-z][a-z0-9]*[_-])*(?:api(?:[_-]|[ \t]+)?key|token|secret|password|authorization)",
+        re.IGNORECASE,
+    )
+    while pending:
+        value = pending.pop()
+        if isinstance(value, dict):
+            if any(isinstance(key, str) and credential_key.fullmatch(key) for key in value):
+                return True
+            pending.extend(value.values())
+        elif isinstance(value, list):
+            pending.extend(value)
+    return False
+
+
+_SCANNER_YAML_FIXTURES = {
+    "compact-flow": r'{?"api\x5fkey": [FIRST, SYNTHETIC_SECOND_CREDENTIAL]}',  # pragma: allowlist secret
+    "compact-flow-sequence": r'[?"api\x5fkey": [FIRST, SYNTHETIC_SECOND_CREDENTIAL]]',  # pragma: allowlist secret
+    "compact-flow-nested": r'{safe: [{?"api\x5fkey": [FIRST, SYNTHETIC_SECOND_CREDENTIAL]}]}',  # pragma: allowlist secret
+    "compact-flow-quoted-delimiters": r'{?"safe:[]": KEEP, ?"api\x5fkey": [FIRST, SYNTHETIC_SECOND_CREDENTIAL]}',  # pragma: allowlist secret
+    "bom-index-zero": '\ufeff"api\\x5fkey": [FIRST, SYNTHETIC_SECOND_CREDENTIAL]',  # pragma: allowlist secret
+    "bom-mid-line": ' \ufeff"api\\x5fkey": [FIRST, SYNTHETIC_SECOND_CREDENTIAL]',  # pragma: allowlist secret
+    "bom-after-newline": '\n\ufeff"api\\x5fkey": [FIRST, SYNTHETIC_SECOND_CREDENTIAL]',  # pragma: allowlist secret
+    "bom-fenced-response": 'Context\n```yaml\n\ufeff"api\\x5fkey": [FIRST, SYNTHETIC_SECOND_CREDENTIAL]\n```\n',  # pragma: allowlist secret
+    "block-question-quoted": r'?"api\x5fkey": [FIRST, SYNTHETIC_SECOND_CREDENTIAL]',  # pragma: allowlist secret
+    "block-question-plain": "?api_key: [FIRST, SYNTHETIC_SECOND_CREDENTIAL]",  # pragma: allowlist secret
+    "block-question-word": "?ordinary: KEEP",
+    "block-question-explicit": '? "api\\x5fkey"\n: [FIRST, SYNTHETIC_SECOND_CREDENTIAL]',  # pragma: allowlist secret
+    "block-question-explicit-plain": "? api_key\n: [FIRST, SYNTHETIC_SECOND_CREDENTIAL]",  # pragma: allowlist secret
+    "ordinary-flow": '{?"ordinary": [KEEP]}',
+}
+
+
+@pytest.mark.parametrize("name", _SCANNER_YAML_FIXTURES)
+@pytest.mark.parametrize("capacity", ["grok", "local:qwen36"])
+def test_yaml_scanner_agreement_at_every_destination(bench, monkeypatch, capsys, name, capacity):
+    module, _bin_dir, brief, out = bench
+    response = _SCANNER_YAML_FIXTURES[name]
+    oracle_stream = (
+        response.split("```yaml\n", 1)[1].split("\n```", 1)[0]
+        if name == "bom-fenced-response"
+        else response
+    )
+    has_key = _yaml_loader_oracle(oracle_stream)
+    # Persist only in memory: the credential must never reach a filesystem writer.
+    persisted = {}
+    original_write, original_read = Path.write_text, Path.read_bytes
+    original_stat, original_is_file = Path.stat, Path.is_file
+
+    def write(path, text, *args, **kwargs):
+        if path in {out, out.with_name(out.name + ".receipt.json")}:
+            persisted[path] = text
+            return len(text)
+        return original_write(path, text, *args, **kwargs)
+
+    def read(path):
+        return persisted[path].encode() if path in persisted else original_read(path)
+
+    def stat(path, *args, **kwargs):
+        if path in persisted:
+            return os.stat_result((0,) * 6 + (len(persisted[path].encode()),) + (0,) * 3)
+        return original_stat(path, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "write_text", write)
+    monkeypatch.setattr(Path, "read_bytes", read)
+    monkeypatch.setattr(Path, "stat", stat)
+    monkeypatch.setattr(Path, "is_file", lambda path: path in persisted or original_is_file(path))
+    if capacity.startswith("local:"):
+        payload = {"choices": [{"message": {"content": response}}]}
+        monkeypatch.setattr(
+            module.urllib.request,
+            "urlopen",
+            lambda *a, **kw: io.BytesIO(json.dumps(payload).encode()),
+        )
+    else:
+        monkeypatch.setattr(module, "_require_binary", lambda name: name)
+        monkeypatch.setattr(module, "_run", lambda *a, **kw: (7, response, response, False, None))
+    rc = module.main([capacity, "--brief", str(brief), "--out", str(out)])
+    captured = capsys.readouterr()
+    answer = persisted[out]
+    receipt = json.loads(persisted[out.with_name(out.name + ".receipt.json")])
+    suppressed = receipt["suppressed_streams"]
+    if suppressed:
+        assert answer == ""
+        assert receipt["answer_policy"] == "suppressed_undecodable_output"
+        for shape in suppressed.values():
+            assert shape["unsupported_class"] in {"YAMLInteriorBOM", "YAMLPlainQuestionKey"}
+            assert shape["unsupported_class"] in captured.err
+    else:
+        assert ("<redacted>" in answer) == has_key, f"loader/redactor divergence: {name}"
+        if not has_key:
+            assert answer == response
+    if has_key or suppressed:
+        for destination in (answer, json.dumps(receipt), captured.out, captured.err):
+            assert "SYNTHETIC_SECOND_CREDENTIAL" not in destination  # pragma: allowlist secret
+            assert "FIRST" not in destination  # pragma: allowlist secret
+    assert rc == (0 if capacity.startswith("local:") and not suppressed else 3)
+    assert receipt["exit_code"] == (7 if capacity == "grok" else 3 if suppressed else 0)
+
+
+def _yaml_subtree_forms(second):
+    return {
+        "sequence": f"api_key:\n- FIRST\n- {second}\n",  # pragma: allowlist secret
+        "indented-sequence": f"api_key:\n  - FIRST\n  - {second}\n",  # pragma: allowlist secret
+        "mapping": f"api_key:\n  primary: FIRST\n  nested:\n    backup: {second}\n",  # pragma: allowlist secret
+        "nested-sequence": f"api_key:\n- primary: FIRST\n- nested:\n    backup: {second}\n",  # pragma: allowlist secret
+    }
+
+
+def _yaml_flow_forms(first, second):
+    return {
+        "sequence": f"[{first},\n{second}]\n",
+        "mapping": f"{{primary: {first},\nbackup: {second}}}\n",
+        "nested-flow-in-block": f"[{{primary: [{first},\n{second}]}}]\n",
+        "double-quoted": f'["{first}\\"}}]",\n{second}]\n',
+        "single-quoted": f"['{first}'']}}',\n{second}]\n",
+        "comment": f"[{first}, # ] }}\n{second}]\n",
+        "tagged-member": f"[!<tag:synthetic.example,2026:]node> {first},\n{second}]\n",
+    }
+
+
+def _yaml_nested_forms(sensitive):
+    commented = sensitive.replace(",\n", ", # ] }\n")
+    return {
+        "nested": f"settings: {{{sensitive}}}\n",
+        "block-parent": f"settings:\n  child: {{nested: {{{sensitive}}}}}\n",
+        "sibling": f"settings: {{safe: KEEP_INSIDE, {sensitive}}}\n",
+        "comments": f"settings: {{ # ] }}\n nested: [{{safe: KEEP_INSIDE, {commented}}}]}}\n",
+        "sequence": f"settings: [{{safe: KEEP_INSIDE}}, {{nested: [{sensitive}]}}]\n",
+        "unbounded": f"settings: {{nested: [{sensitive}\n",
+    }
+
+
+def _yaml_key_forms(second):
+    return {
+        "explicit": f"? api_key\n: [FIRST,\n{second}]\n",  # pragma: allowlist secret
+        "escaped": '"api\\x5fkey": [FIRST,\n' + second + "]\n",
+        "nested-explicit": f"settings:\n  ? api_key\n  : [FIRST,\n    {second}]\n",  # pragma: allowlist secret
+        "flow-escaped": 'settings: {safe: KEEP_INSIDE, "api\\x5fkey": [FIRST,\n' + second + "]}\n",
+        "explicit-block": f"? api_key\n:\n- FIRST\n- nested:\n    backup: {second}\n",  # pragma: allowlist secret
+        "explicit-scalar": f"? api_key\n: |-\n  FIRST\n  {second}\n",  # pragma: allowlist secret
+        "explicit-comment": f"? api_key\n# comment\n\n: &synthetic [FIRST,\n{second}]\n",  # pragma: allowlist secret
+        "flow-explicit": 'settings: {? "api\\x5fkey"\n: [FIRST,\n' + second + "]}\n",
+        "unbounded-escaped": 'settings: {safe: DISCARD, "api\\x5fkey": [FIRST,\n' + second + "]\n",
+        "unsupported-explicit": f"?\n  api_key\n: [FIRST,\n{second}]\n",  # pragma: allowlist secret
+        "unsupported-escape": 'settings: {"api\\qkey": [FIRST,\n' + second + "]}\n",
+        "explicit-key-comment": f"? api_key # label\n: [FIRST,\n{second}]\n",  # pragma: allowlist secret
+        "unsupported-multiline-key": f"? api\n  key\n: [FIRST,\n{second}]\n",
+        "unicode-escaped": '"api\\u005fkey": [FIRST,\n' + second + "]\n",
+        "flow-unicode-escaped": 'settings: {"api\\u005fkey": [FIRST,\n' + second + "]}\n",
+        "escaped-scalar": '"api\\x5fkey": FIRST ' + second + "\nsafe: KEEP_THIS_FIELD\n",
+        "explicit-sibling": f"? api_key\n:\n- FIRST\n- {second}\n? safe\n: KEEP_THIS_FIELD\n",  # pragma: allowlist secret
+        "flow-key-comment": 'settings: {# comment\n"api\\x5fkey": [FIRST,\n' + second + "]}\n",
+        "flow-explicit-tab": 'settings: {?\t"api\\x5fkey": [FIRST,\n' + second + "]}\n",
+        "unsupported-tagged-key": '!!str "api\\x5fkey": [FIRST,\n' + second + "]\n",
+    }
+
+
 @pytest.mark.parametrize(("capacity", "code"), [("grok", 7), ("grok", 0), ("local:qwen36", 0)])
 @pytest.mark.parametrize(
     "prefix",
@@ -99,7 +290,7 @@ def test_bom_yaml_redaction_at_every_destination(
         "flow": '{safe: KEEP, "api\\x5fkey": [FIRST,\nSYNTHETIC_SECOND_CREDENTIAL]}\n',
     }
     response = prefix + forms[form]
-    suppressed = prefix in {"safe: KEEP\n\ufeff", "\ufeff\ufeff"}
+    suppressed = prefix != "\ufeff"
     if capacity.startswith("local:"):
         payload = {"choices": [{"message": {"content": response}}]}
         monkeypatch.setattr(
@@ -139,6 +330,7 @@ def test_bom_yaml_redaction_at_every_destination(
                 "length": len(response),
                 "first_token_class": "text",
                 "reason": "undecodable_stream_suppressed",
+                "unsupported_class": "YAMLInteriorBOM",
             }
             for stream in (["answer"] if capacity.startswith("local:") else ["stdout", "stderr"])
         }
@@ -311,30 +503,9 @@ def test_yaml_key_forms_never_reach_destinations(
 ):
     module, _bin_dir, brief, out = bench
     second = "SYNTHETIC_SECOND_CREDENTIAL"  # pragma: allowlist secret
-    forms = {
-        "explicit": f"? api_key\n: [FIRST,\n{second}]\n",  # pragma: allowlist secret
-        "escaped": '"api\\x5fkey": [FIRST,\n' + second + "]\n",
-        "nested-explicit": f"settings:\n  ? api_key\n  : [FIRST,\n    {second}]\n",  # pragma: allowlist secret
-        "flow-escaped": 'settings: {safe: KEEP_INSIDE, "api\\x5fkey": [FIRST,\n' + second + "]}\n",
-        "explicit-block": f"? api_key\n:\n- FIRST\n- nested:\n    backup: {second}\n",  # pragma: allowlist secret
-        "explicit-scalar": f"? api_key\n: |-\n  FIRST\n  {second}\n",  # pragma: allowlist secret
-        "explicit-comment": f"? api_key\n# comment\n\n: &synthetic [FIRST,\n{second}]\n",  # pragma: allowlist secret
-        "flow-explicit": 'settings: {? "api\\x5fkey"\n: [FIRST,\n' + second + "]}\n",
-        "unbounded-escaped": 'settings: {safe: DISCARD, "api\\x5fkey": [FIRST,\n' + second + "]\n",
-        "unsupported-explicit": f"?\n  api_key\n: [FIRST,\n{second}]\n",  # pragma: allowlist secret
-        "unsupported-escape": 'settings: {"api\\qkey": [FIRST,\n' + second + "]}\n",
-        "explicit-key-comment": f"? api_key # label\n: [FIRST,\n{second}]\n",  # pragma: allowlist secret
-        "unsupported-multiline-key": f"? api\n  key\n: [FIRST,\n{second}]\n",
-        "unicode-escaped": '"api\\u005fkey": [FIRST,\n' + second + "]\n",
-        "flow-unicode-escaped": 'settings: {"api\\u005fkey": [FIRST,\n' + second + "]}\n",
-        "escaped-scalar": '"api\\x5fkey": FIRST ' + second + "\nsafe: KEEP_THIS_FIELD\n",
-        "explicit-sibling": f"? api_key\n:\n- FIRST\n- {second}\n? safe\n: KEEP_THIS_FIELD\n",  # pragma: allowlist secret
-        "flow-key-comment": 'settings: {# comment\n"api\\x5fkey": [FIRST,\n' + second + "]}\n",
-        "flow-explicit-tab": 'settings: {?\t"api\\x5fkey": [FIRST,\n' + second + "]}\n",
-        "unsupported-tagged-key": '!!str "api\\x5fkey": [FIRST,\n' + second + "]\n",
-    }
+    forms = _yaml_key_forms(second)
     diagnostic = forms[form]
-    suppressed = form.startswith(("unsupported-", "unbounded-"))
+    suppressed = form.startswith(("unsupported-", "unbounded-")) or form == "flow-explicit-tab"
     if capacity.startswith("local:"):
         payload = {"choices": [{"message": {"content": diagnostic}}]}
         monkeypatch.setattr(
@@ -369,6 +540,7 @@ def test_yaml_key_forms_never_reach_destinations(
                 "length": len(diagnostic),
                 "first_token_class": "text",
                 "reason": "undecodable_stream_suppressed",
+                **({"unsupported_class": "YAMLFlowKeyTab"} if form == "flow-explicit-tab" else {}),
             }
             for stream in (["answer"] if capacity.startswith("local:") else ["stdout", "stderr"])
         }
@@ -475,12 +647,7 @@ def test_yaml_sensitive_subtree_never_reaches_destinations(
 ):
     module, _bin_dir, brief, out = bench
     second = "SYNTHETIC_SECOND_CREDENTIAL"  # pragma: allowlist secret
-    forms = {
-        "sequence": f"api_key:\n- FIRST\n- {second}\n",  # pragma: allowlist secret
-        "indented-sequence": f"api_key:\n  - FIRST\n  - {second}\n",  # pragma: allowlist secret
-        "mapping": f"api_key:\n  primary: FIRST\n  nested:\n    backup: {second}\n",  # pragma: allowlist secret
-        "nested-sequence": f"api_key:\n- primary: FIRST\n- nested:\n    backup: {second}\n",  # pragma: allowlist secret
-    }
+    forms = _yaml_subtree_forms(second)
     diagnostic = forms[form] + ("safe: KEEP_THIS_FIELD\n" if bounded else "")
     if capacity.startswith("local:"):
         payload = {"choices": [{"message": {"content": diagnostic}}], "model": "synthetic-model"}
@@ -540,17 +707,10 @@ def test_yaml_sensitive_flow_collection_never_reaches_destinations(
     module, bin_dir, brief, out = bench
     first = "SYNTHETIC_FIRST_CREDENTIAL"  # pragma: allowlist secret
     second = "SYNTHETIC_SECOND_CREDENTIAL"  # pragma: allowlist secret
-    forms = {
-        "sequence": f"[{first},\n{second}]\n",
-        "mapping": f"{{primary: {first},\nbackup: {second}}}\n",
-        "nested-flow-in-block": f"[{{primary: [{first},\n{second}]}}]\n",
-        "double-quoted": f'["{first}\\"}}]",\n{second}]\n',
-        "single-quoted": f"['{first}'']}}',\n{second}]\n",
-        "comment": f"[{first}, # ] }}\n{second}]\n",
-        "tagged-member": f"[!<tag:synthetic.example,2026:]node> {first},\n{second}]\n",
-    }
+    forms = _yaml_flow_forms(first, second)
     parent = "settings:\n  " if form == "nested-flow-in-block" else ""
     diagnostic = f"{parent}api_key: {properties}{forms[form]}safe: KEEP_THIS_FIELD\n"  # pragma: allowlist secret
+    suppressed = bool(properties) or form == "tagged-member"
     if capacity.startswith("local:"):
         payload = {"choices": [{"message": {"content": diagnostic}}], "model": "synthetic-model"}
         monkeypatch.setattr(
@@ -566,7 +726,7 @@ def test_yaml_sensitive_flow_collection_never_reaches_destinations(
             "sys.exit(7)\n",
         )
     assert module.main([capacity, "--brief", str(brief), "--out", str(out)]) == (
-        0 if capacity.startswith("local:") else 3
+        0 if capacity.startswith("local:") and not suppressed else 3
     )
     captured = capsys.readouterr()
     destinations = {
@@ -579,12 +739,22 @@ def test_yaml_sensitive_flow_collection_never_reaches_destinations(
     leaks = [name for name, value in destinations.items() if first in value or second in value]
     assert not leaks, f"credential reached destinations: {', '.join(leaks)}"
     expected = f'{parent}api_key: "<redacted>"\nsafe: KEEP_THIS_FIELD\n'  # pragma: allowlist secret
-    assert destinations["answer"] == expected
+    assert destinations["answer"] == ("" if suppressed else expected)
     receipt = _receipt(out)
-    assert receipt["exit_code"] == (0 if capacity.startswith("local:") else 7)
-    assert receipt["answer_policy"] == (
-        "capacity_answer" if capacity.startswith("local:") else "redacted_failure_output"
+    assert receipt["exit_code"] == (
+        (3 if suppressed else 0) if capacity.startswith("local:") else 7
     )
+    assert receipt["answer_policy"] == (
+        "suppressed_undecodable_output"
+        if suppressed
+        else "capacity_answer"
+        if capacity.startswith("local:")
+        else "redacted_failure_output"
+    )
+
+    if suppressed:
+        assert receipt["suppressed_streams"]
+        assert "YAMLCustomTag" in captured.err
 
 
 @pytest.mark.parametrize("opening", ["[", "{"], ids=["sequence", "mapping"])
@@ -628,6 +798,7 @@ def test_unbounded_yaml_flow_collection_suppresses_stream(
             "length": len(diagnostic),
             "first_token_class": "text",
             "reason": "undecodable_stream_suppressed",
+            **({"unsupported_class": "YAMLCustomTag"} if ending.startswith("!<") else {}),
         }
         for stream in (["answer"] if capacity.startswith("local:") else ["stdout", "stderr"])
     }
@@ -645,15 +816,7 @@ def test_nested_yaml_flow_members_never_reach_destinations(
     first = "SYNTHETIC_NESTED_FIRST_CREDENTIAL"  # pragma: allowlist secret
     second = "SYNTHETIC_NESTED_SECOND_CREDENTIAL"  # pragma: allowlist secret
     sensitive = f"api_key: [{first},\n{second}]"  # pragma: allowlist secret
-    commented = sensitive.replace(",\n", ", # ] }\n")
-    forms = {
-        "nested": f"settings: {{{sensitive}}}\n",
-        "block-parent": f"settings:\n  child: {{nested: {{{sensitive}}}}}\n",
-        "sibling": f"settings: {{safe: KEEP_INSIDE, {sensitive}}}\n",
-        "comments": f"settings: {{ # ] }}\n nested: [{{safe: KEEP_INSIDE, {commented}}}]}}\n",
-        "sequence": f"settings: [{{safe: KEEP_INSIDE}}, {{nested: [{sensitive}]}}]\n",
-        "unbounded": f"settings: {{nested: [{sensitive}\n",
-    }
+    forms = _yaml_nested_forms(sensitive)
     diagnostic = forms[form] + "safe: KEEP_OUTSIDE\n"
     if capacity.startswith("local:"):
         payload = {"choices": [{"message": {"content": diagnostic}}]}
@@ -1974,8 +2137,17 @@ def test_structured_failed_output_is_redacted_at_every_destination(
     }
     for destination, text in destinations.items():
         assert "SYNTHETIC_STRUCTURED_CANARY" not in text, destination  # pragma: allowlist secret
-    assert "<redacted>" in destinations["answer"]
-    assert "<redacted>" in _receipt(out)["stderr_tail"]
+    if diagnostic.startswith('password: "') and not diagnostic.endswith('"'):
+        assert destinations["answer"] == ""
+        suppressed = _receipt(out)["suppressed_streams"]
+        assert suppressed
+        assert all(
+            shape["unsupported_class"] == "YAMLUnterminatedScalar" for shape in suppressed.values()
+        )
+        assert "YAMLUnterminatedScalar" in captured.err
+    else:
+        assert "<redacted>" in destinations["answer"]
+        assert "<redacted>" in _receipt(out)["stderr_tail"]
 
 
 @pytest.mark.parametrize(
@@ -2200,8 +2372,9 @@ def test_yaml_scalars_are_redacted_at_every_destination(
         return code, stdout, diagnostic, False, None
 
     monkeypatch.setattr(module, "_run", run)
+    suppressed = "!custom" in diagnostic or "*SYNTHETIC" in diagnostic
     rc = module.main([capacity, "--brief", str(brief), "--out", str(out)])
-    assert rc == (0 if code == 0 else 4 if code == "timeout" else 3)
+    assert rc == (0 if code == 0 and not suppressed else 4 if code == "timeout" else 3)
     captured = capsys.readouterr()
     destinations = {
         "answer": out.read_text(),
@@ -2216,7 +2389,12 @@ def test_yaml_scalars_are_redacted_at_every_destination(
         if "SYNTHETIC_YAML_CANARY" in text  # pragma: allowlist secret
     ]
     assert not leaks, f"credential reached destinations: {', '.join(leaks)}"
-    assert "<redacted>" in destinations["answer"]
+    if suppressed:
+        assert destinations["answer"] == ""
+        assert _receipt(out)["suppressed_streams"]
+        assert ("YAMLAlias" if "*SYNTHETIC" in diagnostic else "YAMLCustomTag") in captured.err
+    else:
+        assert "<redacted>" in destinations["answer"]
     assert _receipt(out)["output_bytes"] == len(out.read_bytes())
 
 
@@ -2964,3 +3142,125 @@ def test_unreadable_brief_names_recovery_without_traceback(
     assert "Traceback" not in captured.err
     assert captured.out == "" and caplog.text == ""
     assert not out.exists() and not out.with_name(out.name + ".receipt.json").exists()
+
+
+def _yaml_oracle_fixtures():
+    """Reuse the actual existing key/collection fixtures, rather than sanitized copies."""
+    first = "SYNTHETIC_FIRST_CREDENTIAL"  # pragma: allowlist secret
+    second = "SYNTHETIC_SECOND_CREDENTIAL"  # pragma: allowlist secret
+    cases = {**_SCANNER_YAML_FIXTURES, **_yaml_key_forms(second)}
+    cases["bom-fenced-extracted"] = (
+        cases["bom-fenced-response"].split("```yaml\n", 1)[1].split("\n```", 1)[0]
+    )
+    for name, text in _yaml_subtree_forms(second).items():
+        for bounded in (False, True):
+            cases[f"subtree-{name}-{bounded}"] = text + ("safe: KEEP\n" if bounded else "")
+    for name, text in _yaml_flow_forms(first, second).items():
+        for prop_name, properties in {
+            "bare": "",
+            "node-properties": "&synthetic !synthetic ",
+            "property-comment": "!<tag:synthetic.example,2026:collection> # ] }\n",
+        }.items():
+            parent = "settings:\n  " if name == "nested-flow-in-block" else ""
+            cases[f"flow-{name}-{prop_name}"] = (
+                f"{parent}api_key: {properties}{text}safe: KEEP_THIS_FIELD\n"  # pragma: allowlist secret
+            )
+    sensitive = f"api_key: [{first},\n{second}]"  # pragma: allowlist secret
+    cases.update(
+        ("nested-" + name, text + "safe: KEEP_OUTSIDE\n")
+        for name, text in _yaml_nested_forms(sensitive).items()
+    )
+    for prefix_name, prefix in {
+        "leading": "\ufeff",
+        "after-newline": "\n\ufeff",
+        "interior": "safe: KEEP\n\ufeff",
+        "repeated": "\ufeff\ufeff",
+    }.items():
+        for form, text in {
+            "escaped": '"api\\x5fkey": [FIRST,\nSYNTHETIC_SECOND_CREDENTIAL]\n',  # pragma: allowlist secret
+            "plain": "api_key: [FIRST,\nSYNTHETIC_SECOND_CREDENTIAL]\n",  # pragma: allowlist secret
+            "flow": '{safe: KEEP, "api\\x5fkey": [FIRST,\nSYNTHETIC_SECOND_CREDENTIAL]}\n',  # pragma: allowlist secret
+        }.items():
+            cases[f"bom-{prefix_name}-{form}"] = prefix + text
+    for test in (
+        test_yaml_scalars_are_redacted_at_every_destination,
+        test_structured_failed_output_is_redacted_at_every_destination,
+    ):
+        mark = next(mark for mark in test.pytestmark if mark.args[0] == "diagnostic")
+        for name, diagnostic in zip(mark.kwargs["ids"], mark.args[1], strict=True):
+            cases[f"{test.__name__}-{name}"] = diagnostic
+    mark = next(
+        mark
+        for mark in test_yaml_quoted_key_escape_semantics.pytestmark
+        if mark.args[0] == ("encoded", "decoded")
+    )
+    for index, (encoded, _decoded) in enumerate(mark.args[1]):
+        for quote in ('"', "'"):
+            cases[f"key-escape-{index}-{ord(quote)}"] = (
+                quote + "api" + encoded + "key" + quote + ": SYNTHETIC_CREDENTIAL"
+            )  # pragma: allowlist secret
+    for encoded in (r"\q", r"\x5", r"\xZZ", r"\u123", r"\U00110000", r"\uD800"):
+        text = '"api' + encoded + 'key": SYNTHETIC_CREDENTIAL'  # pragma: allowlist secret
+        cases[f"unsupported-escape-{encoded}"] = text
+        cases[f"unsupported-flow-escape-{encoded}"] = "settings: {" + text + "}"
+    for opening in ("[", "{"):
+        for index, ending in enumerate(
+            ("", '"unclosed ] }', "'unclosed ] }", "}", "!<unclosed ] ] }")
+        ):
+            cases[f"unbounded-{opening}-{index}"] = (
+                f"safe: SUPPRESS_THIS_TOO\napi_key: {opening}[FIRST,\nSYNTHETIC_UNBOUNDED_CREDENTIAL, {ending}"  # pragma: allowlist secret
+            )
+    for quote in ('"', "'"):
+        cases[f"unterminated-key-{ord(quote)}"] = (
+            quote + "api_key: [FIRST,\nSYNTHETIC_SECOND_CREDENTIAL]\n"
+        )  # pragma: allowlist secret
+    return cases
+
+
+@pytest.mark.parametrize(
+    ("name", "response"),
+    [pytest.param(name, text, id=name) for name, text in _yaml_oracle_fixtures().items()],
+)
+def test_yaml_loader_oracle_agreement(bench, name, response):
+    module, _bin_dir, _brief, _out = bench
+    oracle_text = (
+        response.split("```yaml\n", 1)[1].split("\n```", 1)[0]
+        if name == "bom-fenced-response"
+        else response
+    )
+    try:
+        has_key = _yaml_loader_oracle(oracle_text)
+    except (ValueError, yaml.YAMLError) as exc:
+        has_key = None
+        verdict = type(exc).__name__
+    else:
+        verdict = str(has_key)
+    streams, suppressed = module._redact_streams(answer=response)
+    actual = "suppressed" if suppressed else str("<redacted>" in streams["answer"])
+    print(f"ORACLE {name}: loader={verdict}; redactor={actual}")
+    if suppressed:
+        assert streams == {"answer": ""}
+        assert suppressed["answer"]["length"] == len(response)
+        assert suppressed["answer"]["reason"] == "undecodable_stream_suppressed"
+    else:
+        assert has_key is not None, f"loader refuses {name}: {verdict}"
+        assert ("<redacted>" in streams["answer"]) == has_key, f"loader/redactor divergence: {name}"
+
+
+@pytest.mark.parametrize(
+    ("text", "reason"),
+    [
+        ("x" * 8193, "8192 bytes"),
+        ("é" * 4097, "8192 bytes"),
+        ("&synthetic [*synthetic]", "aliases"),
+        ("a: &synthetic [KEEP]\nb: [*synthetic, *synthetic]", "aliases"),
+        ("[" * 33 + "KEEP" + "]" * 33, "32 collection levels"),
+    ],
+    ids=["oversized", "oversized-utf8", "cycle", "expansion", "depth"],
+)
+def test_yaml_loader_oracle_rejects_unsafe_fixtures_before_loading(monkeypatch, text, reason):
+    monkeypatch.setattr(
+        yaml, "safe_load", lambda text: pytest.fail("unsafe fixture reached loader")
+    )
+    with pytest.raises(ValueError, match=reason):
+        _yaml_loader_oracle(text)
