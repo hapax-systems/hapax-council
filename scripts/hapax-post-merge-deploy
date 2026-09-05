@@ -863,11 +863,14 @@ cleanup_known_stale_user_dropins_for_unit() {
                 echo "  removing stale local drop-in '$dropin': retired without replacement; hapax-glmcp-seat-refresh.timer owns refresh"
             fi
             ;;
-        hapax-glmcp-seat-refresh.service)
+        hapax-glmcp-seat-refresh.service|hapax-glmcp-seat-refresh.timer)
+            # Deploying either refresh unit retires the dispatcher pre-hook before
+            # daemon-reload, even when the dispatcher itself is absent from the diff.
+            cleanup_known_stale_user_dropins_for_unit hapax-pr-review-dispatch.service
             # Interim #4624 probe, installed 2026-09-03. Its own header requires removal
             # when the merged unit replaces it; TimeoutStartSec=900 overrides the unit.
             # Remove this named probe only, preserving every other operator drop-in.
-            dropin="$SYSTEMD_USER_DIR/$unit.d/probe-tree.conf"
+            dropin="$SYSTEMD_USER_DIR/hapax-glmcp-seat-refresh.service.d/probe-tree.conf"
             if [ -e "$dropin" ] || [ -L "$dropin" ]; then
                 rm -f "$dropin"
                 echo "  removing stale local drop-in '$dropin': merged unit replaces the interim probe and requires the 600 s no-lapse bound"

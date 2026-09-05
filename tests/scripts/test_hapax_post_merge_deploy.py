@@ -3608,6 +3608,82 @@ def test_review_dispatch_deploy_removes_only_interim_glm_refresh_dropin(
         )
 
 
+@pytest.mark.parametrize(
+    "suffixes",
+    [("service", "timer"), ("service",), ("timer",)],
+    ids=["refresh-pair", "refresh-service", "refresh-timer"],
+)
+def test_refresh_deploy_retires_both_interim_dropins_before_reload(
+    tmp_path: Path, suffixes: tuple[str, ...]
+) -> None:
+    paths = [f"systemd/units/hapax-glmcp-seat-refresh.{suffix}" for suffix in suffixes]
+    repo, sha = _repo_with_linear_commit(
+        tmp_path, {path: (REPO_ROOT / path).read_text() for path in paths}
+    )
+    # PR #4624 changes exactly the refresh pair, with no dispatcher-unit change.
+    assert _git(repo, "diff", "--name-only", f"{sha}^", sha).splitlines() == paths
+    home = tmp_path / "home"
+    user_dir = home / ".config/systemd/user"
+    overrides = {
+        "hapax-glmcp-seat-refresh.service.d/probe-tree.conf": ("[Service]\nTimeoutStartSec=900\n"),
+        "hapax-pr-review-dispatch.service.d/20-glm-seat-refresh.conf": (
+            "[Service]\nExecStartPre=/interim/refresh\n"
+        ),
+    }
+    siblings = []
+    for relative, body in overrides.items():
+        override = user_dir / relative
+        override.parent.mkdir(parents=True)
+        override.write_text(body)
+        sibling = override.with_name("operator.conf")
+        sibling.write_text("[Service]\nNice=5\n")
+        siblings.append(sibling)
+    bin_dir, calls_path = _fake_systemctl(tmp_path)
+    (bin_dir / "systemctl").write_text(
+        "#!/usr/bin/env bash\nset -eu\n"
+        'printf "%s\\n" "$*" >> "$HAPAX_SYSTEMCTL_CALLS"\n'
+        'case "$*" in\n'
+        '"--user daemon-reload")\n'
+        '  echo "daemon-reload recorded"\n'
+        f"  for relative in {' '.join(overrides)}; do\n"
+        '    dropin="$HOME/.config/systemd/user/$relative"\n'
+        '    if [ -e "$dropin" ] || [ -L "$dropin" ]; then\n'
+        '      echo "stale-at-reload:$relative" >> "$HAPAX_SYSTEMCTL_CALLS"\n'
+        "    fi\n"
+        "  done ;;\n"
+        "*TimeoutStartUSec*) echo 10min ;;\n"
+        "esac\n"
+    )
+    result = subprocess.run(
+        [str(SCRIPT), sha],
+        env={
+            **os.environ,
+            "HOME": str(home),
+            "PATH": f"{bin_dir}:{os.environ['PATH']}",
+            "REPO": str(repo),
+            "HAPAX_SYSTEMCTL_CALLS": str(calls_path),
+            "HAPAX_POST_MERGE_TRACE_PATH": str(tmp_path / "trace.jsonl"),
+        },
+        capture_output=True,
+        text=True,
+    )
+    assert result.returncode == 0, result.stdout + result.stderr
+    calls = calls_path.read_text().splitlines()
+    assert calls.count("--user daemon-reload") == 1
+    for relative in overrides:
+        override = user_dir / relative
+        assert not override.exists(), f"{relative} survived deployment"
+        assert f"stale-at-reload:{relative}" not in calls, f"{relative} survived daemon-reload"
+        removal = f"removing stale local drop-in '{override}'"
+        assert result.stdout.count(removal) == 1
+        assert result.stdout.index(removal) < result.stdout.index("daemon-reload recorded")
+    for sibling in siblings:
+        assert sibling.read_text() == "[Service]\nNice=5\n"
+        assert list(sibling.parent.iterdir()) == [sibling]
+    for path in paths:
+        assert (user_dir / Path(path).name).read_text() == (REPO_ROOT / path).read_text()
+
+
 @pytest.mark.parametrize("probe_present", [True, False])
 @pytest.mark.parametrize("effective", ["10min", "10min 0s", "600s", "15min", "", "query-failed"])
 def test_glm_seat_deploy_removes_only_probe_and_verifies_loaded_deadline(
@@ -3743,12 +3819,12 @@ def test_review_seat_deploy_inventories_both_dropin_directories(
             "operator.conf": "TimeoutStartSec, Environment, ExecStartPre, ExecStartPre",
         }[path.name]
         assert f"[Service] keys: {expected}" in line
-        retired = (
-            "probe-tree.conf"
-            if deployed == "hapax-glmcp-seat-refresh"
-            else "20-glm-seat-refresh.conf"
-        )
-        if path.parent.name == f"{deployed}.service.d" and path.name == retired:
+        retired = {
+            ("hapax-pr-review-dispatch.service.d", "20-glm-seat-refresh.conf"),
+        }
+        if deployed == "hapax-glmcp-seat-refresh":
+            retired.add(("hapax-glmcp-seat-refresh.service.d", "probe-tree.conf"))
+        if (path.parent.name, path.name) in retired:
             assert not path.exists()
             assert result.stdout.index(line) < result.stdout.index("removing stale local drop-in")
         else:
