@@ -1752,8 +1752,14 @@ def _claude_admission(
     observation: str = "subscription_quota_headroom_observed",
     secret_value_persisted: str = "false",
     lane_presence_used_as_quota_evidence: str = "false",
+    probe_environment_scrubbed: str | None = None,
     name: str = "claude-subscription-quota-admission.yaml",
 ) -> None:
+    probe_environment_line = (
+        f"probe_environment_scrubbed: {probe_environment_scrubbed}\n"
+        if probe_environment_scrubbed is not None
+        else ""
+    )
     (relay / name).write_text(
         "schema: hapax.claude_quota_admission.v1\n"
         "status: quota_available\n"
@@ -1762,6 +1768,7 @@ def _claude_admission(
         "capacity_pool: subscription_quota\n"
         "auth_surface: subscription\n"
         f"observation: {observation}\n"
+        f"{probe_environment_line}"
         f"observed_at: {observed_at}\n"
         f"stale_after_seconds: {stale_after_seconds}\n"
         f"evidence_ref: {evidence_ref}\n"
@@ -1792,7 +1799,39 @@ def _assert_claude_admission_ignored(tmp_path: Path, expected_reason: str) -> No
     summary = json.loads(result.stdout)
     assert summary["claude_admissions"] == 0
     assert summary["claude_ignored_admissions"] == 1
-    assert "ignoring claude admission receipt: validation failed" in result.stderr
+    assert f"ignoring claude admission receipt: reason={expected_reason}; recheck:" in result.stderr
+
+
+@pytest.mark.parametrize(
+    ("reason", "reason_code"),
+    [
+        ("receipt expired", "receipt-expired"),
+        ("unsafe receipt name", "unsafe-receipt-name"),
+        ("duplicate key on line 18", "duplicate-key-on-line-18"),
+        (
+            "schema missing or unsupported; expected hapax.example.v1",
+            "schema-missing-or-unsupported-expected-hapax-example-v1",
+        ),
+    ],
+)
+@pytest.mark.parametrize("family", ["claude", "agy"])
+def test_ignored_admission_warning_names_each_reason_class(
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+    family: str,
+    reason: str,
+    reason_code: str,
+) -> None:
+    namespace = runpy.run_path(str(SCRIPT))
+
+    namespace[f"_warn_ignored_{family}_admission"](
+        tmp_path / f"{family}-quota-admission.yaml",
+        reason,
+    )
+
+    warning = capsys.readouterr().err
+    assert f"ignoring {family} admission receipt: reason={reason_code}; recheck:" in warning
+    assert "validation failed" not in warning
 
 
 @pytest.mark.parametrize(
@@ -2006,6 +2045,25 @@ def test_fractional_second_claude_admission_expires_at_normalized_boundary(
     summary = json.loads(result.stdout)
     assert summary["claude_admissions"] == 0
     assert summary["claude_ignored_admissions"] == 1
+
+
+def test_probe_environment_scrub_disclosure_is_accepted(tmp_path: Path) -> None:
+    relay = tmp_path / "relay-receipts"
+    relay.mkdir()
+    _claude_admission(
+        relay,
+        observed_at="2026-06-09T23:55:00Z",
+        probe_environment_scrubbed=(
+            "ANTHROPIC_BASE_URL,ANTHROPIC_AUTH_TOKEN,ANTHROPIC_API_KEY,ANTHROPIC_MODEL"
+        ),
+    )
+
+    result, out = _run_writer(tmp_path)
+
+    assert result.returncode == 0, result.stderr
+    snapshot = _claude_snapshot(json.loads(out.read_text(encoding="utf-8")))
+    assert snapshot["subscription_quota_state"] == "fresh"
+    assert json.loads(result.stdout)["claude_admissions"] == 1
 
 
 def test_claude_admission_rejects_lane_presence_evidence_ref(tmp_path: Path) -> None:
@@ -2470,7 +2528,10 @@ def test_agy_admission_rejects_secret_persistence(tmp_path: Path) -> None:
     summary = json.loads(result.stdout)
     assert summary["agy_admissions"] == 0
     assert summary["agy_ignored_admissions"] == 1
-    assert "ignoring agy admission receipt: validation failed" in result.stderr
+    assert (
+        "ignoring agy admission receipt: "
+        "reason=secret-value-persisted-missing-or-unsupported-expected-false; recheck:"
+    ) in result.stderr
     assert "false-negative recovery" in result.stderr
     assert "secret_value_persisted" not in result.stderr
 
@@ -2490,7 +2551,9 @@ def test_ignored_agy_admission_warning_omits_secretish_receipt_dir(tmp_path: Pat
         if snapshot["route_id"] == "agy.review.direct"
     )
     assert agy_snapshot["subscription_quota_state"] == "unknown"
-    assert "ignoring agy admission receipt: validation failed" in result.stderr
+    assert (
+        "ignoring agy admission receipt: reason=unreadable-receipt-unicodedecodeerror; recheck:"
+    ) in result.stderr
     assert secretish_dir.name not in result.stderr
     summary = json.loads(result.stdout)
     assert summary["agy_admissions"] == 0
