@@ -213,6 +213,10 @@ def test_protected_user_unit_allowlist_and_scores_match_across_runtime_surfaces(
         installer_scores[unit] = int(score)
 
     enforcer = (REPO_ROOT / "scripts/hapax-oom-score-enforce").read_text()
+    # 2026-08-10 logind-storm: the enforcement path must never shell out to
+    # runuser (any spelling, incl. absolute paths) — every call was a full
+    # PAM/pam_systemd session. Unit cgroups resolve from /sys/fs/cgroup only.
+    assert "runuser" not in enforcer
     enforcer_scores = {
         unit: int(score)
         for unit, score in re.findall(
@@ -311,7 +315,11 @@ def test_root_oom_enforcer_uses_system_scoped_failure_intake() -> None:
     assert "After=user@1000.service" in enforcer
     assert "StartLimitIntervalSec=0" in enforcer
     assert "StartLimitBurst" not in enforcer
-    assert "AccuracySec=1s" in timer
+    # 2026-08-10 logind-storm fix: 30s/AccuracySec=1s -> 2min with default accuracy;
+    # the reconciler does not need sub-minute precision, and the tight cadence was
+    # the storm amplifier. AccuracySec must stay absent (default ~1min slack).
+    assert "OnUnitActiveSec=2min" in timer
+    assert "AccuracySec" not in timer
     assert "# Hapax-Install-Scope: system" in intake
     assert "User=hapax" in intake
     assert "Environment=PATH=/usr/local/sbin:/usr/local/bin:/usr/bin:/bin" in intake
