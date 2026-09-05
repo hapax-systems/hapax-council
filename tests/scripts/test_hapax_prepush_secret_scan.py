@@ -127,6 +127,33 @@ def test_detect_secrets_staging_preserves_distinct_repository_paths(tmp_path):
     assert fake not in r.stderr and fake not in r.stdout
 
 
+def test_git_binary_classification_refuses_and_names_unscannable_file(tmp_path, monkeypatch):
+    """A binary diff has no added-line hunks, so the hook must refuse it explicitly."""
+    fake_bin = tmp_path / "detector-bin"
+    fake_bin.mkdir()
+    fake_detector = fake_bin / "detect-secrets"
+    fake_detector.write_text("#!/bin/sh\nprintf '%s\\n' '{\"results\": {}}'\n")
+    fake_detector.chmod(0o755)
+    monkeypatch.setenv("PATH", f"{fake_bin}:{os.environ['PATH']}")
+
+    repo = _repo(tmp_path)
+    base = _commit(repo, ".gitattributes", "*.bin binary\n")
+    payload = (  # pragma: allowlist secret
+        "path " + "/".join(("", "home", "someone", "private"))
+    ).encode() + b"\0"
+    (repo / "payload.bin").write_bytes(payload)
+    _git(repo, "add", "payload.bin")
+    _git(repo, "commit", "-q", "-m", "add binary-classified payload")
+    tip = _git(repo, "rev-parse", "HEAD")
+
+    assert _git(repo, "diff", "--numstat", base, tip) == "-\t-\tpayload.bin"
+    r = _run(repo, "origin", f"refs/heads/main {tip} refs/heads/main {base}\n")
+
+    assert r.returncode == 1, r.stderr
+    assert "unscannable binary content: payload.bin" in r.stderr
+    assert payload.decode(errors="ignore") not in r.stderr
+
+
 def test_vendor_key_prefix_cannot_be_allowlisted_by_inline_pragma(tmp_path, monkeypatch):
     """The independent vendor predicate still refuses keys detect-secrets does not flag."""
     fake_bin = tmp_path / "detector-bin"
