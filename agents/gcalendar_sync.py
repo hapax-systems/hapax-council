@@ -172,9 +172,9 @@ recurring: {str(e.recurring).lower()}
 
 def _get_calendar_service():
     """Build authenticated Calendar API service."""
-    from agents._google_auth import build_service
+    from shared.google_auth import build_service
 
-    return build_service("calendar", "v3", SCOPES)
+    return build_service("calendar", "v3", SCOPES, interactive=False)
 
 
 def _parse_api_event(item: dict) -> CalendarEvent | None:
