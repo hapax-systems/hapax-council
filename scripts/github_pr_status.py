@@ -22,6 +22,7 @@ import subprocess
 import sys
 import time
 from dataclasses import asdict, dataclass
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
@@ -827,12 +828,20 @@ def listing_unavailable_detail(exc: PrListingUnavailable) -> str:
         # "Next action: none" was wrong: a pool that stays empty across cycles is a spend
         # problem, not weather, and the operator is the only one who can look into what is
         # burning it. The routine case still needs nothing done, so say both.
+        reset = (
+            f"reset at {datetime.fromtimestamp(exc.reset_epoch, UTC).isoformat()} "
+            f"(resets in {exc.reset_in_seconds}s)"
+            if exc.reset_epoch is not None
+            else "reset time unknown"
+        )
         return (
             # `reset_in_seconds` is None when no reset epoch was carried, and an f-string
             # renders that as the literal "Nones" — a nonsense duration in the one message an
             # operator actually reads.
-            f" (quota, not auth; {f'resets in {exc.reset_in_seconds}s' if exc.reset_in_seconds is not None else 'reset time unknown'}). "
-            "Next action: none if this clears on the next cycle. If both pools stay below "
+            f" (quota, not auth; {reset}). "
+            "Next action: use the GraphQL reader `gh pr view <number> --repo <repo> "
+            "--json number,url,headRefOid,statusCheckRollup` when that pool has headroom, "
+            "or wait for the REST pool reset and retry. If both pools stay below "
             "their floors across several resets, something is spending them — check "
             "`github_pr_status.py rate` and the fleet timer cadences."
         )
@@ -1152,14 +1161,26 @@ def get_pr_status_graphql(
     repo_root: Path,
     runner: Any = subprocess.run,
     include_status: bool = True,
+    expected_head_sha: str | None = None,
 ) -> dict[str, Any] | None:
     """One PR's status row over GraphQL, for hydration on a GraphQL-routed cycle.
 
     The per-PR sibling of `list_open_pr_statuses_graphql`, and it exists for the same reason the
     listing did: routing the bulk call and leaving the per-PR loop on REST spends the pool the
     routing chose to spare. Returns ``None`` when the PR cannot be read, matching
-    `get_pr_status_rest`.
+    `get_pr_status_rest`. The returned ``headRefOid`` identifies the snapshot; callers with
+    prior head evidence must compare it or pass ``expected_head_sha`` to refuse a moved head.
     """
+
+    def refuse(reason: str) -> None:
+        print(
+            f"github_pr_status: GraphQL status unavailable for PR #{pr_number} ({reason}). "
+            "Next action: re-read this PR in the requested repository and compare headRefOid "
+            "with the expected head before using its status.",
+            file=sys.stderr,
+        )
+
+    fields = _GRAPHQL_PR_LIST_FIELDS + (("statusCheckRollup",) if include_status else ())
     try:
         proc = _run(
             runner,
@@ -1171,7 +1192,7 @@ def get_pr_status_graphql(
                 "--repo",
                 repo,
                 "--json",
-                ",".join(_GRAPHQL_PR_LIST_FIELDS),
+                ",".join(fields),
             ],
             repo_root=repo_root,
         )
@@ -1181,32 +1202,50 @@ def get_pr_status_graphql(
         # lineage collection over one slow PR. Third time in this change that I normalised the
         # boundary in one `_run` caller and left the next; the enumeration test below now holds
         # the list so there is no fourth.
-        print(
-            f"github_pr_status: GraphQL status unavailable for PR #{pr_number} ({exc})",
-            file=sys.stderr,
-        )
+        refuse(f"query_unavailable:{type(exc).__name__}")
         return None
     item = _json_from_proc(proc)
-    if not isinstance(item, dict) or item.get("number") is None:
+    if not isinstance(item, dict):
+        refuse("query_failed_or_malformed")
+        return None
+    number = item.get("number")
+    if isinstance(number, bool) or not isinstance(number, int) or number <= 0:
+        refuse("number_unusable")
+        return None
+    if str(number) != str(pr_number):
+        refuse(f"number_mismatch:requested={pr_number}:returned={number}")
+        return None
+    # gh exposes the base repository in the canonical PR URL. headRepository would identify
+    # a fork instead. Check both URL components so an inconsistent row cannot be accepted.
+    url = item.get("url")
+    identity = (
+        re.fullmatch(r"https?://[^/]+/([^/]+/[^/]+)/pull/(\d+)", url or "")
+        if isinstance(url, str)
+        else None
+    )
+    if identity is None:
+        refuse("repository_identity_unusable")
+        return None
+    if identity[1].casefold() != repo.casefold():
+        refuse(f"repository_mismatch:requested={repo}:returned={identity[1]}")
+        return None
+    if identity[2] != str(number):
+        refuse(f"number_mismatch:requested={number}:url_number={identity[2]}")
+        return None
+    head_sha = item.get("headRefOid")
+    if not isinstance(head_sha, str) or not head_sha.strip() or head_sha != head_sha.strip():
+        refuse("head_sha_unusable")
+        return None
+    if expected_head_sha is not None and head_sha != expected_head_sha:
+        refuse(f"head_sha_mismatch:expected={expected_head_sha}:returned={head_sha}")
+        return None
+    # Hydrate checks and identity in one response. A second gh pr view could observe a new
+    # head and attach its checks to this row's old headRefOid.
+    rollup = item.get("statusCheckRollup") if include_status else []
+    if not isinstance(rollup, list):
+        refuse("statusCheckRollup_unusable")
         return None
     files = item.get("files") if isinstance(item.get("files"), list) else []
-    try:
-        rollup = (
-            _status_check_rollup_graphql(
-                item.get("number"), repo=repo, repo_root=repo_root, runner=runner
-            )
-            if include_status
-            else []
-        )
-    except GraphQLRollupFailed as exc:
-        # A single-PR hydration has no listing-level router around it. Preserve this function's
-        # ``None``-on-unreadable contract so lineage can use eligible REST or record an explicit
-        # unhydrated gap when REST is measured empty.
-        print(
-            f"github_pr_status: GraphQL status unavailable for PR #{pr_number} ({exc.reason})",
-            file=sys.stderr,
-        )
-        return None
     return {
         "number": item.get("number"),
         "id": item.get("id"),
@@ -1217,7 +1256,7 @@ def get_pr_status_graphql(
         "updatedAt": item.get("updatedAt"),
         "mergedAt": item.get("mergedAt"),
         "headRefName": str(item.get("headRefName") or ""),
-        "headRefOid": str(item.get("headRefOid") or ""),
+        "headRefOid": head_sha,
         "changedFiles": item.get("changedFiles") if item.get("changedFiles") is not None else None,
         "files": files or None,
         "isDraft": bool(item.get("isDraft")),
@@ -1799,28 +1838,35 @@ def main(argv: list[str] | None = None) -> int:
         return 0 if transport else GRAPHQL_BACKOFF_RC
     if args.command == "open-prs":
         include_status = not args.no_status
-        if args.head:
-            rows = list_pr_statuses_for_branch_rest(
-                args.head,
-                repo=args.repo,
-                repo_root=args.repo_root,
-                limit=args.limit,
-                include_status=include_status,
-                fail_on_indeterminate=True,
+        try:
+            if args.head:
+                rows = list_pr_statuses_for_branch_rest(
+                    args.head,
+                    repo=args.repo,
+                    repo_root=args.repo_root,
+                    limit=args.limit,
+                    include_status=include_status,
+                    fail_on_indeterminate=True,
+                )
+            else:
+                # Deliberately NOT routed through `list_open_pr_statuses`. This diagnostic asks
+                # for `fail_on_indeterminate=True`, which is REST-specific strictness about
+                # incomplete check evidence and has no GraphQL analogue — routing it would drop
+                # that strictness silently on half its runs. It is also a hand-run command, so it
+                # is not the traffic the balancer exists to spread.
+                rows = list_open_pr_statuses_rest(
+                    repo=args.repo,
+                    repo_root=args.repo_root,
+                    limit=args.limit,
+                    include_status=include_status,
+                    fail_on_indeterminate=True,
+                )
+        except PrListingUnavailable as exc:
+            print(
+                f"github_pr_status: {exc.reason}{listing_unavailable_detail(exc)}",
+                file=sys.stderr,
             )
-        else:
-            # Deliberately NOT routed through `list_open_pr_statuses`. This diagnostic asks
-            # for `fail_on_indeterminate=True`, which is REST-specific strictness about
-            # incomplete check evidence and has no GraphQL analogue — routing it would drop
-            # that strictness silently on half its runs. It is also a hand-run command, so it
-            # is not the traffic the balancer exists to spread.
-            rows = list_open_pr_statuses_rest(
-                repo=args.repo,
-                repo_root=args.repo_root,
-                limit=args.limit,
-                include_status=include_status,
-                fail_on_indeterminate=True,
-            )
+            return GRAPHQL_BACKOFF_RC
         json.dump(rows, sys.stdout, sort_keys=True)
         sys.stdout.write("\n")
         return 0

@@ -2530,31 +2530,51 @@ def _parse_status_created_at(value: Any) -> datetime | None:
     return parsed.astimezone(UTC)
 
 
+@dataclass(frozen=True)
+class AdmissionStatusReadFailed:
+    reason: str
+
+
 def _latest_admission_status(
     head_sha: str,
     *,
     repo: str,
     repo_root: Path,
     runner: Any,
-) -> tuple[str, str, datetime | None] | None:
+) -> tuple[str, str, datetime | None] | None | AdmissionStatusReadFailed:
     """The most recent autoqueue-admission (state, description, created_at) on
-    ``head_sha``, or None when absent/unreadable. Read-before-write lets the
+    ``head_sha``, None when absent, or AdmissionStatusReadFailed when unreadable.
+    Read-before-write lets the
     reconciler POST a fresh status only when it actually changed or is about to
     go stale: GitHub caps statuses at 1000 per SHA+context, and the old
     unconditional POST burned that cap into a 422 self-DoS that made the apply
     loop skip the queue mutation."""
     cmd = ["gh", "api", f"repos/{repo}/commits/{head_sha}/statuses"]
-    proc = runner(cmd, cwd=str(repo_root), capture_output=True, text=True, check=False, timeout=60)
-    if getattr(proc, "returncode", 1) != 0:
-        return None
     try:
-        items = json.loads(proc.stdout or "[]")
+        proc = runner(
+            cmd, cwd=str(repo_root), capture_output=True, text=True, check=False, timeout=60
+        )
+    except (subprocess.SubprocessError, OSError) as exc:
+        return AdmissionStatusReadFailed(f"query_unavailable:{type(exc).__name__}")
+    if getattr(proc, "returncode", 1) != 0:
+        return AdmissionStatusReadFailed(f"query_failed:rc={proc.returncode}")
+    try:
+        items = json.loads(proc.stdout)
     except (json.JSONDecodeError, TypeError):
-        return None
+        return AdmissionStatusReadFailed("invalid_json")
     if not isinstance(items, list):
-        return None
+        return AdmissionStatusReadFailed("expected_status_list")
     for item in items:  # the statuses API returns most-recent-first
-        if isinstance(item, dict) and item.get("context") == AUTOQUEUE_ADMISSION_CONTEXT:
+        if not isinstance(item, dict) or not isinstance(item.get("context"), str):
+            return AdmissionStatusReadFailed("malformed_status_row")
+        if item.get("context") == AUTOQUEUE_ADMISSION_CONTEXT:
+            if not isinstance(item.get("state"), str) or item["state"] not in {
+                "pending",
+                "success",
+                "failure",
+                "error",
+            }:
+                return AdmissionStatusReadFailed("malformed_status_state")
             return (
                 str(item.get("state") or ""),
                 str(item.get("description") or ""),
@@ -2601,26 +2621,46 @@ def _latest_admission_status_graphql(
             repo_root=repo_root,
             runner=runner,
         )
-    except (subprocess.TimeoutExpired, OSError) as exc:
-        LOG.warning("GraphQL admission status read unavailable for %s: %s", head_sha, exc)
+    except (subprocess.SubprocessError, OSError) as exc:
+        LOG.warning(
+            "GraphQL admission status read unavailable for %s: %s", head_sha, type(exc).__name__
+        )
         return None, None
     if proc.returncode != 0:
         return None, None
     try:
         payload = json.loads(proc.stdout or "{}")
-    except json.JSONDecodeError:
+    except (json.JSONDecodeError, TypeError):
         return None, None
-    repository = payload.get("data", {}).get("repository") if isinstance(payload, dict) else None
+    if not isinstance(payload, dict) or payload.get("errors"):
+        return None, None
+    data = payload.get("data")
+    repository = data.get("repository") if isinstance(data, dict) else None
     if not isinstance(repository, dict):
         return None, None
     repository_id = _scalar(repository.get("id"))
     if not repository_id:
         return None, None
     commit = repository.get("object")
-    status = commit.get("status") if isinstance(commit, dict) else None
-    context = status.get("context") if isinstance(status, dict) else None
+    if not isinstance(commit, dict) or "status" not in commit:
+        return None, None
+    status = commit["status"]
+    if status is None:
+        return repository_id, None  # readable commit with no statuses
+    if not isinstance(status, dict) or "context" not in status:
+        return None, None
+    context = status["context"]
+    if context is None:
+        return repository_id, None  # readable status with no context of ours
     if not isinstance(context, dict):
-        return repository_id, None  # readable, and no status of ours on this SHA yet
+        return None, None
+    if not isinstance(context.get("state"), str) or context["state"] not in {
+        "PENDING",
+        "SUCCESS",
+        "FAILURE",
+        "ERROR",
+    }:
+        return None, None
     return repository_id, (
         str(context.get("state") or "").lower(),  # GraphQL enums are upper-case; REST is lower
         str(context.get("description") or ""),
@@ -2670,6 +2710,8 @@ def set_autoqueue_admission_status(
         route_reason = route.reason
     else:
         transport = route or "rest"
+        # Legacy GraphQL callers supplied no independent REST measurement. Keep their
+        # conservative no-REST contract; measured fallback eligibility requires ListingRoute.
         rest_blocked = transport == "graphql"
         route_reason = ""
     if transport == "graphql":
@@ -2678,13 +2720,24 @@ def set_autoqueue_admission_status(
         )
         if repository_id is None:
             if rest_blocked:
-                return False, "graphql_admission_status_read_failed"
+                return (
+                    False,
+                    "graphql_admission_status_read_failed. Next action: retry the read next "
+                    "cycle when GraphQL recovers or `github_pr_status.py rate` shows REST headroom.",
+                )
             current = _latest_admission_status(
                 decision.pr.head_sha, repo=repo, repo_root=repo_root, runner=runner
             )
     else:
         current = _latest_admission_status(
             decision.pr.head_sha, repo=repo, repo_root=repo_root, runner=runner
+        )
+    if isinstance(current, AdmissionStatusReadFailed):
+        return (
+            False,
+            f"rest_admission_status_read_failed:{current.reason}. Next action: retry the "
+            "admission read next cycle; if it persists, check `gh auth status` and "
+            "`github_pr_status.py rate` before retrying.",
         )
     if current is not None:
         cur_state, cur_description, cur_created = current
@@ -2785,6 +2838,10 @@ def _admission_status_write_deferral_class(message: str) -> str | None:
     these documented transport responses keeps the fail-closed path.
     """
     lowered = (message or "").lower()
+    if lowered.startswith(
+        ("rest_admission_status_read_failed", "graphql_admission_status_read_failed")
+    ):
+        return "admission_status_read_failed"
     if "rate limit" in lowered or '"status": "429"' in lowered or "http 429" in lowered:
         return "github_rate_limit"
     # Any 5xx, not a list of the usual ones (review finding on #4627, round 3): a 501 or a 599
@@ -3253,6 +3310,22 @@ def run_reconciler(
                 force_fresh_success=_decision_is_release_head_guard_subject(decision),
                 route=listing_route,
             )
+            if (
+                status_result is not None
+                and not status_result[0]
+                and _admission_status_write_deferral_class(status_result[1])
+                == "admission_status_read_failed"
+            ):
+                mutation_results.append(
+                    {
+                        **decision.as_dict(),
+                        "action": "hold",
+                        "ok": True,
+                        "reasons": ["admission_status_read_failed"],
+                        "message": status_result[1],
+                    }
+                )
+                continue
             if decision.action not in {
                 "queue",
                 "enable_auto_merge",

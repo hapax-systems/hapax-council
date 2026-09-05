@@ -7855,7 +7855,9 @@ def test_admission_status_graphql_read_failure_fails_closed_without_rest_fallbac
         route="graphql",
     )
 
-    assert result == (False, "graphql_admission_status_read_failed")
+    assert result is not None and result[0] is False
+    assert result[1].startswith("graphql_admission_status_read_failed")
+    assert "Next action:" in result[1]
     assert _rest_status_calls(calls) == []
     assert _graphql_mutations(calls) == []
 
@@ -7869,7 +7871,7 @@ def test_admission_status_graphql_read_failure_falls_back_when_rest_is_eligible(
     graphql = _graphql_only_runner(calls, graphql_read_ok=False)
 
     def runner(cmd: list[str], **kwargs: Any) -> subprocess.CompletedProcess:
-        if cmd[:3] == ["gh", "api", "repos/owner/repo/commits/deadbeef/statuses"]:
+        if cmd[:3] == ["gh", "api", "repos/owner/repo/commits/sha-50/statuses"]:
             calls.append(list(cmd))
             return subprocess.CompletedProcess(cmd, 0, "[]", "")
         if cmd[:4] == ["gh", "api", "-X", "POST"] and "/statuses/" in " ".join(cmd):
@@ -7900,3 +7902,214 @@ def test_admission_status_rest_route_still_posts_over_rest(tmp_path: Path) -> No
     )
     assert result is not None and result[0]
     assert len(_admission_posts(runner)) == 1
+
+
+@pytest.mark.parametrize("route", ["rest", "graphql"])
+@pytest.mark.parametrize(
+    "failure",
+    [
+        "nonzero",
+        "invalid_json",
+        "empty_body",
+        "wrong_shape",
+        "bad_row",
+        "bad_state",
+        "timeout",
+        "oserror",
+        "subprocess",
+    ],
+)
+def test_admission_read_failure_never_posts(tmp_path: Path, route: str, failure: str) -> None:
+    calls = []
+    graphql = _graphql_only_runner(calls, graphql_read_ok=False)
+
+    def runner(cmd: list[str], **kwargs: Any) -> subprocess.CompletedProcess:
+        if cmd[:3] == ["gh", "api", "repos/owner/repo/commits/sha-50/statuses"]:
+            calls.append(cmd)
+            if failure == "timeout":
+                raise subprocess.TimeoutExpired(cmd, 60)
+            if failure == "oserror":
+                raise OSError("gh unavailable")
+            if failure == "subprocess":
+                raise subprocess.SubprocessError("gh failed")
+            bodies = {
+                "nonzero": "",
+                "invalid_json": "{",
+                "empty_body": "",
+                "wrong_shape": "{}",
+                "bad_row": "[null]",
+                "bad_state": json.dumps(
+                    [{"context": autoqueue.AUTOQUEUE_ADMISSION_CONTEXT, "state": []}]
+                ),
+            }
+            return subprocess.CompletedProcess(cmd, int(failure == "nonzero"), bodies[failure], "")
+        if cmd[:4] == ["gh", "api", "-X", "POST"]:
+            calls.append(cmd)
+            return subprocess.CompletedProcess(cmd, 0, "{}", "")
+        return graphql(cmd, **kwargs)
+
+    result = autoqueue.set_autoqueue_admission_status(
+        _admission_decision(),
+        repo="owner/repo",
+        repo_root=tmp_path,
+        runner=runner,
+        route=_graphql_route(rest_blocked=False) if route == "graphql" else "rest",
+    )
+    assert result is not None and result[0] is False
+    assert "rest_admission_status_read_failed" in result[1]
+    assert "Next action:" in result[1]
+    assert not any(cmd[:4] == ["gh", "api", "-X", "POST"] for cmd in calls)
+
+
+@pytest.mark.parametrize("present", [False, True])
+def test_admission_rest_fallback_distinguishes_present_and_absent(
+    tmp_path: Path, present: bool
+) -> None:
+    decision = _admission_decision()
+    state, description = autoqueue._admission_status_for(decision)
+    now = datetime(2026, 6, 2, 0, 5, tzinfo=UTC)
+    calls = []
+    graphql = _graphql_only_runner(calls, graphql_read_ok=False)
+
+    def runner(cmd: list[str], **kwargs: Any) -> subprocess.CompletedProcess:
+        if cmd[:3] == ["gh", "api", "repos/owner/repo/commits/sha-50/statuses"]:
+            calls.append(cmd)
+            items = [_existing_status(state, description, now.isoformat())] if present else []
+            return subprocess.CompletedProcess(cmd, 0, json.dumps(items), "")
+        if cmd[:4] == ["gh", "api", "-X", "POST"]:
+            calls.append(cmd)
+            return subprocess.CompletedProcess(cmd, 0, "{}", "")
+        return graphql(cmd, **kwargs)
+
+    result = autoqueue.set_autoqueue_admission_status(
+        decision,
+        repo="owner/repo",
+        repo_root=tmp_path,
+        runner=runner,
+        now=now,
+        route=_graphql_route(rest_blocked=False),
+    )
+    assert result is not None and result[0] is True
+    assert len([cmd for cmd in calls if cmd[:4] == ["gh", "api", "-X", "POST"]]) == (
+        0 if present else 1
+    )
+    if present:
+        assert result == (True, "unchanged")
+
+
+@pytest.mark.parametrize("route", ["rest", "graphql"])
+@pytest.mark.parametrize(
+    "action",
+    [
+        "queue",
+        "already_queued",
+        "enable_auto_merge",
+        "already_auto_merge_enabled",
+        "dequeue",
+        "disable_auto_merge",
+    ],
+)
+def test_reconciler_holds_on_admission_read_failure(
+    tmp_path: Path, monkeypatch: Any, action: str, route: str
+) -> None:
+    vault = _make_vault(tmp_path)
+    _write_task(vault, task_id="task-a", pr=42)
+    runner = _FakeRunner()
+    runner.open_prs = [_pr(42)]
+    original = runner.__call__
+    if route == "graphql":
+        fetch = autoqueue.fetch_open_prs
+
+        def graphql_route(**kwargs: Any) -> Any:
+            prs, _ = fetch(**kwargs)
+            return prs, _graphql_route(rest_blocked=False)
+
+        monkeypatch.setattr(autoqueue, "fetch_open_prs", graphql_route)
+
+    def failed_status_read(cmd: list[str], **kwargs: Any) -> subprocess.CompletedProcess:
+        if cmd[:3] == ["gh", "api", "repos/owner/repo/commits/sha-42/statuses"]:
+            runner.calls.append(cmd)
+            return subprocess.CompletedProcess(cmd, 1, "", "HTTP 503")
+        if cmd[:3] == ["gh", "api", "graphql"] and any("$ctx" in arg for arg in cmd):
+            runner.calls.append(cmd)
+            return subprocess.CompletedProcess(cmd, 1, "", "HTTP 503")
+        return original(cmd, **kwargs)
+
+    monkeypatch.setattr(autoqueue, "classify_pr", lambda *_a, **_k: _admission_decision(42, action))
+    report = autoqueue.run_reconciler(
+        repo="owner/repo",
+        repo_root=tmp_path,
+        vault_root=vault,
+        apply=True,
+        runner=failed_status_read,
+        auto_arm_ledger_path=tmp_path / "ledger.jsonl",
+    )
+    holds = [item for item in report["mutations"] if item["action"] == "hold"]
+    assert len(holds) == 1
+    assert holds[0]["reasons"] == ["admission_status_read_failed"]
+    assert "Next action:" in holds[0]["message"]
+    assert _admission_posts(runner) == []
+    assert not any(cmd[:3] == ["gh", "pr", "merge"] for cmd in runner.calls)
+    assert _graphql_mutations(runner.calls) == []
+
+
+@pytest.mark.parametrize(
+    "repository, errors",
+    [
+        ({"id": "R_test", "object": None}, None),
+        ({"id": "R_test", "object": {}}, None),
+        ({"id": "R_test", "object": {"status": {}}}, None),
+        ({"id": "R_test", "object": {"status": {"context": []}}}, None),
+        ({"id": "R_test", "object": {"status": None}}, [{"message": "read failed"}]),
+    ],
+)
+def test_graphql_admission_failed_payload_is_not_absence(
+    tmp_path: Path, repository: Any, errors: Any
+) -> None:
+    calls = []
+    base = _graphql_only_runner(calls)
+
+    def runner(cmd: list[str], **kwargs: Any) -> subprocess.CompletedProcess:
+        if cmd[:3] == ["gh", "api", "graphql"]:
+            calls.append(cmd)
+            return subprocess.CompletedProcess(
+                cmd, 0, json.dumps({"data": {"repository": repository}, "errors": errors}), ""
+            )
+        return base(cmd, **kwargs)
+
+    result = autoqueue.set_autoqueue_admission_status(
+        _admission_decision(),
+        repo="owner/repo",
+        repo_root=tmp_path,
+        runner=runner,
+        route=_graphql_route(rest_blocked=True),
+    )
+    assert result is not None and result[0] is False
+    assert result[1].startswith("graphql_admission_status_read_failed")
+    assert "Next action:" in result[1]
+    assert _rest_status_calls(calls) == []
+
+
+@pytest.mark.parametrize("status", [None, {"context": None}])
+def test_graphql_admission_confirmed_absence_is_readable(tmp_path: Path, status: Any) -> None:
+    calls = []
+    base = _graphql_only_runner(calls)
+
+    def runner(cmd: list[str], **kwargs: Any) -> subprocess.CompletedProcess:
+        if cmd[:3] == ["gh", "api", "graphql"]:
+            return subprocess.CompletedProcess(
+                cmd,
+                0,
+                json.dumps(
+                    {"data": {"repository": {"id": "R_test", "object": {"status": status}}}}
+                ),
+                "",
+            )
+        return base(cmd, **kwargs)
+
+    assert autoqueue._latest_admission_status_graphql(
+        "sha-50",
+        repo="owner/repo",
+        repo_root=tmp_path,
+        runner=runner,
+    ) == ("R_test", None)

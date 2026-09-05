@@ -11,6 +11,8 @@ from pathlib import Path
 from types import ModuleType
 from typing import Any
 
+import pytest
+
 REPO_ROOT = Path(__file__).resolve().parents[2]
 SCRIPT = REPO_ROOT / "scripts" / "hapax-merge-queue-lineage"
 
@@ -295,6 +297,7 @@ def test_hydration_uses_the_chosen_transport_and_records_what_it_could_not_reach
                     json.dumps(
                         {
                             "number": 4242,
+                            "url": "https://github.com/hapax-systems/hapax-council/pull/4242",
                             "state": "MERGED",
                             "title": "t",
                             "headRefName": "b",
@@ -465,3 +468,88 @@ def test_a_raised_rest_hydration_failure_records_a_gap_instead_of_aborting_colle
         "a raised REST failure must be recorded as a gap that names why, not propagated; "
         f"got {unhydrated}"
     )
+
+
+# Use the real github_pr_status hydrator so malformed identities cannot bypass gap receipts.
+
+
+@pytest.mark.parametrize(
+    "change",
+    [
+        *[{"number": number} for number in (None, "", "4242", 0, -1, True, 4242.0, 4243)],
+        {"url": "https://github.com/other/repo/pull/4242"},
+        {"url": None},
+        {"headRefOid": ""},
+    ],
+)
+def test_invalid_hydration_identity_reaches_fetch_and_collect_gap_receipt(
+    tmp_path: Path, monkeypatch: Any, change: dict[str, Any]
+) -> None:
+    import github_pr_status
+
+    lineage = _load_lineage_module()
+    monkeypatch.setattr(lineage, "REPO_ROOT", tmp_path)
+    monkeypatch.setattr(
+        lineage,
+        "list_open_pr_statuses",
+        lambda **_: ([], github_pr_status.ListingRoute("graphql", True, "REST below floor")),
+    )
+
+    def wrong_identity(cmd: list[str], **_: Any) -> subprocess.CompletedProcess:
+        assert cmd[:3] == ["gh", "pr", "view"], "blocked REST must not be used"
+        return subprocess.CompletedProcess(
+            cmd,
+            0,
+            json.dumps(
+                {
+                    "number": 4242,
+                    "url": "https://github.com/owner/repo/pull/4242",
+                    "headRefOid": "a" * 40,
+                    "statusCheckRollup": [],
+                    **change,
+                }
+            ),
+            "",
+        )
+
+    monkeypatch.setattr(lineage.subprocess, "run", wrong_identity)
+    rows, gaps = lineage.fetch_prs(limit=10, repo="owner/repo", pr_numbers={4242})
+    assert rows == []
+    assert gaps == [{"number": 4242, "reason": "graphql_failed_rest_blocked"}]
+    runs = tmp_path / "runs.json"
+    runs.write_text(
+        json.dumps(
+            [
+                {
+                    "databaseId": 42,
+                    "event": "merge_group",
+                    "status": "completed",
+                    "conclusion": "success",
+                    "headBranch": "gh-readonly-queue/main/pr-4242-" + "a" * 40,
+                    "headSha": "b" * 40,
+                }
+            ]
+        )
+    )
+    summary = tmp_path / "summary.json"
+    assert (
+        lineage.main(
+            [
+                "collect",
+                "--repo",
+                "owner/repo",
+                "--runs-json",
+                str(runs),
+                "--ledger-path",
+                str(tmp_path / "ledger.jsonl"),
+                "--summary-path",
+                str(summary),
+                "--vault-root",
+                str(tmp_path / "vault"),
+            ]
+        )
+        == 0
+    )
+    receipt = json.loads(summary.read_text())
+    assert receipt["hydration_complete"] is False
+    assert receipt["unhydrated_prs"] == gaps

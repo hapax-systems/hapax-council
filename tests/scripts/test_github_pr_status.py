@@ -1980,18 +1980,17 @@ def test_single_pr_graphql_hydration_does_not_return_an_incomplete_row(tmp_path:
     """Lineage must receive ``None`` so it can retry or record an unhydrated gap."""
     seen: list[list[str]] = []
 
-    def rollup_times_out(cmd: list[str], **_: Any) -> subprocess.CompletedProcess:
+    def rollup_missing(cmd: list[str], **_: Any) -> subprocess.CompletedProcess:
         seen.append(list(cmd))
         if cmd[:3] != ["gh", "pr", "view"]:
             return subprocess.CompletedProcess(cmd, 1, "", "unexpected")
-        if cmd[-1] == "statusCheckRollup":
-            raise subprocess.TimeoutExpired(cmd, 60)
         return subprocess.CompletedProcess(
             cmd,
             0,
             json.dumps(
                 {
                     "number": 9,
+                    "url": "https://github.com/owner/repo/pull/9",
                     "state": "OPEN",
                     "title": "PR",
                     "headRefName": "feat/graphql",
@@ -2003,11 +2002,11 @@ def test_single_pr_graphql_hydration_does_not_return_an_incomplete_row(tmp_path:
         )
 
     row = github_pr_status.get_pr_status_graphql(
-        9, repo="owner/repo", repo_root=tmp_path, runner=rollup_times_out
+        9, repo="owner/repo", repo_root=tmp_path, runner=rollup_missing
     )
 
     assert row is None, "an incomplete row would make lineage report hydration_complete=true"
-    assert len([call for call in seen if call[:3] == ["gh", "pr", "view"]]) == 2
+    assert len([call for call in seen if call[:3] == ["gh", "pr", "view"]]) == 1
 
 
 def test_the_rest_fallback_distinguishes_empty_from_failed(tmp_path: Path) -> None:
@@ -2106,3 +2105,114 @@ def test_bulk_graphql_query_never_requests_status_check_rollup(tmp_path: Path) -
     assert any(call[:3] == ["gh", "pr", "view"] for call in runner.calls), (
         "the rollup must still be fetched, just per-PR"
     )
+
+
+@pytest.mark.parametrize(
+    ("change", "reason"),
+    [
+        *[({"number": number}, "number") for number in (None, "", "9", 0, -1, True, 9.0, 10)],
+        ({"url": "https://github.com/other/repo/pull/9"}, "repository_mismatch"),
+        ({"url": "https://github.com/owner/other/pull/9"}, "repository_mismatch"),
+        ({"url": "https://github.com/owner/repo/pull/10"}, "number_mismatch"),
+        ({"url": None}, "repository_identity_unusable"),
+        *[({"headRefOid": sha}, "head_sha_unusable") for sha in (None, "", " ", 123)],
+    ],
+)
+def test_single_pr_hydration_refuses_wrong_identity(
+    tmp_path: Path, capsys: Any, change: dict[str, Any], reason: str
+) -> None:
+    payload = {
+        "number": 9,
+        "url": "https://github.com/owner/repo/pull/9",
+        "headRefOid": "a" * 40,
+        "statusCheckRollup": [],
+        **change,
+    }
+    row = github_pr_status.get_pr_status_graphql(
+        9,
+        repo="owner/repo",
+        repo_root=tmp_path,
+        runner=lambda cmd, **_: subprocess.CompletedProcess(cmd, 0, json.dumps(payload), ""),
+    )
+    assert row is None
+    diagnostic = capsys.readouterr().err
+    assert reason in diagnostic
+    assert "Next action:" in diagnostic
+
+
+def test_single_pr_hydration_returns_head_and_checks_from_one_read(tmp_path: Path) -> None:
+    calls = []
+    sha = "b" * 40
+
+    def runner(cmd: list[str], **_: Any) -> subprocess.CompletedProcess:
+        calls.append(cmd)
+        payload = {
+            "number": 9,
+            "url": "https://github.com/Owner/Repo/pull/9",
+            "headRefOid": sha if len(calls) == 1 else "c" * 40,
+            "statusCheckRollup": [{"name": "test", "conclusion": "FAILURE"}],
+        }
+        return subprocess.CompletedProcess(cmd, 0, json.dumps(payload), "")
+
+    row = github_pr_status.get_pr_status_graphql(
+        "9", repo="owner/repo", repo_root=tmp_path, runner=runner
+    )
+    assert row is not None and row["headRefOid"] == sha
+    assert row["statusCheckRollup"] == [{"name": "test", "conclusion": "FAILURE"}]
+    assert len(calls) == 1, "a second read could attach a moved head's checks to the first head"
+    assert {"headRefOid", "statusCheckRollup", "url", "number"} <= set(calls[0][-1].split(","))
+
+
+@pytest.mark.parametrize("moved", [False, True])
+def test_single_pr_hydration_compares_expected_head(
+    tmp_path: Path, capsys: Any, moved: bool
+) -> None:
+    row = github_pr_status.get_pr_status_graphql(
+        9,
+        repo="owner/repo",
+        repo_root=tmp_path,
+        expected_head_sha="a" * 40,
+        runner=lambda cmd, **_: subprocess.CompletedProcess(
+            cmd,
+            0,
+            json.dumps(
+                {
+                    "number": 9,
+                    "url": "https://github.com/owner/repo/pull/9",
+                    "headRefOid": ("b" if moved else "a") * 40,
+                    "statusCheckRollup": [],
+                }
+            ),
+            "",
+        ),
+    )
+    if moved:
+        assert row is None
+        diagnostic = capsys.readouterr().err
+        assert "head_sha_mismatch" in diagnostic and "Next action:" in diagnostic
+    else:
+        assert row is not None and row["headRefOid"] == "a" * 40
+
+
+@pytest.mark.parametrize("reset", [None, 1893456000])
+@pytest.mark.parametrize("head", [None, "feature/diagnostic"])
+def test_open_prs_quota_refusal_is_actionable(
+    tmp_path: Path, monkeypatch: Any, capsys: Any, reset: int | None, head: str | None
+) -> None:
+    def refused(*_: Any, **__: Any) -> Any:
+        raise github_pr_status.RestPoolExhausted("github_rest_below_floor:0<500", reset)
+
+    monkeypatch.setattr(github_pr_status, "list_open_pr_statuses_rest", refused)
+    monkeypatch.setattr(github_pr_status, "list_pr_statuses_for_branch_rest", refused)
+    args = ["open-prs", "--repo", "owner/repo", "--repo-root", str(tmp_path)]
+    if head:
+        args += ["--head", head]
+    assert github_pr_status.main(args) == github_pr_status.GRAPHQL_BACKOFF_RC
+    captured = capsys.readouterr()
+    assert captured.out == "", "refusal must not emit a successful empty PR list"
+    assert "github_rest_below_floor:0<500" in captured.err
+    assert "Next action:" in captured.err and "GraphQL" in captured.err
+    assert "gh pr view" in captured.err and "headRefOid,statusCheckRollup" in captured.err
+    assert "wait" in captured.err
+    assert ("2030-01-01T00:00:00+00:00" if reset else "reset time unknown") in captured.err
+    assert "Traceback" not in captured.err
