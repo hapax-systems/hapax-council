@@ -1,0 +1,528 @@
+#!/usr/bin/env bash
+# Refresh the GLM review seat: one real sanctioned reviewer round-trip, a witness (schema v1:
+# no prompt, output or secret persisted), the passive admission receipt, the telemetry writer.
+# The timer checks 30 s after service completion (OnUnitInactiveSec=30s, AccuracySec=30s).
+# Skip-path measurement (2026-09-05, isolated HOME, real --show/dispatch loaders,
+# resource.getrusage): 0.547 s wall, 0.537 s CPU; at most ~120 checks/hour (~64.5 CPU s/hour).
+# --envelope: 30 + (5 shutdown + 30 accuracy + 5 scheduler + 600 service + 10 margin)
+# = 680 s threshold; 1 s rounding makes 681 s; 192 s post-mint tail + 681 = 873 < 900 s.
+# Five minutes would cost less CPU but require 950 s / 1143 s, exceeding the seat lifetime.
+# Coordinator evidence, 2026-09-05T18:2xZ: read-only `systemctl --user show -p Environment`
+# on installed hapax-cc-task-offer-ready.service, hapax-claude-account-live-observe.service,
+# and hapax-determine.service: each unit file has Environment=HOME=%h; the manager view has
+# the home path and zero remaining %h (also PYTHONPATH in the latter two). Last runs:
+# Result=success, ExecMainStatus=0. Round-4 `systemd-run -p Environment=X=%h` measured a
+# transient D-Bus property, which retains the literal specifier, not a unit-file assignment.
+# Prints states only. Exit non-zero if the round-trip fails — no receipt is minted then.
+set -euo pipefail
+# The scripts this calls come from the activation worktree (main, activated by the governed loop),
+# never from a mutable development checkout (review finding on #4624).
+H="${HAPAX_COUNCIL:-$HOME/.cache/hapax/source-activation/worktree}"
+ACTIVATION_ROOT="$HOME/.cache/hapax/source-activation/worktree"
+# An inherited HAPAX_COUNCIL must not redirect governance-sensitive receipt minting to a mutable
+# tree (review finding on #4624, round 2). The explicit flag is a test convenience, not caller
+# authentication: any caller may supply it. Whoever can replace the deployed ExecStart can also
+# replace this script. An env sentinel, temporary path, or a check of this script path together
+# with HAPAX_COUNCIL would therefore be decorative: all are under that same caller's control.
+# The verifiable boundary is the governed committed unit: pinned activation root, no exception
+# flag or EnvironmentFile, and inherited root overrides unset. Without the flag, environment
+# markers never grant the exception. Never put this flag in a live unit.
+allow_mutable_root=0
+envelope_only=0
+for arg in "$@"; do
+  case "$arg" in
+    --allow-mutable-root) allow_mutable_root=1 ;;
+    --envelope) envelope_only=1 ;;
+    *) echo "Usage: hapax-glmcp-seat-refresh [--envelope] [--allow-mutable-root (test-harness only)]" >&2; exit 2 ;;
+  esac
+done
+if [[ "$H" != "$ACTIVATION_ROOT" && "$allow_mutable_root" != "1" ]]; then
+  echo "glm seat refresh REFUSED: HAPAX_COUNCIL=$H is not the activation worktree ($ACTIVATION_ROOT); the receipt chain must not run from a mutable tree. Next: unset HAPAX_COUNCIL for this unit, or pass --allow-mutable-root explicitly in a test harness." >&2
+  exit 4
+fi
+WDIR="$HOME/.cache/hapax/glmcp-admission-witness"
+mkdir -p "$WDIR"
+ts="$(date -u +%Y%m%dT%H%M%SZ)"
+ref="glmcp-reviewer-roundtrip-ok-$(echo "$ts" | tr 'A-Z' 'a-z')"
+# The probe measures the Coding Plan seat and nothing else, so the endpoint is the Coding Plan
+# endpoint, pinned — an inherited HAPAX_GLMCP_REVIEW_BASE_URL must not redirect the sanctioned
+# probe and mint a receipt for a call that never reached the plan (review finding on #4624).
+endpoint="https://api.z.ai/api/coding/paas/v4"
+export HAPAX_GLMCP_REVIEW_BASE_URL="$endpoint"
+# Likewise the credential: the seat belongs to the Coding Plan's own entry. An inherited
+# HAPAX_GLMCP_REVIEW_SECRET_ENTRY (or the override that permits alternates) could mint this
+# receipt for another credential (review finding on #4624, round 4).
+export HAPAX_GLMCP_REVIEW_SECRET_ENTRY="glmcp/api-key"  # pragma: allowlist secret
+unset HAPAX_GLMCP_REVIEW_ALLOW_SECRET_ENTRY_OVERRIDE  # pragma: allowlist secret
+# The admission CLI on main accepts exactly glm-5.2 (#4568, unmerged, moves the seat to glm-5.3).
+# The systemd user environment may carry a different HAPAX_GLMCP_REVIEW_MODEL; pin the round-trip
+# to the model the receipt will name, so witness and receipt describe the call that was made.
+model="glm-5.2"
+export HAPAX_GLMCP_REVIEW_MODEL="$model"
+
+# Evaluate only route quota evidence: reuse the dispatch registry's production loader and
+# route/observation predicate, and return observed <observed_at> <stale_after> or a named refusal.
+# This uses the existing bounded parse allowance; it is separate from diagnostic redaction.
+seat_quota_from_receipt() {
+  bounded_timeout "$FILTER_TIMEOUT_S" python3 -c '
+import json
+import sys
+from pathlib import Path
+from pydantic import ValidationError
+import yaml
+
+root = sys.argv[1]
+seat_next = (
+    "Next: run hapax-platform-capability-receipts --show --platform glmcp --json; "
+    "re-run hapax-platform-capability-receipts --platform glmcp and check hapax-glmcp-seat-refresh.service."
+)
+
+sys.path.insert(0, root)
+from shared.platform_capability_receipts import (
+    PlatformCapabilityReceiptError, ensure_utc, load_platform_capability_receipts, parse_duration_spec,
+)
+from shared.platform_capability_registry import (
+    PlatformCapabilityRegistryError,
+    _quota_spend_live_path_from_env,
+    _receipt_quota_names_route,
+    load_platform_capability_registry_for_dispatch,
+)
+from shared.quota_spend_ledger import DEFAULT_QUOTA_SPEND_LEDGER_LIVE
+
+source = "--show JSON response"
+field = "path"
+failure_reason = "field_invalid"
+try:
+    row = json.load(sys.stdin)
+    if not isinstance(row, dict):
+        raise ValueError("row must be an object")
+    for field in ("path", "receipt_id"):
+        if not isinstance(row[field], str) or not row[field]:
+            raise ValueError("field must be nonempty text")
+    source = row["path"]
+    field = "receipt schema/fields (including neighbouring *.json files)"
+    failure_reason = "schema_invalid"
+    # Reload through the plural loader: malformed neighbours, expiry, or replacement between
+    # --show and this read must still fail closed. Use this same object for evidence and age.
+    receipt = load_platform_capability_receipts(Path(row["path"]).parent).get("glmcp")
+    if receipt is None or receipt.receipt_id != row["receipt_id"]:
+        failure_reason = "receipt_changed"
+        raise ValueError("receipt changed since --show")
+    route_id = "glmcp.review.direct"
+    if route_id not in receipt.routes:
+        reason = "route_not_covered"
+    elif not _receipt_quota_names_route(receipt, {"route_id": route_id}):
+        reason = "route_observation_absent"
+    else:
+        # Dispatch applies _route_specific_quota_admission_fresh through this loader:
+        # the recorded route reference alone never establishes LIVE admission.
+        source = str(Path(root) / "config/platform-capability-registry.json")
+        failure_reason = "registry_invalid"
+        registry, _ = load_platform_capability_registry_for_dispatch(
+            Path(source),
+            receipt_dir=Path(row["path"]).parent,
+        )
+        failure_reason = "route_absent"
+        route = next((route for route in registry.routes if route.route_id == route_id), None)
+        if route is None:
+            raise ValueError("required route absent")
+        if "glmcp_review_seat_receipt_admission_required" in route.freshness.evidence.quota.blocked_reasons:
+            ledger_path = _quota_spend_live_path_from_env() or DEFAULT_QUOTA_SPEND_LEDGER_LIVE
+            print(
+                "  --show glmcp_review_seat_receipt_admission_required: live admission failed; ledger="
+                + str(ledger_path) + "; receipt=" + row["path"]
+                + ". Next: check hapax-glmcp-seat-refresh.service for a successful admission; "
+                "run hapax-quota-telemetry-writer --skip-receipts, then "
+                "hapax-platform-capability-receipts --platform glmcp; " + seat_next,
+                file=sys.stderr,
+            )
+            sys.exit(1)
+        # _apply_receipt_to_route_payload anchors quota_checked_at at receipt.observed_at.
+        # The plural loader also drops the whole receipt at its own expiry. Both visibility
+        # checks must reserve the next renewal against whichever lifetime runs out first.
+        source = row["path"]
+        field = "observed_at, stale_after or quota.stale_after"
+        failure_reason = "field_invalid"
+        lifetime = min(parse_duration_spec(receipt.stale_after), parse_duration_spec(receipt.quota.stale_after))
+        print("observed", ensure_utc(receipt.observed_at).isoformat(), str(int(lifetime.total_seconds())) + "s")
+        sys.exit(0)
+    print(
+        "  --show WARNING: account_live_quota_receipt_absent: " + reason + " for " + route_id
+        + "; refreshing because route-specific quota evidence is absent. " + seat_next, file=sys.stderr,
+    )
+except (OSError, json.JSONDecodeError, yaml.YAMLError, ValidationError, KeyError,
+        PlatformCapabilityReceiptError, PlatformCapabilityRegistryError, ValueError) as exc:
+    # Domain loaders wrap expected file/schema errors. Inspect the cause class, never its
+    # message or validation inputs: those may carry receipt data. Unknown causes are bugs.
+    cause = exc
+    while isinstance(cause, (PlatformCapabilityReceiptError, PlatformCapabilityRegistryError)) and cause.__cause__ is not None:
+        cause = cause.__cause__
+    if isinstance(cause, FileNotFoundError):
+        failure_reason, remedy = "file_absent", "restore the missing file"
+        source = str(cause.filename or source)
+    elif isinstance(cause, PermissionError):
+        failure_reason, remedy = "permission_denied", "restore read permission on the file and parent directories"
+        source = str(cause.filename or source)
+    elif isinstance(cause, json.JSONDecodeError):
+        failure_reason, remedy = "json_decode_failed", "repair JSON syntax in the named file/response and neighbouring receipt files"
+    elif isinstance(cause, yaml.YAMLError):
+        failure_reason, remedy = "yaml_decode_failed", "repair YAML syntax in the admission/authority receipt files"
+    elif isinstance(cause, UnicodeDecodeError):
+        failure_reason, remedy = "encoding_invalid", "repair UTF-8 encoding in the receipt files"
+    elif isinstance(cause, OSError):
+        failure_reason, remedy = "file_unreadable", "repair file type, directory access or storage I/O"
+        source = str(cause.filename or source)
+    elif isinstance(cause, ValidationError):
+        failure_reason, remedy = "schema_invalid", "repair schema/fields in the named file and neighbouring receipt files"
+    elif isinstance(cause, (KeyError, ValueError)):
+        remedy = {
+            "field_invalid": "repair field " + field,
+            "schema_invalid": "repair schema/fields in the named file and neighbouring receipt files",
+            "receipt_changed": "rerun --show and regenerate the expired, absent or replaced glmcp receipt",
+            "registry_invalid": "repair registry schema/fields and route definitions",
+            "route_absent": "restore route glmcp.review.direct in the registry",
+        }[failure_reason]
+    else:
+        raise
+    print(
+        "  --show parse: dispatcher quota predicate failed (" + type(exc).__name__
+        + "): " + failure_reason + "; source=" + source + "; field=" + field
+        + ". Next: " + remedy + "; refreshing because dispatcher quota could not be confirmed. "
+        + seat_next, file=sys.stderr,
+    )
+sys.exit(1)
+  ' "$H"
+}
+
+# 0. freshness guard — reads the dispatcher's OWN artifact: the glmcp platform-capability receipt
+#    that hapax-platform-capability-receipts writes only when a fresh relay receipt AND the ledger's
+#    fail-closed validator both vouch for glmcp.review.direct (#4616). Neither the raw relay receipt
+#    nor the ledger's raw fields are trusted here: the production dispatch loader also rechecks LIVE
+#    route admission. A recorded route reference can outlive usable admission (round 12). The
+#    quota.stale_after is what is LEFT at generation; the dispatcher applies it to the top-level
+#    receipt.observed_at, not the older quota.observed_at retained from admission. Refreshing whenever
+#    fewer than the derived threshold remain keeps the seat from lapsing between two autoqueue
+#    cycles (measured 2026-08-04: a receipt that lapsed mid-queue dequeued a green PR).
+#    The receipt is read through the dispatcher's own loader (`--show`: schema, platform, skew,
+#    duration syntax and freshness are validated there), never by picking fields out of the JSON —
+#    a document the dispatcher rejects must not make this guard skip (review finding on #4624,
+#    round 8). `seat_remaining_seconds` prints the seconds left until the EARLIER of the accepted
+#    receipt and quota expiries, or nothing when the dispatcher would not accept it.
+seat_remaining_seconds() {
+  local shown q_status q_observed q_stale stale_s show_err observed_s timestamp_shape
+  # The loader's own refusal is the diagnosis when the seat is not visible; one sanitised line of
+  # it reaches the journal instead of being swallowed (measured 2026-09-03 18:49Z: the check said
+  # "(none)" and nothing said why).
+  show_err="$(mktemp -p "${TMPDIR:-/tmp}" glm-seat-show.XXXXXX)"
+  if ! command -v jq >/dev/null 2>&1; then
+    echo "  --show: jq is not on PATH, so the dispatcher's receipt cannot be read; install jq (the refresh below runs blind and its result cannot be confirmed)" >&2
+    return 1
+  fi
+  if ! shown="$(bounded_timeout "$SHOW_TIMEOUT_S" "$H/scripts/hapax-platform-capability-receipts" --show --platform glmcp --json 2>"$show_err")"; then
+    # Loader refusals are JSON on stdout, often with EMPTY stderr. Parse only the
+    # glmcp rejection reason and sanitise it and stderr in one bounded filter call.
+    printf '%s' "$shown" | print_filtered_output rejection 1 "  --show stderr: " "$show_err" >&2 || true
+    rm -f "$show_err"
+    return 1
+  fi
+  rm -f "$show_err"
+  local parsed
+  if ! parsed="$(printf '%s' "$shown" | jq -r '
+    (.receipts[] | select(.platform == "glmcp")) as $r
+    | if $r.accepted != true then empty else $r end' 2>"$show_err")"; then
+    # A broken parser is not a stale seat (review finding on #4624, round 9): name it, sanitised.
+    print_filtered_output head 1 "  --show parse: " "$show_err" >&2 || true
+    rm -f "$show_err"
+    return 1
+  fi
+  rm -f "$show_err"
+  # --show exposes schema acceptance, not route admission. Reuse the registry's production
+  # quota predicate on the loader-selected receipt, inside the existing bounded parse allowance.
+  if ! parsed="$(printf '%s' "$parsed" | seat_quota_from_receipt)"; then
+    echo "  --show parse: route quota check failed; refreshing because dispatcher quota evidence could not be confirmed. Next: run hapax-platform-capability-receipts --show --platform glmcp --json; re-run hapax-platform-capability-receipts --platform glmcp and check hapax-glmcp-seat-refresh.service." >&2
+    return 1
+  fi
+  read -r q_status q_observed q_stale <<<"$parsed"
+  [[ "${q_status:-}" == "observed" && -n "${q_observed:-}" && "$q_observed" != "?" ]] || return 1
+  case "$q_stale" in
+    *s) stale_s="${q_stale%s}" ;;
+    *m) stale_s=$(( ${q_stale%m} * 60 )) ;;
+    *h) stale_s=$(( ${q_stale%h} * 3600 )) ;;
+    *) stale_s=0 ;;
+  esac
+  if ! observed_s="$(date -u -d "$q_observed" +%s 2>/dev/null)"; then
+    timestamp_shape="${q_observed//[[:digit:]]/0}"
+    timestamp_shape="${timestamp_shape//[[:alpha:]]/x}"
+    timestamp_shape="${timestamp_shape//[!0x:+.-]/?}"
+    echo "  --show timestamp_parse_failed: receipt.observed_at shape=${timestamp_shape:0:80}; refreshing because the timestamp could not be parsed. Next: repair the date parser before relying on this tick's visibility check." >&2
+    return 1
+  fi
+  echo $(( observed_s + stale_s - $(date -u +%s) ))
+}
+# The guard is a real wall-clock envelope, not just the nominal subprocess timeouts. A replacement
+# must survive the current skip's shutdown, the completion-relative timer and its coalescing window,
+# timer scheduling, and one WHOLE service activation. The service chain explicitly accounts for the
+# subprocess deadlines, their forced-kill grace, bounded diagnostic filtering, process launches,
+# filesystem I/O, service scheduling and an engineering margin. Its reserve raises that derived sum
+# to the hard 600 s TimeoutStartSec used by the unit, so the freshness predicate remains sound even
+# when the named slack is exhausted. TimeoutStopSec supplies the post-check shutdown ceiling.
+# OnBootSec=2min is a boot-time exception outside this arithmetic, not a continuous-run guarantee
+# across reboot or before the first successful activation.
+# Its boot-window bound is OnBootSec plus one round-trip (including activation and timer slack).
+# The 24-hour no-lapse witness is post-activation and unmeasured; this envelope does not claim it.
+#
+# The receipt exposes whole seconds. One second above the threshold can disappear between the
+# observation and process exit, so the guard refreshes through threshold + rounding guard; it skips
+# only above SEAT_SKIP_MIN_REMAINING_S. A successful prior run can mint before its tail finishes, so
+# that post-mint tail is independently derived and checked against the 900 s seat life as well.
+TIMER_INACTIVE_DELAY_S=30       # hapax-glmcp-seat-refresh.timer OnUnitInactiveSec=30s
+TIMER_ACCURACY_S=30             # hapax-glmcp-seat-refresh.timer AccuracySec=30s
+TIMER_SCHEDULER_SLACK_S=5
+REVIEW_ATTEMPTS=3
+REVIEW_ATTEMPT_TIMEOUT_S=45    # measured round-trips take ~4 s
+REVIEW_INNER_TIMEOUT_S=40      # inside the outer timeout and its forced-kill grace
+REVIEW_RETRY_SLEEP_S=15
+ADMISSION_TIMEOUT_S=10         # local validation/atomic write; no provider round-trip
+WRITER_TIMEOUT_S=60            # --skip-receipts rebuilds only the local ledger
+RECEIPTS_TIMEOUT_S=35
+SHOW_TIMEOUT_S=15
+TIMEOUT_KILL_AFTER_S=2         # every coreutils timeout has a finite TERM-to-KILL ceiling
+TIMED_COMMAND_COUNT=8          # two shows, three review tries, admission, writer, receipt refresh
+FILTER_TIMEOUT_S=4
+FILTER_INVOCATIONS_MAX=8       # show/parse, three reviewer errors, and three writer/read diagnostics
+PROCESS_LAUNCH_SLACK_S=30
+FILE_IO_SLACK_S=20
+SERVICE_SCHEDULER_SLACK_S=20
+SERVICE_SAFETY_MARGIN_S=20
+WHOLE_SERVICE_BOUND_S=600      # systemd TimeoutStartSec; includes all launch-to-exit wall time
+POST_CHECK_SHUTDOWN_S=5        # systemd TimeoutStopSec
+NO_LAPSE_SAFETY_MARGIN_S=10
+RECEIPT_ROUNDING_GUARD_S=1
+POST_MINT_TIMED_COMMAND_COUNT=4  # admission remainder, writer, receipt refresh, final show
+POST_MINT_FILTER_INVOCATIONS_MAX=4  # admission, writer, receipt refresh, final show/parse refusal
+POST_MINT_PROCESS_LAUNCH_SLACK_S=5
+POST_MINT_FILE_IO_SLACK_S=5
+POST_MINT_SCHEDULER_SLACK_S=5
+SEAT_LIFE_S=900                # DEFAULT_STALE_AFTER_SECONDS of hapax-glmcp-quota-admission
+REVIEW_ENVELOPE_S=$(( REVIEW_ATTEMPTS * REVIEW_ATTEMPT_TIMEOUT_S + (REVIEW_ATTEMPTS - 1) * REVIEW_RETRY_SLEEP_S ))
+CORE_COMMAND_ENVELOPE_S=$(( SHOW_TIMEOUT_S + REVIEW_ENVELOPE_S + ADMISSION_TIMEOUT_S + WRITER_TIMEOUT_S + RECEIPTS_TIMEOUT_S + SHOW_TIMEOUT_S ))
+TIMEOUT_KILL_ENVELOPE_S=$(( TIMED_COMMAND_COUNT * TIMEOUT_KILL_AFTER_S ))
+FILTER_ENVELOPE_S=$(( FILTER_INVOCATIONS_MAX * (FILTER_TIMEOUT_S + TIMEOUT_KILL_AFTER_S) ))
+ACCOUNTED_SERVICE_CHAIN_S=$(( CORE_COMMAND_ENVELOPE_S + TIMEOUT_KILL_ENVELOPE_S + FILTER_ENVELOPE_S + PROCESS_LAUNCH_SLACK_S + FILE_IO_SLACK_S + SERVICE_SCHEDULER_SLACK_S + SERVICE_SAFETY_MARGIN_S ))
+if (( ACCOUNTED_SERVICE_CHAIN_S > WHOLE_SERVICE_BOUND_S )); then
+  echo "glm seat refresh REFUSED: ACCOUNTED_SERVICE_CHAIN_S=${ACCOUNTED_SERVICE_CHAIN_S}s cannot fit inside WHOLE_SERVICE_BOUND_S=${WHOLE_SERVICE_BOUND_S}s (the unit's TimeoutStartSec). It is CORE_COMMAND_ENVELOPE_S=${CORE_COMMAND_ENVELOPE_S}s + TIMEOUT_KILL_ENVELOPE_S=${TIMEOUT_KILL_ENVELOPE_S}s + FILTER_ENVELOPE_S=${FILTER_ENVELOPE_S}s + PROCESS_LAUNCH_SLACK_S=${PROCESS_LAUNCH_SLACK_S}s + FILE_IO_SLACK_S=${FILE_IO_SLACK_S}s + SERVICE_SCHEDULER_SLACK_S=${SERVICE_SCHEDULER_SLACK_S}s + SERVICE_SAFETY_MARGIN_S=${SERVICE_SAFETY_MARGIN_S}s. Next: shorten a stage timeout or its bounded overhead; do not raise the 600 s whole-service predicate." >&2
+  exit 7
+fi
+SERVICE_BOUND_RESERVE_S=$(( WHOLE_SERVICE_BOUND_S - ACCOUNTED_SERVICE_CHAIN_S ))
+# Spell the service envelope back out: every term, plus the reserved wall-clock headroom, is part of
+# SEAT_REFRESH_THRESHOLD_S rather than an undocumented assumption outside the arithmetic.
+SERVICE_ENVELOPE_S=$(( CORE_COMMAND_ENVELOPE_S + TIMEOUT_KILL_ENVELOPE_S + FILTER_ENVELOPE_S + PROCESS_LAUNCH_SLACK_S + FILE_IO_SLACK_S + SERVICE_SCHEDULER_SLACK_S + SERVICE_SAFETY_MARGIN_S + SERVICE_BOUND_RESERVE_S ))
+CHAIN_ENVELOPE_S=$(( POST_CHECK_SHUTDOWN_S + TIMER_ACCURACY_S + TIMER_SCHEDULER_SLACK_S + SERVICE_ENVELOPE_S + NO_LAPSE_SAFETY_MARGIN_S ))
+SEAT_REFRESH_THRESHOLD_S=$(( TIMER_INACTIVE_DELAY_S + CHAIN_ENVELOPE_S ))
+SEAT_SKIP_MIN_REMAINING_S=$(( SEAT_REFRESH_THRESHOLD_S + RECEIPT_ROUNDING_GUARD_S ))
+# Lifetime starts at observe_success's observed_at (quota-admission:351), BEFORE validation
+# and the receipt write, not at this script's witness timestamp or admission process exit.
+# Charge the FULL admission deadline as an upper bound on that remainder, its kill grace,
+# and its diagnostic filter. Even the final show refusal/parse filter is reserved here.
+# The accepted quota surface below is bounded by the admission's expiry through the ledger;
+# never reset its age to the refresh script's clock when admission finishes late.
+POST_MINT_TAIL_S=$(( ADMISSION_TIMEOUT_S + WRITER_TIMEOUT_S + RECEIPTS_TIMEOUT_S + SHOW_TIMEOUT_S + POST_MINT_TIMED_COMMAND_COUNT * TIMEOUT_KILL_AFTER_S + POST_MINT_FILTER_INVOCATIONS_MAX * (FILTER_TIMEOUT_S + TIMEOUT_KILL_AFTER_S) + POST_MINT_PROCESS_LAUNCH_SLACK_S + POST_MINT_FILE_IO_SLACK_S + POST_MINT_SCHEDULER_SLACK_S + POST_CHECK_SHUTDOWN_S + SERVICE_SAFETY_MARGIN_S ))
+OVERRUN_RENEWAL_ENVELOPE_S=$(( POST_MINT_TAIL_S + SEAT_SKIP_MIN_REMAINING_S ))
+# A refresh is visible only if the accepted receipt can survive the completion-relative delay and
+# one complete worst-case next run. A guard that cannot establish this refuses success.
+SEAT_VISIBLE_MIN_S=$SEAT_SKIP_MIN_REMAINING_S
+if (( SEAT_REFRESH_THRESHOLD_S >= SEAT_LIFE_S || OVERRUN_RENEWAL_ENVELOPE_S >= SEAT_LIFE_S )); then
+  echo "glm seat refresh REFUSED: the bounded completion-relative schedule does not fit inside SEAT_LIFE_S=${SEAT_LIFE_S}s. SEAT_REFRESH_THRESHOLD_S=${SEAT_REFRESH_THRESHOLD_S}s, SEAT_SKIP_MIN_REMAINING_S=${SEAT_SKIP_MIN_REMAINING_S}s, OVERRUN_RENEWAL_ENVELOPE_S=${OVERRUN_RENEWAL_ENVELOPE_S}s, POST_MINT_TAIL_S=${POST_MINT_TAIL_S}s, CHAIN_ENVELOPE_S=${CHAIN_ENVELOPE_S}s, SERVICE_ENVELOPE_S=${SERVICE_ENVELOPE_S}s and REVIEW_ENVELOPE_S=${REVIEW_ENVELOPE_S}s include timer, launch, filter, file-I/O, scheduler, kill-after, shutdown and safety-margin terms. Next: shorten a stage timeout or the inactive delay; do not weaken the 600 s whole-service bound." >&2
+  exit 7
+fi
+
+bounded_timeout() {
+  local timeout_s="$1"
+  shift
+  timeout --signal=TERM --kill-after="${TIMEOUT_KILL_AFTER_S}s" "${timeout_s}s" "$@"
+}
+
+print_filtered_output() {
+  local mode="$1" lines="$2" prefix="$3" file="$4"
+  bounded_timeout "$FILTER_TIMEOUT_S" python3 -c '
+import json
+import re
+import sys
+from pathlib import Path
+
+mode, count, prefix, file = sys.argv[1:]
+seat_next = (
+    "Next: run hapax-platform-capability-receipts --show --platform glmcp --json; "
+    "re-run hapax-platform-capability-receipts --platform glmcp and check hapax-glmcp-seat-refresh.service."
+)
+
+
+def sanitise(text):
+    text = re.sub(r"\x1b\[[0-9;]*m", "", text)
+    # Consume the closing key quote and separator before the COMPLETE value, including
+    # escaped quotes, spaces and newlines. An unterminated quoted value consumes the rest.
+    text = re.sub(
+        r"(api[_-]?key|token|secret|password|bearer)(?:[\"\x27])?\s*[:=]?\s*"
+        r"(?:\"(?:\\.|[^\"\\])*(?:\"|\Z)|\x27(?:\\.|[^\x27\\])*(?:\x27|\Z)|[^\s,;}\]]*)",
+        r"\1<redacted>", text, flags=re.IGNORECASE,
+    )
+    return re.sub(r"[\x00-\x08\x0b-\x1f\x7f]", "", text)
+
+if mode == "rejection":
+    reason = "receipt_rejection_reason_unavailable"
+    try:
+        payload = json.load(sys.stdin)
+        for row in payload.get("receipts", []):
+            if row.get("platform") == "glmcp" and row.get("accepted") is not True:
+                if isinstance(row.get("reason"), str) and row["reason"]:
+                    reason = row["reason"]
+                break
+    except (ValueError, AttributeError, TypeError):
+        pass
+    print("  --show WARNING: " + " ".join(sanitise(reason).split())[:200] + ". " + seat_next)
+    print("  Next: run hapax-platform-capability-receipts --platform glmcp to rebuild the receipt; if it still fails, inspect --show --platform glmcp and repair the receipt directory/schema before retrying.")
+
+# Redact before line selection/truncation so a quoted multiline value cannot leak a suffix.
+try:
+    text = Path(file).read_text(errors="replace")
+except OSError:
+    text = "diagnostic file unreadable"
+lines = [line for line in sanitise(text).splitlines() if line.strip()]
+selected = lines[:int(count)] if mode == "head" else lines[-int(count):]
+for line in selected:
+    print(prefix + line[:200] + (". " + seat_next if prefix.startswith("  --show") else ""))
+  ' "$mode" "$lines" "$prefix" "$file"
+}
+
+if (( envelope_only )); then
+  printf '{"timer_inactive_delay_s":%d,"timer_accuracy_s":%d,"timer_scheduler_slack_s":%d,"review_attempts":%d,"review_attempt_timeout_s":%d,"review_inner_timeout_s":%d,"review_retry_sleep_s":%d,"admission_timeout_s":%d,"writer_timeout_s":%d,"receipts_timeout_s":%d,"show_timeout_s":%d,"timeout_kill_after_s":%d,"timed_command_count":%d,"filter_timeout_s":%d,"filter_invocations_max":%d,"process_launch_slack_s":%d,"file_io_slack_s":%d,"service_scheduler_slack_s":%d,"service_safety_margin_s":%d,"whole_service_bound_s":%d,"post_check_shutdown_s":%d,"no_lapse_safety_margin_s":%d,"receipt_rounding_guard_s":%d,"post_mint_timed_command_count":%d,"post_mint_filter_invocations_max":%d,"post_mint_process_launch_slack_s":%d,"post_mint_file_io_slack_s":%d,"post_mint_scheduler_slack_s":%d,"seat_life_s":%d,"review_envelope_s":%d,"core_command_envelope_s":%d,"timeout_kill_envelope_s":%d,"filter_envelope_s":%d,"accounted_service_chain_s":%d,"service_bound_reserve_s":%d,"service_envelope_s":%d,"chain_envelope_s":%d,"post_mint_tail_s":%d,"seat_refresh_threshold_s":%d,"seat_skip_min_remaining_s":%d,"overrun_renewal_envelope_s":%d,"seat_visible_min_s":%d}\n' \
+    "$TIMER_INACTIVE_DELAY_S" "$TIMER_ACCURACY_S" "$TIMER_SCHEDULER_SLACK_S" "$REVIEW_ATTEMPTS" "$REVIEW_ATTEMPT_TIMEOUT_S" "$REVIEW_INNER_TIMEOUT_S" "$REVIEW_RETRY_SLEEP_S" \
+    "$ADMISSION_TIMEOUT_S" "$WRITER_TIMEOUT_S" "$RECEIPTS_TIMEOUT_S" "$SHOW_TIMEOUT_S" "$TIMEOUT_KILL_AFTER_S" "$TIMED_COMMAND_COUNT" "$FILTER_TIMEOUT_S" "$FILTER_INVOCATIONS_MAX" \
+    "$PROCESS_LAUNCH_SLACK_S" "$FILE_IO_SLACK_S" "$SERVICE_SCHEDULER_SLACK_S" "$SERVICE_SAFETY_MARGIN_S" "$WHOLE_SERVICE_BOUND_S" "$POST_CHECK_SHUTDOWN_S" "$NO_LAPSE_SAFETY_MARGIN_S" "$RECEIPT_ROUNDING_GUARD_S" \
+    "$POST_MINT_TIMED_COMMAND_COUNT" "$POST_MINT_FILTER_INVOCATIONS_MAX" "$POST_MINT_PROCESS_LAUNCH_SLACK_S" "$POST_MINT_FILE_IO_SLACK_S" "$POST_MINT_SCHEDULER_SLACK_S" "$SEAT_LIFE_S" \
+    "$REVIEW_ENVELOPE_S" "$CORE_COMMAND_ENVELOPE_S" "$TIMEOUT_KILL_ENVELOPE_S" "$FILTER_ENVELOPE_S" "$ACCOUNTED_SERVICE_CHAIN_S" "$SERVICE_BOUND_RESERVE_S" "$SERVICE_ENVELOPE_S" "$CHAIN_ENVELOPE_S" "$POST_MINT_TAIL_S" \
+    "$SEAT_REFRESH_THRESHOLD_S" "$SEAT_SKIP_MIN_REMAINING_S" "$OVERRUN_RENEWAL_ENVELOPE_S" "$SEAT_VISIBLE_MIN_S"
+  exit 0
+fi
+if remaining="$(seat_remaining_seconds)" && (( remaining > SEAT_SKIP_MIN_REMAINING_S )); then
+  echo "glm seat fresh per the dispatcher's receipt (${remaining}s remain); no round-trip"
+  exit 0
+fi
+
+# 1. round-trip: a fixed one-line blind-review probe; output is counted, never stored. Three
+#    attempts apart (REVIEW_RETRY_SLEEP_S): transient provider errors (measured 2026-09-02 15:36 and 16:03 — exit 1,
+#    0 bytes, then exit 0 a minute later) must not leave the seat to lapse.
+rc=1; bytes=0
+ERR="$(mktemp -p "${TMPDIR:-/tmp}" glm-seat-err.XXXXXX)"
+OUT="$(mktemp -p "${TMPDIR:-/tmp}" glm-seat-out.XXXXXX)"
+WOUT="$(mktemp -p "${TMPDIR:-/tmp}" glm-seat-writer.XXXXXX)"
+trap 'rm -f "$ERR" "$OUT" "$WOUT"' EXIT
+# Tests set this to 0; the unit's budget (TimeoutStartSec) is sized for the default.
+retry_sleep="${HAPAX_GLMCP_SEAT_RETRY_SLEEP:-$REVIEW_RETRY_SLEEP_S}"
+if ! [[ "$retry_sleep" =~ ^[0-9]+$ ]] || (( retry_sleep > REVIEW_RETRY_SLEEP_S )); then
+  echo "glm seat refresh REFUSED: HAPAX_GLMCP_SEAT_RETRY_SLEEP='${retry_sleep}' is not an integer in 0..${REVIEW_RETRY_SLEEP_S}; it is a test-only override the production unit unsets. Next: unset it in the caller's environment." >&2
+  exit 7
+fi
+for (( attempt = 1; attempt <= REVIEW_ATTEMPTS; attempt++ )); do
+  set +e
+  # PAYG fallback OFF: this probe measures the Coding Plan seat and nothing else. With the
+  # reviewer's default fallback on, an exhausted plan answered by API credit would exit 0 and
+  # mint a Coding Plan receipt for quota that does not exist (review finding on #4624).
+  printf 'Blind review smoke. Reply with exactly: OK\n' \
+    | HAPAX_GLMCP_REVIEW_TIMEOUT_SECONDS="$REVIEW_INNER_TIMEOUT_S" HAPAX_GLMCP_REVIEW_MAX_TOKENS=16 \
+      HAPAX_GLMCP_REVIEW_PAYG_FALLBACK=0 \
+      bounded_timeout "$REVIEW_ATTEMPT_TIMEOUT_S" "$H/scripts/hapax-glmcp-reviewer" >"$OUT" 2>"$ERR"
+  rc=${PIPESTATUS[1]}
+  bytes="$(wc -c < "$OUT")"
+  set -e
+  echo "roundtrip attempt $attempt: exit=$rc output_bytes=$bytes endpoint=$endpoint model=$model"
+  if [[ "$rc" -eq 0 && "$bytes" -gt 0 ]]; then break; fi
+  # Why it failed, sanitised (a guard's error text is a disclosure channel): first two lines,
+  # anything key/token/secret/bearer-shaped redacted. Measured 2026-09-02 16:05: two consecutive
+  # failures lapsed the seat between refreshes and the autoqueue dequeued a green PR inside them.
+  # The redaction also swallows a value separated by whitespace or `:`/`=` ("Bearer abc",
+  # "api_key = abc"), and an empty stderr must not end the retry loop under pipefail.
+  print_filtered_output head 2 "  reviewer stderr: " "$ERR" || true
+  [[ "$attempt" -lt "$REVIEW_ATTEMPTS" ]] && sleep "$retry_sleep"
+done
+if [[ "$rc" -ne 0 || "$bytes" -eq 0 ]]; then
+  echo "glm seat NOT refreshed: reviewer round-trip failed (exit $rc, $bytes bytes). Next: read the reviewer's stderr by hand; do not mint." >&2
+  exit 2
+fi
+
+# 2. witness (schema v1), same shape as the 2026-08-04 witnesses.
+cat > "$WDIR/$ref.yaml" <<EOF
+schema: hapax.glmcp_admission_witness.v1
+witness_ref: $ref
+host: $(hostname)
+observed_at: $(date -u +%Y-%m-%dT%H:%M:%SZ)
+supported_tool: hapax-glmcp-reviewer
+endpoint: $endpoint
+model: $model
+invocation_exit_code: $rc
+prompt_or_output_persisted: false
+secret_value_persisted: false
+EOF
+echo "witness: $WDIR/$ref.yaml"
+
+# 3. passive admission receipt, 4. telemetry writer.
+# A failed admission write must say so and name the next action, never die silently under errexit
+# (review finding on #4624, round 5): the witness is already on disk, so the operator can re-run
+# observe-success by hand with the same evidence ref.
+set +e
+bounded_timeout "$ADMISSION_TIMEOUT_S" "$H/scripts/hapax-glmcp-quota-admission" observe-success \
+  --evidence-ref "$ref" --supported-tool hapax-glmcp-reviewer --endpoint "$endpoint" --model "$model" \
+  >"$WOUT" 2>&1
+admission_rc=$?
+set -e
+print_filtered_output tail 3 "" "$WOUT" || true
+if [[ "$admission_rc" -ne 0 ]]; then
+  echo "glm seat NOT admitted: hapax-glmcp-quota-admission exited $admission_rc after a successful round-trip (witness $WDIR/$ref.yaml). Next: run $H/scripts/hapax-glmcp-quota-admission observe-success --evidence-ref $ref --supported-tool hapax-glmcp-reviewer --endpoint $endpoint --model $model by hand and read its output." >&2
+  exit 5
+fi
+# The writer rebuilds the live ledger from the relay receipts — LEDGER ONLY. Its default run
+# refreshes every platform's capability receipt first (against the ledger it has not yet rebuilt,
+# so a glmcp receipt minted there carries the PREVIOUS seat's remaining lifetime) and spends a
+# real Codex exec-auth sentinel on every call; neither belongs in this completion-driven GLM timer
+# (review finding on #4624, round 8). The glmcp receipt is derived from the fresh ledger below.
+# The writer's own diagnostics are sanitised through the bounded filter and printed. The admission
+# receipt is already minted at this point; a writer failure is fatal and names its next action.
+set +e
+bounded_timeout "$WRITER_TIMEOUT_S" "$H/scripts/hapax-quota-telemetry-writer" --skip-receipts >"$WOUT" 2>&1
+writer_rc=$?
+set -e
+print_filtered_output tail 4 "" "$WOUT" || true
+case "$writer_rc" in
+  0) ;;
+  3)
+    # Since round 6 the dispatcher's glmcp platform receipt IS what this script (and the
+    # dispatcher) read for freshness. Exit 3 means that receipt refresh degraded, so the seat is
+    # NOT visible even though the ledger was written: a failure with its next action, never a
+    # success (review finding on #4624, round 6).
+    echo "glm seat NOT visible: the telemetry writer wrote the live ledger but the capability-receipt refresh degraded (exit 3), so the dispatcher's glmcp receipt was not renewed. Next: run $H/scripts/hapax-platform-capability-receipts --platform glmcp by hand and read why." >&2
+    exit 6
+    ;;
+  *)
+    echo "telemetry writer failed (exit $writer_rc) AFTER the admission receipt was minted: the seat is refreshed but the live ledger may be stale. Next: run $H/scripts/hapax-quota-telemetry-writer by hand and read its output." >&2
+    exit 3
+    ;;
+esac
+
+# 5. the dispatcher's glmcp receipt, derived from the ledger that now carries the new admission,
+#    then read back through the dispatcher's loader. A writer exit of zero proves the ledger was
+#    written, not that the seat became visible; the accepted receipt AND the dispatch loader's live
+#    route-admission predicate must agree (review findings on #4624, rounds 8 and 12).
+set +e
+bounded_timeout "$RECEIPTS_TIMEOUT_S" "$H/scripts/hapax-platform-capability-receipts" --platform glmcp >"$WOUT" 2>&1
+receipts_rc=$?
+set -e
+print_filtered_output tail 2 "" "$WOUT" || true
+if [[ "$receipts_rc" -ne 0 ]]; then
+  echo "glm seat NOT visible: the glmcp capability receipt could not be refreshed from the new ledger (exit $receipts_rc) after the admission was minted. Next: run $H/scripts/hapax-platform-capability-receipts --platform glmcp by hand and read why." >&2
+  exit 6
+fi
+if ! remaining="$(seat_remaining_seconds)" || (( remaining <= SEAT_VISIBLE_MIN_S )); then
+  echo "glm seat NOT visible: the dispatcher's glmcp receipt does not carry an accepted, observed quota surface with more than ${SEAT_VISIBLE_MIN_S} s left (${remaining:-none}) after the admission was minted and the ledger rebuilt. Next: run $H/scripts/hapax-platform-capability-receipts --show --platform glmcp and compare its reason with the relay receipt in \$HOME/.cache/hapax/relay/receipts." >&2
+  exit 6
+fi
+echo "glm seat visible to the dispatcher: ${remaining}s remain on the accepted glmcp receipt"

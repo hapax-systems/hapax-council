@@ -22,7 +22,10 @@ StandardError=journal
 SyslogIdentifier=hapax-quota-telemetry
 MemoryMax=256M
 TimeoutStartSec=180
-# Killswitch: `systemctl --user mask hapax-quota-telemetry.timer` stops the
-# writer; receipts then lapse after quota stale_after (15m) and the live ledger
-# goes stale after its TTL — the dispatcher falls back to fail-closed HOLDs,
-# never to silently trusting old telemetry.
+# Killswitch: `systemctl --user mask --now hapax-quota-telemetry.timer hapax-glmcp-seat-refresh.timer`
+# stops both schedules. Then `systemctl --user stop hapax-quota-telemetry.service hapax-glmcp-seat-refresh.service`
+# stops any in-flight writers: both services rebuild the ledger and renew capability receipts.
+# Recheck: `systemctl --user is-active hapax-quota-telemetry.timer hapax-glmcp-seat-refresh.timer hapax-quota-telemetry.service hapax-glmcp-seat-refresh.service`
+# — all four must report inactive. With both producers stopped, receipts lapse after quota
+# stale_after (15m) and the live ledger goes stale after its TTL; dispatch falls back to
+# fail-closed HOLDs, never silently trusting old telemetry.

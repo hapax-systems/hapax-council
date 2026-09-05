@@ -1,0 +1,2187 @@
+"""The GLM review seat's passive admission receipt lives 15 minutes; with no producer to renew it
+the seat had been expired since 2026-08-04 and every council review dossier was refused as seated
+by a blocked family — 40 open PRs admitted nothing for four weeks (memory
+`glm-review-seat-expires-every-15-minutes`, L-158). `scripts/hapax-glmcp-seat-refresh` is that
+producer; `hapax-glmcp-seat-refresh.timer` schedules it after each service completion.
+
+These tests RUN the script against stubbed reviewer / admission / telemetry-writer scripts in a
+throwaway HOME (review finding on #4624: text greps of the script were not behaviour tests), so
+the freshness guard, the root guard, the pins, the retry loop, the no-mint-on-failure rule, the
+redaction and the writer's exit-code handling are each exercised through the real code path
+without a network call."""
+
+from __future__ import annotations
+
+import io
+import json
+import os
+import runpy
+import shlex
+import shutil
+import subprocess
+import sys
+from concurrent.futures import ThreadPoolExecutor
+from contextlib import contextmanager
+from datetime import UTC, datetime, timedelta
+from pathlib import Path
+from threading import Event
+
+import pytest
+
+REPO = Path(__file__).resolve().parents[2]
+SCRIPT = REPO / "scripts" / "hapax-glmcp-seat-refresh"
+RECEIPTS_SCRIPT = REPO / "scripts" / "hapax-platform-capability-receipts"
+SERVICE = REPO / "systemd" / "units" / "hapax-glmcp-seat-refresh.service"
+TIMER = REPO / "systemd" / "units" / "hapax-glmcp-seat-refresh.timer"
+UNIT = REPO / "systemd" / "units" / "hapax-glmcp-seat-refresh.service"
+ACTIVATION_ROOT = "%h/.cache/hapax/source-activation/worktree"
+
+REVIEWER_OK = (
+    'echo "PAYG=${HAPAX_GLMCP_REVIEW_PAYG_FALLBACK:-unset}" >> "$HOME/reviewer-env"\n'
+    'echo "BASE=${HAPAX_GLMCP_REVIEW_BASE_URL:-unset}" >> "$HOME/reviewer-env"\n'
+    'echo "SECRET=${HAPAX_GLMCP_REVIEW_SECRET_ENTRY:-unset}" >> "$HOME/reviewer-env"\n'  # pragma: allowlist secret; synthetic test fixture
+    'echo "OVERRIDE=${HAPAX_GLMCP_REVIEW_ALLOW_SECRET_ENTRY_OVERRIDE:-unset}" >> "$HOME/reviewer-env"\n'  # pragma: allowlist secret; synthetic test fixture
+    "echo OK\n"
+)
+REVIEWER_ALWAYS_FAILS_SILENTLY = "exit 1\n"
+REVIEWER_FAILS_WITH_OUTPUT = "echo NOT_OK\nexit 23\n"
+REVIEWER_FAILS_TWICE_LOUDLY = (
+    'n=$(cat "$HOME/attempts" 2>/dev/null || echo 0); n=$((n + 1)); echo "$n" > "$HOME/attempts"\n'
+    'if [ "$n" -lt 3 ]; then\n'
+    '  echo "Authorization: Bearer abc123" >&2\n'  # pragma: allowlist secret; synthetic redaction fixture
+    '  echo "api_key = zzz9" >&2\n'  # pragma: allowlist secret; synthetic redaction fixture
+    "  exit 1\n"
+    "fi\n"
+    "echo OK\n"
+)
+
+
+def _unit_value(text: str, section: str, key: str) -> str | None:
+    in_section = False
+    for line in text.splitlines():
+        stripped = line.strip()
+        if stripped.startswith("[") and stripped.endswith("]"):
+            in_section = stripped == f"[{section}]"
+            continue
+        if in_section and "=" in stripped:
+            unit_key, _, value = stripped.partition("=")
+            if unit_key.strip() == key:
+                return value.strip()
+    return None
+
+
+def _stub(path: Path, body: str) -> None:
+    path.write_text("#!/usr/bin/env bash\n" + body, encoding="utf-8")
+    path.chmod(0o755)
+
+
+def _glmcp_receipt_json(
+    *,
+    status: str,
+    remaining: int,
+    age: int,
+    now: datetime,
+    receipt_stale: bool = False,
+) -> str:
+    """A complete glmcp platform-capability receipt built through the production model.
+
+    The dispatcher reads this document through its loader (schema, platform, skew, duration syntax,
+    freshness), and since round 8 so does the seat refresher, so the fixture must be a receipt the
+    loader accepts — not three fields in a dict (review finding on #4624, round 8). The quota
+    surface was observed ``age`` seconds ago with ``remaining`` seconds of stale_after left at that
+    moment; the receipt itself lives 24 h so that only the quota surface decides freshness.
+    """
+    from shared.platform_capability_receipts import (
+        CliEvidence,
+        EvidenceStatus,
+        PlatformCapabilityReceipt,
+        ProviderDocsEvidence,
+        SurfaceEvidence,
+        WrapperEvidence,
+    )
+
+    observed = now - timedelta(seconds=age)
+    observed_ok = status == "observed"
+    quota = SurfaceEvidence(
+        status=EvidenceStatus(status),
+        source="local_receipt_probe",
+        observed_at=observed,
+        stale_after=f"{remaining}s",
+        evidence_refs=[
+            "local:glmcp:quota-admission-receipt:glmcp.review.direct:present",
+            "platform-capability-registry:glmcp.review.direct:quota:observed",
+        ]
+        if observed_ok
+        else [],
+        reason_codes=[] if observed_ok else ["account_live_quota_receipt_absent"],
+    )
+    # ``receipt_stale`` makes the RECEIPT stale (observed two hours ago, lives one hour) while its
+    # quota surface still reads fresh: exactly the document a field-picking guard would trust and
+    # the dispatcher's loader drops.
+    receipt = PlatformCapabilityReceipt(
+        receipt_id=f"test-glmcp-{int(observed.timestamp())}",
+        platform="glmcp",
+        routes=["glmcp.review.direct"],
+        observed_at=(now - timedelta(hours=2)) if receipt_stale else observed,
+        stale_after="1h" if receipt_stale else "24h",
+        cli=CliEvidence(binary="hapax-glmcp-reviewer", available=True, version="test"),
+        wrapper=WrapperEvidence(
+            path="scripts/hapax-glmcp-reviewer", exists=True, executable=True, sha256="abc123"
+        ),
+        capability=SurfaceEvidence(
+            status=EvidenceStatus.OBSERVED,
+            source="test",
+            observed_at=observed,
+            stale_after="24h",
+            evidence_refs=["test:glmcp:capability"],
+        ),
+        resource=SurfaceEvidence(
+            status=EvidenceStatus.OBSERVED,
+            source="test",
+            observed_at=observed,
+            stale_after="24h",
+            evidence_refs=["test:glmcp:resource"],
+        ),
+        quota=quota,
+        provider_docs=ProviderDocsEvidence(
+            refs=["test:glmcp:provider-docs"], fetched_at=observed, stale_after="30d"
+        ),
+    )
+    return json.dumps(receipt.model_dump(mode="json"))
+
+
+def _glmcp_admission_artifacts(home: Path, admission: datetime) -> Path:
+    """Build the relay receipt and witnessed live ledger required by production admission."""
+    relay_dir = home / ".cache/hapax/relay/receipts"
+    observed = admission.isoformat().replace("+00:00", "Z")
+    expires = (admission + timedelta(seconds=900)).isoformat().replace("+00:00", "Z")
+    (relay_dir / "glmcp-quota-admission.yaml").write_text(
+        "schema: hapax.glmcp_quota_admission.v1\nstatus: quota_available\n"
+        "route_id: glmcp.review.direct\nlane_presence_used_as_quota_evidence: false\n"
+        f"observed_at: {observed}\nstale_after_seconds: 900\n"
+    )
+    ledger = json.loads((REPO / "config/quota-spend-ledger-fixtures.json").read_text())
+    ledger["captured_at"] = observed
+    ledger["generated_from"] = ["scripts/hapax-quota-telemetry-writer"]
+    ledger["quota_snapshots"] = [
+        {
+            "quota_snapshot_schema": 1,
+            "snapshot_id": "quota-glmcp-test",
+            "captured_at": observed,
+            "fresh_until": expires,
+            "route_id": "glmcp.review.direct",
+            "provider": "z_ai-glm-coding-plan",
+            "capacity_pool": "subscription_quota",
+            "subscription_quota_state": "fresh",
+            "evidence_refs": [
+                "relay-receipt:glmcp-quota-admission.yaml:witness:supported-tool-usage-witness:"
+                "supported_tool:hapax-glmcp-reviewer:endpoint:https://api.z.ai/api/coding/paas/v4:"
+                f"model:glm-5.2:observed_at:{observed}:fresh_until:{expires}"
+            ],
+            "operator_visible_reason": "Synthetic admission for seat refresh regression",
+        }
+    ]
+    ledger_path = home / "quota-spend-ledger-live.json"
+    ledger_path.write_text(json.dumps(ledger))
+    return ledger_path
+
+
+def _harness(
+    tmp_path: Path,
+    *,
+    reviewer: str = REVIEWER_OK,
+    writer_rc: int = 0,
+    admission_rc: int = 0,
+    receipt_status: str | None = None,
+    receipt_remaining: int = 0,
+    receipt_age: int = 0,
+    relay_receipt_observed_ago: int | None = None,
+    refreshed_remaining: int | None = 900,
+    malformed_receipt: bool = False,
+    receipt_stale: bool = False,
+    now: datetime | None = None,
+) -> tuple[Path, Path]:
+    """A throwaway HOME plus a fake council root whose scripts record what they were asked.
+
+    ``receipt_status`` writes the dispatcher's own glmcp platform-capability receipt with that quota
+    status, generated ``receipt_age`` seconds ago and carrying ``receipt_remaining`` seconds of
+    stale_after at generation. ``relay_receipt_observed_ago`` writes a raw admission receipt (the
+    thing the guard must NOT trust on its own). ``refreshed_remaining`` is what the stubbed
+    capability-receipt refresh leaves on disk after the writer (None: it leaves the old receipt).
+    ``malformed_receipt`` writes the pre-round-8 three-field document the loader rejects. The
+    receipts script's ``--show`` is the real one, run against this HOME's receipt directory.
+    Observed receipts include the relay admission and witnessed live ledger that the production
+    registry requires alongside the platform receipt; dispatcher reads must use this HOME's ledger.
+    """
+    home = tmp_path / "home"
+    council = tmp_path / "council"
+    scripts = council / "scripts"
+    scripts.mkdir(parents=True)
+    (council / "shared").symlink_to(REPO / "shared", target_is_directory=True)
+    (council / "config").symlink_to(REPO / "config", target_is_directory=True)
+    (home / ".cache" / "hapax" / "relay" / "receipts").mkdir(parents=True)
+    receipts_dir = home / ".cache" / "hapax" / "platform-capability-receipts"
+    receipts_dir.mkdir(parents=True)
+    _stub(scripts / "hapax-glmcp-reviewer", reviewer)
+    _stub(
+        scripts / "hapax-glmcp-quota-admission",
+        'printf "%s\\n" "$*" >> "$HOME/admission-calls"\n'
+        'printf "admission %s\\n" "$*" >> "$HOME/calls"\n'
+        f'echo "receipt ok"\nexit {admission_rc}\n',
+    )
+    _stub(
+        scripts / "hapax-quota-telemetry-writer",
+        'printf "writer %s\\n" "$*" >> "$HOME/calls"\n'
+        'echo "wrote live ledger"\necho "capability receipts DEGRADED for one provider"\n'
+        'if [ -f "$HOME/refreshed-ledger.json" ]; then\n'
+        '  cp "$HOME/refreshed-ledger.json" "$HOME/quota-spend-ledger-live.json"\n'
+        "fi\n"
+        f"exit {writer_rc}\n",
+    )
+    _stub(
+        scripts / "hapax-platform-capability-receipts",
+        'printf "receipts %s\\n" "$*" >> "$HOME/calls"\n'
+        'case " $* " in\n'
+        '  *" --show "*) exec "$HAPAX_TEST_PYTHON" "$HAPAX_TEST_RECEIPTS_SCRIPT" "$@" ;;\n'
+        "  *)\n"
+        '    if [ -f "$HOME/refreshed-receipt.json" ]; then\n'
+        '      cp "$HOME/refreshed-receipt.json" "$HOME/.cache/hapax/platform-capability-receipts/glmcp.json"\n'
+        "    fi\n"
+        '    echo "glmcp: wrote (stub)"\n'
+        '    exit "${HAPAX_TEST_RECEIPTS_RC:-0}"\n'
+        "    ;;\n"
+        "esac\n",
+    )
+    now = now or datetime.now(UTC)
+    ledger_path = _glmcp_admission_artifacts(home, now)
+    (home / "refreshed-ledger.json").write_text(ledger_path.read_text())
+    ledger_path.unlink()
+    (home / ".cache/hapax/relay/receipts/glmcp-quota-admission.yaml").unlink()
+    if receipt_status == "observed":
+        _glmcp_admission_artifacts(home, now - timedelta(seconds=receipt_age))
+    if malformed_receipt:
+        (receipts_dir / "glmcp.json").write_text(
+            json.dumps(
+                {
+                    "platform": "glmcp",
+                    "observed_at": now.strftime("%Y-%m-%dT%H:%M:%SZ"),
+                    "quota": {
+                        "status": "observed",
+                        "observed_at": now.strftime("%Y-%m-%dT%H:%M:%SZ"),
+                        "stale_after": "900s",
+                    },
+                }
+            ),
+            encoding="utf-8",
+        )
+    elif receipt_status is not None:
+        (receipts_dir / "glmcp.json").write_text(
+            _glmcp_receipt_json(
+                status=receipt_status,
+                remaining=receipt_remaining,
+                age=receipt_age,
+                now=now,
+                receipt_stale=receipt_stale,
+            ),
+            encoding="utf-8",
+        )
+    if refreshed_remaining is not None:
+        (home / "refreshed-receipt.json").write_text(
+            _glmcp_receipt_json(status="observed", remaining=refreshed_remaining, age=1, now=now),
+            encoding="utf-8",
+        )
+    if relay_receipt_observed_ago is not None:
+        observed = now - timedelta(seconds=relay_receipt_observed_ago)
+        (
+            home / ".cache" / "hapax" / "relay" / "receipts" / "glmcp-quota-admission.yaml"
+        ).write_text(
+            "schema: hapax.glmcp_quota_admission.v1\nstatus: quota_available\n"
+            f"observed_at: {observed.strftime('%Y-%m-%dT%H:%M:%SZ')}\nstale_after_seconds: 900\n",
+            encoding="utf-8",
+        )
+    return home, council
+
+
+def _run(
+    home: Path,
+    council: Path,
+    *,
+    allow_root: bool = True,
+    ambient_root_override: bool = False,
+    receipts_rc: int = 0,
+    path: str | None = None,
+    script_text: str | None = None,
+    environment: dict[str, str] | None = None,
+) -> subprocess.CompletedProcess[str]:
+    env = {
+        "HOME": str(home),
+        "HAPAX_COUNCIL": str(council),
+        "PATH": path or os.environ["PATH"],
+        "TMPDIR": str(home),
+        "HAPAX_GLMCP_SEAT_RETRY_SLEEP": "0",
+        # The stubbed receipts script delegates --show to the real one, in this interpreter.
+        "HAPAX_TEST_PYTHON": sys.executable,
+        "HAPAX_TEST_RECEIPTS_SCRIPT": str(RECEIPTS_SCRIPT),
+        "HAPAX_TEST_RECEIPTS_RC": str(receipts_rc),
+        "HAPAX_QUOTA_SPEND_LEDGER_LIVE": str(home / "quota-spend-ledger-live.json"),
+        # Inherited values that must never reach the probe (review findings on #4624, rounds 3–4).
+        "HAPAX_GLMCP_REVIEW_BASE_URL": "https://evil.example/paas/v4",
+        "HAPAX_GLMCP_REVIEW_SECRET_ENTRY": "glmcp/someone-elses-key",  # pragma: allowlist secret; synthetic test fixture
+        "HAPAX_GLMCP_REVIEW_ALLOW_SECRET_ENTRY_OVERRIDE": "1",  # pragma: allowlist secret; synthetic test fixture
+    }
+    if ambient_root_override:
+        env["HAPAX_GLMCP_SEAT_ROOT_OVERRIDE"] = "1"
+    env.update(environment or {})
+    command = ["bash", "-s", "--"] if script_text is not None else ["bash", str(SCRIPT)]
+    if allow_root:
+        command.append("--allow-mutable-root")
+    return subprocess.run(
+        command,
+        input=script_text,
+        env=env,
+        capture_output=True,
+        text=True,
+        timeout=120,
+    )
+
+
+def _witnesses(home: Path) -> list[Path]:
+    return sorted((home / ".cache" / "hapax" / "glmcp-admission-witness").glob("*.yaml"))
+
+
+def _use_real_refresh_producers(home: Path, council: Path) -> None:
+    relay = home / ".cache/hapax/relay/receipts"
+    receipts = home / ".cache/hapax/platform-capability-receipts"
+    ledger_path = home / "quota-spend-ledger-live.json"
+    # Replace the harness writer/admission stubs with their production entry points.
+    for name, args in {
+        "hapax-glmcp-quota-admission": ["--receipt-dir", str(relay)],
+        "hapax-quota-telemetry-writer": [
+            "--out",
+            str(ledger_path),
+            "--relay-receipt-dir",
+            str(relay),
+            "--platform-capability-receipt-dir",
+            str(receipts),
+            "--nvidia-smi",
+            "/bin/false",
+        ],
+    }.items():
+        _stub(
+            council / "scripts" / name,
+            "exec " + shlex.join([sys.executable, str(REPO / "scripts" / name), *args]) + ' "$@"\n',
+        )
+    # Generate the capability artifact through production too; stub only CLI availability.
+    capability_code = (
+        "import runpy, sys\n"
+        "from shared.platform_capability_receipts import CliEvidence\n"
+        f"producer = runpy.run_path({str(RECEIPTS_SCRIPT)!r})\n"
+        "producer['main'].__globals__['observe_cli'] = lambda *a, **kw: CliEvidence(binary='test', available=True)\n"
+        "raise SystemExit(producer['main'](sys.argv[1:]))\n"
+    )
+    _stub(
+        council / "scripts/hapax-platform-capability-receipts",
+        "exec " + shlex.join([sys.executable, "-c", capability_code]) + ' "$@"\n',
+    )
+
+
+@pytest.mark.parametrize("wait_at", ["capabilities", "lock"])
+def test_telemetry_wait_cannot_revoke_real_seat_refresh(
+    tmp_path: Path, monkeypatch, capsys, wait_at
+):
+    """Interleave both real producers; only the reviewer and hardware probes are fake."""
+    from shared.quota_spend_ledger import (
+        load_quota_spend_ledger,
+        subscription_quota_state_for_route,
+    )
+
+    home, council = _harness(tmp_path)
+    _use_real_refresh_producers(home, council)
+    relay = home / ".cache/hapax/relay/receipts"
+    receipts = home / ".cache/hapax/platform-capability-receipts"
+    ledger_path = home / "quota-spend-ledger-live.json"
+    writer = runpy.run_path(str(REPO / "scripts/hapax-quota-telemetry-writer"))
+    globals_ = writer["main"].__globals__
+    started = datetime.now(UTC).replace(microsecond=0) - timedelta(seconds=5)
+    clock = [started]
+    publications = []
+
+    class Clock(datetime):
+        @classmethod
+        def now(cls, tz=None):
+            return clock[0]
+
+    def publish_seat():
+        result = _run(home, council, environment={"PYTHONPATH": str(REPO)})
+        assert result.returncode == 0, result.stdout + result.stderr
+        ledger = load_quota_spend_ledger(ledger_path)
+        assert subscription_quota_state_for_route(ledger, "glmcp.review.direct")[0].value == "fresh"
+        assert not _dispatch_quota(home, datetime.now(UTC)).evidence.quota.blocked_reasons
+        publications.append(ledger)
+        clock[0] = datetime.now(UTC).replace(microsecond=0)
+        assert clock[0] > started
+
+    def refresh_capabilities(**kwargs):
+        assert kwargs["receipt_dir"] == receipts
+        if wait_at == "capabilities":
+            publish_seat()
+        return True
+
+    real_lock = writer["quota_spend_live_lock"]
+
+    @contextmanager
+    def wait_for_lock(path):
+        if wait_at == "lock":
+            publish_seat()
+        with real_lock(path):
+            yield
+
+    monkeypatch.setitem(globals_, "datetime", Clock)
+    monkeypatch.setitem(globals_, "refresh_capability_receipts", refresh_capabilities)
+    monkeypatch.setitem(globals_, "quota_spend_live_lock", wait_for_lock)
+    monkeypatch.setitem(
+        globals_, "probe_local_resource_state", lambda **kw: ("green", ["test:gpu"])
+    )
+    assert (
+        writer["main"](
+            [
+                "--out",
+                str(ledger_path),
+                "--relay-receipt-dir",
+                str(relay),
+                "--platform-capability-receipt-dir",
+                str(receipts),
+                "--json",
+            ]
+        )
+        == 0
+    )
+    assert len(publications) == 1
+    final = load_quota_spend_ledger(ledger_path)
+    assert subscription_quota_state_for_route(final, "glmcp.review.direct")[0].value == "fresh"
+    assert not _dispatch_quota(home, datetime.now(UTC)).evidence.quota.blocked_reasons
+    summary = json.loads(capsys.readouterr().out)
+    assert summary["glmcp_admissions"] == 1
+    assert summary["glmcp_ignored_admissions"] == 0
+    assert final.captured_at == clock[0]
+    scan = writer["active_glmcp_admission_receipts"](relay, now=final.captured_at)
+    assert len(scan.admissions) == 1
+    assert not scan.ignored_evidence_refs
+
+
+def test_parallel_telemetry_resource_scan_cannot_revoke_refresh_admission(
+    tmp_path: Path, monkeypatch, capsys
+):
+    """An earlier invocation really overlaps the refresher, sharing production locks and writes."""
+    from shared.quota_spend_ledger import (
+        load_quota_spend_ledger,
+        subscription_quota_state_for_route,
+    )
+
+    home, council = _harness(tmp_path)
+    _use_real_refresh_producers(home, council)
+    relay = home / ".cache/hapax/relay/receipts"
+    receipts = home / ".cache/hapax/platform-capability-receipts"
+    ledger_path = home / "quota-spend-ledger-live.json"
+    writer = runpy.run_path(str(REPO / "scripts/hapax-quota-telemetry-writer"))
+    globals_ = writer["main"].__globals__
+    started = datetime.now(UTC).replace(microsecond=0) - timedelta(seconds=60)
+    clock = [started]
+    scanning, resume = Event(), Event()
+    real_probe = writer["probe_local_resource_state"]
+    merges = []
+    real_merge = writer["keep_newer_valid_admissions"]
+
+    class Clock(datetime):
+        @classmethod
+        def now(cls, tz=None):
+            return clock[0]
+
+    def scan_resources(**kwargs):
+        scanning.set()
+        assert resume.wait(30), "refresher did not finish during telemetry scan"
+        return real_probe(**kwargs)
+
+    def merge(ledger, previous, *, now):
+        merges.append(previous)
+        return real_merge(ledger, previous, now=now)
+
+    monkeypatch.setitem(globals_, "datetime", Clock)
+    monkeypatch.setitem(globals_, "probe_local_resource_state", scan_resources)
+    monkeypatch.setitem(globals_, "keep_newer_valid_admissions", merge)
+    # --skip-receipts prevents provider probes. The actual capability producer in the
+    # refresher runs with only observe_cli stubbed; refresh_capability_receipts is not mocked.
+    with ThreadPoolExecutor(max_workers=1) as pool:
+        pending = pool.submit(
+            writer["main"],
+            [
+                "--skip-receipts",
+                "--out",
+                str(ledger_path),
+                "--relay-receipt-dir",
+                str(relay),
+                "--platform-capability-receipt-dir",
+                str(receipts),
+                "--nvidia-smi",
+                "/bin/false",
+                "--json",
+            ],
+        )
+        try:
+            assert scanning.wait(30), "telemetry did not enter its resource scan"
+            result = _run(home, council, environment={"PYTHONPATH": str(REPO)})
+            assert result.returncode == 0, result.stdout + result.stderr
+            published = load_quota_spend_ledger(ledger_path)
+            assert published.captured_at > started
+            assert not _dispatch_quota(home, datetime.now(UTC)).evidence.quota.blocked_reasons
+            clock[0] = datetime.now(UTC).replace(microsecond=0)
+        finally:
+            resume.set()
+        assert pending.result(timeout=30) == 0
+    assert merges == [published], "older producer must merge the real refresher's ledger"
+    final = load_quota_spend_ledger(ledger_path)
+    state, _ = subscription_quota_state_for_route(final, "glmcp.review.direct", now=clock[0])
+    assert state.value == "fresh"
+    quota = _dispatch_quota(home, clock[0]).evidence.quota
+    assert not quota.blocked_reasons
+    assert "platform-capability-registry:glmcp.review.direct:quota:observed" in quota.evidence_refs
+    for ledger in (published, final):
+        snapshot = next(
+            row for row in ledger.quota_snapshots if row.route_id == "glmcp.review.direct"
+        )
+        assert snapshot.subscription_quota_state.value == "fresh"
+        assert snapshot.fresh_until == next(
+            row.fresh_until
+            for row in published.quota_snapshots
+            if row.route_id == snapshot.route_id
+        )
+    summary = json.loads(capsys.readouterr().out)
+    assert summary["glmcp_admissions"] == 1
+    assert summary["glmcp_ignored_admissions"] == 0
+    assert final.captured_at == clock[0]
+
+
+@pytest.mark.parametrize(
+    "failure,reason,remedy",
+    [
+        ("absent", "file_absent", "restore"),
+        ("json", "json_decode_failed", "repair JSON"),
+        ("yaml", "yaml_decode_failed", "repair YAML"),
+        ("schema", "schema_invalid", "repair schema"),
+        ("permission", "permission_denied", "restore read permission"),
+        ("encoding", "encoding_invalid", "repair UTF-8 encoding"),
+        ("io", "file_unreadable", "repair file type"),
+        ("field", "field_invalid", "repair field path"),
+        ("registry", "registry_invalid", "repair registry"),
+        ("route", "route_absent", "restore route glmcp.review.direct"),
+        ("changed", "receipt_changed", "rerun --show"),
+    ],
+)
+def test_quota_predicate_expected_failures_name_file_field_and_remedy(
+    tmp_path: Path, monkeypatch, capsys, failure: str, reason: str, remedy: str
+):
+    import yaml
+    from pydantic import ValidationError
+
+    from shared import platform_capability_receipts as receipts
+    from shared import platform_capability_registry as registry
+
+    home, council = _harness(tmp_path, receipt_status="observed", receipt_remaining=900)
+    path = home / ".cache/hapax/platform-capability-receipts/glmcp.json"
+    receipt = receipts.load_platform_capability_receipt(path)
+    row = {"path": str(path), "receipt_id": receipt.receipt_id}
+    if failure == "field":
+        del row["path"]
+    elif failure == "changed":
+        row["receipt_id"] = "previous-receipt"
+    elif failure == "route":
+        from types import SimpleNamespace
+
+        monkeypatch.setattr(
+            registry,
+            "load_platform_capability_registry_for_dispatch",
+            lambda *a, **kw: (SimpleNamespace(routes=[]), ()),
+        )
+    else:
+        causes = {
+            "absent": FileNotFoundError(2, "missing", str(path)),
+            "json": json.JSONDecodeError("synthetic private payload", "{", 1),
+            "yaml": yaml.YAMLError("synthetic private payload"),
+            "schema": ValidationError.from_exception_data("receipt", []),
+            "permission": PermissionError(13, "denied", str(path)),
+            "encoding": UnicodeDecodeError("utf-8", b"\xff", 0, 1, "invalid byte"),
+            "io": IsADirectoryError(21, "directory", str(path)),
+            "registry": registry.PlatformCapabilityRegistryError("synthetic private payload"),
+        }
+
+        def fail_load(*args, **kwargs):
+            # The production plural loader wraps file/decode/schema errors in its domain error.
+            raise receipts.PlatformCapabilityReceiptError("synthetic private payload") from causes[
+                failure
+            ]
+
+        if failure == "registry":
+
+            def fail_registry(*args, **kwargs):
+                raise causes[failure]
+
+            monkeypatch.setattr(
+                registry, "load_platform_capability_registry_for_dispatch", fail_registry
+            )
+        else:
+            monkeypatch.setattr(receipts, "load_platform_capability_receipts", fail_load)
+    monkeypatch.setattr(sys, "argv", ["seat-quota", str(council)])
+    monkeypatch.setattr(sys, "stdin", io.StringIO(json.dumps(row)))
+    source = SCRIPT.read_text().split("seat_quota_from_receipt() {", 1)[1]
+    source = source.split("python3 -c '\n", 1)[1].split('\n  \' "$H"', 1)[0]
+    with pytest.raises(SystemExit) as exc:
+        exec(compile(source, str(SCRIPT), "exec"), {})
+    assert exc.value.code == 1
+    error = capsys.readouterr().err
+    assert remedy in error
+    assert reason in error
+    assert (
+        "path"
+        if failure == "field"
+        else str(council / "config/platform-capability-registry.json")
+        if failure in {"registry", "route"}
+        else str(path)
+    ) in error
+    assert "Next:" in error
+    assert "synthetic private payload" not in error
+
+
+@pytest.mark.parametrize("bug", [RuntimeError, TypeError, AttributeError])
+@pytest.mark.parametrize("wrapped", [False, True])
+def test_quota_predicate_unexpected_exception_preserves_traceback(
+    tmp_path: Path, monkeypatch, bug, wrapped
+):
+    from shared import platform_capability_receipts as receipts
+
+    def broken_loader(*args, **kwargs):
+        if wrapped:
+            raise receipts.PlatformCapabilityReceiptError("unexpected loader bug") from bug("cause")
+        raise bug("unexpected loader bug")
+
+    monkeypatch.setattr(receipts, "load_platform_capability_receipts", broken_loader)
+    monkeypatch.setattr(sys, "argv", ["seat-quota", str(REPO)])
+    monkeypatch.setattr(
+        sys,
+        "stdin",
+        io.StringIO(
+            json.dumps(
+                {
+                    "path": str(tmp_path / "glmcp.json"),
+                    "receipt_id": "test",
+                }
+            )
+        ),
+    )
+    source = SCRIPT.read_text().split("seat_quota_from_receipt() {", 1)[1]
+    source = source.split("python3 -c '\n", 1)[1].split('\n  \' "$H"', 1)[0]
+    with pytest.raises(
+        receipts.PlatformCapabilityReceiptError if wrapped else bug, match="unexpected loader bug"
+    ) as exc:
+        exec(compile(source, str(SCRIPT), "exec"), {})
+    assert any(entry.name == "broken_loader" for entry in exc.traceback)
+
+
+def _dispatch_quota(home: Path, now: datetime):
+    """Read quota through the same registry loader called by dispatch policy sources."""
+    from shared.platform_capability_registry import load_platform_capability_registry_for_dispatch
+
+    # receipt_dir does not redirect the registry's separate route-admission ledger lookup.
+    # Set its explicit override even if the default HOME was captured at module import time.
+    with pytest.MonkeyPatch.context() as patch:
+        patch.setenv("HOME", str(home))
+        patch.setenv("HAPAX_QUOTA_SPEND_LEDGER_LIVE", str(home / "quota-spend-ledger-live.json"))
+        registry, _ = load_platform_capability_registry_for_dispatch(
+            REPO / "config/platform-capability-registry.json",
+            receipt_dir=home / ".cache/hapax/platform-capability-receipts",
+            now=now,
+        )
+    route = next(route for route in registry.routes if route.route_id == "glmcp.review.direct")
+    return route.freshness
+
+
+@pytest.mark.parametrize("admission_present", [True, False])
+def test_dispatch_fixture_is_self_contained_under_empty_home(
+    tmp_path: Path, monkeypatch, admission_present: bool
+) -> None:
+    from shared import quota_spend_ledger
+    from shared.platform_capability_receipts import load_platform_capability_receipts
+
+    monkeypatch.setenv("HOME", str(tmp_path))
+    for key in tuple(os.environ):
+        if key.startswith(("HAPAX_", "XDG_")):
+            monkeypatch.delenv(key)
+    # Other tests may already have imported this HOME-derived default. Keep the fallback empty
+    # too, so forgetting the fixture's ledger override cannot silently read the operator's ledger.
+    monkeypatch.setattr(
+        quota_spend_ledger,
+        "DEFAULT_QUOTA_SPEND_LEDGER_LIVE",
+        tmp_path / ".cache/hapax/orchestration/quota-spend-ledger-live.json",
+    )
+    now = datetime.now(UTC).replace(microsecond=0)
+    home, _ = _harness(tmp_path, receipt_status="observed", receipt_remaining=900, now=now)
+    if not admission_present:
+        (home / "quota-spend-ledger-live.json").unlink()
+    assert "glmcp" in load_platform_capability_receipts(
+        home / ".cache/hapax/platform-capability-receipts", now=now
+    )
+    quota = _dispatch_quota(home, now).evidence.quota
+    assert quota.blocked_reasons == (
+        [] if admission_present else ["glmcp_review_seat_receipt_admission_required"]
+    )
+
+
+def _fixed_date_path(tmp_path: Path, now: datetime) -> str:
+    bin_dir = tmp_path / "bin"
+    bin_dir.mkdir()
+    date = shutil.which("date")
+    assert date is not None
+    _stub(
+        bin_dir / "date",
+        f'if [ "$*" = "-u +%s" ]; then echo {int(now.timestamp())}; else exec "{date}" "$@"; fi\n',
+    )
+    return f"{bin_dir}:{os.environ['PATH']}"
+
+
+@pytest.mark.parametrize("state", ["fresh", "stale", "uncovered"])
+def test_guard_parses_dispatcher_receipt_and_names_refresh_cause(
+    tmp_path: Path, state: str
+) -> None:
+    from shared.platform_capability_receipts import load_platform_capability_receipts
+
+    now = datetime.now(UTC).replace(microsecond=0)
+    home, council = _harness(
+        tmp_path,
+        receipt_status="observed",
+        receipt_remaining=800,
+        now=now,
+        receipt_stale=state == "stale",
+    )
+    receipt_dir = home / ".cache/hapax/platform-capability-receipts"
+    if state == "uncovered":
+        path = receipt_dir / "glmcp.json"
+        receipt = json.loads(path.read_text())
+        receipt["routes"] = ["glmcp.sibling.direct"]
+        path.write_text(json.dumps(receipt))
+    assert ("glmcp" in load_platform_capability_receipts(receipt_dir, now=now)) == (
+        state != "stale"
+    )
+    quota = _dispatch_quota(home, now).evidence.quota
+    assert bool(quota.blocked_reasons) == (state != "fresh")
+    result = _run(home, council, path=_fixed_date_path(tmp_path, now))
+    assert result.returncode == 0, result.stderr
+    if state == "fresh":
+        assert "(800s remain); no round-trip" in result.stdout
+        assert not (home / "reviewer-env").exists()
+        assert not (home / "admission-calls").exists()
+        assert _witnesses(home) == []
+    else:
+        assert "no round-trip" not in result.stdout
+        assert "roundtrip attempt 1: exit=0" in result.stdout
+        assert (home / "admission-calls").exists()
+        cause = "receipt_stale_or_superseded" if state == "stale" else "route_not_covered"
+        assert cause in result.stderr
+
+
+@pytest.mark.parametrize("publication", ["guard", "final"])
+@pytest.mark.parametrize("live", ["absent", "invalid", "stale", "admission-absent"])
+def test_live_admission_matches_dispatch_through_both_script_paths(
+    tmp_path: Path, publication: str, live: str
+) -> None:
+    from shared.platform_capability_receipts import load_platform_capability_receipts
+
+    now = datetime.now(UTC).replace(microsecond=0)
+    home, council = _harness(
+        tmp_path,
+        receipt_status="observed",
+        receipt_remaining=800,
+        now=now,
+        refreshed_remaining=None,
+    )
+    # The no-op writer must leave the failing live state intact through the final check.
+    (home / "refreshed-ledger.json").unlink(missing_ok=True)
+    ledger_path = home / "quota-spend-ledger-live.json"
+    if live == "absent":
+        ledger_path.unlink()
+    elif live == "invalid":
+        ledger_path.write_text("{invalid ledger")
+    elif live == "stale":
+        _glmcp_admission_artifacts(home, now - timedelta(hours=1))
+    else:
+        ledger = json.loads(ledger_path.read_text())
+        ledger["quota_snapshots"] = []
+        ledger_path.write_text(json.dumps(ledger))
+    receipt_path = home / ".cache/hapax/platform-capability-receipts/glmcp.json"
+    assert "glmcp" in load_platform_capability_receipts(receipt_path.parent, now=now)
+    quota = _dispatch_quota(home, now).evidence.quota
+    assert quota.blocked_reasons == ["glmcp_review_seat_receipt_admission_required"]
+    if publication == "final":
+        (home / "refreshed-receipt.json").write_text(receipt_path.read_text())
+        receipt_path.unlink()
+    result = _run(home, council)
+    verdict = next(
+        (
+            line
+            for line in result.stdout.splitlines()
+            if "no round-trip" in line or "visible to the dispatcher" in line
+        ),
+        "no success claim",
+    )
+    print(
+        f"{publication}/{live}: dispatcher={quota.blocked_reasons}; "
+        f"script_exit={result.returncode}; script={verdict}"
+    )
+    assert result.returncode == 6, result.stdout + result.stderr
+    assert "no round-trip" not in result.stdout
+    assert "visible to the dispatcher" not in result.stdout
+    assert (home / "admission-calls").exists()
+    assert "glmcp_review_seat_receipt_admission_required" in result.stderr
+    assert str(ledger_path) in result.stderr
+    assert str(receipt_path) in result.stderr
+    assert "hapax-quota-telemetry-writer --skip-receipts" in result.stderr
+    assert "hapax-platform-capability-receipts --platform glmcp" in result.stderr
+    assert "Next:" in result.stderr
+
+
+@pytest.mark.parametrize("publication", ["guard", "final"])
+def test_receipt_expiry_bounds_both_freshness_checks(tmp_path: Path, publication: str) -> None:
+    from shared.platform_capability_receipts import load_platform_capability_receipts
+
+    now = datetime.now(UTC).replace(microsecond=0)
+    home, council = _harness(tmp_path, receipt_status="observed", receipt_remaining=900, now=now)
+    receipt_dir = home / ".cache/hapax/platform-capability-receipts"
+    receipt_path = receipt_dir / "glmcp.json"
+    receipt = json.loads(receipt_path.read_text())
+    receipt["stale_after"] = "10s"
+    receipt_path.write_text(json.dumps(receipt))
+    assert "glmcp" in load_platform_capability_receipts(receipt_dir, now=now)
+    assert not _dispatch_quota(home, now).evidence.quota.blocked_reasons
+    later = now + timedelta(seconds=11)
+    assert "glmcp" not in load_platform_capability_receipts(receipt_dir, now=later)
+    assert "quota_telemetry_unknown" in _dispatch_quota(home, later).evidence.quota.blocked_reasons
+    if publication == "final":
+        (home / "refreshed-receipt.json").write_text(receipt_path.read_text())
+        receipt_path.unlink()
+    result = _run(home, council, path=_fixed_date_path(tmp_path, now))
+    assert "no round-trip" not in result.stdout
+    assert (home / "admission-calls").exists()
+    assert result.returncode == (6 if publication == "final" else 0), result.stderr
+    if publication == "final":
+        assert "(10) after the admission was minted" in result.stderr
+        assert "glm seat visible to the dispatcher" not in result.stdout
+
+
+@pytest.mark.parametrize("publication", ["guard", "final"])
+@pytest.mark.parametrize("missing", ["coverage", "observation", None])
+def test_route_quota_evidence_matches_production_dispatch(
+    tmp_path: Path, missing: str | None, publication: str, monkeypatch
+) -> None:
+    now = datetime.now(UTC).replace(microsecond=0)
+    home, council = _harness(tmp_path, receipt_status="observed", receipt_remaining=900, now=now)
+    _produce_glmcp_receipt(home, now, now, monkeypatch)
+    receipt_path = home / ".cache/hapax/platform-capability-receipts/glmcp.json"
+    receipt = json.loads(receipt_path.read_text())
+    if missing == "coverage":
+        receipt["routes"] = ["glmcp.sibling.direct"]
+    elif missing == "observation":
+        receipt["quota"]["evidence_refs"] = [
+            "local:glmcp:quota-admission-receipt:glmcp.review.direct:present",
+            "platform-capability-registry:glmcp.sibling.direct:quota:observed",
+        ]
+    receipt_path.write_text(json.dumps(receipt))
+    # --show accepts every case; dispatch admission must still reject either missing route fact.
+    shown = subprocess.run(
+        [sys.executable, str(RECEIPTS_SCRIPT), "--show", "--platform", "glmcp", "--json"],
+        env={"HOME": str(home), "PATH": os.environ["PATH"]},
+        capture_output=True,
+        text=True,
+        check=True,
+    )
+    (row,) = json.loads(shown.stdout)["receipts"]
+    assert row["accepted"] is True
+    quota = _dispatch_quota(home, now).evidence.quota
+    if missing == "coverage":
+        assert "quota_telemetry_unknown" in quota.blocked_reasons
+        assert not quota.evidence_refs
+    else:
+        assert ("account_live_quota_receipt_absent" in quota.blocked_reasons) == (
+            missing is not None
+        )
+        if missing is None:
+            assert not quota.blocked_reasons
+    if publication == "final":
+        (home / "refreshed-receipt.json").write_text(receipt_path.read_text())
+        receipt_path.unlink()
+    result = _run(home, council)
+    assert result.returncode == (6 if publication == "final" and missing else 0), result.stderr
+    should_skip = publication == "guard" and missing is None
+    assert ("no round-trip" in result.stdout) == should_skip
+    assert (home / "admission-calls").exists() != should_skip
+    if missing:
+        assert "account_live_quota_receipt_absent" in result.stderr
+        assert (
+            "route_not_covered" if missing == "coverage" else "route_observation_absent"
+        ) in result.stderr
+
+
+def _produce_glmcp_receipt(home: Path, admission: datetime, generated: datetime, monkeypatch):
+    """Run the real producer with a synthetic admission and a validated, bounded live ledger."""
+    from shared.platform_capability_receipts import CliEvidence
+
+    monkeypatch.setenv("HOME", str(home))
+    receipt_dir = home / ".cache/hapax/platform-capability-receipts"
+    relay_dir = home / ".cache/hapax/relay/receipts"
+    ledger_path = _glmcp_admission_artifacts(home, admission)
+    monkeypatch.setenv("HAPAX_QUOTA_SPEND_LEDGER_LIVE", str(ledger_path))
+    producer = runpy.run_path(str(RECEIPTS_SCRIPT), run_name="__test__")
+    globals_ = producer["main"].__globals__
+    monkeypatch.setitem(globals_, "QUOTA_RECEIPT_DIR", relay_dir)
+    monkeypatch.setitem(globals_, "QUOTA_LEDGER_LIVE", ledger_path)
+    # CLI availability is the only stubbed probe; quota production and its ledger validator run.
+    monkeypatch.setitem(
+        globals_, "observe_cli", lambda *a, **kw: CliEvidence(binary="test", available=True)
+    )
+    assert (
+        producer["main"](
+            [
+                "--platform",
+                "glmcp",
+                "--receipt-dir",
+                str(receipt_dir),
+                "--now",
+                generated.isoformat(),
+            ]
+        )
+        == 0
+    )
+
+
+def test_generated_quota_expiry_matches_dispatcher_without_double_age(
+    tmp_path: Path, monkeypatch
+) -> None:
+    from shared.platform_capability_receipts import parse_duration_spec
+
+    readback = datetime.now(UTC).replace(microsecond=0)
+    admission = readback - timedelta(seconds=135)
+    generated = admission + timedelta(seconds=90)
+    home, council = _harness(tmp_path)
+    _produce_glmcp_receipt(home, admission, generated, monkeypatch)
+    shown = subprocess.run(
+        [
+            sys.executable,
+            str(RECEIPTS_SCRIPT),
+            "--show",
+            "--platform",
+            "glmcp",
+            "--json",
+            "--now",
+            readback.isoformat(),
+        ],
+        capture_output=True,
+        text=True,
+        check=True,
+    )
+    (row,) = json.loads(shown.stdout)["receipts"]
+    assert row["accepted"] is True
+    assert datetime.fromisoformat(row["quota"]["observed_at"]) == admission
+    assert datetime.fromisoformat(row["observed_at"]) == generated
+    assert row["quota"]["stale_after"] == "810s"
+    freshness = _dispatch_quota(home, readback)
+    assert not freshness.evidence.quota.blocked_reasons
+    expiry = freshness.quota_checked_at + parse_duration_spec(freshness.quota_stale_after)
+    expected = int((expiry - readback).total_seconds())
+    assert expected == 765
+    bin_dir = tmp_path / "bin"
+    bin_dir.mkdir()
+    date = shutil.which("date")
+    _stub(
+        bin_dir / "date",
+        f'if [ "$*" = "-u +%s" ]; then echo {int(readback.timestamp())}; else exec "{date}" "$@"; fi\n',
+    )
+    result = _run(home, council, path=f"{bin_dir}:{os.environ['PATH']}")
+    assert result.returncode == 0, result.stderr
+    assert f"({expected}s remain); no round-trip" in result.stdout
+    assert not (home / "admission-calls").exists()
+
+
+def test_script_exists_is_executable_and_parses() -> None:
+    assert SCRIPT.is_file()
+    assert SCRIPT.stat().st_mode & 0o111, "must be executable"
+    subprocess.run(["bash", "-n", str(SCRIPT)], check=True, capture_output=True, timeout=10)
+
+
+def test_refresh_headers_describe_completion_relative_timer() -> None:
+    timer = TIMER.read_text()
+    assert _unit_value(timer, "Timer", "OnUnitInactiveSec") == "30s"
+    assert _unit_value(timer, "Timer", "AccuracySec") == "30s"
+    for path in (SCRIPT, REPO / "scripts/hapax-post-merge-deploy"):
+        header = "\n".join(path.read_text().splitlines()[:40])
+        assert "30 s after service completion" in header
+        assert "OnUnitInactiveSec=30s, AccuracySec=30s" in header
+
+
+def _envelope(tmp_path: Path) -> dict[str, int]:
+    home, council = _harness(tmp_path)
+    proc = subprocess.run(
+        ["bash", str(SCRIPT), "--envelope", "--allow-mutable-root"],
+        env={
+            "HOME": str(home),
+            "HAPAX_COUNCIL": str(council),
+            "PATH": os.environ["PATH"],
+        },
+        capture_output=True,
+        text=True,
+        timeout=30,
+    )
+    assert proc.returncode == 0, proc.stderr
+    return json.loads(proc.stdout)
+
+
+def test_post_mint_tail_starts_at_admissions_observed_at(tmp_path: Path) -> None:
+    e = _envelope(tmp_path)
+    # observe_success stamps observed_at BEFORE validation and the atomic write. Charge
+    # its entire deadline, including kill grace, plus all four possible diagnostic filters.
+    tail = (
+        e["admission_timeout_s"]
+        + e["writer_timeout_s"]
+        + e["receipts_timeout_s"]
+        + e["show_timeout_s"]
+        + 4 * e["timeout_kill_after_s"]
+        + 4 * (e["filter_timeout_s"] + e["timeout_kill_after_s"])
+        + e["post_mint_process_launch_slack_s"]
+        + e["post_mint_file_io_slack_s"]
+        + e["post_mint_scheduler_slack_s"]
+        + e["post_check_shutdown_s"]
+        + e["service_safety_margin_s"]
+    )
+    assert e["post_mint_tail_s"] == tail
+    assert tail + e["seat_skip_min_remaining_s"] < 900
+
+
+def test_preflight_refuses_old_deadlines_before_provider_call(tmp_path: Path, monkeypatch) -> None:
+    e = _envelope(tmp_path / "envelope")
+    home, council = _harness(tmp_path / "run")
+    unsafe = tmp_path / "unsafe-refresh"
+    unsafe.write_text(
+        SCRIPT.read_text()
+        .replace(f"ADMISSION_TIMEOUT_S={e['admission_timeout_s']}", "ADMISSION_TIMEOUT_S=35")
+        .replace(f"WRITER_TIMEOUT_S={e['writer_timeout_s']}", "WRITER_TIMEOUT_S=90")
+    )
+    monkeypatch.setattr(sys.modules[__name__], "SCRIPT", unsafe)
+    result = _run(home, council)
+    assert result.returncode == 7, result.stdout + result.stderr
+    assert "OVERRUN_RENEWAL_ENVELOPE_S=" in result.stderr
+    assert "POST_MINT_TAIL_S=" in result.stderr
+    assert "roundtrip attempt" not in result.stdout
+    assert not (home / "admission-calls").exists()
+
+
+def test_delayed_admission_completion_keeps_original_observed_at(tmp_path: Path) -> None:
+    e = _envelope(tmp_path / "envelope")
+    epoch = int(datetime.now(UTC).timestamp())
+    home, council = _harness(tmp_path / "run", refreshed_remaining=None)
+    delay = e["admission_timeout_s"] - 1
+    (home / "clock").write_text(str(epoch))
+    (home / "admission-receipt.json").write_text(
+        _glmcp_receipt_json(
+            status="observed", remaining=900, age=0, now=datetime.fromtimestamp(epoch, UTC)
+        )
+    )
+    # The receipt fixture is stamped when admission observes success. Only afterward does
+    # admission finish its delayed validation/write; publication must preserve that age.
+    _stub(
+        council / "scripts/hapax-glmcp-quota-admission",
+        f'echo {epoch} > "$HOME/admission-observed-at"\n'
+        f'echo {epoch + delay} > "$HOME/clock"\n'
+        'cp "$HOME/admission-receipt.json" "$HOME/refreshed-receipt.json"\n'
+        'echo "receipt ok"\n',
+    )
+    bin_dir = tmp_path / "bin"
+    bin_dir.mkdir()
+    date = shutil.which("date")
+    _stub(
+        bin_dir / "date",
+        f'if [ "$*" = "-u +%s" ]; then cat "$HOME/clock"; else exec "{date}" "$@"; fi\n',
+    )
+    result = _run(home, council, path=f"{bin_dir}:{os.environ['PATH']}")
+    assert result.returncode == 0, result.stdout + result.stderr
+    assert f"{900 - delay}s remain on the accepted glmcp receipt" in result.stdout
+    assert (
+        int((home / "clock").read_text()) - int((home / "admission-observed-at").read_text())
+        == delay
+    )
+
+
+@pytest.mark.parametrize(
+    "diagnostic",
+    [
+        # Synthetic sentinels: the redaction under test must remove them; none is a credential.
+        '{"api_key": "DUMMY_REVIEW_SENTINEL"}',  # pragma: allowlist secret; synthetic test fixture
+        '{"password": "DUMMY_REVIEW_SENTINEL SECOND_SENTINEL"}',  # pragma: allowlist secret; synthetic test fixture
+        r'{"token": "DUMMY_REVIEW_SENTINEL \"SECOND_SENTINEL\""}',  # pragma: allowlist secret; synthetic test fixture
+        "password='DUMMY_REVIEW_SENTINEL SECOND_SENTINEL'",  # pragma: allowlist secret; synthetic test fixture
+        'api_key="DUMMY_REVIEW_SENTINEL SECOND_SENTINEL"',  # pragma: allowlist secret; synthetic test fixture
+        "token=DUMMY_REVIEW_SENTINEL",  # pragma: allowlist secret; synthetic test fixture
+        "secret: DUMMY_REVIEW_SENTINEL",  # pragma: allowlist secret; synthetic test fixture
+        "Authorization: Bearer DUMMY_REVIEW_SENTINEL",  # pragma: allowlist secret; synthetic test fixture
+        'password="DUMMY_REVIEW_SENTINEL\nSECOND_SENTINEL"',  # pragma: allowlist secret; synthetic test fixture
+        'password="DUMMY_REVIEW_SENTINEL SECOND_SENTINEL',  # pragma: allowlist secret; synthetic test fixture
+    ],
+    ids=[
+        "json-key",
+        "json-spaces",
+        "json-escaped",
+        "single-quotes",
+        "double-quotes",
+        "equals",
+        "colon",
+        "bearer",
+        "multiline",
+        "unterminated",
+    ],
+)
+def test_diagnostic_credentials_are_completely_redacted(tmp_path: Path, diagnostic: str) -> None:
+    home, council = _harness(
+        tmp_path, reviewer=f"cat >&2 <<'DIAGNOSTIC'\n{diagnostic}\nDIAGNOSTIC\nexit 1\n"
+    )
+    result = _run(home, council)
+    assert result.returncode == 2
+    output = result.stdout + result.stderr
+    assert "<redacted>" in output
+    assert "DUMMY_REVIEW_SENTINEL" not in output
+    assert "SECOND_SENTINEL" not in output
+
+
+@pytest.mark.parametrize("stderr_present", [False, True])
+@pytest.mark.parametrize(
+    "reason",
+    [
+        "receipt_absent",
+        "receipt_invalid:ValueError",
+        "receipt_stale_or_superseded",
+        "receipt_dir_unloadable:PermissionError",
+    ],
+)
+def test_show_rejection_warns_with_reason_remedy_and_sanitized_stderr(
+    tmp_path: Path, reason: str, stderr_present: bool
+) -> None:
+    home, council = _harness(tmp_path, reviewer=REVIEWER_ALWAYS_FAILS_SILENTLY)
+    payload = json.dumps(
+        {
+            "receipts": [
+                {
+                    "platform": "glmcp",
+                    "accepted": False,
+                    "reason": reason
+                    + ' {"api_key": "DUMMY_REASON_SENTINEL"}',  # pragma: allowlist secret; synthetic test fixture
+                }
+            ],
+            "unrelated": "DUMMY_UNRELATED_SENTINEL",
+        }
+    )
+    _stub(
+        council / "scripts/hapax-platform-capability-receipts",
+        f"cat <<'REJECTION'\n{payload}\nREJECTION\n"
+        + (
+            "echo 'stderr detail token=DUMMY_STDERR_SENTINEL' >&2\n"  # pragma: allowlist secret; synthetic test fixture
+            if stderr_present
+            else ""
+        )
+        + "exit 1\n",
+    )
+    result = _run(home, council)
+    assert result.returncode == 2
+    assert f"--show WARNING: {reason}" in result.stderr
+    assert "Next:" in result.stderr
+    assert "hapax-platform-capability-receipts --platform glmcp" in result.stderr
+    assert ("stderr detail" in result.stderr) == stderr_present
+    assert "DUMMY_" not in result.stdout + result.stderr
+    assert "roundtrip attempt 3:" in result.stdout
+
+
+@pytest.mark.parametrize("failure", ["rejection", "jq", "route", "coverage", "predicate"])
+def test_each_show_diagnostic_names_inspection_retry_and_unit(tmp_path: Path, failure: str) -> None:
+    home, council = _harness(
+        tmp_path,
+        receipt_status="observed",
+        receipt_remaining=900,
+        reviewer=REVIEWER_ALWAYS_FAILS_SILENTLY,
+    )
+    bin_dir = tmp_path / "bin"
+    bin_dir.mkdir()
+    if failure == "rejection":
+        _stub(
+            council / "scripts/hapax-platform-capability-receipts",
+            'echo \'{"receipts":[{"platform":"glmcp","accepted":false,"reason":"receipt_absent"}]}\'\n'
+            "echo 'synthetic show failure' >&2\nexit 1\n",
+        )
+    elif failure == "jq":
+        _stub(bin_dir / "jq", "echo 'synthetic jq failure' >&2\nexit 5\n")
+    elif failure == "route":
+        python = shutil.which("python3")
+        assert python is not None
+        # The dedicated quota helper receives only the council root after its Python source.
+        # Fail that subprocess, while leaving the diagnostic redactor available.
+        _stub(
+            bin_dir / "python3",
+            'if [ "$#" -eq 3 ] && [ "$3" = "$HAPAX_COUNCIL" ]; then exit 9; fi\n'
+            f'exec "{python}" "$@"\n',
+        )
+    elif failure == "coverage":
+        path = home / ".cache/hapax/platform-capability-receipts/glmcp.json"
+        receipt = json.loads(path.read_text())
+        receipt["routes"] = ["glmcp.sibling.direct"]
+        path.write_text(json.dumps(receipt))
+    else:
+        # Valid JSON from --show, but no loader-selected receipt: exercise the exception path.
+        _stub(
+            council / "scripts/hapax-platform-capability-receipts",
+            'echo \'{"receipts":[{"platform":"glmcp","accepted":true}]}\'\n',
+        )
+    result = _run(home, council, path=f"{bin_dir}:{os.environ['PATH']}")
+    assert result.returncode == 2
+    diagnostics = [line for line in result.stderr.splitlines() if line.startswith("  --show")]
+    expected = {
+        "rejection": ["WARNING: receipt_absent", "stderr: synthetic show failure"],
+        "jq": ["parse: synthetic jq failure"],
+        "route": ["parse: route quota check failed"],
+        "coverage": [
+            "WARNING: account_live_quota_receipt_absent",
+            "parse: route quota check failed",
+        ],
+        "predicate": [
+            "parse: dispatcher quota predicate failed (KeyError)",
+            "parse: route quota check failed",
+        ],
+    }[failure]
+    assert len(diagnostics) == len(expected), result.stderr
+    for line, message in zip(diagnostics, expected, strict=True):
+        assert message in line
+        assert "Next: run hapax-platform-capability-receipts --show --platform glmcp --json" in line
+        assert "re-run hapax-platform-capability-receipts --platform glmcp" in line
+        assert "check hapax-glmcp-seat-refresh.service" in line
+
+
+def test_refresh_threshold_is_derived_from_every_stage_and_a_skip_cannot_lapse(
+    tmp_path: Path,
+) -> None:
+    """The threshold covers bounded commands and every non-command wall-clock term.
+
+    Review round 11 found that the old arithmetic stopped at 540 s of nominal command time plus
+    the 60 s timer window. This recomputes the complete service chain, proves it fits the unit's
+    exact whole-service ceiling, and then derives the skip and overrun invariants from that ceiling.
+    """
+    e = _envelope(tmp_path)
+    assert e["timer_inactive_delay_s"] == 30
+    assert e["chain_envelope_s"] == 650
+    assert e["seat_refresh_threshold_s"] == 680
+    assert e["seat_skip_min_remaining_s"] == 681
+    assert e["post_mint_tail_s"] == 192
+    assert e["overrun_renewal_envelope_s"] == 873
+    review = (
+        e["review_attempts"] * e["review_attempt_timeout_s"]
+        + (e["review_attempts"] - 1) * e["review_retry_sleep_s"]
+    )
+    core_commands = (
+        e["show_timeout_s"]
+        + review
+        + e["admission_timeout_s"]
+        + e["writer_timeout_s"]
+        + e["receipts_timeout_s"]
+        + e["show_timeout_s"]
+    )
+    kill_envelope = e["timed_command_count"] * e["timeout_kill_after_s"]
+    filter_envelope = e["filter_invocations_max"] * (
+        e["filter_timeout_s"] + e["timeout_kill_after_s"]
+    )
+    accounted_service = (
+        core_commands
+        + kill_envelope
+        + filter_envelope
+        + e["process_launch_slack_s"]
+        + e["file_io_slack_s"]
+        + e["service_scheduler_slack_s"]
+        + e["service_safety_margin_s"]
+    )
+    service = accounted_service + e["service_bound_reserve_s"]
+    chain = (
+        e["post_check_shutdown_s"]
+        + e["timer_accuracy_s"]
+        + e["timer_scheduler_slack_s"]
+        + service
+        + e["no_lapse_safety_margin_s"]
+    )
+    post_mint_tail = (
+        e["admission_timeout_s"]
+        + e["writer_timeout_s"]
+        + e["receipts_timeout_s"]
+        + e["show_timeout_s"]
+        + e["post_mint_timed_command_count"] * e["timeout_kill_after_s"]
+        + e["post_mint_filter_invocations_max"]
+        * (e["filter_timeout_s"] + e["timeout_kill_after_s"])
+        + e["post_mint_process_launch_slack_s"]
+        + e["post_mint_file_io_slack_s"]
+        + e["post_mint_scheduler_slack_s"]
+        + e["post_check_shutdown_s"]
+        + e["service_safety_margin_s"]
+    )
+    assert e["review_envelope_s"] == review
+    assert e["core_command_envelope_s"] == core_commands
+    assert e["timeout_kill_envelope_s"] == kill_envelope
+    assert e["filter_envelope_s"] == filter_envelope
+    assert e["accounted_service_chain_s"] == accounted_service
+    assert accounted_service <= e["whole_service_bound_s"]
+    assert e["service_envelope_s"] == service
+    assert service == e["whole_service_bound_s"] == 600
+    assert e["chain_envelope_s"] == chain
+    assert e["post_mint_tail_s"] == post_mint_tail
+    assert e["seat_refresh_threshold_s"] == e["timer_inactive_delay_s"] + chain
+    assert e["seat_skip_min_remaining_s"] == (
+        e["seat_refresh_threshold_s"] + e["receipt_rounding_guard_s"]
+    )
+    assert e["overrun_renewal_envelope_s"] == (post_mint_tail + e["seat_skip_min_remaining_s"])
+    assert e["review_attempts"] == 3
+    # a skip must be possible at all inside the seat's life, or the guard is dead code
+    assert e["seat_refresh_threshold_s"] < e["seat_life_s"]
+    # Even a prior run which minted before its worst-case tail must leave enough life for the
+    # completion-relative delay and the entire next renewal.
+    assert e["overrun_renewal_envelope_s"] < e["seat_life_s"], e
+    assert e["seat_visible_min_s"] == e["seat_skip_min_remaining_s"]
+    assert e["review_inner_timeout_s"] < e["review_attempt_timeout_s"]
+    assert e["service_safety_margin_s"] > 0
+    assert e["no_lapse_safety_margin_s"] > 0
+    timer = TIMER.read_text(encoding="utf-8")
+    assert _unit_value(timer, "Timer", "OnUnitActiveSec") is None
+    assert (
+        _unit_value(timer, "Timer", "OnUnitInactiveSec") == "30s"
+        and e["timer_inactive_delay_s"] == 30
+    )
+    assert _unit_value(timer, "Timer", "AccuracySec") == "30s" and e["timer_accuracy_s"] == 30
+    script = SCRIPT.read_text(encoding="utf-8")
+    assert "remaining > SEAT_SKIP_MIN_REMAINING_S" in script
+    assert "remaining <= SEAT_VISIBLE_MIN_S" in script
+    for stage in (
+        "ADMISSION_TIMEOUT_S",
+        "WRITER_TIMEOUT_S",
+        "RECEIPTS_TIMEOUT_S",
+        "REVIEW_ATTEMPT_TIMEOUT_S",
+    ):
+        assert f'bounded_timeout "${stage}"' in script, stage
+
+
+def test_an_overrunning_oneshot_cannot_consume_the_next_activation(tmp_path: Path) -> None:
+    """Replay the review's overrun on the production budgets and timer wire semantics.
+
+    The prior service starts 300 s before the old periodic firing, mints 180 s before it, and
+    remains active for its bounded post-mint tail. OnUnitActiveSec consumes the firing; its next
+    period plus a worst-case renewal exposes a lapse. OnUnitInactiveSec has no firing while the
+    service is active and schedules only after completion, so the same path renews before expiry.
+    """
+    e = _envelope(tmp_path)
+    timer = TIMER.read_text(encoding="utf-8")
+
+    def seconds(value: str) -> int:
+        for suffix, multiplier in (("min", 60), ("s", 1)):
+            if value.endswith(suffix):
+                return int(value.removesuffix(suffix)) * multiplier
+        raise AssertionError(f"unsupported timer duration: {value}")
+
+    def next_start(timer_text: str, previous_start: int, previous_finish: int) -> int:
+        """Apply systemd's active-relative vs inactive-relative timer semantics to one overrun."""
+        accuracy = seconds(_unit_value(timer_text, "Timer", "AccuracySec") or "")
+        active_delay = _unit_value(timer_text, "Timer", "OnUnitActiveSec")
+        inactive_delay = _unit_value(timer_text, "Timer", "OnUnitInactiveSec")
+        assert (active_delay is None) != (inactive_delay is None), timer_text
+        if inactive_delay is not None:
+            trigger = previous_finish + seconds(inactive_delay)
+        else:
+            period = seconds(active_delay or "")
+            trigger = previous_start + period
+            while trigger < previous_finish:
+                trigger += period  # an elapse while active is consumed, not queued
+        return trigger + accuracy
+
+    old_period_s = 300
+    missed_firing_at = 0
+    previous_start_at = missed_firing_at - old_period_s
+    receipt_minted_at = missed_firing_at - 180
+    previous_finish_at = receipt_minted_at + e["post_mint_tail_s"]
+    receipt_expires_at = receipt_minted_at + e["seat_life_s"]
+    assert previous_start_at < receipt_minted_at < missed_firing_at < previous_finish_at
+    assert previous_finish_at - previous_start_at <= e["service_envelope_s"]
+
+    # The removed OnUnitActiveSec wiring consumes t=0 because the target is active, then waits for
+    # its next period. Include AccuracySec and a full service-to-visible envelope on both paths.
+    old_timer = timer.replace("OnUnitInactiveSec=30s", "OnUnitActiveSec=5min")
+    old_next_start_at = next_start(old_timer, previous_start_at, previous_finish_at)
+    old_next_visible_at = old_next_start_at + e["service_envelope_s"]
+    assert old_next_visible_at > receipt_expires_at  # reproduces the review's lapse
+
+    new_next_start_at = next_start(timer, previous_start_at, previous_finish_at)
+    assert new_next_start_at == (
+        previous_finish_at + e["timer_inactive_delay_s"] + e["timer_accuracy_s"]
+    )
+    new_next_visible_at = new_next_start_at + e["service_envelope_s"]
+    assert new_next_visible_at < receipt_expires_at
+
+
+def test_an_unsafe_envelope_is_refused_and_names_every_term(tmp_path: Path) -> None:
+    home, council = _harness(tmp_path)
+    unsafe_script = tmp_path / "unsafe-seat-refresh"
+    unsafe_script.write_text(
+        SCRIPT.read_text(encoding="utf-8").replace("WRITER_TIMEOUT_S=60", "WRITER_TIMEOUT_S=207"),
+        encoding="utf-8",
+    )
+    proc = subprocess.run(
+        ["bash", str(unsafe_script), "--envelope", "--allow-mutable-root"],
+        env={
+            "HOME": str(home),
+            "HAPAX_COUNCIL": str(council),
+            "PATH": os.environ["PATH"],
+        },
+        capture_output=True,
+        text=True,
+        timeout=30,
+    )
+    assert proc.returncode == 7, proc.stderr
+    for term in (
+        "ACCOUNTED_SERVICE_CHAIN_S",
+        "WHOLE_SERVICE_BOUND_S=600",
+        "TimeoutStartSec",
+        "CORE_COMMAND_ENVELOPE_S",
+        "TIMEOUT_KILL_ENVELOPE_S",
+        "FILTER_ENVELOPE_S",
+        "PROCESS_LAUNCH_SLACK_S",
+        "FILE_IO_SLACK_S",
+        "SERVICE_SCHEDULER_SLACK_S",
+        "SERVICE_SAFETY_MARGIN_S",
+    ):
+        assert term in proc.stderr, (term, proc.stderr)
+
+
+def test_a_hostile_retry_override_is_refused_before_any_round_trip(tmp_path: Path) -> None:
+    """The retry sleep is a test-only knob; an inherited value could stretch the envelope past the
+    threshold and the unit's budget (review finding on #4624, round 9)."""
+    for hostile in ("abc", "999", "-1"):
+        home, council = _harness(tmp_path / hostile.strip("-"))
+        env = {
+            "HOME": str(home),
+            "HAPAX_COUNCIL": str(council),
+            "PATH": os.environ["PATH"],
+            "HAPAX_GLMCP_SEAT_RETRY_SLEEP": hostile,
+        }
+        proc = subprocess.run(
+            ["bash", str(SCRIPT), "--allow-mutable-root"],
+            env=env,
+            capture_output=True,
+            text=True,
+            timeout=60,
+        )
+        assert proc.returncode == 7, (hostile, proc.stderr)
+        assert "HAPAX_GLMCP_SEAT_RETRY_SLEEP" in proc.stderr and "unset it" in proc.stderr
+        calls = (home / "calls").read_text() if (home / "calls").exists() else ""
+        assert not any(line.startswith(("admission", "writer")) for line in calls.splitlines())
+        assert "roundtrip attempt" not in proc.stdout, "no reviewer call may run"
+
+
+def test_the_unit_unsets_the_retry_override() -> None:
+    unit = UNIT.read_text(encoding="utf-8")
+    unset = _unit_value(unit, "Service", "UnsetEnvironment") or ""
+    assert "HAPAX_GLMCP_SEAT_RETRY_SLEEP" in unset.split()
+
+
+def test_missing_jq_is_named_rather_than_read_as_a_stale_seat(tmp_path: Path) -> None:
+    """A broken parser used to look exactly like a stale receipt and trigger a provider call every
+    completion-relative timer tick without saying why (review finding on #4624, round 9)."""
+    home, council = _harness(
+        tmp_path, receipt_status="observed", receipt_remaining=900, receipt_age=10
+    )
+    bin_dir = tmp_path / "bin-without-jq"
+    bin_dir.mkdir()
+    for tool in (
+        "bash",
+        "timeout",
+        "date",
+        "sed",
+        "grep",
+        "head",
+        "cut",
+        "tr",
+        "mktemp",
+        "rm",
+        "wc",
+        "printf",
+        "hostname",
+        "cat",
+        "mkdir",
+        "python3",
+    ):
+        real = shutil.which(tool)
+        if real:
+            (bin_dir / tool).symlink_to(real)
+    env = {
+        "HOME": str(home),
+        "HAPAX_COUNCIL": str(council),
+        "PATH": str(bin_dir),
+        "TMPDIR": str(home),
+        "HAPAX_GLMCP_SEAT_RETRY_SLEEP": "0",
+        "HAPAX_TEST_PYTHON": sys.executable,
+        "HAPAX_TEST_RECEIPTS_SCRIPT": str(RECEIPTS_SCRIPT),
+        "HAPAX_TEST_RECEIPTS_RC": "0",
+    }
+    proc = subprocess.run(
+        ["bash", str(SCRIPT), "--allow-mutable-root"],
+        env=env,
+        capture_output=True,
+        text=True,
+        timeout=120,
+    )
+    assert "jq is not on PATH" in proc.stderr, proc.stderr
+    assert proc.returncode != 0
+
+
+def test_date_parse_failure_names_shape_and_refresh_cause(tmp_path: Path) -> None:
+    """Inject a GNU date failure after the real loader accepts and normalizes the timestamp."""
+    now = datetime.now(UTC).replace(microsecond=0)
+    home, council = _harness(tmp_path, receipt_status="observed", receipt_remaining=900, now=now)
+    bin_dir = tmp_path / "bin"
+    bin_dir.mkdir()
+    date = shutil.which("date")
+    _stub(
+        bin_dir / "date",
+        f'if [ "${{2:-}}" = "-d" ]; then exit 1; fi\nexec "{date}" "$@"\n',
+    )
+    result = _run(home, council, path=f"{bin_dir}:{os.environ['PATH']}")
+    assert result.returncode == 6
+    assert "roundtrip attempt 1: exit=0" in result.stdout
+    assert (home / "admission-calls").exists()
+    # The same failed parser must diagnose both the initial refresh decision and final refusal.
+    assert result.stderr.count("timestamp_parse_failed: receipt.observed_at") == 2
+    assert result.stderr.count("refreshing because the timestamp could not be parsed") == 2
+    assert "shape=0000-00-00x00:00:00+00:00" in result.stderr
+    assert now.isoformat() not in result.stdout + result.stderr
+    assert "glm seat visible to the dispatcher" not in result.stdout
+
+
+def test_a_dispatcher_receipt_with_time_to_spare_skips_the_round_trip(tmp_path: Path) -> None:
+    # 890 s remain: inside the 30 s window after a mint in which a skip is provably safe.
+    home, council = _harness(
+        tmp_path, receipt_status="observed", receipt_remaining=900, receipt_age=10
+    )
+    result = _run(home, council)
+    assert result.returncode == 0, result.stderr
+    assert "no round-trip" in result.stdout
+    assert not (home / "admission-calls").exists()
+    assert _witnesses(home) == []
+
+
+def test_a_dispatcher_receipt_about_to_lapse_round_trips(tmp_path: Path) -> None:
+    # generated 600 s ago with 900 s to live: 300 s remain, under the derived threshold
+    home, council = _harness(
+        tmp_path, receipt_status="observed", receipt_remaining=900, receipt_age=600
+    )
+    result = _run(home, council)
+    assert result.returncode == 0, result.stderr
+    assert "roundtrip attempt 1: exit=0" in result.stdout
+    assert (home / "admission-calls").exists()
+
+
+def test_a_receipt_between_the_old_and_new_thresholds_is_refreshed(tmp_path: Path) -> None:
+    """The next activation's initial --show can consume another SHOW_TIMEOUT_S. A receipt in that
+    exact interval was skipped by the old threshold even though the following run could not finish
+    the chain before it lapsed."""
+    e = _envelope(tmp_path / "envelope")
+    expected_chain = (
+        e["timer_accuracy_s"]
+        + e["show_timeout_s"]
+        + e["review_attempts"] * e["review_attempt_timeout_s"]
+        + (e["review_attempts"] - 1) * e["review_retry_sleep_s"]
+        + e["admission_timeout_s"]
+        + e["writer_timeout_s"]
+        + e["receipts_timeout_s"]
+        + e["show_timeout_s"]
+    )
+    new_threshold = e["timer_inactive_delay_s"] + expected_chain
+    old_threshold = new_threshold - e["show_timeout_s"]
+    remaining = (old_threshold + new_threshold) // 2
+    assert old_threshold < remaining < new_threshold
+
+    home, council = _harness(
+        tmp_path / "run", receipt_status="observed", receipt_remaining=remaining, receipt_age=0
+    )
+    result = _run(home, council)
+    assert result.returncode == 0, result.stderr
+    assert "no round-trip" not in result.stdout
+    assert "roundtrip attempt 1: exit=0" in result.stdout
+    assert (home / "admission-calls").exists()
+
+
+def test_a_receipt_with_exactly_threshold_plus_one_second_is_refreshed(
+    tmp_path: Path,
+) -> None:
+    """One integer second is not enough clearance to skip: it can be consumed immediately by
+    receipt rounding and the post-check shutdown before the completion-relative timer starts."""
+    e = _envelope(tmp_path / "envelope")
+    fixed_epoch = int(datetime.now(UTC).timestamp())
+    fixed_now = datetime.fromtimestamp(fixed_epoch, UTC)
+    home, council = _harness(
+        tmp_path / "run",
+        receipt_status="observed",
+        receipt_remaining=e["seat_refresh_threshold_s"] + 1,
+        receipt_age=0,
+        now=fixed_now,
+    )
+    bin_dir = tmp_path / "bin"
+    bin_dir.mkdir()
+    date = shutil.which("date")
+    assert date is not None
+    _stub(
+        bin_dir / "date",
+        f'if [ "$*" = "-u +%s" ]; then echo "{fixed_epoch}"; else exec "{date}" "$@"; fi\n',
+    )
+    env_path = f"{bin_dir}:{os.environ['PATH']}"
+    result = _run(home, council, path=env_path)
+    assert result.returncode == 0, result.stderr
+    assert "no round-trip" not in result.stdout
+    assert "roundtrip attempt 1: exit=0" in result.stdout
+    assert (home / "admission-calls").exists()
+
+
+def test_an_unobservable_dispatcher_receipt_round_trips_whatever_its_age(tmp_path: Path) -> None:
+    """The dispatcher's receipt says the seat is NOT admitted: a fresh raw relay receipt beside it
+    changes nothing (the validator rejected it, so the dispatcher rejects it)."""
+    home, council = _harness(
+        tmp_path,
+        receipt_status="unobservable",
+        receipt_remaining=900,
+        receipt_age=10,
+        relay_receipt_observed_ago=30,
+    )
+    result = _run(home, council)
+    assert result.returncode == 0, result.stderr
+    assert "no round-trip" not in result.stdout
+    assert (home / "admission-calls").exists()
+
+
+def test_a_raw_relay_receipt_alone_no_longer_counts_as_fresh(tmp_path: Path) -> None:
+    home, council = _harness(tmp_path, relay_receipt_observed_ago=60)
+    result = _run(home, council)
+    assert result.returncode == 0, result.stderr
+    assert "no round-trip" not in result.stdout
+    assert (home / "admission-calls").exists()
+
+
+def test_no_dispatcher_receipt_round_trips(tmp_path: Path) -> None:
+    home, council = _harness(tmp_path)
+    result = _run(home, council)
+    assert result.returncode == 0, result.stderr
+    assert (home / "admission-calls").exists()
+
+
+@pytest.mark.parametrize("ambient_root_override", [False, True])
+def test_a_root_other_than_the_activation_worktree_is_refused(
+    tmp_path: Path, ambient_root_override: bool
+) -> None:
+    """An inherited HAPAX_COUNCIL must not redirect receipt minting to a mutable tree."""
+    home, council = _harness(tmp_path)
+    result = _run(home, council, allow_root=False, ambient_root_override=ambient_root_override)
+    assert result.returncode == 4
+    assert "REFUSED" in result.stderr
+    assert "activation worktree" in result.stderr
+    assert "Next:" in result.stderr
+    assert not (home / "admission-calls").exists()
+    assert not (home / "reviewer-env").exists()
+
+
+def test_explicit_mutable_root_flag_allows_the_stubbed_harness(tmp_path: Path) -> None:
+    home, council = _harness(tmp_path)
+    result = _run(home, council, allow_root=True)
+    assert result.returncode == 0, result.stderr
+    assert (home / "reviewer-env").exists()
+    assert (home / "admission-calls").exists()
+
+
+def test_a_stale_seat_round_trips_writes_a_witness_and_mints(tmp_path: Path) -> None:
+    home, council = _harness(
+        tmp_path, receipt_status="observed", receipt_remaining=900, receipt_age=850
+    )
+    result = _run(home, council)
+    assert result.returncode == 0, result.stderr
+    assert "roundtrip attempt 1: exit=0" in result.stdout
+    witnesses = _witnesses(home)
+    assert len(witnesses) == 1
+    witness = witnesses[0].read_text(encoding="utf-8")
+    assert "schema: hapax.glmcp_admission_witness.v1" in witness
+    assert "prompt_or_output_persisted: false" in witness
+    assert "secret_value_persisted: false" in witness
+    assert "model: glm-5.2" in witness
+    assert "endpoint: https://api.z.ai/api/coding/paas/v4" in witness
+    calls = (home / "admission-calls").read_text(encoding="utf-8")
+    assert "observe-success --evidence-ref glmcp-reviewer-roundtrip-ok-" in calls
+    assert "--supported-tool hapax-glmcp-reviewer" in calls
+    assert "--endpoint https://api.z.ai/api/coding/paas/v4" in calls
+    assert "--model glm-5.2" in calls
+
+
+def test_the_probe_pins_payg_off_the_endpoint_and_the_credential(tmp_path: Path) -> None:
+    """An exhausted Coding Plan answered by API credit, another endpoint, or another credential
+    must not mint a Coding Plan receipt — whatever the inherited environment says."""
+    home, council = _harness(tmp_path)
+    result = _run(home, council)
+    assert result.returncode == 0, result.stderr
+    seen = set((home / "reviewer-env").read_text(encoding="utf-8").split())
+    assert "PAYG=0" in seen
+    assert "BASE=https://api.z.ai/api/coding/paas/v4" in seen
+    assert (
+        "SECRET=glmcp/api-key" in seen  # pragma: allowlist secret; synthetic test fixture
+    )
+    assert "OVERRIDE=unset" in seen
+    assert not any(line.startswith("BASE=https://evil") for line in seen)
+    assert not any("someone-elses" in line for line in seen)
+
+
+def test_three_failed_round_trips_mint_nothing_and_name_the_next_action(tmp_path: Path) -> None:
+    """Empty stderr on a failure used to end the retry loop under pipefail after one attempt."""
+    home, council = _harness(tmp_path, reviewer=REVIEWER_ALWAYS_FAILS_SILENTLY)
+    result = _run(home, council)
+    assert result.returncode == 2
+    assert "roundtrip attempt 3: exit=1" in result.stdout
+    assert result.stdout.count("roundtrip attempt") == 3
+    assert "glm seat NOT refreshed" in result.stderr
+    assert "do not mint" in result.stderr
+    assert _witnesses(home) == []
+    assert not (home / "admission-calls").exists()
+
+
+def test_term_ignoring_reviewer_is_forcibly_killed_on_all_three_attempts(tmp_path: Path) -> None:
+    home, council = _harness(
+        tmp_path,
+        reviewer="exec \"$HAPAX_TEST_PYTHON\" - <<'PY'\n"
+        "import os, signal\n"
+        "from pathlib import Path\n"
+        'home = Path(os.environ["HOME"])\n'
+        "def ignored_term(*_):\n"
+        '    with (home / "terms").open("a") as stream:\n'
+        '        stream.write(f"{os.getpid()}\\n")\n'
+        "signal.signal(signal.SIGTERM, ignored_term)\n"
+        "# A separate fixture watchdog contains the no-kill-after mutation.\n"
+        "signal.signal(signal.SIGALRM, lambda *_: os._exit(88))\n"
+        "signal.alarm(4)\n"
+        'with (home / "attempts").open("a") as stream:\n'
+        '    stream.write(f"{os.getpid()}\\n")\n'
+        "while True:\n"
+        "    signal.pause()\n"
+        "PY\n",
+    )
+    # Shorten the real timeout implementation in memory; production keeps its full envelope.
+    script = SCRIPT.read_text().replace("REVIEW_ATTEMPT_TIMEOUT_S=45", "REVIEW_ATTEMPT_TIMEOUT_S=1")
+    script = script.replace("TIMEOUT_KILL_AFTER_S=2", "TIMEOUT_KILL_AFTER_S=1")
+    result = _run(home, council, script_text=script)
+    attempts = (home / "attempts").read_text().splitlines()
+    assert len(attempts) == len(set(attempts)) == 3
+    assert (home / "terms").read_text().splitlines() == attempts
+    assert result.stdout.count("exit=137 output_bytes=0") == 3, result.stdout
+    assert result.returncode == 2
+    assert _witnesses(home) == []
+    assert not (home / "admission-calls").exists()
+    assert not any(call.startswith("writer ") for call in _calls(home))
+
+
+def test_a_failed_round_trip_that_emits_output_mints_nothing_and_names_its_exit(
+    tmp_path: Path,
+) -> None:
+    """PIPESTATUS must be captured in the shell that ran the pipeline, before counting output."""
+    script = SCRIPT.read_text(encoding="utf-8")
+    assert 'bytes="$(printf' not in script
+    assert "rc=${PIPESTATUS[1]}" in script
+    home, council = _harness(tmp_path, reviewer=REVIEWER_FAILS_WITH_OUTPUT)
+    result = _run(home, council)
+    assert result.returncode == 2
+    assert "roundtrip attempt 3: exit=23 output_bytes=7" in result.stdout
+    assert "reviewer round-trip failed (exit 23, 7 bytes)" in result.stderr
+    assert _witnesses(home) == []
+    assert not (home / "admission-calls").exists()
+
+
+def test_transient_failures_are_retried_and_the_reviewers_stderr_is_redacted(
+    tmp_path: Path,
+) -> None:
+    home, council = _harness(tmp_path, reviewer=REVIEWER_FAILS_TWICE_LOUDLY)
+    result = _run(home, council)
+    assert result.returncode == 0, result.stderr
+    assert "roundtrip attempt 3: exit=0" in result.stdout
+    assert "Bearer<redacted>" in result.stdout
+    assert "api_key<redacted>" in result.stdout
+    assert "abc123" not in result.stdout + result.stderr
+    assert "zzz9" not in result.stdout + result.stderr
+    assert (home / "admission-calls").exists()
+
+
+def test_writer_degradation_is_printed_and_the_seat_still_counts_as_refreshed(
+    tmp_path: Path,
+) -> None:
+    """Exit 3 from the telemetry writer means the live ledger was written but the capability
+    receipt refresh degraded — and since round 6 that receipt is what the dispatcher (and this
+    guard) read, so the seat is NOT visible: a failure that prints the writer's diagnostics and
+    names the next action (review finding on #4624, round 6)."""
+    home, council = _harness(tmp_path, writer_rc=3)
+    result = _run(home, council)
+    assert result.returncode == 6
+    assert "capability receipts DEGRADED for one provider" in result.stdout
+    assert "glm seat NOT visible" in result.stderr
+    assert "hapax-platform-capability-receipts --platform glmcp" in result.stderr
+    assert (home / "admission-calls").exists()
+
+
+def test_admission_failure_after_a_good_round_trip_is_loud_and_names_the_next_action(
+    tmp_path: Path,
+) -> None:
+    """Under errexit a failed admission write used to end the script with no line at all."""
+    home, council = _harness(tmp_path, admission_rc=1)
+    result = _run(home, council)
+    assert result.returncode == 5
+    assert "NOT admitted" in result.stderr
+    assert "observe-success --evidence-ref glmcp-reviewer-roundtrip-ok-" in result.stderr
+    assert "Next:" in result.stderr
+    assert len(_witnesses(home)) == 1
+
+
+def test_writer_failure_after_minting_is_loud_and_names_the_next_action(tmp_path: Path) -> None:
+    home, council = _harness(tmp_path, writer_rc=1)
+    result = _run(home, council)
+    assert result.returncode == 3
+    assert "telemetry writer failed (exit 1)" in result.stderr
+    assert "Next:" in result.stderr
+    assert (home / "admission-calls").exists()
+
+
+def test_model_is_pinned_to_what_the_admission_cli_accepts() -> None:
+    """The systemd user environment carries HAPAX_GLMCP_REVIEW_MODEL; the admission CLI on main
+    accepts exactly glm-5.2. The witness and the receipt must name the model that was called."""
+    text = SCRIPT.read_text(encoding="utf-8")
+    assert 'model="glm-5.2"' in text
+    assert 'export HAPAX_GLMCP_REVIEW_MODEL="$model"' in text
+
+
+def test_service_home_specifiers_only_appear_in_expanded_directives() -> None:
+    """Parse unit assignments, not comments or a simulated string replacement by systemd.
+
+    systemd.exec(5), systemd.service(5), systemd.unit(5) document these directive
+    expansions. Keep this unit's paths direct and unquoted; ordinary Environment=
+    quoting would also expand, but embedded shell literals are outside this contract.
+    EnvironmentFile file contents are never a source of home specifiers for this unit.
+    """
+    expanded = {
+        ("Service", "Environment"),
+        ("Service", "ExecStart"),
+        ("Service", "WorkingDirectory"),
+        ("Unit", "Documentation"),
+    }
+    section = ""
+    count = 0
+    for number, raw in enumerate(SERVICE.read_text().splitlines(), 1):
+        line = raw.strip()
+        if not line or line.startswith(("#", ";")):
+            continue
+        if line.startswith("["):
+            section = line.removeprefix("[").removesuffix("]")
+            continue
+        directive, sep, value = line.partition("=")
+        assert sep, (number, line)
+        assert directive != "EnvironmentFile", "home paths must come from unit assignments"
+        if "%h" not in value:
+            continue
+        count += value.count("%h")
+        assert (section, directive) in expanded, (number, directive)
+        assert "%%h" not in value, "escaped specifier would remain literal"
+        assert not any(quote in value for quote in ("'", '"')), "home paths must be direct"
+        words = shlex.split(value)
+        if directive == "Environment":
+            assert all("=" in word for word in words), (number, words)
+    assert count == 5  # ExecStart and the four environment paths must all be checked.
+
+
+def test_unit_pair_executes_from_the_activation_worktree_and_strips_inherited_overrides(
+    tmp_path: Path,
+) -> None:
+    """A unit that runs a mutable development checkout is a finding (review on #4624); the
+    estate's convention is the governed source-activation worktree. systemd.exec(5) specifies
+    specifier expansion in Environment=, but no shell variable expansion. Script defaults pin
+    the receipt chain; UnsetEnvironment removes inherited user-manager overrides."""
+    service = SERVICE.read_text(encoding="utf-8")
+    exec_start = _unit_value(service, "Service", "ExecStart") or ""
+    assert exec_start == f"{ACTIVATION_ROOT}/scripts/hapax-glmcp-seat-refresh"
+    assert "projects" not in exec_start
+    assert "tmp" not in exec_start
+    assert "source-activation/worktree" in SCRIPT.read_text(encoding="utf-8")
+    for line in service.splitlines():
+        if line.startswith("Environment="):
+            assert "%h" in line, f"environment paths must share ExecStart home specifier: {line}"
+            # No literal home directory beside the specifier: the running user's home, built at
+            # runtime, must not appear, and every value must begin with the specifier, never
+            # with an absolute path (after dropping the specifier no value may start with "/").
+            assert str(Path.home()) not in line
+            assert "=/" not in line.replace("=%h", ""), line
+    assert "Environment= expands specifiers such as %h" in service
+    assert "shell variable expansion does not occur" in service
+    unset = _unit_value(service, "Service", "UnsetEnvironment") or ""
+    for name in (
+        "HAPAX_COUNCIL",
+        "HAPAX_GLMCP_REVIEW_BASE_URL",
+        "HAPAX_GLMCP_REVIEW_SECRET_ENTRY",  # pragma: allowlist secret; synthetic test fixture
+        "HAPAX_GLMCP_REVIEW_ALLOW_SECRET_ENTRY_OVERRIDE",  # pragma: allowlist secret; synthetic test fixture
+        "HAPAX_GLMCP_SEAT_ROOT_OVERRIDE",
+        # the receipt and ledger writers honour these; the seat must read where they wrote
+        "HAPAX_PLATFORM_CAPABILITY_RECEIPT_DIR",
+        "HAPAX_QUOTA_SPEND_LEDGER_LIVE",
+        # the admission writer and the telemetry writer both honour this one; an inherited value
+        # would mint the admission somewhere the ledger never reads (review finding, round 8)
+        "HAPAX_RELAY_RECEIPT_DIR",
+    ):
+        assert name in unset.split(), name
+    assert _unit_value(service, "Service", "Type") == "oneshot"
+    # systemd.timer(5): the same-name service is activated by the enabled timer.
+    assert "[Install]" not in service
+    assert _unit_value(service, "Service", "MemoryMax") is not None
+    service_budget = int(_unit_value(service, "Service", "TimeoutStartSec") or 0)
+    envelope = _envelope(tmp_path)
+    assert service_budget == envelope["whole_service_bound_s"] == 600
+    assert (
+        int(_unit_value(service, "Service", "TimeoutStopSec") or 0)
+        == envelope["post_check_shutdown_s"]
+    )
+    assert _unit_value(service, "Service", "KillMode") == "control-group"
+    assert _unit_value(service, "Service", "SendSIGKILL") == "yes"
+    # ...and the budget is only a budget if every step in it is bounded.
+    script = SCRIPT.read_text(encoding="utf-8")
+    assert 'timeout --signal=TERM --kill-after="${TIMEOUT_KILL_AFTER_S}s" "${timeout_s}s"' in script
+    assert 'bounded_timeout "$REVIEW_ATTEMPT_TIMEOUT_S" "$H/scripts/hapax-glmcp-reviewer"' in script
+    assert (
+        'bounded_timeout "$ADMISSION_TIMEOUT_S" "$H/scripts/hapax-glmcp-quota-admission"' in script
+    )
+    assert (
+        'bounded_timeout "$WRITER_TIMEOUT_S" "$H/scripts/hapax-quota-telemetry-writer" --skip-receipts'
+        in script
+    )
+    assert (
+        'bounded_timeout "$RECEIPTS_TIMEOUT_S" "$H/scripts/hapax-platform-capability-receipts" --platform glmcp'
+        in script
+    )
+    assert (
+        'bounded_timeout "$SHOW_TIMEOUT_S" "$H/scripts/hapax-platform-capability-receipts" --show'
+        in script
+    )
+    assert 'bounded_timeout "$FILTER_TIMEOUT_S" python3 -c' in script
+    assert "bounded no-lapse envelope" in (_unit_value(service, "Unit", "Description") or "")
+    timer = TIMER.read_text(encoding="utf-8")
+    assert _unit_value(timer, "Install", "WantedBy") == "timers.target"
+    assert "After each completion" in (_unit_value(timer, "Unit", "Description") or "")
+
+
+# ---------------------------------------------------------------------------
+# Round 8 (review findings on #4624): the writer's default run refreshed every capability receipt
+# BEFORE rebuilding the ledger — so the glmcp receipt it minted carried the previous seat's
+# remaining lifetime and the freshness shortcut never fired (measured 2026-09-03: 30 round-trips
+# in 36 runs, zero "no round-trip") — and spent a Codex exec-auth sentinel on every call. The
+# writer now runs ledger-only, the glmcp receipt is derived from the fresh ledger afterwards, and
+# the seat counts as refreshed only when the dispatcher's loader accepts that receipt.
+# ---------------------------------------------------------------------------
+
+
+def _calls(home: Path) -> list[str]:
+    return (home / "calls").read_text(encoding="utf-8").splitlines()
+
+
+def test_writer_runs_ledger_only_and_the_glm_receipt_is_derived_afterwards(
+    tmp_path: Path,
+) -> None:
+    home, council = _harness(tmp_path)
+    result = _run(home, council)
+    assert result.returncode == 0, result.stderr
+    calls = _calls(home)
+    writer = [c for c in calls if c.startswith("writer ")]
+    assert writer == ["writer --skip-receipts"], calls
+    refresh = [c for c in calls if c.startswith("receipts ") and "--show" not in c]
+    assert refresh == ["receipts --platform glmcp"], calls
+    assert not any("--all" in c or "--codex-exec-auth-probe" in c for c in calls), calls
+    assert calls.index(writer[0]) < calls.index(refresh[0])
+    assert "glm seat visible to the dispatcher" in result.stdout
+
+
+def test_a_seat_the_dispatcher_cannot_see_after_the_refresh_is_a_failure(tmp_path: Path) -> None:
+    """The stubbed refresh leaves the old receipt (50 s left): a writer exit of zero is not a seat."""
+    home, council = _harness(
+        tmp_path,
+        receipt_status="observed",
+        receipt_remaining=900,
+        receipt_age=850,
+        refreshed_remaining=None,
+    )
+    result = _run(home, council)
+    assert result.returncode == 6
+    assert "glm seat NOT visible" in result.stderr
+    assert "--show --platform glmcp" in result.stderr
+    assert "Next:" in result.stderr
+    assert (home / "admission-calls").exists()
+
+
+def test_a_new_receipt_without_a_full_next_renewal_window_is_refused(tmp_path: Path) -> None:
+    """A refresh is not success when its receipt cannot survive the delay plus the next run."""
+    e = _envelope(tmp_path / "envelope")
+    home, council = _harness(
+        tmp_path / "run",
+        refreshed_remaining=e["seat_refresh_threshold_s"],
+    )
+    result = _run(home, council)
+    assert result.returncode == 6
+    assert f"more than {e['seat_visible_min_s']} s left" in result.stderr
+    assert "glm seat visible to the dispatcher" not in result.stdout
+
+
+def test_a_failed_glm_receipt_refresh_after_minting_is_loud(tmp_path: Path) -> None:
+    home, council = _harness(tmp_path)
+    result = _run(home, council, receipts_rc=1)
+    assert result.returncode == 6
+    assert "could not be refreshed from the new ledger" in result.stderr
+    assert "Next:" in result.stderr
+
+
+def test_a_receipt_the_dispatchers_loader_rejects_does_not_skip_the_round_trip(
+    tmp_path: Path,
+) -> None:
+    """Three plausible fields in a JSON file are not a receipt; the guard reads through the loader."""
+    home, council = _harness(tmp_path, malformed_receipt=True)
+    result = _run(home, council)
+    assert result.returncode == 0, result.stderr
+    assert "no round-trip" not in result.stdout
+    assert (home / "admission-calls").exists()
+
+
+def test_a_stale_receipt_with_a_fresh_looking_quota_surface_does_not_skip(tmp_path: Path) -> None:
+    """The receipt itself expired an hour ago; its quota surface still says 900 s. A guard that
+    picked the quota fields out of the JSON would skip; the dispatcher's loader drops the receipt,
+    so the seat round-trips."""
+    home, council = _harness(
+        tmp_path,
+        receipt_status="observed",
+        receipt_remaining=900,
+        receipt_age=5,
+        receipt_stale=True,
+    )
+    result = _run(home, council)
+    assert result.returncode == 0, result.stderr
+    assert "no round-trip" not in result.stdout
+    assert (home / "admission-calls").exists()
+
+
+def test_show_reports_the_accepted_receipt_and_rejects_a_malformed_one(tmp_path: Path) -> None:
+    receipts_dir = tmp_path / "receipts"
+    receipts_dir.mkdir()
+    now = datetime.now(UTC)
+    (receipts_dir / "glmcp.json").write_text(
+        _glmcp_receipt_json(status="observed", remaining=900, age=5, now=now), encoding="utf-8"
+    )
+    shown = subprocess.run(
+        [
+            sys.executable,
+            str(RECEIPTS_SCRIPT),
+            "--show",
+            "--platform",
+            "glmcp",
+            "--json",
+            "--receipt-dir",
+            str(receipts_dir),
+        ],
+        capture_output=True,
+        text=True,
+        timeout=60,
+    )
+    assert shown.returncode == 0, shown.stderr
+    payload = json.loads(shown.stdout)
+    (row,) = payload["receipts"]
+    assert row["accepted"] is True
+    assert row["quota"]["status"] == "observed"
+    assert row["quota"]["stale_after"] == "900s"
+
+    (receipts_dir / "glmcp.json").write_text('{"platform": "glmcp", "quota": {}}', encoding="utf-8")
+    rejected = subprocess.run(
+        [
+            sys.executable,
+            str(RECEIPTS_SCRIPT),
+            "--show",
+            "--platform",
+            "glmcp",
+            "--json",
+            "--receipt-dir",
+            str(receipts_dir),
+        ],
+        capture_output=True,
+        text=True,
+        timeout=60,
+    )
+    assert rejected.returncode == 1
+    (row,) = json.loads(rejected.stdout)["receipts"]
+    assert row["accepted"] is False
+    assert row["reason"].startswith("receipt_invalid")
+
+
+@pytest.mark.parametrize(
+    "marker",
+    [
+        "HAPAX_GLMCP_SEAT_ROOT_OVERRIDE",
+        "HAPAX_GLMCP_ALLOW_MUTABLE_ROOT",
+        "HAPAX_TEST_HARNESS",
+        "ALLOW_MUTABLE_ROOT",
+        "allow_mutable_root",
+        "ACTIVATION_ROOT",
+    ],
+)
+def test_environment_marker_cannot_grant_mutable_root(tmp_path: Path, marker: str) -> None:
+    home, council = _harness(tmp_path)
+    result = _run(
+        home,
+        council,
+        allow_root=False,
+        environment={marker: str(council) if marker == "ACTIVATION_ROOT" else "1"},
+    )
+    assert result.returncode == 4, result.stdout + result.stderr
+    assert "activation worktree" in result.stderr
+    assert "Next:" in result.stderr
+    assert not (home / "calls").exists()
+    assert not _witnesses(home)
+
+
+def test_committed_refresh_unit_uses_specifier_home_despite_ambient_home(tmp_path: Path) -> None:
+    home, council = _harness(tmp_path)
+    service = SERVICE.read_text()
+    environment = {
+        "HOME": str(tmp_path / "different-home"),
+        "HAPAX_COUNCIL": str(council),
+        "HAPAX_GLMCP_SEAT_ROOT_OVERRIDE": "1",
+    }
+    for line in service.splitlines():
+        if line.startswith("Environment="):
+            for assignment in shlex.split(line.removeprefix("Environment=")):
+                key, value = assignment.split("=", 1)
+                environment[key] = value.replace("%h", str(home))
+    for name in (_unit_value(service, "Service", "UnsetEnvironment") or "").split():
+        environment.pop(name, None)
+    # Check before execution: the old hard-coded HOME must never write into the operator home.
+    assert environment["HOME"] == str(home)
+    activation = home / ".cache/hapax/source-activation/worktree"
+    (activation / "scripts").mkdir(parents=True)
+    shutil.copy2(SCRIPT, activation / "scripts" / SCRIPT.name)
+    command = shlex.split(
+        (_unit_value(service, "Service", "ExecStart") or "").replace("%h", str(home))
+    )
+    assert command == [str(activation / "scripts" / SCRIPT.name)]
+    result = subprocess.run(
+        command + ["--envelope"], env=environment, capture_output=True, text=True, timeout=30
+    )
+    assert result.returncode == 0, result.stderr
+    assert json.loads(result.stdout)["whole_service_bound_s"] == 600
+    assert not (tmp_path / "different-home").exists()
