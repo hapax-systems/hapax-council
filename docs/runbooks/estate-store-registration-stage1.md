@@ -116,15 +116,30 @@ Boot identity continues to come from `/proc/sys/kernel/random/boot_id`.
 Identity observations and their binding live only in completion evidence;
 no field is added to the v1 drift report or stdout summary for this binding.
 
-The current checked-in registry has **no machine-id declarations**. Until the
-coordinator supplies verified `hosts.appendix.machine_id` and
-`hosts.podium.machine_id`, runs explicitly record
-`local_declared_machine_id_absent` / `peer_declared_machine_id_absent` and cannot
-be `ok`. The producer never learns or installs an expected identity from the
-peer it is checking. The existing aliases and SSH targets remain unchanged.
+The checked-in registry declares both coordinator-verified machine ids, read at
+2026-09-05T06:40Z:
 
-An own-label mismatch fails before any scan, write or SSH dispatch. The same
-binding checks the peer completion in both declared directions, independently
+| Host | `hosts.<label>.machine_id` | Readback source |
+|---|---|---|
+| appendix | `ffc36d1a0ca64320a3f1c9f1060292af` | `/etc/machine-id` on hapax-appendix, locally |
+| podium | `15c4e584aac74d048bcbe90fc35e6da3` | `/etc/machine-id` on hapax-podium, over read-only SSH |
+
+Read a host's id with `cat /etc/machine-id` on that host. The coordinator used
+`ssh hapax-podium cat /etc/machine-id` for podium's readback. These commands read
+identity only; updating a declaration requires separately verified readback.
+The producer never learns or installs an expected identity from the peer it is
+checking. A missing declaration still records
+`local_declared_machine_id_absent` / `peer_declared_machine_id_absent` and prevents
+`ok` completion.
+
+An own-label mismatch on a qualified run is a binding failure and refuses before
+any scan, write or SSH dispatch. This includes explicit `--qualified` and native
+service metadata without an identity override. An unqualified manual run, or an
+explicit fixture override without `--qualified`, records each named mismatch
+and continues. Its `identity_binding.status` remains `failed` to preserve the
+comparison result, while successful execution completes `unqualified` with
+`scheduled: absent`. Scan or transport failures still fail the execution.
+The same binding checks the peer completion in both declared directions, independently
 of the consistent requested label in its report and summary. The actual SSH
 argv target is retained and checked against the requested peer's declared
 `ssh_target` and aliases. Mismatch errors name the requested label, observed
@@ -138,7 +153,8 @@ before dispatch or writes. A missing boot id still fails as before.
 `--observed-host-override HOSTNAME MACHINE_ID` is the sole producer fixture
 binding: it replaces the two identity observations, names itself in evidence
 and errors, and can never produce `ok` or `scheduled: true`. Overrides still
-undergo declaration checks; mismatches fail. `--qualified` refuses the flag
+undergo declaration checks; local mismatches are recorded and continue unqualified.
+`--qualified` refuses the flag
 outright, including when its values match. The override is never forwarded to
 the peer. Qualified peer dispatch forwards `--qualified`; the initiator also
 rejects peer override evidence when explicitly invoked with `--qualified`.
@@ -159,7 +175,7 @@ the common parser; only the named operations use each operation-specific option.
 | `--output PATH` | Unset; required by `grandfather`, must resolve inside the current worktree |
 | `--json` | False; JSON stdout instead of YAML. Peer commands always request and forward peer JSON |
 | `--peer-source-root PATH` | `HAPAX_ESTATE_PEER_SOURCE_ROOT` or unset; `check-peer` and `sweep-peer`, explicit flag wins |
-| `--qualified` | False; requires an explicit physical peer binding for peer commands and refuses local or peer observed-identity overrides; forwarded on qualified peer dispatch; does not attest scheduling or supply missing identity declarations |
+| `--qualified` | False; refuses own-label identity mismatches and local or peer observed-identity overrides; requires an explicit physical peer binding for peer commands; forwarded on qualified peer dispatch; does not attest scheduling or supply missing identity declarations |
 | `--expected-source-root PATH` | Unset; every command refuses a different physical script tree, registry or redirected registry path |
 | `--include-report` | False; local `sweep` adds exact report bytes as `report_base64` to stdout; always passed by `sweep-peer` |
 
@@ -254,7 +270,7 @@ it does not produce a drift report.
 | `peer.returncode` | Exact observed SSH process return code, including negative signal codes | Transport launch failure or timeout has no observed code |
 | `peer.transport_error` | `timeout` or transport exception class | Transport completed normally, even with nonzero exit |
 | `peer.status`, `peer.errors` | Binding validation and peer process outcome | Never when a peer result exists; `ok`, `unqualified` or `failed`, plus reason list |
-| `returncode`, `status`, `errors` | CLI exit, observed scheduling completeness and execution/binding checks | Never; errors includes missing-identity and override reasons even on a zero exit |
+| `returncode`, `status`, `errors` | CLI exit, observed scheduling completeness and execution/binding checks | Never; errors includes missing-identity, override and unqualified local mismatch reasons even on a zero exit |
 
 The `absent` sentinel describes unavailable observations, not every malformed
 value. Peer summary values are retained as observed (including explicit nulls)
@@ -266,9 +282,9 @@ the remote observations travel in its forwarded peer completion and exact report
 Native trigger metadata is best effort and may coalesce triggers. It cannot
 prove the absence of missing timer slots. See the upstream
 [systemd execution environment contract](https://raw.githubusercontent.com/systemd/systemd/main/man/systemd.exec.xml).
-`--qualified` is a source-safety requirement, not a scheduling attestation.
+`--qualified` requires source and identity binding; it does not attest scheduling.
 Status is `failed` for nonzero exit, `unqualified` for successful execution
-with identity omissions/overrides or without both observed timer metadata and
+with identity omissions/overrides, recorded local mismatches, or without both observed timer metadata and
 an invocation id, and `ok` otherwise. Identity omissions/overrides on a peer
 also leave the initiator unqualified. Only the specific peer completion errors
 for absent native identity, absent declared machine id and the explicit fixture

@@ -9,10 +9,14 @@ policy:
 hosts:
   appendix:
     aliases: [appendix, hapax-appendix]
+    # Source: /etc/machine-id on hapax-appendix, 2026-09-05T06:40Z.
+    machine_id: ffc36d1a0ca64320a3f1c9f1060292af
     peer: podium
     ssh_target: hapax-appendix
   podium:
     aliases: [podium, hapax-podium]
+    # Source: /etc/machine-id on hapax-podium over read-only ssh, 2026-09-05T06:40Z.
+    machine_id: 15c4e584aac74d048bcbe90fc35e6da3
     peer: appendix
     ssh_target: hapax-podium
 scan_roots:

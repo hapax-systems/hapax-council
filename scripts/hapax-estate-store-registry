@@ -387,7 +387,11 @@ def _execute(args: argparse.Namespace, evidence: dict) -> int:
         registry, host_id=host_id, observed=evidence, scope="local"
     )
     evidence["errors"].extend(evidence["identity_binding"]["errors"])
-    if evidence["identity_binding"]["status"] == "failed":
+    requires_identity_binding = args.qualified or (
+        args.observed_host_override is None
+        and any(value != "absent" for value in evidence["native"].values())
+    )
+    if evidence["identity_binding"]["status"] == "failed" and requires_identity_binding:
         return 2
     if args.command == "list":
         if not args.consumer:

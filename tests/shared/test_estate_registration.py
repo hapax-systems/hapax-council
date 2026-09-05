@@ -25,6 +25,26 @@ from shared.estate_store_registry import load_registry, matching_store
 NOW = datetime(2026, 9, 2, 12, 0, tzinfo=UTC)
 
 
+@pytest.fixture
+def registry(monkeypatch: pytest.MonkeyPatch):  # noqa: ANN201
+    """Keep declarations intact and isolate native reads even for module-only tests."""
+    declared = load_registry()
+    values = {
+        "/proc/sys/kernel/hostname": "hapax-appendix\n",
+        # Coordinator readback, 2026-09-05T06:40Z; not learned from the registry.
+        "/etc/machine-id": "ffc36d1a0ca64320a3f1c9f1060292af\n",
+    }
+    read_text = Path.read_text
+
+    def read(path, *args, **kwargs):  # noqa: ANN001, ANN202
+        if str(path) in values:
+            return values[str(path)]
+        return read_text(path, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "read_text", read)
+    return replace(declared, hosts={host: dict(row) for host, row in declared.hosts.items()})
+
+
 @pytest.mark.parametrize(
     "value", ["", " \n", OSError("fake unreadable"), UnicodeError("fake invalid")]
 )
@@ -53,8 +73,7 @@ def test_native_identity_absence_uses_only_fixed_read_paths(monkeypatch, field, 
     assert observed[next(name for name in paths if name != field)] == "native-value"
 
 
-def _registry_for(home: Path, *, depth: int = 1):  # noqa: ANN202
-    registry = load_registry()
+def _registry_for(registry, *, depth: int = 1):  # noqa: ANN001, ANN202
     return replace(
         registry,
         scan_roots=(
@@ -74,8 +93,9 @@ def _make_hapax_root(home: Path) -> Path:
     return root
 
 
-def test_parent_registration_does_not_register_new_descendant_store(tmp_path: Path) -> None:
-    registry = load_registry()
+def test_parent_registration_does_not_register_new_descendant_store(
+    registry, tmp_path: Path
+) -> None:
     home = tmp_path / "home"
     candidate = home / "Documents" / "Personal" / "30-areas" / "hapax" / "new-garden"
 
@@ -83,12 +103,12 @@ def test_parent_registration_does_not_register_new_descendant_store(tmp_path: Pa
     assert matching_store(registry, candidate, host="appendix", home=home) is None
 
 
-def test_originator_writes_registered_a_and_unregistered_b_as_one_pair(tmp_path: Path) -> None:
+def test_originator_writes_registered_a_and_unregistered_b_as_one_pair(
+    registry, tmp_path: Path
+) -> None:
     home = tmp_path / "home"
     _make_hapax_root(home)
-    result = originate_canaries(
-        load_registry(), host_id="appendix", home=home, now=NOW, token="fixed"
-    )
+    result = originate_canaries(registry, host_id="appendix", home=home, now=NOW, token="fixed")
 
     assert Path(result["canary_a_path"]).is_file()
     registration = json.loads(Path(result["canary_a_registration"]).read_text())
@@ -98,28 +118,28 @@ def test_originator_writes_registered_a_and_unregistered_b_as_one_pair(tmp_path:
     assert not (Path(result["canary_b_path"]) / ".registered").exists()
 
 
-def test_midnight_canary_b_exercises_home_dot_root(tmp_path: Path) -> None:
+def test_midnight_canary_b_exercises_home_dot_root(registry, tmp_path: Path) -> None:
     home = tmp_path / "home"
     _make_hapax_root(home)
     midnight = NOW.replace(hour=0)
 
     result = originate_canaries(
-        load_registry(), host_id="appendix", home=home, now=midnight, token="fixed"
+        registry, host_id="appendix", home=home, now=midnight, token="fixed"
     )
 
     assert Path(result["canary_b_path"]).parent == home
     assert Path(result["canary_b_path"]).name.startswith(".hapax-canary-")
 
 
-def test_cross_host_health_requires_fresh_a_and_the_matching_b_manifest(tmp_path: Path) -> None:
+def test_cross_host_health_requires_fresh_a_and_the_matching_b_manifest(
+    registry, tmp_path: Path
+) -> None:
     home = tmp_path / "home"
     _make_hapax_root(home)
-    result = originate_canaries(
-        load_registry(), host_id="appendix", home=home, now=NOW, token="fixed"
-    )
+    result = originate_canaries(registry, host_id="appendix", home=home, now=NOW, token="fixed")
 
     health = export_canary_health(
-        registry=load_registry(),
+        registry=registry,
         host_id="appendix",
         home=home,
         now=NOW + timedelta(minutes=60),
@@ -130,53 +150,49 @@ def test_cross_host_health_requires_fresh_a_and_the_matching_b_manifest(tmp_path
     Path(result["canary_b_manifest"]).unlink()
     with pytest.raises(RegistrationError, match="pair is incomplete"):
         export_canary_health(
-            registry=load_registry(),
+            registry=registry,
             host_id="appendix",
             home=home,
             now=NOW + timedelta(minutes=60),
         )
 
 
-def test_cross_host_health_rejects_stale_canary_a(tmp_path: Path) -> None:
+def test_cross_host_health_rejects_stale_canary_a(registry, tmp_path: Path) -> None:
     home = tmp_path / "home"
     _make_hapax_root(home)
-    originate_canaries(load_registry(), host_id="appendix", home=home, now=NOW, token="fixed")
+    originate_canaries(registry, host_id="appendix", home=home, now=NOW, token="fixed")
 
     with pytest.raises(RegistrationError, match="restore the hourly originator"):
         export_canary_health(
-            registry=load_registry(),
+            registry=registry,
             host_id="appendix",
             home=home,
             now=NOW + timedelta(hours=2),
         )
 
 
-def test_cross_host_health_rejects_receipt_not_bound_to_registry(tmp_path: Path) -> None:
+def test_cross_host_health_rejects_receipt_not_bound_to_registry(registry, tmp_path: Path) -> None:
     home = tmp_path / "home"
     _make_hapax_root(home)
-    result = originate_canaries(
-        load_registry(), host_id="appendix", home=home, now=NOW, token="fixed"
-    )
+    result = originate_canaries(registry, host_id="appendix", home=home, now=NOW, token="fixed")
     receipt_path = Path(result["canary_a_registration"])
     receipt = json.loads(receipt_path.read_text())
     receipt["store_id"] = "not-registered"
     receipt_path.write_text(json.dumps(receipt), encoding="utf-8")
 
     with pytest.raises(RegistrationError, match="not bound to its declared store"):
-        export_canary_health(registry=load_registry(), host_id="appendix", home=home, now=NOW)
+        export_canary_health(registry=registry, host_id="appendix", home=home, now=NOW)
 
 
-def test_sweep_flags_and_files_without_mutating_candidate(tmp_path: Path) -> None:
+def test_sweep_flags_and_files_without_mutating_candidate(registry, tmp_path: Path) -> None:
     home = tmp_path / "home"
     root = _make_hapax_root(home)
-    result = originate_canaries(
-        load_registry(), host_id="appendix", home=home, now=NOW, token="fixed"
-    )
+    result = originate_canaries(registry, host_id="appendix", home=home, now=NOW, token="fixed")
     candidate = Path(result["canary_b_path"])
     before = (candidate.stat().st_ino, (candidate / "store.json").read_bytes())
 
     outcome = sweep(
-        _registry_for(home),
+        _registry_for(registry),
         host_id="appendix",
         home=home,
         now=NOW + timedelta(days=1),
@@ -203,19 +219,21 @@ def test_sweep_implementation_has_no_rename_move_or_delete_operation() -> None:
     assert "shutil.rmtree(" not in source
 
 
-def test_two_distinct_unflagged_b_instances_file_self_named_incident(tmp_path: Path) -> None:
+def test_two_distinct_unflagged_b_instances_file_self_named_incident(
+    registry, tmp_path: Path
+) -> None:
     home = tmp_path / "home"
     root = _make_hapax_root(home)
-    first = originate_canaries(load_registry(), host_id="appendix", home=home, now=NOW, token="one")
+    first = originate_canaries(registry, host_id="appendix", home=home, now=NOW, token="one")
     second = originate_canaries(
-        load_registry(),
+        registry,
         host_id="appendix",
         home=home,
         now=NOW + timedelta(hours=1),
         token="two",
     )
     dead_scan = replace(
-        load_registry(),
+        registry,
         scan_roots=(
             {"id": "dead-detector", "kind": "directory", "path": str(root / "empty"), "depth": 1},
         ),
@@ -237,12 +255,12 @@ def test_two_distinct_unflagged_b_instances_file_self_named_incident(tmp_path: P
     assert incident["reason"] == "two consecutive distinct Canary B instances passed unflagged"
 
 
-def test_grandfather_capture_is_evidence_not_blessing(tmp_path: Path) -> None:
+def test_grandfather_capture_is_evidence_not_blessing(registry, tmp_path: Path) -> None:
     home = tmp_path / "home"
     root = _make_hapax_root(home)
     (root / "existing-garden").mkdir()
 
-    fragment = grandfather_fragment(_registry_for(home), host_id="appendix", home=home, now=NOW)
+    fragment = grandfather_fragment(_registry_for(registry), host_id="appendix", home=home, now=NOW)
 
     assert fragment["complete_scan"] is True
     assert fragment["operator_blessing"] is None
@@ -252,10 +270,12 @@ def test_grandfather_capture_is_evidence_not_blessing(tmp_path: Path) -> None:
     assert "bounded scan" in row["discovery_evidence"]
 
 
-def test_grandfather_capture_refuses_when_a_scan_root_cannot_be_read(tmp_path: Path) -> None:
+def test_grandfather_capture_refuses_when_a_scan_root_cannot_be_read(
+    registry, tmp_path: Path
+) -> None:
     home = tmp_path / "home"
     registry = replace(
-        load_registry(),
+        registry,
         scan_roots=(
             {"id": "missing", "kind": "directory", "path": str(home / "missing"), "depth": 1},
         ),
@@ -265,40 +285,36 @@ def test_grandfather_capture_refuses_when_a_scan_root_cannot_be_read(tmp_path: P
         grandfather_fragment(registry, host_id="appendix", home=home, now=NOW)
 
 
-def test_peer_command_uses_declared_opposite_host_and_no_fallback() -> None:
+def test_peer_command_uses_declared_opposite_host_and_no_fallback(registry) -> None:
     calls = []
 
     def runner(argv, **kwargs):  # noqa: ANN001, ANN202
         calls.append((argv, kwargs))
         return SimpleNamespace(returncode=0, stdout='{"ok": true}\n', stderr="")
 
-    result = run_peer_command(
-        load_registry(), host_id="appendix", command="export-canary", runner=runner
-    )
+    result = run_peer_command(registry, host_id="appendix", command="export-canary", runner=runner)
 
     assert calls[0][0][5] == "hapax-podium"
     assert "--host podium" in calls[0][0][6]
     assert result.ssh_target == calls[0][0][5]
 
 
-def test_peer_command_refuses_ssh_failure() -> None:
+def test_peer_command_refuses_ssh_failure(registry) -> None:
     def runner(_argv, **_kwargs):  # noqa: ANN202
         return SimpleNamespace(returncode=255, stdout="", stderr="Permission denied")
 
     with pytest.raises(RegistrationError, match="restore the existing SSH link|repair the peer"):
-        run_peer_command(
-            load_registry(), host_id="appendix", command="export-canary", runner=runner
-        )
+        run_peer_command(registry, host_id="appendix", command="export-canary", runner=runner)
 
 
 @pytest.mark.parametrize("binding", [None, "relative/release", "$HOME/release", "/a/../b", "/a//b"])
-def test_qualified_peer_requires_safe_binding(binding: str | None) -> None:
+def test_qualified_peer_requires_safe_binding(registry, binding: str | None) -> None:
     def no_ssh(*_args, **_kwargs):  # noqa: ANN202
         pytest.fail("unsafe binding reached SSH")
 
     with pytest.raises(RegistrationError, match="peer_source_root.*remedy"):
         run_peer_command(
-            load_registry(),
+            registry,
             host_id="appendix",
             command="sweep",
             peer_source_root=binding,
@@ -307,7 +323,7 @@ def test_qualified_peer_requires_safe_binding(binding: str | None) -> None:
         )
 
 
-def test_peer_failure_retains_both_streams_and_exact_returncode() -> None:
+def test_peer_failure_retains_both_streams_and_exact_returncode(registry) -> None:
     stdout = '  {"report_path":"/fake/failed-report.json"}\npartial output\n'
     stderr = "  fake peer diagnostic\nsecond line\n"
 
@@ -315,7 +331,7 @@ def test_peer_failure_retains_both_streams_and_exact_returncode() -> None:
         return SimpleNamespace(returncode=23, stdout=stdout, stderr=stderr)
 
     result = run_peer_command(
-        load_registry(),
+        registry,
         host_id="appendix",
         command="sweep",
         runner=runner,
@@ -326,7 +342,7 @@ def test_peer_failure_retains_both_streams_and_exact_returncode() -> None:
     assert (result.stdout, result.stderr, result.returncode) == (stdout, stderr, 23)
     assert result.failed
     with pytest.raises(RegistrationError) as caught:
-        run_peer_command(load_registry(), host_id="appendix", command="sweep", runner=runner)
+        run_peer_command(registry, host_id="appendix", command="sweep", runner=runner)
     assert (
         caught.value.result.stdout,
         caught.value.result.stderr,
@@ -377,10 +393,12 @@ def fake_peer_shell(tmp_path: Path):  # noqa: ANN201
 
 
 @pytest.mark.parametrize("qualified", [True, False])
-def test_peer_pins_physical_tree_before_alias_moves(fake_peer_shell, qualified: bool) -> None:
+def test_peer_pins_physical_tree_before_alias_moves(
+    registry, fake_peer_shell, qualified: bool
+) -> None:
     old, new, alias, runner = fake_peer_shell
     result = run_peer_command(
-        load_registry(),
+        registry,
         host_id="appendix",
         command="sweep",
         runner=runner,
@@ -397,10 +415,10 @@ def test_peer_pins_physical_tree_before_alias_moves(fake_peer_shell, qualified: 
     }
 
 
-def test_qualified_peer_rejects_symlink_on_peer(fake_peer_shell) -> None:
+def test_qualified_peer_rejects_symlink_on_peer(registry, fake_peer_shell) -> None:
     _old, _new, alias, runner = fake_peer_shell
     result = run_peer_command(
-        load_registry(),
+        registry,
         host_id="appendix",
         command="sweep",
         runner=runner,
@@ -415,12 +433,14 @@ def test_qualified_peer_rejects_symlink_on_peer(fake_peer_shell) -> None:
 @pytest.mark.parametrize(
     "artifact", ["scripts/hapax-estate-store-registry", "config/estate-store-registry.yaml"]
 )
-def test_peer_rejects_redirected_release_artifacts(fake_peer_shell, artifact: str) -> None:
+def test_peer_rejects_redirected_release_artifacts(
+    registry, fake_peer_shell, artifact: str
+) -> None:
     old, new, _alias, runner = fake_peer_shell
     (old / artifact).unlink()
     (old / artifact).symlink_to(new / artifact)
     result = run_peer_command(
-        load_registry(),
+        registry,
         host_id="appendix",
         command="sweep",
         runner=runner,
@@ -432,21 +452,21 @@ def test_peer_rejects_redirected_release_artifacts(fake_peer_shell, artifact: st
     assert "release artifact" in result.stderr
 
 
-def test_peer_timeout_retains_partial_output_without_inventing_returncode() -> None:
+def test_peer_timeout_retains_partial_output_without_inventing_returncode(registry) -> None:
     def runner(*_args, **_kwargs):  # noqa: ANN202
         raise subprocess.TimeoutExpired(
             "fake ssh", 1, output=b"partial summary\n", stderr=b"partial diagnostic\n"
         )
 
     result = run_peer_command(
-        load_registry(), host_id="appendix", command="sweep", runner=runner, check=False
+        registry, host_id="appendix", command="sweep", runner=runner, check=False
     )
     assert result.failed and result.returncode is None and result.transport_error == "timeout"
     assert result.stdout == "partial summary\n"
     assert result.stderr == "partial diagnostic\n"
 
 
-def test_peer_capture_preserves_crlf_verbatim() -> None:
+def test_peer_capture_preserves_crlf_verbatim(registry) -> None:
     def runner(_argv, **kwargs):  # noqa: ANN202
         return subprocess.run(
             [
@@ -458,7 +478,7 @@ def test_peer_capture_preserves_crlf_verbatim() -> None:
         )
 
     result = run_peer_command(
-        load_registry(), host_id="appendix", command="sweep", runner=runner, check=False
+        registry, host_id="appendix", command="sweep", runner=runner, check=False
     )
     assert (result.stdout, result.stderr, result.returncode) == (
         "fake report\r\n",
@@ -469,7 +489,7 @@ def test_peer_capture_preserves_crlf_verbatim() -> None:
 
 @pytest.mark.parametrize("command", ["sweep", "export-canary"])
 def test_peer_command_pins_release_interpreter_despite_uv_environment(
-    monkeypatch, command: str
+    registry, monkeypatch, command: str
 ) -> None:
     for name in (
         "UV_PROJECT_ENVIRONMENT",
@@ -488,7 +508,7 @@ def test_peer_command_pins_release_interpreter_despite_uv_environment(
         return SimpleNamespace(returncode=0, stdout="", stderr="")
 
     run_peer_command(
-        load_registry(),
+        registry,
         host_id="appendix",
         command=command,
         runner=runner,
@@ -507,7 +527,9 @@ def test_peer_command_pins_release_interpreter_despite_uv_environment(
 
 
 @pytest.mark.parametrize("missing", [True, False], ids=["absent", "not-executable"])
-def test_peer_refuses_unavailable_pinned_interpreter(fake_peer_shell, missing: bool) -> None:
+def test_peer_refuses_unavailable_pinned_interpreter(
+    registry, fake_peer_shell, missing: bool
+) -> None:
     old, _new, alias, runner = fake_peer_shell
     python = old / ".venv/bin/python"
     if missing:
@@ -515,7 +537,7 @@ def test_peer_refuses_unavailable_pinned_interpreter(fake_peer_shell, missing: b
     else:
         python.chmod(0o644)
     result = run_peer_command(
-        load_registry(),
+        registry,
         host_id="appendix",
         command="sweep",
         runner=runner,
