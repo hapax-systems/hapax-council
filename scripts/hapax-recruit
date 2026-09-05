@@ -183,11 +183,39 @@ class RunResult:
 
 
 def _redact(text: str) -> str:
+    # Decode before matching labels: JSON strings can contain further JSON envelopes,
+    # escaped quotes, or unicode escapes. Re-encode only after every value is safe.
+    try:
+        payload = json.loads(text)
+    except json.JSONDecodeError:
+        pass
+    else:
+        redacted = _redact_json_value(payload)
+        return text if redacted == payload else json.dumps(redacted)
     # Consume escaped quotes and multiline scalars before any diagnostic is sliced.
     # Unterminated quotes suppress the rest of the block rather than exposing a suffix.
     # Plain scalars consume the whole line and indented continuations. In mixed prose
     # where indentation/flow boundaries are ambiguous, suppress that whole block.
     return _SECRETISH.sub(r"\1<redacted>", text)
+
+
+def _redact_json_value(value):
+    if isinstance(value, dict):
+        redacted = {}
+        for key, item in value.items():
+            # Reuse the text label grammar (including prefixes such as ANTHROPIC_).
+            # A sensitive-key match must consume the complete placeholder scalar.
+            field = f'{json.dumps(key)}: "scalar"'
+            match = _SECRETISH.search(field)
+            redacted[key] = (
+                "<redacted>" if match and match.end() == len(field) else _redact_json_value(item)
+            )
+        return redacted
+    if isinstance(value, list):
+        return [_redact_json_value(item) for item in value]
+    if isinstance(value, str):
+        return _redact(value)
+    return value
 
 
 def _cli_diagnostics(code: int | str, stdout: str, stderr: str, *, chatter: bool = False) -> str:
@@ -291,25 +319,29 @@ def _strip_kimi(text: str, brief: str) -> str:
     return "\n".join(kept).strip() + ("\n" if kept else "")
 
 
-def _parse_claude_json(stdout: str, *, failed: bool = False) -> tuple[str, list[str], bool]:
+def _parse_claude_json(stdout: str, *, failed: bool = False) -> tuple[str, list[str], str | None]:
     """Claude Code's --output-format json: the answer is `result`; served identity is `modelUsage`."""
     try:
         payload = json.loads(stdout)
     except json.JSONDecodeError:
-        return stdout, [], False
+        return (stdout, [], None) if failed else ("", [], "undecodable_result_envelope")
     if isinstance(payload, list):  # stream-json style arrays end with the result object
         payload = next((item for item in reversed(payload) if isinstance(item, dict)), {})
     if not isinstance(payload, dict):
-        return "", [], True
+        return "", [], "invalid result envelope: result must be a non-empty string"
     if failed and not {"result", "type", "modelUsage"}.intersection(payload):
         # A failed CLI can emit a JSON diagnostic instead of a result envelope.
         # Keep it under the redacted_failure_output policy, never as a success.
-        return stdout, [], False
+        return stdout, [], None
     answer = payload.get("result")
     usage = payload.get("modelUsage")
     models = sorted(usage) if isinstance(usage, dict) else []
     invalid = not isinstance(answer, str) or not answer.strip()
-    return ("" if invalid else answer), models, invalid
+    return (
+        "" if invalid else answer,
+        models,
+        "invalid result envelope: result must be a non-empty string" if invalid else None,
+    )
 
 
 def _output_identity(out: Path) -> tuple[int, int, int, int, int] | None:
@@ -423,15 +455,22 @@ def recruit_cli(
             argv += ["--model", model]
         code, stdout, stderr, group_killed, member_survived = _run(argv, cwd=cwd, timeout=timeout)
         answer, models, invalid_envelope = _parse_claude_json(stdout, failed=code != 0)
+        if invalid_envelope and code == 0:
+            code = 3
+        diagnostic_stdout = (
+            f"undecodable response: {len(stdout)} chars"
+            if invalid_envelope == "undecodable_result_envelope"
+            else stdout
+        )
+        diagnostics = _cli_diagnostics(code, diagnostic_stdout, stderr)
         if invalid_envelope:
-            stderr += "\ninvalid result envelope: result must be a non-empty string"
-            if code == 0:
-                code = 3
+            # Add our reason after each raw stream has crossed the redaction boundary.
+            diagnostics += f"\n{invalid_envelope}"
         return RunResult(
             answer,
             code,
             len(stdout),
-            _cli_diagnostics(code, stdout, stderr),
+            diagnostics,
             models,
             group_killed,
             member_survived,

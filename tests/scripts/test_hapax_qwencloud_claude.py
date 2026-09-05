@@ -253,6 +253,23 @@ def fake_boundary(monkeypatch):
     return module, calls, removed
 
 
+@pytest.mark.parametrize("args", [["-p", "synthetic brief"], ["--check"]], ids=["run", "check"])
+def test_missing_secret_helper_names_install_action(fake_boundary, monkeypatch, capsys, args):
+    module, calls, removed = fake_boundary
+    monkeypatch.setenv("PATH", "/synthetic/bin")
+    monkeypatch.setattr(
+        module.shutil, "which", lambda name: "/synthetic/bin/claude" if name == "claude" else None
+    )
+    assert module.main(args) == 3
+    captured = capsys.readouterr()
+    assert "hapax-secret is not on PATH" in captured.err
+    assert "install or restore" in captured.err
+    assert "~/projects/reins/scripts/hapax-secret" in captured.err
+    assert "~/.local/bin/hapax-secret" in captured.err
+    assert "retry the same command" in captured.err
+    assert captured.out == "" and calls == [] and removed == []
+
+
 @pytest.mark.parametrize("allowed", [False, True], ids=["refused", "allowed"])
 @pytest.mark.parametrize(
     ("setting", "flag", "override"),

@@ -47,8 +47,11 @@ the answer and receipt or emits terminal/journal diagnostics. The receipt marks 
 `answer_policy: redacted_failure_output` for failures. Successful answers retain their content
 apart from credential redaction. Kimi's indentation stripping happens after redaction.
 Structured credentials include escaped JSON strings, quoted/multiline YAML values and YAML
-block scalars. Plain YAML scalars include every token on the line and indented continuations,
-including continuations separated by blank lines. Anchors and tags precede the value; block
+block scalars. JSON diagnostics and answers are decoded and redacted structurally before
+serialization, including sensitive-key subtrees, assignments in string values, nested JSON
+strings, escaped quotes and unicode escapes. Plain YAML scalars include every token on the
+line and indented continuations, including continuations separated by blank lines.
+Anchors and tags precede the value; block
 indicators still open blocks after those properties. Sensitive aliases are redacted too.
 Unterminated sensitive quoted values suppress the remaining diagnostic block. Ambiguous
 plain/flow boundaries conservatively suppress the whole line and indented block.
@@ -58,9 +61,13 @@ chatter is not an answer. A retry with no output clears the previous answer file
 All CLI capacities reject empty or whitespace-only extracted answers as `OutputNotProduced`
 with exit 3 and zero answer bytes. Failure receipts and terminal messages include recovery
 actions: check the executable mode/PATH, inspect the receipt, or retry with `--out`/`--timeout`.
-Claude, glmcp and qwencloud result envelopes require a non-empty string `result`. A missing,
-null, numeric, list, object or whitespace-only result records `OutputNotProduced` and
-`invalid result envelope`; the envelope is never substituted for the answer. This also applies
+Claude, glmcp and qwencloud successful responses must decode as JSON result envelopes with a
+non-empty string `result`. Undecodable stdout (including truncated JSON, leading startup
+chatter and empty stdout) records exit 3, `OutputNotProduced`, zero answer bytes and
+`undecodable_result_envelope`; diagnostics retain only its length. Check `--out` and retry the
+brief. A missing, null, numeric, list, object or whitespace-only result records
+`OutputNotProduced` and `invalid result envelope`; the envelope is never substituted for the
+answer. This also applies
 to result objects in stream arrays. A failed CLI's JSON diagnostic without result-envelope
 fields remains redacted failure output.
 

@@ -1392,6 +1392,103 @@ def test_invalid_claude_result_envelope_is_receipted_failure(
     assert captured.out == ""
 
 
+@pytest.mark.parametrize(
+    "encoding",
+    [
+        "object-in-object",
+        "json-in-string",
+        "escaped-quotes",
+        "unicode-quotes",
+        "sensitive-subtree",
+        "string-assignment",
+        "string-colon",
+        "unicode-key",
+        "prefixed-key",
+    ],
+)
+@pytest.mark.parametrize("capacity", ["claude", "glmcp", "qwencloud"])
+@pytest.mark.parametrize("code", [0, 7, "timeout"])
+def test_nested_claude_credentials_never_reach_destinations(
+    bench, monkeypatch, capsys, caplog, encoding, capacity, code
+):
+    module, _bin_dir, brief, out = bench
+    monkeypatch.setattr(module, "_require_binary", lambda name: name)
+    if capacity in module.WRAPPED_CLAUDE:
+        monkeypatch.setenv(module.WRAPPED_CLAUDE[capacity][0], str(brief))
+    canary = "SYNTHETIC_ENVELOPE_CANARY"  # pragma: allowlist secret
+    credential = {"api_key": canary}  # pragma: allowlist secret
+    if encoding == "object-in-object":
+        answer = json.dumps({"outer": credential})
+    elif encoding == "json-in-string":
+        answer = json.dumps({"outer": json.dumps(credential)})
+    elif encoding == "escaped-quotes":
+        answer = json.dumps({"outer": json.dumps(json.dumps(credential))})
+    elif encoding == "unicode-quotes":
+        answer = json.dumps({"outer": json.dumps(credential)}).replace('\\"', r"\u0022")
+    elif encoding == "sensitive-subtree":
+        answer = json.dumps({"password": {"outer": [canary]}})  # pragma: allowlist secret
+    elif encoding in {"string-assignment", "string-colon"}:
+        separator = "=" if encoding == "string-assignment" else ": "
+        assignment = f"api_key{separator}{canary}"  # pragma: allowlist secret
+        answer = json.dumps({"outer": [assignment]})
+    elif encoding == "prefixed-key":
+        answer = json.dumps({"ANTHROPIC_API_KEY": canary})  # pragma: allowlist secret
+    else:
+        answer = json.dumps(credential).replace("api_key", r"\u0061pi_key")
+    stdout = json.dumps({"result": answer, "modelUsage": {"synthetic-served": {}}})
+    # The diagnostic stream can quote the same serialized response, even on success.
+    monkeypatch.setattr(module, "_run", lambda *a, **kw: (code, stdout, stdout, False, None))
+    assert module.main([capacity, "--brief", str(brief), "--out", str(out)]) == (
+        0 if code == 0 else 4 if code == "timeout" else 3
+    )
+    captured = capsys.readouterr()
+    destinations = {
+        "answer": out.read_text(),
+        "receipt": out.with_name(out.name + ".receipt.json").read_text(),
+        "stdout": captured.out,
+        "stderr/journal": captured.err,
+        "log": caplog.text,
+    }
+    leaks = [name for name, value in destinations.items() if canary in value]
+    assert not leaks, f"credential reached destinations: {', '.join(leaks)}"
+    assert "<redacted>" in destinations["answer"]
+    receipt = _receipt(out)
+    assert receipt["output_bytes"] == len(out.read_bytes()) > 0
+    assert receipt["models_reported"] == ["synthetic-served"]
+    assert receipt["exit_code"] == code
+    if code != 0:
+        assert "retry" in receipt["recovery_action"]
+
+
+@pytest.mark.parametrize("capacity", ["claude", "glmcp", "qwencloud"])
+@pytest.mark.parametrize("response", ["truncated", "leading-chatter", "empty"])
+def test_undecodable_claude_envelope_cannot_claim_success(
+    bench, monkeypatch, capsys, caplog, capacity, response
+):
+    module, _bin_dir, brief, out = bench
+    monkeypatch.setattr(module, "_require_binary", lambda name: name)
+    if capacity in module.WRAPPED_CLAUDE:
+        monkeypatch.setenv(module.WRAPPED_CLAUDE[capacity][0], str(brief))
+    canary = "SYNTHETIC_UNDECODABLE_CANARY"  # pragma: allowlist secret
+    credential = json.dumps({"api_key": canary})  # pragma: allowlist secret
+    envelope = json.dumps({"result": credential})
+    stdout = envelope[:-1] if response == "truncated" else "startup chatter\n" + envelope
+    if response == "empty":
+        stdout = ""
+    monkeypatch.setattr(module, "_run", lambda *a, **kw: (0, stdout, "", False, None))
+    assert module.main([capacity, "--brief", str(brief), "--out", str(out)]) == 3
+    receipt = _receipt(out)
+    assert receipt["exit_code"] == 3 and receipt["failure_class"] == "OutputNotProduced"
+    assert receipt["output_bytes"] == 0 and out.read_bytes() == b""
+    captured = capsys.readouterr()
+    assert canary not in json.dumps(receipt) + captured.out + captured.err + caplog.text
+    assert "startup chatter" not in receipt["stderr_tail"]
+    assert "undecodable_result_envelope" in receipt["stderr_tail"]
+    assert "retry" in receipt["recovery_action"] and "--out" in receipt["recovery_action"]
+    assert "retry" in captured.err
+    assert captured.out == "" and caplog.text == ""
+
+
 @pytest.mark.parametrize("condition", ["unwritable-directory", "directory-output", "disk-full"])
 def test_answer_persistence_failure_is_receipted(bench, monkeypatch, capsys, caplog, condition):
     module, _bin_dir, brief, out = bench

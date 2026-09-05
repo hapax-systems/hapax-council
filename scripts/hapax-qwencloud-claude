@@ -157,7 +157,11 @@ def main(argv: Sequence[str] | None = None) -> int:
         _error("claude is not on PATH; install Claude Code, then retry")
         return 3
     if shutil.which("hapax-secret") is None:
-        _error("hapax-secret is not on PATH; the plan key lives in the FileStore")
+        _error(
+            "hapax-secret is not on PATH; the plan key lives in the FileStore; "
+            "install or restore ~/projects/reins/scripts/hapax-secret as "
+            "~/.local/bin/hapax-secret on PATH, then retry the same command"
+        )
         return 3
     if not _secret_output("--where", SECRET_NAME):
         _error(
