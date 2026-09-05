@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import pytest
+
 from shared.memory_pressure import (
     BYTES_PER_GIB,
     MemoryPressureClass,
@@ -19,7 +21,12 @@ from shared.memory_pressure import (
     parse_systemd_memory_properties,
     parse_zram_mm_stat,
 )
-from shared.resource_model import DEFAULT_SERVICE_PROFILES, ResourceState
+from shared.resource_model import DEFAULT_SERVICE_PROFILES, ResourceState, ResourceType
+
+
+def _profile_ram_limit_bytes(service_name: str) -> int | None:
+    limit_gib = DEFAULT_SERVICE_PROFILES[service_name].allocations[ResourceType.RAM].limit
+    return int(limit_gib * BYTES_PER_GIB) if limit_gib is not None else None
 
 
 def test_global_ram_pressure_uses_resource_model_thresholds() -> None:
@@ -137,7 +144,70 @@ def test_critical_floor_risk_represents_stale_ceiling_against_profile() -> None:
     assert signal.pressure_class == MemoryPressureClass.CRITICAL_FLOOR_RISK
     assert signal.state == ResourceState.RED
     assert "memory_max_below_profile_limit" in signal.raw["reasons"]
-    assert "oom_score_less_protected_than_profile" in signal.raw["reasons"]
+    assert "oom_score_adjust_drift" in signal.raw["reasons"]
+
+
+def test_critical_floor_matches_exact_delegated_oom_policy() -> None:
+    profile = DEFAULT_SERVICE_PROFILES["hapax-daimonion"]
+    properties = SystemdMemoryProperties(
+        service_name="hapax-daimonion.service",
+        memory_max_bytes=_profile_ram_limit_bytes("hapax-daimonion"),
+        oom_score_adjust=100,
+    )
+
+    signal = classify_critical_floor_risk(
+        "hapax-daimonion",
+        properties,
+        profile=profile,
+    )
+
+    assert signal.state == ResourceState.GREEN
+    assert signal.raw["reasons"] == []
+
+
+def test_critical_floor_rejects_historical_negative_delegated_score() -> None:
+    profile = DEFAULT_SERVICE_PROFILES["hapax-daimonion"]
+    properties = SystemdMemoryProperties(
+        service_name="hapax-daimonion.service",
+        memory_max_bytes=_profile_ram_limit_bytes("hapax-daimonion"),
+        oom_score_adjust=-500,
+    )
+
+    signal = classify_critical_floor_risk(
+        "hapax-daimonion",
+        properties,
+        profile=profile,
+    )
+
+    assert signal.state == ResourceState.YELLOW
+    assert signal.raw["reasons"] == ["oom_score_adjust_drift"]
+
+
+@pytest.mark.parametrize(
+    "service_name",
+    [
+        "hapax-daimonion",
+        "studio-compositor",
+        "pipewire",
+        "wireplumber",
+        "pipewire-pulse",
+        "hapax-imagination",
+    ],
+)
+def test_declared_delegated_oom_policy_is_checked_for_every_protected_profile(
+    service_name: str,
+) -> None:
+    profile = DEFAULT_SERVICE_PROFILES[service_name]
+    properties = SystemdMemoryProperties(
+        service_name=f"{service_name}.service",
+        memory_max_bytes=_profile_ram_limit_bytes(service_name),
+        oom_score_adjust=-500,
+    )
+
+    signal = classify_critical_floor_risk(service_name, properties, profile=profile)
+
+    assert signal.state == ResourceState.YELLOW
+    assert "oom_score_adjust_drift" in signal.raw["reasons"]
 
 
 def test_parsers_preserve_raw_memory_evidence() -> None:

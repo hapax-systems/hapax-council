@@ -51,7 +51,7 @@ enable hapax-segment-prep-emit-health.timer
 enable hapax-obsidian-publish-sync.timer
 enable hapax-worktree-gc.timer
 enable hapax-backup-watchdog.timer
-enable hapax-container-cleanup.timer
+disable hapax-container-cleanup.timer
 enable hapax-dataset-card-generator.timer
 enable hapax-l12-critical-usb-guard.timer
 enable hapax-omg-lol-fanout.timer
