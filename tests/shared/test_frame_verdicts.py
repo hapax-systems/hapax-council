@@ -1135,6 +1135,32 @@ def test_recursive_member_pattern_does_not_prove_traversal_of_a_directory_symlin
         fv.ref_within_member(selected, False, member)
 
 
+@pytest.mark.parametrize("ref", [".venv/bin/python", ".venv/bin/[p]ython"])
+def test_disjoint_loop_is_not_resolved_for_unrelated_exclusions(tmp_path: Path, ref: str) -> None:
+    (tmp_path / ".venv/bin").mkdir(parents=True)
+    link = tmp_path / ".venv/bin/python"
+    link.symlink_to(link)
+    (tmp_path / "docs").mkdir()
+    document = tmp_path / "docs/x.md"
+    document.touch()
+    pattern = "./docs//**/*.md"
+    assert set(tmp_path.glob(pattern)) == {document}
+    member = fv.DecayedMember(
+        "m",
+        "scope_exited",
+        (tmp_path,),
+        (pattern,),
+        (),
+        excluded_roots=(tmp_path / "unrelated",),
+    )
+    verdicts = fv.FrameVerdicts("fixture", tmp_path, NOW, (member,), ())
+
+    result = fv.scope_within_decayed([ref], verdicts, council_root=tmp_path, vault_root=tmp_path)
+
+    assert result.outside == (ref,)
+    assert not result.all_inside
+
+
 @pytest.mark.parametrize("skip", ["alias", "target"])
 def test_patterned_symlink_skip_dirs_use_lexical_parts(tmp_path: Path, skip: str) -> None:
     (tmp_path / "target").mkdir()

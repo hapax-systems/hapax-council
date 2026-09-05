@@ -319,7 +319,9 @@ def _qualified_location(
             f"scheme-qualified ref {raw!r} uses escaping, a query or a fragment; containment is "
             "undecidable"
         )
-    if "//" in path:
+    if scope_ref and path:
+        path = _normalise_glob_spelling(path, allow_absolute=True)
+    elif "//" in path:
         raise NonCanonicalScopeRef(
             f"scheme-qualified ref {raw!r} has an empty path segment; containment is undecidable"
         )
@@ -747,15 +749,37 @@ def _load_epoch_verdicts(
     )
 
 
-def _filesystem_scope_parts(ref: str) -> tuple[list[str], str | None, bool]:
-    """Split a filesystem ref into its literal path prefix and unmodified glob tail."""
-    text = ref.strip().replace("\\", "/")
-    segments = [segment for segment in text.split("/") if segment not in ("", ".")]
-    if any(segment == ".." for segment in segments):
-        raise NonCanonicalScopeRef(
-            f"mutation_scope_ref {ref!r} contains a '..' segment; declare the surface it actually "
-            "names, without climbing out of it"
+def _normalise_glob_spelling(
+    pattern: str, *, member_pattern: bool = False, allow_absolute: bool = False
+) -> str:
+    """Use pathlib's path parts without guessing about unsupported glob languages."""
+    path = Path(pattern)
+    normalised = path.as_posix()
+    problem = None
+    if not path.parts:
+        problem = "an empty glob has no comparable surface"
+    elif path.is_absolute() and not allow_absolute:
+        problem = "Path.glob requires a relative pattern"
+    elif ".." in path.parts:
+        problem = "contains a '..' segment"
+    elif any("**" in part and part != "**" for part in path.parts):
+        problem = "'**' must be an entire path component"
+    elif "\x00" in pattern:
+        problem = "contains a NUL character"
+    if problem:
+        error_type = UncontainableMemberLocation if member_pattern else NonCanonicalScopeRef
+        kind = "member pattern" if member_pattern else "mutation_scope_ref"
+        raise error_type(
+            f"unsupported {kind} {pattern!r}; normalized form {normalised!r}: {problem}"
         )
+    return normalised
+
+
+def _filesystem_scope_parts(ref: str) -> tuple[list[str], str | None, bool]:
+    """Split a pathlib-normalised filesystem ref into its literal prefix and glob tail."""
+    text = ref.strip().replace("\\", "/")
+    normalised = _normalise_glob_spelling(text, allow_absolute=True)
+    segments = [segment for segment in normalised.split("/") if segment]
     wildcard_at = next(
         (index for index, segment in enumerate(segments) if _WILDCARD.search(segment)), None
     )
@@ -852,7 +876,11 @@ def _pattern_matches(relative: str, pattern: str) -> bool:
     The producer's fs.glob calls root.glob(pattern): every pattern is anchored at the root.
     ``*.md`` selects direct children; ``**/*.md`` also selects nested files.
     """
-    return bool(_glob_to_regex(pattern).match(relative))
+    normalised = _normalise_member_pattern(pattern)
+    # A terminal separator makes root.glob select directories; fs.glob then keeps only files.
+    return not pattern.endswith("/") and bool(
+        _glob_to_regex(normalised).match(Path(relative).as_posix())
+    )
 
 
 def _glob_segments(pattern: str) -> tuple[str, ...]:
@@ -863,10 +891,19 @@ def _glob_segments(pattern: str) -> tuple[str, ...]:
 
 
 def _normalise_member_pattern(pattern: str) -> str:
-    pattern = pattern.strip().replace("\\", "/").strip("/")
+    pattern = _normalise_glob_spelling(pattern, member_pattern=True)
     if pattern.endswith("/**"):
         pattern += "/*"
     return pattern
+
+
+def _member_file_patterns(patterns: tuple[str, ...]) -> tuple[str, ...]:
+    normalised = tuple(_normalise_member_pattern(pattern) for pattern in patterns)
+    return tuple(
+        value
+        for pattern, value in zip(patterns, normalised, strict=True)
+        if not pattern.endswith("/")
+    )
 
 
 def _segment_pattern_covers(member_pattern: str, scope_pattern: str) -> bool:
@@ -953,6 +990,7 @@ def _glob_witnesses(pattern: str) -> tuple[str, ...]:
 
 
 def _scope_glob_covered(scope_pattern: str, member_patterns: tuple[str, ...]) -> bool:
+    member_patterns = _member_file_patterns(member_patterns)
     if any(_glob_pattern_covers(pattern, scope_pattern) for pattern in member_patterns):
         return True
     normalised = tuple(_normalise_member_pattern(pattern) for pattern in member_patterns)
@@ -968,6 +1006,8 @@ def _scope_glob_covered(scope_pattern: str, member_patterns: tuple[str, ...]) ->
 def _path_is_excluded(path: Path, member: DecayedMember) -> bool:
     if any(part in member.skip_dirs for part in path.parts):
         return True
+    if not member.excluded_roots and not member.excluded_prefixes:
+        return False
     # The producer checks skip_dirs lexically, but Declaration.is_excluded resolves paths.
     path = _resolve_member_path(path)
     if any(path == root or root in path.parents for root in member.excluded_roots):
@@ -1067,8 +1107,8 @@ def _resolve_member_path(path: Path) -> Path:
 
 def _check_member_symlinks(
     path: Path, root: Path, member: DecayedMember, *, scope_pattern: str | None
-) -> None:
-    """Do not mistake a lexical entry's target for its membership in fs.glob's surface."""
+) -> bool:
+    """Check possible member entries; report excluded witnesses before testing containment."""
     paths = [path]
     if scope_pattern is not None:
         # Inspect existing witnesses only for ambiguity, never to prove that a glob's future
@@ -1080,7 +1120,25 @@ def _check_member_symlinks(
                 f"cannot inspect scope glob {scope_pattern!r} below {path}: {exc}; "
                 "containment is undecidable"
             ) from exc
+    patterns = _member_file_patterns(member.patterns)
+    has_excluded_entry = False
     for selected in paths:
+        relative = "" if selected == root else selected.relative_to(root).as_posix()
+        if selected == path and scope_pattern is not None:
+            # The literal base may lead to future matches; only a disjoint subtree can be
+            # discarded here. A witness outside the patterns cannot make a matching link safe.
+            disjoint = member.patterns and all(
+                _glob_intersects_subtree(pattern, relative) is False for pattern in patterns
+            )
+        else:
+            disjoint = member.patterns and not any(
+                _pattern_matches(relative, pattern) for pattern in patterns
+            )
+        if disjoint:
+            continue
+        if _path_is_excluded(selected, member):
+            has_excluded_entry = True
+            continue
         for link in (selected, *selected.parents):
             if link == root or root not in link.parents:
                 break
@@ -1112,6 +1170,27 @@ def _check_member_symlinks(
                     "in the member location, re-run the frame producer, then retry the dispatch"
                 )
                 raise error
+    return has_excluded_entry
+
+
+def _refuse_directory_spelled_file(file: Path | QualifiedLocation) -> None:
+    if isinstance(file, QualifiedLocation):
+        prefix = (
+            f"//{file.authority}/"
+            if file.authority is not None
+            else ("/" if file.absolute_path else "")
+        )
+        spelling = f"{file.scheme}:{prefix}{'/'.join(file.parts)}"
+    else:
+        spelling = str(file)
+    error = NonCanonicalScopeRef(
+        f"directory-spelled scope resolves to declared member file {spelling!r}; "
+        "containment is undecidable for this inconsistent spelling"
+    )
+    error.remedy = (
+        f"repair mutation_scope_refs to use the file form {spelling!r}, then retry the dispatch"
+    )
+    raise error
 
 
 def ref_within_member(
@@ -1121,10 +1200,13 @@ def ref_within_member(
     *,
     scope_pattern: str | None = None,
 ) -> bool:
+    patterns = _member_file_patterns(member.patterns)
     broad = dirlike or scope_pattern is not None
     file_path = _resolve_member_path(path) if member.files else path
     if any(file_path == file for file in member.files):
-        return not broad and not _path_is_excluded(path, member)
+        if broad:
+            _refuse_directory_spelled_file(file_path)
+        return not _path_is_excluded(path, member)
     if scope_pattern is not None:
         for file in member.files:
             if (
@@ -1164,10 +1246,17 @@ def ref_within_member(
                     "whole-surface containment cannot be decided safely"
                 )
             continue
-        _check_member_symlinks(
+        relative = "" if path == root else path.relative_to(root).as_posix()
+        if (
+            not broad
+            and member.patterns
+            and path != root
+            and not any(_pattern_matches(relative, pattern) for pattern in patterns)
+        ):
+            continue
+        has_excluded_entry = _check_member_symlinks(
             path, root, member, scope_pattern=(scope_pattern or "**/*") if broad else None
         )
-        relative = "" if path == root else path.relative_to(root).as_posix()
         if broad:
             member_scope_pattern = _scope_pattern_from_base(relative, scope_pattern)
             if member.patterns and not _scope_glob_covered(member_scope_pattern, member.patterns):
@@ -1175,14 +1264,14 @@ def ref_within_member(
             exclusion_scope_pattern = _scope_pattern_from_base("", scope_pattern)
             if _scope_intersects_exclusions(path, exclusion_scope_pattern, member):
                 continue
+            # Retain the conservative exclusion comparison above. An excluded link target
+            # can additionally disprove containment even outside the lexical scope's root.
+            if has_excluded_entry:
+                continue
             return True
-        if _path_is_excluded(path, member):
+        if has_excluded_entry or _path_is_excluded(path, member):
             continue
-        if not member.patterns or path == root:
-            return True
-        for pattern in member.patterns:
-            if _pattern_matches(relative, pattern):
-                return True
+        return True
     return False
 
 
@@ -1194,9 +1283,12 @@ def qualified_ref_within_member(
     scope_pattern: str | None = None,
 ) -> bool:
     """Whether a parsed scheme-qualified ref is contained by one decayed member."""
+    patterns = _member_file_patterns(member.patterns)
     broad = dirlike or scope_pattern is not None
     if ref in member.qualified_files:
-        return not broad
+        if broad:
+            _refuse_directory_spelled_file(ref)
+        return True
     if scope_pattern is not None:
         for file in member.qualified_files:
             same_namespace = (
@@ -1244,7 +1336,7 @@ def qualified_ref_within_member(
             return True
         if not member.patterns or ref.parts == root.parts:
             return True
-        if any(_pattern_matches(relative, pattern) for pattern in member.patterns):
+        if any(_pattern_matches(relative, pattern) for pattern in patterns):
             return True
     return False
 

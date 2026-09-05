@@ -4904,6 +4904,246 @@ def _dispatch_up_to_the_adapter(
 
 
 @pytest.mark.parametrize("namespace", ["filesystem", "podium:", "gh://hapax-systems/"])
+@pytest.mark.parametrize(
+    ("pattern", "scope_ref"),
+    [
+        ("./scripts/*", "scripts/x"),
+        ("scripts//x", "scripts/x"),
+        ("scripts/./x", "scripts/x"),
+        ("scripts/", "scripts/x"),
+        ("scripts/x/", "scripts/x"),
+        ("./scripts/*", "scripts/*"),
+        ("./**//*", "scripts/"),
+        ("scripts/", "scripts/"),
+    ],
+)
+def test_dispatch_member_pattern_spellings_match_producer(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+    namespace: str,
+    pattern: str,
+    scope_ref: str,
+) -> None:
+    module = _dispatcher_module()
+    council = tmp_path / "council"
+    (council / "scripts").mkdir(parents=True)
+    selected = council / "scripts/x"
+    selected.touch()
+    enumerated = {path for path in council.glob(pattern) if path.is_file()}
+    assert enumerated == ({selected} if not pattern.endswith("/") else set())
+    monkeypatch.setattr(module, "REPO_ROOT_FOR_IMPORTS", council)
+    root = str(council) if namespace == "filesystem" else namespace
+    ref = scope_ref if namespace == "filesystem" else namespace + scope_ref
+    frame_root = _frame_procedure_root(
+        tmp_path / "frame", decayed_root=root, location={"path": root, "patterns": [pattern]}
+    )
+
+    rc, err = _dispatch_up_to_the_adapter(
+        tmp_path,
+        monkeypatch,
+        capsys,
+        module,
+        mutation_scope_refs=json.dumps([ref]),
+        frame_root=frame_root,
+    )
+
+    assert rc == 10
+    if selected in enumerated:
+        assert "marks every declared mutation surface out of accountability" in err
+        assert "fixture refusal" not in err
+    else:
+        assert "fixture refusal" in err
+        assert "declared mutation scope is not containable" not in err
+
+
+@pytest.mark.parametrize("namespace", ["filesystem", "podium:", "gh://hapax-systems/"])
+@pytest.mark.parametrize("spelling", ["./scripts/*", "scripts//x", "scripts/./x", "./", "scripts/"])
+def test_dispatch_scope_spellings_match_producer(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+    namespace: str,
+    spelling: str,
+) -> None:
+    module = _dispatcher_module()
+    council = tmp_path / "council"
+    (council / "scripts").mkdir(parents=True)
+    selected = council / "scripts/x"
+    selected.touch()
+    enumerated = {path for path in council.glob("**/*") if path.is_file()}
+    assert enumerated == {selected}
+    if spelling == "./":
+        # Python 3.12's producer cannot enumerate a pattern made only of dot/separator parts.
+        with pytest.raises((AttributeError, IndexError, ValueError)):
+            list(council.glob(spelling))
+    else:
+        entries = set(council.glob(spelling))
+        assert entries == ({selected.parent} if spelling.endswith("/") else {selected})
+    monkeypatch.setattr(module, "REPO_ROOT_FOR_IMPORTS", council)
+    root = str(council) if namespace == "filesystem" else namespace
+    ref = spelling if namespace == "filesystem" else namespace + spelling
+    frame_root = _frame_procedure_root(
+        tmp_path / "frame", decayed_root=root, location={"path": root, "patterns": ["**/*"]}
+    )
+
+    rc, err = _dispatch_up_to_the_adapter(
+        tmp_path,
+        monkeypatch,
+        capsys,
+        module,
+        mutation_scope_refs=json.dumps([ref]),
+        frame_root=frame_root,
+    )
+
+    assert rc == 10
+    assert "fixture refusal" not in err
+    if spelling == "./":
+        assert "unsupported" in err and "normalized form '.'" in err
+        assert "Next: repair mutation_scope_refs" in err
+    else:
+        assert "marks every declared mutation surface out of accountability" in err
+
+
+@pytest.mark.parametrize("namespace", ["filesystem", "podium:", "gh://hapax-systems/"])
+@pytest.mark.parametrize("pattern", ["./", "", "../council/scripts/x", "/scripts/x", "scripts/**x"])
+def test_dispatch_unsupported_member_pattern_names_normalized_form(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+    namespace: str,
+    pattern: str,
+) -> None:
+    module = _dispatcher_module()
+    council = tmp_path / "council"
+    (council / "scripts").mkdir(parents=True)
+    selected = council / "scripts/x"
+    selected.touch()
+    if pattern.startswith("../"):
+        assert set(council.glob(pattern)) == {council / pattern}
+        assert (council / pattern).resolve() == selected
+    else:
+        with pytest.raises((AttributeError, IndexError, ValueError, NotImplementedError)):
+            list(council.glob(pattern))
+    monkeypatch.setattr(module, "REPO_ROOT_FOR_IMPORTS", council)
+    root = str(council) if namespace == "filesystem" else namespace
+    ref = "scripts/x" if namespace == "filesystem" else namespace + "scripts/x"
+    frame_root = _frame_procedure_root(
+        tmp_path / "frame", decayed_root=root, location={"path": root, "patterns": [pattern]}
+    )
+
+    rc, err = _dispatch_up_to_the_adapter(
+        tmp_path,
+        monkeypatch,
+        capsys,
+        module,
+        mutation_scope_refs=json.dumps([ref]),
+        frame_root=frame_root,
+    )
+
+    assert rc == 10
+    assert "fixture refusal" not in err
+    assert "unsupported" in err and f"normalized form {Path(pattern).as_posix()!r}" in err
+    assert "Next: amend frame/procedure/declaration/mass.yaml" in err
+
+
+@pytest.mark.parametrize("namespace", ["filesystem", "podium:", "gh://hapax-systems/"])
+@pytest.mark.parametrize("suffix", ["/", "//", "/./"])
+def test_dispatch_directory_spelled_explicit_file_refuses_with_file_form(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+    namespace: str,
+    suffix: str,
+) -> None:
+    module = _dispatcher_module()
+    council = tmp_path / "council"
+    council.mkdir()
+    file = council / "CLAUDE.md"
+    file.touch()
+    monkeypatch.setattr(module, "REPO_ROOT_FOR_IMPORTS", council)
+    declared = str(file) if namespace == "filesystem" else namespace + "CLAUDE.md"
+    ref = "CLAUDE.md" if namespace == "filesystem" else declared
+    frame_root = _frame_procedure_root(
+        tmp_path / "frame", decayed_root=declared, location={"files": [declared]}
+    )
+    monkeypatch.setenv("HAPAX_FRAME_PROCEDURE_ROOT", str(frame_root))
+    canonical, _, _ = module.frame_verdict_refusal({"mutation_scope_refs": [ref]})
+    assert canonical is not None and "out of accountability" in canonical
+
+    rc, err = _dispatch_up_to_the_adapter(
+        tmp_path,
+        monkeypatch,
+        capsys,
+        module,
+        mutation_scope_refs=json.dumps([ref + suffix]),
+        frame_root=frame_root,
+    )
+
+    assert rc == 10
+    assert "fixture refusal" not in err
+    assert "directory-spelled scope" in err and "declared member file" in err
+    assert f"Next: repair mutation_scope_refs to use the file form {declared!r}" in err
+
+
+@pytest.mark.parametrize(
+    "reason", ["outside-pattern", "excluded-root", "excluded-prefix", "skip-dir"]
+)
+@pytest.mark.parametrize("scope", ["literal", "glob"])
+def test_dispatch_escaping_symlink_outside_effective_member_is_admitted(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+    reason: str,
+    scope: str,
+) -> None:
+    module = _dispatcher_module()
+    council = tmp_path / "council"
+    (council / ".venv/bin").mkdir(parents=True)
+    target = tmp_path / "outside-python"
+    target.touch()
+    link = council / ".venv/bin/python"
+    link.symlink_to(target)
+    pattern = "./docs//**/*.md" if reason == "outside-pattern" else "./.venv//bin/*"
+    enumerated = {path for path in council.glob(pattern) if path.is_file()}
+    assert (link in enumerated) is (reason != "outside-pattern")
+    exclusions = []
+    if reason.startswith("excluded"):
+        excluded = str(target) + ("*" if reason == "excluded-prefix" else "")
+        exclusions = [{"id": "external-residue", "paths": [excluded]}]
+        assert link.resolve() == target
+    skip_dirs = [".venv"] if reason == "skip-dir" else []
+    assert not {
+        path
+        for path in enumerated
+        if not any(part in skip_dirs for part in path.parts)
+        and not (exclusions and path.resolve() == target)
+    }
+    monkeypatch.setattr(module, "REPO_ROOT_FOR_IMPORTS", council)
+    frame_root = _frame_procedure_root(
+        tmp_path / "frame",
+        decayed_root=council,
+        location={"path": str(council), "patterns": [pattern], "skip_dirs": skip_dirs},
+        exclusions=exclusions,
+    )
+    ref = ".venv/bin/python" if scope == "literal" else ".venv/bin/[p]ython"
+
+    rc, err = _dispatch_up_to_the_adapter(
+        tmp_path,
+        monkeypatch,
+        capsys,
+        module,
+        mutation_scope_refs=json.dumps([ref]),
+        frame_root=frame_root,
+    )
+
+    assert rc == 10
+    assert "fixture refusal" in err
+    assert "containment is undecidable" not in err
+    assert "out of accountability" not in err
+
+
+@pytest.mark.parametrize("namespace", ["filesystem", "podium:", "gh://hapax-systems/"])
 @pytest.mark.parametrize("kind", ["file", "directory", "escape", "dangling"])
 def test_dispatch_patterned_member_symlinks_do_not_bypass_decay(
     tmp_path: Path,
