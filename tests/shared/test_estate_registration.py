@@ -15,6 +15,7 @@ from shared.estate_registration import (
     RegistrationError,
     export_canary_health,
     grandfather_fragment,
+    observed_host_identity,
     originate_canaries,
     run_peer_command,
     sweep,
@@ -22,6 +23,34 @@ from shared.estate_registration import (
 from shared.estate_store_registry import load_registry, matching_store
 
 NOW = datetime(2026, 9, 2, 12, 0, tzinfo=UTC)
+
+
+@pytest.mark.parametrize(
+    "value", ["", " \n", OSError("fake unreadable"), UnicodeError("fake invalid")]
+)
+@pytest.mark.parametrize("field", ["observed_hostname", "observed_machine_id"])
+def test_native_identity_absence_uses_only_fixed_read_paths(monkeypatch, field, value) -> None:
+    paths = {
+        "observed_hostname": "/proc/sys/kernel/hostname",
+        "observed_machine_id": "/etc/machine-id",
+    }
+    calls = []
+
+    def read(path, *, encoding):  # noqa: ANN001, ANN202
+        calls.append((str(path), encoding))
+        if str(path) == paths[field]:
+            if isinstance(value, Exception):
+                raise value
+            return value
+        return "native-value\n"
+
+    monkeypatch.setattr(Path, "read_text", read)
+    monkeypatch.setenv("HOSTNAME", "untrusted-host")
+    monkeypatch.setenv("MACHINE_ID", "untrusted-machine")
+    observed = observed_host_identity()
+    assert calls == [(path, "utf-8") for path in paths.values()]
+    assert observed[field] == "absent"
+    assert observed[next(name for name in paths if name != field)] == "native-value"
 
 
 def _registry_for(home: Path, *, depth: int = 1):  # noqa: ANN202
@@ -243,10 +272,13 @@ def test_peer_command_uses_declared_opposite_host_and_no_fallback() -> None:
         calls.append((argv, kwargs))
         return SimpleNamespace(returncode=0, stdout='{"ok": true}\n', stderr="")
 
-    run_peer_command(load_registry(), host_id="appendix", command="export-canary", runner=runner)
+    result = run_peer_command(
+        load_registry(), host_id="appendix", command="export-canary", runner=runner
+    )
 
     assert calls[0][0][5] == "hapax-podium"
     assert "--host podium" in calls[0][0][6]
+    assert result.ssh_target == calls[0][0][5]
 
 
 def test_peer_command_refuses_ssh_failure() -> None:
@@ -469,6 +501,8 @@ def test_peer_command_pins_release_interpreter_despite_uv_environment(
     assert "uv" not in remote
     assert "estate_peer_root=/retained/release\n" in remote
     assert 'exec "$estate_peer_root/.venv/bin/python" -I ' in remote
+    assert " --qualified" in remote
+    assert "--observed-host-override" not in remote
     assert kwargs == {"capture_output": True, "text": False, "timeout": 180, "check": False}
 
 

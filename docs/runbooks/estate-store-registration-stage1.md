@@ -107,6 +107,42 @@ producer does not replace the source activator.
 
 ## Complete command and environment interface
 
+`--host` requests a registry label; it is not an observation of the executing
+machine. Every command reads `/proc/sys/kernel/hostname` (the explicit Linux
+kernel hostname source, without an environment or resolver fallback) and
+`/etc/machine-id` read-only. It compares the hostname with the resolved label
+and its declared aliases, and the machine id with `hosts.<label>.machine_id`.
+Boot identity continues to come from `/proc/sys/kernel/random/boot_id`.
+Identity observations and their binding live only in completion evidence;
+no field is added to the v1 drift report or stdout summary for this binding.
+
+The current checked-in registry has **no machine-id declarations**. Until the
+coordinator supplies verified `hosts.appendix.machine_id` and
+`hosts.podium.machine_id`, runs explicitly record
+`local_declared_machine_id_absent` / `peer_declared_machine_id_absent` and cannot
+be `ok`. The producer never learns or installs an expected identity from the
+peer it is checking. The existing aliases and SSH targets remain unchanged.
+
+An own-label mismatch fails before any scan, write or SSH dispatch. The same
+binding checks the peer completion in both declared directions, independently
+of the consistent requested label in its report and summary. The actual SSH
+argv target is retained and checked against the requested peer's declared
+`ssh_target` and aliases. Mismatch errors name the requested label, observed
+value and declaration (and the dispatched target for a peer). Peer binding
+failures produce `peer.status: failed` and a nonzero initiator exit.
+
+Unreadable, empty or undecodable native identity fields become `absent` and
+make successful execution `unqualified`, including with `--qualified`. Without
+either a requested label or an observed hostname, execution stops unqualified
+before dispatch or writes. A missing boot id still fails as before.
+`--observed-host-override HOSTNAME MACHINE_ID` is the sole producer fixture
+binding: it replaces the two identity observations, names itself in evidence
+and errors, and can never produce `ok` or `scheduled: true`. Overrides still
+undergo declaration checks; mismatches fail. `--qualified` refuses the flag
+outright, including when its values match. The override is never forwarded to
+the peer. Qualified peer dispatch forwards `--qualified`; the initiator also
+rejects peer override evidence when explicitly invoked with `--qualified`.
+
 The positional command is one of `list`, `originate`, `export-canary`,
 `check-peer`, `sweep`, `sweep-peer`, or `grandfather`. Options are accepted by
 the common parser; only the named operations use each operation-specific option.
@@ -115,14 +151,15 @@ the common parser; only the named operations use each operation-specific option.
 |---|---|
 | `-h`, `--help` | Print parser help and exit; no execution evidence line |
 | `--registry PATH` | Running physical tree's `config/estate-store-registry.yaml`; local registry for every command |
-| `--host ID_OR_ALIAS` | Local hostname resolved through registry aliases; every command |
+| `--host ID_OR_ALIAS` | Requested label or alias; defaults to the natively observed hostname, resolved through the registry; every command checks the independent observed identity |
+| `--observed-host-override HOSTNAME MACHINE_ID` | Unset; CLI-only fixture binding for both observations, empty values become `absent`; always recorded and unqualified (or failed), never scheduled; refused by `--qualified` |
 | `--home PATH` | `Path.home()`; local home/vault/runtime path binding, never forwarded to the peer |
 | `--consumer NAME` | Unset; required by `list`. Choices validated by reader: `assemble`, `brief-dispatch`, `census`, `drift-sweep`, `pillar-matcher`, `task-intake` |
 | `--report-root PATH` | Registry `policy.reports_path`; local `sweep` only |
 | `--output PATH` | Unset; required by `grandfather`, must resolve inside the current worktree |
 | `--json` | False; JSON stdout instead of YAML. Peer commands always request and forward peer JSON |
 | `--peer-source-root PATH` | `HAPAX_ESTATE_PEER_SOURCE_ROOT` or unset; `check-peer` and `sweep-peer`, explicit flag wins |
-| `--qualified` | False; requires an explicit physical peer binding for peer commands; does not attest scheduling |
+| `--qualified` | False; requires an explicit physical peer binding for peer commands and refuses local or peer observed-identity overrides; forwarded on qualified peer dispatch; does not attest scheduling or supply missing identity declarations |
 | `--expected-source-root PATH` | Unset; every command refuses a different physical script tree, registry or redirected registry path |
 | `--include-report` | False; local `sweep` adds exact report bytes as `report_base64` to stdout; always passed by `sweep-peer` |
 
@@ -140,6 +177,7 @@ to stderr. Parser errors and help exit before evidence construction.
 | `GIT_*` | Excluded from the local source-identity Git subprocess environment |
 | `UV_*`, uv configuration, `VIRTUAL_ENV` | No binding in the composed remote command: no uv process or environment discovery occurs |
 | `PYTHON*` | Remote interpreter's `-I` ignores Python environment overrides |
+| Observed-identity environment bindings | None added. `HOSTNAME`, `HOST`, `MACHINE_ID`, and `HAPAX_ESTATE_OBSERVED_HOST_OVERRIDE` have no identity-binding effect; use only the explicit CLI fixture flag |
 
 No other environment variable is explicitly read by the producer, and
 `HAPAX_ESTATE_SCHEDULED` has no effect. The producer does not serialize its
@@ -172,6 +210,13 @@ it does not produce a drift report.
 |---|---|---|
 | `schema`, `command` | Evidence schema constant and parsed CLI command | Never |
 | `host` | Registry-resolved local host id | Execution refused before or during host resolution |
+| `requested_host` | Exact `--host` argument, otherwise the observed hostname (possibly from the explicit fixture flag) | No label supplied and hostname observation is absent |
+| `observed_hostname` | Read-only `/proc/sys/kernel/hostname`, stripped; explicit fixture flag's first value when used | Unreadable, undecodable or empty, including an empty fixture value |
+| `observed_machine_id` | Read-only `/etc/machine-id`, stripped; explicit fixture flag's second value when used | Unreadable, undecodable or empty, including an empty fixture value |
+| `observed_host_override` | Literal `--observed-host-override` when that flag is supplied | Flag not supplied |
+| `identity_binding.declared_hostnames` | Requested registry label plus its `aliases` | Entire `identity_binding` is `absent` before host resolution/binding; list otherwise |
+| `identity_binding.declared_machine_id`, `.declared_ssh_target` | Requested host's registry `machine_id` and `ssh_target` | Declaration missing or empty, or entire binding absent |
+| `identity_binding.status`, `.errors` | Local observed/declaration comparison: `ok`, `unqualified` for missing evidence, or `failed` for mismatch; reason list | Entire binding absent before comparison |
 | `boot_id` | Local `/proc/sys/kernel/random/boot_id` | Missing, unreadable or empty; command fails |
 | `native.INVOCATION_ID` | Environment `INVOCATION_ID`, copied as observed | Unset or empty |
 | `native.SYSTEMD_EXEC_PID` | Environment `SYSTEMD_EXEC_PID` | Unset or empty |
@@ -179,7 +224,7 @@ it does not produce a drift report.
 | `native.TRIGGER_PATH` | Environment `TRIGGER_PATH` | Unset or empty |
 | `native.TRIGGER_TIMER_REALTIME_USEC` | Environment of the same name | Unset or empty |
 | `native.TRIGGER_TIMER_MONOTONIC_USEC` | Environment of the same name | Unset or empty |
-| `scheduled` | `true` only for an observed `.timer` trigger unit and at least one positive integer native timer timestamp | Every other case, including manual calls and `--qualified` alone |
+| `scheduled` | `true` only for an observed `.timer` trigger unit and at least one positive integer native timer timestamp, with no execution/binding errors or identity override | Every other case, including manual calls, missing identity evidence, overrides and `--qualified` alone |
 | `source.physical_root` | Resolved path of the running script's tree, fixed at import | Never |
 | `source.git_head` | Successful `git -C <physical_root> rev-parse HEAD`; Git environment overrides excluded | Git unavailable, failed or invalid output |
 | `started_at`, `finished_at` | Local UTC clock immediately around execution | Never in an emitted completion |
@@ -196,6 +241,11 @@ it does not produce a drift report.
 | `root_observations[].observations[1].transport_error` | `timeout` or exception class | Process completed, even with nonzero exit |
 | `root_observations[].observations[1].timeout_seconds` | Fixed `DOCKER_TIMEOUT_SECONDS`, 15 | Never |
 | `peer` | Result of the current SSH call | No peer call completed, or binding refused before dispatch |
+| `peer.observed_hostname`, `.observed_machine_id` | Peer's own completion fields, independently checked against the initiator's registry for the requested peer label | Field missing, empty, null or explicitly `absent`; prevents qualification |
+| `peer.observed_host_override` | Peer's completion marker | Peer marker missing or explicitly `absent`; override errors also prevent qualification even without the marker |
+| `peer.ssh_target` | Actual target argument passed to the SSH capture boundary | Result has no captured target; binding fails |
+| `peer.identity_binding.declared_hostnames`, `.declared_machine_id`, `.declared_ssh_target` | Initiator registry's declarations for the requested peer; same shapes as local binding | Missing/empty machine-id or target declaration; entire `peer` absent before dispatch |
+| `peer.identity_binding.status`, `.errors` | Peer observation and actual dispatch-target comparisons; same three statuses as local binding | Entire `peer` absent before dispatch |
 | `peer.source_binding.kind`, `.requested` | `physical` plus explicit root, or `alias` plus legacy alias | Never when a peer result exists |
 | `peer.report_path`, `peer.report_sha256` | Peer stdout summary, checked against peer completion | Missing summary fields, or command produces no report |
 | `peer.computed_sha256` | SHA-256 recomputed by initiator over decoded `report_base64` | Base64 decoding failed before hashing, or command produces no report; missing base64 defaults to empty bytes, whose digest is retained alongside `peer_report_invalid_or_absent` |
@@ -203,8 +253,8 @@ it does not produce a drift report.
 | `peer.source.physical_root`, `.git_head` | Peer's script tree and Git HEAD, with the same provenance as local `source` | Entire source is `absent` if no source object was observed; a peer-produced `git_head` is `absent` on its Git read failure |
 | `peer.returncode` | Exact observed SSH process return code, including negative signal codes | Transport launch failure or timeout has no observed code |
 | `peer.transport_error` | `timeout` or transport exception class | Transport completed normally, even with nonzero exit |
-| `peer.status`, `peer.errors` | Binding validation and peer process outcome | Never when a peer result exists; `ok` or `failed`, plus reason list |
-| `returncode`, `status`, `errors` | CLI exit, observed scheduling completeness and execution/binding checks | Never; errors is an empty list on success |
+| `peer.status`, `peer.errors` | Binding validation and peer process outcome | Never when a peer result exists; `ok`, `unqualified` or `failed`, plus reason list |
+| `returncode`, `status`, `errors` | CLI exit, observed scheduling completeness and execution/binding checks | Never; errors includes missing-identity and override reasons even on a zero exit |
 
 The `absent` sentinel describes unavailable observations, not every malformed
 value. Peer summary values are retained as observed (including explicit nulls)
@@ -218,7 +268,11 @@ prove the absence of missing timer slots. See the upstream
 [systemd execution environment contract](https://raw.githubusercontent.com/systemd/systemd/main/man/systemd.exec.xml).
 `--qualified` is a source-safety requirement, not a scheduling attestation.
 Status is `failed` for nonzero exit, `unqualified` for successful execution
-without both observed timer metadata and an invocation id, and `ok` otherwise.
+with identity omissions/overrides or without both observed timer metadata and
+an invocation id, and `ok` otherwise. Identity omissions/overrides on a peer
+also leave the initiator unqualified. Only the specific peer completion errors
+for absent native identity, absent declared machine id and the explicit fixture
+override are accepted as unqualified zero-exit evidence; other peer errors fail.
 An SSH-invoked peer normally reports `unqualified`; its successful causal report
 binding is still usable by the initiating invocation. No cadence, streak,
 cross-invocation join or acceptance decision is computed here.

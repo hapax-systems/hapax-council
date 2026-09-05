@@ -100,6 +100,27 @@ NATIVE_VARIABLES = (
     "TRIGGER_TIMER_REALTIME_USEC",
     "TRIGGER_TIMER_MONOTONIC_USEC",
 )
+MACHINE_IDS = {"appendix": "1" * 32, "podium": "2" * 32}
+
+
+def _native_identity(monkeypatch, host="appendix", **overrides):  # noqa: ANN001, ANN202
+    """Fake the OS read boundary; this is not a producer identity override."""
+    values = {
+        "/proc/sys/kernel/hostname": f"hapax-{host}\n",
+        "/etc/machine-id": MACHINE_IDS[host] + "\n",
+        **overrides,
+    }
+    read_text = Path.read_text
+
+    def read(path, *args, **kwargs):  # noqa: ANN001, ANN202
+        if str(path) in values:
+            value = values[str(path)]
+            if isinstance(value, Exception):
+                raise value
+            return value
+        return read_text(path, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "read_text", read)
 
 
 @pytest.fixture
@@ -109,8 +130,12 @@ def cli(monkeypatch: pytest.MonkeyPatch, tmp_path: Path):  # noqa: ANN201
     importlib.machinery.SourceFileLoader(module.__name__, str(SCRIPT)).exec_module(module)
     for name in (*NATIVE_VARIABLES, "HAPAX_ESTATE_PEER_SOURCE_ROOT"):
         monkeypatch.delenv(name, raising=False)
+    declared = load_registry()
     registry = replace(
-        load_registry(),
+        declared,
+        hosts={
+            host: {**row, "machine_id": MACHINE_IDS[host]} for host, row in declared.hosts.items()
+        },
         scan_roots=(
             {"id": "fake-root", "kind": "directory", "path": str(tmp_path / "scan"), "depth": 1},
         ),
@@ -118,13 +143,14 @@ def cli(monkeypatch: pytest.MonkeyPatch, tmp_path: Path):  # noqa: ANN201
     (tmp_path / "scan").mkdir()
     monkeypatch.setattr(module, "load_registry", lambda _path: registry)
     monkeypatch.setattr(module, "_boot_id", lambda: "local-boot", raising=False)
+    _native_identity(monkeypatch)
     return module
 
 
-def _fake_peer():  # noqa: ANN202
+def _fake_peer(host="podium"):  # noqa: ANN001, ANN202
     report = {
         "schema": "hapax.estate-drift-report/v1",
-        "host": "podium",
+        "host": host,
         "stage": "report-only",
         "mutation_actions": [],
         "findings": [],
@@ -135,7 +161,7 @@ def _fake_peer():  # noqa: ANN202
         "report_path": "/fake/reports/peer.json",
         "report_sha256": hashlib.sha256(raw).hexdigest(),
         "report_base64": base64.b64encode(raw).decode(),
-        "host": "podium",
+        "host": host,
         "boot_id": "peer-boot",
         "source": {"physical_root": "/retained/peer", "git_head": "a" * 40},
         "scan_error_count": 0,
@@ -143,7 +169,10 @@ def _fake_peer():  # noqa: ANN202
     evidence = {
         "schema": "hapax.estate-execution/v1",
         "command": "sweep",
-        "host": "podium",
+        "host": host,
+        "observed_hostname": f"hapax-{host}",
+        "observed_machine_id": MACHINE_IDS[host],
+        "observed_host_override": "absent",
         "boot_id": "peer-boot",
         "source": dict(summary["source"]),
         "status": "unqualified",
@@ -154,7 +183,7 @@ def _fake_peer():  # noqa: ANN202
         "report": {
             "path": summary["report_path"],
             "sha256": summary["report_sha256"],
-            "host": "podium",
+            "host": host,
         },
     }
     return summary, evidence
@@ -602,3 +631,248 @@ def test_cli_docker_root_keeps_both_observations(
         } == {str(root / "alpha"), str(root / "beta")}
     assert report["mutation_actions"] == []
     assert base64.b64decode(summary["report_base64"]) == Path(summary["report_path"]).read_bytes()
+
+
+def _timer_context(monkeypatch):  # noqa: ANN001, ANN202
+    for name, value in {
+        "INVOCATION_ID": "b" * 32,
+        "TRIGGER_UNIT": "fake.timer",
+        "TRIGGER_TIMER_REALTIME_USEC": "1788570000000000",
+        "HAPAX_ESTATE_PEER_SOURCE_ROOT": "/retained/peer",
+    }.items():
+        monkeypatch.setenv(name, value)
+
+
+@pytest.mark.parametrize("host", ["appendix", "podium"])
+@pytest.mark.parametrize("command", ["sweep-peer", "check-peer"])
+@pytest.mark.parametrize("field", ["observed_hostname", "observed_machine_id", "matching"])
+def test_cli_peer_observed_identity(cli, monkeypatch, capsys, host, command, field) -> None:
+    _native_identity(monkeypatch, host)
+    _timer_context(monkeypatch)
+    peer = "podium" if host == "appendix" else "appendix"
+    summary, completion = _fake_peer(peer)
+    completion["command"] = "sweep" if command == "sweep-peer" else "export-canary"
+    wrong = f"hapax-{host}" if field == "observed_hostname" else MACHINE_IDS[host]
+    if field != "matching":
+        completion[field] = wrong
+    calls, streams = _install_peer(cli, monkeypatch, summary, completion)
+    code = cli.main([command, "--host", host, "--qualified", "--json"])
+    captured = capsys.readouterr()
+    evidence = _evidence(captured.err)
+    assert captured.out == streams[0] and captured.err.startswith(streams[1])
+    assert len(calls) == 1 and calls[0]["host_id"] == host
+    assert evidence["requested_host"] == host and evidence["host"] == host
+    assert evidence["observed_hostname"] == f"hapax-{host}"
+    assert evidence["observed_machine_id"] == MACHINE_IDS[host]
+    assert evidence["peer"]["ssh_target"] == f"hapax-{peer}"
+    assert evidence["peer"]["host"] == peer
+    if field == "matching":
+        assert code == 0 and evidence["status"] == "ok"
+        assert evidence["scheduled"] is True
+        assert evidence["errors"] == [] and evidence["peer"]["status"] == "ok"
+        assert evidence["peer"]["observed_hostname"] == f"hapax-{peer}"
+        assert evidence["peer"]["observed_machine_id"] == MACHINE_IDS[peer]
+    else:
+        assert code == 2
+        assert evidence["status"] == evidence["peer"]["status"] == "failed"
+        reason = next(row for row in evidence["errors"] if f"peer_{field}_mismatch" in row)
+        assert f"requested='{peer}'" in reason and f"observed='{wrong}'" in reason
+        expected = f"hapax-{peer}" if field == "observed_hostname" else MACHINE_IDS[peer]
+        assert expected in reason and f"ssh_target='hapax-{peer}'" in reason
+
+
+@pytest.mark.parametrize("host", ["appendix", "podium"])
+@pytest.mark.parametrize("field", ["observed_hostname", "observed_machine_id"])
+def test_cli_own_label_mismatch_refuses_before_dispatch(
+    cli, monkeypatch, capsys, tmp_path, host, field
+) -> None:
+    other = "podium" if host == "appendix" else "appendix"
+    path = "/proc/sys/kernel/hostname" if field == "observed_hostname" else "/etc/machine-id"
+    wrong = f"hapax-{other}" if field == "observed_hostname" else MACHINE_IDS[other]
+    _native_identity(monkeypatch, host, **{path: wrong})
+    monkeypatch.setattr(cli, "run_peer_command", lambda *_a, **_k: pytest.fail("dispatched"))
+    monkeypatch.setattr(cli, "sweep", lambda *_a, **_k: pytest.fail("local write"))
+    for command in ("sweep-peer", "check-peer", "sweep"):
+        assert cli.main([command, "--host", host, "--home", str(tmp_path)]) == 2
+        captured = capsys.readouterr()
+        evidence = _evidence(captured.err)
+        assert captured.out == "" and evidence["peer"] == evidence["report"] == "absent"
+        assert evidence["status"] == "failed"
+        reason = next(row for row in evidence["errors"] if f"local_{field}_mismatch" in row)
+        assert f"requested='{host}'" in reason and f"observed='{wrong}'" in reason
+        expected = f"hapax-{host}" if field == "observed_hostname" else MACHINE_IDS[host]
+        assert expected in reason
+
+
+@pytest.mark.parametrize("scope", ["local", "peer"])
+@pytest.mark.parametrize("field", ["observed_hostname", "observed_machine_id"])
+def test_cli_absent_observed_identity_is_unqualified(
+    cli, monkeypatch, capsys, scope, field
+) -> None:
+    _timer_context(monkeypatch)
+    summary, completion = _fake_peer()
+    if scope == "local":
+        path = "/proc/sys/kernel/hostname" if field == "observed_hostname" else "/etc/machine-id"
+        _native_identity(monkeypatch, **{path: PermissionError("fake unreadable identity")})
+    else:
+        completion.pop(field)
+    _install_peer(cli, monkeypatch, summary, completion)
+    assert cli.main(["sweep-peer", "--host", "appendix", "--qualified"]) == 0
+    evidence = _evidence(capsys.readouterr().err)
+    assert evidence["status"] == "unqualified" and evidence["scheduled"] == "absent"
+    observed = evidence if scope == "local" else evidence["peer"]
+    assert observed[field] == "absent"
+    assert f"{scope}_{field}_absent" in evidence["errors"]
+    assert observed["identity_binding"]["status"] == "unqualified"
+    if scope == "peer":
+        assert observed["status"] == "unqualified"
+
+
+@pytest.mark.parametrize("scope", ["local", "peer"])
+def test_cli_absent_declared_machine_id_is_unqualified(cli, monkeypatch, capsys, scope) -> None:
+    registry = cli.load_registry(None)
+    host = "appendix" if scope == "local" else "podium"
+    registry.hosts[host].pop("machine_id")
+    _timer_context(monkeypatch)
+    summary, completion = _fake_peer()
+    _install_peer(cli, monkeypatch, summary, completion)
+    assert cli.main(["sweep-peer", "--host", "appendix"]) == 0
+    evidence = _evidence(capsys.readouterr().err)
+    assert evidence["status"] == "unqualified" and evidence["scheduled"] == "absent"
+    assert f"{scope}_declared_machine_id_absent" in evidence["errors"]
+    observed = evidence if scope == "local" else evidence["peer"]
+    assert observed["identity_binding"]["declared_machine_id"] == "absent"
+    if scope == "peer":
+        assert observed["status"] == "unqualified"
+
+
+@pytest.mark.parametrize("host", ["appendix", "podium"])
+def test_cli_native_identity_and_default_label_ignore_environment(
+    cli, monkeypatch, capsys, host
+) -> None:
+    _native_identity(monkeypatch, host)
+    for name in ("HOSTNAME", "HOST", "MACHINE_ID", "HAPAX_ESTATE_OBSERVED_HOST_OVERRIDE"):
+        monkeypatch.setenv(name, "not-the-native-identity")
+    assert cli.main(["list", "--consumer", "census", "--json"]) == 0
+    evidence = _evidence(capsys.readouterr().err)
+    assert evidence["requested_host"] == evidence["observed_hostname"] == f"hapax-{host}"
+    assert evidence["host"] == host and evidence["observed_machine_id"] == MACHINE_IDS[host]
+    assert evidence["observed_host_override"] == "absent" and evidence["errors"] == []
+
+
+@pytest.mark.parametrize("host", ["appendix", "podium"])
+def test_cli_override_is_explicitly_unqualified(cli, monkeypatch, capsys, host) -> None:
+    other = "podium" if host == "appendix" else "appendix"
+    _native_identity(monkeypatch, other)
+    _timer_context(monkeypatch)
+    summary, completion = _fake_peer(other)
+    calls, _streams = _install_peer(cli, monkeypatch, summary, completion)
+    assert (
+        cli.main(
+            [
+                "sweep-peer",
+                "--host",
+                host,
+                "--observed-host-override",
+                f"hapax-{host}",
+                MACHINE_IDS[host],
+            ]
+        )
+        == 0
+    )
+    evidence = _evidence(capsys.readouterr().err)
+    assert len(calls) == 1 and "observed_host_override" not in calls[0]
+    assert evidence["status"] == "unqualified" and evidence["scheduled"] == "absent"
+    assert evidence["observed_host_override"] == "--observed-host-override"
+    assert "observed_host_override: --observed-host-override" in evidence["errors"]
+    assert evidence["observed_hostname"] == f"hapax-{host}"
+    assert evidence["observed_machine_id"] == MACHINE_IDS[host]
+
+
+@pytest.mark.parametrize("command", ["list", "sweep-peer"])
+def test_cli_qualified_refuses_override(cli, monkeypatch, capsys, command) -> None:
+    _timer_context(monkeypatch)
+    monkeypatch.setattr(cli, "run_peer_command", lambda *_a, **_k: pytest.fail("dispatched"))
+    assert (
+        cli.main(
+            [
+                command,
+                "--host",
+                "appendix",
+                "--consumer",
+                "census",
+                "--qualified",
+                "--observed-host-override",
+                "hapax-appendix",
+                MACHINE_IDS["appendix"],
+            ]
+        )
+        == 2
+    )
+    captured = capsys.readouterr()
+    evidence = _evidence(captured.err)
+    assert captured.out == "" and evidence["peer"] == "absent"
+    assert evidence["status"] == "failed" and evidence["scheduled"] == "absent"
+    assert any(
+        "--qualified refuses --observed-host-override" in reason for reason in evidence["errors"]
+    )
+    assert evidence["observed_host_override"] == "--observed-host-override"
+
+
+@pytest.mark.parametrize("qualified", [False, True])
+def test_cli_peer_override_is_unqualified_or_refused(cli, monkeypatch, capsys, qualified) -> None:
+    _timer_context(monkeypatch)
+    summary, completion = _fake_peer()
+    completion["observed_host_override"] = "--observed-host-override"
+    completion["errors"] = ["observed_host_override: --observed-host-override"]
+    _install_peer(cli, monkeypatch, summary, completion)
+    assert cli.main(
+        ["sweep-peer", "--host", "appendix", *(["--qualified"] if qualified else [])]
+    ) == (2 if qualified else 0)
+    evidence = _evidence(capsys.readouterr().err)
+    assert (
+        evidence["status"]
+        == evidence["peer"]["status"]
+        == ("failed" if qualified else "unqualified")
+    )
+    assert evidence["scheduled"] == "absent"
+    assert "peer_observed_host_override: --observed-host-override" in evidence["errors"]
+
+
+def test_cli_peer_dispatch_target_must_match_declaration(cli, monkeypatch, capsys) -> None:
+    summary, completion = _fake_peer()
+    _install_peer(cli, monkeypatch, summary, completion)
+    peer_command = cli.run_peer_command
+    monkeypatch.setattr(
+        cli,
+        "run_peer_command",
+        lambda *a, **k: replace(peer_command(*a, **k), ssh_target="hapax-appendix"),
+    )
+    assert cli.main(["sweep-peer", "--host", "appendix"]) == 2
+    evidence = _evidence(capsys.readouterr().err)
+    assert evidence["status"] == evidence["peer"]["status"] == "failed"
+    reason = next(row for row in evidence["errors"] if "peer_ssh_target_mismatch" in row)
+    assert "dispatched='hapax-appendix'" in reason and "declared='hapax-podium'" in reason
+
+
+def test_cli_peer_carries_unqualified_identity_errors(cli, monkeypatch, capsys) -> None:
+    _timer_context(monkeypatch)
+    summary, completion = _fake_peer()
+    completion["observed_machine_id"] = "absent"
+    completion["errors"] = ["local_observed_machine_id_absent"]
+    _install_peer(cli, monkeypatch, summary, completion)
+    assert cli.main(["sweep-peer", "--host", "appendix"]) == 0
+    evidence = _evidence(capsys.readouterr().err)
+    assert evidence["status"] == evidence["peer"]["status"] == "unqualified"
+    assert "peer_execution_unqualified: local_observed_machine_id_absent" in evidence["errors"]
+
+
+def test_cli_absent_default_hostname_stops_unqualified(cli, monkeypatch, capsys) -> None:
+    _native_identity(monkeypatch, **{"/proc/sys/kernel/hostname": "\n"})
+    _timer_context(monkeypatch)
+    monkeypatch.setattr(cli, "run_peer_command", lambda *_a, **_k: pytest.fail("dispatched"))
+    assert cli.main(["sweep-peer"]) == 0
+    evidence = _evidence(capsys.readouterr().err)
+    assert evidence["requested_host"] == evidence["observed_hostname"] == "absent"
+    assert evidence["status"] == "unqualified" and evidence["scheduled"] == "absent"
+    assert evidence["peer"] == "absent" and "local_observed_hostname_absent" in evidence["errors"]

@@ -23,8 +23,10 @@ if str(REPO_ROOT) not in sys.path:
 from shared.estate_registration import (
     PeerCommandResult,
     RegistrationError,
+    bind_host_identity,
     export_canary_health,
     grandfather_fragment,
+    observed_host_identity,
     originate_canaries,
     run_peer_command,
     sweep,
@@ -32,6 +34,7 @@ from shared.estate_registration import (
 )
 from shared.estate_store_registry import (
     DEFAULT_REGISTRY_PATH,
+    Registry,
     RegistryError,
     enumerate_stores,
     load_registry,
@@ -46,6 +49,13 @@ NATIVE_VARIABLES = (
     "TRIGGER_TIMER_REALTIME_USEC",
     "TRIGGER_TIMER_MONOTONIC_USEC",
 )
+OVERRIDE_ERROR = "observed_host_override: --observed-host-override"
+IDENTITY_UNQUALIFIED_ERRORS = {
+    "local_observed_hostname_absent",
+    "local_observed_machine_id_absent",
+    "local_declared_machine_id_absent",
+    OVERRIDE_ERROR,
+}
 
 
 def _boot_id() -> str:
@@ -78,9 +88,12 @@ def _source_identity() -> dict[str, str]:
     return {"physical_root": str(REPO_ROOT), "git_head": head}
 
 
-def _peer_evidence(result: PeerCommandResult, *, peer_id: str, command: str) -> dict:
+def _peer_evidence(
+    result: PeerCommandResult, *, registry: Registry, peer_id: str, command: str, qualified: bool
+) -> dict:
     """Bind exact transported report bytes to the peer's completion evidence."""
     errors: list[str] = []
+    unqualified: list[str] = []
     try:
         summary = json.loads(result.stdout)
         if not isinstance(summary, dict):
@@ -107,12 +120,36 @@ def _peer_evidence(result: PeerCommandResult, *, peer_id: str, command: str) -> 
         errors.append(
             "peer_exit_nonzero" if result.returncode is not None else "peer_transport_failed"
         )
+    completion_errors = completion.get("errors")
     if (
         completion.get("status") not in {"ok", "unqualified"}
         or completion.get("returncode") != 0
-        or completion.get("errors") != []
+        or not isinstance(completion_errors, list)
+        or any(
+            not isinstance(reason, str) or reason not in IDENTITY_UNQUALIFIED_ERRORS
+            for reason in completion_errors
+        )
+        or (completion_errors and completion.get("status") != "unqualified")
     ):
         errors.append("peer_execution_failed")
+    elif completion_errors:
+        unqualified.extend(f"peer_execution_unqualified: {reason}" for reason in completion_errors)
+
+    identity = {
+        field: completion.get(field) or "absent"
+        for field in ("observed_hostname", "observed_machine_id")
+    }
+    identity_binding = bind_host_identity(
+        registry, host_id=peer_id, observed=identity, scope="peer", ssh_target=result.ssh_target
+    )
+    (errors if identity_binding["status"] == "failed" else unqualified).extend(
+        identity_binding["errors"]
+    )
+    override = completion.get("observed_host_override", "absent")
+    if override != "absent" or (
+        isinstance(completion_errors, list) and OVERRIDE_ERROR in completion_errors
+    ):
+        (errors if qualified else unqualified).append(f"peer_{OVERRIDE_ERROR}")
 
     def bind(name: str, *values: object) -> None:
         if any(value is None or value == "" or value == "absent" for value in values):
@@ -140,6 +177,10 @@ def _peer_evidence(result: PeerCommandResult, *, peer_id: str, command: str) -> 
     if result.source_binding["kind"] == "physical":
         bind("source", root, result.source_binding["requested"])
     observed = {
+        **identity,
+        "observed_host_override": override,
+        "identity_binding": identity_binding,
+        "ssh_target": result.ssh_target or "absent",
         "source_binding": result.source_binding,
         "returncode": result.returncode if result.returncode is not None else "absent",
         "transport_error": result.transport_error or "absent",
@@ -189,7 +230,10 @@ def _peer_evidence(result: PeerCommandResult, *, peer_id: str, command: str) -> 
             row.get("kind") == "scan-error" for row in findings
         ):
             errors.append("peer_scan_errors")
-    observed.update(status="failed" if errors else "ok", errors=list(dict.fromkeys(errors)))
+    observed.update(
+        status="failed" if errors else "unqualified" if unqualified else "ok",
+        errors=list(dict.fromkeys([*errors, *unqualified])),
+    )
     return observed
 
 
@@ -208,7 +252,15 @@ def _parser() -> argparse.ArgumentParser:
         ),
     )
     parser.add_argument("--registry", type=Path, default=DEFAULT_REGISTRY_PATH)
-    parser.add_argument("--host", help="declared host id or alias; defaults to hostname")
+    parser.add_argument(
+        "--host", help="requested registry label or alias; defaults to observed hostname"
+    )
+    parser.add_argument(
+        "--observed-host-override",
+        nargs=2,
+        metavar=("HOSTNAME", "MACHINE_ID"),
+        help="explicit fixture identity; always unqualified, refused with --qualified",
+    )
     parser.add_argument("--home", type=Path, default=Path.home())
     parser.add_argument("--consumer")
     parser.add_argument("--report-root", type=Path)
@@ -250,10 +302,26 @@ def main(argv: list[str] | None = None) -> int:
         native[name].isdigit() and int(native[name]) > 0
         for name in ("TRIGGER_TIMER_REALTIME_USEC", "TRIGGER_TIMER_MONOTONIC_USEC")
     )
+    identity = observed_host_identity()
+    if args.observed_host_override is not None:
+        identity = dict(
+            zip(
+                identity,
+                (value.strip() or "absent" for value in args.observed_host_override),
+                strict=True,
+            )
+        )
+        scheduled = False
     evidence = {
         "schema": EVIDENCE_SCHEMA,
         "command": args.command,
         "host": "absent",
+        "requested_host": args.host if args.host is not None else identity["observed_hostname"],
+        **identity,
+        "observed_host_override": "--observed-host-override"
+        if args.observed_host_override is not None
+        else "absent",
+        "identity_binding": "absent",
         "boot_id": _boot_id(),
         "native": native,
         "scheduled": True if scheduled else "absent",
@@ -263,7 +331,7 @@ def main(argv: list[str] | None = None) -> int:
         "report": "absent",
         "root_observations": "absent",
         "peer": "absent",
-        "errors": [],
+        "errors": [OVERRIDE_ERROR] if args.observed_host_override is not None else [],
     }
     code = 2
     try:
@@ -275,13 +343,15 @@ def main(argv: list[str] | None = None) -> int:
         if evidence["source"] != _source_identity():
             evidence["errors"].append("local_source_changed_during_execution")
             code = code or 2
+        if evidence["errors"]:
+            evidence["scheduled"] = "absent"
         evidence.update(
             finished_at=utc_text(datetime.now(UTC)),
             returncode=code,
             status="failed"
             if code
             else "ok"
-            if scheduled and native["INVOCATION_ID"] != "absent"
+            if evidence["scheduled"] is True and native["INVOCATION_ID"] != "absent"
             else "unqualified",
         )
         print(
@@ -291,6 +361,10 @@ def main(argv: list[str] | None = None) -> int:
 
 
 def _execute(args: argparse.Namespace, evidence: dict) -> int:
+    if args.qualified and args.observed_host_override is not None:
+        raise RegistrationError(
+            "--qualified refuses --observed-host-override; remedy: read native host identity"
+        )
     if args.expected_source_root and (
         args.expected_source_root != str(REPO_ROOT)
         or args.registry.resolve() != REPO_ROOT / "config" / "estate-store-registry.yaml"
@@ -300,12 +374,21 @@ def _execute(args: argparse.Namespace, evidence: dict) -> int:
             "physical source or registry binding mismatch; remedy: invoke the verified physical release and its registry"
         )
     registry = load_registry(args.registry)
-    host_id = registry.host_id(args.host)
-    evidence["host"] = host_id
     if evidence["boot_id"] == "absent":
         raise RegistrationError(
             "local_boot_id_absent; remedy: restore access to /proc/sys/kernel/random/boot_id"
         )
+    if evidence["requested_host"] == "absent":
+        evidence["errors"].append("local_observed_hostname_absent")
+        return 0
+    host_id = registry.host_id(evidence["requested_host"])
+    evidence["host"] = host_id
+    evidence["identity_binding"] = bind_host_identity(
+        registry, host_id=host_id, observed=evidence, scope="local"
+    )
+    evidence["errors"].extend(evidence["identity_binding"]["errors"])
+    if evidence["identity_binding"]["status"] == "failed":
+        return 2
     if args.command == "list":
         if not args.consumer:
             raise RegistrationError("list requires --consumer; remedy: name the consuming program")
@@ -363,11 +446,17 @@ def _execute(args: argparse.Namespace, evidence: dict) -> int:
             file=sys.stderr,
         )
         peer_id, _target = registry.peer(host_id)
-        evidence["peer"] = _peer_evidence(result, peer_id=peer_id, command=remote_command)
+        evidence["peer"] = _peer_evidence(
+            result,
+            registry=registry,
+            peer_id=peer_id,
+            command=remote_command,
+            qualified=args.qualified,
+        )
         evidence["errors"].extend(evidence["peer"]["errors"])
         if result.returncode is not None and result.returncode > 0:
             return result.returncode
-        return 2 if evidence["errors"] else 0
+        return 2 if evidence["peer"]["status"] == "failed" else 0
     if args.command == "sweep":
         result = sweep(
             registry,

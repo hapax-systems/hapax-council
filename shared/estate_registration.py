@@ -38,6 +38,72 @@ class RegistrationError(RuntimeError):
     """A safety precondition or required source is unavailable."""
 
 
+def observed_host_identity() -> dict[str, str]:
+    """Read native Linux identity directly, without environment or alias resolution."""
+    observed = {}
+    for name, path in (
+        ("observed_hostname", "/proc/sys/kernel/hostname"),
+        ("observed_machine_id", "/etc/machine-id"),
+    ):
+        try:
+            observed[name] = Path(path).read_text(encoding="utf-8").strip() or "absent"
+        except (OSError, UnicodeError):
+            observed[name] = "absent"
+    return observed
+
+
+def bind_host_identity(
+    registry: Registry,
+    *,
+    host_id: str,
+    observed: dict[str, Any],
+    scope: str,
+    ssh_target: str | None = None,
+) -> dict[str, Any]:
+    """Bind observations to declarations; missing evidence never qualifies a run."""
+    declaration = registry.hosts[host_id]
+    hostnames = [host_id, *declaration.get("aliases", [])]
+    machine_id = declaration.get("machine_id") or "absent"
+    errors = []
+    failed = False
+    for field, expected in (
+        ("observed_hostname", hostnames),
+        ("observed_machine_id", machine_id),
+    ):
+        value = observed.get(field)
+        if value is None or value == "absent" or (isinstance(value, str) and not value.strip()):
+            errors.append(f"{scope}_{field}_absent")
+        elif expected != "absent":
+            matches = (
+                isinstance(value, str)
+                and value.casefold() in {name.casefold() for name in hostnames}
+                if field == "observed_hostname"
+                else isinstance(value, str) and value == expected
+            )
+            if not matches:
+                failed = True
+                errors.append(
+                    f"{scope}_{field}_mismatch: requested={host_id!r}, "
+                    f"observed={value!r}, declared={expected!r}, ssh_target={ssh_target!r}"
+                )
+    if machine_id == "absent":
+        errors.append(f"{scope}_declared_machine_id_absent")
+    declared_target = declaration.get("ssh_target") or "absent"
+    if scope == "peer" and (ssh_target != declared_target or ssh_target not in hostnames):
+        failed = True
+        errors.append(
+            f"peer_ssh_target_mismatch: requested={host_id!r}, "
+            f"dispatched={ssh_target!r}, declared={declared_target!r}, hostnames={hostnames!r}"
+        )
+    return {
+        "declared_hostnames": hostnames,
+        "declared_machine_id": machine_id,
+        "declared_ssh_target": declared_target,
+        "status": "failed" if failed else "unqualified" if errors else "ok",
+        "errors": errors,
+    }
+
+
 @dataclass(frozen=True)
 class Candidate:
     path: str
@@ -75,6 +141,7 @@ class PeerCommandResult:
     returncode: int | None
     source_binding: dict[str, str]
     transport_error: str | None = None
+    ssh_target: str | None = None
 
     @property
     def failed(self) -> bool:
@@ -715,13 +782,14 @@ def run_peer_command(
         + '--registry "$estate_peer_root/config/estate-store-registry.yaml" '
         + '--expected-source-root "$estate_peer_root"'
         + (" --include-report" if command == "sweep" else "")
+        + (" --qualified" if qualified else "")
     )
     stdout, stderr, returncode, transport_error = _capture_command(
         ["ssh", "-o", "BatchMode=yes", "-o", "ConnectTimeout=12", target, remote],
         timeout_seconds=timeout_seconds,
         runner=runner,
     )
-    result = PeerCommandResult(stdout, stderr, returncode, binding, transport_error)
+    result = PeerCommandResult(stdout, stderr, returncode, binding, transport_error, target)
     if check and result.failed:
         raise PeerCommandError(
             f"cross-host {command} failed for {peer_id} via {target} "
