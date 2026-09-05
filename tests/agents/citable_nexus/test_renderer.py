@@ -68,7 +68,7 @@ class TestLandingPage:
         copy = HOME_SOURCE.read_text(encoding="utf-8")
         assert (
             hashlib.sha256(copy.encode()).hexdigest()
-            == "f5e06f09b779c7030fd47f86b357d7fca174e1313cce3c10824df837d810561b"  # pragma: allowlist secret (synthetic digest pin)
+            == "d0c5cd06c6f1ef21b3cd4045e187c73a28a5ae34c2825b66c6527e2f6f98c0c9"  # pragma: allowlist secret (synthetic digest pin)
         )
         rendered = render_landing_page().body_html
         before, after = copy.split("<!-- parser-fixture -->")
@@ -79,6 +79,9 @@ class TestLandingPage:
             "Research and engineering on human-agent work, authority, evidence and consent." in copy
         )
         assert "A summary is not a person's instruction." in copy
+        caveat = "It does not authenticate the speaker or make the summary accurate."
+        assert caveat in before
+        assert caveat in rendered
         assert "individual publications explain contributions\nand review status." in copy
         assert copy.count("Research and engineering") == 1
         assert copy.count("One person") == 1

@@ -16,7 +16,7 @@ about AI.
 
 **A summary is not a person's instruction.** A small transcript-parsing example
 shows how a generated summary can be retained without counting it as another
-human turn.
+human turn. It does not authenticate the speaker or make the summary accurate.
 
 <!-- parser-fixture -->
 

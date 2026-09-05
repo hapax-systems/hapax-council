@@ -180,12 +180,12 @@ def _wrap(meta: PageMeta, canonical_url: str, *, has_feed: bool = False) -> str:
 {feed_link}
 <style>
 :root {{ color-scheme: light dark; --bg: light-dark(hsl(0 0% 98%), hsl(0 0% 10%)); --panel: light-dark(hsl(0 0% 94%), hsl(0 0% 14%)); --ink: light-dark(hsl(0 0% 13%), hsl(0 0% 92%)); --muted: light-dark(hsl(0 0% 35%), hsl(0 0% 72%)); --link: light-dark(hsl(205 80% 32%), hsl(200 75% 74%)); --status: light-dark(hsl(155 65% 25%), hsl(155 48% 69%)); --rule: light-dark(hsl(0 0% 72%), hsl(0 0% 38%)); }}
-* {{ box-sizing: border-box; }}
-body {{ margin: auto; max-width: 66rem; padding: clamp(1rem, 4vw, 3rem); background: var(--bg); color: var(--ink); font: 1.0625rem/1.7 system-ui, sans-serif; overflow-wrap: anywhere; }}
+* {{ box-sizing: border-box; letter-spacing: 0; }}
+body {{ margin: auto; max-width: 66rem; padding: 3rem; background: var(--bg); color: var(--ink); font: 1.0625rem/1.7 system-ui, sans-serif; overflow-wrap: anywhere; }}
 h1, h2, h3, h4 {{ line-height: 1.2; text-wrap: balance; }}
-h1 {{ font-size: clamp(2.25rem, 6vw, 3.75rem); margin-block: 2.5rem 1.5rem; letter-spacing: -.04em; }}
+h1 {{ font-size: 3rem; margin-block: 2.5rem 1.5rem; }}
 .home > h1 {{ font-family: ui-monospace, monospace; }}
-.home > h1 + p {{ font-size: clamp(1.25rem, 2.5vw, 1.6rem); line-height: 1.5; max-width: 48ch; }}
+.home > h1 + p {{ font-size: 1.375rem; line-height: 1.5; max-width: 48ch; }}
 h2 {{ font-size: 1.45rem; margin-block: 3rem 1.25rem; border-block-start: 1px solid var(--rule); padding-block-start: 1rem; }}
 p, ul {{ max-width: 68ch; }}
 a {{ color: var(--link); text-underline-offset: .2em; }}
@@ -206,7 +206,10 @@ figcaption strong {{ display: block; color: var(--ink); margin-block-end: .35rem
 .fixture-row dt {{ color: var(--muted); font-size: .85rem; }}
 .fixture-row dd {{ margin: .35rem 0 0; color: var(--status); font-weight: 650; }}
 .fixture-result {{ border-block-start: 1px solid var(--rule); padding: .75rem 1.25rem; margin: 0; max-width: none; font-size: .95rem; }}
-@media (max-width: 40rem) {{ .fixture-row {{ grid-template-columns: minmax(0, 1fr); }} }}
+@media (max-width: 40rem) {{
+    body {{ padding: 1rem; }}
+    .fixture-row {{ grid-template-columns: minmax(0, 1fr); }}
+}}
 </style>
 </head>
 <body>

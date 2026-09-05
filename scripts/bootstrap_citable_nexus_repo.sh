@@ -20,6 +20,8 @@
 #     script includes the generated `CNAME` in the push during `--commit`.
 #   - Only known generated files are reconciled in an existing checkout;
 #     unrelated files, source and git history are preserved.
+#   - Pending changes outside that ownership set refuse delivery before rendering
+#     or reconciling the checkout. Resolve them separately before retrying.
 #
 # References:
 #   - docs/governance/citable-nexus-bootstrap-status.md (historical bootstrap status)
@@ -43,6 +45,17 @@ CLEARED_INPUTS="${HAPAX_NEXUS_CLEARED_INPUTS:-}"
 
 WORK_DIR="${HAPAX_NEXUS_WORK_DIR:-$HOME/.cache/hapax/citable-nexus-bootstrap}"
 COUNCIL_REPO="${HAPAX_COUNCIL_REPO:-$HOME/projects/hapax-council}"
+REPO_FULL="${REPO_OWNER}/${REPO_NAME}"
+REPO_DIR="${WORK_DIR}/${REPO_NAME}"
+
+# Keep this finite ownership set aligned with build_citable_nexus.py's routes.
+GENERATED_FILES=(
+    index.html cite/index.html 404.html
+    manifesto/index.html refusal-brief/index.html
+    deposits/index.html citation-graph/index.html
+    refuse/index.html surfaces/index.html
+    rss.xml CNAME .github/workflows/deploy.yml
+)
 
 DRY_RUN=true
 ENABLE_PAGES=true
@@ -91,6 +104,41 @@ run() {
     fi
 }
 
+refuse_unrelated_changes() {
+    local status entry path generated owned unrelated_count=0
+    # Quoted porcelain paths stay on one line even with embedded newlines.
+    # Disable rename folding so both sides are checked; enumerate untracked
+    # files individually, including unrelated files within generated routes.
+    if ! status="$(cd "${REPO_DIR}" && git --no-optional-locks -c core.quotePath=true status \
+        --porcelain=v1 --untracked-files=all --ignore-submodules=none --no-renames)"; then
+        log "Refusing delivery: checkout status could not be read. Next action: repair the publishing checkout and retry."
+        exit 2
+    fi
+    while IFS= read -r entry; do
+        [[ -n "${entry}" ]] || continue
+        path="${entry:3}"
+        owned=false
+        for generated in "${GENERATED_FILES[@]}"; do
+            if [[ "${path}" == "${generated}" ]]; then
+                owned=true
+                break
+            fi
+        done
+        if [[ "${owned}" == "false" ]]; then
+            unrelated_count=$((unrelated_count + 1))
+        fi
+    done <<< "${status}"
+    if (( unrelated_count > 0 )); then
+        log "Refusing delivery: ${unrelated_count} unrelated changed path(s). Next action: resolve those pending changes separately in the publishing checkout, then retry."
+        exit 2
+    fi
+}
+
+# Refuse an existing dirty checkout before any render or remote action.
+if [[ "${DRY_RUN}" == "false" && -d "${REPO_DIR}" ]]; then
+    refuse_unrelated_changes
+fi
+
 # ── Phase 1: render the site ─────────────────────────────────────────
 
 log "Rendering the site via build_citable_nexus.py (canonical ${CANONICAL_URL})..."
@@ -117,9 +165,6 @@ cp "${COUNCIL_REPO}/docs/citable-nexus/github-actions-deploy.yml.template" \
 
 # ── Phase 2: create or clone the GitHub repo ─────────────────────────
 
-REPO_FULL="${REPO_OWNER}/${REPO_NAME}"
-REPO_DIR="${WORK_DIR}/${REPO_NAME}"
-
 if gh repo view "${REPO_FULL}" >/dev/null 2>&1; then
     log "Repo ${REPO_FULL} already exists; cloning if not present locally."
     if [[ ! -d "${REPO_DIR}" ]]; then
@@ -139,17 +184,12 @@ fi
 # ── Phase 3: copy rendered site into the repo + commit ──────────────
 
 if [[ "${DRY_RUN}" == "false" && -d "${REPO_DIR}" ]]; then
+    # Check a newly cloned checkout too, or changes since the initial preflight.
+    refuse_unrelated_changes
     log "Reconciling generated files in ${REPO_DIR}..."
     # The delivery boundary needs its own cleanup: a clean render directory
     # does not remove pages/feed copied by a previous bootstrap. Keep this
-    # finite ownership set aligned with build_citable_nexus.py's routes.
-    GENERATED_FILES=(
-        index.html cite/index.html 404.html
-        manifesto/index.html refusal-brief/index.html
-        deposits/index.html citation-graph/index.html
-        refuse/index.html surfaces/index.html
-        rss.xml CNAME .github/workflows/deploy.yml
-    )
+    # finite ownership set above aligned with build_citable_nexus.py's routes.
     for generated in "${GENERATED_FILES[@]}"; do
         if [[ -f "${RENDER_DIR}/${generated}" ]]; then
             mkdir -p "$(dirname "${REPO_DIR}/${generated}")"
