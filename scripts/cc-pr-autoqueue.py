@@ -35,7 +35,7 @@ import os
 import re
 import subprocess
 import sys
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any
@@ -227,6 +227,13 @@ class CheckSummary:
 
 
 @dataclass(frozen=True)
+class MergeQueueGovernance:
+    method: str | None = None
+    source: str | None = None
+    reason: str | None = None
+
+
+@dataclass(frozen=True)
 class PullRequest:
     number: int
     node_id: str | None
@@ -243,6 +250,9 @@ class PullRequest:
     auto_merge_enabled: bool
     auto_merge_method: str | None
     check_summary: CheckSummary
+    base_ref: str | None = None
+    default_branch: str | None = None
+    queue_governance: MergeQueueGovernance | None = None
 
 
 @dataclass(frozen=True)
@@ -298,6 +308,22 @@ class Decision:
             out["auto_arm_verified_checks"] = list(self.auto_arm_verified_checks)
         if self.pr.auto_merge_enabled:
             out["auto_merge_method"] = self.pr.auto_merge_method
+        governance = self.pr.queue_governance
+        if governance is not None:
+            out["merge_queue_governance"] = {
+                "base_ref": self.pr.base_ref,
+                "method": governance.method,
+                "source": governance.source,
+                "reason": governance.reason,
+            }
+            if self.pr.auto_merge_enabled:
+                out["auto_merge_method_owner"] = (
+                    "unverified"
+                    if governance.reason
+                    else "merge_queue"
+                    if governance.method
+                    else "pull_request"
+                )
         if (
             self.expected_auto_merge_method is not None
             and self.expected_auto_merge_method != AUTOQUEUE_DEFAULT_MERGE_METHOD
@@ -649,6 +675,135 @@ def fetch_merge_queue_merge_method(
     return None, f"active_named_merge_queue_ruleset_method_missing:{ruleset_name}"
 
 
+def _ruleset_applies_to_pr(ruleset: dict[str, Any], pr: PullRequest) -> bool | None:
+    """Resolve observed ref conditions; unfamiliar pattern syntax stays unknown."""
+    conditions = ruleset.get("conditions")
+    refs = conditions.get("ref_name") if isinstance(conditions, dict) else None
+    if not isinstance(refs, dict) or not pr.base_ref:
+        return None
+    matches: dict[str, bool] = {}
+    for key in ("include", "exclude"):
+        patterns = refs.get(key)
+        if not isinstance(patterns, list) or (key == "include" and not patterns):
+            return None
+        matches[key] = False
+        for pattern in patterns:
+            if pattern == "~ALL":
+                match = True
+            elif pattern == "~DEFAULT_BRANCH":
+                if not pr.default_branch:
+                    return None
+                match = pr.base_ref == pr.default_branch
+            elif (
+                isinstance(pattern, str)
+                and pattern.startswith("refs/heads/")
+                and not any(char in pattern for char in "*?[]\\")
+            ):
+                match = pattern == f"refs/heads/{pr.base_ref}"
+            else:
+                return None
+            matches[key] |= match
+    return matches["include"] and not matches["exclude"]
+
+
+def fetch_pr_merge_queue_governance(
+    pr: PullRequest,
+    *,
+    repo: str,
+    repo_root: Path,
+    runner: Any,
+) -> MergeQueueGovernance:
+    """Validate all enforced queue rules for this base, separately from arm flags.
+
+    The REST PR read supplies base.ref (and base.repo.default_branch); it does
+    not expose isInMergeQueue/mergeQueueEntry. An empty queue membership list
+    cannot establish that ordinary per-PR auto-merge owns the strategy.
+    """
+    prefix = "auto_merge_method_unverified:"
+    if not pr.base_ref:
+        return MergeQueueGovernance(reason=prefix + "pr_base_ref_missing")
+    methods: set[str] = set()
+    sources: list[str] = []
+    page = 1
+    while True:
+        ok, rulesets, message = _gh_api_get_json(
+            f"repos/{repo}/rulesets?per_page=100&page={page}",
+            repo_root=repo_root,
+            runner=runner,
+        )
+        if not ok:
+            return MergeQueueGovernance(reason=prefix + f"enforcement_unreadable:{message}")
+        if not isinstance(rulesets, list):
+            return MergeQueueGovernance(reason=prefix + "enforcement_malformed:rulesets")
+        for summary in rulesets:
+            if (
+                not isinstance(summary, dict)
+                or summary.get("target") not in ("branch", "tag", "push")
+                or summary.get("enforcement") not in ("active", "evaluate", "disabled")
+            ):
+                return MergeQueueGovernance(reason=prefix + "enforcement_malformed:summary")
+            if summary["target"] != "branch" or summary["enforcement"] != "active":
+                continue
+            ruleset_id = summary.get("id")
+            if type(ruleset_id) is not int or ruleset_id <= 0:
+                return MergeQueueGovernance(reason=prefix + "enforcement_malformed:ruleset_id")
+            ok, detail, message = _gh_api_get_json(
+                f"repos/{repo}/rulesets/{ruleset_id}", repo_root=repo_root, runner=runner
+            )
+            if not ok:
+                return MergeQueueGovernance(
+                    reason=prefix + f"enforcement_unreadable:ruleset={ruleset_id}:{message}"
+                )
+            if not isinstance(detail, dict) or any(
+                detail.get(key) != summary.get(key) for key in ("id", "target", "enforcement")
+            ):
+                return MergeQueueGovernance(
+                    reason=prefix + f"enforcement_conflict:ruleset={ruleset_id}"
+                )
+            rules = detail.get("rules")
+            if not isinstance(rules, list) or any(
+                not isinstance(rule, dict) or not isinstance(rule.get("type"), str)
+                for rule in rules
+            ):
+                return MergeQueueGovernance(
+                    reason=prefix + f"queue_rule_malformed:ruleset={ruleset_id}"
+                )
+            queue_rules = [rule for rule in rules if rule["type"] == "merge_queue"]
+            if not queue_rules:
+                continue
+            applies = _ruleset_applies_to_pr(detail, pr)
+            if applies is None:
+                return MergeQueueGovernance(
+                    reason=prefix + f"ref_enforcement_unknown:ruleset={ruleset_id}"
+                )
+            if not applies:
+                continue
+            for rule in queue_rules:
+                parameters = rule.get("parameters")
+                method = (
+                    _normalize_merge_method(parameters.get("merge_method"))
+                    if isinstance(parameters, dict)
+                    else None
+                )
+                if method is None:
+                    return MergeQueueGovernance(
+                        reason=prefix + f"queue_strategy_invalid:ruleset={ruleset_id}"
+                    )
+                methods.add(method)
+            sources.append(f"ruleset:{detail.get('name') or ruleset_id}:{ruleset_id}")
+        if len(rulesets) < 100:
+            break
+        page += 1
+    if len(methods) > 1:
+        return MergeQueueGovernance(
+            reason=prefix + "queue_strategy_conflict:" + ",".join(sorted(methods))
+        )
+    return MergeQueueGovernance(
+        method=next(iter(methods), None),
+        source=",".join(sources) if sources else f"rulesets:base={pr.base_ref}:non_queue",
+    )
+
+
 def _admission_governor_projection(path: Path, *, observed_at: datetime) -> dict[str, Any]:
     """Raw governor feed projection for cockpit consumers.
 
@@ -948,6 +1103,12 @@ def _parse_pr(item: dict[str, Any]) -> PullRequest | None:
         auto_merge_enabled=bool(item.get("autoMergeRequest")),
         auto_merge_method=_auto_merge_request_method(item.get("autoMergeRequest")),
         check_summary=summarize_checks(item.get("statusCheckRollup") or []),
+        base_ref=_scalar(item.get("baseRefName"))
+        if isinstance(item.get("baseRefName"), str)
+        else None,
+        default_branch=_scalar(item.get("baseRepoDefaultBranch"))
+        if isinstance(item.get("baseRepoDefaultBranch"), str)
+        else None,
     )
 
 
@@ -984,6 +1145,15 @@ def fetch_open_prs(
                 rest_merge_state_status(rest_pr)
                 if rest_pr is not None
                 else str(item.get("mergeStateStatus") or "UNKNOWN").upper()
+            )
+            # The shared status adapter omits the base; retain it from the
+            # existing REST detail read to prove ruleset applicability.
+            base = rest_pr.get("base") if isinstance(rest_pr, dict) else None
+            base = base if isinstance(base, dict) else {}
+            base_repo = base.get("repo")
+            item["baseRefName"] = base.get("ref")
+            item["baseRepoDefaultBranch"] = (
+                base_repo.get("default_branch") if isinstance(base_repo, dict) else None
             )
             # Preserve the shared REST snapshot when available. If it is absent, derive the
             # rollup through REST/core check-runs and commit statuses, not another GraphQL PR
@@ -1791,7 +1961,25 @@ def classify_pr(
         if queued or pr.auto_merge_enabled or not reasons:
             reasons.append(expected_method_unverified_reason)
 
-    if pr.auto_merge_enabled and expected_method is not None:
+    governance = pr.queue_governance
+    if governance is not None:
+        if governance.reason:
+            reasons.append(governance.reason)
+        elif queued and governance.method is None:
+            reasons.append("auto_merge_method_unverified:queue_membership_conflict")
+        elif governance.method is not None and governance.method != expected_method:
+            reasons.append(
+                "auto_merge_method_unverified:queue_strategy_expected_conflict:"
+                f"rule={governance.method}:expected={expected_method}"
+            )
+
+    # GitHub ignores autoMergeRequest.mergeMethod under enforced queue handling;
+    # only a validated applicable rule establishes queue ownership of that field.
+    if (
+        pr.auto_merge_enabled
+        and expected_method is not None
+        and (governance is None or (governance.reason is None and governance.method is None))
+    ):
         method_mismatch = _merge_method_mismatch_reason(
             pr,
             expected_auto_merge_method=expected_method,
@@ -2840,6 +3028,17 @@ def run_reconciler(
             runner=runner,
         )
     prs = fetch_open_prs(repo=repo, repo_root=repo_root, limit=limit, runner=runner)
+    if expected_auto_merge_method is not None and expected_auto_merge_method_override is None:
+        governance_by_base: dict[tuple[str | None, str | None], MergeQueueGovernance] = {}
+        governed_prs: list[PullRequest] = []
+        for pr in prs:
+            base_key = (pr.base_ref, pr.default_branch)
+            if base_key not in governance_by_base:
+                governance_by_base[base_key] = fetch_pr_merge_queue_governance(
+                    pr, repo=repo, repo_root=repo_root, runner=runner or subprocess.run
+                )
+            governed_prs.append(replace(pr, queue_governance=governance_by_base[base_key]))
+        prs = governed_prs
     preliminary_decisions = [
         classify_pr(
             pr,

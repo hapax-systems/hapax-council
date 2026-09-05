@@ -368,6 +368,7 @@ def _pr(
     number: int,
     *,
     branch: str | None = None,
+    base: str | None = "main",
     title: str | None = None,
     files: list[str] | None = None,
     changed_files_count: int | None = None,
@@ -392,6 +393,7 @@ def _pr(
         "title": title or f"PR {number}",
         "body": body,
         "headRefName": branch or f"feat/{number}",
+        "baseRefName": base,
         "headRefOid": f"sha-{number}",
         "changedFiles": len(file_list) if changed_files_count is None else changed_files_count,
         "files": [{"path": path} for path in file_list],
@@ -449,15 +451,27 @@ class _FakeRunner:
     def _rest_pr(pr: dict[str, Any]) -> dict[str, Any]:
         labels = pr.get("labels") if isinstance(pr.get("labels"), list) else []
         merge_state = str(pr.get("mergeStateStatus") or "CLEAN").lower()
+        auto_merge = pr.get("autoMergeRequest") or {}
+        method = auto_merge.get("mergeMethod")
         return {
             "number": pr.get("number"),
             "node_id": pr.get("id"),
             "title": pr.get("title") or "",
             "body": pr.get("body") or "",
             "head": {"ref": pr.get("headRefName") or "", "sha": pr.get("headRefOid") or ""},
+            "base": {"ref": pr.get("baseRefName"), "repo": {"default_branch": "main"}},
             "draft": bool(pr.get("isDraft")),
             "labels": labels,
-            "auto_merge": pr.get("autoMergeRequest"),
+            "auto_merge": (
+                {
+                    "enabled_by": {"login": "operator"},
+                    "merge_method": method.lower()
+                    if method in {"MERGE", "SQUASH", "REBASE"}
+                    else method,
+                }
+                if pr.get("autoMergeRequest")
+                else None
+            ),
             "mergeable_state": merge_state,
             "mergeable": merge_state in {"clean", "has_hooks", "unstable"},
             "changed_files": pr.get("changedFiles"),
@@ -497,7 +511,10 @@ class _FakeRunner:
                 branch = head.split(":", 1)[-1]
                 rows = [row for row in rows if (row.get("head") or {}).get("ref") == branch]
             return subprocess.CompletedProcess(cmd, 0, json.dumps(rows), "")
-        if path == "repos/owner/repo/rulesets":
+        if path in {
+            "repos/owner/repo/rulesets",
+            "repos/owner/repo/rulesets?per_page=100&page=1",
+        }:
             if self.rulesets_error is not None:
                 return subprocess.CompletedProcess(cmd, 1, "", self.rulesets_error)
             if self.rulesets_raw_stdout is not None:
@@ -531,6 +548,7 @@ class _FakeRunner:
                     "name": "main-merge-queue",
                     "target": "branch",
                     "enforcement": "active",
+                    "conditions": {"ref_name": {"include": ["~DEFAULT_BRANCH"], "exclude": []}},
                     "rules": [
                         {
                             "type": "merge_queue",
@@ -1692,12 +1710,22 @@ def test_skips_prs_already_in_queue_or_auto_merge_enabled(tmp_path: Path) -> Non
     assert not any(call[:3] == ["gh", "pr", "merge"] for call in runner.calls)
 
 
-def test_already_auto_merge_enabled_requires_matching_ruleset_method(tmp_path: Path) -> None:
+@pytest.mark.parametrize("scope", ["other_base", "excluded_base"])
+def test_non_queue_auto_merge_still_requires_matching_method(tmp_path: Path, scope: str) -> None:
     vault = _make_vault(tmp_path)
     _write_task(vault, task_id="wrong-method-armed", pr=4584)
     runner = _FakeRunner()
     runner.merge_queue_method = "SQUASH"
-    runner.open_prs = [_pr(4584, auto_merge=True, auto_merge_method="MERGE")]
+    runner.open_prs = [_pr(4584, base="release", auto_merge=True, auto_merge_method="MERGE")]
+    if scope == "excluded_base":
+        runner.ruleset_details[16186443] = {
+            "id": 16186443,
+            "name": "main-merge-queue",
+            "target": "branch",
+            "enforcement": "active",
+            "conditions": {"ref_name": {"include": ["~ALL"], "exclude": ["refs/heads/release"]}},
+            "rules": [{"type": "merge_queue", "parameters": {"merge_method": "SQUASH"}}],
+        }
 
     report = autoqueue.run_reconciler(
         repo="owner/repo",
@@ -1714,6 +1742,7 @@ def test_already_auto_merge_enabled_requires_matching_ruleset_method(tmp_path: P
     assert decision["action"] == "disable_auto_merge"
     assert decision["auto_merge_method"] == "MERGE"
     assert "auto_merge_method_mismatch:armed=MERGE:expected=SQUASH" in decision["reasons"]
+    assert decision["auto_merge_method_owner"] == "pull_request"
     assert [
         "gh",
         "pr",
@@ -1725,34 +1754,17 @@ def test_already_auto_merge_enabled_requires_matching_ruleset_method(tmp_path: P
     ] in runner.calls
 
 
-def test_queued_armed_pr_with_wrong_method_is_dequeued_before_disable(
-    tmp_path: Path,
-) -> None:
+@pytest.mark.parametrize("queued", [False, True], ids=["armed", "queued"])
+def test_queue_owned_method_survives_arm_readback(tmp_path: Path, queued: bool) -> None:
     vault = _make_vault(tmp_path)
-    _write_task(vault, task_id="queued-wrong-method-armed", pr=4584)
+    _write_task(vault, task_id="queue-owned-readback", pr=4584)
     runner = _FakeRunner()
-    runner.queued_prs = {4584}
-    runner.open_prs = [_pr(4584, auto_merge=True, auto_merge_method="MERGE")]
+    runner.open_prs = [_pr(4584)]
 
-    report = autoqueue.run_reconciler(
-        repo="owner/repo",
-        repo_root=tmp_path,
-        vault_root=vault,
-        apply=True,
-        runner=runner,
+    armed = autoqueue.run_reconciler(
+        repo="owner/repo", repo_root=tmp_path, vault_root=vault, apply=True, runner=runner
     )
-
-    decision = report["decisions"][0]
-    assert report["counts"]["dequeue"] == 1
-    assert report["counts"]["disable_auto_merge"] == 0
-    assert decision["action"] == "dequeue"
-    assert "auto_merge_method_mismatch:armed=MERGE:expected=SQUASH" in decision["reasons"]
-    assert "does not disable auto-merge" in decision["next_action"]
-    assert "next reconciler pass will re-arm" not in decision["next_action"]
-    assert any(
-        call[:3] == ["gh", "api", "graphql"] and any("dequeuePullRequest" in part for part in call)
-        for call in runner.calls
-    )
+    assert armed["counts"]["queue"] == 1
     assert [
         "gh",
         "pr",
@@ -1760,8 +1772,145 @@ def test_queued_armed_pr_with_wrong_method_is_dequeued_before_disable(
         "4584",
         "--repo",
         "owner/repo",
-        "--disable-auto",
-    ] not in runner.calls
+        "--auto",
+        "--squash",
+    ] in runner.calls
+
+    # API readback after the arm: GitHub reports MERGE even though the enforced
+    # queue strategy (and the command just issued) is SQUASH.
+    runner.open_prs = [_pr(4584, auto_merge=True, auto_merge_method="MERGE")]
+    runner.queued_prs = {4584} if queued else set()
+    runner.calls.clear()
+    report = autoqueue.run_reconciler(
+        repo="owner/repo", repo_root=tmp_path, vault_root=vault, apply=True, runner=runner
+    )
+
+    decision = report["decisions"][0]
+    assert decision["action"] == ("already_queued" if queued else "already_auto_merge_enabled")
+    assert decision.get("reasons", []) == []
+    assert decision["auto_merge_method"] == "MERGE"
+    assert decision["auto_merge_method_owner"] == "merge_queue"
+    assert decision["merge_queue_governance"] == {
+        "base_ref": "main",
+        "method": "SQUASH",
+        "source": "ruleset:main-merge-queue:16186443",
+        "reason": None,
+    }
+    assert not any(call[:3] == ["gh", "pr", "merge"] for call in runner.calls)
+    assert not any("dequeuePullRequest" in part for call in runner.calls for part in call)
+
+
+@pytest.mark.parametrize("queued", [False, True], ids=["armed", "queued"])
+@pytest.mark.parametrize(
+    ("fault", "reason"),
+    [
+        ("unreadable", "enforcement_unreadable:rulesets unavailable"),
+        ("conflicting_rules", "queue_strategy_conflict:MERGE,SQUASH"),
+        ("conflicting_later_page", "queue_strategy_conflict:MERGE,SQUASH"),
+        ("pr_fields_absent", "pr_base_ref_missing"),
+        ("pr_base_malformed", "pr_base_ref_missing"),
+        ("conditions_absent", "ref_enforcement_unknown:ruleset=16186443"),
+        ("unknown_pattern", "ref_enforcement_unknown:ruleset=16186443"),
+        ("enforcement_absent", "enforcement_malformed:summary"),
+        ("enforcement_malformed", "enforcement_malformed:summary"),
+        ("rulesets_malformed", "enforcement_malformed:rulesets"),
+        ("detail_conflict", "enforcement_conflict:ruleset=16186443"),
+        ("strategy_invalid", "queue_strategy_invalid:ruleset=99"),
+        ("detail_unreadable", "enforcement_unreadable:ruleset=99:detail forbidden"),
+    ],
+)
+def test_queue_governance_evidence_refuses_unknown(
+    tmp_path: Path, queued: bool, fault: str, reason: str
+) -> None:
+    class FaultRunner(_FakeRunner):
+        def _rest_response(self, cmd: list[str]) -> subprocess.CompletedProcess | None:
+            if (
+                cmd[:5] == ["gh", "api", "--method", "GET", "-H"]
+                and cmd[6] == "repos/owner/repo/rulesets?per_page=100&page=2"
+                and fault == "conflicting_later_page"
+            ):
+                return subprocess.CompletedProcess(
+                    cmd, 0, json.dumps([self.rulesets_payload[1]]), ""
+                )
+            response = super()._rest_response(cmd)
+            if response is None or response.returncode != 0:
+                return response
+            path = cmd[6]
+            payload = json.loads(response.stdout)
+            if path == "repos/owner/repo/rulesets?per_page=100&page=1":
+                if fault == "unreadable":
+                    return subprocess.CompletedProcess(cmd, 1, "", "rulesets unavailable")
+                if fault == "enforcement_absent":
+                    payload[0].pop("enforcement")
+                elif fault == "enforcement_malformed":
+                    payload[0]["enforcement"] = []
+                elif fault == "rulesets_malformed":
+                    payload = {}
+                elif fault == "conflicting_later_page":
+                    payload = [payload[0]] + [
+                        {"id": i, "target": "tag", "enforcement": "disabled"}
+                        for i in range(100, 199)
+                    ]
+            if path == "repos/owner/repo/pulls/4584" and fault == "pr_fields_absent":
+                payload.pop("base")
+            if path == "repos/owner/repo/pulls/4584" and fault == "pr_base_malformed":
+                payload["base"]["ref"] = {"unknown": "main"}
+            if path == "repos/owner/repo/rulesets/16186443":
+                if fault == "conditions_absent":
+                    payload.pop("conditions")
+                elif fault == "unknown_pattern":
+                    payload["conditions"]["ref_name"]["include"] = ["refs/heads/**"]
+                elif fault == "detail_conflict":
+                    payload["enforcement"] = "disabled"
+            return subprocess.CompletedProcess(cmd, 0, json.dumps(payload), "")
+
+    vault = _make_vault(tmp_path)
+    _write_task(vault, task_id="queue-evidence-lost", pr=4584)
+    runner = FaultRunner()
+    # Matching metadata makes it impossible for the old strict comparison to
+    # hide a fail-open loss of enforcement evidence.
+    runner.open_prs = [_pr(4584, auto_merge=True, auto_merge_method="SQUASH")]
+    runner.queued_prs = {4584} if queued else set()
+    if fault in {
+        "conflicting_rules",
+        "conflicting_later_page",
+        "strategy_invalid",
+        "detail_unreadable",
+    }:
+        runner.rulesets_payload = [
+            {
+                "id": 16186443,
+                "name": "main-merge-queue",
+                "target": "branch",
+                "enforcement": "active",
+            },
+            {"id": 99, "name": "another-queue", "target": "branch", "enforcement": "active"},
+        ]
+        runner.ruleset_details[99] = {
+            **runner.rulesets_payload[1],
+            "conditions": {"ref_name": {"include": ["refs/heads/main"], "exclude": []}},
+            "rules": [
+                {
+                    "type": "merge_queue",
+                    "parameters": {
+                        "merge_method": "MERGE"
+                        if fault in {"conflicting_rules", "conflicting_later_page"}
+                        else "FASTFORWARD"
+                    },
+                }
+            ],
+        }
+        if fault == "detail_unreadable":
+            runner.ruleset_detail_errors[99] = "detail forbidden"
+
+    report = autoqueue.run_reconciler(
+        repo="owner/repo", repo_root=tmp_path, vault_root=vault, apply=True, runner=runner
+    )
+    decision = report["decisions"][0]
+    assert decision["action"] == ("dequeue" if queued else "disable_auto_merge")
+    assert decision["reasons"] == [f"auto_merge_method_unverified:{reason}"]
+    assert decision["auto_merge_method_owner"] == "unverified"
+    assert not any("--auto" in call for call in runner.calls)
 
 
 def test_mismatched_auto_merge_method_converges_after_disable_next_pass(
@@ -1770,7 +1919,7 @@ def test_mismatched_auto_merge_method_converges_after_disable_next_pass(
     vault = _make_vault(tmp_path)
     _write_task(vault, task_id="wrong-method-armed", pr=4584)
     runner = _FakeRunner()
-    runner.open_prs = [_pr(4584, auto_merge=True, auto_merge_method="MERGE")]
+    runner.open_prs = [_pr(4584, base="release", auto_merge=True, auto_merge_method="MERGE")]
 
     first_report = autoqueue.run_reconciler(
         repo="owner/repo",
@@ -1784,7 +1933,7 @@ def test_mismatched_auto_merge_method_converges_after_disable_next_pass(
     assert "next reconciler pass will re-arm" in first_report["decisions"][0]["next_action"]
 
     runner.calls.clear()
-    runner.open_prs = [_pr(4584, auto_merge=False)]
+    runner.open_prs = [_pr(4584, base="release", auto_merge=False)]
     second_report = autoqueue.run_reconciler(
         repo="owner/repo",
         repo_root=tmp_path,
@@ -1812,7 +1961,7 @@ def test_already_auto_merge_enabled_reports_unsupported_armed_method(
     vault = _make_vault(tmp_path)
     _write_task(vault, task_id="unknown-method-armed", pr=4585)
     runner = _FakeRunner()
-    runner.open_prs = [_pr(4585, auto_merge=True, auto_merge_method="FASTFORWARD")]
+    runner.open_prs = [_pr(4585, base="release", auto_merge=True, auto_merge_method="FASTFORWARD")]
 
     report = autoqueue.run_reconciler(
         repo="owner/repo",
@@ -2242,7 +2391,7 @@ def test_already_auto_merge_enabled_without_armed_method_is_rearmed_next_pass(
     vault = _make_vault(tmp_path)
     _write_task(vault, task_id="armed-method-missing", pr=83)
     runner = _FakeRunner()
-    runner.open_prs = [_pr(83, auto_merge=True, auto_merge_method=None)]
+    runner.open_prs = [_pr(83, base="release", auto_merge=True, auto_merge_method=None)]
 
     report = autoqueue.run_reconciler(
         repo="owner/repo",
@@ -2267,7 +2416,7 @@ def test_already_auto_merge_enabled_without_armed_method_is_rearmed_next_pass(
     ] in runner.calls
 
     runner.calls.clear()
-    runner.open_prs = [_pr(83, auto_merge=False)]
+    runner.open_prs = [_pr(83, base="release", auto_merge=False)]
     second_report = autoqueue.run_reconciler(
         repo="owner/repo",
         repo_root=tmp_path,
