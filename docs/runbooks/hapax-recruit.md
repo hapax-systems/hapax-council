@@ -51,6 +51,12 @@ block scalars. JSON diagnostics and answers are decoded and redacted structurall
 serialization, including sensitive-key subtrees, assignments in string values, nested JSON
 strings, escaped quotes and unicode escapes. Plain YAML scalars include every token on the
 line and indented continuations, including continuations separated by blank lines.
+JSON keys cross the same boundary as values: embedded credential assignments and authorization
+fragments are redacted in place, and recognizable bare credential tokens become `<redacted>`.
+This includes token text embedded in otherwise ordinary keys. Safe member values keep their
+structure; colliding redacted keys receive numeric suffixes so no members disappear. A key
+containing undecodable credential serialization suppresses the containing stream, whose shape
+is recorded under `suppressed_streams`.
 Anchors and tags precede the value; block
 indicators still open blocks after those properties. Sensitive aliases are redacted too.
 Unterminated sensitive quoted values suppress the remaining diagnostic block. Ambiguous
@@ -70,6 +76,15 @@ stderr independently before extracting answers or model identities, joining diag
 slicing tails. Codex's newly produced answer file crosses the same boundary as a separate
 `answer` stream; suppressing its stdout or stderr leaves a safe file answer intact. Local
 endpoint answers and diagnostics also cross this boundary.
+
+All reported model identities, including Claude-family `modelUsage` keys and local response
+`model` strings, are redacted and validated before reaching receipts or terminal output. Valid
+identifiers contain 1–256 ASCII characters from `[A-Za-z0-9._:/-]` and contain no recognizable
+credential token. Invalid identities are omitted from `models_reported`; the receipt's
+`model_identity_invalid` list records only character length, first token class and reason.
+A safe answer can still succeed with an invalid identity; the terminal names the condition
+and the recovery action to inspect the receipt, check the capacity's model identifiers and
+retry. Provider, route and usage values from local responses are not copied into the receipt.
 
 Valid JSON is decoded recursively, including JSON embedded in strings. Otherwise, plain/YAML
 credential fields are redacted in place. Remaining escaped sensitive labels indicate malformed
@@ -96,6 +111,9 @@ file retains the measurement; the terminal message names its path. If neither lo
 writable, the command returns 3 and names the mode/space and writable-output remedy on stderr.
 Argument refusals name the affected path and the next action: supply an existing `--brief`
 file, add prompt content to an empty brief, or select an existing `--cwd` directory.
+An unreadable brief returns exit 2 without starting a capacity or writing run artifacts.
+Check its read permission and accessibility, or save it as valid UTF-8, then retry `--brief FILE`;
+the refusal names the path and the appropriate remedy without exception text or a traceback.
 
 Expected launch, decoding, and HTTP transport failures return exit 3 with a `failure_class`.
 Local endpoint connection, headers, and body consumption share one monotonic deadline; exceeding
@@ -112,6 +130,13 @@ env -u HAPAX_GLMCP_MODEL -u HAPAX_GLMCP_REVIEW_MODEL -u HAPAX_GLMCP_REVIEW_PAYG_
   uv run pytest -q -p no:cacheprovider \
   tests/scripts/test_hapax_recruit.py::test_structured_failed_output_is_redacted_at_every_destination \
   tests/scripts/test_hapax_recruit.py::test_nested_claude_credentials_never_reach_destinations \
+  tests/scripts/test_hapax_recruit.py::test_credential_json_keys_never_reach_destinations \
+  tests/scripts/test_hapax_recruit.py::test_unbounded_json_key_suppresses_object_with_shape \
+  tests/scripts/test_hapax_recruit.py::test_redacted_json_key_collisions_preserve_members \
+  tests/scripts/test_hapax_recruit.py::test_local_credential_model_identity_never_reaches_destinations \
+  tests/scripts/test_hapax_recruit.py::test_local_invalid_model_shape_is_recorded_without_text \
+  tests/scripts/test_hapax_recruit.py::test_reported_model_identifier_shape_boundary_accepts_valid_names \
+  tests/scripts/test_hapax_recruit.py::test_unreadable_brief_names_recovery_without_traceback \
   tests/scripts/test_hapax_recruit.py::test_undecodable_claude_envelope_cannot_claim_success \
   tests/scripts/test_hapax_recruit.py::test_undecodable_claude_diagnostic_stream_is_suppressed \
   tests/scripts/test_hapax_recruit.py::test_codex_suppression_keeps_independent_streams \

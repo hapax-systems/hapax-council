@@ -1898,3 +1898,214 @@ def test_unwritable_receipt_and_fallback_name_recovery_without_traceback(
     assert "mode and space" in captured.err and "writable --out" in captured.err
     assert "Traceback" not in captured.err
     assert captured.out == "" and caplog.text == ""
+
+
+@pytest.fixture(params=["authorization", "assignment", "colon", "bare-token", "embedded-token"])
+def credential_key(request):
+    canary = "SYNTHETIC_KEY_CANARY"  # pragma: allowlist secret
+    token = f"sk-{canary}"  # pragma: allowlist secret
+    keys = {
+        "authorization": f"Authorization: Bearer {canary}",  # pragma: allowlist secret
+        "assignment": f"api_key={canary}",  # pragma: allowlist secret
+        "colon": f"api_key: {canary}",  # pragma: allowlist secret
+        "bare-token": token,
+        "embedded-token": f"reported {token} identity",
+    }
+    expected = {
+        "authorization": 'Authorization: Bearer "<redacted>"',  # pragma: allowlist secret
+        "assignment": 'api_key="<redacted>"',  # pragma: allowlist secret
+        "colon": 'api_key: "<redacted>"',  # pragma: allowlist secret
+        "bare-token": "<redacted>",
+        "embedded-token": "reported <redacted> identity",
+    }
+    return canary, keys[request.param], expected[request.param]
+
+
+@pytest.mark.parametrize("capacity", ["grok", "claude", "glmcp", "qwencloud"])
+@pytest.mark.parametrize("code", [0, 7, "timeout"])
+@pytest.mark.parametrize("diagnostics", ["stdout-only", "both"])
+def test_credential_json_keys_never_reach_destinations(
+    bench, monkeypatch, capsys, caplog, credential_key, capacity, code, diagnostics
+):
+    module, _bin_dir, brief, out = bench
+    canary, key, expected_key = credential_key
+    monkeypatch.setattr(module, "_require_binary", lambda name: name)
+    if capacity in module.WRAPPED_CLAUDE:
+        monkeypatch.setenv(module.WRAPPED_CLAUDE[capacity][0], str(brief))
+    value = {"nested": [1, 2]}
+    answer = json.dumps({key: value})
+    stdout = (
+        answer
+        if capacity == "grok"
+        else json.dumps(
+            {"result": answer, "modelUsage": {key: {"inputTokens": 1}, "synthetic-served": {}}}
+        )
+    )
+    stderr = answer if diagnostics == "both" else ""
+    monkeypatch.setattr(module, "_run", lambda *a, **kw: (code, stdout, stderr, False, None))
+    assert module.main([capacity, "--brief", str(brief), "--out", str(out)]) == (
+        0 if code == 0 else 4 if code == "timeout" else 3
+    )
+    captured = capsys.readouterr()
+    receipt = _receipt(out)
+    destinations = {
+        "answer": out.read_text(),
+        "receipt": json.dumps(receipt),
+        "stdout": captured.out,
+        "stderr/journal": captured.err,
+        "log": caplog.text,
+    }
+    leaks = [name for name, text in destinations.items() if canary in text]
+    assert not leaks, f"credential reached destinations: {', '.join(leaks)}"
+    saved = json.loads(destinations["answer"])
+    assert list(saved.values()) == [value], "key redaction changed the value shape"
+    assert list(saved) == [expected_key]
+    assert receipt["exit_code"] == code
+    assert receipt["suppressed_streams"] == {}
+    if capacity != "grok":
+        assert receipt["models_reported"] == ["synthetic-served"]
+        assert receipt["model_identity_invalid"]
+    if code != 0:
+        assert "retry" in receipt["recovery_action"] and "retry" in captured.err
+
+
+@pytest.mark.parametrize("capacity", ["grok", "claude", "glmcp", "qwencloud"])
+@pytest.mark.parametrize("code", [0, 7, "timeout"])
+def test_unbounded_json_key_suppresses_object_with_shape(
+    bench, monkeypatch, capsys, caplog, capacity, code
+):
+    module, _bin_dir, brief, out = bench
+    canary = "SYNTHETIC_UNBOUNDED_KEY_CANARY"  # pragma: allowlist secret
+    key = json.dumps({"api_key": canary}).replace('"', r"\u0022")[:-1]  # pragma: allowlist secret
+    answer = json.dumps({key: {"status": "error"}})
+    stdout = answer if capacity == "grok" else json.dumps({"result": answer})
+    monkeypatch.setattr(module, "_require_binary", lambda name: name)
+    if capacity in module.WRAPPED_CLAUDE:
+        monkeypatch.setenv(module.WRAPPED_CLAUDE[capacity][0], str(brief))
+    monkeypatch.setattr(module, "_run", lambda *a, **kw: (code, stdout, stdout, False, None))
+    rc = module.main([capacity, "--brief", str(brief), "--out", str(out)])
+    captured = capsys.readouterr()
+    assert rc == (4 if code == "timeout" else 3), "unbounded key was accepted"
+    receipt = _receipt(out)
+    destinations = [out.read_text(), json.dumps(receipt), captured.out, captured.err, caplog.text]
+    assert all(canary not in text for text in destinations), "credential reached a destination"
+    assert out.read_text() == ""
+    assert receipt["answer_policy"] == "suppressed_undecodable_output"
+    assert receipt["suppressed_streams"] == {
+        stream: {
+            "length": len(stdout),
+            "first_token_class": "object",
+            "reason": "undecodable_stream_suppressed",
+        }
+        for stream in ("stdout", "stderr")
+    }
+    assert "retry" in receipt["recovery_action"] and "retry" in captured.err
+
+
+def test_redacted_json_key_collisions_preserve_members(bench, monkeypatch, capsys):
+    module, _bin_dir, brief, out = bench
+    canary = "SYNTHETIC_COLLIDING_KEY_CANARY"  # pragma: allowlist secret
+    keys = [f"sk-{canary}{index}" for index in range(2)]  # pragma: allowlist secret
+    payload = {"<redacted>": 0, keys[0]: 1, keys[1]: 2}
+    monkeypatch.setattr(module, "_require_binary", lambda name: name)
+    monkeypatch.setattr(module, "_run", lambda *a, **kw: (0, json.dumps(payload), "", False, None))
+    assert module.main(["grok", "--brief", str(brief), "--out", str(out)]) == 0
+    captured = capsys.readouterr()
+    saved = json.loads(out.read_text())
+    leaked = canary in json.dumps(saved)
+    assert not leaked, "credential key persisted"
+    assert len(saved) == 3 and sorted(saved.values()) == [0, 1, 2]
+    assert all("<redacted>" in key for key in saved)
+    assert canary not in captured.out + captured.err + json.dumps(_receipt(out))
+
+
+@pytest.mark.parametrize("capacity", ["local:qwen36", "local:gptoss", "local:gemma3"])
+def test_local_credential_model_identity_never_reaches_destinations(
+    bench, monkeypatch, capsys, caplog, credential_key, capacity
+):
+    module, _bin_dir, brief, out = bench
+    canary, model, _expected_key = credential_key
+    payload = {
+        "model": model,
+        "choices": [{"message": {"content": "OK"}}],
+        "provider": model,
+        "route": model,
+        "usage": {model: 1},
+    }
+    monkeypatch.setattr(
+        module.urllib.request, "urlopen", lambda *a, **kw: io.BytesIO(json.dumps(payload).encode())
+    )
+    monkeypatch.setattr(
+        module.subprocess, "Popen", lambda *a, **kw: pytest.fail("local route launched a client")
+    )
+    assert module.main([capacity, "--brief", str(brief), "--out", str(out)]) == 0
+    captured = capsys.readouterr()
+    receipt = _receipt(out)
+    destinations = {
+        "answer": out.read_text(),
+        "receipt": json.dumps(receipt),
+        "stdout": captured.out,
+        "stderr/journal": captured.err,
+        "log": caplog.text,
+    }
+    leaks = [name for name, text in destinations.items() if canary in text]
+    assert not leaks, f"credential reached destinations: {', '.join(leaks)}"
+    assert out.read_text() == "OK" and receipt["exit_code"] == 0
+    assert receipt["models_reported"] == "absent"
+    assert receipt["model_identity_invalid"] == [
+        {"length": len(model), "first_token_class": "text", "reason": "model_identity_invalid"}
+    ]
+    assert "model_identity_invalid" in captured.out
+    assert "retry" in receipt["recovery_action"] and "retry" in captured.out
+
+
+@pytest.mark.parametrize("capacity", ["local:qwen36", "local:gptoss", "local:gemma3"])
+@pytest.mark.parametrize("model", ["", "served model", "m" * 257, '"served"', "served\nmodel"])
+def test_local_invalid_model_shape_is_recorded_without_text(
+    bench, monkeypatch, capsys, capacity, model
+):
+    module, _bin_dir, brief, out = bench
+    payload = {"model": model, "choices": [{"message": {"content": "OK"}}]}
+    monkeypatch.setattr(
+        module.urllib.request, "urlopen", lambda *a, **kw: io.BytesIO(json.dumps(payload).encode())
+    )
+    assert module.main([capacity, "--brief", str(brief), "--out", str(out)]) == 0
+    captured = capsys.readouterr()
+    receipt = _receipt(out)
+    assert receipt["models_reported"] == "absent"
+    assert receipt["model_identity_invalid"][0]["length"] == len(model)
+    assert "model_identity_invalid" in captured.out
+    if model:
+        assert model not in captured.out + captured.err + json.dumps(receipt)
+
+
+@pytest.mark.parametrize("model", ["namespace/model_1:Q5.K-M", "m" * 256])
+def test_reported_model_identifier_shape_boundary_accepts_valid_names(bench, model):
+    module, _bin_dir, _brief, _out = bench
+    result = module.RunResult("OK", 0, 2, "", [model])
+    assert result.models_reported == [model]
+
+
+@pytest.mark.parametrize("condition", ["permission", "invalid-utf8"])
+def test_unreadable_brief_names_recovery_without_traceback(
+    bench, monkeypatch, capsys, caplog, condition
+):
+    module, _bin_dir, brief, out = bench
+    if condition == "permission":
+        if os.geteuid() == 0:
+            pytest.skip("root can read a chmod-000 brief")
+        brief.chmod(0)
+    else:
+        brief.write_bytes(b"invalid UTF-8: \xff\xfe")
+    monkeypatch.setattr(module, "_run", lambda *a, **kw: pytest.fail("unreadable brief ran a CLI"))
+    try:
+        assert module.main(["grok", "--brief", str(brief), "--out", str(out)]) == 2
+    finally:
+        brief.chmod(0o600)
+    captured = capsys.readouterr()
+    assert str(brief) in captured.err
+    remedy = "read permission" if condition == "permission" else "UTF-8"
+    assert remedy in captured.err and "retry" in captured.err
+    assert "Traceback" not in captured.err
+    assert captured.out == "" and caplog.text == ""
+    assert not out.exists() and not out.with_name(out.name + ".receipt.json").exists()

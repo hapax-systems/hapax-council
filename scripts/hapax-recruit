@@ -95,6 +95,12 @@ _SECRETISH = re.compile(
     """,
     re.IGNORECASE | re.VERBOSE,
 )
+_TOKENISH = re.compile(
+    r"\b(?:(?:sk-|xai-|hf_|gh[pousr]_|github_pat_|glpat-)[A-Za-z0-9_-]{8,}"
+    r"|(?:AKIA|ASIA)[A-Z0-9]{16}"
+    r"|eyJ[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,})\b"
+)
+_MODEL_IDENTIFIER = re.compile(r"[A-Za-z0-9._:/-]{1,256}\Z")
 _KIMI_TRAILER = re.compile(r"^To resume this session\b")
 
 
@@ -173,8 +179,26 @@ class RunResult:
     recovery_action: str | None = None
     output_bytes: int | None = None
     suppressed_streams: dict[str, dict] = field(default_factory=dict)
+    model_identity_invalid: list[dict] = field(default_factory=list)
 
     def __post_init__(self) -> None:
+        # Every response-derived identity, including modelUsage keys, crosses this
+        # boundary. Invalid names are measurements of shape, never reported models.
+        models = []
+        for model in self.models_reported:
+            identities, _ = _redact_streams(model=model)
+            if _MODEL_IDENTIFIER.fullmatch(model) and identities["model"] == model:
+                models.append(model)
+            else:
+                self.model_identity_invalid.append(
+                    {**_suppressed_stream_shape(model), "reason": "model_identity_invalid"}
+                )
+        self.models_reported = models
+        if self.model_identity_invalid:
+            self.recovery_action = (
+                "inspect the receipt's model_identity_invalid shapes; "
+                "check the capacity's model identifiers and retry the brief"
+            )
         streams, suppressed = _redact_streams(answer=self.answer)
         self.answer = streams["answer"]
         self.suppressed_streams.update(suppressed)
@@ -197,7 +221,7 @@ class RunResult:
 
 def _redact(text: str, *, reject_undecodable: bool = False) -> str:
     # Decode before matching labels: JSON strings can contain further JSON envelopes,
-    # escaped quotes, or unicode escapes. Re-encode only after every value is safe.
+    # escaped quotes, or unicode escapes. Re-encode only after keys and values are safe.
     try:
         payload = json.loads(text)
     except json.JSONDecodeError:
@@ -209,7 +233,7 @@ def _redact(text: str, *, reject_undecodable: bool = False) -> str:
         # Consume plain/YAML fields first. Punctuation in the remaining prose/code is
         # ordinary content, but an escaped sensitive field means serialization remains
         # undecoded. Unescape only a detection copy, never the text returned to callers.
-        remainder = _SECRETISH.sub("", text)
+        remainder = _TOKENISH.sub("", _SECRETISH.sub("", text))
         while True:
             decoded = re.sub(
                 r'\\(?:u[0-9a-fA-F]{4}|["\\/bfnrt])',
@@ -218,7 +242,7 @@ def _redact(text: str, *, reject_undecodable: bool = False) -> str:
             )
             if decoded == remainder:
                 break
-            if _SECRETISH.search(decoded):
+            if _SECRETISH.search(decoded) or _TOKENISH.search(decoded):
                 raise UndecodableStream
             remainder = decoded
     # Consume escaped quotes and multiline scalars before any diagnostic is sliced.
@@ -227,20 +251,28 @@ def _redact(text: str, *, reject_undecodable: bool = False) -> str:
     # where indentation/flow boundaries are ambiguous, suppress that whole block.
     # A quoted replacement remains a complete scalar on subsequent redaction passes;
     # an unquoted marker would consume the ordinary prose following a quoted fragment.
-    return _SECRETISH.sub(r'\1"<redacted>"', text)
+    return _TOKENISH.sub("<redacted>", _SECRETISH.sub(r'\1"<redacted>"', text))
 
 
 def _redact_json_value(value, *, reject_undecodable: bool = False):
     if isinstance(value, dict):
         redacted = {}
         for key, item in value.items():
+            safe_key = _redact(key, reject_undecodable=reject_undecodable)
+            # Keep every member if two credentials collapse to the same marker, or
+            # if the response already has a key matching the marker.
+            base_key, suffix = safe_key, 2
+            while safe_key in redacted:
+                safe_key = f"{base_key} [redacted-key-{suffix}]"
+                suffix += 1
             # Reuse the text label grammar (including prefixes such as ANTHROPIC_).
-            # A sensitive-key match must consume the complete placeholder scalar.
+            # Only a label ending at the placeholder describes a sensitive subtree;
+            # an assignment embedded INSIDE the key does not label its member value.
             field = f'{json.dumps(key)}: "scalar"'
             match = _SECRETISH.search(field)
-            redacted[key] = (
+            redacted[safe_key] = (
                 "<redacted>"
-                if match and match.end() == len(field)
+                if match and match.end(1) == len(field) - len('"scalar"')
                 else _redact_json_value(item, reject_undecodable=reject_undecodable)
             )
         return redacted
@@ -601,7 +633,7 @@ def recruit_local(capacity: str, brief: str, *, timeout: int, model: str | None)
             [],
             failure_class=failure_class,
         )
-    return RunResult(answer, 0, len(answer), "", [served] if served else [])
+    return RunResult(answer, 0, len(answer), "", [served] if served is not None else [])
 
 
 def _failure_recovery(capacity: str, result: RunResult, out: Path) -> str:
@@ -652,6 +684,7 @@ def write_receipt(
         "models_reported": result.models_reported
         if result and result.models_reported
         else "absent",
+        "model_identity_invalid": result.model_identity_invalid if result else [],
         "exit_code": result.exit_code if result else None,
         "output_bytes": result.output_bytes if result else 0,
         "stdout_bytes": result.stdout_bytes if result else 0,
@@ -722,7 +755,19 @@ def main(argv: list[str] | None = None) -> int:
             file=sys.stderr,
         )
         return 2
-    brief = args.brief.read_text(encoding="utf-8")
+    try:
+        brief = args.brief.read_text(encoding="utf-8")
+    except (OSError, UnicodeError) as exc:
+        remedy = (
+            "save the brief as valid UTF-8 and retry --brief FILE"
+            if isinstance(exc, UnicodeError)
+            else "check the file's read permission and accessibility, then retry --brief FILE"
+        )
+        print(
+            f"hapax-recruit: cannot read brief {_redact(str(args.brief))}; {remedy}",
+            file=sys.stderr,
+        )
+        return 2
     if not brief.strip():
         print(
             f"hapax-recruit: brief {args.brief} is empty; add prompt content to the brief",
@@ -837,6 +882,11 @@ def main(argv: list[str] | None = None) -> int:
         )
         return 3
     served = ", ".join(result.models_reported) if result.models_reported else "absent"
+    if result.model_identity_invalid:
+        served += (
+            f"; model_identity_invalid ({len(result.model_identity_invalid)}); "
+            f"{result.recovery_action}"
+        )
     print(
         f"hapax-recruit: {args.capacity} answered ({len(result.answer)} chars, models reported: "
         f"{served}) -> {args.out}; receipt {receipt_path}"
