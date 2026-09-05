@@ -41,6 +41,316 @@ def _unwritten(report) -> set[str]:
     }
 
 
+@pytest.mark.parametrize("terminator", ["break", "continue", "return", "raise RuntimeError"])
+def test_round_six_unreachable_accesses_after_terminator(gate, tmp_path, terminator):
+    _write(
+        tmp_path,
+        "from pathlib import Path\ndef run():\n    for item in [1]:\n"
+        f"        {terminator}\n"
+        "        Path('artifacts/missing.json').write_text('{}')\n"
+        "        Path('artifacts/unreachable.json').read_text()\n"
+        "Path('artifacts/missing.json').read_text()\n",
+    )
+    report = gate.analyse_consumer_side(tmp_path, [])
+    assert _unwritten(report) == {"artifacts/missing.json"}
+    accesses, *_ = gate.collect_artifact_accesses(tmp_path)
+    assert [(a.action, a.pattern) for a in accesses] == [("read", "artifacts/missing.json")]
+
+
+@pytest.mark.parametrize("terminator", ["break", "continue"])
+def test_round_six_loop_exit_preserves_bindings_and_runs_finally(gate, tmp_path, terminator):
+    _write(
+        tmp_path,
+        "from pathlib import Path\nartifact = Path('artifacts/before.json')\n"
+        "for item in [1]:\n    try:\n        artifact = Path('artifacts/exit.json')\n"
+        f"        {terminator}\n"
+        "        artifact = Path('artifacts/unreachable.json')\n"
+        "    finally:\n        artifact.read_text()\n"
+        "else:\n    Path('artifacts/else.json').read_text()\n"
+        "artifact.read_text()\n",
+    )
+    report = gate.analyse_consumer_side(tmp_path, [])
+    assert _unwritten(report) == {
+        "artifacts/before.json",
+        "artifacts/exit.json",
+        "artifacts/else.json",
+    }
+
+
+@pytest.mark.parametrize("signature", ["artifact=ARTIFACT", "*, artifact=ARTIFACT"])
+def test_round_six_module_default_is_frozen(gate, tmp_path, signature):
+    _write(
+        tmp_path,
+        "from pathlib import Path\nARTIFACT = Path('artifacts/old.json')\n"
+        f"def write_state({signature}):\n    artifact.write_text('{{}}')\n"
+        "ARTIFACT = Path('artifacts/new.json')\nwrite_state()\n"
+        "Path('artifacts/new.json').read_text()\n",
+    )
+    accesses, *_ = gate.collect_artifact_accesses(tmp_path)
+    assert {a.pattern for a in accesses if a.action == "write"} == {"artifacts/old.json"}
+    assert _unwritten(gate.analyse_consumer_side(tmp_path, [])) == {"artifacts/new.json"}
+
+
+@pytest.mark.parametrize(
+    "argument, expected",
+    [
+        ("", "old"),
+        ("Path('artifacts/explicit.json')", "explicit"),
+        ("artifact=Path('artifacts/explicit.json')", "explicit"),
+    ],
+)
+def test_round_six_helper_default_and_explicit_argument(gate, tmp_path, argument, expected):
+    _write(
+        tmp_path,
+        "from pathlib import Path\nARTIFACT = Path('artifacts/old.json')\n"
+        "def artifact_path(artifact=ARTIFACT):\n    return artifact\n"
+        "ARTIFACT = Path('artifacts/new.json')\n"
+        f"artifact_path({argument}).write_text('{{}}')\n"
+        "Path('artifacts/new.json').read_text()\n",
+    )
+    accesses, *_ = gate.collect_artifact_accesses(tmp_path)
+    assert {a.pattern for a in accesses if a.action == "write"} == {f"artifacts/{expected}.json"}
+    assert _unwritten(gate.analyse_consumer_side(tmp_path, [])) == {"artifacts/new.json"}
+
+
+def test_round_six_unknown_definition_default_stays_unresolved(gate, tmp_path):
+    _write(
+        tmp_path,
+        "from pathlib import Path\nARTIFACT = choose()\n"
+        "def write_state(artifact=ARTIFACT):\n    artifact.write_text('{}')\n"
+        "ARTIFACT = Path('artifacts/new.json')\nwrite_state()\n"
+        "Path('artifacts/new.json').read_text()\n",
+    )
+    report = gate.analyse_consumer_side(tmp_path, [])
+    assert _unwritten(report) == {"artifacts/new.json"}
+    assert report.unresolvable == 1
+    assert len(report.unresolved_paths) == 1
+    assert "path=artifact" in report.unresolved_paths[0]
+
+
+@pytest.mark.parametrize(
+    "argument", ["Path('artifacts/explicit.json')", "artifact=Path('artifacts/explicit.json')"]
+)
+def test_round_six_explicit_writer_argument_wins(gate, tmp_path, argument):
+    _write(
+        tmp_path,
+        "from pathlib import Path\nARTIFACT = Path('artifacts/old.json')\n"
+        "def write_state(artifact=ARTIFACT):\n    artifact.write_text('{}')\n"
+        "ARTIFACT = Path('artifacts/new.json')\n"
+        f"write_state({argument})\nPath('artifacts/old.json').read_text()\n",
+    )
+    accesses, *_ = gate.collect_artifact_accesses(tmp_path)
+    assert {a.pattern for a in accesses if a.action == "write"} == {"artifacts/explicit.json"}
+    assert _unwritten(gate.analyse_consumer_side(tmp_path, [])) == {"artifacts/old.json"}
+
+
+@pytest.mark.parametrize("argument", ["choose()", "*options", "**options"])
+def test_round_six_unknown_writer_argument_cannot_reuse_default(gate, tmp_path, argument):
+    _write(
+        tmp_path,
+        "from pathlib import Path\ndef write_state(artifact=Path('artifacts/old.json')):\n"
+        "    artifact.write_text('{}')\n"
+        f"write_state({argument})\nPath('artifacts/old.json').read_text()\n",
+    )
+    report = gate.analyse_consumer_side(tmp_path, [])
+    assert _unwritten(report) == {"artifacts/old.json"}
+    assert report.unresolvable == 1
+    assert len(report.unresolved_paths) == 1
+
+
+@pytest.mark.parametrize(
+    "default", ["ARTIFACT, later=(ARTIFACT := Path('artifacts/new.json'))", "helper()"]
+)
+def test_round_six_defaults_use_definition_expression_order(gate, tmp_path, default):
+    _write(
+        tmp_path,
+        "from pathlib import Path\nARTIFACT = Path('artifacts/old.json')\n"
+        "def helper():\n    return ARTIFACT\n"
+        f"def write_state(artifact={default}):\n    artifact.write_text('{{}}')\n"
+        "ARTIFACT = Path('artifacts/new.json')\nwrite_state()\n"
+        "Path('artifacts/new.json').read_text()\n",
+    )
+    accesses, *_ = gate.collect_artifact_accesses(tmp_path)
+    assert {a.pattern for a in accesses if a.action == "write"} == {"artifacts/old.json"}
+
+
+@pytest.mark.parametrize(
+    "literal, other",
+    [
+        ("state[1].json", "state1.json"),
+        ("state].json", "state.json"),
+        ("*.json", "missing.json"),
+        ("state?.json", "state1.json"),
+    ],
+)
+@pytest.mark.parametrize("indirect", [False, True])
+def test_round_six_literal_filename_is_not_a_glob(gate, tmp_path, literal, other, indirect):
+    expression = f"Path('artifacts/{literal}')"
+    _write(
+        tmp_path,
+        "from pathlib import Path\n"
+        + (
+            f"artifact = {expression}\nartifact.write_text('{{}}')\n"
+            if indirect
+            else f"{expression}.write_text('{{}}')\n"
+        )
+        + f"Path('artifacts/{other}').read_text()\n{expression}.read_text()\n",
+    )
+    assert _unwritten(gate.analyse_consumer_side(tmp_path, [])) == {f"artifacts/{other}"}
+    accesses, count, *_ = gate.collect_artifact_accesses(tmp_path)
+    assert {(a.action, a.pattern) for a in accesses} == {
+        ("write", f"artifacts/{literal}"),
+        ("read", f"artifacts/{literal}"),
+        ("read", f"artifacts/{other}"),
+    }
+    assert count == 0
+
+
+@pytest.mark.parametrize("directory", ["state[1]", "state*", "state?", "state]"])
+def test_round_six_glob_escapes_literal_parent(gate, tmp_path, directory):
+    _write(
+        tmp_path,
+        "from pathlib import Path\nPath('artifacts/state1/present.json').write_text('{}')\n"
+        f"Path('artifacts/{directory}').glob('*.json')\n",
+    )
+    assert _unwritten(gate.analyse_consumer_side(tmp_path, [])) == {f"artifacts/{directory}/*.json"}
+
+
+@pytest.mark.parametrize(
+    "statement",
+    [
+        "slots[Path('artifacts/missing.json').read_text()] = 1",
+        "Path('artifacts/missing.json').read_text().attribute = 1",
+        "with manager() as slots[Path('artifacts/missing.json').read_text()]:\n    pass",
+        "with manager() as Path('artifacts/missing.json').read_text().attribute:\n    pass",
+        "slots[Path('artifacts/missing.json').read_text()]: int = 1",
+        "slots[Path('artifacts/missing.json').read_text()] += 1",
+        "del slots[Path('artifacts/missing.json').read_text()]",
+    ],
+    ids=[
+        "subscript",
+        "attribute",
+        "with-subscript",
+        "with-attribute",
+        "annotated",
+        "augmented",
+        "delete",
+    ],
+)
+def test_round_six_store_target_reads_are_scanned(gate, tmp_path, statement):
+    _write(tmp_path, "from pathlib import Path\nslots = {}\n" + statement + "\n")
+    report = gate.analyse_consumer_side(tmp_path, [])
+    assert _unwritten(report) == {"artifacts/missing.json"}
+    assert report.unresolvable == 0
+
+
+@pytest.mark.parametrize("store", ["=", "+="])
+def test_round_six_target_and_rhs_evaluation_order(gate, tmp_path, store):
+    _write(
+        tmp_path,
+        "from pathlib import Path\nslots = {}\nartifact = Path('artifacts/old.json')\n"
+        f"slots[artifact.read_text()] {store} (artifact := Path('artifacts/new.json'))\n",
+    )
+    expected = "old" if store == "+=" else "new"
+    assert _unwritten(gate.analyse_consumer_side(tmp_path, [])) == {f"artifacts/{expected}.json"}
+
+
+@pytest.mark.parametrize(
+    "statement",
+    [
+        "artifact = slots[artifact.read_text()] = Path('artifacts/new.json')",
+        "artifact, slots[artifact.read_text()] = Path('artifacts/new.json'), 1",
+        "with Path('artifacts/new.json') as artifact, manager() as slots[artifact.read_text()]:\n    pass",
+    ],
+    ids=["chained", "unpacked", "with-items"],
+)
+def test_round_six_target_stores_execute_left_to_right(gate, tmp_path, statement):
+    _write(
+        tmp_path,
+        "from pathlib import Path\nslots = {}\nartifact = Path('artifacts/old.json')\n"
+        + statement
+        + "\n",
+    )
+    assert _unwritten(gate.analyse_consumer_side(tmp_path, [])) == {"artifacts/new.json"}
+
+
+@pytest.mark.parametrize("terminator", ["break", "continue", "return", "raise RuntimeError"])
+def test_round_six_conditional_exit_keeps_reachable_branch(gate, tmp_path, terminator):
+    _write(
+        tmp_path,
+        "from pathlib import Path\ndef run(flag):\n    for item in [1]:\n"
+        f"        if flag:\n            {terminator}\n"
+        "        Path('artifacts/reachable.json').write_text('{}')\n"
+        "Path('artifacts/reachable.json').read_text()\n",
+    )
+    assert _unwritten(gate.analyse_consumer_side(tmp_path, [])) == set()
+
+
+@pytest.mark.parametrize("terminator", ["break", "continue"])
+def test_round_six_unreachable_definition_cannot_supply_writer(gate, tmp_path, terminator):
+    _write(
+        tmp_path,
+        "from pathlib import Path\nfor item in [1]:\n"
+        f"    {terminator}\n    def write_state():\n"
+        "        Path('artifacts/missing.json').write_text('{}')\n"
+        "Path('artifacts/missing.json').read_text()\n",
+    )
+    assert _unwritten(gate.analyse_consumer_side(tmp_path, [])) == {"artifacts/missing.json"}
+
+
+@pytest.mark.parametrize("terminator", ["break", "continue"])
+def test_round_six_unreachable_helper_cannot_supply_writer(gate, tmp_path, terminator):
+    _write(
+        tmp_path,
+        "from pathlib import Path\nfor item in [1]:\n"
+        f"    {terminator}\n    def artifact_path():\n"
+        "        return Path('artifacts/missing.json')\n"
+        "artifact_path().write_text('{}')\nPath('artifacts/missing.json').read_text()\n",
+    )
+    report = gate.analyse_consumer_side(tmp_path, [])
+    assert _unwritten(report) == {"artifacts/missing.json"}
+    assert report.unresolvable == 1
+    assert len(report.unresolved_paths) == 1
+
+
+@pytest.mark.parametrize("literal", ["state[1].json", "state].json", "*.json", "state?.json"])
+def test_round_six_real_glob_matches_literal_filename(gate, tmp_path, literal):
+    _write(
+        tmp_path,
+        "from pathlib import Path\n"
+        f"Path('artifacts/{literal}').write_text('{{}}')\n"
+        "Path('artifacts').glob('*.json')\n",
+    )
+    assert _unwritten(gate.analyse_consumer_side(tmp_path, [])) == set()
+
+
+@pytest.mark.parametrize("transform", ["f'{name}'", "Path(name)", "helper(name)"])
+def test_round_six_literal_provenance_survives_path_construction(gate, tmp_path, transform):
+    _write(
+        tmp_path,
+        "from pathlib import Path\ndef helper(name):\n    return Path(name)\n"
+        "name = 'artifacts/state[1].json'\n"
+        f"Path({transform}).write_text('{{}}')\n"
+        "Path('artifacts/state1.json').read_text()\n",
+    )
+    report = gate.analyse_consumer_side(tmp_path, [])
+    assert _unwritten(report) == {"artifacts/state1.json"}
+    accesses, *_ = gate.collect_artifact_accesses(tmp_path)
+    assert {a.pattern for a in accesses if a.action == "write"} == {"artifacts/state[1].json"}
+
+
+def test_round_six_invalid_literal_cannot_forge_provenance(gate, tmp_path):
+    _write(
+        tmp_path,
+        "from pathlib import Path\nPath('artifacts/\\0star.json').write_text('{}')\n"
+        "Path('artifacts/*.json').read_text()\n",
+    )
+    report = gate.analyse_consumer_side(tmp_path, [])
+    assert _unwritten(report) == {"artifacts/*.json"}
+    assert report.unresolvable == 1
+    assert len(report.unresolved_paths) == 1
+
+
 @pytest.mark.parametrize("failure", ["PermissionError", "UnicodeDecodeError", "SyntaxError"])
 def test_source_gap_is_named_in_text_json_and_exit_status(
     gate, tmp_path: Path, monkeypatch, capsys, failure: str

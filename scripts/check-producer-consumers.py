@@ -521,6 +521,8 @@ class ArtifactAccess:
     operation: str
     modelled: bool = True
     bounded: bool = True
+    # None denotes a literal filename. Patterns contain escaped literal components.
+    glob_pattern: str | None = None
 
 
 @dataclass(frozen=True)
@@ -587,8 +589,7 @@ class ConsumerSideReport:
 @dataclass(frozen=True)
 class PathFunction:
     params: tuple[str, ...]
-    defaults: dict[str, ast.expr]
-    return_expr: ast.expr
+    return_expr: ast.expr | None
     module_values: dict[str, str]
     path: Path
     returns_path: bool = False
@@ -621,6 +622,8 @@ class PathFunctionTable(dict[str, PathFunction]):
         self.unresolved_closures: set[str] = set()
         self.unresolved_paths: set[str] = set()
         self.helper_results: dict[tuple[int, tuple[tuple[str, str], ...]], str | None] = {}
+        self.definition_defaults: dict[ast.AST, dict[str, str]] = {}
+        self.call_bindings: dict[ast.AST, list[dict[str, str]]] = {}
 
     def register(self, relative: Path, qualname: str, function: PathFunction) -> None:
         self[f"{_module_name(relative)}.{qualname}"] = function
@@ -712,6 +715,22 @@ def _dotted_name(node: ast.expr) -> str | None:
     return None
 
 
+# NUL cannot occur in a filename. Protect literal metacharacters in the value maps
+# (including serialized branch unions), retaining bare '*' only for dynamic patterns.
+_LITERAL_GLOB_MARKERS = {"*": "\0star", "?": "\0question", "[": "\0left", "]": "\0right"}
+
+
+def _literal_path(value: str) -> str:
+    # Invalid source literals must not impersonate the internal provenance markers.
+    return value.replace("\0", "\0nul").translate(str.maketrans(_LITERAL_GLOB_MARKERS))
+
+
+def _literal_text(value: str, *, escape: bool = False) -> str:
+    for character, marker in _LITERAL_GLOB_MARKERS.items():
+        value = value.replace(marker, f"[{character}]" if escape else character)
+    return value
+
+
 def _normalise_pattern(value: str, repo_root: Path) -> str:
     # This estate uses POSIX paths. A backslash produced by !r/!a is a filename
     # character, not a directory separator.
@@ -787,7 +806,7 @@ def _return_expression(node: ast.FunctionDef | ast.AsyncFunctionDef) -> ast.expr
 
 
 def _function_defaults(
-    node: ast.FunctionDef | ast.AsyncFunctionDef,
+    node: ast.FunctionDef | ast.AsyncFunctionDef | ast.Lambda,
 ) -> dict[str, ast.expr]:
     positional = [*node.args.posonlyargs, *node.args.args]
     start = len(positional) - len(node.args.defaults)
@@ -804,6 +823,39 @@ def _function_defaults(
     return defaults
 
 
+def _call_parameter_values(
+    function: PathFunction,
+    call: ast.Call,
+    values: dict[str, str],
+    path: Path,
+    repo_root: Path,
+    path_functions: dict[str, PathFunction],
+) -> dict[str, str]:
+    supplied: dict[str, ast.expr | None] = (
+        dict.fromkeys(function.params)
+        if any(isinstance(arg, ast.Starred) for arg in call.args)
+        or any(kw.arg is None for kw in call.keywords)
+        else {}
+    )
+    # A starred argument changes all later positional indices; do not guess them.
+    for name, argument in zip(function.params, call.args, strict=False):
+        if isinstance(argument, ast.Starred):
+            break
+        supplied[name] = argument
+    supplied.update((kw.arg, kw.value) for kw in call.keywords if kw.arg is not None)
+    bound: dict[str, str] = {}
+    for name, expression in supplied.items():
+        assigned = _apply_assignment(
+            ast.Assign(targets=[ast.Name(id=name)], value=expression),
+            values,
+            path,
+            repo_root,
+            path_functions,
+        )[0]
+        bound.update((key, assigned[key]) for key in _binding_keys(name) if key in assigned)
+    return bound
+
+
 _MAX_PATH_EXPR_VARIANTS = 8
 _PATH_VALUE_PREFIX = "\0path-value:"
 _LEXICAL_SCOPE_KEY = "\0lexical-scope"
@@ -814,6 +866,7 @@ _UNRESOLVED_FORMAT_PREFIX = "\0unresolved-format:"
 _UNRESOLVED_CLOSURE_PREFIX = "\0unresolved-closure:"
 _HELPER_STACK_KEY = "\0helper-stack"
 _HELPER_EFFECT_KEY = "\0helper-unbounded-effect"
+_FLOW_EXIT_KEY = "\0flow-exit"
 _PATH_CONSTRUCTORS = frozenset(
     {
         "Path",
@@ -1145,21 +1198,21 @@ def _resolve_path_expr(
         return None
     if isinstance(node, ast.Constant):
         if isinstance(node.value, (str, int)):
-            return str(node.value)
+            return _literal_path(str(node.value))
         return None
     if isinstance(node, ast.Name):
         if node.id == "__file__":
-            return path.as_posix()
+            return _literal_path(path.as_posix())
         return values.get(node.id)
     if isinstance(node, ast.JoinedStr):
         parts: list[str] = []
         for item in node.values:
             if isinstance(item, ast.Constant) and isinstance(item.value, str):
-                parts.append(item.value)
+                parts.append(_literal_path(item.value))
             elif isinstance(item, ast.FormattedValue):
                 formatted = _format_constant(item, values)
                 if formatted is not None:
-                    parts.append(formatted)
+                    parts.append(_literal_path(formatted))
                     continue
                 if item.format_spec is not None or item.conversion != -1:
                     return None
@@ -1325,13 +1378,23 @@ def _resolve_path_expr(
         if isinstance(path_functions, PathFunctionTable)
         else (path_functions.get(name) or path_functions.get(name.rsplit(".", 1)[-1]))
     )
-    if function is None or function.node is None:
+    if function is None or function.node is None or function.return_expr is None:
+        return None
+    if (
+        isinstance(path_functions, PathFunctionTable)
+        and function.node not in path_functions.definition_defaults
+    ):
+        # Registration discovers syntax, but an unreachable definition creates no binding.
         return None
     helper_key = f"{function.path}:{function.node.lineno}"
     stack = values.get(_HELPER_STACK_KEY, "").split("|")
     if helper_key in stack or len(stack) > 12:
         return None
     inherited = dict(function.module_values)
+    if path == function.path and not _lexical_scope(values):
+        # A module expression (including a default) calls the helper with the globals
+        # available at that point, before later module stores.
+        inherited = dict(values)
     if len(function.lexical_prefixes) > 1:
         if function.lexical_prefixes[1] not in _lexical_scope(values):
             return None
@@ -1354,50 +1417,9 @@ def _resolve_path_expr(
         path_functions,
         function.lexical_prefixes,
     )
-    for parameter, default in function.defaults.items():
-        resolved = _resolve_path_expr(
-            default,
-            bound,
-            function.path,
-            repo_root,
-            path_functions,
-            depth=depth + 1,
-        )
-        if resolved is not None:
-            bound[parameter] = resolved
-    for parameter, argument in zip(function.params, node.args, strict=False):
-        bound.pop(f"{_CONSTANT_VALUE_PREFIX}{parameter}", None)
-        known, constant = _constant_value(argument, values)
-        if known:
-            bound[f"{_CONSTANT_VALUE_PREFIX}{parameter}"] = json.dumps(constant)
-        bound[parameter] = (
-            _resolve_path_expr(
-                argument,
-                values,
-                path,
-                repo_root,
-                path_functions,
-                depth=depth + 1,
-            )
-            or "*"
-        )
-    for keyword in node.keywords:
-        if keyword.arg is not None:
-            bound.pop(f"{_CONSTANT_VALUE_PREFIX}{keyword.arg}", None)
-            known, constant = _constant_value(keyword.value, values)
-            if known:
-                bound[f"{_CONSTANT_VALUE_PREFIX}{keyword.arg}"] = json.dumps(constant)
-            bound[keyword.arg] = (
-                _resolve_path_expr(
-                    keyword.value,
-                    values,
-                    path,
-                    repo_root,
-                    path_functions,
-                    depth=depth + 1,
-                )
-                or "*"
-            )
+    supplied = _call_parameter_values(function, node, values, path, repo_root, path_functions)
+    _invalidate_names(bound, {name for name in supplied if not name.startswith("\0")})
+    bound.update(supplied)
     cache = path_functions.helper_results if isinstance(path_functions, PathFunctionTable) else {}
     cache_key = (id(function), tuple(sorted(bound.items())))
     if cache_key in cache:
@@ -1560,7 +1582,7 @@ def _artifact_family(name: str) -> str:
 def _useful_pattern(pattern: str | None) -> bool:
     return bool(
         pattern
-        and pattern.isprintable()
+        and _literal_text(pattern).isprintable()
         and pattern not in {"*", ".", "~"}
         and pattern.strip("*/.")
     )
@@ -1656,7 +1678,19 @@ def _record_access(
         assert pattern is not None
         pattern = _normalise_pattern(pattern, repo_root)
         accesses.append(
-            ArtifactAccess(action, pattern, path, call.lineno, family, operation, modelled, bounded)
+            ArtifactAccess(
+                action,
+                _literal_text(pattern),
+                path,
+                call.lineno,
+                family,
+                operation,
+                modelled,
+                bounded,
+                _literal_text(pattern, escape=True)
+                if any(marker in pattern for marker in "*?[")
+                else None,
+            )
         )
 
 
@@ -1772,6 +1806,8 @@ def _classify_call(
         if suffix is None:
             unresolved[0] += 1
         else:
+            # Only the glob argument is pattern syntax; the receiver stays literal.
+            suffix = _literal_text(suffix)
             if call.func.attr == "rglob" and not suffix.startswith("**/"):
                 suffix = f"**/{suffix}"
             _record_access(
@@ -2077,9 +2113,15 @@ def _invalidate_names(values: dict[str, str], names: set[str]) -> None:
 def _target_names(target: ast.AST) -> set[str]:
     # Attribute/subscript stores mutate an object we cannot model. Invalidate its base
     # and attribute fallback as well, rather than letting either supply obsolete evidence.
-    return {item.id for item in ast.walk(target) if isinstance(item, ast.Name)} | {
-        item.attr for item in ast.walk(target) if isinstance(item, ast.Attribute)
-    }
+    if isinstance(target, ast.Name):
+        return {target.id}
+    if isinstance(target, ast.Attribute):
+        return _target_names(target.value) | {target.attr}
+    if isinstance(target, (ast.Subscript, ast.Starred)):
+        return _target_names(target.value)
+    if isinstance(target, (ast.Tuple, ast.List)):
+        return set().union(*(_target_names(child) for child in target.elts))
+    return set()
 
 
 def _apply_assignment(
@@ -2272,14 +2314,11 @@ def _scope_initial_values(
         # same name is no longer the callee used by calls in this scope.
         _set_import_alias(values, arg.arg, None)
         _clear_value_alternatives(values, arg.arg)
-    for name, default in _function_defaults(node).items():
-        known, constant = _constant_value(default, values)
-        if known:
-            values[f"{_CONSTANT_VALUE_PREFIX}{name}"] = json.dumps(constant)
-        resolved = _resolve_path_expr(default, values, path, repo_root, path_functions)
-        if resolved is not None:
-            values[name] = resolved
-            _clear_value_alternatives(values, name)
+    # Defaults are parameter bindings evaluated in the defining scope, before its later
+    # stores and before the callee's locals/parameters shadow names. Missing snapshots
+    # cannot borrow a value from initialized globals.
+    if isinstance(path_functions, PathFunctionTable):
+        values.update(path_functions.definition_defaults.get(node, {}))
     return values
 
 
@@ -2378,6 +2417,16 @@ def _merge_states(states: list[dict[str, str]], *, collapse: bool = False) -> li
     alternatives as metadata.  A later expression expands just the alternatives it references.
     This bounds intermediate cross-products without deleting a statically known read pattern.
     """
+    exits = {state.get(_FLOW_EXIT_KEY) for state in states}
+    if len(exits) > 1:
+        return [
+            merged
+            for reason in sorted(exits, key=lambda item: item or "")
+            for merged in _merge_states(
+                [state for state in states if state.get(_FLOW_EXIT_KEY) == reason],
+                collapse=collapse,
+            )
+        ]
     distinct: dict[tuple[tuple[str, str], ...], dict[str, str]] = {}
     for state in states:
         distinct.setdefault(tuple(sorted(state.items())), state)
@@ -2480,6 +2529,16 @@ class _BlockScanner:
         unresolved_slots = 0
         flagged: set[str] = set()
         for state in states:
+            if isinstance(self.path_functions, PathFunctionTable):
+                function = self.path_functions.resolve(
+                    _function_name(call), self.path, _lexical_scope(state), _import_aliases(state)
+                )
+                if function is not None and function.node is not None:
+                    self.path_functions.call_bindings.setdefault(function.node, []).append(
+                        _call_parameter_values(
+                            function, call, state, self.path, self.repo_root, self.path_functions
+                        )
+                    )
             local_unresolved = [0]
             local_unrecognised: Counter[str] = Counter()
             _classify_call(
@@ -2503,6 +2562,7 @@ class _BlockScanner:
     def _bind_loop_target(
         self, target: ast.expr, value: ast.expr | None, state: dict[str, str]
     ) -> dict[str, str]:
+        self._scan_target(target, [state])
         return _apply_assignment(
             ast.Assign(targets=[target], value=value),
             state,
@@ -2522,7 +2582,7 @@ class _BlockScanner:
         )
         return _merge_states(
             [
-                self._bind_loop_target(statement.target, value, state)
+                self._bind_loop_target(statement.target, value, dict(state))
                 for state in states
                 for value in iterations
             ]
@@ -2540,8 +2600,73 @@ class _BlockScanner:
             state.clear()
             state.update(assigned)
 
+    def _scan_target(self, target: ast.AST, states: list[dict[str, str]]) -> None:
+        """Evaluate a store's receiver/index without treating its names as stores yet."""
+        if isinstance(target, (ast.Tuple, ast.List)):
+            for child in target.elts:
+                self._scan_target(child, states)
+        elif isinstance(target, ast.Starred):
+            self._scan_target(target.value, states)
+        elif isinstance(target, (ast.Attribute, ast.Subscript)):
+            self._scan_expression(target.value, states)
+            if isinstance(target, ast.Subscript):
+                self._scan_expression(target.slice, states)
+
+    def _store_target(
+        self, target: ast.expr, bound: dict[str, str], states: list[dict[str, str]]
+    ) -> None:
+        # RHS bindings were computed before any target executes. Stores themselves run
+        # left to right, so a later receiver/index sees earlier stores (including unpacking).
+        if isinstance(target, (ast.Tuple, ast.List)):
+            for child in target.elts:
+                self._store_target(child, bound, states)
+            return
+        self._scan_target(target, states)
+        for state in states:
+            for name in _target_names(target):
+                for key in _binding_keys(name):
+                    state.pop(key, None)
+                    if key in bound:
+                        state[key] = bound[key]
+
+    def _scan_defaults(
+        self,
+        scope: ast.FunctionDef | ast.AsyncFunctionDef | ast.Lambda,
+        states: list[dict[str, str]],
+    ) -> None:
+        snapshots: list[dict[str, str]] = []
+        for state in states:
+            current = [dict(state)]
+            defaults: dict[str, str] = {}
+            for name, expression in _function_defaults(scope).items():
+                self._scan_expression(expression, current)
+                alternatives = []
+                for predecessor in current:
+                    bound = _apply_assignment(
+                        ast.Assign(targets=[ast.Name(id=name)], value=expression),
+                        predecessor,
+                        self.path,
+                        self.repo_root,
+                        self.path_functions,
+                    )[0]
+                    alternatives.append(
+                        {key: bound[key] for key in _binding_keys(name) if key in bound}
+                    )
+                defaults.update(_merge_states(alternatives, collapse=True)[0])
+            snapshots.append(defaults)
+            state.clear()
+            state.update(_merge_states(current, collapse=True)[0])
+        if isinstance(self.path_functions, PathFunctionTable):
+            self.path_functions.definition_defaults[scope] = _merge_states(
+                snapshots, collapse=True
+            )[0]
+            self.path_functions.helper_results.clear()
+
     def _scan_expression(self, node: ast.AST, states: list[dict[str, str]]) -> None:
-        if isinstance(node, (ast.Lambda, ast.FunctionDef, ast.AsyncFunctionDef)):
+        if isinstance(node, ast.Lambda):
+            self._scan_defaults(node, states)
+            return
+        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
             return
         if isinstance(node, ast.NamedExpr):
             self._scan_expression(node.value, states)
@@ -2582,6 +2707,7 @@ class _BlockScanner:
             return
         if isinstance(getattr(node, "ctx", None), (ast.Store, ast.Del)):
             # Fallback for every Store form not owned by a statement handler below.
+            self._scan_target(node, states)
             for state in states:
                 _invalidate_names(state, _target_names(node))
             return
@@ -2607,7 +2733,19 @@ class _BlockScanner:
             owned_targets.update(statement.targets)
         elif isinstance(statement, (ast.AnnAssign, ast.AugAssign, ast.For, ast.AsyncFor)):
             owned_targets.add(statement.target)
-        if not isinstance(statement, (ast.With, ast.AsyncWith)):
+        if isinstance(statement, ast.AugAssign):
+            # Augmented assignment evaluates its target before the RHS, exactly once.
+            self._scan_target(statement.target, states)
+        if isinstance(statement, (ast.FunctionDef, ast.AsyncFunctionDef)):
+            for decorator in statement.decorator_list:
+                self._scan_expression(decorator, states)
+            self._scan_defaults(statement, states)
+            for argument in ast.walk(statement.args):
+                if isinstance(argument, ast.arg) and argument.annotation is not None:
+                    self._scan_expression(argument.annotation, states)
+            if statement.returns is not None:
+                self._scan_expression(statement.returns, states)
+        elif not isinstance(statement, (ast.With, ast.AsyncWith)):
             for child in ast.iter_child_nodes(statement):
                 if child not in owned_targets and not isinstance(
                     child, (ast.stmt, ast.ExceptHandler, ast.match_case)
@@ -2663,16 +2801,32 @@ class _BlockScanner:
             return states
         if isinstance(statement, ast.Delete):
             for target in statement.targets:
+                self._scan_target(target, states)
                 self._bind(target, None, states)
             return states
         if isinstance(statement, (ast.Assign, ast.AnnAssign)):
             assigned: list[dict[str, str]] = []
             for state in states:
-                assigned.extend(
-                    _apply_assignment(
-                        statement, state, self.path, self.repo_root, self.path_functions
-                    )
+                targets = (
+                    statement.targets if isinstance(statement, ast.Assign) else [statement.target]
                 )
+                # Freeze the RHS separately for each target before stores can rebind it.
+                bindings = [
+                    _apply_assignment(
+                        ast.Assign(targets=[target], value=statement.value)
+                        if isinstance(statement, ast.Assign)
+                        else statement,
+                        state,
+                        self.path,
+                        self.repo_root,
+                        self.path_functions,
+                    )[0]
+                    for target in targets
+                ]
+                stored = [dict(state)]
+                for target, bound in zip(targets, bindings, strict=True):
+                    self._store_target(target, bound, stored)
+                assigned.extend(stored)
             return _merge_states(assigned)
         if isinstance(statement, ast.If):
             taken = self.scan_block(statement.body, _fork(states), exception_states, exit_states)
@@ -2688,17 +2842,28 @@ class _BlockScanner:
                 if isinstance(statement, (ast.For, ast.AsyncFor))
                 else _fork(states)
             )
-            looped = self.scan_block(statement.body, body_states, exception_states, exit_states)
+            loop_exits: list[dict[str, str]] = []
+            looped = self.scan_block(statement.body, body_states, exception_states, loop_exits)
+            broken: list[dict[str, str]] = []
+            for state in loop_exits:
+                reason = state.get(_FLOW_EXIT_KEY)
+                if reason in {"Break", "Continue"}:
+                    state.pop(_FLOW_EXIT_KEY)
+                    (broken if reason == "Break" else looped).append(state)
+                elif exit_states is not None:
+                    exit_states.append(state)
             after = _merge_states(_fork(states) + looped)
-            return (
+            exhausted = (
                 self.scan_block(statement.orelse, after, exception_states, exit_states)
                 if statement.orelse
                 else after
             )
+            return _merge_states(exhausted + broken)
         if isinstance(statement, (ast.With, ast.AsyncWith)):
             for item in statement.items:
                 self._scan_expression(item.context_expr, states)
                 if item.optional_vars is not None:
+                    self._scan_target(item.optional_vars, states)
                     for state in states:
                         expression = item.context_expr
                         name = (
@@ -2812,9 +2977,11 @@ class _BlockScanner:
                 for case in statement.cases
             )
             return _merge_states(case_states + ([] if exhaustive else _fork(states)))
-        if isinstance(statement, (ast.Return, ast.Raise)):
+        if isinstance(statement, (ast.Return, ast.Raise, ast.Break, ast.Continue)):
             if exit_states is not None:
-                exit_states.extend(_fork(states))
+                exit_states.extend(
+                    {**state, _FLOW_EXIT_KEY: type(statement).__name__} for state in states
+                )
             return []
         return states
 
@@ -2897,10 +3064,14 @@ def _scan_scope(
     lexical_prefixes: tuple[str, ...] = (),
     nested_scope_values: dict[ast.AST, list[dict[str, str]]] | None = None,
     closure_rebindings: set[str] | None = None,
+    parameter_values: dict[str, str] | None = None,
 ) -> None:
     initial = _scope_initial_values(
         node, module_values, path, repo_root, path_functions, lexical_prefixes
     )
+    supplied = parameter_values or {}
+    _invalidate_names(initial, {name for name in supplied if not name.startswith("\0")})
+    initial.update(supplied)
     for name in closure_rebindings or ():
         initial.pop(f"{_CONSTANT_VALUE_PREFIX}{name}", None)
         initial.pop(f"{_UNRESOLVED_FORMAT_PREFIX}{name}", None)
@@ -3109,8 +3280,6 @@ def collect_artifact_accesses(
                 if isinstance(node, ast.Lambda):
                     continue
                 return_expr = _return_expression(node)
-                if return_expr is None:
-                    continue
                 params = tuple(
                     arg.arg
                     for arg in [*node.args.posonlyargs, *node.args.args, *node.args.kwonlyargs]
@@ -3122,7 +3291,6 @@ def collect_artifact_accesses(
                     scope.qualname,
                     PathFunction(
                         params,
-                        _function_defaults(node),
                         return_expr,
                         function_values,
                         relative,
@@ -3159,6 +3327,8 @@ def collect_artifact_accesses(
                 nested_scope_values.get(scope.node, [])
                 if len(scope.lexical_prefixes) > 1
                 else [values]
+                if scope.node in nested_scope_values
+                else []
             )
             rebindings = (
                 _closure_rebound_names(enclosing_scopes[scope.lexical_prefixes[1]].node, scope.node)
@@ -3167,19 +3337,21 @@ def collect_artifact_accesses(
             )
             enclosing_scopes[scope.qualname] = scope
             for initial in _merge_states(initial_states):
-                _scan_scope(
-                    scope.node,
-                    initial,
-                    relative,
-                    repo_root,
-                    path_functions,
-                    accesses,
-                    unresolved,
-                    unrecognised,
-                    scope.lexical_prefixes,
-                    nested_scope_values,
-                    rebindings,
-                )
+                for supplied in _merge_states(path_functions.call_bindings.get(scope.node, [{}])):
+                    _scan_scope(
+                        scope.node,
+                        initial,
+                        relative,
+                        repo_root,
+                        path_functions,
+                        accesses,
+                        unresolved,
+                        unrecognised,
+                        scope.lexical_prefixes,
+                        nested_scope_values,
+                        rebindings,
+                        supplied,
+                    )
     unique = list(dict.fromkeys(accesses))
     if capped_expressions is not None:
         capped_expressions.update(path_functions.capped_expressions)
@@ -3294,6 +3466,19 @@ def _patterns_match(left: str, right: str) -> bool:
         if "*" in pattern and not _glob_has_artifact_identity(pattern):
             return False
     return _glob_match(left, right) or _glob_match(right, left)
+
+
+def _accesses_match(left: ArtifactAccess, right: ArtifactAccess) -> bool:
+    if left.glob_pattern is None and right.glob_pattern is None:
+        return left.pattern == right.pattern
+    for access in (left, right):
+        if access.glob_pattern is not None and not _glob_has_artifact_identity(access.glob_pattern):
+            return False
+    if left.glob_pattern is None:
+        return _glob_match(left.pattern, right.glob_pattern)
+    if right.glob_pattern is None:
+        return _glob_match(right.pattern, left.glob_pattern)
+    return _patterns_match(left.glob_pattern, right.glob_pattern)
 
 
 def _dedupe_findings(findings: list[ConsumerSideFinding]) -> list[ConsumerSideFinding]:
@@ -3533,10 +3718,12 @@ def _dynamic_root_writers(pattern: str, writes: list[ArtifactAccess]) -> list[Ar
     ]
 
 
-def _group_reads(reads: list[ArtifactAccess]) -> dict[str, tuple[ArtifactAccess, ...]]:
-    grouped: dict[str, list[ArtifactAccess]] = {}
+def _group_reads(
+    reads: list[ArtifactAccess],
+) -> dict[tuple[str, str | None], tuple[ArtifactAccess, ...]]:
+    grouped: dict[tuple[str, str | None], list[ArtifactAccess]] = {}
     for reader in reads:
-        grouped.setdefault(reader.pattern, []).append(reader)
+        grouped.setdefault((reader.pattern, reader.glob_pattern), []).append(reader)
     return {
         pattern: tuple(sorted(sites, key=lambda item: (str(item.path), item.lineno)))
         for pattern, sites in grouped.items()
@@ -3706,8 +3893,13 @@ def analyse_consumer_side(
     exclusions = Counter({name: 0 for name in CONSUMER_SIDE_EXCLUSIONS})
     included_reads: list[ArtifactAccess] = []
     grouped_reads = _group_reads(reads)
-    for pattern, reader_sites in grouped_reads.items():
-        exclusion = _exclusion_class(pattern, tracked)
+    for (pattern, glob_pattern), reader_sites in grouped_reads.items():
+        exclusion = _exclusion_class(
+            glob_pattern
+            if glob_pattern is not None
+            else _literal_text(_literal_path(pattern), escape=True),
+            tracked,
+        )
         if exclusion is None:
             included_reads.extend(reader_sites)
         else:
@@ -3721,12 +3913,12 @@ def analyse_consumer_side(
         (path, _read(path, source_gaps, repo_root))
         for path in _documented_elsewhere_source_paths(repo_root, tracked)
     ]
-    for pattern, reader_sites in _group_reads(included_reads).items():
+    for (pattern, glob_pattern), reader_sites in _group_reads(included_reads).items():
         representative = reader_sites[0]
         matching = [
             writer
             for writer in writes
-            if writer.bounded and _patterns_match(pattern, writer.pattern)
+            if writer.bounded and _accesses_match(representative, writer)
         ]
         unmodelled = tuple(reader for reader in reader_sites if not reader.modelled)
         if unmodelled:
@@ -3748,7 +3940,7 @@ def analyse_consumer_side(
         elif not matching:
             # Classification evidence is live evidence: a fixture under tests/ cannot downgrade
             # an absent producer into the weaker dynamic-root finding.
-            dynamic_writers = _dynamic_root_writers(pattern, writes)
+            dynamic_writers = _dynamic_root_writers(glob_pattern, writes) if glob_pattern else []
             producer_mentions = _non_python_mentions(pattern, non_python_sources, repo_root)
             documented_mentions = _non_python_mentions(pattern, documented_sources, repo_root)
             if dynamic_writers:
@@ -3787,7 +3979,7 @@ def analyse_consumer_side(
         paired = [
             writer
             for writer in identity_writers
-            if (writer.bounded and _patterns_match(pattern, writer.pattern))
+            if (writer.bounded and _accesses_match(representative, writer))
             or (
                 writer.pattern == pattern
                 and not writer.bounded
@@ -3818,10 +4010,13 @@ def analyse_consumer_side(
         for member in load_decayed_members(frame_path, resolved_mass, repo_root):
             decayed_member_ids.append(member.member_id)
             for writer in writes:
-                if not any(_patterns_match(writer.pattern, pattern) for pattern in member.patterns):
+                if not any(
+                    _accesses_match(writer, replace(writer, pattern=pattern, glob_pattern=pattern))
+                    for pattern in member.patterns
+                ):
                     continue
                 for reader in included_reads:
-                    if not _patterns_match(reader.pattern, writer.pattern):
+                    if not _accesses_match(reader, writer):
                         continue
                     kind = "consumer-reads-decayed-producer"
                     findings.append(
@@ -3913,6 +4108,7 @@ def _access_json(access: ArtifactAccess) -> dict[str, object]:
         "operation": access.operation,
         "modelled": access.modelled,
         "bounded": access.bounded,
+        "glob_pattern": access.glob_pattern,
     }
 
 

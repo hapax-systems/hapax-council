@@ -5104,3 +5104,30 @@ _ = (read_raw_signal,)
 from shared.adjudicator_identity import record_identifies_its_checkout  # noqa: E402
 
 _ = (record_identifies_its_checkout,)
+
+# 2026-09-05: consumer-side-producer-binding-detector-20260831.
+# DETECTOR BLIND SPOT: ast.NodeVisitor dispatches visit_* by name, including
+# aliases on function-local visitor classes in scripts/check-producer-consumers.py.
+# These are static attribute-name references for every detector visitor entrypoint;
+# the function-local subclasses cannot be imported into this whitelist.
+from ast import NodeVisitor as _ProducerConsumerVisitor  # noqa: E402
+
+_ProducerConsumerVisitor.visit_AsyncFunctionDef
+_ProducerConsumerVisitor.visit_Call
+_ProducerConsumerVisitor.visit_ClassDef
+_ProducerConsumerVisitor.visit_DictComp
+_ProducerConsumerVisitor.visit_ExceptHandler
+_ProducerConsumerVisitor.visit_FunctionDef
+_ProducerConsumerVisitor.visit_GeneratorExp
+_ProducerConsumerVisitor.visit_Global
+_ProducerConsumerVisitor.visit_Import
+_ProducerConsumerVisitor.visit_ImportFrom
+_ProducerConsumerVisitor.visit_Lambda
+_ProducerConsumerVisitor.visit_ListComp
+_ProducerConsumerVisitor.visit_MatchAs
+_ProducerConsumerVisitor.visit_MatchMapping
+_ProducerConsumerVisitor.visit_MatchStar
+_ProducerConsumerVisitor.visit_Name
+_ProducerConsumerVisitor.visit_Nonlocal
+_ProducerConsumerVisitor.visit_Return
+_ProducerConsumerVisitor.visit_SetComp
