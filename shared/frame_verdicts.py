@@ -36,6 +36,8 @@ import yaml
 
 FRAME_PROCEDURE_ROOT_ENV = "HAPAX_FRAME_PROCEDURE_ROOT"
 DEFAULT_FRAME_PROCEDURE_ROOT = Path("~/Documents/Personal/30-areas/hapax/frame/procedure")
+FRAME_VAULT_ROOT_ENV = "HAPAX_FRAME_VAULT_ROOT"
+DEFAULT_FRAME_VAULT_ROOT = Path("~/Documents/Personal")
 
 #: ``hapax-frame-iteration.timer``: ``OnUnitActiveSec=3h``. A binding, not a law — change it here
 #: when the timer changes, and the tolerated age below follows.
@@ -83,6 +85,26 @@ _WILDCARD = re.compile(r"[*?\[]")
 class NonCanonicalScopeRef(ValueError):
     """A declared scope cannot be compared safely with the frame's member locations."""
 
+    remedy = "repair mutation_scope_refs to use canonical paths, then retry the dispatch"
+
+
+class UncontainableMemberLocation(NonCanonicalScopeRef):
+    """A decayed member's declaration supplies no comparable location."""
+
+    remedy = (
+        "amend frame/procedure/declaration/mass.yaml with a containable member location; "
+        + PRODUCER_REMEDY
+    )
+
+
+class UndecidableScopeContainment(NonCanonicalScopeRef):
+    """A canonical scope is too broad for a sound containment proof."""
+
+    remedy = (
+        "repair mutation_scope_refs to use explicit file paths or narrower globs whose "
+        "containment can be decided, then retry the dispatch"
+    )
+
 
 class FrameVerdictsUnavailable(RuntimeError):
     """The verdict set cannot be consulted; ``reason`` says why and ``remedy`` what to do."""
@@ -104,6 +126,7 @@ class DecayedMember:
     qualified_files: tuple[QualifiedLocation, ...] = ()
     excluded_roots: tuple[Path, ...] = ()
     excluded_prefixes: tuple[Path, ...] = ()
+    skip_dirs: tuple[str, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -161,6 +184,11 @@ def _member_declaration_identity(member: dict[str, object], exclusions: object) 
 def frame_procedure_root() -> Path:
     raw = os.environ.get(FRAME_PROCEDURE_ROOT_ENV, "").strip()
     return Path(raw).expanduser() if raw else DEFAULT_FRAME_PROCEDURE_ROOT.expanduser()
+
+
+def frame_vault_root() -> Path:
+    raw = os.environ.get(FRAME_VAULT_ROOT_ENV, "").strip()
+    return Path(raw).expanduser() if raw else DEFAULT_FRAME_VAULT_ROOT.expanduser()
 
 
 def epoch_produced_at(name: str) -> datetime | None:
@@ -629,8 +657,11 @@ def load_frame_verdicts(
             roots, patterns, files, qualified_roots, qualified_files = _member_location(member)
         except NonCanonicalScopeRef as exc:
             raise FrameVerdictsUnavailable(
-                f"member {member_id!r} has an uncontainable scheme-qualified location: {exc}"
+                f"member {member_id!r} has an uncontainable scheme-qualified location: {exc}",
+                remedy=UncontainableMemberLocation.remedy,
             ) from exc
+        location = member.get("location") or {}
+        skip_dirs = tuple(location.get("skip_dirs") or []) if isinstance(location, dict) else ()
         for relation in sorted(decay[member_id]):
             decayed.append(
                 DecayedMember(
@@ -641,8 +672,9 @@ def load_frame_verdicts(
                     files,
                     qualified_roots,
                     qualified_files,
-                    excluded_roots,
-                    excluded_prefixes,
+                    excluded_roots=excluded_roots,
+                    excluded_prefixes=excluded_prefixes,
+                    skip_dirs=skip_dirs,
                 )
             )
         if not roots and not files and not qualified_roots and not qualified_files:
@@ -737,12 +769,20 @@ def _glob_to_regex(pattern: str) -> re.Pattern[str]:
             out.append("[^/]")
             index += 1
         elif char == "[":
-            close = pattern.find("]", index + 1)
+            start = index + 1
+            if start < len(pattern) and pattern[start] == "!":
+                start += 1
+            if start < len(pattern) and pattern[start] == "]":
+                start += 1
+            close = pattern.find("]", start)
             if close == -1:
                 out.append(re.escape(char))
                 index += 1
             else:
-                out.append(pattern[index : close + 1])
+                # pathlib uses fnmatch's class semantics: leading ! negates; ^, backslashes,
+                # and non-leading ! are literals. Keep the class within one path segment.
+                translated = fnmatch.translate(pattern[index : close + 1])
+                out.append("(?!/)" + translated.removesuffix(r"\Z").removesuffix(r"\z"))
                 index = close + 1
         else:
             out.append(re.escape(char))
@@ -750,16 +790,13 @@ def _glob_to_regex(pattern: str) -> re.Pattern[str]:
     return re.compile("^" + "".join(out) + "$")
 
 
-def _pattern_matches(relative: str, name: str, pattern: str) -> bool:
+def _pattern_matches(relative: str, pattern: str) -> bool:
     """A member pattern against a path already known to sit under the member's root.
 
-    A pattern with no separator matches by NAME at any depth — the reader's own semantics, and what
-    the mass means when it declares ``patterns: ["*.md"]`` over a whole tree. A pattern containing a
-    separator is anchored at the root, and there ``*`` does not cross one while ``**`` does.
+    The producer's fs.glob calls root.glob(pattern): every pattern is anchored at the root.
+    ``*.md`` selects direct children; ``**/*.md`` also selects nested files.
     """
-    if "/" in pattern or "**" in pattern:
-        return bool(_glob_to_regex(pattern).match(relative))
-    return fnmatch.fnmatchcase(name, pattern)
+    return bool(_glob_to_regex(pattern).match(relative))
 
 
 def _glob_segments(pattern: str) -> tuple[str, ...]:
@@ -771,8 +808,6 @@ def _glob_segments(pattern: str) -> tuple[str, ...]:
 
 def _normalise_member_pattern(pattern: str) -> str:
     pattern = pattern.strip().replace("\\", "/").strip("/")
-    if "/" not in pattern:
-        pattern = f"**/{pattern}"
     if pattern.endswith("/**"):
         pattern += "/*"
     return pattern
@@ -868,13 +903,15 @@ def _scope_glob_covered(scope_pattern: str, member_patterns: tuple[str, ...]) ->
     for witness in _glob_witnesses(scope_pattern):
         if not any(_glob_to_regex(pattern).match(witness) for pattern in normalised):
             return False
-    raise NonCanonicalScopeRef(
+    raise UndecidableScopeContainment(
         f"scope glob {scope_pattern!r} overlaps member patterns {list(member_patterns)!r}, but "
         "whole-surface containment cannot be decided safely"
     )
 
 
 def _path_is_excluded(path: Path, member: DecayedMember) -> bool:
+    if any(part in member.skip_dirs for part in path.parts):
+        return True
     if any(path == root or root in path.parents for root in member.excluded_roots):
         return True
     text = str(path)
@@ -922,6 +959,11 @@ def _glob_intersects_subtree(scope_pattern: str, relative_prefix: str) -> bool |
 def _scope_intersects_exclusions(path: Path, scope_pattern: str, member: DecayedMember) -> bool:
     if _path_is_excluded(path, member):
         return True
+    if member.skip_dirs and any(
+        segment == "**" or any(fnmatch.fnmatchcase(skip, segment) for skip in member.skip_dirs)
+        for segment in _glob_segments(scope_pattern)
+    ):
+        return True
     undecidable = False
     for root in member.excluded_roots:
         if path not in root.parents:
@@ -943,7 +985,7 @@ def _scope_intersects_exclusions(path: Path, scope_pattern: str, member: Decayed
                 return True
             undecidable = undecidable or state is None
     if undecidable:
-        raise NonCanonicalScopeRef(
+        raise UndecidableScopeContainment(
             f"scope glob {scope_pattern!r} cannot be compared safely with the mass exclusions"
         )
     return False
@@ -981,7 +1023,7 @@ def ref_within_member(
         if not member.patterns or path == root:
             return True
         for pattern in member.patterns:
-            if _pattern_matches(relative, path.name, pattern):
+            if _pattern_matches(relative, pattern):
                 return True
     return False
 
@@ -1014,8 +1056,7 @@ def qualified_ref_within_member(
             return True
         if not member.patterns or ref.parts == root.parts:
             return True
-        name = relative_parts[-1] if relative_parts else ""
-        if any(_pattern_matches(relative, name, pattern) for pattern in member.patterns):
+        if any(_pattern_matches(relative, pattern) for pattern in member.patterns):
             return True
     return False
 
@@ -1055,13 +1096,14 @@ def scope_within_decayed(
     verdicts: FrameVerdicts,
     *,
     council_root: Path,
-    vault_root: Path,
+    vault_root: Path | None = None,
 ) -> ScopeVerdict:
+    vault_root = frame_vault_root() if vault_root is None else vault_root
     matches: list[ScopeMatch] = []
     outside: list[str] = []
     declared_refs = [str(ref) for ref in refs if str(ref).strip()]
     if declared_refs and verdicts.unmatchable:
-        raise NonCanonicalScopeRef(
+        raise UncontainableMemberLocation(
             "decayed member(s) "
             f"{list(verdicts.unmatchable)} have no containable declared location; the scope "
             "cannot be compared safely"

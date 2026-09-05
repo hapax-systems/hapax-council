@@ -384,7 +384,7 @@ def test_scope_matching_by_containment_patterns_files_and_wildcard_tails(tmp_pat
     def scope(*refs: str) -> fv.ScopeVerdict:
         return fv.scope_within_decayed(refs, verdicts, council_root=council, vault_root=vault)
 
-    inside = scope("legacy/a.py", "legacy/**/*.py", "30-areas/old/x.md", "config/dead.yaml")
+    inside = scope("legacy/a.py", "legacy/*.py", "30-areas/old/x.md", "config/dead.yaml")
     assert inside.all_inside
     assert [(m.member_id, m.relation) for m in inside.matches] == [
         ("legacy-code", "scope_exited"),
@@ -397,6 +397,7 @@ def test_scope_matching_by_containment_patterns_files_and_wildcard_tails(tmp_pat
     assert scope("legacy/README.md").outside == ("legacy/README.md",)
     # Broad directory and wildcard refs also name non-.py files, so they are only partly inside.
     assert scope("legacy/**").outside == ("legacy/**",)
+    assert scope("legacy/**/*.py").outside == ("legacy/**/*.py",)
     assert scope("legacy/sub/").outside == ("legacy/sub/",)
     # partly inside: admitted (moving things out of a decayed member is legitimate work)
     mixed = scope("legacy/a.py", "scripts/live.py")
@@ -444,16 +445,51 @@ def test_a_double_star_pattern_does_not_match_every_path_under_the_root(tmp_path
     assert fv.ref_within_member(root / "docs" / "b.md", False, member)
     assert not fv.ref_within_member(root / "scripts" / "x.py", False, member)
     assert not fv.ref_within_member(root / "docs" / "a" / "b.py", False, member)
-    # A pattern WITHOUT a separator matches by name at any depth — that is the reader's own
-    # semantics (the mass declares `patterns: ["*.md"]` over whole trees and counts thousands of
-    # files under them). A pattern WITH a separator is anchored at the root, and there `*` does not
-    # cross one.
+    # fs.glob uses root.glob(pattern): flat patterns select only direct children.
     flat = fv.DecayedMember("s", "scope_exited", (root,), ("*.md",), ())
     assert fv.ref_within_member(root / "a.md", False, flat)
-    assert fv.ref_within_member(root / "sub" / "a.md", False, flat)
+    assert not fv.ref_within_member(root / "sub" / "a.md", False, flat)
     anchored = fv.DecayedMember("s", "scope_exited", (root,), ("docs/*.md",), ())
     assert fv.ref_within_member(root / "docs" / "a.md", False, anchored)
     assert not fv.ref_within_member(root / "docs" / "sub" / "a.md", False, anchored)
+
+
+@pytest.mark.parametrize("pattern", ["*.md", "**/*.md"])
+def test_member_globs_match_producer_enumeration(tmp_path: Path, pattern: str) -> None:
+    root = tmp_path / "member"
+    files = [root / "file.md", root / "sub/dir/file.md", root / "sub/dir/file.py"]
+    for path in files:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.touch()
+    member = fv.DecayedMember("m", "scope_exited", (root,), (pattern,), ())
+    # builtin.py:65-68: root.glob(pattern), then keep files.
+    enumerated = {path for path in root.glob(pattern) if path.is_file()}
+    for path in files:
+        assert fv.ref_within_member(path, False, member) == (path in enumerated)
+
+
+@pytest.mark.parametrize("scope_pattern", ["*.md", "sub/dir/*.md", "**/*.md"])
+def test_flat_member_does_not_contain_nested_glob_scopes(
+    tmp_path: Path, scope_pattern: str
+) -> None:
+    member = fv.DecayedMember("m", "scope_exited", (tmp_path,), ("*.md",), ())
+    assert fv.ref_within_member(tmp_path, True, member, scope_pattern=scope_pattern) == (
+        scope_pattern == "*.md"
+    )
+
+
+@pytest.mark.parametrize("pattern", ["[!a]", "[a!]", "[^a]", "[]a]", "[[]", "[a-c]", "[z-a]"])
+def test_glob_classes_match_producer_enumeration(tmp_path: Path, pattern: str) -> None:
+    docs = tmp_path / "docs"
+    docs.mkdir()
+    paths = [docs / f"{char}.py" for char in "abcz!^[]-"]
+    for path in paths:
+        path.touch()
+    glob = f"docs/{pattern}.py"
+    member = fv.DecayedMember("m", "scope_exited", (tmp_path,), (glob,), ())
+    enumerated = set(tmp_path.glob(glob))
+    for path in paths:
+        assert fv.ref_within_member(path, False, member) == (path in enumerated), path.name
 
 
 def test_patterned_member_requires_the_entire_directory_or_wildcard_scope(tmp_path: Path) -> None:
@@ -518,7 +554,7 @@ def test_mass_exclusions_are_subtracted_from_every_decayed_member(tmp_path: Path
     frame = tmp_path / "frame"
     procedure = frame / "procedure"
     frame.mkdir()
-    members = [{"id": "vault-frame", "location": {"path": str(frame), "patterns": ["*.md"]}}]
+    members = [{"id": "vault-frame", "location": {"path": str(frame), "patterns": ["**/*.md"]}}]
     exclusions = [
         {"id": "coord", "paths": ["../../LOG.md"]},
         {"id": "runs", "paths": ["../_runs*"]},
@@ -544,6 +580,64 @@ def test_mass_exclusions_are_subtracted_from_every_decayed_member(tmp_path: Path
     assert scope(frame / "LOG.md").outside == (str(frame / "LOG.md"),)
     prefixed = procedure / "_runs-next" / "receipt.md"
     assert scope(prefixed).outside == (str(prefixed),)
+
+
+def test_skip_dirs_follow_producer_path_part_filtering(tmp_path: Path) -> None:
+    root = tmp_path / "member"
+    paths = [root / path for path in ("live/a.md", "skip/a.md", "live/skip/a.md", "skipper/a.md")]
+    for path in paths:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.touch()
+    verdicts = fv.load_frame_verdicts(
+        _procedure_root(
+            tmp_path / "procedure",
+            members=[
+                {
+                    "id": "m",
+                    "location": {"path": str(root), "patterns": ["**/*.md"], "skip_dirs": ["skip"]},
+                }
+            ],
+            verdicts=[_verdict("m", "scope_exited")],
+        ),
+        now=NOW,
+    )
+    member = verdicts.decayed[0]
+    enumerated = {p for p in root.glob("**/*.md") if p.is_file() and "skip" not in p.parts}
+    for path in paths:
+        assert fv.ref_within_member(path, False, member) == (path in enumerated)
+    for pattern, inside in [("**/*.md", False), ("live/*.md", True), ("*/a.md", False)]:
+        assert fv.ref_within_member(root, True, member, scope_pattern=pattern) == inside
+
+
+@pytest.mark.parametrize("kind", ["PROCEDURE", "VAULT"])
+@pytest.mark.parametrize("value", [None, "", "  ", " ~/custom-frame-root "])
+def test_frame_roots_support_environment_overrides(
+    monkeypatch: pytest.MonkeyPatch, kind: str, value: str | None
+) -> None:
+    env = f"HAPAX_FRAME_{kind}_ROOT"
+    if value is None:
+        monkeypatch.delenv(env, raising=False)
+    else:
+        monkeypatch.setenv(env, value)
+    get_root = fv.frame_procedure_root if kind == "PROCEDURE" else fv.frame_vault_root
+    default = (
+        fv.DEFAULT_FRAME_PROCEDURE_ROOT if kind == "PROCEDURE" else fv.DEFAULT_FRAME_VAULT_ROOT
+    )
+    assert get_root() == (Path(value.strip()) if value and value.strip() else default).expanduser()
+
+
+def test_frame_fixture_restores_environment_when_teardown_is_interrupted(
+    tmp_path_factory: pytest.TempPathFactory, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from tests.conftest import _frame_verdicts_default_root
+
+    monkeypatch.setenv(fv.FRAME_PROCEDURE_ROOT_ENV, "/prior-procedure")
+    fixture = _frame_verdicts_default_root.__wrapped__(tmp_path_factory)
+    next(fixture)
+    assert fv.frame_procedure_root() != Path("/prior-procedure")
+    with pytest.raises(RuntimeError, match="interrupted teardown"):
+        fixture.throw(RuntimeError("interrupted teardown"))
+    assert fv.frame_procedure_root() == Path("/prior-procedure")
 
 
 def test_an_unreadable_mass_exclusion_refuses_instead_of_disappearing(tmp_path: Path) -> None:

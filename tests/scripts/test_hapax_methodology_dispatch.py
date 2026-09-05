@@ -4560,17 +4560,29 @@ def test_policy_rollback_help_documents_retirement() -> None:
 # ── The frame's verdicts at the work-selection dominator ───────────────────────────────────
 
 
-def _frame_procedure_root(root: Path, *, decayed_root: Path | str | None, age_s: int = 0) -> Path:
+def _frame_procedure_root(
+    root: Path,
+    *,
+    decayed_root: Path | str | None,
+    age_s: int = 0,
+    location: dict[str, object] | None = None,
+    exclusions: list[dict[str, object]] | None = None,
+) -> Path:
     """One epoch and a two-member mass; `decayed_root` is the location of the member the epoch
     marks scope_exited (None: the same member, verdict FALSE)."""
     stamp = (datetime.now(UTC) - timedelta(seconds=age_s)).strftime("%Y%m%dT%H%M%SZ")
     epoch = root / "_runs" / "epochs" / f"{stamp}-deadbeef"
     epoch.mkdir(parents=True)
     member_root = decayed_root if decayed_root is not None else root / "unused"
+    declared_exclusions = exclusions or []
     members = [
         {
             "id": "legacy-surface",
-            "location": {"path": str(member_root), "patterns": ["*"]},
+            "location": (
+                location
+                if location is not None
+                else {"path": str(member_root), "patterns": ["**/*"]}
+            ),
         },
         {"id": "live-surface", "location": {"path": str(root / "live")}},
     ]
@@ -4602,7 +4614,9 @@ def _frame_procedure_root(root: Path, *, decayed_root: Path | str | None, age_s:
     )
     (root / "declaration").mkdir()
     (root / "declaration" / "mass.yaml").write_text(
-        yaml.safe_dump({"projection": "frame-reduction", "members": members}),
+        yaml.safe_dump(
+            {"projection": "frame-reduction", "members": members, "exclusions": declared_exclusions}
+        ),
         encoding="utf-8",
     )
     (epoch / "coverage.json").write_text(
@@ -4610,7 +4624,9 @@ def _frame_procedure_root(root: Path, *, decayed_root: Path | str | None, age_s:
             [
                 {
                     "member_id": member["id"],
-                    "member_declaration_identity": fv._member_declaration_identity(member, []),
+                    "member_declaration_identity": fv._member_declaration_identity(
+                        member, declared_exclusions
+                    ),
                 }
                 for member in members
             ]
@@ -4623,6 +4639,132 @@ def _frame_procedure_root(root: Path, *, decayed_root: Path | str | None, age_s:
     )
     (root / "_runs" / "current").symlink_to(Path("epochs") / epoch.name)
     return root
+
+
+@pytest.mark.parametrize("exclusion_kind", ["subtree", "prefix"])
+def test_frame_dispatch_admits_scope_wholly_under_a_mass_exclusion(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, exclusion_kind: str
+) -> None:
+    module = _dispatcher_module()
+    member_root = tmp_path / "member"
+    excluded = member_root / "excluded"
+    raw = str(excluded) + ("*" if exclusion_kind == "prefix" else "")
+    excluded_file = (
+        member_root / "excluded-next" if exclusion_kind == "prefix" else excluded
+    ) / "file.md"
+    excluded_file.parent.mkdir(parents=True)
+    excluded_file.touch()
+    frame_root = _frame_procedure_root(
+        tmp_path / "frame",
+        decayed_root=member_root,
+        location={"path": str(member_root), "patterns": ["**/*.md"]},
+        exclusions=[{"id": "residue", "paths": [raw]}],
+    )
+    monkeypatch.setenv("HAPAX_FRAME_PROCEDURE_ROOT", str(frame_root))
+    # The raw glob includes this file; the producer removes it via ctx.is_excluded.
+    assert excluded_file in set(member_root.glob("**/*.md"))
+    refusal, epoch, decayed = module.frame_verdict_refusal(
+        {"mutation_scope_refs": [str(excluded_file)]}
+    )
+    assert refusal is None  # ADMITTED at the frame dispatch gate.
+    assert epoch is not None and decayed == ("legacy-surface",)
+    live_refusal, _, _ = module.frame_verdict_refusal(
+        {"mutation_scope_refs": [str(member_root / "live.md")]}
+    )
+    assert live_refusal is not None and "out of accountability" in live_refusal
+
+
+@pytest.mark.parametrize(
+    ("case", "diagnosis", "remedy"),
+    [
+        (
+            "noncanonical",
+            "contains a '..' segment",
+            "repair mutation_scope_refs to use canonical paths",
+        ),
+        (
+            "unmatchable",
+            "no containable declared location",
+            "amend frame/procedure/declaration/mass.yaml",
+        ),
+        (
+            "union",
+            "whole-surface containment cannot be decided safely",
+            "repair mutation_scope_refs to use explicit file paths or narrower globs",
+        ),
+        (
+            "exclusions",
+            "cannot be compared safely with the mass exclusions",
+            "repair mutation_scope_refs to use explicit file paths or narrower globs",
+        ),
+        (
+            "declaration",
+            "uncontainable scheme-qualified location",
+            "amend frame/procedure/declaration/mass.yaml",
+        ),
+        ("stale", "the producer has stopped", "run the frame producer"),
+    ],
+)
+def test_frame_dispatch_refusals_name_the_remedy_for_each_error_class(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, case: str, diagnosis: str, remedy: str
+) -> None:
+    module = _dispatcher_module()
+    council = tmp_path / "council"
+    (council / "docs").mkdir(parents=True)
+    monkeypatch.setattr(module, "REPO_ROOT_FOR_IMPORTS", council)
+    location: dict[str, object] = {"path": str(council), "patterns": ["**/*"]}
+    refs = ["docs/file.md"]
+    exclusions = []
+    age_s = 0
+    if case == "noncanonical":
+        refs = ["docs/../file.md"]
+    elif case == "unmatchable":
+        location = {}
+    elif case == "union":
+        location["patterns"] = ["docs/scope", "docs/scope.py", "docs/scope.md"]
+        refs = ["docs/*"]
+    elif case == "exclusions":
+        exclusions = [{"id": "residue", "paths": [str(council / "docs/excluded")]}]
+        refs = ["docs/**/*.rst"]
+    elif case == "declaration":
+        location = {"path": "gh:///missing-authority"}
+    elif case == "stale":
+        age_s = fv.FRAME_EPOCH_MAX_AGE_S + 60
+    frame_root = _frame_procedure_root(
+        tmp_path / "frame",
+        decayed_root=council,
+        location=location,
+        exclusions=exclusions,
+        age_s=age_s,
+    )
+    monkeypatch.setenv("HAPAX_FRAME_PROCEDURE_ROOT", str(frame_root))
+
+    refusal, _, _ = module.frame_verdict_refusal({"mutation_scope_refs": refs})
+
+    assert refusal is not None and diagnosis in refusal
+    assert f"Next: {remedy}" in refusal
+    if case in {"unmatchable", "declaration", "stale"}:
+        assert "systemctl --user start hapax-frame-iteration.service" in refusal
+
+
+def test_frame_dispatch_resolves_relative_refs_against_the_configured_vault(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    module = _dispatcher_module()
+    vault = tmp_path / "vault"
+    (vault / "30-areas/frame").mkdir(parents=True)
+    frame_root = _frame_procedure_root(
+        tmp_path / "procedure", decayed_root=vault / "30-areas/frame"
+    )
+    monkeypatch.setenv("HAPAX_FRAME_PROCEDURE_ROOT", str(frame_root))
+    monkeypatch.setenv("HAPAX_FRAME_VAULT_ROOT", str(vault))
+    monkeypatch.setattr(module, "REPO_ROOT_FOR_IMPORTS", tmp_path / "council")
+
+    refusal, _, _ = module.frame_verdict_refusal(
+        {"mutation_scope_refs": ["30-areas/frame/file.md"]}
+    )
+
+    assert refusal is not None and "out of accountability" in refusal
 
 
 def _dispatch_up_to_the_adapter(

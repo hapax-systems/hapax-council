@@ -10,7 +10,6 @@ from __future__ import annotations
 
 import importlib
 import json
-import os
 import sys
 from datetime import UTC, datetime
 from pathlib import Path
@@ -93,13 +92,9 @@ def _frame_verdicts_default_root(tmp_path_factory: pytest.TempPathFactory):
         encoding="utf-8",
     )
     (root / "_runs" / "current").symlink_to(Path("epochs") / epoch.name)
-    previous = os.environ.get("HAPAX_FRAME_PROCEDURE_ROOT")
-    os.environ["HAPAX_FRAME_PROCEDURE_ROOT"] = str(root)
-    yield
-    if previous is None:
-        os.environ.pop("HAPAX_FRAME_PROCEDURE_ROOT", None)
-    else:
-        os.environ["HAPAX_FRAME_PROCEDURE_ROOT"] = previous
+    with pytest.MonkeyPatch.context() as patch:
+        patch.setenv("HAPAX_FRAME_PROCEDURE_ROOT", str(root))
+        yield
 
 
 # Packages that require optional extras

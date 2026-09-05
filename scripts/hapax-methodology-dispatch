@@ -1072,13 +1072,11 @@ def frame_verdict_refusal(fields: dict[str, Any]) -> tuple[str | None, str | Non
             refs,
             verdicts,
             council_root=REPO_ROOT_FOR_IMPORTS,
-            vault_root=Path.home() / "Documents" / "Personal",
         )
     except frame_verdicts.NonCanonicalScopeRef as exc:
-        # A ref that climbs out of its own tree cannot be contained by any member, so no verdict
-        # about it means anything. Refuse the task rather than admit it unchecked.
+        # The error type identifies whether to repair the task scope or the member declaration.
         return (
-            f"declared mutation scope is not containable: {exc}",
+            f"declared mutation scope is not containable: {exc}. Next: {exc.remedy}",
             verdicts.epoch,
             decayed,
         )
