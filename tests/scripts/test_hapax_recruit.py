@@ -660,10 +660,10 @@ def test_stdout_lanes_keep_brief_side_artifacts_separate_from_recruiter_out(
     ("body", "failure_class", "diagnostic"),
     [
         (
-            b'{"api_key": "SYNTHETIC_PROTOCOL_SENTINEL",',
+            b'{"api_key": "SYNTHETIC_PROTOCOL_SENTINEL",',  # pragma: allowlist secret
             "JSONDecodeError",
             "invalid JSON",
-        ),  # pragma: allowlist secret
+        ),
         (b"\xffSYNTHETIC_PROTOCOL_SENTINEL", "UnicodeDecodeError", "UTF-8"),
         (b'["SYNTHETIC_PROTOCOL_SENTINEL"]', "EndpointProtocolError", "response must be an object"),
         (
