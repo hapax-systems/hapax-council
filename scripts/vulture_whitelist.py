@@ -5105,6 +5105,29 @@ from shared.adjudicator_identity import record_identifies_its_checkout  # noqa: 
 
 _ = (record_identifies_its_checkout,)
 
+# DETECTOR BLIND SPOT, not dead code (the second kind, see above). Every one of these has a real
+# production caller in scripts/hapax-estate-store-registry — an extensionless Python script that
+# vulture never parses (registry --list, canary originate/export, peer-check, sweep, grandfather).
+# Registration-at-production Stage 1 (report-only), 2026-09-02; task row
+# `registration-at-production-stage1-20260902`.
+from shared.estate_registration import (  # noqa: E402
+    export_canary_health,
+    grandfather_fragment,
+    originate_canaries,
+    run_peer_command,
+    sweep,
+)
+from shared.estate_store_registry import enumerate_stores  # noqa: E402
+
+_ = (
+    export_canary_health,
+    grandfather_fragment,
+    originate_canaries,
+    run_peer_command,
+    sweep,
+    enumerate_stores,
+)
+
 # Claim Verification Council dossier split (2026-09-02, row
 # cvc-dossier-evidence-not-process-trace-20260902): Pydantic invokes these `model_validator`s
 # dynamically to populate `evidentiary_rationale` / `process_trace` / `execution_receipt` from the
@@ -5118,3 +5141,12 @@ from agents.deliberative_council.models import (
 
 _PhaseOneResult._populate_dossier_sections
 _CouncilVerdict._populate_dossier_sections
+
+# 2026-09-05: the Stage-1 registration identity binding is called from the extension-less
+# executable scripts/hapax-estate-store-registry (bind_host_identity at its lines 196 and 440,
+# observed_host_identity at 359), which vulture's *.py walk cannot see.
+from shared.estate_registration import bind_host_identity as _bind_host_identity
+from shared.estate_registration import observed_host_identity as _observed_host_identity
+
+_bind_host_identity
+_observed_host_identity
