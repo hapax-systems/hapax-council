@@ -4263,8 +4263,24 @@ from shared.gate_outcome_producer import (  # noqa: E402
     emit_outcome_gate_event,
 )
 
-build_outcome_gate_event
-emit_outcome_gate_event
+_gate_outcome_producer_whitelist = (
+    build_outcome_gate_event,
+    emit_outcome_gate_event,
+)
+
+# Additive measurement-loop join helper (Stage-3 sub-slice 1): public API lands before the
+# witnessed PR-resolution caller, so vulture cannot see its production call path yet.
+from shared.gate_event_join import (  # noqa: E402
+    AdmissionContext,
+    emit_witnessed_outcome,
+    recover_admission_context,
+)
+
+_gate_event_join_whitelist = (
+    AdmissionContext,
+    recover_admission_context,
+    emit_witnessed_outcome,
+)
 
 # DemandShapeRef pure public API (capability onboarding Edge C / PR 4504): pure identity
 # helpers for content-addressed demand acts. Callers land with admission-tuple + reins
