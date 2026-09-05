@@ -3,8 +3,12 @@
 from __future__ import annotations
 
 import json
+import math
+import runpy
 import subprocess
+from collections.abc import Callable
 from configparser import ConfigParser
+from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
@@ -21,12 +25,13 @@ from shared.platform_capability_receipts import (
     ProviderDocsEvidence,
     SurfaceEvidence,
     WrapperEvidence,
+    load_platform_capability_receipt,
     parse_duration_spec,
 )
 from shared.platform_capability_registry import (
-    PlatformCapabilityRegistry,
     _route_specific_quota_admission_fresh,
     check_registry_freshness,
+    check_route_freshness,
     load_platform_capability_registry,
 )
 from shared.quota_spend_ledger import (
@@ -40,12 +45,27 @@ SCRIPT = REPO_ROOT / "scripts" / "hapax-platform-capability-freshness"
 FRESH_NOW = "2026-05-09T21:00:00Z"
 INERT_RECEIPT_DIR = REPO_ROOT / ".pytest-nonexistent-platform-receipts"
 
-# Measured at 9f4cd4518. These are deficits, not exemptions granting fresh supply.
-# Replace each with a positive margin gate when its producer repair is admitted.
-ADMISSION_PRODUCER_DEFICITS = {
-    "agy": "scheduled hapax-determine; window 900s; attempt envelope 2130s; margin -1230s",
-    "glmcp": "no scheduled admission producer; window 900s; dispatcher envelope 2505s",
-}
+# Operational slack beyond the configured attempt budget; successful renewal is not
+# guaranteed by a timer (failed/coalesced attempts can leave unbounded gaps).
+MARGIN_S = 60
+REVIEW_ROUTES = ("agy.review.direct", "glmcp.review.direct")
+
+
+@dataclass(frozen=True)
+class ProducerMeasurement:
+    route_id: str
+    declared_window_s: int
+    producer: str | None
+    terms: dict[str, int]
+
+    @property
+    def producer_envelope_s(self) -> float:
+        # Absence has no finite renewal bound; it is never a zero-second producer.
+        return sum(self.terms.values()) if self.producer else math.inf
+
+    @property
+    def margin_s(self) -> float:
+        return self.declared_window_s - self.producer_envelope_s
 
 
 def _unit_section(name: str, section: str) -> dict[str, str]:
@@ -57,87 +77,130 @@ def _unit_section(name: str, section: str) -> dict[str, str]:
 
 def _unit_seconds(section: dict[str, str], key: str, default: str | None = None) -> int:
     value = section[key] if default is None else section.get(key, default)
-    # These committed units use integer seconds, s, or min; unknown syntax fails closed.
+    # Unknown duration syntax fails in fixture setup, outside the expected failure.
     if value.isdecimal():
         return int(value)
     return int(parse_duration_spec(value.replace("min", "m")).total_seconds())
 
 
-def _admission_producer_measurements() -> dict[str, str]:
+def _timer_envelope(timer: dict[str, str], service: dict[str, str]) -> dict[str, int]:
+    interval = "OnUnitActiveSec" if "OnUnitActiveSec" in timer else "OnUnitInactiveSec"
+    return {
+        "poll": _unit_seconds(timer, interval),
+        "random_delay": _unit_seconds(timer, "RandomizedDelaySec", "0"),
+        "accuracy": _unit_seconds(timer, "AccuracySec", "1min"),
+        "service_timeout": _unit_seconds(service, "TimeoutStartSec"),
+    }
+
+
+@pytest.fixture
+def admission_producer_measurements() -> dict[str, ProducerMeasurement]:
     routes = json.loads((REPO_ROOT / "config/platform-capability-registry.json").read_text())[
         "routes"
     ]
-    windows = {
-        route["platform"]: int(
-            parse_duration_spec(route["freshness"]["quota_stale_after"]).total_seconds()
-        )
-        for route in routes
-        if route["route_id"] in {"agy.review.direct", "glmcp.review.direct"}
-    }
     producers = json.loads((REPO_ROOT / "config/determination-producers.json").read_text())[
         "producers"
     ]
-    agy_producers = [p for p in producers if "agy.review.direct" in p["subjects"]]
-    assert len(agy_producers) == 1
-    agy = agy_producers[0]
-    assert agy["command"] == ["scripts/hapax-agy-quota-admission", "--json"]
-    assert agy["evidence_ttl_seconds"] == windows["agy"]
-    timer = _unit_section("hapax-determine.timer", "Timer")
-    service = _unit_section("hapax-determine.service", "Service")
-    assert "scripts/hapax-determine --json" in service["ExecStart"]
-    # is_due uses ran_at, including failed runs. A threshold crossing can miss one poll.
-    # Charge the whole serial service, not just agy's 240s smoke or its 300s runner timeout.
-    poll = _unit_seconds(timer, "OnUnitActiveSec")
-    runtime = _unit_seconds(service, "TimeoutStartSec")
-    attempt_envelope = (
-        agy["cadence_seconds"]
-        + poll
-        + _unit_seconds(timer, "RandomizedDelaySec", "0")
-        + _unit_seconds(timer, "AccuracySec")
-        + runtime
+    scheduled = []
+    for path in sorted((REPO_ROOT / "systemd/units").glob("*.timer")):
+        timer = _unit_section(path.name, "Timer")
+        target = timer.get("Unit", path.with_suffix(".service").name)
+        if (path.parent / target).is_file():
+            scheduled.append((path.name, timer, _unit_section(target, "Service")))
+
+    measurements = {}
+    for route_id in REVIEW_ROUTES:
+        route = next(route for route in routes if route["route_id"] == route_id)
+        window = int(parse_duration_spec(route["freshness"]["quota_stale_after"]).total_seconds())
+        candidates = []
+        platform = route["platform"]
+        for name, timer, service in scheduled:
+            commands = " ".join(
+                value for key, value in service.items() if key.startswith("ExecStart")
+            )
+            if "scripts/hapax-determine --json" in commands:
+                for producer in producers:
+                    if route_id in producer["subjects"]:
+                        if f"scripts/hapax-{platform}-quota-admission" not in producer["command"]:
+                            raise ValueError(f"unrecognized admission producer: {producer}")
+                        terms = _timer_envelope(timer, service)
+                        # is_due charges cadence since ran_at, including failed runs; a
+                        # threshold crossing can miss a poll. Charge the whole serial service.
+                        terms["cadence"] = producer["cadence_seconds"]
+                        candidates.append(ProducerMeasurement(route_id, window, name, terms))
+            elif any(
+                command in commands
+                for command in (
+                    f"hapax-{platform}-quota-admission",
+                    f"hapax-{platform}-seat-refresh",
+                )
+            ):
+                candidates.append(
+                    ProducerMeasurement(route_id, window, name, _timer_envelope(timer, service))
+                )
+        measurements[route_id] = (
+            min(candidates, key=lambda item: item.producer_envelope_s)
+            if candidates
+            else ProducerMeasurement(route_id, window, None, {})
+        )
+    return measurements
+
+
+def test_review_admission_producer_characterization(
+    admission_producer_measurements: dict[str, ProducerMeasurement],
+) -> None:
+    assert set(admission_producer_measurements) == set(REVIEW_ROUTES)
+    for route_id, measured in admission_producer_measurements.items():
+        dominant = max(measured.terms, key=measured.terms.get) if measured.terms else "none"
+        print(
+            f"{route_id}: window={measured.declared_window_s}s; producer={measured.producer}; "
+            f"terms={measured.terms}; envelope={measured.producer_envelope_s}s; "
+            f"margin={measured.margin_s}s; required_margin>{MARGIN_S}s; dominant={dominant}"
+        )
+        # Relations survive a repair; no assertion requires a negative margin or absence.
+        assert all(term >= 0 for term in measured.terms.values())
+        assert all(measured.producer_envelope_s >= term for term in measured.terms.values())
+        assert (measured.margin_s > 0) == (
+            measured.declared_window_s > measured.producer_envelope_s
+        )
+    dispatcher = _timer_envelope(
+        _unit_section("hapax-pr-review-dispatch.timer", "Timer"),
+        _unit_section("hapax-pr-review-dispatch.service", "Service"),
     )
-    # This head can overrun an active-relative poll. The sum is a configured attempt budget,
-    # not a guarantee of successful renewals: coalescing/failure can leave unbounded gaps.
-    assert runtime > poll
-    assert attempt_envelope + 60 >= windows["agy"], (
-        "Replace the repaired deficit with a margin gate"
+    print(
+        f"review dispatcher: terms={dispatcher}; envelope={sum(dispatcher.values())}s (not an admission producer)"
     )
 
-    assert not any("glmcp.review.direct" in p["subjects"] for p in producers)
-    assert not (REPO_ROOT / "scripts/hapax-glmcp-seat-refresh").exists()
-    # Also catch a newly installed direct admission timer, regardless of the unit name.
-    for path in (REPO_ROOT / "systemd/units").glob("*.timer"):
-        scheduled = _unit_section(path.name, "Timer")
-        target = scheduled.get("Unit", path.with_suffix(".service").name)
-        if not (path.parent / target).is_file():
-            continue
-        command = _unit_section(target, "Service").get("ExecStart", "")
-        assert "hapax-glmcp-quota-admission" not in command
-        assert "hapax-glmcp-seat-refresh" not in command
-    dispatch_timer = _unit_section("hapax-pr-review-dispatch.timer", "Timer")
-    dispatch_service = _unit_section("hapax-pr-review-dispatch.service", "Service")
-    dispatcher_envelope = (
-        _unit_seconds(dispatch_timer, "OnUnitActiveSec")
-        + _unit_seconds(dispatch_timer, "RandomizedDelaySec", "0")
-        + _unit_seconds(dispatch_timer, "AccuracySec")
-        + _unit_seconds(dispatch_service, "TimeoutStartSec")
-    )
-    return {
-        "agy": (
-            f"scheduled hapax-determine; window {windows['agy']}s; "
-            f"attempt envelope {attempt_envelope}s; margin {windows['agy'] - attempt_envelope}s"
+
+@pytest.mark.parametrize(
+    "route_id",
+    [
+        pytest.param(
+            "agy.review.direct",
+            marks=pytest.mark.xfail(
+                strict=True,
+                raises=AssertionError,
+                reason="agy window 900s - envelope 2130s = -1230s; owner: agy cadence follow-on to quota-observation-cadence-margin-20260905",
+            ),
         ),
-        "glmcp": (
-            f"no scheduled admission producer; window {windows['glmcp']}s; "
-            f"dispatcher envelope {dispatcher_envelope}s"
+        pytest.param(
+            "glmcp.review.direct",
+            marks=pytest.mark.xfail(
+                strict=True,
+                raises=AssertionError,
+                reason="glmcp window 900s; scheduled admission producer absent at 58ab8558d; owner: #4624 glm producer repair",
+            ),
         ),
-    }
-
-
-def test_review_admission_producer_margin_deficits_are_explicit() -> None:
-    assert _admission_producer_measurements() == ADMISSION_PRODUCER_DEFICITS
-    # A missing row must fail, even when no scheduled producer can supply that family.
-    assert set(ADMISSION_PRODUCER_DEFICITS) == {"agy", "glmcp"}
+    ],
+)
+def test_review_admission_declared_window_exceeds_producer_envelope_with_margin(
+    route_id: str, admission_producer_measurements: dict[str, ProducerMeasurement]
+) -> None:
+    measured = admission_producer_measurements[route_id]
+    declared_window_s = measured.declared_window_s
+    producer_envelope_s = measured.producer_envelope_s
+    # Only the positive-margin invariant is expected to fail. A repair is strict XPASS.
+    assert declared_window_s > producer_envelope_s + MARGIN_S, measured
 
 
 @pytest.mark.parametrize("platform", ["agy", "glmcp"])
@@ -151,7 +214,7 @@ def test_review_admission_producer_margin_deficits_are_explicit() -> None:
         ("missing_snapshot", 1, SubscriptionQuotaState.UNKNOWN, "missing"),
     ],
 )
-def test_review_admission_expiry_is_not_extended_by_republication(
+def test_review_admission_consumer_expiry_boundaries(
     platform: str,
     observation: str,
     offset_seconds: int,
@@ -187,7 +250,7 @@ def test_review_admission_expiry_is_not_extended_by_republication(
         "operator_visible_reason": "Synthetic sanctioned admission; original expiry retained",
     }
     payload["quota_snapshots"] = [] if observation == "missing_snapshot" else [snapshot]
-    # A newly published ledger must not renew the admission's original validity.
+    # Consumer-only boundary cases; publication is exercised separately below.
     payload["captured_at"] = checked_at
     ledger = QuotaSpendLedger.model_validate(payload)
     state, refs = subscription_quota_state_for_route(ledger, route_id, now=checked_at)
@@ -212,40 +275,239 @@ def test_review_admission_expiry_is_not_extended_by_republication(
         assert ledger.quota_snapshots[0].fresh_until == expires
 
 
-@pytest.mark.parametrize("route_id", ["agy.review.direct", "glmcp.review.direct"])
-@pytest.mark.parametrize("observed", [False, True], ids=["absent", "expired"])
-def test_registry_quota_observation_absent_or_expired_is_not_fresh(
-    route_id: str, observed: bool
+def _write_review_admission(
+    relay: Path, platform: str, *, observed_at: datetime, failed: bool = False
+) -> None:
+    # Raw observation only: the fixture never supplies a derived fresh_until.
+    fields = {
+        "schema": f"hapax.{platform}_quota_admission.v1",
+        "status": "failed" if failed else "quota_available",
+        "provider": "google-antigravity-cli-agy" if platform == "agy" else "z_ai-glm-coding-plan",
+        "capacity_pool": "subscription_quota",
+        "route_id": f"{platform}.review.direct",
+        "supported_tool": f"hapax-{platform}-reviewer",
+        "model": "gemini-3.1-pro-high" if platform == "agy" else "glm-5.2",
+        "observed_at": observed_at.isoformat(),
+        "stale_after_seconds": 900,
+        "evidence_ref": "reviewer-smoke-witness",
+        "secret_value_persisted": "false",  # pragma: allowlist secret (field name, no value)
+        "prompt_or_output_persisted": "false",
+    }
+    if platform == "agy":
+        fields.update(
+            secret_source="agy:operator-session",  # pragma: allowlist secret (locator, no value)
+            billing_mode="operator_session_subscription",
+            smoke_command="scripts/hapax-agy-reviewer",
+            smoke_returncode=1 if failed else 0,
+            smoke_stdout_validated="false" if failed else "true",
+            positive_admission="false" if failed else "true",
+        )
+    else:
+        fields.update(
+            secret_source="pass:glmcp/api-key",  # pragma: allowlist secret (locator, no value)
+            billing_mode="coding_plan_subscription",
+            endpoint="https://api.z.ai/api/coding/paas/v4",
+            payg_fallback="false",
+        )
+    (relay / f"{platform}-quota-admission.yaml").write_text(
+        "\n".join(f"{key}: {value}" for key, value in fields.items()) + "\n"
+    )
+
+
+@pytest.fixture
+def review_publication(
+    platform: str, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> tuple[
+    Path, Path, Path, Callable[[datetime], tuple[QuotaSpendLedger, list[PlatformCapabilityReceipt]]]
+]:
+    relay = tmp_path / "relay"
+    relay.mkdir()
+    receipts = tmp_path / "capability-receipts"
+    live = tmp_path / "ledger.json"
+    monkeypatch.setenv("HAPAX_RELAY_RECEIPT_DIR", str(relay))
+    monkeypatch.setenv("HAPAX_PLATFORM_CAPABILITY_RECEIPT_DIR", str(receipts))
+    monkeypatch.setenv("HAPAX_QUOTA_SPEND_LEDGER_LIVE", str(live))
+    # No account, resource, credential, provider, or SSH probes. The publication and
+    # observation-loading functions themselves execute unchanged against tmp_path.
+    writer = runpy.run_path(str(REPO_ROOT / "scripts/hapax-quota-telemetry-writer"))[
+        "main"
+    ].__globals__
+    publisher = runpy.run_path(str(REPO_ROOT / "scripts/hapax-platform-capability-receipts"))[
+        "main"
+    ].__globals__
+    monkeypatch.setitem(publisher, "QUOTA_RECEIPT_DIR", relay)
+    monkeypatch.setitem(publisher, "QUOTA_LEDGER_LIVE", live)
+    monkeypatch.setitem(publisher, "CONFIG_REFS_BY_PLATFORM", {platform: []})
+    monkeypatch.setitem(
+        publisher,
+        "observe_cli",
+        lambda platform, **kwargs: CliEvidence(binary=platform, available=True, version="test"),
+    )
+    monkeypatch.setitem(
+        writer, "probe_local_resource_state", lambda **kwargs: ("green", ["test:resource"])
+    )
+    publications = []
+    clock = {}
+
+    def publish(argv: list[str], **kwargs: object) -> subprocess.CompletedProcess[str]:
+        # Replace only process transport: the writer's refresh function and both
+        # real CLI main functions still run. Reject any unexpected external call.
+        assert Path(argv[1]) == REPO_ROOT / "scripts/hapax-platform-capability-receipts"
+        args = [arg for arg in argv[2:] if arg not in {"--all", "--codex-exec-auth-probe"}]
+        result = publisher["main"]([*args, "--platform", platform, "--now", clock["now"], "--json"])
+        publications.append(load_platform_capability_receipt(receipts / f"{platform}.json"))
+        return subprocess.CompletedProcess(argv, result, stdout="", stderr="")
+
+    monkeypatch.setattr(subprocess, "run", publish)
+
+    def tick(now: datetime) -> tuple[QuotaSpendLedger, list[PlatformCapabilityReceipt]]:
+        clock["now"] = now.isoformat()
+        publications.clear()
+        assert (
+            writer["main"](
+                [
+                    "--now",
+                    clock["now"],
+                    "--out",
+                    str(live),
+                    "--relay-receipt-dir",
+                    str(relay),
+                    "--platform-capability-receipt-dir",
+                    str(receipts),
+                    "--json",
+                ]
+            )
+            == 0
+        )
+        # On this head the writer refreshes receipts BEFORE rebuilding its ledger.
+        # Publish once more to consume that new ledger, including on the first tick.
+        publish(
+            [
+                "python",
+                str(REPO_ROOT / "scripts/hapax-platform-capability-receipts"),
+                "--receipt-dir",
+                str(receipts),
+            ]
+        )
+        ledger = QuotaSpendLedger.model_validate_json(live.read_text())
+        return ledger, list(publications)
+
+    return relay, receipts, live, tick
+
+
+@pytest.mark.parametrize("platform", ["agy", "glmcp"])
+def test_review_admission_expiry_survives_real_publication(
+    platform: str, review_publication: tuple, capsys: pytest.CaptureFixture[str]
+) -> None:
+    relay, _receipts, _live, tick = review_publication
+    observed = datetime.fromisoformat(FRESH_NOW)
+    original_expiry = observed + timedelta(seconds=900)
+    _write_review_admission(relay, platform, observed_at=observed)
+    measurements = []
+    for offset in (0, 450, 899):
+        now = observed + timedelta(seconds=offset)
+        ledger, publications = tick(now)
+        snapshot = next(
+            s for s in ledger.quota_snapshots if s.route_id == f"{platform}.review.direct"
+        )
+        assert snapshot.captured_at == now
+        assert snapshot.fresh_until == original_expiry
+        assert (
+            subscription_quota_state_for_route(ledger, snapshot.route_id, now=now)[0]
+            is SubscriptionQuotaState.FRESH
+        )
+        assert publications[-1].quota.status is EvidenceStatus.OBSERVED
+        for receipt in publications:
+            # The very first refresh sees no ledger yet; subsequent publications
+            # must all be observed and bounded by the same original admission.
+            if offset == 0 and receipt.quota.status is EvidenceStatus.UNOBSERVABLE:
+                assert receipt.quota.reason_codes == ["quota_telemetry_unknown"]
+                continue
+            assert receipt.quota.status is EvidenceStatus.OBSERVED
+            assert receipt.observed_at == now
+            remaining = parse_duration_spec(receipt.quota.stale_after)
+            assert receipt.observed_at + remaining == original_expiry
+            assert remaining.total_seconds() == 900 - offset
+        capsys.readouterr()
+        measurements.append(
+            f"{platform}: t=+{offset}s; fresh_until={snapshot.fresh_until.isoformat()}; published_remaining={publications[-1].quota.stale_after}"
+        )
+
+    print("\n".join(measurements))
+
+
+@pytest.mark.parametrize("platform", ["agy", "glmcp"])
+@pytest.mark.parametrize("observation", ["absent", "failed"])
+def test_registry_quota_observation_absent_or_failed_is_not_fresh(
+    platform: str, observation: str, review_publication: tuple, tmp_path: Path
+) -> None:
+    relay, receipts, _live, tick = review_publication
+    now = datetime.fromisoformat(FRESH_NOW)
+    route_id = f"{platform}.review.direct"
+    payload = json.loads((REPO_ROOT / "config/platform-capability-registry.json").read_text())
+    route = next(route for route in payload["routes"] if route["route_id"] == route_id)
+    _mark_fresh(route)
+    route["telemetry"]["quota_source"] = "ledger"
+    registry_path = _write_registry(tmp_path, payload)
+    if observation == "failed":
+        _write_review_admission(relay, platform, observed_at=now, failed=True)
+    ledger, publications = tick(now)
+    assert (
+        subscription_quota_state_for_route(ledger, route_id, now=now)[0]
+        is SubscriptionQuotaState.UNKNOWN
+    )
+    assert all(receipt.quota.status is EvidenceStatus.UNOBSERVABLE for receipt in publications)
+
+    registry = load_platform_capability_registry(registry_path, receipt_dir=receipts, now=now)
+    result = check_registry_freshness(registry, route_ids=[route_id], now=now)
+    assert result.ok is False
+    missing_reason = (
+        "route_specific_quota_receipt_absent"
+        if platform == "agy"
+        else "glmcp_review_seat_receipt_admission_required"
+    )
+    assert f"{route_id}: quota blocked: {missing_reason}" in result.routes[0].errors
+
+
+@pytest.mark.parametrize("route_id", REVIEW_ROUTES)
+def test_checker_detects_quota_timestamp_loss_after_registry_loading(
+    route_id: str, tmp_path: Path
 ) -> None:
     payload = json.loads((REPO_ROOT / "config/platform-capability-registry.json").read_text())
     route = next(route for route in payload["routes"] if route["route_id"] == route_id)
     _mark_fresh(route)
     route["telemetry"]["quota_source"] = "ledger"
-    route["freshness"]["quota_checked_at"] = "2026-05-09T20:44:59Z" if observed else None
-    blocker = (
-        "route_specific_quota_receipt_absent"
-        if route_id == "agy.review.direct"
-        else "glmcp_review_seat_receipt_admission_required"
+    now = datetime.fromisoformat(FRESH_NOW)
+    registry = load_platform_capability_registry(
+        _write_registry(tmp_path, payload), receipt_dir=tmp_path / "no-receipts", now=now
     )
-    if not observed:
-        route["route_state"] = "blocked"
-        route["blocked_reasons"] = [blocker]
-        route["freshness"]["evidence"]["quota"]["blocked_reasons"] = [blocker]
-    registry = PlatformCapabilityRegistry.model_validate(payload)
-    checked_at = datetime(2026, 5, 9, 21, 0, tzinfo=UTC)
-    result = check_registry_freshness(registry, route_ids=[route_id], now=checked_at)
-
+    assert check_registry_freshness(registry, route_ids=[route_id], now=now).ok is True
+    loaded_route = next(route for route in registry.routes if route.route_id == route_id)
+    # The schema disallows a null timestamp without reasons. Exercise the checker's
+    # defensive branch by losing ONLY the timestamp after a successful real load;
+    # do not insert a verdict or blocker that would independently keep it red.
+    loaded_route.freshness.quota_checked_at = None
+    result = check_route_freshness(loaded_route, now=now)
     assert result.ok is False
-    assert result.checked_at == checked_at
-    reason = (
-        "quota stale; checked_at=2026-05-09T20:44:59+00:00 stale_after=15m"
-        if observed
-        else f"quota blocked: {blocker}"
+    assert result.errors == (f"{route_id}: quota freshness is unknown",)
+
+
+@pytest.mark.parametrize("route_id", REVIEW_ROUTES)
+def test_registry_quota_observation_expired_is_not_fresh(route_id: str, tmp_path: Path) -> None:
+    payload = json.loads((REPO_ROOT / "config/platform-capability-registry.json").read_text())
+    route = next(route for route in payload["routes"] if route["route_id"] == route_id)
+    _mark_fresh(route)
+    route["telemetry"]["quota_source"] = "ledger"
+    route["freshness"]["quota_checked_at"] = "2026-05-09T20:44:59Z"
+    now = datetime.fromisoformat(FRESH_NOW)
+    registry = load_platform_capability_registry(
+        _write_registry(tmp_path, payload), receipt_dir=tmp_path / "no-receipts", now=now
     )
-    expected = (f"{route_id}: {reason}",)
-    if not observed:
-        expected = (f"{route_id}: blocked: {blocker}", *expected)
-    assert result.routes[0].errors == expected
+    result = check_registry_freshness(registry, route_ids=[route_id], now=now)
+    assert result.ok is False
+    assert result.routes[0].errors == (
+        f"{route_id}: quota stale; checked_at=2026-05-09T20:44:59+00:00 stale_after=15m",
+    )
 
 
 def _run(*args: str) -> subprocess.CompletedProcess[str]:
