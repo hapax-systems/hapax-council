@@ -22,8 +22,8 @@ Usage::
     HAPAX_CC_PR_AUTOQUEUE_EXPECTED_MERGE_METHOD=SQUASH uv run python scripts/cc-pr-autoqueue.py --apply
 
 Default mode is a dry-run report. ``--apply`` performs the GitHub mutation.
-``--expected-merge-method`` is a governed emergency bypass for rulesets API or
-configuration incidents; the report records the override source.
+``--expected-merge-method`` overrides the desired strategy; applicable queue
+governance must still be verified. The report records the override source.
 """
 
 from __future__ import annotations
@@ -437,12 +437,19 @@ def _merge_method_operator_next_action(
         "`gh api repos/<repo>/rulesets/<ruleset_id> --jq "
         "'.rules[] | select(.type==\"merge_queue\") | .parameters.merge_method'` "
         f"and verify one of {methods}; "
-        "during a documented GitHub API or ruleset incident, rerun with "
-        f"`--expected-merge-method <METHOD>` or {EXPECTED_MERGE_METHOD_OVERRIDE_ENV}=<METHOD>."
+        "set `--expected-merge-method <METHOD>` or "
+        f"{EXPECTED_MERGE_METHOD_OVERRIDE_ENV}=<METHOD> to match the applicable queue strategy, "
+        "or remove the contradictory override. Restore unreadable governance evidence "
+        "before retrying; an override cannot replace that evidence."
     )
 
 
 def _decision_next_action(action: str, reasons: tuple[str, ...]) -> str | None:
+    if any(
+        reason.startswith("auto_merge_method_override_contradicts_queue_governance:")
+        for reason in reasons
+    ):
+        return _merge_method_operator_next_action()
     merge_method_reason = any(
         reason.startswith("auto_merge_method_mismatch")
         or reason.startswith("auto_merge_method_unverified")
@@ -726,13 +733,13 @@ def fetch_pr_merge_queue_governance(
     sources: list[str] = []
     page = 1
     while True:
-        ok, rulesets, message = _gh_api_get_json(
+        ok, rulesets, _message = _gh_api_get_json(
             f"repos/{repo}/rulesets?per_page=100&page={page}",
             repo_root=repo_root,
             runner=runner,
         )
         if not ok:
-            return MergeQueueGovernance(reason=prefix + f"enforcement_unreadable:{message}")
+            return MergeQueueGovernance(reason=prefix + "enforcement_unreadable:source=rulesets")
         if not isinstance(rulesets, list):
             return MergeQueueGovernance(reason=prefix + "enforcement_malformed:rulesets")
         for summary in rulesets:
@@ -747,12 +754,12 @@ def fetch_pr_merge_queue_governance(
             ruleset_id = summary.get("id")
             if type(ruleset_id) is not int or ruleset_id <= 0:
                 return MergeQueueGovernance(reason=prefix + "enforcement_malformed:ruleset_id")
-            ok, detail, message = _gh_api_get_json(
+            ok, detail, _message = _gh_api_get_json(
                 f"repos/{repo}/rulesets/{ruleset_id}", repo_root=repo_root, runner=runner
             )
             if not ok:
                 return MergeQueueGovernance(
-                    reason=prefix + f"enforcement_unreadable:ruleset={ruleset_id}:{message}"
+                    reason=prefix + f"enforcement_unreadable:ruleset={ruleset_id}"
                 )
             if not isinstance(detail, dict) or any(
                 detail.get(key) != summary.get(key) for key in ("id", "target", "enforcement")
@@ -1832,6 +1839,7 @@ def classify_pr(
     storm_reasons: tuple[str, ...] = (),
     expected_auto_merge_method: str | None = None,
     expected_auto_merge_method_source: str | None = None,
+    expected_auto_merge_method_is_override: bool = False,
     require_expected_auto_merge_method: bool = False,
 ) -> Decision:
     reasons: list[str] = []
@@ -1962,16 +1970,49 @@ def classify_pr(
             reasons.append(expected_method_unverified_reason)
 
     governance = pr.queue_governance
+    override_refusal = False
     if governance is not None:
-        if governance.reason:
-            reasons.append(governance.reason)
-        elif queued and governance.method is None:
-            reasons.append("auto_merge_method_unverified:queue_membership_conflict")
-        elif governance.method is not None and governance.method != expected_method:
-            reasons.append(
-                "auto_merge_method_unverified:queue_strategy_expected_conflict:"
-                f"rule={governance.method}:expected={expected_method}"
+        if queued and governance.reason is None and governance.method is None:
+            # Membership and applicable-rule receipts contradict each other;
+            # neither receipt establishes ownership of the per-PR method.
+            governance = replace(
+                governance,
+                reason="auto_merge_method_unverified:queue_membership_evidence_contradiction:"
+                "owner=merge_queue:membership=present:governance=non_queue",
             )
+            pr = replace(pr, queue_governance=governance)
+        if governance.reason:
+            if expected_auto_merge_method_is_override:
+                reasons.append(
+                    _expected_merge_method_unverified_reason(
+                        governance.reason.removeprefix("auto_merge_method_unverified:")
+                    )
+                )
+                override_refusal = True
+            else:
+                reasons.append(governance.reason)
+        elif governance.method is not None and governance.method != expected_method:
+            if expected_auto_merge_method_is_override:
+                reasons.append(
+                    "auto_merge_method_override_contradicts_queue_governance:"
+                    f"override={expected_method}:governed={governance.method}"
+                )
+                override_refusal = True
+            else:
+                reasons.append(
+                    "auto_merge_method_unverified:queue_strategy_expected_conflict:"
+                    f"rule={governance.method}:expected={expected_method}"
+                )
+
+    if override_refusal:
+        return Decision(
+            pr=pr,
+            task=task,
+            tasks=matched_tasks,
+            action="blocked",
+            reasons=tuple(reasons),
+            expected_auto_merge_method=expected_auto_merge_method,
+        )
 
     # GitHub ignores autoMergeRequest.mergeMethod under enforced queue handling;
     # only a validated applicable rule establishes queue ownership of that field.
@@ -3028,7 +3069,7 @@ def run_reconciler(
             runner=runner,
         )
     prs = fetch_open_prs(repo=repo, repo_root=repo_root, limit=limit, runner=runner)
-    if expected_auto_merge_method is not None and expected_auto_merge_method_override is None:
+    if expected_auto_merge_method is not None:
         governance_by_base: dict[tuple[str | None, str | None], MergeQueueGovernance] = {}
         governed_prs: list[PullRequest] = []
         for pr in prs:
@@ -3050,6 +3091,7 @@ def run_reconciler(
             active_ci_repair_task_ids=active_ci_repair_task_ids,
             expected_auto_merge_method=expected_auto_merge_method,
             expected_auto_merge_method_source=merge_method_source,
+            expected_auto_merge_method_is_override=expected_auto_merge_method_override is not None,
             require_expected_auto_merge_method=True,
         )
         for pr in prs
@@ -3114,6 +3156,8 @@ def run_reconciler(
                 storm_reasons=storm_mode.reasons,
                 expected_auto_merge_method=expected_auto_merge_method,
                 expected_auto_merge_method_source=merge_method_source,
+                expected_auto_merge_method_is_override=expected_auto_merge_method_override
+                is not None,
                 require_expected_auto_merge_method=True,
             )
             for pr in prs
