@@ -1332,6 +1332,13 @@ def write_receipt(
     route_policy_reason_codes: list[str] | None = None,
     invocation_id: str | None = None,
 ) -> Path:
+    """Record this validation's predicate, consulted frame evidence and input binding.
+
+    invocation_id correlates a caller's attempt; task_note_sha256 binds the exact bytes
+    parsed for that attempt, including on refusal. Keeping both on the predicate row
+    distinguishes retries and substituted notes. does_not_prove explicitly limits the
+    caller's correlation token: it proves neither identity nor authority.
+    """
     ledger_dir = orchestration_ledger_dir()
     ledger_dir.mkdir(parents=True, exist_ok=True)
     path = ledger_dir / "methodology-dispatch.jsonl"

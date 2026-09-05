@@ -1543,6 +1543,66 @@ def test_recursive_member_pattern_does_not_prove_traversal_of_a_directory_symlin
         fv.ref_within_member(selected, False, member)
 
 
+def test_disjoint_alias_checks_the_selected_canonical_surface(tmp_path: Path) -> None:
+    root = tmp_path / "member"
+    root.mkdir()
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    (outside / "file").write_bytes(b"selected bytes")
+    (root / "selected").symlink_to(outside, target_is_directory=True)
+    alias = root / "alias"
+    alias.symlink_to("selected/file")
+    member = fv.DecayedMember("m", "scope_exited", (root,), ("selected/*",), ())
+    # The lexical alias is disjoint, but its bytes belong to an escaping selection.
+    # This guard must inspect that selection itself, before any caller's fallback.
+    with pytest.raises(fv.UndecidableScopeContainment, match="escapes member root") as caught:
+        fv._check_member_symlinks(alias, root, member, scope_pattern=None)
+    assert str(root / "selected") in str(caught.value)
+
+
+def test_disjoint_alias_checks_canonical_exclusions(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    target, alias = tmp_path / "selected", tmp_path / "alias"
+    target.write_bytes(b"selected bytes")
+    alias.symlink_to(target.name)
+    member = fv.DecayedMember("m", "scope_exited", (tmp_path,), ("selected",), ())
+    checked = []
+    original = fv._path_is_excluded
+
+    def observe(path, selected_member):
+        checked.append(path)
+        return original(path, selected_member)
+
+    monkeypatch.setattr(fv, "_path_is_excluded", observe)
+    assert not fv._check_member_symlinks(alias, tmp_path, member, scope_pattern=None)
+    assert target in checked
+
+
+def test_disjoint_directory_alias_undecidable_names_component(tmp_path: Path) -> None:
+    target, alias = tmp_path / "selected", tmp_path / "alias"
+    target.mkdir()
+    (target / "sample").write_bytes(b"selected bytes")
+    alias.symlink_to(target.name, target_is_directory=True)
+    member = fv.DecayedMember("m", "scope_exited", (tmp_path,), ("selected/s*",), ())
+    with pytest.raises(fv.UndecidableScopeContainment) as caught:
+        fv._check_member_symlinks(alias, tmp_path, member, scope_pattern="*")
+    assert str(alias) in str(caught.value)
+    assert str(target) in str(caught.value)
+
+
+def test_canonical_surfaces_contain_only_producer_files(tmp_path: Path) -> None:
+    root = tmp_path / "member"
+    (root / "selected").mkdir(parents=True)
+    (root / "selected/file").write_bytes(b"selected bytes")
+    (root / "unrelated").mkdir()
+    alias = root / "tools"
+    alias.symlink_to("unrelated", target_is_directory=True)
+    member = fv.DecayedMember("m", "scope_exited", (root,), ("selected/**/*", "tools"), ())
+    assert fv._canonical_member_entries(member) == {root / "selected/file": root / "selected/file"}
+    assert fv._canonical_scope_entries(root, "**", member) == {}
+
+
 @pytest.mark.parametrize("ref", [".venv/bin/python", ".venv/bin/[p]ython"])
 def test_disjoint_loop_literal_requires_canonical_resolution(tmp_path: Path, ref: str) -> None:
     (tmp_path / ".venv/bin").mkdir(parents=True)

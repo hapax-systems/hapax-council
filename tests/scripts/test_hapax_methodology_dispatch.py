@@ -1,3 +1,4 @@
+import argparse
 import base64
 import hashlib
 import importlib.machinery
@@ -5039,6 +5040,104 @@ def test_dispatch_recursive_in_root_directory_alias(
     assert receipt["frame_decayed_members"] == ["legacy-surface"]
 
 
+@pytest.mark.parametrize("member_base,scope_base", [("sbin", "bin"), ("bin", "sbin")])
+@pytest.mark.parametrize("suffix", ["*", "**/*"])
+def test_dispatch_directory_pattern_alias_has_canonical_containment(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+    member_base: str,
+    scope_base: str,
+    suffix: str,
+) -> None:
+    root = alias_member_tree(tmp_path / "member")
+    pattern = f"{member_base}/db5.3/{suffix}"
+    read = {p.resolve(): p.read_bytes() for p in root.glob(pattern) if p.is_file()}
+    assert root / "bin/db5.3/db_dump" in read
+    assert all(
+        p.resolve() in read for p in (root / scope_base / "db5.3").glob(suffix) if p.is_file()
+    )
+    frame_root = _frame_procedure_root(
+        tmp_path / "frame",
+        decayed_root=root,
+        reader="fs.glob",
+        location={"path": str(root), "patterns": [pattern]},
+    )
+    rc, err = _dispatch_up_to_the_adapter(
+        tmp_path,
+        monkeypatch,
+        capsys,
+        _dispatcher_module(),
+        mutation_scope_refs=json.dumps([str(root / scope_base / "db5.3") + "/" + suffix]),
+        frame_root=frame_root,
+    )
+    assert rc == 10
+    assert "marks every declared mutation surface out of accountability" in err
+    assert "fixture refusal" not in err
+    receipt = json.loads(
+        (tmp_path / "ledger/methodology-dispatch.jsonl").read_text().splitlines()[-1]
+    )
+    assert receipt["frame_epoch"] == (frame_root / "_runs/current").resolve().name
+    assert receipt["frame_decayed_members"] == ["legacy-surface"]
+
+
+@pytest.mark.parametrize(
+    "scope", ["selected/file", "canonical/file", "canonical/*", "canonical/**", "canonical/"]
+)
+def test_dispatch_content_query_external_member_alias_closure(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+    scope: str,
+) -> None:
+    root = tmp_path / "member"
+    root.mkdir()
+    target = tmp_path / "canonical"
+    target.mkdir()
+    (target / "file").write_bytes(b"GNU selected query bytes")
+    (root / "selected").symlink_to(target, target_is_directory=True)
+    frame_root = _frame_procedure_root(
+        tmp_path / "frame",
+        decayed_root=root,
+        reader="fs.content_query",
+        location={"roots": [str(root)], "patterns": ["selected/*"], "query": "GNU"},
+    )
+    (frame_root / "declaration/params.yaml").write_text(
+        yaml.safe_dump(
+            {
+                "profile_id": "fixture",
+                "parameters": {
+                    "max_unit_bytes": {"value": 128, "why": "test bound"},
+                    "encoding_error_policy": {"value": "strict", "why": "test decoding"},
+                },
+            }
+        )
+    )
+    scope_path = str((root if scope.startswith("selected/") else tmp_path) / scope)
+    if scope.endswith("/"):
+        scope_path += "/"
+    rc, err = _dispatch_up_to_the_adapter(
+        tmp_path,
+        monkeypatch,
+        capsys,
+        _dispatcher_module(),
+        mutation_scope_refs=json.dumps([scope_path]),
+        frame_root=frame_root,
+    )
+    assert rc == 10
+    assert "fixture refusal" not in err
+    if scope.endswith("file"):
+        assert "marks every declared mutation surface out of accountability" in err
+    else:
+        assert "containment is undecidable" in err
+        assert str(target) in err
+    receipt = json.loads(
+        (tmp_path / "ledger/methodology-dispatch.jsonl").read_text().splitlines()[-1]
+    )
+    assert receipt["frame_epoch"] == (frame_root / "_runs/current").resolve().name
+    assert receipt["frame_decayed_members"] == ["legacy-surface"]
+
+
 @pytest.mark.parametrize("content_query", [None, "GNU"])
 def test_dispatch_alias_fixture_matches_installed_producer(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, content_query: str | None
@@ -5055,12 +5154,14 @@ def test_dispatch_alias_fixture_matches_installed_producer(
 
 @pytest.mark.parametrize("include_alias", [False, True])
 @pytest.mark.parametrize("candidate", ["db5.3/**", "db5.3/**/*", "db5.3/db_dump"])
+@pytest.mark.parametrize("scope_base", ["bin", "sbin"])
 def test_dispatch_recursive_scope_ignores_unrelated_selected_alias(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
     capsys: pytest.CaptureFixture[str],
     include_alias: bool,
     candidate: str,
+    scope_base: str,
 ) -> None:
     root = alias_member_tree(tmp_path / "member") / "bin"
     patterns = ["db5.3/**/*", *(["awk", "tools"] if include_alias else [])]
@@ -5084,7 +5185,7 @@ def test_dispatch_recursive_scope_ignores_unrelated_selected_alias(
         monkeypatch,
         capsys,
         _dispatcher_module(),
-        mutation_scope_refs=json.dumps([str(root / candidate)]),
+        mutation_scope_refs=json.dumps([str(root.parent / scope_base / candidate)]),
         frame_root=frame_root,
     )
     assert rc == 10
@@ -5201,7 +5302,7 @@ def test_dispatch_glob_language_is_independent_of_current_matches(
 
 
 @pytest.mark.parametrize("candidate", ["awk", "[a]wk"])
-def test_dispatch_disjoint_symlink_check_defers_to_canonical_closure(
+def test_dispatch_disjoint_symlink_check_consumes_canonical_closure(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
     capsys: pytest.CaptureFixture[str],
@@ -5214,8 +5315,8 @@ def test_dispatch_disjoint_symlink_check_defers_to_canonical_closure(
     alias.symlink_to(target.name)
     member = fv.DecayedMember("m", "scope_exited", (root,), ("gawk",), (), reader="fs.glob")
     assert {p.resolve() for p in root.glob("gawk") if p.is_file()} == {target}
-    # Exercise the exact disjoint/continue branch named by gemini. False here only means
-    # no excluded witness; ref_within_member still compares the canonical closure below.
+    # Exercise the disjoint branch directly as well as main(): it must consume the
+    # selected target and apply its guards even though the lexical pattern does not match.
     assert not fv._check_member_symlinks(alias, root, member, scope_pattern=None)
     assert fv._canonical_member_entries(member) == {target: target}
     frame_root = _frame_procedure_root(
@@ -6693,6 +6794,75 @@ def test_invocation_id_refuses_invalid_tokens_with_constraint_and_remedy(
     assert "1-128 characters from [A-Za-z0-9._:-]" in result.stderr
     assert "Next: supply" in result.stderr
     assert not (tmp_path / "ledger/methodology-dispatch.jsonl").exists()
+
+
+@pytest.mark.parametrize(
+    "token", ["", "x" * 129, "bad/part"], ids=["empty", "too-long", "bad-character"]
+)
+def test_invocation_id_token_direct_rejection(token: str) -> None:
+    with pytest.raises(argparse.ArgumentTypeError, match="1-128 characters"):
+        _dispatcher_module().invocation_id_token(token)
+
+
+@pytest.mark.parametrize("refused", [False, True], ids=["admitted", "refused"])
+def test_validation_receipt_binds_invocation_note_and_frame_consult(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+    refused: bool,
+) -> None:
+    module = _dispatcher_module()
+    root = tmp_path / "member"
+    root.mkdir()
+    frame_root = _frame_procedure_root(tmp_path / "frame", decayed_root=root)
+    spec = _spec(tmp_path / "isap-test.md")
+    task_path = _task(
+        tmp_path / "tasks",
+        "governed-build",
+        _governed_source_frontmatter(
+            spec,
+            mutation_scope_refs=json.dumps([str((root if refused else tmp_path) / "file")]),
+            allowed_platforms="[codex]",
+            required_mode="headless",
+            required_profile="full",
+        ),
+        route_metadata_defaults=False,
+    )
+    note_bytes = task_path.read_bytes().replace(b"\n", b"\r\n") + "\r\nCafé\r\n".encode()
+    task_path.write_bytes(note_bytes)
+    monkeypatch.setenv("HAPAX_CC_TASK_ROOT", str(tmp_path / "tasks"))
+    monkeypatch.setenv("HAPAX_FRAME_PROCEDURE_ROOT", str(frame_root))
+    monkeypatch.setenv("HAPAX_DISPATCH_CLAIM_SWEEP", "0")
+    monkeypatch.setenv("HAPAX_ORCHESTRATION_LEDGER_DIR", str(tmp_path / "ledger"))
+    # receipt-only reaches main's validation/report arm without launching an adapter.
+    rc = module.main(
+        [
+            "--task",
+            "governed-build",
+            "--lane",
+            "cx-green",
+            "--platform",
+            "codex",
+            "--mode",
+            "receipt-only",
+            "--skip-worktree-check",
+            "--invocation-id",
+            "round15:validation.1",
+        ]
+    )
+    output = capsys.readouterr()
+    assert rc == (10 if refused else 0), output.err
+    receipt = json.loads(
+        (tmp_path / "ledger/methodology-dispatch.jsonl").read_text().splitlines()[-1]
+    )
+    assert receipt["ok"] is (not refused)
+    assert receipt["invocation_id"] == "round15:validation.1"
+    assert receipt["task_note_sha256"] == hashlib.sha256(note_bytes).hexdigest()
+    assert receipt["does_not_prove"] == [
+        "invocation_id: correlation token supplied by the caller; not an identity, not an authority"
+    ]
+    assert receipt["frame_epoch"] == (frame_root / "_runs/current").resolve().name
+    assert receipt["frame_decayed_members"] == ["legacy-surface"]
 
 
 def test_invocation_id_distinguishes_same_task_lane_substitute_receipt(tmp_path: Path) -> None:

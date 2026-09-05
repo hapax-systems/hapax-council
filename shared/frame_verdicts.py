@@ -1312,6 +1312,31 @@ def _resolve_external_scope_path(path: Path) -> Path:
     return resolved
 
 
+def _canonical_member_patterns(root: Path, member: DecayedMember) -> tuple[str, ...]:
+    """Resolve each selected pattern's literal prefix before comparing file languages.
+
+    A directory alias in the declaration selects the same future paths as its target.
+    Keep the glob tail intact: today's file witnesses cannot prove that language.
+    """
+    patterns = []
+    for pattern in _member_file_patterns(member.patterns or ("**/*",)):
+        prefix, tail, _ = _filesystem_scope_parts(pattern)
+        if tail is None:
+            prefix, tail = prefix[:-1], prefix[-1]
+        lexical_base = root.joinpath(*prefix)
+        canonical_base = _resolve_external_scope_path(lexical_base)
+        if _path_is_excluded(lexical_base, member):
+            continue
+        if canonical_base != root and root not in canonical_base.parents:
+            raise UndecidableScopeContainment(
+                f"member pattern component {lexical_base} resolves outside member root {root} "
+                f"to {canonical_base}; containment is undecidable"
+            )
+        relative = "" if canonical_base == root else canonical_base.relative_to(root).as_posix()
+        patterns.append(_scope_pattern_from_base(relative, tail))
+    return tuple(patterns)
+
+
 def _check_member_symlinks(
     path: Path, root: Path, member: DecayedMember, *, scope_pattern: str | None
 ) -> bool:
@@ -1342,10 +1367,31 @@ def _check_member_symlinks(
                 _pattern_matches(relative, pattern) for pattern in patterns
             )
         if disjoint:
-            # A different spelling may reach a selected target. Resolve before discarding
-            # the lexical entry; broken glob expansions are as undecidable as literals.
-            _resolve_external_scope_path(selected)
-            continue
+            # Lexical disjointness says nothing about the bytes reached by an alias.
+            # Close the member selection here, then carry the canonical witness through
+            # the same exclusion and parent checks as a lexically selected entry.
+            canonical = _resolve_external_scope_path(selected)
+            surface = frozenset(_canonical_member_entries(member).values())
+            if canonical not in surface:
+                if scope_pattern is None or not any(canonical in file.parents for file in surface):
+                    continue
+                relative = "" if canonical == root else canonical.relative_to(root).as_posix()
+                try:
+                    covered = _scope_glob_covered(
+                        _scope_pattern_from_base(relative, scope_pattern),
+                        _canonical_member_patterns(root, member),
+                    )
+                except UndecidableScopeContainment as exc:
+                    raise UndecidableScopeContainment(
+                        f"scope component {selected} resolves to selected member surface at "
+                        f"{canonical}: {exc}"
+                    ) from exc
+                if not covered:
+                    raise UndecidableScopeContainment(
+                        f"scope component {selected} resolves to selected member surface at "
+                        f"{canonical}, but whole-surface containment is undecidable"
+                    )
+            selected = canonical
         if _path_is_excluded(selected, member):
             has_excluded_entry = True
             continue
@@ -1367,13 +1413,18 @@ def _check_member_symlinks(
                 if resolved != root and root not in resolved.parents:
                     problem = f"escapes member root {root} (resolved target {resolved})"
                 elif link.is_dir() and not any(
-                    "**" not in _glob_segments(pattern)
+                    (
+                        "**" not in _glob_segments(pattern)
+                        or link == root.joinpath(*_filesystem_scope_parts(pattern)[0])
+                        or link in root.joinpath(*_filesystem_scope_parts(pattern)[0]).parents
+                    )
                     and _pattern_matches(selected.relative_to(root).as_posix(), pattern)
                     for pattern in member.patterns
                 ):
                     # Recursive ** does not descend into directory symlinks in root.glob.
-                    # An explicit scope through one therefore needs a traversal proof.
-                    problem = "crosses a directory symlink without a non-recursive member pattern"
+                    # A literal prefix before ** does traverse them; a link encountered
+                    # only by the recursive selector still needs a traversal proof.
+                    problem = "crosses a directory symlink without a traversing member pattern"
             if problem:
                 error = UndecidableScopeContainment(
                     f"symlink {link} -> {target} {problem}; containment is undecidable"
@@ -1513,12 +1564,26 @@ def _content_query_matches(path: Path, query: ContentQuery) -> bool:
 
 
 def _content_query_within_member(
-    path: Path, dirlike: bool, member: DecayedMember, scope_pattern: str | None
+    path: Path,
+    dirlike: bool,
+    member: DecayedMember,
+    scope_pattern: str | None,
+    selected_entries: dict[Path, Path],
 ) -> bool:
     query = member.content_query
     if query is None:
         raise UncontainableMemberLocation("fs.content_query has no declared content predicate")
     canonical = _resolve_external_scope_path(path)
+    if dirlike or scope_pattern is not None:
+        for entry, target in selected_entries.items():
+            if canonical in target.parents and _pattern_matches(
+                target.relative_to(canonical).as_posix(), scope_pattern or "**/*"
+            ):
+                raise UndecidableScopeContainment(
+                    f"fs.content_query scope component {path} reaches selected target {target} "
+                    f"through {entry}; whole-surface containment is undecidable; "
+                    "declare explicit files so the content predicate can be evaluated"
+                )
     for root in member.roots:
         for candidate in dict.fromkeys((path, canonical)):
             if candidate != root and root not in candidate.parents:
@@ -1553,7 +1618,7 @@ def _content_query_within_member(
     # Compare targets before evaluating bytes so both spellings receive the same verdict.
     return any(
         canonical == target and _content_query_matches(entry, query)
-        for entry, target in _canonical_member_entries(member).items()
+        for entry, target in selected_entries.items()
     )
 
 
@@ -1606,8 +1671,6 @@ def ref_within_member(
             except (OSError, RuntimeError) as exc:
                 raise _unresolved_scope_component(candidate, exc) from exc
             return ref_within_member(candidate, candidate_is_dir, member)
-    if member.reader == "fs.content_query":
-        return _content_query_within_member(path, dirlike, member, scope_pattern)
     if broad:
         # A literal directory base denotes the same future file language through an alias.
         # Resolve each component even inside the root; terminal ** supplies no file witnesses
@@ -1619,6 +1682,8 @@ def ref_within_member(
         ):
             return True
     selected_entries = _canonical_member_entries(member)
+    if member.reader == "fs.content_query":
+        return _content_query_within_member(path, dirlike, member, scope_pattern, selected_entries)
     surface = frozenset(selected_entries.values())
     expansions = (
         _canonical_scope_entries(path, scope_pattern, member) if scope_pattern is not None else {}
@@ -1673,9 +1738,28 @@ def ref_within_member(
                 expansion_base = path
                 expansions = _canonical_scope_entries(path, "**/*", member)
             member_scope_pattern = _scope_pattern_from_base(relative, scope_pattern)
-            if member.patterns and not _scope_glob_covered(member_scope_pattern, member.patterns):
+            canonical_base = _resolve_external_scope_path(path)
+            canonical_covered = False
+            if canonical_base == root or root in canonical_base.parents:
+                canonical_relative = (
+                    "" if canonical_base == root else canonical_base.relative_to(root).as_posix()
+                )
+                canonical_covered = _scope_glob_covered(
+                    _scope_pattern_from_base(canonical_relative, scope_pattern),
+                    _canonical_member_patterns(root, member),
+                )
+            if member.patterns and not (
+                canonical_covered or _scope_glob_covered(member_scope_pattern, member.patterns)
+            ):
                 if any(
-                    target in surface and path / entry.relative_to(expansion_base) != target
+                    target in surface
+                    and (
+                        path / entry.relative_to(expansion_base) != target
+                        or any(
+                            selected != target and selected_target == target
+                            for selected, selected_target in selected_entries.items()
+                        )
+                    )
                     for entry, target in expansions.items()
                 ):
                     raise UndecidableScopeContainment(
