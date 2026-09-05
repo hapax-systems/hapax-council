@@ -1155,10 +1155,8 @@ def _ensure_local_ref_at_sha(
     repo_root: Path,
     runner: Any,
 ) -> str:
-    actual_sha = _resolve_local_ref(ref, repo_root=repo_root, runner=runner)
-    if actual_sha == expected_sha:
-        return expected_sha
-
+    """Refresh and pin the base tip, proving the recorded PR base is its ancestor."""
+    # GitHub refreshes baseRefOid lazily; even a matching local ref may lag origin.
     try:
         _run_gh(
             [
@@ -1180,14 +1178,25 @@ def _ensure_local_ref_at_sha(
         ) from exc
 
     actual_sha = _resolve_local_ref(ref, repo_root=repo_root, runner=runner)
-    if actual_sha != expected_sha:
-        actual_label = (actual_sha or "missing")[:12]
+    if not actual_sha:
         raise RuntimeError(
-            f"local ref {ref} resolved to {actual_label}, expected current PR base "
-            f"{expected_sha[:12]}; freshness cannot be established. Next action: refresh "
-            "PR metadata and the base ref, then retry review dispatch."
+            f"local ref {ref} is missing after fetching the base ref. Next action: "
+            "restore origin access and fetch the base ref, then retry review dispatch."
         )
-    return expected_sha
+    try:
+        _run_gh(
+            ["git", "merge-base", "--is-ancestor", expected_sha, actual_sha],
+            repo_root=repo_root,
+            runner=runner,
+        )
+    except RuntimeError as exc:
+        raise RuntimeError(
+            f"PR base {expected_sha[:12]} is not a proven ancestor of refreshed {ref} "
+            f"({actual_sha[:12]}); refusing local git diff. Next action: re-set the PR base "
+            f'with updatePullRequest(baseRefName: "{fetch_ref}") or push a merge of '
+            f"{fetch_ref}, then retry review dispatch."
+        ) from exc
+    return actual_sha
 
 
 def _ensure_local_ref(
