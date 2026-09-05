@@ -11,6 +11,7 @@ from types import SimpleNamespace
 
 import pytest
 
+import shared.estate_registration as registration_module
 from shared.estate_registration import (
     RegistrationError,
     export_canary_health,
@@ -217,6 +218,221 @@ def test_sweep_implementation_has_no_rename_move_or_delete_operation() -> None:
     assert ".unlink(" not in source
     assert "shutil.move(" not in source
     assert "shutil.rmtree(" not in source
+
+
+@pytest.mark.parametrize("legacy", [False, True], ids=["explicit-detector", "legacy-v1"])
+def test_sweep_recovers_flag_receipt_after_interrupted_state_write(
+    registry, tmp_path: Path, monkeypatch, legacy
+) -> None:
+    home = tmp_path / "home"
+    _make_hapax_root(home)
+    first = originate_canaries(registry, host_id="appendix", home=home, now=NOW, token="first")
+    runtime = home / ".cache/hapax/estate-registration"
+    reports = runtime / "reports"
+    write_json = registration_module._write_json
+
+    def interrupt(path, payload):  # noqa: ANN001, ANN202
+        if path.parent.name == "detector-state":
+            raise RegistrationError("injected interruption before detector state persistence")
+        write_json(path, payload)
+
+    with monkeypatch.context() as fault:
+        fault.setattr(registration_module, "_write_json", interrupt)
+        with pytest.raises(RegistrationError, match="injected interruption"):
+            sweep(_registry_for(registry), host_id="appendix", home=home, now=NOW)
+    flag = runtime / "flags" / f"{first['canary_id']}.json"
+    if legacy:
+        # C2's v1 schema had only this detector as producer, with no explicit
+        # detector field. Already-stranded receipts must recover too.
+        receipt = json.loads(flag.read_text())
+        receipt.pop("detector", None)
+        flag.write_text(json.dumps(receipt))
+    before = (flag.stat().st_ino, flag.stat().st_mtime_ns, flag.read_bytes())
+    assert not list((runtime / "detector-state").glob("*.json"))
+    assert not list(reports.glob("estate-drift-*.json"))
+
+    second = originate_canaries(
+        registry, host_id="appendix", home=home, now=NOW + timedelta(hours=1), token="second"
+    )
+    outcome = sweep(
+        _registry_for(registry), host_id="appendix", home=home, now=NOW + timedelta(hours=2)
+    )
+    ids = (first["canary_id"], second["canary_id"])
+    assert outcome.flagged_canary_ids == ids
+    assert outcome.missed_canary_ids == ()
+    assert (flag.stat().st_ino, flag.stat().st_mtime_ns, flag.read_bytes()) == before
+    state = json.loads(next((runtime / "detector-state").glob("*.json")).read_text())
+    assert state["evaluated_ids"] == sorted(ids)
+    assert state["miss_streak"] == 0
+    report = json.loads(Path(outcome.report_path).read_text())
+    assert report["flagged_canary_ids"] == list(ids)
+    repeated = sweep(
+        _registry_for(registry), host_id="appendix", home=home, now=NOW + timedelta(hours=3)
+    )
+    assert repeated.flagged_canary_ids == repeated.missed_canary_ids == ()
+    assert (flag.stat().st_ino, flag.stat().st_mtime_ns, flag.read_bytes()) == before
+
+
+@pytest.mark.parametrize(
+    ("field", "value"),
+    [
+        ("schema", "wrong-schema"),
+        ("canary_id", "another-canary"),
+        ("host", "another-host"),
+        ("detector", "another-detector"),
+        ("path", "/another-canary"),
+        ("action", "quarantine"),
+        ("flagged_at", "invalid-time"),
+        ("flagged_at", "2026-09-02T12:00:00"),
+        ("flagged_at", None),
+        ("invalid-json", None),
+    ],
+)
+def test_sweep_refuses_invalid_existing_flag_with_named_repair(
+    registry, tmp_path: Path, field, value
+) -> None:
+    home = tmp_path / "home"
+    _make_hapax_root(home)
+    canary = originate_canaries(registry, host_id="appendix", home=home, now=NOW, token="first")
+    runtime = home / ".cache/hapax/estate-registration"
+    flag = runtime / "flags" / f"{canary['canary_id']}.json"
+    receipt = {
+        "schema": "hapax.estate-canary-flag/v1",
+        "canary_id": canary["canary_id"],
+        "host": "appendix",
+        "detector": "hapax-estate-store-registry sweep",
+        "path": canary["canary_b_path"],
+        "action": "flag-only",
+        "flagged_at": "2026-09-02T12:00:00Z",
+    }
+    receipt[field] = value
+    flag.parent.mkdir(parents=True)
+    flag.write_text("{" if field == "invalid-json" else json.dumps(receipt))
+    before = flag.read_bytes()
+    with pytest.raises(RegistrationError) as failure:
+        sweep(_registry_for(registry), host_id="appendix", home=home, now=NOW)
+    message = str(failure.value)
+    assert "invalid existing canary flag" in message
+    assert str(flag) in message
+    assert "remedy:" in message and "repair" in message and "rerun" in message
+    assert flag.read_bytes() == before
+    assert not list((runtime / "detector-state").glob("*.json"))
+    assert not list((runtime / "reports").glob("estate-drift-*.json"))
+
+
+def test_sweep_records_both_missed_streaks_in_one_sweep(registry, tmp_path: Path, monkeypatch):
+    home = tmp_path / "home"
+    _make_hapax_root(home)
+    canaries = [
+        originate_canaries(
+            registry, host_id="appendix", home=home, now=NOW + timedelta(hours=i), token=str(i)
+        )
+        for i in range(5)
+    ]
+    # Exact order: miss, miss, flagged, miss, miss.
+    monkeypatch.setattr(
+        registration_module,
+        "scan_candidates",
+        lambda *_args, **_kwargs: (
+            (registration_module.Candidate(canaries[2]["canary_b_path"], "directory", "fake"),),
+            (),
+        ),
+    )
+    outcome = sweep(registry, host_id="appendix", home=home, now=NOW + timedelta(hours=6))
+    runtime = home / ".cache/hapax/estate-registration"
+    paths = sorted((runtime / "reports").glob("incident-estate-detector-dead-*.json"))
+    assert len(paths) == 2
+    incidents = [json.loads(path.read_text()) for path in paths]
+    assert {row["trigger_canary_id"] for row in incidents} == {
+        canaries[1]["canary_id"],
+        canaries[4]["canary_id"],
+    }
+    assert all(row["miss_streak"] == 2 for row in incidents)
+    assert all(row["detector"] == "hapax-estate-store-registry sweep" for row in incidents)
+    assert Path(outcome.detector_incident_path) in paths
+    assert outcome.flagged_canary_ids == (canaries[2]["canary_id"],)
+    assert outcome.missed_canary_ids == tuple(canaries[i]["canary_id"] for i in (0, 1, 3, 4))
+    state = json.loads(next((runtime / "detector-state").glob("*.json")).read_text())
+    assert state["evaluated_ids"] == sorted(row["canary_id"] for row in canaries)
+    assert state["miss_streak"] == 2 and state["incident_filed"] is True
+    assert json.loads(Path(outcome.report_path).read_text())["mutation_actions"] == []
+
+
+@pytest.mark.parametrize(
+    ("field", "value", "reason"),
+    [
+        ("host", "another-host", "wrong host or type"),
+        ("canary", "B", "wrong host or type"),
+        ("created_at", "invalid-time", "no parseable created_at"),
+        ("created_at", None, "no parseable created_at"),
+    ],
+)
+def test_canary_validation_names_record_and_recheck(registry, tmp_path: Path, field, value, reason):
+    home = tmp_path / "home"
+    _make_hapax_root(home)
+    canary = originate_canaries(registry, host_id="appendix", home=home, now=NOW, token="first")
+    path = Path(canary["canary_a_registration"])
+    receipt = json.loads(path.read_text())
+    receipt[field] = value
+    path.write_text(json.dumps(receipt))
+    before = path.read_bytes()
+    with pytest.raises(RegistrationError) as failure:
+        export_canary_health(registry=registry, host_id="appendix", home=home, now=NOW)
+    message = str(failure.value)
+    assert reason in message
+    assert str(path) in message
+    assert "remedy:" in message and "repair" in message
+    assert "originate" in message and "export-canary" in message
+    assert path.read_bytes() == before
+
+
+@pytest.mark.parametrize("failure_kind", ["unreadable", "invalid-json", "non-object", "encoding"])
+def test_required_runtime_record_read_error_names_repair_and_recheck(
+    registry, tmp_path: Path, monkeypatch, failure_kind
+) -> None:
+    home = tmp_path / "home"
+    _make_hapax_root(home)
+    canary = originate_canaries(registry, host_id="appendix", home=home, now=NOW, token="first")
+    path = Path(canary["canary_a_registration"])
+    if failure_kind == "unreadable":
+        read = Path.read_text
+
+        def unreadable(record, *args, **kwargs):  # noqa: ANN001, ANN202
+            if record == path:
+                raise PermissionError("synthetic permission denied")
+            return read(record, *args, **kwargs)
+
+        monkeypatch.setattr(Path, "read_text", unreadable)
+    else:
+        path.write_bytes(
+            {"invalid-json": b"{", "non-object": b"[]", "encoding": b"\xff"}[failure_kind]
+        )
+    before = path.read_bytes()
+    with pytest.raises(RegistrationError) as failure:
+        export_canary_health(registry=registry, host_id="appendix", home=home, now=NOW)
+    message = str(failure.value)
+    assert "required runtime record" in message and str(path) in message
+    assert "remedy:" in message and "repair" in message and "rerun" in message
+    if failure_kind == "unreadable":
+        assert "synthetic permission denied" in message
+    assert path.read_bytes() == before
+
+
+def test_sweep_report_collision_preserves_immutable_record(registry, tmp_path: Path, monkeypatch):
+    home = tmp_path / "home"
+    _make_hapax_root(home)
+    outcome = sweep(_registry_for(registry), host_id="appendix", home=home, now=NOW)
+    report = Path(outcome.report_path)
+    before = (report.stat().st_ino, report.stat().st_mtime_ns, report.read_bytes())
+    # Force just a report collision; the second sweep has a distinct state identity.
+    monkeypatch.setattr(registration_module.secrets, "token_hex", lambda _size: "second")
+    colliding_report = report.parent / "estate-drift-appendix-20260902T120000Z-second.json"
+    colliding_report.write_bytes(before[2])
+    collision_before = (colliding_report.stat().st_ino, colliding_report.read_bytes())
+    with pytest.raises(RegistrationError, match="cannot create immutable runtime record"):
+        sweep(_registry_for(registry), host_id="appendix", home=home, now=NOW)
+    assert (report.stat().st_ino, report.stat().st_mtime_ns, report.read_bytes()) == before
+    assert (colliding_report.stat().st_ino, colliding_report.read_bytes()) == collision_before
 
 
 def test_two_distinct_unflagged_b_instances_file_self_named_incident(

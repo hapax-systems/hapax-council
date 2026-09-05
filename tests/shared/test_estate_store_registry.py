@@ -4,7 +4,9 @@ import base64
 import hashlib
 import importlib.machinery
 import json
+import os
 import stat
+import subprocess
 import sys
 from dataclasses import replace
 from datetime import datetime
@@ -49,7 +51,13 @@ def test_registry_covers_every_declared_consumer_and_vendor_roots_are_flag_only(
 
 def test_registry_rejects_vendor_root_quarantine_even_if_general_policy_is_edited(
     tmp_path: Path,
+    monkeypatch,
 ) -> None:
+    import shared.estate_store_registry as registry_module
+
+    # Simulate a future stage permitting quarantine generally: the vendor guard
+    # must still refuse it independently of that general action allowlist.
+    monkeypatch.setattr(registry_module, "ALLOWED_ACTIONS", {"flag-only", "quarantine"})
     payload = yaml.safe_load(DEFAULT_REGISTRY_PATH.read_text(encoding="utf-8"))
     vendor = next(row for row in payload["stores"] if row["class"] == "vendor-root")
     vendor["action"] = "quarantine"
@@ -58,6 +66,106 @@ def test_registry_rejects_vendor_root_quarantine_even_if_general_policy_is_edite
 
     with pytest.raises(RegistryError, match="non-reporting action|flag-only"):
         load_registry(mutated)
+
+
+@pytest.mark.parametrize(
+    "script_name", ["hapax-estate-store-registry", "check-estate-store-declarations.py"]
+)
+@pytest.mark.parametrize("preloaded", [False, True], ids=["hostile-pythonpath", "preloaded-shared"])
+def test_scripts_bind_shared_import_to_physical_tree(tmp_path: Path, script_name, preloaded):
+    root = Path(__file__).resolve().parents[2]
+    decoy = tmp_path / "other-checkout"
+    package = decoy / "shared"
+    package.mkdir(parents=True)
+    (package / "__init__.py").write_text(
+        "# cached foreign package\n"
+        if preloaded
+        else "raise RuntimeError('decoy shared executed')\n"
+    )
+    unit = tmp_path / "fake.service"
+    unit.write_text("[Service]\nExecStart=/fake/unused\nX-Hapax-Store=None\n")
+    arguments = (
+        ["list", "--consumer", "census", "--host", "appendix", "--json"]
+        if script_name == "hapax-estate-store-registry"
+        else ["--unit", str(unit), "--json"]
+    )
+    launcher = """
+import json
+import runpy
+import subprocess
+import sys
+from pathlib import Path
+from types import SimpleNamespace
+
+script, root, preloaded, *arguments = sys.argv[1:]
+assert sys.path.index(root) > 0  # editable-install position, behind hostile PYTHONPATH
+sys.path.append(root)  # the bootstrap must also remove repeated occurrences
+if preloaded == 'True':
+    import shared
+read_text = Path.read_text
+native = {
+    '/proc/sys/kernel/hostname': 'hapax-appendix',
+    '/etc/machine-id': 'ffc36d1a0ca64320a3f1c9f1060292af',  # pragma: allowlist secret
+    '/proc/sys/kernel/random/boot_id': 'fake-boot',
+}
+Path.read_text = lambda path, *a, **kw: native[str(path)] if str(path) in native else read_text(path, *a, **kw)
+def run(argv, **kwargs):
+    assert argv == ['git', '-C', root, 'rev-parse', 'HEAD']
+    return SimpleNamespace(returncode=0, stdout='a' * 40, stderr='')
+subprocess.run = run
+sys.argv = [script, *arguments]
+try:
+    runpy.run_path(script, run_name='__main__')
+except SystemExit as exc:
+    if exc.code == 0:
+        assert sys.path[0] == root and sys.path.count(root) == 1
+        for name, module in sys.modules.items():
+            if name == 'shared' or name.startswith('shared.'):
+                assert Path(module.__file__).resolve().is_relative_to(Path(root))
+    raise
+"""
+    result = subprocess.run(
+        [
+            sys.executable,
+            "-c",
+            launcher,
+            str(root / "scripts" / script_name),
+            str(root),
+            str(preloaded),
+            *arguments,
+        ],
+        cwd=tmp_path,
+        env={
+            **{key: value for key, value in os.environ.items() if key not in NATIVE_VARIABLES},
+            "PYTHONPATH": os.pathsep.join((str(decoy), str(root))),
+            "PYTHONDONTWRITEBYTECODE": "1",
+        },
+        text=True,
+        capture_output=True,
+        check=False,
+        timeout=15,
+    )
+    if preloaded:
+        assert result.returncode == 2, result.stderr
+        assert "shared import outside physical source root" in result.stderr
+        assert str(package / "__init__.py") in result.stderr
+        assert "remedy:" in result.stderr and "restart" in result.stderr
+        assert "Traceback" not in result.stderr
+        if script_name == "hapax-estate-store-registry":
+            evidence = _evidence(result.stderr)
+            assert evidence["status"] == "failed" and evidence["returncode"] == 2
+            assert evidence["source"]["physical_root"] == str(root)
+            assert evidence["source"]["verified_shared_root"] == "absent"
+            assert len([line for line in result.stderr.splitlines() if line.startswith("{")]) == 1
+    else:
+        assert result.returncode == 0, result.stderr
+        evidence = (
+            _evidence(result.stderr)
+            if script_name == "hapax-estate-store-registry"
+            else json.loads(result.stdout)
+        )
+        assert evidence["source"]["physical_root"] == str(root)
+        assert evidence["source"]["verified_shared_root"] == str(root)
 
 
 def test_grandfathered_rows_have_evidence_and_no_blessing_claim() -> None:
@@ -102,8 +210,8 @@ NATIVE_VARIABLES = (
 )
 # Coordinator readback, 2026-09-05T06:40Z; independent of registry declarations.
 MACHINE_IDS = {
-    "appendix": "ffc36d1a0ca64320a3f1c9f1060292af",
-    "podium": "15c4e584aac74d048bcbe90fc35e6da3",
+    "appendix": "ffc36d1a0ca64320a3f1c9f1060292af",  # pragma: allowlist secret
+    "podium": "15c4e584aac74d048bcbe90fc35e6da3",  # pragma: allowlist secret
 }
 
 
@@ -502,6 +610,7 @@ def test_cli_git_unavailable_is_explicitly_absent(cli, monkeypatch) -> None:
     )
     assert cli._source_identity() == {
         "physical_root": str(SCRIPT.resolve().parents[1]),
+        "verified_shared_root": str(SCRIPT.resolve().parents[1]),
         "git_head": "absent",
     }
 

@@ -16,8 +16,21 @@ from dataclasses import asdict, dataclass
 from pathlib import Path
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
-if str(REPO_ROOT) not in sys.path:
-    sys.path.insert(0, str(REPO_ROOT))
+sys.path[:] = [str(REPO_ROOT), *(entry for entry in sys.path if entry != str(REPO_ROOT))]
+
+import shared
+
+SHARED_FILE = getattr(shared, "__file__", None)
+if not SHARED_FILE or not Path(SHARED_FILE).resolve().is_relative_to(REPO_ROOT):
+    print(
+        f"check-estate-store-declarations: shared import outside physical source root "
+        f"{REPO_ROOT}: {SHARED_FILE or 'absent'}; remedy: repair the release's shared package "
+        "and restart its interpreter with the verified physical script, "
+        "without a preloaded foreign shared package",
+        file=sys.stderr,
+    )
+    raise SystemExit(2)
+VERIFIED_SHARED_ROOT = str(REPO_ROOT)
 
 from shared.estate_store_registry import DEFAULT_REGISTRY_PATH, RegistryError, load_registry
 
@@ -132,6 +145,7 @@ def main(argv: list[str] | None = None) -> int:
     payload = {
         "schema": "hapax.estate-store-declaration-report/v1",
         "stage": "report-only",
+        "source": {"physical_root": str(REPO_ROOT), "verified_shared_root": VERIFIED_SHARED_ROOT},
         "checked_units": len(paths),
         "finding_count": len(findings),
         "findings": [asdict(finding) for finding in findings],

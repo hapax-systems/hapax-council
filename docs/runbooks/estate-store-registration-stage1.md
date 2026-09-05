@@ -72,6 +72,17 @@ pair makes the peer unit fail loudly.
 
 ## Physical source binding
 
+Both `scripts/hapax-estate-store-registry` and the declaration checker promote
+the resolved script tree to `sys.path[0]` unconditionally, removing duplicate
+occurrences before importing `shared`. They then verify that `shared.__file__`
+resolves beneath that physical tree before importing its submodules. An inherited
+`PYTHONPATH` or editable install cannot put a different checkout ahead of it.
+A cached foreign `shared` package refuses with exit 2 and a repair/restart remedy.
+The producer emits a failed completion line even for that bootstrap refusal;
+host, argument and boot observations have not run yet and remain `absent`.
+`source.verified_shared_root` records the verified root on success and `absent`
+on bootstrap refusal. The checker's JSON report carries the same verified root.
+
 `sweep-peer` and `check-peer` accept `--peer-source-root /absolute/physical/release`.
 The default is `HAPAX_ESTATE_PEER_SOURCE_ROOT`, so a coordinator-owned service
 drop-in can supply the separately verified opposite host's retained release
@@ -242,6 +253,7 @@ it does not produce a drift report.
 | `native.TRIGGER_TIMER_MONOTONIC_USEC` | Environment of the same name | Unset or empty |
 | `scheduled` | `true` only for an observed `.timer` trigger unit and at least one positive integer native timer timestamp, with no execution/binding errors or identity override | Every other case, including manual calls, missing identity evidence, overrides and `--qualified` alone |
 | `source.physical_root` | Resolved path of the running script's tree, fixed at import | Never |
+| `source.verified_shared_root` | Physical root verified against the imported `shared.__file__` before loading its submodules | Bootstrap import binding refused |
 | `source.git_head` | Successful `git -C <physical_root> rev-parse HEAD`; Git environment overrides excluded | Git unavailable, failed or invalid output |
 | `started_at`, `finished_at` | Local UTC clock immediately around execution | Never in an emitted completion |
 | `report.path`, `report.sha256`, `report.host` | Local sweep's returned path, SHA-256 of its exact bytes and local host | Entire `report` is `absent` when no local report was returned |
@@ -266,7 +278,7 @@ it does not produce a drift report.
 | `peer.report_path`, `peer.report_sha256` | Peer stdout summary, checked against peer completion | Missing summary fields, or command produces no report |
 | `peer.computed_sha256` | SHA-256 recomputed by initiator over decoded `report_base64` | Base64 decoding failed before hashing, or command produces no report; missing base64 defaults to empty bytes, whose digest is retained alongside `peer_report_invalid_or_absent` |
 | `peer.host`, `peer.boot_id`, `peer.source` | Peer stdout summary, checked against peer completion and requested physical binding | Missing fields; binding failures are recorded |
-| `peer.source.physical_root`, `.git_head` | Peer's script tree and Git HEAD, with the same provenance as local `source` | Entire source is `absent` if no source object was observed; a peer-produced `git_head` is `absent` on its Git read failure |
+| `peer.source.physical_root`, `.verified_shared_root`, `.git_head` | Peer's script tree, verified package root and Git HEAD, with the same provenance as local `source` | Entire source is `absent` if no source object was observed; a peer-produced `git_head` is `absent` on its Git read failure; older producers omit `.verified_shared_root` |
 | `peer.returncode` | Exact observed SSH process return code, including negative signal codes | Transport launch failure or timeout has no observed code |
 | `peer.transport_error` | `timeout` or transport exception class | Transport completed normally, even with nonzero exit |
 | `peer.status`, `peer.errors` | Binding validation and peer process outcome | Never when a peer result exists; `ok`, `unqualified` or `failed`, plus reason list |
@@ -335,6 +347,92 @@ unregistered findings cause it to file
 `hapax-estate-store-registry sweep` as the dead detector. Stage 1 deliberately
 does not self-clean either canary because the accepted stage forbids sweep
 deletion; cleanup remains an activation-stage decision.
+
+Each missed streak filed in a sweep has its own numbered incident filename;
+`detector_incident_path` retains the last incident path for compatibility. Read
+all `incident-estate-detector-dead-<host>-<sweep-stamp>-*.json` records to inspect
+every streak from that sweep.
+
+If a sweep stops after flag creation but before detector state persistence, the
+next sweep validates and reuses that receipt without changing its bytes, inode
+or timestamp. It checks schema, canary id, host, artifact path, action, detector
+identity and a timezone-bearing `flagged_at`. Original v1 receipts without an
+explicit detector field identify the sole producer by their schema; explicit
+foreign identities refuse. Invalid or mismatched receipts remain preserved and
+produce a named repair-and-rerun error. State and reports remain immutable.
+
+## Executable guarantee rechecks
+
+Run from the physical checkout. These tests use temporary stores and fake
+process/identity boundaries; they do not contact a host, Docker daemon or user
+manager. This selection pins the two-miss threshold and detector name, records
+both incidents for `miss, miss, flagged, miss, miss`, rejects vendor quarantine
+even when the general action allowlist permits it, verifies collision refusal
+without rewriting an existing report, and checks candidate bytes/inode plus
+`mutation_actions == []`:
+
+```bash
+env -u HAPAX_GLMCP_MODEL -u HAPAX_GLMCP_REVIEW_MODEL \
+  -u HAPAX_GLMCP_REVIEW_PAYG_FALLBACK -u HAPAX_GLMCP_REVIEW_ALLOW_NON_CODING_PLAN_MODEL \
+  UV_CACHE_DIR=/store-fast/tmp/uv-cache-verify \
+  uv run pytest -q -p no:cacheprovider \
+  tests/shared/test_estate_registration.py::test_two_distinct_unflagged_b_instances_file_self_named_incident \
+  tests/shared/test_estate_registration.py::test_sweep_records_both_missed_streaks_in_one_sweep \
+  tests/shared/test_estate_store_registry.py::test_registry_rejects_vendor_root_quarantine_even_if_general_policy_is_edited \
+  tests/shared/test_estate_registration.py::test_sweep_report_collision_preserves_immutable_record \
+  tests/shared/test_estate_registration.py::test_sweep_flags_and_files_without_mutating_candidate
+```
+
+The incident tests assert the two distinct triggering ids and `miss_streak == 2`
+for both streaks. The vendor test expands `ALLOWED_ACTIONS` in memory while
+requiring `RegistryError`. The report collision test requires `RegistrationError`
+and unchanged report bytes/inode, also checking the first report's mtime. Retry
+and source binding have separate executable checks:
+
+```bash
+env -u HAPAX_GLMCP_MODEL -u HAPAX_GLMCP_REVIEW_MODEL \
+  -u HAPAX_GLMCP_REVIEW_PAYG_FALLBACK -u HAPAX_GLMCP_REVIEW_ALLOW_NON_CODING_PLAN_MODEL \
+  UV_CACHE_DIR=/store-fast/tmp/uv-cache-verify \
+  uv run pytest -q -p no:cacheprovider \
+  tests/shared/test_estate_registration.py::test_sweep_recovers_flag_receipt_after_interrupted_state_write \
+  tests/shared/test_estate_registration.py::test_sweep_refuses_invalid_existing_flag_with_named_repair \
+  tests/shared/test_estate_store_registry.py::test_scripts_bind_shared_import_to_physical_tree
+```
+
+Mutation verification recipe: in an admitted, isolated checkout with no other
+writer, temporarily remove exclusive creation from `_write_json`. The collision
+test must turn red with `Failed: DID NOT RAISE ... RegistrationError` (pytest exit
+1). The driver restores the exact source bytes in `finally`, leaves the file's
+mode intact, and writes no report or new source file. Its own exit is zero only
+when pytest observed the expected red result. Rerun the first selection afterward
+to confirm green. A process killed before `finally` runs requires restoring the
+`os.O_EXCL` term before any further work.
+
+```bash
+python3 - <<'PY'
+from pathlib import Path
+import subprocess
+
+path = Path("shared/estate_registration.py")
+original = path.read_bytes()
+before = b"os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_CLOEXEC"
+after = b"os.O_WRONLY | os.O_CREAT | os.O_CLOEXEC"
+assert original.count(before) == 1
+try:
+    path.write_bytes(original.replace(before, after))
+    result = subprocess.run([
+        "env", "-u", "HAPAX_GLMCP_MODEL", "-u", "HAPAX_GLMCP_REVIEW_MODEL",
+        "-u", "HAPAX_GLMCP_REVIEW_PAYG_FALLBACK",
+        "-u", "HAPAX_GLMCP_REVIEW_ALLOW_NON_CODING_PLAN_MODEL",
+        "UV_CACHE_DIR=/store-fast/tmp/uv-cache-verify",  # pragma: allowlist secret
+        "uv", "run", "pytest", "-q", "-p", "no:cacheprovider", "--tb=short",
+        "tests/shared/test_estate_registration.py::test_sweep_report_collision_preserves_immutable_record",
+    ], check=False)
+finally:
+    path.write_bytes(original)
+assert result.returncode == 1, f"expected pytest exit 1, observed {result.returncode}"
+PY
+```
 
 ## New-unit declaration report
 

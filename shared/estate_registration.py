@@ -469,13 +469,52 @@ def originate_canaries(
 
 
 def _load_json(path: Path) -> dict[str, Any]:
+    remedy = (
+        "remedy: preserve the record, repair its writer or read permissions and UTF-8 JSON "
+        "object content, then rerun the failed estate-store-registry command"
+    )
     try:
         value = json.loads(path.read_text(encoding="utf-8"))
     except (OSError, ValueError) as exc:
-        raise RegistrationError(f"cannot read required runtime record {path}: {exc}") from exc
+        raise RegistrationError(
+            f"cannot read required runtime record {path}: {exc}; {remedy}"
+        ) from exc
     if not isinstance(value, dict):
-        raise RegistrationError(f"required runtime record {path} is not an object")
+        raise RegistrationError(f"required runtime record {path} is not an object; {remedy}")
     return value
+
+
+def _write_canary_flag(path: Path, payload: dict[str, Any]) -> None:
+    """Reuse a validated receipt after interruption before detector state persistence."""
+    try:
+        existing = path.lstat()
+    except FileNotFoundError:
+        _write_json(path, payload)
+        return
+    except OSError as exc:
+        raise RegistrationError(
+            f"cannot inspect existing canary flag {path}: {exc}; "
+            "remedy: preserve the receipt, repair read access and rerun the sweep"
+        ) from exc
+    try:
+        if not stat.S_ISREG(existing.st_mode) or existing.st_uid != os.geteuid():
+            raise ValueError("receipt must be a caller-owned regular file")
+        receipt = _load_json(path)
+        for field in ("schema", "canary_id", "host", "path", "action"):
+            if receipt.get(field) != payload[field]:
+                raise ValueError(f"{field} does not match the canary and detector")
+        # Original v1 receipts identify this sole producer by schema. Preserve
+        # and accept those receipts too, while checking any explicit identity.
+        if receipt.get("detector", "hapax-estate-store-registry sweep") != payload["detector"]:
+            raise ValueError("detector does not match the canary and detector")
+        flagged_at = datetime.fromisoformat(str(receipt.get("flagged_at")).replace("Z", "+00:00"))
+        if flagged_at.tzinfo is None:
+            raise ValueError("flagged_at must include a timezone")
+    except (RegistrationError, ValueError) as exc:
+        raise RegistrationError(
+            f"invalid existing canary flag {path}: {exc}; remedy: preserve the receipt, "
+            "repair the flag writer and receipt identity/content, then rerun the sweep"
+        ) from exc
 
 
 def export_canary_health(
@@ -492,13 +531,25 @@ def export_canary_health(
         raise RegistrationError(
             "no Canary A registration exists; remedy: run the hourly canary originator"
         )
-    registration = _load_json(registrations[-1])
+    registration_path = registrations[-1]
+    registration = _load_json(registration_path)
+    remedy = (
+        "remedy: preserve the registration, repair the canary originator, run "
+        f"hapax-estate-store-registry originate --host {shlex.quote(host_id)} "
+        f"--home {shlex.quote(str(home))}, then rerun "
+        f"hapax-estate-store-registry export-canary --host {shlex.quote(host_id)} "
+        f"--home {shlex.quote(str(home))}"
+    )
     if registration.get("host") != host_id or registration.get("canary") != "A":
-        raise RegistrationError("latest Canary A registration has the wrong host or type")
+        raise RegistrationError(
+            f"latest Canary A registration {registration_path} has the wrong host or type; {remedy}"
+        )
     try:
         created = datetime.fromisoformat(str(registration["created_at"]).replace("Z", "+00:00"))
     except (KeyError, ValueError) as exc:
-        raise RegistrationError("latest Canary A registration has no parseable created_at") from exc
+        raise RegistrationError(
+            f"latest Canary A registration {registration_path} has no parseable created_at; {remedy}"
+        ) from exc
     age = (instant - created.astimezone(UTC)).total_seconds()
     if age < 0 or age > max_age_seconds:
         raise RegistrationError(
@@ -597,6 +648,7 @@ def sweep(
     flagged: list[str] = []
     missed: list[str] = []
     incident_path: Path | None = None
+    incident_index = 0
     for manifest in _manifest_rows(home):
         canary_id = str(manifest.get("canary_id") or "")
         if not canary_id or canary_id in evaluated:
@@ -606,12 +658,13 @@ def sweep(
             streak = 0
             state["incident_filed"] = False
             flagged.append(canary_id)
-            _write_json(
+            _write_canary_flag(
                 _runtime_root(home) / "flags" / f"{canary_id}.json",
                 {
                     "schema": "hapax.estate-canary-flag/v1",
                     "canary_id": canary_id,
                     "host": host_id,
+                    "detector": "hapax-estate-store-registry sweep",
                     "flagged_at": utc_text(instant),
                     "path": b_path,
                     "action": "flag-only",
@@ -622,7 +675,11 @@ def sweep(
             missed.append(canary_id)
         evaluated.add(canary_id)
         if streak >= 2 and not state.get("incident_filed"):
-            incident_path = reports / f"incident-estate-detector-dead-{host_id}-{stamp}.json"
+            incident_index += 1
+            incident_path = (
+                reports
+                / f"incident-estate-detector-dead-{host_id}-{stamp}-{incident_index:04d}.json"
+            )
             _write_json(
                 incident_path,
                 {
