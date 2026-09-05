@@ -226,6 +226,106 @@ wait_for_postgresql() {
     return 1
 }
 
+filter_postgresql_bootstrap() {
+    # Scan SQL boundaries in bytes. COPY data bypasses the lexer entirely; quoted
+    # strings, identifiers, comments and dollar bodies cannot terminate statements.
+    # Only complete bootstrap CREATE statements are omitted. Do not normalize any
+    # other bytes (including CRLF, COPY terminators or a missing final newline).
+    python3 - "$1" "$POSTGRES_SUPERUSER" "$POSTGRES_INITIAL_DATABASE" <<'PYSQL'
+import os
+import re
+import sys
+
+role, database = (os.fsencode(value) for value in sys.argv[2:])
+identifier = rb'("(?:[^"\x00]|"")+"|[A-Za-z_\x80-\xff][A-Za-z_0-9$\x80-\xff]*)'
+create_role = re.compile(rb"CREATE\s+ROLE\s+" + identifier + rb"\s*;", re.I)
+create_database = re.compile(rb"CREATE\s+DATABASE\s+" + identifier + rb"(?:\s+WITH\s+[^;]+)?\s*;", re.I)
+token = re.compile(rb"--[^\r\n]*|/\*|[Ee]'|'|\"|\$(?:[A-Za-z_\x80-\xff][A-Za-z_0-9\x80-\xff]*)?\$|[A-Za-z_\x80-\xff][A-Za-z_0-9$\x80-\xff]*|\s+|.", re.S)
+output = sys.stdout.buffer
+statement = bytearray()
+quote = dollar = b""
+block_depth = 0
+escaped = copy = False
+
+
+def bootstrap(sql):
+    for pattern, expected in ((create_role, role), (create_database, database)):
+        match = pattern.fullmatch(sql)
+        if match:
+            name = match[1]
+            name = name[1:-1].replace(b'""', b'"') if name.startswith(b'"') else name.lower()
+            if name == expected:
+                return True
+    return False
+
+
+with open(sys.argv[1], "rb") as dump:
+    for line in dump:
+        if copy:
+            output.write(line)
+            copy = line.rstrip(b"\r\n") != b"\\."
+            continue
+        # pg_dumpall uses psql metacommands such as \connect and \restrict.
+        if not statement and not block_depth and line.lstrip().startswith(b"\\"):
+            output.write(line)
+            continue
+        i = 0
+        while i < len(line):
+            if dollar:
+                end = line.find(dollar, i)
+                if end < 0:
+                    statement.extend(line[i:])
+                    break
+                end += len(dollar)
+                statement.extend(line[i:end])
+                dollar = b""
+            elif quote:
+                end = i + 1
+                if line[i:i+1] == quote:
+                    if line[end:end+1] == quote:
+                        end += 1
+                    else:
+                        quote = b""
+                elif escaped and line[i:i+1] == b"\\":
+                    end += 1
+                statement.extend(line[i:end])
+            elif block_depth:
+                part = line[i:i+2]
+                end = i + (2 if part in (b"/*", b"*/") else 1)
+                block_depth += (part == b"/*") - (part == b"*/")
+                if statement:
+                    statement.extend(line[i:end])
+                else:
+                    output.write(line[i:end])
+            else:
+                match = token.match(line, i)
+                part, end = match[0], match.end()
+                comment = part.startswith(b"--") or part == b"/*"
+                if statement or not (part.isspace() or comment):
+                    statement.extend(part)
+                else:
+                    output.write(part)
+                if part == b"/*":
+                    block_depth = 1
+                elif part in (b"'", b"E'", b"e'", b'"'):
+                    quote, escaped = part[-1:], len(part) == 2
+                elif part.startswith(b"$") and part.endswith(b"$"):
+                    dollar = part
+                elif part == b";":
+                    sql = bytes(statement)
+                    if not bootstrap(sql):
+                        output.write(sql)
+                    statement.clear()
+                    if re.match(rb"COPY\b.*\bFROM\s+stdin\s*;\Z", sql, re.I | re.S):
+                        copy = True
+                        output.write(line[end:])
+                        break
+            i = end
+    # Let psql diagnose incomplete SQL; never discard an unterminated statement.
+    output.write(statement)
+PYSQL
+}
+
 restore_postgresql() {
     local dump_dir="$1"
     local postgres_dump="$dump_dir/postgres-all.sql"
@@ -238,36 +338,7 @@ restore_postgresql() {
     # that the fresh container has already created. Replaying either one under
     # ON_ERROR_STOP aborts before data restore. Filter only those two CREATE
     # statements; retain their ALTER/\connect content and every other statement.
-    if ! awk \
-        -v role="$POSTGRES_SUPERUSER" \
-        -v initial_database="$POSTGRES_INITIAL_DATABASE" '
-        BEGIN {
-            quoted_role = role
-            gsub(/"/, "\"\"", quoted_role)
-            quoted_role = "\"" quoted_role "\""
-            quoted_database = initial_database
-            gsub(/"/, "\"\"", quoted_database)
-            quoted_database = "\"" quoted_database "\""
-        }
-        {
-            candidate = $0
-            if (sub(/^[[:space:]]*CREATE[[:space:]]+ROLE[[:space:]]+/, "", candidate)) {
-                sub(/[[:space:]]*;[[:space:]]*$/, "", candidate)
-                if (candidate == role || candidate == quoted_role) {
-                    next
-                }
-            }
-            candidate = $0
-            if (sub(/^[[:space:]]*CREATE[[:space:]]+DATABASE[[:space:]]+/, "", candidate)) {
-                sub(/[[:space:]].*$/, "", candidate)
-                sub(/;$/, "", candidate)
-                if (candidate == initial_database || candidate == quoted_database) {
-                    next
-                }
-            }
-            print
-        }
-    ' "$postgres_dump" \
+    if ! filter_postgresql_bootstrap "$postgres_dump" \
         | sudo docker exec -i postgres psql -U "$POSTGRES_SUPERUSER" -v ON_ERROR_STOP=1 \
             > /dev/null; then
         fail "PostgreSQL import failed for $postgres_dump as role $POSTGRES_SUPERUSER; check 'docker logs postgres', then rerun Phase 12" >&2
@@ -418,24 +489,66 @@ bootstrap_source_activation() {
     ok "Source activation root and first-backup executable verified: $active"
 }
 
+reconcile_systemd_user_unit() {
+    local unit="$1" active="$HOME/.cache/hapax/source-activation/worktree"
+    local installed="$HOME/.config/systemd/user/$unit" source archive path suffix
+    source="$active/systemd/units/$unit"
+    if [[ ! -f "$source" || ! -r "$source" ]]; then
+        fail "Cannot reconcile user unit $unit: activation source is missing or unreadable: $source; recover that committed unit in the activation tree, then rerun Phase 15" >&2
+        return 1
+    fi
+    # Keep every archived file/link and drop-in beside the installed unit, outside
+    # systemd's recognized names. Never overwrite a previous recovery artifact.
+    for path in "$installed" "$installed.d"; do
+        if [[ -e "$path" || -L "$path" ]]; then
+            if [[ "$path" == "$installed" && -L "$path" && "$(readlink "$path")" == "$source" ]]; then
+                continue
+            fi
+            archive="$path.restored"
+            suffix=0
+            while [[ -e "$archive" || -L "$archive" ]]; do
+                suffix=$((suffix + 1))
+                archive="$path.restored.$suffix"
+            done
+            if ! mv -- "$path" "$archive"; then
+                fail "Cannot preserve archived user unit $unit at $archive; repair directory permissions, then rerun Phase 15" >&2
+                return 1
+            fi
+            log "Preserved archived $unit at $archive; inspect it before porting any local settings into the committed activation unit"
+        fi
+    done
+    if ! mkdir -p "${installed%/*}" || ! ln -sfn -- "$source" "$installed"; then
+        fail "Cannot install activation unit $unit from $source; repair directory permissions, then rerun Phase 15" >&2
+        return 1
+    fi
+}
+
+restore_timer_services() {
+    local unit="$1" triggers service
+    if ! triggers=$(systemctl --user show "$unit" --property=Triggers --value) \
+        || [[ -z "$triggers" ]]; then
+        fail "Cannot prove the service triggered by $unit; inspect 'systemctl --user cat $unit', repair its Unit= target, then rerun Phase 15" >&2
+        return 1
+    fi
+    for service in $triggers; do
+        if [[ "$service" != *.service || "$service" == */* ]]; then
+            fail "Cannot prove service target for $unit; inspect 'systemctl --user cat $unit', repair its Unit= target, then rerun Phase 15" >&2
+            return 1
+        fi
+        printf '%s\n' "$service"
+    done
+}
+
 verify_systemd_user_target() {
-    local unit="$1" loaded starts target remaining triggers service
+    local unit="$1" loaded starts working triggers service
     if ! loaded=$(systemctl --user show "$unit" --property=LoadState --value) \
         || [[ "$loaded" != loaded ]]; then
         fail "Cannot load restored user unit $unit (missing or dangling unit file); inspect 'systemctl --user cat $unit', repair its source activation link, then rerun Phase 15" >&2
         return 1
     fi
     if [[ "$unit" == *.timer ]]; then
-        if ! triggers=$(systemctl --user show "$unit" --property=Triggers --value) \
-            || [[ -z "$triggers" ]]; then
-            fail "Cannot prove the service triggered by $unit; inspect 'systemctl --user cat $unit', repair its Unit= target, then rerun Phase 15" >&2
-            return 1
-        fi
+        triggers=$(restore_timer_services "$unit") || return 1
         for service in $triggers; do
-            if [[ "$service" != *.service ]]; then
-                fail "Cannot prove service target $service for $unit; inspect 'systemctl --user cat $unit', then rerun Phase 15" >&2
-                return 1
-            fi
             verify_systemd_user_target "$service" || return 1
         done
         return 0
@@ -445,24 +558,75 @@ verify_systemd_user_target() {
         fail "Cannot prove ExecStart for $unit; inspect 'systemctl --user cat $unit', restore its executable, then rerun Phase 15" >&2
         return 1
     fi
-    remaining="$starts"
-    # systemd resolves %h and executable search paths in this property. Fail
-    # closed on empty/unrecognized output instead of treating it as an executable.
-    local path_pattern='path=([^;]+) ;'
-    local found=0
-    while [[ "$remaining" =~ $path_pattern ]]; do
-        target="${BASH_REMATCH[1]}"
-        remaining="${remaining#*"${BASH_REMATCH[0]}"}"
-        if [[ "$target" != /* || ! -f "$target" || ! -x "$target" ]]; then
-            fail "ExecStart target for $unit is missing, dangling, or not executable: $target; inspect 'systemctl --user cat $unit' and repair that executable or its activation link, then rerun Phase 15" >&2
-            return 1
-        fi
-        found=1
-    done
-    if (( found == 0 )); then
-        fail "Cannot parse ExecStart target for $unit; inspect 'systemctl --user show $unit --property=ExecStart', then rerun Phase 15" >&2
+    if ! working=$(systemctl --user show "$unit" --property=WorkingDirectory --value); then
+        fail "Cannot prove WorkingDirectory for $unit; inspect 'systemctl --user cat $unit', then rerun Phase 15" >&2
         return 1
     fi
+    python3 - "$unit" "$starts" "$working" "$HOME/.cache/hapax/source-activation/worktree" <<'PYTARGET'
+import os
+from pathlib import Path
+import re
+import shlex
+import sys
+
+unit, starts, working, active = sys.argv[1:]
+root = Path(active).resolve()
+
+
+def refuse(message):
+    print(f"ExecStart verification failed for {unit}: {message}; inspect 'systemctl --user cat {unit}', repair the committed activation unit or its target, then rerun Phase 15", file=sys.stderr)
+    sys.exit(1)
+
+
+def executable(path):
+    if not os.path.isabs(path) or not os.path.isfile(path) or not os.access(path, os.X_OK):
+        refuse(f"missing, dangling, or nonexecutable interpreter/executable: {path}")
+
+
+if working and not Path(working).is_dir():
+    refuse(f"missing WorkingDirectory: {working}")
+commands = list(re.finditer(r"path=(.*?) ; argv\[\]=(.*?) ;", starts))
+if not commands:
+    refuse("cannot parse resolved ExecStart; inspect its path and argv[] properties")
+for command in commands:
+    target = command[1]
+    executable(target)
+    try:
+        argv = shlex.split(command[2])
+    except ValueError:
+        refuse("cannot parse resolved argv[]; use an explicit script path")
+    if not argv:
+        refuse("empty resolved argv[]")
+    # systemctl can escape whitespace in argument paths as hexadecimal bytes.
+    argv = [re.sub(r"\\x([0-9a-fA-F]{2})", lambda m: chr(int(m[1], 16)), arg) for arg in argv]
+    interpreter = Path(target).name
+    if re.fullmatch(r"(?:ba|da|z|k)?sh|python(?:[0-9.]+)?|perl|ruby|node(?:js)?|lua(?:[0-9.]+)?", interpreter):
+        args = argv[1:]
+        while args and args[0].startswith("-"):
+            option = args.pop(0)
+            if option == "--":
+                break
+            if option == "-m" and interpreter.startswith("python") and args:
+                # Module execution uses the verified interpreter and working tree.
+                args = []
+                break
+            if option in ("-o", "-O", "-W", "-X") and args:
+                args.pop(0)
+            elif option == "-" or "c" in option or option in ("-e", "--eval") and interpreter not in ("sh", "bash", "dash", "zsh", "ksh"):
+                refuse("inline/stdin interpreter program cannot be verified; use an explicit activation script path")
+        if args:
+            script = Path(args[0])
+            if not script.is_absolute():
+                if not working:
+                    refuse(f"relative script has no WorkingDirectory: {script}")
+                script = Path(working) / script
+            if not script.resolve().is_relative_to(root):
+                refuse(f"script is outside the activation root: {script}")
+            if not script.is_file() or not os.access(script, os.R_OK):
+                refuse(f"missing, dangling, or unreadable script: {script}")
+        elif not ("-m" in argv and interpreter.startswith("python")):
+            refuse("interpreter has no script path; restore its activation script argument")
+PYTARGET
 }
 
 restore_llm_stack_files() {
@@ -880,9 +1044,9 @@ restic restore "$RESTORE_SNAPSHOT" --target "$RESTORE_ROOT" --no-lock --verbose 
 ok "Snapshot restored"
 
 # Determine restored home path (username may differ)
-RHOME=$(find "$RESTORE_ROOT/home" -maxdepth 1 -mindepth 1 -type d | head -1)
+RHOME=$(find "$RESTORE_ROOT/home" -maxdepth 1 -mindepth 1 -type d 2>/dev/null | head -1) || RHOME=""
 if [[ -z "$RHOME" ]]; then
-    fail "No home directory found in backup!"
+    fail "No home directory found in backup snapshot $RESTORE_SNAPSHOT; inspect 'restic ls $RESTORE_SNAPSHOT --host hapax-podium --tag tier2-remote /home', select a complete snapshot, then rerun Phase 2 with HAPAX_RESTORE_SNAPSHOT=<id>" >&2
     exit 1
 fi
 ok "Found restored home: $RHOME"
@@ -1489,11 +1653,6 @@ ok "Local backup repo ready at $LOCAL_RESTIC_REPO"
 # ─── Phase 15: Enable user services & timers ───────────────────────────────
 log "=== Phase 15: Enable systemd user services & timers ==="
 
-if ! systemctl --user daemon-reload; then
-    fail "Could not reload the systemd user manager; verify 'systemctl --user status', then rerun Phase 15" >&2
-    exit 1
-fi
-
 enable_systemd_user_unit() {
     local unit="$1" unit_kind="$2" label="$3"
     local enabled_state
@@ -1539,6 +1698,30 @@ TIMERS=(
     screen-context storage-arbiter tmp-monitor
     video-processor video-retention vram-watchdog
 )
+# Reconcile only from the proved activation source; archived overrides cannot
+# supply a runnable command. Resolve timer services after publishing timer units.
+for svc in "${SERVICES[@]}"; do
+    reconcile_systemd_user_unit "$svc.service"
+done
+for timer in "${TIMERS[@]}"; do
+    reconcile_systemd_user_unit "$timer.timer"
+done
+if ! systemctl --user daemon-reload; then
+    fail "Could not reload the systemd user manager; verify 'systemctl --user status', then rerun Phase 15" >&2
+    exit 1
+fi
+
+for timer in "${TIMERS[@]}"; do
+    triggered_services=$(restore_timer_services "$timer.timer")
+    for svc in $triggered_services; do
+        reconcile_systemd_user_unit "$svc"
+    done
+done
+if ! systemctl --user daemon-reload; then
+    fail "Could not reload the systemd user manager; verify 'systemctl --user status', then rerun Phase 15" >&2
+    exit 1
+fi
+
 # Validate the entire recovered user-unit set before publishing any enable link.
 for svc in "${SERVICES[@]}"; do
     verify_systemd_user_target "$svc.service"

@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import subprocess
 from pathlib import Path
 
@@ -522,6 +523,8 @@ def _run_full_restore(
     council_bundle: str = "absent",
     activation_mode: str = "valid",
     unit_target_mode: str = "valid",
+    omit_restored_home: str = "",
+    archived_unit: bool = False,
 ) -> tuple[subprocess.CompletedProcess[str], list[str], Path]:
     home = tmp_path / "home"
     restore_root = tmp_path / "restore-root"
@@ -538,6 +541,85 @@ def _run_full_restore(
         "--profile full", "" if compose_profile is None else f"--profile {compose_profile}"
     )
     compose_contract.write_text(contract_text)
+    # Explicit source inventory: activation must never invent units from the restore arrays.
+    activation_tree = tmp_path / "activation-tree"
+    (activation_tree / ".git").mkdir(parents=True)
+    (activation_tree / "scripts").mkdir()
+    source_units = activation_tree / "systemd/units"
+    source_units.mkdir(parents=True)
+    service_names = [
+        "hapax-secrets",
+        "logos-api",
+        "officium-api",
+        "hapax-daimonion",
+        "hapax-watch-receiver",
+        "studio-compositor",
+        "studio-fx-output",
+        "visual-layer-aggregator",
+        "audio-recorder",
+        "rag-ingest",
+        "keychron-keepalive",
+        "ydotool",
+        "llm-stack",
+        "llm-stack-analytics",
+    ]
+    timer_names = [
+        "hapax-backup-local",
+        "hapax-backup-remote",
+        "hapax-backup-watchdog",
+        "health-monitor",
+        "stack-maintenance",
+        "daily-briefing",
+        "digest",
+        "profile-update",
+        "audio-processor",
+        "av-correlator",
+        "drift-detector",
+        "knowledge-maint",
+        "scout",
+        "llm-backup",
+        "llm-cost-alert",
+        "log-anomaly-alert",
+        "manifest-snapshot",
+        "chrome-sync",
+        "claude-code-sync",
+        "gcalendar-sync",
+        "gdrive-sync",
+        "gmail-sync",
+        "git-sync",
+        "langfuse-sync",
+        "stimmung-sync",
+        "weather-sync",
+        "health-connect-parse",
+        "obsidian-sync",
+        "youtube-sync",
+        "cache-cleanup",
+        "dev-story-index",
+        "disk-space-check",
+        "flow-journal",
+        "gpg-keyboxd-watchdog",
+        "mixer-keepalive",
+        "screen-context",
+        "storage-arbiter",
+        "tmp-monitor",
+        "video-processor",
+        "video-retention",
+        "vram-watchdog",
+    ]
+    active = home / ".cache/hapax/source-activation/worktree"
+    for name in service_names + timer_names:
+        _write_executable(activation_tree / "scripts" / name, "#!/bin/sh\nexit 0\n")
+        (source_units / f"{name}.service").write_text(
+            f"[Service]\nWorkingDirectory={active}\nExecStart={active}/scripts/{name}\n"
+        )
+    for name in timer_names:
+        (source_units / f"{name}.timer").write_text(f"[Timer]\nUnit={name}.service\n")
+    if unit_target_mode == "missing-unit":
+        (source_units / "hapax-backup-remote.service").unlink()
+    if unit_target_mode == "missing-script":
+        (source_units / "hapax-backup-remote.service").write_text(
+            f"[Service]\nExecStart=/bin/bash {active}/scripts/missing-backup\n"
+        )
     home.mkdir()
     for identity in (".gnupg", ".ssh"):
         (home / identity).mkdir()
@@ -673,6 +755,8 @@ if [ "${1:-}" = restore ]; then
         fi
         shift
     done
+    if [ "$OMIT_RESTORED_HOME" = absent ]; then exit 0; fi
+    if [ "$OMIT_RESTORED_HOME" = empty ]; then mkdir -p "$target/home"; exit 0; fi
     home_seg=home
     backed_up_rclone="$target/${home_seg}/backup-user/.config/rclone/rclone.conf"
     mkdir -p "$target/${home_seg}/backup-user/llm-stack" "$(dirname "$backed_up_rclone")"
@@ -683,9 +767,14 @@ if [ "${1:-}" = restore ]; then
     restored_home="$target/${home_seg}/backup-user"
     active="$HOME/.cache/hapax/source-activation/worktree"
     mkdir -p "$restored_home/.config/systemd/user" "$restored_home/.local/bin"
-    ln -s "$active/hapax-backup-local.service" "$restored_home/.config/systemd/user/hapax-backup-local.service"
-    ln -s "$active/hapax-backup-local.timer" "$restored_home/.config/systemd/user/hapax-backup-local.timer"
+    ln -s "$active/systemd/units/hapax-backup-local.service" "$restored_home/.config/systemd/user/hapax-backup-local.service"
+    ln -s "$active/systemd/units/hapax-backup-local.timer" "$restored_home/.config/systemd/user/hapax-backup-local.timer"
     ln -s "$active/scripts/hapax-backup-local" "$restored_home/.local/bin/hapax-backup-local"
+    if [ "$ARCHIVED_UNIT" = 1 ]; then
+        rm "$restored_home/.config/systemd/user/hapax-backup-local.service"
+        printf '[Service]\nExecStart=/bin/bash %s/projects/distro-work/scripts/hapax-backup-local\nWorkingDirectory=%s/projects/distro-work\n' "$HOME" "$HOME" > "$restored_home/.config/systemd/user/hapax-backup-local.service"
+        printf '[Service]\nExecStart=/bin/bash %s/projects/distro-work/scripts/hapax-backup-remote\n' "$HOME" > "$restored_home/.config/systemd/user/hapax-backup-remote.service"
+    fi
     stack="$target/${home_seg}/backup-user/llm-stack"
     printf '%s\n' 'services: {}' > "$stack/docker-compose.yml"
     printf '%s\n' '# restored environment fixture' > "$stack/.env"
@@ -752,9 +841,10 @@ if [ "${2:-}" = show ]; then
     case "$*" in
         *Triggers*) printf '%s\n' "${unit%.timer}.service" ;;
         *LoadState*) [ -f "$HOME/.config/systemd/user/$unit" ] && printf '%s\n' loaded || printf '%s\n' not-found ;;
+        *WorkingDirectory*) sed -n 's/^WorkingDirectory=//p' "$HOME/.config/systemd/user/$unit" ;;
         *ExecStart*)
             target=$(sed -n 's/^ExecStart=//p' "$HOME/.config/systemd/user/$unit")
-            printf '{ path=%s ; argv[]=%s ; }\n' "$target" "$target"
+            printf '{ path=%s ; argv[]=%s ; }\n' "${target%% *}" "$target"
             ;;
     esac
 fi
@@ -768,6 +858,7 @@ case " $* " in
         service=${unit%.timer}.service
         if [ "$unit" = "${unit%.timer}" ]; then service=$unit; fi
         target=$(sed -n 's/^ExecStart=//p' "$HOME/.config/systemd/user/$service")
+        target=${target%% *}
         [ -f "$target" ] && [ -x "$target" ] || exit 20
         printf 'verified ExecStart %s\n' "$service" >> "$COMMAND_LOG"
         ;;
@@ -820,7 +911,7 @@ fi
     _write_executable(
         fake_bin / "activate",
         r"""#!/usr/bin/python3
-import json, os, re, sys
+import json, os, shutil, sys
 from pathlib import Path
 home = Path(os.environ['HOME'])
 active = home / '.cache/hapax/source-activation/worktree'
@@ -829,34 +920,16 @@ with open(os.environ['COMMAND_LOG'], 'a') as log:
     log.write('activate ' + ' '.join(sys.argv[1:]) + '\n')
 if mode == 'failed': sys.exit(17)
 if mode == 'held': sys.exit(0)
-(active / '.git').mkdir(parents=True)
-(active / 'scripts').mkdir()
-(active / 'scripts/hapax-backup-local').write_text('#!/bin/sh\nexit 0\n')
-(active / 'scripts/hapax-backup-local').chmod(0o755)
+active.parent.mkdir(parents=True, exist_ok=True)
+shutil.copytree(os.environ['ACTIVATION_TREE'], active)
 (active.parent / 'current.json').write_text(json.dumps(dict(status='completed_skip_deploy', active_source_head='a'*40, origin_main_sha='a'*40, active_source_path=str(active))))
-units = home / '.config/systemd/user'
-units.mkdir(parents=True, exist_ok=True)
-source = Path(os.environ['RESTORE_SCRIPT_FIXTURE']).read_text()
-for array, suffix in [('SERVICES', 'service'), ('TIMERS', 'timer')]:
-    names = re.search(array + r'=\((.*?)\)', source, re.S)[1].split()
-    for name in names:
-        target = active / 'scripts' / name
-        target.write_text('#!/bin/sh\nexit 0\n')
-        target.chmod(0o755)
-        service = active / (name + '.service')
-        service.write_text('[Service]\nExecStart=' + str(target) + '\n')
-        if not (units / service.name).is_symlink(): (units / service.name).symlink_to(service)
-        if suffix == 'timer':
-            timer = active / (name + '.timer')
-            timer.write_text('[Timer]\nUnit=' + name + '.service\n')
-            if not (units / timer.name).is_symlink(): (units / timer.name).symlink_to(timer)
+# --skip-deploy publishes the supplied source tree and launchers, never unit files.
 broken = active / 'scripts/hapax-backup-remote'
 target_mode = os.environ['UNIT_TARGET_MODE']
 if target_mode in ('missing', 'dangling'):
     broken.unlink()
     if target_mode == 'dangling': broken.symlink_to(active / 'absent')
 if target_mode == 'nonexecutable': broken.chmod(0o644)
-if target_mode == 'missing-unit': (units / 'hapax-backup-remote.service').unlink()
 if mode == 'missing-backup': (active / 'scripts/hapax-backup-local').unlink()
 """,
     )
@@ -1033,7 +1106,9 @@ esac
             "COUNCIL_BUNDLE": council_bundle,
             "ACTIVATION_MODE": activation_mode,
             "UNIT_TARGET_MODE": unit_target_mode,
-            "RESTORE_SCRIPT_FIXTURE": str(RESTORE_SCRIPT),
+            "ACTIVATION_TREE": str(activation_tree),
+            "ARCHIVED_UNIT": "1" if archived_unit else "0",
+            "OMIT_RESTORED_HOME": omit_restored_home,
             "DROP_PHASE12_ENV": "1" if drop_phase12_env else "0",
             "RESTORE_STORE_DEVICE": str(tmp_path / "replacement-disk"),
             "NAS_MODE": nas_mode,
@@ -1619,3 +1694,291 @@ def test_round5_phase11_publication_failure_has_no_success_receipt(
     assert "inspect" in result.stderr and "rerun Phase 11" in result.stderr
     if operation == "store-mkdir":
         assert not any("tee -a /etc/fstab" in c for c in commands)
+
+
+@pytest.mark.parametrize("payload_kind", ["copy", "function", "nested-tags"])
+def test_round6_postgres_payload_is_byte_identical(tmp_path: Path, payload_kind: str) -> None:
+    payloads = {
+        "copy": b"COPY public.probe (value) FROM stdin;\r\nCREATE ROLE hapax;\r\nCREATE DATABASE hapax;\r\nplain row\r\n\\.\r\n",
+        "function": b"CREATE FUNCTION probe() RETURNS text AS $$\nCREATE ROLE hapax;\nCREATE DATABASE hapax;\n$$ LANGUAGE sql;\n",
+        "nested-tags": b"CREATE FUNCTION probe() RETURNS text AS $outer$\nSELECT $inner$\nCREATE ROLE hapax;\nCREATE DATABASE hapax;\n$inner$;\nSELECT $$nested$$;\n$outer$ LANGUAGE sql;\n",
+    }
+    payload = payloads[payload_kind]
+    dump = tmp_path / "dump"
+    dump.mkdir()
+    tail = b"ALTER ROLE hapax WITH LOGIN;\nCREATE ROLE app_reader;\nSELECT 1;"
+    (dump / "postgres-all.sql").write_bytes(
+        b"CREATE ROLE hapax;\nCREATE DATABASE hapax WITH TEMPLATE = template0;\n"
+        + payload
+        + b"CREATE ROLE hapax;\nCREATE DATABASE hapax;\n"
+        + tail
+    )
+    fake_bin = tmp_path / "bin"
+    fake_bin.mkdir()
+    psql_input = tmp_path / "psql-input.sql"
+    _write_executable(fake_bin / "sudo", '#!/bin/sh\ncat > "$PSQL_INPUT"\n')
+    result = subprocess.run(
+        [
+            "bash",
+            "-c",
+            'source "$1"; restore_postgresql "$2"',
+            "restore",
+            str(RESTORE_SCRIPT),
+            str(dump),
+        ],
+        env={**os.environ, "PATH": f"{fake_bin}:/usr/bin:/bin", "PSQL_INPUT": str(psql_input)},
+        capture_output=True,
+        text=True,
+        timeout=5,
+    )
+    assert result.returncode == 0, result.stderr
+    restored = psql_input.read_bytes()
+    assert payload in restored, "COPY rows/function body changed during successful import"
+    assert restored.strip() == (payload + b"\n\n" + tail).strip()
+
+
+def test_round6_reconciles_archived_unit_with_activation_source(tmp_path: Path) -> None:
+    result, commands, root = _run_full_restore(tmp_path, archived_unit=True)
+    assert result.returncode == 0, result.stderr
+    units = tmp_path / "home/.config/systemd/user"
+    active = tmp_path / "home/.cache/hapax/source-activation/worktree"
+    unit = "hapax-backup-local.service"
+    assert (units / unit).read_bytes() == (active / "systemd/units" / unit).read_bytes()
+    assert (units / (unit + ".restored")).read_bytes() == (
+        root / "home/backup-user/.config/systemd/user" / unit
+    ).read_bytes()
+    assert "--user enable hapax-backup-local.timer" in commands
+    assert not any(" enable " in c and ".restored" in c for c in commands)
+
+
+def test_round6_missing_activation_unit_refuses_archived_fallback(tmp_path: Path) -> None:
+    result, commands, _ = _run_full_restore(
+        tmp_path, archived_unit=True, unit_target_mode="missing-unit"
+    )
+    assert result.returncode != 0
+    missing = (
+        tmp_path
+        / "home/.cache/hapax/source-activation/worktree/systemd/units/hapax-backup-remote.service"
+    )
+    assert str(missing) in result.stderr
+    assert "rerun Phase 15" in result.stderr
+    assert not any(c.startswith("--user enable ") for c in commands)
+
+
+def test_round6_interpreter_with_missing_script_refuses_enable(tmp_path: Path) -> None:
+    result, commands, _ = _run_full_restore(tmp_path, unit_target_mode="missing-script")
+    assert result.returncode != 0
+    missing = tmp_path / "home/.cache/hapax/source-activation/worktree/scripts/missing-backup"
+    assert "hapax-backup-remote.service" in result.stderr
+    assert str(missing) in result.stderr
+    assert "rerun Phase 15" in result.stderr
+    assert not any(c.startswith("--user enable ") for c in commands)
+
+
+@pytest.mark.parametrize("mode", ["empty", "absent"])
+def test_round6_missing_home_names_snapshot_inspection_and_retry(tmp_path: Path, mode: str) -> None:
+    result, commands, _ = _run_full_restore(tmp_path, omit_restored_home=mode)
+    identity = "2" * 64
+    assert result.returncode != 0
+    assert f"No home directory found in backup snapshot {identity}" in result.stderr
+    assert f"restic ls {identity} --host hapax-podium --tag tier2-remote /home" in result.stderr
+    assert "HAPAX_RESTORE_SNAPSHOT=<id>" in result.stderr
+    assert "rerun Phase 2" in result.stderr
+    assert not any(" enable " in c for c in commands)
+
+
+def test_round6_runbook_has_no_direct_watchdog_invocation() -> None:
+    # Extend the existing consistency checks without editing the out-of-scope suites.
+    from tests.systemd.test_llm_backup_reconciliation import (
+        test_reconciliation_runbook_documents_restore_path,
+    )
+
+    test_reconciliation_runbook_documents_restore_path()
+    text = (SCRIPTS.parent / "docs/runbooks/llm-stack-backup-reconciliation.md").read_text()
+    assert not re.search(r"`(?:\./)?scripts/hapax-backup-watchdog(?:`|\s)", text)
+    assert not re.search(r"(?m)^\s*(?:\./)?scripts/hapax-backup-watchdog(?:$|\s)", text)
+    restore_steps = text.split("## Restore Path", 1)[1].split("For bare-metal", 1)[0]
+    assert "systemctl --user start hapax-backup-watchdog.service" in restore_steps
+
+
+@pytest.mark.parametrize(
+    "mode",
+    [
+        "missing-script",
+        "dangling-script",
+        "unreadable-script",
+        "outside-root",
+        "missing-interpreter",
+    ],
+)
+def test_round6_resolved_interpreter_and_script_are_both_required(
+    tmp_path: Path, mode: str
+) -> None:
+    result, target = _verify_interpreter_target(tmp_path, mode)
+    assert result.returncode != 0, "interpreter-only verification accepted an unusable script"
+    assert "fixture.service" in result.stderr
+    assert str(target) in result.stderr
+    assert "rerun Phase 15" in result.stderr
+
+
+@pytest.mark.parametrize("mode", ["readable-script", "relative-script", "quoted-script"])
+def test_round6_readable_activation_script_passes(tmp_path: Path, mode: str) -> None:
+    result, _ = _verify_interpreter_target(tmp_path, mode)
+    assert result.returncode == 0, result.stderr
+
+
+def _verify_interpreter_target(
+    tmp_path: Path, mode: str
+) -> tuple[subprocess.CompletedProcess[str], Path]:
+    import shlex
+
+    home = tmp_path / "home"
+    active = home / ".cache/hapax/source-activation/worktree"
+    active.mkdir(parents=True)
+    script = active / ("backup script" if mode == "quoted-script" else "backup")
+    script.write_text("#!/bin/sh\nexit 0\n")
+    script.chmod(0o644)  # An interpreter only needs its script to be readable.
+    interpreter = Path("/bin/bash")
+    if mode == "missing-script":
+        script.unlink()
+    if mode == "dangling-script":
+        script.unlink()
+        script.symlink_to(active / "absent")
+    if mode == "unreadable-script":
+        script.chmod(0o000)
+    if mode == "outside-root":
+        script = home / "archived-script"
+        script.write_text("exit 0\n")
+    if mode == "missing-interpreter":
+        interpreter = active / "absent-bash"
+    argument = script.name if mode == "relative-script" else str(script)
+    starts = f"{{ path={interpreter} ; argv[]={interpreter} -eu -- {shlex.quote(argument)} ; }}"
+    fake_bin = tmp_path / "bin"
+    fake_bin.mkdir()
+    _write_executable(
+        fake_bin / "systemctl",
+        """#!/bin/sh
+case "$*" in
+    *LoadState*) echo loaded ;;
+    *ExecStart*) printf '%s\n' "$FIXTURE_EXEC_START" ;;
+    *WorkingDirectory*) printf '%s\n' "$FIXTURE_WORKING_DIRECTORY" ;;
+esac
+""",
+    )
+    result = subprocess.run(
+        [
+            "bash",
+            "-c",
+            'source "$1"; verify_systemd_user_target fixture.service',
+            "restore",
+            str(RESTORE_SCRIPT),
+        ],
+        env={
+            **os.environ,
+            "HOME": str(home),
+            "PATH": f"{fake_bin}:/usr/bin:/bin",
+            "FIXTURE_EXEC_START": starts,
+            "FIXTURE_WORKING_DIRECTORY": str(active),
+        },
+        capture_output=True,
+        text=True,
+        timeout=5,
+    )
+    return result, interpreter if mode == "missing-interpreter" else script
+
+
+@pytest.mark.parametrize(
+    "payload",
+    [
+        b"/* outer\n/* inner */\nCREATE ROLE hapax;\nCREATE DATABASE hapax;\n*/\n",
+        b"SELECT 'quoted\nCREATE ROLE hapax;\nCREATE DATABASE hapax;\n''tail';\n",
+        b"SELECT E'escaped\\\"quote\nCREATE ROLE hapax;\nCREATE DATABASE hapax;\n';\n",
+        b'CREATE ROLE hapax_reader; CREATE DATABASE hapax_extra; CREATE ROLE "Hapax";\n',
+        b'CREATE ROLE "name with spaces"; SELECT 1;\n',
+        b"-- CREATE ROLE hapax;\nSELECT 1; CREATE ROLE app; -- trailing comment\n",
+    ],
+    ids=["nested-comments", "string", "escape-string", "similar-names", "quoted-name", "same-line"],
+)
+def test_round6_postgres_unrelated_sql_passes_verbatim(tmp_path: Path, payload: bytes) -> None:
+    dump = tmp_path / "postgres-all.sql"
+    dump.write_bytes(payload)
+    result = subprocess.run(
+        [
+            "bash",
+            "-c",
+            'source "$1"; filter_postgresql_bootstrap "$2"',
+            "restore",
+            str(RESTORE_SCRIPT),
+            str(dump),
+        ],
+        capture_output=True,
+        timeout=5,
+    )
+    assert result.returncode == 0, result.stderr
+    assert result.stdout == payload
+
+
+def test_round6_reconciliation_preserves_dropins_and_previous_archives(tmp_path: Path) -> None:
+    home = tmp_path / "home"
+    active = home / ".cache/hapax/source-activation/worktree/systemd/units"
+    active.mkdir(parents=True)
+    source = active / "fixture.service"
+    source.write_bytes(b"[Service]\nExecStart=/bin/true\n")
+    units = home / ".config/systemd/user"
+    units.mkdir(parents=True)
+    installed = units / source.name
+    installed.write_bytes(b"archived unit\r\n")
+    previous = units / "fixture.service.restored"
+    previous.write_bytes(b"previous archived unit\n")
+    dropins = units / "fixture.service.d"
+    dropins.mkdir()
+    (dropins / "override.conf").write_bytes(b"archived override\r\n")
+    for _ in range(2):
+        result = subprocess.run(
+            [
+                "bash",
+                "-c",
+                'source "$1"; reconcile_systemd_user_unit fixture.service',
+                "restore",
+                str(RESTORE_SCRIPT),
+            ],
+            env={**os.environ, "HOME": str(home)},
+            capture_output=True,
+            text=True,
+            timeout=5,
+        )
+        assert result.returncode == 0, result.stderr
+    assert installed.resolve() == source
+    assert installed.read_bytes() == source.read_bytes()
+    assert previous.read_bytes() == b"previous archived unit\n"
+    assert (units / "fixture.service.restored.1").read_bytes() == b"archived unit\r\n"
+    assert not dropins.exists()
+    assert (
+        units / "fixture.service.d.restored/override.conf"
+    ).read_bytes() == b"archived override\r\n"
+
+
+def test_round6_only_exact_top_level_bootstrap_statements_are_removed(tmp_path: Path) -> None:
+    dump = tmp_path / "postgres-all.sql"
+    dump.write_bytes(
+        b'-- prefix\nCREATE ROLE "hapax"; CREATE ROLE "Hapax";\n'
+        b'CREATE\nDATABASE "hapax" WITH TEMPLATE = template0; SELECT 2;\n'
+        b"\\connect hapax\nCREATE ROLE hapax; ALTER ROLE hapax WITH LOGIN;"
+    )
+    result = subprocess.run(
+        [
+            "bash",
+            "-c",
+            'source "$1"; filter_postgresql_bootstrap "$2"',
+            "restore",
+            str(RESTORE_SCRIPT),
+            str(dump),
+        ],
+        capture_output=True,
+        timeout=5,
+    )
+    assert result.returncode == 0, result.stderr
+    assert result.stdout == (
+        b'-- prefix\n CREATE ROLE "Hapax";\n SELECT 2;\n'
+        b"\\connect hapax\n ALTER ROLE hapax WITH LOGIN;"
+    )

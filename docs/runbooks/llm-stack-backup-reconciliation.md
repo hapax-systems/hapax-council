@@ -101,7 +101,10 @@ This intentionally removes the stale standalone script assumptions:
 5. Restore n8n workflows from the staged export if the service state was lost.
 6. Recreate Docker volumes from the restored service configs and the captured
    volume metadata.
-7. Verify backup freshness with `scripts/hapax-backup-watchdog`.
+7. Verify backup freshness with `systemctl --user start hapax-backup-watchdog.service`
+   and inspect `journalctl --user -u hapax-backup-watchdog.service -n 100 --no-pager`.
+   The unit configures `HAPAX_MONOCLE_MAX_AGE_HOURS` for its
+   `~/.cache/hapax/source-activation/worktree/scripts/hapax-backup-watchdog` executable.
 
 For bare-metal B2 recovery, download
 `b2:hapax-backups/dr-scripts/hapax-cachyos-restore.sh` and its companion
