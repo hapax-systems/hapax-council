@@ -9,7 +9,7 @@ reviewed_blobs:
   scripts/vulture_whitelist.py: af7824df31656a5f8d1fd29d475c3117cee22313
   shared/quota_spend_ledger.py: ced85952c509be105cb095d3086afeb4d6018553
   tests/docs/test_capability_consideration_completeness_contract.py: 8ec0e9f4974e70ce9470c187e7bfd13150f1f879
-  tests/scripts/test_hapax_glmcp_reviewer.py: a3f70634dae2b7d6ae61ad534a8d2cb7651a7abb
+  tests/scripts/test_hapax_glmcp_reviewer.py: d342ce4773ca7f71785bac89a3e47218e7af65c7
   tests/scripts/test_hapax_quota_telemetry_writer.py: f71c703c39f31f0c2cf250389afc4f07219c7d5f
   tests/shared/test_platform_capability_registry.py: 94c93f797d76b3275eaa815f630c08f0d4b34683
   tests/shared/test_quota_spend_ledger.py: cf46a92b9ef2a059a94b2c81921e48838c1bba8e
