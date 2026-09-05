@@ -2,7 +2,9 @@
 
 ## Withdrawn 2026-09-05
 
-Operator direction, verbatim, relayed by root on 2026-09-05T20:13Z:
+Operator direction, verbatim, relayed by root at 2026-09-05T20:03:49Z (the bus
+message carrying it bears the filename label 20260905T2013Z; that label is not
+the delivery time):
 
 > get rid of obsidian publish exposure: we need another way to make a curated research basis available. that was an early way to do so but too much exposure
 
@@ -18,10 +20,16 @@ Removed committed paths:
 
 The timer's preset enablement and the omg.lol landing page's vault route were
 also removed. The public-surface registry retains the withdrawn entry as history.
-Vault originals, private Sync/backups, and the site's existing password protection
-are preserved. Runtime/provider withdrawal (podium's unit stop/disable/mask and
-the site's withdrawal) is root's separate evidence; this source retirement does
-not attest to that withdrawal. Research curation is a later, separate question.
+Vault originals and private Sync/backups are preserved. The Publish site itself
+no longer exists: root deleted it at the provider on 2026-09-05 and witnessed the
+withdrawal independently of this source change (authenticated owned-site
+inventory 1 → 0 after native deletion; the public site URL answers 404 on desktop
+and mobile; a direct URL of the old home asset answers 401, which is not claimed
+as deletion proof). No intermediate password-removal exposure occurred: the site
+stayed password-protected until it was deleted. That provider withdrawal and
+podium's unit stop/disable/mask are root's separate evidence; this source
+retirement did not effect the deletion and does not attest to it beyond citing
+that record. Research curation is a later, separate question.
 
 ### Historical procedure — withdrawn; do not execute
 

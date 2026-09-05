@@ -51,7 +51,8 @@ def test_registry_retains_only_a_withdrawn_obsidian_surface() -> None:
         "we can deal with the research curation issue later, for now, just excise obsid pub"
     )
     assert surface.get("withdrawal_source") == (
-        "Operator direction, verbatim, relayed by root on 2026-09-05T20:13Z"
+        "Operator direction, verbatim, relayed by root at 2026-09-05T20:03:49Z "
+        "(bus message filename label 20260905T2013Z, not the delivery time)"
     )
     assert surface.get("withdrawal_record") == WITHDRAWAL_RUNBOOK.as_posix()
     assert surface.get("path_globs") == [WITHDRAWAL_RUNBOOK.as_posix()]
