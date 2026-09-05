@@ -17,9 +17,9 @@ def current_text_outside_withdrawn_section(content: bytes) -> bytes:
 
     The exemption is bounded on both sides: it starts at the dated ``##`` heading and
     ends at the explicit end marker. Both must occur exactly once, in that order, and no
-    other ``##`` heading may sit inside the bounded section (the historical procedure is
-    nested as ``###`` and deeper). Anything outside the bounds is current text and is
-    checked like every other file.
+    heading of rank one or two may sit inside the bounded section (the historical
+    procedure is nested as ``###`` and deeper); fenced code blocks are not headings.
+    Anything outside the bounds is current text and is checked like every other file.
     """
     assert content.count(WITHDRAWN_SECTION_START) == 1, "one dated withdrawn heading"
     assert content.count(WITHDRAWN_SECTION_END) == 1, "one withdrawn end marker"
@@ -27,7 +27,14 @@ def current_text_outside_withdrawn_section(content: bytes) -> bytes:
     end = content.index(WITHDRAWN_SECTION_END)
     assert start < end, "the end marker must follow the withdrawn heading"
     inside = content[start + len(WITHDRAWN_SECTION_START) : end]
-    assert not re.search(rb"(?m)^## ", inside), "no second top-level section inside the bounds"
+    # A heading at the withdrawn section's rank or higher (rank one or two) would start
+    # current text inside the bounds and hide it from the scan; both ranks are refused.
+    # Fenced code blocks are not headings (the recheck commands carry shell comments), so
+    # they are removed before the check; nothing else about Markdown is interpreted.
+    prose = re.sub(rb"(?ms)^```.*?^```[ \t]*$", b"", inside)
+    assert not re.search(rb"(?m)^#{1,2}[ \t]", prose), (
+        "no heading of rank one or two inside the bounds"
+    )
     return content[:start] + content[end + len(WITHDRAWN_SECTION_END) :]
 
 
@@ -86,13 +93,44 @@ def test_withdrawal_exemption_is_bounded_on_both_sides() -> None:
     else:
         raise AssertionError("a withdrawn section without its end marker must be refused")
 
-    nested_second_section = bounded.replace(b"### Historical procedure", b"## Historical procedure")
+    for hidden_heading in (b"## Historical procedure", b"# Current"):
+        hidden = bounded.replace(b"### Historical procedure", hidden_heading)
+        try:
+            current_text_outside_withdrawn_section(hidden)
+        except AssertionError as refused:
+            assert "rank one or two" in str(refused)
+        else:
+            raise AssertionError(f"{hidden_heading!r} inside the bounds must be refused")
+
+    rank_one_current = (
+        WITHDRAWN_SECTION_START
+        + b"history\n# Current\nhttps://publish.obsidian.md/current\n"
+        + WITHDRAWN_SECTION_END
+    )
     try:
-        current_text_outside_withdrawn_section(nested_second_section)
+        current_text_outside_withdrawn_section(rank_one_current)
     except AssertionError as refused:
-        assert "top-level" in str(refused)
+        assert "rank one or two" in str(refused)
     else:
-        raise AssertionError("a second top-level section inside the bounds must be refused")
+        raise AssertionError("a rank-one heading inside the bounds must be refused")
+
+    shell_comment_in_fence = (
+        WITHDRAWN_SECTION_START
+        + b"history\n```bash\n# expect 404\ncurl https://publish.obsidian.md/x\n```\n"
+        + WITHDRAWN_SECTION_END
+    )
+    assert current_text_outside_withdrawn_section(shell_comment_in_fence) == b""
+
+    heading_after_fence = shell_comment_in_fence.replace(
+        b"```\n" + WITHDRAWN_SECTION_END,
+        b"```\n# Current\nhttps://publish.obsidian.md/y\n" + WITHDRAWN_SECTION_END,
+    )
+    try:
+        current_text_outside_withdrawn_section(heading_after_fence)
+    except AssertionError as refused:
+        assert "rank one or two" in str(refused)
+    else:
+        raise AssertionError("a rank-one heading outside a fence inside the bounds must be refused")
 
 
 def test_registry_has_no_active_obsidian_publish_surface() -> None:
