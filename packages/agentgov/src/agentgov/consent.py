@@ -19,6 +19,28 @@ import yaml
 log = logging.getLogger(__name__)
 
 
+def resolve_principal_id(candidate: str) -> str | None:
+    """Use council migration metadata when installed alongside council."""
+    try:
+        from shared.governance.consent import resolve_principal_id as resolve
+    except ModuleNotFoundError as exc:
+        if exc.name not in {"shared", "shared.governance", "shared.governance.consent"}:
+            raise
+        return None
+    return resolve(candidate)
+
+
+def resolve_contract_id(candidate: str) -> str | None:
+    """Use council migration metadata without requiring council in the wheel."""
+    try:
+        from shared.governance.consent import resolve_contract_id as resolve
+    except ModuleNotFoundError as exc:
+        if exc.name not in {"shared", "shared.governance", "shared.governance.consent"}:
+            raise
+        return None
+    return resolve(candidate)
+
+
 class ConsentContractLoadError(Exception):
     """Raised when a contract YAML file fails to parse in strict mode."""
 
@@ -127,7 +149,7 @@ class ConsentRegistry:
             return 0
 
     def get(self, contract_id: str) -> ConsentContract | None:
-        return self._contracts.get(contract_id)
+        return self._contracts.get(resolve_contract_id(contract_id) or contract_id)
 
     def __iter__(self):
         return iter(self._contracts.values())
@@ -143,14 +165,18 @@ class ConsentRegistry:
         for contract in self._contracts.values():
             if not contract.active:
                 continue
-            if person_id in contract.parties and data_category in contract.scope:
+            if (resolve_principal_id(person_id) or person_id) in {
+                resolve_principal_id(party) or party for party in contract.parties
+            } and data_category in contract.scope:
                 return True
         return False
 
     def get_contract_for(self, person_id: str) -> ConsentContract | None:
         """Return the active contract for a person, if any."""
         for contract in self._contracts.values():
-            if contract.active and person_id in contract.parties:
+            if contract.active and (resolve_principal_id(person_id) or person_id) in {
+                resolve_principal_id(party) or party for party in contract.parties
+            }:
                 return contract
         return None
 
@@ -158,7 +184,9 @@ class ConsentRegistry:
         """Return all permitted data categories for a person."""
         categories: set[str] = set()
         for contract in self._contracts.values():
-            if contract.active and person_id in contract.parties:
+            if contract.active and (resolve_principal_id(person_id) or person_id) in {
+                resolve_principal_id(party) or party for party in contract.parties
+            }:
                 categories |= contract.scope
         return frozenset(categories)
 
@@ -174,6 +202,7 @@ class ConsentRegistry:
         Raises KeyError if the contract_id is not registered.
         """
         t0 = time.monotonic()
+        contract_id = resolve_contract_id(contract_id) or contract_id
         contract = self._contracts.get(contract_id)
         if contract is None:
             raise KeyError(f"Contract {contract_id} not registered")
@@ -214,7 +243,9 @@ class ConsentRegistry:
         """Mark all contracts for a person as revoked. Returns revoked IDs."""
         revoked: list[str] = []
         for contract_id, contract in self._contracts.items():
-            if contract.active and person_id in contract.parties:
+            if contract.active and (resolve_principal_id(person_id) or person_id) in {
+                resolve_principal_id(party) or party for party in contract.parties
+            }:
                 revoked_contract = ConsentContract(
                     id=contract.id,
                     parties=contract.parties,
@@ -242,6 +273,7 @@ class ConsentRegistry:
         contracts_dir: Path | None = None,
     ) -> ConsentContract:
         """Create and activate a new consent contract at runtime."""
+        person_id = resolve_principal_id(person_id) or person_id
         now = datetime.now().isoformat()
         cid = contract_id or f"contract-{person_id}-{now[:10]}"
 

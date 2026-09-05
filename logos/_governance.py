@@ -23,13 +23,19 @@ import yaml
 from werkzeug.security import safe_join
 from werkzeug.utils import secure_filename
 
+from shared.governance.consent import (
+    REGISTERED_CHILD_PRINCIPALS,
+    REGISTERED_PRINCIPALS,
+    resolve_contract_id,
+    resolve_principal_id,
+)
+
 log = logging.getLogger(__name__)
 
 # ── Consent contracts (from shared/governance/consent.py) ──────────────
 
 _CONTRACTS_DIR = Path(__file__).parent.parent / "axioms" / "contracts"
 
-REGISTERED_CHILD_PRINCIPALS: frozenset[str] = frozenset({"simon", "agatha"})
 _CONTRACT_ID_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_-]{0,127}$")
 _UNSAFE_CONTRACT_CHARS_RE = re.compile(r"[^A-Za-z0-9_-]+")
 
@@ -103,7 +109,7 @@ class ConsentRegistry:
         return count
 
     def get(self, contract_id: str) -> ConsentContract | None:
-        return self._contracts.get(contract_id)
+        return self._contracts.get(resolve_contract_id(contract_id) or contract_id)
 
     def __iter__(self):
         return iter(self._contracts.values())
@@ -112,27 +118,35 @@ class ConsentRegistry:
         for contract in self._contracts.values():
             if not contract.active:
                 continue
-            if person_id in contract.parties and data_category in contract.scope:
+            if (resolve_principal_id(person_id) or person_id) in {
+                resolve_principal_id(party) or party for party in contract.parties
+            } and data_category in contract.scope:
                 return True
         return False
 
     def get_contract_for(self, person_id: str) -> ConsentContract | None:
         for contract in self._contracts.values():
-            if contract.active and person_id in contract.parties:
+            if contract.active and (resolve_principal_id(person_id) or person_id) in {
+                resolve_principal_id(party) or party for party in contract.parties
+            }:
                 return contract
         return None
 
     def subject_data_categories(self, person_id: str) -> frozenset[str]:
         categories: set[str] = set()
         for contract in self._contracts.values():
-            if contract.active and person_id in contract.parties:
+            if contract.active and (resolve_principal_id(person_id) or person_id) in {
+                resolve_principal_id(party) or party for party in contract.parties
+            }:
                 categories |= contract.scope
         return frozenset(categories)
 
     def purge_subject(self, person_id: str) -> list[str]:
         revoked: list[str] = []
         for contract_id, contract in self._contracts.items():
-            if contract.active and person_id in contract.parties:
+            if contract.active and (resolve_principal_id(person_id) or person_id) in {
+                resolve_principal_id(party) or party for party in contract.parties
+            }:
                 revoked_contract = ConsentContract(
                     id=contract.id,
                     parties=contract.parties,
@@ -159,6 +173,7 @@ class ConsentRegistry:
         visibility_mechanism: str = "on_request",
         contracts_dir: Path | None = None,
     ) -> ConsentContract:
+        person_id = resolve_principal_id(person_id) or person_id
         now = datetime.now().isoformat()
         cid = contract_id or f"contract-{_contract_id_component(person_id)}-{now[:10]}"
 
@@ -219,6 +234,7 @@ def _parse_contract(data: dict[str, Any]) -> ConsentContract:
 
 
 def is_child_principal(person_id: str, registry: ConsentRegistry | None = None) -> bool:
+    person_id = resolve_principal_id(person_id) or person_id
     if person_id in REGISTERED_CHILD_PRINCIPALS:
         return True
     if registry is not None:
@@ -335,7 +351,9 @@ class ProvenanceExpr:
         if self._is_one:
             return True
         if self.contract_id is not None:
-            return self.contract_id in active_contracts
+            return (resolve_contract_id(self.contract_id) or self.contract_id) in {
+                resolve_contract_id(cid) or cid for cid in active_contracts
+            }
         if self.op is ProvenanceOp.TENSOR:
             assert self.left is not None and self.right is not None
             return self.left.evaluate(active_contracts) and self.right.evaluate(active_contracts)
@@ -783,6 +801,7 @@ __all__ = [
     "ProvenanceExpr",
     "ProvenanceOp",
     "REGISTERED_CHILD_PRINCIPALS",
+    "REGISTERED_PRINCIPALS",
     "Says",
     "Selected",
     "Veto",

@@ -12,7 +12,7 @@ from dataclasses import dataclass
 from typing import Any
 
 from agentgov.carrier import CarrierRegistry
-from agentgov.consent import ConsentRegistry
+from agentgov.consent import ConsentRegistry, resolve_contract_id, resolve_principal_id
 from agentgov.labeled import Labeled
 
 
@@ -59,7 +59,11 @@ class RevocationPropagator:
 
     def revoke(self, person_id: str) -> RevocationReport:
         """Revoke all contracts for a person and cascade purge."""
-        revoked_ids = self._consent_registry.purge_subject(person_id)
+        person_id = resolve_principal_id(person_id) or person_id
+        revoked_ids = [
+            resolve_contract_id(cid) or cid
+            for cid in self._consent_registry.purge_subject(person_id)
+        ]
 
         if not revoked_ids:
             return RevocationReport(

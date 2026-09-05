@@ -11,7 +11,7 @@ This module ships the registry + match/revoke primitives. Wiring the
 matcher into the live ``FaceDetector`` and into the consent gate's
 ``consent_to_enroll`` activation path lands as follow-up cc-tasks per
 the parent spec
-``docs/research/2026-05-01-arcface-jason-matcher-reconcile.md``.
+for the per-person consent matcher.
 
 Per the "revoke ships before matcher gate" invariant
 (``cc-task: arcface-per-person-matcher-gate``), ``revoke_enrollment``
@@ -26,6 +26,8 @@ import logging
 from collections.abc import Iterable
 from pathlib import Path
 from typing import TYPE_CHECKING, Final, Protocol
+
+from shared.governance.consent import resolve_principal_id
 
 if TYPE_CHECKING:
     import numpy as np
@@ -42,12 +44,10 @@ ENROLL_SCOPE: Final[str] = "face_enrollment"
 class _ConsentScopeChecker(Protocol):
     """Minimum surface required to verify face-enrollment consent.
 
-    The ``ConsentRegistry.active_contract_for`` method on
-    ``shared.governance.consent.ConsentRegistry`` matches this shape; tests
-    use a stub.
+    The consent check covers all active contracts for the principal.
     """
 
-    def active_contract_for(self, person_id: str) -> object | None: ...
+    def contract_check(self, person_id: str, data_category: str) -> bool: ...
 
 
 class FaceEnrollmentError(RuntimeError):
@@ -59,22 +59,24 @@ def _enrollment_path(principal_id: str, *, root: Path | None = None) -> Path:
         raise FaceEnrollmentError(
             f"invalid principal_id {principal_id!r}; must be a path-safe slug"
         )
+    principal_id = resolve_principal_id(principal_id) or principal_id
     base = root if root is not None else ENROLLMENT_DIR_DEFAULT
     return base / f"{principal_id}.npz"
 
 
 def _has_face_enrollment_scope(consent: _ConsentScopeChecker, principal_id: str) -> bool:
-    contract = consent.active_contract_for(principal_id)
-    if contract is None:
-        return False
-    scope: object = getattr(contract, "scope", None)
-    if scope is None:
-        return False
-    if isinstance(scope, str):
-        return scope == ENROLL_SCOPE
-    if isinstance(scope, Iterable):
-        return ENROLL_SCOPE in scope
-    return False
+    principal_id = resolve_principal_id(principal_id) or principal_id
+    return consent.contract_check(principal_id, ENROLL_SCOPE)
+
+
+def _matching_enrollment_paths(principal_id: str, *, root: Path | None = None) -> list[Path]:
+    """Locate current and predecessor filenames without retaining predecessor text."""
+    canonical = _enrollment_path(principal_id, root=root)
+    return sorted(
+        path
+        for path in canonical.parent.glob("*.npz")
+        if (resolve_principal_id(path.stem) or path.stem) == canonical.stem
+    )
 
 
 def enroll_principal(
@@ -96,6 +98,7 @@ def enroll_principal(
 
     import numpy as np
 
+    principal_id = resolve_principal_id(principal_id) or principal_id
     if not _has_face_enrollment_scope(consent, principal_id):
         raise FaceEnrollmentError(
             f"refusing to enroll {principal_id!r}: no active "
@@ -137,7 +140,10 @@ def load_enrollment(principal_id: str, *, root: Path | None = None) -> NDArray[n
 
     path = _enrollment_path(principal_id, root=root)
     if not path.exists():
-        return None
+        matches = _matching_enrollment_paths(principal_id, root=root)
+        if not matches:
+            return None
+        path = matches[0]
     try:
         with np.load(path) as data:
             embedding = data["embedding"]
@@ -156,21 +162,16 @@ def revoke_enrollment(principal_id: str, *, root: Path | None = None) -> bool:
     intent regardless of disk state.
     """
 
-    path = _enrollment_path(principal_id, root=root)
-    if not path.exists():
-        return False
-    try:
-        path.unlink()
-        log.info("Revoked enrollment for principal %s (%s)", principal_id, path)
-        return True
-    except Exception:
-        log.warning(
-            "Failed to revoke enrollment for %s at %s",
-            principal_id,
-            path,
-            exc_info=True,
-        )
-        return False
+    principal_id = resolve_principal_id(principal_id) or principal_id
+    removed = False
+    for path in _matching_enrollment_paths(principal_id, root=root):
+        try:
+            path.unlink()
+            removed = True
+            log.info("Revoked enrollment for principal %s", principal_id)
+        except OSError:
+            log.warning("Failed to revoke enrollment for %s", principal_id)
+    return removed
 
 
 def list_enrollments(*, root: Path | None = None) -> list[str]:
@@ -183,7 +184,7 @@ def list_enrollments(*, root: Path | None = None) -> list[str]:
     base = root if root is not None else ENROLLMENT_DIR_DEFAULT
     if not base.exists():
         return []
-    return sorted(p.stem for p in base.glob("*.npz"))
+    return sorted({resolve_principal_id(p.stem) or p.stem for p in base.glob("*.npz")})
 
 
 def _cosine_similarity(a: NDArray[np.float32], b: NDArray[np.float32]) -> float:
@@ -236,7 +237,7 @@ def match_principal(
         score = _cosine_similarity(arr, enrolled)
         if score >= threshold and score > best_score:
             best_score = score
-            best_id = pid
+            best_id = resolve_principal_id(pid) or pid
     return best_id
 
 

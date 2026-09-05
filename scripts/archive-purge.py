@@ -33,7 +33,7 @@ Usage::
     archive-purge.py --condition <id> --confirm     # live
     archive-purge.py --condition <id> --confirm --reason "consent revocation"
     archive-purge.py --condition <id> --confirm \\
-        --consent-revoked-for simon --reason "guardian revoked simon's scope"
+        --consent-revoked-for principal-c2 --reason "guardian revoked principal-c2's scope"
 """
 
 from __future__ import annotations
@@ -71,10 +71,11 @@ def _consent_revocation_check(
     modify any contract state.
     """
     try:
-        from shared.governance.consent import ConsentRegistry
+        from shared.governance.consent import ConsentRegistry, resolve_principal_id
     except ImportError as exc:
         return False, f"ConsentRegistry import failed: {exc}"
 
+    person_id = resolve_principal_id(person_id) or person_id
     registry = ConsentRegistry()
     registry.load(contracts_dir)
     contract = registry.get_contract_for(person_id)
@@ -202,6 +203,11 @@ def main(argv: list[str] | None = None) -> int:
 
     # LRR Phase 2 spec §3.9 consent-revocation tie-in.
     if args.consent_revoked_for is not None:
+        from shared.governance.consent import resolve_principal_id
+
+        args.consent_revoked_for = (
+            resolve_principal_id(args.consent_revoked_for) or args.consent_revoked_for
+        )
         contracts_dir = Path(args.contracts_dir) if args.contracts_dir else None
         ok, msg = _consent_revocation_check(args.consent_revoked_for, contracts_dir)
         print(f"consent-check: {msg}", file=sys.stderr)
