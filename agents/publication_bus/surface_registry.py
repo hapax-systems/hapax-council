@@ -497,7 +497,10 @@ SURFACE_REGISTRY: Final[dict[str, SurfaceSpec]] = {
         api="REST",
         dispatch_entry="logos.api.routes.art_50_credentials:verify_credential_v1",
         activation_path="logos :8051 /v1/credential/verify/{credential_id}",
-        scope_note="read-only local certificate packet verification; no external callout",
+        scope_note=(
+            "Local label/name presence checks; signatures unverified. "
+            "No signer trust, attribution or image-byte verification; no external callout."
+        ),
     ),
     "youtube-live-chat-message": SurfaceSpec(
         automation_status=AutomationStatus.CONDITIONAL_ENGAGE,

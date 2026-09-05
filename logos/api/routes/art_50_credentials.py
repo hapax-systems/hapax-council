@@ -1,4 +1,4 @@
-"""Read-only verification route for Article 50 credential packets."""
+"""Read-only required-label/name checks; signatures and signer trust are unverified."""
 
 from __future__ import annotations
 
@@ -19,14 +19,14 @@ def _verify_or_404(credential_id: str) -> dict:
 
 @router.get("/v1/credential/verify/{credential_id}")
 def verify_credential_v1(credential_id: str) -> dict:
-    """Verify a stored Article 50 credential packet by credential id."""
+    """Check stored labels/names; no signature, signer trust or image bytes are verified."""
 
     return _verify_or_404(credential_id)
 
 
 @router.get("/api/art-50/credential/verify/{credential_id}")
 def verify_credential_api(credential_id: str) -> dict:
-    """Internal alias matching the rest of the Logos API route family."""
+    """Check stored labels/names; no signature, signer trust or image bytes are verified."""
 
     return _verify_or_404(credential_id)
 

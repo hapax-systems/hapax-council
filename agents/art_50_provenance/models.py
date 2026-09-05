@@ -153,8 +153,8 @@ class Art50CredentialCertificate(BaseModel):
     evidence_sources: tuple[str, ...] = ART50_EVIDENCE_SOURCES
     limitations: tuple[str, ...] = (
         "This packet is Article 50 audit-trail evidence, not legal advice.",
-        "Unsigned or blocked C2PA states are implementation readiness signals, not trusted "
-        "claim-signer validation.",
+        "All C2PA signing states, including signed_embedded, are issuance declarations; "
+        "local packet checks do not verify signatures, signer trust or attribution.",
         "The fallback PDQ-DCT hash is not native PDQ and must be replaced or accepted by a "
         "production owner before claiming native PDQ coverage.",
         "No court-admissibility or forensic-authenticity claim is made.",
