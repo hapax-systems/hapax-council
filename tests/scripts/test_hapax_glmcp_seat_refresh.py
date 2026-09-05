@@ -20,6 +20,8 @@ import sys
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
+import pytest
+
 REPO = Path(__file__).resolve().parents[2]
 SCRIPT = REPO / "scripts" / "hapax-glmcp-seat-refresh"
 RECEIPTS_SCRIPT = REPO / "scripts" / "hapax-platform-capability-receipts"
@@ -300,6 +302,162 @@ def _envelope(tmp_path: Path) -> dict[str, int]:
     return json.loads(proc.stdout)
 
 
+def test_post_mint_tail_starts_at_admissions_observed_at(tmp_path: Path) -> None:
+    e = _envelope(tmp_path)
+    # observe_success stamps observed_at BEFORE validation and the atomic write. Charge
+    # its entire deadline, including kill grace, plus all four possible diagnostic filters.
+    tail = (
+        e["admission_timeout_s"]
+        + e["writer_timeout_s"]
+        + e["receipts_timeout_s"]
+        + e["show_timeout_s"]
+        + 4 * e["timeout_kill_after_s"]
+        + 4 * (e["filter_timeout_s"] + e["timeout_kill_after_s"])
+        + e["post_mint_process_launch_slack_s"]
+        + e["post_mint_file_io_slack_s"]
+        + e["post_mint_scheduler_slack_s"]
+        + e["post_check_shutdown_s"]
+        + e["service_safety_margin_s"]
+    )
+    assert e["post_mint_tail_s"] == tail
+    assert tail + e["seat_skip_min_remaining_s"] < 900
+
+
+def test_preflight_refuses_old_deadlines_before_provider_call(tmp_path: Path, monkeypatch) -> None:
+    e = _envelope(tmp_path / "envelope")
+    home, council = _harness(tmp_path / "run")
+    unsafe = tmp_path / "unsafe-refresh"
+    unsafe.write_text(
+        SCRIPT.read_text()
+        .replace(f"ADMISSION_TIMEOUT_S={e['admission_timeout_s']}", "ADMISSION_TIMEOUT_S=35")
+        .replace(f"WRITER_TIMEOUT_S={e['writer_timeout_s']}", "WRITER_TIMEOUT_S=90")
+    )
+    monkeypatch.setattr(sys.modules[__name__], "SCRIPT", unsafe)
+    result = _run(home, council)
+    assert result.returncode == 7, result.stdout + result.stderr
+    assert "OVERRUN_RENEWAL_ENVELOPE_S=" in result.stderr
+    assert "POST_MINT_TAIL_S=" in result.stderr
+    assert "roundtrip attempt" not in result.stdout
+    assert not (home / "admission-calls").exists()
+
+
+def test_delayed_admission_completion_keeps_original_observed_at(tmp_path: Path) -> None:
+    e = _envelope(tmp_path / "envelope")
+    epoch = int(datetime.now(UTC).timestamp())
+    home, council = _harness(tmp_path / "run", refreshed_remaining=None)
+    delay = e["admission_timeout_s"] - 1
+    (home / "clock").write_text(str(epoch))
+    (home / "admission-receipt.json").write_text(
+        _glmcp_receipt_json(
+            status="observed", remaining=900, age=0, now=datetime.fromtimestamp(epoch, UTC)
+        )
+    )
+    # The receipt fixture is stamped when admission observes success. Only afterward does
+    # admission finish its delayed validation/write; publication must preserve that age.
+    _stub(
+        council / "scripts/hapax-glmcp-quota-admission",
+        f'echo {epoch} > "$HOME/admission-observed-at"\n'
+        f'echo {epoch + delay} > "$HOME/clock"\n'
+        'cp "$HOME/admission-receipt.json" "$HOME/refreshed-receipt.json"\n'
+        'echo "receipt ok"\n',
+    )
+    bin_dir = tmp_path / "bin"
+    bin_dir.mkdir()
+    date = shutil.which("date")
+    _stub(
+        bin_dir / "date",
+        f'if [ "$*" = "-u +%s" ]; then cat "$HOME/clock"; else exec "{date}" "$@"; fi\n',
+    )
+    result = _run(home, council, path=f"{bin_dir}:{os.environ['PATH']}")
+    assert result.returncode == 0, result.stdout + result.stderr
+    assert f"{900 - delay}s remain on the accepted glmcp receipt" in result.stdout
+    assert (
+        int((home / "clock").read_text()) - int((home / "admission-observed-at").read_text())
+        == delay
+    )
+
+
+@pytest.mark.parametrize(
+    "diagnostic",
+    [
+        '{"api_key": "DUMMY_REVIEW_SENTINEL"}',
+        '{"password": "DUMMY_REVIEW_SENTINEL SECOND_SENTINEL"}',
+        r'{"token": "DUMMY_REVIEW_SENTINEL \"SECOND_SENTINEL\""}',
+        "password='DUMMY_REVIEW_SENTINEL SECOND_SENTINEL'",
+        'api_key="DUMMY_REVIEW_SENTINEL SECOND_SENTINEL"',
+        "token=DUMMY_REVIEW_SENTINEL",
+        "secret: DUMMY_REVIEW_SENTINEL",
+        "Authorization: Bearer DUMMY_REVIEW_SENTINEL",
+        'password="DUMMY_REVIEW_SENTINEL\nSECOND_SENTINEL"',
+        'password="DUMMY_REVIEW_SENTINEL SECOND_SENTINEL',
+    ],
+    ids=[
+        "json-key",
+        "json-spaces",
+        "json-escaped",
+        "single-quotes",
+        "double-quotes",
+        "equals",
+        "colon",
+        "bearer",
+        "multiline",
+        "unterminated",
+    ],
+)
+def test_diagnostic_credentials_are_completely_redacted(tmp_path: Path, diagnostic: str) -> None:
+    home, council = _harness(
+        tmp_path, reviewer=f"cat >&2 <<'DIAGNOSTIC'\n{diagnostic}\nDIAGNOSTIC\nexit 1\n"
+    )
+    result = _run(home, council)
+    assert result.returncode == 2
+    output = result.stdout + result.stderr
+    assert "<redacted>" in output
+    assert "DUMMY_REVIEW_SENTINEL" not in output
+    assert "SECOND_SENTINEL" not in output
+
+
+@pytest.mark.parametrize("stderr_present", [False, True])
+@pytest.mark.parametrize(
+    "reason",
+    [
+        "receipt_absent",
+        "receipt_invalid:ValueError",
+        "receipt_stale_or_superseded",
+        "receipt_dir_unloadable:PermissionError",
+    ],
+)
+def test_show_rejection_warns_with_reason_remedy_and_sanitized_stderr(
+    tmp_path: Path, reason: str, stderr_present: bool
+) -> None:
+    home, council = _harness(tmp_path, reviewer=REVIEWER_ALWAYS_FAILS_SILENTLY)
+    payload = json.dumps(
+        {
+            "receipts": [
+                {
+                    "platform": "glmcp",
+                    "accepted": False,
+                    "reason": reason + ' {"api_key": "DUMMY_REASON_SENTINEL"}',
+                }
+            ],
+            "unrelated": "DUMMY_UNRELATED_SENTINEL",
+        }
+    )
+    _stub(
+        council / "scripts/hapax-platform-capability-receipts",
+        f"cat <<'REJECTION'\n{payload}\nREJECTION\n"
+        + ("echo 'stderr detail token=DUMMY_STDERR_SENTINEL' >&2\n" if stderr_present else "")
+        + "exit 1\n",
+    )
+    result = _run(home, council)
+    assert result.returncode == 2
+    assert f"--show WARNING: {reason}" in result.stderr
+    assert "Next:" in result.stderr
+    assert "hapax-platform-capability-receipts --platform glmcp" in result.stderr
+    assert ("stderr detail" in result.stderr) == stderr_present
+    assert "DUMMY_" not in result.stdout + result.stderr
+    assert "roundtrip attempt 3:" in result.stdout
+
+
 def test_refresh_threshold_is_derived_from_every_stage_and_a_skip_cannot_lapse(
     tmp_path: Path,
 ) -> None:
@@ -344,7 +502,8 @@ def test_refresh_threshold_is_derived_from_every_stage_and_a_skip_cannot_lapse(
         + e["no_lapse_safety_margin_s"]
     )
     post_mint_tail = (
-        e["writer_timeout_s"]
+        e["admission_timeout_s"]
+        + e["writer_timeout_s"]
         + e["receipts_timeout_s"]
         + e["show_timeout_s"]
         + e["post_mint_timed_command_count"] * e["timeout_kill_after_s"]
@@ -460,7 +619,7 @@ def test_an_unsafe_envelope_is_refused_and_names_every_term(tmp_path: Path) -> N
     home, council = _harness(tmp_path)
     unsafe_script = tmp_path / "unsafe-seat-refresh"
     unsafe_script.write_text(
-        SCRIPT.read_text(encoding="utf-8").replace("WRITER_TIMEOUT_S=90", "WRITER_TIMEOUT_S=182"),
+        SCRIPT.read_text(encoding="utf-8").replace("WRITER_TIMEOUT_S=60", "WRITER_TIMEOUT_S=207"),
         encoding="utf-8",
     )
     proc = subprocess.run(
@@ -881,7 +1040,7 @@ def test_unit_pair_executes_from_the_activation_worktree_and_strips_inherited_ov
         'bounded_timeout "$SHOW_TIMEOUT_S" "$H/scripts/hapax-platform-capability-receipts" --show'
         in script
     )
-    assert 'bounded_timeout "$FILTER_TIMEOUT_S" bash -c' in script
+    assert 'bounded_timeout "$FILTER_TIMEOUT_S" python3 -c' in script
     assert "bounded no-lapse envelope" in (_unit_value(service, "Unit", "Description") or "")
     timer = TIMER.read_text(encoding="utf-8")
     assert _unit_value(timer, "Install", "WantedBy") == "timers.target"

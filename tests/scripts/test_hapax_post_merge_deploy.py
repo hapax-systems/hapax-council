@@ -3557,6 +3557,75 @@ def test_coord_service_auto_enable_refuses_when_activation_deploy_missing(
     assert "--user enable --now hapax-coord.service" not in calls
 
 
+@pytest.mark.parametrize("probe_present", [True, False])
+@pytest.mark.parametrize("effective", ["10min", "15min", "", "query-failed"])
+def test_glm_seat_deploy_removes_only_probe_and_verifies_loaded_deadline(
+    tmp_path: Path, probe_present: bool, effective: str
+) -> None:
+    unit = "hapax-glmcp-seat-refresh.service"
+    unit_path = f"systemd/units/{unit}"
+    content = (REPO_ROOT / unit_path).read_text()
+    repo, sha = _repo_with_linear_commit(tmp_path, {unit_path: content})
+    home = tmp_path / "home"
+    dropins = home / ".config/systemd/user" / f"{unit}.d"
+    dropins.mkdir(parents=True)
+    probe = dropins / "probe-tree.conf"
+    if probe_present:
+        probe.write_text(
+            "# Remove this drop-in when the merged unit replaces the interim one.\n"
+            "[Service]\nTimeoutStartSec=900\n"
+        )
+    unrelated = dropins / "operator.conf"
+    unrelated.write_text("[Service]\nNice=5\n")
+    bin_dir, calls_path = _fake_systemctl(tmp_path)
+    fake = bin_dir / "systemctl"
+    fake.write_text(
+        "#!/usr/bin/env bash\nset -eu\n"
+        'printf "%s\\n" "$*" >> "$HAPAX_SYSTEMCTL_CALLS"\n'
+        'case "$*" in\n'
+        '"--user daemon-reload")\n'
+        f'  test -f "$HOME/.config/systemd/user/{unit}"\n'
+        f'  if [ -e "$HOME/.config/systemd/user/{unit}.d/probe-tree.conf" ]; then\n'
+        '    echo 15min > "$HOME/loaded-timeout"\n'
+        f'  else echo "{effective}" > "$HOME/loaded-timeout"; fi ;;\n'
+        f'"--user show {unit} --property=TimeoutStartUSec --value")\n'
+        '  [ -f "$HOME/loaded-timeout" ] || exit 9\n'
+        '  [ "$(cat "$HOME/loaded-timeout")" != "query-failed" ] || exit 4\n'
+        '  cat "$HOME/loaded-timeout" ;;\n'
+        "esac\n"
+    )
+    env = {
+        **os.environ,
+        "HOME": str(home),
+        "PATH": f"{bin_dir}:{os.environ['PATH']}",
+        "REPO": str(repo),
+        "HAPAX_SYSTEMCTL_CALLS": str(calls_path),
+        "HAPAX_POST_MERGE_TRACE_PATH": str(tmp_path / "trace.jsonl"),
+    }
+    result = subprocess.run([str(SCRIPT), sha], env=env, capture_output=True, text=True)
+    assert not probe.exists()
+    assert unrelated.read_text() == "[Service]\nNice=5\n"
+    assert (home / ".config/systemd/user" / unit).read_text() == content
+    if probe_present:
+        assert "removing stale local drop-in" in result.stdout
+        assert "probe-tree.conf" in result.stdout
+        assert "600 s no-lapse bound" in result.stdout
+    calls = calls_path.read_text().splitlines()
+    reload_call = "--user daemon-reload"
+    show_call = f"--user show {unit} --property=TimeoutStartUSec --value"
+    assert show_call in calls
+    assert calls.index(reload_call) < calls.index(show_call)
+    if effective == "10min":
+        assert result.returncode == 0, result.stdout + result.stderr
+        assert "verified hapax-glmcp-seat-refresh.service TimeoutStartSec=600" in result.stdout
+        assert calls.index(show_call) < calls.index(f"--user restart {unit}")
+    else:
+        assert result.returncode != 0, result.stdout + result.stderr
+        assert "TimeoutStartSec=600" in result.stderr
+        assert "next action:" in result.stderr
+        assert f"--user restart {unit}" not in calls
+
+
 def test_obs_audio_bind_unit_deploy_removes_stale_audio_l12_dropin(tmp_path: Path) -> None:
     unit_path = "systemd/units/hapax-obs-audio-bind.service"
     repo, sha = _repo_with_linear_commit(

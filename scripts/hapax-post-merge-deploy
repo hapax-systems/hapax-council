@@ -815,6 +815,16 @@ cleanup_known_stale_user_dropins_for_unit() {
     local unit="$1"
     local dropin_dir dropin
     case "$unit" in
+        hapax-glmcp-seat-refresh.service)
+            # Interim #4624 probe, installed 2026-09-03. Its own header requires removal
+            # when the merged unit replaces it; TimeoutStartSec=900 overrides the unit.
+            # Remove this named probe only, preserving every other operator drop-in.
+            dropin="$SYSTEMD_USER_DIR/$unit.d/probe-tree.conf"
+            if [ -e "$dropin" ] || [ -L "$dropin" ]; then
+                rm -f "$dropin"
+                echo "  removing stale local drop-in '$dropin': merged unit replaces the interim probe and requires the 600 s no-lapse bound"
+            fi
+            ;;
         hapax-audio-safety.service)
             dropin_dir="$SYSTEMD_RUNTIME_USER_DIR/$unit.d"
             [ -d "$dropin_dir" ] || return 0
@@ -1922,6 +1932,16 @@ if [ "${#SYSTEMD[@]}" -gt 0 ]; then
     systemctl --user daemon-reload
     for f in "${SYSTEMD_INSTALLED[@]}"; do
         base="$(basename "$f")"
+        if [[ "$base" == "hapax-glmcp-seat-refresh.service" ]]; then
+            # Check what the manager loaded AFTER daemon-reload and BEFORE restart.
+            # systemctl renders TimeoutStartUSec=600000000 as the timespan "10min".
+            effective_timeout="$(systemctl --user show "$base" --property=TimeoutStartUSec --value)" || effective_timeout=""
+            if [[ "$effective_timeout" != "10min" ]]; then
+                echo "hapax-post-merge-deploy: $base effective deadline does not match required TimeoutStartSec=600 after daemon-reload; next action: inspect systemctl --user show $base --property=TimeoutStartUSec and systemctl --user cat $base, reconcile remaining overrides, and rerun the governed deploy" >&2
+                exit 1
+            fi
+            echo "verified $base TimeoutStartSec=600 after daemon-reload"
+        fi
         unit_content="$(git show "$SHA:$f" 2>/dev/null || true)"
         if unit_content_parked "$unit_content"; then
             echo "parking $base (Hapax-Parked marker)"

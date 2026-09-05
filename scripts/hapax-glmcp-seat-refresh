@@ -58,7 +58,9 @@ seat_remaining_seconds() {
     return 1
   fi
   if ! shown="$(bounded_timeout "$SHOW_TIMEOUT_S" "$H/scripts/hapax-platform-capability-receipts" --show --platform glmcp --json 2>"$show_err")"; then
-    print_filtered_output tail 1 "  --show: " "$show_err" >&2 || true
+    # Loader refusals are JSON on stdout, often with EMPTY stderr. Parse only the
+    # glmcp rejection reason and sanitise it and stderr in one bounded filter call.
+    printf '%s' "$shown" | print_filtered_output rejection 1 "  --show stderr: " "$show_err" >&2 || true
     rm -f "$show_err"
     return 1
   fi
@@ -104,8 +106,8 @@ REVIEW_ATTEMPTS=3
 REVIEW_ATTEMPT_TIMEOUT_S=45    # measured round-trips take ~4 s
 REVIEW_INNER_TIMEOUT_S=40      # inside the outer timeout and its forced-kill grace
 REVIEW_RETRY_SLEEP_S=15
-ADMISSION_TIMEOUT_S=35
-WRITER_TIMEOUT_S=90
+ADMISSION_TIMEOUT_S=10         # local validation/atomic write; no provider round-trip
+WRITER_TIMEOUT_S=60            # --skip-receipts rebuilds only the local ledger
 RECEIPTS_TIMEOUT_S=35
 SHOW_TIMEOUT_S=15
 TIMEOUT_KILL_AFTER_S=2         # every coreutils timeout has a finite TERM-to-KILL ceiling
@@ -120,8 +122,8 @@ WHOLE_SERVICE_BOUND_S=600      # systemd TimeoutStartSec; includes all launch-to
 POST_CHECK_SHUTDOWN_S=5        # systemd TimeoutStopSec
 NO_LAPSE_SAFETY_MARGIN_S=10
 RECEIPT_ROUNDING_GUARD_S=1
-POST_MINT_TIMED_COMMAND_COUNT=3
-POST_MINT_FILTER_INVOCATIONS_MAX=2
+POST_MINT_TIMED_COMMAND_COUNT=4  # admission remainder, writer, receipt refresh, final show
+POST_MINT_FILTER_INVOCATIONS_MAX=4  # admission, writer, receipt refresh, final show/parse refusal
 POST_MINT_PROCESS_LAUNCH_SLACK_S=5
 POST_MINT_FILE_IO_SLACK_S=5
 POST_MINT_SCHEDULER_SLACK_S=5
@@ -142,7 +144,13 @@ SERVICE_ENVELOPE_S=$(( CORE_COMMAND_ENVELOPE_S + TIMEOUT_KILL_ENVELOPE_S + FILTE
 CHAIN_ENVELOPE_S=$(( POST_CHECK_SHUTDOWN_S + TIMER_ACCURACY_S + TIMER_SCHEDULER_SLACK_S + SERVICE_ENVELOPE_S + NO_LAPSE_SAFETY_MARGIN_S ))
 SEAT_REFRESH_THRESHOLD_S=$(( TIMER_INACTIVE_DELAY_S + CHAIN_ENVELOPE_S ))
 SEAT_SKIP_MIN_REMAINING_S=$(( SEAT_REFRESH_THRESHOLD_S + RECEIPT_ROUNDING_GUARD_S ))
-POST_MINT_TAIL_S=$(( WRITER_TIMEOUT_S + RECEIPTS_TIMEOUT_S + SHOW_TIMEOUT_S + POST_MINT_TIMED_COMMAND_COUNT * TIMEOUT_KILL_AFTER_S + POST_MINT_FILTER_INVOCATIONS_MAX * (FILTER_TIMEOUT_S + TIMEOUT_KILL_AFTER_S) + POST_MINT_PROCESS_LAUNCH_SLACK_S + POST_MINT_FILE_IO_SLACK_S + POST_MINT_SCHEDULER_SLACK_S + POST_CHECK_SHUTDOWN_S + SERVICE_SAFETY_MARGIN_S ))
+# Lifetime starts at observe_success's observed_at (quota-admission:351), BEFORE validation
+# and the receipt write, not at this script's witness timestamp or admission process exit.
+# Charge the FULL admission deadline as an upper bound on that remainder, its kill grace,
+# and its diagnostic filter. Even the final show refusal/parse filter is reserved here.
+# The accepted quota surface below is bounded by the admission's expiry through the ledger;
+# never reset its age to the refresh script's clock when admission finishes late.
+POST_MINT_TAIL_S=$(( ADMISSION_TIMEOUT_S + WRITER_TIMEOUT_S + RECEIPTS_TIMEOUT_S + SHOW_TIMEOUT_S + POST_MINT_TIMED_COMMAND_COUNT * TIMEOUT_KILL_AFTER_S + POST_MINT_FILTER_INVOCATIONS_MAX * (FILTER_TIMEOUT_S + TIMEOUT_KILL_AFTER_S) + POST_MINT_PROCESS_LAUNCH_SLACK_S + POST_MINT_FILE_IO_SLACK_S + POST_MINT_SCHEDULER_SLACK_S + POST_CHECK_SHUTDOWN_S + SERVICE_SAFETY_MARGIN_S ))
 OVERRUN_RENEWAL_ENVELOPE_S=$(( POST_MINT_TAIL_S + SEAT_SKIP_MIN_REMAINING_S ))
 # A refresh is visible only if the accepted receipt can survive the completion-relative delay and
 # one complete worst-case next run. A guard that cannot establish this refuses success.
@@ -160,12 +168,49 @@ bounded_timeout() {
 
 print_filtered_output() {
   local mode="$1" lines="$2" prefix="$3" file="$4"
-  bounded_timeout "$FILTER_TIMEOUT_S" bash -c '
-    set -o pipefail
-    if [[ "$1" == "head" ]]; then selector=(head -n "$2"); else selector=(tail -n "$2"); fi
-    sed -E '\''s/\x1b\[[0-9;]*m//g; s/(api[_-]?key|token|secret|password|bearer)([[:space:]]*[:=]?[[:space:]]*)[^[:space:]]*/\1<redacted>/Ig'\'' "$4" \
-      | grep -vE '\''^\s*$'\'' | "${selector[@]}" | cut -c1-200 | sed "s/^/$3/"
-  ' _ "$mode" "$lines" "$prefix" "$file"
+  bounded_timeout "$FILTER_TIMEOUT_S" python3 -c '
+import json
+import re
+import sys
+from pathlib import Path
+
+mode, count, prefix, file = sys.argv[1:]
+
+def sanitise(text):
+    text = re.sub(r"\x1b\[[0-9;]*m", "", text)
+    # Consume the closing key quote and separator before the COMPLETE value, including
+    # escaped quotes, spaces and newlines. An unterminated quoted value consumes the rest.
+    text = re.sub(
+        r"(api[_-]?key|token|secret|password|bearer)(?:[\"\x27])?\s*[:=]?\s*"
+        r"(?:\"(?:\\.|[^\"\\])*(?:\"|\Z)|\x27(?:\\.|[^\x27\\])*(?:\x27|\Z)|[^\s,;}\]]*)",
+        r"\1<redacted>", text, flags=re.IGNORECASE,
+    )
+    return re.sub(r"[\x00-\x08\x0b-\x1f\x7f]", "", text)
+
+if mode == "rejection":
+    reason = "receipt_rejection_reason_unavailable"
+    try:
+        payload = json.load(sys.stdin)
+        for row in payload.get("receipts", []):
+            if row.get("platform") == "glmcp" and row.get("accepted") is not True:
+                if isinstance(row.get("reason"), str) and row["reason"]:
+                    reason = row["reason"]
+                break
+    except (ValueError, AttributeError, TypeError):
+        pass
+    print("  --show WARNING: " + " ".join(sanitise(reason).split())[:200])
+    print("  Next: run hapax-platform-capability-receipts --platform glmcp to rebuild the receipt; if it still fails, inspect --show --platform glmcp and repair the receipt directory/schema before retrying.")
+
+# Redact before line selection/truncation so a quoted multiline value cannot leak a suffix.
+try:
+    text = Path(file).read_text(errors="replace")
+except OSError:
+    text = "diagnostic file unreadable"
+lines = [line for line in sanitise(text).splitlines() if line.strip()]
+selected = lines[:int(count)] if mode == "head" else lines[-int(count):]
+for line in selected:
+    print(prefix + line[:200])
+  ' "$mode" "$lines" "$prefix" "$file"
 }
 
 if [[ "${1:-}" == "--envelope" ]]; then
