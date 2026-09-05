@@ -1002,6 +1002,10 @@ def test_runbook_has_headless_read_refusal_rechecks(request):
     selections = set(re.findall(r"tests/scripts/test_hapax_recruit\.py::[\w\[\]-]+", doc))
     required = {
         "test_structured_failed_output_is_redacted_at_every_destination",
+        "test_nested_claude_credentials_never_reach_destinations",
+        "test_undecodable_claude_envelope_cannot_claim_success",
+        "test_unwritable_receipt_and_fallback_name_recovery_without_traceback",
+        "test_undecodable_claude_diagnostic_stream_is_suppressed",
         "test_codex_run_without_new_output_never_attributes_an_old_answer",
         "test_expected_launch_decode_and_transport_failures_are_receipted",
         "test_local_deadline_covers_connection_and_body",
@@ -1461,9 +1465,10 @@ def test_nested_claude_credentials_never_reach_destinations(
 
 
 @pytest.mark.parametrize("capacity", ["claude", "glmcp", "qwencloud"])
-@pytest.mark.parametrize("response", ["truncated", "leading-chatter", "empty"])
+@pytest.mark.parametrize("response", ["truncated", "leading-chatter", "json-in-string", "empty"])
+@pytest.mark.parametrize("code", [0, 7, "timeout"])
 def test_undecodable_claude_envelope_cannot_claim_success(
-    bench, monkeypatch, capsys, caplog, capacity, response
+    bench, monkeypatch, capsys, caplog, capacity, response, code
 ):
     module, _bin_dir, brief, out = bench
     monkeypatch.setattr(module, "_require_binary", lambda name: name)
@@ -1473,20 +1478,106 @@ def test_undecodable_claude_envelope_cannot_claim_success(
     credential = json.dumps({"api_key": canary})  # pragma: allowlist secret
     envelope = json.dumps({"result": credential})
     stdout = envelope[:-1] if response == "truncated" else "startup chatter\n" + envelope
+    if response == "json-in-string":
+        stdout = json.dumps(envelope)[:-1]
     if response == "empty":
         stdout = ""
-    monkeypatch.setattr(module, "_run", lambda *a, **kw: (0, stdout, "", False, None))
-    assert module.main([capacity, "--brief", str(brief), "--out", str(out)]) == 3
+    monkeypatch.setattr(module, "_run", lambda *a, **kw: (code, stdout, "", False, None))
+    assert module.main([capacity, "--brief", str(brief), "--out", str(out)]) == (
+        4 if code == "timeout" else 3
+    )
     receipt = _receipt(out)
-    assert receipt["exit_code"] == 3 and receipt["failure_class"] == "OutputNotProduced"
-    assert receipt["output_bytes"] == 0 and out.read_bytes() == b""
     captured = capsys.readouterr()
-    assert canary not in json.dumps(receipt) + captured.out + captured.err + caplog.text
+    destinations = {
+        "answer": out.read_text(),
+        "receipt": out.with_name(out.name + ".receipt.json").read_text(),
+        "stdout": captured.out,
+        "stderr/journal": captured.err,
+        "log": caplog.text,
+    }
+    leaks = [name for name, value in destinations.items() if canary in value]
+    assert not leaks, f"credential reached destinations: {', '.join(leaks)}"
+    assert receipt["answer_policy"] == "suppressed_undecodable_output"
+    assert receipt["suppressed_streams"] == {
+        "stdout": {
+            "length": len(stdout),
+            "first_token_class": {
+                "truncated": "object",
+                "leading-chatter": "text",
+                "json-in-string": "string",
+                "empty": "empty",
+            }[response],
+            "reason": "undecodable_stream_suppressed",
+        }
+    }
+    assert receipt["exit_code"] == (3 if code == 0 else code)
+    assert receipt["failure_class"] == "OutputNotProduced"
+    assert receipt["output_bytes"] == 0 and out.read_bytes() == b""
     assert "startup chatter" not in receipt["stderr_tail"]
     assert "undecodable_result_envelope" in receipt["stderr_tail"]
-    assert "retry" in receipt["recovery_action"] and "--out" in receipt["recovery_action"]
+    assert "undecodable_stream_suppressed" in receipt["stderr_tail"]
+    assert "retry" in receipt["recovery_action"]
+    assert ("--timeout" if code == "timeout" else "--out") in receipt["recovery_action"]
     assert "retry" in captured.err
     assert captured.out == "" and caplog.text == ""
+
+
+@pytest.mark.parametrize("capacity", ["claude", "glmcp", "qwencloud"])
+@pytest.mark.parametrize("code", [0, 7, "timeout"])
+@pytest.mark.parametrize("stream", ["stdout", "stderr", "both"])
+@pytest.mark.parametrize(
+    "encoding",
+    ["truncated", "leading-chatter", "json-in-string", "nested-truncated", "escaped-label"],
+)
+def test_undecodable_claude_diagnostic_stream_is_suppressed(
+    bench, monkeypatch, capsys, caplog, capacity, code, stream, encoding
+):
+    module, _bin_dir, brief, out = bench
+    monkeypatch.setattr(module, "_require_binary", lambda name: name)
+    if capacity in module.WRAPPED_CLAUDE:
+        monkeypatch.setenv(module.WRAPPED_CLAUDE[capacity][0], str(brief))
+    canary = "SYNTHETIC_BROKEN_STREAM_CANARY"  # pragma: allowlist secret
+    credential = json.dumps({"api_key": canary})  # pragma: allowlist secret
+    envelope = json.dumps({"result": credential})
+    malformed = {
+        "truncated": envelope[:-1],
+        "leading-chatter": "startup chatter\n" + envelope,
+        "json-in-string": json.dumps(envelope)[:-1],
+        "nested-truncated": json.dumps({"result": json.dumps(envelope)[:-1]}),
+        "escaped-label": credential.replace('"', r"\u0022")[:-1],
+    }[encoding]
+    stdout = json.dumps({"result": "SAFE ANSWER"}) if stream == "stderr" else malformed
+    stderr = "" if stream == "stdout" else malformed
+    monkeypatch.setattr(module, "_run", lambda *a, **kw: (code, stdout, stderr, False, None))
+    expected_rc = 4 if code == "timeout" else 0 if code == 0 and stream == "stderr" else 3
+    assert module.main([capacity, "--brief", str(brief), "--out", str(out)]) == expected_rc
+    captured = capsys.readouterr()
+    destinations = {
+        "answer": out.read_text(),
+        "receipt": out.with_name(out.name + ".receipt.json").read_text(),
+        "stdout": captured.out,
+        "stderr/journal": captured.err,
+        "log": caplog.text,
+    }
+    leaks = [name for name, value in destinations.items() if canary in value]
+    assert not leaks, f"credential reached destinations: {', '.join(leaks)}"
+    receipt = _receipt(out)
+    assert receipt["answer_policy"] == "suppressed_undecodable_output"
+    expected_streams = {"stdout", "stderr"} if stream == "both" else {stream}
+    assert set(receipt["suppressed_streams"]) == expected_streams
+    for shape in receipt["suppressed_streams"].values():
+        assert shape == {
+            "length": len(malformed),
+            "first_token_class": "text"
+            if encoding == "leading-chatter"
+            else ("string" if encoding == "json-in-string" else "object"),
+            "reason": "undecodable_stream_suppressed",
+        }
+    assert out.read_text() == ("SAFE ANSWER" if stream == "stderr" else "")
+    assert receipt["output_bytes"] == len(out.read_bytes())
+    assert "startup chatter" not in receipt["stderr_tail"]
+    assert "undecodable_stream_suppressed" in receipt["stderr_tail"]
+    assert caplog.text == ""
 
 
 @pytest.mark.parametrize("condition", ["unwritable-directory", "directory-output", "disk-full"])

@@ -39,7 +39,7 @@ import time
 import urllib.error
 import urllib.request
 from contextlib import contextmanager
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from pathlib import Path
 
@@ -113,6 +113,10 @@ class EndpointDeadlineExceeded(TimeoutError):
     """The complete endpoint exchange exhausted its wall-clock budget."""
 
 
+class UndecodableStream(ValueError):
+    """A structured stream cannot be completely redacted; never carry its text."""
+
+
 @contextmanager
 def _endpoint_deadline(timeout: int):
     """Bound even trickling headers/reads in this POSIX CLI's main thread."""
@@ -168,6 +172,7 @@ class RunResult:
     failure_class: str | None = None
     recovery_action: str | None = None
     output_bytes: int | None = None
+    suppressed_streams: dict[str, dict] = field(default_factory=dict)
 
     def __post_init__(self) -> None:
         if self.exit_code == 0 and not self.answer.strip():
@@ -182,7 +187,7 @@ class RunResult:
         self.stderr_tail = _redact(self.stderr_tail)[-400:]
 
 
-def _redact(text: str) -> str:
+def _redact(text: str, *, reject_undecodable: bool = False) -> str:
     # Decode before matching labels: JSON strings can contain further JSON envelopes,
     # escaped quotes, or unicode escapes. Re-encode only after every value is safe.
     try:
@@ -190,8 +195,17 @@ def _redact(text: str) -> str:
     except json.JSONDecodeError:
         pass
     else:
-        redacted = _redact_json_value(payload)
+        redacted = _redact_json_value(payload, reject_undecodable=reject_undecodable)
         return text if redacted == payload else json.dumps(redacted)
+    if reject_undecodable:
+        # Plain/YAML credentials have a complete text grammar. After consuming those
+        # fields, empty JSON containers are harmless (e.g. a credential object followed
+        # by a log line). Any remaining structured syntax is unparsed, including escaped
+        # labels and JSON strings inside broken envelopes: suppress the ENTIRE stream.
+        remainder = _SECRETISH.sub("", text)
+        remainder = re.sub(r"\{\s*\}|\[\s*\]", "", remainder)
+        if re.search(r'[{}\[\]"\\]', remainder):
+            raise UndecodableStream
     # Consume escaped quotes and multiline scalars before any diagnostic is sliced.
     # Unterminated quotes suppress the rest of the block rather than exposing a suffix.
     # Plain scalars consume the whole line and indented continuations. In mixed prose
@@ -199,7 +213,7 @@ def _redact(text: str) -> str:
     return _SECRETISH.sub(r"\1<redacted>", text)
 
 
-def _redact_json_value(value):
+def _redact_json_value(value, *, reject_undecodable: bool = False):
     if isinstance(value, dict):
         redacted = {}
         for key, item in value.items():
@@ -208,14 +222,27 @@ def _redact_json_value(value):
             field = f'{json.dumps(key)}: "scalar"'
             match = _SECRETISH.search(field)
             redacted[key] = (
-                "<redacted>" if match and match.end() == len(field) else _redact_json_value(item)
+                "<redacted>"
+                if match and match.end() == len(field)
+                else _redact_json_value(item, reject_undecodable=reject_undecodable)
             )
         return redacted
     if isinstance(value, list):
-        return [_redact_json_value(item) for item in value]
+        return [_redact_json_value(item, reject_undecodable=reject_undecodable) for item in value]
     if isinstance(value, str):
-        return _redact(value)
+        return _redact(value, reject_undecodable=reject_undecodable)
     return value
+
+
+def _suppressed_stream_shape(text: str) -> dict:
+    first = text.lstrip()[:1]
+    return {
+        "length": len(text),
+        "first_token_class": {"": "empty", "{": "object", "[": "array", '"': "string"}.get(
+            first, "text"
+        ),
+        "reason": "undecodable_stream_suppressed",
+    }
 
 
 def _cli_diagnostics(code: int | str, stdout: str, stderr: str, *, chatter: bool = False) -> str:
@@ -324,7 +351,10 @@ def _parse_claude_json(stdout: str, *, failed: bool = False) -> tuple[str, list[
     try:
         payload = json.loads(stdout)
     except json.JSONDecodeError:
-        return (stdout, [], None) if failed else ("", [], "undecodable_result_envelope")
+        if failed and stdout.strip():
+            # recruit_cli has already checked and redacted the complete stream.
+            return stdout, [], None
+        return "", [], "undecodable_result_envelope"
     if isinstance(payload, list):  # stream-json style arrays end with the result object
         payload = next((item for item in reversed(payload) if isinstance(item, dict)), {})
     if not isinstance(payload, dict):
@@ -454,18 +484,33 @@ def recruit_cli(
         if model and capacity == "claude":
             argv += ["--model", model]
         code, stdout, stderr, group_killed, member_survived = _run(argv, cwd=cwd, timeout=timeout)
-        answer, models, invalid_envelope = _parse_claude_json(stdout, failed=code != 0)
+        suppressed_streams = {}
+        try:
+            diagnostic_stdout = _redact(stdout, reject_undecodable=True)
+            answer, models, invalid_envelope = _parse_claude_json(
+                diagnostic_stdout, failed=code != 0
+            )
+        except UndecodableStream:
+            answer, models, invalid_envelope = "", [], "undecodable_result_envelope"
+        if invalid_envelope == "undecodable_result_envelope":
+            suppressed_streams["stdout"] = _suppressed_stream_shape(stdout)
+            diagnostic_stdout = ""
+        try:
+            diagnostic_stderr = _redact(stderr, reject_undecodable=True)
+        except UndecodableStream:
+            suppressed_streams["stderr"] = _suppressed_stream_shape(stderr)
+            diagnostic_stderr = ""
         if invalid_envelope and code == 0:
             code = 3
-        diagnostic_stdout = (
-            f"undecodable response: {len(stdout)} chars"
-            if invalid_envelope == "undecodable_result_envelope"
-            else stdout
-        )
-        diagnostics = _cli_diagnostics(code, diagnostic_stdout, stderr)
+        diagnostics = _cli_diagnostics(code, diagnostic_stdout, diagnostic_stderr)
         if invalid_envelope:
             # Add our reason after each raw stream has crossed the redaction boundary.
             diagnostics += f"\n{invalid_envelope}"
+        for stream, shape in suppressed_streams.items():
+            diagnostics += (
+                f"\n{stream}: {shape['reason']} ({shape['length']} chars, "
+                f"{shape['first_token_class']})"
+            )
         return RunResult(
             answer,
             code,
@@ -475,6 +520,7 @@ def recruit_cli(
             group_killed,
             member_survived,
             failure_class="OutputNotProduced" if invalid_envelope else None,
+            suppressed_streams=suppressed_streams,
         )
     raise Refusal(f"unknown capacity {capacity!r}; one of: {', '.join(CAPACITIES)}")
 
@@ -607,9 +653,16 @@ def write_receipt(
         "stderr_tail": result.stderr_tail if result else "",
         "failure_class": result.failure_class if result else None,
         "recovery_action": result.recovery_action if result else None,
-        "answer_policy": ("redacted_failure_output" if result.exit_code != 0 else "capacity_answer")
+        "answer_policy": (
+            "suppressed_undecodable_output"
+            if result.suppressed_streams
+            else "redacted_failure_output"
+            if result.exit_code != 0
+            else "capacity_answer"
+        )
         if result
         else None,
+        "suppressed_streams": result.suppressed_streams if result else {},
         "refusal": refusal,
         "process_group_killed": result.process_group_killed if result else False,
         "process_group_any_member_survived": (

@@ -64,8 +64,15 @@ actions: check the executable mode/PATH, inspect the receipt, or retry with `--o
 Claude, glmcp and qwencloud successful responses must decode as JSON result envelopes with a
 non-empty string `result`. Undecodable stdout (including truncated JSON, leading startup
 chatter and empty stdout) records exit 3, `OutputNotProduced`, zero answer bytes and
-`undecodable_result_envelope`; diagnostics retain only its length. Check `--out` and retry the
-brief. A missing, null, numeric, list, object or whitespace-only result records
+`undecodable_result_envelope`. Failed and timed-out malformed envelopes are also suppressed;
+their original exit code is retained. Each stream crosses the structural redaction boundary
+independently, including JSON embedded in strings and escaped labels. If any structured part
+cannot be decoded or consumed by the plain/YAML credential grammar, the entire stream is
+suppressed from the answer and diagnostics. Receipts name `suppressed_undecodable_output`
+and record each affected stream under `suppressed_streams`: its character length, first token
+class (never token text), and reason `undecodable_stream_suppressed`. This also applies to
+malformed stderr on success. Check `--out` and retry the brief, or increase `--timeout` after
+a timeout. A missing, null, numeric, list, object or whitespace-only result records
 `OutputNotProduced` and `invalid result envelope`; the envelope is never substituted for the
 answer. This also applies
 to result objects in stream arrays. A failed CLI's JSON diagnostic without result-envelope
@@ -96,12 +103,16 @@ env -u HAPAX_GLMCP_MODEL -u HAPAX_GLMCP_REVIEW_MODEL -u HAPAX_GLMCP_REVIEW_PAYG_
   UV_CACHE_DIR=/store-fast/tmp/uv-cache-verify PYTEST_ADDOPTS='--confcutdir=tests/scripts' \
   uv run pytest -q -p no:cacheprovider \
   tests/scripts/test_hapax_recruit.py::test_structured_failed_output_is_redacted_at_every_destination \
+  tests/scripts/test_hapax_recruit.py::test_nested_claude_credentials_never_reach_destinations \
+  tests/scripts/test_hapax_recruit.py::test_undecodable_claude_envelope_cannot_claim_success \
+  tests/scripts/test_hapax_recruit.py::test_undecodable_claude_diagnostic_stream_is_suppressed \
   tests/scripts/test_hapax_recruit.py::test_yaml_scalars_are_redacted_at_every_destination \
   tests/scripts/test_hapax_recruit.py::test_invalid_claude_result_envelope_is_receipted_failure \
   tests/scripts/test_hapax_recruit.py::test_answer_persistence_failure_is_receipted \
   tests/scripts/test_hapax_recruit.py::test_success_receipt_follows_verified_answer_bytes \
   tests/scripts/test_hapax_recruit.py::test_incomplete_answer_write_cannot_claim_success \
   tests/scripts/test_hapax_recruit.py::test_unwritable_directory_retains_a_temporary_failure_receipt \
+  tests/scripts/test_hapax_recruit.py::test_unwritable_receipt_and_fallback_name_recovery_without_traceback \
   tests/scripts/test_hapax_recruit.py::test_argument_validation_names_recovery \
   tests/scripts/test_hapax_recruit.py::test_codex_run_without_new_output_never_attributes_an_old_answer \
   tests/scripts/test_hapax_recruit.py::test_empty_cli_answer_is_receipted_failure \
