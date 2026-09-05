@@ -185,7 +185,8 @@ def _claim(
     argv = ["bash", str(SCRIPT)]
     if extra_args:
         argv.extend(extra_args)
-    argv.append(task_id)
+    if task_id:
+        argv.append(task_id)
     return subprocess.run(
         argv,
         env=env,
@@ -268,6 +269,88 @@ def test_rehydrate_activation_cache_wrapper(tmp_path: Path, conflict: bool) -> N
             for path in home.rglob("*")
             if path.is_file()
         } == all_before
+
+
+@pytest.mark.parametrize(
+    ("task_id", "options", "exit_code", "reason", "remedy"),
+    [
+        (
+            "",
+            [],
+            1,
+            "activation_cache_usage_invalid",
+            "rerun cc-claim --rehydrate-activation-cache <task_id>",
+        ),
+        (
+            "refused",
+            ["--force"],
+            1,
+            "activation_cache_usage_invalid",
+            "rerun cc-claim --rehydrate-activation-cache <task_id>",
+        ),
+        (
+            "refused",
+            ["--recover-claim-publications"],
+            1,
+            "activation_cache_usage_invalid",
+            "rerun cc-claim --rehydrate-activation-cache <task_id>",
+        ),
+        ("../refused", [], 8, "task_id_invalid", "use one non-path task identifier"),
+        (
+            "bounded",
+            [],
+            8,
+            "claim_publication_journal_entry_limit",
+            "restore the bounded claim-publication journal set",
+        ),
+    ],
+    ids=["missing_task", "force", "recover", "invalid_task", "journal_limit"],
+)
+def test_rehydrate_refusal_branches_leave_every_file_unchanged(
+    tmp_path: Path, task_id: str, options: list[str], exit_code: int, reason: str, remedy: str
+) -> None:
+    from shared.sdlc_claim import _MAX_CLAIM_PUBLICATIONS
+
+    home = tmp_path / "home"
+    _write_task(home, "active", "unchanged-sentinel")
+    roots = default_claim_publication_roots(home=home)
+    if task_id == "bounded":
+        journals = Path(roots.claim_transaction_root)
+        journals.mkdir(parents=True, mode=0o700)
+        for index in range(_MAX_CLAIM_PUBLICATIONS + 1):
+            (journals / f"entry-{index}").write_bytes(b"untouched\n")
+    before = {
+        path: (path.read_bytes(), path.stat().st_mode, path.stat().st_mtime_ns)
+        for path in tmp_path.rglob("*")
+        if path.is_file()
+    }
+    tree_before = set(tmp_path.rglob("*"))
+
+    result = _claim(
+        home,
+        task_id,
+        dispatch=False,
+        install_gate0b=False,
+        extra_args=["--rehydrate-activation-cache", *options],
+    )
+
+    assert result.returncode == exit_code, result.stderr
+    if exit_code == 1:
+        expected = (
+            f"cc-claim: {reason}: supply one task id without --force or "
+            f"--recover-claim-publications. Next action: {remedy}.\n"
+        )
+    else:
+        detail = str(roots.claim_transaction_root) if task_id == "bounded" else task_id
+        expected = f"cc-claim: HOLD — {reason} ({detail}). Next action: {remedy}.\n"
+    assert result.stderr == expected
+    assert result.stdout == ""
+    assert set(tmp_path.rglob("*")) == tree_before
+    assert {
+        path: (path.read_bytes(), path.stat().st_mode, path.stat().st_mtime_ns)
+        for path in tmp_path.rglob("*")
+        if path.is_file()
+    } == before
 
 
 def test_default_claim_without_dispatch_issues_manual_binding(tmp_path: Path) -> None:

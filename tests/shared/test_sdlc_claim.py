@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import errno
 import hashlib
 import json
 import multiprocessing as mp
@@ -1211,6 +1212,289 @@ def _rehydrate(fixture: ClaimFixture, receipt_root: Path):
         lock_root=fixture.locks,
         task_id=fixture.intent.task_id,
     )
+
+
+@pytest.mark.parametrize("state", ["aborted", "applied"], ids=["aborted", "superseded"])
+@pytest.mark.parametrize("position", ["before", "after"])
+def test_rehydrate_selects_current_publication_before_writing(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, state: str, position: str
+) -> None:
+    # Keep A away from the hash-space endpoints so both requested B orderings
+    # have a substantial probability on every attempt, regardless of tmp_path.
+    for attempt in range(128):
+        fixture, receipt = _activation_fixture(tmp_path / f"current-{attempt}")
+        if "claim-pub-4" <= receipt.publication_id < "claim-pub-c":
+            break
+    else:
+        pytest.fail("could not construct a central publication identity")
+    original = {
+        path: (path.read_bytes(), path.stat()) for path in tmp_path.rglob("*") if path.is_file()
+    }
+    fixture.intent.note_path.write_bytes(
+        fixture.intent.note_path.read_bytes().replace(b"status: claimed", b"status: pr_open")
+    )
+    # Publish a second genuine admission with the SAME lease vector. Only the
+    # exact publication named by the surviving receipt distinguishes A from B.
+    for attempt in range(128):
+        intent = ClaimPublicationIntent.create(
+            task=resolve_task_note(fixture.vault, fixture.intent.task_id),
+            cache_dir=fixture.cache,
+            note_after=fixture.intent.note_path.read_bytes()
+            + f"\nPublication B {attempt}\n".encode(),
+            binding=fixture.intent.binding,
+        )
+        proof_root = tmp_path / f"publication-b-{attempt}"
+        proof_root.mkdir()
+        active = _active_admission_fixture(proof_root, replace(fixture, intent=intent))
+        other_id = admitted_claim_publication_id(intent, active.consumption)
+        if (other_id < receipt.publication_id) == (position == "before"):
+            break
+    else:
+        pytest.fail("could not construct the requested publication ordering")
+    receipt.receipt_path.unlink()
+    for projection in sdlc_claim._projections(fixture.intent)[1:7]:
+        projection.path.unlink(missing_ok=True)
+    other = sdlc_claim._apply_admitted_claim_publication_transaction(
+        intent,
+        active.consumption,
+        transaction_root=fixture.transactions,
+        receipt_root=receipt.receipt_path.parent,
+        lock_root=fixture.locks,
+        now=active.checked_at,
+    )
+    record = json.loads(other.manifest_path.read_bytes())
+    record["state"] = state
+    record["reason_code"] = "retained-publication-b"
+    other.manifest_path.write_bytes(_canonical(record) + b"\n")
+    # Retain B's journal; A's receipt and surviving sidecars are the current plane.
+    for path, (content, metadata) in original.items():
+        path.write_bytes(content)
+        path.chmod(stat.S_IMODE(metadata.st_mode))
+        os.utime(path, ns=(metadata.st_atime_ns, metadata.st_mtime_ns))
+    paths = tuple(sdlc_claim._projections(fixture.intent)[index].path for index in (1, 4))
+    for path in paths:
+        path.unlink()
+    before_paths = tuple(path for path in tmp_path.rglob("*") if path.is_file())
+    before = _file_identity_snapshot(before_paths)
+    list_names = sdlc_claim.ReadOnlyFsSnapshot.list_names
+    runs = []
+    for reverse in (False, True):
+        with monkeypatch.context() as patch:
+            patch.setattr(
+                sdlc_claim.ReadOnlyFsSnapshot,
+                "list_names",
+                lambda self, directory: tuple(sorted(list_names(self, directory), reverse=reverse)),
+            )
+            results = _rehydrate(fixture, receipt.receipt_path.parent)
+        current = next(item for item in results if item.publication_id == receipt.publication_id)
+        ignored = next(item for item in results if item.publication_id == other.publication_id)
+        assert len(results) == 2
+        assert current.state == "rehydrated"
+        assert current.written_paths == paths
+        assert ignored.state == state
+        assert ignored.reason_code == "claim_publication_not_current"
+        assert "retained-publication-b" in ignored.detail
+        assert ignored.written_paths == ()
+        assert _file_identity_snapshot(before_paths) == before
+        assert {path for path in tmp_path.rglob("*") if path.is_file()} == set(before_paths) | set(
+            paths
+        )
+        writes = tuple(
+            (path, path.read_bytes(), stat.S_IMODE(path.stat().st_mode)) for path in paths
+        )
+        assert writes == tuple(
+            (path, f"{fixture.intent.task_id}\n".encode(), 0o644) for path in paths
+        )
+        runs.append((results, writes))
+        for path in paths:
+            path.unlink()
+    assert runs[0] == runs[1]
+
+
+@pytest.mark.parametrize("failure", ["race", "cas"])
+@pytest.mark.parametrize(
+    "first_exists", [False, True], ids=["installed_first", "preexisting_first"]
+)
+def test_rehydrate_second_install_retains_partial_effects(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, failure: str, first_exists: bool
+) -> None:
+    import shared.coord_projection as projection_layer
+
+    fixture, receipt = _activation_fixture(tmp_path)
+    first, second = (sdlc_claim._projections(fixture.intent)[index].path for index in (1, 4))
+    if first_exists:
+        first.write_bytes(f"{fixture.intent.task_id}\n".encode())
+        first.chmod(0o644)
+    before = _file_identity_snapshot((first,)) if first_exists else None
+    rename = projection_layer._renameat2
+    calls = []
+
+    def fail_second(src_fd, src_name, dst_fd, dst_name, flags):
+        calls.append(dst_name)
+        if dst_name == second.name:
+            if failure == "race":
+                second.write_bytes(b"concurrent-owner\n")
+                second.chmod(0o644)
+            else:
+                with monkeypatch.context() as patch:
+                    patch.setattr(projection_layer.ctypes, "CDLL", lambda *args, **kwargs: object())
+                    return rename(src_fd, src_name, dst_fd, dst_name, flags)
+        return rename(src_fd, src_name, dst_fd, dst_name, flags)
+
+    monkeypatch.setattr(projection_layer, "_renameat2", fail_second)
+    with pytest.raises(ClaimPublicationError) as raised:
+        _rehydrate(fixture, receipt.receipt_path.parent)
+    assert calls == ([second.name] if first_exists else [first.name, second.name])
+    assert first.read_bytes() == f"{fixture.intent.task_id}\n".encode()
+    if first_exists:
+        assert _file_identity_snapshot((first,)) == before
+    if failure == "race":
+        assert second.read_bytes() == b"concurrent-owner\n"
+    else:
+        assert not second.exists()
+    detail = json.loads(raised.value.detail)
+    assert detail["written_paths"] == ([] if first_exists else [str(first)])
+    assert detail["failed_path"] == str(second)
+    assert (str(first) in detail["retained_effects"]) is not first_exists
+    scratches = tuple(fixture.cache.glob("*.transition-scratch"))
+    assert len(scratches) == 1
+    assert str(scratches[0]) in detail["retained_effects"]
+    assert detail["failure_reason"] == (
+        "transition_precondition_changed"
+        if failure == "race"
+        else "transition_atomic_cas_unavailable"
+    )
+    assert raised.value.reason_code == (
+        "claim_activation_cache_conflict"
+        if failure == "race"
+        else "transition_atomic_cas_unavailable"
+    )
+    assert raised.value.repair_action == (
+        "preserve the activation cache and retry after the named path stabilizes"
+        if failure == "race"
+        else "run lifecycle projection only on Linux with renameat2 support"
+    )
+
+
+@pytest.mark.parametrize(
+    ("error", "remedy"),
+    [
+        (errno.ENOSPC, "free space on the named filesystem, preserve retained effects, then retry"),
+        (
+            errno.EIO,
+            "repair the named filesystem's I/O failure, preserve retained effects, then retry",
+        ),
+        (errno.EACCES, "restore access to the named path, preserve retained effects, then retry"),
+        (
+            errno.EPERM,
+            "restore permission for the named operation, preserve retained effects, then retry",
+        ),
+        (
+            errno.ENOTDIR,
+            "restore real parent directories for the named path, preserve retained effects, then retry",
+        ),
+    ],
+    ids=["ENOSPC", "EIO", "EACCES", "EPERM", "ENOTDIR"],
+)
+@pytest.mark.parametrize(
+    "phase", ["scratch_open", "scratch_write", "scratch_fsync", "rename", "after_rename"]
+)
+def test_rehydrate_filesystem_failure_is_actionable_and_retains_effects(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, error: int, remedy: str, phase: str
+) -> None:
+    import shared.coord_projection as projection_layer
+
+    fixture, receipt = _activation_fixture(tmp_path)
+    first, second = (sdlc_claim._projections(fixture.intent)[index].path for index in (1, 4))
+    original_open = projection_layer.os.open
+    write = projection_layer.os.write
+    rename = projection_layer._renameat2
+    fsync = projection_layer.os.fsync
+    renamed = False
+    injected = False
+    scratch_fd = None
+
+    def fail_open(path, flags, *args, **kwargs):
+        nonlocal injected, scratch_fd
+        target = str(path).startswith(f".{second.name}.") and flags & os.O_CREAT
+        if phase == "scratch_open" and target:
+            injected = True
+            raise OSError(error, os.strerror(error), str(path))
+        fd = original_open(path, flags, *args, **kwargs)
+        if target:
+            scratch_fd = fd
+        return fd
+
+    def fail_write(fd, payload):
+        nonlocal injected
+        if phase == "scratch_write" and fd == scratch_fd:
+            injected = True
+            write(fd, payload[:3])
+            raise OSError(error, os.strerror(error), str(second))
+        return write(fd, payload)
+
+    def fail_rename(src_fd, src_name, dst_fd, dst_name, flags):
+        nonlocal renamed, injected
+        if dst_name == second.name and phase == "rename":
+            injected = True
+            raise OSError(error, os.strerror(error), dst_name)
+        result = rename(src_fd, src_name, dst_fd, dst_name, flags)
+        if dst_name == second.name:
+            renamed = True
+        return result
+
+    def fail_fsync(fd):
+        nonlocal injected
+        if not injected and (
+            (phase == "after_rename" and renamed) or (phase == "scratch_fsync" and fd == scratch_fd)
+        ):
+            injected = True
+            raise OSError(error, os.strerror(error), str(second))
+        return fsync(fd)
+
+    with monkeypatch.context() as patch:
+        patch.setattr(projection_layer.os, "open", fail_open)
+        patch.setattr(projection_layer.os, "write", fail_write)
+        patch.setattr(projection_layer, "_renameat2", fail_rename)
+        patch.setattr(projection_layer.os, "fsync", fail_fsync)
+        with pytest.raises(ClaimPublicationError) as raised:
+            _rehydrate(fixture, receipt.receipt_path.parent)
+    assert injected
+    assert raised.value.reason_code == f"claim_activation_cache_{errno.errorcode[error].lower()}"
+    assert raised.value.repair_action == remedy
+    detail = json.loads(raised.value.detail)
+    assert detail["written_paths"] == [str(first)]
+    assert detail["failed_path"] == str(second)
+    assert detail["failure_reason"] == errno.errorcode[error]
+    assert str(first) in detail["retained_effects"]
+    assert first.read_bytes() == f"{fixture.intent.task_id}\n".encode()
+    if phase == "after_rename":
+        assert second.read_bytes() == first.read_bytes()
+        assert str(second) in detail["retained_effects"]
+    else:
+        assert not second.exists()
+    scratches = tuple(fixture.cache.glob("*.transition-scratch"))
+    assert len(scratches) == (1 if phase in {"scratch_write", "scratch_fsync", "rename"} else 0)
+    for scratch in scratches:
+        assert str(scratch) in detail["retained_effects"]
+
+
+@pytest.mark.parametrize("operation", ["link", "unlink"])
+def test_rehydrate_creation_does_not_link_or_unlink(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, operation: str
+) -> None:
+    import shared.coord_projection as projection_layer
+
+    fixture, receipt = _activation_fixture(tmp_path)
+
+    def forbidden(*args, **kwargs):
+        raise OSError(errno.EIO, f"unexpected {operation} in activation creation")
+
+    with monkeypatch.context() as patch:
+        patch.setattr(projection_layer.os, operation, forbidden)
+        (result,) = _rehydrate(fixture, receipt.receipt_path.parent)
+    assert result.state == "rehydrated"
+    assert len(result.written_paths) == 2
 
 
 def test_rehydrate_applied_activation_preserves_evolved_note_and_survivors(tmp_path: Path) -> None:
