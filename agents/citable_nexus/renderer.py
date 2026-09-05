@@ -18,8 +18,8 @@ Invariants the renderer enforces:
     operator", "OTO").
   - No "Subscribe" / "Contact" / "Get a Demo" CTAs. Verified by
     :class:`tests.agents.citable_nexus.test_renderer.TestNoCtaCopy`.
-  - Non-engagement clause appears on every page footer (long form
-    for ``/`` and ``/refuse``; short form elsewhere).
+  - Site-specific distribution limits appear on every page footer via
+    the shared attribution block's per-artifact override.
   - Open Graph + Bluesky meta tags on every page.
   - Self-contained HTML — no external CSS / JS dependencies.
 """
@@ -34,6 +34,7 @@ from typing import Final
 from urllib.parse import urlsplit
 from xml.etree import ElementTree as ET
 
+from agents.authoring.byline import Byline, BylineVariant, SurfaceRegister
 from agents.citable_nexus.citation_graph import compose_graph
 from agents.citable_nexus.datacite_snapshot import (
     DataCiteSnapshot,
@@ -52,8 +53,8 @@ from agents.publication_bus.surface_registry import (
     refused_surfaces,
 )
 from shared.attribution_block import (
-    NON_ENGAGEMENT_CLAUSE_LONG,
-    NON_ENGAGEMENT_CLAUSE_SHORT,
+    UnsettledContributionVariant,
+    render_attribution_block,
 )
 
 # ── Page registry ────────────────────────────────────────────────────
@@ -106,12 +107,11 @@ referent picker's canonical names; no legal name. The Refusal Brief's
 authorship-indeterminacy stance binds this byline to the artifact set,
 not to a single person."""
 
-POLYSEMIC_DECODER_CHANNEL_7: Final[str] = (
-    "Polysemic decoder channel 7: an aesthetic register, not a marketing surface."
+SITE_DISTRIBUTION_LIMITS: Final[str] = (
+    "This site publishes static research pages. No comments, subscriptions or "
+    "automated outreach originate here. Human-authored participation elsewhere remains possible."
 )
-"""Per Manifesto v0 §II + V5 attribution policy. The site adopts
-this register because the Refusal Brief explicitly identifies the
-absence of marketing copy as its load-bearing aesthetic claim."""
+"""Per-artifact limits; this does not change shared estate distribution policy."""
 
 
 # ── HTML helpers ──────────────────────────────────────────────────────
@@ -146,19 +146,24 @@ def _meta_tags(title: str, description: str, page_path: str, canonical_base: str
     <meta name="twitter:description" content="{_esc(description)}">"""
 
 
-def _footer(long_form: bool = False) -> str:
-    """V5 attribution + non-engagement clause footer."""
-    clause = NON_ENGAGEMENT_CLAUSE_LONG if long_form else NON_ENGAGEMENT_CLAUSE_SHORT
+def _footer() -> str:
+    """Identify the work and contributions, with this site's distribution limits."""
+    attribution = render_attribution_block(
+        Byline(operator_legal_name="", operator_referent="Oudepode"),
+        byline_variant=BylineVariant.V4,
+        unsettled_variant=UnsettledContributionVariant.V4,
+        register=SurfaceRegister.AESTHETIC,
+        non_engagement_clause_override=SITE_DISTRIBUTION_LIMITS,
+    )
     return f"""    <footer>
-        <p class="byline">{_esc(V5_BYLINE)}</p>
-        <p class="clause">{_esc(clause)}</p>
-        <p class="register">{_esc(POLYSEMIC_DECODER_CHANNEL_7)}</p>
+        <p class="byline">{_esc(attribution.byline_text)}</p>
+        <p>AI agents contribute to research, implementation and writing;
+        individual publications explain contributions and review status.</p>
+        <p class="clause">{_esc(attribution.non_engagement_clause or "")}</p>
     </footer>"""
 
 
-def _wrap(
-    meta: PageMeta, canonical_url: str, *, footer_long_form: bool = False, has_feed: bool = False
-) -> str:
+def _wrap(meta: PageMeta, canonical_url: str, *, has_feed: bool = False) -> str:
     """Wrap one PageMeta into a full HTML document."""
     body = re.sub(
         r'href="(/(?!/)[^" ]*)"', lambda m: f'href="{_esc(canonical_url)}{m[1]}"', meta.body_html
@@ -174,23 +179,40 @@ def _wrap(
 {_meta_tags(meta.title, meta.description, meta.path, canonical_url)}
 {feed_link}
 <style>
-:root {{ color-scheme: light dark; --bg: light-dark(#fbf1c7, #1d2021); --ink: light-dark(#282828, #ebdbb2); --link: light-dark(#076678, #83a598); --rule: light-dark(#665c54, #bdae93); }}
+:root {{ color-scheme: light dark; --bg: light-dark(hsl(0 0% 98%), hsl(0 0% 10%)); --panel: light-dark(hsl(0 0% 94%), hsl(0 0% 14%)); --ink: light-dark(hsl(0 0% 13%), hsl(0 0% 92%)); --muted: light-dark(hsl(0 0% 35%), hsl(0 0% 72%)); --link: light-dark(hsl(205 80% 32%), hsl(200 75% 74%)); --status: light-dark(hsl(155 65% 25%), hsl(155 48% 69%)); --rule: light-dark(hsl(0 0% 72%), hsl(0 0% 38%)); }}
 * {{ box-sizing: border-box; }}
-body {{ margin: auto; max-width: 72ch; padding: 1.5rem; background: var(--bg); color: var(--ink); font: 1.125rem/1.65 system-ui, sans-serif; overflow-wrap: anywhere; }}
-h1 {{ font-family: ui-monospace, monospace; }}
-h1, h2, h3, h4 {{ line-height: 1.25; }}
-h2 {{ margin-top: 2rem; }}
+body {{ margin: auto; max-width: 66rem; padding: clamp(1rem, 4vw, 3rem); background: var(--bg); color: var(--ink); font: 1.0625rem/1.7 system-ui, sans-serif; overflow-wrap: anywhere; }}
+h1, h2, h3, h4 {{ line-height: 1.2; text-wrap: balance; }}
+h1 {{ font-size: clamp(2.25rem, 6vw, 3.75rem); margin-block: 2.5rem 1.5rem; letter-spacing: -.04em; }}
+.home > h1 {{ font-family: ui-monospace, monospace; }}
+.home > h1 + p {{ font-size: clamp(1.25rem, 2.5vw, 1.6rem); line-height: 1.5; max-width: 48ch; }}
+h2 {{ font-size: 1.45rem; margin-block: 3rem 1.25rem; border-block-start: 1px solid var(--rule); padding-block-start: 1rem; }}
+p, ul {{ max-width: 68ch; }}
 a {{ color: var(--link); text-underline-offset: .2em; }}
+a:hover {{ text-decoration-thickness: .15em; }}
 a:focus-visible {{ outline: 2px solid currentColor; outline-offset: 4px; }}
-nav, footer {{ border-block-start: 1px solid var(--rule); padding-block: 1rem; }}
+nav {{ border-block: 1px solid var(--rule); padding-block: .65rem; font-size: .95rem; }}
 nav a {{ display: inline-block; margin-inline-end: 1rem; }}
-pre {{ white-space: pre-wrap; overflow-wrap: anywhere; }}
+footer {{ border-block-start: 1px solid var(--rule); margin-block-start: 3.5rem; padding-block: 1.25rem; color: var(--muted); font-size: .9rem; }}
+.byline {{ color: var(--ink); font-weight: 650; }}
+pre {{ white-space: pre-wrap; overflow-wrap: anywhere; background: var(--panel); padding: 1rem; font-size: .875rem; line-height: 1.6; }}
+code {{ font-family: ui-monospace, monospace; }}
+.parser-fixture {{ margin: 1.75rem 0; border: 1px solid var(--rule); }}
+figcaption {{ padding: 1rem 1.25rem; color: var(--muted); font-size: .95rem; max-width: 76ch; }}
+figcaption strong {{ display: block; color: var(--ink); margin-block-end: .35rem; }}
+.fixture-row {{ display: grid; grid-template-columns: minmax(0, 1fr) minmax(13rem, .5fr); border-block-start: 1px solid var(--rule); }}
+.fixture-row pre {{ margin: 0; }}
+.fixture-row dl {{ margin: 0; padding: 1rem 1.25rem; }}
+.fixture-row dt {{ color: var(--muted); font-size: .85rem; }}
+.fixture-row dd {{ margin: .35rem 0 0; color: var(--status); font-weight: 650; }}
+.fixture-result {{ border-block-start: 1px solid var(--rule); padding: .75rem 1.25rem; margin: 0; max-width: none; font-size: .95rem; }}
+@media (max-width: 40rem) {{ .fixture-row {{ grid-template-columns: minmax(0, 1fr); }} }}
 </style>
 </head>
 <body>
 <nav aria-label="Site"><a href="{_esc(canonical_url)}/">Home</a><a href="{_esc(canonical_url)}/cite">Cite</a></nav>
 {body}
-{_footer(long_form=footer_long_form)}
+{_footer()}
 </body>
 </html>
 """
@@ -199,15 +221,56 @@ pre {{ white-space: pre-wrap; overflow-wrap: anywhere; }}
 # ── Page renderers ────────────────────────────────────────────────────
 
 
+def _parser_fixture_figure() -> str:
+    """Abbreviated verbatim fields from the synthetic test linked in home.md.
+
+    Source: tests/dev_story/test_parser.py:240-270 at
+    9f4cd45184381a9befaa9208d6b0e6403de6484a, including its asserted roles.
+    Omit identifiers/timestamps; the remaining content is copied, not invented.
+    """
+    examples = (
+        (
+            {"type": "user", "message": {"role": "user", "content": "a real operator turn"}},
+            "user",
+        ),
+        (
+            {
+                "type": "user",
+                "isCompactSummary": True,
+                "message": {"role": "user", "content": "agent-authored summary prose"},
+            },
+            "compaction_summary",
+        ),
+    )
+    rows = "\n".join(
+        '<div class="fixture-row">'
+        f'<pre aria-label="Synthetic envelope {number}"><code>{_esc(json.dumps(envelope, indent=2))}</code></pre>'
+        "<dl><dt>Observed parser role</dt>"
+        f"<dd><code>{_esc(role)}</code></dd></dl></div>"
+        for number, (envelope, role) in enumerate(examples, 1)
+    )
+    return f"""<figure class="parser-fixture" aria-labelledby="parser-fixture-caption">
+<figcaption id="parser-fixture-caption"><strong>Two envelopes, one retained user turn</strong>
+Synthetic fixture, abbreviated to the relevant fields. It demonstrates the distinction
+between a user turn and a compaction summary, not speaker authentication or summary accuracy.</figcaption>
+{rows}
+<p class="fixture-result">Parser result: 2 envelopes · 1 retained user turn.</p>
+</figure>"""
+
+
 def render_landing_page() -> PageMeta:
     """Render the committed, reader-facing home copy."""
     markdown = HOME_SOURCE.read_text(encoding="utf-8")
     description = " ".join(markdown.split("\n\n")[1].splitlines())
+    # This committed home-only marker inserts trusted figure markup. The general
+    # Markdown renderer continues to escape raw HTML in cleared documents.
+    before, after = markdown.split("<!-- parser-fixture -->")
+    body = markdown_to_html(before) + _parser_fixture_figure() + markdown_to_html(after)
     return PageMeta(
         path="/",
         title="Hapax — research and engineering",
         description=description,
-        body_html=f"<main>{markdown_to_html(markdown)}</main>",
+        body_html=f'<main class="home">{body}</main>',
     )
 
 
@@ -592,7 +655,6 @@ def render_site(canonical_url: str, *, cleared_inputs: Path | None = None) -> Re
         meta.path: _wrap(
             meta,
             canonical_url,
-            footer_long_form=meta.path in ("/", "/refuse", "/refusal-brief"),
             has_feed=bool(entries),
         )
         for meta in metadata

@@ -5,6 +5,8 @@ from __future__ import annotations
 import hashlib
 import json
 import re
+import runpy
+import tempfile
 from html import unescape
 from html.parser import HTMLParser
 from pathlib import Path
@@ -16,6 +18,7 @@ import pytest
 from agents.citable_nexus.renderer import (
     HOME_SOURCE,
     PAGE_PATHS,
+    SITE_DISTRIBUTION_LIMITS,
     V5_BYLINE,
     PageMeta,
     normalize_canonical_url,
@@ -65,14 +68,20 @@ class TestLandingPage:
         copy = HOME_SOURCE.read_text(encoding="utf-8")
         assert (
             hashlib.sha256(copy.encode()).hexdigest()
-            == "f40aa67760d10e63634c759b593591f2ca5533fd797a50e6928908c3980cc74f"  # pragma: allowlist secret (synthetic digest pin)
+            == "f5e06f09b779c7030fd47f86b357d7fca174e1313cce3c10824df837d810561b"  # pragma: allowlist secret (synthetic digest pin)
         )
-        assert markdown_to_html(copy) in render_landing_page().body_html
+        rendered = render_landing_page().body_html
+        before, after = copy.split("<!-- parser-fixture -->")
+        assert markdown_to_html(before) in rendered
+        assert markdown_to_html(after) in rendered
+        assert "<!-- parser-fixture -->" not in rendered
         assert (
             "Research and engineering on human-agent work, authority, evidence and consent." in copy
         )
         assert "A summary is not a person's instruction." in copy
-        assert "individual publications explain their contributions and review" in copy
+        assert "individual publications explain contributions\nand review status." in copy
+        assert copy.count("Research and engineering") == 1
+        assert copy.count("One person") == 1
         assert "Payment must not purchase a" in copy
         headings = re.findall(r"^## (.+)$", copy, re.M)
         assert headings == [
@@ -222,9 +231,11 @@ class TestRenderSite:
     def test_every_page_has_non_engagement_clause(self):
         site = render_site(CANONICAL)
         for path, html in site.pages.items():
-            has_long = NON_ENGAGEMENT_CLAUSE_LONG in html
-            has_short = NON_ENGAGEMENT_CLAUSE_SHORT in html
-            assert has_long or has_short, f"{path} missing non-engagement clause"
+            assert SITE_DISTRIBUTION_LIMITS in html, path
+            assert NON_ENGAGEMENT_CLAUSE_LONG not in html, path
+            assert NON_ENGAGEMENT_CLAUSE_SHORT not in html, path
+            assert "Polysemic decoder channel 7" not in html, path
+            assert "AI agents contribute to research, implementation and writing" in html, path
 
     def test_every_page_has_canonical_link(self):
         site = render_site(CANONICAL)
@@ -268,14 +279,65 @@ class TestNoCtaCopy:
                 )
 
 
-class TestPolysemicRegister:
-    def test_register_attribution_present_on_landing(self):
-        # The polysemic-decoder-channel-7 string is in the footer, not the
-        # body. Check it on the full rendered page (body + footer) instead.
-        from agents.citable_nexus.renderer import _wrap
+def test_footer_uses_per_artifact_distribution_override(monkeypatch):
+    from unittest.mock import Mock
 
-        full = _wrap(render_landing_page(), CANONICAL, footer_long_form=True)
-        assert "Polysemic decoder channel 7" in full
+    from agents.citable_nexus import renderer
+
+    render = Mock(wraps=renderer.render_attribution_block)
+    monkeypatch.setattr(renderer, "render_attribution_block", render)
+    site = render_site(CANONICAL)
+    assert render.call_count == len(site.pages)
+    for call in render.call_args_list:
+        assert call.kwargs["non_engagement_clause_override"] == SITE_DISTRIBUTION_LIMITS
+    assert "No comments, subscriptions or automated outreach originate here." in site.pages["/"]
+    assert "Human-authored participation elsewhere remains possible." in site.pages["/"]
+
+
+def test_home_figure_matches_source_fixture_and_observed_parser_roles(tmp_path, monkeypatch):
+    # Execute the existing synthetic fixture in a temporary directory, recording
+    # the actual parser inputs and output. No real transcript is read.
+    fixture = runpy.run_path(str(REPO_ROOT / "tests/dev_story/test_parser.py"))
+    case = fixture["test_compaction_summary_is_not_counted_as_an_operator_turn"]
+    parse = fixture["parse_session"]
+    observed = {}
+
+    def record_parse(path, project_path):
+        observed["envelopes"] = [json.loads(line) for line in path.read_text().splitlines()]
+        result = parse(path, project_path)
+        observed["roles"] = [message.role for message in result.messages]
+        return result
+
+    monkeypatch.setitem(case.__globals__, "parse_session", record_parse)
+    monkeypatch.setattr(tempfile, "tempdir", str(tmp_path))
+    case()
+    body = render_landing_page().body_html
+    figure = re.search(r"<figure\b.*?</figure>", body, re.S)[0]
+    envelopes = [
+        json.loads(unescape(block))
+        for block in re.findall(r"<pre[^>]*><code>(.*?)</code></pre>", figure, re.S)
+    ]
+    assert envelopes == [
+        {
+            key: value
+            for key, value in envelope.items()
+            if key in ("type", "message", "isCompactSummary")
+        }
+        for envelope in observed["envelopes"]
+    ]
+    assert (
+        re.findall(r"<dd><code>(.*?)</code></dd>", figure)
+        == observed["roles"]
+        == [
+            "user",
+            "compaction_summary",
+        ]
+    )
+    assert '"uuid"' not in unescape(figure) and '"timestamp"' not in unescape(figure)
+    assert "Parser result: 2 envelopes · 1 retained user turn." in figure
+    assert "Synthetic fixture, abbreviated to the relevant fields." in figure
+    assert "not speaker authentication or summary accuracy." in figure
+    assert "9f4cd45184381a9befaa9208d6b0e6403de6484a/tests/dev_story/test_parser.py#L240" in body
 
 
 class Structure(HTMLParser):

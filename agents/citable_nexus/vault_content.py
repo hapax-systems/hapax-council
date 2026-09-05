@@ -117,6 +117,12 @@ def _render_inline(text: str) -> str:
     return "".join(parts)
 
 
+# A renderer directive line inside cleared copy. The citable-nexus renderer
+# replaces it with the source-pinned parser-fixture figure; this converter
+# drops it so mirrored surfaces never show the escaped marker as text.
+PARSER_FIXTURE_MARKER = "<!-- parser-fixture -->"
+
+
 def markdown_to_html(markdown: str) -> str:
     """Render flat markdown to HTML via the minimal inline converter.
 
@@ -163,6 +169,16 @@ def markdown_to_html(markdown: str) -> str:
 
         if in_fence:
             fence_buffer.append(line)
+            i += 1
+            continue
+
+        if line.strip() == PARSER_FIXTURE_MARKER:
+            # A renderer directive, not content: the citable-nexus renderer
+            # replaces it with the source-pinned fixture figure; every other
+            # consumer of the same copy renders nothing here rather than the
+            # escaped marker text.
+            _flush_paragraph()
+            _flush_list()
             i += 1
             continue
 

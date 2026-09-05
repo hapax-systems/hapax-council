@@ -1,24 +1,24 @@
 # Hapax
 
 Research and engineering on human-agent work, authority, evidence and consent.
-One operator, working with AI agents. Public findings, code and limitations.
+For dependable work with AI over time: how intentions survive a handoff, how
+actions remain within permission, how contributions are represented, and how
+anyone can check what actually happened.
 
-Research and engineering for dependable work with AI.
-
-Hapax studies what happens when people work with AI over time: how intentions
-survive a handoff, how actions remain within permission, how contributions are
-represented, and how anyone can check what actually happened.
-
-One person operates this work with AI agents. The public material includes
-source code, research notes and examples with explicit limits. It is not a
-finished answer to the wider questions about AI.
+One person independently operates Hapax with AI agents contributing to research,
+implementation and writing. Public findings include source code, research notes
+and examples with explicit limits; individual publications explain contributions
+and review status. A project byline does not mean every named participant
+performed the same work. This is not a finished answer to the wider questions
+about AI.
 
 ## Start With Something You Can Check
 
 **A summary is not a person's instruction.** A small transcript-parsing example
 shows how a generated summary can be retained without counting it as another
-human turn. The example tests that distinction; it does not authenticate the
-speaker or make the summary accurate.
+human turn.
+
+<!-- parser-fixture -->
 
 [Inspect the parser](https://github.com/hapax-systems/hapax-council/blob/9f4cd45184381a9befaa9208d6b0e6403de6484a/agents/dev_story/parser.py#L276)
 and [its regression tests](https://github.com/hapax-systems/hapax-council/blob/9f4cd45184381a9befaa9208d6b0e6403de6484a/tests/dev_story/test_parser.py#L240).
@@ -58,11 +58,6 @@ already fulfills them. Public results must describe the checks actually made
 and the questions still open.
 
 ## About The Work
-
-Hapax is independently operated. AI agents contribute to research, implementation
-and writing; individual publications explain their contributions and review
-status. A project byline does not mean every named participant performed the
-same work.
 
 The aim is useful, transferable work and a sustainable business built on that
 value. Commercial interests should be visible. Payment must not purchase a
