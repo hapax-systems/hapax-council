@@ -2930,6 +2930,16 @@ def lifecycle_transition_intent_ref(intent: LifecycleTransitionIntent) -> str:
     return f"transition-intent@sha256:{_sha256(_canonical_json_bytes(intent.to_record()))}"
 
 
+def _echo_receipt_ref_matches(echo_receipt_ref: object, echo_message_id: object) -> bool:
+    """Grounded Echo uses mq:<id>. Publication-owned skip uses echo-absent:<id> on both fields."""
+
+    if not isinstance(echo_receipt_ref, str) or not isinstance(echo_message_id, str):
+        return False
+    if echo_message_id.startswith("echo-absent:"):
+        return echo_receipt_ref == echo_message_id
+    return echo_receipt_ref == f"mq:{echo_message_id}"
+
+
 def _validate_terminal_close_admission(
     intent: LifecycleTransitionIntent,
     admission: Mapping[str, Any] | None,
@@ -3010,6 +3020,7 @@ def _validate_terminal_close_admission(
     relay_vector = admission.get("relay_vector")
     gate_keys = {
         "authority_case",
+        "authority_ref",
         "command",
         "final_status",
         "gate",
@@ -3017,6 +3028,7 @@ def _validate_terminal_close_admission(
         "note_sha256",
         "observed_at",
         "outcome",
+        "reason_code",
         "returncode",
         "schema",
         "stderr_sha256",
@@ -3032,7 +3044,7 @@ def _validate_terminal_close_admission(
         or admission.get("authority_case") != intent.authority_case
         or admission.get("actor") != intent.actor
         or admission.get("position_ref") != intent.predecessor_position_ref
-        or f"mq:{admission.get('echo_message_id')}" != intent.echo_receipt_ref
+        or not _echo_receipt_ref_matches(intent.echo_receipt_ref, admission.get("echo_message_id"))
         or intent.evidence_type != "terminal_close_admission"
         or intent.evidence_summary != admission_ref
         or admission.get("final_status") not in {"done", "withdrawn", "superseded"}
@@ -3067,7 +3079,7 @@ def _validate_terminal_close_admission(
             or item.get("authority_case") != intent.authority_case
             or item.get("final_status") != admission.get("final_status")
             or item.get("note_sha256") != admission.get("note_sha256")
-            or item.get("outcome") not in {"pass", "not_applicable"}
+            or item.get("outcome") not in {"pass", "not_applicable", "skipped_retroactive"}
             for item in checked_gate_evidence
         )
         or not isinstance(admission.get("note_path"), str)
@@ -3642,7 +3654,7 @@ def _entry_matches(state: _EntryState | None, payload: bytes | None, mode: int |
     return state.content == payload and state.mode == mode
 
 
-def _renameat2(
+def _renameat2_syscall(
     src_dir_fd: int,
     src_name: str,
     dst_dir_fd: int,
@@ -3652,10 +3664,7 @@ def _renameat2(
     libc = ctypes.CDLL(None, use_errno=True)
     function = getattr(libc, "renameat2", None)
     if function is None:
-        raise LifecycleTransitionError(
-            "transition_atomic_cas_unavailable",
-            "run lifecycle projection only on Linux with renameat2 support",
-        )
+        raise OSError(errno.ENOSYS, "renameat2 unavailable", f"{src_name}->{dst_name}")
     function.argtypes = [
         ctypes.c_int,
         ctypes.c_char_p,
@@ -3674,6 +3683,330 @@ def _renameat2(
     if result != 0:
         value = ctypes.get_errno()
         raise OSError(value, os.strerror(value), f"{src_name}->{dst_name}")
+
+
+def _same_regular_inode(dir_fd: int, left: str, right: str) -> bool:
+    try:
+        left_stat = os.stat(left, dir_fd=dir_fd, follow_symlinks=False)
+        right_stat = os.stat(right, dir_fd=dir_fd, follow_symlinks=False)
+    except FileNotFoundError:
+        return False
+    return (
+        stat.S_ISREG(left_stat.st_mode)
+        and stat.S_ISREG(right_stat.st_mode)
+        and left_stat.st_ino == right_stat.st_ino
+    )
+
+
+def _drop_link_name(src_name: str) -> str:
+    return f".{src_name}.drop-link"
+
+
+def _drop_src_name(src_name: str) -> str:
+    return f".{src_name}.drop-src"
+
+
+_DRAIN_PARK_RE = re.compile(r"^\..+\.drain\.[0-9]+\.[0-9a-f]+$")
+
+
+def _is_drain_target_name(name: str, keep_name: str) -> bool:
+    """Only hidden transaction residue, never an external non-hidden hardlink."""
+    if not name.startswith("."):
+        return False
+    if name in {
+        _drop_src_name(keep_name),
+        _drop_link_name(keep_name),
+        _exchange_displaced_name(keep_name),
+    }:
+        return True
+    if _DRAIN_PARK_RE.fullmatch(name):
+        return True
+    return name.endswith((".transition-tmp", ".drop-src", ".drop-link"))
+
+
+def _park_and_drop_if_inode(
+    dir_fd: int,
+    name: str,
+    expected_ino: int,
+    expected_bytes: bytes | None = None,
+) -> bool:
+    """Rename name aside and unlink only if that inode is still expected_ino.
+
+    Returns True when the name is gone. False if a racer was restored to name.
+    """
+    unique = f".{name}.drain.{os.getpid()}.{secrets.token_hex(4)}"
+    try:
+        os.rename(name, unique, src_dir_fd=dir_fd, dst_dir_fd=dir_fd)
+    except FileNotFoundError:
+        return True
+    except OSError:
+        return False
+    try:
+        parked = os.stat(unique, dir_fd=dir_fd, follow_symlinks=False)
+    except OSError:
+        return False
+    if parked.st_ino != expected_ino:
+        _restore_parked_name(dir_fd, unique, name)
+        return False
+    if expected_bytes is not None:
+        read = _read_regular_bytes(dir_fd, unique, max(len(expected_bytes), 1))
+        if read is None or read[0] != expected_bytes:
+            _restore_parked_name(dir_fd, unique, name)
+            return False
+    try:
+        os.unlink(unique, dir_fd=dir_fd)
+    except OSError:
+        _restore_parked_name(dir_fd, unique, name)
+        return False
+    try:
+        os.stat(name, dir_fd=dir_fd, follow_symlinks=False)
+    except FileNotFoundError:
+        return True
+    return False
+
+
+def _restore_parked_name(dir_fd: int, parked: str, dest: str) -> None:
+    """Put parked back at dest without clobbering a racing replacement.
+
+    os.rename would overwrite dest. link fails with EEXIST instead.
+    """
+    try:
+        os.link(
+            parked,
+            dest,
+            src_dir_fd=dir_fd,
+            dst_dir_fd=dir_fd,
+            follow_symlinks=False,
+        )
+    except OSError:
+        return
+    try:
+        os.unlink(parked, dir_fd=dir_fd)
+    except OSError:
+        return
+
+
+def _drain_peer_aliases(
+    dir_fd: int,
+    keep_name: str,
+    extra_names: tuple[str, ...] | None = None,
+) -> None:
+    """Drop extra names that still share keep_name's inode.
+
+    When extra_names is given, only those names are considered (link-unlink
+    of a known source). Otherwise only hidden transaction residue is
+    scanned, never an external non-hidden hardlink.
+
+    Rename each extra aside first. If the parked name is not keep's inode,
+    it is a racer: put it back only when dest is still absent. Do not
+    unlink or rename-over a replacement.
+
+    Exclusive flock is taken on a write-opened regular sibling. Directory
+    descriptors from _open_parent_dir are O_RDONLY; NFS maps flock to
+    fcntl, which refuses LOCK_EX on a read-only fd.
+    """
+    lock_name = _DRAIN_LOCK_NAME
+    lock_fd = os.open(
+        lock_name,
+        os.O_RDWR | os.O_CREAT | os.O_CLOEXEC,
+        0o600,
+        dir_fd=dir_fd,
+    )
+    try:
+        fcntl.flock(lock_fd, fcntl.LOCK_EX)
+        if extra_names is None:
+            try:
+                listed = os.listdir(dir_fd)
+            except OSError:
+                return
+            names = [
+                extra
+                for extra in listed
+                if extra not in {keep_name, lock_name} and _is_drain_target_name(extra, keep_name)
+            ]
+        else:
+            names = [extra for extra in extra_names if extra not in {keep_name, lock_name}]
+        try:
+            keep_stat = os.stat(keep_name, dir_fd=dir_fd, follow_symlinks=False)
+        except OSError:
+            return
+        keep_ino = keep_stat.st_ino
+        for extra in names:
+            _park_and_drop_if_inode(dir_fd, extra, keep_ino)
+    finally:
+        fcntl.flock(lock_fd, fcntl.LOCK_UN)
+        os.close(lock_fd)
+        # Keep the lock pathname. Unlinking it lets a waiter lock the old
+        # inode while the next drain creates a new one.
+
+
+def _hardlink_extra_names(
+    dir_fd: int,
+    live_name: str,
+    scratch_name: str,
+) -> tuple[str, ...]:
+    names = [
+        scratch_name,
+        _drop_link_name(scratch_name),
+        _drop_src_name(scratch_name),
+        _drop_link_name(live_name),
+        _drop_src_name(live_name),
+    ]
+    seen: dict[str, None] = {}
+    ordered: list[str] = []
+    for extra in names:
+        if extra == live_name or extra in seen:
+            continue
+        seen[extra] = None
+        ordered.append(extra)
+    return tuple(ordered)
+
+
+def _read_regular_bytes(
+    dir_fd: int,
+    name: str,
+    max_bytes: int,
+) -> tuple[bytes, os.stat_result] | None:
+    try:
+        info = os.stat(name, dir_fd=dir_fd, follow_symlinks=False)
+    except FileNotFoundError:
+        return None
+    if not stat.S_ISREG(info.st_mode) or info.st_size > max_bytes:
+        return None
+    fd = os.open(
+        name,
+        os.O_RDONLY | os.O_CLOEXEC | os.O_NOFOLLOW | os.O_NOATIME,
+        dir_fd=dir_fd,
+    )
+    try:
+        return os.read(fd, info.st_size), info
+    finally:
+        os.close(fd)
+
+
+def _drop_extra_link(
+    dir_fd: int,
+    src_name: str,
+    peer_name: str,
+) -> None:
+    """Drop `src_name` only if it still names the extra link of `peer_name`.
+
+    Occupy the deterministic parking name with link (EEXIST, no clobber).
+    Then rename the source to a unique sibling. If that sibling is not the
+    peer inode, it is a racer: put it back and HOLD.
+    """
+    if not _same_regular_inode(dir_fd, src_name, peer_name):
+        raise OSError(errno.EEXIST, "destination raced after link", src_name)
+    parked = _drop_src_name(src_name)
+    os.link(
+        src_name,
+        parked,
+        src_dir_fd=dir_fd,
+        dst_dir_fd=dir_fd,
+        follow_symlinks=False,
+    )
+    if not _same_regular_inode(dir_fd, parked, peer_name):
+        try:
+            os.unlink(parked, dir_fd=dir_fd)
+        except FileNotFoundError:
+            pass
+        raise OSError(errno.EEXIST, "drop-src raced", parked)
+    _drain_peer_aliases(dir_fd, peer_name, extra_names=(src_name, parked))
+    try:
+        os.stat(src_name, dir_fd=dir_fd, follow_symlinks=False)
+    except FileNotFoundError:
+        return
+    raise OSError(errno.EEXIST, "source raced before drop", src_name)
+
+
+def _link_then_unlink_src(
+    src_dir_fd: int,
+    src_name: str,
+    dst_dir_fd: int,
+    dst_name: str,
+) -> None:
+    if src_dir_fd != dst_dir_fd:
+        raise OSError(errno.EXDEV, "link-unlink requires one directory", dst_name)
+    os.link(
+        src_name,
+        dst_name,
+        src_dir_fd=src_dir_fd,
+        dst_dir_fd=dst_dir_fd,
+        follow_symlinks=False,
+    )
+    _drop_extra_link(src_dir_fd, src_name, dst_name)
+
+
+def _renameat2_noreplace_fallback(
+    src_dir_fd: int,
+    src_name: str,
+    dst_dir_fd: int,
+    dst_name: str,
+) -> None:
+    # Atomic no-clobber: link fails with EEXIST if dst exists (verified on NFS4.2).
+    _link_then_unlink_src(src_dir_fd, src_name, dst_dir_fd, dst_name)
+
+
+def _exchange_displaced_name(dst_name: str) -> str:
+    """Deterministic mid-exchange name so crash recovery can find the preimage."""
+
+    return f".{dst_name}.exchange-displaced"
+
+
+def _renameat2_exchange_fallback(
+    src_dir_fd: int,
+    src_name: str,
+    dst_dir_fd: int,
+    dst_name: str,
+) -> None:
+    # Three-step EXCHANGE. A reader can observe dst_name absent between
+    # steps 1 and 2. Crash leaves the preimage at a deterministic displaced name.
+    displaced = _exchange_displaced_name(dst_name)
+    try:
+        os.stat(displaced, dir_fd=dst_dir_fd, follow_symlinks=False)
+    except FileNotFoundError:
+        pass
+    else:
+        raise OSError(errno.EEXIST, "exchange displaced name occupied", displaced)
+    # NOREPLACE park: rename would clobber a racer that created `displaced`
+    # after the occupancy check. Re-stat before unlink so a dest replacement
+    # is not deleted.
+    _link_then_unlink_src(dst_dir_fd, dst_name, dst_dir_fd, displaced)
+    try:
+        # NOREPLACE install: a racer that created dest in the dest-absent window
+        # must get EEXIST, not a silent clobber.
+        _link_then_unlink_src(src_dir_fd, src_name, dst_dir_fd, dst_name)
+    except OSError:
+        try:
+            os.stat(dst_name, dir_fd=dst_dir_fd, follow_symlinks=False)
+        except FileNotFoundError:
+            _renameat2_noreplace_fallback(src_dir_fd, displaced, dst_dir_fd, dst_name)
+        raise
+    _renameat2_noreplace_fallback(src_dir_fd, displaced, dst_dir_fd, src_name)
+
+
+def _renameat2(
+    src_dir_fd: int,
+    src_name: str,
+    dst_dir_fd: int,
+    dst_name: str,
+    flags: int,
+) -> None:
+    try:
+        _renameat2_syscall(src_dir_fd, src_name, dst_dir_fd, dst_name, flags)
+        return
+    except OSError as exc:
+        if exc.errno not in (errno.EINVAL, errno.ENOSYS):
+            raise
+        if src_dir_fd != dst_dir_fd:
+            raise
+        if flags == _RENAME_NOREPLACE:
+            _renameat2_noreplace_fallback(src_dir_fd, src_name, dst_dir_fd, dst_name)
+            return
+        if flags == _RENAME_EXCHANGE:
+            _renameat2_exchange_fallback(src_dir_fd, src_name, dst_dir_fd, dst_name)
+            return
+        raise
 
 
 def _write_scratch(dir_fd: int, name: str, payload: bytes, mode: int) -> _EntryState:
@@ -3745,7 +4078,12 @@ def _unlink_exact_entry(
             "hold the transaction and preserve the unexpected scratch entry",
             name,
         )
-    os.unlink(name, dir_fd=dir_fd)
+    if not _park_and_drop_if_inode(dir_fd, name, expected.inode, expected_bytes=expected.content):
+        raise LifecycleTransitionError(
+            "transition_projection_scratch_cleanup_failed",
+            "hold the transaction until the exact scratch entry is absent",
+            name,
+        )
     os.fsync(dir_fd)
     if (
         _entry_state_at(
@@ -3995,14 +4333,314 @@ def _finalize_rolled_back_scratch(
 
 def _cas_rollback(projection: FileProjection, scratch: _ProjectionScratch) -> bool:
     with _open_parent_dir(projection.path) as (dir_fd, name):
-        current = _entry_state_at(
-            dir_fd,
-            name,
-            max_bytes=_MAX_LIFECYCLE_BLOB_BYTES,
-        )
+        if scratch.kind == "create" and projection.before is None:
+            try:
+                dest_stat = os.stat(name, dir_fd=dir_fd, follow_symlinks=False)
+            except FileNotFoundError:
+                dest_stat = None
+            extras = [
+                extra
+                for extra in _hardlink_extra_names(dir_fd, name, scratch.path.name)
+                if _same_regular_inode(dir_fd, name, extra)
+            ]
+            if (
+                dest_stat is not None
+                and stat.S_ISREG(dest_stat.st_mode)
+                and dest_stat.st_nlink >= 2
+                and extras
+            ):
+                if not _same_regular_inode(dir_fd, name, extras[0]):
+                    return False
+                keep_ino = dest_stat.st_ino
+                if not _park_and_drop_if_inode(dir_fd, name, keep_ino):
+                    return False
+                scratch_present = scratch.path.name in extras
+                for extra in extras:
+                    if extra == scratch.path.name:
+                        continue
+                    if not scratch_present:
+                        os.link(
+                            extra,
+                            scratch.path.name,
+                            src_dir_fd=dir_fd,
+                            dst_dir_fd=dir_fd,
+                            follow_symlinks=False,
+                        )
+                        scratch_present = True
+                    _drain_peer_aliases(dir_fd, scratch.path.name, extra_names=(extra,))
+                keep = scratch.path.name if scratch.path.name != name else extras[0]
+                _drain_peer_aliases(dir_fd, keep)
+                os.fsync(dir_fd)
+                return True
+        if scratch.kind == "delete":
+            try:
+                dest_stat = os.stat(name, dir_fd=dir_fd, follow_symlinks=False)
+            except FileNotFoundError:
+                dest_stat = None
+            extras = [
+                extra
+                for extra in _hardlink_extra_names(dir_fd, name, scratch.path.name)
+                if _same_regular_inode(dir_fd, name, extra)
+            ]
+            if dest_stat is None and projection.before is not None:
+                for extra in _hardlink_extra_names(dir_fd, name, scratch.path.name):
+                    read = _read_regular_bytes(dir_fd, extra, _MAX_LIFECYCLE_BLOB_BYTES)
+                    if read is None or read[0] != projection.before:
+                        continue
+                    if (
+                        projection.before_mode is not None
+                        and stat.S_IMODE(read[1].st_mode) != projection.before_mode
+                    ):
+                        continue
+                    try:
+                        os.link(
+                            extra,
+                            name,
+                            src_dir_fd=dir_fd,
+                            dst_dir_fd=dir_fd,
+                            follow_symlinks=False,
+                        )
+                    except OSError as exc:
+                        if exc.errno == errno.EEXIST:
+                            return False
+                        raise
+                    if extra != scratch.path.name:
+                        _drain_peer_aliases(dir_fd, name, extra_names=(extra,))
+                    os.fsync(dir_fd)
+                    return True
+            if (
+                dest_stat is not None
+                and stat.S_ISREG(dest_stat.st_mode)
+                and dest_stat.st_nlink >= 2
+                and extras
+            ):
+                _drain_peer_aliases(dir_fd, name, extra_names=tuple(extras))
+                _drain_peer_aliases(dir_fd, name)
+                os.fsync(dir_fd)
+                return True
+        if scratch.kind == "update":
+            displaced_name = _exchange_displaced_name(name)
+            try:
+                dest_stat = os.stat(name, dir_fd=dir_fd, follow_symlinks=False)
+                displaced_stat = os.stat(displaced_name, dir_fd=dir_fd, follow_symlinks=False)
+            except FileNotFoundError:
+                dest_stat = None
+                displaced_stat = None
+            if (
+                dest_stat is not None
+                and displaced_stat is not None
+                and stat.S_ISREG(dest_stat.st_mode)
+                and dest_stat.st_ino == displaced_stat.st_ino
+                and dest_stat.st_nlink >= 2
+                and projection.before_mode is not None
+                and stat.S_IMODE(dest_stat.st_mode) == projection.before_mode
+                and stat.S_IMODE(displaced_stat.st_mode) == projection.before_mode
+            ):
+                # Crash after parking dest onto displaced, before unlinking dest.
+                # A drop-link extra may also be present (nlink>=3).
+                if not _same_regular_inode(dir_fd, name, displaced_name):
+                    return False
+                extras = (
+                    _drop_link_name(name),
+                    _drop_src_name(name),
+                    _drop_src_name(scratch.path.name),
+                    displaced_name,
+                )
+                _drain_peer_aliases(dir_fd, name, extra_names=extras)
+                _drain_peer_aliases(dir_fd, name)
+                os.fsync(dir_fd)
+                return True
+            try:
+                dest_stat = os.stat(name, dir_fd=dir_fd, follow_symlinks=False)
+                scratch_stat = os.stat(scratch.path.name, dir_fd=dir_fd, follow_symlinks=False)
+            except FileNotFoundError:
+                dest_stat = None
+                scratch_stat = None
+            if (
+                dest_stat is not None
+                and scratch_stat is not None
+                and stat.S_ISREG(dest_stat.st_mode)
+                and dest_stat.st_ino == scratch_stat.st_ino
+                and dest_stat.st_nlink >= 2
+            ):
+                dest_fd = os.open(
+                    name,
+                    os.O_RDONLY | os.O_CLOEXEC | os.O_NOFOLLOW | os.O_NOATIME,
+                    dir_fd=dir_fd,
+                )
+                try:
+                    dest_bytes = os.read(dest_fd, dest_stat.st_size)
+                finally:
+                    os.close(dest_fd)
+                displaced_name = _exchange_displaced_name(name)
+                displaced = _entry_state_at(
+                    dir_fd,
+                    displaced_name,
+                    max_bytes=_MAX_LIFECYCLE_BLOB_BYTES,
+                )
+                if dest_bytes == projection.after and _entry_matches(
+                    displaced, projection.before, projection.before_mode
+                ):
+                    # Crash after link, before unlink: dest and src share the
+                    # postimage inode. _entry_state_at rejects nlink!=1, so
+                    # this repair must run first.
+                    if not _same_regular_inode(dir_fd, name, scratch.path.name):
+                        return False
+                    try:
+                        _drop_extra_link(dir_fd, name, scratch.path.name)
+                    except OSError as exc:
+                        if exc.errno == errno.EEXIST:
+                            return False
+                        raise
+                    try:
+                        os.link(
+                            displaced_name,
+                            name,
+                            src_dir_fd=dir_fd,
+                            dst_dir_fd=dir_fd,
+                            follow_symlinks=False,
+                        )
+                    except OSError as exc:
+                        if exc.errno == errno.EEXIST:
+                            return False
+                        raise
+                    _drain_peer_aliases(dir_fd, name)
+                    os.fsync(dir_fd)
+                    return True
+            try:
+                dest_stat = os.stat(name, dir_fd=dir_fd, follow_symlinks=False)
+                scratch_stat = os.stat(scratch.path.name, dir_fd=dir_fd, follow_symlinks=False)
+                displaced_stat = os.stat(displaced_name, dir_fd=dir_fd, follow_symlinks=False)
+            except FileNotFoundError:
+                dest_stat = None
+                scratch_stat = None
+                displaced_stat = None
+            if (
+                dest_stat is not None
+                and scratch_stat is not None
+                and displaced_stat is not None
+                and dest_stat.st_nlink == 1
+                and _same_regular_inode(dir_fd, scratch.path.name, displaced_name)
+                and scratch_stat.st_nlink >= 2
+            ):
+                dest_fd = os.open(
+                    name,
+                    os.O_RDONLY | os.O_CLOEXEC | os.O_NOFOLLOW | os.O_NOATIME,
+                    dir_fd=dir_fd,
+                )
+                try:
+                    dest_bytes = os.read(dest_fd, dest_stat.st_size)
+                finally:
+                    os.close(dest_fd)
+                if dest_bytes == projection.after:
+                    # Dest holds after; scratch may still share an extra
+                    # drop-src/displaced link. Drain those extras so
+                    # _entry_state_at can read nlink=1.
+                    for extra in (
+                        displaced_name,
+                        _drop_src_name(scratch.path.name),
+                        _drop_src_name(name),
+                        _drop_link_name(name),
+                    ):
+                        if extra == scratch.path.name:
+                            continue
+                        _drain_peer_aliases(dir_fd, scratch.path.name, extra_names=(extra,))
+                    os.fsync(dir_fd)
+
+        def _state_or_none(entry_name: str):
+            try:
+                return _entry_state_at(
+                    dir_fd,
+                    entry_name,
+                    max_bytes=_MAX_LIFECYCLE_BLOB_BYTES,
+                )
+            except LifecycleTransitionError:
+                return None
+
+        current = _state_or_none(name)
+        if scratch.kind == "update":
+            displaced_name = _exchange_displaced_name(name)
+            displaced = _state_or_none(displaced_name)
+            scratch_state = _state_or_none(scratch.path.name)
+            if (
+                _entry_matches(current, projection.after, projection.after_mode)
+                and _entry_matches(displaced, projection.before, projection.before_mode)
+                and scratch_state is None
+            ):
+                # Crash after unlink: dest holds the postimage, the preimage
+                # sits at the displaced name, and src is gone.
+                try:
+                    _renameat2_noreplace_fallback(dir_fd, name, dir_fd, scratch.path.name)
+                    _renameat2_noreplace_fallback(dir_fd, displaced_name, dir_fd, name)
+                except OSError as exc:
+                    if exc.errno == errno.EEXIST:
+                        return False
+                    raise
+                os.fsync(dir_fd)
+                return True
         if _entry_matches(current, projection.before, projection.before_mode):
             return True
         if not _entry_matches(current, projection.after, projection.after_mode):
+            if scratch.kind == "update" and current is None:
+                candidates = (
+                    _exchange_displaced_name(name),
+                    _drop_src_name(name),
+                    _drop_src_name(scratch.path.name),
+                    _drop_link_name(name),
+                )
+                for candidate in candidates:
+                    read = _read_regular_bytes(dir_fd, candidate, _MAX_LIFECYCLE_BLOB_BYTES)
+                    if read is None or read[0] != projection.before:
+                        continue
+                    if (
+                        projection.before_mode is not None
+                        and stat.S_IMODE(read[1].st_mode) != projection.before_mode
+                    ):
+                        continue
+                    candidate_ino = read[1].st_ino
+                    try:
+                        again = os.stat(candidate, dir_fd=dir_fd, follow_symlinks=False)
+                    except OSError:
+                        continue
+                    if again.st_ino != candidate_ino:
+                        continue
+                    try:
+                        os.link(
+                            candidate,
+                            name,
+                            src_dir_fd=dir_fd,
+                            dst_dir_fd=dir_fd,
+                            follow_symlinks=False,
+                        )
+                    except OSError as exc:
+                        if exc.errno == errno.EEXIST:
+                            return False
+                        raise
+                    restored = _read_regular_bytes(dir_fd, name, _MAX_LIFECYCLE_BLOB_BYTES)
+                    if restored is None or restored[0] != projection.before:
+                        if restored is not None:
+                            _park_and_drop_if_inode(dir_fd, name, restored[1].st_ino)
+                        return False
+                    extras = tuple(
+                        extra
+                        for extra in _hardlink_extra_names(dir_fd, name, scratch.path.name)
+                        if extra != name
+                    )
+                    _drain_peer_aliases(dir_fd, name, extra_names=extras)
+                    _drain_peer_aliases(dir_fd, name)
+                    restored = _read_regular_bytes(dir_fd, name, _MAX_LIFECYCLE_BLOB_BYTES)
+                    if restored is None or restored[0] != projection.before:
+                        return False
+                    if (
+                        projection.before_mode is not None
+                        and stat.S_IMODE(restored[1].st_mode) != projection.before_mode
+                    ):
+                        _park_and_drop_if_inode(dir_fd, name, restored[1].st_ino)
+                        return False
+                    if restored[1].st_nlink != 1:
+                        return False
+                    os.fsync(dir_fd)
+                    return True
             return False
         scratch_state = _entry_state_at(
             dir_fd,
@@ -4187,7 +4825,38 @@ def _open_existing_private_directory_fd(path: Path) -> int | None:
         raise
 
 
+_DRAIN_LOCK_NAME = ".drain-lock"
 _TRANSACTION_DIRECTORY_RE = re.compile(r"^sdlc-txn-[0-9a-f]{64}\.attempt-[0-9]{4,}$")
+
+
+def _regular_owned_drain_lock(metadata: os.stat_result) -> bool:
+    return (
+        stat.S_ISREG(metadata.st_mode)
+        and metadata.st_uid == os.geteuid()
+        and stat.S_IMODE(metadata.st_mode) == 0o600
+    )
+
+
+def _is_known_drain_lock_at(dir_fd: int, name: str) -> bool:
+    if name != _DRAIN_LOCK_NAME:
+        return False
+    try:
+        metadata = os.stat(name, dir_fd=dir_fd, follow_symlinks=False)
+    except OSError:
+        return False
+    return _regular_owned_drain_lock(metadata)
+
+
+def _is_known_drain_lock_path(path: Path) -> bool:
+    if path.name != _DRAIN_LOCK_NAME:
+        return False
+    try:
+        metadata = os.lstat(path)
+    except OSError:
+        return False
+    return _regular_owned_drain_lock(metadata)
+
+
 _TRANSACTION_BLOB_RE = re.compile(r"^[0-9]{4}\.(?:before|after)$")
 _TRANSACTION_PHASE_PROJECTION_RE = re.compile(r"^phase-(?:prepared|applied|aborted)\.append\.json$")
 _MATERIALIZATION_PLAN_RE = re.compile(r"^(sdlc-txn-[0-9a-f]{64}\.attempt-[0-9]{4,})\.plan\.json$")
@@ -4232,6 +4901,8 @@ def _transaction_manifest_paths(
     paths: list[Path] = []
     try:
         for name in sorted(os.listdir(root_fd)):
+            if _is_known_drain_lock_at(root_fd, name):
+                continue
             if allow_materialization_plans and _MATERIALIZATION_PLAN_RE.fullmatch(name):
                 continue
             if _TRANSACTION_DIRECTORY_RE.fullmatch(name) is None:
@@ -4551,6 +5222,8 @@ def _lifecycle_estate_usage(*roots: Path) -> tuple[int, int, int]:
                             + 2 * _MAX_LIFECYCLE_PHASE_BYTES
                         )
             for name in root_names:
+                if _is_known_drain_lock_at(root_fd, name):
+                    continue
                 if root_index > 0 and _MATERIALIZATION_PLAN_RE.fullmatch(name):
                     continue
                 if _TRANSACTION_DIRECTORY_RE.fullmatch(name) is None:
@@ -5387,9 +6060,17 @@ def _execute_lifecycle_transition(
 ) -> LifecycleTransitionReceipt:
     """Apply one exact lifecycle transition with strict receipts and CAS rollback."""
 
-    _require_lifecycle_effect_activation()
+    # Terminal close is the slice-2 admitted effect. Other lifecycle effects stay
+    # default-deny until the spine lockstep release. Validate the admission
+    # before disarming that switch — a caller-supplied mapping is not proof.
     intent, ordered = _canonical_execution_inputs(intent, projections)
     _validate_terminal_close_admission(intent, terminal_close_admission)
+    if not (
+        terminal_close_admission is not None
+        and intent.from_stage == "S10"
+        and intent.to_stage == "S11"
+    ):
+        _require_lifecycle_effect_activation()
     if intent.from_stage == "S10" and intent.to_stage == "S11" and locked_preflight is None:
         raise LifecycleTransitionError(
             "transition_terminal_locked_preflight_missing",
@@ -6741,6 +7422,8 @@ def _capture_lifecycle_journals(
                         ),
                     )
                 )
+            continue
+        if _is_known_drain_lock_path(directory.path / name):
             continue
         if _TRANSACTION_DIRECTORY_RE.fullmatch(name) is None:
             captured.append(

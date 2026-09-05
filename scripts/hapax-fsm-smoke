@@ -154,9 +154,37 @@ EOF
   timeout 30 uv run --no-sync python scripts/cc-stage-advance "$task" S10_CLOSURE
   require_grep "stage: S10_CLOSURE" "$active/$task.md"
 
+  write_relay() {
+    local claim="$1"
+    mkdir -p "$sb/.cache/hapax/relay"
+    cat > "$sb/.cache/hapax/relay/alpha-status.yaml" <<RELAY
+role: alpha
+session_id: smoke-session-${smoke_mode}
+status: active
+current_claim: ${claim}
+task_id: ${claim}
+RELAY
+  }
+
   step "close"
-  timeout 30 uv run --no-sync bash scripts/cc-close "$task" --status done
-  require_file "$sb/Documents/Personal/20-projects/hapax-cc-tasks/closed/$task.md"
+  close_log="$sb/close-${smoke_mode}.log"
+  if [[ "$smoke_mode" == "killswitch" ]]; then
+    set +e
+    timeout 30 uv run --no-sync bash scripts/cc-close "$task" --status done >"$close_log" 2>&1
+    close_rc=$?
+    set -e
+    cat "$close_log"
+    if [[ "$close_rc" -eq 0 ]]; then
+      printf '[%s] killswitch close must refuse without an admitted publication\n' "$smoke_mode" >&2
+      exit 1
+    fi
+    require_grep "REFUSED" "$close_log"
+    require_file "$active/$task.md"
+  else
+    write_relay "$task"
+    timeout 30 uv run --no-sync bash scripts/cc-close "$task" --status done
+    require_file "$sb/Documents/Personal/20-projects/hapax-cc-tasks/closed/$task.md"
+  fi
 
   if [[ "$smoke_mode" == "default" ]]; then
     second_task="${task}-after-close"
@@ -185,12 +213,23 @@ EOF
       exit 1
     fi
     cat "$second_claim_log"
-    require_grep "archived terminal dispatch-only claim residue" "$second_claim_log"
+    # Typed close clears the full claim vector; no dispatch-only residue remains
+    # for cc-claim to archive (bash rewriter used to leave that residue).
+    reject_grep "archived terminal dispatch-only claim residue" "$second_claim_log"
     require_grep "admitted publication applied" "$second_claim_log"
     require_grep "$second_task" "$sb/.cache/hapax/cc-active-task-alpha"
     require_grep "status: claimed" "$active/$second_task.md"
 
+    step "stage S7_RELEASE after-close"
+    timeout 30 uv run --no-sync python scripts/cc-stage-advance "$second_task" S7_RELEASE
+    require_grep "stage: S7_RELEASE" "$active/$second_task.md"
+
+    step "stage S10_CLOSURE after-close"
+    timeout 30 uv run --no-sync python scripts/cc-stage-advance "$second_task" S10_CLOSURE
+    require_grep "stage: S10_CLOSURE" "$active/$second_task.md"
+
     step "close after-close claim"
+    write_relay "$second_task"
     timeout 30 uv run --no-sync bash scripts/cc-close "$second_task" --status done
     require_file "$sb/Documents/Personal/20-projects/hapax-cc-tasks/closed/$second_task.md"
   fi
@@ -198,7 +237,11 @@ EOF
   step "recovery governor"
   timeout 30 uv run --no-sync python -m shared.recovery_governor --permit "lane:smoke-${smoke_mode}"
 
-  step "ok"
+  if [[ "$smoke_mode" == "killswitch" ]]; then
+    step "close-refused-as-designed"
+  else
+    step "ok"
+  fi
 )
 
 if [[ "$mode" == "both" || "$mode" == "default" ]]; then
