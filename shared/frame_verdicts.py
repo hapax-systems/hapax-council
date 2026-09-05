@@ -1732,12 +1732,18 @@ def ref_within_member(
             path = _resolve_external_scope_path(path)
         if path != root and root not in path.parents:
             if scope_pattern is not None and any(
-                target in surface or any(target in file.parents for file in surface)
-                for target in expansions.values()
+                target in surface
+                or any(target in file.parents for file in surface)
+                or (
+                    entry.is_dir()
+                    and (target == root or root in target.parents or target in root.parents)
+                )
+                for entry, target in expansions.items()
             ):
+                # Directory aliases overlap canonical roots even when no file is selected.
                 # Current aliases prove overlap, never containment of future paths.
                 raise UndecidableScopeContainment(
-                    f"scope glob {scope_pattern!r} reaches selected canonical targets in "
+                    f"scope glob {scope_pattern!r} reaches canonical member surface in "
                     f"member root {root}; whole-surface containment cannot be decided safely"
                 )
             if (
@@ -1787,7 +1793,10 @@ def ref_within_member(
                 canonical_covered or _scope_glob_covered(member_scope_pattern, member.patterns)
             ):
                 if any(
-                    target in surface
+                    (
+                        target in surface
+                        or (entry.is_dir() and ref_within_member(target, True, member))
+                    )
                     and (
                         path / entry.relative_to(expansion_base) != target
                         or any(

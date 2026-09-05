@@ -21,7 +21,12 @@ from shared.platform_capability_registry import PlatformCapabilityRegistry
 from shared.quota_spend_ledger import QUOTA_SPEND_LEDGER_FIXTURES
 from shared.relay_mq import send_message
 from shared.relay_mq_envelope import Envelope
-from tests.frame_verdict_helpers import alias_member_tree, git_checkout, producer_glob_bytes
+from tests.frame_verdict_helpers import (
+    alias_member_tree,
+    git_checkout,
+    producer_glob_bytes,
+    rg_query_bytes,
+)
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 SCRIPT = REPO_ROOT / "scripts" / "hapax-methodology-dispatch"
@@ -4818,7 +4823,9 @@ def test_dispatch_content_query_external_glob_alias_refuses_selected_bytes(
 
 
 @pytest.mark.parametrize("decayed", [True, False], ids=["decayed", "healthy"])
-@pytest.mark.parametrize("kind", ["directory", "file", "escape"])
+@pytest.mark.parametrize(
+    "kind", ["directory", "file", "escape", "empty-directory", "empty-escape", "empty-subtree"]
+)
 @pytest.mark.parametrize("spelling", ["literal", "singleton", "repeated", "wildcard"])
 def test_dispatch_alias_main_refuses_decay_and_admits_health(
     tmp_path: Path,
@@ -4833,20 +4840,36 @@ def test_dispatch_alias_main_refuses_decay_and_admits_health(
         "directory": ("sbin", "[s]bin", "[ss]bin", "s?in"),
         "file": ("awk", "[a]wk", "[aa]wk", "a?k"),
         "escape": ("tools", "[t]ools", "[tt]ools", "t?ols"),
+        "subtree": ("empty", "[e]mpty", "[e-e]mpty", "e?pty"),
     }
-    alias = names[kind][("literal", "singleton", "repeated", "wildcard").index(spelling)]
+    if kind.startswith("empty-"):
+        names["directory"] = ("sbin", "[s]bin", "[s-s]bin", "s?in")
+        names["escape"] = ("tools", "[t]ools", "[t-t]ools", "t?ols")
+        (root / "bin/site_perl").mkdir()
+        # Both the member and an escaping target have no selected files.
+        (root / "tools/unselected").unlink()
+    alias = names[kind.removeprefix("empty-")][
+        ("literal", "singleton", "repeated", "wildcard").index(spelling)
+    ]
     member_root = root / ("bin/db5.3" if kind == "directory" else "bin")
     pattern = "gawk" if kind == "file" else "**/*"
-    read = producer_glob_bytes(member_root, [pattern], monkeypatch)
     if kind == "directory":
-        assert read == {
-            member_root / name: (member_root / name).read_bytes()
-            for name in ("db_dump", "nested/db_load")
-        }
         scope = str(root / alias / "db5.3") + "/"
+    elif kind == "empty-directory":
+        member_root = root / "bin/site_perl"
+        scope = str(root / alias / "site_perl") + "/"
+    elif kind == "empty-subtree":
+        (member_root / "empty").symlink_to("site_perl", target_is_directory=True)
+        pattern = "site_perl/**/*"
+        scope = str(member_root / alias) + "/"
+    elif kind == "empty-escape":
+        member_root = root / "bin/site_perl"
+        (member_root / "tools").symlink_to(root / "tools", target_is_directory=True)
+        scope = str(member_root / alias) + "/"
     else:
-        assert member_root / "gawk" in read
         scope = str(member_root / alias) + ("/**" if kind == "escape" else "")
+    if kind.startswith("empty-"):
+        assert not any(path.is_file() for path in member_root.glob(pattern))
     frame_root = _frame_procedure_root(
         tmp_path / "frame",
         decayed_root=member_root if decayed else None,
@@ -4941,7 +4964,7 @@ def test_dispatch_in_root_alias_uses_canonical_member(
         ("bin/*", "bin/[g]awk", True),
     ],
 )
-def test_dispatch_canonical_closure_matches_producer_bytes(
+def test_dispatch_canonical_closure_uses_expected_bytes(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
     capsys: pytest.CaptureFixture[str],
@@ -4957,8 +4980,7 @@ def test_dispatch_canonical_closure_matches_producer_bytes(
     (root / "bin/awk").symlink_to("gawk")
     (root / "tools").mkdir()
     (root / "bin/tools").symlink_to("../tools", target_is_directory=True)
-    read = producer_glob_bytes(root, [pattern], monkeypatch, excluded=(target,) if excluded else ())
-    assert read == ({} if excluded else {target: target.read_bytes()})
+    read = {} if excluded else {target: target.read_bytes()}
     expansions = list(root.glob(candidate))
     assert expansions
     inside = all(path.resolve(strict=True) in read for path in expansions)
@@ -5166,6 +5188,24 @@ def test_dispatch_content_query_external_member_alias_closure(
     assert receipt["frame_decayed_members"] == ["legacy-surface"]
 
 
+@pytest.mark.parametrize("populated", [False, True])
+@pytest.mark.parametrize("excluded", [False, True])
+@pytest.mark.parametrize("pattern", ["bin/gawk", "bin/awk", "bin/*", "**/*"])
+def test_producer_glob_selection_parity(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, populated: bool, excluded: bool, pattern: str
+) -> None:
+    root = tmp_path / "member"
+    (root / "bin").mkdir(parents=True)
+    target = root / "bin/gawk"
+    if populated:
+        target.write_bytes(b"selected canonical bytes")
+        (root / "bin/awk").symlink_to(target.name)
+    selected = producer_glob_bytes(
+        root, [pattern], monkeypatch, excluded=(target,) if excluded else ()
+    )
+    assert selected == ({target: target.read_bytes()} if populated and not excluded else {})
+
+
 @pytest.mark.parametrize("content_query", [None, "GNU"])
 def test_dispatch_alias_fixture_matches_installed_producer(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, content_query: str | None
@@ -5307,9 +5347,6 @@ def test_dispatch_glob_language_is_independent_of_current_matches(
     target = root / "gawk"
     if populated:
         target.write_bytes(b"selected bytes\n")
-    assert producer_glob_bytes(root, [pattern], monkeypatch) == (
-        {target: target.read_bytes()} if populated else {}
-    )
     frame_root = _frame_procedure_root(
         tmp_path / "frame",
         decayed_root=root,
@@ -5484,7 +5521,6 @@ def test_dispatch_canonical_closure_unresolved_entry_names_remedy(
             return original_readlink(path)
 
         monkeypatch.setattr(Path, "readlink", denied_readlink)
-    assert producer_glob_bytes(root, ["bin/gawk"], monkeypatch) == {target: target.read_bytes()}
     assert set(root.glob("bin/alias-*")) == {root / "bin/alias-good", broken}
     pattern = "bin/alias-*" if broken_selected else "bin/gawk"
     candidate = "bin/gawk" if broken_selected else "bin/alias-*"
@@ -5521,7 +5557,6 @@ def test_dispatch_canonical_closure_expands_external_glob(
     root.mkdir()
     target = root / "gawk"
     target.write_bytes(b"selected bytes\n")
-    assert producer_glob_bytes(root, ["gawk"], monkeypatch) == {target: target.read_bytes()}
     external = tmp_path / "external"
     external.mkdir()
     (external / "alias-good").symlink_to(target)
@@ -6233,10 +6268,11 @@ def test_producer_rg_oracle_never_skips_missing_rg(
         producer_glob_bytes(tmp_path, ["*.py"], monkeypatch, content_query="s", query_engine="rg")
 
 
+@pytest.mark.parametrize("oracle", ["consumer", "producer"])
 @pytest.mark.parametrize("query", ["sced", "k", "i"])
 @pytest.mark.parametrize("match_mode", ["substring", "word"])
 def test_producer_casefold_engines_agree(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, query: str, match_mode: str
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, query: str, match_mode: str, oracle: str
 ) -> None:
     root = tmp_path / "casefold"
     root.mkdir()
@@ -6244,6 +6280,15 @@ def test_producer_casefold_engines_agree(
         [query.upper(), query.title(), f"_{query.upper()}_", f"a{query.upper()}z", "unrelated"]
     ):
         (root / f"{index}.py").write_text(text)
+    if oracle == "consumer":
+        predicate = fv.ContentQuery(query, True, match_mode, 128, "strict")
+        selected = {
+            path.name for path in root.glob("*.py") if fv._content_query_matches(path, predicate)
+        }
+        assert selected == (
+            {"0.py", "1.py", "2.py"} if match_mode == "word" else {"0.py", "1.py", "2.py", "3.py"}
+        )
+        return
     selections = {
         engine: producer_glob_bytes(
             root,
@@ -6271,9 +6316,10 @@ def test_producer_casefold_oracle_detects_divergence(
 
     monkeypatch.setitem(globals(), "producer_glob_bytes", divergent_python)
     with pytest.raises(AssertionError, match="Python/rg case-fold selection diverged"):
-        test_producer_casefold_engines_agree(tmp_path, monkeypatch, "sced", "word")
+        test_producer_casefold_engines_agree(tmp_path, monkeypatch, "sced", "word", "producer")
 
 
+@pytest.mark.parametrize("oracle", ["consumer", "producer"])
 @pytest.mark.parametrize("match_mode", ["word", "substring"])
 @pytest.mark.parametrize(
     ("query", "content", "rg_substring", "rg_word", "conservative_i"),
@@ -6312,20 +6358,14 @@ def test_dispatch_content_query_real_rg_unicode_and_word_oracle(
     rg_word: bool,
     conservative_i: bool,
     match_mode: str,
+    oracle: str,
 ) -> None:
     root = tmp_path / "member"
     root.mkdir()
     target = root / "file.py"
     target.write_text(content, encoding="utf-8")
-    commands = []
-    real_run = subprocess.run
-
-    def observe_run(command, **kwargs):
-        commands.append(command)
-        return real_run(command, **kwargs)
-
-    with monkeypatch.context() as observed:
-        observed.setattr(subprocess, "run", observe_run)
+    rg_inside = rg_word if match_mode == "word" else rg_substring
+    if oracle == "producer":
         selected = producer_glob_bytes(
             root,
             ["*.py"],
@@ -6335,11 +6375,20 @@ def test_dispatch_content_query_real_rg_unicode_and_word_oracle(
             case_insensitive=True,
             match_mode=match_mode,
         )
-    rg_commands = [command for command in commands if Path(command[0]).name == "rg"]
-    assert rg_commands, "the installed producer must actually execute rg for this oracle"
-    assert all("--ignore-case" in command for command in rg_commands)
-    rg_inside = rg_word if match_mode == "word" else rg_substring
-    assert selected == ({target: target.read_bytes()} if rg_inside else {})
+        assert selected == ({target: target.read_bytes()} if rg_inside else {})
+        return
+    commands = []
+    real_run = subprocess.run
+
+    def observe_run(command, **kwargs):
+        commands.append(command)
+        return real_run(command, **kwargs)
+
+    with monkeypatch.context() as observed:
+        observed.setattr(subprocess, "run", observe_run)
+        selected = rg_query_bytes(root, query, case_insensitive=True)
+    assert commands and all("--ignore-case" in command for command in commands)
+    assert selected == ({target: target.read_bytes()} if rg_substring else {})
     frame_root = _frame_procedure_root(
         tmp_path / "frame",
         decayed_root=root,

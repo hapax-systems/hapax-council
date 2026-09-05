@@ -13,7 +13,40 @@ import pytest
 import yaml
 
 from shared import frame_verdicts as fv
-from tests.frame_verdict_helpers import git_checkout, latest_epoch_dir, producer_glob_bytes
+from tests import frame_verdict_helpers as frame_helpers
+from tests.frame_verdict_helpers import git_checkout, latest_epoch_dir
+
+
+@pytest.mark.parametrize("required", [None, "0", "1"])
+@pytest.mark.parametrize("engine", ["python", "rg"])
+def test_producer_absence_is_checked_at_each_use(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, required: str | None, engine: str
+) -> None:
+    missing = tmp_path / "absent/frame/procedure/builtin.py"
+    monkeypatch.setattr(frame_helpers, "PRODUCER_BUILTIN_PATH", missing)
+    if required is None:
+        monkeypatch.delenv("HAPAX_FRAME_ORACLE_REQUIRED", raising=False)
+    else:
+        monkeypatch.setenv("HAPAX_FRAME_ORACLE_REQUIRED", required)
+    expected = pytest.fail.Exception if required == "1" else pytest.skip.Exception
+    for _ in range(2):
+        with pytest.raises(expected) as caught:
+            frame_helpers.producer_glob_bytes(
+                tmp_path, ["*.py"], monkeypatch, content_query="query", query_engine=engine
+            )
+        assert str(caught.value) == f"FRAME_PRODUCER_ABSENT:{missing}"
+
+
+@pytest.mark.parametrize("case_insensitive", [False, True])
+def test_direct_rg_oracle_never_skips_missing_rg(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, case_insensitive: bool
+) -> None:
+    monkeypatch.setattr(frame_helpers.shutil, "which", lambda name: None)
+    with pytest.raises(
+        pytest.fail.Exception, match="frame content-query rg oracle requires the rg executable"
+    ):
+        frame_helpers.rg_query_bytes(tmp_path, "query", case_insensitive=case_insensitive)
+
 
 NOW = datetime(2026, 9, 3, 22, 30, tzinfo=UTC)
 
@@ -1315,8 +1348,7 @@ def test_validate_task_in_root_alias_uses_canonical_member(
         target.write_bytes(b"accountable bytes\n")
     alias = root / "bin/awk"
     alias.symlink_to(target)
-    read = producer_glob_bytes(root, ["bin/gawk"], monkeypatch)
-    assert read == {selected: selected.read_bytes()}
+    read = {selected: selected.read_bytes()}
     frame_root = _frame_procedure_root(
         tmp_path / "frame",
         decayed_root=root,

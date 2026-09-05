@@ -1,6 +1,7 @@
 """Fixture epoch selection, real Git history and producer reads for frame consumer tests."""
 
 import importlib
+import os
 import shutil
 import subprocess
 from pathlib import Path
@@ -9,6 +10,8 @@ from types import SimpleNamespace
 import pytest
 
 from shared.frame_verdicts import epoch_produced_at
+
+PRODUCER_BUILTIN_PATH = Path.home() / "Documents/Personal/30-areas/hapax/frame/procedure/builtin.py"
 
 
 def alias_member_tree(root: Path) -> Path:
@@ -59,11 +62,12 @@ def producer_glob_bytes(
     rg = shutil.which("rg")
     if query_engine == "rg" and rg is None:
         pytest.fail("frame content-query rg oracle requires the rg executable")
-    base = Path("~/Documents/Personal/30-areas/hapax").expanduser()
-    if not (base / "frame/procedure/builtin.py").is_file():
-        if query_engine == "rg":
-            pytest.fail("frame content-query rg oracle requires the installed frame producer")
-        pytest.skip("installed frame producer is unavailable")
+    if not PRODUCER_BUILTIN_PATH.is_file():
+        reason = f"FRAME_PRODUCER_ABSENT:{PRODUCER_BUILTIN_PATH}"
+        if os.environ.get("HAPAX_FRAME_ORACLE_REQUIRED") == "1":
+            pytest.fail(reason)
+        pytest.skip(reason)
+    base = PRODUCER_BUILTIN_PATH.parents[2]
     monkeypatch.syspath_prepend(str(base))
     builtin = importlib.import_module("frame.procedure.builtin")
     declaration = importlib.import_module("frame.procedure.declaration")
@@ -117,6 +121,24 @@ def producer_glob_bytes(
         assert rg_commands, "the rg oracle must execute rg, not the Python fallback"
         assert all(("--ignore-case" in command) == case_insensitive for command in rg_commands)
     return {Path(obs.meta["path"]).resolve(strict=True): obs.content for obs in result.observations}
+
+
+def rg_query_bytes(root: Path, query: str, *, case_insensitive: bool) -> dict[Path, bytes]:
+    """Execute the content-query prefilter independently of the private producer."""
+    rg = shutil.which("rg")
+    if rg is None:
+        pytest.fail("frame content-query rg oracle requires the rg executable")
+    command = [rg, "--fixed-strings", "--files-with-matches", "--text", "--no-ignore", "--hidden"]
+    if case_insensitive:
+        command.append("--ignore-case")
+    result = subprocess.run(
+        [*command, "--", query, str(root)], capture_output=True, text=True, timeout=10
+    )
+    assert result.returncode in (0, 1), result.stderr
+    return {
+        Path(line).resolve(strict=True): Path(line).read_bytes()
+        for line in result.stdout.splitlines()
+    }
 
 
 def git_checkout(root: Path, *, history: str) -> None:
