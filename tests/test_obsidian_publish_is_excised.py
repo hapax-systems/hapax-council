@@ -14,6 +14,7 @@ import yaml
 # The Markdown parser is the locked markdown-it-py (uv.lock, via rich/textual); a missing
 # parser fails this module loudly at import, it is never skipped around.
 from markdown_it import MarkdownIt
+from markdown_it.token import Token
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 SCANNED_DIRECTORIES = ("scripts", "systemd", "config", "agents", "hooks", "docs/runbooks")
@@ -23,28 +24,63 @@ WITHDRAWN_SECTION_START = b"## Withdrawn 2026-09-05\n"
 WITHDRAWN_SECTION_END = b"<!-- end: withdrawn 2026-09-05 -->\n"
 
 
-def current_text_outside_withdrawn_section(content: bytes) -> bytes:
-    """Return the runbook with exactly one bounded withdrawn section removed.
+def withdrawn_section_lines(tokens: list[Token]) -> tuple[int, int] | None:
+    """Find the exemption in the complete document's CommonMark token stream.
 
-    The exemption is bounded on both sides: it starts at the dated ``##`` heading and
-    ends at the explicit end marker. Both must occur exactly once, in that order, and no
-    heading of rank one or two may sit inside the bounded section (the historical
-    procedure is nested as ``###`` and deeper). Headings are what the locked CommonMark
-    parser says they are (ATX at any permitted indentation, Setext underlines); code,
-    fenced or indented, is not a heading. Anything outside the bounds is current text
-    and is checked like every other file.
+    Only a top-level ATX h2 with the exact inline content starts a withdrawal. With
+    no genuine start, all content remains current. Otherwise exactly one start and
+    one exact top-level end-comment block are required, in order. A rank-one or
+    rank-two heading inside those bounds is refused; historical headings stay deeper.
+    Both scans use the resulting zero-based, end-exclusive token-map line range.
     """
-    assert content.count(WITHDRAWN_SECTION_START) == 1, "one dated withdrawn heading"
-    assert content.count(WITHDRAWN_SECTION_END) == 1, "one withdrawn end marker"
-    start = content.index(WITHDRAWN_SECTION_START)
-    end = content.index(WITHDRAWN_SECTION_END)
-    assert start < end, "the end marker must follow the withdrawn heading"
-    inside = content[start + len(WITHDRAWN_SECTION_START) : end]
-    # A heading at the withdrawn section's rank or higher (rank one or two) would start
-    # current text inside the bounds and hide it from the scan; both ranks are refused.
-    ranks = heading_ranks(inside)
-    assert not any(rank <= 2 for rank in ranks), "no heading of rank one or two inside the bounds"
-    return content[:start] + content[end + len(WITHDRAWN_SECTION_END) :]
+    starts = [
+        heading.map
+        for heading, inline in zip(tokens, tokens[1:], strict=False)
+        if heading.type == "heading_open"
+        and heading.tag == "h2"
+        and heading.markup == "##"
+        and heading.level == 0
+        and heading.map is not None
+        and inline.type == "inline"
+        and inline.content == "Withdrawn 2026-09-05"
+    ]
+    if not starts:
+        return None
+    assert len(starts) == 1, "one dated withdrawn heading"
+    ends = [
+        token.map
+        for token in tokens
+        if token.type == "html_block"
+        and token.level == 0
+        and token.map is not None
+        and token.content.removesuffix("\n") == WITHDRAWN_SECTION_END.decode().removesuffix("\n")
+    ]
+    assert len(ends) == 1, "one withdrawn end marker"
+    start, end = starts[0], ends[0]
+    assert start[1] <= end[0], "the end marker must follow the withdrawn heading"
+    assert not any(
+        token.type == "heading_open"
+        and token.tag in {"h1", "h2"}
+        and token.map is not None
+        and start[1] <= token.map[0] < end[0]
+        for token in tokens
+    ), "no heading of rank one or two inside the bounds"
+    return start[0], end[1]
+
+
+def cut_withdrawn_lines(content: bytes, bounds: tuple[int, int] | None) -> bytes:
+    """Remove only the validated token-map lines, preserving all other source bytes."""
+    if bounds is None:
+        return content
+    start, end = bounds
+    lines = content.splitlines(keepends=True)
+    return b"".join(lines[:start] + lines[end:])
+
+
+def current_text_outside_withdrawn_section(content: bytes) -> bytes:
+    """Convenience entry for the byte-scan pins, using the complete document's bounds."""
+    tokens = MarkdownIt("commonmark").parse(content.decode("utf-8", errors="replace"))
+    return cut_withdrawn_lines(content, withdrawn_section_lines(tokens))
 
 
 def heading_ranks(markdown: bytes) -> list[int]:
@@ -53,26 +89,26 @@ def heading_ranks(markdown: bytes) -> list[int]:
     return [int(token.tag[1]) for token in tokens if token.type == "heading_open"]
 
 
-def current_publish_destinations(content: bytes) -> list[tuple[int, str]]:
+def current_publish_destinations(
+    tokens: list[Token], bounds: tuple[int, int] | None
+) -> list[tuple[int, str]]:
     """Resolve the whole document, exempting destinations rendered wholly inside the bounds.
 
     Reference definitions are document-wide, so their location cannot determine
     whether a rendered link or image is current. Inline maps are zero-based,
     end-exclusive line spans; diagnostics name the first current line, one-based.
     """
-    start = content.index(WITHDRAWN_SECTION_START)
-    end = content.index(WITHDRAWN_SECTION_END) + len(WITHDRAWN_SECTION_END)
-    start_line = content.count(b"\n", 0, start)
-    end_line = content.count(b"\n", 0, end)
     violations = []
-    tokens = MarkdownIt("commonmark").parse(content.decode("utf-8", errors="replace"))
     for inline in tokens:
         if inline.type != "inline" or inline.map is None:
             continue
         first, last = inline.map
-        if start_line <= first and last <= end_line:
-            continue
-        current_line = first if first < start_line else max(first, end_line)
+        current_line = first
+        if bounds is not None:
+            start_line, end_line = bounds
+            if start_line <= first and last <= end_line:
+                continue
+            current_line = first if first < start_line else max(first, end_line)
         for child in inline.children or []:
             attribute = {"link_open": "href", "image": "src"}.get(child.type)
             if attribute is None:
@@ -108,17 +144,15 @@ def test_current_sources_have_no_publish_references() -> None:
                 continue
             content = path.read_bytes()
             relative = path.relative_to(REPO_ROOT)
-            if (
-                path.suffix.lower() == ".md"
-                and WITHDRAWN_SECTION_START in content
-                and WITHDRAWN_SECTION_END in content
-            ):
+            if path.suffix.lower() == ".md":
+                tokens = MarkdownIt("commonmark").parse(content.decode("utf-8", errors="replace"))
+                bounds = withdrawn_section_lines(tokens)
                 violations.extend(
                     f"{relative}:{line}: {destination}"
-                    for line, destination in current_publish_destinations(content)
+                    for line, destination in current_publish_destinations(tokens, bounds)
                 )
-            if relative == WITHDRAWAL_RUNBOOK:
-                content = current_text_outside_withdrawn_section(content)
+                if relative == WITHDRAWAL_RUNBOOK:
+                    content = cut_withdrawn_lines(content, bounds)
             for token in PUBLISH_TOKENS:
                 if token in content.lower():
                     violations.append(f"{relative}: {token.decode()}")
@@ -140,6 +174,161 @@ def scan_runbook(monkeypatch: pytest.MonkeyPatch):
         test_current_sources_have_no_publish_references()
 
     return scan
+
+
+def test_fenced_withdrawal_heading_cannot_hide_current_destination(scan_runbook) -> None:
+    """Root's exact byte fixture: the complete document has no withdrawal heading."""
+    content = (
+        b"# Runbook\n"
+        b"\n"
+        b"```text\n"
+        b"## Withdrawn 2026-09-05\n"
+        b"```\n"
+        b"\n"
+        b"# Current\n"
+        b"\n"
+        b"Current vault: [vault](https://publish.obsidian.md/hapax)\n"
+        b"\n"
+        b"<!-- end: withdrawn 2026-09-05 -->\n"
+    )
+    with pytest.raises(
+        AssertionError,
+        match=re.escape(f"{WITHDRAWAL_RUNBOOK}:9: https://publish.obsidian.md/hapax"),
+    ):
+        scan_runbook(content)
+
+
+@pytest.mark.parametrize(
+    "fake_heading",
+    [
+        pytest.param(b"```text\n" + WITHDRAWN_SECTION_START + b"```\n", id="fenced"),
+        pytest.param(b"    " + WITHDRAWN_SECTION_START, id="indented-code"),
+        pytest.param(b"> " + WITHDRAWN_SECTION_START, id="blockquote"),
+        pytest.param(b"- " + WITHDRAWN_SECTION_START, id="list-item"),
+        pytest.param(b"Withdrawn 2026-09-05\n--------------------\n", id="setext"),
+        pytest.param(b"## **Withdrawn 2026-09-05**\n", id="different-inline-content"),
+    ],
+)
+@pytest.mark.parametrize("has_publish", [False, True], ids=["preserved", "current-refused"])
+def test_fake_withdrawal_heading_is_current_content(
+    scan_runbook, fake_heading: bytes, has_publish: bool
+) -> None:
+    current = (
+        b"Current vault: [vault](https://publish.obsidian.md/hapax)\n"
+        if has_publish
+        else b"Current vault: private\n"
+    )
+    content = (
+        b"# Runbook\n\n"
+        + fake_heading
+        + b"\n# Current\n\n"
+        + current
+        + b"\n"
+        + WITHDRAWN_SECTION_END
+    )
+    if has_publish:
+        with pytest.raises(AssertionError) as refused:
+            scan_runbook(content)
+        assert re.search(
+            re.escape(str(WITHDRAWAL_RUNBOOK)) + r":\d+: https://publish\.obsidian\.md/hapax",
+            str(refused.value),
+        )
+    else:
+        scan_runbook(content)
+        assert current_text_outside_withdrawn_section(content) == content
+
+
+def test_fenced_markers_inside_genuine_withdrawal_stay_exempt(scan_runbook) -> None:
+    bounded = (
+        b"# Runbook\n\n"
+        + WITHDRAWN_SECTION_START
+        + b"\n```text\n"
+        + WITHDRAWN_SECTION_START
+        + b"https://publish.obsidian.md/hapax\nhapax-obsidian-publish-sync\n"
+        + WITHDRAWN_SECTION_END
+        + b"```\n\n"
+        + WITHDRAWN_SECTION_END
+        + b"\n# Current\n\nCurrent vault: private\n"
+    )
+    scan_runbook(bounded)
+
+
+@pytest.mark.parametrize(
+    "invalid_end",
+    [
+        pytest.param(b"", id="missing"),
+        pytest.param(b"```text\n" + WITHDRAWN_SECTION_END + b"```\n", id="fenced"),
+        pytest.param(b"    " + WITHDRAWN_SECTION_END, id="indented-code"),
+        pytest.param(b"> " + WITHDRAWN_SECTION_END, id="blockquote"),
+        pytest.param(b"- " + WITHDRAWN_SECTION_END, id="list-item"),
+        pytest.param(b"paragraph " + WITHDRAWN_SECTION_END, id="inline-html"),
+        pytest.param(WITHDRAWN_SECTION_END.rstrip(b"\n") + b" extra\n", id="inexact-comment"),
+    ],
+)
+def test_genuine_withdrawal_requires_a_top_level_end_block(
+    scan_runbook, invalid_end: bytes
+) -> None:
+    content = WITHDRAWN_SECTION_START + b"\nHistorical vault: private\n\n" + invalid_end
+    with pytest.raises(AssertionError, match="one withdrawn end marker"):
+        scan_runbook(content)
+
+
+def test_two_genuine_withdrawal_headings_are_ambiguous(scan_runbook) -> None:
+    content = (
+        WITHDRAWN_SECTION_START
+        + b"\nHistorical vault: private\n\n"
+        + WITHDRAWN_SECTION_START
+        + b"\nMore history\n\n"
+        + WITHDRAWN_SECTION_END
+    )
+    with pytest.raises(AssertionError, match="one dated withdrawn heading"):
+        scan_runbook(content)
+
+
+def test_two_genuine_withdrawal_end_blocks_are_ambiguous(scan_runbook) -> None:
+    content = WITHDRAWN_SECTION_START + b"\n" + WITHDRAWN_SECTION_END + WITHDRAWN_SECTION_END
+    with pytest.raises(AssertionError, match="one withdrawn end marker"):
+        scan_runbook(content)
+
+
+def test_withdrawal_end_block_must_follow_genuine_heading(scan_runbook) -> None:
+    content = WITHDRAWN_SECTION_END + b"\n" + WITHDRAWN_SECTION_START
+    with pytest.raises(AssertionError, match="the end marker must follow the withdrawn heading"):
+        scan_runbook(content)
+
+
+@pytest.mark.parametrize(
+    "heading",
+    [
+        pytest.param(WITHDRAWN_SECTION_START, id="plain-atx"),
+        pytest.param(b"   " + WITHDRAWN_SECTION_START, id="permitted-atx-indentation"),
+        pytest.param(b"## Withdrawn 2026-09-05 ##\n", id="closing-atx-hashes"),
+    ],
+)
+def test_genuine_withdrawal_uses_one_whole_document_parse(
+    scan_runbook, monkeypatch: pytest.MonkeyPatch, heading: bytes
+) -> None:
+    content = (
+        b"Current vault: [vault][retired-site]\n\n"
+        + heading
+        + b"\n[retired-site]: https://publish.obsidian.md/hapax\n\n"
+        + WITHDRAWN_SECTION_END
+    )
+    original_parse = MarkdownIt.parse
+    parsed_sources = []
+
+    def parse(parser, source, *args, **kwargs):
+        parsed_sources.append(source)
+        return original_parse(parser, source, *args, **kwargs)
+
+    monkeypatch.setattr(MarkdownIt, "parse", parse)
+    with pytest.raises(
+        AssertionError,
+        match=re.escape(f"{WITHDRAWAL_RUNBOOK}:1: https://publish.obsidian.md/hapax"),
+    ):
+        scan_runbook(content)
+    assert parsed_sources.count(content.decode()) == 1
+    assert parsed_sources.count("\n[retired-site]: https://publish.obsidian.md/hapax\n\n") == 0
 
 
 def test_current_reference_resolves_definition_inside_withdrawn_bounds(scan_runbook) -> None:
