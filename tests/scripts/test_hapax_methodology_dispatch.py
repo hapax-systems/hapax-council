@@ -4569,6 +4569,7 @@ def _frame_procedure_root(
     age_s: int = 0,
     location: dict[str, object] | None = None,
     exclusions: list[dict[str, object]] | None = None,
+    reader: str | None = None,
 ) -> Path:
     """One epoch and a two-member mass; `decayed_root` is the location of the member the epoch
     marks scope_exited (None: the same member, verdict FALSE)."""
@@ -4588,6 +4589,8 @@ def _frame_procedure_root(
         },
         {"id": "live-surface", "location": {"path": str(root / "live")}},
     ]
+    if reader is not None:
+        members[0]["reader"] = {"id": reader, "version": "^1.0.0"}
     verdicts = [
         {
             "subject": {"member_id": member["id"]},
@@ -5303,6 +5306,134 @@ def test_dispatch_refuses_work_whose_whole_scope_lies_in_a_decayed_member(
     assert "legacy-surface/old.py lies in legacy-surface (scope_exited)" in err
     assert "re-declare mutation_scope_refs" in err
     assert "fixture refusal" not in err
+
+
+@pytest.mark.parametrize(
+    "name", ["file.md", "session/file.md", "excluded/file.md", "session/", "session/*.md"]
+)
+def test_dispatch_ssh_glob_recursive_selection(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+    name: str,
+) -> None:
+    module = _dispatcher_module()
+    remote = "podium:.local/share/opencode"
+    frame_root = _frame_procedure_root(
+        tmp_path / "frame",
+        decayed_root=remote,
+        reader="ssh.glob",
+        location={"path": remote, "patterns": ["*"], "skip_dirs": ["excluded"]},
+        exclusions=[{"id": "excluded", "paths": [remote + "/excluded"]}],
+    )
+    rc, err = _dispatch_up_to_the_adapter(
+        tmp_path,
+        monkeypatch,
+        capsys,
+        module,
+        mutation_scope_refs=json.dumps([f"{remote}/{name}"]),
+        frame_root=frame_root,
+    )
+    assert rc == 10
+    assert "fixture refusal" not in err, err
+    assert "marks every declared mutation surface out of accountability" in err
+
+
+@pytest.mark.parametrize("host", ["podium", "hapax-podium.local", "stage", "undeclared-podium"])
+@pytest.mark.parametrize("declared_host", ["podium", "hapax-podium.local"])
+def test_dispatch_ssh_glob_host_aliases(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+    host: str,
+    declared_host: str,
+) -> None:
+    module = _dispatcher_module()
+    remote = f"{declared_host}:.local/share/opencode"
+    frame_root = _frame_procedure_root(
+        tmp_path / "frame",
+        decayed_root=remote,
+        reader="ssh.glob",
+        location={
+            "path": remote,
+            "patterns": ["*"],
+            "host_aliases": {"podium": "hapax-podium.local", "stage": "hapax-podium.local"},
+        },
+    )
+    rc, err = _dispatch_up_to_the_adapter(
+        tmp_path,
+        monkeypatch,
+        capsys,
+        module,
+        mutation_scope_refs=json.dumps([f"{host}:.local/share/opencode/file.md"]),
+        frame_root=frame_root,
+    )
+    assert rc == 10
+    assert "fixture refusal" not in err, err
+    if host == "undeclared-podium":
+        assert "undecidable" in err
+        assert "Next:" in err
+        assert "host_aliases" in err
+        assert "podium" in err and "hapax-podium.local" in err and "stage" in err
+    else:
+        assert "marks every declared mutation surface out of accountability" in err
+
+
+@pytest.mark.parametrize("base_source", ["vault", "epoch", "unavailable", "invalid-epoch"])
+def test_dispatch_relative_member_uses_producer_base(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+    base_source: str,
+) -> None:
+    module = _dispatcher_module()
+    vault = tmp_path / "vault"
+    producer_base = vault / "30-areas/hapax" if base_source == "vault" else tmp_path / "producer"
+    surface = producer_base / "frame/procedure"
+    surface.mkdir(parents=True)
+    file = surface / "builtin.py"
+    file.write_text("# producer surface\n")
+    assert {p for p in surface.glob("*.py") if p.is_file()} == {file}
+    frame_root = _frame_procedure_root(
+        tmp_path / "frame",
+        decayed_root="frame/procedure",
+        reader="fs.glob",
+        location={"path": "frame/procedure", "patterns": ["*.py"]},
+    )
+    if base_source in ("epoch", "invalid-epoch"):
+        # A recorded cwd takes precedence even when a different valid vault base exists.
+        (vault / "30-areas/hapax").mkdir(parents=True)
+        (frame_root / "_runs/current/hypothesis.json").write_text(
+            json.dumps(
+                {
+                    "iteration": {
+                        "environment": {
+                            "cwd": str(producer_base) if base_source == "epoch" else "relative-base"
+                        }
+                    }
+                }
+            )
+        )
+    monkeypatch.setenv("HAPAX_FRAME_VAULT_ROOT", str(vault))
+    unrelated = tmp_path / "unrelated"
+    unrelated.mkdir()
+    monkeypatch.chdir(unrelated)
+    rc, err = _dispatch_up_to_the_adapter(
+        tmp_path,
+        monkeypatch,
+        capsys,
+        module,
+        mutation_scope_refs=json.dumps([str(file)]),
+        frame_root=frame_root,
+    )
+    assert rc == 10
+    assert "fixture refusal" not in err, err
+    if base_source in ("unavailable", "invalid-epoch"):
+        assert "undecidable" in err
+        assert "producer working directory" in err
+        assert "Next:" in err and "HAPAX_FRAME_VAULT_ROOT" in err
+    else:
+        assert "marks every declared mutation surface out of accountability" in err
 
 
 def test_dispatch_refuses_scheme_qualified_scope_in_a_decayed_member(

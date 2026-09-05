@@ -5,6 +5,7 @@ from __future__ import annotations
 import hashlib
 import json
 import re
+import subprocess
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
@@ -15,6 +16,95 @@ from shared import frame_verdicts as fv
 from tests.frame_verdict_helpers import git_checkout
 
 NOW = datetime(2026, 9, 3, 22, 30, tzinfo=UTC)
+
+
+@pytest.mark.parametrize(
+    "patterns",
+    [["*"], ["*.md"], ["file[12].md"], ["session/*.md"], [], ["**"], ["file**.md"], ["."]],
+)
+def test_ssh_glob_matches_producer_find_name_oracle(tmp_path: Path, patterns: list[str]) -> None:
+    """builtin.py:ssh_glob uses find . -type f ( -name PATTERN -o ... ), recursively.
+
+    Execute that selection locally, without SSH, caps or byte transport. Unlike fs_glob,
+    ssh_glob never reads skip_dirs or calls ctx.is_excluded: even the declared excluded
+    directory remains selected. These nonempty tiny files are below all producer bounds.
+    """
+    mirror = tmp_path / "remote"
+    names = ["file1.md", "session/file2.md", "excluded/file1.md", "session/code.py", ".hidden.md"]
+    for name in names:
+        file = mirror / name
+        file.parent.mkdir(parents=True, exist_ok=True)
+        file.write_text("content")
+    expression = []
+    for pattern in patterns or ["*"]:
+        if expression:
+            expression.append("-o")
+        expression.extend(["-name", pattern])
+    selected = subprocess.run(
+        ["find", ".", "-type", "f", "(", *expression, ")", "-print"],
+        cwd=mirror,
+        text=True,
+        capture_output=True,
+        check=True,
+    ).stdout.splitlines()
+    selected = {name.removeprefix("./") for name in selected}
+    location = "podium:.local/share/opencode"
+    verdicts = fv.load_frame_verdicts(
+        _procedure_root(
+            tmp_path / "procedure",
+            members=[
+                {
+                    "id": "remote",
+                    "reader": {"id": "ssh.glob", "version": "^1.0.0"},
+                    "location": {
+                        "path": location,
+                        "patterns": patterns,
+                        "skip_dirs": ["excluded"],
+                    },
+                }
+            ],
+            verdicts=[_verdict("remote", "scope_exited")],
+            exclusions=[{"id": "excluded", "paths": [str(mirror / "excluded")]}],
+        ),
+        now=NOW,
+    )
+    for name in names:
+        result = fv.scope_within_decayed(
+            [f"{location}/{name}"], verdicts, council_root=tmp_path, vault_root=tmp_path
+        )
+        assert result.all_inside == (name in selected), (patterns, name, selected, result)
+
+
+def test_ssh_glob_unsupported_filename_syntax_is_undecidable(tmp_path: Path) -> None:
+    # find matches a slash inside this negated class; treating every slash as a path
+    # separator would incorrectly admit this file as outside the decayed surface.
+    (tmp_path / "file.md").write_text("content")
+    pattern = "*[!/]md"
+    assert (
+        subprocess.run(
+            ["find", ".", "-type", "f", "-name", pattern],
+            cwd=tmp_path,
+            capture_output=True,
+            text=True,
+            check=True,
+        ).stdout
+        == "./file.md\n"
+    )
+    member = fv.DecayedMember(
+        "remote",
+        "scope_exited",
+        (),
+        (pattern,),
+        (),
+        qualified_roots=(fv._qualified_location("podium:store")[0],),
+        reader="ssh.glob",
+    )
+    with pytest.raises(
+        fv.UncontainableMemberLocation, match="ssh.glob filename pattern.*undecidable"
+    ):
+        fv.qualified_ref_within_member(
+            fv._qualified_location("podium:store/file.md")[0], False, member
+        )
 
 
 def _stamp(at: datetime) -> str:

@@ -29,7 +29,7 @@ import json
 import os
 import re
 import subprocess
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
@@ -142,6 +142,8 @@ class DecayedMember:
     excluded_roots: tuple[Path, ...] = ()
     excluded_prefixes: tuple[Path, ...] = ()
     skip_dirs: tuple[str, ...] = ()
+    reader: str = ""
+    host_aliases: tuple[tuple[str, str], ...] = ()
 
 
 @dataclass(frozen=True)
@@ -403,8 +405,72 @@ def _exclusion_locations(
     return tuple(roots), tuple(prefixes)
 
 
+def _producer_working_directory(epoch_dir: Path) -> Path:
+    """Use recorded execution context, or the declared vault binding, never dispatch cwd.
+
+    Current producer epochs persist iteration.environment in hypothesis.json, but only
+    record python/platform/host. Honour cwd when recorded; older epochs use the working
+    directory from the producer command in PRODUCER_REMEDY.
+    """
+    remedy = (
+        "record an absolute producer working directory in hypothesis.json iteration.environment.cwd "
+        f"or set {FRAME_VAULT_ROOT_ENV} to the producer's vault with 30-areas/hapax; "
+        + PRODUCER_REMEDY
+    )
+    hypothesis = epoch_dir / "hypothesis.json"
+    try:
+        if hypothesis.exists():
+            payload = json.loads(hypothesis.read_text(encoding="utf-8"))
+            environment = payload.get("iteration", {}).get("environment", {})
+            if "cwd" in environment:
+                raw = environment["cwd"]
+                if isinstance(raw, str) and raw and Path(raw).is_absolute():
+                    return Path(raw).resolve()
+                raise ValueError("recorded cwd must be a non-empty absolute path")
+        vault = frame_vault_root().expanduser()
+        base = vault / "30-areas/hapax"
+        if vault.is_absolute() and base.is_dir():
+            return base.resolve()
+    except (OSError, ValueError, AttributeError, TypeError) as exc:
+        raise FrameVerdictsUnavailable(
+            f"producer working directory is undecidable: {exc}", remedy=remedy
+        ) from exc
+    raise FrameVerdictsUnavailable(
+        "relative member location is undecidable: no recorded producer working directory "
+        "or available declared vault base",
+        remedy=remedy,
+    )
+
+
+def _member_host_aliases(member: dict[str, object]) -> tuple[tuple[str, str], ...]:
+    location = member.get("location") or {}
+    raw = (location.get("host_aliases") or {}) if isinstance(location, dict) else {}
+    if not isinstance(raw, dict):
+        raise UncontainableMemberLocation("location.host_aliases must be a host-to-host mapping")
+    aliases: dict[str, str] = {}
+    for alias, canonical in raw.items():
+        if not isinstance(alias, str) or not isinstance(canonical, str):
+            raise UncontainableMemberLocation("location.host_aliases must contain literal hosts")
+        _validate_authority(alias, alias)
+        _validate_authority(canonical, canonical)
+        alias, canonical = alias.casefold(), canonical.casefold()
+        if alias in aliases and aliases[alias] != canonical:
+            raise UncontainableMemberLocation(
+                "location.host_aliases has conflicting host spellings"
+            )
+        aliases[alias] = canonical
+    # The producer performs ONE lookup. A chain or cycle cannot safely be flattened.
+    if any(aliases.get(host, host) != host for host in aliases.values()):
+        raise UncontainableMemberLocation(
+            "location.host_aliases must map each alias directly to its canonical host"
+        )
+    return tuple(sorted(aliases.items()))
+
+
 def _member_location(
     member: dict[str, object],
+    *,
+    epoch_dir: Path,
 ) -> tuple[
     tuple[Path, ...],
     tuple[str, ...],
@@ -423,12 +489,19 @@ def _member_location(
         raw_roots.extend(str(item) for item in location["roots"] if isinstance(item, str))
     roots: list[Path] = []
     qualified_roots: list[QualifiedLocation] = []
+
+    def local_path(raw: str) -> Path:
+        path = Path(raw).expanduser()
+        if not path.is_absolute():
+            path = _producer_working_directory(epoch_dir) / path
+        return path.resolve()
+
     for raw in raw_roots:
         raw = raw.strip()
         if _has_qualifier(raw):
             qualified_roots.append(_qualified_location(raw)[0])
             continue
-        roots.append(Path(raw).expanduser().resolve())
+        roots.append(local_path(raw))
     patterns = location.get("patterns")
     globs = tuple(str(item) for item in patterns) if isinstance(patterns, list) else ()
     files_raw = location.get("files")
@@ -442,7 +515,7 @@ def _member_location(
             if _has_qualifier(item):
                 qualified_files.append(_qualified_location(item)[0])
             else:
-                files.append(Path(item).expanduser().resolve())
+                files.append(local_path(item))
     return (
         tuple(roots),
         globs,
@@ -714,8 +787,13 @@ def _load_epoch_verdicts(
     for member_id, member in members_by_id.items():
         if member_id not in decay:
             continue
+        reader = member.get("reader")
+        reader_id = reader.get("id", "") if isinstance(reader, dict) else ""
         try:
-            roots, patterns, files, qualified_roots, qualified_files = _member_location(member)
+            roots, patterns, files, qualified_roots, qualified_files = _member_location(
+                member, epoch_dir=epoch_dir
+            )
+            host_aliases = _member_host_aliases(member) if reader_id == "ssh.glob" else ()
         except NonCanonicalScopeRef as exc:
             raise FrameVerdictsUnavailable(
                 f"member {member_id!r} has an uncontainable scheme-qualified location: {exc}",
@@ -736,6 +814,8 @@ def _load_epoch_verdicts(
                     excluded_roots=excluded_roots,
                     excluded_prefixes=excluded_prefixes,
                     skip_dirs=skip_dirs,
+                    reader=reader_id,
+                    host_aliases=host_aliases,
                 )
             )
         if not roots and not files and not qualified_roots and not qualified_files:
@@ -1275,6 +1355,45 @@ def ref_within_member(
     return False
 
 
+def _ssh_glob_patterns(patterns: tuple[str, ...]) -> tuple[str, ...]:
+    """Translate find -name's filename selection to recursive containment patterns.
+
+    ssh.glob neither consults mass exclusions nor reads skip_dirs. It selects files
+    at every depth. Slashes outside character classes never match; repeated stars are
+    filename stars, not pathlib recursion. Unsupported find/fnmatch dialect features
+    are undecidable.
+    """
+    result = []
+    for pattern in patterns or ("*",):
+        if ("/" in pattern and "[" in pattern) or any(
+            token in pattern for token in ("\\", "\x00", "[^", "[:", "[.", "[=")
+        ):
+            raise UncontainableMemberLocation(
+                f"ssh.glob filename pattern {pattern!r} is undecidable; declare a plain "
+                "find -name pattern without escapes or locale-dependent character classes"
+            )
+        if "/" not in pattern and pattern not in ("", ".", ".."):
+            result.append("**/" + re.sub(r"\*+", "*", pattern))
+    return tuple(result)
+
+
+def _canonical_remote_location(
+    location: QualifiedLocation, member: DecayedMember
+) -> QualifiedLocation:
+    if location.authority is not None:
+        return location
+    aliases = dict(member.host_aliases)
+    declared = {p.scheme for p in (*member.qualified_roots, *member.qualified_files)}
+    known = declared | aliases.keys() | set(aliases.values())
+    if location.scheme not in known:
+        raise UndecidableScopeContainment(
+            f"remote host {location.scheme!r} is undeclared; alias containment is undecidable "
+            f"for member {member.member_id!r}. Next: use a declared host from {sorted(known)!r} "
+            f"or amend location.host_aliases {aliases!r}; {PRODUCER_REMEDY}"
+        )
+    return replace(location, scheme=aliases.get(location.scheme, location.scheme))
+
+
 def qualified_ref_within_member(
     ref: QualifiedLocation,
     dirlike: bool,
@@ -1283,14 +1402,27 @@ def qualified_ref_within_member(
     scope_pattern: str | None = None,
 ) -> bool:
     """Whether a parsed scheme-qualified ref is contained by one decayed member."""
-    patterns = _member_file_patterns(member.patterns)
+    remote = member.reader == "ssh.glob"
+    patterns = (
+        _ssh_glob_patterns(member.patterns) if remote else _member_file_patterns(member.patterns)
+    )
+    qualified_roots = member.qualified_roots
+    qualified_files = member.qualified_files
+    if remote:
+        ref = _canonical_remote_location(ref, member)
+        qualified_roots = tuple(
+            _canonical_remote_location(root, member) for root in qualified_roots
+        )
+        qualified_files = tuple(
+            _canonical_remote_location(file, member) for file in qualified_files
+        )
     broad = dirlike or scope_pattern is not None
-    if ref in member.qualified_files:
+    if ref in qualified_files:
         if broad:
             _refuse_directory_spelled_file(ref)
         return True
     if scope_pattern is not None:
-        for file in member.qualified_files:
+        for file in qualified_files:
             same_namespace = (
                 ref.scheme == file.scheme
                 and ref.authority == file.authority
@@ -1305,7 +1437,7 @@ def qualified_ref_within_member(
                     f"scope glob {scope_pattern!r} matches declared member file {file}; "
                     "whole-surface containment cannot be decided safely"
                 )
-    for root in member.qualified_roots:
+    for root in qualified_roots:
         same_namespace = (
             ref.scheme == root.scheme
             and ref.authority == root.authority
@@ -1331,10 +1463,12 @@ def qualified_ref_within_member(
         relative = "/".join(relative_parts)
         if broad:
             member_scope_pattern = _scope_pattern_from_base(relative, scope_pattern)
-            if member.patterns and not _scope_glob_covered(member_scope_pattern, member.patterns):
+            if (member.patterns or remote) and not _scope_glob_covered(
+                member_scope_pattern, patterns if remote else member.patterns
+            ):
                 continue
             return True
-        if not member.patterns or ref.parts == root.parts:
+        if (not member.patterns and not remote) or ref.parts == root.parts:
             return True
         if any(_pattern_matches(relative, pattern) for pattern in patterns):
             return True
