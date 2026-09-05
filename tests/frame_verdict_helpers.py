@@ -10,6 +10,20 @@ import pytest
 from shared.frame_verdicts import epoch_produced_at
 
 
+def alias_member_tree(root: Path) -> Path:
+    """A portable file surface with file aliases, directory aliases and nested files."""
+    (root / "bin/db5.3/nested").mkdir(parents=True)
+    (root / "bin/db5.3/db_dump").write_bytes(b"selected database bytes\n")
+    (root / "bin/db5.3/nested/db_load").write_bytes(b"selected nested bytes\n")
+    (root / "bin/gawk").write_bytes(b"GNU selected query bytes\n")
+    (root / "bin/awk").symlink_to("gawk")
+    (root / "sbin").symlink_to("bin", target_is_directory=True)
+    (root / "tools").mkdir()
+    (root / "tools/unselected").write_bytes(b"unrelated bytes\n")
+    (root / "bin/tools").symlink_to("../tools", target_is_directory=True)
+    return root
+
+
 def latest_epoch_dir(procedure_root: Path) -> Path | None:
     """Select the newest persisted test-fixture attempt, independent of publication."""
     epochs = procedure_root / "_runs" / "epochs"

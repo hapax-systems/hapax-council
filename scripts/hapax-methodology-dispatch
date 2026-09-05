@@ -1106,8 +1106,8 @@ def frame_verdict_refusal(
         (
             f"frame epoch {verdicts.epoch} marks every declared mutation surface out of "
             f"accountability: {detail}. Next: re-declare mutation_scope_refs on a live surface, or "
-            "re-witness the member in frame/procedure/declaration/mass.yaml and re-run the frame "
-            "producer"
+            f"re-witness the member in {frame_verdicts.MASS_DECLARATION_LOCATION} "
+            "and re-run the frame producer"
         ),
         verdicts.epoch,
         decayed,
@@ -2463,13 +2463,7 @@ def main(argv: list[str] | None = None) -> int:
     if route_decision.action is not DispatchAction.LAUNCH:
         _emit_gate_event(route_decision, policy_request, task_fields, gate_result="reject")
         route_reason = f"route policy {route_decision.action.value}: {route_decision.message}"
-        blocked = Validation(
-            False,
-            route_reason,
-            validation.task,
-            validation.parent_spec_path,
-            validation.exempt_read_only,
-        )
+        blocked = replace(validation, ok=False, reason=route_reason)
         if not args.no_receipt:
             write_receipt(
                 invocation_id=args.invocation_id,
@@ -2517,13 +2511,7 @@ def main(argv: list[str] | None = None) -> int:
         return 10
     compatibility_reason = platform_lane_compatibility_reason(args.lane, selected_route)
     if compatibility_reason is not None:
-        blocked = Validation(
-            False,
-            compatibility_reason,
-            validation.task,
-            validation.parent_spec_path,
-            validation.exempt_read_only,
-        )
+        blocked = replace(validation, ok=False, reason=compatibility_reason)
         if not args.no_receipt:
             write_receipt(
                 invocation_id=args.invocation_id,

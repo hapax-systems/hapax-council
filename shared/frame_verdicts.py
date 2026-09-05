@@ -78,6 +78,9 @@ PRODUCER_REMEDY = (
     "~/Documents/Personal/30-areas/hapax: `uv run --with pyyaml python -m frame.procedure.run` — "
     "then retry the dispatch"
 )
+MASS_DECLARATION_LOCATION = (
+    "declaration/mass.yaml (relative to the procedure root, HAPAX_FRAME_PROCEDURE_ROOT)"
+)
 
 _EPOCH_NAME = re.compile(r"^(\d{8}T\d{6}Z)-[0-9a-f]+$")
 _NON_FILESYSTEM_ROOT = re.compile(r"^[A-Za-z][A-Za-z0-9+.\-]*:")
@@ -97,8 +100,7 @@ class UncontainableMemberLocation(NonCanonicalScopeRef):
     """A decayed member's declaration supplies no comparable location."""
 
     remedy = (
-        "amend frame/procedure/declaration/mass.yaml with a containable member location; "
-        + PRODUCER_REMEDY
+        f"amend {MASS_DECLARATION_LOCATION} with a containable member location; " + PRODUCER_REMEDY
     )
 
 
@@ -1606,6 +1608,16 @@ def ref_within_member(
             return ref_within_member(candidate, candidate_is_dir, member)
     if member.reader == "fs.content_query":
         return _content_query_within_member(path, dirlike, member, scope_pattern)
+    if broad:
+        # A literal directory base denotes the same future file language through an alias.
+        # Resolve each component even inside the root; terminal ** supplies no file witnesses
+        # to repair a lexical-only comparison. Keep the lexical proof as well for member
+        # patterns that explicitly select entries through an alias.
+        canonical_base = _resolve_external_scope_path(path)
+        if canonical_base != path and ref_within_member(
+            canonical_base, dirlike, member, scope_pattern=scope_pattern
+        ):
+            return True
     selected_entries = _canonical_member_entries(member)
     surface = frozenset(selected_entries.values())
     expansions = (
