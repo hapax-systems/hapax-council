@@ -43,6 +43,122 @@ def _unwritten(report) -> set[str]:
     }
 
 
+@pytest.mark.parametrize(
+    "store, wrapped",
+    [
+        ("global", False),
+        ("globals", False),
+        ("nonlocal", False),
+        ("global", True),
+        ("globals", True),
+    ],
+)
+def test_round_eight_callee_mutations_invalidate_caller(gate, tmp_path, store, wrapped):
+    if store == "nonlocal":
+        source = (
+            "def run():\n"
+            "    ARTIFACT = Path('artifacts/old.json')\n"
+            "    def configure():\n"
+            "        nonlocal ARTIFACT\n"
+            "        ARTIFACT = Path('artifacts/new.json')\n"
+            "    configure()\n"
+            "    ARTIFACT.write_text('{}')\n"
+            "run()\n"
+        )
+    else:
+        source = (
+            "ARTIFACT = Path('artifacts/old.json')\n"
+            "def configure():\n"
+            + (
+                "    global ARTIFACT\n    ARTIFACT = Path('artifacts/new.json')\n"
+                if store == "global"
+                else "    globals()['ARTIFACT'] = Path('artifacts/new.json')\n"
+            )
+            + (
+                "def run():\n    configure()\n    ARTIFACT.write_text('{}')\nrun()\n"
+                if wrapped
+                else "configure()\nARTIFACT.write_text('{}')\n"
+            )
+        )
+    _write(
+        tmp_path,
+        "from pathlib import Path\n" + source + "Path('artifacts/old.json').read_text()\n",
+    )
+    accesses, *_ = gate.collect_artifact_accesses(tmp_path)
+    assert not [a for a in accesses if a.action == "write" and a.bounded], accesses
+    report = gate.analyse_consumer_side(tmp_path, [])
+    assert _unwritten(report) == {"artifacts/old.json"}
+    assert report.unresolvable > 0
+    assert any("ARTIFACT" in site for site in report.unresolved_paths)
+
+
+def test_round_eight_augassign_freezes_target_before_walrus(gate, tmp_path):
+    _write(
+        tmp_path,
+        "from pathlib import Path\nartifact = Path('artifacts/old')\n"
+        "artifact /= str(artifact := Path('new.json'))\n"
+        "artifact.write_text('{}')\nPath('new.json/new.json').read_text()\n",
+    )
+    accesses, *_ = gate.collect_artifact_accesses(tmp_path)
+    assert {a.pattern for a in accesses if a.action == "write"} == {"artifacts/old/new.json"}
+    report = gate.analyse_consumer_side(tmp_path, [])
+    assert _unwritten(report) == {"new.json/new.json"}
+    assert report.unresolvable == 0
+
+
+@pytest.mark.parametrize("artifact", ["state.json", "nested/state.json", "a/b/state.json"])
+def test_round_eight_recursive_glob_includes_zero_directories(gate, tmp_path, artifact):
+    _write(
+        tmp_path,
+        "from pathlib import Path\n"
+        f"Path('artifacts/{artifact}').write_text('{{}}')\n"
+        "list(Path('artifacts').rglob('*.json'))\n",
+    )
+    report = gate.analyse_consumer_side(tmp_path, [])
+    assert report.findings == []
+    assert report.unresolvable == 0
+
+
+@pytest.mark.parametrize("cap_route", ["calls", "scope", "module"])
+def test_round_eight_binding_cap_is_reported_as_uncertainty(
+    gate, tmp_path, monkeypatch, capsys, cap_route
+):
+    monkeypatch.setattr(gate, "_MAX_BINDING_STATES", 0 if cap_route == "module" else 1)
+    calls = (
+        "read_state(Path('artifacts/a.json'))\nread_state(Path('artifacts/b.json'))\n"
+        if cap_route == "calls"
+        else "read_state(Path('artifacts/a.json'))\n"
+    )
+    _write(
+        tmp_path,
+        "from pathlib import Path\ndef read_state(artifact):\n    artifact.read_text()\n" + calls,
+    )
+    report = gate.analyse_consumer_side(tmp_path, [])
+    assert report.unresolvable > 0
+    assert any("binding state cap" in site for site in report.capped_expressions)
+    assert any("shared/consumer.py:" in site for site in report.capped_expressions)
+    gate.print_consumer_side_report(report, tmp_path / "unused.json")
+    assert "[CAPPED] shared/consumer.py:" in capsys.readouterr().out
+
+
+def test_round_eight_report_error_with_findings_stays_report_only(tmp_path):
+    _write(tmp_path, "from pathlib import Path\nPath('artifacts/orphan.json').read_text()\n")
+    # A directory is an invalid report file even when this canary runs as root.
+    result = subprocess.run(
+        [sys.executable, str(SCRIPT_PATH), "--consumer-side", "--report-json", str(tmp_path)],
+        cwd=tmp_path,
+        capture_output=True,
+        text=True,
+        check=False,
+        timeout=30,
+    )
+    assert result.returncode == 0, result.stdout + result.stderr
+    assert f"[REPORT-ERROR] {tmp_path}:" in result.stdout
+    assert "[REPORT] consumer-reads-unwritten-artifact" in result.stdout
+    assert "read=artifacts/orphan.json" in result.stdout
+    assert "consumer-side gate is REPORT-ONLY" in result.stdout
+
+
 @pytest.mark.parametrize("caller_first", [False, True])
 @pytest.mark.parametrize("imported", [False, True])
 @pytest.mark.parametrize("arguments", [("new",), ("new", "other"), (None,), ("new", None)])

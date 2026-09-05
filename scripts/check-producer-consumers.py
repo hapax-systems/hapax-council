@@ -645,6 +645,7 @@ class PathFunctionTable(dict[str, PathFunction]):
         self.scope_calls: dict[ast.AST, list[ast.Call]] = {}
         self.scope_helpers: dict[tuple, tuple[ast.AST, ...]] = {}
         self.scope_locals: dict[ast.AST, set[str]] = {}
+        self.scope_mutations: dict[ast.AST, tuple[set[str], set[str]]] = {}
         self.call_edges: dict[ast.AST, set[ast.AST]] = {}
 
     def record_calls(self, node: ast.AST, states: list[dict[str, str]]) -> None:
@@ -2419,6 +2420,44 @@ def _scope_local_names(node: ast.AST) -> set[str]:
     return local - outer
 
 
+def _scope_outer_mutations(
+    node: ast.FunctionDef | ast.AsyncFunctionDef,
+) -> tuple[set[str], set[str]]:
+    """Names a callee may store outside its local frame; nested bodies run separately."""
+    globals_: set[str] = set()
+    nonlocals: set[str] = set()
+    stores: set[str] = set()
+    namespace_stores: set[str] = set()
+    pending = list(node.body)
+    while pending:
+        item = pending.pop()
+        if isinstance(item, ast.Global):
+            globals_.update(item.names)
+        elif isinstance(item, ast.Nonlocal):
+            nonlocals.update(item.names)
+        elif isinstance(item, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)):
+            stores.add(item.name)
+            continue
+        elif isinstance(item, ast.Lambda):
+            continue
+        elif isinstance(item, (ast.Import, ast.ImportFrom)):
+            stores.update(alias.asname or alias.name.split(".")[0] for alias in item.names)
+        elif isinstance(getattr(item, "ctx", None), (ast.Store, ast.Del)):
+            stores.update(_target_names(item))
+            if (
+                isinstance(item, ast.Subscript)
+                and isinstance(item.value, ast.Call)
+                and _function_name(item.value) == "globals"
+            ):
+                namespace_stores.add(
+                    item.slice.value
+                    if isinstance(item.slice, ast.Constant) and isinstance(item.slice.value, str)
+                    else "*"
+                )
+        pending.extend(ast.iter_child_nodes(item))
+    return (globals_ & stores) | namespace_stores, nonlocals & stores
+
+
 def _scope_initial_values(
     node: ast.Module | ast.FunctionDef | ast.AsyncFunctionDef | ast.Lambda,
     module_values: dict[str, str],
@@ -2719,6 +2758,7 @@ class _BlockScanner:
         unresolved_slots = 0
         flagged: set[str] = set()
         for state in states:
+            function = None
             if isinstance(self.path_functions, PathFunctionTable):
                 function = self.path_functions.resolve(
                     _function_name(call), self.path, _lexical_scope(state), _import_aliases(state)
@@ -2747,10 +2787,42 @@ class _BlockScanner:
             )
             unresolved_slots = max(unresolved_slots, local_unresolved[0])
             flagged.update(local_unrecognised)
+            if function is not None and function.node is not None:
+                self._invalidate_callee_mutations(function, state)
         self.accesses.extend(dict.fromkeys(call_accesses))
         self.unresolved[0] += unresolved_slots
         for name in flagged:
             self.unrecognised[name] += 1
+
+    def _invalidate_callee_mutations(self, function: PathFunction, state: dict[str, str]) -> None:
+        table = self.path_functions
+        if not isinstance(table, PathFunctionTable) or function.path != self.path:
+            return
+        if function.node not in table.scope_mutations:
+            table.scope_mutations[function.node] = _scope_outer_mutations(function.node)
+        globals_, nonlocals = table.scope_mutations[function.node]
+        if not globals_ and not nonlocals:
+            return
+        locals_ = set(json.loads(state.get(_CALL_LOCALS_KEY, "[]")))
+        cells = set(json.loads(state.get(_CALL_CELLS_KEY, "[]")))
+        if globals_:
+            inherited = _decode_call_globals(state.get(_CALL_GLOBALS_KEY), table)
+            names = (
+                {name for name in inherited.keys() | state.keys() if not name.startswith("\0")}
+                if "*" in globals_
+                else globals_
+            )
+            _invalidate_names(inherited, names)
+            if _CALL_GLOBALS_KEY in state:
+                state[_CALL_GLOBALS_KEY] = _encode_call_globals(inherited, table)
+            _invalidate_names(state, names - locals_ - cells)
+        if nonlocals and len(function.lexical_prefixes) > 1:
+            enclosing = function.lexical_prefixes[1]
+            prefixes = _lexical_scope(state)
+            if enclosing in prefixes:
+                _invalidate_names(
+                    state, nonlocals if prefixes[0] == enclosing else nonlocals - locals_
+                )
 
     def _bind_loop_target(
         self, target: ast.expr, value: ast.expr | None, state: dict[str, str]
@@ -2962,6 +3034,7 @@ class _BlockScanner:
         if isinstance(statement, ast.AugAssign):
             # Augmented assignment evaluates its target before the RHS, exactly once.
             self._scan_target(statement.target, states)
+            self._freeze_expression(statement.target, states)
         if isinstance(statement, (ast.FunctionDef, ast.AsyncFunctionDef)):
             for decorator in statement.decorator_list:
                 self._scan_expression(decorator, states)
@@ -3743,18 +3816,20 @@ def collect_artifact_accesses(
             for access in evidence.accesses
             if access.action == "read" and not access.bounded
         )
-        for relative, _tree in parsed:
-            for scope in scopes_by_path[relative]:
-                if scope.node in changing_calls:
-                    path_functions.unresolved_paths.add(
-                        f"{relative}:{scope.node.lineno}: call bindings for {scope.qualname} "
+        for relative, tree in parsed:
+            for node, name in [
+                (tree, "<module>"),
+                *((scope.node, scope.qualname) for scope in scopes_by_path[relative]),
+            ]:
+                if node in changing_calls:
+                    site = (
+                        f"{relative}:{getattr(node, 'lineno', 1)}: call bindings for {name} "
                         "did not converge"
-                        + (
-                            " (binding state cap)"
-                            if scope.node in path_functions.capped_scopes
-                            else ""
-                        )
                     )
+                    if node in path_functions.capped_scopes:
+                        site += " (binding state cap)"
+                        path_functions.capped_expressions.add(site)
+                    path_functions.unresolved_paths.add(site)
                     unresolved[0] += 1
     unique = list(dict.fromkeys(accesses))
     if capped_expressions is not None:
@@ -3834,8 +3909,12 @@ def _glob_regex(pattern: str) -> re.Pattern[str]:
     while i < len(pattern):
         char = pattern[i]
         if pattern.startswith("**", i):
-            out.append(".*")
-            i += 2
+            if pattern.startswith("**/", i):
+                out.append("(?:[^/]+/)*")
+                i += 3
+            else:
+                out.append(".*")
+                i += 2
             continue
         if char == "*":
             out.append("[^/]*")
@@ -4633,7 +4712,12 @@ def print_consumer_side_report(report: ConsumerSideReport, report_path: Path) ->
         for gap in report.source_gaps
     ]
     diagnostics.extend(
-        f"[CAPPED] {site}: compact expression union; concrete alternatives retained"
+        f"[CAPPED] {site}"
+        + (
+            ""
+            if "binding state cap" in site
+            else ": compact expression union; concrete alternatives retained"
+        )
         for site in report.capped_expressions
     )
     diagnostics.extend(
