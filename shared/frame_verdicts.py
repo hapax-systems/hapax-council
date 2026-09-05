@@ -231,23 +231,6 @@ def epoch_produced_at(name: str) -> datetime | None:
         return None
 
 
-def latest_epoch_dir(procedure_root: Path) -> Path | None:
-    """Return the newest persisted attempt, for history/diagnostics rather than consumption."""
-    epochs = procedure_root / "_runs" / "epochs"
-    if not epochs.is_dir():
-        return None
-    candidates = [
-        child
-        for child in epochs.iterdir()
-        if child.is_dir()
-        and epoch_produced_at(child.name) is not None
-        and (child / "elements.json").is_file()
-    ]
-    if not candidates:
-        return None
-    return max(candidates, key=lambda child: child.name)
-
-
 def current_epoch_dir(procedure_root: Path) -> Path:
     """Resolve and validate the producer's accepted-current publication pointer.
 

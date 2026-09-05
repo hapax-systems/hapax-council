@@ -1,4 +1,4 @@
-"""Real Git history and producer reads for the frame consumer's regressions."""
+"""Fixture epoch selection, real Git history and producer reads for frame consumer tests."""
 
 import importlib
 import subprocess
@@ -6,6 +6,25 @@ from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
+
+from shared.frame_verdicts import epoch_produced_at
+
+
+def latest_epoch_dir(procedure_root: Path) -> Path | None:
+    """Select the newest persisted test-fixture attempt, independent of publication."""
+    epochs = procedure_root / "_runs" / "epochs"
+    if not epochs.is_dir():
+        return None
+    candidates = [
+        child
+        for child in epochs.iterdir()
+        if child.is_dir()
+        and epoch_produced_at(child.name) is not None
+        and (child / "elements.json").is_file()
+    ]
+    if not candidates:
+        return None
+    return max(candidates, key=lambda child: child.name)
 
 
 def producer_glob_bytes(

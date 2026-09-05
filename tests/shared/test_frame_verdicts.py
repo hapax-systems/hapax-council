@@ -13,7 +13,7 @@ import pytest
 import yaml
 
 from shared import frame_verdicts as fv
-from tests.frame_verdict_helpers import git_checkout, producer_glob_bytes
+from tests.frame_verdict_helpers import git_checkout, latest_epoch_dir, producer_glob_bytes
 
 NOW = datetime(2026, 9, 3, 22, 30, tzinfo=UTC)
 
@@ -405,7 +405,7 @@ def test_latest_epoch_is_the_newest_parseable_dir_that_carries_elements(tmp_path
     (epochs / "20261303T123456Z-deadbeef").mkdir()
     (epochs / "20261303T123456Z-deadbeef" / "elements.json").write_text("[]")
 
-    chosen = fv.latest_epoch_dir(tmp_path)
+    chosen = latest_epoch_dir(tmp_path)
 
     assert chosen is not None and chosen.name == "20260903T204725Z-d693f20c"
     assert fv.epoch_produced_at(chosen.name) == datetime(2026, 9, 3, 20, 47, 25, tzinfo=UTC)
@@ -552,7 +552,7 @@ def test_epoch_older_than_two_cadences_refuses_and_younger_does_not(tmp_path: Pa
 def test_malformed_elements_mass_or_no_verdict_rows_refuse(tmp_path: Path) -> None:
     members = [{"id": "m", "location": {"path": str(tmp_path / "m")}}]
     root = _procedure_root(tmp_path, members=members, verdicts=[_verdict("m", "scope_exited")])
-    epoch = fv.latest_epoch_dir(root)
+    epoch = latest_epoch_dir(root)
     assert epoch is not None
 
     (epoch / "elements.json").write_text("{not json", encoding="utf-8")
@@ -978,7 +978,7 @@ def test_a_malformed_verdict_row_refuses_instead_of_shrinking_the_decayed_set(
     failing open at the one point it exists to fail closed."""
     members = [{"id": "m", "location": {"path": str(tmp_path / "m")}}]
     root = _procedure_root(tmp_path, members=members, verdicts=[_verdict("m", "scope_exited")])
-    epoch = fv.latest_epoch_dir(root)
+    epoch = latest_epoch_dir(root)
     assert epoch is not None
     (epoch / "elements.json").write_text(
         json.dumps(
@@ -1089,7 +1089,7 @@ def test_malformed_verdict_dictionaries_refuse(
 def test_an_incomplete_or_duplicate_verdict_matrix_refuses(tmp_path: Path) -> None:
     members = [{"id": "m", "location": {"path": str(tmp_path / "m")}}]
     root = _procedure_root(tmp_path, members=members, verdicts=[])
-    epoch = fv.latest_epoch_dir(root)
+    epoch = latest_epoch_dir(root)
     assert epoch is not None
     elements = json.loads((epoch / "elements.json").read_text(encoding="utf-8"))
     rows = elements[1]["payload"]["verdicts"]
@@ -1248,7 +1248,7 @@ def test_a_verdict_is_not_applied_to_a_member_redeclared_since_the_epoch(tmp_pat
     member since re-pointed would decay a surface nobody witnessed."""
     members = [{"id": "m", "location": {"path": str(tmp_path / "m"), "patterns": ["*.py"]}}]
     root = _procedure_root(tmp_path, members=members, verdicts=[_verdict("m", "scope_exited")])
-    epoch = fv.latest_epoch_dir(root)
+    epoch = latest_epoch_dir(root)
     assert epoch is not None
     matching = fv._member_declaration_identity(members[0], [])
     (epoch / "coverage.json").write_text(
@@ -1314,7 +1314,7 @@ def test_coverage_must_bind_every_current_member_exactly_once(
     root = _procedure_root(
         tmp_path, members=members, verdicts=[_verdict("decayed", "scope_exited", True)]
     )
-    epoch = fv.latest_epoch_dir(root)
+    epoch = latest_epoch_dir(root)
     assert epoch is not None
     coverage_path = epoch / "coverage.json"
     coverage = json.loads(coverage_path.read_text(encoding="utf-8"))
