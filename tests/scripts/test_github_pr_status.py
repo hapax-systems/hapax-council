@@ -1287,7 +1287,9 @@ class _BothTransportsRunner(FakeRunner):
                 "",
             )
         if cmd[:3] == ["gh", "pr", "view"]:
-            return subprocess.CompletedProcess(cmd, 0, json.dumps({"statusCheckRollup": []}), "")
+            return subprocess.CompletedProcess(
+                cmd, 0, json.dumps({"headRefOid": "abc123", "statusCheckRollup": []}), ""
+            )
         if cmd[:5] == ["gh", "api", "--method", "GET", "-H"]:
             path = cmd[6]
             pull = {
@@ -1961,7 +1963,9 @@ def test_a_real_empty_graphql_rollup_remains_a_determinate_result(tmp_path: Path
     def no_checks(cmd: list[str], **kwargs: Any) -> subprocess.CompletedProcess:
         seen.append(list(cmd))
         if cmd[:3] == ["gh", "pr", "view"]:
-            return subprocess.CompletedProcess(cmd, 0, json.dumps({"statusCheckRollup": []}), "")
+            return subprocess.CompletedProcess(
+                cmd, 0, json.dumps({"headRefOid": "abc123", "statusCheckRollup": []}), ""
+            )
         return _BothTransportsRunner(rest_remaining=3000, graphql_remaining=4900)(cmd, **kwargs)
 
     rows, route = github_pr_status.list_open_pr_statuses(

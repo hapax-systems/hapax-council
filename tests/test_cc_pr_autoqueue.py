@@ -7455,14 +7455,16 @@ def _rate_only_runner(
         if cmd[:3] == ["gh", "pr", "list"]:
             return subprocess.CompletedProcess(cmd, 0, json.dumps(rows or []), "")
         if cmd[:3] == ["gh", "pr", "view"]:
+            queried_row = next(row for row in rows or [] if str(row["number"]) == cmd[3])
             return subprocess.CompletedProcess(
                 cmd,
                 0,
                 json.dumps(
                     {
+                        "headRefOid": queried_row["headRefOid"],
                         "statusCheckRollup": [
                             {"name": "lint", "state": "SUCCESS", "__typename": "CheckRun"}
-                        ]
+                        ],
                     }
                 ),
                 "",
@@ -7669,7 +7671,9 @@ def test_a_graphql_row_with_no_checks_keeps_an_empty_rollup_rather_than_asking_r
 
     def no_checks(cmd: list[str], **kwargs: Any) -> subprocess.CompletedProcess:
         if cmd[:3] == ["gh", "pr", "view"]:
-            return subprocess.CompletedProcess(cmd, 0, json.dumps({"statusCheckRollup": []}), "")
+            return subprocess.CompletedProcess(
+                cmd, 0, json.dumps({"headRefOid": row["headRefOid"], "statusCheckRollup": []}), ""
+            )
         return _rate_only_runner(core=0, graphql=4660, calls=calls, rows=[row])(cmd, **kwargs)
 
     prs, _route = autoqueue.fetch_open_prs(repo="owner/repo", repo_root=tmp_path, runner=no_checks)
