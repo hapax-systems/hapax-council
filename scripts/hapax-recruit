@@ -45,6 +45,8 @@ from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from pathlib import Path
 
+import yaml
+
 INSTRUMENT_REV = "hapax-recruit/1"
 REPO_ROOT = Path(__file__).resolve().parents[1]
 GLMCP_WRAPPER_ENV = "HAPAX_RECRUIT_GLMCP_WRAPPER"
@@ -220,6 +222,16 @@ class RunResult:
         streams, suppressed = _redact_streams(answer=self.answer)
         self.answer = streams["answer"]
         self.suppressed_streams.update(suppressed)
+        if any(
+            shape.get("unsupported_class") == "ResponseDecodeError"
+            for shape in self.suppressed_streams.values()
+        ):
+            # Decoding is a stream failure, not a new execution. Preserve timeout,
+            # group cleanup and drain measurements already supplied by the runner.
+            self.failure_class = "ResponseDecodeError"
+            if self.exit_code == 0:
+                self.exit_code = 3
+            self.stderr_tail += "\nmalformed JSON response: decoder limit exceeded"
         if self.exit_code == 0 and not self.answer.strip():
             self.answer = ""
             self.exit_code = 3
@@ -305,6 +317,7 @@ def _yaml_flow_end(
 ) -> int:
     """Bound a flow and collect sensitive member spans at every nesting depth."""
     stack, quote, index = [], "", start
+    comments = []
     sensitive = False
     while index < len(text):
         char = text[index]
@@ -324,18 +337,31 @@ def _yaml_flow_end(
                 raise UndecodableStream(sensitive=sensitive)
             index = end + 1
             continue
-        elif char == "#" and text[index - 1] in " \t\r\n[{,":
-            newline = text.find("\n", index)
-            index = len(text) if newline < 0 else newline + 1
+        elif char == "#" and text[index - 1] in " \t\r\n\x85\u2028\u2029[{,:?\"'":
+            # Installed PyYAML 6.0.3 scanner.py:752-785, scan_to_next_token
+            # (especially 778-780): comments end at ANY YAML line break, outside
+            # quoted scalars. Keep their position so key slices cannot hide escapes.
+            comment_start = index
+            while index < len(text) and text[index] not in "\r\n\x85\u2028\u2029":
+                index += 1
+            comments.append((comment_start, index))
             continue
-        elif char in "\"'" and text[index - 1] in " \t\r\n[{,:?":
+        elif char in "\"'" and text[index - 1] in " \t\r\n\x85\u2028\u2029[{,:?":
             quote = char
         elif char in "[{":
             stack.append({"close": "]" if char == "[" else "}", "key": index + 1, "value": None})
         elif char == ":" and stack:
             member = stack[-1]
             key = text[member["key"] : index]
-            normalized = _yaml_key(key, flow=True)
+            # Use exactly the comment spans skipped by this walk. A '#' inside
+            # a quoted scalar or plain word remains key data, never whitespace.
+            cursor, parts = member["key"], []
+            for begin, end in comments:
+                if begin >= cursor:
+                    parts.append(text[cursor:begin])
+                    cursor = end
+            parts.append(text[cursor:index])
+            normalized = _yaml_key("".join(parts), flow=True)
             probe = normalized + ': "scalar"'
             label = _SECRETISH.search(probe)
             if label and label.end(1) == len(probe) - len('"scalar"'):
@@ -494,6 +520,28 @@ def _redact(text: str, *, reject_undecodable: bool = False) -> str:
         return "<redacted>"
 
 
+def _yaml_has_alias_node(text: str) -> bool:
+    """Recognize collection alias nodes without constructing or expanding a graph."""
+    # PyYAML 6.0.3 scanner.py:225-231 dispatches */& only at token starts;
+    # scan_anchor:899-933 requires an ASCII letter/digit/-/_ name. Parsing events
+    # keeps quoted, block and plain-scalar prose out of the node indicator grammar.
+    if not re.search(r"[*&][A-Za-z0-9_-]", text):
+        return False
+    depth = 0
+    try:
+        for event in yaml.parse(text):
+            if isinstance(event, (yaml.events.MappingStartEvent, yaml.events.SequenceStartEvent)):
+                depth += 1
+            elif isinstance(event, (yaml.events.MappingEndEvent, yaml.events.SequenceEndEvent)):
+                depth -= 1
+            elif depth and isinstance(event, yaml.events.AliasEvent):
+                return True
+    except yaml.YAMLError:
+        # Non-YAML prose still crosses the existing credential/flow boundary.
+        pass
+    return False
+
+
 def _redact_text(text: str, *, reject_undecodable: bool = False) -> str:
     # Decode before matching labels: JSON strings can contain further JSON envelopes,
     # escaped quotes, or unicode escapes. Re-encode only after keys and values are safe.
@@ -504,15 +552,12 @@ def _redact_text(text: str, *, reject_undecodable: bool = False) -> str:
     else:
         redacted = _redact_json_value(payload, reject_undecodable=reject_undecodable)
         return text if redacted == payload else json.dumps(redacted)
-    # Custom tags need constructors outside safe_load's grammar, and aliases need
-    # graph expansion. This scalar/flow redactor supports neither class. Refuse
-    # their lexical forms (also in ambiguous prose), without interpreting values.
-    for pattern, unsupported_class in (
-        (r"(?:^|[ \t\r\n:[{,])!(?!!)[^ \t\r\n]", "YAMLCustomTag"),
-        (r"(?:^|[ \t\r\n:[{,])\*[^ \t\r\n\[\]{},]+", "YAMLAlias"),
-    ):
-        if re.search(pattern, text):
-            raise UndecodableStream(unsupported_class=unsupported_class)
+    # Custom tags need constructors outside safe_load's grammar. Aliases require
+    # graph expansion, but emphasis and indicators inside prose are scalar data.
+    if re.search(r"(?:^|[ \t\r\n:[{,])!(?!!)[^ \t\r\n]", text):
+        raise UndecodableStream(unsupported_class="YAMLCustomTag")
+    if _yaml_has_alias_node(text):
+        raise UndecodableStream(unsupported_class="YAMLAlias")
     text = _redact_yaml_subtrees(text)
     if reject_undecodable:
         # Consume plain/YAML fields first. Punctuation in the remaining prose/code is
@@ -585,6 +630,12 @@ def _redact_streams(**streams: str) -> tuple[dict[str, str], dict[str, dict]]:
     for name, text in streams.items():
         try:
             redacted[name] = _redact(text, reject_undecodable=True)
+        except ResponseDecodeError:
+            redacted[name] = ""
+            suppressed[name] = {
+                **_suppressed_stream_shape(text),
+                "unsupported_class": "ResponseDecodeError",
+            }
         except UndecodableStream as exc:
             redacted[name] = ""
             suppressed[name] = _suppressed_stream_shape(text)

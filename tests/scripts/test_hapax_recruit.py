@@ -131,6 +131,13 @@ def _yaml_loader_oracle(text):
 
 
 _SCANNER_YAML_FIXTURES = {
+    "flow-key-comment-after-question": '{ ? # comment\n"api\\x5fkey"\n : [FIRST, SYNTHETIC_SECOND_CREDENTIAL]}',  # pragma: allowlist secret
+    "flow-key-comment-before-colon": '{ ? "api\\x5fkey" # comment\n : [FIRST, SYNTHETIC_SECOND_CREDENTIAL]}',  # pragma: allowlist secret
+    "flow-key-comment-sequence": '[ ? # comment\n"api\\x5fkey"\n : [FIRST, SYNTHETIC_SECOND_CREDENTIAL]]',  # pragma: allowlist secret
+    "flow-key-comment-compact-question": '{ ?# comment\n"api\\x5fkey"\n : [FIRST, SYNTHETIC_SECOND_CREDENTIAL]}',  # pragma: allowlist secret
+    "flow-key-comment-compact-quote": '{ ? "api\\x5fkey"# comment\n : [FIRST, SYNTHETIC_SECOND_CREDENTIAL]}',  # pragma: allowlist secret
+    "flow-key-comment-cr": '{ ? # comment\r"api\\x5fkey"\r : [FIRST, SYNTHETIC_SECOND_CREDENTIAL]}',  # pragma: allowlist secret
+    "flow-key-comment-nel": '{ ? # comment\x85"api\\x5fkey"\x85 : [FIRST, SYNTHETIC_SECOND_CREDENTIAL]}',  # pragma: allowlist secret
     "compact-flow": r'{?"api\x5fkey": [FIRST, SYNTHETIC_SECOND_CREDENTIAL]}',  # pragma: allowlist secret
     "compact-flow-sequence": r'[?"api\x5fkey": [FIRST, SYNTHETIC_SECOND_CREDENTIAL]]',  # pragma: allowlist secret
     "compact-flow-nested": r'{safe: [{?"api\x5fkey": [FIRST, SYNTHETIC_SECOND_CREDENTIAL]}]}',  # pragma: allowlist secret
@@ -637,6 +644,132 @@ def test_json_digit_limit_is_receipted_decode_failure(bench, monkeypatch, capsys
     assert "7" * 5000 not in json.dumps(receipt) + captured.out + captured.err + caplog.text
     assert "Traceback" not in captured.err
     assert caplog.text == ""
+
+
+@pytest.mark.parametrize(
+    "capacity", ["grok", "kimi", "agy", "claude", "glmcp", "qwencloud", "local:qwen36"]
+)
+@pytest.mark.parametrize(
+    "response",
+    [
+        "The result is **correct**.",
+        "The result is *correct*.",
+        "Use *synthetic or &synthetic in prose.",
+        'result: "Use *synthetic or &synthetic in prose."',
+        "result: Use *synthetic or &synthetic in prose.",
+        "result: |\n  *synthetic is literal content.\n",
+    ],
+    ids=["bold", "italic", "indicators-in-prose", "quoted", "plain", "block-scalar"],
+)
+def test_successful_markdown_survives_every_adapter(bench, monkeypatch, capsys, capacity, response):
+    module, _bin_dir, brief, out = bench
+    # The oracle sees scalars, never alias events inside these ordinary answers.
+    assert not any(isinstance(event, yaml.events.AliasEvent) for event in yaml.parse(response))
+    monkeypatch.setattr(module, "_require_binary", lambda name: name)
+    if capacity in module.WRAPPED_CLAUDE:
+        monkeypatch.setenv(module.WRAPPED_CLAUDE[capacity][0], str(brief))
+    if capacity.startswith("local:"):
+        payload = {"choices": [{"message": {"content": response}}]}
+        monkeypatch.setattr(
+            module.urllib.request,
+            "urlopen",
+            lambda *a, **kw: io.BytesIO(json.dumps(payload).encode()),
+        )
+    else:
+        stdout = (
+            json.dumps({"result": response})
+            if capacity in {"claude", "glmcp", "qwencloud"}
+            else response
+        )
+        monkeypatch.setattr(module, "_run", lambda *a, **kw: (0, stdout, "", False, None))
+    rc = module.main([capacity, "--brief", str(brief), "--out", str(out)])
+    receipt = _receipt(out)
+    captured = capsys.readouterr()
+    assert rc == 0, "ordinary Markdown answer was discarded"
+    expected = module._strip_kimi(response, brief.read_text()) if capacity == "kimi" else response
+    assert out.read_text() == expected
+    assert receipt["exit_code"] == 0 and receipt["failure_class"] is None
+    assert receipt["suppressed_streams"] == {}
+    assert receipt["answer_policy"] == "capacity_answer"
+    assert captured.err == ""
+
+
+@pytest.mark.parametrize(
+    "response",
+    [
+        "source: &synthetic KEEP\nresult: *synthetic",
+        "[&synthetic KEEP, *synthetic]",
+        "{source: &synthetic KEEP, result: [*synthetic]}",
+        "&synthetic [*synthetic]",
+        "- &synthetic KEEP\n- *synthetic",
+    ],
+    ids=["mapping", "flow-sequence", "nested", "cycle", "block-sequence"],
+)
+def test_structural_yaml_alias_nodes_are_suppressed(bench, response):
+    module, _bin_dir, _brief, _out = bench
+    # Parse events only: even the oracle never constructs/expands the cyclic graph.
+    assert any(isinstance(event, yaml.events.AliasEvent) for event in yaml.parse(response))
+    streams, suppressed = module._redact_streams(answer=response)
+    assert streams == {"answer": ""}, "structural alias escaped suppression"
+    assert suppressed["answer"]["unsupported_class"] == "YAMLAlias"
+
+
+@pytest.mark.parametrize("capacity", ["grok", "kimi", "agy", "claude", "glmcp", "qwencloud"])
+@pytest.mark.parametrize("stream", ["stdout", "stderr"])
+@pytest.mark.parametrize("form", ["digits", "decoder", "decoder-object", "answer", "embedded"])
+def test_timeout_decoder_limit_retains_execution_evidence(
+    bench, monkeypatch, capsys, caplog, capacity, stream, form
+):
+    module, _bin_dir, brief, out = bench
+    depth = 10000 if form.startswith("decoder") else 1100
+    response = "[" * depth + "0" + "]" * depth
+    if form == "digits":
+        response = '{"number":' + "7" * 5000 + "}"
+    elif form == "decoder-object":
+        response = '{"safe":' * depth + "0" + "}" * depth
+    elif form == "embedded":
+        response = json.dumps({"safe": response})
+    monkeypatch.setattr(module, "_require_binary", lambda name: name)
+    if capacity in module.WRAPPED_CLAUDE:
+        monkeypatch.setenv(module.WRAPPED_CLAUDE[capacity][0], str(brief))
+    stdout, stderr = (response, "") if stream == "stdout" else ("", response)
+    drained = {"stdout": len(stdout.encode()), "stderr": len(stderr.encode())}
+
+    def run(*args, drain_status, **kwargs):
+        drain_status.update(drain_timed_out=True, drained_bytes=drained)
+        return "timeout", stdout, stderr, True, False
+
+    monkeypatch.setattr(module, "_run", run)
+    recursion_limit, digit_limit = sys.getrecursionlimit(), sys.get_int_max_str_digits()
+    sys.setrecursionlimit(1000)
+    sys.set_int_max_str_digits(4300)
+    try:
+        rc = module.main([capacity, "--brief", str(brief), "--out", str(out), "--timeout", "1"])
+    finally:
+        sys.setrecursionlimit(recursion_limit)
+        sys.set_int_max_str_digits(digit_limit)
+    receipt = _receipt(out)
+    captured = capsys.readouterr()
+    measured = (
+        rc,
+        receipt["exit_code"],
+        receipt["process_group_killed"],
+        receipt["process_group_any_member_survived"],
+        receipt["drain_timed_out"],
+        receipt["drained_bytes"],
+        receipt["stdout_bytes"],
+    )
+    assert measured == (4, "timeout", True, False, True, drained, len(stdout)), (
+        "decoder failure erased execution evidence"
+    )
+    assert receipt["failure_class"] == "ResponseDecodeError"
+    assert receipt["suppressed_streams"][stream]["unsupported_class"] == "ResponseDecodeError"
+    assert receipt["suppressed_streams"][stream]["length"] == len(response)
+    assert out.read_text() == "" and receipt["output_bytes"] == 0
+    assert "--timeout" in receipt["recovery_action"]
+    assert "ResponseDecodeError" in captured.err
+    assert response not in json.dumps(receipt) + captured.out + captured.err + caplog.text
+    assert "Traceback" not in captured.err and caplog.text == ""
 
 
 @pytest.mark.parametrize("form", ["sequence", "indented-sequence", "mapping", "nested-sequence"])
@@ -3272,6 +3405,8 @@ def test_yaml_loader_oracle_agreement(bench, name, response):
     streams, suppressed = module._redact_streams(answer=response)
     actual = "suppressed" if suppressed else str("<redacted>" in streams["answer"])
     print(f"ORACLE {name}: loader={verdict}; redactor={actual}")
+    if name.startswith("flow-key-comment"):
+        assert not suppressed, "scanner-supported flow key comments must be normalized"
     if suppressed:
         assert streams == {"answer": ""}
         assert suppressed["answer"]["length"] == len(response)
