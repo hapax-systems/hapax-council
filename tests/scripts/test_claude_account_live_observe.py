@@ -37,7 +37,7 @@ _spec.loader.exec_module(obs)
 NOW = datetime(2026, 8, 19, 16, 0, 0, tzinfo=UTC)
 
 
-class TestRefusesContaminatedEnvironment:
+class TestScrubsContaminatedEnvironment:
     """The probe must not measure a redirected endpoint and call it the subscription.
 
     /run/user/1000/hapax-secrets.env carries ANTHROPIC_BASE_URL pointing at podium's
@@ -45,20 +45,45 @@ class TestRefusesContaminatedEnvironment:
     the probe would have measured that proxy while minting auth_surface=subscription.
     """
 
-    @pytest.mark.parametrize(
-        "var", ["ANTHROPIC_BASE_URL", "ANTHROPIC_API_KEY", "ANTHROPIC_AUTH_TOKEN"]
-    )
-    def test_probe_refuses_when_redirect_env_is_set(
+    @pytest.mark.parametrize("var", obs.PROBE_ENV_SCRUBBED)
+    def test_probe_scrubs_known_redirect_env_from_the_child(
         self, monkeypatch: pytest.MonkeyPatch, var: str
     ) -> None:
-        monkeypatch.setenv(var, "https://not-the-subscription.invalid")
+        monkeypatch.setenv(var, "redacted-test-value")
+        child_env: dict[str, str] = {}
+
+        def fake_run(*args, **kwargs):
+            child_env.update(kwargs["env"])
+
+            class R:
+                stdout = json.dumps(
+                    {
+                        "is_error": False,
+                        "model": "claude-opus-5",
+                        "usage": {"input_tokens": 1, "output_tokens": 1},
+                    }
+                )
+                stderr = ""
+
+            return R()
+
+        monkeypatch.setattr(obs.subprocess, "run", fake_run)
+        event = obs.probe(NOW)
+        assert event is not None and event.kind == "served"
+        assert var not in child_env, "redirect control leaked into the probe subprocess"
+        assert event.scrubbed_env == obs.PROBE_ENV_SCRUBBED
+
+    def test_probe_refuses_an_unscrubbed_redirect_control(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.setenv("CLAUDE_CODE_USE_BEDROCK", "1")
         called: list[object] = []
         monkeypatch.setattr(obs.subprocess, "run", lambda *a, **k: called.append(a) or None)
-        assert obs.probe(NOW) is None, "must refuse, not measure the wrong endpoint"
-        assert called == [], "must not even invoke the CLI"
+        assert obs.probe(NOW) is None
+        assert called == [], "must not invoke the CLI with an unhandled redirect control"
 
     def test_clean_env_is_not_refused(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        for var in ("ANTHROPIC_BASE_URL", "ANTHROPIC_API_KEY", "ANTHROPIC_AUTH_TOKEN"):
+        for var in obs.PROBE_ENV_SCRUBBED:
             monkeypatch.delenv(var, raising=False)
         assert obs.provider_redirect_env() == []
 
@@ -135,7 +160,7 @@ class TestProbeCarriesTheModelItObserved:
     def test_probe_records_the_model_from_the_response(
         self, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        for var in ("ANTHROPIC_BASE_URL", "ANTHROPIC_API_KEY", "ANTHROPIC_AUTH_TOKEN"):
+        for var in obs.PROBE_ENV_SCRUBBED:
             monkeypatch.delenv(var, raising=False)
         monkeypatch.setattr(obs.subprocess, "run", self._fake_run("claude-opus-5"))
         ev = obs.probe(NOW)
@@ -159,6 +184,28 @@ class TestProbeCarriesTheModelItObserved:
         )
         assert all("would_run" in r for r in planned), f"probe minted nothing: {planned}"
 
+    def test_probe_backed_receipt_discloses_the_scrubbed_environment(self, tmp_path: Path) -> None:
+        event = obs.Observation(
+            "served",
+            NOW,
+            "active-probe",
+            model="claude-opus-5",
+            scrubbed_env=obs.PROBE_ENV_SCRUBBED,
+        )
+
+        receipts = obs.mint(
+            event,
+            now=NOW,
+            route_ids=("claude.review.opus",),
+            stale_after_seconds=1800,
+            receipt_dir=tmp_path,
+            dry_run=False,
+        )
+
+        assert receipts[0]["returncode"] == 0, receipts
+        receipt = next(tmp_path.glob("*.yaml")).read_text(encoding="utf-8")
+        assert ("probe_environment_scrubbed: " + ",".join(obs.PROBE_ENV_SCRUBBED)) in receipt
+
     def test_probe_requests_a_model_that_can_witness_every_default_route(self) -> None:
         """Haiku cannot witness claude.review.opus — the route the review floor needs."""
         for route in obs.DEFAULT_ROUTE_IDS:
@@ -171,7 +218,7 @@ class TestProbeCarriesTheModelItObserved:
     def test_probe_without_an_identifiable_model_is_not_evidence(
         self, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        for var in ("ANTHROPIC_BASE_URL", "ANTHROPIC_API_KEY", "ANTHROPIC_AUTH_TOKEN"):
+        for var in obs.PROBE_ENV_SCRUBBED:
             monkeypatch.delenv(var, raising=False)
         monkeypatch.setattr(obs.subprocess, "run", self._fake_run(None))
         assert obs.probe(NOW) is None
@@ -213,7 +260,7 @@ class TestProbeFailureIsNotAbsentEvidence:
     """A probe that could not RUN is a broken instrument, not an observation of nothing."""
 
     def test_missing_binary_reports_probe_failed(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        for var in ("ANTHROPIC_BASE_URL", "ANTHROPIC_API_KEY", "ANTHROPIC_AUTH_TOKEN"):
+        for var in obs.PROBE_ENV_SCRUBBED:
             monkeypatch.delenv(var, raising=False)
 
         def boom(*a, **k):
@@ -224,7 +271,7 @@ class TestProbeFailureIsNotAbsentEvidence:
         assert ev is not None and ev.kind == "probe_failed"
 
     def test_timeout_reports_probe_failed(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        for var in ("ANTHROPIC_BASE_URL", "ANTHROPIC_API_KEY", "ANTHROPIC_AUTH_TOKEN"):
+        for var in obs.PROBE_ENV_SCRUBBED:
             monkeypatch.delenv(var, raising=False)
 
         def slow(*a, **k):
@@ -233,11 +280,11 @@ class TestProbeFailureIsNotAbsentEvidence:
         monkeypatch.setattr(obs.subprocess, "run", slow)
         assert obs.probe(NOW).kind == "probe_failed"
 
-    def test_redirect_refusal_is_still_no_evidence_not_probe_failure(
+    def test_unscrubbed_redirect_refusal_is_still_no_evidence_not_probe_failure(
         self, monkeypatch: pytest.MonkeyPatch
     ) -> None:
         """Refusing on a contaminated env is a correct decision, not a broken instrument."""
-        monkeypatch.setenv("ANTHROPIC_BASE_URL", "https://not-the-subscription.invalid")
+        monkeypatch.setenv("CLAUDE_CODE_USE_VERTEX", "1")
         assert obs.probe(NOW) is None
 
 

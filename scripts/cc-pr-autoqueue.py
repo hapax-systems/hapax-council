@@ -1300,7 +1300,7 @@ def _fetch_status_check_rollup_graphql(
     query = (
         "query($owner:String!,$repo:String!,$number:Int!){repository(owner:$owner,name:$repo){"
         "pullRequest(number:$number){headRefOid commits(last:1){nodes{commit{oid "
-        "statusCheckRollup{contexts(first:100){nodes{__typename ... on CheckRun{name status "
+        "statusCheckRollup{contexts(first:100){totalCount nodes{__typename ... on CheckRun{name status "
         "conclusion completedAt startedAt} ... on StatusContext{context state createdAt}}}}}}}}}}"
     )
     try:
@@ -1349,12 +1349,13 @@ def _fetch_status_check_rollup_graphql(
     commit = None
     if commit_nodes and isinstance(commit_nodes[-1], dict):
         commit = commit_nodes[-1].get("commit")
-    rollup = (
-        commit.get("statusCheckRollup", {}).get("contexts", {}).get("nodes")
-        if isinstance(commit, dict)
-        else None
-    )
-    if not isinstance(rollup, list):
+    status_rollup = commit.get("statusCheckRollup") if isinstance(commit, dict) else None
+    contexts = status_rollup.get("contexts") if isinstance(status_rollup, dict) else None
+    rollup = contexts.get("nodes") if isinstance(contexts, dict) else None
+    total = contexts.get("totalCount") if isinstance(contexts, dict) else None
+    # A later failed run may sit outside this page. Partial checks cannot verify release
+    # mitigations; the caller can retry via REST only when that pool is eligible.
+    if not isinstance(rollup, list) or type(total) is not int or len(rollup) != total:
         return False, "invalid_status_check_rollup", []
     return True, sha, rollup
 

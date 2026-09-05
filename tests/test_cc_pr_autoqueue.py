@@ -705,7 +705,10 @@ class _GraphQLRollupOnRestIndeterminateRunner(_FakeRunner):
                                         "commit": {
                                             "oid": head_sha,
                                             "statusCheckRollup": {
-                                                "contexts": {"nodes": rollup},
+                                                "contexts": {
+                                                    "totalCount": len(rollup),
+                                                    "nodes": rollup,
+                                                },
                                             },
                                         }
                                     }
@@ -717,6 +720,58 @@ class _GraphQLRollupOnRestIndeterminateRunner(_FakeRunner):
             }
             return subprocess.CompletedProcess(cmd, 0, json.dumps(payload), "")
         return super().__call__(cmd, **kwargs)
+
+
+@pytest.mark.parametrize(
+    "count,total,complete",
+    [
+        (1, 1, True),
+        (100, 100, True),
+        (1, None, False),
+        (1, "1", False),
+        (1, True, False),
+        (1, -1, False),
+        (1, 0, False),
+        (1, 2, False),
+    ],
+    ids=[
+        "complete",
+        "complete_100",
+        "missing",
+        "string",
+        "boolean",
+        "negative",
+        "excess",
+        "truncated",
+    ],
+)
+def test_graphql_release_evidence_requires_declared_complete_contexts(
+    tmp_path: Path, count: int, total: Any, complete: bool
+) -> None:
+    fake = _GraphQLRollupOnRestIndeterminateRunner(
+        graphql_head_sha="sha-42", graphql_rollup=[_check(f"check-{i}") for i in range(count)]
+    )
+
+    def runner(cmd: list[str], **kwargs: Any) -> subprocess.CompletedProcess:
+        proc = fake(cmd, **kwargs)
+        if cmd[:3] == ["gh", "api", "graphql"]:
+            payload = json.loads(proc.stdout)
+            pull = payload["data"]["repository"]["pullRequest"]
+            contexts = pull["commits"]["nodes"][0]["commit"]["statusCheckRollup"]["contexts"]
+            # Model GraphQL field selection too: an unrequested total cannot prove completeness.
+            if total is None or not any("totalCount" in arg for arg in cmd):
+                contexts.pop("totalCount")
+            else:
+                contexts["totalCount"] = total
+            return subprocess.CompletedProcess(cmd, 0, json.dumps(payload), "")
+        return proc
+
+    ok, sha_or_reason, checks = autoqueue.fetch_pr_release_evidence(
+        42, repo="owner/repo", repo_root=tmp_path, runner=runner, route=_graphql_route()
+    )
+    assert ok is complete
+    assert sha_or_reason == ("sha-42" if complete else "invalid_status_check_rollup")
+    assert checks == ({f"check-{i}" for i in range(count)} if complete else set())
 
 
 def test_fetch_pr_release_evidence_rejects_non_json_success(tmp_path: Path) -> None:
@@ -766,6 +821,7 @@ def test_fetch_pr_release_evidence_falls_back_to_graphql_when_rest_pull_indeterm
                                             "oid": "sha-42",
                                             "statusCheckRollup": {
                                                 "contexts": {
+                                                    "totalCount": 1,
                                                     "nodes": [
                                                         {
                                                             "__typename": "CheckRun",
@@ -773,7 +829,7 @@ def test_fetch_pr_release_evidence_falls_back_to_graphql_when_rest_pull_indeterm
                                                             "status": "COMPLETED",
                                                             "conclusion": "SUCCESS",
                                                         }
-                                                    ]
+                                                    ],
                                                 }
                                             },
                                         }
@@ -840,6 +896,7 @@ def test_fetch_status_rollup_falls_back_to_graphql_when_rest_indeterminate(
                                             "oid": "sha-graph",
                                             "statusCheckRollup": {
                                                 "contexts": {
+                                                    "totalCount": 2,
                                                     "nodes": [
                                                         {
                                                             "__typename": "CheckRun",
@@ -855,7 +912,7 @@ def test_fetch_status_rollup_falls_back_to_graphql_when_rest_indeterminate(
                                                             "conclusion": "SUCCESS",
                                                             "completedAt": "2026-07-07T21:46:00Z",
                                                         },
-                                                    ]
+                                                    ],
                                                 }
                                             },
                                         }
@@ -7411,6 +7468,91 @@ def test_egress_revalidation_plumbs_changed_files_into_the_coverage_bound(tmp_pa
     assert not any("audio_or_live_egress" in b or "egress_evidence" in b for b in covered), (
         f"covered paths should revalidate clean: {covered}"
     )
+
+
+@pytest.mark.parametrize("rest_blocked", [False, True], ids=["rest_healthy", "rest_blocked"])
+def test_release_gate_rejects_graphql_mitigation_failure_beyond_first_100(
+    tmp_path: Path, rest_blocked: bool
+) -> None:
+    from shared.release_gate import LIVE_EGRESS_MITIGATION_CHECKS
+
+    vault = _make_vault(tmp_path)
+    frontmatter = _egress_armed_frontmatter()
+    _write_task(vault, task_id=str(frontmatter["task_id"]), pr=42, extra_frontmatter=frontmatter)
+    _write_governance_review_dossier(vault, str(frontmatter["task_id"]), 42)
+    task = autoqueue.load_task_notes(vault)[0]
+    changed_files = ("shared/capability_adapter_protocol.py",)
+    independent_checks = autoqueue._release_mitigation_verified_checks(
+        set(),
+        task,
+        frontmatter,
+        pr_number=42,
+        pr_head_sha="sha-42",
+        changed_files=changed_files,
+        changed_file_count=1,
+    )
+    assert independent_checks == {autoqueue.REVIEW_TEAM_QUORUM_EVIDENCE}
+    checks = [
+        {**_check(name), "completedAt": "2026-09-05T01:00:00Z"}
+        for name in LIVE_EGRESS_MITIGATION_CHECKS
+        if name != autoqueue.REVIEW_TEAM_QUORUM_EVIDENCE
+    ]
+    checks.extend(_check(f"extra-{index}") for index in range(100 - len(checks)))
+    checks.append(
+        {
+            **_check("egress-boundary-pin", "FAILURE"),
+            "completedAt": "2026-09-05T02:00:00Z",
+        }
+    )
+    fake = _FakeRunner()
+    fake.open_prs = [_pr(42, checks=checks)]
+
+    def runner(cmd: list[str], **kwargs: Any) -> subprocess.CompletedProcess:
+        if cmd[:3] == ["gh", "api", "graphql"]:
+            fake.calls.append(list(cmd))
+            commit = {
+                "oid": "sha-42",
+                "statusCheckRollup": {"contexts": {"totalCount": 101, "nodes": checks[:100]}},
+            }
+            pull = {"headRefOid": "sha-42", "commits": {"nodes": [{"commit": commit}]}}
+            return subprocess.CompletedProcess(
+                cmd, 0, json.dumps({"data": {"repository": {"pullRequest": pull}}}), ""
+            )
+        if cmd[:5] == ["gh", "api", "--method", "GET", "-H"]:
+            assert not rest_blocked, f"REST is ineligible: {cmd}"
+        proc = fake(cmd, **kwargs)
+        if cmd[:5] == ["gh", "api", "--method", "GET", "-H"] and cmd[6].endswith("/check-runs"):
+            page = int(_FakeRunner._fields(cmd)["page"])
+            runs = json.loads(proc.stdout)["check_runs"]
+            payload = {"total_count": len(runs), "check_runs": runs[(page - 1) * 100 : page * 100]}
+            return subprocess.CompletedProcess(cmd, 0, json.dumps(payload), "")
+        return proc
+
+    ok, sha_or_reason, verified = autoqueue.fetch_pr_release_evidence(
+        42,
+        repo="owner/repo",
+        repo_root=tmp_path,
+        runner=runner,
+        route=_graphql_route(rest_blocked=rest_blocked),
+    )
+    blockers = autoqueue._release_auto_arm_current_evidence_blockers(
+        frontmatter, verified_checks=verified | independent_checks, changed_files=changed_files
+    )
+    assert any("egress-boundary-pin" in blocker for blocker in blockers), blockers
+    assert "egress-boundary-pin" not in verified
+    assert ok is not rest_blocked
+    assert sha_or_reason == ("invalid_status_check_rollup" if rest_blocked else "sha-42")
+    assert any(cmd[:3] == ["gh", "api", "graphql"] for cmd in fake.calls)
+    assert (
+        any(cmd[:5] == ["gh", "api", "--method", "GET", "-H"] for cmd in fake.calls)
+        is not rest_blocked
+    )
+    pages = [
+        _FakeRunner._fields(cmd)["page"]
+        for cmd in fake.calls
+        if cmd[:5] == ["gh", "api", "--method", "GET", "-H"] and cmd[6].endswith("/check-runs")
+    ]
+    assert pages == ([] if rest_blocked else ["1", "2"])
 
 
 def test_egress_revalidation_without_changed_files_holds_coverage_unevaluable(

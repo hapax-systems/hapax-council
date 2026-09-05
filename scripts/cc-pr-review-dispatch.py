@@ -1001,9 +1001,25 @@ def fetch_pr(
     engages on failure can react to exhaustion but never prevent it. When the cycle measured
     REST below its floor, this begins on GraphQL instead, and REST becomes the fallback.
     """
+    incomplete_pr: PRInfo | None = None
     if route is not None and route.transport == "graphql":
         try:
-            return _fetch_pr_via_view(pr_number, repo=repo, repo_root=repo_root, runner=runner)
+            pr_info = _fetch_pr_via_view(pr_number, repo=repo, repo_root=repo_root, runner=runner)
+            if (
+                pr_info.changed_file_count is None
+                or len(pr_info.files) >= pr_info.changed_file_count
+                or route.rest_blocked
+            ):
+                return pr_info
+            # Keep the known truncation for review_pr's withholding reason if REST also
+            # fails. A successful metadata response is not a complete file listing.
+            incomplete_pr = pr_info
+            LOG.warning(
+                "GraphQL pull files truncated for PR #%d (%d/%d); falling back to REST",
+                pr_number,
+                len(pr_info.files),
+                pr_info.changed_file_count,
+            )
         except RuntimeError as exc:
             if route.rest_blocked:
                 # REST was MEASURED below its floor. Falling back to it would attempt more
@@ -1020,6 +1036,8 @@ def fetch_pr(
             )
     item = get_pull_rest(pr_number, repo=repo, repo_root=repo_root, runner=runner)
     if item is None:
+        if incomplete_pr is not None:
+            return incomplete_pr
         if route is not None and route.transport == "graphql":
             # `gh pr view` was already the PRIMARY on this cycle and it failed; retrying it here
             # would repeat a call we know just failed, which is the "attempt more after a
@@ -1051,6 +1069,8 @@ def fetch_pr(
     head = item.get("head") if isinstance(item.get("head"), dict) else {}
     base = item.get("base") if isinstance(item.get("base"), dict) else {}
     file_items = list_pull_files_rest(pr_number, repo=repo, repo_root=repo_root, runner=runner)
+    if incomplete_pr is not None and not file_items:
+        return incomplete_pr
     files = tuple(
         str(entry["filename"])
         for entry in file_items
@@ -1184,42 +1204,13 @@ def fetch_pr_diff_from_local(pr_info: PRInfo, *, repo_root: Path, runner: Any) -
             "prove the current PR head. Next action: restore GitHub PR metadata access or "
             "fetch PR metadata with headRefOid/head.sha before review dispatch."
         )
-    # Refresh the base branch over the git protocol (a different quota from REST) and require
-    # the base sha the PR metadata records to be an ANCESTOR of the local tip, not equal to it.
-    # REST's `base.sha` is the tip at the PR's last update and GraphQL's `baseRefOid` the tip at
-    # query time, so equality refused every PR whose base had moved on since — the dispatch
-    # timer's "expected PR base" failures on 2026-09-03 for this very PR. A local tip that is
-    # BEHIND the recorded base (fetch failed, or the base was rewritten) still refuses, because
-    # the merge base below would then be older than the one GitHub's diff endpoint uses.
-    try:
-        _run_gh(
-            ["git", "fetch", "--quiet", "origin", base_ref],
-            repo_root=repo_root,
-            runner=runner,
-            timeout=180,
-        )
-    except RuntimeError as exc:
-        LOG.warning(
-            "could not refresh origin/%s before the local diff of PR #%d: %s",
-            base_ref,
-            pr_info.number,
-            exc,
-        )
-    _ensure_local_ref(remote_base, fetch_ref=base_ref, repo_root=repo_root, runner=runner)
-    if pr_info.base_sha:
-        try:
-            _run_gh(
-                ["git", "merge-base", "--is-ancestor", pr_info.base_sha, remote_base],
-                repo_root=repo_root,
-                runner=runner,
-            )
-        except RuntimeError as exc:
-            raise RuntimeError(
-                f"local git diff fallback for PR #{pr_info.number}: {remote_base} is behind the "
-                f"base {pr_info.base_sha[:12]} the PR records (or that base was rewritten), so a "
-                "local merge base would be older than GitHub's. Next action: `git fetch origin "
-                f"{base_ref}` and retry. ({exc})"
-            ) from exc
+    pinned_base = _ensure_local_ref_at_sha(
+        remote_base,
+        expected_sha=pr_info.base_sha,
+        fetch_ref=base_ref,
+        repo_root=repo_root,
+        runner=runner,
+    )
 
     head = pr_info.head_sha
     _ensure_local_ref(
@@ -1236,32 +1227,37 @@ def fetch_pr_diff_from_local(pr_info: PRInfo, *, repo_root: Path, runner: Any) -
             f"access or fetch pull/{pr_info.number}/head before review dispatch."
         )
 
-    merge_base = _run_gh(
-        ["git", "merge-base", remote_base, head],
-        repo_root=repo_root,
-        runner=runner,
-    ).strip()
+    try:
+        merge_base = _run_gh(
+            ["git", "merge-base", pinned_base, head],
+            repo_root=repo_root,
+            runner=runner,
+        ).strip()
+    except RuntimeError as exc:
+        raise RuntimeError(
+            f"local git diff fallback for PR #{pr_info.number} cannot compute a merge-base "
+            f"between {remote_base} and head {head[:12]}; the refs may be missing or the "
+            "histories unrelated. Next action: fetch the PR head and base refs, then retry "
+            "review dispatch."
+        ) from exc
     if not merge_base:
         raise RuntimeError(
-            f"local git diff fallback for PR #{pr_info.number}: head {head[:12]} and the current "
-            f"base {remote_base} ({pr_info.base_sha[:12]} per PR metadata) share no merge base "
-            "locally. Next action: fetch "
-            f"pull/{pr_info.number}/head and origin/{base_ref} before review dispatch."
+            f"local git diff fallback for PR #{pr_info.number} computed no merge-base "
+            f"between {remote_base} and head {head[:12]}; refusing to review an unproven "
+            "diff. Next action: fetch the PR head and base refs, then retry review dispatch."
         )
-    if merge_base != pr_info.base_sha:
-        # A PR whose base has moved on since it branched — the NORMAL shape of a PR behind main
-        # — has a merge base older than the current base tip. The previous revision raised
-        # here, and with REST measured empty every such PR produced a per-cycle error instead
-        # of a dossier: reviews deadlocked on exactly the PRs that most needed them. Found by
-        # review on #4610. GitHub's own PR diff is `merge-base(base, head)..head` (the
-        # three-dot diff), so pinning to the merge base IS the endpoint's semantics; the pin is
-        # recorded below so the dossier states which base it reviewed against.
+    if merge_base != pinned_base or merge_base != pr_info.base_sha:
+        # A PR behind main is valid: GitHub reviews merge-base(base, head)..head.
+        # The metadata may also lag the refreshed base. Record the actual comparison
+        # base in the dossier instead of rejecting either normal shape of a PR.
         LOG.info(
-            "PR #%d is behind %s: reviewing head %s against merge base %s (current base %s)",
+            "PR #%d: reviewing head %s against merge base %s "
+            "(refreshed %s %s, recorded PR base %s)",
             pr_info.number,
-            base_ref,
             head[:12],
             merge_base[:12],
+            base_ref,
+            pinned_base[:12],
             pr_info.base_sha[:12],
         )
     diff = _run_gh(
@@ -1297,6 +1293,58 @@ def _local_commit_object_exists(ref: str, *, repo_root: Path, runner: Any) -> bo
     except RuntimeError:
         return False
     return True
+
+
+def _ensure_local_ref_at_sha(
+    ref: str,
+    *,
+    expected_sha: str,
+    fetch_ref: str,
+    repo_root: Path,
+    runner: Any,
+) -> str:
+    """Refresh and return an immutable base tip with the recorded PR base as an ancestor."""
+    # GitHub refreshes baseRefOid lazily; even a matching local ref may lag origin.
+    try:
+        _run_gh(
+            [
+                "git",
+                "fetch",
+                "--quiet",
+                "origin",
+                f"+refs/heads/{fetch_ref}:refs/remotes/origin/{fetch_ref}",
+            ],
+            repo_root=repo_root,
+            runner=runner,
+            timeout=180,
+        )
+    except RuntimeError as exc:
+        raise RuntimeError(
+            f"local ref {ref} cannot establish the current PR base at "
+            f"{expected_sha[:12]}; fetching the base ref failed. Next action: restore "
+            "origin access and retry review dispatch."
+        ) from exc
+
+    actual_sha = _resolve_local_ref(ref, repo_root=repo_root, runner=runner)
+    if not actual_sha:
+        raise RuntimeError(
+            f"local ref {ref} is missing after fetching the base ref. Next action: "
+            "restore origin access and fetch the base ref, then retry review dispatch."
+        )
+    try:
+        _run_gh(
+            ["git", "merge-base", "--is-ancestor", expected_sha, actual_sha],
+            repo_root=repo_root,
+            runner=runner,
+        )
+    except RuntimeError as exc:
+        raise RuntimeError(
+            f"PR base {expected_sha[:12]} is not a proven ancestor of refreshed {ref} "
+            f"({actual_sha[:12]}); refusing local git diff. Next action: re-set the PR base "
+            f'with updatePullRequest(baseRefName: "{fetch_ref}") or push a merge of '
+            f"{fetch_ref}, then retry review dispatch."
+        ) from exc
+    return actual_sha
 
 
 def _ensure_local_ref(
