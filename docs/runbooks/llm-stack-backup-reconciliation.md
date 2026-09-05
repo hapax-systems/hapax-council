@@ -37,11 +37,13 @@ off-site lane below.
 Recheck the B2 lane's claims on podium:
 
 ```bash
+set -o pipefail
 systemctl --user list-timers hapax-backup-remote.timer --no-pager
 systemctl --user status hapax-backup-remote.service --no-pager | head -5
 export RESTIC_PASSWORD_COMMAND='pass show backblaze/restic-password'  # pragma: allowlist secret
 restic -r rclone:b2:hapax-backups/restic snapshots --latest 1
-~/.cache/hapax/source-activation/worktree/scripts/hapax-backup-watchdog 2>&1 | grep Tier2-B2
+systemctl --user start hapax-backup-watchdog.service &&
+  journalctl --user -u hapax-backup-watchdog.service -n 100 --no-pager
 ```
 
 Critical offsite safety baseline:

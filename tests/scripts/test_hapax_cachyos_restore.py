@@ -515,7 +515,13 @@ def _run_full_restore(
     existing_b2: bool = False,
     nas_mode: str = "existing",
     supplied_nas_password: bool = False,
-    restore_snapshot: str = "latest",
+    restore_snapshot: str = "",
+    snapshot_mode: str = "mixed",
+    fail_privileged: str = "",
+    github_mode: str = "available",
+    council_bundle: str = "absent",
+    activation_mode: str = "valid",
+    unit_target_mode: str = "valid",
 ) -> tuple[subprocess.CompletedProcess[str], list[str], Path]:
     home = tmp_path / "home"
     restore_root = tmp_path / "restore-root"
@@ -533,6 +539,41 @@ def _run_full_restore(
     )
     compose_contract.write_text(contract_text)
     home.mkdir()
+    for identity in (".gnupg", ".ssh"):
+        (home / identity).mkdir()
+        (home / identity / "original").write_text("original identity fixture\n")
+    snapshots = [
+        {
+            "id": "abcdef0123456789",
+            "hostname": "hapax-podium",
+            "tags": ["tier2-remote"],
+            "time": "2026-09-01T00:00:00Z",
+        },
+        {
+            "id": "2" * 64,
+            "hostname": "hapax-podium",
+            "tags": ["tier2-remote"],
+            "time": "2026-09-02T00:00:00Z",
+        },
+        {
+            "id": "f" * 64,
+            "hostname": "hapax-monocle",
+            "tags": ["monocle-daily"],
+            "time": "2026-09-04T00:00:00Z",
+        },
+        {
+            "id": "e" * 64,
+            "hostname": "hapax-podium",
+            "tags": ["other"],
+            "time": "2026-09-03T00:00:00Z",
+        },
+    ]
+    if snapshot_mode == "foreign-only":
+        snapshots = snapshots[2:]
+    if snapshot_mode == "invalid-time":
+        snapshots[1]["time"] = "unknown"
+    snapshot_file = tmp_path / "snapshots.json"
+    snapshot_file.write_text(json.dumps(snapshots))
     if omit_env_file == ".env" or omit_stack:
         # A pre-existing destination must not hide missing recovery inputs.
         (home / "llm-stack").mkdir()
@@ -607,7 +648,23 @@ if [ "${1:-}" = -r ]; then
         exit 19
     fi
 fi
+if [ "${1:-}" = snapshots ]; then
+    host= tag=
+    while [ "$#" -gt 0 ]; do
+        case "$1" in --host) host=$2; shift ;; --tag) tag=$2; shift ;; esac
+        shift
+    done
+    if [ -n "$host" ]; then
+        [ "$SNAPSHOT_MODE" != unreadable ] || exit 17
+        if [ "$SNAPSHOT_MODE" = invalid-json ]; then printf '%s\n' '{'; exit 0; fi
+    fi
+    jq --arg host "$host" --arg tag "$tag" '[.[] | select(($host == "" or .hostname == $host) and ($tag == "" or (.tags | index($tag))))]' "$SNAPSHOT_FILE"
+    exit 0
+fi
 if [ "${1:-}" = restore ]; then
+    selected=$2
+    if [ "$selected" = latest ]; then selected=$(jq -r 'max_by(.time).id' "$SNAPSHOT_FILE"); fi
+    printf 'selected snapshot %s\n' "$selected" >> "$COMMAND_LOG"
     target=
     while [ "$#" -gt 0 ]; do
         if [ "$1" = --target ]; then
@@ -619,6 +676,16 @@ if [ "${1:-}" = restore ]; then
     home_seg=home
     backed_up_rclone="$target/${home_seg}/backup-user/.config/rclone/rclone.conf"
     mkdir -p "$target/${home_seg}/backup-user/llm-stack" "$(dirname "$backed_up_rclone")"
+    for identity in .gnupg .ssh; do
+        mkdir -p "$target/${home_seg}/backup-user/$identity"
+        printf '%s\n' 'replacement identity fixture' > "$target/${home_seg}/backup-user/$identity/replacement"
+    done
+    restored_home="$target/${home_seg}/backup-user"
+    active="$HOME/.cache/hapax/source-activation/worktree"
+    mkdir -p "$restored_home/.config/systemd/user" "$restored_home/.local/bin"
+    ln -s "$active/hapax-backup-local.service" "$restored_home/.config/systemd/user/hapax-backup-local.service"
+    ln -s "$active/hapax-backup-local.timer" "$restored_home/.config/systemd/user/hapax-backup-local.timer"
+    ln -s "$active/scripts/hapax-backup-local" "$restored_home/.local/bin/hapax-backup-local"
     stack="$target/${home_seg}/backup-user/llm-stack"
     printf '%s\n' 'services: {}' > "$stack/docker-compose.yml"
     printf '%s\n' '# restored environment fixture' > "$stack/.env"
@@ -626,13 +693,16 @@ if [ "${1:-}" = restore ]; then
     if [ -n "$OMIT_ENV_FILE" ]; then rm "$stack/$OMIT_ENV_FILE"; fi
     if [ "$OMIT_STACK" = 1 ]; then rm -rf "$stack"; fi
     printf '%s\n' 'stale-b2-config' > "$backed_up_rclone"
-    if [ "${OMIT_RESTORE_DUMP:-0}" != 1 ]; then
+    if [ "${OMIT_RESTORE_DUMP:-0}" != 1 ] && [ "$selected" != ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff ]; then
         dump="$target/store/llm-data/backup-dumps-remote"
         mkdir -p "$dump/qdrant" "$dump/git-bundles"
         printf '%s\n' 'SELECT 1;' > "$dump/postgres-all.sql"
         printf '%s\n' '{}' > "$dump/n8n-workflows.json"
         printf '%s\n' 'snapshot' > "$dump/qdrant/restore-test.snapshot"
         printf '%s\n' 'bundle' > "$dump/git-bundles/obsidian-hapax.bundle"
+        if [ "$COUNCIL_BUNDLE" != absent ]; then
+            printf '%s\n' "$COUNCIL_BUNDLE" > "$dump/git-bundles/hapax-council.bundle"
+        fi
     fi
 fi
 exit 0
@@ -643,6 +713,10 @@ exit 0
         """#!/bin/sh
 set -eu
 printf 'sudo %s\n' "$*" >> "$COMMAND_LOG"
+if [ "$FAIL_PRIVILEGED" = store-mkdir ] && [ "$*" = "mkdir -p -- $STORE_ROOT_FIXTURE" ]; then exit 17; fi
+if [ -n "$FAIL_PRIVILEGED" ]; then
+    case " $* " in *" $FAIL_PRIVILEGED "*) exit 17 ;; esac
+fi
 case "${1:-}" in
     mkdir)
         shift
@@ -673,11 +747,30 @@ exit 0
         """#!/bin/sh
 set -eu
 printf '%s\n' "$*" >> "$COMMAND_LOG"
+if [ "${2:-}" = show ]; then
+    unit=$3
+    case "$*" in
+        *Triggers*) printf '%s\n' "${unit%.timer}.service" ;;
+        *LoadState*) [ -f "$HOME/.config/systemd/user/$unit" ] && printf '%s\n' loaded || printf '%s\n' not-found ;;
+        *ExecStart*)
+            target=$(sed -n 's/^ExecStart=//p' "$HOME/.config/systemd/user/$unit")
+            printf '{ path=%s ; argv[]=%s ; }\n' "$target" "$target"
+            ;;
+    esac
+fi
 case " $* " in
     *" enable $FAIL_ENABLE_UNIT ") exit 7 ;;
     *" is-enabled $FAIL_VERIFY_UNIT ") exit 8 ;;
     *" is-enabled $REPORT_STATE_UNIT ") printf '%s\n' "$REPORTED_STATE" ;;
     *" is-enabled "*) printf '%s\n' enabled ;;
+    *" --user enable "*)
+        unit=$3
+        service=${unit%.timer}.service
+        if [ "$unit" = "${unit%.timer}" ]; then service=$unit; fi
+        target=$(sed -n 's/^ExecStart=//p' "$HOME/.config/systemd/user/$service")
+        [ -f "$target" ] && [ -x "$target" ] || exit 20
+        printf 'verified ExecStart %s\n' "$service" >> "$COMMAND_LOG"
+        ;;
 esac
 exit 0
 """,
@@ -687,13 +780,23 @@ exit 0
         """#!/bin/sh
 set -eu
 printf 'git %s\n' "$*" >> "$COMMAND_LOG"
+case " $* " in
+    *" rev-parse "*) printf '%s\n' aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa ;;
+    *" fsck "*) [ "$COUNCIL_BUNDLE" != disconnected ] || exit 22 ;;
+esac
 if [ "${1:-}" = clone ]; then
     case "$2" in
         *hapax-council*)
-            [ "$FAIL_COUNCIL_CLONES" != 1 ] || exit 7
+            case "$2" in
+                *.bundle) [ "$(cat "$2")" = valid ] || [ "$(cat "$2")" = disconnected ] || exit 21 ;;
+                *) [ "$FAIL_COUNCIL_CLONES" != 1 ] && [ "$GITHUB_MODE" = available ] || exit 7 ;;
+            esac
             if [ "$EMPTY_COUNCIL_CHECKOUT" = 1 ]; then exit 0; fi
-            mkdir -p "$3/systemd/units"
+            mkdir -p "$3/systemd/units" "$3/scripts"
             cp "$COMPOSE_CONTRACT_FIXTURE" "$3/systemd/units/llm-stack.service"
+            if [ "$ACTIVATION_MODE" != missing-entry ]; then
+                cp "$RESTORE_FAKE_BIN/activate" "$3/scripts/hapax-source-activate"
+            fi
             ;;
     esac
     mkdir -p "$3/.git"
@@ -706,10 +809,55 @@ exit 0
         """#!/bin/sh
 set -eu
 printf 'gh %s\n' "$*" >> "$COMMAND_LOG"
+[ "$GITHUB_MODE" != missing ] || exit 127
+[ "$GITHUB_MODE" != unauthenticated ] || exit 4
 if [ "${1:-}" = repo ] && [ "${2:-}" = clone ] && [ "$3" = hapax-systems/hapax-council ]; then
     [ "$FAIL_COUNCIL_CLONES" != 1 ] || exit 8
     exec "$RESTORE_FAKE_BIN/git" clone "$3" "$4"
 fi
+""",
+    )
+    _write_executable(
+        fake_bin / "activate",
+        r"""#!/usr/bin/python3
+import json, os, re, sys
+from pathlib import Path
+home = Path(os.environ['HOME'])
+active = home / '.cache/hapax/source-activation/worktree'
+mode = os.environ['ACTIVATION_MODE']
+with open(os.environ['COMMAND_LOG'], 'a') as log:
+    log.write('activate ' + ' '.join(sys.argv[1:]) + '\n')
+if mode == 'failed': sys.exit(17)
+if mode == 'held': sys.exit(0)
+(active / '.git').mkdir(parents=True)
+(active / 'scripts').mkdir()
+(active / 'scripts/hapax-backup-local').write_text('#!/bin/sh\nexit 0\n')
+(active / 'scripts/hapax-backup-local').chmod(0o755)
+(active.parent / 'current.json').write_text(json.dumps(dict(status='completed_skip_deploy', active_source_head='a'*40, origin_main_sha='a'*40, active_source_path=str(active))))
+units = home / '.config/systemd/user'
+units.mkdir(parents=True, exist_ok=True)
+source = Path(os.environ['RESTORE_SCRIPT_FIXTURE']).read_text()
+for array, suffix in [('SERVICES', 'service'), ('TIMERS', 'timer')]:
+    names = re.search(array + r'=\((.*?)\)', source, re.S)[1].split()
+    for name in names:
+        target = active / 'scripts' / name
+        target.write_text('#!/bin/sh\nexit 0\n')
+        target.chmod(0o755)
+        service = active / (name + '.service')
+        service.write_text('[Service]\nExecStart=' + str(target) + '\n')
+        if not (units / service.name).is_symlink(): (units / service.name).symlink_to(service)
+        if suffix == 'timer':
+            timer = active / (name + '.timer')
+            timer.write_text('[Timer]\nUnit=' + name + '.service\n')
+            if not (units / timer.name).is_symlink(): (units / timer.name).symlink_to(timer)
+broken = active / 'scripts/hapax-backup-remote'
+target_mode = os.environ['UNIT_TARGET_MODE']
+if target_mode in ('missing', 'dangling'):
+    broken.unlink()
+    if target_mode == 'dangling': broken.symlink_to(active / 'absent')
+if target_mode == 'nonexecutable': broken.chmod(0o644)
+if target_mode == 'missing-unit': (units / 'hapax-backup-remote.service').unlink()
+if mode == 'missing-backup': (active / 'scripts/hapax-backup-local').unlink()
 """,
     )
     _write_executable(
@@ -823,7 +971,8 @@ esac
     for command in passthrough_commands:
         _write_executable(fake_bin / command, "#!/bin/sh\nexit 0\n")
     bash_env.write_text(
-        "\n".join(
+        'command() { if [[ "$*" == "-v gh" && "$GITHUB_MODE" == missing ]]; then return 1; fi; builtin command "$@"; }\n'
+        + "\n".join(
             f'{command}() {{ "$RESTORE_FAKE_BIN/{command}" "$@"; }}'
             for command in (
                 *passthrough_commands,
@@ -876,6 +1025,15 @@ esac
             "FAIL_COMPOSE": "1" if fail_compose else "0",
             "DROP_COPIED_ENV": "1" if drop_copied_env else "0",
             "SIGNATURE_MODE": signature_mode,
+            "FAIL_PRIVILEGED": fail_privileged,
+            "STORE_ROOT_FIXTURE": str(store_root),
+            "SNAPSHOT_MODE": snapshot_mode,
+            "SNAPSHOT_FILE": str(snapshot_file),
+            "GITHUB_MODE": github_mode,
+            "COUNCIL_BUNDLE": council_bundle,
+            "ACTIVATION_MODE": activation_mode,
+            "UNIT_TARGET_MODE": unit_target_mode,
+            "RESTORE_SCRIPT_FIXTURE": str(RESTORE_SCRIPT),
             "DROP_PHASE12_ENV": "1" if drop_phase12_env else "0",
             "RESTORE_STORE_DEVICE": str(tmp_path / "replacement-disk"),
             "NAS_MODE": nas_mode,
@@ -1252,3 +1410,212 @@ def test_round4_dump_remedy_can_select_complete_snapshot(tmp_path: Path) -> None
     result, commands, root = _run_full_restore(tmp_path, restore_snapshot="abcdef0123456789")
     assert result.returncode == 0
     assert f"restic restore abcdef0123456789 --target {root} --no-lock --verbose" in commands
+
+
+def test_round5_restore_selects_newest_podium_snapshot(tmp_path: Path) -> None:
+    result, commands, _ = _run_full_restore(tmp_path)
+    assert result.returncode == 0, result.stderr
+    assert "selected snapshot " + "2" * 64 in commands
+    assert any("--host hapax-podium --tag tier2-remote" in c for c in commands)
+
+
+@pytest.mark.parametrize("selection", ["", "f" * 64, "e" * 64, "deadbeef", "latest"])
+def test_round5_restore_refuses_unproved_producer_before_identity(
+    tmp_path: Path, selection: str
+) -> None:
+    result, commands, _ = _run_full_restore(
+        tmp_path, snapshot_mode="foreign-only", restore_snapshot=selection
+    )
+    assert result.returncode != 0
+    assert "hapax-podium/tier2-remote" in result.stderr
+    assert "restic snapshots --host hapax-podium --tag tier2-remote" in result.stderr
+    assert not any(c.startswith("restic restore ") for c in commands)
+    for identity in (".gnupg", ".ssh"):
+        assert (tmp_path / "home" / identity / "original").is_file()
+
+
+def test_round5_dump_validation_precedes_identity_replacement(tmp_path: Path) -> None:
+    result, commands, _ = _run_full_restore(tmp_path, omit_restore_dump=True)
+    assert result.returncode != 0
+    assert "No database dump directory" in result.stderr
+    for identity in (".gnupg", ".ssh"):
+        assert (tmp_path / "home" / identity / "original").is_file(), (
+            "identity changed before dump validation"
+        )
+        assert not (tmp_path / "home" / identity / "replacement").exists()
+    assert not any(c.startswith("pass ") for c in commands)
+
+
+@pytest.mark.parametrize(
+    "operation,next_operation",
+    [
+        ("mklabel gpt", "mkpart"),
+        ("mkpart store ext4 1MiB 100%", "udevadm"),
+        ("udevadm settle", "mkfs.ext4"),
+        ("mkfs.ext4 -L store", "blkid -s UUID"),
+        ("blkid -s UUID -o value", "tee -a /etc/fstab"),
+    ],
+)
+def test_round5_phase11_stops_after_privileged_failure(
+    tmp_path: Path, operation: str, next_operation: str
+) -> None:
+    result, commands, _ = _run_full_restore(
+        tmp_path,
+        restore_snapshot="abcdef0123456789",
+        signature_mode="empty",
+        fail_privileged=operation,
+    )
+    assert result.returncode != 0, "Phase 11 continued after privileged exit 17"
+    failed_index = next(
+        i for i, c in enumerate(commands) if c.startswith("sudo ") and operation in c
+    )
+    assert not any(next_operation in c for c in commands[failed_index + 1 :]), (
+        "later privileged operation ran"
+    )
+    assert "Phase 12:" not in result.stdout
+    assert "Replacement disk provisioned" not in result.stdout
+    assert "Phase 11" in result.stderr and "inspect" in result.stderr
+
+
+@pytest.mark.parametrize("mode", ["missing", "unauthenticated", "clone-failed"])
+def test_round5_council_bundle_recovers_github_failure(tmp_path: Path, mode: str) -> None:
+    result, commands, root = _run_full_restore(
+        tmp_path, restore_snapshot="abcdef0123456789", github_mode=mode, council_bundle="valid"
+    )
+    assert result.returncode == 0, result.stderr
+    assert "hapax-council bundle fallback" in result.stdout
+    assert "CachyOS Restore Complete" in result.stdout
+    assert any(
+        c.startswith(f"git clone {root}/{DUMP_PATHS[0]}/git-bundles/hapax-council.bundle ")
+        for c in commands
+    )
+    assert any("fsck --connectivity-only" in c for c in commands)
+    if mode == "missing":
+        assert "gh is unavailable" in result.stdout
+    elif mode == "unauthenticated":
+        assert "gh auth status failed" in result.stdout
+
+
+@pytest.mark.parametrize("bundle", ["absent", "invalid"])
+def test_round5_council_bundle_failure_is_named(tmp_path: Path, bundle: str) -> None:
+    result, commands, _ = _run_full_restore(
+        tmp_path,
+        restore_snapshot="abcdef0123456789",
+        github_mode="clone-failed",
+        council_bundle=bundle,
+    )
+    assert result.returncode != 0
+    assert "hapax-council.bundle" in result.stderr
+    assert "rerun" in result.stderr
+    assert "Phase 4:" not in result.stdout
+    assert not any(c.startswith("docker compose ") for c in commands)
+
+
+def test_round5_bootstrap_installs_phase_dependencies(tmp_path: Path) -> None:
+    result, commands, _ = _run_full_restore(tmp_path, restore_snapshot="abcdef0123456789")
+    assert result.returncode == 0
+    bootstrap = next(c for c in commands if c.startswith("sudo pacman -Syu "))
+    assert {
+        "restic",
+        "rclone",
+        "gnupg",
+        "pass",
+        "curl",
+        "wget",
+        "git",
+        "github-cli",
+        "jq",
+        "base-devel",
+        "python",
+        "parted",
+        "e2fsprogs",
+        "util-linux",
+    } <= set(bootstrap.split())
+    assert commands.index(bootstrap) < next(
+        i for i, c in enumerate(commands) if c.startswith("gh ")
+    )
+
+
+def test_round5_activation_precedes_all_unit_enables(tmp_path: Path) -> None:
+    result, commands, _ = _run_full_restore(tmp_path, restore_snapshot="abcdef0123456789")
+    assert result.returncode == 0, result.stderr
+    assert "activate --skip-deploy" in commands
+    assert commands.index("activate --skip-deploy") < next(
+        i for i, c in enumerate(commands) if " enable " in c
+    )
+    launcher = tmp_path / "home/.local/bin/hapax-backup-local"
+    assert launcher.is_symlink() and launcher.is_file() and os.access(launcher, os.X_OK)
+    for command in commands:
+        if command.startswith("--user enable "):
+            unit = command.split()[-1].replace(".timer", ".service")
+            text = (tmp_path / "home/.config/systemd/user" / unit).read_text()
+            target = Path(text.split("ExecStart=", 1)[1].strip())
+            assert target.is_file() and os.access(target, os.X_OK), command
+            assert f"verified ExecStart {unit}" in commands
+
+
+@pytest.mark.parametrize("mode", ["missing-entry", "failed", "held", "missing-backup"])
+def test_round5_unproved_activation_refuses_before_any_enable(tmp_path: Path, mode: str) -> None:
+    result, commands, _ = _run_full_restore(
+        tmp_path, restore_snapshot="abcdef0123456789", activation_mode=mode
+    )
+    assert result.returncode != 0
+    assert "activation" in result.stderr and "rerun" in result.stderr
+    assert not any(" enable " in c for c in commands)
+    assert "CachyOS Restore Complete" not in result.stdout
+
+
+@pytest.mark.parametrize("mode", ["missing", "dangling", "nonexecutable", "missing-unit"])
+def test_round5_user_targets_verified_before_any_user_enable(tmp_path: Path, mode: str) -> None:
+    result, commands, _ = _run_full_restore(
+        tmp_path, restore_snapshot="abcdef0123456789", unit_target_mode=mode
+    )
+    assert result.returncode != 0
+    assert "hapax-backup-remote.service" in result.stderr
+    assert "rerun Phase 15" in result.stderr
+    assert not any(c.startswith("--user enable ") for c in commands)
+    assert "CachyOS Restore Complete" not in result.stdout
+
+
+@pytest.mark.parametrize("mode", ["unreadable", "invalid-json", "invalid-time"])
+def test_round5_unreadable_snapshot_metadata_refuses_before_restore(
+    tmp_path: Path, mode: str
+) -> None:
+    result, commands, _ = _run_full_restore(tmp_path, snapshot_mode=mode)
+    assert result.returncode != 0
+    assert "hapax-podium/tier2-remote" in result.stderr
+    assert "rerun Phase 2" in result.stderr
+    assert not any(c.startswith("restic restore ") for c in commands)
+    assert (tmp_path / "home/.gnupg/original").is_file()
+
+
+def test_round5_snapshot_prefix_resolves_to_immutable_id(tmp_path: Path) -> None:
+    result, commands, _ = _run_full_restore(tmp_path, restore_snapshot="22222222")
+    assert result.returncode == 0
+    assert "selected snapshot " + "2" * 64 in commands
+
+
+def test_round5_bundle_connectivity_failure_refuses(tmp_path: Path) -> None:
+    result, commands, _ = _run_full_restore(
+        tmp_path, github_mode="clone-failed", council_bundle="disconnected"
+    )
+    assert result.returncode != 0
+    assert "bundle fallback failed connectivity verification" in result.stderr
+    assert "rerun Phase 3" in result.stderr
+    assert "Phase 4:" not in result.stdout
+    assert not any("activate " in c for c in commands)
+
+
+@pytest.mark.parametrize("operation", ["store-mkdir", "tee -a /etc/fstab"])
+def test_round5_phase11_publication_failure_has_no_success_receipt(
+    tmp_path: Path, operation: str
+) -> None:
+    result, commands, _ = _run_full_restore(
+        tmp_path, signature_mode="empty", fail_privileged=operation
+    )
+    assert result.returncode != 0
+    assert "Replacement disk provisioned" not in result.stdout
+    assert "Phase 12:" not in result.stdout
+    assert "inspect" in result.stderr and "rerun Phase 11" in result.stderr
+    if operation == "store-mkdir":
+        assert not any("tee -a /etc/fstab" in c for c in commands)

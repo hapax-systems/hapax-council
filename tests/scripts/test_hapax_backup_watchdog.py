@@ -535,3 +535,60 @@ def test_round4_missing_monocle_snapshot_is_independent_failure(tmp_path):
     assert result.returncode == 1
     assert "Tier2-B2: OK" in receipt
     assert "Monocle-B2: no snapshots found for hapax-monocle/monocle-daily" in receipt
+
+
+@pytest.mark.parametrize(
+    "options,diagnostic,guidance",
+    [
+        (
+            {"fail_entries": ("nas-password",)},  # pragma: allowlist secret
+            "cannot read restic password",
+            "pass show 'nas-password' >/dev/null",  # pragma: allowlist secret
+        ),  # pragma: allowlist secret
+        (
+            {"empty_entries": ("nas-password",)},  # pragma: allowlist secret
+            "is empty",
+            "pass insert 'nas-password'",  # pragma: allowlist secret
+        ),
+        (
+            {"ages": {"tier2-remote": None}},
+            "PostgreSQL listing not attempted",
+            "restic -r 'b2' snapshots --json",
+        ),
+        (
+            {"ages": {"tier2-remote": None}},
+            "no snapshots found",
+            "restic -r 'b2' snapshots --host hapax-podium --tag tier2-remote",
+        ),
+        (
+            {"check_mode": "corrupt"},
+            "possible repo corruption",
+            "restic -r 'nas' check --read-data",
+        ),
+        (
+            {"listing_mode": "failed"},
+            "PostgreSQL listing failed",
+            "restic -r 'b2' ls --long " + f"{2:064x}",
+        ),
+    ],
+)
+def test_round5_failure_receipts_include_next_action(tmp_path, options, diagnostic, guidance):
+    result, _, receipt = run_watchdog(tmp_path, **options)
+    assert result.returncode == 1
+    for output in (result.stdout, receipt):
+        line = next(line for line in output.splitlines() if diagnostic in line)
+        assert guidance in line, "failure receipt omitted recovery command"
+
+
+def test_round5_runbook_recheck_uses_configured_unit_and_preserves_status():
+    text = (REPO_ROOT / "docs/runbooks/llm-stack-backup-reconciliation.md").read_text()
+    block = (
+        text.split("Recheck the B2 lane's claims on podium:", 1)[1]
+        .split("```bash", 1)[1]
+        .split("```", 1)[0]
+    )
+    assert "set -o pipefail" in block
+    assert "systemctl --user start hapax-backup-watchdog.service &&" in block
+    assert "journalctl --user -u hapax-backup-watchdog.service" in block
+    assert "| grep" not in block
+    assert "worktree/scripts/hapax-backup-watchdog" not in block

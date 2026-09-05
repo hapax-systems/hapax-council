@@ -300,6 +300,57 @@ restore_qdrant_snapshots() {
     done
 }
 
+select_restore_snapshot() {
+    local snapshots selected
+    local remedy="inspect 'restic snapshots --host hapax-podium --tag tier2-remote --json', then rerun Phase 2 with HAPAX_RESTORE_SNAPSHOT=<verified ID>"
+    if ! snapshots=$(restic snapshots --host hapax-podium --tag tier2-remote --json --no-lock 2>/dev/null); then
+        fail "Cannot list hapax-podium/tier2-remote snapshots; check B2 access and $remedy" >&2
+        return 1
+    fi
+    if ! selected=$(python3 -c '
+import datetime, json, re, sys
+try:
+    rows = json.load(sys.stdin)
+    requested = sys.argv[1]
+    if not isinstance(rows, list):
+        raise ValueError("snapshot metadata is not an array")
+    if requested and not re.fullmatch(r"[0-9a-fA-F]{8,64}", requested):
+        raise ValueError("HAPAX_RESTORE_SNAPSHOT must be an immutable snapshot ID")
+    candidates = []
+    for row in rows:
+        if row.get("hostname") != "hapax-podium" or "tier2-remote" not in row.get("tags", []):
+            continue
+        identity = row["id"]
+        if not re.fullmatch(r"[0-9a-fA-F]{8,64}", identity):
+            raise ValueError("invalid snapshot ID")
+        time = datetime.datetime.fromisoformat(row["time"].replace("Z", "+00:00"))
+        if time.tzinfo is None:
+            raise ValueError("snapshot time has no timezone")
+        if not requested or identity.startswith(requested.lower()):
+            candidates.append((time, identity))
+    if not candidates or (requested and len(candidates) != 1):
+        raise ValueError("no unique snapshot proved for the requested producer and ID")
+    print(max(candidates)[1])
+except (ValueError, KeyError, TypeError, AttributeError):
+    sys.exit(1)
+' "${HAPAX_RESTORE_SNAPSHOT:-}" <<< "$snapshots"); then
+        fail "No hapax-podium/tier2-remote snapshot could be proved (missing producer, invalid metadata, or foreign/unknown/ambiguous HAPAX_RESTORE_SNAPSHOT); $remedy" >&2
+        return 1
+    fi
+    printf '%s\n' "$selected"
+}
+
+github_recovery_ready() {
+    if ! command -v gh >/dev/null 2>&1; then
+        warn "gh is unavailable; install github-cli with 'sudo pacman -S --needed github-cli'; trying the recovery fallback"
+        return 1
+    fi
+    if ! gh auth status >/dev/null 2>&1; then
+        warn "gh auth status failed; run 'gh auth login' to repair GitHub access; trying the recovery fallback"
+        return 1
+    fi
+}
+
 restore_council_checkout() {
     local bundle="$1" council="$HOME/projects/hapax-council"
     local remote="hapax-systems/hapax-council"
@@ -308,8 +359,18 @@ restore_council_checkout() {
     if [[ ! -e "$council" ]]; then
         if git clone "git@github.com:${remote}.git" "$council" > /dev/null 2>&1; then
             ok "Cloned hapax-council (SSH)"
-        elif gh repo clone "$remote" "$council" > /dev/null 2>&1; then
+        elif github_recovery_ready && gh repo clone "$remote" "$council" > /dev/null 2>&1; then
             ok "Cloned hapax-council (gh)"
+        elif [[ -s "$bundle" ]] && git clone "$bundle" "$council" > /dev/null 2>&1; then
+            ok "Recovered hapax-council bundle fallback; verifying checkout connectivity"
+            if ! git -C "$council" fsck --connectivity-only >/dev/null 2>&1; then
+                fail "hapax-council bundle fallback failed connectivity verification: $bundle; recover a complete git bundle, then rerun Phase 3" >&2
+                return 1
+            fi
+            if ! git -C "$council" remote set-url origin "https://github.com/${remote}.git"; then
+                fail "Could not set hapax-council origin after bundle recovery; run git -C '$council' remote set-url origin https://github.com/${remote}.git, then rerun Phase 3" >&2
+                return 1
+            fi
         else
             fail "Failed to clone hapax-council from git@github.com:${remote}.git or gh repo clone $remote; repair GitHub access or recover with git clone '$bundle' '$council', then rerun the restore" >&2
             return 1
@@ -317,6 +378,89 @@ restore_council_checkout() {
     fi
     if [[ ! -e "$council/.git" ]] || ! git -C "$council" rev-parse --verify HEAD > /dev/null 2>&1; then
         fail "Required council checkout is invalid: $council; recover from $remote or $bundle, then rerun the restore" >&2
+        return 1
+    fi
+}
+
+bootstrap_source_activation() {
+    local council="$HOME/projects/hapax-council"
+    local active="$HOME/.cache/hapax/source-activation/worktree"
+    local state="$HOME/.cache/hapax/source-activation" head
+    local entry="$council/scripts/hapax-source-activate"
+    local remedy="inspect $state/current.json and rerun '$entry --skip-deploy' before retrying Phase 10"
+
+    if [[ ! -x "$entry" ]]; then
+        fail "Source activation entry point is missing or not executable: $entry; recover the council checkout, then $remedy" >&2
+        return 1
+    fi
+    # Bootstrap the existing governed entry point directly: the recovered launcher
+    # may still be a dangling link into the cache excluded from backups.
+    if ! HAPAX_SOURCE_ACTIVATE_CANONICAL="$council" \
+        HAPAX_SOURCE_ACTIVATE_WORKTREE="$active" \
+        HAPAX_SOURCE_ACTIVATE_STATE_DIR="$state" \
+        HAPAX_SOURCE_ACTIVATE_RELEASES_DIR="$state/releases" \
+        "$entry" --skip-deploy; then
+        fail "Source activation bootstrap failed; $remedy" >&2
+        return 1
+    fi
+    # A HOLD can return zero without publishing anything. Require both its receipt
+    # and the published filesystem, including the first-backup command below.
+    if [[ ! -e "$active/.git" || ! -x "$active/scripts/hapax-backup-local" ]] \
+        || ! head=$(git -C "$active" rev-parse --verify HEAD) \
+        || [[ ! "$head" =~ ^[[:xdigit:]]{40,64}$ ]] \
+        || ! jq -e --arg head "$head" --arg active "$active" '
+            .status == "completed_skip_deploy" and .active_source_head == $head
+            and .origin_main_sha == $head and .active_source_path == $active
+        ' "$state/current.json" >/dev/null 2>&1; then
+        fail "Cannot prove source activation root $active, its receipt, or executable scripts/hapax-backup-local; $remedy" >&2
+        return 1
+    fi
+    ok "Source activation root and first-backup executable verified: $active"
+}
+
+verify_systemd_user_target() {
+    local unit="$1" loaded starts target remaining triggers service
+    if ! loaded=$(systemctl --user show "$unit" --property=LoadState --value) \
+        || [[ "$loaded" != loaded ]]; then
+        fail "Cannot load restored user unit $unit (missing or dangling unit file); inspect 'systemctl --user cat $unit', repair its source activation link, then rerun Phase 15" >&2
+        return 1
+    fi
+    if [[ "$unit" == *.timer ]]; then
+        if ! triggers=$(systemctl --user show "$unit" --property=Triggers --value) \
+            || [[ -z "$triggers" ]]; then
+            fail "Cannot prove the service triggered by $unit; inspect 'systemctl --user cat $unit', repair its Unit= target, then rerun Phase 15" >&2
+            return 1
+        fi
+        for service in $triggers; do
+            if [[ "$service" != *.service ]]; then
+                fail "Cannot prove service target $service for $unit; inspect 'systemctl --user cat $unit', then rerun Phase 15" >&2
+                return 1
+            fi
+            verify_systemd_user_target "$service" || return 1
+        done
+        return 0
+    fi
+    if ! starts=$(systemctl --user show "$unit" --property=ExecStart --value) \
+        || [[ -z "$starts" ]]; then
+        fail "Cannot prove ExecStart for $unit; inspect 'systemctl --user cat $unit', restore its executable, then rerun Phase 15" >&2
+        return 1
+    fi
+    remaining="$starts"
+    # systemd resolves %h and executable search paths in this property. Fail
+    # closed on empty/unrecognized output instead of treating it as an executable.
+    local path_pattern='path=([^;]+) ;'
+    local found=0
+    while [[ "$remaining" =~ $path_pattern ]]; do
+        target="${BASH_REMATCH[1]}"
+        remaining="${remaining#*"${BASH_REMATCH[0]}"}"
+        if [[ "$target" != /* || ! -f "$target" || ! -x "$target" ]]; then
+            fail "ExecStart target for $unit is missing, dangling, or not executable: $target; inspect 'systemctl --user cat $unit' and repair that executable or its activation link, then rerun Phase 15" >&2
+            return 1
+        fi
+        found=1
+    done
+    if (( found == 0 )); then
+        fail "Cannot parse ExecStart target for $unit; inspect 'systemctl --user show $unit --property=ExecStart', then rerun Phase 15" >&2
         return 1
     fi
 }
@@ -506,7 +650,7 @@ provision_store_root() {
     # the operator names — and nothing else. Every refusal names its next action.
     local store_root="$1" registry_path="${2:-$HOST_STORAGE_REGISTRY}"
     local replacement="${3:-}" fstab_path="${4:-/etc/fstab}" target_root="${5:-}"
-    local identity uuid serial by_id device signatures kind target
+    local identity uuid serial by_id device signatures kind target provisioned=0
 
     if ! identity=$(store_filesystem_identity "$store_root" "$registry_path" 2>/dev/null); then
         fail "The registry has no mount record for $store_root on the B2 staging host; add mounts[] with its uuid and device_ref.serial to $registry_path, then rerun Phase 11" >&2
@@ -552,17 +696,35 @@ provision_store_root() {
             return 1
         fi
         log "Provisioning replacement disk $replacement for canonical storage root $store_root..."
-        sudo parted "$replacement" --script mklabel gpt
-        sudo parted "$replacement" --script mkpart store ext4 1MiB 100%
-        sudo udevadm settle >/dev/null 2>&1 || true
-        device="$(store_partition_path "$replacement")"
-        sudo mkfs.ext4 -L store "$device"
-        uuid=$(sudo blkid -s UUID -o value "$device")
+        if ! sudo parted "$replacement" --script mklabel gpt; then
+            fail "Could not create GPT on $replacement; inspect 'sudo parted $replacement print', then rerun Phase 11 after repairing the disk" >&2
+            return 1
+        fi
+        if ! sudo parted "$replacement" --script mkpart store ext4 1MiB 100%; then
+            fail "Could not partition $replacement; inspect 'sudo parted $replacement print', then rerun Phase 11 after repairing the disk" >&2
+            return 1
+        fi
+        if ! sudo udevadm settle; then
+            fail "Could not settle partition devices for $replacement; inspect 'udevadm monitor', then rerun Phase 11 after repairing device discovery" >&2
+            return 1
+        fi
+        if ! device="$(store_partition_path "$replacement")"; then
+            fail "Could not resolve the partition on $replacement; inspect 'lsblk $replacement', then rerun Phase 11" >&2
+            return 1
+        fi
+        if ! sudo mkfs.ext4 -L store "$device"; then
+            fail "Could not format $device; inspect 'sudo blkid $device', then rerun Phase 11 after repairing the filesystem" >&2
+            return 1
+        fi
+        if ! uuid=$(sudo blkid -s UUID -o value "$device"); then
+            fail "Could not read the new filesystem UUID on $device; inspect 'sudo blkid $device', then rerun Phase 11" >&2
+            return 1
+        fi
         if [[ -z "$uuid" ]]; then
             fail "Required backup storage root $store_root has no filesystem UUID on $device after mkfs; inspect blkid, then rerun Phase 11" >&2
             return 1
         fi
-        ok "Replacement disk provisioned: UUID=$uuid on $device"
+        provisioned=1
         warn "The registry still records the old filesystem (serial ${serial:-unrecorded}, by-id ${by_id:-unrecorded}); update its mount and device records after the restore so the next restore finds this disk without RESTORE_STORE_DEVICE"
     else
         fail "The canonical $store_root filesystem (UUID $uuid, expected on ${by_id:-an unrecorded disk}, serial ${serial:-unrecorded}) is not present on this host, and nothing is formatted on a guess. If that disk was replaced, rerun Phase 11 with RESTORE_STORE_DEVICE=/dev/disk/by-id/<the empty replacement disk>; if it is installed, check cabling and blkid, then rerun Phase 11" >&2
@@ -570,11 +732,20 @@ provision_store_root() {
     fi
 
     target="$(target_storage_path "$store_root" "$target_root")"
-    sudo mkdir -p -- "$target"
+    if ! sudo mkdir -p -- "$target"; then
+        fail "Could not create $target; inspect its parent filesystem permissions, then rerun Phase 11" >&2
+        return 1
+    fi
     if ! awk -v target="$store_root" '$1 !~ /^#/ && $2 == target { found = 1 } END { exit !found }' "$fstab_path"; then
-        printf 'UUID=%s %s ext4 defaults,noatime,commit=60 0 2\n' "$uuid" "$store_root" \
-            | sudo tee -a "$fstab_path" > /dev/null
+        if ! printf 'UUID=%s %s ext4 defaults,noatime,commit=60 0 2\n' "$uuid" "$store_root" \
+            | sudo tee -a "$fstab_path" > /dev/null; then
+            fail "Could not record $store_root in $fstab_path; inspect its permissions and filesystem space, then rerun Phase 11" >&2
+            return 1
+        fi
         ok "Added $store_root to $fstab_path"
+    fi
+    if (( provisioned )); then
+        ok "Replacement disk provisioned: UUID=$uuid on $device"
     fi
 }
 
@@ -651,9 +822,15 @@ fi
 # ─── Phase 1: Bootstrap ────────────────────────────────────────────────────
 log "=== Phase 1: Bootstrap toolchain ==="
 
-sudo pacman -Syu --noconfirm --needed \
-    restic rclone gnupg pass curl wget git jq base-devel \
-    > /dev/null 2>&1
+# Phase 1 repository/bootstrap: restic rclone curl wget git jq base-devel python.
+# Phases 3–4 identity and source recovery: gnupg pass github-cli.
+# Phase 11 storage inspection/provisioning: parted e2fsprogs util-linux (udevadm: base systemd).
+if ! sudo pacman -Syu --noconfirm --needed \
+    restic rclone gnupg pass curl wget git github-cli jq base-devel python \
+    parted e2fsprogs util-linux > /dev/null 2>&1; then
+    fail "Cannot install recovery packages; inspect 'sudo pacman -Syu --needed restic rclone gnupg pass curl wget git github-cli jq base-devel python parted e2fsprogs util-linux', then rerun Phase 1" >&2
+    exit 1
+fi
 ok "Core packages installed"
 
 # Install paru (AUR helper) if not present
@@ -697,8 +874,9 @@ log "=== Phase 2: Restore files from B2 ==="
 
 prepare_restore_root "$RESTORE_ROOT"
 
-log "Restoring snapshot ${HAPAX_RESTORE_SNAPSHOT:-latest}..."
-restic restore "${HAPAX_RESTORE_SNAPSHOT:-latest}" --target "$RESTORE_ROOT" --no-lock --verbose 2>&1 | tail -3
+RESTORE_SNAPSHOT=$(select_restore_snapshot)
+log "Restoring hapax-podium/tier2-remote snapshot $RESTORE_SNAPSHOT..."
+restic restore "$RESTORE_SNAPSHOT" --target "$RESTORE_ROOT" --no-lock --verbose 2>&1 | tail -3
 ok "Snapshot restored"
 
 # Determine restored home path (username may differ)
@@ -708,6 +886,11 @@ if [[ -z "$RHOME" ]]; then
     exit 1
 fi
 ok "Found restored home: $RHOME"
+
+# Prove the recovery dump before replacing GPG, SSH, or password-store identity.
+if ! DUMP=$(find_restore_dump_dir "$RESTORE_ROOT"); then
+    exit 1
+fi
 
 # ─── Phase 3: Identity (GPG, pass, SSH) ────────────────────────────────────
 log "=== Phase 3: Restore secrets & identity ==="
@@ -747,10 +930,7 @@ chmod 644 ~/.ssh/*.pub ~/.ssh/known_hosts 2>/dev/null || true
 store_backup_credentials
 
 # Council supplies the tracked Compose contract and the later source-activation
-# checkout. Resolve recovery inputs and fail before any dependent phase runs.
-if ! DUMP=$(find_restore_dump_dir "$RESTORE_ROOT"); then
-    exit 1
-fi
+# checkout. Phase 2 already proved the dump before identity replacement.
 restore_council_checkout "$DUMP/git-bundles/hapax-council.bundle"
 
 # ─── Phase 4: User configs ─────────────────────────────────────────────────
@@ -788,8 +968,8 @@ fi
 
 # Claude Code config (source controlled — clone, don't copy from backup)
 if [[ ! -d "$HOME/.claude/.git" ]]; then
-    gh repo clone ryanklee/claude-code-config "$HOME/.claude-restore" > /dev/null 2>&1
-    if [[ -d "$HOME/.claude-restore" ]]; then
+    if github_recovery_ready && gh repo clone ryanklee/claude-code-config "$HOME/.claude-restore" > /dev/null 2>&1 \
+        && [[ -d "$HOME/.claude-restore" ]]; then
         mkdir -p ~/.claude
         cp -a "$HOME/.claude-restore/"* ~/.claude/ 2>/dev/null
         cp -a "$HOME/.claude-restore/".* ~/.claude/ 2>/dev/null || true
@@ -797,7 +977,11 @@ if [[ ! -d "$HOME/.claude/.git" ]]; then
         ok "Claude Code config restored from repo"
     else
         # Fallback: copy from backup
-        [[ -d "$RHOME/.claude" ]] && cp -a "$RHOME/.claude" ~/ && ok "~/.claude (from backup)"
+        if [[ -d "$RHOME/.claude" ]]; then
+            cp -a "$RHOME/.claude" ~/ && ok "~/.claude (from backup)"
+        else
+            warn "Claude Code config unavailable from GitHub and backup; run 'gh auth login' and recover ryanklee/claude-code-config after restore"
+        fi
     fi
 fi
 
@@ -807,9 +991,11 @@ if [[ -d "$RHOME/.local/bin" ]]; then
     cp -a "$RHOME/.local/bin/"* ~/.local/bin/
     find ~/.local/bin -name '*.sh' -exec chmod +x {} \; 2>/dev/null
     find ~/.local/bin -name '*.py' -exec chmod +x {} \; 2>/dev/null
-    find ~/.local/bin/hypr-scripts -type f -exec chmod +x {} \; 2>/dev/null
-    find ~/.local/bin/waybar-scripts -type f -exec chmod +x {} \; 2>/dev/null
-    find ~/.local/bin/llm-hotkeys -type f -exec chmod +x {} \; 2>/dev/null
+    for script_group in hypr-scripts waybar-scripts llm-hotkeys; do
+        if [[ -d "$HOME/.local/bin/$script_group" ]]; then
+            find "$HOME/.local/bin/$script_group" -type f -exec chmod +x {} \;
+        fi
+    done
     ok "~/.local/bin"
 fi
 
@@ -1083,6 +1269,10 @@ ok "Flatpak apps installed"
 # ─── Phase 10: System configuration ────────────────────────────────────────
 log "=== Phase 10: System services & groups ==="
 
+# Phase 8 installed uv; Phase 1 installed python/git/curl for source activation.
+# Complete governed bootstrap before enabling any system or user unit.
+bootstrap_source_activation
+
 # User groups
 sudo usermod -aG docker,input "$USER" 2>/dev/null || true
 
@@ -1186,7 +1376,7 @@ ensure_tmpfs_tmp
 # ─── Phase 12: Docker stack ────────────────────────────────────────────────
 log "=== Phase 12: Start Docker stack + restore PostgreSQL, Qdrant, and n8n workflows ==="
 
-# Phase 3 resolved DUMP for council recovery; retain it for database and git recovery.
+# Phase 2 resolved DUMP before identity and council recovery; retain it for database and git recovery.
 restore_database_services "$DUMP"
 
 # ─── Phase 12b: Ollama models ────────────────────────────────────────────
@@ -1333,10 +1523,6 @@ SERVICES=(
     keychron-keepalive ydotool
     llm-stack llm-stack-analytics
 )
-for svc in "${SERVICES[@]}"; do
-    enable_systemd_user_unit "$svc.service" service "$svc"
-done
-
 # Timers
 TIMERS=(
     hapax-backup-local hapax-backup-remote hapax-backup-watchdog
@@ -1353,6 +1539,16 @@ TIMERS=(
     screen-context storage-arbiter tmp-monitor
     video-processor video-retention vram-watchdog
 )
+# Validate the entire recovered user-unit set before publishing any enable link.
+for svc in "${SERVICES[@]}"; do
+    verify_systemd_user_target "$svc.service"
+done
+for timer in "${TIMERS[@]}"; do
+    verify_systemd_user_target "$timer.timer"
+done
+for svc in "${SERVICES[@]}"; do
+    enable_systemd_user_unit "$svc.service" service "$svc"
+done
 for timer in "${TIMERS[@]}"; do
     enable_systemd_user_unit "$timer.timer" timer "$timer"
 done

@@ -259,6 +259,7 @@ def run_watchdog(
     listing_mode: str = "present",
     check_mode: str = "success",
     fail_entries: tuple[str, ...] = (),
+    empty_entries: tuple[str, ...] = (),
     monocle_threshold: str | None = "36",
 ) -> tuple[subprocess.CompletedProcess[str], list[dict], str]:
     fake_bin = tmp_path / "bin"
@@ -299,6 +300,7 @@ def run_watchdog(
         "pass",
         """
 case " $FAIL_ENTRIES " in *" $2 "*) exit 9 ;; esac
+case " $EMPTY_ENTRIES " in *" $2 "*) exit 0 ;; esac
 printf '%s\n' watchdog-fixture-password # pragma: allowlist secret
 """,
     )
@@ -372,6 +374,7 @@ done
             "LISTING_MODE": listing_mode,
             "CHECK_MODE": check_mode,
             "FAIL_ENTRIES": " ".join(fail_entries),
+            "EMPTY_ENTRIES": " ".join(empty_entries),
             "TMPDIR": str(tmp_path),
         }
     )

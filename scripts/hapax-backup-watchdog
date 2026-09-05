@@ -52,12 +52,12 @@ restic_password() {
     local entry="$1" label="$2" value
     # Set the caller's local password in this shell: subshells lose failure records.
     if ! value=$(pass show "$entry" 2>/dev/null); then
-        record_failure "$label: cannot read restic password from pass entry '$entry'"
+        record_failure "$label: cannot read restic password from pass entry '$entry'; next action: run pass show '$entry' >/dev/null, repair GPG/pass access, then rerun the configured watchdog unit"
         return 1
     fi
     value="${value%%$'\n'*}"
     if [[ -z "$value" ]]; then
-        record_failure "$label: restic password entry '$entry' is empty"
+        record_failure "$label: restic password entry '$entry' is empty; next action: repair it with pass insert '$entry', verify with pass show '$entry' >/dev/null, then rerun the configured watchdog unit"
         return 1
     fi
     password="$value"
@@ -103,7 +103,7 @@ check_snapshot_age() {
         return
     fi
     if [[ -z "$latest" ]]; then
-        record_failure "$label: no snapshots found for $host/$tag"
+        record_failure "$label: no snapshots found for $host/$tag; next action: inspect restic -r '$repo' snapshots --host $host --tag $tag, repair that producer's failed backup, then rerun the configured watchdog unit"
         return
     fi
     IFS=$'\t' read -r latest_id latest_time <<< "$latest"
@@ -164,7 +164,7 @@ check_restic_integrity() {
         if (( status == 11 )) || grep -Eqi 'repository is already locked|unable to (create|acquire) lock|could not (create|acquire).*lock|failed to (create|acquire).*lock' "$CHECK_TMP/stderr"; then
             record_failure "$label: locked / could not acquire the lock (restic exit $status): $detail; check $producer_unit and the reported restic PID; only the operator may run restic unlock after proving the lock is stale"
         else
-            record_failure "$label: restic check failed — possible repo corruption (restic exit $status): $detail"
+            record_failure "$label: restic check failed — possible repo corruption (restic exit $status): $detail; next action: inspect restic -r '$repo' check --read-data with its configured credential, preserve the damaged repository and recover from a verified independent backup"
         fi
     fi
 }
@@ -174,7 +174,7 @@ check_postgres_dump_in_snapshot() {
     restic_password "$entry" "$label PostgreSQL" || return 0
     local snapshot="${LATEST_SNAPSHOTS[$label]:-}"
     if [[ -z "$snapshot" ]]; then
-        record_failure "$label: PostgreSQL listing not attempted: could not prove the producer's latest snapshot ID"
+        record_failure "$label: PostgreSQL listing not attempted: could not prove the producer's latest snapshot ID; next action: inspect restic -r '$repo' snapshots --json and repair the preceding producer freshness failure, then rerun the configured watchdog unit"
         return
     fi
     local listing status dump_line size
@@ -182,7 +182,7 @@ check_postgres_dump_in_snapshot() {
         :
     else
         status=$?
-        record_failure "$label: PostgreSQL listing failed (restic exit $status): $(stderr_summary)"
+        record_failure "$label: PostgreSQL listing failed (restic exit $status): $(stderr_summary); next action: inspect restic -r '$repo' ls --long $snapshot with its configured credential, repair repository access, then rerun the configured watchdog unit"
         return
     fi
     dump_line=$(printf '%s\n' "$listing" | awk '$NF ~ /(^|\/)postgres-all[.]sql$/ { print; exit }')
