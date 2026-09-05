@@ -4960,11 +4960,25 @@ from shared.entitlement_capability import is_routable_supply as _is_routable_sup
 
 _ = (_classify_entitlement, _is_routable_supply)
 
-# GitHub PR status helper consumed by scripts/hapax-merge-queue-lineage, an
+# GitHub PR status helpers consumed by scripts/hapax-merge-queue-lineage, an
 # extensionless Python CLI that vulture's source scan does not follow.
+#
+# `get_pr_status_graphql` joined its REST sibling here 2026-08-30. Lineage hydrates a PR over the
+# transport the cycle chose: GraphQL when the balancer routed there, REST otherwise, with the
+# other pool used as a fallback only when it is measured above its floor. Both are called from
+# that same invisible file. DETECTOR BLIND SPOT, not dead code — the second kind.
+#
+# (This comment previously said hydration "follows either chosen transport", which was true of
+# the intent and false of the code at the time — the GraphQL branch was gated on REST being
+# healthy, so it refused GraphQL exactly when REST was empty. Fixed; the wording is now what
+# the code does rather than what it meant to.)
+#
+# Recheck, because the justification is only worth what it can be checked against:
+#   rg -n "get_pr_status_(rest|graphql)" scripts/hapax-merge-queue-lineage
+from github_pr_status import get_pr_status_graphql as _get_pr_status_graphql  # noqa: E402
 from github_pr_status import get_pr_status_rest as _get_pr_status_rest  # noqa: E402
 
-_ = (_get_pr_status_rest,)
+_ = (_get_pr_status_rest, _get_pr_status_graphql)
 
 # ---------------------------------------------------------------------------
 # Agentic-trust evidence-only non-supply plane (PR #4503)

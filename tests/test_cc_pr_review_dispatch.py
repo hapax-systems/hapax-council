@@ -515,6 +515,50 @@ class TestDryRun:
 
 
 class TestApply:
+    @pytest.mark.parametrize("field", ["diff_source", "comparison_base", "diff_sha256"])
+    @pytest.mark.parametrize("truncated", [False, True])
+    def test_persisted_dossier_records_refreshed_diff_provenance(
+        self, tmp_path: Path, field: str, truncated: bool
+    ) -> None:
+        comparison_base = "d" * 40
+
+        class LocalDiffGh(FakeGh):
+            def __call__(self, cmd: list[str], **kwargs: Any) -> subprocess.CompletedProcess:
+                if cmd[0] == "git":
+                    self.calls.append(list(cmd))
+                    if cmd[:2] == ["git", "merge-base"] and "--is-ancestor" not in cmd:
+                        return subprocess.CompletedProcess(cmd, 0, comparison_base, "")
+                    if cmd[:2] == ["git", "diff"]:
+                        assert cmd[-1] == f"{comparison_base}..{self.head_sha}"
+                        return subprocess.CompletedProcess(cmd, 0, self.diff, "")
+                    assert cmd[1] in {"fetch", "rev-parse", "cat-file", "merge-base"}
+                    return subprocess.CompletedProcess(cmd, 0, comparison_base, "")
+                return super().__call__(cmd, **kwargs)
+
+        gh = LocalDiffGh(base_sha="b" * 40)
+        gh.diff += "+café\n"
+        if truncated:
+            gh.diff += "+more\n" * 100_000
+            assert dispatch.truncate_diff(gh.diff) != gh.diff
+        result, _, _, note = _review(
+            tmp_path,
+            gh=gh,
+            route=dispatch.ListingRoute("graphql", True, "REST below floor"),
+        )
+        assert result["status"] == "dispatched"
+        assert any(cmd[:3] == ["git", "fetch", "--quiet"] for cmd in gh.calls)
+        persisted = yaml.safe_load(
+            (note.parent / "task-a.review-dossier.yaml").read_text(encoding="utf-8")
+        )
+        expected = {
+            "diff_source": "local-git",
+            "comparison_base": comparison_base,
+            "diff_sha256": sha256(gh.diff.encode("utf-8")).hexdigest(),
+        }
+        assert persisted.get(field) == expected[field], (field, persisted.get(field))
+        assert persisted["head_sha"] == gh.head_sha
+        assert persisted["dossier_schema"] == 1
+
     def test_three_reviewers_cross_family_dossier(self, tmp_path: Path) -> None:
         result, gh, reviewers, note = _review(tmp_path)
         assert result["status"] == "dispatched"
@@ -1646,8 +1690,92 @@ checklist:
                 runner=gh,
             )
 
-        assert "expected PR base" in str(excinfo.value)
+        assert "is behind the base" in str(excinfo.value)
         assert not any(call[:2] == ["git", "diff"] for call in gh.calls)
+
+    def test_local_git_diff_fallback_reviews_against_the_refreshed_base_when_the_recorded_sha_is_stale(
+        self, tmp_path: Path
+    ) -> None:
+        """The PR metadata's base sha lags the branch (REST reports the tip at the PR's last
+        update). The local base tip is AHEAD of it, so the diff is computed against
+        merge-base(origin/main, head) and records that base — the dispatch timer's own
+        "expected PR base" failure shape on 2026-09-03 (review finding on #4610)."""
+        repo_root = tmp_path / "repo"
+        repo_root.mkdir()
+        subprocess.run(["git", "init", "-q"], cwd=repo_root, check=True)
+        subprocess.run(["git", "config", "user.email", "t@t"], cwd=repo_root, check=True)
+        subprocess.run(["git", "config", "user.name", "t"], cwd=repo_root, check=True)
+        target = repo_root / "shared" / "foo.py"
+        target.parent.mkdir(parents=True)
+        target.write_text("value = 'stale-base'\n", encoding="utf-8")
+        subprocess.run(["git", "add", "-A"], cwd=repo_root, check=True)
+        subprocess.run(["git", "commit", "-qm", "stale-base"], cwd=repo_root, check=True)
+        stale_base_sha = subprocess.run(
+            ["git", "rev-parse", "HEAD"],
+            cwd=repo_root,
+            check=True,
+            capture_output=True,
+            text=True,
+        ).stdout.strip()
+        target.write_text("value = 'current-base'\n", encoding="utf-8")
+        subprocess.run(["git", "add", "-A"], cwd=repo_root, check=True)
+        subprocess.run(["git", "commit", "-qm", "current-base"], cwd=repo_root, check=True)
+        current_base_sha = subprocess.run(
+            ["git", "rev-parse", "HEAD"],
+            cwd=repo_root,
+            check=True,
+            capture_output=True,
+            text=True,
+        ).stdout.strip()
+        subprocess.run(
+            ["git", "update-ref", "refs/remotes/origin/main", current_base_sha],
+            cwd=repo_root,
+            check=True,
+        )
+        target.write_text("value = 'head'\n", encoding="utf-8")
+        subprocess.run(["git", "add", "-A"], cwd=repo_root, check=True)
+        subprocess.run(["git", "commit", "-qm", "head"], cwd=repo_root, check=True)
+        head_sha = subprocess.run(
+            ["git", "rev-parse", "HEAD"],
+            cwd=repo_root,
+            check=True,
+            capture_output=True,
+            text=True,
+        ).stdout.strip()
+
+        class FreshLocalGh(FakeGh):
+            def __call__(self, cmd: list[str], **kwargs: Any) -> subprocess.CompletedProcess:
+                self.calls.append(list(cmd))
+                if cmd[:3] == ["git", "fetch", "--quiet"]:
+                    return subprocess.CompletedProcess(cmd, 0, "", "")
+                if cmd and cmd[0] == "git":
+                    return subprocess.run(cmd, **kwargs)
+                return super().__call__(cmd, **kwargs)
+
+        gh = FreshLocalGh(base_sha=stale_base_sha, head_sha=head_sha, files=["shared/foo.py"])
+        diff = dispatch.fetch_pr_diff_from_local(
+            dispatch.PRInfo(
+                number=42,
+                title="PR 42",
+                body="body",
+                base_ref="main",
+                base_sha=stale_base_sha,
+                head_ref="feat/42",
+                head_sha=head_sha,
+                changed_file_count=1,
+                is_draft=False,
+                files=("shared/foo.py",),
+            ),
+            repo_root=repo_root,
+            runner=gh,
+        )
+
+        assert "-value = 'current-base'" in diff
+        assert "+value = 'head'" in diff
+        assert "stale-base" not in diff, "the base's own move must not be reviewed as PR content"
+        assert diff.comparison_base == current_base_sha
+        assert diff.source == "local-git"
+        assert any(call[:3] == ["git", "fetch", "--quiet"] for call in gh.calls)
 
     def test_local_git_diff_fallback_rejects_missing_head_sha(self, tmp_path: Path) -> None:
         gh = FakeGh()
@@ -1731,7 +1859,7 @@ checklist:
         assert "fetch pull/42/head before review dispatch" in message
         assert not any(call[:2] == ["git", "diff"] for call in gh.calls)
 
-    def test_local_git_diff_fallback_rejects_head_missing_current_base(
+    def test_local_git_diff_fallback_reviews_a_behind_pr_against_its_merge_base(
         self, tmp_path: Path
     ) -> None:
         repo_root = tmp_path / "repo"
@@ -1786,26 +1914,33 @@ checklist:
                 return super().__call__(cmd, **kwargs)
 
         gh = DivergedBaseGh(base_sha=current_base_sha, head_sha=head_sha, files=["shared/foo.py"])
-        with pytest.raises(RuntimeError) as excinfo:
-            dispatch.fetch_pr_diff_from_local(
-                dispatch.PRInfo(
-                    number=42,
-                    title="PR 42",
-                    body="body",
-                    base_ref="main",
-                    base_sha=current_base_sha,
-                    head_ref="feat/42",
-                    head_sha=head_sha,
-                    changed_file_count=1,
-                    is_draft=False,
-                    files=("shared/foo.py",),
-                ),
-                repo_root=repo_root,
-                runner=gh,
-            )
+        # A PR behind main is the NORMAL shape of a PR: its merge base with the current base tip
+        # is older than that tip. GitHub's diff endpoint reviews `merge-base(base, head)..head`;
+        # the local path must do the same instead of refusing. Refusing here, with REST measured
+        # empty, produced a per-cycle error instead of a dossier for every behind PR (#4610 review).
+        diff = dispatch.fetch_pr_diff_from_local(
+            dispatch.PRInfo(
+                number=42,
+                title="PR 42",
+                body="body",
+                base_ref="main",
+                base_sha=current_base_sha,
+                head_ref="feat/42",
+                head_sha=head_sha,
+                changed_file_count=1,
+                is_draft=False,
+                files=("shared/foo.py",),
+            ),
+            repo_root=repo_root,
+            runner=gh,
+        )
 
-        assert "cannot prove head contains" in str(excinfo.value)
-        assert not any(call[:2] == ["git", "diff"] for call in gh.calls)
+        assert "+value = 'head'" in diff and "-value = 'base'" in diff
+        assert "current-base" not in diff, "the base's later commit is not the PR's change"
+        diff_calls = [call for call in gh.calls if call[:2] == ["git", "diff"]]
+        assert diff_calls and diff_calls[0][-1] == f"{base_sha}..{head_sha}", (
+            "the diff must be pinned to the merge base, which is the original base commit here"
+        )
 
     def test_rest_pull_failure_names_recheck_action(self, tmp_path: Path) -> None:
         class MissingPullGh(FakeGh):
@@ -4245,3 +4380,164 @@ payg_fallback: false
         reviews = dispatch.dispatch_reviews(constitution, ["prompt"], registry, runner)
 
         assert reviews[0]["verdict"] == "provider-outage"
+
+
+def _rate_only_runner(*, core: int, graphql: int, calls: list[list[str]] | None = None) -> Any:
+    """Serves rate_limit and the GraphQL listing; refuses REST spend."""
+
+    def run(cmd: list[str], **_: Any) -> subprocess.CompletedProcess:
+        if calls is not None:
+            calls.append(list(cmd))
+        if cmd[:4] == ["gh", "api", "-i", "rate_limit"]:
+            head = (
+                "HTTP/2.0 200 OK\r\n"
+                "X-Ratelimit-Limit: 5000\r\n"
+                f"X-Ratelimit-Remaining: {core}\r\n"
+                "X-Ratelimit-Reset: 1893456000\r\n"
+                "X-Ratelimit-Resource: core\r\n"
+            )
+            payload = {
+                "resources": {
+                    "core": {"remaining": core, "limit": 5000, "reset": 1893456000},
+                    "graphql": {"remaining": graphql, "limit": 5000, "reset": 1893456000},
+                }
+            }
+            return subprocess.CompletedProcess(cmd, 0, f"{head}\r\n{json.dumps(payload)}", "")
+        if cmd[:3] == ["gh", "pr", "list"]:
+            return subprocess.CompletedProcess(cmd, 0, "[]", "")
+        raise AssertionError(f"no REST call may be spent once the pool is empty: {cmd}")
+
+    return run
+
+
+def test_exhausted_rest_routes_the_review_scan_to_graphql(tmp_path: Path) -> None:
+    """This test previously asserted the scan was skipped.
+
+    All three seated review families called that a critical gap: REST at zero with GraphQL
+    at 93% headroom stalled review dispatch rather than using the healthy pool. Skipping
+    remains correct when both pools are empty — pinned below.
+    """
+    calls: list[list[str]] = []
+    assert (
+        dispatch.review_all_open_prs(
+            repo="owner/repo",
+            repo_root=tmp_path,
+            gh_runner=_rate_only_runner(core=0, graphql=4660, calls=calls),
+        )
+        == []
+    )
+    assert any(call[:3] == ["gh", "pr", "list"] for call in calls), (
+        "an exhausted REST pool with healthy GraphQL must select GraphQL, not sit out"
+    )
+
+
+def test_graphql_routed_scan_does_not_begin_each_pr_on_rest(tmp_path: Path) -> None:
+    """Routing the listing is one call; the per-PR work is N. Only routing the one spares little.
+
+    The previous version of this coverage returned an empty listing, so there were no rows and
+    no per-PR path to observe — while `review_pr` was in fact calling `fetch_pr`, whose first
+    act was `get_pull_rest`. A fixture that avoids the failing path is the same defect it is
+    meant to catch, and this is the second time in this PR that exact shape got through.
+    """
+    calls: list[list[str]] = []
+    row = {
+        "number": 4610,
+        "isDraft": False,
+        "transport": "graphql",
+        "headRefOid": "deadbeef",
+    }
+
+    def runner(cmd: list[str], **_: Any) -> subprocess.CompletedProcess:
+        calls.append(list(cmd))
+        if cmd[:4] == ["gh", "api", "-i", "rate_limit"]:
+            head = (
+                "HTTP/2.0 200 OK\r\nX-Ratelimit-Limit: 5000\r\n"
+                "X-Ratelimit-Remaining: 0\r\nX-Ratelimit-Reset: 1893456000\r\n"
+                "X-Ratelimit-Resource: core\r\n"
+            )
+            payload = {
+                "resources": {
+                    "core": {"remaining": 0, "limit": 5000, "reset": 1893456000},
+                    "graphql": {"remaining": 4660, "limit": 5000, "reset": 1893456000},
+                }
+            }
+            return subprocess.CompletedProcess(cmd, 0, f"{head}\r\n{json.dumps(payload)}", "")
+        if cmd[:3] == ["gh", "pr", "list"]:
+            return subprocess.CompletedProcess(cmd, 0, json.dumps([row]), "")
+        if cmd[:3] == ["gh", "pr", "view"]:
+            return subprocess.CompletedProcess(
+                cmd,
+                0,
+                json.dumps(
+                    {
+                        "number": 4610,
+                        "title": "t",
+                        "body": "b",
+                        "baseRefName": "main",
+                        "baseRefOid": "base000",
+                        "headRefName": "feat/x",
+                        "headRefOid": "deadbeef",
+                        "changedFiles": 1,
+                        "isDraft": False,
+                        "files": [{"path": "scripts/example.py"}],
+                    }
+                ),
+                "",
+            )
+        if len(cmd) > 6 and str(cmd[6]).startswith("repos/"):
+            raise AssertionError(f"per-PR REST spend after a GraphQL-routed listing: {cmd}")
+        return subprocess.CompletedProcess(cmd, 1, "", "unhandled")
+
+    # review_pr will fail for other reasons (no vault note); the assertion under test is that
+    # nothing reached REST, which the runner enforces by raising.
+    dispatch.review_all_open_prs(
+        repo="owner/repo", repo_root=tmp_path, vault_root=tmp_path, gh_runner=runner
+    )
+
+    assert any(call[:3] == ["gh", "pr", "list"] for call in calls)
+    assert not any(len(call) > 6 and str(call[6]).startswith("repos/") for call in calls)
+
+
+def test_both_pools_exhausted_skips_the_review_scan(tmp_path: Path) -> None:
+    """Caller-level coverage for RestPoolExhausted (codex-1, major).
+
+    This module's tests were the ones the review flagged as unchanged. Skipping a scan is
+    safe here — the next scan re-evaluates every open PR from scratch, so nothing is lost
+    by sitting out a cycle — but it must be a *deliberate* skip rather than a crash, and it
+    must not spend a listing into guaranteed 403s.
+    """
+    assert (
+        dispatch.review_all_open_prs(
+            repo="owner/repo",
+            repo_root=tmp_path,
+            gh_runner=_rate_only_runner(core=0, graphql=0),
+        )
+        == []
+    )
+
+
+def test_a_raised_gh_failure_is_normalised_so_the_fallback_handlers_see_it(tmp_path: Path) -> None:
+    """`_run_gh` must convert a RAISED failure, not only a nonzero return code.
+
+    Found by external review. `runner` can raise `subprocess.TimeoutExpired` or `OSError` (a
+    missing or unexecutable `gh`), and neither is a `RuntimeError` — so both sailed past all EIGHT
+    `except RuntimeError` handlers in this module, skipping the transport fallback they guard and
+    surfacing as a per-PR error that can starve that PR every cycle.
+
+    Normalised at the primitive rather than by widening eight handlers: one mitigation at the
+    boundary, not eight for the same hazard. It still RAISES — returning an empty string here would
+    read as "gh said nothing", which is the silent-empty defect this fleet refuses elsewhere.
+    """
+
+    def gh_is_not_installed(cmd, **kwargs):
+        raise FileNotFoundError(2, "No such file or directory: 'gh'")
+
+    with pytest.raises(RuntimeError) as excinfo:
+        dispatch._run_gh(["gh", "pr", "view"], repo_root=tmp_path, runner=gh_is_not_installed)
+    assert "could not run" in str(excinfo.value)
+
+    def gh_times_out(cmd, **kwargs):
+        raise subprocess.TimeoutExpired(cmd, 120)
+
+    with pytest.raises(RuntimeError):
+        dispatch._run_gh(["gh", "pr", "view"], repo_root=tmp_path, runner=gh_times_out)
