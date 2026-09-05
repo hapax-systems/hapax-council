@@ -29,6 +29,7 @@ fi
 
 if [ ! -f "$REPO_ROOT/scripts/pre-push" ]; then
   echo "ERROR: no scripts/pre-push in $REPO_ROOT" >&2
+  echo "Remedy: restore scripts/pre-push in this checkout and re-run scripts/install-git-hooks.sh." >&2
   exit 1
 fi
 
@@ -57,6 +58,7 @@ install -m 0755 "$REPO_ROOT/scripts/pre-push" "$HOOKS_DIR/pre-push"
 
 if [ ! -x "$HOOKS_DIR/pre-commit" ] || [ ! -x "$HOOKS_DIR/pre-push" ]; then
   echo "ERROR: hook installation did not produce executable pre-commit and pre-push hooks." >&2
+  echo "Remedy: check hook-directory permissions and the pre-commit/install tools, then re-run scripts/install-git-hooks.sh." >&2
   exit 1
 fi
 

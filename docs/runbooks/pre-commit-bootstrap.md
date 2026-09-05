@@ -85,7 +85,7 @@ env -u HAPAX_GLMCP_MODEL -u HAPAX_GLMCP_REVIEW_MODEL \
   -u HAPAX_GLMCP_REVIEW_PAYG_FALLBACK -u HAPAX_GLMCP_REVIEW_ALLOW_NON_CODING_PLAN_MODEL \
   UV_CACHE_DIR=/store-fast/tmp/uv-cache-verify TMPDIR=/store-fast/tmp \
   uv run pytest -q -p no:cacheprovider tests/scripts/test_hapax_prepush_secret_scan.py \
-  -k 'installed_hook or installer_refuses_conflicting_hooks_path or runbook_verification'
+  -k 'installed_hook or installer_refuses or runbook_verification'
 ```
 
 For a task-scoped verification, run pre-commit on the files you touched:
@@ -123,6 +123,12 @@ its first parent. Root commits are compared with the empty tree. The detectors a
 absolute-home-path check; the hook prints finding TYPES and counts, never values, and refuses with
 a remedy. Entropy-only findings on the codebase-derived
 `docs/architecture/system-dynamics-map*` files are not secrets and are skipped there.
+
+Detector line numbers are translated back to Git's LF-delimited lines, including files with
+bare carriage returns or CRLF endings. Every scanned file must be valid UTF-8: detect-secrets
+can silently skip other encodings. The scanner refuses such files by name without printing
+their contents. Convert them to UTF-8 or remove them, then amend/rebase the affected commits
+before retrying; changing only the branch tip leaves the earlier commits unscannable.
 
 There is no path-based exemption from the absolute-home-path check, including under
 `systemd/units/`, and neither the vendor-key nor home-path detector has a line-level allowlist. A

@@ -142,6 +142,69 @@ def test_detect_secrets_staging_preserves_distinct_repository_paths(tmp_path):
     assert fake not in r.stderr and fake not in r.stdout
 
 
+@pytest.mark.parametrize("separator", ["\r", "\r\n", "\r\n\r"], ids=["cr", "crlf", "mixed"])
+def test_real_detector_maps_carriage_returns_to_added_git_lines(tmp_path, separator):
+    repo = _repo(tmp_path)
+    base = _commit(repo, "carriage.txt", f"prefix{separator}")
+    key = "AKIA" + "ZXCVBNMASDFG1234"  # pragma: allowlist secret
+    content = f"prefix{separator}AWS_ACCESS_KEY_ID={key}\r\n"
+    tip = _commit(repo, "carriage.txt", content)
+    expected_deletions = int(separator != "\r\n")
+    assert _git(repo, "diff", "--numstat", base, tip) == f"1\t{expected_deletions}\tcarriage.txt"
+
+    result = _run(repo, "origin", f"refs/heads/main {tip} refs/heads/main {base}\n")
+
+    assert result.returncode == 1, result.stderr
+    assert "secret-shaped: carriage.txt" in result.stderr
+    assert "AWS Access Key" in result.stderr
+    assert "Remedy: remove or redact" in result.stderr
+    assert key not in result.stdout and key not in result.stderr
+
+
+@pytest.mark.parametrize("separator", ["\r", "\r\n"], ids=["cr", "crlf"])
+def test_real_detector_carriage_returns_do_not_flag_unchanged_git_lines(tmp_path, separator):
+    repo = _repo(tmp_path)
+    key = "AKIA" + "ZXCVBNMASDFG1234"  # pragma: allowlist secret
+    existing = f"prefix{separator}AWS_ACCESS_KEY_ID={key}\r\n"
+    base = _commit(repo, "existing.txt", existing)
+    tip = _commit(repo, "existing.txt", existing + "ordinary added line\r\n")
+
+    result = _run(repo, "origin", f"refs/heads/main {tip} refs/heads/main {base}\n")
+
+    assert result.returncode == 0, result.stderr
+    assert key not in result.stdout and key not in result.stderr
+
+
+@pytest.mark.parametrize("existing_accent", [False, True], ids=["new-file", "existing-accent"])
+def test_real_detector_refuses_non_utf8_text(tmp_path, existing_accent):
+    repo = _repo(tmp_path)
+    path = repo / "latin1.txt"
+    accent = b"caf\xe9\n"
+    if existing_accent:
+        path.write_bytes(accent)
+        _git(repo, "add", "-A")
+        _git(repo, "commit", "-q", "-m", "existing Latin-1 text")
+    base = _git(repo, "rev-parse", "HEAD")
+    key = "AKIA" + "ZXCVBNMASDFG1234"  # pragma: allowlist secret
+    path.write_bytes(accent + f"AWS_ACCESS_KEY_ID={key}\n".encode())
+    _git(repo, "add", "-A")
+    _git(repo, "commit", "-q", "-m", "add synthetic credential to Latin-1 text")
+    tip = _git(repo, "rev-parse", "HEAD")
+    assert _git(repo, "diff", "--numstat", base, tip) == (
+        f"{1 if existing_accent else 2}\t0\tlatin1.txt"
+    )
+
+    result = _run(repo, "origin", f"refs/heads/main {tip} refs/heads/main {base}\n")
+
+    assert result.returncode == 3, result.stderr
+    assert "committed content is not valid UTF-8" in result.stderr
+    assert "unscanned content: latin1.txt" in result.stderr
+    assert "Remedy: convert the file to UTF-8 or remove it" in result.stderr
+    assert "amend/rebase" in result.stderr
+    assert key not in result.stdout and key not in result.stderr
+    assert "caf" not in result.stderr
+
+
 def test_git_binary_classification_refuses_and_names_unscannable_file(tmp_path, monkeypatch):
     """A binary diff has no added-line hunks, so the hook must refuse it explicitly."""
     fake_bin = tmp_path / "detector-bin"
@@ -651,6 +714,47 @@ def test_installer_refuses_conflicting_hooks_path(tmp_path, clean_detector, hook
     assert not (clone / ".git" / "hooks" / "pre-push").exists()
 
 
+def test_installer_refuses_missing_pre_push_source(tmp_path, clean_detector):
+    clone, _remote = _hook_clone(tmp_path, clean_detector)
+    (clone / "scripts" / "pre-push").unlink()
+
+    result = _install(clone)
+
+    assert result.returncode == 1, result.stderr
+    assert "ERROR: no scripts/pre-push" in result.stderr
+    assert "Remedy: restore scripts/pre-push" in result.stderr
+    assert "re-run scripts/install-git-hooks.sh" in result.stderr
+    assert "Done." not in result.stdout
+    assert not (clone / ".git" / "hooks" / "pre-push").exists()
+
+
+@pytest.mark.parametrize("hook", ["pre-commit", "pre-push"])
+def test_installer_refuses_nonexecutable_installed_hook(tmp_path, clean_detector, hook):
+    clone, _remote = _hook_clone(tmp_path, clean_detector)
+    if hook == "pre-commit":
+        # A tool can return success without actually installing an executable hook.
+        _executable(clean_detector / "pre-commit", "#!/bin/sh\nexit 0\n")
+    else:
+        installer = shutil.which("install")
+        assert installer
+        _executable(
+            clean_detector / "install",
+            f'#!/bin/sh\n"{installer}" "$@" || exit $?\n'
+            'if [ "$1" = -m ]; then chmod a-x "$4"; fi\n',
+        )
+
+    result = _install(clone)
+
+    assert result.returncode == 1, result.stderr
+    assert "did not produce executable pre-commit and pre-push hooks" in result.stderr
+    assert (
+        "Remedy: check hook-directory permissions and the pre-commit/install tools" in result.stderr
+    )
+    assert "re-run scripts/install-git-hooks.sh" in result.stderr
+    assert "Done." not in result.stdout
+    assert not os.access(clone / ".git" / "hooks" / hook, os.X_OK)
+
+
 @pytest.mark.parametrize("dirty", [False, True], ids=["clean", "dirty"])
 def test_installed_hook_falls_back_to_main_checkout(tmp_path, clean_detector, dirty):
     clone, remote = _hook_clone(tmp_path, clean_detector)
@@ -687,8 +791,10 @@ def test_installed_hook_refuses_missing_scanner(installed_checkout):
     assert _git(remote, "rev-parse", branch) == base
 
 
-@pytest.mark.parametrize("failure", ["timeout", "invalid-json", "blob-read"])
-def test_installed_hook_scan_failure(installed_checkout, clean_detector, failure):
+@pytest.mark.parametrize(
+    "failure", ["timeout", "invalid-json", "blob-read", "detector-unavailable", "uvx-unavailable"]
+)
+def test_installed_hook_scan_failure(installed_checkout, clean_detector, monkeypatch, failure):
     checkout, _clone, remote = installed_checkout
     branch = _git(checkout, "branch", "--show-current")
     base = _git(remote, "rev-parse", branch)
@@ -719,6 +825,21 @@ def test_installed_hook_scan_failure(installed_checkout, clean_detector, failure
         )
         reason = "detect-secrets unavailable (TimeoutExpired)"
         remedy = "repair the detector before retrying"
+    elif failure in {"detector-unavailable", "uvx-unavailable"}:
+        # Keep real Git hook dispatch but make tool absence independent of the host PATH.
+        (clean_detector / "detect-secrets").unlink()
+        for command in ("git", "bash", "python3"):
+            executable = shutil.which(command)
+            assert executable
+            (clean_detector / command).symlink_to(executable)
+        monkeypatch.setenv("PATH", str(clean_detector))
+        if failure == "detector-unavailable":
+            _executable(clean_detector / "uvx", "#!/bin/sh\nexit 127\n")
+            reason = "detect-secrets failed with exit status 127"
+            remedy = "repair or reinstall detect-secrets"
+        else:
+            reason = "detect-secrets unavailable (FileNotFoundError)"
+            remedy = "install it (`uv tool install detect-secrets`) and retry"
     else:
         # Git prepends its exec path when dispatching hooks, so inject at the Python
         # subprocess boundary instead of relying on a PATH shim named git.
