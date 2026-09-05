@@ -5,6 +5,7 @@ import hashlib
 import importlib.machinery
 import json
 import stat
+import sys
 from dataclasses import replace
 from datetime import datetime
 from pathlib import Path
@@ -209,6 +210,7 @@ def test_cli_records_absent_native_metadata_and_local_report_digest(cli, tmp_pat
         "candidate_count",
         "finding_count",
         "findings",
+        "root_observations",
         "flagged_canary_ids",
         "missed_canary_ids",
         "detector_incident_path",
@@ -503,3 +505,100 @@ def test_cli_frames_evidence_after_unterminated_peer_stderr(cli, monkeypatch, ca
     captured = capsys.readouterr()
     assert captured.out == result.stdout and captured.err.startswith(result.stderr)
     assert _evidence(captured.err)["status"] == "failed"
+
+
+@pytest.mark.parametrize("filesystem_failed", [False, True], ids=["readable", "denied"])
+@pytest.mark.parametrize("outcome", ["two", "zero", "nonzero", "missing", "timeout", "invalid"])
+def test_cli_docker_root_keeps_both_observations(
+    cli, monkeypatch, tmp_path, capsys, outcome, filesystem_failed
+) -> None:
+    import os
+
+    from shared import estate_registration
+
+    root = tmp_path / "volumes"
+    root.mkdir()
+    registry = load_registry()
+    docker_row = next(row for row in registry.scan_roots if row["id"] == "docker-volumes")
+    registry = replace(registry, scan_roots=({**docker_row, "path": str(root)},))
+    monkeypatch.setattr(cli, "load_registry", lambda _path: registry)
+    fake_bin = tmp_path / "fake-bin"
+    fake_bin.mkdir()
+    # PATH contains only the fixture: a missing docker cannot reach a real daemon.
+    monkeypatch.setenv("PATH", str(fake_bin))
+    stdout = {
+        "two": "alpha\r\nbeta\r\n",
+        "nonzero": "partial\r\n",
+        "timeout": "partial\r\n",
+        "invalid": "../escape\r\n",
+    }.get(outcome, "")
+    stderr = "fake docker diagnostic\r\n" if outcome != "missing" else ""
+    if outcome != "missing":
+        docker = fake_bin / "docker"
+        docker.write_text(
+            f"#!{sys.executable}\nimport os, sys, time\n"
+            "assert sys.argv[1:] == ['volume', 'ls', '--format', '{{.Name}}']\n"
+            f"os.write(1, {stdout.encode()!r})\nos.write(2, {stderr.encode()!r})\n"
+            + ("time.sleep(30)\n" if outcome == "timeout" else "")
+            + f"sys.exit({23 if outcome == 'nonzero' else 0})\n"
+        )
+        docker.chmod(0o755)
+    monkeypatch.setattr(estate_registration, "DOCKER_TIMEOUT_SECONDS", 0.5, raising=False)
+    scandir = os.scandir
+
+    def scan(path):  # noqa: ANN001, ANN202
+        if filesystem_failed and Path(path) == root:
+            raise PermissionError("fake filesystem permission denied")
+        return scandir(path)
+
+    monkeypatch.setattr(os, "scandir", scan)
+    failed_cli = outcome in {"nonzero", "missing", "timeout", "invalid"}
+    failed = filesystem_failed or failed_cli
+    code = cli.main(
+        ["sweep", "--host", "appendix", "--home", str(tmp_path), "--json", "--include-report"]
+    )
+    captured = capsys.readouterr()
+    assert code == (2 if failed else 0)
+    summary = json.loads(captured.out)
+    report = json.loads(Path(summary["report_path"]).read_bytes())
+    evidence = _evidence(captured.err)
+    observations = report["root_observations"]
+    assert evidence["root_observations"] == observations
+    assert len(observations) == 1
+    observed = observations[0]
+    assert observed["scan_root"] == "docker-volumes" and observed["path"] == str(root)
+    assert observed["kind"] == "docker-volumes"
+    assert observed["status"] == ("read-failed" if failed else "read-ok")
+    assert observed["candidate_count"] == (2 if outcome == "two" else 0)
+    filesystem, command = observed["observations"]
+    assert filesystem["method"] == "filesystem"
+    assert filesystem["status"] == ("read-failed" if filesystem_failed else "read-ok")
+    assert filesystem["candidate_count"] == 0
+    assert bool(filesystem["errors"]) == filesystem_failed
+    if filesystem_failed:
+        assert "fake filesystem permission denied" in filesystem["errors"][0]["error"]
+    assert command["method"] == "docker-volume-ls"
+    assert command["command"] == ["docker", "volume", "ls", "--format", "{{.Name}}"]
+    assert command["status"] == ("read-failed" if failed_cli else "read-ok")
+    assert command["stdout"] == stdout and command["stderr"] == stderr
+    assert command["returncode"] == (
+        "absent" if outcome in {"missing", "timeout"} else 23 if outcome == "nonzero" else 0
+    )
+    assert command["transport_error"] == (
+        {"missing": "FileNotFoundError", "timeout": "timeout"}.get(outcome, "absent")
+    )
+    assert command["timeout_seconds"] == 0.5
+    assert command["candidate_count"] == (2 if outcome == "two" else 0)
+    assert bool(command["errors"]) == failed_cli
+    if failed_cli:
+        assert "docker-volume-ls" in command["errors"][0]["error"]
+        assert "remedy" in command["errors"][0]["error"]
+    assert summary["scan_error_count"] == int(filesystem_failed) + int(failed_cli)
+    assert evidence["status"] == ("failed" if failed else "unqualified")
+    assert report["candidate_count"] == (2 if outcome == "two" else 0)
+    if outcome == "two":
+        assert {
+            row["path"] for row in report["findings"] if row["kind"] == "unregistered-store"
+        } == {str(root / "alpha"), str(root / "beta")}
+    assert report["mutation_actions"] == []
+    assert base64.b64decode(summary["report_base64"]) == Path(summary["report_path"]).read_bytes()

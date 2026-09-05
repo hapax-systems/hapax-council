@@ -10,6 +10,7 @@ from __future__ import annotations
 import glob
 import json
 import os
+import re
 import secrets
 import shlex
 import stat
@@ -30,6 +31,7 @@ from shared.estate_store_registry import (
 
 CANARY_MAX_AGE_SECONDS = 90 * 60
 REMOTE_SOURCE_ROOT = "$HOME/.cache/hapax/source-activation/worktree"
+DOCKER_TIMEOUT_SECONDS = 15
 
 
 class RegistrationError(RuntimeError):
@@ -58,6 +60,7 @@ class SweepResult:
     flagged_canary_ids: tuple[str, ...]
     missed_canary_ids: tuple[str, ...]
     detector_incident_path: str | None
+    root_observations: tuple[dict[str, Any], ...] = ()
 
 
 Runner = Callable[..., subprocess.CompletedProcess[str] | subprocess.CompletedProcess[bytes]]
@@ -84,6 +87,33 @@ class PeerCommandError(RegistrationError):
     def __init__(self, message: str, result: PeerCommandResult):
         super().__init__(message)
         self.result = result
+
+
+def _capture_command(
+    argv: Sequence[str], *, timeout_seconds: float, runner: Runner = subprocess.run
+) -> tuple[str, str, int | None, str | None]:
+    """Shared process boundary: exact streams, observed code, transport failure.
+
+    Kept identical for local enumeration and SSH; a timeout retains partial
+    output and never invents a successful return code.
+    """
+
+    def stream(value: str | bytes | None) -> str:
+        return (
+            value.decode("utf-8", errors="surrogateescape")
+            if isinstance(value, bytes)
+            else value or ""
+        )
+
+    try:
+        process = runner(
+            list(argv), capture_output=True, text=False, timeout=timeout_seconds, check=False
+        )
+        return stream(process.stdout), stream(process.stderr), process.returncode, None
+    except subprocess.TimeoutExpired as exc:
+        return stream(exc.stdout), stream(exc.stderr), None, "timeout"
+    except (OSError, subprocess.SubprocessError) as exc:
+        return "", "", None, type(exc).__name__
 
 
 def utc_text(value: datetime) -> str:
@@ -189,11 +219,75 @@ def _mount_candidates(
     return candidates, []
 
 
+def _docker_volume_candidates(
+    root: Path, depth: int, scan_root: str
+) -> tuple[list[Candidate], list[ScanError], dict[str, Any]]:
+    """Two named observations of the declared root; neither failure is erased."""
+    found, failed = _walk_bounded(root, depth, scan_root)
+    filesystem = {
+        "method": "filesystem",
+        "status": "read-failed" if failed else "read-ok",
+        "candidate_count": len(found),
+        "errors": [asdict(error) for error in failed],
+    }
+    command = ["docker", "volume", "ls", "--format", "{{.Name}}"]
+    stdout, stderr, returncode, transport_error = _capture_command(
+        command, timeout_seconds=DOCKER_TIMEOUT_SECONDS
+    )
+    cli_errors: list[ScanError] = []
+    names: list[str] = []
+    reason = None
+    if returncode != 0 or transport_error is not None:
+        reason = f"returncode={returncode}, transport_error={transport_error}"
+    else:
+        names = stdout.splitlines()
+        if any(re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9_.-]*", name) is None for name in names):
+            reason = "invalid volume name in stdout"
+    if reason is not None:
+        cli_errors.append(
+            ScanError(
+                scan_root,
+                str(root),
+                f"docker-volume-ls read-failed: {reason}; remedy: restore the read-only "
+                "docker volume ls binding and rerun the sweep",
+            )
+        )
+        names = []
+    cli_found = [Candidate(str(root / name), "docker-volume", scan_root) for name in names]
+    cli = {
+        "method": "docker-volume-ls",
+        "status": "read-failed" if cli_errors else "read-ok",
+        "command": command,
+        "stdout": stdout,
+        "stderr": stderr,
+        "returncode": returncode if returncode is not None else "absent",
+        "transport_error": transport_error or "absent",
+        "timeout_seconds": DOCKER_TIMEOUT_SECONDS,
+        "candidate_count": len(cli_found),
+        "errors": [asdict(error) for error in cli_errors],
+    }
+    found.extend(cli_found)
+    failed.extend(cli_errors)
+    return (
+        found,
+        failed,
+        {
+            "scan_root": scan_root,
+            "path": str(root),
+            "kind": "docker-volumes",
+            "status": "read-failed" if failed else "read-ok",
+            "candidate_count": len({candidate.path for candidate in found}),
+            "observations": [filesystem, cli],
+        },
+    )
+
+
 def scan_candidates(
     registry: Registry,
     *,
     home: Path,
     mountinfo: Path = Path("/proc/self/mountinfo"),
+    root_observations: list[dict[str, Any]] | None = None,
 ) -> tuple[tuple[Candidate, ...], tuple[ScanError, ...]]:
     candidates: list[Candidate] = []
     errors: list[ScanError] = []
@@ -217,6 +311,13 @@ def scan_candidates(
         if not isinstance(depth, int) or depth < 1 or depth > 4:
             raise RegistrationError(f"scan root {root_id!r} depth must be an integer from 1 to 4")
         expanded = _expand(raw_path, home)
+        if kind == "docker-volumes":
+            found, failed, observed = _docker_volume_candidates(Path(expanded), depth, root_id)
+            candidates.extend(found)
+            errors.extend(failed)
+            if root_observations is not None:
+                root_observations.append(observed)
+            continue
         roots = (
             [Path(expanded)]
             if kind == "directory"
@@ -400,7 +501,10 @@ def sweep(
 ) -> SweepResult:
     """Diff reality against declarations and file findings without touching candidates."""
     instant = (now or datetime.now(UTC)).astimezone(UTC)
-    candidates, scan_errors = scan_candidates(registry, home=home, mountinfo=mountinfo)
+    root_observations: list[dict[str, Any]] = []
+    candidates, scan_errors = scan_candidates(
+        registry, home=home, mountinfo=mountinfo, root_observations=root_observations
+    )
     findings: list[dict[str, Any]] = []
     for candidate in candidates:
         if matching_store(registry, Path(candidate.path), host=host_id, home=home) is None:
@@ -481,6 +585,7 @@ def sweep(
             "candidate_count": len(candidates),
             "finding_count": len(findings),
             "findings": findings,
+            "root_observations": root_observations,
             "flagged_canary_ids": flagged,
             "missed_canary_ids": missed,
             "detector_incident_path": str(incident_path) if incident_path else None,
@@ -494,6 +599,7 @@ def sweep(
         flagged_canary_ids=tuple(flagged),
         missed_canary_ids=tuple(missed),
         detector_incident_path=str(incident_path) if incident_path else None,
+        root_observations=tuple(root_observations),
     )
 
 
@@ -558,13 +664,6 @@ def run_peer_command(
     No stream filter exists here: both streams remain unmodified in the result.
     """
 
-    def stream(value: str | bytes | None) -> str:
-        return (
-            value.decode("utf-8", errors="surrogateescape")
-            if isinstance(value, bytes)
-            else value or ""
-        )
-
     peer_id, target = registry.peer(host_id)
     if command not in {"sweep", "export-canary"}:
         raise RegistrationError("unsupported peer command; remedy: use sweep or export-canary")
@@ -596,8 +695,8 @@ def run_peer_command(
         if peer_source_root is not None
         else f'estate_peer_root=$(realpath -e -- "{REMOTE_SOURCE_ROOT}") || exit 2\n'
     )
-    # Validate the root and both artifacts before executing. The explicit paths
-    # survive alias promotion; --no-sync avoids runtime dependency mutations.
+    # Validate the root and both artifacts before executing. Invoke the release's
+    # interpreter directly so environment-manager settings cannot redirect it.
     remote = (
         assignment
         + f'estate_refuse() {{ printf "%s\\n" {shlex.quote(refusal)} >&2; exit 2; }}\n'
@@ -607,36 +706,22 @@ def run_peer_command(
         + "for estate_artifact in scripts/hapax-estate-store-registry config/estate-store-registry.yaml; do\n"
         + 'test "$(realpath -e -- "$estate_peer_root/$estate_artifact")" = "$estate_peer_root/$estate_artifact" || estate_refuse\n'
         + "done\n"
-        + 'exec "$HOME/.local/bin/uv" --directory "$estate_peer_root" run --no-sync python -I '
+        + 'if ! test -x "$estate_peer_root/.venv/bin/python"; then\n'
+        + 'printf "pinned interpreter unavailable: %s; remedy: provision the verified release virtual environment before enabling\\n" "$estate_peer_root/.venv/bin/python" >&2\n'
+        + "exit 2\nfi\n"
+        + 'exec "$estate_peer_root/.venv/bin/python" -I '
         + '"$estate_peer_root/scripts/hapax-estate-store-registry" '
         + f"{shlex.quote(command)} --host {shlex.quote(peer_id)} --json "
         + '--registry "$estate_peer_root/config/estate-store-registry.yaml" '
         + '--expected-source-root "$estate_peer_root"'
         + (" --include-report" if command == "sweep" else "")
     )
-    try:
-        process = runner(
-            [
-                "ssh",
-                "-o",
-                "BatchMode=yes",
-                "-o",
-                "ConnectTimeout=12",
-                target,
-                remote,
-            ],
-            capture_output=True,
-            text=False,
-            timeout=timeout_seconds,
-            check=False,
-        )
-        result = PeerCommandResult(
-            stream(process.stdout), stream(process.stderr), process.returncode, binding
-        )
-    except subprocess.TimeoutExpired as exc:
-        result = PeerCommandResult(stream(exc.stdout), stream(exc.stderr), None, binding, "timeout")
-    except (OSError, subprocess.SubprocessError) as exc:
-        result = PeerCommandResult("", "", None, binding, type(exc).__name__)
+    stdout, stderr, returncode, transport_error = _capture_command(
+        ["ssh", "-o", "BatchMode=yes", "-o", "ConnectTimeout=12", target, remote],
+        timeout_seconds=timeout_seconds,
+        runner=runner,
+    )
+    result = PeerCommandResult(stdout, stderr, returncode, binding, transport_error)
     if check and result.failed:
         raise PeerCommandError(
             f"cross-host {command} failed for {peer_id} via {target} "

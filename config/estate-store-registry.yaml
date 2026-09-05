@@ -32,7 +32,7 @@ scan_roots:
     kind: mountinfo
     include_prefixes: ["{home}", /store, /mnt]
   - id: docker-volumes
-    kind: directory
+    kind: docker-volumes
     path: /var/lib/docker/volumes
     depth: 1
 

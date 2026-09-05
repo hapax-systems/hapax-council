@@ -261,6 +261,7 @@ def main(argv: list[str] | None = None) -> int:
         "started_at": utc_text(datetime.now(UTC)),
         "finished_at": "absent",
         "report": "absent",
+        "root_observations": "absent",
         "peer": "absent",
         "errors": [],
     }
@@ -377,6 +378,7 @@ def _execute(args: argparse.Namespace, evidence: dict) -> int:
         raw = Path(result.report_path).read_bytes()
         digest = hashlib.sha256(raw).hexdigest()
         evidence["report"] = {"path": result.report_path, "sha256": digest, "host": host_id}
+        evidence["root_observations"] = list(result.root_observations)
         _print(
             {
                 "report_path": result.report_path,

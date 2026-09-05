@@ -324,16 +324,16 @@ def fake_peer_shell(tmp_path: Path):  # noqa: ANN201
     alias = home / ".cache/hapax/source-activation/worktree"
     alias.parent.mkdir(parents=True)
     alias.symlink_to(old, target_is_directory=True)
-    uv = home / ".local/bin/uv"
-    uv.parent.mkdir(parents=True)
-    uv.write_text(
-        f"#!{sys.executable}\nimport os, sys\nfrom pathlib import Path\n"
-        f"alias = Path({str(alias)!r})\nalias.unlink()\nalias.symlink_to({str(new)!r})\n"
-        "assert '--no-sync' in sys.argv\n"
-        "args = sys.argv[sys.argv.index('python') + 1:]\n"
-        f"os.execv({sys.executable!r}, [{sys.executable!r}, *args])\n"
-    )
-    uv.chmod(0o755)
+    for root in (old, new):
+        python = root / ".venv/bin/python"
+        python.parent.mkdir(parents=True)
+        python.write_text(
+            f"#!{sys.executable}\nimport os, sys\nfrom pathlib import Path\n"
+            f"alias = Path({str(alias)!r})\nalias.unlink()\nalias.symlink_to({str(new)!r})\n"
+            "assert sys.argv[1] == '-I'\n"
+            f"os.execv({sys.executable!r}, [{sys.executable!r}, *sys.argv[1:]])\n"
+        )
+        python.chmod(0o755)
 
     def runner(argv, **kwargs):  # noqa: ANN001, ANN202
         assert argv[0] == "ssh"  # The network boundary ends here.
@@ -433,3 +433,67 @@ def test_peer_capture_preserves_crlf_verbatim() -> None:
         "fake diagnostic\r\n",
         23,
     )
+
+
+@pytest.mark.parametrize("command", ["sweep", "export-canary"])
+def test_peer_command_pins_release_interpreter_despite_uv_environment(
+    monkeypatch, command: str
+) -> None:
+    for name in (
+        "UV_PROJECT_ENVIRONMENT",
+        "UV_CONFIG_FILE",
+        "UV_PYTHON",
+        "UV_WORKING_DIRECTORY",
+        "VIRTUAL_ENV",
+        "PYTHONHOME",
+        "PYTHONPATH",
+    ):
+        monkeypatch.setenv(name, "/untrusted/redirect")
+    calls = []
+
+    def runner(argv, **kwargs):  # noqa: ANN001, ANN202
+        calls.append((argv, kwargs))
+        return SimpleNamespace(returncode=0, stdout="", stderr="")
+
+    run_peer_command(
+        load_registry(),
+        host_id="appendix",
+        command=command,
+        runner=runner,
+        peer_source_root="/retained/release",
+        qualified=True,
+    )
+    argv, kwargs = calls[0]
+    assert argv[:6] == ["ssh", "-o", "BatchMode=yes", "-o", "ConnectTimeout=12", "hapax-podium"]
+    remote = argv[6]
+    assert "uv" not in remote
+    assert "estate_peer_root=/retained/release\n" in remote
+    assert 'exec "$estate_peer_root/.venv/bin/python" -I ' in remote
+    assert kwargs == {"capture_output": True, "text": False, "timeout": 180, "check": False}
+
+
+@pytest.mark.parametrize("missing", [True, False], ids=["absent", "not-executable"])
+def test_peer_refuses_unavailable_pinned_interpreter(fake_peer_shell, missing: bool) -> None:
+    old, _new, alias, runner = fake_peer_shell
+    python = old / ".venv/bin/python"
+    if missing:
+        python.unlink()
+    else:
+        python.chmod(0o644)
+    result = run_peer_command(
+        load_registry(),
+        host_id="appendix",
+        command="sweep",
+        runner=runner,
+        peer_source_root=str(old),
+        qualified=True,
+        check=False,
+    )
+    assert result.returncode == 2
+    assert result.stdout == ""
+    assert str(python) in result.stderr
+    assert (
+        "remedy: provision the verified release virtual environment before enabling"
+        in result.stderr
+    )
+    assert alias.resolve() == old
