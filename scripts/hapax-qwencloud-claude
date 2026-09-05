@@ -101,6 +101,16 @@ def _check(base_url: str, model: str) -> int:
         stderr=subprocess.DEVNULL,
         text=True,
     )
+    if version_result.returncode != 0:
+        _error(
+            f"claude --version failed (exit {version_result.returncode}); "
+            "install Claude Code or repair the claude executable on PATH, then retry"
+        )
+        return (
+            version_result.returncode
+            if version_result.returncode >= 0
+            else 128 - version_result.returncode
+        )
     version = version_result.stdout.splitlines()[0] if version_result.stdout else "claude"
     print(
         f"hapax-qwencloud-claude: ok — client {version}, endpoint {base_url}, "

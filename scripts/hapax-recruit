@@ -97,6 +97,10 @@ class Refusal(Exception):
         super().__init__(_redact(message))
 
 
+class EndpointProtocolError(ValueError):
+    """A response violates the chat-completion protocol; messages contain no body data."""
+
+
 @dataclass
 class RunResult:
     answer: str
@@ -106,15 +110,21 @@ class RunResult:
     models_reported: list[str]
     process_group_killed: bool = False
     process_group_any_member_survived: bool | None = None
+    failure_class: str | None = None
 
     def __post_init__(self) -> None:
-        # Subprocess diagnostics cross every guard disclosure surface (receipt,
-        # terminal, and any future logger) through this boundary exactly once.
-        self.stderr_tail = _redact(self.stderr_tail)
+        # Receive FULL diagnostics: slicing first can discard a credential's label.
+        # Receipt, terminal, and any future logger only see this redacted tail.
+        self.stderr_tail = _redact(self.stderr_tail)[-400:]
 
 
 def _redact(text: str) -> str:
     return _SECRETISH.sub(r"\1<redacted>", text)
+
+
+def _cli_diagnostics(code: int | str, stdout: str, stderr: str, *, chatter: bool = False) -> str:
+    """Keep full diagnostics until RunResult redacts them; successful answers stay out."""
+    return "\n".join(part for part in (stdout if chatter or code != 0 else "", stderr) if part)
 
 
 def _now() -> datetime:
@@ -258,7 +268,7 @@ def recruit_cli(
             answer,
             code,
             len(stdout),
-            stderr[-400:],
+            _cli_diagnostics(code, stdout, stderr, chatter=True),
             sorted(set(reported)),
             group_killed,
             member_survived,
@@ -268,7 +278,13 @@ def recruit_cli(
         argv = [binary, "-p", brief, "--cwd", str(cwd)]
         code, stdout, stderr, group_killed, member_survived = _run(argv, cwd=cwd, timeout=timeout)
         return RunResult(
-            stdout, code, len(stdout), stderr[-400:], [], group_killed, member_survived
+            stdout,
+            code,
+            len(stdout),
+            _cli_diagnostics(code, stdout, stderr),
+            [],
+            group_killed,
+            member_survived,
         )
     if capacity == "kimi":
         binary = _require_binary("kimi")
@@ -278,7 +294,7 @@ def recruit_cli(
             _strip_kimi(stdout, brief),
             code,
             len(stdout),
-            stderr[-400:],
+            _cli_diagnostics(code, stdout, stderr),
             [],
             group_killed,
             member_survived,
@@ -290,7 +306,13 @@ def recruit_cli(
             argv, cwd=cwd, timeout=timeout + 15
         )
         return RunResult(
-            stdout, code, len(stdout), stderr[-400:], [], group_killed, member_survived
+            stdout,
+            code,
+            len(stdout),
+            _cli_diagnostics(code, stdout, stderr),
+            [],
+            group_killed,
+            member_survived,
         )
     if capacity == "claude" or capacity in WRAPPED_CLAUDE:
         if capacity == "claude":
@@ -312,7 +334,7 @@ def recruit_cli(
             answer,
             code,
             len(stdout),
-            stderr[-400:],
+            _cli_diagnostics(code, stdout, stderr),
             models,
             group_killed,
             member_survived,
@@ -335,17 +357,51 @@ def recruit_local(capacity: str, brief: str, *, timeout: int, model: str | None)
     try:
         with urllib.request.urlopen(request, timeout=timeout) as response:
             payload = json.loads(response.read().decode("utf-8"))
+        if not isinstance(payload, dict):
+            raise EndpointProtocolError("response must be an object")
+        choices = payload.get("choices")
+        if not isinstance(choices, list) or not choices:
+            raise EndpointProtocolError("choices must be a non-empty list")
+        if not isinstance(choices[0], dict):
+            raise EndpointProtocolError("choices[0] must be an object")
+        message = choices[0].get("message")
+        if not isinstance(message, dict):
+            raise EndpointProtocolError("choices[0].message must be an object")
+        answer = message.get("content")
+        if not isinstance(answer, str):
+            raise EndpointProtocolError("choices[0].message.content must be a string")
+        if not answer:
+            raise EndpointProtocolError("choices[0].message.content must not be empty")
+        served = payload.get("model")
+        if served is not None and not isinstance(served, str):
+            raise EndpointProtocolError("model must be a string when present")
     except urllib.error.URLError as exc:
-        return RunResult("", 3, 0, f"endpoint {base} unreachable: {exc}"[-400:], [])
+        # Do not read HTTPError bodies. The reason may itself contain diagnostics;
+        # pass it whole through RunResult's redaction boundary before truncation.
+        return RunResult(
+            "", 3, 0, f"endpoint {base} unreachable: {exc}", [], failure_class=type(exc).__name__
+        )
     except TimeoutError:
         return RunResult("", "timeout", 0, f"endpoint {base} timed out after {timeout}s", [])
-    choices = payload.get("choices") if isinstance(payload, dict) else None
-    answer = ""
-    if isinstance(choices, list) and choices and isinstance(choices[0], dict):
-        message = choices[0].get("message") or {}
-        answer = str(message.get("content") or "")
-    served = payload.get("model") if isinstance(payload, dict) else None
-    return RunResult(answer, 0 if answer else 3, len(answer), "", [served] if served else [])
+    except (json.JSONDecodeError, UnicodeDecodeError, EndpointProtocolError) as exc:
+        # Decode errors can quote response data. Only protocol errors have messages
+        # constructed by us; never include the response body in diagnostics.
+        if isinstance(exc, json.JSONDecodeError):
+            diagnostic = f"invalid JSON response at line {exc.lineno}, column {exc.colno}"
+        elif isinstance(exc, UnicodeDecodeError):
+            diagnostic = "response is not valid UTF-8"
+        else:
+            diagnostic = str(exc)
+        failure_class = type(exc).__name__
+        return RunResult(
+            "",
+            3,
+            0,
+            f"endpoint {base}: {failure_class}: {diagnostic}",
+            [],
+            failure_class=failure_class,
+        )
+    return RunResult(answer, 0, len(answer), "", [served] if served else [])
 
 
 def write_receipt(
@@ -381,6 +437,7 @@ def write_receipt(
         "output_bytes": len(result.answer.encode("utf-8")) if result else 0,
         "stdout_bytes": result.stdout_bytes if result else 0,
         "stderr_tail": result.stderr_tail if result else "",
+        "failure_class": result.failure_class if result else None,
         "refusal": refusal,
         "process_group_killed": result.process_group_killed if result else False,
         "process_group_any_member_survived": (
@@ -425,6 +482,9 @@ def main(argv: list[str] | None = None) -> int:
     if not cwd.is_dir():
         print(f"hapax-recruit: cwd {cwd} is not a directory", file=sys.stderr)
         return 2
+    # Resolve against the caller once, before Codex changes cwd. Only Codex
+    # receives -o; kimi/qwencloud return stdout and manage their own side files.
+    args.out = args.out.resolve()
     args.out.parent.mkdir(parents=True, exist_ok=True)
     receipt_path = args.out.with_name(args.out.name + ".receipt.json")
 

@@ -2,17 +2,16 @@
 
 from __future__ import annotations
 
-import http.server
 import importlib.machinery
 import importlib.util
+import io
 import json
 import os
 import re
 import signal
-import subprocess
 import sys
-import threading
 import time
+import urllib.error
 from pathlib import Path
 from types import ModuleType
 
@@ -65,7 +64,13 @@ def bench(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> tuple[ModuleType, 
     brief = tmp_path / "brief.md"
     brief.write_text("Reply with exactly: OK\n\nSecond line of the brief.\n", encoding="utf-8")
     out = tmp_path / "answers" / "run.md"
-    return _module(), bin_dir, brief, out
+    module = _module()
+
+    def no_network(*args, **kwargs):
+        raise AssertionError("test attempted an unfaked endpoint call")
+
+    monkeypatch.setattr(module.urllib.request, "urlopen", no_network)
+    return module, bin_dir, brief, out
 
 
 def _receipt(out: Path) -> dict:
@@ -130,7 +135,7 @@ def test_codex_shape_reads_the_output_file_and_closes_stdin(bench, tmp_path: Pat
     module, bin_dir, brief, out = bench
     repo = tmp_path / "repo"
     repo.mkdir()
-    subprocess.run(["git", "init", "-q"], cwd=repo, check=True)
+    _stub(bin_dir, "git", "print('true')\n")
     _stub(
         bin_dir,
         "codex",
@@ -161,6 +166,7 @@ def test_codex_refuses_a_cwd_that_is_not_a_git_checkout_and_names_the_flag(
 ) -> None:
     module, bin_dir, brief, out = bench
     _stub(bin_dir, "codex", "print('should not run')\n")
+    _stub(bin_dir, "git", "sys.exit(1)\n")
     plain = tmp_path / "plain"
     plain.mkdir()
 
@@ -445,37 +451,20 @@ def test_local_endpoint_posts_an_openai_chat_completion_and_records_the_served_m
     module, _bin_dir, brief, out = bench
     seen: list[dict] = []
 
-    class Handler(http.server.BaseHTTPRequestHandler):
-        def do_POST(self) -> None:  # noqa: N802 — http.server's own naming
-            length = int(self.headers.get("Content-Length", "0"))
-            seen.append({"path": self.path, "body": json.loads(self.rfile.read(length))})
-            payload = json.dumps(
+    def urlopen(request, *, timeout):
+        seen.append({"path": request.selector, "body": json.loads(request.data)})
+        assert timeout == 900
+        return io.BytesIO(
+            json.dumps(
                 {
                     "model": "qwen3.6-35b-a3b-q5",
                     "choices": [{"message": {"role": "assistant", "content": "OK"}}],
                 }
             ).encode()
-            self.send_response(200)
-            self.send_header("Content-Type", "application/json")
-            self.send_header("Content-Length", str(len(payload)))
-            self.end_headers()
-            self.wfile.write(payload)
-
-        def log_message(self, *_: object) -> None:
-            return
-
-    server = http.server.HTTPServer(("127.0.0.1", 0), Handler)
-    thread = threading.Thread(target=server.serve_forever, daemon=True)
-    thread.start()
-    try:
-        monkeypatch.setitem(
-            module.LOCAL_ENDPOINTS,
-            "local:qwen36",
-            (f"http://127.0.0.1:{server.server_port}/v1", "qwen3.6-35b-a3b"),
         )
-        rc = module.main(["local:qwen36", "--brief", str(brief), "--out", str(out)])
-    finally:
-        server.shutdown()
+
+    monkeypatch.setattr(module.urllib.request, "urlopen", urlopen)
+    rc = module.main(["local:qwen36", "--brief", str(brief), "--out", str(out)])
 
     assert rc == 0
     assert out.read_text() == "OK"
@@ -491,9 +480,11 @@ def test_local_endpoint_unreachable_is_a_capacity_failure_with_a_receipt(
     bench, monkeypatch
 ) -> None:
     module, _bin_dir, brief, out = bench
-    monkeypatch.setitem(
-        module.LOCAL_ENDPOINTS, "local:gemma3", ("http://127.0.0.1:9/v1", "gemma-3-4b")
-    )
+
+    def urlopen(request, *, timeout):
+        raise urllib.error.URLError("synthetic connection refused")
+
+    monkeypatch.setattr(module.urllib.request, "urlopen", urlopen)
 
     rc = module.main(["local:gemma3", "--brief", str(brief), "--out", str(out), "--timeout", "2"])
 
@@ -513,3 +504,233 @@ def test_list_and_argument_refusals(
     empty.write_text("  \n")
     assert module.main(["grok", "--brief", str(empty), "--out", str(out)]) == 2
     assert module.main(["grok", "--brief", str(tmp_path / "nope.md"), "--out", str(out)]) == 2
+
+
+_BOUNDARY_DIAGNOSTICS = [
+    '{"api_key": "VALUE"}',
+    "password: 'VALUE'",
+    "api_key: VALUE",
+    "API key: VALUE",
+    "token=VALUE",
+    "Bearer VALUE",
+    "Authorization: Basic VALUE",
+]
+_BOUNDARY_IDS = ["json", "yaml", "colon", "space", "equals", "bearer", "authorization"]
+
+
+@pytest.mark.parametrize("form", _BOUNDARY_DIAGNOSTICS, ids=_BOUNDARY_IDS)
+@pytest.mark.parametrize("stream", ["stderr", "stdout"])
+@pytest.mark.parametrize(
+    "capacity", ["codex", "grok", "kimi", "agy", "claude", "glmcp", "qwencloud"]
+)
+def test_cli_diagnostics_redact_before_tail(
+    bench, monkeypatch, capsys, capacity: str, stream: str, form: str
+) -> None:
+    module, bin_dir, brief, out = bench
+    canary = "SYNTHETIC_BOUNDARY_SENTINEL"
+    diagnostic = form.replace("VALUE", "P" * 450 + canary) + "\ncontext after failure"
+    # The raw tail starts inside the credential and still contains the complete sentinel.
+    assert diagnostic[-400:].startswith("P") and canary in diagnostic[-400:]
+    monkeypatch.setattr(module, "_require_binary", lambda name: str(bin_dir / name))
+    monkeypatch.setattr(module, "_is_git_checkout", lambda cwd: True)
+    if capacity in module.WRAPPED_CLAUDE:
+        env_name, _ = module.WRAPPED_CLAUDE[capacity]
+        monkeypatch.setenv(env_name, str(brief))
+
+    def run(argv, *, cwd, timeout):
+        if capacity == "codex":
+            Path(argv[argv.index("-o") + 1]).write_text("ANSWER")
+        return (
+            7,
+            diagnostic if stream == "stdout" else "",
+            diagnostic if stream == "stderr" else "",
+            False,
+            None,
+        )
+
+    monkeypatch.setattr(module, "_run", run)
+    assert module.main([capacity, "--brief", str(brief), "--out", str(out)]) == 3
+    receipt = _receipt(out)
+    captured = capsys.readouterr()
+    assert canary not in json.dumps(receipt) + captured.out + captured.err
+    assert "P" * 20 not in receipt["stderr_tail"]
+    assert "<redacted>" in receipt["stderr_tail"]
+    assert "context after failure" in receipt["stderr_tail"]
+    assert len(receipt["stderr_tail"]) <= 400
+
+
+@pytest.mark.parametrize("form", _BOUNDARY_DIAGNOSTICS, ids=_BOUNDARY_IDS)
+@pytest.mark.parametrize("error_kind", ["url", "http"])
+def test_endpoint_diagnostics_redact_before_tail(bench, monkeypatch, capsys, form, error_kind):
+    module, _bin_dir, brief, out = bench
+    canary = "SYNTHETIC_ENDPOINT_SENTINEL"
+    diagnostic = form.replace("VALUE", "P" * 450 + canary) + "\ncontext after failure"
+    assert diagnostic[-400:].startswith("P") and canary in diagnostic[-400:]
+
+    def urlopen(request, *, timeout):
+        if error_kind == "http":
+            raise urllib.error.HTTPError(
+                request.full_url, 503, diagnostic, {}, io.BytesIO(diagnostic.encode())
+            )
+        raise urllib.error.URLError(diagnostic)
+
+    monkeypatch.setattr(module.urllib.request, "urlopen", urlopen)
+    assert module.main(["local:qwen36", "--brief", str(brief), "--out", str(out)]) == 3
+    receipt = _receipt(out)
+    captured = capsys.readouterr()
+    assert canary not in json.dumps(receipt) + captured.out + captured.err
+    assert "P" * 20 not in receipt["stderr_tail"]
+    assert "<redacted>" in receipt["stderr_tail"]
+    assert "context after failure" in receipt["stderr_tail"]
+    assert len(receipt["stderr_tail"]) <= 400
+
+
+@pytest.mark.parametrize("preexisting", [False, True], ids=["absent", "unrelated-file"])
+def test_codex_relative_output_uses_one_absolute_path(bench, tmp_path, monkeypatch, preexisting):
+    module, _bin_dir, brief, _out = bench
+    caller = tmp_path / "caller"
+    checkout = tmp_path / "checkout"
+    caller.mkdir()
+    checkout.mkdir()
+    monkeypatch.chdir(caller)
+    out = caller / "answer.md"
+    if preexisting:
+        out.write_text("UNRELATED OLD ANSWER")
+    monkeypatch.setattr(module, "_require_binary", lambda name: name)
+    monkeypatch.setattr(module, "_is_git_checkout", lambda cwd: True)
+    seen = []
+
+    def run(argv, *, cwd, timeout):
+        target = Path(argv[argv.index("-o") + 1])
+        seen.append(target)
+        # Model the client's actual resolution relative to its selected checkout.
+        (cwd / target).write_text("ACTUAL CODEX ANSWER")
+        return 0, "stdout chatter", "", False, None
+
+    monkeypatch.setattr(module, "_run", run)
+    assert (
+        module.main(["codex", "--brief", str(brief), "--out", "answer.md", "--cwd", str(checkout)])
+        == 0
+    )
+    assert out.read_text() == "ACTUAL CODEX ANSWER"
+    assert seen == [out]
+    receipt = _receipt(out)
+    assert receipt["out"] == str(out)
+    assert receipt["output_bytes"] == len(out.read_bytes())
+    assert not (checkout / "answer.md").exists()
+
+
+@pytest.mark.parametrize("capacity", ["kimi", "qwencloud"])
+def test_stdout_lanes_keep_brief_side_artifacts_separate_from_recruiter_out(
+    bench, tmp_path, monkeypatch, capacity
+):
+    module, _bin_dir, brief, _out = bench
+    caller = tmp_path / "caller"
+    checkout = tmp_path / "checkout"
+    caller.mkdir()
+    checkout.mkdir()
+    monkeypatch.chdir(caller)
+    artifact = brief.with_suffix(".answer.md")
+    monkeypatch.setattr(module, "_require_binary", lambda name: name)
+    monkeypatch.setenv(module.QWENCLOUD_WRAPPER_ENV, str(brief))
+
+    def run(argv, *, cwd, timeout):
+        assert "-o" not in argv and "--out" not in argv
+        assert cwd == checkout
+        artifact.write_text("CLIENT ARTIFACT BESIDE BRIEF")
+        stdout = (
+            "RETURNED ANSWER" if capacity == "kimi" else json.dumps({"result": "RETURNED ANSWER"})
+        )
+        return 0, stdout, "", False, None
+
+    monkeypatch.setattr(module, "_run", run)
+    assert (
+        module.main([capacity, "--brief", str(brief), "--out", "answer.md", "--cwd", str(checkout)])
+        == 0
+    )
+    out = caller / "answer.md"
+    assert out.read_text().strip() == "RETURNED ANSWER"
+    assert artifact.read_text() == "CLIENT ARTIFACT BESIDE BRIEF"
+    assert _receipt(out)["out"] == str(out)
+    assert not (checkout / "answer.md").exists()
+
+
+@pytest.mark.parametrize(
+    ("body", "failure_class", "diagnostic"),
+    [
+        (b'{"api_key": "SYNTHETIC_PROTOCOL_SENTINEL",', "JSONDecodeError", "invalid JSON"),
+        (b"\xffSYNTHETIC_PROTOCOL_SENTINEL", "UnicodeDecodeError", "UTF-8"),
+        (b'["SYNTHETIC_PROTOCOL_SENTINEL"]', "EndpointProtocolError", "response must be an object"),
+        (
+            b'{"choices": {"secret": "SYNTHETIC_PROTOCOL_SENTINEL"}}',
+            "EndpointProtocolError",
+            "choices must be a non-empty list",
+        ),
+        (b'{"choices": []}', "EndpointProtocolError", "choices must be a non-empty list"),
+        (
+            b'{"choices": ["SYNTHETIC_PROTOCOL_SENTINEL"]}',
+            "EndpointProtocolError",
+            "choices[0] must be an object",
+        ),
+        (b'{"choices": [{}]}', "EndpointProtocolError", "message must be an object"),
+        (
+            b'{"choices": [{"message": "SYNTHETIC_PROTOCOL_SENTINEL"}]}',
+            "EndpointProtocolError",
+            "message must be an object",
+        ),
+        (b'{"choices": [{"message": {}}]}', "EndpointProtocolError", "content must be a string"),
+        (
+            b'{"choices": [{"message": {"content": ["SYNTHETIC_PROTOCOL_SENTINEL"]}}]}',
+            "EndpointProtocolError",
+            "content must be a string",
+        ),
+        (
+            b'{"choices": [{"message": {"content": 42}}]}',
+            "EndpointProtocolError",
+            "content must be a string",
+        ),
+        (
+            b'{"choices": [{"message": {"content": ""}}]}',
+            "EndpointProtocolError",
+            "content must not be empty",
+        ),
+        (
+            b'{"choices": [{"message": {"content": "OK"}}], "model": {"secret": "SYNTHETIC_PROTOCOL_SENTINEL"}}',
+            "EndpointProtocolError",
+            "model must be a string",
+        ),
+    ],
+    ids=[
+        "invalid-json",
+        "invalid-encoding",
+        "non-object",
+        "choices-object",
+        "choices-empty",
+        "choice-string",
+        "missing-message",
+        "message-string",
+        "missing-content",
+        "content-list",
+        "content-number",
+        "content-empty",
+        "model-object",
+    ],
+)
+def test_malformed_endpoint_response_is_receipted_capacity_failure(
+    bench, monkeypatch, capsys, body, failure_class, diagnostic
+):
+    module, _bin_dir, brief, out = bench
+    monkeypatch.setattr(
+        module.urllib.request, "urlopen", lambda request, *, timeout: io.BytesIO(body)
+    )
+    assert module.main(["local:qwen36", "--brief", str(brief), "--out", str(out)]) == 3
+    receipt = _receipt(out)
+    assert receipt["exit_code"] == 3
+    assert receipt["failure_class"] == failure_class
+    assert failure_class in receipt["stderr_tail"]
+    assert diagnostic in receipt["stderr_tail"]
+    assert receipt["models_reported"] == "absent"
+    assert out.read_text() == ""
+    captured = capsys.readouterr()
+    assert "SYNTHETIC_PROTOCOL_SENTINEL" not in json.dumps(receipt) + captured.out + captured.err
+    assert body.decode(errors="replace") not in receipt["stderr_tail"]

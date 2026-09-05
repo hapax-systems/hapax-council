@@ -202,3 +202,25 @@ def test_missing_secret_or_client_names_the_remedy(bench, tmp_path: Path) -> Non
 
     assert proc.returncode == 4 and "store the plan's sk-sp- key" in proc.stderr
     assert not record.exists()
+
+
+@pytest.mark.parametrize("probe_exit", [127, 1])
+def test_check_propagates_failed_client_probe_with_remedy(bench, tmp_path, probe_exit):
+    record, env = bench
+    (tmp_path / "bin" / "claude").write_text(
+        "#!/usr/bin/env python3\n"
+        "import sys\n"
+        "assert sys.argv[1:] == ['--version']\n"
+        "print('SYNTHETIC_PROBE_OUTPUT')\n"
+        "print('SYNTHETIC_PROBE_ERROR', file=sys.stderr)\n"
+        f"sys.exit({probe_exit})\n"
+    )
+    proc = _run(env, "--check")
+    assert proc.returncode == probe_exit
+    assert "ok — client" not in proc.stdout
+    assert "claude --version" in proc.stderr
+    assert str(probe_exit) in proc.stderr
+    assert "install Claude Code" in proc.stderr and "PATH" in proc.stderr
+    assert "SYNTHETIC_PROBE" not in proc.stdout + proc.stderr
+    assert FAKE_KEY not in proc.stdout + proc.stderr
+    assert not record.exists()
