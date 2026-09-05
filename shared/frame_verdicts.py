@@ -110,10 +110,21 @@ class UndecidableScopeContainment(NonCanonicalScopeRef):
 class FrameVerdictsUnavailable(RuntimeError):
     """The verdict set cannot be consulted; ``reason`` says why and ``remedy`` what to do."""
 
-    def __init__(self, reason: str, remedy: str = PRODUCER_REMEDY) -> None:
+    def __init__(
+        self,
+        reason: str,
+        remedy: str = PRODUCER_REMEDY,
+        *,
+        frame_epoch: str | None = None,
+        frame_root_resolved: str | None = None,
+    ) -> None:
+        if frame_root_resolved is not None:
+            reason = f"{reason}; frame_root_resolved={frame_root_resolved}"
         super().__init__(f"{reason}. Next: {remedy}")
         self.reason = reason
         self.remedy = remedy
+        self.frame_epoch = frame_epoch
+        self.frame_root_resolved = frame_root_resolved
 
 
 @dataclass(frozen=True)
@@ -424,12 +435,30 @@ def load_frame_verdicts(
     guessed "nothing decayed" on any of these would be admitting work against no verdicts.
     """
     root = procedure_root if procedure_root is not None else frame_procedure_root()
-    if not root.is_dir():
+    root = root.expanduser().resolve()
+    epoch_dir: Path | None = None
+    try:
+        if not root.is_dir():
+            raise FrameVerdictsUnavailable(
+                f"frame procedure root {root} does not exist (set {FRAME_PROCEDURE_ROOT_ENV} or "
+                "restore the vault)"
+            )
+        epoch_dir = current_epoch_dir(root)
+        return _load_epoch_verdicts(root, epoch_dir, now=now, max_age_s=max_age_s)
+    except FrameVerdictsUnavailable as exc:
+        # Bind diagnostics to this read, including missing pointers and damaged epoch inputs.
+        # The dispatcher must not re-resolve an environment override when writing its receipt.
         raise FrameVerdictsUnavailable(
-            f"frame procedure root {root} does not exist (set {FRAME_PROCEDURE_ROOT_ENV} or "
-            "restore the vault)"
-        )
-    epoch_dir = current_epoch_dir(root)
+            exc.reason,
+            exc.remedy,
+            frame_epoch=epoch_dir.name if epoch_dir is not None else None,
+            frame_root_resolved=str(root),
+        ) from exc
+
+
+def _load_epoch_verdicts(
+    root: Path, epoch_dir: Path, *, now: datetime | None, max_age_s: int
+) -> FrameVerdicts:
     produced_at = epoch_produced_at(epoch_dir.name)
     assert produced_at is not None  # current_epoch_dir only returns a parseable epoch
     current = now if now is not None else datetime.now(UTC)

@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import argparse
 import functools
+import hashlib
 import json
 import os
 import re
@@ -254,6 +255,7 @@ RECEIPT_ONLY_ROUTE = PlatformPath(
 class TaskNote:
     path: Path
     fields: dict[str, Any]
+    note_sha256: str | None = None
 
 
 @dataclass
@@ -267,6 +269,7 @@ class Validation:
     #: shows the frame was read (a guard visible only when it refuses is presence, not use)
     frame_epoch: str | None = None
     frame_decayed_members: tuple[str, ...] = ()
+    frame_unavailable: dict[str, str | None] | None = None
 
 
 @dataclass(frozen=True)
@@ -541,7 +544,12 @@ def read_task(task_root: Path, task_id: str) -> TaskNote | None:
     candidates = [active / f"{task_id}.md", *sorted(active.glob(f"{task_id}-*.md"))]
     for candidate in candidates:
         if candidate.is_file():
-            return TaskNote(candidate, parse_frontmatter(candidate.read_text(encoding="utf-8")))
+            note_bytes = candidate.read_bytes()
+            return TaskNote(
+                candidate,
+                parse_frontmatter(note_bytes.decode("utf-8")),
+                hashlib.sha256(note_bytes).hexdigest(),
+            )
     return None
 
 
@@ -1043,7 +1051,9 @@ def _validate_system_drain(
     return Validation(True, f"system-drain eligible ({why})", task, None, exempt_read_only=True)
 
 
-def frame_verdict_refusal(fields: dict[str, Any]) -> tuple[str | None, str | None, tuple[str, ...]]:
+def frame_verdict_refusal(
+    fields: dict[str, Any], *, unavailable_evidence: dict[str, str | None] | None = None
+) -> tuple[str | None, str | None, tuple[str, ...]]:
     """The frame's verdicts, consulted here because governed dispatch is the work-selection
     dominator for every worker whose only launch path is this script (FRAME-PRODUCER §B2).
 
@@ -1057,6 +1067,13 @@ def frame_verdict_refusal(fields: dict[str, Any]) -> tuple[str | None, str | Non
     try:
         verdicts = frame_verdicts.load_frame_verdicts()
     except frame_verdicts.FrameVerdictsUnavailable as exc:
+        if unavailable_evidence is not None:
+            unavailable_evidence.update(
+                reason=exc.reason,
+                remedy=exc.remedy,
+                frame_epoch=exc.frame_epoch,
+                frame_root_resolved=exc.frame_root_resolved,
+            )
         return (
             "frame verdicts unavailable at the work-selection point: "
             f"{exc.reason}. Next: {exc.remedy}",
@@ -1197,10 +1214,20 @@ def validate_task(
         if not ok:
             return Validation(False, reason, task, parent_spec_path, exempt)
 
-    frame_refusal, frame_epoch, frame_decayed = frame_verdict_refusal(fields)
+    frame_unavailable: dict[str, str | None] = {}
+    frame_refusal, frame_epoch, frame_decayed = frame_verdict_refusal(
+        fields, unavailable_evidence=frame_unavailable
+    )
     if frame_refusal is not None:
         return Validation(
-            False, frame_refusal, task, parent_spec_path, exempt, frame_epoch, frame_decayed
+            False,
+            frame_refusal,
+            task,
+            parent_spec_path,
+            exempt,
+            frame_epoch,
+            frame_decayed,
+            frame_unavailable or None,
         )
 
     return Validation(True, "eligible", task, parent_spec_path, exempt, frame_epoch, frame_decayed)
@@ -1301,6 +1328,7 @@ def write_receipt(
     durable_binding: DurableDispatchBinding | None = None,
     dispatch_launch: DispatchLaunchResult | None = None,
     route_policy_reason_codes: list[str] | None = None,
+    invocation_id: str | None = None,
 ) -> Path:
     ledger_dir = orchestration_ledger_dir()
     ledger_dir.mkdir(parents=True, exist_ok=True)
@@ -1310,6 +1338,7 @@ def write_receipt(
         "event": "methodology_dispatch",
         "timestamp": now_utc(),
         "task_id": task_id,
+        "invocation_id": invocation_id,
         "lane": lane,
         "platform": platform,
         "mode": mode,
@@ -1320,12 +1349,14 @@ def write_receipt(
         "ok": validation.ok,
         "reason": validation.reason,
         "task_path": str(validation.task.path) if validation.task else None,
+        "task_note_sha256": validation.task.note_sha256 if validation.task else None,
         "parent_spec_path": str(validation.parent_spec_path)
         if validation.parent_spec_path
         else None,
         "exempt_read_only": validation.exempt_read_only,
         "frame_epoch": validation.frame_epoch,
         "frame_decayed_members": list(validation.frame_decayed_members),
+        "frame_unavailable": validation.frame_unavailable,
         "launched": launched,
         "launch_returncode": launch_returncode,
         "prompt": prompt,
@@ -1348,6 +1379,9 @@ def write_receipt(
         record["route_decision_receipt_path"] = (
             str(route_decision_receipt_path) if route_decision_receipt_path else None
         )
+    record.setdefault("does_not_prove", []).append(
+        "invocation_id: correlation token supplied by the caller; not an identity, not an authority"
+    )
     record["dispatch_host"] = effective_dispatch_host(platform, mode)
     with path.open("a", encoding="utf-8") as fh:
         fh.write(json.dumps(record, sort_keys=True) + "\n")
@@ -2045,6 +2079,7 @@ def run_system_drain(args: argparse.Namespace, task_root: Path) -> int:
         if args.no_receipt:
             return
         write_receipt(
+            invocation_id=getattr(args, "invocation_id", None),
             task_id=args.task,
             lane=SYSTEM_DRAIN_LANE,
             platform=args.platform,
@@ -2080,6 +2115,7 @@ def run_system_drain(args: argparse.Namespace, task_root: Path) -> int:
 
     if not args.no_receipt:
         write_receipt(
+            invocation_id=getattr(args, "invocation_id", None),
             task_id=args.task,
             lane=SYSTEM_DRAIN_LANE,
             platform=args.platform,
@@ -2095,10 +2131,24 @@ def run_system_drain(args: argparse.Namespace, task_root: Path) -> int:
     return 0
 
 
+def invocation_id_token(value: str) -> str:
+    if re.fullmatch(r"[A-Za-z0-9._:-]{1,128}", value) is None:
+        raise argparse.ArgumentTypeError(
+            "must be 1-128 characters from [A-Za-z0-9._:-]. Next: supply a bounded printable "
+            "correlation token with --invocation-id, or omit the option"
+        )
+    return value
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--task", help="Explicit cc-task id to dispatch")
     parser.add_argument("--lane", help="Target lane, e.g. beta or cx-red")
+    parser.add_argument(
+        "--invocation-id",
+        type=invocation_id_token,
+        help="Caller correlation token: 1-128 characters from [A-Za-z0-9._:-]; no authority",
+    )
     parser.add_argument(
         "--platform",
         default="claude",
@@ -2243,6 +2293,7 @@ def main(argv: list[str] | None = None) -> int:
         task_for_receipt = read_task(task_root, args.task)
         if not args.no_receipt:
             write_receipt(
+                invocation_id=args.invocation_id,
                 task_id=args.task,
                 lane=args.lane,
                 platform=args.platform,
@@ -2281,6 +2332,7 @@ def main(argv: list[str] | None = None) -> int:
     if not validation.ok:
         if not args.no_receipt:
             write_receipt(
+                invocation_id=args.invocation_id,
                 task_id=args.task,
                 lane=args.lane,
                 platform=args.platform,
@@ -2305,6 +2357,7 @@ def main(argv: list[str] | None = None) -> int:
             blocked = replace(validation, ok=False, reason=reason)
             if not args.no_receipt:
                 write_receipt(
+                    invocation_id=args.invocation_id,
                     task_id=args.task,
                     lane=args.lane,
                     platform=args.platform,
@@ -2326,6 +2379,7 @@ def main(argv: list[str] | None = None) -> int:
             blocked = replace(validation, ok=False, reason=reason)
             if not args.no_receipt:
                 write_receipt(
+                    invocation_id=args.invocation_id,
                     task_id=args.task,
                     lane=args.lane,
                     platform=args.platform,
@@ -2352,6 +2406,7 @@ def main(argv: list[str] | None = None) -> int:
             print(prompt)
         if not args.no_receipt:
             write_receipt(
+                invocation_id=args.invocation_id,
                 task_id=args.task,
                 lane=args.lane,
                 platform=args.platform,
@@ -2415,6 +2470,7 @@ def main(argv: list[str] | None = None) -> int:
         )
         if not args.no_receipt:
             write_receipt(
+                invocation_id=args.invocation_id,
                 task_id=args.task,
                 lane=args.lane,
                 platform=args.platform,
@@ -2440,6 +2496,7 @@ def main(argv: list[str] | None = None) -> int:
         blocked = replace(validation, ok=False, reason=reason)
         if not args.no_receipt:
             write_receipt(
+                invocation_id=args.invocation_id,
                 task_id=args.task,
                 lane=args.lane,
                 platform=args.platform,
@@ -2467,6 +2524,7 @@ def main(argv: list[str] | None = None) -> int:
         )
         if not args.no_receipt:
             write_receipt(
+                invocation_id=args.invocation_id,
                 task_id=args.task,
                 lane=args.lane,
                 platform=selected_route.platform,
@@ -2505,6 +2563,7 @@ def main(argv: list[str] | None = None) -> int:
         blocked = replace(validation, ok=False, reason=reason)
         if not args.no_receipt:
             write_receipt(
+                invocation_id=args.invocation_id,
                 task_id=args.task,
                 lane=args.lane,
                 platform=args.platform,
@@ -2632,6 +2691,7 @@ def main(argv: list[str] | None = None) -> int:
                 blocked = replace(validation, ok=False, reason=reason)
                 if not args.no_receipt:
                     write_receipt(
+                        invocation_id=args.invocation_id,
                         task_id=args.task,
                         lane=args.lane,
                         platform=args.platform,
@@ -2652,6 +2712,7 @@ def main(argv: list[str] | None = None) -> int:
                 blocked = replace(validation, ok=False, reason=reason)
                 if not args.no_receipt:
                     write_receipt(
+                        invocation_id=args.invocation_id,
                         task_id=args.task,
                         lane=args.lane,
                         platform=args.platform,
@@ -2672,6 +2733,7 @@ def main(argv: list[str] | None = None) -> int:
 
         if not args.no_receipt:
             write_receipt(
+                invocation_id=args.invocation_id,
                 task_id=args.task,
                 lane=args.lane,
                 platform=args.platform,
@@ -2691,6 +2753,7 @@ def main(argv: list[str] | None = None) -> int:
 
     if not args.no_receipt:
         write_receipt(
+            invocation_id=args.invocation_id,
             task_id=args.task,
             lane=args.lane,
             platform=args.platform,

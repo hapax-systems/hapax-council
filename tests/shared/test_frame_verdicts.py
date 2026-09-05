@@ -1054,3 +1054,46 @@ def test_a_repo_relative_ref_matches_a_member_declared_at_another_checkout(tmp_p
 
     assert scope.all_inside, scope
     assert scope.matches[0].member_id == "legacy"
+
+
+@pytest.mark.parametrize("source", ["explicit", "environment", "default"])
+@pytest.mark.parametrize("state", ["stale", "missing-root", "missing-current", "missing-elements"])
+def test_unavailable_frame_evidence_binds_resolved_root(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, source: str, state: str
+) -> None:
+    reasons = []
+    for name in ("frame-a", "frame-b"):
+        root = tmp_path / name
+        epoch_name = None
+        if state in {"stale", "missing-elements"}:
+            at = NOW - timedelta(seconds=fv.FRAME_EPOCH_MAX_AGE_S + 1) if state == "stale" else NOW
+            _procedure_root(root, members=[], verdicts=[], at=at)
+            epoch = (root / "_runs/current").resolve()
+            epoch_name = epoch.name
+            if state == "missing-elements":
+                (epoch / "elements.json").unlink()
+        elif state == "missing-current":
+            root.mkdir()
+        # Resolve a relative symlink, including a dangling one for an absent root.
+        alias = tmp_path / (name + "-alias")
+        alias.symlink_to(root, target_is_directory=True)
+        monkeypatch.chdir(tmp_path)
+        relative_alias = Path(alias.name)
+        if source == "environment":
+            monkeypatch.setenv(fv.FRAME_PROCEDURE_ROOT_ENV, f" {relative_alias} ")
+        elif source == "default":
+            monkeypatch.delenv(fv.FRAME_PROCEDURE_ROOT_ENV, raising=False)
+            monkeypatch.setattr(fv, "DEFAULT_FRAME_PROCEDURE_ROOT", relative_alias)
+        else:
+            monkeypatch.setenv(fv.FRAME_PROCEDURE_ROOT_ENV, str(tmp_path / "unrelated"))
+
+        with pytest.raises(fv.FrameVerdictsUnavailable) as caught:
+            fv.load_frame_verdicts(relative_alias if source == "explicit" else None, now=NOW)
+
+        error = caught.value
+        assert error.frame_root_resolved == str(root.resolve())
+        assert error.frame_epoch == epoch_name
+        assert f"frame_root_resolved={root.resolve()}" in error.reason
+        assert error.remedy == fv.PRODUCER_REMEDY
+        reasons.append(error.reason)
+    assert reasons[0] != reasons[1]

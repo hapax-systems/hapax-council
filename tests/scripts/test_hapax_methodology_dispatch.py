@@ -1,4 +1,5 @@
 import base64
+import hashlib
 import importlib.machinery
 import importlib.util
 import json
@@ -5064,3 +5065,217 @@ def test_dispatch_maps_release_activation_refs_to_the_canonical_repository(
     assert refusal is not None and "out of accountability" in refusal
     assert epoch is not None and epoch.endswith("-deadbeef")
     assert decayed == ("legacy-surface",)
+
+
+@pytest.mark.parametrize(
+    "invocation_id",
+    [None, "x", "Canary.01_root:Ab-C9".ljust(128, "z")],
+    ids=["absent", "one-character", "128-characters"],
+)
+def test_receipt_invocation_id_echo_and_explicit_null(
+    tmp_path: Path, invocation_id: str | None
+) -> None:
+    _worktree(tmp_path / "worktree")
+    spec = _spec(tmp_path / "isap-test.md")
+    _task(tmp_path / "tasks", "governed-build", _codex_only_build_frontmatter(spec))
+    args = [] if invocation_id is None else ["--invocation-id", invocation_id]
+
+    result = _run(
+        tmp_path,
+        "--task",
+        "governed-build",
+        "--lane",
+        "cx-green",
+        "--platform",
+        "codex",
+        "--mode",
+        "receipt-only",
+        *args,
+    )
+
+    assert result.returncode == 0, result.stderr
+    receipt = json.loads(
+        (tmp_path / "ledger/methodology-dispatch.jsonl").read_text().splitlines()[-1]
+    )
+    assert receipt["invocation_id"] == invocation_id
+    assert receipt["does_not_prove"] == [
+        "invocation_id: correlation token supplied by the caller; not an identity, not an authority"
+    ]
+
+
+@pytest.mark.parametrize("token", ["x" * 129, "", "has space", "bad/part", "bad\n", "é", "bad\x1b"])
+def test_invocation_id_refuses_invalid_tokens_with_constraint_and_remedy(
+    tmp_path: Path, token: str
+) -> None:
+    result = _run(tmp_path, "--invocation-id", token)
+
+    assert result.returncode == 2
+    assert "--invocation-id" in result.stderr
+    assert "1-128 characters from [A-Za-z0-9._:-]" in result.stderr
+    assert "Next: supply" in result.stderr
+    assert not (tmp_path / "ledger/methodology-dispatch.jsonl").exists()
+
+
+def test_invocation_id_distinguishes_same_task_lane_substitute_receipt(tmp_path: Path) -> None:
+    _worktree(tmp_path / "worktree")
+    spec = _spec(tmp_path / "isap-test.md")
+    _task(tmp_path / "tasks", "governed-build", _codex_only_build_frontmatter(spec))
+    expected_id = "canary:expected.01"
+    for correlation_args in (["--invocation-id", expected_id], []):
+        result = _run(
+            tmp_path,
+            "--task",
+            "governed-build",
+            "--lane",
+            "cx-green",
+            "--platform",
+            "codex",
+            "--mode",
+            "receipt-only",
+            *correlation_args,
+        )
+        assert result.returncode == 0, result.stderr
+
+    expected, substitute = [
+        json.loads(line)
+        for line in (tmp_path / "ledger/methodology-dispatch.jsonl").read_text().splitlines()
+    ]
+    assert expected["task_id"] == substitute["task_id"] == "governed-build"
+    assert expected["lane"] == substitute["lane"] == "cx-green"
+    assert expected["invocation_id"] == expected_id
+    assert substitute["invocation_id"] is None
+    assert [r for r in [expected, substitute] if r["invocation_id"] == expected_id] == [expected]
+
+
+def test_receipt_task_note_sha256_hashes_exact_written_bytes(tmp_path: Path) -> None:
+    _worktree(tmp_path / "worktree")
+    spec = _spec(tmp_path / "isap-test.md")
+    task_path = _task(tmp_path / "tasks", "governed-build", _codex_only_build_frontmatter(spec))
+    # Raw bytes include CRLF and non-ASCII: hashing a re-encoded read_text() would differ.
+    note_bytes = task_path.read_bytes().replace(b"\n", b"\r\n") + "\r\nCafé\r\n".encode()
+    task_path.write_bytes(note_bytes)
+
+    result = _run(
+        tmp_path,
+        "--task",
+        "governed-build",
+        "--lane",
+        "cx-green",
+        "--platform",
+        "codex",
+        "--mode",
+        "receipt-only",
+    )
+
+    assert result.returncode == 0, result.stderr
+    receipt = json.loads(
+        (tmp_path / "ledger/methodology-dispatch.jsonl").read_text().splitlines()[-1]
+    )
+    assert receipt["task_note_sha256"] == hashlib.sha256(note_bytes).hexdigest()
+
+
+@pytest.mark.parametrize("race", ["rewrite-after-read", "change-and-restore"])
+def test_receipt_task_note_sha256_binds_parsed_bytes_across_file_race(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, race: str
+) -> None:
+    module = _dispatcher_module()
+    spec = _spec(tmp_path / "isap-test.md")
+    task_path = _task(tmp_path / "tasks", "governed-build", _codex_only_build_frontmatter(spec))
+    original_bytes = task_path.read_bytes()
+    changed_bytes = original_bytes.replace(b'title: "governed-build"', b'title: "transient note"')
+    before_hash = hashlib.sha256(task_path.read_bytes()).hexdigest()
+    parsed_bytes = changed_bytes if race == "change-and-restore" else original_bytes
+    reader = module.read_task
+    parsed_notes = []
+
+    def read_then_rewrite(task_root: Path, task_id: str):
+        if race == "change-and-restore":
+            task_path.write_bytes(changed_bytes)
+        note = reader(task_root, task_id)
+        parsed_notes.append(note)
+        task_path.write_bytes(original_bytes if race == "change-and-restore" else changed_bytes)
+        return note
+
+    monkeypatch.setenv("HAPAX_CC_TASK_ROOT", str(tmp_path / "tasks"))
+    monkeypatch.setenv("HAPAX_ORCHESTRATION_LEDGER_DIR", str(tmp_path / "ledger"))
+    monkeypatch.setenv("HAPAX_CC_CLAIMS_DIR", str(tmp_path / "claims"))
+    monkeypatch.setenv("HAPAX_DISPATCH_CLAIM_SWEEP", "0")
+    monkeypatch.setattr(module, "read_task", read_then_rewrite)
+    rc = module.main(
+        [
+            "--task",
+            "governed-build",
+            "--lane",
+            "cx-green",
+            "--platform",
+            "codex",
+            "--mode",
+            "receipt-only",
+            "--skip-worktree-check",
+        ]
+    )
+
+    assert rc == 0
+    assert len(parsed_notes) == 1
+    parsed = parsed_notes[0]
+    expected_hash = hashlib.sha256(parsed_bytes).hexdigest()
+    assert parsed.note_sha256 == expected_hash
+    receipt = json.loads(
+        (tmp_path / "ledger/methodology-dispatch.jsonl").read_text().splitlines()[-1]
+    )
+    after_hash = hashlib.sha256(task_path.read_bytes()).hexdigest()
+    if race == "change-and-restore":
+        # The old before/after comparison passes even though dispatch parsed different bytes.
+        assert before_hash == after_hash
+        assert parsed.fields["title"] == "transient note"
+    else:
+        assert before_hash != after_hash
+    assert expected_hash != after_hash
+    assert receipt["task_note_sha256"] == expected_hash
+
+
+@pytest.mark.parametrize("state", ["stale", "missing-root", "missing-current"])
+def test_receipt_frame_unavailable_binds_resolved_root(tmp_path: Path, state: str) -> None:
+    _worktree(tmp_path / "worktree")
+    spec = _spec(tmp_path / "isap-test.md")
+    _task(tmp_path / "tasks", "governed-build", _codex_only_build_frontmatter(spec))
+    epoch_name = "20200101T000000Z-deadbeef"
+    roots = [tmp_path / "frame-a", tmp_path / "frame-b"]
+    for root in roots:
+        if state == "stale":
+            epoch = root / "_runs/epochs" / epoch_name
+            epoch.mkdir(parents=True)
+            (epoch / "publish.json").write_text(json.dumps({"epoch": epoch_name, "swapped": True}))
+            (root / "_runs/current").symlink_to(Path("epochs") / epoch_name)
+        elif state == "missing-current":
+            root.mkdir()
+        result = _run(
+            tmp_path,
+            "--task",
+            "governed-build",
+            "--lane",
+            "cx-green",
+            "--platform",
+            "codex",
+            "--mode",
+            "receipt-only",
+            extra_env={"HAPAX_FRAME_PROCEDURE_ROOT": str(root)},
+        )
+        assert result.returncode == 10, result.stderr
+        assert "frame verdicts unavailable" in result.stderr
+        assert f"frame_root_resolved={root.resolve()}" in result.stderr
+
+    receipts = [
+        json.loads(line)
+        for line in (tmp_path / "ledger/methodology-dispatch.jsonl").read_text().splitlines()
+    ]
+    for receipt, root in zip(receipts, roots, strict=True):
+        evidence = receipt["frame_unavailable"]
+        assert evidence["frame_root_resolved"] == str(root.resolve())
+        assert evidence["frame_epoch"] == (epoch_name if state == "stale" else None)
+        assert "hapax-frame-iteration.service" in evidence["remedy"]
+        assert f"frame_root_resolved={root.resolve()}" in evidence["reason"]
+        assert evidence["reason"] in receipt["reason"]
+        assert receipt["frame_epoch"] is None  # Existing meaning: no verdict set was consulted.
+    assert receipts[0]["reason"] != receipts[1]["reason"]
+    assert receipts[0]["frame_unavailable"] != receipts[1]["frame_unavailable"]
