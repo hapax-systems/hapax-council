@@ -35,8 +35,7 @@ fi
 # core.hooksPath replaces Git's entire hook lookup directory, and pre-commit refuses to install
 # while it is set. Require one common hook directory so pre-commit and pre-push cannot mask each
 # other. The explicit failure also repairs clones configured by the superseded pre-push runbook.
-hooks_path="$(git config --get core.hooksPath || true)"
-if [ -n "$hooks_path" ]; then
+if hooks_path="$(git config --get core.hooksPath)"; then
   echo "ERROR: core.hooksPath is set to '$hooks_path'; it would mask the shared hooks." >&2
   echo "  Clear it and re-run: git config --unset-all core.hooksPath" >&2
   echo "  See docs/runbooks/pre-commit-bootstrap.md." >&2

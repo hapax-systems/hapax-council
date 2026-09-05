@@ -54,10 +54,38 @@ underlying repository.
 ## Verify
 
 ```bash
+(
+# An unset value returns 1. Any configured value, including an empty one, masks hooks.
+if git config --show-origin core.hooksPath; then
+  echo "core.hooksPath masks the shared hooks. Clear it at the reported origin and re-run the installer." >&2
+  exit 1
+fi
+git rev-parse --git-path hooks
 hooks_dir="$(git rev-parse --path-format=absolute --git-common-dir)/hooks"
-test -x "$hooks_dir/pre-commit"
-test -x "$hooks_dir/pre-push"
+effective_hooks="$(git rev-parse --path-format=absolute --git-path hooks)"
+test "$effective_hooks" = "$hooks_dir" || exit 1
+test -x "$hooks_dir/pre-commit" || exit 1
+test -x "$hooks_dir/pre-push" || exit 1
 sed -n '1,12p' "$hooks_dir/pre-commit"
+)
+```
+
+Repeat these checks from each linked worktree: worktree-specific configuration can change
+Git's effective hook directory even though the executable files exist in the common directory.
+
+Exercise actual Git hook dispatch with the hermetic integration tests below. They create a local
+bare remote and temporary clone under `/store-fast/tmp`, install the versioned wrapper, and run
+`git push` from both the clone and a linked worktree. They assert the hook's exit via Git trace2,
+the push status, and whether the remote ref moved: clean pushes pass and dirty pushes refuse.
+The fallback and failure tests also check the named recovery action. No network or changes to
+this checkout's installed hooks are involved; pre-commit and detector failure cases use test tools.
+
+```bash
+env -u HAPAX_GLMCP_MODEL -u HAPAX_GLMCP_REVIEW_MODEL \
+  -u HAPAX_GLMCP_REVIEW_PAYG_FALLBACK -u HAPAX_GLMCP_REVIEW_ALLOW_NON_CODING_PLAN_MODEL \
+  UV_CACHE_DIR=/store-fast/tmp/uv-cache-verify TMPDIR=/store-fast/tmp \
+  uv run pytest -q -p no:cacheprovider tests/scripts/test_hapax_prepush_secret_scan.py \
+  -k 'installed_hook or installer_refuses_conflicting_hooks_path or runbook_verification'
 ```
 
 For a task-scoped verification, run pre-commit on the files you touched:
@@ -98,8 +126,11 @@ a remedy. Entropy-only findings on the codebase-derived
 
 There is no path-based exemption from the absolute-home-path check, including under
 `systemd/units/`, and neither the vendor-key nor home-path detector has a line-level allowlist. A
-unit that needs an operator-specific path must be parameterized. Recheck the predicate and
-per-commit behavior with `uv run pytest tests/scripts/test_hapax_prepush_secret_scan.py -q`.
+unit that needs an operator-specific path must be parameterized. Recheck all predicates,
+per-commit behavior, and installed hook dispatch with the same pytest command above, omitting
+the `-k` filter. The full suite also runs the real detect-secrets CLI. For an offline run with
+cached tools, add `UV_TOOL_DIR=/store-fast/tmp/uv-tools-verify UV_OFFLINE=1` to that command's
+environment.
 
 Exempting a private mirror (the only sanctioned exemption): `git config --add
 hapax.prepushScan.skipRemote <remote-name>`. There is no in-script bypass; if the hook refuses a

@@ -13,6 +13,10 @@ if [ ! -f "$scan" ]; then
   # A worktree checked out at a commit without the scanner: use the main checkout's copy, and
   # refuse (not pass) if neither exists — the absence of the scanner is not a clean scan.
   scan="$(git rev-parse --path-format=absolute --git-common-dir)/../scripts/hapax-prepush-secret-scan"
-  [ -f "$scan" ] || { echo "pre-push: scanner missing at $root/scripts/hapax-prepush-secret-scan — refusing" >&2; exit 3; }
+  if [ ! -f "$scan" ]; then
+    echo "pre-push: scanner missing at $root/scripts/hapax-prepush-secret-scan — refusing" >&2
+    echo "Remedy: restore scripts/hapax-prepush-secret-scan in this checkout and retry the push." >&2
+    exit 3
+  fi
 fi
 exec python3 "$scan" "$@"
