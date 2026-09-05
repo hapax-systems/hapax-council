@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import errno
 import hashlib
 import json
 import multiprocessing as mp
@@ -7,7 +8,7 @@ import os
 import queue
 import stat
 import subprocess
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
@@ -1179,6 +1180,688 @@ def _resolve(fixture: ClaimFixture):
         transaction_root=fixture.transactions,
         lock_root=fixture.locks,
     )
+
+
+def _activation_fixture(tmp_path: Path):
+    fixture = _fixture(tmp_path, task_id="claim-activation-cache-rehydrate-fixture".ljust(54, "x"))
+    active = _active_admission_fixture(tmp_path, fixture)
+    receipt = sdlc_claim._apply_admitted_claim_publication_transaction(
+        fixture.intent,
+        active.consumption,
+        transaction_root=fixture.transactions,
+        receipt_root=tmp_path / "receipts",
+        lock_root=fixture.locks,
+        now=active.checked_at,
+    )
+    fixture.intent.note_path.write_bytes(
+        fixture.intent.note_after.replace(
+            b"updated_at: 2026-07-11T12:00:00Z", b"updated_at: 2026-09-05T02:30:00Z"
+        )
+        + b"\nLegitimate progress after publication.\n"
+    )
+    for path in fixture.cache.glob("cc-active-task-*"):
+        path.unlink()
+    return fixture, receipt
+
+
+def _rehydrate(fixture: ClaimFixture, receipt_root: Path):
+    return sdlc_claim.rehydrate_applied_activation_projections(
+        cache_dir=fixture.cache,
+        transaction_root=fixture.transactions,
+        receipt_root=receipt_root,
+        lock_root=fixture.locks,
+        task_id=fixture.intent.task_id,
+    )
+
+
+@pytest.mark.parametrize("state", ["aborted", "applied"], ids=["aborted", "superseded"])
+@pytest.mark.parametrize("position", ["before", "after"])
+def test_rehydrate_selects_current_publication_before_writing(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, state: str, position: str
+) -> None:
+    # Keep A away from the hash-space endpoints so both requested B orderings
+    # have a substantial probability on every attempt, regardless of tmp_path.
+    for attempt in range(128):
+        fixture, receipt = _activation_fixture(tmp_path / f"current-{attempt}")
+        if "claim-pub-4" <= receipt.publication_id < "claim-pub-c":
+            break
+    else:
+        pytest.fail("could not construct a central publication identity")
+    original = {
+        path: (path.read_bytes(), path.stat()) for path in tmp_path.rglob("*") if path.is_file()
+    }
+    fixture.intent.note_path.write_bytes(
+        fixture.intent.note_path.read_bytes().replace(b"status: claimed", b"status: pr_open")
+    )
+    # Publish a second genuine admission with the SAME lease vector. Only the
+    # exact publication named by the surviving receipt distinguishes A from B.
+    for attempt in range(128):
+        intent = ClaimPublicationIntent.create(
+            task=resolve_task_note(fixture.vault, fixture.intent.task_id),
+            cache_dir=fixture.cache,
+            note_after=fixture.intent.note_path.read_bytes()
+            + f"\nPublication B {attempt}\n".encode(),
+            binding=fixture.intent.binding,
+        )
+        proof_root = tmp_path / f"publication-b-{attempt}"
+        proof_root.mkdir()
+        active = _active_admission_fixture(proof_root, replace(fixture, intent=intent))
+        other_id = admitted_claim_publication_id(intent, active.consumption)
+        if (other_id < receipt.publication_id) == (position == "before"):
+            break
+    else:
+        pytest.fail("could not construct the requested publication ordering")
+    receipt.receipt_path.unlink()
+    for projection in sdlc_claim._projections(fixture.intent)[1:7]:
+        projection.path.unlink(missing_ok=True)
+    other = sdlc_claim._apply_admitted_claim_publication_transaction(
+        intent,
+        active.consumption,
+        transaction_root=fixture.transactions,
+        receipt_root=receipt.receipt_path.parent,
+        lock_root=fixture.locks,
+        now=active.checked_at,
+    )
+    record = json.loads(other.manifest_path.read_bytes())
+    record["state"] = state
+    record["reason_code"] = "retained-publication-b"
+    other.manifest_path.write_bytes(_canonical(record) + b"\n")
+    # Retain B's journal; A's receipt and surviving sidecars are the current plane.
+    for path, (content, metadata) in original.items():
+        path.write_bytes(content)
+        path.chmod(stat.S_IMODE(metadata.st_mode))
+        os.utime(path, ns=(metadata.st_atime_ns, metadata.st_mtime_ns))
+    paths = tuple(sdlc_claim._projections(fixture.intent)[index].path for index in (1, 4))
+    for path in paths:
+        path.unlink()
+    before_paths = tuple(path for path in tmp_path.rglob("*") if path.is_file())
+    before = _file_identity_snapshot(before_paths)
+    list_names = sdlc_claim.ReadOnlyFsSnapshot.list_names
+    runs = []
+    for reverse in (False, True):
+        with monkeypatch.context() as patch:
+            patch.setattr(
+                sdlc_claim.ReadOnlyFsSnapshot,
+                "list_names",
+                lambda self, directory: tuple(sorted(list_names(self, directory), reverse=reverse)),
+            )
+            results = _rehydrate(fixture, receipt.receipt_path.parent)
+        current = next(item for item in results if item.publication_id == receipt.publication_id)
+        ignored = next(item for item in results if item.publication_id == other.publication_id)
+        assert len(results) == 2
+        assert current.state == "rehydrated"
+        assert current.written_paths == paths
+        assert ignored.state == state
+        assert ignored.reason_code == "claim_publication_not_current"
+        assert "retained-publication-b" in ignored.detail
+        assert ignored.written_paths == ()
+        assert _file_identity_snapshot(before_paths) == before
+        assert {path for path in tmp_path.rglob("*") if path.is_file()} == set(before_paths) | set(
+            paths
+        )
+        writes = tuple(
+            (path, path.read_bytes(), stat.S_IMODE(path.stat().st_mode)) for path in paths
+        )
+        assert writes == tuple(
+            (path, f"{fixture.intent.task_id}\n".encode(), 0o644) for path in paths
+        )
+        runs.append((results, writes))
+        for path in paths:
+            path.unlink()
+    assert runs[0] == runs[1]
+
+
+@pytest.mark.parametrize("failure", ["race", "cas"])
+@pytest.mark.parametrize(
+    "first_exists", [False, True], ids=["installed_first", "preexisting_first"]
+)
+def test_rehydrate_second_install_retains_partial_effects(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, failure: str, first_exists: bool
+) -> None:
+    import shared.coord_projection as projection_layer
+
+    fixture, receipt = _activation_fixture(tmp_path)
+    first, second = (sdlc_claim._projections(fixture.intent)[index].path for index in (1, 4))
+    if first_exists:
+        first.write_bytes(f"{fixture.intent.task_id}\n".encode())
+        first.chmod(0o644)
+    before = _file_identity_snapshot((first,)) if first_exists else None
+    rename = projection_layer._renameat2
+    calls = []
+
+    def fail_second(src_fd, src_name, dst_fd, dst_name, flags):
+        calls.append(dst_name)
+        if dst_name == second.name:
+            if failure == "race":
+                second.write_bytes(b"concurrent-owner\n")
+                second.chmod(0o644)
+            else:
+                with monkeypatch.context() as patch:
+                    patch.setattr(projection_layer.ctypes, "CDLL", lambda *args, **kwargs: object())
+                    return rename(src_fd, src_name, dst_fd, dst_name, flags)
+        return rename(src_fd, src_name, dst_fd, dst_name, flags)
+
+    monkeypatch.setattr(projection_layer, "_renameat2", fail_second)
+    with pytest.raises(ClaimPublicationError) as raised:
+        _rehydrate(fixture, receipt.receipt_path.parent)
+    assert calls == ([second.name] if first_exists else [first.name, second.name])
+    assert first.read_bytes() == f"{fixture.intent.task_id}\n".encode()
+    if first_exists:
+        assert _file_identity_snapshot((first,)) == before
+    if failure == "race":
+        assert second.read_bytes() == b"concurrent-owner\n"
+    else:
+        assert not second.exists()
+    detail = json.loads(raised.value.detail)
+    assert detail["written_paths"] == ([] if first_exists else [str(first)])
+    assert detail["failed_path"] == str(second)
+    assert (str(first) in detail["retained_effects"]) is not first_exists
+    scratches = tuple(fixture.cache.glob("*.transition-scratch"))
+    assert len(scratches) == 1
+    assert str(scratches[0]) in detail["retained_effects"]
+    assert detail["failure_reason"] == (
+        "transition_precondition_changed"
+        if failure == "race"
+        else "transition_atomic_cas_unavailable"
+    )
+    assert raised.value.reason_code == (
+        "claim_activation_cache_conflict"
+        if failure == "race"
+        else "transition_atomic_cas_unavailable"
+    )
+    assert raised.value.repair_action == (
+        "preserve the activation cache and retry after the named path stabilizes"
+        if failure == "race"
+        else "run lifecycle projection only on Linux with renameat2 support"
+    )
+
+
+@pytest.mark.parametrize(
+    ("error", "remedy"),
+    [
+        (errno.ENOSPC, "free space on the named filesystem, preserve retained effects, then retry"),
+        (
+            errno.EIO,
+            "repair the named filesystem's I/O failure, preserve retained effects, then retry",
+        ),
+        (errno.EACCES, "restore access to the named path, preserve retained effects, then retry"),
+        (
+            errno.EPERM,
+            "restore permission for the named operation, preserve retained effects, then retry",
+        ),
+        (
+            errno.ENOTDIR,
+            "restore real parent directories for the named path, preserve retained effects, then retry",
+        ),
+    ],
+    ids=["ENOSPC", "EIO", "EACCES", "EPERM", "ENOTDIR"],
+)
+@pytest.mark.parametrize(
+    "phase", ["scratch_open", "scratch_write", "scratch_fsync", "rename", "after_rename"]
+)
+def test_rehydrate_filesystem_failure_is_actionable_and_retains_effects(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, error: int, remedy: str, phase: str
+) -> None:
+    import shared.coord_projection as projection_layer
+
+    fixture, receipt = _activation_fixture(tmp_path)
+    first, second = (sdlc_claim._projections(fixture.intent)[index].path for index in (1, 4))
+    original_open = projection_layer.os.open
+    write = projection_layer.os.write
+    rename = projection_layer._renameat2
+    fsync = projection_layer.os.fsync
+    renamed = False
+    injected = False
+    scratch_fd = None
+
+    def fail_open(path, flags, *args, **kwargs):
+        nonlocal injected, scratch_fd
+        target = str(path).startswith(f".{second.name}.") and flags & os.O_CREAT
+        if phase == "scratch_open" and target:
+            injected = True
+            raise OSError(error, os.strerror(error), str(path))
+        fd = original_open(path, flags, *args, **kwargs)
+        if target:
+            scratch_fd = fd
+        return fd
+
+    def fail_write(fd, payload):
+        nonlocal injected
+        if phase == "scratch_write" and fd == scratch_fd:
+            injected = True
+            write(fd, payload[:3])
+            raise OSError(error, os.strerror(error), str(second))
+        return write(fd, payload)
+
+    def fail_rename(src_fd, src_name, dst_fd, dst_name, flags):
+        nonlocal renamed, injected
+        if dst_name == second.name and phase == "rename":
+            injected = True
+            raise OSError(error, os.strerror(error), dst_name)
+        result = rename(src_fd, src_name, dst_fd, dst_name, flags)
+        if dst_name == second.name:
+            renamed = True
+        return result
+
+    def fail_fsync(fd):
+        nonlocal injected
+        if not injected and (
+            (phase == "after_rename" and renamed) or (phase == "scratch_fsync" and fd == scratch_fd)
+        ):
+            injected = True
+            raise OSError(error, os.strerror(error), str(second))
+        return fsync(fd)
+
+    with monkeypatch.context() as patch:
+        patch.setattr(projection_layer.os, "open", fail_open)
+        patch.setattr(projection_layer.os, "write", fail_write)
+        patch.setattr(projection_layer, "_renameat2", fail_rename)
+        patch.setattr(projection_layer.os, "fsync", fail_fsync)
+        with pytest.raises(ClaimPublicationError) as raised:
+            _rehydrate(fixture, receipt.receipt_path.parent)
+    assert injected
+    assert raised.value.reason_code == f"claim_activation_cache_{errno.errorcode[error].lower()}"
+    assert raised.value.repair_action == remedy
+    detail = json.loads(raised.value.detail)
+    assert detail["written_paths"] == [str(first)]
+    assert detail["failed_path"] == str(second)
+    assert detail["failure_reason"] == errno.errorcode[error]
+    assert str(first) in detail["retained_effects"]
+    assert first.read_bytes() == f"{fixture.intent.task_id}\n".encode()
+    if phase == "after_rename":
+        assert second.read_bytes() == first.read_bytes()
+        assert str(second) in detail["retained_effects"]
+    else:
+        assert not second.exists()
+    scratches = tuple(fixture.cache.glob("*.transition-scratch"))
+    assert len(scratches) == (1 if phase in {"scratch_write", "scratch_fsync", "rename"} else 0)
+    for scratch in scratches:
+        assert str(scratch) in detail["retained_effects"]
+
+
+@pytest.mark.parametrize("operation", ["link", "unlink"])
+def test_rehydrate_creation_does_not_link_or_unlink(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, operation: str
+) -> None:
+    import shared.coord_projection as projection_layer
+
+    fixture, receipt = _activation_fixture(tmp_path)
+
+    def forbidden(*args, **kwargs):
+        raise OSError(errno.EIO, f"unexpected {operation} in activation creation")
+
+    with monkeypatch.context() as patch:
+        patch.setattr(projection_layer.os, operation, forbidden)
+        (result,) = _rehydrate(fixture, receipt.receipt_path.parent)
+    assert result.state == "rehydrated"
+    assert len(result.written_paths) == 2
+
+
+def test_rehydrate_applied_activation_preserves_evolved_note_and_survivors(tmp_path: Path) -> None:
+    fixture, receipt = _activation_fixture(tmp_path)
+    evolved = fixture.intent.note_path.read_bytes()
+    paths_before = tuple(sorted(path for path in tmp_path.rglob("*") if path.is_file()))
+    before = _file_identity_snapshot(paths_before)
+    with pytest.raises(ClaimPublicationError, match="claim_cache_missing"):
+        resolve_applied_claim_publication(
+            vault_root=fixture.vault,
+            cache_dir=fixture.cache,
+            role=fixture.intent.role,
+            session_id=fixture.intent.session_id,
+            task_id=fixture.intent.task_id,
+            transaction_root=fixture.transactions,
+            receipt_root=receipt.receipt_path.parent,
+            lock_root=fixture.locks,
+        )
+    recovered = recover_claim_publications(
+        cache_dir=fixture.cache,
+        transaction_root=fixture.transactions,
+        receipt_root=receipt.receipt_path.parent,
+        lock_root=fixture.locks,
+        task_id=fixture.intent.task_id,
+    )
+    assert [(item.state, item.reason_code) for item in recovered] == [
+        ("hold", "claim_publication_postimage_drift")
+    ]
+
+    results = _rehydrate(fixture, receipt.receipt_path.parent)
+
+    assert len(results) == 1
+    result = results[0]
+    expected = tuple(
+        fixture.cache / f"cc-active-task-{key}"
+        for key in (fixture.intent.role, f"{fixture.intent.role}-{fixture.intent.session_id}")
+    )
+    assert result.publication_id == receipt.publication_id
+    assert result.state == "rehydrated"
+    assert result.reason_code is None
+    assert result.written_paths == expected
+    assert result.observed_before == tuple((path, "absent") for path in expected)
+    for path in expected:
+        assert str(path) in result.detail
+        assert path.read_bytes() == f"{fixture.intent.task_id}\n".encode()
+        assert len(path.read_bytes()) == 55
+        assert stat.S_IMODE(path.stat().st_mode) == 0o644
+    assert fixture.intent.note_path.read_bytes() == evolved
+    assert _file_identity_snapshot(paths_before) == before
+    assert {path for path in tmp_path.rglob("*") if path.is_file()} == set(paths_before) | set(
+        expected
+    )
+    resolved = resolve_applied_claim_publication(
+        vault_root=fixture.vault,
+        cache_dir=fixture.cache,
+        role=fixture.intent.role,
+        session_id=fixture.intent.session_id,
+        task_id=fixture.intent.task_id,
+        transaction_root=fixture.transactions,
+        receipt_root=receipt.receipt_path.parent,
+        lock_root=fixture.locks,
+    )
+    assert resolved.receipt.publication_id == receipt.publication_id
+    assert resolved.current_task.content == evolved
+
+
+def _assert_rehydration_refused(fixture: ClaimFixture, receipt_root: Path, reason: str) -> None:
+    root = fixture.cache.parent
+    tree = _tree_snapshot(root)
+    files = tuple(
+        sorted(path for path in root.rglob("*") if path.is_file() and not path.is_symlink())
+    )
+    before = _file_identity_snapshot(files)
+    with pytest.raises(ClaimPublicationError) as raised:
+        _rehydrate(fixture, receipt_root)
+    assert raised.value.reason_code == reason
+    assert raised.value.repair_action
+    assert _tree_snapshot(root) == tree
+    assert _file_identity_snapshot(files) == before
+
+
+def test_rehydrate_idempotence_is_no_write(tmp_path: Path) -> None:
+    fixture, receipt = _activation_fixture(tmp_path)
+    _rehydrate(fixture, receipt.receipt_path.parent)
+    paths = tuple(sorted(path for path in tmp_path.rglob("*") if path.is_file()))
+    before = _file_identity_snapshot(paths)
+    tree = _tree_snapshot(tmp_path)
+
+    (result,) = _rehydrate(fixture, receipt.receipt_path.parent)
+
+    assert result.state == "noop"
+    assert result.written_paths == ()
+    assert result.observed_before == ()
+    assert result.reason_code is None
+    assert _file_identity_snapshot(paths) == before
+    assert _tree_snapshot(tmp_path) == tree
+
+
+@pytest.mark.parametrize("index", [1, 4], ids=["role", "session"])
+def test_rehydrate_only_missing_activation(tmp_path: Path, index: int) -> None:
+    fixture, receipt = _activation_fixture(tmp_path)
+    projection = sdlc_claim._projections(fixture.intent)[index]
+    projection.path.write_bytes(projection.after)
+    projection.path.chmod(projection.after_mode)
+    before = _file_identity_snapshot((projection.path,))
+
+    (result,) = _rehydrate(fixture, receipt.receipt_path.parent)
+
+    assert result.state == "rehydrated"
+    assert len(result.written_paths) == 1
+    assert projection.path not in result.written_paths
+    assert _file_identity_snapshot((projection.path,)) == before
+
+
+@pytest.mark.parametrize("change", ["owner", "authority_case", "mode", "path"])
+def test_rehydrate_refuses_current_identity_change(tmp_path: Path, change: str) -> None:
+    fixture, receipt = _activation_fixture(tmp_path)
+    note = fixture.intent.note_path
+    if change == "owner":
+        note.write_bytes(note.read_bytes().replace(b"assigned_to: cx-red", b"assigned_to: cx-blue"))
+    elif change == "authority_case":
+        note.write_bytes(note.read_bytes().replace(b"CASE-CLAIM-001", b"CASE-CLAIM-002"))
+    elif change == "mode":
+        note.chmod(0o600)
+    else:
+        note.rename(note.with_name(f"{fixture.intent.task_id}-renamed.md"))
+
+    _assert_rehydration_refused(
+        fixture, receipt.receipt_path.parent, "claim_publication_current_identity_mismatch"
+    )
+
+
+@pytest.mark.parametrize("index", [1, 4], ids=["role", "session"])
+@pytest.mark.parametrize("change", ["bytes", "mode"])
+def test_rehydrate_refuses_existing_activation_conflict(
+    tmp_path: Path, index: int, change: str
+) -> None:
+    fixture, receipt = _activation_fixture(tmp_path)
+    projection = sdlc_claim._projections(fixture.intent)[index]
+    projection.path.write_bytes(b"another-task\n" if change == "bytes" else projection.after)
+    projection.path.chmod(0o600 if change == "mode" else projection.after_mode)
+
+    _assert_rehydration_refused(
+        fixture, receipt.receipt_path.parent, "claim_activation_cache_conflict"
+    )
+
+
+@pytest.mark.parametrize(
+    "sidecar",
+    ["role_epoch", "role_dispatch", "session_epoch", "session_dispatch", "receipt", "manifest"],
+)
+@pytest.mark.parametrize("change", ["bytes", "mode", "missing"])
+def test_rehydrate_refuses_surviving_postimage_drift(
+    tmp_path: Path, sidecar: str, change: str
+) -> None:
+    fixture, receipt = _activation_fixture(tmp_path)
+    projections = sdlc_claim._projections(fixture.intent)
+    path = {
+        "role_epoch": projections[2].path,
+        "role_dispatch": projections[3].path,
+        "session_epoch": projections[5].path,
+        "session_dispatch": projections[6].path,
+        "receipt": receipt.receipt_path,
+        "manifest": receipt.manifest_path,
+    }[sidecar]
+    reason = "claim_publication_postimage_drift"
+    if change == "bytes":
+        # Semantically identical, byte-different: identity parsing alone is insufficient.
+        path.write_bytes(path.read_bytes() + b"\n")
+        if sidecar == "manifest":
+            reason = "claim_publication_journal_noncanonical"
+    elif change == "mode":
+        path.chmod(0o640)
+        if sidecar == "manifest":
+            reason = "fs_snapshot_file_unsafe"
+    else:
+        path.unlink()
+        if sidecar == "manifest":
+            reason = "claim_publication_manifest_unreadable"
+
+    _assert_rehydration_refused(fixture, receipt.receipt_path.parent, reason)
+
+
+@pytest.mark.parametrize(
+    "index",
+    range(7),
+    ids=[
+        "note",
+        "role_claim",
+        "role_epoch",
+        "role_dispatch",
+        "session_claim",
+        "session_epoch",
+        "session_dispatch",
+    ],
+)
+def test_rehydrate_refuses_projection_symlink(tmp_path: Path, index: int) -> None:
+    fixture, receipt = _activation_fixture(tmp_path)
+    projection = sdlc_claim._projections(fixture.intent)[index]
+    target = tmp_path / "symlink-target"
+    target.write_bytes(projection.after)
+    target.chmod(projection.after_mode)
+    projection.path.unlink(missing_ok=True)
+    projection.path.symlink_to(target)
+
+    _assert_rehydration_refused(fixture, receipt.receipt_path.parent, "fs_snapshot_file_unsafe")
+
+
+@pytest.mark.parametrize("artifact", ["receipt", "manifest", "blob", "proof"])
+def test_rehydrate_refuses_evidence_symlink(tmp_path: Path, artifact: str) -> None:
+    fixture, receipt = _activation_fixture(tmp_path)
+    if artifact == "receipt":
+        path = receipt.receipt_path
+    elif artifact == "manifest":
+        path = receipt.manifest_path
+    elif artifact == "blob":
+        path = receipt.manifest_path.parent / "0000.after"
+    else:
+        _, projections, _, _, _ = sdlc_claim._load_any_manifest(receipt.manifest_path)
+        path = projections[7].path
+    target = tmp_path / "symlink-target"
+    target.write_bytes(path.read_bytes())
+    target.chmod(stat.S_IMODE(path.stat().st_mode))
+    path.unlink()
+    path.symlink_to(target)
+
+    _assert_rehydration_refused(fixture, receipt.receipt_path.parent, "fs_snapshot_file_unsafe")
+
+
+@pytest.mark.parametrize(
+    "state", ["created", "projecting", "postimage_complete", "recovery_required", "aborted"]
+)
+def test_rehydrate_refuses_non_applied_journal(tmp_path: Path, state: str) -> None:
+    fixture, receipt = _activation_fixture(tmp_path)
+    record = json.loads(receipt.manifest_path.read_bytes())
+    record["state"] = state
+    receipt.manifest_path.write_bytes(_canonical(record) + b"\n")
+
+    _assert_rehydration_refused(
+        fixture, receipt.receipt_path.parent, "claim_publication_not_applied"
+    )
+
+
+@pytest.mark.parametrize("historical", [False, True], ids=["legacy", "historical"])
+def test_rehydrate_refuses_non_current_consumption(tmp_path: Path, historical: bool) -> None:
+    fixture = _fixture(tmp_path)
+    if historical:
+        active = _active_admission_fixture(tmp_path, fixture)
+        _materialize_admitted_history(fixture, _historical_consumption(fixture, active))
+        reason = "historical_claim_publication_recovery_forbidden"
+    else:
+        _materialize_v1_history(fixture)
+        reason = "legacy_claim_publication_recovery_forbidden"
+    with sdlc_claim._claim_publication_lock(fixture.intent, lock_root=fixture.locks):
+        pass
+    for path in fixture.cache.glob("cc-active-task-*"):
+        path.unlink()
+    receipt_root = claim_publication_receipt_path(fixture.cache, fixture.intent.binding).parent
+
+    _assert_rehydration_refused(fixture, receipt_root, reason)
+
+
+def test_rehydrate_refuses_unknown_task_without_writes(tmp_path: Path) -> None:
+    fixture = _fixture(tmp_path)
+    _assert_rehydration_refused(fixture, tmp_path / "receipts", "claim_publication_not_found")
+
+
+@pytest.mark.parametrize(
+    "field", ["task_id", "lane", "session_id", "claim_epoch", "authority_case"]
+)
+@pytest.mark.parametrize("both", [False, True], ids=["one_binding", "both_bindings"])
+def test_rehydrate_refuses_changed_binding_vector(tmp_path: Path, field: str, both: bool) -> None:
+    fixture, receipt = _activation_fixture(tmp_path)
+    binding = fixture.intent.binding
+    value = binding.claim_epoch + 1 if field == "claim_epoch" else "different-identity"
+    changed = replace(binding, **{field: value})
+    for index in (3, 6) if both else (6,):
+        sdlc_claim._projections(fixture.intent)[index].path.write_bytes(
+            _canonical(changed.to_record()) + b"\n"
+        )
+    if field == "claim_epoch" and both:
+        for index in (2, 5):
+            sdlc_claim._projections(fixture.intent)[index].path.write_bytes(
+                f"{value} {fixture.intent.task_id}\n".encode()
+            )
+
+    _assert_rehydration_refused(
+        fixture, receipt.receipt_path.parent, "claim_publication_postimage_drift"
+    )
+
+
+@pytest.mark.parametrize("artifact", ["receipt", "manifest", "proof"])
+def test_rehydrate_refuses_changed_evidence(tmp_path: Path, artifact: str) -> None:
+    fixture, receipt = _activation_fixture(tmp_path)
+    if artifact == "proof":
+        _, projections, _, _, _ = sdlc_claim._load_any_manifest(receipt.manifest_path)
+        projections[7].path.write_bytes(b"changed-proof\n")
+    else:
+        path = receipt.receipt_path if artifact == "receipt" else receipt.manifest_path
+        record = json.loads(path.read_bytes())
+        if artifact == "receipt":
+            record["publication_id"] = "claim-pub-" + "0" * 64
+            body = {key: value for key, value in record.items() if key != "receipt_hash"}
+            record["receipt_hash"] = hashlib.sha256(_canonical(body)).hexdigest()
+        else:
+            record["reason_code"] = "unexpected-reason"
+        path.write_bytes(_canonical(record) + b"\n")
+
+    _assert_rehydration_refused(
+        fixture, receipt.receipt_path.parent, "claim_publication_postimage_drift"
+    )
+
+
+def test_rehydrate_allows_retired_proof_sources(tmp_path: Path) -> None:
+    fixture, receipt = _activation_fixture(tmp_path)
+    _, projections, _, _, _ = sdlc_claim._load_any_manifest(receipt.manifest_path)
+    for projection in projections[7:]:
+        projection.path.unlink()
+
+    (result,) = _rehydrate(fixture, receipt.receipt_path.parent)
+
+    assert result.state == "rehydrated"
+    assert all(not projection.path.exists() for projection in projections[7:])
+
+
+def test_rehydrate_uses_publication_lock_and_cas(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from contextlib import contextmanager
+
+    fixture, receipt = _activation_fixture(tmp_path)
+    original_lock = sdlc_claim._claim_publication_lock
+    original_apply = sdlc_claim._apply_projections
+    locked = False
+    called = False
+
+    @contextmanager
+    def checked_lock(intent, *, lock_root):
+        nonlocal locked
+        assert intent == fixture.intent
+        assert lock_root == fixture.locks
+        with original_lock(intent, lock_root=lock_root):
+            locked = True
+            yield
+            locked = False
+
+    def racing_apply(projections, scratches, failure_hook):
+        nonlocal called
+        assert locked
+        called = True
+        projections[0].path.write_bytes(b"concurrent-owner\n")
+        projections[0].path.chmod(0o644)
+        original_apply(projections, scratches, failure_hook)
+
+    monkeypatch.setattr(sdlc_claim, "_claim_publication_lock", checked_lock)
+    monkeypatch.setattr(sdlc_claim, "_apply_projections", racing_apply)
+
+    with pytest.raises(ClaimPublicationError, match="claim_activation_cache_conflict"):
+        _rehydrate(fixture, receipt.receipt_path.parent)
+
+    assert called
+    assert (
+        fixture.cache / f"cc-active-task-{fixture.intent.role}"
+    ).read_bytes() == b"concurrent-owner\n"
+    assert not (
+        fixture.cache / f"cc-active-task-{fixture.intent.role}-{fixture.intent.session_id}"
+    ).exists()
 
 
 def _outcome_committer(
