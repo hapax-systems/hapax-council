@@ -5141,3 +5141,12 @@ from agents.deliberative_council.models import (
 
 _PhaseOneResult._populate_dossier_sections
 _CouncilVerdict._populate_dossier_sections
+
+# 2026-09-05: the Stage-1 registration identity binding is called from the extension-less
+# executable scripts/hapax-estate-store-registry (bind_host_identity at its lines 196 and 440,
+# observed_host_identity at 359), which vulture's *.py walk cannot see.
+from shared.estate_registration import bind_host_identity as _bind_host_identity
+from shared.estate_registration import observed_host_identity as _observed_host_identity
+
+_bind_host_identity
+_observed_host_identity
