@@ -20,6 +20,11 @@ Removed committed paths:
 
 The timer's preset enablement and the omg.lol landing page's vault route were
 also removed. The public-surface registry retains the withdrawn entry as history.
+The source pin (`tests/test_obsidian_publish_is_excised.py`) scans exactly the
+runtime and current surfaces `scripts/`, `systemd/`, `config/`, `agents/`, `hooks/`
+and `docs/runbooks/` for the site address and the wrapper name; historical
+documents elsewhere in the repository are retained and are not scanned, and no
+vault content is scanned or purged.
 Vault originals and private Sync/backups are preserved. The Publish site itself
 no longer exists: root deleted it at the provider on 2026-09-05 and witnessed the
 withdrawal independently of this source change (authenticated owned-site
@@ -72,6 +77,8 @@ systemctl --user show hapax-obsidian-publish-sync.service \
 readlink -f ~/.local/bin/hapax-obsidian-publish-sync
 test -e "$(readlink -f ~/.local/bin/hapax-obsidian-publish-sync)" \
   && echo target-exists || echo target-absent
+# Publish configuration in the vault (read-only, no credentials) — expect None None
+python3 -c 'import json, os; d = json.load(open(os.path.expanduser("~/Documents/Personal/.obsidian/publish.json"))); print(d.get("siteId"), d.get("host"))'
 # source absence only — proves nothing about installed copies or the provider
 uv run pytest -q tests/test_obsidian_publish_is_excised.py
 ```

@@ -1,11 +1,22 @@
-"""Prevent the withdrawn Publish exposure from returning to current source."""
+"""Prevent the withdrawn Publish exposure from returning to current source.
+
+The scan covers the enumerated runtime/current surfaces (``scripts``, ``systemd``,
+``config``, ``agents``, ``hooks`` and ``docs/runbooks``); historical documents elsewhere
+are retained and not scanned.
+"""
 
 import re
 from pathlib import Path
 
+import pytest
 import yaml
 
+# The heading parser is the locked markdown-it-py (uv.lock, via rich/textual); a missing
+# parser fails this module loudly at import, it is never skipped around.
+from markdown_it import MarkdownIt
+
 REPO_ROOT = Path(__file__).resolve().parents[1]
+SCANNED_DIRECTORIES = ("scripts", "systemd", "config", "agents", "hooks", "docs/runbooks")
 WITHDRAWAL_RUNBOOK = Path("docs/runbooks/obsidian-publish-sync.md")
 PUBLISH_TOKENS = (b"publish.obsidian.md", b"hapax-obsidian-publish-sync")
 WITHDRAWN_SECTION_START = b"## Withdrawn 2026-09-05\n"
@@ -18,8 +29,10 @@ def current_text_outside_withdrawn_section(content: bytes) -> bytes:
     The exemption is bounded on both sides: it starts at the dated ``##`` heading and
     ends at the explicit end marker. Both must occur exactly once, in that order, and no
     heading of rank one or two may sit inside the bounded section (the historical
-    procedure is nested as ``###`` and deeper); fenced code blocks are not headings.
-    Anything outside the bounds is current text and is checked like every other file.
+    procedure is nested as ``###`` and deeper). Headings are what the locked CommonMark
+    parser says they are (ATX at any permitted indentation, Setext underlines); code,
+    fenced or indented, is not a heading. Anything outside the bounds is current text
+    and is checked like every other file.
     """
     assert content.count(WITHDRAWN_SECTION_START) == 1, "one dated withdrawn heading"
     assert content.count(WITHDRAWN_SECTION_END) == 1, "one withdrawn end marker"
@@ -29,13 +42,15 @@ def current_text_outside_withdrawn_section(content: bytes) -> bytes:
     inside = content[start + len(WITHDRAWN_SECTION_START) : end]
     # A heading at the withdrawn section's rank or higher (rank one or two) would start
     # current text inside the bounds and hide it from the scan; both ranks are refused.
-    # Fenced code blocks are not headings (the recheck commands carry shell comments), so
-    # they are removed before the check; nothing else about Markdown is interpreted.
-    prose = re.sub(rb"(?ms)^```.*?^```[ \t]*$", b"", inside)
-    assert not re.search(rb"(?m)^#{1,2}[ \t]", prose), (
-        "no heading of rank one or two inside the bounds"
-    )
+    ranks = heading_ranks(inside)
+    assert not any(rank <= 2 for rank in ranks), "no heading of rank one or two inside the bounds"
     return content[:start] + content[end + len(WITHDRAWN_SECTION_END) :]
+
+
+def heading_ranks(markdown: bytes) -> list[int]:
+    """Heading ranks in document order, from the locked CommonMark parser's tokens."""
+    tokens = MarkdownIt("commonmark").parse(markdown.decode("utf-8", errors="replace"))
+    return [int(token.tag[1]) for token in tokens if token.type == "heading_open"]
 
 
 def active_obsidian_publish_surfaces(registry: dict) -> list[str]:
@@ -55,7 +70,7 @@ def active_obsidian_publish_surfaces(registry: dict) -> list[str]:
 
 def test_current_sources_have_no_publish_references() -> None:
     violations = []
-    for directory in ("scripts", "systemd", "config", "agents", "hooks", "docs/runbooks"):
+    for directory in SCANNED_DIRECTORIES:
         for path in sorted((REPO_ROOT / directory).rglob("*")):
             if path.is_symlink() or not path.is_file():
                 continue
@@ -192,3 +207,49 @@ def test_registry_retains_only_a_withdrawn_obsidian_surface() -> None:
     )
     assert surface.get("withdrawal_record") == WITHDRAWAL_RUNBOOK.as_posix()
     assert surface.get("path_globs") == [WITHDRAWAL_RUNBOOK.as_posix()]
+
+
+@pytest.mark.parametrize(
+    "hidden_heading",
+    [
+        pytest.param(b" ## Current\n", id="indented-atx-h2"),
+        pytest.param(b"   # Current\n", id="indented-atx-h1"),
+        pytest.param(b"Current\n-------\n", id="setext-h2"),
+        pytest.param(b"Current\n=======\n", id="setext-h1"),
+    ],
+)
+def test_headings_the_parser_recognizes_are_refused_inside_the_bounds(
+    hidden_heading: bytes,
+) -> None:
+    """Root's reproduction: indented ATX and Setext headings parse as h1/h2 and must not hide text."""
+    bounded = (
+        WITHDRAWN_SECTION_START
+        + b"history\n"
+        + hidden_heading
+        + b"https://publish.obsidian.md/current\n"
+        + WITHDRAWN_SECTION_END
+    )
+    assert [rank for rank in heading_ranks(bounded[len(WITHDRAWN_SECTION_START) :]) if rank <= 2]
+    try:
+        current_text_outside_withdrawn_section(bounded)
+    except AssertionError as refused:
+        assert "rank one or two" in str(refused)
+    else:
+        raise AssertionError(f"{hidden_heading!r} inside the bounds must be refused")
+
+
+@pytest.mark.parametrize(
+    "not_a_heading",
+    [
+        pytest.param(b"```bash\n# expect 404\n```\n", id="fenced-shell-comment"),
+        pytest.param(b"    # indented code, not a heading\n", id="indented-code"),
+        pytest.param(b"### Historical procedure\n", id="rank-three"),
+        pytest.param(b"#hashtag without a space is text\n", id="no-space-after-hash"),
+    ],
+)
+def test_code_and_deeper_headings_stay_exempt_inside_the_bounds(not_a_heading: bytes) -> None:
+    bounded = WITHDRAWN_SECTION_START + b"history\n" + not_a_heading + WITHDRAWN_SECTION_END
+    assert not [
+        rank for rank in heading_ranks(bounded[len(WITHDRAWN_SECTION_START) :]) if rank <= 2
+    ]
+    assert current_text_outside_withdrawn_section(bounded) == b""
