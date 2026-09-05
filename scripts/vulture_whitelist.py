@@ -5127,3 +5127,17 @@ _ = (
     sweep,
     enumerate_stores,
 )
+
+# Claim Verification Council dossier split (2026-09-02, row
+# cvc-dossier-evidence-not-process-trace-20260902): Pydantic invokes these `model_validator`s
+# dynamically to populate `evidentiary_rationale` / `process_trace` / `execution_receipt` from the
+# legacy field names and back. DETECTOR BLIND SPOT, not dead code.
+from agents.deliberative_council.models import (  # noqa: E402
+    CouncilVerdict as _CouncilVerdict,
+)
+from agents.deliberative_council.models import (
+    PhaseOneResult as _PhaseOneResult,
+)
+
+_PhaseOneResult._populate_dossier_sections
+_CouncilVerdict._populate_dossier_sections
