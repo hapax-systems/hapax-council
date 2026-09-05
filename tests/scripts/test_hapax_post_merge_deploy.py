@@ -3557,6 +3557,54 @@ def test_coord_service_auto_enable_refuses_when_activation_deploy_missing(
     assert "--user enable --now hapax-coord.service" not in calls
 
 
+@pytest.mark.parametrize("interim", ["file", "dangling-symlink", "absent"])
+def test_review_dispatch_deploy_removes_only_interim_glm_refresh_dropin(
+    tmp_path: Path, interim: str
+) -> None:
+    unit = "hapax-pr-review-dispatch.service"
+    unit_path = f"systemd/units/{unit}"
+    content = (REPO_ROOT / unit_path).read_text()
+    repo, sha = _repo_with_linear_commit(tmp_path, {unit_path: content})
+    home = tmp_path / "home"
+    dropins = home / ".config/systemd/user" / f"{unit}.d"
+    dropins.mkdir(parents=True)
+    probe = dropins / "20-glm-seat-refresh.conf"
+    if interim == "file":
+        probe.write_text("[Service]\nExecStartPre=-/usr/bin/bash /tmp/glm_seat_refresh.sh\n")
+    elif interim == "dangling-symlink":
+        probe.symlink_to(tmp_path / "absent-interim.conf")
+    siblings = {
+        "operator.conf": "[Service]\nNice=5\n",
+        "21-glm-seat-refresh.conf": "[Service]\nNice=6\n",
+    }
+    for name, body in siblings.items():
+        (dropins / name).write_text(body)
+    other_unit = home / ".config/systemd/user/other.service.d"
+    other_unit.mkdir()
+    other_probe = other_unit / probe.name
+    other_probe.write_text("[Service]\nNice=7\n")
+    bin_dir, calls_path = _fake_systemctl(tmp_path)
+    env = {
+        **os.environ,
+        "HOME": str(home),
+        "PATH": f"{bin_dir}:{os.environ['PATH']}",
+        "REPO": str(repo),
+        "HAPAX_SYSTEMCTL_CALLS": str(calls_path),
+        "HAPAX_POST_MERGE_TRACE_PATH": str(tmp_path / "trace.jsonl"),
+    }
+    result = subprocess.run([str(SCRIPT), sha], env=env, capture_output=True, text=True)
+    assert result.returncode == 0, result.stdout + result.stderr
+    assert not probe.exists() and not probe.is_symlink()
+    assert sorted(path.name for path in dropins.iterdir()) == sorted(siblings)
+    for name, body in siblings.items():
+        assert (dropins / name).read_text() == body
+    assert other_probe.read_text() == "[Service]\nNice=7\n"
+    assert (home / ".config/systemd/user" / unit).read_text() == content
+    if interim != "absent":
+        assert "20-glm-seat-refresh.conf" in result.stdout
+        assert "merged review-dispatch unit runs the committed GLM seat refresh" in result.stdout
+
+
 @pytest.mark.parametrize("probe_present", [True, False])
 @pytest.mark.parametrize("effective", ["10min", "15min", "", "query-failed"])
 def test_glm_seat_deploy_removes_only_probe_and_verifies_loaded_deadline(

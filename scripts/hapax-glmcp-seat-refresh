@@ -45,8 +45,8 @@ export HAPAX_GLMCP_REVIEW_MODEL="$model"
 #    The receipt is read through the dispatcher's own loader (`--show`: schema, platform, skew,
 #    duration syntax and freshness are validated there), never by picking fields out of the JSON —
 #    a document the dispatcher rejects must not make this guard skip (review finding on #4624,
-#    round 8). `seat_remaining_seconds` prints the seconds left on the accepted receipt's quota
-#    surface, or nothing when the dispatcher would not accept it.
+#    round 8). `seat_remaining_seconds` prints the seconds left until the EARLIER of the accepted
+#    receipt and quota expiries, or nothing when the dispatcher would not accept it.
 seat_remaining_seconds() {
   local shown q_status q_observed q_stale stale_s show_err observed_s timestamp_shape
   # The loader's own refusal is the diagnosis when the seat is not visible; one sanitised line of
@@ -78,7 +78,7 @@ seat_remaining_seconds() {
   # --show exposes schema acceptance, not route admission. Reuse the registry's production
   # quota predicate on the loader-selected receipt, inside the existing bounded parse allowance.
   if ! parsed="$(printf '%s' "$parsed" | print_filtered_output seat 1 "" /dev/null)"; then
-    echo "  --show parse: route quota check failed; refreshing because dispatcher quota evidence could not be confirmed" >&2
+    echo "  --show parse: route quota check failed; refreshing because dispatcher quota evidence could not be confirmed. Next: run hapax-platform-capability-receipts --show --platform glmcp --json; re-run hapax-platform-capability-receipts --platform glmcp and check hapax-glmcp-seat-refresh.service." >&2
     return 1
   fi
   read -r q_status q_observed q_stale <<<"$parsed"
@@ -186,11 +186,15 @@ import sys
 from pathlib import Path
 
 mode, count, prefix, file, root = sys.argv[1:]
+seat_next = (
+    "Next: run hapax-platform-capability-receipts --show --platform glmcp --json; "
+    "re-run hapax-platform-capability-receipts --platform glmcp and check hapax-glmcp-seat-refresh.service."
+)
 
 if mode == "seat":
     try:
         sys.path.insert(0, root)
-        from shared.platform_capability_receipts import ensure_utc, load_platform_capability_receipts
+        from shared.platform_capability_receipts import ensure_utc, load_platform_capability_receipts, parse_duration_spec
         from shared.platform_capability_registry import _receipt_quota_names_route
 
         row = json.load(sys.stdin)
@@ -206,17 +210,20 @@ if mode == "seat":
             reason = "route_observation_absent"
         else:
             # _apply_receipt_to_route_payload anchors quota_checked_at at receipt.observed_at.
-            print("observed", ensure_utc(receipt.observed_at).isoformat(), receipt.quota.stale_after)
+            # The plural loader also drops the whole receipt at its own expiry. Both visibility
+            # checks must reserve the next renewal against whichever lifetime runs out first.
+            lifetime = min(parse_duration_spec(receipt.stale_after), parse_duration_spec(receipt.quota.stale_after))
+            print("observed", ensure_utc(receipt.observed_at).isoformat(), str(int(lifetime.total_seconds())) + "s")
             sys.exit(0)
         print(
             "  --show WARNING: account_live_quota_receipt_absent: " + reason + " for " + route_id
-            + "; refreshing because route-specific quota evidence is absent", file=sys.stderr,
+            + "; refreshing because route-specific quota evidence is absent. " + seat_next, file=sys.stderr,
         )
     except Exception as exc:
         # Exception messages can contain receipt data; only their type belongs in the journal.
         print(
             "  --show parse: dispatcher quota predicate failed (" + type(exc).__name__
-            + "); refreshing because the receipt could not be read", file=sys.stderr,
+            + "); refreshing because the receipt could not be read. " + seat_next, file=sys.stderr,
         )
     sys.exit(1)
 
@@ -242,7 +249,7 @@ if mode == "rejection":
                 break
     except (ValueError, AttributeError, TypeError):
         pass
-    print("  --show WARNING: " + " ".join(sanitise(reason).split())[:200])
+    print("  --show WARNING: " + " ".join(sanitise(reason).split())[:200] + ". " + seat_next)
     print("  Next: run hapax-platform-capability-receipts --platform glmcp to rebuild the receipt; if it still fails, inspect --show --platform glmcp and repair the receipt directory/schema before retrying.")
 
 # Redact before line selection/truncation so a quoted multiline value cannot leak a suffix.
@@ -253,7 +260,7 @@ except OSError:
 lines = [line for line in sanitise(text).splitlines() if line.strip()]
 selected = lines[:int(count)] if mode == "head" else lines[-int(count):]
 for line in selected:
-    print(prefix + line[:200])
+    print(prefix + line[:200] + (". " + seat_next if prefix.startswith("  --show") else ""))
   ' "$mode" "$lines" "$prefix" "$file" "$H"
 }
 

@@ -256,6 +256,7 @@ def _run(
     allow_root: bool = True,
     receipts_rc: int = 0,
     path: str | None = None,
+    script_text: str | None = None,
 ) -> subprocess.CompletedProcess[str]:
     env = {
         "HOME": str(home),
@@ -275,7 +276,12 @@ def _run(
     if allow_root:
         env["HAPAX_GLMCP_SEAT_ROOT_OVERRIDE"] = "1"
     return subprocess.run(
-        ["bash", str(SCRIPT)], env=env, capture_output=True, text=True, timeout=120
+        ["bash", "-s"] if script_text is not None else ["bash", str(SCRIPT)],
+        input=script_text,
+        env=env,
+        capture_output=True,
+        text=True,
+        timeout=120,
     )
 
 
@@ -294,6 +300,85 @@ def _dispatch_quota(home: Path, now: datetime):
     )
     route = next(route for route in registry.routes if route.route_id == "glmcp.review.direct")
     return route.freshness
+
+
+def _fixed_date_path(tmp_path: Path, now: datetime) -> str:
+    bin_dir = tmp_path / "bin"
+    bin_dir.mkdir()
+    date = shutil.which("date")
+    assert date is not None
+    _stub(
+        bin_dir / "date",
+        f'if [ "$*" = "-u +%s" ]; then echo {int(now.timestamp())}; else exec "{date}" "$@"; fi\n',
+    )
+    return f"{bin_dir}:{os.environ['PATH']}"
+
+
+@pytest.mark.parametrize("state", ["fresh", "stale", "uncovered"])
+def test_guard_parses_dispatcher_receipt_and_names_refresh_cause(
+    tmp_path: Path, state: str
+) -> None:
+    from shared.platform_capability_receipts import load_platform_capability_receipts
+
+    now = datetime.now(UTC).replace(microsecond=0)
+    home, council = _harness(
+        tmp_path,
+        receipt_status="observed",
+        receipt_remaining=900,
+        now=now,
+        receipt_stale=state == "stale",
+    )
+    receipt_dir = home / ".cache/hapax/platform-capability-receipts"
+    if state == "uncovered":
+        path = receipt_dir / "glmcp.json"
+        receipt = json.loads(path.read_text())
+        receipt["routes"] = ["glmcp.sibling.direct"]
+        path.write_text(json.dumps(receipt))
+    assert ("glmcp" in load_platform_capability_receipts(receipt_dir, now=now)) == (
+        state != "stale"
+    )
+    quota = _dispatch_quota(home, now).evidence.quota
+    assert bool(quota.blocked_reasons) == (state != "fresh")
+    result = _run(home, council, path=_fixed_date_path(tmp_path, now))
+    assert result.returncode == 0, result.stderr
+    if state == "fresh":
+        assert "(900s remain); no round-trip" in result.stdout
+        assert not (home / "admission-calls").exists()
+        assert _witnesses(home) == []
+    else:
+        assert "no round-trip" not in result.stdout
+        assert "roundtrip attempt 1: exit=0" in result.stdout
+        assert (home / "admission-calls").exists()
+        cause = "receipt_stale_or_superseded" if state == "stale" else "route_not_covered"
+        assert cause in result.stderr
+
+
+@pytest.mark.parametrize("publication", ["guard", "final"])
+def test_receipt_expiry_bounds_both_freshness_checks(tmp_path: Path, publication: str) -> None:
+    from shared.platform_capability_receipts import load_platform_capability_receipts
+
+    now = datetime.now(UTC).replace(microsecond=0)
+    home, council = _harness(tmp_path, receipt_status="observed", receipt_remaining=900, now=now)
+    receipt_dir = home / ".cache/hapax/platform-capability-receipts"
+    receipt_path = receipt_dir / "glmcp.json"
+    receipt = json.loads(receipt_path.read_text())
+    receipt["stale_after"] = "10s"
+    receipt_path.write_text(json.dumps(receipt))
+    assert "glmcp" in load_platform_capability_receipts(receipt_dir, now=now)
+    assert not _dispatch_quota(home, now).evidence.quota.blocked_reasons
+    later = now + timedelta(seconds=11)
+    assert "glmcp" not in load_platform_capability_receipts(receipt_dir, now=later)
+    assert "quota_telemetry_unknown" in _dispatch_quota(home, later).evidence.quota.blocked_reasons
+    if publication == "final":
+        (home / "refreshed-receipt.json").write_text(receipt_path.read_text())
+        receipt_path.unlink()
+    result = _run(home, council, path=_fixed_date_path(tmp_path, now))
+    assert "no round-trip" not in result.stdout
+    assert (home / "admission-calls").exists()
+    assert result.returncode == (6 if publication == "final" else 0), result.stderr
+    if publication == "final":
+        assert "(10) after the admission was minted" in result.stderr
+        assert "glm seat visible to the dispatcher" not in result.stdout
 
 
 @pytest.mark.parametrize("publication", ["guard", "final"])
@@ -642,6 +727,66 @@ def test_show_rejection_warns_with_reason_remedy_and_sanitized_stderr(
     assert ("stderr detail" in result.stderr) == stderr_present
     assert "DUMMY_" not in result.stdout + result.stderr
     assert "roundtrip attempt 3:" in result.stdout
+
+
+@pytest.mark.parametrize("failure", ["rejection", "jq", "route", "coverage", "predicate"])
+def test_each_show_diagnostic_names_inspection_retry_and_unit(tmp_path: Path, failure: str) -> None:
+    home, council = _harness(
+        tmp_path,
+        receipt_status="observed",
+        receipt_remaining=900,
+        reviewer=REVIEWER_ALWAYS_FAILS_SILENTLY,
+    )
+    bin_dir = tmp_path / "bin"
+    bin_dir.mkdir()
+    if failure == "rejection":
+        _stub(
+            council / "scripts/hapax-platform-capability-receipts",
+            'echo \'{"receipts":[{"platform":"glmcp","accepted":false,"reason":"receipt_absent"}]}\'\n'
+            "echo 'synthetic show failure' >&2\nexit 1\n",
+        )
+    elif failure == "jq":
+        _stub(bin_dir / "jq", "echo 'synthetic jq failure' >&2\nexit 5\n")
+    elif failure == "route":
+        python = shutil.which("python3")
+        assert python is not None
+        _stub(
+            bin_dir / "python3",
+            f'for arg in "$@"; do [ "$arg" != seat ] || exit 9; done\nexec "{python}" "$@"\n',
+        )
+    elif failure == "coverage":
+        path = home / ".cache/hapax/platform-capability-receipts/glmcp.json"
+        receipt = json.loads(path.read_text())
+        receipt["routes"] = ["glmcp.sibling.direct"]
+        path.write_text(json.dumps(receipt))
+    else:
+        # Valid JSON from --show, but no loader-selected receipt: exercise the exception path.
+        _stub(
+            council / "scripts/hapax-platform-capability-receipts",
+            'echo \'{"receipts":[{"platform":"glmcp","accepted":true}]}\'\n',
+        )
+    result = _run(home, council, path=f"{bin_dir}:{os.environ['PATH']}")
+    assert result.returncode == 2
+    diagnostics = [line for line in result.stderr.splitlines() if line.startswith("  --show")]
+    expected = {
+        "rejection": ["WARNING: receipt_absent", "stderr: synthetic show failure"],
+        "jq": ["parse: synthetic jq failure"],
+        "route": ["parse: route quota check failed"],
+        "coverage": [
+            "WARNING: account_live_quota_receipt_absent",
+            "parse: route quota check failed",
+        ],
+        "predicate": [
+            "parse: dispatcher quota predicate failed (KeyError)",
+            "parse: route quota check failed",
+        ],
+    }[failure]
+    assert len(diagnostics) == len(expected), result.stderr
+    for line, message in zip(diagnostics, expected, strict=True):
+        assert message in line
+        assert "Next: run hapax-platform-capability-receipts --show --platform glmcp --json" in line
+        assert "re-run hapax-platform-capability-receipts --platform glmcp" in line
+        assert "check hapax-glmcp-seat-refresh.service" in line
 
 
 def test_refresh_threshold_is_derived_from_every_stage_and_a_skip_cannot_lapse(
@@ -1111,6 +1256,40 @@ def test_three_failed_round_trips_mint_nothing_and_name_the_next_action(tmp_path
     assert "do not mint" in result.stderr
     assert _witnesses(home) == []
     assert not (home / "admission-calls").exists()
+
+
+def test_term_ignoring_reviewer_is_forcibly_killed_on_all_three_attempts(tmp_path: Path) -> None:
+    home, council = _harness(
+        tmp_path,
+        reviewer="exec \"$HAPAX_TEST_PYTHON\" - <<'PY'\n"
+        "import os, signal\n"
+        "from pathlib import Path\n"
+        'home = Path(os.environ["HOME"])\n'
+        "def ignored_term(*_):\n"
+        '    with (home / "terms").open("a") as stream:\n'
+        '        stream.write(f"{os.getpid()}\\n")\n'
+        "signal.signal(signal.SIGTERM, ignored_term)\n"
+        "# A separate fixture watchdog contains the no-kill-after mutation.\n"
+        "signal.signal(signal.SIGALRM, lambda *_: os._exit(88))\n"
+        "signal.alarm(4)\n"
+        'with (home / "attempts").open("a") as stream:\n'
+        '    stream.write(f"{os.getpid()}\\n")\n'
+        "while True:\n"
+        "    signal.pause()\n"
+        "PY\n",
+    )
+    # Shorten the real timeout implementation in memory; production keeps its full envelope.
+    script = SCRIPT.read_text().replace("REVIEW_ATTEMPT_TIMEOUT_S=45", "REVIEW_ATTEMPT_TIMEOUT_S=1")
+    script = script.replace("TIMEOUT_KILL_AFTER_S=2", "TIMEOUT_KILL_AFTER_S=1")
+    result = _run(home, council, script_text=script)
+    attempts = (home / "attempts").read_text().splitlines()
+    assert len(attempts) == len(set(attempts)) == 3
+    assert (home / "terms").read_text().splitlines() == attempts
+    assert result.stdout.count("exit=137 output_bytes=0") == 3, result.stdout
+    assert result.returncode == 2
+    assert _witnesses(home) == []
+    assert not (home / "admission-calls").exists()
+    assert not any(call.startswith("writer ") for call in _calls(home))
 
 
 def test_a_failed_round_trip_that_emits_output_mints_nothing_and_names_its_exit(
