@@ -1168,6 +1168,27 @@ def _scope_glob_covered(scope_pattern: str, member_patterns: tuple[str, ...]) ->
     )
 
 
+def _literal_scope_glob(pattern: str) -> str | None:
+    """Prove a singleton language, independently of the glob's current expansions."""
+    literal: list[str] = []
+    index = 0
+    while index < len(pattern):
+        char = pattern[index]
+        if char in "*?":
+            return None
+        if char == "[":
+            # A single non-negated character is the only class we need to prove here.
+            # Larger classes remain subject to the conservative language comparator.
+            if index + 2 >= len(pattern) or pattern[index + 2] != "]" or pattern[index + 1] == "!":
+                return None
+            literal.append(pattern[index + 1])
+            index += 3
+        else:
+            literal.append(char)
+            index += 1
+    return "".join(literal)
+
+
 def _path_is_excluded(path: Path, member: DecayedMember) -> bool:
     if any(part in member.skip_dirs for part in path.parts):
         return True
@@ -1366,15 +1387,17 @@ def _check_member_symlinks(
 def _canonical_member_entries(member: DecayedMember) -> dict[Path, Path]:
     """Close the producer's selected file entries over their canonical byte targets.
 
-    Keep pathlib's traversal and lexical skip_dirs filter. Check selected symlinks before
-    is_file(), which silently drops dangling entries, and retain the round-nine remedies
-    for unresolved/escaping links. Declaration exclusions already compare resolved paths.
+    Keep each reader's pathlib traversal and exclusions. Content-query predicates are
+    evaluated on the selected entries at comparison time. Resolve before is_file(), which
+    silently drops dangling links, and retain fs.glob's traversal/escape remedies.
     """
     surface: dict[Path, Path] = {}
+    content_query = member.reader == "fs.content_query"
+    patterns = member.patterns if content_query else member.patterns or ("**/*",)
     for root in member.roots:
-        for pattern in member.patterns or ("**/*",):
+        for pattern in patterns:
             try:
-                entries = list(root.glob(pattern))
+                entries = list(root.rglob(pattern) if content_query else root.glob(pattern))
             except (OSError, RuntimeError, ValueError) as exc:
                 raise UndecidableScopeContainment(
                     f"cannot enumerate member pattern {pattern!r} below {root}: {exc}; "
@@ -1388,7 +1411,9 @@ def _canonical_member_entries(member: DecayedMember) -> dict[Path, Path]:
                         continue
                 except (OSError, RuntimeError) as exc:
                     raise _unresolved_scope_component(entry, exc) from exc
-                if _check_member_symlinks(entry, root, member, scope_pattern=None):
+                if not content_query and _check_member_symlinks(
+                    entry, root, member, scope_pattern=None
+                ):
                     continue
                 canonical = _resolve_external_scope_path(entry)
                 if entry.is_file() and not _path_is_excluded(entry, member):
@@ -1407,13 +1432,24 @@ def _canonical_scope_entries(path: Path, pattern: str, member: DecayedMember) ->
     canonical = {}
     for entry in entries:
         try:
+            # The producer reads files. Terminal ** can yield only directories; those
+            # entries supply no evidence about containment of the recursive file language.
+            if entry.is_dir():
+                continue
             for root in member.roots:
                 if root in entry.parents:
                     _check_member_symlinks(entry, root, member, scope_pattern=None)
-            canonical[entry] = _resolve_external_scope_path(entry)
-        except UndecidableScopeContainment as exc:
-            error = UndecidableScopeContainment(f"scope glob expansion {entry}: {exc}")
-            error.remedy = f"repair scope glob expansion {entry}; {exc.remedy}"
+            target = _resolve_external_scope_path(entry)
+            if entry.is_file():
+                canonical[entry] = target
+        except (UndecidableScopeContainment, OSError, RuntimeError) as exc:
+            cause = (
+                exc
+                if isinstance(exc, UndecidableScopeContainment)
+                else _unresolved_scope_component(entry, exc)
+            )
+            error = UndecidableScopeContainment(f"scope glob expansion {entry}: {cause}")
+            error.remedy = f"repair scope glob expansion {entry}; {cause.remedy}"
             raise error from exc
     return canonical
 
@@ -1505,17 +1541,18 @@ def _content_query_within_member(
                     relative, "**/" + pattern
                 ):
                     continue
-                try:
-                    selected = any(p == candidate and p.is_file() for p in root.rglob(pattern))
-                except (OSError, RuntimeError, ValueError) as exc:
-                    raise UndecidableScopeContainment(
-                        f"fs.content_query cannot enumerate {root} with {pattern!r}: {exc}"
-                    ) from exc
-                if not selected and Path(normalised).name == "**":
-                    continue
-                if _content_query_matches(candidate, query) and selected:
-                    return True
-    return False
+                if Path(normalised).name != "**" and not candidate.exists():
+                    # A future file in the path language has no readable predicate yet.
+                    # Preserve the missing-bytes remedy instead of calling it outside.
+                    _content_query_matches(candidate, query)
+    if dirlike or scope_pattern is not None:
+        return False
+    # The pattern selects entries, while the content is read at their canonical targets.
+    # Compare targets before evaluating bytes so both spellings receive the same verdict.
+    return any(
+        canonical == target and _content_query_matches(entry, query)
+        for entry, target in _canonical_member_entries(member).items()
+    )
 
 
 def _local_member_file_matches(path: Path, root: Path, pattern: str) -> bool:
@@ -1539,8 +1576,6 @@ def ref_within_member(
     *,
     scope_pattern: str | None = None,
 ) -> bool:
-    if member.reader == "fs.content_query":
-        return _content_query_within_member(path, dirlike, member, scope_pattern)
     _member_file_patterns(member.patterns)  # Validate even when the candidate is outside.
     broad = dirlike or scope_pattern is not None
     file_path = _resolve_member_path(path) if member.files else path
@@ -1561,13 +1596,20 @@ def ref_within_member(
                     f"scope glob {scope_pattern!r} matches declared member file {file}; "
                     "whole-surface containment cannot be decided safely"
                 )
+        literal = _literal_scope_glob(scope_pattern)
+        if literal is not None:
+            candidate = path / literal
+            try:
+                candidate_is_dir = candidate.is_dir()
+            except (OSError, RuntimeError) as exc:
+                raise _unresolved_scope_component(candidate, exc) from exc
+            return ref_within_member(candidate, candidate_is_dir, member)
+    if member.reader == "fs.content_query":
+        return _content_query_within_member(path, dirlike, member, scope_pattern)
     selected_entries = _canonical_member_entries(member)
     surface = frozenset(selected_entries.values())
     expansions = (
         _canonical_scope_entries(path, scope_pattern, member) if scope_pattern is not None else {}
-    )
-    aliases = any(entry != target for entry, target in selected_entries.items()) or any(
-        entry != target for entry, target in expansions.items()
     )
     lexical_path = path
     for root in member.roots:
@@ -1578,10 +1620,14 @@ def ref_within_member(
             # and the member-specific symlink checks below.
             path = _resolve_external_scope_path(path)
         if path != root and root not in path.parents:
-            if scope_pattern is not None and expansions and aliases:
-                # A glob's literal prefix can be outside while its expanded aliases enter
-                # the member. Every expansion was resolved before testing membership.
-                return all(target in surface for target in expansions.values())
+            if scope_pattern is not None and any(
+                target in surface for target in expansions.values()
+            ):
+                # Current aliases prove overlap, never containment of future paths.
+                raise UndecidableScopeContainment(
+                    f"scope glob {scope_pattern!r} reaches selected canonical targets in "
+                    f"member root {root}; whole-surface containment cannot be decided safely"
+                )
             if (
                 scope_pattern is not None
                 and path in root.parents
@@ -1609,24 +1655,27 @@ def ref_within_member(
             path, root, member, scope_pattern=(scope_pattern or "**/*") if broad else None
         )
         if broad:
-            # Resolve every expansion before a lexical language comparison can reject it.
-            # A singleton glob alias names exactly the same bytes as its literal spelling.
+            # Resolve every file expansion before comparing the candidate's language.
+            expansion_base = lexical_path
             if scope_pattern is None:
+                expansion_base = path
                 expansions = _canonical_scope_entries(path, "**/*", member)
             member_scope_pattern = _scope_pattern_from_base(relative, scope_pattern)
-            canonical_inside = bool(expansions) and all(
-                target in surface for target in expansions.values()
-            )
-            if scope_pattern is not None and expansions and aliases:
-                return canonical_inside
-            if (
-                member.patterns
-                and not canonical_inside
-                and not _scope_glob_covered(member_scope_pattern, member.patterns)
-            ):
+            if member.patterns and not _scope_glob_covered(member_scope_pattern, member.patterns):
+                if any(
+                    target in surface and path / entry.relative_to(expansion_base) != target
+                    for entry, target in expansions.items()
+                ):
+                    raise UndecidableScopeContainment(
+                        f"scope glob {scope_pattern!r} reaches selected canonical targets; "
+                        "whole-surface containment cannot be decided safely"
+                    )
                 continue
             exclusion_scope_pattern = _scope_pattern_from_base("", scope_pattern)
             if _scope_intersects_exclusions(path, exclusion_scope_pattern, member):
+                continue
+            # Existing files can disprove containment, but cannot establish the proof.
+            if any(target not in surface for target in expansions.values()):
                 continue
             # Retain the conservative exclusion comparison above. An excluded link target
             # can additionally disprove containment even outside the lexical scope's root.

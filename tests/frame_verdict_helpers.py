@@ -33,8 +33,10 @@ def producer_glob_bytes(
     monkeypatch: pytest.MonkeyPatch,
     *,
     excluded: tuple[Path, ...] = (),
+    content_query: str | None = None,
+    max_unit_bytes: int = 128,
 ) -> dict[Path, bytes]:
-    """Call the installed producer's selection, exclusion and byte reader, without a run."""
+    """Call the installed producer's glob/query selection and byte reader, without a run."""
     base = Path("~/Documents/Personal/30-areas/hapax").expanduser()
     if not (base / "frame/procedure/builtin.py").is_file():
         pytest.skip("installed frame producer is unavailable")
@@ -52,12 +54,24 @@ def producer_glob_bytes(
         digest="fixture",
         path=root / "mass.yaml",
     )
-    values = {"max_unit_bytes": 128, "encoding_error_policy": "strict"}
-    result = builtin.fs_glob(
-        SimpleNamespace(id="fixture", location={"path": str(root), "patterns": patterns}),
-        SimpleNamespace(get=lambda name, **kwargs: values[name]),
-        mass,
-    )
+    values = {"max_unit_bytes": max_unit_bytes, "encoding_error_policy": "strict"}
+    location = {"path": str(root), "patterns": patterns}
+    reader = builtin.fs_glob
+    if content_query is not None:
+        location = {"roots": [str(root)], "patterns": patterns, "query": content_query}
+        reader = builtin.fs_content_query
+    with monkeypatch.context() as fallback:
+        if content_query is not None:
+            fallback.setattr(builtin.shutil, "which", lambda name: None)
+        result = reader(
+            SimpleNamespace(
+                id="fixture",
+                location=location,
+                bounds=SimpleNamespace(max_seconds=10, max_units=None),
+            ),
+            SimpleNamespace(get=lambda name, **kwargs: values[name]),
+            mass,
+        )
     assert result.complete and result.failure is None
     return {Path(obs.meta["path"]).resolve(strict=True): obs.content for obs in result.observations}
 

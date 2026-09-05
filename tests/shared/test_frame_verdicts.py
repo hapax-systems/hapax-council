@@ -275,6 +275,32 @@ def test_content_query_evaluates_current_bytes_and_canonical_alias(tmp_path: Pat
         assert fv.ref_within_member(alias, False, member) is inside
 
 
+@pytest.mark.parametrize("external", [False, True])
+def test_content_query_selected_alias_predicate_uses_target_bytes(
+    tmp_path: Path, external: bool
+) -> None:
+    member, root = _content_query_member(tmp_path, location={"patterns": ["awk"]})
+    target = (tmp_path if external else root) / "gawk"
+    alias = root / "nested/awk"
+    alias.parent.mkdir()
+    alias.symlink_to(target)
+    for content, inside in [(b"def selected(): pass", True), (b"value = 1", False)]:
+        target.write_bytes(content)
+        assert fv.ref_within_member(alias, False, member) is inside
+        assert fv.ref_within_member(target, False, member) is inside
+
+
+@pytest.mark.parametrize("kind", ["dangling", "loop"])
+def test_content_query_selected_unresolved_alias_has_remedy(tmp_path: Path, kind: str) -> None:
+    member, root = _content_query_member(tmp_path, location={"patterns": ["awk"]})
+    alias = root / "awk"
+    alias.symlink_to(alias.name if kind == "loop" else "missing")
+    with pytest.raises(fv.UndecidableScopeContainment) as caught:
+        fv.ref_within_member(root / "gawk", False, member)
+    assert str(alias) in str(caught.value)
+    assert "intended target" in caught.value.remedy
+
+
 @pytest.mark.parametrize("problem", ["oversize", "zero-bound", "missing", "unreadable", "strict"])
 def test_content_query_unreadable_or_unbounded_file_is_undecidable(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, problem: str
@@ -838,6 +864,49 @@ def test_patterned_member_requires_the_entire_directory_or_wildcard_scope(tmp_pa
     assert scope("scripts/**").outside == ("scripts/**",)
     assert scope("docs/**/*.py").outside == ("docs/**/*.py",)
     assert scope("docs/").outside == ("docs/",)
+
+
+@pytest.mark.parametrize("populated", [False, True])
+@pytest.mark.parametrize("base_alias", [False, True])
+def test_glob_language_uses_the_canonical_root(
+    tmp_path: Path, populated: bool, base_alias: bool
+) -> None:
+    root = tmp_path / "member"
+    root.mkdir()
+    alias = tmp_path / "alias"
+    alias.symlink_to(root, target_is_directory=True)
+    if populated:
+        (root / "gawk").touch()
+    member = fv.DecayedMember("m", "scope_exited", (root,), ("gawk",), ())
+    base = alias if base_alias else root
+    assert not fv.ref_within_member(base, True, member, scope_pattern="gaw*k")
+    assert fv.ref_within_member(base / "gawk", False, member)
+    assert fv.ref_within_member(base, True, member, scope_pattern="[g]awk")
+
+
+@pytest.mark.parametrize(
+    ("probe", "pattern"), [("is_dir", "a*"), ("is_file", "a*"), ("is_dir", "[a]wk")]
+)
+def test_scope_expansion_file_type_failure_has_remedy(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, probe: str, pattern: str
+) -> None:
+    target, alias = tmp_path / "gawk", tmp_path / "awk"
+    target.touch()
+    alias.symlink_to(target.name)
+    member = fv.DecayedMember("m", "scope_exited", (tmp_path,), ("gawk",), ())
+    original = getattr(Path, probe)
+
+    def denied(path, *args, **kwargs):
+        if path == alias:
+            raise PermissionError(13, "fixture stat denied", str(path))
+        return original(path, *args, **kwargs)
+
+    monkeypatch.setattr(Path, probe, denied)
+    with pytest.raises(fv.UndecidableScopeContainment) as caught:
+        fv.ref_within_member(tmp_path, True, member, scope_pattern=pattern)
+    assert "containment is undecidable" in str(caught.value)
+    assert ("scope glob expansion" if pattern == "a*" else "scope component") in str(caught.value)
+    assert str(alias) in caught.value.remedy
 
 
 def test_an_undecidable_pattern_union_refuses_instead_of_admitting(tmp_path: Path) -> None:
