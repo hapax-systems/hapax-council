@@ -266,7 +266,7 @@ def current_epoch_dir(procedure_root: Path) -> Path:
         raise FrameVerdictsUnavailable(f"current epoch {epoch_dir.name} publish.json is missing")
     try:
         receipt = json.loads(publish_path.read_text(encoding="utf-8"))
-    except (OSError, json.JSONDecodeError) as exc:
+    except (OSError, UnicodeDecodeError, json.JSONDecodeError) as exc:
         raise FrameVerdictsUnavailable(f"{publish_path} is unreadable or malformed: {exc}") from exc
     if not isinstance(receipt, dict):
         raise FrameVerdictsUnavailable(f"{publish_path} must contain a JSON object")
@@ -477,7 +477,7 @@ def _load_epoch_verdicts(
     elements_path = epoch_dir / "elements.json"
     try:
         elements = json.loads(elements_path.read_text(encoding="utf-8"))
-    except (OSError, json.JSONDecodeError) as exc:
+    except (OSError, UnicodeDecodeError, json.JSONDecodeError) as exc:
         raise FrameVerdictsUnavailable(
             f"{elements_path} is unreadable or malformed: {exc}"
         ) from exc
@@ -524,7 +524,7 @@ def _load_epoch_verdicts(
     mass_path = root / "declaration" / "mass.yaml"
     try:
         mass = yaml.safe_load(mass_path.read_text(encoding="utf-8"))
-    except (OSError, yaml.YAMLError) as exc:
+    except (OSError, UnicodeDecodeError, yaml.YAMLError) as exc:
         raise FrameVerdictsUnavailable(f"{mass_path} is unreadable or malformed: {exc}") from exc
     members = mass.get("members") if isinstance(mass, dict) else None
     if not isinstance(members, list):
@@ -562,7 +562,7 @@ def _load_epoch_verdicts(
     epoch_identities: dict[str, str] = {}
     try:
         coverage_rows = json.loads(coverage_path.read_text(encoding="utf-8"))
-    except (OSError, json.JSONDecodeError) as exc:
+    except (OSError, UnicodeDecodeError, json.JSONDecodeError) as exc:
         raise FrameVerdictsUnavailable(
             f"{coverage_path} is unreadable or malformed: {exc}; the verdicts cannot be bound "
             "to the declaration they were computed against"
@@ -1042,6 +1042,19 @@ def ref_within_member(
     broad = dirlike or scope_pattern is not None
     if any(path == file for file in member.files):
         return not broad and not _path_is_excluded(path, member)
+    if scope_pattern is not None:
+        for file in member.files:
+            if (
+                path in file.parents
+                and not _path_is_excluded(file, member)
+                and _pattern_matches(file.relative_to(path).as_posix(), scope_pattern)
+            ):
+                # The declared file is concrete; the scope supplies the glob. A matching file
+                # proves overlap, but the glob may also name undeclared (even future) files.
+                raise UndecidableScopeContainment(
+                    f"scope glob {scope_pattern!r} matches declared member file {file}; "
+                    "whole-surface containment cannot be decided safely"
+                )
     for root in member.roots:
         if path != root and root not in path.parents:
             if (
@@ -1087,13 +1100,43 @@ def qualified_ref_within_member(
     broad = dirlike or scope_pattern is not None
     if ref in member.qualified_files:
         return not broad
+    if scope_pattern is not None:
+        for file in member.qualified_files:
+            same_namespace = (
+                ref.scheme == file.scheme
+                and ref.authority == file.authority
+                and ref.absolute_path == file.absolute_path
+            )
+            if (
+                same_namespace
+                and file.parts[: len(ref.parts)] == ref.parts
+                and _pattern_matches("/".join(file.parts[len(ref.parts) :]), scope_pattern)
+            ):
+                raise UndecidableScopeContainment(
+                    f"scope glob {scope_pattern!r} matches declared member file {file}; "
+                    "whole-surface containment cannot be decided safely"
+                )
     for root in member.qualified_roots:
         same_namespace = (
             ref.scheme == root.scheme
             and ref.authority == root.authority
             and ref.absolute_path == root.absolute_path
         )
-        if not same_namespace or ref.parts[: len(root.parts)] != root.parts:
+        if not same_namespace:
+            continue
+        if ref.parts[: len(root.parts)] != root.parts:
+            if (
+                scope_pattern is not None
+                and root.parts[: len(ref.parts)] == ref.parts
+                and _glob_intersects_subtree(scope_pattern, "/".join(root.parts[len(ref.parts) :]))
+                is not False
+            ):
+                # As for filesystem roots, a glob before the root can enter the member even
+                # though its literal prefix is outside. An absent witness is not disjointness.
+                raise UndecidableScopeContainment(
+                    f"scope glob {scope_pattern!r} may enter member root {root}; "
+                    "whole-surface containment cannot be decided safely"
+                )
             continue
         relative_parts = ref.parts[len(root.parts) :]
         relative = "/".join(relative_parts)

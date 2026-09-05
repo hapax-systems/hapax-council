@@ -1083,6 +1083,98 @@ def test_glob_components_before_member_root_do_not_guess_containment(
         assert result.outside == (scope_pattern,)
 
 
+@pytest.mark.parametrize(
+    "ref",
+    [
+        "podium:.local/share/[x]pencode/x",
+        "podium:.local/share/*.py",
+        "podium:.local/elsewhere/[o]pencode/x",
+        "other:.local/share/[o]pencode/x",
+        "podium:/.local/share/[o]pencode/x",
+        "podium://host/.local/share/[o]pencode/x",
+    ],
+)
+def test_qualified_globs_disjoint_from_member_roots_are_outside(tmp_path: Path, ref: str) -> None:
+    root = _procedure_root(
+        tmp_path,
+        members=[{"id": "m", "location": {"path": "podium:.local/share/opencode"}}],
+        verdicts=[_verdict("m", "scope_exited")],
+    )
+    result = fv.scope_within_decayed(
+        [ref], fv.load_frame_verdicts(root, now=NOW), council_root=tmp_path / "council"
+    )
+    assert not result.all_inside
+    assert result.matches == ()
+    assert result.outside == (ref,)
+
+
+@pytest.mark.parametrize("namespace", ["filesystem", "podium:", "gh://hapax-systems/"])
+@pytest.mark.parametrize(
+    "pattern", ["config/[l]ive.yaml", "config/*/*.yaml", "[x]onfig/*.yaml", "elsewhere/[d]ead.yaml"]
+)
+def test_explicit_file_globs_disjoint_by_path_parts_are_outside(
+    tmp_path: Path, namespace: str, pattern: str
+) -> None:
+    council = tmp_path / "council"
+    declared = (
+        str(council / "config/dead.yaml")
+        if namespace == "filesystem"
+        else namespace + "config/dead.yaml"
+    )
+    ref = pattern if namespace == "filesystem" else namespace + pattern
+    root = _procedure_root(
+        tmp_path,
+        members=[{"id": "m", "location": {"files": [declared]}}],
+        verdicts=[_verdict("m", "scope_exited")],
+    )
+    result = fv.scope_within_decayed(
+        [ref], fv.load_frame_verdicts(root, now=NOW), council_root=council
+    )
+    assert not result.all_inside
+    assert result.matches == ()
+    assert result.outside == (ref,)
+
+
+@pytest.mark.parametrize(
+    "ref",
+    [
+        "other:config/[d]ead.yaml",
+        "podium:/config/[d]ead.yaml",
+        "podium://host/config/[d]ead.yaml",
+    ],
+)
+def test_explicit_file_globs_in_other_namespaces_are_outside(tmp_path: Path, ref: str) -> None:
+    root = _procedure_root(
+        tmp_path,
+        members=[{"id": "m", "location": {"files": ["podium:config/dead.yaml"]}}],
+        verdicts=[_verdict("m", "scope_exited")],
+    )
+    result = fv.scope_within_decayed(
+        [ref], fv.load_frame_verdicts(root, now=NOW), council_root=tmp_path / "council"
+    )
+    assert not result.all_inside
+    assert result.matches == ()
+    assert result.outside == (ref,)
+
+
+@pytest.mark.parametrize("exclusion", ["skip_dirs", "root", "prefix"])
+def test_explicit_file_globs_do_not_include_excluded_files(tmp_path: Path, exclusion: str) -> None:
+    council = tmp_path / "council"
+    file = council / "config/dead.yaml"
+    member = fv.DecayedMember(
+        "m",
+        "scope_exited",
+        (),
+        (),
+        (file,),
+        skip_dirs=("config",) if exclusion == "skip_dirs" else (),
+        excluded_roots=(file.parent,) if exclusion == "root" else (),
+        excluded_prefixes=(file.parent / "dead",) if exclusion == "prefix" else (),
+    )
+    assert not fv.ref_within_member(file, False, member)
+    assert not fv.ref_within_member(file.parent, True, member, scope_pattern="[d]ead.yaml")
+
+
 @pytest.mark.parametrize("identity", ["unrelated", "missing", "invalid", "unverified-source"])
 def test_repo_relative_scope_does_not_count_an_unverified_repository(
     tmp_path: Path, identity: str

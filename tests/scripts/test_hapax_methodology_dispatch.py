@@ -4960,6 +4960,155 @@ def test_dispatch_refuses_scheme_qualified_scope_in_a_decayed_member(
     assert "fixture refusal" not in err
 
 
+@pytest.mark.parametrize(
+    "tail",
+    ["opencode/x", "[o]pencode/x", "[!x]pencode/x", "**/opencode/x", "*/x", "[o]pencode/[!a]"],
+    ids=["literal", "singleton", "negated", "recursive", "wildcard", "unknown-tail"],
+)
+def test_dispatch_qualified_root_glob_spellings_do_not_bypass_decay(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+    tail: str,
+) -> None:
+    module = _dispatcher_module()
+    mirror = tmp_path / "remote/.local/share"
+    member_root = mirror / "opencode"
+    member_root.mkdir(parents=True)
+    (member_root / "x").touch()
+    # The qualified path has the same path-part glob semantics as the producer's fs.glob.
+    enumerated = {file for file in member_root.glob("**/*") if file.is_file()}
+    assert {file for file in mirror.glob(tail) if file.is_file()} == enumerated
+    frame_root = _frame_procedure_root(
+        tmp_path / "frame", decayed_root="podium:.local/share/opencode"
+    )
+    ref = f"podium:.local/share/{tail}"
+
+    rc, err = _dispatch_up_to_the_adapter(
+        tmp_path,
+        monkeypatch,
+        capsys,
+        module,
+        mutation_scope_refs=json.dumps([ref]),
+        frame_root=frame_root,
+    )
+
+    assert rc == 10
+    assert "fixture refusal" not in err, "decayed scope escaped validate_task and reached launch"
+    if tail == "opencode/x":
+        assert "marks every declared mutation surface out of accountability" in err
+    else:
+        assert "whole-surface containment cannot be decided safely" in err
+        assert fv.UndecidableScopeContainment.remedy in err
+    receipt = json.loads(
+        (tmp_path / "ledger/methodology-dispatch.jsonl").read_text().splitlines()[-1]
+    )
+    assert receipt["ok"] is False
+    assert receipt["frame_epoch"].endswith("-deadbeef")
+    assert receipt["frame_decayed_members"] == ["legacy-surface"]
+    assert receipt["reason"] in err
+
+
+@pytest.mark.parametrize("namespace", ["filesystem", "podium:", "gh://hapax-systems/"])
+@pytest.mark.parametrize(
+    "pattern",
+    ["config/dead.yaml", "config/[d]ead.yaml", "config/*.yaml", "**/[d]ead.yaml"],
+    ids=["literal", "singleton", "mixed", "recursive"],
+)
+def test_dispatch_explicit_file_glob_spellings_do_not_bypass_decay(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+    namespace: str,
+    pattern: str,
+) -> None:
+    module = _dispatcher_module()
+    council = tmp_path / "council"
+    (council / "config").mkdir(parents=True)
+    dead = council / "config/dead.yaml"
+    dead.touch()
+    (council / "config/live.yaml").touch()
+    scoped = {file for file in council.glob(pattern) if file.is_file()}
+    assert dead in scoped
+    if pattern == "config/*.yaml":
+        assert scoped - {dead}  # A matching file alone must not prove whole-scope containment.
+    monkeypatch.setattr(module, "REPO_ROOT_FOR_IMPORTS", council)
+    declared_file = str(dead) if namespace == "filesystem" else namespace + "config/dead.yaml"
+    ref = pattern if namespace == "filesystem" else namespace + pattern
+    frame_root = _frame_procedure_root(
+        tmp_path / "frame", decayed_root=declared_file, location={"files": [declared_file]}
+    )
+
+    rc, err = _dispatch_up_to_the_adapter(
+        tmp_path,
+        monkeypatch,
+        capsys,
+        module,
+        mutation_scope_refs=json.dumps([ref]),
+        frame_root=frame_root,
+    )
+
+    assert rc == 10
+    assert "fixture refusal" not in err, "decayed scope escaped validate_task and reached launch"
+    if pattern == "config/dead.yaml":
+        assert "marks every declared mutation surface out of accountability" in err
+    else:
+        assert "whole-surface containment cannot be decided safely" in err
+        assert fv.UndecidableScopeContainment.remedy in err
+    receipt = json.loads(
+        (tmp_path / "ledger/methodology-dispatch.jsonl").read_text().splitlines()[-1]
+    )
+    assert receipt["ok"] is False
+    assert receipt["frame_epoch"].endswith("-deadbeef")
+    assert receipt["frame_decayed_members"] == ["legacy-surface"]
+    assert receipt["reason"] in err
+
+
+@pytest.mark.parametrize(
+    "filename", ["elements.json", "publish.json", "coverage.json", "mass.yaml"]
+)
+def test_dispatch_invalid_utf8_refuses_with_producer_evidence(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+    filename: str,
+) -> None:
+    module = _dispatcher_module()
+    frame_root = _frame_procedure_root(tmp_path / "frame", decayed_root=None)
+    epoch = (frame_root / "_runs/current").resolve()
+    damaged = (frame_root / "declaration" if filename == "mass.yaml" else epoch) / filename
+    damaged.write_bytes(b"\xff")
+
+    rc, err = _dispatch_up_to_the_adapter(
+        tmp_path,
+        monkeypatch,
+        capsys,
+        module,
+        mutation_scope_refs="[scripts/live.py]",
+        frame_root=frame_root,
+    )
+
+    assert rc == 10
+    assert "frame verdicts unavailable" in err
+    assert str(damaged) in err
+    assert "unreadable or malformed" in err
+    assert fv.PRODUCER_REMEDY in err
+    assert "fixture refusal" not in err
+    assert "Traceback" not in err
+    receipt = json.loads(
+        (tmp_path / "ledger/methodology-dispatch.jsonl").read_text().splitlines()[-1]
+    )
+    assert receipt["ok"] is False
+    assert receipt["frame_epoch"] is None
+    assert receipt["frame_decayed_members"] == []
+    evidence = receipt["frame_unavailable"]
+    assert evidence["remedy"] == fv.PRODUCER_REMEDY
+    assert evidence["frame_root_resolved"] == str(frame_root.resolve())
+    assert evidence["frame_epoch"] == (None if filename == "publish.json" else epoch.name)
+    assert str(damaged) in evidence["reason"]
+    assert "unreadable or malformed" in evidence["reason"]
+
+
 def test_dispatch_admits_work_outside_decayed_members_and_work_partly_inside(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
 ) -> None:
