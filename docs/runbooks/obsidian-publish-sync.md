@@ -31,6 +31,51 @@ podium's unit stop/disable/mask are root's separate evidence; this source
 retirement did not effect the deletion and does not attest to it beyond citing
 that record. Research curation is a later, separate question.
 
+### Observed withdrawal (root's readback, sanitized)
+
+Observer report, not cryptographic proof. Account and site identifiers, token
+details, private file names and counts, and browser or profile locators are
+omitted on purpose.
+
+- 2026-09-05T20:15:43Z: the native provider deletion of the site was accepted;
+  the authenticated owned-site inventory changed from one to zero, as observed
+  by root. No provider account was deleted and private Sync was not changed.
+- The public site URL independently returned 404 ("Not found!") in fresh desktop
+  and mobile browser contexts. A direct URL of an old asset returned 401, which is
+  expressly not deletion proof. No claim is made about physical backup or cache
+  erasure at the provider.
+- 2026-09-05T20:43Z readback on both managed hosts: the Publish service and timer
+  report `LoadState=masked` and `UnitFileState=masked`; on appendix both are
+  inactive; on podium the timer is inactive and the service retains its old
+  failed state (not active). The native site mapping is null and the Publish
+  plugin is disabled, so no configured site remains.
+- 2026-09-05T20:43Z installed-wrapper inventory: on both hosts the installed
+  wrapper link still points at the source-activation worktree's copy of the
+  wrapper, and that pre-merge target still exists (main at `cad2ec5ab`); mutable
+  checkout copies also exist. The installed wrapper is therefore not absent until
+  this source change is activated. The runtime masks are the mitigation in force,
+  not a claim about every historical copy.
+
+### Recheck (read-only)
+
+None of these commands reruns the provider deletion or touches a credential.
+
+```bash
+# public slug, no credentials — expect 404
+curl -sS -o /dev/null -w '%{http_code}\n' https://publish.obsidian.md/hapax/
+# on EACH managed host — expect masked and no active/running unit
+# (old failed residue may remain on the service)
+systemctl --user show hapax-obsidian-publish-sync.service \
+  hapax-obsidian-publish-sync.timer \
+  --property=Id,LoadState,UnitFileState,ActiveState
+# installed wrapper: pre-activation (target exists) versus post-activation (absent)
+readlink -f ~/.local/bin/hapax-obsidian-publish-sync
+test -e "$(readlink -f ~/.local/bin/hapax-obsidian-publish-sync)" \
+  && echo target-exists || echo target-absent
+# source absence only — proves nothing about installed copies or the provider
+uv run pytest -q tests/test_obsidian_publish_is_excised.py
+```
+
 ### Historical procedure — withdrawn; do not execute
 
 The procedure below is retained only as history of the retired publication path.
@@ -77,3 +122,5 @@ from the pinned npm package before publish.
 ```bash
 systemctl --user enable --now hapax-obsidian-publish-sync.timer
 ```
+
+<!-- end: withdrawn 2026-09-05 -->
