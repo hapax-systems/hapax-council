@@ -57,13 +57,15 @@ def test_source_gap_is_named_in_text_json_and_exit_status(
     monkeypatch.setenv("RUNNER_TEMP", str(tmp_path / "reports"))
     try:
         args = gate.build_parser().parse_args(["--consumer-side"])
-        assert gate.run_consumer_side(args) == 2
+        assert gate.run_consumer_side(args) == 0
         output = capsys.readouterr().out
         assert "[REPORT-ERROR]" in output
         assert "status=incomplete" in output
+        assert "REPORT-ONLY" in output
         assert "shared/consumer.py" in output and failure in output
         payload = json.loads((tmp_path / "reports/consumer-side-report.json").read_text())
         assert payload["summary"]["status"] == "incomplete"
+        assert payload["summary"]["report_only"] is True
         assert payload["source_gaps"] == [
             {
                 "path": "shared/consumer.py",
@@ -74,6 +76,191 @@ def test_source_gap_is_named_in_text_json_and_exit_status(
         assert "artifacts/visible.json" in {f["read_pattern"] for f in payload["findings"]}
     finally:
         broken.chmod(0o600)
+
+
+def test_main_keeps_invalid_source_report_only(gate, tmp_path: Path, monkeypatch, capsys) -> None:
+    _write(tmp_path, "def broken(:\n")
+    monkeypatch.chdir(tmp_path)
+    destination = tmp_path / "reports/consumer-side-report.json"
+    assert gate.main(["--consumer-side", "--report-json", str(destination)]) == 0
+    output = capsys.readouterr().out
+    assert "REPORT-ONLY" in output and "[REPORT-ERROR]" in output
+    assert "shared/consumer.py" in output and "SyntaxError" in output
+    payload = json.loads(destination.read_text())
+    assert payload["summary"]["status"] == "incomplete"
+    assert payload["errors"] == ["shared/consumer.py: parse failed (SyntaxError)"]
+
+
+@pytest.mark.parametrize(
+    ("operation", "action"),
+    [("open().read()", "read"), ("open('w').write('{}')", "write")],
+)
+def test_assigned_path_open_receiver_keeps_access(
+    gate, tmp_path: Path, operation: str, action: str
+) -> None:
+    _write(
+        tmp_path,
+        "from pathlib import Path\np = Path('artifacts/orphan.json')\n" + f"p.{operation}\n",
+    )
+    accesses, unresolved, *_ = gate.collect_artifact_accesses(tmp_path)
+    assert {(item.action, item.pattern, item.operation) for item in accesses} == {
+        (action, "artifacts/orphan.json", "Path.open")
+    }
+    assert unresolved == 0
+    if action == "read":
+        assert _unwritten(gate.analyse_consumer_side(tmp_path, [])) == {"artifacts/orphan.json"}
+
+
+@pytest.mark.parametrize("receiver", ["choose()", "'artifacts/orphan.json'"])
+@pytest.mark.parametrize(
+    "operation", ["open().read()", "open('w').write('{}')", "open(mode='w').write('{}')"]
+)
+def test_assigned_unknown_open_receiver_is_counted(
+    gate, tmp_path: Path, operation: str, receiver: str
+) -> None:
+    _write(tmp_path, f"p = {receiver}\np.{operation}\n")
+    accesses, unresolved, _imports, unrecognised = gate.collect_artifact_accesses(tmp_path)
+    assert accesses == []
+    assert unresolved == 1
+    assert unrecognised == {"p.open": 1}
+
+
+@pytest.mark.parametrize("nested", ["def", "async def", "lambda"])
+@pytest.mark.parametrize("rebinding", ["after_definition", "loop", "between_calls"])
+def test_rebound_closure_never_invents_an_obsolete_writer(
+    gate, tmp_path: Path, capsys, nested: str, rebinding: str
+) -> None:
+    definition = (
+        f"    {nested} inner():\n        artifact.write_text('{{}}')\n"
+        if nested != "lambda"
+        else "    inner = lambda: artifact.write_text('{}')\n"
+    )
+    mutation = "    artifact = Path('artifacts/new.json')\n"
+    if rebinding == "loop":
+        mutation = "    for _ in range(2):\n    " + mutation
+    call = "    await inner()\n" if nested == "async def" else "    inner()\n"
+    before = call if rebinding == "between_calls" else ""
+    outer = "async def outer():\n" if nested == "async def" else "def outer():\n"
+    invoke = "import asyncio\nasyncio.run(outer())\n" if nested == "async def" else "outer()\n"
+    _write(
+        tmp_path,
+        "from pathlib import Path\n"
+        + outer
+        + "    artifact = Path('artifacts/old.json')\n"
+        + definition
+        + before
+        + mutation
+        + call
+        + invoke
+        + "Path('artifacts/old.json').read_text()\n",
+    )
+    accesses, unresolved, *_ = gate.collect_artifact_accesses(tmp_path)
+    writers = {item.pattern for item in accesses if item.action == "write"}
+    assert writers != {"artifacts/old.json"}, "definition-time snapshot fabricated the only writer"
+    # This analysis cannot bound callback invocation, so rebinding must remain a named gap.
+    assert writers == set()
+    assert unresolved == 1
+    report = gate.analyse_consumer_side(tmp_path, [])
+    assert "artifacts/old.json" in _unwritten(report)
+    payload = gate._report_json(report)
+    assert payload["unresolved_closures"] == [
+        "shared/consumer.py:4: closure binding artifact may change after definition"
+    ]
+    gate.print_consumer_side_report(report, tmp_path / "report.json")
+    assert "[UNRESOLVED] " + payload["unresolved_closures"][0] in capsys.readouterr().out
+
+
+@pytest.mark.parametrize(
+    "body",
+    [
+        "        return artifact.read_text()\n",
+        "        return artifact.open().read()\n",
+        "        artifact.open('w').write('{}')\n",
+        "        Path(f'{artifact}/state.json').write_text('{}')\n",
+        "        target = artifact\n        Path(f'{target}/state.json').write_text('{}')\n",
+    ],
+)
+def test_rebound_closure_access_is_unresolved_even_through_formatting(
+    gate, tmp_path: Path, body: str
+) -> None:
+    _write(
+        tmp_path,
+        "from pathlib import Path\ndef outer():\n    artifact = Path('artifacts/old')\n"
+        "    def inner():\n" + body + "    artifact = choose()\n    return inner\n",
+    )
+    accesses, unresolved, *_ = gate.collect_artifact_accesses(tmp_path)
+    assert accesses == []
+    assert unresolved == 1
+    assert gate.analyse_consumer_side(tmp_path, []).unresolved_closures
+
+
+def test_closure_rebinding_clears_all_branch_alternatives(gate, tmp_path: Path) -> None:
+    _write(
+        tmp_path,
+        "from pathlib import Path\ndef outer(flag):\n"
+        "    artifact = Path('artifacts/a.json') if flag else Path('artifacts/b.json')\n"
+        "    def inner():\n        artifact.write_text('{}')\n"
+        "    artifact = Path('artifacts/new.json')\n    inner()\n",
+    )
+    accesses, unresolved, *_ = gate.collect_artifact_accesses(tmp_path)
+    assert accesses == []
+    assert unresolved == 1
+
+
+def test_closure_in_loop_cannot_keep_a_previous_iteration_binding(gate, tmp_path: Path) -> None:
+    _write(
+        tmp_path,
+        "from pathlib import Path\ndef outer(items):\n"
+        "    for item in items:\n"
+        "        artifact = Path('artifacts/old.json') if item else Path('artifacts/new.json')\n"
+        "        def inner():\n            artifact.write_text('{}')\n"
+        "        callbacks.append(inner)\n    for callback in callbacks:\n        callback()\n",
+    )
+    accesses, unresolved, *_ = gate.collect_artifact_accesses(tmp_path)
+    assert accesses == []
+    assert unresolved == 1
+
+
+def test_later_rebinding_does_not_change_a_frozen_default(gate, tmp_path: Path) -> None:
+    _write(
+        tmp_path,
+        "from pathlib import Path\ndef outer():\n    artifact = Path('artifacts/frozen.json')\n"
+        "    def inner(saved=artifact):\n        saved.write_text('{}')\n"
+        "    artifact = Path('artifacts/new.json')\n    inner()\n",
+    )
+    accesses, unresolved, *_ = gate.collect_artifact_accesses(tmp_path)
+    assert {(item.action, item.pattern) for item in accesses} == {
+        ("write", "artifacts/frozen.json")
+    }
+    assert unresolved == 0
+    assert gate.analyse_consumer_side(tmp_path, []).unresolved_closures == ()
+
+
+def test_nonlocal_rebinding_cannot_leave_a_snapshot_writer(gate, tmp_path: Path) -> None:
+    _write(
+        tmp_path,
+        "from pathlib import Path\ndef outer():\n    artifact = Path('artifacts/old.json')\n"
+        "    def inner():\n        artifact.write_text('{}')\n"
+        "    def rebind():\n        nonlocal artifact\n"
+        "        artifact = Path('artifacts/new.json')\n    rebind()\n    inner()\n",
+    )
+    accesses, unresolved, *_ = gate.collect_artifact_accesses(tmp_path)
+    assert accesses == []
+    assert unresolved == 1
+
+
+def test_redefined_outer_scopes_keep_their_own_closure_evidence(gate, tmp_path: Path) -> None:
+    _write(
+        tmp_path,
+        "from pathlib import Path\ndef outer():\n    artifact = Path('artifacts/stable.json')\n"
+        "    def inner():\n        artifact.read_text()\n"
+        "outer()\ndef outer():\n    artifact = Path('artifacts/old.json')\n"
+        "    def inner():\n        artifact.write_text('{}')\n"
+        "    artifact = Path('artifacts/new.json')\n    inner()\nouter()\n",
+    )
+    accesses, unresolved, *_ = gate.collect_artifact_accesses(tmp_path)
+    assert {(item.action, item.pattern) for item in accesses} == {("read", "artifacts/stable.json")}
+    assert unresolved == 1
 
 
 def test_all_source_gaps_are_retained(gate, tmp_path: Path) -> None:

@@ -579,6 +579,7 @@ class ConsumerSideReport:
     measured: dict[str, object] = field(default_factory=dict)
     source_gaps: tuple[SourceGap, ...] = ()
     capped_expressions: tuple[str, ...] = ()
+    unresolved_closures: tuple[str, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -614,6 +615,7 @@ class PathFunctionTable(dict[str, PathFunction]):
         self.imports_by_path: dict[Path, frozenset[str]] = {}
         self.aliases_by_path: dict[Path, dict[str, str]] = {}
         self.capped_expressions: set[str] = set()
+        self.unresolved_closures: set[str] = set()
 
     def register(self, relative: Path, qualname: str, function: PathFunction) -> None:
         self[f"{_module_name(relative)}.{qualname}"] = function
@@ -798,6 +800,7 @@ _PATH_VALUE_PREFIX = "\0path-value:"
 _LEXICAL_SCOPE_KEY = "\0lexical-scope"
 _IMPORT_ALIAS_PREFIX = "\0import-alias:"
 _VALUE_ALTERNATIVES_PREFIX = "\0value-alternatives:"
+_UNRESOLVED_CLOSURE_PREFIX = "\0unresolved-closure:"
 
 
 def _path_value_key(name: str) -> str:
@@ -1038,6 +1041,14 @@ def _resolve_path_expr(
     depth: int = 0,
 ) -> str | None:
     if node is None or depth > 12:
+        return None
+    # An unbounded closure cell is not a dynamic path component. In particular, formatting
+    # it must not turn an obsolete binding into a wildcard producer.
+    if depth == 0 and any(
+        f"{_UNRESOLVED_CLOSURE_PREFIX}{item.id}" in values
+        for item in ast.walk(node)
+        if isinstance(item, ast.Name)
+    ):
         return None
     if isinstance(node, ast.Constant):
         if isinstance(node.value, (str, int)):
@@ -1542,14 +1553,16 @@ def _classify_call(
             family=context_family,
             operation=call.func.attr,
         )
-    elif short_name == "open":
+    elif short_name == "open" or (
+        isinstance(call.func, ast.Attribute) and call.func.attr == "open"
+    ):
         receiver = call.func.value if isinstance(call.func, ast.Attribute) else None
         path_method = receiver is not None and _is_path_valued_expr(
             receiver, values, path, path_functions
         )
         known_function = name in {"open", "builtins.open", "codecs.open", "io.open"}
-        expression = receiver if path_method else _call_argument(call, 0, "file")
-        operation = "Path.open" if path_method else name
+        expression = receiver if path_method else _call_argument(call, 0, "file") if name else None
+        operation = "Path.open" if path_method else name or raw_name
         _record_access(
             accesses,
             unresolved,
@@ -1569,7 +1582,7 @@ def _classify_call(
             modelled=known_function or path_method,
         )
         if not known_function and not path_method:
-            unrecognised[name] += 1
+            unrecognised[name or raw_name] += 1
     elif isinstance(call.func, ast.Attribute) and call.func.attr in {"glob", "rglob"}:
         suffix = _resolve_path_expr(
             _call_argument(call, 0), values, path, repo_root, path_functions
@@ -1900,6 +1913,19 @@ def _apply_assignment(
         _set_path_value(assigned, target.id, is_path)
         _set_import_alias(assigned, target.id, None)
         _clear_value_alternatives(assigned, target.id)
+        closure_origins = (
+            {
+                values[f"{_UNRESOLVED_CLOSURE_PREFIX}{item.id}"]
+                for item in ast.walk(statement.value)
+                if isinstance(item, ast.Name) and f"{_UNRESOLVED_CLOSURE_PREFIX}{item.id}" in values
+            }
+            if statement.value is not None
+            else set()
+        )
+        closure_key = f"{_UNRESOLVED_CLOSURE_PREFIX}{target.id}"
+        assigned.pop(closure_key, None)
+        if closure_origins:
+            assigned[closure_key] = "|".join(sorted(closure_origins))
         if len(resolved_values) > 1:
             _set_value_alternatives(assigned, target.id, resolved_values)
     return [assigned]
@@ -1969,6 +1995,7 @@ def _scope_initial_values(
     values = dict(module_values)
     _set_lexical_scope(values, lexical_prefixes)
     for name in _scope_local_names(node):
+        values.pop(f"{_UNRESOLVED_CLOSURE_PREFIX}{name}", None)
         values[name] = "*"
         _set_path_value(values, name, False)
         _set_import_alias(values, name, None)
@@ -1979,6 +2006,7 @@ def _scope_initial_values(
     if node.args.kwarg is not None:
         parameters.append(node.args.kwarg)
     for arg in parameters:
+        values.pop(f"{_UNRESOLVED_CLOSURE_PREFIX}{arg.arg}", None)
         values[arg.arg] = "*"
         _set_path_value(values, arg.arg, _is_path_annotation(arg.annotation))
         # Parameters are bindings in the function's lexical scope.  A module import with the
@@ -1991,6 +2019,87 @@ def _scope_initial_values(
             values[name] = resolved
             _clear_value_alternatives(values, name)
     return values
+
+
+def _closure_rebound_names(enclosing: ast.AST, closure: ast.AST) -> set[str]:
+    """Cells whose invocation-time value cannot be bounded by a definition snapshot.
+
+    We do not model callback escape or call scheduling. A later store (including a loop
+    back-edge or a nonlocal store in another callback) therefore invalidates a captured
+    value. Stable captures and definition-time defaults keep their existing evidence.
+    """
+    local = _scope_local_names(closure)
+    arguments = closure.args
+    local.update(
+        arg.arg for arg in (*arguments.posonlyargs, *arguments.args, *arguments.kwonlyargs)
+    )
+    local.update(arg.arg for arg in (arguments.vararg, arguments.kwarg) if arg is not None)
+    body = [closure.body] if isinstance(closure, ast.Lambda) else closure.body
+    referenced = {
+        item.id
+        for statement in body
+        for item in ast.walk(statement)
+        if isinstance(item, ast.Name) and isinstance(item.ctx, ast.Load)
+    } - local
+    start = (closure.lineno, closure.col_offset)
+    # Stores textually before a definition inside a loop can execute after it on the next
+    # iteration. Treat the entire containing loop as a possible rebinding region.
+    for item in ast.walk(enclosing):
+        if isinstance(item, (ast.For, ast.AsyncFor, ast.While)) and closure in ast.walk(item):
+            start = min(start, (item.lineno, item.col_offset))
+    rebound: set[str] = set()
+
+    class Visitor(ast.NodeVisitor):
+        def bind(self, item: ast.AST, names: set[str]) -> None:
+            if (item.lineno, item.col_offset) >= start:
+                rebound.update(names)
+
+        def visit_Name(self, item: ast.Name) -> None:
+            if isinstance(item.ctx, (ast.Store, ast.Del)):
+                self.bind(item, {item.id})
+
+        def visit_FunctionDef(self, item: ast.FunctionDef) -> None:
+            self.bind(item, {item.name})
+            # Nested locals do not rebind enclosing cells; explicit nonlocal declarations
+            # may, and scheduling these callbacks is outside this scanner's model.
+            for child in ast.walk(item):
+                if isinstance(child, ast.Nonlocal):
+                    rebound.update(child.names)
+
+        visit_AsyncFunctionDef = visit_FunctionDef
+        visit_ClassDef = visit_FunctionDef
+
+        def visit_Lambda(self, item: ast.Lambda) -> None:
+            return
+
+        def visit_Import(self, item: ast.Import) -> None:
+            self.bind(item, {alias.asname or alias.name.split(".")[0] for alias in item.names})
+
+        def visit_ImportFrom(self, item: ast.ImportFrom) -> None:
+            self.bind(item, {alias.asname or alias.name for alias in item.names})
+
+        def visit_ExceptHandler(self, item: ast.ExceptHandler) -> None:
+            if item.name:
+                self.bind(item, {item.name})
+            self.generic_visit(item)
+
+        def visit_MatchAs(self, item: ast.MatchAs) -> None:
+            if item.name:
+                self.bind(item, {item.name})
+            self.generic_visit(item)
+
+        visit_MatchStar = visit_MatchAs
+
+        def visit_MatchMapping(self, item: ast.MatchMapping) -> None:
+            if item.rest:
+                self.bind(item, {item.rest})
+            self.generic_visit(item)
+
+    visitor = Visitor()
+    enclosing_body = [enclosing.body] if isinstance(enclosing, ast.Lambda) else enclosing.body
+    for statement in enclosing_body:
+        visitor.visit(statement)
+    return referenced & rebound
 
 
 _MAX_BRANCH_STATES = 8
@@ -2283,10 +2392,20 @@ def _scan_scope(
     unrecognised: Counter[str],
     lexical_prefixes: tuple[str, ...] = (),
     nested_scope_values: dict[ast.AST, list[dict[str, str]]] | None = None,
+    closure_rebindings: set[str] | None = None,
 ) -> None:
     initial = _scope_initial_values(
         node, module_values, path, repo_root, path_functions, lexical_prefixes
     )
+    for name in closure_rebindings or ():
+        initial.pop(name, None)
+        _clear_value_alternatives(initial, name)
+        _set_path_value(initial, name, False)
+        _set_import_alias(initial, name, None)
+        site = f"{path}:{node.lineno}: closure binding {name} may change after definition"
+        initial[f"{_UNRESOLVED_CLOSURE_PREFIX}{name}"] = site
+        if isinstance(path_functions, PathFunctionTable):
+            path_functions.unresolved_closures.add(site)
     if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
         context = node.name
     elif isinstance(node, ast.Lambda):
@@ -2449,6 +2568,7 @@ def collect_artifact_accesses(
     tests_only: bool = False,
     source_gaps: list[SourceGap] | None = None,
     capped_expressions: set[str] | None = None,
+    unresolved_closures: set[str] | None = None,
 ) -> tuple[list[ArtifactAccess], int, dict[Path, frozenset[str]], dict[str, int]]:
     parsed: list[tuple[Path, ast.Module]] = []
     for source_path in _iter_python_sources(
@@ -2526,14 +2646,21 @@ def collect_artifact_accesses(
             unrecognised,
             nested_scope_values=nested_scope_values,
         )
+        enclosing_scopes: dict[str, LexicalScope] = {}
         for scope in _iter_function_scopes(tree):
-            # A closure starts with the state of its enclosing function at its definition.
+            # Definition snapshots are usable only for cells that cannot subsequently change.
             # Module-level functions retain the initialized module map, as before.
             initial_states = (
                 nested_scope_values.get(scope.node, [])
                 if len(scope.lexical_prefixes) > 1
                 else [values]
             )
+            rebindings = (
+                _closure_rebound_names(enclosing_scopes[scope.lexical_prefixes[1]].node, scope.node)
+                if len(scope.lexical_prefixes) > 1
+                else set()
+            )
+            enclosing_scopes[scope.qualname] = scope
             for initial in _merge_states(initial_states):
                 _scan_scope(
                     scope.node,
@@ -2546,10 +2673,13 @@ def collect_artifact_accesses(
                     unrecognised,
                     scope.lexical_prefixes,
                     nested_scope_values,
+                    rebindings,
                 )
     unique = list(dict.fromkeys(accesses))
     if capped_expressions is not None:
         capped_expressions.update(path_functions.capped_expressions)
+    if unresolved_closures is not None:
+        unresolved_closures.update(path_functions.unresolved_closures)
     return unique, unresolved[0], imports_by_path, dict(sorted(unrecognised.items()))
 
 
@@ -3053,8 +3183,12 @@ def analyse_consumer_side(
     tracked = _git_tracked_paths(repo_root)
     source_gaps: list[SourceGap] = []
     capped_expressions: set[str] = set()
+    unresolved_closures: set[str] = set()
     accesses, unresolved, imports_by_path, unrecognised = collect_artifact_accesses(
-        repo_root, source_gaps=source_gaps, capped_expressions=capped_expressions
+        repo_root,
+        source_gaps=source_gaps,
+        capped_expressions=capped_expressions,
+        unresolved_closures=unresolved_closures,
     )
     reads = [item for item in accesses if item.action == "read"]
     writes = [item for item in accesses if item.action == "write"]
@@ -3207,6 +3341,7 @@ def analyse_consumer_side(
         ),
         source_gaps=tuple(dict.fromkeys(source_gaps)),
         capped_expressions=tuple(sorted(capped_expressions)),
+        unresolved_closures=tuple(sorted(unresolved_closures)),
     )
 
 
@@ -3278,6 +3413,7 @@ def _report_json(report: ConsumerSideReport) -> dict[str, object]:
             for gap in report.source_gaps
         ],
         "capped_expressions": list(report.capped_expressions),
+        "unresolved_closures": list(report.unresolved_closures),
         "findings": [
             {
                 "kind": finding.kind,
@@ -3342,6 +3478,8 @@ def print_consumer_side_report(report: ConsumerSideReport, report_path: Path) ->
         )
     for site in report.capped_expressions:
         print(f"[CAPPED] {site}: compact expression union; concrete alternatives retained")
+    for site in report.unresolved_closures:
+        print(f"[UNRESOLVED] {site}")
     counts = Counter(finding.kind for finding in report.findings)
     print(
         "consumer-side counts: "
@@ -3426,7 +3564,7 @@ def run_consumer_side(args: argparse.Namespace) -> int:
             "names (--frame, --mass or the allowlist) and rerun; the gate stays report-only"
         )
     print_consumer_side_report(report, report_path)
-    return 2 if report.source_gaps else 0
+    return 0
 
 
 # ── Diff plumbing ─────────────────────────────────────────────────────
