@@ -7552,6 +7552,41 @@ def test_graphql_rows_are_not_rehydrated_through_the_exhausted_rest_pool(
     )
 
 
+def test_autoqueue_skips_bulk_listing_with_a_moved_head(tmp_path: Path) -> None:
+    calls: list[list[str]] = []
+    fake = _rate_only_runner(core=0, graphql=4660, calls=calls, rows=[_GRAPHQL_ROW])
+
+    def runner(cmd: list[str], **kwargs: Any) -> subprocess.CompletedProcess:
+        if cmd[:3] == ["gh", "api", "repos/owner/repo/git/matching-refs/heads/gh-readonly-queue"]:
+            calls.append(cmd)
+            return subprocess.CompletedProcess(cmd, 0, "", "")
+        if cmd[:3] == ["gh", "pr", "view"]:
+            calls.append(cmd)
+            return subprocess.CompletedProcess(
+                cmd,
+                0,
+                json.dumps({"headRefOid": "new-head", "statusCheckRollup": [_check("lint")]}),
+                "",
+            )
+        return fake(cmd, **kwargs)
+
+    prs, route = autoqueue.fetch_open_prs(repo="owner/repo", repo_root=tmp_path, runner=runner)
+    assert prs == []
+    assert route is None
+    report = autoqueue.run_reconciler(
+        repo="owner/repo",
+        repo_root=tmp_path,
+        vault_root=tmp_path,
+        expected_auto_merge_method_override="SQUASH",
+        apply=True,
+        runner=runner,
+    )
+    assert report["skipped"] is True
+    assert report["reason"] == "open_pr_listing_unavailable"
+    assert _graphql_mutations(calls) == []
+    assert not any(cmd[:3] == ["gh", "pr", "merge"] for cmd in calls)
+
+
 def test_the_reconciler_skips_rather_than_reading_an_unavailable_listing_as_quiet(
     tmp_path: Path,
 ) -> None:
@@ -8045,12 +8080,147 @@ def test_reconciler_holds_on_admission_read_failure(
         auto_arm_ledger_path=tmp_path / "ledger.jsonl",
     )
     holds = [item for item in report["mutations"] if item["action"] == "hold"]
-    assert len(holds) == 1
-    assert holds[0]["reasons"] == ["admission_status_read_failed"]
-    assert "Next action:" in holds[0]["message"]
     assert _admission_posts(runner) == []
-    assert not any(cmd[:3] == ["gh", "pr", "merge"] for cmd in runner.calls)
-    assert _graphql_mutations(runner.calls) == []
+    if action in {"dequeue", "disable_auto_merge"}:
+        assert holds == []
+        cancellations = [item for item in report["mutations"] if item["action"] == action]
+        assert len(cancellations) == 1
+        # This fixture is not queued, so dequeue must still revalidate and refuse it.
+        assert cancellations[0]["ok"] is (action == "disable_auto_merge")
+        if action == "dequeue":
+            assert cancellations[0]["message"] == (
+                "pull_request_not_in_merge_queue:dequeue_revalidation_failed"
+            )
+    else:
+        assert len(holds) == 1
+        assert holds[0]["reasons"] == ["admission_status_read_failed"]
+        assert "Next action:" in holds[0]["message"]
+        assert not any(cmd[:3] == ["gh", "pr", "merge"] for cmd in runner.calls)
+        assert _graphql_mutations(runner.calls) == []
+
+
+@pytest.mark.parametrize("queued", [True, False], ids=["dequeue", "disable_auto_merge"])
+def test_do_not_merge_cancels_despite_admission_503(tmp_path: Path, queued: bool) -> None:
+    vault = _make_vault(tmp_path)
+    _write_task(vault, task_id="task-a", pr=42)
+    fake = _FakeRunner()
+    fake.open_prs = [_pr(42, labels=["do-not-merge"], auto_merge=True)]
+    fake.queued_prs = {42} if queued else set()
+    fake.head_statuses["sha-42"] = [
+        _existing_status("success", "previously admitted", datetime.now(UTC).isoformat())
+    ]
+
+    def runner(cmd: list[str], **kwargs: Any) -> subprocess.CompletedProcess:
+        if cmd[:3] == ["gh", "api", "repos/owner/repo/commits/sha-42/statuses"]:
+            fake.calls.append(cmd)
+            return subprocess.CompletedProcess(cmd, 1, "", "HTTP 503")
+        return fake(cmd, **kwargs)
+
+    report = autoqueue.run_reconciler(
+        repo="owner/repo",
+        repo_root=tmp_path,
+        vault_root=vault,
+        apply=True,
+        runner=runner,
+        auto_arm_ledger_path=tmp_path / "ledger.jsonl",
+    )
+    action = "dequeue" if queued else "disable_auto_merge"
+    assert report["decisions"][0]["action"] == action
+    assert any("do-not-merge" in reason for reason in report["decisions"][0]["reasons"])
+    cancellations = [item for item in report["mutations"] if item["action"] == action]
+    assert len(cancellations) == 1, report["mutations"]
+    assert cancellations[0]["ok"] is True
+    assert _admission_posts(fake) == []
+    if queued:
+        assert len(_graphql_mutations(fake.calls)) == 1
+        assert "dequeuePullRequest" in " ".join(_graphql_mutations(fake.calls)[0])
+        assert sum("mergeQueue{" in " ".join(cmd) for cmd in fake.calls) >= 2
+    else:
+        assert ["gh", "pr", "merge", "42", "--repo", "owner/repo", "--disable-auto"] in fake.calls
+
+
+@pytest.mark.parametrize("failure", ["timeout", "oserror", "invalid_json"])
+@pytest.mark.parametrize("route", ["graphql", "rest_fallback"])
+def test_release_evidence_distinguishes_transport_from_payload(
+    tmp_path: Path, caplog: pytest.LogCaptureFixture, failure: str, route: str
+) -> None:
+    def runner(cmd: list[str], **_: Any) -> subprocess.CompletedProcess:
+        if cmd[:5] == ["gh", "api", "--method", "GET", "-H"]:
+            return subprocess.CompletedProcess(cmd, 1, "", "HTTP 503")
+        if cmd[:4] == ["gh", "api", "-i", "rate_limit"]:
+            return subprocess.CompletedProcess(cmd, 0, "{}", "")
+        assert cmd[:3] == ["gh", "api", "graphql"]
+        if failure == "timeout":
+            raise subprocess.TimeoutExpired(cmd, 60)
+        if failure == "oserror":
+            raise OSError("gh unavailable")
+        return subprocess.CompletedProcess(cmd, 0, "not json", "")
+
+    ok, reason, checks = autoqueue.fetch_pr_release_evidence(
+        42,
+        repo="owner/repo",
+        repo_root=tmp_path,
+        runner=runner,
+        route=_graphql_route(rest_blocked=True) if route == "graphql" else None,
+    )
+    assert ok is False
+    assert checks == set()
+    if failure == "invalid_json":
+        assert reason == "invalid_pr_release_evidence_payload"
+    else:
+        assert reason.startswith("pr_release_evidence_transport_unavailable:"), reason
+        assert "Next action:" in reason
+        assert "gh pr view 42 --repo owner/repo --json headRefOid,statusCheckRollup" in reason
+        assert "retry" in reason
+        assert reason in caplog.text
+
+
+@pytest.mark.parametrize("boundary", ["release_head", "auto_arm"])
+def test_release_blocker_preserves_transport_diagnosis(tmp_path: Path, boundary: str) -> None:
+    vault = _make_vault(tmp_path)
+    _write_task(
+        vault,
+        task_id="transport-unavailable",
+        status="pr_open",
+        pr=42,
+        extra_frontmatter={
+            **_eligible_arm_extra(),
+            "release_authorized": boundary == "release_head",
+            "release_authorized_head_sha": "sha-42",
+            "stage": "S7_RELEASE" if boundary == "release_head" else "S6_IMPLEMENTATION",
+        },
+    )
+    task = autoqueue.load_task_notes(vault)[0]
+
+    def runner(cmd: list[str], **_: Any) -> subprocess.CompletedProcess:
+        if cmd[:4] == ["gh", "api", "-i", "rate_limit"]:
+            return subprocess.CompletedProcess(cmd, 0, "{}", "")
+        assert cmd[:3] == ["gh", "api", "graphql"]
+        raise OSError("gh unavailable")
+
+    kwargs = {
+        "repo": "owner/repo",
+        "repo_root": tmp_path,
+        "runner": runner,
+        "route": _graphql_route(rest_blocked=True),
+    }
+    if boundary == "release_head":
+        decision = autoqueue.Decision(pr=autoqueue._parse_pr(_pr(42)), task=task, action="queue")
+        reason = autoqueue._release_head_boundary_blocker(decision, **kwargs)
+    else:
+        ok, reason = autoqueue.arm_release_for_task(
+            task,
+            ledger_path=tmp_path / "ledger.jsonl",
+            pr_number=42,
+            expected_head_sha="sha-42",
+            **kwargs,
+        )
+        assert ok is False
+    assert reason.startswith(
+        "current_pr_checks_unreadable:pr_release_evidence_transport_unavailable:"
+    )
+    assert "Next action: retry `gh pr view 42 --repo owner/repo" in reason
+    assert not (tmp_path / "ledger.jsonl").exists()
 
 
 @pytest.mark.parametrize(

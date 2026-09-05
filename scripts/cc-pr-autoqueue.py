@@ -1138,14 +1138,14 @@ def _fetch_status_check_rollup_graphql(
             runner=runner,
         )
     except (subprocess.TimeoutExpired, OSError) as exc:
-        # `run_graphql_rate_aware` has always been able to raise; what changed is that this path
-        # became the PRIMARY for release evidence on a GraphQL-routed cycle, so a boundary that
-        # was rarely reached is now on the hot path and would crash the whole reconcile. I did
-        # not introduce the raw boundary — I promoted it, which is its own kind of regression.
-        #
-        # Fail-closed, same as every other failure here: no evidence means no release.
-        LOG.warning("GraphQL release evidence unavailable for PR #%s: %s", pr_number, exc)
-        return False, "invalid_pr_release_evidence_payload", []
+        reason = (
+            f"pr_release_evidence_transport_unavailable:{type(exc).__name__}. "
+            f"Next action: retry `gh pr view {pr_number} --repo {repo} "
+            "--json headRefOid,statusCheckRollup`; if it still fails, check `gh auth status` "
+            "and `uv run python scripts/github_pr_status.py rate` before retrying the cycle."
+        )
+        LOG.warning("%s", reason)
+        return False, reason, []
     if proc.returncode != 0:
         return False, "invalid_pr_release_evidence_payload", []
     try:
@@ -1211,7 +1211,9 @@ def fetch_pr_release_evidence(
             repo_root=repo_root,
             runner=runner,
         )
-        return fallback if fallback[0] else (False, "invalid_pr_release_evidence_payload", set())
+        if fallback[0] or fallback[1].startswith("pr_release_evidence_transport_unavailable:"):
+            return fallback
+        return False, "invalid_pr_release_evidence_payload", set()
     head = payload.get("head") if isinstance(payload.get("head"), dict) else {}
     sha = _scalar(head.get("sha"))
     if not sha:
@@ -1221,7 +1223,9 @@ def fetch_pr_release_evidence(
             repo_root=repo_root,
             runner=runner,
         )
-        return fallback if fallback[0] else (False, "missing_head_sha", set())
+        if fallback[0] or fallback[1].startswith("pr_release_evidence_transport_unavailable:"):
+            return fallback
+        return False, "missing_head_sha", set()
     rollup = _fetch_status_check_rollup(
         pr_number,
         head_sha=sha,
@@ -2260,7 +2264,9 @@ def _release_head_boundary_blocker(
         route=route,
     )
     if not evidence_ok:
-        if current_head_sha in {
+        if current_head_sha.startswith(
+            "pr_release_evidence_transport_unavailable:"
+        ) or current_head_sha in {
             "invalid_pr_release_evidence_payload",
             "invalid_status_check_rollup",
         }:
@@ -2434,7 +2440,9 @@ def arm_release_for_task(
             route=route,
         )
         if not evidence_ok:
-            if current_head_sha in {
+            if current_head_sha.startswith(
+                "pr_release_evidence_transport_unavailable:"
+            ) or current_head_sha in {
                 "invalid_pr_release_evidence_payload",
                 "invalid_status_check_rollup",
             }:
@@ -3310,8 +3318,11 @@ def run_reconciler(
                 force_fresh_success=_decision_is_release_head_guard_subject(decision),
                 route=listing_route,
             )
+            # An unreadable status prevents new admission, but a known blocker still requires
+            # cancellation. merge_pr retains the existing dequeue revalidation below.
             if (
-                status_result is not None
+                decision.action not in {"dequeue", "disable_auto_merge"}
+                and status_result is not None
                 and not status_result[0]
                 and _admission_status_write_deferral_class(status_result[1])
                 == "admission_status_read_failed"

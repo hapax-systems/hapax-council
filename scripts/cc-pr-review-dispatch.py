@@ -32,6 +32,7 @@ from __future__ import annotations
 
 import argparse
 import fcntl
+import hashlib
 import json
 import logging
 import os
@@ -3031,6 +3032,9 @@ def review_pr(
             changed_file_count=pr_info.changed_file_count,
             repo_root=repo_root,
         )
+        dossier["diff_source"] = pr_diff.source
+        dossier["comparison_base"] = pr_diff.comparison_base
+        dossier["diff_sha256"] = hashlib.sha256(pr_diff.encode("utf-8")).hexdigest()
         # Durable evidence audit trail: exactly which prior-critical excerpts
         # were shown to reviewers, pinned to which head (sdlc-legibility —
         # receipts must reconstruct the evidence, not just the verdict).

@@ -515,6 +515,50 @@ class TestDryRun:
 
 
 class TestApply:
+    @pytest.mark.parametrize("field", ["diff_source", "comparison_base", "diff_sha256"])
+    @pytest.mark.parametrize("truncated", [False, True])
+    def test_persisted_dossier_records_refreshed_diff_provenance(
+        self, tmp_path: Path, field: str, truncated: bool
+    ) -> None:
+        comparison_base = "d" * 40
+
+        class LocalDiffGh(FakeGh):
+            def __call__(self, cmd: list[str], **kwargs: Any) -> subprocess.CompletedProcess:
+                if cmd[0] == "git":
+                    self.calls.append(list(cmd))
+                    if cmd[:2] == ["git", "merge-base"] and "--is-ancestor" not in cmd:
+                        return subprocess.CompletedProcess(cmd, 0, comparison_base, "")
+                    if cmd[:2] == ["git", "diff"]:
+                        assert cmd[-1] == f"{comparison_base}..{self.head_sha}"
+                        return subprocess.CompletedProcess(cmd, 0, self.diff, "")
+                    assert cmd[1] in {"fetch", "rev-parse", "cat-file", "merge-base"}
+                    return subprocess.CompletedProcess(cmd, 0, comparison_base, "")
+                return super().__call__(cmd, **kwargs)
+
+        gh = LocalDiffGh(base_sha="b" * 40)
+        gh.diff += "+café\n"
+        if truncated:
+            gh.diff += "+more\n" * 100_000
+            assert dispatch.truncate_diff(gh.diff) != gh.diff
+        result, _, _, note = _review(
+            tmp_path,
+            gh=gh,
+            route=dispatch.ListingRoute("graphql", True, "REST below floor"),
+        )
+        assert result["status"] == "dispatched"
+        assert any(cmd[:3] == ["git", "fetch", "--quiet"] for cmd in gh.calls)
+        persisted = yaml.safe_load(
+            (note.parent / "task-a.review-dossier.yaml").read_text(encoding="utf-8")
+        )
+        expected = {
+            "diff_source": "local-git",
+            "comparison_base": comparison_base,
+            "diff_sha256": sha256(gh.diff.encode("utf-8")).hexdigest(),
+        }
+        assert persisted.get(field) == expected[field], (field, persisted.get(field))
+        assert persisted["head_sha"] == gh.head_sha
+        assert persisted["dossier_schema"] == 1
+
     def test_three_reviewers_cross_family_dossier(self, tmp_path: Path) -> None:
         result, gh, reviewers, note = _review(tmp_path)
         assert result["status"] == "dispatched"

@@ -1976,6 +1976,44 @@ def test_a_real_empty_graphql_rollup_remains_a_determinate_result(tmp_path: Path
     )
 
 
+@pytest.mark.parametrize("hydrated_head", ["abc123", "head-B", "", None])
+@pytest.mark.parametrize("rest_remaining", [0, 3000])
+@pytest.mark.parametrize("with_checks", [True, False])
+def test_bulk_graphql_rollup_is_bound_to_the_listed_head(
+    tmp_path: Path, hydrated_head: str | None, rest_remaining: int, with_checks: bool
+) -> None:
+    fake = _BothTransportsRunner(rest_remaining=rest_remaining, graphql_remaining=4900)
+    check = {"name": "head-B-check", "status": "COMPLETED", "conclusion": "SUCCESS"}
+    checks = [check] if with_checks else []
+
+    def runner(cmd: list[str], **kwargs: Any) -> subprocess.CompletedProcess:
+        if cmd[:3] == ["gh", "pr", "view"]:
+            fake.calls.append(cmd)
+            payload = {"headRefOid": hydrated_head, "statusCheckRollup": checks}
+            return subprocess.CompletedProcess(cmd, 0, json.dumps(payload), "")
+        return fake(cmd, **kwargs)
+
+    if hydrated_head != "abc123" and rest_remaining == 0:
+        with pytest.raises(github_pr_status.GraphQLRollupFailed, match="head_sha_mismatch"):
+            github_pr_status.list_open_pr_statuses(
+                repo="owner/repo", repo_root=tmp_path, runner=runner
+            )
+        assert not any(cmd[:5] == ["gh", "api", "--method", "GET", "-H"] for cmd in fake.calls)
+    else:
+        rows, route = github_pr_status.list_open_pr_statuses(
+            repo="owner/repo", repo_root=tmp_path, runner=runner
+        )
+        if hydrated_head == "abc123":
+            assert route.transport == "graphql"
+            assert rows[0]["headRefOid"] == hydrated_head
+            assert rows[0]["statusCheckRollup"] == checks
+        else:
+            assert route.transport == "rest"
+            assert check not in rows[0]["statusCheckRollup"]
+    view = next(cmd for cmd in fake.calls if cmd[:3] == ["gh", "pr", "view"])
+    assert {"headRefOid", "statusCheckRollup"} <= set(view[-1].split(","))
+
+
 def test_single_pr_graphql_hydration_does_not_return_an_incomplete_row(tmp_path: Path) -> None:
     """Lineage must receive ``None`` so it can retry or record an unhydrated gap."""
     seen: list[list[str]] = []

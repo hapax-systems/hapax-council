@@ -30,6 +30,43 @@ def _load_lineage_module() -> ModuleType:
     return module
 
 
+def test_bulk_moved_head_refuses_lineage_collection(tmp_path: Path, monkeypatch: Any) -> None:
+    lineage = _load_lineage_module()
+    monkeypatch.setattr(lineage, "REPO_ROOT", tmp_path)
+
+    def runner(cmd: list[str], **_: Any) -> subprocess.CompletedProcess:
+        if cmd[:4] == ["gh", "api", "-i", "rate_limit"]:
+            payload = {
+                "resources": {
+                    "core": {"remaining": 0, "limit": 5000},
+                    "graphql": {"remaining": 4900, "limit": 5000},
+                }
+            }
+            return subprocess.CompletedProcess(cmd, 0, json.dumps(payload), "")
+        if cmd[:3] == ["gh", "pr", "list"]:
+            return subprocess.CompletedProcess(
+                cmd, 0, json.dumps([{"number": 42, "headRefOid": "old-head"}]), ""
+            )
+        assert cmd[:3] == ["gh", "pr", "view"], "REST is blocked"
+        return subprocess.CompletedProcess(
+            cmd,
+            0,
+            json.dumps(
+                {
+                    "headRefOid": "new-head",
+                    "statusCheckRollup": [{"name": "lint", "conclusion": "SUCCESS"}],
+                }
+            ),
+            "",
+        )
+
+    monkeypatch.setattr(lineage.subprocess, "run", runner)
+    with pytest.raises(
+        RuntimeError, match="head_sha_mismatch:pr=42:expected=old-head:returned=new-head"
+    ):
+        lineage.fetch_prs(limit=10, repo="owner/repo", pr_numbers={42})
+
+
 def test_collect_from_json_fixtures_writes_ledger_and_summary(tmp_path: Path) -> None:
     runs_json = tmp_path / "runs.json"
     prs_json = tmp_path / "prs.json"

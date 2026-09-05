@@ -987,6 +987,7 @@ _GRAPHQL_PR_LIST_FIELDS = (
 def _status_check_rollup_graphql(
     number: Any,
     *,
+    expected_head_sha: str,
     repo: str,
     repo_root: Path,
     runner: Any,
@@ -1002,7 +1003,16 @@ def _status_check_rollup_graphql(
     try:
         proc = _run(
             runner,
-            ["gh", "pr", "view", str(number), "--repo", repo, "--json", "statusCheckRollup"],
+            [
+                "gh",
+                "pr",
+                "view",
+                str(number),
+                "--repo",
+                repo,
+                "--json",
+                "headRefOid,statusCheckRollup",
+            ],
             repo_root=repo_root,
         )
     except (subprocess.TimeoutExpired, OSError) as exc:
@@ -1028,6 +1038,14 @@ def _status_check_rollup_graphql(
         raise GraphQLRollupFailed(
             f"github_graphql_rollup_malformed:pr={number}:statusCheckRollup expected list, "
             f"got {type(rollup).__name__}"
+        )
+    head_sha = payload.get("headRefOid")
+    if not expected_head_sha or head_sha != expected_head_sha:
+        raise GraphQLRollupFailed(
+            f"github_graphql_rollup_head_sha_mismatch:pr={number}:"
+            f"expected={expected_head_sha}:returned={head_sha}. "
+            "Next action: retry the listing to hydrate the current head; "
+            "checks from this response were not attached."
         )
     return rollup
 
@@ -1139,7 +1157,11 @@ def list_open_pr_statuses_graphql(
                 "autoMergeRequest": item.get("autoMergeRequest"),
                 "mergeStateStatus": _upper_or_none(item.get("mergeStateStatus")) or "UNKNOWN",
                 "statusCheckRollup": _status_check_rollup_graphql(
-                    number, repo=repo, repo_root=repo_root, runner=runner
+                    number,
+                    expected_head_sha=str(item.get("headRefOid") or ""),
+                    repo=repo,
+                    repo_root=repo_root,
+                    runner=runner,
                 )
                 if include_status
                 else [],
