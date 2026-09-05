@@ -842,7 +842,8 @@ def test_full_restore_carries_resolved_artifacts_through_phase_16(tmp_path: Path
     phase_positions = [result.stdout.index(f"=== Phase {phase}:") for phase in range(17)]
     assert phase_positions == sorted(phase_positions)
     compose_command = (
-        f"docker compose -f {tmp_path}/home/llm-stack/docker-compose.yml --profile full up -d"
+        f"docker compose -f {tmp_path / 'home' / 'llm-stack' / 'docker-compose.yml'}"
+        " --profile full up -d"
     )
     assert compose_command in commands
     assert commands.index(compose_command) < commands.index(
@@ -989,8 +990,8 @@ def test_full_restore_uses_the_tracked_compose_profile(tmp_path: Path, profile: 
     result, commands, _ = _run_full_restore(tmp_path, compose_profile=profile)
     assert result.returncode == 0, result.stderr
     assert (
-        f"docker compose -f {tmp_path}/home/llm-stack/docker-compose.yml --profile {profile} up -d"
-        in commands
+        f"docker compose -f {tmp_path / 'home' / 'llm-stack' / 'docker-compose.yml'}"
+        f" --profile {profile} up -d" in commands
     )
     assert "CachyOS Restore Complete" in result.stdout
 
@@ -1011,7 +1012,7 @@ def test_full_restore_refuses_missing_or_invalid_compose_profile(
 def test_full_restore_refuses_missing_secret_environment(tmp_path: Path, env_file: str) -> None:
     result, commands, root = _run_full_restore(tmp_path, omit_env_file=env_file)
     assert result.returncode != 0
-    assert f"{root}/home/backup-user/llm-stack/{env_file}" in result.stderr
+    assert "/".join((str(root), "home", "backup-user", "llm-stack", env_file)) in result.stderr
     assert "Phase 5" not in result.stdout
     assert not any(command.startswith("docker compose ") for command in commands)
     assert "CachyOS Restore Complete" not in result.stdout
@@ -1020,7 +1021,8 @@ def test_full_restore_refuses_missing_secret_environment(tmp_path: Path, env_fil
 def test_full_restore_verifies_environment_after_copy(tmp_path: Path) -> None:
     result, commands, _ = _run_full_restore(tmp_path, drop_copied_env=True)
     assert result.returncode != 0
-    assert f"environment file was not restored: {tmp_path}/home/llm-stack/.env" in result.stderr
+    missing_env = tmp_path / "home" / "llm-stack" / ".env"
+    assert f"environment file was not restored: {missing_env}" in result.stderr
     assert "Phase 5" not in result.stdout
     assert not any(command.startswith("docker compose ") for command in commands)
     assert "CachyOS Restore Complete" not in result.stdout
