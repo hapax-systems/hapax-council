@@ -5105,6 +5105,20 @@ from shared.adjudicator_identity import record_identifies_its_checkout  # noqa: 
 
 _ = (record_identifies_its_checkout,)
 
+# frame_verdicts: the work-selection dominator consults the frame's accountability verdicts from
+# scripts/hapax-methodology-dispatch — an extensionless script vulture never parses (see the note
+# at the end of this file). load_frame_verdicts and scope_within_decayed are called there, in
+# validate_task's frame_verdict_refusal; this is the second kind of entry — live machinery whose
+# only production caller is invisible to the scanner.
+from shared.frame_verdicts import (  # noqa: E402
+    load_frame_verdicts as _load_frame_verdicts,
+)
+from shared.frame_verdicts import (  # noqa: E402
+    scope_within_decayed as _scope_within_decayed,
+)
+
+_ = (_load_frame_verdicts, _scope_within_decayed)
+
 # Claim Verification Council dossier split (2026-09-02, row
 # cvc-dossier-evidence-not-process-trace-20260902): Pydantic invokes these `model_validator`s
 # dynamically to populate `evidentiary_rationale` / `process_trace` / `execution_receipt` from the

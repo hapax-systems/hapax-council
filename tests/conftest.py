@@ -9,10 +9,14 @@ Local files: profiles/operator.json, profiles/demo-personas.yaml, hapaxromana pa
 from __future__ import annotations
 
 import importlib
+import json
 import sys
+from datetime import UTC, datetime
 from pathlib import Path
 
 import pytest
+
+from shared import frame_verdicts as fv
 
 
 @pytest.fixture(autouse=True)
@@ -34,6 +38,63 @@ def _isolate_turn_timing_witness(tmp_path, monkeypatch):
         return _vw.record_turn_timing(**kwargs)
 
     monkeypatch.setattr("agents.hapax_daimonion.turn_budget.record_turn_timing", _redirected)
+
+
+@pytest.fixture(autouse=True, scope="session")
+def _frame_verdicts_default_root(tmp_path_factory: pytest.TempPathFactory):
+    """Every governed-dispatch validation consults the frame's verdicts (shared/frame_verdicts.py)
+    and refuses when they are absent or stale. Tests run without the vault, so the session gets a
+    fresh verdict set in which nothing is decayed; a test that wants a decayed member or a stale
+    epoch sets HAPAX_FRAME_PROCEDURE_ROOT itself (a function-scoped monkeypatch wins)."""
+    root = tmp_path_factory.mktemp("frame-procedure")
+    epoch = root / "_runs" / "epochs" / f"{datetime.now(UTC).strftime('%Y%m%dT%H%M%SZ')}-00000000"
+    epoch.mkdir(parents=True)
+    member = {"id": "nothing", "location": {"path": str(root / "nothing")}}
+    (epoch / "elements.json").write_text(
+        json.dumps(
+            [
+                {
+                    "id": "frame:relevance-report",
+                    "kind": "relevance_report",
+                    "payload": {
+                        "verdicts": [
+                            {
+                                "subject": {"member_id": "nothing"},
+                                "relation": relation,
+                                "verdict": "FALSE" if relation == "scope_exited" else "UNKNOWN",
+                                "projection": "frame-reduction",
+                            }
+                            for relation in sorted(fv.ALL_RELATIONS)
+                        ]
+                    },
+                }
+            ]
+        ),
+        encoding="utf-8",
+    )
+    (root / "declaration").mkdir()
+    (root / "declaration" / "mass.yaml").write_text(
+        json.dumps({"projection": "frame-reduction", "members": [member]}), encoding="utf-8"
+    )
+    (epoch / "coverage.json").write_text(
+        json.dumps(
+            [
+                {
+                    "member_id": "nothing",
+                    "member_declaration_identity": fv._member_declaration_identity(member, []),
+                }
+            ]
+        ),
+        encoding="utf-8",
+    )
+    (epoch / "publish.json").write_text(
+        json.dumps({"epoch": epoch.name, "swapped": True, "reason": "test fixture"}),
+        encoding="utf-8",
+    )
+    (root / "_runs" / "current").symlink_to(Path("epochs") / epoch.name)
+    with pytest.MonkeyPatch.context() as patch:
+        patch.setenv("HAPAX_FRAME_PROCEDURE_ROOT", str(root))
+        yield
 
 
 # Packages that require optional extras

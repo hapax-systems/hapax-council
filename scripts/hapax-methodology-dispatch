@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import argparse
 import functools
+import hashlib
 import json
 import os
 import re
@@ -13,7 +14,7 @@ import subprocess
 import sys
 import time
 from collections.abc import Callable
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
@@ -31,6 +32,7 @@ from executor_contract import (  # noqa: E402
     supports_route,
 )
 
+from shared import frame_verdicts
 from shared.capability_adapter_protocol import (
     AgyAdapter,
     AuthorityViolation,
@@ -253,6 +255,7 @@ RECEIPT_ONLY_ROUTE = PlatformPath(
 class TaskNote:
     path: Path
     fields: dict[str, Any]
+    note_sha256: str | None = None
 
 
 @dataclass
@@ -262,6 +265,11 @@ class Validation:
     task: TaskNote | None = None
     parent_spec_path: Path | None = None
     exempt_read_only: bool = False
+    #: the frame epoch whose verdicts this validation consulted, so an ADMITTED dispatch's receipt
+    #: shows the frame was read (a guard visible only when it refuses is presence, not use)
+    frame_epoch: str | None = None
+    frame_decayed_members: tuple[str, ...] = ()
+    frame_unavailable: dict[str, str | None] | None = None
 
 
 @dataclass(frozen=True)
@@ -536,7 +544,12 @@ def read_task(task_root: Path, task_id: str) -> TaskNote | None:
     candidates = [active / f"{task_id}.md", *sorted(active.glob(f"{task_id}-*.md"))]
     for candidate in candidates:
         if candidate.is_file():
-            return TaskNote(candidate, parse_frontmatter(candidate.read_text(encoding="utf-8")))
+            note_bytes = candidate.read_bytes()
+            return TaskNote(
+                candidate,
+                parse_frontmatter(note_bytes.decode("utf-8")),
+                hashlib.sha256(note_bytes).hexdigest(),
+            )
     return None
 
 
@@ -1038,6 +1051,72 @@ def _validate_system_drain(
     return Validation(True, f"system-drain eligible ({why})", task, None, exempt_read_only=True)
 
 
+def frame_verdict_refusal(
+    fields: dict[str, Any], *, unavailable_evidence: dict[str, str | None] | None = None
+) -> tuple[str | None, str | None, tuple[str, ...]]:
+    """The frame's verdicts, consulted here because governed dispatch is the work-selection
+    dominator for every worker whose only launch path is this script (FRAME-PRODUCER §B2).
+
+    Refuses (1) when the verdict set cannot be consulted — absent, stale, malformed — naming
+    the producer, and (2) when every declared mutation surface lies inside a member the accepted
+    epoch at ``_runs/current`` marks TRUE for superseded, discharged, scope_exited, absorbed,
+    contradicted, context_lost or unconsulted. A newer rejected attempt does not govern.
+    Work on a surface out of accountability is the ad hoc expediency the reduction exists to end.
+    A scope partly inside a decayed member
+    is admitted (moving things out of one is legitimate work). No declared scope: nothing for
+    this reader to judge; the route-metadata gate owns that refusal.
+    """
+    try:
+        verdicts = frame_verdicts.load_frame_verdicts()
+    except frame_verdicts.FrameVerdictsUnavailable as exc:
+        if unavailable_evidence is not None:
+            unavailable_evidence.update(
+                reason=exc.reason,
+                remedy=exc.remedy,
+                frame_epoch=exc.frame_epoch,
+                frame_root_resolved=exc.frame_root_resolved,
+            )
+        return (
+            "frame verdicts unavailable at the work-selection point: "
+            f"{exc.reason}. Next: {exc.remedy}",
+            None,
+            (),
+        )
+    decayed = tuple(sorted({m.member_id for m in verdicts.decayed}))
+    refs = _operator_gate_mutation_scope_refs(fields)
+    if not refs:
+        return None, verdicts.epoch, decayed
+    try:
+        scope = frame_verdicts.scope_within_decayed(
+            refs,
+            verdicts,
+            council_root=REPO_ROOT_FOR_IMPORTS,
+        )
+    except frame_verdicts.NonCanonicalScopeRef as exc:
+        # The error type identifies whether to repair the task scope or the member declaration.
+        consulted = "; ".join(f"{m.member_id} ({m.relation})" for m in verdicts.decayed)
+        return (
+            f"declared mutation scope is not containable: {exc}. "
+            f"Frame epoch {verdicts.epoch}; consulted decayed members: {consulted}. "
+            f"Next: {exc.remedy}",
+            verdicts.epoch,
+            decayed,
+        )
+    if not scope.all_inside:
+        return None, verdicts.epoch, decayed
+    detail = "; ".join(f"{m.ref} lies in {m.member_id} ({m.relation})" for m in scope.matches)
+    return (
+        (
+            f"frame epoch {verdicts.epoch} marks every declared mutation surface out of "
+            f"accountability: {detail}. Next: re-declare mutation_scope_refs on a live surface, or "
+            f"re-witness the member in {frame_verdicts.MASS_DECLARATION_LOCATION} "
+            "and re-run the frame producer"
+        ),
+        verdicts.epoch,
+        decayed,
+    )
+
+
 def validate_task(
     *,
     task_id: str,
@@ -1140,7 +1219,23 @@ def validate_task(
         if not ok:
             return Validation(False, reason, task, parent_spec_path, exempt)
 
-    return Validation(True, "eligible", task, parent_spec_path, exempt)
+    frame_unavailable: dict[str, str | None] = {}
+    frame_refusal, frame_epoch, frame_decayed = frame_verdict_refusal(
+        fields, unavailable_evidence=frame_unavailable
+    )
+    if frame_refusal is not None:
+        return Validation(
+            False,
+            frame_refusal,
+            task,
+            parent_spec_path,
+            exempt,
+            frame_epoch,
+            frame_decayed,
+            frame_unavailable or None,
+        )
+
+    return Validation(True, "eligible", task, parent_spec_path, exempt, frame_epoch, frame_decayed)
 
 
 def build_prompt(
@@ -1238,7 +1333,15 @@ def write_receipt(
     durable_binding: DurableDispatchBinding | None = None,
     dispatch_launch: DispatchLaunchResult | None = None,
     route_policy_reason_codes: list[str] | None = None,
+    invocation_id: str | None = None,
 ) -> Path:
+    """Record this validation's predicate, consulted frame evidence and input binding.
+
+    invocation_id correlates a caller's attempt; task_note_sha256 binds the exact bytes
+    parsed for that attempt, including on refusal. Keeping both on the predicate row
+    distinguishes retries and substituted notes. does_not_prove explicitly limits the
+    caller's correlation token: it proves neither identity nor authority.
+    """
     ledger_dir = orchestration_ledger_dir()
     ledger_dir.mkdir(parents=True, exist_ok=True)
     path = ledger_dir / "methodology-dispatch.jsonl"
@@ -1247,6 +1350,7 @@ def write_receipt(
         "event": "methodology_dispatch",
         "timestamp": now_utc(),
         "task_id": task_id,
+        "invocation_id": invocation_id,
         "lane": lane,
         "platform": platform,
         "mode": mode,
@@ -1257,10 +1361,14 @@ def write_receipt(
         "ok": validation.ok,
         "reason": validation.reason,
         "task_path": str(validation.task.path) if validation.task else None,
+        "task_note_sha256": validation.task.note_sha256 if validation.task else None,
         "parent_spec_path": str(validation.parent_spec_path)
         if validation.parent_spec_path
         else None,
         "exempt_read_only": validation.exempt_read_only,
+        "frame_epoch": validation.frame_epoch,
+        "frame_decayed_members": list(validation.frame_decayed_members),
+        "frame_unavailable": validation.frame_unavailable,
         "launched": launched,
         "launch_returncode": launch_returncode,
         "prompt": prompt,
@@ -1283,6 +1391,9 @@ def write_receipt(
         record["route_decision_receipt_path"] = (
             str(route_decision_receipt_path) if route_decision_receipt_path else None
         )
+    record.setdefault("does_not_prove", []).append(
+        "invocation_id: correlation token supplied by the caller; not an identity, not an authority"
+    )
     record["dispatch_host"] = effective_dispatch_host(platform, mode)
     with path.open("a", encoding="utf-8") as fh:
         fh.write(json.dumps(record, sort_keys=True) + "\n")
@@ -1980,19 +2091,14 @@ def run_system_drain(args: argparse.Namespace, task_root: Path) -> int:
         if args.no_receipt:
             return
         write_receipt(
+            invocation_id=getattr(args, "invocation_id", None),
             task_id=args.task,
             lane=SYSTEM_DRAIN_LANE,
             platform=args.platform,
             mode=args.mode,
             profile=args.profile,
             route=None,
-            validation=Validation(
-                False,
-                reason,
-                validation.task,
-                validation.parent_spec_path,
-                validation.exempt_read_only,
-            ),
+            validation=replace(validation, ok=False, reason=reason),
             prompt=None,
             launched=False,
             launch_returncode=rc,
@@ -2021,6 +2127,7 @@ def run_system_drain(args: argparse.Namespace, task_root: Path) -> int:
 
     if not args.no_receipt:
         write_receipt(
+            invocation_id=getattr(args, "invocation_id", None),
             task_id=args.task,
             lane=SYSTEM_DRAIN_LANE,
             platform=args.platform,
@@ -2036,10 +2143,24 @@ def run_system_drain(args: argparse.Namespace, task_root: Path) -> int:
     return 0
 
 
+def invocation_id_token(value: str) -> str:
+    if re.fullmatch(r"[A-Za-z0-9._:-]{1,128}", value) is None:
+        raise argparse.ArgumentTypeError(
+            "must be 1-128 characters from [A-Za-z0-9._:-]. Next: supply a bounded printable "
+            "correlation token with --invocation-id, or omit the option"
+        )
+    return value
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--task", help="Explicit cc-task id to dispatch")
     parser.add_argument("--lane", help="Target lane, e.g. beta or cx-red")
+    parser.add_argument(
+        "--invocation-id",
+        type=invocation_id_token,
+        help="Caller correlation token: 1-128 characters from [A-Za-z0-9._:-]; no authority",
+    )
     parser.add_argument(
         "--platform",
         default="claude",
@@ -2184,6 +2305,7 @@ def main(argv: list[str] | None = None) -> int:
         task_for_receipt = read_task(task_root, args.task)
         if not args.no_receipt:
             write_receipt(
+                invocation_id=args.invocation_id,
                 task_id=args.task,
                 lane=args.lane,
                 platform=args.platform,
@@ -2222,6 +2344,7 @@ def main(argv: list[str] | None = None) -> int:
     if not validation.ok:
         if not args.no_receipt:
             write_receipt(
+                invocation_id=args.invocation_id,
                 task_id=args.task,
                 lane=args.lane,
                 platform=args.platform,
@@ -2243,15 +2366,10 @@ def main(argv: list[str] | None = None) -> int:
                 ok = False
                 reason = metadata_reason
         if not ok:
-            blocked = Validation(
-                False,
-                reason,
-                validation.task,
-                validation.parent_spec_path,
-                validation.exempt_read_only,
-            )
+            blocked = replace(validation, ok=False, reason=reason)
             if not args.no_receipt:
                 write_receipt(
+                    invocation_id=args.invocation_id,
                     task_id=args.task,
                     lane=args.lane,
                     platform=args.platform,
@@ -2270,15 +2388,10 @@ def main(argv: list[str] | None = None) -> int:
         assert route is not None
         if args.launch:
             reason = "receipt-only mode does not launch lanes"
-            blocked = Validation(
-                False,
-                reason,
-                validation.task,
-                validation.parent_spec_path,
-                validation.exempt_read_only,
-            )
+            blocked = replace(validation, ok=False, reason=reason)
             if not args.no_receipt:
                 write_receipt(
+                    invocation_id=args.invocation_id,
                     task_id=args.task,
                     lane=args.lane,
                     platform=args.platform,
@@ -2305,6 +2418,7 @@ def main(argv: list[str] | None = None) -> int:
             print(prompt)
         if not args.no_receipt:
             write_receipt(
+                invocation_id=args.invocation_id,
                 task_id=args.task,
                 lane=args.lane,
                 platform=args.platform,
@@ -2359,15 +2473,10 @@ def main(argv: list[str] | None = None) -> int:
     if route_decision.action is not DispatchAction.LAUNCH:
         _emit_gate_event(route_decision, policy_request, task_fields, gate_result="reject")
         route_reason = f"route policy {route_decision.action.value}: {route_decision.message}"
-        blocked = Validation(
-            False,
-            route_reason,
-            validation.task,
-            validation.parent_spec_path,
-            validation.exempt_read_only,
-        )
+        blocked = replace(validation, ok=False, reason=route_reason)
         if not args.no_receipt:
             write_receipt(
+                invocation_id=args.invocation_id,
                 task_id=args.task,
                 lane=args.lane,
                 platform=args.platform,
@@ -2390,15 +2499,10 @@ def main(argv: list[str] | None = None) -> int:
     if selected_route is None:
         reason = _unsupported_selected_route_reason(route_decision)
         assert reason is not None
-        blocked = Validation(
-            False,
-            reason,
-            validation.task,
-            validation.parent_spec_path,
-            validation.exempt_read_only,
-        )
+        blocked = replace(validation, ok=False, reason=reason)
         if not args.no_receipt:
             write_receipt(
+                invocation_id=args.invocation_id,
                 task_id=args.task,
                 lane=args.lane,
                 platform=args.platform,
@@ -2417,15 +2521,10 @@ def main(argv: list[str] | None = None) -> int:
         return 10
     compatibility_reason = platform_lane_compatibility_reason(args.lane, selected_route)
     if compatibility_reason is not None:
-        blocked = Validation(
-            False,
-            compatibility_reason,
-            validation.task,
-            validation.parent_spec_path,
-            validation.exempt_read_only,
-        )
+        blocked = replace(validation, ok=False, reason=compatibility_reason)
         if not args.no_receipt:
             write_receipt(
+                invocation_id=args.invocation_id,
                 task_id=args.task,
                 lane=args.lane,
                 platform=selected_route.platform,
@@ -2461,15 +2560,10 @@ def main(argv: list[str] | None = None) -> int:
         )
     if not durable_binding.ok and args.launch:
         reason = f"durable MQ authority binding required: {durable_binding.reason}"
-        blocked = Validation(
-            False,
-            reason,
-            validation.task,
-            validation.parent_spec_path,
-            validation.exempt_read_only,
-        )
+        blocked = replace(validation, ok=False, reason=reason)
         if not args.no_receipt:
             write_receipt(
+                invocation_id=args.invocation_id,
                 task_id=args.task,
                 lane=args.lane,
                 platform=args.platform,
@@ -2594,15 +2688,10 @@ def main(argv: list[str] | None = None) -> int:
                 rc = dispatch_launch.launch_returncode
             except AuthorityViolation as exc:
                 reason = f"capability adapter launch refused: {exc}"
-                blocked = Validation(
-                    False,
-                    reason,
-                    validation.task,
-                    validation.parent_spec_path,
-                    validation.exempt_read_only,
-                )
+                blocked = replace(validation, ok=False, reason=reason)
                 if not args.no_receipt:
                     write_receipt(
+                        invocation_id=args.invocation_id,
                         task_id=args.task,
                         lane=args.lane,
                         platform=args.platform,
@@ -2620,15 +2709,10 @@ def main(argv: list[str] | None = None) -> int:
                 return 10
             except CoordDispatchError as exc:
                 reason = f"atomic dispatch launch failed: {exc.reason}"
-                blocked = Validation(
-                    False,
-                    reason,
-                    validation.task,
-                    validation.parent_spec_path,
-                    validation.exempt_read_only,
-                )
+                blocked = replace(validation, ok=False, reason=reason)
                 if not args.no_receipt:
                     write_receipt(
+                        invocation_id=args.invocation_id,
                         task_id=args.task,
                         lane=args.lane,
                         platform=args.platform,
@@ -2649,6 +2733,7 @@ def main(argv: list[str] | None = None) -> int:
 
         if not args.no_receipt:
             write_receipt(
+                invocation_id=args.invocation_id,
                 task_id=args.task,
                 lane=args.lane,
                 platform=args.platform,
@@ -2668,6 +2753,7 @@ def main(argv: list[str] | None = None) -> int:
 
     if not args.no_receipt:
         write_receipt(
+            invocation_id=args.invocation_id,
             task_id=args.task,
             lane=args.lane,
             platform=args.platform,

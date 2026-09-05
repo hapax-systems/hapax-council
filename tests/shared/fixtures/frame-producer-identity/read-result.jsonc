@@ -1,0 +1,19 @@
+{
+  "producer_commit": "f8f19c0656b7917025c5ee65775481bcb9203e97", // pragma: allowlist secret
+  "enumerated_units": 4,
+  "excluded_units": 1,
+  "bytes_read": 9,
+  "observations": [
+    {
+      "unit_id": "nested/two.md",
+      "content_hex": "cebb0a"
+    },
+    {
+      "unit_id": "one.md",
+      "content_hex": "636166c3a90a"
+    }
+  ],
+  "residue": [
+    "tree/excluded/generated.md: excluded-by-declaration (fixture-generated, receipt fixture:generated-residue)"
+  ]
+}
