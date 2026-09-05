@@ -454,6 +454,66 @@ def fake_boundary(monkeypatch):
     return module, calls, removed
 
 
+@pytest.mark.parametrize("client_exit", [0, 7], ids=["success", "failure"])
+def test_cleanup_failure_keeps_the_client_result_and_names_the_directory(
+    fake_boundary, monkeypatch, capsys, client_exit
+):
+    module, calls, removed = fake_boundary
+    original_run = module.subprocess.run
+
+    def run(argv, **kwargs):
+        if argv[0] == "claude":
+            calls.append((argv, kwargs))
+            return subprocess.CompletedProcess(argv, client_exit)
+        return original_run(argv, **kwargs)
+
+    def fail_rmtree(path):
+        removed.append(path)
+        raise PermissionError(13, "Permission denied", path)
+
+    monkeypatch.setattr(module.subprocess, "run", run)
+    monkeypatch.setattr(module.shutil, "rmtree", fail_rmtree)
+    rc = module.main(["-p", "synthetic brief"])
+    captured = capsys.readouterr()
+    assert rc == client_exit  # the client's own result is never replaced by the cleanup error
+    assert removed == ["/synthetic/isolation"]
+    assert captured.out == "" and FAKE_KEY not in captured.err
+    assert len(captured.err.splitlines()) == 1
+    assert "cleanup_failed" in captured.err and "PermissionError" in captured.err
+    assert "/synthetic/isolation" in captured.err and "rm -rf /synthetic/isolation" in captured.err
+    assert "TMPDIR" in captured.err and "retry" in captured.err
+
+
+def test_cleanup_failure_after_a_launch_failure_reports_both(fake_boundary, monkeypatch, capsys):
+    module, calls, removed = fake_boundary
+    original_run = module.subprocess.run
+
+    def fail_client(argv, **kwargs):
+        if argv[0] == "claude":
+            raise FileNotFoundError(FAKE_KEY)
+        return original_run(argv, **kwargs)
+
+    def fail_rmtree(path):
+        removed.append(path)
+        raise OSError(30, "Read-only file system", path)
+
+    monkeypatch.setattr(module.subprocess, "run", fail_client)
+    monkeypatch.setattr(module.shutil, "rmtree", fail_rmtree)
+    rc = module.main(["-p", "synthetic brief"])
+    captured = capsys.readouterr()
+    assert rc == 3
+    assert removed == ["/synthetic/isolation"]
+    assert FAKE_KEY not in captured.err
+    lines = captured.err.splitlines()
+    assert len(lines) == 2
+    assert "claude" in lines[0] and "PATH" in lines[0]
+    assert (
+        "cleanup_failed" in lines[1]
+        and "OSError" in lines[1]
+        and "/synthetic/isolation" in lines[1]
+    )
+
+
 @pytest.mark.parametrize("args", [["-p", "synthetic brief"], ["--check"]], ids=["run", "check"])
 def test_missing_secret_helper_names_install_action(fake_boundary, monkeypatch, capsys, args):
     module, calls, removed = fake_boundary

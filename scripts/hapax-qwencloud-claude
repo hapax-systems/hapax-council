@@ -220,7 +220,25 @@ def main(argv: Sequence[str] | None = None) -> int:
         _error(CLIENT_STARTUP_REMEDY)
         return 3
     finally:
+        _remove_isolated_home(iso_home)
+
+
+def _remove_isolated_home(iso_home: str) -> None:
+    """Remove the isolated HOME; a removal failure is reported with its remedy, never raised.
+
+    An exception escaping the ``finally`` would replace the client's own result with a
+    bare traceback and hide which directory survived. The client's exit code stands; the
+    operator is told exactly what remains and how to remove it. The directory holds the
+    client's isolated state (the key is passed only through the environment).
+    """
+    try:
         shutil.rmtree(iso_home)
+    except OSError as exc:
+        _error(
+            f"cleanup_failed: the isolated temporary directory {iso_home} could not be "
+            f"removed ({type(exc).__name__}); the client's result stands; remove it by "
+            f"hand (rm -rf {iso_home}) and check that TMPDIR is writable, then retry"
+        )
 
 
 if __name__ == "__main__":
