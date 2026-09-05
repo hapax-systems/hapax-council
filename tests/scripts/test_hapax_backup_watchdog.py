@@ -5,6 +5,10 @@ import pathlib
 import subprocess
 from datetime import UTC, datetime, timedelta
 
+import pytest
+
+from tests.scripts.backup_test_support import run_watchdog
+
 REPO_ROOT = pathlib.Path(__file__).resolve().parents[2]
 SCRIPT = REPO_ROOT / "scripts" / "hapax-backup-watchdog"
 GDRIVE_SCRIPT = REPO_ROOT / "scripts" / "hapax-backup-gdrive-critical"
@@ -82,30 +86,10 @@ class TestWatchdogScript:
         assert "implausibly small" in text
 
     def test_dump_check_fails_when_restic_listing_has_no_dump(self, tmp_path, monkeypatch):
-        text = SCRIPT.read_text()
-        start = text.index("check_postgres_dump_in_snapshot() {")
-        end = text.index("\n}\n", start) + 3
-        probe = tmp_path / "probe.sh"
-        bin_dir = tmp_path / "bin"
-        bin_dir.mkdir()
-        (bin_dir / "pass").write_text("#!/usr/bin/env bash\necho secret\n", encoding="utf-8")
-        (bin_dir / "restic").write_text("#!/usr/bin/env bash\nexit 0\n", encoding="utf-8")
-        (bin_dir / "pass").chmod(0o755)
-        (bin_dir / "restic").chmod(0o755)
-        probe.write_text(
-            "#!/usr/bin/env bash\nset -euo pipefail\n"
-            "FAILURES=()\nlog() { :; }\n"
-            + text[start:end]
-            + "check_postgres_dump_in_snapshot repo lbl entry\n"
-            + 'printf "%s\\n" "${FAILURES[@]}"\n'
-            + "exit ${#FAILURES[@]}\n",
-            encoding="utf-8",
-        )
-        probe.chmod(0o755)
-        env = {**__import__("os").environ, "PATH": f"{bin_dir}:{__import__('os').environ['PATH']}"}
-        result = subprocess.run([str(probe)], capture_output=True, text=True, timeout=10, env=env)
+        result, _, receipt = run_watchdog(tmp_path, listing_mode="absent")
         assert result.returncode == 1
-        assert "NO postgres-all.sql" in result.stdout
+        assert "Tier2-B2: newest snapshot contains NO postgres-all.sql" in result.stdout
+        assert "Tier2-B2: newest snapshot contains NO postgres-all.sql" in receipt
 
     @staticmethod
     def _run_b2_failure(tmp_path: pathlib.Path, mode: str) -> subprocess.CompletedProcess[str]:
@@ -131,9 +115,9 @@ case "${1:-}" in
             exit 11
         fi
         if [ "$is_b2" = 1 ] && [ "$B2_MODE" = stale ]; then
-            printf '[{"time":"%s"}]\n' "$STALE_TIME"
+            printf '[{"id":"abcdef0123456789","time":"%s"}]\n' "$STALE_TIME"
         else
-            printf '[{"time":"%s"}]\n' "$RECENT_TIME"
+            printf '[{"id":"abcdef0123456789","time":"%s"}]\n' "$RECENT_TIME"
         fi
         ;;
     check)
@@ -165,6 +149,7 @@ esac
         env.update(
             {
                 "B2_MODE": mode,
+                "HAPAX_MONOCLE_MAX_AGE_HOURS": "96",
                 "HAPAX_ALERT_BIN": str(alert),
                 "HAPAX_GDRIVE_CRITICAL_REPO": "gdrive",
                 "HAPAX_POSTGRES_DUMP_MIN_BYTES": "100",
@@ -438,3 +423,115 @@ class TestGDriveCriticalSystemdUnits:
         assert "Install" in unit
         assert "# Hapax-Auto-Enable: true" not in GDRIVE_TIMER.read_text()
         assert "enable hapax-backup-gdrive-critical.timer" not in USER_PRESET.read_text()
+
+
+@pytest.mark.parametrize("own_age,foreign_age,healthy", [(72, 0, False), (0, 72, True)])
+def test_round4_freshness_belongs_to_exact_producer(tmp_path, own_age, foreign_age, healthy):
+    result, commands, _ = run_watchdog(
+        tmp_path,
+        ages={
+            "tier2-remote": own_age,
+            "monocle-daily": foreign_age,
+            "foreign-host": foreign_age,
+            "foreign-tag": foreign_age,
+        },
+        monocle_threshold="96",
+    )
+    if healthy:
+        assert result.returncode == 0
+        assert "Tier2-B2: OK" in result.stdout
+    else:
+        assert result.returncode == 1, "foreign snapshot hid stale podium producer"
+        assert "Tier2-B2: latest snapshot is 72h old" in result.stdout
+    for host, tag in [
+        ("hapax-podium", "tier1-local"),
+        ("hapax-podium", "tier2-remote"),
+        ("hapax-podium", "gdrive-critical"),
+    ]:
+        assert any(
+            row["args"][0] == "snapshots"
+            and "--host" in row["args"]
+            and host in row["args"]
+            and "--tag" in row["args"]
+            and tag in row["args"]
+            for row in commands
+        )
+
+
+def test_round4_missing_own_snapshot_is_named_failure(tmp_path):
+    result, _, receipt = run_watchdog(tmp_path, ages={"tier2-remote": None})
+    assert result.returncode == 1
+    assert "Tier2-B2: no snapshots found for hapax-podium/tier2-remote" in receipt
+
+
+@pytest.mark.parametrize("mode", ["present", "absent", "failed", "foreign-only"])
+def test_round4_dump_listing_reports_selected_snapshot_outcome(tmp_path, mode):
+    result, commands, receipt = run_watchdog(tmp_path, listing_mode=mode)
+    if mode == "present":
+        assert result.returncode == 0
+        assert "Tier2-B2: postgres dump present, 1000 bytes" in receipt
+    elif mode in ("absent", "foreign-only"):
+        assert result.returncode == 1
+        assert "Tier2-B2: newest snapshot contains NO postgres-all.sql" in receipt
+        assert "listing failed" not in receipt
+    else:
+        assert result.returncode == 1
+        assert (
+            "Tier2-B2: PostgreSQL listing failed (restic exit 23): simulated listing denied"
+            in receipt
+        )
+        assert "NO postgres-all.sql" not in receipt
+    listings = [row["args"] for row in commands if row["repo"] == "b2" and row["args"][0] == "ls"]
+    assert len(listings) == 1
+    assert f"{2:064x}" in listings[0], "dump check did not use podium freshness snapshot ID"
+    assert "latest" not in listings[0]
+
+
+@pytest.mark.parametrize("mode", ["locked", "locked-legacy", "corrupt"])
+def test_round4_integrity_distinguishes_lock_from_corruption(tmp_path, mode):
+    result, commands, receipt = run_watchdog(tmp_path, check_mode=mode)
+    assert result.returncode == 1
+    if mode.startswith("locked"):
+        assert "Tier1-NAS: locked / could not acquire the lock" in receipt
+        assert "corruption" not in receipt
+        assert "hapax-backup-local.service" in receipt
+        assert "restic unlock" in receipt and "operator" in receipt
+    else:
+        assert "possible repo corruption" in receipt
+        assert "pack checksum mismatch" in receipt
+    assert not any("unlock" in row["args"] for row in commands)
+
+
+def test_round4_monocle_has_independent_freshness_receipt(tmp_path):
+    result, _, receipt = run_watchdog(tmp_path, ages={"tier2-remote": 0, "monocle-daily": 72})
+    assert result.returncode == 1, "stale Monocle producer was not checked"
+    assert "Tier2-B2: OK" in receipt
+    assert "Monocle-B2: latest snapshot is 72h old (max 36h)" in receipt
+
+
+@pytest.mark.parametrize("threshold", [None, "", "oops", "0", "-1"])
+def test_round4_monocle_threshold_must_be_configured(tmp_path, threshold):
+    result, _, receipt = run_watchdog(tmp_path, monocle_threshold=threshold)
+    assert result.returncode == 1
+    assert "Monocle-B2: configuration failure" in receipt
+    assert "HAPAX_MONOCLE_MAX_AGE_HOURS" in receipt
+
+
+def test_round4_every_password_failure_reaches_summary_and_receipt_in_order(tmp_path):
+    result, _, receipt = run_watchdog(tmp_path, fail_entries=("nas-password", "b2-password"))
+    assert result.returncode == 1
+    first = "Tier1-NAS freshness: cannot read restic password from pass entry 'nas-password'"
+    second = "Tier2-B2 freshness: cannot read restic password from pass entry 'b2-password'"
+    for output in (result.stdout, receipt):
+        assert first in output, "first failed password check diagnostic was lost"
+        assert second in output, "second failed password check diagnostic was lost"
+        assert output.index(first) < output.index(second)
+        assert "Tier1-NAS integrity: cannot read restic password" in output
+        assert "Tier2-B2 PostgreSQL: cannot read restic password" in output
+
+
+def test_round4_missing_monocle_snapshot_is_independent_failure(tmp_path):
+    result, _, receipt = run_watchdog(tmp_path, ages={"monocle-daily": None})
+    assert result.returncode == 1
+    assert "Tier2-B2: OK" in receipt
+    assert "Monocle-B2: no snapshots found for hapax-monocle/monocle-daily" in receipt

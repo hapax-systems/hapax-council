@@ -510,6 +510,12 @@ def _run_full_restore(
     empty_council_checkout: bool = False,
     fail_compose: bool = False,
     drop_copied_env: bool = False,
+    drop_phase12_env: bool = False,
+    signature_mode: str = "canonical",
+    existing_b2: bool = False,
+    nas_mode: str = "existing",
+    supplied_nas_password: bool = False,
+    restore_snapshot: str = "latest",
 ) -> tuple[subprocess.CompletedProcess[str], list[str], Path]:
     home = tmp_path / "home"
     restore_root = tmp_path / "restore-root"
@@ -527,7 +533,7 @@ def _run_full_restore(
     )
     compose_contract.write_text(contract_text)
     home.mkdir()
-    if omit_env_file or omit_stack:
+    if omit_env_file == ".env" or omit_stack:
         # A pre-existing destination must not hide missing recovery inputs.
         (home / "llm-stack").mkdir()
         for env_file in (".env", ".envrc"):
@@ -570,14 +576,37 @@ def _run_full_restore(
     rclone_config = home / ".config" / "rclone" / "rclone.conf"
     rclone_config.parent.mkdir(parents=True)
     rclone_config.write_text("active-b2-config\n", encoding="utf-8")
-    stale_pass_entry = pass_state / "backups" / "restic-password"
-    stale_pass_entry.parent.mkdir(parents=True)
-    stale_pass_entry.write_text("stale\n", encoding="utf-8")  # pragma: allowlist secret
+    nas_entry = pass_state / "backups" / "restic-password"
+    nas_entry.parent.mkdir(parents=True)
+    if nas_mode != "absent":
+        nas_entry.write_text("nas-fixture\n")  # pragma: allowlist secret
+    if existing_b2:
+        b2_entry = pass_state / "backblaze" / "restic-password"
+        b2_entry.parent.mkdir(parents=True)
+        b2_entry.write_text("b2-recovered-fixture\n")  # pragma: allowlist secret
+    # Model pass's encrypted-entry existence separately from decryption success.
+    password_store = home / ".password-store"
+    password_store.mkdir()
+    for entry in pass_state.rglob("*"):
+        if entry.is_file():
+            marker = password_store / (str(entry.relative_to(pass_state)) + ".gpg")
+            marker.parent.mkdir(parents=True, exist_ok=True)
+            marker.touch()
 
     _write_executable(
         fake_bin / "restic",
         """#!/bin/sh
 set -eu
+printf 'restic %s\n' "$*" >> "$COMMAND_LOG"
+if [ "${1:-}" = -r ]; then
+    if [ "$RESTIC_PASSWORD" = "$(cat "$PASS_STATE/backups/restic-password")" ] &&
+       [ "$RESTIC_PASSWORD" = nas-fixture ]; then
+        printf '%s\n' 'NAS credential matched' >> "$COMMAND_LOG"
+    else
+        printf '%s\n' 'NAS credential mismatch' >> "$COMMAND_LOG"
+        exit 19
+    fi
+fi
 if [ "${1:-}" = restore ]; then
     target=
     while [ "$#" -gt 0 ]; do
@@ -613,12 +642,19 @@ exit 0
         fake_bin / "sudo",
         """#!/bin/sh
 set -eu
+printf 'sudo %s\n' "$*" >> "$COMMAND_LOG"
 case "${1:-}" in
     mkdir)
         shift
         exec /usr/bin/mkdir "$@"
         ;;
     blkid)
+        if [ "$DROP_PHASE12_ENV" = 1 ]; then rm -f "$HOME/llm-stack/.env"; fi
+        if [ "${2:-}" = -U ]; then
+            if [ "$SIGNATURE_MODE" = uuid-failure ]; then exit 17; fi
+            if [ "$SIGNATURE_MODE" = uuid-empty ]; then exit 0; fi
+            if [ "$SIGNATURE_MODE" != canonical ]; then exit 2; fi
+        fi
         printf '%s\n' /dev/restore-test
         ;;
     docker)
@@ -683,7 +719,7 @@ set -eu
 printf 'docker %s\n' "$*" >> "$COMMAND_LOG"
 if [ "${1:-}" = compose ]; then
     [ "$*" = "compose -f $HOME/llm-stack/docker-compose.yml --profile $COMPOSE_PROFILE up -d" ] || exit 10
-    [ -f "$HOME/llm-stack/.env" ] && [ -f "$HOME/llm-stack/.envrc" ] || exit 11
+    [ -f "$HOME/llm-stack/.env" ] || exit 11
     [ "$FAIL_COMPOSE" != 1 ] || exit 12
     : > "$HOME/stack-started"
 elif [ "${1:-}" = exec ]; then
@@ -704,6 +740,26 @@ set -eu
 if [ "$DROP_COPIED_ENV" = 1 ]; then
     rm -f "$HOME/llm-stack/.env"
 fi
+""",
+    )
+    _write_executable(
+        fake_bin / "lsblk",
+        """#!/bin/sh
+set -eu
+printf 'lsblk %s\n' "$*" >> "$COMMAND_LOG"
+case "$*" in
+    *"-dno TYPE"*)
+        printf '%s\n' disk
+        if [ "$SIGNATURE_MODE" = type-failure ]; then exit 17; fi
+        ;;
+    *"-no FSTYPE,PTTYPE"*)
+        case "$SIGNATURE_MODE" in
+            failure) printf '%s\n' 'simulated signature inspection failure' >&2; exit 17 ;;
+            failure-empty) exit 17 ;;
+            existing) printf '%s\n' ext4 ;;
+        esac
+        ;;
+esac
 """,
     )
     _write_executable(fake_bin / "mountpoint", "#!/bin/sh\nexit 0\n")
@@ -736,6 +792,7 @@ case "${1:-}" in
         ;;
     show)
         entry=${2:-}
+        if [ "$entry" = backups/restic-password ] && [ "$NAS_MODE" = unreadable ]; then exit 18; fi
         if [ "$entry" = "${MISMATCH_PASS_SHOW_ENTRY:-}" ]; then
             printf '%s\n' stale # pragma: allowlist secret
         else
@@ -776,6 +833,7 @@ esac
                 "findmnt",
                 "gh",
                 "git",
+                "lsblk",
                 "mountpoint",
                 "pacman",
                 "pass",
@@ -789,6 +847,9 @@ esac
         encoding="utf-8",
     )
 
+    nas_fixture_password = (
+        "nas-fixture" if supplied_nas_password else ""
+    )  # pragma: allowlist secret
     env = os.environ.copy()
     env.update(
         {
@@ -802,6 +863,7 @@ esac
             "FAIL_VERIFY_UNIT": fail_verify_unit,
             "HAPAX_HOST_STORAGE_REGISTRY": str(registry),
             "HAPAX_RESTORE_ROOT": str(restore_root),
+            "HAPAX_RESTORE_SNAPSHOT": restore_snapshot,
             "HOME": str(home),
             "MISMATCH_PASS_SHOW_ENTRY": mismatch_pass_show_entry,
             "OMIT_RESTORE_DUMP": "1" if omit_restore_dump else "0",
@@ -813,6 +875,12 @@ esac
             "EMPTY_COUNCIL_CHECKOUT": "1" if empty_council_checkout else "0",
             "FAIL_COMPOSE": "1" if fail_compose else "0",
             "DROP_COPIED_ENV": "1" if drop_copied_env else "0",
+            "SIGNATURE_MODE": signature_mode,
+            "DROP_PHASE12_ENV": "1" if drop_phase12_env else "0",
+            "RESTORE_STORE_DEVICE": str(tmp_path / "replacement-disk"),
+            "NAS_MODE": nas_mode,
+            "RESTORE_NAS_RESTIC_PASSWORD": nas_fixture_password,
+            "PASSWORD_STORE_DIR": str(password_store),
             "PATH": f"{fake_bin}:/usr/bin:/bin",
             "PASS_STATE": str(pass_state),
             "RESTIC_PASSWORD": "restore-test-password",  # pragma: allowlist secret
@@ -876,9 +944,8 @@ def test_full_restore_carries_resolved_artifacts_through_phase_16(tmp_path: Path
         "backblaze/key-id",
         "backblaze/app-key",
         "backblaze/restic-password",
-        "backups/restic-password",
     ):
-        assert f"pass insert -f -e {entry}" in commands
+        assert f"pass insert -e {entry}" in commands
         assert f"pass show {entry}" in commands
 
 
@@ -909,8 +976,8 @@ def test_full_restore_fails_with_named_paths_when_dump_inputs_are_missing(
             id="insert-failure",
         ),
         pytest.param(
-            {"mismatch_pass_show_entry": "backups/restic-password"},
-            "Backup credential backups/restic-password did not match after pass insert",
+            {"mismatch_pass_show_entry": "backblaze/restic-password"},
+            "Backup credential backblaze/restic-password did not match after pass insert",
             id="readback-mismatch",
         ),
     ],
@@ -1008,7 +1075,7 @@ def test_full_restore_refuses_missing_or_invalid_compose_profile(
     assert "CachyOS Restore Complete" not in result.stdout
 
 
-@pytest.mark.parametrize("env_file", [".env", ".envrc"])
+@pytest.mark.parametrize("env_file", [".env"])
 def test_full_restore_refuses_missing_secret_environment(tmp_path: Path, env_file: str) -> None:
     result, commands, root = _run_full_restore(tmp_path, omit_env_file=env_file)
     assert result.returncode != 0
@@ -1071,3 +1138,117 @@ def test_full_restore_compose_failure_stops_database_import_and_later_phases(
     assert not any("pg_isready" in command or "psql" in command for command in commands)
     assert "Phase 13" not in result.stdout
     assert "CachyOS Restore Complete" not in result.stdout
+
+
+@pytest.mark.parametrize(
+    "mode",
+    ["failure", "failure-empty", "type-failure", "uuid-failure", "uuid-empty", "existing", "empty"],
+)
+def test_round4_signature_inspection_gates_every_destructive_step(
+    tmp_path: Path, mode: str
+) -> None:
+    result, commands, _ = _run_full_restore(tmp_path, signature_mode=mode)
+    destructive = [
+        c
+        for c in commands
+        if any(
+            word in c.split() for word in ("mklabel", "mkpart", "mkfs.ext4", "wipefs", "luksFormat")
+        )
+    ]
+    if mode == "empty":
+        assert result.returncode == 0, result.stderr
+        assert len(destructive) == 3
+    else:
+        assert not destructive, "unproved disk was formatted"
+        assert result.returncode != 0
+        if mode.startswith("uuid-"):
+            assert (
+                "could not inspect canonical filesystem UUID=restore-test-uuid: blkid exit"
+                in result.stderr
+            )
+            assert "nothing was formatted" in result.stderr
+        elif mode == "type-failure":
+            assert "could not inspect" in result.stderr
+            assert "disk type: lsblk exit 17" in result.stderr
+            assert "nothing was formatted" in result.stderr
+        elif mode.startswith("failure"):
+            assert f"could not inspect {tmp_path / 'replacement-disk'} signatures" in result.stderr
+            assert "lsblk exit 17" in result.stderr
+            assert "nothing was formatted" in result.stderr
+        else:
+            assert "already carries a filesystem or partition table" in result.stderr
+
+
+def test_round4_envrc_is_optional_in_both_restore_phases(tmp_path: Path) -> None:
+    result, commands, _ = _run_full_restore(tmp_path, omit_env_file=".envrc")
+    assert result.returncode == 0, "complete stack without optional .envrc was refused"
+    assert "Optional llm-stack .envrc is absent" in result.stdout
+    assert "Phase 12: verified required llm-stack .env" in result.stdout
+    assert not (tmp_path / "home/llm-stack/.envrc").exists()
+    assert "Optional llm-stack .envrc is absent; Compose requires .env only" in result.stdout
+    assert "CachyOS Restore Complete" in result.stdout
+    assert any(c.startswith("docker compose ") for c in commands)
+
+
+@pytest.mark.parametrize("existing_b2", [False, True])
+def test_round4_repository_credentials_remain_independent(
+    tmp_path: Path, existing_b2: bool
+) -> None:
+    result, commands, _ = _run_full_restore(tmp_path, existing_b2=existing_b2)
+    assert result.returncode == 0, "restore failed with independent repository passwords"
+    assert (tmp_path / "pass-state/backups/restic-password").read_text() == "nas-fixture\n"
+    assert "NAS credential matched" in commands
+    assert not any(
+        c.startswith("pass insert") and c.endswith("backups/restic-password") for c in commands
+    )
+    b2_inserts = [
+        c
+        for c in commands
+        if c.startswith("pass insert") and c.endswith("backblaze/restic-password")
+    ]
+    assert len(b2_inserts) == (0 if existing_b2 else 1)
+    if existing_b2:
+        assert (
+            tmp_path / "pass-state/backblaze/restic-password"
+        ).read_text() == "b2-recovered-fixture\n"
+
+
+@pytest.mark.parametrize("mode", ["absent", "unreadable"])
+def test_round4_unproved_nas_credential_is_never_replaced(tmp_path: Path, mode: str) -> None:
+    result, commands, _ = _run_full_restore(tmp_path, nas_mode=mode)
+    assert result.returncode != 0
+    assert "backups/restic-password" in result.stderr
+    assert not any(
+        c.startswith("pass insert") and c.endswith("backups/restic-password") for c in commands
+    )
+    assert "Phase 14" not in result.stdout
+
+
+def test_round4_absent_nas_credential_requires_its_own_input(tmp_path: Path) -> None:
+    result, commands, _ = _run_full_restore(tmp_path, nas_mode="absent", supplied_nas_password=True)
+    assert result.returncode == 0, "separately supplied NAS password was not used"
+    assert "pass insert -e backups/restic-password" in commands
+    assert "NAS credential matched" in commands
+
+
+def test_round4_missing_dump_names_producer_and_recovery_action(tmp_path: Path) -> None:
+    result, _, _ = _run_full_restore(tmp_path, omit_restore_dump=True)
+    assert result.returncode != 0
+    assert "select a complete hapax-podium/tier2-remote snapshot" in result.stderr
+    assert "restic snapshots --host hapax-podium --tag tier2-remote" in result.stderr
+    assert "rerun from Phase 2" in result.stderr
+
+
+def test_round4_phase12_still_refuses_missing_env(tmp_path: Path) -> None:
+    result, commands, _ = _run_full_restore(tmp_path, drop_phase12_env=True)
+    assert result.returncode != 0
+    missing = tmp_path / "home" / "llm-stack" / ".env"
+    assert f"Required llm-stack environment file is missing: {missing}" in result.stderr
+    assert "Phase 12:" in result.stdout
+    assert not any(c.startswith("docker compose ") for c in commands)
+
+
+def test_round4_dump_remedy_can_select_complete_snapshot(tmp_path: Path) -> None:
+    result, commands, root = _run_full_restore(tmp_path, restore_snapshot="abcdef0123456789")
+    assert result.returncode == 0
+    assert f"restic restore abcdef0123456789 --target {root} --no-lock --verbose" in commands

@@ -182,6 +182,7 @@ find_restore_dump_dir() {
     done
 
     fail "No database dump directory found. Searched:" >&2
+    fail "Recovery action: select a complete hapax-podium/tier2-remote snapshot with 'restic snapshots --host hapax-podium --tag tier2-remote', then rerun from Phase 2 with HAPAX_RESTORE_SNAPSHOT=<that snapshot ID>" >&2
     for relative_path in "${RESTORE_DUMP_RELATIVE_PATHS[@]}"; do
         printf '  - %s/%s\n' "$restore_root" "$relative_path" >&2
     done
@@ -323,7 +324,7 @@ restore_council_checkout() {
 restore_llm_stack_files() {
     local source_dir="$1" destination="$HOME/llm-stack" env_file
 
-    for env_file in .env .envrc; do
+    for env_file in .env; do
         if [[ ! -f "$source_dir/$env_file" ]]; then
             fail "Required llm-stack environment file is missing: $source_dir/$env_file; recover it from a complete snapshot, then rerun Phase 4" >&2
             return 1
@@ -331,13 +332,16 @@ restore_llm_stack_files() {
     done
     mkdir -p "$destination"
     cp -a "$source_dir"/. "$destination/"
-    for env_file in .env .envrc; do
+    for env_file in .env; do
         if [[ ! -f "$destination/$env_file" ]]; then
             fail "Required llm-stack environment file was not restored: $destination/$env_file; repair the copy, then rerun Phase 4" >&2
             return 1
         fi
     done
-    ok "~/llm-stack (including .env and .envrc)"
+    if [[ ! -f "$source_dir/.envrc" ]]; then
+        log "Optional llm-stack .envrc is absent from the snapshot; Compose requires .env only"
+    fi
+    ok "~/llm-stack (required .env verified; optional .envrc copied when present)"
 }
 
 restore_docker_stack() {
@@ -366,16 +370,20 @@ restore_docker_stack() {
         fail "Required Docker Compose profile is absent or invalid in $compose_contract; restore the tracked llm-stack.service startup contract, then rerun Phase 12" >&2
         return 1
     fi
-    for env_file in .env .envrc; do
+    for env_file in .env; do
         if [[ ! -f "$compose_dir/$env_file" ]]; then
             fail "Required llm-stack environment file is missing: $compose_dir/$env_file; rerun Phase 4 from a complete snapshot" >&2
             return 1
         fi
     done
 
+    log "Phase 12: verified required llm-stack .env"
+    if [[ ! -f "$compose_dir/.envrc" ]]; then
+        log "Optional llm-stack .envrc is absent; Compose requires .env only"
+    fi
     log "Starting Docker stack..."
     cd "$compose_dir"
-    set +u; source .envrc 2>/dev/null || true; set -u
+    # Match llm-stack.service: Compose consumes .env; .envrc is optional direnv configuration.
     sudo systemctl restart docker 2>/dev/null
     # Use sudo — docker group not active until re-login
     sudo docker compose -f "$compose_file" --profile "$compose_profile" up -d 2>&1 | tail -5
@@ -414,9 +422,10 @@ store_backup_credentials() {
         "$B2_KEY_ID"
         "$B2_APP_KEY"
         "$RESTIC_PASSWORD"
-        "$RESTIC_PASSWORD"
+        "${RESTORE_NAS_RESTIC_PASSWORD:-}"
     )
-    local entry observed index
+    local entry observed index credential_file
+    local password_store="${PASSWORD_STORE_DIR:-$HOME/.password-store}"
 
     if ! pass ls > /dev/null 2>&1; then
         fail "Password store is unavailable; initialize or unlock pass, then rerun Phase 3" >&2
@@ -426,7 +435,27 @@ store_backup_credentials() {
 
     for index in "${!entries[@]}"; do
         entry="${entries[$index]}"
-        if ! printf '%s\n' "${values[$index]}" | pass insert -f -e "$entry" > /dev/null 2>&1; then
+        credential_file="$password_store/$entry.gpg"
+        if [[ -e "$credential_file" || -L "$credential_file" ]]; then
+            if ! observed=$(pass show "$entry" 2>/dev/null) || [[ -z "$observed" ]]; then
+                fail "Could not read recovered backup credential $entry; unlock or repair pass, then rerun Phase 3; existing entry was preserved" >&2
+                return 1
+            fi
+            ok "Preserved recovered backup credential $entry"
+            continue
+        fi
+        # A failed decryption is never proof of absence. Check the store itself before
+        # creating an entry, and never use the B2 recovery password for the NAS repository.
+        if [[ ! -d "$password_store" || ! -r "$password_store" || ! -x "$password_store" ]] ||
+            [[ -d "$(dirname "$credential_file")" && ! -x "$(dirname "$credential_file")" ]]; then
+            fail "Could not prove backup credential $entry is absent; repair password-store access, then rerun Phase 3" >&2
+            return 1
+        fi
+        if [[ -z "${values[$index]}" ]]; then
+            fail "Backup credential $entry is absent; supply its independent NAS password via RESTORE_NAS_RESTIC_PASSWORD, then rerun Phase 3" >&2
+            return 1
+        fi
+        if ! printf '%s\n' "${values[$index]}" | pass insert -e "$entry" > /dev/null 2>&1; then
             fail "Could not store backup credential $entry in pass; initialize or unlock pass, then rerun Phase 3" >&2
             return 1
         fi
@@ -489,15 +518,35 @@ provision_store_root() {
         return 1
     fi
 
-    if device=$(sudo blkid -U "$uuid" 2>/dev/null) && [[ -n "$device" ]]; then
+    local identity_status=0
+    device=$(sudo blkid -U "$uuid" 2>&1) || identity_status=$?
+    # blkid exit 2 means the UUID was not found; other failures do not prove absence.
+    if (( identity_status != 0 && identity_status != 2 )) ||
+        { (( identity_status == 0 )) && [[ -z "$device" ]]; }; then
+        fail "could not inspect canonical filesystem UUID=$uuid: blkid exit $identity_status: ${device:-no diagnostic output}; nothing was formatted; repair UUID inspection, then rerun Phase 11" >&2
+        return 1
+    fi
+    if (( identity_status == 0 )) && [[ -n "$device" ]]; then
         ok "Canonical $store_root filesystem present: UUID=$uuid on $device (serial ${serial:-unrecorded})"
     elif [[ -n "$replacement" ]]; then
-        kind=$(lsblk -dno TYPE "$replacement" 2>/dev/null | tr -d '[:space:]' || true)
+        if kind=$(lsblk -dno TYPE "$replacement" 2>&1); then
+            kind=$(printf '%s' "$kind" | tr -d '[:space:]')
+        else
+            local type_status=$?
+            fail "could not inspect $replacement disk type: lsblk exit $type_status: ${kind:-no diagnostic output}; nothing was formatted; repair disk inspection, then rerun Phase 11" >&2
+            return 1
+        fi
         if [[ "$kind" != "disk" ]]; then
             fail "RESTORE_STORE_DEVICE=$replacement is not a whole disk on this host (lsblk type: ${kind:-none}); name the replacement by its /dev/disk/by-id path, then rerun Phase 11" >&2
             return 1
         fi
-        signatures=$(lsblk -no FSTYPE,PTTYPE "$replacement" 2>/dev/null | tr -d '[:space:]' || true)
+        if signatures=$(lsblk -no FSTYPE,PTTYPE "$replacement" 2>&1); then
+            signatures=$(printf '%s' "$signatures" | tr -d '[:space:]')
+        else
+            local inspection_status=$?
+            fail "could not inspect $replacement signatures: lsblk exit $inspection_status: ${signatures:-no diagnostic output}; nothing was formatted; repair disk inspection, then rerun Phase 11" >&2
+            return 1
+        fi
         if [[ -n "$signatures" ]]; then
             fail "RESTORE_STORE_DEVICE=$replacement already carries a filesystem or partition table ($signatures); this script never formats a disk that holds data — if it truly is the replacement, wipe it deliberately with wipefs, then rerun Phase 11" >&2
             return 1
@@ -648,8 +697,8 @@ log "=== Phase 2: Restore files from B2 ==="
 
 prepare_restore_root "$RESTORE_ROOT"
 
-log "Restoring latest snapshot..."
-restic restore latest --target "$RESTORE_ROOT" --no-lock --verbose 2>&1 | tail -3
+log "Restoring snapshot ${HAPAX_RESTORE_SNAPSHOT:-latest}..."
+restic restore "${HAPAX_RESTORE_SNAPSHOT:-latest}" --target "$RESTORE_ROOT" --no-lock --verbose 2>&1 | tail -3
 ok "Snapshot restored"
 
 # Determine restored home path (username may differ)
@@ -693,8 +742,8 @@ chmod 700 ~/.gnupg ~/.ssh 2>/dev/null || true
 chmod 600 ~/.gnupg/* ~/.ssh/id_* 2>/dev/null || true
 chmod 644 ~/.ssh/*.pub ~/.ssh/known_hosts 2>/dev/null || true
 
-# Producers read these exact entries at startup. Overwrite stale values and read each one back before
-# claiming that credential recovery succeeded.
+# Producers read these independent entries at startup. Preserve recovered entries and verify
+# each newly created entry before claiming that credential recovery succeeded.
 store_backup_credentials
 
 # Council supplies the tracked Compose contract and the later source-activation
@@ -1235,8 +1284,12 @@ if ! mkdir -p "$LOCAL_RESTIC_REPO"; then
     fail "Could not create Tier 1 repository at $LOCAL_RESTIC_REPO; repair the $TIER1_STORAGE_ROOT mount, then rerun Phase 14" >&2
     exit 1
 fi
-if ! RESTIC_PASSWORD="$RESTIC_PASSWORD" restic -r "$LOCAL_RESTIC_REPO" snapshots --no-lock > /dev/null 2>&1; then
-    if ! RESTIC_PASSWORD="$RESTIC_PASSWORD" restic -r "$LOCAL_RESTIC_REPO" init; then
+if ! NAS_RESTIC_PASSWORD=$(pass show backups/restic-password 2>/dev/null) || [[ -z "$NAS_RESTIC_PASSWORD" ]]; then
+    fail "Could not read independent NAS credential backups/restic-password; repair pass, then rerun Phase 14" >&2
+    exit 1
+fi
+if ! RESTIC_PASSWORD="$NAS_RESTIC_PASSWORD" restic -r "$LOCAL_RESTIC_REPO" snapshots --no-lock > /dev/null 2>&1; then
+    if ! RESTIC_PASSWORD="$NAS_RESTIC_PASSWORD" restic -r "$LOCAL_RESTIC_REPO" init; then
         fail "Could not initialize Tier 1 repository at $LOCAL_RESTIC_REPO; inspect restic and the $TIER1_STORAGE_ROOT mount, then rerun Phase 14" >&2
         exit 1
     fi

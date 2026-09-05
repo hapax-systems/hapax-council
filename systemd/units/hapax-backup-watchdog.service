@@ -12,6 +12,10 @@ Environment=PATH=/home/hapax/.local/bin:/usr/local/bin:/usr/bin:/bin
 Environment=HOME=/home/hapax
 Environment=GNUPGHOME=/home/hapax/.gnupg
 Environment=PASSWORD_STORE_DIR=/home/hapax/.password-store
+# Monocle's hapax-monocle/monocle-daily producer shares the Tier2 repository and is checked
+# independently of podium's lanes; the watchdog refuses to run without this threshold rather
+# than defaulting it. Daily cadence with the same slack as the podium daily lanes.
+Environment=HAPAX_MONOCLE_MAX_AGE_HOURS=36
 MemoryMax=512M
 CPUQuota=25%
 SyslogIdentifier=hapax-backup-watchdog
