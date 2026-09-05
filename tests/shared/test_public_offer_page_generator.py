@@ -12,6 +12,7 @@ from datetime import UTC, datetime
 import pytest
 from pydantic import ValidationError
 
+import agents.payment_processors.resource_receipts as resource_receipts
 from shared.conversion_target_readiness import REQUIRED_GATE_DIMENSIONS, GateDimension
 from shared.monetization_readiness_ledger import (
     GateDimensionEvidence,
@@ -41,7 +42,7 @@ def _empty_ledger() -> MonetizationReadinessLedger:
     return evaluate_default_monetization_readiness(snap)
 
 
-def _full_ledger() -> MonetizationReadinessLedger:
+def _full_ledger(*, resource_receipt_ref: str | None = None) -> MonetizationReadinessLedger:
     snap = MonetizationReadinessSnapshot(
         captured_at=NOW,
         snapshot_source="test",
@@ -49,13 +50,20 @@ def _full_ledger() -> MonetizationReadinessLedger:
             dim: GateDimensionEvidence(
                 dimension=dim,
                 satisfied=dim in ALL_DIMS,
-                evidence_refs=(f"evidence:{dim}",),
+                evidence_refs=_evidence_refs(dim, resource_receipt_ref=resource_receipt_ref),
                 operator_visible_reason=f"{dim} satisfied",
             )
             for dim in REQUIRED_GATE_DIMENSIONS
         },
     )
     return evaluate_default_monetization_readiness(snap)
+
+
+def _evidence_refs(dim: GateDimension, *, resource_receipt_ref: str | None) -> tuple[str, ...]:
+    refs = [f"evidence:{dim}"]
+    if dim == "monetization" and resource_receipt_ref:
+        refs.append(resource_receipt_ref)
+    return tuple(refs)
 
 
 def _registry() -> SupportSurfaceRegistry:
@@ -209,10 +217,26 @@ class TestStateGating:
         assert "bootstrap-needed" in page.blocked_reason
         assert "support_surface_registry.no_perk_copy_valid" in page.missing_evidence_dimensions
 
-    def test_full_ledger_with_support_refs_renders_offer(self) -> None:
+    def test_full_ledger_with_support_refs_renders_offer(
+        self, tmp_path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        receipt_log = tmp_path / "money-rail-resource-receipts.jsonl"
+        monkeypatch.setenv(
+            resource_receipts.MONEY_RAIL_RESOURCE_RECEIPT_LOG_ENV,
+            str(receipt_log),
+        )
+        receipt_ref = resource_receipts.record_payment_event_resource_receipt(
+            rail="liberapay",
+            external_id="lp-public-offer-page-real-receipt",
+            event_kind="payin_succeeded",
+            downstream_action="payment_event_log.append_event",
+            log_path=receipt_log,
+        )
+        assert receipt_ref is not None
+
         page = generate_offer_page(
             _registry(),
-            _full_ledger(),
+            _full_ledger(resource_receipt_ref=receipt_ref),
             support_readiness_refs=_all_registry_refs(),
             now=NOW,
         )

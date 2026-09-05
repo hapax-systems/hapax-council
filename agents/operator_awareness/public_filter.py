@@ -70,8 +70,23 @@ def public_filter(state: AwarenessState) -> AwarenessState:
     redacted: dict[str, object] = {}
     for field_name, block_type in _BLOCK_REDACTORS.items():
         block = getattr(state, field_name)
-        redacted[field_name] = block if block.public else block_type()
+        if not block.public:
+            redacted[field_name] = block_type()
+        elif field_name == "monetization":
+            redacted[field_name] = _public_monetization_block(block)
+        else:
+            redacted[field_name] = block
     return state.model_copy(update=redacted)
+
+
+def _public_monetization_block(block: MonetizationBlock) -> MonetizationBlock:
+    """Preserve public monetization aggregates while removing private receipt refs."""
+
+    if block.last_event is None or block.last_event.resource_receipt_ref is None:
+        return block
+    return block.model_copy(
+        update={"last_event": block.last_event.model_copy(update={"resource_receipt_ref": None})}
+    )
 
 
 __all__ = ["public_filter"]

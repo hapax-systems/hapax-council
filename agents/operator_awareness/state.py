@@ -28,6 +28,8 @@ from typing import Literal
 
 from pydantic import BaseModel, ConfigDict, Field
 
+MONEY_RAIL_RESOURCE_RECEIPT_REF_PREFIX = "money-rail-resource-receipt:"
+
 log = logging.getLogger(__name__)
 
 DEFAULT_STATE_PATH = Path(
@@ -244,10 +246,10 @@ class SprintBlock(_Block):
 class PaymentEvent(BaseModel):
     """One receive-rail payment event — never aggregated, raw individuals.
 
-    Lightning, Nostr Zap (NIP-57), and Liberapay each emit one
-    PaymentEvent per received receipt. Receivers append to a JSONL log
-    in /dev/shm; the awareness aggregator tails the log and pushes the
-    latest event into the MonetizationBlock.
+    Lightning, Nostr Zap (NIP-57), Liberapay, and x402 USDC-on-Base
+    each emit one PaymentEvent per received receipt. Receivers append
+    to a JSONL log in /dev/shm; the awareness aggregator tails the log
+    and pushes the latest event into the MonetizationBlock.
 
     Anti-anthropomorphization: structured fields, no narrative voice.
     The ``sender_excerpt`` field caps zap/sponsorship messages at 80
@@ -262,12 +264,19 @@ class PaymentEvent(BaseModel):
     model_config = ConfigDict(frozen=True, extra="forbid")
 
     timestamp: datetime
-    rail: Literal["lightning", "nostr_zap", "liberapay"]
+    rail: Literal["lightning", "nostr_zap", "liberapay", "x402_usdc_base"]
     amount_sats: int | None = None
     amount_usd: float | None = None
     amount_eur: float | None = None
     sender_excerpt: str = Field(default="", max_length=80)
     external_id: str | None = None  # invoice id / zap event id / sponsorship id
+    resource_receipt_ref: str | None = Field(
+        default=None,
+        pattern=(
+            rf"^{MONEY_RAIL_RESOURCE_RECEIPT_REF_PREFIX}"
+            r"[a-z0-9][a-z0-9_-]*:[a-z0-9][a-z0-9_-]*$"
+        ),
+    )
 
 
 class MonetizationBlock(_Block):
@@ -387,6 +396,28 @@ def write_state_atomic(state: AwarenessState, path: Path = DEFAULT_STATE_PATH) -
         return False
 
 
+def state_write_failure_guidance(path: Path) -> str:
+    """Operator next action when a post-receipt atomic state write fails.
+
+    This is a *state-file* write failure, not a receipt-log failure: any
+    money-rail resource receipt committed before the write remains append-only,
+    immutable admission evidence. Names the exact state target and its parent,
+    plus the atomic writer's own temp glob (``path.with_suffix('.json.tmp.*')``)
+    so the operator can inspect and clear only a proven-stale temp — never a
+    temp belonging to a live concurrent writer.
+    """
+
+    temp_pattern = path.with_suffix(".json.tmp.*")
+    return (
+        f"state write failed at {path} (a state-file write failure, not a "
+        f"receipt-log failure); next action: check the parent directory "
+        f"{path.parent} for write permission and free space, inspect and remove "
+        f"only a proven-stale atomic-write temp matching {temp_pattern}, then "
+        "retry; the committed money-rail resource receipt is append-only and "
+        "remains immutable admission evidence"
+    )
+
+
 __all__ = [
     "DEFAULT_STATE_PATH",
     "DEFAULT_TTL_S",
@@ -410,5 +441,6 @@ __all__ = [
     "ResearchDispatchBlock",
     "SprintBlock",
     "StreamBlock",
+    "state_write_failure_guidance",
     "write_state_atomic",
 ]

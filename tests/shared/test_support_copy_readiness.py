@@ -7,6 +7,7 @@ from datetime import UTC, datetime
 import pytest
 from pydantic import ValidationError
 
+import agents.payment_processors.resource_receipts as resource_receipts
 from shared.conversion_target_readiness import REQUIRED_GATE_DIMENSIONS, GateDimension
 from shared.monetization_readiness_ledger import (
     GateDimensionEvidence,
@@ -18,6 +19,7 @@ from shared.support_copy_readiness import (
     PROHIBITED_SUPPORT_COPY_SHAPES,
     PUBLIC_TRUTH_DIMENSIONS,
     SupportCopyConsumerReadiness,
+    SupportCopyReadinessDecision,
     evaluate_support_copy_readiness,
 )
 from shared.support_surface_registry import SupportSurfaceRegistry, load_support_surface_registry
@@ -26,7 +28,12 @@ NOW = datetime(2026, 5, 2, 11, 50, tzinfo=UTC)
 ALL_DIMS: frozenset[GateDimension] = frozenset(REQUIRED_GATE_DIMENSIONS)
 
 
-def _snapshot(satisfied: frozenset[GateDimension]) -> MonetizationReadinessSnapshot:
+def _snapshot(
+    satisfied: frozenset[GateDimension],
+    *,
+    resource_receipt: bool = True,
+    resource_receipt_ref: str = "money-rail-resource-receipt:liberapay:mrr-test",
+) -> MonetizationReadinessSnapshot:
     return MonetizationReadinessSnapshot(
         captured_at=NOW,
         snapshot_source="test",
@@ -34,7 +41,12 @@ def _snapshot(satisfied: frozenset[GateDimension]) -> MonetizationReadinessSnaps
             dim: GateDimensionEvidence(
                 dimension=dim,
                 satisfied=dim in satisfied,
-                evidence_refs=(f"evidence:{dim}",) if dim in satisfied else (),
+                evidence_refs=_evidence_refs(
+                    dim,
+                    satisfied,
+                    resource_receipt=resource_receipt,
+                    resource_receipt_ref=resource_receipt_ref,
+                ),
                 operator_visible_reason=(
                     f"{dim} satisfied" if dim in satisfied else f"{dim} missing"
                 ),
@@ -44,8 +56,34 @@ def _snapshot(satisfied: frozenset[GateDimension]) -> MonetizationReadinessSnaps
     )
 
 
-def _ledger(satisfied: frozenset[GateDimension]) -> MonetizationReadinessLedger:
-    return evaluate_default_monetization_readiness(_snapshot(satisfied))
+def _evidence_refs(
+    dim: GateDimension,
+    satisfied: frozenset[GateDimension],
+    *,
+    resource_receipt: bool,
+    resource_receipt_ref: str,
+) -> tuple[str, ...]:
+    if dim not in satisfied:
+        return ()
+    refs = [f"evidence:{dim}"]
+    if dim == "monetization" and resource_receipt:
+        refs.append(resource_receipt_ref)
+    return tuple(refs)
+
+
+def _ledger(
+    satisfied: frozenset[GateDimension],
+    *,
+    resource_receipt: bool = True,
+    resource_receipt_ref: str = "money-rail-resource-receipt:liberapay:mrr-test",
+) -> MonetizationReadinessLedger:
+    return evaluate_default_monetization_readiness(
+        _snapshot(
+            satisfied,
+            resource_receipt=resource_receipt,
+            resource_receipt_ref=resource_receipt_ref,
+        )
+    )
 
 
 def _registry() -> SupportSurfaceRegistry:
@@ -57,6 +95,38 @@ def _refs(*, money: bool = True, no_perk: bool = True) -> dict[str, bool]:
         "support_surface_registry.no_perk_copy_valid": no_perk,
         "MonetizationReadiness.safe_to_publish_offer": money,
     }
+
+
+def _public_safe_decision_payload(
+    *,
+    resource_receipt_refs: tuple[str, ...] = ("money-rail-resource-receipt:liberapay:mrr-test",),
+) -> dict[str, object]:
+    return {
+        "state": "public-safe",
+        "target_family_id": "support_prompt",
+        "surface_id": "sponsor_support_copy",
+        "public_copy_allowed": True,
+        "allowed_public_copy": ("No access, perks, priority, or service is promised.",),
+        "resource_receipt_refs": resource_receipt_refs,
+        "aggregate_receipts_public_only": True,
+        "per_receipt_public_state_allowed": False,
+        "consumer_states": (
+            SupportCopyConsumerReadiness(
+                consumer="public_offer_page",
+                readiness_state="public-safe",
+                public_copy_allowed=True,
+                support_invitation_allowed=True,
+            ),
+        ),
+    }
+
+
+@pytest.fixture(autouse=True)
+def _verified_resource_receipt_refs(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(
+        "shared.support_copy_readiness.resource_receipt_matches",
+        lambda _ref, **_kwargs: True,
+    )
 
 
 def test_missing_registry_is_unavailable_and_fails_closed() -> None:
@@ -130,6 +200,7 @@ def test_full_evidence_and_refs_returns_public_safe_machine_state() -> None:
     assert decision.allowed_public_copy
     assert "No access" in " ".join(decision.allowed_public_copy)
     assert set(PROHIBITED_SUPPORT_COPY_SHAPES) <= set(decision.prohibited_copy_shapes)
+    assert decision.resource_receipt_refs == ("money-rail-resource-receipt:liberapay:mrr-test",)
 
     for consumer in (
         "public_offer_page",
@@ -145,6 +216,177 @@ def test_full_evidence_and_refs_returns_public_safe_machine_state() -> None:
         assert state.issue_invitation_allowed is False
         assert state.licensing_negotiation_allowed is False
         assert state.customer_service_expectation_allowed is False
+
+
+def test_public_safe_decision_direct_construction_requires_resource_receipt_refs() -> None:
+    with pytest.raises(ValidationError, match="resource receipt refs"):
+        SupportCopyReadinessDecision(**_public_safe_decision_payload(resource_receipt_refs=()))
+
+
+def test_public_safe_decision_model_validate_requires_resource_receipt_refs() -> None:
+    with pytest.raises(ValidationError, match="resource receipt refs"):
+        SupportCopyReadinessDecision.model_validate(
+            _public_safe_decision_payload(resource_receipt_refs=())
+        )
+
+
+def test_public_safe_decision_model_validation_is_receipt_io_free(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    def _unexpected_receipt_io(*_args: object, **_kwargs: object) -> bool:
+        raise AssertionError("model validation must not verify the resource receipt ledger")
+
+    monkeypatch.setattr(
+        "shared.support_copy_readiness.resource_receipt_matches", _unexpected_receipt_io
+    )
+
+    decision = SupportCopyReadinessDecision.model_validate(_public_safe_decision_payload())
+
+    assert decision.state == "public-safe"
+    assert decision.resource_receipt_refs == ("money-rail-resource-receipt:liberapay:mrr-test",)
+
+
+def test_full_evidence_and_refs_requires_real_resource_receipt(
+    tmp_path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    receipt_log = tmp_path / "money-rail-resource-receipts.jsonl"
+    monkeypatch.setenv(
+        resource_receipts.MONEY_RAIL_RESOURCE_RECEIPT_LOG_ENV,
+        str(receipt_log),
+    )
+    monkeypatch.setattr(
+        "shared.support_copy_readiness.resource_receipt_matches",
+        resource_receipts.resource_receipt_matches,
+    )
+    receipt_ref = resource_receipts.record_payment_event_resource_receipt(
+        rail="liberapay",
+        external_id="lp-public-safe-real-receipt",
+        event_kind="payin_succeeded",
+        downstream_action="payment_event_log.append_event",
+    )
+
+    assert receipt_ref is not None
+
+    decision = evaluate_support_copy_readiness(
+        _registry(),
+        _ledger(ALL_DIMS, resource_receipt_ref=receipt_ref),
+        readiness_refs=_refs(),
+    )
+
+    assert decision.state == "public-safe"
+    assert decision.resource_receipt_refs == (receipt_ref,)
+
+
+def test_forged_cross_rail_receipt_ref_fails_closed_against_real_ledger(
+    tmp_path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A ref that reuses a real receipt_id under the wrong rail is unverified.
+
+    Commits a genuine ``liberapay`` PAYMENT_EVENT_APPEND receipt, then presents a
+    forged ref carrying the same receipt_id but a different rail. The gate binds
+    the rail from the ref as ``expected_rail``, so the forged ref resolves to no
+    receipt and holds public support copy — a rail cannot borrow another rail's
+    committed evidence. The honest ref for the same receipt still passes, proving
+    the ledger genuinely holds the receipt and the rejection is rail-based.
+    """
+
+    receipt_log = tmp_path / "money-rail-resource-receipts.jsonl"
+    monkeypatch.setenv(
+        resource_receipts.MONEY_RAIL_RESOURCE_RECEIPT_LOG_ENV,
+        str(receipt_log),
+    )
+    monkeypatch.setattr(
+        "shared.support_copy_readiness.resource_receipt_matches",
+        resource_receipts.resource_receipt_matches,
+    )
+    honest_ref = resource_receipts.record_payment_event_resource_receipt(
+        rail="liberapay",
+        external_id="lp-forged-rail-real-receipt",
+        event_kind="payin_succeeded",
+        downstream_action="payment_event_log.append_event",
+    )
+    assert honest_ref is not None
+
+    _prefix, rail, receipt_id = honest_ref.split(":", 2)
+    assert rail == "liberapay"
+    forged_ref = resource_receipts.receipt_ref_from_id("lightning", receipt_id)
+    assert forged_ref != honest_ref
+
+    forged_decision = evaluate_support_copy_readiness(
+        _registry(),
+        _ledger(ALL_DIMS, resource_receipt_ref=forged_ref),
+        readiness_refs=_refs(),
+    )
+    assert forged_decision.state == "monetization-held"
+    assert forged_decision.public_copy_allowed is False
+    assert "money_rail_resource_receipt_unverified" in forged_decision.blockers
+
+    honest_decision = evaluate_support_copy_readiness(
+        _registry(),
+        _ledger(ALL_DIMS, resource_receipt_ref=honest_ref),
+        readiness_refs=_refs(),
+    )
+    assert honest_decision.state == "public-safe"
+
+
+def test_missing_resource_receipt_holds_even_with_public_truth_and_monetization() -> None:
+    decision = evaluate_support_copy_readiness(
+        _registry(),
+        _ledger(ALL_DIMS, resource_receipt=False),
+        readiness_refs=_refs(),
+    )
+
+    assert decision.state == "monetization-held"
+    assert decision.public_copy_allowed is False
+    assert "money_rail_resource_receipt_missing" in decision.blockers
+
+
+def test_unverified_resource_receipt_holds_public_support_copy(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(
+        "shared.support_copy_readiness.resource_receipt_matches",
+        lambda _ref, **_kwargs: False,
+    )
+
+    decision = evaluate_support_copy_readiness(
+        _registry(),
+        _ledger(ALL_DIMS, resource_receipt=True),
+        readiness_refs=_refs(),
+    )
+
+    assert decision.state == "monetization-held"
+    assert decision.public_copy_allowed is False
+    assert "money_rail_resource_receipt_unverified" in decision.blockers
+
+
+def test_support_copy_receipt_verification_requires_payment_event_provenance(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    calls: list[dict[str, object]] = []
+
+    def _matches(ref: str, **kwargs: object) -> bool:
+        calls.append({"ref": ref, **kwargs})
+        return True
+
+    monkeypatch.setattr("shared.support_copy_readiness.resource_receipt_matches", _matches)
+
+    decision = evaluate_support_copy_readiness(
+        _registry(),
+        _ledger(ALL_DIMS, resource_receipt=True),
+        readiness_refs=_refs(),
+    )
+
+    assert decision.state == "public-safe"
+    assert calls == [
+        {
+            "ref": "money-rail-resource-receipt:liberapay:mrr-test",
+            "rail": "liberapay",
+            "operation": resource_receipts.MoneyRailReceiptOperation.PAYMENT_EVENT_APPEND,
+        }
+    ]
 
 
 def test_readme_and_package_cannot_invite_support_before_public_safe() -> None:

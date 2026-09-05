@@ -8,12 +8,13 @@ raise, and a partially written line is rolled back under the stream lock.
 
 from __future__ import annotations
 
+import contextlib
 import fcntl
 import hashlib
 import json
 import os
 import re
-from collections.abc import Mapping
+from collections.abc import Iterator, Mapping
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
@@ -64,6 +65,16 @@ class DurableSinkValueError(ValueError):
 
 class DurableSinkAppendError(RuntimeError):
     """A durable append did not complete successfully."""
+
+
+class DurableSinkReuseConflictError(DurableSinkAppendError):
+    """An idempotent ``append_once`` found a conflicting committed row.
+
+    Raised when ``source_receipt_ref`` already names a committed row whose
+    stable identity differs from the caller's, or names more than one row.
+    Committed durable evidence is never overwritten or retracted, so the
+    append fails closed instead.
+    """
 
 
 class DurableSinkChainError(RuntimeError):
@@ -214,72 +225,105 @@ class DurableJsonlSink:
 
         root = assert_durable_root(self.root)
         target = root / _stream_filename(stream_id)
-        lock_path = _lock_path(target)
-        try:
-            lock_fd = os.open(lock_path, os.O_WRONLY | os.O_CREAT | NOFOLLOW_FLAG, 0o600)
-        except OSError as exc:
-            raise DurableSinkAppendError(
-                f"failed to open durable sink lock {lock_path}; next action: verify "
-                "the durable root still exists and is writable"
-            ) from exc
-        locked = False
-        body_error: BaseException | None = None
-        try:
-            try:
-                fcntl.flock(lock_fd, fcntl.LOCK_EX)
-                locked = True
-            except OSError as exc:
-                raise DurableSinkAppendError(
-                    f"failed to acquire durable sink lock {lock_path}; next action: "
-                    "retry after verifying no stale writer holds the stream lock"
-                ) from exc
-            try:
-                # Phase 1 intentionally revalidates the whole stream before each
-                # append. Later Stage0 consumers can add persisted tail anchors;
-                # until then, trusting fresh on-disk evidence is the safer tradeoff.
-                validation = validate_chain(target, stream_id=stream_id)
-                validation.raise_for_issues()
-                row = make_row(
-                    stream_id=stream_id,
-                    data_class=data_class,
-                    source_receipt_ref=source_receipt_ref,
-                    payload=payload,
-                    prior_hash=validation.tail_hash,
-                    timestamp=timestamp,
+        with _hold_stream_lock(_lock_path(target)):
+            # Phase 1 intentionally revalidates the whole stream before each
+            # append. Later Stage0 consumers can add persisted tail anchors;
+            # until then, trusting fresh on-disk evidence is the safer tradeoff.
+            validation = validate_chain(target, stream_id=stream_id)
+            validation.raise_for_issues()
+            row = make_row(
+                stream_id=stream_id,
+                data_class=data_class,
+                source_receipt_ref=source_receipt_ref,
+                payload=payload,
+                prior_hash=validation.tail_hash,
+                timestamp=timestamp,
+            )
+            _append_row_locked(target, row)
+            return row
+
+    def append_once(
+        self,
+        *,
+        stream_id: str,
+        data_class: str,
+        source_receipt_ref: str,
+        payload: Mapping[str, Any],
+        timestamp: str,
+    ) -> DurableSinkRow:
+        """Idempotently append one chained row keyed by ``source_receipt_ref``.
+
+        Under the same exclusive per-stream lock as :meth:`append`, scan the
+        committed chain for rows already carrying ``source_receipt_ref``:
+
+        * none present -> append a new chained row exactly like :meth:`append`;
+        * exactly one present whose stable identity matches this call -> reuse
+          it, append nothing, and return the committed row. Stable identity is
+          ``schema_version``, ``timestamp``, ``stream_id``, ``data_class``,
+          ``source_receipt_ref`` and the canonical ``payload`` — every field
+          except the chain-position ``prior_hash`` and derived ``row_hash``;
+        * any other case (a single identity mismatch, or more than one row for
+          the ref) -> raise :class:`DurableSinkReuseConflictError`, appending
+          nothing.
+
+        This lets at-least-once callers (webhook retries, provider redeliveries
+        that mint a fresh delivery id for one payload) contribute exactly one
+        committed row per ``source_receipt_ref`` with identical stable identity;
+        a conflicting identity fails closed. The guarantee is bounded to what is
+        written here — it makes no claim about downstream projection,
+        publication, or process-death behavior. Committed evidence is never
+        overwritten or retracted.
+
+        ``timestamp`` is REQUIRED and must be deterministic for a given logical
+        receipt: an omitted/clock-derived value would differ between the first
+        attempt and a retry, turning a legitimate reuse into a false conflict.
+        """
+
+        if not isinstance(timestamp, str) or not timestamp:
+            raise DurableSinkValueError(
+                "append_once requires an explicit non-empty deterministic timestamp so a "
+                "retry of the same receipt reuses its committed row instead of conflicting "
+                "on a fresh clock read; next action: pass the source event's occurred_at"
+            )
+        root = assert_durable_root(self.root)
+        target = root / _stream_filename(stream_id)
+        # Build the candidate row once so its normalized identity (canonical
+        # payload, timestamp) is stable across the scan and any append.
+        candidate = make_row(
+            stream_id=stream_id,
+            data_class=data_class,
+            source_receipt_ref=source_receipt_ref,
+            payload=payload,
+            prior_hash=GENESIS_HASH,  # placeholder; identity excludes prior_hash/row_hash
+            timestamp=timestamp,
+        )
+        candidate_identity = _row_identity(candidate.as_dict())
+        with _hold_stream_lock(_lock_path(target)):
+            validation = validate_chain(target, stream_id=stream_id)
+            validation.raise_for_issues()
+            existing = _committed_rows_for_ref(target, source_receipt_ref)
+            if existing:
+                if len(existing) == 1 and _row_identity(existing[0]) == candidate_identity:
+                    return _row_from_committed(existing[0])
+                raise DurableSinkReuseConflictError(
+                    f"durable sink source_receipt_ref {source_receipt_ref!r} already names "
+                    f"{len(existing)} committed row(s) in stream {stream_id!r} with more "
+                    "than one committed row or a differing stable identity; next action: "
+                    "refusing to append conflicting Stage-0 evidence — append_once will "
+                    "not collapse, pick between, delete, or infer among duplicate "
+                    "committed financial evidence; investigate the upstream rail for a "
+                    "source_receipt_ref collision, then repair or quarantine before retry"
                 )
-                _append_row_locked(target, row)
-                return row
-            except BaseException as exc:
-                body_error = exc
-                raise
-        finally:
-            release_error: DurableSinkAppendError | None = None
-            release_cause: OSError | None = None
-            close_error: DurableSinkAppendError | None = None
-            close_cause: OSError | None = None
-            if locked:
-                try:
-                    fcntl.flock(lock_fd, fcntl.LOCK_UN)
-                except OSError as exc:
-                    if body_error is None:
-                        release_error = DurableSinkAppendError(
-                            f"failed to release durable sink lock {lock_path}; next "
-                            "action: verify lock state before retrying append"
-                        )
-                        release_cause = exc
-            try:
-                os.close(lock_fd)
-            except OSError as exc:
-                if body_error is None and release_error is None:
-                    close_error = DurableSinkAppendError(
-                        f"failed to close durable sink lock {lock_path}; next action: "
-                        "verify lock fd state before retrying append"
-                    )
-                    close_cause = exc
-            if release_error is not None:
-                raise release_error from release_cause
-            if close_error is not None:
-                raise close_error from close_cause
+            row = make_row(
+                stream_id=stream_id,
+                data_class=data_class,
+                source_receipt_ref=source_receipt_ref,
+                payload=payload,
+                prior_hash=validation.tail_hash,
+                timestamp=timestamp,
+            )
+            _append_row_locked(target, row)
+            return row
 
 
 def make_row(
@@ -449,6 +493,115 @@ def validate_chain(
         tail_hash=expected_prior,
         expected_tail_hash=expected_tail_hash,
         expected_count=expected_count,
+    )
+
+
+@contextlib.contextmanager
+def _hold_stream_lock(lock_path: Path) -> Iterator[None]:
+    """Hold the exclusive per-stream append lock.
+
+    Shared by :meth:`DurableJsonlSink.append` and
+    :meth:`DurableJsonlSink.append_once` so both serialize through one lock
+    implementation with identical acquire/release/close error handling.
+    """
+
+    try:
+        lock_fd = os.open(lock_path, os.O_WRONLY | os.O_CREAT | NOFOLLOW_FLAG, 0o600)
+    except OSError as exc:
+        raise DurableSinkAppendError(
+            f"failed to open durable sink lock {lock_path}; next action: verify "
+            "the durable root still exists and is writable"
+        ) from exc
+    locked = False
+    body_error: BaseException | None = None
+    try:
+        try:
+            fcntl.flock(lock_fd, fcntl.LOCK_EX)
+            locked = True
+        except OSError as exc:
+            raise DurableSinkAppendError(
+                f"failed to acquire durable sink lock {lock_path}; next action: "
+                "retry after verifying no stale writer holds the stream lock"
+            ) from exc
+        try:
+            yield
+        except BaseException as exc:
+            body_error = exc
+            raise
+    finally:
+        release_error: DurableSinkAppendError | None = None
+        release_cause: OSError | None = None
+        close_error: DurableSinkAppendError | None = None
+        close_cause: OSError | None = None
+        if locked:
+            try:
+                fcntl.flock(lock_fd, fcntl.LOCK_UN)
+            except OSError as exc:
+                if body_error is None:
+                    release_error = DurableSinkAppendError(
+                        f"failed to release durable sink lock {lock_path}; next "
+                        "action: verify lock state before retrying append"
+                    )
+                    release_cause = exc
+        try:
+            os.close(lock_fd)
+        except OSError as exc:
+            if body_error is None and release_error is None:
+                close_error = DurableSinkAppendError(
+                    f"failed to close durable sink lock {lock_path}; next action: "
+                    "verify lock fd state before retrying append"
+                )
+                close_cause = exc
+        if release_error is not None:
+            raise release_error from release_cause
+        if close_error is not None:
+            raise close_error from close_cause
+
+
+def _committed_rows_for_ref(target: Path, source_receipt_ref: str) -> list[dict[str, Any]]:
+    """Return committed rows whose ``source_receipt_ref`` matches, in file order.
+
+    Called only while the per-stream lock is held and after ``validate_chain``
+    has passed, so every line parses as a well-formed row object.
+    """
+
+    if not target.exists():
+        return []
+    matches: list[dict[str, Any]] = []
+    with target.open("r", encoding="utf-8") as handle:
+        for line in handle:
+            text = line.strip()
+            if not text:
+                continue
+            row = json.loads(text)
+            if isinstance(row, Mapping) and row.get("source_receipt_ref") == source_receipt_ref:
+                matches.append(dict(row))
+    return matches
+
+
+def _row_identity(row: Mapping[str, Any]) -> tuple[Any, ...]:
+    """Stable identity of a row: everything except ``prior_hash``/``row_hash``."""
+
+    return (
+        row.get("schema_version"),
+        row.get("timestamp"),
+        row.get("stream_id"),
+        row.get("data_class"),
+        row.get("source_receipt_ref"),
+        _canonical_json(row.get("payload") if isinstance(row.get("payload"), Mapping) else {}),
+    )
+
+
+def _row_from_committed(row: Mapping[str, Any]) -> DurableSinkRow:
+    return DurableSinkRow(
+        schema_version=row["schema_version"],
+        timestamp=row["timestamp"],
+        stream_id=row["stream_id"],
+        data_class=row["data_class"],
+        source_receipt_ref=row["source_receipt_ref"],
+        prior_hash=row["prior_hash"],
+        row_hash=row["row_hash"],
+        payload=row["payload"],
     )
 
 
