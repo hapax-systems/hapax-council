@@ -31,7 +31,9 @@ REGISTRY = REPO_ROOT / "config" / "platform-capability-registry.json"
 #: composite_assemblies field is absent, the registry's behavior is byte-identical — and the
 #: promise was aspiration, not fact. This pins the file's sha256: a registry edit must move the
 #: pin in the same commit, so the byte surface changes only deliberately and diff-visibly.
-REGISTRY_BYTE_PIN = "9cc5d81a64225588c0a3c6b879075300b81b9dc04427bf8f6ba0dae6964b5a92"
+REGISTRY_BYTE_PIN = (
+    "57a37545cf35e8b19f5506e887c9d475b493c2910a4ec46be4b54ff8ac908d17"  # pragma: allowlist secret
+)
 
 
 def test_registry_bytes_are_pinned() -> None:
@@ -87,6 +89,35 @@ def test_platform_capability_schema_validates_seed_registry() -> None:
 
     assert schema["title"] == "PlatformCapabilityRegistry"
     assert registry["registry_schema"] == 1
+
+
+def test_schema_models_missing_wrapper_only_for_a_route_blocked_on_that_absence() -> None:
+    schema = _json(SCHEMA)
+    registry = _json(REGISTRY)
+    fable = next(
+        route for route in registry["routes"] if route["route_id"] == "claude.review.fable"
+    )
+
+    assert fable["sanctioned_wrapper"] == ""
+    jsonschema.Draft202012Validator(schema).validate(registry)
+
+    active_without_wrapper = deepcopy(registry)
+    active_fable = next(
+        route
+        for route in active_without_wrapper["routes"]
+        if route["route_id"] == "claude.review.fable"
+    )
+    active_fable["route_state"] = "active"
+    with pytest.raises(jsonschema.ValidationError, match="blocked"):
+        jsonschema.Draft202012Validator(schema).validate(active_without_wrapper)
+
+    unnamed_absence = deepcopy(registry)
+    unnamed_fable = next(
+        route for route in unnamed_absence["routes"] if route["route_id"] == "claude.review.fable"
+    )
+    unnamed_fable["blocked_reasons"] = ["some_other_blocker"]
+    with pytest.raises(jsonschema.ValidationError):
+        jsonschema.Draft202012Validator(schema).validate(unnamed_absence)
 
 
 @pytest.mark.parametrize(
@@ -334,7 +365,7 @@ def test_seed_registry_names_no_dispatcher_policy_integration() -> None:
         assert token not in registry_text
 
 
-def test_seed_registry_records_dimensional_scores_with_evidence() -> None:
+def test_seed_registry_records_dimensional_scores_with_typed_evidence_or_blockers() -> None:
     registry = _json(REGISTRY)
 
     for route in registry["routes"]:
@@ -343,9 +374,11 @@ def test_seed_registry_records_dimensional_scores_with_evidence() -> None:
         for score in scores.values():
             assert 0 <= score["score"] <= 5
             assert 0 <= score["confidence"] <= 5
-            assert score["evidence_refs"]
+            if not score["evidence_refs"]:
+                assert score["confidence"] == 0
+                assert score["observed_at"] is None
             assert score["stale_after"]
-        assert route["tool_state"]
+        assert route["tool_state"] or route["freshness"]["evidence"]["resource"]["blocked_reasons"]
 
 
 def test_seed_registry_records_omitted_shapes_as_evidence_only_non_supply() -> None:
