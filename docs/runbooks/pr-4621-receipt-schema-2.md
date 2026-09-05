@@ -1,8 +1,7 @@
 ---
 scope_amendment_schema: 1
 pr: 4621
-reviewed_head: 50ad69b96dcc0ac10551f37585358bdadf803721
-reviewed_head_note: "the head the amendment was reviewed against; the amendment covers every commit on branch feat/receipt-resource-vector-absent-20260902 from e767794bf onward, because a head pinned in a file that later commits change can never equal the final head (review finding, 2026-09-04)"
+reviewed_head: a85fed3897ea516012cef293dd9b5f224aa06f30
 task_ids:
   - receipt-resource-vector-absent-not-zero-20260902
   - compute-unit-absent-never-inferred-20260902
@@ -42,6 +41,13 @@ incidental or silent omission.
 authorizes its source change under the existing T1 authority case. It does not
 authorize a provider call, live spend, deployment, or runtime-state mutation.
 Verification uses fake local fixtures and stubs only.
+
+## Review pin
+
+The machine-readable `reviewed_head` is the substantive PR head reviewed for
+this amendment. Commits after that head may change only this runbook and its
+contract test; the contract test rejects any post-review source drift. This
+note stays in the body so the front matter contains only schema fields.
 
 ## Schema-1 compatibility contract
 

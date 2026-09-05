@@ -26,6 +26,8 @@ forcing function.
 
 from __future__ import annotations
 
+import re
+import subprocess
 import sys
 from datetime import UTC, datetime
 from pathlib import Path
@@ -271,6 +273,53 @@ def test_spend_receipt_field_set_is_pinned() -> None:
 def test_pr_4621_scope_amendment_names_the_complete_t1_mutation_surface() -> None:
     text = PR_4621_SCOPE_AMENDMENT.read_text(encoding="utf-8")
     amendment = yaml.safe_load(text.split("---", 2)[1])
+
+    assert set(amendment) == {
+        "scope_amendment_schema",
+        "pr",
+        "reviewed_head",
+        "task_ids",
+        "authority_case",
+        "parent_spec",
+        "risk_tier",
+        "amendment_authorized_by",
+        "authority_evidence_ref",
+        "authorized_at",
+        "source_mutation_authorized",
+        "runtime_mutation_authorized",
+        "provider_spend_authorized",
+        "mutation_scope_refs",
+    }
+    reviewed_head = amendment["reviewed_head"]
+    assert re.fullmatch(r"[0-9a-f]{40}", reviewed_head)
+    current_head = subprocess.run(
+        ["git", "rev-parse", "HEAD"],
+        cwd=REPO_ROOT,
+        check=True,
+        capture_output=True,
+        text=True,
+    ).stdout.strip()
+    assert (
+        subprocess.run(
+            ["git", "merge-base", "--is-ancestor", reviewed_head, current_head],
+            cwd=REPO_ROOT,
+            check=False,
+        ).returncode
+        == 0
+    ), f"reviewed_head {reviewed_head} is not an ancestor of HEAD {current_head}"
+    post_review_paths = set(
+        subprocess.run(
+            ["git", "diff", "--name-only", f"{reviewed_head}..{current_head}"],
+            cwd=REPO_ROOT,
+            check=True,
+            capture_output=True,
+            text=True,
+        ).stdout.splitlines()
+    )
+    assert post_review_paths <= {
+        "docs/runbooks/pr-4621-receipt-schema-2.md",
+        "tests/docs/test_capability_consideration_completeness_contract.py",
+    }, f"substantive files changed after reviewed_head: {sorted(post_review_paths)}"
 
     assert amendment["task_ids"] == [
         "receipt-resource-vector-absent-not-zero-20260902",
