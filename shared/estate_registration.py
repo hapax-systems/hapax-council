@@ -60,7 +60,30 @@ class SweepResult:
     detector_incident_path: str | None
 
 
-Runner = Callable[..., subprocess.CompletedProcess[str]]
+Runner = Callable[..., subprocess.CompletedProcess[str] | subprocess.CompletedProcess[bytes]]
+
+
+@dataclass(frozen=True)
+class PeerCommandResult:
+    """Lossless process outcome; transport failures have no observed return code."""
+
+    stdout: str
+    stderr: str
+    returncode: int | None
+    source_binding: dict[str, str]
+    transport_error: str | None = None
+
+    @property
+    def failed(self) -> bool:
+        return self.returncode != 0 or self.transport_error is not None
+
+
+class PeerCommandError(RegistrationError):
+    """Compatibility for checked callers, retaining the complete failed result."""
+
+    def __init__(self, message: str, result: PeerCommandResult):
+        super().__init__(message)
+        self.result = result
 
 
 def utc_text(value: datetime) -> str:
@@ -522,16 +545,77 @@ def run_peer_command(
     *,
     host_id: str,
     command: str,
+    peer_source_root: str | None = None,
+    qualified: bool = False,
+    check: bool = True,
     runner: Runner = subprocess.run,
     timeout_seconds: int = 180,
-) -> subprocess.CompletedProcess[str]:
+) -> PeerCommandResult:
+    """Use the caller-verified retained release, checking physicality on the peer.
+
+    Retention and release integrity are admission responsibilities, not inferred
+    from a directory name. Manual alias resolution happens once before execution.
+    No stream filter exists here: both streams remain unmodified in the result.
+    """
+
+    def stream(value: str | bytes | None) -> str:
+        return (
+            value.decode("utf-8", errors="surrogateescape")
+            if isinstance(value, bytes)
+            else value or ""
+        )
+
     peer_id, target = registry.peer(host_id)
+    if command not in {"sweep", "export-canary"}:
+        raise RegistrationError("unsupported peer command; remedy: use sweep or export-canary")
+    if qualified and not peer_source_root:
+        raise RegistrationError(
+            "qualified run is missing peer_source_root; remedy: set --peer-source-root "
+            "or HAPAX_ESTATE_PEER_SOURCE_ROOT to the peer's verified retained physical release"
+        )
+    if peer_source_root is not None and (
+        not peer_source_root.startswith("/")
+        or peer_source_root.startswith("//")
+        or str(Path(peer_source_root)) != peer_source_root
+        or ".." in Path(peer_source_root).parts
+        or any(ord(char) < 32 for char in peer_source_root)
+    ):
+        raise RegistrationError(
+            "unsafe peer_source_root; remedy: provide an absolute normalized physical release path"
+        )
+    binding = {
+        "kind": "physical" if peer_source_root is not None else "alias",
+        "requested": peer_source_root if peer_source_root is not None else REMOTE_SOURCE_ROOT,
+    }
+    refusal = (
+        "unsafe peer_source_root or release artifact; remedy: verify and retain the physical "
+        "peer release, script and registry and pass --peer-source-root"
+    )
+    assignment = (
+        f"estate_peer_root={shlex.quote(peer_source_root)}\n"
+        if peer_source_root is not None
+        else f'estate_peer_root=$(realpath -e -- "{REMOTE_SOURCE_ROOT}") || exit 2\n'
+    )
+    # Validate the root and both artifacts before executing. The explicit paths
+    # survive alias promotion; --no-sync avoids runtime dependency mutations.
     remote = (
-        f'exec "$HOME/.local/bin/uv" --directory "{REMOTE_SOURCE_ROOT}" run python '
-        f"scripts/hapax-estate-store-registry {shlex.quote(command)} --host {shlex.quote(peer_id)} --json"
+        assignment
+        + f'estate_refuse() {{ printf "%s\\n" {shlex.quote(refusal)} >&2; exit 2; }}\n'
+        + 'test "$(realpath -e -- "$estate_peer_root")" = "$estate_peer_root" || estate_refuse\n'
+        + 'cd -P -- "$estate_peer_root" || estate_refuse\n'
+        + 'test "$(pwd -P)" = "$estate_peer_root" || estate_refuse\n'
+        + "for estate_artifact in scripts/hapax-estate-store-registry config/estate-store-registry.yaml; do\n"
+        + 'test "$(realpath -e -- "$estate_peer_root/$estate_artifact")" = "$estate_peer_root/$estate_artifact" || estate_refuse\n'
+        + "done\n"
+        + 'exec "$HOME/.local/bin/uv" --directory "$estate_peer_root" run --no-sync python -I '
+        + '"$estate_peer_root/scripts/hapax-estate-store-registry" '
+        + f"{shlex.quote(command)} --host {shlex.quote(peer_id)} --json "
+        + '--registry "$estate_peer_root/config/estate-store-registry.yaml" '
+        + '--expected-source-root "$estate_peer_root"'
+        + (" --include-report" if command == "sweep" else "")
     )
     try:
-        result = runner(
+        process = runner(
             [
                 "ssh",
                 "-o",
@@ -542,19 +626,22 @@ def run_peer_command(
                 remote,
             ],
             capture_output=True,
-            text=True,
+            text=False,
             timeout=timeout_seconds,
             check=False,
         )
+        result = PeerCommandResult(
+            stream(process.stdout), stream(process.stderr), process.returncode, binding
+        )
+    except subprocess.TimeoutExpired as exc:
+        result = PeerCommandResult(stream(exc.stdout), stream(exc.stderr), None, binding, "timeout")
     except (OSError, subprocess.SubprocessError) as exc:
-        raise RegistrationError(
-            f"cross-host {command} could not reach {peer_id} via {target}: {exc}; "
-            "remedy: restore the existing SSH link"
-        ) from exc
-    if result.returncode != 0:
-        detail = (result.stderr or result.stdout).strip()
-        raise RegistrationError(
-            f"cross-host {command} failed for {peer_id} via {target}: {detail or result.returncode}; "
-            "remedy: repair the peer unit or source activation"
+        result = PeerCommandResult("", "", None, binding, type(exc).__name__)
+    if check and result.failed:
+        raise PeerCommandError(
+            f"cross-host {command} failed for {peer_id} via {target} "
+            f"(returncode={result.returncode}, transport_error={result.transport_error}); "
+            "remedy: repair the peer unit or source activation; restore the existing SSH link",
+            result,
         )
     return result

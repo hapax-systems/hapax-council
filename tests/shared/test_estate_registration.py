@@ -1,6 +1,9 @@
 from __future__ import annotations
 
 import json
+import os
+import subprocess
+import sys
 from dataclasses import replace
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
@@ -254,3 +257,179 @@ def test_peer_command_refuses_ssh_failure() -> None:
         run_peer_command(
             load_registry(), host_id="appendix", command="export-canary", runner=runner
         )
+
+
+@pytest.mark.parametrize("binding", [None, "relative/release", "$HOME/release", "/a/../b", "/a//b"])
+def test_qualified_peer_requires_safe_binding(binding: str | None) -> None:
+    def no_ssh(*_args, **_kwargs):  # noqa: ANN202
+        pytest.fail("unsafe binding reached SSH")
+
+    with pytest.raises(RegistrationError, match="peer_source_root.*remedy"):
+        run_peer_command(
+            load_registry(),
+            host_id="appendix",
+            command="sweep",
+            peer_source_root=binding,
+            qualified=True,
+            runner=no_ssh,
+        )
+
+
+def test_peer_failure_retains_both_streams_and_exact_returncode() -> None:
+    stdout = '  {"report_path":"/fake/failed-report.json"}\npartial output\n'
+    stderr = "  fake peer diagnostic\nsecond line\n"
+
+    def runner(*_args, **_kwargs):  # noqa: ANN202
+        return SimpleNamespace(returncode=23, stdout=stdout, stderr=stderr)
+
+    result = run_peer_command(
+        load_registry(),
+        host_id="appendix",
+        command="sweep",
+        runner=runner,
+        check=False,
+        peer_source_root="/retained/release",
+        qualified=True,
+    )
+    assert (result.stdout, result.stderr, result.returncode) == (stdout, stderr, 23)
+    assert result.failed
+    with pytest.raises(RegistrationError) as caught:
+        run_peer_command(load_registry(), host_id="appendix", command="sweep", runner=runner)
+    assert (
+        caught.value.result.stdout,
+        caught.value.result.stderr,
+        caught.value.result.returncode,
+    ) == (
+        stdout,
+        stderr,
+        23,
+    )
+    assert stdout not in str(caught.value) and stderr not in str(caught.value)
+
+
+@pytest.fixture
+def fake_peer_shell(tmp_path: Path):  # noqa: ANN201
+    """Execute only the generated shell in a temporary fake host, never SSH or uv."""
+    home = tmp_path / "peer-home"
+    old = home / "releases" / "old release"
+    new = home / "releases" / "new"
+    for root in (old, new):
+        (root / "scripts").mkdir(parents=True)
+        (root / "config").mkdir()
+        (root / "config" / "estate-store-registry.yaml").write_text("fake registry")
+        (root / "scripts" / "hapax-estate-store-registry").write_text(
+            "from pathlib import Path\nimport json\n"
+            "print(json.dumps({'physical_root':str(Path(__file__).resolve().parents[1])}))\n"
+        )
+    alias = home / ".cache/hapax/source-activation/worktree"
+    alias.parent.mkdir(parents=True)
+    alias.symlink_to(old, target_is_directory=True)
+    uv = home / ".local/bin/uv"
+    uv.parent.mkdir(parents=True)
+    uv.write_text(
+        f"#!{sys.executable}\nimport os, sys\nfrom pathlib import Path\n"
+        f"alias = Path({str(alias)!r})\nalias.unlink()\nalias.symlink_to({str(new)!r})\n"
+        "assert '--no-sync' in sys.argv\n"
+        "args = sys.argv[sys.argv.index('python') + 1:]\n"
+        f"os.execv({sys.executable!r}, [{sys.executable!r}, *args])\n"
+    )
+    uv.chmod(0o755)
+
+    def runner(argv, **kwargs):  # noqa: ANN001, ANN202
+        assert argv[0] == "ssh"  # The network boundary ends here.
+        return subprocess.run(
+            ["/bin/sh", "-c", argv[6]], env={**os.environ, "HOME": str(home)}, **kwargs
+        )
+
+    return old, new, alias, runner
+
+
+@pytest.mark.parametrize("qualified", [True, False])
+def test_peer_pins_physical_tree_before_alias_moves(fake_peer_shell, qualified: bool) -> None:
+    old, new, alias, runner = fake_peer_shell
+    result = run_peer_command(
+        load_registry(),
+        host_id="appendix",
+        command="sweep",
+        runner=runner,
+        peer_source_root=str(old) if qualified else None,
+        qualified=qualified,
+        check=False,
+    )
+    assert result.returncode == 0
+    assert alias.resolve() == new
+    assert json.loads(result.stdout)["physical_root"] == str(old)
+    assert result.source_binding == {
+        "kind": "physical" if qualified else "alias",
+        "requested": str(old) if qualified else "$HOME/.cache/hapax/source-activation/worktree",
+    }
+
+
+def test_qualified_peer_rejects_symlink_on_peer(fake_peer_shell) -> None:
+    _old, _new, alias, runner = fake_peer_shell
+    result = run_peer_command(
+        load_registry(),
+        host_id="appendix",
+        command="sweep",
+        runner=runner,
+        peer_source_root=str(alias),
+        qualified=True,
+        check=False,
+    )
+    assert result.failed
+    assert "peer_source_root" in result.stderr and "remedy" in result.stderr
+
+
+@pytest.mark.parametrize(
+    "artifact", ["scripts/hapax-estate-store-registry", "config/estate-store-registry.yaml"]
+)
+def test_peer_rejects_redirected_release_artifacts(fake_peer_shell, artifact: str) -> None:
+    old, new, _alias, runner = fake_peer_shell
+    (old / artifact).unlink()
+    (old / artifact).symlink_to(new / artifact)
+    result = run_peer_command(
+        load_registry(),
+        host_id="appendix",
+        command="sweep",
+        runner=runner,
+        peer_source_root=str(old),
+        qualified=True,
+        check=False,
+    )
+    assert result.failed
+    assert "release artifact" in result.stderr
+
+
+def test_peer_timeout_retains_partial_output_without_inventing_returncode() -> None:
+    def runner(*_args, **_kwargs):  # noqa: ANN202
+        raise subprocess.TimeoutExpired(
+            "fake ssh", 1, output=b"partial summary\n", stderr=b"partial diagnostic\n"
+        )
+
+    result = run_peer_command(
+        load_registry(), host_id="appendix", command="sweep", runner=runner, check=False
+    )
+    assert result.failed and result.returncode is None and result.transport_error == "timeout"
+    assert result.stdout == "partial summary\n"
+    assert result.stderr == "partial diagnostic\n"
+
+
+def test_peer_capture_preserves_crlf_verbatim() -> None:
+    def runner(_argv, **kwargs):  # noqa: ANN202
+        return subprocess.run(
+            [
+                sys.executable,
+                "-c",
+                "import os; os.write(1, b'fake report\\r\\n'); os.write(2, b'fake diagnostic\\r\\n'); raise SystemExit(23)",
+            ],
+            **kwargs,
+        )
+
+    result = run_peer_command(
+        load_registry(), host_id="appendix", command="sweep", runner=runner, check=False
+    )
+    assert (result.stdout, result.stderr, result.returncode) == (
+        "fake report\r\n",
+        "fake diagnostic\r\n",
+        23,
+    )

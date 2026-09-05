@@ -4,8 +4,14 @@
 from __future__ import annotations
 
 import argparse
+import base64
+import binascii
+import hashlib
 import json
+import os
+import subprocess
 import sys
+from datetime import UTC, datetime
 from pathlib import Path
 
 import yaml
@@ -15,12 +21,14 @@ if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
 from shared.estate_registration import (
+    PeerCommandResult,
     RegistrationError,
     export_canary_health,
     grandfather_fragment,
     originate_canaries,
     run_peer_command,
     sweep,
+    utc_text,
 )
 from shared.estate_store_registry import (
     DEFAULT_REGISTRY_PATH,
@@ -28,6 +36,161 @@ from shared.estate_store_registry import (
     enumerate_stores,
     load_registry,
 )
+
+EVIDENCE_SCHEMA = "hapax.estate-execution/v1"
+NATIVE_VARIABLES = (
+    "INVOCATION_ID",
+    "SYSTEMD_EXEC_PID",
+    "TRIGGER_UNIT",
+    "TRIGGER_PATH",
+    "TRIGGER_TIMER_REALTIME_USEC",
+    "TRIGGER_TIMER_MONOTONIC_USEC",
+)
+
+
+def _boot_id() -> str:
+    try:
+        return Path("/proc/sys/kernel/random/boot_id").read_text().strip() or "absent"
+    except OSError:
+        return "absent"
+
+
+def _source_identity() -> dict[str, str]:
+    head = "absent"
+    try:
+        result = subprocess.run(
+            ["git", "-C", str(REPO_ROOT), "rev-parse", "HEAD"],
+            capture_output=True,
+            text=True,
+            check=False,
+            timeout=5,
+            env={key: value for key, value in os.environ.items() if not key.startswith("GIT_")},
+        )
+        value = result.stdout.strip()
+        if (
+            result.returncode == 0
+            and len(value) in {40, 64}
+            and all(c in "0123456789abcdef" for c in value)
+        ):
+            head = value
+    except (OSError, subprocess.SubprocessError):
+        pass
+    return {"physical_root": str(REPO_ROOT), "git_head": head}
+
+
+def _peer_evidence(result: PeerCommandResult, *, peer_id: str, command: str) -> dict:
+    """Bind exact transported report bytes to the peer's completion evidence."""
+    errors: list[str] = []
+    try:
+        summary = json.loads(result.stdout)
+        if not isinstance(summary, dict):
+            raise ValueError
+    except ValueError:
+        summary = {}
+        errors.append("peer_summary_invalid")
+    completions = []
+    for line in result.stderr.splitlines():
+        try:
+            row = json.loads(line)
+        except ValueError:
+            continue
+        if (
+            isinstance(row, dict)
+            and row.get("schema") == EVIDENCE_SCHEMA
+            and row.get("command") == command
+        ):
+            completions.append(row)
+    completion = completions[0] if len(completions) == 1 else {}
+    if not completion:
+        errors.append("peer_execution_evidence_absent_or_ambiguous")
+    if result.failed:
+        errors.append(
+            "peer_exit_nonzero" if result.returncode is not None else "peer_transport_failed"
+        )
+    if (
+        completion.get("status") not in {"ok", "unqualified"}
+        or completion.get("returncode") != 0
+        or completion.get("errors") != []
+    ):
+        errors.append("peer_execution_failed")
+
+    def bind(name: str, *values: object) -> None:
+        if any(value is None or value == "" or value == "absent" for value in values):
+            errors.append(f"peer_{name}_absent")
+        elif any(value != values[0] for value in values[1:]):
+            errors.append(f"peer_{name}_mismatch")
+
+    bind("host", peer_id, summary.get("host"), completion.get("host"))
+    bind("boot_id", summary.get("boot_id"), completion.get("boot_id"))
+    if not isinstance(summary.get("boot_id"), str):
+        errors.append("peer_boot_id_absent")
+    source = summary.get("source")
+    if not isinstance(source, dict):
+        source = {}
+    root = source.get("physical_root")
+    bind("source", source or None, completion.get("source"))
+    if (
+        not isinstance(root, str)
+        or not root.startswith("/")
+        or root.startswith("//")
+        or str(Path(root)) != root
+        or ".." in Path(root).parts
+    ):
+        errors.append("peer_source_absent_or_unsafe")
+    if result.source_binding["kind"] == "physical":
+        bind("source", root, result.source_binding["requested"])
+    observed = {
+        "source_binding": result.source_binding,
+        "returncode": result.returncode if result.returncode is not None else "absent",
+        "transport_error": result.transport_error or "absent",
+        "host": summary.get("host", "absent"),
+        "boot_id": summary.get("boot_id", "absent"),
+        "source": source or "absent",
+        "report_path": summary.get("report_path", "absent"),
+        "report_sha256": summary.get("report_sha256", "absent"),
+        "computed_sha256": "absent",
+    }
+    if command == "sweep":
+        report_evidence = completion.get("report")
+        if not isinstance(report_evidence, dict):
+            report_evidence = {}
+        bind("report_path", summary.get("report_path"), report_evidence.get("path"))
+        path = summary.get("report_path")
+        if not isinstance(path, str) or not Path(path).is_absolute():
+            errors.append("peer_report_path_unsafe")
+        report = {}
+        try:
+            raw = base64.b64decode(summary.get("report_base64", ""), validate=True)
+            observed["computed_sha256"] = hashlib.sha256(raw).hexdigest()
+            report = json.loads(raw)
+            if not isinstance(report, dict):
+                raise ValueError
+        except (ValueError, TypeError, binascii.Error):
+            report = {}
+            errors.append("peer_report_invalid_or_absent")
+        bind(
+            "report_digest",
+            summary.get("report_sha256"),
+            report_evidence.get("sha256"),
+            observed["computed_sha256"],
+        )
+        bind("host", peer_id, report.get("host"), report_evidence.get("host"))
+        if (
+            report.get("schema") != "hapax.estate-drift-report/v1"
+            or report.get("stage") != "report-only"
+            or report.get("mutation_actions") != []
+        ):
+            errors.append("peer_report_contract_invalid")
+        findings = report.get("findings")
+        if not isinstance(findings, list) or not all(isinstance(row, dict) for row in findings):
+            errors.append("peer_report_findings_invalid")
+            findings = []
+        if summary.get("scan_error_count") != 0 or any(
+            row.get("kind") == "scan-error" for row in findings
+        ):
+            errors.append("peer_scan_errors")
+    observed.update(status="failed" if errors else "ok", errors=list(dict.fromkeys(errors)))
+    return observed
 
 
 def _parser() -> argparse.ArgumentParser:
@@ -51,6 +214,25 @@ def _parser() -> argparse.ArgumentParser:
     parser.add_argument("--report-root", type=Path)
     parser.add_argument("--output", type=Path)
     parser.add_argument("--json", action="store_true")
+    parser.add_argument(
+        "--peer-source-root",
+        default=os.environ.get("HAPAX_ESTATE_PEER_SOURCE_ROOT"),
+        help="verified retained physical peer release (env: HAPAX_ESTATE_PEER_SOURCE_ROOT)",
+    )
+    parser.add_argument(
+        "--qualified",
+        action="store_true",
+        help="require explicit peer source even without native service metadata",
+    )
+    parser.add_argument(
+        "--expected-source-root",
+        help="refuse if this script or registry is outside this physical release",
+    )
+    parser.add_argument(
+        "--include-report",
+        action="store_true",
+        help="include exact report bytes in the peer stdout envelope",
+    )
     return parser
 
 
@@ -63,89 +245,175 @@ def _print(value: object, *, as_json: bool) -> None:
 
 def main(argv: list[str] | None = None) -> int:
     args = _parser().parse_args(argv)
+    native = {name: os.environ.get(name) or "absent" for name in NATIVE_VARIABLES}
+    scheduled = native["TRIGGER_UNIT"].endswith(".timer") and any(
+        native[name].isdigit() and int(native[name]) > 0
+        for name in ("TRIGGER_TIMER_REALTIME_USEC", "TRIGGER_TIMER_MONOTONIC_USEC")
+    )
+    evidence = {
+        "schema": EVIDENCE_SCHEMA,
+        "command": args.command,
+        "host": "absent",
+        "boot_id": _boot_id(),
+        "native": native,
+        "scheduled": True if scheduled else "absent",
+        "source": _source_identity(),
+        "started_at": utc_text(datetime.now(UTC)),
+        "finished_at": "absent",
+        "report": "absent",
+        "peer": "absent",
+        "errors": [],
+    }
+    code = 2
     try:
-        registry = load_registry(args.registry)
-        host_id = registry.host_id(args.host)
-        if args.command == "list":
-            if not args.consumer:
-                raise RegistrationError(
-                    "list requires --consumer; remedy: name the consuming program"
-                )
-            stores = [
-                {
-                    "id": store.id,
-                    "locator": store.locator,
-                    "locator_kind": store.locator_kind,
-                    "class": store.store_class,
-                    "lifecycle": store.lifecycle,
-                    "discovery_evidence": store.discovery_evidence,
-                }
-                for store in enumerate_stores(
-                    registry, consumer=args.consumer, host=host_id, home=args.home
-                )
-            ]
-            _print(
-                {
-                    "schema": "hapax.estate-consumer-enumeration/v1",
-                    "consumer": args.consumer,
-                    "host": host_id,
-                    "stores": stores,
-                },
-                as_json=args.json,
+        code = _execute(args, evidence)
+    except (RegistrationError, RegistryError, OSError, ValueError) as exc:
+        evidence["errors"].append(str(exc))
+        print(f"hapax-estate-store-registry: {exc}", file=sys.stderr)
+    finally:
+        if evidence["source"] != _source_identity():
+            evidence["errors"].append("local_source_changed_during_execution")
+            code = code or 2
+        evidence.update(
+            finished_at=utc_text(datetime.now(UTC)),
+            returncode=code,
+            status="failed"
+            if code
+            else "ok"
+            if scheduled and native["INVOCATION_ID"] != "absent"
+            else "unqualified",
+        )
+        print(
+            json.dumps(evidence, separators=(",", ":"), sort_keys=True), file=sys.stderr, flush=True
+        )
+    return code
+
+
+def _execute(args: argparse.Namespace, evidence: dict) -> int:
+    if args.expected_source_root and (
+        args.expected_source_root != str(REPO_ROOT)
+        or args.registry.resolve() != REPO_ROOT / "config" / "estate-store-registry.yaml"
+        or str(args.registry) != str(args.registry.resolve())
+    ):
+        raise RegistrationError(
+            "physical source or registry binding mismatch; remedy: invoke the verified physical release and its registry"
+        )
+    registry = load_registry(args.registry)
+    host_id = registry.host_id(args.host)
+    evidence["host"] = host_id
+    if evidence["boot_id"] == "absent":
+        raise RegistrationError(
+            "local_boot_id_absent; remedy: restore access to /proc/sys/kernel/random/boot_id"
+        )
+    if args.command == "list":
+        if not args.consumer:
+            raise RegistrationError("list requires --consumer; remedy: name the consuming program")
+        stores = [
+            {
+                "id": store.id,
+                "locator": store.locator,
+                "locator_kind": store.locator_kind,
+                "class": store.store_class,
+                "lifecycle": store.lifecycle,
+                "discovery_evidence": store.discovery_evidence,
+            }
+            for store in enumerate_stores(
+                registry, consumer=args.consumer, host=host_id, home=args.home
             )
-            return 0
-        if args.command == "originate":
-            _print(originate_canaries(registry, host_id=host_id, home=args.home), as_json=args.json)
-            return 0
-        if args.command == "export-canary":
-            _print(
-                export_canary_health(registry=registry, host_id=host_id, home=args.home),
-                as_json=args.json,
-            )
-            return 0
-        if args.command in {"check-peer", "sweep-peer"}:
-            remote_command = "export-canary" if args.command == "check-peer" else "sweep"
-            result = run_peer_command(registry, host_id=host_id, command=remote_command)
-            print(result.stdout, end="")
-            return 0
-        if args.command == "sweep":
-            result = sweep(
-                registry,
-                host_id=host_id,
-                home=args.home,
-                report_root=args.report_root,
-            )
-            _print(
-                {
-                    "report_path": result.report_path,
-                    "finding_count": len(result.findings),
-                    "scan_error_count": len(result.scan_errors),
-                    "flagged_canary_ids": list(result.flagged_canary_ids),
-                    "missed_canary_ids": list(result.missed_canary_ids),
-                    "detector_incident_path": result.detector_incident_path,
-                },
-                as_json=args.json,
-            )
-            return 2 if result.scan_errors else 0
-        fragment = grandfather_fragment(registry, host_id=host_id, home=args.home)
-        if args.output is None:
-            raise RegistrationError(
-                "grandfather requires --output; remedy: name a reviewable file inside the current worktree"
-            )
-        if not args.output.resolve().is_relative_to(REPO_ROOT.resolve()):
-            raise RegistrationError(
-                "grandfather output must stay inside the current worktree; "
-                "remedy: choose a worktree-relative report path"
-            )
-        args.output.parent.mkdir(parents=True, exist_ok=True)
-        args.output.write_text(yaml.safe_dump(fragment, sort_keys=False), encoding="utf-8")
+        ]
         _print(
-            {"output": str(args.output), "store_count": len(fragment["stores"])}, as_json=args.json
+            {
+                "schema": "hapax.estate-consumer-enumeration/v1",
+                "consumer": args.consumer,
+                "host": host_id,
+                "stores": stores,
+            },
+            as_json=args.json,
         )
         return 0
-    except (RegistrationError, RegistryError) as exc:
-        print(f"hapax-estate-store-registry: {exc}", file=sys.stderr)
-        return 2
+    if args.command == "originate":
+        _print(originate_canaries(registry, host_id=host_id, home=args.home), as_json=args.json)
+        return 0
+    if args.command == "export-canary":
+        _print(
+            {
+                **export_canary_health(registry=registry, host_id=host_id, home=args.home),
+                "boot_id": evidence["boot_id"],
+                "source": evidence["source"],
+            },
+            as_json=args.json,
+        )
+        return 0
+    if args.command in {"check-peer", "sweep-peer"}:
+        remote_command = "export-canary" if args.command == "check-peer" else "sweep"
+        result = run_peer_command(
+            registry,
+            host_id=host_id,
+            command=remote_command,
+            peer_source_root=args.peer_source_root,
+            qualified=args.qualified
+            or any(value != "absent" for value in evidence["native"].values()),
+            check=False,
+        )
+        print(result.stdout, end="")
+        print(
+            result.stderr,
+            end="" if not result.stderr or result.stderr.endswith("\n") else "\n",
+            file=sys.stderr,
+        )
+        peer_id, _target = registry.peer(host_id)
+        evidence["peer"] = _peer_evidence(result, peer_id=peer_id, command=remote_command)
+        evidence["errors"].extend(evidence["peer"]["errors"])
+        if result.returncode is not None and result.returncode > 0:
+            return result.returncode
+        return 2 if evidence["errors"] else 0
+    if args.command == "sweep":
+        result = sweep(
+            registry,
+            host_id=host_id,
+            home=args.home,
+            report_root=args.report_root,
+        )
+        raw = Path(result.report_path).read_bytes()
+        digest = hashlib.sha256(raw).hexdigest()
+        evidence["report"] = {"path": result.report_path, "sha256": digest, "host": host_id}
+        _print(
+            {
+                "report_path": result.report_path,
+                "report_sha256": digest,
+                "host": host_id,
+                "boot_id": evidence["boot_id"],
+                "source": evidence["source"],
+                **(
+                    {"report_base64": base64.b64encode(raw).decode("ascii")}
+                    if args.include_report
+                    else {}
+                ),
+                "finding_count": len(result.findings),
+                "scan_error_count": len(result.scan_errors),
+                "flagged_canary_ids": list(result.flagged_canary_ids),
+                "missed_canary_ids": list(result.missed_canary_ids),
+                "detector_incident_path": result.detector_incident_path,
+            },
+            as_json=args.json,
+        )
+        if result.scan_errors:
+            evidence["errors"].append("scan_errors")
+        return 2 if result.scan_errors else 0
+    fragment = grandfather_fragment(registry, host_id=host_id, home=args.home)
+    if args.output is None:
+        raise RegistrationError(
+            "grandfather requires --output; remedy: name a reviewable file inside the current worktree"
+        )
+    if not args.output.resolve().is_relative_to(REPO_ROOT.resolve()):
+        raise RegistrationError(
+            "grandfather output must stay inside the current worktree; "
+            "remedy: choose a worktree-relative report path"
+        )
+    args.output.parent.mkdir(parents=True, exist_ok=True)
+    args.output.write_text(yaml.safe_dump(fragment, sort_keys=False), encoding="utf-8")
+    _print({"output": str(args.output), "store_count": len(fragment["stores"])}, as_json=args.json)
+    return 0
 
 
 if __name__ == "__main__":
