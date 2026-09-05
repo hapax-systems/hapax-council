@@ -1410,13 +1410,16 @@ def test_invalid_claude_result_envelope_is_receipted_failure(
         "prefixed-key",
     ],
 )
-@pytest.mark.parametrize("capacity", ["claude", "glmcp", "qwencloud"])
+@pytest.mark.parametrize(
+    "capacity", ["codex", "grok", "kimi", "agy", "claude", "glmcp", "qwencloud"]
+)
 @pytest.mark.parametrize("code", [0, 7, "timeout"])
 def test_nested_claude_credentials_never_reach_destinations(
     bench, monkeypatch, capsys, caplog, encoding, capacity, code
 ):
     module, _bin_dir, brief, out = bench
     monkeypatch.setattr(module, "_require_binary", lambda name: name)
+    monkeypatch.setattr(module, "_is_git_checkout", lambda cwd: True)
     if capacity in module.WRAPPED_CLAUDE:
         monkeypatch.setenv(module.WRAPPED_CLAUDE[capacity][0], str(brief))
     canary = "SYNTHETIC_ENVELOPE_CANARY"  # pragma: allowlist secret
@@ -1440,8 +1443,14 @@ def test_nested_claude_credentials_never_reach_destinations(
     else:
         answer = json.dumps(credential).replace("api_key", r"\u0061pi_key")
     stdout = json.dumps({"result": answer, "modelUsage": {"synthetic-served": {}}})
+
     # The diagnostic stream can quote the same serialized response, even on success.
-    monkeypatch.setattr(module, "_run", lambda *a, **kw: (code, stdout, stdout, False, None))
+    def run(argv, *, cwd, timeout):
+        if capacity == "codex":
+            Path(argv[argv.index("-o") + 1]).write_text(answer)
+        return code, stdout, stdout, False, None
+
+    monkeypatch.setattr(module, "_run", run)
     assert module.main([capacity, "--brief", str(brief), "--out", str(out)]) == (
         0 if code == 0 else 4 if code == "timeout" else 3
     )
@@ -1458,8 +1467,14 @@ def test_nested_claude_credentials_never_reach_destinations(
     assert "<redacted>" in destinations["answer"]
     receipt = _receipt(out)
     assert receipt["output_bytes"] == len(out.read_bytes()) > 0
-    assert receipt["models_reported"] == ["synthetic-served"]
+    assert receipt["models_reported"] == (
+        ["synthetic-served"] if capacity in {"claude", "glmcp", "qwencloud"} else "absent"
+    )
     assert receipt["exit_code"] == code
+    assert receipt["suppressed_streams"] == {}
+    assert receipt["answer_policy"] == (
+        "capacity_answer" if code == 0 else "redacted_failure_output"
+    )
     if code != 0:
         assert "retry" in receipt["recovery_action"]
 
@@ -1522,7 +1537,9 @@ def test_undecodable_claude_envelope_cannot_claim_success(
     assert captured.out == "" and caplog.text == ""
 
 
-@pytest.mark.parametrize("capacity", ["claude", "glmcp", "qwencloud"])
+@pytest.mark.parametrize(
+    "capacity", ["codex", "grok", "kimi", "agy", "claude", "glmcp", "qwencloud"]
+)
 @pytest.mark.parametrize("code", [0, 7, "timeout"])
 @pytest.mark.parametrize("stream", ["stdout", "stderr", "both"])
 @pytest.mark.parametrize(
@@ -1534,6 +1551,7 @@ def test_undecodable_claude_diagnostic_stream_is_suppressed(
 ):
     module, _bin_dir, brief, out = bench
     monkeypatch.setattr(module, "_require_binary", lambda name: name)
+    monkeypatch.setattr(module, "_is_git_checkout", lambda cwd: True)
     if capacity in module.WRAPPED_CLAUDE:
         monkeypatch.setenv(module.WRAPPED_CLAUDE[capacity][0], str(brief))
     canary = "SYNTHETIC_BROKEN_STREAM_CANARY"  # pragma: allowlist secret
@@ -1546,9 +1564,22 @@ def test_undecodable_claude_diagnostic_stream_is_suppressed(
         "nested-truncated": json.dumps({"result": json.dumps(envelope)[:-1]}),
         "escaped-label": credential.replace('"', r"\u0022")[:-1],
     }[encoding]
-    stdout = json.dumps({"result": "SAFE ANSWER"}) if stream == "stderr" else malformed
+    safe_stdout = (
+        json.dumps({"result": "SAFE ANSWER"})
+        if capacity in {"claude", "glmcp", "qwencloud"}
+        else "SAFE ANSWER\n"
+        if capacity == "kimi"
+        else "SAFE ANSWER"
+    )
+    stdout = safe_stdout if stream == "stderr" else malformed
     stderr = "" if stream == "stdout" else malformed
-    monkeypatch.setattr(module, "_run", lambda *a, **kw: (code, stdout, stderr, False, None))
+
+    def run(argv, *, cwd, timeout):
+        if capacity == "codex":
+            Path(argv[argv.index("-o") + 1]).write_text(stdout)
+        return code, stdout, stderr, False, None
+
+    monkeypatch.setattr(module, "_run", run)
     expected_rc = 4 if code == "timeout" else 0 if code == 0 and stream == "stderr" else 3
     assert module.main([capacity, "--brief", str(brief), "--out", str(out)]) == expected_rc
     captured = capsys.readouterr()
@@ -1564,6 +1595,9 @@ def test_undecodable_claude_diagnostic_stream_is_suppressed(
     receipt = _receipt(out)
     assert receipt["answer_policy"] == "suppressed_undecodable_output"
     expected_streams = {"stdout", "stderr"} if stream == "both" else {stream}
+    assert receipt["exit_code"] == (3 if code == 0 and stream != "stderr" else code)
+    if capacity == "codex" and stream != "stderr":
+        expected_streams.add("answer")
     assert set(receipt["suppressed_streams"]) == expected_streams
     for shape in receipt["suppressed_streams"].values():
         assert shape == {
@@ -1573,11 +1607,154 @@ def test_undecodable_claude_diagnostic_stream_is_suppressed(
             else ("string" if encoding == "json-in-string" else "object"),
             "reason": "undecodable_stream_suppressed",
         }
-    assert out.read_text() == ("SAFE ANSWER" if stream == "stderr" else "")
+    assert out.read_text() == (
+        ("SAFE ANSWER\n" if capacity == "kimi" else "SAFE ANSWER") if stream == "stderr" else ""
+    )
     assert receipt["output_bytes"] == len(out.read_bytes())
     assert "startup chatter" not in receipt["stderr_tail"]
     assert "undecodable_stream_suppressed" in receipt["stderr_tail"]
     assert caplog.text == ""
+
+
+@pytest.mark.parametrize("stream", ["stdout", "stderr", "answer"])
+@pytest.mark.parametrize("code", [0, 7, "timeout"])
+def test_codex_suppression_keeps_independent_streams(
+    bench, monkeypatch, capsys, caplog, stream, code
+):
+    module, _bin_dir, brief, out = bench
+    monkeypatch.setattr(module, "_require_binary", lambda name: name)
+    monkeypatch.setattr(module, "_is_git_checkout", lambda cwd: True)
+    canary = "SYNTHETIC_CODEX_STREAM_CANARY"  # pragma: allowlist secret
+    credential = json.dumps({"api_key": canary})  # pragma: allowlist secret
+    malformed = json.dumps({"result": credential})[:-1]
+    streams = {"stdout": "launch chatter", "stderr": "diagnostic context", "answer": "SAFE ANSWER"}
+    streams[stream] = malformed
+
+    def run(argv, *, cwd, timeout):
+        Path(argv[argv.index("-o") + 1]).write_text(streams["answer"])
+        return code, streams["stdout"], streams["stderr"], False, None
+
+    monkeypatch.setattr(module, "_run", run)
+    expected_rc = 4 if code == "timeout" else 0 if code == 0 and stream != "answer" else 3
+    assert module.main(["codex", "--brief", str(brief), "--out", str(out)]) == expected_rc
+    receipt = _receipt(out)
+    captured = capsys.readouterr()
+    destinations = [out.read_text(), json.dumps(receipt), captured.out, captured.err, caplog.text]
+    assert all(canary not in value for value in destinations), "credential reached a destination"
+    assert out.read_text() == ("" if stream == "answer" else "SAFE ANSWER")
+    assert receipt["answer_policy"] == "suppressed_undecodable_output"
+    assert receipt["suppressed_streams"] == {
+        stream: {
+            "length": len(malformed),
+            "first_token_class": "object",
+            "reason": "undecodable_stream_suppressed",
+        }
+    }
+    assert receipt["output_bytes"] == len(out.read_bytes())
+    if stream != "stdout":
+        assert "launch chatter" in receipt["stderr_tail"]
+    if stream != "stderr":
+        assert "diagnostic context" in receipt["stderr_tail"]
+
+
+@pytest.mark.parametrize("capacity", ["local:qwen36", "local:gptoss", "local:gemma3"])
+@pytest.mark.parametrize("case", ["ordinary", "nested", "malformed", "failure"])
+def test_local_result_uses_same_redaction_boundary(
+    bench, monkeypatch, capsys, caplog, capacity, case
+):
+    module, _bin_dir, brief, out = bench
+    canary = "SYNTHETIC_LOCAL_STREAM_CANARY"  # pragma: allowlist secret
+    credential = json.dumps({"api_key": canary})  # pragma: allowlist secret
+    nested = json.dumps({"result": credential})
+    answer = 'Use "foo.py" and [guide](guide.md).\n' if case == "ordinary" else nested
+    if case in {"malformed", "failure"}:
+        answer = nested[:-1]
+
+    def urlopen(*args, **kwargs):
+        if case == "failure":
+            raise urllib.error.URLError(answer)
+        return io.BytesIO(json.dumps({"choices": [{"message": {"content": answer}}]}).encode())
+
+    monkeypatch.setattr(module.urllib.request, "urlopen", urlopen)
+    suppressed = case in {"malformed", "failure"}
+    assert module.main([capacity, "--brief", str(brief), "--out", str(out)]) == (
+        3 if suppressed else 0
+    )
+    receipt = _receipt(out)
+    captured = capsys.readouterr()
+    destinations = [out.read_text(), json.dumps(receipt), captured.out, captured.err, caplog.text]
+    assert all(canary not in value for value in destinations), "credential reached a destination"
+    if suppressed:
+        assert out.read_text() == ""
+        assert receipt["answer_policy"] == "suppressed_undecodable_output"
+        assert set(receipt["suppressed_streams"]) == {"stderr" if case == "failure" else "answer"}
+    else:
+        assert receipt["suppressed_streams"] == {}
+        if case == "ordinary":
+            assert out.read_bytes() == answer.encode()
+        else:
+            assert "<redacted>" in out.read_text()
+
+
+@pytest.mark.parametrize("capacity", ["claude", "glmcp", "qwencloud"])
+@pytest.mark.parametrize(
+    "answer",
+    [
+        'Use "foo.py".',
+        "See [the guide](https://example.invalid/guide).",
+        '```python\nconfig = {"path": r"C:\\work\\foo.py"}\n```\n',
+        '{"example": [unfinished, but no sensitive fields}',
+        '  [1, {"example": "C:\\\\work"}]  \n',
+    ],
+    ids=["quotes", "markdown", "fenced-code", "json-looking", "valid-json"],
+)
+def test_successful_claude_answer_preserves_ordinary_text(
+    bench, monkeypatch, capsys, capacity, answer
+):
+    module, _bin_dir, brief, out = bench
+    monkeypatch.setattr(module, "_require_binary", lambda name: name)
+    if capacity in module.WRAPPED_CLAUDE:
+        monkeypatch.setenv(module.WRAPPED_CLAUDE[capacity][0], str(brief))
+    stdout = json.dumps({"result": answer, "modelUsage": {"synthetic-served": {}}})
+    monkeypatch.setattr(module, "_run", lambda *a, **kw: (0, stdout, answer, False, None))
+
+    assert module.main([capacity, "--brief", str(brief), "--out", str(out)]) == 0
+    assert out.read_bytes() == answer.encode()
+    receipt = _receipt(out)
+    assert receipt["answer_policy"] == "capacity_answer"
+    assert receipt["suppressed_streams"] == {}
+    assert receipt["failure_class"] is None
+    assert receipt["models_reported"] == ["synthetic-served"]
+    assert receipt["output_bytes"] == len(answer.encode())
+    assert receipt["stderr_tail"] == answer
+    assert f"{capacity} answered" in capsys.readouterr().out
+
+
+@pytest.mark.parametrize("capacity", ["claude", "glmcp", "qwencloud"])
+@pytest.mark.parametrize("separator", ["=", ": "])
+def test_successful_claude_answer_redacts_fragments_in_place(
+    bench, monkeypatch, capsys, caplog, capacity, separator
+):
+    module, _bin_dir, brief, out = bench
+    monkeypatch.setattr(module, "_require_binary", lambda name: name)
+    if capacity in module.WRAPPED_CLAUDE:
+        monkeypatch.setenv(module.WRAPPED_CLAUDE[capacity][0], str(brief))
+    canary = "SYNTHETIC_PROSE_CANARY"  # pragma: allowlist secret
+    fragment = f'api_key{separator}"{canary}"'  # pragma: allowlist secret
+    answer = f'Use "foo.py" with {fragment}; see [guide](guide.md).\n'
+    expected = answer.replace(canary, "<redacted>")
+    stdout = json.dumps({"result": answer})
+    monkeypatch.setattr(module, "_run", lambda *a, **kw: (0, stdout, answer, False, None))
+
+    assert module.main([capacity, "--brief", str(brief), "--out", str(out)]) == 0
+    assert out.read_text() == expected
+    receipt = _receipt(out)
+    assert receipt["answer_policy"] == "capacity_answer"
+    assert receipt["suppressed_streams"] == {}
+    captured = capsys.readouterr()
+    destinations = [out.read_text(), json.dumps(receipt), captured.out, captured.err, caplog.text]
+    assert all(canary not in value for value in destinations), "credential reached a destination"
+    assert receipt["stderr_tail"] == expected
 
 
 @pytest.mark.parametrize("condition", ["unwritable-directory", "directory-output", "disk-full"])

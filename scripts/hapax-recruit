@@ -175,16 +175,24 @@ class RunResult:
     suppressed_streams: dict[str, dict] = field(default_factory=dict)
 
     def __post_init__(self) -> None:
+        streams, suppressed = _redact_streams(answer=self.answer)
+        self.answer = streams["answer"]
+        self.suppressed_streams.update(suppressed)
         if self.exit_code == 0 and not self.answer.strip():
             self.answer = ""
             self.exit_code = 3
             self.failure_class = "OutputNotProduced"
             self.stderr_tail += "\nempty answer from this invocation"
-        # Credentials must not reach an answer file even when the capacity succeeded.
-        self.answer = _redact(self.answer)
         # Receive FULL diagnostics: slicing first can discard a credential's label.
-        # Receipt, terminal, and any future logger only see this redacted tail.
-        self.stderr_tail = _redact(self.stderr_tail)[-400:]
+        # Raw streams were validated independently before joining. Their concatenation
+        # need not be a JSON document, so do not reject it as undecodable here.
+        self.stderr_tail = _redact(self.stderr_tail)
+        for stream, shape in self.suppressed_streams.items():
+            self.stderr_tail += (
+                f"\n{stream}: {shape['reason']} ({shape['length']} chars, "
+                f"{shape['first_token_class']})"
+            )
+        self.stderr_tail = self.stderr_tail[-400:]
 
 
 def _redact(text: str, *, reject_undecodable: bool = False) -> str:
@@ -198,19 +206,28 @@ def _redact(text: str, *, reject_undecodable: bool = False) -> str:
         redacted = _redact_json_value(payload, reject_undecodable=reject_undecodable)
         return text if redacted == payload else json.dumps(redacted)
     if reject_undecodable:
-        # Plain/YAML credentials have a complete text grammar. After consuming those
-        # fields, empty JSON containers are harmless (e.g. a credential object followed
-        # by a log line). Any remaining structured syntax is unparsed, including escaped
-        # labels and JSON strings inside broken envelopes: suppress the ENTIRE stream.
+        # Consume plain/YAML fields first. Punctuation in the remaining prose/code is
+        # ordinary content, but an escaped sensitive field means serialization remains
+        # undecoded. Unescape only a detection copy, never the text returned to callers.
         remainder = _SECRETISH.sub("", text)
-        remainder = re.sub(r"\{\s*\}|\[\s*\]", "", remainder)
-        if re.search(r'[{}\[\]"\\]', remainder):
-            raise UndecodableStream
+        while True:
+            decoded = re.sub(
+                r'\\(?:u[0-9a-fA-F]{4}|["\\/bfnrt])',
+                lambda match: json.loads('"' + match.group() + '"'),
+                remainder,
+            )
+            if decoded == remainder:
+                break
+            if _SECRETISH.search(decoded):
+                raise UndecodableStream
+            remainder = decoded
     # Consume escaped quotes and multiline scalars before any diagnostic is sliced.
     # Unterminated quotes suppress the rest of the block rather than exposing a suffix.
     # Plain scalars consume the whole line and indented continuations. In mixed prose
     # where indentation/flow boundaries are ambiguous, suppress that whole block.
-    return _SECRETISH.sub(r"\1<redacted>", text)
+    # A quoted replacement remains a complete scalar on subsequent redaction passes;
+    # an unquoted marker would consume the ordinary prose following a quoted fragment.
+    return _SECRETISH.sub(r'\1"<redacted>"', text)
 
 
 def _redact_json_value(value, *, reject_undecodable: bool = False):
@@ -243,6 +260,18 @@ def _suppressed_stream_shape(text: str) -> dict:
         ),
         "reason": "undecodable_stream_suppressed",
     }
+
+
+def _redact_streams(**streams: str) -> tuple[dict[str, str], dict[str, dict]]:
+    """Validate every complete stream independently before extraction, joining or slicing."""
+    redacted, suppressed = {}, {}
+    for name, text in streams.items():
+        try:
+            redacted[name] = _redact(text, reject_undecodable=True)
+        except UndecodableStream:
+            redacted[name] = ""
+            suppressed[name] = _suppressed_stream_shape(text)
+    return redacted, suppressed
 
 
 def _cli_diagnostics(code: int | str, stdout: str, stderr: str, *, chatter: bool = False) -> str:
@@ -405,71 +434,16 @@ def recruit_cli(
         if model:
             argv += ["--model", model]
         argv.append(brief)
-        previous_output = _output_identity(out)
-        code, stdout, stderr, group_killed, member_survived = _run(argv, cwd=cwd, timeout=timeout)
-        current_output = _output_identity(out)
-        produced_output = current_output is not None and current_output != previous_output
-        answer = out.read_text(encoding="utf-8") if produced_output else ""
-        failure_class = None
-        if not answer.strip():
-            answer = ""
-            failure_class = "OutputNotProduced"
-            stderr += "\ncodex produced no new output (absent or empty) for this invocation"
-            if code == 0:
-                code = 3
-        reported = re.findall(r"^model:\s*(\S+)", stdout + "\n" + stderr, flags=re.MULTILINE)
-        return RunResult(
-            answer,
-            code,
-            len(stdout),
-            _cli_diagnostics(code, stdout, stderr, chatter=True),
-            sorted(set(reported)),
-            group_killed,
-            member_survived,
-            failure_class=failure_class,
-        )
-    if capacity == "grok":
+    elif capacity == "grok":
         binary = _require_binary("grok")
         argv = [binary, "-p", brief, "--cwd", str(cwd)]
-        code, stdout, stderr, group_killed, member_survived = _run(argv, cwd=cwd, timeout=timeout)
-        return RunResult(
-            stdout,
-            code,
-            len(stdout),
-            _cli_diagnostics(code, stdout, stderr),
-            [],
-            group_killed,
-            member_survived,
-        )
-    if capacity == "kimi":
+    elif capacity == "kimi":
         binary = _require_binary("kimi")
         argv = [binary, "-p", brief, "--output-format", "text"]
-        code, stdout, stderr, group_killed, member_survived = _run(argv, cwd=cwd, timeout=timeout)
-        return RunResult(
-            _strip_kimi(_redact(stdout), brief),
-            code,
-            len(stdout),
-            _cli_diagnostics(code, stdout, stderr),
-            [],
-            group_killed,
-            member_survived,
-        )
-    if capacity == "agy":
+    elif capacity == "agy":
         binary = _require_binary("agy")
         argv = [binary, f"--print={brief}", "--print-timeout", f"{timeout}s"]
-        code, stdout, stderr, group_killed, member_survived = _run(
-            argv, cwd=cwd, timeout=timeout + 15
-        )
-        return RunResult(
-            stdout,
-            code,
-            len(stdout),
-            _cli_diagnostics(code, stdout, stderr),
-            [],
-            group_killed,
-            member_survived,
-        )
-    if capacity == "claude" or capacity in WRAPPED_CLAUDE:
+    elif capacity == "claude" or capacity in WRAPPED_CLAUDE:
         if capacity == "claude":
             binary = _require_binary("claude")
         else:
@@ -483,46 +457,70 @@ def recruit_cli(
         argv = [binary, "-p", brief, "--output-format", "json"]
         if model and capacity == "claude":
             argv += ["--model", model]
-        code, stdout, stderr, group_killed, member_survived = _run(argv, cwd=cwd, timeout=timeout)
-        suppressed_streams = {}
-        try:
-            diagnostic_stdout = _redact(stdout, reject_undecodable=True)
-            answer, models, invalid_envelope = _parse_claude_json(
-                diagnostic_stdout, failed=code != 0
+    else:
+        raise Refusal(f"unknown capacity {capacity!r}; one of: {', '.join(CAPACITIES)}")
+
+    previous_output = _output_identity(out) if capacity == "codex" else None
+    code, stdout, stderr, group_killed, member_survived = _run(
+        argv, cwd=cwd, timeout=timeout + 15 if capacity == "agy" else timeout
+    )
+    raw_streams = {"stdout": stdout, "stderr": stderr}
+    if capacity == "codex":
+        current_output = _output_identity(out)
+        produced_output = current_output is not None and current_output != previous_output
+        raw_streams["answer"] = out.read_text(encoding="utf-8") if produced_output else ""
+    streams, suppressed_streams = _redact_streams(**raw_streams)
+    diagnostic_stdout, diagnostic_stderr = streams["stdout"], streams["stderr"]
+    answer, models, invalid_envelope = diagnostic_stdout, [], None
+    failure_class = None
+    if capacity == "codex":
+        answer = streams["answer"]
+        if not answer.strip():
+            answer = ""
+            failure_class = "OutputNotProduced"
+            diagnostic_stderr += (
+                "\ncodex produced no new output (absent or empty) for this invocation"
             )
-        except UndecodableStream:
-            answer, models, invalid_envelope = "", [], "undecodable_result_envelope"
+            if code == 0:
+                code = 3
+        # Identity extraction also sees only validated streams.
+        models = sorted(
+            set(
+                re.findall(
+                    r"^model:\s*(\S+)",
+                    diagnostic_stdout + "\n" + diagnostic_stderr,
+                    flags=re.MULTILINE,
+                )
+            )
+        )
+    elif capacity == "kimi":
+        answer = _strip_kimi(diagnostic_stdout, brief)
+    elif capacity == "claude" or capacity in WRAPPED_CLAUDE:
+        answer, models, invalid_envelope = _parse_claude_json(diagnostic_stdout, failed=code != 0)
         if invalid_envelope == "undecodable_result_envelope":
             suppressed_streams["stdout"] = _suppressed_stream_shape(stdout)
             diagnostic_stdout = ""
-        try:
-            diagnostic_stderr = _redact(stderr, reject_undecodable=True)
-        except UndecodableStream:
-            suppressed_streams["stderr"] = _suppressed_stream_shape(stderr)
-            diagnostic_stderr = ""
-        if invalid_envelope and code == 0:
-            code = 3
-        diagnostics = _cli_diagnostics(code, diagnostic_stdout, diagnostic_stderr)
         if invalid_envelope:
-            # Add our reason after each raw stream has crossed the redaction boundary.
-            diagnostics += f"\n{invalid_envelope}"
-        for stream, shape in suppressed_streams.items():
-            diagnostics += (
-                f"\n{stream}: {shape['reason']} ({shape['length']} chars, "
-                f"{shape['first_token_class']})"
-            )
-        return RunResult(
-            answer,
-            code,
-            len(stdout),
-            diagnostics,
-            models,
-            group_killed,
-            member_survived,
-            failure_class="OutputNotProduced" if invalid_envelope else None,
-            suppressed_streams=suppressed_streams,
-        )
-    raise Refusal(f"unknown capacity {capacity!r}; one of: {', '.join(CAPACITIES)}")
+            failure_class = "OutputNotProduced"
+            if code == 0:
+                code = 3
+    diagnostics = _cli_diagnostics(
+        code, diagnostic_stdout, diagnostic_stderr, chatter=capacity == "codex"
+    )
+    if invalid_envelope:
+        # Add our reason after each raw stream has crossed the redaction boundary.
+        diagnostics += f"\n{invalid_envelope}"
+    return RunResult(
+        answer,
+        code,
+        len(stdout),
+        diagnostics,
+        models,
+        group_killed,
+        member_survived,
+        failure_class=failure_class,
+        suppressed_streams=suppressed_streams,
+    )
 
 
 def recruit_local(capacity: str, brief: str, *, timeout: int, model: str | None) -> RunResult:
@@ -565,9 +563,16 @@ def recruit_local(capacity: str, brief: str, *, timeout: int, model: str | None)
         )
     except urllib.error.URLError as exc:
         # Do not read HTTPError bodies. The reason may itself contain diagnostics;
-        # pass it whole through RunResult's redaction boundary before truncation.
+        # validate the complete stream before RunResult truncates diagnostics.
+        streams, suppressed = _redact_streams(stderr=f"endpoint {base} unreachable: {exc}")
         return RunResult(
-            "", 3, 0, f"endpoint {base} unreachable: {exc}", [], failure_class=type(exc).__name__
+            "",
+            3,
+            0,
+            streams["stderr"],
+            [],
+            failure_class=type(exc).__name__,
+            suppressed_streams=suppressed,
         )
     except TimeoutError:
         return RunResult(

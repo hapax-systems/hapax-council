@@ -65,10 +65,18 @@ Claude, glmcp and qwencloud successful responses must decode as JSON result enve
 non-empty string `result`. Undecodable stdout (including truncated JSON, leading startup
 chatter and empty stdout) records exit 3, `OutputNotProduced`, zero answer bytes and
 `undecodable_result_envelope`. Failed and timed-out malformed envelopes are also suppressed;
-their original exit code is retained. Each stream crosses the structural redaction boundary
-independently, including JSON embedded in strings and escaped labels. If any structured part
-cannot be decoded or consumed by the plain/YAML credential grammar, the entire stream is
-suppressed from the answer and diagnostics. Receipts name `suppressed_undecodable_output`
+their original exit code is retained. All seven CLI capacities validate and redact stdout and
+stderr independently before extracting answers or model identities, joining diagnostics, or
+slicing tails. Codex's newly produced answer file crosses the same boundary as a separate
+`answer` stream; suppressing its stdout or stderr leaves a safe file answer intact. Local
+endpoint answers and diagnostics also cross this boundary.
+
+Valid JSON is decoded recursively, including JSON embedded in strings. Otherwise, plain/YAML
+credential fields are redacted in place. Remaining escaped sensitive labels indicate malformed
+embedded serialization and suppress the entire affected stream. Ordinary prose, quotes, Markdown
+links, fenced code, brackets, braces and backslashes survive verbatim, including JSON-looking
+snippets with no sensitive fields. A quoted redaction marker keeps later redaction passes from
+consuming prose after a sensitive fragment. Receipts name `suppressed_undecodable_output`
 and record each affected stream under `suppressed_streams`: its character length, first token
 class (never token text), and reason `undecodable_stream_suppressed`. This also applies to
 malformed stderr on success. Check `--out` and retry the brief, or increase `--timeout` after
@@ -106,6 +114,10 @@ env -u HAPAX_GLMCP_MODEL -u HAPAX_GLMCP_REVIEW_MODEL -u HAPAX_GLMCP_REVIEW_PAYG_
   tests/scripts/test_hapax_recruit.py::test_nested_claude_credentials_never_reach_destinations \
   tests/scripts/test_hapax_recruit.py::test_undecodable_claude_envelope_cannot_claim_success \
   tests/scripts/test_hapax_recruit.py::test_undecodable_claude_diagnostic_stream_is_suppressed \
+  tests/scripts/test_hapax_recruit.py::test_codex_suppression_keeps_independent_streams \
+  tests/scripts/test_hapax_recruit.py::test_local_result_uses_same_redaction_boundary \
+  tests/scripts/test_hapax_recruit.py::test_successful_claude_answer_preserves_ordinary_text \
+  tests/scripts/test_hapax_recruit.py::test_successful_claude_answer_redacts_fragments_in_place \
   tests/scripts/test_hapax_recruit.py::test_yaml_scalars_are_redacted_at_every_destination \
   tests/scripts/test_hapax_recruit.py::test_invalid_claude_result_envelope_is_receipted_failure \
   tests/scripts/test_hapax_recruit.py::test_answer_persistence_failure_is_receipted \
