@@ -5,61 +5,156 @@ from typing import Annotated, Any
 
 from pydantic import BaseModel, ConfigDict, Field, create_model, model_validator
 
-EXECUTION_RECEIPT_FIELDS = frozenset(
-    {
-        "oracle_weight",
-        "input_hash",
-        "refused",
-        "refusal_reason",
-        "shortcircuited",
-        "council_health",
-        "models_used",
-        "served_models",
-        "ruler_substituted",
-        "failed_members",
-        "cache_policy",
-        "capability_admissions",
-        "route_resource_admission",
-        "capability_receipt_refs",
-        "capability_admission_source",
-        "capability_admission_call_count",
-        "phases_completed",
-        "member_execution",
-        "model_alias",
-        "served_model",
-        "capability_id",
-        "route_id",
-        "capability_admission_action",
-    }
-)
+# Receipt schemas name fields at every record depth. Lists name their item
+# schema; cache policies are indexed by models identified by the receipt.
+# These are projections, not model defaults: unrecorded fields stay unrecorded.
+_PROVENANCE_FIELDS = {
+    "served_model": str,
+    "capability_id": str,
+    "route_id": str,
+    "capability_admission_action": str,
+    "capability_receipt_refs": [str],
+}
+_MEMBER_EXECUTION_FIELDS = {
+    "oracle_weight": int,
+    "model_alias": str,
+    **_PROVENANCE_FIELDS,
+}
+_FAILURE_FIELDS = {"model_alias": str, "reason": str}
+_HEALTH_FIELDS = {
+    "members_requested": int,
+    "members_valid": int,
+    "families_requested": int,
+    "families_valid": int,
+    "failed_members": [_FAILURE_FIELDS],
+    "below_quorum": bool,
+    "quorum_floor_members": int,
+    "quorum_floor_families": int,
+    "served_substitutions": int,
+}
+_CACHE_POLICY_FIELDS = {
+    "alias": str,
+    "family": str,
+    "cache_control": bool,
+    "cache_control_ttl": (str, type(None)),
+    "cache_control_ttl_setting": (str, type(None)),
+    "openai_prompt_cache": bool,
+    "openai_prompt_cache_retention": (str, type(None)),
+}
+_ADMISSION_FIELDS = {
+    "receipt_schema": int,
+    "receipt_id": str,
+    "receipt_ref": str,
+    "capability_id": str,
+    "route_id": str,
+    "provider": str,
+    "capacity_pool": str,
+    "profile": str,
+    "task_class": str,
+    "quality_floor": str,
+    "estimated_cost_usd": str,
+    "evaluated_at": str,
+    "authority_task_id": str,
+    "authority_case": str,
+    "authority_item": str,
+    "authority_parent_spec": str,
+    "authority_source_ref": str,
+    "admission_action": str,
+    "admitted": bool,
+    "reason_codes": [str],
+    "quota_evidence_refs": [str],
+    "spend_evidence_refs": [str],
+    "resource_evidence_refs": [str],
+    "receipt_refs": [str],
+    "ledger_id": str,
+    "ledger_captured_at": str,
+}
+_EXECUTION_RECEIPT_SCHEMA = {
+    **_MEMBER_EXECUTION_FIELDS,
+    "input_hash": str,
+    "refused": bool,
+    "refusal_reason": str,
+    "shortcircuited": bool,
+    "council_health": _HEALTH_FIELDS,
+    "models_used": [str],
+    "served_models": [str],
+    "ruler_substituted": bool,
+    "failed_members": [_FAILURE_FIELDS],
+    "cache_policy": {},  # Named model indices are bound at the receipt boundary.
+    "capability_admissions": [_ADMISSION_FIELDS],
+    "route_resource_admission": str,
+    "capability_admission_source": str,
+    "capability_admission_call_count": int,
+    "phases_completed": [int],
+    "member_execution": [_MEMBER_EXECUTION_FIELDS],
+}
+EXECUTION_RECEIPT_FIELDS = frozenset(_EXECUTION_RECEIPT_SCHEMA)
+_OMIT = object()
+
+
+def _sanitize_execution_value(value: Any, schema: Any) -> Any:
+    if isinstance(schema, dict):
+        if not isinstance(value, dict):
+            return _OMIT
+        sanitized = {}
+        for key, child_schema in schema.items():
+            if key not in value:
+                continue
+            child = _sanitize_execution_value(value[key], child_schema)
+            if child is _OMIT:
+                continue
+            # Empty legacy references represent unavailable provenance. Do not
+            # turn these producer sentinels into recorded evidence.
+            if key == "capability_receipt_refs" and not child:
+                continue
+            # This legacy list is positional relative to models_used. Dropping
+            # individual unknowns would relabel the surviving served models.
+            # Per-member receipts retain whatever provenance was observed.
+            if key == "served_models" and (not child or len(child) != len(value[key])):
+                continue
+            sanitized[key] = child
+        if schema is _MEMBER_EXECUTION_FIELDS:
+            sanitized["oracle_weight"] = 0
+        return sanitized if sanitized or not value else _OMIT
+    if isinstance(schema, list):
+        if not isinstance(value, (list, tuple)):
+            return _OMIT
+        items = [
+            cleaned
+            for item in value
+            if (cleaned := _sanitize_execution_value(item, schema[0])) is not _OMIT
+        ]
+        return type(value)(items) if items or not value else _OMIT
+    if isinstance(value, str) and not value.strip():
+        return _OMIT
+    allowed_types = schema if isinstance(schema, tuple) else (schema,)
+    return value if type(value) in allowed_types else _OMIT
 
 
 def sanitize_execution_receipt(receipt: Any) -> dict[str, Any]:
-    """Return only execution/provenance fields, explicitly carrying no oracle weight."""
+    """Project named execution/provenance fields recursively, with zero oracle weight."""
     source = receipt if isinstance(receipt, dict) else {}
-    sanitized = {
-        key: value
-        for key, value in source.items()
-        if key in EXECUTION_RECEIPT_FIELDS and key != "member_execution"
+    aliases = [source.get("model_alias")]
+    models_used = source.get("models_used")
+    if isinstance(models_used, (list, tuple)):
+        aliases.extend(models_used)
+    for field in ("member_execution", "failed_members"):
+        members = source.get(field)
+        if isinstance(members, (list, tuple)):
+            aliases.extend(
+                member.get("model_alias") for member in members if isinstance(member, dict)
+            )
+    # A cache record cannot authorize its own index name. Only model identities
+    # recorded elsewhere in this receipt may name entries in this container.
+    schema = {
+        **_EXECUTION_RECEIPT_SCHEMA,
+        "cache_policy": {
+            alias: _CACHE_POLICY_FIELDS
+            for alias in aliases
+            if isinstance(alias, str) and alias.strip()
+        },
     }
-    members = source.get("member_execution")
-    if isinstance(members, (list, tuple)):
-        sanitized["member_execution"] = [
-            {
-                **{
-                    key: value
-                    for key, value in member.items()
-                    if key in EXECUTION_RECEIPT_FIELDS and key != "member_execution"
-                },
-                "oracle_weight": 0,
-            }
-            for member in members
-            if isinstance(member, dict)
-        ]
-    # A caller cannot promote execution provenance into evidence by supplying a
-    # different value for this marker.
-    sanitized["oracle_weight"] = 0
-    return sanitized
+    return _sanitize_execution_value({**source, "oracle_weight": 0}, schema)
 
 
 class CouncilMode(StrEnum):

@@ -7,7 +7,9 @@ from unittest.mock import patch
 
 import pytest
 
+from agents.deliberative_council.capability_admission import CapabilityAdmissionReceipt
 from agents.deliberative_council.engine import _assess_health, deliberate
+from agents.deliberative_council.members import cache_policy_for_aliases
 from agents.deliberative_council.models import (
     ConvergenceStatus,
     CouncilConfig,
@@ -16,7 +18,9 @@ from agents.deliberative_council.models import (
     CouncilVerdict,
     EvidenceMatrix,
     EvidenceMatrixAxis,
+    Phase1Output,
     PhaseOneResult,
+    sanitize_execution_receipt,
 )
 from agents.deliberative_council.prompts import RESEARCH_SYSTEM_PROMPT, phase1_system_prompt
 from agents.deliberative_council.rubrics import EpistemicQualityRubric
@@ -245,6 +249,193 @@ def test_explicit_execution_receipts_are_sanitized_at_both_model_levels() -> Non
     assert verdict.receipt == expected
     assert canary not in json.dumps(member.execution_receipt)
     assert canary not in json.dumps(verdict.execution_receipt)
+
+
+@pytest.mark.parametrize("process_key", ("process", "trace", "stdout", "future_unknown"))
+def test_nested_execution_fields_are_allowlisted(process_key: str) -> None:
+    canary = "NESTED-PROCESS-CANARY"
+    failure = {"model_alias": "opus", "reason": "TimeoutError"}
+    policy = {"alias": "opus", "family": "anthropic", "cache_control": False}
+    admission = {
+        "receipt_id": "admission-1",
+        "admitted": True,
+        "receipt_refs": ["admission:1"],
+    }
+    receipt = {
+        "cache_policy": {"opus": {**policy, process_key: {"text": canary}}},
+        "council_health": {
+            "members_valid": 3,
+            "failed_members": [{**failure, process_key: [canary]}],
+            process_key: canary,
+        },
+        "failed_members": [{**failure, process_key: canary}],
+        "capability_admissions": [
+            {
+                **admission,
+                "receipt_refs": ["admission:1", {process_key: canary}],
+                process_key: canary,
+            }
+        ],
+        "member_execution": [
+            {
+                "model_alias": "opus",
+                "served_model": "claude-opus",
+                "capability_receipt_refs": ["admission:1", {process_key: canary}],
+                process_key: canary,
+            }
+        ],
+        "models_used": ["opus", {process_key: canary}],
+        "phases_completed": [1, {process_key: canary}],
+        # Even an allowed scalar field must not become an arbitrary container.
+        "input_hash": {process_key: canary},
+    }
+    expected = {
+        "cache_policy": {"opus": policy},
+        "council_health": {"members_valid": 3, "failed_members": [failure]},
+        "failed_members": [failure],
+        "capability_admissions": [admission],
+        "member_execution": [
+            {
+                "model_alias": "opus",
+                "served_model": "claude-opus",
+                "capability_receipt_refs": ["admission:1"],
+                "oracle_weight": 0,
+            }
+        ],
+        "models_used": ["opus"],
+        "phases_completed": [1],
+        "oracle_weight": 0,
+    }
+
+    assert sanitize_execution_receipt(receipt) == expected
+    assert canary not in json.dumps(sanitize_execution_receipt(receipt))
+
+
+def test_execution_receipt_retains_produced_evidence_without_filling_absences() -> None:
+    admission = CapabilityAdmissionReceipt(
+        receipt_id="admission-1",
+        receipt_ref="admission:1",
+        capability_id="cvc.opus",
+        route_id="claude-opus",
+        provider="anthropic",
+        capacity_pool="api_paid_spend",
+        admission_action="admitted",
+        admitted=True,
+        quota_evidence_refs=("quota:1",),
+        spend_evidence_refs=("spend:1",),
+        resource_evidence_refs=("resource:1",),
+        receipt_refs=("admission:1",),
+    ).model_dump(mode="json", exclude_none=True, exclude_unset=True)
+    policies = cache_policy_for_aliases(("opus", "claude-opus", "custom-route"))
+    receipt = {
+        "capability_admissions": [admission],
+        "cache_policy": policies,
+        "council_health": {"members_valid": 0, "below_quorum": True},
+        "served_models": ["claude-opus", "claude-opus", "custom-model"],
+        "models_used": ["opus", "claude-opus", "custom-route"],
+        "shortcircuited": False,
+        "phases_completed": [],
+    }
+    expected = {**receipt, "oracle_weight": 0}
+    # Undeclared records cannot ride alongside the model-indexed policies.
+    unsafe = {
+        **receipt,
+        "cache_policy": {
+            **policies,
+            "stdout": {"alias": "stdout", "family": "PROCESS-CANARY"},
+            "trace": ["PROCESS-CANARY"],
+        },
+    }
+
+    assert sanitize_execution_receipt(unsafe) == expected
+    assert sanitize_execution_receipt(expected) == expected
+
+
+@pytest.mark.parametrize(
+    "identities", ({"model_alias": "opus"}, {"failed_members": [{"model_alias": "opus"}]})
+)
+def test_cache_policy_preserves_named_member_and_failed_model_evidence(identities: dict) -> None:
+    receipt = {**identities, "cache_policy": {"opus": {"cache_control": False}}}
+
+    assert sanitize_execution_receipt(receipt) == {**receipt, "oracle_weight": 0}
+
+
+async def test_deliberate_sanitizes_nested_receipts_at_publication() -> None:
+    canary = "PUBLISHED-NESTED-PROCESS-CANARY"
+    results = [_member(alias) for alias in _ALIASES]
+    # model_copy bypasses validation: the verdict boundary must still sanitize.
+    results[0] = results[0].model_copy(
+        update={
+            "execution_receipt": {
+                "served_model": "served-opus",
+                "cache_policy": {"opus": {"phase1_transcript": canary}},
+                "capability_receipt_refs": ["admission:opus", {"stdout": canary}],
+            }
+        }
+    )
+    policy = {"opus": {"alias": "opus", "cache_control": False, "trace": canary}}
+    with (
+        patch("agents.deliberative_council.engine.run_phase1", return_value=results),
+        patch("agents.deliberative_council.engine.cache_policy_for_aliases", return_value=policy),
+    ):
+        verdict = await deliberate(
+            _input(), CouncilMode.DISCONFIRMATION, EpistemicQualityRubric(), _config()
+        )
+
+    receipt = verdict.model_dump(mode="json")["execution_receipt"]
+    assert canary not in json.dumps(receipt)
+    assert receipt["cache_policy"] == {"opus": {"alias": "opus", "cache_control": False}}
+    assert receipt["member_execution"][0]["capability_receipt_refs"] == ["admission:opus"]
+
+
+@pytest.mark.parametrize(
+    "provenance",
+    (
+        {},
+        {
+            "served_model": "",
+            "capability_id": "",
+            "route_id": "",
+            "capability_admission_action": "",
+            "capability_receipt_refs": (),
+        },
+    ),
+)
+def test_missing_member_provenance_serializes_as_absent(provenance: dict) -> None:
+    member = PhaseOneResult(model_alias="opus", scores={"a": 4}, rationale={}, **provenance)
+
+    assert member.model_dump(mode="json")["execution_receipt"] == {"oracle_weight": 0}
+    assert PhaseOneResult.model_validate_json(member.model_dump_json()).execution_receipt == {
+        "oracle_weight": 0
+    }
+
+
+@pytest.mark.parametrize("served_models", (("", "", "", ""), ("claude-opus", "", "", "")))
+async def test_unavailable_provenance_producer_does_not_publish_placeholders(served_models) -> None:
+    output = Phase1Output(scores={"a": 4}, research_findings=["source.md supports claim"])
+    calls = iter(served_models)
+
+    async def call_member(_member, _prompt, *, output_type=None, **_kwargs):
+        if output_type is None:
+            return "source.md supports claim", [], ""
+        return output, [], next(calls)
+
+    with (
+        patch("agents.deliberative_council.engine.build_member", return_value=object()),
+        patch("agents.deliberative_council.engine._call_member", side_effect=call_member),
+        patch("agents.deliberative_council.engine.member_capability_admission", return_value=None),
+    ):
+        verdict = await deliberate(
+            _input(), CouncilMode.DISCONFIRMATION, EpistemicQualityRubric(), _config()
+        )
+
+    receipt = verdict.model_dump(mode="json")["execution_receipt"]
+    assert receipt["member_execution"] == [
+        {"model_alias": alias, "oracle_weight": 0, **({"served_model": served} if served else {})}
+        for alias, served in zip(_ALIASES, served_models, strict=True)
+    ]
+    # A partial positional list would associate served models with the wrong aliases.
+    assert "served_models" not in receipt
 
 
 async def test_execution_receipt_excludes_process_trace() -> None:
