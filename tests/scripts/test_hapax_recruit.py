@@ -967,12 +967,29 @@ def test_local_deadline_interrupts_loopback_trickle(bench, monkeypatch, stage):
     assert receipt["output_bytes"] == 0
 
 
-def test_runbook_has_headless_read_refusal_rechecks():
+def test_runbook_has_headless_read_refusal_rechecks(request):
     doc = (SCRIPT.parents[1] / "docs/runbooks/hapax-recruit.md").read_text()
     assert 'grok -p "$recruit_read_prompt" --cwd "$recruit_probe_dir/cwd" < /dev/null' in doc
     assert 'agy --print="$recruit_read_prompt" --print-timeout 60s < /dev/null' in doc
     assert "outside cwd" in doc
     assert "read_file" in doc and "command" in doc and "auto-denied" in doc
+    assert 'grok -p "$recruit_inside_prompt" --cwd "$recruit_probe_dir/cwd" < /dev/null' in doc
+    assert 'cp "$recruit_probe_dir/read-target.txt" "$recruit_probe_dir/cwd/read-target.txt"' in doc
+    selections = set(re.findall(r"tests/scripts/test_hapax_recruit\.py::[\w\[\]-]+", doc))
+    required = {
+        "test_structured_failed_output_is_redacted_at_every_destination",
+        "test_codex_run_without_new_output_never_attributes_an_old_answer",
+        "test_expected_launch_decode_and_transport_failures_are_receipted",
+        "test_local_deadline_covers_connection_and_body",
+        "test_local_deadline_interrupts_blocking_io_and_restores_alarm",
+        "test_timeout_kills_wrapper_process_group_and_records_no_survivor",
+    }
+    assert required <= {node.split("::")[1] for node in selections}
+    # Collect independently so a recheck selected by node id still sees all cases.
+    collector = pytest.Module.from_parent(request.session, path=Path(__file__))
+    collected = {item.nodeid for item in collector.collect()}
+    collected.update(node.split("[")[0] for node in tuple(collected))
+    assert selections <= collected, f"runbook names uncollected tests: {selections - collected}"
 
 
 @pytest.mark.parametrize("stage", ["connection", "body"])
@@ -1019,3 +1036,233 @@ def test_short_http_content_length_is_a_receipted_transport_failure(bench, monke
     assert _receipt(out)["failure_class"] == "IncompleteRead"
     assert _receipt(out)["output_bytes"] == 0
     assert out.read_text() == ""
+
+
+@pytest.mark.parametrize(
+    "diagnostic",
+    [
+        r'{"password": "prefix\"SYNTHETIC_STRUCTURED_CANARY"}',  # pragma: allowlist secret
+        "api_key: |-\n  SYNTHETIC_STRUCTURED_CANARY\n",  # pragma: allowlist secret
+        "api_key: >\n  SYNTHETIC_STRUCTURED_CANARY\n",  # pragma: allowlist secret
+        "password: 'prefix''SYNTHETIC_STRUCTURED_CANARY'",  # pragma: allowlist secret
+        'password: "prefix\n  SYNTHETIC_STRUCTURED_CANARY"',  # pragma: allowlist secret
+        'password: "prefix\n  SYNTHETIC_STRUCTURED_CANARY',  # pragma: allowlist secret
+        "password: prefix\n  SYNTHETIC_STRUCTURED_CANARY\n",  # pragma: allowlist secret
+    ],
+    ids=[
+        "json-escape",
+        "yaml-literal",
+        "yaml-folded",
+        "yaml-single",
+        "multiline",
+        "unbounded",
+        "yaml-plain",
+    ],
+)
+@pytest.mark.parametrize(
+    "capacity", ["codex", "grok", "kimi", "agy", "claude", "glmcp", "qwencloud"]
+)
+@pytest.mark.parametrize("code", [7, "timeout"])
+def test_structured_failed_output_is_redacted_at_every_destination(
+    bench, monkeypatch, capsys, caplog, diagnostic, capacity, code
+):
+    module, _bin_dir, brief, out = bench
+    monkeypatch.setattr(module, "_require_binary", lambda name: name)
+    monkeypatch.setattr(module, "_is_git_checkout", lambda cwd: True)
+    if capacity in module.WRAPPED_CLAUDE:
+        monkeypatch.setenv(module.WRAPPED_CLAUDE[capacity][0], str(brief))
+
+    def run(argv, *, cwd, timeout):
+        if capacity == "codex":
+            Path(argv[argv.index("-o") + 1]).write_text(diagnostic)
+        return code, diagnostic, diagnostic, False, None
+
+    monkeypatch.setattr(module, "_run", run)
+    assert module.main([capacity, "--brief", str(brief), "--out", str(out)]) == (
+        4 if code == "timeout" else 3
+    )
+    captured = capsys.readouterr()
+    destinations = {
+        "answer": out.read_text(),
+        "receipt": out.with_name(out.name + ".receipt.json").read_text(),
+        "stdout": captured.out,
+        "stderr/journal": captured.err,
+        "log": caplog.text,
+    }
+    for destination, text in destinations.items():
+        assert "SYNTHETIC_STRUCTURED_CANARY" not in text, destination  # pragma: allowlist secret
+    assert "<redacted>" in destinations["answer"]
+    assert "<redacted>" in _receipt(out)["stderr_tail"]
+
+
+@pytest.mark.parametrize(
+    ("capacity", "stdout"),
+    [
+        pytest.param(capacity, value, id=f"{capacity}-{condition}")
+        for capacity in ["claude", "grok", "agy", "kimi", "glmcp", "qwencloud", "codex"]
+        for condition, value in [("empty", ""), ("whitespace", " \n\t")]
+    ]
+    + [
+        pytest.param(capacity, json.dumps({"result": value}), id=f"{capacity}-json-{condition}")
+        for capacity in ["claude", "glmcp", "qwencloud"]
+        for condition, value in [("empty", ""), ("whitespace", " \n\t")]
+    ],
+)
+def test_empty_cli_answer_is_receipted_failure(bench, monkeypatch, capsys, capacity, stdout):
+    module, _bin_dir, brief, out = bench
+    monkeypatch.setattr(module, "_require_binary", lambda name: name)
+    monkeypatch.setattr(module, "_is_git_checkout", lambda cwd: True)
+    if capacity in module.WRAPPED_CLAUDE:
+        monkeypatch.setenv(module.WRAPPED_CLAUDE[capacity][0], str(brief))
+
+    def run(argv, *, cwd, timeout):
+        if capacity == "codex":
+            Path(argv[argv.index("-o") + 1]).write_text(stdout)
+        return 0, stdout, "", False, None
+
+    monkeypatch.setattr(module, "_run", run)
+    assert module.main([capacity, "--brief", str(brief), "--out", str(out)]) == 3
+    receipt = _receipt(out)
+    assert receipt["exit_code"] == 3
+    assert receipt["failure_class"] == "OutputNotProduced"
+    assert receipt["capacity"] == capacity
+    assert capacity in receipt["stderr_tail"] and "empty" in receipt["stderr_tail"]
+    assert receipt["output_bytes"] == 0 and out.read_bytes() == b""
+    captured = capsys.readouterr()
+    assert "answered" not in captured.out + captured.err
+
+
+@pytest.mark.parametrize(
+    ("capacity", "endpoint", "default_model"),
+    [
+        ("local:gptoss", "http://localhost:5001/v1/chat/completions", "gpt-oss-20b"),
+        ("local:gemma3", "http://localhost:5002/v1/chat/completions", "gemma-3-4b"),
+        ("local:qwen36", "http://localhost:5000/v1/chat/completions", "qwen3.6-35b-a3b"),
+    ],
+)
+@pytest.mark.parametrize(
+    "override", [None, "synthetic-local-override"], ids=["default", "override"]
+)
+def test_local_routes_and_model_overrides(
+    bench, monkeypatch, capacity, endpoint, default_model, override
+):
+    module, _bin_dir, brief, out = bench
+    requests = []
+
+    def urlopen(request, *, timeout):
+        requests.append(request)
+        assert timeout == 5
+        return io.BytesIO(
+            b'{"model": "synthetic-served", "choices": [{"message": {"content": "LOCAL OK"}}]}'
+        )
+
+    monkeypatch.setattr(module.urllib.request, "urlopen", urlopen)
+    monkeypatch.setattr(
+        module.subprocess, "Popen", lambda *a, **kw: pytest.fail("local route launched a client")
+    )
+    args = [capacity, "--brief", str(brief), "--out", str(out), "--timeout", "5"]
+    if override:
+        args += ["--model", override]
+    assert module.main(args) == 0
+    assert len(requests) == 1
+    assert requests[0].full_url == endpoint
+    assert json.loads(requests[0].data) == {
+        "model": override or default_model,
+        "messages": [{"role": "user", "content": brief.read_text()}],
+        "temperature": 0,
+    }
+    assert out.read_text() == "LOCAL OK"
+    receipt = _receipt(out)
+    assert receipt["capacity"] == capacity and receipt["exit_code"] == 0
+    assert receipt["models_reported"] == ["synthetic-served"]
+    assert receipt["model_requested"] == override and receipt["cwd"] is None
+
+
+@pytest.mark.parametrize(
+    "failure_class",
+    [
+        "PermissionError",
+        "UnicodeDecodeError",
+        "IncompleteRead",
+        "ConnectionResetError",
+        "OSError",
+        "HTTPException",
+        "LocalUnicodeDecodeError",
+        "JSONDecodeError",
+        "EndpointProtocolError",
+        "EndpointTimeout",
+        "EndpointDeadlineExceeded",
+        "TimeoutError",
+        "OutputNotProduced",
+        "CLIExit",
+    ],
+)
+def test_failure_recovery_actions_reach_diagnostic_destinations(
+    bench, monkeypatch, capsys, caplog, failure_class
+):
+    module, _bin_dir, brief, out = bench
+    capacity = (
+        "grok"
+        if failure_class
+        in {"PermissionError", "UnicodeDecodeError", "OutputNotProduced", "CLIExit", "TimeoutError"}
+        else "local:qwen36"
+    )
+    monkeypatch.setattr(module, "_require_binary", lambda name: name)
+    canary = "SYNTHETIC_RECOVERY_CANARY"  # pragma: allowlist secret
+
+    def fail(*args, **kwargs):
+        if failure_class == "OutputNotProduced":
+            return 0, "", "", False, None
+        if failure_class == "CLIExit":
+            return 7, "", "", False, None
+        if failure_class == "TimeoutError":
+            return "timeout", "", "", True, False
+        if failure_class == "PermissionError":
+            raise PermissionError(canary)
+        if failure_class == "UnicodeDecodeError":
+            raise UnicodeDecodeError("utf-8", canary.encode(), 0, 1, canary)
+        if failure_class == "IncompleteRead":
+            raise http.client.IncompleteRead(canary.encode(), 999)
+        if failure_class == "ConnectionResetError":
+            raise ConnectionResetError(canary)
+        if failure_class == "OSError":
+            raise OSError(canary)
+        if failure_class == "HTTPException":
+            raise http.client.HTTPException(canary)
+        if failure_class == "LocalUnicodeDecodeError":
+            return io.BytesIO(canary.encode() + b"\xff")
+        if failure_class == "JSONDecodeError":
+            return io.BytesIO(canary.encode())
+        if failure_class == "EndpointProtocolError":
+            return io.BytesIO(json.dumps({"choices": canary}).encode())
+        if failure_class == "EndpointTimeout":
+            raise TimeoutError(canary)
+        raise module.EndpointDeadlineExceeded(canary)
+
+    monkeypatch.setattr(module, "_run", fail)
+    monkeypatch.setattr(module.urllib.request, "urlopen", fail)
+    assert module.main([capacity, "--brief", str(brief), "--out", str(out), "--timeout", "5"]) == (
+        4 if failure_class in {"TimeoutError", "EndpointTimeout"} else 3
+    )
+    receipt = _receipt(out)
+    captured = capsys.readouterr()
+    if failure_class == "PermissionError":
+        remedy = ["executable", "mode", "PATH", "retry"]
+    elif failure_class in {"TimeoutError", "EndpointTimeout", "EndpointDeadlineExceeded"}:
+        remedy = ["--timeout", "retry"]
+    elif failure_class == "OutputNotProduced":
+        remedy = ["--out", str(out), "retry"]
+    elif capacity.startswith("local:"):
+        remedy = ["receipt", "endpoint", "--timeout", "retry"]
+    else:
+        remedy = ["receipt", "--out", "retry"]
+    for destination in (receipt["stderr_tail"], captured.err):
+        assert capacity in destination
+        for action in remedy:
+            assert action in destination, f"missing recovery action: {action}"
+    assert receipt["recovery_action"]
+    for action in remedy:
+        assert action in receipt["recovery_action"]
+    assert out.read_bytes() == b""  # Diagnostics must not turn an absent answer into an answer.
+    assert captured.out == "" and caplog.text == ""
+    assert canary not in json.dumps(receipt) + captured.err

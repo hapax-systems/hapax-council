@@ -80,11 +80,14 @@ _SECRETISH = re.compile(
         \bbearer\s+
     )
     (?:
-        "[^"\r\n]*"
+        [|>][0-9+-]*[ \t]*(?:\#[^\r\n]*)?\r?\n
+        (?:[ \t]+[^\r\n]*(?:\r?\n|\Z)|[ \t]*\r?\n)*
         |
-        '[^'\r\n]*'
+        "(?:\\[\s\S]|[^"\\])*(?:"|\\?\Z)
         |
-        [^\s,;}\]"'\r\n]+
+        '(?:''|[^'])*(?:'|\Z)
+        |
+        [^\s,;}\]"'\r\n]+(?:[ \t]*\r?\n[ \t]+[^\r\n]*)*
     )
     """,
     re.IGNORECASE | re.VERBOSE,
@@ -160,8 +163,14 @@ class RunResult:
     process_group_killed: bool = False
     process_group_any_member_survived: bool | None = None
     failure_class: str | None = None
+    recovery_action: str | None = None
 
     def __post_init__(self) -> None:
+        if self.exit_code == 0 and not self.answer.strip():
+            self.answer = ""
+            self.exit_code = 3
+            self.failure_class = "OutputNotProduced"
+            self.stderr_tail += "\nempty answer from this invocation"
         # Failed stdout is diagnostic material even when a CLI parsed it as an answer.
         if self.exit_code != 0:
             self.answer = _redact(self.answer)
@@ -171,12 +180,16 @@ class RunResult:
 
 
 def _redact(text: str) -> str:
+    # Consume escaped quotes and multiline scalars before any diagnostic is sliced.
+    # Unterminated quotes suppress the rest of the block rather than exposing a suffix.
     return _SECRETISH.sub(r"\1<redacted>", text)
 
 
 def _cli_diagnostics(code: int | str, stdout: str, stderr: str, *, chatter: bool = False) -> str:
-    """Keep full diagnostics until RunResult redacts them; successful answers stay out."""
-    return "\n".join(part for part in (stdout if chatter or code != 0 else "", stderr) if part)
+    """Redact each full stream before joining: a quote in stderr cannot close stdout's value."""
+    return "\n".join(
+        _redact(part) for part in (stdout if chatter or code != 0 else "", stderr) if part
+    )
 
 
 def _now() -> datetime:
@@ -326,9 +339,10 @@ def recruit_cli(
         produced_output = current_output is not None and current_output != previous_output
         answer = out.read_text(encoding="utf-8") if produced_output else ""
         failure_class = None
-        if not answer:
+        if not answer.strip():
+            answer = ""
             failure_class = "OutputNotProduced"
-            stderr += "\ncodex produced no new output for this invocation"
+            stderr += "\ncodex produced no new output (absent or empty) for this invocation"
             if code == 0:
                 code = 3
         reported = re.findall(r"^model:\s*(\S+)", stdout + "\n" + stderr, flags=re.MULTILINE)
@@ -360,7 +374,7 @@ def recruit_cli(
         argv = [binary, "-p", brief, "--output-format", "text"]
         code, stdout, stderr, group_killed, member_survived = _run(argv, cwd=cwd, timeout=timeout)
         return RunResult(
-            _strip_kimi(stdout, brief),
+            _strip_kimi(_redact(stdout) if code != 0 else stdout, brief),
             code,
             len(stdout),
             _cli_diagnostics(code, stdout, stderr),
@@ -446,7 +460,9 @@ def recruit_local(capacity: str, brief: str, *, timeout: int, model: str | None)
         if served is not None and not isinstance(served, str):
             raise EndpointProtocolError("model must be a string when present")
     except EndpointDeadlineExceeded as exc:
-        return RunResult("", 3, 0, str(exc), [], failure_class=type(exc).__name__)
+        return RunResult(
+            "", 3, 0, "endpoint deadline exceeded", [], failure_class=type(exc).__name__
+        )
     except urllib.error.URLError as exc:
         # Do not read HTTPError bodies. The reason may itself contain diagnostics;
         # pass it whole through RunResult's redaction boundary before truncation.
@@ -454,7 +470,14 @@ def recruit_local(capacity: str, brief: str, *, timeout: int, model: str | None)
             "", 3, 0, f"endpoint {base} unreachable: {exc}", [], failure_class=type(exc).__name__
         )
     except TimeoutError:
-        return RunResult("", "timeout", 0, f"endpoint {base} timed out after {timeout}s", [])
+        return RunResult(
+            "",
+            "timeout",
+            0,
+            f"endpoint {base} timed out after {timeout}s",
+            [],
+            failure_class="TimeoutError",
+        )
     except (json.JSONDecodeError, UnicodeDecodeError, EndpointProtocolError) as exc:
         # Decode errors can quote response data. Only protocol errors have messages
         # constructed by us; never include the response body in diagnostics.
@@ -474,6 +497,20 @@ def recruit_local(capacity: str, brief: str, *, timeout: int, model: str | None)
             failure_class=failure_class,
         )
     return RunResult(answer, 0, len(answer), "", [served] if served else [])
+
+
+def _failure_recovery(capacity: str, result: RunResult, out: Path) -> str:
+    """Build next actions only from invocation metadata, never exception/response text."""
+    if result.exit_code == "timeout" or result.failure_class == "EndpointDeadlineExceeded":
+        return "increase --timeout and retry the brief"
+    if result.failure_class == "PermissionError":
+        return "check the executable's mode and PATH, then retry the brief"
+    if result.failure_class == "OutputNotProduced":
+        return f"check --out {out}, then retry the brief"
+    if capacity in LOCAL_ENDPOINTS:
+        base, _ = LOCAL_ENDPOINTS[capacity]
+        return f"inspect the receipt; retry endpoint {base} with --timeout SECONDS"
+    return "inspect the receipt; retry the brief with --out FILE"
 
 
 def write_receipt(
@@ -510,6 +547,7 @@ def write_receipt(
         "stdout_bytes": result.stdout_bytes if result else 0,
         "stderr_tail": result.stderr_tail if result else "",
         "failure_class": result.failure_class if result else None,
+        "recovery_action": result.recovery_action if result else None,
         "answer_policy": ("redacted_failure_output" if result.exit_code != 0 else "capacity_answer")
         if result
         else None,
@@ -589,6 +627,12 @@ def main(argv: list[str] | None = None) -> int:
             "", 3, 0, f"capacity failed: {failure_class}", [], failure_class=failure_class
         )
     ended = _now()
+    if result is not None and result.exit_code != 0:
+        result.recovery_action = _redact(_failure_recovery(args.capacity, result, args.out))
+        # Keep the full remedy separately: long output paths must survive tail limits.
+        result.stderr_tail = (result.stderr_tail + f"\n{args.capacity}: {result.recovery_action}")[
+            -400:
+        ]
     write_receipt(
         receipt_path,
         capacity=args.capacity,
@@ -609,14 +653,15 @@ def main(argv: list[str] | None = None) -> int:
     if result.exit_code == "timeout":
         print(
             f"hapax-recruit: {args.capacity} timed out after {args.timeout}s; partial output kept "
-            f"(receipt: {receipt_path})",
+            f"(receipt: {receipt_path}); {result.recovery_action}",
             file=sys.stderr,
         )
         return 4
     if result.exit_code != 0:
         print(
             f"hapax-recruit: {args.capacity} exited {result.exit_code}; stderr tail: "
-            f"{result.stderr_tail.strip()[-200:]} (receipt: {receipt_path})",
+            f"{result.stderr_tail.strip()[-200:]} (receipt: {receipt_path}); "
+            f"{result.recovery_action}",
             file=sys.stderr,
         )
         return 3

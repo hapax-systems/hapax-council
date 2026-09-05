@@ -6,6 +6,7 @@ import json
 import os
 import subprocess
 from pathlib import Path
+from types import ModuleType
 
 import pytest
 
@@ -224,3 +225,105 @@ def test_check_propagates_failed_client_probe_with_remedy(bench, tmp_path, probe
     assert "SYNTHETIC_PROBE" not in proc.stdout + proc.stderr
     assert FAKE_KEY not in proc.stdout + proc.stderr
     assert not record.exists()
+
+
+@pytest.fixture
+def fake_boundary(monkeypatch):
+    module = ModuleType("qwencloud_under_test")
+    exec(compile(WRAPPER.read_text(), str(WRAPPER), "exec"), module.__dict__)
+    for name in tuple(os.environ):
+        if name.startswith("HAPAX_QWENCLOUD_"):
+            monkeypatch.delenv(name)
+    monkeypatch.setattr(module.shutil, "which", lambda name: f"/synthetic/bin/{name}")
+    monkeypatch.setattr(module.tempfile, "mkdtemp", lambda **kw: "/synthetic/isolation")
+    removed = []
+    monkeypatch.setattr(module.shutil, "rmtree", removed.append)
+    calls = []
+
+    def run(argv, **kwargs):
+        calls.append((argv, kwargs))
+        if argv == ["hapax-secret", "--where", module.SECRET_NAME]:
+            return subprocess.CompletedProcess(argv, 0, "filestore\n")
+        if argv == ["hapax-secret", module.SECRET_NAME]:
+            return subprocess.CompletedProcess(argv, 0, FAKE_KEY)
+        assert argv == ["claude", "-p", "synthetic brief"]
+        return subprocess.CompletedProcess(argv, 0)
+
+    monkeypatch.setattr(module.subprocess, "run", run)
+    return module, calls, removed
+
+
+@pytest.mark.parametrize("allowed", [False, True], ids=["refused", "allowed"])
+@pytest.mark.parametrize(
+    ("setting", "flag", "override"),
+    [
+        (
+            "HAPAX_QWENCLOUD_ANTHROPIC_BASE_URL",
+            "HAPAX_QWENCLOUD_ALLOW_BASE_URL_OVERRIDE",
+            "https://synthetic.example/anthropic",
+        ),
+        (
+            "HAPAX_QWENCLOUD_MODEL",
+            "HAPAX_QWENCLOUD_ALLOW_NON_PLAN_MODEL",
+            "synthetic-reviewed-model",
+        ),
+    ],
+    ids=["endpoint", "model"],
+)
+def test_reviewed_override_flags_control_client_configuration(
+    fake_boundary, monkeypatch, capsys, allowed, setting, flag, override
+):
+    module, calls, removed = fake_boundary
+    monkeypatch.setenv(setting, override)
+    if allowed:
+        monkeypatch.setenv(flag, "1")
+    rc = module.main(["-p", "synthetic brief"])
+    captured = capsys.readouterr()
+    if not allowed:
+        assert rc == 2 and f"{flag}=1" in captured.err
+        assert calls == [] and removed == []
+        return
+    assert rc == 0 and captured.err == ""
+    assert len(calls) == 3
+    argv, kwargs = calls[-1]
+    assert argv == ["claude", "-p", "synthetic brief"]
+    client = kwargs["env"]
+    assert client["ANTHROPIC_AUTH_TOKEN"] == FAKE_KEY
+    assert client["ANTHROPIC_BASE_URL"] == (override if setting.endswith("BASE_URL") else OFFICIAL)
+    model = override if setting.endswith("MODEL") else "qwen3.7-plus"
+    for name in (
+        "ANTHROPIC_MODEL",
+        "ANTHROPIC_SMALL_FAST_MODEL",
+        "ANTHROPIC_DEFAULT_OPUS_MODEL",
+        "ANTHROPIC_DEFAULT_SONNET_MODEL",
+        "ANTHROPIC_DEFAULT_HAIKU_MODEL",
+    ):
+        assert client[name] == model
+    assert client["HOME"] == "/synthetic/isolation" and removed == [client["HOME"]]
+    assert FAKE_KEY not in json.dumps(argv) + captured.out + captured.err
+
+
+@pytest.mark.parametrize("empty", ["", " \n\t"], ids=["empty", "whitespace"])
+def test_empty_secret_refuses_before_constructing_or_requesting_client(
+    fake_boundary, monkeypatch, capsys, empty
+):
+    module, calls, removed = fake_boundary
+
+    def run(argv, **kwargs):
+        calls.append(argv)
+        assert argv[0] == "hapax-secret", "empty secret reached a client request"
+        return subprocess.CompletedProcess(argv, 0, "filestore" if "--where" in argv else empty)
+
+    monkeypatch.setattr(module.subprocess, "run", run)
+    monkeypatch.setattr(
+        module, "_client_environment", lambda *a: pytest.fail("empty secret constructed a client")
+    )
+    assert module.main(["-p", "synthetic brief"]) == 4
+    assert calls == [
+        ["hapax-secret", "--where", module.SECRET_NAME],
+        ["hapax-secret", module.SECRET_NAME],
+    ]
+    assert removed == []
+    captured = capsys.readouterr()
+    assert "read back empty" in captured.err and "re-store it with hapax-secret" in captured.err
+    assert captured.out == ""
