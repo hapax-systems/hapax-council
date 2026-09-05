@@ -324,15 +324,21 @@ def test_public_contract_without_receipt_still_carries_limits():
     assert rendered["warnings"] == list(EXPECTED_VERIFICATION_LIMITS)
 
 
-@pytest.mark.parametrize(
-    "limit_index", range(3), ids=["signer-trust", "attribution", "image-byte-identity"]
-)
 @pytest.mark.parametrize("prefix", ["/v1/credential/verify/", "/api/art-50/credential/verify/"])
 @pytest.mark.parametrize("state", list(C2paSigningState))
 @pytest.mark.asyncio
-async def test_public_response_body_preserves_emitted_limits(
-    sample, tmp_path, monkeypatch, limit_index, prefix, state
+async def test_public_response_body_keeps_reason_tokens_pure(
+    sample, tmp_path, monkeypatch, prefix, state
 ):
+    """The HTTP verification body carries machine-readable reason-code tokens only.
+
+    It does NOT carry the three prose limits: those are emitted on the certificate
+    packet (``limitations``, the artifact the route serves a verdict about) and on the
+    surface contract's warnings, and are asserted where they are emitted by
+    ``test_persisted_certificate_carries_the_three_limits_where_emitted`` and
+    ``test_public_contract_result_preserves_emitted_limits`` below. Reviewer finding,
+    2026-09-05 (codex): an HTTP-named test must not read the limits off the fixture.
+    """
     certificate, _ = sample
     certificate.c2pa.status = state
     monkeypatch.setenv("HAPAX_STATE", str(tmp_path))
@@ -355,18 +361,36 @@ async def test_public_response_body_preserves_emitted_limits(
     emitted = verify_certificate_payload(certificate).model_dump(mode="json")
     assert body == emitted
     # The public verification response keeps its machine-readable reason-code tokens
-    # pure: no prose is appended to `reasons` (root's disposition, 2026-09-05). The limits
-    # reach the public surface where they are emitted — the certificate's `limitations`
-    # (the artifact the route serves a verdict about) and the surface contract's warnings.
+    # pure: no prose is appended to `reasons` (root's disposition, 2026-09-05).
     assert all(re.fullmatch(r"[a-z0-9_]+", reason) for reason in body["reasons"]), body["reasons"]
     assert body["reasons"][0] == "cryptographic_verification_not_performed"
-    limitations = certificate.model_dump(mode="json")["limitations"]
+    assert not set(body["reasons"]) & set(EXPECTED_VERIFICATION_LIMITS)
+    assert "limitations" not in body
+    assert body["status"] == UNVERIFIED
+    assert body["exact_sha256_match"] is None and body["phash_distance"] is None
+
+
+@pytest.mark.parametrize(
+    "limit_index", range(3), ids=["signer-trust", "attribution", "image-byte-identity"]
+)
+def test_persisted_certificate_carries_the_three_limits_where_emitted(
+    sample, tmp_path, monkeypatch, limit_index
+):
+    """The limits live on the persisted certificate packet, read back through the
+    route's own loader — the public representation the verdict is about — not on the
+    in-memory fixture. Their emission point is the certificate model's ``limitations``
+    default; the recorded emission mutations (remove or invert one limit there) turn
+    this test red."""
+    certificate, _ = sample
+    monkeypatch.setenv("HAPAX_STATE", str(tmp_path))
+    write_certificate(certificate, state_root=tmp_path)
+    packet = routes.load_certificate(certificate.credential_id)
+    assert packet is not None
+    limitations = packet.model_dump(mode="json")["limitations"]
     assert limitations[1 + limit_index : 2 + limit_index] == [
         EXPECTED_VERIFICATION_LIMITS[limit_index]
     ]
     assert limitations[1:4] == list(EXPECTED_VERIFICATION_LIMITS)
-    assert body["status"] == UNVERIFIED
-    assert body["exact_sha256_match"] is None and body["phash_distance"] is None
 
 
 @pytest.mark.parametrize(
