@@ -77,7 +77,10 @@ receipt paths with any measurement claim. These commands reproduce the measureme
 historical transcript timings without their receipts are not independently verified artifacts.
 The three artifacts matching `$recruit_measure_dir/*.receipt.json` are the live-run evidence;
 the coordinator attaches the actual receipt paths to the PR body after running the commands.
-The directory is allocated by `mktemp -d`, so its actual path comes from that run, not this document.
+For that live run, the coordinator sets `TMPDIR` to an existing directory under
+`~/Documents/Personal/` before running the unchanged block, so `mktemp -d` allocates the
+answers and receipts under the vault, not tmpfs. The attached paths must come from that
+live run; copying earlier temporary receipts into the vault does not remeasure the capacities.
 
 ## Failure artifacts and deadlines
 
@@ -129,7 +132,14 @@ and the recovery action to inspect the receipt, check the capacity's model ident
 retry. Provider, route and usage values from local responses are not copied into the receipt.
 
 Valid JSON is decoded recursively, including JSON embedded in strings. Otherwise, plain/YAML
-credential fields are redacted in place. Remaining escaped sensitive labels indicate malformed
+credential fields are redacted in place. YAML scalar keys are normalized before matching:
+double-quoted keys decode YAML hex, Unicode and character escapes; single-quoted keys decode
+only doubled single quotes. An explicit `? key` is associated with its following `: value`
+before applying the same scalar, block and flow bounds, including nested mappings.
+Unsupported or malformed key forms suppress the affected stream and record its shape.
+JSON decoder digit-limit failures write a failure receipt, return exit 3 and name the
+malformed JSON response with a retry action; decoder exception text is never emitted.
+Remaining escaped sensitive labels indicate malformed
 embedded serialization and suppress the entire affected stream. Sensitive YAML flow sequences
 and mappings are consumed through their matching closing delimiter, across lines and nested
 collections, with quoted strings, tags and comments respected. Each member is inspected, including
@@ -189,6 +199,10 @@ env -u HAPAX_GLMCP_MODEL -u HAPAX_GLMCP_REVIEW_MODEL -u HAPAX_GLMCP_REVIEW_PAYG_
   tests/scripts/test_hapax_recruit.py::test_nested_claude_credentials_never_reach_destinations \
   tests/scripts/test_hapax_recruit.py::test_yaml_sensitive_subtree_never_reaches_destinations \
   tests/scripts/test_hapax_recruit.py::test_yaml_sensitive_flow_collection_never_reaches_destinations \
+  tests/scripts/test_hapax_recruit.py::test_yaml_key_forms_never_reach_destinations \
+  tests/scripts/test_hapax_recruit.py::test_yaml_quoted_key_escape_semantics \
+  tests/scripts/test_hapax_recruit.py::test_unsupported_yaml_key_escape_suppresses_stream \
+  tests/scripts/test_hapax_recruit.py::test_json_digit_limit_is_receipted_decode_failure \
   tests/scripts/test_hapax_recruit.py::test_nested_yaml_flow_members_never_reach_destinations \
   tests/scripts/test_hapax_recruit.py::test_unbounded_yaml_flow_collection_suppresses_stream \
   tests/scripts/test_hapax_recruit.py::test_credential_json_keys_never_reach_destinations \

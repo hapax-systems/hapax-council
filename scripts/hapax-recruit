@@ -103,7 +103,10 @@ _TOKENISH = re.compile(
     r"|eyJ[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,})\b"
 )
 _MODEL_IDENTIFIER = re.compile(r"[A-Za-z0-9._:/-]{1,256}\Z")
-_YAML_FIELD = re.compile(r"^([ \t]*)(-[ \t]+)?([^:\r\n]+):[ \t]*(.*)$")
+_YAML_FIELD = re.compile(
+    r"""^([ \t]*)(-[ \t]+)?("(?:\\.|[^"\\])*"|'(?:''|[^'])*'|[^:\r\n]+):[ \t]*(.*)$"""
+)
+_YAML_EXPLICIT_KEY = re.compile(r"^([ \t]*)(-[ \t]+)?\?(?:[ \t]+(.*))?$")
 _KIMI_TRAILER = re.compile(r"^To resume this session\b")
 
 
@@ -124,6 +127,23 @@ class EndpointDeadlineExceeded(TimeoutError):
 
 class UndecodableStream(ValueError):
     """A structured stream cannot be completely redacted; never carry its text."""
+
+    def __init__(self, *, sensitive: bool = False) -> None:
+        super().__init__()
+        self.sensitive = sensitive
+
+
+class ResponseDecodeError(ValueError):
+    """The JSON decoder rejected a response at its implementation limits."""
+
+
+def _load_response_json(text: str):
+    try:
+        return json.loads(text)
+    except json.JSONDecodeError:
+        raise  # Plain text/YAML still uses the existing fallback grammar.
+    except ValueError:
+        raise ResponseDecodeError("malformed JSON response: decoder limit exceeded") from None
 
 
 @contextmanager
@@ -216,9 +236,70 @@ class RunResult:
         self.stderr_tail = self.stderr_tail[-400:]
 
 
-def _yaml_flow_end(text: str, start: int, redactions: list[tuple[int, int]] | None = None) -> int:
+def _yaml_key(key: str) -> str:
+    """Decode a single-line YAML scalar key, preserving its quote style for matching."""
+    key = key.strip()
+    key = re.sub(r"^\?(?:[ \t\r\n]+|$)", "", key)
+    if key.startswith(("!", "&")):
+        raise UndecodableStream(sensitive=True)
+    if not key or key[0] not in "\"'":
+        return re.split(r"[ \t]+#", key, maxsplit=1)[0].rstrip()
+    if key[0] == "'":
+        if not re.fullmatch(r"'(?:''|[^'\r\n])*'", key):
+            raise UndecodableStream(sensitive=True)
+        return "'" + key[1:-1].replace("''", "'") + "'"
+    if not re.fullmatch(r'"(?:\\[^\r\n]|[^"\\\r\n])*"', key):
+        raise UndecodableStream(sensitive=True)
+    escapes = {
+        "0": "\0",
+        "a": "\a",
+        "b": "\b",
+        "t": "\t",
+        "n": "\n",
+        "v": "\v",
+        "f": "\f",
+        "r": "\r",
+        "e": "\x1b",
+        " ": " ",
+        '"': '"',
+        "/": "/",
+        "\\": "\\",
+        "N": "\x85",
+        "_": "\xa0",
+        "L": "\u2028",
+        "P": "\u2029",
+    }
+    decoded, index = ['"'], 1
+    while index < len(key) - 1:
+        char = key[index]
+        index += 1
+        if char == "\\":
+            char = key[index]
+            index += 1
+            if char in escapes:
+                char = escapes[char]
+            elif char in "xuU":
+                width = {"x": 2, "u": 4, "U": 8}[char]
+                digits = key[index : index + width]
+                if len(digits) != width or not re.fullmatch(r"[0-9a-fA-F]+", digits):
+                    raise UndecodableStream(sensitive=True)
+                codepoint = int(digits, 16)
+                if codepoint > 0x10FFFF or 0xD800 <= codepoint <= 0xDFFF:
+                    raise UndecodableStream(sensitive=True)
+                char = chr(codepoint)
+                index += width
+            else:
+                raise UndecodableStream(sensitive=True)
+        decoded.append(char)
+    return "".join((*decoded, '"'))
+
+
+def _yaml_flow_end(
+    text: str, start: int, redactions: list[tuple[int, int, str]] | None = None
+) -> int:
     """Bound a flow and collect sensitive member spans at every nesting depth."""
     stack, quote, index = [], "", start
+    sensitive = False
     while index < len(text):
         char = text[index]
         if quote:
@@ -234,7 +315,7 @@ def _yaml_flow_end(text: str, start: int, redactions: list[tuple[int, int]] | No
             # Verbatim tag URIs can contain flow delimiters; they end only at >.
             end = text.find(">", index + 2)
             if end < 0:
-                raise UndecodableStream
+                raise UndecodableStream(sensitive=sensitive)
             index = end + 1
             continue
         elif char == "#" and text[index - 1] in " \t\r\n[{,":
@@ -247,25 +328,30 @@ def _yaml_flow_end(text: str, start: int, redactions: list[tuple[int, int]] | No
             stack.append({"close": "]" if char == "[" else "}", "key": index + 1, "value": None})
         elif char == ":" and stack:
             member = stack[-1]
-            probe = text[member["key"] : index].strip() + ': "scalar"'
+            key = text[member["key"] : index]
+            normalized = _yaml_key(key)
+            probe = normalized + ': "scalar"'
             label = _SECRETISH.search(probe)
             if label and label.end(1) == len(probe) - len('"scalar"'):
+                sensitive = True
                 member["value"] = member["value"] or index + 1
+                if redactions is not None and normalized != key.strip():
+                    redactions.append((member["key"], index, " " + normalized))
             member["key"] = index + 1
         elif char in ",]}":
             if not stack:
-                raise UndecodableStream
+                raise UndecodableStream(sensitive=sensitive)
             member = stack[-1]
             if member["value"] is not None and redactions is not None:
-                redactions.append((member["value"], index))
+                redactions.append((member["value"], index, ' "<redacted>"'))
             member["key"], member["value"] = index + 1, None
             if char != ",":
                 if char != stack.pop()["close"]:
-                    raise UndecodableStream
+                    raise UndecodableStream(sensitive=sensitive)
                 if not stack:
                     return index + 1
         index += 1
-    raise UndecodableStream
+    raise UndecodableStream(sensitive=sensitive)
 
 
 def _redact_yaml_flow_members(text: str) -> str:
@@ -276,17 +362,17 @@ def _redact_yaml_flow_members(text: str) -> str:
             continue
         try:
             end = _yaml_flow_end(text, opening.start(), spans)
-        except UndecodableStream:
+        except UndecodableStream as exc:
             # Ordinary prose may contain unmatched brackets. An unbounded flow
             # containing a credential label cannot safely cross the boundary.
-            if _SECRETISH.search(text[opening.start() :]):
+            if exc.sensitive or _SECRETISH.search(text[opening.start() :]):
                 raise
             break
     safe, end = [], 0
-    for start, stop in sorted(spans):
+    for start, stop, replacement in sorted(spans):
         if start < end:  # A sensitive parent already consumed this member.
             continue
-        safe.extend((text[end:start], ' "<redacted>"'))
+        safe.extend((text[end:start], replacement))
         end = stop
     return "".join((*safe, text[end:]))
 
@@ -297,10 +383,34 @@ def _redact_yaml_subtrees(text: str) -> str:
     safe, index = [], 0
     while index < len(lines):
         line = lines[index]
+        explicit = _YAML_EXPLICIT_KEY.match(line.rstrip("\r\n"))
+        if explicit:
+            indent, entry, key = explicit.groups()
+            # Complex/multiline keys cannot be bounded by this scalar matcher.
+            if not key or key.lstrip().startswith(("[", "{", "!", "&", "|", ">")):
+                raise UndecodableStream
+            normalized = _yaml_key(key)
+            probe = f'{normalized}: "scalar"'
+            label = _SECRETISH.search(probe)
+            end = index + 1
+            while end < len(lines) and (
+                not lines[end].strip() or lines[end].lstrip().startswith("#")
+            ):
+                end += 1
+            value_line = (
+                re.match(r"^([ \t]*):(?:[ \t]+|(?=\r?$))", lines[end]) if end < len(lines) else None
+            )
+            if not value_line or len(value_line[1]) != len(indent) + len(entry or ""):
+                raise UndecodableStream
+            if label and label.end(1) == len(probe) - len('"scalar"'):
+                # Feed the complete value into the same flow/subtree/scalar bounds.
+                line = f"{indent}{entry or ''}{normalized}: " + lines[end][value_line.end() :]
+                lines[index : end + 1] = [line]
         field = _YAML_FIELD.match(line.rstrip("\r\n"))
         if field:
             indent, entry, key, value = field.groups()
-            probe = f'{key}: "scalar"'
+            normalized = _yaml_key(key)
+            probe = f'{normalized}: "scalar"'
             label = _SECRETISH.search(probe)
             sensitive = label and label.end(1) == len(probe) - len('"scalar"')
             if sensitive:
@@ -313,7 +423,7 @@ def _redact_yaml_subtrees(text: str) -> str:
                 )
                 if flow:
                     end = _yaml_flow_end(tail, flow.start(1))
-                    safe.append(f'{indent}{entry or ""}{key}: "<redacted>"')
+                    safe.append(f'{indent}{entry or ""}{normalized}: "<redacted>"')
                     lines, index = tail[end:].splitlines(keepends=True), 0
                     continue
             # Only a missing scalar (possibly with node properties/comments) opens
@@ -327,13 +437,18 @@ def _redact_yaml_subtrees(text: str) -> str:
                     depth = len(following) - len(following.lstrip(" \t"))
                     sequence = re.match(r"[ \t]*-(?:[ \t\r\n]|$)", following)
                     if depth <= key_indent and not (depth == key_indent and sequence):
-                        if _YAML_FIELD.match(following.rstrip("\r\n")):
+                        if _YAML_FIELD.match(following.rstrip("\r\n")) or _YAML_EXPLICIT_KEY.match(
+                            following.rstrip("\r\n")
+                        ):
                             break
                     # If no sibling key bounds the subtree, suppress through EOF.
                     end += 1
-                safe.append(f'{indent}{entry or ""}{key}: "<redacted>"\n')
+                safe.append(f'{indent}{entry or ""}{normalized}: "<redacted>"\n')
                 index = end
                 continue
+            if sensitive and normalized != key:
+                # The scalar matcher must see decoded escapes too.
+                line = line[: field.start(3)] + normalized + line[field.end(3) :]
         safe.append(line)
         index += 1
     return _redact_yaml_flow_members("".join(safe))
@@ -343,7 +458,7 @@ def _redact(text: str, *, reject_undecodable: bool = False) -> str:
     # Decode before matching labels: JSON strings can contain further JSON envelopes,
     # escaped quotes, or unicode escapes. Re-encode only after keys and values are safe.
     try:
-        payload = json.loads(text)
+        payload = _load_response_json(text)
     except json.JSONDecodeError:
         pass
     else:
@@ -571,7 +686,7 @@ def _strip_kimi(text: str, brief: str) -> str:
 def _parse_claude_json(stdout: str, *, failed: bool = False) -> tuple[str, list[str], str | None]:
     """Claude Code's --output-format json: the answer is `result`; served identity is `modelUsage`."""
     try:
-        payload = json.loads(stdout)
+        payload = _load_response_json(stdout)
     except json.JSONDecodeError:
         # Failed CLIs can emit plain/YAML diagnostics. Preserve that redacted
         # failure output, but never retain a partial JSON envelope (with or
@@ -579,7 +694,7 @@ def _parse_claude_json(stdout: str, *, failed: bool = False) -> tuple[str, list[
         if failed and stdout.strip():
             try:
                 diagnostic, end = json.JSONDecoder().raw_decode(stdout.lstrip())
-            except json.JSONDecodeError:
+            except ValueError:
                 if not re.search(r'[\[{]|^\s*"', stdout):
                     return stdout, [], None
             else:
@@ -750,7 +865,9 @@ def recruit_local(capacity: str, brief: str, *, timeout: int, model: str | None)
     try:
         with _endpoint_deadline(timeout) as deadline:
             with urllib.request.urlopen(request, timeout=timeout) as response:
-                payload = json.loads(_read_endpoint_body(response, deadline).decode("utf-8"))
+                payload = _load_response_json(
+                    _read_endpoint_body(response, deadline).decode("utf-8")
+                )
         if not isinstance(payload, dict):
             raise EndpointProtocolError("response must be an object")
         choices = payload.get("choices")
@@ -798,7 +915,12 @@ def recruit_local(capacity: str, brief: str, *, timeout: int, model: str | None)
             [],
             failure_class="TimeoutError",
         )
-    except (json.JSONDecodeError, UnicodeDecodeError, EndpointProtocolError) as exc:
+    except (
+        json.JSONDecodeError,
+        UnicodeDecodeError,
+        EndpointProtocolError,
+        ResponseDecodeError,
+    ) as exc:
         # Decode errors can quote response data. Only protocol errors have messages
         # constructed by us; never include the response body in diagnostics.
         if isinstance(exc, json.JSONDecodeError):
@@ -832,6 +954,10 @@ def _failure_recovery(capacity: str, result: RunResult, out: Path) -> str:
         return "check the executable's mode and PATH, then retry the brief"
     if result.failure_class == "OutputNotProduced":
         return f"check --out {out}, then retry the brief"
+    if result.failure_class == "ResponseDecodeError":
+        return (
+            "inspect the malformed JSON response and the receipt; retry the brief with --out FILE"
+        )
     if capacity in LOCAL_ENDPOINTS:
         base, _ = LOCAL_ENDPOINTS[capacity]
         return f"inspect the receipt; retry endpoint {base} with --timeout SECONDS"
@@ -992,7 +1118,7 @@ def main(argv: list[str] | None = None) -> int:
             )
     except Refusal as exc:
         refusal = str(exc)
-    except (OSError, UnicodeError, http.client.HTTPException) as exc:
+    except (OSError, UnicodeError, http.client.HTTPException, ResponseDecodeError) as exc:
         # Expected launch/decoding/transport failures must reach the receipt boundary.
         # Exception text can embed paths, response bytes or credentials: keep only its class.
         failure_class = type(exc).__name__

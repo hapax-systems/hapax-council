@@ -82,6 +82,193 @@ def _receipt(out: Path) -> dict:
     return json.loads(out.with_name(out.name + ".receipt.json").read_text())
 
 
+@pytest.mark.parametrize("capacity", ["grok", "local:qwen36"])
+@pytest.mark.parametrize(
+    "form",
+    [
+        "explicit",
+        "escaped",
+        "nested-explicit",
+        "flow-escaped",
+        "explicit-block",
+        "explicit-scalar",
+        "explicit-comment",
+        "flow-explicit",
+        "unbounded-escaped",
+        "unsupported-explicit",
+        "unsupported-escape",
+        "explicit-key-comment",
+        "unsupported-multiline-key",
+        "unicode-escaped",
+        "flow-unicode-escaped",
+        "escaped-scalar",
+        "explicit-sibling",
+        "flow-key-comment",
+        "flow-explicit-tab",
+        "unsupported-tagged-key",
+    ],
+)
+def test_yaml_key_forms_never_reach_destinations(
+    bench, monkeypatch, capsys, caplog, capacity, form
+):
+    module, _bin_dir, brief, out = bench
+    second = "SYNTHETIC_SECOND_CREDENTIAL"  # pragma: allowlist secret
+    forms = {
+        "explicit": f"? api_key\n: [FIRST,\n{second}]\n",  # pragma: allowlist secret
+        "escaped": '"api\\x5fkey": [FIRST,\n' + second + "]\n",
+        "nested-explicit": f"settings:\n  ? api_key\n  : [FIRST,\n    {second}]\n",  # pragma: allowlist secret
+        "flow-escaped": 'settings: {safe: KEEP_INSIDE, "api\\x5fkey": [FIRST,\n' + second + "]}\n",
+        "explicit-block": f"? api_key\n:\n- FIRST\n- nested:\n    backup: {second}\n",  # pragma: allowlist secret
+        "explicit-scalar": f"? api_key\n: |-\n  FIRST\n  {second}\n",  # pragma: allowlist secret
+        "explicit-comment": f"? api_key\n# comment\n\n: &synthetic [FIRST,\n{second}]\n",  # pragma: allowlist secret
+        "flow-explicit": 'settings: {? "api\\x5fkey"\n: [FIRST,\n' + second + "]}\n",
+        "unbounded-escaped": 'settings: {safe: DISCARD, "api\\x5fkey": [FIRST,\n' + second + "]\n",
+        "unsupported-explicit": f"?\n  api_key\n: [FIRST,\n{second}]\n",  # pragma: allowlist secret
+        "unsupported-escape": 'settings: {"api\\qkey": [FIRST,\n' + second + "]}\n",
+        "explicit-key-comment": f"? api_key # label\n: [FIRST,\n{second}]\n",  # pragma: allowlist secret
+        "unsupported-multiline-key": f"? api\n  key\n: [FIRST,\n{second}]\n",
+        "unicode-escaped": '"api\\u005fkey": [FIRST,\n' + second + "]\n",
+        "flow-unicode-escaped": 'settings: {"api\\u005fkey": [FIRST,\n' + second + "]}\n",
+        "escaped-scalar": '"api\\x5fkey": FIRST ' + second + "\nsafe: KEEP_THIS_FIELD\n",
+        "explicit-sibling": f"? api_key\n:\n- FIRST\n- {second}\n? safe\n: KEEP_THIS_FIELD\n",  # pragma: allowlist secret
+        "flow-key-comment": 'settings: {# comment\n"api\\x5fkey": [FIRST,\n' + second + "]}\n",
+        "flow-explicit-tab": 'settings: {?\t"api\\x5fkey": [FIRST,\n' + second + "]}\n",
+        "unsupported-tagged-key": '!!str "api\\x5fkey": [FIRST,\n' + second + "]\n",
+    }
+    diagnostic = forms[form]
+    suppressed = form.startswith(("unsupported-", "unbounded-"))
+    if capacity.startswith("local:"):
+        payload = {"choices": [{"message": {"content": diagnostic}}]}
+        monkeypatch.setattr(
+            module.urllib.request,
+            "urlopen",
+            lambda *a, **kw: io.BytesIO(json.dumps(payload).encode()),
+        )
+    else:
+        monkeypatch.setattr(module, "_require_binary", lambda name: name)
+        monkeypatch.setattr(
+            module, "_run", lambda *a, **kw: (7, diagnostic, diagnostic, False, None)
+        )
+    rc = module.main([capacity, "--brief", str(brief), "--out", str(out)])
+    captured = capsys.readouterr()
+    receipt = _receipt(out)
+    destinations = {
+        "answer": out.read_text(),
+        "receipt": json.dumps(receipt),
+        "terminal stdout": captured.out,
+        "terminal stderr": captured.err,
+        "log": caplog.text,
+    }
+    leaks = [name for name, value in destinations.items() if second in value or "FIRST" in value]
+    assert not leaks, f"credential reached destinations: {', '.join(leaks)}"
+    assert rc == (0 if capacity.startswith("local:") and not suppressed else 3)
+    assert receipt["output_bytes"] == len(out.read_bytes())
+    if suppressed:
+        assert out.read_text() == ""
+        assert receipt["answer_policy"] == "suppressed_undecodable_output"
+        assert receipt["suppressed_streams"] == {
+            stream: {
+                "length": len(diagnostic),
+                "first_token_class": "text",
+                "reason": "undecodable_stream_suppressed",
+            }
+            for stream in (["answer"] if capacity.startswith("local:") else ["stdout", "stderr"])
+        }
+    else:
+        assert "<redacted>" in out.read_text()
+        assert receipt["suppressed_streams"] == {}
+        if form == "flow-escaped":
+            assert "safe: KEEP_INSIDE" in out.read_text()
+        if form in {"escaped-scalar", "explicit-sibling"}:
+            assert "KEEP_THIS_FIELD" in out.read_text()
+    assert caplog.text == ""
+
+
+@pytest.mark.parametrize(
+    ("encoded", "decoded"),
+    [
+        (r"\x5f", "_"),
+        (r"\u005f", "_"),
+        (r"\U0000005f", "_"),
+        (r"\U0001f600", "\U0001f600"),
+        (r"\_", "\xa0"),
+        (r"\N", "\x85"),
+        (r"\L", "\u2028"),
+        (r"\P", "\u2029"),
+        (r"\0", "\0"),
+        (r"\a", "\a"),
+        (r"\b", "\b"),
+        (r"\t", "\t"),
+        (r"\n", "\n"),
+        (r"\v", "\v"),
+        (r"\f", "\f"),
+        (r"\r", "\r"),
+        (r"\e", "\x1b"),
+        (r"\ ", " "),
+        (r"\"", '"'),
+        (r"\/", "/"),
+        (r"\\", "\\"),
+    ],
+)
+def test_yaml_quoted_key_escape_semantics(bench, encoded, decoded):
+    module, _bin_dir, _brief, _out = bench
+    assert module._yaml_key('"prefix' + encoded + 'suffix"') == '"prefix' + decoded + 'suffix"'
+    # A YAML single-quoted key interprets only doubled single quotes.
+    single = "'prefix" + encoded + "suffix'"
+    assert module._yaml_key(single) == single
+    assert module._yaml_key("'prefix''suffix'") == "'prefix'suffix'"
+
+
+@pytest.mark.parametrize("encoded", [r"\q", r"\x5", r"\xZZ", r"\u123", r"\U00110000", r"\uD800"])
+@pytest.mark.parametrize("flow", [False, True], ids=["block", "flow"])
+def test_unsupported_yaml_key_escape_suppresses_stream(bench, encoded, flow):
+    module, _bin_dir, _brief, _out = bench
+    text = '"api' + encoded + 'key": SYNTHETIC_CREDENTIAL'
+    if flow:
+        text = "settings: {" + text + "}"
+    streams, suppressed = module._redact_streams(stdout=text)
+    assert streams == {"stdout": ""}
+    assert suppressed == {
+        "stdout": {
+            "length": len(text),
+            "first_token_class": "text" if flow else "string",
+            "reason": "undecodable_stream_suppressed",
+        }
+    }
+
+
+@pytest.mark.parametrize("capacity", ["grok", "local:qwen36"])
+def test_json_digit_limit_is_receipted_decode_failure(bench, monkeypatch, capsys, caplog, capacity):
+    module, _bin_dir, brief, out = bench
+    previous_limit = sys.get_int_max_str_digits()
+    sys.set_int_max_str_digits(4300)
+    response = '{"number": ' + "7" * 5000 + "}"
+    try:
+        if capacity.startswith("local:"):
+            monkeypatch.setattr(
+                module.urllib.request, "urlopen", lambda *a, **kw: io.BytesIO(response.encode())
+            )
+        else:
+            monkeypatch.setattr(module, "_require_binary", lambda name: name)
+            monkeypatch.setattr(module, "_run", lambda *a, **kw: (0, response, "", False, None))
+        assert module.main([capacity, "--brief", str(brief), "--out", str(out)]) == 3
+    finally:
+        sys.set_int_max_str_digits(previous_limit)
+    receipt = _receipt(out)
+    captured = capsys.readouterr()
+    assert receipt["exit_code"] == 3
+    assert receipt["failure_class"] == "ResponseDecodeError"
+    assert receipt["output_bytes"] == 0
+    assert out.read_text() == ""
+    assert "malformed JSON response" in receipt["stderr_tail"]
+    assert "malformed JSON response" in receipt["recovery_action"]
+    assert "malformed JSON response" in captured.err
+    assert "retry" in receipt["recovery_action"]
+    assert "7" * 5000 not in json.dumps(receipt) + captured.out + captured.err + caplog.text
+    assert "Traceback" not in captured.err
+    assert caplog.text == ""
+
+
 @pytest.mark.parametrize("form", ["sequence", "indented-sequence", "mapping", "nested-sequence"])
 @pytest.mark.parametrize("capacity", ["grok", "local:qwen36"])
 @pytest.mark.parametrize("bounded", [False, True], ids=["eof", "sibling-key"])
@@ -1463,6 +1650,9 @@ def test_runbook_names_live_measurement_commands_and_receipts():
     assert "`wall_s`, `models_reported`," in doc
     assert "`$recruit_measure_dir/*.receipt.json`" in doc
     assert "coordinator attaches the actual receipt paths to the PR body" in doc
+    assert "the coordinator sets `TMPDIR` to an existing directory under" in doc
+    assert "`~/Documents/Personal/` before running the unchanged block" in doc
+    assert "answers and receipts under the vault, not tmpfs" in doc
     assert (
         "historical transcript timings without their receipts are not independently verified" in doc
     )
