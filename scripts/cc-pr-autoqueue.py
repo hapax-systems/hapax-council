@@ -53,6 +53,7 @@ import review_team  # noqa: E402
 from github_pr_status import (  # noqa: E402
     GRAPHQL_BACKOFF_RC,
     REST_INDETERMINATE_CHECK_NAME,
+    RestIndeterminateError,
     fetch_status_check_rollup_rest,
     get_pull_rest,
     list_open_pr_statuses_rest,
@@ -1136,9 +1137,10 @@ def fetch_open_prs(
         limit=limit,
         include_files=True,
         include_review_decision=True,
+        fail_on_indeterminate=True,
     )
     if not raw:
-        LOG.warning("REST open PR scan returned no rows")
+        LOG.info("REST open PR scan returned no rows")
         return []
     prs: list[PullRequest] = []
     for item in raw:
@@ -3069,7 +3071,23 @@ def run_reconciler(
             repo_root=repo_root,
             runner=runner,
         )
-    prs = fetch_open_prs(repo=repo, repo_root=repo_root, limit=limit, runner=runner)
+    try:
+        prs = fetch_open_prs(repo=repo, repo_root=repo_root, limit=limit, runner=runner)
+    except RestIndeterminateError as exc:
+        report = {
+            "repo": repo,
+            "apply": apply,
+            "skipped": True,
+            "reason": f"open_pr_scan_indeterminate:{exc.reason}",
+            "decisions": [],
+            "mutations": [],
+        }
+        return _finalize_reconciler_report(
+            report,
+            report_path=report_path,
+            admission_governor_path=admission_governor_path,
+            now=now,
+        )
     if expected_auto_merge_method is not None:
         governance_by_base: dict[tuple[str | None, str | None], MergeQueueGovernance] = {}
         governed_prs: list[PullRequest] = []

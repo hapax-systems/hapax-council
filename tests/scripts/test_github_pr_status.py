@@ -6,6 +6,8 @@ import sys
 from pathlib import Path
 from typing import Any
 
+import pytest
+
 SCRIPTS = Path(__file__).resolve().parents[2] / "scripts"
 if str(SCRIPTS) not in sys.path:
     sys.path.insert(0, str(SCRIPTS))
@@ -66,6 +68,54 @@ class FakeRunner:
         if cmd[:3] == ["gh", "api", "graphql"]:
             return subprocess.CompletedProcess(cmd, 0, '{"data":{}}', "")
         return subprocess.CompletedProcess(cmd, 1, "", "unexpected command")
+
+
+@pytest.mark.parametrize("fail_on_indeterminate", [False, True])
+@pytest.mark.parametrize(
+    ("returncode", "body", "stderr", "cause"),
+    [
+        (0, "[]", "", None),
+        (0, "{}", "", "invalid_list"),
+        (1, "", "gh: API rate limit exceeded (HTTP 403)", "rate_limit"),
+    ],
+)
+def test_rest_pull_list_second_page_preserves_indeterminacy(
+    tmp_path: Path,
+    fail_on_indeterminate: bool,
+    returncode: int,
+    body: str,
+    stderr: str,
+    cause: str | None,
+) -> None:
+    class PaginatedListRunner(FakeRunner):
+        def __call__(self, cmd: list[str], **kwargs: Any) -> subprocess.CompletedProcess:
+            self.calls.append(list(cmd))
+            assert cmd[:4] == ["gh", "api", "--method", "GET"]
+            assert cmd[6] == "repos/owner/repo/pulls"
+            if _api_fields(cmd)["page"] == "1":
+                return subprocess.CompletedProcess(
+                    cmd, 0, json.dumps([{"number": number} for number in range(100)]), ""
+                )
+            return subprocess.CompletedProcess(cmd, returncode, body, stderr)
+
+    runner = PaginatedListRunner()
+    kwargs = {
+        "repo": "owner/repo",
+        "repo_root": tmp_path,
+        "runner": runner,
+        "limit": 200,
+        "fail_on_indeterminate": fail_on_indeterminate,
+    }
+    if fail_on_indeterminate and cause:
+        with pytest.raises(github_pr_status.RestIndeterminateError) as caught:
+            github_pr_status.list_pulls_rest(**kwargs)
+        assert isinstance(caught.value, subprocess.SubprocessError)
+        assert caught.value.reason == cause
+        assert str(caught.value) == cause
+    else:
+        rows = github_pr_status.list_pulls_rest(**kwargs)
+        assert len(rows) == (100 if cause is None else 0)
+    assert len(runner.calls) == 2
 
 
 def test_rest_status_rollup_uses_check_runs_and_statuses(tmp_path: Path) -> None:

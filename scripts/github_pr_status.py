@@ -34,6 +34,14 @@ DEFAULT_REVIEW_DECISION_REST_LIMIT = 5000
 _SAFE_CACHE_RE = re.compile(r"[^A-Za-z0-9_.-]+")
 
 
+class RestIndeterminateError(subprocess.SubprocessError):
+    """A strict REST read failed, with a payload-free reason token."""
+
+    def __init__(self, reason: str) -> None:
+        super().__init__(reason)
+        self.reason = reason
+
+
 @dataclass(frozen=True)
 class GraphQLBackoff:
     remaining: int
@@ -162,6 +170,7 @@ def _rest_get_json(
     runner: Any,
     fields: dict[str, str] | None = None,
     timeout: int = DEFAULT_TIMEOUT_SECONDS,
+    fail_on_indeterminate: bool = False,
 ) -> Any | None:
     cmd = [
         "gh",
@@ -174,7 +183,27 @@ def _rest_get_json(
     ]
     for key, value in (fields or {}).items():
         cmd.extend(["-f", f"{key}={value}"])
-    proc = _run(runner, cmd, repo_root=repo_root, timeout=timeout)
+    try:
+        proc = _run(runner, cmd, repo_root=repo_root, timeout=timeout)
+    except (OSError, subprocess.SubprocessError) as exc:
+        if fail_on_indeterminate:
+            raise RestIndeterminateError("transport_error") from exc
+        raise
+    if fail_on_indeterminate:
+        if proc.returncode != 0:
+            message = f"{proc.stderr or ''} {proc.stdout or ''}".lower()
+            reason = (
+                "rate_limit"
+                if "rate limit" in message or "rate_limit" in message
+                else "request_failed"
+            )
+            raise RestIndeterminateError(reason)
+        if not (proc.stdout or "").strip():
+            raise RestIndeterminateError("empty_body")
+        try:
+            return json.loads(proc.stdout)
+        except json.JSONDecodeError as exc:
+            raise RestIndeterminateError("invalid_json") from exc
     return _json_from_proc(proc)
 
 
@@ -186,6 +215,7 @@ def _rest_get_json_pages_or_none(
     fields: dict[str, str] | None = None,
     limit: int = 100,
     timeout: int = DEFAULT_TIMEOUT_SECONDS,
+    fail_on_indeterminate: bool = False,
 ) -> list[Any] | None:
     if limit <= 0:
         return []
@@ -201,8 +231,11 @@ def _rest_get_json_pages_or_none(
             runner=runner,
             fields=page_fields,
             timeout=timeout,
+            fail_on_indeterminate=fail_on_indeterminate,
         )
         if not isinstance(payload, list):
+            if fail_on_indeterminate:
+                raise RestIndeterminateError("invalid_list")
             return None
         if not payload:
             break
@@ -457,9 +490,9 @@ def list_pulls_rest(
             runner=runner,
             fields=fields,
             limit=limit,
+            fail_on_indeterminate=True,
         )
-        if payload is None:
-            raise subprocess.SubprocessError(f"REST pull list indeterminate for {repo}")
+        assert payload is not None
     else:
         payload = _rest_get_json_pages(
             f"repos/{repo}/pulls",

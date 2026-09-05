@@ -1148,6 +1148,137 @@ def test_empty_rest_reviews_do_not_synthesize_review_required(tmp_path: Path) ->
     assert "review_decision:REVIEW_REQUIRED" not in report["decisions"][0].get("reasons", [])
 
 
+def test_run_reconciler_empty_open_pr_scan_has_no_refusal(tmp_path: Path) -> None:
+    runner = _FakeRunner()
+    report_path = tmp_path / "cc-pr-autoqueue-report.json"
+
+    report = autoqueue.run_reconciler(
+        repo="owner/repo",
+        repo_root=tmp_path,
+        vault_root=_make_vault(tmp_path),
+        apply=False,
+        lineage_ledger_path=None,
+        quarantine_path=tmp_path / "quarantine.json",
+        admission_governor_path=tmp_path / "governor.yaml",
+        report_path=report_path,
+        runner=runner,
+    )
+
+    saved = json.loads(report_path.read_text())
+    for payload in (report, saved):
+        assert payload["decisions"] == []
+        assert payload["mutations"] == []
+        assert "skipped" not in payload
+        assert "reason" not in payload
+        assert "refusal" not in payload
+    assert report["stable_report"]["written"] is True
+    list_calls = [call for call in runner.calls if "repos/owner/repo/pulls" in call]
+    assert len(list_calls) == 1
+    assert list_calls[0][:4] == ["gh", "api", "--method", "GET"]
+    assert not any(call[:2] == ["gh", "pr"] or "POST" in call for call in runner.calls)
+    assert not any("mutation" in part for call in runner.calls for part in call)
+
+
+@pytest.mark.parametrize(
+    ("returncode", "stdout", "stderr", "exception", "cause"),
+    [
+        pytest.param(
+            1,
+            '{"message":"API rate limit exceeded","status":"403"}',
+            "gh: API rate limit exceeded (HTTP 403)",
+            None,
+            "rate_limit",
+            id="rate_limit_403",
+        ),
+        pytest.param(0, "not json", "", None, "invalid_json", id="non_json"),
+        pytest.param(0, "{}", "", None, "invalid_list", id="object_body"),
+        pytest.param(0, "null", "", None, "invalid_list", id="null_body"),
+        pytest.param(0, '"array"', "", None, "invalid_list", id="string_body"),
+        pytest.param(0, "", "", None, "empty_body", id="empty_body"),
+        pytest.param(1, "[]", "connection reset", None, "request_failed", id="nonzero_exit"),
+        pytest.param(
+            1,
+            '{"message":"Internal Server Error"}',
+            "gh: Internal Server Error (HTTP 500)",
+            None,
+            "request_failed",
+            id="http_500",
+        ),
+        pytest.param(
+            0, "", "", OSError("connection failed"), "transport_error", id="transport_error"
+        ),
+        pytest.param(
+            0,
+            "",
+            "",
+            subprocess.TimeoutExpired("gh", 60),
+            "transport_error",
+            id="transport_timeout",
+        ),
+    ],
+)
+def test_run_reconciler_refuses_indeterminate_open_pr_scan(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    returncode: int,
+    stdout: str,
+    stderr: str,
+    exception: Exception | None,
+    cause: str,
+) -> None:
+    vault = _make_vault(tmp_path)
+    task_paths = [_write_task(vault, task_id=f"task-{number}", pr=number) for number in (42, 43)]
+    original_notes = [path.read_text() for path in task_paths]
+    runner = _FakeRunner()
+    runner.open_prs = [_pr(42, auto_merge=True), _pr(43)]
+    runner.queued_prs = {42}
+    rest_response = runner._rest_response
+
+    def failed_list(cmd: list[str]) -> subprocess.CompletedProcess | None:
+        if "repos/owner/repo/pulls" in cmd:
+            if exception is not None:
+                raise exception
+            return subprocess.CompletedProcess(cmd, returncode, stdout, stderr)
+        return rest_response(cmd)
+
+    monkeypatch.setattr(runner, "_rest_response", failed_list)
+    report_path = tmp_path / "cc-pr-autoqueue-report.json"
+    quarantine_path = tmp_path / "quarantine.json"
+    ledger_path = tmp_path / "auto-arm.jsonl"
+    report = autoqueue.run_reconciler(
+        repo="owner/repo",
+        repo_root=tmp_path,
+        vault_root=vault,
+        apply=False,
+        lineage_ledger_path=None,
+        quarantine_path=quarantine_path,
+        auto_arm_ledger_path=ledger_path,
+        admission_governor_path=tmp_path / "governor.yaml",
+        report_path=report_path,
+        runner=runner,
+    )
+
+    saved = json.loads(report_path.read_text())
+    for payload in (report, saved):
+        assert payload["skipped"] is True
+        assert payload["reason"] == f"open_pr_scan_indeterminate:{cause}"
+        assert re.fullmatch(r"[a-z_]+:[a-z_]+", payload["reason"])
+        assert payload["decisions"] == []
+        assert payload["mutations"] == []
+        assert payload["apply"] is False
+    assert report["stable_report"]["written"] is True
+    assert [path.read_text() for path in task_paths] == original_notes
+    assert not quarantine_path.exists()
+    assert not ledger_path.exists()
+    # The failed REST list is the last request: no fallback, retry, or PR work.
+    list_calls = [call for call in runner.calls if "repos/owner/repo/pulls" in call]
+    assert len(list_calls) == 1
+    assert list_calls[0][:4] == ["gh", "api", "--method", "GET"]
+    assert runner.calls[-1] == list_calls[0]
+    assert not any(call[:2] == ["gh", "pr"] or "POST" in call for call in runner.calls)
+    assert not any("mutation" in part for call in runner.calls for part in call)
+
+
 def test_graphql_backoff_skips_autoqueue_reconciler(tmp_path: Path) -> None:
     vault = _make_vault(tmp_path)
     _write_task(vault, task_id="task-a", pr=42)
