@@ -1,0 +1,1845 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+# =============================================================================
+# Hapax CachyOS Restore — Fresh install to fully operational system
+# =============================================================================
+#
+# PREREQS:
+#   1. Fresh CachyOS install with:
+#      - Limine bootloader (default)
+#      - btrfs with default subvolumes (@, @home, @root, @srv, @cache, @tmp, @log)
+#      - NVIDIA open modules selected in installer
+#      - User account created (same username)
+#      - Network connected
+#   2. Store disk: Phase 11 mounts the filesystem the storage registry names (by UUID);
+#      a replacement disk is formatted only when named in RESTORE_STORE_DEVICE and empty
+#
+# HOW TO GET THIS SCRIPT (pick one):
+#
+#   Option A — GitHub (authenticate via browser):
+#     sudo pacman -S git github-cli
+#     gh auth login              # browser OAuth, no SSH key needed
+#     gh repo clone hapax-systems/hapax-council
+#     ./hapax-council/scripts/hapax-cachyos-restore
+#
+#   Option B — B2 (needs key ID + app key):
+#     sudo pacman -S rclone
+#     rclone config create b2 b2 account YOUR_KEY_ID key YOUR_APP_KEY
+#     DR_OBJECT_NAME="hapax-cachyos-restore.sh"
+#     rclone copyto "b2:hapax-backups/dr-scripts/${DR_OBJECT_NAME}" "./${DR_OBJECT_NAME}"
+#     rclone copyto "b2:hapax-backups/dr-scripts/host-storage-registry.json" "./host-storage-registry.json"
+#     chmod +x "${DR_OBJECT_NAME}"
+#     HAPAX_HOST_STORAGE_REGISTRY="$PWD/host-storage-registry.json" "./${DR_OBJECT_NAME}"
+#
+#   Option C — USB stick (copy the script and host-storage-registry.json before wiping,
+#     then set HAPAX_HOST_STORAGE_REGISTRY to the copied registry path)
+#
+# YOU NEED TO KNOW:
+#   1. Restic encryption password
+#   2. Backblaze B2 key ID + application key
+#   3. GPG passphrase
+#
+# =============================================================================
+
+RED='\033[0;31m'; GREEN='\033[0;32m'; CYAN='\033[0;36m'; YELLOW='\033[0;33m'; NC='\033[0m'
+log()  { echo -e "${CYAN}[DR]${NC} $1"; }
+ok()   { echo -e "${GREEN}[OK]${NC} $1"; }
+warn() { echo -e "${YELLOW}[WARN]${NC} $1"; }
+fail() { echo -e "${RED}[FAIL]${NC} $1"; }
+ask()  { read -rp "$1: " "$2"; }
+
+DR_OBJECT_NAME="hapax-cachyos-restore.sh"
+RESTORE_ROOT="${HAPAX_RESTORE_ROOT:-/var/tmp/hapax-restore}"
+POSTGRES_SUPERUSER="${HAPAX_POSTGRES_SUPERUSER:-hapax}"
+POSTGRES_INITIAL_DATABASE="${HAPAX_POSTGRES_INITIAL_DATABASE:-$POSTGRES_SUPERUSER}"
+SCRIPT_DIR="$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")"
+HOST_STORAGE_REGISTRY="${HAPAX_HOST_STORAGE_REGISTRY:-$SCRIPT_DIR/../config/infrastructure/host-storage-registry.json}"
+BACKUP_STORAGE_POLICY_IDS=("local-nas-restic" "b2-restic-offsite")
+BACKUP_STORAGE_ROOTS=()
+RESTORE_DUMP_RELATIVE_PATHS=(
+    "store/llm-data/backup-dumps-remote"
+    "store/llm-data/backup-dumps-local"
+)
+
+load_backup_storage_roots() {
+    local registry_path="${1:-$HOST_STORAGE_REGISTRY}"
+    local roots
+
+    if [[ ! -s "$registry_path" ]]; then
+        fail "Canonical host storage registry is missing or empty: $registry_path; fetch the recovery companion object, then rerun Phase 11" >&2
+        return 1
+    fi
+    if ! roots=$(jq -er \
+        --arg local_policy "${BACKUP_STORAGE_POLICY_IDS[0]}" \
+        --arg remote_policy "${BACKUP_STORAGE_POLICY_IDS[1]}" '
+        [.backup_policies[]
+            | select(.store_id == $local_policy or .store_id == $remote_policy)
+            | .required_mount_roots[]]
+        | unique
+        | if length == 0 then error("no required mount roots") else .[] end
+    ' "$registry_path" 2>/dev/null); then
+        fail "Could not read backup storage roots from $registry_path; repair backup_policies.required_mount_roots, then rerun Phase 11" >&2
+        return 1
+    fi
+
+    mapfile -t BACKUP_STORAGE_ROOTS <<< "$roots"
+}
+
+policy_storage_roots() {
+    local policy_id="$1" registry_path="${2:-$HOST_STORAGE_REGISTRY}"
+
+    jq -er --arg policy_id "$policy_id" '
+        [.backup_policies[]
+            | select(.store_id == $policy_id)
+            | .required_mount_roots[]]
+        | unique
+        | if length == 0 then error("policy has no required mount roots") else .[] end
+    ' "$registry_path"
+}
+
+target_storage_path() {
+    local canonical_root="$1" target_root="${2:-}"
+
+    printf '%s%s\n' "${target_root%/}" "$canonical_root"
+}
+
+ensure_backup_storage_roots() {
+    local target_root="${1:-}"
+    local canonical_root target
+
+    for canonical_root in "${BACKUP_STORAGE_ROOTS[@]}"; do
+        target="$(target_storage_path "$canonical_root" "$target_root")"
+        if ! sudo mkdir -p -- "$target"; then
+            fail "Required backup storage root $canonical_root could not be created at $target; repair the target filesystem, then rerun Phase 11" >&2
+            return 1
+        fi
+        if ! mountpoint -q "$target"; then
+            if ! sudo mount "$target"; then
+                fail "Required backup storage root $canonical_root could not be mounted at $target; restore its canonical mount entry, then rerun Phase 11" >&2
+                return 1
+            fi
+        fi
+        if ! mountpoint -q "$target"; then
+            fail "Required backup storage root $canonical_root is still not a mount point at $target; inspect findmnt, then rerun Phase 11" >&2
+            return 1
+        fi
+        ok "Backup storage root mounted: $canonical_root"
+    done
+}
+
+prepare_backup_staging() {
+    local store_root="$1" producer_user producer_group path
+    if ! producer_user=$(id -un) || ! producer_group=$(id -gn); then
+        fail "Cannot identify the backup user for $store_root/llm-data; run 'id' as the recovering user, repair account lookup, then rerun Phase 11" >&2
+        return 1
+    fi
+    # Both producers remove and recreate their dump roots without sudo. They
+    # need the parent too; never recursively change ownership of restored data.
+    local directories=(
+        "$store_root/llm-data"
+        "$store_root/llm-data/backup-dumps-local"
+        "$store_root/llm-data/backup-dumps-remote"
+        "$store_root/llm-data/backup-dumps-local/qdrant"
+        "$store_root/llm-data/backup-dumps-remote/qdrant"
+        "$store_root/llm-data/backup-dumps-remote/git-bundles"
+    )
+    for path in "${directories[@]}"; do
+        if [[ -L "$path" ]]; then
+            fail "Cannot prepare backup staging $path for $producer_user: symbolic link; inspect and relocate its target, replace the link with a directory on $store_root, then rerun Phase 11" >&2
+            return 1
+        fi
+    done
+    for path in "${directories[@]}"; do
+        if ! sudo install -d -o "$producer_user" -g "$producer_group" -m 0700 -- "$path"; then
+            fail "Cannot prepare backup staging $path for $producer_user:$producer_group with mode 0700; inspect 'ls -ld $path' and repair filesystem access, then rerun Phase 11" >&2
+            return 1
+        fi
+        if ! sudo runuser -u "$producer_user" -- test -w "$path"; then
+            fail "Backup staging $path is not writable by $producer_user; inspect 'ls -ld $path', repair ownership or mount permissions, then rerun Phase 11" >&2
+            return 1
+        fi
+    done
+    ok "Backup staging prepared for $producer_user:$producer_group under $store_root/llm-data"
+}
+
+prepare_restore_root() {
+    local restore_root="$1"
+
+    rm -rf -- "$restore_root"
+    mkdir -p -- "$restore_root"
+}
+
+current_filesystem_type() {
+    local path="$1"
+
+    findmnt -n -o FSTYPE --target "$path" 2>/dev/null || true
+}
+
+record_tmpfs_mount() {
+    local tmp_path="$1" fstab_path="$2"
+    local entry="tmpfs $tmp_path tmpfs defaults,noatime,size=8G 0 0"
+
+    if ! awk -v target="$tmp_path" \
+        '$1 == "tmpfs" && $2 == target && $3 == "tmpfs" { found = 1 } END { exit !found }' \
+        "$fstab_path"; then
+        printf '%s\n' "$entry" | sudo tee -a "$fstab_path" > /dev/null
+    fi
+}
+
+mount_tmpfs_at() {
+    local tmp_path="$1"
+
+    sudo mount -t tmpfs -o defaults,noatime,size=8G tmpfs "$tmp_path"
+}
+
+ensure_tmpfs_tmp() {
+    local tmp_path="${1:-/tmp}" fstab_path="${2:-/etc/fstab}"
+
+    if [[ "$(current_filesystem_type "$tmp_path")" == "tmpfs" ]]; then
+        return 0
+    fi
+
+    record_tmpfs_mount "$tmp_path" "$fstab_path"
+    mount_tmpfs_at "$tmp_path"
+    ok "tmpfs $tmp_path"
+}
+
+find_restore_dump_dir() {
+    local restore_root="$1" relative_path candidate
+
+    for relative_path in "${RESTORE_DUMP_RELATIVE_PATHS[@]}"; do
+        candidate="$restore_root/$relative_path"
+        if [[ -d "$candidate" ]]; then
+            printf '%s\n' "$candidate"
+            return 0
+        fi
+    done
+
+    fail "No database dump directory found. Searched:" >&2
+    fail "Recovery action: select a complete hapax-podium/tier2-remote snapshot with 'restic snapshots --host hapax-podium --tag tier2-remote', then rerun from Phase 2 with HAPAX_RESTORE_SNAPSHOT=<that snapshot ID>" >&2
+    for relative_path in "${RESTORE_DUMP_RELATIVE_PATHS[@]}"; do
+        printf '  - %s/%s\n' "$restore_root" "$relative_path" >&2
+    done
+    return 1
+}
+
+restore_n8n_workflows() {
+    local dump_dir="$1"
+    local workflow_dump="$dump_dir/n8n-workflows.json"
+    local container_dump="/tmp/n8n-workflows.json"
+
+    if [[ ! -s "$workflow_dump" ]]; then
+        fail "Required n8n workflow export is missing or empty: $workflow_dump; restore a complete snapshot, then rerun Phase 12" >&2
+        return 1
+    fi
+
+    log "Importing n8n workflows..."
+    if ! sudo docker cp "$workflow_dump" "n8n:$container_dump"; then
+        fail "Could not copy n8n workflow export into the n8n container; check 'docker logs n8n', then rerun Phase 12" >&2
+        return 1
+    fi
+    if ! sudo docker exec n8n n8n import:workflow --input="$container_dump"; then
+        fail "n8n workflow import failed; check 'docker logs n8n', then rerun Phase 12" >&2
+        return 1
+    fi
+    ok "n8n workflows imported"
+}
+
+wait_for_postgresql() {
+    local attempt
+
+    log "Waiting for PostgreSQL as $POSTGRES_SUPERUSER..."
+    for attempt in $(seq 1 30); do
+        if sudo docker exec postgres pg_isready -U "$POSTGRES_SUPERUSER" > /dev/null 2>&1; then
+            return 0
+        fi
+        sleep 2
+    done
+
+    fail "PostgreSQL did not become ready for role $POSTGRES_SUPERUSER; check 'docker logs postgres', then rerun Phase 12" >&2
+    return 1
+}
+
+filter_postgresql_bootstrap() {
+    # Scan SQL boundaries in bytes. COPY data bypasses the lexer entirely; quoted
+    # strings, identifiers, comments and dollar bodies cannot terminate statements.
+    # Only complete bootstrap CREATE statements are omitted. Do not normalize any
+    # other bytes (including CRLF, COPY terminators or a missing final newline).
+    python3 - "$1" "$POSTGRES_SUPERUSER" "$POSTGRES_INITIAL_DATABASE" <<'PYSQL'
+import os
+import re
+import sys
+
+role, database = (os.fsencode(value) for value in sys.argv[2:])
+identifier = rb'("(?:[^"\x00]|"")+"|[A-Za-z_\x80-\xff][A-Za-z_0-9$\x80-\xff]*)'
+create_role = re.compile(rb"CREATE\s+ROLE\s+" + identifier + rb"\s*;", re.I)
+create_database = re.compile(rb"CREATE\s+DATABASE\s+" + identifier + rb"(?:\s+WITH\s+[^;]+)?\s*;", re.I)
+token = re.compile(rb"--[^\r\n]*|/\*|[Ee]'|'|\"|\$(?:[A-Za-z_\x80-\xff][A-Za-z_0-9\x80-\xff]*)?\$|[A-Za-z_\x80-\xff][A-Za-z_0-9$\x80-\xff]*|\s+|.", re.S)
+output = sys.stdout.buffer
+statement = bytearray()
+quote = dollar = b""
+block_depth = 0
+escaped = copy = False
+
+
+def bootstrap(sql):
+    for pattern, expected in ((create_role, role), (create_database, database)):
+        match = pattern.fullmatch(sql)
+        if match:
+            name = match[1]
+            name = name[1:-1].replace(b'""', b'"') if name.startswith(b'"') else name.lower()
+            if name == expected:
+                return True
+    return False
+
+
+with open(sys.argv[1], "rb") as dump:
+    for line in dump:
+        if copy:
+            output.write(line)
+            copy = line.rstrip(b"\r\n") != b"\\."
+            continue
+        # pg_dumpall uses psql metacommands such as \connect and \restrict.
+        if not statement and not block_depth and line.lstrip().startswith(b"\\"):
+            output.write(line)
+            continue
+        i = 0
+        while i < len(line):
+            if dollar:
+                end = line.find(dollar, i)
+                if end < 0:
+                    statement.extend(line[i:])
+                    break
+                end += len(dollar)
+                statement.extend(line[i:end])
+                dollar = b""
+            elif quote:
+                end = i + 1
+                if line[i:i+1] == quote:
+                    if line[end:end+1] == quote:
+                        end += 1
+                    else:
+                        quote = b""
+                elif escaped and line[i:i+1] == b"\\":
+                    end += 1
+                statement.extend(line[i:end])
+            elif block_depth:
+                part = line[i:i+2]
+                end = i + (2 if part in (b"/*", b"*/") else 1)
+                block_depth += (part == b"/*") - (part == b"*/")
+                if statement:
+                    statement.extend(line[i:end])
+                else:
+                    output.write(line[i:end])
+            else:
+                match = token.match(line, i)
+                part, end = match[0], match.end()
+                comment = part.startswith(b"--") or part == b"/*"
+                if statement or not (part.isspace() or comment):
+                    statement.extend(part)
+                else:
+                    output.write(part)
+                if part == b"/*":
+                    block_depth = 1
+                elif part in (b"'", b"E'", b"e'", b'"'):
+                    quote, escaped = part[-1:], len(part) == 2
+                elif part.startswith(b"$") and part.endswith(b"$"):
+                    dollar = part
+                elif part == b";":
+                    sql = bytes(statement)
+                    if not bootstrap(sql):
+                        output.write(sql)
+                    statement.clear()
+                    if re.match(rb"COPY\b.*\bFROM\s+stdin\s*;\Z", sql, re.I | re.S):
+                        copy = True
+                        output.write(line[end:])
+                        break
+            i = end
+    # Let psql diagnose incomplete SQL; never discard an unterminated statement.
+    output.write(statement)
+PYSQL
+}
+
+restore_postgresql() {
+    local dump_dir="$1"
+    local postgres_dump="$dump_dir/postgres-all.sql"
+
+    if [[ ! -s "$postgres_dump" ]]; then
+        fail "Required PostgreSQL dump is missing or empty: $postgres_dump; restore a complete snapshot, then rerun Phase 12" >&2
+        return 1
+    fi
+    # pg_dumpall includes CREATE ROLE and CREATE DATABASE for bootstrap objects
+    # that the fresh container has already created. Replaying either one under
+    # ON_ERROR_STOP aborts before data restore. Filter only those two CREATE
+    # statements; retain their ALTER/\connect content and every other statement.
+    if ! filter_postgresql_bootstrap "$postgres_dump" \
+        | sudo docker exec -i postgres psql -U "$POSTGRES_SUPERUSER" -v ON_ERROR_STOP=1 \
+            > /dev/null; then
+        fail "PostgreSQL import failed for $postgres_dump as role $POSTGRES_SUPERUSER; check 'docker logs postgres', then rerun Phase 12" >&2
+        return 1
+    fi
+    ok "PostgreSQL restored"
+}
+
+restore_qdrant_snapshots() {
+    local dump_dir="$1"
+    local qdrant_dump_dir="$dump_dir/qdrant"
+    local snap coll
+    local snapshots=("$qdrant_dump_dir/"*.snapshot)
+
+    if [[ ! -d "$qdrant_dump_dir" || ! -f "${snapshots[0]}" ]]; then
+        fail "Required Qdrant snapshots are missing: $qdrant_dump_dir/*.snapshot; restore a complete snapshot, then rerun Phase 12" >&2
+        return 1
+    fi
+
+    for snap in "${snapshots[@]}"; do
+        coll=$(basename "$snap" .snapshot)
+        if ! curl -sf -X POST \
+            "http://127.0.0.1:6333/collections/${coll}/snapshots/upload" \
+            -H 'Content-Type: multipart/form-data' \
+            -F "snapshot=@${snap}" > /dev/null; then
+            fail "Qdrant snapshot upload failed for collection $coll from $snap; check Qdrant health, then rerun Phase 12" >&2
+            return 1
+        fi
+        ok "Qdrant: $coll"
+    done
+}
+
+select_restore_snapshot() {
+    local snapshots selected
+    local remedy="inspect 'restic snapshots --host hapax-podium --tag tier2-remote --json', then rerun Phase 2 with HAPAX_RESTORE_SNAPSHOT=<verified ID>"
+    if ! snapshots=$(restic snapshots --host hapax-podium --tag tier2-remote --json --no-lock 2>/dev/null); then
+        fail "Cannot list hapax-podium/tier2-remote snapshots; check B2 access and $remedy" >&2
+        return 1
+    fi
+    if ! selected=$(python3 -c '
+import datetime, json, re, sys
+try:
+    rows = json.load(sys.stdin)
+    requested = sys.argv[1]
+    if not isinstance(rows, list):
+        raise ValueError("snapshot metadata is not an array")
+    if requested and not re.fullmatch(r"[0-9a-fA-F]{8,64}", requested):
+        raise ValueError("HAPAX_RESTORE_SNAPSHOT must be an immutable snapshot ID")
+    candidates = []
+    for row in rows:
+        if row.get("hostname") != "hapax-podium" or "tier2-remote" not in row.get("tags", []):
+            continue
+        identity = row["id"]
+        if not re.fullmatch(r"[0-9a-fA-F]{8,64}", identity):
+            raise ValueError("invalid snapshot ID")
+        time = datetime.datetime.fromisoformat(row["time"].replace("Z", "+00:00"))
+        if time.tzinfo is None:
+            raise ValueError("snapshot time has no timezone")
+        if not requested or identity.startswith(requested.lower()):
+            candidates.append((time, identity))
+    if not candidates or (requested and len(candidates) != 1):
+        raise ValueError("no unique snapshot proved for the requested producer and ID")
+    print(max(candidates)[1])
+except (ValueError, KeyError, TypeError, AttributeError):
+    sys.exit(1)
+' "${HAPAX_RESTORE_SNAPSHOT:-}" <<< "$snapshots"); then
+        fail "No hapax-podium/tier2-remote snapshot could be proved (missing producer, invalid metadata, or foreign/unknown/ambiguous HAPAX_RESTORE_SNAPSHOT); $remedy" >&2
+        return 1
+    fi
+    printf '%s\n' "$selected"
+}
+
+github_recovery_ready() {
+    if ! command -v gh >/dev/null 2>&1; then
+        warn "gh is unavailable; install github-cli with 'sudo pacman -S --needed github-cli'; trying the recovery fallback"
+        return 1
+    fi
+    if ! gh auth status >/dev/null 2>&1; then
+        warn "gh auth status failed; run 'gh auth login' to repair GitHub access; trying the recovery fallback"
+        return 1
+    fi
+}
+
+restore_council_checkout() {
+    local bundle="$1" council="$HOME/projects/hapax-council"
+    local remote="hapax-systems/hapax-council"
+
+    mkdir -p "$HOME/projects"
+    if [[ ! -e "$council" ]]; then
+        if git clone "git@github.com:${remote}.git" "$council" > /dev/null 2>&1; then
+            ok "Cloned hapax-council (SSH)"
+        elif github_recovery_ready && gh repo clone "$remote" "$council" > /dev/null 2>&1; then
+            ok "Cloned hapax-council (gh)"
+        elif [[ -s "$bundle" ]] && git clone "$bundle" "$council" > /dev/null 2>&1; then
+            ok "Recovered hapax-council bundle fallback; verifying checkout connectivity"
+            if ! git -C "$council" fsck --connectivity-only >/dev/null 2>&1; then
+                fail "hapax-council bundle fallback failed connectivity verification: $bundle; recover a complete git bundle, then rerun Phase 3" >&2
+                return 1
+            fi
+            if ! git -C "$council" remote set-url origin "https://github.com/${remote}.git"; then
+                fail "Could not set hapax-council origin after bundle recovery; run git -C '$council' remote set-url origin https://github.com/${remote}.git, then rerun Phase 3" >&2
+                return 1
+            fi
+        else
+            fail "Failed to clone hapax-council from git@github.com:${remote}.git or gh repo clone $remote; repair GitHub access or recover with git clone '$bundle' '$council', then rerun the restore" >&2
+            return 1
+        fi
+    fi
+    if [[ ! -e "$council/.git" ]] || ! git -C "$council" rev-parse --verify HEAD > /dev/null 2>&1; then
+        fail "Required council checkout is invalid: $council; recover from $remote or $bundle, then rerun the restore" >&2
+        return 1
+    fi
+}
+
+bootstrap_source_activation() {
+    local council="$HOME/projects/hapax-council"
+    local active="$HOME/.cache/hapax/source-activation/worktree"
+    local state="$HOME/.cache/hapax/source-activation" head
+    local entry="$council/scripts/hapax-source-activate"
+    local remedy="inspect $state/current.json and rerun '$entry --skip-deploy' before retrying Phase 10"
+
+    if [[ ! -x "$entry" ]]; then
+        fail "Source activation entry point is missing or not executable: $entry; recover the council checkout, then $remedy" >&2
+        return 1
+    fi
+    # Bootstrap the existing governed entry point directly: the recovered launcher
+    # may still be a dangling link into the cache excluded from backups.
+    if ! HAPAX_SOURCE_ACTIVATE_CANONICAL="$council" \
+        HAPAX_SOURCE_ACTIVATE_WORKTREE="$active" \
+        HAPAX_SOURCE_ACTIVATE_STATE_DIR="$state" \
+        HAPAX_SOURCE_ACTIVATE_RELEASES_DIR="$state/releases" \
+        "$entry" --skip-deploy; then
+        fail "Source activation bootstrap failed; $remedy" >&2
+        return 1
+    fi
+    # A HOLD can return zero without publishing anything. Require both its receipt
+    # and the published filesystem, including the first-backup command below.
+    if [[ ! -e "$active/.git" || ! -x "$active/scripts/hapax-backup-local" ]] \
+        || ! head=$(git -C "$active" rev-parse --verify HEAD) \
+        || [[ ! "$head" =~ ^[[:xdigit:]]{40,64}$ ]] \
+        || ! jq -e --arg head "$head" --arg active "$active" '
+            .status == "completed_skip_deploy" and .active_source_head == $head
+            and .origin_main_sha == $head and .active_source_path == $active
+        ' "$state/current.json" >/dev/null 2>&1; then
+        fail "Cannot prove source activation root $active, its receipt, or executable scripts/hapax-backup-local; $remedy" >&2
+        return 1
+    fi
+    ok "Source activation root and first-backup executable verified: $active"
+}
+
+reconcile_systemd_user_unit() {
+    local unit="$1" active="$HOME/.cache/hapax/source-activation/worktree"
+    local installed="$HOME/.config/systemd/user/$unit" source archive path suffix
+    local requirement="${2:-mandatory}" available="${3:-yes}" status
+    source="$active/systemd/units/$unit"
+    [[ -f "$source" && -r "$source" ]] || available=no
+    if [[ "$available" == no && "$requirement" == mandatory ]]; then
+        fail "Cannot reconcile user unit $unit: activation source is missing or unreadable: $source; recover that committed unit in the activation tree, then rerun Phase 15" >&2
+        return 1
+    fi
+    # Keep every archived file/link and drop-in beside the installed unit, outside
+    # systemd's recognized names. Never overwrite a previous recovery artifact.
+    for path in "$installed" "$installed.d" \
+        "$HOME/.config/systemd/user/"*.wants/"$unit" \
+        "$HOME/.config/systemd/user/"*.requires/"$unit"; do
+        if [[ -e "$path" || -L "$path" ]]; then
+            if [[ "$available" == yes && "$path" == "$installed" && -L "$path" && "$(readlink "$path")" == "$source" ]]; then
+                continue
+            fi
+            archive="$path.restored"
+            suffix=0
+            while [[ -e "$archive" || -L "$archive" ]]; do
+                suffix=$((suffix + 1))
+                archive="$path.restored.$suffix"
+            done
+            if ! mv -- "$path" "$archive"; then
+                fail "Cannot preserve archived user unit $unit at $archive; repair directory permissions, then rerun Phase 15" >&2
+                return 1
+            fi
+            log "Preserved archived $unit at $archive; inspect it before porting any local settings into the committed activation unit"
+        fi
+    done
+    if [[ "$available" == no ]]; then
+        status="$installed.restored.status"
+        suffix=0
+        while [[ -e "$status" || -L "$status" ]]; do
+            suffix=$((suffix + 1))
+            status="$installed.restored.status.$suffix"
+        done
+        local message="$unit: not_in_activation_tree; next action: inspect the preserved $installed.restored files, recover a committed runnable unit in $active/systemd/units, then rerun Phase 15"
+        if ! printf '%s\n' "$message" > "$status"; then
+            fail "Cannot record missing optional unit $unit at $status; repair directory permissions, then rerun Phase 15" >&2
+            return 1
+        fi
+        log "$message"
+        return 0
+    fi
+    if ! mkdir -p "${installed%/*}" || ! ln -sfn -- "$source" "$installed"; then
+        fail "Cannot install activation unit $unit from $source; repair directory permissions, then rerun Phase 15" >&2
+        return 1
+    fi
+    ok "Reconciled activation unit: $unit"
+}
+
+restore_timer_services() {
+    local unit="$1" triggers service
+    if ! triggers=$(systemctl --user show "$unit" --property=Triggers --value) \
+        || [[ -z "$triggers" ]]; then
+        fail "Cannot prove the service triggered by $unit; inspect 'systemctl --user cat $unit', repair its Unit= target, then rerun Phase 15" >&2
+        return 1
+    fi
+    for service in $triggers; do
+        if [[ "$service" != *.service || "$service" == */* ]]; then
+            fail "Cannot prove service target for $unit; inspect 'systemctl --user cat $unit', repair its Unit= target, then rerun Phase 15" >&2
+            return 1
+        fi
+        printf '%s\n' "$service"
+    done
+}
+
+verify_systemd_user_target() {
+    local unit="$1" loaded starts working triggers service
+    if ! loaded=$(systemctl --user show "$unit" --property=LoadState --value) \
+        || [[ "$loaded" != loaded ]]; then
+        fail "Cannot load restored user unit $unit (missing or dangling unit file); inspect 'systemctl --user cat $unit', repair its source activation link, then rerun Phase 15" >&2
+        return 1
+    fi
+    if [[ "$unit" == *.timer ]]; then
+        triggers=$(restore_timer_services "$unit") || return 1
+        for service in $triggers; do
+            verify_systemd_user_target "$service" || return 1
+        done
+        return 0
+    fi
+    if ! starts=$(systemctl --user show "$unit" --property=ExecStart --value) \
+        || [[ -z "$starts" ]]; then
+        fail "Cannot prove ExecStart for $unit; inspect 'systemctl --user cat $unit', restore its executable, then rerun Phase 15" >&2
+        return 1
+    fi
+    if ! working=$(systemctl --user show "$unit" --property=WorkingDirectory --value); then
+        fail "Cannot prove WorkingDirectory for $unit; inspect 'systemctl --user cat $unit', then rerun Phase 15" >&2
+        return 1
+    fi
+    python3 - "$unit" "$starts" "$working" "$HOME/.cache/hapax/source-activation/worktree" <<'PYTARGET'
+import os
+from pathlib import Path
+import re
+import shlex
+import sys
+
+unit, starts, working, active = sys.argv[1:]
+root = Path(active).resolve()
+
+
+def refuse(message):
+    print(f"ExecStart verification failed for {unit}: {message}; inspect 'systemctl --user cat {unit}', repair the committed activation unit or its target, then rerun Phase 15", file=sys.stderr)
+    sys.exit(1)
+
+
+def executable(path):
+    if not os.path.isabs(path) or not os.path.isfile(path) or not os.access(path, os.X_OK):
+        refuse(f"missing, dangling, or nonexecutable interpreter/executable: {path}")
+
+
+if working and not Path(working).is_dir():
+    refuse(f"missing WorkingDirectory: {working}")
+commands = list(re.finditer(r"path=(.*?) ; argv\[\]=(.*?) ;", starts))
+if not commands:
+    refuse("cannot parse resolved ExecStart; inspect its path and argv[] properties")
+for command in commands:
+    target = command[1]
+    executable(target)
+    try:
+        argv = shlex.split(command[2])
+    except ValueError:
+        refuse("cannot parse resolved argv[]; use an explicit script path")
+    if not argv:
+        refuse("empty resolved argv[]")
+    # systemctl can escape whitespace in argument paths as hexadecimal bytes.
+    argv = [re.sub(r"\\x([0-9a-fA-F]{2})", lambda m: chr(int(m[1], 16)), arg) for arg in argv]
+    interpreter = Path(target).name
+    if re.fullmatch(r"(?:ba|da|z|k)?sh|python(?:[0-9.]+)?|perl|ruby|node(?:js)?|lua(?:[0-9.]+)?", interpreter):
+        args = argv[1:]
+        while args and args[0].startswith("-"):
+            option = args.pop(0)
+            if option == "--":
+                break
+            if option == "-m" and interpreter.startswith("python") and args:
+                # Module execution uses the verified interpreter and working tree.
+                args = []
+                break
+            if option in ("-o", "-O", "-W", "-X") and args:
+                args.pop(0)
+            elif option == "-" or "c" in option or option in ("-e", "--eval") and interpreter not in ("sh", "bash", "dash", "zsh", "ksh"):
+                refuse("inline/stdin interpreter program cannot be verified; use an explicit activation script path")
+        if args:
+            script = Path(args[0])
+            if not script.is_absolute():
+                if not working:
+                    refuse(f"relative script has no WorkingDirectory: {script}")
+                script = Path(working) / script
+            if not script.resolve().is_relative_to(root):
+                refuse(f"script is outside the activation root: {script}")
+            if not script.is_file() or not os.access(script, os.R_OK):
+                refuse(f"missing, dangling, or unreadable script: {script}")
+        elif not ("-m" in argv and interpreter.startswith("python")):
+            refuse("interpreter has no script path; restore its activation script argument")
+PYTARGET
+}
+
+restore_llm_stack_files() {
+    local source_dir="$1" destination="$HOME/llm-stack" env_file
+
+    for env_file in .env; do
+        if [[ ! -f "$source_dir/$env_file" ]]; then
+            fail "Required llm-stack environment file is missing: $source_dir/$env_file; recover it from a complete snapshot, then rerun Phase 4" >&2
+            return 1
+        fi
+    done
+    mkdir -p "$destination"
+    cp -a "$source_dir"/. "$destination/"
+    for env_file in .env; do
+        if [[ ! -f "$destination/$env_file" ]]; then
+            fail "Required llm-stack environment file was not restored: $destination/$env_file; repair the copy, then rerun Phase 4" >&2
+            return 1
+        fi
+    done
+    if [[ ! -f "$source_dir/.envrc" ]]; then
+        log "Optional llm-stack .envrc is absent from the snapshot; Compose requires .env only"
+    fi
+    ok "~/llm-stack (required .env verified; optional .envrc copied when present)"
+}
+
+restore_docker_stack() {
+    local dump_dir="$1"
+    local compose_file="$HOME/llm-stack/docker-compose.yml"
+    local compose_dir compose_profile env_file
+    local compose_contract="$HOME/projects/hapax-council/systemd/units/llm-stack.service"
+
+    if [[ ! -f "$compose_file" ]]; then
+        fail "Required Docker Compose configuration is missing: $compose_file; restore llm-stack/docker-compose.yml from the recovery snapshot, then rerun Phase 12" >&2
+        return 1
+    fi
+    compose_dir="$(dirname "$compose_file")"
+    # Read the tracked startup contract, including when this script was downloaded
+    # standalone from B2. An absent/ambiguous profile must never start an empty stack.
+    if [[ ! -s "$compose_contract" ]] || ! compose_profile=$(awk '
+        /^ExecStart=.*docker[[:space:]]+compose[[:space:]]/ {
+            for (i = 1; i <= NF; i++) {
+                if ($i == "--profile") {
+                    if ($(i + 2) != "up") exit 1
+                    print $(i + 1)
+                }
+            }
+        }
+    ' "$compose_contract") || [[ ! "$compose_profile" =~ ^[a-zA-Z0-9][a-zA-Z0-9_.-]*$ ]]; then
+        fail "Required Docker Compose profile is absent or invalid in $compose_contract; restore the tracked llm-stack.service startup contract, then rerun Phase 12" >&2
+        return 1
+    fi
+    for env_file in .env; do
+        if [[ ! -f "$compose_dir/$env_file" ]]; then
+            fail "Required llm-stack environment file is missing: $compose_dir/$env_file; rerun Phase 4 from a complete snapshot" >&2
+            return 1
+        fi
+    done
+
+    log "Phase 12: verified required llm-stack .env"
+    if [[ ! -f "$compose_dir/.envrc" ]]; then
+        log "Optional llm-stack .envrc is absent; Compose requires .env only"
+    fi
+    log "Starting Docker stack..."
+    cd "$compose_dir"
+    # Match llm-stack.service: Compose consumes .env; .envrc is optional direnv configuration.
+    sudo systemctl restart docker 2>/dev/null
+    # Use sudo — docker group not active until re-login
+    sudo docker compose -f "$compose_file" --profile "$compose_profile" up -d 2>&1 | tail -5
+    ok "Docker stack starting"
+
+    wait_for_postgresql
+    restore_postgresql "$dump_dir"
+
+    # Wait for Qdrant
+    log "Waiting for Qdrant..."
+    for _attempt in $(seq 1 30); do
+        curl -sf http://127.0.0.1:6333/healthz > /dev/null 2>&1 && break
+        sleep 2
+    done
+
+    restore_qdrant_snapshots "$dump_dir"
+    restore_n8n_workflows "$dump_dir"
+    cd "$HOME"
+}
+
+restore_database_services() {
+    local dump_dir="$1"
+
+    ok "Using database dumps: $dump_dir"
+    restore_docker_stack "$dump_dir"
+}
+
+store_backup_credentials() {
+    local entries=(
+        backblaze/key-id
+        backblaze/app-key
+        backblaze/restic-password
+        backups/restic-password
+    )
+    local values=(
+        "$B2_KEY_ID"
+        "$B2_APP_KEY"
+        "$RESTIC_PASSWORD"
+        "${RESTORE_NAS_RESTIC_PASSWORD:-}"
+    )
+    local entry observed index credential_file
+    local password_store="${PASSWORD_STORE_DIR:-$HOME/.password-store}"
+
+    if ! pass ls > /dev/null 2>&1; then
+        fail "Password store is unavailable; initialize or unlock pass, then rerun Phase 3" >&2
+        return 1
+    fi
+    ok "pass store verified"
+
+    for index in "${!entries[@]}"; do
+        entry="${entries[$index]}"
+        credential_file="$password_store/$entry.gpg"
+        if [[ -e "$credential_file" || -L "$credential_file" ]]; then
+            if ! observed=$(pass show "$entry" 2>/dev/null) || [[ -z "$observed" ]]; then
+                fail "Could not read recovered backup credential $entry; unlock or repair pass, then rerun Phase 3; existing entry was preserved" >&2
+                return 1
+            fi
+            ok "Preserved recovered backup credential $entry"
+            continue
+        fi
+        # A failed decryption is never proof of absence. Check the store itself before
+        # creating an entry, and never use the B2 recovery password for the NAS repository.
+        if [[ ! -d "$password_store" || ! -r "$password_store" || ! -x "$password_store" ]] ||
+            [[ -d "$(dirname "$credential_file")" && ! -x "$(dirname "$credential_file")" ]]; then
+            fail "Could not prove backup credential $entry is absent; repair password-store access, then rerun Phase 3" >&2
+            return 1
+        fi
+        if [[ -z "${values[$index]}" ]]; then
+            fail "Backup credential $entry is absent; supply its independent NAS password via RESTORE_NAS_RESTIC_PASSWORD, then rerun Phase 3" >&2
+            return 1
+        fi
+        if ! printf '%s\n' "${values[$index]}" | pass insert -e "$entry" > /dev/null 2>&1; then
+            fail "Could not store backup credential $entry in pass; initialize or unlock pass, then rerun Phase 3" >&2
+            return 1
+        fi
+        if ! observed=$(pass show "$entry" 2>/dev/null); then
+            fail "Could not read back backup credential $entry from pass; repair the password store, then rerun Phase 3" >&2
+            return 1
+        fi
+        if [[ "$observed" != "${values[$index]}" ]]; then
+            fail "Backup credential $entry did not match after pass insert; repair the password store, then rerun Phase 3" >&2
+            return 1
+        fi
+    done
+
+    ok "Backup credentials stored and verified in pass"
+}
+
+store_partition_path() {
+    # First partition of a whole disk, by the naming rule of its path family.
+    local disk="$1"
+    case "$disk" in
+        /dev/disk/by-*/*) printf '%s-part1\n' "$disk" ;;
+        *nvme*|*mmcblk*|*loop*) printf '%sp1\n' "$disk" ;;
+        *) printf '%s1\n' "$disk" ;;
+    esac
+}
+
+store_filesystem_identity() {
+    # Prints "uuid<TAB>serial<TAB>by_id" for the registry mount record that carries the store
+    # root on the host that owns the B2 staging policy. Fails when the registry has no such record.
+    local store_root="$1" registry_path="${2:-$HOST_STORAGE_REGISTRY}"
+
+    jq -er --arg root "$store_root" --arg policy "${BACKUP_STORAGE_POLICY_IDS[1]}" '
+        . as $doc
+        | (first($doc.backup_policies[] | select(.store_id == $policy) | .target_host)) as $host
+        | ([$doc.mounts[]
+            | select(.target_host == $host and any((.mountpoints // [])[]; . == $root))] | first) as $m
+        | if $m == null then error("no mount record for " + $root + " on " + $host) else . end
+        | ($m.device_ref.serial // "") as $serial
+        | (([$doc.devices[]
+            | select(.target_host == $host and .serial == $serial)
+            | (.by_id // [])[0]] | first) // "") as $by_id
+        | [($m.uuid // ""), $serial, $by_id] | @tsv
+    ' "$registry_path"
+}
+
+provision_store_root() {
+    # Mount the canonical store filesystem the registry names, or provision the replacement disk
+    # the operator names — and nothing else. Every refusal names its next action.
+    local store_root="$1" registry_path="${2:-$HOST_STORAGE_REGISTRY}"
+    local replacement="${3:-}" fstab_path="${4:-/etc/fstab}" target_root="${5:-}"
+    local identity uuid serial by_id device signatures kind target provisioned=0
+
+    if ! identity=$(store_filesystem_identity "$store_root" "$registry_path" 2>/dev/null); then
+        fail "The registry has no mount record for $store_root on the B2 staging host; add mounts[] with its uuid and device_ref.serial to $registry_path, then rerun Phase 11" >&2
+        return 1
+    fi
+    IFS=$'\t' read -r uuid serial by_id <<< "$identity"
+    if [[ -z "$uuid" ]]; then
+        fail "The registry mount record for $store_root has no filesystem UUID; repair it in $registry_path, then rerun Phase 11" >&2
+        return 1
+    fi
+
+    local identity_status=0
+    device=$(sudo blkid -U "$uuid" 2>&1) || identity_status=$?
+    # blkid exit 2 means the UUID was not found; other failures do not prove absence.
+    if (( identity_status != 0 && identity_status != 2 )) ||
+        { (( identity_status == 0 )) && [[ -z "$device" ]]; }; then
+        fail "could not inspect canonical filesystem UUID=$uuid: blkid exit $identity_status: ${device:-no diagnostic output}; nothing was formatted; repair UUID inspection, then rerun Phase 11" >&2
+        return 1
+    fi
+    if (( identity_status == 0 )) && [[ -n "$device" ]]; then
+        ok "Canonical $store_root filesystem present: UUID=$uuid on $device (serial ${serial:-unrecorded})"
+    elif [[ -n "$replacement" ]]; then
+        if kind=$(lsblk -dno TYPE "$replacement" 2>&1); then
+            kind=$(printf '%s' "$kind" | tr -d '[:space:]')
+        else
+            local type_status=$?
+            fail "could not inspect $replacement disk type: lsblk exit $type_status: ${kind:-no diagnostic output}; nothing was formatted; repair disk inspection, then rerun Phase 11" >&2
+            return 1
+        fi
+        if [[ "$kind" != "disk" ]]; then
+            fail "RESTORE_STORE_DEVICE=$replacement is not a whole disk on this host (lsblk type: ${kind:-none}); name the replacement by its /dev/disk/by-id path, then rerun Phase 11" >&2
+            return 1
+        fi
+        if signatures=$(lsblk -no FSTYPE,PTTYPE "$replacement" 2>&1); then
+            signatures=$(printf '%s' "$signatures" | tr -d '[:space:]')
+        else
+            local inspection_status=$?
+            fail "could not inspect $replacement signatures: lsblk exit $inspection_status: ${signatures:-no diagnostic output}; nothing was formatted; repair disk inspection, then rerun Phase 11" >&2
+            return 1
+        fi
+        if [[ -n "$signatures" ]]; then
+            fail "RESTORE_STORE_DEVICE=$replacement already carries a filesystem or partition table ($signatures); this script never formats a disk that holds data — if it truly is the replacement, wipe it deliberately with wipefs, then rerun Phase 11" >&2
+            return 1
+        fi
+        log "Provisioning replacement disk $replacement for canonical storage root $store_root..."
+        if ! sudo parted "$replacement" --script mklabel gpt; then
+            fail "Could not create GPT on $replacement; inspect 'sudo parted $replacement print', then rerun Phase 11 after repairing the disk" >&2
+            return 1
+        fi
+        if ! sudo parted "$replacement" --script mkpart store ext4 1MiB 100%; then
+            fail "Could not partition $replacement; inspect 'sudo parted $replacement print', then rerun Phase 11 after repairing the disk" >&2
+            return 1
+        fi
+        if ! sudo udevadm settle; then
+            fail "Could not settle partition devices for $replacement; inspect 'udevadm monitor', then rerun Phase 11 after repairing device discovery" >&2
+            return 1
+        fi
+        if ! device="$(store_partition_path "$replacement")"; then
+            fail "Could not resolve the partition on $replacement; inspect 'lsblk $replacement', then rerun Phase 11" >&2
+            return 1
+        fi
+        if ! sudo mkfs.ext4 -L store "$device"; then
+            fail "Could not format $device; inspect 'sudo blkid $device', then rerun Phase 11 after repairing the filesystem" >&2
+            return 1
+        fi
+        if ! uuid=$(sudo blkid -s UUID -o value "$device"); then
+            fail "Could not read the new filesystem UUID on $device; inspect 'sudo blkid $device', then rerun Phase 11" >&2
+            return 1
+        fi
+        if [[ -z "$uuid" ]]; then
+            fail "Required backup storage root $store_root has no filesystem UUID on $device after mkfs; inspect blkid, then rerun Phase 11" >&2
+            return 1
+        fi
+        provisioned=1
+        warn "The registry still records the old filesystem (serial ${serial:-unrecorded}, by-id ${by_id:-unrecorded}); update its mount and device records after the restore so the next restore finds this disk without RESTORE_STORE_DEVICE"
+    else
+        fail "The canonical $store_root filesystem (UUID $uuid, expected on ${by_id:-an unrecorded disk}, serial ${serial:-unrecorded}) is not present on this host, and nothing is formatted on a guess. If that disk was replaced, rerun Phase 11 with RESTORE_STORE_DEVICE=/dev/disk/by-id/<the empty replacement disk>; if it is installed, check cabling and blkid, then rerun Phase 11" >&2
+        return 1
+    fi
+
+    target="$(target_storage_path "$store_root" "$target_root")"
+    if ! sudo mkdir -p -- "$target"; then
+        fail "Could not create $target; inspect its parent filesystem permissions, then rerun Phase 11" >&2
+        return 1
+    fi
+    if ! awk -v target="$store_root" '$1 !~ /^#/ && $2 == target { found = 1 } END { exit !found }' "$fstab_path"; then
+        if ! printf 'UUID=%s %s ext4 defaults,noatime,commit=60 0 2\n' "$uuid" "$store_root" \
+            | sudo tee -a "$fstab_path" > /dev/null; then
+            fail "Could not record $store_root in $fstab_path; inspect its permissions and filesystem space, then rerun Phase 11" >&2
+            return 1
+        fi
+        ok "Added $store_root to $fstab_path"
+    fi
+    if (( provisioned )); then
+        ok "Replacement disk provisioned: UUID=$uuid on $device"
+    fi
+}
+
+carry_network_mount_entries() {
+    # Network filesystems carry no host-local UUID, so their restored fstab lines are valid as
+    # they are; copy the ones for required backup roots that the live fstab does not have yet.
+    local restored_fstab="$1" fstab_path="${2:-/etc/fstab}"
+    local canonical_root line
+
+    [[ -s "$restored_fstab" ]] || return 0
+    for canonical_root in "${BACKUP_STORAGE_ROOTS[@]}"; do
+        if awk -v target="$canonical_root" '$1 !~ /^#/ && $2 == target { found = 1 } END { exit !found }' "$fstab_path"; then
+            continue
+        fi
+        line=$(awk -v target="$canonical_root" '$1 !~ /^#/ && $2 == target && $3 ~ /^(nfs|nfs4|cifs|smb3)$/ { print; exit }' "$restored_fstab")
+        if [[ -n "$line" ]]; then
+            printf '%s\n' "$line" | sudo tee -a "$fstab_path" > /dev/null
+            ok "Carried the network mount for $canonical_root from the restored fstab"
+        fi
+    done
+}
+
+if [[ "${BASH_SOURCE[0]}" != "$0" ]]; then
+    return 0
+fi
+
+case "${1:-}" in
+    --print-dr-object-name)
+        printf '%s\n' "$DR_OBJECT_NAME"
+        exit 0
+        ;;
+    --resolve-dump-dir)
+        if [[ $# -ne 2 ]]; then
+            fail "Usage: $0 --resolve-dump-dir RESTORE_ROOT" >&2
+            exit 2
+        fi
+        find_restore_dump_dir "$2"
+        exit $?
+        ;;
+    --import-n8n-workflows)
+        if [[ $# -ne 2 ]]; then
+            fail "Usage: $0 --import-n8n-workflows DUMP_DIR" >&2
+            exit 2
+        fi
+        restore_n8n_workflows "$2"
+        exit $?
+        ;;
+    --print-storage-roots)
+        if [[ $# -gt 2 ]]; then
+            fail "Usage: $0 --print-storage-roots [HOST_STORAGE_REGISTRY]" >&2
+            exit 2
+        fi
+        load_backup_storage_roots "${2:-$HOST_STORAGE_REGISTRY}"
+        printf '%s\n' "${BACKUP_STORAGE_ROOTS[@]}"
+        exit 0
+        ;;
+esac
+
+# ─── Phase 0: Collect secrets ───────────────────────────────────────────────
+log "=== Phase 0: Collect recovery secrets ==="
+
+if [[ -z "${RESTIC_PASSWORD:-}" ]]; then
+    read -rsp "Restic encryption password: " RESTIC_PASSWORD; echo
+    export RESTIC_PASSWORD
+fi
+if [[ -z "${B2_KEY_ID:-}" ]]; then
+    ask "Backblaze B2 Key ID" B2_KEY_ID; export B2_KEY_ID
+fi
+if [[ -z "${B2_APP_KEY:-}" ]]; then
+    read -rsp "Backblaze B2 Application Key: " B2_APP_KEY; echo
+    export B2_APP_KEY
+fi
+
+# ─── Phase 1: Bootstrap ────────────────────────────────────────────────────
+log "=== Phase 1: Bootstrap toolchain ==="
+
+# Phase 1 repository/bootstrap: restic rclone curl wget git jq base-devel python.
+# Phases 3–4 identity and source recovery: gnupg pass github-cli.
+# Phase 11 storage inspection/provisioning: parted e2fsprogs util-linux (udevadm: base systemd).
+if ! sudo pacman -Syu --noconfirm --needed \
+    restic rclone gnupg pass curl wget git github-cli jq base-devel python \
+    parted e2fsprogs util-linux > /dev/null 2>&1; then
+    fail "Cannot install recovery packages; inspect 'sudo pacman -Syu --needed restic rclone gnupg pass curl wget git github-cli jq base-devel python parted e2fsprogs util-linux', then rerun Phase 1" >&2
+    exit 1
+fi
+ok "Core packages installed"
+
+# Install paru (AUR helper) if not present
+if ! command -v paru &>/dev/null; then
+    log "Installing paru..."
+    PARU_DIR=$(mktemp -d)
+    git clone https://aur.archlinux.org/paru-bin.git "$PARU_DIR" > /dev/null 2>&1
+    (cd "$PARU_DIR" && makepkg -si --noconfirm > /dev/null 2>&1)
+    rm -rf "$PARU_DIR"
+    ok "paru installed"
+fi
+
+# Configure rclone. The config carries the B2 application key: it is created under umask 077 and
+# pinned to 0600, never left at the ambient umask (a 022 umask made it world-readable — review
+# finding on #4623, round 5).
+mkdir -p ~/.config/rclone
+chmod 700 ~/.config/rclone
+if ! rclone listremotes 2>/dev/null | grep -q '^b2:'; then
+    (umask 077; cat > ~/.config/rclone/rclone.conf <<RCLONE
+[b2]
+type = b2
+account = ${B2_KEY_ID}
+key = ${B2_APP_KEY}
+RCLONE
+    )
+    chmod 600 ~/.config/rclone/rclone.conf
+    ok "rclone configured for B2 (config mode 0600)"
+fi
+
+# Verify backup access
+export RESTIC_REPOSITORY="rclone:b2:hapax-backups/restic"
+log "Verifying backup repository..."
+if ! restic snapshots --no-lock --latest 1 > /dev/null 2>&1; then
+    fail "Cannot access B2 backup. Check credentials."
+    exit 1
+fi
+ok "Backup accessible"
+
+# ─── Phase 2: Restore from backup ──────────────────────────────────────────
+log "=== Phase 2: Restore files from B2 ==="
+
+prepare_restore_root "$RESTORE_ROOT"
+
+RESTORE_SNAPSHOT=$(select_restore_snapshot)
+log "Restoring hapax-podium/tier2-remote snapshot $RESTORE_SNAPSHOT..."
+restic restore "$RESTORE_SNAPSHOT" --target "$RESTORE_ROOT" --no-lock --verbose 2>&1 | tail -3
+ok "Snapshot restored"
+
+# Determine restored home path (username may differ)
+RHOME=$(find "$RESTORE_ROOT/home" -maxdepth 1 -mindepth 1 -type d 2>/dev/null | head -1) || RHOME=""
+if [[ -z "$RHOME" ]]; then
+    fail "No home directory found in backup snapshot $RESTORE_SNAPSHOT; inspect 'restic ls $RESTORE_SNAPSHOT --host hapax-podium --tag tier2-remote /home', select a complete snapshot, then rerun Phase 2 with HAPAX_RESTORE_SNAPSHOT=<id>" >&2
+    exit 1
+fi
+ok "Found restored home: $RHOME"
+
+# Prove the recovery dump before replacing GPG, SSH, or password-store identity.
+if ! DUMP=$(find_restore_dump_dir "$RESTORE_ROOT"); then
+    exit 1
+fi
+
+# ─── Phase 3: Identity (GPG, pass, SSH) ────────────────────────────────────
+log "=== Phase 3: Restore secrets & identity ==="
+
+# GPG keys (must come from backup — can't be regenerated)
+if [[ -d "$RHOME/.gnupg" ]]; then
+    rm -rf ~/.gnupg
+    cp -a "$RHOME/.gnupg" ~/
+    ok "Restored ~/.gnupg"
+fi
+
+# SSH keys (from backup)
+if [[ -d "$RHOME/.ssh" ]]; then
+    rm -rf ~/.ssh
+    cp -a "$RHOME/.ssh" ~/
+    ok "Restored ~/.ssh"
+fi
+
+# Pass store (clone from GitHub — source controlled)
+if [[ ! -d ~/.password-store/.git ]]; then
+    gh repo clone ryanklee/pass-store ~/.password-store > /dev/null 2>&1 && \
+        ok "Cloned pass store from GitHub" || {
+        # Fallback: restore from backup
+        if [[ -d "$RHOME/.password-store" ]]; then
+            rm -rf ~/.password-store
+            cp -a "$RHOME/.password-store" ~/
+            ok "Restored ~/.password-store (from backup)"
+        fi
+    }
+fi
+chmod 700 ~/.gnupg ~/.ssh 2>/dev/null || true
+chmod 600 ~/.gnupg/* ~/.ssh/id_* 2>/dev/null || true
+chmod 644 ~/.ssh/*.pub ~/.ssh/known_hosts 2>/dev/null || true
+
+# Producers read these independent entries at startup. Preserve recovered entries and verify
+# each newly created entry before claiming that credential recovery succeeded.
+store_backup_credentials
+
+# Council supplies the tracked Compose contract and the later source-activation
+# checkout. Phase 2 already proved the dump before identity replacement.
+restore_council_checkout "$DUMP/git-bundles/hapax-council.bundle"
+
+# ─── Phase 4: User configs ─────────────────────────────────────────────────
+log "=== Phase 4: Restore user configuration ==="
+
+# Dotfiles repo (symlinked config — fish, git, hyprland, waybar, tmux)
+if [[ ! -d "$HOME/dotfiles" ]]; then
+    gh repo clone ryanklee/dotfiles "$HOME/dotfiles" > /dev/null 2>&1 && \
+        ok "Cloned dotfiles repo" || warn "dotfiles clone failed"
+fi
+if [[ -f "$HOME/dotfiles/install.sh" ]]; then
+    bash "$HOME/dotfiles/install.sh"
+    ok "Dotfiles symlinked"
+fi
+
+# XDG config dirs NOT covered by dotfiles
+for d in foot fuzzel mako kanshi environment.d aichat mods autostart \
+         gtk-3.0 gtk-4.0 qt6ct hapax-daimonion wireplumber pipewire gh atuin fabric; do
+    if [[ -d "$RHOME/.config/$d" ]]; then
+        mkdir -p ~/.config
+        rm -rf ~/.config/"$d"
+        cp -a "$RHOME/.config/$d" ~/.config/
+        ok "~/.config/$d"
+    fi
+done
+[[ -f "$RHOME/.config/starship.toml" ]] && cp -a "$RHOME/.config/starship.toml" ~/.config/
+[[ -f "$RHOME/.config/mimeapps.list" ]] && cp -a "$RHOME/.config/mimeapps.list" ~/.config/
+
+# Systemd user units
+if [[ -d "$RHOME/.config/systemd/user" ]]; then
+    mkdir -p ~/.config/systemd/user
+    cp -a "$RHOME/.config/systemd/user/"* ~/.config/systemd/user/
+    ok "systemd user units"
+fi
+
+# Claude Code config (source controlled — clone, don't copy from backup)
+if [[ ! -d "$HOME/.claude/.git" ]]; then
+    if github_recovery_ready && gh repo clone ryanklee/claude-code-config "$HOME/.claude-restore" > /dev/null 2>&1 \
+        && [[ -d "$HOME/.claude-restore" ]]; then
+        mkdir -p ~/.claude
+        cp -a "$HOME/.claude-restore/"* ~/.claude/ 2>/dev/null
+        cp -a "$HOME/.claude-restore/".* ~/.claude/ 2>/dev/null || true
+        rm -rf "$HOME/.claude-restore"
+        ok "Claude Code config restored from repo"
+    else
+        # Fallback: copy from backup
+        if [[ -d "$RHOME/.claude" ]]; then
+            cp -a "$RHOME/.claude" ~/ && ok "~/.claude (from backup)"
+        else
+            warn "Claude Code config unavailable from GitHub and backup; run 'gh auth login' and recover ryanklee/claude-code-config after restore"
+        fi
+    fi
+fi
+
+# Custom scripts
+if [[ -d "$RHOME/.local/bin" ]]; then
+    mkdir -p ~/.local/bin
+    cp -a "$RHOME/.local/bin/"* ~/.local/bin/
+    find ~/.local/bin -name '*.sh' -exec chmod +x {} \; 2>/dev/null
+    find ~/.local/bin -name '*.py' -exec chmod +x {} \; 2>/dev/null
+    for script_group in hypr-scripts waybar-scripts llm-hotkeys; do
+        if [[ -d "$HOME/.local/bin/$script_group" ]]; then
+            find "$HOME/.local/bin/$script_group" -type f -exec chmod +x {} \;
+        fi
+    done
+    ok "~/.local/bin"
+fi
+
+# Local share data
+for d in atuin hapax-daimonion keyrings fonts; do
+    if [[ -d "$RHOME/.local/share/$d" ]]; then
+        mkdir -p ~/.local/share
+        rm -rf ~/.local/share/"$d"
+        cp -a "$RHOME/.local/share/$d" ~/.local/share/
+        ok "~/.local/share/$d"
+    fi
+done
+# WirePlumber state (persisted volumes, default devices)
+if [[ -d "$RHOME/.local/state/wireplumber" ]]; then
+    mkdir -p ~/.local/state/wireplumber
+    cp -a "$RHOME/.local/state/wireplumber/"* ~/.local/state/wireplumber/
+    ok "~/.local/state/wireplumber (volume state)"
+fi
+
+fc-cache -f 2>/dev/null && ok "Font cache rebuilt" || true
+
+# Models (Piper TTS)
+for d in "$RESTORE_ROOT/home"/*/models; do
+    if [[ -d "$d" ]]; then
+        cp -a "$d" ~/
+        ok "~/models"
+        break
+    fi
+done
+
+# llm-stack (full directory, including its secret environment)
+restore_llm_stack_files "$RHOME/llm-stack"
+
+# ─── Phase 5: System configs ───────────────────────────────────────────────
+log "=== Phase 5: Restore system configuration ==="
+
+RETC="$RESTORE_ROOT/etc"
+
+# Save restored fstab for reference (UUIDs will differ)
+[[ -f "$RETC/fstab" ]] && sudo cp "$RETC/fstab" /etc/fstab.restored
+log "Old fstab saved to /etc/fstab.restored (UUIDs will differ)"
+
+# Docker daemon config
+[[ -f "$RETC/docker/daemon.json" ]] && sudo mkdir -p /etc/docker && \
+    sudo cp "$RETC/docker/daemon.json" /etc/docker/daemon.json && ok "/etc/docker/daemon.json"
+
+# Bluetooth
+[[ -f "$RETC/bluetooth/main.conf" ]] && \
+    sudo cp "$RETC/bluetooth/main.conf" /etc/bluetooth/main.conf && ok "bluetooth config"
+
+# udev rules
+if [[ -d "$RETC/udev/rules.d" ]]; then
+    sudo cp "$RETC/udev/rules.d/"*.rules /etc/udev/rules.d/ 2>/dev/null
+    ok "udev rules"
+fi
+
+# sysctl
+if [[ -d "$RETC/sysctl.d" ]]; then
+    for f in "$RETC/sysctl.d/"90-*.conf; do
+        [[ -f "$f" ]] && sudo cp "$f" /etc/sysctl.d/
+    done
+    sudo sysctl --system > /dev/null 2>&1
+    ok "sysctl tuning"
+fi
+
+# NetworkManager
+if [[ -d "$RETC/NetworkManager/conf.d" ]]; then
+    sudo mkdir -p /etc/NetworkManager/conf.d
+    sudo cp "$RETC/NetworkManager/conf.d/"99-*.conf /etc/NetworkManager/conf.d/ 2>/dev/null
+    ok "NetworkManager config"
+fi
+
+# journald
+if [[ -d "$RETC/systemd/journald.conf.d" ]]; then
+    sudo mkdir -p /etc/systemd/journald.conf.d
+    sudo cp "$RETC/systemd/journald.conf.d/"* /etc/systemd/journald.conf.d/
+    ok "journald config"
+fi
+
+# modprobe.d configs from backup (NVIDIA handled separately in Phase 6)
+if [[ -d "$RETC/modprobe.d" ]]; then
+    for f in "$RETC/modprobe.d/"*.conf; do
+        [[ -f "$f" ]] || continue
+        fname=$(basename "$f")
+        # Skip nvidia.conf — Phase 6 writes a known-good version
+        [[ "$fname" == "nvidia.conf" ]] && continue
+        sudo cp "$f" /etc/modprobe.d/
+    done
+    ok "modprobe.d configs (usbcore, uvcvideo, v4l2loopback)"
+fi
+
+sudo udevadm control --reload-rules 2>/dev/null || true
+
+# ─── Phase 6: NVIDIA modprobe ──────────────────────────────────────────────
+log "=== Phase 6: NVIDIA kernel module options ==="
+
+sudo tee /etc/modprobe.d/nvidia.conf > /dev/null <<'NVIDIA'
+options nvidia NVreg_UsePageAttributeTable=1
+options nvidia_drm modeset=1
+options nvidia NVreg_PreserveVideoMemoryAllocations=1
+options nvidia NVreg_TemporaryFilePath=/var
+options nvidia NVreg_DynamicPowerManagement=0x00
+NVIDIA
+ok "NVIDIA modprobe options"
+
+# Kernel modules
+sudo tee /etc/modules-load.d/hapax.conf > /dev/null <<'MODULES'
+snd-virmidi
+v4l2loopback
+MODULES
+ok "Kernel modules (snd-virmidi, v4l2loopback)"
+
+# ─── Phase 7: Install packages ─────────────────────────────────────────────
+log "=== Phase 7: Install system packages ==="
+
+# Hyprland + Wayland desktop
+PKGS_DESKTOP=(
+    hyprland hyprlock hypridle hyprpaper xdg-desktop-portal-hyprland
+    foot fuzzel waybar mako wl-clipboard cliphist slurp grim
+    wlsunset playerctl brightnessctl
+    blueman pavucontrol qt6ct qt6-wayland
+    kanshi wf-recorder wtype
+)
+
+# GPU + CUDA — detect which kernel's nvidia module to install
+NVIDIA_MODULE=""
+if pacman -Q linux-cachyos-lts &>/dev/null; then
+    NVIDIA_MODULE="linux-cachyos-lts-nvidia-open"
+elif pacman -Q linux-cachyos &>/dev/null; then
+    NVIDIA_MODULE="linux-cachyos-nvidia-open"
+fi
+PKGS_GPU=(
+    ${NVIDIA_MODULE:+$NVIDIA_MODULE} nvidia-utils lib32-nvidia-utils
+    cuda nvidia-container-toolkit nvtop mangohud
+)
+
+# Docker
+PKGS_DOCKER=(
+    docker docker-compose docker-buildx
+)
+
+# CLI tools
+PKGS_CLI=(
+    fish tmux direnv jq ripgrep bat fd eza zoxide fzf
+    git git-delta github-cli pandoc-cli imagemagick
+    starship atuin pass gnupg ydotool micro
+    ttf-jetbrains-mono-nerd noto-fonts-emoji
+)
+
+# System services
+PKGS_SYSTEM=(
+    earlyoom restic rclone tailscale smartmontools
+    python-pipx alsa-utils qpwgraph irqbalance
+    flatpak rnnoise noise-suppression-for-voice
+    v4l2loopback-dkms v4l2loopback-utils
+)
+
+# Dev toolchain
+PKGS_DEV=(
+    base-devel cmake rustup python python-pip
+)
+
+# Btrfs maintenance (no grub-btrfs — system uses Limine)
+PKGS_BTRFS=(
+    snapper snap-pac
+)
+
+sudo pacman -S --noconfirm --needed \
+    "${PKGS_DESKTOP[@]}" "${PKGS_GPU[@]}" "${PKGS_DOCKER[@]}" \
+    "${PKGS_CLI[@]}" "${PKGS_SYSTEM[@]}" "${PKGS_DEV[@]}" "${PKGS_BTRFS[@]}" \
+    2>&1 | tail -5
+
+ok "Pacman packages installed"
+
+# AUR packages
+log "Installing AUR packages..."
+paru -S --noconfirm --needed wlogout 2>&1 | tail -3 || warn "wlogout AUR install failed"
+ok "AUR packages"
+
+# ─── Phase 8: Standalone tools ──────────────────────────────────────────────
+log "=== Phase 8: Install standalone toolchain ==="
+
+# Rust (via rustup, already installed by pacman)
+if ! rustup show | grep -q stable; then
+    rustup default stable > /dev/null 2>&1
+    ok "Rust stable toolchain"
+fi
+
+# uv (Python)
+if ! command -v uv &>/dev/null; then
+    curl -LsSf https://astral.sh/uv/install.sh | sh > /dev/null 2>&1
+    ok "uv installed"
+fi
+
+# fnm (Node.js)
+if ! command -v fnm &>/dev/null; then
+    curl -fsSL https://fnm.vercel.app/install | bash -s -- --skip-shell > /dev/null 2>&1
+    export PATH="$HOME/.local/share/fnm:$PATH"
+    eval "$(fnm env)"
+    fnm install 22
+    ok "fnm + Node 22"
+fi
+
+# pnpm
+if ! command -v pnpm &>/dev/null; then
+    npm install -g pnpm > /dev/null 2>&1
+    ok "pnpm"
+fi
+
+# Claude Code (pinned version — check memory for latest known-good)
+if ! command -v claude &>/dev/null; then
+    npm install -g @anthropic-ai/claude-code > /dev/null 2>&1
+    ok "Claude Code"
+fi
+
+# Claude Code plugins (reinstall from marketplace)
+if command -v claude &>/dev/null; then
+    log "Installing Claude Code plugins..."
+    CLAUDE_PLUGINS=(
+        superpowers frontend-design feature-dev commit-commands
+        security-guidance rust-analyzer-lsp claude-code-setup
+        ralph-loop claude-md-management pr-review-toolkit
+        hookify playground
+    )
+    for plugin in "${CLAUDE_PLUGINS[@]}"; do
+        claude plugins install "$plugin" > /dev/null 2>&1 && ok "plugin: $plugin" || true
+    done
+    # Community marketplaces
+    claude plugins marketplace add existential-birds/beagle > /dev/null 2>&1 || true
+    claude plugins marketplace add L3DigitalNet/Claude-Code-Plugins > /dev/null 2>&1 || true
+    claude plugins install beagle-python > /dev/null 2>&1 && ok "plugin: beagle-python" || true
+    claude plugins install beagle-react > /dev/null 2>&1 && ok "plugin: beagle-react" || true
+    claude plugins install beagle-ai > /dev/null 2>&1 && ok "plugin: beagle-ai" || true
+    claude plugins install linux-sysadmin > /dev/null 2>&1 && ok "plugin: linux-sysadmin" || true
+fi
+
+# Go
+if ! command -v go &>/dev/null; then
+    sudo pacman -S --noconfirm go > /dev/null 2>&1
+    ok "Go"
+fi
+
+# Cargo tools
+command -v aichat &>/dev/null || cargo install aichat > /dev/null 2>&1 && ok "aichat" || true
+
+# Go tools
+export PATH="/usr/bin:$HOME/go/bin:$PATH"
+command -v mods &>/dev/null || go install github.com/charmbracelet/mods@latest > /dev/null 2>&1 && ok "mods" || true
+command -v fabric &>/dev/null || go install github.com/danielmiessler/fabric@latest > /dev/null 2>&1 && ok "fabric" || true
+
+# pipx tools
+pipx install llm > /dev/null 2>&1 || true
+pipx install shell-gpt > /dev/null 2>&1 || true
+ok "pipx tools"
+
+# ─── Phase 9: Flatpak apps ─────────────────────────────────────────────────
+log "=== Phase 9: Install Flatpak apps ==="
+
+flatpak remote-add --if-not-exists flathub https://dl.flathub.org/repo/flathub.flatpakrepo 2>/dev/null
+
+FLATPAK_APPS=(
+    io.github.aandrew_me.ytdn
+)
+
+for app in "${FLATPAK_APPS[@]}"; do
+    flatpak install -y --noninteractive flathub "$app" > /dev/null 2>&1 && ok "Flatpak: $app" || warn "Flatpak: $app failed"
+done
+
+ok "Flatpak apps installed"
+
+# ─── Phase 10: System configuration ────────────────────────────────────────
+log "=== Phase 10: System services & groups ==="
+
+# Phase 8 installed uv; Phase 1 installed python/git/curl for source activation.
+# Complete governed bootstrap before enabling any system or user unit.
+bootstrap_source_activation
+
+# User groups
+sudo usermod -aG docker,input "$USER" 2>/dev/null || true
+
+# NVIDIA container runtime
+sudo nvidia-ctk runtime configure --runtime=docker > /dev/null 2>&1 || true
+
+# Ensure fish is default shell (CachyOS default, but verify)
+if [[ "$SHELL" != "$(which fish)" ]] && command -v fish &>/dev/null; then
+    sudo chsh -s "$(which fish)" "$USER" && ok "Default shell: fish"
+fi
+
+# Enable system services
+sudo systemctl enable --now docker 2>/dev/null || true
+sudo systemctl enable --now bluetooth 2>/dev/null || true
+sudo systemctl enable --now earlyoom 2>/dev/null || true
+sudo systemctl enable --now tailscaled 2>/dev/null || true
+sudo systemctl enable --now smartd 2>/dev/null || true
+sudo systemctl enable --now fstrim.timer 2>/dev/null || true
+sudo systemctl enable --now irqbalance 2>/dev/null || true
+
+# Btrfs snapshots
+# Create snapper config for root if it doesn't exist yet
+if [[ ! -f /etc/snapper/configs/root ]]; then
+    sudo snapper -c root create-config / 2>/dev/null && ok "Snapper config created for /" || warn "Snapper create-config failed"
+fi
+sudo systemctl enable --now snapper-cleanup.timer 2>/dev/null || true
+sudo systemctl enable --now btrfs-scrub@-.timer 2>/dev/null || true
+
+# Tune snapper retention (default 50 is too many)
+if [[ -f /etc/snapper/configs/root ]]; then
+    sudo sed -i 's/NUMBER_LIMIT="50"/NUMBER_LIMIT="15"/' /etc/snapper/configs/root
+    sudo sed -i 's/NUMBER_LIMIT_IMPORTANT="50"/NUMBER_LIMIT_IMPORTANT="10"/' /etc/snapper/configs/root
+    ok "Snapper retention tuned (15 normal, 10 important)"
+fi
+
+# earlyoom config (Arch uses /etc/default/earlyoom)
+sudo tee /etc/default/earlyoom > /dev/null <<'EARLYOOM'
+EARLYOOM_ARGS="-m 5 -s 5 --prefer '(ollama|comfyui|qwen|deepseek|audio_processor|litellm|clickhouse)' --avoid '(Hyprland|pipewire|wireplumber|dockerd|containerd|bluetoothd|systemd|foot|waybar)'"
+EARLYOOM
+sudo systemctl restart earlyoom 2>/dev/null || true
+ok "earlyoom configured"
+
+# SMART monitoring
+sudo tee /etc/smartd.conf > /dev/null <<'SMARTD'
+DEVICESCAN -a -o on -S on -n standby,q -s (S/../.././02|L/../../6/03) -W 4,35,45 -m root -M exec /usr/share/smartmontools/smartd_warning.sh
+SMARTD
+sudo systemctl restart smartd 2>/dev/null || true
+ok "SMART monitoring enabled"
+
+ok "System services configured"
+
+# ─── Phase 11: Canonical backup storage roots ──────────────────────────────
+log "=== Phase 11: Canonical backup storage setup ==="
+
+load_backup_storage_roots "$HOST_STORAGE_REGISTRY"
+if ! STORE_ROOT=$(policy_storage_roots "b2-restic-offsite" "$HOST_STORAGE_REGISTRY"); then
+    fail "Could not resolve the B2 staging root from $HOST_STORAGE_REGISTRY; repair its backup policy, then rerun Phase 11" >&2
+    exit 1
+fi
+if [[ "$STORE_ROOT" == *$'\n'* ]]; then
+    fail "B2 staging policy resolved more than one storage root; repair b2-restic-offsite in $HOST_STORAGE_REGISTRY, then rerun Phase 11" >&2
+    exit 1
+fi
+if ! TIER1_STORAGE_ROOTS=$(policy_storage_roots "local-nas-restic" "$HOST_STORAGE_REGISTRY"); then
+    fail "Could not resolve Tier 1 storage roots from $HOST_STORAGE_REGISTRY; repair its backup policy, then rerun Phase 11" >&2
+    exit 1
+fi
+TIER1_STORAGE_ROOT=""
+while IFS= read -r canonical_root; do
+    [[ "$canonical_root" == "$STORE_ROOT" ]] && continue
+    if [[ -n "$TIER1_STORAGE_ROOT" ]]; then
+        fail "Tier 1 policy resolved multiple non-staging roots; repair local-nas-restic in $HOST_STORAGE_REGISTRY, then rerun Phase 11" >&2
+        exit 1
+    fi
+    TIER1_STORAGE_ROOT="$canonical_root"
+done <<< "$TIER1_STORAGE_ROOTS"
+if [[ -z "$TIER1_STORAGE_ROOT" ]]; then
+    fail "Tier 1 policy has no repository mount root distinct from $STORE_ROOT; repair local-nas-restic in $HOST_STORAGE_REGISTRY, then rerun Phase 11" >&2
+    exit 1
+fi
+
+# Provision the canonical B2 staging root from the registry's identity — never from a guessed
+# kernel name. Podium carries two identical SATA disks at /dev/sda and /dev/sdb, and the second
+# holds a whole-disk filesystem with no partition table: the old rule "first unmounted disk with
+# no partitions → mklabel + mkfs" would have formatted it. Nothing is formatted unless the operator
+# names the replacement disk in RESTORE_STORE_DEVICE and it carries no signature (#4623, round 5).
+if ! provision_store_root "$STORE_ROOT" "$HOST_STORAGE_REGISTRY" "${RESTORE_STORE_DEVICE:-}" /etc/fstab ""; then
+    exit 1
+fi
+
+# Phase 5 saved the restored fstab beside the live one. Network filesystems (the NAS root) carry
+# no host-local UUID, so their lines are valid as restored; carry them before mounting the roots.
+carry_network_mount_entries /etc/fstab.restored /etc/fstab
+
+ensure_backup_storage_roots
+prepare_backup_staging "$STORE_ROOT"
+
+# The restored tree lives under /var/tmp, so installing tmpfs on /tmp cannot
+# hide the snapshot before database recovery.
+ensure_tmpfs_tmp
+
+# ─── Phase 12: Docker stack ────────────────────────────────────────────────
+log "=== Phase 12: Start Docker stack + restore PostgreSQL, Qdrant, and n8n workflows ==="
+
+# Phase 2 resolved DUMP before identity and council recovery; retain it for database and git recovery.
+restore_database_services "$DUMP"
+
+# ─── Phase 12b: Ollama models ────────────────────────────────────────────
+log "=== Phase 12b: Pull Ollama models ==="
+
+if command -v ollama &>/dev/null || pacman -Q ollama-cuda &>/dev/null 2>&1; then
+    sudo systemctl enable --now ollama 2>/dev/null || true
+    sleep 3
+    OLLAMA_MODELS=(nomic-embed-text nomic-embed-cpu qwen3:4b qwen3:8b gemma3:4b phi4-mini)
+    for model in "${OLLAMA_MODELS[@]}"; do
+        log "Pulling $model..."
+        ollama pull "$model" 2>&1 | tail -1 && ok "Ollama: $model" || warn "Ollama: $model failed"
+    done
+else
+    warn "Ollama not installed — install ollama-cuda and pull models manually"
+fi
+
+# ─── Phase 13: Git repos ───────────────────────────────────────────────────
+log "=== Phase 13: Clone git repositories ==="
+
+mkdir -p ~/projects
+
+# Repos with remotes (clone from GitHub)
+# Try SSH first, fall back to gh (uses OAuth token from gh auth login)
+declare -A REPOS=(
+    [hapax-constitution]="ryanklee/hapax-constitution"
+    [hapax-officium]="ryanklee/hapax-officium"
+    [hapax-watch]="ryanklee/hapax-watch"
+    [hapax-mcp]="ryanklee/hapax-mcp"
+    [hapax-phone]="ryanklee/hapax-phone"
+)
+
+for repo in "${!REPOS[@]}"; do
+    if [[ ! -d "$HOME/projects/$repo" ]]; then
+        if git clone "git@github.com:${REPOS[$repo]}.git" "$HOME/projects/$repo" > /dev/null 2>&1; then
+            ok "Cloned $repo (SSH)"
+        elif gh repo clone "${REPOS[$repo]}" "$HOME/projects/$repo" > /dev/null 2>&1; then
+            ok "Cloned $repo (gh)"
+        else
+            warn "Failed to clone $repo"
+        fi
+    else
+        ok "$repo already exists"
+    fi
+done
+
+# Public repos (no auth needed)
+if [[ ! -d "$HOME/projects/tabbyAPI" ]]; then
+    git clone https://github.com/theroyallab/tabbyAPI "$HOME/projects/tabbyAPI" > /dev/null 2>&1 && \
+        ok "Cloned tabbyAPI" || warn "Failed to clone tabbyAPI"
+fi
+
+# Repos without remotes — restore from git bundles
+BUNDLES="$DUMP/git-bundles"
+for repo in obsidian-hapax sample-search hapax-system; do
+    if [[ ! -d "$HOME/projects/$repo" ]]; then
+        if [[ -f "$BUNDLES/${repo}.bundle" ]]; then
+            git clone "$BUNDLES/${repo}.bundle" "$HOME/projects/$repo" > /dev/null 2>&1 && \
+                ok "Restored $repo from bundle" || warn "Failed to restore $repo"
+        else
+            warn "$repo has no remote and no bundle — manual recovery needed"
+        fi
+    fi
+done
+
+# Restore git dirty state (uncommitted work)
+for repo in ~/projects/*/; do
+    name=$(basename "$repo")
+    patch="$DUMP/git-diff-${name}.patch"
+    if [[ -f "$patch" && -s "$patch" ]]; then
+        git -C "$repo" apply "$patch" > /dev/null 2>&1 && \
+            log "Applied uncommitted changes to $name" || true
+    fi
+done
+
+# Documents/Work vault (git repo, no remote — restore from bundle)
+if [[ ! -d ~/Documents/Work ]]; then
+    mkdir -p ~/Documents
+    if [[ -f "$BUNDLES/Work.bundle" ]]; then
+        git clone "$BUNDLES/Work.bundle" ~/Documents/Work > /dev/null 2>&1 && ok "Documents/Work"
+    else
+        warn "Documents/Work has no bundle — sync via Obsidian Sync"
+    fi
+fi
+
+# ─── Phase 14: Local backup repo ───────────────────────────────────────────
+log "=== Phase 14: Initialize local backup repo ==="
+
+LOCAL_RESTIC_REPO="$TIER1_STORAGE_ROOT/backups/restic"
+if ! mountpoint -q "$TIER1_STORAGE_ROOT"; then
+    fail "Required backup storage root $TIER1_STORAGE_ROOT is not mounted; rerun Phase 11 before initializing Tier 1" >&2
+    exit 1
+fi
+if ! mkdir -p "$LOCAL_RESTIC_REPO"; then
+    fail "Could not create Tier 1 repository at $LOCAL_RESTIC_REPO; repair the $TIER1_STORAGE_ROOT mount, then rerun Phase 14" >&2
+    exit 1
+fi
+if ! NAS_RESTIC_PASSWORD=$(pass show backups/restic-password 2>/dev/null) || [[ -z "$NAS_RESTIC_PASSWORD" ]]; then
+    fail "Could not read independent NAS credential backups/restic-password; repair pass, then rerun Phase 14" >&2
+    exit 1
+fi
+if ! RESTIC_PASSWORD="$NAS_RESTIC_PASSWORD" restic -r "$LOCAL_RESTIC_REPO" snapshots --no-lock > /dev/null 2>&1; then
+    if ! RESTIC_PASSWORD="$NAS_RESTIC_PASSWORD" restic -r "$LOCAL_RESTIC_REPO" init; then
+        fail "Could not initialize Tier 1 repository at $LOCAL_RESTIC_REPO; inspect restic and the $TIER1_STORAGE_ROOT mount, then rerun Phase 14" >&2
+        exit 1
+    fi
+fi
+ok "Local backup repo ready at $LOCAL_RESTIC_REPO"
+
+# ─── Phase 15: Enable user services & timers ───────────────────────────────
+log "=== Phase 15: Enable systemd user services & timers ==="
+
+enable_systemd_user_unit() {
+    local unit="$1" unit_kind="$2" label="$3"
+    local enabled_state
+
+    if ! systemctl --user enable "$unit"; then
+        fail "Could not enable systemd user $unit_kind $unit; verify the unit is installed and 'systemctl --user status' works, then rerun Phase 15" >&2
+        return 1
+    fi
+    if ! enabled_state=$(systemctl --user is-enabled "$unit"); then
+        fail "Systemd could not determine whether user $unit_kind $unit is enabled; inspect 'systemctl --user is-enabled $unit', then rerun Phase 15" >&2
+        return 1
+    fi
+    if [[ "$enabled_state" != "enabled" ]]; then
+        fail "Systemd reports user $unit_kind $unit as ${enabled_state:-unknown}, not enabled; repair its install link, then rerun Phase 15" >&2
+        return 1
+    fi
+    ok "$unit_kind: $label"
+}
+
+# Only the backup lanes are mandatory. Other services/timers come from the
+# archived inventory, intersected with the committed activation unit set.
+MANDATORY_BACKUP_UNITS=(
+    hapax-backup-local.service hapax-backup-local.timer
+    hapax-backup-remote.service hapax-backup-remote.timer
+    hapax-backup-watchdog.service hapax-backup-watchdog.timer
+    llm-backup.service llm-backup.timer
+)
+ACTIVE_UNITS="$HOME/.cache/hapax/source-activation/worktree/systemd/units"
+if ! committed_units=$(git -C "${ACTIVE_UNITS%/systemd/units}" ls-tree -r --name-only HEAD -- systemd/units); then
+    fail "Cannot read committed activation unit inventory at $ACTIVE_UNITS; repair the activation checkout and rerun Phase 15" >&2
+    exit 1
+fi
+declare -A committed_unit_set=() selected_units=()
+while IFS= read -r path; do
+    [[ "$path" == systemd/units/* ]] || continue
+    committed_unit_set["${path#systemd/units/}"]=yes
+done <<< "$committed_units"
+RECOVERY_UNITS=()
+ENABLE_UNITS=()
+for unit in "${MANDATORY_BACKUP_UNITS[@]}"; do
+    reconcile_systemd_user_unit "$unit" mandatory "${committed_unit_set[$unit]:-no}"
+    selected_units["$unit"]=yes
+    RECOVERY_UNITS+=("$unit")
+    [[ "$unit" != *.timer ]] || ENABLE_UNITS+=("$unit")
+done
+# Capture archived files, dangling links, drop-ins and enabled dependencies.
+for path in "$HOME/.config/systemd/user/"* \
+    "$HOME/.config/systemd/user/"*.wants/* \
+    "$HOME/.config/systemd/user/"*.requires/*; do
+    [[ -e "$path" || -L "$path" ]] || continue
+    unit="${path##*/}"
+    unit="${unit%.d}"
+    case "$unit" in *.service|*.timer) ;; *) continue ;; esac
+    [[ -z "${selected_units[$unit]:-}" ]] || continue
+    selected_units["$unit"]=yes
+    available="${committed_unit_set[$unit]:-no}"
+    [[ -f "$ACTIVE_UNITS/$unit" && -r "$ACTIVE_UNITS/$unit" ]] || available=no
+    reconcile_systemd_user_unit "$unit" optional "$available"
+    [[ "$available" == yes ]] || continue
+    RECOVERY_UNITS+=("$unit")
+    ENABLE_UNITS+=("$unit")
+done
+if ! systemctl --user daemon-reload; then
+    fail "Could not reload the systemd user manager; verify 'systemctl --user status', then rerun Phase 15" >&2
+    exit 1
+fi
+for unit in "${RECOVERY_UNITS[@]}"; do
+    [[ "$unit" == *.timer ]] || continue
+    triggered_services=$(restore_timer_services "$unit")
+    for svc in $triggered_services; do
+        reconcile_systemd_user_unit "$svc" mandatory "${committed_unit_set[$svc]:-no}"
+    done
+done
+if ! systemctl --user daemon-reload; then
+    fail "Could not reload the systemd user manager; verify 'systemctl --user status', then rerun Phase 15" >&2
+    exit 1
+fi
+# Prove the entire selected set before enabling; static backup services are
+# activated by their timers and have no independent [Install] contract.
+for unit in "${RECOVERY_UNITS[@]}"; do
+    verify_systemd_user_target "$unit"
+done
+for unit in "${ENABLE_UNITS[@]}"; do
+    enable_systemd_user_unit "$unit" "${unit##*.}" "${unit%.*}"
+done
+
+# Set Yeti capture gain to 73% (+8dB) — persisted by WirePlumber state after first set
+wpctl set-volume alsa_input.usb-Blue_Microphones_Yeti_Stereo_Microphone_REV8-00.analog-stereo 0.73 2>/dev/null && \
+    ok "Yeti capture gain: 73%" || true
+
+# ─── Phase 16: Arch-specific adjustments ───────────────────────────────────
+log "=== Phase 16: CachyOS-specific tweaks ==="
+
+# Verify fish config was restored
+if [[ -f ~/.config/fish/config.fish ]]; then
+    ok "Fish config present"
+else
+    warn "Fish config missing — may need manual setup"
+fi
+
+# Pacman parallel downloads + colors
+sudo sed -i 's/#ParallelDownloads/ParallelDownloads/' /etc/pacman.conf 2>/dev/null
+sudo sed -i 's/#Color/Color/' /etc/pacman.conf 2>/dev/null
+ok "Pacman optimized (parallel downloads, color)"
+
+# ─── Summary ────────────────────────────────────────────────────────────────
+echo ""
+log "=========================================="
+log "  CachyOS Restore Complete"
+log "=========================================="
+echo ""
+log "Manual steps:"
+echo "  1. Log out and back in (docker group activation)"
+echo "  2. Select Hyprland session at login screen"
+echo "  3. tailscale up   (authenticate)"
+echo "  4. Add SSH pubkey to GitHub if regenerated: cat ~/.ssh/id_ed25519.pub"
+echo "  5. Verify: docker compose -f ~/llm-stack/docker-compose.yml ps"
+echo "  6. Verify: pass show api/anthropic"
+echo "  7. Verify: claude --version && claude plugins list"
+echo "  8. cd ~/projects/hapax-council && uv sync"
+echo "  9. systemctl --user start logos-api && systemctl --user start hapax-daimonion"
+echo " 10. Verify n8n workflows: docker exec n8n n8n list:workflow"
+echo " 11. First local backup: ~/.cache/hapax/source-activation/worktree/scripts/hapax-backup-local"
+echo ""
+log "Verification:"
+echo "  nvidia-smi                    # GPU"
+echo "  snapper list                  # btrfs snapshots"
+echo "  sudo smartctl -a /dev/nvme0n1 # disk health"
+echo "  systemctl --user --failed     # failed services"
+echo "  pass ls                       # secrets"
+echo "  claude plugins list           # claude plugins"
+echo ""
+log "Estimated time from fresh CachyOS install to here: ~20 minutes"
+echo ""

@@ -1,0 +1,320 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+# Tier 2: Remote daily backup to Backblaze B2 via rclone
+# Scope: everything from Tier 1 + git bundles + full system metadata
+# Schedule: daily at 03:30 via systemd timer
+# Runs as user (not root). Database state captured via API dumps.
+
+export RESTIC_REPOSITORY="rclone:b2:hapax-backups/restic"
+POSTGRES_SUPERUSER="${HAPAX_POSTGRES_SUPERUSER:-hapax}"
+
+log() { echo "[$(date -Iseconds)] $1"; }
+ok()  { echo "[$(date -Iseconds)] OK: $1"; }
+
+snapshot_qdrant() {
+    local collection_response collection_names coll snapshot_response snap_name
+
+    if ! collection_response=$(curl -sf http://127.0.0.1:6333/collections); then
+        log "FATAL: failed to list Qdrant collections; check Qdrant health, then rerun the backup"
+        return 1
+    fi
+    if ! collection_names=$(jq -er \
+        '.result.collections | if length == 0 then error("no collections") else .[].name end' \
+        <<< "$collection_response" 2>/dev/null); then
+        log "FATAL: Qdrant collection list was empty or invalid; inspect the collections API, then rerun the backup"
+        return 1
+    fi
+
+    while IFS= read -r coll; do
+        if ! snapshot_response=$(curl -sf -X POST \
+            "http://127.0.0.1:6333/collections/${coll}/snapshots"); then
+            log "FATAL: failed to create Qdrant snapshot for $coll; check Qdrant health, then rerun the backup"
+            return 1
+        fi
+        if ! snap_name=$(jq -er \
+            '.result.name | select(type == "string" and length > 0)' \
+            <<< "$snapshot_response" 2>/dev/null); then
+            log "FATAL: Qdrant returned no snapshot name for $coll; inspect the snapshot API response, then rerun the backup"
+            return 1
+        fi
+        if ! curl -sf \
+            "http://127.0.0.1:6333/collections/${coll}/snapshots/${snap_name}" \
+            -o "$DUMP_DIR/qdrant/${coll}.snapshot"; then
+            log "FATAL: failed to download Qdrant snapshot for $coll; check Qdrant storage, then rerun the backup"
+            return 1
+        fi
+    done <<< "$collection_names"
+}
+
+export_n8n_workflows() {
+    local workflow_dump="$DUMP_DIR/n8n-workflows.json"
+    local export_errors="$DUMP_DIR/n8n-workflows.err"
+
+    if ! docker exec n8n n8n export:workflow --all \
+        --output=/tmp/n8n-workflows.json 2> "$export_errors"; then
+        log "FATAL: n8n workflow export failed; check 'docker logs n8n', then rerun the backup"
+        return 1
+    fi
+    if ! docker cp n8n:/tmp/n8n-workflows.json "$workflow_dump" 2>> "$export_errors"; then
+        log "FATAL: could not copy n8n workflow export to $workflow_dump; check the n8n container, then rerun the backup"
+        return 1
+    fi
+    if [[ ! -s "$workflow_dump" ]]; then
+        log "FATAL: n8n workflow export is missing or empty at $workflow_dump; check the n8n CLI, then rerun the backup"
+        return 1
+    fi
+    rm -f "$export_errors"
+}
+
+
+# The journal receipt survives missing storage and names steps that never ran.
+BACKUP_STEP=mounts
+DUMP_DIR=""
+BACKUP_DETAIL=""
+SNAPSHOT_STATUS=skipped
+BUNDLE_STATUS=skipped
+DR_STATUS=skipped
+backup_receipt() {
+    local result=$? status=failed
+    trap - EXIT
+    [[ "$result" -ne 0 ]] || status=success
+    log "BACKUP RECEIPT lane=tier2-remote status=$status step=$BACKUP_STEP snapshot=$SNAPSHOT_STATUS git-bundles=$BUNDLE_STATUS dr-publication=$DR_STATUS detail=$BACKUP_DETAIL"
+    [[ -z "${DUMP_DIR:-}" ]] || rm -rf -- "$DUMP_DIR"
+    exit "$result"
+}
+trap backup_receipt EXIT
+
+missing_mounts=()
+for required_mount in /store; do
+    mountpoint -q "$required_mount" || missing_mounts+=("$required_mount")
+done
+if (( ${#missing_mounts[@]} > 0 )); then
+    BACKUP_DETAIL="missing mounts: ${missing_mounts[*]}"
+    log "FATAL: $BACKUP_DETAIL; mount the required filesystems, then rerun the backup"
+    exit 1
+fi
+
+BACKUP_STEP=credentials
+if ! RESTIC_PASSWORD=$(pass show backblaze/restic-password 2>/dev/null) || [[ -z "$RESTIC_PASSWORD" ]]; then
+    BACKUP_DETAIL="cannot read non-empty pass entry backblaze/restic-password"
+    log "FATAL: $BACKUP_DETAIL; unlock or repair pass, then rerun the backup"
+    exit 1
+fi
+export RESTIC_PASSWORD
+
+# Remove stale locks from a prior interrupted/OOM-killed run (preventive — the B2
+# prune was being OOM-killed mid-run, which can leave a stale lock → exit 11).
+restic unlock 2>/dev/null || true
+
+log "Starting Tier 2 (remote) backup"
+
+DUMP_DIR="${HAPAX_BACKUP_DUMP_DIR:-/store/llm-data/backup-dumps-remote}"  # disk, not tmpfs: tmpfs is charged to this service's memory cgroup (MemoryHigh) and throttles the job to a crawl (measured 2026-09-02)
+rm -rf "$DUMP_DIR"
+mkdir -p "$DUMP_DIR/qdrant" "$DUMP_DIR/git-bundles"
+BACKUP_STEP=postgres
+
+# PostgreSQL dump
+log "Dumping PostgreSQL..."
+# GATED. A dump that fails must stop the lane, not ship as a 0-byte file.
+# Capture stderr, check the exit code, then prove the dump is actually complete:
+# pg_dumpall writes a terminator line last, so its presence rules out truncation
+# (a full disk or a killed container yields a large but headless file).
+PG_DUMP="$DUMP_DIR/postgres-all.sql"
+PG_ERR="$DUMP_DIR/postgres-all.err"
+if ! docker exec postgres pg_dumpall -U "$POSTGRES_SUPERUSER" > "$PG_DUMP" 2>"$PG_ERR"; then
+    log "FATAL: pg_dumpall exited non-zero: $(tail -c 300 "$PG_ERR" 2>/dev/null); inspect 'docker logs postgres', then rerun the backup"
+    exit 1
+fi
+if ! tail -c 200 "$PG_DUMP" | grep -q "PostgreSQL database cluster dump complete"; then
+    log "FATAL: dump lacks completion terminator (truncated); size=$(stat -c%s "$PG_DUMP" 2>/dev/null); check free space and the postgres container, then rerun the backup"
+    exit 1
+fi
+_pg_size=$(stat -c%s "$PG_DUMP")
+if [[ "$_pg_size" -lt 1000000000 ]]; then
+    log "FATAL: dump implausibly small: ${_pg_size} bytes (floor 1000000000); verify the expected databases exist, then rerun the backup"
+    exit 1
+fi
+log "PostgreSQL dump OK: ${_pg_size} bytes, terminator present"
+
+# Qdrant snapshots
+log "Snapshotting Qdrant collections..."
+BACKUP_STEP=qdrant
+snapshot_qdrant
+
+# n8n workflows are part of the declared backup. A missing export is a broken
+# backup, so do not invoke restic unless the file was materialized.
+BACKUP_STEP=n8n
+export_n8n_workflows
+
+# Docker volume metadata
+log "Capturing Docker volume metadata..."
+docker volume ls --format '{{.Name}}' > "$DUMP_DIR/docker-volumes.txt" 2>/dev/null || true
+docker volume ls -q 2>/dev/null | while read -r vol; do
+    docker volume inspect "$vol" 2>/dev/null
+done > "$DUMP_DIR/docker-volume-inspect.json" 2>/dev/null || true
+
+# Package lists
+pacman -Qe > "$DUMP_DIR/pacman-explicit.txt" 2>/dev/null || true
+pacman -Qm > "$DUMP_DIR/pacman-aur.txt" 2>/dev/null || true
+flatpak list --app --columns=application,origin > "$DUMP_DIR/flatpak-apps.txt" 2>/dev/null || true
+
+# System metadata
+lsblk -o NAME,SIZE,TYPE,FSTYPE,MOUNTPOINT > "$DUMP_DIR/partition-layout.txt"
+cp /etc/fstab "$DUMP_DIR/fstab-copy.txt"
+systemctl --user list-unit-files --state=enabled > "$DUMP_DIR/systemd-user-enabled.txt" 2>/dev/null || true
+systemctl list-unit-files --state=enabled > "$DUMP_DIR/systemd-system-enabled.txt" 2>/dev/null || true
+crontab -l > "$DUMP_DIR/crontab-user.txt" 2>/dev/null || true
+
+# Git bundles (full repo snapshots, includes all branches/tags)
+log "Creating git bundles..."
+BACKUP_STEP=git-bundles
+bundle_failures=()
+bundle_count=0
+for repo in ~/projects/*/; do
+    if [[ -e "$repo/.git" ]]; then
+        name=$(basename "$repo")
+        bundle_count=$((bundle_count + 1))
+        if ! git -C "$repo" bundle create "$DUMP_DIR/git-bundles/${name}.bundle" --all 2>/dev/null; then
+            bundle_failures+=("$repo")
+        fi
+        git -C "$repo" stash list > "$DUMP_DIR/git-stash-${name}.txt" 2>/dev/null || true
+        git -C "$repo" diff > "$DUMP_DIR/git-diff-${name}.patch" 2>/dev/null || true
+    fi
+done
+
+if (( ${#bundle_failures[@]} > 0 )); then
+    BUNDLE_STATUS=failed
+    BACKUP_DETAIL="failed repositories: ${bundle_failures[*]}"
+    log "FATAL: git bundles failed; $BACKUP_DETAIL; repair these repositories and rerun the backup"
+    exit 1
+fi
+if (( bundle_count > 0 )); then
+    BUNDLE_STATUS=success
+fi
+
+log "Running restic backup to B2..."
+BACKUP_STEP=snapshot
+SNAPSHOT_STATUS=failed
+restic backup \
+    --host hapax-podium \
+    --verbose \
+    --tag "tier2-remote" \
+    "$DUMP_DIR" \
+    "$HOME/.config/fish/" \
+    "$HOME/.gitconfig" \
+    "$HOME/.config/hypr/" \
+    "$HOME/.config/waybar/" \
+    "$HOME/.config/foot/" \
+    "$HOME/.config/fuzzel/" \
+    "$HOME/.config/mako/" \
+    "$HOME/.config/kanshi/" \
+    "$HOME/.config/starship.toml" \
+    "$HOME/.config/environment.d/" \
+    "$HOME/.config/systemd/user/" \
+    "$HOME/.config/autostart/" \
+    "$HOME/.config/aichat/" \
+    "$HOME/.config/mods/" \
+    "$HOME/.config/gtk-3.0/" \
+    "$HOME/.config/gtk-4.0/" \
+    "$HOME/.config/qt6ct/" \
+    "$HOME/.config/rclone/" \
+    "$HOME/.config/hapax-daimonion/" \
+    "$HOME/.config/wireplumber/" \
+    "$HOME/.config/pipewire/" \
+    "$HOME/.local/state/wireplumber/" \
+    "$HOME/.config/gh/" \
+    "$HOME/.config/atuin/" \
+    "$HOME/.config/fabric/" \
+    "$HOME/.claude/" \
+    "$HOME/.local/bin/" \
+    "$HOME/.local/share/atuin/" \
+    "$HOME/.local/share/hapax-daimonion/" \
+    "$HOME/.local/share/keyrings/" \
+    "$HOME/models/" \
+    "$HOME/.gnupg/" \
+    "$HOME/.password-store/" \
+    "$HOME/.ssh/" \
+    "$HOME/.local/share/fonts/" \
+    "$HOME/llm-stack/" \
+    /etc/fstab \
+    /etc/docker/daemon.json \
+    /etc/bluetooth/main.conf \
+    /etc/udev/rules.d/ \
+    /etc/sysctl.d/ \
+    /etc/NetworkManager/conf.d/ \
+    /etc/systemd/journald.conf.d/ \
+    /etc/modprobe.d/ \
+    --exclude="*.pyc" \
+    --exclude="__pycache__" \
+    --exclude=".venv" \
+    --exclude="node_modules" \
+    --exclude=".cache" \
+    --exclude="*.sock" \
+    --exclude="*.lock" \
+    --exclude="llm-stack/comfyui"
+
+SNAPSHOT_STATUS=success
+BACKUP_STEP=retention
+
+log "Applying retention policy (4 weekly, 2 monthly)..."
+# See hapax-backup-local for the full rationale. Same defect measured here
+# 2026-08-18: 12 snapshots in 6 (host,paths) groups.
+restic forget \
+    --host hapax-podium \
+    --tag "tier2-remote" \
+    --group-by host,tags \
+    --keep-within 120d \
+    --keep-weekly 4 \
+    --keep-monthly 2 \
+    --prune
+
+# Upload the DR restore script independently, so a bare-metal recovery can
+# bootstrap WITHOUT a working restic. This previously pointed at
+# ~/.local/bin/hapax-dr-restore.sh -- a file that does not exist on this host and
+# was never tracked -- and `2>/dev/null && ok || log WARN` swallowed both the
+# missing source and any failure. The step no-opped every run and B2's copy went
+# five months stale (2026-03-11). A DR script nobody verifies is not a DR script.
+#
+# Failing here does NOT lose backup data: restic backup and forget have already
+# completed above. It fails because DR readiness is part of this lane's job, and
+# a refusal naming its own remedy beats a silent WARN.
+# The DR script lives beside this one now (the scripts' former repository is archived, read-only).
+BACKUP_STEP=dr-publication
+DR_STATUS=failed
+SCRIPT_DIR="$(dirname "$(readlink -f "$0")")"
+DR_SCRIPT="$SCRIPT_DIR/hapax-cachyos-restore"
+HOST_STORAGE_REGISTRY="$(readlink -f "$SCRIPT_DIR/../config/infrastructure/host-storage-registry.json")"
+log "Uploading DR restore script to B2..."
+if [[ ! -x "$DR_SCRIPT" ]]; then
+    log "FATAL: DR script missing at $DR_SCRIPT — bare-metal recovery cannot"
+    log "       bootstrap. Snapshot data IS written; fix the path or restore"
+    log "       the script, then re-run."
+    exit 1
+fi
+if [[ ! -s "$HOST_STORAGE_REGISTRY" ]]; then
+    log "FATAL: host storage registry missing at $HOST_STORAGE_REGISTRY — bare-metal recovery cannot resolve canonical mount roots; restore the registry, then re-run"
+    exit 1
+fi
+DR_OBJECT_NAME=$("$DR_SCRIPT" --print-dr-object-name)
+DR_OBJECT_URI="b2:hapax-backups/dr-scripts/${DR_OBJECT_NAME}"
+if ! rclone copyto "$DR_SCRIPT" "$DR_OBJECT_URI"; then
+    log "FATAL: DR script upload failed — B2 still holds the stale copy; inspect the rclone B2 remote, then rerun the backup"
+    exit 1
+fi
+ok "DR script uploaded: $DR_OBJECT_URI"
+STORAGE_REGISTRY_OBJECT_URI="b2:hapax-backups/dr-scripts/host-storage-registry.json"
+if ! rclone copyto "$HOST_STORAGE_REGISTRY" "$STORAGE_REGISTRY_OBJECT_URI"; then
+    log "FATAL: host storage registry upload failed — B2 recovery has stale mount roots; inspect the rclone B2 remote, then rerun the backup"
+    exit 1
+fi
+ok "Host storage registry uploaded: $STORAGE_REGISTRY_OBJECT_URI"
+
+DR_STATUS=success
+
+log "Tier 2 backup complete"
+restic snapshots --latest 1
+
+BACKUP_STEP=complete
+
+notify-send -u low "Backup" "Tier 2 (remote → B2) backup complete" 2>/dev/null || true
