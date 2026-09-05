@@ -52,6 +52,7 @@ from collections import Counter
 from collections.abc import Iterator
 from dataclasses import dataclass, field, replace
 from datetime import UTC, datetime
+from functools import lru_cache
 from pathlib import Path, PurePosixPath
 
 import yaml
@@ -604,6 +605,18 @@ class LexicalScope:
     lexical_prefixes: tuple[str, ...]
 
 
+@dataclass
+class _ScopeEvidence:
+    accesses: list[ArtifactAccess]
+    unresolved: int
+    unrecognised: Counter[str]
+    calls: dict[ast.AST, list[dict[str, str]]]
+    nested: dict[ast.AST, list[dict[str, str]]]
+    defaults: dict[ast.AST, dict[str, str]]
+    paths: set[str]
+    closures: set[str]
+
+
 class PathFunctionTable(dict[str, PathFunction]):
     """Path helpers keyed by their qualified name (``module.function``).
 
@@ -624,6 +637,32 @@ class PathFunctionTable(dict[str, PathFunction]):
         self.helper_results: dict[tuple[int, tuple[tuple[str, str], ...]], str | None] = {}
         self.definition_defaults: dict[ast.AST, dict[str, str]] = {}
         self.call_bindings: dict[ast.AST, list[dict[str, str]]] = {}
+        self.scope_results: dict[ast.AST, dict[tuple, _ScopeEvidence]] = {}
+        self.binding_states: dict[ast.AST, set[tuple]] = {}
+        self.capped_scopes: set[ast.AST] = set()
+        self.global_snapshot_ids: dict[tuple[tuple[str, str], ...], str] = {}
+        self.global_snapshots: list[dict[str, str]] = []
+        self.scope_calls: dict[ast.AST, list[ast.Call]] = {}
+        self.scope_helpers: dict[tuple, tuple[ast.AST, ...]] = {}
+        self.scope_locals: dict[ast.AST, set[str]] = {}
+        self.call_edges: dict[ast.AST, set[ast.AST]] = {}
+
+    def record_calls(self, node: ast.AST, states: list[dict[str, str]]) -> None:
+        """Bound distinct invocation states across all fixpoint rounds, including cache replay."""
+        seen = self.binding_states.setdefault(node, set())
+        current = self.call_bindings.setdefault(node, [])
+        for state in states:
+            if node in self.capped_scopes:
+                return
+            key = tuple(sorted(state.items()))
+            if key not in seen:
+                if len(seen) >= _MAX_BINDING_STATES:
+                    self.capped_scopes.add(node)
+                    current.clear()
+                    return
+                seen.add(key)
+            if state not in current:
+                current.append(state)
 
     def register(self, relative: Path, qualname: str, function: PathFunction) -> None:
         self[f"{_module_name(relative)}.{qualname}"] = function
@@ -867,6 +906,10 @@ _UNRESOLVED_CLOSURE_PREFIX = "\0unresolved-closure:"
 _HELPER_STACK_KEY = "\0helper-stack"
 _HELPER_EFFECT_KEY = "\0helper-unbounded-effect"
 _FLOW_EXIT_KEY = "\0flow-exit"
+_CALL_GLOBALS_KEY = "\0call-globals"
+_CALL_LOCALS_KEY = "\0call-locals"
+_CALL_CELLS_KEY = "\0call-cells"
+_EXPRESSION_VALUE_PREFIX = "\0evaluated:"
 _PATH_CONSTRUCTORS = frozenset(
     {
         "Path",
@@ -901,6 +944,98 @@ def _set_lexical_scope(values: dict[str, str], prefixes: tuple[str, ...]) -> Non
 def _lexical_scope(values: dict[str, str]) -> tuple[str, ...]:
     encoded = values.get(_LEXICAL_SCOPE_KEY, "")
     return tuple(part for part in encoded.split("|") if part)
+
+
+def _intern_binding_state(values: dict[str, str], functions: dict[str, PathFunction]) -> str:
+    """Share immutable snapshots instead of copying JSON into every call state."""
+    if not isinstance(functions, PathFunctionTable):
+        return json.dumps(values, sort_keys=True)
+    key = tuple(sorted(values.items()))
+    encoded = functions.global_snapshot_ids.get(key)
+    if encoded is None:
+        encoded = str(len(functions.global_snapshots))
+        functions.global_snapshot_ids[key] = encoded
+        functions.global_snapshots.append(dict(values))
+    return encoded
+
+
+def _encode_call_globals(values: dict[str, str], functions: dict[str, PathFunction]) -> str:
+    # Execution-frame bookkeeping is not a module binding. Including the imported callee's
+    # lexical name makes identical globals look different for every entry point, exhausting
+    # the state cap and propagating artificial changes around the call graph.
+    metadata = {
+        _CALL_GLOBALS_KEY,
+        _CALL_LOCALS_KEY,
+        _CALL_CELLS_KEY,
+        _LEXICAL_SCOPE_KEY,
+        _HELPER_STACK_KEY,
+        _HELPER_EFFECT_KEY,
+        _FLOW_EXIT_KEY,
+    }
+    return _intern_binding_state(
+        {
+            key: value
+            for key, value in values.items()
+            if key not in metadata and _EXPRESSION_VALUE_PREFIX not in key
+        },
+        functions,
+    )
+
+
+def _decode_call_globals(encoded: str | None, functions: dict[str, PathFunction]) -> dict[str, str]:
+    if encoded is None:
+        return {}
+    if isinstance(functions, PathFunctionTable):
+        return dict(functions.global_snapshots[int(encoded)])
+    return json.loads(encoded)
+
+
+def _call_global_values(
+    function: PathFunction,
+    values: dict[str, str],
+    calling_path: Path,
+    path_functions: dict[str, PathFunction],
+) -> dict[str, str]:
+    """Keep invocation globals separate from the caller's parameters and local bindings."""
+    if calling_path != function.path:
+        return dict(function.module_values)
+    inherited = _decode_call_globals(values.get(_CALL_GLOBALS_KEY), path_functions)
+    local_keys = {
+        key
+        for name in (
+            *json.loads(values.get(_CALL_LOCALS_KEY, "[]")),
+            *json.loads(values.get(_CALL_CELLS_KEY, "[]")),
+        )
+        for key in _binding_keys(name)
+    }
+    for key in inherited.keys() | values.keys():
+        if (
+            key in local_keys
+            or key in {_CALL_GLOBALS_KEY, _CALL_LOCALS_KEY, _CALL_CELLS_KEY, _LEXICAL_SCOPE_KEY}
+            or _EXPRESSION_VALUE_PREFIX in key
+        ):
+            continue
+        inherited.pop(key, None)
+        if key in values:
+            inherited[key] = values[key]
+    return inherited
+
+
+def _expression_value_name(node: ast.AST) -> str:
+    return (
+        f"{_EXPRESSION_VALUE_PREFIX}{type(node).__name__}:"
+        f"{getattr(node, 'lineno', 0)}:{getattr(node, 'col_offset', 0)}:"
+        f"{getattr(node, 'end_lineno', 0)}:{getattr(node, 'end_col_offset', 0)}"
+    )
+
+
+def _evaluated_expression(node: ast.expr | None, values: dict[str, str]) -> ast.expr | None:
+    """Reuse an operand's value after a later operand has changed its source binding."""
+    if isinstance(node, ast.Name) and node.id.startswith(_EXPRESSION_VALUE_PREFIX):
+        return node
+    if node is not None and (name := _expression_value_name(node)) in values:
+        return ast.copy_location(ast.Name(id=name, ctx=ast.Load()), node)
+    return node
 
 
 def _set_import_alias(values: dict[str, str], name: str, target: str | None) -> None:
@@ -1097,6 +1232,7 @@ def _resolve_path_expr_variants(
     repo_root: Path,
     path_functions: dict[str, PathFunction],
 ) -> tuple[str | None, ...]:
+    node = _evaluated_expression(node, values)
     variants = [
         _resolve_path_expr(expression, state, path, repo_root, path_functions)
         for expression in _path_expressions(node, path, path_functions)
@@ -1109,6 +1245,9 @@ def _resolve_path_expr_variants(
 
 def _constant_value(node: ast.expr | None, values: dict[str, str]) -> tuple[bool, object]:
     """Keep scalar types for formatting; a path-shaped abstract string is not a constant."""
+    node = _evaluated_expression(node, values)
+    if isinstance(node, ast.NamedExpr):
+        return _constant_value(node.target, values)
     if isinstance(node, ast.Constant) and isinstance(node.value, (str, int, float, type(None))):
         return True, node.value
     if isinstance(node, ast.Name):
@@ -1153,6 +1292,7 @@ def _has_unbounded_format(
     repo_root: Path,
     path_functions: dict[str, PathFunction],
 ) -> bool:
+    node = _evaluated_expression(node, values)
     if node is None:
         return False
     for item in ast.walk(node):
@@ -1186,8 +1326,13 @@ def _resolve_path_expr(
     *,
     depth: int = 0,
 ) -> str | None:
+    node = _evaluated_expression(node, values)
     if node is None or depth > 12:
         return None
+    if isinstance(node, ast.NamedExpr):
+        return _resolve_path_expr(
+            node.target, values, path, repo_root, path_functions, depth=depth + 1
+        )
     # An unbounded closure cell is not a dynamic path component. In particular, formatting
     # it must not turn an obsolete binding into a wildcard producer.
     if depth == 0 and any(
@@ -1380,6 +1525,10 @@ def _resolve_path_expr(
     )
     if function is None or function.node is None or function.return_expr is None:
         return None
+    if _HELPER_EFFECT_KEY in values:
+        # An unknown effect already prevents this helper invocation from returning a bounded
+        # path. Keep walking its control flow, but do not recursively expand more helpers.
+        return None
     if (
         isinstance(path_functions, PathFunctionTable)
         and function.node not in path_functions.definition_defaults
@@ -1390,24 +1539,12 @@ def _resolve_path_expr(
     stack = values.get(_HELPER_STACK_KEY, "").split("|")
     if helper_key in stack or len(stack) > 12:
         return None
-    inherited = dict(function.module_values)
-    if path == function.path and not _lexical_scope(values):
-        # A module expression (including a default) calls the helper with the globals
-        # available at that point, before later module stores.
-        inherited = dict(values)
+    invocation_globals = _call_global_values(function, values, path, path_functions)
+    inherited = dict(invocation_globals)
     if len(function.lexical_prefixes) > 1:
         if function.lexical_prefixes[1] not in _lexical_scope(values):
             return None
-        # Closure cells come from the enclosing invocation, while declared globals still
-        # belong to the defining module. Local stores are reset by _scope_initial_values.
-        inherited.update(values)
-        for statement in ast.walk(function.node):
-            if isinstance(statement, ast.Global):
-                for global_name in statement.names:
-                    for key in _binding_keys(global_name):
-                        inherited.pop(key, None)
-                        if key in function.module_values:
-                            inherited[key] = function.module_values[key]
+        inherited = dict(values)
     inherited[_HELPER_STACK_KEY] = "|".join((*stack, helper_key))
     bound = _scope_initial_values(
         function.node,
@@ -1416,6 +1553,7 @@ def _resolve_path_expr(
         repo_root,
         path_functions,
         function.lexical_prefixes,
+        invocation_globals,
     )
     supplied = _call_parameter_values(function, node, values, path, repo_root, path_functions)
     _invalidate_names(bound, {name for name in supplied if not name.startswith("\0")})
@@ -1462,8 +1600,11 @@ def _is_path_valued_expr(
     depth: int = 0,
 ) -> bool:
     """Whether an expression is modelled as a pathlib path, never merely path-shaped text."""
+    node = _evaluated_expression(node, values)
     if node is None or depth > 12:
         return False
+    if isinstance(node, ast.NamedExpr):
+        return _is_path_valued_expr(node.target, values, path, path_functions, depth=depth + 1)
     if isinstance(node, ast.Name):
         return _path_value_key(node.id) in values
     if isinstance(node, ast.BinOp) and isinstance(node.op, ast.Div):
@@ -2285,13 +2426,59 @@ def _scope_initial_values(
     repo_root: Path,
     path_functions: dict[str, PathFunction],
     lexical_prefixes: tuple[str, ...],
+    invocation_globals: dict[str, str] | None = None,
 ) -> dict[str, str]:
     if isinstance(node, ast.Module):
         # Module scope executes top to bottom: a read before an assignment sees nothing.
         return {}
-    values = dict(module_values)
+    nested = len(lexical_prefixes) > 1
+    if invocation_globals is None:
+        invocation_globals = (
+            _decode_call_globals(module_values[_CALL_GLOBALS_KEY], path_functions)
+            if nested and _CALL_GLOBALS_KEY in module_values
+            else module_values
+        )
+    values = dict(invocation_globals)
+    cells: set[str] = set()
+    if nested:
+        cells.update(json.loads(module_values.get(_CALL_LOCALS_KEY, "[]")))
+        cells.update(json.loads(module_values.get(_CALL_CELLS_KEY, "[]")))
+        pending = [node.body] if isinstance(node, ast.Lambda) else list(node.body)
+        while pending:
+            item = pending.pop()
+            if isinstance(item, ast.Global):
+                cells.difference_update(item.names)
+            elif not isinstance(
+                item, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef, ast.Lambda)
+            ):
+                pending.extend(ast.iter_child_nodes(item))
+        # A global snapshot must not overwrite a stable closure cell with the same name.
+        # Explicit global declarations bypass cells, including inside path helpers.
+        for name in cells:
+            for key in _binding_keys(name):
+                values.pop(key, None)
+                if key in module_values:
+                    values[key] = module_values[key]
+    values[_CALL_CELLS_KEY] = json.dumps(sorted(cells))
+    if _HELPER_STACK_KEY in module_values:
+        values[_HELPER_STACK_KEY] = module_values[_HELPER_STACK_KEY]
+    values[_CALL_GLOBALS_KEY] = _encode_call_globals(
+        {
+            key: value
+            for key, value in invocation_globals.items()
+            if key not in {_CALL_GLOBALS_KEY, _CALL_LOCALS_KEY, _CALL_CELLS_KEY, _LEXICAL_SCOPE_KEY}
+            and _EXPRESSION_VALUE_PREFIX not in key
+        },
+        path_functions,
+    )
     _set_lexical_scope(values, lexical_prefixes)
-    for name in _scope_local_names(node):
+    if isinstance(path_functions, PathFunctionTable):
+        if node not in path_functions.scope_locals:
+            path_functions.scope_locals[node] = _scope_local_names(node)
+        local_names = path_functions.scope_locals[node]
+    else:
+        local_names = _scope_local_names(node)
+    for name in local_names:
         values.pop(f"{_UNRESOLVED_FORMAT_PREFIX}{name}", None)
         values.pop(f"{_CONSTANT_VALUE_PREFIX}{name}", None)
         values.pop(f"{_UNRESOLVED_CLOSURE_PREFIX}{name}", None)
@@ -2304,6 +2491,7 @@ def _scope_initial_values(
         parameters.append(node.args.vararg)
     if node.args.kwarg is not None:
         parameters.append(node.args.kwarg)
+    values[_CALL_LOCALS_KEY] = json.dumps(sorted(local_names | {arg.arg for arg in parameters}))
     for arg in parameters:
         values.pop(f"{_UNRESOLVED_FORMAT_PREFIX}{arg.arg}", None)
         values.pop(f"{_CONSTANT_VALUE_PREFIX}{arg.arg}", None)
@@ -2404,6 +2592,8 @@ def _closure_rebound_names(enclosing: ast.AST, closure: ast.AST) -> set[str]:
 
 
 _MAX_BRANCH_STATES = 8
+_MAX_BINDING_STATES = 16
+_MAX_BINDING_ROUNDS = 12
 
 
 def _fork(states: list[dict[str, str]]) -> list[dict[str, str]]:
@@ -2534,11 +2724,14 @@ class _BlockScanner:
                     _function_name(call), self.path, _lexical_scope(state), _import_aliases(state)
                 )
                 if function is not None and function.node is not None:
-                    self.path_functions.call_bindings.setdefault(function.node, []).append(
-                        _call_parameter_values(
-                            function, call, state, self.path, self.repo_root, self.path_functions
-                        )
+                    supplied = _call_parameter_values(
+                        function, call, state, self.path, self.repo_root, self.path_functions
                     )
+                    supplied[_CALL_GLOBALS_KEY] = _encode_call_globals(
+                        _call_global_values(function, state, self.path, self.path_functions),
+                        self.path_functions,
+                    )
+                    self.path_functions.record_calls(function.node, [supplied])
             local_unresolved = [0]
             local_unrecognised: Counter[str] = Counter()
             _classify_call(
@@ -2663,6 +2856,20 @@ class _BlockScanner:
             self.path_functions.helper_results.clear()
 
     def _scan_expression(self, node: ast.AST, states: list[dict[str, str]]) -> None:
+        if isinstance(node, ast.Call) and any(
+            isinstance(item, ast.NamedExpr) for item in ast.walk(node)
+        ):
+            # Python evaluates the callable (including its receiver) before arguments,
+            # and each argument before the next. Snapshot complete values, not just names:
+            # attributes, subscripts, and nested calls can all depend on a rebound name.
+            self._scan_expression(node.func, states)
+            if isinstance(node.func, ast.Attribute):
+                self._freeze_expression(node.func.value, states)
+            for argument in (*node.args, *(keyword.value for keyword in node.keywords)):
+                self._scan_expression(argument, states)
+                self._freeze_expression(argument, states)
+            self._classify(node, states)
+            return
         if isinstance(node, ast.Lambda):
             self._scan_defaults(node, states)
             return
@@ -2711,10 +2918,25 @@ class _BlockScanner:
             for state in states:
                 _invalidate_names(state, _target_names(node))
             return
+        ordered = any(isinstance(item, ast.NamedExpr) for item in ast.walk(node))
         for child in ast.iter_child_nodes(node):
             self._scan_expression(child, states)
+            if ordered and isinstance(child, ast.expr):
+                self._freeze_expression(child, states)
         if isinstance(node, ast.Call):
             self._classify(node, states)
+
+    def _freeze_expression(self, node: ast.expr, states: list[dict[str, str]]) -> None:
+        name = _expression_value_name(node)
+        for state in states:
+            assigned = _apply_assignment(
+                ast.Assign(targets=[ast.Name(id=name)], value=node),
+                state,
+                self.path,
+                self.repo_root,
+                self.path_functions,
+            )[0]
+            state.update((key, assigned[key]) for key in _binding_keys(name) if key in assigned)
 
     def _scan_statement(
         self,
@@ -2723,6 +2945,10 @@ class _BlockScanner:
         exception_states: list[dict[str, str]] | None = None,
         exit_states: list[dict[str, str]] | None = None,
     ) -> list[dict[str, str]]:
+        for state in states:
+            for key in list(state):
+                if _EXPRESSION_VALUE_PREFIX in key:
+                    state.pop(key)
         if exception_states is not None and _statement_may_raise(statement):
             # An assignment's right-hand side runs before its target is rebound.  Handlers see
             # the state entering the raising statement, never its normal post-state.
@@ -3066,46 +3292,150 @@ def _scan_scope(
     closure_rebindings: set[str] | None = None,
     parameter_values: dict[str, str] | None = None,
 ) -> None:
-    initial = _scope_initial_values(
-        node, module_values, path, repo_root, path_functions, lexical_prefixes
-    )
+    table = path_functions if isinstance(path_functions, PathFunctionTable) else None
+    if table is not None and node in table.capped_scopes and table.scope_results.get(node):
+        return
     supplied = parameter_values or {}
-    _invalidate_names(initial, {name for name in supplied if not name.startswith("\0")})
-    initial.update(supplied)
-    for name in closure_rebindings or ():
-        initial.pop(f"{_CONSTANT_VALUE_PREFIX}{name}", None)
-        initial.pop(f"{_UNRESOLVED_FORMAT_PREFIX}{name}", None)
-        initial.pop(name, None)
-        _clear_value_alternatives(initial, name)
-        _set_path_value(initial, name, False)
-        _set_import_alias(initial, name, None)
-        site = f"{path}:{node.lineno}: closure binding {name} may change after definition"
-        initial[f"{_UNRESOLVED_CLOSURE_PREFIX}{name}"] = site
-        if isinstance(path_functions, PathFunctionTable):
-            path_functions.unresolved_closures.add(site)
-    if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
-        context = node.name
-    elif isinstance(node, ast.Lambda):
-        context = "lambda"
-    else:
-        context = path.stem
-    # Source order is the semantics: a read sees the assignments above it, never one below
-    # (review finding on #4626, round 5), and every branch above it, not just the last one
-    # (round 6) — see _BlockScanner.
-    scanner = _BlockScanner(
-        path=path,
-        repo_root=repo_root,
-        path_functions=path_functions,
-        accesses=accesses,
-        unresolved=unresolved,
-        unrecognised=unrecognised,
-        context_family=_artifact_family(context),
-        nested_scope_values=nested_scope_values if nested_scope_values is not None else {},
-    )
-    if isinstance(node, ast.Lambda):
-        scanner._scan_expression(node.body, [initial])
-    else:
-        scanner.scan_block(list(node.body), [initial])
+    cache_key = None
+    evidence = None
+    helpers = None
+    if table is not None:
+        # Memoize the inputs, not an expanded copy of all globals for every function.
+        # Look up evidence before rebuilding locals, globals, and helper import bindings.
+        input_key = (_intern_binding_state(module_values, table), tuple(sorted(supplied.items())))
+        helper_key = (node, input_key)
+        helpers = table.scope_helpers.get(helper_key)
+        results = table.scope_results.setdefault(node, {})
+        for name in closure_rebindings or ():
+            table.unresolved_closures.add(
+                f"{path}:{node.lineno}: closure binding {name} may change after definition"
+            )
+        if helpers is not None:
+            defaults = frozenset(
+                (helper, tuple(sorted(table.definition_defaults.get(helper, {}).items())))
+                for helper in (node, *helpers)
+            )
+            cache_key = (*input_key, defaults)
+            evidence = results.get(cache_key)
+        if evidence is None and len(results) >= _MAX_BINDING_STATES:
+            table.capped_scopes.add(node)
+            return
+    if evidence is None:
+        invocation_globals = (
+            _decode_call_globals(parameter_values[_CALL_GLOBALS_KEY], path_functions)
+            if parameter_values is not None and _CALL_GLOBALS_KEY in parameter_values
+            else None
+        )
+        initial = _scope_initial_values(
+            node,
+            module_values,
+            path,
+            repo_root,
+            path_functions,
+            lexical_prefixes,
+            invocation_globals,
+        )
+        _invalidate_names(initial, {name for name in supplied if not name.startswith("\0")})
+        initial.update(supplied)
+        for name in closure_rebindings or ():
+            initial.pop(f"{_CONSTANT_VALUE_PREFIX}{name}", None)
+            initial.pop(f"{_UNRESOLVED_FORMAT_PREFIX}{name}", None)
+            initial.pop(name, None)
+            _clear_value_alternatives(initial, name)
+            _set_path_value(initial, name, False)
+            _set_import_alias(initial, name, None)
+            site = f"{path}:{node.lineno}: closure binding {name} may change after definition"
+            initial[f"{_UNRESOLVED_CLOSURE_PREFIX}{name}"] = site
+            if isinstance(path_functions, PathFunctionTable):
+                path_functions.unresolved_closures.add(site)
+        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
+            context = node.name
+        elif isinstance(node, ast.Lambda):
+            context = "lambda"
+        else:
+            context = path.stem
+        if table is not None:
+            if helpers is None:
+                if node not in table.scope_calls:
+                    table.scope_calls[node] = [
+                        item for item in ast.walk(node) if isinstance(item, ast.Call)
+                    ]
+                aliases = _import_aliases(initial)
+                helpers = tuple(
+                    {
+                        helper.node
+                        for call in table.scope_calls[node]
+                        if (
+                            helper := table.resolve(
+                                _function_name(call), path, lexical_prefixes, aliases
+                            )
+                        )
+                        is not None
+                        and helper.node is not None
+                    }
+                )
+                table.scope_helpers[helper_key] = helpers
+            defaults = frozenset(
+                (helper, tuple(sorted(table.definition_defaults.get(helper, {}).items())))
+                for helper in (node, *helpers)
+            )
+            cache_key = (*input_key, defaults)
+    if evidence is None:
+        saved_calls = table.call_bindings if table is not None else {}
+        saved_paths = table.unresolved_paths if table is not None else set()
+        saved_closures = table.unresolved_closures if table is not None else set()
+        if table is not None:
+            table.call_bindings = {}
+            table.unresolved_paths = set()
+            table.unresolved_closures = set()
+        local_accesses: list[ArtifactAccess] = []
+        local_unresolved = [0]
+        local_unrecognised: Counter[str] = Counter()
+        local_nested: dict[ast.AST, list[dict[str, str]]] = {}
+        scanner = _BlockScanner(
+            path=path,
+            repo_root=repo_root,
+            path_functions=path_functions,
+            accesses=local_accesses,
+            unresolved=local_unresolved,
+            unrecognised=local_unrecognised,
+            context_family=_artifact_family(context),
+            nested_scope_values=local_nested,
+        )
+        if isinstance(node, ast.Lambda):
+            scanner._scan_expression(node.body, [initial])
+        else:
+            scanner.scan_block(list(node.body), [initial])
+        evidence = _ScopeEvidence(
+            local_accesses,
+            local_unresolved[0],
+            local_unrecognised,
+            table.call_bindings if table is not None else {},
+            local_nested,
+            {scope: dict(table.definition_defaults.get(scope, {})) for scope in local_nested}
+            if table is not None
+            else {},
+            table.unresolved_paths if table is not None else set(),
+            table.unresolved_closures if table is not None else set(),
+        )
+        if table is not None:
+            table.call_bindings = saved_calls
+            table.unresolved_paths = saved_paths
+            table.unresolved_closures = saved_closures
+            table.scope_results[node][cache_key] = evidence
+    accesses.extend(evidence.accesses)
+    unresolved[0] += evidence.unresolved
+    unrecognised.update(evidence.unrecognised)
+    if nested_scope_values is not None:
+        for scope, states in evidence.nested.items():
+            nested_scope_values.setdefault(scope, []).extend(_fork(states))
+    if table is not None:
+        table.call_edges.setdefault(node, set()).update(evidence.calls)
+        for callee, states in evidence.calls.items():
+            table.record_calls(callee, states)
+        table.definition_defaults.update(evidence.defaults)
+        table.unresolved_paths.update(evidence.paths)
+        table.unresolved_closures.update(evidence.closures)
 
 
 def _iter_function_scopes(
@@ -3255,6 +3585,8 @@ def collect_artifact_accesses(
             parsed.append((relative, tree))
 
     path_functions = PathFunctionTable()
+    scopes_by_path = {relative: _iter_function_scopes(tree) for relative, tree in parsed}
+    rebindings_by_node: dict[ast.AST, set[str]] = {}
     imports_by_path = {
         relative: _module_imports(
             tree, _module_name(relative), is_package=relative.name == "__init__.py"
@@ -3275,7 +3607,7 @@ def collect_artifact_accesses(
         for relative, tree in parsed:
             values = _module_values(tree, relative, repo_root, path_functions)
             module_values_by_path[relative] = values
-            for scope in _iter_function_scopes(tree):
+            for scope in scopes_by_path[relative]:
                 node = scope.node
                 if isinstance(node, ast.Lambda):
                     continue
@@ -3302,56 +3634,128 @@ def collect_artifact_accesses(
                     ),
                 )
 
-    accesses: list[ArtifactAccess] = []
-    unresolved = [0]
-    unrecognised: Counter[str] = Counter()
-    for relative, tree in parsed:
-        values = module_values_by_path[relative]
-        nested_scope_values: dict[ast.AST, list[dict[str, str]]] = {}
-        _scan_scope(
-            tree,
-            values,
-            relative,
-            repo_root,
-            path_functions,
-            accesses,
-            unresolved,
-            unrecognised,
-            nested_scope_values=nested_scope_values,
-        )
-        enclosing_scopes: dict[str, LexicalScope] = {}
-        for scope in _iter_function_scopes(tree):
-            # Definition snapshots are usable only for cells that cannot subsequently change.
-            # Module-level functions retain the initialized module map, as before.
-            initial_states = (
-                nested_scope_values.get(scope.node, [])
-                if len(scope.lexical_prefixes) > 1
-                else [values]
-                if scope.node in nested_scope_values
-                else []
+    # Gather calls across the whole repository before retaining any body's accesses.
+    # Recompute each round: provisional defaults must disappear when a later caller is found.
+    observed_calls: dict[ast.AST, list[dict[str, str]]] = {}
+    changing_calls: set[ast.AST] = set()
+    for _ in range(_MAX_BINDING_ROUNDS):
+        path_functions.call_bindings = {}
+        path_functions.unresolved_paths.clear()
+        path_functions.unresolved_closures.clear()
+        path_functions.helper_results.clear()
+        accesses: list[ArtifactAccess] = []
+        unresolved = [0]
+        unrecognised: Counter[str] = Counter()
+        for relative, tree in parsed:
+            values = module_values_by_path[relative]
+            nested_scope_values: dict[ast.AST, list[dict[str, str]]] = {}
+            _scan_scope(
+                tree,
+                values,
+                relative,
+                repo_root,
+                path_functions,
+                accesses,
+                unresolved,
+                unrecognised,
+                nested_scope_values=nested_scope_values,
             )
-            rebindings = (
-                _closure_rebound_names(enclosing_scopes[scope.lexical_prefixes[1]].node, scope.node)
-                if len(scope.lexical_prefixes) > 1
-                else set()
-            )
-            enclosing_scopes[scope.qualname] = scope
-            for initial in _merge_states(initial_states):
-                for supplied in _merge_states(path_functions.call_bindings.get(scope.node, [{}])):
-                    _scan_scope(
-                        scope.node,
-                        initial,
-                        relative,
-                        repo_root,
-                        path_functions,
-                        accesses,
-                        unresolved,
-                        unrecognised,
-                        scope.lexical_prefixes,
-                        nested_scope_values,
-                        rebindings,
-                        supplied,
+            enclosing_scopes: dict[str, LexicalScope] = {}
+            for scope in scopes_by_path[relative]:
+                # Definition snapshots are usable only for cells that cannot subsequently change.
+                # Called functions replace this fallback with their invocation globals.
+                initial_states = (
+                    nested_scope_values.get(scope.node, [])
+                    if len(scope.lexical_prefixes) > 1
+                    else [values]
+                    if scope.node in nested_scope_values
+                    else []
+                )
+                if scope.node not in rebindings_by_node:
+                    rebindings_by_node[scope.node] = (
+                        _closure_rebound_names(
+                            enclosing_scopes[scope.lexical_prefixes[1]].node, scope.node
+                        )
+                        if len(scope.lexical_prefixes) > 1
+                        else set()
                     )
+                rebindings = rebindings_by_node[scope.node]
+                enclosing_scopes[scope.qualname] = scope
+                for initial in _merge_states(initial_states):
+                    for supplied in observed_calls.get(scope.node, [{}]):
+                        _scan_scope(
+                            scope.node,
+                            initial,
+                            relative,
+                            repo_root,
+                            path_functions,
+                            accesses,
+                            unresolved,
+                            unrecognised,
+                            scope.lexical_prefixes,
+                            nested_scope_values,
+                            rebindings,
+                            supplied,
+                        )
+        discovered = {
+            node: [
+                dict(items) for items in sorted({tuple(sorted(state.items())) for state in states})
+            ]
+            for node, states in path_functions.call_bindings.items()
+        }
+        if discovered == observed_calls:
+            changing_calls = set()
+            break
+        changing_calls = {
+            node
+            for node in discovered.keys() | observed_calls.keys()
+            if discovered.get(node) != observed_calls.get(node)
+        }
+        observed_calls = discovered
+    changing_calls.update(path_functions.capped_scopes)
+    if changing_calls:
+        # Recursive argument growth has no finite binding in this model. Keep its gaps named,
+        # and withhold function writers rather than publishing the last arbitrary approximation.
+        pending = list(changing_calls)
+        while pending:
+            for callee in path_functions.call_edges.get(pending.pop(), set()) - changing_calls:
+                changing_calls.add(callee)
+                pending.append(callee)
+        function_lines = {
+            (relative, item.lineno)
+            for relative, tree in parsed
+            for scope in scopes_by_path[relative]
+            if scope.node in changing_calls
+            for item in ast.walk(scope.node)
+            if isinstance(item, ast.Call)
+        }
+        accesses = [
+            access
+            for access in accesses
+            if access.action != "write" or (access.path, access.lineno) not in function_lines
+        ]
+        # A cap withholds producer claims, but must not erase already observed unresolved
+        # reader identities. These remain gap evidence and cannot prove a bounded producer.
+        accesses.extend(
+            access
+            for node in changing_calls
+            for evidence in path_functions.scope_results.get(node, {}).values()
+            for access in evidence.accesses
+            if access.action == "read" and not access.bounded
+        )
+        for relative, _tree in parsed:
+            for scope in scopes_by_path[relative]:
+                if scope.node in changing_calls:
+                    path_functions.unresolved_paths.add(
+                        f"{relative}:{scope.node.lineno}: call bindings for {scope.qualname} "
+                        "did not converge"
+                        + (
+                            " (binding state cap)"
+                            if scope.node in path_functions.capped_scopes
+                            else ""
+                        )
+                    )
+                    unresolved[0] += 1
     unique = list(dict.fromkeys(accesses))
     if capped_expressions is not None:
         capped_expressions.update(path_functions.capped_expressions)
@@ -3418,6 +3822,7 @@ def _glob_class(pattern: str, start: int) -> tuple[str, int]:
     return body, close + 1
 
 
+@lru_cache(maxsize=4096)
 def _glob_regex(pattern: str) -> re.Pattern[str]:
     """A glob as a regex whose `*` and `?` stop at `/` (only `**` crosses directories).
 
@@ -3547,8 +3952,11 @@ def _pattern_is_committed(pattern: str, tracked: frozenset[str]) -> bool:
         if parts:
             candidates.append(PurePosixPath(*parts).as_posix())
     return any(
-        _glob_match(path, candidate)
-        for path in tracked
+        (
+            candidate in tracked
+            if not any(char in candidate for char in "*?[")
+            else any(_glob_match(path, candidate) for path in tracked)
+        )
         for candidate in candidates
         if not candidate.startswith(("/", "~/"))
     )
@@ -3983,14 +4391,15 @@ def analyse_consumer_side(
             or (
                 writer.pattern == pattern
                 and not writer.bounded
-                and all(not reader.bounded for reader in reader_sites)
+                and any(not reader.bounded for reader in reader_sites)
             )
         ]
         for reader in reader_sites:
             pairs.extend(
                 ArtifactPair(reader.family, reader, writer)
                 for writer in paired
-                if _specific_pair_identity(reader, writer, imports_by_path)
+                if (writer.bounded or not reader.bounded)
+                and _specific_pair_identity(reader, writer, imports_by_path)
             )
         if identity_writers and not paired:
             kind = "consumer-producer-path-mismatch"

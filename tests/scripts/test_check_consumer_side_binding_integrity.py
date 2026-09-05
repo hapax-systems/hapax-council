@@ -7,7 +7,9 @@ import importlib.util
 import itertools
 import json
 import re
+import subprocess
 import sys
+from dataclasses import replace
 from pathlib import Path
 
 import pytest
@@ -38,6 +40,516 @@ def _unwritten(report) -> set[str]:
         finding.reader.pattern
         for finding in report.findings
         if finding.kind == "consumer-reads-unwritten-artifact"
+    }
+
+
+@pytest.mark.parametrize("caller_first", [False, True])
+@pytest.mark.parametrize("imported", [False, True])
+@pytest.mark.parametrize("arguments", [("new",), ("new", "other"), (None,), ("new", None)])
+def test_round_seven_call_bindings_precede_body_accesses(
+    gate, tmp_path, caller_first, imported, arguments
+):
+    writer = (
+        "def write_state(artifact=Path('artifacts/old.json')):\n    artifact.write_text('{}')\n"
+    )
+    calls = "".join(
+        f"    write_state(Path('artifacts/{name}.json'))\n"
+        if name is not None
+        else "    write_state(choose())\n"
+        for name in arguments
+    )
+    caller = "def run():\n" + calls
+    if imported:
+        writer_path = tmp_path / "shared" / ("a_writer.py" if caller_first else "z_writer.py")
+        writer_path.parent.mkdir(parents=True, exist_ok=True)
+        writer_path.write_text("from pathlib import Path\n" + writer)
+        definitions = f"from shared.{writer_path.stem} import write_state\n" + caller
+    else:
+        definitions = caller + writer if caller_first else writer + caller
+    _write(
+        tmp_path,
+        "from pathlib import Path\n" + definitions + "run()\n"
+        "Path('artifacts/old.json').read_text()\n",
+    )
+    accesses, *_ = gate.collect_artifact_accesses(tmp_path)
+    assert {a.pattern for a in accesses if a.action == "write" and a.bounded} == {
+        f"artifacts/{name}.json" for name in arguments if name is not None
+    }
+    report = gate.analyse_consumer_side(tmp_path, [])
+    assert _unwritten(report) == {"artifacts/old.json"}
+    assert report.unresolvable == (1 if None in arguments else 0)
+    assert bool(report.unresolved_paths) == (None in arguments)
+
+
+@pytest.mark.parametrize(
+    "before, after, expected",
+    [(True, False, {"old"}), (True, True, {"old", "new"}), (False, True, {"new"})],
+)
+@pytest.mark.parametrize("wrapped", [False, True])
+def test_round_seven_function_globals_at_call(gate, tmp_path, before, after, expected, wrapped):
+    _write(
+        tmp_path,
+        "from pathlib import Path\nARTIFACT = Path('artifacts/old.json')\n"
+        "def write_state():\n    ARTIFACT.write_text('{}')\n"
+        + ("def run():\n    write_state()\n" if wrapped else "")
+        + (("run()\n" if wrapped else "write_state()\n") if before else "")
+        + "ARTIFACT = Path('artifacts/new.json')\n"
+        + (("run()\n" if wrapped else "write_state()\n") if after else "")
+        + "Path('artifacts/new.json').read_text()\n",
+    )
+    accesses, *_ = gate.collect_artifact_accesses(tmp_path)
+    assert {a.pattern for a in accesses if a.action == "write"} == {
+        f"artifacts/{name}.json" for name in expected
+    }
+    report = gate.analyse_consumer_side(tmp_path, [])
+    assert _unwritten(report) == (set() if "new" in expected else {"artifacts/new.json"})
+    assert report.unresolvable == 0
+
+
+@pytest.mark.parametrize(
+    "receiver, initial, expected",
+    [
+        ("artifact", "old.json", "old.json"),
+        ("artifact.parent", "old.json/child", "old.json"),
+        ("artifact.parents[0]", "old.json/child", "old.json"),
+        ("artifact.with_suffix('.json')", "old.txt", "old.json"),
+    ],
+)
+@pytest.mark.parametrize("nested", [False, True])
+def test_round_seven_receiver_precedes_argument_rebinding(
+    gate, tmp_path, receiver, initial, expected, nested
+):
+    write = f"{receiver}.write_text(str(artifact := Path('artifacts/new.json')))"
+    _write(
+        tmp_path,
+        f"from pathlib import Path\nartifact = Path('artifacts/{initial}')\n"
+        + (f"str({write})\n" if nested else f"{write}\n")
+        + "artifact.read_text()\n",
+    )
+    accesses, *_ = gate.collect_artifact_accesses(tmp_path)
+    assert {a.pattern for a in accesses if a.action == "write"} == {f"artifacts/{expected}"}
+    report = gate.analyse_consumer_side(tmp_path, [])
+    assert _unwritten(report) == {"artifacts/new.json"}
+    assert report.unresolvable == 0
+
+
+@pytest.mark.parametrize("argument", ["artifact, later=", "artifact=artifact, later="])
+def test_round_seven_arguments_keep_their_evaluation_state(gate, tmp_path, argument):
+    _write(
+        tmp_path,
+        "from pathlib import Path\nartifact = Path('artifacts/old.json')\n"
+        "def write_state(artifact, later):\n    artifact.write_text('{}')\n"
+        f"write_state({argument}(artifact := Path('artifacts/new.json')))\n"
+        "artifact.read_text()\n",
+    )
+    accesses, *_ = gate.collect_artifact_accesses(tmp_path)
+    assert {a.pattern for a in accesses if a.action == "write"} == {"artifacts/old.json"}
+    assert _unwritten(gate.analyse_consumer_side(tmp_path, [])) == {"artifacts/new.json"}
+
+
+def test_round_seven_unknown_receiver_cannot_borrow_argument_binding(gate, tmp_path):
+    _write(
+        tmp_path,
+        "from pathlib import Path\nartifact = choose()\n"
+        "artifact.write_text(str(artifact := Path('artifacts/new.json')))\n"
+        "artifact.read_text()\n",
+    )
+    accesses, *_ = gate.collect_artifact_accesses(tmp_path)
+    assert not [a for a in accesses if a.action == "write" and a.bounded]
+    report = gate.analyse_consumer_side(tmp_path, [])
+    assert _unwritten(report) == {"artifacts/new.json"}
+    assert report.unresolvable == 1
+    assert any("path=artifact" in site for site in report.unresolved_paths)
+
+
+def test_round_seven_unknown_call_globals_are_named(gate, tmp_path):
+    _write(
+        tmp_path,
+        "from pathlib import Path\nARTIFACT = choose()\n"
+        "def write_state():\n    ARTIFACT.write_text('{}')\n"
+        "write_state()\nARTIFACT = Path('artifacts/new.json')\nARTIFACT.read_text()\n",
+    )
+    report = gate.analyse_consumer_side(tmp_path, [])
+    assert _unwritten(report) == {"artifacts/new.json"}
+    assert report.unresolvable == 1
+    assert any("path=ARTIFACT" in site for site in report.unresolved_paths)
+
+
+def test_round_seven_caller_locals_cannot_replace_callee_globals(gate, tmp_path):
+    _write(
+        tmp_path,
+        "from pathlib import Path\nARTIFACT = Path('artifacts/old.json')\n"
+        "def write_state():\n    ARTIFACT.write_text('{}')\n"
+        "def run(ARTIFACT):\n    write_state()\n"
+        "run(Path('artifacts/new.json'))\nPath('artifacts/new.json').read_text()\n",
+    )
+    accesses, *_ = gate.collect_artifact_accesses(tmp_path)
+    assert {a.pattern for a in accesses if a.action == "write"} == {"artifacts/old.json"}
+    assert _unwritten(gate.analyse_consumer_side(tmp_path, [])) == {"artifacts/new.json"}
+
+
+def test_round_seven_many_call_states_retain_the_union(gate, tmp_path):
+    _write(
+        tmp_path,
+        "from pathlib import Path\ndef write_state():\n    ARTIFACT.write_text('{}')\n"
+        + "".join(f"ARTIFACT = Path('artifacts/{i}.json')\nwrite_state()\n" for i in range(12)),
+    )
+    accesses, count, *_ = gate.collect_artifact_accesses(tmp_path)
+    assert {a.pattern for a in accesses if a.action == "write"} == {
+        f"artifacts/{i}.json" for i in range(12)
+    }
+    assert count == 0
+
+
+@pytest.mark.parametrize("reverse", [False, True])
+def test_round_seven_call_state_cap_is_named_without_guessing(gate, tmp_path, reverse):
+    calls = [f"write_state(Path('artifacts/{index}.json'))\n" for index in range(40)]
+    _write(
+        tmp_path,
+        "from pathlib import Path\n"
+        "def write_state(artifact):\n    artifact.write_text('{}')\n"
+        + "".join(reversed(calls) if reverse else calls)
+        + "Path('artifacts/39.json').read_text()\n",
+    )
+    report = gate.analyse_consumer_side(tmp_path, [])
+    assert report.unresolvable > 0
+    assert any(
+        "binding state cap" in site and "write_state" in site for site in report.unresolved_paths
+    )
+    assert _unwritten(report) == {"artifacts/39.json"}
+    accesses, *_ = gate.collect_artifact_accesses(tmp_path)
+    assert not [access for access in accesses if access.action == "write" and access.bounded]
+
+
+@pytest.mark.parametrize("caller_first", [False, True])
+def test_round_seven_state_cap_preserves_unresolved_read_evidence(gate, tmp_path, caller_first):
+    reader = "def read_binding(root: Path, key):\n    (root / f'binding-{key}.json').read_text()\n"
+    caller = "def callers():\n" + "".join(
+        f"    read_binding(Path('artifacts/{index}'), choose_key())\n" for index in range(40)
+    )
+    _write(
+        tmp_path,
+        "from pathlib import Path\n"
+        + (caller + reader if caller_first else reader + caller)
+        + "callers()\n",
+    )
+    accesses, unresolved, *_ = gate.collect_artifact_accesses(tmp_path)
+    assert unresolved > 0
+    assert any(
+        access.action == "read" and not access.bounded and "binding-" in access.pattern
+        for access in accesses
+    )
+
+
+def test_round_seven_fixpoint_iteration_cap_is_named(gate, tmp_path, monkeypatch):
+    monkeypatch.setattr(gate, "_MAX_BINDING_ROUNDS", 3)
+    _write(
+        tmp_path,
+        "from pathlib import Path\n"
+        "def write_state(artifact):\n    artifact.write_text('{}')\n"
+        + "".join(
+            f"def step_{n}(artifact):\n"
+            f"    {'write_state' if n == 0 else f'step_{n - 1}'}(artifact)\n"
+            for n in range(6)
+        )
+        + "step_5(Path('artifacts/new.json'))\n"
+        "Path('artifacts/new.json').read_text()\n"
+        "Path('artifacts/stable.json').write_text('{}')\n",
+    )
+    report = gate.analyse_consumer_side(tmp_path, [])
+    assert report.unresolvable > 0
+    assert any("did not converge" in site for site in report.unresolved_paths)
+    assert _unwritten(report) == {"artifacts/new.json"}
+    accesses, *_ = gate.collect_artifact_accesses(tmp_path)
+    assert {access.pattern for access in accesses if access.action == "write"} == {
+        "artifacts/stable.json"
+    }
+
+
+def test_round_seven_mixed_read_bounds_keep_only_unresolved_pairs(gate, tmp_path, monkeypatch):
+    # This is the mixed group collected at sdlc_claim.py:4089/4152 in the real tree:
+    # identical displayed pattern and glob, with both bounded and unresolved reads.
+    pattern = "*/cc-claim-dispatch-*.json"
+    dynamic = gate.ArtifactAccess(
+        "read",
+        pattern,
+        Path("shared/reader.py"),
+        1,
+        "claim_dispatch_binding",
+        "load_claim_dispatch_binding",
+        bounded=False,
+        glob_pattern=pattern,
+    )
+    literal = replace(dynamic, lineno=2, bounded=True)
+    writer = replace(
+        dynamic,
+        action="write",
+        path=Path("shared/writer.py"),
+        operation="write_claim_dispatch_binding",
+    )
+    monkeypatch.setattr(
+        gate,
+        "collect_artifact_accesses",
+        lambda *_args, **_kwargs: (
+            [dynamic, literal, writer],
+            2,
+            {dynamic.path: frozenset({"shared.writer"})},
+            {},
+        ),
+    )
+    report = gate.analyse_consumer_side(tmp_path, [])
+    assert len(report.pairs) == 1
+    assert report.pairs[0].reader == dynamic
+    assert report.pairs[0].writer == writer
+    assert pattern in _unwritten(report)
+
+
+def test_round_seven_imported_callers_share_equal_global_states(gate, tmp_path):
+    _write(
+        tmp_path,
+        "from shared import writer\n" + "".join(f"writer.run_{index}()\n" for index in range(24)),
+    )
+    (tmp_path / "shared/writer.py").write_text(
+        "from pathlib import Path\nARTIFACT = Path('artifacts/shared.json')\n"
+        "def write_state():\n    ARTIFACT.write_text('{}')\n"
+        + "".join(f"def run_{index}():\n    write_state()\n" for index in range(24))
+    )
+    accesses, unresolved, *_ = gate.collect_artifact_accesses(tmp_path)
+    assert unresolved == 0
+    assert {access.pattern for access in accesses if access.action == "write"} == {
+        "artifacts/shared.json"
+    }
+
+
+def test_round_seven_repeated_calls_do_not_exhaust_state_cap(gate, tmp_path):
+    _write(
+        tmp_path,
+        "from pathlib import Path\n"
+        "def write_state(artifact):\n    artifact.write_text('{}')\n"
+        + "write_state(Path('artifacts/stable.json'))\n"
+        * 80,
+    )
+    accesses, unresolved, *_ = gate.collect_artifact_accesses(tmp_path)
+    assert unresolved == 0
+    assert {access.pattern for access in accesses if access.action == "write"} == {
+        "artifacts/stable.json"
+    }
+
+
+def test_round_seven_repeated_glob_matches_reuse_compilation(gate, monkeypatch):
+    compiled = []
+    original = gate.re.compile
+
+    def counted(pattern, *args, **kwargs):
+        compiled.append(pattern)
+        return original(pattern, *args, **kwargs)
+
+    monkeypatch.setattr(gate.re, "compile", counted)
+    tracked = frozenset(f"config/unrelated-{index}.txt" for index in range(200))
+    for _ in range(10):
+        assert not gate._pattern_is_committed("artifacts/fixpoint-resource/*.json", tracked)
+    assert gate._pattern_is_committed("config/unrelated-0.txt", tracked)
+    assert not gate._pattern_is_committed("config/unrelated-0.txt.extra", tracked)
+    assert len(compiled) == 1
+
+
+def test_round_seven_fixpoint_resource_bounds(tmp_path):
+    # Several imported call chains require repeated binding discovery. Compare isolated
+    # processes so peak RSS is not inherited from earlier tests; a single sweep is the
+    # synthetic baseline, with the same parse/registration and report work in both runs.
+    # Large module constants expose duplicated global snapshots; VmHWM belongs to the
+    # child address space, unlike ru_maxrss which can retain the pytest parent's peak.
+    module_count = 80
+    for index in range(module_count):
+        module = tmp_path / "shared" / f"writer_{index}.py"
+        module.parent.mkdir(parents=True, exist_ok=True)
+        module.write_text(
+            "from pathlib import Path\n"
+            + "".join(f"CONSTANT_{n} = {str(n).ljust(2048, chr(120))!r}\n" for n in range(64))
+            + "def write_state(artifact=Path('artifacts/old.json')):\n"
+            "    artifact.write_text('{}')\n"
+            + "".join(
+                f"def step_{n}(artifact):\n"
+                f"    {'write_state' if n == 0 else f'step_{n - 1}'}(artifact)\n"
+                for n in range(6)
+            )
+        )
+    _write(
+        tmp_path,
+        "from pathlib import Path\n"
+        + "".join(
+            f"from shared.writer_{index} import step_5 as run_{index}\n"
+            f"run_{index}(Path('artifacts/{index}.json'))\n"
+            for index in range(module_count)
+        ),
+    )
+    driver = """
+import importlib.util, json, sys, time
+from pathlib import Path
+spec = importlib.util.spec_from_file_location("measured_scanner", sys.argv[1])
+gate = importlib.util.module_from_spec(spec)
+sys.modules[spec.name] = gate
+spec.loader.exec_module(gate)
+if sys.argv[3] == "single":
+    gate._MAX_BINDING_ROUNDS = 1
+started = time.monotonic()
+accesses, unresolved, *_ = gate.collect_artifact_accesses(Path(sys.argv[2]))
+print(json.dumps({"seconds": time.monotonic() - started,
+                  "rss": int(next(line.split()[1] for line in Path('/proc/self/status').read_text().splitlines()
+                                  if line.startswith('VmHWM:'))),
+                  "writers": sorted({a.pattern for a in accesses if a.action == "write"}),
+                  "unresolved": unresolved}))
+"""
+    measured = {}
+    for mode in ("single", "fixpoint"):
+        result = subprocess.run(
+            [sys.executable, "-c", driver, str(SCRIPT_PATH), str(tmp_path), mode],
+            capture_output=True,
+            text=True,
+            check=True,
+            timeout=30,
+        )
+        measured[mode] = json.loads(result.stdout)
+    baseline, fixed = measured["single"], measured["fixpoint"]
+    metrics = {
+        mode: {key: result[key] for key in ("seconds", "rss")} for mode, result in measured.items()
+    }
+    print(f"synthetic binding resource measurements: {metrics}")
+    assert fixed["writers"] == [
+        f"artifacts/{index}.json" for index in sorted(range(module_count), key=str)
+    ]
+    assert fixed["unresolved"] == 0
+    assert fixed["rss"] <= 2 * baseline["rss"], measured
+    assert fixed["seconds"] <= 2 * baseline["seconds"], measured
+
+
+def test_round_seven_recursive_binding_growth_is_named(gate, tmp_path):
+    _write(
+        tmp_path,
+        "from pathlib import Path\ndef write_state(artifact):\n"
+        "    artifact.write_text('{}')\n    write_state(artifact / 'next')\n"
+        "def write_stable():\n    Path('artifacts/stable.json').write_text('{}')\n"
+        "write_stable()\n"
+        "write_state(Path('artifacts/root'))\nPath('artifacts/root/next').read_text()\n",
+    )
+    report = gate.analyse_consumer_side(tmp_path, [])
+    assert _unwritten(report) == {"artifacts/root/next"}
+    assert report.unresolvable > 0
+    assert any(
+        "call bindings for write_state did not converge" in site for site in report.unresolved_paths
+    )
+    accesses, *_ = gate.collect_artifact_accesses(tmp_path)
+    assert {a.pattern for a in accesses if a.action == "write"} == {"artifacts/stable.json"}
+
+
+@pytest.mark.parametrize(
+    "expression, expected",
+    [
+        ("artifact.with_name(str(artifact := Path('new.json')))", "artifacts/old.json/new.json"),
+        ("artifact.parents[(index := 0)]", "artifacts/old.json"),
+        ("artifact / str(artifact := Path('new.json'))", "artifacts/old.json/child/new.json"),
+    ],
+)
+def test_round_seven_nested_receiver_operands(gate, tmp_path, expression, expected):
+    _write(
+        tmp_path,
+        "from pathlib import Path\nartifact = Path('artifacts/old.json/child')\n"
+        f"({expression}).write_text('{{}}')\n",
+    )
+    accesses, *_ = gate.collect_artifact_accesses(tmp_path)
+    assert {a.pattern for a in accesses if a.action == "write"} == {expected}
+
+
+@pytest.mark.parametrize("declared_global", [False, True])
+@pytest.mark.parametrize("helper", [False, True])
+def test_round_seven_nested_call_separates_cells_from_globals(
+    gate, tmp_path, declared_global, helper
+):
+    _write(
+        tmp_path,
+        "from pathlib import Path\nARTIFACT = Path('artifacts/old.json')\n"
+        "def outer():\n    ARTIFACT = Path('artifacts/cell.json')\n"
+        "    def inner():\n"
+        + ("        global ARTIFACT\n" if declared_global else "")
+        + ("        return ARTIFACT\n" if helper else "        ARTIFACT.write_text('{}')\n")
+        + ("    inner().write_text('{}')\n" if helper else "    inner()\n")
+        + "outer()\nARTIFACT = Path('artifacts/new.json')\nARTIFACT.read_text()\n"
+        "Path('artifacts/cell.json').read_text()\nPath('artifacts/old.json').read_text()\n",
+    )
+    expected = "old" if declared_global else "cell"
+    accesses, *_ = gate.collect_artifact_accesses(tmp_path)
+    assert {a.pattern for a in accesses if a.action == "write"} == {f"artifacts/{expected}.json"}
+    report = gate.analyse_consumer_side(tmp_path, [])
+    assert _unwritten(report) == {
+        f"artifacts/{name}.json" for name in {"old", "cell", "new"} - {expected}
+    }
+    assert report.unresolvable == 0
+
+
+@pytest.mark.parametrize("caller_first", [False, True])
+def test_round_seven_transitive_calls_keep_explicit_bindings(gate, tmp_path, caller_first):
+    definitions = [
+        "def write_state(artifact=Path('artifacts/old.json')):\n    artifact.write_text('{}')\n",
+        *[
+            f"def step_{index}(artifact):\n"
+            f"    {'write_state' if index == 0 else f'step_{index - 1}'}(artifact)\n"
+            for index in range(6)
+        ],
+    ]
+    _write(
+        tmp_path,
+        "from pathlib import Path\n"
+        + "".join(reversed(definitions) if caller_first else definitions)
+        + "step_5(Path('artifacts/new.json'))\nPath('artifacts/old.json').read_text()\n",
+    )
+    accesses, unresolved, *_ = gate.collect_artifact_accesses(tmp_path)
+    assert {a.pattern for a in accesses if a.action == "write"} == {"artifacts/new.json"}
+    assert unresolved == 0
+    assert _unwritten(gate.analyse_consumer_side(tmp_path, [])) == {"artifacts/old.json"}
+
+
+@pytest.mark.parametrize(
+    "source, orphan",
+    [
+        (
+            "def write_state(artifact=Path('artifacts/old.json')):\n"
+            "    artifact.write_text('{}')\n"
+            "def run():\n    write_state(Path('artifacts/new.json'))\nrun()\n",
+            "old",
+        ),
+        (
+            "ARTIFACT = Path('artifacts/old.json')\n"
+            "def write_state():\n    ARTIFACT.write_text('{}')\nwrite_state()\n"
+            "ARTIFACT = Path('artifacts/new.json')\n",
+            "new",
+        ),
+        (
+            "artifact = Path('artifacts/old.json')\n"
+            "artifact.write_text(str(artifact := Path('artifacts/new.json')))\n",
+            "new",
+        ),
+    ],
+    ids=["definition-order", "call-globals", "receiver-order"],
+)
+def test_round_seven_report_arm_keeps_orphan_visible(
+    gate, tmp_path, monkeypatch, capsys, source, orphan
+):
+    _write(
+        tmp_path,
+        "from pathlib import Path\n" + source + f"Path('artifacts/{orphan}.json').read_text()\n",
+    )
+    monkeypatch.chdir(tmp_path)
+    report_path = tmp_path / "report.json"
+    assert gate.main(["--consumer-side", "--report-json", str(report_path)]) == 0
+    output = capsys.readouterr().out
+    assert "consumer-reads-unwritten-artifact=1" in output
+    assert f"artifacts/{orphan}.json" in output
+    assert "REPORT-ONLY" in output
+    report = json.loads(report_path.read_text())
+    assert report["summary"]["unresolvable"] == 0
+    assert report["summary"]["report_only"] is True
+    assert {finding["read_pattern"] for finding in report["findings"]} == {
+        f"artifacts/{orphan}.json"
     }
 
 
