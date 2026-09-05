@@ -1,4 +1,6 @@
 import errno
+import json
+import re
 import socket
 from datetime import UTC, datetime
 from io import BytesIO
@@ -6,6 +8,7 @@ from io import BytesIO
 import pytest
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
+from httpx import ASGITransport, AsyncClient
 from PIL import Image
 
 from agents.art_50_provenance.fingerprint import compute_image_fingerprints
@@ -21,11 +24,23 @@ from agents.art_50_provenance.verify import (
     verify_certificate_payload,
     verify_image_bytes,
 )
-from agents.publication_bus.surface_registry import SURFACE_REGISTRY
+from agents.publication_bus.surface_registry import (
+    SURFACE_REGISTRY,
+    SurfaceContract,
+    lint_surface_contract,
+)
 from logos.api.routes import art_50_credentials as routes
+from shared.evidence_ledger import ClaimRecord, LegibilityEvidenceRecord
 
 UNVERIFIED = "structure_present_unverified"
 CRYPTO_LIMIT = "cryptographic_verification_not_performed"
+EXPECTED_VERIFICATION_LIMITS = (
+    "All C2PA signing states, including signed_embedded, are issuance declarations; "
+    "local packet checks do not verify signatures, signer trust or attribution "
+    "and never establish valid_signed.",
+    "Identity-name presence does not establish authorship or attribution.",
+    "A perceptual match is only perceptual-hash proximity, not byte identity or signed provenance.",
+)
 REQUIRED = (
     ("c2pa.ai-disclosure", "missing_c2pa_ai_disclosure"),
     ("c2pa.actions.v2", "missing_c2pa_actions_v2"),
@@ -297,3 +312,121 @@ def test_public_scope_starts_with_the_bounded_predicate():
     note = SURFACE_REGISTRY["art-50-credential-verify"].scope_note
     assert "label/name presence" in note[:100]
     assert "signatures unverified" in note[:100]
+
+
+def test_public_contract_without_receipt_still_carries_limits():
+    contract = SurfaceContract(
+        surface_id="art-50-credential-verify",
+        surface_type="public_page",
+        publication_surface_ref="art-50-credential-verify",
+    )
+    rendered = lint_surface_contract(contract, [], []).model_dump(mode="json")
+    assert rendered["warnings"] == list(EXPECTED_VERIFICATION_LIMITS)
+
+
+@pytest.mark.parametrize(
+    "limit_index", range(3), ids=["signer-trust", "attribution", "image-byte-identity"]
+)
+@pytest.mark.parametrize("prefix", ["/v1/credential/verify/", "/api/art-50/credential/verify/"])
+@pytest.mark.parametrize("state", list(C2paSigningState))
+@pytest.mark.asyncio
+async def test_public_response_body_preserves_emitted_limits(
+    sample, tmp_path, monkeypatch, limit_index, prefix, state
+):
+    certificate, _ = sample
+    certificate.c2pa.status = state
+    monkeypatch.setenv("HAPAX_STATE", str(tmp_path))
+    write_certificate(certificate, state_root=tmp_path)
+
+    async def inline_thread_handoff(func, *args, **kwargs):
+        return func(*args, **kwargs)
+
+    # Exercise routing, local loading, verification and HTTP serialization in
+    # process. Only the worker-thread handoff is faked: denied socketpair.send()
+    # cannot wake the loop. The separate TestClient alias/404 test still skips.
+    monkeypatch.setattr("fastapi.routing.run_in_threadpool", inline_thread_handoff)
+    app = FastAPI()
+    app.include_router(routes.router)
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+        response = await client.get(prefix + certificate.credential_id)
+
+    assert response.status_code == 200
+    body = json.loads(response.content)
+    emitted = verify_certificate_payload(certificate).model_dump(mode="json")
+    assert body == emitted
+    # The public verification response keeps its machine-readable reason-code tokens
+    # pure: no prose is appended to `reasons` (root's disposition, 2026-09-05). The limits
+    # reach the public surface where they are emitted — the certificate's `limitations`
+    # (the artifact the route serves a verdict about) and the surface contract's warnings.
+    assert all(re.fullmatch(r"[a-z0-9_]+", reason) for reason in body["reasons"]), body["reasons"]
+    assert body["reasons"][0] == "cryptographic_verification_not_performed"
+    limitations = certificate.model_dump(mode="json")["limitations"]
+    assert limitations[1 + limit_index : 2 + limit_index] == [
+        EXPECTED_VERIFICATION_LIMITS[limit_index]
+    ]
+    assert limitations[1:4] == list(EXPECTED_VERIFICATION_LIMITS)
+    assert body["status"] == UNVERIFIED
+    assert body["exact_sha256_match"] is None and body["phash_distance"] is None
+
+
+@pytest.mark.parametrize(
+    "limit_index", range(3), ids=["signer-trust", "attribution", "image-byte-identity"]
+)
+@pytest.mark.parametrize("image_variant", [None, 0, 1], ids=["packet", "exact", "perceptual"])
+def test_public_contract_result_preserves_emitted_limits(
+    sample, tmp_path, limit_index, image_variant
+):
+    certificate, variants = sample
+    result = (
+        verify_certificate_payload(certificate)
+        if image_variant is None
+        else verify_image_bytes(certificate, variants[image_variant])
+    )
+    receipt = tmp_path / "verification.json"
+    receipt.write_text(result.model_dump_json())
+    contract = SurfaceContract(
+        surface_id="art-50-credential-verify",
+        surface_type="public_page",
+        audience_refs=["public_adopter"],
+        allowed_claim_refs=["CL-VERIFY"],
+        publication_surface_ref="art-50-credential-verify",
+        verification=list(result.reasons),
+    )
+    claim = ClaimRecord(
+        claim_id="CL-VERIFY",
+        text=result.status.value,
+        claim_kind="capability",
+        audience_scope=["public_adopter"],
+        evidence_refs=["EV-VERIFY"],
+        allowed_surfaces=[contract.surface_id],
+        status="approved_public",
+    )
+    evidence = LegibilityEvidenceRecord(
+        evidence_id="EV-VERIFY",
+        kind="local_api",
+        path=str(receipt),
+        value_summary=receipt.read_text(),
+        collected_at_epoch=100.0,
+        privacy_class="public",
+        public_safe=True,
+    )
+    rendered = lint_surface_contract(contract, [claim], [evidence], now=100.0).model_dump(
+        mode="json"
+    )
+
+    assert rendered["allowed"] and rendered["blockers"] == []
+    # The verifier's reason-code tokens pass through verbatim and stay pure; the three
+    # limits follow them as the contract's own warnings, exactly as emitted.
+    token_count = len(result.reasons)
+    assert rendered["warnings"][:token_count] == list(result.reasons)
+    assert all(re.fullmatch(r"[a-z0-9_]+", reason) for reason in result.reasons), result.reasons
+    limits = rendered["warnings"][token_count:]
+    assert limits[limit_index : 1 + limit_index] == [EXPECTED_VERIFICATION_LIMITS[limit_index]]
+    assert limits == list(EXPECTED_VERIFICATION_LIMITS)
+    assert rendered["manifest"]["evidence_ids"] == {"CL-VERIFY": ["EV-VERIFY"]}
+    assert certificate.model_dump(mode="json")["limitations"][1:4] == limits
+    assert SURFACE_REGISTRY[contract.publication_surface_ref].scope_note == (
+        "Local label/name presence checks; signatures unverified. "
+        "No image bytes checked by the credential route; no external callout. "
+        + " ".join(EXPECTED_VERIFICATION_LIMITS)
+    )

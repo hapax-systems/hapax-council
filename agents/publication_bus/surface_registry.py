@@ -30,6 +30,7 @@ from typing import Final, Literal
 
 from pydantic import BaseModel, Field
 
+from agents.art_50_provenance.models import ART50_VERIFICATION_LIMITATIONS
 from shared.evidence_ledger import (
     AudienceId,
     ClaimEvidenceStatus,
@@ -499,7 +500,8 @@ SURFACE_REGISTRY: Final[dict[str, SurfaceSpec]] = {
         activation_path="logos :8051 /v1/credential/verify/{credential_id}",
         scope_note=(
             "Local label/name presence checks; signatures unverified. "
-            "No signer trust, attribution or image-byte verification; no external callout."
+            "No image bytes checked by the credential route; no external callout. "
+            + " ".join(ART50_VERIFICATION_LIMITATIONS)
         ),
     ),
     "youtube-live-chat-message": SurfaceSpec(
@@ -725,6 +727,11 @@ def lint_surface_contract(
 
     blockers: list[str] = []
     warnings: list[str] = []
+    if contract.publication_surface_ref == "art-50-credential-verify":
+        # Carry emitted reasons verbatim through the existing verification and
+        # warning fields. Retain the limits even without a verifier receipt.
+        warnings.extend(contract.verification)
+        warnings.extend(ART50_VERIFICATION_LIMITATIONS)
     profiles = default_audience_profiles()
     registry = SURFACE_REGISTRY if surface_registry is None else surface_registry
     claims_by_id = {claim.claim_id: claim for claim in claims}
