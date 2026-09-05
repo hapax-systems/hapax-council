@@ -1,0 +1,1272 @@
+#!/usr/bin/env python3
+"""hapax-recruit — one entry point that recruits any entitled capacity for one headless brief.
+
+Operator ruling 2026-09-03: every model available through entitlement is live and recruitable
+as capacity *before* the spine routes and recruits for us, and regardless of proper onboarding.
+This is that layer, and no more: it knows each capacity's measured working shape (the roster
+`capability-audit/RECRUITABLE-CAPACITY-ROSTER-2026-09-03.md`), runs one brief through it, and
+writes a receipt of what actually ran. Admission, quota receipts and route selection stay the
+spine's job; a receipt here is a *measurement* of a run, not an admission of one.
+
+Stated with no estate noun: a recruiter takes a brief, a capacity name and a working directory,
+runs the capacity in the one shape measured to work headlessly, captures its answer, and records
+what ran — identity as reported by the capacity itself, never inferred — so a later reader can
+tell a run that happened from a run that was believed to happen.
+
+    hapax-recruit <capacity> --brief FILE --out FILE [--cwd DIR] [--timeout S] [--model M]
+    hapax-recruit --list
+
+Capacities: codex · grok · kimi · agy · claude · glmcp · qwencloud
+· local:qwen36 · local:gptoss · local:gemma3
+
+Exit codes: 0 answered · 2 refused (arguments, cwd rule, missing binary) · 3 the capacity failed
+· 4 timeout with bounded pipe draining and process-group cleanup evidence in the receipt.
+Every non-zero exit still writes the receipt when the run started.
+"""
+
+from __future__ import annotations
+
+import argparse
+import hashlib
+import http.client
+import json
+import os
+import re
+import shutil
+import signal
+import subprocess
+import sys
+import tempfile
+import time
+import urllib.error
+import urllib.request
+from contextlib import contextmanager
+from dataclasses import dataclass, field
+from datetime import UTC, datetime
+from pathlib import Path
+
+INSTRUMENT_REV = "hapax-recruit/1"
+REPO_ROOT = Path(__file__).resolve().parents[1]
+GLMCP_WRAPPER_ENV = "HAPAX_RECRUIT_GLMCP_WRAPPER"
+QWENCLOUD_WRAPPER_ENV = "HAPAX_RECRUIT_QWENCLOUD_WRAPPER"
+#: Claude Code driven by a session-scoped wrapper: (env override, default wrapper path)
+WRAPPED_CLAUDE = {
+    "glmcp": (GLMCP_WRAPPER_ENV, "scripts/hapax-glmcp-claude"),
+    "qwencloud": (QWENCLOUD_WRAPPER_ENV, "scripts/hapax-qwencloud-claude"),
+}
+LOCAL_ENDPOINTS = {
+    # roster rows measured serving on appendix 2026-09-03; OpenAI-compatible llama.cpp servers
+    "local:qwen36": ("http://localhost:5000/v1", "qwen3.6-35b-a3b"),
+    "local:gptoss": ("http://localhost:5001/v1", "gpt-oss-20b"),
+    "local:gemma3": ("http://localhost:5002/v1", "gemma-3-4b"),
+}
+CAPACITIES = ("codex", "grok", "kimi", "agy", "claude", "glmcp", "qwencloud", *LOCAL_ENDPOINTS)
+SHAPES = {
+    "codex": "codex exec --sandbox read-only -C <cwd:git checkout> -o <out> <brief> < /dev/null",
+    "grok": "grok -p <brief> --cwd <cwd>  (reads inside cwd only)",
+    "kimi": "kimi -p <brief> --output-format text  (session trailer stripped)",
+    "agy": "agy --print=<brief> --print-timeout <S>s  (prompt-only; headless reads are denied)",
+    "claude": "claude -p <brief> --output-format json [--model M]  (modelUsage recorded)",
+    "glmcp": "scripts/hapax-glmcp-claude -p <brief> --output-format json  (Claude Code on the GLM plan)",
+    "qwencloud": "scripts/hapax-qwencloud-claude -p <brief> --output-format json  (Claude Code on the Qwen Cloud plan)",
+    "local:qwen36": "POST http://localhost:5000/v1/chat/completions  (a model, not an agent)",
+    "local:gptoss": "POST http://localhost:5001/v1/chat/completions",
+    "local:gemma3": "POST http://localhost:5002/v1/chat/completions",
+}
+_SECRETISH = re.compile(
+    r"""
+    (
+        ["']?\bauthorization["']?\s*:\s*(?:(?:basic|bearer)\s+)?
+        |
+        ["']?(?:api(?:[_-]|[ \t]+)?key|token|secret|password)["']?\s*[:=]\s*
+        |
+        \bbearer\s+
+    )
+    # YAML node properties precede the scalar; neither an anchor nor a tag is its value.
+    (?:(?:&[^\s]+|![^\s]+)[ \t]+)*
+    (?:
+        [|>][0-9+-]*[ \t]*(?:\#[^\r\n]*)?\r?\n
+        (?:[ \t]+[^\r\n]*(?:\r?\n|\Z)|[ \t]*\r?\n)*
+        |
+        "(?:\\[\s\S]|[^"\\])*(?:"|\\?\Z)
+        |
+        '(?:''|[^'])*(?:'|\Z)
+        |
+        [^\r\n]+(?:(?:[ \t]*\r?\n)+[ \t]+[^\r\n]*)*
+    )
+    """,
+    re.IGNORECASE | re.VERBOSE,
+)
+_TOKENISH = re.compile(
+    r"\b(?:(?:sk-|xai-|hf_|gh[pousr]_|github_pat_|glpat-)[A-Za-z0-9_-]{8,}"
+    r"|(?:AKIA|ASIA)[A-Z0-9]{16}"
+    r"|eyJ[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,})\b"
+)
+_MODEL_IDENTIFIER = re.compile(r"[A-Za-z0-9._:/-]{1,256}\Z")
+_YAML_FIELD = re.compile(
+    r"""^([ \t]*)(-[ \t]+)?("(?:\\.|[^"\\])*"|'(?:''|[^'])*'|[^:\r\n]+):[ \t]*(.*)$"""
+)
+_YAML_EXPLICIT_KEY = re.compile(r"^([ \t]*)(-[ \t]+)?\?(?:[ \t]+(.*))?$")
+_KIMI_TRAILER = re.compile(r"^To resume this session\b")
+
+
+class Refusal(Exception):
+    """A run that must not start; the message names the remedy."""
+
+    def __init__(self, message: str) -> None:
+        super().__init__(_redact(message))
+
+
+class EndpointProtocolError(ValueError):
+    """A response violates the chat-completion protocol; messages contain no body data."""
+
+
+class EndpointDeadlineExceeded(TimeoutError):
+    """The complete endpoint exchange exhausted its wall-clock budget."""
+
+
+class UndecodableStream(ValueError):
+    """A structured stream cannot be completely redacted; never carry its text."""
+
+    def __init__(self, *, sensitive: bool = False, unsupported_class: str | None = None) -> None:
+        super().__init__()
+        self.sensitive = sensitive
+        self.unsupported_class = unsupported_class
+
+
+class ResponseDecodeError(ValueError):
+    """The JSON decoder rejected a response at its implementation limits."""
+
+
+def _load_response_json(text: str):
+    try:
+        return json.loads(text)
+    except json.JSONDecodeError:
+        raise  # Plain text/YAML still uses the existing fallback grammar.
+    except (ValueError, RecursionError):
+        raise ResponseDecodeError("malformed JSON response: decoder limit exceeded") from None
+
+
+@contextmanager
+def _endpoint_deadline(timeout: int):
+    """Bound even trickling headers/reads in this POSIX CLI's main thread."""
+    started = time.monotonic()
+    deadline = started + timeout
+
+    def expired(*_args):
+        raise EndpointDeadlineExceeded(f"endpoint deadline exceeded after {timeout}s")
+
+    if timeout <= 0:
+        expired()
+    previous_handler = signal.signal(signal.SIGALRM, expired)
+    previous_timer = signal.setitimer(signal.ITIMER_REAL, timeout)
+    try:
+        yield deadline
+        if time.monotonic() >= deadline:
+            expired()
+    finally:
+        signal.setitimer(signal.ITIMER_REAL, 0)
+        signal.signal(signal.SIGALRM, previous_handler)
+        if previous_timer[0]:
+            remaining = max(0.000001, previous_timer[0] - (time.monotonic() - started))
+            signal.setitimer(signal.ITIMER_REAL, remaining, previous_timer[1])
+
+
+def _read_endpoint_body(response, deadline: float) -> bytes:
+    chunks = []
+    while True:
+        if time.monotonic() >= deadline:
+            raise EndpointDeadlineExceeded("endpoint deadline exceeded during body consumption")
+        # read1 performs at most one underlying read; read(n) can wait for n bytes.
+        chunk = response.read1(65536)
+        if time.monotonic() >= deadline:
+            raise EndpointDeadlineExceeded("endpoint deadline exceeded during body consumption")
+        if not chunk:
+            # HTTPResponse.read1 does not raise on premature EOF with Content-Length.
+            remaining = getattr(response, "length", None)
+            if remaining:
+                raise http.client.IncompleteRead(b"", remaining)
+            return b"".join(chunks)
+        chunks.append(chunk)
+
+
+@dataclass
+class RunResult:
+    answer: str
+    exit_code: int | str
+    stdout_bytes: int
+    stderr_tail: str
+    models_reported: list[str]
+    process_group_killed: bool = False
+    process_group_any_member_survived: bool | None = None
+    failure_class: str | None = None
+    recovery_action: str | None = None
+    output_bytes: int | None = None
+    suppressed_streams: dict[str, dict] = field(default_factory=dict)
+    model_identity_invalid: list[dict] = field(default_factory=list)
+    drain_timed_out: bool = False
+    drained_bytes: dict[str, int] = field(default_factory=dict)
+
+    def __post_init__(self) -> None:
+        # Every response-derived identity, including modelUsage keys, crosses this
+        # boundary. Invalid names are measurements of shape, never reported models.
+        self.models_reported, invalid = _validated_model_identities(self.models_reported)
+        self.model_identity_invalid.extend(invalid)
+        if self.model_identity_invalid:
+            self.recovery_action = (
+                "inspect the receipt's model_identity_invalid shapes; "
+                "check the capacity's model identifiers and retry the brief"
+            )
+        streams, suppressed = _redact_streams(answer=self.answer)
+        self.answer = streams["answer"]
+        self.suppressed_streams.update(suppressed)
+        if self.exit_code == 0 and not self.answer.strip():
+            self.answer = ""
+            self.exit_code = 3
+            self.failure_class = "OutputNotProduced"
+            self.stderr_tail += "\nempty answer from this invocation"
+        # Receive FULL diagnostics: slicing first can discard a credential's label.
+        # Raw streams were validated independently before joining. Their concatenation
+        # need not be a JSON document, so do not reject it as undecodable here.
+        self.stderr_tail = _redact(self.stderr_tail)
+        for stream, shape in self.suppressed_streams.items():
+            self.stderr_tail += (
+                f"\n{stream}: {shape['reason']} ({shape['length']} chars, "
+                f"{shape.get('unsupported_class', shape['first_token_class'])})"
+            )
+        self.stderr_tail = self.stderr_tail[-400:]
+
+
+def _yaml_key(key: str, *, flow: bool = False) -> str:
+    """Decode a single-line YAML scalar key, preserving its quote style for matching."""
+    key = key.strip()
+    if flow and re.match(r"^\?[ ]*\t", key):
+        raise UndecodableStream(sensitive=True, unsupported_class="YAMLFlowKeyTab")
+    # PyYAML Scanner.check_key: in flow context '?' needs no separator.
+    # In block context it is an indicator only before YAML whitespace or EOF.
+    if key.startswith("?") and (flow or key[1:2] in " \t\r\n\x85\u2028\u2029"):
+        key = key[1:].lstrip(" \t\r\n\x85\u2028\u2029")
+    if key.startswith(("!", "&")):
+        raise UndecodableStream(sensitive=True)
+    if not key or key[0] not in "\"'":
+        return re.split(r"[ \t]+#", key, maxsplit=1)[0].rstrip()
+    if key[0] == "'":
+        if not re.fullmatch(r"'(?:''|[^'\r\n])*'", key):
+            raise UndecodableStream(sensitive=True)
+        return "'" + key[1:-1].replace("''", "'") + "'"
+    if not re.fullmatch(r'"(?:\\[^\r\n]|[^"\\\r\n])*"', key):
+        raise UndecodableStream(sensitive=True)
+    escapes = {
+        "0": "\0",
+        "a": "\a",
+        "b": "\b",
+        "t": "\t",
+        "n": "\n",
+        "v": "\v",
+        "f": "\f",
+        "r": "\r",
+        "e": "\x1b",
+        " ": " ",
+        '"': '"',
+        "/": "/",
+        "\\": "\\",
+        "N": "\x85",
+        "_": "\xa0",
+        "L": "\u2028",
+        "P": "\u2029",
+    }
+    decoded, index = ['"'], 1
+    while index < len(key) - 1:
+        char = key[index]
+        index += 1
+        if char == "\\":
+            char = key[index]
+            index += 1
+            if char in escapes:
+                char = escapes[char]
+            elif char in "xuU":
+                width = {"x": 2, "u": 4, "U": 8}[char]
+                digits = key[index : index + width]
+                if len(digits) != width or not re.fullmatch(r"[0-9a-fA-F]+", digits):
+                    raise UndecodableStream(sensitive=True)
+                codepoint = int(digits, 16)
+                if codepoint > 0x10FFFF or 0xD800 <= codepoint <= 0xDFFF:
+                    raise UndecodableStream(sensitive=True)
+                char = chr(codepoint)
+                index += width
+            else:
+                raise UndecodableStream(sensitive=True)
+        decoded.append(char)
+    return "".join((*decoded, '"'))
+
+
+def _yaml_flow_end(
+    text: str, start: int, redactions: list[tuple[int, int, str]] | None = None
+) -> int:
+    """Bound a flow and collect sensitive member spans at every nesting depth."""
+    stack, quote, index = [], "", start
+    sensitive = False
+    while index < len(text):
+        char = text[index]
+        if quote:
+            if quote == '"' and char == "\\":
+                index += 2
+                continue
+            if char == quote:
+                if quote == "'" and text[index : index + 2] == "''":
+                    index += 2
+                    continue
+                quote = ""
+        elif text[index : index + 2] == "!<" and text[index - 1] in " \t\r\n[{,:":
+            # Verbatim tag URIs can contain flow delimiters; they end only at >.
+            end = text.find(">", index + 2)
+            if end < 0:
+                raise UndecodableStream(sensitive=sensitive)
+            index = end + 1
+            continue
+        elif char == "#" and text[index - 1] in " \t\r\n[{,":
+            newline = text.find("\n", index)
+            index = len(text) if newline < 0 else newline + 1
+            continue
+        elif char in "\"'" and text[index - 1] in " \t\r\n[{,:?":
+            quote = char
+        elif char in "[{":
+            stack.append({"close": "]" if char == "[" else "}", "key": index + 1, "value": None})
+        elif char == ":" and stack:
+            member = stack[-1]
+            key = text[member["key"] : index]
+            normalized = _yaml_key(key, flow=True)
+            probe = normalized + ': "scalar"'
+            label = _SECRETISH.search(probe)
+            if label and label.end(1) == len(probe) - len('"scalar"'):
+                sensitive = True
+                member["value"] = member["value"] or index + 1
+                if redactions is not None and normalized != key.strip():
+                    redactions.append((member["key"], index, " " + normalized))
+            member["key"] = index + 1
+        elif char in ",]}":
+            if not stack:
+                raise UndecodableStream(sensitive=sensitive)
+            member = stack[-1]
+            if member["value"] is not None and redactions is not None:
+                redactions.append((member["value"], index, ' "<redacted>"'))
+            member["key"], member["value"] = index + 1, None
+            if char != ",":
+                if char != stack.pop()["close"]:
+                    raise UndecodableStream(sensitive=sensitive)
+                if not stack:
+                    return index + 1
+        index += 1
+    raise UndecodableStream(sensitive=sensitive)
+
+
+def _redact_yaml_flow_members(text: str) -> str:
+    """Walk enclosing flows even when their first key is not sensitive."""
+    spans, end = [], 0
+    for opening in re.finditer(r"[\[{]", text):
+        if opening.start() < end:
+            continue
+        try:
+            end = _yaml_flow_end(text, opening.start(), spans)
+        except UndecodableStream as exc:
+            # Ordinary prose may contain unmatched brackets. An unbounded flow
+            # containing a credential label cannot safely cross the boundary.
+            if exc.sensitive or _SECRETISH.search(text[opening.start() :]):
+                raise
+            break
+    safe, end = [], 0
+    for start, stop, replacement in sorted(spans):
+        if start < end:  # A sensitive parent already consumed this member.
+            continue
+        safe.extend((text[end:start], replacement))
+        end = stop
+    return "".join((*safe, text[end:]))
+
+
+def _redact_yaml_subtrees(text: str) -> str:
+    """Bound sensitive flow collections by delimiters and block collections by sibling keys."""
+    lines = text.splitlines(keepends=True)
+    safe, index = [], 0
+    while index < len(lines):
+        line = lines[index]
+        explicit = _YAML_EXPLICIT_KEY.match(line.rstrip("\r\n"))
+        if explicit:
+            indent, entry, key = explicit.groups()
+            # Complex/multiline keys cannot be bounded by this scalar matcher.
+            if not key or key.lstrip().startswith(("[", "{", "!", "&", "|", ">")):
+                raise UndecodableStream
+            normalized = _yaml_key(key)
+            probe = f'{normalized}: "scalar"'
+            label = _SECRETISH.search(probe)
+            end = index + 1
+            while end < len(lines) and (
+                not lines[end].strip() or lines[end].lstrip().startswith("#")
+            ):
+                end += 1
+            value_line = (
+                re.match(r"^([ \t]*):(?:[ \t]+|(?=\r?$))", lines[end]) if end < len(lines) else None
+            )
+            if not value_line or len(value_line[1]) != len(indent) + len(entry or ""):
+                raise UndecodableStream
+            if label and label.end(1) == len(probe) - len('"scalar"'):
+                # Feed the complete value into the same flow/subtree/scalar bounds.
+                line = f"{indent}{entry or ''}{normalized}: " + lines[end][value_line.end() :]
+                lines[index : end + 1] = [line]
+        field = _YAML_FIELD.match(line.rstrip("\r\n"))
+        if field:
+            quoted = re.match(r""""(?:\\.|[^"\\])*"|'(?:''|[^'])*'""", line[field.start(3) :])
+            if quoted:
+                # A complete quoted word followed by prose is not a mapping key.
+                # Keep malformed/unclosed keys on the existing suppression path.
+                suffix = line.rstrip("\r\n")[field.start(3) + quoted.end() :]
+                if not re.match(r"[ \t]*:(?:[ \t]|$)", suffix):
+                    field = None
+        if field:
+            indent, entry, key, value = field.groups()
+            if key.startswith("?") and key[1:2] not in " \t\r\n\x85\u2028\u2029":
+                # A literal '?' belongs to this plain scalar. The later diagnostic
+                # regex cannot preserve that boundary, so refuse this class.
+                raise UndecodableStream(unsupported_class="YAMLPlainQuestionKey")
+            normalized = _yaml_key(key)
+            probe = f'{normalized}: "scalar"'
+            label = _SECRETISH.search(probe)
+            sensitive = label and label.end(1) == len(probe) - len('"scalar"')
+            if sensitive:
+                tail = "".join(lines[index:])[field.start(4) :]
+                if value.startswith(('"', "'")) and not re.match(
+                    r"\"(?:\\[\s\S]|[^\"\\])*\"|'(?:''|[^'])*'", tail
+                ):
+                    raise UndecodableStream(unsupported_class="YAMLUnterminatedScalar")
+                # Node properties and comments can put the opening on a later line.
+                flow = re.match(
+                    r"(?:(?:&[^\s,\[\]{}]+|!(?:<[^>\r\n]*>|[^\s,\[\]{}<>]*))(?=[ \t\r\n])"
+                    r"|[ \t\r\n]|\#[^\r\n]*(?:\r?\n|\Z))*([\[{])",
+                    tail,
+                )
+                if flow:
+                    end = _yaml_flow_end(tail, flow.start(1))
+                    safe.append(f'{indent}{entry or ""}{normalized}: "<redacted>"')
+                    lines, index = tail[end:].splitlines(keepends=True), 0
+                    continue
+            # Only a missing scalar (possibly with node properties/comments) opens
+            # a block collection. Quoted and block scalars retain their own grammar.
+            collection = re.fullmatch(r"(?:(?:&\S+|!\S+)[ \t]*)*(?:\#.*)?", value)
+            if sensitive and collection:
+                key_indent = len(indent) + len(entry or "")
+                end = index + 1
+                while end < len(lines):
+                    following = lines[end]
+                    depth = len(following) - len(following.lstrip(" \t"))
+                    sequence = re.match(r"[ \t]*-(?:[ \t\r\n]|$)", following)
+                    if depth <= key_indent and not (depth == key_indent and sequence):
+                        if _YAML_FIELD.match(following.rstrip("\r\n")) or _YAML_EXPLICIT_KEY.match(
+                            following.rstrip("\r\n")
+                        ):
+                            break
+                    # If no sibling key bounds the subtree, suppress through EOF.
+                    end += 1
+                safe.append(f'{indent}{entry or ""}{normalized}: "<redacted>"\n')
+                index = end
+                continue
+            if sensitive and normalized != key:
+                # The scalar matcher must see decoded escapes too.
+                line = line[: field.start(3)] + normalized + line[field.end(3) :]
+        safe.append(line)
+        index += 1
+    return _redact_yaml_flow_members("".join(safe))
+
+
+def _redact(text: str, *, reject_undecodable: bool = False) -> str:
+    try:
+        # PyYAML Scanner.scan_to_next_token skips a BOM only at stream index 0.
+        # Any other BOM is data, including one following whitespace. Refuse it
+        # without changing key identity; fenced blocks are not separate streams here.
+        text = text.removeprefix("\ufeff")
+        if "\ufeff" in text:
+            raise UndecodableStream(unsupported_class="YAMLInteriorBOM")
+        return _redact_text(text, reject_undecodable=reject_undecodable)
+    except RecursionError:
+        # Traversal and embedded JSON can exhaust depth after decoding succeeds.
+        raise ResponseDecodeError("malformed JSON response: decoder limit exceeded") from None
+    except UndecodableStream:
+        if reject_undecodable:
+            raise
+        return "<redacted>"
+
+
+def _redact_text(text: str, *, reject_undecodable: bool = False) -> str:
+    # Decode before matching labels: JSON strings can contain further JSON envelopes,
+    # escaped quotes, or unicode escapes. Re-encode only after keys and values are safe.
+    try:
+        payload = _load_response_json(text)
+    except json.JSONDecodeError:
+        pass
+    else:
+        redacted = _redact_json_value(payload, reject_undecodable=reject_undecodable)
+        return text if redacted == payload else json.dumps(redacted)
+    # Custom tags need constructors outside safe_load's grammar, and aliases need
+    # graph expansion. This scalar/flow redactor supports neither class. Refuse
+    # their lexical forms (also in ambiguous prose), without interpreting values.
+    for pattern, unsupported_class in (
+        (r"(?:^|[ \t\r\n:[{,])!(?!!)[^ \t\r\n]", "YAMLCustomTag"),
+        (r"(?:^|[ \t\r\n:[{,])\*[^ \t\r\n\[\]{},]+", "YAMLAlias"),
+    ):
+        if re.search(pattern, text):
+            raise UndecodableStream(unsupported_class=unsupported_class)
+    text = _redact_yaml_subtrees(text)
+    if reject_undecodable:
+        # Consume plain/YAML fields first. Punctuation in the remaining prose/code is
+        # ordinary content, but an escaped sensitive field means serialization remains
+        # undecoded. Unescape only a detection copy, never the text returned to callers.
+        remainder = _TOKENISH.sub("", _SECRETISH.sub("", text))
+        while True:
+            decoded = re.sub(
+                r'\\(?:u[0-9a-fA-F]{4}|["\\/bfnrt])',
+                lambda match: json.loads('"' + match.group() + '"'),
+                remainder,
+            )
+            if decoded == remainder:
+                break
+            if _SECRETISH.search(decoded) or _TOKENISH.search(decoded):
+                raise UndecodableStream
+            remainder = decoded
+    # Consume escaped quotes and multiline scalars before any diagnostic is sliced.
+    # Unterminated quotes suppress the rest of the block rather than exposing a suffix.
+    # Plain scalars consume the whole line and indented continuations. In mixed prose
+    # where indentation/flow boundaries are ambiguous, suppress that whole block.
+    # A quoted replacement remains a complete scalar on subsequent redaction passes;
+    # an unquoted marker would consume the ordinary prose following a quoted fragment.
+    return _TOKENISH.sub("<redacted>", _SECRETISH.sub(r'\1"<redacted>"', text))
+
+
+def _redact_json_value(value, *, reject_undecodable: bool = False):
+    if isinstance(value, dict):
+        redacted = {}
+        for key, item in value.items():
+            safe_key = _redact(key, reject_undecodable=reject_undecodable)
+            # Keep every member if two credentials collapse to the same marker, or
+            # if the response already has a key matching the marker.
+            base_key, suffix = safe_key, 2
+            while safe_key in redacted:
+                safe_key = f"{base_key} [redacted-key-{suffix}]"
+                suffix += 1
+            # Reuse the text label grammar (including prefixes such as ANTHROPIC_).
+            # Only a label ending at the placeholder describes a sensitive subtree;
+            # an assignment embedded INSIDE the key does not label its member value.
+            field = f'{json.dumps(key)}: "scalar"'
+            match = _SECRETISH.search(field)
+            redacted[safe_key] = (
+                "<redacted>"
+                if match and match.end(1) == len(field) - len('"scalar"')
+                else _redact_json_value(item, reject_undecodable=reject_undecodable)
+            )
+        return redacted
+    if isinstance(value, list):
+        return [_redact_json_value(item, reject_undecodable=reject_undecodable) for item in value]
+    if isinstance(value, str):
+        return _redact(value, reject_undecodable=reject_undecodable)
+    return value
+
+
+def _suppressed_stream_shape(text: str) -> dict:
+    first = text.lstrip()[:1]
+    return {
+        "length": len(text),
+        "first_token_class": {"": "empty", "{": "object", "[": "array", '"': "string"}.get(
+            first, "text"
+        ),
+        "reason": "undecodable_stream_suppressed",
+    }
+
+
+def _redact_streams(**streams: str) -> tuple[dict[str, str], dict[str, dict]]:
+    """Validate every complete stream independently before extraction, joining or slicing."""
+    redacted, suppressed = {}, {}
+    for name, text in streams.items():
+        try:
+            redacted[name] = _redact(text, reject_undecodable=True)
+        except UndecodableStream as exc:
+            redacted[name] = ""
+            suppressed[name] = _suppressed_stream_shape(text)
+            if exc.unsupported_class:
+                suppressed[name]["unsupported_class"] = exc.unsupported_class
+    return redacted, suppressed
+
+
+def _validated_model_identities(models: list[str]) -> tuple[list[str], list[dict]]:
+    valid, invalid = [], []
+    for model in models:
+        identities, _ = _redact_streams(model=model)
+        if _MODEL_IDENTIFIER.fullmatch(model) and identities["model"] == model:
+            valid.append(model)
+        else:
+            invalid.append({**_suppressed_stream_shape(model), "reason": "model_identity_invalid"})
+    return valid, invalid
+
+
+def _cli_diagnostics(code: int | str, stdout: str, stderr: str, *, chatter: bool = False) -> str:
+    """Redact each full stream before joining: a quote in stderr cannot close stdout's value."""
+    return "\n".join(
+        _redact(part) for part in (stdout if chatter or code != 0 else "", stderr) if part
+    )
+
+
+def _now() -> datetime:
+    return datetime.now(UTC)
+
+
+def _iso(moment: datetime) -> str:
+    return moment.strftime("%Y-%m-%dT%H:%M:%SZ")
+
+
+def _require_binary(name: str) -> str:
+    found = shutil.which(name)
+    if found is None:
+        raise Refusal(f"{name} is not on PATH; install it or fix PATH, then retry")
+    return found
+
+
+def _process_group_has_live_members(process_group_id: int) -> bool:
+    """Return whether a non-zombie member remains able to execute after cleanup."""
+    proc_root = Path("/proc")
+    if proc_root.is_dir():
+        for stat_path in proc_root.glob("[0-9]*/stat"):
+            try:
+                fields = stat_path.read_text(encoding="utf-8").rsplit(")", 1)[1].split()
+                state, member_group = fields[0], int(fields[2])
+            except (FileNotFoundError, IndexError, PermissionError, ValueError):
+                continue
+            if member_group == process_group_id and state != "Z":
+                return True
+        return False
+
+    try:
+        os.killpg(process_group_id, 0)
+    except ProcessLookupError:
+        return False
+    except PermissionError:
+        return True
+    return True
+
+
+def _is_git_checkout(cwd: Path) -> bool:
+    proc = subprocess.run(
+        ["git", "-C", str(cwd), "rev-parse", "--is-inside-work-tree"],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    return proc.returncode == 0 and proc.stdout.strip() == "true"
+
+
+def _run(
+    argv: list[str], *, cwd: Path, timeout: int, stdin_closed: bool = True, drain_status: dict
+) -> tuple[int | str, str, str, bool, bool | None]:
+    process = subprocess.Popen(
+        argv,
+        cwd=str(cwd),
+        stdin=subprocess.DEVNULL if stdin_closed else None,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        start_new_session=True,
+    )
+    try:
+        stdout, stderr = process.communicate(timeout=timeout)
+    except subprocess.TimeoutExpired:
+        group_killed = False
+        try:
+            os.killpg(process.pid, signal.SIGKILL)
+            group_killed = True
+        except ProcessLookupError:
+            pass
+        # A descendant may setsid() while holding our pipes. Killing the original
+        # group cannot guarantee EOF, so the final drain must have its own deadline.
+        drain_timeout = min(0.5, max(0.05, timeout * 0.1))
+        try:
+            stdout, stderr = process.communicate(timeout=drain_timeout)
+        except subprocess.TimeoutExpired as exc:
+            drain_status["drain_timed_out"] = True
+            # Keep cumulative raw bytes until cleanup measurements are complete.
+            stdout, stderr = exc.output or b"", exc.stderr or b""
+        finally:
+            process.stdout.close()
+            process.stderr.close()
+        drain_status["drained_bytes"] = {
+            "stdout": len(stdout),
+            "stderr": len(stderr),
+        }
+        try:
+            process.wait(timeout=drain_timeout)
+        except subprocess.TimeoutExpired:
+            pass
+
+        deadline = time.monotonic() + 0.5
+        while _process_group_has_live_members(process.pid) and time.monotonic() < deadline:
+            time.sleep(0.01)
+        member_survived = _process_group_has_live_members(process.pid)
+        return (
+            "timeout",
+            stdout.decode("utf-8", errors="replace"),
+            stderr.decode("utf-8", errors="replace"),
+            group_killed,
+            member_survived,
+        )
+    return process.returncode, stdout.decode("utf-8"), stderr.decode("utf-8"), False, None
+
+
+def _strip_kimi(text: str, brief: str) -> str:
+    first_brief_line = brief.strip().splitlines()[0].strip() if brief.strip() else ""
+    kept: list[str] = []
+    for line in text.splitlines():
+        stripped = line.strip()
+        if stripped.startswith("kimi version") or _KIMI_TRAILER.match(stripped):
+            continue
+        if stripped.startswith("• "):
+            stripped = stripped[2:]
+        if first_brief_line and stripped == first_brief_line:
+            continue  # the echoed prompt
+        kept.append(stripped)
+    return "\n".join(kept).strip() + ("\n" if kept else "")
+
+
+def _parse_claude_json(stdout: str, *, failed: bool = False) -> tuple[str, list[str], str | None]:
+    """Claude Code's --output-format json: the answer is `result`; served identity is `modelUsage`."""
+    try:
+        payload = _load_response_json(stdout)
+    except json.JSONDecodeError:
+        # Failed CLIs can emit plain/YAML diagnostics. Preserve that redacted
+        # failure output, but never retain a partial JSON envelope (with or
+        # without startup chatter) as its answer.
+        if failed and stdout.strip():
+            try:
+                diagnostic, end = json.JSONDecoder().raw_decode(stdout.lstrip())
+            except ValueError:
+                if not re.search(r'[\[{]|^\s*"', stdout):
+                    return stdout, [], None
+            else:
+                # A complete JSON diagnostic may have ordinary trailing context.
+                if (
+                    isinstance(diagnostic, dict)
+                    and not {"result", "type", "modelUsage"}.intersection(diagnostic)
+                    and not re.search(r'[\[{]|^\s*"', stdout.lstrip()[end:])
+                ):
+                    return stdout, [], None
+        return "", [], "undecodable_result_envelope"
+    if isinstance(payload, list):  # stream-json style arrays end with the result object
+        payload = next((item for item in reversed(payload) if isinstance(item, dict)), {})
+    if not isinstance(payload, dict):
+        return "", [], "invalid result envelope: result must be a non-empty string"
+    if failed and not {"result", "type", "modelUsage"}.intersection(payload):
+        # A failed CLI can emit a JSON diagnostic instead of a result envelope.
+        # Keep it under the redacted_failure_output policy, never as a success.
+        return stdout, [], None
+    answer = payload.get("result")
+    usage = payload.get("modelUsage")
+    models = sorted(usage) if isinstance(usage, dict) else []
+    invalid = not isinstance(answer, str) or not answer.strip()
+    return (
+        "" if invalid else answer,
+        models,
+        "invalid result envelope: result must be a non-empty string" if invalid else None,
+    )
+
+
+def _output_identity(out: Path) -> tuple[int, int, int, int, int] | None:
+    if not out.is_file():
+        return None
+    info = out.stat()
+    return info.st_dev, info.st_ino, info.st_mtime_ns, info.st_ctime_ns, info.st_size
+
+
+def recruit_cli(
+    capacity: str,
+    brief: str,
+    *,
+    cwd: Path,
+    out: Path,
+    timeout: int,
+    model: str | None,
+    allow_untrusted_cwd: bool,
+) -> RunResult:
+    if capacity == "codex":
+        binary = _require_binary("codex")
+        argv = [binary, "exec", "--sandbox", "read-only", "-C", str(cwd), "-o", str(out)]
+        if not _is_git_checkout(cwd):
+            if not allow_untrusted_cwd:
+                raise Refusal(
+                    f"codex refuses a cwd that is not a git checkout ({cwd}); point --cwd at a "
+                    "checkout, or pass --allow-untrusted-cwd to add --skip-git-repo-check "
+                    "explicitly (the roster measured this refusal on 2026-09-03)"
+                )
+            argv.append("--skip-git-repo-check")
+        if model:
+            argv += ["--model", model]
+        argv.append(brief)
+    elif capacity == "grok":
+        binary = _require_binary("grok")
+        argv = [binary, "-p", brief, "--cwd", str(cwd)]
+    elif capacity == "kimi":
+        binary = _require_binary("kimi")
+        argv = [binary, "-p", brief, "--output-format", "text"]
+    elif capacity == "agy":
+        binary = _require_binary("agy")
+        argv = [binary, f"--print={brief}", "--print-timeout", f"{timeout}s"]
+        if model:
+            # The requested selector, forwarded as the CLI's current-session model option;
+            # the served identity is not observable from agy's output and is never inferred.
+            argv += ["--model", model]
+    elif capacity == "claude" or capacity in WRAPPED_CLAUDE:
+        if capacity == "claude":
+            binary = _require_binary("claude")
+        else:
+            env_name, default = WRAPPED_CLAUDE[capacity]
+            wrapper = Path(os.environ.get(env_name) or REPO_ROOT / default)
+            if not wrapper.is_file():
+                raise Refusal(
+                    f"{capacity} wrapper {wrapper} is missing; set {env_name} or restore it"
+                )
+            binary = str(wrapper)
+        argv = [binary, "-p", brief, "--output-format", "json"]
+        if model and capacity == "claude":
+            argv += ["--model", model]
+    else:
+        raise Refusal(f"unknown capacity {capacity!r}; one of: {', '.join(CAPACITIES)}")
+
+    previous_output = _output_identity(out) if capacity == "codex" else None
+    drain_status = {}
+    code, stdout, stderr, group_killed, member_survived = _run(
+        argv,
+        cwd=cwd,
+        timeout=timeout + 15 if capacity == "agy" else timeout,
+        drain_status=drain_status,
+    )
+    raw_streams = {"stdout": stdout, "stderr": stderr}
+    if capacity == "codex":
+        current_output = _output_identity(out)
+        produced_output = current_output is not None and current_output != previous_output
+        raw_streams["answer"] = out.read_text(encoding="utf-8") if produced_output else ""
+    streams, suppressed_streams = _redact_streams(**raw_streams)
+    diagnostic_stdout, diagnostic_stderr = streams["stdout"], streams["stderr"]
+    answer, models, invalid_envelope = diagnostic_stdout, [], None
+    failure_class = None
+    if capacity == "codex":
+        answer = streams["answer"]
+        if not answer.strip():
+            answer = ""
+            failure_class = "OutputNotProduced"
+            diagnostic_stderr += (
+                "\ncodex produced no new output (absent or empty) for this invocation"
+            )
+            if code == 0:
+                code = 3
+        # Identity extraction also sees only validated streams.
+        models = sorted(
+            set(
+                re.findall(
+                    r"^model:\s*(\S+)",
+                    diagnostic_stdout + "\n" + diagnostic_stderr,
+                    flags=re.MULTILINE,
+                )
+            )
+        )
+    elif capacity == "kimi":
+        answer = _strip_kimi(diagnostic_stdout, brief)
+    elif capacity == "claude" or capacity in WRAPPED_CLAUDE:
+        answer, models, invalid_envelope = _parse_claude_json(diagnostic_stdout, failed=code != 0)
+        if invalid_envelope == "undecodable_result_envelope":
+            suppressed_streams.setdefault("stdout", _suppressed_stream_shape(stdout))
+            diagnostic_stdout = ""
+        if invalid_envelope:
+            failure_class = "OutputNotProduced"
+            if code == 0:
+                code = 3
+    diagnostics = _cli_diagnostics(
+        code, diagnostic_stdout, diagnostic_stderr, chatter=capacity == "codex"
+    )
+    if invalid_envelope:
+        # Add our reason after each raw stream has crossed the redaction boundary.
+        diagnostics += f"\n{invalid_envelope}"
+    return RunResult(
+        answer,
+        code,
+        len(stdout),
+        diagnostics,
+        models,
+        group_killed,
+        member_survived,
+        failure_class=failure_class,
+        suppressed_streams=suppressed_streams,
+        **drain_status,
+    )
+
+
+def recruit_local(capacity: str, brief: str, *, timeout: int, model: str | None) -> RunResult:
+    base, default_model = LOCAL_ENDPOINTS[capacity]
+    body = json.dumps(
+        {
+            "model": model or default_model,
+            "messages": [{"role": "user", "content": brief}],
+            "temperature": 0,
+        }
+    ).encode("utf-8")
+    request = urllib.request.Request(
+        f"{base}/chat/completions", data=body, headers={"Content-Type": "application/json"}
+    )
+    try:
+        with _endpoint_deadline(timeout) as deadline:
+            with urllib.request.urlopen(request, timeout=timeout) as response:
+                payload = _load_response_json(
+                    _read_endpoint_body(response, deadline).decode("utf-8")
+                )
+        if not isinstance(payload, dict):
+            raise EndpointProtocolError("response must be an object")
+        choices = payload.get("choices")
+        if not isinstance(choices, list) or not choices:
+            raise EndpointProtocolError("choices must be a non-empty list")
+        if not isinstance(choices[0], dict):
+            raise EndpointProtocolError("choices[0] must be an object")
+        message = choices[0].get("message")
+        if not isinstance(message, dict):
+            raise EndpointProtocolError("choices[0].message must be an object")
+        answer = message.get("content")
+        if not isinstance(answer, str):
+            raise EndpointProtocolError("choices[0].message.content must be a string")
+        if not answer:
+            raise EndpointProtocolError("choices[0].message.content must not be empty")
+        served = payload.get("model")
+        if served is not None and not isinstance(served, str):
+            raise EndpointProtocolError("model must be a string when present")
+        # Invariant: response-derived model text is validated at extraction as
+        # well as at the shared RunResult boundary, before any constructor sees it.
+        models, invalid_models = _validated_model_identities([served] if served is not None else [])
+    except EndpointDeadlineExceeded as exc:
+        return RunResult(
+            "", 3, 0, "endpoint deadline exceeded", [], failure_class=type(exc).__name__
+        )
+    except urllib.error.URLError as exc:
+        # Do not read HTTPError bodies. The reason may itself contain diagnostics;
+        # validate the complete stream before RunResult truncates diagnostics.
+        streams, suppressed = _redact_streams(stderr=f"endpoint {base} unreachable: {exc}")
+        return RunResult(
+            "",
+            3,
+            0,
+            streams["stderr"],
+            [],
+            failure_class=type(exc).__name__,
+            suppressed_streams=suppressed,
+        )
+    except TimeoutError:
+        return RunResult(
+            "",
+            "timeout",
+            0,
+            f"endpoint {base} timed out after {timeout}s",
+            [],
+            failure_class="TimeoutError",
+        )
+    except (
+        json.JSONDecodeError,
+        UnicodeDecodeError,
+        EndpointProtocolError,
+        ResponseDecodeError,
+    ) as exc:
+        # Decode errors can quote response data. Only protocol errors have messages
+        # constructed by us; never include the response body in diagnostics.
+        if isinstance(exc, json.JSONDecodeError):
+            diagnostic = f"invalid JSON response at line {exc.lineno}, column {exc.colno}"
+        elif isinstance(exc, UnicodeDecodeError):
+            diagnostic = "response is not valid UTF-8"
+        else:
+            diagnostic = str(exc)
+        failure_class = type(exc).__name__
+        return RunResult(
+            "",
+            3,
+            0,
+            f"endpoint {base}: {failure_class}: {diagnostic}",
+            [],
+            failure_class=failure_class,
+        )
+    return RunResult(answer, 0, len(answer), "", models, model_identity_invalid=invalid_models)
+
+
+def _failure_recovery(capacity: str, result: RunResult, out: Path) -> str:
+    """Build next actions only from invocation metadata, never exception/response text."""
+    if result.failure_class == "AnswerPersistenceFailed":
+        return (
+            f"check the output directory's mode and space for {out}; "
+            "retry the brief with a writable --out FILE"
+        )
+    if result.exit_code == "timeout" or result.failure_class == "EndpointDeadlineExceeded":
+        return "increase --timeout and retry the brief"
+    if result.failure_class == "PermissionError":
+        return "check the executable's mode and PATH, then retry the brief"
+    if result.failure_class == "OutputNotProduced":
+        return f"check --out {out}, then retry the brief"
+    if result.failure_class == "ResponseDecodeError":
+        return (
+            "inspect the malformed JSON response and the receipt; retry the brief with --out FILE"
+        )
+    if capacity in LOCAL_ENDPOINTS:
+        base, _ = LOCAL_ENDPOINTS[capacity]
+        return f"inspect the receipt; retry endpoint {base} with --timeout SECONDS"
+    return "inspect the receipt; retry the brief with --out FILE"
+
+
+def write_receipt(
+    path: Path,
+    *,
+    capacity: str,
+    brief: str,
+    cwd: Path | None,
+    out: Path,
+    started: datetime,
+    ended: datetime,
+    result: RunResult | None,
+    refusal: str | None,
+    model_requested: str | None,
+) -> Path:
+    receipt = {
+        "instrument_rev": INSTRUMENT_REV,
+        "capacity": capacity,
+        "shape": SHAPES[capacity],
+        "cwd": str(cwd) if cwd is not None else None,
+        "brief_sha256": hashlib.sha256(brief.encode("utf-8")).hexdigest(),
+        "brief_bytes": len(brief.encode("utf-8")),
+        "out": str(out),
+        "started_at": _iso(started),
+        "ended_at": _iso(ended),
+        "wall_s": round((ended - started).total_seconds(), 3),
+        "model_requested": model_requested,
+        # identity is what the capacity REPORTED; "absent" is a value, never a guess
+        "models_reported": result.models_reported
+        if result and result.models_reported
+        else "absent",
+        "model_identity_invalid": result.model_identity_invalid if result else [],
+        "exit_code": result.exit_code if result else None,
+        "output_bytes": result.output_bytes if result else 0,
+        "stdout_bytes": result.stdout_bytes if result else 0,
+        "stderr_tail": result.stderr_tail if result else "",
+        "failure_class": result.failure_class if result else None,
+        "recovery_action": result.recovery_action if result else None,
+        "answer_policy": (
+            "suppressed_undecodable_output"
+            if result.suppressed_streams
+            else "redacted_failure_output"
+            if result.exit_code != 0
+            else "capacity_answer"
+        )
+        if result
+        else None,
+        "suppressed_streams": result.suppressed_streams if result else {},
+        "refusal": refusal,
+        "process_group_killed": result.process_group_killed if result else False,
+        "drain_timed_out": result.drain_timed_out if result else False,
+        "drained_bytes": result.drained_bytes if result else {},
+        "process_group_any_member_survived": (
+            result.process_group_any_member_survived if result else None
+        ),
+    }
+    data = json.dumps(receipt, indent=2, sort_keys=True) + "\n"
+    try:
+        path.write_text(data, encoding="utf-8")
+    except OSError:
+        # An unwritable answer directory may also prevent the adjacent receipt.
+        # Preserve the failure measurement in a private temporary file and name it.
+        with tempfile.NamedTemporaryFile(
+            mode="w",
+            encoding="utf-8",
+            prefix="hapax-recruit-",
+            suffix=".receipt.json",
+            delete=False,
+        ) as fallback:
+            fallback.write(data)
+            return Path(fallback.name)
+    return path
+
+
+def main(argv: list[str] | None = None) -> int:
+    parser = argparse.ArgumentParser(prog="hapax-recruit", description=__doc__.split("\n\n")[0])
+    parser.add_argument("capacity", nargs="?", choices=CAPACITIES)
+    parser.add_argument("--brief", type=Path, help="file holding the prompt")
+    parser.add_argument("--out", type=Path, help="answer file; the receipt is <out>.receipt.json")
+    parser.add_argument("--cwd", type=Path, default=None, help="working directory (default: .)")
+    parser.add_argument("--timeout", type=int, default=900)
+    parser.add_argument(
+        "--model", default=None, help="passed through where the capacity accepts it"
+    )
+    parser.add_argument("--allow-untrusted-cwd", action="store_true")
+    parser.add_argument("--list", action="store_true", help="print the roster shapes and exit")
+    args = parser.parse_args(argv)
+
+    if args.list:
+        for name in CAPACITIES:
+            print(f"{name:14s} {SHAPES[name]}")
+        return 0
+    if not args.capacity or args.brief is None or args.out is None:
+        print(
+            "hapax-recruit: <capacity> --brief FILE --out FILE are required (or --list)",
+            file=sys.stderr,
+        )
+        return 2
+    if not args.brief.is_file():
+        print(
+            f"hapax-recruit: brief {args.brief} is not a file; supply an existing --brief file",
+            file=sys.stderr,
+        )
+        return 2
+    try:
+        brief = args.brief.read_text(encoding="utf-8")
+    except (OSError, UnicodeError) as exc:
+        remedy = (
+            "save the brief as valid UTF-8 and retry --brief FILE"
+            if isinstance(exc, UnicodeError)
+            else "check the file's read permission and accessibility, then retry --brief FILE"
+        )
+        print(
+            f"hapax-recruit: cannot read brief {_redact(str(args.brief))}; {remedy}",
+            file=sys.stderr,
+        )
+        return 2
+    if not brief.strip():
+        print(
+            f"hapax-recruit: brief {args.brief} is empty; add prompt content to the brief",
+            file=sys.stderr,
+        )
+        return 2
+    cwd = (args.cwd or Path.cwd()).resolve()
+    if not cwd.is_dir():
+        print(
+            f"hapax-recruit: cwd {cwd} is not a directory; select an existing --cwd directory",
+            file=sys.stderr,
+        )
+        return 2
+    # Resolve against the caller once, before Codex changes cwd. Only Codex
+    # receives -o; kimi/qwencloud return stdout and manage their own side files.
+    args.out = args.out.resolve()
+    receipt_path = args.out.with_name(args.out.name + ".receipt.json")
+
+    started = _now()
+    result: RunResult | None = None
+    refusal: str | None = None
+    preparing_output = True
+    try:
+        args.out.parent.mkdir(parents=True, exist_ok=True)
+        preparing_output = False
+        if args.capacity in LOCAL_ENDPOINTS:
+            result = recruit_local(args.capacity, brief, timeout=args.timeout, model=args.model)
+        else:
+            result = recruit_cli(
+                args.capacity,
+                brief,
+                cwd=cwd,
+                out=args.out,
+                timeout=args.timeout,
+                model=args.model,
+                allow_untrusted_cwd=args.allow_untrusted_cwd,
+            )
+    except Refusal as exc:
+        refusal = str(exc)
+    except (OSError, UnicodeError, http.client.HTTPException, ResponseDecodeError) as exc:
+        # Expected launch/decoding/transport failures must reach the receipt boundary.
+        # Exception text can embed paths, response bytes or credentials: keep only its class.
+        failure_class = type(exc).__name__
+        result = RunResult(
+            "", 3, 0, f"capacity failed: {failure_class}", [], failure_class=failure_class
+        )
+        if preparing_output:
+            result.failure_class = "AnswerPersistenceFailed"
+            result.stderr_tail = f"answer persistence failed: {failure_class}"
+    if result is not None:
+        try:
+            if result.failure_class != "AnswerPersistenceFailed":
+                args.out.write_text(result.answer, encoding="utf-8")
+                if args.out.read_bytes() != result.answer.encode("utf-8"):
+                    raise OSError("answer readback differs from intended bytes")
+        except (OSError, UnicodeError) as exc:
+            result.exit_code = 3
+            result.failure_class = "AnswerPersistenceFailed"
+            result.stderr_tail = f"answer persistence failed: {type(exc).__name__}"
+        # Measure the file, including partial writes or an unchanged prior answer.
+        # An inaccessible size is unknown, never a fabricated zero or success claim.
+        try:
+            result.output_bytes = args.out.stat().st_size if args.out.is_file() else 0
+        except OSError:
+            result.output_bytes = None
+    ended = _now()
+    if result is not None and result.exit_code != 0:
+        result.recovery_action = _redact(_failure_recovery(args.capacity, result, args.out))
+        # Keep the full remedy separately: long output paths must survive tail limits.
+        result.stderr_tail = (result.stderr_tail + f"\n{args.capacity}: {result.recovery_action}")[
+            -400:
+        ]
+    try:
+        receipt_path = write_receipt(
+            receipt_path,
+            capacity=args.capacity,
+            brief=brief,
+            cwd=None if args.capacity in LOCAL_ENDPOINTS else cwd,
+            out=args.out,
+            started=started,
+            ended=ended,
+            result=result,
+            refusal=refusal,
+            model_requested=args.model,
+        )
+    except OSError:
+        print(
+            _redact(
+                f"hapax-recruit: cannot persist receipt {receipt_path} or a temporary receipt; "
+                "check directory mode and space; retry with a writable --out FILE"
+            ),
+            file=sys.stderr,
+        )
+        return 3
+    if refusal is not None:
+        print(f"hapax-recruit: REFUSED — {refusal} (receipt: {receipt_path})", file=sys.stderr)
+        return 2
+    assert result is not None
+    unsupported = sorted(
+        {
+            shape["unsupported_class"]
+            for shape in result.suppressed_streams.values()
+            if "unsupported_class" in shape
+        }
+    )
+    if unsupported:
+        print(
+            f"hapax-recruit: suppressed unsupported stream classes: {', '.join(unsupported)} "
+            f"(receipt: {receipt_path})",
+            file=sys.stderr,
+        )
+    if result.exit_code == "timeout":
+        print(
+            f"hapax-recruit: {args.capacity} timed out after {args.timeout}s; partial output kept "
+            f"(receipt: {receipt_path}); {result.recovery_action}",
+            file=sys.stderr,
+        )
+        return 4
+    if result.exit_code != 0:
+        print(
+            f"hapax-recruit: {args.capacity} exited {result.exit_code}; stderr tail: "
+            f"{result.stderr_tail.strip()[-200:]} (receipt: {receipt_path}); "
+            f"{result.recovery_action}",
+            file=sys.stderr,
+        )
+        return 3
+    served = ", ".join(result.models_reported) if result.models_reported else "absent"
+    if result.model_identity_invalid:
+        served += (
+            f"; model_identity_invalid ({len(result.model_identity_invalid)}); "
+            f"{result.recovery_action}"
+        )
+    print(
+        f"hapax-recruit: {args.capacity} answered ({len(result.answer)} chars, models reported: "
+        f"{served}) -> {args.out}; receipt {receipt_path}"
+    )
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())
