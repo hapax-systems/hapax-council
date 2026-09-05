@@ -380,16 +380,17 @@ def test_delayed_admission_completion_keeps_original_observed_at(tmp_path: Path)
 @pytest.mark.parametrize(
     "diagnostic",
     [
-        '{"api_key": "DUMMY_REVIEW_SENTINEL"}',
-        '{"password": "DUMMY_REVIEW_SENTINEL SECOND_SENTINEL"}',
-        r'{"token": "DUMMY_REVIEW_SENTINEL \"SECOND_SENTINEL\""}',
-        "password='DUMMY_REVIEW_SENTINEL SECOND_SENTINEL'",
-        'api_key="DUMMY_REVIEW_SENTINEL SECOND_SENTINEL"',
-        "token=DUMMY_REVIEW_SENTINEL",
-        "secret: DUMMY_REVIEW_SENTINEL",
-        "Authorization: Bearer DUMMY_REVIEW_SENTINEL",
-        'password="DUMMY_REVIEW_SENTINEL\nSECOND_SENTINEL"',
-        'password="DUMMY_REVIEW_SENTINEL SECOND_SENTINEL',
+        # Synthetic sentinels: the redaction under test must remove them; none is a credential.
+        '{"api_key": "DUMMY_REVIEW_SENTINEL"}',  # pragma: allowlist secret
+        '{"password": "DUMMY_REVIEW_SENTINEL SECOND_SENTINEL"}',  # pragma: allowlist secret
+        r'{"token": "DUMMY_REVIEW_SENTINEL \"SECOND_SENTINEL\""}',  # pragma: allowlist secret
+        "password='DUMMY_REVIEW_SENTINEL SECOND_SENTINEL'",  # pragma: allowlist secret
+        'api_key="DUMMY_REVIEW_SENTINEL SECOND_SENTINEL"',  # pragma: allowlist secret
+        "token=DUMMY_REVIEW_SENTINEL",  # pragma: allowlist secret
+        "secret: DUMMY_REVIEW_SENTINEL",  # pragma: allowlist secret
+        "Authorization: Bearer DUMMY_REVIEW_SENTINEL",  # pragma: allowlist secret
+        'password="DUMMY_REVIEW_SENTINEL\nSECOND_SENTINEL"',  # pragma: allowlist secret
+        'password="DUMMY_REVIEW_SENTINEL SECOND_SENTINEL',  # pragma: allowlist secret
     ],
     ids=[
         "json-key",
@@ -436,7 +437,8 @@ def test_show_rejection_warns_with_reason_remedy_and_sanitized_stderr(
                 {
                     "platform": "glmcp",
                     "accepted": False,
-                    "reason": reason + ' {"api_key": "DUMMY_REASON_SENTINEL"}',
+                    "reason": reason
+                    + ' {"api_key": "DUMMY_REASON_SENTINEL"}',  # pragma: allowlist secret
                 }
             ],
             "unrelated": "DUMMY_UNRELATED_SENTINEL",
@@ -445,7 +447,9 @@ def test_show_rejection_warns_with_reason_remedy_and_sanitized_stderr(
     _stub(
         council / "scripts/hapax-platform-capability-receipts",
         f"cat <<'REJECTION'\n{payload}\nREJECTION\n"
-        + ("echo 'stderr detail token=DUMMY_STDERR_SENTINEL' >&2\n" if stderr_present else "")
+        + (
+            "echo 'stderr detail token=DUMMY_STDERR_SENTINEL' >&2\n" if stderr_present else ""
+        )  # pragma: allowlist secret
         + "exit 1\n",
     )
     result = _run(home, council)
