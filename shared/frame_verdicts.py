@@ -28,6 +28,7 @@ import hashlib
 import json
 import os
 import re
+import subprocess
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
@@ -942,10 +943,11 @@ def _glob_intersects_subtree(scope_pattern: str, relative_prefix: str) -> bool |
         for concrete, pattern in zip(prefix, segments, strict=False):
             if not fnmatch.fnmatchcase(concrete, pattern):
                 return False
-        witnesses = [
-            *prefix,
-            *(_segment_witnesses(pattern)[0] for pattern in segments[len(prefix) :]),
-        ]
+        tails = [_segment_witnesses(pattern) for pattern in segments[len(prefix) :]]
+        if any(not choices for choices in tails):
+            # A missing sample (e.g. for [!a].py) does not prove the segment empty.
+            return None
+        witnesses = [*prefix, *(choices[0] for choices in tails)]
         return bool(regex.match("/".join(witnesses)))
 
     for concrete, pattern in zip(prefix, segments, strict=False):
@@ -976,14 +978,14 @@ def _scope_intersects_exclusions(path: Path, scope_pattern: str, member: Decayed
         parent = prefix.parent
         if path != parent and path not in parent.parents:
             continue
-        relative = prefix.relative_to(path)
-        for suffix in ("", "scope", "-scope"):
-            state = _glob_intersects_subtree(
-                scope_pattern, relative.with_name(relative.name + suffix).as_posix()
-            )
-            if state is True:
-                return True
-            undecidable = undecidable or state is None
+        state = _glob_intersects_subtree(scope_pattern, prefix.relative_to(path).as_posix())
+        if state is True:
+            return True
+        # The exclusion is a string prefix, so every possible suffix also needs checking.
+        # Concrete subtree witnesses can prove overlap, but their absence cannot prove
+        # disjointness (excluded-special intersects *-special even when excluded does not).
+        # The current glob comparator cannot decide that language intersection.
+        undecidable = True
     if undecidable:
         raise UndecidableScopeContainment(
             f"scope glob {scope_pattern!r} cannot be compared safely with the mass exclusions"
@@ -1061,6 +1063,34 @@ def qualified_ref_within_member(
     return False
 
 
+def _repository_identity(checkout: Path) -> frozenset[str] | None:
+    """Verify a checkout root and identify its history without reading remote credentials."""
+    try:
+        top = subprocess.run(
+            ["git", "-C", str(checkout), "rev-parse", "--show-toplevel"],
+            check=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.DEVNULL,
+            text=True,
+            timeout=5,
+        ).stdout.strip()
+        if not top or Path(top).resolve() != checkout.resolve():
+            return None
+        roots = subprocess.run(
+            ["git", "-C", str(checkout), "rev-list", "--max-parents=0", "HEAD"],
+            check=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.DEVNULL,
+            text=True,
+            timeout=5,
+        ).stdout.splitlines()
+    except (OSError, subprocess.SubprocessError):
+        return None
+    if not roots or any(re.fullmatch(r"[0-9a-f]{40}|[0-9a-f]{64}", root) is None for root in roots):
+        return None
+    return frozenset(roots)
+
+
 def _repo_relative_candidates(
     ref: str, verdicts: FrameVerdicts, *, council_root: Path
 ) -> list[Path]:
@@ -1070,8 +1100,10 @@ def _repo_relative_candidates(
     members at the canonical checkout, so a ref like `scripts/x.py` resolved against the running
     tree could never match — the guard would have been inert exactly where it runs (review finding,
     codex, 2026-09-04). A repo-relative ref is therefore also tried under each declared member's
-    containing git checkout. Repository identity cannot come from ``council_root.name``: a deployed
-    source activation resolves to ``releases/<sha>`` and that basename is the release hash.
+    containing git checkout, but only after verifying equivalent root commit histories.
+    Repository identity cannot come from ``council_root.name``: a deployed source activation
+    resolves to ``releases/<sha>`` and that basename is the release hash. An unverified checkout
+    supplies no additional candidates.
     """
     text = ref.strip().replace("\\", "/")
     if text.startswith("/") or text.startswith("~"):
@@ -1088,7 +1120,13 @@ def _repo_relative_candidates(
                     roots.add(candidate.resolve())
                     break
     roots.discard(council_root.resolve())
-    return [(root / relative).resolve() for root in sorted(roots)]
+    if not roots or (identity := _repository_identity(council_root)) is None:
+        return []
+    return [
+        (root / relative).resolve()
+        for root in sorted(roots)
+        if _repository_identity(root) == identity
+    ]
 
 
 def scope_within_decayed(

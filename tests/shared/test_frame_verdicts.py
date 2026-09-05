@@ -10,6 +10,7 @@ import pytest
 import yaml
 
 from shared import frame_verdicts as fv
+from tests.frame_verdict_helpers import git_checkout
 
 NOW = datetime(2026, 9, 3, 22, 30, tzinfo=UTC)
 
@@ -994,13 +995,50 @@ def test_member_declaration_identity_matches_a_real_epoch() -> None:
     assert checked, "no member could be checked — the coverage rows carry no identities"
 
 
+@pytest.mark.parametrize("identity", ["unrelated", "missing", "invalid", "unverified-source"])
+def test_repo_relative_scope_does_not_count_an_unverified_repository(
+    tmp_path: Path, identity: str
+) -> None:
+    council = tmp_path / "council"
+    unrelated = tmp_path / "unrelated-repo"
+    if identity == "unverified-source":
+        (council / ".git").mkdir(parents=True)
+        git_checkout(unrelated, history="council")
+    else:
+        git_checkout(council, history="council")
+    if identity == "unrelated":
+        git_checkout(unrelated, history="unrelated")
+    elif identity == "invalid":
+        (unrelated / ".git").mkdir(parents=True)
+    (council / "docs").mkdir()
+    (unrelated / "docs").mkdir(parents=True)
+    members = [{"id": "unrelated-docs", "location": {"path": str(unrelated / "docs")}}]
+    verdicts = fv.load_frame_verdicts(
+        _procedure_root(
+            tmp_path / "procedure",
+            members=members,
+            verdicts=[_verdict("unrelated-docs", "scope_exited")],
+        ),
+        now=NOW,
+    )
+
+    scope = fv.scope_within_decayed(
+        ["docs/live.md"], verdicts, council_root=council, vault_root=tmp_path / "vault"
+    )
+
+    assert not scope.all_inside
+    assert scope.matches == ()
+    assert scope.outside == ("docs/live.md",)
+
+
 def test_a_repo_relative_ref_matches_a_member_declared_at_another_checkout(tmp_path: Path) -> None:
     """In production the dispatcher runs from the activation worktree while the mass declares the
     canonical checkout; a ref resolved only against the running tree could never match, leaving the
     guard inert exactly where it runs."""
     canonical = tmp_path / "projects" / "hapax-council"
     running = tmp_path / "source-activation" / "releases" / "43b8c76a31"  # pragma: allowlist secret
-    (canonical / ".git").mkdir(parents=True)
+    git_checkout(canonical, history="council")
+    git_checkout(running, history="council")
     (canonical / "legacy").mkdir(parents=True)
     (running / "legacy").mkdir(parents=True)
     assert canonical.name != running.name

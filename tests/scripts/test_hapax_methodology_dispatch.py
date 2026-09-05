@@ -19,6 +19,7 @@ from shared.platform_capability_registry import PlatformCapabilityRegistry
 from shared.quota_spend_ledger import QUOTA_SPEND_LEDGER_FIXTURES
 from shared.relay_mq import send_message
 from shared.relay_mq_envelope import Envelope
+from tests.frame_verdict_helpers import git_checkout
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 SCRIPT = REPO_ROOT / "scripts" / "hapax-methodology-dispatch"
@@ -4674,6 +4675,72 @@ def test_frame_dispatch_admits_scope_wholly_under_a_mass_exclusion(
     assert live_refusal is not None and "out of accountability" in live_refusal
 
 
+def test_frame_dispatch_does_not_prove_prefix_exclusion_disjoint_by_sampling(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    module = _dispatcher_module()
+    member_root = tmp_path / "member"
+    excluded_file = member_root / "excluded-special/file.md"
+    included_file = member_root / "live-special/file.md"
+    for path in (excluded_file, included_file):
+        path.parent.mkdir(parents=True)
+        path.touch()
+    frame_root = _frame_procedure_root(
+        tmp_path / "frame",
+        decayed_root=member_root,
+        location={"path": str(member_root), "patterns": ["**/*.md"]},
+        exclusions=[{"id": "residue", "paths": [str(member_root / "excluded") + "*"]}],
+    )
+    monkeypatch.setenv("HAPAX_FRAME_PROCEDURE_ROOT", str(frame_root))
+    # The producer enumerates both; its prefix exclusion removes only the first.
+    enumerated = {p for p in member_root.glob("**/*.md") if p.is_file()}
+    scope_files = {p for p in member_root.glob("*-special/*.md") if p.is_file()}
+    effective = {p for p in enumerated if not str(p).startswith(str(member_root / "excluded"))}
+    assert scope_files - effective == {excluded_file}
+    assert scope_files & effective == {included_file}
+
+    refusal, epoch, decayed = module.frame_verdict_refusal(
+        {"mutation_scope_refs": [str(member_root / "*-special/*.md")]}
+    )
+
+    assert epoch is not None and decayed == ("legacy-surface",)
+    assert refusal is not None and "cannot be compared safely with the mass exclusions" in refusal
+    assert (
+        "Next: repair mutation_scope_refs to use explicit file paths or narrower globs" in refusal
+    )
+    assert "out of accountability" not in refusal
+
+
+@pytest.mark.parametrize("exclusion_suffix", ["", "*"])
+def test_frame_dispatch_negated_scope_class_with_exclusion_has_a_remedy(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, exclusion_suffix: str
+) -> None:
+    module = _dispatcher_module()
+    member_root = tmp_path / "member"
+    excluded_file = member_root / "excluded/b.py"
+    excluded_file.parent.mkdir(parents=True)
+    excluded_file.touch()
+    frame_root = _frame_procedure_root(
+        tmp_path / "frame",
+        decayed_root=member_root,
+        location={"path": str(member_root), "patterns": ["**/*"]},
+        exclusions=[{"id": "residue", "paths": [str(member_root / "excluded") + exclusion_suffix]}],
+    )
+    monkeypatch.setenv("HAPAX_FRAME_PROCEDURE_ROOT", str(frame_root))
+    assert excluded_file in set(member_root.glob("*/[!a].py"))
+    assert excluded_file in set(member_root.glob("**/*"))
+
+    refusal, epoch, decayed = module.frame_verdict_refusal(
+        {"mutation_scope_refs": [str(member_root / "*/[!a].py")]}
+    )
+
+    assert epoch is not None and decayed == ("legacy-surface",)
+    assert refusal is not None and "cannot be compared safely with the mass exclusions" in refusal
+    assert (
+        "Next: repair mutation_scope_refs to use explicit file paths or narrower globs" in refusal
+    )
+
+
 @pytest.mark.parametrize(
     ("case", "diagnosis", "remedy"),
     [
@@ -4979,7 +5046,8 @@ def test_dispatch_maps_release_activation_refs_to_the_canonical_repository(
     activation = (
         tmp_path / "source-activation" / "releases" / "43b8c76a31"  # pragma: allowlist secret
     )  # pragma: allowlist secret
-    (canonical / ".git").mkdir(parents=True)
+    git_checkout(canonical, history="council")
+    git_checkout(activation, history="council")
     (canonical / "legacy-surface").mkdir()
     (activation / "legacy-surface").mkdir(parents=True)
     assert activation.name != canonical.name
