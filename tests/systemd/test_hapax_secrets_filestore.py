@@ -589,10 +589,12 @@ def test_ci_stages_verified_reins_source_outside_workspace(tmp_path, monkeypatch
     ]
 
 
-def _run_producer(env: dict[str, str], setup: str = "") -> subprocess.CompletedProcess[str]:
+def _run_producer(
+    env: dict[str, str], setup: str = "", *, interpreter: str = sys.executable
+) -> subprocess.CompletedProcess[str]:
     return subprocess.run(
         [
-            sys.executable,
+            interpreter,
             "-c",
             "import os, runpy, sys\n"
             + setup
@@ -1255,8 +1257,184 @@ def test_get_launch_oserror_after_where_preserves_files(helper_source):
     _assert_read_refusal(result, common, authority, inodes, AUTHORITY_ENTRY, "launch OSError")
 
 
-@pytest.mark.parametrize("operation", ["has", "get"])
-@pytest.mark.parametrize("exception", ["OSError", "ValueError", "RuntimeError"])
+def _entry_fault_setup(operation, fault):
+    """Inject below real FileStore methods, only on the synthetic authority blob."""
+    # Python 3.14 is_file() calls os.path.isfile(), bypassing Path.stat().
+    # os.stat observes both that swallowed path and the producer's direct stat.
+    owner = "os" if operation == "stat" else "Path"
+    return (
+        "import errno\n"
+        "from pathlib import Path\n"
+        "target = Path(os.environ['REINS_SECRET_STORE']) / "
+        f"{(AUTHORITY_ENTRY + '.bin')!r}\n"
+        "marker = target.parent / 'entry-fault-observed'\n"
+        f"original = {owner}.{operation}\n"
+        "def fail(path, *args, **kwargs):\n"
+        "    if path == target or path == str(target):\n"
+        f"        marker.write_text({fault!r})\n"
+        f"        raise OSError(errno.{fault}, 'synthetic-private-error-detail')\n"  # pragma: allowlist secret
+        "    return original(path, *args, **kwargs)\n"
+        f"{owner}.{operation} = fail\n"
+    )
+
+
+@pytest.mark.parametrize("prior", [False, True], ids=["missing-file", "existing-file"])
+@pytest.mark.parametrize("operation", ["stat", "open"])
+@pytest.mark.parametrize(
+    ("fault", "exception"),
+    [
+        ("EIO", "OSError"),
+        ("EACCES", "PermissionError"),
+        ("ELOOP", "OSError"),
+        ("EPERM", "PermissionError"),
+        ("ENOTDIR", "NotADirectoryError"),
+    ],
+)
+def test_service_filestore_entry_fault_preserves_files(
+    producer_store, prior, operation, fault, exception
+):
+    store, common = producer_store
+    store.put(AUTHORITY_ENTRY, AUTHORITY_VALUE)
+    authority, _ = _prior_files(common)
+    if not prior:
+        authority.unlink()
+    before = (_file_state(common), _file_state(authority))
+    result = _run_producer(
+        os.environ.copy(), _entry_fault_setup(operation, fault), interpreter="/usr/bin/python3"
+    )
+    assert (store.root / "entry-fault-observed").read_text() == fault
+    assert authority.exists() == prior, "entry fault removed or created the authority file"
+    assert (_file_state(common), _file_state(authority)) == before
+    assert result.returncode == 2
+    assert f"FileStore {AUTHORITY_ENTRY} unreadable ({exception})" in result.stderr
+    assert "restore service-user read access and valid FileStore entries and .key" in result.stderr
+    assert "Next action:" in result.stderr
+    assert "Traceback" not in result.stderr and "synthetic" not in result.stderr
+    assert not result.stdout
+    assert not list(common.parent.glob(".*.tmp"))
+
+
+@pytest.fixture
+def native_helper_source(producer_store, monkeypatch):
+    store, common = producer_store
+    helper = common.parent / "bin" / "hapax-secret"
+    helper.write_text(
+        "#!/usr/bin/python3\n"
+        "import os, runpy, sys\n"
+        "sys.path.insert(0, os.environ['HAPAX_REINS_API'])\n"
+        "exec(os.environ.get('SYNTHETIC_ENTRY_FAULT_SETUP', ''))\n"
+        "runpy.run_module('hapax_secret', run_name='__main__')\n"
+    )
+    helper.chmod(0o700)
+    monkeypatch.setenv("HAPAX_SECRET_HELPER", str(helper))
+    monkeypatch.setenv("HAPAX_SECRETS_SOURCE", "helper")
+    monkeypatch.setenv("HAPAX_SECRETS_FORCE_REMOTE", "0")
+    monkeypatch.delenv("SYNTHETIC_ENTRY_FAULT_SETUP", raising=False)
+    return store, common, helper
+
+
+@pytest.mark.parametrize("prior", [False, True], ids=["missing-file", "existing-file"])
+@pytest.mark.parametrize("state", ["absent", "readable", "unreadable"])
+@pytest.mark.parametrize("source", ["filestore", "helper"])
+def test_service_entry_decision_table(native_helper_source, monkeypatch, prior, state, source):
+    store, common, _ = native_helper_source
+    monkeypatch.setenv("HAPAX_SECRETS_SOURCE", source)
+    if state != "absent":
+        store.put(AUTHORITY_ENTRY, AUTHORITY_VALUE)
+        if state == "unreadable":
+            store._blob_path(AUTHORITY_ENTRY).write_bytes(b"truncated")
+    authority, _ = _prior_files(common)
+    if not prior:
+        authority.unlink()
+    before = (_file_state(common), _file_state(authority))
+    result = _run_producer(os.environ.copy(), interpreter="/usr/bin/python3")
+    if state == "unreadable":
+        assert (_file_state(common), _file_state(authority)) == before
+        assert result.returncode == 2
+        assert AUTHORITY_ENTRY in result.stderr and "present-but-unreadable" in result.stderr
+        assert "Next action:" in result.stderr
+        assert not result.stdout
+    else:
+        assert result.returncode == 0, result.stderr
+        assert common.read_bytes() == COMMON_BASELINE
+        if state == "absent":
+            assert not authority.exists()
+            assert not store._blob_path(AUTHORITY_ENTRY).exists()
+        else:
+            assert authority.read_bytes() == AUTHORITY_ENV.encode() + b"=" + AUTHORITY_VALUE + b"\n"
+    assert "synthetic" not in result.stdout + result.stderr
+    assert not list(common.parent.glob(".*.tmp"))
+
+
+@pytest.mark.parametrize("fault", ["EIO", "EACCES", "ELOOP"])
+def test_native_helper_stat_fault_is_indistinguishable_from_absence(
+    native_helper_source, monkeypatch, fault
+):
+    """Protocol boundary evidence, not a claim that helper omission is safe.
+
+    Reins must distinguish these responses before this producer can do so.
+    Never run the producer on this ambiguous response to endorse deletion.
+    """
+    store, _, helper = native_helper_source
+    responses = []
+    for present in (False, True):
+        if present:
+            store.put(AUTHORITY_ENTRY, AUTHORITY_VALUE)
+            monkeypatch.setenv("SYNTHETIC_ENTRY_FAULT_SETUP", _entry_fault_setup("stat", fault))
+        pair = []
+        for args in (["--where", AUTHORITY_ENTRY], [AUTHORITY_ENTRY]):
+            result = subprocess.run(
+                [str(helper), *args],
+                env=os.environ.copy(),
+                capture_output=True,
+                check=False,
+                timeout=5,
+            )
+            pair.append((result.returncode, result.stdout, result.stderr))
+        responses.append(pair)
+    assert (
+        responses[0]
+        == responses[1]
+        == [
+            (1, f"not found: {AUTHORITY_ENTRY}\n".encode(), b""),
+            (
+                1,
+                b"",
+                f"not found in FileStore: {AUTHORITY_ENTRY}. legal_next: "
+                "run hapax-secret (TTY put) via reins.\n".encode(),
+            ),
+        ]
+    )
+    assert (store.root / "entry-fault-observed").read_text() == fault
+
+
+@pytest.mark.parametrize("prior", [False, True], ids=["missing-file", "existing-file"])
+@pytest.mark.parametrize("fault", ["EIO", "EACCES", "ELOOP"])
+def test_service_native_helper_open_fault_preserves_files(
+    native_helper_source, monkeypatch, prior, fault
+):
+    store, common, _ = native_helper_source
+    store.put(AUTHORITY_ENTRY, AUTHORITY_VALUE)
+    authority, _ = _prior_files(common)
+    if not prior:
+        authority.unlink()
+    before = (_file_state(common), _file_state(authority))
+    monkeypatch.setenv("SYNTHETIC_ENTRY_FAULT_SETUP", _entry_fault_setup("open", fault))
+    result = _run_producer(os.environ.copy(), interpreter="/usr/bin/python3")
+    assert (store.root / "entry-fault-observed").read_text() == fault
+    assert (_file_state(common), _file_state(authority)) == before
+    assert result.returncode == 2
+    assert f"helper {AUTHORITY_ENTRY} GET transport exit 1" in result.stderr
+    assert "Next action:" in result.stderr
+    assert "Traceback" not in result.stderr and "synthetic" not in result.stderr
+    assert not result.stdout
+    assert not list(common.parent.glob(".*.tmp"))
+
+
+@pytest.mark.parametrize("operation", ["_blob_path", "get"])
+@pytest.mark.parametrize(
+    "exception", ["OSError", "ValueError", "RuntimeError", "FileNotFoundError"]
+)
 def test_store_exceptions_preserve_files(producer_store, operation, exception):
     _, common = producer_store
     authority, inodes = _prior_files(common)
@@ -1682,7 +1860,7 @@ def test_producer_absent_authority_removes_stale_file(producer_store, stale) -> 
     authority = common.with_name(AUTHORITY_FILE)
     if stale:
         authority.write_bytes(AUTHORITY_VALUE)
-    result = _run_producer(os.environ.copy())
+    result = _run_producer(os.environ.copy(), interpreter="/usr/bin/python3")
     assert result.returncode == 0, result.stderr
     assert not authority.exists()
     assert common.read_bytes() == COMMON_BASELINE

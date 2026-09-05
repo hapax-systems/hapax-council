@@ -221,7 +221,9 @@ def _helper_value(name: str) -> bytes | None:
 
     result = _helper_call(name)
     # Reins GET maps both absent and invalid blobs to this exact response.
-    # Only a separately demonstrated --where absence permits omission/deletion.
+    # The paired --where response is required for omission/deletion, but pinned
+    # Reins also maps entry stat faults to this pair. Distinguishing those faults
+    # requires a native helper change; this transport cannot recover the cause.
     not_found = (
         f"not found in FileStore: {name}. legal_next: run hapax-secret (TTY put) via reins.\n"
     ).encode()
@@ -250,7 +252,13 @@ def _store_value(name: str, env_name: str) -> str | None:
     else:
         repair = _STORE_REPAIR
         try:
-            if not store.has(name):
+            # Pinned FileStore exposes its validated root/<safe-name>.bin path.
+            # has()/get() use is_file(), which can suppress stat errors. Only
+            # the entry stat's FileNotFoundError demonstrates optional absence.
+            entry = store._blob_path(name)
+            try:
+                entry.stat()
+            except FileNotFoundError:
                 return None
             raw = store.get(name)
         except Exception as exc:
