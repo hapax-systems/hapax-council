@@ -691,7 +691,7 @@ def test_payg_resource_receipt_round_trips_through_telemetry_writer(
     receipt = module.SpendReceipt.model_validate(payload)
     reservation = module.PaygSpendReservation(path=reservation.path, spend_receipt=receipt)
     config = module.ReviewConfig(
-        secret_entry="glmcp/api-key",
+        secret_entry="glmcp/api-key",  # pragma: allowlist secret
         base_url=module.DEFAULT_CODING_PLAN_BASE_URL,
         model="glm-5.2",
         timeout_seconds=42,
@@ -704,7 +704,7 @@ def test_payg_resource_receipt_round_trips_through_telemetry_writer(
     primary = module.ZaiHttpError(
         status=429,
         detail=json.dumps({"error": {"code": "1310", "message": "Quota exhausted."}}),
-        secret="fixture-only",
+        secret="fixture-only",  # pragma: allowlist secret
         base_url=module.DEFAULT_CODING_PLAN_BASE_URL,
         provider_label="Coding Plan",
     )
