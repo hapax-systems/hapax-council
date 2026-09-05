@@ -5,8 +5,8 @@ OnFailure=notify-failure@%n.service
 
 [Service]
 Type=oneshot
-ExecStart=/home/hapax/projects/hapax-council/scripts/hapax-backup-watchdog
-WorkingDirectory=/home/hapax/projects/hapax-council
+ExecStart=%h/.cache/hapax/source-activation/worktree/scripts/hapax-backup-watchdog
+WorkingDirectory=%h/.cache/hapax/source-activation/worktree
 Environment=PATH=/home/hapax/.local/bin:/usr/local/bin:/usr/bin:/bin
 Environment=HOME=/home/hapax
 Environment=GNUPGHOME=/home/hapax/.gnupg
