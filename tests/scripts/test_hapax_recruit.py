@@ -1250,8 +1250,8 @@ def test_agy_shape_forwards_an_explicit_model_selector(bench) -> None:
     receipt = _receipt(out)
     assert receipt["model_requested"] == "synthetic-flash-selector"
     # A forwarded selector is a request, not a served identity: agy reports no served
-    # model, so nothing is recorded as served and nothing is inferred from the request.
-    assert receipt["models_reported"] == []
+    # model, so the receipt records the identity as absent and infers nothing from the request.
+    assert receipt["models_reported"] == "absent"
 
 
 def test_claude_shape_records_the_served_models_from_model_usage(bench) -> None:
