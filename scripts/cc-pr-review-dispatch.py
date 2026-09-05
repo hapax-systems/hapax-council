@@ -1001,9 +1001,25 @@ def fetch_pr(
     engages on failure can react to exhaustion but never prevent it. When the cycle measured
     REST below its floor, this begins on GraphQL instead, and REST becomes the fallback.
     """
+    incomplete_pr: PRInfo | None = None
     if route is not None and route.transport == "graphql":
         try:
-            return _fetch_pr_via_view(pr_number, repo=repo, repo_root=repo_root, runner=runner)
+            pr_info = _fetch_pr_via_view(pr_number, repo=repo, repo_root=repo_root, runner=runner)
+            if (
+                pr_info.changed_file_count is None
+                or len(pr_info.files) >= pr_info.changed_file_count
+                or route.rest_blocked
+            ):
+                return pr_info
+            # Keep the known truncation for review_pr's withholding reason if REST also
+            # fails. A successful metadata response is not a complete file listing.
+            incomplete_pr = pr_info
+            LOG.warning(
+                "GraphQL pull files truncated for PR #%d (%d/%d); falling back to REST",
+                pr_number,
+                len(pr_info.files),
+                pr_info.changed_file_count,
+            )
         except RuntimeError as exc:
             if route.rest_blocked:
                 # REST was MEASURED below its floor. Falling back to it would attempt more
@@ -1020,6 +1036,8 @@ def fetch_pr(
             )
     item = get_pull_rest(pr_number, repo=repo, repo_root=repo_root, runner=runner)
     if item is None:
+        if incomplete_pr is not None:
+            return incomplete_pr
         if route is not None and route.transport == "graphql":
             # `gh pr view` was already the PRIMARY on this cycle and it failed; retrying it here
             # would repeat a call we know just failed, which is the "attempt more after a
@@ -1051,6 +1069,8 @@ def fetch_pr(
     head = item.get("head") if isinstance(item.get("head"), dict) else {}
     base = item.get("base") if isinstance(item.get("base"), dict) else {}
     file_items = list_pull_files_rest(pr_number, repo=repo, repo_root=repo_root, runner=runner)
+    if incomplete_pr is not None and not file_items:
+        return incomplete_pr
     files = tuple(
         str(entry["filename"])
         for entry in file_items

@@ -4431,7 +4431,9 @@ def test_exhausted_rest_routes_the_review_scan_to_graphql(tmp_path: Path) -> Non
     )
 
 
-def test_graphql_routed_scan_does_not_begin_each_pr_on_rest(tmp_path: Path) -> None:
+def test_graphql_routed_scan_does_not_begin_each_pr_on_rest(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
     """Routing the listing is one call; the per-PR work is N. Only routing the one spares little.
 
     The previous version of this coverage returned an empty listing, so there were no rows and
@@ -4480,6 +4482,7 @@ def test_graphql_routed_scan_does_not_begin_each_pr_on_rest(tmp_path: Path) -> N
                         "changedFiles": 1,
                         "isDraft": False,
                         "files": [{"path": "scripts/example.py"}],
+                        "statusCheckRollup": [],
                     }
                 ),
                 "",
@@ -4488,14 +4491,92 @@ def test_graphql_routed_scan_does_not_begin_each_pr_on_rest(tmp_path: Path) -> N
             raise AssertionError(f"per-PR REST spend after a GraphQL-routed listing: {cmd}")
         return subprocess.CompletedProcess(cmd, 1, "", "unhandled")
 
-    # review_pr will fail for other reasons (no vault note); the assertion under test is that
-    # nothing reached REST, which the runner enforces by raising.
-    dispatch.review_all_open_prs(
-        repo="owner/repo", repo_root=tmp_path, vault_root=tmp_path, gh_runner=runner
+    reviews = []
+    real_review_pr = dispatch.review_pr
+
+    def record_review(pr_number: int, **kwargs: Any) -> dict[str, Any]:
+        reviews.append((pr_number, kwargs["route"]))
+        return real_review_pr(pr_number, **kwargs)
+
+    monkeypatch.setattr(dispatch, "review_pr", record_review)
+    results = dispatch.review_all_open_prs(
+        repo="owner/repo",
+        repo_root=tmp_path,
+        vault_root=tmp_path,
+        gh_runner=runner,
+        route_blocked_families={},
     )
 
+    assert len(reviews) == 1, f"review_pr was not reached: {results}"
+    assert reviews[0][0] == 4610
+    assert reviews[0][1].transport == "graphql"
+    assert reviews[0][1].rest_blocked is True
+    assert results == [{"status": "no_task", "pr": 4610}]
     assert any(call[:3] == ["gh", "pr", "list"] for call in calls)
     assert not any(len(call) > 6 and str(call[6]).startswith("repos/") for call in calls)
+
+
+@pytest.mark.parametrize(
+    "rest_state", ["healthy", "blocked", "unavailable", "files_unavailable", "truncated"]
+)
+def test_graphql_truncated_files_use_eligible_rest_for_review(
+    tmp_path: Path, rest_state: str
+) -> None:
+    files = [f"shared/file_{index}.py" for index in range(101)]
+    fake = FakeGh(files=files, changed_files_count=101)
+    calls = []
+
+    def runner(cmd: list[str], **kwargs: Any) -> subprocess.CompletedProcess:
+        calls.append(list(cmd))
+        if cmd[:3] == ["gh", "pr", "view"]:
+            proc = fake(cmd, **kwargs)
+            payload = json.loads(proc.stdout)
+            payload["files"] = payload["files"][:100]
+            return subprocess.CompletedProcess(cmd, 0, json.dumps(payload), "")
+        assert rest_state != "blocked", f"REST is ineligible: {cmd}"
+        if rest_state == "unavailable":
+            return subprocess.CompletedProcess(cmd, 1, "", "HTTP 503")
+        proc = fake(cmd, **kwargs)
+        if cmd[:2] == ["gh", "api"] and cmd[6].endswith("/files"):
+            if rest_state == "files_unavailable":
+                return subprocess.CompletedProcess(cmd, 1, "", "HTTP 503")
+            page = int(next(arg.split("=", 1)[1] for arg in cmd if arg.startswith("page=")))
+            rows = json.loads(proc.stdout)
+            if rest_state == "truncated":
+                rows = rows[:100]
+            return subprocess.CompletedProcess(
+                cmd, 0, json.dumps(rows[(page - 1) * 100 : page * 100]), ""
+            )
+        return proc
+
+    result, _, reviewers, note = _review(
+        tmp_path,
+        gh_runner=runner,
+        route=dispatch.ListingRoute(
+            transport="graphql", rest_blocked=rest_state == "blocked", reason=rest_state
+        ),
+    )
+    assert calls[0][:3] == ["gh", "pr", "view"]
+    if rest_state == "healthy":
+        assert result["status"] == "dispatched", result
+        dossier = yaml.safe_load(Path(result["dossier_path"]).read_text())
+        assert dossier["changed_files"] == files
+        assert dossier["changed_file_count"] == 101
+        assert reviewers.invocations
+        assert any(cmd[6].endswith("/files") for cmd in calls if cmd[:2] == ["gh", "api"])
+    else:
+        assert result == {
+            "status": "changed_files_truncated",
+            "pr": 42,
+            "files_seen": 100,
+            "changed_files": 101,
+        }
+        assert not reviewers.invocations
+        assert not (note.parent / "task-a.acceptance.yaml").exists()
+        if rest_state == "blocked":
+            assert len(calls) == 1
+        else:
+            assert any(cmd[:2] == ["gh", "api"] for cmd in calls)
 
 
 def test_both_pools_exhausted_skips_the_review_scan(tmp_path: Path) -> None:
