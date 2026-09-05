@@ -537,3 +537,94 @@ def test_decayed_findings_merge_reader_sites_of_one_pattern(gate, tmp_path: Path
         Path("shared/reader_a.py"),
         Path("shared/reader_b.py"),
     }
+
+
+@pytest.mark.parametrize("loop", ["for", "async for"])
+@pytest.mark.parametrize("collection", ["[{items}]", "({items},)", "{{{items}}}"])
+@pytest.mark.parametrize("operation", ["read_text()", "write_text('{}')"])
+def test_loop_target_rebinding_preserves_real_accesses(
+    gate, tmp_path: Path, loop: str, collection: str, operation: str
+) -> None:
+    items = "Path('artifacts/new.json'), Path('artifacts/other.json')"
+    _write(
+        tmp_path,
+        "shared/consumer.py",
+        "from pathlib import Path\nasync def use():\n"
+        "    artifact = Path('artifacts/old.json')\n"
+        f"    {loop} artifact in {collection.format(items=items)}:\n"
+        f"        artifact.{operation}\n"
+        "Path('artifacts/old.json').read_text()\n",
+    )
+    accesses, unresolved, *_ = gate.collect_artifact_accesses(tmp_path)
+    assert {item.pattern for item in accesses if item.lineno == 5} == {
+        "artifacts/new.json",
+        "artifacts/other.json",
+    }
+    assert unresolved == 0
+    patterns = _unwritten_patterns(gate.analyse_consumer_side(tmp_path, []), "shared/consumer.py")
+    assert "artifacts/old.json" in patterns
+    if operation == "read_text()":
+        assert {"artifacts/new.json", "artifacts/other.json"} <= patterns
+
+
+@pytest.mark.parametrize("loop", ["for", "async for"])
+@pytest.mark.parametrize("target", ["artifact", "(label, artifact)"])
+@pytest.mark.parametrize("iterable", ["items", "[f'artifacts/{unknown}.json']"])
+def test_loop_target_unknown_iterable_is_unresolved(
+    gate, tmp_path: Path, loop: str, target: str, iterable: str
+) -> None:
+    _write(
+        tmp_path,
+        "shared/consumer.py",
+        "from pathlib import Path\nasync def use(items):\n"
+        "    artifact = Path('artifacts/old.json')\n"
+        f"    {loop} {target} in {iterable}:\n"
+        "        artifact.write_text('{}')\n        artifact.read_text()\n"
+        "Path('artifacts/old.json').read_text()\n",
+    )
+    accesses, unresolved, *_ = gate.collect_artifact_accesses(tmp_path)
+    assert not [item for item in accesses if item.lineno in (5, 6)]
+    assert unresolved == 2
+    report = gate.analyse_consumer_side(tmp_path, [])
+    assert "artifacts/old.json" in _unwritten_patterns(report, "shared/consumer.py")
+    assert len(report.unresolved_paths) == 2
+    assert all("artifact" in site for site in report.unresolved_paths)
+
+
+@pytest.mark.parametrize("loop", ["for", "async for"])
+def test_loop_target_tuple_unpacking_binds_each_component(gate, tmp_path: Path, loop: str) -> None:
+    _write(
+        tmp_path,
+        "shared/consumer.py",
+        "from pathlib import Path\nasync def use():\n"
+        "    source = Path('artifacts/old-source.json')\n"
+        "    dest = Path('artifacts/old-dest.json')\n"
+        f"    {loop} source, (label, dest) in ["
+        "(Path('artifacts/source.json'), ('label', Path('artifacts/dest.json')))]:\n"
+        "        source.read_text()\n        dest.write_text('{}')\n"
+        "Path('artifacts/old-dest.json').read_text()\n",
+    )
+    accesses, unresolved, *_ = gate.collect_artifact_accesses(tmp_path)
+    assert {(item.action, item.pattern) for item in accesses if item.lineno in (6, 7)} == {
+        ("read", "artifacts/source.json"),
+        ("write", "artifacts/dest.json"),
+    }
+    assert unresolved == 0
+    assert "artifacts/old-dest.json" in _unwritten_patterns(
+        gate.analyse_consumer_side(tmp_path, []), "shared/consumer.py"
+    )
+
+
+def test_loop_target_post_loop_keeps_zero_iteration_and_body_end(gate, tmp_path: Path) -> None:
+    _write(
+        tmp_path,
+        "shared/consumer.py",
+        "from pathlib import Path\ndef use():\n"
+        "    artifact = Path('artifacts/old.json')\n"
+        "    for artifact in [Path('artifacts/new.json')]:\n        pass\n"
+        "    artifact.read_text()\n",
+    )
+    assert _unwritten_patterns(gate.analyse_consumer_side(tmp_path, []), "shared/consumer.py") == {
+        "artifacts/old.json",
+        "artifacts/new.json",
+    }

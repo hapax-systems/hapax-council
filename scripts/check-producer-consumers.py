@@ -580,6 +580,7 @@ class ConsumerSideReport:
     source_gaps: tuple[SourceGap, ...] = ()
     capped_expressions: tuple[str, ...] = ()
     unresolved_closures: tuple[str, ...] = ()
+    unresolved_paths: tuple[str, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -591,6 +592,7 @@ class PathFunction:
     path: Path
     returns_path: bool = False
     lexical_prefixes: tuple[str, ...] = ()
+    node: ast.FunctionDef | ast.AsyncFunctionDef | None = None
 
 
 @dataclass(frozen=True)
@@ -616,9 +618,12 @@ class PathFunctionTable(dict[str, PathFunction]):
         self.aliases_by_path: dict[Path, dict[str, str]] = {}
         self.capped_expressions: set[str] = set()
         self.unresolved_closures: set[str] = set()
+        self.unresolved_paths: set[str] = set()
+        self.helper_results: dict[tuple[int, tuple[tuple[str, str], ...]], str | None] = {}
 
     def register(self, relative: Path, qualname: str, function: PathFunction) -> None:
         self[f"{_module_name(relative)}.{qualname}"] = function
+        self.helper_results.clear()
 
     def canonical_name(
         self,
@@ -801,6 +806,18 @@ _LEXICAL_SCOPE_KEY = "\0lexical-scope"
 _IMPORT_ALIAS_PREFIX = "\0import-alias:"
 _VALUE_ALTERNATIVES_PREFIX = "\0value-alternatives:"
 _UNRESOLVED_CLOSURE_PREFIX = "\0unresolved-closure:"
+_HELPER_STACK_KEY = "\0helper-stack"
+_HELPER_EFFECT_KEY = "\0helper-unbounded-effect"
+_PATH_CONSTRUCTORS = frozenset(
+    {
+        "Path",
+        "PurePath",
+        "PurePosixPath",
+        "pathlib.Path",
+        "pathlib.PurePath",
+        "pathlib.PurePosixPath",
+    }
+)
 
 
 def _path_value_key(name: str) -> str:
@@ -1141,7 +1158,31 @@ def _resolve_path_expr(
         if isinstance(path_functions, PathFunctionTable)
         else _function_name(node)
     )
-    if name in {"Path", "pathlib.Path", "str"}:
+    if name in _PATH_CONSTRUCTORS:
+        components: list[str] = []
+        for argument in node.args:
+            component = _resolve_path_expr(
+                argument, values, path, repo_root, path_functions, depth=depth + 1
+            )
+            if component is None or (
+                component == "*"
+                and not (isinstance(argument, ast.Constant) and argument.value == "*")
+            ):
+                return None
+            if len(node.args) > 1 and any(
+                _resolve_path_expr(
+                    item.value, values, path, repo_root, path_functions, depth=depth + 1
+                )
+                in (None, "*")
+                for item in ast.walk(argument)
+                if isinstance(item, ast.FormattedValue)
+            ):
+                return None
+            components.append(component)
+        # Preserve absolute components until the entire construction has been joined. Early
+        # repository-relative normalization loses a nested Path's absolute reset semantics.
+        return str(PurePosixPath(*components))
+    if name == "str":
         if not node.args:
             return "."
         return _resolve_path_expr(
@@ -1200,10 +1241,35 @@ def _resolve_path_expr(
         if isinstance(path_functions, PathFunctionTable)
         else (path_functions.get(name) or path_functions.get(name.rsplit(".", 1)[-1]))
     )
-    if function is None:
+    if function is None or function.node is None:
         return None
-    bound = dict(function.module_values)
-    _set_lexical_scope(bound, function.lexical_prefixes)
+    helper_key = f"{function.path}:{function.node.lineno}"
+    stack = values.get(_HELPER_STACK_KEY, "").split("|")
+    if helper_key in stack or len(stack) > 12:
+        return None
+    inherited = dict(function.module_values)
+    if len(function.lexical_prefixes) > 1:
+        if function.lexical_prefixes[1] not in _lexical_scope(values):
+            return None
+        # Closure cells come from the enclosing invocation, while declared globals still
+        # belong to the defining module. Local stores are reset by _scope_initial_values.
+        inherited.update(values)
+        for statement in ast.walk(function.node):
+            if isinstance(statement, ast.Global):
+                for global_name in statement.names:
+                    inherited.pop(global_name, None)
+                    _clear_value_alternatives(inherited, global_name)
+                    if global_name in function.module_values:
+                        inherited[global_name] = function.module_values[global_name]
+    inherited[_HELPER_STACK_KEY] = "|".join((*stack, helper_key))
+    bound = _scope_initial_values(
+        function.node,
+        inherited,
+        function.path,
+        repo_root,
+        path_functions,
+        function.lexical_prefixes,
+    )
     for parameter, default in function.defaults.items():
         resolved = _resolve_path_expr(
             default,
@@ -1240,14 +1306,32 @@ def _resolve_path_expr(
                 )
                 or "*"
             )
-    return _resolve_path_expr(
-        function.return_expr,
-        bound,
-        function.path,
-        repo_root,
-        path_functions,
-        depth=depth + 1,
+    cache = path_functions.helper_results if isinstance(path_functions, PathFunctionTable) else {}
+    cache_key = (id(function), tuple(sorted(bound.items())))
+    if cache_key in cache:
+        return cache[cache_key]
+    scanner = _PathHelperScanner(
+        path=function.path,
+        repo_root=repo_root,
+        path_functions=path_functions,
+        accesses=[],
+        unresolved=[0],
+        unrecognised=Counter(),
+        context_family="path-helper",
+        nested_scope_values={},
     )
+    fallthrough = scanner.scan_block(function.node.body, [bound])
+    result = (
+        next(iter(scanner.return_values))
+        if not fallthrough and len(scanner.return_values) == 1
+        else None
+    )
+    # Classification and assignment evaluate the same calls; memoize their binding state so
+    # nested helpers do not repeatedly expand the same bodies. Bound the per-scan cache.
+    if len(cache) >= 4096:
+        cache.clear()
+    cache[cache_key] = result
+    return result
 
 
 def _is_path_annotation(node: ast.expr | None) -> bool:
@@ -1471,8 +1555,17 @@ def _record_access(
             pattern = _join_pattern(pattern, append, repo_root)
         if not _useful_pattern(pattern):
             unresolved[0] += 1
+            if isinstance(path_functions, PathFunctionTable):
+                expression_label = (
+                    ast.unparse(expression) if expression is not None else "<unknown>"
+                )
+                path_functions.unresolved_paths.add(
+                    f"{path}:{call.lineno}:{call.col_offset}: {action} {operation} "
+                    f"path={expression_label}"
+                )
             continue
         assert pattern is not None
+        pattern = _normalise_pattern(pattern, repo_root)
         accesses.append(
             ArtifactAccess(action, pattern, path, call.lineno, family, operation, modelled)
         )
@@ -2132,6 +2225,9 @@ def _merge_states(states: list[dict[str, str]]) -> list[dict[str, str]]:
     collapsed: dict[str, str] = {}
     for name in internal_names:
         alternatives = {state.get(name) for state in merged}
+        if name == _HELPER_EFFECT_KEY and "1" in alternatives:
+            collapsed[name] = "1"
+            continue
         if len(alternatives) == 1 and None not in alternatives:
             value = alternatives.pop()
             assert value is not None
@@ -2229,6 +2325,67 @@ class _BlockScanner:
         for name in flagged:
             self.unrecognised[name] += 1
 
+    def _bind_loop_target(
+        self, target: ast.expr, value: ast.expr | None, state: dict[str, str]
+    ) -> dict[str, str]:
+        if isinstance(target, (ast.Tuple, ast.List)):
+            components = (
+                value.elts
+                if isinstance(value, (ast.Tuple, ast.List)) and len(target.elts) == len(value.elts)
+                else [None] * len(target.elts)
+            )
+            assigned = dict(state)
+            # Resolve every component against the incoming state: unpacking stores must not
+            # change the meaning of later expressions in the same iteration value.
+            for child, component in zip(target.elts, components, strict=True):
+                child_state = self._bind_loop_target(child, component, state)
+                for name in {item.id for item in ast.walk(child) if isinstance(item, ast.Name)}:
+                    for key in (
+                        name,
+                        _path_value_key(name),
+                        _value_alternatives_key(name),
+                        f"{_IMPORT_ALIAS_PREFIX}{name}",
+                        f"{_UNRESOLVED_CLOSURE_PREFIX}{name}",
+                    ):
+                        assigned.pop(key, None)
+                        if key in child_state:
+                            assigned[key] = child_state[key]
+            return assigned
+        if isinstance(target, ast.Starred):
+            return self._bind_loop_target(target.value, None, state)
+        if value is not None and any(
+            _resolve_path_expr(item.value, state, self.path, self.repo_root, self.path_functions)
+            in (None, "*")
+            for item in ast.walk(value)
+            if isinstance(item, ast.FormattedValue)
+        ):
+            # A literal container does not make its dynamic elements literal. In particular,
+            # an unknown formatted target must not become a wildcard writer in the body.
+            value = None
+        return _apply_assignment(
+            ast.Assign(targets=[target], value=value),
+            state,
+            self.path,
+            self.repo_root,
+            self.path_functions,
+        )[0]
+
+    def _loop_body_states(
+        self, statement: ast.For | ast.AsyncFor, states: list[dict[str, str]]
+    ) -> list[dict[str, str]]:
+        iterations = (
+            statement.iter.elts
+            if isinstance(statement.iter, (ast.List, ast.Tuple, ast.Set))
+            else [None]
+        )
+        return _merge_states(
+            [
+                self._bind_loop_target(statement.target, value, state)
+                for state in states
+                for value in iterations
+            ]
+        )
+
     def _scan_statement(
         self,
         statement: ast.stmt,
@@ -2299,7 +2456,12 @@ class _BlockScanner:
             )
             return _merge_states(taken + not_taken)
         if isinstance(statement, (ast.For, ast.AsyncFor, ast.While)):
-            looped = self.scan_block(statement.body, _fork(states), exception_states, exit_states)
+            body_states = (
+                self._loop_body_states(statement, states)
+                if isinstance(statement, (ast.For, ast.AsyncFor))
+                else _fork(states)
+            )
+            looped = self.scan_block(statement.body, body_states, exception_states, exit_states)
             after = _merge_states(_fork(states) + looped)
             return (
                 self.scan_block(statement.orelse, after, exception_states, exit_states)
@@ -2379,6 +2541,65 @@ class _BlockScanner:
                 exit_states.extend(_fork(states))
             return []
         return states
+
+
+class _PathHelperScanner(_BlockScanner):
+    """Evaluate return bindings using the same control flow as artifact access scanning.
+
+    Helpers expose one scalar path to the expression resolver. Ambiguous returns and effects
+    we cannot bound therefore remain unresolved, rather than selecting one branch's producer.
+    Calls are inspected for effects here; accesses are counted by the ordinary scope scan.
+    """
+
+    def __init__(self, **kwargs) -> None:
+        super().__init__(**kwargs)
+        self.return_values: set[str | None] = set()
+
+    def _classify(self, call: ast.Call, states: list[dict[str, str]]) -> None:
+        for state in states:
+            if _HELPER_EFFECT_KEY in state:
+                continue
+            resolved = _resolve_path_expr(
+                call, state, self.path, self.repo_root, self.path_functions
+            )
+            if resolved is None:
+                state[_HELPER_EFFECT_KEY] = "1"
+            if isinstance(self.path_functions, PathFunctionTable):
+                function = self.path_functions.resolve(
+                    _function_name(call), self.path, _lexical_scope(state), _import_aliases(state)
+                )
+                if (
+                    function
+                    and function.node
+                    and any(
+                        isinstance(item, (ast.Global, ast.Nonlocal))
+                        for item in ast.walk(function.node)
+                    )
+                ):
+                    state[_HELPER_EFFECT_KEY] = "1"
+
+    def _scan_statement(
+        self,
+        statement: ast.stmt,
+        states: list[dict[str, str]],
+        exception_states: list[dict[str, str]] | None = None,
+        exit_states: list[dict[str, str]] | None = None,
+    ) -> list[dict[str, str]]:
+        # Effects can happen before a call raises or returns. Mark them before the shared
+        # walker captures exception predecessors and before evaluating a return expression.
+        for call in _statement_calls(statement):
+            self._classify(call, states)
+        if isinstance(statement, ast.Return):
+            for state in states:
+                if _HELPER_EFFECT_KEY in state:
+                    self.return_values.add(None)
+                else:
+                    self.return_values.update(
+                        _resolve_path_expr_variants(
+                            statement.value, state, self.path, self.repo_root, self.path_functions
+                        )
+                    )
+        return super()._scan_statement(statement, states, exception_states, exit_states)
 
 
 def _scan_scope(
@@ -2569,6 +2790,7 @@ def collect_artifact_accesses(
     source_gaps: list[SourceGap] | None = None,
     capped_expressions: set[str] | None = None,
     unresolved_closures: set[str] | None = None,
+    unresolved_paths: set[str] | None = None,
 ) -> tuple[list[ArtifactAccess], int, dict[Path, frozenset[str]], dict[str, int]]:
     parsed: list[tuple[Path, ast.Module]] = []
     for source_path in _iter_python_sources(
@@ -2626,6 +2848,7 @@ def collect_artifact_accesses(
                             return_expr, function_values, relative, path_functions
                         ),
                         scope.lexical_prefixes,
+                        node,
                     ),
                 )
 
@@ -2680,6 +2903,8 @@ def collect_artifact_accesses(
         capped_expressions.update(path_functions.capped_expressions)
     if unresolved_closures is not None:
         unresolved_closures.update(path_functions.unresolved_closures)
+    if unresolved_paths is not None:
+        unresolved_paths.update(path_functions.unresolved_paths)
     return unique, unresolved[0], imports_by_path, dict(sorted(unrecognised.items()))
 
 
@@ -3184,11 +3409,13 @@ def analyse_consumer_side(
     source_gaps: list[SourceGap] = []
     capped_expressions: set[str] = set()
     unresolved_closures: set[str] = set()
+    unresolved_paths: set[str] = set()
     accesses, unresolved, imports_by_path, unrecognised = collect_artifact_accesses(
         repo_root,
         source_gaps=source_gaps,
         capped_expressions=capped_expressions,
         unresolved_closures=unresolved_closures,
+        unresolved_paths=unresolved_paths,
     )
     reads = [item for item in accesses if item.action == "read"]
     writes = [item for item in accesses if item.action == "write"]
@@ -3342,6 +3569,7 @@ def analyse_consumer_side(
         source_gaps=tuple(dict.fromkeys(source_gaps)),
         capped_expressions=tuple(sorted(capped_expressions)),
         unresolved_closures=tuple(sorted(unresolved_closures)),
+        unresolved_paths=tuple(sorted(unresolved_paths)),
     )
 
 
@@ -3414,6 +3642,7 @@ def _report_json(report: ConsumerSideReport) -> dict[str, object]:
         ],
         "capped_expressions": list(report.capped_expressions),
         "unresolved_closures": list(report.unresolved_closures),
+        "unresolved_paths": list(report.unresolved_paths),
         "findings": [
             {
                 "kind": finding.kind,
@@ -3479,6 +3708,8 @@ def print_consumer_side_report(report: ConsumerSideReport, report_path: Path) ->
     for site in report.capped_expressions:
         print(f"[CAPPED] {site}: compact expression union; concrete alternatives retained")
     for site in report.unresolved_closures:
+        print(f"[UNRESOLVED] {site}")
+    for site in report.unresolved_paths:
         print(f"[UNRESOLVED] {site}")
     counts = Counter(finding.kind for finding in report.findings)
     print(

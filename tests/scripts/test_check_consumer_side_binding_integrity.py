@@ -511,3 +511,154 @@ def test_script_decode_failure_is_reported_but_excluded_bytecode_is_not(
     assert {(str(gap.path), gap.error_class) for gap in report.source_gaps} == {
         ("scripts/unreadable-command", "UnicodeDecodeError")
     }
+
+
+def test_multi_component_path_does_not_pair_different_files(gate, tmp_path: Path) -> None:
+    _write(
+        tmp_path,
+        "from pathlib import Path\n"
+        "Path('artifacts', 'produced.json').write_text('{}')\n"
+        "Path('artifacts', 'missing.json').read_text()\n",
+    )
+    report = gate.analyse_consumer_side(tmp_path, [])
+    assert "artifacts/missing.json" in _unwritten(report)
+    accesses, unresolved, *_ = gate.collect_artifact_accesses(tmp_path)
+    assert {(item.action, item.pattern) for item in accesses} == {
+        ("write", "artifacts/produced.json"),
+        ("read", "artifacts/missing.json"),
+    }
+    assert unresolved == 0
+
+
+@pytest.mark.parametrize(
+    "component",
+    ["{absolute!r}", "Path({absolute!r})", "PurePath({absolute!r})"],
+)
+def test_multi_component_path_absolute_component_resets_prefix(
+    gate, tmp_path: Path, component: str
+) -> None:
+    absolute = str(tmp_path / "artifacts/reset")
+    _write(
+        tmp_path,
+        "from pathlib import Path, PurePath\n"
+        f"Path('wrong', {component.format(absolute=absolute)}, 'missing.json').read_text()\n",
+    )
+    assert _unwritten(gate.analyse_consumer_side(tmp_path, [])) == {"artifacts/reset/missing.json"}
+
+
+@pytest.mark.parametrize("constructor", ["Path", "PurePath", "PurePosixPath"])
+def test_multi_component_path_joins_nested_components(
+    gate, tmp_path: Path, constructor: str
+) -> None:
+    _write(
+        tmp_path,
+        "from pathlib import Path, PurePath, PurePosixPath\n"
+        f"Path({constructor}('artifacts', 'nested'), Path('missing.json')).read_text()\n",
+    )
+    assert _unwritten(gate.analyse_consumer_side(tmp_path, [])) == {"artifacts/nested/missing.json"}
+
+
+@pytest.mark.parametrize("component", ["choose()", "unknown", "f'{unknown}.json'"])
+def test_multi_component_path_unknown_component_is_named(
+    gate, tmp_path: Path, capsys, component: str
+) -> None:
+    _write(
+        tmp_path,
+        "from pathlib import Path\n"
+        f"Path('artifacts', {component}).write_text('{{}}')\n"
+        "Path('artifacts/missing.json').read_text()\n",
+    )
+    accesses, unresolved, *_ = gate.collect_artifact_accesses(tmp_path)
+    assert not [item for item in accesses if item.action == "write"]
+    assert unresolved == 1
+    report = gate.analyse_consumer_side(tmp_path, [])
+    assert "artifacts/missing.json" in _unwritten(report)
+    sites = gate._report_json(report)["unresolved_paths"]
+    assert len(sites) == 1 and "shared/consumer.py:2:" in sites[0]
+    assert component in sites[0]
+    gate.print_consumer_side_report(report, tmp_path / "unused.json")
+    assert "[UNRESOLVED] " + sites[0] in capsys.readouterr().out
+
+
+@pytest.mark.parametrize("declaration", ["", "    global ARTIFACT\n"])
+def test_helper_local_assignments_do_not_borrow_module_writer(
+    gate, tmp_path: Path, declaration: str
+) -> None:
+    _write(
+        tmp_path,
+        "from pathlib import Path\nARTIFACT = Path('artifacts/old.json')\n"
+        "def artifact_path():\n"
+        + declaration
+        + "    ARTIFACT = Path('artifacts/intermediate.json')\n"
+        "    ARTIFACT = Path('artifacts/new.json')\n    return ARTIFACT\n"
+        "artifact_path().write_text('{}')\nPath('artifacts/old.json').read_text()\n",
+    )
+    report = gate.analyse_consumer_side(tmp_path, [])
+    assert "artifacts/old.json" in _unwritten(report)
+    accesses, unresolved, *_ = gate.collect_artifact_accesses(tmp_path)
+    assert {item.pattern for item in accesses if item.action == "write"} == {"artifacts/new.json"}
+    assert unresolved == 0
+
+
+@pytest.mark.parametrize(
+    "body",
+    [
+        "    if flag:\n        ARTIFACT = Path('artifacts/new.json')\n",
+        "    for ARTIFACT in choices:\n        pass\n",
+        "    global ARTIFACT\n    rebind()\n",
+        "    global ARTIFACT\n    rebind()\n    saved = ARTIFACT\n",
+    ],
+)
+def test_helper_unbounded_body_cannot_supply_old_writer(gate, tmp_path: Path, body: str) -> None:
+    returned = "saved" if "saved =" in body else "ARTIFACT"
+    _write(
+        tmp_path,
+        "from pathlib import Path\nARTIFACT = Path('artifacts/old.json')\n"
+        "def rebind():\n    global ARTIFACT\n"
+        "    ARTIFACT = Path('artifacts/new.json')\n"
+        "def artifact_path():\n" + body + f"    return {returned}\n"
+        "artifact_path().write_text('{}')\nPath('artifacts/old.json').read_text()\n",
+    )
+    report = gate.analyse_consumer_side(tmp_path, [])
+    assert "artifacts/old.json" in _unwritten(report)
+    assert report.unresolvable >= 1
+    assert any("artifact_path()" in site for site in report.unresolved_paths)
+
+
+def test_helper_nonlocal_assignment_uses_enclosing_binding(gate, tmp_path: Path) -> None:
+    _write(
+        tmp_path,
+        "from pathlib import Path\nARTIFACT = Path('artifacts/old.json')\n"
+        "def outer():\n    ARTIFACT = Path('artifacts/enclosing.json')\n"
+        "    def artifact_path():\n        nonlocal ARTIFACT\n"
+        "        ARTIFACT = Path('artifacts/new.json')\n        return ARTIFACT\n"
+        "    artifact_path().write_text('{}')\nPath('artifacts/old.json').read_text()\n",
+    )
+    accesses, unresolved, *_ = gate.collect_artifact_accesses(tmp_path)
+    assert {item.pattern for item in accesses if item.action == "write"} == {"artifacts/new.json"}
+    assert unresolved == 0
+    assert "artifacts/old.json" in _unwritten(gate.analyse_consumer_side(tmp_path, []))
+
+
+def test_helper_return_uses_state_at_return_not_after(gate, tmp_path: Path) -> None:
+    _write(
+        tmp_path,
+        "from pathlib import Path\nARTIFACT = Path('artifacts/old.json')\n"
+        "def artifact_path():\n    ARTIFACT = Path('artifacts/returned.json')\n"
+        "    return ARTIFACT\n    ARTIFACT = Path('artifacts/unreachable.json')\n"
+        "artifact_path().read_text()\n",
+    )
+    assert _unwritten(gate.analyse_consumer_side(tmp_path, [])) == {"artifacts/returned.json"}
+
+
+def test_helper_guard_raise_preserves_normal_return_binding(gate, tmp_path: Path) -> None:
+    _write(
+        tmp_path,
+        "from pathlib import Path\ndef artifact_path(flag):\n"
+        "    if flag:\n        raise ValueError('invalid')\n"
+        "    artifact = Path('artifacts/normal.json')\n    return artifact\n"
+        "artifact_path(False).read_text()\n",
+    )
+    report = gate.analyse_consumer_side(tmp_path, [])
+    assert _unwritten(report) == {"artifacts/normal.json"}
+    assert report.unresolvable == 0
