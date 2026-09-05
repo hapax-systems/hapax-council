@@ -9,7 +9,7 @@ no Eleventy, no Hugo dependency. Pure stdlib + filesystem reads from
 static host (GitHub Pages, omg.lol weblog, Netlify, plain object
 storage).
 
-Phase 0 invariants the renderer enforces:
+Invariants the renderer enforces:
 
   - No operator legal name in any rendered page body. The V5 byline
     constants come from ``shared.attribution_block`` which has its
@@ -27,8 +27,12 @@ Phase 0 invariants the renderer enforces:
 from __future__ import annotations
 
 import json
+import re
 from dataclasses import dataclass
+from pathlib import Path
 from typing import Final
+from urllib.parse import urlsplit
+from xml.etree import ElementTree as ET
 
 from agents.citable_nexus.citation_graph import compose_graph
 from agents.citable_nexus.datacite_snapshot import (
@@ -38,6 +42,7 @@ from agents.citable_nexus.datacite_snapshot import (
 )
 from agents.citable_nexus.vault_content import (
     markdown_to_html,
+    read_cleared_inputs,
     read_vault_document,
 )
 from agents.publication_bus.surface_registry import (
@@ -64,24 +69,36 @@ class PageMeta:
     body_html: str
 
 
-PAGE_PATHS: Final[tuple[str, ...]] = (
-    "/",
-    "/cite",
-    "/refuse",
-    "/surfaces",
-    "/manifesto",
-    "/refusal-brief",
-    "/deposits",
-    "/citation-graph",
-)
-"""Phase 0 + Phase 1 + Phase 2 page set. The cc-task design's
-8-page schedule is now complete."""
+PAGE_PATHS: Final[tuple[str, ...]] = ("/", "/cite", "/404.html")
+"""Always included pages. Optional document routes require cleared inputs."""
 
-CANONICAL_BASE_URL: Final[str] = "https://hapax.research"
-"""Canonical base URL the rendered site assumes when emitting
-``<link rel="canonical">``. Operator can override via the build CLI
-when the actual deployment URL differs (e.g., omg.lol weblog
-fallback)."""
+HOME_SOURCE = Path(__file__).resolve().parents[2] / "docs/citable-nexus/home.md"
+
+
+def normalize_canonical_url(value: str) -> str:
+    """Accept an explicit HTTP(S) origin, optionally with a static-site path prefix."""
+    value = value.strip().rstrip("/")
+    parsed = urlsplit(value)
+    if (
+        parsed.scheme not in ("http", "https")
+        or not parsed.hostname
+        or parsed.username is not None
+        or parsed.password is not None
+        or parsed.query
+        or parsed.fragment
+        or re.search(r"[\s<>\\{}\"']", value)
+        or any(part in (".", "..") for part in parsed.path.split("/"))
+    ):
+        raise ValueError(
+            "--canonical-url must be an absolute HTTP(S) URL without credentials, query or fragment"
+        )
+    # Also reject malformed port numbers before any output is written.
+    try:
+        parsed.port
+    except ValueError as exc:
+        raise ValueError(f"--canonical-url: {exc}") from exc
+    return value
+
 
 V5_BYLINE: Final[str] = "Hapax / Oudepode / OTO"
 """V5 byline per the operator-referent policy. Uses the operator-
@@ -108,12 +125,12 @@ def _esc(text: str) -> str:
     )
 
 
-def _meta_tags(title: str, description: str, page_path: str) -> str:
+def _meta_tags(title: str, description: str, page_path: str, canonical_base: str) -> str:
     """Open Graph + Bluesky + Twitter Card meta tags.
 
     Bluesky uses Open Graph; the explicit ``og:`` block covers all
     three platforms with one declaration."""
-    canonical_url = f"{CANONICAL_BASE_URL}{page_path}"
+    canonical_url = f"{canonical_base}{page_path}"
     return f"""    <meta charset="utf-8">
     <meta name="viewport" content="width=device-width, initial-scale=1">
     <title>{_esc(title)}</title>
@@ -139,15 +156,40 @@ def _footer(long_form: bool = False) -> str:
     </footer>"""
 
 
-def _wrap(meta: PageMeta, *, footer_long_form: bool = False) -> str:
+def _wrap(
+    meta: PageMeta, canonical_url: str, *, footer_long_form: bool = False, has_feed: bool = False
+) -> str:
     """Wrap one PageMeta into a full HTML document."""
+    body = re.sub(
+        r'href="(/(?!/)[^" ]*)"', lambda m: f'href="{_esc(canonical_url)}{m[1]}"', meta.body_html
+    )
+    feed_link = (
+        f'<link rel="alternate" type="application/rss+xml" title="Hapax documents" href="{_esc(canonical_url)}/rss.xml">'
+        if has_feed
+        else ""
+    )
     return f"""<!doctype html>
 <html lang="en">
 <head>
-{_meta_tags(meta.title, meta.description, meta.path)}
+{_meta_tags(meta.title, meta.description, meta.path, canonical_url)}
+{feed_link}
+<style>
+:root {{ color-scheme: light dark; --bg: light-dark(#fbf1c7, #1d2021); --ink: light-dark(#282828, #ebdbb2); --link: light-dark(#076678, #83a598); --rule: light-dark(#665c54, #bdae93); }}
+* {{ box-sizing: border-box; }}
+body {{ margin: auto; max-width: 72ch; padding: 1.5rem; background: var(--bg); color: var(--ink); font: 1.125rem/1.65 system-ui, sans-serif; overflow-wrap: anywhere; }}
+h1 {{ font-family: ui-monospace, monospace; }}
+h1, h2, h3, h4 {{ line-height: 1.25; }}
+h2 {{ margin-top: 2rem; }}
+a {{ color: var(--link); text-underline-offset: .2em; }}
+a:focus-visible {{ outline: 2px solid currentColor; outline-offset: 4px; }}
+nav, footer {{ border-block-start: 1px solid var(--rule); padding-block: 1rem; }}
+nav a {{ display: inline-block; margin-inline-end: 1rem; }}
+pre {{ white-space: pre-wrap; overflow-wrap: anywhere; }}
+</style>
 </head>
 <body>
-{meta.body_html}
+<nav aria-label="Site"><a href="{_esc(canonical_url)}/">Home</a><a href="{_esc(canonical_url)}/cite">Cite</a></nav>
+{body}
 {_footer(long_form=footer_long_form)}
 </body>
 </html>
@@ -158,38 +200,26 @@ def _wrap(meta: PageMeta, *, footer_long_form: bool = False) -> str:
 
 
 def render_landing_page() -> PageMeta:
-    """``/`` — landing with V5 byline + page index + non-engagement clause."""
-    body = """    <header>
-        <h1>Hapax research</h1>
-        <p class="intent">A citable nexus for the operator's published artifacts.</p>
-    </header>
-    <main>
-        <section class="page-index">
-            <h2>Index</h2>
-            <ul>
-                <li><a href="/cite">/cite</a> — canonical citation block (BibTeX, RIS, plaintext)</li>
-                <li><a href="/refuse">/refuse</a> — REFUSED surfaces catalog (the Tier-3 catalog)</li>
-                <li><a href="/surfaces">/surfaces</a> — full publication-bus surface registry</li>
-            </ul>
-            <p class="phase-note">Phase 1+ pages — <code>/manifesto</code>, <code>/refusal-brief</code>, <code>/deposits</code>, <code>/citation-graph</code> — ship after the operator vault sync + DataCite snapshot ledger lands.</p>
-        </section>
-    </main>"""
+    """Render the committed, reader-facing home copy."""
+    markdown = HOME_SOURCE.read_text(encoding="utf-8")
+    description = " ".join(markdown.split("\n\n")[1].splitlines())
     return PageMeta(
         path="/",
-        title="Hapax research — citable nexus",
-        description="A citable nexus for the operator's published artifacts. Manifesto, Refusal Brief, surface registry, citation graph.",
-        body_html=body,
+        title="Hapax — research and engineering",
+        description=description,
+        body_html=f"<main>{markdown_to_html(markdown)}</main>",
     )
 
 
-def render_cite_page() -> PageMeta:
+def render_cite_page(canonical_url: str) -> PageMeta:
     """``/cite`` — canonical citation block in BibTeX, RIS, plaintext."""
+    canonical_url = normalize_canonical_url(canonical_url)
     bibtex = (
         "@misc{hapax_research_2026,\n"
         "  author       = {Hapax and Oudepode},\n"
         "  title        = {Hapax: a single-operator research instrument},\n"
         "  year         = {2026},\n"
-        "  url          = {https://hapax.research},\n"
+        f"  url          = {{{canonical_url}}},\n"
         "  note         = {Authorship-indeterminacy stance per V5 attribution policy}\n"
         "}"
     )
@@ -199,12 +229,11 @@ def render_cite_page() -> PageMeta:
         "AU  - Oudepode\n"
         "TI  - Hapax: a single-operator research instrument\n"
         "PY  - 2026\n"
-        "UR  - https://hapax.research\n"
+        f"UR  - {canonical_url}\n"
         "ER  - "
     )
     plaintext = (
-        "Hapax & Oudepode (2026). Hapax: a single-operator research "
-        "instrument. https://hapax.research"
+        f"Hapax & Oudepode (2026). Hapax: a single-operator research instrument. {canonical_url}"
     )
     body = f"""    <header>
         <h1>Cite</h1>
@@ -247,7 +276,7 @@ def render_refuse_page() -> PageMeta:
     )
     body = f"""    <header>
         <h1>Refused surfaces</h1>
-        <p class="intent">Surfaces the publication-bus has explicitly chosen not to engage with. The Refusal Brief documents the reasoning per surface; this page is the live index.</p>
+        <p class="intent">Surfaces the publication-bus has explicitly chosen not to engage with. The Refusal Brief documents the reasoning per surface; this page records the source registry at build time.</p>
     </header>
     <main>
         <section class="refused-catalog">
@@ -337,7 +366,7 @@ def _render_surface_row(surface_name: str) -> str:
     return f"                <li><code>{_esc(surface_name)}</code>{api}{note}</li>"
 
 
-# ── Phase 1b: vault-content pages ────────────────────────────────────
+# ── Cleared vault-content pages ────────────────────────────────────
 
 
 def _render_vault_page(
@@ -347,21 +376,16 @@ def _render_vault_page(
     title: str,
     description: str,
     placeholder_intro: str,
+    cleared_inputs: frozenset[Path],
 ) -> PageMeta:
-    """Render one vault-sourced page with safe-fallback for missing files.
-
-    The renderer build environment (CI, ad-hoc) may not have the
-    operator vault mounted. When the source file is absent,
-    ``vault_content.read_vault_document`` returns
-    ``available=False`` and we emit a Phase-1 placeholder rather
-    than failing the build.
-    """
-    doc = read_vault_document(slug)
+    """Render a cleared source or state plainly that no copy is included."""
+    doc = read_vault_document(slug, cleared_inputs=cleared_inputs)
     if doc.available:
         rendered = markdown_to_html(doc.markdown)
+        rendered = re.sub(r"<(\/?)(h[1-4])>", lambda m: f"<{m[1]}h{int(m[2][1]) + 1}>", rendered)
         body = f"""    <header>
         <h1>{_esc(title)}</h1>
-        <p class="intent">Sourced from the operator vault at build time.</p>
+        <p class="intent">Included from an explicitly cleared source.</p>
     </header>
     <main class="vault-content">
 {rendered}
@@ -372,10 +396,7 @@ def _render_vault_page(
         <p class="intent">{_esc(placeholder_intro)}</p>
     </header>
     <main class="vault-placeholder">
-        <p>The {slug} markdown source is not yet synced into the renderer's build scope. The operator vault path
-            (<code>~/Documents/Personal/30-areas/hapax/{slug}.md</code>) is the canonical authoring surface;
-            this page renders that content directly when the build host has read access to the vault.</p>
-        <p>Set <code>HAPAX_VAULT_HAPAX_DIR</code> to override the source dir.</p>
+        <p>No reviewed copy is included in this build.</p>
     </main>"""
     return PageMeta(
         path=path,
@@ -385,10 +406,11 @@ def _render_vault_page(
     )
 
 
-def render_manifesto_page() -> PageMeta:
+def render_manifesto_page(*, cleared_inputs: frozenset[Path] = frozenset()) -> PageMeta:
     """``/manifesto`` — Manifesto v0 rendered from the operator vault."""
     return _render_vault_page(
         slug="manifesto",
+        cleared_inputs=cleared_inputs,
         path="/manifesto",
         title="Manifesto — Hapax research",
         description="Manifesto v0 — the canonical articulation of Hapax's single-operator research-instrument posture.",
@@ -396,10 +418,11 @@ def render_manifesto_page() -> PageMeta:
     )
 
 
-def render_refusal_brief_page() -> PageMeta:
+def render_refusal_brief_page(*, cleared_inputs: frozenset[Path] = frozenset()) -> PageMeta:
     """``/refusal-brief`` — Refusal Brief rendered from the operator vault."""
     return _render_vault_page(
         slug="refusal-brief",
+        cleared_inputs=cleared_inputs,
         path="/refusal-brief",
         title="Refusal Brief — Hapax research",
         description="Refusal Brief — per-surface rationale for the publication-bus's REFUSED catalog.",
@@ -465,10 +488,7 @@ def render_deposits_page(snapshot: DataCiteSnapshot | None = None) -> PageMeta:
         <p class="intent">Operator's authored works as resolved by the DataCite GraphQL API.</p>
     </header>
     <main class="snapshot-placeholder">
-        <p>No DataCite snapshot found at <code>~/hapax-state/datacite-mirror/</code>. The mirror runs nightly via
-            <code>hapax-datacite-mirror.timer</code>; the first snapshot lands after the operator configures
-            <code>HAPAX_OPERATOR_ORCID</code> (see <code>scripts/configure-orcid.sh</code> from PR #2018).
-            Set <code>HAPAX_DATACITE_MIRROR_DIR</code> to override the source dir for this build.</p>
+        <p>No reviewed deposit snapshot is included in this build.</p>
     </main>"""
     return PageMeta(
         path="/deposits",
@@ -481,23 +501,6 @@ def render_deposits_page(snapshot: DataCiteSnapshot | None = None) -> PageMeta:
 # ── Phase 2: citation graph from DataCite snapshot ───────────────────
 
 
-# Single deliberate exception to the "self-contained HTML / no external
-# CSS/JS dependencies" Phase 0 invariant: the /citation-graph page
-# loads Cytoscape.js from a SHA-pinned jsdelivr CDN. The page's graph
-# JSON is embedded in a <script type="application/json"> block so the
-# data is degradeable to plain JSON when JS is disabled.
-CYTOSCAPE_CDN_URL: Final[str] = (
-    "https://cdn.jsdelivr.net/npm/cytoscape@3.30.2/dist/cytoscape.min.js"
-)
-"""Pinned Cytoscape.js URL. Update the version + integrity hash together."""
-
-CYTOSCAPE_INTEGRITY: Final[str] = (
-    "sha384-t06iElIZJxlR9pJEDgN4yEJoWuRvUg4F2RwkiFoY67RdOEkB7DyJX0aLmwjF6gd3"
-)
-"""SRI hash for the pinned Cytoscape.js. Verified against npm shasum.
-Update both this constant and CYTOSCAPE_CDN_URL when bumping versions."""
-
-
 def render_citation_graph_page(
     snapshot: DataCiteSnapshot | None = None,
 ) -> PageMeta:
@@ -505,9 +508,8 @@ def render_citation_graph_page(
 
     Composes a Cytoscape.js elements list from the freshest DataCite
     snapshot (or an injected fixture for tests). The page embeds the
-    JSON inline so it survives JS-disabled clients as a machine-
-    extractable payload; the active rendering uses Cytoscape.js to
-    lay out a force-directed graph.
+    JSON inline for machine extraction and a readable identifier/relation
+    list. No graph library or network request is needed.
     """
     snap = snapshot if snapshot is not None else read_latest_snapshot()
     graph = compose_graph(snap)
@@ -520,38 +522,24 @@ def render_citation_graph_page(
             f"<code>{_esc(snap.snapshot_date or '')}</code>; "
             f"{len(graph.nodes)} nodes, {len(graph.edges)} edges."
         )
+        rows = "\n".join(
+            f"<li>{_esc(edge.source)} — {_esc(edge.relation_type)} — {_esc(edge.target)}</li>"
+            for edge in graph.edges
+        )
+        nodes = "\n".join(f"<li>{_esc(node.id)}</li>" for node in graph.nodes)
+        # Escape raw-text script delimiters even in explicitly supplied data.
+        elements_json = elements_json.replace("<", "\\u003c")
         body_main = f"""    <main>
-        <section class="graph-canvas">
-            <p class="legend"><strong>work</strong> = operator-authored DOI; <strong>related</strong> = identifier referenced by relatedIdentifiers (typed by relationType: <code>IsVersionOf</code>, <code>IsRequiredBy</code>, <code>IsObsoletedBy</code>, etc.).</p>
-            <div id="cy" style="width:100%;height:600px;border:1px solid #444"></div>
-        </section>
-        <section class="graph-data-fallback">
-            <h2>Embedded JSON (no-JS fallback)</h2>
-            <p>The graph payload is also embedded in a machine-extractable JSON block on this page (see <code>&lt;script type="application/json" id="graph-data"&gt;</code>); a no-JS client can parse the JSON directly without Cytoscape.</p>
-        </section>
+        <section><h2>Identifiers</h2><ul>{nodes}</ul></section>
+        <section><h2>Recorded relations</h2><ul>{rows}</ul></section>
+        <section><h2>Graph data</h2><p>Embedded JSON uses the Cytoscape elements format.</p>
+        <pre>{_esc(elements_json)}</pre></section>
     </main>
-    <script type="application/json" id="graph-data">{elements_json}</script>
-    <script src="{_esc(CYTOSCAPE_CDN_URL)}" integrity="{_esc(CYTOSCAPE_INTEGRITY)}" crossorigin="anonymous"></script>
-    <script>
-      (function() {{
-        var data = JSON.parse(document.getElementById('graph-data').textContent);
-        cytoscape({{
-          container: document.getElementById('cy'),
-          elements: data,
-          style: [
-            {{ selector: 'node', style: {{ 'label': 'data(label)', 'font-size': '10px', 'background-color': '#888' }} }},
-            {{ selector: 'node[type = "work"]', style: {{ 'background-color': '#e8b923', 'shape': 'round-rectangle' }} }},
-            {{ selector: 'node[type = "related"]', style: {{ 'background-color': '#458588' }} }},
-            {{ selector: 'edge', style: {{ 'label': 'data(label)', 'font-size': '8px', 'curve-style': 'bezier', 'target-arrow-shape': 'triangle', 'line-color': '#666' }} }}
-          ],
-          layout: {{ name: 'cose', idealEdgeLength: 120, animate: false }}
-        }});
-      }})();
-    </script>"""
+    <script type="application/json" id="graph-data">{elements_json}</script>"""
     else:
         intro = "DataCite-derived backlink network."
         body_main = """    <main class="snapshot-placeholder">
-        <p>No DataCite snapshot found at <code>~/hapax-state/datacite-mirror/</code>. The graph reads the same snapshot file as <code>/deposits</code>; once the operator runs <code>scripts/configure-orcid.sh</code> (PR #2018) and the nightly mirror fires, this page renders.</p>
+        <p>No reviewed citation graph is included in this build.</p>
     </main>"""
 
     body = f"""    <header>
@@ -575,23 +563,54 @@ class RenderedSite:
     """The full set of rendered pages keyed by path."""
 
     pages: dict[str, str]
+    feed: str | None = None
 
 
-def render_site() -> RenderedSite:
-    """Render all Phase-0 + Phase-1 + Phase-2 pages.
-
-    Returns a :class:`RenderedSite` mapping URL path → fully-formed
-    HTML document. Pages with the long-form non-engagement clause:
-    ``/``, ``/refuse``, and ``/refusal-brief``. Other pages use the
-    short form.
-    """
-    pages: dict[str, str] = {}
-    pages["/"] = _wrap(render_landing_page(), footer_long_form=True)
-    pages["/cite"] = _wrap(render_cite_page(), footer_long_form=False)
-    pages["/refuse"] = _wrap(render_refuse_page(), footer_long_form=True)
-    pages["/surfaces"] = _wrap(render_surfaces_page(), footer_long_form=False)
-    pages["/manifesto"] = _wrap(render_manifesto_page(), footer_long_form=False)
-    pages["/refusal-brief"] = _wrap(render_refusal_brief_page(), footer_long_form=True)
-    pages["/deposits"] = _wrap(render_deposits_page(), footer_long_form=False)
-    pages["/citation-graph"] = _wrap(render_citation_graph_page(), footer_long_form=False)
-    return RenderedSite(pages=pages)
+def render_site(canonical_url: str, *, cleared_inputs: Path | None = None) -> RenderedSite:
+    """Render committed chrome/home and only explicitly cleared optional documents."""
+    canonical_url = normalize_canonical_url(canonical_url)
+    cleared = read_cleared_inputs(cleared_inputs)
+    entries = [
+        read_vault_document(slug, cleared_inputs=cleared) for slug in ("manifesto", "refusal-brief")
+    ]
+    entries = [doc for doc in entries if doc.available and doc.markdown.strip()]
+    metadata = [
+        render_landing_page(),
+        render_cite_page(canonical_url),
+        PageMeta(
+            path="/404.html",
+            title="Page not found — Hapax",
+            description="The requested page was not found.",
+            body_html='<main><h1>Page not found</h1><p>The requested page is not included here. <a href="/">Return home</a>.</p></main>',
+        ),
+    ]
+    if any(doc.slug == "manifesto" for doc in entries):
+        metadata.append(render_manifesto_page(cleared_inputs=cleared))
+    if any(doc.slug == "refusal-brief" for doc in entries):
+        metadata.append(render_refusal_brief_page(cleared_inputs=cleared))
+    pages = {
+        meta.path: _wrap(
+            meta,
+            canonical_url,
+            footer_long_form=meta.path in ("/", "/refuse", "/refusal-brief"),
+            has_feed=bool(entries),
+        )
+        for meta in metadata
+    }
+    feed = None
+    if entries:
+        rss = ET.Element("rss", version="2.0")
+        channel = ET.SubElement(rss, "channel")
+        for tag, value in (
+            ("title", "Hapax documents"),
+            ("link", canonical_url + "/"),
+            ("description", "Documents included in this build."),
+        ):
+            ET.SubElement(channel, tag).text = value
+        for doc in entries:
+            item = ET.SubElement(channel, "item")
+            ET.SubElement(item, "title").text = doc.slug.replace("-", " ").title()
+            ET.SubElement(item, "link").text = canonical_url + "/" + doc.slug
+            ET.SubElement(item, "guid", isPermaLink="true").text = canonical_url + "/" + doc.slug
+        feed = ET.tostring(rss, encoding="unicode", xml_declaration=True)
+    return RenderedSite(pages=pages, feed=feed)

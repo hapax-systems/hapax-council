@@ -1,22 +1,9 @@
-"""Vault content ingest for citable-nexus pages.
+"""Explicitly cleared Markdown inputs and a small, escaped Markdown renderer.
 
-Reads markdown source files from the operator vault at
-``~/Documents/Personal/30-areas/hapax/{manifesto,refusal-brief}.md``
-and converts them to HTML for the renderer's ``/manifesto`` and
-``/refusal-brief`` pages. Override the vault dir via
-``HAPAX_VAULT_HAPAX_DIR``.
-
-Constitutional posture: vault content is operator-authored and
-already public-archive-published elsewhere (Manifesto via
-omg.lol weblog; Refusal Brief via Zenodo concept-DOI). The renderer
-re-exposes it at the citable-nexus front door without modification.
-
-Markdown converter: minimal inline implementation. Handles ``#``
-through ``####`` headings, paragraphs, ``-`` / ``*`` bulleted lists,
-``` `inline code` ``` spans, ``[text](url)`` links, and code fences
-``` ```...``` ```. No table support, no nested-list support — the
-operator's source files are flat. If the vault evolves to need
-richer rendering, swap to ``markdown-it-py`` as a dep then.
+Readability is not publication permission. Optional vault documents are unavailable
+unless their exact resolved paths appear in a supplied allowlist. Relative entries
+are resolved beside that allowlist, not against the caller's working directory.
+No authorship or prior publication is inferred from a path or its contents.
 """
 
 from __future__ import annotations
@@ -42,8 +29,7 @@ class VaultDocument:
     markdown: str
     """Raw markdown source. Empty when the file is absent."""
     available: bool
-    """``True`` when the source file exists; ``False`` triggers
-    the placeholder render path."""
+    """True only when the source is explicitly cleared and readable."""
 
 
 def _vault_dir() -> Path:
@@ -52,19 +38,43 @@ def _vault_dir() -> Path:
     return Path(env) if env else DEFAULT_VAULT_HAPAX_DIR
 
 
-def read_vault_document(slug: str) -> VaultDocument:
-    """Read ``<vault_dir>/<slug>.md``; safe-fallback when absent.
+def read_cleared_inputs(allowlist: Path | None = None) -> frozenset[Path]:
+    """Validate every listed file before rendering; an absent list clears nothing."""
+    if allowlist is None:
+        return frozenset()
+    allowlist = allowlist.expanduser().resolve()
+    paths = set()
+    try:
+        lines = allowlist.read_text(encoding="utf-8").splitlines()
+    except (OSError, UnicodeError) as exc:
+        raise ValueError(f"Cannot read --cleared-inputs {allowlist}: {exc}") from exc
+    for line in lines:
+        if not line.strip():
+            continue
+        path = Path(line.strip()).expanduser()
+        if not path.is_absolute():
+            path = allowlist.parent / path
+        path = path.resolve()
+        try:
+            # Validate even listed inputs that no page currently consumes.
+            path.read_text(encoding="utf-8")
+        except (OSError, UnicodeError) as exc:
+            raise ValueError(f"Cleared input refused: {path}: {exc}") from exc
+        paths.add(path)
+    return frozenset(paths)
 
-    Returns a :class:`VaultDocument` with ``available=False`` and
-    empty markdown when the file does not exist or is unreadable —
-    the renderer then emits a Phase-1 placeholder rather than
-    failing the build.
-    """
-    path = _vault_dir() / f"{slug}.md"
+
+def read_vault_document(
+    slug: str, *, cleared_inputs: frozenset[Path] = frozenset()
+) -> VaultDocument:
+    """Read only an explicitly cleared document, refusing a failed cleared read."""
+    path = (_vault_dir() / f"{slug}.md").resolve()
+    if path not in cleared_inputs:
+        return VaultDocument(slug=slug, markdown="", available=False)
     try:
         text = path.read_text(encoding="utf-8")
-    except (FileNotFoundError, OSError):
-        return VaultDocument(slug=slug, markdown="", available=False)
+    except (OSError, UnicodeError) as exc:
+        raise ValueError(f"Cleared input refused: {path}: {exc}") from exc
     return VaultDocument(slug=slug, markdown=text, available=True)
 
 
@@ -74,8 +84,6 @@ def read_vault_document(slug: str) -> VaultDocument:
 _HEADING_RE = re.compile(r"^(#{1,4})\s+(.+)$")
 _BULLET_RE = re.compile(r"^[-*]\s+(.+)$")
 _FENCE_RE = re.compile(r"^```(?:[\w-]+)?$")
-_INLINE_CODE_RE = re.compile(r"`([^`]+)`")
-_LINK_RE = re.compile(r"\[([^\]]+)\]\(([^)]+)\)")
 
 
 def _esc(text: str) -> str:
@@ -86,27 +94,27 @@ def _esc(text: str) -> str:
 
 
 def _render_inline(text: str) -> str:
-    """Inline-span pass: escape, then re-introduce link + code spans.
+    """Render code, links and strong emphasis without interpreting code contents."""
+    from urllib.parse import urlsplit
 
-    Order matters: escape first so ``<`` in plain text doesn't read
-    as a tag, then unescape inside the recovered ``<a>`` / ``<code>``
-    elements where we own the surrounding markup.
-    """
-    out = _esc(text)
-
-    def _code_repl(m: re.Match[str]) -> str:
-        return f"<code>{m.group(1)}</code>"
-
-    def _link_repl(m: re.Match[str]) -> str:
-        # Inner text is already escaped; href needs its own light
-        # validation but we accept whatever the operator put in the
-        # vault (vault content is operator-controlled).
-        href = m.group(2).replace('"', "%22")
-        return f'<a href="{href}">{m.group(1)}</a>'
-
-    out = _INLINE_CODE_RE.sub(_code_repl, out)
-    out = _LINK_RE.sub(_link_repl, out)
-    return out
+    pattern = re.compile(r"`([^`]+)`|\[([^\]]+)\]\(([^)]+)\)|\*\*(.+?)\*\*")
+    parts: list[str] = []
+    end = 0
+    for match in pattern.finditer(text):
+        parts.append(_esc(text[end : match.start()]))
+        code, label, href, strong = match.groups()
+        if code is not None:
+            parts.append(f"<code>{_esc(code)}</code>")
+        elif href is not None:
+            if urlsplit(href).scheme.lower() not in ("", "https", "http", "mailto"):
+                parts.append(_esc(label))
+            else:
+                parts.append(f'<a href="{_esc(href)}">{_esc(label)}</a>')
+        else:
+            parts.append(f"<strong>{_esc(strong)}</strong>")
+        end = match.end()
+    parts.append(_esc(text[end:]))
+    return "".join(parts)
 
 
 def markdown_to_html(markdown: str) -> str:
@@ -203,4 +211,5 @@ __all__ = [
     "VaultDocument",
     "markdown_to_html",
     "read_vault_document",
+    "read_cleared_inputs",
 ]
