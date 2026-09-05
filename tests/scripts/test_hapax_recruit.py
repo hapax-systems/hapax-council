@@ -82,6 +82,183 @@ def _receipt(out: Path) -> dict:
     return json.loads(out.with_name(out.name + ".receipt.json").read_text())
 
 
+@pytest.mark.parametrize("form", ["sequence", "indented-sequence", "mapping", "nested-sequence"])
+@pytest.mark.parametrize("capacity", ["grok", "local:qwen36"])
+@pytest.mark.parametrize("bounded", [False, True], ids=["eof", "sibling-key"])
+def test_yaml_sensitive_subtree_never_reaches_destinations(
+    bench, monkeypatch, capsys, caplog, form, capacity, bounded
+):
+    module, _bin_dir, brief, out = bench
+    second = "SYNTHETIC_SECOND_CREDENTIAL"  # pragma: allowlist secret
+    forms = {
+        "sequence": f"api_key:\n- FIRST\n- {second}\n",  # pragma: allowlist secret
+        "indented-sequence": f"api_key:\n  - FIRST\n  - {second}\n",  # pragma: allowlist secret
+        "mapping": f"api_key:\n  primary: FIRST\n  nested:\n    backup: {second}\n",  # pragma: allowlist secret
+        "nested-sequence": f"api_key:\n- primary: FIRST\n- nested:\n    backup: {second}\n",  # pragma: allowlist secret
+    }
+    diagnostic = forms[form] + ("safe: KEEP_THIS_FIELD\n" if bounded else "")
+    if capacity.startswith("local:"):
+        payload = {"choices": [{"message": {"content": diagnostic}}], "model": "synthetic-model"}
+        monkeypatch.setattr(
+            module.urllib.request,
+            "urlopen",
+            lambda *a, **kw: io.BytesIO(json.dumps(payload).encode()),
+        )
+    else:
+        monkeypatch.setattr(module, "_require_binary", lambda name: name)
+        monkeypatch.setattr(
+            module, "_run", lambda *a, **kw: (7, diagnostic, diagnostic, False, None)
+        )
+    assert module.main([capacity, "--brief", str(brief), "--out", str(out)]) == (
+        0 if capacity.startswith("local:") else 3
+    )
+    captured = capsys.readouterr()
+    destinations = {
+        "answer": out.read_text(),
+        "receipt": out.with_name(out.name + ".receipt.json").read_text(),
+        "terminal stdout": captured.out,
+        "terminal stderr": captured.err,
+        "log": caplog.text,
+    }
+    leaks = [
+        name
+        for name, value in destinations.items()
+        if second in value or "FIRST" in value  # pragma: allowlist secret
+    ]
+    assert not leaks, f"credential reached destinations: {', '.join(leaks)}"
+    assert "<redacted>" in destinations["answer"]
+    if bounded:
+        assert "safe: KEEP_THIS_FIELD" in destinations["answer"]
+
+
+def test_timeout_receipt_is_bounded_when_detached_descendant_holds_pipes(
+    bench, tmp_path, monkeypatch, capsys
+):
+    module, bin_dir, brief, out = bench
+    pid_file = tmp_path / "detached.json"
+    stdout, stderr = "pré-drain output\n", "pré-drain diagnostic\n"
+    wrapper = _stub(
+        bin_dir,
+        "detached-wrapper",
+        "import subprocess, time\n"
+        "child = subprocess.Popen([sys.executable, '-c', 'import time; time.sleep(15)'], "
+        "start_new_session=True)\n"
+        f"with open({str(pid_file)!r}, 'w') as fh:\n"
+        "    json.dump({'pid': child.pid, 'pgid': os.getpgrp()}, fh)\n"
+        f"print({stdout!r}, end='', flush=True)\n"
+        f"print({stderr!r}, end='', file=sys.stderr, flush=True)\n"
+        "time.sleep(15)\n",
+    )
+    monkeypatch.setattr(module, "_require_binary", lambda name: str(wrapper))
+    real_run = module._run
+    monkeypatch.setattr(module, "_run", lambda argv, **kw: real_run(argv, **{**kw, "timeout": 0.3}))
+
+    def expired(*_args):
+        pytest.fail("timeout cleanup exceeded the 2s test deadline", pytrace=False)
+
+    previous_handler = signal.signal(signal.SIGALRM, expired)
+    previous_timer = signal.setitimer(signal.ITIMER_REAL, 2)
+    started = time.monotonic()
+    try:
+        rc = module.main(["grok", "--brief", str(brief), "--out", str(out), "--timeout", "1"])
+        elapsed = time.monotonic() - started
+        receipt = _receipt(out)
+        child = json.loads(pid_file.read_text())
+        assert os.getpgid(child["pid"]) != child["pgid"]
+        assert rc == 4 and receipt["exit_code"] == "timeout"
+        assert elapsed < 1.5 and receipt["wall_s"] < 1.5
+        assert receipt["process_group_killed"] is True
+        assert receipt["process_group_any_member_survived"] is False
+        assert receipt["drain_timed_out"] is True
+        assert receipt["drained_bytes"] == {
+            "stdout": len(stdout.encode()),
+            "stderr": len(stderr.encode()),
+        }
+        assert out.read_text() == stdout
+        assert stderr.strip() in receipt["stderr_tail"]
+        assert "--timeout" in receipt["recovery_action"]
+        assert "retry" in capsys.readouterr().err
+    finally:
+        signal.setitimer(signal.ITIMER_REAL, 0)
+        signal.signal(signal.SIGALRM, previous_handler)
+        if previous_timer[0]:
+            signal.setitimer(signal.ITIMER_REAL, *previous_timer)
+        if pid_file.exists():
+            child = json.loads(pid_file.read_text())
+            for pid in (child["pid"], child["pgid"]):
+                try:
+                    os.kill(pid, signal.SIGKILL)
+                except ProcessLookupError:
+                    pass
+
+
+@pytest.mark.parametrize("capacity", ["claude", "glmcp", "qwencloud"])
+@pytest.mark.parametrize("code", [7, "timeout"])
+@pytest.mark.parametrize(
+    "stdout",
+    [
+        '{"result":"PARTIAL"',
+        'startup chatter\n{"result":"PARTIAL"',
+        '{"diagnostic":"startup"}\n{"result":"PARTIAL"',
+        json.dumps('{"result":"PARTIAL"}')[:-1],
+    ],
+    ids=["truncated", "leading-chatter", "diagnostic-prefix", "string"],
+)
+def test_failed_malformed_envelope_without_credentials_is_suppressed(
+    bench, monkeypatch, capsys, caplog, capacity, code, stdout
+):
+    module, _bin_dir, brief, out = bench
+    monkeypatch.setattr(module, "_require_binary", lambda name: name)
+    if capacity in module.WRAPPED_CLAUDE:
+        monkeypatch.setenv(module.WRAPPED_CLAUDE[capacity][0], str(brief))
+    monkeypatch.setattr(module, "_run", lambda *a, **kw: (code, stdout, "", False, None))
+    assert module.main([capacity, "--brief", str(brief), "--out", str(out)]) == (
+        4 if code == "timeout" else 3
+    )
+    receipt = _receipt(out)
+    assert receipt["answer_policy"] == "suppressed_undecodable_output"
+    assert receipt["suppressed_streams"] == {"stdout": module._suppressed_stream_shape(stdout)}
+    assert receipt["exit_code"] == code
+    assert receipt["failure_class"] == "OutputNotProduced"
+    assert receipt["output_bytes"] == 0 and out.read_bytes() == b""
+    captured = capsys.readouterr()
+    assert "PARTIAL" not in json.dumps(receipt) + captured.out + captured.err + caplog.text
+    assert "undecodable_result_envelope" in receipt["stderr_tail"]
+    assert "retry" in captured.err
+
+
+@pytest.mark.parametrize("model", ["invalid model", "synthetic-valid-model"])
+def test_local_model_is_validated_before_result_construction(bench, monkeypatch, model):
+    module, _bin_dir, _brief, _out = bench
+    payload = {"choices": [{"message": {"content": "OK"}}], "model": model}
+    monkeypatch.setattr(
+        module.urllib.request, "urlopen", lambda *a, **kw: io.BytesIO(json.dumps(payload).encode())
+    )
+    original = module.RunResult
+    observed = []
+
+    def construct(*args, **kwargs):
+        observed.append(True)
+        if model == "invalid model":
+            assert not args[4], "unvalidated local model reached RunResult"
+            assert kwargs["model_identity_invalid"] == [
+                {
+                    "length": len(model),
+                    "first_token_class": "text",
+                    "reason": "model_identity_invalid",
+                }
+            ]
+        else:
+            assert args[4] == [model]
+            assert kwargs["model_identity_invalid"] == []
+        return original(*args, **kwargs)
+
+    monkeypatch.setattr(module, "RunResult", construct)
+    result = module.recruit_local("local:qwen36", "synthetic brief", timeout=1, model=None)
+    assert result.answer == "OK" and result.exit_code == 0
+    assert observed == [True]
+
+
 def _mutate_to_legacy_redaction(module: ModuleType, monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(module, "_SECRETISH", _LEGACY_SECRETISH)
 
@@ -570,7 +747,7 @@ def test_cli_diagnostics_redact_before_tail(
         env_name, _ = module.WRAPPED_CLAUDE[capacity]
         monkeypatch.setenv(env_name, str(brief))
 
-    def run(argv, *, cwd, timeout):
+    def run(argv, *, cwd, timeout, drain_status):
         if capacity == "codex":
             Path(argv[argv.index("-o") + 1]).write_text("ANSWER")
         return (
@@ -634,7 +811,7 @@ def test_codex_relative_output_uses_one_absolute_path(bench, tmp_path, monkeypat
     monkeypatch.setattr(module, "_is_git_checkout", lambda cwd: True)
     seen = []
 
-    def run(argv, *, cwd, timeout):
+    def run(argv, *, cwd, timeout, drain_status):
         target = Path(argv[argv.index("-o") + 1])
         seen.append(target)
         # Model the client's actual resolution relative to its selected checkout.
@@ -668,7 +845,7 @@ def test_stdout_lanes_keep_brief_side_artifacts_separate_from_recruiter_out(
     monkeypatch.setattr(module, "_require_binary", lambda name: name)
     monkeypatch.setenv(module.QWENCLOUD_WRAPPER_ENV, str(brief))
 
-    def run(argv, *, cwd, timeout):
+    def run(argv, *, cwd, timeout, drain_status):
         assert "-o" not in argv and "--out" not in argv
         assert cwd == checkout
         artifact.write_text("CLIENT ARTIFACT BESIDE BRIEF")
@@ -789,7 +966,7 @@ def test_failed_stdout_is_redacted_at_every_destination(
     if capacity in module.WRAPPED_CLAUDE:
         monkeypatch.setenv(module.WRAPPED_CLAUDE[capacity][0], str(brief))
 
-    def run(argv, *, cwd, timeout):
+    def run(argv, *, cwd, timeout, drain_status):
         if capacity == "codex":
             Path(argv[argv.index("-o") + 1]).write_text(diagnostic)
         return code, diagnostic, "", False, None
@@ -1020,6 +1197,30 @@ def test_runbook_has_headless_read_refusal_rechecks(request):
     assert selections <= collected, f"runbook names uncollected tests: {selections - collected}"
 
 
+def test_runbook_names_live_measurement_commands_and_receipts():
+    doc = (SCRIPT.parents[1] / "docs/runbooks/hapax-recruit.md").read_text()
+    assert "manual; record a differing result at" in doc
+    assert (
+        "~/Documents/Personal/30-areas/hapax/capability-audit/"
+        "RECRUITABLE-CAPACITY-ROSTER-2026-09-03.md"
+    ) in doc
+    for capacity, stem in [
+        ("grok", "grok"),
+        ("local:qwen36", "local-qwen36"),
+        ("qwencloud", "qwencloud"),
+    ]:
+        command = (
+            f'scripts/hapax-recruit {capacity} --brief "$recruit_measure_dir/brief.md" '
+            f'--out "$recruit_measure_dir/{stem}.md"'
+        )
+        assert command in doc
+        assert f"$recruit_measure_dir/{stem}.md.receipt.json" in doc
+    assert "`wall_s`, `models_reported`," in doc
+    assert (
+        "historical transcript timings without their receipts are not independently verified" in doc
+    )
+
+
 @pytest.mark.parametrize("stage", ["connection", "body"])
 def test_local_deadline_interrupts_blocking_io_and_restores_alarm(bench, monkeypatch, stage):
     module, _bin_dir, brief, out = bench
@@ -1100,7 +1301,7 @@ def test_structured_failed_output_is_redacted_at_every_destination(
     if capacity in module.WRAPPED_CLAUDE:
         monkeypatch.setenv(module.WRAPPED_CLAUDE[capacity][0], str(brief))
 
-    def run(argv, *, cwd, timeout):
+    def run(argv, *, cwd, timeout, drain_status):
         if capacity == "codex":
             Path(argv[argv.index("-o") + 1]).write_text(diagnostic)
         return code, diagnostic, diagnostic, False, None
@@ -1143,7 +1344,7 @@ def test_empty_cli_answer_is_receipted_failure(bench, monkeypatch, capsys, capac
     if capacity in module.WRAPPED_CLAUDE:
         monkeypatch.setenv(module.WRAPPED_CLAUDE[capacity][0], str(brief))
 
-    def run(argv, *, cwd, timeout):
+    def run(argv, *, cwd, timeout, drain_status):
         if capacity == "codex":
             Path(argv[argv.index("-o") + 1]).write_text(stdout)
         return 0, stdout, "", False, None
@@ -1336,7 +1537,7 @@ def test_yaml_scalars_are_redacted_at_every_destination(
     if capacity in module.WRAPPED_CLAUDE:
         monkeypatch.setenv(module.WRAPPED_CLAUDE[capacity][0], str(brief))
 
-    def run(argv, *, cwd, timeout):
+    def run(argv, *, cwd, timeout, drain_status):
         if capacity == "codex":
             Path(argv[argv.index("-o") + 1]).write_text(diagnostic)
         stdout = diagnostic
@@ -1445,7 +1646,7 @@ def test_nested_claude_credentials_never_reach_destinations(
     stdout = json.dumps({"result": answer, "modelUsage": {"synthetic-served": {}}})
 
     # The diagnostic stream can quote the same serialized response, even on success.
-    def run(argv, *, cwd, timeout):
+    def run(argv, *, cwd, timeout, drain_status):
         if capacity == "codex":
             Path(argv[argv.index("-o") + 1]).write_text(answer)
         return code, stdout, stdout, False, None
@@ -1574,7 +1775,7 @@ def test_undecodable_claude_diagnostic_stream_is_suppressed(
     stdout = safe_stdout if stream == "stderr" else malformed
     stderr = "" if stream == "stdout" else malformed
 
-    def run(argv, *, cwd, timeout):
+    def run(argv, *, cwd, timeout, drain_status):
         if capacity == "codex":
             Path(argv[argv.index("-o") + 1]).write_text(stdout)
         return code, stdout, stderr, False, None
@@ -1630,7 +1831,7 @@ def test_codex_suppression_keeps_independent_streams(
     streams = {"stdout": "launch chatter", "stderr": "diagnostic context", "answer": "SAFE ANSWER"}
     streams[stream] = malformed
 
-    def run(argv, *, cwd, timeout):
+    def run(argv, *, cwd, timeout, drain_status):
         Path(argv[argv.index("-o") + 1]).write_text(streams["answer"])
         return code, streams["stdout"], streams["stderr"], False, None
 

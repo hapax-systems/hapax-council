@@ -14,7 +14,10 @@ crawl that this diff does not deliver.
 
 ## Recheck the measured read refusals
 
-These are manual provider probes for the registry item; tests do not execute them. With the
+These probes are **manual; record a differing result at
+`~/Documents/Personal/30-areas/hapax/capability-audit/RECRUITABLE-CAPACITY-ROSTER-2026-09-03.md`**,
+under the grok/agy headless-read registry item, with the command, date and observed output.
+Tests do not execute them. With the
 operator's existing CLI login/configuration, run this shell block. It puts a harmless random
 marker outside Grok's cwd and omits the marker from the prompt, so a returned marker demonstrates
 a file read. It uses each CLI's default permissions, with stdin closed and no permission bypass.
@@ -40,6 +43,30 @@ refusal. A returned marker means the refusal no longer reproduces under the curr
 record that result in the registry item. Exit status alone does not establish either outcome.
 The inside-cwd Grok probe should return the marker; compare it with the final `cat` output.
 
+## Recheck live wall time and served identity
+
+The recruiter writes the receipt beside the requested answer: `--out FILE` produces
+`FILE.receipt.json`. The qwencloud client wrapper itself does not write a recruitment receipt;
+invoke it through `hapax-recruit qwencloud` to measure the run. The following exact commands,
+run from this checkout with the operator's existing configuration, remeasure grok,
+local:qwen36 and qwencloud. These are manual live calls and are never executed by tests.
+
+```sh
+recruit_measure_dir=$(mktemp -d)
+printf 'Reply with exactly: OK\n' > "$recruit_measure_dir/brief.md"
+scripts/hapax-recruit grok --brief "$recruit_measure_dir/brief.md" --out "$recruit_measure_dir/grok.md" --cwd "$PWD" --timeout 120
+scripts/hapax-recruit local:qwen36 --brief "$recruit_measure_dir/brief.md" --out "$recruit_measure_dir/local-qwen36.md" --timeout 120
+scripts/hapax-recruit qwencloud --brief "$recruit_measure_dir/brief.md" --out "$recruit_measure_dir/qwencloud.md" --cwd "$PWD" --timeout 120
+python3 -c 'import json, pathlib, sys; [(print(p, json.loads(p.read_text()))) for p in pathlib.Path(sys.argv[1]).glob("*.receipt.json")]' "$recruit_measure_dir"
+```
+
+The receipts are `$recruit_measure_dir/grok.md.receipt.json`,
+`$recruit_measure_dir/local-qwen36.md.receipt.json`, and
+`$recruit_measure_dir/qwencloud.md.receipt.json`. Each records `wall_s`, `models_reported`,
+`exit_code` and timestamps; an unreported served identity remains `absent`. Preserve those
+receipt paths with any measurement claim. These commands reproduce the measurement procedure;
+historical transcript timings without their receipts are not independently verified artifacts.
+
 ## Failure artifacts and deadlines
 
 CLI output, including successful answers and partial timeout answers, is redacted before the recruiter writes
@@ -51,6 +78,9 @@ block scalars. JSON diagnostics and answers are decoded and redacted structurall
 serialization, including sensitive-key subtrees, assignments in string values, nested JSON
 strings, escaped quotes and unicode escapes. Plain YAML scalars include every token on the
 line and indented continuations, including continuations separated by blank lines.
+Sensitive YAML block collections include every sequence item (including unindented items)
+and nested mapping until the next key at the same or lower indentation. Without that boundary,
+the remainder of the block is suppressed.
 JSON keys cross the same boundary as values: embedded credential assignments and authorization
 fragments are redacted in place, and recognizable bare credential tokens become `<redacted>`.
 This includes token text embedded in otherwise ordinary keys. Safe member values keep their
@@ -120,6 +150,13 @@ Local endpoint connection, headers, and body consumption share one monotonic dea
 it records `EndpointDeadlineExceeded` and exit 3. The POSIX CLI uses an interval timer to interrupt
 blocking I/O as well as bounded body reads, so a trickling response cannot extend the deadline.
 CLI subprocess timeouts retain exit 4 and process-group cleanup receipts.
+After killing the group, final pipe draining is limited to 10% of the subprocess timeout,
+with a 0.05-second minimum and 0.5-second maximum. A detached descendant holding inherited pipes
+cannot prevent receipt creation: the recruiter closes the pipes and records `drain_timed_out: true`.
+`drained_bytes.stdout` and `drained_bytes.stderr` count the cumulative UTF-8 bytes captured before
+pipe closure, prior to redaction; their values contain no stream content. Reaping the direct child
+has the same bounded wait, and checking the original process group adds at most 0.5 seconds.
+The group-survivor field describes only the original group, not descendants that created a new session.
 
 Recheck each claim with these exact selections. Provider subprocesses and responses are synthetic;
 these tests make no provider requests. The cleanup selection launches only the test wrapper.

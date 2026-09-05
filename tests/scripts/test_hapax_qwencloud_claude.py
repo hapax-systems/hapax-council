@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 import os
 import subprocess
+import sys
 from pathlib import Path
 from types import ModuleType
 
@@ -203,6 +204,53 @@ def test_missing_secret_or_client_names_the_remedy(bench, tmp_path: Path) -> Non
 
     assert proc.returncode == 4 and "store the plan's sk-sp- key" in proc.stderr
     assert not record.exists()
+
+
+@pytest.mark.parametrize("outcome", [7, -15], ids=["nonzero", "signal"])
+def test_client_failure_exit_is_propagated_and_home_removed(bench, tmp_path, outcome):
+    record, env = bench
+    client = tmp_path / "bin" / "claude"
+    client.write_text(
+        "#!/usr/bin/env python3\n"
+        "import json, os, signal, sys\n"
+        f"with open({str(record)!r}, 'w') as fh:\n"
+        "    json.dump({'home': os.environ['HOME']}, fh)\n"
+        + (f"sys.exit({outcome})\n" if outcome >= 0 else "os.kill(os.getpid(), signal.SIGTERM)\n")
+    )
+    proc = _run(env, "-p", "synthetic brief")
+    assert proc.returncode == (outcome if outcome >= 0 else 128 - outcome)
+    isolated_home = Path(json.loads(record.read_text())["home"])
+    assert isolated_home != Path(env["HOME"])
+    assert not isolated_home.exists()
+    assert list(Path(env["TMPDIR"]).iterdir()) == []
+    assert FAKE_KEY not in proc.stdout + proc.stderr
+
+
+def test_client_launch_failure_removes_isolated_home(bench, tmp_path):
+    record, env = bench
+    # execvp can skip a missing interpreter and fall through to another PATH
+    # entry. Keep this failure fixture confined to its synthetic binaries.
+    env["PATH"] = str(tmp_path / "bin")
+    (tmp_path / "bin" / "python3").symlink_to(sys.executable)
+    (tmp_path / "bin" / "bash").symlink_to("/bin/bash")
+    # Discovery succeeds; exec then fails because this synthetic interpreter is absent.
+    (tmp_path / "bin" / "claude").write_text(f"#!{tmp_path}/missing-interpreter\n")
+    proc = _run(env, "-p", "synthetic brief")
+    assert proc.returncode != 0
+    assert not record.exists()
+    assert list(Path(env["TMPDIR"]).iterdir()) == []
+    assert FAKE_KEY not in proc.stdout + proc.stderr
+
+
+@pytest.mark.parametrize("args", [["-p", "synthetic brief"], ["--check"]], ids=["run", "check"])
+def test_missing_client_names_install_remedy(fake_boundary, monkeypatch, capsys, args):
+    module, calls, removed = fake_boundary
+    monkeypatch.setattr(module.shutil, "which", lambda name: None if name == "claude" else name)
+    assert module.main(args) == 3
+    captured = capsys.readouterr()
+    assert "claude is not on PATH" in captured.err
+    assert "install Claude Code, then retry" in captured.err
+    assert captured.out == "" and calls == [] and removed == []
 
 
 @pytest.mark.parametrize("probe_exit", [127, 1])

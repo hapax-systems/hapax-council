@@ -101,6 +101,7 @@ _TOKENISH = re.compile(
     r"|eyJ[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,})\b"
 )
 _MODEL_IDENTIFIER = re.compile(r"[A-Za-z0-9._:/-]{1,256}\Z")
+_YAML_FIELD = re.compile(r"^([ \t]*)(-[ \t]+)?([^:\r\n]+):[ \t]*(.*)$")
 _KIMI_TRAILER = re.compile(r"^To resume this session\b")
 
 
@@ -180,20 +181,14 @@ class RunResult:
     output_bytes: int | None = None
     suppressed_streams: dict[str, dict] = field(default_factory=dict)
     model_identity_invalid: list[dict] = field(default_factory=list)
+    drain_timed_out: bool = False
+    drained_bytes: dict[str, int] = field(default_factory=dict)
 
     def __post_init__(self) -> None:
         # Every response-derived identity, including modelUsage keys, crosses this
         # boundary. Invalid names are measurements of shape, never reported models.
-        models = []
-        for model in self.models_reported:
-            identities, _ = _redact_streams(model=model)
-            if _MODEL_IDENTIFIER.fullmatch(model) and identities["model"] == model:
-                models.append(model)
-            else:
-                self.model_identity_invalid.append(
-                    {**_suppressed_stream_shape(model), "reason": "model_identity_invalid"}
-                )
-        self.models_reported = models
+        self.models_reported, invalid = _validated_model_identities(self.models_reported)
+        self.model_identity_invalid.extend(invalid)
         if self.model_identity_invalid:
             self.recovery_action = (
                 "inspect the receipt's model_identity_invalid shapes; "
@@ -219,6 +214,40 @@ class RunResult:
         self.stderr_tail = self.stderr_tail[-400:]
 
 
+def _redact_yaml_subtrees(text: str) -> str:
+    """Bound sensitive block collections by sibling keys, including indentless sequences."""
+    lines = text.splitlines(keepends=True)
+    safe, index = [], 0
+    while index < len(lines):
+        line = lines[index]
+        field = _YAML_FIELD.match(line.rstrip("\r\n"))
+        if field:
+            indent, entry, key, value = field.groups()
+            probe = f'{key}: "scalar"'
+            label = _SECRETISH.search(probe)
+            # Only a missing scalar (possibly with node properties/comments) opens
+            # a block collection. Quoted and block scalars retain their own grammar.
+            collection = re.fullmatch(r"(?:(?:&\S+|!\S+)[ \t]*)*(?:\#.*)?", value)
+            if label and label.end(1) == len(probe) - len('"scalar"') and collection:
+                key_indent = len(indent) + len(entry or "")
+                end = index + 1
+                while end < len(lines):
+                    following = lines[end]
+                    depth = len(following) - len(following.lstrip(" \t"))
+                    sequence = re.match(r"[ \t]*-(?:[ \t\r\n]|$)", following)
+                    if depth <= key_indent and not (depth == key_indent and sequence):
+                        if _YAML_FIELD.match(following.rstrip("\r\n")):
+                            break
+                    # If no sibling key bounds the subtree, suppress through EOF.
+                    end += 1
+                safe.append(f'{indent}{entry or ""}{key}: "<redacted>"\n')
+                index = end
+                continue
+        safe.append(line)
+        index += 1
+    return "".join(safe)
+
+
 def _redact(text: str, *, reject_undecodable: bool = False) -> str:
     # Decode before matching labels: JSON strings can contain further JSON envelopes,
     # escaped quotes, or unicode escapes. Re-encode only after keys and values are safe.
@@ -229,6 +258,7 @@ def _redact(text: str, *, reject_undecodable: bool = False) -> str:
     else:
         redacted = _redact_json_value(payload, reject_undecodable=reject_undecodable)
         return text if redacted == payload else json.dumps(redacted)
+    text = _redact_yaml_subtrees(text)
     if reject_undecodable:
         # Consume plain/YAML fields first. Punctuation in the remaining prose/code is
         # ordinary content, but an escaped sensitive field means serialization remains
@@ -306,6 +336,17 @@ def _redact_streams(**streams: str) -> tuple[dict[str, str], dict[str, dict]]:
     return redacted, suppressed
 
 
+def _validated_model_identities(models: list[str]) -> tuple[list[str], list[dict]]:
+    valid, invalid = [], []
+    for model in models:
+        identities, _ = _redact_streams(model=model)
+        if _MODEL_IDENTIFIER.fullmatch(model) and identities["model"] == model:
+            valid.append(model)
+        else:
+            invalid.append({**_suppressed_stream_shape(model), "reason": "model_identity_invalid"})
+    return valid, invalid
+
+
 def _cli_diagnostics(code: int | str, stdout: str, stderr: str, *, chatter: bool = False) -> str:
     """Redact each full stream before joining: a quote in stderr cannot close stdout's value."""
     return "\n".join(
@@ -362,7 +403,7 @@ def _is_git_checkout(cwd: Path) -> bool:
 
 
 def _run(
-    argv: list[str], *, cwd: Path, timeout: int, stdin_closed: bool = True
+    argv: list[str], *, cwd: Path, timeout: int, stdin_closed: bool = True, drain_status: dict
 ) -> tuple[int | str, str, str, bool, bool | None]:
     process = subprocess.Popen(
         argv,
@@ -382,7 +423,27 @@ def _run(
             group_killed = True
         except ProcessLookupError:
             pass
-        stdout, stderr = process.communicate()
+        # A descendant may setsid() while holding our pipes. Killing the original
+        # group cannot guarantee EOF, so the final drain must have its own deadline.
+        drain_timeout = min(0.5, max(0.05, timeout * 0.1))
+        try:
+            stdout, stderr = process.communicate(timeout=drain_timeout)
+        except subprocess.TimeoutExpired as exc:
+            drain_status["drain_timed_out"] = True
+            # TimeoutExpired carries cumulative bytes even with text=True.
+            stdout = (exc.output or b"").decode("utf-8")
+            stderr = (exc.stderr or b"").decode("utf-8")
+        finally:
+            process.stdout.close()
+            process.stderr.close()
+        drain_status["drained_bytes"] = {
+            "stdout": len(stdout.encode("utf-8")),
+            "stderr": len(stderr.encode("utf-8")),
+        }
+        try:
+            process.wait(timeout=drain_timeout)
+        except subprocess.TimeoutExpired:
+            pass
 
         deadline = time.monotonic() + 0.5
         while _process_group_has_live_members(process.pid) and time.monotonic() < deadline:
@@ -412,9 +473,23 @@ def _parse_claude_json(stdout: str, *, failed: bool = False) -> tuple[str, list[
     try:
         payload = json.loads(stdout)
     except json.JSONDecodeError:
+        # Failed CLIs can emit plain/YAML diagnostics. Preserve that redacted
+        # failure output, but never retain a partial JSON envelope (with or
+        # without startup chatter) as its answer.
         if failed and stdout.strip():
-            # recruit_cli has already checked and redacted the complete stream.
-            return stdout, [], None
+            try:
+                diagnostic, end = json.JSONDecoder().raw_decode(stdout.lstrip())
+            except json.JSONDecodeError:
+                if not re.search(r'[\[{]|^\s*"', stdout):
+                    return stdout, [], None
+            else:
+                # A complete JSON diagnostic may have ordinary trailing context.
+                if (
+                    isinstance(diagnostic, dict)
+                    and not {"result", "type", "modelUsage"}.intersection(diagnostic)
+                    and not re.search(r'[\[{]|^\s*"', stdout.lstrip()[end:])
+                ):
+                    return stdout, [], None
         return "", [], "undecodable_result_envelope"
     if isinstance(payload, list):  # stream-json style arrays end with the result object
         payload = next((item for item in reversed(payload) if isinstance(item, dict)), {})
@@ -493,8 +568,12 @@ def recruit_cli(
         raise Refusal(f"unknown capacity {capacity!r}; one of: {', '.join(CAPACITIES)}")
 
     previous_output = _output_identity(out) if capacity == "codex" else None
+    drain_status = {}
     code, stdout, stderr, group_killed, member_survived = _run(
-        argv, cwd=cwd, timeout=timeout + 15 if capacity == "agy" else timeout
+        argv,
+        cwd=cwd,
+        timeout=timeout + 15 if capacity == "agy" else timeout,
+        drain_status=drain_status,
     )
     raw_streams = {"stdout": stdout, "stderr": stderr}
     if capacity == "codex":
@@ -552,6 +631,7 @@ def recruit_cli(
         member_survived,
         failure_class=failure_class,
         suppressed_streams=suppressed_streams,
+        **drain_status,
     )
 
 
@@ -589,6 +669,9 @@ def recruit_local(capacity: str, brief: str, *, timeout: int, model: str | None)
         served = payload.get("model")
         if served is not None and not isinstance(served, str):
             raise EndpointProtocolError("model must be a string when present")
+        # Invariant: response-derived model text is validated at extraction as
+        # well as at the shared RunResult boundary, before any constructor sees it.
+        models, invalid_models = _validated_model_identities([served] if served is not None else [])
     except EndpointDeadlineExceeded as exc:
         return RunResult(
             "", 3, 0, "endpoint deadline exceeded", [], failure_class=type(exc).__name__
@@ -633,7 +716,7 @@ def recruit_local(capacity: str, brief: str, *, timeout: int, model: str | None)
             [],
             failure_class=failure_class,
         )
-    return RunResult(answer, 0, len(answer), "", [served] if served is not None else [])
+    return RunResult(answer, 0, len(answer), "", models, model_identity_invalid=invalid_models)
 
 
 def _failure_recovery(capacity: str, result: RunResult, out: Path) -> str:
@@ -703,6 +786,8 @@ def write_receipt(
         "suppressed_streams": result.suppressed_streams if result else {},
         "refusal": refusal,
         "process_group_killed": result.process_group_killed if result else False,
+        "drain_timed_out": result.drain_timed_out if result else False,
+        "drained_bytes": result.drained_bytes if result else {},
         "process_group_any_member_survived": (
             result.process_group_any_member_survived if result else None
         ),
