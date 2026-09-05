@@ -34,6 +34,7 @@ fi
 
 force=false
 recover_claim_publications_only=false
+rehydrate_activation_cache_only=false
 # Default mode publishes through the admitted Gate-0B claim-publication path.
 # The legacy note/cache writer is available only as an explicit slice-1 fallback.
 canon_enforced="1"
@@ -42,6 +43,7 @@ usage() {
 usage: cc-claim [--force] <task_id> [--dispatch-* VALUE ...]
        cc-claim [--force] [--dispatch-* VALUE ...] -- <task_id>
        cc-claim --recover-claim-publications [<task_id>]
+       cc-claim --rehydrate-activation-cache <task_id>
 
 Omit dispatch flags in default mode for a manual self-witnessed binding.
 Every --dispatch-* option requires one VALUE from the dispatcher receipt.
@@ -72,6 +74,7 @@ while [[ $# -gt 0 ]]; do
   case "$1" in
     --force) force=true; shift ;;
     --recover-claim-publications) recover_claim_publications_only=true; shift ;;
+    --rehydrate-activation-cache) rehydrate_activation_cache_only=true; shift ;;
     --dispatch-message-id) require_option_value "$1" "${2:-}"; dispatch_message_id="$2"; shift 2 ;;
     --dispatch-binding-hash) require_option_value "$1" "${2:-}"; dispatch_binding_hash="$2"; shift 2 ;;
     --dispatch-platform) require_option_value "$1" "${2:-}"; dispatch_platform="$2"; shift 2 ;;
@@ -84,6 +87,10 @@ while [[ $# -gt 0 ]]; do
     *) task_id="$1"; shift ;;
   esac
 done
+if [[ "$rehydrate_activation_cache_only" == "true" && ( -z "$task_id" || "$recover_claim_publications_only" == "true" || "$force" == "true" ) ]]; then
+  echo "cc-claim: activation_cache_usage_invalid: supply one task id without --force or --recover-claim-publications. Next action: rerun cc-claim --rehydrate-activation-cache <task_id>." >&2
+  exit 1
+fi
 if [[ -z "$task_id" && "$recover_claim_publications_only" != "true" ]]; then
   usage
   exit 1
@@ -100,6 +107,43 @@ fi
 if [[ ! -x "$python_runner" ]]; then
   echo "cc-claim: python3 missing; cannot rewrite frontmatter. Next action: install python3 or rerun from a provisioned repo virtualenv." >&2
   exit 3
+fi
+if [[ "$rehydrate_activation_cache_only" == "true" ]]; then
+  "$python_runner" -I - "$SCRIPT_DIR/.." "$task_id" <<'PYEOF'
+import sys
+from pathlib import Path
+
+repo_root = Path(sys.argv[1]).resolve()
+task_id = sys.argv[2]
+if str(repo_root) not in sys.path:
+    sys.path.insert(0, str(repo_root))
+
+from shared.gate0b_claim_publication_install import default_claim_publication_roots  # noqa: E402
+from shared.sdlc_claim import (  # noqa: E402
+    ClaimPublicationError,
+    rehydrate_applied_activation_projections,
+)
+
+roots = default_claim_publication_roots(home=Path.home())
+try:
+    results = rehydrate_applied_activation_projections(
+        cache_dir=Path(roots.claim_cache_dir),
+        transaction_root=Path(roots.claim_transaction_root),
+        receipt_root=Path(roots.claim_receipt_root),
+        lock_root=Path(roots.claim_lock_root),
+        task_id=task_id,
+    )
+except ClaimPublicationError as exc:
+    detail = f" ({exc.detail})" if exc.detail else ""
+    print(
+        f"cc-claim: HOLD — {exc.reason_code}{detail}. Next action: {exc.repair_action}.",
+        file=sys.stderr,
+    )
+    sys.exit(8)
+for item in results:
+    print(f"cc-claim: activation-cache {item.publication_id}:{item.state}: {item.detail}")
+PYEOF
+  exit $?
 fi
 if [[ "$recover_claim_publications_only" == "true" ]]; then
   "$python_runner" -I - "$SCRIPT_DIR/.." "$task_id" <<'PYEOF'
