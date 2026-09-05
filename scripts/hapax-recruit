@@ -34,6 +34,7 @@ import shutil
 import signal
 import subprocess
 import sys
+import tempfile
 import time
 import urllib.error
 import urllib.request
@@ -79,6 +80,8 @@ _SECRETISH = re.compile(
         |
         \bbearer\s+
     )
+    # YAML node properties precede the scalar; neither an anchor nor a tag is its value.
+    (?:(?:&[^\s]+|![^\s]+)[ \t]+)*
     (?:
         [|>][0-9+-]*[ \t]*(?:\#[^\r\n]*)?\r?\n
         (?:[ \t]+[^\r\n]*(?:\r?\n|\Z)|[ \t]*\r?\n)*
@@ -87,7 +90,7 @@ _SECRETISH = re.compile(
         |
         '(?:''|[^'])*(?:'|\Z)
         |
-        [^\s,;}\]"'\r\n]+(?:[ \t]*\r?\n[ \t]+[^\r\n]*)*
+        [^\r\n]+(?:(?:[ \t]*\r?\n)+[ \t]+[^\r\n]*)*
     )
     """,
     re.IGNORECASE | re.VERBOSE,
@@ -164,6 +167,7 @@ class RunResult:
     process_group_any_member_survived: bool | None = None
     failure_class: str | None = None
     recovery_action: str | None = None
+    output_bytes: int | None = None
 
     def __post_init__(self) -> None:
         if self.exit_code == 0 and not self.answer.strip():
@@ -171,9 +175,8 @@ class RunResult:
             self.exit_code = 3
             self.failure_class = "OutputNotProduced"
             self.stderr_tail += "\nempty answer from this invocation"
-        # Failed stdout is diagnostic material even when a CLI parsed it as an answer.
-        if self.exit_code != 0:
-            self.answer = _redact(self.answer)
+        # Credentials must not reach an answer file even when the capacity succeeded.
+        self.answer = _redact(self.answer)
         # Receive FULL diagnostics: slicing first can discard a credential's label.
         # Receipt, terminal, and any future logger only see this redacted tail.
         self.stderr_tail = _redact(self.stderr_tail)[-400:]
@@ -182,6 +185,8 @@ class RunResult:
 def _redact(text: str) -> str:
     # Consume escaped quotes and multiline scalars before any diagnostic is sliced.
     # Unterminated quotes suppress the rest of the block rather than exposing a suffix.
+    # Plain scalars consume the whole line and indented continuations. In mixed prose
+    # where indentation/flow boundaries are ambiguous, suppress that whole block.
     return _SECRETISH.sub(r"\1<redacted>", text)
 
 
@@ -286,20 +291,25 @@ def _strip_kimi(text: str, brief: str) -> str:
     return "\n".join(kept).strip() + ("\n" if kept else "")
 
 
-def _parse_claude_json(stdout: str) -> tuple[str, list[str]]:
+def _parse_claude_json(stdout: str, *, failed: bool = False) -> tuple[str, list[str], bool]:
     """Claude Code's --output-format json: the answer is `result`; served identity is `modelUsage`."""
     try:
         payload = json.loads(stdout)
     except json.JSONDecodeError:
-        return stdout, []
+        return stdout, [], False
     if isinstance(payload, list):  # stream-json style arrays end with the result object
         payload = next((item for item in reversed(payload) if isinstance(item, dict)), {})
     if not isinstance(payload, dict):
-        return stdout, []
+        return "", [], True
+    if failed and not {"result", "type", "modelUsage"}.intersection(payload):
+        # A failed CLI can emit a JSON diagnostic instead of a result envelope.
+        # Keep it under the redacted_failure_output policy, never as a success.
+        return stdout, [], False
     answer = payload.get("result")
     usage = payload.get("modelUsage")
     models = sorted(usage) if isinstance(usage, dict) else []
-    return (answer if isinstance(answer, str) else stdout), models
+    invalid = not isinstance(answer, str) or not answer.strip()
+    return ("" if invalid else answer), models, invalid
 
 
 def _output_identity(out: Path) -> tuple[int, int, int, int, int] | None:
@@ -374,7 +384,7 @@ def recruit_cli(
         argv = [binary, "-p", brief, "--output-format", "text"]
         code, stdout, stderr, group_killed, member_survived = _run(argv, cwd=cwd, timeout=timeout)
         return RunResult(
-            _strip_kimi(_redact(stdout) if code != 0 else stdout, brief),
+            _strip_kimi(_redact(stdout), brief),
             code,
             len(stdout),
             _cli_diagnostics(code, stdout, stderr),
@@ -412,7 +422,11 @@ def recruit_cli(
         if model and capacity == "claude":
             argv += ["--model", model]
         code, stdout, stderr, group_killed, member_survived = _run(argv, cwd=cwd, timeout=timeout)
-        answer, models = _parse_claude_json(stdout)
+        answer, models, invalid_envelope = _parse_claude_json(stdout, failed=code != 0)
+        if invalid_envelope:
+            stderr += "\ninvalid result envelope: result must be a non-empty string"
+            if code == 0:
+                code = 3
         return RunResult(
             answer,
             code,
@@ -421,6 +435,7 @@ def recruit_cli(
             models,
             group_killed,
             member_survived,
+            failure_class="OutputNotProduced" if invalid_envelope else None,
         )
     raise Refusal(f"unknown capacity {capacity!r}; one of: {', '.join(CAPACITIES)}")
 
@@ -501,6 +516,11 @@ def recruit_local(capacity: str, brief: str, *, timeout: int, model: str | None)
 
 def _failure_recovery(capacity: str, result: RunResult, out: Path) -> str:
     """Build next actions only from invocation metadata, never exception/response text."""
+    if result.failure_class == "AnswerPersistenceFailed":
+        return (
+            f"check the output directory's mode and space for {out}; "
+            "retry the brief with a writable --out FILE"
+        )
     if result.exit_code == "timeout" or result.failure_class == "EndpointDeadlineExceeded":
         return "increase --timeout and retry the brief"
     if result.failure_class == "PermissionError":
@@ -525,7 +545,7 @@ def write_receipt(
     result: RunResult | None,
     refusal: str | None,
     model_requested: str | None,
-) -> None:
+) -> Path:
     receipt = {
         "instrument_rev": INSTRUMENT_REV,
         "capacity": capacity,
@@ -543,7 +563,7 @@ def write_receipt(
         if result and result.models_reported
         else "absent",
         "exit_code": result.exit_code if result else None,
-        "output_bytes": len(result.answer.encode("utf-8")) if result else 0,
+        "output_bytes": result.output_bytes if result else 0,
         "stdout_bytes": result.stdout_bytes if result else 0,
         "stderr_tail": result.stderr_tail if result else "",
         "failure_class": result.failure_class if result else None,
@@ -557,7 +577,22 @@ def write_receipt(
             result.process_group_any_member_survived if result else None
         ),
     }
-    path.write_text(json.dumps(receipt, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+    data = json.dumps(receipt, indent=2, sort_keys=True) + "\n"
+    try:
+        path.write_text(data, encoding="utf-8")
+    except OSError:
+        # An unwritable answer directory may also prevent the adjacent receipt.
+        # Preserve the failure measurement in a private temporary file and name it.
+        with tempfile.NamedTemporaryFile(
+            mode="w",
+            encoding="utf-8",
+            prefix="hapax-recruit-",
+            suffix=".receipt.json",
+            delete=False,
+        ) as fallback:
+            fallback.write(data)
+            return Path(fallback.name)
+    return path
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -585,26 +620,37 @@ def main(argv: list[str] | None = None) -> int:
         )
         return 2
     if not args.brief.is_file():
-        print(f"hapax-recruit: brief {args.brief} is not a file", file=sys.stderr)
+        print(
+            f"hapax-recruit: brief {args.brief} is not a file; supply an existing --brief file",
+            file=sys.stderr,
+        )
         return 2
     brief = args.brief.read_text(encoding="utf-8")
     if not brief.strip():
-        print(f"hapax-recruit: brief {args.brief} is empty", file=sys.stderr)
+        print(
+            f"hapax-recruit: brief {args.brief} is empty; add prompt content to the brief",
+            file=sys.stderr,
+        )
         return 2
     cwd = (args.cwd or Path.cwd()).resolve()
     if not cwd.is_dir():
-        print(f"hapax-recruit: cwd {cwd} is not a directory", file=sys.stderr)
+        print(
+            f"hapax-recruit: cwd {cwd} is not a directory; select an existing --cwd directory",
+            file=sys.stderr,
+        )
         return 2
     # Resolve against the caller once, before Codex changes cwd. Only Codex
     # receives -o; kimi/qwencloud return stdout and manage their own side files.
     args.out = args.out.resolve()
-    args.out.parent.mkdir(parents=True, exist_ok=True)
     receipt_path = args.out.with_name(args.out.name + ".receipt.json")
 
     started = _now()
     result: RunResult | None = None
     refusal: str | None = None
+    preparing_output = True
     try:
+        args.out.parent.mkdir(parents=True, exist_ok=True)
+        preparing_output = False
         if args.capacity in LOCAL_ENDPOINTS:
             result = recruit_local(args.capacity, brief, timeout=args.timeout, model=args.model)
         else:
@@ -626,6 +672,25 @@ def main(argv: list[str] | None = None) -> int:
         result = RunResult(
             "", 3, 0, f"capacity failed: {failure_class}", [], failure_class=failure_class
         )
+        if preparing_output:
+            result.failure_class = "AnswerPersistenceFailed"
+            result.stderr_tail = f"answer persistence failed: {failure_class}"
+    if result is not None:
+        try:
+            if result.failure_class != "AnswerPersistenceFailed":
+                args.out.write_text(result.answer, encoding="utf-8")
+                if args.out.read_bytes() != result.answer.encode("utf-8"):
+                    raise OSError("answer readback differs from intended bytes")
+        except (OSError, UnicodeError) as exc:
+            result.exit_code = 3
+            result.failure_class = "AnswerPersistenceFailed"
+            result.stderr_tail = f"answer persistence failed: {type(exc).__name__}"
+        # Measure the file, including partial writes or an unchanged prior answer.
+        # An inaccessible size is unknown, never a fabricated zero or success claim.
+        try:
+            result.output_bytes = args.out.stat().st_size if args.out.is_file() else 0
+        except OSError:
+            result.output_bytes = None
     ended = _now()
     if result is not None and result.exit_code != 0:
         result.recovery_action = _redact(_failure_recovery(args.capacity, result, args.out))
@@ -633,23 +698,32 @@ def main(argv: list[str] | None = None) -> int:
         result.stderr_tail = (result.stderr_tail + f"\n{args.capacity}: {result.recovery_action}")[
             -400:
         ]
-    write_receipt(
-        receipt_path,
-        capacity=args.capacity,
-        brief=brief,
-        cwd=None if args.capacity in LOCAL_ENDPOINTS else cwd,
-        out=args.out,
-        started=started,
-        ended=ended,
-        result=result,
-        refusal=refusal,
-        model_requested=args.model,
-    )
+    try:
+        receipt_path = write_receipt(
+            receipt_path,
+            capacity=args.capacity,
+            brief=brief,
+            cwd=None if args.capacity in LOCAL_ENDPOINTS else cwd,
+            out=args.out,
+            started=started,
+            ended=ended,
+            result=result,
+            refusal=refusal,
+            model_requested=args.model,
+        )
+    except OSError:
+        print(
+            _redact(
+                f"hapax-recruit: cannot persist receipt {receipt_path} or a temporary receipt; "
+                "check directory mode and space; retry with a writable --out FILE"
+            ),
+            file=sys.stderr,
+        )
+        return 3
     if refusal is not None:
         print(f"hapax-recruit: REFUSED — {refusal} (receipt: {receipt_path})", file=sys.stderr)
         return 2
     assert result is not None
-    args.out.write_text(result.answer, encoding="utf-8")
     if result.exit_code == "timeout":
         print(
             f"hapax-recruit: {args.capacity} timed out after {args.timeout}s; partial output kept "

@@ -42,17 +42,38 @@ The inside-cwd Grok probe should return the marker; compare it with the final `c
 
 ## Failure artifacts and deadlines
 
-Failed CLI output, including partial timeout answers, is redacted before the recruiter writes
+CLI output, including successful answers and partial timeout answers, is redacted before the recruiter writes
 the answer and receipt or emits terminal/journal diagnostics. The receipt marks this as
-`answer_policy: redacted_failure_output`. Successful answers retain their original content.
+`answer_policy: redacted_failure_output` for failures. Successful answers retain their content
+apart from credential redaction. Kimi's indentation stripping happens after redaction.
 Structured credentials include escaped JSON strings, quoted/multiline YAML values and YAML
-block scalars. Unterminated sensitive quoted values suppress the remaining diagnostic block.
+block scalars. Plain YAML scalars include every token on the line and indented continuations,
+including continuations separated by blank lines. Anchors and tags precede the value; block
+indicators still open blocks after those properties. Sensitive aliases are redacted too.
+Unterminated sensitive quoted values suppress the remaining diagnostic block. Ambiguous
+plain/flow boundaries conservatively suppress the whole line and indented block.
 Codex output is accepted only if its file identity or timestamps changed during this invocation.
 An absent, unchanged, or empty output records `OutputNotProduced` and zero output bytes; stdout
 chatter is not an answer. A retry with no output clears the previous answer file.
 All CLI capacities reject empty or whitespace-only extracted answers as `OutputNotProduced`
 with exit 3 and zero answer bytes. Failure receipts and terminal messages include recovery
 actions: check the executable mode/PATH, inspect the receipt, or retry with `--out`/`--timeout`.
+Claude, glmcp and qwencloud result envelopes require a non-empty string `result`. A missing,
+null, numeric, list, object or whitespace-only result records `OutputNotProduced` and
+`invalid result envelope`; the envelope is never substituted for the answer. This also applies
+to result objects in stream arrays. A failed CLI's JSON diagnostic without result-envelope
+fields remains redacted failure output.
+
+The answer is written and its UTF-8 bytes read back before the receipt is finalized. A failed
+directory creation, answer write, or readback records exit 3 and `AnswerPersistenceFailed`;
+check the output directory's mode and space, then retry with a writable `--out`. `output_bytes`
+measures the regular file actually on disk, including partial writes or an unchanged older
+file on failure. It is zero for an absent file or directory, and null if its size is inaccessible.
+If the adjacent receipt cannot be written, a private `hapax-recruit-*.receipt.json` temporary
+file retains the measurement; the terminal message names its path. If neither location is
+writable, the command returns 3 and names the mode/space and writable-output remedy on stderr.
+Argument refusals name the affected path and the next action: supply an existing `--brief`
+file, add prompt content to an empty brief, or select an existing `--cwd` directory.
 
 Expected launch, decoding, and HTTP transport failures return exit 3 with a `failure_class`.
 Local endpoint connection, headers, and body consumption share one monotonic deadline; exceeding
@@ -68,6 +89,13 @@ env -u HAPAX_GLMCP_MODEL -u HAPAX_GLMCP_REVIEW_MODEL -u HAPAX_GLMCP_REVIEW_PAYG_
   UV_CACHE_DIR=/store-fast/tmp/uv-cache-verify PYTEST_ADDOPTS='--confcutdir=tests/scripts' \
   uv run pytest -q -p no:cacheprovider \
   tests/scripts/test_hapax_recruit.py::test_structured_failed_output_is_redacted_at_every_destination \
+  tests/scripts/test_hapax_recruit.py::test_yaml_scalars_are_redacted_at_every_destination \
+  tests/scripts/test_hapax_recruit.py::test_invalid_claude_result_envelope_is_receipted_failure \
+  tests/scripts/test_hapax_recruit.py::test_answer_persistence_failure_is_receipted \
+  tests/scripts/test_hapax_recruit.py::test_success_receipt_follows_verified_answer_bytes \
+  tests/scripts/test_hapax_recruit.py::test_incomplete_answer_write_cannot_claim_success \
+  tests/scripts/test_hapax_recruit.py::test_unwritable_directory_retains_a_temporary_failure_receipt \
+  tests/scripts/test_hapax_recruit.py::test_argument_validation_names_recovery \
   tests/scripts/test_hapax_recruit.py::test_codex_run_without_new_output_never_attributes_an_old_answer \
   tests/scripts/test_hapax_recruit.py::test_empty_cli_answer_is_receipted_failure \
   tests/scripts/test_hapax_recruit.py::test_expected_launch_decode_and_transport_failures_are_receipted \

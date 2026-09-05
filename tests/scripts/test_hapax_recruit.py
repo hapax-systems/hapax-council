@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import errno
 import hashlib
 import http.client
 import importlib.machinery
@@ -512,6 +513,29 @@ def test_list_and_argument_refusals(
     empty.write_text("  \n")
     assert module.main(["grok", "--brief", str(empty), "--out", str(out)]) == 2
     assert module.main(["grok", "--brief", str(tmp_path / "nope.md"), "--out", str(out)]) == 2
+
+
+@pytest.mark.parametrize("condition", ["missing-brief", "empty-brief", "invalid-cwd"])
+def test_argument_validation_names_recovery(bench, monkeypatch, capsys, condition):
+    module, _bin_dir, brief, out = bench
+    args = ["grok", "--brief", str(brief), "--out", str(out)]
+    if condition == "missing-brief":
+        brief.unlink()
+        path, remedy = brief, "supply an existing --brief file"
+    elif condition == "empty-brief":
+        brief.write_text(" \n\t")
+        path, remedy = brief, "add prompt content to the brief"
+    else:
+        path = brief.parent / "missing-cwd"
+        args += ["--cwd", str(path)]
+        remedy = "select an existing --cwd directory"
+    monkeypatch.setattr(module, "recruit_cli", lambda *a, **kw: pytest.fail("validation launched"))
+    assert module.main(args) == 2
+    captured = capsys.readouterr()
+    assert str(path) in captured.err
+    assert remedy in captured.err
+    assert captured.out == ""
+    assert not out.exists()
 
 
 # Synthetic credential-shaped diagnostics: the redaction under test must remove them; none is real.
@@ -1266,3 +1290,246 @@ def test_failure_recovery_actions_reach_diagnostic_destinations(
     assert out.read_bytes() == b""  # Diagnostics must not turn an absent answer into an answer.
     assert captured.out == "" and caplog.text == ""
     assert canary not in json.dumps(receipt) + captured.err
+
+
+@pytest.mark.parametrize(
+    "diagnostic",
+    [
+        "password: prefix SYNTHETIC_YAML_CANARY\n",  # pragma: allowlist secret
+        "password: prefix words\n  SYNTHETIC_YAML_CANARY\n",  # pragma: allowlist secret
+        "password: prefix words\n\n  SYNTHETIC_YAML_CANARY\n",  # pragma: allowlist secret
+        "api_key: &provider |-\n  SYNTHETIC_YAML_CANARY\n",  # pragma: allowlist secret
+        "api_key: &provider >\n  SYNTHETIC_YAML_CANARY\n",  # pragma: allowlist secret
+        "password: &provider prefix SYNTHETIC_YAML_CANARY\n",  # pragma: allowlist secret
+        "password: !!str prefix SYNTHETIC_YAML_CANARY\n",  # pragma: allowlist secret
+        "password: !custom &provider |-\n  SYNTHETIC_YAML_CANARY\n",  # pragma: allowlist secret
+        'password: &provider !!str "prefix SYNTHETIC_YAML_CANARY"\n',  # pragma: allowlist secret
+        "api_key: &SYNTHETIC_YAML_CANARY harmless\npassword: *SYNTHETIC_YAML_CANARY\n",  # pragma: allowlist secret
+    ],
+    ids=[
+        "plain-tokens",
+        "plain-continuation",
+        "plain-blank-continuation",
+        "anchored-literal",
+        "anchored-folded",
+        "anchored-plain",
+        "tagged-plain",
+        "tagged-anchored-block",
+        "anchored-tagged-quoted",
+        "alias",
+    ],
+)
+@pytest.mark.parametrize(
+    "capacity", ["codex", "grok", "kimi", "agy", "claude", "glmcp", "qwencloud"]
+)
+@pytest.mark.parametrize("code", [0, 7, "timeout"])
+def test_yaml_scalars_are_redacted_at_every_destination(
+    bench, monkeypatch, capsys, caplog, diagnostic, capacity, code
+):
+    module, _bin_dir, brief, out = bench
+    monkeypatch.setattr(module, "_require_binary", lambda name: name)
+    monkeypatch.setattr(module, "_is_git_checkout", lambda cwd: True)
+    if capacity in module.WRAPPED_CLAUDE:
+        monkeypatch.setenv(module.WRAPPED_CLAUDE[capacity][0], str(brief))
+
+    def run(argv, *, cwd, timeout):
+        if capacity == "codex":
+            Path(argv[argv.index("-o") + 1]).write_text(diagnostic)
+        stdout = diagnostic
+        if capacity in {"claude", "glmcp", "qwencloud"}:
+            stdout = json.dumps({"result": diagnostic})
+        return code, stdout, diagnostic, False, None
+
+    monkeypatch.setattr(module, "_run", run)
+    rc = module.main([capacity, "--brief", str(brief), "--out", str(out)])
+    assert rc == (0 if code == 0 else 4 if code == "timeout" else 3)
+    captured = capsys.readouterr()
+    destinations = {
+        "answer": out.read_text(),
+        "receipt": out.with_name(out.name + ".receipt.json").read_text(),
+        "stdout": captured.out,
+        "stderr/journal": captured.err,
+        "log": caplog.text,
+    }
+    leaks = [
+        destination
+        for destination, text in destinations.items()
+        if "SYNTHETIC_YAML_CANARY" in text  # pragma: allowlist secret
+    ]
+    assert not leaks, f"credential reached destinations: {', '.join(leaks)}"
+    assert "<redacted>" in destinations["answer"]
+    assert _receipt(out)["output_bytes"] == len(out.read_bytes())
+
+
+@pytest.mark.parametrize(
+    "payload",
+    [{}, {"result": None}, {"result": 42}, {"result": []}, {"result": {}}, {"result": " \n\t"}],
+    ids=["missing", "null", "number", "list", "object", "whitespace"],
+)
+@pytest.mark.parametrize("capacity", ["claude", "glmcp", "qwencloud"])
+@pytest.mark.parametrize("stream_array", [False, True], ids=["object", "stream-array"])
+def test_invalid_claude_result_envelope_is_receipted_failure(
+    bench, monkeypatch, capsys, payload, capacity, stream_array
+):
+    module, _bin_dir, brief, out = bench
+    monkeypatch.setattr(module, "_require_binary", lambda name: name)
+    if capacity in module.WRAPPED_CLAUDE:
+        monkeypatch.setenv(module.WRAPPED_CLAUDE[capacity][0], str(brief))
+    payload = {"type": "result", "modelUsage": {"synthetic-served": {}}, **payload}
+    stdout = json.dumps([payload] if stream_array else payload)
+    monkeypatch.setattr(module, "_run", lambda *a, **kw: (0, stdout, "", False, None))
+    assert module.main([capacity, "--brief", str(brief), "--out", str(out)]) == 3
+    receipt = _receipt(out)
+    assert receipt["exit_code"] == 3
+    assert receipt["failure_class"] == "OutputNotProduced"
+    assert receipt["output_bytes"] == 0 and out.read_bytes() == b""
+    assert receipt["models_reported"] == ["synthetic-served"]
+    captured = capsys.readouterr()
+    for diagnostic in (receipt["stderr_tail"], captured.err):
+        assert "invalid result envelope" in diagnostic
+    assert "retry" in receipt["recovery_action"]
+    assert "--out" in receipt["recovery_action"]
+    assert captured.out == ""
+
+
+@pytest.mark.parametrize("condition", ["unwritable-directory", "directory-output", "disk-full"])
+def test_answer_persistence_failure_is_receipted(bench, monkeypatch, capsys, caplog, condition):
+    module, _bin_dir, brief, out = bench
+    out.parent.mkdir()
+    monkeypatch.setattr(module, "_require_binary", lambda name: name)
+    monkeypatch.setattr(module, "_run", lambda *a, **kw: (0, "OK", "", False, None))
+    original_write = Path.write_text
+    if condition == "directory-output":
+        out.mkdir()
+    elif condition == "unwritable-directory":
+        # Keep an existing receipt writable while forbidding new directory entries.
+        receipt_path = out.with_name(out.name + ".receipt.json")
+        receipt_path.write_text("{}")
+        out.parent.chmod(0o555)
+
+    def write(path, text, *args, **kwargs):
+        if path == out and condition == "disk-full":
+            original_write(path, text[:1], *args, **kwargs)
+            raise OSError(errno.ENOSPC, "synthetic disk full")
+        return original_write(path, text, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "write_text", write)
+    try:
+        rc = module.main(["grok", "--brief", str(brief), "--out", str(out)])
+        receipt = _receipt(out)
+        assert receipt["exit_code"] == 3, "receipt claimed success before answer persistence"
+        assert rc == 3
+        assert receipt["failure_class"] == "AnswerPersistenceFailed"
+        assert receipt["out"] == str(out)
+        actual_bytes = len(out.read_bytes()) if out.is_file() else 0
+        assert receipt["output_bytes"] == actual_bytes
+        captured = capsys.readouterr()
+        assert captured.out == "" and caplog.text == ""
+        assert "Traceback" not in captured.err
+        assert "answer persistence failed" in receipt["stderr_tail"]
+        for diagnostic in (receipt["recovery_action"], captured.err):
+            for action in (str(out), "directory", "mode", "space", "writable --out", "retry"):
+                assert action in diagnostic
+    finally:
+        out.parent.chmod(0o755)
+
+
+def test_success_receipt_follows_verified_answer_bytes(bench, monkeypatch):
+    module, _bin_dir, brief, out = bench
+    monkeypatch.setattr(module, "_require_binary", lambda name: name)
+    monkeypatch.setattr(module, "_run", lambda *a, **kw: (0, "réponse\n", "", False, None))
+    original_receipt = module.write_receipt
+
+    def write_receipt(path, **kwargs):
+        assert out.is_file(), "success receipt preceded answer persistence"
+        assert out.read_bytes() == kwargs["result"].answer.encode("utf-8")
+        return original_receipt(path, **kwargs)
+
+    monkeypatch.setattr(module, "write_receipt", write_receipt)
+    assert module.main(["grok", "--brief", str(brief), "--out", str(out)]) == 0
+    assert _receipt(out)["output_bytes"] == len(out.read_bytes())
+
+
+@pytest.mark.parametrize("preexisting", [False, True], ids=["absent", "old-answer"])
+def test_incomplete_answer_write_cannot_claim_success(bench, monkeypatch, preexisting):
+    module, _bin_dir, brief, out = bench
+    out.parent.mkdir()
+    if preexisting:
+        out.write_text("older answer")
+    monkeypatch.setattr(module, "_require_binary", lambda name: name)
+    monkeypatch.setattr(module, "_run", lambda *a, **kw: (0, "OK", "", False, None))
+    original_write = Path.write_text
+
+    def write(path, text, *args, **kwargs):
+        if path == out:
+            if not preexisting:
+                original_write(path, text[:1], *args, **kwargs)
+            return len(text)  # Silent short/no-op write must be caught by readback.
+        return original_write(path, text, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "write_text", write)
+    assert module.main(["grok", "--brief", str(brief), "--out", str(out)]) == 3
+    receipt = _receipt(out)
+    assert receipt["exit_code"] == 3
+    assert receipt["failure_class"] == "AnswerPersistenceFailed"
+    assert receipt["output_bytes"] == len(out.read_bytes())
+
+
+@pytest.mark.parametrize("missing_parent", [False, True], ids=["write-answer", "create-parent"])
+def test_unwritable_directory_retains_a_temporary_failure_receipt(
+    bench, monkeypatch, capsys, tmp_path, missing_parent
+):
+    module, _bin_dir, brief, out = bench
+    out.parent.mkdir()
+    blocked_directory = out.parent
+    if missing_parent:
+        out = out.parent / "missing" / out.name
+    monkeypatch.setattr(module.tempfile, "tempdir", str(tmp_path))
+    monkeypatch.setattr(module, "_require_binary", lambda name: name)
+
+    def run(*args, **kwargs):
+        assert not missing_parent, "capacity ran before its output directory was created"
+        return 0, "OK", "", False, None
+
+    monkeypatch.setattr(module, "_run", run)
+    blocked_directory.chmod(0o555)
+    try:
+        assert module.main(["grok", "--brief", str(brief), "--out", str(out)]) == 3
+        captured = capsys.readouterr()
+        (fallback,) = tmp_path.glob("hapax-recruit-*.receipt.json")
+        receipt = json.loads(fallback.read_text())
+        assert str(fallback) in captured.err and str(out) in captured.err
+        assert fallback.stat().st_mode & 0o777 == 0o600
+        assert receipt["failure_class"] == "AnswerPersistenceFailed"
+        assert receipt["exit_code"] == 3 and receipt["output_bytes"] == 0
+        assert "writable --out" in receipt["recovery_action"]
+        assert captured.out == "" and "Traceback" not in captured.err
+    finally:
+        blocked_directory.chmod(0o755)
+
+
+def test_unwritable_receipt_and_fallback_name_recovery_without_traceback(
+    bench, monkeypatch, capsys, caplog
+):
+    module, _bin_dir, brief, out = bench
+    monkeypatch.setattr(module, "_require_binary", lambda name: name)
+    monkeypatch.setattr(module, "_run", lambda *a, **kw: (0, "OK", "", False, None))
+    original_write = Path.write_text
+
+    def write(path, text, *args, **kwargs):
+        if path.name.endswith(".receipt.json"):
+            raise OSError(errno.ENOSPC, "synthetic receipt disk full")
+        return original_write(path, text, *args, **kwargs)
+
+    def fallback(*args, **kwargs):
+        raise OSError(errno.ENOSPC, "synthetic temporary disk full")
+
+    monkeypatch.setattr(Path, "write_text", write)
+    monkeypatch.setattr(module.tempfile, "NamedTemporaryFile", fallback)
+    assert module.main(["grok", "--brief", str(brief), "--out", str(out)]) == 3
+    captured = capsys.readouterr()
+    assert out.read_text() == "OK"
+    assert "cannot persist receipt" in captured.err
+    assert "mode and space" in captured.err and "writable --out" in captured.err
+    assert "Traceback" not in captured.err
+    assert captured.out == "" and caplog.text == ""
