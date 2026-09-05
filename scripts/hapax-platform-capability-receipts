@@ -14,6 +14,7 @@ import shutil
 import socket
 import subprocess
 import sys
+import tempfile
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any
@@ -910,9 +911,18 @@ def platform_routes(
 def write_receipt(receipt: PlatformCapabilityReceipt, receipt_dir: Path) -> Path:
     receipt_dir.mkdir(parents=True, exist_ok=True)
     path = receipt_dir / f"{receipt.platform}.json"
-    path.write_text(
-        json.dumps(receipt.model_dump(mode="json"), indent=2, sort_keys=True), encoding="utf-8"
-    )
+    payload = json.dumps(receipt.model_dump(mode="json"), indent=2, sort_keys=True)
+    # Both scheduled producers publish here. Keep incomplete files outside the plural
+    # loader's *.json glob and replace the final path once, after the complete write.
+    fd, tmp_name = tempfile.mkstemp(dir=receipt_dir, prefix=f".{path.name}.", suffix=".tmp")
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8") as stream:
+            stream.write(payload)
+            stream.flush()
+            os.fsync(stream.fileno())
+        os.replace(tmp_name, path)
+    finally:
+        Path(tmp_name).unlink(missing_ok=True)
     return path
 
 

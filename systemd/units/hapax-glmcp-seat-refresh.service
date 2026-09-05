@@ -9,13 +9,13 @@ Description=Keep the GLM review seat admitted within the script's bounded no-lap
 [Service]
 Type=oneshot
 ExecStart=%h/.cache/hapax/source-activation/worktree/scripts/hapax-glmcp-seat-refresh
-# Installed systemd.exec(5), `man -P cat systemd.exec` (MANWIDTH=80, LC_ALL=C,
-# GROFF_NO_SGR=1, TERM=dumb), Environment= lines 3100-3101:
-# Specifier expansion is performed, see the "Specifiers" section in systemd.unit(5).
-# The same manual, LogExtraFields= line 3505 (not the Environment= section):
-# The usual specifiers are expanded in all assignments (see below).
-# `systemd-run -p Environment=` sets D-Bus properties, not unit-file assignments;
-# a transient probe does NOT exercise unit-file specifier expansion.
+# Coordinator measurement, 2026-09-05T18:2xZ (read-only user-manager inspection):
+# installed hapax-cc-task-offer-ready.service, hapax-claude-account-live-observe.service,
+# and hapax-determine.service each contain Environment=HOME=%h verbatim. For all three,
+# `systemctl --user show -p Environment` reports the home path and zero remaining %h;
+# the latter two also expand PYTHONPATH. Last runs: Result=success, ExecMainStatus=0.
+# Round-4 `systemd-run -p Environment=X=%h` measured a transient D-Bus property, which
+# retains the literal specifier; it did not exercise expansion from an installed unit file.
 Environment=HOME=%h
 Environment=PATH=%h/.local/bin:/usr/local/bin:/usr/bin:/bin
 Environment=GNUPGHOME=%h/.gnupg

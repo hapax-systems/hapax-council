@@ -10,6 +10,9 @@ OnBootSec=2min
 # service's 600 s TimeoutStartSec, so an active-relative timer could elapse while the oneshot was
 # still active and consume that activation. This directive cannot elapse while the target is active;
 # AccuracySec plus the script's explicit scheduler allowance bounds the modeled next-start delay.
+# 2026-09-05 isolated skip tick: 0.547 s wall / 0.537 s CPU (~64.5 CPU s/hour at 120 ticks).
+# Keep 30 s: --envelope pins threshold=680 s, skip floor=681 s, post-mint renewal=873 < 900 s.
+# A five-minute delay would require threshold=950 s and renewal=1143 s; it cannot fit this seat.
 OnUnitInactiveSec=30s
 AccuracySec=30s
 Persistent=false

@@ -2,6 +2,17 @@
 # Refresh the GLM review seat: one real sanctioned reviewer round-trip, a witness (schema v1:
 # no prompt, output or secret persisted), the passive admission receipt, the telemetry writer.
 # The timer checks 30 s after service completion (OnUnitInactiveSec=30s, AccuracySec=30s).
+# Skip-path measurement (2026-09-05, isolated HOME, real --show/dispatch loaders,
+# resource.getrusage): 0.547 s wall, 0.537 s CPU; at most ~120 checks/hour (~64.5 CPU s/hour).
+# --envelope: 30 + (5 shutdown + 30 accuracy + 5 scheduler + 600 service + 10 margin)
+# = 680 s threshold; 1 s rounding makes 681 s; 192 s post-mint tail + 681 = 873 < 900 s.
+# Five minutes would cost less CPU but require 950 s / 1143 s, exceeding the seat lifetime.
+# Coordinator evidence, 2026-09-05T18:2xZ: read-only `systemctl --user show -p Environment`
+# on installed hapax-cc-task-offer-ready.service, hapax-claude-account-live-observe.service,
+# and hapax-determine.service: each unit file has Environment=HOME=%h; the manager view has
+# the home path and zero remaining %h (also PYTHONPATH in the latter two). Last runs:
+# Result=success, ExecMainStatus=0. Round-4 `systemd-run -p Environment=X=%h` measured a
+# transient D-Bus property, which retains the literal specifier, not a unit-file assignment.
 # Prints states only. Exit non-zero if the round-trip fails — no receipt is minted then.
 set -euo pipefail
 # The scripts this calls come from the activation worktree (main, activated by the governed loop),

@@ -20,9 +20,11 @@ import shlex
 import shutil
 import subprocess
 import sys
+from concurrent.futures import ThreadPoolExecutor
 from contextlib import contextmanager
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
+from threading import Event
 
 import pytest
 
@@ -347,17 +349,7 @@ def _witnesses(home: Path) -> list[Path]:
     return sorted((home / ".cache" / "hapax" / "glmcp-admission-witness").glob("*.yaml"))
 
 
-@pytest.mark.parametrize("wait_at", ["capabilities", "lock"])
-def test_telemetry_wait_cannot_revoke_real_seat_refresh(
-    tmp_path: Path, monkeypatch, capsys, wait_at
-):
-    """Interleave both real producers; only the reviewer and hardware probes are fake."""
-    from shared.quota_spend_ledger import (
-        load_quota_spend_ledger,
-        subscription_quota_state_for_route,
-    )
-
-    home, council = _harness(tmp_path)
+def _use_real_refresh_producers(home: Path, council: Path) -> None:
     relay = home / ".cache/hapax/relay/receipts"
     receipts = home / ".cache/hapax/platform-capability-receipts"
     ledger_path = home / "quota-spend-ledger-live.json"
@@ -391,6 +383,23 @@ def test_telemetry_wait_cannot_revoke_real_seat_refresh(
         council / "scripts/hapax-platform-capability-receipts",
         "exec " + shlex.join([sys.executable, "-c", capability_code]) + ' "$@"\n',
     )
+
+
+@pytest.mark.parametrize("wait_at", ["capabilities", "lock"])
+def test_telemetry_wait_cannot_revoke_real_seat_refresh(
+    tmp_path: Path, monkeypatch, capsys, wait_at
+):
+    """Interleave both real producers; only the reviewer and hardware probes are fake."""
+    from shared.quota_spend_ledger import (
+        load_quota_spend_ledger,
+        subscription_quota_state_for_route,
+    )
+
+    home, council = _harness(tmp_path)
+    _use_real_refresh_producers(home, council)
+    relay = home / ".cache/hapax/relay/receipts"
+    receipts = home / ".cache/hapax/platform-capability-receipts"
+    ledger_path = home / "quota-spend-ledger-live.json"
     writer = runpy.run_path(str(REPO / "scripts/hapax-quota-telemetry-writer"))
     globals_ = writer["main"].__globals__
     started = datetime.now(UTC).replace(microsecond=0) - timedelta(seconds=5)
@@ -458,6 +467,98 @@ def test_telemetry_wait_cannot_revoke_real_seat_refresh(
     scan = writer["active_glmcp_admission_receipts"](relay, now=final.captured_at)
     assert len(scan.admissions) == 1
     assert not scan.ignored_evidence_refs
+
+
+def test_parallel_telemetry_resource_scan_cannot_revoke_refresh_admission(
+    tmp_path: Path, monkeypatch, capsys
+):
+    """An earlier invocation really overlaps the refresher, sharing production locks and writes."""
+    from shared.quota_spend_ledger import (
+        load_quota_spend_ledger,
+        subscription_quota_state_for_route,
+    )
+
+    home, council = _harness(tmp_path)
+    _use_real_refresh_producers(home, council)
+    relay = home / ".cache/hapax/relay/receipts"
+    receipts = home / ".cache/hapax/platform-capability-receipts"
+    ledger_path = home / "quota-spend-ledger-live.json"
+    writer = runpy.run_path(str(REPO / "scripts/hapax-quota-telemetry-writer"))
+    globals_ = writer["main"].__globals__
+    started = datetime.now(UTC).replace(microsecond=0) - timedelta(seconds=60)
+    clock = [started]
+    scanning, resume = Event(), Event()
+    real_probe = writer["probe_local_resource_state"]
+    merges = []
+    real_merge = writer["keep_newer_valid_admissions"]
+
+    class Clock(datetime):
+        @classmethod
+        def now(cls, tz=None):
+            return clock[0]
+
+    def scan_resources(**kwargs):
+        scanning.set()
+        assert resume.wait(30), "refresher did not finish during telemetry scan"
+        return real_probe(**kwargs)
+
+    def merge(ledger, previous, *, now):
+        merges.append(previous)
+        return real_merge(ledger, previous, now=now)
+
+    monkeypatch.setitem(globals_, "datetime", Clock)
+    monkeypatch.setitem(globals_, "probe_local_resource_state", scan_resources)
+    monkeypatch.setitem(globals_, "keep_newer_valid_admissions", merge)
+    # --skip-receipts prevents provider probes. The actual capability producer in the
+    # refresher runs with only observe_cli stubbed; refresh_capability_receipts is not mocked.
+    with ThreadPoolExecutor(max_workers=1) as pool:
+        pending = pool.submit(
+            writer["main"],
+            [
+                "--skip-receipts",
+                "--out",
+                str(ledger_path),
+                "--relay-receipt-dir",
+                str(relay),
+                "--platform-capability-receipt-dir",
+                str(receipts),
+                "--nvidia-smi",
+                "/bin/false",
+                "--json",
+            ],
+        )
+        try:
+            assert scanning.wait(30), "telemetry did not enter its resource scan"
+            result = _run(home, council, environment={"PYTHONPATH": str(REPO)})
+            assert result.returncode == 0, result.stdout + result.stderr
+            published = load_quota_spend_ledger(ledger_path)
+            assert published.captured_at > started
+            assert not _dispatch_quota(home, datetime.now(UTC)).evidence.quota.blocked_reasons
+            clock[0] = datetime.now(UTC).replace(microsecond=0)
+        finally:
+            resume.set()
+        assert pending.result(timeout=30) == 0
+    assert merges == [published], "older producer must merge the real refresher's ledger"
+    final = load_quota_spend_ledger(ledger_path)
+    state, _ = subscription_quota_state_for_route(final, "glmcp.review.direct", now=clock[0])
+    assert state.value == "fresh"
+    quota = _dispatch_quota(home, clock[0]).evidence.quota
+    assert not quota.blocked_reasons
+    assert "platform-capability-registry:glmcp.review.direct:quota:observed" in quota.evidence_refs
+    for ledger in (published, final):
+        snapshot = next(
+            row for row in ledger.quota_snapshots if row.route_id == "glmcp.review.direct"
+        )
+        assert snapshot.subscription_quota_state.value == "fresh"
+        assert snapshot.fresh_until == next(
+            row.fresh_until
+            for row in published.quota_snapshots
+            if row.route_id == snapshot.route_id
+        )
+    summary = json.loads(capsys.readouterr().out)
+    assert summary["glmcp_admissions"] == 1
+    assert summary["glmcp_ignored_admissions"] == 0
+    assert final.captured_at == clock[0]
 
 
 @pytest.mark.parametrize(
@@ -1175,6 +1276,12 @@ def test_refresh_threshold_is_derived_from_every_stage_and_a_skip_cannot_lapse(
     exact whole-service ceiling, and then derives the skip and overrun invariants from that ceiling.
     """
     e = _envelope(tmp_path)
+    assert e["timer_inactive_delay_s"] == 30
+    assert e["chain_envelope_s"] == 650
+    assert e["seat_refresh_threshold_s"] == 680
+    assert e["seat_skip_min_remaining_s"] == 681
+    assert e["post_mint_tail_s"] == 192
+    assert e["overrun_renewal_envelope_s"] == 873
     review = (
         e["review_attempts"] * e["review_attempt_timeout_s"]
         + (e["review_attempts"] - 1) * e["review_retry_sleep_s"]
@@ -1758,6 +1865,44 @@ def test_model_is_pinned_to_what_the_admission_cli_accepts() -> None:
     text = SCRIPT.read_text(encoding="utf-8")
     assert 'model="glm-5.2"' in text
     assert 'export HAPAX_GLMCP_REVIEW_MODEL="$model"' in text
+
+
+def test_service_home_specifiers_only_appear_in_expanded_directives() -> None:
+    """Parse unit assignments, not comments or a simulated string replacement by systemd.
+
+    systemd.exec(5), systemd.service(5), systemd.unit(5) document these directive
+    expansions. Keep this unit's paths direct and unquoted; ordinary Environment=
+    quoting would also expand, but embedded shell literals are outside this contract.
+    EnvironmentFile file contents are never a source of home specifiers for this unit.
+    """
+    expanded = {
+        ("Service", "Environment"),
+        ("Service", "ExecStart"),
+        ("Service", "WorkingDirectory"),
+        ("Unit", "Documentation"),
+    }
+    section = ""
+    count = 0
+    for number, raw in enumerate(SERVICE.read_text().splitlines(), 1):
+        line = raw.strip()
+        if not line or line.startswith(("#", ";")):
+            continue
+        if line.startswith("["):
+            section = line.removeprefix("[").removesuffix("]")
+            continue
+        directive, sep, value = line.partition("=")
+        assert sep, (number, line)
+        assert directive != "EnvironmentFile", "home paths must come from unit assignments"
+        if "%h" not in value:
+            continue
+        count += value.count("%h")
+        assert (section, directive) in expanded, (number, directive)
+        assert "%%h" not in value, "escaped specifier would remain literal"
+        assert not any(quote in value for quote in ("'", '"')), "home paths must be direct"
+        words = shlex.split(value)
+        if directive == "Environment":
+            assert all("=" in word for word in words), (number, words)
+    assert count == 5  # ExecStart and the four environment paths must all be checked.
 
 
 def test_unit_pair_executes_from_the_activation_worktree_and_strips_inherited_overrides(

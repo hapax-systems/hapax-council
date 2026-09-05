@@ -168,7 +168,16 @@ def test_environment_home_specifier_matches_installed_systemd_documentation() ->
         line.removeprefix("# ") for line in service.splitlines() if line.startswith("#")
     )
     assert "Environment=HOME=%h" in service.splitlines()
-    assert quote in comments
-    assert other_quote in comments
-    assert "LogExtraFields=" in comments
-    assert "D-Bus properties" in comments
+    # The unit no longer quotes the manual; it carries exercised evidence (coordinator
+    # measurement 2026-09-05, read-only user-manager inspection): three installed units
+    # carry HOME=%h verbatim and the manager's parsed view shows the home path with zero
+    # remaining %h; the round-4 systemd-run result was a transient D-Bus property.
+    for installed_unit in (
+        "hapax-cc-task-offer-ready.service",
+        "hapax-claude-account-live-observe.service",
+        "hapax-determine.service",
+    ):
+        assert installed_unit in comments
+    assert "zero remaining %h" in comments
+    assert "Result=success" in comments
+    assert "transient D-Bus property" in comments
