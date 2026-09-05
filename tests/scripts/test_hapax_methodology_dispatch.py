@@ -4771,7 +4771,7 @@ def test_dispatch_content_query_broad_scope_below_root_never_falls_outside(
 
 
 @pytest.mark.parametrize("spelling", ["alias", "[aa]lias", "alias-*"])
-@pytest.mark.parametrize("target_kind", ["file", "directory"])
+@pytest.mark.parametrize("target_kind", ["file", "directory", "selected-external-file"])
 def test_dispatch_content_query_external_glob_alias_refuses_selected_bytes(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -4781,9 +4781,15 @@ def test_dispatch_content_query_external_glob_alias_refuses_selected_bytes(
 ) -> None:
     root = alias_member_tree(tmp_path / "member")
     target = root / "bin/gawk"
+    if target_kind == "selected-external-file":
+        selected = target
+        target = tmp_path / "external-selected-bytes"
+        target.write_bytes(selected.read_bytes())
+        selected.unlink()
+        selected.symlink_to(target)
     outside = tmp_path / "outside"
     outside.mkdir()
-    link_target = target if target_kind == "file" else target.parent
+    link_target = target.parent if target_kind == "directory" else target
     for alias in ("alias", "alias-selected"):
         (outside / alias).symlink_to(link_target, target_is_directory=target_kind == "directory")
     assert {p.resolve() for p in outside.glob(spelling)} == {link_target}
@@ -4806,9 +4812,75 @@ def test_dispatch_content_query_external_glob_alias_refuses_selected_bytes(
         frame_root=frame_root,
     )
     _assert_frame_refusal_receipt(tmp_path, frame_root, rc, err)
-    if spelling != "alias" or target_kind == "directory":
-        component = link_target if spelling == "alias" else outside
+    if spelling == "alias-*" or target_kind == "directory":
+        component = outside if spelling == "alias-*" else link_target
         assert "containment is undecidable" in err and str(component) in err
+
+
+@pytest.mark.parametrize("decayed", [True, False], ids=["decayed", "healthy"])
+@pytest.mark.parametrize("kind", ["directory", "file", "escape"])
+@pytest.mark.parametrize("spelling", ["literal", "singleton", "repeated", "wildcard"])
+def test_dispatch_alias_main_refuses_decay_and_admits_health(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+    decayed: bool,
+    kind: str,
+    spelling: str,
+) -> None:
+    root = alias_member_tree(tmp_path / "member")
+    names = {
+        "directory": ("sbin", "[s]bin", "[ss]bin", "s?in"),
+        "file": ("awk", "[a]wk", "[aa]wk", "a?k"),
+        "escape": ("tools", "[t]ools", "[tt]ools", "t?ols"),
+    }
+    alias = names[kind][("literal", "singleton", "repeated", "wildcard").index(spelling)]
+    member_root = root / ("bin/db5.3" if kind == "directory" else "bin")
+    pattern = "gawk" if kind == "file" else "**/*"
+    read = producer_glob_bytes(member_root, [pattern], monkeypatch)
+    if kind == "directory":
+        assert read == {
+            member_root / name: (member_root / name).read_bytes()
+            for name in ("db_dump", "nested/db_load")
+        }
+        scope = str(root / alias / "db5.3") + "/"
+    else:
+        assert member_root / "gawk" in read
+        scope = str(member_root / alias) + ("/**" if kind == "escape" else "")
+    frame_root = _frame_procedure_root(
+        tmp_path / "frame",
+        decayed_root=member_root if decayed else None,
+        reader="fs.glob",
+        location={"path": str(member_root), "patterns": [pattern]},
+    )
+    module = _dispatcher_module()
+    rc, err = _dispatch_up_to_the_adapter(
+        tmp_path,
+        monkeypatch,
+        capsys,
+        module,
+        mutation_scope_refs=json.dumps([scope]),
+        frame_root=frame_root,
+    )
+    if decayed:
+        _assert_frame_refusal_receipt(tmp_path, frame_root, rc, err)
+        if kind == "escape":
+            assert "containment is undecidable" in err
+        return
+    # Reaching the launch adapter proves main() admitted the same governed task.
+    assert rc == 10 and "fixture refusal" in err
+    validation = module.validate_task(
+        task_id="governed-build",
+        lane="cx-green",
+        platform="codex",
+        task_root=tmp_path / "tasks",
+        strict_worktree=False,
+    )
+    assert validation.ok and validation.reason == "eligible"
+    receipt = json.loads(
+        (tmp_path / "ledger/methodology-dispatch.jsonl").read_text().splitlines()[-1]
+    )
+    assert receipt["frame_decayed_members"] == []
 
 
 @pytest.mark.parametrize("kind", ["member", "nonmember", "outside", "chain", "excluded"])
@@ -6149,18 +6221,57 @@ def _dispatch_up_to_the_adapter(
 
 
 @pytest.mark.parametrize("allow_rgless", [False, True])
-def test_producer_rg_oracle_requires_explicit_rgless_run(
+def test_producer_rg_oracle_never_skips_missing_rg(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, allow_rgless: bool
 ) -> None:
     monkeypatch.setattr("tests.frame_verdict_helpers.shutil.which", lambda name: None)
     monkeypatch.setenv("HAPAX_ALLOW_NO_RG", "1" if allow_rgless else "0")
-    exception = pytest.skip.Exception if allow_rgless else pytest.fail.Exception
     with pytest.raises(
-        (pytest.skip.Exception, pytest.fail.Exception),
+        pytest.fail.Exception,
         match="frame content-query rg oracle requires the rg executable",
-    ) as caught:
+    ):
         producer_glob_bytes(tmp_path, ["*.py"], monkeypatch, content_query="s", query_engine="rg")
-    assert isinstance(caught.value, exception)
+
+
+@pytest.mark.parametrize("query", ["sced", "k", "i"])
+@pytest.mark.parametrize("match_mode", ["substring", "word"])
+def test_producer_casefold_engines_agree(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, query: str, match_mode: str
+) -> None:
+    root = tmp_path / "casefold"
+    root.mkdir()
+    for index, text in enumerate(
+        [query.upper(), query.title(), f"_{query.upper()}_", f"a{query.upper()}z", "unrelated"]
+    ):
+        (root / f"{index}.py").write_text(text)
+    selections = {
+        engine: producer_glob_bytes(
+            root,
+            ["*.py"],
+            monkeypatch,
+            content_query=query,
+            query_engine=engine,
+            case_insensitive=True,
+            match_mode=match_mode,
+        )
+        for engine in ("python", "rg")
+    }
+    assert selections["rg"], "case-folded positive witnesses must be selected"
+    assert selections["python"] == selections["rg"], "Python/rg case-fold selection diverged"
+
+
+def test_producer_casefold_oracle_detects_divergence(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    real_producer = producer_glob_bytes
+
+    def divergent_python(*args, **kwargs):
+        selected = real_producer(*args, **kwargs)
+        return {} if kwargs["query_engine"] == "python" else selected
+
+    monkeypatch.setitem(globals(), "producer_glob_bytes", divergent_python)
+    with pytest.raises(AssertionError, match="Python/rg case-fold selection diverged"):
+        test_producer_casefold_engines_agree(tmp_path, monkeypatch, "sced", "word")
 
 
 @pytest.mark.parametrize("match_mode", ["word", "substring"])

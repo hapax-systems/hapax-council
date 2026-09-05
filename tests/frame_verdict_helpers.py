@@ -1,7 +1,6 @@
 """Fixture epoch selection, real Git history and producer reads for frame consumer tests."""
 
 import importlib
-import os
 import shutil
 import subprocess
 from pathlib import Path
@@ -59,12 +58,11 @@ def producer_glob_bytes(
     assert query_engine in {"python", "rg"}
     rg = shutil.which("rg")
     if query_engine == "rg" and rg is None:
-        reason = "frame content-query rg oracle requires the rg executable"
-        if os.environ.get("HAPAX_ALLOW_NO_RG") == "1":
-            pytest.skip(f"{reason}; HAPAX_ALLOW_NO_RG=1 declares a rg-less run")
-        pytest.fail(f"{reason}; only HAPAX_ALLOW_NO_RG=1 permits a rg-less run")
+        pytest.fail("frame content-query rg oracle requires the rg executable")
     base = Path("~/Documents/Personal/30-areas/hapax").expanduser()
     if not (base / "frame/procedure/builtin.py").is_file():
+        if query_engine == "rg":
+            pytest.fail("frame content-query rg oracle requires the installed frame producer")
         pytest.skip("installed frame producer is unavailable")
     monkeypatch.syspath_prepend(str(base))
     builtin = importlib.import_module("frame.procedure.builtin")
@@ -92,9 +90,19 @@ def producer_glob_bytes(
             "match": match_mode,
         }
         reader = builtin.fs_content_query
+    rg_commands = []
+    real_run = subprocess.run
+
+    def observe_run(command, **kwargs):
+        if Path(command[0]).name == "rg":
+            rg_commands.append(command)
+        return real_run(command, **kwargs)
+
     with monkeypatch.context() as fallback:
         if content_query is not None and query_engine == "python":
             fallback.setattr(builtin.shutil, "which", lambda name: None)
+        elif content_query is not None and query_engine == "rg":
+            fallback.setattr(builtin.subprocess, "run", observe_run)
         result = reader(
             SimpleNamespace(
                 id="fixture",
@@ -105,6 +113,9 @@ def producer_glob_bytes(
             mass,
         )
     assert result.complete and result.failure is None
+    if content_query is not None and query_engine == "rg":
+        assert rg_commands, "the rg oracle must execute rg, not the Python fallback"
+        assert all(("--ignore-case" in command) == case_insensitive for command in rg_commands)
     return {Path(obs.meta["path"]).resolve(strict=True): obs.content for obs in result.observations}
 
 

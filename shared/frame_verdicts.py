@@ -1181,12 +1181,14 @@ def _literal_scope_glob(pattern: str) -> str | None:
         if char in "*?":
             return None
         if char == "[":
-            # A single non-negated character is the only class we need to prove here.
-            # Larger classes remain subject to the conservative language comparator.
-            if index + 2 >= len(pattern) or pattern[index + 2] != "]" or pattern[index + 1] == "!":
+            # Repeating a character does not enlarge a class's language: [ss]bin
+            # names the same alias as [s]bin. Leave ranges and negation undecidable.
+            end = pattern.find("]", index + 2)
+            characters = pattern[index + 1 : end] if end != -1 else ""
+            if not characters or characters[0] == "!" or len(set(characters)) != 1:
                 return None
-            literal.append(pattern[index + 1])
-            index += 3
+            literal.append(characters[0])
+            index = end + 1
         else:
             literal.append(char)
             index += 1
@@ -1716,7 +1718,9 @@ def ref_within_member(
         return _content_query_within_member(path, dirlike, member, scope_pattern, selected_entries)
     surface = frozenset(selected_entries.values())
     expansions = (
-        _canonical_scope_entries(path, scope_pattern, member) if scope_pattern is not None else {}
+        _canonical_scope_entries(path, scope_pattern, member, include_directories=True)
+        if scope_pattern is not None
+        else {}
     )
     lexical_path = path
     for root in member.roots:
@@ -1728,7 +1732,8 @@ def ref_within_member(
             path = _resolve_external_scope_path(path)
         if path != root and root not in path.parents:
             if scope_pattern is not None and any(
-                target in surface for target in expansions.values()
+                target in surface or any(target in file.parents for file in surface)
+                for target in expansions.values()
             ):
                 # Current aliases prove overlap, never containment of future paths.
                 raise UndecidableScopeContainment(
@@ -1801,7 +1806,9 @@ def ref_within_member(
             if _scope_intersects_exclusions(path, exclusion_scope_pattern, member):
                 continue
             # Existing files can disprove containment, but cannot establish the proof.
-            if any(target not in surface for target in expansions.values()):
+            if any(
+                target not in surface for entry, target in expansions.items() if not entry.is_dir()
+            ):
                 continue
             # Retain the conservative exclusion comparison above. An excluded link target
             # can additionally disprove containment even outside the lexical scope's root.

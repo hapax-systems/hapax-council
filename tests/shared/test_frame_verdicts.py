@@ -317,6 +317,34 @@ def test_content_query_selected_alias_predicate_uses_target_bytes(
         assert fv.ref_within_member(target, False, member) is inside
 
 
+@pytest.mark.parametrize("spelling", ["[a]lias", "[aa]lias", "[aaa]lias"])
+def test_content_query_singleton_glob_alias_selects_external_target(
+    tmp_path: Path, spelling: str
+) -> None:
+    member, root = _content_query_member(tmp_path, location={"patterns": ["selected"]})
+    target = tmp_path / "target.py"
+    target.write_bytes(b"def selected(): pass")
+    (root / "selected").symlink_to(target)
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    (outside / "alias").symlink_to(target)
+    assert {entry.resolve() for entry in outside.glob(spelling)} == {target}
+    assert fv.ref_within_member(outside, True, member, scope_pattern=spelling)
+
+
+@pytest.mark.parametrize("spelling", ["[s]bin", "[ss]bin", "[sss]bin"])
+def test_glob_singleton_directory_alias_has_canonical_containment(
+    tmp_path: Path, spelling: str
+) -> None:
+    root = tmp_path / "bin/db5.3"
+    root.mkdir(parents=True)
+    (root / "db_dump").write_bytes(b"selected bytes")
+    (tmp_path / "sbin").symlink_to("bin", target_is_directory=True)
+    member = fv.DecayedMember("m", "scope_exited", (root,), ("**/*",), ())
+    assert {entry.resolve() for entry in tmp_path.glob(spelling + "/db5.3")} == {root}
+    assert fv.ref_within_member(tmp_path, True, member, scope_pattern=spelling + "/db5.3")
+
+
 @pytest.mark.parametrize("kind", ["dangling", "loop"])
 def test_content_query_selected_unresolved_alias_has_remedy(tmp_path: Path, kind: str) -> None:
     member, root = _content_query_member(tmp_path, location={"patterns": ["awk"]})
