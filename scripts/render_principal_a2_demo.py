@@ -1,6 +1,6 @@
-"""Render narration audio for Alexis demo.
+"""Render narration audio for principal-a2 demo.
 
-Usage: uv run python scripts/render_alexis_demo.py
+Usage: uv run python scripts/render_principal_a2_demo.py
 """
 
 from __future__ import annotations
@@ -475,7 +475,7 @@ def _slugify(text: str) -> str:
 
 
 async def main() -> None:
-    output_dir = Path("output/demos/alexis-demo/audio")
+    output_dir = Path("output/demos/principal-a2-demo/audio")
 
     # Clear old audio
     if output_dir.exists():
@@ -485,7 +485,9 @@ async def main() -> None:
     output_dir.mkdir(parents=True, exist_ok=True)
 
     total_words = sum(len(text.split()) for _, text in SCENES)
-    print(f"Alexis demo: {len(SCENES)} scenes, ~{total_words} words (~{total_words / 140:.0f} min)")
+    print(
+        f"principal-a2 demo: {len(SCENES)} scenes, ~{total_words} words (~{total_words / 140:.0f} min)"
+    )
 
     from agents.demo_pipeline.voice import generate_all_voice_segments
 

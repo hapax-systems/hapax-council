@@ -9,7 +9,7 @@ import pytest
     "source_id,expected",
     [
         # Operator-perception class → top apex.
-        ("insightface.enrolled.jason", "top"),
+        ("insightface.enrolled.principal-a1", "top"),
         ("insightface:operator", "top"),
         ("pi-noir.desk.hand", "top"),
         ("pi-noir.overhead.drums", "top"),
@@ -51,6 +51,6 @@ def test_unknown_defaults_to_bl_memory_bucket() -> None:
 def test_case_insensitive_dispatch() -> None:
     from shared.geal_grounding_classifier import classify_source
 
-    assert classify_source("INSIGHTFACE.enrolled.jason") == "top"
+    assert classify_source("INSIGHTFACE.enrolled.principal-a1") == "top"
     assert classify_source("Rag.document.paper") == "bl"
     assert classify_source("Chat.keyword.x") == "br"

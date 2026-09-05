@@ -354,7 +354,7 @@ Acute fix: wgpu writes `Rgba8Unorm` to `reverie.rgba`; cairo reads it as `ARGB32
 - TTS quality over music (ducker works, no popping) ✓
 - No stacktraces in the 30-min window ✓
 
-If all pass, mode transitions to `public_research` and the public-ish rehearsal with consented peers (`agatha`, `simon`) is scheduled.
+If all pass, mode transitions to `public_research` and the public-ish rehearsal with consented peers (`principal-c1`, `principal-c2`) is scheduled.
 
 ## 6. Classification / detection inventory
 
@@ -447,7 +447,7 @@ Each phase lands on `volitional-director` branch. Rollback = revert the phase's 
 - Turntable test: operator plays vinyl → within ≤30 s the narrative director has chosen a camera hero aligned with the `overhead_hand_zones.turntable` signal, the stance is `NOMINAL` (or `SEEKING` if desk+audio disagree), and the captions/activity header narrate the grounding.
 
 **Legibility:**
-- Blind-audit of 1-minute stream clips by operator or `agatha`/`simon`: ≥3 distinct directorial moves identifiable per minute (structural 0-1 + narrative 2-3 + twitch modulations visible).
+- Blind-audit of 1-minute stream clips by operator or `principal-c1`/`principal-c2`: ≥3 distinct directorial moves identifiable per minute (structural 0-1 + narrative 2-3 + twitch modulations visible).
 - Consent-safe layout auto-switches within 5 s of a second face appearing without active contract.
 
 **Research:**

@@ -29,7 +29,7 @@ log = logging.getLogger(__name__)
 
 _CONTRACTS_DIR = Path(__file__).parent.parent / "axioms" / "contracts"
 
-REGISTERED_CHILD_PRINCIPALS: frozenset[str] = frozenset({"simon", "agatha"})
+REGISTERED_CHILD_PRINCIPALS: frozenset[str] = frozenset({"principal-c2", "principal-c1"})
 _CONTRACT_ID_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_-]{0,127}$")
 _UNSAFE_CONTRACT_CHARS_RE = re.compile(r"[^A-Za-z0-9_-]+")
 
