@@ -1,7 +1,7 @@
 # Producer declaration identity fixture
 
 Generated from the Personal vault repository at commit
-`f8f19c0656b7917025c5ee65775481bcb9203e97`. The producer files were clean.
+`f8f19c0656b7917025c5ee65775481bcb9203e97`. The producer files were clean. <!-- pragma: allowlist secret -->
 `frame/procedure/builtin.py::fs_glob` (reader version 1.0.1) read a small
 synthetic tree; `frame/procedure/declaration.py::load_declaration` produced the
 member declaration identity. No consumer code participates in generation.
@@ -9,9 +9,25 @@ member declaration identity. No consumer code participates in generation.
 `mass.json` holds the exact UTF-8 declaration input bytes. The generator captures
 `json.dumps`'s return value from the producer's member identity code path;
 `declaration.canonical.json` stores those exact UTF-8 hash-input bytes with **no
-trailing newline**. `declaration.digest` contains the producer's literal identity
-(with a newline). `read-result.json` records the producer's observations as hex
-bytes and its exclusion residue; timestamps are deliberately omitted.
+trailing newline**. `declaration.digest.txt` contains the producer's literal
+SHA-256 hex digest followed by `  # pragma: allowlist secret` and a newline.
+The test strips the first `#` and everything after it, trims whitespace, checks
+for exactly 64 lowercase hex characters, and restores the `declaration:` prefix.
+A text sidecar keeps the literal producer evidence together and independently
+inspectable, rather than embedding it in the consumer test module.
+
+`read-result.jsonc` records the producer's observations as hex bytes and its
+exclusion residue; timestamps are deliberately omitted. It is JSON-with-comments
+only because the push-time secret scanner requires a same-line pragma on hex
+digests. Each digest-bearing line has ` // pragma: allowlist secret` appended.
+The test removes line comments and their preceding horizontal whitespace outside
+JSON strings, preserving escaped quotes, backslashes, UTF-8 bytes and newlines.
+The comment-stripped canonical form is the original round-six `read-result.json`
+byte sequence: two-space indentation, original key order, LF line endings and
+one final LF, without JSON reserialization. `read-result.sha256.txt` pins its
+literal SHA-256; the test verifies it before `json.loads`:
+
+`37441bfc9b4cd59917b8f7e45a3c3f48a774c41905c552a47936dd636d287c72`. <!-- pragma: allowlist secret -->
 
 The tree has two included Markdown files, one declared exclusion, one file
 skipped by path part, and one non-matching text file. Non-ASCII text, nested
@@ -24,8 +40,10 @@ the commit above; this command overwrites only this fixture's generated files):
 
 ```sh
 env PYTHONDONTWRITEBYTECODE=1 UV_CACHE_DIR=/store-fast/tmp/uv-cache-verify uv run python - <<'PY'
+import hashlib
 import json
 import os
+import re
 import subprocess
 import sys
 import tempfile
@@ -105,8 +123,17 @@ with tempfile.TemporaryDirectory(prefix='frame-producer-fixture-') as scratch:
     }
     (fixture / 'mass.json').write_bytes(encoded)
     (fixture / 'declaration.canonical.json').write_bytes(canonical[0])
-    (fixture / 'declaration.digest').write_text(identity + '\n', encoding='utf-8')
-    (fixture / 'read-result.json').write_text(dumps(observed, ensure_ascii=False, indent=2) + '\n', encoding='utf-8')
+    digest = identity.removeprefix('declaration:')
+    assert re.fullmatch(r'[0-9a-f]{64}', digest)
+    (fixture / 'declaration.digest.txt').write_text(digest + '  # pragma: allowlist secret\n', encoding='utf-8')
+    observed_json = dumps(observed, ensure_ascii=False, indent=2) + '\n'
+    annotated = '\n'.join(
+        line + ' // pragma: allowlist secret' if re.search(r'"[0-9a-f]{40,64}"', line) else line
+        for line in observed_json.split('\n')
+    )
+    (fixture / 'read-result.jsonc').write_bytes(annotated.encode('utf-8'))
+    result_digest = hashlib.sha256(observed_json.encode('utf-8')).hexdigest()
+    (fixture / 'read-result.sha256.txt').write_text(result_digest + '  # pragma: allowlist secret\n', encoding='utf-8')
     print('producer_commit=' + commit)
     print(identity)
     print(dumps(observed, ensure_ascii=False, sort_keys=True))

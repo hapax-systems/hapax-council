@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import re
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
@@ -1026,11 +1027,59 @@ def test_member_declaration_identity_matches_a_real_epoch() -> None:
     assert checked, "no member could be checked — the coverage rows carry no identities"
 
 
+def _load_literal_digest(path: Path) -> str:
+    lines = path.read_text(encoding="utf-8").splitlines()
+    assert len(lines) == 1
+    digest = lines[0].partition("#")[0].strip()
+    assert re.fullmatch(r"[0-9a-f]{64}", digest), path
+    return digest
+
+
+def _strip_json_line_comments(text: str) -> str:
+    """Preserve JSON strings and newlines; remove comment separators and line comments."""
+    return re.sub(
+        r'"(?:\\.|[^"\\])*"|[ \t]*//[^\r\n]*',
+        lambda match: match[0] if match[0].startswith('"') else "",
+        text,
+    )
+
+
+def _load_verified_jsonc(path: Path) -> dict[str, object]:
+    canonical = _strip_json_line_comments(path.read_bytes().decode("utf-8")).encode("utf-8")
+    assert hashlib.sha256(canonical).hexdigest() == _load_literal_digest(
+        path.with_suffix(".sha256.txt")
+    )
+    return json.loads(canonical)
+
+
+def test_json_line_comments_preserve_strings_and_original_line_endings() -> None:
+    canonical = r'{"url": "gh://fixture/notes", "escaped": "quote\"//text", "slash": "\\"}'
+    for newline in ("\n", "\r\n", ""):
+        annotated = canonical + "  // pragma: allowlist secret" + newline
+        assert _strip_json_line_comments(annotated) == canonical + newline
+        assert json.loads(_strip_json_line_comments(annotated)) == json.loads(canonical)
+
+
+def test_producer_read_result_fixture_preserves_recorded_bytes() -> None:
+    fixture = Path(__file__).parent / "fixtures/frame-producer-identity"
+    observed = _load_verified_jsonc(fixture / "read-result.jsonc")
+    assert observed["enumerated_units"] == 4
+    assert observed["excluded_units"] == 1
+    assert observed["bytes_read"] == 9
+    assert {
+        row["unit_id"]: bytes.fromhex(row["content_hex"]) for row in observed["observations"]
+    } == {"nested/two.md": "λ\n".encode(), "one.md": "café\n".encode()}
+    assert observed["residue"] == [
+        "tree/excluded/generated.md: excluded-by-declaration "
+        "(fixture-generated, receipt fixture:generated-residue)"
+    ]
+
+
 def test_member_declaration_identity_matches_literal_producer_fixture() -> None:
     fixture = Path(__file__).parent / "fixtures/frame-producer-identity"
     mass = json.loads((fixture / "mass.json").read_bytes())
     canonical = (fixture / "declaration.canonical.json").read_bytes()
-    expected = (fixture / "declaration.digest").read_text(encoding="utf-8").strip()
+    expected = "declaration:" + _load_literal_digest(fixture / "declaration.digest.txt")
     assert json.loads(canonical) == {"member": mass["members"][0], "exclusions": mass["exclusions"]}
     assert "declaration:" + hashlib.sha256(canonical).hexdigest() == expected
     assert fv._member_declaration_identity(mass["members"][0], mass["exclusions"]) == expected
