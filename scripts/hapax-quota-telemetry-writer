@@ -216,6 +216,9 @@ CLAUDE_ADMISSION_OBSERVATIONS = frozenset(
     {"subscription_quota_headroom_observed", "operator_confirmed_subscription_headroom"}
 )
 CLAUDE_ADMISSION_MAX_STALE_AFTER_SECONDS = 3600
+CLAUDE_ADMISSION_PROBE_ENV_SCRUBBED = (
+    "ANTHROPIC_BASE_URL,ANTHROPIC_AUTH_TOKEN,ANTHROPIC_API_KEY,ANTHROPIC_MODEL"
+)
 # The composite ledger evidence ref MUST end with this suffix so the availability guarantor's
 # _account_live_quota_observed_ref attests. Lane/session presence never produces it.
 CLAUDE_ADMISSION_ACCOUNT_LIVE_QUOTA_SUFFIX = "account-live-quota:observed"
@@ -270,6 +273,7 @@ CLAUDE_ADMISSION_FIELDS = frozenset(
         "capacity_pool",
         "auth_surface",
         "observation",
+        "probe_environment_scrubbed",
         "observed_at",
         "stale_after_seconds",
         "evidence_ref",
@@ -1076,27 +1080,28 @@ def _claude_ignored_receipts_for_route(ignored_refs: list[str], route_id: str) -
 
 def _warn_ignored_agy_admission(path: Path, reason: str) -> str:
     receipt_label = _receipt_label(path)
+    reason_code = _reason_code(reason)
     print(
         "hapax-quota-telemetry-writer: ignoring agy admission receipt: "
-        f"validation failed; recheck: {AGY_ADMISSION_RECHECK_COMMAND}; "
+        f"reason={reason_code}; recheck: {AGY_ADMISSION_RECHECK_COMMAND}; "
         f"{AGY_ADMISSION_RECOVERY_HINT}",
         file=sys.stderr,
     )
-    return f"relay-receipt:{receipt_label}:ignored:{_reason_code(reason)}"
+    return f"relay-receipt:{receipt_label}:ignored:{reason_code}"
 
 
 def _warn_ignored_claude_admission(path: Path, reason: str, route_id: str | None = None) -> str:
-    # Generic stderr (like agy) so a rejected receipt's field names/values never echo; the specific
-    # reason survives only as a slugified code in the returned ignored evidence ref.
+    # Emit the same sanitized reason code stored in evidence. Never print raw rejected field values.
     receipt_label = _receipt_label(path)
+    reason_code = _reason_code(reason)
     print(
         "hapax-quota-telemetry-writer: ignoring claude admission receipt: "
-        f"validation failed; recheck: {CLAUDE_ADMISSION_RECHECK_COMMAND}; "
+        f"reason={reason_code}; recheck: {CLAUDE_ADMISSION_RECHECK_COMMAND}; "
         f"{CLAUDE_ADMISSION_RECOVERY_HINT}",
         file=sys.stderr,
     )
     route_ref = f":route_id:{route_id}" if route_id in CLAUDE_SUBSCRIPTION_ROUTES else ""
-    return f"relay-receipt:{receipt_label}:ignored:{_reason_code(reason)}{route_ref}"
+    return f"relay-receipt:{receipt_label}:ignored:{reason_code}{route_ref}"
 
 
 def active_agy_admission_receipts(
@@ -1298,6 +1303,13 @@ def active_claude_admission_receipts(
         observation = fields.get("observation", "").strip()
         if observation not in CLAUDE_ADMISSION_OBSERVATIONS:
             reject(path, "observation missing or unsupported", route_id)
+            continue
+        probe_environment_scrubbed = fields.get("probe_environment_scrubbed", "").strip()
+        if (
+            probe_environment_scrubbed
+            and probe_environment_scrubbed != CLAUDE_ADMISSION_PROBE_ENV_SCRUBBED
+        ):
+            reject(path, "probe environment scrub disclosure missing or unsupported", route_id)
             continue
         receipt_evidence_ref = " ".join(fields.get("evidence_ref", "").strip().split())
         if (

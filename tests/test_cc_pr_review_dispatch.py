@@ -179,6 +179,7 @@ class FakeGh:
             "number": self.pr_number,
             "title": f"PR {self.pr_number}",
             "body": "PR body acceptance evidence",
+            "base": {"ref": "main", "sha": self.base_sha},
             "head": {"ref": f"feat/{self.pr_number}", "sha": self.head_sha},
             "draft": False,
             "changed_files": (
@@ -315,6 +316,152 @@ def _review(tmp_path: Path, **overrides: Any) -> tuple[dict, FakeGh, RecordingRe
             dispatch.FAMILY_OUTAGE_STATE = old_dispatch_outage_state
             dispatch.review_team.FAMILY_OUTAGE_STATE = old_review_team_outage_state
     return result, gh, reviewers, note
+
+
+def _make_pr_one_commit_behind_main(tmp_path: Path) -> tuple[Path, str, str, str, str]:
+    """Create base -> {head, current main}; return both tips and the three-dot diff."""
+    repo_root = tmp_path / "repo"
+    remote_root = tmp_path / "remote.git"
+    repo_root.mkdir()
+    subprocess.run(["git", "init", "-q", "--bare", remote_root], check=True)
+    subprocess.run(["git", "init", "-q"], cwd=repo_root, check=True)
+    subprocess.run(["git", "config", "user.email", "t@t"], cwd=repo_root, check=True)
+    subprocess.run(["git", "config", "user.name", "t"], cwd=repo_root, check=True)
+    subprocess.run(["git", "remote", "add", "origin", str(remote_root)], cwd=repo_root, check=True)
+    target = repo_root / "shared" / "foo.py"
+    target.parent.mkdir(parents=True)
+    target.write_text("value = 'base'\n", encoding="utf-8")
+    subprocess.run(["git", "add", "-A"], cwd=repo_root, check=True)
+    subprocess.run(["git", "commit", "-qm", "base"], cwd=repo_root, check=True)
+    old_base_sha = subprocess.run(
+        ["git", "rev-parse", "HEAD"],
+        cwd=repo_root,
+        check=True,
+        capture_output=True,
+        text=True,
+    ).stdout.strip()
+
+    target.write_text("value = 'head'\n", encoding="utf-8")
+    subprocess.run(["git", "add", "-A"], cwd=repo_root, check=True)
+    subprocess.run(["git", "commit", "-qm", "head"], cwd=repo_root, check=True)
+    head_sha = subprocess.run(
+        ["git", "rev-parse", "HEAD"],
+        cwd=repo_root,
+        check=True,
+        capture_output=True,
+        text=True,
+    ).stdout.strip()
+
+    current_base_sha = subprocess.run(
+        [
+            "git",
+            "commit-tree",
+            f"{old_base_sha}^{{tree}}",
+            "-p",
+            old_base_sha,
+            "-m",
+            "main ahead",
+        ],
+        cwd=repo_root,
+        check=True,
+        capture_output=True,
+        text=True,
+    ).stdout.strip()
+    subprocess.run(
+        ["git", "push", "-q", "origin", f"{current_base_sha}:refs/heads/main"],
+        cwd=repo_root,
+        check=True,
+    )
+    expected_diff = subprocess.run(
+        ["git", "diff", "--no-ext-diff", "--find-renames", f"{old_base_sha}..{head_sha}"],
+        cwd=repo_root,
+        check=True,
+        capture_output=True,
+        text=True,
+    ).stdout
+    return repo_root, old_base_sha, current_base_sha, head_sha, expected_diff
+
+
+def _make_pr_with_stale_local_base(tmp_path: Path) -> tuple[Path, str, str, str, str]:
+    """Create a PR whose local tracking ref predates the PR's current merge-base."""
+    repo_root = tmp_path / "repo"
+    remote_root = tmp_path / "remote.git"
+    repo_root.mkdir()
+    subprocess.run(["git", "init", "-q", "--bare", remote_root], check=True)
+    subprocess.run(["git", "init", "-q"], cwd=repo_root, check=True)
+    subprocess.run(["git", "config", "user.email", "t@t"], cwd=repo_root, check=True)
+    subprocess.run(["git", "config", "user.name", "t"], cwd=repo_root, check=True)
+    subprocess.run(["git", "remote", "add", "origin", str(remote_root)], cwd=repo_root, check=True)
+
+    target = repo_root / "shared" / "foo.py"
+    target.parent.mkdir(parents=True)
+    target.write_text("value = 'base'\n", encoding="utf-8")
+    subprocess.run(["git", "add", "-A"], cwd=repo_root, check=True)
+    subprocess.run(["git", "commit", "-qm", "stale base"], cwd=repo_root, check=True)
+    stale_base_sha = subprocess.run(
+        ["git", "rev-parse", "HEAD"],
+        cwd=repo_root,
+        check=True,
+        capture_output=True,
+        text=True,
+    ).stdout.strip()
+
+    already_on_base = repo_root / "shared" / "already_on_base.py"
+    already_on_base.write_text("value = 'shared'\n", encoding="utf-8")
+    subprocess.run(["git", "add", "-A"], cwd=repo_root, check=True)
+    subprocess.run(["git", "commit", "-qm", "shared with current base"], cwd=repo_root, check=True)
+    current_merge_base = subprocess.run(
+        ["git", "rev-parse", "HEAD"],
+        cwd=repo_root,
+        check=True,
+        capture_output=True,
+        text=True,
+    ).stdout.strip()
+
+    target.write_text("value = 'head'\n", encoding="utf-8")
+    subprocess.run(["git", "add", "-A"], cwd=repo_root, check=True)
+    subprocess.run(["git", "commit", "-qm", "head"], cwd=repo_root, check=True)
+    head_sha = subprocess.run(
+        ["git", "rev-parse", "HEAD"],
+        cwd=repo_root,
+        check=True,
+        capture_output=True,
+        text=True,
+    ).stdout.strip()
+
+    current_base_sha = subprocess.run(
+        [
+            "git",
+            "commit-tree",
+            f"{current_merge_base}^{{tree}}",
+            "-p",
+            current_merge_base,
+            "-m",
+            "current base",
+        ],
+        cwd=repo_root,
+        check=True,
+        capture_output=True,
+        text=True,
+    ).stdout.strip()
+    subprocess.run(
+        ["git", "push", "-q", "origin", f"{current_base_sha}:refs/heads/main"],
+        cwd=repo_root,
+        check=True,
+    )
+    subprocess.run(
+        ["git", "update-ref", "refs/remotes/origin/main", stale_base_sha],
+        cwd=repo_root,
+        check=True,
+    )
+    expected_diff = subprocess.run(
+        ["git", "diff", "--no-ext-diff", "--find-renames", f"{current_merge_base}..{head_sha}"],
+        cwd=repo_root,
+        check=True,
+        capture_output=True,
+        text=True,
+    ).stdout
+    return repo_root, stale_base_sha, current_base_sha, head_sha, expected_diff
 
 
 def _write_registry_with_extra_review_descriptor(tmp_path: Path) -> Path:
@@ -1541,41 +1688,68 @@ checklist:
         assert any(call[:3] == ["gh", "pr", "diff"] for call in gh.calls)
         assert any("diff --git" in prompt for _, _, prompt in reviewers.invocations)
 
+    @pytest.mark.parametrize(
+        "github_diff_available",
+        [True, False],
+        ids=["rest-diff", "local-merge-base-fallback"],
+    )
+    def test_review_dispatches_pr_one_commit_behind_main_from_merge_base(
+        self, tmp_path: Path, github_diff_available: bool
+    ) -> None:
+        repo_root, old_base_sha, current_base_sha, head_sha, expected_diff = (
+            _make_pr_one_commit_behind_main(tmp_path)
+        )
+
+        class BehindMainGh(FakeGh):
+            def __call__(self, cmd: list[str], **kwargs: Any) -> subprocess.CompletedProcess:
+                if cmd and cmd[0] == "git":
+                    self.calls.append(list(cmd))
+                    return subprocess.run(cmd, **kwargs)
+                if not github_diff_available and (
+                    (
+                        cmd[:5] == ["gh", "api", "--method", "GET", "-H"]
+                        and len(cmd) > 6
+                        and cmd[5] == "Accept: application/vnd.github.v3.diff"
+                    )
+                    or cmd[:3] == ["gh", "pr", "diff"]
+                ):
+                    self.calls.append(list(cmd))
+                    return subprocess.CompletedProcess(cmd, 1, "", "diff rate limited")
+                return super().__call__(cmd, **kwargs)
+
+        gh = BehindMainGh(
+            base_sha=old_base_sha,
+            head_sha=head_sha,
+            files=["shared/foo.py"],
+        )
+        gh.diff = expected_diff
+        result, gh, reviewers, _ = _review(tmp_path, gh=gh, repo_root=repo_root)
+
+        assert result["status"] == "dispatched"
+        assert reviewers.invocations
+        rendered_expected_diff = dispatch.render_untrusted_block(
+            "PR diff", expected_diff, limit=dispatch.MAX_DIFF_CHARS + 500
+        )
+        for _, _, prompt in reviewers.invocations:
+            assert rendered_expected_diff in prompt
+            assert "-value = 'base'" in prompt
+            assert "+value = 'head'" in prompt
+        if github_diff_available:
+            assert not any(call[:2] == ["git", "merge-base"] for call in gh.calls)
+        else:
+            assert result["dossier"]["comparison_base"] == old_base_sha
+            assert result["dossier"]["diff_source"] == "local-git"
+            assert ["git", "merge-base", current_base_sha, head_sha] in gh.calls
+            assert any(
+                call[:5]
+                == ["git", "diff", "--no-ext-diff", "--find-renames", f"{old_base_sha}..{head_sha}"]
+                for call in gh.calls
+            )
+
     def test_pr_diff_falls_back_to_local_git_diff_when_github_diff_unavailable(
         self, tmp_path: Path
     ) -> None:
-        repo_root = tmp_path / "repo"
-        repo_root.mkdir()
-        subprocess.run(["git", "init", "-q"], cwd=repo_root, check=True)
-        subprocess.run(["git", "config", "user.email", "t@t"], cwd=repo_root, check=True)
-        subprocess.run(["git", "config", "user.name", "t"], cwd=repo_root, check=True)
-        target = repo_root / "shared" / "foo.py"
-        target.parent.mkdir(parents=True)
-        target.write_text("value = 'base'\n", encoding="utf-8")
-        subprocess.run(["git", "add", "-A"], cwd=repo_root, check=True)
-        subprocess.run(["git", "commit", "-qm", "base"], cwd=repo_root, check=True)
-        base_sha = subprocess.run(
-            ["git", "rev-parse", "HEAD"],
-            cwd=repo_root,
-            check=True,
-            capture_output=True,
-            text=True,
-        ).stdout.strip()
-        subprocess.run(
-            ["git", "update-ref", "refs/remotes/origin/main", base_sha],
-            cwd=repo_root,
-            check=True,
-        )
-        target.write_text("value = 'head'\n", encoding="utf-8")
-        subprocess.run(["git", "add", "-A"], cwd=repo_root, check=True)
-        subprocess.run(["git", "commit", "-qm", "head"], cwd=repo_root, check=True)
-        head_sha = subprocess.run(
-            ["git", "rev-parse", "HEAD"],
-            cwd=repo_root,
-            check=True,
-            capture_output=True,
-            text=True,
-        ).stdout.strip()
+        repo_root, base_sha, _, head_sha, _ = _make_pr_one_commit_behind_main(tmp_path)
 
         class DiffUnavailableGh(FakeGh):
             def __call__(self, cmd: list[str], **kwargs: Any) -> subprocess.CompletedProcess:
@@ -1617,6 +1791,256 @@ checklist:
         assert "+value = 'head'" in diff
         assert any(call[:3] == ["gh", "pr", "diff"] for call in gh.calls)
         assert any(call[:2] == ["git", "diff"] for call in gh.calls)
+
+    @pytest.mark.parametrize("tracking_at_pr_base", [False, True], ids=["tracking-S", "tracking-B"])
+    def test_local_git_diff_fallback_accepts_lagging_base_after_refresh(
+        self, tmp_path: Path, tracking_at_pr_base: bool
+    ) -> None:
+        repo_root, stale_base_sha, current_base_sha, head_sha, expected_diff = (
+            _make_pr_with_stale_local_base(tmp_path)
+        )
+        old_base_sha = subprocess.run(
+            ["git", "rev-parse", f"{head_sha}^"],
+            cwd=repo_root,
+            check=True,
+            capture_output=True,
+            text=True,
+        ).stdout.strip()
+        # Main is S -> B -> M, head is B -> H, and GitHub still reports B.
+        if tracking_at_pr_base:
+            subprocess.run(
+                ["git", "update-ref", "refs/remotes/origin/main", old_base_sha],
+                cwd=repo_root,
+                check=True,
+            )
+
+        class StaleBaseGh(FakeGh):
+            def __call__(self, cmd: list[str], **kwargs: Any) -> subprocess.CompletedProcess:
+                self.calls.append(list(cmd))
+                if cmd and cmd[0] == "git":
+                    return subprocess.run(cmd, **kwargs)
+                return super().__call__(cmd, **kwargs)
+
+        gh = StaleBaseGh(base_sha=old_base_sha, head_sha=head_sha, files=["shared/foo.py"])
+        diff = dispatch.fetch_pr_diff_from_local(
+            dispatch.PRInfo(
+                number=42,
+                title="PR 42",
+                body="body",
+                base_ref="main",
+                base_sha=old_base_sha,
+                head_ref="feat/42",
+                head_sha=head_sha,
+                changed_file_count=1,
+                is_draft=False,
+                files=("shared/foo.py",),
+            ),
+            repo_root=repo_root,
+            runner=gh,
+        )
+
+        assert diff == expected_diff
+        assert stale_base_sha != current_base_sha
+        assert "already_on_base.py" not in diff
+        fetch = [
+            "git",
+            "fetch",
+            "--quiet",
+            "origin",
+            "+refs/heads/main:refs/remotes/origin/main",
+        ]
+        merge_base = ["git", "merge-base", current_base_sha, head_sha]
+        ancestry = ["git", "merge-base", "--is-ancestor", old_base_sha, current_base_sha]
+        assert fetch in gh.calls
+        assert gh.calls.index(fetch) < gh.calls.index(ancestry) < gh.calls.index(merge_base)
+        assert [
+            "git",
+            "diff",
+            "--no-ext-diff",
+            "--find-renames",
+            f"{old_base_sha}..{head_sha}",
+        ] in gh.calls
+        assert (
+            subprocess.run(
+                ["git", "rev-parse", "origin/main"],
+                cwd=repo_root,
+                check=True,
+                capture_output=True,
+                text=True,
+            ).stdout.strip()
+            == current_base_sha
+        )
+
+    def test_local_git_diff_fallback_rejects_stale_base_when_refresh_fails(
+        self, tmp_path: Path
+    ) -> None:
+        repo_root, _, current_base_sha, head_sha, _ = _make_pr_with_stale_local_base(tmp_path)
+
+        class FailedBaseRefreshGh(FakeGh):
+            def __call__(self, cmd: list[str], **kwargs: Any) -> subprocess.CompletedProcess:
+                self.calls.append(list(cmd))
+                if cmd[:3] == ["git", "fetch", "--quiet"]:
+                    return subprocess.CompletedProcess(cmd, 1, "", "fetch failed")
+                if cmd and cmd[0] == "git":
+                    return subprocess.run(cmd, **kwargs)
+                return super().__call__(cmd, **kwargs)
+
+        gh = FailedBaseRefreshGh(
+            base_sha=current_base_sha,
+            head_sha=head_sha,
+            files=["shared/foo.py"],
+        )
+        with pytest.raises(RuntimeError) as excinfo:
+            dispatch.fetch_pr_diff_from_local(
+                dispatch.PRInfo(
+                    number=42,
+                    title="PR 42",
+                    body="body",
+                    base_ref="main",
+                    base_sha=current_base_sha,
+                    head_ref="feat/42",
+                    head_sha=head_sha,
+                    changed_file_count=1,
+                    is_draft=False,
+                    files=("shared/foo.py",),
+                ),
+                repo_root=repo_root,
+                runner=gh,
+            )
+
+        assert "cannot establish the current PR base" in str(excinfo.value)
+        assert any(call[:3] == ["git", "fetch", "--quiet"] for call in gh.calls)
+        assert not any(call[:2] == ["git", "merge-base"] for call in gh.calls)
+        assert not any(call[:2] == ["git", "diff"] for call in gh.calls)
+
+    def test_local_git_diff_fallback_rejects_fetch_that_does_not_pin_base(
+        self, tmp_path: Path
+    ) -> None:
+        repo_root, _, current_base_sha, head_sha, _ = _make_pr_with_stale_local_base(tmp_path)
+
+        class UnpinnedBaseGh(FakeGh):
+            def __call__(self, cmd: list[str], **kwargs: Any) -> subprocess.CompletedProcess:
+                self.calls.append(list(cmd))
+                if cmd[:3] == ["git", "fetch", "--quiet"]:
+                    return subprocess.CompletedProcess(cmd, 0, "", "")
+                if cmd and cmd[0] == "git":
+                    return subprocess.run(cmd, **kwargs)
+                return super().__call__(cmd, **kwargs)
+
+        gh = UnpinnedBaseGh(
+            base_sha=current_base_sha,
+            head_sha=head_sha,
+            files=["shared/foo.py"],
+        )
+        with pytest.raises(RuntimeError) as excinfo:
+            dispatch.fetch_pr_diff_from_local(
+                dispatch.PRInfo(
+                    number=42,
+                    title="PR 42",
+                    body="body",
+                    base_ref="main",
+                    base_sha=current_base_sha,
+                    head_ref="feat/42",
+                    head_sha=head_sha,
+                    changed_file_count=1,
+                    is_draft=False,
+                    files=("shared/foo.py",),
+                ),
+                repo_root=repo_root,
+                runner=gh,
+            )
+
+        assert "not a proven ancestor of refreshed origin/main" in str(excinfo.value)
+        assert not any(
+            call[:2] == ["git", "merge-base"] and call[2] != "--is-ancestor" for call in gh.calls
+        )
+        assert not any(call[:2] == ["git", "diff"] for call in gh.calls)
+
+    @pytest.mark.parametrize(
+        "force_pushed_main", [False, True], ids=["foreign-base", "rewritten-main"]
+    )
+    def test_local_git_diff_fallback_rejects_nonancestor_base_with_remedy(
+        self, tmp_path: Path, force_pushed_main: bool
+    ) -> None:
+        repo_root, old_base_sha, current_base_sha, head_sha, _ = _make_pr_one_commit_behind_main(
+            tmp_path
+        )
+        if force_pushed_main:
+            # GitHub still records M after main is force-pushed back to B.
+            base_sha = current_base_sha
+            subprocess.run(
+                ["git", "push", "-q", "origin", f"+{old_base_sha}:refs/heads/main"],
+                cwd=repo_root,
+                check=True,
+            )
+        else:
+            # H is on a foreign branch: it shares B with main but is not its ancestor.
+            base_sha = head_sha
+        subprocess.run(
+            ["git", "update-ref", "refs/remotes/origin/main", base_sha],
+            cwd=repo_root,
+            check=True,
+        )
+
+        class NonancestorBaseGh(FakeGh):
+            def __call__(self, cmd: list[str], **kwargs: Any) -> subprocess.CompletedProcess:
+                self.calls.append(list(cmd))
+                if cmd and cmd[0] == "git":
+                    return subprocess.run(cmd, **kwargs)
+                return super().__call__(cmd, **kwargs)
+
+        gh = NonancestorBaseGh(base_sha=base_sha, head_sha=head_sha, files=["shared/foo.py"])
+        with pytest.raises(RuntimeError) as excinfo:
+            dispatch.fetch_pr_diff_from_local(
+                dispatch.PRInfo(
+                    number=42,
+                    title="PR 42",
+                    body="body",
+                    base_ref="main",
+                    base_sha=base_sha,
+                    head_ref="feat/42",
+                    head_sha=head_sha,
+                    changed_file_count=1,
+                    is_draft=False,
+                    files=("shared/foo.py",),
+                ),
+                repo_root=repo_root,
+                runner=gh,
+            )
+
+        message = str(excinfo.value)
+        assert "not a proven ancestor of refreshed origin/main" in message
+        assert 'updatePullRequest(baseRefName: "main")' in message
+        assert "push a merge of main" in message
+        assert not any(
+            call[:2] == ["git", "merge-base"] and call[2] != "--is-ancestor" for call in gh.calls
+        )
+        assert not any(call[:2] == ["git", "diff"] for call in gh.calls)
+
+    def test_local_git_diff_fallback_rejects_missing_base_sha(self, tmp_path: Path) -> None:
+        gh = FakeGh()
+
+        with pytest.raises(RuntimeError) as excinfo:
+            dispatch.fetch_pr_diff_from_local(
+                dispatch.PRInfo(
+                    number=42,
+                    title="PR 42",
+                    body="body",
+                    base_ref="main",
+                    base_sha="",
+                    head_ref="feat/42",
+                    head_sha="b" * 40,
+                    changed_file_count=1,
+                    is_draft=False,
+                    files=("shared/foo.py",),
+                ),
+                repo_root=tmp_path,
+                runner=gh,
+            )
+
+        assert "base SHA is unavailable" in str(excinfo.value)
+        assert not any(call[:2] == ["git", "merge-base"] for call in gh.calls)
+        assert not any(call[:2] == ["git", "diff"] for call in gh.calls)
 
     def test_local_git_diff_fallback_rejects_stale_base_ref(self, tmp_path: Path) -> None:
         repo_root = tmp_path / "repo"
@@ -1690,7 +2114,7 @@ checklist:
                 runner=gh,
             )
 
-        assert "is behind the base" in str(excinfo.value)
+        assert "not a proven ancestor of refreshed origin/main" in str(excinfo.value)
         assert not any(call[:2] == ["git", "diff"] for call in gh.calls)
 
     def test_local_git_diff_fallback_reviews_against_the_refreshed_base_when_the_recorded_sha_is_stale(
@@ -1802,33 +2226,12 @@ checklist:
         assert not any(call[:2] == ["git", "diff"] for call in gh.calls)
 
     def test_local_git_diff_fallback_names_missing_head_fetch_action(self, tmp_path: Path) -> None:
-        repo_root = tmp_path / "repo"
-        repo_root.mkdir()
-        subprocess.run(["git", "init", "-q"], cwd=repo_root, check=True)
-        subprocess.run(["git", "config", "user.email", "t@t"], cwd=repo_root, check=True)
-        subprocess.run(["git", "config", "user.name", "t"], cwd=repo_root, check=True)
-        target = repo_root / "shared" / "foo.py"
-        target.parent.mkdir(parents=True)
-        target.write_text("value = 'base'\n", encoding="utf-8")
-        subprocess.run(["git", "add", "-A"], cwd=repo_root, check=True)
-        subprocess.run(["git", "commit", "-qm", "base"], cwd=repo_root, check=True)
-        base_sha = subprocess.run(
-            ["git", "rev-parse", "HEAD"],
-            cwd=repo_root,
-            check=True,
-            capture_output=True,
-            text=True,
-        ).stdout.strip()
-        subprocess.run(
-            ["git", "update-ref", "refs/remotes/origin/main", base_sha],
-            cwd=repo_root,
-            check=True,
-        )
+        repo_root, _, base_sha, _, _ = _make_pr_one_commit_behind_main(tmp_path)
 
         class MissingHeadFetchGh(FakeGh):
             def __call__(self, cmd: list[str], **kwargs: Any) -> subprocess.CompletedProcess:
                 self.calls.append(list(cmd))
-                if cmd[:3] == ["git", "fetch", "--quiet"]:
+                if cmd[:3] == ["git", "fetch", "--quiet"] and cmd[-1] == "pull/42/head":
                     return subprocess.CompletedProcess(cmd, 1, "", "fetch failed")
                 if cmd and cmd[0] == "git":
                     return subprocess.run(cmd, **kwargs)
@@ -1909,6 +2312,8 @@ checklist:
         class DivergedBaseGh(FakeGh):
             def __call__(self, cmd: list[str], **kwargs: Any) -> subprocess.CompletedProcess:
                 self.calls.append(list(cmd))
+                if cmd[:3] == ["git", "fetch", "--quiet"]:
+                    return subprocess.CompletedProcess(cmd, 0, "", "")
                 if cmd and cmd[0] == "git":
                     return subprocess.run(cmd, **kwargs)
                 return super().__call__(cmd, **kwargs)
@@ -1941,6 +2346,116 @@ checklist:
         assert diff_calls and diff_calls[0][-1] == f"{base_sha}..{head_sha}", (
             "the diff must be pinned to the merge base, which is the original base commit here"
         )
+        assert diff.comparison_base == base_sha
+        assert diff.source == "local-git"
+
+    def test_local_git_diff_fallback_rejects_unrelated_histories(self, tmp_path: Path) -> None:
+        repo_root, _, current_base_sha, _, _ = _make_pr_one_commit_behind_main(tmp_path)
+        empty_tree_sha = subprocess.run(
+            ["git", "mktree"],
+            cwd=repo_root,
+            check=True,
+            capture_output=True,
+            text=True,
+            input="",
+        ).stdout.strip()
+        unrelated_head_sha = subprocess.run(
+            ["git", "commit-tree", empty_tree_sha, "-m", "unrelated head"],
+            cwd=repo_root,
+            check=True,
+            capture_output=True,
+            text=True,
+        ).stdout.strip()
+
+        class UnrelatedHistoryGh(FakeGh):
+            def __call__(self, cmd: list[str], **kwargs: Any) -> subprocess.CompletedProcess:
+                self.calls.append(list(cmd))
+                if cmd and cmd[0] == "git":
+                    return subprocess.run(cmd, **kwargs)
+                return super().__call__(cmd, **kwargs)
+
+        gh = UnrelatedHistoryGh(
+            base_sha=current_base_sha,
+            head_sha=unrelated_head_sha,
+            files=["shared/foo.py"],
+        )
+        with pytest.raises(RuntimeError) as excinfo:
+            dispatch.fetch_pr_diff_from_local(
+                dispatch.PRInfo(
+                    number=42,
+                    title="PR 42",
+                    body="body",
+                    base_ref="main",
+                    base_sha=current_base_sha,
+                    head_ref="feat/42",
+                    head_sha=unrelated_head_sha,
+                    changed_file_count=1,
+                    is_draft=False,
+                    files=("shared/foo.py",),
+                ),
+                repo_root=repo_root,
+                runner=gh,
+            )
+
+        message = str(excinfo.value)
+        assert "cannot compute a merge-base" in message
+        assert "histories unrelated" in message
+        assert not any(call[:2] == ["git", "diff"] for call in gh.calls)
+
+    @pytest.mark.parametrize("missing", ["base-ref", "merge-base"])
+    def test_local_git_diff_fallback_rejects_missing_base_evidence_with_action(
+        self, tmp_path: Path, missing: str
+    ) -> None:
+        gh = FakeGh()
+
+        def runner(cmd: list[str], **kwargs: Any) -> subprocess.CompletedProcess:
+            gh.calls.append(list(cmd))
+            assert cmd[0] == "git"
+            if cmd[:3] == ["git", "fetch", "--quiet"]:
+                return subprocess.CompletedProcess(cmd, 0, "", "")
+            if cmd == ["git", "rev-parse", "--verify", "origin/main"]:
+                if missing == "base-ref":
+                    return subprocess.CompletedProcess(cmd, 1, "", "missing ref")
+                return subprocess.CompletedProcess(cmd, 0, gh.base_sha, "")
+            if cmd[:3] == ["git", "merge-base", "--is-ancestor"]:
+                return subprocess.CompletedProcess(cmd, 0, "", "")
+            if cmd == ["git", "rev-parse", "--verify", gh.head_sha]:
+                return subprocess.CompletedProcess(cmd, 0, gh.head_sha, "")
+            if cmd == ["git", "cat-file", "-e", f"{gh.head_sha}^{{commit}}"]:
+                return subprocess.CompletedProcess(cmd, 0, "", "")
+            if cmd == ["git", "merge-base", gh.base_sha, gh.head_sha]:
+                return subprocess.CompletedProcess(cmd, 0, "\n", "")
+            pytest.fail(f"unexpected command: {cmd}")
+
+        with pytest.raises(RuntimeError) as excinfo:
+            dispatch.fetch_pr_diff_from_local(
+                dispatch.PRInfo(
+                    number=42,
+                    title="PR 42",
+                    body="body",
+                    base_ref="main",
+                    base_sha=gh.base_sha,
+                    head_ref="feat/42",
+                    head_sha=gh.head_sha,
+                    changed_file_count=1,
+                    is_draft=False,
+                    files=("shared/foo.py",),
+                ),
+                repo_root=tmp_path,
+                runner=runner,
+            )
+
+        message = str(excinfo.value)
+        if missing == "base-ref":
+            assert "origin/main is missing after fetching the base ref" in message
+            assert "restore origin access and fetch the base ref" in message
+            assert not any(call[:2] == ["git", "merge-base"] for call in gh.calls)
+        else:
+            assert "computed no merge-base" in message
+            assert "fetch the PR head and base refs" in message
+        assert "Next action:" in message
+        assert "retry review dispatch" in message
+        assert not any(call[:2] == ["git", "diff"] for call in gh.calls)
 
     def test_rest_pull_failure_names_recheck_action(self, tmp_path: Path) -> None:
         class MissingPullGh(FakeGh):
