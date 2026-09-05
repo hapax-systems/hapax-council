@@ -379,6 +379,7 @@ def _pr(
     review_decision: str | None = None,
     auto_merge: bool = False,
     auto_merge_method: str | None = "SQUASH",
+    author: str | None = None,
 ) -> dict[str, Any]:
     file_list = ["shared/foo.py"] if files is None else files
     auto_merge_request: dict[str, Any] | None = None
@@ -393,6 +394,7 @@ def _pr(
         "body": body,
         "headRefName": branch or f"feat/{number}",
         "headRefOid": f"sha-{number}",
+        "author": {"login": author} if author else None,
         "changedFiles": len(file_list) if changed_files_count is None else changed_files_count,
         "files": [{"path": path} for path in file_list],
         "isDraft": draft,
@@ -703,7 +705,10 @@ class _GraphQLRollupOnRestIndeterminateRunner(_FakeRunner):
                                         "commit": {
                                             "oid": head_sha,
                                             "statusCheckRollup": {
-                                                "contexts": {"nodes": rollup},
+                                                "contexts": {
+                                                    "totalCount": len(rollup),
+                                                    "nodes": rollup,
+                                                },
                                             },
                                         }
                                     }
@@ -715,6 +720,58 @@ class _GraphQLRollupOnRestIndeterminateRunner(_FakeRunner):
             }
             return subprocess.CompletedProcess(cmd, 0, json.dumps(payload), "")
         return super().__call__(cmd, **kwargs)
+
+
+@pytest.mark.parametrize(
+    "count,total,complete",
+    [
+        (1, 1, True),
+        (100, 100, True),
+        (1, None, False),
+        (1, "1", False),
+        (1, True, False),
+        (1, -1, False),
+        (1, 0, False),
+        (1, 2, False),
+    ],
+    ids=[
+        "complete",
+        "complete_100",
+        "missing",
+        "string",
+        "boolean",
+        "negative",
+        "excess",
+        "truncated",
+    ],
+)
+def test_graphql_release_evidence_requires_declared_complete_contexts(
+    tmp_path: Path, count: int, total: Any, complete: bool
+) -> None:
+    fake = _GraphQLRollupOnRestIndeterminateRunner(
+        graphql_head_sha="sha-42", graphql_rollup=[_check(f"check-{i}") for i in range(count)]
+    )
+
+    def runner(cmd: list[str], **kwargs: Any) -> subprocess.CompletedProcess:
+        proc = fake(cmd, **kwargs)
+        if cmd[:3] == ["gh", "api", "graphql"]:
+            payload = json.loads(proc.stdout)
+            pull = payload["data"]["repository"]["pullRequest"]
+            contexts = pull["commits"]["nodes"][0]["commit"]["statusCheckRollup"]["contexts"]
+            # Model GraphQL field selection too: an unrequested total cannot prove completeness.
+            if total is None or not any("totalCount" in arg for arg in cmd):
+                contexts.pop("totalCount")
+            else:
+                contexts["totalCount"] = total
+            return subprocess.CompletedProcess(cmd, 0, json.dumps(payload), "")
+        return proc
+
+    ok, sha_or_reason, checks = autoqueue.fetch_pr_release_evidence(
+        42, repo="owner/repo", repo_root=tmp_path, runner=runner, route=_graphql_route()
+    )
+    assert ok is complete
+    assert sha_or_reason == ("sha-42" if complete else "invalid_status_check_rollup")
+    assert checks == ({f"check-{i}" for i in range(count)} if complete else set())
 
 
 def test_fetch_pr_release_evidence_rejects_non_json_success(tmp_path: Path) -> None:
@@ -742,9 +799,15 @@ def test_fetch_pr_release_evidence_falls_back_to_graphql_when_rest_pull_indeterm
         calls.append(list(cmd))
         if cmd[:5] == ["gh", "api", "--method", "GET", "-H"]:
             return subprocess.CompletedProcess(cmd, 1, "", "secondary rate limit")
-        if cmd[:3] == ["gh", "api", "rate_limit"]:
+        if cmd[:4] == ["gh", "api", "-i", "rate_limit"]:
             payload = {"resources": {"graphql": {"remaining": 1000, "reset": 1893456000}}}
-            return subprocess.CompletedProcess(cmd, 0, json.dumps(payload), "")
+            return subprocess.CompletedProcess(
+                cmd,
+                0,
+                "HTTP/2.0 200 OK\r\nX-Ratelimit-Limit: 5000\r\nX-Ratelimit-Remaining: 5000\r\nX-Ratelimit-Reset: 1893456000\r\nX-Ratelimit-Resource: core\r\n\r\n"
+                + json.dumps(payload),
+                "",
+            )
         if cmd[:3] == ["gh", "api", "graphql"]:
             payload = {
                 "data": {
@@ -758,6 +821,7 @@ def test_fetch_pr_release_evidence_falls_back_to_graphql_when_rest_pull_indeterm
                                             "oid": "sha-42",
                                             "statusCheckRollup": {
                                                 "contexts": {
+                                                    "totalCount": 1,
                                                     "nodes": [
                                                         {
                                                             "__typename": "CheckRun",
@@ -765,7 +829,7 @@ def test_fetch_pr_release_evidence_falls_back_to_graphql_when_rest_pull_indeterm
                                                             "status": "COMPLETED",
                                                             "conclusion": "SUCCESS",
                                                         }
-                                                    ]
+                                                    ],
                                                 }
                                             },
                                         }
@@ -810,9 +874,15 @@ def test_fetch_status_rollup_falls_back_to_graphql_when_rest_indeterminate(
 
     def runner(cmd: list[str], **_: Any) -> subprocess.CompletedProcess:
         calls.append(list(cmd))
-        if cmd[:3] == ["gh", "api", "rate_limit"]:
+        if cmd[:4] == ["gh", "api", "-i", "rate_limit"]:
             payload = {"resources": {"graphql": {"remaining": 1000, "reset": 1893456000}}}
-            return subprocess.CompletedProcess(cmd, 0, json.dumps(payload), "")
+            return subprocess.CompletedProcess(
+                cmd,
+                0,
+                "HTTP/2.0 200 OK\r\nX-Ratelimit-Limit: 5000\r\nX-Ratelimit-Remaining: 5000\r\nX-Ratelimit-Reset: 1893456000\r\nX-Ratelimit-Resource: core\r\n\r\n"
+                + json.dumps(payload),
+                "",
+            )
         if cmd[:3] == ["gh", "api", "graphql"]:
             payload = {
                 "data": {
@@ -826,6 +896,7 @@ def test_fetch_status_rollup_falls_back_to_graphql_when_rest_indeterminate(
                                             "oid": "sha-graph",
                                             "statusCheckRollup": {
                                                 "contexts": {
+                                                    "totalCount": 2,
                                                     "nodes": [
                                                         {
                                                             "__typename": "CheckRun",
@@ -841,7 +912,7 @@ def test_fetch_status_rollup_falls_back_to_graphql_when_rest_indeterminate(
                                                             "conclusion": "SUCCESS",
                                                             "completedAt": "2026-07-07T21:46:00Z",
                                                         },
-                                                    ]
+                                                    ],
                                                 }
                                             },
                                         }
@@ -966,7 +1037,7 @@ def test_fetch_open_prs_uses_rest_core_not_gh_pr_list(tmp_path: Path) -> None:
     runner = _FakeRunner()
     runner.open_prs = [_pr(42)]
 
-    prs = autoqueue.fetch_open_prs(repo="owner/repo", repo_root=tmp_path, runner=runner)
+    prs, _route = autoqueue.fetch_open_prs(repo="owner/repo", repo_root=tmp_path, runner=runner)
 
     assert [pr.number for pr in prs] == [42]
     assert any(
@@ -991,7 +1062,7 @@ def test_empty_rest_reviews_do_not_synthesize_review_required(tmp_path: Path) ->
     runner = EmptyReviewsRunner()
     runner.open_prs = [_pr(42)]
 
-    prs = autoqueue.fetch_open_prs(repo="owner/repo", repo_root=tmp_path, runner=runner)
+    prs, _route = autoqueue.fetch_open_prs(repo="owner/repo", repo_root=tmp_path, runner=runner)
     assert prs[0].review_decision is None
 
     report = autoqueue.run_reconciler(
@@ -1012,10 +1083,16 @@ def test_graphql_backoff_skips_autoqueue_reconciler(tmp_path: Path) -> None:
 
     class _LowGraphQLRunner(_FakeRunner):
         def __call__(self, cmd: list[str], **kwargs: Any) -> subprocess.CompletedProcess:
-            if cmd[:3] == ["gh", "api", "rate_limit"]:
+            if cmd[:4] == ["gh", "api", "-i", "rate_limit"]:
                 self.calls.append(list(cmd))
                 payload = {"resources": {"graphql": {"remaining": 0, "reset": 1893456000}}}
-                return subprocess.CompletedProcess(cmd, 0, json.dumps(payload), "")
+                return subprocess.CompletedProcess(
+                    cmd,
+                    0,
+                    "HTTP/2.0 200 OK\r\nX-Ratelimit-Limit: 5000\r\nX-Ratelimit-Remaining: 5000\r\nX-Ratelimit-Reset: 1893456000\r\nX-Ratelimit-Resource: core\r\n\r\n"
+                    + json.dumps(payload),
+                    "",
+                )
             return super().__call__(cmd, **kwargs)
 
     runner = _LowGraphQLRunner()
@@ -7393,6 +7470,91 @@ def test_egress_revalidation_plumbs_changed_files_into_the_coverage_bound(tmp_pa
     )
 
 
+@pytest.mark.parametrize("rest_blocked", [False, True], ids=["rest_healthy", "rest_blocked"])
+def test_release_gate_rejects_graphql_mitigation_failure_beyond_first_100(
+    tmp_path: Path, rest_blocked: bool
+) -> None:
+    from shared.release_gate import LIVE_EGRESS_MITIGATION_CHECKS
+
+    vault = _make_vault(tmp_path)
+    frontmatter = _egress_armed_frontmatter()
+    _write_task(vault, task_id=str(frontmatter["task_id"]), pr=42, extra_frontmatter=frontmatter)
+    _write_governance_review_dossier(vault, str(frontmatter["task_id"]), 42)
+    task = autoqueue.load_task_notes(vault)[0]
+    changed_files = ("shared/capability_adapter_protocol.py",)
+    independent_checks = autoqueue._release_mitigation_verified_checks(
+        set(),
+        task,
+        frontmatter,
+        pr_number=42,
+        pr_head_sha="sha-42",
+        changed_files=changed_files,
+        changed_file_count=1,
+    )
+    assert independent_checks == {autoqueue.REVIEW_TEAM_QUORUM_EVIDENCE}
+    checks = [
+        {**_check(name), "completedAt": "2026-09-05T01:00:00Z"}
+        for name in LIVE_EGRESS_MITIGATION_CHECKS
+        if name != autoqueue.REVIEW_TEAM_QUORUM_EVIDENCE
+    ]
+    checks.extend(_check(f"extra-{index}") for index in range(100 - len(checks)))
+    checks.append(
+        {
+            **_check("egress-boundary-pin", "FAILURE"),
+            "completedAt": "2026-09-05T02:00:00Z",
+        }
+    )
+    fake = _FakeRunner()
+    fake.open_prs = [_pr(42, checks=checks)]
+
+    def runner(cmd: list[str], **kwargs: Any) -> subprocess.CompletedProcess:
+        if cmd[:3] == ["gh", "api", "graphql"]:
+            fake.calls.append(list(cmd))
+            commit = {
+                "oid": "sha-42",
+                "statusCheckRollup": {"contexts": {"totalCount": 101, "nodes": checks[:100]}},
+            }
+            pull = {"headRefOid": "sha-42", "commits": {"nodes": [{"commit": commit}]}}
+            return subprocess.CompletedProcess(
+                cmd, 0, json.dumps({"data": {"repository": {"pullRequest": pull}}}), ""
+            )
+        if cmd[:5] == ["gh", "api", "--method", "GET", "-H"]:
+            assert not rest_blocked, f"REST is ineligible: {cmd}"
+        proc = fake(cmd, **kwargs)
+        if cmd[:5] == ["gh", "api", "--method", "GET", "-H"] and cmd[6].endswith("/check-runs"):
+            page = int(_FakeRunner._fields(cmd)["page"])
+            runs = json.loads(proc.stdout)["check_runs"]
+            payload = {"total_count": len(runs), "check_runs": runs[(page - 1) * 100 : page * 100]}
+            return subprocess.CompletedProcess(cmd, 0, json.dumps(payload), "")
+        return proc
+
+    ok, sha_or_reason, verified = autoqueue.fetch_pr_release_evidence(
+        42,
+        repo="owner/repo",
+        repo_root=tmp_path,
+        runner=runner,
+        route=_graphql_route(rest_blocked=rest_blocked),
+    )
+    blockers = autoqueue._release_auto_arm_current_evidence_blockers(
+        frontmatter, verified_checks=verified | independent_checks, changed_files=changed_files
+    )
+    assert any("egress-boundary-pin" in blocker for blocker in blockers), blockers
+    assert "egress-boundary-pin" not in verified
+    assert ok is not rest_blocked
+    assert sha_or_reason == ("invalid_status_check_rollup" if rest_blocked else "sha-42")
+    assert any(cmd[:3] == ["gh", "api", "graphql"] for cmd in fake.calls)
+    assert (
+        any(cmd[:5] == ["gh", "api", "--method", "GET", "-H"] for cmd in fake.calls)
+        is not rest_blocked
+    )
+    pages = [
+        _FakeRunner._fields(cmd)["page"]
+        for cmd in fake.calls
+        if cmd[:5] == ["gh", "api", "--method", "GET", "-H"] and cmd[6].endswith("/check-runs")
+    ]
+    assert pages == ([] if rest_blocked else ["1", "2"])
+
+
 def test_egress_revalidation_without_changed_files_holds_coverage_unevaluable(
     tmp_path: Path,
 ) -> None:
@@ -7407,6 +7569,281 @@ def test_egress_revalidation_without_changed_files_holds_coverage_unevaluable(
     assert "egress_evidence_coverage_unevaluable:no_changed_files" in blockers
 
 
+def _rate_only_runner(
+    *,
+    core: int,
+    graphql: int,
+    calls: list[list[str]] | None = None,
+    rows: list[dict[str, Any]] | None = None,
+) -> Any:
+    """Serves rate_limit and the GraphQL listing; refuses REST spend."""
+
+    def run(cmd: list[str], **_: Any) -> subprocess.CompletedProcess:
+        if calls is not None:
+            calls.append(list(cmd))
+        if cmd[:4] == ["gh", "api", "-i", "rate_limit"]:
+            head = (
+                "HTTP/2.0 200 OK\r\n"
+                "X-Ratelimit-Limit: 5000\r\n"
+                f"X-Ratelimit-Remaining: {core}\r\n"
+                "X-Ratelimit-Reset: 1893456000\r\n"
+                "X-Ratelimit-Resource: core\r\n"
+            )
+            payload = {
+                "resources": {
+                    "core": {"remaining": core, "limit": 5000, "reset": 1893456000},
+                    "graphql": {"remaining": graphql, "limit": 5000, "reset": 1893456000},
+                }
+            }
+            return subprocess.CompletedProcess(cmd, 0, f"{head}\r\n{json.dumps(payload)}", "")
+        if cmd[:3] == ["gh", "pr", "list"]:
+            return subprocess.CompletedProcess(cmd, 0, json.dumps(rows or []), "")
+        if cmd[:3] == ["gh", "pr", "view"]:
+            queried_row = next(row for row in rows or [] if str(row["number"]) == cmd[3])
+            return subprocess.CompletedProcess(
+                cmd,
+                0,
+                json.dumps(
+                    {
+                        "headRefOid": queried_row["headRefOid"],
+                        "statusCheckRollup": [
+                            {"name": "lint", "state": "SUCCESS", "__typename": "CheckRun"}
+                        ],
+                    }
+                ),
+                "",
+            )
+        if cmd[:3] == ["gh", "api", "graphql"]:
+            # The native merge-queue probe. Already GraphQL before this change, and the
+            # reconciler skips on its own when it is indeterminate — so it has to succeed here
+            # or the cycle never reaches the listing decision under test.
+            return subprocess.CompletedProcess(
+                cmd,
+                0,
+                json.dumps({"data": {"repository": {"mergeQueue": {"entries": {"nodes": []}}}}}),
+                "",
+            )
+        raise AssertionError(f"no REST call may be spent once the pool is empty: {cmd}")
+
+    return run
+
+
+#: One realistic GraphQL row. Returning `[]` was how the first version of these tests hid the
+#: defect the review then found: routing the listing proves nothing if the per-PR work that
+#: follows still goes to REST, and with no rows there is no per-PR work to observe.
+_GRAPHQL_ROW = {
+    "number": 4610,
+    "id": "PR_node",
+    "state": "OPEN",
+    "title": "a real row",
+    "body": "",
+    "url": "https://github.example/o/r/pull/4610",
+    "updatedAt": "2026-08-30T00:00:00Z",
+    "mergedAt": None,
+    "headRefName": "feat/x",
+    "headRefOid": "deadbeef",
+    "changedFiles": 1,
+    "files": [{"path": "scripts/example.py"}],
+    "isDraft": False,
+    "labels": [],
+    "reviewDecision": "APPROVED",
+    "autoMergeRequest": None,
+    "mergeStateStatus": "CLEAN",
+}
+
+
+def test_fetch_open_prs_routes_to_graphql_when_rest_is_exhausted(tmp_path: Path) -> None:
+    """The predicate at the fleet caller: chosen before the call, not after a failure.
+
+    This test previously asserted the caller *skipped* the cycle. All three seated review
+    families called that a critical gap — an exhausted REST pool with GraphQL at 93%
+    headroom stalled the timer instead of using the healthy pool. Skipping is still correct
+    when both pools are empty, which the companion test below pins.
+    """
+    calls: list[list[str]] = []
+    rows, _route = autoqueue.fetch_open_prs(
+        repo="owner/repo",
+        repo_root=tmp_path,
+        runner=_rate_only_runner(core=0, graphql=4660, calls=calls),
+    )
+
+    assert rows == []
+    assert any(call[:3] == ["gh", "pr", "list"] for call in calls), (
+        "an exhausted REST pool with healthy GraphQL must select GraphQL, not sit out"
+    )
+
+
+def test_graphql_rows_are_not_rehydrated_through_the_exhausted_rest_pool(
+    tmp_path: Path,
+) -> None:
+    """Routing one call is worthless if the per-PR work that follows still goes to REST.
+
+    The first version of this coverage returned an empty listing, so there were no rows and
+    no per-PR path to observe — and `fetch_open_prs` was in fact calling `get_pull_rest` for
+    every row plus a REST check-runs fallback. That is a test whose fixture avoided the very
+    path that would have failed, which is the same shape as the defect it missed. This one
+    uses a real row and lets the runner raise on any REST call.
+    """
+    calls: list[list[str]] = []
+    prs, _route = autoqueue.fetch_open_prs(
+        repo="owner/repo",
+        repo_root=tmp_path,
+        runner=_rate_only_runner(core=0, graphql=4660, calls=calls, rows=[_GRAPHQL_ROW]),
+    )
+
+    assert len(prs) == 1, f"the routed listing must still produce usable rows: {prs}"
+    assert any(call[:3] == ["gh", "pr", "list"] for call in calls)
+    assert not any(len(call) > 6 and str(call[6]).startswith("repos/") for call in calls), (
+        f"no REST call may follow a GraphQL-routed listing: {calls}"
+    )
+
+
+def test_autoqueue_skips_bulk_listing_with_a_moved_head(tmp_path: Path) -> None:
+    calls: list[list[str]] = []
+    fake = _rate_only_runner(core=0, graphql=4660, calls=calls, rows=[_GRAPHQL_ROW])
+
+    def runner(cmd: list[str], **kwargs: Any) -> subprocess.CompletedProcess:
+        if cmd[:3] == ["gh", "api", "repos/owner/repo/git/matching-refs/heads/gh-readonly-queue"]:
+            calls.append(cmd)
+            return subprocess.CompletedProcess(cmd, 0, "", "")
+        if cmd[:3] == ["gh", "pr", "view"]:
+            calls.append(cmd)
+            return subprocess.CompletedProcess(
+                cmd,
+                0,
+                json.dumps({"headRefOid": "new-head", "statusCheckRollup": [_check("lint")]}),
+                "",
+            )
+        return fake(cmd, **kwargs)
+
+    prs, route = autoqueue.fetch_open_prs(repo="owner/repo", repo_root=tmp_path, runner=runner)
+    assert prs == []
+    assert route is None
+    report = autoqueue.run_reconciler(
+        repo="owner/repo",
+        repo_root=tmp_path,
+        vault_root=tmp_path,
+        expected_auto_merge_method_override="SQUASH",
+        apply=True,
+        runner=runner,
+    )
+    assert report["skipped"] is True
+    assert report["reason"] == "open_pr_listing_unavailable"
+    assert _graphql_mutations(calls) == []
+    assert not any(cmd[:3] == ["gh", "pr", "merge"] for cmd in calls)
+
+
+def test_the_reconciler_skips_rather_than_reading_an_unavailable_listing_as_quiet(
+    tmp_path: Path,
+) -> None:
+    """The defect the routing change itself introduced, caught by codex.
+
+    `fetch_open_prs` grew a second return value and the reconciler kept reading only the first,
+    so `([], None)` — "we could not look" — was indistinguishable from "no open PRs", and every
+    decision below it would be made on absent evidence.
+    """
+
+    # GraphQL healthy so the merge-queue probe succeeds and the cycle reaches the listing —
+    # with both pools empty the reconciler skips earlier, on that probe, and never gets here.
+    # This runner does not police REST spend (a sibling test does); it only makes the listing
+    # fail, so the assertion is about what the reconciler concludes from that.
+    def listing_fails(cmd: list[str], **_: Any) -> subprocess.CompletedProcess:
+        if cmd[:4] == ["gh", "api", "-i", "rate_limit"]:
+            head = (
+                "HTTP/2.0 200 OK\r\nX-Ratelimit-Limit: 5000\r\n"
+                "X-Ratelimit-Remaining: 0\r\nX-Ratelimit-Reset: 1893456000\r\n"
+                "X-Ratelimit-Resource: core\r\n"
+            )
+            payload = {
+                "resources": {
+                    "core": {"remaining": 0, "limit": 5000, "reset": 1893456000},
+                    "graphql": {"remaining": 4660, "limit": 5000, "reset": 1893456000},
+                }
+            }
+            return subprocess.CompletedProcess(cmd, 0, f"{head}\r\n{json.dumps(payload)}", "")
+        if cmd[:3] == ["gh", "api", "graphql"]:
+            return subprocess.CompletedProcess(
+                cmd,
+                0,
+                json.dumps({"data": {"repository": {"mergeQueue": {"entries": {"nodes": []}}}}}),
+                "",
+            )
+        if cmd[:3] == ["gh", "pr", "list"]:
+            return subprocess.CompletedProcess(cmd, 1, "", "HTTP 504 Gateway Timeout")
+        return subprocess.CompletedProcess(cmd, 0, "[]", "")
+
+    report = autoqueue.run_reconciler(
+        repo="owner/repo", repo_root=tmp_path, vault_root=tmp_path, runner=listing_fails
+    )
+
+    assert report.get("skipped") is True
+    assert report.get("reason") == "open_pr_listing_unavailable", (
+        f"a failed listing must skip the cycle, not read as an empty estate: {report}"
+    )
+
+
+def test_a_quiet_estate_is_not_reported_as_an_unavailable_listing(tmp_path: Path) -> None:
+    """The mirror of the skip fix, and introduced by it.
+
+    A successful listing with zero rows is a genuinely quiet estate. Returning `None` for the
+    route made the reconciler skip on a CORRECT measurement — so having taught it not to read
+    unavailability as quiet, the same commit taught it to read quiet as unavailability.
+    """
+    prs, route = autoqueue.fetch_open_prs(
+        repo="owner/repo",
+        repo_root=tmp_path,
+        runner=_rate_only_runner(core=0, graphql=4660, rows=[]),
+    )
+
+    assert prs == []
+    assert route is not None, "a successful empty listing is a measurement, not a failure"
+    assert route.transport == "graphql"
+
+
+def test_a_graphql_row_with_no_checks_keeps_an_empty_rollup_rather_than_asking_rest(
+    tmp_path: Path,
+) -> None:
+    """The fail-closed branch, tested directly rather than by implication.
+
+    A GraphQL row already made its own per-PR rollup call. When that comes back empty — no
+    checks, or an unfetchable rollup — `[]` IS the fail-closed value: it reads downstream as
+    "checks unknown / not green". Reaching for REST would spend the exhausted pool to arrive at
+    the same verdict, so the branch exists to not do that, and this witnesses it.
+    """
+    calls: list[list[str]] = []
+    row = {**_GRAPHQL_ROW, "number": 4611}
+
+    def no_checks(cmd: list[str], **kwargs: Any) -> subprocess.CompletedProcess:
+        if cmd[:3] == ["gh", "pr", "view"]:
+            return subprocess.CompletedProcess(
+                cmd, 0, json.dumps({"headRefOid": row["headRefOid"], "statusCheckRollup": []}), ""
+            )
+        return _rate_only_runner(core=0, graphql=4660, calls=calls, rows=[row])(cmd, **kwargs)
+
+    prs, _route = autoqueue.fetch_open_prs(repo="owner/repo", repo_root=tmp_path, runner=no_checks)
+
+    assert len(prs) == 1
+    assert not any(len(call) > 6 and str(call[6]).startswith("repos/") for call in calls), (
+        f"an empty rollup on a GraphQL row must stay empty, not fall through to REST: {calls}"
+    )
+
+
+def test_fetch_open_prs_skips_the_cycle_when_both_pools_are_exhausted(tmp_path: Path) -> None:
+    """Caller-level coverage for the RestPoolExhausted path (codex-1, major).
+
+    The lower-level test proved the listing raises; none proved the fleet caller handles it.
+    An uncaught exception here would crash the timer service and mint a P0 "service failed"
+    incident — strictly worse than the exhaustion it reports. Routing must not become a way
+    to spend a pool that is also measurably empty.
+    """
+    prs, route = autoqueue.fetch_open_prs(
+        repo="owner/repo",
+        repo_root=tmp_path,
+        runner=_rate_only_runner(core=0, graphql=0),
+    )
+    assert prs == [] and route is None
+
+
 def test_canon_assessor_reports_armed_for_authorized_egress_task() -> None:
     # Round-16 glm/claude claimed the canon .armed read in the suppression
     # branch is dead for this class. It is not: armed reflects the frontmatter
@@ -7415,3 +7852,962 @@ def test_canon_assessor_reports_armed_for_authorized_egress_task() -> None:
     from shared.sdlc_lifecycle import assess_release_auto_arm as canon_assess
 
     assert canon_assess(_egress_armed_frontmatter()).armed is True
+
+
+# ------------------------------------------------------------------ machine-authored admission
+#
+# A cc-task binds a change to a ROUTED DEMAND. An automated producer has a standing policy instead,
+# so `missing_cc_task_link` reported the wrong fact for 14 of 55 open PRs — it says somebody forgot,
+# when dependabot has no task by construction and never will.
+#
+# The exemption REPLACES the acceptance predicate rather than removing it, because the review-team
+# quorum gate lives inside `_task_blockers` and runs only when a task matched: "no task" already
+# meant "no review requirement", so dropping the task-link reason alone would have relaxed two gates
+# while appearing to relax one.
+
+
+def _producer(
+    tmp_path: Path,
+    *,
+    login: str = "app/dependabot",
+    scope: list[str] | None = None,
+    requires_review: bool = False,
+) -> Path:
+    path = tmp_path / "machine-authors.yaml"
+    path.write_text(
+        "schema: hapax.machine-authors.v1\nproducers:\n"
+        f'  - logins: ["{login}"]\n'
+        f"    display_name: {login.split('/')[-1]}\n"
+        "    path_scope:\n"
+        + "".join(f'      - "{p}"\n' for p in (scope or ["**/package.json", "**/uv.lock"]))
+        + f"    requires_review: {str(requires_review).lower()}\n",
+        encoding="utf-8",
+    )
+    return path
+
+
+def test_a_declared_producer_in_scope_is_not_blocked_for_a_missing_task_link(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The whole point: a dependency bump has no routed demand, so it has no task to link."""
+    producers = autoqueue.load_machine_producers(_producer(tmp_path))
+    monkeypatch.setattr(autoqueue, "load_machine_producers", lambda: producers)
+    pr = autoqueue._parse_pr(_pr(1, files=["package.json", "uv.lock"], author="app/dependabot"))
+    assert pr is not None and pr.author_login == "app/dependabot"
+    decision = autoqueue.classify_pr(pr, tasks=[], queued_prs=set())
+    assert decision.action == "queue", decision.reasons
+    assert decision.reasons == ()
+    assert decision.task is None and decision.tasks == ()
+
+
+def test_a_declared_producer_out_of_scope_is_still_blocked_and_names_the_paths(
+    tmp_path: Path,
+) -> None:
+    """The supply-chain guard, and the single mitigation for it.
+
+    A producer that steps outside its declared scope is what compromise or misconfiguration looks
+    like from here. `.github/**` is in no auto-admit scope deliberately: **CI cannot be the
+    acceptance predicate for a change to CI**, and a workflow is exactly where a change can
+    exfiltrate secrets or disable the checks that would have caught it.
+    """
+    producer = autoqueue.load_machine_producers(_producer(tmp_path))["app/dependabot"]
+    pr = autoqueue._parse_pr(
+        _pr(2, files=["package.json", ".github/workflows/ci.yml"], author="app/dependabot")
+    )
+    blockers = autoqueue.machine_producer_blockers(producer, pr)
+    assert any(b.startswith("machine_author_out_of_scope:") for b in blockers), blockers
+    assert ".github/workflows/ci.yml" in blockers[0], blockers
+
+
+def test_recursive_manifest_scope_does_not_admit_a_manifest_beneath_github() -> None:
+    """Recursive manifest globs must not let repository-local CI certify itself.
+
+    This exercises the effective match against the shipped policy: checking only that no pattern
+    string starts with `.github/` misses that fnmatch(`.github/actions/x/package.json`,
+    `**/package.json`) is true.
+    """
+    producer = autoqueue.load_machine_producers()["app/dependabot"]
+    pr = autoqueue._parse_pr(
+        _pr(
+            2,
+            files=[".github/actions/setup-tool/package.json"],
+            author="app/dependabot",
+        )
+    )
+    assert pr is not None
+    assert autoqueue.machine_producer_blockers(producer, pr) == [
+        "machine_author_out_of_scope:dependabot:.github/actions/setup-tool/package.json"
+    ]
+
+
+def test_a_lookalike_login_is_not_a_declared_producer(tmp_path: Path) -> None:
+    """Matching is EQUALITY. `app/dependabot-evil` is a different principal, and a prefix or
+    substring match would admit it silently — the substring-for-judgement defect this estate has
+    already removed from three other gates."""
+    producers = autoqueue.load_machine_producers(_producer(tmp_path))
+    assert producers.get("app/dependabot-evil") is None
+    assert producers.get("dependabot") is None
+    assert producers.get("app/dependabot") is not None
+
+
+def test_a_machine_pr_with_any_failing_check_is_blocked_even_if_it_is_not_required(
+    tmp_path: Path,
+) -> None:
+    """CI is a machine PR's ENTIRE acceptance predicate, so the required subset is the wrong bar.
+
+    Measured against the live queue on 2026-09-01: #4515 was failing `egress-boundary-pin` and
+    `all-green`, #4527 was failing `rust-check` on a Cargo bump. None of those is in
+    `required_checks` (lint/test/typecheck/web-build/vscode-build), so the ordinary filter dropped
+    them and both PRs reported NO blockers — they would have merged red. Every unit test was green
+    at the time; only running the policy against reality found it.
+    """
+    producer = autoqueue.load_machine_producers(_producer(tmp_path))["app/dependabot"]
+    red = autoqueue._parse_pr(
+        _pr(
+            5,
+            files=["package.json"],
+            author="app/dependabot",
+            checks=[{"name": "rust-check", "conclusion": "FAILURE"}],
+        )
+    )
+    blockers = autoqueue.machine_producer_blockers(producer, red)
+    assert any(b.startswith("machine_author_checks_failing:") for b in blockers), blockers
+    assert "rust-check" in blockers[0]
+
+    pending = autoqueue._parse_pr(
+        _pr(
+            6,
+            files=["package.json"],
+            author="app/dependabot",
+            checks=[{"name": "test", "status": "IN_PROGRESS"}],
+        )
+    )
+    assert any(
+        b.startswith("machine_author_checks_pending:")
+        for b in autoqueue.machine_producer_blockers(producer, pending)
+    ), "not yet green is not green"
+
+
+def test_one_producer_is_recognised_under_every_transport_name_it_presents() -> None:
+    """The SHIPPED policy must recognise dependabot on both transports.
+
+    Measured 2026-09-01: the REST pulls API reports `dependabot[bot]` while
+    `gh pr list --json author` reports `app/dependabot` — same bot, same PRs, two strings. Under
+    strict equality a single-name declaration recognised it on one transport and not the other, so
+    the exemption would have applied or not depending on which rate-limit pool had headroom that
+    minute. The first live run of this policy found exactly that: 0 machine-author reasons against
+    14 dependabot PRs.
+
+    This reads the real config on purpose. A fixture would pass while the shipped declaration was
+    wrong, which is the failure that actually happened.
+    """
+    producers = autoqueue.load_machine_producers()
+    rest = producers.get("dependabot[bot]")
+    graphql = producers.get("app/dependabot")
+    assert rest is not None, "REST reports dependabot[bot]; the policy must declare it"
+    assert graphql is not None, "gh/GraphQL reports app/dependabot; the policy must declare it too"
+    assert rest is graphql, "both names must resolve to ONE producer, not two policies"
+    assert not any(p.startswith(".github/") for p in rest.path_scope), (
+        "CI cannot be the acceptance predicate for a change to CI"
+    )
+
+
+def test_a_producer_requiring_review_is_blocked_without_a_dossier(tmp_path: Path) -> None:
+    """Per-producer, so a future producer that emits authored logic is gated normally.
+
+    A version bump carries no authored logic and CI decides it. A codegen or refactor bot does, and
+    declares `requires_review: true`.
+    """
+    producer = autoqueue.load_machine_producers(
+        _producer(tmp_path, login="app/codegen-bot", requires_review=True)
+    )["app/codegen-bot"]
+    pr = autoqueue._parse_pr(_pr(3, files=["package.json"], author="app/codegen-bot"))
+    assert autoqueue.machine_producer_blockers(producer, pr) == [
+        "machine_author_requires_review:codegen-bot:"
+        "missing valid quorum-accept dossier; link a cc-task and run "
+        "scripts/cc-pr-review-dispatch.py for the current PR head"
+    ]
+    assert autoqueue.machine_producer_blockers(producer, pr, has_quorum_accept_dossier=True) == []
+
+
+def test_an_unreadable_policy_admits_nothing(tmp_path: Path) -> None:
+    """Failure direction. An absent or malformed policy must yield NO producers, so every PR keeps
+    the ordinary human requirements — never a silent blanket exemption."""
+    assert autoqueue.load_machine_producers(tmp_path / "does-not-exist.yaml") == {}
+    bad = tmp_path / "bad.yaml"
+    bad.write_text('producers: [{login: "app/x"}]\n', encoding="utf-8")  # no path_scope
+    assert autoqueue.load_machine_producers(bad) == {}, (
+        "a producer with no declared scope is not a producer with unlimited scope"
+    )
+
+
+def test_an_unknown_file_list_is_not_an_in_scope_file_list(tmp_path: Path) -> None:
+    """`files is None` means the diff could not be read, which is not evidence it is in scope.
+
+    Admitting on an unreadable file set would make the exemption unbounded exactly when the
+    transport is degraded — a bound reported as a verdict, in the place it would cost most.
+    """
+    producer = autoqueue.load_machine_producers(_producer(tmp_path))["app/dependabot"]
+    payload = _pr(4, author="app/dependabot")
+    payload["files"] = None
+    pr = autoqueue._parse_pr(payload)
+    assert autoqueue.machine_producer_blockers(producer, pr) == [
+        "machine_author_file_list_unavailable:dependabot"
+    ]
+
+
+def test_a_truncated_allowed_file_list_is_not_complete_scope_evidence(tmp_path: Path) -> None:
+    """An allowed prefix of a larger diff cannot satisfy the every-file scope predicate."""
+    producer = autoqueue.load_machine_producers(_producer(tmp_path))["app/dependabot"]
+    pr = autoqueue._parse_pr(
+        _pr(
+            7,
+            files=["package.json"],
+            changed_files_count=3001,
+            author="app/dependabot",
+        )
+    )
+    assert pr is not None
+    assert autoqueue.machine_producer_blockers(producer, pr) == [
+        "machine_author_file_list_incomplete:dependabot:1/3001"
+    ]
+
+
+def test_a_file_list_at_the_rest_cap_is_not_complete_scope_evidence(tmp_path: Path) -> None:
+    """An exact cap-sized list is ambiguous when the independent count was synthesized from it."""
+    producer = autoqueue.load_machine_producers(_producer(tmp_path))["app/dependabot"]
+    files = [f"package-{index}/package.json" for index in range(3000)]
+    pr = autoqueue._parse_pr(_pr(10, files=files, author="app/dependabot"))
+    assert pr is not None and pr.changed_files_count == len(pr.files) == 3000
+    assert autoqueue.machine_producer_blockers(producer, pr) == [
+        "machine_author_file_list_at_limit:dependabot:3000"
+    ]
+
+
+def test_a_malformed_file_entry_cannot_disappear_into_an_allowed_subset(tmp_path: Path) -> None:
+    """Parser filtering must become a count mismatch, never evidence that every file is allowed."""
+    producer = autoqueue.load_machine_producers(_producer(tmp_path))["app/dependabot"]
+    payload = _pr(8, files=["package.json"], author="app/dependabot")
+    payload["changedFiles"] = 2
+    payload["files"].append({"filename": ".github/workflows/hidden.yml"})
+    pr = autoqueue._parse_pr(payload)
+    assert pr is not None and pr.files == ("package.json",)
+    assert autoqueue.machine_producer_blockers(producer, pr) == [
+        "machine_author_file_list_incomplete:dependabot:1/2"
+    ]
+
+
+def test_an_unknown_changed_file_count_refuses_machine_admission(tmp_path: Path) -> None:
+    """Without the independent total, the guard cannot distinguish complete from capped."""
+    producer = autoqueue.load_machine_producers(_producer(tmp_path))["app/dependabot"]
+    payload = _pr(9, files=["package.json"], author="app/dependabot")
+    payload["changedFiles"] = None
+    pr = autoqueue._parse_pr(payload)
+    assert pr is not None
+    assert autoqueue.machine_producer_blockers(producer, pr) == [
+        "machine_author_file_count_unavailable:dependabot:"
+        "independent changed-file count unavailable; fetch via GraphQL or re-run when the REST pool resets"
+    ]
+
+
+# --- #4610 second round: the admission status write stays on the pool the cycle is on -------
+#
+# codex critical (dossier 2026-09-02): every apply decision called set_autoqueue_admission_status,
+# whose first act was an unguarded REST GET and whose write was a REST POST. On a cycle routed to
+# GraphQL because REST is below its floor, both failed and the apply loop skipped the queue
+# mutation — the incident condition stalled the live autoqueue while spending N calls against the
+# exhausted pool. These pin the GraphQL twin and the absence of any REST fallback from it.
+
+
+def _graphql_only_runner(
+    calls: list[list[str]],
+    *,
+    status: tuple[str, str, str] | None = None,
+    repository_id: str = "R_kgDOtest",
+    graphql_read_ok: bool = True,
+) -> Any:
+    """Serves rate_limit (REST below floor, GraphQL healthy) and GraphQL; refuses every REST call."""
+
+    def runner(cmd: list[str], **_: Any) -> subprocess.CompletedProcess:
+        calls.append(list(cmd))
+        if cmd[:4] == ["gh", "api", "-i", "rate_limit"]:
+            payload = {
+                "resources": {
+                    "core": {"remaining": 3, "reset": 1893456000},
+                    "graphql": {"remaining": 4000, "reset": 1893456000},
+                }
+            }
+            return subprocess.CompletedProcess(
+                cmd,
+                0,
+                "HTTP/2.0 200 OK\r\nX-Ratelimit-Limit: 5000\r\nX-Ratelimit-Remaining: 3\r\n"
+                "X-Ratelimit-Reset: 1893456000\r\nX-Ratelimit-Resource: core\r\n\r\n"
+                + json.dumps(payload),
+                "",
+            )
+        if cmd[:3] == ["gh", "api", "graphql"]:
+            if not graphql_read_ok:
+                return subprocess.CompletedProcess(cmd, 1, "", "graphql read failed")
+            context = (
+                None
+                if status is None
+                else {"state": status[0].upper(), "description": status[1], "createdAt": status[2]}
+            )
+            payload = {
+                "data": {
+                    "repository": {
+                        "id": repository_id,
+                        "object": {"status": {"context": context}},
+                    }
+                }
+            }
+            return subprocess.CompletedProcess(cmd, 0, json.dumps(payload), "")
+        return subprocess.CompletedProcess(cmd, 1, "", "REST refused: core pool below floor")
+
+    return runner
+
+
+def _graphql_mutations(calls: list[list[str]]) -> list[list[str]]:
+    return [
+        call
+        for call in calls
+        if call[:3] == ["gh", "api", "graphql"]
+        and any(arg.startswith("query=mutation") for arg in call)
+    ]
+
+
+def _rest_status_calls(calls: list[list[str]]) -> list[list[str]]:
+    return [call for call in calls if any("/statuses" in arg for arg in call)]
+
+
+def _graphql_route(*, rest_blocked: bool = True) -> Any:
+    return autoqueue.ListingRoute(
+        transport="graphql",
+        rest_blocked=rest_blocked,
+        reason="core 3/5000 below floor 100" if rest_blocked else "core 4800/5000",
+    )
+
+
+def test_graphql_routed_cycle_reads_via_graphql_and_defers_the_rest_only_write(
+    tmp_path: Path,
+) -> None:
+    """Commit statuses have no GraphQL mutation. A cycle routed to GraphQL because REST is
+    below its floor reads the current status through GraphQL and, needing a write, defers it
+    as a transport-window deferral — it never posts to REST and never invents a mutation.
+
+    Review finding on #4610, round 9: the previous revision compared the ListingRoute OBJECT
+    against the string "graphql" (unreachable branch) and then called a `createCommitStatus`
+    mutation that GitHub's schema does not define.
+    """
+    decision = _admission_decision()
+    calls: list[list[str]] = []
+    result = autoqueue.set_autoqueue_admission_status(
+        decision,
+        repo="owner/repo",
+        repo_root=tmp_path,
+        runner=_graphql_only_runner(calls),
+        route=_graphql_route(rest_blocked=True),
+    )
+
+    assert result is not None and result[0] is False, result
+    assert autoqueue._admission_status_write_deferral_class(result[1]) == "github_rate_limit"
+    assert "below floor 100" in result[1]
+    assert _rest_status_calls(calls) == [], "a GraphQL-routed cycle must not touch the REST pool"
+    assert _graphql_mutations(calls) == [], "there is no commit-status mutation to send"
+    assert [c for c in calls if c[:3] == ["gh", "api", "graphql"]], "the read goes via GraphQL"
+
+
+def test_graphql_routed_cycle_with_rest_headroom_writes_through_rest(tmp_path: Path) -> None:
+    """The route object says whether REST is actually below its floor; when it is not, the
+    read still goes through GraphQL and the write goes to the only endpoint that exists."""
+    decision = _admission_decision()
+    calls: list[list[str]] = []
+    graphql = _graphql_only_runner(calls)
+
+    def runner(cmd: list[str], **kwargs: Any) -> subprocess.CompletedProcess:
+        if cmd[:4] == ["gh", "api", "-X", "POST"] and "/statuses/" in " ".join(cmd):
+            calls.append(list(cmd))
+            return subprocess.CompletedProcess(cmd, 0, json.dumps({"state": "success"}), "")
+        return graphql(cmd, **kwargs)
+
+    result = autoqueue.set_autoqueue_admission_status(
+        decision,
+        repo="owner/repo",
+        repo_root=tmp_path,
+        runner=runner,
+        route=_graphql_route(rest_blocked=False),
+    )
+
+    assert result is not None and result[0], result
+    assert len(_rest_status_calls(calls)) == 1
+    assert _graphql_mutations(calls) == []
+
+
+def test_a_bare_graphql_transport_string_still_defers_the_write(tmp_path: Path) -> None:
+    decision = _admission_decision()
+    calls: list[list[str]] = []
+    result = autoqueue.set_autoqueue_admission_status(
+        decision,
+        repo="owner/repo",
+        repo_root=tmp_path,
+        runner=_graphql_only_runner(calls),
+        route="graphql",
+    )
+
+    assert result is not None and result[0] is False, result
+    assert autoqueue._admission_status_write_deferral_class(result[1]) == "github_rate_limit"
+    assert _rest_status_calls(calls) == []
+
+
+def test_admission_status_graphql_route_is_idempotent_when_unchanged_and_fresh(
+    tmp_path: Path,
+) -> None:
+    decision = _admission_decision()
+    state, description = autoqueue._admission_status_for(decision)
+    calls: list[list[str]] = []
+    now = datetime(2026, 6, 2, 0, 5, tzinfo=UTC)
+    result = autoqueue.set_autoqueue_admission_status(
+        decision,
+        repo="owner/repo",
+        repo_root=tmp_path,
+        runner=_graphql_only_runner(calls, status=(state, description, "2026-06-02T00:00:00Z")),
+        now=now,
+        route="graphql",
+    )
+
+    assert result == (True, "unchanged")
+    assert _graphql_mutations(calls) == []
+    assert _rest_status_calls(calls) == []
+
+
+def test_admission_status_graphql_read_failure_fails_closed_without_rest_fallback(
+    tmp_path: Path,
+) -> None:
+    """No REST fallback from the GraphQL branch: REST being below floor is why we are here."""
+    decision = _admission_decision()
+    calls: list[list[str]] = []
+    result = autoqueue.set_autoqueue_admission_status(
+        decision,
+        repo="owner/repo",
+        repo_root=tmp_path,
+        runner=_graphql_only_runner(calls, graphql_read_ok=False),
+        route="graphql",
+    )
+
+    assert result is not None and result[0] is False
+    assert result[1].startswith("graphql_admission_status_read_failed")
+    assert "Next action:" in result[1]
+    assert _rest_status_calls(calls) == []
+    assert _graphql_mutations(calls) == []
+
+
+def test_admission_status_graphql_read_failure_falls_back_when_rest_is_eligible(
+    tmp_path: Path,
+) -> None:
+    """A roomier GraphQL pool is a preference, not evidence that REST is blocked."""
+    decision = _admission_decision()
+    calls: list[list[str]] = []
+    graphql = _graphql_only_runner(calls, graphql_read_ok=False)
+
+    def runner(cmd: list[str], **kwargs: Any) -> subprocess.CompletedProcess:
+        if cmd[:3] == ["gh", "api", "repos/owner/repo/commits/sha-50/statuses"]:
+            calls.append(list(cmd))
+            return subprocess.CompletedProcess(cmd, 0, "[]", "")
+        if cmd[:4] == ["gh", "api", "-X", "POST"] and "/statuses/" in " ".join(cmd):
+            calls.append(list(cmd))
+            return subprocess.CompletedProcess(cmd, 0, json.dumps({"state": "success"}), "")
+        return graphql(cmd, **kwargs)
+
+    result = autoqueue.set_autoqueue_admission_status(
+        decision,
+        repo="owner/repo",
+        repo_root=tmp_path,
+        runner=runner,
+        route=_graphql_route(rest_blocked=False),
+    )
+
+    assert result is not None and result[0], result
+    assert any(call[:3] == ["gh", "api", "graphql"] for call in calls)
+    assert len(_rest_status_calls(calls)) == 2, "eligible REST must carry the read and write"
+    assert _graphql_mutations(calls) == []
+
+
+def test_admission_status_rest_route_still_posts_over_rest(tmp_path: Path) -> None:
+    """The REST path is untouched when the cycle was routed to REST."""
+    decision = _admission_decision()
+    runner = _FakeRunner()
+    result = autoqueue.set_autoqueue_admission_status(
+        decision, repo="owner/repo", repo_root=tmp_path, runner=runner, route="rest"
+    )
+    assert result is not None and result[0]
+    assert len(_admission_posts(runner)) == 1
+
+
+@pytest.mark.parametrize("route", ["rest", "graphql"])
+@pytest.mark.parametrize(
+    "failure",
+    [
+        "nonzero",
+        "invalid_json",
+        "empty_body",
+        "wrong_shape",
+        "bad_row",
+        "bad_state",
+        "timeout",
+        "oserror",
+        "subprocess",
+    ],
+)
+def test_admission_read_failure_never_posts(tmp_path: Path, route: str, failure: str) -> None:
+    calls = []
+    graphql = _graphql_only_runner(calls, graphql_read_ok=False)
+
+    def runner(cmd: list[str], **kwargs: Any) -> subprocess.CompletedProcess:
+        if cmd[:3] == ["gh", "api", "repos/owner/repo/commits/sha-50/statuses"]:
+            calls.append(cmd)
+            if failure == "timeout":
+                raise subprocess.TimeoutExpired(cmd, 60)
+            if failure == "oserror":
+                raise OSError("gh unavailable")
+            if failure == "subprocess":
+                raise subprocess.SubprocessError("gh failed")
+            bodies = {
+                "nonzero": "",
+                "invalid_json": "{",
+                "empty_body": "",
+                "wrong_shape": "{}",
+                "bad_row": "[null]",
+                "bad_state": json.dumps(
+                    [{"context": autoqueue.AUTOQUEUE_ADMISSION_CONTEXT, "state": []}]
+                ),
+            }
+            return subprocess.CompletedProcess(cmd, int(failure == "nonzero"), bodies[failure], "")
+        if cmd[:4] == ["gh", "api", "-X", "POST"]:
+            calls.append(cmd)
+            return subprocess.CompletedProcess(cmd, 0, "{}", "")
+        return graphql(cmd, **kwargs)
+
+    result = autoqueue.set_autoqueue_admission_status(
+        _admission_decision(),
+        repo="owner/repo",
+        repo_root=tmp_path,
+        runner=runner,
+        route=_graphql_route(rest_blocked=False) if route == "graphql" else "rest",
+    )
+    assert result is not None and result[0] is False
+    assert "rest_admission_status_read_failed" in result[1]
+    assert "Next action:" in result[1]
+    assert not any(cmd[:4] == ["gh", "api", "-X", "POST"] for cmd in calls)
+
+
+@pytest.mark.parametrize("present", [False, True])
+def test_admission_rest_fallback_distinguishes_present_and_absent(
+    tmp_path: Path, present: bool
+) -> None:
+    decision = _admission_decision()
+    state, description = autoqueue._admission_status_for(decision)
+    now = datetime(2026, 6, 2, 0, 5, tzinfo=UTC)
+    calls = []
+    graphql = _graphql_only_runner(calls, graphql_read_ok=False)
+
+    def runner(cmd: list[str], **kwargs: Any) -> subprocess.CompletedProcess:
+        if cmd[:3] == ["gh", "api", "repos/owner/repo/commits/sha-50/statuses"]:
+            calls.append(cmd)
+            items = [_existing_status(state, description, now.isoformat())] if present else []
+            return subprocess.CompletedProcess(cmd, 0, json.dumps(items), "")
+        if cmd[:4] == ["gh", "api", "-X", "POST"]:
+            calls.append(cmd)
+            return subprocess.CompletedProcess(cmd, 0, "{}", "")
+        return graphql(cmd, **kwargs)
+
+    result = autoqueue.set_autoqueue_admission_status(
+        decision,
+        repo="owner/repo",
+        repo_root=tmp_path,
+        runner=runner,
+        now=now,
+        route=_graphql_route(rest_blocked=False),
+    )
+    assert result is not None and result[0] is True
+    assert len([cmd for cmd in calls if cmd[:4] == ["gh", "api", "-X", "POST"]]) == (
+        0 if present else 1
+    )
+    if present:
+        assert result == (True, "unchanged")
+
+
+@pytest.mark.parametrize("route", ["rest", "graphql"])
+@pytest.mark.parametrize(
+    "action",
+    [
+        "queue",
+        "already_queued",
+        "enable_auto_merge",
+        "already_auto_merge_enabled",
+        "dequeue",
+        "disable_auto_merge",
+    ],
+)
+def test_reconciler_holds_on_admission_read_failure(
+    tmp_path: Path, monkeypatch: Any, action: str, route: str
+) -> None:
+    vault = _make_vault(tmp_path)
+    _write_task(vault, task_id="task-a", pr=42)
+    runner = _FakeRunner()
+    runner.open_prs = [_pr(42)]
+    original = runner.__call__
+    if route == "graphql":
+        fetch = autoqueue.fetch_open_prs
+
+        def graphql_route(**kwargs: Any) -> Any:
+            prs, _ = fetch(**kwargs)
+            return prs, _graphql_route(rest_blocked=False)
+
+        monkeypatch.setattr(autoqueue, "fetch_open_prs", graphql_route)
+
+    def failed_status_read(cmd: list[str], **kwargs: Any) -> subprocess.CompletedProcess:
+        if cmd[:3] == ["gh", "api", "repos/owner/repo/commits/sha-42/statuses"]:
+            runner.calls.append(cmd)
+            return subprocess.CompletedProcess(cmd, 1, "", "HTTP 503")
+        if cmd[:3] == ["gh", "api", "graphql"] and any("$ctx" in arg for arg in cmd):
+            runner.calls.append(cmd)
+            return subprocess.CompletedProcess(cmd, 1, "", "HTTP 503")
+        return original(cmd, **kwargs)
+
+    monkeypatch.setattr(autoqueue, "classify_pr", lambda *_a, **_k: _admission_decision(42, action))
+    report = autoqueue.run_reconciler(
+        repo="owner/repo",
+        repo_root=tmp_path,
+        vault_root=vault,
+        apply=True,
+        runner=failed_status_read,
+        auto_arm_ledger_path=tmp_path / "ledger.jsonl",
+    )
+    holds = [item for item in report["mutations"] if item["action"] == "hold"]
+    assert _admission_posts(runner) == []
+    if action in {"dequeue", "disable_auto_merge"}:
+        assert holds == []
+        cancellations = [item for item in report["mutations"] if item["action"] == action]
+        assert len(cancellations) == 1
+        # This fixture is not queued, so dequeue must still revalidate and refuse it.
+        assert cancellations[0]["ok"] is (action == "disable_auto_merge")
+        if action == "dequeue":
+            assert cancellations[0]["message"] == (
+                "pull_request_not_in_merge_queue:dequeue_revalidation_failed"
+            )
+    else:
+        assert len(holds) == 1
+        assert holds[0]["reasons"] == ["admission_status_read_failed"]
+        assert "Next action:" in holds[0]["message"]
+        assert not any(cmd[:3] == ["gh", "pr", "merge"] for cmd in runner.calls)
+        assert _graphql_mutations(runner.calls) == []
+
+
+@pytest.mark.parametrize("queued", [True, False], ids=["dequeue", "disable_auto_merge"])
+def test_do_not_merge_cancels_despite_admission_503(tmp_path: Path, queued: bool) -> None:
+    vault = _make_vault(tmp_path)
+    _write_task(vault, task_id="task-a", pr=42)
+    fake = _FakeRunner()
+    fake.open_prs = [_pr(42, labels=["do-not-merge"], auto_merge=True)]
+    fake.queued_prs = {42} if queued else set()
+    fake.head_statuses["sha-42"] = [
+        _existing_status("success", "previously admitted", datetime.now(UTC).isoformat())
+    ]
+
+    def runner(cmd: list[str], **kwargs: Any) -> subprocess.CompletedProcess:
+        if cmd[:3] == ["gh", "api", "repos/owner/repo/commits/sha-42/statuses"]:
+            fake.calls.append(cmd)
+            return subprocess.CompletedProcess(cmd, 1, "", "HTTP 503")
+        return fake(cmd, **kwargs)
+
+    report = autoqueue.run_reconciler(
+        repo="owner/repo",
+        repo_root=tmp_path,
+        vault_root=vault,
+        apply=True,
+        runner=runner,
+        auto_arm_ledger_path=tmp_path / "ledger.jsonl",
+    )
+    action = "dequeue" if queued else "disable_auto_merge"
+    assert report["decisions"][0]["action"] == action
+    assert any("do-not-merge" in reason for reason in report["decisions"][0]["reasons"])
+    cancellations = [item for item in report["mutations"] if item["action"] == action]
+    assert len(cancellations) == 1, report["mutations"]
+    assert cancellations[0]["ok"] is True
+    assert _admission_posts(fake) == []
+    if queued:
+        assert len(_graphql_mutations(fake.calls)) == 1
+        assert "dequeuePullRequest" in " ".join(_graphql_mutations(fake.calls)[0])
+        assert sum("mergeQueue{" in " ".join(cmd) for cmd in fake.calls) >= 2
+    else:
+        assert ["gh", "pr", "merge", "42", "--repo", "owner/repo", "--disable-auto"] in fake.calls
+
+
+@pytest.mark.parametrize("failure", ["timeout", "oserror", "invalid_json"])
+@pytest.mark.parametrize("route", ["graphql", "rest_fallback"])
+def test_release_evidence_distinguishes_transport_from_payload(
+    tmp_path: Path, caplog: pytest.LogCaptureFixture, failure: str, route: str
+) -> None:
+    def runner(cmd: list[str], **_: Any) -> subprocess.CompletedProcess:
+        if cmd[:5] == ["gh", "api", "--method", "GET", "-H"]:
+            return subprocess.CompletedProcess(cmd, 1, "", "HTTP 503")
+        if cmd[:4] == ["gh", "api", "-i", "rate_limit"]:
+            return subprocess.CompletedProcess(cmd, 0, "{}", "")
+        assert cmd[:3] == ["gh", "api", "graphql"]
+        if failure == "timeout":
+            raise subprocess.TimeoutExpired(cmd, 60)
+        if failure == "oserror":
+            raise OSError("gh unavailable")
+        return subprocess.CompletedProcess(cmd, 0, "not json", "")
+
+    ok, reason, checks = autoqueue.fetch_pr_release_evidence(
+        42,
+        repo="owner/repo",
+        repo_root=tmp_path,
+        runner=runner,
+        route=_graphql_route(rest_blocked=True) if route == "graphql" else None,
+    )
+    assert ok is False
+    assert checks == set()
+    if failure == "invalid_json":
+        assert reason == "invalid_pr_release_evidence_payload"
+    else:
+        assert reason.startswith("pr_release_evidence_transport_unavailable:"), reason
+        assert "Next action:" in reason
+        assert "gh pr view 42 --repo owner/repo --json headRefOid,statusCheckRollup" in reason
+        assert "retry" in reason
+        assert reason in caplog.text
+
+
+@pytest.mark.parametrize("boundary", ["release_head", "auto_arm"])
+def test_release_blocker_preserves_transport_diagnosis(tmp_path: Path, boundary: str) -> None:
+    vault = _make_vault(tmp_path)
+    _write_task(
+        vault,
+        task_id="transport-unavailable",
+        status="pr_open",
+        pr=42,
+        extra_frontmatter={
+            **_eligible_arm_extra(),
+            "release_authorized": boundary == "release_head",
+            "release_authorized_head_sha": "sha-42",
+            "stage": "S7_RELEASE" if boundary == "release_head" else "S6_IMPLEMENTATION",
+        },
+    )
+    task = autoqueue.load_task_notes(vault)[0]
+
+    def runner(cmd: list[str], **_: Any) -> subprocess.CompletedProcess:
+        if cmd[:4] == ["gh", "api", "-i", "rate_limit"]:
+            return subprocess.CompletedProcess(cmd, 0, "{}", "")
+        assert cmd[:3] == ["gh", "api", "graphql"]
+        raise OSError("gh unavailable")
+
+    kwargs = {
+        "repo": "owner/repo",
+        "repo_root": tmp_path,
+        "runner": runner,
+        "route": _graphql_route(rest_blocked=True),
+    }
+    if boundary == "release_head":
+        decision = autoqueue.Decision(pr=autoqueue._parse_pr(_pr(42)), task=task, action="queue")
+        reason = autoqueue._release_head_boundary_blocker(decision, **kwargs)
+    else:
+        ok, reason = autoqueue.arm_release_for_task(
+            task,
+            ledger_path=tmp_path / "ledger.jsonl",
+            pr_number=42,
+            expected_head_sha="sha-42",
+            **kwargs,
+        )
+        assert ok is False
+    assert reason.startswith(
+        "current_pr_checks_unreadable:pr_release_evidence_transport_unavailable:"
+    )
+    assert "Next action: retry `gh pr view 42 --repo owner/repo" in reason
+    assert not (tmp_path / "ledger.jsonl").exists()
+
+
+@pytest.mark.parametrize(
+    "repository, errors",
+    [
+        ({"id": "R_test", "object": None}, None),
+        ({"id": "R_test", "object": {}}, None),
+        ({"id": "R_test", "object": {"status": {}}}, None),
+        ({"id": "R_test", "object": {"status": {"context": []}}}, None),
+        ({"id": "R_test", "object": {"status": None}}, [{"message": "read failed"}]),
+    ],
+)
+def test_graphql_admission_failed_payload_is_not_absence(
+    tmp_path: Path, repository: Any, errors: Any
+) -> None:
+    calls = []
+    base = _graphql_only_runner(calls)
+
+    def runner(cmd: list[str], **kwargs: Any) -> subprocess.CompletedProcess:
+        if cmd[:3] == ["gh", "api", "graphql"]:
+            calls.append(cmd)
+            return subprocess.CompletedProcess(
+                cmd, 0, json.dumps({"data": {"repository": repository}, "errors": errors}), ""
+            )
+        return base(cmd, **kwargs)
+
+    result = autoqueue.set_autoqueue_admission_status(
+        _admission_decision(),
+        repo="owner/repo",
+        repo_root=tmp_path,
+        runner=runner,
+        route=_graphql_route(rest_blocked=True),
+    )
+    assert result is not None and result[0] is False
+    assert result[1].startswith("graphql_admission_status_read_failed")
+    assert "Next action:" in result[1]
+    assert _rest_status_calls(calls) == []
+
+
+@pytest.mark.parametrize("status", [None, {"context": None}])
+def test_graphql_admission_confirmed_absence_is_readable(tmp_path: Path, status: Any) -> None:
+    calls = []
+    base = _graphql_only_runner(calls)
+
+    def runner(cmd: list[str], **kwargs: Any) -> subprocess.CompletedProcess:
+        if cmd[:3] == ["gh", "api", "graphql"]:
+            return subprocess.CompletedProcess(
+                cmd,
+                0,
+                json.dumps(
+                    {"data": {"repository": {"id": "R_test", "object": {"status": status}}}}
+                ),
+                "",
+            )
+        return base(cmd, **kwargs)
+
+    assert autoqueue._latest_admission_status_graphql(
+        "sha-50",
+        repo="owner/repo",
+        repo_root=tmp_path,
+        runner=runner,
+    ) == ("R_test", None)
+
+
+@pytest.mark.parametrize("true_count", [None, 2])
+def test_missing_rest_count_cannot_certify_an_allowed_prefix(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, true_count: int | None
+) -> None:
+    """Drive transport mapping through the actual admission entry point."""
+    import github_pr_status
+
+    producers = autoqueue.load_machine_producers(_producer(tmp_path))
+    monkeypatch.setattr(autoqueue, "load_machine_producers", lambda: producers)
+    payload = _pr(9, files=["package.json"], author="app/dependabot")
+    pull = {**_FakeRunner._rest_pr(payload), "user": payload["author"]}
+    del pull["changed_files"]
+    calls = []
+
+    def runner(cmd: list[str], **_: Any) -> subprocess.CompletedProcess:
+        calls.append(cmd)
+        if cmd[:4] == ["gh", "api", "-i", "rate_limit"]:
+            return subprocess.CompletedProcess(cmd, 0, "{}", "")
+        if cmd[:3] == ["gh", "pr", "view"]:
+            assert "changedFiles" in cmd[-1].split(",")
+            if true_count is None:
+                return subprocess.CompletedProcess(cmd, 1, "", "GraphQL unavailable")
+            return subprocess.CompletedProcess(
+                cmd,
+                0,
+                json.dumps(
+                    {
+                        **payload,
+                        "url": "https://github.com/owner/repo/pull/9",
+                        "changedFiles": true_count,
+                    }
+                ),
+                "",
+            )
+        if cmd[6] == "repos/owner/repo/pulls/9":
+            return subprocess.CompletedProcess(cmd, 0, json.dumps(pull), "")
+        if cmd[6] == "repos/owner/repo/pulls/9/files":
+            return subprocess.CompletedProcess(cmd, 0, '[{"filename":"package.json"}]', "")
+        raise AssertionError(cmd)
+
+    row = github_pr_status._pull_status_row_from_rest(
+        pull,
+        repo="owner/repo",
+        repo_root=tmp_path,
+        runner=runner,
+        include_files=True,
+        include_status=False,
+    )
+    row["statusCheckRollup"] = payload["statusCheckRollup"]
+    pr = autoqueue._parse_pr(row)
+    assert pr is not None
+    decision = autoqueue.classify_pr(pr, tasks=[], queued_prs=set())
+    assert decision.action == "blocked", decision.reasons
+    assert row["changedFiles"] == true_count
+    if true_count is None:
+        assert any(
+            "independent changed-file count unavailable; fetch via GraphQL or re-run when the REST pool resets"
+            in reason
+            for reason in decision.reasons
+        ), decision.reasons
+    else:
+        assert decision.reasons == ("machine_author_file_list_incomplete:dependabot:1/2",)
+    assert any(cmd[:3] == ["gh", "pr", "view"] for cmd in calls)
+
+
+@pytest.mark.parametrize("gate_off", [False, True])
+@pytest.mark.parametrize("dossier_state", ["quorum", "missing", "stale", "wrong_pr", "no_quorum"])
+def test_review_required_producer_uses_independent_dossier_in_classify_pr(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, gate_off: bool, dossier_state: str
+) -> None:
+    """A producer's explicit review requirement needs actual current quorum evidence."""
+    if not gate_off:
+        monkeypatch.delenv("HAPAX_REVIEW_TEAM_GATE_OFF", raising=False)
+    producers = autoqueue.load_machine_producers(
+        _producer(tmp_path, login="app/codegen-bot", requires_review=True)
+    )
+    monkeypatch.setattr(autoqueue, "load_machine_producers", lambda: producers)
+    vault = _make_vault(tmp_path)
+    _write_task(vault, task_id="codegen-review", pr=42)
+    if dossier_state != "missing":
+        _write_review_dossier(
+            vault,
+            "codegen-review",
+            head_sha="old-head" if dossier_state == "stale" else "sha-42",
+            pr=43 if dossier_state == "wrong_pr" else 42,
+            verdict="no-quorum" if dossier_state == "no_quorum" else "quorum-accept",
+        )
+    pr = autoqueue._parse_pr(_pr(42, files=["package.json"], author="app/codegen-bot"))
+    assert pr is not None
+    decision = autoqueue.classify_pr(
+        pr,
+        tasks=autoqueue.load_task_notes(vault),
+        queued_prs=set(),
+    )
+    if dossier_state == "quorum":
+        assert decision.action == "queue", decision.reasons
+        assert decision.reasons == ()
+    else:
+        assert decision.action == "blocked", decision.reasons
+        assert any(
+            reason.startswith("machine_author_requires_review:codegen-bot:")
+            and "quorum-accept dossier" in reason
+            for reason in decision.reasons
+        ), decision.reasons
+
+
+def test_taskless_review_required_producer_names_the_dossier_remedy(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    producers = autoqueue.load_machine_producers(
+        _producer(tmp_path, login="app/codegen-bot", requires_review=True)
+    )
+    monkeypatch.setattr(autoqueue, "load_machine_producers", lambda: producers)
+    pr = autoqueue._parse_pr(_pr(42, files=["package.json"], author="app/codegen-bot"))
+    assert pr is not None
+    decision = autoqueue.classify_pr(pr, tasks=[], queued_prs=set())
+    assert decision.action == "blocked"
+    assert any(
+        "quorum-accept dossier" in reason and "link a cc-task" in reason
+        for reason in decision.reasons
+    ), decision.reasons

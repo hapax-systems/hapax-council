@@ -29,6 +29,7 @@ configuration incidents; the report records the override source.
 from __future__ import annotations
 
 import argparse
+import fnmatch
 import json
 import logging
 import os
@@ -53,9 +54,12 @@ import review_team  # noqa: E402
 from github_pr_status import (  # noqa: E402
     GRAPHQL_BACKOFF_RC,
     REST_INDETERMINATE_CHECK_NAME,
+    ListingRoute,
+    PrListingUnavailable,
     fetch_status_check_rollup_rest,
     get_pull_rest,
-    list_open_pr_statuses_rest,
+    list_open_pr_statuses,
+    listing_unavailable_detail,
     rest_merge_state_status,
     run_graphql_rate_aware,
 )
@@ -243,6 +247,185 @@ class PullRequest:
     auto_merge_enabled: bool
     auto_merge_method: str | None
     check_summary: CheckSummary
+    #: Login of the PR's author, or None when the transport did not report one. Used ONLY to
+    #: recognise a declared automated producer; absence is treated as "not a declared producer",
+    #: which is the safe direction — an unknown author gets the ordinary human requirements.
+    author_login: str | None = None
+
+
+MACHINE_AUTHORS_PATH = Path(__file__).resolve().parents[1] / "config" / "machine-authors.yaml"
+# `github_pr_status.list_pull_files_rest` stops after 3,000 entries. The PullRequest model does not
+# carry transport provenance, so a list at that boundary cannot prove it was not capped.
+MACHINE_AUTHOR_FILE_LIST_LIMIT = 3000
+
+
+def _author_login(item: Any) -> str | None:
+    """Login from either transport's author shape, or None.
+
+    REST reports `user: {login}` and `gh pr list --json author` reports `author: {login}`; the REST
+    mapper in `github_pr_status` normalises to `author`, and both are read here so a transport
+    change cannot silently drop the field and turn every producer into an unrecognised one.
+    """
+    for key in ("author", "user"):
+        value = item.get(key) if isinstance(item, dict) else None
+        if isinstance(value, dict) and value.get("login"):
+            return str(value["login"])
+    return None
+
+
+@dataclass(frozen=True)
+class MachineProducer:
+    """A declared automated producer and the scope it may change without a routed demand."""
+
+    logins: tuple[str, ...]
+    display_name: str
+    path_scope: tuple[str, ...]
+    requires_review: bool
+
+
+def load_machine_producers(path: Path | None = None) -> dict[str, MachineProducer]:
+    """Declared producers, keyed by EXACT login.
+
+    Keyed by equality on purpose. A prefix or substring match would admit `app/dependabot-evil` as
+    `app/dependabot`, and substring-for-judgement is a defect this estate has already removed from
+    three other gates. An unreadable or absent file yields NO producers, so the failure direction
+    is "everything keeps the ordinary human requirements" rather than a silent blanket exemption.
+
+    **One producer may declare several logins, because one principal has different names on
+    different transports.** Measured 2026-09-01: REST reports `dependabot[bot]` and
+    `gh pr list --json author` reports `app/dependabot` for the same bot on the same PRs. Under
+    strict equality a single-name declaration would recognise the producer on one transport and not
+    the other, so the exemption would apply or not depending on which pool had headroom.
+    """
+    source = path or MACHINE_AUTHORS_PATH
+    try:
+        raw = yaml.safe_load(source.read_text(encoding="utf-8")) or {}
+    except (OSError, yaml.YAMLError):
+        return {}
+    out: dict[str, MachineProducer] = {}
+    for entry in raw.get("producers") or []:
+        if not isinstance(entry, dict):
+            continue
+        declared = entry.get("logins")
+        if isinstance(declared, str):
+            declared = [declared]
+        logins = tuple(str(x).strip() for x in (declared or []) if str(x).strip())
+        scope = entry.get("path_scope")
+        # A producer with no declared scope is NOT a producer with unlimited scope. Skipping it
+        # leaves its PRs on the ordinary path, which is the direction that cannot over-admit.
+        if not logins or not isinstance(scope, list) or not scope:
+            continue
+        producer = MachineProducer(
+            logins=logins,
+            display_name=str(entry.get("display_name") or logins[0]),
+            path_scope=tuple(str(p) for p in scope if str(p).strip()),
+            requires_review=bool(entry.get("requires_review", True)),
+        )
+        for login in logins:
+            out[login] = producer
+    return out
+
+
+def _path_in_scope(path: str, patterns: tuple[str, ...]) -> bool:
+    """Does `path` fall inside a declared scope?
+
+    `.github/**` is never eligible for machine auto-admission. CI cannot certify a change to its
+    own acceptance predicate, and recursive manifest patterns such as `**/package.json` otherwise
+    match manifests inside repository-local actions.
+
+    `fnmatch` alone gets `**/x` wrong for a repository-root file: its `*` happily crosses `/`, but
+    `**/package.json` still requires the literal separator, so a top-level `package.json` does NOT
+    match and would be reported out-of-scope. Writing both `package.json` and `**/package.json` into
+    every declaration would push that trap onto whoever adds the next producer, so the recursive
+    form is given its documented meaning here instead: `**/x` matches `x` at any depth including
+    the root.
+    """
+    if path == ".github" or path.startswith(".github/"):
+        return False
+    for pattern in patterns:
+        if fnmatch.fnmatch(path, pattern):
+            return True
+        if pattern.startswith("**/") and fnmatch.fnmatch(path, pattern[3:]):
+            return True
+    return False
+
+
+def machine_producer_blockers(
+    producer: MachineProducer,
+    pr: PullRequest,
+    *,
+    has_quorum_accept_dossier: bool = False,
+) -> list[str]:
+    """Why this producer's PR is NOT admissible without a cc-task link. Empty means it is.
+
+    This REPLACES the task-link predicate rather than removing it. The task link's real job is to
+    bind a change to a routed demand and its acceptance record; a producer has a standing policy
+    instead of a routed demand, so its acceptance predicate is: it changed only what it is
+    authorised to change, and its checks pass. Required checks are evaluated elsewhere and are
+    untouched by this.
+    """
+    reasons: list[str] = []
+    if pr.files is None:
+        # Never admit on an unknown file set. "We could not read the diff" is not "the diff is in
+        # scope", and confusing the two is the bound-reported-as-a-verdict error that would make
+        # this exemption unbounded exactly when the transport is degraded.
+        reasons.append(f"machine_author_file_list_unavailable:{producer.display_name}")
+        return reasons
+    if pr.changed_files_count is None:
+        # The file list is only a complete authorization boundary when the transport also reports
+        # how many files the PR changes. Without that independent count, a capped response and a
+        # complete response are indistinguishable.
+        reasons.append(
+            f"machine_author_file_count_unavailable:{producer.display_name}:"
+            "independent changed-file count unavailable; fetch via GraphQL or re-run when the REST pool resets"
+        )
+        return reasons
+    if len(pr.files) != pr.changed_files_count:
+        # REST file enumeration is capped and parsing drops malformed entries. Either can leave a
+        # plausible-looking allowed subset, so any disagreement refuses instead of applying scope
+        # policy to evidence known to be incomplete.
+        reasons.append(
+            f"machine_author_file_list_incomplete:{producer.display_name}:"
+            f"{len(pr.files)}/{pr.changed_files_count}"
+        )
+        return reasons
+    if len(pr.files) >= MACHINE_AUTHOR_FILE_LIST_LIMIT:
+        reasons.append(
+            f"machine_author_file_list_at_limit:{producer.display_name}:"
+            f"{MACHINE_AUTHOR_FILE_LIST_LIMIT}"
+        )
+        return reasons
+    outside = sorted(path for path in pr.files if not _path_in_scope(path, producer.path_scope))
+    if outside:
+        reasons.append(
+            f"machine_author_out_of_scope:{producer.display_name}:" + ",".join(outside[:5])
+        )
+    # **EVERY check, not the required subset.** The ordinary path blocks only on `required_checks`
+    # (here: lint/test/typecheck/web-build/vscode-build), which is right for a human PR whose
+    # acceptance record lives in its task. A machine PR has no such record — CI *is* its entire
+    # acceptance predicate — so filtering to a subset would admit exactly the failures that matter.
+    # Measured 2026-09-01 against the live queue: #4515 was failing `egress-boundary-pin` and
+    # `all-green`, #4527 was failing `rust-check` on a Cargo bump, and none of the three is a
+    # required check, so both reported no blockers and would have merged red. Found only by running
+    # the policy against reality; the unit tests were all green.
+    if pr.check_summary.failed:
+        reasons.append(
+            f"machine_author_checks_failing:{producer.display_name}:"
+            + ",".join(sorted(pr.check_summary.failed)[:5])
+        )
+    if pr.check_summary.pending:
+        # Not yet green is not green. Blocking here only delays; admitting here merges unverified.
+        reasons.append(
+            f"machine_author_checks_pending:{producer.display_name}:"
+            + ",".join(sorted(pr.check_summary.pending)[:5])
+        )
+    if producer.requires_review and not has_quorum_accept_dossier:
+        reasons.append(
+            f"machine_author_requires_review:{producer.display_name}:"
+            "missing valid quorum-accept dossier; link a cc-task and run "
+            "scripts/cc-pr-review-dispatch.py for the current PR head"
+        )
+    return reasons
 
 
 @dataclass(frozen=True)
@@ -948,6 +1131,7 @@ def _parse_pr(item: dict[str, Any]) -> PullRequest | None:
         auto_merge_enabled=bool(item.get("autoMergeRequest")),
         auto_merge_method=_auto_merge_request_method(item.get("autoMergeRequest")),
         check_summary=summarize_checks(item.get("statusCheckRollup") or []),
+        author_login=_author_login(item),
     )
 
 
@@ -957,29 +1141,54 @@ def fetch_open_prs(
     repo_root: Path | None = None,
     limit: int = 100,
     runner: Any = None,
-) -> list[PullRequest]:
+) -> tuple[list[PullRequest], ListingRoute | None]:
+    """Open PRs plus the cycle's transport decision.
+
+    The decision is returned rather than left for the caller to infer from row stamps: an
+    empty GraphQL-routed listing has no rows to inspect, so inference silently read "rest".
+    ``None`` means the listing was unavailable and the cycle is skipping.
+    """
     runner = runner or subprocess.run
     repo_root = repo_root or default_repo_root()
-    raw = list_open_pr_statuses_rest(
-        repo=repo,
-        repo_root=repo_root,
-        runner=runner,
-        limit=limit,
-        include_files=True,
-        include_review_decision=True,
-    )
+    try:
+        raw, route = list_open_pr_statuses(
+            repo=repo,
+            repo_root=repo_root,
+            runner=runner,
+            limit=limit,
+            include_files=True,
+            include_review_decision=True,
+        )
+    except PrListingUnavailable as exc:
+        # Skip this cycle rather than spending a listing plus per-PR hydration into
+        # guaranteed 403s. Distinguished from the empty-scan warning below because the
+        # two mean different things: this one is "we did not look", not "nothing found".
+        LOG.warning(
+            "open PR scan skipped: %s%s",
+            exc.reason,
+            listing_unavailable_detail(exc),
+        )
+        return [], None
     if not raw:
-        LOG.warning("REST open PR scan returned no rows")
-        return []
+        # A successful listing with zero rows is a genuinely quiet estate, NOT an unavailable
+        # one. Returning `None` here made the caller skip the cycle on a correct measurement —
+        # the mirror of the defect this route object exists to fix, introduced by fixing it.
+        LOG.info("open PR scan returned no rows (estate is quiet, listing succeeded)")
+        return [], route
     prs: list[PullRequest] = []
     for item in raw:
         if isinstance(item, dict):
             rest_pr = None
-            try:
-                number = int(item.get("number"))
-                rest_pr = get_pull_rest(number, repo=repo, repo_root=repo_root, runner=runner)
-            except (TypeError, ValueError):
-                rest_pr = None
+            # Rows fetched over GraphQL already carry mergeStateStatus and a per-PR rollup, so
+            # re-hydrating them through REST would spend the pool the routing exists to spare —
+            # one call moved and nothing saved, which is what the review found. Only REST rows
+            # need this pass.
+            if item.get("transport") != "graphql":
+                try:
+                    number = int(item.get("number"))
+                    rest_pr = get_pull_rest(number, repo=repo, repo_root=repo_root, runner=runner)
+                except (TypeError, ValueError):
+                    rest_pr = None
             item["mergeStateStatus"] = (
                 rest_merge_state_status(rest_pr)
                 if rest_pr is not None
@@ -995,6 +1204,14 @@ def fetch_open_prs(
                 and not _rollup_is_rest_indeterminate(fallback_rollup)
             ):
                 item["statusCheckRollup"] = fallback_rollup
+            elif item.get("transport") == "graphql":
+                # A GraphQL row already made its own per-PR rollup call. An empty result here
+                # means no checks or an unfetchable rollup, and `[]` is the fail-closed value
+                # either way — it reads downstream as "checks unknown / not green". Reaching
+                # for REST would spend the exhausted pool to reach the same verdict.
+                item["statusCheckRollup"] = (
+                    fallback_rollup if isinstance(fallback_rollup, list) else []
+                )
             else:
                 item["statusCheckRollup"] = _fetch_status_check_rollup(
                     item.get("number"),
@@ -1006,7 +1223,7 @@ def fetch_open_prs(
             pr = _parse_pr(item)
             if pr is not None:
                 prs.append(pr)
-    return prs
+    return prs, route
 
 
 def _fetch_status_check_rollup(
@@ -1083,23 +1300,33 @@ def _fetch_status_check_rollup_graphql(
     query = (
         "query($owner:String!,$repo:String!,$number:Int!){repository(owner:$owner,name:$repo){"
         "pullRequest(number:$number){headRefOid commits(last:1){nodes{commit{oid "
-        "statusCheckRollup{contexts(first:100){nodes{__typename ... on CheckRun{name status "
+        "statusCheckRollup{contexts(first:100){totalCount nodes{__typename ... on CheckRun{name status "
         "conclusion completedAt startedAt} ... on StatusContext{context state createdAt}}}}}}}}}}"
     )
-    proc = run_graphql_rate_aware(
-        [
-            "-f",
-            f"query={query}",
-            "-f",
-            f"owner={owner}",
-            "-f",
-            f"repo={name}",
-            "-F",
-            f"number={pr_number}",
-        ],
-        repo_root=repo_root,
-        runner=runner,
-    )
+    try:
+        proc = run_graphql_rate_aware(
+            [
+                "-f",
+                f"query={query}",
+                "-f",
+                f"owner={owner}",
+                "-f",
+                f"repo={name}",
+                "-F",
+                f"number={pr_number}",
+            ],
+            repo_root=repo_root,
+            runner=runner,
+        )
+    except (subprocess.TimeoutExpired, OSError) as exc:
+        reason = (
+            f"pr_release_evidence_transport_unavailable:{type(exc).__name__}. "
+            f"Next action: retry `gh pr view {pr_number} --repo {repo} "
+            "--json headRefOid,statusCheckRollup`; if it still fails, check `gh auth status` "
+            "and `uv run python scripts/github_pr_status.py rate` before retrying the cycle."
+        )
+        LOG.warning("%s", reason)
+        return False, reason, []
     if proc.returncode != 0:
         return False, "invalid_pr_release_evidence_payload", []
     try:
@@ -1122,12 +1349,13 @@ def _fetch_status_check_rollup_graphql(
     commit = None
     if commit_nodes and isinstance(commit_nodes[-1], dict):
         commit = commit_nodes[-1].get("commit")
-    rollup = (
-        commit.get("statusCheckRollup", {}).get("contexts", {}).get("nodes")
-        if isinstance(commit, dict)
-        else None
-    )
-    if not isinstance(rollup, list):
+    status_rollup = commit.get("statusCheckRollup") if isinstance(commit, dict) else None
+    contexts = status_rollup.get("contexts") if isinstance(status_rollup, dict) else None
+    rollup = contexts.get("nodes") if isinstance(contexts, dict) else None
+    total = contexts.get("totalCount") if isinstance(contexts, dict) else None
+    # A later failed run may sit outside this page. Partial checks cannot verify release
+    # mitigations; the caller can retry via REST only when that pool is eligible.
+    if not isinstance(rollup, list) or type(total) is not int or len(rollup) != total:
         return False, "invalid_status_check_rollup", []
     return True, sha, rollup
 
@@ -1138,9 +1366,25 @@ def fetch_pr_release_evidence(
     repo: str = DEFAULT_REPO,
     repo_root: Path | None = None,
     runner: Any = None,
+    route: ListingRoute | None = None,
 ) -> tuple[bool, str, set[str]]:
+    """Release evidence for one PR, on the transport the cycle chose.
+
+    An apply cycle reaches this per actionable PR, so beginning unconditionally on REST meant
+    a cycle routed AWAY from REST still spent it N times before falling back. The GraphQL path
+    already existed here as a post-failure fallback; when the cycle measured REST below its
+    floor it becomes the primary instead.
+    """
     runner = runner or subprocess.run
     repo_root = repo_root or default_repo_root()
+    if route is not None and route.transport == "graphql":
+        primary = _fetch_pr_release_evidence_graphql(
+            pr_number, repo=repo, repo_root=repo_root, runner=runner
+        )
+        if primary[0] or route.rest_blocked:
+            # A measured-empty REST pool is not an eligible fallback, so a GraphQL failure is
+            # the answer rather than a reason to spend REST anyway.
+            return primary
     payload = get_pull_rest(pr_number, repo=repo, repo_root=repo_root, runner=runner)
     if not isinstance(payload, dict):
         fallback = _fetch_pr_release_evidence_graphql(
@@ -1149,7 +1393,9 @@ def fetch_pr_release_evidence(
             repo_root=repo_root,
             runner=runner,
         )
-        return fallback if fallback[0] else (False, "invalid_pr_release_evidence_payload", set())
+        if fallback[0] or fallback[1].startswith("pr_release_evidence_transport_unavailable:"):
+            return fallback
+        return False, "invalid_pr_release_evidence_payload", set()
     head = payload.get("head") if isinstance(payload.get("head"), dict) else {}
     sha = _scalar(head.get("sha"))
     if not sha:
@@ -1159,7 +1405,9 @@ def fetch_pr_release_evidence(
             repo_root=repo_root,
             runner=runner,
         )
-        return fallback if fallback[0] else (False, "missing_head_sha", set())
+        if fallback[0] or fallback[1].startswith("pr_release_evidence_transport_unavailable:"):
+            return fallback
+        return False, "missing_head_sha", set()
     rollup = _fetch_status_check_rollup(
         pr_number,
         head_sha=sha,
@@ -1701,14 +1949,42 @@ def classify_pr(
     matches = _matching_tasks(pr, tasks)
     matched_tasks = tuple(matches)
     task: TaskNote | None = matches[0] if len(matches) == 1 else None
-    if not matches:
-        if TASK_NOTE_PARSE_FAILURES:
-            broken = ",".join(name for name, _ in TASK_NOTE_PARSE_FAILURES[:4])
-            reasons.append(
-                f"missing_cc_task_link (NOTE: {len(TASK_NOTE_PARSE_FAILURES)} unparseable task note(s): {broken} — fix or run scripts/cc-task-lint)"
+    producer = load_machine_producers().get(pr.author_login or "")
+    if producer is not None and (not matches or producer.requires_review):
+        # Taskless producers use their standing policy. Producers requiring review use the
+        # existing task-keyed dossier path, validated even when the ordinary task gate is off.
+        # A missing task/dossier cannot be turned into quorum by an empty all() or a bypass.
+        has_quorum_accept_dossier = (
+            bool(matches)
+            and producer.requires_review
+            and all(
+                not _review_team_quorum_evidence_blockers(
+                    matched_task,
+                    matched_task.frontmatter,
+                    pr_number=pr.number,
+                    pr_head_sha=pr.head_sha,
+                    changed_files=pr.files,
+                    changed_file_count=pr.changed_files_count,
+                )
+                for matched_task in matches
             )
-        else:
-            reasons.append("missing_cc_task_link")
+        )
+        reasons.extend(
+            machine_producer_blockers(
+                producer, pr, has_quorum_accept_dossier=has_quorum_accept_dossier
+            )
+        )
+    if not matches:
+        # Declared producers have a standing policy instead of a routed demand. Its checks
+        # above replace the task-link predicate; required CI checks still apply to every PR.
+        if producer is None:
+            if TASK_NOTE_PARSE_FAILURES:
+                broken = ",".join(name for name, _ in TASK_NOTE_PARSE_FAILURES[:4])
+                reasons.append(
+                    f"missing_cc_task_link (NOTE: {len(TASK_NOTE_PARSE_FAILURES)} unparseable task note(s): {broken} — fix or run scripts/cc-task-lint)"
+                )
+            else:
+                reasons.append("missing_cc_task_link")
     else:
         for matched_task in matches:
             blockers = _task_blockers(
@@ -1884,6 +2160,7 @@ def merge_pr(
     repo_root: Path | None = None,
     runner: Any = None,
     require_route_metadata: bool = True,
+    route: ListingRoute | None = None,
 ) -> tuple[bool, str]:
     runner = runner or subprocess.run
     repo_root = repo_root or default_repo_root()
@@ -1929,6 +2206,9 @@ def merge_pr(
                 repo=repo,
                 repo_root=repo_root,
                 runner=runner,
+                # The second call site. Threading only the first left the auto-arm
+                # revalidation re-entering REST on a cycle routed away from it.
+                route=route,
             )
             if boundary_blocker:
                 return False, boundary_blocker
@@ -2137,6 +2417,7 @@ def _release_head_boundary_blocker(
     repo_root: Path | None = None,
     runner: Any = None,
     release_authorization_waivers: list[str] | None = None,
+    route: ListingRoute | None = None,
 ) -> str | None:
     if decision.action not in {
         "queue",
@@ -2190,9 +2471,12 @@ def _release_head_boundary_blocker(
         repo=repo,
         repo_root=repo_root,
         runner=runner,
+        route=route,
     )
     if not evidence_ok:
-        if current_head_sha in {
+        if current_head_sha.startswith(
+            "pr_release_evidence_transport_unavailable:"
+        ) or current_head_sha in {
             "invalid_pr_release_evidence_payload",
             "invalid_status_check_rollup",
         }:
@@ -2313,6 +2597,7 @@ def arm_release_for_task(
     repo: str = DEFAULT_REPO,
     repo_root: Path | None = None,
     runner: Any = None,
+    route: ListingRoute | None = None,
 ) -> tuple[bool, str]:
     """Authorize release for a stranded task on behalf of a dead lane (system).
 
@@ -2358,9 +2643,16 @@ def arm_release_for_task(
             repo=repo,
             repo_root=repo_root,
             runner=runner,
+            # The THIRD call site. `_release_head_boundary_blocker` and `merge_pr` were threaded
+            # two commits ago and this one was not, so auto-arm still revalidated a head over
+            # REST on a cycle routed away from it. Enumerating the callers would have found all
+            # three at once; fixing the two the review named found two.
+            route=route,
         )
         if not evidence_ok:
-            if current_head_sha in {
+            if current_head_sha.startswith(
+                "pr_release_evidence_transport_unavailable:"
+            ) or current_head_sha in {
                 "invalid_pr_release_evidence_payload",
                 "invalid_status_check_rollup",
             }:
@@ -2456,37 +2748,142 @@ def _parse_status_created_at(value: Any) -> datetime | None:
     return parsed.astimezone(UTC)
 
 
+@dataclass(frozen=True)
+class AdmissionStatusReadFailed:
+    reason: str
+
+
 def _latest_admission_status(
     head_sha: str,
     *,
     repo: str,
     repo_root: Path,
     runner: Any,
-) -> tuple[str, str, datetime | None] | None:
+) -> tuple[str, str, datetime | None] | None | AdmissionStatusReadFailed:
     """The most recent autoqueue-admission (state, description, created_at) on
-    ``head_sha``, or None when absent/unreadable. Read-before-write lets the
+    ``head_sha``, None when absent, or AdmissionStatusReadFailed when unreadable.
+    Read-before-write lets the
     reconciler POST a fresh status only when it actually changed or is about to
     go stale: GitHub caps statuses at 1000 per SHA+context, and the old
     unconditional POST burned that cap into a 422 self-DoS that made the apply
     loop skip the queue mutation."""
     cmd = ["gh", "api", f"repos/{repo}/commits/{head_sha}/statuses"]
-    proc = runner(cmd, cwd=str(repo_root), capture_output=True, text=True, check=False, timeout=60)
-    if getattr(proc, "returncode", 1) != 0:
-        return None
     try:
-        items = json.loads(proc.stdout or "[]")
+        proc = runner(
+            cmd, cwd=str(repo_root), capture_output=True, text=True, check=False, timeout=60
+        )
+    except (subprocess.SubprocessError, OSError) as exc:
+        return AdmissionStatusReadFailed(f"query_unavailable:{type(exc).__name__}")
+    if getattr(proc, "returncode", 1) != 0:
+        return AdmissionStatusReadFailed(f"query_failed:rc={proc.returncode}")
+    try:
+        items = json.loads(proc.stdout)
     except (json.JSONDecodeError, TypeError):
-        return None
+        return AdmissionStatusReadFailed("invalid_json")
     if not isinstance(items, list):
-        return None
+        return AdmissionStatusReadFailed("expected_status_list")
     for item in items:  # the statuses API returns most-recent-first
-        if isinstance(item, dict) and item.get("context") == AUTOQUEUE_ADMISSION_CONTEXT:
+        if not isinstance(item, dict) or not isinstance(item.get("context"), str):
+            return AdmissionStatusReadFailed("malformed_status_row")
+        if item.get("context") == AUTOQUEUE_ADMISSION_CONTEXT:
+            if not isinstance(item.get("state"), str) or item["state"] not in {
+                "pending",
+                "success",
+                "failure",
+                "error",
+            }:
+                return AdmissionStatusReadFailed("malformed_status_state")
             return (
                 str(item.get("state") or ""),
                 str(item.get("description") or ""),
                 _parse_status_created_at(item.get("created_at")),
             )
     return None
+
+
+def _latest_admission_status_graphql(
+    head_sha: str,
+    *,
+    repo: str,
+    repo_root: Path,
+    runner: Any,
+) -> tuple[str | None, tuple[str, str, datetime | None] | None]:
+    """GraphQL twin of ``_latest_admission_status`` for a cycle routed off REST.
+
+    Returns ``(repository_node_id, current_status)``. The node id proves the read reached the
+    repository; commit statuses have no GraphQL mutation (GitHub's schema defines none), so the
+    write itself stays on REST and is deferred while that pool is below its floor. ``(None,
+    None)`` means the pool refused or the payload was not the shape asked for — the caller then
+    either uses independently eligible REST or fails closed when REST is measured blocked.
+    """
+    owner, name = repo.split("/", 1)
+    query = (
+        "query($owner:String!,$repo:String!,$sha:GitObjectID!,$ctx:String!){"
+        "repository(owner:$owner,name:$repo){id object(oid:$sha){... on Commit{"
+        "status{context(name:$ctx){state description createdAt}}}}}}"
+    )
+    try:
+        proc = run_graphql_rate_aware(
+            [
+                "-f",
+                f"query={query}",
+                "-f",
+                f"owner={owner}",
+                "-f",
+                f"repo={name}",
+                "-f",
+                f"sha={head_sha}",
+                "-f",
+                f"ctx={AUTOQUEUE_ADMISSION_CONTEXT}",
+            ],
+            repo_root=repo_root,
+            runner=runner,
+        )
+    except (subprocess.SubprocessError, OSError) as exc:
+        LOG.warning(
+            "GraphQL admission status read unavailable for %s: %s", head_sha, type(exc).__name__
+        )
+        return None, None
+    if proc.returncode != 0:
+        return None, None
+    try:
+        payload = json.loads(proc.stdout or "{}")
+    except (json.JSONDecodeError, TypeError):
+        return None, None
+    if not isinstance(payload, dict) or payload.get("errors"):
+        return None, None
+    data = payload.get("data")
+    repository = data.get("repository") if isinstance(data, dict) else None
+    if not isinstance(repository, dict):
+        return None, None
+    repository_id = _scalar(repository.get("id"))
+    if not repository_id:
+        return None, None
+    commit = repository.get("object")
+    if not isinstance(commit, dict) or "status" not in commit:
+        return None, None
+    status = commit["status"]
+    if status is None:
+        return repository_id, None  # readable commit with no statuses
+    if not isinstance(status, dict) or "context" not in status:
+        return None, None
+    context = status["context"]
+    if context is None:
+        return repository_id, None  # readable status with no context of ours
+    if not isinstance(context, dict):
+        return None, None
+    if not isinstance(context.get("state"), str) or context["state"] not in {
+        "PENDING",
+        "SUCCESS",
+        "FAILURE",
+        "ERROR",
+    }:
+        return None, None
+    return repository_id, (
+        str(context.get("state") or "").lower(),  # GraphQL enums are upper-case; REST is lower
+        str(context.get("description") or ""),
+        _parse_status_created_at(context.get("createdAt")),
+    )
 
 
 def set_autoqueue_admission_status(
@@ -2497,6 +2894,7 @@ def set_autoqueue_admission_status(
     runner: Any = None,
     now: datetime | None = None,
     force_fresh_success: bool = False,
+    route: ListingRoute | str | None = None,
 ) -> tuple[bool, str] | None:
     """Write the server-visible autoqueue admission proof for a PR head SHA.
 
@@ -2514,9 +2912,51 @@ def set_autoqueue_admission_status(
     if not decision.pr.head_sha:
         return False, "missing_head_sha"
     state, description = status
-    current = _latest_admission_status(
-        decision.pr.head_sha, repo=repo, repo_root=repo_root, runner=runner
-    )
+    # **Stay off a measured-blocked pool.** When the listing was routed to GraphQL because REST
+    # is below its floor, an unguarded REST GET here (and the REST POST after it) fails, and the
+    # apply loop then skips the queue mutation. But a GraphQL route may also mean only that
+    # GraphQL has proportionally more headroom. In that case REST remains an eligible fallback
+    # if the preferred GraphQL read fails.
+    repository_id: str | None = None
+    # The cycle's route arrives as the ListingRoute the listing chose (transport, whether REST is
+    # below its floor, and why) — every caller passes `route=listing_route` — or as a bare
+    # transport string. Until round 9 of #4610 this compared the OBJECT against "graphql", which
+    # never matched, so every cycle stayed on REST however empty that pool was measured to be.
+    if isinstance(route, ListingRoute):
+        transport = route.transport
+        rest_blocked = route.rest_blocked
+        route_reason = route.reason
+    else:
+        transport = route or "rest"
+        # Legacy GraphQL callers supplied no independent REST measurement. Keep their
+        # conservative no-REST contract; measured fallback eligibility requires ListingRoute.
+        rest_blocked = transport == "graphql"
+        route_reason = ""
+    if transport == "graphql":
+        repository_id, current = _latest_admission_status_graphql(
+            decision.pr.head_sha, repo=repo, repo_root=repo_root, runner=runner
+        )
+        if repository_id is None:
+            if rest_blocked:
+                return (
+                    False,
+                    "graphql_admission_status_read_failed. Next action: retry the read next "
+                    "cycle when GraphQL recovers or `github_pr_status.py rate` shows REST headroom.",
+                )
+            current = _latest_admission_status(
+                decision.pr.head_sha, repo=repo, repo_root=repo_root, runner=runner
+            )
+    else:
+        current = _latest_admission_status(
+            decision.pr.head_sha, repo=repo, repo_root=repo_root, runner=runner
+        )
+    if isinstance(current, AdmissionStatusReadFailed):
+        return (
+            False,
+            f"rest_admission_status_read_failed:{current.reason}. Next action: retry the "
+            "admission read next cycle; if it persists, check `gh auth status` and "
+            "`github_pr_status.py rate` before retrying.",
+        )
     if current is not None:
         cur_state, cur_description, cur_created = current
         if cur_state == state == "failure":
@@ -2533,6 +2973,17 @@ def set_autoqueue_admission_status(
         )
         if unchanged and fresh and not (force_fresh_success and state == "success"):
             return True, "unchanged"
+    if rest_blocked:
+        # Commit statuses have no GraphQL mutation — GitHub's schema defines none, and the
+        # `createCommitStatus` call this branch used to make was invented (review finding on
+        # #4610, round 9). The write waits for the REST pool to clear its floor. The message
+        # says "rate limit" so `_admission_status_write_deferral_class` files it as a
+        # transport-window deferral, not as a verdict on the pull request.
+        return (
+            False,
+            "admission status write deferred: GitHub commit statuses are REST-only and the core "
+            f"REST pool is below its floor (rate limit; {route_reason or 'no reason recorded'})",
+        )
     cmd = [
         "gh",
         "api",
@@ -2605,6 +3056,10 @@ def _admission_status_write_deferral_class(message: str) -> str | None:
     these documented transport responses keeps the fail-closed path.
     """
     lowered = (message or "").lower()
+    if lowered.startswith(
+        ("rest_admission_status_read_failed", "graphql_admission_status_read_failed")
+    ):
+        return "admission_status_read_failed"
     if "rate limit" in lowered or '"status": "429"' in lowered or "http 429" in lowered:
         return "github_rate_limit"
     # Any 5xx, not a list of the usual ones (review finding on #4627, round 3): a 501 or a 599
@@ -2635,6 +3090,7 @@ def _release_auto_arm_fail_closed_mutations(
     repo_root: Path,
     runner: Any,
     now: datetime,
+    route: str | None = None,
 ) -> list[dict[str, Any]]:
     fail_decision = _release_auto_arm_fail_closed_decision(
         decision,
@@ -2652,6 +3108,7 @@ def _release_auto_arm_fail_closed_mutations(
         repo_root=repo_root,
         runner=runner,
         now=now,
+        route=route,
     )
     if fail_status_result is not None:
         if fail_status is None:
@@ -2839,7 +3296,35 @@ def run_reconciler(
             repo_root=repo_root,
             runner=runner,
         )
-    prs = fetch_open_prs(repo=repo, repo_root=repo_root, limit=limit, runner=runner)
+    prs, listing_route = fetch_open_prs(repo=repo, repo_root=repo_root, limit=limit, runner=runner)
+    if listing_route is None:
+        # The listing was unavailable, which is NOT "no open PRs" — and returning ([], None)
+        # made the two look identical to everything downstream. This is the defect the routing
+        # change itself introduced: `fetch_open_prs` grew a second return value, and the
+        # reconciler kept reading only the first. A cycle that could not look must skip, or it
+        # reports an empty estate and every decision below it is made on absent evidence.
+        LOG.warning(
+            "autoqueue reconcile skipped: open-PR listing unavailable "
+            "(this is 'we did not look', not 'nothing to do'). Next action: none if the next "
+            "cycle proceeds; if it repeats, run `github_pr_status.py rate` and `gh auth status` "
+            "— a listing that fails with both pools healthy is not a quota condition."
+        )
+        report = {
+            "repo": repo,
+            "apply": apply,
+            "skipped": True,
+            "reason": "open_pr_listing_unavailable",
+            "detail": (
+                "both rate pools measured below their floors, or the listing itself failed; "
+                "no PR decisions attempted"
+            ),
+        }
+        return _finalize_reconciler_report(
+            report,
+            report_path=report_path,
+            admission_governor_path=admission_governor_path,
+            now=now,
+        )
     preliminary_decisions = [
         classify_pr(
             pr,
@@ -2954,6 +3439,7 @@ def run_reconciler(
                         head_ref=decision.pr.head_ref,
                         expected_head_sha=decision.pr.head_sha,
                         require_route_metadata=require_route_metadata,
+                        route=listing_route,
                         changed_files=decision.pr.files,
                         changed_file_count=decision.pr.changed_files_count,
                         repo=repo,
@@ -2978,6 +3464,7 @@ def run_reconciler(
                                 repo_root=repo_root,
                                 runner=runner,
                                 now=now,
+                                route=listing_route,
                             )
                         )
                         continue
@@ -2999,6 +3486,7 @@ def run_reconciler(
                     repo_root=repo_root,
                     runner=runner,
                     release_authorization_waivers=release_authorization_waivers,
+                    route=listing_route,
                 )
                 if head_blocker is not None:
                     mutation_results.append(
@@ -3018,6 +3506,7 @@ def run_reconciler(
                             repo_root=repo_root,
                             runner=runner,
                             now=now,
+                            route=listing_route,
                         )
                     )
                     continue
@@ -3037,7 +3526,27 @@ def run_reconciler(
                 runner=runner,
                 now=now,
                 force_fresh_success=_decision_is_release_head_guard_subject(decision),
+                route=listing_route,
             )
+            # An unreadable status prevents new admission, but a known blocker still requires
+            # cancellation. merge_pr retains the existing dequeue revalidation below.
+            if (
+                decision.action not in {"dequeue", "disable_auto_merge"}
+                and status_result is not None
+                and not status_result[0]
+                and _admission_status_write_deferral_class(status_result[1])
+                == "admission_status_read_failed"
+            ):
+                mutation_results.append(
+                    {
+                        **decision.as_dict(),
+                        "action": "hold",
+                        "ok": True,
+                        "reasons": ["admission_status_read_failed"],
+                        "message": status_result[1],
+                    }
+                )
+                continue
             if decision.action not in {
                 "queue",
                 "enable_auto_merge",
@@ -3085,6 +3594,7 @@ def run_reconciler(
                                     repo_root=repo_root,
                                     runner=runner,
                                     now=now,
+                                    route=listing_route,
                                 )
                             )
                 continue
@@ -3115,6 +3625,7 @@ def run_reconciler(
                 repo_root=repo_root,
                 runner=runner,
                 require_route_metadata=require_route_metadata,
+                route=listing_route,
             )
             result = {
                 **decision.as_dict(),
@@ -3145,6 +3656,7 @@ def run_reconciler(
                         repo_root=repo_root,
                         runner=runner,
                         now=now,
+                        route=listing_route,
                     )
                 )
 
