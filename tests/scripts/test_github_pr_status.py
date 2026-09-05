@@ -593,6 +593,7 @@ def test_open_pr_status_snapshot_does_not_hydrate_list_rows_by_default(tmp_path:
                                     "title": "REST PR",
                                     "body": "body",
                                     "head": {"ref": "feat/rest", "sha": "abc123"},
+                                    "base": {"ref": "release", "repo": {"default_branch": "main"}},
                                     "draft": True,
                                     "state": "open",
                                     "merged_at": None,
@@ -617,11 +618,14 @@ def test_open_pr_status_snapshot_does_not_hydrate_list_rows_by_default(tmp_path:
     )
 
     assert rows[0]["state"] == "OPEN"
+    assert rows[0]["baseRefName"] == "release"
+    assert rows[0]["baseRepoDefaultBranch"] == "main"
     assert rows[0]["isDraft"] is True
     assert rows[0]["mergedAt"] is None
     assert rows[0]["updatedAt"] == "2026-07-05T15:00:00Z"
     assert rows[0]["url"] == "https://github.example/owner/repo/pull/9"
     assert not any(call[6] == "repos/owner/repo/pulls/9" for call in runner.calls)
+    assert len(runner.calls) == 1
 
 
 def test_open_pr_status_snapshot_hydrates_list_rows_when_requested(tmp_path: Path) -> None:
@@ -640,6 +644,7 @@ def test_open_pr_status_snapshot_hydrates_list_rows_when_requested(tmp_path: Pat
                                     "number": 9,
                                     "title": "REST PR",
                                     "head": {"ref": "feat/rest", "sha": "abc123"},
+                                    "base": {"ref": "release", "repo": {"default_branch": "main"}},
                                     "draft": False,
                                     "state": "open",
                                     "updated_at": "2026-07-05T15:00:00Z",
@@ -678,4 +683,6 @@ def test_open_pr_status_snapshot_hydrates_list_rows_when_requested(tmp_path: Pat
     )
 
     assert rows[0]["mergeStateStatus"] == "BEHIND"
+    assert rows[0]["baseRefName"] == "release"
+    assert rows[0]["baseRepoDefaultBranch"] == "main"
     assert any(call[6] == "repos/owner/repo/pulls/9" for call in runner.calls)

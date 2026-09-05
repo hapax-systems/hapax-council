@@ -552,6 +552,10 @@ def _pull_status_row_from_rest(
         else None
     )
     pull = detail if isinstance(detail, dict) else item
+    base = item.get("base") if isinstance(item.get("base"), dict) else {}
+    base_repo = base.get("repo") if isinstance(base.get("repo"), dict) else {}
+    detail_base = pull.get("base") if isinstance(pull.get("base"), dict) else {}
+    detail_base_repo = detail_base.get("repo") if isinstance(detail_base.get("repo"), dict) else {}
     head = pull.get("head") if isinstance(pull.get("head"), dict) else {}
     sha = str(head.get("sha") or "")
     head_ref = str(head.get("ref") or "")
@@ -581,6 +585,9 @@ def _pull_status_row_from_rest(
         "mergedAt": pull.get("merged_at"),
         "headRefName": head_ref,
         "headRefOid": sha,
+        "baseRefName": base.get("ref") or detail_base.get("ref"),
+        "baseRepoDefaultBranch": base_repo.get("default_branch")
+        or detail_base_repo.get("default_branch"),
         "changedFiles": changed_files,
         "files": _files_payload_from_rest(files) if include_files else None,
         "isDraft": bool(pull.get("draft")),

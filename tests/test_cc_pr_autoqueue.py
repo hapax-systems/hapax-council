@@ -995,6 +995,130 @@ def test_fetch_open_prs_uses_rest_core_not_gh_pr_list(tmp_path: Path) -> None:
     assert not any(call[:3] == ["gh", "pr", "view"] for call in runner.calls)
 
 
+@pytest.mark.parametrize(
+    ("adapter_base", "rest_base"),
+    [("main", None), (None, "main"), ("main", "main"), (None, None), ("main", "release")],
+    ids=["adapter_only", "rest_only", "both", "neither", "adapter_precedence"],
+)
+def test_run_reconciler_base_sources(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, adapter_base: str | None, rest_base: str | None
+) -> None:
+    vault = _make_vault(tmp_path)
+    _write_task(vault, task_id="base-source", pr=42)
+    runner = _FakeRunner()
+    runner.open_prs = [_pr(42, base=rest_base, auto_merge=True, auto_merge_method="MERGE")]
+    runner.queued_prs = {42}
+    item = _pr(42, base=adapter_base, auto_merge=True, auto_merge_method="MERGE")
+    item["baseRepoDefaultBranch"] = "main" if adapter_base else None
+    monkeypatch.setattr(autoqueue, "list_open_pr_statuses_rest", lambda **_kwargs: [item])
+
+    report = autoqueue.run_reconciler(
+        repo="owner/repo",
+        repo_root=tmp_path,
+        vault_root=vault,
+        apply=False,
+        lineage_ledger_path=None,
+        quarantine_path=tmp_path / "quarantine.json",
+        admission_governor_path=tmp_path / "governor.yaml",
+        runner=runner,
+    )
+
+    decision = report["decisions"][0]
+    governance = decision["merge_queue_governance"]
+    assert governance["base_ref"] == (adapter_base or rest_base)
+    if adapter_base or rest_base:
+        assert decision["action"] == "already_queued"
+        assert decision.get("reasons", []) == []
+        assert decision["auto_merge_method_owner"] == "merge_queue"
+        assert governance["method"] == "SQUASH"
+        assert governance["source"].startswith("ruleset:")
+        assert governance["reason"] is None
+    else:
+        reason = "auto_merge_method_unverified:pr_base_ref_missing"
+        assert decision["action"] == "dequeue"
+        assert decision["reasons"] == [reason]
+        assert decision["auto_merge_method_owner"] == "unverified"
+        assert governance["reason"] == reason
+    assert not any("POST" in call or "--disable-auto" in call for call in runner.calls)
+    assert not any("mutation" in part for call in runner.calls for part in call)
+
+
+@pytest.mark.parametrize("detail_state", ["absent", "base_missing"])
+@pytest.mark.parametrize("override", [None, "SQUASH", "MERGE"])
+def test_run_reconciler_adapter_only_preserves_all_decisions(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, detail_state: str, override: str | None
+) -> None:
+    vault = _make_vault(tmp_path)
+    runner = _FakeRunner()
+    runner.open_prs = [
+        _pr(42, auto_merge=True, auto_merge_method="MERGE"),
+        _pr(43, auto_merge=True, auto_merge_method="MERGE"),
+        _pr(44, base="release", auto_merge=True, auto_merge_method="MERGE"),
+        _pr(45),
+    ]
+    runner.queued_prs = {42}
+    for pr in runner.open_prs:
+        _write_task(vault, task_id=f"base-source-{pr['number']}", pr=pr["number"])
+    kwargs = {
+        "repo": "owner/repo",
+        "repo_root": tmp_path,
+        "vault_root": vault,
+        "apply": False,
+        "lineage_ledger_path": None,
+        "quarantine_path": tmp_path / "quarantine.json",
+        "admission_governor_path": tmp_path / "governor.yaml",
+        "expected_auto_merge_method_override": override,
+        "runner": runner,
+    }
+    with_detail = autoqueue.run_reconciler(**kwargs)
+    detail_for_number = runner._rest_pull_for_number
+
+    def missing_detail(number: int) -> dict[str, Any] | None:
+        if detail_state == "absent":
+            return None
+        detail = detail_for_number(number)
+        assert detail is not None
+        detail.pop("base")
+        return detail
+
+    monkeypatch.setattr(runner, "_rest_pull_for_number", missing_detail)
+    runner.calls.clear()
+    adapter_only = autoqueue.run_reconciler(**kwargs)
+
+    assert adapter_only["decisions"] == with_detail["decisions"]
+    assert adapter_only["counts"] == with_detail["counts"]
+    decisions = {decision["pr"]: decision for decision in adapter_only["decisions"]}
+    expected_actions = (
+        {42: "blocked", 43: "blocked", 44: "already_auto_merge_enabled", 45: "blocked"}
+        if override == "MERGE"
+        else {
+            42: "already_queued",
+            43: "already_auto_merge_enabled",
+            44: "disable_auto_merge",
+            45: "queue",
+        }
+    )
+    assert {
+        number: decision["action"] for number, decision in decisions.items()
+    } == expected_actions
+    for number, decision in decisions.items():
+        governance = decision["merge_queue_governance"]
+        assert governance["base_ref"] == ("release" if number == 44 else "main")
+        assert governance["method"] == (None if number == 44 else "SQUASH")
+        assert governance["reason"] is None
+    # Each PR still gets only the two pre-existing detail attempts: adapter
+    # hydration and the reconciler's secondary read. No request was added.
+    detail_calls = [
+        call
+        for call in runner.calls
+        if call[:5] == ["gh", "api", "--method", "GET", "-H"]
+        and re.fullmatch(r"repos/owner/repo/pulls/\d+", call[6])
+    ]
+    assert len(detail_calls) == 2 * len(runner.open_prs)
+    assert not any("POST" in call or "--disable-auto" in call for call in runner.calls)
+    assert not any("mutation" in part for call in runner.calls for part in call)
+
+
 def test_empty_rest_reviews_do_not_synthesize_review_required(tmp_path: Path) -> None:
     class EmptyReviewsRunner(_FakeRunner):
         def _rest_response(self, cmd: list[str]) -> subprocess.CompletedProcess | None:
@@ -1872,10 +1996,12 @@ def test_queue_governance_evidence_refuses_unknown(
                         {"id": i, "target": "tag", "enforcement": "disabled"}
                         for i in range(100, 199)
                     ]
-            if path == "repos/owner/repo/pulls/4584" and fault == "pr_fields_absent":
-                payload.pop("base")
-            if path == "repos/owner/repo/pulls/4584" and fault == "pr_base_malformed":
-                payload["base"]["ref"] = {"unknown": "main"}
+            if path in {"repos/owner/repo/pulls", "repos/owner/repo/pulls/4584"}:
+                for pull in payload if isinstance(payload, list) else [payload]:
+                    if fault == "pr_fields_absent":
+                        pull.pop("base")
+                    elif fault == "pr_base_malformed":
+                        pull["base"]["ref"] = {"unknown": "main"}
             if path == "repos/owner/repo/rulesets/16186443":
                 if fault == "conditions_absent":
                     payload.pop("conditions")

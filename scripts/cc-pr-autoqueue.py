@@ -722,8 +722,9 @@ def fetch_pr_merge_queue_governance(
 ) -> MergeQueueGovernance:
     """Validate all enforced queue rules for this base, separately from arm flags.
 
-    The REST PR read supplies base.ref (and base.repo.default_branch); it does
-    not expose isInMergeQueue/mergeQueueEntry. An empty queue membership list
+    The REST status adapter carries base.ref and base.repo.default_branch from
+    the list payload, with detail reads as a secondary source. REST does not
+    expose isInMergeQueue/mergeQueueEntry. An empty queue membership list
     cannot establish that ordinary per-PR auto-merge owns the strategy.
     """
     prefix = "auto_merge_method_unverified:"
@@ -1153,13 +1154,13 @@ def fetch_open_prs(
                 if rest_pr is not None
                 else str(item.get("mergeStateStatus") or "UNKNOWN").upper()
             )
-            # The shared status adapter omits the base; retain it from the
-            # existing REST detail read to prove ruleset applicability.
+            # Keep the adapter's base fields even when this detail read fails;
+            # use the existing read only to fill missing applicability evidence.
             base = rest_pr.get("base") if isinstance(rest_pr, dict) else None
             base = base if isinstance(base, dict) else {}
             base_repo = base.get("repo")
-            item["baseRefName"] = base.get("ref")
-            item["baseRepoDefaultBranch"] = (
+            item["baseRefName"] = item.get("baseRefName") or base.get("ref")
+            item["baseRepoDefaultBranch"] = item.get("baseRepoDefaultBranch") or (
                 base_repo.get("default_branch") if isinstance(base_repo, dict) else None
             )
             # Preserve the shared REST snapshot when available. If it is absent, derive the
