@@ -1,0 +1,32 @@
+#!/usr/bin/env bash
+# Seat-run (manual) PR review dispatch with the public-gate signing credential delivered.
+#
+# The systemd unit gets HAPAX_PUBLIC_GATE_AUTHORITY_HMAC_KEY from the dedicated runtime file
+# hapax-secrets writes (/run/user/%U/hapax-public-gate-authority.env). A seat session's own
+# environment does not carry it, so a manual `cc-pr-review-dispatch.py` run writes unsigned
+# dossiers and receipts. Run this instead, with the dispatcher's own arguments:
+#
+#   scripts/hapax-pr-review-dispatch-signed --pr 4642
+#
+# Exactly one name is resolved, from the FileStore through the shared helper (never pass), and
+# exported only into the dispatcher's environment: never argv, never a log line. The dispatcher
+# strips it again from every reviewer child. When it cannot be resolved this refuses instead of
+# dispatching unsigned.
+
+set -euo pipefail
+
+# BASH_SOURCE is the symlink path when invoked through ~/.local/bin; resolve the target first
+# so the lib and the repository are found beside it (same idiom as hapax-context7-mcp).
+_hapax_self="$(/usr/bin/readlink -f -- "${BASH_SOURCE[0]}" 2>/dev/null || printf '%s' "${BASH_SOURCE[0]}")"
+. "${_hapax_self%/*}/lib/secret.sh"
+repo_root="${_hapax_self%/*}/.."
+
+hapax_secret_into HAPAX_PUBLIC_GATE_AUTHORITY_HMAC_KEY hapax-public-gate-authority-hmac-key || {
+  echo "hapax-pr-review-dispatch-signed: public-gate signing credential unavailable from the" \
+       "FileStore (hapax-public-gate-authority-hmac-key); refusing to dispatch unsigned." \
+       "Next action: hapax-secret --where hapax-public-gate-authority-hmac-key, restore the" \
+       "entry in the FileStore, then rerun." >&2
+  exit 2
+}
+
+exec uv --directory "$repo_root" run python scripts/cc-pr-review-dispatch.py "$@"
