@@ -1220,6 +1220,40 @@ def test_agy_shape_is_prompt_only_with_a_print_timeout(bench) -> None:
     assert argv == [f"--print={brief.read_text()}", "--print-timeout", "60s"]
 
 
+def test_agy_shape_forwards_an_explicit_model_selector(bench) -> None:
+    module, bin_dir, brief, out = bench
+    _stub(bin_dir, "agy", "print('OK')\n")
+
+    rc = module.main(
+        [
+            "agy",
+            "--brief",
+            str(brief),
+            "--out",
+            str(out),
+            "--timeout",
+            "60",
+            "--model",
+            "synthetic-flash-selector",
+        ]
+    )
+
+    assert rc == 0
+    argv = _calls(bin_dir, "agy")[0]["argv"]
+    assert argv == [
+        f"--print={brief.read_text()}",
+        "--print-timeout",
+        "60s",
+        "--model",
+        "synthetic-flash-selector",
+    ], "the explicit selector is forwarded as the CLI's current-session model option"
+    receipt = _receipt(out)
+    assert receipt["model_requested"] == "synthetic-flash-selector"
+    # A forwarded selector is a request, not a served identity: agy reports no served
+    # model, so nothing is recorded as served and nothing is inferred from the request.
+    assert receipt["models_reported"] == []
+
+
 def test_claude_shape_records_the_served_models_from_model_usage(bench) -> None:
     module, bin_dir, brief, out = bench
     _stub(

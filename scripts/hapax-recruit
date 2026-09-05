@@ -811,6 +811,10 @@ def recruit_cli(
     elif capacity == "agy":
         binary = _require_binary("agy")
         argv = [binary, f"--print={brief}", "--print-timeout", f"{timeout}s"]
+        if model:
+            # The requested selector, forwarded as the CLI's current-session model option;
+            # the served identity is not observable from agy's output and is never inferred.
+            argv += ["--model", model]
     elif capacity == "claude" or capacity in WRAPPED_CLAUDE:
         if capacity == "claude":
             binary = _require_binary("claude")
