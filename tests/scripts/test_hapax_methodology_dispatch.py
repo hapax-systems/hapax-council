@@ -5038,6 +5038,160 @@ def test_dispatch_recursive_in_root_directory_alias(
     )
     assert receipt["frame_epoch"] == (frame_root / "_runs/current").resolve().name
     assert receipt["frame_decayed_members"] == ["legacy-surface"]
+    assert str(root / base / "db5.3") + suffix in receipt["reason"]
+
+
+@pytest.mark.parametrize("scope", ["awk", "tools/**", "tools/**/*"])
+def test_dispatch_alias_member_tree_file_alias_and_escape_refusals(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+    scope: str,
+) -> None:
+    root = alias_member_tree(tmp_path / "member") / "bin"
+    frame_root = _frame_procedure_root(
+        tmp_path / "frame",
+        decayed_root=root,
+        reader="fs.glob",
+        location={"path": str(root), "patterns": ["gawk" if scope == "awk" else "**/*"]},
+    )
+    rc, err = _dispatch_up_to_the_adapter(
+        tmp_path,
+        monkeypatch,
+        capsys,
+        _dispatcher_module(),
+        mutation_scope_refs=json.dumps([str(root / scope)]),
+        frame_root=frame_root,
+    )
+    assert rc == 10
+    assert "fixture refusal" not in err
+    receipt = json.loads(
+        (tmp_path / "ledger/methodology-dispatch.jsonl").read_text().splitlines()[-1]
+    )
+    assert receipt["ok"] is False and receipt["launched"] is False
+    assert receipt["reason"] in err
+    assert receipt["frame_epoch"] == (frame_root / "_runs/current").resolve().name
+    assert receipt["frame_decayed_members"] == ["legacy-surface"]
+    if scope == "awk":
+        assert "marks every declared mutation surface out of accountability" in receipt["reason"]
+        assert str(root / "awk") in receipt["reason"]
+    else:
+        assert "containment is undecidable" in receipt["reason"]
+        assert str(root / "tools") in receipt["reason"]
+        assert "Next:" in receipt["reason"]
+
+
+@pytest.mark.parametrize("match_mode", ["word", "substring"])
+@pytest.mark.parametrize(
+    ("query", "content"),
+    [("sced", "ſced"), ("k", "K"), ("i", "ı")],
+    ids=["long-s", "kelvin-sign", "dotless-i"],
+)
+def test_dispatch_content_query_unicode_case_insensitive_refuses(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+    query: str,
+    content: str,
+    match_mode: str,
+) -> None:
+    root = tmp_path / "member"
+    root.mkdir()
+    target = root / "file.py"
+    target.write_text(content, encoding="utf-8")
+    frame_root = _frame_procedure_root(
+        tmp_path / "frame",
+        decayed_root=root,
+        reader="fs.content_query",
+        location={
+            "roots": [str(root)],
+            "patterns": ["*.py"],
+            "query": query,
+            "case_insensitive": True,
+            "match": match_mode,
+        },
+    )
+    (frame_root / "declaration/params.yaml").write_text(
+        yaml.safe_dump(
+            {
+                "profile_id": "fixture",
+                "parameters": {
+                    "max_unit_bytes": {"value": 128, "why": "test bound"},
+                    "encoding_error_policy": {"value": "strict", "why": "producer decoding"},
+                },
+            }
+        )
+    )
+    rc, err = _dispatch_up_to_the_adapter(
+        tmp_path,
+        monkeypatch,
+        capsys,
+        _dispatcher_module(),
+        mutation_scope_refs=json.dumps([str(target)]),
+        frame_root=frame_root,
+    )
+    assert rc == 10
+    assert "marks every declared mutation surface out of accountability" in err
+    assert "fixture refusal" not in err
+    receipt = json.loads(
+        (tmp_path / "ledger/methodology-dispatch.jsonl").read_text().splitlines()[-1]
+    )
+    assert receipt["ok"] is False and receipt["launched"] is False
+    assert str(target) in receipt["reason"]
+    assert receipt["frame_epoch"] == (frame_root / "_runs/current").resolve().name
+    assert receipt["frame_decayed_members"] == ["legacy-surface"]
+
+
+@pytest.mark.parametrize("scope", ["empty", "file", "glob"])
+def test_dispatch_without_fixture_verdict_set_refuses_every_scope(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+    scope: str,
+) -> None:
+    module = _dispatcher_module()
+    root = tmp_path / "absent-frame"
+    assert not root.exists()
+    # Remove the session fixture's override and isolate the actual default lookup.
+    monkeypatch.delenv("HAPAX_FRAME_PROCEDURE_ROOT")
+    monkeypatch.setattr(fv, "DEFAULT_FRAME_PROCEDURE_ROOT", root)
+    spec = _spec(tmp_path / "isap-test.md")
+    refs = [] if scope == "empty" else [str(tmp_path / ("live.py" if scope == "file" else "**/*"))]
+    _task(
+        tmp_path / "tasks",
+        "governed-build",
+        _governed_source_frontmatter(spec, mutation_scope_refs=json.dumps(refs)),
+        route_metadata_defaults=False,
+    )
+    monkeypatch.setenv("HAPAX_CC_TASK_ROOT", str(tmp_path / "tasks"))
+    monkeypatch.setenv("HAPAX_DISPATCH_CLAIM_SWEEP", "0")
+    monkeypatch.setenv("HAPAX_ORCHESTRATION_LEDGER_DIR", str(tmp_path / "ledger"))
+    rc = module.main(
+        [
+            "--task",
+            "governed-build",
+            "--lane",
+            "cx-green",
+            "--platform",
+            "codex",
+            "--mode",
+            "receipt-only",
+            "--skip-worktree-check",
+        ]
+    )
+    err = capsys.readouterr().err
+    assert rc == 10
+    reason = f"frame procedure root {root} does not exist"
+    assert "frame verdicts unavailable" in err and reason in err
+    receipt = json.loads(
+        (tmp_path / "ledger/methodology-dispatch.jsonl").read_text().splitlines()[-1]
+    )
+    assert receipt["ok"] is False and receipt["launched"] is False
+    assert receipt["frame_epoch"] is None and receipt["frame_decayed_members"] == []
+    assert reason in receipt["frame_unavailable"]["reason"]
+    assert receipt["frame_unavailable"]["frame_root_resolved"] == str(root)
+    assert receipt["frame_unavailable"]["remedy"] == fv.PRODUCER_REMEDY
+    assert "Next:" in receipt["reason"]
 
 
 @pytest.mark.parametrize("member_base,scope_base", [("sbin", "bin"), ("bin", "sbin")])

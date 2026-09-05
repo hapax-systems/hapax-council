@@ -275,6 +275,33 @@ def test_content_query_evaluates_current_bytes_and_canonical_alias(tmp_path: Pat
         assert fv.ref_within_member(alias, False, member) is inside
 
 
+@pytest.mark.parametrize("spelling", ["bin", "sbin"])
+@pytest.mark.parametrize("populated", [False, True], ids=["future", "selected"])
+@pytest.mark.parametrize("prefix", ["", "nested"], ids=["root", "recursive"])
+def test_content_query_helper_canonical_directory_pattern_bounds_bytes(
+    tmp_path: Path, spelling: str, populated: bool, prefix: str
+) -> None:
+    member, root = _content_query_member(tmp_path, location={"patterns": ["sbin/db5.3/*.py"]})
+    root = root / prefix
+    directory = root / "bin/db5.3"
+    directory.mkdir(parents=True)
+    (root / "sbin").symlink_to("bin", target_is_directory=True)
+    target = directory / "file.py"
+    if populated:
+        target.write_bytes(b"def selected(): pass")
+    candidate = root / spelling / "db5.3/file.py"
+    selected = fv._canonical_member_entries(member)
+    if populated:
+        assert selected == {root / "sbin/db5.3/file.py": target}
+        assert fv._content_query_within_member(candidate, False, member, None, selected)
+    else:
+        assert selected == {}
+        with pytest.raises(fv.UndecidableScopeContainment) as caught:
+            fv._content_query_within_member(candidate, False, member, None, selected)
+        assert str(target) in str(caught.value)
+        assert "max_unit_bytes" in caught.value.remedy
+
+
 @pytest.mark.parametrize("external", [False, True])
 def test_content_query_selected_alias_predicate_uses_target_bytes(
     tmp_path: Path, external: bool

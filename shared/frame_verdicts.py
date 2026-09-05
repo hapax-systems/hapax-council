@@ -8,13 +8,15 @@ run. That is the whole architecture. Everything below it is a binding, declared 
 swapped:
 
 - the verdict set is the accepted epoch selected by the frame procedure's atomic
-  ``_runs/current`` pointer, produced by ``hapax-frame-iteration.timer`` every
+  ``_runs/current`` pointer with a matching accepted ``publish.json`` receipt; a newer rejected
+  attempt does not govern. Epochs are produced by ``hapax-frame-iteration.timer`` every
   :data:`FRAME_ITERATION_CADENCE_S`;
 - the surfaces are the members of the procedure's ``declaration/mass.yaml`` and their declared
   filesystem locations;
 - the effect surface of a unit of work is its task row's ``mutation_scope_refs``;
-- "out of accountability" is a TRUE verdict under one of :data:`DECAY_RELATIONS`, the same seven
-  relations the producer uses to regionise a member as decayed.
+- "out of accountability" is a TRUE verdict under one of the producer's seven
+  :data:`DECAY_RELATIONS`: superseded, discharged, scope_exited, absorbed, contradicted,
+  context_lost or unconsulted.
 
 Filesystem and scheme-qualified surfaces are separate namespaces. Scheme-qualified declarations
 (``gh://``, ``podium:``) are compared structurally by scheme, authority and path segments; a
@@ -1323,17 +1325,28 @@ def _canonical_member_patterns(root: Path, member: DecayedMember) -> tuple[str, 
         prefix, tail, _ = _filesystem_scope_parts(pattern)
         if tail is None:
             prefix, tail = prefix[:-1], prefix[-1]
-        lexical_base = root.joinpath(*prefix)
-        canonical_base = _resolve_external_scope_path(lexical_base)
-        if _path_is_excluded(lexical_base, member):
-            continue
-        if canonical_base != root and root not in canonical_base.parents:
-            raise UndecidableScopeContainment(
-                f"member pattern component {lexical_base} resolves outside member root {root} "
-                f"to {canonical_base}; containment is undecidable"
-            )
-        relative = "" if canonical_base == root else canonical_base.relative_to(root).as_posix()
-        patterns.append(_scope_pattern_from_base(relative, tail))
+        bases = [root.joinpath(*prefix)]
+        if member.reader == "fs.content_query" and prefix:
+            # rglob can encounter the literal prefix at any depth. Resolve those
+            # aliases too, including when the scope names a not-yet-created file.
+            try:
+                bases.extend(root.rglob(Path(*prefix).as_posix()))
+            except (OSError, RuntimeError, ValueError) as exc:
+                raise UndecidableScopeContainment(
+                    f"cannot inspect member pattern prefix {Path(*prefix)} below {root}: {exc}; "
+                    "containment is undecidable"
+                ) from exc
+        for lexical_base in dict.fromkeys(bases):
+            canonical_base = _resolve_external_scope_path(lexical_base)
+            if _path_is_excluded(lexical_base, member):
+                continue
+            if canonical_base != root and root not in canonical_base.parents:
+                raise UndecidableScopeContainment(
+                    f"member pattern component {lexical_base} resolves outside member root {root} "
+                    f"to {canonical_base}; containment is undecidable"
+                )
+            relative = "" if canonical_base == root else canonical_base.relative_to(root).as_posix()
+            patterns.append(_scope_pattern_from_base(relative, tail))
     return tuple(patterns)
 
 
@@ -1528,7 +1541,7 @@ def _refuse_directory_spelled_file(file: Path | QualifiedLocation) -> None:
 
 
 def _content_query_matches(path: Path, query: ContentQuery) -> bool:
-    """builtin.fs_content_query's byte prefilter followed by its optional word predicate."""
+    """A Unicode prefilter followed by builtin.fs_content_query's optional word predicate."""
     try:
         if path.stat().st_size > query.max_unit_bytes:
             raise ValueError(f"exceeds max_unit_bytes={query.max_unit_bytes}")
@@ -1536,10 +1549,15 @@ def _content_query_matches(path: Path, query: ContentQuery) -> bool:
             blob = stream.read(query.max_unit_bytes + 1)
         if len(blob) > query.max_unit_bytes:
             raise ValueError(f"exceeds max_unit_bytes={query.max_unit_bytes}")
-        needle = query.query.encode("utf-8")
         if query.case_insensitive:
-            needle, blob = needle.lower(), blob.lower()
-        if needle not in blob:
+            text = blob.decode("utf-8", errors=query.encoding_error_policy)
+            # Queries here are ASCII, but rg --ignore-case can select Unicode bytes
+            # (long s, Kelvin sign). Python's Unicode matcher also conservatively
+            # includes dotted/dotless i, as the producer's own word predicate does.
+            # Keep the original text for that predicate's character boundaries.
+            if not re.search(re.escape(query.query), text, re.IGNORECASE):
+                return False
+        elif query.query.encode("utf-8") not in blob:
             return False
         if query.match_mode == "word":
             text = blob.decode("utf-8", errors=query.encoding_error_policy)
@@ -1574,6 +1592,12 @@ def _content_query_within_member(
     if query is None:
         raise UncontainableMemberLocation("fs.content_query has no declared content predicate")
     canonical = _resolve_external_scope_path(path)
+    if not dirlike and scope_pattern is None and canonical in selected_entries.values():
+        # A producer-selected entry is inside even when its alias targets another root.
+        return any(
+            canonical == target and _content_query_matches(entry, query)
+            for entry, target in selected_entries.items()
+        )
     if dirlike or scope_pattern is not None:
         for entry, target in selected_entries.items():
             if canonical in target.parents and _pattern_matches(
@@ -1585,41 +1609,27 @@ def _content_query_within_member(
                     "declare explicit files so the content predicate can be evaluated"
                 )
     for root in member.roots:
-        for candidate in dict.fromkeys((path, canonical)):
-            if candidate != root and root not in candidate.parents:
-                if scope_pattern is not None and candidate in root.parents:
-                    raise UndecidableScopeContainment(
-                        f"fs.content_query scope glob {scope_pattern!r} may enter {root}; "
-                        "declare explicit files so the content predicate can be evaluated"
-                    )
-                continue
-            if _path_is_excluded(candidate, member) or not member.patterns:
-                continue
-            if dirlike or scope_pattern is not None:
+        if canonical != root and root not in canonical.parents:
+            if scope_pattern is not None and canonical in root.parents:
                 raise UndecidableScopeContainment(
-                    f"fs.content_query needs explicit file paths below {root} to evaluate "
-                    "the content predicate; whole-surface containment is undecidable"
+                    f"fs.content_query scope glob {scope_pattern!r} may enter {root}; "
+                    "declare explicit files so the content predicate can be evaluated"
                 )
-            relative = candidate.relative_to(root).as_posix()
-            for pattern in member.patterns:
-                normalised = _normalise_member_pattern(pattern)
-                # rglob adds recursive selection; terminal ** still uses pathlib itself.
-                if Path(normalised).name != "**" and not _pattern_matches(
-                    relative, "**/" + pattern
-                ):
-                    continue
-                if Path(normalised).name != "**" and not candidate.exists():
-                    # A future file in the path language has no readable predicate yet.
-                    # Preserve the missing-bytes remedy instead of calling it outside.
-                    _content_query_matches(candidate, query)
-    if dirlike or scope_pattern is not None:
-        return False
-    # The pattern selects entries, while the content is read at their canonical targets.
-    # Compare targets before evaluating bytes so both spellings receive the same verdict.
-    return any(
-        canonical == target and _content_query_matches(entry, query)
-        for entry, target in selected_entries.items()
-    )
+            continue
+        if _path_is_excluded(canonical, member) or not member.patterns:
+            continue
+        if dirlike or scope_pattern is not None:
+            raise UndecidableScopeContainment(
+                f"fs.content_query needs explicit file paths below {root} to evaluate "
+                "the content predicate; whole-surface containment is undecidable"
+            )
+        relative = canonical.relative_to(root).as_posix()
+        for pattern in _canonical_member_patterns(root, member):
+            # rglob adds recursive selection; canonical patterns omit directory-only **.
+            if _pattern_matches(relative, "**/" + pattern) and not canonical.exists():
+                # Missing bytes cannot be called outside based on an alias spelling.
+                _content_query_matches(canonical, query)
+    return False
 
 
 def _local_member_file_matches(path: Path, root: Path, pattern: str) -> bool:
