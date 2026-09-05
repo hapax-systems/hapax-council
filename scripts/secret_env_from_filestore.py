@@ -1,80 +1,103 @@
 #!/usr/bin/env python3
-"""Write agent env from reins FileStore (not pass). Estate path = shipped path.
+"""Write agent env from the explicitly selected FileStore or helper source.
 
-Runs from the source-activation worktree. Imports FileStore from the reins
-install pin (~/.local/share/reins/current/api), not a mutable checkout.
-
-Validates FileStore prerequisites (.key present, private ownership/modes,
-backend is file, required names resolvable) before touching either env file.
-Each file uses temp + os.replace so a failed write preserves its prior file.
+HAPAX_SECRETS_SOURCE defaults to filestore: import the reins install pin
+(~/.local/share/reins/current/api) and validate its private root and .key.
+The helper source delegates to hapax-secret (HAPAX_SECRET_HELPER overrides
+its executable), with a 20-second timeout per name and no retry or fallback.
+All lookups finish before either env file is touched. Each file uses temp +
+os.replace so a failed write preserves its prior file.
 """
 
 from __future__ import annotations
 
 import os
+import shutil
 import stat
+import subprocess
 import sys
 from pathlib import Path
-
-_REINS_API = Path(
-    os.environ.get("HAPAX_REINS_API", "").strip()
-    or str(Path.home() / ".local/share/reins/current/api")
-)
-sys.path.insert(0, str(_REINS_API))
-try:
-    from k0.key_capture import default_store
-except ImportError as exc:
-    sys.stderr.write(
-        "secret_env_from_filestore: FileStore not importable "
-        f"({exc}). Next action: install reins FileStore at "
-        "~/.local/share/reins/current (reins#35) and rerun.\n"
-    )
-    raise SystemExit(2) from exc
-
-store = default_store()
-if store.backend_id != "file":
-    sys.stderr.write(
-        f"secret_env_from_filestore: default_store backend_id={store.backend_id!r} "
-        "is not file. Next action: do not point this unit at PassStore.\n"
-    )
-    raise SystemExit(2)
+from typing import NoReturn
 
 
-def _prerequisite_failure(problem: str, repair: str) -> None:
+def _prerequisite_failure(problem: str, repair: str) -> NoReturn:
     sys.stderr.write(f"secret_env_from_filestore: {problem}. Next action: {repair}.\n")
     raise SystemExit(2)
 
 
-key_path = store.root / ".key"
-try:
-    for path, mode in ((store.root, 0o700), (key_path, 0o600)):
-        info = path.stat()
-        if info.st_uid != os.getuid():
-            _prerequisite_failure(
-                f"FileStore prerequisite {path} has wrong owner",
-                "restore ownership to the service user and rerun",
-            )
-        if stat.S_IMODE(info.st_mode) != mode:
-            _prerequisite_failure(
-                f"FileStore prerequisite {path} has wrong mode",
-                f"restore private permissions with chmod {mode:o} {path} and rerun",
-            )
-    if not store.root.is_dir() or not key_path.is_file():
-        _prerequisite_failure(
-            f"FileStore root must be a directory and .key a file at {store.root}",
-            "repair the FileStore root and .key types and rerun",
+_SOURCE = os.environ.get("HAPAX_SECRETS_SOURCE", "filestore")
+_HELPER_TIMEOUT_SECONDS = 20
+_HELPER_REPAIR = (
+    "check HAPAX_SECRETS_HOST reachability and FileStore enrollment on that host; "
+    "install executable hapax-secret on PATH or set HAPAX_SECRET_HELPER and rerun"
+)
+if _SOURCE not in ("filestore", "helper"):
+    _prerequisite_failure(
+        "HAPAX_SECRETS_SOURCE must be filestore or helper",
+        "set HAPAX_SECRETS_SOURCE=filestore or HAPAX_SECRETS_SOURCE=helper "
+        "(or unset it for filestore) and rerun",
+    )
+
+if _SOURCE == "helper":
+    _helper = shutil.which(os.environ.get("HAPAX_SECRET_HELPER", "hapax-secret"))
+    if _helper is None:
+        _prerequisite_failure("helper executable missing or not executable", _HELPER_REPAIR)
+    _backend = "filestore-via-helper"
+else:
+    _REINS_API = Path(
+        os.environ.get("HAPAX_REINS_API", "").strip()
+        or str(Path.home() / ".local/share/reins/current/api")
+    )
+    sys.path.insert(0, str(_REINS_API))
+    try:
+        from k0.key_capture import default_store
+    except ImportError as exc:
+        sys.stderr.write(
+            "secret_env_from_filestore: FileStore not importable "
+            f"({exc}). Next action: install reins FileStore at "
+            "~/.local/share/reins/current (reins#35) and rerun.\n"
         )
-except FileNotFoundError:
-    _prerequisite_failure(
-        f"FileStore root or .key missing at {store.root}",
-        "enroll FileStore (reins#35) then hapax-secret TTY put for required names; "
-        "do not start this unit until .key exists",
-    )
-except OSError:
-    _prerequisite_failure(
-        f"FileStore root or .key unreadable at {store.root}",
-        "restore service-user read access to the FileStore root and .key and rerun",
-    )
+        raise SystemExit(2) from exc
+
+    store = default_store()
+    if store.backend_id != "file":
+        sys.stderr.write(
+            f"secret_env_from_filestore: default_store backend_id={store.backend_id!r} "
+            "is not file. Next action: do not point this unit at PassStore.\n"
+        )
+        raise SystemExit(2)
+
+    key_path = store.root / ".key"
+    try:
+        for path, mode in ((store.root, 0o700), (key_path, 0o600)):
+            info = path.stat()
+            if info.st_uid != os.getuid():
+                _prerequisite_failure(
+                    f"FileStore prerequisite {path} has wrong owner",
+                    "restore ownership to the service user and rerun",
+                )
+            if stat.S_IMODE(info.st_mode) != mode:
+                _prerequisite_failure(
+                    f"FileStore prerequisite {path} has wrong mode",
+                    f"restore private permissions with chmod {mode:o} {path} and rerun",
+                )
+        if not store.root.is_dir() or not key_path.is_file():
+            _prerequisite_failure(
+                f"FileStore root must be a directory and .key a file at {store.root}",
+                "repair the FileStore root and .key types and rerun",
+            )
+    except FileNotFoundError:
+        _prerequisite_failure(
+            f"FileStore root or .key missing at {store.root}",
+            "enroll FileStore (reins#35) then hapax-secret TTY put for required names; "
+            "do not start this unit until .key exists",
+        )
+    except OSError:
+        _prerequisite_failure(
+            f"FileStore root or .key unreadable at {store.root}",
+            "restore service-user read access to the FileStore root and .key and rerun",
+        )
+    _backend = store.backend_id
 
 _LITELLM = os.environ.get("HAPAX_LITELLM_BASE_URL", "https://hapax-podium.tailf9491.ts.net:4000")
 _LANGFUSE = os.environ.get("HAPAX_LANGFUSE_HOST", "http://127.0.0.1:3000")
@@ -106,7 +129,7 @@ OPTIONAL: dict[str, str] = {
 LITERALS: dict[str, str] = {
     "LITELLM_BASE_URL": _LITELLM,
     "LITELLM_API_BASE": _LITELLM,
-    "ANTHROPIC_API_KEY": "",  # filled from FileStore litellm below
+    "ANTHROPIC_API_KEY": "",  # filled from the selected litellm source below
     "ANTHROPIC_BASE_URL": _LITELLM,
     "ANTHROPIC_AUTH_TOKEN": "",
     "LANGFUSE_HOST": _LANGFUSE,
@@ -122,7 +145,43 @@ def _first_line(raw: bytes) -> str:
     return raw.decode("utf-8", "replace").split("\n", 1)[0]
 
 
+def _helper_value(name: str) -> bytes | None:
+    try:
+        result = subprocess.run(
+            [_helper, name],
+            stdin=subprocess.DEVNULL,
+            capture_output=True,
+            check=False,
+            timeout=_HELPER_TIMEOUT_SECONDS,
+        )
+    except subprocess.TimeoutExpired:
+        _prerequisite_failure(
+            f"helper {name} timeout after {_HELPER_TIMEOUT_SECONDS}s", _HELPER_REPAIR
+        )
+    except OSError:
+        _prerequisite_failure(f"helper {name} launch OSError", _HELPER_REPAIR)
+
+    # hapax_secret._do_get: absence is rc=1, empty stdout and this diagnostic.
+    # Other rc=1 failures (including Python exceptions) must not remove files.
+    absent = (
+        f"not found in FileStore: {name}. legal_next: run hapax-secret (TTY put) via reins.\n"
+    ).encode()
+    if result.returncode == 1 and result.stdout == b"" and result.stderr == absent:
+        return None
+    if result.returncode != 0:
+        _prerequisite_failure(f"helper {name} transport exit {result.returncode}", _HELPER_REPAIR)
+    try:
+        # Validate all stdout before _first_line; never replace decoding errors
+        # in helper output or expose captured output/exception details in logs.
+        result.stdout.decode("utf-8")
+    except UnicodeDecodeError:
+        _prerequisite_failure(f"helper {name} decoding failure (UTF-8)", _HELPER_REPAIR)
+    return result.stdout
+
+
 def _store_value(name: str) -> bytes | None:
+    if _SOURCE == "helper":
+        return _helper_value(name)
     try:
         return store.get(name)
     except OSError:
@@ -192,7 +251,7 @@ for env_name, value in LITERALS.items():
 authority_value = _store_value("hapax-public-gate-authority-hmac-key")
 authority_out = out.with_name("hapax-public-gate-authority.env")
 _write_env(out, lines)
-print(f"wrote {out} keys={len(lines)} backend={store.backend_id}")
+print(f"wrote {out} keys={len(lines)} source={_SOURCE} backend={_backend}")
 if authority_value is None:
     authority_out.unlink(missing_ok=True)
 else:

@@ -1,5 +1,6 @@
 """Council hapax-secrets unit and watchdog copies use FileStore, not pass show."""
 
+import json
 import os
 import runpy
 import subprocess
@@ -16,6 +17,30 @@ AUTHORITY_ENV = "HAPAX_PUBLIC_GATE_AUTHORITY_HMAC_KEY"
 AUTHORITY_ENTRY = "hapax-public-gate-authority-hmac-key"
 AUTHORITY_FILE = "hapax-public-gate-authority.env"
 AUTHORITY_VALUE = b"synthetic-public-gate-authority-key"  # pragma: allowlist secret
+REQUIRED_VALUES = {
+    "litellm-master-key": b"synthetic-litellm",  # pragma: allowlist secret
+    "langfuse-public-key": b"synthetic-langfuse-public",  # pragma: allowlist secret
+    "langfuse-secret-key": b"synthetic-langfuse-secret",  # pragma: allowlist secret
+    "api-huggingface": b"synthetic-huggingface",  # pragma: allowlist secret
+    "api-mistral": b"synthetic-mistral",  # pragma: allowlist secret
+    "api-openai": b"synthetic-openai",  # pragma: allowlist secret
+}
+OPTIONAL_ENTRIES = (
+    "soundcloud-client-id",
+    "soundcloud-client-secret",
+    "soundcloud-banked-url-canonical",
+    "mastadon-access-token",
+    "bluesky-operator-app-password",
+    "bluesky-operator-did",
+    "ia-access-key",
+    "ia-secret-key",
+    "osf-api-token",
+    "philarchive-session-cookie",
+    "philarchive-author-id",
+    "zenodo-api-token",
+    "orcid-orcid",
+    "kofi-verification-token",
+)
 COMMON_BASELINE = (
     b"LITELLM_API_KEY=synthetic-litellm\n"  # pragma: allowlist secret
     b"LANGFUSE_PUBLIC_KEY=synthetic-langfuse-public\n"  # pragma: allowlist secret
@@ -104,7 +129,84 @@ def _run_producer(env: dict[str, str], setup: str = "") -> subprocess.CompletedP
         capture_output=True,
         text=True,
         env=env,
+        timeout=30,
     )
+
+
+@pytest.fixture(autouse=True)
+def producer_sandbox(tmp_path, monkeypatch):
+    """Every producer invocation is isolated from live stores, helpers and ssh."""
+    monkeypatch.delenv("HAPAX_SECRETS_SOURCE", raising=False)
+    monkeypatch.delenv("HAPAX_SECRET_HELPER", raising=False)
+    monkeypatch.setenv("REINS_SECRET_STORE", str(tmp_path / "secrets"))
+    monkeypatch.setenv("HAPAX_REINS_API", str(tmp_path / "unavailable-api"))
+    monkeypatch.setenv("HAPAX_SECRETS_ENV_PATH", str(tmp_path / "hapax-secrets.env"))
+    monkeypatch.setenv("HAPAX_LITELLM_BASE_URL", "http://127.0.0.1:9")
+    monkeypatch.setenv("HAPAX_LANGFUSE_HOST", "http://127.0.0.1:10")
+    monkeypatch.setenv("HAPAX_SOUNDCLOUD_USERNAME", "synthetic-operator")
+    monkeypatch.setenv("HAPAX_MASTODON_INSTANCE_URL", "https://mastodon.invalid")
+    monkeypatch.setenv("HAPAX_BLUESKY_HANDLE", "synthetic.invalid")
+    bin_dir = tmp_path / "bin"
+    bin_dir.mkdir()
+    for name in ("hapax-secret", "ssh"):
+        shim = bin_dir / name
+        marker = tmp_path / f"unexpected-{name}"
+        shim.write_text(
+            f"#!{sys.executable}\nfrom pathlib import Path\n"
+            f"Path({str(marker)!r}).touch()\nraise SystemExit(99)\n"
+        )
+        shim.chmod(0o700)
+    # A non-executable shim must not let lookup continue to an installed helper.
+    monkeypatch.setenv("PATH", str(bin_dir))
+    yield
+    assert not (tmp_path / "unexpected-hapax-secret").exists()
+    assert not (tmp_path / "unexpected-ssh").exists()
+
+
+@pytest.fixture
+def helper_source(tmp_path, monkeypatch):
+    helper = tmp_path / "bin" / "hapax-secret"
+    helper.write_text(
+        f"#!{sys.executable}\n"
+        "import json, os, sys, time\n"
+        "from pathlib import Path\n"
+        "name = sys.argv[1]\n"
+        "with Path(os.environ['SYNTHETIC_HELPER_CALLS']).open('a') as log:\n"
+        "    log.write(name + '\\n')\n"
+        "entry = json.loads(os.environ['SYNTHETIC_HELPER_TABLE']).get(name, {})\n"
+        "action = entry.get('action', 'absent')\n"
+        "if action == 'absent':\n"
+        "    sys.stderr.write(f'not found in FileStore: {name}. legal_next: '"
+        "'run hapax-secret (TTY put) via reins.\\n')\n"
+        "    sys.exit(1)\n"
+        "if action == 'hang':\n"
+        "    time.sleep(22)\n"
+        "if action == 'exit':\n"
+        "    sys.stderr.write('synthetic-private-error-detail\\n')\n"  # pragma: allowlist secret
+        "    sys.exit(entry['code'])\n"
+        "if action == 'bad-absence':\n"
+        "    sys.stderr.write('not found in FileStore: wrong-name. legal_next: '"
+        "'run hapax-secret (TTY put) via reins.\\n')\n"
+        "    sys.exit(1)\n"
+        "sys.stdout.buffer.write(bytes.fromhex(entry['hex']))\n"
+        "sys.exit(entry.get('code', 0))\n"
+    )
+    helper.chmod(0o700)
+    monkeypatch.setenv("HAPAX_SECRETS_SOURCE", "helper")
+    monkeypatch.setenv("SYNTHETIC_HELPER_CALLS", str(tmp_path / "helper-calls"))
+    values = {
+        **REQUIRED_VALUES,
+        "orcid-orcid": b"0000-0000-0000-0000",  # pragma: allowlist secret
+        AUTHORITY_ENTRY: AUTHORITY_VALUE,
+    }
+    table = {name: {"action": "value", "hex": value.hex()} for name, value in values.items()}
+    return table, helper, tmp_path / "hapax-secrets.env"
+
+
+def _run_helper(table, setup=""):
+    env = os.environ.copy()
+    env["SYNTHETIC_HELPER_TABLE"] = json.dumps(table)
+    return _run_producer(env, setup)
 
 
 @pytest.fixture
@@ -124,25 +226,249 @@ def producer_store(tmp_path, monkeypatch):
     from k0.key_capture import FileStore
 
     store = FileStore(root=store_root)
-    for name, value in (
-        ("litellm-master-key", b"synthetic-litellm"),  # pragma: allowlist secret
-        ("langfuse-public-key", b"synthetic-langfuse-public"),  # pragma: allowlist secret
-        ("langfuse-secret-key", b"synthetic-langfuse-secret"),  # pragma: allowlist secret
-        ("api-huggingface", b"synthetic-huggingface"),  # pragma: allowlist secret
-        ("api-mistral", b"synthetic-mistral"),  # pragma: allowlist secret
-        ("api-openai", b"synthetic-openai"),  # pragma: allowlist secret
-        ("orcid-orcid", b"0000-0000-0000-0000"),  # pragma: allowlist secret
-    ):
+    for name, value in REQUIRED_VALUES.items():
         store.put(name, value)
+    store.put("orcid-orcid", b"0000-0000-0000-0000")  # pragma: allowlist secret
     return store, env_path
 
 
-def test_producer_writes_env_from_filestore(producer_store) -> None:
+@pytest.mark.parametrize("source", [None, "filestore"])
+def test_producer_writes_env_from_filestore(producer_store, monkeypatch, source) -> None:
     _, env_path = producer_store
+    if source is not None:
+        monkeypatch.setenv("HAPAX_SECRETS_SOURCE", source)
     result = _run_producer(os.environ.copy())
     assert result.returncode == 0, result.stderr
     assert env_path.read_bytes() == COMMON_BASELINE
     assert oct(env_path.stat().st_mode)[-3:] == "600"
+    assert "source=filestore backend=file" in result.stdout
+
+
+@pytest.mark.parametrize("source", ["unknown", "", "HELPER", " helper "])
+def test_unknown_source_refuses_before_writing(producer_store, monkeypatch, source) -> None:
+    _, common = producer_store
+    monkeypatch.setenv("HAPAX_SECRETS_SOURCE", source)
+    result = _run_producer(os.environ.copy())
+    assert result.returncode == 2, "unknown source must refuse"
+    assert "HAPAX_SECRETS_SOURCE" in result.stderr
+    assert "filestore" in result.stderr and "helper" in result.stderr
+    assert "Next action:" in result.stderr
+    assert not common.exists()
+    assert not common.with_name(AUTHORITY_FILE).exists()
+
+
+@pytest.mark.parametrize("override", [False, True])
+def test_helper_skips_filestore_prerequisites(helper_source, monkeypatch, override) -> None:
+    table, helper, common = helper_source
+    if override:
+        helper = helper.rename(helper.with_name("synthetic-override"))
+        monkeypatch.setenv("HAPAX_SECRET_HELPER", str(helper))
+    # Fail even if the module is available through an ambient PYTHONPATH.
+    setup = (
+        "import builtins\n"
+        "real_import = builtins.__import__\n"
+        "def no_filestore(name, *args, **kwargs):\n"
+        "    if name == 'k0' or name.startswith('k0.'):\n"
+        "        raise ImportError('synthetic unavailable FileStore pin')\n"
+        "    return real_import(name, *args, **kwargs)\n"
+        "builtins.__import__ = no_filestore\n"
+    )
+    result = _run_helper(table, setup)
+    assert result.returncode == 0, result.stderr
+    assert common.read_bytes() == COMMON_BASELINE
+    assert common.with_name(AUTHORITY_FILE).read_bytes() == (
+        AUTHORITY_ENV.encode() + b"=" + AUTHORITY_VALUE + b"\n"
+    )
+    assert "source=helper backend=filestore-via-helper" in result.stdout
+    assert not (common.parent / "secrets").exists()
+    assert (common.parent / "helper-calls").read_text().splitlines() == [
+        *REQUIRED_VALUES,
+        *OPTIONAL_ENTRIES,
+        AUTHORITY_ENTRY,
+    ]
+    assert AUTHORITY_VALUE.decode() not in result.stdout + result.stderr
+
+
+def test_helper_present_matches_filestore_bytes(producer_store, helper_source, monkeypatch):
+    store, common = producer_store
+    table, _, _ = helper_source
+    values = dict(REQUIRED_VALUES)
+    for name in OPTIONAL_ENTRIES:
+        values[name] = b"synthetic-optional\r\nsynthetic-ignored"  # pragma: allowlist secret
+    values["api-openai"] = b""  # pragma: allowlist secret
+    values[AUTHORITY_ENTRY] = AUTHORITY_VALUE + b"\nsynthetic-ignored"  # pragma: allowlist secret
+    for name, value in values.items():
+        store.put(name, value)
+        table[name] = {"action": "value", "hex": (value + b"\n").hex()}
+    monkeypatch.setenv("HAPAX_SECRETS_SOURCE", "filestore")
+    assert _run_producer(os.environ.copy()).returncode == 0
+    authority = common.with_name(AUTHORITY_FILE)
+    baseline = (common.read_bytes(), authority.read_bytes())
+    monkeypatch.setenv("HAPAX_SECRETS_SOURCE", "helper")
+    result = _run_helper(table)
+    assert result.returncode == 0, result.stderr
+    assert "source=helper" in result.stdout
+    assert (common.read_bytes(), authority.read_bytes()) == baseline
+    assert common.stat().st_mode & 0o777 == 0o600
+    assert authority.stat().st_mode & 0o777 == 0o600
+    assert not list(common.parent.glob(".*.tmp"))
+
+
+def test_helper_absent_optional_and_authority(helper_source):
+    table, _, common = helper_source
+    assert _run_helper(table).returncode == 0
+    authority = common.with_name(AUTHORITY_FILE)
+    baseline = common.read_bytes()
+    table[AUTHORITY_ENTRY] = {"action": "absent"}
+    result = _run_helper(table)
+    assert result.returncode == 0, result.stderr
+    assert common.read_bytes() == baseline == COMMON_BASELINE
+    assert not authority.exists()
+    assert b"SOUNDCLOUD_CLIENT_ID=" not in baseline
+
+
+@pytest.mark.parametrize("name", list(REQUIRED_VALUES))
+def test_helper_required_absent_preserves_files(helper_source, name):
+    table, _, common = helper_source
+    authority = common.with_name(AUTHORITY_FILE)
+    common.write_bytes(COMMON_BASELINE)
+    authority.write_bytes(AUTHORITY_VALUE)
+    inodes = (common.stat().st_ino, authority.stat().st_ino)
+    table[name] = {"action": "absent"}
+    result = _run_helper(table)
+    assert result.returncode == 2
+    assert name in result.stderr
+    assert "Next action:" in result.stderr and "TTY put" in result.stderr
+    assert common.read_bytes() == COMMON_BASELINE
+    assert authority.read_bytes() == AUTHORITY_VALUE
+    assert (common.stat().st_ino, authority.stat().st_ino) == inodes
+
+
+@pytest.mark.parametrize("name", ["api-openai", "soundcloud-client-id", AUTHORITY_ENTRY])
+@pytest.mark.parametrize(
+    ("fault", "diagnostic"),
+    [
+        ({"action": "exit", "code": 255}, "transport exit 255"),
+        ({"action": "exit", "code": 2}, "transport exit 2"),
+        ({"action": "exit", "code": 1}, "transport exit 1"),
+        ({"action": "bad-absence"}, "transport exit 1"),
+        ({"action": "value", "hex": "ff"}, "decoding"),  # pragma: allowlist secret
+        ({"action": "value", "hex": "0aff"}, "decoding"),  # pragma: allowlist secret
+    ],
+    ids=["ssh-255", "exit-2", "exit-1", "wrong-absence", "decode", "decode-second-line"],
+)
+def test_helper_failure_preserves_both_files(helper_source, name, fault, diagnostic):
+    table, _, common = helper_source
+    authority = common.with_name(AUTHORITY_FILE)
+    common.write_bytes(COMMON_BASELINE)
+    authority.write_bytes(AUTHORITY_VALUE)
+    inodes = (common.stat().st_ino, authority.stat().st_ino)
+    table[name] = fault
+    result = _run_helper(table)
+    assert common.read_bytes() == COMMON_BASELINE
+    assert authority.read_bytes() == AUTHORITY_VALUE
+    assert (common.stat().st_ino, authority.stat().st_ino) == inodes, "published before resolution"
+    assert result.returncode == 2, "helper failure must refuse without fallback"
+    assert name in result.stderr and diagnostic in result.stderr
+    assert "Next action:" in result.stderr
+    assert "HAPAX_SECRETS_HOST" in result.stderr and "enrollment" in result.stderr
+    log = result.stdout + result.stderr
+    assert AUTHORITY_VALUE.decode() not in log
+    assert "synthetic-private-error-detail" not in log  # pragma: allowlist secret
+    assert not list(common.parent.glob(".*.tmp"))
+    calls = (common.parent / "helper-calls").read_text().splitlines()
+    assert calls == [*REQUIRED_VALUES, *OPTIONAL_ENTRIES, AUTHORITY_ENTRY][: calls.index(name) + 1]
+
+
+def test_helper_failure_never_uses_available_filestore(producer_store, helper_source):
+    # Keep the transport matrix runnable without reins; this separate parity
+    # pin makes fallback observable even when the local store could succeed.
+    store, common = producer_store
+    store.put(AUTHORITY_ENTRY, AUTHORITY_VALUE)
+    table, _, _ = helper_source
+    table[AUTHORITY_ENTRY] = {"action": "exit", "code": 255}
+    result = _run_helper(table)
+    assert result.returncode == 2, "helper failure must refuse without fallback"
+    assert not common.exists()
+    assert not common.with_name(AUTHORITY_FILE).exists()
+
+
+def test_helper_timeout_preserves_both_files(helper_source):
+    table, _, common = helper_source
+    authority = common.with_name(AUTHORITY_FILE)
+    common.write_bytes(COMMON_BASELINE)
+    authority.write_bytes(AUTHORITY_VALUE)
+    inodes = (common.stat().st_ino, authority.stat().st_ino)
+    table[AUTHORITY_ENTRY]["action"] = "hang"
+    result = _run_helper(table)
+    assert result.returncode == 2, "helper call must time out before the 22-second hang ends"
+    assert AUTHORITY_ENTRY in result.stderr and "timeout" in result.stderr
+    assert "20" in result.stderr
+    assert "Next action:" in result.stderr
+    assert "HAPAX_SECRETS_HOST" in result.stderr and "enrollment" in result.stderr
+    assert common.read_bytes() == COMMON_BASELINE
+    assert authority.read_bytes() == AUTHORITY_VALUE
+    assert (common.stat().st_ino, authority.stat().st_ino) == inodes
+    assert not list(common.parent.glob(".*.tmp"))
+
+
+@pytest.mark.parametrize("fault", ["missing", "not-executable", "launch-oserror"])
+def test_helper_executable_failure_preserves_files(helper_source, monkeypatch, fault):
+    table, helper, common = helper_source
+    if fault == "missing":
+        monkeypatch.setenv("HAPAX_SECRET_HELPER", str(helper.with_name("missing")))
+    elif fault == "not-executable":
+        helper.chmod(0o600)
+    else:
+        # Executable exists, but its interpreter does not: a real launch OSError.
+        helper.write_text(f"#!{helper.parent / 'missing-interpreter'}\n")
+    authority = common.with_name(AUTHORITY_FILE)
+    common.write_bytes(COMMON_BASELINE)
+    authority.write_bytes(AUTHORITY_VALUE)
+    inodes = (common.stat().st_ino, authority.stat().st_ino)
+    result = _run_helper(table)
+    assert result.returncode == 2
+    assert "launch" in result.stderr if fault == "launch-oserror" else "executable" in result.stderr
+    if fault == "launch-oserror":
+        assert "litellm-master-key" in result.stderr
+    assert "Next action:" in result.stderr and "HAPAX_SECRET_HELPER" in result.stderr
+    assert "HAPAX_SECRETS_HOST" in result.stderr and "enrollment" in result.stderr
+    assert common.read_bytes() == COMMON_BASELINE
+    assert authority.read_bytes() == AUTHORITY_VALUE
+    assert (common.stat().st_ino, authority.stat().st_ino) == inodes
+    assert not list(common.parent.glob(".*.tmp"))
+
+
+@pytest.mark.parametrize("filename", ["hapax-secrets.env", AUTHORITY_FILE])
+def test_helper_replaces_files_atomically(helper_source, monkeypatch, filename):
+    table, _, common = helper_source
+    monkeypatch.setenv("SYNTHETIC_HELPER_TABLE", json.dumps(table))
+    target = common.with_name(filename)
+    target.write_bytes(b"synthetic-prior-env\n")  # pragma: allowlist secret
+    target.chmod(0o644)
+    prior = target.read_bytes()
+    inode = target.stat().st_ino
+    replace = os.replace
+    replacements = []
+
+    def observe_replace(src, dst):
+        assert (common.parent / "helper-calls").read_text().splitlines() == [
+            *REQUIRED_VALUES,
+            *OPTIONAL_ENTRIES,
+            AUTHORITY_ENTRY,
+        ]
+        if dst == target:
+            assert target.read_bytes() == prior
+            assert Path(src).stat().st_mode & 0o777 == 0o600
+            replacements.append((src, dst))
+        replace(src, dst)
+
+    monkeypatch.setattr(os, "replace", observe_replace)
+    runpy.run_path(str(PRODUCER), run_name="__main__")
+    assert replacements == [(target.with_name(f".{filename}.tmp"), target)]
+    assert target.stat().st_ino != inode
+    assert target.stat().st_mode & 0o777 == 0o600
+    assert not list(common.parent.glob(".*.tmp"))
 
 
 def test_producer_missing_key_does_not_clobber_env(tmp_path, monkeypatch) -> None:
