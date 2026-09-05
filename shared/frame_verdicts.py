@@ -1487,7 +1487,9 @@ def _canonical_member_entries(member: DecayedMember) -> dict[Path, Path]:
     return surface
 
 
-def _canonical_scope_entries(path: Path, pattern: str, member: DecayedMember) -> dict[Path, Path]:
+def _canonical_scope_entries(
+    path: Path, pattern: str, member: DecayedMember, *, include_directories: bool = False
+) -> dict[Path, Path]:
     """Expand in the producer tree before resolving every entry, including broken links."""
     try:
         entries = list(path.glob(pattern))
@@ -1500,13 +1502,13 @@ def _canonical_scope_entries(path: Path, pattern: str, member: DecayedMember) ->
         try:
             # The producer reads files. Terminal ** can yield only directories; those
             # entries supply no evidence about containment of the recursive file language.
-            if entry.is_dir():
+            if entry.is_dir() and not include_directories:
                 continue
             for root in member.roots:
-                if root in entry.parents:
+                if member.reader != "fs.content_query" and root in entry.parents:
                     _check_member_symlinks(entry, root, member, scope_pattern=None)
             target = _resolve_external_scope_path(entry)
-            if entry.is_file():
+            if entry.is_file() or (include_directories and entry.is_dir()):
                 canonical[entry] = target
         except (UndecidableScopeContainment, OSError, RuntimeError) as exc:
             cause = (
@@ -1598,6 +1600,24 @@ def _content_query_within_member(
             canonical == target and _content_query_matches(entry, query)
             for entry, target in selected_entries.items()
         )
+    if scope_pattern is not None:
+        # A glob can hide an external alias in a nonliteral segment. Compare its
+        # resolved expansions, including directories that can reach selected bytes.
+        # Such witnesses prove overlap only, never the glob's whole future surface.
+        surface = frozenset(selected_entries.values())
+        for entry, target in _canonical_scope_entries(
+            path, scope_pattern, member, include_directories=True
+        ).items():
+            if (
+                target in surface
+                or any(target in file.parents for file in surface)
+                or any(target == root or root in target.parents for root in member.roots)
+            ):
+                raise UndecidableScopeContainment(
+                    f"fs.content_query scope glob {scope_pattern!r} component {entry} "
+                    f"resolves to member surface at {target}; whole-surface containment is "
+                    "undecidable; declare explicit files so the content predicate can be evaluated"
+                )
     if dirlike or scope_pattern is not None:
         for entry, target in selected_entries.items():
             if canonical in target.parents and _pattern_matches(
@@ -1616,13 +1636,13 @@ def _content_query_within_member(
                     "declare explicit files so the content predicate can be evaluated"
                 )
             continue
-        if _path_is_excluded(canonical, member) or not member.patterns:
-            continue
         if dirlike or scope_pattern is not None:
             raise UndecidableScopeContainment(
-                f"fs.content_query needs explicit file paths below {root} to evaluate "
-                "the content predicate; whole-surface containment is undecidable"
+                f"fs.content_query scope component {path} needs explicit file paths below {root} "
+                "to evaluate the content predicate; whole-surface containment is undecidable"
             )
+        if _path_is_excluded(canonical, member) or not member.patterns:
+            continue
         relative = canonical.relative_to(root).as_posix()
         for pattern in _canonical_member_patterns(root, member):
             # rglob adds recursive selection; canonical patterns omit directory-only **.

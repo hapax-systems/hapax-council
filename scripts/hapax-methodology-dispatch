@@ -1094,8 +1094,11 @@ def frame_verdict_refusal(
         )
     except frame_verdicts.NonCanonicalScopeRef as exc:
         # The error type identifies whether to repair the task scope or the member declaration.
+        consulted = "; ".join(f"{m.member_id} ({m.relation})" for m in verdicts.decayed)
         return (
-            f"declared mutation scope is not containable: {exc}. Next: {exc.remedy}",
+            f"declared mutation scope is not containable: {exc}. "
+            f"Frame epoch {verdicts.epoch}; consulted decayed members: {consulted}. "
+            f"Next: {exc.remedy}",
             verdicts.epoch,
             decayed,
         )

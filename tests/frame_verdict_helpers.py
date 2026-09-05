@@ -1,6 +1,8 @@
 """Fixture epoch selection, real Git history and producer reads for frame consumer tests."""
 
 import importlib
+import os
+import shutil
 import subprocess
 from pathlib import Path
 from types import SimpleNamespace
@@ -49,8 +51,18 @@ def producer_glob_bytes(
     excluded: tuple[Path, ...] = (),
     content_query: str | None = None,
     max_unit_bytes: int = 128,
+    query_engine: str = "python",
+    case_insensitive: bool = False,
+    match_mode: str = "substring",
 ) -> dict[Path, bytes]:
     """Call the installed producer's glob/query selection and byte reader, without a run."""
+    assert query_engine in {"python", "rg"}
+    rg = shutil.which("rg")
+    if query_engine == "rg" and rg is None:
+        reason = "frame content-query rg oracle requires the rg executable"
+        if os.environ.get("HAPAX_ALLOW_NO_RG") == "1":
+            pytest.skip(f"{reason}; HAPAX_ALLOW_NO_RG=1 declares a rg-less run")
+        pytest.fail(f"{reason}; only HAPAX_ALLOW_NO_RG=1 permits a rg-less run")
     base = Path("~/Documents/Personal/30-areas/hapax").expanduser()
     if not (base / "frame/procedure/builtin.py").is_file():
         pytest.skip("installed frame producer is unavailable")
@@ -72,10 +84,16 @@ def producer_glob_bytes(
     location = {"path": str(root), "patterns": patterns}
     reader = builtin.fs_glob
     if content_query is not None:
-        location = {"roots": [str(root)], "patterns": patterns, "query": content_query}
+        location = {
+            "roots": [str(root)],
+            "patterns": patterns,
+            "query": content_query,
+            "case_insensitive": case_insensitive,
+            "match": match_mode,
+        }
         reader = builtin.fs_content_query
     with monkeypatch.context() as fallback:
-        if content_query is not None:
+        if content_query is not None and query_engine == "python":
             fallback.setattr(builtin.shutil, "which", lambda name: None)
         result = reader(
             SimpleNamespace(
