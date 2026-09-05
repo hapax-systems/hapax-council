@@ -57,6 +57,8 @@ seat_quota_from_receipt() {
 import json
 import sys
 from pathlib import Path
+from pydantic import ValidationError
+import yaml
 
 root = sys.argv[1]
 seat_next = (
@@ -64,21 +66,36 @@ seat_next = (
     "re-run hapax-platform-capability-receipts --platform glmcp and check hapax-glmcp-seat-refresh.service."
 )
 
-try:
-    sys.path.insert(0, root)
-    from shared.platform_capability_receipts import ensure_utc, load_platform_capability_receipts, parse_duration_spec
-    from shared.platform_capability_registry import (
-        _quota_spend_live_path_from_env,
-        _receipt_quota_names_route,
-        load_platform_capability_registry_for_dispatch,
-    )
-    from shared.quota_spend_ledger import DEFAULT_QUOTA_SPEND_LEDGER_LIVE
+sys.path.insert(0, root)
+from shared.platform_capability_receipts import (
+    PlatformCapabilityReceiptError, ensure_utc, load_platform_capability_receipts, parse_duration_spec,
+)
+from shared.platform_capability_registry import (
+    PlatformCapabilityRegistryError,
+    _quota_spend_live_path_from_env,
+    _receipt_quota_names_route,
+    load_platform_capability_registry_for_dispatch,
+)
+from shared.quota_spend_ledger import DEFAULT_QUOTA_SPEND_LEDGER_LIVE
 
+source = "--show JSON response"
+field = "path"
+failure_reason = "field_invalid"
+try:
     row = json.load(sys.stdin)
+    if not isinstance(row, dict):
+        raise ValueError("row must be an object")
+    for field in ("path", "receipt_id"):
+        if not isinstance(row[field], str) or not row[field]:
+            raise ValueError("field must be nonempty text")
+    source = row["path"]
+    field = "receipt schema/fields (including neighbouring *.json files)"
+    failure_reason = "schema_invalid"
     # Reload through the plural loader: malformed neighbours, expiry, or replacement between
     # --show and this read must still fail closed. Use this same object for evidence and age.
     receipt = load_platform_capability_receipts(Path(row["path"]).parent).get("glmcp")
     if receipt is None or receipt.receipt_id != row["receipt_id"]:
+        failure_reason = "receipt_changed"
         raise ValueError("receipt changed since --show")
     route_id = "glmcp.review.direct"
     if route_id not in receipt.routes:
@@ -88,11 +105,16 @@ try:
     else:
         # Dispatch applies _route_specific_quota_admission_fresh through this loader:
         # the recorded route reference alone never establishes LIVE admission.
+        source = str(Path(root) / "config/platform-capability-registry.json")
+        failure_reason = "registry_invalid"
         registry, _ = load_platform_capability_registry_for_dispatch(
-            Path(root) / "config/platform-capability-registry.json",
+            Path(source),
             receipt_dir=Path(row["path"]).parent,
         )
-        route = next(route for route in registry.routes if route.route_id == route_id)
+        failure_reason = "route_absent"
+        route = next((route for route in registry.routes if route.route_id == route_id), None)
+        if route is None:
+            raise ValueError("required route absent")
         if "glmcp_review_seat_receipt_admission_required" in route.freshness.evidence.quota.blocked_reasons:
             ledger_path = _quota_spend_live_path_from_env() or DEFAULT_QUOTA_SPEND_LEDGER_LIVE
             print(
@@ -107,6 +129,9 @@ try:
         # _apply_receipt_to_route_payload anchors quota_checked_at at receipt.observed_at.
         # The plural loader also drops the whole receipt at its own expiry. Both visibility
         # checks must reserve the next renewal against whichever lifetime runs out first.
+        source = row["path"]
+        field = "observed_at, stale_after or quota.stale_after"
+        failure_reason = "field_invalid"
         lifetime = min(parse_duration_spec(receipt.stale_after), parse_duration_spec(receipt.quota.stale_after))
         print("observed", ensure_utc(receipt.observed_at).isoformat(), str(int(lifetime.total_seconds())) + "s")
         sys.exit(0)
@@ -114,11 +139,45 @@ try:
         "  --show WARNING: account_live_quota_receipt_absent: " + reason + " for " + route_id
         + "; refreshing because route-specific quota evidence is absent. " + seat_next, file=sys.stderr,
     )
-except Exception as exc:
-    # Exception messages can contain receipt data; only their type belongs in the journal.
+except (OSError, json.JSONDecodeError, yaml.YAMLError, ValidationError, KeyError,
+        PlatformCapabilityReceiptError, PlatformCapabilityRegistryError, ValueError) as exc:
+    # Domain loaders wrap expected file/schema errors. Inspect the cause class, never its
+    # message or validation inputs: those may carry receipt data. Unknown causes are bugs.
+    cause = exc
+    while isinstance(cause, (PlatformCapabilityReceiptError, PlatformCapabilityRegistryError)) and cause.__cause__ is not None:
+        cause = cause.__cause__
+    if isinstance(cause, FileNotFoundError):
+        failure_reason, remedy = "file_absent", "restore the missing file"
+        source = str(cause.filename or source)
+    elif isinstance(cause, PermissionError):
+        failure_reason, remedy = "permission_denied", "restore read permission on the file and parent directories"
+        source = str(cause.filename or source)
+    elif isinstance(cause, json.JSONDecodeError):
+        failure_reason, remedy = "json_decode_failed", "repair JSON syntax in the named file/response and neighbouring receipt files"
+    elif isinstance(cause, yaml.YAMLError):
+        failure_reason, remedy = "yaml_decode_failed", "repair YAML syntax in the admission/authority receipt files"
+    elif isinstance(cause, UnicodeDecodeError):
+        failure_reason, remedy = "encoding_invalid", "repair UTF-8 encoding in the receipt files"
+    elif isinstance(cause, OSError):
+        failure_reason, remedy = "file_unreadable", "repair file type, directory access or storage I/O"
+        source = str(cause.filename or source)
+    elif isinstance(cause, ValidationError):
+        failure_reason, remedy = "schema_invalid", "repair schema/fields in the named file and neighbouring receipt files"
+    elif isinstance(cause, (KeyError, ValueError)):
+        remedy = {
+            "field_invalid": "repair field " + field,
+            "schema_invalid": "repair schema/fields in the named file and neighbouring receipt files",
+            "receipt_changed": "rerun --show and regenerate the expired, absent or replaced glmcp receipt",
+            "registry_invalid": "repair registry schema/fields and route definitions",
+            "route_absent": "restore route glmcp.review.direct in the registry",
+        }[failure_reason]
+    else:
+        raise
     print(
         "  --show parse: dispatcher quota predicate failed (" + type(exc).__name__
-        + "); refreshing because the receipt could not be read. " + seat_next, file=sys.stderr,
+        + "): " + failure_reason + "; source=" + source + "; field=" + field
+        + ". Next: " + remedy + "; refreshing because dispatcher quota could not be confirmed. "
+        + seat_next, file=sys.stderr,
     )
 sys.exit(1)
   ' "$H"
@@ -198,6 +257,7 @@ seat_remaining_seconds() {
 # when the named slack is exhausted. TimeoutStopSec supplies the post-check shutdown ceiling.
 # OnBootSec=2min is a boot-time exception outside this arithmetic, not a continuous-run guarantee
 # across reboot or before the first successful activation.
+# Its boot-window bound is OnBootSec plus one round-trip (including activation and timer slack).
 # The 24-hour no-lapse witness is post-activation and unmeasured; this envelope does not claim it.
 #
 # The receipt exposes whole seconds. One second above the threshold can disappear between the

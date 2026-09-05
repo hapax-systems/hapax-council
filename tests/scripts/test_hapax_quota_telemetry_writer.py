@@ -121,6 +121,43 @@ def test_capability_receipt_refresh_preserves_codex_exec_auth_probe(
     ]
 
 
+@pytest.mark.parametrize("case", ["older", "newer", "expired", "untrusted"])
+def test_ledger_merge_keeps_only_newer_valid_route_admission(tmp_path: Path, case: str) -> None:
+    from shared.quota_spend_ledger import (
+        load_quota_spend_ledger,
+        subscription_quota_state_for_route,
+    )
+
+    relay = tmp_path / "relay-receipts"
+    relay.mkdir()
+    _glmcp_admission(relay, observed_at="2026-06-10T00:00:04Z")
+    result, out = _run_writer(tmp_path, now="2026-06-10T00:00:05Z")
+    assert result.returncode == 0, result.stderr
+    previous = json.loads(out.read_text())
+    admitted = next(
+        row for row in previous["quota_snapshots"] if row["route_id"] == "glmcp.review.direct"
+    )
+    assert admitted["subscription_quota_state"] == "fresh"
+    if case == "untrusted":
+        admitted["evidence_refs"] = ["test:untrusted"]
+        out.write_text(json.dumps(previous))
+    (relay / "glmcp-quota-admission.yaml").unlink()
+    now = {"newer": "2026-06-10T00:00:10Z", "expired": "2026-06-10T00:20:00Z"}.get(case, NOW)
+    result, out = _run_writer(tmp_path, now=now)
+    assert result.returncode == 0, result.stderr
+    ledger = load_quota_spend_ledger(out)
+    from datetime import datetime
+
+    state, _ = subscription_quota_state_for_route(
+        ledger, "glmcp.review.direct", now=datetime.fromisoformat(now)
+    )
+    assert state.value == ("fresh" if case == "older" else "unknown")
+    if case == "older":
+        kept = next(row for row in ledger.quota_snapshots if row.route_id == "glmcp.review.direct")
+        assert kept.model_dump(mode="json") == admitted
+        assert ledger.captured_at.isoformat() == "2026-06-10T00:00:05+00:00"
+
+
 def _wall_receipt(
     relay: Path,
     role: str,

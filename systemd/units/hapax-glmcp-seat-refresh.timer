@@ -2,6 +2,9 @@
 Description=After each completion: keep the GLM review seat admitted (the service skips while a full renewal still fits)
 
 [Timer]
+# OnBootSec=2min is a boot-time exception outside the continuous-run envelope.
+# Its boot-window bound is OnBootSec plus one round-trip (including activation and timer slack).
+# The 24-hour no-lapse witness is post-activation and unmeasured; this envelope does not claim it.
 OnBootSec=2min
 # Schedule from the service becoming inactive, not from its activation. A refresh is bounded by the
 # service's 600 s TimeoutStartSec, so an active-relative timer could elapse while the oneshot was

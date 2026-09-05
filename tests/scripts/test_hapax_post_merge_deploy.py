@@ -3686,8 +3686,12 @@ def test_refresh_deploy_retires_both_interim_dropins_before_reload(
     for sibling in siblings:
         assert sibling.read_text() == "[Service]\nNice=5\n"
         assert list(sibling.parent.iterdir()) == [sibling]
-    for path in paths[:1] if unexpected else paths:
-        assert (user_dir / Path(path).name).read_text() == (REPO_ROOT / path).read_text()
+    for path in paths:
+        installed = user_dir / Path(path).name
+        if unexpected:
+            assert not installed.exists(), f"refused deploy installed {installed}"
+        else:
+            assert installed.read_text() == (REPO_ROOT / path).read_text()
 
 
 @pytest.mark.parametrize("unexpected", [False, True])
@@ -3741,7 +3745,9 @@ def test_glm_seat_deploy_removes_only_probe_and_verifies_loaded_deadline(
     assert not probe.exists()
     if unexpected:
         assert unrelated.read_text() == "[Service]\nNice=5\n"
-    assert (home / ".config/systemd/user" / unit).read_text() == content
+        assert not (home / ".config/systemd/user" / unit).exists()
+    else:
+        assert (home / ".config/systemd/user" / unit).read_text() == content
     if probe_present:
         assert "removing stale local drop-in" in result.stdout
         assert "probe-tree.conf" in result.stdout
@@ -3760,6 +3766,8 @@ def test_glm_seat_deploy_removes_only_probe_and_verifies_loaded_deadline(
         assert str(unrelated) in result.stderr
         assert "next action:" in result.stderr
         assert f"--user restart {unit}" not in calls
+        assert "--user daemon-reload" not in calls
+        assert not any("enable" in call for call in calls)
         assert not completed
         return
     reload_call = "--user daemon-reload"
@@ -3788,6 +3796,52 @@ def test_glm_seat_deploy_removes_only_probe_and_verifies_loaded_deadline(
         assert "TimeoutStartSec=600" in result.stderr
         assert "next action:" in result.stderr
         assert f"--user restart {unit}" not in calls
+
+
+@pytest.mark.parametrize("location", ["user", "runtime"])
+def test_glm_dropin_refusal_precedes_every_unit_install(tmp_path: Path, location: str) -> None:
+    paths = {
+        "systemd/units/aaa-before-glm.service": "[Service]\nExecStart=/bin/true\n",
+        **{
+            f"systemd/units/hapax-glmcp-seat-refresh.{suffix}": (
+                REPO_ROOT / f"systemd/units/hapax-glmcp-seat-refresh.{suffix}"
+            ).read_text()
+            for suffix in ("service", "timer")
+        },
+    }
+    repo, sha = _repo_with_linear_commit(tmp_path, paths)
+    home = tmp_path / "home"
+    runtime = tmp_path / "runtime"
+    user_dir = home / ".config/systemd/user"
+    dropin_root = user_dir if location == "user" else runtime / "systemd/user"
+    stray = dropin_root / "hapax-glmcp-seat-refresh.service.d/operator.conf"
+    stray.parent.mkdir(parents=True)
+    stray.write_text("[Service]\nNice=5\n")
+    bin_dir, calls_path = _fake_systemctl(tmp_path)
+    result = subprocess.run(
+        [str(SCRIPT), sha],
+        capture_output=True,
+        text=True,
+        env={
+            **os.environ,
+            "HOME": str(home),
+            "XDG_RUNTIME_DIR": str(runtime),
+            "PATH": f"{bin_dir}:{os.environ['PATH']}",
+            "REPO": str(repo),
+            "HAPAX_SYSTEMCTL_CALLS": str(calls_path),
+            "HAPAX_POST_MERGE_TRACE_PATH": str(tmp_path / "trace.jsonl"),
+        },
+    )
+    assert result.returncode == 1, result.stdout + result.stderr
+    assert "glm_seat_unexpected_dropin" in result.stderr
+    assert "next action:" in result.stderr
+    assert stray.read_text() == "[Service]\nNice=5\n"
+    installed = [Path(path).name for path in paths if (user_dir / Path(path).name).exists()]
+    assert installed == [], f"refusal left installed units: {installed}"
+    calls = calls_path.read_text() if calls_path.exists() else ""
+    assert "daemon-reload" not in calls
+    assert "restart" not in calls
+    assert "enable" not in calls
 
 
 @pytest.mark.parametrize("location", ["runtime", "dangling"])

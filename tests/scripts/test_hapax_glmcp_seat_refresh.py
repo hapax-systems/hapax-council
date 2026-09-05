@@ -12,6 +12,7 @@ without a network call."""
 
 from __future__ import annotations
 
+import io
 import json
 import os
 import runpy
@@ -19,6 +20,7 @@ import shlex
 import shutil
 import subprocess
 import sys
+from contextlib import contextmanager
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
@@ -343,6 +345,244 @@ def _run(
 
 def _witnesses(home: Path) -> list[Path]:
     return sorted((home / ".cache" / "hapax" / "glmcp-admission-witness").glob("*.yaml"))
+
+
+@pytest.mark.parametrize("wait_at", ["capabilities", "lock"])
+def test_telemetry_wait_cannot_revoke_real_seat_refresh(
+    tmp_path: Path, monkeypatch, capsys, wait_at
+):
+    """Interleave both real producers; only the reviewer and hardware probes are fake."""
+    from shared.quota_spend_ledger import (
+        load_quota_spend_ledger,
+        subscription_quota_state_for_route,
+    )
+
+    home, council = _harness(tmp_path)
+    relay = home / ".cache/hapax/relay/receipts"
+    receipts = home / ".cache/hapax/platform-capability-receipts"
+    ledger_path = home / "quota-spend-ledger-live.json"
+    # Replace the harness writer/admission stubs with their production entry points.
+    for name, args in {
+        "hapax-glmcp-quota-admission": ["--receipt-dir", str(relay)],
+        "hapax-quota-telemetry-writer": [
+            "--out",
+            str(ledger_path),
+            "--relay-receipt-dir",
+            str(relay),
+            "--platform-capability-receipt-dir",
+            str(receipts),
+            "--nvidia-smi",
+            "/bin/false",
+        ],
+    }.items():
+        _stub(
+            council / "scripts" / name,
+            "exec " + shlex.join([sys.executable, str(REPO / "scripts" / name), *args]) + ' "$@"\n',
+        )
+    # Generate the capability artifact through production too; stub only CLI availability.
+    capability_code = (
+        "import runpy, sys\n"
+        "from shared.platform_capability_receipts import CliEvidence\n"
+        f"producer = runpy.run_path({str(RECEIPTS_SCRIPT)!r})\n"
+        "producer['main'].__globals__['observe_cli'] = lambda *a, **kw: CliEvidence(binary='test', available=True)\n"
+        "raise SystemExit(producer['main'](sys.argv[1:]))\n"
+    )
+    _stub(
+        council / "scripts/hapax-platform-capability-receipts",
+        "exec " + shlex.join([sys.executable, "-c", capability_code]) + ' "$@"\n',
+    )
+    writer = runpy.run_path(str(REPO / "scripts/hapax-quota-telemetry-writer"))
+    globals_ = writer["main"].__globals__
+    started = datetime.now(UTC).replace(microsecond=0) - timedelta(seconds=5)
+    clock = [started]
+    publications = []
+
+    class Clock(datetime):
+        @classmethod
+        def now(cls, tz=None):
+            return clock[0]
+
+    def publish_seat():
+        result = _run(home, council, environment={"PYTHONPATH": str(REPO)})
+        assert result.returncode == 0, result.stdout + result.stderr
+        ledger = load_quota_spend_ledger(ledger_path)
+        assert subscription_quota_state_for_route(ledger, "glmcp.review.direct")[0].value == "fresh"
+        assert not _dispatch_quota(home, datetime.now(UTC)).evidence.quota.blocked_reasons
+        publications.append(ledger)
+        clock[0] = datetime.now(UTC).replace(microsecond=0)
+        assert clock[0] > started
+
+    def refresh_capabilities(**kwargs):
+        assert kwargs["receipt_dir"] == receipts
+        if wait_at == "capabilities":
+            publish_seat()
+        return True
+
+    real_lock = writer["quota_spend_live_lock"]
+
+    @contextmanager
+    def wait_for_lock(path):
+        if wait_at == "lock":
+            publish_seat()
+        with real_lock(path):
+            yield
+
+    monkeypatch.setitem(globals_, "datetime", Clock)
+    monkeypatch.setitem(globals_, "refresh_capability_receipts", refresh_capabilities)
+    monkeypatch.setitem(globals_, "quota_spend_live_lock", wait_for_lock)
+    monkeypatch.setitem(
+        globals_, "probe_local_resource_state", lambda **kw: ("green", ["test:gpu"])
+    )
+    assert (
+        writer["main"](
+            [
+                "--out",
+                str(ledger_path),
+                "--relay-receipt-dir",
+                str(relay),
+                "--platform-capability-receipt-dir",
+                str(receipts),
+                "--json",
+            ]
+        )
+        == 0
+    )
+    assert len(publications) == 1
+    final = load_quota_spend_ledger(ledger_path)
+    assert subscription_quota_state_for_route(final, "glmcp.review.direct")[0].value == "fresh"
+    assert not _dispatch_quota(home, datetime.now(UTC)).evidence.quota.blocked_reasons
+    summary = json.loads(capsys.readouterr().out)
+    assert summary["glmcp_admissions"] == 1
+    assert summary["glmcp_ignored_admissions"] == 0
+    assert final.captured_at == clock[0]
+    scan = writer["active_glmcp_admission_receipts"](relay, now=final.captured_at)
+    assert len(scan.admissions) == 1
+    assert not scan.ignored_evidence_refs
+
+
+@pytest.mark.parametrize(
+    "failure,reason,remedy",
+    [
+        ("absent", "file_absent", "restore"),
+        ("json", "json_decode_failed", "repair JSON"),
+        ("yaml", "yaml_decode_failed", "repair YAML"),
+        ("schema", "schema_invalid", "repair schema"),
+        ("permission", "permission_denied", "restore read permission"),
+        ("encoding", "encoding_invalid", "repair UTF-8 encoding"),
+        ("io", "file_unreadable", "repair file type"),
+        ("field", "field_invalid", "repair field path"),
+        ("registry", "registry_invalid", "repair registry"),
+        ("route", "route_absent", "restore route glmcp.review.direct"),
+        ("changed", "receipt_changed", "rerun --show"),
+    ],
+)
+def test_quota_predicate_expected_failures_name_file_field_and_remedy(
+    tmp_path: Path, monkeypatch, capsys, failure: str, reason: str, remedy: str
+):
+    import yaml
+    from pydantic import ValidationError
+
+    from shared import platform_capability_receipts as receipts
+    from shared import platform_capability_registry as registry
+
+    home, council = _harness(tmp_path, receipt_status="observed", receipt_remaining=900)
+    path = home / ".cache/hapax/platform-capability-receipts/glmcp.json"
+    receipt = receipts.load_platform_capability_receipt(path)
+    row = {"path": str(path), "receipt_id": receipt.receipt_id}
+    if failure == "field":
+        del row["path"]
+    elif failure == "changed":
+        row["receipt_id"] = "previous-receipt"
+    elif failure == "route":
+        from types import SimpleNamespace
+
+        monkeypatch.setattr(
+            registry,
+            "load_platform_capability_registry_for_dispatch",
+            lambda *a, **kw: (SimpleNamespace(routes=[]), ()),
+        )
+    else:
+        causes = {
+            "absent": FileNotFoundError(2, "missing", str(path)),
+            "json": json.JSONDecodeError("synthetic private payload", "{", 1),
+            "yaml": yaml.YAMLError("synthetic private payload"),
+            "schema": ValidationError.from_exception_data("receipt", []),
+            "permission": PermissionError(13, "denied", str(path)),
+            "encoding": UnicodeDecodeError("utf-8", b"\xff", 0, 1, "invalid byte"),
+            "io": IsADirectoryError(21, "directory", str(path)),
+            "registry": registry.PlatformCapabilityRegistryError("synthetic private payload"),
+        }
+
+        def fail_load(*args, **kwargs):
+            # The production plural loader wraps file/decode/schema errors in its domain error.
+            raise receipts.PlatformCapabilityReceiptError("synthetic private payload") from causes[
+                failure
+            ]
+
+        if failure == "registry":
+
+            def fail_registry(*args, **kwargs):
+                raise causes[failure]
+
+            monkeypatch.setattr(
+                registry, "load_platform_capability_registry_for_dispatch", fail_registry
+            )
+        else:
+            monkeypatch.setattr(receipts, "load_platform_capability_receipts", fail_load)
+    monkeypatch.setattr(sys, "argv", ["seat-quota", str(council)])
+    monkeypatch.setattr(sys, "stdin", io.StringIO(json.dumps(row)))
+    source = SCRIPT.read_text().split("seat_quota_from_receipt() {", 1)[1]
+    source = source.split("python3 -c '\n", 1)[1].split('\n  \' "$H"', 1)[0]
+    with pytest.raises(SystemExit) as exc:
+        exec(compile(source, str(SCRIPT), "exec"), {})
+    assert exc.value.code == 1
+    error = capsys.readouterr().err
+    assert remedy in error
+    assert reason in error
+    assert (
+        "path"
+        if failure == "field"
+        else str(council / "config/platform-capability-registry.json")
+        if failure in {"registry", "route"}
+        else str(path)
+    ) in error
+    assert "Next:" in error
+    assert "synthetic private payload" not in error
+
+
+@pytest.mark.parametrize("bug", [RuntimeError, TypeError, AttributeError])
+@pytest.mark.parametrize("wrapped", [False, True])
+def test_quota_predicate_unexpected_exception_preserves_traceback(
+    tmp_path: Path, monkeypatch, bug, wrapped
+):
+    from shared import platform_capability_receipts as receipts
+
+    def broken_loader(*args, **kwargs):
+        if wrapped:
+            raise receipts.PlatformCapabilityReceiptError("unexpected loader bug") from bug("cause")
+        raise bug("unexpected loader bug")
+
+    monkeypatch.setattr(receipts, "load_platform_capability_receipts", broken_loader)
+    monkeypatch.setattr(sys, "argv", ["seat-quota", str(REPO)])
+    monkeypatch.setattr(
+        sys,
+        "stdin",
+        io.StringIO(
+            json.dumps(
+                {
+                    "path": str(tmp_path / "glmcp.json"),
+                    "receipt_id": "test",
+                }
+            )
+        ),
+    )
+    source = SCRIPT.read_text().split("seat_quota_from_receipt() {", 1)[1]
+    source = source.split("python3 -c '\n", 1)[1].split('\n  \' "$H"', 1)[0]
+    with pytest.raises(
+        receipts.PlatformCapabilityReceiptError if wrapped else bug, match="unexpected loader bug"
+    ) as exc:
+        exec(compile(source, str(SCRIPT), "exec"), {})
+    assert any(entry.name == "broken_loader" for entry in exc.traceback)
 
 
 def _dispatch_quota(home: Path, now: datetime):

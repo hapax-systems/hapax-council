@@ -1264,6 +1264,17 @@ if [ "$DRY_RUN" = "1" ]; then
 fi
 
 inventory_review_seat_dropins
+# Refuse unexpected GLM overrides before installing ANY unit in this deployment.
+# Cleanup is bounded to the known interim overrides; the inventory above precedes it.
+for f in "${SYSTEMD[@]}"; do
+    case "$(basename "$f")" in
+        hapax-glmcp-seat-refresh.service|hapax-glmcp-seat-refresh.timer)
+            if git cat-file -e "$SHA:$f" 2>/dev/null; then
+                cleanup_known_stale_user_dropins_for_unit "$(basename "$f")"
+            fi
+            ;;
+    esac
+done
 
 # --- PipeWire confs ---
 if [ "${#PW[@]}" -gt 0 ]; then
@@ -1985,7 +1996,10 @@ if [ "${#SYSTEMD[@]}" -gt 0 ]; then
             fi
             git show "$SHA:$f" > "$dest"
             echo "  '$f' -> '$dest'"
-            cleanup_known_stale_user_dropins_for_unit "$base"
+            case "$base" in
+                hapax-glmcp-seat-refresh.service|hapax-glmcp-seat-refresh.timer) ;; # preflighted above
+                *) cleanup_known_stale_user_dropins_for_unit "$base" ;;
+            esac
             SYSTEMD_INSTALLED+=("$f")
         else
             rm -fv "$dest" || true

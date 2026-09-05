@@ -9,6 +9,13 @@ Description=Keep the GLM review seat admitted within the script's bounded no-lap
 [Service]
 Type=oneshot
 ExecStart=%h/.cache/hapax/source-activation/worktree/scripts/hapax-glmcp-seat-refresh
+# Installed systemd.exec(5), `man -P cat systemd.exec` (MANWIDTH=80, LC_ALL=C,
+# GROFF_NO_SGR=1, TERM=dumb), Environment= lines 3100-3101:
+# Specifier expansion is performed, see the "Specifiers" section in systemd.unit(5).
+# The same manual, LogExtraFields= line 3505 (not the Environment= section):
+# The usual specifiers are expanded in all assignments (see below).
+# `systemd-run -p Environment=` sets D-Bus properties, not unit-file assignments;
+# a transient probe does NOT exercise unit-file specifier expansion.
 Environment=HOME=%h
 Environment=PATH=%h/.local/bin:/usr/local/bin:/usr/bin:/bin
 Environment=GNUPGHOME=%h/.gnupg
