@@ -131,3 +131,16 @@ systemctl --user enable --now hapax-obsidian-publish-sync.timer
 ```
 
 <!-- end: withdrawn 2026-09-05 -->
+
+## Current activation and observation limits
+
+After any source activation, the runtime owner re-reads the sync units' masked
+state using the read-only commands in the observed-withdrawal/recheck material
+above and reasserts the masks if needed. Root and cx-blue own runtime and live
+links; this repository performs no unit or provider mutation.
+
+The recorded recheck observation was a 404 from this host, masked sync units,
+and the local `publish.json` site id and host fields reported as null. The
+provider-side inventory was not read by those recheck commands; nothing here
+proves provider deletion of the retired site. No provider deletion is performed
+or scheduled.

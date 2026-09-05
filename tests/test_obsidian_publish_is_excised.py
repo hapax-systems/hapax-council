@@ -11,7 +11,7 @@ from pathlib import Path
 import pytest
 import yaml
 
-# The heading parser is the locked markdown-it-py (uv.lock, via rich/textual); a missing
+# The Markdown parser is the locked markdown-it-py (uv.lock, via rich/textual); a missing
 # parser fails this module loudly at import, it is never skipped around.
 from markdown_it import MarkdownIt
 
@@ -53,6 +53,38 @@ def heading_ranks(markdown: bytes) -> list[int]:
     return [int(token.tag[1]) for token in tokens if token.type == "heading_open"]
 
 
+def current_publish_destinations(content: bytes) -> list[tuple[int, str]]:
+    """Resolve the whole document, exempting destinations rendered wholly inside the bounds.
+
+    Reference definitions are document-wide, so their location cannot determine
+    whether a rendered link or image is current. Inline maps are zero-based,
+    end-exclusive line spans; diagnostics name the first current line, one-based.
+    """
+    start = content.index(WITHDRAWN_SECTION_START)
+    end = content.index(WITHDRAWN_SECTION_END) + len(WITHDRAWN_SECTION_END)
+    start_line = content.count(b"\n", 0, start)
+    end_line = content.count(b"\n", 0, end)
+    violations = []
+    tokens = MarkdownIt("commonmark").parse(content.decode("utf-8", errors="replace"))
+    for inline in tokens:
+        if inline.type != "inline" or inline.map is None:
+            continue
+        first, last = inline.map
+        if start_line <= first and last <= end_line:
+            continue
+        current_line = first if first < start_line else max(first, end_line)
+        for child in inline.children or []:
+            attribute = {"link_open": "href", "image": "src"}.get(child.type)
+            if attribute is None:
+                continue
+            destination = child.attrGet(attribute)
+            if destination and any(
+                token in destination.encode("utf-8").lower() for token in PUBLISH_TOKENS
+            ):
+                violations.append((current_line + 1, destination))
+    return violations
+
+
 def active_obsidian_publish_surfaces(registry: dict) -> list[str]:
     """Every registry surface that is about Obsidian Publish and is not withdrawn."""
     active = []
@@ -76,12 +108,153 @@ def test_current_sources_have_no_publish_references() -> None:
                 continue
             content = path.read_bytes()
             relative = path.relative_to(REPO_ROOT)
+            if (
+                path.suffix.lower() == ".md"
+                and WITHDRAWN_SECTION_START in content
+                and WITHDRAWN_SECTION_END in content
+            ):
+                violations.extend(
+                    f"{relative}:{line}: {destination}"
+                    for line, destination in current_publish_destinations(content)
+                )
             if relative == WITHDRAWAL_RUNBOOK:
                 content = current_text_outside_withdrawn_section(content)
             for token in PUBLISH_TOKENS:
                 if token in content.lower():
                     violations.append(f"{relative}: {token.decode()}")
     assert not violations, "\n".join(violations)
+
+
+@pytest.fixture
+def scan_runbook(monkeypatch: pytest.MonkeyPatch):
+    """Exercise both repository scans with an in-memory replacement for the runbook."""
+    original_read_bytes = Path.read_bytes
+
+    def scan(content: bytes, relative: Path = WITHDRAWAL_RUNBOOK) -> None:
+        def read_bytes(path: Path) -> bytes:
+            if path == REPO_ROOT / relative:
+                return content
+            return original_read_bytes(path)
+
+        monkeypatch.setattr(Path, "read_bytes", read_bytes)
+        test_current_sources_have_no_publish_references()
+
+    return scan
+
+
+def test_current_reference_resolves_definition_inside_withdrawn_bounds(scan_runbook) -> None:
+    bounded = (
+        b"Current vault: [vault][retired-site]\n\n"
+        + WITHDRAWN_SECTION_START
+        + b"\n[retired-site]: https://publish.obsidian.md/hapax\n\n"
+        + WITHDRAWN_SECTION_END
+    )
+    outside = current_text_outside_withdrawn_section(bounded)
+    assert not any(token in outside.lower() for token in PUBLISH_TOKENS)
+    with pytest.raises(
+        AssertionError,
+        match=re.escape(f"{WITHDRAWAL_RUNBOOK}:1: https://publish.obsidian.md/hapax"),
+    ):
+        scan_runbook(bounded)
+
+
+def test_reference_used_only_inside_withdrawn_bounds_stays_exempt(scan_runbook) -> None:
+    bounded = (
+        b"Current vault: private\n\n"
+        + WITHDRAWN_SECTION_START
+        + b"\nHistorical vault: [vault][retired-site]\n\n"
+        + b"[retired-site]: https://publish.obsidian.md/hapax\n\n"
+        + WITHDRAWN_SECTION_END
+    )
+    scan_runbook(bounded)
+
+
+def test_current_reference_without_a_definition_stays_literal(scan_runbook) -> None:
+    bounded = (
+        b"Current vault: [vault][retired-site]\n\n"
+        + WITHDRAWN_SECTION_START
+        + b"\nHistorical vault: private\n\n"
+        + WITHDRAWN_SECTION_END
+    )
+    scan_runbook(bounded)
+
+
+def test_current_reference_label_case_folding_is_refused(scan_runbook) -> None:
+    bounded = (
+        b"Current vault: [vault][Retired-Site]\n\n"
+        + WITHDRAWN_SECTION_START
+        + b"\n[retired-site]: https://publish.obsidian.md/hapax\n\n"
+        + WITHDRAWN_SECTION_END
+    )
+    with pytest.raises(
+        AssertionError,
+        match=re.escape(f"{WITHDRAWAL_RUNBOOK}:1: https://publish.obsidian.md/hapax"),
+    ):
+        scan_runbook(bounded)
+
+
+def test_current_image_reference_to_withdrawn_definition_is_refused(scan_runbook) -> None:
+    bounded = (
+        b"Current vault: ![vault][retired-site]\n\n"
+        + WITHDRAWN_SECTION_START
+        + b"\n[retired-site]: https://publish.obsidian.md/hapax\n\n"
+        + WITHDRAWN_SECTION_END
+    )
+    with pytest.raises(
+        AssertionError,
+        match=re.escape(f"{WITHDRAWAL_RUNBOOK}:1: https://publish.obsidian.md/hapax"),
+    ):
+        scan_runbook(bounded)
+
+
+def test_current_reference_definition_is_refused_by_both_scans(scan_runbook) -> None:
+    bounded = (
+        b"Current vault: [vault][retired-site]\n\n"
+        + b"[retired-site]: https://publish.obsidian.md/hapax\n\n"
+        + WITHDRAWN_SECTION_START
+        + b"\nHistorical vault: private\n\n"
+        + WITHDRAWN_SECTION_END
+    )
+    with pytest.raises(AssertionError) as refused:
+        scan_runbook(bounded)
+    assert [line.strip() for line in str(refused.value).splitlines()[:2]] == [
+        f"{WITHDRAWAL_RUNBOOK}:1: https://publish.obsidian.md/hapax",
+        f"{WITHDRAWAL_RUNBOOK}: publish.obsidian.md",
+    ]
+
+
+def test_current_reference_after_withdrawn_end_is_refused(scan_runbook) -> None:
+    bounded = (
+        WITHDRAWN_SECTION_START
+        + b"\n[retired-site]: https://publish.obsidian.md/hapax\n\n"
+        + WITHDRAWN_SECTION_END
+        + b"Current vault: [vault][retired-site]\n"
+    )
+    with pytest.raises(
+        AssertionError,
+        match=re.escape(f"{WITHDRAWAL_RUNBOOK}:6: https://publish.obsidian.md/hapax"),
+    ):
+        scan_runbook(bounded)
+
+
+def test_other_scanned_markdown_with_bounds_runs_both_scans(scan_runbook) -> None:
+    relative = next(
+        path.relative_to(REPO_ROOT)
+        for path in sorted((REPO_ROOT / "docs/runbooks").glob("*.md"))
+        if path.is_file() and not path.is_symlink() and path != REPO_ROOT / WITHDRAWAL_RUNBOOK
+    )
+    bounded = (
+        b"Current vault: [vault][retired-site]\n\n"
+        + WITHDRAWN_SECTION_START
+        + b"\n[retired-site]: https://publish.obsidian.md/hapax\n\n"
+        + WITHDRAWN_SECTION_END
+    )
+    with pytest.raises(AssertionError) as refused:
+        scan_runbook(bounded, relative)
+    assert [line.strip() for line in str(refused.value).splitlines()[:2]] == [
+        f"{relative}:1: https://publish.obsidian.md/hapax",
+        f"{relative}: publish.obsidian.md",
+    ]
 
 
 def test_withdrawal_exemption_is_bounded_on_both_sides() -> None:
