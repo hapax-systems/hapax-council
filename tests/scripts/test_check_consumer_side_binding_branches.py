@@ -628,3 +628,73 @@ def test_loop_target_post_loop_keeps_zero_iteration_and_body_end(gate, tmp_path:
         "artifacts/old.json",
         "artifacts/new.json",
     }
+
+
+@pytest.mark.parametrize(
+    ("flow", "expected", "unresolved"),
+    [
+        pytest.param(
+            "if flag:\n    ARTIFACT = Path('artifacts/a.json')\nelse:\n    ARTIFACT = Path('artifacts/b.json')\n",
+            {"artifacts/a.json", "artifacts/b.json"},
+            0,
+            id="if-else",
+        ),
+        pytest.param(
+            "for item in items:\n    ARTIFACT = Path('artifacts/a.json')\n",
+            {"artifacts/old.json", "artifacts/a.json"},
+            0,
+            id="loop",
+        ),
+        pytest.param(
+            "while flag:\n    ARTIFACT = Path('artifacts/a.json')\n",
+            {"artifacts/old.json", "artifacts/a.json"},
+            0,
+            id="while",
+        ),
+        pytest.param(
+            "try:\n    ARTIFACT = Path('artifacts/a.json')\nexcept OSError:\n    ARTIFACT = Path('artifacts/b.json')\n",
+            {"artifacts/a.json", "artifacts/b.json"},
+            0,
+            id="try",
+        ),
+        pytest.param(
+            "if flag:\n    ARTIFACT = unknown\nelse:\n    ARTIFACT = Path('artifacts/b.json')\n",
+            {"artifacts/b.json"},
+            1,
+            id="unbounded",
+        ),
+    ],
+)
+def test_function_inherits_module_post_flow_bindings(
+    gate, tmp_path: Path, flow, expected, unresolved
+) -> None:
+    _write(
+        tmp_path,
+        "shared/consumer.py",
+        "from pathlib import Path\n"
+        "ARTIFACT = Path('artifacts/old.json')\n"
+        + flow
+        + "def write_state():\n    ARTIFACT.write_text('{}')\n"
+        "Path('artifacts/old.json').read_text()\n",
+    )
+    accesses, count, *_ = gate.collect_artifact_accesses(tmp_path)
+    assert {a.pattern for a in accesses if a.action == "write"} == expected
+    assert count == unresolved
+    report = gate.analyse_consumer_side(tmp_path, [])
+    assert ("artifacts/old.json" in _unwritten_patterns(report, "shared/consumer.py")) == (
+        "artifacts/old.json" not in expected
+    )
+    assert len(report.unresolved_paths) == unresolved
+
+
+def test_loop_unpacking_keeps_known_sibling_of_dynamic_component(gate, tmp_path: Path) -> None:
+    _write(
+        tmp_path,
+        "shared/consumer.py",
+        "from pathlib import Path\ndef use(unknown):\n"
+        "    for known, dynamic in [(Path('artifacts/known.json'), f'artifacts/{unknown}.json')]:\n"
+        "        known.read_text()\n        dynamic.write_text('{}')\n",
+    )
+    report = gate.analyse_consumer_side(tmp_path, [])
+    assert _unwritten_patterns(report, "shared/consumer.py") == {"artifacts/known.json"}
+    assert report.unresolvable == 1

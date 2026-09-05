@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import ast
 import importlib.util
 import itertools
 import json
@@ -662,3 +663,305 @@ def test_helper_guard_raise_preserves_normal_return_binding(gate, tmp_path: Path
     report = gate.analyse_consumer_side(tmp_path, [])
     assert _unwritten(report) == {"artifacts/normal.json"}
     assert report.unresolvable == 0
+
+
+@pytest.mark.parametrize(
+    ("binding", "expected"),
+    [
+        pytest.param(
+            "artifact, other = Path('artifacts/new.json'), None", "artifacts/new.json", id="tuple"
+        ),
+        pytest.param(
+            "[artifact, other] = [Path('artifacts/new.json'), None]",
+            "artifacts/new.json",
+            id="list",
+        ),
+        pytest.param(
+            "artifact, (other, label) = Path('artifacts/new.json'), (None, None)",
+            "artifacts/new.json",
+            id="nested",
+        ),
+        pytest.param("artifact, other = items", None, id="unknown-unpack"),
+        pytest.param(
+            "artifact, other = [Path('artifacts/new.json')]", None, id="mismatched-unpack"
+        ),
+        pytest.param("*artifact, other = [Path('artifacts/new.json'), None]", None, id="starred"),
+        pytest.param("artifact /= 'child.json'", "artifacts/old.json/child.json", id="aug-div"),
+        pytest.param("artifact += '.new'", "artifacts/old.json.new", id="aug-add"),
+        pytest.param("artifact /= unknown", None, id="aug-unknown"),
+        pytest.param("artifact *= 2", None, id="aug-unmodelled"),
+        pytest.param("with context() as artifact:\n        pass", None, id="with"),
+        pytest.param("async with context() as artifact:\n        pass", None, id="async-with"),
+        pytest.param(
+            "with Path('artifacts/new.json') as artifact:\n        pass",
+            "artifacts/new.json",
+            id="with-path",
+        ),
+        pytest.param("del artifact", None, id="del"),
+        pytest.param("(artifact := unknown)", None, id="named-expression"),
+        pytest.param("artifact.part = unknown", None, id="attribute-store"),
+        pytest.param("artifact[0] = unknown", None, id="subscript-store"),
+        pytest.param("import other as artifact", None, id="import"),
+        pytest.param("def artifact():\n        pass", None, id="function"),
+        pytest.param("class artifact:\n        pass", None, id="class"),
+        pytest.param(
+            "match items:\n        case artifact:\n            artifact.write_text('{}')",
+            None,
+            id="match",
+        ),
+        pytest.param(
+            "try:\n        raise ValueError()\n    except ValueError as artifact:\n        artifact.write_text('{}')",
+            None,
+            id="except",
+        ),
+    ],
+)
+def test_store_cannot_supply_an_obsolete_producer(gate, tmp_path: Path, binding, expected) -> None:
+    _write(
+        tmp_path,
+        "from pathlib import Path\nasync def use(items):\n"
+        "    artifact = Path('artifacts/old.json')\n"
+        f"    {binding}\n    artifact.write_text('{{}}')\n"
+        "Path('artifacts/old.json').read_text()\n",
+    )
+    report = gate.analyse_consumer_side(tmp_path, [])
+    assert "artifacts/old.json" in _unwritten(report)
+    accesses, unresolved, *_ = gate.collect_artifact_accesses(tmp_path)
+    assert {a.pattern for a in accesses if a.action == "write"} == (
+        {expected} if expected else set()
+    )
+    assert (unresolved > 0) == (expected is None)
+    if expected is None:
+        assert any("artifact" in site for site in report.unresolved_paths)
+
+
+@pytest.mark.parametrize(
+    "expression",
+    [
+        "[artifact.write_text('{}') for artifact in items]",
+        "{artifact.write_text('{}') for artifact in items}",
+        "{artifact: artifact.write_text('{}') for artifact in items}",
+        "(artifact.write_text('{}') for artifact in items)",
+    ],
+)
+def test_comprehension_targets_do_not_borrow_or_export_producers(
+    gate, tmp_path: Path, expression
+) -> None:
+    _write(
+        tmp_path,
+        "from pathlib import Path\ndef use(items):\n"
+        "    artifact = Path('artifacts/old.json')\n"
+        f"    {expression}\n    artifact.write_text('{{}}')\n"
+        "Path('artifacts/old.json').read_text()\n",
+    )
+    report = gate.analyse_consumer_side(tmp_path, [])
+    assert "artifacts/old.json" in _unwritten(report)
+    assert report.unresolvable == 2
+    assert len(report.unresolved_paths) == 2
+
+
+def test_store_context_inventory_and_fallback(gate, tmp_path: Path) -> None:
+    # These are all concrete CPython expression nodes capable of carrying ast.Store.
+    contexts = {
+        node
+        for node in vars(ast).values()
+        if isinstance(node, type) and issubclass(node, ast.expr) and "ctx" in node._fields
+    }
+    assert contexts == {ast.Name, ast.Attribute, ast.Subscript, ast.Starred, ast.List, ast.Tuple}
+    scanner = gate._BlockScanner(
+        path=Path("shared/consumer.py"),
+        repo_root=tmp_path,
+        path_functions={},
+        accesses=[],
+        unresolved=[0],
+        unrecognised=gate.Counter(),
+        context_family="test",
+        nested_scope_values={},
+    )
+    # An unrecognised statement still exposes its Store expression to the fallback.
+    statement = ast.Expr(value=ast.Name(id="artifact", ctx=ast.Store()))
+    state = scanner.scan_block([statement], [{"artifact": "artifacts/old.json"}])[0]
+    assert state.get("artifact") in (None, "*")
+
+
+@pytest.mark.parametrize(
+    ("key", "field", "expected", "wrong"),
+    [
+        pytest.param("1", "key:02d", "artifacts/01.json", "artifacts/1.json", id="spec"),
+        pytest.param("'word'", "key!r", "artifacts/'word'.json", "artifacts/word.json", id="repr"),
+        pytest.param("'é'", "key!a", "artifacts/'\\xe9'.json", "artifacts/é.json", id="ascii"),
+        pytest.param("1", "key!s:0>2", "artifacts/01.json", "artifacts/1.json", id="str"),
+        pytest.param(
+            "123", "key!s:.2", "artifacts/12.json", "artifacts/123.json", id="str-precision"
+        ),
+        pytest.param("1.25", "key:.1f", "artifacts/1.2.json", "artifacts/1.25.json", id="float"),
+        pytest.param("True", "key!s", "artifacts/True.json", "artifacts/1.json", id="bool"),
+    ],
+)
+def test_constant_formatting_cannot_match_a_different_filename(
+    gate, tmp_path: Path, key, field, expected, wrong
+) -> None:
+    _write(
+        tmp_path,
+        "from pathlib import Path\n" + f"key = {key}\n"
+        f"Path(f'artifacts/{{{field}}}.json').write_text('{{}}')\nPath({wrong!r}).read_text()\n",
+    )
+    report = gate.analyse_consumer_side(tmp_path, [])
+    assert wrong in _unwritten(report)
+    accesses, unresolved, *_ = gate.collect_artifact_accesses(tmp_path)
+    assert {a.pattern for a in accesses if a.action == "write"} == {expected}
+    assert unresolved == 0
+
+
+@pytest.mark.parametrize(
+    "field", ["key:02d", "key:{width}d", "key!r:bad", "unknown!s", "unknown:02d"]
+)
+def test_unbounded_or_invalid_formatting_is_named(gate, tmp_path: Path, field) -> None:
+    _write(
+        tmp_path,
+        "from pathlib import Path\nkey = 'word'\nwidth = 2\n"
+        f"Path(f'artifacts/{{{field}}}.json').write_text('{{}}')\n"
+        "Path('artifacts/word.json').read_text()\n",
+    )
+    report = gate.analyse_consumer_side(tmp_path, [])
+    assert "artifacts/word.json" in _unwritten(report)
+    assert report.unresolvable == 1
+    assert len(report.unresolved_paths) == 1
+
+
+def test_unresolved_console_summary_first_and_bounded_json_complete(
+    gate, tmp_path: Path, capsys
+) -> None:
+    _write(tmp_path, "def use():\n" + "".join(f"    unknown_{i}.read_text()\n" for i in range(100)))
+    report = gate.analyse_consumer_side(tmp_path, [])
+    gate.print_consumer_side_report(report, tmp_path / "report.json")
+    lines = capsys.readouterr().out.splitlines()
+    assert lines[0].startswith("consumer-side counts:")
+    assert sum(line.startswith("[UNRESOLVED]") for line in lines) == gate.CONSUMER_SIDE_REPORT_LIMIT
+    assert any("75 more in JSON" in line for line in lines)
+    assert len(lines) <= gate.CONSUMER_SIDE_REPORT_LIMIT + 4
+    payload = gate._report_json(report)
+    assert payload["summary"]["unresolvable"] == 100
+    assert len(payload["unresolved_paths"]) == 100
+
+
+@pytest.mark.parametrize("assigned", [False, True])
+def test_unformatted_dynamic_gap_cannot_prove_a_producer(gate, tmp_path: Path, assigned) -> None:
+    writer = (
+        "    artifact = Path(f'artifacts/{unknown}.json')\n    artifact.write_text('{}')\n"
+        if assigned
+        else "    Path(f'artifacts/{unknown}.json').write_text('{}')\n"
+    )
+    _write(
+        tmp_path,
+        "from pathlib import Path\ndef use(unknown):\n"
+        + writer
+        + "Path('artifacts/old.json').read_text()\n",
+    )
+    report = gate.analyse_consumer_side(tmp_path, [])
+    assert "artifacts/old.json" in _unwritten(report)
+    assert report.unresolvable == 1
+    assert len(report.unresolved_paths) == 1
+    assert not report.pairs
+
+
+@pytest.mark.parametrize(
+    "expression",
+    [
+        "(artifact := Path('artifacts/a.json')) if flag else (artifact := Path('artifacts/b.json'))",
+        "(artifact := Path('artifacts/a.json')) or (artifact := Path('artifacts/b.json'))",
+    ],
+)
+def test_expression_stores_preserve_both_possible_bindings(
+    gate, tmp_path: Path, expression
+) -> None:
+    _write(
+        tmp_path,
+        "from pathlib import Path\ndef use(flag):\n"
+        "    artifact = Path('artifacts/old.json')\n" + f"    {expression}\n"
+        "    artifact.read_text()\n",
+    )
+    assert _unwritten(gate.analyse_consumer_side(tmp_path, [])) == {
+        "artifacts/a.json",
+        "artifacts/b.json",
+    }
+
+
+def test_unpacking_resolves_all_components_before_storing(gate, tmp_path: Path) -> None:
+    _write(
+        tmp_path,
+        "from pathlib import Path\ndef use():\n"
+        "    first = Path('artifacts/first.json')\n    second = Path('artifacts/second.json')\n"
+        "    first, second = second, first\n    first.read_text()\n    second.read_text()\n",
+    )
+    accesses, unresolved, *_ = gate.collect_artifact_accesses(tmp_path)
+    assert [(a.lineno, a.pattern) for a in accesses] == [
+        (6, "artifacts/second.json"),
+        (7, "artifacts/first.json"),
+    ]
+    assert unresolved == 0
+
+
+def test_formatting_helper_argument_replaces_typed_default(gate, tmp_path: Path) -> None:
+    _write(
+        tmp_path,
+        "from pathlib import Path\ndef artifact_path(key=1):\n"
+        "    return Path(f'artifacts/{key:02d}.json')\n"
+        "artifact_path(2).write_text('{}')\nPath('artifacts/01.json').read_text()\n",
+    )
+    report = gate.analyse_consumer_side(tmp_path, [])
+    assert "artifacts/01.json" in _unwritten(report)
+    accesses, unresolved, *_ = gate.collect_artifact_accesses(tmp_path)
+    assert {a.pattern for a in accesses if a.action == "write"} == {"artifacts/02.json"}
+    assert unresolved == 0
+
+
+def test_lambda_comprehension_has_its_own_target_binding(gate, tmp_path: Path) -> None:
+    _write(
+        tmp_path,
+        "from pathlib import Path\nartifact = Path('artifacts/old.json')\n"
+        "use = lambda items: [artifact.write_text('{}') for artifact in items]\n"
+        "Path('artifacts/old.json').read_text()\n",
+    )
+    report = gate.analyse_consumer_side(tmp_path, [])
+    assert "artifacts/old.json" in _unwritten(report)
+    assert report.unresolvable == 1
+    assert len(report.unresolved_paths) == 1
+
+
+def test_unmodelled_type_alias_invalidates_store(gate, tmp_path: Path) -> None:
+    _write(
+        tmp_path,
+        "from pathlib import Path\ndef use():\n"
+        "    artifact = Path('artifacts/old.json')\n    type artifact = str\n"
+        "    artifact.write_text('{}')\nPath('artifacts/old.json').read_text()\n",
+    )
+    report = gate.analyse_consumer_side(tmp_path, [])
+    assert "artifacts/old.json" in _unwritten(report)
+    assert report.unresolvable == 1
+
+
+def test_dynamic_helper_pair_is_retained_as_unresolved_evidence(
+    gate, tmp_path: Path, capsys
+) -> None:
+    _write(
+        tmp_path,
+        "from pathlib import Path\ndef artifact_path(key):\n"
+        "    return Path(f'artifacts/widget-{key}.json')\n"
+        "def use(key):\n    artifact = artifact_path(key)\n"
+        "    artifact.write_text('{}')\n    artifact.read_text()\n"
+        "Path('artifacts/widget-old.json').read_text()\n",
+    )
+    report = gate.analyse_consumer_side(tmp_path, [])
+    assert "artifacts/widget-old.json" in _unwritten(report)
+    assert report.unresolvable == 2
+    assert len(report.unresolved_paths) == 2
+    payload = gate._report_json(report)
+    assert len(payload["pairs"]) == 1
+    assert payload["pairs"][0]["status"] == "unresolved"
+    assert payload["pairs"][0]["writer"]["bounded"] is False
+    gate.print_consumer_side_report(report, tmp_path / "report.json")
+    assert (
+        "status=unresolved; equal dynamic patterns, possible pairing only"
+        in capsys.readouterr().out
+    )

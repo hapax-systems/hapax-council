@@ -520,6 +520,7 @@ class ArtifactAccess:
     family: str
     operation: str
     modelled: bool = True
+    bounded: bool = True
 
 
 @dataclass(frozen=True)
@@ -712,7 +713,10 @@ def _dotted_name(node: ast.expr) -> str | None:
 
 
 def _normalise_pattern(value: str, repo_root: Path) -> str:
-    value = value.replace("\\", "/")
+    # This estate uses POSIX paths. A backslash produced by !r/!a is a filename
+    # character, not a directory separator.
+    if value.startswith("$HOME\\"):
+        value = value.replace("\\", "/")
     if value == "$HOME":
         value = "~"
     elif value.startswith("$HOME/"):
@@ -805,6 +809,8 @@ _PATH_VALUE_PREFIX = "\0path-value:"
 _LEXICAL_SCOPE_KEY = "\0lexical-scope"
 _IMPORT_ALIAS_PREFIX = "\0import-alias:"
 _VALUE_ALTERNATIVES_PREFIX = "\0value-alternatives:"
+_CONSTANT_VALUE_PREFIX = "\0constant-value:"
+_UNRESOLVED_FORMAT_PREFIX = "\0unresolved-format:"
 _UNRESOLVED_CLOSURE_PREFIX = "\0unresolved-closure:"
 _HELPER_STACK_KEY = "\0helper-stack"
 _HELPER_EFFECT_KEY = "\0helper-unbounded-effect"
@@ -1048,6 +1054,76 @@ def _resolve_path_expr_variants(
     return tuple(dict.fromkeys(variants))
 
 
+def _constant_value(node: ast.expr | None, values: dict[str, str]) -> tuple[bool, object]:
+    """Keep scalar types for formatting; a path-shaped abstract string is not a constant."""
+    if isinstance(node, ast.Constant) and isinstance(node.value, (str, int, float, type(None))):
+        return True, node.value
+    if isinstance(node, ast.Name):
+        encoded = values.get(f"{_CONSTANT_VALUE_PREFIX}{node.id}")
+        if encoded is not None:
+            return True, json.loads(encoded)
+    if isinstance(node, ast.UnaryOp) and isinstance(node.op, (ast.USub, ast.UAdd)):
+        known, value = _constant_value(node.operand, values)
+        if known and isinstance(value, (int, float)):
+            return True, -value if isinstance(node.op, ast.USub) else +value
+    return False, None
+
+
+def _format_constant(node: ast.FormattedValue, values: dict[str, str]) -> str | None:
+    known, value = _constant_value(node.value, values)
+    if not known:
+        return None
+    spec = ""
+    if node.format_spec is not None:
+        if not isinstance(node.format_spec, ast.JoinedStr) or any(
+            not isinstance(item, ast.Constant) or not isinstance(item.value, str)
+            for item in node.format_spec.values
+        ):
+            return None
+        spec = "".join(item.value for item in node.format_spec.values)
+    conversions = {ord("r"): repr, ord("s"): str, ord("a"): ascii}
+    if node.conversion != -1:
+        conversion = conversions.get(node.conversion)
+        if conversion is None:
+            return None
+        value = conversion(value)
+    try:
+        return format(value, spec)
+    except (ValueError, TypeError, OverflowError):
+        return None
+
+
+def _has_unbounded_format(
+    node: ast.expr | None,
+    values: dict[str, str],
+    path: Path,
+    repo_root: Path,
+    path_functions: dict[str, PathFunction],
+) -> bool:
+    if node is None:
+        return False
+    for item in ast.walk(node):
+        if isinstance(item, ast.Name) and f"{_UNRESOLVED_FORMAT_PREFIX}{item.id}" in values:
+            return True
+        if isinstance(item, ast.Call) and isinstance(path_functions, PathFunctionTable):
+            helper = path_functions.resolve(
+                _function_name(item), path, _lexical_scope(values), _import_aliases(values)
+            )
+            if helper is not None and "*" in (
+                _resolve_path_expr(item, values, path, repo_root, path_functions) or ""
+            ):
+                return True
+        if isinstance(item, ast.FormattedValue) and _format_constant(item, values) is None:
+            if (
+                item.format_spec is not None
+                or item.conversion != -1
+                or _resolve_path_expr(item.value, values, path, repo_root, path_functions)
+                in (None, "*")
+            ):
+                return True
+    return False
+
+
 def _resolve_path_expr(
     node: ast.expr | None,
     values: dict[str, str],
@@ -1081,6 +1157,14 @@ def _resolve_path_expr(
             if isinstance(item, ast.Constant) and isinstance(item.value, str):
                 parts.append(item.value)
             elif isinstance(item, ast.FormattedValue):
+                formatted = _format_constant(item, values)
+                if formatted is not None:
+                    parts.append(formatted)
+                    continue
+                if item.format_spec is not None or item.conversion != -1:
+                    return None
+                # Preserve the existing unformatted dynamic-pattern gap evidence. Explicit
+                # formatting cannot use this approximation: its type/spec must be known.
                 resolved = _resolve_path_expr(
                     item.value,
                     values,
@@ -1257,10 +1341,10 @@ def _resolve_path_expr(
         for statement in ast.walk(function.node):
             if isinstance(statement, ast.Global):
                 for global_name in statement.names:
-                    inherited.pop(global_name, None)
-                    _clear_value_alternatives(inherited, global_name)
-                    if global_name in function.module_values:
-                        inherited[global_name] = function.module_values[global_name]
+                    for key in _binding_keys(global_name):
+                        inherited.pop(key, None)
+                        if key in function.module_values:
+                            inherited[key] = function.module_values[key]
     inherited[_HELPER_STACK_KEY] = "|".join((*stack, helper_key))
     bound = _scope_initial_values(
         function.node,
@@ -1282,6 +1366,10 @@ def _resolve_path_expr(
         if resolved is not None:
             bound[parameter] = resolved
     for parameter, argument in zip(function.params, node.args, strict=False):
+        bound.pop(f"{_CONSTANT_VALUE_PREFIX}{parameter}", None)
+        known, constant = _constant_value(argument, values)
+        if known:
+            bound[f"{_CONSTANT_VALUE_PREFIX}{parameter}"] = json.dumps(constant)
         bound[parameter] = (
             _resolve_path_expr(
                 argument,
@@ -1295,6 +1383,10 @@ def _resolve_path_expr(
         )
     for keyword in node.keywords:
         if keyword.arg is not None:
+            bound.pop(f"{_CONSTANT_VALUE_PREFIX}{keyword.arg}", None)
+            known, constant = _constant_value(keyword.value, values)
+            if known:
+                bound[f"{_CONSTANT_VALUE_PREFIX}{keyword.arg}"] = json.dumps(constant)
             bound[keyword.arg] = (
                 _resolve_path_expr(
                     keyword.value,
@@ -1429,23 +1521,18 @@ def _module_values(
     repo_root: Path,
     path_functions: dict[str, PathFunction],
 ) -> dict[str, str]:
-    values = _module_constants(tree)
-    if isinstance(path_functions, PathFunctionTable):
-        for name, target in path_functions.aliases_by_path.get(path, {}).items():
-            _set_import_alias(values, name, target)
-    values["__file__"] = path.as_posix()
-    assignments: list[ast.Assign | ast.AnnAssign] = [
-        node for node in tree.body if isinstance(node, (ast.Assign, ast.AnnAssign))
-    ]
-    for _ in range(2):
-        changed = False
-        for assignment in assignments:
-            assigned = _apply_assignment(assignment, values, path, repo_root, path_functions)[0]
-            changed |= assigned != values
-            values = assigned
-        if not changed:
-            break
-    return values
+    scanner = _ModuleBindingScanner(
+        path=path,
+        repo_root=repo_root,
+        path_functions=path_functions,
+        accesses=[],
+        unresolved=[0],
+        unrecognised=Counter(),
+        context_family="module-bindings",
+        nested_scope_values={},
+    )
+    states = scanner.scan_block(tree.body, [{"__file__": path.as_posix()}])
+    return _merge_states(states, collapse=True)[0] if states else {}
 
 
 def _artifact_family(name: str) -> str:
@@ -1550,10 +1637,11 @@ def _record_access(
     append: str | None = None,
     modelled: bool = True,
 ) -> None:
+    bounded = not _has_unbounded_format(expression, values, path, repo_root, path_functions)
     for pattern in _resolve_path_expr_variants(expression, values, path, repo_root, path_functions):
         if pattern is not None and append is not None:
             pattern = _join_pattern(pattern, append, repo_root)
-        if not _useful_pattern(pattern):
+        if not _useful_pattern(pattern) or not bounded:
             unresolved[0] += 1
             if isinstance(path_functions, PathFunctionTable):
                 expression_label = (
@@ -1563,11 +1651,12 @@ def _record_access(
                     f"{path}:{call.lineno}:{call.col_offset}: {action} {operation} "
                     f"path={expression_label}"
                 )
-            continue
+            if not _useful_pattern(pattern):
+                continue
         assert pattern is not None
         pattern = _normalise_pattern(pattern, repo_root)
         accesses.append(
-            ArtifactAccess(action, pattern, path, call.lineno, family, operation, modelled)
+            ArtifactAccess(action, pattern, path, call.lineno, family, operation, modelled, bounded)
         )
 
 
@@ -1965,15 +2054,79 @@ def _statement_may_raise(statement: ast.stmt) -> bool:
     return False
 
 
+def _binding_keys(name: str) -> tuple[str, ...]:
+    return (
+        name,
+        _path_value_key(name),
+        _value_alternatives_key(name),
+        f"{_IMPORT_ALIAS_PREFIX}{name}",
+        f"{_UNRESOLVED_CLOSURE_PREFIX}{name}",
+        f"{_CONSTANT_VALUE_PREFIX}{name}",
+        f"{_UNRESOLVED_FORMAT_PREFIX}{name}",
+    )
+
+
+def _invalidate_names(values: dict[str, str], names: set[str]) -> None:
+    for name in names:
+        for key in _binding_keys(name):
+            values.pop(key, None)
+        values[name] = "*"
+        _set_import_alias(values, name, None)
+
+
+def _target_names(target: ast.AST) -> set[str]:
+    # Attribute/subscript stores mutate an object we cannot model. Invalidate its base
+    # and attribute fallback as well, rather than letting either supply obsolete evidence.
+    return {item.id for item in ast.walk(target) if isinstance(item, ast.Name)} | {
+        item.attr for item in ast.walk(target) if isinstance(item, ast.Attribute)
+    }
+
+
 def _apply_assignment(
     statement: ast.Assign | ast.AnnAssign,
     values: dict[str, str],
     path: Path,
     repo_root: Path,
     path_functions: dict[str, PathFunction],
+    *,
+    strict_formatted: bool = False,
 ) -> list[dict[str, str]]:
     targets = statement.targets if isinstance(statement, ast.Assign) else [statement.target]
     assigned = dict(values)
+    for target in targets:
+        if isinstance(target, (ast.Tuple, ast.List)):
+            components = (
+                statement.value.elts
+                if isinstance(statement.value, (ast.Tuple, ast.List))
+                and len(target.elts) == len(statement.value.elts)
+                and not any(isinstance(item, ast.Starred) for item in target.elts)
+                else [None] * len(target.elts)
+            )
+            for child, component in zip(target.elts, components, strict=True):
+                child_state = _apply_assignment(
+                    ast.Assign(targets=[child], value=component),
+                    values,
+                    path,
+                    repo_root,
+                    path_functions,
+                    strict_formatted=strict_formatted,
+                )[0]
+                # All RHS components use the incoming bindings (including swaps).
+                for name in _target_names(child):
+                    for key in _binding_keys(name):
+                        assigned.pop(key, None)
+                        if key in child_state:
+                            assigned[key] = child_state[key]
+        elif not isinstance(target, ast.Name):
+            # Starred, Attribute and Subscript are the remaining concrete Store forms;
+            # conservatively cover any future/unmodelled target too.
+            _invalidate_names(assigned, _target_names(target))
+    if strict_formatted and _has_unbounded_format(
+        statement.value, values, path, repo_root, path_functions
+    ):
+        # Container components have already been bound individually above. An unknown
+        # iteration element cannot make a wildcard writer or erase a known sibling.
+        statement = ast.Assign(targets=targets, value=None)
     is_path = (
         isinstance(statement, ast.AnnAssign) and _is_path_annotation(statement.annotation)
     ) or _is_path_valued_expr(statement.value, assigned, path, path_functions)
@@ -2003,6 +2156,15 @@ def _apply_assignment(
         # (the old fixpoint kept the old value and resolved every later read through it).
         resolved = next(iter(resolved_values)) if len(resolved_values) == 1 else None
         assigned[target.id] = resolved if resolved is not None else "*"
+        constant_key = f"{_CONSTANT_VALUE_PREFIX}{target.id}"
+        assigned.pop(constant_key, None)
+        known, constant = _constant_value(statement.value, values)
+        if known:
+            assigned[constant_key] = json.dumps(constant)
+        format_key = f"{_UNRESOLVED_FORMAT_PREFIX}{target.id}"
+        assigned.pop(format_key, None)
+        if _has_unbounded_format(statement.value, values, path, repo_root, path_functions):
+            assigned[format_key] = "1"
         _set_path_value(assigned, target.id, is_path)
         _set_import_alias(assigned, target.id, None)
         _clear_value_alternatives(assigned, target.id)
@@ -2088,6 +2250,8 @@ def _scope_initial_values(
     values = dict(module_values)
     _set_lexical_scope(values, lexical_prefixes)
     for name in _scope_local_names(node):
+        values.pop(f"{_UNRESOLVED_FORMAT_PREFIX}{name}", None)
+        values.pop(f"{_CONSTANT_VALUE_PREFIX}{name}", None)
         values.pop(f"{_UNRESOLVED_CLOSURE_PREFIX}{name}", None)
         values[name] = "*"
         _set_path_value(values, name, False)
@@ -2099,6 +2263,8 @@ def _scope_initial_values(
     if node.args.kwarg is not None:
         parameters.append(node.args.kwarg)
     for arg in parameters:
+        values.pop(f"{_UNRESOLVED_FORMAT_PREFIX}{arg.arg}", None)
+        values.pop(f"{_CONSTANT_VALUE_PREFIX}{arg.arg}", None)
         values.pop(f"{_UNRESOLVED_CLOSURE_PREFIX}{arg.arg}", None)
         values[arg.arg] = "*"
         _set_path_value(values, arg.arg, _is_path_annotation(arg.annotation))
@@ -2107,6 +2273,9 @@ def _scope_initial_values(
         _set_import_alias(values, arg.arg, None)
         _clear_value_alternatives(values, arg.arg)
     for name, default in _function_defaults(node).items():
+        known, constant = _constant_value(default, values)
+        if known:
+            values[f"{_CONSTANT_VALUE_PREFIX}{name}"] = json.dumps(constant)
         resolved = _resolve_path_expr(default, values, path, repo_root, path_functions)
         if resolved is not None:
             values[name] = resolved
@@ -2202,7 +2371,7 @@ def _fork(states: list[dict[str, str]]) -> list[dict[str, str]]:
     return [dict(state) for state in states]
 
 
-def _merge_states(states: list[dict[str, str]]) -> list[dict[str, str]]:
+def _merge_states(states: list[dict[str, str]], *, collapse: bool = False) -> list[dict[str, str]]:
     """Deduplicate branch maps, joining excess maps without losing known values.
 
     Once the disjunctive-state cap is reached, each user binding keeps the union of its concrete
@@ -2213,7 +2382,7 @@ def _merge_states(states: list[dict[str, str]]) -> list[dict[str, str]]:
     for state in states:
         distinct.setdefault(tuple(sorted(state.items())), state)
     merged = list(distinct.values())
-    if len(merged) <= _MAX_BRANCH_STATES:
+    if len(merged) <= _MAX_BRANCH_STATES and not collapse:
         return merged
 
     internal_names = {
@@ -2227,6 +2396,12 @@ def _merge_states(states: list[dict[str, str]]) -> list[dict[str, str]]:
         alternatives = {state.get(name) for state in merged}
         if name == _HELPER_EFFECT_KEY and "1" in alternatives:
             collapsed[name] = "1"
+            continue
+        if name.startswith(_UNRESOLVED_FORMAT_PREFIX) and "1" in alternatives:
+            collapsed[name] = "1"
+            continue
+        if name.startswith(_IMPORT_ALIAS_PREFIX) and len(alternatives) > 1:
+            collapsed[name] = ""
             continue
         if len(alternatives) == 1 and None not in alternatives:
             value = alternatives.pop()
@@ -2328,46 +2503,13 @@ class _BlockScanner:
     def _bind_loop_target(
         self, target: ast.expr, value: ast.expr | None, state: dict[str, str]
     ) -> dict[str, str]:
-        if isinstance(target, (ast.Tuple, ast.List)):
-            components = (
-                value.elts
-                if isinstance(value, (ast.Tuple, ast.List)) and len(target.elts) == len(value.elts)
-                else [None] * len(target.elts)
-            )
-            assigned = dict(state)
-            # Resolve every component against the incoming state: unpacking stores must not
-            # change the meaning of later expressions in the same iteration value.
-            for child, component in zip(target.elts, components, strict=True):
-                child_state = self._bind_loop_target(child, component, state)
-                for name in {item.id for item in ast.walk(child) if isinstance(item, ast.Name)}:
-                    for key in (
-                        name,
-                        _path_value_key(name),
-                        _value_alternatives_key(name),
-                        f"{_IMPORT_ALIAS_PREFIX}{name}",
-                        f"{_UNRESOLVED_CLOSURE_PREFIX}{name}",
-                    ):
-                        assigned.pop(key, None)
-                        if key in child_state:
-                            assigned[key] = child_state[key]
-            return assigned
-        if isinstance(target, ast.Starred):
-            return self._bind_loop_target(target.value, None, state)
-        if value is not None and any(
-            _resolve_path_expr(item.value, state, self.path, self.repo_root, self.path_functions)
-            in (None, "*")
-            for item in ast.walk(value)
-            if isinstance(item, ast.FormattedValue)
-        ):
-            # A literal container does not make its dynamic elements literal. In particular,
-            # an unknown formatted target must not become a wildcard writer in the body.
-            value = None
         return _apply_assignment(
             ast.Assign(targets=[target], value=value),
             state,
             self.path,
             self.repo_root,
             self.path_functions,
+            strict_formatted=True,
         )[0]
 
     def _loop_body_states(
@@ -2386,6 +2528,68 @@ class _BlockScanner:
             ]
         )
 
+    def _bind(self, target: ast.expr, value: ast.expr | None, states: list[dict[str, str]]) -> None:
+        for state in states:
+            assigned = _apply_assignment(
+                ast.Assign(targets=[target], value=value),
+                state,
+                self.path,
+                self.repo_root,
+                self.path_functions,
+            )[0]
+            state.clear()
+            state.update(assigned)
+
+    def _scan_expression(self, node: ast.AST, states: list[dict[str, str]]) -> None:
+        if isinstance(node, (ast.Lambda, ast.FunctionDef, ast.AsyncFunctionDef)):
+            return
+        if isinstance(node, ast.NamedExpr):
+            self._scan_expression(node.value, states)
+            self._bind(node.target, node.value, states)
+            return
+        if isinstance(node, ast.IfExp):
+            self._scan_expression(node.test, states)
+            taken, not_taken = _fork(states), _fork(states)
+            self._scan_expression(node.body, taken)
+            self._scan_expression(node.orelse, not_taken)
+            states[:] = _merge_states(taken + not_taken)
+            return
+        if isinstance(node, ast.BoolOp):
+            continued = _fork(states)
+            alternatives = []
+            for value in node.values:
+                self._scan_expression(value, continued)
+                alternatives.extend(_fork(continued))
+            states[:] = _merge_states(alternatives)
+            return
+        if isinstance(node, (ast.ListComp, ast.SetComp, ast.DictComp, ast.GeneratorExp)):
+            inner = _fork(states)
+            for generator in node.generators:
+                self._scan_expression(generator.iter, inner)
+                self._bind(generator.target, None, inner)
+                for condition in generator.ifs:
+                    self._scan_expression(condition, inner)
+            for value in (node.key, node.value) if isinstance(node, ast.DictComp) else (node.elt,):
+                self._scan_expression(value, inner)
+            # Do not export comprehension values. We also refuse to use a pre-comprehension
+            # snapshot for these targets outside it; deferred iteration is not scheduled here.
+            names = set().union(*(_target_names(g.target) for g in node.generators))
+            names.update(
+                item.target.id for item in ast.walk(node) if isinstance(item, ast.NamedExpr)
+            )
+            for state in states:
+                _invalidate_names(state, names)
+            return
+        if isinstance(getattr(node, "ctx", None), (ast.Store, ast.Del)):
+            # Fallback for every Store form not owned by a statement handler below.
+            for state in states:
+                _invalidate_names(state, _target_names(node))
+            return
+        for child in ast.iter_child_nodes(node):
+            self._scan_expression(child, states)
+        if isinstance(node, ast.Call):
+            self._classify(node, states)
+
     def _scan_statement(
         self,
         statement: ast.stmt,
@@ -2397,8 +2601,18 @@ class _BlockScanner:
             # An assignment's right-hand side runs before its target is rebound.  Handlers see
             # the state entering the raising statement, never its normal post-state.
             exception_states.extend(_fork(states))
-        for call in _statement_calls(statement):
-            self._classify(call, states)
+        # Targets are processed after their RHS, and with-items bind in entry order.
+        owned_targets = set()
+        if isinstance(statement, (ast.Assign, ast.Delete)):
+            owned_targets.update(statement.targets)
+        elif isinstance(statement, (ast.AnnAssign, ast.AugAssign, ast.For, ast.AsyncFor)):
+            owned_targets.add(statement.target)
+        if not isinstance(statement, (ast.With, ast.AsyncWith)):
+            for child in ast.iter_child_nodes(statement):
+                if child not in owned_targets and not isinstance(
+                    child, (ast.stmt, ast.ExceptHandler, ast.match_case)
+                ):
+                    self._scan_expression(child, states)
         for scope in _statement_scopes(statement):
             self.nested_scope_values.setdefault(scope, []).extend(_fork(states))
         if isinstance(statement, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)):
@@ -2417,6 +2631,7 @@ class _BlockScanner:
                 if exception_states is not None and (class_exceptions or class_exits):
                     exception_states.extend(_fork(states))
             for state in states:
+                _invalidate_names(state, {statement.name})
                 prefix = next(iter(_lexical_scope(state)), "")
                 target = ".".join(filter(None, (_module_name(self.path), prefix, statement.name)))
                 _set_import_alias(
@@ -2436,8 +2651,20 @@ class _BlockScanner:
             imported = _fork(states)
             for state in imported:
                 for name, target in bindings.items():
+                    _invalidate_names(state, {name})
                     _set_import_alias(state, name, target)
             return imported
+        if isinstance(statement, ast.AugAssign):
+            # Only the path operations understood by _resolve_path_expr can resolve this.
+            expression = ast.copy_location(
+                ast.BinOp(left=statement.target, op=statement.op, right=statement.value), statement
+            )
+            self._bind(statement.target, expression, states)
+            return states
+        if isinstance(statement, ast.Delete):
+            for target in statement.targets:
+                self._bind(target, None, states)
+            return states
         if isinstance(statement, (ast.Assign, ast.AnnAssign)):
             assigned: list[dict[str, str]] = []
             for state in states:
@@ -2469,6 +2696,29 @@ class _BlockScanner:
                 else after
             )
         if isinstance(statement, (ast.With, ast.AsyncWith)):
+            for item in statement.items:
+                self._scan_expression(item.context_expr, states)
+                if item.optional_vars is not None:
+                    for state in states:
+                        expression = item.context_expr
+                        name = (
+                            self.path_functions.canonical_name(
+                                _function_name(expression),
+                                self.path,
+                                _lexical_scope(state),
+                                _import_aliases(state),
+                            )
+                            if isinstance(expression, ast.Call)
+                            and isinstance(self.path_functions, PathFunctionTable)
+                            else _function_name(expression)
+                            if isinstance(expression, ast.Call)
+                            else ""
+                        )
+                        self._bind(
+                            item.optional_vars,
+                            expression if name in _PATH_CONSTRUCTORS else None,
+                            [state],
+                        )
             return self.scan_block(statement.body, states, exception_states, exit_states)
         if isinstance(statement, (ast.Try, getattr(ast, "TryStar", ast.Try))):
             body_exception_states: list[dict[str, str]] = []
@@ -2486,12 +2736,20 @@ class _BlockScanner:
             handler_states: list[dict[str, str]] = []
             handler_exit_states: list[dict[str, str]] = []
             for handler in statement.handlers:
-                handler_states += self.scan_block(
+                inputs = _fork(handler_inputs)
+                if handler.name:
+                    for state in inputs:
+                        _invalidate_names(state, {handler.name})
+                completed = self.scan_block(
                     handler.body,
-                    _fork(handler_inputs),
+                    inputs,
                     exception_states,
                     handler_exit_states,
                 )
+                if handler.name:
+                    for state in completed:
+                        _invalidate_names(state, {handler.name})
+                handler_states += completed
             else_exit_states: list[dict[str, str]] = []
             else_states = (
                 self.scan_block(
@@ -2532,15 +2790,40 @@ class _BlockScanner:
         if isinstance(statement, ast.Match):
             case_states: list[dict[str, str]] = []
             for case in statement.cases:
-                case_states += self.scan_block(
-                    case.body, _fork(states), exception_states, exit_states
-                )
-            return _merge_states(case_states + _fork(states))
+                inputs = _fork(states)
+                names = {
+                    item.name
+                    for item in ast.walk(case.pattern)
+                    if isinstance(item, (ast.MatchAs, ast.MatchStar)) and item.name
+                } | {
+                    item.rest
+                    for item in ast.walk(case.pattern)
+                    if isinstance(item, ast.MatchMapping) and item.rest
+                }
+                for state in inputs:
+                    _invalidate_names(state, names)
+                if case.guard is not None:
+                    self._scan_expression(case.guard, inputs)
+                case_states += self.scan_block(case.body, inputs, exception_states, exit_states)
+            exhaustive = any(
+                isinstance(case.pattern, ast.MatchAs)
+                and case.pattern.pattern is None
+                and case.guard is None
+                for case in statement.cases
+            )
+            return _merge_states(case_states + ([] if exhaustive else _fork(states)))
         if isinstance(statement, (ast.Return, ast.Raise)):
             if exit_states is not None:
                 exit_states.extend(_fork(states))
             return []
         return states
+
+
+class _ModuleBindingScanner(_BlockScanner):
+    """Compute post-flow globals without publishing duplicate prepass diagnostics."""
+
+    def _classify(self, call: ast.Call, states: list[dict[str, str]]) -> None:
+        return
 
 
 class _PathHelperScanner(_BlockScanner):
@@ -2619,6 +2902,8 @@ def _scan_scope(
         node, module_values, path, repo_root, path_functions, lexical_prefixes
     )
     for name in closure_rebindings or ():
+        initial.pop(f"{_CONSTANT_VALUE_PREFIX}{name}", None)
+        initial.pop(f"{_UNRESOLVED_FORMAT_PREFIX}{name}", None)
         initial.pop(name, None)
         _clear_value_alternatives(initial, name)
         _set_path_value(initial, name, False)
@@ -2647,10 +2932,7 @@ def _scan_scope(
         nested_scope_values=nested_scope_values if nested_scope_values is not None else {},
     )
     if isinstance(node, ast.Lambda):
-        visitor = _ScopeCallVisitor()
-        visitor.visit(node.body)
-        for call in visitor.calls:
-            scanner._classify(call, [initial])
+        scanner._scan_expression(node.body, [initial])
     else:
         scanner.scan_block(list(node.body), [initial])
 
@@ -3441,7 +3723,11 @@ def analyse_consumer_side(
     ]
     for pattern, reader_sites in _group_reads(included_reads).items():
         representative = reader_sites[0]
-        matching = [writer for writer in writes if _patterns_match(pattern, writer.pattern)]
+        matching = [
+            writer
+            for writer in writes
+            if writer.bounded and _patterns_match(pattern, writer.pattern)
+        ]
         unmodelled = tuple(reader for reader in reader_sites if not reader.modelled)
         if unmodelled:
             kind = "consumer-reads-through-unmodelled-api"
@@ -3498,7 +3784,16 @@ def analyse_consumer_side(
                 _specific_pair_identity(reader, writer, imports_by_path) for reader in reader_sites
             )
         ]
-        paired = [writer for writer in identity_writers if _patterns_match(pattern, writer.pattern)]
+        paired = [
+            writer
+            for writer in identity_writers
+            if (writer.bounded and _patterns_match(pattern, writer.pattern))
+            or (
+                writer.pattern == pattern
+                and not writer.bounded
+                and all(not reader.bounded for reader in reader_sites)
+            )
+        ]
         for reader in reader_sites:
             pairs.extend(
                 ArtifactPair(reader.family, reader, writer)
@@ -3617,6 +3912,7 @@ def _access_json(access: ArtifactAccess) -> dict[str, object]:
         "family": access.family,
         "operation": access.operation,
         "modelled": access.modelled,
+        "bounded": access.bounded,
     }
 
 
@@ -3668,7 +3964,9 @@ def _report_json(report: ConsumerSideReport) -> dict[str, object]:
                 "family": pair.family,
                 "reader": _access_json(pair.reader),
                 "writer": _access_json(pair.writer),
-                "status": "no-live-mismatch",
+                "status": "no-live-mismatch"
+                if pair.reader.bounded and pair.writer.bounded
+                else "unresolved",
             }
             for pair in report.pairs
         ],
@@ -3700,17 +3998,6 @@ def _write_consumer_side_json_report_only(report: ConsumerSideReport, path: Path
 
 
 def print_consumer_side_report(report: ConsumerSideReport, report_path: Path) -> None:
-    for gap in report.source_gaps:
-        print(
-            f"[REPORT-ERROR] {gap.path}: {gap.operation} failed ({gap.error_class}); "
-            "next action: make the source readable and valid Python, then rerun"
-        )
-    for site in report.capped_expressions:
-        print(f"[CAPPED] {site}: compact expression union; concrete alternatives retained")
-    for site in report.unresolved_closures:
-        print(f"[UNRESOLVED] {site}")
-    for site in report.unresolved_paths:
-        print(f"[UNRESOLVED] {site}")
     counts = Counter(finding.kind for finding in report.findings)
     print(
         "consumer-side counts: "
@@ -3735,6 +4022,22 @@ def print_consumer_side_report(report: ConsumerSideReport, report_path: Path) ->
         f"unresolvable={report.unresolvable} "
         f"unrecognised-path-calls={sum(report.unrecognised_path_calls.values())}"
     )
+    diagnostics = [
+        f"[REPORT-ERROR] {gap.path}: {gap.operation} failed ({gap.error_class}); "
+        "next action: make the source readable and valid Python, then rerun"
+        for gap in report.source_gaps
+    ]
+    diagnostics.extend(
+        f"[CAPPED] {site}: compact expression union; concrete alternatives retained"
+        for site in report.capped_expressions
+    )
+    diagnostics.extend(
+        f"[UNRESOLVED] {site}" for site in (*report.unresolved_closures, *report.unresolved_paths)
+    )
+    for diagnostic in diagnostics[:CONSUMER_SIDE_REPORT_LIMIT]:
+        print(diagnostic)
+    if len(diagnostics) > CONSUMER_SIDE_REPORT_LIMIT:
+        print(f"{len(diagnostics) - CONSUMER_SIDE_REPORT_LIMIT} more in JSON")
     printed_by_kind: Counter[str] = Counter()
     for finding, entry in report.allowlisted:
         if printed_by_kind[finding.kind] >= CONSUMER_SIDE_REPORT_LIMIT:
@@ -3753,11 +4056,15 @@ def print_consumer_side_report(report: ConsumerSideReport, report_path: Path) ->
         for finding in kind_findings[:remaining]:
             print(_finding_line(finding))
     for pair in sorted(report.pairs, key=_pair_priority)[:CONSUMER_SIDE_REPORT_LIMIT]:
+        detail = (
+            "status=no-live-mismatch; paired reader/writer resolved from two places"
+            if pair.reader.bounded and pair.writer.bounded
+            else "status=unresolved; equal dynamic patterns, possible pairing only"
+        )
         print(
             f"[PAIRED] {pair.family} reader={pair.reader.path}:{pair.reader.lineno} "
             f"read={pair.reader.pattern} writer={pair.writer.path}:{pair.writer.lineno} "
-            f"write={pair.writer.pattern} status=no-live-mismatch; paired reader/writer "
-            "resolved from two places"
+            f"write={pair.writer.pattern} {detail}"
         )
     print(f"consumer-side full JSON report: {report_path}")
     print(
