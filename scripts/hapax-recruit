@@ -26,6 +26,7 @@ from __future__ import annotations
 
 import argparse
 import hashlib
+import http.client
 import json
 import os
 import re
@@ -36,6 +37,7 @@ import sys
 import time
 import urllib.error
 import urllib.request
+from contextlib import contextmanager
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
@@ -101,6 +103,53 @@ class EndpointProtocolError(ValueError):
     """A response violates the chat-completion protocol; messages contain no body data."""
 
 
+class EndpointDeadlineExceeded(TimeoutError):
+    """The complete endpoint exchange exhausted its wall-clock budget."""
+
+
+@contextmanager
+def _endpoint_deadline(timeout: int):
+    """Bound even trickling headers/reads in this POSIX CLI's main thread."""
+    started = time.monotonic()
+    deadline = started + timeout
+
+    def expired(*_args):
+        raise EndpointDeadlineExceeded(f"endpoint deadline exceeded after {timeout}s")
+
+    if timeout <= 0:
+        expired()
+    previous_handler = signal.signal(signal.SIGALRM, expired)
+    previous_timer = signal.setitimer(signal.ITIMER_REAL, timeout)
+    try:
+        yield deadline
+        if time.monotonic() >= deadline:
+            expired()
+    finally:
+        signal.setitimer(signal.ITIMER_REAL, 0)
+        signal.signal(signal.SIGALRM, previous_handler)
+        if previous_timer[0]:
+            remaining = max(0.000001, previous_timer[0] - (time.monotonic() - started))
+            signal.setitimer(signal.ITIMER_REAL, remaining, previous_timer[1])
+
+
+def _read_endpoint_body(response, deadline: float) -> bytes:
+    chunks = []
+    while True:
+        if time.monotonic() >= deadline:
+            raise EndpointDeadlineExceeded("endpoint deadline exceeded during body consumption")
+        # read1 performs at most one underlying read; read(n) can wait for n bytes.
+        chunk = response.read1(65536)
+        if time.monotonic() >= deadline:
+            raise EndpointDeadlineExceeded("endpoint deadline exceeded during body consumption")
+        if not chunk:
+            # HTTPResponse.read1 does not raise on premature EOF with Content-Length.
+            remaining = getattr(response, "length", None)
+            if remaining:
+                raise http.client.IncompleteRead(b"", remaining)
+            return b"".join(chunks)
+        chunks.append(chunk)
+
+
 @dataclass
 class RunResult:
     answer: str
@@ -113,6 +162,9 @@ class RunResult:
     failure_class: str | None = None
 
     def __post_init__(self) -> None:
+        # Failed stdout is diagnostic material even when a CLI parsed it as an answer.
+        if self.exit_code != 0:
+            self.answer = _redact(self.answer)
         # Receive FULL diagnostics: slicing first can discard a credential's label.
         # Receipt, terminal, and any future logger only see this redacted tail.
         self.stderr_tail = _redact(self.stderr_tail)[-400:]
@@ -237,6 +289,13 @@ def _parse_claude_json(stdout: str) -> tuple[str, list[str]]:
     return (answer if isinstance(answer, str) else stdout), models
 
 
+def _output_identity(out: Path) -> tuple[int, int, int, int, int] | None:
+    if not out.is_file():
+        return None
+    info = out.stat()
+    return info.st_dev, info.st_ino, info.st_mtime_ns, info.st_ctime_ns, info.st_size
+
+
 def recruit_cli(
     capacity: str,
     brief: str,
@@ -261,8 +320,17 @@ def recruit_cli(
         if model:
             argv += ["--model", model]
         argv.append(brief)
+        previous_output = _output_identity(out)
         code, stdout, stderr, group_killed, member_survived = _run(argv, cwd=cwd, timeout=timeout)
-        answer = out.read_text(encoding="utf-8") if out.is_file() else stdout
+        current_output = _output_identity(out)
+        produced_output = current_output is not None and current_output != previous_output
+        answer = out.read_text(encoding="utf-8") if produced_output else ""
+        failure_class = None
+        if not answer:
+            failure_class = "OutputNotProduced"
+            stderr += "\ncodex produced no new output for this invocation"
+            if code == 0:
+                code = 3
         reported = re.findall(r"^model:\s*(\S+)", stdout + "\n" + stderr, flags=re.MULTILINE)
         return RunResult(
             answer,
@@ -272,6 +340,7 @@ def recruit_cli(
             sorted(set(reported)),
             group_killed,
             member_survived,
+            failure_class=failure_class,
         )
     if capacity == "grok":
         binary = _require_binary("grok")
@@ -355,8 +424,9 @@ def recruit_local(capacity: str, brief: str, *, timeout: int, model: str | None)
         f"{base}/chat/completions", data=body, headers={"Content-Type": "application/json"}
     )
     try:
-        with urllib.request.urlopen(request, timeout=timeout) as response:
-            payload = json.loads(response.read().decode("utf-8"))
+        with _endpoint_deadline(timeout) as deadline:
+            with urllib.request.urlopen(request, timeout=timeout) as response:
+                payload = json.loads(_read_endpoint_body(response, deadline).decode("utf-8"))
         if not isinstance(payload, dict):
             raise EndpointProtocolError("response must be an object")
         choices = payload.get("choices")
@@ -375,6 +445,8 @@ def recruit_local(capacity: str, brief: str, *, timeout: int, model: str | None)
         served = payload.get("model")
         if served is not None and not isinstance(served, str):
             raise EndpointProtocolError("model must be a string when present")
+    except EndpointDeadlineExceeded as exc:
+        return RunResult("", 3, 0, str(exc), [], failure_class=type(exc).__name__)
     except urllib.error.URLError as exc:
         # Do not read HTTPError bodies. The reason may itself contain diagnostics;
         # pass it whole through RunResult's redaction boundary before truncation.
@@ -438,6 +510,9 @@ def write_receipt(
         "stdout_bytes": result.stdout_bytes if result else 0,
         "stderr_tail": result.stderr_tail if result else "",
         "failure_class": result.failure_class if result else None,
+        "answer_policy": ("redacted_failure_output" if result.exit_code != 0 else "capacity_answer")
+        if result
+        else None,
         "refusal": refusal,
         "process_group_killed": result.process_group_killed if result else False,
         "process_group_any_member_survived": (
@@ -506,6 +581,13 @@ def main(argv: list[str] | None = None) -> int:
             )
     except Refusal as exc:
         refusal = str(exc)
+    except (OSError, UnicodeError, http.client.HTTPException) as exc:
+        # Expected launch/decoding/transport failures must reach the receipt boundary.
+        # Exception text can embed paths, response bytes or credentials: keep only its class.
+        failure_class = type(exc).__name__
+        result = RunResult(
+            "", 3, 0, f"capacity failed: {failure_class}", [], failure_class=failure_class
+        )
     ended = _now()
     write_receipt(
         receipt_path,

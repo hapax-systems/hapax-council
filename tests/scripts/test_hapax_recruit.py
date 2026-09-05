@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import hashlib
+import http.client
 import importlib.machinery
 import importlib.util
 import io
@@ -10,8 +12,10 @@ import os
 import re
 import signal
 import sys
+import threading
 import time
 import urllib.error
+from http.server import BaseHTTPRequestHandler, HTTPServer
 from pathlib import Path
 from types import ModuleType
 
@@ -165,7 +169,11 @@ def test_codex_refuses_a_cwd_that_is_not_a_git_checkout_and_names_the_flag(
     bench, tmp_path: Path, capsys: pytest.CaptureFixture[str]
 ) -> None:
     module, bin_dir, brief, out = bench
-    _stub(bin_dir, "codex", "print('should not run')\n")
+    _stub(
+        bin_dir,
+        "codex",
+        "open(sys.argv[sys.argv.index('-o') + 1], 'w').write('allowed checkout answer')\n",
+    )
     _stub(bin_dir, "git", "sys.exit(1)\n")
     plain = tmp_path / "plain"
     plain.mkdir()
@@ -558,6 +566,7 @@ def test_cli_diagnostics_redact_before_tail(
     assert "<redacted>" in receipt["stderr_tail"]
     assert "context after failure" in receipt["stderr_tail"]
     assert len(receipt["stderr_tail"]) <= 400
+    assert canary not in out.read_text()
 
 
 @pytest.mark.parametrize("form", _BOUNDARY_DIAGNOSTICS, ids=_BOUNDARY_IDS)
@@ -739,3 +748,274 @@ def test_malformed_endpoint_response_is_receipted_capacity_failure(
     captured = capsys.readouterr()
     assert "SYNTHETIC_PROTOCOL_SENTINEL" not in json.dumps(receipt) + captured.out + captured.err
     assert body.decode(errors="replace") not in receipt["stderr_tail"]
+
+
+@pytest.mark.parametrize(
+    "capacity", ["codex", "grok", "kimi", "agy", "claude", "glmcp", "qwencloud"]
+)
+@pytest.mark.parametrize("code", [7, "timeout"])
+def test_failed_stdout_is_redacted_at_every_destination(
+    bench, monkeypatch, capsys, caplog, capacity, code
+):
+    module, _bin_dir, brief, out = bench
+    canary = "SYNTHETIC_REVIEW_CANARY"  # pragma: allowlist secret
+    diagnostic = f"api_key={canary}"  # pragma: allowlist secret
+    monkeypatch.setattr(module, "_require_binary", lambda name: name)
+    monkeypatch.setattr(module, "_is_git_checkout", lambda cwd: True)
+    if capacity in module.WRAPPED_CLAUDE:
+        monkeypatch.setenv(module.WRAPPED_CLAUDE[capacity][0], str(brief))
+
+    def run(argv, *, cwd, timeout):
+        if capacity == "codex":
+            Path(argv[argv.index("-o") + 1]).write_text(diagnostic)
+        return code, diagnostic, "", False, None
+
+    monkeypatch.setattr(module, "_run", run)
+    assert module.main([capacity, "--brief", str(brief), "--out", str(out)]) == (
+        4 if code == "timeout" else 3
+    )
+    receipt = _receipt(out)
+    captured = capsys.readouterr()
+    # There is no journal writer: stdout/stderr are also the systemd journal boundary.
+    destinations = {
+        "answer": out.read_text(),
+        "receipt": json.dumps(receipt),
+        "terminal/journal stdout": captured.out,
+        "terminal/journal stderr": captured.err,
+        "logging": caplog.text,
+    }
+    for destination, text in destinations.items():
+        assert canary not in text, f"unredacted diagnostic persisted to {destination}"
+    assert "<redacted>" in out.read_text()
+    assert "<redacted>" in receipt["stderr_tail"]
+    assert receipt["output_bytes"] == len(out.read_bytes())
+    assert receipt["answer_policy"] == "redacted_failure_output"
+
+
+@pytest.mark.parametrize("code", [0, "timeout"])
+@pytest.mark.parametrize("preexisting", [False, True])
+def test_codex_run_without_new_output_never_attributes_an_old_answer(
+    bench, monkeypatch, code, preexisting
+):
+    module, _bin_dir, brief, out = bench
+    out.parent.mkdir()
+    if preexisting:
+        out.write_text("ANSWER TO AN EARLIER BRIEF")
+    brief.write_text("A NEW BRIEF")
+    monkeypatch.setattr(module, "_require_binary", lambda name: name)
+    monkeypatch.setattr(module, "_is_git_checkout", lambda cwd: True)
+    monkeypatch.setattr(
+        module, "_run", lambda *args, **kwargs: (code, "only launch chatter", "", False, None)
+    )
+
+    assert module.main(["codex", "--brief", str(brief), "--out", str(out)]) == (
+        4 if code == "timeout" else 3
+    )
+    receipt = _receipt(out)
+    assert receipt["brief_sha256"] == hashlib.sha256(brief.read_bytes()).hexdigest()
+    assert receipt["output_bytes"] == 0, "stale output attributed to the new brief"
+    assert receipt["failure_class"] == "OutputNotProduced"
+    assert "no new output" in receipt["stderr_tail"]
+    assert out.read_text() == ""
+
+
+@pytest.mark.parametrize(
+    "failure_class", ["PermissionError", "UnicodeDecodeError", "IncompleteRead"]
+)
+def test_expected_launch_decode_and_transport_failures_are_receipted(
+    bench, monkeypatch, capsys, failure_class
+):
+    module, _bin_dir, brief, out = bench
+    canary = "SYNTHETIC_FAILURE_SENTINEL"  # pragma: allowlist secret
+    diagnostic = f"api_key={canary}".encode()  # pragma: allowlist secret
+    capacity = "qwencloud"
+    monkeypatch.setenv(module.QWENCLOUD_WRAPPER_ENV, str(brief))
+
+    def popen(*args, **kwargs):
+        if failure_class == "PermissionError":
+            raise PermissionError(13, diagnostic.decode(), str(brief))
+
+        class Process:
+            returncode = 0
+
+            def communicate(self, **kwargs):
+                return (diagnostic + b"\xff").decode("utf-8"), ""
+
+        return Process()
+
+    monkeypatch.setattr(module.subprocess, "Popen", popen)
+    if failure_class == "IncompleteRead":
+        capacity = "local:qwen36"
+
+        class TruncatedResponse(io.BytesIO):
+            def read(self, *args):
+                raise http.client.IncompleteRead(diagnostic, 100)
+
+            read1 = read
+
+        monkeypatch.setattr(
+            module.urllib.request, "urlopen", lambda *args, **kwargs: TruncatedResponse()
+        )
+
+    assert module.main([capacity, "--brief", str(brief), "--out", str(out)]) == 3
+    receipt = _receipt(out)
+    assert receipt["exit_code"] == 3
+    assert receipt["failure_class"] == failure_class
+    assert failure_class in receipt["stderr_tail"]
+    assert receipt["output_bytes"] == 0
+    assert out.read_text() == ""
+    captured = capsys.readouterr()
+    assert canary not in json.dumps(receipt) + captured.out + captured.err
+
+
+@pytest.mark.parametrize("stage", ["connection", "body"])
+def test_local_deadline_covers_connection_and_body(bench, monkeypatch, stage):
+    module, _bin_dir, brief, out = bench
+    clock = [100.0]
+    monkeypatch.setattr(module.time, "monotonic", lambda: clock[0])
+
+    class DelayedResponse(io.BytesIO):
+        def read(self, *args):
+            if stage == "body":
+                clock[0] += 1.2
+            return super().read(*args)
+
+        read1 = read
+
+    def urlopen(*args, **kwargs):
+        if stage == "connection":
+            clock[0] += 1.2
+        return DelayedResponse(b'{"choices": [{"message": {"content": "OK"}}]}')
+
+    monkeypatch.setattr(module.urllib.request, "urlopen", urlopen)
+    assert (
+        module.main(["local:qwen36", "--brief", str(brief), "--out", str(out), "--timeout", "1"])
+        == 3
+    )
+    receipt = _receipt(out)
+    assert receipt["failure_class"] == "EndpointDeadlineExceeded"
+    assert "deadline" in receipt["stderr_tail"]
+    assert receipt["output_bytes"] == 0
+
+
+@pytest.mark.parametrize("stage", ["headers", "body"])
+def test_local_deadline_interrupts_loopback_trickle(bench, monkeypatch, stage):
+    module, _bin_dir, brief, out = bench
+    stop = threading.Event()
+    body = b'{"choices": [{"message": {"content": "OK"}}]}'
+
+    class Handler(BaseHTTPRequestHandler):
+        def log_message(self, *args):
+            pass
+
+        def do_POST(self):
+            self.rfile.read(int(self.headers["Content-Length"]))
+            try:
+                if stage == "headers":
+                    self.wfile.write(b"HTTP/1.0 200 OK\r\n")
+                    for _ in range(10):
+                        self.wfile.write(b"X-Trickle: yes\r\n")
+                        self.wfile.flush()
+                        if stop.wait(0.2):
+                            return
+                    self.wfile.write(f"Content-Length: {len(body)}\r\n\r\n".encode())
+                    self.wfile.write(body)
+                else:
+                    self.send_response(200)
+                    self.send_header("Content-Length", str(len(body)))
+                    self.end_headers()
+                    for offset in range(0, len(body), 4):
+                        self.wfile.write(body[offset : offset + 4])
+                        self.wfile.flush()
+                        if stop.wait(0.2):
+                            return
+            except (BrokenPipeError, ConnectionResetError):
+                pass
+
+    try:
+        server = HTTPServer(("127.0.0.1", 0), Handler)
+    except PermissionError as exc:
+        pytest.skip(f"sandbox forbids loopback sockets: {type(exc).__name__}: {exc}")
+    thread = threading.Thread(
+        target=server.serve_forever, kwargs={"poll_interval": 0.05}, daemon=True
+    )
+    thread.start()
+    # This is the sole permitted socket boundary: an ephemeral synthetic loopback server.
+    monkeypatch.setitem(
+        module.LOCAL_ENDPOINTS,
+        "local:qwen36",
+        (f"http://127.0.0.1:{server.server_port}/v1", "synthetic"),
+    )
+    opener = module.urllib.request.build_opener(module.urllib.request.ProxyHandler({}))
+    monkeypatch.setattr(module.urllib.request, "urlopen", opener.open)
+    started = time.monotonic()
+    try:
+        rc = module.main(
+            ["local:qwen36", "--brief", str(brief), "--out", str(out), "--timeout", "1"]
+        )
+        elapsed = time.monotonic() - started
+    finally:
+        stop.set()
+        server.shutdown()
+        server.server_close()
+        thread.join(timeout=1)
+    assert rc == 3, "slowly arriving response escaped the deadline"
+    assert elapsed < 1.6, "run exceeded the overall deadline"
+    receipt = _receipt(out)
+    assert receipt["failure_class"] == "EndpointDeadlineExceeded"
+    assert "deadline" in receipt["stderr_tail"]
+    assert receipt["output_bytes"] == 0
+
+
+def test_runbook_has_headless_read_refusal_rechecks():
+    doc = (SCRIPT.parents[1] / "docs/runbooks/hapax-recruit.md").read_text()
+    assert 'grok -p "$recruit_read_prompt" --cwd "$recruit_probe_dir/cwd" < /dev/null' in doc
+    assert 'agy --print="$recruit_read_prompt" --print-timeout 60s < /dev/null' in doc
+    assert "outside cwd" in doc
+    assert "read_file" in doc and "command" in doc and "auto-denied" in doc
+
+
+@pytest.mark.parametrize("stage", ["connection", "body"])
+def test_local_deadline_interrupts_blocking_io_and_restores_alarm(bench, monkeypatch, stage):
+    module, _bin_dir, brief, out = bench
+    previous_handler = signal.getsignal(signal.SIGALRM)
+    assert signal.getitimer(signal.ITIMER_REAL) == (0, 0)
+
+    class BlockingResponse(io.BytesIO):
+        def read(self, *args):
+            if stage == "body":
+                time.sleep(2)
+            return super().read(*args)
+
+        read1 = read
+
+    def urlopen(*args, **kwargs):
+        if stage == "connection":
+            time.sleep(2)
+        return BlockingResponse(b'{"choices": [{"message": {"content": "OK"}}]}')
+
+    monkeypatch.setattr(module.urllib.request, "urlopen", urlopen)
+    started = time.monotonic()
+    rc = module.main(["local:qwen36", "--brief", str(brief), "--out", str(out), "--timeout", "1"])
+    assert rc == 3, "blocking I/O escaped the deadline"
+    assert time.monotonic() - started < 1.6
+    assert signal.getsignal(signal.SIGALRM) == previous_handler
+    assert signal.getitimer(signal.ITIMER_REAL) == (0, 0)
+    assert _receipt(out)["failure_class"] == "EndpointDeadlineExceeded"
+
+
+def test_short_http_content_length_is_a_receipted_transport_failure(bench, monkeypatch):
+    module, _bin_dir, brief, out = bench
+
+    class FakeSocket:
+        def makefile(self, *args):
+            body = b'{"choices": [{"message": {"content": "OK"}}]}'
+            return io.BytesIO(b"HTTP/1.0 200 OK\r\nContent-Length: 999\r\n\r\n" + body)
+
+    response = http.client.HTTPResponse(FakeSocket())
+    response.begin()
+    monkeypatch.setattr(module.urllib.request, "urlopen", lambda *args, **kwargs: response)
+    assert module.main(["local:qwen36", "--brief", str(brief), "--out", str(out)]) == 3
+    assert _receipt(out)["failure_class"] == "IncompleteRead"
+    assert _receipt(out)["output_bytes"] == 0
+    assert out.read_text() == ""
