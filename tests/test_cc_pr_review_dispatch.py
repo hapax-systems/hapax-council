@@ -4548,3 +4548,56 @@ payg_fallback: false
         reviews = dispatch.dispatch_reviews(constitution, ["prompt"], registry, runner)
 
         assert reviews[0]["verdict"] == "provider-outage"
+
+
+@pytest.mark.parametrize("apply", [False, True])
+def test_main_acceptance_transfer_verb_is_separate_from_review(monkeypatch, capsys, apply):
+    from unittest.mock import Mock
+
+    transfer = Mock(return_value={"status": "transferred" if apply else "plan"})
+    review = Mock(side_effect=AssertionError("transfer must not review execution B"))
+    monkeypatch.delenv(dispatch.KILLSWITCH_ENV, raising=False)
+    monkeypatch.setattr(dispatch, "transfer_acceptance", transfer)
+    monkeypatch.setattr(dispatch, "review_pr", review)
+    args = [
+        "--pr",
+        "7",
+        "--transfer-acceptance",
+        "--acceptance-dossier",
+        "synthetic.review-dossier.yaml",
+    ]
+    if apply:
+        args.append("--apply")
+    assert dispatch.main(args) == 0
+    assert json.loads(capsys.readouterr().out)["status"] == ("transferred" if apply else "plan")
+    transfer.assert_called_once_with(
+        7,
+        repo=dispatch.DEFAULT_REPO,
+        repo_root=dispatch.REPO_ROOT,
+        dossier_name="synthetic.review-dossier.yaml",
+        apply=apply,
+    )
+    review.assert_not_called()
+
+
+@pytest.mark.parametrize(
+    "args",
+    [
+        ["--all", "--transfer-acceptance", "--acceptance-dossier", "synthetic.review-dossier.yaml"],
+        ["--pr", "7", "--transfer-acceptance"],
+        [
+            "--pr",
+            "7",
+            "--transfer-acceptance",
+            "--acceptance-dossier",
+            "synthetic.review-dossier.yaml",
+            "--force",
+        ],
+    ],
+)
+def test_main_transfer_verb_refuses_ambiguous_or_incomplete_request(monkeypatch, args):
+    monkeypatch.delenv(dispatch.KILLSWITCH_ENV, raising=False)
+    monkeypatch.setattr(dispatch, "transfer_acceptance", lambda *a, **kw: {"status": "refused"})
+    with pytest.raises(SystemExit) as exc:
+        dispatch.main(args)
+    assert exc.value.code == 2

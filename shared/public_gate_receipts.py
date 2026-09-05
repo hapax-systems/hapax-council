@@ -18,6 +18,7 @@ import json
 import logging
 import os
 import re
+import subprocess
 from collections.abc import Iterable, Mapping
 from pathlib import Path
 from typing import Any
@@ -332,6 +333,8 @@ def public_gate_receipt_ref_exists(
 
 def _normalized_expected_head_sha(expected_head_sha: str | None) -> str | None:
     if expected_head_sha is None:
+        return None
+    if not isinstance(expected_head_sha, str):
         return None
     normalized = expected_head_sha.strip().casefold()
     if PUBLIC_GATE_REVIEW_HEAD_RE.fullmatch(normalized) is None:
@@ -765,7 +768,7 @@ def _review_dossier_evidence_allows(
     authority_secret: str,
     expected_head_sha: str | None,
 ) -> bool:
-    if not isinstance(data, Mapping):
+    if not isinstance(data, Mapping) or "transfer_schema" in data or "kind" in data:
         return False
     if not path.name.endswith(PUBLIC_GATE_REVIEW_DOSSIER_SUFFIX):
         return False
@@ -818,7 +821,7 @@ def _acceptance_receipt_evidence_allows(
     authority_secret: str,
     expected_head_sha: str | None,
 ) -> bool:
-    if not isinstance(data, Mapping):
+    if not isinstance(data, Mapping) or "transfer_schema" in data or "kind" in data:
         return False
     if not path.name.endswith(PUBLIC_GATE_ACCEPTANCE_RECEIPT_SUFFIX):
         return False
@@ -1119,3 +1122,383 @@ def _outcome_value_allows(value: Any) -> bool | None:
     if normalized in PUBLIC_GATE_FAIL_VALUES:
         return False
     return None
+
+
+# A separate statement about the execution of an existing acceptance, never a review.
+PUBLIC_GATE_TRANSFER_KIND = "public-gate-acceptance-transfer"
+PUBLIC_GATE_TRANSFER_ISSUER = "cc-pr-review-dispatch:acceptance-transfer"
+PUBLIC_GATE_TRANSFER_DOMAIN = b"public-gate-acceptance-transfer:v1\x00"
+PUBLIC_GATE_TRANSFER_GATES = (
+    "source_artifact_public_safe",
+    "source_refs_present",
+    "rights_privacy_redaction_pass",
+    "target_surface_allowlist_pass",
+    "claim_review_current",
+    "no_direct_public_egress",
+)
+
+
+class AcceptanceTransferError(ValueError):
+    """A failed transfer predicate, including the action needed before retry."""
+
+
+def _transfer_require(condition: object, reason: str) -> None:
+    if not condition:
+        raise AcceptanceTransferError(
+            f"{reason}; next action: hold publication and obtain a verified exact-commit "
+            "transfer from cc-pr-review-dispatch --transfer-acceptance"
+        )
+
+
+def acceptance_transfer_signature(data: Mapping[str, Any], secret: str) -> str:
+    payload = {key: value for key, value in data.items() if key != "transfer_signature"}
+    return (
+        "hmac-sha256:"
+        + hmac.new(
+            secret.encode(),
+            PUBLIC_GATE_TRANSFER_DOMAIN
+            + json.dumps(payload, sort_keys=True, separators=(",", ":")).encode(),
+            hashlib.sha256,
+        ).hexdigest()
+    )
+
+
+def transfer_git_data(repo_root: Path, *args: str, runner: Any = None) -> str:
+    """Inspect local objects as data. No fetch, checkout, hooks or candidate code."""
+    try:
+        proc = (runner or subprocess.run)(
+            ["git", "--no-optional-locks", "--no-replace-objects", *args],
+            cwd=repo_root,
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+    except OSError as exc:
+        raise AcceptanceTransferError(
+            "transfer_git_unobservable; next action: restore local immutable git objects"
+        ) from exc
+    _transfer_require(proc.returncode == 0, "transfer_git_object_unavailable:" + args[-1])
+    return proc.stdout
+
+
+def transfer_repository(repo_root: Path, *, runner: Any = None) -> str:
+    remote = transfer_git_data(repo_root, "remote", "get-url", "origin", runner=runner).strip()
+    match = re.fullmatch(
+        r"(?:https://github\.com/|git@github\.com:)([\w.-]+/[\w.-]+?)(?:\.git)?", remote
+    )
+    _transfer_require(match is not None, "transfer_repository_unobservable")
+    return match[1]
+
+
+def transfer_dossier(
+    name: str, *, digest: str | None = None, authority_roots: Iterable[Path] | None = None
+) -> tuple[Path, dict[str, Any], str]:
+    _transfer_require(
+        isinstance(name, str)
+        and Path(name).name == name
+        and name.endswith(PUBLIC_GATE_REVIEW_DOSSIER_SUFFIX),
+        "transfer_subject_must_be_dossier",
+    )
+    roots = (
+        tuple(authority_roots) if authority_roots is not None else _public_gate_authority_roots()
+    )
+    paths = [root / name for root in roots if _path_is_inside_root(root / name, root)]
+    _transfer_require(len(paths) == 1, "transfer_dossier_missing_or_ambiguous:" + name)
+    raw = paths[0].read_bytes()
+    actual_digest = "sha256:" + hashlib.sha256(raw).hexdigest()
+    _transfer_require(digest is None or digest == actual_digest, "transfer_dossier_digest_mismatch")
+    try:
+        data = yaml.safe_load(raw)
+    except yaml.YAMLError as exc:
+        raise AcceptanceTransferError(
+            "transfer_dossier_malformed; next action: restore the exact accepted dossier"
+        ) from exc
+    _transfer_require(
+        isinstance(data, dict) and "kind" not in data and "transfer_schema" not in data,
+        "transfer_subject_must_be_dossier",
+    )
+    return paths[0], data, actual_digest
+
+
+def validate_transfer_dossier(
+    path: Path,
+    dossier: dict[str, Any],
+    *,
+    repository: str,
+    pr: int,
+    subject_head_sha: str,
+    bindings: Mapping[str, object],
+    receipts: Mapping[str, object],
+    receipt_roots: Iterable[Path],
+    authority_roots: Iterable[Path] | None = None,
+) -> None:
+    """Keep the original signature, head, quorum and all six receipts necessary."""
+    secret = _public_gate_authority_secret()
+    _transfer_require(
+        dossier.get("repository") == repository, "transfer_dossier_repository_mismatch"
+    )
+    _transfer_require(dossier.get("pr") == pr, "transfer_dossier_pr_mismatch")
+    _transfer_require(
+        set(receipts) == set(PUBLIC_GATE_TRANSFER_GATES), "transfer_six_receipts_required"
+    )
+    _transfer_require(
+        _mapping_has_trusted_authority_signature(dossier, secret),
+        "transfer_dossier_signature_invalid",
+    )
+    for gate in PUBLIC_GATE_TRANSFER_GATES:
+        ref = receipts[gate]
+        _transfer_require(isinstance(ref, str), "transfer_receipt_malformed:" + gate)
+        _transfer_require(
+            _review_dossier_evidence_allows(
+                dossier,
+                path=path,
+                expected_gate=gate,
+                bindings=bindings,
+                receipt_refs=frozenset({ref}),
+                authority_secret=secret,
+                expected_head_sha=subject_head_sha,
+            ),
+            "transfer_dossier_acceptance_invalid:" + gate,
+        )
+        _transfer_require(
+            public_gate_receipt_value_present(
+                ref,
+                expected_gate=gate,
+                roots=receipt_roots,
+                bindings=bindings,
+                expected_head_sha=subject_head_sha,
+                authority_roots=authority_roots,
+            ),
+            "transfer_bound_receipt_invalid:" + gate,
+        )
+
+
+def transfer_artifact_bindings(
+    dossier: Mapping[str, Any], head: str, repo_root: Path, *, runner: Any = None
+) -> dict[str, object]:
+    """Use the production Markdown projection on immutable accepted source data."""
+    from scripts.publish_vault_artifact import (
+        _parse_publication_markdown,
+        _project_artifact,
+        _publication_gate_receipt_bindings,
+    )
+
+    _transfer_require(_normalized_expected_head_sha(head), "transfer_head_malformed")
+    path = dossier.get("artifact_git_path")
+    blob = dossier.get("artifact_blob_oid")
+    _transfer_require(
+        bool(path) != bool(blob),
+        "missing_immutable_artifact_object:"
+        + str(dossier.get("source_path") or dossier.get("artifact_slug")),
+    )
+    if path:
+        _transfer_require(
+            isinstance(path, str)
+            and not Path(path).is_absolute()
+            and ".." not in Path(path).parts
+            and ":" not in path,
+            "transfer_artifact_path_invalid",
+        )
+        text = transfer_git_data(repo_root, "show", f"{head}:{path}", runner=runner)
+    else:
+        _transfer_require(_normalized_expected_head_sha(blob), "transfer_artifact_blob_invalid")
+        text = transfer_git_data(repo_root, "cat-file", "blob", blob, runner=runner)
+    frontmatter, body = _parse_publication_markdown(text)
+    surfaces = dossier.get("target_surfaces")
+    _transfer_require(isinstance(surfaces, list) and bool(surfaces), "transfer_targets_missing")
+    artifact = _project_artifact(body_md=body, frontmatter=frontmatter, surfaces=surfaces)
+    return _publication_gate_receipt_bindings(artifact)
+
+
+def _verify_acceptance_transfer(
+    context: Mapping[str, Any],
+    *,
+    observed_head_sha: str | None,
+    repo_root: Path,
+    bindings: Mapping[str, object],
+    receipts: Mapping[str, object],
+    receipt_roots: Iterable[Path],
+) -> dict[str, Any]:
+    """Authorize only observed B, using a separately authenticated statement about A."""
+    transfer = context.get("acceptance_transfer")
+    _transfer_require(not isinstance(transfer, list), "transfer_ambiguous")
+    _transfer_require(isinstance(transfer, dict), "transfer_missing_or_malformed")
+    _transfer_require(
+        transfer.get("kind") == PUBLIC_GATE_TRANSFER_KIND
+        and type(transfer.get("transfer_schema")) is int
+        and transfer.get("transfer_schema") == 1,
+        "transfer_kind_or_schema_invalid",
+    )
+    _transfer_require(
+        transfer.get("issuer") == PUBLIC_GATE_TRANSFER_ISSUER, "transfer_issuer_invalid"
+    )
+    secret = _public_gate_authority_secret()
+    signature = transfer.get("transfer_signature")
+    _transfer_require(
+        bool(secret)
+        and isinstance(signature, str)
+        and hmac.compare_digest(signature, acceptance_transfer_signature(transfer, secret)),
+        "transfer_signature_or_domain_invalid",
+    )
+    _transfer_require(
+        _normalized_expected_head_sha(observed_head_sha), "transfer_execution_identity_unobserved"
+    )
+    execution = transfer.get("execution_head_sha")
+    _transfer_require(
+        _normalized_expected_head_sha(execution), "transfer_execution_identity_malformed"
+    )
+    _transfer_require(
+        observed_head_sha == execution, f"transfer_authorizes_exact_commit_only:{execution}"
+    )
+    _transfer_require(
+        not transfer_git_data(repo_root, "status", "--porcelain", "--untracked-files=all").strip(),
+        "transfer_dirty_checkout",
+    )
+    repository = transfer_repository(repo_root)
+    _transfer_require(transfer.get("repository") == repository, "transfer_repository_mismatch")
+    pr = context.get("publication_pr")
+    _transfer_require(
+        type(pr) is int and pr > 0 and transfer.get("pr") == pr, "transfer_pr_mismatch"
+    )
+    provenance = transfer.get("provenance")
+    _transfer_require(
+        isinstance(provenance, dict)
+        and provenance.get("merged") is True
+        and bool(provenance.get("merged_at"))
+        and provenance.get("merge_method") in {"merge", "squash"}
+        and provenance.get("result_commit") == execution,
+        "transfer_provenance_invalid",
+    )
+    _transfer_require(
+        isinstance(transfer.get("dossier_digest"), str)
+        and re.fullmatch(r"sha256:[0-9a-f]{64}", transfer["dossier_digest"]),
+        "transfer_dossier_digest_missing_or_malformed",
+    )
+    path, dossier, digest = transfer_dossier(
+        transfer.get("dossier_name"), digest=transfer.get("dossier_digest")
+    )
+    _transfer_require(
+        transfer.get("artifact_source")
+        == {
+            "git_path": dossier.get("artifact_git_path"),
+            "blob_oid": dossier.get("artifact_blob_oid"),
+        },
+        "transfer_artifact_source_mismatch",
+    )
+    subject = transfer.get("subject_head_sha")
+    _transfer_require(_normalized_expected_head_sha(subject), "transfer_subject_identity_malformed")
+    _transfer_require(transfer.get("receipts") == dict(receipts), "transfer_receipts_mismatch")
+    _transfer_require(
+        _receipt_mapping_has_required_bindings(transfer.get("bindings"), bindings),
+        "transfer_artifact_binding_mismatch",
+    )
+    validate_transfer_dossier(
+        path,
+        dossier,
+        repository=repository,
+        pr=pr,
+        subject_head_sha=subject,
+        bindings=bindings,
+        receipts=receipts,
+        receipt_roots=receipt_roots,
+    )
+    parents, method = transfer_merge_shape(repo_root, subject, execution)
+    _transfer_require(
+        provenance.get("result_parents") == parents and provenance.get("merge_method") == method,
+        "transfer_merge_provenance_mismatch",
+    )
+    _transfer_require(
+        transfer_artifact_bindings(dossier, execution, repo_root) == dict(bindings),
+        "transfer_execution_artifact_mismatch",
+    )
+    report = {
+        "reviewed_subject": {"head_sha": subject, "dossier_digest": digest},
+        "executing_release": {"head_sha": observed_head_sha, "repository": repository, "pr": pr},
+        "bindings": dict(bindings),
+        "transfer_evidence": transfer,
+    }
+    previous = context.get("acceptance_transfer_result")
+    _transfer_require(
+        previous is None
+        or json.dumps(previous, sort_keys=True) == json.dumps(report, sort_keys=True),
+        "transfer_stale_result_identity",
+    )
+    # Check again after object/receipt reads; a changing checkout cannot produce a pass.
+    _transfer_require(
+        transfer_git_data(repo_root, "rev-parse", "--verify", "HEAD").strip() == execution,
+        "transfer_execution_identity_changed",
+    )
+    _transfer_require(
+        not transfer_git_data(repo_root, "status", "--porcelain", "--untracked-files=all").strip(),
+        "transfer_dirty_checkout",
+    )
+    return report
+
+
+def publication_artifact_fingerprint(artifact: Any) -> str:
+    """The same content projection defines publisher, orchestrator and transfer identity."""
+    payload = artifact.model_dump(mode="json")
+    relevant = {
+        key: payload.get(key)
+        for key in (
+            "slug",
+            "title",
+            "abstract",
+            "body_md",
+            "body_html",
+            "doi",
+            "co_authors",
+            "surfaces_targeted",
+            "attribution_block",
+            "embed_image_url",
+        )
+    }
+    encoded = json.dumps(relevant, sort_keys=True, separators=(",", ":")).encode()
+    return hashlib.sha256(encoded).hexdigest()
+
+
+def verify_acceptance_transfer(
+    context: Mapping[str, Any],
+    *,
+    observed_head_sha: str | None,
+    repo_root: Path,
+    bindings: Mapping[str, object],
+    receipts: Mapping[str, object],
+    receipt_roots: Iterable[Path],
+) -> dict[str, Any]:
+    """Malformed evidence is a named hold, never a repair or fallback to subject A."""
+    try:
+        return _verify_acceptance_transfer(
+            context,
+            observed_head_sha=observed_head_sha,
+            repo_root=repo_root,
+            bindings=bindings,
+            receipts=receipts,
+            receipt_roots=receipt_roots,
+        )
+    except AcceptanceTransferError:
+        raise
+    except (ValueError, TypeError, AttributeError, OSError) as exc:
+        raise AcceptanceTransferError(
+            "transfer_malformed; next action: restore a complete signed transfer and its exact dossier"
+        ) from exc
+
+
+def transfer_merge_shape(
+    repo_root: Path,
+    subject: str,
+    execution: str,
+    *,
+    runner: Any = None,
+) -> tuple[list[str], str]:
+    """Read the immutable merge parents; single-parent results need squash equivalence."""
+    commit = transfer_git_data(repo_root, "cat-file", "commit", execution, runner=runner)
+    parents = [
+        line[7:] for line in commit.split("\n\n", 1)[0].splitlines() if line.startswith("parent ")
+    ]
+    method = "merge" if len(parents) == 2 else "squash"
+    _transfer_require(
+        (method == "merge" and subject in parents) or (method == "squash" and len(parents) == 1),
+        "transfer_merge_parent_relation_invalid",
+    )
+    return parents, method

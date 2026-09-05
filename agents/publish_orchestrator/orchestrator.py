@@ -64,6 +64,7 @@ from prometheus_client import REGISTRY, CollectorRegistry, Counter
 from pydantic import ValidationError
 
 from agents.publication_bus.surface_registry import dispatch_registry
+from shared import public_gate_receipts as transfer_authority
 from shared.preprint_artifact import (
     INBOX_DIR_NAME,
     ApprovalState,
@@ -768,6 +769,37 @@ class Orchestrator:
         )
         receipts, error = _artifact_publication_gate_receipts(artifact)
         bindings = _publication_gate_receipt_bindings(artifact)
+        context = artifact.publication_gate_context or {}
+        if (
+            ("acceptance_transfer" in context or "acceptance_transfer_result" in context)
+            and error is None
+            and policy_error is None
+        ):
+            try:
+                transfer_authority._transfer_require(
+                    set(required) == set(transfer_authority.PUBLIC_GATE_TRANSFER_GATES),
+                    "transfer_policy_gates_not_covered",
+                )
+                report = transfer_authority.verify_acceptance_transfer(
+                    context,
+                    observed_head_sha=_current_repo_head_sha(),
+                    repo_root=REPO_ROOT,
+                    bindings=bindings,
+                    receipts=receipts,
+                    receipt_roots=self._public_gate_receipt_roots,
+                )
+            except transfer_authority.AcceptanceTransferError as exc:
+                return PublicationGateChildResult(
+                    name="public_gate_receipts",
+                    decision=PublicationGateDecision.HOLD,
+                    findings=(str(exc),),
+                )
+            return PublicationGateChildResult(
+                name="public_gate_receipts",
+                decision=PublicationGateDecision.PASS,
+                evidence_refs=tuple(str(receipts[gate]) for gate in required),
+                report=report,
+            )
         findings = (error,) if error is not None else ()
         if policy_error is not None:
             findings = (*findings, policy_error)
@@ -779,7 +811,11 @@ class Orchestrator:
                 expected_gate=gate,
                 roots=self._public_gate_receipt_roots,
                 bindings=bindings,
-                expected_head_sha=self._public_gate_expected_head_sha,
+                expected_head_sha=(
+                    self._public_gate_expected_head_sha
+                    if self._public_gate_expected_head_sha == _current_repo_head_sha()
+                    else None
+                ),
             )
         )
         if missing:
@@ -881,6 +917,10 @@ class Orchestrator:
         )
 
     def _attach_gate_frontmatter(self, artifact: PreprintArtifact) -> None:
+        # Transfer results belong to the artifact/log. Rewriting its git-backed source
+        # here would dirty B after verification and before the provider action.
+        if "acceptance_transfer" in (artifact.publication_gate_context or {}):
+            return
         if not artifact.source_path:
             return
         source_path = Path(artifact.source_path).expanduser()
@@ -1666,24 +1706,7 @@ def _artifact_fingerprint(artifact: PreprintArtifact) -> str:
     force a fresh dispatch.
     """
 
-    payload = artifact.model_dump(mode="json")
-    relevant = {
-        key: payload.get(key)
-        for key in (
-            "slug",
-            "title",
-            "abstract",
-            "body_md",
-            "body_html",
-            "doi",
-            "co_authors",
-            "surfaces_targeted",
-            "attribution_block",
-            "embed_image_url",
-        )
-    }
-    encoded = json.dumps(relevant, sort_keys=True, separators=(",", ":")).encode()
-    return sha256(encoded).hexdigest()
+    return transfer_authority.publication_artifact_fingerprint(artifact)
 
 
 def _current_repo_head_sha(repo_root: Path = REPO_ROOT) -> str | None:

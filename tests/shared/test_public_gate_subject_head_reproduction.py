@@ -6,6 +6,7 @@ helpers and consumer checks run; no dispatcher, publisher, or daemon is started.
 
 from __future__ import annotations
 
+import hashlib
 import importlib.util
 import json
 import subprocess
@@ -212,6 +213,7 @@ def test_accepted_pr_head_dossier_positive_control_records_no_reviewed_subject(
     """The same signed dossier passes at A; acceptance outputs carry no subject identity."""
     accepted = accepted_dossier
     monkeypatch.setattr(publisher, "_current_repo_head_sha", lambda: SUBJECT_HEAD)
+    monkeypatch.setattr(orchestrator, "_current_repo_head_sha", lambda: SUBJECT_HEAD)
     assert (
         publisher._assert_publication_gate_receipts(
             accepted.frontmatter,
@@ -284,3 +286,465 @@ def test_executing_release_head_is_observed_separately_from_reviewed_subject(
     print("checkout observation: both git rev-parse --verify HEAD helpers return B")
     print("default consumers: publisher refuses; orchestrator expected=B, decision=hold")
     print("signed subject remains A; no subject or executing SHA in gate result")
+
+
+@pytest.fixture
+def transfer_seat(accepted_dossier, monkeypatch):
+    """Synthetic authenticated API and immutable objects; every unexpected action fails."""
+    accepted = accepted_dossier
+    dispatch = sys.modules["cc_pr_review_dispatch_subject_head_reproduction"]
+    dossier = yaml.safe_load(accepted.dossier_path.read_text())
+    dossier.update(repository="synthetic/repository", artifact_git_path="drafts/synthetic.md")
+    dispatch._sign_public_gate_authority_evidence(dossier)
+    accepted.dossier_path.write_text(yaml.safe_dump(dossier))
+    markdown = "---\n" + yaml.safe_dump(accepted.frontmatter) + "---\n" + accepted.artifact.body_md
+    state = {
+        "head": EXECUTING_HEAD,
+        "dirty": "",
+        "repo": "synthetic/repository",
+        "method": "merge",
+        "a_text": markdown,
+        "b_text": markdown,
+        "record": {
+            "number": 1,
+            "merged": True,
+            "merged_at": "2026-09-05T01:00:00Z",
+            "head": {"sha": SUBJECT_HEAD},
+            "merge_commit_sha": EXECUTING_HEAD,
+            "base": {"repo": {"full_name": "synthetic/repository"}},
+        },
+    }
+
+    def runner(cmd, **kwargs):
+        if cmd[:3] == ["git", "--no-optional-locks", "--no-replace-objects"]:
+            cmd = ["git", *cmd[3:]]
+        if cmd[:3] == ["gh", "pr", "view"]:
+            output = json.dumps({"number": 1, "headRefOid": SUBJECT_HEAD})
+        elif cmd[0] == "gh" and "repos/synthetic/repository/pulls/1" in cmd:
+            output = json.dumps(state["record"])
+        elif cmd == ["git", "remote", "get-url", "origin"]:
+            output = "https://github.com/" + state["repo"] + ".git"
+        elif cmd == ["git", "status", "--porcelain", "--untracked-files=all"]:
+            output = state["dirty"]
+        elif cmd == ["git", "rev-parse", "--verify", "HEAD"]:
+            output = state["head"] or ""
+        elif cmd[:3] == ["git", "cat-file", "blob"]:
+            assert cmd[3] == "d" * 40
+            if state.get("missing_blob"):
+                return subprocess.CompletedProcess(
+                    cmd, 1, stdout="", stderr="synthetic missing blob"
+                )
+            output = state["a_text"]
+        elif cmd[:3] == ["git", "cat-file", "commit"]:
+            if cmd[3] in state.get("extra_commits", {}):
+                return subprocess.CompletedProcess(
+                    cmd, 0, stdout=state["extra_commits"][cmd[3]], stderr=""
+                )
+            assert cmd[3] == EXECUTING_HEAD
+            parents = ["c" * 40, SUBJECT_HEAD] if state["method"] == "merge" else ["c" * 40]
+            output = (
+                "tree "
+                + "d" * 40
+                + "\n"
+                + "".join("parent " + p + "\n" for p in state.get("parents", parents))
+                + "\nSynthetic commit"
+            )
+        elif cmd[:2] == ["git", "show"]:
+            assert cmd[2] in (
+                SUBJECT_HEAD + ":drafts/synthetic.md",
+                EXECUTING_HEAD + ":drafts/synthetic.md",
+            )
+            output = state["a_text"] if cmd[2].startswith(SUBJECT_HEAD) else state["b_text"]
+        else:
+            pytest.fail(f"unexpected external action: {cmd}")
+        return subprocess.CompletedProcess(cmd, 0, stdout=output, stderr="")
+
+    monkeypatch.setattr(subprocess, "run", runner)
+    state["runner"] = runner
+    state["dispatch"] = dispatch
+    state["accepted"] = accepted
+    return state
+
+
+def _issue_transfer(seat, *, apply=True):
+    return seat["dispatch"].transfer_acceptance(
+        1,
+        repo="synthetic/repository",
+        repo_root=publisher.REPO_ROOT,
+        dossier_name=seat["accepted"].dossier_path.name,
+        apply=apply,
+        runner=seat["runner"],
+        receipt_roots=(seat["accepted"].receipt_root,),
+    )
+
+
+def _install_transfer(seat):
+    issued = _issue_transfer(seat)
+    assert issued["status"] == "transferred", issued
+    context = {"acceptance_transfer": issued["transfer"], "publication_pr": 1}
+    accepted = seat["accepted"]
+    accepted.frontmatter["publication_gate_context"] = context
+    accepted.artifact.publication_gate_context.update(context)
+    return context
+
+
+def _both_transfer_consumers(seat):
+    accepted = seat["accepted"]
+    try:
+        built = publisher._build_artifact(
+            body_md=accepted.artifact.body_md,
+            frontmatter=accepted.frontmatter,
+            surfaces=accepted.artifact.surfaces_targeted,
+            approver="Oudepode",
+        )
+        publisher_result = built
+    except publisher.PublicationGateError as exc:
+        publisher_result = str(exc)
+    result = _consumer(accepted, SUBJECT_HEAD)._public_gate_receipts_gate_result(accepted.artifact)
+    return publisher_result, result
+
+
+@pytest.mark.parametrize("method", ["merge", "squash"])
+def test_signed_transfer_positive_control_both_real_consumers(transfer_seat, method):
+    seat = transfer_seat
+    seat["method"] = method
+    context = _install_transfer(seat)
+    built, result = _both_transfer_consumers(seat)
+    assert isinstance(built, PreprintArtifact), built
+    assert result.passes(), result
+    report = result.child_results[0].report
+    assert report["reviewed_subject"]["head_sha"] == SUBJECT_HEAD
+    assert report["executing_release"]["head_sha"] == EXECUTING_HEAD
+    assert report["transfer_evidence"]["provenance"]["merge_method"] == method
+    assert json.loads(
+        json.dumps(built.publication_gate_context["acceptance_transfer_result"])
+    ) == json.loads(json.dumps(report))
+    assert report["transfer_evidence"] == context["acceptance_transfer"]
+    assert SUBJECT_HEAD not in " ".join(result.child_results[0].evidence_refs)
+    assert EXECUTING_HEAD not in " ".join(result.child_results[0].evidence_refs)
+    assert built.approval == ApprovalState.APPROVED
+
+
+@pytest.mark.parametrize(
+    ("boundary", "reason"),
+    [
+        ("mismatched_b", "transfer_authorizes_exact_commit_only:" + EXECUTING_HEAD),
+        ("descendant", "transfer_authorizes_exact_commit_only:" + EXECUTING_HEAD),
+        ("unobserved", "transfer_execution_identity_unobserved"),
+        ("wrong_key", "transfer_signature_or_domain_invalid"),
+        ("wrong_domain", "transfer_signature_or_domain_invalid"),
+        ("digest", "transfer_dossier_digest_mismatch"),
+        ("missing_digest", "transfer_dossier_digest_missing_or_malformed"),
+        ("wrong_repo", "transfer_repository_mismatch"),
+        ("wrong_pr", "transfer_pr_mismatch"),
+        ("dirty", "transfer_dirty_checkout"),
+        ("kind", "transfer_kind_or_schema_invalid"),
+        ("malformed", "transfer_missing_or_malformed"),
+        ("ambiguous", "transfer_ambiguous"),
+        ("artifact", "transfer_artifact_binding_mismatch"),
+        ("targets", "transfer_artifact_binding_mismatch"),
+        ("substitution", "transfer_dossier_digest_mismatch"),
+        ("missing_dossier", "transfer_dossier_missing_or_ambiguous"),
+        ("stale_result", "transfer_stale_result_identity"),
+        ("immutable_b", "transfer_execution_artifact_mismatch"),
+        ("receipts", "transfer_receipts_mismatch"),
+        ("provenance", "transfer_provenance_invalid"),
+        ("dossier_signature", "transfer_dossier_signature_invalid"),
+        ("dossier_head", "transfer_dossier_acceptance_invalid:"),
+        ("dossier_quorum", "transfer_dossier_acceptance_invalid:"),
+        ("bound_receipt", "transfer_bound_receipt_invalid:"),
+        ("artifact_source", "transfer_artifact_source_mismatch"),
+        ("result_without_transfer", "transfer_missing_or_malformed"),
+    ],
+)
+def test_transfer_consumer_trust_boundary(transfer_seat, boundary, reason):
+    seat = transfer_seat
+    context = _install_transfer(seat)
+    accepted = seat["accepted"]
+    transfer = context["acceptance_transfer"]
+    if boundary in {"mismatched_b", "descendant"}:
+        seat["head"] = "e" * 40
+        if boundary == "descendant":
+            seat["extra_commits"] = {
+                seat["head"]: "tree "
+                + "d" * 40
+                + "\nparent "
+                + EXECUTING_HEAD
+                + "\n\nSynthetic descendant"
+            }
+            commit = public_gate_receipts.transfer_git_data(
+                publisher.REPO_ROOT, "cat-file", "commit", seat["head"]
+            )
+            assert "parent " + EXECUTING_HEAD in commit.split("\n\n", 1)[0]
+    elif boundary == "unobserved":
+        seat["head"] = None
+    elif boundary == "wrong_key":
+        key = "synthetic-forged-transfer-key"  # pragma: allowlist secret
+        transfer["transfer_signature"] = public_gate_receipts.acceptance_transfer_signature(
+            transfer, key
+        )
+    elif boundary == "wrong_domain":
+        transfer["transfer_signature"] = public_gate_receipts.public_gate_authority_signature(
+            {key: value for key, value in transfer.items() if key != "transfer_signature"},
+            AUTHORITY_KEY,
+        )
+    elif boundary == "digest":
+        transfer["dossier_digest"] = "sha256:" + "0" * 64
+    elif boundary == "missing_digest":
+        transfer.pop("dossier_digest")
+    elif boundary == "wrong_repo":
+        transfer["repository"] = "synthetic/elsewhere"
+    elif boundary == "wrong_pr":
+        transfer["pr"] = 2
+    elif boundary == "dirty":
+        seat["dirty"] = " M drafts/synthetic.md"
+    elif boundary == "kind":
+        transfer["kind"] = "review-dossier"
+    elif boundary == "malformed":
+        context["acceptance_transfer"] = None
+    elif boundary == "ambiguous":
+        context["acceptance_transfer"] = [transfer, transfer]
+    elif boundary == "artifact":
+        accepted.artifact.body_md += " Tampered."
+    elif boundary == "targets":
+        accepted.artifact.surfaces_targeted.append("mastodon-post")
+    elif boundary == "substitution":
+        accepted.dossier_path.write_text(
+            accepted.dossier_path.read_text() + "\n# substituted bytes\n"
+        )
+    elif boundary == "missing_dossier":
+        accepted.dossier_path.unlink()
+    elif boundary == "stale_result":
+        context["acceptance_transfer_result"] = {"executing_release": {"head_sha": SUBJECT_HEAD}}
+    elif boundary == "immutable_b":
+        seat["b_text"] += " Tampered."
+    elif boundary == "receipts":
+        transfer["receipts"] = {}
+    elif boundary == "provenance":
+        transfer["provenance"]["merged"] = False
+    elif boundary in {"dossier_signature", "dossier_quorum"}:
+        dossier = yaml.safe_load(accepted.dossier_path.read_text())
+        if boundary == "dossier_signature":
+            dossier["authority_signature"] = "hmac-sha256:" + "0" * 64
+        else:
+            dossier["review_team_verdict"] = "no-quorum"
+            seat["dispatch"]._sign_public_gate_authority_evidence(dossier)
+        accepted.dossier_path.write_text(yaml.safe_dump(dossier))
+        transfer["dossier_digest"] = (
+            "sha256:" + hashlib.sha256(accepted.dossier_path.read_bytes()).hexdigest()
+        )
+    elif boundary == "dossier_head":
+        transfer["subject_head_sha"] = "f" * 40
+    elif boundary == "bound_receipt":
+        path = accepted.receipt_root / (GATES[0] + ".yaml")
+        receipt = yaml.safe_load(path.read_text())
+        receipt["status"] = "failed"
+        path.write_text(yaml.safe_dump(receipt))
+    elif boundary == "artifact_source":
+        transfer["artifact_source"]["git_path"] = "another.md"
+    elif boundary == "result_without_transfer":
+        context.pop("acceptance_transfer")
+        accepted.artifact.publication_gate_context.pop("acceptance_transfer")
+        context["acceptance_transfer_result"] = {}
+    if boundary not in {"wrong_key", "wrong_domain"}:
+        transfer["transfer_signature"] = public_gate_receipts.acceptance_transfer_signature(
+            transfer, AUTHORITY_KEY
+        )
+    accepted.artifact.publication_gate_context.update(context)
+    built, result = _both_transfer_consumers(seat)
+    assert isinstance(built, str), boundary
+    assert reason in built
+    assert not result.passes(), boundary
+    assert reason in result.child_results[0].findings[0]
+    assert "next action:" in built
+    assert "next action:" in result.child_results[0].findings[0]
+    # Exercise the real dispatch boundary, including its retry entry point.
+    consumer = _consumer(accepted, SUBJECT_HEAD)
+    consumer._withhold_for_gate = Mock()
+    consumer._hardening_gate = Mock()
+    pool = Mock()
+    consumer._dispatch(accepted.artifact, pool=pool)
+    consumer._withhold_for_gate.assert_called_once()
+    consumer._hardening_gate.evaluate.assert_not_called()
+    pool.submit.assert_not_called()
+
+
+def test_caller_supplied_subject_without_transfer_stays_refused(transfer_seat):
+    seat = transfer_seat
+    accepted = seat["accepted"]
+    accepted.frontmatter["release_head_sha"] = SUBJECT_HEAD
+    built, result = _both_transfer_consumers(seat)
+    assert isinstance(built, str)
+    assert not result.passes()
+    with pytest.raises(publisher.PublicationGateError):
+        publisher._assert_publication_gate_receipts(
+            accepted.frontmatter,
+            accepted.artifact.surfaces_targeted,
+            bindings=publisher._publication_gate_receipt_bindings(accepted.artifact),
+            expected_head_sha=SUBJECT_HEAD,
+        )
+
+
+@pytest.mark.parametrize(
+    ("boundary", "reason"),
+    [
+        ("record_head", "transfer_merge_record_head_mismatch"),
+        ("record_repo", "transfer_merge_record_repository_or_pr_mismatch"),
+        ("record_pr", "transfer_merge_record_repository_or_pr_mismatch"),
+        ("not_merged", "transfer_pr_not_merged"),
+        ("parents", "transfer_merge_parent_relation_invalid"),
+        ("signature", "transfer_dossier_signature_invalid"),
+        ("artifact_b", "transfer_artifact_fingerprint_mismatch:" + EXECUTING_HEAD),
+        ("mutable_vault", "missing_immutable_artifact_object:"),
+        ("dossier_repo", "transfer_dossier_repository_mismatch"),
+        ("dossier_pr", "transfer_dossier_pr_mismatch"),
+        ("quorum", "transfer_bound_receipt_invalid:"),
+        ("receipt", "transfer_bound_receipt_invalid:"),
+        ("transfer_of_transfer", "transfer_subject_must_be_dossier"),
+    ],
+)
+def test_transfer_issuer_provenance_boundary(transfer_seat, boundary, reason):
+    seat = transfer_seat
+    accepted = seat["accepted"]
+    dossier = yaml.safe_load(accepted.dossier_path.read_text())
+    if boundary == "record_head":
+        seat["record"]["head"]["sha"] = "e" * 40
+    elif boundary == "record_repo":
+        seat["record"]["base"]["repo"]["full_name"] = "synthetic/elsewhere"
+    elif boundary == "record_pr":
+        seat["record"]["number"] = 2
+    elif boundary == "not_merged":
+        seat["record"]["merged"] = False
+    elif boundary == "parents":
+        seat["parents"] = ["c" * 40, "d" * 40]
+    elif boundary == "signature":
+        dossier["authority_signature"] = "hmac-sha256:" + "0" * 64
+    elif boundary == "artifact_b":
+        seat["b_text"] += " Tampered."
+    elif boundary == "mutable_vault":
+        dossier.pop("artifact_git_path")
+        dossier["source_path"] = "vault/synthetic-mutable-note.md"
+    elif boundary == "dossier_repo":
+        dossier["repository"] = "synthetic/elsewhere"
+    elif boundary == "dossier_pr":
+        dossier["pr"] = 2
+    elif boundary == "quorum":
+        dossier["review_team_verdict"] = "no-quorum"
+    elif boundary == "receipt":
+        receipt = accepted.receipt_root / (GATES[0] + ".yaml")
+        data = yaml.safe_load(receipt.read_text())
+        data["status"] = "failed"
+        receipt.write_text(yaml.safe_dump(data))
+    elif boundary == "transfer_of_transfer":
+        dossier.update(kind=public_gate_receipts.PUBLIC_GATE_TRANSFER_KIND, transfer_schema=1)
+    if boundary != "signature":
+        seat["dispatch"]._sign_public_gate_authority_evidence(dossier)
+    accepted.dossier_path.write_text(yaml.safe_dump(dossier))
+    result = _issue_transfer(seat)
+    assert result["status"] == "refused", result
+    assert reason in result["reason"]
+    assert "next action:" in result["reason"]
+
+
+def test_transfer_presented_as_acceptance_is_refused(transfer_seat):
+    seat = transfer_seat
+    context = _install_transfer(seat)
+    dossier = yaml.safe_load(seat["accepted"].dossier_path.read_text())
+    # Even a dual-shaped record signed in the old domain cannot be an acceptance.
+    dossier.update(kind=context["acceptance_transfer"]["kind"], transfer_schema=1)
+    seat["dispatch"]._sign_public_gate_authority_evidence(dossier)
+    seat["accepted"].dossier_path.write_text(yaml.safe_dump(dossier))
+    seat["accepted"].frontmatter.pop("publication_gate_context")
+    seat["accepted"].artifact.publication_gate_context.pop("acceptance_transfer")
+    seat["head"] = SUBJECT_HEAD
+    built, result = _both_transfer_consumers(seat)
+    assert isinstance(built, str)
+    assert not result.passes()
+
+
+def test_transfer_issuer_plan_has_no_authority(transfer_seat):
+    result = _issue_transfer(transfer_seat, apply=False)
+    assert result["status"] == "plan"
+    assert "transfer_signature" not in result["transfer"]
+
+
+@pytest.mark.parametrize("gate", GATES)
+def test_transfer_requires_each_of_six_bound_receipts(transfer_seat, gate):
+    seat = transfer_seat
+    _install_transfer(seat)
+    path = seat["accepted"].receipt_root / (gate + ".yaml")
+    receipt = yaml.safe_load(path.read_text())
+    receipt["artifact_fingerprint"] = "altered"
+    path.write_text(yaml.safe_dump(receipt))
+    built, result = _both_transfer_consumers(seat)
+    assert isinstance(built, str)
+    assert "transfer_bound_receipt_invalid:" + gate in built
+    assert not result.passes()
+    assert "transfer_bound_receipt_invalid:" + gate in result.child_results[0].findings[0]
+
+
+def test_transfer_cannot_skip_additional_surface_policy_gate(transfer_seat, monkeypatch):
+    seat = transfer_seat
+    _install_transfer(seat)
+    required = (*GATES, "fanout_loop_prevention_present")
+    monkeypatch.setattr(publisher, "_required_publication_gate_receipts", lambda surfaces: required)
+    monkeypatch.setattr(
+        orchestrator.Orchestrator,
+        "_required_publication_gate_receipts",
+        lambda self, surfaces: (required, None),
+    )
+    built, result = _both_transfer_consumers(seat)
+    assert isinstance(built, str)
+    assert "transfer_policy_gates_not_covered" in built
+    assert not result.passes()
+    assert "transfer_policy_gates_not_covered" in result.child_results[0].findings[0]
+
+
+def test_vault_transfer_uses_immutable_blob_only(transfer_seat):
+    seat = transfer_seat
+    accepted = seat["accepted"]
+    dossier = yaml.safe_load(accepted.dossier_path.read_text())
+    dossier.pop("artifact_git_path")
+    dossier["artifact_blob_oid"] = "d" * 40
+    dossier["source_path"] = "vault/synthetic-mutable-note.md"
+    seat["dispatch"]._sign_public_gate_authority_evidence(dossier)
+    accepted.dossier_path.write_text(yaml.safe_dump(dossier))
+    _install_transfer(seat)
+    built, result = _both_transfer_consumers(seat)
+    assert isinstance(built, PreprintArtifact), built
+    assert result.passes()
+    seat["missing_blob"] = True
+    refused = _issue_transfer(seat)
+    assert refused["status"] == "refused"
+    assert "transfer_git_object_unavailable:" + "d" * 40 in refused["reason"]
+
+
+def test_transfer_result_does_not_rewrite_accepted_source(transfer_seat, tmp_path):
+    seat = transfer_seat
+    _install_transfer(seat)
+    built, result = _both_transfer_consumers(seat)
+    assert isinstance(built, PreprintArtifact)
+    source = tmp_path / "synthetic-source.md"
+    original = seat["a_text"]
+    source.write_text(original)
+    built.source_path = str(source)
+    built.publication_gate_result = result.to_frontmatter()
+    _consumer(seat["accepted"])._attach_gate_frontmatter(built)
+    assert source.read_text() == original
+
+
+def test_transfer_issuer_malformed_api_record_is_named_refusal(transfer_seat):
+    seat = transfer_seat
+    seat["record"]["base"] = None
+    result = _issue_transfer(seat)
+    assert result["status"] == "refused"
+    assert "transfer_evidence_unobservable_or_malformed" in result["reason"]
+    assert "next action:" in result["reason"]
+
+
+def test_immutable_parser_error_does_not_serialize_source_content():
+    marker = "synthetic-private-source-marker"
+    with pytest.raises(publisher.PublicationFrontmatterError) as exc:
+        publisher._parse_publication_markdown("---\nbroken: [\n---\n" + marker)
+    assert "immutable artifact text" in str(exc.value)
+    assert marker not in str(exc.value)

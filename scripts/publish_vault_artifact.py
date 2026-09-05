@@ -67,19 +67,18 @@ own incident/authority receipt before any replacement artifact is published.
 from __future__ import annotations
 
 import argparse
-import json
 import logging
 import os
 import re
 import subprocess
 import sys
 from collections.abc import Iterable, Mapping
-from hashlib import sha256
 from pathlib import Path
 
 import yaml
 
 from agents.publication_bus.surface_registry import dispatch_registry
+from shared import public_gate_receipts as transfer_authority
 from shared.co_author_model import CoAuthor
 from shared.co_author_model import get as get_co_author
 from shared.frontmatter import parse_frontmatter_with_diagnostics
@@ -226,13 +225,14 @@ def _resolve_one_co_author(entry) -> CoAuthor | None:  # type: ignore[no-untyped
         return None
 
 
-def _parse_publication_markdown(path: Path) -> tuple[dict, str]:
+def _parse_publication_markdown(path: Path | str) -> tuple[dict, str]:
     result = parse_frontmatter_with_diagnostics(path)
     if result.ok:
         return result.frontmatter or {}, result.body
 
     if result.error_kind == "yaml_error":
-        raise PublicationFrontmatterError(f"YAML frontmatter is invalid: {path}")
+        label = str(path) if isinstance(path, Path) else "immutable artifact text"
+        raise PublicationFrontmatterError(f"YAML frontmatter is invalid: {label}")
     return {}, result.body
 
 
@@ -518,8 +518,27 @@ def _assert_publication_gate_receipts(
     *,
     bindings: Mapping[str, object] | None = None,
     expected_head_sha: str | None = None,
-) -> None:
+) -> dict | None:
+    context = _optional_mapping(_frontmatter_value(frontmatter, "publication_gate_context")) or {}
     required = _required_publication_gate_receipts(surfaces)
+    if "acceptance_transfer" in context or "acceptance_transfer_result" in context:
+        try:
+            transfer_authority._transfer_require(
+                set(required) == set(transfer_authority.PUBLIC_GATE_TRANSFER_GATES),
+                "transfer_policy_gates_not_covered",
+            )
+            return transfer_authority.verify_acceptance_transfer(
+                context,
+                observed_head_sha=_current_repo_head_sha(),
+                repo_root=REPO_ROOT,
+                bindings=bindings or {},
+                receipts=_publication_gate_receipts(frontmatter),
+                receipt_roots=PUBLIC_GATE_RECEIPT_ROOTS,
+            )
+        except transfer_authority.AcceptanceTransferError as exc:
+            raise PublicationGateError(str(exc)) from exc
+    if expected_head_sha != _current_repo_head_sha():
+        expected_head_sha = None
     receipts = _publication_gate_receipts(frontmatter)
     missing = sorted(
         gate
@@ -556,6 +575,33 @@ def _build_artifact(
         )
     _assert_target_surfaces_allowed(surfaces)
 
+    artifact = _project_artifact(
+        body_md=body_md,
+        frontmatter=frontmatter,
+        surfaces=surfaces,
+        source_path=source_path,
+    )
+    report = _assert_publication_gate_receipts(
+        frontmatter,
+        surfaces,
+        bindings=_publication_gate_receipt_bindings(artifact),
+        expected_head_sha=_current_repo_head_sha(),
+    )
+    if report is not None:
+        artifact.publication_gate_context = dict(artifact.publication_gate_context or {})
+        artifact.publication_gate_context["acceptance_transfer_result"] = report
+    artifact.mark_approved(by_referent=approver)
+    return artifact
+
+
+def _project_artifact(
+    *,
+    body_md: str,
+    frontmatter: dict,
+    surfaces: list[str],
+    source_path: Path | None = None,
+) -> PreprintArtifact:
+    """Pure production artifact projection, also used for immutable transfer witnesses."""
     title = _optional_string(_frontmatter_value(frontmatter, "title"))
     title = title or _extract_first_heading(body_md) or "Untitled"
     slug = _optional_string(_frontmatter_value(frontmatter, "slug")) or _slugify(title)
@@ -600,15 +646,7 @@ def _build_artifact(
     if publication_gate_override is not None:
         kwargs["publication_gate_override"] = publication_gate_override
 
-    artifact = PreprintArtifact(**kwargs)
-    artifact.mark_approved(by_referent=approver)
-    _assert_publication_gate_receipts(
-        frontmatter,
-        surfaces,
-        bindings=_publication_gate_receipt_bindings(artifact),
-        expected_head_sha=_current_repo_head_sha(),
-    )
-    return artifact
+    return PreprintArtifact(**kwargs)
 
 
 def _publication_gate_receipt_bindings(artifact: PreprintArtifact) -> dict[str, object]:
@@ -622,24 +660,7 @@ def _publication_gate_receipt_bindings(artifact: PreprintArtifact) -> dict[str, 
 def _artifact_fingerprint_for_gate(artifact: PreprintArtifact) -> str:
     """Mirror the orchestrator fingerprint used for receipt replay prevention."""
 
-    payload = artifact.model_dump(mode="json")
-    relevant = {
-        key: payload.get(key)
-        for key in (
-            "slug",
-            "title",
-            "abstract",
-            "body_md",
-            "body_html",
-            "doi",
-            "co_authors",
-            "surfaces_targeted",
-            "attribution_block",
-            "embed_image_url",
-        )
-    }
-    encoded = json.dumps(relevant, sort_keys=True, separators=(",", ":")).encode()
-    return sha256(encoded).hexdigest()
+    return transfer_authority.publication_artifact_fingerprint(artifact)
 
 
 def _current_repo_head_sha(repo_root: Path = REPO_ROOT) -> str | None:
