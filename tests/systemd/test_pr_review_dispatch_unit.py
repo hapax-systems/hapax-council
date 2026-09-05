@@ -41,7 +41,7 @@ def test_review_dispatch_wants_and_orders_secrets_producer() -> None:
 
 def test_publish_orchestrator_loads_both_optional_environment_files() -> None:
     assert _unit_values("hapax-publish-orchestrator.service", "Service", "EnvironmentFile") == [
-        "-/run/user/1000/hapax-secrets.env",
+        "-/run/user/%U/hapax-secrets.env",
         AUTHORITY_ENV_FILE,
     ]
 

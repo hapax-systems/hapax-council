@@ -170,17 +170,42 @@ def helper_source(tmp_path, monkeypatch):
         f"#!{sys.executable}\n"
         "import json, os, sys, time\n"
         "from pathlib import Path\n"
-        "name = sys.argv[1]\n"
+        "operation = 'where' if sys.argv[1] == '--where' else 'get'\n"
+        "name = sys.argv[-1]\n"
         "with Path(os.environ['SYNTHETIC_HELPER_CALLS']).open('a') as log:\n"
-        "    log.write(name + '\\n')\n"
+        "    log.write(('--where ' if operation == 'where' else '') + name + '\\n')\n"
         "entry = json.loads(os.environ['SYNTHETIC_HELPER_TABLE']).get(name, {})\n"
+        "default = entry if operation == 'get' else {'action': "
+        "'absent' if entry.get('action', 'absent') == 'absent' else 'present'}\n"
+        "entry = entry.get(operation, default)\n"
         "action = entry.get('action', 'absent')\n"
+        "if action == 'store':\n"
+        "    sys.path.insert(0, os.environ['HAPAX_REINS_API'])\n"
+        "    from k0.key_capture import FileStore\n"
+        "    store = FileStore(root=Path(os.environ['REINS_SECRET_STORE']))\n"
+        "    if operation == 'where':\n"
+        "        action = 'present' if store.has(name) else 'absent'\n"
+        "    else:\n"
+        "        value = store.get(name)\n"
+        "        action = 'absent' if value is None else 'value'\n"
+        "        if value is not None:\n"
+        "            entry['hex'] = value.hex()\n"
+        "if action == 'present':\n"
+        "    print('filestore')\n"
+        "    sys.exit(0)\n"
         "if action == 'absent':\n"
+        "    if operation == 'where':\n"
+        "        print(f'not found: {name}')\n"
+        "        sys.exit(1)\n"
         "    sys.stderr.write(f'not found in FileStore: {name}. legal_next: '"
         "'run hapax-secret (TTY put) via reins.\\n')\n"
         "    sys.exit(1)\n"
         "if action == 'hang':\n"
         "    time.sleep(22)\n"
+        "if action == 'remove-helper':\n"
+        "    Path(sys.argv[0]).unlink()\n"
+        "    print('filestore')\n"
+        "    sys.exit(0)\n"
         "if action == 'exit':\n"
         "    sys.stderr.write('synthetic-private-error-detail\\n')\n"  # pragma: allowlist secret
         "    sys.exit(entry['code'])\n"
@@ -209,6 +234,36 @@ def _run_helper(table, setup=""):
     return _run_producer(env, setup)
 
 
+def _expected_helper_calls():
+    return [
+        call
+        for name in (*REQUIRED_VALUES, *OPTIONAL_ENTRIES, AUTHORITY_ENTRY)
+        for call in (f"--where {name}", name)
+    ]
+
+
+def _prior_files(common):
+    authority = common.with_name(AUTHORITY_FILE)
+    common.write_bytes(COMMON_BASELINE)
+    authority.write_bytes(AUTHORITY_VALUE)
+    return authority, (common.stat().st_ino, authority.stat().st_ino)
+
+
+def _assert_read_refusal(result, common, authority, inodes, name, diagnostic):
+    assert result.returncode == 2, "failed read must refuse before publishing either file"
+    assert common.read_bytes() == COMMON_BASELINE
+    assert authority.is_file(), "failed authority read must never delete the prior authority file"
+    assert authority.read_bytes() == AUTHORITY_VALUE
+    assert (common.stat().st_ino, authority.stat().st_ino) == inodes
+    assert name in result.stderr and diagnostic in result.stderr
+    assert "Next action:" in result.stderr
+    assert not result.stdout
+    assert "Traceback" not in result.stderr
+    assert AUTHORITY_VALUE.decode() not in result.stderr
+    assert "synthetic-private-error-detail" not in result.stderr  # pragma: allowlist secret
+    assert not list(common.parent.glob(".*.tmp"))
+
+
 @pytest.fixture
 def producer_store(tmp_path, monkeypatch):
     pin = _require_reins_pin()
@@ -225,11 +280,232 @@ def producer_store(tmp_path, monkeypatch):
     monkeypatch.syspath_prepend(str(pin))
     from k0.key_capture import FileStore
 
+    store_root.mkdir(mode=0o700)
+    key = store_root / ".key"
+    key.write_bytes(b"synthetic-filestore-test-key-0000")  # pragma: allowlist secret
+    key.chmod(0o600)
     store = FileStore(root=store_root)
     for name, value in REQUIRED_VALUES.items():
         store.put(name, value)
     store.put("orcid-orcid", b"0000-0000-0000-0000")  # pragma: allowlist secret
     return store, env_path
+
+
+@pytest.mark.parametrize("source", ["filestore", "helper"])
+@pytest.mark.parametrize("name", ["api-openai", "soundcloud-client-id", AUTHORITY_ENTRY])
+@pytest.mark.parametrize("damage", ["truncate", "mac"])
+def test_corrupt_blob_refuses_without_deleting_authority(
+    producer_store, helper_source, monkeypatch, source, name, damage
+):
+    store, common = producer_store
+    table, _, _ = helper_source
+    store.put(name, AUTHORITY_VALUE)
+    blob = store.root / f"{name}.bin"
+    raw = blob.read_bytes()
+    blob.write_bytes(
+        raw[:8] if damage == "truncate" else raw[:16] + bytes([raw[16] ^ 1]) + raw[17:]
+    )
+    assert store.has(name) and store.get(name) is None
+    table[name] = {"where": {"action": "store"}, "get": {"action": "store"}}
+    authority, inodes = _prior_files(common)
+    monkeypatch.setenv("HAPAX_SECRETS_SOURCE", source)
+    result = _run_helper(table) if source == "helper" else _run_producer(os.environ.copy())
+    _assert_read_refusal(result, common, authority, inodes, name, "present-but-unreadable")
+
+
+@pytest.mark.parametrize("source", ["filestore", "helper"])
+@pytest.mark.parametrize("name", ["api-openai", "soundcloud-client-id", AUTHORITY_ENTRY])
+@pytest.mark.parametrize(
+    ("raw", "diagnostic"),
+    [
+        (b"synthetic-\xff", "decoding"),  # pragma: allowlist secret
+        (b"synthetic\n\xff", "decoding"),  # pragma: allowlist secret
+        (b"synthetic\0", "control"),  # pragma: allowlist secret
+        (b"synthetic\t", "control"),  # pragma: allowlist secret
+        (b"synthetic\r\n", "control"),  # pragma: allowlist secret
+        (b"synthetic\x7f", "control"),  # pragma: allowlist secret
+        (b"synthetic\xc2\x85", "control"),  # pragma: allowlist secret
+        (b"synthetic\nsynthetic-tail", "control"),  # pragma: allowlist secret
+    ],
+    ids=["utf8", "utf8-tail", "nul", "tab", "crlf", "del", "c1", "embedded-newline"],
+)
+def test_invalid_value_refuses_before_publication(
+    producer_store, helper_source, monkeypatch, source, name, raw, diagnostic
+):
+    store, common = producer_store
+    table, _, _ = helper_source
+    store.put(name, raw)
+    table[name] = {"action": "value", "hex": raw.hex()}
+    authority, inodes = _prior_files(common)
+    monkeypatch.setenv("HAPAX_SECRETS_SOURCE", source)
+    result = _run_helper(table) if source == "helper" else _run_producer(os.environ.copy())
+    _assert_read_refusal(result, common, authority, inodes, name, diagnostic)
+
+
+@pytest.mark.parametrize("present", [False, True])
+@pytest.mark.parametrize("name", ["api-openai", "soundcloud-client-id", AUTHORITY_ENTRY])
+def test_helper_where_and_get_classify_absence(helper_source, name, present):
+    table, _, common = helper_source
+    authority, inodes = _prior_files(common)
+    table[name] = {
+        "where": {"action": "present" if present else "absent"},
+        "get": {"action": "absent"},
+    }
+    result = _run_helper(table)
+    if present:
+        _assert_read_refusal(result, common, authority, inodes, name, "present-but-unreadable")
+    elif name in REQUIRED_VALUES:
+        _assert_read_refusal(result, common, authority, inodes, name, "missing")
+    else:
+        assert result.returncode == 0, result.stderr
+        assert common.read_bytes() == COMMON_BASELINE
+        assert common.stat().st_ino != inodes[0], "successful optional absence refreshes common"
+        assert authority.exists() == (name != AUTHORITY_ENTRY)
+    calls = (common.parent / "helper-calls").read_text().splitlines()
+    index = calls.index(name)
+    assert calls[index - 1] == f"--where {name}"
+    assert calls.count(name) == 1 and calls.count(f"--where {name}") == 1
+
+
+@pytest.mark.parametrize("name", ["api-openai", "soundcloud-client-id", AUTHORITY_ENTRY])
+@pytest.mark.parametrize("code", [255, 2, 1])
+def test_where_transport_failure_alone_refuses(helper_source, name, code):
+    table, _, common = helper_source
+    authority, inodes = _prior_files(common)
+    table[name] = {
+        "where": {"action": "exit", "code": code},
+        "get": {"action": "value", "hex": AUTHORITY_VALUE.hex()},
+    }
+    result = _run_helper(table)
+    _assert_read_refusal(result, common, authority, inodes, name, f"transport exit {code}")
+    calls = (common.parent / "helper-calls").read_text().splitlines()
+    assert calls[-1] == f"--where {name}"
+    assert name not in calls
+
+
+def test_where_timeout_refuses(helper_source):
+    table, _, common = helper_source
+    authority, inodes = _prior_files(common)
+    table[AUTHORITY_ENTRY]["where"] = {"action": "hang"}
+    result = _run_helper(table)
+    _assert_read_refusal(result, common, authority, inodes, AUTHORITY_ENTRY, "timeout after 20s")
+    assert (common.parent / "helper-calls").read_text().splitlines()[-1] == (
+        f"--where {AUTHORITY_ENTRY}"
+    )
+
+
+def test_get_launch_oserror_after_where_preserves_files(helper_source):
+    table, _, common = helper_source
+    authority, inodes = _prior_files(common)
+    table[AUTHORITY_ENTRY]["where"] = {"action": "remove-helper"}
+    result = _run_helper(table)
+    _assert_read_refusal(result, common, authority, inodes, AUTHORITY_ENTRY, "launch OSError")
+
+
+@pytest.mark.parametrize("operation", ["has", "get"])
+@pytest.mark.parametrize("exception", ["OSError", "ValueError", "RuntimeError"])
+def test_store_exceptions_preserve_files(producer_store, operation, exception):
+    _, common = producer_store
+    authority, inodes = _prior_files(common)
+    setup = (
+        "sys.path.insert(0, os.environ['HAPAX_REINS_API'])\n"
+        "from k0.key_capture import FileStore\n"
+        f"original = FileStore.{operation}\n"
+        "def fail(store, name):\n"
+        "    if name == 'api-openai':\n"
+        f"        raise {exception}('synthetic-private-error-detail')\n"  # pragma: allowlist secret
+        "    return original(store, name)\n"
+        f"FileStore.{operation} = fail\n"
+    )
+    result = _run_producer(os.environ.copy(), setup)
+    _assert_read_refusal(result, common, authority, inodes, "api-openai", exception)
+
+
+def test_store_initialization_exception_preserves_files(producer_store):
+    _, common = producer_store
+    authority, inodes = _prior_files(common)
+    setup = (
+        "sys.path.insert(0, os.environ['HAPAX_REINS_API'])\n"
+        "import k0.key_capture\n"
+        "def fail():\n"
+        "    raise ValueError('synthetic-private-error-detail')\n"  # pragma: allowlist secret
+        "k0.key_capture.default_store = fail\n"
+    )
+    result = _run_producer(os.environ.copy(), setup)
+    _assert_read_refusal(result, common, authority, inodes, "FileStore", "ValueError")
+
+
+@pytest.mark.parametrize("mode", [0o750, 0o500, 0o1700])
+def test_filestore_root_mode_is_exact(producer_store, mode):
+    store, common = producer_store
+    authority, inodes = _prior_files(common)
+    store.root.chmod(mode)
+    try:
+        result = _run_producer(os.environ.copy())
+    finally:
+        store.root.chmod(0o700)
+    _assert_read_refusal(result, common, authority, inodes, "FileStore", "chmod 700")
+
+
+@pytest.mark.parametrize("mode", [0o640, 0o400, 0o1600])
+def test_filestore_key_mode_is_exact(producer_store, mode):
+    store, common = producer_store
+    authority, inodes = _prior_files(common)
+    (store.root / ".key").chmod(mode)
+    result = _run_producer(os.environ.copy())
+    _assert_read_refusal(result, common, authority, inodes, ".key", "chmod 600")
+
+
+@pytest.mark.parametrize("source", ["filestore", "helper"])
+@pytest.mark.parametrize("stage", ["replace", "open"])
+@pytest.mark.parametrize("prior", [False, True])
+def test_second_publication_failure_names_partial_outcome(
+    producer_store, helper_source, monkeypatch, source, stage, prior
+):
+    store, common = producer_store
+    table, _, _ = helper_source
+    store.put(AUTHORITY_ENTRY, AUTHORITY_VALUE)
+    authority, inodes = _prior_files(common)
+    if not prior:
+        authority.unlink()
+    monkeypatch.setenv("HAPAX_SECRETS_SOURCE", source)
+    setup = (
+        f"original = os.{stage}\n"
+        "calls = 0\n"
+        "def fail_second(*args, **kwargs):\n"
+        "    global calls\n"
+        "    calls += 1\n"
+        "    if calls == 2:\n"
+        "        raise OSError('synthetic-private-error-detail')\n"  # pragma: allowlist secret
+        "    return original(*args, **kwargs)\n"
+        f"os.{stage} = fail_second\n"
+    )
+    # FileStore._key also uses os.open; restrict injection to publication temporaries.
+    if stage == "open":
+        setup = setup.replace(
+            "    calls += 1",
+            "    if str(args[0]).endswith('.env.tmp'):\n        calls += 1",
+        )
+    result = (
+        _run_helper(table, setup) if source == "helper" else _run_producer(os.environ.copy(), setup)
+    )
+    assert result.returncode == 2
+    assert common.read_bytes() == COMMON_BASELINE
+    assert common.stat().st_ino != inodes[0], "first replacement must have succeeded"
+    assert authority.exists() == prior
+    if prior:
+        assert authority.read_bytes() == AUTHORITY_VALUE
+        assert authority.stat().st_ino == inodes[1]
+    outcome = "retained" if prior else "absent"
+    assert (
+        f"common refreshed; authority replacement failed at {authority}; prior authority file {outcome}"
+        in result.stderr
+    )
+    assert "Next action:" in result.stderr
+    assert "Traceback" not in result.stderr
+    assert "synthetic-private-error-detail" not in result.stderr  # pragma: allowlist secret
+    assert AUTHORITY_VALUE.decode() not in result.stdout + result.stderr
+    assert not list(common.parent.glob(".*.tmp"))
 
 
 @pytest.mark.parametrize("source", [None, "filestore"])
@@ -281,11 +557,7 @@ def test_helper_skips_filestore_prerequisites(helper_source, monkeypatch, overri
     )
     assert "source=helper backend=filestore-via-helper" in result.stdout
     assert not (common.parent / "secrets").exists()
-    assert (common.parent / "helper-calls").read_text().splitlines() == [
-        *REQUIRED_VALUES,
-        *OPTIONAL_ENTRIES,
-        AUTHORITY_ENTRY,
-    ]
+    assert (common.parent / "helper-calls").read_text().splitlines() == _expected_helper_calls()
     assert AUTHORITY_VALUE.decode() not in result.stdout + result.stderr
 
 
@@ -294,12 +566,12 @@ def test_helper_present_matches_filestore_bytes(producer_store, helper_source, m
     table, _, _ = helper_source
     values = dict(REQUIRED_VALUES)
     for name in OPTIONAL_ENTRIES:
-        values[name] = b"synthetic-optional\r\nsynthetic-ignored"  # pragma: allowlist secret
+        values[name] = b"synthetic-optional"  # pragma: allowlist secret
     values["api-openai"] = b""  # pragma: allowlist secret
-    values[AUTHORITY_ENTRY] = AUTHORITY_VALUE + b"\nsynthetic-ignored"  # pragma: allowlist secret
+    values[AUTHORITY_ENTRY] = AUTHORITY_VALUE + b"\n"
     for name, value in values.items():
         store.put(name, value)
-        table[name] = {"action": "value", "hex": (value + b"\n").hex()}
+        table[name] = {"action": "value", "hex": (value.rstrip(b"\n") + b"\n").hex()}
     monkeypatch.setenv("HAPAX_SECRETS_SOURCE", "filestore")
     assert _run_producer(os.environ.copy()).returncode == 0
     authority = common.with_name(AUTHORITY_FILE)
@@ -377,7 +649,8 @@ def test_helper_failure_preserves_both_files(helper_source, name, fault, diagnos
     assert "synthetic-private-error-detail" not in log  # pragma: allowlist secret
     assert not list(common.parent.glob(".*.tmp"))
     calls = (common.parent / "helper-calls").read_text().splitlines()
-    assert calls == [*REQUIRED_VALUES, *OPTIONAL_ENTRIES, AUTHORITY_ENTRY][: calls.index(name) + 1]
+    expected = _expected_helper_calls()
+    assert calls == expected[: expected.index(name) + 1]
 
 
 def test_helper_failure_never_uses_available_filestore(producer_store, helper_source):
@@ -452,11 +725,7 @@ def test_helper_replaces_files_atomically(helper_source, monkeypatch, filename):
     replacements = []
 
     def observe_replace(src, dst):
-        assert (common.parent / "helper-calls").read_text().splitlines() == [
-            *REQUIRED_VALUES,
-            *OPTIONAL_ENTRIES,
-            AUTHORITY_ENTRY,
-        ]
+        assert (common.parent / "helper-calls").read_text().splitlines() == _expected_helper_calls()
         if dst == target:
             assert target.read_bytes() == prior
             assert Path(src).stat().st_mode & 0o777 == 0o600
@@ -630,7 +899,7 @@ def test_producer_replaces_files_with_one_atomic_rename(
 
 @pytest.mark.parametrize("filename", ["hapax-secrets.env", AUTHORITY_FILE])
 def test_producer_mid_write_failure_preserves_final_file(
-    producer_store, monkeypatch, filename
+    producer_store, monkeypatch, capsys, filename
 ) -> None:
     store, common = producer_store
     store.put(AUTHORITY_ENTRY, AUTHORITY_VALUE)
@@ -650,8 +919,10 @@ def test_producer_mid_write_failure_preserves_final_file(
         return write(fd, data)
 
     monkeypatch.setattr(os, "write", fail_mid_write)
-    with pytest.raises(OSError, match="synthetic mid-write failure"):
+    with pytest.raises(SystemExit) as refusal:
         runpy.run_path(str(PRODUCER), run_name="__main__")
+    assert refusal.value.code == 2
+    assert "replacement failed at" in capsys.readouterr().err
     assert target.read_bytes() == prior
     assert target.stat().st_ino == inode
     assert not list(common.parent.glob(".*.tmp"))

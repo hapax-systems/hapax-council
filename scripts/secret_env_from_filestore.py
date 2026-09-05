@@ -4,9 +4,10 @@
 HAPAX_SECRETS_SOURCE defaults to filestore: import the reins install pin
 (~/.local/share/reins/current/api) and validate its private root and .key.
 The helper source delegates to hapax-secret (HAPAX_SECRET_HELPER overrides
-its executable), with a 20-second timeout per name and no retry or fallback.
-All lookups finish before either env file is touched. Each file uses temp +
-os.replace so a failed write preserves its prior file.
+its executable), with a 20-second timeout per operation and no retry or fallback.
+Presence checks, reads and strict value validation finish before either env
+file is touched. Each file uses temp + os.replace; these are two replacements,
+so a failure publishing authority can leave the common file refreshed.
 """
 
 from __future__ import annotations
@@ -16,6 +17,7 @@ import shutil
 import stat
 import subprocess
 import sys
+import unicodedata
 from pathlib import Path
 from typing import NoReturn
 
@@ -31,6 +33,7 @@ _HELPER_REPAIR = (
     "check HAPAX_SECRETS_HOST reachability and FileStore enrollment on that host; "
     "install executable hapax-secret on PATH or set HAPAX_SECRET_HELPER and rerun"
 )
+_STORE_REPAIR = "restore service-user read access and valid FileStore entries and .key and rerun"
 if _SOURCE not in ("filestore", "helper"):
     _prerequisite_failure(
         "HAPAX_SECRETS_SOURCE must be filestore or helper",
@@ -59,7 +62,10 @@ else:
         )
         raise SystemExit(2) from exc
 
-    store = default_store()
+    try:
+        store = default_store()
+    except Exception as exc:
+        _prerequisite_failure(f"FileStore initialization {type(exc).__name__}", _STORE_REPAIR)
     if store.backend_id != "file":
         sys.stderr.write(
             f"secret_env_from_filestore: default_store backend_id={store.backend_id!r} "
@@ -142,13 +148,18 @@ LITERALS: dict[str, str] = {
 
 
 def _first_line(raw: bytes) -> str:
-    return raw.decode("utf-8", "replace").split("\n", 1)[0]
+    text = raw.decode("utf-8", errors="strict")
+    # Only the helper's optional trailing LF is a permitted control character.
+    if any(unicodedata.category(char) == "Cc" for char in text.removesuffix("\n")):
+        raise ValueError("control character")
+    return text.split("\n", 1)[0]
 
 
-def _helper_value(name: str) -> bytes | None:
+def _helper_call(name: str, *, where: bool = False) -> subprocess.CompletedProcess[bytes]:
+    operation = "--where" if where else "GET"
     try:
-        result = subprocess.run(
-            [_helper, name],
+        return subprocess.run(
+            [_helper, "--where", name] if where else [_helper, name],
             stdin=subprocess.DEVNULL,
             capture_output=True,
             check=False,
@@ -156,39 +167,65 @@ def _helper_value(name: str) -> bytes | None:
         )
     except subprocess.TimeoutExpired:
         _prerequisite_failure(
-            f"helper {name} timeout after {_HELPER_TIMEOUT_SECONDS}s", _HELPER_REPAIR
+            f"helper {name} {operation} timeout after {_HELPER_TIMEOUT_SECONDS}s", _HELPER_REPAIR
         )
     except OSError:
-        _prerequisite_failure(f"helper {name} launch OSError", _HELPER_REPAIR)
+        _prerequisite_failure(f"helper {name} {operation} launch OSError", _HELPER_REPAIR)
 
-    # hapax_secret._do_get: absence is rc=1, empty stdout and this diagnostic.
-    # Other rc=1 failures (including Python exceptions) must not remove files.
+
+def _helper_value(name: str) -> bytes | None:
+    where = _helper_call(name, where=True)
+    present = where.returncode == 0 and where.stdout == b"filestore\n" and not where.stderr
     absent = (
+        where.returncode == 1
+        and where.stdout == f"not found: {name}\n".encode()
+        and not where.stderr
+    )
+    if not (present or absent):
+        _prerequisite_failure(
+            f"helper {name} --where transport exit {where.returncode} (unrecognized response)",
+            _HELPER_REPAIR,
+        )
+
+    result = _helper_call(name)
+    # Reins GET maps both absent and invalid blobs to this exact response.
+    # Only a separately demonstrated --where absence permits omission/deletion.
+    not_found = (
         f"not found in FileStore: {name}. legal_next: run hapax-secret (TTY put) via reins.\n"
     ).encode()
-    if result.returncode == 1 and result.stdout == b"" and result.stderr == absent:
+    if result.returncode == 1 and result.stdout == b"" and result.stderr == not_found:
+        if present:
+            _prerequisite_failure(f"helper {name} present-but-unreadable", _HELPER_REPAIR)
         return None
     if result.returncode != 0:
-        _prerequisite_failure(f"helper {name} transport exit {result.returncode}", _HELPER_REPAIR)
-    try:
-        # Validate all stdout before _first_line; never replace decoding errors
-        # in helper output or expose captured output/exception details in logs.
-        result.stdout.decode("utf-8")
-    except UnicodeDecodeError:
-        _prerequisite_failure(f"helper {name} decoding failure (UTF-8)", _HELPER_REPAIR)
+        _prerequisite_failure(
+            f"helper {name} GET transport exit {result.returncode}", _HELPER_REPAIR
+        )
     return result.stdout
 
 
-def _store_value(name: str) -> bytes | None:
+def _store_value(name: str) -> str | None:
     if _SOURCE == "helper":
-        return _helper_value(name)
+        raw = _helper_value(name)
+        repair = _HELPER_REPAIR
+    else:
+        repair = _STORE_REPAIR
+        try:
+            if not store.has(name):
+                return None
+            raw = store.get(name)
+        except Exception as exc:
+            _prerequisite_failure(f"FileStore {name} unreadable ({type(exc).__name__})", repair)
+        if raw is None:
+            _prerequisite_failure(f"FileStore {name} present-but-unreadable", repair)
+    if raw is None:
+        return None
     try:
-        return store.get(name)
-    except OSError:
-        _prerequisite_failure(
-            f"FileStore prerequisite {name} unreadable at {store.root}",
-            "restore service-user read access to the FileStore entry and .key and rerun",
-        )
+        return _first_line(raw)
+    except UnicodeDecodeError:
+        _prerequisite_failure(f"{_SOURCE} {name} decoding failure (UTF-8)", repair)
+    except ValueError:
+        _prerequisite_failure(f"{_SOURCE} {name} invalid control character", repair)
 
 
 def _write_env(out: Path, lines: list[str]) -> None:
@@ -225,7 +262,7 @@ for env_name, spec in REQUIRED.items():
     if val is None:
         missing.append(spec)
         continue
-    resolved[env_name] = _first_line(val)
+    resolved[env_name] = val
 if missing:
     sys.stderr.write(
         "secret_env_from_filestore: missing "
@@ -242,7 +279,7 @@ for env_name, spec in OPTIONAL.items():
     val = _store_value(spec)
     if val is None:
         continue
-    lines.append(f"{env_name}={_first_line(val)}")
+    lines.append(f"{env_name}={val}")
 for env_name, value in LITERALS.items():
     lines.append(f"{env_name}={value}")
 
@@ -250,12 +287,28 @@ for env_name, value in LITERALS.items():
 # after the common environment is complete, without adding it to OPTIONAL.
 authority_value = _store_value("hapax-public-gate-authority-hmac-key")
 authority_out = out.with_name("hapax-public-gate-authority.env")
-_write_env(out, lines)
+try:
+    _write_env(out, lines)
+except OSError:
+    prior_common = "retained" if out.exists() else "absent"
+    _prerequisite_failure(
+        f"common replacement failed at {out}; prior common file {prior_common}; authority untouched",
+        "restore write access to the environment directory and rerun",
+    )
 print(f"wrote {out} keys={len(lines)} source={_SOURCE} backend={_backend}")
-if authority_value is None:
-    authority_out.unlink(missing_ok=True)
-else:
-    _write_env(
-        authority_out,
-        [f"HAPAX_PUBLIC_GATE_AUTHORITY_HMAC_KEY={_first_line(authority_value)}"],
+try:
+    if authority_value is None:
+        authority_out.unlink(missing_ok=True)
+    else:
+        _write_env(
+            authority_out,
+            [f"HAPAX_PUBLIC_GATE_AUTHORITY_HMAC_KEY={authority_value}"],
+        )
+except OSError:
+    prior_authority = "retained" if authority_out.exists() else "absent"
+    action = "removal" if authority_value is None else "replacement"
+    _prerequisite_failure(
+        f"common refreshed; authority {action} failed at {authority_out}; "
+        f"prior authority file {prior_authority}",
+        "restore write access to the authority environment path and rerun",
     )

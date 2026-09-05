@@ -10,12 +10,12 @@ WorkingDirectory=%h/.cache/hapax/source-activation/worktree
 # 2026-04-26 Phase-3 fanout activation: surface adapters (bluesky, IA, OSF,
 # PhilArchive, Zenodo refusal-deposit) read HAPAX_*_TOKEN / HAPAX_*_KEY /
 # HAPAX_BLUESKY_* env vars from hapax-secrets.service via
-# /run/user/1000/hapax-secrets.env. Without this EnvironmentFile every
+# /run/user/%U/hapax-secrets.env. Without this EnvironmentFile every
 # adapter returns ``auth_error`` and refusal-annex fanout (and every
 # other enqueued artefact) silently no-ops. The `-` prefix makes the file
 # optional — service still starts on hosts where hapax-secrets isn't
 # materialised yet (CI runners, fresh VMs).
-EnvironmentFile=-/run/user/1000/hapax-secrets.env
+EnvironmentFile=-/run/user/%U/hapax-secrets.env
 EnvironmentFile=-/run/user/%U/hapax-public-gate-authority.env
 Environment=PYTHONPATH=%h/.cache/hapax/source-activation/worktree
 ExecStart=%h/.cache/hapax/source-activation/worktree/.venv/bin/python -m agents.publish_orchestrator
