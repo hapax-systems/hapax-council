@@ -3,13 +3,16 @@
 import json
 import os
 import runpy
+import shutil
 import subprocess
 import sys
 import uuid
 from pathlib import Path
 
 import pytest
+import yaml
 
+REINS_GIT = shutil.which("git") or "/usr/bin/git"
 REPO_ROOT = Path(__file__).resolve().parents[2]
 UNIT = REPO_ROOT / "systemd" / "units" / "hapax-secrets.service"
 WATCHDOGS = REPO_ROOT / "systemd" / "watchdogs"
@@ -232,21 +235,41 @@ def _reins_pin() -> Path:
 
 
 def _require_reins_pin() -> Path:
-    pin = _reins_pin()
-    if not (pin / "k0" / "key_capture.py").is_file():
-        if os.environ.get("HAPAX_TEST_REINS_LOCAL_ONLY") == "1":
-            pytest.skip("REINS_LOCAL_ONLY_DEPENDENCY_MISSING: HAPAX_TEST_REINS_LOCAL_ONLY=1")
-        pytest.fail(
-            "REINS_TEST_DEPENDENCY_MISSING: install the pinned reins-read test dependency "
-            "and expose its k0 package via _reins_pin; ~/.local/share/reins/current/api "
-            "is unavailable. HAPAX_TEST_REINS_LOCAL_ONLY=1 permits an explicitly local-only run."
+    explicit = os.environ.get("HAPAX_REINS_TEST_SOURCE_API")
+    candidates = ([Path(explicit)] if explicit else []) + [_reins_pin()]
+    for candidate in candidates:
+        if (
+            not (candidate / "bootstrap_receipt.py").is_file()
+            or not (candidate / "k0" / "key_capture.py").is_file()
+        ):
+            continue
+        head = subprocess.run(
+            [REINS_GIT, "-C", str(candidate), "rev-parse", "HEAD"],
+            capture_output=True,
+            text=True,
+            check=False,
         )
-    return pin
+        if (
+            head.returncode == 0
+            and head.stdout.strip() != "edf05c05615df083d8dfd90ad1c11d88ba88761e"
+        ):
+            pytest.fail(
+                "REINS_TEST_SOURCE_COMMIT_MISMATCH: expected edf05c05615df083d8dfd90ad1c11d88ba88761e"
+            )
+        return candidate
+    pytest.fail(
+        "REINS_TEST_DEPENDENCY_MISSING: stage Reins source at "
+        "edf05c05615df083d8dfd90ad1c11d88ba88761e and set HAPAX_REINS_TEST_SOURCE_API "
+        "to its api directory, or expose that source at ~/.local/share/reins/current/api; "
+        "bootstrap_receipt.py and k0/key_capture.py are required."
+    )
 
 
-def test_missing_reins_dependency_fails_by_default(tmp_path, monkeypatch):
-    monkeypatch.setattr(sys.modules[__name__], "_reins_pin", lambda: tmp_path / "missing-api")
-    monkeypatch.delenv("HAPAX_TEST_REINS_LOCAL_ONLY", raising=False)
+@pytest.mark.parametrize("local_only", [False, True])
+def test_missing_reins_dependency_fails_by_default(tmp_path, monkeypatch, local_only):
+    monkeypatch.setattr(sys.modules[__name__], "_reins_pin", lambda: tmp_path / "missing-pin")
+    monkeypatch.setenv("HAPAX_REINS_TEST_SOURCE_API", str(tmp_path / "missing-explicit"))
+    monkeypatch.setenv("HAPAX_TEST_REINS_LOCAL_ONLY", "1" if local_only else "0")
     try:
         with pytest.raises(pytest.fail.Exception, match="REINS_TEST_DEPENDENCY_MISSING"):
             _require_reins_pin()
@@ -254,11 +277,137 @@ def test_missing_reins_dependency_fails_by_default(tmp_path, monkeypatch):
         pytest.fail("missing Reins dependency silently skipped instead of failing")
 
 
-def test_missing_reins_dependency_local_only_skip_is_explicit(tmp_path, monkeypatch):
-    monkeypatch.setattr(sys.modules[__name__], "_reins_pin", lambda: tmp_path / "missing-api")
-    monkeypatch.setenv("HAPAX_TEST_REINS_LOCAL_ONLY", "1")
-    with pytest.raises(pytest.skip.Exception, match="REINS_LOCAL_ONLY_DEPENDENCY_MISSING"):
+@pytest.fixture
+def reins_test_source(tmp_path):
+    # Copy actual source; never manufacture a FileStore substitute or a home pin.
+    return shutil.copytree(
+        _require_reins_pin(),
+        tmp_path / "reins" / "api",
+        ignore=shutil.ignore_patterns("__pycache__"),
+    )
+
+
+def test_explicit_reins_source_wins_over_operator_pin(reins_test_source, monkeypatch):
+    operator_pin = _require_reins_pin()
+    monkeypatch.setattr(sys.modules[__name__], "_reins_pin", lambda: operator_pin)
+    monkeypatch.setenv("HAPAX_REINS_TEST_SOURCE_API", str(reins_test_source))
+    assert _require_reins_pin() == reins_test_source
+    # Exercise the real import in isolation, including the missing wheel module.
+    result = subprocess.run(
+        [
+            sys.executable,
+            "-I",
+            "-c",
+            "import sys; sys.path.insert(0, sys.argv[1]); "
+            "from k0.key_capture import FileStore; import bootstrap_receipt; "
+            "assert FileStore.__module__ == 'k0.key_capture'",
+            str(reins_test_source),
+        ],
+        capture_output=True,
+        check=False,
+    )
+    assert result.returncode == 0, result.stderr
+
+
+@pytest.mark.parametrize("explicit", [False, True])
+@pytest.mark.parametrize("missing", ["bootstrap_receipt.py", "k0"])
+def test_incomplete_reins_source_is_refused(reins_test_source, monkeypatch, explicit, missing):
+    candidate = reins_test_source
+    target = candidate / missing
+    if target.is_dir():
+        shutil.rmtree(target)
+    else:
+        target.unlink()
+    monkeypatch.setattr(
+        sys.modules[__name__],
+        "_reins_pin",
+        lambda: candidate.parent / "missing-pin" if explicit else candidate,
+    )
+    monkeypatch.delenv("HAPAX_REINS_TEST_SOURCE_API", raising=False)
+    if explicit:
+        monkeypatch.setenv("HAPAX_REINS_TEST_SOURCE_API", str(candidate))
+    with pytest.raises(pytest.fail.Exception, match="REINS_TEST_DEPENDENCY_MISSING"):
         _require_reins_pin()
+
+
+@pytest.mark.parametrize("explicit", [False, True])
+@pytest.mark.parametrize("commit", ["edf05c05615df083d8dfd90ad1c11d88ba88761e", "0" * 40])
+def test_reins_source_commit_is_checked(reins_test_source, monkeypatch, explicit, commit):
+    monkeypatch.delenv("HAPAX_REINS_TEST_SOURCE_API", raising=False)
+    monkeypatch.setattr(sys.modules[__name__], "_reins_pin", lambda: reins_test_source)
+    if explicit:
+        monkeypatch.setenv("HAPAX_REINS_TEST_SOURCE_API", str(reins_test_source))
+    calls = []
+
+    def git_head(args, **kwargs):
+        calls.append(args)
+        return subprocess.CompletedProcess(args, 0, commit + "\n", "")
+
+    monkeypatch.setattr(subprocess, "run", git_head)
+    if commit == "edf05c05615df083d8dfd90ad1c11d88ba88761e":
+        assert _require_reins_pin() == reins_test_source
+    else:
+        with pytest.raises(pytest.fail.Exception, match="REINS_TEST_SOURCE_COMMIT_MISMATCH"):
+            _require_reins_pin()
+    assert len(calls) == 1
+    assert calls[0][1:] == ["-C", str(reins_test_source), "rev-parse", "HEAD"]
+
+
+def test_invalid_explicit_reins_source_falls_back_to_pin(reins_test_source, monkeypatch):
+    monkeypatch.setenv("HAPAX_REINS_TEST_SOURCE_API", str(reins_test_source / "missing-api"))
+    monkeypatch.setattr(sys.modules[__name__], "_reins_pin", lambda: reins_test_source)
+    assert _require_reins_pin() == reins_test_source
+
+
+@pytest.mark.parametrize("head", ["edf05c05615df083d8dfd90ad1c11d88ba88761e", "0" * 40])
+def test_ci_stages_verified_reins_source_outside_workspace(tmp_path, monkeypatch, head):
+    workflow = yaml.safe_load((REPO_ROOT / ".github/workflows/ci.yml").read_text())
+    steps = workflow["jobs"]["test-full-shard"]["steps"]
+    stage = next(
+        (step for step in steps if step.get("name") == "Stage pinned Reins test source"), None
+    )
+    assert stage is not None, "full pytest shard must stage pinned Reins source"
+    pytest_step = next(step for step in steps if step.get("name") == "Run full pytest shard")
+    assert steps.index(stage) < steps.index(pytest_step)
+    assert stage["env"] == {
+        "REINS_TEST_COMMIT": "edf05c05615df083d8dfd90ad1c11d88ba88761e",
+        "REINS_TEST_SOURCE": "${{ runner.temp }}/reins",
+    }
+    assert pytest_step["env"]["HAPAX_REINS_TEST_SOURCE_API"] == "${{ runner.temp }}/reins/api"
+    git = tmp_path / "bin" / "git"
+    git.write_text(
+        f"#!{sys.executable}\n"
+        "import json, os, sys\n"
+        "from pathlib import Path\n"
+        "with Path(os.environ['REINS_GIT_CALLS']).open('a') as log:\n"
+        "    log.write(json.dumps(sys.argv[1:]) + '\\n')\n"
+        "if sys.argv[-2:] == ['rev-parse', 'HEAD']:\n"
+        "    print(os.environ['REINS_GIT_HEAD'])\n"
+    )
+    git.chmod(0o700)
+    source = str(tmp_path / "runner-temp" / "reins")
+    log = tmp_path / "git-calls"
+    monkeypatch.setenv("REINS_TEST_COMMIT", stage["env"]["REINS_TEST_COMMIT"])
+    monkeypatch.setenv("REINS_TEST_SOURCE", source)
+    monkeypatch.setenv("REINS_GIT_CALLS", str(log))
+    monkeypatch.setenv("REINS_GIT_HEAD", head)
+    result = subprocess.run(["/bin/bash", "-c", stage["run"]], capture_output=True, text=True)
+    assert (result.returncode == 0) == (head == stage["env"]["REINS_TEST_COMMIT"])
+    assert head in result.stdout
+    calls = [json.loads(line) for line in log.read_text().splitlines()]
+    assert calls == [
+        [
+            "clone",
+            "--depth",
+            "1",
+            "--no-checkout",
+            "https://github.com/hapax-systems/reins.git",
+            source,
+        ],
+        ["-C", source, "fetch", "--depth", "1", "origin", stage["env"]["REINS_TEST_COMMIT"]],
+        ["-C", source, "checkout", "--detach", stage["env"]["REINS_TEST_COMMIT"]],
+        ["-C", source, "rev-parse", "HEAD"],
+    ]
 
 
 def _run_producer(env: dict[str, str], setup: str = "") -> subprocess.CompletedProcess[str]:
@@ -533,21 +682,48 @@ def test_literal_validation_precedes_common_write(helper_source, monkeypatch, na
     ("backend", "token"),
     [
         (b"pass\n", "pass"),
-        (b"REMOTE!._-\tprivate-remote-text\n", "remote_._-"),
-        (b"x" * 80 + b"\n", "x" * 32),
-        (b"\xff\n", "_"),
+        (b"filestore\n", "filestore"),
         (b"", "empty"),
+        (b"synthetic-private-key-material\n", "unknown"),  # pragma: allowlist secret
+        (b"synthetic-private-key-material" * 8 + b"\n", "unknown"),  # pragma: allowlist secret
+        (b"synthetic-private key material\n", "unknown"),  # pragma: allowlist secret
+        (b"pass synthetic-private-key-material\n", "unknown"),  # pragma: allowlist secret
+        (b"pass-synthetic-private-key-material\n", "unknown"),  # pragma: allowlist secret
+        (b"pass", "unknown"),
+        (b"PASS\n", "unknown"),
+        (b"filestore extra\n", "unknown"),
+        (b"\xff\n", "unknown"),
     ],
-    ids=["pass", "sanitized", "capped", "non-ascii", "empty"],
+    ids=[
+        "pass",
+        "filestore",
+        "empty",
+        "short-secret",
+        "long-secret",
+        "spaces",
+        "pass-with-spaces",
+        "pass-prefix",
+        "no-newline",
+        "uppercase",
+        "filestore-extra",
+        "non-ascii",
+    ],
 )
 def test_where_backend_disagreement_names_safe_token(helper_source, backend, token):
     table, _, common = helper_source
     authority, inodes = _prior_files(common)
-    table[AUTHORITY_ENTRY]["where"] = {"action": "value", "hex": backend.hex()}
+    before = (common.read_bytes(), authority.read_bytes())
+    table[AUTHORITY_ENTRY]["where"] = {
+        "action": "value",
+        "hex": backend.hex(),
+        "code": 2 if backend == b"filestore\n" else 0,
+    }
     result = _run_helper(table)
     _assert_read_refusal(result, common, authority, inodes, AUTHORITY_ENTRY, "--where")
+    assert (common.read_bytes(), authority.read_bytes()) == before
+    if token == "unknown" and backend:
+        assert backend not in (result.stdout + result.stderr).encode()
     assert f"backend={token} (" in result.stderr
-    assert "private-remote-text" not in result.stderr
     assert (common.parent / "helper-calls").read_text().splitlines()[
         -1
     ] == f"--where {AUTHORITY_ENTRY}"

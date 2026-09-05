@@ -209,12 +209,9 @@ def _helper_value(name: str) -> bytes | None:
         and not where.stderr
     )
     if not (present or absent):
-        # Only the first --where token is a backend label. Never forward GET
-        # bytes or helper stderr; cap before sanitizing untrusted label text.
-        tokens = where.stdout.split(None, 1)
-        token = (tokens[0][:32] if tokens else b"empty").lower()
-        backend = "".join(
-            chr(c) if c in b"abcdefghijklmnopqrstuvwxyz0123456789._-" else "_" for c in token
+        # Classify complete responses only; helper output is untrusted material.
+        backend = {b"pass\n": "pass", b"filestore\n": "filestore", b"": "empty"}.get(
+            where.stdout, "unknown"
         )
         _prerequisite_failure(
             f"helper {name} --where transport exit {where.returncode} "
