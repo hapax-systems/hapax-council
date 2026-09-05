@@ -8,7 +8,6 @@ set -euo pipefail
 # Repo on Synology DS425+ NAS via NFS for true DR (separate physical device).
 
 REPO="/mnt/nas/backups/restic"
-export RESTIC_PASSWORD="$(pass show backups/restic-password)"
 export RESTIC_REPOSITORY="$REPO"
 POSTGRES_SUPERUSER="${HAPAX_POSTGRES_SUPERUSER:-hapax}"
 
@@ -69,6 +68,42 @@ export_n8n_workflows() {
     rm -f "$export_errors"
 }
 
+
+# The journal receipt survives missing storage and names steps that never ran.
+BACKUP_STEP=mounts
+DUMP_DIR=""
+BACKUP_DETAIL=""
+SNAPSHOT_STATUS=skipped
+BUNDLE_STATUS=skipped
+DR_STATUS=skipped
+backup_receipt() {
+    local result=$? status=failed
+    trap - EXIT
+    [[ "$result" -ne 0 ]] || status=success
+    log "BACKUP RECEIPT lane=tier1-local status=$status step=$BACKUP_STEP snapshot=$SNAPSHOT_STATUS git-bundles=$BUNDLE_STATUS dr-publication=$DR_STATUS detail=$BACKUP_DETAIL"
+    [[ -z "${DUMP_DIR:-}" ]] || rm -rf -- "$DUMP_DIR"
+    exit "$result"
+}
+trap backup_receipt EXIT
+
+missing_mounts=()
+for required_mount in /store /mnt/nas; do
+    mountpoint -q "$required_mount" || missing_mounts+=("$required_mount")
+done
+if (( ${#missing_mounts[@]} > 0 )); then
+    BACKUP_DETAIL="missing mounts: ${missing_mounts[*]}"
+    log "FATAL: $BACKUP_DETAIL; mount the required filesystems, then rerun the backup"
+    exit 1
+fi
+
+BACKUP_STEP=credentials
+if ! RESTIC_PASSWORD=$(pass show backups/restic-password 2>/dev/null) || [[ -z "$RESTIC_PASSWORD" ]]; then
+    BACKUP_DETAIL="cannot read non-empty pass entry backups/restic-password"
+    log "FATAL: $BACKUP_DETAIL; unlock or repair pass, then rerun the backup"
+    exit 1
+fi
+export RESTIC_PASSWORD
+
 # Remove stale locks left by a prior interrupted run — a recurring exit-11 cause
 # (e.g. a backup killed mid-run, or the 2026-06-03 disk failure mid-backup).
 restic unlock 2>/dev/null || true
@@ -79,7 +114,7 @@ log "Starting Tier 1 (local) backup"
 DUMP_DIR="${HAPAX_BACKUP_DUMP_DIR:-/store/llm-data/backup-dumps-local}"  # disk, not tmpfs: tmpfs is charged to this service's memory cgroup (MemoryHigh) and throttles the job to a crawl (measured 2026-09-02)
 rm -rf "$DUMP_DIR"
 mkdir -p "$DUMP_DIR/qdrant"
-trap 'rm -rf "$DUMP_DIR"' EXIT
+BACKUP_STEP=postgres
 
 # PostgreSQL dump via Docker
 log "Dumping PostgreSQL..."
@@ -112,10 +147,12 @@ log "PostgreSQL dump OK: ${_pg_size} bytes, terminator present"
 
 # Qdrant snapshots via REST API
 log "Snapshotting Qdrant collections..."
+BACKUP_STEP=qdrant
 snapshot_qdrant
 
 # n8n workflows are part of the declared backup. A missing export is a broken
 # backup, so do not invoke restic unless the file was materialized.
+BACKUP_STEP=n8n
 export_n8n_workflows
 
 # Docker volume metadata (for DR reference — what volumes exist and their config)
@@ -143,7 +180,10 @@ for repo in ~/projects/*/; do
 done
 
 log "Running restic backup..."
+BACKUP_STEP=snapshot
+SNAPSHOT_STATUS=failed
 restic backup \
+    --host hapax-podium \
     --verbose \
     --tag "tier1-local" \
     "$DUMP_DIR" \
@@ -203,6 +243,9 @@ restic backup \
     --exclude="*.lock" \
     --exclude="llm-stack/comfyui"
 
+SNAPSHOT_STATUS=success
+BACKUP_STEP=retention
+
 log "Applying retention policy (7 daily, 4 weekly, 3 monthly)..."
 # --group-by host,tags, NOT the default host,paths: every change to the path
 # list above would otherwise mint a fresh retention group with its own full
@@ -212,6 +255,8 @@ log "Applying retention policy (7 daily, 4 weekly, 3 monthly)..."
 # nothing today; it ages out gradually instead. Purging it sooner is an operator
 # decision, not a side effect of correcting the grouping.
 restic forget \
+    --host hapax-podium \
+    --tag "tier1-local" \
     --group-by host,tags \
     --keep-within 120d \
     --keep-daily 7 \
@@ -221,5 +266,7 @@ restic forget \
 
 log "Tier 1 backup complete"
 restic snapshots --latest 1
+
+BACKUP_STEP=complete
 
 notify-send -u low "Backup" "Tier 1 (local) backup complete" 2>/dev/null || true

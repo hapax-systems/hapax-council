@@ -503,6 +503,13 @@ def _run_full_restore(
     omit_restore_dump: bool = False,
     report_state_unit: str = "",
     reported_state: str = "enabled",
+    compose_profile: str | None = "full",
+    omit_env_file: str = "",
+    omit_stack: bool = False,
+    fail_council_clones: bool = False,
+    empty_council_checkout: bool = False,
+    fail_compose: bool = False,
+    drop_copied_env: bool = False,
 ) -> tuple[subprocess.CompletedProcess[str], list[str], Path]:
     home = tmp_path / "home"
     restore_root = tmp_path / "restore-root"
@@ -513,7 +520,18 @@ def _run_full_restore(
     command_log = tmp_path / "commands.log"
     pass_state = tmp_path / "pass-state"
     registry = tmp_path / "host-storage-registry.json"
+    compose_contract = tmp_path / "llm-stack.service"
+    contract_text = (SCRIPTS.parent / "systemd/units/llm-stack.service").read_text()
+    contract_text = contract_text.replace(
+        "--profile full", "" if compose_profile is None else f"--profile {compose_profile}"
+    )
+    compose_contract.write_text(contract_text)
     home.mkdir()
+    if omit_env_file or omit_stack:
+        # A pre-existing destination must not hide missing recovery inputs.
+        (home / "llm-stack").mkdir()
+        for env_file in (".env", ".envrc"):
+            (home / "llm-stack" / env_file).write_text("# stale destination fixture\n")
     fake_bin.mkdir()
     registry.write_text(
         json.dumps(
@@ -554,7 +572,7 @@ def _run_full_restore(
     rclone_config.write_text("active-b2-config\n", encoding="utf-8")
     stale_pass_entry = pass_state / "backups" / "restic-password"
     stale_pass_entry.parent.mkdir(parents=True)
-    stale_pass_entry.write_text("stale\n", encoding="utf-8")
+    stale_pass_entry.write_text("stale\n", encoding="utf-8")  # pragma: allowlist secret
 
     _write_executable(
         fake_bin / "restic",
@@ -572,7 +590,12 @@ if [ "${1:-}" = restore ]; then
     home_seg=home
     backed_up_rclone="$target/${home_seg}/backup-user/.config/rclone/rclone.conf"
     mkdir -p "$target/${home_seg}/backup-user/llm-stack" "$(dirname "$backed_up_rclone")"
-    printf '%s\n' 'services: {}' > "$target/${home_seg}/backup-user/llm-stack/docker-compose.yml"
+    stack="$target/${home_seg}/backup-user/llm-stack"
+    printf '%s\n' 'services: {}' > "$stack/docker-compose.yml"
+    printf '%s\n' '# restored environment fixture' > "$stack/.env"
+    printf '%s\n' '# restored direnv fixture' > "$stack/.envrc"
+    if [ -n "$OMIT_ENV_FILE" ]; then rm "$stack/$OMIT_ENV_FILE"; fi
+    if [ "$OMIT_STACK" = 1 ]; then rm -rf "$stack"; fi
     printf '%s\n' 'stale-b2-config' > "$backed_up_rclone"
     if [ "${OMIT_RESTORE_DUMP:-0}" != 1 ]; then
         dump="$target/store/llm-data/backup-dumps-remote"
@@ -599,9 +622,8 @@ case "${1:-}" in
         printf '%s\n' /dev/restore-test
         ;;
     docker)
-        case " $* " in
-            *" psql "*) cat > /dev/null ;;
-        esac
+        shift
+        exec "$RESTORE_FAKE_BIN/docker" "$@"
         ;;
     tee)
         cat > /dev/null
@@ -629,10 +651,63 @@ exit 0
         """#!/bin/sh
 set -eu
 printf 'git %s\n' "$*" >> "$COMMAND_LOG"
+if [ "${1:-}" = clone ]; then
+    case "$2" in
+        *hapax-council*)
+            [ "$FAIL_COUNCIL_CLONES" != 1 ] || exit 7
+            if [ "$EMPTY_COUNCIL_CHECKOUT" = 1 ]; then exit 0; fi
+            mkdir -p "$3/systemd/units"
+            cp "$COMPOSE_CONTRACT_FIXTURE" "$3/systemd/units/llm-stack.service"
+            ;;
+    esac
+    mkdir -p "$3/.git"
+fi
 exit 0
 """,
     )
+    _write_executable(
+        fake_bin / "gh",
+        """#!/bin/sh
+set -eu
+printf 'gh %s\n' "$*" >> "$COMMAND_LOG"
+if [ "${1:-}" = repo ] && [ "${2:-}" = clone ] && [ "$3" = hapax-systems/hapax-council ]; then
+    [ "$FAIL_COUNCIL_CLONES" != 1 ] || exit 8
+    exec "$RESTORE_FAKE_BIN/git" clone "$3" "$4"
+fi
+""",
+    )
+    _write_executable(
+        fake_bin / "docker",
+        """#!/bin/sh
+set -eu
+printf 'docker %s\n' "$*" >> "$COMMAND_LOG"
+if [ "${1:-}" = compose ]; then
+    [ "$*" = "compose -f $HOME/llm-stack/docker-compose.yml --profile $COMPOSE_PROFILE up -d" ] || exit 10
+    [ -f "$HOME/llm-stack/.env" ] && [ -f "$HOME/llm-stack/.envrc" ] || exit 11
+    [ "$FAIL_COMPOSE" != 1 ] || exit 12
+    : > "$HOME/stack-started"
+elif [ "${1:-}" = exec ]; then
+    [ -f "$HOME/stack-started" ] || exit 13
+    case " $* " in
+        *" psql "*) cat > "$HOME/restored-postgres.sql" ;;
+    esac
+elif [ "${1:-}" = cp ]; then
+    [ -s "$2" ] || exit 14
+fi
+""",
+    )
+    _write_executable(
+        fake_bin / "cp",
+        """#!/bin/sh
+set -eu
+/usr/bin/cp "$@"
+if [ "$DROP_COPIED_ENV" = 1 ]; then
+    rm -f "$HOME/llm-stack/.env"
+fi
+""",
+    )
     _write_executable(fake_bin / "mountpoint", "#!/bin/sh\nexit 0\n")
+    _write_executable(fake_bin / "findmnt", "#!/bin/sh\nprintf '%s\\n' tmpfs\n")
     _write_executable(fake_bin / "curl", "#!/bin/sh\nexit 0\n")
     _write_executable(fake_bin / "pacman", "#!/bin/sh\nexit 1\n")
     _write_executable(fake_bin / "rclone", "#!/bin/sh\nprintf '%s\\n' 'b2:'\n")
@@ -662,7 +737,7 @@ case "${1:-}" in
     show)
         entry=${2:-}
         if [ "$entry" = "${MISMATCH_PASS_SHOW_ENTRY:-}" ]; then
-            printf '%s\n' stale
+            printf '%s\n' stale # pragma: allowlist secret
         else
             cat "$PASS_STATE/$entry"
         fi
@@ -678,7 +753,6 @@ esac
         "fish",
         "flatpak",
         "fnm",
-        "gh",
         "go",
         "mods",
         "ollama",
@@ -697,6 +771,10 @@ esac
             for command in (
                 *passthrough_commands,
                 "curl",
+                "cp",
+                "docker",
+                "findmnt",
+                "gh",
                 "git",
                 "mountpoint",
                 "pacman",
@@ -714,8 +792,8 @@ esac
     env = os.environ.copy()
     env.update(
         {
-            "B2_APP_KEY": "restore-test-app-key",
-            "B2_KEY_ID": "restore-test-key-id",
+            "B2_APP_KEY": "restore-test-app-key",  # pragma: allowlist secret
+            "B2_KEY_ID": "restore-test-key-id",  # pragma: allowlist secret
             "BASH_ENV": str(bash_env),
             "COMMAND_LOG": str(command_log),
             "FAIL_ENABLE_UNIT": fail_enable_unit,
@@ -727,6 +805,14 @@ esac
             "HOME": str(home),
             "MISMATCH_PASS_SHOW_ENTRY": mismatch_pass_show_entry,
             "OMIT_RESTORE_DUMP": "1" if omit_restore_dump else "0",
+            "COMPOSE_CONTRACT_FIXTURE": str(compose_contract),
+            "COMPOSE_PROFILE": compose_profile or "",
+            "OMIT_ENV_FILE": omit_env_file,
+            "OMIT_STACK": "1" if omit_stack else "0",
+            "FAIL_COUNCIL_CLONES": "1" if fail_council_clones else "0",
+            "EMPTY_COUNCIL_CHECKOUT": "1" if empty_council_checkout else "0",
+            "FAIL_COMPOSE": "1" if fail_compose else "0",
+            "DROP_COPIED_ENV": "1" if drop_copied_env else "0",
             "PATH": f"{fake_bin}:/usr/bin:/bin",
             "PASS_STATE": str(pass_state),
             "RESTIC_PASSWORD": "restore-test-password",  # pragma: allowlist secret
@@ -753,8 +839,20 @@ def test_full_restore_carries_resolved_artifacts_through_phase_16(tmp_path: Path
     dump = restore_root / DUMP_PATHS[0]
 
     assert result.returncode == 0, result.stderr
-    for phase in ("Phase 0", "Phase 13", "Phase 14", "Phase 15", "Phase 16"):
-        assert phase in result.stdout
+    phase_positions = [result.stdout.index(f"=== Phase {phase}:") for phase in range(17)]
+    assert phase_positions == sorted(phase_positions)
+    compose_command = (
+        f"docker compose -f {tmp_path}/home/llm-stack/docker-compose.yml --profile full up -d"
+    )
+    assert compose_command in commands
+    assert commands.index(compose_command) < commands.index(
+        "docker exec postgres pg_isready -U hapax"
+    )
+    assert (tmp_path / "home/restored-postgres.sql").read_text() == "SELECT 1;\n"
+    assert (tmp_path / "home/projects/hapax-council/.git").is_dir()
+    for env_file in (".env", ".envrc"):
+        source = restore_root / "home/backup-user/llm-stack" / env_file
+        assert (tmp_path / "home/llm-stack" / env_file).read_bytes() == source.read_bytes()
     assert "CachyOS Restore Complete" in result.stdout
     assert any(
         command == f"git clone {dump}/git-bundles/obsidian-hapax.bundle "
@@ -883,4 +981,91 @@ def test_full_restore_refuses_completion_without_persistent_timer_install_link(
     assert result.returncode != 0
     assert f"reports user timer {unit} as static, not enabled" in result.stderr
     assert f"--user enable {unit}" in commands
+    assert "CachyOS Restore Complete" not in result.stdout
+
+
+@pytest.mark.parametrize("profile", ["full", "recovery-fixture"])
+def test_full_restore_uses_the_tracked_compose_profile(tmp_path: Path, profile: str) -> None:
+    result, commands, _ = _run_full_restore(tmp_path, compose_profile=profile)
+    assert result.returncode == 0, result.stderr
+    assert (
+        f"docker compose -f {tmp_path}/home/llm-stack/docker-compose.yml --profile {profile} up -d"
+        in commands
+    )
+    assert "CachyOS Restore Complete" in result.stdout
+
+
+@pytest.mark.parametrize("profile", [None, "", "full extra"])
+def test_full_restore_refuses_missing_or_invalid_compose_profile(
+    tmp_path: Path, profile: str | None
+) -> None:
+    result, commands, _ = _run_full_restore(tmp_path, compose_profile=profile)
+    assert result.returncode != 0
+    assert "Required Docker Compose profile is absent or invalid" in result.stderr
+    assert not any(command.startswith("docker compose ") for command in commands)
+    assert "Phase 13" not in result.stdout
+    assert "CachyOS Restore Complete" not in result.stdout
+
+
+@pytest.mark.parametrize("env_file", [".env", ".envrc"])
+def test_full_restore_refuses_missing_secret_environment(tmp_path: Path, env_file: str) -> None:
+    result, commands, root = _run_full_restore(tmp_path, omit_env_file=env_file)
+    assert result.returncode != 0
+    assert f"{root}/home/backup-user/llm-stack/{env_file}" in result.stderr
+    assert "Phase 5" not in result.stdout
+    assert not any(command.startswith("docker compose ") for command in commands)
+    assert "CachyOS Restore Complete" not in result.stdout
+
+
+def test_full_restore_verifies_environment_after_copy(tmp_path: Path) -> None:
+    result, commands, _ = _run_full_restore(tmp_path, drop_copied_env=True)
+    assert result.returncode != 0
+    assert f"environment file was not restored: {tmp_path}/home/llm-stack/.env" in result.stderr
+    assert "Phase 5" not in result.stdout
+    assert not any(command.startswith("docker compose ") for command in commands)
+    assert "CachyOS Restore Complete" not in result.stdout
+
+
+def test_full_restore_refuses_missing_stack_inputs(tmp_path: Path) -> None:
+    result, _, _ = _run_full_restore(tmp_path, omit_stack=True)
+    assert result.returncode != 0
+    assert "Required llm-stack environment file is missing" in result.stderr
+    assert "Phase 5" not in result.stdout
+    assert "CachyOS Restore Complete" not in result.stdout
+
+
+def test_full_restore_double_council_clone_failure_stops_with_recovery_remedy(
+    tmp_path: Path,
+) -> None:
+    result, commands, root = _run_full_restore(tmp_path, fail_council_clones=True)
+    assert result.returncode != 0
+    council = tmp_path / "home/projects/hapax-council"
+    assert f"git clone git@github.com:hapax-systems/hapax-council.git {council}" in commands
+    assert f"gh repo clone hapax-systems/hapax-council {council}" in commands
+    assert "Failed to clone hapax-council" in result.stderr
+    assert "git@github.com:hapax-systems/hapax-council.git" in result.stderr
+    assert (
+        f"git clone '{root}/{DUMP_PATHS[0]}/git-bundles/hapax-council.bundle' '{council}'"
+        in result.stderr
+    )
+    assert "Phase 4" not in result.stdout
+    assert not any(command.startswith("docker compose ") for command in commands)
+    assert "CachyOS Restore Complete" not in result.stdout
+
+
+def test_full_restore_refuses_clone_success_without_council_checkout(tmp_path: Path) -> None:
+    result, _, _ = _run_full_restore(tmp_path, empty_council_checkout=True)
+    assert result.returncode != 0
+    assert "Required council checkout is invalid" in result.stderr
+    assert "Phase 4" not in result.stdout
+    assert "CachyOS Restore Complete" not in result.stdout
+
+
+def test_full_restore_compose_failure_stops_database_import_and_later_phases(
+    tmp_path: Path,
+) -> None:
+    result, commands, _ = _run_full_restore(tmp_path, fail_compose=True)
+    assert result.returncode != 0
+    assert not any("pg_isready" in command or "psql" in command for command in commands)
+    assert "Phase 13" not in result.stdout
     assert "CachyOS Restore Complete" not in result.stdout

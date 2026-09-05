@@ -6,7 +6,6 @@ set -euo pipefail
 # Schedule: daily at 03:30 via systemd timer
 # Runs as user (not root). Database state captured via API dumps.
 
-export RESTIC_PASSWORD="$(pass show backblaze/restic-password)"
 export RESTIC_REPOSITORY="rclone:b2:hapax-backups/restic"
 POSTGRES_SUPERUSER="${HAPAX_POSTGRES_SUPERUSER:-hapax}"
 
@@ -68,6 +67,42 @@ export_n8n_workflows() {
     rm -f "$export_errors"
 }
 
+
+# The journal receipt survives missing storage and names steps that never ran.
+BACKUP_STEP=mounts
+DUMP_DIR=""
+BACKUP_DETAIL=""
+SNAPSHOT_STATUS=skipped
+BUNDLE_STATUS=skipped
+DR_STATUS=skipped
+backup_receipt() {
+    local result=$? status=failed
+    trap - EXIT
+    [[ "$result" -ne 0 ]] || status=success
+    log "BACKUP RECEIPT lane=tier2-remote status=$status step=$BACKUP_STEP snapshot=$SNAPSHOT_STATUS git-bundles=$BUNDLE_STATUS dr-publication=$DR_STATUS detail=$BACKUP_DETAIL"
+    [[ -z "${DUMP_DIR:-}" ]] || rm -rf -- "$DUMP_DIR"
+    exit "$result"
+}
+trap backup_receipt EXIT
+
+missing_mounts=()
+for required_mount in /store; do
+    mountpoint -q "$required_mount" || missing_mounts+=("$required_mount")
+done
+if (( ${#missing_mounts[@]} > 0 )); then
+    BACKUP_DETAIL="missing mounts: ${missing_mounts[*]}"
+    log "FATAL: $BACKUP_DETAIL; mount the required filesystems, then rerun the backup"
+    exit 1
+fi
+
+BACKUP_STEP=credentials
+if ! RESTIC_PASSWORD=$(pass show backblaze/restic-password 2>/dev/null) || [[ -z "$RESTIC_PASSWORD" ]]; then
+    BACKUP_DETAIL="cannot read non-empty pass entry backblaze/restic-password"
+    log "FATAL: $BACKUP_DETAIL; unlock or repair pass, then rerun the backup"
+    exit 1
+fi
+export RESTIC_PASSWORD
+
 # Remove stale locks from a prior interrupted/OOM-killed run (preventive — the B2
 # prune was being OOM-killed mid-run, which can leave a stale lock → exit 11).
 restic unlock 2>/dev/null || true
@@ -77,7 +112,7 @@ log "Starting Tier 2 (remote) backup"
 DUMP_DIR="${HAPAX_BACKUP_DUMP_DIR:-/store/llm-data/backup-dumps-remote}"  # disk, not tmpfs: tmpfs is charged to this service's memory cgroup (MemoryHigh) and throttles the job to a crawl (measured 2026-09-02)
 rm -rf "$DUMP_DIR"
 mkdir -p "$DUMP_DIR/qdrant" "$DUMP_DIR/git-bundles"
-trap 'rm -rf "$DUMP_DIR"' EXIT
+BACKUP_STEP=postgres
 
 # PostgreSQL dump
 log "Dumping PostgreSQL..."
@@ -104,10 +139,12 @@ log "PostgreSQL dump OK: ${_pg_size} bytes, terminator present"
 
 # Qdrant snapshots
 log "Snapshotting Qdrant collections..."
+BACKUP_STEP=qdrant
 snapshot_qdrant
 
 # n8n workflows are part of the declared backup. A missing export is a broken
 # backup, so do not invoke restic unless the file was materialized.
+BACKUP_STEP=n8n
 export_n8n_workflows
 
 # Docker volume metadata
@@ -131,18 +168,36 @@ crontab -l > "$DUMP_DIR/crontab-user.txt" 2>/dev/null || true
 
 # Git bundles (full repo snapshots, includes all branches/tags)
 log "Creating git bundles..."
+BACKUP_STEP=git-bundles
+bundle_failures=()
+bundle_count=0
 for repo in ~/projects/*/; do
-    if [[ -d "$repo/.git" ]]; then
+    if [[ -e "$repo/.git" ]]; then
         name=$(basename "$repo")
-        git -C "$repo" bundle create "$DUMP_DIR/git-bundles/${name}.bundle" --all 2>/dev/null || \
-            log "WARN: bundle failed for $name"
+        bundle_count=$((bundle_count + 1))
+        if ! git -C "$repo" bundle create "$DUMP_DIR/git-bundles/${name}.bundle" --all 2>/dev/null; then
+            bundle_failures+=("$repo")
+        fi
         git -C "$repo" stash list > "$DUMP_DIR/git-stash-${name}.txt" 2>/dev/null || true
         git -C "$repo" diff > "$DUMP_DIR/git-diff-${name}.patch" 2>/dev/null || true
     fi
 done
 
+if (( ${#bundle_failures[@]} > 0 )); then
+    BUNDLE_STATUS=failed
+    BACKUP_DETAIL="failed repositories: ${bundle_failures[*]}"
+    log "FATAL: git bundles failed; $BACKUP_DETAIL; repair these repositories and rerun the backup"
+    exit 1
+fi
+if (( bundle_count > 0 )); then
+    BUNDLE_STATUS=success
+fi
+
 log "Running restic backup to B2..."
+BACKUP_STEP=snapshot
+SNAPSHOT_STATUS=failed
 restic backup \
+    --host hapax-podium \
     --verbose \
     --tag "tier2-remote" \
     "$DUMP_DIR" \
@@ -199,10 +254,15 @@ restic backup \
     --exclude="*.lock" \
     --exclude="llm-stack/comfyui"
 
+SNAPSHOT_STATUS=success
+BACKUP_STEP=retention
+
 log "Applying retention policy (4 weekly, 2 monthly)..."
 # See hapax-backup-local for the full rationale. Same defect measured here
 # 2026-08-18: 12 snapshots in 6 (host,paths) groups.
 restic forget \
+    --host hapax-podium \
+    --tag "tier2-remote" \
     --group-by host,tags \
     --keep-within 120d \
     --keep-weekly 4 \
@@ -220,6 +280,8 @@ restic forget \
 # completed above. It fails because DR readiness is part of this lane's job, and
 # a refusal naming its own remedy beats a silent WARN.
 # The DR script lives beside this one now (the scripts' former repository is archived, read-only).
+BACKUP_STEP=dr-publication
+DR_STATUS=failed
 SCRIPT_DIR="$(dirname "$(readlink -f "$0")")"
 DR_SCRIPT="$SCRIPT_DIR/hapax-cachyos-restore"
 HOST_STORAGE_REGISTRY="$(readlink -f "$SCRIPT_DIR/../config/infrastructure/host-storage-registry.json")"
@@ -248,7 +310,11 @@ if ! rclone copyto "$HOST_STORAGE_REGISTRY" "$STORAGE_REGISTRY_OBJECT_URI"; then
 fi
 ok "Host storage registry uploaded: $STORAGE_REGISTRY_OBJECT_URI"
 
+DR_STATUS=success
+
 log "Tier 2 backup complete"
 restic snapshots --latest 1
+
+BACKUP_STEP=complete
 
 notify-send -u low "Backup" "Tier 2 (remote → B2) backup complete" 2>/dev/null || true

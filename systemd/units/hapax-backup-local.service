@@ -3,8 +3,6 @@ Description=Dump PostgreSQL/Qdrant/n8n and back up system state to NAS with rest
 After=network-online.target hapax-source-activate.service
 Wants=network-online.target hapax-source-activate.service
 RequiresMountsFor=/store/llm-data /mnt/nas/backups/restic
-ConditionPathIsMountPoint=/store
-ConditionPathIsMountPoint=/mnt/nas
 OnFailure=notify-failure@%n.service
 
 [Service]

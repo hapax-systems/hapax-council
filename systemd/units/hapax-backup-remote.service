@@ -3,7 +3,6 @@ Description=Dump PostgreSQL/Qdrant/n8n, back up system state to B2, and publish 
 After=network-online.target hapax-source-activate.service
 Wants=network-online.target hapax-source-activate.service
 RequiresMountsFor=/store/llm-data
-ConditionPathIsMountPoint=/store
 OnFailure=notify-failure@%n.service
 
 [Service]

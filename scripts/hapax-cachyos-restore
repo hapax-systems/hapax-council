@@ -299,23 +299,86 @@ restore_qdrant_snapshots() {
     done
 }
 
+restore_council_checkout() {
+    local bundle="$1" council="$HOME/projects/hapax-council"
+    local remote="hapax-systems/hapax-council"
+
+    mkdir -p "$HOME/projects"
+    if [[ ! -e "$council" ]]; then
+        if git clone "git@github.com:${remote}.git" "$council" > /dev/null 2>&1; then
+            ok "Cloned hapax-council (SSH)"
+        elif gh repo clone "$remote" "$council" > /dev/null 2>&1; then
+            ok "Cloned hapax-council (gh)"
+        else
+            fail "Failed to clone hapax-council from git@github.com:${remote}.git or gh repo clone $remote; repair GitHub access or recover with git clone '$bundle' '$council', then rerun the restore" >&2
+            return 1
+        fi
+    fi
+    if [[ ! -e "$council/.git" ]] || ! git -C "$council" rev-parse --verify HEAD > /dev/null 2>&1; then
+        fail "Required council checkout is invalid: $council; recover from $remote or $bundle, then rerun the restore" >&2
+        return 1
+    fi
+}
+
+restore_llm_stack_files() {
+    local source_dir="$1" destination="$HOME/llm-stack" env_file
+
+    for env_file in .env .envrc; do
+        if [[ ! -f "$source_dir/$env_file" ]]; then
+            fail "Required llm-stack environment file is missing: $source_dir/$env_file; recover it from a complete snapshot, then rerun Phase 4" >&2
+            return 1
+        fi
+    done
+    mkdir -p "$destination"
+    cp -a "$source_dir"/. "$destination/"
+    for env_file in .env .envrc; do
+        if [[ ! -f "$destination/$env_file" ]]; then
+            fail "Required llm-stack environment file was not restored: $destination/$env_file; repair the copy, then rerun Phase 4" >&2
+            return 1
+        fi
+    done
+    ok "~/llm-stack (including .env and .envrc)"
+}
+
 restore_docker_stack() {
     local dump_dir="$1"
     local compose_file="$HOME/llm-stack/docker-compose.yml"
-    local compose_dir
+    local compose_dir compose_profile env_file
+    local compose_contract="$HOME/projects/hapax-council/systemd/units/llm-stack.service"
 
     if [[ ! -f "$compose_file" ]]; then
         fail "Required Docker Compose configuration is missing: $compose_file; restore llm-stack/docker-compose.yml from the recovery snapshot, then rerun Phase 12" >&2
         return 1
     fi
     compose_dir="$(dirname "$compose_file")"
+    # Read the tracked startup contract, including when this script was downloaded
+    # standalone from B2. An absent/ambiguous profile must never start an empty stack.
+    if [[ ! -s "$compose_contract" ]] || ! compose_profile=$(awk '
+        /^ExecStart=.*docker[[:space:]]+compose[[:space:]]/ {
+            for (i = 1; i <= NF; i++) {
+                if ($i == "--profile") {
+                    if ($(i + 2) != "up") exit 1
+                    print $(i + 1)
+                }
+            }
+        }
+    ' "$compose_contract") || [[ ! "$compose_profile" =~ ^[a-zA-Z0-9][a-zA-Z0-9_.-]*$ ]]; then
+        fail "Required Docker Compose profile is absent or invalid in $compose_contract; restore the tracked llm-stack.service startup contract, then rerun Phase 12" >&2
+        return 1
+    fi
+    for env_file in .env .envrc; do
+        if [[ ! -f "$compose_dir/$env_file" ]]; then
+            fail "Required llm-stack environment file is missing: $compose_dir/$env_file; rerun Phase 4 from a complete snapshot" >&2
+            return 1
+        fi
+    done
 
     log "Starting Docker stack..."
     cd "$compose_dir"
     set +u; source .envrc 2>/dev/null || true; set -u
     sudo systemctl restart docker 2>/dev/null
     # Use sudo — docker group not active until re-login
-    sudo docker compose -f "$compose_file" up -d 2>&1 | tail -5
+    sudo docker compose -f "$compose_file" --profile "$compose_profile" up -d 2>&1 | tail -5
     ok "Docker stack starting"
 
     wait_for_postgresql
@@ -634,6 +697,13 @@ chmod 644 ~/.ssh/*.pub ~/.ssh/known_hosts 2>/dev/null || true
 # claiming that credential recovery succeeded.
 store_backup_credentials
 
+# Council supplies the tracked Compose contract and the later source-activation
+# checkout. Resolve recovery inputs and fail before any dependent phase runs.
+if ! DUMP=$(find_restore_dump_dir "$RESTORE_ROOT"); then
+    exit 1
+fi
+restore_council_checkout "$DUMP/git-bundles/hapax-council.bundle"
+
 # ─── Phase 4: User configs ─────────────────────────────────────────────────
 log "=== Phase 4: Restore user configuration ==="
 
@@ -721,15 +791,8 @@ for d in "$RESTORE_ROOT/home"/*/models; do
     fi
 done
 
-# llm-stack (full directory)
-for d in "$RESTORE_ROOT/home"/*/llm-stack; do
-    if [[ -d "$d" ]]; then
-        mkdir -p ~/llm-stack
-        cp -a "$d"/* ~/llm-stack/
-        ok "~/llm-stack"
-        break
-    fi
-done
+# llm-stack (full directory, including its secret environment)
+restore_llm_stack_files "$RHOME/llm-stack"
 
 # ─── Phase 5: System configs ───────────────────────────────────────────────
 log "=== Phase 5: Restore system configuration ==="
@@ -1074,12 +1137,7 @@ ensure_tmpfs_tmp
 # ─── Phase 12: Docker stack ────────────────────────────────────────────────
 log "=== Phase 12: Start Docker stack + restore PostgreSQL, Qdrant, and n8n workflows ==="
 
-# Phase 13 consumes git bundles and dirty-tree patches from this same directory. Resolve it once in
-# the orchestration shell, fail with find_restore_dump_dir's named-paths message, and retain it for
-# every later phase.
-if ! DUMP=$(find_restore_dump_dir "$RESTORE_ROOT"); then
-    exit 1
-fi
+# Phase 3 resolved DUMP for council recovery; retain it for database and git recovery.
 restore_database_services "$DUMP"
 
 # ─── Phase 12b: Ollama models ────────────────────────────────────────────
@@ -1106,7 +1164,6 @@ mkdir -p ~/projects
 # Try SSH first, fall back to gh (uses OAuth token from gh auth login)
 declare -A REPOS=(
     [hapax-constitution]="ryanklee/hapax-constitution"
-    [hapax-council]="hapax-systems/hapax-council"
     [hapax-officium]="ryanklee/hapax-officium"
     [hapax-watch]="ryanklee/hapax-watch"
     [hapax-mcp]="ryanklee/hapax-mcp"

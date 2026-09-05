@@ -64,17 +64,22 @@ def test_llm_backup_unit_uses_source_controlled_receipt() -> None:
     working_dir = _unit_value(text, "Service", "WorkingDirectory")
 
     assert exec_start is not None
-    assert "/home/hapax/projects/hapax-council/systemd/scripts/backup.sh" in exec_start
+    activation_root = "%h/.cache/hapax/source-activation/worktree"
+    assert exec_start == f"/bin/bash {activation_root}/systemd/scripts/backup.sh"
+    assert not re.search(r"(?:~|/home/[^/]+|%h)/projects(?:/|$)", text)
+    assert "hapax-source-activate.service" in (_unit_value(text, "Unit", "Wants") or "")
+    assert "hapax-source-activate.service" in (_unit_value(text, "Unit", "After") or "")
+    assert _unit_value(text, "Service", "ExecCondition") is None
     assert "/home/hapax/Scripts/setup" not in exec_start
     assert "llm-stack-scripts" not in exec_start
-    assert working_dir == "/home/hapax/projects/hapax-council"
+    assert working_dir == activation_root
 
 
 def test_backup_tier_units_execute_source_controlled_scripts() -> None:
     """Backup units execute only the governed source-activation worktree."""
     archived_repo = "-".join(("distro", "work"))
     activation_root = "%h/.cache/hapax/source-activation/worktree"
-    mutable_project_path = re.compile(r"(?:~|/home/[^/]+)/projects(?:/|$)")
+    mutable_project_path = re.compile(r"(?:~|/home/[^/]+|%h)/projects(?:/|$)")
     for lane in ("local", "remote"):
         text = (UNITS / f"hapax-backup-{lane}.service").read_text()
         exec_start = _unit_value(text, "Service", "ExecStart")
@@ -87,9 +92,7 @@ def test_backup_tier_units_execute_source_controlled_scripts() -> None:
         assert archived_repo not in text, lane
         assert _unit_value(text, "Unit", "RequiresMountsFor"), lane
         mount_conditions = _unit_value(text, "Unit", "ConditionPathIsMountPoint")
-        assert mount_conditions is not None and "/store" in mount_conditions, lane
-        if lane == "local":
-            assert "/mnt/nas" in mount_conditions
+        assert mount_conditions is None, lane  # The script must run to emit a refusal receipt.
         script = REPO / "scripts" / f"hapax-backup-{lane}"
         assert script.is_file(), script
         assert script.stat().st_mode & 0o111, f"{script} must be executable"
@@ -228,3 +231,26 @@ def test_backup_storage_roots_have_one_canonical_registry_table() -> None:
         timeout=10,
     )
     assert result.stdout.splitlines() == ["/mnt/nas", "/store"]
+
+
+def test_reconciliation_keeps_runtime_acceptance_unevidenced() -> None:
+    text = RUNBOOK.read_text()
+    assert "deployed-runtime clause: not yet evidenced" in text
+    assert "runtime cutover and acceptance\nremain with the coordinators" in text
+    assert "FragmentPath/ExecStart" in text
+
+
+def test_remote_manifest_names_shared_dump_failure_dependency() -> None:
+    narrative = yaml.safe_load((MANIFESTS / "backup_remote.yaml").read_text())["narrative"]
+    assert "independent failure domains" not in narrative
+    assert "shared dump-service failure fails both lanes" in narrative
+    for dependency in (
+        "PostgreSQL",
+        "Qdrant",
+        "n8n",
+        "pass store",
+        "/store",
+        "activation tree",
+        "hapax-podium",
+    ):
+        assert dependency in narrative

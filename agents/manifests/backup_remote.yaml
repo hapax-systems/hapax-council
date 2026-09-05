@@ -55,4 +55,7 @@ narrative: |
   metadata, writes a restic snapshot to Backblaze B2, applies the declared
   retention policy, and uploads the standalone DR restore script. It does not
   consume the local lane's staged dumps, so it has no runtime dependency on
-  `backup_local`; the two lanes are independent failure domains.
+  `backup_local`. Both lanes share the dump step's dependencies: PostgreSQL,
+  Qdrant, n8n, the pass store, /store, the activation tree, and hapax-podium.
+  A shared dump-service failure fails both lanes; separate dump directories
+  do not isolate that failure. Only the NAS and B2 destinations fail independently.

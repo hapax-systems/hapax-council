@@ -10,7 +10,7 @@ Tier 1 local coverage:
 
 - Timer: `hapax-backup-local.timer`
 - Service: `hapax-backup-local.service`
-- Script: `%h/.cache/hapax/source-activation/worktree/scripts/hapax-backup-local`
+- Script: `~/.cache/hapax/source-activation/worktree/scripts/hapax-backup-local`
 - Restic repository: `/mnt/nas/backups/restic`
 - Staging: `/store/llm-data/backup-dumps-local`
 
@@ -18,7 +18,7 @@ Tier 2 Backblaze B2 coverage:
 
 - Timer: `hapax-backup-remote.timer` (daily at 03:30 with randomized delay)
 - Service: `hapax-backup-remote.service`
-- Script: `%h/.cache/hapax/source-activation/worktree/scripts/hapax-backup-remote`
+- Script: `~/.cache/hapax/source-activation/worktree/scripts/hapax-backup-remote`
 - Restic repository: `rclone:b2:hapax-backups/restic`
 - Staging: `/store/llm-data/backup-dumps-remote`
 - Recovery bootstrap object: `b2:hapax-backups/dr-scripts/hapax-cachyos-restore.sh`
@@ -76,7 +76,7 @@ runs:
 ## Deprecated Lane
 
 `llm-backup.service` now calls the source-controlled
-`systemd/scripts/backup.sh` compatibility receipt. That script exits
+`~/.cache/hapax/source-activation/worktree/systemd/scripts/backup.sh` compatibility receipt. That script exits
 successfully, writes no backup artifacts, does not read secrets, and points at
 the Tier 1/Tier 2 lanes above.
 
@@ -127,9 +127,11 @@ rclone cat b2:hapax-backups/dr-scripts/hapax-cachyos-restore.sh | cmp -s scripts
 rclone cat b2:hapax-backups/dr-scripts/host-storage-registry.json | cmp -s config/infrastructure/host-storage-registry.json -
 ```
 
-The source checks above do not satisfy the deployed-runtime clause. At this PR
-head that clause remains pending until after merge and governed source
-activation; do not close the task or claim runtime success from static tests.
+**deployed-runtime clause: not yet evidenced**. These source checks do not
+witness the activated revision, installed FragmentPath/ExecStart, or successful
+producer executions. This is source repair only; runtime cutover and acceptance
+remain with the coordinators. Do not close the task or claim runtime success
+from static tests.
 After activation completes, record the actual command output in the PR/task
 receipt without reading credentials:
 

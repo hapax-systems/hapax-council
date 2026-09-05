@@ -23,6 +23,9 @@ def run_backup(
     postgres_mode: str = "success",
     restic_mode: str = "success",
     rclone_mode: str = "success",
+    missing_mounts: tuple[str, ...] = (),
+    credential_mode: str = "success",
+    bundle_mode: str = "none",
 ) -> tuple[subprocess.CompletedProcess[str], list[str]]:
     fake_bin = tmp_path / "bin"
     fake_home = tmp_path / "home"
@@ -31,7 +34,52 @@ def run_backup(
     fake_bin.mkdir()
     fake_home.mkdir()
 
-    _write_stub(fake_bin, "pass", "printf '%s\\n' test-password")
+    _write_stub(
+        fake_bin,
+        "pass",
+        """
+printf 'pass %s\n' "$*" >> "$COMMAND_LOG"
+case "$CREDENTIAL_MODE" in
+    failure) exit 9 ;;
+    empty) exit 0 ;;
+esac
+printf '%s\n' test-password # pragma: allowlist secret
+""",
+    )
+    _write_stub(
+        fake_bin,
+        "mountpoint",
+        """
+printf 'mountpoint %s\n' "$*" >> "$COMMAND_LOG"
+case " $MISSING_MOUNTS " in
+    *" $2 "*) exit 1 ;;
+esac
+exit 0
+""",
+    )
+    if bundle_mode != "none":
+        for name in ("local-only-one", "local-only-two"):
+            repo = fake_home / "projects" / name
+            repo.mkdir(parents=True)
+            if bundle_mode == "invalid-worktree":
+                (repo / ".git").write_text(f"gitdir: {tmp_path}/missing-git-dir\n")
+            else:
+                (repo / ".git").mkdir()
+    _write_stub(
+        fake_bin,
+        "git",
+        """
+printf 'git %s\n' "$*" >> "$COMMAND_LOG"
+if [ "${3:-}" = bundle ]; then
+    if [ "$BUNDLE_MODE" = invalid-repo ] || [ "$BUNDLE_MODE" = invalid-worktree ]; then
+        # Read-only git validation proves these fixture repositories cannot be bundled.
+        exec /usr/bin/git -C "$2" rev-parse --verify HEAD
+    fi
+    printf '%s\n' bundle > "$5"
+fi
+exit 0
+""",
+    )
     _write_stub(
         fake_bin,
         "docker",
@@ -167,7 +215,6 @@ exit 0
     for command in (
         "pacman",
         "flatpak",
-        "git",
         "notify-send",
         "systemctl",
         "crontab",
@@ -186,6 +233,9 @@ exit 0
             "POSTGRES_MODE": postgres_mode,
             "RESTIC_MODE": restic_mode,
             "RCLONE_MODE": rclone_mode,
+            "MISSING_MOUNTS": " ".join(missing_mounts),
+            "CREDENTIAL_MODE": credential_mode,
+            "BUNDLE_MODE": bundle_mode,
         }
     )
     result = subprocess.run(
