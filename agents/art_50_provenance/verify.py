@@ -1,4 +1,4 @@
-"""Verification helpers for local Article 50 certificate packets."""
+"""Required-record checks and image comparisons, not cryptographic verification."""
 
 from __future__ import annotations
 
@@ -16,19 +16,20 @@ from agents.art_50_provenance.models import (
 
 
 class Art50VerificationStatus(StrEnum):
-    """Verification outcome for local packet validation."""
+    """Outcome of required-label/name checks and optional image comparison."""
 
-    VALID_SIGNED = "valid_signed"
-    VALID_UNSIGNED_PREVIEW = "valid_unsigned_preview"
+    STRUCTURE_PRESENT_UNVERIFIED = "structure_present_unverified"
     INVALID = "invalid"
 
 
 class Art50VerificationResult(BaseModel):
-    """Structured verification result returned by the API route."""
+    """Bounded checks; no signature, signer trust or attribution is verified."""
 
     credential_id: str
     status: Art50VerificationStatus
-    c2pa_status: C2paSigningState
+    c2pa_status: C2paSigningState = Field(
+        description="Packet-declared issuance/signing state, not verified by these checks."
+    )
     has_ai_disclosure: bool
     has_actions: bool
     has_v5_identities: bool
@@ -55,7 +56,7 @@ def _identity_names(certificate: Art50CredentialCertificate) -> set[str]:
 def verify_certificate_payload(
     certificate: Art50CredentialCertificate,
 ) -> Art50VerificationResult:
-    """Validate the machine-readable structure of a local certificate packet."""
+    """Check required labels and identity names, not assertion truth or validity."""
 
     labels = manifest_labels(certificate.c2pa.manifest)
     required_names = {identity.name for identity in DEFAULT_V5_IDENTITIES}
@@ -65,7 +66,7 @@ def verify_certificate_payload(
     has_watermark_record = "org.hapax.article50.watermark.v1" in labels
     has_fingerprints = "org.hapax.article50.fingerprints.v1" in labels
 
-    reasons: list[str] = []
+    reasons: list[str] = ["cryptographic_verification_not_performed"]
     if not has_ai_disclosure:
         reasons.append("missing_c2pa_ai_disclosure")
     if not has_actions:
@@ -90,10 +91,8 @@ def verify_certificate_payload(
     )
     if not structurally_valid:
         status = Art50VerificationStatus.INVALID
-    elif certificate.c2pa.status is C2paSigningState.SIGNED_EMBEDDED:
-        status = Art50VerificationStatus.VALID_SIGNED
     else:
-        status = Art50VerificationStatus.VALID_UNSIGNED_PREVIEW
+        status = Art50VerificationStatus.STRUCTURE_PRESENT_UNVERIFIED
 
     return Art50VerificationResult(
         credential_id=certificate.credential_id,
@@ -114,7 +113,10 @@ def verify_image_bytes(
     *,
     phash_threshold: int = 4,
 ) -> Art50VerificationResult:
-    """Verify certificate structure plus exact/perceptual image match."""
+    """Compare bytes to an unauthenticated recorded digest and measure similarity.
+
+    Neither an exact match nor perceptual similarity establishes signed provenance.
+    """
 
     result = verify_certificate_payload(certificate)
     observed = compute_image_fingerprints(
@@ -125,6 +127,10 @@ def verify_image_bytes(
     exact_sha = observed.sha256 == certificate.output_fingerprint.sha256
     distance = phash_distance(observed.phash, certificate.output_fingerprint.phash)
     reasons = list(result.reasons)
+    if not exact_sha:
+        reasons.append("exact_sha256_mismatch")
+        if distance <= phash_threshold:
+            reasons.append("perceptual_match_only")
     if not exact_sha and distance > phash_threshold:
         reasons.append("image_fingerprint_mismatch")
         status = Art50VerificationStatus.INVALID
