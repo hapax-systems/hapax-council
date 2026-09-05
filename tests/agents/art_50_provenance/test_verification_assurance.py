@@ -1,3 +1,5 @@
+import errno
+import socket
 from datetime import UTC, datetime
 from io import BytesIO
 
@@ -14,6 +16,7 @@ from agents.art_50_provenance.models import (
     C2paSigningState,
     WatermarkRecord,
 )
+from agents.art_50_provenance.store import write_certificate
 from agents.art_50_provenance.verify import (
     verify_certificate_payload,
     verify_image_bytes,
@@ -30,6 +33,23 @@ REQUIRED = (
     ("org.hapax.article50.fingerprints.v1", "missing_fingerprint_record"),
     ("org.hapax.article50.identity.v1", "missing_v5_identities"),
 )
+
+
+def _require_testclient_ipc():
+    # asyncio's cross-thread wakeup silently ignores denied socket writes, which
+    # otherwise hangs TestClient. Check the actual transfer, not just allocation.
+    operation = "socket.socketpair()"
+    try:
+        reader, writer = socket.socketpair()
+        with reader, writer:
+            operation = "socketpair.send()"
+            writer.send(b"x")
+            operation = "socketpair.recv()"
+            assert reader.recv(1) == b"x"
+    except OSError as exc:
+        if exc.errno not in (errno.EPERM, errno.EACCES):
+            raise
+        pytest.skip(f"sandbox IPC limit: TestClient requires {operation}: {exc}")
 
 
 @pytest.fixture
@@ -90,6 +110,55 @@ def test_declared_signing_state_never_promotes_assurance(sample, state):
     assert result.c2pa_status is state
     assert CRYPTO_LIMIT in result.reasons
     assert result.exact_sha256_match is None and result.phash_distance is None
+
+
+def test_emitted_limitations_preserve_bounded_meaning(sample):
+    certificate, _ = sample
+    # Pin complete statements, including their negations: keyword presence alone
+    # would accept inverted claims or an appended, contradictory assurance claim.
+    assert certificate.model_dump(mode="json")["limitations"] == [
+        "This packet is Article 50 audit-trail evidence, not legal advice.",
+        "All C2PA signing states, including signed_embedded, are issuance declarations; "
+        "local packet checks do not verify signatures, signer trust or attribution "
+        "and never establish valid_signed.",
+        "Identity-name presence does not establish authorship or attribution.",
+        "A perceptual match is only perceptual-hash proximity, not byte identity "
+        "or signed provenance.",
+        "The fallback PDQ-DCT hash is not native PDQ and must be replaced or accepted by a "
+        "production owner before claiming native PDQ coverage.",
+        "No court-admissibility or forensic-authenticity claim is made.",
+    ]
+
+
+@pytest.mark.parametrize(
+    "distance,status,comparison_reason",
+    [
+        pytest.param(4, UNVERIFIED, "perceptual_match_only", id="at-threshold"),
+        pytest.param(3, UNVERIFIED, "perceptual_match_only", id="adjacent-inside"),
+        pytest.param(5, "invalid", "image_fingerprint_mismatch", id="adjacent-outside"),
+        pytest.param(64, "invalid", "image_fingerprint_mismatch", id="distant"),
+    ],
+)
+def test_phash_default_threshold_boundary(sample, monkeypatch, distance, status, comparison_reason):
+    certificate, variants = sample
+    recorded = certificate.output_fingerprint
+    # Control the observed hashes while exercising the real Hamming distance and
+    # default threshold (4). SHA inequality forces the perceptual comparison path.
+    observed = recorded.model_copy(
+        update={
+            "sha256": "f" * 64,
+            "phash": f"{int(recorded.phash, 16) ^ ((1 << distance) - 1):016x}",
+        }
+    )
+    assert observed.sha256 != recorded.sha256
+    monkeypatch.setattr(
+        "agents.art_50_provenance.verify.compute_image_fingerprints", lambda *a, **kw: observed
+    )
+    result = verify_image_bytes(certificate, variants[1])
+    assert result.phash_distance == distance
+    assert result.exact_sha256_match is False
+    assert result.status.value == status
+    assert result.reasons == (CRYPTO_LIMIT, "exact_sha256_mismatch", comparison_reason)
 
 
 def test_same_pixels_different_bytes_are_only_a_perceptual_match(sample):
@@ -165,6 +234,7 @@ def test_both_http_routes_preserve_the_bounded_result(sample, monkeypatch, prefi
     monkeypatch.setattr(routes, "load_certificate", lambda credential_id: certificate)
     app = FastAPI()
     app.include_router(routes.router)
+    _require_testclient_ipc()
     with TestClient(app) as client:
         response = client.get(prefix + certificate.credential_id)
     assert response.status_code == 200
@@ -179,9 +249,48 @@ def test_missing_packet_remains_404(monkeypatch, prefix):
     monkeypatch.setattr(routes, "load_certificate", lambda credential_id: None)
     app = FastAPI()
     app.include_router(routes.router)
+    _require_testclient_ipc()
     with TestClient(app) as client:
         response = client.get(prefix + "crd_" + "0" * 24)
     assert response.status_code == 404
+
+
+def test_route_aliases_and_missing_id_contract(sample, tmp_path, monkeypatch):
+    """Run: env -u HAPAX_GLMCP_MODEL -u HAPAX_GLMCP_REVIEW_MODEL -u HAPAX_GLMCP_REVIEW_PAYG_FALLBACK -u HAPAX_GLMCP_REVIEW_ALLOW_NON_CODING_PLAN_MODEL LITELLM_LOCAL_MODEL_COST_MAP=True UV_CACHE_DIR=/store-fast/tmp/uv-cache-verify uv run pytest -q -p no:cacheprovider -rs tests/agents/art_50_provenance/test_verification_assurance.py::test_route_aliases_and_missing_id_contract
+
+    Mount the app's production router in an isolated FastAPI test app, with only
+    synthetic packet storage under tmp_path; no app lifespan or live server.
+    Denied socketpair IPC is a sandbox limit, never evidence of route success.
+    """
+    # Registration remains checkable even where the HTTP exercise must skip.
+    assert {(route.path, "GET" in route.methods) for route in routes.router.routes} == {
+        ("/v1/credential/verify/{credential_id}", True),
+        ("/api/art-50/credential/verify/{credential_id}", True),
+    }
+    certificate, _ = sample
+    monkeypatch.setenv("HAPAX_STATE", str(tmp_path))
+    write_certificate(certificate, state_root=tmp_path)
+    app = FastAPI()
+    app.include_router(routes.router)
+    _require_testclient_ipc()
+    with TestClient(app) as client:
+        responses = [
+            client.get(prefix + certificate.credential_id)
+            for prefix in ("/v1/credential/verify/", "/api/art-50/credential/verify/")
+        ]
+        missing = [
+            client.get(prefix + "crd_" + "f" * 24)
+            for prefix in ("/v1/credential/verify/", "/api/art-50/credential/verify/")
+        ]
+
+    assert [response.status_code for response in responses] == [200, 200]
+    assert responses[0].json() == responses[1].json()
+    assert responses[0].json() == verify_certificate_payload(certificate).model_dump(mode="json")
+    assert [response.status_code for response in missing] == [404, 404]
+    assert [response.json() for response in missing] == [
+        {"detail": "credential packet not found"},
+        {"detail": "credential packet not found"},
+    ]
 
 
 def test_public_scope_starts_with_the_bounded_predicate():

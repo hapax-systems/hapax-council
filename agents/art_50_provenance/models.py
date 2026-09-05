@@ -154,7 +154,11 @@ class Art50CredentialCertificate(BaseModel):
     limitations: tuple[str, ...] = (
         "This packet is Article 50 audit-trail evidence, not legal advice.",
         "All C2PA signing states, including signed_embedded, are issuance declarations; "
-        "local packet checks do not verify signatures, signer trust or attribution.",
+        "local packet checks do not verify signatures, signer trust or attribution "
+        "and never establish valid_signed.",
+        "Identity-name presence does not establish authorship or attribution.",
+        "A perceptual match is only perceptual-hash proximity, not byte identity "
+        "or signed provenance.",
         "The fallback PDQ-DCT hash is not native PDQ and must be replaced or accepted by a "
         "production owner before claiming native PDQ coverage.",
         "No court-admissibility or forensic-authenticity claim is made.",
