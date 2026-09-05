@@ -10,7 +10,10 @@ import json
 import os
 import subprocess
 import sys
+from datetime import UTC, datetime
 from pathlib import Path
+
+import pytest
 
 SCRIPT = Path(__file__).resolve().parents[2] / "scripts" / "hapax-platform-capability-receipts"
 
@@ -38,22 +41,68 @@ def test_a_missing_receipt_for_the_named_platform_is_reported_not_invented(tmp_p
     (home / ".cache" / "hapax" / "platform-capability-receipts").mkdir(parents=True)
     proc = _show(home, "--platform", "glmcp", "--json")
     assert "Traceback" not in proc.stderr
+    assert proc.returncode == 1
     payload = json.loads(proc.stdout)
-    assert all(
-        row.get("platform") != "glmcp" or row.get("accepted") is not True
-        for row in payload["receipts"]
-    )
+    assert payload["ok"] is False
+    (row,) = payload["receipts"]
+    assert row["platform"] == "glmcp"
+    assert row["accepted"] is False
+    assert row["reason"] == "receipt_invalid:PlatformCapabilityReceiptError"
     assert payload["directory_error"] is None
 
 
-def test_plain_text_mode_prints_a_quota_line_per_receipt(tmp_path: Path) -> None:
+@pytest.mark.parametrize("present", [False, True], ids=["missing", "accepted"])
+def test_plain_text_mode_prints_a_quota_line_per_receipt(tmp_path: Path, present: bool) -> None:
+    from shared.platform_capability_receipts import PlatformCapabilityReceipt
+
     home = tmp_path / "home"
-    (home / ".cache" / "hapax" / "platform-capability-receipts").mkdir(parents=True)
+    receipt_dir = home / ".cache/hapax/platform-capability-receipts"
+    receipt_dir.mkdir(parents=True)
+    now = datetime.now(UTC).replace(microsecond=0).isoformat().replace("+00:00", "Z")
+    if present:
+        surface = {
+            "status": "observed",
+            "source": "test",
+            "observed_at": now,
+            "stale_after": "15m",
+            "evidence_refs": ["platform-capability-registry:glmcp.review.direct:quota:observed"],
+        }
+        receipt = PlatformCapabilityReceipt.model_validate(
+            {
+                "receipt_id": "test-glmcp-show",
+                "platform": "glmcp",
+                "routes": ["glmcp.review.direct"],
+                "observed_at": now,
+                "stale_after": "15m",
+                "cli": {"binary": "test", "available": True},
+                "wrapper": {
+                    "path": "scripts/hapax-glmcp-reviewer",
+                    "exists": True,
+                    "executable": True,
+                },
+                "capability": surface,
+                "resource": surface,
+                "quota": surface,
+                "provider_docs": {
+                    "refs": ["test:provider-docs"],
+                    "fetched_at": now,
+                    "stale_after": "30d",
+                },
+            }
+        )
+        (receipt_dir / "glmcp.json").write_text(receipt.model_dump_json())
     proc = _show(home, "--platform", "glmcp")
     assert "Traceback" not in proc.stderr
-    assert proc.returncode in (0, 1)
-    # nothing stored: the text mode must say so rather than print an empty quota surface as observed
-    assert "observed" not in proc.stdout.lower() or "quota=observed" not in proc.stdout
+    assert proc.returncode == (0 if present else 1)
+    if present:
+        assert proc.stdout == (
+            f"glmcp: accepted=True quota=observed observed_at={now} stale_after=15m\n"
+        )
+    else:
+        assert proc.stdout == (
+            "glmcp: accepted=False quota=? observed_at=? stale_after=? "
+            "reason=receipt_invalid:PlatformCapabilityReceiptError\n"
+        )
 
 
 def test_an_unloadable_receipt_directory_is_not_accepted(tmp_path: Path) -> None:

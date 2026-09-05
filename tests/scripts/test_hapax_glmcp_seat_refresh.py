@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import json
 import os
+import runpy
 import shutil
 import subprocess
 import sys
@@ -33,8 +34,8 @@ ACTIVATION_ROOT = "%h/.cache/hapax/source-activation/worktree"
 REVIEWER_OK = (
     'echo "PAYG=${HAPAX_GLMCP_REVIEW_PAYG_FALLBACK:-unset}" >> "$HOME/reviewer-env"\n'
     'echo "BASE=${HAPAX_GLMCP_REVIEW_BASE_URL:-unset}" >> "$HOME/reviewer-env"\n'
-    'echo "SECRET=${HAPAX_GLMCP_REVIEW_SECRET_ENTRY:-unset}" >> "$HOME/reviewer-env"\n'  # pragma: allowlist secret
-    'echo "OVERRIDE=${HAPAX_GLMCP_REVIEW_ALLOW_SECRET_ENTRY_OVERRIDE:-unset}" >> "$HOME/reviewer-env"\n'  # pragma: allowlist secret
+    'echo "SECRET=${HAPAX_GLMCP_REVIEW_SECRET_ENTRY:-unset}" >> "$HOME/reviewer-env"\n'  # pragma: allowlist secret; synthetic test fixture
+    'echo "OVERRIDE=${HAPAX_GLMCP_REVIEW_ALLOW_SECRET_ENTRY_OVERRIDE:-unset}" >> "$HOME/reviewer-env"\n'  # pragma: allowlist secret; synthetic test fixture
     "echo OK\n"
 )
 REVIEWER_ALWAYS_FAILS_SILENTLY = "exit 1\n"
@@ -42,8 +43,8 @@ REVIEWER_FAILS_WITH_OUTPUT = "echo NOT_OK\nexit 23\n"
 REVIEWER_FAILS_TWICE_LOUDLY = (
     'n=$(cat "$HOME/attempts" 2>/dev/null || echo 0); n=$((n + 1)); echo "$n" > "$HOME/attempts"\n'
     'if [ "$n" -lt 3 ]; then\n'
-    '  echo "Authorization: Bearer abc123" >&2\n'
-    '  echo "api_key = zzz9" >&2\n'
+    '  echo "Authorization: Bearer abc123" >&2\n'  # pragma: allowlist secret; synthetic redaction fixture
+    '  echo "api_key = zzz9" >&2\n'  # pragma: allowlist secret; synthetic redaction fixture
     "  exit 1\n"
     "fi\n"
     "echo OK\n"
@@ -101,7 +102,10 @@ def _glmcp_receipt_json(
         source="local_receipt_probe",
         observed_at=observed,
         stale_after=f"{remaining}s",
-        evidence_refs=["local:glmcp:quota-admission-receipt:glmcp.review.direct:present"]
+        evidence_refs=[
+            "local:glmcp:quota-admission-receipt:glmcp.review.direct:present",
+            "platform-capability-registry:glmcp.review.direct:quota:observed",
+        ]
         if observed_ok
         else [],
         reason_codes=[] if observed_ok else ["account_live_quota_receipt_absent"],
@@ -170,6 +174,7 @@ def _harness(
     council = tmp_path / "council"
     scripts = council / "scripts"
     scripts.mkdir(parents=True)
+    (council / "shared").symlink_to(REPO / "shared", target_is_directory=True)
     (home / ".cache" / "hapax" / "relay" / "receipts").mkdir(parents=True)
     receipts_dir = home / ".cache" / "hapax" / "platform-capability-receipts"
     receipts_dir.mkdir(parents=True)
@@ -264,8 +269,8 @@ def _run(
         "HAPAX_TEST_RECEIPTS_RC": str(receipts_rc),
         # Inherited values that must never reach the probe (review findings on #4624, rounds 3–4).
         "HAPAX_GLMCP_REVIEW_BASE_URL": "https://evil.example/paas/v4",
-        "HAPAX_GLMCP_REVIEW_SECRET_ENTRY": "glmcp/someone-elses-key",  # pragma: allowlist secret
-        "HAPAX_GLMCP_REVIEW_ALLOW_SECRET_ENTRY_OVERRIDE": "1",  # pragma: allowlist secret
+        "HAPAX_GLMCP_REVIEW_SECRET_ENTRY": "glmcp/someone-elses-key",  # pragma: allowlist secret; synthetic test fixture
+        "HAPAX_GLMCP_REVIEW_ALLOW_SECRET_ENTRY_OVERRIDE": "1",  # pragma: allowlist secret; synthetic test fixture
     }
     if allow_root:
         env["HAPAX_GLMCP_SEAT_ROOT_OVERRIDE"] = "1"
@@ -276,6 +281,181 @@ def _run(
 
 def _witnesses(home: Path) -> list[Path]:
     return sorted((home / ".cache" / "hapax" / "glmcp-admission-witness").glob("*.yaml"))
+
+
+def _dispatch_quota(home: Path, now: datetime):
+    """Read quota through the same registry loader called by dispatch policy sources."""
+    from shared.platform_capability_registry import load_platform_capability_registry_for_dispatch
+
+    registry, _ = load_platform_capability_registry_for_dispatch(
+        REPO / "config/platform-capability-registry.json",
+        receipt_dir=home / ".cache/hapax/platform-capability-receipts",
+        now=now,
+    )
+    route = next(route for route in registry.routes if route.route_id == "glmcp.review.direct")
+    return route.freshness
+
+
+@pytest.mark.parametrize("publication", ["guard", "final"])
+@pytest.mark.parametrize("missing", ["coverage", "observation", None])
+def test_route_quota_evidence_matches_production_dispatch(
+    tmp_path: Path, missing: str | None, publication: str, monkeypatch
+) -> None:
+    now = datetime.now(UTC).replace(microsecond=0)
+    home, council = _harness(tmp_path, receipt_status="observed", receipt_remaining=900, now=now)
+    _produce_glmcp_receipt(home, now, now, monkeypatch)
+    receipt_path = home / ".cache/hapax/platform-capability-receipts/glmcp.json"
+    receipt = json.loads(receipt_path.read_text())
+    if missing == "coverage":
+        receipt["routes"] = ["glmcp.sibling.direct"]
+    elif missing == "observation":
+        receipt["quota"]["evidence_refs"] = [
+            "local:glmcp:quota-admission-receipt:glmcp.review.direct:present",
+            "platform-capability-registry:glmcp.sibling.direct:quota:observed",
+        ]
+    receipt_path.write_text(json.dumps(receipt))
+    # --show accepts every case; dispatch admission must still reject either missing route fact.
+    shown = subprocess.run(
+        [sys.executable, str(RECEIPTS_SCRIPT), "--show", "--platform", "glmcp", "--json"],
+        env={"HOME": str(home), "PATH": os.environ["PATH"]},
+        capture_output=True,
+        text=True,
+        check=True,
+    )
+    (row,) = json.loads(shown.stdout)["receipts"]
+    assert row["accepted"] is True
+    quota = _dispatch_quota(home, now).evidence.quota
+    if missing == "coverage":
+        assert "quota_telemetry_unknown" in quota.blocked_reasons
+        assert not quota.evidence_refs
+    else:
+        assert ("account_live_quota_receipt_absent" in quota.blocked_reasons) == (
+            missing is not None
+        )
+        if missing is None:
+            assert not quota.blocked_reasons
+    if publication == "final":
+        (home / "refreshed-receipt.json").write_text(receipt_path.read_text())
+        receipt_path.unlink()
+    result = _run(home, council)
+    assert result.returncode == (6 if publication == "final" and missing else 0), result.stderr
+    should_skip = publication == "guard" and missing is None
+    assert ("no round-trip" in result.stdout) == should_skip
+    assert (home / "admission-calls").exists() != should_skip
+    if missing:
+        assert "account_live_quota_receipt_absent" in result.stderr
+        assert (
+            "route_not_covered" if missing == "coverage" else "route_observation_absent"
+        ) in result.stderr
+
+
+def _produce_glmcp_receipt(home: Path, admission: datetime, generated: datetime, monkeypatch):
+    """Run the real producer with a synthetic admission and a validated, bounded live ledger."""
+    from shared.platform_capability_receipts import CliEvidence
+
+    monkeypatch.setenv("HOME", str(home))
+    receipt_dir = home / ".cache/hapax/platform-capability-receipts"
+    relay_dir = home / ".cache/hapax/relay/receipts"
+    observed = admission.isoformat().replace("+00:00", "Z")
+    expires = (admission + timedelta(seconds=900)).isoformat().replace("+00:00", "Z")
+    (relay_dir / "glmcp-quota-admission.yaml").write_text(
+        "schema: hapax.glmcp_quota_admission.v1\nstatus: quota_available\n"
+        "route_id: glmcp.review.direct\nlane_presence_used_as_quota_evidence: false\n"
+        f"observed_at: {observed}\nstale_after_seconds: 900\n"
+    )
+    ledger = json.loads((REPO / "config/quota-spend-ledger-fixtures.json").read_text())
+    ledger["captured_at"] = observed
+    ledger["generated_from"] = ["scripts/hapax-quota-telemetry-writer"]
+    ledger["quota_snapshots"] = [
+        {
+            "quota_snapshot_schema": 1,
+            "snapshot_id": "quota-glmcp-test",
+            "captured_at": observed,
+            "fresh_until": expires,
+            "route_id": "glmcp.review.direct",
+            "provider": "z_ai-glm-coding-plan",
+            "capacity_pool": "subscription_quota",
+            "subscription_quota_state": "fresh",
+            "evidence_refs": [
+                "relay-receipt:glmcp-quota-admission.yaml:witness:supported-tool-usage-witness:"
+                "supported_tool:hapax-glmcp-reviewer:endpoint:https://api.z.ai/api/coding/paas/v4:"
+                f"model:glm-5.2:observed_at:{observed}:fresh_until:{expires}"
+            ],
+            "operator_visible_reason": "Synthetic admission for producer expiry regression",
+        }
+    ]
+    ledger_path = home / "quota-spend-ledger-live.json"
+    ledger_path.write_text(json.dumps(ledger))
+    monkeypatch.setenv("HAPAX_QUOTA_SPEND_LEDGER_LIVE", str(ledger_path))
+    producer = runpy.run_path(str(RECEIPTS_SCRIPT), run_name="__test__")
+    globals_ = producer["main"].__globals__
+    monkeypatch.setitem(globals_, "QUOTA_RECEIPT_DIR", relay_dir)
+    monkeypatch.setitem(globals_, "QUOTA_LEDGER_LIVE", ledger_path)
+    # CLI availability is the only stubbed probe; quota production and its ledger validator run.
+    monkeypatch.setitem(
+        globals_, "observe_cli", lambda *a, **kw: CliEvidence(binary="test", available=True)
+    )
+    assert (
+        producer["main"](
+            [
+                "--platform",
+                "glmcp",
+                "--receipt-dir",
+                str(receipt_dir),
+                "--now",
+                generated.isoformat(),
+            ]
+        )
+        == 0
+    )
+
+
+def test_generated_quota_expiry_matches_dispatcher_without_double_age(
+    tmp_path: Path, monkeypatch
+) -> None:
+    from shared.platform_capability_receipts import parse_duration_spec
+
+    readback = datetime.now(UTC).replace(microsecond=0)
+    admission = readback - timedelta(seconds=135)
+    generated = admission + timedelta(seconds=90)
+    home, council = _harness(tmp_path)
+    _produce_glmcp_receipt(home, admission, generated, monkeypatch)
+    shown = subprocess.run(
+        [
+            sys.executable,
+            str(RECEIPTS_SCRIPT),
+            "--show",
+            "--platform",
+            "glmcp",
+            "--json",
+            "--now",
+            readback.isoformat(),
+        ],
+        capture_output=True,
+        text=True,
+        check=True,
+    )
+    (row,) = json.loads(shown.stdout)["receipts"]
+    assert row["accepted"] is True
+    assert datetime.fromisoformat(row["quota"]["observed_at"]) == admission
+    assert datetime.fromisoformat(row["observed_at"]) == generated
+    assert row["quota"]["stale_after"] == "810s"
+    freshness = _dispatch_quota(home, readback)
+    assert not freshness.evidence.quota.blocked_reasons
+    expiry = freshness.quota_checked_at + parse_duration_spec(freshness.quota_stale_after)
+    expected = int((expiry - readback).total_seconds())
+    assert expected == 765
+    bin_dir = tmp_path / "bin"
+    bin_dir.mkdir()
+    date = shutil.which("date")
+    _stub(
+        bin_dir / "date",
+        f'if [ "$*" = "-u +%s" ]; then echo {int(readback.timestamp())}; else exec "{date}" "$@"; fi\n',
+    )
+    result = _run(home, council, path=f"{bin_dir}:{os.environ['PATH']}")
+    assert result.returncode == 0, result.stderr
+    assert f"({expected}s remain); no round-trip" in result.stdout
+    assert not (home / "admission-calls").exists()
 
 
 def test_script_exists_is_executable_and_parses() -> None:
@@ -381,16 +561,16 @@ def test_delayed_admission_completion_keeps_original_observed_at(tmp_path: Path)
     "diagnostic",
     [
         # Synthetic sentinels: the redaction under test must remove them; none is a credential.
-        '{"api_key": "DUMMY_REVIEW_SENTINEL"}',  # pragma: allowlist secret
-        '{"password": "DUMMY_REVIEW_SENTINEL SECOND_SENTINEL"}',  # pragma: allowlist secret
-        r'{"token": "DUMMY_REVIEW_SENTINEL \"SECOND_SENTINEL\""}',  # pragma: allowlist secret
-        "password='DUMMY_REVIEW_SENTINEL SECOND_SENTINEL'",  # pragma: allowlist secret
-        'api_key="DUMMY_REVIEW_SENTINEL SECOND_SENTINEL"',  # pragma: allowlist secret
-        "token=DUMMY_REVIEW_SENTINEL",  # pragma: allowlist secret
-        "secret: DUMMY_REVIEW_SENTINEL",  # pragma: allowlist secret
-        "Authorization: Bearer DUMMY_REVIEW_SENTINEL",  # pragma: allowlist secret
-        'password="DUMMY_REVIEW_SENTINEL\nSECOND_SENTINEL"',  # pragma: allowlist secret
-        'password="DUMMY_REVIEW_SENTINEL SECOND_SENTINEL',  # pragma: allowlist secret
+        '{"api_key": "DUMMY_REVIEW_SENTINEL"}',  # pragma: allowlist secret; synthetic test fixture
+        '{"password": "DUMMY_REVIEW_SENTINEL SECOND_SENTINEL"}',  # pragma: allowlist secret; synthetic test fixture
+        r'{"token": "DUMMY_REVIEW_SENTINEL \"SECOND_SENTINEL\""}',  # pragma: allowlist secret; synthetic test fixture
+        "password='DUMMY_REVIEW_SENTINEL SECOND_SENTINEL'",  # pragma: allowlist secret; synthetic test fixture
+        'api_key="DUMMY_REVIEW_SENTINEL SECOND_SENTINEL"',  # pragma: allowlist secret; synthetic test fixture
+        "token=DUMMY_REVIEW_SENTINEL",  # pragma: allowlist secret; synthetic test fixture
+        "secret: DUMMY_REVIEW_SENTINEL",  # pragma: allowlist secret; synthetic test fixture
+        "Authorization: Bearer DUMMY_REVIEW_SENTINEL",  # pragma: allowlist secret; synthetic test fixture
+        'password="DUMMY_REVIEW_SENTINEL\nSECOND_SENTINEL"',  # pragma: allowlist secret; synthetic test fixture
+        'password="DUMMY_REVIEW_SENTINEL SECOND_SENTINEL',  # pragma: allowlist secret; synthetic test fixture
     ],
     ids=[
         "json-key",
@@ -438,7 +618,7 @@ def test_show_rejection_warns_with_reason_remedy_and_sanitized_stderr(
                     "platform": "glmcp",
                     "accepted": False,
                     "reason": reason
-                    + ' {"api_key": "DUMMY_REASON_SENTINEL"}',  # pragma: allowlist secret
+                    + ' {"api_key": "DUMMY_REASON_SENTINEL"}',  # pragma: allowlist secret; synthetic test fixture
                 }
             ],
             "unrelated": "DUMMY_UNRELATED_SENTINEL",
@@ -448,8 +628,10 @@ def test_show_rejection_warns_with_reason_remedy_and_sanitized_stderr(
         council / "scripts/hapax-platform-capability-receipts",
         f"cat <<'REJECTION'\n{payload}\nREJECTION\n"
         + (
-            "echo 'stderr detail token=DUMMY_STDERR_SENTINEL' >&2\n" if stderr_present else ""
-        )  # pragma: allowlist secret
+            "echo 'stderr detail token=DUMMY_STDERR_SENTINEL' >&2\n"  # pragma: allowlist secret; synthetic test fixture
+            if stderr_present
+            else ""
+        )
         + "exit 1\n",
     )
     result = _run(home, council)
@@ -729,6 +911,29 @@ def test_missing_jq_is_named_rather_than_read_as_a_stale_seat(tmp_path: Path) ->
     assert proc.returncode != 0
 
 
+def test_date_parse_failure_names_shape_and_refresh_cause(tmp_path: Path) -> None:
+    """Inject a GNU date failure after the real loader accepts and normalizes the timestamp."""
+    now = datetime.now(UTC).replace(microsecond=0)
+    home, council = _harness(tmp_path, receipt_status="observed", receipt_remaining=900, now=now)
+    bin_dir = tmp_path / "bin"
+    bin_dir.mkdir()
+    date = shutil.which("date")
+    _stub(
+        bin_dir / "date",
+        f'if [ "${{2:-}}" = "-d" ]; then exit 1; fi\nexec "{date}" "$@"\n',
+    )
+    result = _run(home, council, path=f"{bin_dir}:{os.environ['PATH']}")
+    assert result.returncode == 6
+    assert "roundtrip attempt 1: exit=0" in result.stdout
+    assert (home / "admission-calls").exists()
+    # The same failed parser must diagnose both the initial refresh decision and final refusal.
+    assert result.stderr.count("timestamp_parse_failed: receipt.observed_at") == 2
+    assert result.stderr.count("refreshing because the timestamp could not be parsed") == 2
+    assert "shape=0000-00-00x00:00:00+00:00" in result.stderr
+    assert now.isoformat() not in result.stdout + result.stderr
+    assert "glm seat visible to the dispatcher" not in result.stdout
+
+
 def test_a_dispatcher_receipt_with_time_to_spare_skips_the_round_trip(tmp_path: Path) -> None:
     # 890 s remain: inside the 30 s window after a mint in which a skip is provably safe.
     home, council = _harness(
@@ -887,7 +1092,9 @@ def test_the_probe_pins_payg_off_the_endpoint_and_the_credential(tmp_path: Path)
     seen = set((home / "reviewer-env").read_text(encoding="utf-8").split())
     assert "PAYG=0" in seen
     assert "BASE=https://api.z.ai/api/coding/paas/v4" in seen
-    assert "SECRET=glmcp/api-key" in seen  # pragma: allowlist secret
+    assert (
+        "SECRET=glmcp/api-key" in seen  # pragma: allowlist secret; synthetic test fixture
+    )
     assert "OVERRIDE=unset" in seen
     assert not any(line.startswith("BASE=https://evil") for line in seen)
     assert not any("someone-elses" in line for line in seen)
@@ -1003,8 +1210,8 @@ def test_unit_pair_executes_from_the_activation_worktree_and_strips_inherited_ov
     for name in (
         "HAPAX_COUNCIL",
         "HAPAX_GLMCP_REVIEW_BASE_URL",
-        "HAPAX_GLMCP_REVIEW_SECRET_ENTRY",  # pragma: allowlist secret
-        "HAPAX_GLMCP_REVIEW_ALLOW_SECRET_ENTRY_OVERRIDE",  # pragma: allowlist secret
+        "HAPAX_GLMCP_REVIEW_SECRET_ENTRY",  # pragma: allowlist secret; synthetic test fixture
+        "HAPAX_GLMCP_REVIEW_ALLOW_SECRET_ENTRY_OVERRIDE",  # pragma: allowlist secret; synthetic test fixture
         "HAPAX_GLMCP_SEAT_ROOT_OVERRIDE",
         # the receipt and ledger writers honour these; the seat must read where they wrote
         "HAPAX_PLATFORM_CAPABILITY_RECEIPT_DIR",
