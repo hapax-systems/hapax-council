@@ -14,7 +14,7 @@ import pytest
 import yaml
 
 REINS_GIT = shutil.which("git") or "/usr/bin/git"
-REINS_EXPECTED_COMMIT = "edf05c05615df083d8dfd90ad1c11d88ba88761e"
+REINS_EXPECTED_COMMIT = "edf05c05615df083d8dfd90ad1c11d88ba88761e"  # pragma: allowlist secret
 REINS_GIT_TIMEOUT_SECONDS = 5
 REPO_ROOT = Path(__file__).resolve().parents[2]
 UNIT = REPO_ROOT / "systemd" / "units" / "hapax-secrets.service"
@@ -535,7 +535,10 @@ def test_invalid_explicit_reins_source_is_refused(reins_git_checkout, tmp_path, 
         _require_reins_pin()
 
 
-@pytest.mark.parametrize("head", ["edf05c05615df083d8dfd90ad1c11d88ba88761e", "0" * 40])
+@pytest.mark.parametrize(
+    "head",
+    ["edf05c05615df083d8dfd90ad1c11d88ba88761e", "0" * 40],  # pragma: allowlist secret
+)
 def test_ci_stages_verified_reins_source_outside_workspace(tmp_path, monkeypatch, head):
     workflow = yaml.safe_load((REPO_ROOT / ".github/workflows/ci.yml").read_text())
     steps = workflow["jobs"]["test-full-shard"]["steps"]
@@ -546,7 +549,7 @@ def test_ci_stages_verified_reins_source_outside_workspace(tmp_path, monkeypatch
     pytest_step = next(step for step in steps if step.get("name") == "Run full pytest shard")
     assert steps.index(stage) < steps.index(pytest_step)
     assert stage["env"] == {
-        "REINS_TEST_COMMIT": "edf05c05615df083d8dfd90ad1c11d88ba88761e",
+        "REINS_TEST_COMMIT": "edf05c05615df083d8dfd90ad1c11d88ba88761e",  # pragma: allowlist secret
         "REINS_TEST_SOURCE": "${{ runner.temp }}/reins",
     }
     assert pytest_step["env"]["HAPAX_REINS_TEST_SOURCE_API"] == "${{ runner.temp }}/reins/api"

@@ -606,7 +606,7 @@ jobs:
           uv run --no-sync python scripts/ci_verify_pango_font.py "Px437 IBM VGA 8x16"
       - name: Stage pinned Reins test source
         env:
-          REINS_TEST_COMMIT: edf05c05615df083d8dfd90ad1c11d88ba88761e
+          REINS_TEST_COMMIT: edf05c05615df083d8dfd90ad1c11d88ba88761e # pragma: allowlist secret (git commit identifier, not a credential)
           REINS_TEST_SOURCE: ${{ runner.temp }}/reins
         run: |
           set -euo pipefail
