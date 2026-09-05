@@ -2,8 +2,11 @@ import errno
 import json
 import re
 import socket
+import subprocess
+import sys
 from datetime import UTC, datetime
 from io import BytesIO
+from pathlib import Path
 
 import pytest
 from fastapi import FastAPI
@@ -454,3 +457,51 @@ def test_public_contract_result_preserves_emitted_limits(
         "No image bytes checked by the credential route; no external callout. "
         + " ".join(EXPECTED_VERIFICATION_LIMITS)
     )
+
+
+REPO_ROOT = Path(__file__).resolve().parents[3]
+PILLOW_BLOCKED_PROBE = "\n".join(
+    [
+        "import sys",
+        "sys.modules['PIL'] = None  # every import of PIL raises ImportError from here on",
+        "import agents.art_50_provenance",
+        "import agents.publication_bus.surface_registry as registry",
+        "from agents.art_50_provenance.models import ART50_VERIFICATION_LIMITATIONS",
+        "from shared.capability_inventory_aggregator import ingest_publication_bus_from_module",
+        "descriptors = list(ingest_publication_bus_from_module())",
+        "from agents.art_50_provenance.fingerprint import compute_image_fingerprints",
+        "try:",
+        "    compute_image_fingerprints(b'not an image', mime_type='image/png')",
+        "except ImportError as exc:",
+        "    image_path = 'PIL' in str(exc)",
+        "else:",
+        "    image_path = False",
+        "print(len(registry.SURFACE_REGISTRY), len(ART50_VERIFICATION_LIMITATIONS),"
+        " len(descriptors), image_path)",
+    ]
+)
+
+
+def test_public_surface_and_inventory_import_without_pillow() -> None:
+    """The surface registry, the Article 50 package and the inventory source import without Pillow.
+
+    The minimal CI inventory environment carries only pydantic and pyyaml. On 2026-09-05 an
+    eager Pillow import on the package import path (issuer -> fingerprint -> PIL) made the
+    whole publication_bus inventory source unavailable: 0 new, 0 changed, 55 missing of 136
+    observed descriptors. Pillow is imported where image bytes are opened, so descriptor
+    discovery and record-only verification keep their small dependency boundary, and only
+    the image path refuses without it.
+    """
+    completed = subprocess.run(
+        [sys.executable, "-c", PILLOW_BLOCKED_PROBE],
+        capture_output=True,
+        text=True,
+        cwd=REPO_ROOT,
+        check=False,
+        timeout=120,
+    )
+    assert completed.returncode == 0, completed.stderr
+    surfaces, limits, descriptors, image_path_refuses = completed.stdout.split()
+    assert int(surfaces) > 0 and int(limits) == 3
+    assert int(descriptors) > 0, "the inventory source must yield descriptors without Pillow"
+    assert image_path_refuses == "True", "only the image path may depend on Pillow"

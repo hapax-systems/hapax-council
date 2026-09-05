@@ -1,10 +1,12 @@
-"""Visible disclosure watermarking for the image-only MVP."""
+"""Visible disclosure watermarking for the image-only MVP.
+
+Pillow is imported where image bytes are drawn, never at module import (see
+``fingerprint.py``): the package must import in the minimal inventory environment.
+"""
 
 from __future__ import annotations
 
 from io import BytesIO
-
-from PIL import Image, ImageDraw, ImageFont, PngImagePlugin
 
 from agents.art_50_provenance.models import WatermarkRecord
 
@@ -27,6 +29,8 @@ def apply_visible_watermark(
     mime_type: str,
 ) -> tuple[bytes, WatermarkRecord]:
     """Draw a visible Article 50 disclosure label into image bytes."""
+
+    from PIL import Image, ImageDraw, ImageFont, PngImagePlugin
 
     with Image.open(BytesIO(image_bytes)) as opened:
         output_format = _output_format_for_mime(mime_type, opened.format)
