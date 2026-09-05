@@ -18,8 +18,7 @@ def test_landing_page_has_h_card_identity_anchor() -> None:
     assert 'rel="me" href="https://youtube.com/@legomena-live"' in html
 
 
-def test_landing_page_links_to_obsidian_publish_vault() -> None:
+def test_landing_page_has_no_obsidian_publish_link() -> None:
     html = LANDING.read_text(encoding="utf-8")
 
-    assert '<li>vault: <a href="https://publish.obsidian.md/hapax">' in html
-    assert "publish.obsidian.md/hapax</a></li>" in html
+    assert "publish.obsidian.md" not in html.lower()
