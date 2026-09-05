@@ -131,6 +131,124 @@ def test_yaml_sensitive_subtree_never_reaches_destinations(
         assert "safe: KEEP_THIS_FIELD" in destinations["answer"]
 
 
+@pytest.mark.parametrize(
+    "form",
+    [
+        "sequence",
+        "mapping",
+        "nested-flow-in-block",
+        "double-quoted",
+        "single-quoted",
+        "comment",
+        "tagged-member",
+    ],
+)
+@pytest.mark.parametrize(
+    "properties",
+    ["", "&synthetic !synthetic ", "!<tag:synthetic.example,2026:collection> # ] }\n"],
+    ids=["bare", "node-properties", "property-comment"],
+)
+@pytest.mark.parametrize("capacity", ["grok", "local:qwen36"])
+def test_yaml_sensitive_flow_collection_never_reaches_destinations(
+    bench, monkeypatch, capsys, caplog, form, properties, capacity
+):
+    module, bin_dir, brief, out = bench
+    first = "SYNTHETIC_FIRST_CREDENTIAL"  # pragma: allowlist secret
+    second = "SYNTHETIC_SECOND_CREDENTIAL"  # pragma: allowlist secret
+    forms = {
+        "sequence": f"[{first},\n{second}]\n",
+        "mapping": f"{{primary: {first},\nbackup: {second}}}\n",
+        "nested-flow-in-block": f"[{{primary: [{first},\n{second}]}}]\n",
+        "double-quoted": f'["{first}\\"}}]",\n{second}]\n',
+        "single-quoted": f"['{first}'']}}',\n{second}]\n",
+        "comment": f"[{first}, # ] }}\n{second}]\n",
+        "tagged-member": f"[!<tag:synthetic.example,2026:]node> {first},\n{second}]\n",
+    }
+    parent = "settings:\n  " if form == "nested-flow-in-block" else ""
+    diagnostic = f"{parent}api_key: {properties}{forms[form]}safe: KEEP_THIS_FIELD\n"  # pragma: allowlist secret
+    if capacity.startswith("local:"):
+        payload = {"choices": [{"message": {"content": diagnostic}}], "model": "synthetic-model"}
+        monkeypatch.setattr(
+            module.urllib.request,
+            "urlopen",
+            lambda *a, **kw: io.BytesIO(json.dumps(payload).encode()),
+        )
+    else:
+        _stub(
+            bin_dir,
+            capacity,
+            f"print({diagnostic!r}, end='')\nprint({diagnostic!r}, end='', file=sys.stderr)\n"
+            "sys.exit(7)\n",
+        )
+    assert module.main([capacity, "--brief", str(brief), "--out", str(out)]) == (
+        0 if capacity.startswith("local:") else 3
+    )
+    captured = capsys.readouterr()
+    destinations = {
+        "answer": out.read_text(),
+        "receipt": out.with_name(out.name + ".receipt.json").read_text(),
+        "terminal stdout": captured.out,
+        "terminal stderr": captured.err,
+        "log": caplog.text,
+    }
+    leaks = [name for name, value in destinations.items() if first in value or second in value]
+    assert not leaks, f"credential reached destinations: {', '.join(leaks)}"
+    expected = f'{parent}api_key: "<redacted>"\nsafe: KEEP_THIS_FIELD\n'  # pragma: allowlist secret
+    assert destinations["answer"] == expected
+    receipt = _receipt(out)
+    assert receipt["exit_code"] == (0 if capacity.startswith("local:") else 7)
+    assert receipt["answer_policy"] == (
+        "capacity_answer" if capacity.startswith("local:") else "redacted_failure_output"
+    )
+
+
+@pytest.mark.parametrize("opening", ["[", "{"], ids=["sequence", "mapping"])
+@pytest.mark.parametrize(
+    "ending",
+    ["", '"unclosed ] }', "'unclosed ] }", "}", "!<unclosed ] ] }"],
+    ids=["eof", "double-quote", "single-quote", "mismatched", "tag"],
+)
+@pytest.mark.parametrize("capacity", ["grok", "local:qwen36"])
+def test_unbounded_yaml_flow_collection_suppresses_stream(
+    bench, monkeypatch, capsys, caplog, opening, ending, capacity
+):
+    module, bin_dir, brief, out = bench
+    canary = "SYNTHETIC_UNBOUNDED_CREDENTIAL"  # pragma: allowlist secret
+    # Keep an inner sequence open so even a trailing mapping close is mismatched.
+    diagnostic = f"safe: SUPPRESS_THIS_TOO\napi_key: {opening}[FIRST,\n{canary}, {ending}"  # pragma: allowlist secret
+    if capacity.startswith("local:"):
+        payload = {"choices": [{"message": {"content": diagnostic}}]}
+        monkeypatch.setattr(
+            module.urllib.request,
+            "urlopen",
+            lambda *a, **kw: io.BytesIO(json.dumps(payload).encode()),
+        )
+    else:
+        _stub(
+            bin_dir,
+            capacity,
+            f"print({diagnostic!r}, end='')\nprint({diagnostic!r}, end='', file=sys.stderr)\n"
+            "sys.exit(7)\n",
+        )
+    assert module.main([capacity, "--brief", str(brief), "--out", str(out)]) == 3
+    captured = capsys.readouterr()
+    receipt = _receipt(out)
+    destinations = [out.read_text(), json.dumps(receipt), captured.out, captured.err, caplog.text]
+    assert all(canary not in value for value in destinations), "credential reached a destination"
+    assert out.read_text() == ""
+    assert receipt["answer_policy"] == "suppressed_undecodable_output"
+    assert receipt["exit_code"] == (3 if capacity.startswith("local:") else 7)
+    assert receipt["suppressed_streams"] == {
+        stream: {
+            "length": len(diagnostic),
+            "first_token_class": "text",
+            "reason": "undecodable_stream_suppressed",
+        }
+        for stream in (["answer"] if capacity.startswith("local:") else ["stdout", "stderr"])
+    }
+    assert "retry" in receipt["recovery_action"]
+
+
 def test_timeout_receipt_is_bounded_when_detached_descendant_holds_pipes(
     bench, tmp_path, monkeypatch, capsys
 ):
@@ -1180,6 +1298,8 @@ def test_runbook_has_headless_read_refusal_rechecks(request):
     required = {
         "test_structured_failed_output_is_redacted_at_every_destination",
         "test_nested_claude_credentials_never_reach_destinations",
+        "test_yaml_sensitive_subtree_never_reaches_destinations",
+        "test_yaml_sensitive_flow_collection_never_reaches_destinations",
         "test_undecodable_claude_envelope_cannot_claim_success",
         "test_unwritable_receipt_and_fallback_name_recovery_without_traceback",
         "test_undecodable_claude_diagnostic_stream_is_suppressed",
@@ -1188,6 +1308,7 @@ def test_runbook_has_headless_read_refusal_rechecks(request):
         "test_local_deadline_covers_connection_and_body",
         "test_local_deadline_interrupts_blocking_io_and_restores_alarm",
         "test_timeout_kills_wrapper_process_group_and_records_no_survivor",
+        "test_timeout_receipt_is_bounded_when_detached_descendant_holds_pipes",
     }
     assert required <= {node.split("::")[1] for node in selections}
     # Collect independently so a recheck selected by node id still sees all cases.

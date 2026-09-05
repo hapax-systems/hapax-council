@@ -118,7 +118,10 @@ retry. Provider, route and usage values from local responses are not copied into
 
 Valid JSON is decoded recursively, including JSON embedded in strings. Otherwise, plain/YAML
 credential fields are redacted in place. Remaining escaped sensitive labels indicate malformed
-embedded serialization and suppress the entire affected stream. Ordinary prose, quotes, Markdown
+embedded serialization and suppress the entire affected stream. Sensitive YAML flow sequences
+and mappings are consumed through their matching closing delimiter, across lines and nested
+collections, with quoted strings, tags and comments respected. An unterminated or mismatched flow
+collection suppresses the entire affected stream. Ordinary prose, quotes, Markdown
 links, fenced code, brackets, braces and backslashes survive verbatim, including JSON-looking
 snippets with no sensitive fields. A quoted redaction marker keeps later redaction passes from
 consuming prose after a sensitive fragment. Receipts name `suppressed_undecodable_output`
@@ -163,10 +166,14 @@ these tests make no provider requests. The cleanup selection launches only the t
 
 ```sh
 env -u HAPAX_GLMCP_MODEL -u HAPAX_GLMCP_REVIEW_MODEL -u HAPAX_GLMCP_REVIEW_PAYG_FALLBACK -u HAPAX_GLMCP_REVIEW_ALLOW_NON_CODING_PLAN_MODEL \
-  UV_CACHE_DIR=/store-fast/tmp/uv-cache-verify PYTEST_ADDOPTS='--confcutdir=tests/scripts' \
+  LITELLM_LOCAL_MODEL_COST_MAP=True UV_CACHE_DIR=/store-fast/tmp/uv-cache-verify \
+  PYTEST_ADDOPTS='--confcutdir=tests/scripts' \
   uv run pytest -q -p no:cacheprovider \
   tests/scripts/test_hapax_recruit.py::test_structured_failed_output_is_redacted_at_every_destination \
   tests/scripts/test_hapax_recruit.py::test_nested_claude_credentials_never_reach_destinations \
+  tests/scripts/test_hapax_recruit.py::test_yaml_sensitive_subtree_never_reaches_destinations \
+  tests/scripts/test_hapax_recruit.py::test_yaml_sensitive_flow_collection_never_reaches_destinations \
+  tests/scripts/test_hapax_recruit.py::test_unbounded_yaml_flow_collection_suppresses_stream \
   tests/scripts/test_hapax_recruit.py::test_credential_json_keys_never_reach_destinations \
   tests/scripts/test_hapax_recruit.py::test_unbounded_json_key_suppresses_object_with_shape \
   tests/scripts/test_hapax_recruit.py::test_redacted_json_key_collisions_preserve_members \
@@ -194,6 +201,7 @@ env -u HAPAX_GLMCP_MODEL -u HAPAX_GLMCP_REVIEW_MODEL -u HAPAX_GLMCP_REVIEW_PAYG_
   tests/scripts/test_hapax_recruit.py::test_local_deadline_covers_connection_and_body \
   tests/scripts/test_hapax_recruit.py::test_local_deadline_interrupts_blocking_io_and_restores_alarm \
   tests/scripts/test_hapax_recruit.py::test_timeout_kills_wrapper_process_group_and_records_no_survivor \
+  tests/scripts/test_hapax_recruit.py::test_timeout_receipt_is_bounded_when_detached_descendant_holds_pipes \
   tests/scripts/test_hapax_recruit.py::test_failure_recovery_actions_reach_diagnostic_destinations \
   tests/scripts/test_hapax_recruit.py::test_runbook_has_headless_read_refusal_rechecks
 ```

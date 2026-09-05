@@ -214,8 +214,46 @@ class RunResult:
         self.stderr_tail = self.stderr_tail[-400:]
 
 
+def _yaml_flow_end(text: str, start: int) -> int:
+    """Find the outer flow close without treating quoted/comment delimiters as syntax."""
+    stack, quote, index = [], "", start
+    while index < len(text):
+        char = text[index]
+        if quote:
+            if quote == '"' and char == "\\":
+                index += 2
+                continue
+            if char == quote:
+                if quote == "'" and text[index : index + 2] == "''":
+                    index += 2
+                    continue
+                quote = ""
+        elif text[index : index + 2] == "!<" and text[index - 1] in " \t\r\n[{,:":
+            # Verbatim tag URIs can contain flow delimiters; they end only at >.
+            end = text.find(">", index + 2)
+            if end < 0:
+                raise UndecodableStream
+            index = end + 1
+            continue
+        elif char == "#" and text[index - 1] in " \t\r\n[{,":
+            newline = text.find("\n", index)
+            index = len(text) if newline < 0 else newline + 1
+            continue
+        elif char in "\"'" and text[index - 1] in " \t\r\n[{,:":
+            quote = char
+        elif char in "[{":
+            stack.append("]" if char == "[" else "}")
+        elif char in "]}":
+            if not stack or char != stack.pop():
+                raise UndecodableStream
+            if not stack:
+                return index + 1
+        index += 1
+    raise UndecodableStream
+
+
 def _redact_yaml_subtrees(text: str) -> str:
-    """Bound sensitive block collections by sibling keys, including indentless sequences."""
+    """Bound sensitive flow collections by delimiters and block collections by sibling keys."""
     lines = text.splitlines(keepends=True)
     safe, index = [], 0
     while index < len(lines):
@@ -225,10 +263,24 @@ def _redact_yaml_subtrees(text: str) -> str:
             indent, entry, key, value = field.groups()
             probe = f'{key}: "scalar"'
             label = _SECRETISH.search(probe)
+            sensitive = label and label.end(1) == len(probe) - len('"scalar"')
+            if sensitive:
+                tail = "".join(lines[index:])[field.start(4) :]
+                # Node properties and comments can put the opening on a later line.
+                flow = re.match(
+                    r"(?:(?:&[^\s,\[\]{}]+|!(?:<[^>\r\n]*>|[^\s,\[\]{}<>]*))(?=[ \t\r\n])"
+                    r"|[ \t\r\n]|\#[^\r\n]*(?:\r?\n|\Z))*([\[{])",
+                    tail,
+                )
+                if flow:
+                    end = _yaml_flow_end(tail, flow.start(1))
+                    safe.append(f'{indent}{entry or ""}{key}: "<redacted>"')
+                    lines, index = tail[end:].splitlines(keepends=True), 0
+                    continue
             # Only a missing scalar (possibly with node properties/comments) opens
             # a block collection. Quoted and block scalars retain their own grammar.
             collection = re.fullmatch(r"(?:(?:&\S+|!\S+)[ \t]*)*(?:\#.*)?", value)
-            if label and label.end(1) == len(probe) - len('"scalar"') and collection:
+            if sensitive and collection:
                 key_indent = len(indent) + len(entry or "")
                 end = index + 1
                 while end < len(lines):
@@ -258,7 +310,12 @@ def _redact(text: str, *, reject_undecodable: bool = False) -> str:
     else:
         redacted = _redact_json_value(payload, reject_undecodable=reject_undecodable)
         return text if redacted == payload else json.dumps(redacted)
-    text = _redact_yaml_subtrees(text)
+    try:
+        text = _redact_yaml_subtrees(text)
+    except UndecodableStream:
+        if reject_undecodable:
+            raise
+        return "<redacted>"
     if reject_undecodable:
         # Consume plain/YAML fields first. Punctuation in the remaining prose/code is
         # ordinary content, but an escaped sensitive field means serialization remains

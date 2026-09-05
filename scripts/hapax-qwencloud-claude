@@ -18,6 +18,10 @@ from collections.abc import Sequence
 SECRET_NAME = "qwencloud/apikey"  # pragma: allowlist secret
 OFFICIAL_BASE_URL = "https://token-plan.ap-southeast-1.maas.aliyuncs.com/apps/anthropic"
 DEFAULT_MODEL = "qwen3.7-plus"
+CLIENT_STARTUP_REMEDY = (
+    "cannot launch claude; install Claude Code or repair the claude executable "
+    "and its permissions on PATH, then retry"
+)
 PLAN_MODELS = frozenset(
     {
         "qwen3.7-plus",
@@ -93,14 +97,18 @@ def _check(base_url: str, model: str) -> int:
     check_env = os.environ.copy()
     check_env.pop("ANTHROPIC_BASE_URL", None)
     check_env.pop("ANTHROPIC_AUTH_TOKEN", None)
-    version_result = subprocess.run(
-        ["claude", "--version"],
-        env=check_env,
-        check=False,
-        stdout=subprocess.PIPE,
-        stderr=subprocess.DEVNULL,
-        text=True,
-    )
+    try:
+        version_result = subprocess.run(
+            ["claude", "--version"],
+            env=check_env,
+            check=False,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.DEVNULL,
+            text=True,
+        )
+    except OSError:
+        _error(CLIENT_STARTUP_REMEDY)
+        return 3
     if version_result.returncode != 0:
         _error(
             f"claude --version failed (exit {version_result.returncode}); "
@@ -178,9 +186,16 @@ def main(argv: Sequence[str] | None = None) -> int:
         _error(f"secret '{SECRET_NAME}' read back empty; re-store it with hapax-secret")
         return 4
 
-    iso_home = tempfile.mkdtemp(
-        prefix="hapax-qwencloud-claude.", dir=os.environ.get("TMPDIR", "/tmp")
-    )
+    try:
+        iso_home = tempfile.mkdtemp(
+            prefix="hapax-qwencloud-claude.", dir=os.environ.get("TMPDIR", "/tmp")
+        )
+    except OSError:
+        _error(
+            "cannot create the isolated temporary directory; set TMPDIR to an existing "
+            "writable directory with free space, then retry"
+        )
+        return 3
     try:
         client_env = _client_environment(iso_home, base_url, model, key)
         result = subprocess.run(
@@ -189,6 +204,9 @@ def main(argv: Sequence[str] | None = None) -> int:
             check=False,
         )
         return result.returncode if result.returncode >= 0 else 128 - result.returncode
+    except OSError:
+        _error(CLIENT_STARTUP_REMEDY)
+        return 3
     finally:
         shutil.rmtree(iso_home)
 

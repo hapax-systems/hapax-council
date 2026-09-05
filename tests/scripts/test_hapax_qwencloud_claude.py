@@ -243,6 +243,74 @@ def test_client_launch_failure_removes_isolated_home(bench, tmp_path):
 
 
 @pytest.mark.parametrize("args", [["-p", "synthetic brief"], ["--check"]], ids=["run", "check"])
+def test_client_startup_failure_names_remedy_and_cleans_home(bench, tmp_path, args):
+    record, env = bench
+    env["PATH"] = str(tmp_path / "bin")
+    (tmp_path / "bin" / "python3").symlink_to(sys.executable)
+    (tmp_path / "bin" / "bash").symlink_to("/bin/bash")
+    (tmp_path / "bin" / "claude").write_text(f"#!{tmp_path}/missing-interpreter\n")
+    proc = _run(env, *args)
+    assert not record.exists()
+    assert list(Path(env["TMPDIR"]).iterdir()) == []
+    assert proc.stdout == "" and FAKE_KEY not in proc.stderr
+    assert proc.returncode == 3
+    assert len(proc.stderr.splitlines()) == 1
+    assert "claude" in proc.stderr and "PATH" in proc.stderr
+    assert "install" in proc.stderr and "retry" in proc.stderr
+
+
+@pytest.mark.parametrize("failure", [FileNotFoundError, PermissionError, OSError])
+def test_temporary_home_failure_names_remedy_without_launch(
+    fake_boundary, monkeypatch, capsys, failure
+):
+    module, calls, removed = fake_boundary
+
+    def fail_mkdtemp(**kwargs):
+        raise failure(FAKE_KEY)
+
+    monkeypatch.setattr(module.tempfile, "mkdtemp", fail_mkdtemp)
+    try:
+        rc = module.main(["-p", "synthetic brief"])
+    except OSError:
+        rc = None  # An uncaught startup error becomes a standalone traceback.
+    captured = capsys.readouterr()
+    assert rc == 3
+    assert all(argv[0] == "hapax-secret" for argv, _ in calls)
+    assert removed == []
+    assert captured.out == "" and FAKE_KEY not in captured.err
+    assert len(captured.err.splitlines()) == 1
+    assert "temporary directory" in captured.err and "TMPDIR" in captured.err
+    assert "writable" in captured.err and "retry" in captured.err
+
+
+@pytest.mark.parametrize("failure", [FileNotFoundError, PermissionError, OSError])
+@pytest.mark.parametrize("args", [["-p", "synthetic brief"], ["--check"]], ids=["run", "check"])
+def test_discovered_client_launch_error_names_remedy_and_cleans_home(
+    fake_boundary, monkeypatch, capsys, failure, args
+):
+    module, calls, removed = fake_boundary
+    original_run = module.subprocess.run
+
+    def fail_client(argv, **kwargs):
+        if argv[0] == "claude":
+            raise failure(FAKE_KEY)
+        return original_run(argv, **kwargs)
+
+    monkeypatch.setattr(module.subprocess, "run", fail_client)
+    try:
+        rc = module.main(args)
+    except OSError:
+        rc = None  # Do not copy even a synthetic credential into assertion output.
+    captured = capsys.readouterr()
+    assert removed == ([] if args == ["--check"] else ["/synthetic/isolation"])
+    assert rc == 3
+    assert captured.out == "" and FAKE_KEY not in captured.err
+    assert len(captured.err.splitlines()) == 1
+    assert "claude" in captured.err and "PATH" in captured.err
+    assert "install" in captured.err and "retry" in captured.err
+
+
+@pytest.mark.parametrize("args", [["-p", "synthetic brief"], ["--check"]], ids=["run", "check"])
 def test_missing_client_names_install_remedy(fake_boundary, monkeypatch, capsys, args):
     module, calls, removed = fake_boundary
     monkeypatch.setattr(module.shutil, "which", lambda name: None if name == "claude" else name)
