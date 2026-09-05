@@ -4,12 +4,21 @@ from __future__ import annotations
 
 from pathlib import Path
 
+import pytest
+
 REPO_ROOT = Path(__file__).resolve().parents[2]
 SYSTEMD_ROOT = REPO_ROOT / "systemd"
 UNITS_DIR = SYSTEMD_ROOT / "units"
 PRESET = SYSTEMD_ROOT / "user-preset.d" / "hapax.preset"
 README = SYSTEMD_ROOT / "README.md"
 AUTHORITY_ENV_FILE = "-/run/user/%U/hapax-public-gate-authority.env"
+
+
+@pytest.fixture(autouse=True)
+def synthetic_path(tmp_path, monkeypatch):
+    bin_dir = tmp_path / "bin"
+    bin_dir.mkdir()
+    monkeypatch.setenv("PATH", str(bin_dir))
 
 
 def _unit_values(name: str, section: str, directive: str) -> list[str]:

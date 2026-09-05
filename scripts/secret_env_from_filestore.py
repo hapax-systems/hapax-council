@@ -147,12 +147,39 @@ LITERALS: dict[str, str] = {
 }
 
 
-def _first_line(raw: bytes) -> str:
+def _decoded_value(raw: bytes) -> str:
     text = raw.decode("utf-8", errors="strict")
-    # Only the helper's optional trailing LF is a permitted control character.
-    if any(unicodedata.category(char) == "Cc" for char in text.removesuffix("\n")):
+    # Only helper framing may be removed; FileStore bytes are the stored value.
+    if _SOURCE == "helper":
+        text = text.removesuffix("\n")
+    if any(unicodedata.category(char) == "Cc" for char in text):
         raise ValueError("control character")
-    return text.split("\n", 1)[0]
+    return text
+
+
+def _validate_env_value(env_name: str, value: str, entry: str) -> None:
+    # systemd.exec(5) EnvironmentFile= interprets quotes and backslashes and
+    # may log invalid Unicode values. Emit only this conservative ASCII subset.
+    # Empty values retain their existing meaning; one helper LF was removed
+    # by _decoded_value. Literals receive the same validation before either write.
+    for char in value:
+        codepoint = ord(char)
+        if 0xFDD0 <= codepoint <= 0xFDEF or (codepoint & 0xFFFF) in (0xFFFE, 0xFFFF):
+            problem = "Unicode noncharacter"
+        elif unicodedata.category(char) == "Cc":
+            problem = "control character"
+        elif char.isspace():
+            problem = "whitespace"
+        elif not 0x21 <= codepoint <= 0x7E:
+            problem = "non-ASCII character"
+        elif char in "\"'\\#;":
+            problem = "EnvironmentFile syntax character"
+        else:
+            continue
+        _prerequisite_failure(
+            f"EnvironmentFile {env_name} ({entry}) invalid {problem}",
+            "use printable ASCII without whitespace, quotes, backslashes, # or ; and rerun",
+        )
 
 
 def _helper_call(name: str, *, where: bool = False) -> subprocess.CompletedProcess[bytes]:
@@ -182,8 +209,16 @@ def _helper_value(name: str) -> bytes | None:
         and not where.stderr
     )
     if not (present or absent):
+        # Only the first --where token is a backend label. Never forward GET
+        # bytes or helper stderr; cap before sanitizing untrusted label text.
+        tokens = where.stdout.split(None, 1)
+        token = (tokens[0][:32] if tokens else b"empty").lower()
+        backend = "".join(
+            chr(c) if c in b"abcdefghijklmnopqrstuvwxyz0123456789._-" else "_" for c in token
+        )
         _prerequisite_failure(
-            f"helper {name} --where transport exit {where.returncode} (unrecognized response)",
+            f"helper {name} --where transport exit {where.returncode} "
+            f"backend={backend} (unrecognized response)",
             _HELPER_REPAIR,
         )
 
@@ -195,16 +230,23 @@ def _helper_value(name: str) -> bytes | None:
     ).encode()
     if result.returncode == 1 and result.stdout == b"" and result.stderr == not_found:
         if present:
-            _prerequisite_failure(f"helper {name} present-but-unreadable", _HELPER_REPAIR)
+            _prerequisite_failure(
+                f"helper {name} GET present-but-unreadable; --where backend=filestore",
+                _HELPER_REPAIR,
+            )
         return None
     if result.returncode != 0:
         _prerequisite_failure(
             f"helper {name} GET transport exit {result.returncode}", _HELPER_REPAIR
         )
+    if absent:
+        _prerequisite_failure(
+            f"helper {name} GET disagrees with --where backend=absent", _HELPER_REPAIR
+        )
     return result.stdout
 
 
-def _store_value(name: str) -> str | None:
+def _store_value(name: str, env_name: str) -> str | None:
     if _SOURCE == "helper":
         raw = _helper_value(name)
         repair = _HELPER_REPAIR
@@ -221,11 +263,11 @@ def _store_value(name: str) -> str | None:
     if raw is None:
         return None
     try:
-        return _first_line(raw)
+        return _decoded_value(raw)
     except UnicodeDecodeError:
-        _prerequisite_failure(f"{_SOURCE} {name} decoding failure (UTF-8)", repair)
+        _prerequisite_failure(f"{_SOURCE} {name} ({env_name}) decoding failure (UTF-8)", repair)
     except ValueError:
-        _prerequisite_failure(f"{_SOURCE} {name} invalid control character", repair)
+        _prerequisite_failure(f"{_SOURCE} {name} ({env_name}) invalid control character", repair)
 
 
 def _write_env(out: Path, lines: list[str]) -> None:
@@ -258,7 +300,7 @@ out = Path(os.environ.get("HAPAX_SECRETS_ENV_PATH", f"/run/user/{uid}/hapax-secr
 resolved: dict[str, str] = {}
 missing: list[str] = []
 for env_name, spec in REQUIRED.items():
-    val = _store_value(spec)
+    val = _store_value(spec, env_name)
     if val is None:
         missing.append(spec)
         continue
@@ -276,7 +318,7 @@ LITERALS["ANTHROPIC_API_KEY"] = litellm_text
 LITERALS["ANTHROPIC_AUTH_TOKEN"] = litellm_text
 lines: list[str] = [f"{env_name}={resolved[env_name]}" for env_name in REQUIRED]
 for env_name, spec in OPTIONAL.items():
-    val = _store_value(spec)
+    val = _store_value(spec, env_name)
     if val is None:
         continue
     lines.append(f"{env_name}={val}")
@@ -285,8 +327,19 @@ for env_name, value in LITERALS.items():
 
 # Resolve this prerequisite before publishing either file; project it only
 # after the common environment is complete, without adding it to OPTIONAL.
-authority_value = _store_value("hapax-public-gate-authority-hmac-key")
+authority_value = _store_value(
+    "hapax-public-gate-authority-hmac-key", "HAPAX_PUBLIC_GATE_AUTHORITY_HMAC_KEY"
+)
 authority_out = out.with_name("hapax-public-gate-authority.env")
+for line in lines:
+    env_name, value = line.split("=", 1)
+    _validate_env_value(env_name, value, REQUIRED.get(env_name, OPTIONAL.get(env_name, "literal")))
+if authority_value is not None:
+    _validate_env_value(
+        "HAPAX_PUBLIC_GATE_AUTHORITY_HMAC_KEY",
+        authority_value,
+        "hapax-public-gate-authority-hmac-key",
+    )
 try:
     _write_env(out, lines)
 except OSError:
@@ -309,6 +362,6 @@ except OSError:
     action = "removal" if authority_value is None else "replacement"
     _prerequisite_failure(
         f"common refreshed; authority {action} failed at {authority_out}; "
-        f"prior authority file {prior_authority}",
+        f"prior authority file {prior_authority}; HAPAX_PUBLIC_GATE_AUTHORITY_HMAC_KEY",
         "restore write access to the authority environment path and rerun",
     )

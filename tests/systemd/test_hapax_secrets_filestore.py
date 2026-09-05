@@ -5,6 +5,7 @@ import os
 import runpy
 import subprocess
 import sys
+import uuid
 from pathlib import Path
 
 import pytest
@@ -57,7 +58,7 @@ COMMON_BASELINE = (
     b"LANGFUSE_HOST=http://127.0.0.1:10\n"
     b"HAPAX_SOUNDCLOUD_USERNAME=synthetic-operator\n"  # pragma: allowlist secret (synthetic literal; entropy false positive)
     b"HAPAX_MASTODON_INSTANCE_URL=https://mastodon.invalid\n"
-    b"HAPAX_BLUESKY_HANDLE=synthetic.invalid\n"
+    b"HAPAX_BLUESKY_HANDLE=synthetic.invalid\n"  # pragma: allowlist secret
 )
 MIGRATED_WATCHDOGS = (
     "briefing-watchdog",
@@ -68,6 +69,128 @@ MIGRATED_WATCHDOGS = (
     "meeting-prep-watchdog",
     "scout-watchdog",
 )
+
+
+def _environment_file_model(payload: bytes) -> dict[str, str]:
+    """Model systemd.exec(5), EnvironmentFile= (not shell/shlex syntax).
+
+    Rules: UTF-8 scalar values excluding NUL, BOM and Unicode noncharacters;
+    KEY=VALUE lines; blank/no-equals and #/; comment lines ignored; surrounding
+    space/tab/CR trimmed, interior whitespace and interior quotes preserved.
+    Initial single quotes preserve everything through the closing quote;
+    initial double quotes unescape backslash, quote, dollar and backtick only.
+    Backslash-newline continues unquoted/double-quoted values; other unquoted
+    escapes preserve the following character. No expansion is performed.
+    https://www.freedesktop.org/software/systemd/man/latest/systemd.exec.html#EnvironmentFile=
+    https://github.com/systemd/systemd/blob/v260/man/systemd.exec.xml
+    """
+    text = payload.decode("utf-8", errors="strict")
+    for char in text:
+        codepoint = ord(char)
+        if (
+            codepoint in (0, 0xFEFF)
+            or 0xFDD0 <= codepoint <= 0xFDEF
+            or (codepoint & 0xFFFF) in (0xFFFE, 0xFFFF)
+        ):
+            raise ValueError("EnvironmentFile invalid Unicode scalar/noncharacter")
+    assignments = {}
+    pos = 0
+    while pos < len(text):
+        end = text.find("\n", pos)
+        end = len(text) if end < 0 else end
+        line = text[pos:end].lstrip(" \t\r")
+        if not line or line.startswith(("#", ";")) or "=" not in line:
+            pos = end + 1
+            continue
+        equals = text.index("=", pos, end)
+        name = text[pos:equals].strip(" \t\r")
+        pos = equals + 1
+        value = []
+        keep = 0
+        state = "leading"
+        while pos < len(text):
+            char = text[pos]
+            pos += 1
+            if state == "single":
+                if char == "'":
+                    state = "leading"
+                else:
+                    value.append(char)
+                    keep = len(value)
+                continue
+            if state == "double" and char == '"':
+                state = "leading"
+                continue
+            if state != "double" and char == "\n":
+                break
+            if state == "leading":
+                if char in " \t\r":
+                    continue
+                if char in "\"'":
+                    state = "single" if char == "'" else "double"
+                    continue
+                state = "unquoted"
+            if char == "\\":
+                if pos == len(text):
+                    break
+                escaped = text[pos]
+                pos += 1
+                if escaped != "\n":
+                    if state == "double" and escaped not in '\\"$`':
+                        value.append("\\")
+                    value.append(escaped)
+                keep = len(value)
+            else:
+                value.append(char)
+                if state == "double" or char not in " \t\r":
+                    keep = len(value)
+        assignments[name] = "".join(value[:keep])
+    return assignments
+
+
+@pytest.mark.parametrize(
+    ("payload", "expected"),
+    [
+        (
+            b" # comment\n;comment\nignored\n K = synthetic a \t\r\n",  # pragma: allowlist secret
+            {"K": "synthetic a"},  # pragma: allowlist secret
+        ),  # pragma: allowlist secret
+        (b"K='synthetic \\ a\nb'\n", {"K": "synthetic \\ a\nb"}),  # pragma: allowlist secret
+        (
+            b'K="synthetic \\"\\\\\\$\\`\\q"\n',  # pragma: allowlist secret
+            {"K": 'synthetic "\\$`\\q'},  # pragma: allowlist secret
+        ),  # pragma: allowlist secret
+        (b"K=synthetic\\\n-tail\n", {"K": "synthetic-tail"}),  # pragma: allowlist secret
+        (b'K="synthetic\\\n-tail"\n', {"K": "synthetic-tail"}),  # pragma: allowlist secret
+        (b"K=synthetic\\ ", {"K": "synthetic "}),  # pragma: allowlist secret
+        (b'K=synthetic"quote"\n', {"K": 'synthetic"quote"'}),  # pragma: allowlist secret
+        (b"K=\n", {"K": ""}),  # pragma: allowlist secret
+    ],
+    ids=[
+        "comments-trimming",
+        "single-multiline",
+        "double-escapes",
+        "continuation",
+        "double-continuation",
+        "escaped-space",
+        "interior-quotes",
+        "empty",
+    ],
+)
+def test_environment_file_model_rules(payload, expected):
+    assert _environment_file_model(payload) == expected
+
+
+@pytest.mark.parametrize(
+    "payload",
+    [
+        b"K=synthetic-\xff\n",  # pragma: allowlist secret
+        b"K=synthetic-\xef\xbf\xbf\n",  # pragma: allowlist secret
+    ],
+)
+def test_environment_file_model_refuses_invalid_unicode(payload):
+    with pytest.raises(ValueError):
+        _environment_file_model(payload)
 
 
 def test_hapax_secrets_unit_uses_filestore_not_pass() -> None:
@@ -111,8 +234,31 @@ def _reins_pin() -> Path:
 def _require_reins_pin() -> Path:
     pin = _reins_pin()
     if not (pin / "k0" / "key_capture.py").is_file():
-        pytest.skip("reins FileStore pin not installed at ~/.local/share/reins/current/api")
+        if os.environ.get("HAPAX_TEST_REINS_LOCAL_ONLY") == "1":
+            pytest.skip("REINS_LOCAL_ONLY_DEPENDENCY_MISSING: HAPAX_TEST_REINS_LOCAL_ONLY=1")
+        pytest.fail(
+            "REINS_TEST_DEPENDENCY_MISSING: install the pinned reins-read test dependency "
+            "and expose its k0 package via _reins_pin; ~/.local/share/reins/current/api "
+            "is unavailable. HAPAX_TEST_REINS_LOCAL_ONLY=1 permits an explicitly local-only run."
+        )
     return pin
+
+
+def test_missing_reins_dependency_fails_by_default(tmp_path, monkeypatch):
+    monkeypatch.setattr(sys.modules[__name__], "_reins_pin", lambda: tmp_path / "missing-api")
+    monkeypatch.delenv("HAPAX_TEST_REINS_LOCAL_ONLY", raising=False)
+    try:
+        with pytest.raises(pytest.fail.Exception, match="REINS_TEST_DEPENDENCY_MISSING"):
+            _require_reins_pin()
+    except pytest.skip.Exception:
+        pytest.fail("missing Reins dependency silently skipped instead of failing")
+
+
+def test_missing_reins_dependency_local_only_skip_is_explicit(tmp_path, monkeypatch):
+    monkeypatch.setattr(sys.modules[__name__], "_reins_pin", lambda: tmp_path / "missing-api")
+    monkeypatch.setenv("HAPAX_TEST_REINS_LOCAL_ONLY", "1")
+    with pytest.raises(pytest.skip.Exception, match="REINS_LOCAL_ONLY_DEPENDENCY_MISSING"):
+        _require_reins_pin()
 
 
 def _run_producer(env: dict[str, str], setup: str = "") -> subprocess.CompletedProcess[str]:
@@ -143,9 +289,12 @@ def producer_sandbox(tmp_path, monkeypatch):
     monkeypatch.setenv("HAPAX_SECRETS_ENV_PATH", str(tmp_path / "hapax-secrets.env"))
     monkeypatch.setenv("HAPAX_LITELLM_BASE_URL", "http://127.0.0.1:9")
     monkeypatch.setenv("HAPAX_LANGFUSE_HOST", "http://127.0.0.1:10")
-    monkeypatch.setenv("HAPAX_SOUNDCLOUD_USERNAME", "synthetic-operator")
+    monkeypatch.setenv(
+        "HAPAX_SOUNDCLOUD_USERNAME",
+        "synthetic-operator",  # pragma: allowlist secret
+    )  # pragma: allowlist secret
     monkeypatch.setenv("HAPAX_MASTODON_INSTANCE_URL", "https://mastodon.invalid")
-    monkeypatch.setenv("HAPAX_BLUESKY_HANDLE", "synthetic.invalid")
+    monkeypatch.setenv("HAPAX_BLUESKY_HANDLE", "synthetic.invalid")  # pragma: allowlist secret
     bin_dir = tmp_path / "bin"
     bin_dir.mkdir()
     for name in ("hapax-secret", "ssh"):
@@ -259,9 +408,330 @@ def _assert_read_refusal(result, common, authority, inodes, name, diagnostic):
     assert "Next action:" in result.stderr
     assert not result.stdout
     assert "Traceback" not in result.stderr
+    assert "synthetic" not in result.stderr
     assert AUTHORITY_VALUE.decode() not in result.stderr
     assert "synthetic-private-error-detail" not in result.stderr  # pragma: allowlist secret
     assert not list(common.parent.glob(".*.tmp"))
+
+
+def _file_state(path):
+    try:
+        info = path.stat()
+    except FileNotFoundError:
+        return None
+    return info.st_ino, info.st_mtime_ns, path.read_bytes()
+
+
+@pytest.mark.parametrize(
+    ("raw", "diagnostic"),
+    [
+        ("synthetic-noncharacter-\uffff".encode(), "noncharacter"),  # pragma: allowlist secret
+        (b'"synthetic-quoted"', "syntax"),  # pragma: allowlist secret
+        (b"synthetic-backslash\\", "syntax"),  # pragma: allowlist secret
+        (b"'synthetic-single-quoted'", "syntax"),  # pragma: allowlist secret
+        (b"synthetic#fragment", "syntax"),  # pragma: allowlist secret
+        (b"synthetic;delimiter", "syntax"),  # pragma: allowlist secret
+        (b" synthetic-space ", "whitespace"),  # pragma: allowlist secret
+        ("synthetic-unicode-\u00e9".encode(), "non-ASCII"),  # pragma: allowlist secret
+        ("synthetic-noncharacter-\ufdd0".encode(), "noncharacter"),  # pragma: allowlist secret
+        ("synthetic-noncharacter-\U0010fffe".encode(), "noncharacter"),  # pragma: allowlist secret
+    ],
+    ids=[
+        "noncharacter-ffff",
+        "double-quote",
+        "backslash",
+        "single-quote",
+        "hash",
+        "semicolon",
+        "space",
+        "non-ascii",
+        "noncharacter-fdd0",
+        "noncharacter-10fffe",
+    ],
+)
+@pytest.mark.parametrize(
+    ("name", "env_name"),
+    [
+        ("api-openai", "OPENAI_API_KEY"),
+        ("soundcloud-client-id", "SOUNDCLOUD_CLIENT_ID"),
+        (AUTHORITY_ENTRY, AUTHORITY_ENV),
+    ],
+    ids=["required", "optional", "authority"],
+)
+def test_unsafe_environment_value_refuses_with_zero_writes(
+    helper_source, raw, diagnostic, name, env_name
+):
+    table, _, common = helper_source
+    authority, inodes = _prior_files(common)
+    before = (_file_state(common), _file_state(authority))
+    table[name] = {"action": "value", "hex": raw.hex()}
+    result = _run_helper(table)
+    _assert_read_refusal(result, common, authority, inodes, name, diagnostic)
+    assert env_name in result.stderr
+    assert raw not in (result.stdout + result.stderr).encode()
+    assert (_file_state(common), _file_state(authority)) == before
+
+
+@pytest.mark.parametrize(
+    ("raw", "decoded"),
+    [
+        (b'"synthetic-quoted"', "synthetic-quoted"),  # pragma: allowlist secret
+        (b"synthetic-backslash\\", "synthetic-backslash"),  # pragma: allowlist secret
+    ],  # pragma: allowlist secret
+    ids=["double-quote", "backslash"],
+)
+def test_unescaped_candidate_changes_in_consumer_model(helper_source, raw, decoded):
+    table, _, common = helper_source
+    candidate = common.with_name("synthetic-candidate.env")  # pragma: allowlist secret
+    candidate.write_bytes(AUTHORITY_ENV.encode() + b"=" + raw + b"\n")
+    assert _environment_file_model(candidate.read_bytes()) == {AUTHORITY_ENV: decoded}
+    assert decoded != raw.decode()
+    table[AUTHORITY_ENTRY] = {"action": "value", "hex": raw.hex()}
+    result = _run_helper(table)
+    assert result.returncode == 2, "producer admitted material changed by the consumer grammar"
+    assert not common.exists() and not common.with_name(AUTHORITY_FILE).exists()
+    assert raw not in (result.stdout + result.stderr).encode()
+
+
+def test_noncharacter_candidate_is_refused_by_consumer_model(helper_source):
+    table, _, common = helper_source
+    raw = "synthetic-noncharacter-\uffff".encode()  # pragma: allowlist secret
+    candidate = common.with_name("synthetic-candidate.env")  # pragma: allowlist secret
+    candidate.write_bytes(AUTHORITY_ENV.encode() + b"=" + raw + b"\n")
+    with pytest.raises(ValueError, match="noncharacter"):
+        _environment_file_model(candidate.read_bytes())
+    table[AUTHORITY_ENTRY] = {"action": "value", "hex": raw.hex()}
+    result = _run_helper(table)
+    assert result.returncode == 2, "producer admitted a consumer diagnostic disclosure hazard"
+    assert not common.exists() and not common.with_name(AUTHORITY_FILE).exists()
+    assert raw not in (result.stdout + result.stderr).encode()
+
+
+@pytest.mark.parametrize(
+    "name",
+    [
+        "HAPAX_LITELLM_BASE_URL",
+        "HAPAX_LANGFUSE_HOST",
+        "HAPAX_SOUNDCLOUD_USERNAME",
+        "HAPAX_MASTODON_INSTANCE_URL",
+        "HAPAX_BLUESKY_HANDLE",
+    ],
+)
+def test_literal_validation_precedes_common_write(helper_source, monkeypatch, name):
+    table, _, common = helper_source
+    authority, inodes = _prior_files(common)
+    before = (_file_state(common), _file_state(authority))
+    raw = "synthetic-literal\\"  # pragma: allowlist secret
+    monkeypatch.setenv(name, raw)
+    result = _run_helper(table)
+    _assert_read_refusal(result, common, authority, inodes, "EnvironmentFile", "syntax")
+    assert raw not in result.stdout + result.stderr
+    assert (_file_state(common), _file_state(authority)) == before
+
+
+@pytest.mark.parametrize(
+    ("backend", "token"),
+    [
+        (b"pass\n", "pass"),
+        (b"REMOTE!._-\tprivate-remote-text\n", "remote_._-"),
+        (b"x" * 80 + b"\n", "x" * 32),
+        (b"\xff\n", "_"),
+        (b"", "empty"),
+    ],
+    ids=["pass", "sanitized", "capped", "non-ascii", "empty"],
+)
+def test_where_backend_disagreement_names_safe_token(helper_source, backend, token):
+    table, _, common = helper_source
+    authority, inodes = _prior_files(common)
+    table[AUTHORITY_ENTRY]["where"] = {"action": "value", "hex": backend.hex()}
+    result = _run_helper(table)
+    _assert_read_refusal(result, common, authority, inodes, AUTHORITY_ENTRY, "--where")
+    assert f"backend={token} (" in result.stderr
+    assert "private-remote-text" not in result.stderr
+    assert (common.parent / "helper-calls").read_text().splitlines()[
+        -1
+    ] == f"--where {AUTHORITY_ENTRY}"
+
+
+@pytest.mark.parametrize(
+    "present", [False, True], ids=["where-absent-get-present", "where-present-get-absent"]
+)
+def test_get_disagreement_names_where_backend(helper_source, present):
+    table, _, common = helper_source
+    authority, inodes = _prior_files(common)
+    table[AUTHORITY_ENTRY] = {
+        "where": {"action": "present" if present else "absent"},
+        "get": {"action": "absent"}
+        if present
+        else {"action": "value", "hex": AUTHORITY_VALUE.hex()},
+    }
+    result = _run_helper(table)
+    _assert_read_refusal(result, common, authority, inodes, AUTHORITY_ENTRY, "GET")
+    token = "filestore" if present else "absent"
+    assert f"--where backend={token}" in result.stderr
+
+
+def test_stale_authority_removal_failure_names_common_outcome(helper_source):
+    table, _, common = helper_source
+    authority, _ = _prior_files(common)
+    before = _file_state(authority)
+    common_inode = common.stat().st_ino
+    table[AUTHORITY_ENTRY] = {"action": "absent"}
+    setup = (
+        "from pathlib import Path\n"
+        "original_unlink = Path.unlink\n"
+        "def fail_unlink(path, *args, **kwargs):\n"
+        f"    if path.name == {AUTHORITY_FILE!r}:\n"
+        "        raise OSError('synthetic-private-error-detail')\n"  # pragma: allowlist secret
+        "    return original_unlink(path, *args, **kwargs)\n"
+        "Path.unlink = fail_unlink\n"
+    )
+    result = _run_helper(table, setup)
+    assert result.returncode == 2
+    assert common.read_bytes() == COMMON_BASELINE
+    assert common.stat().st_ino != common_inode
+    assert _file_state(authority) == before
+    assert f"common refreshed; authority removal failed at {authority}" in result.stderr
+    assert AUTHORITY_ENV in result.stderr
+    assert "prior authority file retained" in result.stderr
+    assert "synthetic-private-error-detail" not in result.stderr  # pragma: allowlist secret
+    assert AUTHORITY_VALUE.decode() not in result.stdout + result.stderr
+    assert not list(common.parent.glob(".*.tmp"))
+
+
+def test_every_emitted_assignment_roundtrips_through_consumer(helper_source):
+    table, _, common = helper_source
+    # Exercise the entire admitted alphabet in required, optional and authority values.
+    raw = b"synthetic-" + bytes(  # pragma: allowlist secret
+        c for c in range(0x21, 0x7F) if c not in b"\"'\\#;"
+    )  # pragma: allowlist secret
+    for name in (*REQUIRED_VALUES, *OPTIONAL_ENTRIES, AUTHORITY_ENTRY):
+        table[name] = {"action": "value", "hex": raw.hex()}
+    result = _run_helper(table)
+    assert result.returncode == 0, result.stderr
+    expected = dict(line.split("=", 1) for line in COMMON_BASELINE.decode().splitlines())
+    namespace = {
+        **dict(
+            zip(
+                REQUIRED_VALUES,
+                (
+                    "LITELLM_API_KEY",
+                    "LANGFUSE_PUBLIC_KEY",
+                    "LANGFUSE_SECRET_KEY",
+                    "HF_TOKEN",
+                    "MISTRAL_API_KEY",
+                    "OPENAI_API_KEY",
+                ),
+                strict=True,
+            )
+        ),
+        **dict(
+            zip(
+                OPTIONAL_ENTRIES,
+                (
+                    "SOUNDCLOUD_CLIENT_ID",
+                    "SOUNDCLOUD_CLIENT_SECRET",
+                    "HAPAX_SOUNDCLOUD_BANKED_URL",
+                    "HAPAX_MASTODON_ACCESS_TOKEN",
+                    "HAPAX_BLUESKY_APP_PASSWORD",
+                    "HAPAX_BLUESKY_DID",
+                    "HAPAX_IA_ACCESS_KEY",
+                    "HAPAX_IA_SECRET_KEY",
+                    "HAPAX_OSF_TOKEN",
+                    "HAPAX_PHILARCHIVE_SESSION_COOKIE",
+                    "HAPAX_PHILARCHIVE_AUTHOR_ID",
+                    "HAPAX_ZENODO_TOKEN",
+                    "HAPAX_OPERATOR_ORCID",
+                    "KO_FI_WEBHOOK_VERIFICATION_TOKEN",
+                ),
+                strict=True,
+            )
+        ),
+    }
+    expected.update(
+        dict.fromkeys(
+            (*namespace.values(), "ANTHROPIC_API_KEY", "ANTHROPIC_AUTH_TOKEN"), raw.decode()
+        )
+    )
+    assert _environment_file_model(common.read_bytes()) == expected
+    assert _environment_file_model(common.with_name(AUTHORITY_FILE).read_bytes()) == {
+        AUTHORITY_ENV: raw.decode()
+    }
+    assert raw not in (result.stdout + result.stderr).encode()
+
+
+@pytest.mark.integration
+def test_generated_files_roundtrip_in_real_user_manager(helper_source):
+    """Only a fresh transient synthetic unit; never inspect the manager environment.
+
+    --pipe keeps child stdout out of the journal. The child emits only names
+    overwritten by our synthetic EnvironmentFiles, never the inherited env.
+    """
+    client_env = {
+        name: os.environ[name]
+        for name in ("PATH", "XDG_RUNTIME_DIR", "DBUS_SESSION_BUS_ADDRESS")
+        if name in os.environ
+    }
+    required_tools = ("/usr/bin/systemctl", "/usr/bin/systemd-run", "/usr/bin/journalctl")
+    if not all(Path(tool).is_file() for tool in required_tools):
+        pytest.skip("SYSTEMD_USER_MANAGER_UNREACHABLE: systemd client tools unavailable")
+    try:
+        probe = subprocess.run(
+            ["/usr/bin/systemctl", "--user", "show", "--property=Version", "--value"],
+            env=client_env,
+            capture_output=True,
+            timeout=5,
+            check=False,
+        )
+    except (OSError, subprocess.TimeoutExpired):
+        pytest.skip("SYSTEMD_USER_MANAGER_UNREACHABLE: read-only manager probe unavailable")
+    if probe.returncode != 0:
+        pytest.skip("SYSTEMD_USER_MANAGER_UNREACHABLE: read-only manager probe failed")
+    table, _, common = helper_source
+    result = _run_helper(table)
+    assert result.returncode == 0, result.stderr
+    authority = common.with_name(AUTHORITY_FILE)
+    expected = dict(line.split("=", 1) for line in COMMON_BASELINE.decode().splitlines())
+    expected[AUTHORITY_ENV] = AUTHORITY_VALUE.decode()
+    unit = f"hapax-synthetic-env-{uuid.uuid4().hex}.service"
+    child = subprocess.run(
+        [
+            "/usr/bin/systemd-run",
+            "--user",
+            "--wait",
+            "--collect",
+            "--pipe",
+            "--quiet",
+            f"--unit={unit}",
+            "-p",
+            f"EnvironmentFile={common}",
+            "-p",
+            f"EnvironmentFile={authority}",
+            "-p",
+            f"Environment=PATH={os.environ['PATH']}",
+            sys.executable,
+            "-I",
+            "-c",
+            "import json, os, sys; print(json.dumps({name: os.environ[name] for name in sys.argv[1:]}, sort_keys=True))",
+            *expected,
+        ],
+        env=client_env,
+        capture_output=True,
+        timeout=30,
+        check=False,
+    )
+    assert child.returncode == 0
+    assert child.stdout.decode() == json.dumps(expected, sort_keys=True) + "\n"
+    journal = subprocess.run(
+        ["/usr/bin/journalctl", "--user-unit", unit, "--no-pager", "-o", "cat", "-n", "100"],
+        env=client_env,
+        capture_output=True,
+        timeout=5,
+        check=False,
+    )
+    assert journal.returncode == 0
+    for value in (*REQUIRED_VALUES.values(), AUTHORITY_VALUE):
+        assert value not in child.stderr + journal.stdout + journal.stderr
 
 
 @pytest.fixture
@@ -273,9 +743,11 @@ def producer_store(tmp_path, monkeypatch):
     monkeypatch.setenv("HAPAX_SECRETS_ENV_PATH", str(env_path))
     monkeypatch.setenv("HAPAX_LITELLM_BASE_URL", "http://127.0.0.1:9")
     monkeypatch.setenv("HAPAX_LANGFUSE_HOST", "http://127.0.0.1:10")
-    monkeypatch.setenv("HAPAX_SOUNDCLOUD_USERNAME", "synthetic-operator")
+    monkeypatch.setenv(
+        "HAPAX_SOUNDCLOUD_USERNAME", "synthetic-operator"
+    )  # pragma: allowlist secret
     monkeypatch.setenv("HAPAX_MASTODON_INSTANCE_URL", "https://mastodon.invalid")
-    monkeypatch.setenv("HAPAX_BLUESKY_HANDLE", "synthetic.invalid")
+    monkeypatch.setenv("HAPAX_BLUESKY_HANDLE", "synthetic.invalid")  # pragma: allowlist secret
     monkeypatch.setenv("HAPAX_REINS_API", str(pin))
     monkeypatch.syspath_prepend(str(pin))
     from k0.key_capture import FileStore
@@ -342,9 +814,18 @@ def test_invalid_value_refuses_before_publication(
     _assert_read_refusal(result, common, authority, inodes, name, diagnostic)
 
 
-@pytest.mark.parametrize("present", [False, True])
-@pytest.mark.parametrize("name", ["api-openai", "soundcloud-client-id", AUTHORITY_ENTRY])
-def test_helper_where_and_get_classify_absence(helper_source, name, present):
+@pytest.mark.parametrize(
+    ("name", "present", "diagnostic"),
+    [
+        ("api-openai", True, "present-but-unreadable"),
+        ("soundcloud-client-id", True, "present-but-unreadable"),
+        (AUTHORITY_ENTRY, True, "present-but-unreadable"),
+        ("api-openai", False, "missing"),
+    ],
+)
+def test_helper_where_and_get_refuse_unreadable_or_required_absence(
+    helper_source, name, present, diagnostic
+):
     table, _, common = helper_source
     authority, inodes = _prior_files(common)
     table[name] = {
@@ -352,18 +833,29 @@ def test_helper_where_and_get_classify_absence(helper_source, name, present):
         "get": {"action": "absent"},
     }
     result = _run_helper(table)
-    if present:
-        _assert_read_refusal(result, common, authority, inodes, name, "present-but-unreadable")
-    elif name in REQUIRED_VALUES:
-        _assert_read_refusal(result, common, authority, inodes, name, "missing")
-    else:
-        assert result.returncode == 0, result.stderr
-        assert common.read_bytes() == COMMON_BASELINE
-        assert common.stat().st_ino != inodes[0], "successful optional absence refreshes common"
-        assert authority.exists() == (name != AUTHORITY_ENTRY)
+    _assert_read_refusal(result, common, authority, inodes, name, diagnostic)
     calls = (common.parent / "helper-calls").read_text().splitlines()
-    index = calls.index(name)
-    assert calls[index - 1] == f"--where {name}"
+    assert calls[calls.index(name) - 1] == f"--where {name}"
+    assert calls.count(name) == 1 and calls.count(f"--where {name}") == 1
+
+
+@pytest.mark.parametrize(
+    ("name", "authority_exists"),
+    [("soundcloud-client-id", True), (AUTHORITY_ENTRY, False)],
+)
+def test_helper_where_and_get_allow_demonstrated_optional_absence(
+    helper_source, name, authority_exists
+):
+    table, _, common = helper_source
+    authority, inodes = _prior_files(common)
+    table[name] = {"where": {"action": "absent"}, "get": {"action": "absent"}}
+    result = _run_helper(table)
+    assert result.returncode == 0, result.stderr
+    assert common.read_bytes() == COMMON_BASELINE
+    assert common.stat().st_ino != inodes[0], "successful optional absence refreshes common"
+    assert authority.exists() == authority_exists
+    calls = (common.parent / "helper-calls").read_text().splitlines()
+    assert calls[calls.index(name) - 1] == f"--where {name}"
     assert calls.count(name) == 1 and calls.count(f"--where {name}") == 1
 
 
@@ -458,9 +950,9 @@ def test_filestore_key_mode_is_exact(producer_store, mode):
 
 @pytest.mark.parametrize("source", ["filestore", "helper"])
 @pytest.mark.parametrize("stage", ["replace", "open"])
-@pytest.mark.parametrize("prior", [False, True])
+@pytest.mark.parametrize(("prior", "outcome"), [(False, "absent"), (True, "retained")])
 def test_second_publication_failure_names_partial_outcome(
-    producer_store, helper_source, monkeypatch, source, stage, prior
+    producer_store, helper_source, monkeypatch, source, stage, prior, outcome
 ):
     store, common = producer_store
     table, _, _ = helper_source
@@ -468,6 +960,7 @@ def test_second_publication_failure_names_partial_outcome(
     authority, inodes = _prior_files(common)
     if not prior:
         authority.unlink()
+    before_authority = _file_state(authority)
     monkeypatch.setenv("HAPAX_SECRETS_SOURCE", source)
     setup = (
         f"original = os.{stage}\n"
@@ -493,10 +986,7 @@ def test_second_publication_failure_names_partial_outcome(
     assert common.read_bytes() == COMMON_BASELINE
     assert common.stat().st_ino != inodes[0], "first replacement must have succeeded"
     assert authority.exists() == prior
-    if prior:
-        assert authority.read_bytes() == AUTHORITY_VALUE
-        assert authority.stat().st_ino == inodes[1]
-    outcome = "retained" if prior else "absent"
+    assert _file_state(authority) == before_authority
     assert (
         f"common refreshed; authority replacement failed at {authority}; prior authority file {outcome}"
         in result.stderr
@@ -537,7 +1027,7 @@ def test_unknown_source_refuses_before_writing(producer_store, monkeypatch, sour
 def test_helper_skips_filestore_prerequisites(helper_source, monkeypatch, override) -> None:
     table, helper, common = helper_source
     if override:
-        helper = helper.rename(helper.with_name("synthetic-override"))
+        helper = helper.rename(helper.with_name("synthetic-override"))  # pragma: allowlist secret
         monkeypatch.setenv("HAPAX_SECRET_HELPER", str(helper))
     # Fail even if the module is available through an ambient PYTHONPATH.
     setup = (
@@ -545,7 +1035,7 @@ def test_helper_skips_filestore_prerequisites(helper_source, monkeypatch, overri
         "real_import = builtins.__import__\n"
         "def no_filestore(name, *args, **kwargs):\n"
         "    if name == 'k0' or name.startswith('k0.'):\n"
-        "        raise ImportError('synthetic unavailable FileStore pin')\n"
+        "        raise ImportError('synthetic unavailable FileStore pin')\n"  # pragma: allowlist secret
         "    return real_import(name, *args, **kwargs)\n"
         "builtins.__import__ = no_filestore\n"
     )
@@ -568,7 +1058,7 @@ def test_helper_present_matches_filestore_bytes(producer_store, helper_source, m
     for name in OPTIONAL_ENTRIES:
         values[name] = b"synthetic-optional"  # pragma: allowlist secret
     values["api-openai"] = b""  # pragma: allowlist secret
-    values[AUTHORITY_ENTRY] = AUTHORITY_VALUE + b"\n"
+    values[AUTHORITY_ENTRY] = AUTHORITY_VALUE
     for name, value in values.items():
         store.put(name, value)
         table[name] = {"action": "value", "hex": (value.rstrip(b"\n") + b"\n").hex()}
@@ -576,6 +1066,9 @@ def test_helper_present_matches_filestore_bytes(producer_store, helper_source, m
     assert _run_producer(os.environ.copy()).returncode == 0
     authority = common.with_name(AUTHORITY_FILE)
     baseline = (common.read_bytes(), authority.read_bytes())
+    assert _environment_file_model(authority.read_bytes()) == {
+        AUTHORITY_ENV: store.get(AUTHORITY_ENTRY).decode()
+    }
     monkeypatch.setenv("HAPAX_SECRETS_SOURCE", "helper")
     result = _run_helper(table)
     assert result.returncode == 0, result.stderr
@@ -584,6 +1077,18 @@ def test_helper_present_matches_filestore_bytes(producer_store, helper_source, m
     assert common.stat().st_mode & 0o777 == 0o600
     assert authority.stat().st_mode & 0o777 == 0o600
     assert not list(common.parent.glob(".*.tmp"))
+
+
+def test_filestore_trailing_lf_is_value_not_helper_framing(producer_store):
+    store, common = producer_store
+    raw = AUTHORITY_VALUE + b"\n"
+    store.put(AUTHORITY_ENTRY, raw)
+    assert store.get(AUTHORITY_ENTRY) == raw
+    authority, inodes = _prior_files(common)
+    before = (_file_state(common), _file_state(authority))
+    result = _run_producer(os.environ.copy())
+    _assert_read_refusal(result, common, authority, inodes, AUTHORITY_ENV, "control")
+    assert (_file_state(common), _file_state(authority)) == before
 
 
 def test_helper_absent_optional_and_authority(helper_source):
@@ -685,8 +1190,15 @@ def test_helper_timeout_preserves_both_files(helper_source):
     assert not list(common.parent.glob(".*.tmp"))
 
 
-@pytest.mark.parametrize("fault", ["missing", "not-executable", "launch-oserror"])
-def test_helper_executable_failure_preserves_files(helper_source, monkeypatch, fault):
+@pytest.mark.parametrize(
+    ("fault", "diagnostic"),
+    [
+        ("missing", "helper executable missing or not executable"),
+        ("not-executable", "helper executable missing or not executable"),
+        ("launch-oserror", "helper litellm-master-key --where launch OSError"),
+    ],
+)
+def test_helper_executable_failure_preserves_files(helper_source, monkeypatch, fault, diagnostic):
     table, helper, common = helper_source
     if fault == "missing":
         monkeypatch.setenv("HAPAX_SECRET_HELPER", str(helper.with_name("missing")))
@@ -701,9 +1213,7 @@ def test_helper_executable_failure_preserves_files(helper_source, monkeypatch, f
     inodes = (common.stat().st_ino, authority.stat().st_ino)
     result = _run_helper(table)
     assert result.returncode == 2
-    assert "launch" in result.stderr if fault == "launch-oserror" else "executable" in result.stderr
-    if fault == "launch-oserror":
-        assert "litellm-master-key" in result.stderr
+    assert diagnostic in result.stderr
     assert "Next action:" in result.stderr and "HAPAX_SECRET_HELPER" in result.stderr
     assert "HAPAX_SECRETS_HOST" in result.stderr and "enrollment" in result.stderr
     assert common.read_bytes() == COMMON_BASELINE
@@ -915,7 +1425,7 @@ def test_producer_mid_write_failure_preserves_final_file(
         if path in (target, target.with_name(f".{filename}.tmp")):
             write(fd, data[:7])
             assert target.read_bytes() == prior
-            raise OSError("synthetic mid-write failure")
+            raise OSError("synthetic mid-write failure")  # pragma: allowlist secret
         return write(fd, data)
 
     monkeypatch.setattr(os, "write", fail_mid_write)
@@ -956,7 +1466,7 @@ def test_produced_authority_is_scrubbed_from_reviewer_child(producer_store, monk
         "HAPAX_CC_TASK_HASH",
     )
     for task_name in task_names:
-        monkeypatch.setenv(task_name, "synthetic-parent-task")
+        monkeypatch.setenv(task_name, "synthetic-parent-task")  # pragma: allowlist secret
     monkeypatch.syspath_prepend(str(REPO_ROOT / "scripts"))
     spec = importlib.util.spec_from_file_location(
         "authority_delivery_dispatch", REPO_ROOT / "scripts" / "cc-pr-review-dispatch.py"
@@ -966,21 +1476,21 @@ def test_produced_authority_is_scrubbed_from_reviewer_child(producer_store, monk
     monkeypatch.setitem(sys.modules, spec.name, dispatch)
     spec.loader.exec_module(dispatch)
     child = dispatch.default_reviewer_runner(
-        dispatch.review_team.Seat(id="synthetic-seat", family="glm"),
+        dispatch.review_team.Seat(id="synthetic-seat", family="glm"),  # pragma: allowlist secret
         {
             "reviewer_command": [
                 sys.executable,
                 "-c",
                 "import os, sys; "
                 "assert all(name not in os.environ for name in sys.argv[1:]); "
-                "assert os.environ['HAPAX_REVIEW_SEAT_ID'] == 'synthetic-seat'; "
+                "assert os.environ['HAPAX_REVIEW_SEAT_ID'] == 'synthetic-seat'; "  # pragma: allowlist secret
                 "assert os.environ['HAPAX_REVIEW_FAMILY'] == 'glm'; print('scrubbed')",
                 AUTHORITY_ENV,
                 *task_names,
             ],
             "timeout_seconds": 10,
         },
-        "synthetic prompt",
+        "synthetic prompt",  # pragma: allowlist secret
     )
     assert child.stdout == "scrubbed\n"
 
