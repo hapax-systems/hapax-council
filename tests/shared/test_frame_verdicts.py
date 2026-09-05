@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import hashlib
 import json
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
@@ -1023,6 +1024,117 @@ def test_member_declaration_identity_matches_a_real_epoch() -> None:
         assert fv._member_declaration_identity(member, exclusions) == recorded, row["member_id"]
         checked += 1
     assert checked, "no member could be checked — the coverage rows carry no identities"
+
+
+def test_member_declaration_identity_matches_literal_producer_fixture() -> None:
+    fixture = Path(__file__).parent / "fixtures/frame-producer-identity"
+    mass = json.loads((fixture / "mass.json").read_bytes())
+    canonical = (fixture / "declaration.canonical.json").read_bytes()
+    expected = (fixture / "declaration.digest").read_text(encoding="utf-8").strip()
+    assert json.loads(canonical) == {"member": mass["members"][0], "exclusions": mass["exclusions"]}
+    assert "declaration:" + hashlib.sha256(canonical).hexdigest() == expected
+    assert fv._member_declaration_identity(mass["members"][0], mass["exclusions"]) == expected
+
+
+def test_explicit_file_glob_through_symlinked_parent_retains_round_five_refusal(
+    tmp_path: Path,
+) -> None:
+    target = tmp_path / "target"
+    target.mkdir()
+    file = target / "dead.yaml"
+    file.touch()
+    alias = tmp_path / "alias"
+    alias.symlink_to(target, target_is_directory=True)
+    member = fv.DecayedMember("m", "scope_exited", (), (), (file,))
+    with pytest.raises(fv.UndecidableScopeContainment, match="matches declared member file"):
+        fv.ref_within_member(alias, True, member, scope_pattern="*.yaml")
+
+
+@pytest.mark.parametrize("kind", ["escape", "dangling", "loop"])
+@pytest.mark.parametrize("ref", ["alias.py", "[a]lias.py", "*.py"])
+def test_patterned_symlink_ambiguity_names_the_link_and_target(
+    tmp_path: Path, kind: str, ref: str
+) -> None:
+    council = tmp_path / "council"
+    council.mkdir()
+    link = council / "alias.py"
+    target = link if kind == "loop" else tmp_path / "target"
+    if kind == "escape":
+        target.touch()
+    link.symlink_to(target)
+    member = fv.DecayedMember("m", "scope_exited", (council,), ("*.py",), ())
+    verdicts = fv.FrameVerdicts("fixture", tmp_path, NOW, (member,), ())
+    with pytest.raises(fv.UndecidableScopeContainment) as caught:
+        fv.scope_within_decayed([ref], verdicts, council_root=council, vault_root=tmp_path)
+    assert str(link) in str(caught.value)
+    assert str(target) in str(caught.value)
+    assert str(link) in caught.value.remedy
+    assert str(target) in caught.value.remedy
+
+
+def test_recursive_member_pattern_does_not_prove_traversal_of_a_directory_symlink(
+    tmp_path: Path,
+) -> None:
+    (tmp_path / "target").mkdir()
+    (tmp_path / "target/old.py").touch()
+    (tmp_path / "alias").symlink_to(tmp_path / "target", target_is_directory=True)
+    selected = tmp_path / "alias/old.py"
+    assert selected in set(tmp_path.glob("alias/*.py"))
+    assert selected not in set(tmp_path.glob("**/*.py"))
+    member = fv.DecayedMember("m", "scope_exited", (tmp_path,), ("**/*.py",), ())
+    with pytest.raises(fv.UndecidableScopeContainment, match="directory symlink"):
+        fv.ref_within_member(selected, False, member)
+
+
+@pytest.mark.parametrize("skip", ["alias", "target"])
+def test_patterned_symlink_skip_dirs_use_lexical_parts(tmp_path: Path, skip: str) -> None:
+    (tmp_path / "target").mkdir()
+    (tmp_path / "target/old.py").touch()
+    (tmp_path / "alias").symlink_to(tmp_path / "target", target_is_directory=True)
+    member = fv.DecayedMember(
+        "m", "scope_exited", (tmp_path,), ("alias/*.py",), (), skip_dirs=(skip,)
+    )
+    selected = tmp_path / "alias/old.py"
+    assert selected in set(tmp_path.glob("alias/*.py"))
+    assert fv.ref_within_member(selected, False, member) is (skip == "target")
+
+
+def test_patterned_symlink_exclusions_use_the_resolved_target(tmp_path: Path) -> None:
+    (tmp_path / "excluded").mkdir()
+    target = tmp_path / "excluded/old.py"
+    target.touch()
+    link = tmp_path / "alias.py"
+    link.symlink_to(target)
+    member = fv.DecayedMember(
+        "m",
+        "scope_exited",
+        (tmp_path,),
+        ("alias.py",),
+        (),
+        excluded_roots=(tmp_path / "excluded",),
+    )
+    assert link in set(tmp_path.glob("alias.py"))
+    assert not fv.ref_within_member(link, False, member)
+
+
+@pytest.mark.parametrize("escape", [False, True])
+def test_patterned_symlink_in_an_equivalent_checkout_preserves_its_entry(
+    tmp_path: Path, escape: bool
+) -> None:
+    canonical, running = tmp_path / "canonical", tmp_path / "running"
+    git_checkout(canonical, history="council")
+    git_checkout(running, history="council")
+    target = (tmp_path if escape else canonical) / "target"
+    target.touch()
+    (canonical / "alias.py").symlink_to(target)
+    member = fv.DecayedMember("m", "scope_exited", (canonical,), ("alias.py",), ())
+    verdicts = fv.FrameVerdicts("fixture", tmp_path, NOW, (member,), ())
+    if escape:
+        with pytest.raises(fv.UndecidableScopeContainment, match="escapes member root"):
+            fv.scope_within_decayed(["alias.py"], verdicts, council_root=running)
+    else:
+        scope = fv.scope_within_decayed(["alias.py"], verdicts, council_root=running)
+        assert scope.all_inside
 
 
 @pytest.mark.parametrize(

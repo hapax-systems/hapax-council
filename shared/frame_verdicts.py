@@ -80,6 +80,9 @@ PRODUCER_REMEDY = (
 
 _EPOCH_NAME = re.compile(r"^(\d{8}T\d{6}Z)-[0-9a-f]+$")
 _NON_FILESYSTEM_ROOT = re.compile(r"^[A-Za-z][A-Za-z0-9+.\-]*:")
+_AUTHORITY = re.compile(
+    r"[A-Za-z0-9](?:[A-Za-z0-9-]*[A-Za-z0-9])?(?:\.[A-Za-z0-9](?:[A-Za-z0-9-]*[A-Za-z0-9])?)*"
+)
 _WILDCARD = re.compile(r"[*?\[]")
 
 
@@ -181,8 +184,8 @@ def _member_declaration_identity(member: dict[str, object], exclusions: object) 
     """The producer's per-member declaration identity, recomputed by its own rule.
 
     `frame/procedure/declaration.py::_member_declaration_identities`. Copied rather than imported
-    because the producer lives in another tree; `test_member_declaration_identity_matches_a_real_epoch`
-    pins that this reproduces a real epoch's recorded value, so a change on either side is caught.
+    because the producer lives in another tree. The literal producer fixture pins compatibility
+    even without the vault; the real-epoch test additionally checks the installed producer.
     """
     canonical = json.dumps(
         {"member": member, "exclusions": exclusions},
@@ -287,14 +290,13 @@ def _qualified_location(
 ) -> tuple[QualifiedLocation, bool, str | None]:
     """Parse one scheme-qualified declaration or scope without lossy URI normalisation."""
     text = raw.strip()
+    qualifier = text.partition(":")[0]
+    # A malformed host qualifier must not fall through to the filesystem namespace.
+    if ":" in text and not text.split(":", 1)[1].startswith("//"):
+        _validate_authority(qualifier, raw)
     match = _NON_FILESYSTEM_ROOT.match(text)
     if match is None:
         raise NonCanonicalScopeRef(f"{raw!r} is not scheme-qualified")
-    if "\\" in text or "?" in text or "#" in text or "%" in text:
-        raise NonCanonicalScopeRef(
-            f"scheme-qualified ref {raw!r} uses escaping, a query or a fragment; containment is "
-            "undecidable"
-        )
     scheme, remainder = text.split(":", 1)
     authority: str | None = None
     absolute_path = remainder.startswith("/")
@@ -306,11 +308,17 @@ def _qualified_location(
             raise NonCanonicalScopeRef(
                 f"scheme-qualified ref {raw!r} has an empty authority; containment is undecidable"
             )
+        _validate_authority(authority, raw)
         authority = authority.casefold()
         path = path_tail if separator else ""
         absolute_path = True
     elif absolute_path:
         path = remainder[1:]
+    if "\\" in text or "?" in text or "#" in text or "%" in text:
+        raise NonCanonicalScopeRef(
+            f"scheme-qualified ref {raw!r} uses escaping, a query or a fragment; containment is "
+            "undecidable"
+        )
     if "//" in path:
         raise NonCanonicalScopeRef(
             f"scheme-qualified ref {raw!r} has an empty path segment; containment is undecidable"
@@ -341,6 +349,22 @@ def _qualified_location(
         dirlike,
         scope_pattern,
     )
+
+
+def _validate_authority(authority: str, raw: str) -> None:
+    if _AUTHORITY.fullmatch(authority) is None:
+        raise NonCanonicalScopeRef(
+            f"qualified ref {raw!r} has unsupported authority or host qualifier {authority!r}; "
+            "accepted form is dot-separated ASCII letter/digit labels with interior hyphens "
+            "(for example gh://hapax-systems/council/x or podium:council/x); "
+            "wildcard-authority containment is not supported; replace the spelling with "
+            "the literal authority or host qualifier"
+        )
+
+
+def _has_qualifier(raw: str) -> bool:
+    prefix, separator, _ = raw.partition(":")
+    return bool(separator) and "/" not in prefix
 
 
 def _exclusion_locations(
@@ -399,7 +423,7 @@ def _member_location(
     qualified_roots: list[QualifiedLocation] = []
     for raw in raw_roots:
         raw = raw.strip()
-        if _NON_FILESYSTEM_ROOT.match(raw):
+        if _has_qualifier(raw):
             qualified_roots.append(_qualified_location(raw)[0])
             continue
         roots.append(Path(raw).expanduser().resolve())
@@ -413,7 +437,7 @@ def _member_location(
             if not isinstance(item, str):
                 continue
             item = item.strip()
-            if _NON_FILESYSTEM_ROOT.match(item):
+            if _has_qualifier(item):
                 qualified_files.append(_qualified_location(item)[0])
             else:
                 files.append(Path(item).expanduser().resolve())
@@ -759,21 +783,18 @@ def resolve_scope_ref(ref: str, *, council_root: Path, vault_root: Path) -> tupl
         # a file that may not exist yet (the work is about to create it), so the decision is made
         # on the nearest ancestor, never on the leaf.
         first = Path(segments[0]) if segments else Path(".")
-        base = next((b for b in (council_root, vault_root) if (b / first).exists()), council_root)
+        base = next(
+            (
+                b
+                for b in (council_root, vault_root)
+                if (b / first).exists() or (b / first).is_symlink()
+            ),
+            council_root,
+        )
         path = base / path
-    # Resolve symlinks on the deepest existing ancestor: a ref may name a file the work is about to
-    # create, so the leaf need not exist, but every existing component must be canonical or a
-    # symlinked directory would carry a ref outside the member it appears to be inside.
+    # Keep entries below the root lexical, as fs.glob does. A member comparison checks symlinks
+    # against that member's root; resolving here would erase the very entry it enumerated.
     path = path.absolute()
-    existing = path
-    tail: list[str] = []
-    while not existing.exists() and existing != existing.parent:
-        tail.append(existing.name)
-        existing = existing.parent
-    if existing.exists():
-        path = existing.resolve()
-        for part in reversed(tail):
-            path = path / part
     if path.is_dir():
         dirlike = True
     return path, dirlike
@@ -947,6 +968,8 @@ def _scope_glob_covered(scope_pattern: str, member_patterns: tuple[str, ...]) ->
 def _path_is_excluded(path: Path, member: DecayedMember) -> bool:
     if any(part in member.skip_dirs for part in path.parts):
         return True
+    # The producer checks skip_dirs lexically, but Declaration.is_excluded resolves paths.
+    path = _resolve_member_path(path)
     if any(path == root or root in path.parents for root in member.excluded_roots):
         return True
     text = str(path)
@@ -1032,6 +1055,65 @@ def _scope_pattern_from_base(relative: str, scope_pattern: str | None) -> str:
     return "/".join(part for part in (relative, tail) if part)
 
 
+def _resolve_member_path(path: Path) -> Path:
+    try:
+        return path.resolve()
+    except (OSError, RuntimeError) as exc:
+        raise UndecidableScopeContainment(
+            f"cannot resolve {path}: {exc}; containment is undecidable; "
+            "repair the symlink and declare its intended target explicitly"
+        ) from exc
+
+
+def _check_member_symlinks(
+    path: Path, root: Path, member: DecayedMember, *, scope_pattern: str | None
+) -> None:
+    """Do not mistake a lexical entry's target for its membership in fs.glob's surface."""
+    paths = [path]
+    if scope_pattern is not None:
+        # Inspect existing witnesses only for ambiguity, never to prove that a glob's future
+        # surface is contained. pathlib uses the same traversal rules as the producer here.
+        try:
+            paths.extend(path.glob(scope_pattern))
+        except (OSError, RuntimeError, ValueError) as exc:
+            raise UndecidableScopeContainment(
+                f"cannot inspect scope glob {scope_pattern!r} below {path}: {exc}; "
+                "containment is undecidable"
+            ) from exc
+    for selected in paths:
+        for link in (selected, *selected.parents):
+            if link == root or root not in link.parents:
+                break
+            if not link.is_symlink():
+                continue
+            target = link.readlink()
+            problem = None
+            try:
+                resolved = link.resolve(strict=True)
+            except (OSError, RuntimeError):
+                problem = "is dangling or cannot be resolved"
+            else:
+                if resolved != root and root not in resolved.parents:
+                    problem = f"escapes member root {root} (resolved target {resolved})"
+                elif link.is_dir() and not any(
+                    "**" not in _glob_segments(pattern)
+                    and _pattern_matches(selected.relative_to(root).as_posix(), pattern)
+                    for pattern in member.patterns
+                ):
+                    # Recursive ** does not descend into directory symlinks in root.glob.
+                    # An explicit scope through one therefore needs a traversal proof.
+                    problem = "crosses a directory symlink without a non-recursive member pattern"
+            if problem:
+                error = UndecidableScopeContainment(
+                    f"symlink {link} -> {target} {problem}; containment is undecidable"
+                )
+                error.remedy = (
+                    f"repair or re-declare symlink {link} -> {target} and its intended target "
+                    "in the member location, re-run the frame producer, then retry the dispatch"
+                )
+                raise error
+
+
 def ref_within_member(
     path: Path,
     dirlike: bool,
@@ -1040,14 +1122,15 @@ def ref_within_member(
     scope_pattern: str | None = None,
 ) -> bool:
     broad = dirlike or scope_pattern is not None
-    if any(path == file for file in member.files):
+    file_path = _resolve_member_path(path) if member.files else path
+    if any(file_path == file for file in member.files):
         return not broad and not _path_is_excluded(path, member)
     if scope_pattern is not None:
         for file in member.files:
             if (
-                path in file.parents
+                file_path in file.parents
                 and not _path_is_excluded(file, member)
-                and _pattern_matches(file.relative_to(path).as_posix(), scope_pattern)
+                and _pattern_matches(file.relative_to(file_path).as_posix(), scope_pattern)
             ):
                 # The declared file is concrete; the scope supplies the glob. A matching file
                 # proves overlap, but the glob may also name undeclared (even future) files.
@@ -1055,7 +1138,18 @@ def ref_within_member(
                     f"scope glob {scope_pattern!r} matches declared member file {file}; "
                     "whole-surface containment cannot be decided safely"
                 )
+    lexical_path = path
     for root in member.roots:
+        path = lexical_path
+        member_path = path
+        if path != root and root not in path.parents:
+            # Roots themselves may be declared through a symlink. Canonicalise only the
+            # ancestor naming that root, preserving every entry below it for pattern matching.
+            for ancestor in (path, *path.parents):
+                if _resolve_member_path(ancestor) == root:
+                    member_path = root / path.relative_to(ancestor)
+                    break
+        path = member_path
         if path != root and root not in path.parents:
             if (
                 scope_pattern is not None
@@ -1070,6 +1164,9 @@ def ref_within_member(
                     "whole-surface containment cannot be decided safely"
                 )
             continue
+        _check_member_symlinks(
+            path, root, member, scope_pattern=(scope_pattern or "**/*") if broad else None
+        )
         relative = "" if path == root else path.relative_to(root).as_posix()
         if broad:
             member_scope_pattern = _scope_pattern_from_base(relative, scope_pattern)
@@ -1210,11 +1307,7 @@ def _repo_relative_candidates(
     roots.discard(council_root.resolve())
     if not roots or (identity := _repository_identity(council_root)) is None:
         return []
-    return [
-        (root / relative).resolve()
-        for root in sorted(roots)
-        if _repository_identity(root) == identity
-    ]
+    return [root / relative for root in sorted(roots) if _repository_identity(root) == identity]
 
 
 def scope_within_decayed(
@@ -1236,7 +1329,7 @@ def scope_within_decayed(
         )
     for ref in declared_refs:
         text = str(ref).strip()
-        if _NON_FILESYSTEM_ROOT.match(text):
+        if _has_qualifier(text):
             qualified_ref, dirlike, scope_pattern = _qualified_location(text, scope_ref=True)
             hit = next(
                 (

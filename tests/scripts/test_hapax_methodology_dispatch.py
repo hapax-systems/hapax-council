@@ -4903,6 +4903,134 @@ def _dispatch_up_to_the_adapter(
     return rc, capsys.readouterr().err
 
 
+@pytest.mark.parametrize("namespace", ["filesystem", "podium:", "gh://hapax-systems/"])
+@pytest.mark.parametrize("kind", ["file", "directory", "escape", "dangling"])
+def test_dispatch_patterned_member_symlinks_do_not_bypass_decay(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+    namespace: str,
+    kind: str,
+) -> None:
+    module = _dispatcher_module()
+    council = tmp_path / "council"
+    (council / ".venv/bin").mkdir(parents=True)
+    target = (tmp_path if kind == "escape" else council) / "target"
+    if kind == "directory":
+        target.mkdir()
+        (target / "python").touch()
+        link = council / ".venv/bin/linked"
+        pattern = ".venv/bin/linked/python"
+    else:
+        if kind != "dangling":
+            target.touch()
+        link = council / ".venv/bin/python"
+        pattern = ".venv/bin/python"
+    link.symlink_to(target, target_is_directory=kind == "directory")
+    # The producer enumerates lexical entries, including a dangling literal glob entry
+    # (which its subsequent is_file filter drops). Never substitute the target spelling.
+    assert council / pattern in set(council.glob(pattern))
+    monkeypatch.setattr(module, "REPO_ROOT_FOR_IMPORTS", council)
+    declared_root = str(council) if namespace == "filesystem" else namespace + "council"
+    ref = pattern if namespace == "filesystem" else namespace + "council/" + pattern
+    frame_root = _frame_procedure_root(
+        tmp_path / "frame",
+        decayed_root=declared_root,
+        location={"path": declared_root, "patterns": [pattern]},
+    )
+
+    rc, err = _dispatch_up_to_the_adapter(
+        tmp_path,
+        monkeypatch,
+        capsys,
+        module,
+        mutation_scope_refs=json.dumps([ref]),
+        frame_root=frame_root,
+    )
+
+    assert rc == 10
+    assert "fixture refusal" not in err, "symlink scope escaped validate_task and reached launch"
+    if namespace == "filesystem" and kind in {"escape", "dangling"}:
+        assert "containment is undecidable" in err
+        assert str(link) in err and str(target) in err
+        assert "Next:" in err and "symlink" in err
+    else:
+        assert "marks every declared mutation surface out of accountability" in err
+    receipt = json.loads(
+        (tmp_path / "ledger/methodology-dispatch.jsonl").read_text().splitlines()[-1]
+    )
+    assert receipt["ok"] is False
+    assert receipt["frame_epoch"].endswith("-deadbeef")
+    assert receipt["frame_decayed_members"] == ["legacy-surface"]
+    assert receipt["reason"] in err
+
+
+@pytest.mark.parametrize("namespace", ["gh", "host"])
+@pytest.mark.parametrize("spelling", ["*", "?", "[", "]", "@", " ", "%", "#", "_", "é", "\\"])
+def test_dispatch_invalid_qualified_authority_refuses_with_accepted_form(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+    namespace: str,
+    spelling: str,
+) -> None:
+    module = _dispatcher_module()
+    if namespace == "gh":
+        root = "gh://hapax-systems/council"
+        authority = "h" + spelling + "apax-systems"
+        ref = f"gh://{authority}/council/x"
+    else:
+        root = "podium:council"
+        authority = "p" + spelling + "odium"
+        ref = f"{authority}:council/x"
+    frame_root = _frame_procedure_root(tmp_path / "frame", decayed_root=root)
+
+    rc, err = _dispatch_up_to_the_adapter(
+        tmp_path,
+        monkeypatch,
+        capsys,
+        module,
+        mutation_scope_refs=json.dumps([ref]),
+        frame_root=frame_root,
+    )
+
+    assert rc == 10
+    assert "fixture refusal" not in err, "invalid authority reached launch"
+    assert repr(authority) in err
+    assert "accepted form" in err
+    assert "wildcard-authority containment is not supported" in err
+    assert "Next:" in err
+
+
+@pytest.mark.parametrize(
+    ("root", "ref"),
+    [
+        ("gh://hapax-systems/council", "GH://HAPAX-SYSTEMS/council/x"),
+        ("podium:council", "PODIUM:council/x"),
+    ],
+)
+def test_dispatch_plain_qualified_authority_casefolding_still_refuses_decay(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+    root: str,
+    ref: str,
+) -> None:
+    module = _dispatcher_module()
+    frame_root = _frame_procedure_root(tmp_path / "frame", decayed_root=root)
+    rc, err = _dispatch_up_to_the_adapter(
+        tmp_path,
+        monkeypatch,
+        capsys,
+        module,
+        mutation_scope_refs=json.dumps([ref]),
+        frame_root=frame_root,
+    )
+    assert rc == 10
+    assert "fixture refusal" not in err
+    assert "marks every declared mutation surface out of accountability" in err
+
+
 def test_dispatch_refuses_work_whose_whole_scope_lies_in_a_decayed_member(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
 ) -> None:
