@@ -5037,6 +5037,119 @@ def test_dispatch_refuses_when_the_frame_verdicts_are_stale_naming_the_producer(
     assert "fixture refusal" not in err
 
 
+@pytest.mark.parametrize("scope_ref", ["docs/file.md", "**/*.md", "*.md"])
+def test_dispatch_refuses_root_globs_from_an_equivalent_activation_checkout(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+    scope_ref: str,
+) -> None:
+    module = _dispatcher_module()
+    canonical = tmp_path / "projects/council"
+    activation = tmp_path / "source-activation/releases/release"
+    for checkout in (canonical, activation):
+        git_checkout(checkout, history="council")
+        (checkout / "docs").mkdir()
+        (checkout / "docs/file.md").touch()
+        (checkout / "file.md").touch()
+    monkeypatch.setattr(module, "REPO_ROOT_FOR_IMPORTS", activation)
+    frame_root = _frame_procedure_root(
+        tmp_path / "frame",
+        decayed_root=canonical,
+        location={"path": str(canonical), "patterns": ["**/*.md"]},
+    )
+    enumerated = {
+        file.relative_to(canonical) for file in canonical.glob("**/*.md") if file.is_file()
+    }
+    scoped = {file.relative_to(activation) for file in activation.glob(scope_ref) if file.is_file()}
+    assert scoped and scoped <= enumerated
+
+    rc, err = _dispatch_up_to_the_adapter(
+        tmp_path,
+        monkeypatch,
+        capsys,
+        module,
+        mutation_scope_refs=json.dumps([scope_ref]),
+        frame_root=frame_root,
+    )
+
+    assert rc == 10
+    assert "marks every declared mutation surface out of accountability" in err
+    assert f"{scope_ref} lies in legacy-surface (scope_exited)" in err
+    receipt = json.loads(
+        (tmp_path / "ledger/methodology-dispatch.jsonl").read_text().splitlines()[-1]
+    )
+    assert receipt["ok"] is False
+    assert receipt["frame_epoch"].endswith("-deadbeef")
+    assert receipt["frame_decayed_members"] == ["legacy-surface"]
+
+
+def test_dispatch_refuses_a_glob_overlapping_the_member_root_with_a_remedy(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    module = _dispatcher_module()
+    council = tmp_path / "council"
+    (council / "legacy").mkdir(parents=True)
+    (council / "legacy/old.py").touch()
+    monkeypatch.setattr(module, "REPO_ROOT_FOR_IMPORTS", council)
+    frame_root = _frame_procedure_root(
+        tmp_path / "frame",
+        decayed_root=council / "legacy",
+        location={"path": str(council / "legacy"), "patterns": ["**/*.py"]},
+    )
+
+    rc, err = _dispatch_up_to_the_adapter(
+        tmp_path,
+        monkeypatch,
+        capsys,
+        module,
+        mutation_scope_refs=json.dumps(["[l]egacy/*.py"]),
+        frame_root=frame_root,
+    )
+
+    assert rc == 10
+    assert "whole-surface containment cannot be decided safely" in err
+    assert fv.UndecidableScopeContainment.remedy in err
+    receipt = json.loads(
+        (tmp_path / "ledger/methodology-dispatch.jsonl").read_text().splitlines()[-1]
+    )
+    assert receipt["ok"] is False
+    assert "declared mutation scope is not containable" in receipt["reason"]
+    assert receipt["frame_epoch"].endswith("-deadbeef")
+
+
+def test_dispatch_refuses_an_invalid_epoch_date_with_a_producer_receipt(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    module = _dispatcher_module()
+    frame_root = tmp_path / "frame"
+    name = "20261303T123456Z-deadbeef"
+    (frame_root / "_runs/epochs" / name).mkdir(parents=True)
+    (frame_root / "_runs/current").symlink_to(Path("epochs") / name)
+
+    rc, err = _dispatch_up_to_the_adapter(
+        tmp_path,
+        monkeypatch,
+        capsys,
+        module,
+        mutation_scope_refs="[scripts/live.py]",
+        frame_root=frame_root,
+    )
+
+    assert rc == 10
+    assert "frame verdicts unavailable" in err
+    assert f"names invalid epoch {name!r}" in err
+    assert fv.PRODUCER_REMEDY in err
+    receipt = json.loads(
+        (tmp_path / "ledger/methodology-dispatch.jsonl").read_text().splitlines()[-1]
+    )
+    assert receipt["ok"] is False
+    assert receipt["frame_epoch"] is None
+    assert receipt["frame_unavailable"]["remedy"] == fv.PRODUCER_REMEDY
+    assert receipt["frame_unavailable"]["frame_root_resolved"] == str(frame_root.resolve())
+    assert f"names invalid epoch {name!r}" in receipt["frame_unavailable"]["reason"]
+
+
 def test_dispatch_maps_release_activation_refs_to_the_canonical_repository(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:

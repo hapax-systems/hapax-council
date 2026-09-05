@@ -115,11 +115,41 @@ def test_latest_epoch_is_the_newest_parseable_dir_that_carries_elements(tmp_path
     (epochs / "20260903T230000Z-ffffffff").mkdir()  # newest, but no elements yet (in flight)
     (epochs / "notes").mkdir()
     (epochs / "notes" / "elements.json").write_text("[]")
+    (epochs / "20261303T123456Z-deadbeef").mkdir()
+    (epochs / "20261303T123456Z-deadbeef" / "elements.json").write_text("[]")
 
     chosen = fv.latest_epoch_dir(tmp_path)
 
     assert chosen is not None and chosen.name == "20260903T204725Z-d693f20c"
     assert fv.epoch_produced_at(chosen.name) == datetime(2026, 9, 3, 20, 47, 25, tzinfo=UTC)
+
+
+@pytest.mark.parametrize(
+    "stamp",
+    [
+        "20261303T123456Z",
+        "20260931T123456Z",
+        "20260229T123456Z",
+        "20260903T243456Z",
+        "20260903T126056Z",
+        "20260903T123460Z",
+    ],
+)
+def test_invalid_calendar_epoch_refuses_with_the_producer_remedy(
+    tmp_path: Path, stamp: str
+) -> None:
+    name = f"{stamp}-deadbeef"
+    epoch = tmp_path / "_runs/epochs" / name
+    epoch.mkdir(parents=True)
+    (tmp_path / "_runs/current").symlink_to(Path("epochs") / name)
+
+    for read in (fv.current_epoch_dir, fv.load_frame_verdicts):
+        with pytest.raises(fv.FrameVerdictsUnavailable, match="names invalid epoch") as caught:
+            read(tmp_path)
+        assert name in caught.value.reason
+        assert caught.value.remedy == fv.PRODUCER_REMEDY
+    assert caught.value.frame_root_resolved == str(tmp_path.resolve())
+    assert fv.epoch_produced_at(name) is None
 
 
 def test_loader_uses_the_accepted_current_epoch_not_a_newer_rejected_attempt(
@@ -993,6 +1023,64 @@ def test_member_declaration_identity_matches_a_real_epoch() -> None:
         assert fv._member_declaration_identity(member, exclusions) == recorded, row["member_id"]
         checked += 1
     assert checked, "no member could be checked — the coverage rows carry no identities"
+
+
+@pytest.mark.parametrize(
+    ("member_dir", "scope_pattern", "overlaps"),
+    [
+        ("legacy", "[l]egacy/*.py", True),
+        ("legacy", "leg?cy/*.py", True),
+        ("legacy", "*/old.py", True),
+        ("legacy", "**/*.py", True),
+        ("legacy", "[l]egacy/**/old.py", True),
+        ("legacy", "[l]egacy/[!a].py", True),
+        ("archive/legacy", "*/[l]egacy/*.py", True),
+        ("archive/legacy", "[a]rchive/leg?cy/*.py", True),
+        ("archive/legacy", "**/[l]egacy/*.py", True),
+        ("legacy", "[x]egacy/*.py", False),
+        ("legacy", "*.py", False),
+        ("archive/legacy", "*/[x]egacy/*.py", False),
+    ],
+)
+def test_glob_components_before_member_root_do_not_guess_containment(
+    tmp_path: Path, member_dir: str, scope_pattern: str, overlaps: bool
+) -> None:
+    council = tmp_path / "council"
+    member_root = council / member_dir
+    member_root.mkdir(parents=True)
+    (member_root / "old.py").touch()
+    (member_root / "b.py").touch()
+    for relative in ("live/old.py", "xegacy/old.py", "archive/xegacy/old.py", "live.py"):
+        file = council / relative
+        file.parent.mkdir(parents=True, exist_ok=True)
+        file.touch()
+    members = [{"id": "legacy", "location": {"path": str(member_root), "patterns": ["**/*.py"]}}]
+    verdicts = fv.load_frame_verdicts(
+        _procedure_root(
+            tmp_path / "procedure", members=members, verdicts=[_verdict("legacy", "scope_exited")]
+        ),
+        now=NOW,
+    )
+    # Producer oracle: root.glob(pattern), retaining files, anchored at each root.
+    enumerated = {file for file in member_root.glob("**/*.py") if file.is_file()}
+    scope_files = {file for file in council.glob(scope_pattern) if file.is_file()}
+    assert scope_files
+    assert bool(scope_files & enumerated) is overlaps
+    assert fv.scope_within_decayed(
+        [f"{member_dir}/*.py"], verdicts, council_root=council
+    ).all_inside
+
+    if overlaps:
+        with pytest.raises(fv.UndecidableScopeContainment) as caught:
+            fv.scope_within_decayed([scope_pattern], verdicts, council_root=council)
+        assert scope_pattern in str(caught.value)
+        assert str(member_root) in str(caught.value)
+        assert "explicit file paths or narrower globs" in caught.value.remedy
+    else:
+        result = fv.scope_within_decayed([scope_pattern], verdicts, council_root=council)
+        assert not result.all_inside
+        assert result.matches == ()
+        assert result.outside == (scope_pattern,)
 
 
 @pytest.mark.parametrize("identity", ["unrelated", "missing", "invalid", "unverified-source"])

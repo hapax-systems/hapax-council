@@ -207,7 +207,12 @@ def epoch_produced_at(name: str) -> datetime | None:
     match = _EPOCH_NAME.match(name)
     if match is None:
         return None
-    return datetime.strptime(match.group(1), "%Y%m%dT%H%M%SZ").replace(tzinfo=UTC)
+    try:
+        return datetime.strptime(match.group(1), "%Y%m%dT%H%M%SZ").replace(tzinfo=UTC)
+    except ValueError:
+        # A syntactically valid stamp can still name an impossible calendar date/time.
+        # Let current_epoch_dir issue the same actionable refusal as any invalid name.
+        return None
 
 
 def latest_epoch_dir(procedure_root: Path) -> Path | None:
@@ -949,7 +954,7 @@ def _path_is_excluded(path: Path, member: DecayedMember) -> bool:
 
 
 def _glob_intersects_subtree(scope_pattern: str, relative_prefix: str) -> bool | None:
-    """Whether a scope glob has a path at or below one concrete exclusion prefix."""
+    """Whether a scope glob has a path at or below one concrete subtree prefix."""
     prefix = tuple(part for part in relative_prefix.split("/") if part)
     regex = _glob_to_regex(scope_pattern)
     candidates = [relative_prefix]
@@ -1039,6 +1044,18 @@ def ref_within_member(
         return not broad and not _path_is_excluded(path, member)
     for root in member.roots:
         if path != root and root not in path.parents:
+            if (
+                scope_pattern is not None
+                and path in root.parents
+                and _glob_intersects_subtree(scope_pattern, root.relative_to(path).as_posix())
+                is not False
+            ):
+                # The literal prefix stops before the member root, but the glob may enter it.
+                # Neither overlap nor a missing witness proves whole-surface containment.
+                raise UndecidableScopeContainment(
+                    f"scope glob {scope_pattern!r} may enter member root {root}; "
+                    "whole-surface containment cannot be decided safely"
+                )
             continue
         relative = "" if path == root else path.relative_to(root).as_posix()
         if broad:
@@ -1138,8 +1155,7 @@ def _repo_relative_candidates(
     if text.startswith("/") or text.startswith("~"):
         return []
     segments, _, _ = _filesystem_scope_parts(ref)
-    if not segments:
-        return []
+    # An empty literal prefix still names the repository root; apply its glob there.
     relative = Path(*segments)
     roots: set[Path] = set()
     for member in verdicts.decayed:
