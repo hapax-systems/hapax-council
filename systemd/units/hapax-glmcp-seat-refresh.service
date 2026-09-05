@@ -1,5 +1,5 @@
 [Unit]
-Description=Keep the GLM review seat admitted: one sanctioned reviewer round-trip when the passive admission receipt is older than 5 minutes (it lives 15)
+Description=Keep the GLM review seat admitted within the script's bounded no-lapse envelope
 # The receipt chain: reviewer round-trip (exit 0) -> witness yaml (no prompt/output/secret persisted)
 # -> hapax-glmcp-quota-admission observe-success -> hapax-quota-telemetry-writer -> live ledger the
 # review dispatcher and the autoqueue read. Measured 2026-09-02: with no refresher the seat had been
@@ -13,10 +13,15 @@ Environment=HOME=/home/hapax
 Environment=PATH=/home/hapax/.local/bin:/usr/local/bin:/usr/bin:/bin
 Environment=GNUPGHOME=/home/hapax/.gnupg
 Environment=PASSWORD_STORE_DIR=/home/hapax/.password-store
-# Three attempts of up to 60 s plus two 30 s pauses, then the admission writer (60 s), the
-# telemetry writer (120 s, ledger only), the glmcp receipt refresh (60 s) and two validated reads
-# (30 s each): 540 s is the bounded script runtime, with 360 s of unit-level shutdown margin.
-TimeoutStartSec=900
+# The script accounts for every stage, kill-after grace, bounded filtering, launches, file I/O,
+# scheduler slack and an explicit margin, then refuses with exit 7 unless that chain fits this exact
+# whole-service bound. This cap covers wall time from ExecStart launch through normal process exit.
+TimeoutStartSec=600
+# Bound the final TERM-to-KILL transition too: OnUnitInactiveSec does not start until shutdown ends,
+# so post-check shutdown is part of the freshness predicate rather than unbounded cleanup time.
+TimeoutStopSec=5
+KillMode=control-group
+SendSIGKILL=yes
 # The receipt chain runs the activation worktree, the Coding Plan endpoint and the Coding Plan
 # credential, and nothing else. systemd does NOT expand specifiers such as %h inside Environment=
 # (measured 2026-09-02: `Environment=X=%h/y` arrives as the literal `%h/y`), so the pins live in

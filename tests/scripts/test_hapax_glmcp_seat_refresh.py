@@ -2,7 +2,7 @@
 the seat had been expired since 2026-08-04 and every council review dossier was refused as seated
 by a blocked family — 40 open PRs admitted nothing for four weeks (memory
 `glm-review-seat-expires-every-15-minutes`, L-158). `scripts/hapax-glmcp-seat-refresh` is that
-producer; `hapax-glmcp-seat-refresh.timer` runs it every five minutes.
+producer; `hapax-glmcp-seat-refresh.timer` schedules it after each service completion.
 
 These tests RUN the script against stubbed reviewer / admission / telemetry-writer scripts in a
 throwaway HOME (review finding on #4624: text greps of the script were not behaviour tests), so
@@ -152,6 +152,7 @@ def _harness(
     refreshed_remaining: int | None = 900,
     malformed_receipt: bool = False,
     receipt_stale: bool = False,
+    now: datetime | None = None,
 ) -> tuple[Path, Path]:
     """A throwaway HOME plus a fake council root whose scripts record what they were asked.
 
@@ -197,7 +198,7 @@ def _harness(
         "    ;;\n"
         "esac\n",
     )
-    now = datetime.now(UTC)
+    now = now or datetime.now(UTC)
     if malformed_receipt:
         (receipts_dir / "glmcp.json").write_text(
             json.dumps(
@@ -242,12 +243,17 @@ def _harness(
 
 
 def _run(
-    home: Path, council: Path, *, allow_root: bool = True, receipts_rc: int = 0
+    home: Path,
+    council: Path,
+    *,
+    allow_root: bool = True,
+    receipts_rc: int = 0,
+    path: str | None = None,
 ) -> subprocess.CompletedProcess[str]:
     env = {
         "HOME": str(home),
         "HAPAX_COUNCIL": str(council),
-        "PATH": os.environ["PATH"],
+        "PATH": path or os.environ["PATH"],
         "TMPDIR": str(home),
         "HAPAX_GLMCP_SEAT_RETRY_SLEEP": "0",
         # The stubbed receipts script delegates --show to the real one, in this interpreter.
@@ -297,41 +303,84 @@ def _envelope(tmp_path: Path) -> dict[str, int]:
 def test_refresh_threshold_is_derived_from_every_stage_and_a_skip_cannot_lapse(
     tmp_path: Path,
 ) -> None:
-    """Review finding on #4624, round 9: the threshold covered the timer period and the reviewer
-    retries only, while a replacement receipt is not dispatcher-visible until the admission mint,
-    the ledger writer, the receipt refresh and the read-back also finish, and AccuracySec can delay
-    the activation. The script now derives the threshold from every stage and refuses to run when
-    the sum no longer fits inside the seat's life; this test recomputes the sum from the printed
-    stage constants and checks all three invariants against the unit files."""
+    """The threshold covers bounded commands and every non-command wall-clock term.
+
+    Review round 11 found that the old arithmetic stopped at 540 s of nominal command time plus
+    the 60 s timer window. This recomputes the complete service chain, proves it fits the unit's
+    exact whole-service ceiling, and then derives the skip and overrun invariants from that ceiling.
+    """
     e = _envelope(tmp_path)
     review = (
         e["review_attempts"] * e["review_attempt_timeout_s"]
         + (e["review_attempts"] - 1) * e["review_retry_sleep_s"]
     )
-    service = (
-        e["show_timeout_s"]  # the next run's initial freshness read
+    core_commands = (
+        e["show_timeout_s"]
         + review
         + e["admission_timeout_s"]
         + e["writer_timeout_s"]
         + e["receipts_timeout_s"]
         + e["show_timeout_s"]
     )
-    chain = e["timer_accuracy_s"] + service
-    post_mint_tail = e["writer_timeout_s"] + e["receipts_timeout_s"] + e["show_timeout_s"]
+    kill_envelope = e["timed_command_count"] * e["timeout_kill_after_s"]
+    filter_envelope = e["filter_invocations_max"] * (
+        e["filter_timeout_s"] + e["timeout_kill_after_s"]
+    )
+    accounted_service = (
+        core_commands
+        + kill_envelope
+        + filter_envelope
+        + e["process_launch_slack_s"]
+        + e["file_io_slack_s"]
+        + e["service_scheduler_slack_s"]
+        + e["service_safety_margin_s"]
+    )
+    service = accounted_service + e["service_bound_reserve_s"]
+    chain = (
+        e["post_check_shutdown_s"]
+        + e["timer_accuracy_s"]
+        + e["timer_scheduler_slack_s"]
+        + service
+        + e["no_lapse_safety_margin_s"]
+    )
+    post_mint_tail = (
+        e["writer_timeout_s"]
+        + e["receipts_timeout_s"]
+        + e["show_timeout_s"]
+        + e["post_mint_timed_command_count"] * e["timeout_kill_after_s"]
+        + e["post_mint_filter_invocations_max"]
+        * (e["filter_timeout_s"] + e["timeout_kill_after_s"])
+        + e["post_mint_process_launch_slack_s"]
+        + e["post_mint_file_io_slack_s"]
+        + e["post_mint_scheduler_slack_s"]
+        + e["post_check_shutdown_s"]
+        + e["service_safety_margin_s"]
+    )
     assert e["review_envelope_s"] == review
+    assert e["core_command_envelope_s"] == core_commands
+    assert e["timeout_kill_envelope_s"] == kill_envelope
+    assert e["filter_envelope_s"] == filter_envelope
+    assert e["accounted_service_chain_s"] == accounted_service
+    assert accounted_service <= e["whole_service_bound_s"]
     assert e["service_envelope_s"] == service
+    assert service == e["whole_service_bound_s"] == 600
     assert e["chain_envelope_s"] == chain
     assert e["post_mint_tail_s"] == post_mint_tail
     assert e["seat_refresh_threshold_s"] == e["timer_inactive_delay_s"] + chain
-    assert e["overrun_renewal_envelope_s"] == post_mint_tail + e["seat_refresh_threshold_s"]
+    assert e["seat_skip_min_remaining_s"] == (
+        e["seat_refresh_threshold_s"] + e["receipt_rounding_guard_s"]
+    )
+    assert e["overrun_renewal_envelope_s"] == (post_mint_tail + e["seat_skip_min_remaining_s"])
     assert e["review_attempts"] == 3
     # a skip must be possible at all inside the seat's life, or the guard is dead code
     assert e["seat_refresh_threshold_s"] < e["seat_life_s"]
     # Even a prior run which minted before its worst-case tail must leave enough life for the
     # completion-relative delay and the entire next renewal.
     assert e["overrun_renewal_envelope_s"] < e["seat_life_s"], e
-    assert e["seat_visible_min_s"] == e["seat_refresh_threshold_s"]
+    assert e["seat_visible_min_s"] == e["seat_skip_min_remaining_s"]
     assert e["review_inner_timeout_s"] < e["review_attempt_timeout_s"]
+    assert e["service_safety_margin_s"] > 0
+    assert e["no_lapse_safety_margin_s"] > 0
     timer = TIMER.read_text(encoding="utf-8")
     assert _unit_value(timer, "Timer", "OnUnitActiveSec") is None
     assert (
@@ -340,7 +389,7 @@ def test_refresh_threshold_is_derived_from_every_stage_and_a_skip_cannot_lapse(
     )
     assert _unit_value(timer, "Timer", "AccuracySec") == "30s" and e["timer_accuracy_s"] == 30
     script = SCRIPT.read_text(encoding="utf-8")
-    assert "remaining > SEAT_REFRESH_THRESHOLD_S" in script
+    assert "remaining > SEAT_SKIP_MIN_REMAINING_S" in script
     assert "remaining <= SEAT_VISIBLE_MIN_S" in script
     for stage in (
         "ADMISSION_TIMEOUT_S",
@@ -348,7 +397,7 @@ def test_refresh_threshold_is_derived_from_every_stage_and_a_skip_cannot_lapse(
         "RECEIPTS_TIMEOUT_S",
         "REVIEW_ATTEMPT_TIMEOUT_S",
     ):
-        assert f'timeout "${stage}"' in script, stage
+        assert f'bounded_timeout "${stage}"' in script, stage
 
 
 def test_an_overrunning_oneshot_cannot_consume_the_next_activation(tmp_path: Path) -> None:
@@ -411,7 +460,7 @@ def test_an_unsafe_envelope_is_refused_and_names_every_term(tmp_path: Path) -> N
     home, council = _harness(tmp_path)
     unsafe_script = tmp_path / "unsafe-seat-refresh"
     unsafe_script.write_text(
-        SCRIPT.read_text(encoding="utf-8").replace("WRITER_TIMEOUT_S=120", "WRITER_TIMEOUT_S=166"),
+        SCRIPT.read_text(encoding="utf-8").replace("WRITER_TIMEOUT_S=90", "WRITER_TIMEOUT_S=182"),
         encoding="utf-8",
     )
     proc = subprocess.run(
@@ -428,22 +477,16 @@ def test_an_unsafe_envelope_is_refused_and_names_every_term(tmp_path: Path) -> N
     )
     assert proc.returncode == 7, proc.stderr
     for term in (
-        "SEAT_REFRESH_THRESHOLD_S",
-        "OVERRUN_RENEWAL_ENVELOPE_S",
-        "POST_MINT_TAIL_S",
-        "CHAIN_ENVELOPE_S",
-        "REVIEW_ENVELOPE_S",
-        "TIMER_INACTIVE_DELAY_S",
-        "TIMER_ACCURACY_S",
-        "initial SHOW_TIMEOUT_S",
-        "REVIEW_ATTEMPTS",
-        "REVIEW_ATTEMPT_TIMEOUT_S",
-        "REVIEW_RETRY_SLEEP_S",
-        "ADMISSION_TIMEOUT_S",
-        "WRITER_TIMEOUT_S",
-        "RECEIPTS_TIMEOUT_S",
-        "final SHOW_TIMEOUT_S",
-        "SEAT_LIFE_S",
+        "ACCOUNTED_SERVICE_CHAIN_S",
+        "WHOLE_SERVICE_BOUND_S=600",
+        "TimeoutStartSec",
+        "CORE_COMMAND_ENVELOPE_S",
+        "TIMEOUT_KILL_ENVELOPE_S",
+        "FILTER_ENVELOPE_S",
+        "PROCESS_LAUNCH_SLACK_S",
+        "FILE_IO_SLACK_S",
+        "SERVICE_SCHEDULER_SLACK_S",
+        "SERVICE_SAFETY_MARGIN_S",
     ):
         assert term in proc.stderr, (term, proc.stderr)
 
@@ -570,6 +613,37 @@ def test_a_receipt_between_the_old_and_new_thresholds_is_refreshed(tmp_path: Pat
         tmp_path / "run", receipt_status="observed", receipt_remaining=remaining, receipt_age=0
     )
     result = _run(home, council)
+    assert result.returncode == 0, result.stderr
+    assert "no round-trip" not in result.stdout
+    assert "roundtrip attempt 1: exit=0" in result.stdout
+    assert (home / "admission-calls").exists()
+
+
+def test_a_receipt_with_exactly_threshold_plus_one_second_is_refreshed(
+    tmp_path: Path,
+) -> None:
+    """One integer second is not enough clearance to skip: it can be consumed immediately by
+    receipt rounding and the post-check shutdown before the completion-relative timer starts."""
+    e = _envelope(tmp_path / "envelope")
+    fixed_epoch = int(datetime.now(UTC).timestamp())
+    fixed_now = datetime.fromtimestamp(fixed_epoch, UTC)
+    home, council = _harness(
+        tmp_path / "run",
+        receipt_status="observed",
+        receipt_remaining=e["seat_refresh_threshold_s"] + 1,
+        receipt_age=0,
+        now=fixed_now,
+    )
+    bin_dir = tmp_path / "bin"
+    bin_dir.mkdir()
+    date = shutil.which("date")
+    assert date is not None
+    _stub(
+        bin_dir / "date",
+        f'if [ "$*" = "-u +%s" ]; then echo "{fixed_epoch}"; else exec "{date}" "$@"; fi\n',
+    )
+    env_path = f"{bin_dir}:{os.environ['PATH']}"
+    result = _run(home, council, path=env_path)
     assert result.returncode == 0, result.stderr
     assert "no round-trip" not in result.stdout
     assert "roundtrip attempt 1: exit=0" in result.stdout
@@ -781,25 +855,34 @@ def test_unit_pair_executes_from_the_activation_worktree_and_strips_inherited_ov
     assert _unit_value(service, "Service", "MemoryMax") is not None
     service_budget = int(_unit_value(service, "Service", "TimeoutStartSec") or 0)
     envelope = _envelope(tmp_path)
-    bounded_runtime = envelope["chain_envelope_s"] - envelope["timer_accuracy_s"]
-    assert service_budget >= bounded_runtime
+    assert service_budget == envelope["whole_service_bound_s"] == 600
+    assert (
+        int(_unit_value(service, "Service", "TimeoutStopSec") or 0)
+        == envelope["post_check_shutdown_s"]
+    )
+    assert _unit_value(service, "Service", "KillMode") == "control-group"
+    assert _unit_value(service, "Service", "SendSIGKILL") == "yes"
     # ...and the budget is only a budget if every step in it is bounded.
     script = SCRIPT.read_text(encoding="utf-8")
-    assert 'timeout "$REVIEW_ATTEMPT_TIMEOUT_S" "$H/scripts/hapax-glmcp-reviewer"' in script
-    assert 'timeout "$ADMISSION_TIMEOUT_S" "$H/scripts/hapax-glmcp-quota-admission"' in script
+    assert 'timeout --signal=TERM --kill-after="${TIMEOUT_KILL_AFTER_S}s" "${timeout_s}s"' in script
+    assert 'bounded_timeout "$REVIEW_ATTEMPT_TIMEOUT_S" "$H/scripts/hapax-glmcp-reviewer"' in script
     assert (
-        'timeout "$WRITER_TIMEOUT_S" "$H/scripts/hapax-quota-telemetry-writer" --skip-receipts'
+        'bounded_timeout "$ADMISSION_TIMEOUT_S" "$H/scripts/hapax-glmcp-quota-admission"' in script
+    )
+    assert (
+        'bounded_timeout "$WRITER_TIMEOUT_S" "$H/scripts/hapax-quota-telemetry-writer" --skip-receipts'
         in script
     )
     assert (
-        'timeout "$RECEIPTS_TIMEOUT_S" "$H/scripts/hapax-platform-capability-receipts" --platform glmcp'
+        'bounded_timeout "$RECEIPTS_TIMEOUT_S" "$H/scripts/hapax-platform-capability-receipts" --platform glmcp'
         in script
     )
     assert (
-        'timeout "${SHOW_TIMEOUT_S:-30}" "$H/scripts/hapax-platform-capability-receipts" --show'
+        'bounded_timeout "$SHOW_TIMEOUT_S" "$H/scripts/hapax-platform-capability-receipts" --show'
         in script
     )
-    assert "older than 5 minutes" in (_unit_value(service, "Unit", "Description") or "")
+    assert 'bounded_timeout "$FILTER_TIMEOUT_S" bash -c' in script
+    assert "bounded no-lapse envelope" in (_unit_value(service, "Unit", "Description") or "")
     timer = TIMER.read_text(encoding="utf-8")
     assert _unit_value(timer, "Install", "WantedBy") == "timers.target"
     assert "After each completion" in (_unit_value(timer, "Unit", "Description") or "")
@@ -861,7 +944,7 @@ def test_a_new_receipt_without_a_full_next_renewal_window_is_refused(tmp_path: P
     )
     result = _run(home, council)
     assert result.returncode == 6
-    assert f"more than {e['seat_refresh_threshold_s']} s left" in result.stderr
+    assert f"more than {e['seat_visible_min_s']} s left" in result.stderr
     assert "glm seat visible to the dispatcher" not in result.stdout
 
 

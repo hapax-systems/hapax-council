@@ -57,9 +57,8 @@ seat_remaining_seconds() {
     echo "  --show: jq is not on PATH, so the dispatcher's receipt cannot be read; install jq (the refresh below runs blind and its result cannot be confirmed)" >&2
     return 1
   fi
-  if ! shown="$(timeout "${SHOW_TIMEOUT_S:-30}" "$H/scripts/hapax-platform-capability-receipts" --show --platform glmcp --json 2>"$show_err")"; then
-    sed -E 's/(api[_-]?key|token|secret|password|bearer)([[:space:]]*[:=]?[[:space:]]*)[^[:space:]]*/\1<redacted>/Ig' "$show_err" \
-      | grep -vE '^\s*$' | tail -1 | cut -c1-200 | sed 's/^/  --show: /' >&2 || true
+  if ! shown="$(bounded_timeout "$SHOW_TIMEOUT_S" "$H/scripts/hapax-platform-capability-receipts" --show --platform glmcp --json 2>"$show_err")"; then
+    print_filtered_output tail 1 "  --show: " "$show_err" >&2 || true
     rm -f "$show_err"
     return 1
   fi
@@ -71,8 +70,7 @@ seat_remaining_seconds() {
         [($r.quota.status // "?"), ($r.quota.observed_at // "?"), ($r.quota.stale_after // "?")] | join(" ")
       end' 2>"$show_err")"; then
     # A broken parser is not a stale seat (review finding on #4624, round 9): name it, sanitised.
-    sed -E 's/(api[_-]?key|token|secret|password|bearer)([[:space:]]*[:=]?[[:space:]]*)[^[:space:]]*/\1<redacted>/Ig' "$show_err" \
-      | grep -vE '^\s*$' | head -1 | cut -c1-200 | sed 's/^/  --show parse: /' >&2 || true
+    print_filtered_output head 1 "  --show parse: " "$show_err" >&2 || true
     rm -f "$show_err"
     return 1
   fi
@@ -87,52 +85,100 @@ seat_remaining_seconds() {
   esac
   echo $(( $(date -u -d "$q_observed" +%s 2>/dev/null || echo 0) + stale_s - $(date -u +%s) ))
 }
-# The guard's threshold is DERIVED from every stage a replacement receipt passes through before the
-# dispatcher can see it. The timer uses OnUnitInactiveSec: unlike OnUnitActiveSec, its clock cannot
-# elapse while this oneshot is active and consume an activation (review finding on #4624, round 10).
-# After a skip, the next run begins after the inactive delay plus AccuracySec, spends one
-# SHOW_TIMEOUT_S discovering the old receipt's remaining life, then must finish the reviewer,
-# admission mint, ledger writer, receipt refresh and final visibility read-back before that receipt
-# lapses. A successful prior run can mint its admission before its writer/receipt/read-back tail, so
-# the overrun invariant also includes that tail before the completion-relative timer starts. Three
-# invariants are checked at run time rather than promised in prose:
-#   skip is safe            only when remaining > inactive delay + chain envelope
-#   a refreshed seat is safe only when its visible remainder exceeds that same threshold
-#   an overrun is safe      only when prior post-mint tail + delay + next chain < seat life
-# If a stage timeout below is ever raised until the sums no longer fit, the script refuses to run.
-TIMER_INACTIVE_DELAY_S=30        # hapax-glmcp-seat-refresh.timer OnUnitInactiveSec=30s
+# The guard is a real wall-clock envelope, not just the nominal subprocess timeouts. A replacement
+# must survive the current skip's shutdown, the completion-relative timer and its coalescing window,
+# timer scheduling, and one WHOLE service activation. The service chain explicitly accounts for the
+# subprocess deadlines, their forced-kill grace, bounded diagnostic filtering, process launches,
+# filesystem I/O, service scheduling and an engineering margin. Its reserve raises that derived sum
+# to the hard 600 s TimeoutStartSec used by the unit, so the freshness predicate remains sound even
+# when the named slack is exhausted. TimeoutStopSec supplies the post-check shutdown ceiling.
+#
+# The receipt exposes whole seconds. One second above the threshold can disappear between the
+# observation and process exit, so the guard refreshes through threshold + rounding guard; it skips
+# only above SEAT_SKIP_MIN_REMAINING_S. A successful prior run can mint before its tail finishes, so
+# that post-mint tail is independently derived and checked against the 900 s seat life as well.
+TIMER_INACTIVE_DELAY_S=30       # hapax-glmcp-seat-refresh.timer OnUnitInactiveSec=30s
 TIMER_ACCURACY_S=30             # hapax-glmcp-seat-refresh.timer AccuracySec=30s
+TIMER_SCHEDULER_SLACK_S=5
 REVIEW_ATTEMPTS=3
-REVIEW_ATTEMPT_TIMEOUT_S=60     # outer `timeout` around the reviewer; measured round-trips take ~4 s
-REVIEW_INNER_TIMEOUT_S=55       # the reviewer's own HTTP budget, inside the outer timeout
-REVIEW_RETRY_SLEEP_S=30
-ADMISSION_TIMEOUT_S=60
-WRITER_TIMEOUT_S=120
-RECEIPTS_TIMEOUT_S=60
-SHOW_TIMEOUT_S=30
-SEAT_LIFE_S=900                 # DEFAULT_STALE_AFTER_SECONDS of hapax-glmcp-quota-admission
+REVIEW_ATTEMPT_TIMEOUT_S=45    # measured round-trips take ~4 s
+REVIEW_INNER_TIMEOUT_S=40      # inside the outer timeout and its forced-kill grace
+REVIEW_RETRY_SLEEP_S=15
+ADMISSION_TIMEOUT_S=35
+WRITER_TIMEOUT_S=90
+RECEIPTS_TIMEOUT_S=35
+SHOW_TIMEOUT_S=15
+TIMEOUT_KILL_AFTER_S=2         # every coreutils timeout has a finite TERM-to-KILL ceiling
+TIMED_COMMAND_COUNT=8          # two shows, three review tries, admission, writer, receipt refresh
+FILTER_TIMEOUT_S=4
+FILTER_INVOCATIONS_MAX=8       # show/parse, three reviewer errors, and three writer/read diagnostics
+PROCESS_LAUNCH_SLACK_S=30
+FILE_IO_SLACK_S=20
+SERVICE_SCHEDULER_SLACK_S=20
+SERVICE_SAFETY_MARGIN_S=20
+WHOLE_SERVICE_BOUND_S=600      # systemd TimeoutStartSec; includes all launch-to-exit wall time
+POST_CHECK_SHUTDOWN_S=5        # systemd TimeoutStopSec
+NO_LAPSE_SAFETY_MARGIN_S=10
+RECEIPT_ROUNDING_GUARD_S=1
+POST_MINT_TIMED_COMMAND_COUNT=3
+POST_MINT_FILTER_INVOCATIONS_MAX=2
+POST_MINT_PROCESS_LAUNCH_SLACK_S=5
+POST_MINT_FILE_IO_SLACK_S=5
+POST_MINT_SCHEDULER_SLACK_S=5
+SEAT_LIFE_S=900                # DEFAULT_STALE_AFTER_SECONDS of hapax-glmcp-quota-admission
 REVIEW_ENVELOPE_S=$(( REVIEW_ATTEMPTS * REVIEW_ATTEMPT_TIMEOUT_S + (REVIEW_ATTEMPTS - 1) * REVIEW_RETRY_SLEEP_S ))
-SERVICE_ENVELOPE_S=$(( SHOW_TIMEOUT_S + REVIEW_ENVELOPE_S + ADMISSION_TIMEOUT_S + WRITER_TIMEOUT_S + RECEIPTS_TIMEOUT_S + SHOW_TIMEOUT_S ))
-CHAIN_ENVELOPE_S=$(( TIMER_ACCURACY_S + SERVICE_ENVELOPE_S ))
-POST_MINT_TAIL_S=$(( WRITER_TIMEOUT_S + RECEIPTS_TIMEOUT_S + SHOW_TIMEOUT_S ))
-SEAT_REFRESH_THRESHOLD_S=$(( TIMER_INACTIVE_DELAY_S + CHAIN_ENVELOPE_S ))
-OVERRUN_RENEWAL_ENVELOPE_S=$(( POST_MINT_TAIL_S + SEAT_REFRESH_THRESHOLD_S ))
-# A refresh is visible only if the accepted receipt can survive the completion-relative delay and
-# one complete worst-case next run. A guard that cannot establish this refuses success.
-SEAT_VISIBLE_MIN_S=$SEAT_REFRESH_THRESHOLD_S
-if (( SEAT_REFRESH_THRESHOLD_S >= SEAT_LIFE_S || OVERRUN_RENEWAL_ENVELOPE_S >= SEAT_LIFE_S )); then
-  echo "glm seat refresh REFUSED: the completion-relative schedule does not fit inside SEAT_LIFE_S=${SEAT_LIFE_S}s. SEAT_REFRESH_THRESHOLD_S=${SEAT_REFRESH_THRESHOLD_S}s, OVERRUN_RENEWAL_ENVELOPE_S=${OVERRUN_RENEWAL_ENVELOPE_S}s, POST_MINT_TAIL_S=${POST_MINT_TAIL_S}s, CHAIN_ENVELOPE_S=${CHAIN_ENVELOPE_S}s and REVIEW_ENVELOPE_S=${REVIEW_ENVELOPE_S}s come from: TIMER_INACTIVE_DELAY_S=${TIMER_INACTIVE_DELAY_S}s + TIMER_ACCURACY_S=${TIMER_ACCURACY_S}s + initial SHOW_TIMEOUT_S=${SHOW_TIMEOUT_S}s + REVIEW_ATTEMPTS=${REVIEW_ATTEMPTS} * REVIEW_ATTEMPT_TIMEOUT_S=${REVIEW_ATTEMPT_TIMEOUT_S}s + (REVIEW_ATTEMPTS - 1) * REVIEW_RETRY_SLEEP_S=${REVIEW_RETRY_SLEEP_S}s + ADMISSION_TIMEOUT_S=${ADMISSION_TIMEOUT_S}s + WRITER_TIMEOUT_S=${WRITER_TIMEOUT_S}s + RECEIPTS_TIMEOUT_S=${RECEIPTS_TIMEOUT_S}s + final SHOW_TIMEOUT_S=${SHOW_TIMEOUT_S}s. Next: shorten a stage timeout or the inactive delay in this script and its unit, then retry." >&2
+CORE_COMMAND_ENVELOPE_S=$(( SHOW_TIMEOUT_S + REVIEW_ENVELOPE_S + ADMISSION_TIMEOUT_S + WRITER_TIMEOUT_S + RECEIPTS_TIMEOUT_S + SHOW_TIMEOUT_S ))
+TIMEOUT_KILL_ENVELOPE_S=$(( TIMED_COMMAND_COUNT * TIMEOUT_KILL_AFTER_S ))
+FILTER_ENVELOPE_S=$(( FILTER_INVOCATIONS_MAX * (FILTER_TIMEOUT_S + TIMEOUT_KILL_AFTER_S) ))
+ACCOUNTED_SERVICE_CHAIN_S=$(( CORE_COMMAND_ENVELOPE_S + TIMEOUT_KILL_ENVELOPE_S + FILTER_ENVELOPE_S + PROCESS_LAUNCH_SLACK_S + FILE_IO_SLACK_S + SERVICE_SCHEDULER_SLACK_S + SERVICE_SAFETY_MARGIN_S ))
+if (( ACCOUNTED_SERVICE_CHAIN_S > WHOLE_SERVICE_BOUND_S )); then
+  echo "glm seat refresh REFUSED: ACCOUNTED_SERVICE_CHAIN_S=${ACCOUNTED_SERVICE_CHAIN_S}s cannot fit inside WHOLE_SERVICE_BOUND_S=${WHOLE_SERVICE_BOUND_S}s (the unit's TimeoutStartSec). It is CORE_COMMAND_ENVELOPE_S=${CORE_COMMAND_ENVELOPE_S}s + TIMEOUT_KILL_ENVELOPE_S=${TIMEOUT_KILL_ENVELOPE_S}s + FILTER_ENVELOPE_S=${FILTER_ENVELOPE_S}s + PROCESS_LAUNCH_SLACK_S=${PROCESS_LAUNCH_SLACK_S}s + FILE_IO_SLACK_S=${FILE_IO_SLACK_S}s + SERVICE_SCHEDULER_SLACK_S=${SERVICE_SCHEDULER_SLACK_S}s + SERVICE_SAFETY_MARGIN_S=${SERVICE_SAFETY_MARGIN_S}s. Next: shorten a stage timeout or its bounded overhead; do not raise the 600 s whole-service predicate." >&2
   exit 7
 fi
+SERVICE_BOUND_RESERVE_S=$(( WHOLE_SERVICE_BOUND_S - ACCOUNTED_SERVICE_CHAIN_S ))
+# Spell the service envelope back out: every term, plus the reserved wall-clock headroom, is part of
+# SEAT_REFRESH_THRESHOLD_S rather than an undocumented assumption outside the arithmetic.
+SERVICE_ENVELOPE_S=$(( CORE_COMMAND_ENVELOPE_S + TIMEOUT_KILL_ENVELOPE_S + FILTER_ENVELOPE_S + PROCESS_LAUNCH_SLACK_S + FILE_IO_SLACK_S + SERVICE_SCHEDULER_SLACK_S + SERVICE_SAFETY_MARGIN_S + SERVICE_BOUND_RESERVE_S ))
+CHAIN_ENVELOPE_S=$(( POST_CHECK_SHUTDOWN_S + TIMER_ACCURACY_S + TIMER_SCHEDULER_SLACK_S + SERVICE_ENVELOPE_S + NO_LAPSE_SAFETY_MARGIN_S ))
+SEAT_REFRESH_THRESHOLD_S=$(( TIMER_INACTIVE_DELAY_S + CHAIN_ENVELOPE_S ))
+SEAT_SKIP_MIN_REMAINING_S=$(( SEAT_REFRESH_THRESHOLD_S + RECEIPT_ROUNDING_GUARD_S ))
+POST_MINT_TAIL_S=$(( WRITER_TIMEOUT_S + RECEIPTS_TIMEOUT_S + SHOW_TIMEOUT_S + POST_MINT_TIMED_COMMAND_COUNT * TIMEOUT_KILL_AFTER_S + POST_MINT_FILTER_INVOCATIONS_MAX * (FILTER_TIMEOUT_S + TIMEOUT_KILL_AFTER_S) + POST_MINT_PROCESS_LAUNCH_SLACK_S + POST_MINT_FILE_IO_SLACK_S + POST_MINT_SCHEDULER_SLACK_S + POST_CHECK_SHUTDOWN_S + SERVICE_SAFETY_MARGIN_S ))
+OVERRUN_RENEWAL_ENVELOPE_S=$(( POST_MINT_TAIL_S + SEAT_SKIP_MIN_REMAINING_S ))
+# A refresh is visible only if the accepted receipt can survive the completion-relative delay and
+# one complete worst-case next run. A guard that cannot establish this refuses success.
+SEAT_VISIBLE_MIN_S=$SEAT_SKIP_MIN_REMAINING_S
+if (( SEAT_REFRESH_THRESHOLD_S >= SEAT_LIFE_S || OVERRUN_RENEWAL_ENVELOPE_S >= SEAT_LIFE_S )); then
+  echo "glm seat refresh REFUSED: the bounded completion-relative schedule does not fit inside SEAT_LIFE_S=${SEAT_LIFE_S}s. SEAT_REFRESH_THRESHOLD_S=${SEAT_REFRESH_THRESHOLD_S}s, SEAT_SKIP_MIN_REMAINING_S=${SEAT_SKIP_MIN_REMAINING_S}s, OVERRUN_RENEWAL_ENVELOPE_S=${OVERRUN_RENEWAL_ENVELOPE_S}s, POST_MINT_TAIL_S=${POST_MINT_TAIL_S}s, CHAIN_ENVELOPE_S=${CHAIN_ENVELOPE_S}s, SERVICE_ENVELOPE_S=${SERVICE_ENVELOPE_S}s and REVIEW_ENVELOPE_S=${REVIEW_ENVELOPE_S}s include timer, launch, filter, file-I/O, scheduler, kill-after, shutdown and safety-margin terms. Next: shorten a stage timeout or the inactive delay; do not weaken the 600 s whole-service bound." >&2
+  exit 7
+fi
+
+bounded_timeout() {
+  local timeout_s="$1"
+  shift
+  timeout --signal=TERM --kill-after="${TIMEOUT_KILL_AFTER_S}s" "${timeout_s}s" "$@"
+}
+
+print_filtered_output() {
+  local mode="$1" lines="$2" prefix="$3" file="$4"
+  bounded_timeout "$FILTER_TIMEOUT_S" bash -c '
+    set -o pipefail
+    if [[ "$1" == "head" ]]; then selector=(head -n "$2"); else selector=(tail -n "$2"); fi
+    sed -E '\''s/\x1b\[[0-9;]*m//g; s/(api[_-]?key|token|secret|password|bearer)([[:space:]]*[:=]?[[:space:]]*)[^[:space:]]*/\1<redacted>/Ig'\'' "$4" \
+      | grep -vE '\''^\s*$'\'' | "${selector[@]}" | cut -c1-200 | sed "s/^/$3/"
+  ' _ "$mode" "$lines" "$prefix" "$file"
+}
+
 if [[ "${1:-}" == "--envelope" ]]; then
-  printf '{"timer_inactive_delay_s":%d,"timer_accuracy_s":%d,"review_attempts":%d,"review_attempt_timeout_s":%d,"review_inner_timeout_s":%d,"review_retry_sleep_s":%d,"admission_timeout_s":%d,"writer_timeout_s":%d,"receipts_timeout_s":%d,"show_timeout_s":%d,"seat_life_s":%d,"review_envelope_s":%d,"service_envelope_s":%d,"chain_envelope_s":%d,"post_mint_tail_s":%d,"seat_refresh_threshold_s":%d,"overrun_renewal_envelope_s":%d,"seat_visible_min_s":%d}\n' \
-    "$TIMER_INACTIVE_DELAY_S" "$TIMER_ACCURACY_S" "$REVIEW_ATTEMPTS" "$REVIEW_ATTEMPT_TIMEOUT_S" "$REVIEW_INNER_TIMEOUT_S" "$REVIEW_RETRY_SLEEP_S" \
-    "$ADMISSION_TIMEOUT_S" "$WRITER_TIMEOUT_S" "$RECEIPTS_TIMEOUT_S" "$SHOW_TIMEOUT_S" "$SEAT_LIFE_S" \
-    "$REVIEW_ENVELOPE_S" "$SERVICE_ENVELOPE_S" "$CHAIN_ENVELOPE_S" "$POST_MINT_TAIL_S" \
-    "$SEAT_REFRESH_THRESHOLD_S" "$OVERRUN_RENEWAL_ENVELOPE_S" "$SEAT_VISIBLE_MIN_S"
+  printf '{"timer_inactive_delay_s":%d,"timer_accuracy_s":%d,"timer_scheduler_slack_s":%d,"review_attempts":%d,"review_attempt_timeout_s":%d,"review_inner_timeout_s":%d,"review_retry_sleep_s":%d,"admission_timeout_s":%d,"writer_timeout_s":%d,"receipts_timeout_s":%d,"show_timeout_s":%d,"timeout_kill_after_s":%d,"timed_command_count":%d,"filter_timeout_s":%d,"filter_invocations_max":%d,"process_launch_slack_s":%d,"file_io_slack_s":%d,"service_scheduler_slack_s":%d,"service_safety_margin_s":%d,"whole_service_bound_s":%d,"post_check_shutdown_s":%d,"no_lapse_safety_margin_s":%d,"receipt_rounding_guard_s":%d,"post_mint_timed_command_count":%d,"post_mint_filter_invocations_max":%d,"post_mint_process_launch_slack_s":%d,"post_mint_file_io_slack_s":%d,"post_mint_scheduler_slack_s":%d,"seat_life_s":%d,"review_envelope_s":%d,"core_command_envelope_s":%d,"timeout_kill_envelope_s":%d,"filter_envelope_s":%d,"accounted_service_chain_s":%d,"service_bound_reserve_s":%d,"service_envelope_s":%d,"chain_envelope_s":%d,"post_mint_tail_s":%d,"seat_refresh_threshold_s":%d,"seat_skip_min_remaining_s":%d,"overrun_renewal_envelope_s":%d,"seat_visible_min_s":%d}\n' \
+    "$TIMER_INACTIVE_DELAY_S" "$TIMER_ACCURACY_S" "$TIMER_SCHEDULER_SLACK_S" "$REVIEW_ATTEMPTS" "$REVIEW_ATTEMPT_TIMEOUT_S" "$REVIEW_INNER_TIMEOUT_S" "$REVIEW_RETRY_SLEEP_S" \
+    "$ADMISSION_TIMEOUT_S" "$WRITER_TIMEOUT_S" "$RECEIPTS_TIMEOUT_S" "$SHOW_TIMEOUT_S" "$TIMEOUT_KILL_AFTER_S" "$TIMED_COMMAND_COUNT" "$FILTER_TIMEOUT_S" "$FILTER_INVOCATIONS_MAX" \
+    "$PROCESS_LAUNCH_SLACK_S" "$FILE_IO_SLACK_S" "$SERVICE_SCHEDULER_SLACK_S" "$SERVICE_SAFETY_MARGIN_S" "$WHOLE_SERVICE_BOUND_S" "$POST_CHECK_SHUTDOWN_S" "$NO_LAPSE_SAFETY_MARGIN_S" "$RECEIPT_ROUNDING_GUARD_S" \
+    "$POST_MINT_TIMED_COMMAND_COUNT" "$POST_MINT_FILTER_INVOCATIONS_MAX" "$POST_MINT_PROCESS_LAUNCH_SLACK_S" "$POST_MINT_FILE_IO_SLACK_S" "$POST_MINT_SCHEDULER_SLACK_S" "$SEAT_LIFE_S" \
+    "$REVIEW_ENVELOPE_S" "$CORE_COMMAND_ENVELOPE_S" "$TIMEOUT_KILL_ENVELOPE_S" "$FILTER_ENVELOPE_S" "$ACCOUNTED_SERVICE_CHAIN_S" "$SERVICE_BOUND_RESERVE_S" "$SERVICE_ENVELOPE_S" "$CHAIN_ENVELOPE_S" "$POST_MINT_TAIL_S" \
+    "$SEAT_REFRESH_THRESHOLD_S" "$SEAT_SKIP_MIN_REMAINING_S" "$OVERRUN_RENEWAL_ENVELOPE_S" "$SEAT_VISIBLE_MIN_S"
   exit 0
 fi
-if remaining="$(seat_remaining_seconds)" && (( remaining > SEAT_REFRESH_THRESHOLD_S )); then
+if remaining="$(seat_remaining_seconds)" && (( remaining > SEAT_SKIP_MIN_REMAINING_S )); then
   echo "glm seat fresh per the dispatcher's receipt (${remaining}s remain); no round-trip"
   exit 0
 fi
@@ -159,7 +205,7 @@ for (( attempt = 1; attempt <= REVIEW_ATTEMPTS; attempt++ )); do
   printf 'Blind review smoke. Reply with exactly: OK\n' \
     | HAPAX_GLMCP_REVIEW_TIMEOUT_SECONDS="$REVIEW_INNER_TIMEOUT_S" HAPAX_GLMCP_REVIEW_MAX_TOKENS=16 \
       HAPAX_GLMCP_REVIEW_PAYG_FALLBACK=0 \
-      timeout "$REVIEW_ATTEMPT_TIMEOUT_S" "$H/scripts/hapax-glmcp-reviewer" >"$OUT" 2>"$ERR"
+      bounded_timeout "$REVIEW_ATTEMPT_TIMEOUT_S" "$H/scripts/hapax-glmcp-reviewer" >"$OUT" 2>"$ERR"
   rc=${PIPESTATUS[1]}
   bytes="$(wc -c < "$OUT")"
   set -e
@@ -170,8 +216,7 @@ for (( attempt = 1; attempt <= REVIEW_ATTEMPTS; attempt++ )); do
   # failures lapsed the seat for five minutes and the autoqueue dequeued a green PR inside them.
   # The redaction also swallows a value separated by whitespace or `:`/`=` ("Bearer abc",
   # "api_key = abc"), and an empty stderr must not end the retry loop under pipefail.
-  sed -E 's/(api[_-]?key|token|secret|password|bearer)([[:space:]]*[:=]?[[:space:]]*)[^[:space:]]*/\1<redacted>/Ig' "$ERR" \
-    | grep -vE '^\s*$' | head -2 | cut -c1-200 | sed 's/^/  reviewer stderr: /' || true
+  print_filtered_output head 2 "  reviewer stderr: " "$ERR" || true
   [[ "$attempt" -lt "$REVIEW_ATTEMPTS" ]] && sleep "$retry_sleep"
 done
 if [[ "$rc" -ne 0 || "$bytes" -eq 0 ]]; then
@@ -199,12 +244,12 @@ echo "witness: $WDIR/$ref.yaml"
 # (review finding on #4624, round 5): the witness is already on disk, so the operator can re-run
 # observe-success by hand with the same evidence ref.
 set +e
-timeout "$ADMISSION_TIMEOUT_S" "$H/scripts/hapax-glmcp-quota-admission" observe-success \
+bounded_timeout "$ADMISSION_TIMEOUT_S" "$H/scripts/hapax-glmcp-quota-admission" observe-success \
   --evidence-ref "$ref" --supported-tool hapax-glmcp-reviewer --endpoint "$endpoint" --model "$model" \
   >"$WOUT" 2>&1
 admission_rc=$?
 set -e
-sed 's/\x1b\[[0-9;]*m//g' "$WOUT" | grep -vE '^\s*$' | tail -3 | cut -c1-200 || true
+print_filtered_output tail 3 "" "$WOUT" || true
 if [[ "$admission_rc" -ne 0 ]]; then
   echo "glm seat NOT admitted: hapax-glmcp-quota-admission exited $admission_rc after a successful round-trip (witness $WDIR/$ref.yaml). Next: run $H/scripts/hapax-glmcp-quota-admission observe-success --evidence-ref $ref --supported-tool hapax-glmcp-reviewer --endpoint $endpoint --model $model by hand and read its output." >&2
   exit 5
@@ -214,13 +259,13 @@ fi
 # so a glmcp receipt minted there carries the PREVIOUS seat's remaining lifetime) and spends a
 # real Codex exec-auth sentinel on every call; neither belongs in this completion-driven GLM timer
 # (review finding on #4624, round 8). The glmcp receipt is derived from the fresh ledger below.
-# The writer's own diagnostics are printed, never filtered away. The admission receipt is already
-# minted at this point; a writer failure is fatal and names its next action.
+# The writer's own diagnostics are sanitised through the bounded filter and printed. The admission
+# receipt is already minted at this point; a writer failure is fatal and names its next action.
 set +e
-timeout "$WRITER_TIMEOUT_S" "$H/scripts/hapax-quota-telemetry-writer" --skip-receipts >"$WOUT" 2>&1
+bounded_timeout "$WRITER_TIMEOUT_S" "$H/scripts/hapax-quota-telemetry-writer" --skip-receipts >"$WOUT" 2>&1
 writer_rc=$?
 set -e
-sed 's/\x1b\[[0-9;]*m//g' "$WOUT" | grep -vE '^\s*$' | tail -4 | cut -c1-200 || true
+print_filtered_output tail 4 "" "$WOUT" || true
 case "$writer_rc" in
   0) ;;
   3)
@@ -242,10 +287,10 @@ esac
 #    written, not that the seat became visible; only the accepted receipt does (review finding on
 #    #4624, round 8).
 set +e
-timeout "$RECEIPTS_TIMEOUT_S" "$H/scripts/hapax-platform-capability-receipts" --platform glmcp >"$WOUT" 2>&1
+bounded_timeout "$RECEIPTS_TIMEOUT_S" "$H/scripts/hapax-platform-capability-receipts" --platform glmcp >"$WOUT" 2>&1
 receipts_rc=$?
 set -e
-sed 's/\x1b\[[0-9;]*m//g' "$WOUT" | grep -vE '^\s*$' | tail -2 | cut -c1-200 || true
+print_filtered_output tail 2 "" "$WOUT" || true
 if [[ "$receipts_rc" -ne 0 ]]; then
   echo "glm seat NOT visible: the glmcp capability receipt could not be refreshed from the new ledger (exit $receipts_rc) after the admission was minted. Next: run $H/scripts/hapax-platform-capability-receipts --platform glmcp by hand and read why." >&2
   exit 6

@@ -3,10 +3,10 @@ Description=After each completion: keep the GLM review seat admitted (the servic
 
 [Timer]
 OnBootSec=2min
-# Schedule from the service becoming inactive, not from its activation. A successful refresh can
-# consume up to 540 s, so OnUnitActiveSec=5min could elapse while the oneshot was still active and
-# systemd would consume that activation without restarting it. This directive cannot elapse while
-# the target is active; AccuracySec makes the completion-to-next-start delay at most 60 s.
+# Schedule from the service becoming inactive, not from its activation. A refresh is bounded by the
+# service's 600 s TimeoutStartSec, so an active-relative timer could elapse while the oneshot was
+# still active and consume that activation. This directive cannot elapse while the target is active;
+# AccuracySec plus the script's explicit scheduler allowance bounds the modeled next-start delay.
 OnUnitInactiveSec=30s
 AccuracySec=30s
 Persistent=false
