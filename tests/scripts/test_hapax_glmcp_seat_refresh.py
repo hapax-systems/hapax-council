@@ -145,6 +145,42 @@ def _glmcp_receipt_json(
     return json.dumps(receipt.model_dump(mode="json"))
 
 
+def _glmcp_admission_artifacts(home: Path, admission: datetime) -> Path:
+    """Build the relay receipt and witnessed live ledger required by production admission."""
+    relay_dir = home / ".cache/hapax/relay/receipts"
+    observed = admission.isoformat().replace("+00:00", "Z")
+    expires = (admission + timedelta(seconds=900)).isoformat().replace("+00:00", "Z")
+    (relay_dir / "glmcp-quota-admission.yaml").write_text(
+        "schema: hapax.glmcp_quota_admission.v1\nstatus: quota_available\n"
+        "route_id: glmcp.review.direct\nlane_presence_used_as_quota_evidence: false\n"
+        f"observed_at: {observed}\nstale_after_seconds: 900\n"
+    )
+    ledger = json.loads((REPO / "config/quota-spend-ledger-fixtures.json").read_text())
+    ledger["captured_at"] = observed
+    ledger["generated_from"] = ["scripts/hapax-quota-telemetry-writer"]
+    ledger["quota_snapshots"] = [
+        {
+            "quota_snapshot_schema": 1,
+            "snapshot_id": "quota-glmcp-test",
+            "captured_at": observed,
+            "fresh_until": expires,
+            "route_id": "glmcp.review.direct",
+            "provider": "z_ai-glm-coding-plan",
+            "capacity_pool": "subscription_quota",
+            "subscription_quota_state": "fresh",
+            "evidence_refs": [
+                "relay-receipt:glmcp-quota-admission.yaml:witness:supported-tool-usage-witness:"
+                "supported_tool:hapax-glmcp-reviewer:endpoint:https://api.z.ai/api/coding/paas/v4:"
+                f"model:glm-5.2:observed_at:{observed}:fresh_until:{expires}"
+            ],
+            "operator_visible_reason": "Synthetic admission for seat refresh regression",
+        }
+    ]
+    ledger_path = home / "quota-spend-ledger-live.json"
+    ledger_path.write_text(json.dumps(ledger))
+    return ledger_path
+
+
 def _harness(
     tmp_path: Path,
     *,
@@ -169,6 +205,8 @@ def _harness(
     capability-receipt refresh leaves on disk after the writer (None: it leaves the old receipt).
     ``malformed_receipt`` writes the pre-round-8 three-field document the loader rejects. The
     receipts script's ``--show`` is the real one, run against this HOME's receipt directory.
+    Observed receipts include the relay admission and witnessed live ledger that the production
+    registry requires alongside the platform receipt; dispatcher reads must use this HOME's ledger.
     """
     home = tmp_path / "home"
     council = tmp_path / "council"
@@ -206,6 +244,8 @@ def _harness(
         "esac\n",
     )
     now = now or datetime.now(UTC)
+    if receipt_status == "observed":
+        _glmcp_admission_artifacts(home, now - timedelta(seconds=receipt_age))
     if malformed_receipt:
         (receipts_dir / "glmcp.json").write_text(
             json.dumps(
@@ -297,13 +337,49 @@ def _dispatch_quota(home: Path, now: datetime):
     """Read quota through the same registry loader called by dispatch policy sources."""
     from shared.platform_capability_registry import load_platform_capability_registry_for_dispatch
 
-    registry, _ = load_platform_capability_registry_for_dispatch(
-        REPO / "config/platform-capability-registry.json",
-        receipt_dir=home / ".cache/hapax/platform-capability-receipts",
-        now=now,
-    )
+    # receipt_dir does not redirect the registry's separate route-admission ledger lookup.
+    # Set its explicit override even if the default HOME was captured at module import time.
+    with pytest.MonkeyPatch.context() as patch:
+        patch.setenv("HOME", str(home))
+        patch.setenv("HAPAX_QUOTA_SPEND_LEDGER_LIVE", str(home / "quota-spend-ledger-live.json"))
+        registry, _ = load_platform_capability_registry_for_dispatch(
+            REPO / "config/platform-capability-registry.json",
+            receipt_dir=home / ".cache/hapax/platform-capability-receipts",
+            now=now,
+        )
     route = next(route for route in registry.routes if route.route_id == "glmcp.review.direct")
     return route.freshness
+
+
+@pytest.mark.parametrize("admission_present", [True, False])
+def test_dispatch_fixture_is_self_contained_under_empty_home(
+    tmp_path: Path, monkeypatch, admission_present: bool
+) -> None:
+    from shared import quota_spend_ledger
+    from shared.platform_capability_receipts import load_platform_capability_receipts
+
+    monkeypatch.setenv("HOME", str(tmp_path))
+    for key in tuple(os.environ):
+        if key.startswith(("HAPAX_", "XDG_")):
+            monkeypatch.delenv(key)
+    # Other tests may already have imported this HOME-derived default. Keep the fallback empty
+    # too, so forgetting the fixture's ledger override cannot silently read the operator's ledger.
+    monkeypatch.setattr(
+        quota_spend_ledger,
+        "DEFAULT_QUOTA_SPEND_LEDGER_LIVE",
+        tmp_path / ".cache/hapax/orchestration/quota-spend-ledger-live.json",
+    )
+    now = datetime.now(UTC).replace(microsecond=0)
+    home, _ = _harness(tmp_path, receipt_status="observed", receipt_remaining=900, now=now)
+    if not admission_present:
+        (home / "quota-spend-ledger-live.json").unlink()
+    assert "glmcp" in load_platform_capability_receipts(
+        home / ".cache/hapax/platform-capability-receipts", now=now
+    )
+    quota = _dispatch_quota(home, now).evidence.quota
+    assert quota.blocked_reasons == (
+        [] if admission_present else ["glmcp_review_seat_receipt_admission_required"]
+    )
 
 
 def _fixed_date_path(tmp_path: Path, now: datetime) -> str:
@@ -446,36 +522,7 @@ def _produce_glmcp_receipt(home: Path, admission: datetime, generated: datetime,
     monkeypatch.setenv("HOME", str(home))
     receipt_dir = home / ".cache/hapax/platform-capability-receipts"
     relay_dir = home / ".cache/hapax/relay/receipts"
-    observed = admission.isoformat().replace("+00:00", "Z")
-    expires = (admission + timedelta(seconds=900)).isoformat().replace("+00:00", "Z")
-    (relay_dir / "glmcp-quota-admission.yaml").write_text(
-        "schema: hapax.glmcp_quota_admission.v1\nstatus: quota_available\n"
-        "route_id: glmcp.review.direct\nlane_presence_used_as_quota_evidence: false\n"
-        f"observed_at: {observed}\nstale_after_seconds: 900\n"
-    )
-    ledger = json.loads((REPO / "config/quota-spend-ledger-fixtures.json").read_text())
-    ledger["captured_at"] = observed
-    ledger["generated_from"] = ["scripts/hapax-quota-telemetry-writer"]
-    ledger["quota_snapshots"] = [
-        {
-            "quota_snapshot_schema": 1,
-            "snapshot_id": "quota-glmcp-test",
-            "captured_at": observed,
-            "fresh_until": expires,
-            "route_id": "glmcp.review.direct",
-            "provider": "z_ai-glm-coding-plan",
-            "capacity_pool": "subscription_quota",
-            "subscription_quota_state": "fresh",
-            "evidence_refs": [
-                "relay-receipt:glmcp-quota-admission.yaml:witness:supported-tool-usage-witness:"
-                "supported_tool:hapax-glmcp-reviewer:endpoint:https://api.z.ai/api/coding/paas/v4:"
-                f"model:glm-5.2:observed_at:{observed}:fresh_until:{expires}"
-            ],
-            "operator_visible_reason": "Synthetic admission for producer expiry regression",
-        }
-    ]
-    ledger_path = home / "quota-spend-ledger-live.json"
-    ledger_path.write_text(json.dumps(ledger))
+    ledger_path = _glmcp_admission_artifacts(home, admission)
     monkeypatch.setenv("HAPAX_QUOTA_SPEND_LEDGER_LIVE", str(ledger_path))
     producer = runpy.run_path(str(RECEIPTS_SCRIPT), run_name="__test__")
     globals_ = producer["main"].__globals__
