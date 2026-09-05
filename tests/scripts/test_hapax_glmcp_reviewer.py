@@ -667,29 +667,7 @@ def test_payg_spend_receipt_carries_gate_event_task_hash(
     assert f"task_hash: {'sha256:' + ('a' * 64)}" in reservation.path.read_text(encoding="utf-8")
 
 
-@pytest.mark.parametrize("compute_status", ["absent", "reported"])
-def test_payg_resource_receipt_round_trips_through_telemetry_writer(
-    tmp_path: Path, compute_status: str
-) -> None:
-    from shared.quota_spend_ledger import QuotaSpendLedger
-    from tests.scripts.test_hapax_quota_telemetry_writer import PAYG_NOW, _run_writer
-
-    module = _load_module()
-    relay = tmp_path / "relay-receipts"
-    relay.mkdir()
-    reservation = _payg_reservation(
-        module, str(relay / "glmcp-payg-spend-20260706t140430z-test.yaml")
-    )
-    payload = reservation.spend_receipt.model_dump(mode="json")
-    if compute_status == "reported":
-        payload.update(
-            run_id="run-glmcp-resource-round-trip",
-            compute_unit_status="reported",
-            compute_unit_value="reasoning_items:7",
-            compute_unit_provenance="provider_field",
-        )
-    receipt = module.SpendReceipt.model_validate(payload)
-    reservation = module.PaygSpendReservation(path=reservation.path, spend_receipt=receipt)
+def _emit_payg_spend_receipt(module: ModuleType, reservation: object) -> None:
     config = module.ReviewConfig(
         secret_entry="glmcp/api-key",  # pragma: allowlist secret
         base_url=module.DEFAULT_CODING_PLAN_BASE_URL,
@@ -712,19 +690,139 @@ def test_payg_resource_receipt_round_trips_through_telemetry_writer(
         reservation=reservation, config=config, primary_error=primary, status="spend_estimated"
     )
 
+
+@pytest.mark.parametrize("compute_status", ["absent", "reported"])
+def test_payg_resource_receipt_round_trips_through_telemetry_writer(
+    tmp_path: Path, compute_status: str
+) -> None:
+    from shared.quota_spend_ledger import QuotaSpendLedger
+    from tests.scripts.test_hapax_quota_telemetry_writer import PAYG_NOW, _run_writer
+
+    module = _load_module()
+    relay = tmp_path / "relay-receipts"
+    relay.mkdir()
+    reservation = _payg_reservation(
+        module, str(relay / "glmcp-payg-spend-20260706t140430z-test.yaml")
+    )
+    payload = reservation.spend_receipt.model_dump(mode="json")
+    payload.update(
+        run_id="run-glmcp-resource-round-trip",
+        effort="high",
+        effort_provenance="requested",
+        wall_latency_ms=31_337,
+        ttfb_ms=42,
+        input_tokens=2048,
+        output_tokens=17,
+    )
+    if compute_status == "reported":
+        payload.update(
+            compute_unit_status="reported",
+            compute_unit_value="reasoning_items:7",
+            compute_unit_provenance="provider_field",
+        )
+    receipt = module.SpendReceipt.model_validate(payload)
+    reservation = module.PaygSpendReservation(path=reservation.path, spend_receipt=receipt)
+    _emit_payg_spend_receipt(module, reservation)
+
     result, out = _run_writer(tmp_path, now=PAYG_NOW)
 
     assert result.returncode == 0, result.stderr
     summary = json.loads(result.stdout)
     assert summary["glmcp_ignored_payg_spend_receipts"] == 0, result.stderr
     assert summary["glmcp_payg_spend_receipts"] == 1
+    persisted = next(
+        item
+        for item in json.loads(out.read_text())["spend_receipts"]
+        if item["spend_id"] == receipt.spend_id
+    )
+    expected = {
+        "spend_receipt_schema": 2,
+        "run_id": "run-glmcp-resource-round-trip",
+        "model_id": "z_ai-glm-5.2",
+        "effort": "high",
+        "quantization": "not_applicable",
+        "effort_provenance": "requested",
+        "wall_latency_ms": 31_337,
+        "ttfb_ms": 42,
+        "input_tokens": 2048,
+        "output_tokens": 17,
+        "compute_unit_status": compute_status,
+        "compute_unit_value": "reasoning_items:7" if compute_status == "reported" else "absent",
+        "compute_unit_provenance": "provider_field" if compute_status == "reported" else "absent",
+        "tokens_do_not_explain_latency": True,
+        "estimated_cost_usd": "0.05",
+    }
+    for field, value in expected.items():
+        assert persisted[field] == value, field
     ledger = QuotaSpendLedger.model_validate_json(out.read_text())
     accepted = next(item for item in ledger.spend_receipts if item.spend_id == receipt.spend_id)
     assert accepted.run_id == receipt.run_id
+    assert accepted.wall_latency_ms == 31_337
+    assert accepted.ttfb_ms == 42
+    assert accepted.input_tokens == 2048
+    assert accepted.output_tokens == 17
+    assert accepted.effort_provenance == "requested"
     assert accepted.compute_unit_status == receipt.compute_unit_status
     assert accepted.compute_unit_value == receipt.compute_unit_value
     assert accepted.compute_unit_provenance == receipt.compute_unit_provenance
     assert accepted.estimated_cost_usd == receipt.estimated_cost_usd
+
+
+def test_payg_compute_drift_refuses_writer_refresh_and_preserves_output(tmp_path: Path) -> None:
+    from shared.quota_spend_ledger import QuotaSpendLedger
+    from tests.scripts.test_hapax_quota_telemetry_writer import PAYG_NOW, _run_writer
+
+    module = _load_module()
+    relay = tmp_path / "relay-receipts"
+    relay.mkdir()
+    reservation = _payg_reservation(
+        module, str(relay / "glmcp-payg-spend-20260706t140430z-test.yaml")
+    )
+    payload = reservation.spend_receipt.model_dump(mode="json")
+    payload.update(
+        run_id="run-glmcp-compute-drift",
+        compute_unit_status="reported",
+        compute_unit_value="reasoning_items:7",
+        compute_unit_provenance="provider_field",
+    )
+    receipt = module.SpendReceipt.model_validate(payload)
+    reservation = module.PaygSpendReservation(path=reservation.path, spend_receipt=receipt)
+    _emit_payg_spend_receipt(module, reservation)
+    initial, out = _run_writer(tmp_path, now=PAYG_NOW)
+    assert initial.returncode == 0, initial.stderr
+    before = out.read_bytes()
+    ledger = QuotaSpendLedger.model_validate_json(before)
+    assert receipt in ledger.spend_receipts
+
+    payload.update(spend_id=f"{receipt.spend_id}-conflict", compute_unit_value="reasoning_items:8")
+    conflicting = module.SpendReceipt.model_validate(payload)
+    _emit_payg_spend_receipt(
+        module,
+        module.PaygSpendReservation(
+            path=relay / "glmcp-payg-spend-20260706t140430z-conflict.yaml",
+            spend_receipt=conflicting,
+        ),
+    )
+
+    # Refresh the persisted ledger so drift must be checked against its history.
+    result, refreshed = _run_writer(tmp_path, "--base", str(out), now=PAYG_NOW)
+
+    assert result.returncode == 1, result.stderr
+    assert result.stdout == ""
+    assert "hapax-quota-telemetry-writer: live ledger invalid:" in result.stderr
+    assert f"r7_compute_unit_drift:{receipt.run_id}" in result.stderr
+    assert receipt.spend_id in result.stderr
+    assert conflicting.spend_id in result.stderr
+    assert (
+        "recheck: uv run scripts/check-quota-spend-ledger --fixture <preserved-ledger.json>"
+        in result.stderr
+    )
+    assert "reconcile the named receipts against provider evidence" in result.stderr
+    assert "preserve all spend history and original relay receipts" in result.stderr
+    assert "never discard spend" in result.stderr
+    assert "docs/runbooks/pr-4621-receipt-schema-2.md#compute-unit-drift-recovery" in result.stderr
+    assert refreshed == out
+    assert out.read_bytes() == before
 
 
 def test_payg_task_hash_rejects_malformed_env(monkeypatch: pytest.MonkeyPatch) -> None:
