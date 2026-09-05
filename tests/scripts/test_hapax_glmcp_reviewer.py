@@ -667,6 +667,66 @@ def test_payg_spend_receipt_carries_gate_event_task_hash(
     assert f"task_hash: {'sha256:' + ('a' * 64)}" in reservation.path.read_text(encoding="utf-8")
 
 
+@pytest.mark.parametrize("compute_status", ["absent", "reported"])
+def test_payg_resource_receipt_round_trips_through_telemetry_writer(
+    tmp_path: Path, compute_status: str
+) -> None:
+    from shared.quota_spend_ledger import QuotaSpendLedger
+    from tests.scripts.test_hapax_quota_telemetry_writer import PAYG_NOW, _run_writer
+
+    module = _load_module()
+    relay = tmp_path / "relay-receipts"
+    relay.mkdir()
+    reservation = _payg_reservation(
+        module, str(relay / "glmcp-payg-spend-20260706t140430z-test.yaml")
+    )
+    payload = reservation.spend_receipt.model_dump(mode="json")
+    if compute_status == "reported":
+        payload.update(
+            run_id="run-glmcp-resource-round-trip",
+            compute_unit_status="reported",
+            compute_unit_value="reasoning_items:7",
+            compute_unit_provenance="provider_field",
+        )
+    receipt = module.SpendReceipt.model_validate(payload)
+    reservation = module.PaygSpendReservation(path=reservation.path, spend_receipt=receipt)
+    config = module.ReviewConfig(
+        secret_entry="glmcp/api-key",
+        base_url=module.DEFAULT_CODING_PLAN_BASE_URL,
+        model="glm-5.2",
+        timeout_seconds=42,
+        max_tokens=123,
+        temperature=0,
+        thinking="disabled",
+        payg_fallback=True,
+        payg_base_url=module.DEFAULT_PAYG_BASE_URL,
+    )
+    primary = module.ZaiHttpError(
+        status=429,
+        detail=json.dumps({"error": {"code": "1310", "message": "Quota exhausted."}}),
+        secret="fixture-only",
+        base_url=module.DEFAULT_CODING_PLAN_BASE_URL,
+        provider_label="Coding Plan",
+    )
+    module._write_payg_spend_receipt_file(
+        reservation=reservation, config=config, primary_error=primary, status="spend_estimated"
+    )
+
+    result, out = _run_writer(tmp_path, now=PAYG_NOW)
+
+    assert result.returncode == 0, result.stderr
+    summary = json.loads(result.stdout)
+    assert summary["glmcp_ignored_payg_spend_receipts"] == 0, result.stderr
+    assert summary["glmcp_payg_spend_receipts"] == 1
+    ledger = QuotaSpendLedger.model_validate_json(out.read_text())
+    accepted = next(item for item in ledger.spend_receipts if item.spend_id == receipt.spend_id)
+    assert accepted.run_id == receipt.run_id
+    assert accepted.compute_unit_status == receipt.compute_unit_status
+    assert accepted.compute_unit_value == receipt.compute_unit_value
+    assert accepted.compute_unit_provenance == receipt.compute_unit_provenance
+    assert accepted.estimated_cost_usd == receipt.estimated_cost_usd
+
+
 def test_payg_task_hash_rejects_malformed_env(monkeypatch: pytest.MonkeyPatch) -> None:
     module = _load_module()
     _clean_env(monkeypatch)

@@ -1067,7 +1067,13 @@ class QuotaSpendLedger(StrictModel):
                 f"receipts={','.join(event.spend_receipt_ids)}"
                 for event in compute_unit_drifts
             )
-            raise ValueError(details)
+            raise ValueError(
+                f"{details}; recheck: uv run scripts/check-quota-spend-ledger "
+                "--fixture <preserved-ledger.json>; reconcile the named receipts against "
+                "provider evidence; preserve all spend history and original relay receipts; "
+                "never discard spend. Recovery: "
+                "docs/runbooks/pr-4621-receipt-schema-2.md#compute-unit-drift-recovery"
+            )
         for decision in self.spend_gate_decisions:
             if decision.budget_id and decision.budget_id not in budget_ids:
                 raise ValueError(f"{decision.decision_id} references unknown budget")

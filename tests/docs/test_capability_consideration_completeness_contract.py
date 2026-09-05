@@ -26,12 +26,14 @@ forcing function.
 
 from __future__ import annotations
 
+import hashlib
 import re
-import subprocess
+import shutil
 import sys
 from datetime import UTC, datetime
 from pathlib import Path
 
+import pytest
 import yaml
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
@@ -270,6 +272,60 @@ def test_spend_receipt_field_set_is_pinned() -> None:
     }
 
 
+def _assert_pr_4621_reviewed_blobs(amendment: dict, root: Path) -> None:
+    # The manifest's own document cannot contain its raw blob hash. Its exact
+    # schema and authority/scope are checked separately below.
+    reviewed_blobs = amendment["reviewed_blobs"]
+    assert set(reviewed_blobs) == set(amendment["mutation_scope_refs"]) - {
+        "docs/runbooks/pr-4621-receipt-schema-2.md"
+    }
+    for path, reviewed_blob in reviewed_blobs.items():
+        assert re.fullmatch(r"[0-9a-f]{40}", reviewed_blob)
+        current_path = root / path
+        message = (
+            f"the runbook reviewed {path} at {amendment['reviewed_head']} "
+            f"(blob {reviewed_blob}); path {path} has changed since — re-review or re-pin "
+            "reviewed_head and reviewed_blobs in docs/runbooks/pr-4621-receipt-schema-2.md"
+        )
+        assert current_path.is_file(), message
+        contents = current_path.read_bytes()
+        current_blob = hashlib.sha1(f"blob {len(contents)}\0".encode() + contents).hexdigest()
+        assert current_blob == reviewed_blob, message
+
+
+def _copy_pr_4621_reviewed_paths(root: Path) -> dict:
+    amendment = yaml.safe_load(PR_4621_SCOPE_AMENDMENT.read_text().split("---", 2)[1])
+    for path in amendment["reviewed_blobs"]:
+        destination = root / path
+        destination.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copyfile(REPO_ROOT / path, destination)
+    return amendment
+
+
+def test_pr_4621_review_pin_needs_no_history_and_ignores_unrelated_paths(tmp_path: Path) -> None:
+    amendment = _copy_pr_4621_reviewed_paths(tmp_path)
+    assert not (tmp_path / ".git").exists()
+    _assert_pr_4621_reviewed_blobs(amendment, tmp_path)
+    (tmp_path / "shared" / "unrelated.py").write_text("unrelated = True\n")
+    _assert_pr_4621_reviewed_blobs(amendment, tmp_path)
+
+
+@pytest.mark.parametrize("change", ["modify", "delete"])
+def test_pr_4621_review_pin_rejects_changed_reviewed_path(tmp_path: Path, change: str) -> None:
+    amendment = _copy_pr_4621_reviewed_paths(tmp_path)
+    path = "shared/quota_spend_ledger.py"
+    reviewed_path = tmp_path / path
+    if change == "modify":
+        reviewed_path.write_text(reviewed_path.read_text() + "\n# changed after review\n")
+    else:
+        reviewed_path.unlink()
+    with pytest.raises(AssertionError) as exc_info:
+        _assert_pr_4621_reviewed_blobs(amendment, tmp_path)
+    message = str(exc_info.value)
+    assert f"the runbook reviewed {path} at {amendment['reviewed_head']}" in message
+    assert f"path {path} has changed since — re-review or re-pin" in message
+
+
 def test_pr_4621_scope_amendment_names_the_complete_t1_mutation_surface() -> None:
     text = PR_4621_SCOPE_AMENDMENT.read_text(encoding="utf-8")
     amendment = yaml.safe_load(text.split("---", 2)[1])
@@ -278,6 +334,7 @@ def test_pr_4621_scope_amendment_names_the_complete_t1_mutation_surface() -> Non
         "scope_amendment_schema",
         "pr",
         "reviewed_head",
+        "reviewed_blobs",
         "task_ids",
         "authority_case",
         "parent_spec",
@@ -292,34 +349,7 @@ def test_pr_4621_scope_amendment_names_the_complete_t1_mutation_surface() -> Non
     }
     reviewed_head = amendment["reviewed_head"]
     assert re.fullmatch(r"[0-9a-f]{40}", reviewed_head)
-    current_head = subprocess.run(
-        ["git", "rev-parse", "HEAD"],
-        cwd=REPO_ROOT,
-        check=True,
-        capture_output=True,
-        text=True,
-    ).stdout.strip()
-    assert (
-        subprocess.run(
-            ["git", "merge-base", "--is-ancestor", reviewed_head, current_head],
-            cwd=REPO_ROOT,
-            check=False,
-        ).returncode
-        == 0
-    ), f"reviewed_head {reviewed_head} is not an ancestor of HEAD {current_head}"
-    post_review_paths = set(
-        subprocess.run(
-            ["git", "diff", "--name-only", f"{reviewed_head}..{current_head}"],
-            cwd=REPO_ROOT,
-            check=True,
-            capture_output=True,
-            text=True,
-        ).stdout.splitlines()
-    )
-    assert post_review_paths <= {
-        "docs/runbooks/pr-4621-receipt-schema-2.md",
-        "tests/docs/test_capability_consideration_completeness_contract.py",
-    }, f"substantive files changed after reviewed_head: {sorted(post_review_paths)}"
+    _assert_pr_4621_reviewed_blobs(amendment, REPO_ROOT)
 
     assert amendment["task_ids"] == [
         "receipt-resource-vector-absent-not-zero-20260902",

@@ -2166,6 +2166,87 @@ def test_spend_receipt_derives_tokens_do_not_explain_latency_only_with_both_inpu
     assert wall_absent.model_dump(mode="json")["tokens_do_not_explain_latency"] == "absent"
 
 
+@pytest.mark.parametrize(
+    ("wall_latency_ms", "output_tokens", "expected"),
+    [
+        pytest.param(30_001, 127, True, id="high-wall-low-output"),
+        pytest.param(29_999, 127, False, id="low-wall-low-output"),
+        pytest.param(30_001, 129, False, id="high-wall-high-output"),
+        pytest.param(29_999, 129, False, id="low-wall-high-output"),
+        pytest.param(30_000, 127, False, id="exact-wall-threshold"),
+        pytest.param(30_001, 128, False, id="exact-output-threshold"),
+        pytest.param(30_000, 128, False, id="both-exact-thresholds"),
+        pytest.param(None, 127, None, id="missing-wall"),
+        pytest.param(30_001, None, None, id="missing-output"),
+        pytest.param(None, None, None, id="both-missing"),
+    ],
+)
+def test_spend_receipt_latency_truth_table(
+    wall_latency_ms: int | None, output_tokens: int | None, expected: bool | None
+) -> None:
+    payload = _payload()["spend_receipts"][0]
+    payload.update(wall_latency_ms=wall_latency_ms, output_tokens=output_tokens)
+    # Caller-supplied derived values must never override either the inequality
+    # or explicit absence; this also checks the serializer's False/absent split.
+    payload["tokens_do_not_explain_latency"] = expected is not True
+    receipt = SpendReceipt.model_validate(payload)
+    assert receipt.tokens_do_not_explain_latency is expected
+    rendered = receipt.model_dump(mode="json")
+    assert rendered["tokens_do_not_explain_latency"] == ("absent" if expected is None else expected)
+    assert receipt.compute_unit_status is ComputeUnitStatus.ABSENT
+    assert receipt.compute_unit_value is None
+
+
+@pytest.mark.parametrize("provenance", ["requested", "observed"])
+def test_spend_receipt_preserves_explicit_effort_provenance(provenance: str) -> None:
+    payload = _payload()["spend_receipts"][0]
+    payload.update(effort="xhigh", effort_provenance=provenance)
+    receipt = SpendReceipt.model_validate(payload)
+    assert receipt.effort is Effort.XHIGH
+    assert receipt.effort_provenance is EffortProvenance(provenance)
+    rendered = receipt.model_dump(mode="json")
+    assert rendered["effort_provenance"] == provenance
+    assert SpendReceipt.model_validate(rendered).effort_provenance is EffortProvenance(provenance)
+
+
+def test_spend_receipt_does_not_infer_effort_provenance() -> None:
+    payload = _payload()["spend_receipts"][0]
+    payload.update(effort="xhigh")
+    payload.pop("effort_provenance")
+    assert SpendReceipt.model_validate(payload).effort_provenance is EffortProvenance.ABSENT
+
+
+@pytest.mark.parametrize("missing_value", [None, "absent"])
+def test_reported_compute_unit_requires_value(missing_value: str | None) -> None:
+    payload = _payload()["spend_receipts"][0]
+    payload.update(
+        run_id="run-compute-missing-value",
+        compute_unit_status="reported",
+        compute_unit_value=missing_value,
+        compute_unit_provenance="provider_field",
+    )
+    with pytest.raises(ValidationError, match="reported compute unit requires a value"):
+        SpendReceipt.model_validate(payload)
+
+
+@pytest.mark.parametrize("provenance", ["absent", "inferred"])
+def test_reported_compute_unit_rejects_invalid_provenance(provenance: str) -> None:
+    payload = _payload()["spend_receipts"][0]
+    payload.update(
+        run_id="run-compute-invalid-provenance",
+        compute_unit_status="reported",
+        compute_unit_value="reasoning_items:7",
+        compute_unit_provenance=provenance,
+    )
+    error = (
+        "reported compute unit requires provider_field provenance"
+        if provenance == "absent"
+        else "Input should be 'provider_field' or 'absent'"
+    )
+    with pytest.raises(ValidationError, match=error):
+        SpendReceipt.model_validate(payload)
+
+
 def test_spend_receipt_has_no_latency_inferred_depth_or_step_field() -> None:
     assert not {
         field_name
@@ -2233,8 +2314,15 @@ def test_same_run_reported_compute_unit_change_is_classified_and_rejected_as_r7(
 
     payload = _payload()
     payload["spend_receipts"] = [receipt.model_dump(mode="json") for receipt in receipts]
-    with pytest.raises(ValidationError, match="r7_compute_unit_drift.*run-compute-fixture-001"):
+    with pytest.raises(
+        ValidationError, match="r7_compute_unit_drift.*run-compute-fixture-001"
+    ) as exc_info:
         QuotaSpendLedger.model_validate(payload)
+    message = str(exc_info.value)
+    assert "uv run scripts/check-quota-spend-ledger --fixture <preserved-ledger.json>" in message
+    assert "reconcile the named receipts against provider evidence" in message
+    assert "preserve all spend history and original relay receipts; never discard spend" in message
+    assert "docs/runbooks/pr-4621-receipt-schema-2.md#compute-unit-drift-recovery" in message
 
 
 def test_reported_compute_unit_changes_across_runs_are_not_r7_drift() -> None:
