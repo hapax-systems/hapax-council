@@ -13,7 +13,7 @@ import pytest
 import yaml
 
 from shared import frame_verdicts as fv
-from tests.frame_verdict_helpers import git_checkout
+from tests.frame_verdict_helpers import git_checkout, producer_glob_bytes
 
 NOW = datetime(2026, 9, 3, 22, 30, tzinfo=UTC)
 
@@ -1169,6 +1169,60 @@ def test_a_symlinked_member_root_and_ref_resolve_to_the_same_surface(tmp_path: P
     assert verdicts.decayed[0].roots == (real.resolve(),)
 
 
+@pytest.mark.parametrize("kind", ["member", "nonmember", "outside"])
+def test_validate_task_in_root_alias_uses_canonical_member(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, kind: str
+) -> None:
+    from tests.scripts.test_hapax_methodology_dispatch import (
+        _dispatcher_module,
+        _frame_procedure_root,
+        _governed_source_frontmatter,
+        _spec,
+        _task,
+    )
+
+    module = _dispatcher_module()
+    root = tmp_path / "member"
+    (root / "bin").mkdir(parents=True)
+    selected = root / "bin/gawk"
+    selected.write_bytes(b"selected bytes\n")
+    target = selected if kind == "member" else (root if kind == "nonmember" else tmp_path) / "other"
+    if target != selected:
+        target.write_bytes(b"accountable bytes\n")
+    alias = root / "bin/awk"
+    alias.symlink_to(target)
+    read = producer_glob_bytes(root, ["bin/gawk"], monkeypatch)
+    assert read == {selected: selected.read_bytes()}
+    frame_root = _frame_procedure_root(
+        tmp_path / "frame",
+        decayed_root=root,
+        reader="fs.glob",
+        location={"path": str(root), "patterns": ["bin/gawk"]},
+    )
+    monkeypatch.setenv("HAPAX_FRAME_PROCEDURE_ROOT", str(frame_root))
+    for index, path in enumerate((alias, target)):
+        task_id = f"alias-{index}"
+        _task(
+            tmp_path / "tasks",
+            task_id,
+            _governed_source_frontmatter(
+                _spec(tmp_path / "spec.md"), mutation_scope_refs=json.dumps([str(path)])
+            ),
+        )
+        result = module.validate_task(
+            task_id=task_id,
+            lane="cx-green",
+            platform="codex",
+            task_root=tmp_path / "tasks",
+            strict_worktree=False,
+        )
+        inside = path.resolve(strict=True) in read
+        assert result.ok is (not inside), result.reason
+        assert (
+            "marks every declared mutation surface out of accountability" in result.reason
+        ) is inside
+
+
 def test_a_symlinked_explicit_member_file_and_ref_resolve_to_the_same_file(tmp_path: Path) -> None:
     council, vault = tmp_path / "c", tmp_path / "v"
     real = tmp_path / "outside" / "real.py"
@@ -1440,20 +1494,12 @@ def test_disjoint_loop_literal_requires_canonical_resolution(tmp_path: Path, ref
     )
     verdicts = fv.FrameVerdicts("fixture", tmp_path, NOW, (member,), ())
 
-    if ref == ".venv/bin/python":
-        # Round ten: lexical disjointness cannot prove a literal alias is outside before
-        # evaluating its target. The old outside assertion bypassed canonical containment.
-        with pytest.raises(fv.UndecidableScopeContainment) as caught:
-            fv.scope_within_decayed([ref], verdicts, council_root=tmp_path, vault_root=tmp_path)
-        assert str(link) in str(caught.value)
-        assert "cannot resolve scope component" in str(caught.value)
-        assert str(link) in caught.value.remedy and "intended target" in caught.value.remedy
-        return
-
-    result = fv.scope_within_decayed([ref], verdicts, council_root=tmp_path, vault_root=tmp_path)
-
-    assert result.outside == (ref,)
-    assert not result.all_inside
+    # Neither the literal nor the equivalent singleton glob may skip target resolution.
+    with pytest.raises(fv.UndecidableScopeContainment) as caught:
+        fv.scope_within_decayed([ref], verdicts, council_root=tmp_path, vault_root=tmp_path)
+    assert str(link) in str(caught.value)
+    assert "cannot resolve scope component" in str(caught.value)
+    assert str(link) in caught.value.remedy and "intended target" in caught.value.remedy
 
 
 @pytest.mark.parametrize("skip", ["alias", "target"])

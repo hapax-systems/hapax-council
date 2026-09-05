@@ -1336,6 +1336,9 @@ def _check_member_symlinks(
                 _pattern_matches(relative, pattern) for pattern in patterns
             )
         if disjoint:
+            # A different spelling may reach a selected target. Resolve before discarding
+            # the lexical entry; broken glob expansions are as undecidable as literals.
+            _resolve_external_scope_path(selected)
             continue
         if _path_is_excluded(selected, member):
             has_excluded_entry = True
@@ -1343,9 +1346,12 @@ def _check_member_symlinks(
         for link in (selected, *selected.parents):
             if link == root or root not in link.parents:
                 break
-            if not link.is_symlink():
-                continue
-            target = link.readlink()
+            try:
+                if not link.is_symlink():
+                    continue
+                target = link.readlink()
+            except (OSError, RuntimeError) as exc:
+                raise _unresolved_scope_component(link, exc) from exc
             problem = None
             try:
                 resolved = link.resolve(strict=True)
@@ -1372,6 +1378,61 @@ def _check_member_symlinks(
                 )
                 raise error
     return has_excluded_entry
+
+
+def _canonical_member_entries(member: DecayedMember) -> dict[Path, Path]:
+    """Close the producer's selected file entries over their canonical byte targets.
+
+    Keep pathlib's traversal and lexical skip_dirs filter. Check selected symlinks before
+    is_file(), which silently drops dangling entries, and retain the round-nine remedies
+    for unresolved/escaping links. Declaration exclusions already compare resolved paths.
+    """
+    surface: dict[Path, Path] = {}
+    for root in member.roots:
+        for pattern in member.patterns or ("**/*",):
+            try:
+                entries = list(root.glob(pattern))
+            except (OSError, RuntimeError, ValueError) as exc:
+                raise UndecidableScopeContainment(
+                    f"cannot enumerate member pattern {pattern!r} below {root}: {exc}; "
+                    "containment is undecidable"
+                ) from exc
+            for entry in entries:
+                # fs.glob discards directories, including resolvable directory symlinks.
+                # A file reached THROUGH one still needs the traversal checks below.
+                try:
+                    if entry.is_dir():
+                        continue
+                except (OSError, RuntimeError) as exc:
+                    raise _unresolved_scope_component(entry, exc) from exc
+                if _check_member_symlinks(entry, root, member, scope_pattern=None):
+                    continue
+                canonical = _resolve_external_scope_path(entry)
+                if entry.is_file() and not _path_is_excluded(entry, member):
+                    surface[entry] = canonical
+    return surface
+
+
+def _canonical_scope_entries(path: Path, pattern: str, member: DecayedMember) -> dict[Path, Path]:
+    """Expand in the producer tree before resolving every entry, including broken links."""
+    try:
+        entries = list(path.glob(pattern))
+    except (OSError, RuntimeError, ValueError) as exc:
+        raise UndecidableScopeContainment(
+            f"cannot inspect scope glob {pattern!r} below {path}: {exc}; containment is undecidable"
+        ) from exc
+    canonical = {}
+    for entry in entries:
+        try:
+            for root in member.roots:
+                if root in entry.parents:
+                    _check_member_symlinks(entry, root, member, scope_pattern=None)
+            canonical[entry] = _resolve_external_scope_path(entry)
+        except UndecidableScopeContainment as exc:
+            error = UndecidableScopeContainment(f"scope glob expansion {entry}: {exc}")
+            error.remedy = f"repair scope glob expansion {entry}; {exc.remedy}"
+            raise error from exc
+    return canonical
 
 
 def _refuse_directory_spelled_file(file: Path | QualifiedLocation) -> None:
@@ -1517,6 +1578,14 @@ def ref_within_member(
                     f"scope glob {scope_pattern!r} matches declared member file {file}; "
                     "whole-surface containment cannot be decided safely"
                 )
+    selected_entries = _canonical_member_entries(member)
+    surface = frozenset(selected_entries.values())
+    expansions = (
+        _canonical_scope_entries(path, scope_pattern, member) if scope_pattern is not None else {}
+    )
+    aliases = any(entry != target for entry, target in selected_entries.items()) or any(
+        entry != target for entry, target in expansions.items()
+    )
     lexical_path = path
     for root in member.roots:
         path = lexical_path
@@ -1526,6 +1595,10 @@ def ref_within_member(
             # and the member-specific symlink checks below.
             path = _resolve_external_scope_path(path)
         if path != root and root not in path.parents:
+            if scope_pattern is not None and expansions and aliases:
+                # A glob's literal prefix can be outside while its expanded aliases enter
+                # the member. Every expansion was resolved before testing membership.
+                return all(target in surface for target in expansions.values())
             if (
                 scope_pattern is not None
                 and path in root.parents
@@ -1553,8 +1626,21 @@ def ref_within_member(
             path, root, member, scope_pattern=(scope_pattern or "**/*") if broad else None
         )
         if broad:
+            # Resolve every expansion before a lexical language comparison can reject it.
+            # A singleton glob alias names exactly the same bytes as its literal spelling.
+            if scope_pattern is None:
+                expansions = _canonical_scope_entries(path, "**/*", member)
             member_scope_pattern = _scope_pattern_from_base(relative, scope_pattern)
-            if member.patterns and not _scope_glob_covered(member_scope_pattern, member.patterns):
+            canonical_inside = bool(expansions) and all(
+                target in surface for target in expansions.values()
+            )
+            if scope_pattern is not None and expansions and aliases:
+                return canonical_inside
+            if (
+                member.patterns
+                and not canonical_inside
+                and not _scope_glob_covered(member_scope_pattern, member.patterns)
+            ):
                 continue
             exclusion_scope_pattern = _scope_pattern_from_base("", scope_pattern)
             if _scope_intersects_exclusions(path, exclusion_scope_pattern, member):
@@ -1567,13 +1653,10 @@ def ref_within_member(
         if has_excluded_entry or _path_is_excluded(path, member):
             continue
         return True
-    if any(lexical_path == root or root in lexical_path.parents for root in member.roots):
-        # Lexical selection and exclusions above still govern producer-enumerated aliases.
-        # A different spelling can additionally name a selected canonical target in the root.
-        canonical = _resolve_external_scope_path(lexical_path)
-        if canonical != lexical_path:
-            return ref_within_member(canonical, dirlike, member, scope_pattern=scope_pattern)
-    return False
+    # The member's own entries may be aliases, so canonical targets must be considered
+    # even when the candidate itself has no symlink components or matching lexical pattern.
+    canonical = _resolve_external_scope_path(lexical_path)
+    return not broad and canonical in surface
 
 
 def _ssh_glob_patterns(patterns: tuple[str, ...]) -> tuple[str, ...]:

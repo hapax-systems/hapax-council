@@ -20,7 +20,7 @@ from shared.platform_capability_registry import PlatformCapabilityRegistry
 from shared.quota_spend_ledger import QUOTA_SPEND_LEDGER_FIXTURES
 from shared.relay_mq import send_message
 from shared.relay_mq_envelope import Envelope
-from tests.frame_verdict_helpers import git_checkout
+from tests.frame_verdict_helpers import git_checkout, producer_glob_bytes
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 SCRIPT = REPO_ROOT / "scripts" / "hapax-methodology-dispatch"
@@ -4947,6 +4947,164 @@ def test_dispatch_in_root_alias_uses_canonical_member(
     assert rc == 10
     assert ("marks every declared mutation surface out of accountability" in err) is inside
     assert ("fixture refusal" in err) is (not inside)
+
+
+@pytest.mark.parametrize(
+    ("pattern", "candidate", "excluded"),
+    [
+        ("bin/gawk", "bin/awk", False),
+        ("bin/gawk", "bin/[a]wk", False),
+        ("bin/awk", "bin/gawk", False),
+        ("bin/awk", "bin/[g]awk", False),
+        ("bin/*", "bin/[a]wk", False),
+        ("**/*", "bin/[a]wk", False),
+        ("bin/*", "bin/awk", True),
+        ("bin/*", "bin/[a]wk", True),
+        ("bin/*", "bin/gawk", True),
+        ("bin/*", "bin/[g]awk", True),
+    ],
+)
+def test_dispatch_canonical_closure_matches_producer_bytes(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+    pattern: str,
+    candidate: str,
+    excluded: bool,
+) -> None:
+    module = _dispatcher_module()
+    root = tmp_path / "member"
+    (root / "bin").mkdir(parents=True)
+    target = root / "bin/gawk"
+    target.write_bytes(b"producer reads these canonical bytes\n")
+    (root / "bin/awk").symlink_to("gawk")
+    (root / "tools").mkdir()
+    (root / "bin/tools").symlink_to("../tools", target_is_directory=True)
+    read = producer_glob_bytes(root, [pattern], monkeypatch, excluded=(target,) if excluded else ())
+    assert read == ({} if excluded else {target: target.read_bytes()})
+    expansions = list(root.glob(candidate))
+    assert expansions
+    inside = all(path.resolve(strict=True) in read for path in expansions)
+    frame_root = _frame_procedure_root(
+        tmp_path / "frame",
+        decayed_root=root,
+        reader="fs.glob",
+        location={"path": str(root), "patterns": [pattern]},
+        exclusions=[{"id": "residue", "paths": [str(target)]}] if excluded else [],
+    )
+    rc, err = _dispatch_up_to_the_adapter(
+        tmp_path,
+        monkeypatch,
+        capsys,
+        module,
+        mutation_scope_refs=json.dumps([str(root / candidate)]),
+        frame_root=frame_root,
+    )
+    assert rc == 10
+    assert ("marks every declared mutation surface out of accountability" in err) is inside
+    assert ("fixture refusal" in err) is (not inside)
+
+
+@pytest.mark.parametrize("kind", ["dangling", "loop", "readlink-error"])
+@pytest.mark.parametrize("broken_selected", [False, True])
+def test_dispatch_canonical_closure_unresolved_entry_names_remedy(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+    kind: str,
+    broken_selected: bool,
+) -> None:
+    module = _dispatcher_module()
+    root = tmp_path / "member"
+    (root / "bin").mkdir(parents=True)
+    target = root / "bin/gawk"
+    target.write_bytes(b"canonical bytes\n")
+    (root / "bin/alias-good").symlink_to("gawk")
+    broken = root / "bin/alias-broken"
+    broken.symlink_to(broken.name if kind == "loop" else "missing")
+    if kind == "readlink-error":
+        original_readlink = Path.readlink
+
+        def denied_readlink(path):
+            if path == broken:
+                raise PermissionError(13, "Permission denied", str(path))
+            return original_readlink(path)
+
+        monkeypatch.setattr(Path, "readlink", denied_readlink)
+    assert producer_glob_bytes(root, ["bin/gawk"], monkeypatch) == {target: target.read_bytes()}
+    assert set(root.glob("bin/alias-*")) == {root / "bin/alias-good", broken}
+    pattern = "bin/alias-*" if broken_selected else "bin/gawk"
+    candidate = "bin/gawk" if broken_selected else "bin/alias-*"
+    frame_root = _frame_procedure_root(
+        tmp_path / "frame",
+        decayed_root=root,
+        reader="fs.glob",
+        location={"path": str(root), "patterns": [pattern]},
+    )
+    rc, err = _dispatch_up_to_the_adapter(
+        tmp_path,
+        monkeypatch,
+        capsys,
+        module,
+        mutation_scope_refs=json.dumps([str(root / candidate)]),
+        frame_root=frame_root,
+    )
+    assert rc == 10
+    assert "fixture refusal" not in err, "unresolvable entry was treated as outside"
+    assert "containment is undecidable" in err
+    assert str(broken) in err and str(broken) in err.partition("Next: ")[2]
+    assert "intended target" in err
+
+
+@pytest.mark.parametrize("kind", ["alias", "partly-unresolved", "unexpandable"])
+def test_dispatch_canonical_closure_expands_external_glob(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+    kind: str,
+) -> None:
+    module = _dispatcher_module()
+    root = tmp_path / "member"
+    root.mkdir()
+    target = root / "gawk"
+    target.write_bytes(b"selected bytes\n")
+    assert producer_glob_bytes(root, ["gawk"], monkeypatch) == {target: target.read_bytes()}
+    external = tmp_path / "external"
+    external.mkdir()
+    (external / "alias-good").symlink_to(target)
+    broken = external / "alias-broken"
+    if kind == "partly-unresolved":
+        broken.symlink_to("missing")
+    elif kind == "unexpandable":
+        original_glob = Path.glob
+
+        def denied_glob(path, pattern, *args, **kwargs):
+            if path == external:
+                raise PermissionError(13, "Permission denied", str(path))
+            return original_glob(path, pattern, *args, **kwargs)
+
+        monkeypatch.setattr(Path, "glob", denied_glob)
+    frame_root = _frame_procedure_root(
+        tmp_path / "frame",
+        decayed_root=root,
+        reader="fs.glob",
+        location={"path": str(root), "patterns": ["gawk"]},
+    )
+    rc, err = _dispatch_up_to_the_adapter(
+        tmp_path,
+        monkeypatch,
+        capsys,
+        module,
+        mutation_scope_refs=json.dumps([str(external / "alias-*")]),
+        frame_root=frame_root,
+    )
+    assert rc == 10
+    assert "fixture refusal" not in err
+    if kind == "alias":
+        assert "marks every declared mutation surface out of accountability" in err
+    else:
+        assert "containment is undecidable" in err and "Next:" in err
+        assert str(broken if kind == "partly-unresolved" else external) in err
 
 
 @pytest.mark.parametrize("kind", ["dangling", "loop"])
