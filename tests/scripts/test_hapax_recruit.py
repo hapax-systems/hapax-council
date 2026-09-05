@@ -82,6 +82,204 @@ def _receipt(out: Path) -> dict:
     return json.loads(out.with_name(out.name + ".receipt.json").read_text())
 
 
+@pytest.mark.parametrize(("capacity", "code"), [("grok", 7), ("grok", 0), ("local:qwen36", 0)])
+@pytest.mark.parametrize(
+    "prefix",
+    ["\ufeff", "\n\ufeff", "safe: KEEP\n\ufeff", "\ufeff\ufeff"],
+    ids=["leading", "after-newline", "interior", "repeated"],
+)
+@pytest.mark.parametrize("form", ["escaped", "plain", "flow"])
+def test_bom_yaml_redaction_at_every_destination(
+    bench, monkeypatch, capsys, caplog, capacity, code, prefix, form
+):
+    module, _bin_dir, brief, out = bench
+    forms = {
+        "escaped": '"api\\x5fkey": [FIRST,\nSYNTHETIC_SECOND_CREDENTIAL]\n',
+        "plain": "api_key: [FIRST,\nSYNTHETIC_SECOND_CREDENTIAL]\n",  # pragma: allowlist secret
+        "flow": '{safe: KEEP, "api\\x5fkey": [FIRST,\nSYNTHETIC_SECOND_CREDENTIAL]}\n',
+    }
+    response = prefix + forms[form]
+    suppressed = prefix in {"safe: KEEP\n\ufeff", "\ufeff\ufeff"}
+    if capacity.startswith("local:"):
+        payload = {"choices": [{"message": {"content": response}}]}
+        monkeypatch.setattr(
+            module.urllib.request,
+            "urlopen",
+            lambda *a, **kw: io.BytesIO(json.dumps(payload).encode()),
+        )
+    else:
+        monkeypatch.setattr(module, "_require_binary", lambda name: name)
+        monkeypatch.setattr(
+            module, "_run", lambda *a, **kw: (code, response, response, False, None)
+        )
+    rc = module.main([capacity, "--brief", str(brief), "--out", str(out)])
+    receipt = _receipt(out)
+    captured = capsys.readouterr()
+    destinations = {
+        "answer": out.read_text(),
+        "receipt": json.dumps(receipt),
+        "terminal stdout": captured.out,
+        "terminal stderr": captured.err,
+        "logs": caplog.text,
+    }
+    leaks = [
+        name
+        for name, text in destinations.items()
+        if "FIRST" in text or "SYNTHETIC_SECOND_CREDENTIAL" in text
+    ]
+    assert not leaks, f"credential reached destinations: {', '.join(leaks)}"
+    assert rc == (3 if code or suppressed else 0)
+    assert receipt["exit_code"] == (code or (3 if suppressed else 0))
+    assert receipt["output_bytes"] == len(out.read_bytes())
+    if suppressed:
+        assert destinations["answer"] == "", "interior BOM must suppress the stream"
+        assert receipt["answer_policy"] == "suppressed_undecodable_output"
+        assert receipt["suppressed_streams"] == {
+            stream: {
+                "length": len(response),
+                "first_token_class": "text",
+                "reason": "undecodable_stream_suppressed",
+            }
+            for stream in (["answer"] if capacity.startswith("local:") else ["stdout", "stderr"])
+        }
+    else:
+        assert "\ufeff" not in destinations["answer"], "leading BOM was not normalized"
+        assert "<redacted>" in destinations["answer"]
+        assert receipt["suppressed_streams"] == {}
+        assert receipt["answer_policy"] == (
+            "redacted_failure_output" if code else "capacity_answer"
+        )
+        if form == "flow":
+            assert "safe: KEEP" in destinations["answer"]
+    assert caplog.text == ""
+
+
+@pytest.mark.parametrize("capacity", ["grok", "local:qwen36"])
+@pytest.mark.parametrize(
+    ("response", "expected"),
+    [
+        ('"Hello" means: welcome home.', '"Hello" means: welcome home.'),
+        (
+            '"token" is a word we use loosely: nothing here',
+            '"token" is a word we use loosely: nothing here',
+        ),
+        ('"token": abc123', '"token": "<redacted>"'),  # pragma: allowlist secret
+        ('  "token" \t: abc123', '  "token": "<redacted>"'),  # pragma: allowlist secret
+        ("'Hello' means: welcome home.", "'Hello' means: welcome home."),
+        ('  "Hello" means: welcome home.\n', '  "Hello" means: welcome home.\n'),
+        ('"Hello":welcome home.', '"Hello":welcome home.'),
+        ('"Hello": welcome home.', '"Hello": welcome home.'),
+        ('"Hello: friend" means: welcome home.', '"Hello: friend" means: welcome home.'),
+    ],
+    ids=[
+        "hello-prose",
+        "token-prose",
+        "token-key",
+        "spaced-key",
+        "single-quote",
+        "indented-prose",
+        "no-separator",
+        "ordinary-key",
+        "quoted-colon-prose",
+    ],
+)
+def test_quoted_prose_and_sensitive_keys_through_main(
+    bench, monkeypatch, capsys, caplog, capacity, response, expected
+):
+    module, _bin_dir, brief, out = bench
+    if capacity.startswith("local:"):
+        payload = {"choices": [{"message": {"content": response}}]}
+        monkeypatch.setattr(
+            module.urllib.request,
+            "urlopen",
+            lambda *a, **kw: io.BytesIO(json.dumps(payload).encode()),
+        )
+    else:
+        monkeypatch.setattr(module, "_require_binary", lambda name: name)
+        monkeypatch.setattr(module, "_run", lambda *a, **kw: (0, response, response, False, None))
+    assert module.main([capacity, "--brief", str(brief), "--out", str(out)]) == 0
+    assert out.read_bytes() == expected.encode()
+    receipt = _receipt(out)
+    captured = capsys.readouterr()
+    assert receipt["exit_code"] == 0
+    assert receipt["answer_policy"] == "capacity_answer"
+    assert receipt["failure_class"] is None
+    assert receipt["suppressed_streams"] == {}
+    assert receipt["output_bytes"] == len(expected.encode())
+    assert receipt["stderr_tail"] == ("" if capacity.startswith("local:") else expected)
+    assert f"{capacity} answered" in captured.out
+    assert captured.err == ""
+    assert "abc123" not in json.dumps(receipt) + captured.out + captured.err + caplog.text
+    assert caplog.text == ""
+
+
+@pytest.mark.parametrize("quote", ['"', "'"])
+def test_unterminated_yaml_key_remains_suppressed(bench, quote):
+    module, _bin_dir, _brief, _out = bench
+    response = quote + "api_key: [FIRST,\nSYNTHETIC_SECOND_CREDENTIAL]\n"
+    streams, suppressed = module._redact_streams(answer=response)
+    assert streams == {"answer": ""}
+    assert suppressed == {
+        "answer": {
+            "length": len(response),
+            "first_token_class": "string" if quote == '"' else "text",
+            "reason": "undecodable_stream_suppressed",
+        }
+    }
+
+
+@pytest.mark.parametrize("capacity", ["grok", "local:qwen36"])
+@pytest.mark.parametrize("form", ["decoder", "answer", "decoder-object", "embedded"])
+def test_json_depth_limit_is_receipted_decode_failure(
+    bench, monkeypatch, capsys, caplog, capacity, form
+):
+    module, _bin_dir, brief, out = bench
+    # CPython 3.12's JSON C decoder has a separate limit from Python traversal.
+    depth = 10000 if form.startswith("decoder") else 1100
+    response = "[" * depth + "0" + "]" * depth
+    if form == "decoder-object":
+        response = '{"safe":' * depth + "0" + "}" * depth
+    if form == "embedded":
+        response = json.dumps({"safe": response})
+    if capacity.startswith("local:"):
+        body = (
+            response
+            if form == "decoder"
+            else json.dumps({"choices": [{"message": {"content": response}}]})
+        )
+        monkeypatch.setattr(
+            module.urllib.request, "urlopen", lambda *a, **kw: io.BytesIO(body.encode())
+        )
+    else:
+        monkeypatch.setattr(module, "_require_binary", lambda name: name)
+        monkeypatch.setattr(module, "_run", lambda *a, **kw: (0, response, "", False, None))
+    # Pytest raises the interpreter limit; pin the ordinary CLI limit so both
+    # decoder exhaustion and post-decode traversal exhaustion are exercised.
+    previous_limit = sys.getrecursionlimit()
+    sys.setrecursionlimit(1000)
+    try:
+        rc = module.main([capacity, "--brief", str(brief), "--out", str(out)])
+    finally:
+        sys.setrecursionlimit(previous_limit)
+    assert rc == 3
+    receipt = _receipt(out)
+    captured = capsys.readouterr()
+    assert receipt["exit_code"] == 3
+    assert receipt["failure_class"] == "ResponseDecodeError"
+    assert receipt["output_bytes"] == 0
+    assert out.read_text() == ""
+    assert "malformed JSON response" in receipt["stderr_tail"]
+    assert "malformed JSON response" in receipt["recovery_action"]
+    assert "malformed JSON response" in captured.err
+    assert "retry" in receipt["recovery_action"]
+    destinations = json.dumps(receipt) + captured.out + captured.err + caplog.text
+    assert response not in destinations
+    assert "RecursionError" not in destinations
+    assert "maximum recursion depth" not in destinations
+    assert "Traceback" not in destinations
+    assert caplog.text == ""
+
+
 @pytest.mark.parametrize("capacity", ["grok", "local:qwen36"])
 @pytest.mark.parametrize(
     "form",

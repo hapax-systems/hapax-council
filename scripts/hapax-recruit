@@ -142,7 +142,7 @@ def _load_response_json(text: str):
         return json.loads(text)
     except json.JSONDecodeError:
         raise  # Plain text/YAML still uses the existing fallback grammar.
-    except ValueError:
+    except (ValueError, RecursionError):
         raise ResponseDecodeError("malformed JSON response: decoder limit exceeded") from None
 
 
@@ -408,6 +408,14 @@ def _redact_yaml_subtrees(text: str) -> str:
                 lines[index : end + 1] = [line]
         field = _YAML_FIELD.match(line.rstrip("\r\n"))
         if field:
+            quoted = re.match(r""""(?:\\.|[^"\\])*"|'(?:''|[^'])*'""", line[field.start(3) :])
+            if quoted:
+                # A complete quoted word followed by prose is not a mapping key.
+                # Keep malformed/unclosed keys on the existing suppression path.
+                suffix = line.rstrip("\r\n")[field.start(3) + quoted.end() :]
+                if not re.match(r"[ \t]*:(?:[ \t]|$)", suffix):
+                    field = None
+        if field:
             indent, entry, key, value = field.groups()
             normalized = _yaml_key(key)
             probe = f'{normalized}: "scalar"'
@@ -455,6 +463,23 @@ def _redact_yaml_subtrees(text: str) -> str:
 
 
 def _redact(text: str, *, reject_undecodable: bool = False) -> str:
+    try:
+        # Normalize one stream-leading BOM before any JSON/YAML key inspection,
+        # including decoded JSON strings. Interior/repeated BOMs are unsupported.
+        text = re.sub(r"\A([ \t\r\n]*)\ufeff", r"\1", text, count=1)
+        if "\ufeff" in text:
+            raise UndecodableStream
+        return _redact_text(text, reject_undecodable=reject_undecodable)
+    except RecursionError:
+        # Traversal and embedded JSON can exhaust depth after decoding succeeds.
+        raise ResponseDecodeError("malformed JSON response: decoder limit exceeded") from None
+    except UndecodableStream:
+        if reject_undecodable:
+            raise
+        return "<redacted>"
+
+
+def _redact_text(text: str, *, reject_undecodable: bool = False) -> str:
     # Decode before matching labels: JSON strings can contain further JSON envelopes,
     # escaped quotes, or unicode escapes. Re-encode only after keys and values are safe.
     try:
@@ -464,12 +489,7 @@ def _redact(text: str, *, reject_undecodable: bool = False) -> str:
     else:
         redacted = _redact_json_value(payload, reject_undecodable=reject_undecodable)
         return text if redacted == payload else json.dumps(redacted)
-    try:
-        text = _redact_yaml_subtrees(text)
-    except UndecodableStream:
-        if reject_undecodable:
-            raise
-        return "<redacted>"
+    text = _redact_yaml_subtrees(text)
     if reject_undecodable:
         # Consume plain/YAML fields first. Punctuation in the remaining prose/code is
         # ordinary content, but an escaped sensitive field means serialization remains
