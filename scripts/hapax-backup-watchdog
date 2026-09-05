@@ -48,6 +48,20 @@ record_success() {
     log "  $1"
 }
 
+producer_recovery_action() {
+    local label="$1" unit
+    case "$label" in
+        Tier1-NAS) unit=hapax-backup-local.service ;;
+        Tier2-B2) unit=hapax-backup-remote.service ;;
+        GDrive-Critical) unit=hapax-backup-gdrive-critical.service ;;
+        Monocle-B2)
+            printf '%s' "next action: on hapax-monocle inspect 'journalctl --user -n 100 --no-pager' for the monocle-daily backup process, repair its reported failure and rerun that configured producer; then rerun 'systemctl --user start hapax-backup-watchdog.service' on hapax-podium"
+            return
+            ;;
+    esac
+    printf '%s' "next action: inspect 'journalctl --user -u $unit -n 100 --no-pager', repair the reported backup failure, retry 'systemctl --user start $unit', then rerun 'systemctl --user start hapax-backup-watchdog.service'"
+}
+
 restic_password() {
     local entry="$1" label="$2" value
     # Set the caller's local password in this shell: subshells lose failure records.
@@ -78,6 +92,8 @@ stderr_summary() {
 
 check_snapshot_age() {
     local repo="$1" label="$2" max_hours="$3" password_entry="$4" host="$5" tag="$6"
+    local recovery_action
+    recovery_action=$(producer_recovery_action "$label")
     log "Checking $label snapshot age (max ${max_hours}h, $host/$tag)..."
     if [[ ! "$max_hours" =~ ^[1-9][0-9]{0,5}$ ]]; then
         record_failure "$label: configuration failure: ${7:-maximum snapshot age} must be a positive integer number of hours"
@@ -94,7 +110,7 @@ check_snapshot_age() {
             if type != "array" then error("expected snapshots array") else
                 max_by(.time) | if . == null then "" else [.id, .time] | @tsv end
             end' 2>"$CHECK_TMP/stderr"); then
-            record_failure "$label: cannot read snapshots: invalid snapshot metadata: $(stderr_summary)"
+            record_failure "$label: cannot read snapshots: invalid snapshot metadata: $(stderr_summary); $recovery_action"
             return
         fi
     else
@@ -108,13 +124,13 @@ check_snapshot_age() {
     fi
     IFS=$'\t' read -r latest_id latest_time <<< "$latest"
     if [[ ! "$latest_id" =~ ^[[:xdigit:]]{8,64}$ ]]; then
-        record_failure "$label: cannot prove snapshot ID for $host/$tag"
+        record_failure "$label: cannot prove snapshot ID for $host/$tag; $recovery_action"
         return
     fi
 
     local latest_epoch now_epoch age_hours
     latest_epoch=$(date -d "$latest_time" +%s 2>/dev/null) || {
-        record_failure "$label: cannot parse snapshot time '$latest_time'"
+        record_failure "$label: cannot parse snapshot time '$latest_time'; $recovery_action"
         return
     }
     LATEST_SNAPSHOTS["$label"]="$latest_id"
@@ -122,7 +138,7 @@ check_snapshot_age() {
     age_hours=$(( (now_epoch - latest_epoch) / 3600 ))
 
     if (( age_hours > max_hours )); then
-        record_failure "$label: latest snapshot is ${age_hours}h old (max ${max_hours}h) [$host/$tag, $latest_id]"
+        record_failure "$label: latest snapshot is ${age_hours}h old (max ${max_hours}h) [$host/$tag, $latest_id]; $recovery_action"
     else
         record_success "$label: OK — latest snapshot ${age_hours}h old [$host/$tag, $latest_id]"
     fi
@@ -171,6 +187,8 @@ check_restic_integrity() {
 
 check_postgres_dump_in_snapshot() {
     local repo="$1" label="$2" entry="$3" password
+    local recovery_action
+    recovery_action=$(producer_recovery_action "$label")
     restic_password "$entry" "$label PostgreSQL" || return 0
     local snapshot="${LATEST_SNAPSHOTS[$label]:-}"
     if [[ -z "$snapshot" ]]; then
@@ -187,15 +205,15 @@ check_postgres_dump_in_snapshot() {
     fi
     dump_line=$(printf '%s\n' "$listing" | awk '$NF ~ /(^|\/)postgres-all[.]sql$/ { print; exit }')
     if [[ -z "$dump_line" ]]; then
-        record_failure "$label: newest snapshot contains NO postgres-all.sql (successfully listed $snapshot)"
+        record_failure "$label: newest snapshot contains NO postgres-all.sql (successfully listed $snapshot); $recovery_action"
         return
     fi
     size=$(printf '%s\n' "$dump_line" | awk '{ print $4 }')
     case "$size" in
-        ""|*[!0-9]*) record_failure "$label: could not parse dump size"; return ;;
+        ""|*[!0-9]*) record_failure "$label: could not parse dump size; $recovery_action"; return ;;
     esac
     local min_bytes="${HAPAX_POSTGRES_DUMP_MIN_BYTES:-1000000000}"
-    (( size < min_bytes )) && { record_failure "$label: postgres dump implausibly small: ${size} bytes"; return; }
+    (( size < min_bytes )) && { record_failure "$label: postgres dump implausibly small: ${size} bytes; $recovery_action"; return; }
     record_success "$label: postgres dump present, ${size} bytes (snapshot $snapshot)"
 }
 

@@ -261,6 +261,7 @@ def run_watchdog(
     fail_entries: tuple[str, ...] = (),
     empty_entries: tuple[str, ...] = (),
     monocle_threshold: str | None = "36",
+    snapshot_mode: str = "valid",
 ) -> tuple[subprocess.CompletedProcess[str], list[dict], str]:
     fake_bin = tmp_path / "bin"
     fake_bin.mkdir()
@@ -318,7 +319,15 @@ for flag, key in [('--host', 'hostname'), ('--tag', 'tags')]:
         value = args[args.index(flag) + 1]
         snapshots = [s for s in snapshots if (value in s[key] if key == 'tags' else value == s[key])]
 if args[0] == 'snapshots':
-    print(json.dumps(snapshots))
+    mode = os.environ['SNAPSHOT_MODE'] if repo == 'b2' and '--tag' in args and args[args.index('--tag') + 1] == 'tier2-remote' else 'valid'
+    if mode == 'invalid-json':
+        print('{')
+    elif mode == 'invalid-metadata':
+        print('{}')
+    else:
+        if mode == 'invalid-id': snapshots[0]['id'] = 'invalid'
+        if mode == 'invalid-time': snapshots[0]['time'] = 'unknown'
+        print(json.dumps(snapshots))
 elif args[0] == 'check' and repo == 'nas':
     mode = os.environ['CHECK_MODE']
     if mode.startswith('locked'):
@@ -334,6 +343,9 @@ elif args[0] == 'ls':
         sys.exit(23)
     if mode == 'absent':
         print('-rw-r--r-- 0 0 1000 date time /dump/postgres-all.sql.old')
+    elif mode in ('small', 'invalid-size'):
+        size = '1' if mode == 'small' else 'unknown'
+        print(f'-rw-r--r-- 0 0 {size} date time /dump/postgres-all.sql')
     elif mode == 'foreign-only' and f'{2:064x}' in args:
         pass
     else:
@@ -369,6 +381,7 @@ done
             "HAPAX_GDRIVE_CRITICAL_RESTIC_PASSWORD_ENTRY": "gdrive-password",  # pragma: allowlist secret
             "HAPAX_POSTGRES_DUMP_MIN_BYTES": "100",
             "SNAPSHOTS": str(snapshot_file),
+            "SNAPSHOT_MODE": snapshot_mode,
             "COMMAND_LOG": str(commands),
             "RECEIPT": str(receipt),
             "LISTING_MODE": listing_mode,

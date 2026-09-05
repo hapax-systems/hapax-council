@@ -1,9 +1,13 @@
 from __future__ import annotations
 
+import io
 import json
 import os
 import re
+import shlex
+import shutil
 import subprocess
+import tarfile
 from pathlib import Path
 
 import pytest
@@ -525,6 +529,9 @@ def _run_full_restore(
     unit_target_mode: str = "valid",
     omit_restored_home: str = "",
     archived_unit: bool = False,
+    optional_units: tuple[str, ...] = ("hapax-secrets.service",),
+    missing_mandatory: str = "",
+    staging_mode: str = "success",
 ) -> tuple[subprocess.CompletedProcess[str], list[str], Path]:
     home = tmp_path / "home"
     restore_root = tmp_path / "restore-root"
@@ -547,73 +554,38 @@ def _run_full_restore(
     (activation_tree / "scripts").mkdir()
     source_units = activation_tree / "systemd/units"
     source_units.mkdir(parents=True)
-    service_names = [
-        "hapax-secrets",
-        "logos-api",
-        "officium-api",
-        "hapax-daimonion",
-        "hapax-watch-receiver",
-        "studio-compositor",
-        "studio-fx-output",
-        "visual-layer-aggregator",
-        "audio-recorder",
-        "rag-ingest",
-        "keychron-keepalive",
-        "ydotool",
-        "llm-stack",
-        "llm-stack-analytics",
-    ]
-    timer_names = [
-        "hapax-backup-local",
-        "hapax-backup-remote",
-        "hapax-backup-watchdog",
-        "health-monitor",
-        "stack-maintenance",
-        "daily-briefing",
-        "digest",
-        "profile-update",
-        "audio-processor",
-        "av-correlator",
-        "drift-detector",
-        "knowledge-maint",
-        "scout",
-        "llm-backup",
-        "llm-cost-alert",
-        "log-anomaly-alert",
-        "manifest-snapshot",
-        "chrome-sync",
-        "claude-code-sync",
-        "gcalendar-sync",
-        "gdrive-sync",
-        "gmail-sync",
-        "git-sync",
-        "langfuse-sync",
-        "stimmung-sync",
-        "weather-sync",
-        "health-connect-parse",
-        "obsidian-sync",
-        "youtube-sync",
-        "cache-cleanup",
-        "dev-story-index",
-        "disk-space-check",
-        "flow-journal",
-        "gpg-keyboxd-watchdog",
-        "mixer-keepalive",
-        "screen-context",
-        "storage-arbiter",
-        "tmp-monitor",
-        "video-processor",
-        "video-retention",
-        "vram-watchdog",
-    ]
+    committed_paths = []
+    committed_archive = subprocess.check_output(
+        ["git", "archive", "HEAD", "systemd/units"], cwd=SCRIPTS.parent
+    )
+    with tarfile.open(fileobj=io.BytesIO(committed_archive)) as archive:
+        for member in archive.getmembers():
+            if not member.isfile():
+                continue
+            committed_paths.append(member.name)
+            target = activation_tree / member.name
+            target.parent.mkdir(parents=True, exist_ok=True)
+            target.write_bytes(archive.extractfile(member).read())
+            target.chmod(member.mode)
+    # Actual executable contracts, only inspected; producer side effects stay behind fakes.
+    for relative in (
+        "scripts/hapax-backup-local",
+        "scripts/hapax-backup-remote",
+        "scripts/hapax-backup-watchdog",
+        "scripts/secret_env_from_filestore.py",
+        "systemd/scripts/backup.sh",
+    ):
+        target = activation_tree / relative
+        target.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copy2(SCRIPTS.parent / relative, target)
+    if staging_mode == "symlink":
+        staging_target = tmp_path / "unrelated-data"
+        staging_target.mkdir(mode=0o755)
+        store_root.mkdir()
+        (store_root / "llm-data").symlink_to(staging_target, target_is_directory=True)
     active = home / ".cache/hapax/source-activation/worktree"
-    for name in service_names + timer_names:
-        _write_executable(activation_tree / "scripts" / name, "#!/bin/sh\nexit 0\n")
-        (source_units / f"{name}.service").write_text(
-            f"[Service]\nWorkingDirectory={active}\nExecStart={active}/scripts/{name}\n"
-        )
-    for name in timer_names:
-        (source_units / f"{name}.timer").write_text(f"[Timer]\nUnit={name}.service\n")
+    if missing_mandatory:
+        (source_units / missing_mandatory).unlink()
     if unit_target_mode == "missing-unit":
         (source_units / "hapax-backup-remote.service").unlink()
     if unit_target_mode == "missing-script":
@@ -770,6 +742,12 @@ if [ "${1:-}" = restore ]; then
     ln -s "$active/systemd/units/hapax-backup-local.service" "$restored_home/.config/systemd/user/hapax-backup-local.service"
     ln -s "$active/systemd/units/hapax-backup-local.timer" "$restored_home/.config/systemd/user/hapax-backup-local.timer"
     ln -s "$active/scripts/hapax-backup-local" "$restored_home/.local/bin/hapax-backup-local"
+    for unit in $OPTIONAL_UNITS; do
+        printf '[Service]\nExecStart=/bin/false\n' > "$restored_home/.config/systemd/user/$unit"
+        mkdir -p "$restored_home/.config/systemd/user/$unit.d" "$restored_home/.config/systemd/user/default.target.wants"
+        printf '[Service]\nEnvironment=ARCHIVED=1\n' > "$restored_home/.config/systemd/user/$unit.d/override.conf"
+        ln -s "../$unit" "$restored_home/.config/systemd/user/default.target.wants/$unit"
+    done
     if [ "$ARCHIVED_UNIT" = 1 ]; then
         rm "$restored_home/.config/systemd/user/hapax-backup-local.service"
         printf '[Service]\nExecStart=/bin/bash %s/projects/distro-work/scripts/hapax-backup-local\nWorkingDirectory=%s/projects/distro-work\n' "$HOME" "$HOME" > "$restored_home/.config/systemd/user/hapax-backup-local.service"
@@ -807,6 +785,10 @@ if [ -n "$FAIL_PRIVILEGED" ]; then
     case " $* " in *" $FAIL_PRIVILEGED "*) exit 17 ;; esac
 fi
 case "${1:-}" in
+    install|runuser)
+        command=$1; shift
+        exec "$RESTORE_FAKE_BIN/$command" "$@"
+        ;;
     mkdir)
         shift
         exec /usr/bin/mkdir "$@"
@@ -831,6 +813,42 @@ esac
 exit 0
 """,
     )
+    (tmp_path / "committed-units").write_text("\n".join(committed_paths) + "\n")
+    _write_executable(
+        fake_bin / "install",
+        """#!/bin/sh
+set -eu
+printf 'install %s\n' "$*" >> "$COMMAND_LOG"
+[ "$STAGING_MODE" != install-failed ] || exit 17
+[ "$1 $2 $3 $4 $5 $6 $7 $8" = '-d -o restore-test-user -g restore-test-group -m 0700 --' ] || exit 18
+shift 8
+for path in "$@"; do
+    case "$path" in "$STORE_ROOT_FIXTURE/llm-data"*) ;; *) exit 19 ;; esac
+    /usr/bin/install -d -m 0700 -- "$path"
+done
+""",
+    )
+    _write_executable(
+        fake_bin / "runuser",
+        """#!/bin/sh
+set -eu
+printf 'runuser %s\n' "$*" >> "$COMMAND_LOG"
+[ "$STAGING_MODE" != not-writable ] || exit 17
+[ "$1 $2 $3" = '-u restore-test-user --' ] || exit 18
+shift 3
+exec "$@"
+""",
+    )
+    _write_executable(
+        fake_bin / "id",
+        """#!/bin/sh
+case "$*" in
+    -un) echo restore-test-user ;;
+    -gn) echo restore-test-group ;;
+    *) exit 19 ;;
+esac
+""",
+    )
     _write_executable(
         fake_bin / "systemctl",
         """#!/bin/sh
@@ -839,11 +857,14 @@ printf '%s\n' "$*" >> "$COMMAND_LOG"
 if [ "${2:-}" = show ]; then
     unit=$3
     case "$*" in
-        *Triggers*) printf '%s\n' "${unit%.timer}.service" ;;
+        *Triggers*)
+            triggered=$(sed -n 's/^Unit=//p' "$HOME/.config/systemd/user/$unit")
+            printf '%s\n' "${triggered:-${unit%.timer}.service}"
+            ;;
         *LoadState*) [ -f "$HOME/.config/systemd/user/$unit" ] && printf '%s\n' loaded || printf '%s\n' not-found ;;
-        *WorkingDirectory*) sed -n 's/^WorkingDirectory=//p' "$HOME/.config/systemd/user/$unit" ;;
+        *WorkingDirectory*) sed -n 's/^WorkingDirectory=//p' "$HOME/.config/systemd/user/$unit" | sed "s|%h|$HOME|g" ;;
         *ExecStart*)
-            target=$(sed -n 's/^ExecStart=//p' "$HOME/.config/systemd/user/$unit")
+            target=$(sed -n 's/^ExecStart=//p' "$HOME/.config/systemd/user/$unit" | sed "s|%h|$HOME|g")
             printf '{ path=%s ; argv[]=%s ; }\n' "${target%% *}" "$target"
             ;;
     esac
@@ -857,7 +878,7 @@ case " $* " in
         unit=$3
         service=${unit%.timer}.service
         if [ "$unit" = "${unit%.timer}" ]; then service=$unit; fi
-        target=$(sed -n 's/^ExecStart=//p' "$HOME/.config/systemd/user/$service")
+        target=$(sed -n 's/^ExecStart=//p' "$HOME/.config/systemd/user/$service" | sed "s|%h|$HOME|g")
         target=${target%% *}
         [ -f "$target" ] && [ -x "$target" ] || exit 20
         printf 'verified ExecStart %s\n' "$service" >> "$COMMAND_LOG"
@@ -872,6 +893,7 @@ exit 0
 set -eu
 printf 'git %s\n' "$*" >> "$COMMAND_LOG"
 case " $* " in
+    *" ls-tree "*) cat "$COMMITTED_UNITS" ;;
     *" rev-parse "*) printf '%s\n' aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa ;;
     *" fsck "*) [ "$COUNCIL_BUNDLE" != disconnected ] || exit 22 ;;
 esac
@@ -1054,6 +1076,7 @@ esac
                 "docker",
                 "findmnt",
                 "gh",
+                "id",
                 "git",
                 "lsblk",
                 "mountpoint",
@@ -1107,6 +1130,10 @@ esac
             "ACTIVATION_MODE": activation_mode,
             "UNIT_TARGET_MODE": unit_target_mode,
             "ACTIVATION_TREE": str(activation_tree),
+            "COMMITTED_UNITS": str(tmp_path / "committed-units"),
+            "OPTIONAL_UNITS": " ".join(optional_units),
+            "STAGING_MODE": staging_mode,
+            "TMPDIR": str(tmp_path),
             "ARCHIVED_UNIT": "1" if archived_unit else "0",
             "OMIT_RESTORED_HOME": omit_restored_home,
             "DROP_PHASE12_ENV": "1" if drop_phase12_env else "0",
@@ -1624,8 +1651,17 @@ def test_round5_activation_precedes_all_unit_enables(tmp_path: Path) -> None:
         if command.startswith("--user enable "):
             unit = command.split()[-1].replace(".timer", ".service")
             text = (tmp_path / "home/.config/systemd/user" / unit).read_text()
-            target = Path(text.split("ExecStart=", 1)[1].strip())
+            start = next(
+                line.removeprefix("ExecStart=")
+                for line in text.splitlines()
+                if line.startswith("ExecStart=")
+            )
+            argv = shlex.split(start.replace("%h", str(tmp_path / "home")))
+            target = Path(argv[0])
             assert target.is_file() and os.access(target, os.X_OK), command
+            if target.name in ("bash", "python3"):
+                script = Path(argv[1])
+                assert script.is_file() and os.access(script, os.R_OK), command
             assert f"verified ExecStart {unit}" in commands
 
 
@@ -1982,3 +2018,116 @@ def test_round6_only_exact_top_level_bootstrap_statements_are_removed(tmp_path: 
         b'-- prefix\n CREATE ROLE "Hapax";\n SELECT 2;\n'
         b"\\connect hapax\n ALTER ROLE hapax WITH LOGIN;"
     )
+
+
+MANDATORY_BACKUP_UNITS = tuple(
+    f"{lane}.{kind}"
+    for lane in ("hapax-backup-local", "hapax-backup-remote", "hapax-backup-watchdog", "llm-backup")
+    for kind in ("service", "timer")
+)
+
+
+def test_round7_committed_inventory_preserves_absent_optional_units(tmp_path: Path) -> None:
+    optional = (
+        "hapax-secrets.service",
+        "officium-api.service",
+        "ydotool.service",
+        "phantom.service",
+    )
+    result, commands, root = _run_full_restore(tmp_path, optional_units=optional)
+    assert result.returncode == 0, result.stderr
+    units = tmp_path / "home/.config/systemd/user"
+    active = tmp_path / "home/.cache/hapax/source-activation/worktree"
+    committed_paths = subprocess.check_output(
+        ["git", "ls-tree", "-r", "--name-only", "HEAD", "systemd/units"],
+        cwd=SCRIPTS.parent,
+        text=True,
+    ).splitlines()
+    assert sorted(
+        str(path.relative_to(active))
+        for path in (active / "systemd/units").rglob("*")
+        if path.is_file()
+    ) == sorted(committed_paths)
+    for unit in MANDATORY_BACKUP_UNITS:
+        assert (units / unit).read_bytes() == subprocess.check_output(
+            ["git", "show", f"HEAD:systemd/units/{unit}"], cwd=SCRIPTS.parent
+        )
+        assert result.stdout.index(f"Reconciled activation unit: {unit}") < result.stdout.index(
+            "officium-api.service: not_in_activation_tree"
+        )
+    enables = [c.removeprefix("--user enable ") for c in commands if c.startswith("--user enable ")]
+    assert enables[:4] == [u for u in MANDATORY_BACKUP_UNITS if u.endswith(".timer")]
+    assert "hapax-secrets.service" in enables
+    for unit in optional[1:]:
+        assert not (active / "systemd/units" / unit).exists(), (
+            "fixture fabricated an activation unit"
+        )
+        assert not (units / unit).exists() and not (units / unit).is_symlink()
+        assert unit not in enables
+        archived = units / f"{unit}.restored"
+        assert (
+            archived.read_bytes()
+            == (root / "home/backup-user/.config/systemd/user" / unit).read_bytes()
+        )
+        status = (units / f"{unit}.restored.status").read_text()
+        assert unit in status and "not_in_activation_tree" in status
+        assert "next action:" in status and "rerun Phase 15" in status
+        assert (units / f"{unit}.d.restored/override.conf").is_file()
+        assert not (units / "default.target.wants" / unit).is_symlink()
+        assert (units / "default.target.wants" / f"{unit}.restored").is_symlink()
+
+
+@pytest.mark.parametrize("unit", MANDATORY_BACKUP_UNITS)
+def test_round7_every_backup_unit_is_mandatory(tmp_path: Path, unit: str) -> None:
+    result, commands, _ = _run_full_restore(tmp_path, missing_mandatory=unit)
+    assert result.returncode != 0
+    assert (
+        unit in result.stderr
+        and "activation" in result.stderr
+        and "rerun Phase 15" in result.stderr
+    )
+    assert not any(c.startswith("--user enable ") for c in commands)
+
+
+def test_round7_replacement_staging_is_writable_before_enabling(tmp_path: Path) -> None:
+    result, commands, _ = _run_full_restore(tmp_path, signature_mode="empty")
+    assert result.returncode == 0, result.stderr
+    first_enable = next(i for i, c in enumerate(commands) if c.startswith("--user enable "))
+    for relative in (
+        "",
+        "/backup-dumps-local",
+        "/backup-dumps-remote",
+        "/backup-dumps-local/qdrant",
+        "/backup-dumps-remote/qdrant",
+        "/backup-dumps-remote/git-bundles",
+    ):
+        path = tmp_path / ("store/llm-data" + relative)
+        prepare = f"sudo install -d -o restore-test-user -g restore-test-group -m 0700 -- {path}"
+        probe = f"sudo runuser -u restore-test-user -- test -w {path}"
+        assert prepare in commands, f"missing staging preparation: {path}"
+        assert probe in commands, f"missing producer writability probe: {path}"
+        assert commands.index(prepare) < commands.index(probe) < first_enable
+        assert path.is_dir() and path.stat().st_mode & 0o777 == 0o700
+    # The producers remove/recreate the roots; only owning the child is insufficient.
+    assert not any("chown -R" in c or "chmod -R" in c for c in commands)
+
+
+@pytest.mark.parametrize("mode", ["install-failed", "not-writable"])
+def test_round7_unprepared_staging_stops_before_database_restore(tmp_path: Path, mode: str) -> None:
+    result, commands, _ = _run_full_restore(tmp_path, staging_mode=mode)
+    assert result.returncode != 0
+    assert str(tmp_path / "store/llm-data") in result.stderr
+    assert "restore-test-user" in result.stderr and "rerun Phase 11" in result.stderr
+    assert "Phase 12:" not in result.stdout
+    assert not any(c.startswith("--user enable ") for c in commands)
+
+
+def test_round7_staging_symlink_refuses_before_changing_ownership(tmp_path: Path) -> None:
+    result, commands, _ = _run_full_restore(tmp_path, staging_mode="symlink")
+    assert result.returncode != 0
+    assert str(tmp_path / "store/llm-data") in result.stderr
+    assert "symbolic link" in result.stderr and "rerun Phase 11" in result.stderr
+    assert "Phase 12:" not in result.stdout
+    assert not any(c.startswith("sudo install ") for c in commands)
+    assert not any(c.startswith("--user enable ") for c in commands)
+    assert (tmp_path / "unrelated-data").stat().st_mode & 0o777 == 0o755

@@ -592,3 +592,42 @@ def test_round5_runbook_recheck_uses_configured_unit_and_preserves_status():
     assert "journalctl --user -u hapax-backup-watchdog.service" in block
     assert "| grep" not in block
     assert "worktree/scripts/hapax-backup-watchdog" not in block
+
+
+@pytest.mark.parametrize(
+    ("options", "diagnostic"),
+    [
+        ({"ages": {"tier2-remote": 72}}, "latest snapshot is 72h old"),
+        ({"snapshot_mode": "invalid-json"}, "invalid snapshot metadata"),
+        ({"snapshot_mode": "invalid-metadata"}, "invalid snapshot metadata"),
+        ({"snapshot_mode": "invalid-id"}, "cannot prove snapshot ID"),
+        ({"snapshot_mode": "invalid-time"}, "cannot parse snapshot time"),
+        ({"listing_mode": "absent"}, "contains NO postgres-all.sql"),
+        ({"listing_mode": "small"}, "postgres dump implausibly small"),
+        ({"listing_mode": "invalid-size"}, "could not parse dump size"),
+    ],
+)
+def test_round7_failure_receipt_names_producer_inspection_and_retry(tmp_path, options, diagnostic):
+    result, _, receipt = run_watchdog(tmp_path, **options)
+    assert result.returncode == 1
+    line = next(line for line in receipt.splitlines() if "Tier2-B2:" in line and diagnostic in line)
+    assert "next action:" in line
+    assert "journalctl --user -u hapax-backup-remote.service -n 100 --no-pager" in line
+    assert "systemctl --user start hapax-backup-remote.service" in line
+    assert "systemctl --user start hapax-backup-watchdog.service" in line
+
+
+@pytest.mark.parametrize(
+    ("tag", "label", "producer"),
+    [
+        ("tier1-local", "Tier1-NAS", "hapax-backup-local.service"),
+        ("gdrive-critical", "GDrive-Critical", "hapax-backup-gdrive-critical.service"),
+        ("monocle-daily", "Monocle-B2", "hapax-monocle"),
+    ],
+)
+def test_round7_stale_receipt_identifies_each_producer(tmp_path, tag, label, producer):
+    result, _, receipt = run_watchdog(tmp_path, ages={tag: 72})
+    assert result.returncode == 1
+    line = next(line for line in receipt.splitlines() if f"{label}: latest snapshot" in line)
+    assert "next action:" in line and "journalctl" in line and producer in line
+    assert "rerun" in line and "systemctl --user start hapax-backup-watchdog.service" in line

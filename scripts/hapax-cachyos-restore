@@ -128,6 +128,41 @@ ensure_backup_storage_roots() {
     done
 }
 
+prepare_backup_staging() {
+    local store_root="$1" producer_user producer_group path
+    if ! producer_user=$(id -un) || ! producer_group=$(id -gn); then
+        fail "Cannot identify the backup user for $store_root/llm-data; run 'id' as the recovering user, repair account lookup, then rerun Phase 11" >&2
+        return 1
+    fi
+    # Both producers remove and recreate their dump roots without sudo. They
+    # need the parent too; never recursively change ownership of restored data.
+    local directories=(
+        "$store_root/llm-data"
+        "$store_root/llm-data/backup-dumps-local"
+        "$store_root/llm-data/backup-dumps-remote"
+        "$store_root/llm-data/backup-dumps-local/qdrant"
+        "$store_root/llm-data/backup-dumps-remote/qdrant"
+        "$store_root/llm-data/backup-dumps-remote/git-bundles"
+    )
+    for path in "${directories[@]}"; do
+        if [[ -L "$path" ]]; then
+            fail "Cannot prepare backup staging $path for $producer_user: symbolic link; inspect and relocate its target, replace the link with a directory on $store_root, then rerun Phase 11" >&2
+            return 1
+        fi
+    done
+    for path in "${directories[@]}"; do
+        if ! sudo install -d -o "$producer_user" -g "$producer_group" -m 0700 -- "$path"; then
+            fail "Cannot prepare backup staging $path for $producer_user:$producer_group with mode 0700; inspect 'ls -ld $path' and repair filesystem access, then rerun Phase 11" >&2
+            return 1
+        fi
+        if ! sudo runuser -u "$producer_user" -- test -w "$path"; then
+            fail "Backup staging $path is not writable by $producer_user; inspect 'ls -ld $path', repair ownership or mount permissions, then rerun Phase 11" >&2
+            return 1
+        fi
+    done
+    ok "Backup staging prepared for $producer_user:$producer_group under $store_root/llm-data"
+}
+
 prepare_restore_root() {
     local restore_root="$1"
 
@@ -492,16 +527,20 @@ bootstrap_source_activation() {
 reconcile_systemd_user_unit() {
     local unit="$1" active="$HOME/.cache/hapax/source-activation/worktree"
     local installed="$HOME/.config/systemd/user/$unit" source archive path suffix
+    local requirement="${2:-mandatory}" available="${3:-yes}" status
     source="$active/systemd/units/$unit"
-    if [[ ! -f "$source" || ! -r "$source" ]]; then
+    [[ -f "$source" && -r "$source" ]] || available=no
+    if [[ "$available" == no && "$requirement" == mandatory ]]; then
         fail "Cannot reconcile user unit $unit: activation source is missing or unreadable: $source; recover that committed unit in the activation tree, then rerun Phase 15" >&2
         return 1
     fi
     # Keep every archived file/link and drop-in beside the installed unit, outside
     # systemd's recognized names. Never overwrite a previous recovery artifact.
-    for path in "$installed" "$installed.d"; do
+    for path in "$installed" "$installed.d" \
+        "$HOME/.config/systemd/user/"*.wants/"$unit" \
+        "$HOME/.config/systemd/user/"*.requires/"$unit"; do
         if [[ -e "$path" || -L "$path" ]]; then
-            if [[ "$path" == "$installed" && -L "$path" && "$(readlink "$path")" == "$source" ]]; then
+            if [[ "$available" == yes && "$path" == "$installed" && -L "$path" && "$(readlink "$path")" == "$source" ]]; then
                 continue
             fi
             archive="$path.restored"
@@ -517,10 +556,26 @@ reconcile_systemd_user_unit() {
             log "Preserved archived $unit at $archive; inspect it before porting any local settings into the committed activation unit"
         fi
     done
+    if [[ "$available" == no ]]; then
+        status="$installed.restored.status"
+        suffix=0
+        while [[ -e "$status" || -L "$status" ]]; do
+            suffix=$((suffix + 1))
+            status="$installed.restored.status.$suffix"
+        done
+        local message="$unit: not_in_activation_tree; next action: inspect the preserved $installed.restored files, recover a committed runnable unit in $active/systemd/units, then rerun Phase 15"
+        if ! printf '%s\n' "$message" > "$status"; then
+            fail "Cannot record missing optional unit $unit at $status; repair directory permissions, then rerun Phase 15" >&2
+            return 1
+        fi
+        log "$message"
+        return 0
+    fi
     if ! mkdir -p "${installed%/*}" || ! ln -sfn -- "$source" "$installed"; then
         fail "Cannot install activation unit $unit from $source; repair directory permissions, then rerun Phase 15" >&2
         return 1
     fi
+    ok "Reconciled activation unit: $unit"
 }
 
 restore_timer_services() {
@@ -1532,6 +1587,7 @@ fi
 carry_network_mount_entries /etc/fstab.restored /etc/fstab
 
 ensure_backup_storage_roots
+prepare_backup_staging "$STORE_ROOT"
 
 # The restored tree lives under /var/tmp, so installing tmpfs on /tmp cannot
 # hide the snapshot before database recovery.
@@ -1672,68 +1728,71 @@ enable_systemd_user_unit() {
     ok "$unit_kind: $label"
 }
 
-# Core services
-SERVICES=(
-    hapax-secrets
-    logos-api officium-api
-    hapax-daimonion hapax-watch-receiver
-    studio-compositor studio-fx-output visual-layer-aggregator
-    audio-recorder rag-ingest
-    keychron-keepalive ydotool
-    llm-stack llm-stack-analytics
+# Only the backup lanes are mandatory. Other services/timers come from the
+# archived inventory, intersected with the committed activation unit set.
+MANDATORY_BACKUP_UNITS=(
+    hapax-backup-local.service hapax-backup-local.timer
+    hapax-backup-remote.service hapax-backup-remote.timer
+    hapax-backup-watchdog.service hapax-backup-watchdog.timer
+    llm-backup.service llm-backup.timer
 )
-# Timers
-TIMERS=(
-    hapax-backup-local hapax-backup-remote hapax-backup-watchdog
-    health-monitor stack-maintenance
-    daily-briefing digest profile-update
-    audio-processor av-correlator
-    drift-detector knowledge-maint scout
-    llm-backup llm-cost-alert log-anomaly-alert manifest-snapshot
-    chrome-sync claude-code-sync gcalendar-sync gdrive-sync gmail-sync
-    git-sync langfuse-sync stimmung-sync weather-sync
-    health-connect-parse obsidian-sync youtube-sync
-    cache-cleanup dev-story-index disk-space-check flow-journal
-    gpg-keyboxd-watchdog mixer-keepalive
-    screen-context storage-arbiter tmp-monitor
-    video-processor video-retention vram-watchdog
-)
-# Reconcile only from the proved activation source; archived overrides cannot
-# supply a runnable command. Resolve timer services after publishing timer units.
-for svc in "${SERVICES[@]}"; do
-    reconcile_systemd_user_unit "$svc.service"
+ACTIVE_UNITS="$HOME/.cache/hapax/source-activation/worktree/systemd/units"
+if ! committed_units=$(git -C "${ACTIVE_UNITS%/systemd/units}" ls-tree -r --name-only HEAD -- systemd/units); then
+    fail "Cannot read committed activation unit inventory at $ACTIVE_UNITS; repair the activation checkout and rerun Phase 15" >&2
+    exit 1
+fi
+declare -A committed_unit_set=() selected_units=()
+while IFS= read -r path; do
+    [[ "$path" == systemd/units/* ]] || continue
+    committed_unit_set["${path#systemd/units/}"]=yes
+done <<< "$committed_units"
+RECOVERY_UNITS=()
+ENABLE_UNITS=()
+for unit in "${MANDATORY_BACKUP_UNITS[@]}"; do
+    reconcile_systemd_user_unit "$unit" mandatory "${committed_unit_set[$unit]:-no}"
+    selected_units["$unit"]=yes
+    RECOVERY_UNITS+=("$unit")
+    [[ "$unit" != *.timer ]] || ENABLE_UNITS+=("$unit")
 done
-for timer in "${TIMERS[@]}"; do
-    reconcile_systemd_user_unit "$timer.timer"
+# Capture archived files, dangling links, drop-ins and enabled dependencies.
+for path in "$HOME/.config/systemd/user/"* \
+    "$HOME/.config/systemd/user/"*.wants/* \
+    "$HOME/.config/systemd/user/"*.requires/*; do
+    [[ -e "$path" || -L "$path" ]] || continue
+    unit="${path##*/}"
+    unit="${unit%.d}"
+    case "$unit" in *.service|*.timer) ;; *) continue ;; esac
+    [[ -z "${selected_units[$unit]:-}" ]] || continue
+    selected_units["$unit"]=yes
+    available="${committed_unit_set[$unit]:-no}"
+    [[ -f "$ACTIVE_UNITS/$unit" && -r "$ACTIVE_UNITS/$unit" ]] || available=no
+    reconcile_systemd_user_unit "$unit" optional "$available"
+    [[ "$available" == yes ]] || continue
+    RECOVERY_UNITS+=("$unit")
+    ENABLE_UNITS+=("$unit")
 done
 if ! systemctl --user daemon-reload; then
     fail "Could not reload the systemd user manager; verify 'systemctl --user status', then rerun Phase 15" >&2
     exit 1
 fi
-
-for timer in "${TIMERS[@]}"; do
-    triggered_services=$(restore_timer_services "$timer.timer")
+for unit in "${RECOVERY_UNITS[@]}"; do
+    [[ "$unit" == *.timer ]] || continue
+    triggered_services=$(restore_timer_services "$unit")
     for svc in $triggered_services; do
-        reconcile_systemd_user_unit "$svc"
+        reconcile_systemd_user_unit "$svc" mandatory "${committed_unit_set[$svc]:-no}"
     done
 done
 if ! systemctl --user daemon-reload; then
     fail "Could not reload the systemd user manager; verify 'systemctl --user status', then rerun Phase 15" >&2
     exit 1
 fi
-
-# Validate the entire recovered user-unit set before publishing any enable link.
-for svc in "${SERVICES[@]}"; do
-    verify_systemd_user_target "$svc.service"
+# Prove the entire selected set before enabling; static backup services are
+# activated by their timers and have no independent [Install] contract.
+for unit in "${RECOVERY_UNITS[@]}"; do
+    verify_systemd_user_target "$unit"
 done
-for timer in "${TIMERS[@]}"; do
-    verify_systemd_user_target "$timer.timer"
-done
-for svc in "${SERVICES[@]}"; do
-    enable_systemd_user_unit "$svc.service" service "$svc"
-done
-for timer in "${TIMERS[@]}"; do
-    enable_systemd_user_unit "$timer.timer" timer "$timer"
+for unit in "${ENABLE_UNITS[@]}"; do
+    enable_systemd_user_unit "$unit" "${unit##*.}" "${unit%.*}"
 done
 
 # Set Yeti capture gain to 73% (+8dB) — persisted by WirePlumber state after first set
