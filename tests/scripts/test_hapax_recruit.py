@@ -506,14 +506,15 @@ def test_list_and_argument_refusals(
     assert module.main(["grok", "--brief", str(tmp_path / "nope.md"), "--out", str(out)]) == 2
 
 
+# Synthetic credential-shaped diagnostics: the redaction under test must remove them; none is real.
 _BOUNDARY_DIAGNOSTICS = [
-    '{"api_key": "VALUE"}',
-    "password: 'VALUE'",
-    "api_key: VALUE",
-    "API key: VALUE",
-    "token=VALUE",
-    "Bearer VALUE",
-    "Authorization: Basic VALUE",
+    '{"api_key": "VALUE"}',  # pragma: allowlist secret
+    "password: 'VALUE'",  # pragma: allowlist secret
+    "api_key: VALUE",  # pragma: allowlist secret
+    "API key: VALUE",  # pragma: allowlist secret
+    "token=VALUE",  # pragma: allowlist secret
+    "Bearer VALUE",  # pragma: allowlist secret
+    "Authorization: Basic VALUE",  # pragma: allowlist secret
 ]
 _BOUNDARY_IDS = ["json", "yaml", "colon", "space", "equals", "bearer", "authorization"]
 
@@ -658,11 +659,15 @@ def test_stdout_lanes_keep_brief_side_artifacts_separate_from_recruiter_out(
 @pytest.mark.parametrize(
     ("body", "failure_class", "diagnostic"),
     [
-        (b'{"api_key": "SYNTHETIC_PROTOCOL_SENTINEL",', "JSONDecodeError", "invalid JSON"),
+        (
+            b'{"api_key": "SYNTHETIC_PROTOCOL_SENTINEL",',
+            "JSONDecodeError",
+            "invalid JSON",
+        ),  # pragma: allowlist secret
         (b"\xffSYNTHETIC_PROTOCOL_SENTINEL", "UnicodeDecodeError", "UTF-8"),
         (b'["SYNTHETIC_PROTOCOL_SENTINEL"]', "EndpointProtocolError", "response must be an object"),
         (
-            b'{"choices": {"secret": "SYNTHETIC_PROTOCOL_SENTINEL"}}',
+            b'{"choices": {"secret": "SYNTHETIC_PROTOCOL_SENTINEL"}}',  # pragma: allowlist secret
             "EndpointProtocolError",
             "choices must be a non-empty list",
         ),
@@ -695,7 +700,7 @@ def test_stdout_lanes_keep_brief_side_artifacts_separate_from_recruiter_out(
             "content must not be empty",
         ),
         (
-            b'{"choices": [{"message": {"content": "OK"}}], "model": {"secret": "SYNTHETIC_PROTOCOL_SENTINEL"}}',
+            b'{"choices": [{"message": {"content": "OK"}}], "model": {"secret": "SYNTHETIC_PROTOCOL_SENTINEL"}}',  # pragma: allowlist secret
             "EndpointProtocolError",
             "model must be a string",
         ),
