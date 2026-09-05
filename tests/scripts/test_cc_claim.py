@@ -6,6 +6,8 @@ import textwrap
 from datetime import UTC, datetime
 from pathlib import Path
 
+import pytest
+
 from shared.gate0b_claim_publication_install import (
     default_claim_publication_roots,
     install_claim_publication_composition,
@@ -191,6 +193,81 @@ def _claim(
         capture_output=True,
         check=False,
     )
+
+
+@pytest.mark.parametrize("conflict", [False, True], ids=["restore_and_noop", "refuse_conflict"])
+def test_rehydrate_activation_cache_wrapper(tmp_path: Path, conflict: bool) -> None:
+    home = tmp_path / "home"
+    task_id = "rehydrate-wrapper"
+    note = _write_task(home, "active", task_id)
+    published = _claim(home, task_id)
+    assert published.returncode == 0, published.stderr
+    note.write_text(
+        re.sub(r"updated_at: [^\n]+", "updated_at: 2026-09-05T02:30:00Z", note.read_text())
+        + "\nProgress after publication.\n"
+    )
+    cache = home / ".cache" / "hapax"
+    paths = (cache / "cc-active-task-cx-test", cache / f"cc-active-task-cx-test-{_SESSION_ID}")
+    for path in paths:
+        path.unlink()
+    if conflict:
+        paths[0].write_bytes(b"another-task\n")
+        paths[0].chmod(0o644)
+    before = {
+        path: (path.read_bytes(), path.stat().st_mode, path.stat().st_mtime_ns)
+        for path in home.rglob("*")
+        if path.is_file()
+    }
+
+    result = _claim(
+        home,
+        task_id,
+        dispatch=False,
+        install_gate0b=False,
+        extra_args=["--rehydrate-activation-cache"],
+    )
+
+    if conflict:
+        assert result.returncode == 8
+        assert "claim_activation_cache_conflict" in result.stderr
+        assert (
+            "Next action: preserve the conflicting activation cache and reconcile its owner before retrying."
+            in result.stderr
+        )
+        assert not paths[1].exists()
+    else:
+        assert result.returncode == 0, result.stderr
+        assert ":rehydrated:" in result.stdout
+        for path in paths:
+            assert f"{path}: absent -> restored" in result.stdout
+            assert path.read_bytes() == f"{task_id}\n".encode()
+            assert path.stat().st_mode & 0o777 == 0o644
+    assert {
+        path: (path.read_bytes(), path.stat().st_mode, path.stat().st_mtime_ns) for path in before
+    } == before
+    assert {path for path in home.rglob("*") if path.is_file()} == set(before) | (
+        set() if conflict else set(paths)
+    )
+    if not conflict:
+        all_before = {
+            path: (path.read_bytes(), path.stat().st_mode, path.stat().st_mtime_ns)
+            for path in home.rglob("*")
+            if path.is_file()
+        }
+        again = _claim(
+            home,
+            task_id,
+            dispatch=False,
+            install_gate0b=False,
+            extra_args=["--rehydrate-activation-cache"],
+        )
+        assert again.returncode == 0, again.stderr
+        assert ":noop:" in again.stdout
+        assert {
+            path: (path.read_bytes(), path.stat().st_mode, path.stat().st_mtime_ns)
+            for path in home.rglob("*")
+            if path.is_file()
+        } == all_before
 
 
 def test_default_claim_without_dispatch_issues_manual_binding(tmp_path: Path) -> None:
