@@ -31,7 +31,31 @@ KIMI_BIN="${KIMI_BIN:-$HOME/.kimi-code/bin/kimi}"
 SESSION="hapax-kimi-$ROLE"
 SESSION_UUID="$(cat /proc/sys/kernel/random/uuid)"
 COUNCIL_DIR="${HAPAX_COUNCIL_DIR:-$HOME/projects/hapax-council}"
+TMUX_LANE_CONFIGURE="$COUNCIL_DIR/scripts/hapax-tmux-lane-configure"
 WORKDIR="${HAPAX_KIMI_WORKDIR:-$HOME}"
+
+configure_hapax_tmux_lane() {
+  local tmux_bin="${1:-tmux}"
+  [ "${TMUX_LANE_PROFILE_SUPPORTED:-0}" = "1" ] || return 0
+  [ -x "$TMUX_LANE_CONFIGURE" ] || return 0
+  if ! "$TMUX_LANE_CONFIGURE" "$tmux_bin"; then
+    echo "hapax-kimi: warning: failed to apply Hapax tmux lane profile" >&2
+  fi
+}
+
+tmux_lane_profile_supported() {
+  local tmux_bin="${1:-tmux}" version=""
+  version="$("$tmux_bin" -V 2>/dev/null || true)"
+  case "$version" in
+    tmux\ *) return 0 ;;
+    *) return 1 ;;
+  esac
+}
+
+TMUX_LANE_PROFILE_SUPPORTED=0
+if tmux_lane_profile_supported tmux; then
+  TMUX_LANE_PROFILE_SUPPORTED=1
+fi
 
 if tmux has-session -t "$SESSION" 2>/dev/null; then
   echo "hapax-kimi: session $SESSION already exists — attach with: tmux attach -t $SESSION" >&2
@@ -74,4 +98,5 @@ RUNNER="$SPAWN_DIR/run-$(date -u +%Y%m%dT%H%M%SZ)-$ROLE.sh"
 chmod 700 "$RUNNER"
 
 tmux new-session -d -s "$SESSION" "$RUNNER"
+configure_hapax_tmux_lane tmux
 echo "hapax-kimi: lane $ROLE up at tmux session $SESSION"
