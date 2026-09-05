@@ -73,7 +73,7 @@ _SECRETISH = re.compile(
     (
         ["']?\bauthorization["']?\s*:\s*(?:(?:basic|bearer)\s+)?
         |
-        ["']?(?:api[_-]?key|token|secret|password)["']?\s*[:=]\s*
+        ["']?(?:api(?:[_-]|[ \t]+)?key|token|secret|password)["']?\s*[:=]\s*
         |
         \bbearer\s+
     )

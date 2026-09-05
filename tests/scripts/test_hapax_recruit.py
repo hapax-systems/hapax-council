@@ -322,11 +322,20 @@ def test_qwencloud_shape_uses_its_own_wrapper_binding(bench, tmp_path: Path, mon
         ('{"api_key": "FAKE_JSON_CREDENTIAL"}', "FAKE_JSON_CREDENTIAL"),  # pragma: allowlist secret
         ("password: 'FAKE YAML CREDENTIAL'", "FAKE YAML CREDENTIAL"),  # pragma: allowlist secret
         ("api_key: FAKE_COLON_CREDENTIAL", "FAKE_COLON_CREDENTIAL"),
+        ("API key: FAKE_SPACE_CREDENTIAL", "FAKE_SPACE_CREDENTIAL"),
         ("token=FAKE_EQUALS_CREDENTIAL", "FAKE_EQUALS_CREDENTIAL"),
         ("Bearer FAKE_BEARER_CREDENTIAL", "FAKE_BEARER_CREDENTIAL"),
         ("Authorization: Basic FAKE_AUTH_CREDENTIAL", "FAKE_AUTH_CREDENTIAL"),
     ],
-    ids=["json", "yaml", "key-colon-value", "key-equals-value", "bearer", "authorization"],
+    ids=[
+        "json",
+        "yaml",
+        "key-colon-value",
+        "space-separated-key",
+        "key-equals-value",
+        "bearer",
+        "authorization",
+    ],
 )
 def test_capacity_failure_redacts_every_diagnostic_form_from_receipt_and_terminal(
     bench,
@@ -355,6 +364,19 @@ def test_registered_legacy_regex_mutation_turns_the_json_case_red(
     module, _bin_dir, _brief, _out = bench
     diagnostic = '{"api_key": "FAKE_JSON_MUTATION_CANARY"}'  # pragma: allowlist secret
     canary = "FAKE_JSON_MUTATION_CANARY"
+
+    _assert_redacted(module, diagnostic, canary)
+    REGISTERED_MUTATIONS["legacy-redaction-regex"](module, monkeypatch)
+    with pytest.raises(AssertionError):
+        _assert_redacted(module, diagnostic, canary)
+
+
+def test_registered_legacy_regex_mutation_turns_the_space_separated_api_key_case_red(
+    bench, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    module, _bin_dir, _brief, _out = bench
+    diagnostic = "API key: FAKE_SPACE_MUTATION_CANARY"
+    canary = "FAKE_SPACE_MUTATION_CANARY"
 
     _assert_redacted(module, diagnostic, canary)
     REGISTERED_MUTATIONS["legacy-redaction-regex"](module, monkeypatch)
