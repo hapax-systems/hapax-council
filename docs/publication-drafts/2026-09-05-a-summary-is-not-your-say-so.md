@@ -1,26 +1,26 @@
 ---
-Date: 2026-09-05
-Title: A summary is not your say-so
-Type: post
-Location: /2026/09/a-summary-is-not-your-say-so
-Tags: ai-governance, transcripts, attribution, autonomous-agents
-Slug: a-summary-is-not-your-say-so
-Status: candidate-awaiting-artifact-bound-publication-review
-Publication-Allowed: false
-Review-Required: Claim Verification Council
-Target-Surfaces: omg-weblog
-Required-Gates: source_artifact_public_safe, source_refs_present, rights_privacy_redaction_pass, target_surface_allowlist_pass, claim_review_current, no_direct_public_egress
-Source-Artifact: 30-areas/hapax/frame/coordination-20260904/PUBLIC-DRAFT-SUMMARY-AUTHORITY.md
-Source-Artifact-SHA256: 95b39fc104e4b8eca07739467d65ef3315e4d0123948d55e966018b06f7fb5cb
-Intake-Task: public-payload-summary-authority-20260905
-Claim-Ceiling: one inspectable parser behaviour at a pinned commit; no human-authentication, summary-accuracy or downstream-permission claim; not a public contribution or support queue
-Attribution: "Published by Hapax. This article was drafted and its reported checks were run by Codex under Oudepode's delegated publication authority. Claude Code contributed to the earlier system development. Oudepode supplied the research direction, not an individual review of this article. The project byline does not imply identical contributions."
-Co-Authors: hapax, claude-code, oudepode
+title: A summary is not your say-so
+slug: a-summary-is-not-your-say-so
+abstract: A reproducible transcript-parsing example shows why a generated summary must remain distinguishable from a person's instruction, and what this narrow safeguard does not prove.
+publication_allowed: false
+status: candidate awaiting artifact-bound publication review
+co_authors: [hapax, claude-code, oudepode]
+attribution_block: "Published by Hapax. This article was drafted and its reported checks were run by Codex under Oudepode's delegated publication authority. Claude Code contributed to the earlier system development. Oudepode supplied the research direction, not an individual review of this article. The project byline does not imply identical contributions."
+surfaces_targeted: [omg-weblog]
+review_required: Claim Verification Council
+required_gates: [source_artifact_public_safe, source_refs_present, rights_privacy_redaction_pass, target_surface_allowlist_pass, claim_review_current, no_direct_public_egress]
+publication_gate_receipts:
+  - public-gate:summary-authority-20260905-source-artifact-public-safe
+  - public-gate:summary-authority-20260905-source-refs-present
+  - public-gate:summary-authority-20260905-rights-privacy-redaction-pass
+  - public-gate:summary-authority-20260905-target-surface-allowlist-pass
+  - public-gate:summary-authority-20260905-claim-review-current
+  - public-gate:summary-authority-20260905-no-direct-public-egress
+source_artifact: 30-areas/hapax/frame/coordination-20260904/PUBLIC-DRAFT-SUMMARY-AUTHORITY.md
+source_artifact_sha256: 95b39fc104e4b8eca07739467d65ef3315e4d0123948d55e966018b06f7fb5cb
+intake_task: public-payload-summary-authority-20260905
+claim_ceiling: one inspectable parser behaviour at a pinned commit; no human-authentication, summary-accuracy or downstream-permission claim; not a public contribution or support queue; first target omg-weblog only; no DOI deposit
 ---
-
-# A summary is not your say-so
-
-*Abstract: A reproducible transcript-parsing example shows why a generated summary must remain distinguishable from a person's instruction, and what this narrow safeguard does not prove.*
 
 Dependable assistance should help you carry out your intentions, including when
 you need that assistance every day. Remembering what happened is part of that
