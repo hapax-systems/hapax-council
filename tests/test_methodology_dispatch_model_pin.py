@@ -88,3 +88,10 @@ def test_every_claude_profile_in_registry_has_a_model_pin():
     }
     missing = claude_profiles - set(mod.CLAUDE_PROFILE_MODEL_PIN)
     assert not missing, f"claude headless profiles missing a model pin: {missing}"
+
+
+def test_grok_headless_full_is_not_mutable_while_registry_blocked() -> None:
+    """R3-live: PLATFORM_PATHS must not open a mutable spawn while route is blocked."""
+    route = mod.PLATFORM_PATHS[("grok", "headless", "full")]
+    assert route.mutable is False
+    assert route.platform == "grok"

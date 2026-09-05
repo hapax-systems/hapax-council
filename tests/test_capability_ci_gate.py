@@ -34,6 +34,9 @@ ROOT = Path(__file__).resolve().parent.parent
 HISTORICAL_V1_BASELINE = ROOT / "tests" / "fixtures" / "capability-inventory-baseline-v1.json"
 BASELINE_SCHEMA = ROOT / "schemas" / "capability-inventory-baseline.schema.json"
 GATE = ROOT / "scripts" / "hapax-capability-surface-delta-gate"
+#: The only capability admitted into supply since the historical v1 baseline. Adding a second entry
+#: here is a governance act, not a test fix: it asserts a new capability shape is real supply.
+ADMITTED_SUPPLY_SINCE_V1 = "grok.headless.full"
 CI_GATE_COMMAND = [
     "uv",
     "run",
@@ -151,7 +154,10 @@ class CapabilityCIGateTest(unittest.TestCase):
         baseline = CapabilityInventoryBaselineV2.model_validate(payload)
 
         self.assertEqual(baseline.schema_version, 2)
-        self.assertEqual(baseline.count, 191)
+        # 192 since grok.headless.full landed: the first admitted-supply addition after the v1
+        # baseline. Moving this number is the reviewable event the surface-delta gate exists to
+        # force — it must never be bumped to make a failing run green.
+        self.assertEqual(baseline.count, 192)
         evaluator = baseline.records["local_compute.agentic_trust_evaluator_surface"]
         self.assertEqual(evaluator.inventory_disposition.value, "evidence_only_non_supply")
 
@@ -164,12 +170,17 @@ class CapabilityCIGateTest(unittest.TestCase):
         )
         legacy = json.loads(raw)
         self.assertEqual(legacy["count"], 179)
+        live_supply = {
+            descriptor.capability_id: descriptor_fingerprint(descriptor)
+            for descriptor in snapshot.admitted_supply_descriptors()
+        }
+        # Admitted supply was frozen at the v1 set until grok.headless.full. Rather than relax the
+        # equality to accommodate it, name the addition exactly: everything else must still match
+        # v1 byte-for-byte, and exactly one id may be new. A second unannounced addition fails here.
+        self.assertEqual(set(live_supply) - set(legacy["fingerprints"]), {ADMITTED_SUPPLY_SINCE_V1})
         self.assertEqual(
+            {k: v for k, v in live_supply.items() if k != ADMITTED_SUPPLY_SINCE_V1},
             legacy["fingerprints"],
-            {
-                descriptor.capability_id: descriptor_fingerprint(descriptor)
-                for descriptor in snapshot.admitted_supply_descriptors()
-            },
         )
         registered = _load_inventory_baseline(HISTORICAL_V1_BASELINE)
 
@@ -177,7 +188,8 @@ class CapabilityCIGateTest(unittest.TestCase):
 
         self.assertEqual(
             set(delta.new_capability_ids),
-            {descriptor.shape_id for descriptor in snapshot.evidence_only_non_supply_descriptors()},
+            {descriptor.shape_id for descriptor in snapshot.evidence_only_non_supply_descriptors()}
+            | {ADMITTED_SUPPLY_SINCE_V1},
         )
         self.assertEqual(delta.changed_capability_ids, [])
         self.assertEqual(delta.missing_capability_ids, [])
