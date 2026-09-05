@@ -15,6 +15,7 @@ from __future__ import annotations
 import json
 import os
 import runpy
+import shlex
 import shutil
 import subprocess
 import sys
@@ -213,6 +214,7 @@ def _harness(
     scripts = council / "scripts"
     scripts.mkdir(parents=True)
     (council / "shared").symlink_to(REPO / "shared", target_is_directory=True)
+    (council / "config").symlink_to(REPO / "config", target_is_directory=True)
     (home / ".cache" / "hapax" / "relay" / "receipts").mkdir(parents=True)
     receipts_dir = home / ".cache" / "hapax" / "platform-capability-receipts"
     receipts_dir.mkdir(parents=True)
@@ -227,6 +229,9 @@ def _harness(
         scripts / "hapax-quota-telemetry-writer",
         'printf "writer %s\\n" "$*" >> "$HOME/calls"\n'
         'echo "wrote live ledger"\necho "capability receipts DEGRADED for one provider"\n'
+        'if [ -f "$HOME/refreshed-ledger.json" ]; then\n'
+        '  cp "$HOME/refreshed-ledger.json" "$HOME/quota-spend-ledger-live.json"\n'
+        "fi\n"
         f"exit {writer_rc}\n",
     )
     _stub(
@@ -244,6 +249,10 @@ def _harness(
         "esac\n",
     )
     now = now or datetime.now(UTC)
+    ledger_path = _glmcp_admission_artifacts(home, now)
+    (home / "refreshed-ledger.json").write_text(ledger_path.read_text())
+    ledger_path.unlink()
+    (home / ".cache/hapax/relay/receipts/glmcp-quota-admission.yaml").unlink()
     if receipt_status == "observed":
         _glmcp_admission_artifacts(home, now - timedelta(seconds=receipt_age))
     if malformed_receipt:
@@ -298,6 +307,7 @@ def _run(
     receipts_rc: int = 0,
     path: str | None = None,
     script_text: str | None = None,
+    environment: dict[str, str] | None = None,
 ) -> subprocess.CompletedProcess[str]:
     env = {
         "HOME": str(home),
@@ -309,6 +319,7 @@ def _run(
         "HAPAX_TEST_PYTHON": sys.executable,
         "HAPAX_TEST_RECEIPTS_SCRIPT": str(RECEIPTS_SCRIPT),
         "HAPAX_TEST_RECEIPTS_RC": str(receipts_rc),
+        "HAPAX_QUOTA_SPEND_LEDGER_LIVE": str(home / "quota-spend-ledger-live.json"),
         # Inherited values that must never reach the probe (review findings on #4624, rounds 3–4).
         "HAPAX_GLMCP_REVIEW_BASE_URL": "https://evil.example/paas/v4",
         "HAPAX_GLMCP_REVIEW_SECRET_ENTRY": "glmcp/someone-elses-key",  # pragma: allowlist secret; synthetic test fixture
@@ -316,6 +327,7 @@ def _run(
     }
     if ambient_root_override:
         env["HAPAX_GLMCP_SEAT_ROOT_OVERRIDE"] = "1"
+    env.update(environment or {})
     command = ["bash", "-s", "--"] if script_text is not None else ["bash", str(SCRIPT)]
     if allow_root:
         command.append("--allow-mutable-root")
@@ -432,6 +444,66 @@ def test_guard_parses_dispatcher_receipt_and_names_refresh_cause(
         assert (home / "admission-calls").exists()
         cause = "receipt_stale_or_superseded" if state == "stale" else "route_not_covered"
         assert cause in result.stderr
+
+
+@pytest.mark.parametrize("publication", ["guard", "final"])
+@pytest.mark.parametrize("live", ["absent", "invalid", "stale", "admission-absent"])
+def test_live_admission_matches_dispatch_through_both_script_paths(
+    tmp_path: Path, publication: str, live: str
+) -> None:
+    from shared.platform_capability_receipts import load_platform_capability_receipts
+
+    now = datetime.now(UTC).replace(microsecond=0)
+    home, council = _harness(
+        tmp_path,
+        receipt_status="observed",
+        receipt_remaining=800,
+        now=now,
+        refreshed_remaining=None,
+    )
+    # The no-op writer must leave the failing live state intact through the final check.
+    (home / "refreshed-ledger.json").unlink(missing_ok=True)
+    ledger_path = home / "quota-spend-ledger-live.json"
+    if live == "absent":
+        ledger_path.unlink()
+    elif live == "invalid":
+        ledger_path.write_text("{invalid ledger")
+    elif live == "stale":
+        _glmcp_admission_artifacts(home, now - timedelta(hours=1))
+    else:
+        ledger = json.loads(ledger_path.read_text())
+        ledger["quota_snapshots"] = []
+        ledger_path.write_text(json.dumps(ledger))
+    receipt_path = home / ".cache/hapax/platform-capability-receipts/glmcp.json"
+    assert "glmcp" in load_platform_capability_receipts(receipt_path.parent, now=now)
+    quota = _dispatch_quota(home, now).evidence.quota
+    assert quota.blocked_reasons == ["glmcp_review_seat_receipt_admission_required"]
+    if publication == "final":
+        (home / "refreshed-receipt.json").write_text(receipt_path.read_text())
+        receipt_path.unlink()
+    result = _run(home, council)
+    verdict = next(
+        (
+            line
+            for line in result.stdout.splitlines()
+            if "no round-trip" in line or "visible to the dispatcher" in line
+        ),
+        "no success claim",
+    )
+    print(
+        f"{publication}/{live}: dispatcher={quota.blocked_reasons}; "
+        f"script_exit={result.returncode}; script={verdict}"
+    )
+    assert result.returncode == 6, result.stdout + result.stderr
+    assert "no round-trip" not in result.stdout
+    assert "visible to the dispatcher" not in result.stdout
+    assert (home / "admission-calls").exists()
+    assert "glmcp_review_seat_receipt_admission_required" in result.stderr
+    assert str(ledger_path) in result.stderr
+    assert str(receipt_path) in result.stderr
+    assert "hapax-quota-telemetry-writer --skip-receipts" in result.stderr
+    assert "hapax-platform-capability-receipts --platform glmcp" in result.stderr
+    assert "Next:" in result.stderr
 
 
 @pytest.mark.parametrize("publication", ["guard", "final"])
@@ -1278,7 +1350,7 @@ def test_a_root_other_than_the_activation_worktree_is_refused(
     assert not (home / "reviewer-env").exists()
 
 
-def test_explicit_mutable_root_flag_allows_only_the_stubbed_harness(tmp_path: Path) -> None:
+def test_explicit_mutable_root_flag_allows_the_stubbed_harness(tmp_path: Path) -> None:
     home, council = _harness(tmp_path)
     result = _run(home, council, allow_root=True)
     assert result.returncode == 0, result.stderr
@@ -1463,7 +1535,12 @@ def test_unit_pair_executes_from_the_activation_worktree_and_strips_inherited_ov
     assert "source-activation/worktree" in SCRIPT.read_text(encoding="utf-8")
     for line in service.splitlines():
         if line.startswith("Environment="):
-            assert "%" not in line, f"this unit deliberately uses literal environment paths: {line}"
+            assert "%h" in line, f"environment paths must share ExecStart home specifier: {line}"
+            # No literal home directory beside the specifier: the running user's home, built at
+            # runtime, must not appear, and every value must begin with the specifier, never
+            # with an absolute path (after dropping the specifier no value may start with "/").
+            assert str(Path.home()) not in line
+            assert "=/" not in line.replace("=%h", ""), line
     assert "Environment= expands specifiers such as %h" in service
     assert "shell variable expansion does not occur" in service
     unset = _unit_value(service, "Service", "UnsetEnvironment") or ""
@@ -1665,3 +1742,61 @@ def test_show_reports_the_accepted_receipt_and_rejects_a_malformed_one(tmp_path:
     (row,) = json.loads(rejected.stdout)["receipts"]
     assert row["accepted"] is False
     assert row["reason"].startswith("receipt_invalid")
+
+
+@pytest.mark.parametrize(
+    "marker",
+    [
+        "HAPAX_GLMCP_SEAT_ROOT_OVERRIDE",
+        "HAPAX_GLMCP_ALLOW_MUTABLE_ROOT",
+        "HAPAX_TEST_HARNESS",
+        "ALLOW_MUTABLE_ROOT",
+        "allow_mutable_root",
+        "ACTIVATION_ROOT",
+    ],
+)
+def test_environment_marker_cannot_grant_mutable_root(tmp_path: Path, marker: str) -> None:
+    home, council = _harness(tmp_path)
+    result = _run(
+        home,
+        council,
+        allow_root=False,
+        environment={marker: str(council) if marker == "ACTIVATION_ROOT" else "1"},
+    )
+    assert result.returncode == 4, result.stdout + result.stderr
+    assert "activation worktree" in result.stderr
+    assert "Next:" in result.stderr
+    assert not (home / "calls").exists()
+    assert not _witnesses(home)
+
+
+def test_committed_refresh_unit_uses_specifier_home_despite_ambient_home(tmp_path: Path) -> None:
+    home, council = _harness(tmp_path)
+    service = SERVICE.read_text()
+    environment = {
+        "HOME": str(tmp_path / "different-home"),
+        "HAPAX_COUNCIL": str(council),
+        "HAPAX_GLMCP_SEAT_ROOT_OVERRIDE": "1",
+    }
+    for line in service.splitlines():
+        if line.startswith("Environment="):
+            for assignment in shlex.split(line.removeprefix("Environment=")):
+                key, value = assignment.split("=", 1)
+                environment[key] = value.replace("%h", str(home))
+    for name in (_unit_value(service, "Service", "UnsetEnvironment") or "").split():
+        environment.pop(name, None)
+    # Check before execution: the old hard-coded HOME must never write into the operator home.
+    assert environment["HOME"] == str(home)
+    activation = home / ".cache/hapax/source-activation/worktree"
+    (activation / "scripts").mkdir(parents=True)
+    shutil.copy2(SCRIPT, activation / "scripts" / SCRIPT.name)
+    command = shlex.split(
+        (_unit_value(service, "Service", "ExecStart") or "").replace("%h", str(home))
+    )
+    assert command == [str(activation / "scripts" / SCRIPT.name)]
+    result = subprocess.run(
+        command + ["--envelope"], env=environment, capture_output=True, text=True, timeout=30
+    )
+    assert result.returncode == 0, result.stderr
+    assert json.loads(result.stdout)["whole_service_bound_s"] == 600
+    assert not (tmp_path / "different-home").exists()

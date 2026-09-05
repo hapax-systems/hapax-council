@@ -68,3 +68,45 @@ def test_pr_review_dispatch_runbook_has_recheck_commands() -> None:
         "hapax-pr-review-dispatch.service --no-pager"
     ) in text
     assert "uv run python scripts/cc-pr-review-dispatch.py --pr <PR_NUMBER>" in text
+
+
+def test_committed_refresh_pair_cannot_opt_into_mutable_root() -> None:
+    service = (UNITS_DIR / "hapax-glmcp-seat-refresh.service").read_text()
+    timer = (UNITS_DIR / "hapax-glmcp-seat-refresh.timer").read_text()
+    for text in (service, timer):
+        directives = [
+            line.strip()
+            for line in text.splitlines()
+            if line.strip() and not line.lstrip().startswith(("#", ";"))
+        ]
+        assert all("--allow-mutable-root" not in line for line in directives)
+        assert all(
+            not line.startswith(("EnvironmentFile=", "PassEnvironment=")) for line in directives
+        )
+    unset = set()
+    for line in service.splitlines():
+        if line.startswith("UnsetEnvironment="):
+            unset.update(line.split("=", 1)[1].split())
+    assert {"HAPAX_COUNCIL", "HAPAX_GLMCP_SEAT_ROOT_OVERRIDE", "BASH_ENV", "ENV"} <= unset
+    assert "Unit=" not in timer  # Same-name committed service is the only timer target.
+
+
+def test_quota_killswitch_covers_both_actual_producers() -> None:
+    text = (UNITS_DIR / "hapax-quota-telemetry.service").read_text()
+    comment = " ".join(
+        line.removeprefix("# ") for line in text.splitlines() if line.startswith("#")
+    )
+    assert "mask --now hapax-quota-telemetry.timer hapax-glmcp-seat-refresh.timer" in comment
+    assert "stop hapax-quota-telemetry.service hapax-glmcp-seat-refresh.service" in comment
+    assert (
+        "systemctl --user is-active hapax-quota-telemetry.timer hapax-glmcp-seat-refresh.timer hapax-quota-telemetry.service hapax-glmcp-seat-refresh.service"
+        in comment
+    )
+    assert "all four must report inactive" in comment
+
+
+def test_refresh_envelope_excludes_boot_and_unmeasured_post_activation_witness() -> None:
+    script = (REPO_ROOT / "scripts/hapax-glmcp-seat-refresh").read_text()
+    assert "OnBootSec=2min is a boot-time exception" in script
+    assert "continuous-run guarantee" in script
+    assert "24-hour no-lapse witness is post-activation and unmeasured" in script

@@ -875,6 +875,15 @@ cleanup_known_stale_user_dropins_for_unit() {
                 rm -f "$dropin"
                 echo "  removing stale local drop-in '$dropin': merged unit replaces the interim probe and requires the 600 s no-lapse bound"
             fi
+            # No refresh-service drop-ins are part of this branch. Preserve an unexpected
+            # file for inspection, but refuse activation: even Nice= can change the envelope.
+            for dropin_dir in "$SYSTEMD_USER_DIR" "$SYSTEMD_RUNTIME_USER_DIR"; do
+                for dropin in "$dropin_dir/hapax-glmcp-seat-refresh.service.d"/*.conf; do
+                    [ -e "$dropin" ] || [ -L "$dropin" ] || continue
+                    echo "hapax-post-merge-deploy: glm_seat_unexpected_dropin: '$dropin' remains after cleanup; refusing activation; next action: inspect systemctl --user cat hapax-glmcp-seat-refresh.service, reconcile this unexpected .conf so none remain, then rerun the governed deploy" >&2
+                    exit 1
+                done
+            done
             ;;
         hapax-audio-safety.service)
             dropin_dir="$SYSTEMD_RUNTIME_USER_DIR/$unit.d"
@@ -1989,7 +1998,8 @@ if [ "${#SYSTEMD[@]}" -gt 0 ]; then
             # Check what the manager loaded AFTER daemon-reload and BEFORE restart.
             # Parse systemd's timespan, including equivalent renderings such as "10min 0s".
             if ! effective_timeout="$(systemctl --user show "$base" --property=TimeoutStartUSec --value 2>/dev/null)"; then
-                echo "hapax-post-merge-deploy: WARNING: could not query $base TimeoutStartUSec after daemon-reload; deploy continues without deadline verification; next action: re-run systemctl --user show $base --property=TimeoutStartUSec --value and inspect systemctl --user cat $base; confirm TimeoutStartSec=600 before relying on the no-lapse bound" >&2
+                echo "hapax-post-merge-deploy: glm_seat_deadline_unverified: could not query $base TimeoutStartUSec after daemon-reload; refusing activation; next action: re-run systemctl --user show $base --property=TimeoutStartUSec --value; it must report 600s (10min), equivalent to TimeoutStartSec=600; inspect systemctl --user cat $base, then rerun the governed deploy" >&2
+                exit 1
             else
                 effective_timeout_us="$(LC_ALL=C systemd-analyze timespan "$effective_timeout" 2>/dev/null | awk '$1 == "us:" {print $2}')" || effective_timeout_us=""
                 if [[ "$effective_timeout_us" != "600000000" ]]; then

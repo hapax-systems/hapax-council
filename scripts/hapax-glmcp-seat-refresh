@@ -9,8 +9,13 @@ set -euo pipefail
 H="${HAPAX_COUNCIL:-$HOME/.cache/hapax/source-activation/worktree}"
 ACTIVATION_ROOT="$HOME/.cache/hapax/source-activation/worktree"
 # An inherited HAPAX_COUNCIL must not redirect governance-sensitive receipt minting to a mutable
-# tree (review finding on #4624, round 2). Only an explicit test-harness argument can allow it;
-# no ambient environment variable grants this exception. Never put this flag in a live unit.
+# tree (review finding on #4624, round 2). The explicit flag is a test convenience, not caller
+# authentication: any caller may supply it. Whoever can replace the deployed ExecStart can also
+# replace this script. An env sentinel, temporary path, or a check of this script path together
+# with HAPAX_COUNCIL would therefore be decorative: all are under that same caller's control.
+# The verifiable boundary is the governed committed unit: pinned activation root, no exception
+# flag or EnvironmentFile, and inherited root overrides unset. Without the flag, environment
+# markers never grant the exception. Never put this flag in a live unit.
 allow_mutable_root=0
 envelope_only=0
 for arg in "$@"; do
@@ -62,7 +67,12 @@ seat_next = (
 try:
     sys.path.insert(0, root)
     from shared.platform_capability_receipts import ensure_utc, load_platform_capability_receipts, parse_duration_spec
-    from shared.platform_capability_registry import _receipt_quota_names_route
+    from shared.platform_capability_registry import (
+        _quota_spend_live_path_from_env,
+        _receipt_quota_names_route,
+        load_platform_capability_registry_for_dispatch,
+    )
+    from shared.quota_spend_ledger import DEFAULT_QUOTA_SPEND_LEDGER_LIVE
 
     row = json.load(sys.stdin)
     # Reload through the plural loader: malformed neighbours, expiry, or replacement between
@@ -76,6 +86,24 @@ try:
     elif not _receipt_quota_names_route(receipt, {"route_id": route_id}):
         reason = "route_observation_absent"
     else:
+        # Dispatch applies _route_specific_quota_admission_fresh through this loader:
+        # the recorded route reference alone never establishes LIVE admission.
+        registry, _ = load_platform_capability_registry_for_dispatch(
+            Path(root) / "config/platform-capability-registry.json",
+            receipt_dir=Path(row["path"]).parent,
+        )
+        route = next(route for route in registry.routes if route.route_id == route_id)
+        if "glmcp_review_seat_receipt_admission_required" in route.freshness.evidence.quota.blocked_reasons:
+            ledger_path = _quota_spend_live_path_from_env() or DEFAULT_QUOTA_SPEND_LEDGER_LIVE
+            print(
+                "  --show glmcp_review_seat_receipt_admission_required: live admission failed; ledger="
+                + str(ledger_path) + "; receipt=" + row["path"]
+                + ". Next: check hapax-glmcp-seat-refresh.service for a successful admission; "
+                "run hapax-quota-telemetry-writer --skip-receipts, then "
+                "hapax-platform-capability-receipts --platform glmcp; " + seat_next,
+                file=sys.stderr,
+            )
+            sys.exit(1)
         # _apply_receipt_to_route_payload anchors quota_checked_at at receipt.observed_at.
         # The plural loader also drops the whole receipt at its own expiry. Both visibility
         # checks must reserve the next renewal against whichever lifetime runs out first.
@@ -99,8 +127,8 @@ sys.exit(1)
 # 0. freshness guard — reads the dispatcher's OWN artifact: the glmcp platform-capability receipt
 #    that hapax-platform-capability-receipts writes only when a fresh relay receipt AND the ledger's
 #    fail-closed validator both vouch for glmcp.review.direct (#4616). Neither the raw relay receipt
-#    nor the ledger's raw fields are consulted here: both have looked "fresh" while the validator
-#    (and therefore the dispatcher) said otherwise (review findings on #4624, rounds 2 and 4). The
+#    nor the ledger's raw fields are trusted here: the production dispatch loader also rechecks LIVE
+#    route admission. A recorded route reference can outlive usable admission (round 12). The
 #    quota.stale_after is what is LEFT at generation; the dispatcher applies it to the top-level
 #    receipt.observed_at, not the older quota.observed_at retained from admission. Refreshing whenever
 #    fewer than the derived threshold remain keeps the seat from lapsing between two autoqueue
@@ -168,6 +196,9 @@ seat_remaining_seconds() {
 # filesystem I/O, service scheduling and an engineering margin. Its reserve raises that derived sum
 # to the hard 600 s TimeoutStartSec used by the unit, so the freshness predicate remains sound even
 # when the named slack is exhausted. TimeoutStopSec supplies the post-check shutdown ceiling.
+# OnBootSec=2min is a boot-time exception outside this arithmetic, not a continuous-run guarantee
+# across reboot or before the first successful activation.
+# The 24-hour no-lapse witness is post-activation and unmeasured; this envelope does not claim it.
 #
 # The receipt exposes whole seconds. One second above the threshold can disappear between the
 # observation and process exit, so the guard refreshes through threshold + rounding guard; it skips
@@ -408,8 +439,8 @@ esac
 
 # 5. the dispatcher's glmcp receipt, derived from the ledger that now carries the new admission,
 #    then read back through the dispatcher's loader. A writer exit of zero proves the ledger was
-#    written, not that the seat became visible; only the accepted receipt does (review finding on
-#    #4624, round 8).
+#    written, not that the seat became visible; the accepted receipt AND the dispatch loader's live
+#    route-admission predicate must agree (review findings on #4624, rounds 8 and 12).
 set +e
 bounded_timeout "$RECEIPTS_TIMEOUT_S" "$H/scripts/hapax-platform-capability-receipts" --platform glmcp >"$WOUT" 2>&1
 receipts_rc=$?
