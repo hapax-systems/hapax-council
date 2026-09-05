@@ -2,13 +2,16 @@
 
 from __future__ import annotations
 
+import fcntl
 import json
 import os
 import runpy
 import stat
 import subprocess
 import sys
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
+from threading import Event
 
 import pytest
 
@@ -77,9 +80,12 @@ def _run_writer(
     return result, out
 
 
+@pytest.mark.parametrize("diagnostic", ["", "stale_observation_not_published platform=glmcp"])
 def test_capability_receipt_refresh_preserves_codex_exec_auth_probe(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
+    capsys,
+    diagnostic: str,
 ) -> None:
     namespace = runpy.run_path(str(SCRIPT))
     calls: list[list[str]] = []
@@ -96,7 +102,7 @@ def test_capability_receipt_refresh_preserves_codex_exec_auth_probe(
         assert capture_output is True
         assert text is True
         assert timeout == 36
-        return subprocess.CompletedProcess(argv, 0, stdout="", stderr="")
+        return subprocess.CompletedProcess(argv, 0, stdout="", stderr=diagnostic)
 
     monkeypatch.setattr(namespace["subprocess"], "run", fake_run)
 
@@ -107,6 +113,7 @@ def test_capability_receipt_refresh_preserves_codex_exec_auth_probe(
         )
         is True
     )
+    assert capsys.readouterr().err == (diagnostic + "\n" if diagnostic else "")
     assert calls == [
         [
             sys.executable,
@@ -156,6 +163,62 @@ def test_ledger_merge_keeps_only_newer_valid_route_admission(tmp_path: Path, cas
         kept = next(row for row in ledger.quota_snapshots if row.route_id == "glmcp.review.direct")
         assert kept.model_dump(mode="json") == admitted
         assert ledger.captured_at.isoformat() == "2026-06-10T00:00:05+00:00"
+
+
+def test_telemetry_rereads_admission_after_shared_publication_lock(tmp_path: Path, monkeypatch):
+    from shared.quota_spend_ledger import load_quota_spend_ledger
+
+    namespace = runpy.run_path(str(SCRIPT))
+    globals_ = namespace["main"].__globals__
+    capability = runpy.run_path(str(REPO_ROOT / "scripts/hapax-platform-capability-receipts"))
+    receipt_dir = tmp_path / "platform-receipts"
+    relay = tmp_path / "relay-receipts"
+    relay.mkdir()
+    out = tmp_path / "live.json"
+    attempted, scanned = Event(), Event()
+    real_flock = fcntl.flock
+    real_scan = namespace["active_glmcp_admission_receipts"]
+    lock_inode = None
+
+    def flock(fd, operation):
+        if operation == fcntl.LOCK_EX and os.fstat(fd).st_ino == lock_inode:
+            attempted.set()
+        return real_flock(fd, operation)
+
+    def scan(*args, **kwargs):
+        scanned.set()
+        return real_scan(*args, **kwargs)
+
+    monkeypatch.setattr(fcntl, "flock", flock)
+    monkeypatch.setitem(globals_, "active_glmcp_admission_receipts", scan)
+    monkeypatch.setitem(globals_, "refresh_capability_receipts", lambda **kw: True)
+    monkeypatch.setitem(
+        globals_, "probe_local_resource_state", lambda **kw: ("green", ["test:gpu"])
+    )
+    with ThreadPoolExecutor(max_workers=1) as pool:
+        with capability["receipt_publication_lock"](receipt_dir):
+            lock_inode = (tmp_path / ".platform-receipts.publication.lock").stat().st_ino
+            pending = pool.submit(
+                namespace["main"],
+                [
+                    "--now",
+                    "2026-06-10T00:00:05Z",
+                    "--out",
+                    str(out),
+                    "--relay-receipt-dir",
+                    str(relay),
+                    "--platform-capability-receipt-dir",
+                    str(receipt_dir),
+                ],
+            )
+            assert attempted.wait(2), "telemetry bypassed the capability publication lock"
+            assert not scanned.is_set(), "admission was read before acquiring the shared lock"
+            _glmcp_admission(relay, observed_at="2026-06-10T00:00:04Z")
+        assert pending.result(timeout=10) == 0
+    ledger = load_quota_spend_ledger(out)
+    snapshot = next(row for row in ledger.quota_snapshots if row.route_id == "glmcp.review.direct")
+    assert snapshot.subscription_quota_state.value == "fresh"
+    assert any("observed_at:2026-06-10T00:00:04Z" in ref for ref in snapshot.evidence_refs)
 
 
 def _wall_receipt(

@@ -3968,6 +3968,78 @@ def test_review_seat_deploy_inventories_both_dropin_directories(
     assert all("Description" not in line and "continued" not in line for line in inventory)
 
 
+@pytest.mark.parametrize("mode", ["apply", "--dry-run", "--report-coverage"])
+def test_review_seat_inventory_compares_tracked_runtime_before_actions(tmp_path: Path, mode):
+    unit = "hapax-pr-review-dispatch.service"
+    tracked = f"systemd/units/{unit}.d/operator.conf"
+    repo, sha = _repo_with_linear_commit(
+        tmp_path,
+        {
+            f"systemd/units/{unit}": (REPO_ROOT / f"systemd/units/{unit}").read_text(),
+            tracked: "[Service]\nTimeoutStartSec=600\nEnvironment=PRIVATE=tracked-value\n",
+        },
+    )
+    home = tmp_path / "home"
+    directory = home / ".config/systemd/user" / f"{unit}.d"
+    directory.mkdir(parents=True)
+    runtime = directory / "operator.conf"
+    original = "[Service]\nTimeoutStartSec=900\nEnvironment=PRIVATE=runtime-value\n"
+    runtime.write_text(original)
+    interim = directory / "20-glm-seat-refresh.conf"
+    interim.write_text("[Service]\nExecStartPre=/old/refresh\n")
+    bin_dir, calls_path = _fake_systemctl(tmp_path)
+    systemctl = bin_dir / "systemctl"
+    systemctl.write_text(
+        systemctl.read_text().replace(
+            "#!/usr/bin/env bash\n", '#!/usr/bin/env bash\necho "ACTION: systemctl $*"\n'
+        )
+    )
+    result = subprocess.run(
+        [str(SCRIPT), *([] if mode == "apply" else [mode]), sha],
+        env={
+            **os.environ,
+            "HOME": str(home),
+            "PATH": f"{bin_dir}:{os.environ['PATH']}",
+            "REPO": str(repo),
+            "HAPAX_SYSTEMCTL_CALLS": str(calls_path),
+            "HAPAX_POST_MERGE_TRACE_PATH": str(tmp_path / "trace.jsonl"),
+        },
+        capture_output=True,
+        text=True,
+    )
+    assert result.returncode == 0, result.stdout + result.stderr
+    lines = result.stdout.splitlines()
+    inventory = [line for line in lines if "drop-in inventory:" in line]
+    assert any(
+        f"tracked '{tracked}' [Service] keys: TimeoutStartSec, Environment" in line
+        for line in inventory
+    )
+    assert any(f"runtime '{runtime}' (tracked-drift)" in line for line in inventory)
+    assert any(f"runtime '{interim}' (runtime-only)" in line for line in inventory)
+    assert "source=tracked unit=hapax-glmcp-seat-refresh.service: none" in result.stdout
+    assert "tracked-value" not in result.stdout + result.stderr
+    assert "runtime-value" not in result.stdout + result.stderr
+    end = max(lines.index(line) for line in inventory)
+    if mode == "apply":
+        actions = [
+            i
+            for i, line in enumerate(lines)
+            if "removing stale local drop-in" in line or "ACTION:" in line or " -> " in line
+        ]
+        assert actions and end < min(actions), result.stdout
+        assert not interim.exists()
+    else:
+        assert interim.exists()
+        assert runtime.read_text() == original
+        assert "ACTION:" not in result.stdout
+        marker = (
+            "dry-run: post-merge deploy trace written"
+            if mode == "--dry-run"
+            else "ok: all systemd/** paths"
+        )
+        assert end < next(i for i, line in enumerate(lines) if marker in line)
+
+
 def test_glm_seat_deploy_enables_timer_without_enabling_static_service(tmp_path: Path) -> None:
     """systemd.timer(5): the enabled timer activates its same-name static service."""
     stem = "hapax-glmcp-seat-refresh"

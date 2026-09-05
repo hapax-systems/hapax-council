@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import argparse
+import fcntl
 import hashlib
 import json
 import math
@@ -15,6 +16,7 @@ import socket
 import subprocess
 import sys
 import tempfile
+from contextlib import contextmanager
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any
@@ -43,6 +45,7 @@ from shared.platform_capability_receipts import (  # noqa: E402
     ensure_utc,
     load_platform_capability_receipt,
     load_platform_capability_receipts,
+    parse_duration_spec,
     receipt_reference,
 )
 from shared.platform_capability_registry import (  # noqa: E402
@@ -908,22 +911,84 @@ def platform_routes(
     return routes
 
 
-def write_receipt(receipt: PlatformCapabilityReceipt, receipt_dir: Path) -> Path:
-    receipt_dir.mkdir(parents=True, exist_ok=True)
-    path = receipt_dir / f"{receipt.platform}.json"
-    payload = json.dumps(receipt.model_dump(mode="json"), indent=2, sort_keys=True)
-    # Both scheduled producers publish here. Keep incomplete files outside the plural
-    # loader's *.json glob and replace the final path once, after the complete write.
-    fd, tmp_name = tempfile.mkstemp(dir=receipt_dir, prefix=f".{path.name}.", suffix=".tmp")
-    try:
-        with os.fdopen(fd, "w", encoding="utf-8") as stream:
-            stream.write(payload)
-            stream.flush()
-            os.fsync(stream.fileno())
-        os.replace(tmp_name, path)
-    finally:
-        Path(tmp_name).unlink(missing_ok=True)
-    return path
+@contextmanager
+def receipt_publication_lock(receipt_dir: Path) -> Any:
+    """Shared by capability compare-and-publish and telemetry's ledger transaction.
+
+    Keep the lock beside the receipt directory, outside the plural loader's glob;
+    never unlink its inode. Independent processes and opens contend on the same flock.
+    """
+    directory = receipt_dir.expanduser().resolve()
+    directory.parent.mkdir(parents=True, exist_ok=True)
+    with (directory.parent / f".{directory.name}.publication.lock").open("a") as lock:
+        fcntl.flock(lock.fileno(), fcntl.LOCK_EX)
+        try:
+            yield
+        finally:
+            fcntl.flock(lock.fileno(), fcntl.LOCK_UN)
+
+
+def observation_supersedes(
+    receipt: PlatformCapabilityReceipt, previous: PlatformCapabilityReceipt
+) -> bool:
+    """Order quota evidence by its observation, never by publication wall-clock max.
+
+    Positive evidence is identified by admission references plus quota.observed_at;
+    its validity ends at receipt.observed_at + quota.stale_after. Negative evidence
+    (failure or absence) is a distinct observation dated by quota.observed_at.
+    An earlier observation cannot replace a later one, in either direction: an old
+    failure cannot erase a renewal, nor an old admission erase a later failure.
+    At equal observation times positive evidence wins: failure/absence has not
+    established a later distinct observation (admissions have second precision).
+    Equal-time positive evidence must name the same admission references and may
+    only retain or shorten that admission's validity window, never extend it.
+    Distinct equal-time admissions are unordered: retain the published evidence.
+    """
+    observed = ensure_utc(receipt.quota.observed_at)
+    prior_observed = ensure_utc(previous.quota.observed_at)
+    if observed != prior_observed:
+        return observed > prior_observed
+    positive = receipt.quota.status is EvidenceStatus.OBSERVED
+    prior_positive = previous.quota.status is EvidenceStatus.OBSERVED
+    if positive != prior_positive:
+        return positive
+    if not positive:
+        return True
+    # Exclude generation/provenance references: neither identifies an admission.
+    refs = {ref for ref in receipt.quota.evidence_refs if ref.startswith("relay-receipt:")}
+    prior_refs = {ref for ref in previous.quota.evidence_refs if ref.startswith("relay-receipt:")}
+    expiry = ensure_utc(receipt.observed_at) + parse_duration_spec(receipt.quota.stale_after)
+    prior_expiry = ensure_utc(previous.observed_at) + parse_duration_spec(
+        previous.quota.stale_after
+    )
+    return refs == prior_refs and expiry <= prior_expiry
+
+
+def write_receipt(receipt: PlatformCapabilityReceipt, receipt_dir: Path) -> Path | None:
+    with receipt_publication_lock(receipt_dir):
+        receipt_dir.mkdir(parents=True, exist_ok=True)
+        path = receipt_dir / f"{receipt.platform}.json"
+        # Re-read AFTER flock, including for an observation built before another producer ran.
+        previous = load_platform_capability_receipt(path) if path.exists() else None
+        if previous is not None and not observation_supersedes(receipt, previous):
+            print(
+                f"hapax-platform-capability-receipts: stale_observation_not_published "
+                f"platform={receipt.platform}; retained current receipt",
+                file=sys.stderr,
+            )
+            return None
+        payload = json.dumps(receipt.model_dump(mode="json"), indent=2, sort_keys=True)
+        # Incomplete files stay outside the plural loader's *.json glob.
+        fd, tmp_name = tempfile.mkstemp(dir=receipt_dir, prefix=f".{path.name}.", suffix=".tmp")
+        try:
+            with os.fdopen(fd, "w", encoding="utf-8") as stream:
+                stream.write(payload)
+                stream.flush()
+                os.fsync(stream.fileno())
+            os.replace(tmp_name, path)
+        finally:
+            Path(tmp_name).unlink(missing_ok=True)
+        return path
 
 
 def positive_float_env_default(name: str, default: float) -> float:
@@ -1137,6 +1202,13 @@ def main(argv: list[str] | None = None) -> int:
                 "platform": platform,
                 "receipt_id": receipt.receipt_id,
                 "path": str(path) if path else None,
+                "publication_status": (
+                    "dry_run"
+                    if args.dry_run
+                    else "published"
+                    if path
+                    else "stale_observation_not_published"
+                ),
                 "cli_available": receipt.cli.available,
                 "wrapper_exists": receipt.wrapper.exists,
                 "capability_status": receipt.capability.status.value,
@@ -1159,7 +1231,7 @@ def main(argv: list[str] | None = None) -> int:
         print(json.dumps(payload, indent=2, sort_keys=True))
     else:
         for item in outputs:
-            target = item["path"] or "<dry-run>"
+            target = item["path"] or f"<{item['publication_status']}>"
             print(
                 f"{item['platform']}: wrote {target} "
                 f"cli={item['cli_available']} wrapper={item['wrapper_exists']} "

@@ -509,13 +509,34 @@ def test_parallel_telemetry_resource_scan_cannot_revoke_refresh_admission(
     monkeypatch.setitem(globals_, "datetime", Clock)
     monkeypatch.setitem(globals_, "probe_local_resource_state", scan_resources)
     monkeypatch.setitem(globals_, "keep_newer_valid_admissions", merge)
-    # --skip-receipts prevents provider probes. The actual capability producer in the
-    # refresher runs with only observe_cli stubbed; refresh_capability_receipts is not mocked.
+    real_run = subprocess.run
+
+    def run_with_local_receipt_probe(argv, **kwargs):
+        if len(argv) > 1 and Path(argv[1]) == RECEIPTS_SCRIPT:
+            # Keep the actual telemetry child publication; limit the fixture to GLM and
+            # use the harness's CLI stub so neither Codex nor provider credentials are probed.
+            args = argv[2:]
+            args = [arg for arg in args if arg not in {"--all", "--codex-exec-auth-probe"}]
+            argv = [
+                str(council / "scripts/hapax-platform-capability-receipts"),
+                "--platform",
+                "glmcp",
+                *args,
+            ]
+            kwargs["env"] = {
+                **os.environ,
+                "HOME": str(home),
+                "PYTHONPATH": str(REPO),
+                "HAPAX_RELAY_RECEIPT_DIR": str(relay),
+                "HAPAX_QUOTA_SPEND_LEDGER_LIVE": str(ledger_path),
+            }
+        return real_run(argv, **kwargs)
+
+    monkeypatch.setattr(subprocess, "run", run_with_local_receipt_probe)
     with ThreadPoolExecutor(max_workers=1) as pool:
         pending = pool.submit(
             writer["main"],
             [
-                "--skip-receipts",
                 "--out",
                 str(ledger_path),
                 "--relay-receipt-dir",
@@ -958,6 +979,69 @@ def _produce_glmcp_receipt(home: Path, admission: datetime, generated: datetime,
         )
         == 0
     )
+
+
+@pytest.mark.parametrize("delayed", [True, False], ids=["delayed-older", "older-first"])
+def test_delayed_telemetry_publication_preserves_renewed_admission(
+    tmp_path: Path, monkeypatch, delayed: bool
+):
+    """t=5 renewal expires at 905; delayed telemetry still carries expiry 615 at t=616."""
+    from shared.platform_capability_receipts import (
+        load_platform_capability_receipts,
+        parse_duration_spec,
+    )
+
+    t0 = datetime(2026, 9, 5, tzinfo=UTC)
+    home, _ = _harness(tmp_path, now=t0)
+    receipt_dir = home / ".cache/hapax/platform-capability-receipts"
+    _produce_glmcp_receipt(home, t0 - timedelta(seconds=285), t0, monkeypatch)
+    older = load_platform_capability_receipts(receipt_dir, now=t0)["glmcp"]
+    dispatcher = runpy.run_path(str(REPO / "scripts/cc-pr-review-dispatch.py"))
+    consumer = dispatcher["review_team"]
+
+    def assert_fresh(second):
+        now = t0 + timedelta(seconds=second)
+        loaded = load_platform_capability_receipts(receipt_dir, now=now)["glmcp"]
+        registry, _ = consumer.load_platform_capability_registry_for_dispatch(
+            REPO / "config/platform-capability-registry.json", receipt_dir=receipt_dir, now=now
+        )
+        check = consumer.check_registry_freshness(
+            registry, route_ids=["glmcp.review.direct"], now=now
+        ).routes[0]
+        assert not [error for error in check.errors if "quota" in error], check.errors
+        expiry = loaded.observed_at + parse_duration_spec(loaded.quota.stale_after)
+        assert expiry == t0 + timedelta(seconds=905)
+
+    producer = runpy.run_path(str(RECEIPTS_SCRIPT))
+    real_write = producer["write_receipt"]
+
+    def renew():
+        _produce_glmcp_receipt(
+            home, t0 + timedelta(seconds=5), t0 + timedelta(seconds=5), monkeypatch
+        )
+        assert_fresh(5)  # The refresher has already successfully read back its renewal.
+
+    def delayed_write(receipt, directory):
+        assert receipt == older
+        if delayed:
+            renew()
+        return real_write(receipt, directory)
+
+    monkeypatch.setitem(producer["main"].__globals__, "build_receipt", lambda **kw: older)
+    monkeypatch.setitem(producer["main"].__globals__, "write_receipt", delayed_write)
+    telemetry = runpy.run_path(str(REPO / "scripts/hapax-quota-telemetry-writer"))
+
+    def run_receipt_child(argv, **kwargs):
+        # Run the real child entry point in memory; the delayed object was built by production.
+        assert Path(argv[1]) == RECEIPTS_SCRIPT
+        rc = producer["main"](["--platform", "glmcp", "--receipt-dir", str(receipt_dir)])
+        return subprocess.CompletedProcess(argv, rc, stdout="", stderr="")
+
+    monkeypatch.setattr(subprocess, "run", run_receipt_child)
+    assert telemetry["refresh_capability_receipts"](timeout=12, receipt_dir=receipt_dir)
+    if not delayed:
+        renew()
+    assert_fresh(616)
 
 
 def test_generated_quota_expiry_matches_dispatcher_without_double_age(
@@ -2040,6 +2124,21 @@ def test_a_new_receipt_without_a_full_next_renewal_window_is_refused(tmp_path: P
     assert result.returncode == 6
     assert f"more than {e['seat_visible_min_s']} s left" in result.stderr
     assert "glm seat visible to the dispatcher" not in result.stdout
+
+
+def test_stale_publication_diagnostic_does_not_mask_successful_seat_readback(tmp_path: Path):
+    home, council = _harness(tmp_path)
+    child = council / "scripts/hapax-platform-capability-receipts"
+    child.write_text(
+        child.read_text().replace(
+            'echo "glmcp: wrote (stub)"',
+            'echo "stale_observation_not_published platform=glmcp" >&2',
+        )
+    )
+    result = _run(home, council)
+    assert result.returncode == 0, result.stdout + result.stderr
+    assert "stale_observation_not_published" in result.stderr
+    assert "glm seat visible to the dispatcher" in result.stdout
 
 
 def test_a_failed_glm_receipt_refresh_after_minting_is_loud(tmp_path: Path) -> None:

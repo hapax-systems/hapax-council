@@ -6,13 +6,15 @@ a missing receipt, plain-text output, or a directory the loader cannot read.
 
 from __future__ import annotations
 
+import fcntl
 import json
+import multiprocessing
 import os
 import runpy
 import subprocess
 import sys
 from concurrent.futures import ThreadPoolExecutor
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from threading import Event, current_thread
 
@@ -31,7 +33,7 @@ def publication_receipts():
         "source": "test",
         "observed_at": now,
         "stale_after": "15m",
-        "evidence_refs": ["test:publication"],
+        "evidence_refs": ["relay-receipt:admission-a:observed_at:2026-09-05T00:00:00Z"],
     }
     receipt_a = PlatformCapabilityReceipt.model_validate(
         {
@@ -49,53 +51,166 @@ def publication_receipts():
         }
     )
     receipt_b = receipt_a.model_copy(
-        update={"receipt_id": "writer-b", "known_unknowns": ["longer receipt" * 100]}
+        update={
+            "receipt_id": "writer-b",
+            "observed_at": now + timedelta(seconds=5),
+            "quota": receipt_a.quota.model_copy(
+                update={
+                    "observed_at": now + timedelta(seconds=5),
+                    "evidence_refs": ["relay-receipt:admission-b:observed_at:2026-09-05T00:00:05Z"],
+                }
+            ),
+            "known_unknowns": ["longer receipt" * 100],
+        }
     )
     return receipt_a, receipt_b, now
 
 
 def test_concurrent_receipt_publications_never_leave_a_json_tail(
-    tmp_path: Path, monkeypatch, publication_receipts
+    tmp_path: Path, monkeypatch, publication_receipts, capsys
 ):
-    """Pause A after opening its output; let B publish a longer receipt before A writes."""
+    """B holds flock before replace; A must block, re-read B, and refuse its older observation."""
     from shared.platform_capability_receipts import load_platform_capability_receipts
 
     receipt_a, receipt_b, now = publication_receipts
     write_receipt = runpy.run_path(str(SCRIPT))["write_receipt"]
     path = write_receipt(receipt_a, tmp_path)
-    opened, finish = Event(), Event()
-    real_path_open, real_fdopen = Path.open, os.fdopen
+    opened, finish, attempted = Event(), Event(), Event()
+    real_fdopen, real_flock = os.fdopen, fcntl.flock
 
-    def pause_writer_a(stream):
-        if current_thread().name.startswith("receipt-a"):
+    def fdopen(fd, *args, **kwargs):
+        stream = real_fdopen(fd, *args, **kwargs)
+        if current_thread().name.startswith("receipt-b"):
             opened.set()
-            if not finish.wait(30):
+            if not finish.wait(10):
                 stream.close()
-                raise AssertionError("writer B did not finish while A was paused")
+                raise AssertionError("writer B was never released")
         return stream
 
-    def path_open(self, mode="r", *args, **kwargs):
-        stream = real_path_open(self, mode, *args, **kwargs)
-        return pause_writer_a(stream) if "w" in mode or "x" in mode else stream
+    def flock(fd, operation):
+        if current_thread().name.startswith("receipt-a") and operation == fcntl.LOCK_EX:
+            attempted.set()
+        return real_flock(fd, operation)
 
-    def fdopen(fd, mode="r", *args, **kwargs):
-        return pause_writer_a(real_fdopen(fd, mode, *args, **kwargs))
-
-    monkeypatch.setattr(Path, "open", path_open)
     monkeypatch.setattr(os, "fdopen", fdopen)
-    with ThreadPoolExecutor(max_workers=1, thread_name_prefix="receipt-a") as pool:
-        pending = pool.submit(write_receipt, receipt_a, tmp_path)
+    monkeypatch.setattr(fcntl, "flock", flock)
+    with (
+        ThreadPoolExecutor(max_workers=1, thread_name_prefix="receipt-b") as new_pool,
+        ThreadPoolExecutor(max_workers=1, thread_name_prefix="receipt-a") as old_pool,
+    ):
+        newer = new_pool.submit(write_receipt, receipt_b, tmp_path)
         try:
-            assert opened.wait(30), "writer A never opened its output"
-            # Both calls use the production writer; the plural loader sees B while A is open.
-            assert write_receipt(receipt_b, tmp_path) == path
-            assert load_platform_capability_receipts(tmp_path, now=now)["glmcp"] == receipt_b
+            assert opened.wait(10), "writer B never opened its output"
+            older = old_pool.submit(write_receipt, receipt_a, tmp_path)
+            assert attempted.wait(2), "older publisher did not acquire the shared flock"
+            assert not older.done(), "older publisher must block behind B's transaction"
+            assert load_platform_capability_receipts(tmp_path, now=now)["glmcp"] == receipt_a
         finally:
             finish.set()
-        assert pending.result(timeout=30) == path
-    # A's shorter write must replace B's inode, never overwrite its prefix and leave a tail.
-    assert load_platform_capability_receipts(tmp_path, now=now)["glmcp"] == receipt_a
+        assert newer.result(timeout=10) == path
+        assert older.result(timeout=10) is None
+    # The delayed shorter A must NEVER undo B's renewed admission, nor leave a JSON tail.
+    assert load_platform_capability_receipts(tmp_path, now=now)["glmcp"] == receipt_b
+    assert "stale_observation_not_published" in capsys.readouterr().err
     assert sorted(tmp_path.iterdir()) == [path]
+
+
+@pytest.mark.parametrize("status", ["error", "unobservable"])
+@pytest.mark.parametrize(
+    "offset", [-5, 0, 5], ids=["older-failure", "tied-failure", "later-failure"]
+)
+@pytest.mark.parametrize("negative_first", [False, True], ids=["positive-first", "negative-first"])
+def test_failure_observation_order_ignores_publication_clock(
+    tmp_path: Path, publication_receipts, capsys, status, offset, negative_first
+):
+    from shared.platform_capability_receipts import (
+        EvidenceStatus,
+        load_platform_capability_receipts,
+    )
+
+    _, positive, now = publication_receipts
+    # A delayed positive can have a later generation clock, and a negative's TTL can
+    # exceed the admission's. Neither wall-clock max nor max expiry orders observations.
+    positive = positive.model_copy(update={"observed_at": now + timedelta(seconds=200)})
+    negative = positive.model_copy(
+        update={
+            "receipt_id": "failure",
+            "observed_at": now + timedelta(seconds=300 if offset < 0 else 100),
+            "quota": positive.quota.model_copy(
+                update={
+                    "status": EvidenceStatus(status),
+                    "observed_at": positive.quota.observed_at + timedelta(seconds=offset),
+                    "stale_after": "24h",
+                    "evidence_refs": [],
+                    "reason_codes": [
+                        "account_live_quota_receipt_absent"
+                        if status == "unobservable"
+                        else "admission_failed"
+                    ],
+                }
+            ),
+        }
+    )
+    write_receipt = runpy.run_path(str(SCRIPT))["write_receipt"]
+    first, second = (negative, positive) if negative_first else (positive, negative)
+    write_receipt(first, tmp_path)
+    result = write_receipt(second, tmp_path)
+    expected = negative if offset > 0 else positive
+    assert (
+        load_platform_capability_receipts(tmp_path, now=now + timedelta(seconds=301))["glmcp"]
+        == expected
+    )
+    assert (result is None) == (expected == first)
+    assert ("stale_observation_not_published" in capsys.readouterr().err) == (expected == first)
+
+
+@pytest.mark.parametrize("change", ["identity", "extend", "shorten"])
+def test_equal_time_admission_identity_and_validity_are_preserved(
+    tmp_path: Path, publication_receipts, change
+):
+    from shared.platform_capability_receipts import load_platform_capability_receipts
+
+    receipt, _, now = publication_receipts
+    quota = receipt.quota.model_copy(
+        update=(
+            {"evidence_refs": ["relay-receipt:distinct-admission"]}
+            if change == "identity"
+            else {"stale_after": "16m" if change == "extend" else "14m"}
+        )
+    )
+    candidate = receipt.model_copy(update={"quota": quota})
+    write_receipt = runpy.run_path(str(SCRIPT))["write_receipt"]
+    write_receipt(receipt, tmp_path)
+    write_receipt(candidate, tmp_path)
+    expected = candidate if change == "shorten" else receipt
+    assert load_platform_capability_receipts(tmp_path, now=now)["glmcp"] == expected
+
+
+def test_process_crash_before_replace_preserves_receipt_and_releases_lock(
+    tmp_path: Path, publication_receipts
+):
+    from shared.platform_capability_receipts import load_platform_capability_receipts
+
+    receipt_a, receipt_b, now = publication_receipts
+    write_receipt = runpy.run_path(str(SCRIPT))["write_receipt"]
+    write_receipt(receipt_a, tmp_path)
+
+    def crash():
+        os.replace = lambda *args: os._exit(73)
+        write_receipt(receipt_b, tmp_path)
+
+    process = multiprocessing.get_context("fork").Process(target=crash)
+    process.start()
+    process.join(timeout=10)
+    try:
+        assert process.exitcode == 73
+        assert load_platform_capability_receipts(tmp_path, now=now)["glmcp"] == receipt_a
+        assert write_receipt(receipt_b, tmp_path) is not None
+        assert load_platform_capability_receipts(tmp_path, now=now)["glmcp"] == receipt_b
+    finally:
+        if process.is_alive():
+            process.kill()
+            process.join()
 
 
 @pytest.mark.parametrize("failure", [None, "fsync", "replace"])

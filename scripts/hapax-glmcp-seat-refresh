@@ -512,11 +512,13 @@ esac
 #    then read back through the dispatcher's loader. A writer exit of zero proves the ledger was
 #    written, not that the seat became visible; the accepted receipt AND the dispatch loader's live
 #    route-admission predicate must agree (review findings on #4624, rounds 8 and 12).
+#    The capability writer revalidates admission order under the same publication flock
+#    as telemetry. A refused stale observation is diagnostic, then readback decides success.
 set +e
 bounded_timeout "$RECEIPTS_TIMEOUT_S" "$H/scripts/hapax-platform-capability-receipts" --platform glmcp >"$WOUT" 2>&1
 receipts_rc=$?
 set -e
-print_filtered_output tail 2 "" "$WOUT" || true
+print_filtered_output tail 2 "" "$WOUT" >&2 || true
 if [[ "$receipts_rc" -ne 0 ]]; then
   echo "glm seat NOT visible: the glmcp capability receipt could not be refreshed from the new ledger (exit $receipts_rc) after the admission was minted. Next: run $H/scripts/hapax-platform-capability-receipts --platform glmcp by hand and read why." >&2
   exit 6

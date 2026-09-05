@@ -813,40 +813,66 @@ remove_unversioned_user_dropins_for_unit() {
     rmdir "$dropin_dir" 2>/dev/null || true
 }
 
+review_seat_dropin_keys() {
+    # Values, including continued Environment/command values, must never reach the log.
+    awk '
+        /^[[:space:]]*[#;]/ { next }
+        {
+            was_continued = continued
+            continued = /\\$/
+            if (was_continued) next
+        }
+        /^[[:space:]]*\[/ {
+            service = ($0 ~ /^[[:space:]]*\[Service\][[:space:]]*$/)
+            next
+        }
+        service && /^[[:space:]]*[A-Za-z][A-Za-z0-9]*[[:space:]]*=/ {
+            key = $0
+            sub(/=.*/, "", key)
+            gsub(/[[:space:]]/, "", key)
+            printf "%s%s", separator, key
+            separator = ", "
+        }
+    '
+}
+
 inventory_review_seat_dropins() {
-    local unit dropin keys
-    # Report both directories before cleanup. Only key names reach the activation log:
-    # Environment and command values may contain credentials or private operator data.
+    local unit dropin tracked keys classification found
+    # Report the target commit versus runtime BEFORE any cleanup/install/reload,
+    # including report-only and dry-run exits. This function only reads and prints.
     for unit in hapax-glmcp-seat-refresh.service hapax-pr-review-dispatch.service; do
+        found=0
+        while IFS= read -r -d '' tracked; do
+            [[ "$tracked" == *.conf ]] || continue
+            found=1
+            keys="$(git show "$SHA:$tracked" | review_seat_dropin_keys)" || keys="unreadable"
+            echo "  drop-in inventory: tracked '$tracked' [Service] keys: ${keys:-none}"
+        done < <(git ls-tree -r -z --name-only "$SHA" -- "systemd/units/$unit.d/" 2>/dev/null)
+        if [ "$found" = 0 ]; then
+            echo "  drop-in inventory source=tracked unit=$unit: none"
+        fi
+        found=0
         for dropin in "$SYSTEMD_USER_DIR/$unit.d"/*.conf; do
             [ -e "$dropin" ] || [ -L "$dropin" ] || continue
+            found=1
+            tracked="systemd/units/$unit.d/$(basename "$dropin")"
+            classification=runtime-only
+            if git cat-file -e "$SHA:$tracked" 2>/dev/null; then
+                classification=tracked-drift
+                if [ -f "$dropin" ] && cmp -s "$dropin" <(git show "$SHA:$tracked"); then
+                    classification=tracked-match
+                fi
+            fi
             if [ ! -f "$dropin" ] || [ ! -r "$dropin" ]; then
-                echo "  drop-in inventory: '$dropin' [Service] keys: unreadable; inspect this drop-in"
-                continue
-            fi
-            if ! keys="$(awk '
-                /^[[:space:]]*[#;]/ { next }
-                {
-                    was_continued = continued
-                    continued = /\\$/
-                    if (was_continued) next
-                }
-                /^[[:space:]]*\[/ {
-                    service = ($0 ~ /^[[:space:]]*\[Service\][[:space:]]*$/)
-                    next
-                }
-                service && /^[[:space:]]*[A-Za-z][A-Za-z0-9]*[[:space:]]*=/ {
-                    key = $0
-                    sub(/=.*/, "", key)
-                    gsub(/[[:space:]]/, "", key)
-                    printf "%s%s", separator, key
-                    separator = ", "
-                }
-            ' "$dropin" 2>/dev/null)"; then
                 keys="unreadable; inspect this drop-in"
+            else
+                keys="$(review_seat_dropin_keys < "$dropin" 2>/dev/null)" || keys="unreadable; inspect this drop-in"
             fi
-            echo "  drop-in inventory: '$dropin' [Service] keys: ${keys:-none}"
+            echo "  drop-in inventory: runtime '$dropin' ($classification) [Service] keys: ${keys:-none}"
         done
+        if [ "$found" = 0 ]; then
+            echo "  drop-in inventory source=runtime unit=$unit: none"
+        fi
     done
 }
 
@@ -1221,6 +1247,7 @@ while IFS= read -r f; do
 done <<< "$FILES"
 
 if [ "$REPORT_COVERAGE" = "1" ]; then
+    inventory_review_seat_dropins
     if [ "${#SYSTEMD_UNCLASSIFIED[@]}" -gt 0 ]; then
         echo "ERROR: ${#SYSTEMD_UNCLASSIFIED[@]} systemd/** path(s) in $SHA fall outside hapax-post-merge-deploy case-globs:" >&2
         for f in "${SYSTEMD_UNCLASSIFIED[@]}"; do
@@ -1239,6 +1266,8 @@ fi
 if [ "$DRY_RUN" != "1" ]; then
     reexec_with_safe_root_required_lock
 fi
+
+inventory_review_seat_dropins
 
 TRACE_READY=1
 if [ -z "$FILES" ]; then
@@ -1263,7 +1292,6 @@ if [ "$DRY_RUN" = "1" ]; then
     exit 0
 fi
 
-inventory_review_seat_dropins
 # Refuse unexpected GLM overrides before installing ANY unit in this deployment.
 # Cleanup is bounded to the known interim overrides; the inventory above precedes it.
 for f in "${SYSTEMD[@]}"; do
