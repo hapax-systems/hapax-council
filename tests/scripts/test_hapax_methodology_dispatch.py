@@ -5146,6 +5146,135 @@ def test_dispatch_escaping_symlink_outside_effective_member_is_admitted(
     assert "out of accountability" not in err
 
 
+@pytest.mark.parametrize("alias_kind", ["subtree", "root", "chain", "explicit-file", "outside"])
+@pytest.mark.parametrize("scope", ["literal", "glob"])
+def test_dispatch_external_alias_preserves_surface_verdict(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+    alias_kind: str,
+    scope: str,
+) -> None:
+    module = _dispatcher_module()
+    member_root = tmp_path / "member"
+    (member_root / "bin").mkdir(parents=True)
+    declared_file = member_root / "bin/cat"
+    declared_file.touch()
+    alias = tmp_path / "alias"
+    target = member_root / "bin"
+    if alias_kind == "root":
+        target = member_root
+    elif alias_kind == "outside":
+        target = tmp_path / "outside"
+        target.mkdir()
+        (target / "cat").touch()
+    elif alias_kind == "chain":
+        bridge = tmp_path / "bridge"
+        bridge.symlink_to(member_root, target_is_directory=True)
+        target = bridge / "bin"
+    alias.symlink_to(target, target_is_directory=True)
+    base = alias / "bin" if alias_kind == "root" else alias
+    selected = base / "cat"
+    enumerated = {p.resolve() for p in member_root.glob("bin/*") if p.is_file()}
+    assert (selected.resolve() in enumerated) is (alias_kind != "outside")
+    location = (
+        {"files": [str(declared_file)]}
+        if alias_kind == "explicit-file"
+        else {"path": str(member_root), "patterns": ["bin/*"]}
+    )
+    frame_root = _frame_procedure_root(
+        tmp_path / "frame", decayed_root=member_root, location=location
+    )
+    ref = str(selected if scope == "literal" else base / "[c]at")
+    canonical_ref = str(selected.resolve() if scope == "literal" else base.resolve() / "[c]at")
+    monkeypatch.setenv("HAPAX_FRAME_PROCEDURE_ROOT", str(frame_root))
+    canonical, _, _ = module.frame_verdict_refusal({"mutation_scope_refs": [canonical_ref]})
+
+    rc, err = _dispatch_up_to_the_adapter(
+        tmp_path,
+        monkeypatch,
+        capsys,
+        module,
+        mutation_scope_refs=json.dumps([ref]),
+        frame_root=frame_root,
+    )
+
+    assert rc == 10
+    if alias_kind == "outside":
+        assert canonical is None
+        assert "fixture refusal" in err
+        assert "out of accountability" not in err
+        assert "undecidable" not in err
+        return
+    assert "fixture refusal" not in err, "alias bypassed the frame refusal and reached launch"
+    if alias_kind == "explicit-file" and scope == "glob":
+        diagnosis = "whole-surface containment cannot be decided safely"
+    else:
+        diagnosis = "marks every declared mutation surface out of accountability"
+    assert canonical is not None and diagnosis in canonical
+    assert diagnosis in err
+    receipt = json.loads(
+        (tmp_path / "ledger/methodology-dispatch.jsonl").read_text().splitlines()[-1]
+    )
+    assert receipt["ok"] is False
+    assert receipt["frame_epoch"].endswith("-deadbeef")
+    assert receipt["frame_decayed_members"] == ["legacy-surface"]
+    assert receipt["reason"] in err
+
+
+@pytest.mark.parametrize("kind", ["dangling", "loop", "not-directory", "unreadable"])
+def test_dispatch_unresolved_external_scope_component_names_remedy(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+    kind: str,
+) -> None:
+    module = _dispatcher_module()
+    member_root = tmp_path / "member"
+    (member_root / "bin").mkdir(parents=True)
+    frame_root = _frame_procedure_root(
+        tmp_path / "frame",
+        decayed_root=member_root,
+        location={"path": str(member_root), "patterns": ["bin/*"]},
+    )
+    component = tmp_path / "alias"
+    if kind == "unreadable":
+        component.mkdir()
+        original_stat = Path.stat
+
+        def denied_stat(path, *args, **kwargs):
+            if path == component / "cat":
+                raise PermissionError(13, "Permission denied", str(path))
+            return original_stat(path, *args, **kwargs)
+
+        monkeypatch.setattr(Path, "stat", denied_stat)
+    elif kind == "not-directory":
+        component.touch()
+    else:
+        component.symlink_to(component if kind == "loop" else tmp_path / "missing")
+
+    rc, err = _dispatch_up_to_the_adapter(
+        tmp_path,
+        monkeypatch,
+        capsys,
+        module,
+        mutation_scope_refs=json.dumps([str(component / "cat")]),
+        frame_root=frame_root,
+    )
+
+    assert rc == 10
+    assert "fixture refusal" not in err, "unresolved component was treated as outside"
+    assert "containment is undecidable" in err
+    assert str(component) in err
+    assert str(component) in err.partition("Next: ")[2]
+    receipt = json.loads(
+        (tmp_path / "ledger/methodology-dispatch.jsonl").read_text().splitlines()[-1]
+    )
+    assert receipt["ok"] is False
+    assert receipt["frame_epoch"].endswith("-deadbeef")
+    assert receipt["reason"] in err
+
+
 @pytest.mark.parametrize("namespace", ["filesystem", "podium:", "gh://hapax-systems/"])
 @pytest.mark.parametrize("kind", ["file", "directory", "escape", "dangling"])
 def test_dispatch_patterned_member_symlinks_do_not_bypass_decay(
@@ -5993,6 +6122,46 @@ def test_receipt_task_note_sha256_binds_parsed_bytes_across_file_race(
         assert before_hash != after_hash
     assert expected_hash != after_hash
     assert receipt["task_note_sha256"] == expected_hash
+
+
+def test_dispatch_looping_publication_pointer_refuses_with_producer_remedy(tmp_path: Path) -> None:
+    _worktree(tmp_path / "worktree")
+    spec = _spec(tmp_path / "isap-test.md")
+    _task(tmp_path / "tasks", "governed-build", _codex_only_build_frontmatter(spec))
+    root = tmp_path / "frame"
+    current = root / "_runs/current"
+    current.parent.mkdir(parents=True)
+    current.symlink_to("current")
+
+    result = _run(
+        tmp_path,
+        "--task",
+        "governed-build",
+        "--lane",
+        "cx-green",
+        "--platform",
+        "codex",
+        "--mode",
+        "receipt-only",
+        extra_env={"HAPAX_FRAME_PROCEDURE_ROOT": str(root)},
+    )
+
+    assert "Traceback" not in result.stderr, result.stderr
+    assert result.returncode == 10, result.stderr
+    assert "frame verdicts unavailable" in result.stderr
+    assert str(current) in result.stderr
+    assert fv.PRODUCER_REMEDY in result.stderr
+    receipt = json.loads(
+        (tmp_path / "ledger/methodology-dispatch.jsonl").read_text().splitlines()[-1]
+    )
+    assert receipt["ok"] is False
+    assert receipt["frame_epoch"] is None
+    evidence = receipt["frame_unavailable"]
+    assert evidence["frame_epoch"] is None
+    assert evidence["frame_root_resolved"] == str(root.resolve())
+    assert evidence["remedy"] == fv.PRODUCER_REMEDY
+    assert str(current) in evidence["reason"]
+    assert evidence["reason"] in receipt["reason"]
 
 
 @pytest.mark.parametrize("state", ["stale", "missing-root", "missing-current"])

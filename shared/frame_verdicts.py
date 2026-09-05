@@ -253,7 +253,7 @@ def current_epoch_dir(procedure_root: Path) -> Path:
     try:
         epoch_dir = current.resolve(strict=True)
         epochs = (runs / "epochs").resolve(strict=True)
-    except OSError as exc:
+    except (OSError, RuntimeError) as exc:
         raise FrameVerdictsUnavailable(
             f"published frame pointer {current} is broken or unreadable: {exc}"
         ) from exc
@@ -868,6 +868,19 @@ def _filesystem_scope_parts(ref: str) -> tuple[list[str], str | None, bool]:
     return segments[:wildcard_at], "/".join(segments[wildcard_at:]), True
 
 
+def _unresolved_scope_component(
+    path: Path, exc: OSError | RuntimeError
+) -> UndecidableScopeContainment:
+    error = UndecidableScopeContainment(
+        f"cannot resolve scope component {path}: {exc}; containment is undecidable"
+    )
+    error.remedy = (
+        f"repair or re-declare unresolved component {path} and its intended target "
+        "in mutation_scope_refs, then retry the dispatch"
+    )
+    return error
+
+
 def resolve_scope_ref(ref: str, *, council_root: Path, vault_root: Path) -> tuple[Path, bool]:
     """A declared ref as an absolute path plus whether it names a directory-like surface.
 
@@ -899,8 +912,11 @@ def resolve_scope_ref(ref: str, *, council_root: Path, vault_root: Path) -> tupl
     # Keep entries below the root lexical, as fs.glob does. A member comparison checks symlinks
     # against that member's root; resolving here would erase the very entry it enumerated.
     path = path.absolute()
-    if path.is_dir():
-        dirlike = True
+    try:
+        if path.is_dir():
+            dirlike = True
+    except (OSError, RuntimeError) as exc:
+        raise _unresolved_scope_component(path, exc) from exc
     return path, dirlike
 
 
@@ -1185,6 +1201,25 @@ def _resolve_member_path(path: Path) -> Path:
         ) from exc
 
 
+def _resolve_external_scope_path(path: Path) -> Path:
+    """Resolve aliases before comparing roots, without treating broken links as future files."""
+    resolved = Path(path.anchor)
+    for part in path.parts[1:]:
+        component = resolved / part
+        try:
+            try:
+                component.lstat()
+            except FileNotFoundError:
+                # Work may create this path. An existing symlink, including a dangling one,
+                # passes lstat and must instead resolve strictly below.
+                resolved = component
+            else:
+                resolved = component.resolve(strict=True)
+        except (OSError, RuntimeError) as exc:
+            raise _unresolved_scope_component(component, exc) from exc
+    return resolved
+
+
 def _check_member_symlinks(
     path: Path, root: Path, member: DecayedMember, *, scope_pattern: str | None
 ) -> bool:
@@ -1303,15 +1338,11 @@ def ref_within_member(
     lexical_path = path
     for root in member.roots:
         path = lexical_path
-        member_path = path
         if path != root and root not in path.parents:
-            # Roots themselves may be declared through a symlink. Canonicalise only the
-            # ancestor naming that root, preserving every entry below it for pattern matching.
-            for ancestor in (path, *path.parents):
-                if _resolve_member_path(ancestor) == root:
-                    member_path = root / path.relative_to(ancestor)
-                    break
-        path = member_path
+            # An external alias can enter any descendant of the canonical member root.
+            # Entries already under the root retain the producer's lexical glob semantics
+            # and the member-specific symlink checks below.
+            path = _resolve_external_scope_path(path)
         if path != root and root not in path.parents:
             if (
                 scope_pattern is not None
