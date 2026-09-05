@@ -49,6 +49,7 @@ import subprocess
 import sys
 import tomllib
 from collections import Counter
+from collections.abc import Iterator
 from dataclasses import dataclass, field, replace
 from datetime import UTC, datetime
 from pathlib import Path, PurePosixPath
@@ -165,10 +166,14 @@ def _collection_arg(call: ast.Call, constants: dict[str, str], positional_ok: bo
     return None
 
 
-def _parse(source: str, path: Path) -> ast.Module | None:
+def _parse(
+    source: str, path: Path, source_gaps: list[SourceGap] | None = None
+) -> ast.Module | None:
     try:
         return ast.parse(source, filename=str(path))
-    except SyntaxError:
+    except (SyntaxError, ValueError) as exc:
+        if source_gaps is not None:
+            source_gaps.append(SourceGap(path, "parse", type(exc).__name__))
         return None
 
 
@@ -345,10 +350,17 @@ def _iter_python_files(repo_root: Path, include_tests: bool = False) -> list[Pat
     return files
 
 
-def _read(path: Path) -> str:
+def _read(
+    path: Path,
+    source_gaps: list[SourceGap] | None = None,
+    repo_root: Path | None = None,
+) -> str:
     try:
         return path.read_text(encoding="utf-8")
-    except (OSError, UnicodeDecodeError):
+    except (OSError, UnicodeDecodeError) as exc:
+        if source_gaps is not None:
+            relative = path.relative_to(repo_root) if repo_root is not None else path
+            source_gaps.append(SourceGap(relative, "read", type(exc).__name__))
         return ""
 
 
@@ -542,6 +554,13 @@ class DecayedMember:
     patterns: tuple[str, ...]
 
 
+@dataclass(frozen=True)
+class SourceGap:
+    path: Path
+    operation: str
+    error_class: str
+
+
 @dataclass
 class ConsumerSideReport:
     findings: list[ConsumerSideFinding]
@@ -558,6 +577,8 @@ class ConsumerSideReport:
     # own need): a report with no head is unusable by any later reader, because nothing says
     # which tree it describes.
     measured: dict[str, object] = field(default_factory=dict)
+    source_gaps: tuple[SourceGap, ...] = ()
+    capped_expressions: tuple[str, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -592,6 +613,7 @@ class PathFunctionTable(dict[str, PathFunction]):
         super().__init__()
         self.imports_by_path: dict[Path, frozenset[str]] = {}
         self.aliases_by_path: dict[Path, dict[str, str]] = {}
+        self.capped_expressions: set[str] = set()
 
     def register(self, relative: Path, qualname: str, function: PathFunction) -> None:
         self[f"{_module_name(relative)}.{qualname}"] = function
@@ -611,7 +633,7 @@ class PathFunctionTable(dict[str, PathFunction]):
         if head in bindings:
             target = bindings[head]
             if not target:  # An assignment in this scope shadows the imported binding.
-                return name
+                return ""
             return f"{target}.{tail}" if separator else target
         module = _module_name(calling_path)
         if not separator:
@@ -628,6 +650,8 @@ class PathFunctionTable(dict[str, PathFunction]):
         lexical_prefixes: tuple[str, ...] = (),
         aliases: dict[str, str] | None = None,
     ) -> PathFunction | None:
+        if not self.canonical_name(name, calling_path, lexical_prefixes, aliases):
+            return None
         short = name.rsplit(".", 1)[-1]
         imports = self.imports_by_path.get(calling_path, frozenset())
         if "." in name:
@@ -862,6 +886,23 @@ def _expand_value_alternative_states(
 def _first_conditional_expression_path(
     node: ast.AST, path: tuple[tuple[str, int | None], ...] = ()
 ) -> tuple[tuple[str, int | None], ...] | None:
+    # These expressions cannot resolve to a path. Their contents (notably lambda bodies and
+    # collection literals) are not alternatives of the containing path expression.
+    if isinstance(
+        node,
+        (
+            ast.Lambda,
+            ast.Dict,
+            ast.List,
+            ast.Set,
+            ast.Tuple,
+            ast.ListComp,
+            ast.SetComp,
+            ast.DictComp,
+            ast.GeneratorExp,
+        ),
+    ):
+        return None
     if isinstance(node, ast.IfExp) or (
         isinstance(node, ast.BoolOp) and isinstance(node.op, ast.Or)
     ):
@@ -931,12 +972,43 @@ def _conditional_expr_variants(node: ast.expr | None) -> tuple[list[ast.expr], b
             alternatives = tuple(conditional.values)
         if len(pending) + len(resolved) + len(alternatives) > _MAX_PATH_EXPR_VARIANTS:
             truncated = True
+            # Keep the remaining disjunction as a compact union. The cap bounds expanded ASTs,
+            # never the set of concrete artifacts that can be read from this expression.
+            resolved.append(expression)
             continue
         pending.extend(
             _replace_ast_node(expression, conditional_path, alternative)
             for alternative in reversed(alternatives)
         )
     return resolved, truncated
+
+
+def _expand_conditional_union(expression: ast.expr) -> Iterator[ast.expr]:
+    """Stream leaves of a compact union without materialising its Cartesian product."""
+    conditional_path = _first_conditional_expression_path(expression)
+    if conditional_path is None:
+        yield expression
+        return
+    conditional = _ast_node_at(expression, conditional_path)
+    alternatives = (
+        (conditional.body, conditional.orelse)
+        if isinstance(conditional, ast.IfExp)
+        else conditional.values
+    )
+    for alternative in alternatives:
+        yield from _expand_conditional_union(
+            _replace_ast_node(expression, conditional_path, alternative)
+        )
+
+
+def _path_expressions(
+    node: ast.expr | None, path: Path, path_functions: dict[str, PathFunction]
+) -> Iterator[ast.expr]:
+    expressions, capped = _conditional_expr_variants(node)
+    if capped and node is not None and isinstance(path_functions, PathFunctionTable):
+        path_functions.capped_expressions.add(f"{path}:{node.lineno}:{node.col_offset}")
+    for expression in expressions:
+        yield from _expand_conditional_union(expression)
 
 
 def _resolve_path_expr_variants(
@@ -946,13 +1018,12 @@ def _resolve_path_expr_variants(
     repo_root: Path,
     path_functions: dict[str, PathFunction],
 ) -> tuple[str | None, ...]:
-    expressions, truncated = _conditional_expr_variants(node)
     variants = [
         _resolve_path_expr(expression, state, path, repo_root, path_functions)
-        for expression in expressions
+        for expression in _path_expressions(node, path, path_functions)
         for state in _expand_value_alternative_states(expression, values)
     ]
-    if truncated or not expressions:
+    if not variants:
         variants.append(None)
     return tuple(dict.fromkeys(variants))
 
@@ -1052,7 +1123,13 @@ def _resolve_path_expr(
     if not isinstance(node, ast.Call):
         return None
 
-    name = _function_name(node)
+    name = (
+        path_functions.canonical_name(
+            _function_name(node), path, _lexical_scope(values), _import_aliases(values)
+        )
+        if isinstance(path_functions, PathFunctionTable)
+        else _function_name(node)
+    )
     if name in {"Path", "pathlib.Path", "str"}:
         if not node.args:
             return "."
@@ -1197,7 +1274,13 @@ def _is_path_valued_expr(
         )
     if not isinstance(node, ast.Call):
         return False
-    name = _function_name(node)
+    name = (
+        path_functions.canonical_name(
+            _function_name(node), path, _lexical_scope(values), _import_aliases(values)
+        )
+        if isinstance(path_functions, PathFunctionTable)
+        else _function_name(node)
+    )
     if name in {"Path", "pathlib.Path", "Path.home", "pathlib.Path.home"}:
         return True
     if isinstance(node.func, ast.Attribute) and node.func.attr in {
@@ -1216,18 +1299,32 @@ def _is_path_valued_expr(
     return bool(function and function.returns_path)
 
 
-def _iter_python_sources(repo_root: Path, *, tests_only: bool = False) -> list[Path]:
-    files = set(_iter_python_files(repo_root, include_tests=tests_only))
-    if tests_only:
-        return sorted(path for path in files if _is_test_path(path.relative_to(repo_root)))
-    scripts = repo_root / "scripts"
-    if scripts.is_dir():
-        for candidate in scripts.rglob("*"):
-            if not candidate.is_file() or candidate.suffix == ".py":
+def _iter_python_sources(
+    repo_root: Path, *, tests_only: bool = False, source_gaps: list[SourceGap] | None = None
+) -> list[Path]:
+    files: set[Path] = set()
+
+    def unread_directory(exc: OSError) -> None:
+        if source_gaps is not None:
+            failed = Path(exc.filename) if exc.filename else repo_root
+            source_gaps.append(SourceGap(failed.relative_to(repo_root), "read", type(exc).__name__))
+
+    # Prune excluded trees before descending. os.walk's error callback also makes unreadable
+    # source directories visible; pathlib glob silently suppresses directory-listing failures.
+    for directory, subdirs, names in os.walk(repo_root, onerror=unread_directory):
+        subdirs[:] = [name for name in subdirs if name not in EXCLUDE_DIR_PARTS]
+        for name in names:
+            candidate = Path(directory) / name
+            relative = candidate.relative_to(repo_root)
+            is_test = _is_test_path(relative)
+            if tests_only != is_test:
                 continue
-            source = _read(candidate)
-            if source.startswith("#!/") and "python" in source.splitlines()[0]:
+            if candidate.suffix == ".py":
                 files.add(candidate)
+            elif not tests_only and relative.parts[0] == "scripts":
+                source = _read(candidate, source_gaps, repo_root)
+                if source.startswith("#!/") and "python" in source.splitlines()[0]:
+                    files.add(candidate)
     return sorted(files)
 
 
@@ -1248,23 +1345,9 @@ def _module_values(
     for _ in range(2):
         changed = False
         for assignment in assignments:
-            targets = (
-                assignment.targets if isinstance(assignment, ast.Assign) else [assignment.target]
-            )
-            resolved = _resolve_path_expr(assignment.value, values, path, repo_root, path_functions)
-            is_path = (
-                isinstance(assignment, ast.AnnAssign) and _is_path_annotation(assignment.annotation)
-            ) or _is_path_valued_expr(assignment.value, values, path, path_functions)
-            for target in targets:
-                if not isinstance(target, ast.Name):
-                    continue
-                marker_changed = (_path_value_key(target.id) in values) != is_path
-                _set_path_value(values, target.id, is_path)
-                if marker_changed:
-                    changed = True
-                if resolved is not None and values.get(target.id) != resolved:
-                    values[target.id] = resolved
-                    changed = True
+            assigned = _apply_assignment(assignment, values, path, repo_root, path_functions)[0]
+            changed |= assigned != values
+            values = assigned
         if not changed:
             break
     return values
@@ -1721,6 +1804,23 @@ def _statement_calls(statement: ast.stmt) -> list[ast.Call]:
     return visitor.calls
 
 
+def _statement_scopes(statement: ast.stmt) -> list[ast.AST]:
+    """Deferred bodies defined by this statement, excluding bodies of nested statements."""
+    scopes: list[ast.AST] = []
+
+    class Visitor(ast.NodeVisitor):
+        def visit_Lambda(self, node: ast.Lambda) -> None:
+            scopes.append(node)
+
+    if isinstance(statement, (ast.FunctionDef, ast.AsyncFunctionDef)):
+        scopes.append(statement)
+    visitor = Visitor()
+    for child in ast.iter_child_nodes(statement):
+        if not isinstance(child, (ast.stmt, ast.ExceptHandler, ast.match_case)):
+            visitor.visit(child)
+    return scopes
+
+
 _POTENTIALLY_RAISING_EXPRESSIONS = (
     ast.Attribute,
     ast.Await,
@@ -1771,9 +1871,8 @@ def _apply_assignment(
     is_path = (
         isinstance(statement, ast.AnnAssign) and _is_path_annotation(statement.annotation)
     ) or _is_path_valued_expr(statement.value, assigned, path, path_functions)
-    expressions, truncated = _conditional_expr_variants(statement.value)
     resolved_values: set[str | None] = set()
-    for expression in expressions:
+    for expression in _path_expressions(statement.value, path, path_functions):
         tentative = _resolve_path_expr(expression, values, path, repo_root, path_functions)
         abstract_names = {
             item.id
@@ -1789,7 +1888,7 @@ def _apply_assignment(
             )
         else:
             resolved_values.add(tentative)
-    if truncated or not expressions:
+    if not resolved_values:
         resolved_values.add(None)
     for target in targets:
         if not isinstance(target, ast.Name):
@@ -1806,6 +1905,56 @@ def _apply_assignment(
     return [assigned]
 
 
+def _scope_local_names(node: ast.AST) -> set[str]:
+    """Python local bindings shadow outer names throughout the function, even before a store."""
+    local: set[str] = set()
+    outer: set[str] = set()
+
+    class Visitor(ast.NodeVisitor):
+        def visit_Name(self, item: ast.Name) -> None:
+            if isinstance(item.ctx, (ast.Store, ast.Del)):
+                local.add(item.id)
+
+        def visit_FunctionDef(self, item: ast.FunctionDef) -> None:
+            local.add(item.name)
+
+        visit_AsyncFunctionDef = visit_FunctionDef
+        visit_ClassDef = visit_FunctionDef
+
+        def visit_Lambda(self, item: ast.Lambda) -> None:
+            return
+
+        def visit_Import(self, item: ast.Import) -> None:
+            local.update(alias.asname or alias.name.split(".")[0] for alias in item.names)
+
+        def visit_ImportFrom(self, item: ast.ImportFrom) -> None:
+            local.update(alias.asname or alias.name for alias in item.names)
+
+        def visit_Global(self, item: ast.Global) -> None:
+            outer.update(item.names)
+
+        visit_Nonlocal = visit_Global
+
+        def visit_ExceptHandler(self, item: ast.ExceptHandler) -> None:
+            if item.name:
+                local.add(item.name)
+            self.generic_visit(item)
+
+        # Comprehension targets live in their own scope.
+        visit_ListComp = visit_Lambda
+        visit_SetComp = visit_Lambda
+        visit_DictComp = visit_Lambda
+        visit_GeneratorExp = visit_Lambda
+
+    visitor = Visitor()
+    if isinstance(node, ast.Lambda):
+        visitor.visit(node.body)
+    else:
+        for statement in node.body:
+            visitor.visit(statement)
+    return local - outer
+
+
 def _scope_initial_values(
     node: ast.Module | ast.FunctionDef | ast.AsyncFunctionDef | ast.Lambda,
     module_values: dict[str, str],
@@ -1819,6 +1968,11 @@ def _scope_initial_values(
         return {}
     values = dict(module_values)
     _set_lexical_scope(values, lexical_prefixes)
+    for name in _scope_local_names(node):
+        values[name] = "*"
+        _set_path_value(values, name, False)
+        _set_import_alias(values, name, None)
+        _clear_value_alternatives(values, name)
     parameters = [*node.args.posonlyargs, *node.args.args, *node.args.kwonlyargs]
     if node.args.vararg is not None:
         parameters.append(node.args.vararg)
@@ -1917,6 +2071,7 @@ class _BlockScanner:
         unresolved: list[int],
         unrecognised: Counter[str],
         context_family: str,
+        nested_scope_values: dict[ast.AST, list[dict[str, str]]],
     ) -> None:
         self.path = path
         self.repo_root = repo_root
@@ -1925,6 +2080,7 @@ class _BlockScanner:
         self.unresolved = unresolved
         self.unrecognised = unrecognised
         self.context_family = context_family
+        self.nested_scope_values = nested_scope_values
 
     def scan_block(
         self,
@@ -1977,6 +2133,8 @@ class _BlockScanner:
             exception_states.extend(_fork(states))
         for call in _statement_calls(statement):
             self._classify(call, states)
+        for scope in _statement_scopes(statement):
+            self.nested_scope_values.setdefault(scope, []).extend(_fork(states))
         if isinstance(statement, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)):
             if isinstance(statement, ast.ClassDef):
                 # Bases and decorators above run in the enclosing scope.  A class body also runs
@@ -1993,7 +2151,15 @@ class _BlockScanner:
                 if exception_states is not None and (class_exceptions or class_exits):
                     exception_states.extend(_fork(states))
             for state in states:
-                _set_import_alias(state, statement.name, None)
+                prefix = next(iter(_lexical_scope(state)), "")
+                target = ".".join(filter(None, (_module_name(self.path), prefix, statement.name)))
+                _set_import_alias(
+                    state,
+                    statement.name,
+                    target
+                    if isinstance(statement, (ast.FunctionDef, ast.AsyncFunctionDef))
+                    else None,
+                )
             return states
         if isinstance(statement, (ast.Import, ast.ImportFrom)):
             bindings = _import_bindings(
@@ -2116,6 +2282,7 @@ def _scan_scope(
     unresolved: list[int],
     unrecognised: Counter[str],
     lexical_prefixes: tuple[str, ...] = (),
+    nested_scope_values: dict[ast.AST, list[dict[str, str]]] | None = None,
 ) -> None:
     initial = _scope_initial_values(
         node, module_values, path, repo_root, path_functions, lexical_prefixes
@@ -2137,6 +2304,7 @@ def _scan_scope(
         unresolved=unresolved,
         unrecognised=unrecognised,
         context_family=_artifact_family(context),
+        nested_scope_values=nested_scope_values if nested_scope_values is not None else {},
     )
     if isinstance(node, ast.Lambda):
         visitor = _ScopeCallVisitor()
@@ -2263,7 +2431,9 @@ def _module_aliases(
     aliases: dict[str, str] = {}
     for statement in tree.body:
         aliases.update(_import_bindings([statement], module_name, is_package=is_package))
-        if isinstance(statement, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)):
+        if isinstance(statement, (ast.FunctionDef, ast.AsyncFunctionDef)):
+            aliases[statement.name] = f"{module_name}.{statement.name}"
+        elif isinstance(statement, ast.ClassDef):
             aliases[statement.name] = ""
         elif isinstance(statement, (ast.Assign, ast.AnnAssign)):
             targets = statement.targets if isinstance(statement, ast.Assign) else [statement.target]
@@ -2277,11 +2447,15 @@ def collect_artifact_accesses(
     repo_root: Path,
     *,
     tests_only: bool = False,
+    source_gaps: list[SourceGap] | None = None,
+    capped_expressions: set[str] | None = None,
 ) -> tuple[list[ArtifactAccess], int, dict[Path, frozenset[str]], dict[str, int]]:
     parsed: list[tuple[Path, ast.Module]] = []
-    for source_path in _iter_python_sources(repo_root, tests_only=tests_only):
+    for source_path in _iter_python_sources(
+        repo_root, tests_only=tests_only, source_gaps=source_gaps
+    ):
         relative = source_path.relative_to(repo_root)
-        tree = _parse(_read(source_path), relative)
+        tree = _parse(_read(source_path, source_gaps, repo_root), relative, source_gaps)
         if tree is not None:
             parsed.append((relative, tree))
 
@@ -2340,6 +2514,7 @@ def collect_artifact_accesses(
     unrecognised: Counter[str] = Counter()
     for relative, tree in parsed:
         values = module_values_by_path[relative]
+        nested_scope_values: dict[ast.AST, list[dict[str, str]]] = {}
         _scan_scope(
             tree,
             values,
@@ -2349,20 +2524,32 @@ def collect_artifact_accesses(
             accesses,
             unresolved,
             unrecognised,
+            nested_scope_values=nested_scope_values,
         )
         for scope in _iter_function_scopes(tree):
-            _scan_scope(
-                scope.node,
-                values,
-                relative,
-                repo_root,
-                path_functions,
-                accesses,
-                unresolved,
-                unrecognised,
-                scope.lexical_prefixes,
+            # A closure starts with the state of its enclosing function at its definition.
+            # Module-level functions retain the initialized module map, as before.
+            initial_states = (
+                nested_scope_values.get(scope.node, [])
+                if len(scope.lexical_prefixes) > 1
+                else [values]
             )
+            for initial in _merge_states(initial_states):
+                _scan_scope(
+                    scope.node,
+                    initial,
+                    relative,
+                    repo_root,
+                    path_functions,
+                    accesses,
+                    unresolved,
+                    unrecognised,
+                    scope.lexical_prefixes,
+                    nested_scope_values,
+                )
     unique = list(dict.fromkeys(accesses))
+    if capped_expressions is not None:
+        capped_expressions.update(path_functions.capped_expressions)
     return unique, unresolved[0], imports_by_path, dict(sorted(unrecognised.items()))
 
 
@@ -2628,7 +2815,7 @@ def _non_python_source_paths(repo_root: Path, tracked: frozenset[str]) -> list[P
             relative = candidate.relative_to(repo_root)
         except ValueError:
             continue
-        if not candidate.is_file() or candidate.suffix == ".py":
+        if _is_excluded(relative) or not candidate.is_file() or candidate.suffix == ".py":
             continue
         # Unit files declare an external process and are evidence about the
         # estate, not an implementation of the producer in this repository.
@@ -2648,7 +2835,7 @@ def _documented_elsewhere_source_paths(repo_root: Path, tracked: frozenset[str])
             relative = candidate.relative_to(repo_root)
         except ValueError:
             continue
-        if not candidate.is_file():
+        if _is_excluded(relative) or not candidate.is_file():
             continue
         is_runbook = relative.parts[:2] == ("docs", "runbooks") and candidate.suffix == ".md"
         is_config = relative.parts[:1] == ("config",) and candidate.suffix in config_suffixes
@@ -2864,7 +3051,11 @@ def analyse_consumer_side(
     mass_path: Path | None = None,
 ) -> ConsumerSideReport:
     tracked = _git_tracked_paths(repo_root)
-    accesses, unresolved, imports_by_path, unrecognised = collect_artifact_accesses(repo_root)
+    source_gaps: list[SourceGap] = []
+    capped_expressions: set[str] = set()
+    accesses, unresolved, imports_by_path, unrecognised = collect_artifact_accesses(
+        repo_root, source_gaps=source_gaps, capped_expressions=capped_expressions
+    )
     reads = [item for item in accesses if item.action == "read"]
     writes = [item for item in accesses if item.action == "write"]
     findings: list[ConsumerSideFinding] = []
@@ -2880,10 +3071,12 @@ def analyse_consumer_side(
             exclusions[exclusion] += 1
 
     non_python_sources = [
-        (path, _read(path)) for path in _non_python_source_paths(repo_root, tracked)
+        (path, _read(path, source_gaps, repo_root))
+        for path in _non_python_source_paths(repo_root, tracked)
     ]
     documented_sources = [
-        (path, _read(path)) for path in _documented_elsewhere_source_paths(repo_root, tracked)
+        (path, _read(path, source_gaps, repo_root))
+        for path in _documented_elsewhere_source_paths(repo_root, tracked)
     ]
     for pattern, reader_sites in _group_reads(included_reads).items():
         representative = reader_sites[0]
@@ -3008,6 +3201,12 @@ def analyse_consumer_side(
         dict(exclusions),
         unrecognised_path_calls=unrecognised,
         measured=measured_provenance(repo_root, frame_path, decayed_member_ids),
+        errors=tuple(
+            f"{gap.path}: {gap.operation} failed ({gap.error_class})"
+            for gap in dict.fromkeys(source_gaps)
+        ),
+        source_gaps=tuple(dict.fromkeys(source_gaps)),
+        capped_expressions=tuple(sorted(capped_expressions)),
     )
 
 
@@ -3071,8 +3270,14 @@ def _report_json(report: ConsumerSideReport) -> dict[str, object]:
             "unrecognised_path_calls": report.unrecognised_path_calls,
             "errors": len(report.errors),
             "report_only": True,
+            "status": "incomplete" if report.errors else "complete",
         },
         "errors": list(report.errors),
+        "source_gaps": [
+            {"path": str(gap.path), "operation": gap.operation, "error_class": gap.error_class}
+            for gap in report.source_gaps
+        ],
+        "capped_expressions": list(report.capped_expressions),
         "findings": [
             {
                 "kind": finding.kind,
@@ -3124,15 +3329,23 @@ def _write_consumer_side_json_report_only(report: ConsumerSideReport, path: Path
         write_consumer_side_json(report, path)
     except (OSError, TypeError, ValueError) as exc:
         print(
-            f"[REPORT-ERROR] {path}: {exc}; next action: pass a writable --json-report path "
+            f"[REPORT-ERROR] {path}: {exc}; next action: pass a writable --report-json path "
             "(a directory under ~/.cache/hapax works) and rerun; the gate stays report-only"
         )
 
 
 def print_consumer_side_report(report: ConsumerSideReport, report_path: Path) -> None:
+    for gap in report.source_gaps:
+        print(
+            f"[REPORT-ERROR] {gap.path}: {gap.operation} failed ({gap.error_class}); "
+            "next action: make the source readable and valid Python, then rerun"
+        )
+    for site in report.capped_expressions:
+        print(f"[CAPPED] {site}: compact expression union; concrete alternatives retained")
     counts = Counter(finding.kind for finding in report.findings)
     print(
         "consumer-side counts: "
+        f"status={'incomplete' if report.errors else 'complete'} "
         f"findings={len(report.findings)} "
         f"consumer-reads-unwritten-artifact={counts['consumer-reads-unwritten-artifact']} "
         "consumer-reads-through-unmodelled-api="
@@ -3186,7 +3399,7 @@ def print_consumer_side_report(report: ConsumerSideReport, report_path: Path) ->
 
 def run_consumer_side(args: argparse.Namespace) -> int:
     repo_root = Path.cwd()
-    report_path = _report_output_path(repo_root)
+    report_path = args.report_json or _report_output_path(repo_root)
     analysis_error: str | None = None
     try:
         allowlist = load_allowlist(args.allowlist)
@@ -3213,7 +3426,7 @@ def run_consumer_side(args: argparse.Namespace) -> int:
             "names (--frame, --mass or the allowlist) and rerun; the gate stays report-only"
         )
     print_consumer_side_report(report, report_path)
-    return 0
+    return 2 if report.source_gaps else 0
 
 
 # ── Diff plumbing ─────────────────────────────────────────────────────
@@ -3410,6 +3623,7 @@ def build_parser() -> argparse.ArgumentParser:
         help="report whole-tree consumers with missing, mismatched, or decayed producers",
     )
     parser.add_argument("--frame", type=Path, help="optional frame elements.json decay verdicts")
+    parser.add_argument("--report-json", type=Path, help="consumer-side JSON report destination")
     parser.add_argument(
         "--mass", type=Path, help="optional frame mass.yaml member/path declaration"
     )
