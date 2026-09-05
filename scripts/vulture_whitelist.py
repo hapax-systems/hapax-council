@@ -5105,6 +5105,13 @@ from shared.adjudicator_identity import record_identifies_its_checkout  # noqa: 
 
 _ = (record_identifies_its_checkout,)
 
+# Spend receipt schema 2 (2026-09-02, rows receipt-resource-vector-absent-not-zero-20260902 and
+# compute-unit-absent-never-inferred-20260902): Pydantic invokes this `model_validator` dynamically
+# to normalise rendered `absent` markers back into typed absence. DETECTOR BLIND SPOT, not dead code.
+from shared.quota_spend_ledger import SpendReceipt as _SpendReceipt  # noqa: E402
+
+_SpendReceipt._normalize_rendered_absence
+
 # Claim Verification Council dossier split (2026-09-02, row
 # cvc-dossier-evidence-not-process-trace-20260902): Pydantic invokes these `model_validator`s
 # dynamically to populate `evidentiary_rationale` / `process_trace` / `execution_receipt` from the

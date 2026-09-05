@@ -939,7 +939,7 @@ def _write_glmcp_live_quota_ledger(path: Path) -> None:
     )
     payload["spend_receipts"].append(
         {
-            "spend_receipt_schema": 1,
+            "spend_receipt_schema": 2,
             "spend_id": "spend-20260517T075900Z-glmcp-payg-review-test",
             "task_id": "glmcp-review-direct",
             "authority_case": "CASE-CAPACITY-ROUTING-GLMCP-PAYG-TEST",

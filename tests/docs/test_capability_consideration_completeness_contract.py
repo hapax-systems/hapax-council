@@ -26,12 +26,19 @@ forcing function.
 
 from __future__ import annotations
 
+import hashlib
+import re
+import shutil
 import sys
 from datetime import UTC, datetime
 from pathlib import Path
 
+import pytest
+import yaml
+
 REPO_ROOT = Path(__file__).resolve().parents[2]
 SCRIPTS = REPO_ROOT / "scripts"
+PR_4621_SCOPE_AMENDMENT = REPO_ROOT / "docs" / "runbooks" / "pr-4621-receipt-schema-2.md"
 for p in (REPO_ROOT, SCRIPTS):
     if str(p) not in sys.path:
         sys.path.insert(0, str(p))
@@ -221,6 +228,154 @@ def test_capacity_pool_positive_control() -> None:
     assert not _is_modeled("effort", {"grounding", "architecture"})
     assert _is_modeled("quantization", {"quantization"})
     assert not _is_modeled("quantization", {"model_or_engine", "cost_usd"})
+
+
+def test_spend_receipt_field_set_is_pinned() -> None:
+    assert set(SpendReceipt.model_fields) == {
+        "spend_receipt_schema",
+        "spend_id",
+        "task_id",
+        "task_hash",
+        "run_id",
+        "authority_case",
+        "route_id",
+        "capacity_pool",
+        "budget_id",
+        "provider",
+        "model_or_engine",
+        "model_id",
+        "effort",
+        "quantization",
+        "effort_provenance",
+        "wall_latency_ms",
+        "ttfb_ms",
+        "input_tokens",
+        "output_tokens",
+        "compute_unit_status",
+        "compute_unit_value",
+        "compute_unit_provenance",
+        "tokens_do_not_explain_latency",
+        "auth_surface",
+        "quality_floor",
+        "quality_preservation_reason",
+        "spend_reason",
+        "estimated_cost_usd",
+        "actual_cost_usd",
+        "cap_remaining_usd",
+        "created_at",
+        "reconcile_by",
+        "reconciliation_state",
+        "reconciled_at",
+        "reconciliation_reason",
+        "artifact_refs",
+        "support_artifact_authority",
+    }
+
+
+def _assert_pr_4621_reviewed_blobs(amendment: dict, root: Path) -> None:
+    # The manifest's own document cannot contain its raw blob hash. Its exact
+    # schema and authority/scope are checked separately below.
+    reviewed_blobs = amendment["reviewed_blobs"]
+    assert set(reviewed_blobs) == set(amendment["mutation_scope_refs"]) - {
+        "docs/runbooks/pr-4621-receipt-schema-2.md"
+    }
+    for path, reviewed_blob in reviewed_blobs.items():
+        assert re.fullmatch(r"[0-9a-f]{40}", reviewed_blob)
+        current_path = root / path
+        message = (
+            f"the runbook reviewed {path} at {amendment['reviewed_head']} "
+            f"(blob {reviewed_blob}); path {path} has changed since — re-review or re-pin "
+            "reviewed_head and reviewed_blobs in docs/runbooks/pr-4621-receipt-schema-2.md"
+        )
+        assert current_path.is_file(), message
+        contents = current_path.read_bytes()
+        current_blob = hashlib.sha1(f"blob {len(contents)}\0".encode() + contents).hexdigest()
+        assert current_blob == reviewed_blob, message
+
+
+def _copy_pr_4621_reviewed_paths(root: Path) -> dict:
+    amendment = yaml.safe_load(PR_4621_SCOPE_AMENDMENT.read_text().split("---", 2)[1])
+    for path in amendment["reviewed_blobs"]:
+        destination = root / path
+        destination.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copyfile(REPO_ROOT / path, destination)
+    return amendment
+
+
+def test_pr_4621_review_pin_needs_no_history_and_ignores_unrelated_paths(tmp_path: Path) -> None:
+    amendment = _copy_pr_4621_reviewed_paths(tmp_path)
+    assert not (tmp_path / ".git").exists()
+    _assert_pr_4621_reviewed_blobs(amendment, tmp_path)
+    (tmp_path / "shared" / "unrelated.py").write_text("unrelated = True\n")
+    _assert_pr_4621_reviewed_blobs(amendment, tmp_path)
+
+
+@pytest.mark.parametrize("change", ["modify", "delete"])
+def test_pr_4621_review_pin_rejects_changed_reviewed_path(tmp_path: Path, change: str) -> None:
+    amendment = _copy_pr_4621_reviewed_paths(tmp_path)
+    path = "shared/quota_spend_ledger.py"
+    reviewed_path = tmp_path / path
+    if change == "modify":
+        reviewed_path.write_text(reviewed_path.read_text() + "\n# changed after review\n")
+    else:
+        reviewed_path.unlink()
+    with pytest.raises(AssertionError) as exc_info:
+        _assert_pr_4621_reviewed_blobs(amendment, tmp_path)
+    message = str(exc_info.value)
+    assert f"the runbook reviewed {path} at {amendment['reviewed_head']}" in message
+    assert f"path {path} has changed since — re-review or re-pin" in message
+
+
+def test_pr_4621_scope_amendment_names_the_complete_t1_mutation_surface() -> None:
+    text = PR_4621_SCOPE_AMENDMENT.read_text(encoding="utf-8")
+    amendment = yaml.safe_load(text.split("---", 2)[1])
+
+    assert set(amendment) == {
+        "scope_amendment_schema",
+        "pr",
+        "reviewed_head",
+        "reviewed_blobs",
+        "task_ids",
+        "authority_case",
+        "parent_spec",
+        "risk_tier",
+        "amendment_authorized_by",
+        "authority_evidence_ref",
+        "authorized_at",
+        "source_mutation_authorized",
+        "runtime_mutation_authorized",
+        "provider_spend_authorized",
+        "mutation_scope_refs",
+    }
+    reviewed_head = amendment["reviewed_head"]
+    assert re.fullmatch(r"[0-9a-f]{40}", reviewed_head)
+    _assert_pr_4621_reviewed_blobs(amendment, REPO_ROOT)
+
+    assert amendment["task_ids"] == [
+        "receipt-resource-vector-absent-not-zero-20260902",
+        "compute-unit-absent-never-inferred-20260902",
+    ]
+    assert amendment["authority_case"] == "CASE-CAPABILITY-ROUTING-001"
+    assert amendment["parent_spec"] == (
+        "30-areas/hapax/frame/RESEARCH-latent-recurrent-reasoning-20260902.md"
+    )
+    assert amendment["risk_tier"] == "T1"
+    assert amendment["source_mutation_authorized"] is True
+    assert amendment["runtime_mutation_authorized"] is False
+    assert amendment["provider_spend_authorized"] is False
+    assert set(amendment["mutation_scope_refs"]) == {
+        "config/quota-spend-ledger-fixtures.json",
+        "docs/runbooks/pr-4621-receipt-schema-2.md",
+        "scripts/hapax-glmcp-reviewer",
+        "scripts/hapax-quota-telemetry-writer",
+        "scripts/vulture_whitelist.py",
+        "shared/quota_spend_ledger.py",
+        "tests/docs/test_capability_consideration_completeness_contract.py",
+        "tests/scripts/test_hapax_glmcp_reviewer.py",
+        "tests/scripts/test_hapax_quota_telemetry_writer.py",
+        "tests/shared/test_platform_capability_registry.py",
+        "tests/shared/test_quota_spend_ledger.py",
+    }
 
 
 def test_route_ids_stay_three_segment() -> None:

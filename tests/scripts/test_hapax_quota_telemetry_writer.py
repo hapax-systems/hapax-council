@@ -338,10 +338,24 @@ def _glmcp_payg_spend(
     reconcile_by: str = "2026-07-07T14:04:30Z",
     estimated_cost_usd: str = "0.05",
     extra_fields: str = "",
+    schema: str = "hapax.glmcp_payg_spend.v2",
 ) -> None:
     task_hash_line = f"task_hash: {task_hash}\n" if task_hash is not None else ""
+    schema_2_fields = (
+        "effort_provenance: absent\n"
+        "wall_latency_ms: absent\n"
+        "ttfb_ms: absent\n"
+        "input_tokens: absent\n"
+        "output_tokens: absent\n"
+        "compute_unit_status: absent\n"
+        "compute_unit_value: absent\n"
+        "compute_unit_provenance: absent\n"
+        "tokens_do_not_explain_latency: absent\n"
+        if schema == "hapax.glmcp_payg_spend.v2"
+        else ""
+    )
     (relay / name).write_text(
-        f"""schema: hapax.glmcp_payg_spend.v1
+        f"""schema: {schema}
 status: spend_estimated
 spend_id: {spend_id}
 task_id: {task_id}
@@ -354,6 +368,7 @@ model_or_engine: glm-5.2
 model_id: z_ai-glm-5.2
 effort: none
 quantization: not_applicable
+{schema_2_fields}\
 auth_surface: api_key
 quality_floor: frontier_review_required
 quality_preservation_reason: receipt-bounded GLMCP review fallback after Coding Plan quota wall
@@ -1228,6 +1243,89 @@ def test_glmcp_payg_spend_receipt_counts_against_budget_gate(tmp_path: Path) -> 
     assert "matching TransitionBudget cap exhausted" in glmcp_snapshot["operator_visible_reason"]
     summary = json.loads(result.stdout)
     assert summary["glmcp_payg_spend_receipts"] == 1
+
+
+def test_writer_upgrades_schema_1_live_and_relay_spend_without_losing_cap_history(
+    tmp_path: Path,
+) -> None:
+    relay = tmp_path / "relay-receipts"
+    relay.mkdir()
+    spend_receipt_name = "glmcp-payg-spend-20260706t140430z-schema1.yaml"
+    task_id = "cc-task-schema1-spend-history-test"
+    _wall_receipt(relay, "cx-glmcp", "2026-07-06T16:00:00Z")
+    _glmcp_admission(
+        relay,
+        observed_at="2026-07-06T14:04:00Z",
+        endpoint="https://api.z.ai/api/paas/v4",
+        name="glmcp-quota-admission-payg.yaml",
+        evidence_ref=spend_receipt_name,
+    )
+    _glmcp_payg_spend(
+        relay,
+        name=spend_receipt_name,
+        spend_id="spend-20260706T140430Z-glmcp-payg-review-schema1",
+        task_id=task_id,
+        schema="hapax.glmcp_payg_spend.v1",
+    )
+
+    base = tmp_path / "quota-spend-ledger-schema1-live.json"
+    base_payload = json.loads(FIXTURES.read_text(encoding="utf-8"))
+    legacy_base_receipt = {
+        "spend_receipt_schema": 1,
+        "spend_id": "spend-20260706T140300Z-glmcp-payg-review-schema1-live",
+        "task_id": task_id,
+        "authority_case": "CASE-CAPACITY-ROUTING-GLMCP-PAYG-20260706",
+        "route_id": "glmcp.review.direct",
+        "capacity_pool": "api_paid_spend",
+        "budget_id": "tb-20260706-zai-glmcp-payg-review",
+        "provider": "z_ai",
+        "model_or_engine": "glm-5.2",
+        "model_id": "z_ai-glm-5.2",
+        "effort": "none",
+        "quantization": "not_applicable",
+        "auth_surface": "api_key",
+        "quality_floor": "frontier_review_required",
+        "quality_preservation_reason": "historical schema-1 live spend fixture",
+        "spend_reason": "quota_exhaustion",
+        "estimated_cost_usd": "0.04",
+        "actual_cost_usd": None,
+        "cap_remaining_usd": None,
+        "created_at": "2026-07-06T14:03:00Z",
+        "reconcile_by": "2026-07-07T14:03:00Z",
+        "reconciliation_state": "pending",
+        "reconciled_at": None,
+        "reconciliation_reason": None,
+        "artifact_refs": [],
+        "support_artifact_authority": "none",
+    }
+    base_payload["spend_receipts"].append(legacy_base_receipt)
+    for budget in base_payload["transition_budgets"]:
+        if budget["budget_id"] == "tb-20260706-zai-glmcp-payg-review":
+            budget["daily_cap_usd"] = "0.10"
+    base.write_text(json.dumps(base_payload), encoding="utf-8")
+
+    result, out = _run_writer(tmp_path, "--base", str(base), now=PAYG_NOW)
+
+    assert result.returncode == 0, result.stderr
+    payload = json.loads(out.read_text(encoding="utf-8"))
+    receipts = {receipt["spend_id"]: receipt for receipt in payload["spend_receipts"]}
+    assert receipts[legacy_base_receipt["spend_id"]]["estimated_cost_usd"] == "0.04"
+    assert receipts[legacy_base_receipt["spend_id"]]["spend_receipt_schema"] == 2
+    assert receipts[legacy_base_receipt["spend_id"]]["compute_unit_value"] == "absent"
+    relay_receipt = receipts["spend-20260706T140430Z-glmcp-payg-review-schema1"]
+    assert relay_receipt["estimated_cost_usd"] == "0.05"
+    assert relay_receipt["spend_receipt_schema"] == 2
+    assert relay_receipt["wall_latency_ms"] == "absent"
+    glmcp_snapshot = next(
+        snapshot
+        for snapshot in payload["quota_snapshots"]
+        if snapshot["route_id"] == "glmcp.review.direct"
+    )
+    assert glmcp_snapshot["subscription_quota_state"] == "exhausted"
+    assert "matching TransitionBudget cap exhausted" in glmcp_snapshot["operator_visible_reason"]
+    summary = json.loads(result.stdout)
+    assert summary["glmcp_payg_spend_receipts"] == 1
+    assert summary["glmcp_ignored_payg_spend_receipts"] == 0
 
 
 def test_glmcp_payg_spend_receipt_legacy_null_optionals_are_counted(

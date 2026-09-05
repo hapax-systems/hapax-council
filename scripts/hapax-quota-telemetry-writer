@@ -410,7 +410,11 @@ GLMCP_ADMISSION_RECOVERY_HINT = (
     "prompt_or_output_persisted=false, billing_mode, and endpoint-matched payg_fallback, "
     "then rerun writer; PAYG receipts also require an active paid-spend budget gate"
 )
-GLMCP_PAYG_SPEND_RECEIPT_SCHEMA = "hapax.glmcp_payg_spend.v1"
+GLMCP_PAYG_SPEND_RECEIPT_SCHEMA_V1 = "hapax.glmcp_payg_spend.v1"
+GLMCP_PAYG_SPEND_RECEIPT_SCHEMA = "hapax.glmcp_payg_spend.v2"
+GLMCP_PAYG_SPEND_RECEIPT_SCHEMAS = frozenset(
+    {GLMCP_PAYG_SPEND_RECEIPT_SCHEMA_V1, GLMCP_PAYG_SPEND_RECEIPT_SCHEMA}
+)
 GLMCP_PAYG_SPEND_RECEIPT_GLOB = "*glmcp-payg-spend*.yaml"
 GLMCP_PAYG_SPEND_SAFE_RECEIPT_NAME_RE = re.compile(
     r"\A[a-z0-9_.+-]*glmcp-payg-spend[a-z0-9_.+-]*\.yaml\Z"
@@ -424,13 +428,19 @@ GLMCP_PAYG_SPEND_FIELDS = frozenset(
         "budget_id",
         "capacity_pool",
         "cap_remaining_usd",
+        "compute_unit_provenance",
+        "compute_unit_status",
+        "compute_unit_value",
         "created_at",
         "effort",
+        "effort_provenance",
         "endpoint",
         "estimated_cost_usd",
         "actual_cost_usd",
+        "input_tokens",
         "model_id",
         "model_or_engine",
+        "output_tokens",
         "payg_fallback",
         "primary_error_class",
         "prompt_or_output_persisted",
@@ -443,6 +453,7 @@ GLMCP_PAYG_SPEND_FIELDS = frozenset(
         "reconciled_at",
         "reconciliation_reason",
         "route_id",
+        "run_id",
         "schema",
         "secret_source",
         "secret_value_persisted",
@@ -453,6 +464,9 @@ GLMCP_PAYG_SPEND_FIELDS = frozenset(
         "supported_tool",
         "task_hash",
         "task_id",
+        "tokens_do_not_explain_latency",
+        "ttfb_ms",
+        "wall_latency_ms",
     }
 )
 GLMCP_PAYG_SPEND_NULLABLE_FIELDS = frozenset(
@@ -1647,9 +1661,12 @@ def active_glmcp_payg_spend_receipts(
         if parse_error is not None:
             reject(path, parse_error)
             continue
-        if fields.get("schema", "") != GLMCP_PAYG_SPEND_RECEIPT_SCHEMA:
+        relay_schema = fields.get("schema", "")
+        if relay_schema not in GLMCP_PAYG_SPEND_RECEIPT_SCHEMAS:
             reject(
-                path, f"schema missing or unsupported; expected {GLMCP_PAYG_SPEND_RECEIPT_SCHEMA}"
+                path,
+                "schema missing or unsupported; expected one of "
+                f"{sorted(GLMCP_PAYG_SPEND_RECEIPT_SCHEMAS)}",
             )
             continue
         if fields.get("status", "") not in {"spend_estimated", "spend_reconciled"}:
@@ -1724,10 +1741,13 @@ def active_glmcp_payg_spend_receipts(
                 "cap_remaining_usd",
                 "created_at",
                 "effort",
+                "effort_provenance",
                 "estimated_cost_usd",
                 "actual_cost_usd",
+                "input_tokens",
                 "model_id",
                 "model_or_engine",
+                "output_tokens",
                 "provider",
                 "quality_floor",
                 "quality_preservation_reason",
@@ -1737,11 +1757,18 @@ def active_glmcp_payg_spend_receipts(
                 "reconciled_at",
                 "reconciliation_reason",
                 "route_id",
+                "run_id",
                 "spend_id",
                 "spend_reason",
                 "support_artifact_authority",
                 "task_hash",
                 "task_id",
+                "tokens_do_not_explain_latency",
+                "ttfb_ms",
+                "wall_latency_ms",
+                "compute_unit_status",
+                "compute_unit_value",
+                "compute_unit_provenance",
             }
             and not _glmcp_payg_spend_field_is_nullish(key, value)
         }
@@ -1749,7 +1776,9 @@ def active_glmcp_payg_spend_receipts(
         if isinstance(task_hash, str) and not GLMCP_PAYG_SPEND_TASK_HASH_RE.fullmatch(task_hash):
             _warn_stripped_glmcp_payg_spend_task_hash(path, task_hash)
             receipt_payload.pop("task_hash", None)
-        receipt_payload["spend_receipt_schema"] = 1
+        receipt_payload["spend_receipt_schema"] = (
+            1 if relay_schema == GLMCP_PAYG_SPEND_RECEIPT_SCHEMA_V1 else 2
+        )
         try:
             receipts.append(SpendReceipt.model_validate(receipt_payload))
         except (ValueError, TypeError) as exc:
