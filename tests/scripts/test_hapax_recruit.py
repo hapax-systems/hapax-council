@@ -249,6 +249,129 @@ def test_unbounded_yaml_flow_collection_suppresses_stream(
     assert "retry" in receipt["recovery_action"]
 
 
+@pytest.mark.parametrize(
+    "form", ["nested", "block-parent", "sibling", "comments", "sequence", "unbounded"]
+)
+@pytest.mark.parametrize("capacity", ["grok", "local:qwen36"])
+def test_nested_yaml_flow_members_never_reach_destinations(
+    bench, monkeypatch, capsys, caplog, form, capacity
+):
+    module, bin_dir, brief, out = bench
+    first = "SYNTHETIC_NESTED_FIRST_CREDENTIAL"  # pragma: allowlist secret
+    second = "SYNTHETIC_NESTED_SECOND_CREDENTIAL"  # pragma: allowlist secret
+    sensitive = f"api_key: [{first},\n{second}]"  # pragma: allowlist secret
+    commented = sensitive.replace(",\n", ", # ] }\n")
+    forms = {
+        "nested": f"settings: {{{sensitive}}}\n",
+        "block-parent": f"settings:\n  child: {{nested: {{{sensitive}}}}}\n",
+        "sibling": f"settings: {{safe: KEEP_INSIDE, {sensitive}}}\n",
+        "comments": f"settings: {{ # ] }}\n nested: [{{safe: KEEP_INSIDE, {commented}}}]}}\n",
+        "sequence": f"settings: [{{safe: KEEP_INSIDE}}, {{nested: [{sensitive}]}}]\n",
+        "unbounded": f"settings: {{nested: [{sensitive}\n",
+    }
+    diagnostic = forms[form] + "safe: KEEP_OUTSIDE\n"
+    if capacity.startswith("local:"):
+        payload = {"choices": [{"message": {"content": diagnostic}}]}
+        monkeypatch.setattr(
+            module.urllib.request,
+            "urlopen",
+            lambda *a, **kw: io.BytesIO(json.dumps(payload).encode()),
+        )
+    else:
+        _stub(
+            bin_dir,
+            capacity,
+            f"print({diagnostic!r}, end='')\nprint({diagnostic!r}, end='', file=sys.stderr)\n"
+            "sys.exit(7)\n",
+        )
+    rc = module.main([capacity, "--brief", str(brief), "--out", str(out)])
+    captured = capsys.readouterr()
+    destinations = {
+        "answer": out.read_text(),
+        "receipt": out.with_name(out.name + ".receipt.json").read_text(),
+        "terminal stdout": captured.out,
+        "terminal stderr": captured.err,
+        "log": caplog.text,
+    }
+    leaks = [name for name, value in destinations.items() if first in value or second in value]
+    assert not leaks, f"credential reached destinations: {', '.join(leaks)}"
+    receipt = _receipt(out)
+    if form == "unbounded":
+        assert rc == 3 and destinations["answer"] == ""
+        assert receipt["answer_policy"] == "suppressed_undecodable_output"
+        assert receipt["suppressed_streams"]
+        assert "retry" in receipt["recovery_action"]
+    else:
+        assert rc == (0 if capacity.startswith("local:") else 3)
+        assert receipt["answer_policy"] == (
+            "capacity_answer" if capacity.startswith("local:") else "redacted_failure_output"
+        )
+        assert "<redacted>" in destinations["answer"]
+        assert "safe: KEEP_OUTSIDE" in destinations["answer"]
+        if form in {"sibling", "sequence"}:
+            assert "safe: KEEP_INSIDE" in destinations["answer"]
+
+
+@pytest.mark.parametrize("detached", [False, True], ids=["closed-pipes", "held-pipes"])
+def test_timeout_invalid_utf8_retains_cleanup_evidence(bench, tmp_path, capsys, detached):
+    module, bin_dir, brief, out = bench
+    pid_file = tmp_path / "malformed-child.json"
+    _stub(
+        bin_dir,
+        "grok",
+        "import subprocess, time\n"
+        + (
+            "child = subprocess.Popen([sys.executable, '-c', 'import time; time.sleep(15)'], "
+            "start_new_session=True)\n"
+            if detached
+            else "child = None\n"
+        )
+        + f"with open({str(pid_file)!r}, 'w') as fh:\n"
+        "    json.dump({'pid': child.pid if child else None, 'pgid': os.getpgrp()}, fh)\n"
+        "os.write(1, b'\\xe2')\n"
+        "os.write(2, b'\\xe2')\n"
+        "time.sleep(15)\n",
+    )
+
+    def expired(*_args):
+        pytest.fail("malformed-byte timeout exceeded the 4s test deadline", pytrace=False)
+
+    previous_handler = signal.signal(signal.SIGALRM, expired)
+    previous_timer = signal.setitimer(signal.ITIMER_REAL, 4)
+    started = time.monotonic()
+    try:
+        rc = module.main(["grok", "--brief", str(brief), "--out", str(out), "--timeout", "1"])
+        receipt = _receipt(out)
+        assert rc == 4, (
+            f"rc={rc}, failure_class={receipt['failure_class']}, "
+            f"process_group_killed={receipt['process_group_killed']}"
+        )
+        assert time.monotonic() - started < 2.5
+        assert receipt["exit_code"] == "timeout"
+        assert receipt["process_group_killed"] is True
+        assert receipt["process_group_any_member_survived"] is False
+        assert receipt["drain_timed_out"] is detached
+        assert receipt["drained_bytes"] == {"stdout": 1, "stderr": 1}
+        assert receipt["answer_policy"] == "redacted_failure_output"
+        assert out.read_text() == "\ufffd"
+        assert "\ufffd" in receipt["stderr_tail"]
+        assert "--timeout" in receipt["recovery_action"]
+        assert "retry" in capsys.readouterr().err
+    finally:
+        signal.setitimer(signal.ITIMER_REAL, 0)
+        signal.signal(signal.SIGALRM, previous_handler)
+        if previous_timer[0]:
+            signal.setitimer(signal.ITIMER_REAL, *previous_timer)
+        if pid_file.exists():
+            child = json.loads(pid_file.read_text())
+            for pid in (child["pid"], child["pgid"]):
+                if pid is not None:
+                    try:
+                        os.kill(pid, signal.SIGKILL)
+                    except ProcessLookupError:
+                        pass
+
+
 def test_timeout_receipt_is_bounded_when_detached_descendant_holds_pipes(
     bench, tmp_path, monkeypatch, capsys
 ):
@@ -1296,6 +1419,7 @@ def test_runbook_has_headless_read_refusal_rechecks(request):
     assert 'cp "$recruit_probe_dir/read-target.txt" "$recruit_probe_dir/cwd/read-target.txt"' in doc
     selections = set(re.findall(r"tests/scripts/test_hapax_recruit\.py::[\w\[\]-]+", doc))
     required = {
+        "test_runbook_pins_narrowed_exit_predicate",
         "test_structured_failed_output_is_redacted_at_every_destination",
         "test_nested_claude_credentials_never_reach_destinations",
         "test_yaml_sensitive_subtree_never_reaches_destinations",
@@ -1337,9 +1461,30 @@ def test_runbook_names_live_measurement_commands_and_receipts():
         assert command in doc
         assert f"$recruit_measure_dir/{stem}.md.receipt.json" in doc
     assert "`wall_s`, `models_reported`," in doc
+    assert "`$recruit_measure_dir/*.receipt.json`" in doc
+    assert "coordinator attaches the actual receipt paths to the PR body" in doc
     assert (
         "historical transcript timings without their receipts are not independently verified" in doc
     )
+
+
+def test_runbook_pins_narrowed_exit_predicate():
+    doc = (SCRIPT.parents[1] / "docs/runbooks/hapax-recruit.md").read_text()
+    section = doc.split("## Exit predicate, narrowed 2026-09-04\n", 1)[1].split("\n## ", 1)[0]
+    assert "launcher, receipt, failure-safety, and tested\ncapacity shapes" in section
+    assert "must not claim grok/agy file-read onboarding or the five-way\ncrawl" in section
+    assert "five-way crawl returning five tables is deferred to the same registry item" in section
+    assert (
+        "tests/scripts/test_hapax_recruit.py::test_runbook_pins_narrowed_exit_predicate" in section
+    )
+
+
+def test_module_docstring_lists_all_capacities_and_timeout_cleanup(bench):
+    module, _bin_dir, _brief, _out = bench
+    capacities = module.__doc__.split("Capacities:", 1)[1].split("\n\n", 1)[0]
+    assert all(capacity in capacities for capacity in module.CAPACITIES)
+    assert "4 timeout" in module.__doc__
+    assert "cleanup evidence" in module.__doc__
 
 
 @pytest.mark.parametrize("stage", ["connection", "body"])

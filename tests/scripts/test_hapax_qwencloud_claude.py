@@ -321,6 +321,91 @@ def test_missing_client_names_install_remedy(fake_boundary, monkeypatch, capsys,
     assert captured.out == "" and calls == [] and removed == []
 
 
+@pytest.mark.parametrize("stage", ["where", "read"])
+def test_secret_helper_missing_interpreter_names_remedy(bench, tmp_path, stage):
+    record, env = bench
+    env["PATH"] = str(tmp_path / "bin")
+    (tmp_path / "bin" / "python3").symlink_to(sys.executable)
+    helper = tmp_path / "bin" / "hapax-secret"
+    broken = f"#!{tmp_path}/missing-interpreter\n"
+    helper.write_text(
+        broken
+        if stage == "where"
+        else (
+            "#!/usr/bin/env python3\n"
+            "import pathlib, sys\n"
+            "assert sys.argv[1] == '--where'\n"
+            f"pathlib.Path(__file__).write_text({broken!r})\n"
+            "print('filestore')\n"
+        )
+    )
+    proc = _run(env, "-p", "synthetic brief")
+    assert proc.returncode == 3
+    assert len(proc.stderr.splitlines()) == 1
+    assert "hapax-secret" in proc.stderr and "PATH" in proc.stderr
+    assert "interpreter" in proc.stderr and "retry" in proc.stderr
+    assert proc.stdout == "" and FAKE_KEY not in proc.stderr
+    assert not record.exists() and list(Path(env["TMPDIR"]).iterdir()) == []
+
+
+@pytest.mark.parametrize("failure", [FileNotFoundError, PermissionError, OSError])
+@pytest.mark.parametrize("stage", ["where-run", "where-check", "read"])
+def test_secret_helper_launch_error_names_remedy(
+    fake_boundary, monkeypatch, capsys, failure, stage
+):
+    module, calls, removed = fake_boundary
+    original_run = module.subprocess.run
+
+    def fail_helper(argv, **kwargs):
+        if argv[0] == "hapax-secret" and (("--where" in argv) == stage.startswith("where")):
+            raise failure(FAKE_KEY)
+        return original_run(argv, **kwargs)
+
+    monkeypatch.setattr(module.subprocess, "run", fail_helper)
+    try:
+        rc = module.main(["--check"] if stage == "where-check" else ["-p", "synthetic brief"])
+    except OSError:
+        rc = None  # Keep even synthetic exception credentials out of assertion output.
+    captured = capsys.readouterr()
+    assert rc == 3, "helper launch escaped without a recovery action"
+    assert captured.out == "" and FAKE_KEY not in captured.err
+    assert len(captured.err.splitlines()) == 1
+    assert "hapax-secret" in captured.err and "PATH" in captured.err
+    assert "interpreter" in captured.err and "permissions" in captured.err
+    assert "retry" in captured.err
+    assert all(argv[0] == "hapax-secret" for argv, _ in calls) and removed == []
+
+
+@pytest.mark.parametrize("outcome", [FileNotFoundError, PermissionError, OSError, 7, -15])
+def test_check_negative_branches_directly(fake_boundary, monkeypatch, capsys, outcome):
+    module, calls, removed = fake_boundary
+    monkeypatch.setenv("ANTHROPIC_AUTH_TOKEN", FAKE_KEY)
+    monkeypatch.setenv("ANTHROPIC_BASE_URL", "https://synthetic.example/anthropic")
+
+    def probe(argv, **kwargs):
+        calls.append(argv)
+        assert argv == ["claude", "--version"]
+        assert "ANTHROPIC_AUTH_TOKEN" not in kwargs["env"]
+        assert "ANTHROPIC_BASE_URL" not in kwargs["env"]
+        assert kwargs["stderr"] == subprocess.DEVNULL
+        if isinstance(outcome, type):
+            raise outcome(FAKE_KEY)
+        return subprocess.CompletedProcess(argv, outcome, FAKE_KEY)
+
+    monkeypatch.setattr(module.subprocess, "run", probe)
+    try:
+        rc = module._check(module.OFFICIAL_BASE_URL, module.DEFAULT_MODEL)
+    except OSError:
+        rc = None
+    captured = capsys.readouterr()
+    expected = 3 if isinstance(outcome, type) else outcome if outcome >= 0 else 128 - outcome
+    assert rc == expected
+    assert captured.out == "" and FAKE_KEY not in captured.err
+    assert len(captured.err.splitlines()) == 1
+    assert "claude" in captured.err and "PATH" in captured.err and "retry" in captured.err
+    assert calls == [["claude", "--version"]] and removed == []
+
+
 @pytest.mark.parametrize("probe_exit", [127, 1])
 def test_check_propagates_failed_client_probe_with_remedy(bench, tmp_path, probe_exit):
     record, env = bench

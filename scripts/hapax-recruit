@@ -16,10 +16,12 @@ tell a run that happened from a run that was believed to happen.
     hapax-recruit <capacity> --brief FILE --out FILE [--cwd DIR] [--timeout S] [--model M]
     hapax-recruit --list
 
-Capacities: codex · grok · kimi · agy · claude · glmcp · local:qwen36 · local:gptoss · local:gemma3
+Capacities: codex · grok · kimi · agy · claude · glmcp · qwencloud
+· local:qwen36 · local:gptoss · local:gemma3
 
 Exit codes: 0 answered · 2 refused (arguments, cwd rule, missing binary) · 3 the capacity failed
-· 4 timeout. Every non-zero exit still writes the receipt when the run started.
+· 4 timeout with bounded pipe draining and process-group cleanup evidence in the receipt.
+Every non-zero exit still writes the receipt when the run started.
 """
 
 from __future__ import annotations
@@ -214,8 +216,8 @@ class RunResult:
         self.stderr_tail = self.stderr_tail[-400:]
 
 
-def _yaml_flow_end(text: str, start: int) -> int:
-    """Find the outer flow close without treating quoted/comment delimiters as syntax."""
+def _yaml_flow_end(text: str, start: int, redactions: list[tuple[int, int]] | None = None) -> int:
+    """Bound a flow and collect sensitive member spans at every nesting depth."""
     stack, quote, index = [], "", start
     while index < len(text):
         char = text[index]
@@ -242,14 +244,51 @@ def _yaml_flow_end(text: str, start: int) -> int:
         elif char in "\"'" and text[index - 1] in " \t\r\n[{,:":
             quote = char
         elif char in "[{":
-            stack.append("]" if char == "[" else "}")
-        elif char in "]}":
-            if not stack or char != stack.pop():
-                raise UndecodableStream
+            stack.append({"close": "]" if char == "[" else "}", "key": index + 1, "value": None})
+        elif char == ":" and stack:
+            member = stack[-1]
+            probe = text[member["key"] : index].strip() + ': "scalar"'
+            label = _SECRETISH.search(probe)
+            if label and label.end(1) == len(probe) - len('"scalar"'):
+                member["value"] = member["value"] or index + 1
+            member["key"] = index + 1
+        elif char in ",]}":
             if not stack:
-                return index + 1
+                raise UndecodableStream
+            member = stack[-1]
+            if member["value"] is not None and redactions is not None:
+                redactions.append((member["value"], index))
+            member["key"], member["value"] = index + 1, None
+            if char != ",":
+                if char != stack.pop()["close"]:
+                    raise UndecodableStream
+                if not stack:
+                    return index + 1
         index += 1
     raise UndecodableStream
+
+
+def _redact_yaml_flow_members(text: str) -> str:
+    """Walk enclosing flows even when their first key is not sensitive."""
+    spans, end = [], 0
+    for opening in re.finditer(r"[\[{]", text):
+        if opening.start() < end:
+            continue
+        try:
+            end = _yaml_flow_end(text, opening.start(), spans)
+        except UndecodableStream:
+            # Ordinary prose may contain unmatched brackets. An unbounded flow
+            # containing a credential label cannot safely cross the boundary.
+            if _SECRETISH.search(text[opening.start() :]):
+                raise
+            break
+    safe, end = [], 0
+    for start, stop in sorted(spans):
+        if start < end:  # A sensitive parent already consumed this member.
+            continue
+        safe.extend((text[end:start], ' "<redacted>"'))
+        end = stop
+    return "".join((*safe, text[end:]))
 
 
 def _redact_yaml_subtrees(text: str) -> str:
@@ -297,7 +336,7 @@ def _redact_yaml_subtrees(text: str) -> str:
                 continue
         safe.append(line)
         index += 1
-    return "".join(safe)
+    return _redact_yaml_flow_members("".join(safe))
 
 
 def _redact(text: str, *, reject_undecodable: bool = False) -> str:
@@ -468,7 +507,6 @@ def _run(
         stdin=subprocess.DEVNULL if stdin_closed else None,
         stdout=subprocess.PIPE,
         stderr=subprocess.PIPE,
-        text=True,
         start_new_session=True,
     )
     try:
@@ -487,15 +525,14 @@ def _run(
             stdout, stderr = process.communicate(timeout=drain_timeout)
         except subprocess.TimeoutExpired as exc:
             drain_status["drain_timed_out"] = True
-            # TimeoutExpired carries cumulative bytes even with text=True.
-            stdout = (exc.output or b"").decode("utf-8")
-            stderr = (exc.stderr or b"").decode("utf-8")
+            # Keep cumulative raw bytes until cleanup measurements are complete.
+            stdout, stderr = exc.output or b"", exc.stderr or b""
         finally:
             process.stdout.close()
             process.stderr.close()
         drain_status["drained_bytes"] = {
-            "stdout": len(stdout.encode("utf-8")),
-            "stderr": len(stderr.encode("utf-8")),
+            "stdout": len(stdout),
+            "stderr": len(stderr),
         }
         try:
             process.wait(timeout=drain_timeout)
@@ -506,8 +543,14 @@ def _run(
         while _process_group_has_live_members(process.pid) and time.monotonic() < deadline:
             time.sleep(0.01)
         member_survived = _process_group_has_live_members(process.pid)
-        return "timeout", stdout, stderr, group_killed, member_survived
-    return process.returncode, stdout, stderr, False, None
+        return (
+            "timeout",
+            stdout.decode("utf-8", errors="replace"),
+            stderr.decode("utf-8", errors="replace"),
+            group_killed,
+            member_survived,
+        )
+    return process.returncode, stdout.decode("utf-8"), stderr.decode("utf-8"), False, None
 
 
 def _strip_kimi(text: str, brief: str) -> str:

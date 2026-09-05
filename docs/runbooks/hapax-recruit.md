@@ -12,6 +12,15 @@ exit predicate must therefore be narrowed to the launcher, receipt, failure-safe
 capacity shapes delivered here; it must not claim grok/agy file-read onboarding or the five-way
 crawl that this diff does not deliver.
 
+Recheck this narrowing without live capacity calls:
+
+```sh
+env -u HAPAX_GLMCP_MODEL -u HAPAX_GLMCP_REVIEW_MODEL -u HAPAX_GLMCP_REVIEW_PAYG_FALLBACK -u HAPAX_GLMCP_REVIEW_ALLOW_NON_CODING_PLAN_MODEL \
+  LITELLM_LOCAL_MODEL_COST_MAP=True UV_CACHE_DIR=/store-fast/tmp/uv-cache-verify \
+  PYTEST_ADDOPTS='--confcutdir=tests/scripts' \
+  uv run pytest -q -p no:cacheprovider tests/scripts/test_hapax_recruit.py::test_runbook_pins_narrowed_exit_predicate
+```
+
 ## Recheck the measured read refusals
 
 These probes are **manual; record a differing result at
@@ -66,6 +75,9 @@ The receipts are `$recruit_measure_dir/grok.md.receipt.json`,
 `exit_code` and timestamps; an unreported served identity remains `absent`. Preserve those
 receipt paths with any measurement claim. These commands reproduce the measurement procedure;
 historical transcript timings without their receipts are not independently verified artifacts.
+The three artifacts matching `$recruit_measure_dir/*.receipt.json` are the live-run evidence;
+the coordinator attaches the actual receipt paths to the PR body after running the commands.
+The directory is allocated by `mktemp -d`, so its actual path comes from that run, not this document.
 
 ## Failure artifacts and deadlines
 
@@ -120,8 +132,10 @@ Valid JSON is decoded recursively, including JSON embedded in strings. Otherwise
 credential fields are redacted in place. Remaining escaped sensitive labels indicate malformed
 embedded serialization and suppress the entire affected stream. Sensitive YAML flow sequences
 and mappings are consumed through their matching closing delimiter, across lines and nested
-collections, with quoted strings, tags and comments respected. An unterminated or mismatched flow
-collection suppresses the entire affected stream. Ordinary prose, quotes, Markdown
+collections, with quoted strings, tags and comments respected. Each member is inspected, including
+sensitive keys following ordinary siblings inside nested mappings and sequences. A sensitive value
+is redacted through its enclosing member boundary. An unterminated or mismatched flow containing
+a sensitive key at any depth suppresses the entire affected stream. Ordinary prose, quotes, Markdown
 links, fenced code, brackets, braces and backslashes survive verbatim, including JSON-looking
 snippets with no sensitive fields. A quoted redaction marker keeps later redaction passes from
 consuming prose after a sensitive fragment. Receipts name `suppressed_undecodable_output`
@@ -156,8 +170,10 @@ CLI subprocess timeouts retain exit 4 and process-group cleanup receipts.
 After killing the group, final pipe draining is limited to 10% of the subprocess timeout,
 with a 0.05-second minimum and 0.5-second maximum. A detached descendant holding inherited pipes
 cannot prevent receipt creation: the recruiter closes the pipes and records `drain_timed_out: true`.
-`drained_bytes.stdout` and `drained_bytes.stderr` count the cumulative UTF-8 bytes captured before
-pipe closure, prior to redaction; their values contain no stream content. Reaping the direct child
+`drained_bytes.stdout` and `drained_bytes.stderr` count the cumulative raw bytes captured before
+pipe closure, prior to decoding or redaction; their values contain no stream content. Invalid UTF-8
+in timeout output is decoded with replacement characters before redaction, preserving exit 4 and
+all cleanup measurements even when the final drain times out. Reaping the direct child
 has the same bounded wait, and checking the original process group adds at most 0.5 seconds.
 The group-survivor field describes only the original group, not descendants that created a new session.
 
@@ -173,6 +189,7 @@ env -u HAPAX_GLMCP_MODEL -u HAPAX_GLMCP_REVIEW_MODEL -u HAPAX_GLMCP_REVIEW_PAYG_
   tests/scripts/test_hapax_recruit.py::test_nested_claude_credentials_never_reach_destinations \
   tests/scripts/test_hapax_recruit.py::test_yaml_sensitive_subtree_never_reaches_destinations \
   tests/scripts/test_hapax_recruit.py::test_yaml_sensitive_flow_collection_never_reaches_destinations \
+  tests/scripts/test_hapax_recruit.py::test_nested_yaml_flow_members_never_reach_destinations \
   tests/scripts/test_hapax_recruit.py::test_unbounded_yaml_flow_collection_suppresses_stream \
   tests/scripts/test_hapax_recruit.py::test_credential_json_keys_never_reach_destinations \
   tests/scripts/test_hapax_recruit.py::test_unbounded_json_key_suppresses_object_with_shape \
@@ -202,6 +219,7 @@ env -u HAPAX_GLMCP_MODEL -u HAPAX_GLMCP_REVIEW_MODEL -u HAPAX_GLMCP_REVIEW_PAYG_
   tests/scripts/test_hapax_recruit.py::test_local_deadline_interrupts_blocking_io_and_restores_alarm \
   tests/scripts/test_hapax_recruit.py::test_timeout_kills_wrapper_process_group_and_records_no_survivor \
   tests/scripts/test_hapax_recruit.py::test_timeout_receipt_is_bounded_when_detached_descendant_holds_pipes \
+  tests/scripts/test_hapax_recruit.py::test_timeout_invalid_utf8_retains_cleanup_evidence \
   tests/scripts/test_hapax_recruit.py::test_failure_recovery_actions_reach_diagnostic_destinations \
   tests/scripts/test_hapax_recruit.py::test_runbook_has_headless_read_refusal_rechecks
 ```

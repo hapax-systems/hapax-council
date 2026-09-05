@@ -61,14 +61,21 @@ def _error(message: str) -> None:
     print(f"hapax-qwencloud-claude: {message}", file=sys.stderr)
 
 
-def _secret_output(*args: str) -> str:
-    result = subprocess.run(
-        ["hapax-secret", *args],
-        check=False,
-        stdout=subprocess.PIPE,
-        stderr=subprocess.DEVNULL,
-        text=True,
-    )
+def _secret_output(*args: str) -> str | None:
+    try:
+        result = subprocess.run(
+            ["hapax-secret", *args],
+            check=False,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.DEVNULL,
+            text=True,
+        )
+    except OSError:
+        _error(
+            "cannot launch hapax-secret; repair the helper executable, its interpreter "
+            "and permissions on PATH, then retry the same command"
+        )
+        return None
     return result.stdout.strip()
 
 
@@ -171,7 +178,10 @@ def main(argv: Sequence[str] | None = None) -> int:
             "~/.local/bin/hapax-secret on PATH, then retry the same command"
         )
         return 3
-    if not _secret_output("--where", SECRET_NAME):
+    location = _secret_output("--where", SECRET_NAME)
+    if location is None:
+        return 3
+    if not location:
         _error(
             f"secret '{SECRET_NAME}' is absent; store the plan's sk-sp- key with "
             "hapax-secret (TTY put), then retry"
@@ -182,6 +192,8 @@ def main(argv: Sequence[str] | None = None) -> int:
         return _check(base_url, model)
 
     key = _secret_output(SECRET_NAME)  # pragma: allowlist secret
+    if key is None:
+        return 3
     if not key:
         _error(f"secret '{SECRET_NAME}' read back empty; re-store it with hapax-secret")
         return 4
