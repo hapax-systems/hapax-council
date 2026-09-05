@@ -3602,11 +3602,14 @@ def test_review_dispatch_deploy_removes_only_interim_glm_refresh_dropin(
     assert (home / ".config/systemd/user" / unit).read_text() == content
     if interim != "absent":
         assert "20-glm-seat-refresh.conf" in result.stdout
-        assert "merged review-dispatch unit runs the committed GLM seat refresh" in result.stdout
+        assert (
+            "retired without replacement; hapax-glmcp-seat-refresh.timer owns refresh"
+            in result.stdout
+        )
 
 
 @pytest.mark.parametrize("probe_present", [True, False])
-@pytest.mark.parametrize("effective", ["10min", "15min", "", "query-failed"])
+@pytest.mark.parametrize("effective", ["10min", "10min 0s", "600s", "15min", "", "query-failed"])
 def test_glm_seat_deploy_removes_only_probe_and_verifies_loaded_deadline(
     tmp_path: Path, probe_present: bool, effective: str
 ) -> None:
@@ -3663,15 +3666,136 @@ def test_glm_seat_deploy_removes_only_probe_and_verifies_loaded_deadline(
     show_call = f"--user show {unit} --property=TimeoutStartUSec --value"
     assert show_call in calls
     assert calls.index(reload_call) < calls.index(show_call)
-    if effective == "10min":
+    if effective in {"10min", "10min 0s", "600s"}:
         assert result.returncode == 0, result.stdout + result.stderr
         assert "verified hapax-glmcp-seat-refresh.service TimeoutStartSec=600" in result.stdout
+        assert calls.index(show_call) < calls.index(f"--user restart {unit}")
+    elif effective == "query-failed":
+        assert result.returncode == 0, result.stdout + result.stderr
+        assert f"WARNING: could not query {unit} TimeoutStartUSec" in result.stderr
+        assert f"systemctl {show_call}" in result.stderr
+        assert f"systemctl --user cat {unit}" in result.stderr
+        assert "next action:" in result.stderr
+        assert "verified" not in result.stdout
         assert calls.index(show_call) < calls.index(f"--user restart {unit}")
     else:
         assert result.returncode != 0, result.stdout + result.stderr
         assert "TimeoutStartSec=600" in result.stderr
         assert "next action:" in result.stderr
         assert f"--user restart {unit}" not in calls
+
+
+@pytest.mark.parametrize("deployed", ["hapax-glmcp-seat-refresh", "hapax-pr-review-dispatch"])
+def test_review_seat_deploy_inventories_both_dropin_directories(
+    tmp_path: Path, deployed: str
+) -> None:
+    unit_path = f"systemd/units/{deployed}.service"
+    repo, sha = _repo_with_linear_commit(tmp_path, {unit_path: (REPO_ROOT / unit_path).read_text()})
+    home = tmp_path / "home"
+    bodies = {
+        "probe-tree.conf": "[Service]\nTimeoutStartSec=900\n",
+        "20-glm-seat-refresh.conf": "[Service]\nExecStartPre=/interim/refresh\n",
+        "operator.conf": (
+            "[Unit]\nDescription=operator label\n"
+            "[Service]\n # ignored comment\n; another comment\n"
+            " TimeoutStartSec = 900\nEnvironment=OPERATOR_LABEL=private-label\n"
+            "ExecStartPre=\nExecStartPre=/operator/check \\\n"
+            "   continued=value\n[Install]\nWantedBy=default.target\n"
+        ),
+    }
+    originals = {}
+    for stem in ("hapax-glmcp-seat-refresh", "hapax-pr-review-dispatch"):
+        directory = home / ".config/systemd/user" / f"{stem}.service.d"
+        directory.mkdir(parents=True)
+        for name, body in bodies.items():
+            path = directory / name
+            path.write_text(body)
+            originals[path] = body
+        (directory / "dangling.conf").symlink_to(tmp_path / "absent.conf")
+    bin_dir, calls_path = _fake_systemctl(tmp_path)
+    (bin_dir / "systemctl").write_text(
+        "#!/usr/bin/env bash\n"
+        'printf "%s\\n" "$*" >> "$HAPAX_SYSTEMCTL_CALLS"\n'
+        'case "$*" in *TimeoutStartUSec*) echo 10min ;; esac\n'
+        "exit 0\n"
+    )
+    result = subprocess.run(
+        [str(SCRIPT), sha],
+        env={
+            **os.environ,
+            "HOME": str(home),
+            "PATH": f"{bin_dir}:{os.environ['PATH']}",
+            "REPO": str(repo),
+            "HAPAX_SYSTEMCTL_CALLS": str(calls_path),
+            "HAPAX_POST_MERGE_TRACE_PATH": str(tmp_path / "trace.jsonl"),
+        },
+        capture_output=True,
+        text=True,
+    )
+    assert result.returncode == 0, result.stdout + result.stderr
+    inventory = [line for line in result.stdout.splitlines() if "drop-in inventory:" in line]
+    assert len(inventory) == 8
+    for path, body in originals.items():
+        line = next(line for line in inventory if str(path) in line)
+        expected = {
+            "probe-tree.conf": "TimeoutStartSec",
+            "20-glm-seat-refresh.conf": "ExecStartPre",
+            "operator.conf": "TimeoutStartSec, Environment, ExecStartPre, ExecStartPre",
+        }[path.name]
+        assert f"[Service] keys: {expected}" in line
+        retired = (
+            "probe-tree.conf"
+            if deployed == "hapax-glmcp-seat-refresh"
+            else "20-glm-seat-refresh.conf"
+        )
+        if path.parent.name == f"{deployed}.service.d" and path.name == retired:
+            assert not path.exists()
+            assert result.stdout.index(line) < result.stdout.index("removing stale local drop-in")
+        else:
+            assert path.read_text() == body
+    assert sum("unreadable" in line for line in inventory) == 2
+    assert "private-label" not in result.stdout + result.stderr
+    assert all("Description" not in line and "continued" not in line for line in inventory)
+
+
+def test_glm_seat_deploy_enables_timer_without_enabling_static_service(tmp_path: Path) -> None:
+    """systemd.timer(5): the enabled timer activates its same-name static service."""
+    stem = "hapax-glmcp-seat-refresh"
+    paths = [f"systemd/units/{stem}.{suffix}" for suffix in ("service", "timer")]
+    repo, sha = _repo_with_linear_commit(
+        tmp_path, {path: (REPO_ROOT / path).read_text() for path in paths}
+    )
+    service, timer = [(REPO_ROOT / path).read_text() for path in paths]
+    assert "[Install]" not in service
+    assert "Hapax-Auto-Enable:" not in service
+    assert "[Install]\nWantedBy=timers.target" in timer
+    bin_dir, calls_path = _fake_systemctl(tmp_path)
+    (bin_dir / "systemctl").write_text(
+        "#!/usr/bin/env bash\n"
+        'printf "%s\\n" "$*" >> "$HAPAX_SYSTEMCTL_CALLS"\n'
+        'case "$*" in\n'
+        '  *TimeoutStartUSec*) echo "10min" ;;\n'
+        '  "--user is-active "*) exit 3 ;;\n'
+        "esac\nexit 0\n"
+    )
+    result = subprocess.run(
+        [str(SCRIPT), sha],
+        env={
+            **os.environ,
+            "HOME": str(tmp_path / "home"),
+            "PATH": f"{bin_dir}:{os.environ['PATH']}",
+            "REPO": str(repo),
+            "HAPAX_SYSTEMCTL_CALLS": str(calls_path),
+            "HAPAX_POST_MERGE_TRACE_PATH": str(tmp_path / "trace.jsonl"),
+        },
+        capture_output=True,
+        text=True,
+    )
+    assert result.returncode == 0, result.stdout + result.stderr
+    calls = calls_path.read_text().splitlines()
+    assert f"--user enable --now {stem}.timer" in calls
+    assert not any("enable" in call and f"{stem}.service" in call for call in calls)
+    assert f"--user restart {stem}.service" not in calls
 
 
 def test_obs_audio_bind_unit_deploy_removes_stale_audio_l12_dropin(tmp_path: Path) -> None:

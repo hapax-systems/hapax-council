@@ -33,6 +33,8 @@
 #       service/timer goes live instead of installing-but-sleeping (the
 #       try-restart-is-a-no-op-for-a-never-enabled-unit gap). Unmarked new
 #       timers still auto-enable for back-compat; unmarked services do not.
+#       The GLM seat refresh timer checks 30 s after service completion
+#       (OnUnitInactiveSec=30s, AccuracySec=30s); the dispatcher has no refresh hook.
 #   systemd/units/*.service.d/*.conf → cp drop-in + daemon-reload + restart active unit
 #       plus known stale local route-dropin cleanup for units that are being
 #       sourceized out of a temporary worktree override.
@@ -811,17 +813,54 @@ remove_unversioned_user_dropins_for_unit() {
     rmdir "$dropin_dir" 2>/dev/null || true
 }
 
+inventory_review_seat_dropins() {
+    local unit dropin keys
+    # Report both directories before cleanup. Only key names reach the activation log:
+    # Environment and command values may contain credentials or private operator data.
+    for unit in hapax-glmcp-seat-refresh.service hapax-pr-review-dispatch.service; do
+        for dropin in "$SYSTEMD_USER_DIR/$unit.d"/*.conf; do
+            [ -e "$dropin" ] || [ -L "$dropin" ] || continue
+            if [ ! -f "$dropin" ] || [ ! -r "$dropin" ]; then
+                echo "  drop-in inventory: '$dropin' [Service] keys: unreadable; inspect this drop-in"
+                continue
+            fi
+            if ! keys="$(awk '
+                /^[[:space:]]*[#;]/ { next }
+                {
+                    was_continued = continued
+                    continued = /\\$/
+                    if (was_continued) next
+                }
+                /^[[:space:]]*\[/ {
+                    service = ($0 ~ /^[[:space:]]*\[Service\][[:space:]]*$/)
+                    next
+                }
+                service && /^[[:space:]]*[A-Za-z][A-Za-z0-9]*[[:space:]]*=/ {
+                    key = $0
+                    sub(/=.*/, "", key)
+                    gsub(/[[:space:]]/, "", key)
+                    printf "%s%s", separator, key
+                    separator = ", "
+                }
+            ' "$dropin" 2>/dev/null)"; then
+                keys="unreadable; inspect this drop-in"
+            fi
+            echo "  drop-in inventory: '$dropin' [Service] keys: ${keys:-none}"
+        done
+    done
+}
+
 cleanup_known_stale_user_dropins_for_unit() {
     local unit="$1"
     local dropin_dir dropin
     case "$unit" in
         hapax-pr-review-dispatch.service)
-            # The merged #4624 unit owns this pre-hook in the activation tree. Remove only
-            # the named interim script override, preserving every other operator drop-in.
+            # Retire the interim pre-hook without replacement: the timer owns refresh.
+            # Remove only the named override, preserving every other operator drop-in.
             dropin="$SYSTEMD_USER_DIR/$unit.d/20-glm-seat-refresh.conf"
             if [ -e "$dropin" ] || [ -L "$dropin" ]; then
                 rm -f "$dropin"
-                echo "  removing stale local drop-in '$dropin': merged review-dispatch unit runs the committed GLM seat refresh from the activation tree"
+                echo "  removing stale local drop-in '$dropin': retired without replacement; hapax-glmcp-seat-refresh.timer owns refresh"
             fi
             ;;
         hapax-glmcp-seat-refresh.service)
@@ -1211,6 +1250,8 @@ if [ "$DRY_RUN" = "1" ]; then
     echo "dry-run: post-merge deploy trace written to $TRACE_PATH"
     exit 0
 fi
+
+inventory_review_seat_dropins
 
 # --- PipeWire confs ---
 if [ "${#PW[@]}" -gt 0 ]; then
@@ -1943,13 +1984,17 @@ if [ "${#SYSTEMD[@]}" -gt 0 ]; then
         base="$(basename "$f")"
         if [[ "$base" == "hapax-glmcp-seat-refresh.service" ]]; then
             # Check what the manager loaded AFTER daemon-reload and BEFORE restart.
-            # systemctl renders TimeoutStartUSec=600000000 as the timespan "10min".
-            effective_timeout="$(systemctl --user show "$base" --property=TimeoutStartUSec --value)" || effective_timeout=""
-            if [[ "$effective_timeout" != "10min" ]]; then
-                echo "hapax-post-merge-deploy: $base effective deadline does not match required TimeoutStartSec=600 after daemon-reload; next action: inspect systemctl --user show $base --property=TimeoutStartUSec and systemctl --user cat $base, reconcile remaining overrides, and rerun the governed deploy" >&2
-                exit 1
+            # Parse systemd's timespan, including equivalent renderings such as "10min 0s".
+            if ! effective_timeout="$(systemctl --user show "$base" --property=TimeoutStartUSec --value 2>/dev/null)"; then
+                echo "hapax-post-merge-deploy: WARNING: could not query $base TimeoutStartUSec after daemon-reload; deploy continues without deadline verification; next action: re-run systemctl --user show $base --property=TimeoutStartUSec --value and inspect systemctl --user cat $base; confirm TimeoutStartSec=600 before relying on the no-lapse bound" >&2
+            else
+                effective_timeout_us="$(LC_ALL=C systemd-analyze timespan "$effective_timeout" 2>/dev/null | awk '$1 == "us:" {print $2}')" || effective_timeout_us=""
+                if [[ "$effective_timeout_us" != "600000000" ]]; then
+                    echo "hapax-post-merge-deploy: $base effective deadline does not match required TimeoutStartSec=600 after daemon-reload; next action: inspect systemctl --user show $base --property=TimeoutStartUSec and systemctl --user cat $base, reconcile remaining overrides, and rerun the governed deploy" >&2
+                    exit 1
+                fi
+                echo "verified $base TimeoutStartSec=600 after daemon-reload"
             fi
-            echo "verified $base TimeoutStartSec=600 after daemon-reload"
         fi
         unit_content="$(git show "$SHA:$f" 2>/dev/null || true)"
         if unit_content_parked "$unit_content"; then

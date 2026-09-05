@@ -38,12 +38,11 @@ def test_pr_review_dispatch_service_is_timer_driven_only() -> None:
     assert "WantedBy=default.target" not in text
 
 
-def test_pr_review_dispatch_refreshes_glm_without_blocking_other_reviewers() -> None:
+def test_pr_review_dispatch_has_no_seat_refresh_hook() -> None:
     text = (UNITS_DIR / "hapax-pr-review-dispatch.service").read_text(encoding="utf-8")
     pre_hooks = [line for line in text.splitlines() if line.startswith("ExecStartPre=")]
-    assert pre_hooks == [
-        "ExecStartPre=-%h/.cache/hapax/source-activation/worktree/scripts/hapax-glmcp-seat-refresh"
-    ]
+    assert pre_hooks == []
+    assert "hapax-glmcp-seat-refresh" not in text
 
 
 def test_pr_review_dispatch_timer_has_single_periodic_cadence() -> None:

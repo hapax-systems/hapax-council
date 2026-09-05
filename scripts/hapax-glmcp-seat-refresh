@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
 # Refresh the GLM review seat: one real sanctioned reviewer round-trip, a witness (schema v1:
 # no prompt, output or secret persisted), the passive admission receipt, the telemetry writer.
+# The timer checks 30 s after service completion (OnUnitInactiveSec=30s, AccuracySec=30s).
 # Prints states only. Exit non-zero if the round-trip fails — no receipt is minted then.
 set -euo pipefail
 # The scripts this calls come from the activation worktree (main, activated by the governed loop),
@@ -8,9 +9,19 @@ set -euo pipefail
 H="${HAPAX_COUNCIL:-$HOME/.cache/hapax/source-activation/worktree}"
 ACTIVATION_ROOT="$HOME/.cache/hapax/source-activation/worktree"
 # An inherited HAPAX_COUNCIL must not redirect governance-sensitive receipt minting to a mutable
-# tree (review finding on #4624, round 2): refuse any other root unless a test says so explicitly.
-if [[ "$H" != "$ACTIVATION_ROOT" && "${HAPAX_GLMCP_SEAT_ROOT_OVERRIDE:-0}" != "1" ]]; then
-  echo "glm seat refresh REFUSED: HAPAX_COUNCIL=$H is not the activation worktree ($ACTIVATION_ROOT); the receipt chain must not run from a mutable tree. Next: unset HAPAX_COUNCIL for this unit, or set HAPAX_GLMCP_SEAT_ROOT_OVERRIDE=1 in a test harness." >&2
+# tree (review finding on #4624, round 2). Only an explicit test-harness argument can allow it;
+# no ambient environment variable grants this exception. Never put this flag in a live unit.
+allow_mutable_root=0
+envelope_only=0
+for arg in "$@"; do
+  case "$arg" in
+    --allow-mutable-root) allow_mutable_root=1 ;;
+    --envelope) envelope_only=1 ;;
+    *) echo "Usage: hapax-glmcp-seat-refresh [--envelope] [--allow-mutable-root (test-harness only)]" >&2; exit 2 ;;
+  esac
+done
+if [[ "$H" != "$ACTIVATION_ROOT" && "$allow_mutable_root" != "1" ]]; then
+  echo "glm seat refresh REFUSED: HAPAX_COUNCIL=$H is not the activation worktree ($ACTIVATION_ROOT); the receipt chain must not run from a mutable tree. Next: unset HAPAX_COUNCIL for this unit, or pass --allow-mutable-root explicitly in a test harness." >&2
   exit 4
 fi
 WDIR="$HOME/.cache/hapax/glmcp-admission-witness"
@@ -32,6 +43,58 @@ unset HAPAX_GLMCP_REVIEW_ALLOW_SECRET_ENTRY_OVERRIDE  # pragma: allowlist secret
 # to the model the receipt will name, so witness and receipt describe the call that was made.
 model="glm-5.2"
 export HAPAX_GLMCP_REVIEW_MODEL="$model"
+
+# Evaluate only route quota evidence: reuse the dispatch registry's production loader and
+# route/observation predicate, and return observed <observed_at> <stale_after> or a named refusal.
+# This uses the existing bounded parse allowance; it is separate from diagnostic redaction.
+seat_quota_from_receipt() {
+  bounded_timeout "$FILTER_TIMEOUT_S" python3 -c '
+import json
+import sys
+from pathlib import Path
+
+root = sys.argv[1]
+seat_next = (
+    "Next: run hapax-platform-capability-receipts --show --platform glmcp --json; "
+    "re-run hapax-platform-capability-receipts --platform glmcp and check hapax-glmcp-seat-refresh.service."
+)
+
+try:
+    sys.path.insert(0, root)
+    from shared.platform_capability_receipts import ensure_utc, load_platform_capability_receipts, parse_duration_spec
+    from shared.platform_capability_registry import _receipt_quota_names_route
+
+    row = json.load(sys.stdin)
+    # Reload through the plural loader: malformed neighbours, expiry, or replacement between
+    # --show and this read must still fail closed. Use this same object for evidence and age.
+    receipt = load_platform_capability_receipts(Path(row["path"]).parent).get("glmcp")
+    if receipt is None or receipt.receipt_id != row["receipt_id"]:
+        raise ValueError("receipt changed since --show")
+    route_id = "glmcp.review.direct"
+    if route_id not in receipt.routes:
+        reason = "route_not_covered"
+    elif not _receipt_quota_names_route(receipt, {"route_id": route_id}):
+        reason = "route_observation_absent"
+    else:
+        # _apply_receipt_to_route_payload anchors quota_checked_at at receipt.observed_at.
+        # The plural loader also drops the whole receipt at its own expiry. Both visibility
+        # checks must reserve the next renewal against whichever lifetime runs out first.
+        lifetime = min(parse_duration_spec(receipt.stale_after), parse_duration_spec(receipt.quota.stale_after))
+        print("observed", ensure_utc(receipt.observed_at).isoformat(), str(int(lifetime.total_seconds())) + "s")
+        sys.exit(0)
+    print(
+        "  --show WARNING: account_live_quota_receipt_absent: " + reason + " for " + route_id
+        + "; refreshing because route-specific quota evidence is absent. " + seat_next, file=sys.stderr,
+    )
+except Exception as exc:
+    # Exception messages can contain receipt data; only their type belongs in the journal.
+    print(
+        "  --show parse: dispatcher quota predicate failed (" + type(exc).__name__
+        + "); refreshing because the receipt could not be read. " + seat_next, file=sys.stderr,
+    )
+sys.exit(1)
+  ' "$H"
+}
 
 # 0. freshness guard — reads the dispatcher's OWN artifact: the glmcp platform-capability receipt
 #    that hapax-platform-capability-receipts writes only when a fresh relay receipt AND the ledger's
@@ -77,7 +140,7 @@ seat_remaining_seconds() {
   rm -f "$show_err"
   # --show exposes schema acceptance, not route admission. Reuse the registry's production
   # quota predicate on the loader-selected receipt, inside the existing bounded parse allowance.
-  if ! parsed="$(printf '%s' "$parsed" | print_filtered_output seat 1 "" /dev/null)"; then
+  if ! parsed="$(printf '%s' "$parsed" | seat_quota_from_receipt)"; then
     echo "  --show parse: route quota check failed; refreshing because dispatcher quota evidence could not be confirmed. Next: run hapax-platform-capability-receipts --show --platform glmcp --json; re-run hapax-platform-capability-receipts --platform glmcp and check hapax-glmcp-seat-refresh.service." >&2
     return 1
   fi
@@ -185,47 +248,12 @@ import re
 import sys
 from pathlib import Path
 
-mode, count, prefix, file, root = sys.argv[1:]
+mode, count, prefix, file = sys.argv[1:]
 seat_next = (
     "Next: run hapax-platform-capability-receipts --show --platform glmcp --json; "
     "re-run hapax-platform-capability-receipts --platform glmcp and check hapax-glmcp-seat-refresh.service."
 )
 
-if mode == "seat":
-    try:
-        sys.path.insert(0, root)
-        from shared.platform_capability_receipts import ensure_utc, load_platform_capability_receipts, parse_duration_spec
-        from shared.platform_capability_registry import _receipt_quota_names_route
-
-        row = json.load(sys.stdin)
-        # Reload through the plural loader: malformed neighbours, expiry, or replacement between
-        # --show and this read must still fail closed. Use this same object for evidence and age.
-        receipt = load_platform_capability_receipts(Path(row["path"]).parent).get("glmcp")
-        if receipt is None or receipt.receipt_id != row["receipt_id"]:
-            raise ValueError("receipt changed since --show")
-        route_id = "glmcp.review.direct"
-        if route_id not in receipt.routes:
-            reason = "route_not_covered"
-        elif not _receipt_quota_names_route(receipt, {"route_id": route_id}):
-            reason = "route_observation_absent"
-        else:
-            # _apply_receipt_to_route_payload anchors quota_checked_at at receipt.observed_at.
-            # The plural loader also drops the whole receipt at its own expiry. Both visibility
-            # checks must reserve the next renewal against whichever lifetime runs out first.
-            lifetime = min(parse_duration_spec(receipt.stale_after), parse_duration_spec(receipt.quota.stale_after))
-            print("observed", ensure_utc(receipt.observed_at).isoformat(), str(int(lifetime.total_seconds())) + "s")
-            sys.exit(0)
-        print(
-            "  --show WARNING: account_live_quota_receipt_absent: " + reason + " for " + route_id
-            + "; refreshing because route-specific quota evidence is absent. " + seat_next, file=sys.stderr,
-        )
-    except Exception as exc:
-        # Exception messages can contain receipt data; only their type belongs in the journal.
-        print(
-            "  --show parse: dispatcher quota predicate failed (" + type(exc).__name__
-            + "); refreshing because the receipt could not be read. " + seat_next, file=sys.stderr,
-        )
-    sys.exit(1)
 
 def sanitise(text):
     text = re.sub(r"\x1b\[[0-9;]*m", "", text)
@@ -261,10 +289,10 @@ lines = [line for line in sanitise(text).splitlines() if line.strip()]
 selected = lines[:int(count)] if mode == "head" else lines[-int(count):]
 for line in selected:
     print(prefix + line[:200] + (". " + seat_next if prefix.startswith("  --show") else ""))
-  ' "$mode" "$lines" "$prefix" "$file" "$H"
+  ' "$mode" "$lines" "$prefix" "$file"
 }
 
-if [[ "${1:-}" == "--envelope" ]]; then
+if (( envelope_only )); then
   printf '{"timer_inactive_delay_s":%d,"timer_accuracy_s":%d,"timer_scheduler_slack_s":%d,"review_attempts":%d,"review_attempt_timeout_s":%d,"review_inner_timeout_s":%d,"review_retry_sleep_s":%d,"admission_timeout_s":%d,"writer_timeout_s":%d,"receipts_timeout_s":%d,"show_timeout_s":%d,"timeout_kill_after_s":%d,"timed_command_count":%d,"filter_timeout_s":%d,"filter_invocations_max":%d,"process_launch_slack_s":%d,"file_io_slack_s":%d,"service_scheduler_slack_s":%d,"service_safety_margin_s":%d,"whole_service_bound_s":%d,"post_check_shutdown_s":%d,"no_lapse_safety_margin_s":%d,"receipt_rounding_guard_s":%d,"post_mint_timed_command_count":%d,"post_mint_filter_invocations_max":%d,"post_mint_process_launch_slack_s":%d,"post_mint_file_io_slack_s":%d,"post_mint_scheduler_slack_s":%d,"seat_life_s":%d,"review_envelope_s":%d,"core_command_envelope_s":%d,"timeout_kill_envelope_s":%d,"filter_envelope_s":%d,"accounted_service_chain_s":%d,"service_bound_reserve_s":%d,"service_envelope_s":%d,"chain_envelope_s":%d,"post_mint_tail_s":%d,"seat_refresh_threshold_s":%d,"seat_skip_min_remaining_s":%d,"overrun_renewal_envelope_s":%d,"seat_visible_min_s":%d}\n' \
     "$TIMER_INACTIVE_DELAY_S" "$TIMER_ACCURACY_S" "$TIMER_SCHEDULER_SLACK_S" "$REVIEW_ATTEMPTS" "$REVIEW_ATTEMPT_TIMEOUT_S" "$REVIEW_INNER_TIMEOUT_S" "$REVIEW_RETRY_SLEEP_S" \
     "$ADMISSION_TIMEOUT_S" "$WRITER_TIMEOUT_S" "$RECEIPTS_TIMEOUT_S" "$SHOW_TIMEOUT_S" "$TIMEOUT_KILL_AFTER_S" "$TIMED_COMMAND_COUNT" "$FILTER_TIMEOUT_S" "$FILTER_INVOCATIONS_MAX" \
@@ -309,7 +337,7 @@ for (( attempt = 1; attempt <= REVIEW_ATTEMPTS; attempt++ )); do
   if [[ "$rc" -eq 0 && "$bytes" -gt 0 ]]; then break; fi
   # Why it failed, sanitised (a guard's error text is a disclosure channel): first two lines,
   # anything key/token/secret/bearer-shaped redacted. Measured 2026-09-02 16:05: two consecutive
-  # failures lapsed the seat for five minutes and the autoqueue dequeued a green PR inside them.
+  # failures lapsed the seat between refreshes and the autoqueue dequeued a green PR inside them.
   # The redaction also swallows a value separated by whitespace or `:`/`=` ("Bearer abc",
   # "api_key = abc"), and an empty stderr must not end the retry loop under pipefail.
   print_filtered_output head 2 "  reviewer stderr: " "$ERR" || true

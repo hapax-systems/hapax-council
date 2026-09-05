@@ -254,6 +254,7 @@ def _run(
     council: Path,
     *,
     allow_root: bool = True,
+    ambient_root_override: bool = False,
     receipts_rc: int = 0,
     path: str | None = None,
     script_text: str | None = None,
@@ -273,10 +274,13 @@ def _run(
         "HAPAX_GLMCP_REVIEW_SECRET_ENTRY": "glmcp/someone-elses-key",  # pragma: allowlist secret; synthetic test fixture
         "HAPAX_GLMCP_REVIEW_ALLOW_SECRET_ENTRY_OVERRIDE": "1",  # pragma: allowlist secret; synthetic test fixture
     }
-    if allow_root:
+    if ambient_root_override:
         env["HAPAX_GLMCP_SEAT_ROOT_OVERRIDE"] = "1"
+    command = ["bash", "-s", "--"] if script_text is not None else ["bash", str(SCRIPT)]
+    if allow_root:
+        command.append("--allow-mutable-root")
     return subprocess.run(
-        ["bash", "-s"] if script_text is not None else ["bash", str(SCRIPT)],
+        command,
         input=script_text,
         env=env,
         capture_output=True,
@@ -324,7 +328,7 @@ def test_guard_parses_dispatcher_receipt_and_names_refresh_cause(
     home, council = _harness(
         tmp_path,
         receipt_status="observed",
-        receipt_remaining=900,
+        receipt_remaining=800,
         now=now,
         receipt_stale=state == "stale",
     )
@@ -342,7 +346,8 @@ def test_guard_parses_dispatcher_receipt_and_names_refresh_cause(
     result = _run(home, council, path=_fixed_date_path(tmp_path, now))
     assert result.returncode == 0, result.stderr
     if state == "fresh":
-        assert "(900s remain); no round-trip" in result.stdout
+        assert "(800s remain); no round-trip" in result.stdout
+        assert not (home / "reviewer-env").exists()
         assert not (home / "admission-calls").exists()
         assert _witnesses(home) == []
     else:
@@ -549,15 +554,24 @@ def test_script_exists_is_executable_and_parses() -> None:
     subprocess.run(["bash", "-n", str(SCRIPT)], check=True, capture_output=True, timeout=10)
 
 
+def test_refresh_headers_describe_completion_relative_timer() -> None:
+    timer = TIMER.read_text()
+    assert _unit_value(timer, "Timer", "OnUnitInactiveSec") == "30s"
+    assert _unit_value(timer, "Timer", "AccuracySec") == "30s"
+    for path in (SCRIPT, REPO / "scripts/hapax-post-merge-deploy"):
+        header = "\n".join(path.read_text().splitlines()[:40])
+        assert "30 s after service completion" in header
+        assert "OnUnitInactiveSec=30s, AccuracySec=30s" in header
+
+
 def _envelope(tmp_path: Path) -> dict[str, int]:
     home, council = _harness(tmp_path)
     proc = subprocess.run(
-        ["bash", str(SCRIPT), "--envelope"],
+        ["bash", str(SCRIPT), "--envelope", "--allow-mutable-root"],
         env={
             "HOME": str(home),
             "HAPAX_COUNCIL": str(council),
             "PATH": os.environ["PATH"],
-            "HAPAX_GLMCP_SEAT_ROOT_OVERRIDE": "1",
         },
         capture_output=True,
         text=True,
@@ -750,9 +764,12 @@ def test_each_show_diagnostic_names_inspection_retry_and_unit(tmp_path: Path, fa
     elif failure == "route":
         python = shutil.which("python3")
         assert python is not None
+        # The dedicated quota helper receives only the council root after its Python source.
+        # Fail that subprocess, while leaving the diagnostic redactor available.
         _stub(
             bin_dir / "python3",
-            f'for arg in "$@"; do [ "$arg" != seat ] || exit 9; done\nexec "{python}" "$@"\n',
+            'if [ "$#" -eq 3 ] && [ "$3" = "$HAPAX_COUNCIL" ]; then exit 9; fi\n'
+            f'exec "{python}" "$@"\n',
         )
     elif failure == "coverage":
         path = home / ".cache/hapax/platform-capability-receipts/glmcp.json"
@@ -954,12 +971,11 @@ def test_an_unsafe_envelope_is_refused_and_names_every_term(tmp_path: Path) -> N
         encoding="utf-8",
     )
     proc = subprocess.run(
-        ["bash", str(unsafe_script), "--envelope"],
+        ["bash", str(unsafe_script), "--envelope", "--allow-mutable-root"],
         env={
             "HOME": str(home),
             "HAPAX_COUNCIL": str(council),
             "PATH": os.environ["PATH"],
-            "HAPAX_GLMCP_SEAT_ROOT_OVERRIDE": "1",
         },
         capture_output=True,
         text=True,
@@ -990,11 +1006,14 @@ def test_a_hostile_retry_override_is_refused_before_any_round_trip(tmp_path: Pat
             "HOME": str(home),
             "HAPAX_COUNCIL": str(council),
             "PATH": os.environ["PATH"],
-            "HAPAX_GLMCP_SEAT_ROOT_OVERRIDE": "1",
             "HAPAX_GLMCP_SEAT_RETRY_SLEEP": hostile,
         }
         proc = subprocess.run(
-            ["bash", str(SCRIPT)], env=env, capture_output=True, text=True, timeout=60
+            ["bash", str(SCRIPT), "--allow-mutable-root"],
+            env=env,
+            capture_output=True,
+            text=True,
+            timeout=60,
         )
         assert proc.returncode == 7, (hostile, proc.stderr)
         assert "HAPAX_GLMCP_SEAT_RETRY_SLEEP" in proc.stderr and "unset it" in proc.stderr
@@ -1011,7 +1030,7 @@ def test_the_unit_unsets_the_retry_override() -> None:
 
 def test_missing_jq_is_named_rather_than_read_as_a_stale_seat(tmp_path: Path) -> None:
     """A broken parser used to look exactly like a stale receipt and trigger a provider call every
-    five minutes without saying why (review finding on #4624, round 9)."""
+    completion-relative timer tick without saying why (review finding on #4624, round 9)."""
     home, council = _harness(
         tmp_path, receipt_status="observed", receipt_remaining=900, receipt_age=10
     )
@@ -1043,14 +1062,17 @@ def test_missing_jq_is_named_rather_than_read_as_a_stale_seat(tmp_path: Path) ->
         "HAPAX_COUNCIL": str(council),
         "PATH": str(bin_dir),
         "TMPDIR": str(home),
-        "HAPAX_GLMCP_SEAT_ROOT_OVERRIDE": "1",
         "HAPAX_GLMCP_SEAT_RETRY_SLEEP": "0",
         "HAPAX_TEST_PYTHON": sys.executable,
         "HAPAX_TEST_RECEIPTS_SCRIPT": str(RECEIPTS_SCRIPT),
         "HAPAX_TEST_RECEIPTS_RC": "0",
     }
     proc = subprocess.run(
-        ["bash", str(SCRIPT)], env=env, capture_output=True, text=True, timeout=120
+        ["bash", str(SCRIPT), "--allow-mutable-root"],
+        env=env,
+        capture_output=True,
+        text=True,
+        timeout=120,
     )
     assert "jq is not on PATH" in proc.stderr, proc.stderr
     assert proc.returncode != 0
@@ -1194,16 +1216,27 @@ def test_no_dispatcher_receipt_round_trips(tmp_path: Path) -> None:
     assert (home / "admission-calls").exists()
 
 
-def test_a_root_other_than_the_activation_worktree_is_refused(tmp_path: Path) -> None:
+@pytest.mark.parametrize("ambient_root_override", [False, True])
+def test_a_root_other_than_the_activation_worktree_is_refused(
+    tmp_path: Path, ambient_root_override: bool
+) -> None:
     """An inherited HAPAX_COUNCIL must not redirect receipt minting to a mutable tree."""
     home, council = _harness(tmp_path)
-    result = _run(home, council, allow_root=False)
+    result = _run(home, council, allow_root=False, ambient_root_override=ambient_root_override)
     assert result.returncode == 4
     assert "REFUSED" in result.stderr
     assert "activation worktree" in result.stderr
     assert "Next:" in result.stderr
     assert not (home / "admission-calls").exists()
     assert not (home / "reviewer-env").exists()
+
+
+def test_explicit_mutable_root_flag_allows_only_the_stubbed_harness(tmp_path: Path) -> None:
+    home, council = _harness(tmp_path)
+    result = _run(home, council, allow_root=True)
+    assert result.returncode == 0, result.stderr
+    assert (home / "reviewer-env").exists()
+    assert (home / "admission-calls").exists()
 
 
 def test_a_stale_seat_round_trips_writes_a_witness_and_mints(tmp_path: Path) -> None:
@@ -1372,10 +1405,9 @@ def test_unit_pair_executes_from_the_activation_worktree_and_strips_inherited_ov
     tmp_path: Path,
 ) -> None:
     """A unit that runs a mutable development checkout is a finding (review on #4624); the
-    estate's convention is the governed source-activation worktree. The pins live in the script's
-    defaults because systemd does not expand specifiers inside Environment= (measured
-    2026-09-02: `Environment=X=%h/y` arrives literally), and the unit strips the inherited
-    user-manager values that could override them."""
+    estate's convention is the governed source-activation worktree. systemd.exec(5) specifies
+    specifier expansion in Environment=, but no shell variable expansion. Script defaults pin
+    the receipt chain; UnsetEnvironment removes inherited user-manager overrides."""
     service = SERVICE.read_text(encoding="utf-8")
     exec_start = _unit_value(service, "Service", "ExecStart") or ""
     assert exec_start == f"{ACTIVATION_ROOT}/scripts/hapax-glmcp-seat-refresh"
@@ -1384,7 +1416,9 @@ def test_unit_pair_executes_from_the_activation_worktree_and_strips_inherited_ov
     assert "source-activation/worktree" in SCRIPT.read_text(encoding="utf-8")
     for line in service.splitlines():
         if line.startswith("Environment="):
-            assert "%" not in line, f"specifiers are not expanded in Environment=: {line}"
+            assert "%" not in line, f"this unit deliberately uses literal environment paths: {line}"
+    assert "Environment= expands specifiers such as %h" in service
+    assert "shell variable expansion does not occur" in service
     unset = _unit_value(service, "Service", "UnsetEnvironment") or ""
     for name in (
         "HAPAX_COUNCIL",
@@ -1401,6 +1435,8 @@ def test_unit_pair_executes_from_the_activation_worktree_and_strips_inherited_ov
     ):
         assert name in unset.split(), name
     assert _unit_value(service, "Service", "Type") == "oneshot"
+    # systemd.timer(5): the same-name service is activated by the enabled timer.
+    assert "[Install]" not in service
     assert _unit_value(service, "Service", "MemoryMax") is not None
     service_budget = int(_unit_value(service, "Service", "TimeoutStartSec") or 0)
     envelope = _envelope(tmp_path)
