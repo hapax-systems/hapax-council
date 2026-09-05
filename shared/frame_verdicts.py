@@ -23,6 +23,7 @@ comparison that cannot be parsed refuses rather than being treated as outside th
 
 from __future__ import annotations
 
+import codecs
 import fnmatch
 import hashlib
 import json
@@ -144,6 +145,16 @@ class DecayedMember:
     skip_dirs: tuple[str, ...] = ()
     reader: str = ""
     host_aliases: tuple[tuple[str, str], ...] = ()
+    content_query: ContentQuery | None = None
+
+
+@dataclass(frozen=True)
+class ContentQuery:
+    query: str
+    case_insensitive: bool
+    match_mode: str
+    max_unit_bytes: int
+    encoding_error_policy: str
 
 
 @dataclass(frozen=True)
@@ -482,8 +493,10 @@ def _member_location(
     location = member.get("location")
     if not isinstance(location, dict):
         return (), (), (), (), ()
+    reader = member.get("reader")
+    content_query = isinstance(reader, dict) and reader.get("id") == "fs.content_query"
     raw_roots: list[str] = []
-    if isinstance(location.get("path"), str):
+    if not content_query and isinstance(location.get("path"), str):
         raw_roots.append(str(location["path"]))
     if isinstance(location.get("roots"), list):
         raw_roots.extend(str(item) for item in location["roots"] if isinstance(item, str))
@@ -504,7 +517,7 @@ def _member_location(
         roots.append(local_path(raw))
     patterns = location.get("patterns")
     globs = tuple(str(item) for item in patterns) if isinstance(patterns, list) else ()
-    files_raw = location.get("files")
+    files_raw = None if content_query else location.get("files")
     files: list[Path] = []
     qualified_files: list[QualifiedLocation] = []
     if isinstance(files_raw, list):
@@ -523,6 +536,63 @@ def _member_location(
         tuple(qualified_roots),
         tuple(qualified_files),
     )
+
+
+def _load_content_query(
+    member: dict[str, object], procedure_root: Path, epoch_dir: Path
+) -> ContentQuery:
+    """Use fs.content_query's declaration and parameter profile, without private defaults."""
+    location = member.get("location") or {}
+    try:
+        query = location.get("query")
+        roots = location.get("roots")
+        insensitive = bool(location.get("case_insensitive"))
+        mode = location.get("match")
+        mode = "substring" if mode is None else str(mode)
+        if not isinstance(roots, list) or not roots:
+            raise ValueError("location.roots must be a nonempty list")
+        if not isinstance(query, str) or not query:
+            raise ValueError("location.query must be a nonempty literal")
+        if mode not in {"substring", "word"}:
+            raise ValueError("location.match must be substring or word")
+        if "\n" in query or "\r" in query or (insensitive and not query.isascii()):
+            raise ValueError("multiline or non-ASCII case-insensitive query is unsupported")
+        profile = yaml.safe_load((procedure_root / "declaration/params.yaml").read_text("utf-8"))
+        hypothesis = epoch_dir / "hypothesis.json"
+        if hypothesis.exists():
+            recorded = json.loads(hypothesis.read_text("utf-8")).get("iteration", {})
+            digest = recorded.get("parameter_profile_digest")
+            canonical = json.dumps(
+                profile, sort_keys=True, separators=(",", ":"), ensure_ascii=False
+            )
+            if (
+                digest is not None
+                and digest != hashlib.sha256(canonical.encode("utf-8")).hexdigest()
+            ):
+                raise ValueError(
+                    "declaration/params.yaml differs from the accepted epoch's profile"
+                )
+        parameters = profile["parameters"]
+        max_bytes = parameters["max_unit_bytes"]["value"]
+        errors = parameters["encoding_error_policy"]["value"]
+        if type(max_bytes) is not int or max_bytes < 0:
+            raise ValueError("max_unit_bytes must be a nonnegative integer")
+        codecs.lookup_error(errors)
+    except (
+        OSError,
+        UnicodeError,
+        yaml.YAMLError,
+        LookupError,
+        TypeError,
+        AttributeError,
+        ValueError,
+    ) as exc:
+        raise FrameVerdictsUnavailable(
+            f"member {member['id']!r} fs.content_query containment is undecidable: {exc}",
+            remedy="repair the fs.content_query location and declaration/params.yaml; "
+            + PRODUCER_REMEDY,
+        ) from exc
+    return ContentQuery(query, insensitive, mode, max_bytes, errors)
 
 
 def load_frame_verdicts(
@@ -789,6 +859,12 @@ def _load_epoch_verdicts(
             continue
         reader = member.get("reader")
         reader_id = reader.get("id", "") if isinstance(reader, dict) else ""
+        if reader_id not in {"", "fs.glob", "ssh.glob", "fs.content_query"}:
+            raise FrameVerdictsUnavailable(
+                f"member {member_id!r} uses unimplemented containment reader {reader_id!r}",
+                remedy=f"implement containment for reader {reader_id!r}, or re-declare the member "
+                "with a supported reader; " + PRODUCER_REMEDY,
+            )
         try:
             roots, patterns, files, qualified_roots, qualified_files = _member_location(
                 member, epoch_dir=epoch_dir
@@ -801,6 +877,18 @@ def _load_epoch_verdicts(
             ) from exc
         location = member.get("location") or {}
         skip_dirs = tuple(location.get("skip_dirs") or []) if isinstance(location, dict) else ()
+        content_query = None
+        if reader_id == "fs.content_query":
+            content_query = _load_content_query(member, root, epoch_dir)
+            if qualified_roots:
+                raise FrameVerdictsUnavailable(
+                    f"member {member_id!r} fs.content_query requires local filesystem roots",
+                    remedy=UncontainableMemberLocation.remedy,
+                )
+            if location.get("patterns") is None:
+                patterns = ("**/*",)
+            # fs.content_query consults declared exclusions, but not fs.glob's skip_dirs.
+            skip_dirs = ()
         for relation in sorted(decay[member_id]):
             decayed.append(
                 DecayedMember(
@@ -816,6 +904,7 @@ def _load_epoch_verdicts(
                     skip_dirs=skip_dirs,
                     reader=reader_id,
                     host_aliases=host_aliases,
+                    content_query=content_query,
                 )
             )
         if not roots and not files and not qualified_roots and not qualified_files:
@@ -987,10 +1076,7 @@ def _glob_segments(pattern: str) -> tuple[str, ...]:
 
 
 def _normalise_member_pattern(pattern: str) -> str:
-    pattern = _normalise_glob_spelling(pattern, member_pattern=True)
-    if pattern.endswith("/**"):
-        pattern += "/*"
-    return pattern
+    return _normalise_glob_spelling(pattern, member_pattern=True)
 
 
 def _member_file_patterns(patterns: tuple[str, ...]) -> tuple[str, ...]:
@@ -998,7 +1084,7 @@ def _member_file_patterns(patterns: tuple[str, ...]) -> tuple[str, ...]:
     return tuple(
         value
         for pattern, value in zip(patterns, normalised, strict=True)
-        if not pattern.endswith("/")
+        if not pattern.endswith("/") and Path(value).name != "**"
     )
 
 
@@ -1308,6 +1394,100 @@ def _refuse_directory_spelled_file(file: Path | QualifiedLocation) -> None:
     raise error
 
 
+def _content_query_matches(path: Path, query: ContentQuery) -> bool:
+    """builtin.fs_content_query's byte prefilter followed by its optional word predicate."""
+    try:
+        if path.stat().st_size > query.max_unit_bytes:
+            raise ValueError(f"exceeds max_unit_bytes={query.max_unit_bytes}")
+        with path.open("rb") as stream:
+            blob = stream.read(query.max_unit_bytes + 1)
+        if len(blob) > query.max_unit_bytes:
+            raise ValueError(f"exceeds max_unit_bytes={query.max_unit_bytes}")
+        needle = query.query.encode("utf-8")
+        if query.case_insensitive:
+            needle, blob = needle.lower(), blob.lower()
+        if needle not in blob:
+            return False
+        if query.match_mode == "word":
+            text = blob.decode("utf-8", errors=query.encoding_error_policy)
+            return bool(
+                re.search(
+                    rf"(?<![A-Za-z0-9]){re.escape(query.query)}(?![A-Za-z0-9])",
+                    text,
+                    re.IGNORECASE if query.case_insensitive else 0,
+                )
+            )
+        return True
+    except (OSError, UnicodeError, ValueError, TypeError) as exc:
+        error = UndecidableScopeContainment(
+            f"fs.content_query cannot read/evaluate {path}: {exc}; containment is undecidable"
+        )
+        error.remedy = (
+            f"restore readable bytes for {path} within the declared max_unit_bytes and "
+            "encoding_error_policy, or amend declaration/params.yaml and re-run the frame "
+            "producer, then retry the dispatch"
+        )
+        raise error from exc
+
+
+def _content_query_within_member(
+    path: Path, dirlike: bool, member: DecayedMember, scope_pattern: str | None
+) -> bool:
+    query = member.content_query
+    if query is None:
+        raise UncontainableMemberLocation("fs.content_query has no declared content predicate")
+    canonical = _resolve_external_scope_path(path)
+    for root in member.roots:
+        for candidate in dict.fromkeys((path, canonical)):
+            if candidate != root and root not in candidate.parents:
+                if scope_pattern is not None and candidate in root.parents:
+                    raise UndecidableScopeContainment(
+                        f"fs.content_query scope glob {scope_pattern!r} may enter {root}; "
+                        "declare explicit files so the content predicate can be evaluated"
+                    )
+                continue
+            if _path_is_excluded(candidate, member) or not member.patterns:
+                continue
+            if dirlike or scope_pattern is not None:
+                raise UndecidableScopeContainment(
+                    f"fs.content_query needs explicit file paths below {root} to evaluate "
+                    "the content predicate; whole-surface containment is undecidable"
+                )
+            relative = candidate.relative_to(root).as_posix()
+            for pattern in member.patterns:
+                normalised = _normalise_member_pattern(pattern)
+                # rglob adds recursive selection; terminal ** still uses pathlib itself.
+                if Path(normalised).name != "**" and not _pattern_matches(
+                    relative, "**/" + pattern
+                ):
+                    continue
+                try:
+                    selected = any(p == candidate and p.is_file() for p in root.rglob(pattern))
+                except (OSError, RuntimeError, ValueError) as exc:
+                    raise UndecidableScopeContainment(
+                        f"fs.content_query cannot enumerate {root} with {pattern!r}: {exc}"
+                    ) from exc
+                if not selected and Path(normalised).name == "**":
+                    continue
+                if _content_query_matches(candidate, query) and selected:
+                    return True
+    return False
+
+
+def _local_member_file_matches(path: Path, root: Path, pattern: str) -> bool:
+    normalised = _normalise_member_pattern(pattern)
+    if Path(normalised).name != "**":
+        return _pattern_matches(path.relative_to(root).as_posix(), pattern)
+    # In Python 3.12 terminal ** selects only directories. Use the producer's exact
+    # selection and is_file filter rather than expanding its surface with an added /*.
+    try:
+        return any(p == path and p.is_file() for p in root.glob(pattern))
+    except (OSError, RuntimeError, ValueError) as exc:
+        raise UndecidableScopeContainment(
+            f"cannot enumerate member pattern {pattern!r} below {root}: {exc}"
+        ) from exc
+
+
 def ref_within_member(
     path: Path,
     dirlike: bool,
@@ -1315,7 +1495,9 @@ def ref_within_member(
     *,
     scope_pattern: str | None = None,
 ) -> bool:
-    patterns = _member_file_patterns(member.patterns)
+    if member.reader == "fs.content_query":
+        return _content_query_within_member(path, dirlike, member, scope_pattern)
+    _member_file_patterns(member.patterns)  # Validate even when the candidate is outside.
     broad = dirlike or scope_pattern is not None
     file_path = _resolve_member_path(path) if member.files else path
     if any(file_path == file for file in member.files):
@@ -1362,7 +1544,9 @@ def ref_within_member(
             not broad
             and member.patterns
             and path != root
-            and not any(_pattern_matches(relative, pattern) for pattern in patterns)
+            and not any(
+                _local_member_file_matches(path, root, pattern) for pattern in member.patterns
+            )
         ):
             continue
         has_excluded_entry = _check_member_symlinks(
@@ -1383,6 +1567,12 @@ def ref_within_member(
         if has_excluded_entry or _path_is_excluded(path, member):
             continue
         return True
+    if any(lexical_path == root or root in lexical_path.parents for root in member.roots):
+        # Lexical selection and exclusions above still govern producer-enumerated aliases.
+        # A different spelling can additionally name a selected canonical target in the root.
+        canonical = _resolve_external_scope_path(lexical_path)
+        if canonical != lexical_path:
+            return ref_within_member(canonical, dirlike, member, scope_pattern=scope_pattern)
     return False
 
 

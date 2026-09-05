@@ -198,6 +198,201 @@ def _verdict(member_id: str, relation: str, verdict: object = True) -> dict[str,
     }
 
 
+def _content_query_member(
+    tmp_path: Path,
+    *,
+    location: dict[str, object] | None = None,
+    max_bytes: int = 128,
+    errors: str = "replace",
+    exclusions: list[dict[str, object]] | None = None,
+) -> tuple[fv.DecayedMember, Path]:
+    root = tmp_path / "member"
+    root.mkdir(exist_ok=True)
+    declaration = {
+        "id": "query",
+        "reader": {"id": "fs.content_query"},
+        "location": {
+            "roots": [str(root)],
+            "patterns": ["*.py"],
+            "query": "def ",
+            **(location or {}),
+        },
+    }
+    procedure = _procedure_root(
+        tmp_path / "procedure",
+        members=[declaration],
+        verdicts=[_verdict("query", "scope_exited")],
+        exclusions=exclusions,
+    )
+    (procedure / "declaration/params.yaml").write_text(
+        yaml.safe_dump(
+            {
+                "profile_id": "fixture",
+                "parameters": {
+                    "max_unit_bytes": {"value": max_bytes, "why": "test bound"},
+                    "encoding_error_policy": {"value": errors, "why": "test decoding"},
+                },
+            }
+        )
+    )
+    return fv.load_frame_verdicts(procedure, now=NOW).decayed[0], root
+
+
+@pytest.mark.parametrize(
+    ("location", "blob", "inside"),
+    [
+        ({}, b"def selected(): pass", True),
+        ({}, b"DEF selected(): pass", False),
+        ({"case_insensitive": True}, b"DEF selected(): pass", True),
+        ({"query": "sced", "match": "word"}, b"sced_jailbreak", True),
+        ({"query": "sced", "match": "word"}, b"quiesced", False),
+        ({"query": "sced", "match": "word", "case_insensitive": True}, b"SCED-ruler", True),
+        ({"query": "sced"}, b"quiesced", True),
+        ({"patterns": []}, b"def selected(): pass", False),
+        ({"patterns": None}, b"def selected(): pass", True),
+        ({"skip_dirs": ["nested"]}, b"def selected(): pass", True),
+        ({"patterns": ["nested/**"]}, b"def selected(): pass", False),
+    ],
+)
+def test_content_query_declared_predicate(
+    tmp_path: Path, location: dict[str, object], blob: bytes, inside: bool
+) -> None:
+    member, root = _content_query_member(tmp_path, location=location)
+    file = root / "nested/file.py"
+    file.parent.mkdir()
+    file.write_bytes(blob)
+    assert fv.ref_within_member(file, False, member) is inside
+
+
+def test_content_query_evaluates_current_bytes_and_canonical_alias(tmp_path: Path) -> None:
+    member, root = _content_query_member(tmp_path)
+    file = root / "file.py"
+    alias = root / "alias"
+    alias.symlink_to(file)
+    for content, inside in [(b"def selected(): pass", True), (b"value = 1", False)]:
+        file.write_bytes(content)
+        assert fv.ref_within_member(file, False, member) is inside
+        assert fv.ref_within_member(alias, False, member) is inside
+
+
+@pytest.mark.parametrize("problem", ["oversize", "zero-bound", "missing", "unreadable", "strict"])
+def test_content_query_unreadable_or_unbounded_file_is_undecidable(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, problem: str
+) -> None:
+    member, root = _content_query_member(
+        tmp_path,
+        max_bytes=0 if problem == "zero-bound" else 4,
+        errors="strict" if problem == "strict" else "replace",
+        location={"query": "x", "match": "word"},
+    )
+    file = root / "file.py"
+    if problem != "missing":
+        file.write_bytes(b"x     " if problem == "oversize" else b"x\xff")
+    if problem == "unreadable":
+        original = Path.open
+
+        def denied(path, *args, **kwargs):
+            if path == file:
+                raise PermissionError("fixture read denied")
+            return original(path, *args, **kwargs)
+
+        monkeypatch.setattr(Path, "open", denied)
+    with pytest.raises(fv.UndecidableScopeContainment) as caught:
+        fv.ref_within_member(file, False, member)
+    assert "fs.content_query" in str(caught.value) and str(file) in str(caught.value)
+    assert (
+        "max_unit_bytes" in caught.value.remedy and "encoding_error_policy" in caught.value.remedy
+    )
+
+
+@pytest.mark.parametrize(("errors", "inside"), [("replace", True), ("ignore", False)])
+def test_content_query_word_predicate_uses_declared_encoding_policy(
+    tmp_path: Path, errors: str, inside: bool
+) -> None:
+    member, root = _content_query_member(
+        tmp_path,
+        errors=errors,
+        location={"query": "sced", "match": "word"},
+    )
+    file = root / "file.py"
+    file.write_bytes(b"sced\xffword")
+    assert fv.ref_within_member(file, False, member) is inside
+
+
+def test_content_query_preserves_declared_exclusions_and_refuses_broad_scopes(
+    tmp_path: Path,
+) -> None:
+    file = tmp_path / "member/file.py"
+    member, root = _content_query_member(
+        tmp_path,
+        exclusions=[{"id": "residue", "paths": [str(file)]}],
+    )
+    file.write_bytes(b"def selected(): pass")
+    assert not fv.ref_within_member(file, False, member)
+    with pytest.raises(fv.UndecidableScopeContainment, match="content predicate"):
+        fv.ref_within_member(root, True, member, scope_pattern="*.py")
+
+
+def test_content_query_uses_only_producer_roots(tmp_path: Path) -> None:
+    outside = tmp_path / "outside.py"
+    outside.write_bytes(b"def selected(): pass")
+    member, _ = _content_query_member(
+        tmp_path, location={"path": str(tmp_path), "files": [str(outside)]}
+    )
+    assert not fv.ref_within_member(outside, False, member)
+
+
+def test_content_query_parameters_match_the_accepted_epoch(tmp_path: Path) -> None:
+    _content_query_member(tmp_path)
+    procedure = tmp_path / "procedure"
+    params = procedure / "declaration/params.yaml"
+    profile = yaml.safe_load(params.read_text())
+    # ParameterProfile.digest uses this canonical serialization (producer params.py:131-133).
+    canonical = json.dumps(profile, sort_keys=True, separators=(",", ":"), ensure_ascii=False)
+    (procedure / "_runs/current/hypothesis.json").write_text(
+        json.dumps(
+            {
+                "iteration": {
+                    "parameter_profile_digest": hashlib.sha256(canonical.encode()).hexdigest()
+                },
+            }
+        )
+    )
+    assert fv.load_frame_verdicts(procedure, now=NOW).decayed[0].content_query.max_unit_bytes == 128
+    profile["parameters"]["max_unit_bytes"]["value"] = 256
+    params.write_text(yaml.safe_dump(profile))
+    with pytest.raises(fv.FrameVerdictsUnavailable, match="differs from the accepted epoch"):
+        fv.load_frame_verdicts(procedure, now=NOW)
+
+
+def test_content_query_terminal_glob_does_not_read_unselected_files(tmp_path: Path) -> None:
+    member, root = _content_query_member(tmp_path, max_bytes=0, location={"patterns": ["**"]})
+    file = root / "file.py"
+    file.write_bytes(b"def selected(): pass")
+    assert not {p for p in root.rglob("**") if p.is_file()}
+    assert not fv.ref_within_member(file, False, member)
+
+
+@pytest.mark.parametrize(
+    "location",
+    [
+        {"roots": ["podium:store"]},
+        {"roots": []},
+        {"query": ""},
+        {"query": "two\nlines"},
+        {"query": "é", "case_insensitive": True},
+        {"match": "regex"},
+    ],
+)
+def test_content_query_invalid_declaration_has_producer_remedy(
+    tmp_path: Path, location: dict[str, object]
+) -> None:
+    with pytest.raises(fv.FrameVerdictsUnavailable) as caught:
+        _content_query_member(tmp_path, location=location)
+    assert "fs.content_query" in str(caught.value)
+    assert "run the frame producer" in caught.value.remedy
+
+
 def test_latest_epoch_is_the_newest_parseable_dir_that_carries_elements(tmp_path: Path) -> None:
     epochs = tmp_path / "_runs" / "epochs"
     (epochs / "20260903T112609Z-0c5d7a85").mkdir(parents=True)
@@ -1226,7 +1421,7 @@ def test_recursive_member_pattern_does_not_prove_traversal_of_a_directory_symlin
 
 
 @pytest.mark.parametrize("ref", [".venv/bin/python", ".venv/bin/[p]ython"])
-def test_disjoint_loop_is_not_resolved_for_unrelated_exclusions(tmp_path: Path, ref: str) -> None:
+def test_disjoint_loop_literal_requires_canonical_resolution(tmp_path: Path, ref: str) -> None:
     (tmp_path / ".venv/bin").mkdir(parents=True)
     link = tmp_path / ".venv/bin/python"
     link.symlink_to(link)
@@ -1244,6 +1439,16 @@ def test_disjoint_loop_is_not_resolved_for_unrelated_exclusions(tmp_path: Path, 
         excluded_roots=(tmp_path / "unrelated",),
     )
     verdicts = fv.FrameVerdicts("fixture", tmp_path, NOW, (member,), ())
+
+    if ref == ".venv/bin/python":
+        # Round ten: lexical disjointness cannot prove a literal alias is outside before
+        # evaluating its target. The old outside assertion bypassed canonical containment.
+        with pytest.raises(fv.UndecidableScopeContainment) as caught:
+            fv.scope_within_decayed([ref], verdicts, council_root=tmp_path, vault_root=tmp_path)
+        assert str(link) in str(caught.value)
+        assert "cannot resolve scope component" in str(caught.value)
+        assert str(link) in caught.value.remedy and "intended target" in caught.value.remedy
+        return
 
     result = fv.scope_within_decayed([ref], verdicts, council_root=tmp_path, vault_root=tmp_path)
 

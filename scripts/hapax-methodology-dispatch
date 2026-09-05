@@ -1058,9 +1058,11 @@ def frame_verdict_refusal(
     dominator for every worker whose only launch path is this script (FRAME-PRODUCER §B2).
 
     Refuses (1) when the verdict set cannot be consulted — absent, stale, malformed — naming
-    the producer, and (2) when every declared mutation surface lies inside a member the newest
-    epoch marks scope-exited, superseded or discharged: work on a surface out of accountability
-    is the ad hoc expediency the reduction exists to end. A scope partly inside a decayed member
+    the producer, and (2) when every declared mutation surface lies inside a member the accepted
+    epoch at ``_runs/current`` marks TRUE for superseded, discharged, scope_exited, absorbed,
+    contradicted, context_lost or unconsulted. A newer rejected attempt does not govern.
+    Work on a surface out of accountability is the ad hoc expediency the reduction exists to end.
+    A scope partly inside a decayed member
     is admitted (moving things out of one is legitimate work). No declared scope: nothing for
     this reader to judge; the route-metadata gate owns that refusal.
     """
