@@ -9143,3 +9143,134 @@ def test_receipt_only_member_root_resolution_failure_has_repair_action(
     assert evidence["remedy"] in receipt["reason"]
     assert receipt["reason"] in err
     assert "Traceback" not in err
+
+
+@pytest.mark.parametrize("scope", ["config/ci/*", "config/ci/scope", "config/ci/scope.py"])
+def test_receipt_only_equivalent_checkouts_require_one_common_outside_witness(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+    scope: str,
+) -> None:
+    """One repository-relative witness must survive both checkout projections."""
+    module = _dispatcher_module()
+    first, second = tmp_path / "first", tmp_path / "second"
+    for checkout in (first, second):
+        git_checkout(checkout, history="council")
+        (checkout / "config/ci").mkdir(parents=True)
+    assert fv._repository_identity(first) == fv._repository_identity(second) is not None
+    verdicts = fv.FrameVerdicts(
+        epoch="20260906T120000Z-deadbeef",
+        elements_path=tmp_path / "in-memory-elements.json",
+        produced_at=datetime(2026, 9, 6, 12, tzinfo=UTC),
+        decayed=(
+            fv.DecayedMember(
+                "A",
+                "scope_exited",
+                (first / "config/ci",),
+                ("**/*",),
+                (),
+                skip_dirs=("scope",),
+                reader="fs.glob",
+            ),
+            fv.DecayedMember(
+                "B",
+                "scope_exited",
+                (second / "config/ci",),
+                ("scope", "scope/**/*"),
+                (),
+                reader="fs.glob",
+            ),
+        ),
+        unmatchable=(),
+    )
+    monkeypatch.setattr(fv, "load_frame_verdicts", lambda: verdicts)
+    monkeypatch.setattr(module, "REPO_ROOT_FOR_IMPORTS", first)
+    monkeypatch.setattr(sys.modules[__name__], "_dispatcher_module", lambda: module)
+    rc, err = _dispatch_receipt_only_scope(tmp_path, monkeypatch, capsys, tmp_path / "frame", scope)
+    assert rc == 10, f"{scope}: expected refusal (10), main() returned {rc}; {err}"
+    receipt = json.loads(
+        (tmp_path / "ledger/methodology-dispatch.jsonl").read_text().splitlines()[-1]
+    )
+    assert receipt["ok"] is False and receipt["launched"] is False
+    assert receipt["frame_decayed_members"] == ["A", "B"]
+    assert receipt["frame_epoch"] == verdicts.epoch
+    if scope == "config/ci/*":
+        assert "scope_containment_undecidable" in receipt["reason"]
+        assert fv.UndecidableScopeContainment.remedy in receipt["reason"]
+    assert receipt["reason"] in err
+
+
+@pytest.mark.parametrize("failure", [RuntimeError, OSError], ids=["symlink-loop", "filesystem"])
+def test_receipt_only_procedure_root_resolution_failure_has_repair_action(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+    failure: type[Exception],
+) -> None:
+    frame_root = tmp_path / "unresolvable-procedure"
+    resolve = Path.resolve
+
+    def broken_root(path: Path, *args, **kwargs) -> Path:
+        if path == frame_root:
+            raise failure("fixture procedure root resolution failure")
+        return resolve(path, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "resolve", broken_root)
+    try:
+        rc, err = _dispatch_receipt_only_scope(
+            tmp_path, monkeypatch, capsys, frame_root, tmp_path / "live.py"
+        )
+    except (OSError, RuntimeError):
+        rc, err = None, capsys.readouterr().err
+    ledger = tmp_path / "ledger/methodology-dispatch.jsonl"
+    receipt = json.loads(ledger.read_text().splitlines()[-1]) if ledger.is_file() else {}
+    evidence = receipt.get("frame_unavailable") or {}
+    assert "repair filesystem access or symlinks" in evidence.get("remedy", ""), (
+        "procedure root resolution failure has no receipt repair action"
+    )
+    assert str(frame_root) in evidence["remedy"]
+    assert "HAPAX_FRAME_PROCEDURE_ROOT" in evidence["remedy"]
+    assert "then retry the dispatch" in evidence["remedy"]
+    assert rc == 10
+    assert receipt["ok"] is False and receipt["launched"] is False
+    assert receipt["frame_epoch"] is None and receipt["frame_decayed_members"] == []
+    assert evidence["frame_epoch"] is None and evidence["frame_root_resolved"] is None
+    assert f"configured frame procedure root {frame_root} cannot be resolved" in evidence["reason"]
+    assert "fixture procedure root resolution failure" in evidence["reason"]
+    assert evidence["remedy"] in receipt["reason"]
+    assert receipt["reason"] in err
+    assert "Traceback" not in err
+
+
+def test_receipt_only_admission_propagates_member_declaration_remedy(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    frame_root = _frame_procedure_root(tmp_path / "frame", decayed_root=tmp_path / "decayed")
+    calls = []
+
+    def uncontainable_declaration(path, dirlike, scope_pattern, member):
+        calls.append(member.member_id)
+        raise fv.UncontainableMemberLocation("fixture declaration cannot be compared")
+
+    # Inject at the admission comparison, after the unchanged containment phase.
+    monkeypatch.setattr(fv, "_local_disjoint_established", uncontainable_declaration)
+    rc, err = _dispatch_receipt_only_scope(
+        tmp_path, monkeypatch, capsys, frame_root, tmp_path / "live.py"
+    )
+    receipt = json.loads(
+        (tmp_path / "ledger/methodology-dispatch.jsonl").read_text().splitlines()[-1]
+    )
+    expected_remedy = (
+        "Next: amend declaration/mass.yaml (relative to the procedure root, "
+        "HAPAX_FRAME_PROCEDURE_ROOT) with a containable member location; run the frame producer"
+    )
+    assert expected_remedy in receipt["reason"], f"missing declaration remedy: {expected_remedy}"
+    assert calls == ["legacy-surface"]
+    assert rc == 10
+    assert receipt["ok"] is False and receipt["launched"] is False
+    assert "fixture declaration cannot be compared" in receipt["reason"]
+    assert "scope_containment_undecidable" in receipt["reason"]
+    assert receipt["reason"] in err

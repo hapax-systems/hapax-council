@@ -7,12 +7,12 @@ runs in the default council pytest harness.
 from __future__ import annotations
 
 import json
+import runpy
 from pathlib import Path
 
 import pytest
 
 from shared.gate_log import (
-    DEFAULT_GATE_LOG,
     GateEvent,
     append_gate_event,
     is_persistent,
@@ -70,11 +70,22 @@ def test_missing_log_is_empty(tmp_path: Path) -> None:
     assert list(read_gate_events(path=tmp_path / "nope.jsonl")) == []
 
 
-def test_default_path_is_persistent_not_tmpfs() -> None:
-    # The substrate must survive a reboot (the tmpfs-swap-trap).
-    assert is_persistent(DEFAULT_GATE_LOG)
-    # A nested tmp component on persistent storage is not the volatile root.
-    assert not DEFAULT_GATE_LOG.is_relative_to("/tmp")
+def test_default_gate_log_under_fixed_home_is_persistent_and_outside_volatile_roots(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # Load the real default expression under a fixed persistent HOME, independent
+    # of pytest's basetemp and the importing process's HOME or gate-log override.
+    import shared.gate_log as gate_log
+
+    monkeypatch.setenv("HOME", "/persistent-fixture-home")
+    monkeypatch.delenv("HAPAX_GATE_LOG", raising=False)
+    namespace = runpy.run_path(gate_log.__file__)
+    default = namespace["DEFAULT_GATE_LOG"]
+    assert namespace["is_persistent"](default)
+    for volatile_root in ("/tmp", "/dev/shm", "/run"):
+        assert not default.is_relative_to(volatile_root)
+    assert default == Path("/persistent-fixture-home/.cache/hapax/sdlc-routing/gate-events.jsonl")
+    assert is_persistent("/persistent-fixture-home/tmp/gate-events.jsonl")
     assert not is_persistent("/tmp/x/gate-events.jsonl")
     assert not is_persistent("/dev/shm/gate-events.jsonl")
 

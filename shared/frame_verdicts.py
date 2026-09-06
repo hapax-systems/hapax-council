@@ -613,7 +613,14 @@ def load_frame_verdicts(
     guessed "nothing decayed" on any of these would be admitting work against no verdicts.
     """
     root = procedure_root if procedure_root is not None else frame_procedure_root()
-    root = root.expanduser().resolve()
+    try:
+        root = root.expanduser().resolve()
+    except (OSError, RuntimeError) as exc:
+        raise FrameVerdictsUnavailable(
+            f"configured frame procedure root {root} cannot be resolved: {exc}",
+            f"repair filesystem access or symlinks for configured frame procedure root {root} "
+            f"(check {FRAME_PROCEDURE_ROOT_ENV}), then retry the dispatch",
+        ) from exc
     epoch_dir: Path | None = None
     try:
         if not root.is_dir():
@@ -2630,7 +2637,11 @@ def _qualified_disjoint_established(
 
 
 def _local_partial_scope_established(
-    path: Path, dirlike: bool, scope_pattern: str | None, *members: DecayedMember
+    path: Path,
+    dirlike: bool,
+    scope_pattern: str | None,
+    *members: DecayedMember,
+    projections: tuple[Path, ...] = (),
 ) -> bool:
     """Prove noncontainment with a canonical outside path in a broad scope's language.
 
@@ -2644,11 +2655,14 @@ def _local_partial_scope_established(
     for witness in _glob_witnesses(pattern):
         if not _pattern_matches(witness, pattern):
             continue
-        candidate = path / witness
-        if candidate.is_dir():
+        # The same relative tail must work in every equivalent checkout. Independent
+        # witnesses per checkout can each land inside another projection's decayed union.
+        candidates = tuple(root / witness for root in (path, *projections))
+        if any(candidate.is_dir() for candidate in candidates):
             continue
         if all(
             _local_disjoint_established(candidate, False, None, member) is True
+            for candidate in candidates
             for member in members
         ):
             return True
@@ -2665,7 +2679,8 @@ def _scope_admission_established(
 
     Containment has already run unchanged. Its negative answers alone are not admission
     evidence. Establish disjointness/exclusion or, for a local partial scope, a canonical
-    witness outside every decayed member. Remote paths cannot supply such a witness.
+    witness outside every decayed member in every equivalent checkout projection.
+    Remote paths cannot supply such a witness.
     Unknown means refusal.
     """
     for member in members:
@@ -2678,7 +2693,11 @@ def _scope_admission_established(
                 )
                 if established is not True and isinstance(candidate, Path):
                     established = _local_partial_scope_established(
-                        candidate, dirlike, scope_pattern, *members
+                        candidate,
+                        dirlike,
+                        scope_pattern,
+                        *members,
+                        projections=tuple(path for path in candidates if isinstance(path, Path)),
                     )
                 if established is not True:
                     raise UndecidableScopeContainment(
