@@ -19,7 +19,7 @@ import yaml
 
 from shared.governance import consent
 
-pytest_plugins = ("tests.shared.test_consent_identifier_compatibility",)
+# Synthetic custody is autouse for the whole tree through tests/conftest.py.
 
 ROOT = Path(__file__).resolve().parents[2]
 PRINCIPAL = "synthetic-successor-subject"
