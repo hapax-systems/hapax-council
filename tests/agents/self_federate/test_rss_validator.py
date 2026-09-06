@@ -94,6 +94,38 @@ class TestFetchRss:
         mock_requests.RequestException = _requests_lib.RequestException
         assert fetch_rss(DEFAULT_HAPAX_RSS_URL) is None
 
+    @patch("agents.self_federate.rss_validator.requests")
+    def test_default_call_fetches_the_rss_document_not_the_weblog_page(
+        self, mock_requests: MagicMock
+    ) -> None:
+        """The default URL must be the path that serves RSS.
+
+        Measured 2026-09-05 (root, live): ``/rss`` returns the weblog's HTML page (the same
+        bytes as the site root; XML parsing fails) while ``/rss.xml`` returns
+        ``application/rss+xml`` with the real items. The request mock serves RSS ONLY for
+        ``/rss.xml`` and HTML for ``/rss``, so a default pointed at ``/rss`` goes red here.
+        Mutation witness: revert ``DEFAULT_HAPAX_RSS_URL`` to ``/rss`` -> this test fails.
+        """
+        weblog_html = "<!doctype html><html><head><title>Hapax weblog</title></head></html>"
+
+        def serve(url: str, timeout: float | None = None) -> MagicMock:
+            if url.endswith("/rss.xml"):
+                return _mock_response(200, _VALID_RSS)
+            if url.endswith("/rss"):
+                return _mock_response(200, weblog_html)
+            return _mock_response(404)
+
+        mock_requests.get.side_effect = serve
+        result = fetch_rss()  # the DEFAULT call, exactly as the scheduled validator makes it
+        assert result is not None
+        assert validate_rss(result) is True, "the default URL must fetch a parseable RSS document"
+        requested = mock_requests.get.call_args.args[0]
+        assert requested == DEFAULT_HAPAX_RSS_URL
+        assert requested.endswith("/rss.xml")
+        # The HTML the weblog serves at /rss is not RSS: the same call against that path is
+        # what the validator used to make, and it must classify as invalid, not as a feed.
+        assert validate_rss(fetch_rss("https://hapax.weblog.lol/rss") or b"") is False
+
 
 class TestValidateRss:
     def test_valid_rss_returns_true(self) -> None:
