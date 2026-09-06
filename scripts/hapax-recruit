@@ -242,8 +242,11 @@ class RunResult:
         # need not be a JSON document, so do not reject it as undecodable here.
         self.stderr_tail = _redact(self.stderr_tail)
         for stream, shape in self.suppressed_streams.items():
+            length = (
+                f"{shape['length']} chars" if shape["length"] is not None else "length unavailable"
+            )
             self.stderr_tail += (
-                f"\n{stream}: {shape['reason']} ({shape['length']} chars, "
+                f"\n{stream}: {shape['reason']} ({length}, "
                 f"{shape.get('unsupported_class', shape['first_token_class'])})"
             )
         self.stderr_tail = self.stderr_tail[-400:]
@@ -598,7 +601,8 @@ def _redact_json_value(value, *, reject_undecodable: bool = False):
             # Reuse the text label grammar (including prefixes such as ANTHROPIC_).
             # Only a label ending at the placeholder describes a sensitive subtree;
             # an assignment embedded INSIDE the key does not label its member value.
-            field = f'{json.dumps(key)}: "scalar"'
+            # Match decoded separators, including tabs, just as the text path does.
+            field = f'"{key}": "scalar"'
             match = _SECRETISH.search(field)
             redacted[safe_key] = (
                 "<redacted>"
@@ -892,11 +896,30 @@ def recruit_cli(
         drain_status=drain_status,
     )
     raw_streams = {"stdout": stdout, "stderr": stderr}
+    answer_failure = None
     if capacity == "codex":
-        current_output = _output_identity(out)
-        produced_output = current_output is not None and current_output != previous_output
-        raw_streams["answer"] = out.read_text(encoding="utf-8") if produced_output else ""
+        try:
+            current_output = _output_identity(out)
+            produced_output = current_output is not None and current_output != previous_output
+            raw_streams["answer"] = out.read_text(encoding="utf-8") if produced_output else ""
+        except (UnicodeDecodeError, OSError) as exc:
+            # Reading a stream is not a new execution: retain all runner measurements.
+            # Neither exception text nor undecodable bytes cross the receipt boundary.
+            raw_streams["answer"] = ""
+            answer_failure = {
+                "length": None,
+                "first_token_class": "unknown",
+                "reason": "answer_stream_read_failed",
+                "unsupported_class": (
+                    "AnswerStreamUndecodable"
+                    if isinstance(exc, UnicodeDecodeError)
+                    else "AnswerStreamUnreadable"
+                ),
+                "exception_class": type(exc).__name__,
+            }
     streams, suppressed_streams = _redact_streams(**raw_streams)
+    if answer_failure:
+        suppressed_streams["answer"] = answer_failure
     diagnostic_stdout, diagnostic_stderr = streams["stdout"], streams["stderr"]
     answer, models, invalid_envelope = diagnostic_stdout, [], None
     failure_class = None
@@ -904,10 +927,16 @@ def recruit_cli(
         answer = streams["answer"]
         if not answer.strip():
             answer = ""
-            failure_class = "OutputNotProduced"
-            diagnostic_stderr += (
-                "\ncodex produced no new output (absent or empty) for this invocation"
-            )
+            if answer_failure:
+                failure_class = answer_failure["unsupported_class"]
+                diagnostic_stderr += (
+                    f"\ncodex answer stream failed: {answer_failure['exception_class']}"
+                )
+            else:
+                failure_class = "OutputNotProduced"
+                diagnostic_stderr += (
+                    "\ncodex produced no new output (absent or empty) for this invocation"
+                )
             if code == 0:
                 code = 3
         # Identity extraction also sees only validated streams.
@@ -1252,6 +1281,16 @@ def main(argv: list[str] | None = None) -> int:
         result.stderr_tail = (result.stderr_tail + f"\n{args.capacity}: {result.recovery_action}")[
             -400:
         ]
+    elif result is not None and any(
+        "unsupported_class" in shape for shape in result.suppressed_streams.values()
+    ):
+        remedy = (
+            "inspect the receipt's suppressed_streams shapes, the retained diagnostic record; "
+            "correct the capacity's diagnostic format and retry the brief"
+        )
+        result.recovery_action = (
+            f"{result.recovery_action}; {remedy}" if result.recovery_action else remedy
+        )
     try:
         receipt_path = write_receipt(
             receipt_path,
@@ -1288,7 +1327,7 @@ def main(argv: list[str] | None = None) -> int:
     if unsupported:
         print(
             f"hapax-recruit: suppressed unsupported stream classes: {', '.join(unsupported)} "
-            f"(receipt: {receipt_path})",
+            f"(receipt: {receipt_path}); {result.recovery_action}",
             file=sys.stderr,
         )
     if result.exit_code == "timeout":

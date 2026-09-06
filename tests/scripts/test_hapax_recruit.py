@@ -8,6 +8,7 @@ import http.client
 import importlib.machinery
 import importlib.util
 import io
+import itertools
 import json
 import os
 import re
@@ -128,6 +129,101 @@ def _yaml_loader_oracle(text):
         elif isinstance(value, list):
             pending.extend(value)
     return False
+
+
+@pytest.mark.parametrize("capacity", ["grok", "claude", "local:qwen36"])
+def test_json_credential_separator_agreement_at_every_destination(
+    bench, monkeypatch, capsys, capacity
+):
+    module, _bin_dir, brief, out = bench
+    receipt_path = out.with_name(out.name + ".receipt.json")
+    persisted = {}
+    original_write, original_read = Path.write_text, Path.read_bytes
+    original_stat, original_is_file = Path.stat, Path.is_file
+
+    def write(path, text, *args, **kwargs):
+        if path in {out, receipt_path}:
+            persisted[path] = text
+            return len(text)
+        return original_write(path, text, *args, **kwargs)
+
+    def read(path):
+        return persisted[path].encode() if path in persisted else original_read(path)
+
+    def stat(path, *args, **kwargs):
+        if path in persisted:
+            return os.stat_result((0,) * 6 + (len(persisted[path].encode()),) + (0,) * 3)
+        return original_stat(path, *args, **kwargs)
+
+    # Both destination writes stay in memory, including when the redactor is mutated.
+    monkeypatch.setattr(Path, "write_text", write)
+    monkeypatch.setattr(Path, "read_bytes", read)
+    monkeypatch.setattr(Path, "stat", stat)
+    monkeypatch.setattr(Path, "is_file", lambda path: path in persisted or original_is_file(path))
+    monkeypatch.setattr(module, "_require_binary", lambda name: name)
+    first = "SYNTHETIC_FIRST_CREDENTIAL"  # pragma: allowlist secret (synthetic sentinel)
+    second = "SYNTHETIC_SECOND_CREDENTIAL"  # pragma: allowlist secret (synthetic sentinel)
+    separators = {"none": "", "underscore": "_", "hyphen": "-"}
+    # The grammar admits an optional _/-, or any nonempty run of spaces and tabs.
+    # Exhaust every whitespace combination through length three.
+    separators.update(
+        ("".join("S" if char == " " else "T" for char in chars), "".join(chars))
+        for length in range(1, 4)
+        for chars in itertools.product(" \t", repeat=length)
+    )
+    failures = []
+    for separator_name, separator in separators.items():
+        response = json.dumps(
+            {f"api{separator}key": [first, second]}
+        )  # pragma: allowlist secret (synthetic sentinel)
+        assert _yaml_loader_oracle(response) is True
+        for form in ("json", "raw"):
+            # The prefix prevents JSON decoding; quoted keys must instead decode
+            # the literal JSON escape through the text/YAML path.
+            answer = response if form == "json" else "diagnostic: " + response
+            stdout = json.dumps({"result": answer}) if capacity == "claude" else answer
+            if capacity.startswith("local:"):
+                payload = {"choices": [{"message": {"content": answer}}]}
+                monkeypatch.setattr(
+                    module.urllib.request,
+                    "urlopen",
+                    lambda *a, **kw: io.BytesIO(json.dumps(payload).encode()),
+                )
+            else:
+                monkeypatch.setattr(
+                    module,
+                    "_run",
+                    lambda *a, **kw: (7 if capacity == "grok" else 0, stdout, "", False, None),
+                )
+            rc = module.main([capacity, "--brief", str(brief), "--out", str(out)])
+            captured = capsys.readouterr()
+            receipt = json.loads(persisted[receipt_path])
+            case = f"{separator_name}/{form}/{capacity}"
+            # Collect all cells before asserting, so a mutation measures the whole matrix.
+            if ("<redacted>" in persisted[out]) != _yaml_loader_oracle(answer):
+                failures.append(f"loader/redactor divergence: {case}")
+            for destination, text in {
+                "answer": persisted[out],
+                "receipt": persisted[receipt_path],
+                "stderr": captured.err,
+                "stdout": captured.out,
+            }.items():
+                if first in text or second in text:
+                    failures.append(f"credential reached {destination}: {case}")
+                if (
+                    destination == "answer"
+                    or capacity == "grok"
+                    and destination in {"receipt", "stderr"}
+                ) and "<redacted>" not in text:
+                    failures.append(f"redacted value absent from {destination}: {case}")
+            assert rc == (3 if capacity == "grok" else 0)
+            assert receipt["exit_code"] == (7 if capacity == "grok" else 0)
+            assert receipt["suppressed_streams"] == {}
+            assert receipt["answer_policy"] == (
+                "redacted_failure_output" if capacity == "grok" else "capacity_answer"
+            )
+            assert receipt["output_bytes"] == len(persisted[out].encode()) > 0
+    assert not failures, "\n".join(failures)
 
 
 _SCANNER_YAML_FIXTURES = {
@@ -714,8 +810,15 @@ def test_structural_yaml_alias_nodes_are_suppressed(bench, response):
     assert suppressed["answer"]["unsupported_class"] == "YAMLAlias"
 
 
-@pytest.mark.parametrize("capacity", ["grok", "kimi", "agy", "claude", "glmcp", "qwencloud"])
-@pytest.mark.parametrize("stream", ["stdout", "stderr"])
+@pytest.mark.parametrize(
+    ("capacity", "stream"),
+    [
+        (capacity, stream)
+        for capacity in ("codex", "grok", "kimi", "agy", "claude", "glmcp", "qwencloud")
+        for stream in ("stdout", "stderr")
+    ]
+    + [("codex", "answer")],
+)
 @pytest.mark.parametrize("form", ["digits", "decoder", "decoder-object", "answer", "embedded"])
 def test_timeout_decoder_limit_retains_execution_evidence(
     bench, monkeypatch, capsys, caplog, capacity, stream, form
@@ -730,13 +833,18 @@ def test_timeout_decoder_limit_retains_execution_evidence(
     elif form == "embedded":
         response = json.dumps({"safe": response})
     monkeypatch.setattr(module, "_require_binary", lambda name: name)
+    monkeypatch.setattr(module, "_is_git_checkout", lambda cwd: True)
     if capacity in module.WRAPPED_CLAUDE:
         monkeypatch.setenv(module.WRAPPED_CLAUDE[capacity][0], str(brief))
     stdout, stderr = (response, "") if stream == "stdout" else ("", response)
+    if stream == "answer":
+        stdout, stderr = "", ""
     drained = {"stdout": len(stdout.encode()), "stderr": len(stderr.encode())}
 
     def run(*args, drain_status, **kwargs):
         drain_status.update(drain_timed_out=True, drained_bytes=drained)
+        if capacity == "codex":
+            out.write_text(response if stream == "answer" else "")
         return "timeout", stdout, stderr, True, False
 
     monkeypatch.setattr(module, "_run", run)
@@ -770,6 +878,110 @@ def test_timeout_decoder_limit_retains_execution_evidence(
     assert "ResponseDecodeError" in captured.err
     assert response not in json.dumps(receipt) + captured.out + captured.err + caplog.text
     assert "Traceback" not in captured.err and caplog.text == ""
+
+
+@pytest.mark.parametrize("error", ["UnicodeDecodeError", "OSError"])
+@pytest.mark.parametrize("code", ["timeout", 7, 0])
+@pytest.mark.parametrize(
+    ("group_killed", "member_survived", "drain_timed_out"),
+    [(True, False, True), (True, True, True), (False, None, False)],
+    ids=["killed", "survived", "unmeasured"],
+)
+def test_codex_answer_read_failure_retains_execution_evidence(
+    bench, monkeypatch, capsys, caplog, error, code, group_killed, member_survived, drain_timed_out
+):
+    module, _bin_dir, brief, out = bench
+    monkeypatch.setattr(module, "_require_binary", lambda name: name)
+    monkeypatch.setattr(module, "_is_git_checkout", lambda cwd: True)
+    stdout, stderr = "synthetic execution chatter", "synthetic diagnostic"
+    drained = {"stdout": 113, "stderr": 227}
+    canary = "SYNTHETIC_ANSWER_READ_CREDENTIAL"  # pragma: allowlist secret (synthetic sentinel)
+    failure_class = (
+        "AnswerStreamUndecodable" if error == "UnicodeDecodeError" else "AnswerStreamUnreadable"
+    )
+    original_read = Path.read_text
+
+    def read(path, *args, **kwargs):
+        if path == out:
+            if error == "UnicodeDecodeError":
+                raise UnicodeDecodeError("utf-8", canary.encode(), 0, 1, canary)
+            raise OSError(canary)
+        return original_read(path, *args, **kwargs)
+
+    def run(*args, drain_status, **kwargs):
+        out.write_text("synthetic answer file")
+        drain_status.update(drain_timed_out=drain_timed_out, drained_bytes=drained)
+        return code, stdout, stderr, group_killed, member_survived
+
+    monkeypatch.setattr(module, "_run", run)
+    with monkeypatch.context() as patch:
+        patch.setattr(Path, "read_text", read)
+        rc = module.main(["codex", "--brief", str(brief), "--out", str(out), "--timeout", "1"])
+    receipt = _receipt(out)
+    captured = capsys.readouterr()
+    measured = (
+        rc,
+        receipt["exit_code"],
+        receipt["process_group_killed"],
+        receipt["process_group_any_member_survived"],
+        receipt["drain_timed_out"],
+        receipt["drained_bytes"],
+        receipt["stdout_bytes"],
+    )
+    assert measured == (
+        4 if code == "timeout" else 3,
+        3 if code == 0 else code,
+        group_killed,
+        member_survived,
+        drain_timed_out,
+        drained,
+        len(stdout),
+    ), "answer read failure erased execution evidence"
+    assert receipt["failure_class"] == failure_class
+    assert receipt["suppressed_streams"]["answer"] == {
+        "length": None,
+        "first_token_class": "unknown",
+        "reason": "answer_stream_read_failed",
+        "unsupported_class": failure_class,
+        "exception_class": error,
+    }
+    assert out.read_bytes() == b"" and receipt["output_bytes"] == 0
+    assert receipt["answer_policy"] == "suppressed_undecodable_output"
+    assert failure_class in captured.err and error in receipt["stderr_tail"]
+    assert "retry" in receipt["recovery_action"]
+    if code == "timeout":
+        assert "--timeout" in receipt["recovery_action"]
+    for destination in (json.dumps(receipt), captured.out, captured.err, caplog.text):
+        assert canary not in destination
+        assert "Traceback" not in destination
+    assert caplog.text == ""
+
+
+def test_successful_suppressed_diagnostic_names_recovery(bench, monkeypatch, capsys):
+    module, _bin_dir, brief, out = bench
+    stderr = "safe: !unsupported KEEP"
+    monkeypatch.setattr(module, "_require_binary", lambda name: name)
+    monkeypatch.setattr(module, "_run", lambda *a, **kw: (0, "OK", stderr, False, None))
+    assert module.main(["grok", "--brief", str(brief), "--out", str(out)]) == 0
+    receipt = _receipt(out)
+    captured = capsys.readouterr()
+    assert out.read_text() == "OK" and receipt["exit_code"] == 0
+    assert receipt["suppressed_streams"] == {
+        "stderr": {
+            "length": len(stderr),
+            "first_token_class": "text",
+            "reason": "undecodable_stream_suppressed",
+            "unsupported_class": "YAMLCustomTag",
+        }
+    }
+    assert receipt["recovery_action"], "successful suppression has no recovery action"
+    assert "suppressed_streams" in receipt["recovery_action"]
+    assert "diagnostic format" in receipt["recovery_action"]
+    assert "retry" in receipt["recovery_action"]
+    assert receipt["recovery_action"] in captured.err
+    assert "YAMLCustomTag" in captured.err
+    assert str(out.with_name(out.name + ".receipt.json")) in captured.err
+    assert stderr not in captured.err
 
 
 @pytest.mark.parametrize("form", ["sequence", "indented-sequence", "mapping", "nested-sequence"])

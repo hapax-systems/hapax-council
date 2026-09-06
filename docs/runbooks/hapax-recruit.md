@@ -151,7 +151,10 @@ snippets with no sensitive fields. A quoted redaction marker keeps later redacti
 consuming prose after a sensitive fragment. Receipts name `suppressed_undecodable_output`
 and record each affected stream under `suppressed_streams`: its character length, first token
 class (never token text), and reason `undecodable_stream_suppressed`. This also applies to
-malformed stderr on success. Check `--out` and retry the brief, or increase `--timeout` after
+malformed stderr on success. For a successful run with an unsupported diagnostic class,
+inspect the receipt's `suppressed_streams` shapes as the retained diagnostic record,
+correct the capacity's diagnostic format and retry the brief; the warning names this action.
+Check `--out` and retry the brief, or increase `--timeout` after
 a timeout. A missing, null, numeric, list, object or whitespace-only result records
 `OutputNotProduced` and `invalid result envelope`; the envelope is never substituted for the
 answer. This also applies
