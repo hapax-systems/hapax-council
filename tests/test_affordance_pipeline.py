@@ -1,6 +1,10 @@
 """Tests for the affordance-as-retrieval pipeline (Phase R0)."""
 
+import json
 import time
+from unittest.mock import Mock
+
+import pytest
 
 from shared.affordance import (
     ActivationState,
@@ -8,6 +12,215 @@ from shared.affordance import (
     OperationalProperties,
 )
 from shared.impingement import Impingement, ImpingementType, render_impingement_text
+
+CUSTODY_FAILURES = ("missing", "unreadable", "malformed", "conflict", "incomplete")
+CUSTODY_REMEDIES = {
+    "missing": "restore_compat_custody",
+    "unreadable": "restore_compat_custody",
+    "malformed": "repair_compat_document",
+    "conflict": "reconcile_compat_conflict",
+    "incomplete": "complete_compat_inventory",
+}
+
+
+@pytest.fixture(autouse=True)
+def synthetic_custody(monkeypatch, tmp_path):
+    """Exercise the real resolver with synthetic bytes, without any FileStore."""
+    from agentgov import consent as portable
+
+    import agents.refusal_brief as refusal
+    from shared import affordance_pipeline as pipeline
+    from shared.governance import consent
+    from tests.shared.synthetic_custody import document
+
+    state = {"mode": "valid", "reads": 0, "events": []}
+
+    def read():
+        state["reads"] += 1
+        mode = state["mode"]
+        if mode == "missing":
+            raise FileNotFoundError("synthetic-private-custody-path")
+        if mode == "unreadable":
+            raise PermissionError("synthetic-private-custody-path")
+        if mode == "malformed":
+            return b"{synthetic-private-custody-content"
+        data = document()
+        if mode == "conflict":
+            key = next(iter(data["principals"]))
+            data["principals"][key] = key
+        if mode == "incomplete":
+            data["inventory"].append("synthetic-private-unmapped-subject")
+        return json.dumps(data).encode()
+
+    # Missing bytes have their own public reason; keep the real validator and
+    # operation context in play for every decision and every nested registry call.
+    def custody_read():
+        try:
+            return read()
+        except FileNotFoundError:
+            raise portable.IdentityMigrationUnavailable(
+                "compat_missing", cause_class="FileNotFoundError"
+            ) from None
+
+    monkeypatch.setattr(consent, "_read_compatibility_document", custody_read)
+    monkeypatch.setattr(portable, "_configured_binding", consent._ESTATE_BINDING)
+    monkeypatch.setattr(consent, "publish_health", Mock())
+    contracts = tmp_path / "synthetic-contracts"
+    contracts.mkdir()
+    monkeypatch.setattr(consent, "_CONTRACTS_DIR", contracts)
+    monkeypatch.setattr(pipeline, "ACTIVATION_STATE_PATH", tmp_path / "activation.json")
+    monkeypatch.setattr(pipeline, "_WL_MANIFEST_PATH", tmp_path / "absent-manifest.json")
+    monkeypatch.setattr(refusal, "append", lambda event, **_: state["events"].append(event) or True)
+    return state
+
+
+@pytest.fixture
+def consent_contract(synthetic_custody):
+    from shared.governance import consent
+    from tests.shared.synthetic_custody import CONTRACT, PRINCIPAL
+
+    path = consent._CONTRACTS_DIR / "synthetic-contract.yaml"
+
+    def write(*, person=PRINCIPAL, scope=("video", "document"), revoked=False):
+        path.write_text(
+            json.dumps(
+                {
+                    "id": CONTRACT,
+                    "parties": ["operator", person],
+                    "scope": list(scope),
+                    "revoked_at": "2026-01-01T00:00:00Z" if revoked else None,
+                }
+            )
+        )
+
+    write()
+    return write
+
+
+def assert_custody_diagnostic(text, mode):
+    from tests.shared.synthetic_custody import document
+
+    assert f"compat_{mode}" in text
+    assert "cause_class=" in text
+    assert f"remedy={CUSTODY_REMEDIES[mode]}" in text
+    assert "synthetic-private" not in text
+    for section in ("principals", "contracts"):
+        for predecessor, successor in document()[section].items():
+            assert predecessor not in text
+            assert successor not in text
+
+
+@pytest.fixture
+def consent_selection(monkeypatch):
+    from shared.affordance import SelectionCandidate
+    from shared.affordance_pipeline import AffordancePipeline
+    from tests.shared.synthetic_custody import OLD_PRINCIPAL
+
+    pipeline = AffordancePipeline()
+    candidate = SelectionCandidate(
+        capability_name="synthetic.capability",
+        similarity=0.9,
+        payload={
+            "consent_required": True,
+            "consent_person_id": OLD_PRINCIPAL,
+            "consent_data_category": "video",
+            "monetization_risk": "none",
+            "content_risk": "tier_0_owned",
+        },
+    )
+    impingement = Impingement(
+        timestamp=time.time(),
+        source="synthetic",
+        type=ImpingementType.STATISTICAL_DEVIATION,
+        strength=0.5,
+    )
+    monkeypatch.setattr(pipeline, "_get_embedding", lambda _: None)
+    monkeypatch.setattr(pipeline, "_fallback_keyword_match", lambda _: [candidate])
+    monkeypatch.setattr(pipeline, "_active_programme_cached", lambda: None)
+    # Freeze consent time to prove every repeated selection is inside the TTL.
+    monkeypatch.setattr("shared.affordance_pipeline.time.time", lambda: 2000000000.0)
+    return pipeline, candidate, lambda: pipeline.select(impingement)
+
+
+@pytest.mark.parametrize("mode", CUSTODY_FAILURES)
+def test_selection_refuses_custody_failure(
+    mode, synthetic_custody, consent_contract, consent_selection, caplog
+):
+    synthetic_custody["mode"] = mode
+    pipeline, candidate, select = consent_selection
+    assert select() == []
+    assert_custody_diagnostic(caplog.text, mode)
+    assert_custody_diagnostic(synthetic_custody["events"][-1].reason, mode)
+
+
+@pytest.mark.parametrize("mode", CUSTODY_FAILURES)
+def test_warm_selection_refuses_current_custody_failure(
+    mode, synthetic_custody, consent_contract, consent_selection, caplog
+):
+    pipeline, candidate, select = consent_selection
+    assert select() == [candidate]
+    loaded_at = pipeline._consent_loaded_at
+    synthetic_custody["mode"] = mode
+    assert select() == []
+    assert pipeline._consent_loaded_at == loaded_at
+    assert synthetic_custody["reads"] == 2
+    assert_custody_diagnostic(caplog.text, mode)
+
+
+def test_warm_selection_observes_persisted_revocation(
+    synthetic_custody, consent_contract, consent_selection
+):
+    pipeline, candidate, select = consent_selection
+    assert select() == [candidate]
+    consent_contract(revoked=True)
+    assert select() == []
+    assert synthetic_custody["reads"] == 2
+
+
+def test_warm_selection_with_valid_custody_still_permits(
+    synthetic_custody, consent_contract, consent_selection
+):
+    pipeline, candidate, select = consent_selection
+    assert select() == [candidate]
+    assert select() == [candidate]
+    # Loading plus matching uses exactly one snapshot per selection.
+    assert synthetic_custody["reads"] == 2
+
+
+def test_selection_negative_cache_keeps_existing_semantics(
+    synthetic_custody, consent_contract, consent_selection
+):
+    pipeline, candidate, select = consent_selection
+    consent_contract(scope=("audio",))
+    assert select() == []
+    consent_contract()
+    assert select() == []
+    assert synthetic_custody["reads"] == 1
+    pipeline._consent_loaded_at -= 61
+    assert select() == [candidate]
+    assert synthetic_custody["reads"] == 2
+
+
+def test_selection_without_consent_requirement_keeps_permitting(
+    synthetic_custody, consent_selection
+):
+    pipeline, candidate, select = consent_selection
+    synthetic_custody["mode"] = "missing"
+    candidate.payload["consent_required"] = False
+    assert select() == [candidate]
+    assert synthetic_custody["reads"] == 0
+
+
+def test_selection_sanitizes_registry_exception(consent_selection, monkeypatch, caplog):
+    monkeypatch.setattr(
+        "shared.governance.consent.load_contracts",
+        Mock(side_effect=RuntimeError("synthetic-private-person-and-path")),
+    )
+    pipeline, candidate, select = consent_selection
+    assert select() == []
+    assert "consent_check_failed: cause_class=RuntimeError" in caplog.text
+    assert "remedy=restore_consent_registry" in caplog.text
+    assert "synthetic-private" not in caplog.text
 
 
 def test_base_level_never_used():
@@ -630,10 +843,7 @@ class TestConsentGate:
         ):
             assert p._consent_allows(cand) is False
 
-    def test_consent_decision_is_cached(self):
-        # The cache is the reason this gate can run per-frame in the
-        # reverie mixer. Two consecutive consent-required checks within
-        # the TTL window must trigger only one contract load.
+    def test_positive_consent_decision_is_revalidated(self):
         from unittest.mock import MagicMock, patch
 
         p = self._pipeline()
@@ -643,8 +853,8 @@ class TestConsentGate:
         with patch("shared.governance.consent.load_contracts", return_value=registry) as mock_load:
             assert p._consent_allows(cand) is True
             assert p._consent_allows(cand) is True
-            assert mock_load.call_count == 1
-            assert registry.contract_check.call_count == 1
+            assert mock_load.call_count == 2
+            assert registry.contract_check.call_count == 2
 
     def test_consent_cache_is_keyed_by_scope_signature(self):
         from unittest.mock import MagicMock, patch
@@ -667,7 +877,7 @@ class TestConsentGate:
         with patch("shared.governance.consent.load_contracts", return_value=registry) as mock_load:
             assert p._consent_allows(video) is False
             assert p._consent_allows(audio) is True
-            assert mock_load.call_count == 1
+            assert mock_load.call_count == 2
             assert registry.contract_check.call_count == 2
 
     def test_consent_cache_refreshes_after_ttl(self):
@@ -729,7 +939,7 @@ class TestConsentRefusalBriefEmission:
         assert len(captured) == 1
         assert captured[0].surface == "affordance_pipeline:consent_gate"
         assert captured[0].axiom == "interpersonal_transparency"
-        assert "no matching active consent contract" in captured[0].reason
+        assert "consent_no_match" in captured[0].reason
 
     def test_emits_on_loader_exception(self, monkeypatch):
         from unittest.mock import patch
@@ -747,7 +957,7 @@ class TestConsentRefusalBriefEmission:
             assert AffordancePipeline()._consent_allows(self._candidate()) is False
 
         assert len(captured) == 1
-        assert "exception" in captured[0].reason.lower()
+        assert "consent_check_failed: cause_class=RuntimeError" in captured[0].reason
 
     def test_no_emit_when_consent_active(self, monkeypatch):
         from unittest.mock import MagicMock, patch

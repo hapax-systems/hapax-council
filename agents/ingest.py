@@ -668,23 +668,36 @@ def _check_consent_for_ingest(payload: dict) -> bool:
     """Check if all persons in payload have active consent contracts.
 
     Returns True if safe to ingest, False if unconsented persons present.
-    Degrades gracefully — if the consent registry is unavailable, allows
-    ingestion (sync agents already filter upstream).
+    Required custody failures withhold identified payloads.
     """
     people = payload.get("people", [])
     if not people:
         return True  # No persons — safe
 
+    from agentgov.consent import IdentityMigrationUnavailable
+
     try:
-        from shared.governance.consent import ConsentRegistry
+        from shared.governance.consent import ConsentRegistry, estate_identity_operation
 
-        registry = ConsentRegistry()
-        registry.load()
-    except Exception:
-        return True  # Registry unavailable — degrade gracefully
-
-    source_service = payload.get("source_service", "document")
-    return all(registry.contract_check(str(person), source_service) for person in people)
+        with estate_identity_operation():
+            registry = ConsentRegistry()
+            registry.load()
+            source_service = payload.get("source_service", "document")
+            allowed = all(registry.contract_check(str(person), source_service) for person in people)
+    except Exception as exc:
+        reason = (
+            f"{exc.reason}: cause_class={exc.cause_class or type(exc).__name__} remedy={exc.remedy}"
+            if isinstance(exc, IdentityMigrationUnavailable)
+            else f"consent_check_failed: cause_class={type(exc).__name__} "
+            "remedy=restore_consent_registry"
+        )
+        log.warning("Consent ingest withheld: %s", reason)
+        return False
+    if not allowed:
+        log.warning(
+            "consent_no_match: cause_class=NoActiveContract remedy=establish_matching_consent"
+        )
+    return allowed
 
 
 def ingest_file(path: Path) -> tuple[bool, str]:
@@ -734,6 +747,11 @@ def ingest_file(path: Path) -> tuple[bool, str]:
             except Exception:
                 pass  # Frontmatter parsing is best-effort
 
+        # Validate the same file metadata used by every chunk before embedding.
+        metadata = enrich_payload({"source": str(path.resolve())}, frontmatter)
+        if not _check_consent_for_ingest(metadata):
+            return (True, "consent_skipped")
+
         # Embed and upsert
         from qdrant_client import models
 
@@ -750,16 +768,14 @@ def ingest_file(path: Path) -> tuple[bool, str]:
             now = time.time()
             for i, (chunk, vec) in enumerate(zip(chunks, vectors, strict=True)):
                 payload = {
+                    **metadata,
                     "text": chunk.text,
-                    "source": str(path.resolve()),
                     "filename": path.name,
                     "extension": path.suffix.lower(),
                     "chunk_index": i,
                     "chunk_count": len(chunks),
                     "ingested_at": now,
                 }
-                # Enrich with frontmatter metadata and path-based auto-detection
-                payload = enrich_payload(payload, frontmatter)
                 points.append(
                     models.PointStruct(
                         id=point_id(path, i),
@@ -767,11 +783,6 @@ def ingest_file(path: Path) -> tuple[bool, str]:
                         payload=payload,
                     )
                 )
-
-        # Consent check: skip if unconsented persons in any chunk payload
-        if points and not _check_consent_for_ingest(points[0].payload):
-            log.info("Consent: skipping %s — unconsented persons in payload", path.name)
-            return (True, "consent_skipped")
 
         if points:
             ensure_collection(CFG.collection, vector_size=len(points[0].vector))

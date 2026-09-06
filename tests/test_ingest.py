@@ -6,7 +6,91 @@ import time
 from types import SimpleNamespace
 from unittest.mock import MagicMock
 
+import pytest
+
 from agents import ingest
+from tests import test_affordance_pipeline as consent_cases
+from tests.test_affordance_pipeline import (
+    CUSTODY_FAILURES,
+    assert_custody_diagnostic,
+)
+
+synthetic_custody = consent_cases.synthetic_custody
+consent_contract = consent_cases.consent_contract
+
+
+@pytest.fixture
+def consent_ingest(monkeypatch, tmp_path):
+    from tests.shared.synthetic_custody import OLD_PRINCIPAL
+
+    path = tmp_path / "synthetic-document.md"
+    path.write_text(f"---\npeople: [{OLD_PRINCIPAL}]\n---\nSynthetic document.")
+    monkeypatch.setattr(
+        ingest, "extract_chunks", lambda _: [SimpleNamespace(text="Synthetic document.")]
+    )
+    monkeypatch.setattr(ingest, "embed_batch", MagicMock(return_value=[[0.1, 0.2]]))
+    monkeypatch.setattr(ingest, "ensure_collection", MagicMock())
+    monkeypatch.setattr(ingest, "delete_file_points", MagicMock())
+    qdrant = MagicMock()
+    monkeypatch.setattr(ingest, "get_qdrant", lambda: qdrant)
+    return path, qdrant
+
+
+@pytest.mark.parametrize("mode", CUSTODY_FAILURES)
+def test_ingest_caller_withholds_custody_failure(
+    mode, synthetic_custody, consent_contract, consent_ingest, caplog
+):
+    path, qdrant = consent_ingest
+    synthetic_custody["mode"] = mode
+    assert ingest.ingest_file(path) == (True, "consent_skipped")
+    ingest.embed_batch.assert_not_called()
+    qdrant.upsert.assert_not_called()
+    ingest.ensure_collection.assert_not_called()
+    ingest.delete_file_points.assert_not_called()
+    assert_custody_diagnostic(caplog.text, mode)
+
+
+@pytest.mark.parametrize("allowed", (True, False))
+def test_ingest_caller_valid_custody_controls(
+    allowed, synthetic_custody, consent_contract, consent_ingest, caplog
+):
+    path, qdrant = consent_ingest
+    consent_contract(scope=("document",) if allowed else ("audio",))
+    assert ingest.ingest_file(path) == (True, "" if allowed else "consent_skipped")
+    assert ingest.embed_batch.call_count == int(allowed)
+    assert qdrant.upsert.call_count == int(allowed)
+    assert synthetic_custody["reads"] == 1
+    if not allowed:
+        assert "consent_no_match: cause_class=NoActiveContract" in caplog.text
+        assert "remedy=establish_matching_consent" in caplog.text
+
+
+def test_ingest_without_people_keeps_permitting(synthetic_custody, consent_ingest):
+    path, qdrant = consent_ingest
+    path.write_text("Synthetic document without people.")
+    synthetic_custody["mode"] = "missing"
+    assert ingest.ingest_file(path) == (True, "")
+    qdrant.upsert.assert_called_once()
+    assert synthetic_custody["reads"] == 0
+
+
+@pytest.mark.parametrize("stage", ("load", "contract_check"))
+def test_ingest_caller_sanitizes_registry_exceptions(stage, consent_ingest, monkeypatch, caplog):
+    from shared.governance import consent
+
+    monkeypatch.setattr(
+        consent.ConsentRegistry,
+        stage,
+        MagicMock(side_effect=RuntimeError("synthetic-private-person-and-path")),
+    )
+    path, qdrant = consent_ingest
+    assert ingest.ingest_file(path) == (True, "consent_skipped")
+    ingest.embed_batch.assert_not_called()
+    qdrant.upsert.assert_not_called()
+    assert "consent_check_failed: cause_class=RuntimeError" in caplog.text
+    assert "remedy=restore_consent_registry" in caplog.text
+    assert "synthetic-private" not in caplog.text
+
 
 # ── parse_frontmatter ────────────────────────────────────────────────────────
 

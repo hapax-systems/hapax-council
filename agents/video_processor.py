@@ -127,10 +127,11 @@ class ProcessedSegmentInfo(BaseModel):
     role: str = ""
     processed_at: float = 0.0
     category: str = "empty_room"
-    value_score: float = 0.0
-    people_count: int = 0
-    motion_score: float = 0.0
-    scene_change: bool = False
+    value_score: float | None = 0.0
+    people_count: int | None = 0
+    motion_score: float | None = 0.0
+    scene_change: bool | None = False
+    consent_status: str = ""
     disposition: str = ""  # "uploaded", "local_keep", "discard"
     uploaded: bool = False
     upload_path: str = ""
@@ -635,17 +636,7 @@ def _classify_segment_dispatch(segment_path: Path) -> SegmentClassification:
         if minutes:
             agg = _aggregate_perception_minutes(minutes)
             classification = _classify_from_perception(agg)
-            log.info(
-                "Perception-classified %s: %s (score=%.2f, present=%.0f%%, "
-                "activity=%s, flow=%.2f, people=%d)",
-                segment_path.name,
-                classification.category,
-                classification.value_score,
-                agg["operator_present_ratio"] * 100,
-                agg["activity_mode"],
-                agg["flow_score_mean"],
-                agg["person_count_max"],
-            )
+            # The processing caller logs measurements after consent validation.
             return classification
     # Fallback: original haar cascade pipeline
     log.info("No perception data for %s — falling back to haar cascades", segment_path.name)
@@ -737,18 +728,63 @@ def _classify_segment(segment_path: Path) -> SegmentClassification:
 def _guest_consent_check() -> bool:
     """Check if guest presence metadata may be persisted.
 
-    Returns True if guest metadata is safe to persist (consent granted
-    or registry unavailable — degrade open since operator is always present).
-    Returns False if registry is loaded and no guest consent contract exists.
+    Required custody and contract scope must validate together.
     """
-    try:
-        from shared.governance.consent import ConsentRegistry
+    from agentgov.consent import IdentityMigrationUnavailable
 
-        registry = ConsentRegistry()
-        registry.load()
-        return registry.contract_check("guest", "video")
-    except Exception:
-        return True  # Registry unavailable — degrade gracefully
+    try:
+        from shared.governance.consent import ConsentRegistry, estate_identity_operation
+
+        with estate_identity_operation():
+            registry = ConsentRegistry()
+            registry.load()
+            allowed = registry.contract_check("guest", "video")
+    except Exception as exc:
+        reason = (
+            f"{exc.reason}: cause_class={exc.cause_class or type(exc).__name__} remedy={exc.remedy}"
+            if isinstance(exc, IdentityMigrationUnavailable)
+            else f"consent_check_failed: cause_class={type(exc).__name__} "
+            "remedy=restore_consent_registry"
+        )
+        log.warning("Consent video withheld: %s", reason)
+        return False
+    if not allowed:
+        log.warning(
+            "consent_no_match: cause_class=NoActiveContract remedy=establish_matching_consent"
+        )
+    return allowed
+
+
+def _consented_metadata(classification: SegmentClassification) -> dict:
+    """Validate once before persisting or acting on guest-derived measurements."""
+    if (
+        classification.people_count > 1 or classification.max_people > 1
+    ) and not _guest_consent_check():
+        # Neither classifier separates guests from the operator in these fields.
+        # Null means withheld, never an observation of an operator-only scene.
+        return {
+            "category": "consent_withheld",
+            "value_score": None,
+            "people_count": None,
+            "max_people": None,
+            "motion_score": None,
+            "scene_change": None,
+            "ssim": None,
+            "consent_status": "withheld",
+        }
+    return classification.model_dump(exclude={"frame_analyses"})
+
+
+def _persist_sidecar(segment_path: Path, data: dict, suffix: str) -> Path:
+    """Write metadata already admitted or withheld by the consent boundary."""
+    sidecar_path = segment_path.with_suffix(segment_path.suffix + suffix)
+    data = {
+        "filename": segment_path.name,
+        "classified_at": datetime.now(UTC).isoformat(),
+        **data,
+    }
+    sidecar_path.write_text(json.dumps(data, indent=2), encoding="utf-8")
+    return sidecar_path
 
 
 def _write_sidecar(
@@ -762,26 +798,12 @@ def _write_sidecar(
     Sidecar contains classification metadata for the retention script
     and for any future reprocessing.
     """
-    sidecar_path = segment_path.with_suffix(segment_path.suffix + suffix)
-    data = {
-        "filename": segment_path.name,
-        "classified_at": datetime.now(UTC).isoformat(),
-        "category": classification.category,
-        "value_score": classification.value_score,
-        "people_count": classification.people_count,
-        "max_people": classification.max_people,
-        "motion_score": classification.motion_score,
-        "scene_change": classification.scene_change,
-        "ssim": classification.ssim,
-        "disposition": disposition,
-    }
-    # Consent gate: redact guest presence metadata if unconsented
-    if data["people_count"] > 1 and not _guest_consent_check():
-        log.info("Consent: redacting guest count in sidecar for %s", segment_path.name)
-        data["people_count"] = 1  # Only operator
-        data["max_people"] = 1
-    sidecar_path.write_text(json.dumps(data, indent=2), encoding="utf-8")
-    return sidecar_path
+    data = _consented_metadata(classification)
+    if data.get("consent_status") == "withheld":
+        disposition = "withheld"
+        suffix = ".classified"
+    data["disposition"] = disposition
+    return _persist_sidecar(segment_path, data, suffix)
 
 
 # ── Upload to Google Drive ───────────────────────────────────────────────────
@@ -863,6 +885,18 @@ def _process_segment(
             processed_at=time.time(),
         )
 
+    metadata = _consented_metadata(classification)
+    if metadata.get("consent_status") == "withheld":
+        metadata["disposition"] = "withheld"
+        _persist_sidecar(segment_path, metadata, ".classified")
+        _log_change("consent_withheld", "guest metadata withheld", {"consent_status": "withheld"})
+        return ProcessedSegmentInfo(
+            filename=filename,
+            role=role,
+            processed_at=time.time(),
+            **metadata,
+        )
+
     score = classification.value_score
     category = classification.category
 
@@ -878,20 +912,20 @@ def _process_segment(
             uploaded = True
             upload_path = f"gdrive:video-archive/{role}/{date}/{filename}"
             # Mark as processed so retention script can delete local copy
-            _write_sidecar(segment_path, classification, disposition, suffix=".processed")
+            _persist_sidecar(segment_path, {**metadata, "disposition": disposition}, ".processed")
         else:
             # Upload failed — keep locally, mark classified for retry
             disposition = "local_keep"
-            _write_sidecar(segment_path, classification, disposition, suffix=".classified")
+            _persist_sidecar(segment_path, {**metadata, "disposition": disposition}, ".classified")
             log.warning("Upload failed for %s — keeping locally", filename)
     elif score >= LOCAL_KEEP_THRESHOLD:
         # Keep locally for 48h review window
         disposition = "local_keep"
-        _write_sidecar(segment_path, classification, disposition, suffix=".classified")
+        _persist_sidecar(segment_path, {**metadata, "disposition": disposition}, ".classified")
     else:
         # Discard — mark processed so retention script deletes it
         disposition = "discard"
-        _write_sidecar(segment_path, classification, disposition, suffix=".processed")
+        _persist_sidecar(segment_path, {**metadata, "disposition": disposition}, ".processed")
 
     info = ProcessedSegmentInfo(
         filename=filename,

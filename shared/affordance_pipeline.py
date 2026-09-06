@@ -14,6 +14,8 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Literal
 
+from agentgov.consent import IdentityMigrationUnavailable
+
 from shared.affordance import ActivationState, CapabilityRecord, SelectionCandidate
 from shared.affordance_metrics import AffordanceMetrics
 from shared.affordance_posterior_store import (
@@ -103,9 +105,8 @@ DISPATCH_TRACE_ENV = "HAPAX_DISPATCH_TRACE"
 # 0.999 ≈ 700-tick half-life (gentle); 1.0 disables. Operator-tunable.
 THOMPSON_DECAY_ENV = "HAPAX_AFFORDANCE_THOMPSON_DECAY"
 THOMPSON_DECAY_DEFAULT = 0.999
-# Consent contract registry refresh window. Cheap to refresh (4 yaml files)
-# but pipeline.select() is hot-pathed (per-frame in reverie mixer, per-impingement
-# in run_loops_aux), so we cache for 60s instead of reading every call.
+# Negative decisions and duplicate refusal events may be cached for 60s.
+# Positive decisions must reload consent under current custody on every use.
 _CONSENT_CACHE_TTL_S = 60.0
 
 # D-26 (Phase 5): active-programme refresh window. Tighter than the consent
@@ -152,9 +153,7 @@ def _emit_consent_refusal(*, axiom: str, surface: str, reason: str) -> None:
     so consent_required capabilities are about to be blocked.
 
     The cache TTL on the consent gate (60s) bounds emission rate to
-    at most one append per minute per pipeline instance — the gate
-    only loads contracts on cache miss, and emit is conditional on
-    the load returning False.
+    at most one append per reason and scope per minute per pipeline instance.
 
     Best-effort: writer failures swallowed so an observability hiccup
     never breaks the consent decision path.
@@ -521,59 +520,64 @@ class AffordancePipeline:
         if not isinstance(person_id, str) or not person_id.strip():
             _emit_once(
                 ("missing_person_id", candidate.capability_name, ""),
-                reason="missing consent_person_id — consent_required candidate blocked",
+                reason="consent_scope_missing: cause_class=MissingPerson remedy=declare_consent_scope",
             )
             return False
         person_id = person_id.strip()
         if person_id == "operator":
             _emit_once(
                 ("operator_scope", candidate.capability_name, str(data_category)),
-                reason="operator/network authorization is not interpersonal consent",
+                reason="consent_scope_invalid: cause_class=OperatorScope remedy=declare_subject_scope",
             )
             return False
         if not isinstance(data_category, str) or not data_category.strip():
             _emit_once(
                 ("missing_data_category", candidate.capability_name, person_id),
-                reason="missing consent_data_category — consent_required candidate blocked",
+                reason="consent_scope_missing: cause_class=MissingCategory remedy=declare_consent_scope",
             )
             return False
         data_category = data_category.strip()
 
         requirement = (person_id, data_category)
-        if requirement not in self._consent_scope_cache:
+        if self._consent_scope_cache.get(requirement) is not False:
             try:
-                from shared.governance.consent import load_contracts
+                from shared.governance.consent import estate_identity_operation, load_contracts
 
-                if self._consent_registry is None:
+                # Loading and checking share one validated correspondence snapshot.
+                # A fresh registry also sees revocations made since the last selection.
+                with estate_identity_operation():
                     self._consent_registry = load_contracts(strict=True)
-                    self._consent_loaded_at = now
-                allowed = bool(
-                    self._consent_registry.contract_check(
-                        requirement[0],
-                        requirement[1],
+                    allowed = bool(
+                        self._consent_registry.contract_check(
+                            requirement[0],
+                            requirement[1],
+                        )
                     )
-                )
                 self._consent_scope_cache[requirement] = allowed
                 self._consent_loaded_at = now
                 if not allowed:
                     _emit_once(
                         ("no_match", requirement[0], requirement[1]),
                         reason=(
-                            "no matching active consent contract for "
-                            f"{requirement[0]}:{requirement[1]} — candidate blocked"
+                            "consent_no_match: cause_class=NoActiveContract "
+                            "remedy=establish_matching_consent"
                         ),
                     )
-            except Exception:
-                log.warning(
-                    "Consent gate failed for %s — blocking (fail-closed)",
-                    candidate.capability_name,
+            except Exception as exc:
+                reason = (
+                    f"{exc.reason}: cause_class={exc.cause_class or type(exc).__name__} "
+                    f"remedy={exc.remedy}"
+                    if isinstance(exc, IdentityMigrationUnavailable)
+                    else f"consent_check_failed: cause_class={type(exc).__name__} "
+                    "remedy=restore_consent_registry"
                 )
+                log.warning("Consent selection refused: %s", reason)
                 self._consent_scope_cache[requirement] = False
                 self._consent_registry = None
                 self._consent_loaded_at = now
                 _emit_once(
                     ("loader_exception", requirement[0], requirement[1]),
-                    reason="contract loader exception — gate failed closed",
+                    reason=reason,
                 )
         return self._consent_scope_cache[requirement]
 
