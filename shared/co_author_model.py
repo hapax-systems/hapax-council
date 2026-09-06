@@ -95,6 +95,13 @@ HAPAX = CoAuthor(
     url="https://hapax.omg.lol",
 )
 
+CODEX = CoAuthor(
+    name="Codex",
+    role="substrate",
+    cff_type="entity",
+    alias="codex",
+)
+
 CLAUDE_CODE = CoAuthor(
     name="Claude Code",
     role="substrate",
@@ -118,6 +125,7 @@ ALL_CO_AUTHORS: tuple[CoAuthor, ...] = (HAPAX, CLAUDE_CODE, OUDEPODE)
 # ── Render helpers ──────────────────────────────────────────────────
 
 _BY_KEY: dict[str, CoAuthor] = {
+    "codex": CODEX,
     "hapax": HAPAX,
     "claude_code": CLAUDE_CODE,
     "claude-code": CLAUDE_CODE,
@@ -160,6 +168,7 @@ def compose_byline(keys: list[str] | None = None, *, separator: str = ", ") -> s
 __all__ = [
     "ALL_CO_AUTHORS",
     "CLAUDE_CODE",
+    "CODEX",
     "CffType",
     "CoAuthor",
     "HAPAX",

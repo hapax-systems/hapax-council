@@ -167,19 +167,16 @@ def _default_state_root() -> Path:
 def _resolve_co_authors(frontmatter: dict) -> list[CoAuthor]:
     """Resolve frontmatter ``co_authors`` to canonical ``CoAuthor`` objects.
 
-    Recognized entry shapes (each must round-trip cleanly to a registered
-    ``CoAuthor`` — partial matches default to ALL_CO_AUTHORS to avoid
-    silent author dropping):
+    Recognized entry shapes (each must resolve to a registered ``CoAuthor``):
 
       - ``"hapax"`` / ``"claude-code"`` / ``"oudepode"`` — alias keys
       - ``"Hapax (entity, primary)"`` — first-token-stem normalized to
         kebab-case, looked up via ``shared.co_author_model.get()``
       - ``{"alias": "..."}`` — dict with explicit alias
 
-    If the frontmatter list is absent OR any entry fails to resolve,
-    return ``[]`` so the ``PreprintArtifact`` constructor populates with
-    ``ALL_CO_AUTHORS``. This avoids silently shipping with fewer authors
-    than the operator intended.
+    Absent or empty lists retain the existing ``PreprintArtifact`` default.
+    If any explicit entry fails to resolve, refuse the entire list before
+    constructing or writing an artifact.
     """
     raw = frontmatter.get("co_authors")
     if not raw:
@@ -189,11 +186,11 @@ def _resolve_co_authors(frontmatter: dict) -> list[CoAuthor]:
     for entry in raw:
         co = _resolve_one_co_author(entry)
         if co is None:
-            log.warning(
-                "co_author %r could not be resolved; falling back to default ALL_CO_AUTHORS",
-                entry,
+            raise PublicationFrontmatterError(
+                f"unrecognized co_authors entry {entry!r}; next action: use a registered "
+                "key such as 'codex' or 'hapax', or an alias mapping such as "
+                "{'alias': 'codex'}"
             )
-            return []
         resolved.append(co)
     return resolved
 
