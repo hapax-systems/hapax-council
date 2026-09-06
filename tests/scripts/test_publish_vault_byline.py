@@ -239,3 +239,88 @@ def test_publisher_refuses_codex_and_unregistered_before_artifact_write(
     assert not state.exists()
     assert source.read_bytes() == original_source
     assert "unrecognized co_authors entry 'unregistered'" in caplog.text
+
+
+@pytest.mark.parametrize(
+    "entry, findings",
+    [
+        pytest.param(
+            {"alias": "codex", "key": "hapax"},
+            ("alias='codex' -> Codex", "key='hapax' -> Hapax"),
+            id="codex-hapax",
+        ),
+        pytest.param(
+            {"alias": "hapax", "key": "codex"},
+            ("alias='hapax' -> Hapax", "key='codex' -> Codex"),
+            id="hapax-codex",
+        ),
+        pytest.param(
+            {"alias": "codex", "key": "unregistered"},
+            ("alias='codex' -> Codex", "key='unregistered' -> unrecognized"),
+            id="unknown-secondary",
+        ),
+        pytest.param(
+            {"alias": "codex", "key": None},
+            ("alias='codex' -> Codex", "key=None -> unrecognized"),
+            id="null-secondary",
+        ),
+        pytest.param(
+            {"alias": "codex", "key": ""},
+            ("alias='codex' -> Codex", "key='' -> unrecognized"),
+            id="empty-secondary",
+        ),
+    ],
+)
+def test_publisher_refuses_unresolved_or_conflicting_selectors_before_artifact_write(
+    tmp_path, caplog, entry, findings
+):
+    # Bind clearance to the buggy primary selection so only selector refusal
+    # prevents the actual caller from writing that artifact.
+    source, _ = _source_with_receipts(
+        tmp_path,
+        entries=[entry],
+        expected_authors=[authors.get(entry["alias"])],
+        byline="Synthetic attribution",
+    )
+    original_source = source.read_bytes()
+    state = tmp_path / "isolated-state"
+
+    assert _run_publisher(source, state) == 1
+
+    assert not state.exists()
+    assert source.read_bytes() == original_source
+    assert "unresolved or conflicting co_authors selectors" in caplog.text
+    for finding in findings:
+        assert finding in caplog.text
+    assert "next action: use registered selectors for the same canonical participant" in caplog.text
+
+
+@pytest.mark.parametrize(
+    "entry, canonical",
+    [
+        pytest.param({"alias": "codex", "key": "CODEX"}, "codex", id="case-agreement"),
+        pytest.param(
+            {"alias": "claude-code", "key": "claude_code"}, "claude-code", id="alias-agreement"
+        ),
+        pytest.param({"alias": "CODEX"}, "codex", id="single-alias"),
+        pytest.param({"key": "claude_code"}, "claude-code", id="single-key"),
+    ],
+)
+def test_publisher_writes_canonical_selector_agreement_to_artifact(tmp_path, entry, canonical):
+    source, expected = _source_with_receipts(
+        tmp_path,
+        entries=[entry],
+        expected_authors=[authors.get(canonical)],
+        byline="Synthetic attribution",
+    )
+    original_source = source.read_bytes()
+    state = tmp_path / "isolated-state"
+
+    assert _run_publisher(source, state) == 0
+
+    destination = state / "publish" / "inbox" / "synthetic-byline.json"
+    assert sorted(state.rglob("*.json")) == [destination]
+    payload = json.loads(destination.read_text())
+    assert payload["co_authors"] == expected.model_dump(mode="json")["co_authors"]
+    assert payload["attribution_block"] == "Synthetic attribution"
+    assert source.read_bytes() == original_source

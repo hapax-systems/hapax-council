@@ -210,15 +210,34 @@ def _resolve_one_co_author(entry) -> CoAuthor | None:  # type: ignore[no-untyped
     Splits on first ``(`` to lift the name out of "Name (role, ...)"
     prose; normalizes to kebab-case-lowercase before hitting
     ``co_author_model.get``.
+
+    Mapping selectors must each resolve and agree on the canonical participant.
     """
     if isinstance(entry, dict):
-        alias = entry.get("alias") or entry.get("key")
-        if not alias:
+        selectors = [selector for selector in ("alias", "key") if selector in entry]
+        if not selectors:
             return None
-        try:
-            return get_co_author(str(alias))
-        except KeyError:
-            return None
+        participants: list[CoAuthor | None] = []
+        for selector in selectors:
+            try:
+                participant = get_co_author(str(entry[selector])) if entry[selector] else None
+            except KeyError:
+                participant = None
+            participants.append(participant)
+        if len(selectors) > 1 and (
+            any(participant is None for participant in participants)
+            or any(participant != participants[0] for participant in participants[1:])
+        ):
+            findings = "; ".join(
+                f"{selector}={entry[selector]!r} -> "
+                f"{participant.name if participant is not None else 'unrecognized'}"
+                for selector, participant in zip(selectors, participants, strict=True)
+            )
+            raise PublicationFrontmatterError(
+                f"unresolved or conflicting co_authors selectors: {findings}; "
+                "next action: use registered selectors for the same canonical participant"
+            )
+        return participants[0]
 
     if not isinstance(entry, str):
         return None
