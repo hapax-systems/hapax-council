@@ -1636,3 +1636,88 @@ def test_genuine_relative_join_still_pairs(gate, tmp_path: Path) -> None:
     report = gate.analyse_consumer_side(tmp_path, [])
     assert not report.findings
     assert report.unresolvable == 0
+
+
+@pytest.fixture
+def synthetic_repo(gate, monkeypatch):
+    """Keep the exact review root without creating /review-fixture on the host."""
+    root = Path("/review-fixture")
+    relative = Path("shared/consumer.py")
+    monkeypatch.setattr(gate, "_iter_python_sources", lambda *_a, **_kw: [root / relative])
+    monkeypatch.setattr(gate, "_git_tracked_paths", lambda _root: frozenset({str(relative)}))
+
+    def analyse(source):
+        monkeypatch.setattr(gate, "_read", lambda *_a, **_kw: source)
+        return gate.analyse_consumer_side(root, []), gate.collect_artifact_accesses(root)
+
+    return analyse
+
+
+@pytest.mark.parametrize(
+    "inner",
+    [
+        "Path('/review-fixture/artifacts/placeholder').parent",
+        "Path('/review-fixture/' + 'artifacts')",
+        "Path(f\"/review-fixture/{'artifacts'}\")",
+    ],
+    ids=["parent", "addition", "fstring"],
+)
+@pytest.mark.parametrize("assigned", [False, True], ids=["inline", "assigned"])
+def test_composed_absolute_identity_survives_expression_evaluation(
+    synthetic_repo, inner, assigned
+) -> None:
+    setup = f"target = {inner}\n" if assigned else ""
+    operand = "target" if assigned else inner
+    report, (accesses, unresolved, *_) = synthetic_repo(
+        "from pathlib import Path\n"
+        + setup
+        + f"(Path('wrong') / {operand} / 'old.json').write_text('{{}}')\n"
+        "Path('wrong/artifacts/old.json').read_text()\n"
+    )
+    # The inline parent case is codex-1's exact composed expression and repo_root.
+    assert (Path("shared/consumer.py"), "wrong/artifacts/old.json") in _unwritten(report)
+    assert {(a.action, a.pattern, a.bounded) for a in accesses} == {
+        ("write", "artifacts/old.json", True),
+        ("read", "wrong/artifacts/old.json", True),
+    }
+    assert unresolved == report.unresolvable == 0
+
+
+@pytest.mark.parametrize("reverse", [False, True], ids=["codex-exact", "reverse"])
+def test_posix_backslash_and_slash_filenames_do_not_pair(synthetic_repo, reverse) -> None:
+    writer = "Path(r'$HOME\\artifacts/old.json')"
+    reader = "Path('$HOME/artifacts/old.json')"
+    writer_pattern = r"$HOME\artifacts/old.json"
+    reader_pattern = "$HOME/artifacts/old.json"
+    if reverse:
+        writer, reader = reader, writer
+        writer_pattern, reader_pattern = reader_pattern, writer_pattern
+    report, (accesses, unresolved, *_) = synthetic_repo(
+        f"from pathlib import Path\n{writer}.write_text('{{}}')\n{reader}.read_text()\n"
+    )
+    assert (Path("shared/consumer.py"), reader_pattern) in _unwritten(report)
+    assert {(a.action, a.pattern, a.bounded) for a in accesses} == {
+        ("write", writer_pattern, True),
+        ("read", reader_pattern, True),
+    }
+    assert unresolved == report.unresolvable == 0
+
+
+@pytest.mark.parametrize("conversion", ["r", "a"])
+def test_formatted_backslashes_are_runtime_filename_characters(synthetic_repo, conversion) -> None:
+    # _format_constant applies repr/ascii just as Python does. These backslashes
+    # belong to the resulting filename; decoding them again would change it.
+    value = "\\é"
+    converted = repr(value) if conversion == "r" else ascii(value)
+    expected = "$HOME" + converted + "/old.json"
+    slash_pattern = Path(expected.replace("\\", "/")).as_posix()
+    expression = f'Path(f"$HOME{{value!{conversion}}}/old.json")'
+    report, (accesses, unresolved, *_) = synthetic_repo(
+        f"from pathlib import Path\nvalue = {value!r}\n"
+        f"{expression}.write_text('{{}}')\nPath({expected!r}).read_text()\n"
+        f"Path({slash_pattern!r}).read_text()\n"
+    )
+    assert (Path("shared/consumer.py"), slash_pattern) in _unwritten(report)
+    assert (Path("shared/consumer.py"), expected) not in _unwritten(report)
+    assert [(a.pattern, a.bounded) for a in accesses if a.action == "write"] == [(expected, True)]
+    assert unresolved == report.unresolvable == 0

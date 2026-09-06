@@ -926,10 +926,7 @@ def _literal_text(value: str, *, escape: bool = False) -> str:
 
 
 def _normalise_pattern(value: str, repo_root: Path) -> str:
-    # This estate uses POSIX paths. A backslash produced by !r/!a is a filename
-    # character, not a directory separator.
-    if value.startswith("$HOME\\"):
-        value = value.replace("\\", "/")
+    # POSIX backslashes, including runtime !r/!a output, are filename characters.
     root = repo_root.resolve().as_posix()
     if value == root:
         return "."
@@ -944,9 +941,9 @@ def _normalise_pattern(value: str, repo_root: Path) -> str:
 
 def _join_pattern(left: str, right: str, repo_root: Path) -> str:
     joined = right if right.startswith("/") or left in ("", ".") else f"{left.rstrip('/')}/{right}"
-    # An inner join can be the absolute RHS of another join. Keep its root until
-    # access recording; stripping the repository prefix here loses the reset.
-    return joined if joined.startswith("/") else _normalise_pattern(joined, repo_root)
+    # Preserve expression identity until access recording: this result may still
+    # be an absolute RHS, or be concatenated with another string.
+    return joined
 
 
 def _parent_pattern(value: str, levels: int, repo_root: Path) -> str | None:
@@ -955,7 +952,7 @@ def _parent_pattern(value: str, levels: int, repo_root: Path) -> str | None:
         if result == _HOME_ROOT:
             return None
         result = str(PurePosixPath(result).parent)
-    return _normalise_pattern(result, repo_root)
+    return result
 
 
 def _function_name(call: ast.Call, values: dict[str, str] | None = None) -> str:
@@ -1653,7 +1650,7 @@ def _resolve_path_expr(
                     depth=depth + 1,
                 )
                 parts.append(resolved if resolved and resolved != "*" else "*")
-        return _normalise_pattern("".join(parts), repo_root)
+        return "".join(parts)
     if isinstance(node, ast.BinOp) and isinstance(node.op, (ast.Div, ast.Add)):
         left = _resolve_path_expr(
             node.left, values, path, repo_root, path_functions, depth=depth + 1
@@ -1664,7 +1661,7 @@ def _resolve_path_expr(
         if left is None or right is None:
             return None
         if isinstance(node.op, ast.Add):
-            return _normalise_pattern(left + right, repo_root)
+            return left + right
         return _join_pattern(left, right, repo_root)
     if isinstance(node, ast.BoolOp) and isinstance(node.op, ast.Or):
         resolved = [

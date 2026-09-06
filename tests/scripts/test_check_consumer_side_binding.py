@@ -179,8 +179,10 @@ def test_non_python_producer_downgrades_cache_finding(gate, tmp_path: Path) -> N
     assert "scripts/producer.sh" in matches[0].detail
 
 
-def test_pattern_matching_normalises_separators(gate) -> None:
-    assert gate._patterns_match(r"$HOME\cache\wanted.json", "$HOME/cache/wanted.json")
+def test_pattern_matching_keeps_posix_backslash_distinct(gate) -> None:
+    # Reverse round twenty-one b5af9bcdc: a POSIX backslash is part of the
+    # filename, including when Python's runtime !r/!a conversion produces it.
+    assert not gate._patterns_match(r"$HOME\cache\wanted.json", "$HOME/cache/wanted.json")
 
 
 def test_pattern_matching_keeps_literal_home_and_tilde_distinct(gate) -> None:
