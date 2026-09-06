@@ -16,6 +16,19 @@ import pytest
 
 
 @pytest.fixture(autouse=True)
+def _isolate_publication_witness_log(tmp_path, monkeypatch):
+    """Keep publisher dispatch witnesses in per-test files, including children."""
+    from agents.publication_bus import witness_log
+
+    monkeypatch.setenv(
+        witness_log.PUBLICATION_LOG_PATH_ENV, str(tmp_path / "publication-log.jsonl")
+    )
+    witness_log.reset_idempotency_cache()
+    yield
+    witness_log.reset_idempotency_cache()
+
+
+@pytest.fixture(autouse=True)
 def _isolate_turn_timing_witness(tmp_path, monkeypatch):
     """Keep TurnBudget.emit() receipts out of the production /dev/shm witness.
 
