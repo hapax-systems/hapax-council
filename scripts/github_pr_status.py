@@ -23,6 +23,7 @@ import sys
 import time
 from dataclasses import asdict, dataclass
 from datetime import UTC, datetime
+from http import HTTPStatus
 from pathlib import Path
 from typing import Any
 
@@ -63,10 +64,17 @@ _SAFE_CACHE_RE = re.compile(r"[^A-Za-z0-9_.-]+")
 class RestIndeterminateError(subprocess.SubprocessError):
     """A strict REST read failed, with a payload-free reason token."""
 
-    def __init__(self, reason: str, *, row_index: int | None = None) -> None:
+    def __init__(
+        self,
+        reason: str,
+        *,
+        row_index: int | None = None,
+        observed_http_status: int | None = None,
+    ) -> None:
         super().__init__(reason)
         self.reason = reason
         self.row_index = row_index
+        self.observed_http_status = observed_http_status
 
 
 def read_ref_name(value: Any) -> str | None:
@@ -338,7 +346,18 @@ def _rest_get_json(
                 if "rate limit" in message or "rate_limit" in message
                 else "request_failed"
             )
-            raise RestIndeterminateError(reason)
+            # gh exposes some failures via a terminal "(HTTP NNN)" stderr
+            # diagnostic. Never infer status from the cause, exit code, or body.
+            # Ambiguous, unrecognized, and absent status evidence stays unknown.
+            statuses = set(
+                re.findall(r"\(HTTP ([1-5][0-9]{2})\)\s*$", proc.stderr or "", re.MULTILINE)
+            )
+            observed_http_status = None
+            if len(statuses) == 1:
+                code = int(statuses.pop())
+                if code in {status.value for status in HTTPStatus}:
+                    observed_http_status = code
+            raise RestIndeterminateError(reason, observed_http_status=observed_http_status)
         if not (proc.stdout or "").strip():
             raise RestIndeterminateError("empty_body")
         try:

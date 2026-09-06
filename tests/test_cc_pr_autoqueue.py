@@ -10657,3 +10657,123 @@ def test_graphql_malformed_references_refuse_governance_without_rest(
     assert governance.reason == f"auto_merge_method_unverified:{reason}"
     assert governance.method is None
     assert not any(cmd[:4] == ["gh", "api", "--method", "GET"] for cmd in calls)
+
+
+@pytest.mark.parametrize("state", ["queued", "armed", "unarmed"])
+def test_successors_action_and_observed_merge_possibility(tmp_path: Path, state: str) -> None:
+    report = _method_override_report(tmp_path, state=state, override="MERGE")
+    [decision] = report["decisions"]
+    assert decision["action"] == ("blocked" if state == "unarmed" else "hold")
+    assert decision["observed_pr_merge_state"] == {
+        "queued": state == "queued",
+        "auto_merge_armed": state != "unarmed",
+    }
+    assert decision["merge_possible_without_reconciler_action"] is (
+        None if state == "unarmed" else True
+    )
+    assert report["mutations"] == []
+
+
+def test_successors_unobserved_queue_membership_is_unknown() -> None:
+    pr = autoqueue._parse_pr(_pr(42, auto_merge=False))
+    assert pr is not None
+    decision = autoqueue.Decision(pr=pr, action="blocked").as_dict()
+    assert decision["observed_pr_merge_state"] == {"queued": None, "auto_merge_armed": False}
+    assert decision["merge_possible_without_reconciler_action"] is None
+
+
+@pytest.mark.parametrize("source", ["rulesets", "detail"])
+@pytest.mark.parametrize(
+    "diagnostic,status,cause",
+    [
+        ("forbidden (HTTP 403)", 403, "request_failed"),
+        ("not found (HTTP 404)", 404, "request_failed"),
+        ("private diagnostic", None, "request_failed"),
+        ("API rate limit exceeded (HTTP 403)", 403, "rate_limit"),
+        ("unknown (HTTP 599)", None, "request_failed"),
+    ],
+)
+def test_successors_http_status_visible_beside_cause(
+    tmp_path: Path, source: str, diagnostic: str, status: int | None, cause: str
+) -> None:
+    runner = _FakeRunner()
+    if source == "rulesets":
+        runner.rulesets_error = diagnostic
+    else:
+        runner.ruleset_detail_errors[16186443] = diagnostic
+    report = _method_override_report(tmp_path, state="armed", override="MERGE", runner=runner)
+    [decision] = report["decisions"]
+    assert decision["observed_governance_http_status"] == status
+    scope = "source=rulesets" if source == "rulesets" else "ruleset=16186443"
+    reason = f"auto_merge_method_unverified:enforcement_unreadable:{scope}:cause={cause}"
+    assert decision["merge_queue_governance"]["reason"] == reason
+    assert decision["reasons"] == [reason + ":override=MERGE"]
+    assert decision["action"] == "disable_auto_merge"
+    assert decision["next_action"] == autoqueue._merge_method_operator_next_action()
+    assert diagnostic not in json.dumps(report)
+
+
+def test_successors_rendered_help_keeps_docstring_structure(capsys: pytest.CaptureFixture) -> None:
+    with pytest.raises(SystemExit) as error:
+        autoqueue.main(["--help"])
+    assert error.value.code == 0
+    rendered = capsys.readouterr().out
+    assert autoqueue.__doc__.strip() in rendered
+    assert (
+        "\n    HAPAX_CC_PR_AUTOQUEUE_OFF=1 uv run python scripts/cc-pr-autoqueue.py --apply\n"
+        in rendered
+    )
+    assert "The override is not an\noutage bypass." in rendered
+
+
+@pytest.mark.parametrize("state", ["armed", "queued"])
+@pytest.mark.parametrize("override,owner", [("MERGE", "unverified"), ("SQUASH", "merge_queue")])
+def test_successors_unrelated_blocker_does_not_change_owner(
+    tmp_path: Path, state: str, override: str, owner: str
+) -> None:
+    before = _method_override_report(tmp_path, state=state, override=override)["decisions"][0]
+    after = _method_override_report(tmp_path, state=state, override=override, blocker="ci_failure")[
+        "decisions"
+    ][0]
+    assert before["auto_merge_method_owner"] == owner
+    assert after["action"] == ("dequeue" if state == "queued" else "disable_auto_merge")
+    assert after["auto_merge_method_owner"] == owner
+    assert before["merge_queue_governance"] == after["merge_queue_governance"]
+
+
+def test_successors_queue_can_be_observed_without_auto_merge_arming() -> None:
+    pr = autoqueue._parse_pr(_pr(42, auto_merge=False))
+    assert pr is not None
+    decision = autoqueue.classify_pr(pr, tasks=[], queued_prs={42}).as_dict()
+    assert decision["observed_pr_merge_state"] == {"queued": True, "auto_merge_armed": False}
+    assert decision["merge_possible_without_reconciler_action"] is True
+
+
+def test_successors_release_refusal_preserves_observed_state() -> None:
+    pr = autoqueue._parse_pr(_pr(42, auto_merge=False))
+    assert pr is not None
+    original = autoqueue.Decision(pr=pr, action="already_queued", observed_queued=True)
+    refused = autoqueue._release_auto_arm_fail_closed_decision(original, "synthetic")
+    assert refused is not None
+    assert refused.as_dict()["observed_pr_merge_state"] == {
+        "queued": True,
+        "auto_merge_armed": False,
+    }
+
+
+@pytest.mark.parametrize("status", [403, None])
+def test_successors_listing_refusal_preserves_status(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, status: int | None
+) -> None:
+    def unavailable(**kwargs):
+        cause = github_pr_status.RestIndeterminateError(
+            "request_failed", observed_http_status=status
+        )
+        raise github_pr_status.RestListingFailed("synthetic", rest_error=cause) from cause
+
+    monkeypatch.setattr(autoqueue, "list_open_pr_statuses", unavailable)
+    report = _method_override_report(tmp_path, state="armed", override="MERGE")
+    assert report["reason"] == "open_pr_scan_indeterminate:request_failed"
+    assert report["observed_http_status"] == status
+    assert report["decisions"] == []
+    assert report["mutations"] == []

@@ -2612,3 +2612,46 @@ def test_graphql_validates_all_rows_before_hydrating_any(tmp_path: Path, bad_row
             repo="owner/repo", repo_root=tmp_path, runner=runner
         )
     assert len(calls) == 1
+
+
+@pytest.mark.parametrize(
+    "returncode,body,diagnostic,cause,status",
+    [
+        (1, "", "forbidden (HTTP 403)", "request_failed", 403),
+        (1, "", "not found (HTTP 404)", "request_failed", 404),
+        (1, "", "private diagnostic", "request_failed", None),
+        (1, "", "API rate limit exceeded (HTTP 403)", "rate_limit", 403),
+        (1, '{"message":"rate_limit"}', "", "rate_limit", None),
+        (1, "", "unknown (HTTP 599)", "request_failed", None),
+        (1, "", "HTTP 403", "request_failed", None),
+        (1, "(HTTP 403)", "", "request_failed", None),
+        (1, "", "error (HTTP 403)\nerror (HTTP 404)", "request_failed", None),
+        (0, "", "", "empty_body", None),
+        (0, "not json", "", "invalid_json", None),
+    ],
+)
+def test_successors_strict_status_evidence_keeps_reason(
+    tmp_path: Path, returncode: int, body: str, diagnostic: str, cause: str, status: int | None
+) -> None:
+    def runner(cmd, **kwargs):
+        return subprocess.CompletedProcess(cmd, returncode, body, diagnostic)
+
+    with pytest.raises(github_pr_status.RestIndeterminateError) as error:
+        github_pr_status._rest_get_json(
+            "synthetic", repo_root=tmp_path, runner=runner, fail_on_indeterminate=True
+        )
+    assert error.value.reason == cause
+    assert str(error.value) == cause
+    assert error.value.observed_http_status == status
+
+
+def test_successors_transport_status_is_unknown(tmp_path: Path) -> None:
+    def runner(cmd, **kwargs):
+        raise OSError("private diagnostic (HTTP 403)")
+
+    with pytest.raises(github_pr_status.RestIndeterminateError) as error:
+        github_pr_status._rest_get_json(
+            "synthetic", repo_root=tmp_path, runner=runner, fail_on_indeterminate=True
+        )
+    assert error.value.reason == "transport_error"
+    assert error.value.observed_http_status is None

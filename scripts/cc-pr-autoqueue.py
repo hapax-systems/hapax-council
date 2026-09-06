@@ -244,6 +244,7 @@ class MergeQueueGovernance:
     method: str | None = None
     source: str | None = None
     reason: str | None = None
+    observed_http_status: int | None = None
 
 
 @dataclass(frozen=True)
@@ -303,6 +304,7 @@ class Decision:
     auto_arm: bool = False
     auto_arm_verified_checks: tuple[str, ...] = ()
     expected_auto_merge_method: str | None = None
+    observed_queued: bool | None = None
 
     def as_dict(self) -> dict[str, Any]:
         out: dict[str, Any] = {
@@ -310,6 +312,17 @@ class Decision:
             "title": self.pr.title,
             "head_ref": self.pr.head_ref,
             "action": self.action,
+            # These are observations at classification, not the result of applying action.
+            "observed_pr_merge_state": {
+                "queued": self.observed_queued,
+                "auto_merge_armed": self.pr.auto_merge_enabled,
+            },
+            # Existing GitHub automation can still merge; this is not a readiness
+            # guarantee. Without it, these observations cannot establish possibility
+            # (for example, an operator could merge directly), so report unknown.
+            "merge_possible_without_reconciler_action": (
+                True if self.observed_queued or self.pr.auto_merge_enabled else None
+            ),
         }
         if self.task is not None:
             out["task_id"] = self.task.task_id
@@ -327,6 +340,7 @@ class Decision:
             out["auto_merge_method"] = self.pr.auto_merge_method
         governance = self.pr.queue_governance
         if governance is not None:
+            out["observed_governance_http_status"] = governance.observed_http_status
             out["merge_queue_governance"] = {
                 "base_ref": self.pr.base_ref,
                 "method": governance.method,
@@ -347,12 +361,8 @@ class Decision:
                 out["auto_merge_method_owner"] = (
                     "unverified"
                     if governance.reason
-                    or (
-                        self.action in {"blocked", "hold"}
-                        and any(
-                            reason.startswith(OVERRIDE_CONTRADICTION_PREFIX)
-                            for reason in self.reasons
-                        )
+                    or any(
+                        reason.startswith(OVERRIDE_CONTRADICTION_PREFIX) for reason in self.reasons
                     )
                     else "merge_queue"
                     if governance.method
@@ -798,7 +808,8 @@ def fetch_pr_merge_queue_governance(
             )
         except RestIndeterminateError as exc:
             return MergeQueueGovernance(
-                reason=prefix + f"enforcement_unreadable:source=rulesets:cause={exc.reason}"
+                reason=prefix + f"enforcement_unreadable:source=rulesets:cause={exc.reason}",
+                observed_http_status=exc.observed_http_status,
             )
         if not isinstance(rulesets, list):
             return MergeQueueGovernance(reason=prefix + "enforcement_malformed:rulesets")
@@ -824,7 +835,8 @@ def fetch_pr_merge_queue_governance(
             except RestIndeterminateError as exc:
                 return MergeQueueGovernance(
                     reason=prefix
-                    + f"enforcement_unreadable:ruleset={ruleset_id}:cause={exc.reason}"
+                    + f"enforcement_unreadable:ruleset={ruleset_id}:cause={exc.reason}",
+                    observed_http_status=exc.observed_http_status,
                 )
             if not isinstance(detail, dict) or any(
                 detail.get(key) != summary.get(key) for key in ("id", "target", "enforcement")
@@ -1213,7 +1225,9 @@ def fetch_open_prs(
         # The router has already tried any eligible fallback. Preserve the strict REST
         # cause for the reconciler's classified refusal, without changing its pure token.
         if isinstance(exc.__cause__, RestIndeterminateError):
-            raise RestIndeterminateError(exc.__cause__.reason) from exc
+            raise RestIndeterminateError(
+                exc.__cause__.reason, observed_http_status=exc.__cause__.observed_http_status
+            ) from exc
         # Skip this cycle rather than spending a listing plus per-PR hydration into
         # guaranteed 403s. Distinguished from the empty-scan warning below because the
         # two mean different things: this one is "we did not look", not "nothing found".
@@ -2191,6 +2205,7 @@ def classify_pr(
             action = "blocked"
         return Decision(
             pr=pr,
+            observed_queued=queued,
             task=task,
             tasks=matched_tasks,
             action=action,
@@ -2200,6 +2215,7 @@ def classify_pr(
     if queued:
         return Decision(
             pr=pr,
+            observed_queued=queued,
             task=task,
             tasks=matched_tasks,
             action="already_queued",
@@ -2211,6 +2227,7 @@ def classify_pr(
     if pr.auto_merge_enabled:
         return Decision(
             pr=pr,
+            observed_queued=queued,
             task=task,
             tasks=matched_tasks,
             action="already_auto_merge_enabled",
@@ -2222,6 +2239,7 @@ def classify_pr(
         if include_pending_auto:
             return Decision(
                 pr=pr,
+                observed_queued=queued,
                 task=task,
                 tasks=matched_tasks,
                 action="enable_auto_merge",
@@ -2231,6 +2249,7 @@ def classify_pr(
             )
         return Decision(
             pr=pr,
+            observed_queued=queued,
             task=task,
             tasks=matched_tasks,
             action="blocked",
@@ -2239,6 +2258,7 @@ def classify_pr(
         )
     return Decision(
         pr=pr,
+        observed_queued=queued,
         task=task,
         tasks=matched_tasks,
         action="queue",
@@ -3128,6 +3148,7 @@ def _release_auto_arm_fail_closed_decision(
         return None
     return Decision(
         pr=decision.pr,
+        observed_queued=decision.observed_queued,
         task=decision.task,
         tasks=decision.tasks,
         action=action,
@@ -3401,6 +3422,7 @@ def run_reconciler(
             "apply": apply,
             "skipped": True,
             "reason": f"open_pr_scan_indeterminate:{exc.reason}",
+            "observed_http_status": exc.observed_http_status,
             "decisions": [],
             "mutations": [],
         }
@@ -3855,7 +3877,9 @@ def run_reconciler(
 
 
 def main(argv: list[str] | None = None) -> int:
-    parser = argparse.ArgumentParser(description=__doc__)
+    parser = argparse.ArgumentParser(
+        description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter
+    )
     parser.add_argument("--apply", action="store_true", help="Queue/arm eligible PRs.")
     parser.add_argument("--repo", default=DEFAULT_REPO, help="GitHub repo, owner/name.")
     parser.add_argument("--repo-root", type=Path, default=default_repo_root())
