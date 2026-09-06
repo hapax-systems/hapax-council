@@ -14,6 +14,7 @@ from agents.deliberative_council.modes.disconfirmation import (
 from agents.deliberative_council.rubrics import DisconfirmationRubric
 from shared.segment_disconfirmation import (
     apply_council_verdicts,
+    build_substance_gap_report,
     extract_claims,
     run_council_disconfirmation,
 )
@@ -487,3 +488,201 @@ class TestApplyCouncilVerdicts:
         assert result["council_disconfirmation_passed"] is True
         assert result["council_degraded"] is False
         assert result["degraded_claims"] == []
+
+
+class TestSubstanceGapReport:
+    @pytest.mark.parametrize(
+        ("status", "scores", "expected"),
+        [
+            pytest.param(
+                ConvergenceStatus.CONVERGED,
+                [1, 5, 5, 5],
+                DisconfirmationVerdict.REFUTED,
+                id="mixed",
+            ),
+            pytest.param(
+                ConvergenceStatus.CONVERGED,
+                [],
+                DisconfirmationVerdict.INSUFFICIENT_EVIDENCE,
+                id="empty",
+            ),
+            pytest.param(
+                ConvergenceStatus.CONVERGED,
+                [None, None, None, None],
+                DisconfirmationVerdict.INSUFFICIENT_EVIDENCE,
+                id="all_none",
+            ),
+            pytest.param(
+                ConvergenceStatus.CONVERGED,
+                [5, None, None],
+                DisconfirmationVerdict.SURVIVED,
+                id="partial_high",
+            ),
+            pytest.param(
+                ConvergenceStatus.HUNG,
+                [1, 1, 1, 1],
+                DisconfirmationVerdict.INSUFFICIENT_EVIDENCE,
+                id="hung_low",
+            ),
+            pytest.param(
+                ConvergenceStatus.REFUSED,
+                [1, 1, 1, 1],
+                DisconfirmationVerdict.INSUFFICIENT_EVIDENCE,
+                id="refused_low",
+            ),
+            pytest.param(
+                ConvergenceStatus.CONVERGED,
+                [1, 1, 1, 1],
+                DisconfirmationVerdict.REFUTED,
+                id="all_low",
+            ),
+            pytest.param(
+                ConvergenceStatus.CONVERGED,
+                [1, None, None],
+                DisconfirmationVerdict.REFUTED,
+                id="partial_low",
+            ),
+            pytest.param(
+                ConvergenceStatus.CONVERGED,
+                [3, 3, 3, 3],
+                DisconfirmationVerdict.CONTESTED,
+                id="neutral",
+            ),
+        ],
+    )
+    def test_disposition_and_report_agree(
+        self,
+        status: ConvergenceStatus,
+        scores: list[int | None],
+        expected: DisconfirmationVerdict,
+    ) -> None:
+        claim = _mock_claim("synthetic:claim", "A synthetic structural claim.")
+        grounds = ["synthetic:source", "synthetic:other"]
+        claim_map = [{"claim_id": "synthetic:claim", "grounds": grounds}]
+        axes = [axis.name for axis in DisconfirmationRubric().axes][: len(scores)]
+        verdict = _mock_verdict(status, dict(zip(axes, scores, strict=True)))
+        verdict.disagreement_log.append("Counterexample found in the cited source.")
+        verdicts = [(claim, verdict)]
+
+        assert derive_verdict(verdict) == expected
+        result = apply_council_verdicts(verdicts, [], claim_map)
+        for disposition, key in (
+            (DisconfirmationVerdict.SURVIVED, "survived_claims"),
+            (DisconfirmationVerdict.CONTESTED, "contested_claims"),
+            (DisconfirmationVerdict.REFUTED, "refuted_claims"),
+            (DisconfirmationVerdict.INSUFFICIENT_EVIDENCE, "degraded_claims"),
+        ):
+            assert result[key] == (["synthetic:claim"] if expected == disposition else [])
+        assert result["no_candidate_triggered"] is (expected == DisconfirmationVerdict.REFUTED)
+        assert result["council_degraded"] is (
+            expected == DisconfirmationVerdict.INSUFFICIENT_EVIDENCE
+        )
+        assert result["council_disconfirmation_passed"] is (
+            expected in (DisconfirmationVerdict.SURVIVED, DisconfirmationVerdict.CONTESTED)
+        )
+
+        report = build_substance_gap_report(verdicts, claim_map)
+        lines = report.splitlines()
+        assert [line for line in lines if line.startswith("### REFUTED:")] == [
+            f"### REFUTED: {claim_id}" for claim_id in result["refuted_claims"]
+        ]
+        assert lines[0] == "## Substance Gap Report (Council Disconfirmation)"
+        assert lines[-1] == "The composer should find stronger evidence or reframe these claims."
+        if expected == DisconfirmationVerdict.REFUTED:
+            assert f"Claim: {claim.text}" in lines
+            assert f"Scores: {verdict.scores}" in lines
+            assert f"Council notes: {verdict.disagreement_log[0]}" in lines
+            assert f"Research: {verdict.research_findings[0]}" in lines
+            weak_sources = next(line for line in lines if line.startswith("### Weak sources:"))
+            assert set(weak_sources.removeprefix("### Weak sources: ").split(", ")) == set(grounds)
+            assert "### Summary: 1 claims refuted." in lines
+        else:
+            assert "synthetic:claim" not in report
+            assert "Claim:" not in report
+            assert "Scores:" not in report
+            assert "Council notes:" not in report
+            assert "Research:" not in report
+            assert "### Weak sources:" not in report
+            assert "### Summary: 0 claims refuted." in lines
+
+    @pytest.mark.parametrize("refuted_count", [1, 3], ids=["structural_feedback", "repair"])
+    @pytest.mark.parametrize(
+        ("status", "scores"),
+        [(ConvergenceStatus.CONVERGED, {}), (ConvergenceStatus.HUNG, {"a": 1})],
+        ids=["empty", "hung_low"],
+    )
+    def test_triggered_report_excludes_insufficient_claim(
+        self, refuted_count: int, status: ConvergenceStatus, scores: dict[str, int]
+    ) -> None:
+        """Both caller triggers consume the report built from ALL verdicts."""
+        verdicts = []
+        claim_map = []
+        refuted_ids = [f"synthetic:refuted:{i}" for i in range(refuted_count)]
+        for claim_id in refuted_ids:
+            claim = _mock_claim(claim_id, f"Refuted claim {claim_id}.")
+            verdicts.append((claim, _mock_verdict(ConvergenceStatus.CONVERGED, {"a": 1})))
+            grounds = [f"synthetic:source:{claim_id}"]
+            if refuted_count == 1:
+                grounds.append("synthetic:structural-source")
+            claim_map.append({"claim_id": claim_id, "grounds": grounds})
+        insufficient = _mock_claim("synthetic:insufficient", "Undetermined claim text.")
+        verdict = _mock_verdict(status, scores)
+        verdict.disagreement_log.append("Undetermined council note.")
+        verdict.research_findings[:] = ["Undetermined research finding."]
+        verdicts.append((insufficient, verdict))
+        claim_map.append(
+            {"claim_id": "synthetic:insufficient", "grounds": ["synthetic:undetermined-source"]}
+        )
+
+        result = apply_council_verdicts(verdicts, [], claim_map)
+        assert result["refuted_claims"] == refuted_ids
+        assert result["degraded_claims"] == ["synthetic:insufficient"]
+        assert result["survived_claims"] == []
+        assert result["contested_claims"] == []
+        assert result["council_disconfirmation_passed"] is False
+        assert result["council_degraded"] is True
+        assert result["no_candidate_triggered"] is (refuted_count == 1)
+        assert result["no_candidate_triggered"] or len(result["refuted_claims"]) > 2
+
+        report = build_substance_gap_report(verdicts, claim_map)
+        lines = report.splitlines()
+        assert [line for line in lines if line.startswith("### REFUTED:")] == [
+            f"### REFUTED: {claim_id}" for claim_id in refuted_ids
+        ]
+        assert f"### Summary: {refuted_count} claims refuted." in lines
+        assert "synthetic:insufficient" not in report
+        assert insufficient.text not in report
+        assert verdict.disagreement_log[0] not in report
+        assert verdict.research_findings[0] not in report
+        assert "synthetic:undetermined-source" not in report
+
+    @pytest.mark.parametrize(
+        ("status", "scores"),
+        [(ConvergenceStatus.CONVERGED, {"a": 1}), (ConvergenceStatus.HUNG, {})],
+        ids=["otherwise_refuted", "otherwise_insufficient"],
+    )
+    def test_unavailable_precedes_report_disposition(
+        self, status: ConvergenceStatus, scores: dict[str, int]
+    ) -> None:
+        claim = _mock_claim("synthetic:unavailable", "Unavailable claim text.")
+        verdict = _mock_verdict(status, scores)
+        verdict.receipt["council_unavailable"] = True
+        claim_map = [
+            {"claim_id": "synthetic:unavailable", "grounds": ["synthetic:a", "synthetic:b"]}
+        ]
+        with patch("shared.segment_disconfirmation.derive_verdict", wraps=derive_verdict) as derive:
+            result = apply_council_verdicts([(claim, verdict)], [], claim_map)
+            report = build_substance_gap_report([(claim, verdict)], claim_map)
+        derive.assert_not_called()
+        assert result["degraded_claims"] == ["synthetic:unavailable"]
+        assert result["refuted_claims"] == []
+        assert result["survived_claims"] == []
+        assert result["contested_claims"] == []
+        assert result["council_disconfirmation_passed"] is False
+        assert result["council_degraded"] is True
+        assert result["no_candidate_triggered"] is False
+        assert report == (
+            "## Substance Gap Report (Council Disconfirmation)\n\n"
+            "### Summary: 0 claims refuted.\n"
+            "The composer should find stronger evidence or reframe these claims."
+        )

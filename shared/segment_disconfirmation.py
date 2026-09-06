@@ -293,7 +293,8 @@ def build_substance_gap_report(
 
     Identifies which claims were refuted, what sources were weak, and
     suggests search terms for replacement sources. Feeds back into the
-    composer for a repair pass.
+    composer for a repair pass. Omits unavailable and insufficient-evidence
+    claims; only the mode's REFUTED disposition supplies repair findings.
     """
     lines = ["## Substance Gap Report (Council Disconfirmation)"]
     refuted_claims: list[str] = []
@@ -304,8 +305,7 @@ def build_substance_gap_report(
         if verdict.receipt.get("council_unavailable"):
             continue
         scores = verdict.scores
-        mean = sum(s for s in scores.values() if s is not None) / max(1, len(scores))
-        if mean <= 2.0:
+        if derive_verdict(verdict) == DisconfirmationVerdict.REFUTED:
             claim_text = claim_input.text[:200]
             refuted_claims.append(claim_id)
             lines.append(f"\n### REFUTED: {claim_id}")
