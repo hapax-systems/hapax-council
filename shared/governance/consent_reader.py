@@ -249,13 +249,21 @@ class ConsentGatedReader:
         )
 
     def _build_known_persons(self) -> frozenset[str]:
-        """Recognize validated identities independently of loaded or active consent."""
+        """Combine independent migration identities with active contract parties."""
         with estate_identity_operation() as snapshot:
-            return (
+            independent = (
                 frozenset(snapshot.principals)
                 | frozenset(snapshot.principals.values())
                 | REGISTERED_PRINCIPALS
             )
+            persons: set[str] = set()
+            for contract in self._registry.active_contracts:
+                for party in contract.parties:
+                    canonical = snapshot.resolve_principal_id(party)
+                    if canonical != "operator" and canonical not in self._operator_ids:
+                        persons.add(canonical)
+            # A failed or empty registry must not erase the independent vocabulary.
+            return independent | frozenset(persons)
 
     def _record(self, decision: ReaderDecision, source: str, category: str) -> None:
         """Record decision to in-memory log and optional disk audit."""
