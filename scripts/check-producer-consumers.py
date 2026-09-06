@@ -643,7 +643,9 @@ class PathFunctionTable(dict[str, PathFunction]):
         self.capped_expressions: set[str] = set()
         self.unresolved_closures: set[str] = set()
         self.unresolved_paths: set[str] = set()
-        self.helper_results: dict[tuple[int, tuple[tuple[str, str], ...]], str | None] = {}
+        self.helper_results: dict[
+            tuple[int, tuple[tuple[str, str], ...]], tuple[str | None, bool]
+        ] = {}
         self.definition_defaults: dict[ast.AST, dict[str, str]] = {}
         self.call_bindings: dict[ast.AST, list[dict[str, str]]] = {}
         self.scope_results: dict[ast.AST, dict[tuple, _ScopeEvidence]] = {}
@@ -1518,10 +1520,12 @@ def _has_unbounded_format(
             helper = path_functions.resolve(
                 _function_name(item, values), path, _lexical_scope(values), _import_aliases(values)
             )
-            if helper is not None and "*" in (
-                _resolve_path_expr(item, values, path, repo_root, path_functions) or ""
-            ):
-                return True
+            if helper is not None:
+                result, unbounded = _resolve_path_helper(
+                    item, values, path, repo_root, path_functions
+                )
+                if unbounded or "*" in (result or ""):
+                    return True
         if isinstance(item, ast.FormattedValue) and _format_constant(item, values) is None:
             if (
                 item.format_spec is not None
@@ -1731,34 +1735,44 @@ def _resolve_path_expr(
         if base is not None and new_name is not None:
             return _join_pattern(str(PurePosixPath(base).parent), new_name, repo_root)
 
+    return _resolve_path_helper(node, values, path, repo_root, path_functions)[0]
+
+
+def _resolve_path_helper(
+    node: ast.Call,
+    values: dict[str, str],
+    path: Path,
+    repo_root: Path,
+    path_functions: dict[str, PathFunction],
+) -> tuple[str | None, bool]:
+    """Keep a visible helper's literal result separate from its certification certainty."""
+    name = _function_name(node, values)
     function = (
-        path_functions.resolve(
-            _function_name(node, values), path, _lexical_scope(values), _import_aliases(values)
-        )
+        path_functions.resolve(name, path, _lexical_scope(values), _import_aliases(values))
         if isinstance(path_functions, PathFunctionTable)
         else (path_functions.get(name) or path_functions.get(name.rsplit(".", 1)[-1]))
     )
     if function is None or function.node is None or function.return_expr is None:
-        return None
+        return None, False
     if _HELPER_EFFECT_KEY in values:
         # An unknown effect already prevents this helper invocation from returning a bounded
         # path. Keep walking its control flow, but do not recursively expand more helpers.
-        return None
+        return None, False
     if (
         isinstance(path_functions, PathFunctionTable)
         and function.node not in path_functions.definition_defaults
     ):
         # Registration discovers syntax, but an unreachable definition creates no binding.
-        return None
+        return None, False
     helper_key = f"{function.path}:{function.node.lineno}"
     stack = values.get(_HELPER_STACK_KEY, "").split("|")
     if helper_key in stack or len(stack) > 12:
-        return None
+        return None, False
     invocation_globals = _call_global_values(function, values, path, path_functions)
     inherited = dict(invocation_globals)
     if len(function.lexical_prefixes) > 1:
         if function.lexical_prefixes[1] not in _lexical_scope(values):
-            return None
+            return None, False
         inherited = dict(values)
     inherited[_HELPER_STACK_KEY] = "|".join((*stack, helper_key))
     bound = _scope_initial_values(
@@ -1797,8 +1811,8 @@ def _resolve_path_expr(
     # nested helpers do not repeatedly expand the same bodies. Bound the per-scan cache.
     if len(cache) >= 4096:
         cache.clear()
-    cache[cache_key] = result
-    return result
+    cache[cache_key] = (result, scanner.unbounded_return)
+    return cache[cache_key]
 
 
 def _is_path_annotation(node: ast.expr | None) -> bool:
@@ -2933,7 +2947,7 @@ def _merge_states(states: list[dict[str, str]], *, collapse: bool = False) -> li
         if name == _HELPER_EFFECT_KEY and "1" in alternatives:
             collapsed[name] = "1"
             continue
-        if name.startswith(_UNRESOLVED_FORMAT_PREFIX) and "1" in alternatives:
+        if name.startswith(_UNRESOLVED_FORMAT_PREFIX) and any(alternatives):
             collapsed[name] = "1"
             continue
         if name.startswith(_IMPORT_ALIAS_PREFIX) and len(alternatives) > 1:
@@ -3103,9 +3117,8 @@ class _BlockScanner:
                             f"unresolved call target {_function_name(call) or '<dynamic>'}"
                         )
                     self._invalidate_uncertain_bindings(state)
-                    # A missing callable identity is not a dynamic filename component.
-                    # Freeze uncertainty so assigning/formatting its result cannot certify
-                    # a wildcard writer at _record_access, even after later rebinding.
+                    # Retain literal components surrounding an unknown result, with the
+                    # same uncertainty flag that assignments and access sites already carry.
                     self._mark_untracked_result(call, state)
         self.accesses.extend(dict.fromkeys(call_accesses))
         self.unresolved[0] += unresolved_slots
@@ -3115,9 +3128,7 @@ class _BlockScanner:
     def _mark_untracked_result(self, call: ast.Call, state: dict[str, str]) -> None:
         result_name = _expression_value_name(call)
         state[result_name] = "*"
-        state[f"{_UNRESOLVED_CLOSURE_PREFIX}{result_name}"] = (
-            f"{self.path}:{call.lineno}: binding identity not tracked"
-        )
+        state[f"{_UNRESOLVED_FORMAT_PREFIX}{result_name}"] = "1"
 
     def _invalidate_callee_mutations(self, function: PathFunction, state: dict[str, str]) -> None:
         table = self.path_functions
@@ -3195,17 +3206,26 @@ class _BlockScanner:
     def _invalidate_effect_names(self, values: dict[str, str], names: set[str]) -> None:
         # Flat validation bodies repeatedly encounter unknown APIs with identical
         # effects. An already poisoned binding needs no further stores or deletions.
-        prefix = f"{self.path}: UNRESOLVED outer effect binding "
         names = {
             name
             for name in names
-            if values.get(f"{_UNRESOLVED_CLOSURE_PREFIX}{name}") != prefix + name
+            # __file__ denotes this scanned source in _resolve_path_expr, independently
+            # of runtime globals. A visible source-relative helper keeps that identity.
+            if name != "__file__" and values.get(f"{_UNRESOLVED_FORMAT_PREFIX}{name}") != "effect"
+        }
+        retained = {
+            key: values[key]
+            for name in names
+            for key in (name, _path_value_key(name), f"{_VALUE_ALTERNATIVES_PREFIX}{name}")
+            if key in values
         }
         _invalidate_names(values, names)
+        values.update(retained)
         for name in names:
-            # An effect gap is not a dynamic path component: joining a suffix must not
-            # turn an unknown binding into a bounded wildcard producer.
-            values[f"{_UNRESOLVED_CLOSURE_PREFIX}{name}"] = prefix + name
+            # An effect withdraws certification, not the literal evidence of an access.
+            # Callable aliases and scalar constants stay invalidated. The distinct flag
+            # avoids re-invalidating identical states during effect-summary fixpoints.
+            values[f"{_UNRESOLVED_FORMAT_PREFIX}{name}"] = "effect"
 
     def _invalidate_outer_bindings(
         self, function: PathFunction, state: dict[str, str], globals_: set[str], nonlocals: set[str]
@@ -3381,10 +3401,11 @@ class _BlockScanner:
             # Calls can mutate outer bindings without a syntactic Store in this loop.
             # Its possible zero-iteration path cannot certify the old producer either.
             changed.update(
-                key.removeprefix(_UNRESOLVED_CLOSURE_PREFIX)
+                key.removeprefix(prefix)
                 for state in looped + broken
                 for key in state
-                if key.startswith(_UNRESOLVED_CLOSURE_PREFIX)
+                for prefix in (_UNRESOLVED_CLOSURE_PREFIX, _UNRESOLVED_FORMAT_PREFIX)
+                if key.startswith(prefix)
             )
             looped = _merge_states((_fork(states) if may_be_empty else []) + looped)
             # Once the fallback union exceeds the branch budget, retain concrete
@@ -3541,10 +3562,11 @@ class _BlockScanner:
                 item.target.id for item in ast.walk(node) if isinstance(item, ast.NamedExpr)
             )
             effect_names = {
-                key.removeprefix(_UNRESOLVED_CLOSURE_PREFIX)
+                key.removeprefix(prefix)
                 for state in inner
                 for key in state
-                if key.startswith(_UNRESOLVED_CLOSURE_PREFIX)
+                for prefix in (_UNRESOLVED_CLOSURE_PREFIX, _UNRESOLVED_FORMAT_PREFIX)
+                if key.startswith(prefix)
             }
             for state in states:
                 _invalidate_names(state, names)
@@ -4062,6 +4084,7 @@ class _PathHelperScanner(_BlockScanner):
     def __init__(self, **kwargs) -> None:
         super().__init__(**kwargs)
         self.return_values: set[str | None] = set()
+        self.unbounded_return = False
 
     def _scan_expression(self, node: ast.AST, states: list[dict[str, str]]) -> None:
         # Effect uncertainty is permanent for this return-summary path. Keep walking
@@ -4113,6 +4136,9 @@ class _PathHelperScanner(_BlockScanner):
                 if _HELPER_EFFECT_KEY in state:
                     self.return_values.add(None)
                 else:
+                    self.unbounded_return |= _has_unbounded_format(
+                        statement.value, state, self.path, self.repo_root, self.path_functions
+                    )
                     self.return_values.update(
                         _resolve_path_expr_variants(
                             statement.value, state, self.path, self.repo_root, self.path_functions

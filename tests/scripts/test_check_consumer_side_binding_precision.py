@@ -878,6 +878,92 @@ def test_stacked_decorators_apply_innermost_first(gate, tmp_path: Path, kind) ->
     assert report.unresolvable == 0
 
 
+@pytest.mark.parametrize("writer", [False, True], ids=["unwritten", "certified-writer"])
+def test_untracked_result_retains_the_readers_literal_pattern(gate, tmp_path: Path, writer) -> None:
+    _write(tmp_path, "shared/helper.py", "def output_name():\n    return 'obsolete'\n")
+    _write(
+        tmp_path,
+        "shared/consumer.py",
+        "from pathlib import Path\n"
+        "def replacement():\n    return 'actual'\n"
+        "def load_state():\n    from shared import helper, producer\n"
+        "    helper.output_name = replacement\n"
+        "    name = helper.output_name()\n"
+        "    target = Path('artifacts') / name / 'state.json'\n"
+        "    return target.read_text()\nload_state()\n",
+    )
+    if writer:
+        _write(
+            tmp_path,
+            "shared/producer.py",
+            "from pathlib import Path\ndef save_state():\n"
+            "    Path('artifacts/actual/state.json').write_text('{}')\n",
+        )
+    report = gate.analyse_consumer_side(tmp_path, [])
+    assert report.unresolvable > 0
+    if writer:
+        assert not report.findings
+        assert any(
+            pair.reader.path == Path("shared/consumer.py")
+            and pair.reader.pattern == "artifacts/*/state.json"
+            and pair.writer.pattern == "artifacts/actual/state.json"
+            and pair.writer.bounded
+            for pair in report.pairs
+        )
+    else:
+        assert not report.pairs
+        assert {finding.kind for finding in report.findings} == {
+            "consumer-reads-unwritten-artifact"
+        }
+        assert (Path("shared/consumer.py"), "artifacts/*/state.json") in _unwritten(report)
+        assert not any(finding.writers for finding in report.findings)
+
+
+def test_visible_source_relative_helper_survives_module_call_effects(gate, tmp_path: Path) -> None:
+    _write(
+        tmp_path,
+        "shared/consumer.py",
+        "from pathlib import Path\nimport logging\nLOG = logging.getLogger(__name__)\n"
+        "def source_root() -> Path:\n    return Path(__file__).resolve().parents[1]\n"
+        "def load_state():\n"
+        "    root = source_root()\n"
+        "    return (root / 'config' / 'literal.json').read_text()\n",
+    )
+    report = gate.analyse_consumer_side(tmp_path, [])
+    assert {finding.kind for finding in report.findings} == {"consumer-reads-unwritten-artifact"}
+    assert (Path("shared/consumer.py"), "config/literal.json") in _unwritten(report)
+    assert report.unresolvable == 0
+
+
+@pytest.mark.parametrize("via_helper", [False, True], ids=["binding", "helper-result"])
+@pytest.mark.parametrize("branched", [False, True], ids=["straight-line", "branch-cap"])
+def test_module_effects_retain_literal_accesses_without_certifying_writers(
+    gate, tmp_path: Path, monkeypatch, via_helper, branched
+) -> None:
+    if branched:
+        monkeypatch.setattr(gate, "_MAX_BRANCH_STATES", 1)
+    target = "artifact_path()" if via_helper else "ARTIFACT"
+    _write(
+        tmp_path,
+        "shared/consumer.py",
+        "from pathlib import Path\nARTIFACT = Path('artifacts/literal.json')\n"
+        + ("if flag:\n    unknown_setup()\n" if branched else "unknown_setup()\n")
+        + "def artifact_path() -> Path:\n    return ARTIFACT\n"
+        f"def load_state():\n    return {target}.read_text()\n"
+        f"def save_state():\n    {target}.write_text('{{}}')\n"
+        "Path('artifacts/literal.json').read_text()\n",
+    )
+    accesses, unresolved, *_ = gate.collect_artifact_accesses(tmp_path)
+    assert unresolved > 0
+    assert {(a.action, a.pattern, a.bounded) for a in accesses if a.family == "state"} == {
+        ("read", "artifacts/literal.json", False),
+        ("write", "artifacts/literal.json", False),
+    }
+    report = gate.analyse_consumer_side(tmp_path, [])
+    assert (Path("shared/consumer.py"), "artifacts/literal.json") in _unwritten(report)
+    assert not any(a.bounded for f in report.findings for a in f.writers)
+
+
 def test_function_attribute_assignment_keeps_result_identity_uncertain(
     gate, tmp_path: Path
 ) -> None:
@@ -897,9 +983,13 @@ def test_function_attribute_assignment_keeps_result_identity_uncertain(
     )
     accesses, *_ = gate.collect_artifact_accesses(tmp_path)
     assert not [a for a in accesses if a.action == "write" and a.bounded]
+    writers = [a for a in accesses if a.action == "write"]
+    assert {a.pattern for a in writers} == {"artifacts/*/state.json"}
     report = gate.analyse_consumer_side(tmp_path, [])
     assert (Path("shared/consumer.py"), "artifacts/orphan/state.json") in _unwritten(report)
     assert report.unresolvable > 0
+    assert not report.pairs
+    assert any(set(writers) <= set(finding.writers) for finding in report.findings)
     # The uncalled-body fallback consumes the module prepass snapshot, not a discovered
     # invocation. It must carry the same uncertainty as the evaluated call above.
     _write(
@@ -914,9 +1004,13 @@ def test_function_attribute_assignment_keeps_result_identity_uncertain(
     )
     accesses, *_ = gate.collect_artifact_accesses(tmp_path)
     assert not [a for a in accesses if a.action == "write" and a.bounded]
+    writers = [a for a in accesses if a.action == "write"]
+    assert {a.pattern for a in writers} == {"artifacts/*/state.json"}
     report = gate.analyse_consumer_side(tmp_path, [])
     assert (Path("shared/consumer.py"), "artifacts/orphan/state.json") in _unwritten(report)
     assert report.unresolvable > 0
+    assert not report.pairs
+    assert any(set(writers) <= set(finding.writers) for finding in report.findings)
 
 
 def test_callee_identity_is_captured_before_argument_rebinding(gate, tmp_path: Path) -> None:
