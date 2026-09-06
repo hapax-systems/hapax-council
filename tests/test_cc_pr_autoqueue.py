@@ -1907,6 +1907,88 @@ class TestMergeQueuePayloadReconciliation:
                 id="nodes_not_list",
             ),
             pytest.param(
+                {"data": {"repository": {"mergeQueue": {"entries": {"nodes": None}}}}},
+                "nodes_unresolved",
+                id="nodes_null",
+            ),
+            *[
+                pytest.param(
+                    {"data": {"repository": {"mergeQueue": {"entries": {"nodes": nodes}}}}},
+                    cause,
+                    id=case,
+                )
+                for nodes, cause, case in [
+                    ([None], "entry_unresolved:null_node", "node_null"),
+                    (["private diagnostic /?\n"], "invalid_entry:node_type", "node_scalar"),
+                    ([[]], "invalid_entry:node_type", "node_list"),
+                    ([{}], "invalid_entry:missing_pull_request", "pull_request_absent"),
+                    (
+                        [{"pullRequest": None}],
+                        "entry_unresolved:null_pull_request",
+                        "pull_request_null",
+                    ),
+                    (
+                        [{"pullRequest": "private diagnostic /?\n"}],
+                        "invalid_entry:pull_request_type",
+                        "pull_request_scalar",
+                    ),
+                    (
+                        [{"pullRequest": []}],
+                        "invalid_entry:pull_request_type",
+                        "pull_request_list",
+                    ),
+                    ([{"pullRequest": {}}], "invalid_entry:missing_number", "number_absent"),
+                    *[
+                        (
+                            [{"pullRequest": {"number": number}}],
+                            "invalid_entry:number_type",
+                            f"number_{case}",
+                        )
+                        for number, case in [
+                            (True, "true"),
+                            (False, "false"),
+                            (42.75, "float"),
+                            (42.0, "integral_float"),
+                            ("42", "string"),
+                            (None, "null"),
+                            ({}, "object"),
+                            ([], "list"),
+                        ]
+                    ],
+                    (
+                        [{"pullRequest": {"number": 42}}, {"pullRequest": {"number": 42.75}}],
+                        "invalid_entry:number_type",
+                        "mixed_valid_invalid",
+                    ),
+                    (
+                        [{"pullRequest": {"number": 42}}, None],
+                        "entry_unresolved:null_node",
+                        "mixed_valid_unresolved",
+                    ),
+                ]
+            ],
+            *[
+                pytest.param(
+                    {
+                        "errors": errors,
+                        "data": {"repository": {"mergeQueue": merge_queue}},
+                    },
+                    "invalid_errors",
+                    id=f"errors_{case}_{queue_case}",
+                )
+                for errors, case in [
+                    ({}, "object"),
+                    (False, "false"),
+                    (None, "null"),
+                    ("private diagnostic /?\n", "string"),
+                    (0, "zero"),
+                ]
+                for merge_queue, queue_case in [
+                    ({"entries": {"nodes": []}}, "configured"),
+                    (None, "null_queue"),
+                ]
+            ],
+            pytest.param(
                 {
                     "errors": [{"message": "private diagnostic /?\n"}],
                     "data": {"repository": {"mergeQueue": {"entries": {"nodes": []}}}},
@@ -1960,6 +2042,9 @@ class TestMergeQueuePayloadReconciliation:
         assert task_path.read_bytes() == original_note
         assert not quarantine_path.exists()
         assert not ledger_path.exists()
+        assert not any(call[:3] == ["gh", "pr", "merge"] for call in runner.calls)
+        assert not any("mutation" in part for call in runner.calls for part in call)
+        assert _admission_posts(runner) == []
         # Only the rate probe and the queue read are allowed; a ref cannot resolve
         # an indeterminate queue object, and no listing/decision/mutation may follow.
         assert sum(call[:3] == ["gh", "api", "graphql"] for call in runner.calls) == 1
@@ -1979,8 +2064,10 @@ class TestMergeQueuePayloadReconciliation:
         assert re.fullmatch(r"[A-Za-z0-9_:,=.-]+", cause)
         assert "private diagnostic" not in caplog.text + json.dumps(report)
 
+    @pytest.mark.parametrize("numbers", [[], [42]], ids=["empty_nodes", "integer_number"])
+    @pytest.mark.parametrize("has_refs", [False, True], ids=["empty_refs", "queue_refs"])
     def test_configured_queue_combines_nodes_and_refs(
-        self, tmp_path: Path, caplog: pytest.LogCaptureFixture
+        self, tmp_path: Path, caplog: pytest.LogCaptureFixture, numbers: list[int], has_refs: bool
     ) -> None:
         runner = _FakeRunner()
         runner.merge_queue_stdout = json.dumps(
@@ -1988,12 +2075,17 @@ class TestMergeQueuePayloadReconciliation:
                 "errors": [],
                 "data": {
                     "repository": {
-                        "mergeQueue": {"entries": {"nodes": [{"pullRequest": {"number": 42}}]}}
+                        "mergeQueue": {
+                            "entries": {
+                                "nodes": [{"pullRequest": {"number": number}} for number in numbers]
+                            }
+                        }
                     }
                 },
             }
         )
-        runner.queue_refs = ["refs/heads/gh-readonly-queue/main/pr-43-deadbeef"]
+        if has_refs:
+            runner.queue_refs = ["refs/heads/gh-readonly-queue/main/pr-43-deadbeef"]
         with caplog.at_level("INFO", logger=autoqueue.LOG.name):
             report = autoqueue.run_reconciler(
                 repo="owner/repo",
@@ -2004,7 +2096,12 @@ class TestMergeQueuePayloadReconciliation:
                 runner=runner,
             )
         assert "skipped" not in report
-        assert report["queued_prs"] == [42, 43]
+        assert report["queued_prs"] == numbers + ([43] if has_refs else [])
+        assert any(
+            call[:3] == ["gh", "api", "repos/owner/repo/git/matching-refs/heads/gh-readonly-queue"]
+            for call in runner.calls
+        )
+        assert report["mutations"] == []
         assert "no_configured_merge_queue" not in caplog.text
 
     def test_queueless_repository_completes_reconcile(
