@@ -4548,3 +4548,62 @@ payg_fallback: false
         reviews = dispatch.dispatch_reviews(constitution, ["prompt"], registry, runner)
 
         assert reviews[0]["verdict"] == "provider-outage"
+
+
+@pytest.mark.parametrize("apply", [False, True])
+@pytest.mark.parametrize("refused", [False, True])
+def test_main_acceptance_transfer_verb_is_separate_from_review(monkeypatch, capsys, apply, refused):
+    from unittest.mock import Mock
+
+    status = "refused" if refused else "transferred" if apply else "plan"
+    payload = {"status": status}
+    if refused:
+        payload["reason"] = "transfer_pr_not_merged"
+    transfer = Mock(return_value=payload)
+    review = Mock(side_effect=AssertionError("transfer must not review execution B"))
+    monkeypatch.delenv(dispatch.KILLSWITCH_ENV, raising=False)
+    monkeypatch.setattr(dispatch, "transfer_acceptance", transfer)
+    monkeypatch.setattr(dispatch, "review_pr", review)
+    args = [
+        "--pr",
+        "7",
+        "--transfer-acceptance",
+        "--acceptance-dossier",
+        "synthetic.review-dossier.yaml",
+    ]
+    if apply:
+        args.append("--apply")
+    exit_code = dispatch.main(args)
+    assert json.loads(capsys.readouterr().out) == payload
+    assert exit_code == (3 if refused else 0)
+    transfer.assert_called_once_with(
+        7,
+        repo=dispatch.DEFAULT_REPO,
+        repo_root=dispatch.REPO_ROOT,
+        dossier_name="synthetic.review-dossier.yaml",
+        apply=apply,
+    )
+    review.assert_not_called()
+
+
+@pytest.mark.parametrize(
+    "args",
+    [
+        ["--all", "--transfer-acceptance", "--acceptance-dossier", "synthetic.review-dossier.yaml"],
+        ["--pr", "7", "--transfer-acceptance"],
+        [
+            "--pr",
+            "7",
+            "--transfer-acceptance",
+            "--acceptance-dossier",
+            "synthetic.review-dossier.yaml",
+            "--force",
+        ],
+    ],
+)
+def test_main_transfer_verb_refuses_ambiguous_or_incomplete_request(monkeypatch, args):
+    monkeypatch.delenv(dispatch.KILLSWITCH_ENV, raising=False)
+    monkeypatch.setattr(dispatch, "transfer_acceptance", lambda *a, **kw: {"status": "refused"})
+    with pytest.raises(SystemExit) as exc:
+        dispatch.main(args)
+    assert exc.value.code == 2

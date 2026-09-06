@@ -3067,12 +3067,170 @@ def review_all_open_prs(
     return results
 
 
+def transfer_acceptance(
+    pr_number: int,
+    *,
+    repo: str,
+    repo_root: Path,
+    dossier_name: str,
+    apply: bool = False,
+    runner: Any = None,
+    receipt_roots: tuple[Path, ...] | None = None,
+) -> dict[str, Any]:
+    """Attest only a verified merge relation; stdout is the explicit transfer output."""
+    from scripts.publish_vault_artifact import PUBLIC_GATE_RECEIPT_ROOTS
+
+    runner = runner or subprocess.run
+    require = public_gate_receipts._transfer_require
+    try:
+        require(
+            public_gate_receipts.transfer_repository(repo_root, runner=runner) == repo,
+            "transfer_repository_mismatch",
+        )
+        # Both authenticated paths must agree. No cached row or caller head is evidence.
+        pr = _fetch_pr_via_view(pr_number, repo=repo, repo_root=repo_root, runner=runner)
+        record = get_pull_rest(pr_number, repo=repo, repo_root=repo_root, runner=runner)
+        require(isinstance(record, dict), "transfer_merge_record_unavailable")
+        require(
+            record.get("number") == pr_number == pr.number
+            and record.get("base", {}).get("repo", {}).get("full_name") == repo,
+            "transfer_merge_record_repository_or_pr_mismatch",
+        )
+        require(record.get("merged") is True and record.get("merged_at"), "transfer_pr_not_merged")
+        subject = pr.head_sha
+        execution = record.get("merge_commit_sha")
+        require(
+            public_gate_receipts._normalized_expected_head_sha(subject)
+            and public_gate_receipts._normalized_expected_head_sha(execution)
+            and record.get("head", {}).get("sha") == subject,
+            "transfer_merge_record_head_mismatch",
+        )
+        # The authenticated result plus immutable parent shape selects merge or
+        # squash equivalence. The latter makes no A ancestry assertion.
+        parents, method = public_gate_receipts.transfer_merge_shape(
+            repo_root,
+            subject,
+            execution,
+            runner=runner,
+        )
+        require(record.get("merge_method", method) == method, "transfer_merge_method_mismatch")
+        path, dossier, digest = public_gate_receipts.transfer_dossier(dossier_name)
+        require(
+            public_gate_receipts._mapping_has_trusted_authority_signature(
+                dossier, public_gate_receipts._public_gate_authority_secret()
+            ),
+            "transfer_dossier_signature_invalid",
+        )
+        bindings = {
+            "artifact_slug": dossier.get("artifact_slug"),
+            "artifact_fingerprint": dossier.get("artifact_fingerprint"),
+            "target_surfaces": tuple(dossier.get("target_surfaces") or ()),
+        }
+        # The signed dossier lists all refs; actual gate records determine the keyed mapping.
+        refs = dossier.get("authorized_public_gate_receipts")
+        require(isinstance(refs, list) and len(refs) == 6, "transfer_six_receipts_required")
+        roots = receipt_roots if receipt_roots is not None else PUBLIC_GATE_RECEIPT_ROOTS
+        receipts = {}
+        for gate in public_gate_receipts.PUBLIC_GATE_TRANSFER_GATES:
+            matches = [
+                ref
+                for ref in refs
+                if public_gate_receipts.public_gate_receipt_value_present(
+                    ref,
+                    expected_gate=gate,
+                    roots=roots,
+                    bindings=bindings,
+                    expected_head_sha=subject,
+                )
+            ]
+            require(len(matches) == 1, "transfer_bound_receipt_invalid:" + gate)
+            receipts[gate] = matches[0]
+        public_gate_receipts.validate_transfer_dossier(
+            path,
+            dossier,
+            repository=repo,
+            pr=pr_number,
+            subject_head_sha=subject,
+            bindings=bindings,
+            receipts=receipts,
+            receipt_roots=roots,
+        )
+        for head in (subject, execution):
+            require(
+                public_gate_receipts.transfer_artifact_bindings(
+                    dossier, head, repo_root, runner=runner
+                )
+                == bindings,
+                "transfer_artifact_fingerprint_mismatch:" + head,
+            )
+        transfer = {
+            "kind": public_gate_receipts.PUBLIC_GATE_TRANSFER_KIND,
+            "issuer": public_gate_receipts.PUBLIC_GATE_TRANSFER_ISSUER,
+            "transfer_schema": 1,
+            "repository": repo,
+            "pr": pr_number,
+            "subject_head_sha": subject,
+            "execution_head_sha": execution,
+            "dossier_name": path.name,
+            "dossier_digest": digest,
+            "artifact_source": {
+                "git_path": dossier.get("artifact_git_path"),
+                "blob_oid": dossier.get("artifact_blob_oid"),
+            },
+            "receipts": receipts,
+            "bindings": bindings,
+            "provenance": {
+                "merged": True,
+                "merged_at": record["merged_at"],
+                "merge_method": method,
+                "result_commit": execution,
+                "result_parents": parents,
+                "method_evidence": "github-merge-record-and-immutable-parent-shape",
+            },
+        }
+        if apply:
+            secret = os.environ.get(
+                public_gate_receipts.PUBLIC_GATE_AUTHORITY_SECRET_ENV, ""
+            ).strip()
+            require(secret, "transfer_signing_key_unavailable")
+            transfer["transfer_signature"] = public_gate_receipts.acceptance_transfer_signature(
+                transfer, secret
+            )
+        return {"status": "transferred" if apply else "plan", "transfer": transfer}
+    except (
+        public_gate_receipts.AcceptanceTransferError,
+        RuntimeError,
+        ValueError,
+        TypeError,
+        AttributeError,
+        OSError,
+    ) as exc:
+        reason = (
+            str(exc)
+            if isinstance(exc, public_gate_receipts.AcceptanceTransferError)
+            else "transfer_evidence_unobservable_or_malformed; next action: restore authenticated merge metadata and readable immutable acceptance objects"
+        )
+        return {
+            "status": "refused",
+            "reason": reason,
+            "next_action": "hold publication; restore verified merge, dossier and immutable artifact evidence",
+        }
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     target = parser.add_mutually_exclusive_group(required=True)
     target.add_argument("--pr", type=int, help="review one PR")
     target.add_argument("--all", action="store_true", help="scan all open PRs")
     parser.add_argument("--apply", action="store_true", help="dispatch reviewers (default: plan)")
+    parser.add_argument(
+        "--transfer-acceptance",
+        action="store_true",
+        help="attest an accepted dossier at the exact merged commit",
+    )
+    parser.add_argument(
+        "--acceptance-dossier", help="exact accepted dossier filename in the authority roots"
+    )
     parser.add_argument("--force", action="store_true", help="re-review an already-reviewed sha")
     parser.add_argument("--repo", default=DEFAULT_REPO)
     parser.add_argument(
@@ -3102,8 +3260,20 @@ def main(argv: list[str] | None = None) -> int:
     if os.environ.get(KILLSWITCH_ENV, "").strip().lower() in TRUTHY_ENV_VALUES:
         LOG.warning("%s set — dispatcher disabled, exiting without action", KILLSWITCH_ENV)
         return 0
-    if args.all:
-        results: Any = review_all_open_prs(
+    if args.transfer_acceptance:
+        if args.pr is None or not args.acceptance_dossier or args.force:
+            parser.error(
+                "--transfer-acceptance requires --pr and --acceptance-dossier and excludes --force"
+            )
+        results: Any = transfer_acceptance(
+            args.pr,
+            repo=args.repo,
+            repo_root=args.repo_root or REPO_ROOT,
+            dossier_name=args.acceptance_dossier,
+            apply=args.apply,
+        )
+    elif args.all:
+        results = review_all_open_prs(
             repo=args.repo,
             repo_root=args.repo_root,
             vault_root=args.vault_root,
@@ -3121,6 +3291,8 @@ def main(argv: list[str] | None = None) -> int:
         )
     json.dump(results, sys.stdout, indent=2, default=str)
     sys.stdout.write("\n")
+    if args.transfer_acceptance and results.get("status") == "refused":
+        return 3  # Transfer refused; 2 is argparse usage failure, 1 is an uncaught error.
     return 0
 
 

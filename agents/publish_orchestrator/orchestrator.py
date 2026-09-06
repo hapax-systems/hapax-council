@@ -64,6 +64,7 @@ from prometheus_client import REGISTRY, CollectorRegistry, Counter
 from pydantic import ValidationError
 
 from agents.publication_bus.surface_registry import dispatch_registry
+from shared import public_gate_receipts as transfer_authority
 from shared.preprint_artifact import (
     INBOX_DIR_NAME,
     ApprovalState,
@@ -268,6 +269,15 @@ class SurfaceResult:
 # ── Orchestrator ────────────────────────────────────────────────────
 
 
+class _ExecutionIdentityRefused(RuntimeError):
+    """Carry a worker's egress refusal back to the receipt/ledger writer."""
+
+    def __init__(self, reason: str, detail: str) -> None:
+        super().__init__(f"{reason}: {detail}")
+        self.reason = reason
+        self.detail = detail
+
+
 class Orchestrator:
     """30s-tick approval-gated inbox watcher.
 
@@ -464,10 +474,15 @@ class Orchestrator:
             self._withhold_for_gate(artifact, receipt_gate_result)
             return
 
-        gate_result = self._hardening_gate.evaluate(artifact)
+        # Capture B from this verification, before hardening or queued workers can
+        # change the artifact. A persisted PASS or caller-supplied A is not authority.
+        verified_execution_head_sha = (
+            (receipt_child.report or {}).get("executing_release", {}).get("head_sha")
+        )
+        hardening_result = self._hardening_gate.evaluate(artifact)
         gate_result = self._with_public_gate_receipts_child(
             artifact,
-            gate_result,
+            hardening_result,
             receipt_child=receipt_child,
         )
         artifact.publication_gate_result = gate_result.to_frontmatter()
@@ -583,12 +598,36 @@ class Orchestrator:
         for surface in deduped_surfaces:
             if prior_results.get(surface, "") in _TERMINAL_RESULTS:
                 continue
-            futures[surface] = pool.submit(self._dispatch_one, artifact, surface)
+            futures[surface] = pool.submit(
+                self._dispatch_one,
+                artifact,
+                surface,
+                verified_execution_head_sha=verified_execution_head_sha,
+            )
 
         # Collect results + persist log entries.
+        egress_findings: list[str] = []
+        egress_gate_result = None
         for surface, future in futures.items():
+            surface_gate_result = gate_result
+            failure_reason = failure_detail = None
             try:
                 result = future.result(timeout=120.0)
+            except _ExecutionIdentityRefused as exc:
+                result = "denied"
+                failure_reason, failure_detail = exc.reason, exc.detail
+                egress_findings.append(f"{surface}: {exc}")
+                egress_gate_result = self._with_public_gate_receipts_child(
+                    artifact,
+                    hardening_result,
+                    receipt_child=receipt_child.model_copy(
+                        update={
+                            "decision": PublicationGateDecision.HOLD,
+                            "findings": tuple(egress_findings),
+                        }
+                    ),
+                )
+                surface_gate_result = egress_gate_result
             except Exception:  # noqa: BLE001
                 log.exception("surface %s dispatch raised", surface)
                 result = "error"
@@ -597,9 +636,17 @@ class Orchestrator:
                 surface,
                 result,
                 artifact_fingerprint=artifact_fingerprint,
-                publication_gate_decision=gate_result.decision.value,
-                publication_gate_fingerprint=gate_fingerprint,
+                publication_gate_decision=surface_gate_result.decision.value,
+                publication_gate_fingerprint=publication_gate_fingerprint(surface_gate_result),
+                failure_reason=failure_reason,
+                failure_detail=failure_detail,
             )
+
+        if egress_gate_result is not None:
+            # Replace the earlier PASS and withhold through the existing gate path.
+            # Workers only return findings; artifact and ledger writes stay here.
+            self._withhold_for_gate(artifact, egress_gate_result)
+            return
 
         # Final state check: did all surfaces reach terminal? If yes,
         # move the artifact to published/ only if every surface succeeded.
@@ -640,11 +687,55 @@ class Orchestrator:
                     artifact_fingerprint=artifact_fingerprint,
                 )
 
-    def _dispatch_one(self, artifact: PreprintArtifact, surface: str) -> str:
+    def _dispatch_one(
+        self,
+        artifact: PreprintArtifact,
+        surface: str,
+        *,
+        verified_execution_head_sha: str | None = None,
+    ) -> str:
         """Resolve + invoke the publisher entry-point for ``surface``."""
         entry = self._resolve_entry_point(surface)
         if entry is None:
             return "surface_unwired"
+        context = artifact.publication_gate_context or {}
+        if (
+            verified_execution_head_sha is not None
+            or "acceptance_transfer" in context
+            or "acceptance_transfer_result" in context
+        ):
+            # This is the last boundary after hardening, queueing and imports.
+            # Compare to verified B, not the reviewed subject A or a cached PASS.
+            observed_head_sha = _current_repo_head_sha()
+            detail = (
+                f"verified_execution_head={verified_execution_head_sha or 'unverified'} "
+                f"observed_execution_head={observed_head_sha or 'unobserved'}; "
+                "next action: restore the exact clean verified release and reverify the artifact"
+            )
+            if verified_execution_head_sha is None or observed_head_sha is None:
+                raise _ExecutionIdentityRefused(
+                    "execution_identity_unobserved_after_verification", detail
+                )
+            if observed_head_sha != verified_execution_head_sha:
+                raise _ExecutionIdentityRefused("execution_head_changed_after_verification", detail)
+            try:
+                dirty = transfer_authority.transfer_git_data(
+                    REPO_ROOT, "status", "--porcelain", "--untracked-files=all"
+                ).strip()
+            except transfer_authority.AcceptanceTransferError as exc:
+                raise _ExecutionIdentityRefused(
+                    "execution_identity_unobserved_after_verification", detail
+                ) from exc
+            if dirty:
+                raise _ExecutionIdentityRefused("execution_tree_dirty_after_verification", detail)
+            observed_head_sha = _current_repo_head_sha()
+            if observed_head_sha != verified_execution_head_sha:
+                raise _ExecutionIdentityRefused(
+                    "execution_head_changed_after_verification",
+                    f"verified_execution_head={verified_execution_head_sha} "
+                    f"observed_execution_head={observed_head_sha or 'unobserved'}; "
+                    "next action: restore the exact clean verified release and reverify the artifact",
+                )
         try:
             return entry(artifact)
         except Exception:  # noqa: BLE001
@@ -768,6 +859,37 @@ class Orchestrator:
         )
         receipts, error = _artifact_publication_gate_receipts(artifact)
         bindings = _publication_gate_receipt_bindings(artifact)
+        context = artifact.publication_gate_context or {}
+        if (
+            ("acceptance_transfer" in context or "acceptance_transfer_result" in context)
+            and error is None
+            and policy_error is None
+        ):
+            try:
+                transfer_authority._transfer_require(
+                    set(required) == set(transfer_authority.PUBLIC_GATE_TRANSFER_GATES),
+                    "transfer_policy_gates_not_covered",
+                )
+                report = transfer_authority.verify_acceptance_transfer(
+                    context,
+                    observed_head_sha=_current_repo_head_sha(),
+                    repo_root=REPO_ROOT,
+                    bindings=bindings,
+                    receipts=receipts,
+                    receipt_roots=self._public_gate_receipt_roots,
+                )
+            except transfer_authority.AcceptanceTransferError as exc:
+                return PublicationGateChildResult(
+                    name="public_gate_receipts",
+                    decision=PublicationGateDecision.HOLD,
+                    findings=(str(exc),),
+                )
+            return PublicationGateChildResult(
+                name="public_gate_receipts",
+                decision=PublicationGateDecision.PASS,
+                evidence_refs=tuple(str(receipts[gate]) for gate in required),
+                report=report,
+            )
         findings = (error,) if error is not None else ()
         if policy_error is not None:
             findings = (*findings, policy_error)
@@ -779,7 +901,11 @@ class Orchestrator:
                 expected_gate=gate,
                 roots=self._public_gate_receipt_roots,
                 bindings=bindings,
-                expected_head_sha=self._public_gate_expected_head_sha,
+                expected_head_sha=(
+                    self._public_gate_expected_head_sha
+                    if self._public_gate_expected_head_sha == _current_repo_head_sha()
+                    else None
+                ),
             )
         )
         if missing:
@@ -881,6 +1007,10 @@ class Orchestrator:
         )
 
     def _attach_gate_frontmatter(self, artifact: PreprintArtifact) -> None:
+        # Transfer results belong to the artifact/log. Rewriting its git-backed source
+        # here would dirty B after verification and before the provider action.
+        if "acceptance_transfer" in (artifact.publication_gate_context or {}):
+            return
         if not artifact.source_path:
             return
         source_path = Path(artifact.source_path).expanduser()
@@ -1666,24 +1796,7 @@ def _artifact_fingerprint(artifact: PreprintArtifact) -> str:
     force a fresh dispatch.
     """
 
-    payload = artifact.model_dump(mode="json")
-    relevant = {
-        key: payload.get(key)
-        for key in (
-            "slug",
-            "title",
-            "abstract",
-            "body_md",
-            "body_html",
-            "doi",
-            "co_authors",
-            "surfaces_targeted",
-            "attribution_block",
-            "embed_image_url",
-        )
-    }
-    encoded = json.dumps(relevant, sort_keys=True, separators=(",", ":")).encode()
-    return sha256(encoded).hexdigest()
+    return transfer_authority.publication_artifact_fingerprint(artifact)
 
 
 def _current_repo_head_sha(repo_root: Path = REPO_ROOT) -> str | None:

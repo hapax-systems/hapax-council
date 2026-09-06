@@ -28,6 +28,17 @@ from shared.publication_hardening.gate import (
     PublicationGateResult,
 )
 from shared.publication_hardening.review import ReviewReport
+from tests.shared.test_public_gate_subject_head_reproduction import (
+    EXECUTING_HEAD,
+    SUBJECT_HEAD,
+    _install_transfer,
+)
+from tests.shared.test_public_gate_subject_head_reproduction import (
+    accepted_dossier as accepted_dossier,
+)
+from tests.shared.test_public_gate_subject_head_reproduction import (
+    transfer_seat as transfer_seat,
+)
 
 TASK_ID = "cc-task-public-gate-test"
 AUTHORITY_SECRET = "test-public-gate-authority-secret"
@@ -299,6 +310,118 @@ def _make_orchestrator(
 
 
 # ── Empty inbox ─────────────────────────────────────────────────────
+
+
+@pytest.mark.parametrize("change_at", ["hardening", "worker"])
+@pytest.mark.parametrize(
+    ("change", "reason"),
+    [
+        ("head", "execution_head_changed_after_verification"),
+        ("dirty", "execution_tree_dirty_after_verification"),
+        ("unobserved_head", "execution_identity_unobserved_after_verification"),
+        ("unobserved_status", "execution_identity_unobserved_after_verification"),
+        ("unchanged", None),
+    ],
+)
+def test_transfer_dispatch_rechecks_execution_at_provider_boundary(
+    transfer_seat, monkeypatch, change_at, change, reason
+):
+    from concurrent.futures import ThreadPoolExecutor
+
+    seat = transfer_seat
+    _install_transfer(seat)
+    accepted = seat["accepted"]
+    artifact = accepted.artifact
+    state_root = accepted.receipt_root.parent / "state"
+    monkeypatch.setattr(orchestrator_module, "_current_repo_head_sha", lambda: seat["head"])
+    provider = mock.Mock(return_value="ok")
+    gate = _StaticGate(PublicationGateDecision.PASS)
+    orch = Orchestrator(
+        state_root=state_root,
+        surface_registry={"omg-weblog": "synthetic_publisher:publish_artifact"},
+        publication_allowed_surfaces={"omg-weblog"},
+        public_event_path=state_root / "public-events.jsonl",
+        public_gate_receipt_roots=(accepted.receipt_root,),
+        hardening_gate=gate,
+        registry=CollectorRegistry(),
+    )
+    gate_path = state_root / "publish/log" / f"{artifact.slug}.publication-hardening-gate.json"
+    original_dossier = accepted.dossier_path.read_bytes()
+    verified_reports = []
+    original_receipts = orch._public_gate_receipts_gate_result
+
+    def verify(candidate):
+        result = original_receipts(candidate)
+        assert result.decision == PublicationGateDecision.PASS
+        verified_reports.append(result.child_results[0].report)
+        return result
+
+    monkeypatch.setattr(orch, "_public_gate_receipts_gate_result", verify)
+
+    def change_identity():
+        assert verified_reports[0]["executing_release"]["head_sha"] == EXECUTING_HEAD
+        if change == "head":
+            seat["head"] = "e" * 40
+        elif change == "dirty":
+            seat["dirty"] = " M drafts/synthetic.md"
+        elif change == "unobserved_head":
+            seat["head"] = None
+        elif change == "unobserved_status":
+
+            def unavailable_status(*args, **kwargs):
+                raise public_gate_receipts.AcceptanceTransferError("synthetic_git_unobservable")
+
+            monkeypatch.setattr(public_gate_receipts, "transfer_git_data", unavailable_status)
+
+    original_evaluate = gate.evaluate
+
+    def evaluate(candidate):
+        if change_at == "hardening":
+            change_identity()
+        return original_evaluate(candidate)
+
+    monkeypatch.setattr(gate, "evaluate", evaluate)
+
+    def resolve(surface):
+        assert surface == "omg-weblog"
+        # Worker resolution is after the PASS is persisted and queued work starts.
+        persisted_pass = json.loads(gate_path.read_text())
+        assert persisted_pass["publication_gate_decision"] == "pass"
+        report = persisted_pass["child_results"][-1]["report"]
+        assert report["reviewed_subject"]["head_sha"] == SUBJECT_HEAD
+        assert report["executing_release"]["head_sha"] == EXECUTING_HEAD
+        if change_at == "worker":
+            change_identity()
+        return provider
+
+    monkeypatch.setattr(orch, "_resolve_entry_point", resolve)
+    with ThreadPoolExecutor(max_workers=1) as pool:
+        orch._dispatch(artifact, pool=pool)
+
+    record = json.loads(artifact.log_path("omg-weblog", state_root=state_root).read_text())
+    final_gate = json.loads(gate_path.read_text())
+    if reason is None:
+        provider.assert_called_once_with(artifact)
+        assert record["result"] == "ok"
+        assert final_gate["publication_gate_decision"] == "pass"
+        assert artifact.published_path(state_root=state_root).exists()
+    else:
+        provider.assert_not_called()
+        assert record["result"] == "denied"
+        assert record["failure_reason"] == reason
+        assert EXECUTING_HEAD in record["failure_detail"]
+        assert (seat["head"] or "unobserved") in record["failure_detail"]
+        assert record["publication_gate_decision"] == "hold"
+        assert final_gate["result"] == "operator_hold"
+        assert final_gate["publication_gate_decision"] == "hold"
+        assert final_gate["child_results"][-1]["decision"] == "hold"
+        assert reason in " ".join(final_gate["flagged_issues"])
+        persisted = json.loads(artifact.draft_path(state_root=state_root).read_text())
+        assert persisted["publication_gate_result"]["decision"] == "hold"
+        assert not artifact.published_path(state_root=state_root).exists()
+        assert not artifact.failed_path(state_root=state_root).exists()
+    assert len(verified_reports) == 1
+    assert accepted.dossier_path.read_bytes() == original_dossier
 
 
 class TestEmptyInbox:

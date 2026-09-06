@@ -23,10 +23,12 @@ import os
 from collections.abc import Mapping
 from unittest import mock
 
+import pytest
 import yaml
 from prometheus_client import CollectorRegistry
 
 from agents.publication_bus.publisher_kit import PublisherResult
+from agents.publish_orchestrator import orchestrator as orchestrator_module
 from agents.publish_orchestrator.orchestrator import (
     FANOUT_SURFACE_IDS,
     PUBLICATION_BASELINE_REQUIRED_GATES,
@@ -214,6 +216,15 @@ def _make_orchestrator(state_root) -> Orchestrator:  # type: ignore[no-untyped-d
         public_gate_expected_head_sha="a" * 40,
         registry=CollectorRegistry(),
     )
+
+
+@pytest.fixture(autouse=True)
+def _observed_execution_head_is_the_synthetic_head(monkeypatch):
+    """The orchestrator observes the executing checkout itself and honours a
+    configured expected head only when it is that observation. These runs bind
+    their receipts and dossier to the synthetic head, so the observation must
+    report it; the real checkout's head would otherwise hold every artifact."""
+    monkeypatch.setattr(orchestrator_module, "_current_repo_head_sha", lambda: "a" * 40)
 
 
 # ── Phase 1 publishers: real SURFACE_REGISTRY, mocked transports ────
