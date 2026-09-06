@@ -15,12 +15,13 @@ from __future__ import annotations
 import asyncio
 import logging
 import os
+from contextlib import asynccontextmanager
 from dataclasses import asdict
 from pathlib import Path
 from threading import Lock
 from urllib.parse import unquote
 
-from fastapi import APIRouter, Query, Response
+from fastapi import APIRouter, FastAPI, Query, Request, Response
 from pydantic import BaseModel, Field
 from werkzeug.security import safe_join
 
@@ -32,14 +33,41 @@ from shared.governance.consent import (
     resolve_principal_id,
 )
 from shared.governance.revocation import RevocationReport
+from shared.notify import send_notification
+from shared.stream_archive import archive_root
 
 _log = logging.getLogger(__name__)
 
-router = APIRouter(prefix="/api/consent", tags=["consent"])
-
-# Keep failure reports for explicit retries during this API process's lifetime.
-_pending_revocations: dict[str, RevocationReport] = {}
+# Existing archive-purge audit destination (scripts/archive-purge.py).
+_PURGE_AUDIT_PATH = archive_root() / "purge.log"
 _revocation_lock = Lock()
+
+
+def _purge_retry_instruction(person_id: str) -> str:
+    return (
+        f"POST /api/consent/retry/{person_id} is valid for the current process only. "
+        f"After restart, reconcile outstanding contracts from the durable purge_pending "
+        f"record in {_PURGE_AUDIT_PATH}; no purge is automatically re-run."
+    )
+
+
+def _warn_pending_purges() -> None:
+    try:
+        pending = get_revocation_propagator().pending_purges(_PURGE_AUDIT_PATH)
+    except Exception:
+        _log.warning("purge_audit_unreadable: inspect the durable purge audit before retrying")
+        return
+    for person_id in sorted(pending):
+        _log.warning("purge_pending: %s; %s", person_id, _purge_retry_instruction(person_id))
+
+
+@asynccontextmanager
+async def _consent_lifespan(app: FastAPI):
+    await asyncio.to_thread(_warn_pending_purges)
+    yield
+
+
+router = APIRouter(prefix="/api/consent", tags=["consent"], lifespan=_consent_lifespan)
 
 _TRACE_ALLOWED_BASES = (
     Path(__file__).resolve().parents[3],
@@ -161,14 +189,22 @@ def _revocation_response(report: RevocationReport, response: Response) -> dict:
     payload["failures"] = [cause for result in report.purge_results for cause in result.failures]
     if report.retry_contract_ids or payload["failures"]:
         response.status_code = 503
+        payload["durable_record"] = {"event": "purge_pending", "audit": str(_PURGE_AUDIT_PATH)}
+        payload["retry_instruction"] = _purge_retry_instruction(report.person_id)
     return payload
 
 
-def _run_revocation(person_id: str, *, retry: bool = False) -> RevocationReport | None:
+def _run_revocation(
+    person_id: str, app: FastAPI, *, retry: bool = False
+) -> RevocationReport | None:
     with _revocation_lock, estate_identity_operation():
+        # Reports belong to this app instance; the audit survives process replacement.
+        if not hasattr(app.state, "pending_consent_revocations"):
+            app.state.pending_consent_revocations = {}
+        pending_revocations = app.state.pending_consent_revocations
         person_id = resolve_principal_id(person_id)
         prop = get_revocation_propagator()
-        pending = _pending_revocations.get(person_id)
+        pending = pending_revocations.get(person_id)
         if retry:
             if pending is None:
                 return None
@@ -194,9 +230,22 @@ def _run_revocation(person_id: str, *, retry: bool = False) -> RevocationReport 
                     prior_purge_results=pending.prior_purge_results + report.prior_purge_results,
                 )
         if report.retry_contract_ids:
-            _pending_revocations[person_id] = report
+            pending_revocations[person_id] = report
+            prop.record_purge_pending(report, _PURGE_AUDIT_PATH)
+            try:
+                send_notification(
+                    "Consent purge pending",
+                    f"purge_pending: {person_id}; contracts={','.join(report.retry_contract_ids)}. "
+                    + _purge_retry_instruction(person_id),
+                    priority="high",
+                    tags=["warning"],
+                )
+            except Exception:
+                _log.warning("purge_pending_notification_failed: inspect the durable purge audit")
         else:
-            _pending_revocations.pop(person_id, None)
+            if retry and pending is not None and report.purge_complete:
+                prop.record_purge_complete(person_id, pending.retry_contract_ids, _PURGE_AUDIT_PATH)
+            pending_revocations.pop(person_id, None)
         _log.info(
             "Revocation: revoked=%s, purged=%d, purge_complete=%s",
             report.contract_revoked,
@@ -207,19 +256,26 @@ def _run_revocation(person_id: str, *, retry: bool = False) -> RevocationReport 
 
 
 @router.post("/revoke/{person_id}")
-async def revoke_consent(person_id: str, response: Response) -> dict:
+async def revoke_consent(person_id: str, response: Response, request: Request) -> dict:
     """Revoke consent and retain an incomplete purge for an explicit retry."""
-    report = await asyncio.to_thread(_run_revocation, person_id)
+    report = await asyncio.to_thread(_run_revocation, person_id, request.app)
     return _revocation_response(report, response)
 
 
 @router.post("/retry/{person_id}")
-async def retry_consent_purge(person_id: str, response: Response) -> dict:
+async def retry_consent_purge(person_id: str, response: Response, request: Request) -> dict:
     """Resume a retained purge without restoring consent or losing prior effects."""
-    report = await asyncio.to_thread(_run_revocation, person_id, retry=True)
+    report = await asyncio.to_thread(_run_revocation, person_id, request.app, retry=True)
     if report is None:
         response.status_code = 404
-        return {"error": "purge_retry_unavailable"}
+        return {
+            "error": "purge_retry_unavailable",
+            "durable_record": {"event": "purge_pending", "audit": str(_PURGE_AUDIT_PATH)},
+            "retry_instruction": (
+                "No report retained in this process. Inspect the durable purge_pending "
+                "record for outstanding contracts and reconcile manually; consent remains revoked."
+            ),
+        }
     return _revocation_response(report, response)
 
 

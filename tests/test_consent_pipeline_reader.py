@@ -71,14 +71,20 @@ async def test_complete_retrieval_gates_predecessor(
     caplog.set_level(logging.INFO)
     predecessor = await _retrieve(_pipeline(reader, f"Notes about {OLD_PRINCIPAL}."))
     canonical = await _retrieve(_pipeline(reader, f"Notes about {PRINCIPAL}."))
-    assert predecessor == canonical
+    if scope == "audio":
+        assert predecessor == canonical == "Notes about someone."
+    else:
+        assert predecessor == f"Notes about {OLD_PRINCIPAL}."
+        assert canonical == f"Notes about {PRINCIPAL}."
     assert len(reader.decisions) == 2
     assert reader.decisions[0].degradation_level == (2 if scope == "audio" else 1)
     assert await _retrieve(_pipeline(reader, "No people mentioned.")) == "No people mentioned."
     assert len(reader.decisions) == 2
     assert OLD_PRINCIPAL not in (tmp_path / "reader.jsonl").read_text()
     assert OLD_PRINCIPAL not in caplog.text
-    assert OLD_PRINCIPAL not in repr([asdict(d) for d in reader.decisions])
+    if scope == "audio":
+        assert OLD_PRINCIPAL not in repr([asdict(d) for d in reader.decisions])
+    assert all(d.person_ids == (PRINCIPAL,) for d in reader.decisions)
 
 
 @pytest.mark.parametrize(

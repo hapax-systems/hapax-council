@@ -7,9 +7,13 @@ cascading purge across all registered subsystems.
 
 from __future__ import annotations
 
+import json
 import logging
+import os
 from collections.abc import Callable
 from dataclasses import dataclass, field, replace
+from datetime import UTC, datetime
+from pathlib import Path
 from typing import Any
 
 from agentgov.carrier import CarrierRegistry
@@ -87,6 +91,59 @@ class RevocationPropagator:
 
     def register_handler(self, name: str, handler: PurgeHandler) -> None:
         self._handlers.append((name, handler))
+
+    def record_purge_pending(self, report: RevocationReport, audit_path: Path) -> None:
+        """Append residue to the installation's existing purge audit, not a retry journal."""
+        self._record_purge_state(
+            "purge_pending", report.person_id, report.retry_contract_ids, audit_path
+        )
+
+    def record_purge_complete(
+        self, person_id: str, contract_ids: tuple[str, ...], audit_path: Path
+    ) -> None:
+        """Resolve only the outstanding contracts that this retry actually completed."""
+        self._record_purge_state("purge_complete", person_id, contract_ids, audit_path)
+
+    def _record_purge_state(
+        self, event: str, person_id: str, contract_ids: tuple[str, ...], audit_path: Path
+    ) -> None:
+        with identity_operation(self._consent_registry._identity_binding):
+            entry = {
+                "ts": datetime.now(UTC).isoformat(),
+                "event": event,
+                "person_id": resolve_principal_id(person_id),
+                "contract_ids": sorted({resolve_contract_id(cid) for cid in contract_ids}),
+            }
+            try:
+                audit_path.parent.mkdir(parents=True, exist_ok=True)
+                with audit_path.open("a", encoding="utf-8") as audit:
+                    audit.write(json.dumps(entry) + "\n")
+                    audit.flush()
+                    os.fsync(audit.fileno())
+            except OSError:
+                log.warning("purge_audit_unwritten: retain current-process retry report")
+                raise RuntimeError("purge_audit_unwritten") from None
+
+    def pending_purges(self, audit_path: Path) -> dict[str, tuple[str, ...]]:
+        """Read outstanding audit residue without reconstituting or running a retry."""
+        with identity_operation(self._consent_registry._identity_binding):
+            pending: dict[str, set[str]] = {}
+            try:
+                with audit_path.open(encoding="utf-8") as audit:
+                    for line in audit:
+                        entry = json.loads(line)
+                        if entry.get("event") not in {"purge_pending", "purge_complete"}:
+                            continue  # Existing archive purge audit entries remain untouched.
+                        person_id = resolve_principal_id(entry["person_id"])
+                        contract_ids = {resolve_contract_id(cid) for cid in entry["contract_ids"]}
+                        remaining = pending.setdefault(person_id, set())
+                        if entry["event"] == "purge_pending":
+                            remaining.update(contract_ids)
+                        else:
+                            remaining.difference_update(contract_ids)
+            except FileNotFoundError:
+                return {}
+            return {pid: tuple(sorted(ids)) for pid, ids in pending.items() if ids}
 
     def _purge(
         self,

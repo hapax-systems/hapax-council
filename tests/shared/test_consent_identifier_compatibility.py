@@ -234,7 +234,7 @@ def test_unavailable_store_never_initializes_key(damage, synthetic_custody, monk
         raise AssertionError("initializing_accessor_called")
 
     monkeypatch.setattr(api.FileStore, "_key", forbid_initialization)
-    reason = "compat_missing" if damage in {"missing", "integrity"} else "compat_unreadable"
+    reason = "compat_missing" if damage == "missing" else "compat_unreadable"
     with pytest.raises(portable.IdentityMigrationUnavailable, match=f"^{reason}$"):
         consent.resolve_principal_id(PRINCIPAL)
     assert (key.read_bytes() if key.exists() else None) == original

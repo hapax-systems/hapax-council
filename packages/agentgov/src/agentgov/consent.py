@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import logging
 import os
+import re
 import time
 from contextlib import contextmanager
 from contextvars import ContextVar
@@ -27,7 +28,7 @@ log = logging.getLogger(__name__)
 class IdentityMigrationUnavailable(RuntimeError):
     """Identity resolution refused; only a public reason token is exposed."""
 
-    def __init__(self, reason: str) -> None:
+    def __init__(self, reason: str, *, cause_class: str | None = None) -> None:
         allowed = {
             "identity_unconfigured",
             "compat_missing",
@@ -37,7 +38,24 @@ class IdentityMigrationUnavailable(RuntimeError):
             "compat_incomplete",
         }
         self.reason = reason if reason in allowed else "compat_unreadable"
+        self.cause_class = cause_class
         super().__init__(self.reason)
+
+
+def custody_read_failure(exc: Exception) -> IdentityMigrationUnavailable:
+    """Expose cause types and import names, never exception text or paths."""
+    cause_class = type(exc).__name__
+    if re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]*", cause_class) is None:
+        cause_class = "Exception"
+    module = getattr(exc, "name", None) if isinstance(exc, ImportError) else None
+    if not isinstance(module, str) or re.fullmatch(r"[A-Za-z_][\w.]*", module) is None:
+        module = None
+    log.warning(
+        "compat_unreadable: cause_class=%s missing_module=%s remedy=restore_compat_custody",
+        cause_class,
+        module or "unavailable",
+    )
+    return IdentityMigrationUnavailable("compat_unreadable", cause_class=cause_class)
 
 
 @dataclass(frozen=True)
@@ -95,9 +113,9 @@ def identity_operation(binding: IdentityMigrationBinding | None = None):
             ):
                 raise IdentityMigrationUnavailable("compat_malformed")
         except IdentityMigrationUnavailable as exc:
-            raise IdentityMigrationUnavailable(exc.reason) from None
-        except Exception:
-            raise IdentityMigrationUnavailable("compat_unreadable") from None
+            raise IdentityMigrationUnavailable(exc.reason, cause_class=exc.cause_class) from None
+        except Exception as exc:
+            raise custody_read_failure(exc) from None
     else:
         raise IdentityMigrationUnavailable("identity_unconfigured")
     token = _identity_snapshot.set((selected, snapshot))
@@ -126,9 +144,9 @@ def _resolve_identifier(candidate: str, kind: str) -> str:
                 raise IdentityMigrationUnavailable("compat_malformed")
             return candidate if result is None else result
         except IdentityMigrationUnavailable as exc:
-            raise IdentityMigrationUnavailable(exc.reason) from None
-        except Exception:
-            raise IdentityMigrationUnavailable("compat_unreadable") from None
+            raise IdentityMigrationUnavailable(exc.reason, cause_class=exc.cause_class) from None
+        except Exception as exc:
+            raise custody_read_failure(exc) from None
 
 
 def resolve_principal_id(candidate: str) -> str:

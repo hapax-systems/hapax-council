@@ -13,6 +13,7 @@ import importlib
 import json
 import logging
 import os
+import re
 import sys
 from collections.abc import Mapping
 from dataclasses import dataclass
@@ -27,6 +28,7 @@ from agentgov.consent import (
     IdentityMigrationUnavailable,
     check_consent_state_freshness,
     configure_identity_migration,
+    custody_read_failure,
     identity_operation,
     parse_contract,
 )
@@ -57,6 +59,10 @@ def estate_identity_operation():
     return identity_operation(_ESTATE_BINDING)
 
 
+class CompatibilityIntegrityError(ValueError):
+    """FileStore returned no readable bytes for an existing compatibility entry."""
+
+
 def _read_compatibility_document() -> bytes:
     # Import the installed API the same way as the existing FileStore helper.
     api_path = Path(
@@ -66,8 +72,8 @@ def _read_compatibility_document() -> bytes:
     sys.path.insert(0, str(api_path))
     try:
         key_capture = importlib.import_module("k0.key_capture")
-    except Exception:
-        raise IdentityMigrationUnavailable("compat_unreadable") from None
+    except Exception as exc:
+        raise custody_read_failure(exc) from None
     finally:
         sys.path.remove(str(api_path))
 
@@ -79,15 +85,16 @@ def _read_compatibility_document() -> bytes:
                 # disappears between opening the store and reading its blob.
                 key = (self.root / ".key").read_bytes()
                 if len(key) != 32:
-                    raise IdentityMigrationUnavailable("compat_unreadable")
+                    raise CompatibilityIntegrityError()
                 return key
 
         store = ReadOnlyFileStore()
         raw = store.get(_COMPATIBILITY_ENTRY)
-    except Exception:
-        raise IdentityMigrationUnavailable("compat_unreadable") from None
+        if raw is None and store.has(_COMPATIBILITY_ENTRY):
+            raise CompatibilityIntegrityError()
+    except Exception as exc:
+        raise custody_read_failure(exc) from None
     if raw is None:
-        # FileStore collapses missing and integrity-failed blobs to None.
         raise IdentityMigrationUnavailable("compat_missing")
     return raw
 
@@ -117,6 +124,15 @@ class _CorrespondenceSnapshot:
         canonical = self.resolve_principal_id(principal_id)
         return frozenset(
             label for label, successor in self.principals.items() if successor == canonical
+        )
+
+    def mentioned_principal_ids(self, content: str) -> frozenset[str]:
+        """Recognize all private labels on a matching-only string, never rewrite data."""
+        matching_content = content.lower()
+        return frozenset(
+            canonical
+            for label, canonical in self.principals.items()
+            if re.search(r"\b" + re.escape(label) + r"\b", matching_content, re.IGNORECASE)
         )
 
     def contains_predecessor(self, text: str) -> bool:

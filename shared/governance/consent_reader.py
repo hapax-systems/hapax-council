@@ -15,7 +15,6 @@ from __future__ import annotations
 
 import json
 import logging
-import re
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
@@ -51,6 +50,7 @@ class ReaderDecision:
     consented_count: int
     unconsented_count: int
     audit_note: str  # "2 of 5 persons consented" (no names in audit)
+    person_ids: tuple[str, ...] = ()  # Canonical decision partition only.
 
 
 # ── Tool → category mapping ─────────────────────────────────────────────────
@@ -139,17 +139,18 @@ class ConsentGatedReader:
         Key invariant: the operator (operator_ids) is always treated as consented.
         Every other person requires contract_check(person_id, data_category).
         """
-        # Matching labels remain local; decisions contain only canonical content/IDs.
         with estate_identity_operation() as snapshot:
-            person_ids = frozenset(snapshot.resolve_principal_id(pid) for pid in datum.person_ids)
-            content = datum.content
-            for pid in person_ids:
-                for label in sorted(snapshot.predecessor_labels(pid), key=len, reverse=True):
-                    content = re.sub(re.escape(label), lambda _: pid, content, flags=re.IGNORECASE)
+            canonical_person_ids = frozenset(
+                snapshot.resolve_principal_id(pid) for pid in datum.person_ids
+            ) | snapshot.mentioned_principal_ids(datum.content)
             operator_ids = frozenset(
                 snapshot.resolve_principal_id(pid) for pid in self._operator_ids
             )
-        datum = RetrievedDatum(content, person_ids, datum.data_category, datum.source)
+            # From this boundary onward, every partition uses canonical IDs only.
+            # Recognition never changes the retrieved content, including consented text.
+            datum = RetrievedDatum(
+                datum.content, canonical_person_ids, datum.data_category, datum.source
+            )
         # Partition person IDs
         consented: set[str] = set()
         unconsented: set[str] = set()
@@ -167,17 +168,24 @@ class ConsentGatedReader:
                 allowed=True,
                 degradation_level=1,
                 filtered_content=datum.content,
+                person_ids=tuple(sorted(canonical_person_ids)),
                 consented_count=len(consented),
                 unconsented_count=0,
                 audit_note=f"{len(consented)} of {len(datum.person_ids)} persons consented",
             )
         else:
             # Some unconsented — apply abstraction (Level 2)
-            filtered = degrade(datum.content, frozenset(unconsented), datum.data_category)
+            # Expand only denied canonical identities into private abstraction terms.
+            # The existing degradation machinery receives the original retrieved text.
+            unconsented_labels = frozenset(unconsented) | frozenset(
+                label for pid in unconsented for label in snapshot.predecessor_labels(pid)
+            )
+            filtered = degrade(datum.content, unconsented_labels, datum.data_category)
             decision = ReaderDecision(
                 allowed=True,
                 degradation_level=2,
                 filtered_content=filtered,
+                person_ids=tuple(sorted(canonical_person_ids)),
                 consented_count=len(consented),
                 unconsented_count=len(unconsented),
                 audit_note=(
@@ -199,7 +207,7 @@ class ConsentGatedReader:
         if tool_name in _PASSTHROUGH_TOOLS or tool_name not in _TOOL_CATEGORIES:
             return result
 
-        with estate_identity_operation():
+        with estate_identity_operation() as snapshot:
             category = _TOOL_CATEGORIES[tool_name]
 
             # Use category-specific extractor if available, else generic
@@ -209,7 +217,7 @@ class ConsentGatedReader:
                 person_ids |= extractor(result)
 
             # If no persons found, pass through
-            if not person_ids:
+            if not person_ids and not snapshot.mentioned_principal_ids(result):
                 return result
 
             datum = RetrievedDatum(
@@ -236,7 +244,6 @@ class ConsentGatedReader:
                     canonical = snapshot.resolve_principal_id(party)
                     if canonical != "operator" and canonical not in self._operator_ids:
                         persons.add(canonical)
-                        persons.update(snapshot.predecessor_labels(canonical))
         return frozenset(persons)
 
     def _record(self, decision: ReaderDecision, source: str, category: str) -> None:
