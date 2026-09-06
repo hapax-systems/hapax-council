@@ -142,6 +142,7 @@ def load_enrollment(principal_id: str, *, root: Path | None = None) -> NDArray[n
 
     import numpy as np
 
+    path = None
     try:
         path = _enrollment_path(principal_id, root=root)
         if path.with_suffix(".revoked").exists():
@@ -154,8 +155,13 @@ def load_enrollment(principal_id: str, *, root: Path | None = None) -> NDArray[n
         with np.load(path) as data:
             embedding = data["embedding"]
         return np.asarray(embedding, dtype=np.float32)
-    except Exception:
-        log.warning("Failed to load enrollment for %s", principal_id, exc_info=True)
+    except Exception as exc:
+        with estate_identity_operation() as snapshot:
+            private = snapshot.contains_predecessor(f"{principal_id}: {path}: {exc}")
+        if private:
+            log.warning("enrollment_read_failed")
+        else:
+            log.warning("Failed to load enrollment for %s", principal_id, exc_info=True)
         return None
 
 

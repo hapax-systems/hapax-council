@@ -15,11 +15,12 @@ from __future__ import annotations
 
 import json
 import logging
+import re
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
 
-from shared.governance.consent import ConsentRegistry, load_contracts
+from shared.governance.consent import ConsentRegistry, estate_identity_operation, load_contracts
 from shared.governance.degradation import degrade
 from shared.governance.person_extract import (
     extract_calendar_persons,
@@ -108,9 +109,9 @@ class ConsentGatedReader:
         self._operator_ids = operator_ids
         self._audit_path = audit_path
         self._decisions: list[ReaderDecision] = []
-        self._known_persons = self._build_known_persons()
 
     @staticmethod
+    @estate_identity_operation()
     def create(
         operator_ids: frozenset[str] | None = None,
         audit_path: Path | None = None,
@@ -126,23 +127,35 @@ class ConsentGatedReader:
             audit_path=audit_path,
         )
 
+    @estate_identity_operation()
     def reload_contracts(self) -> None:
         """Reload consent contracts from disk."""
         self._registry = load_contracts()
-        self._known_persons = self._build_known_persons()
 
+    @estate_identity_operation()
     def filter(self, datum: RetrievedDatum) -> ReaderDecision:
         """The core gate. Partitions person_ids into consented/unconsented, applies degradation.
 
         Key invariant: the operator (operator_ids) is always treated as consented.
         Every other person requires contract_check(person_id, data_category).
         """
+        # Matching labels remain local; decisions contain only canonical content/IDs.
+        with estate_identity_operation() as snapshot:
+            person_ids = frozenset(snapshot.resolve_principal_id(pid) for pid in datum.person_ids)
+            content = datum.content
+            for pid in person_ids:
+                for label in sorted(snapshot.predecessor_labels(pid), key=len, reverse=True):
+                    content = re.sub(re.escape(label), lambda _: pid, content, flags=re.IGNORECASE)
+            operator_ids = frozenset(
+                snapshot.resolve_principal_id(pid) for pid in self._operator_ids
+            )
+        datum = RetrievedDatum(content, person_ids, datum.data_category, datum.source)
         # Partition person IDs
         consented: set[str] = set()
         unconsented: set[str] = set()
 
         for pid in datum.person_ids:
-            if pid in self._operator_ids or self._registry.contract_check(pid, datum.data_category):
+            if pid in operator_ids or self._registry.contract_check(pid, datum.data_category):
                 consented.add(pid)
             else:
                 unconsented.add(pid)
@@ -186,40 +199,44 @@ class ConsentGatedReader:
         if tool_name in _PASSTHROUGH_TOOLS or tool_name not in _TOOL_CATEGORIES:
             return result
 
-        category = _TOOL_CATEGORIES[tool_name]
+        with estate_identity_operation():
+            category = _TOOL_CATEGORIES[tool_name]
 
-        # Use category-specific extractor if available, else generic
-        extractor = _CATEGORY_EXTRACTORS.get(category)
-        if extractor:
-            person_ids = extractor(result)
-        else:
-            person_ids = extract_person_ids(result, known_persons=self._known_persons)
+            # Use category-specific extractor if available, else generic
+            extractor = _CATEGORY_EXTRACTORS.get(category)
+            person_ids = extract_person_ids(result, known_persons=self._build_known_persons())
+            if extractor:
+                person_ids |= extractor(result)
 
-        # If no persons found, pass through
-        if not person_ids:
-            return result
+            # If no persons found, pass through
+            if not person_ids:
+                return result
 
-        datum = RetrievedDatum(
-            content=result,
-            person_ids=person_ids,
-            data_category=category,
-            source=tool_name,
-        )
-        decision = self.filter(datum)
-        return decision.filtered_content
+            datum = RetrievedDatum(
+                content=result,
+                person_ids=person_ids,
+                data_category=category,
+                source=tool_name,
+            )
+            decision = self.filter(datum)
+            return decision.filtered_content
 
     @property
     def decisions(self) -> list[ReaderDecision]:
         """All decisions made by this reader instance."""
         return list(self._decisions)
 
+    @estate_identity_operation()
     def _build_known_persons(self) -> frozenset[str]:
         """Build the set of known person names from active contracts."""
         persons: set[str] = set()
-        for contract in self._registry.active_contracts:
-            for party in contract.parties:
-                if party != "operator" and party not in self._operator_ids:
-                    persons.add(party)
+        with estate_identity_operation() as snapshot:
+            for contract in self._registry.active_contracts:
+                for party in contract.parties:
+                    canonical = snapshot.resolve_principal_id(party)
+                    if canonical != "operator" and canonical not in self._operator_ids:
+                        persons.add(canonical)
+                        persons.update(snapshot.predecessor_labels(canonical))
         return frozenset(persons)
 
     def _record(self, decision: ReaderDecision, source: str, category: str) -> None:

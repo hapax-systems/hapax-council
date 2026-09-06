@@ -20,12 +20,14 @@ from pathlib import Path
 from typing import Any
 
 import yaml
+from agentgov.consent import _private_load_error
 from werkzeug.security import safe_join
 from werkzeug.utils import secure_filename
 
 from shared.governance.consent import (
     REGISTERED_CHILD_PRINCIPALS,
     REGISTERED_PRINCIPALS,
+    estate_identity_operation,
     resolve_contract_id,
     resolve_principal_id,
 )
@@ -80,6 +82,7 @@ class ConsentRegistry:
 
     _contracts: dict[str, ConsentContract] = field(default_factory=dict)
 
+    @estate_identity_operation()
     def load(self, contracts_dir: Path | None = None) -> int:
         directory = contracts_dir or _CONTRACTS_DIR
         if not directory.exists():
@@ -96,24 +99,31 @@ class ConsentRegistry:
                 self._contracts[contract.id] = contract
                 if contract.active:
                     count += 1
-                    log.info(
-                        "Loaded contract %s: %s ↔ %s (scope: %s)",
-                        contract.id,
-                        contract.parties[0],
-                        contract.parties[1],
-                        ", ".join(sorted(contract.scope)),
-                    )
-            except Exception:
-                log.exception("Failed to load contract from %s", path)
+                    log.info("consent_contract_loaded")
+            except Exception as exc:
+                if _private_load_error(path, exc):
+                    log.warning("consent_contract_malformed")
+                else:
+                    log.exception("Failed to load contract from %s", path)
 
         return count
 
+    @estate_identity_operation()
     def get(self, contract_id: str) -> ConsentContract | None:
-        return self._contracts.get(resolve_contract_id(contract_id) or contract_id)
+        canonical = resolve_contract_id(contract_id)
+        return next(
+            (
+                contract
+                for key, contract in self._contracts.items()
+                if resolve_contract_id(key) == canonical
+            ),
+            None,
+        )
 
     def __iter__(self):
         return iter(self._contracts.values())
 
+    @estate_identity_operation()
     def contract_check(self, person_id: str, data_category: str) -> bool:
         for contract in self._contracts.values():
             if not contract.active:
@@ -124,6 +134,7 @@ class ConsentRegistry:
                 return True
         return False
 
+    @estate_identity_operation()
     def get_contract_for(self, person_id: str) -> ConsentContract | None:
         for contract in self._contracts.values():
             if contract.active and (resolve_principal_id(person_id) or person_id) in {
@@ -160,9 +171,10 @@ class ConsentRegistry:
                 )
                 self._contracts[contract_id] = revoked_contract
                 revoked.append(contract_id)
-                log.info("Revoked contract %s for %s", contract_id, person_id)
+                log.info("consent_contract_revoked")
         return revoked
 
+    @estate_identity_operation()
     def create_contract(
         self,
         person_id: str,
@@ -175,7 +187,11 @@ class ConsentRegistry:
     ) -> ConsentContract:
         person_id = resolve_principal_id(person_id) or person_id
         now = datetime.now().isoformat()
-        cid = contract_id or f"contract-{_contract_id_component(person_id)}-{now[:10]}"
+        cid = (
+            resolve_contract_id(contract_id)
+            if contract_id
+            else f"contract-{_contract_id_component(person_id)}-{now[:10]}"
+        )
 
         contract = ConsentContract(
             id=cid,
@@ -233,6 +249,7 @@ def _parse_contract(data: dict[str, Any]) -> ConsentContract:
     )
 
 
+@estate_identity_operation()
 def is_child_principal(person_id: str, registry: ConsentRegistry | None = None) -> bool:
     person_id = resolve_principal_id(person_id) or person_id
     if person_id in REGISTERED_CHILD_PRINCIPALS:
@@ -345,6 +362,7 @@ class ProvenanceExpr:
             return self
         return ProvenanceExpr(op=ProvenanceOp.PLUS, left=self, right=other)
 
+    @estate_identity_operation()
     def evaluate(self, active_contracts: frozenset[str]) -> bool:
         if self._is_zero:
             return False

@@ -112,6 +112,13 @@ class _CorrespondenceSnapshot:
     def resolve_contract_id(self, candidate: str) -> str:
         return self.contracts.get(candidate, candidate)
 
+    def predecessor_labels(self, principal_id: str) -> frozenset[str]:
+        """Private matching terms for one principal; never export or audit them."""
+        canonical = self.resolve_principal_id(principal_id)
+        return frozenset(
+            label for label, successor in self.principals.items() if successor == canonical
+        )
+
     def contains_predecessor(self, text: str) -> bool:
         """Classify diagnostics without exporting private correspondence."""
         return any(

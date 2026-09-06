@@ -7,6 +7,7 @@ cascading purge across all registered subsystems.
 
 from __future__ import annotations
 
+import logging
 from collections.abc import Callable
 from dataclasses import dataclass, field, replace
 from typing import Any
@@ -20,6 +21,8 @@ from agentgov.consent import (
     resolve_principal_id,
 )
 from agentgov.labeled import Labeled
+
+log = logging.getLogger(__name__)
 
 
 @dataclass(frozen=True)
@@ -105,8 +108,10 @@ class RevocationPropagator:
                     else:
                         results.append(PurgeResult(subsystem, 0, failures=("purge_invalid",)))
                 except IdentityMigrationUnavailable as exc:
+                    log.warning("purge_handler_failed: %s", exc.reason)
                     results.append(PurgeResult(subsystem, 0, failures=(exc.reason,)))
                 except Exception:
+                    log.warning("purge_handler_failed: purge_failed")
                     results.append(PurgeResult(subsystem, 0, failures=("purge_failed",)))
         return tuple(results)
 

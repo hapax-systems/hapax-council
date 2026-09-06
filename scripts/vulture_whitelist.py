@@ -5130,3 +5130,10 @@ from shared.governance import consent as _estate_consent  # noqa: E402
 
 _estate_consent.load_identity_snapshot
 _estate_consent._CorrespondenceSnapshot.contains_predecessor
+
+# Consent revoke/retry are FastAPI-dispatched endpoints; the router retains the
+# callables through decorators, which vulture does not follow.
+from logos.api.routes import consent as _consent_routes  # noqa: E402
+
+_consent_routes.revoke_consent
+_consent_routes.retry_consent_purge

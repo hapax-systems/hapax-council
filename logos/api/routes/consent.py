@@ -12,21 +12,34 @@ GET /consent/overhead — governance overhead measurement
 
 from __future__ import annotations
 
+import asyncio
 import logging
 import os
+from dataclasses import asdict
 from pathlib import Path
+from threading import Lock
 from urllib.parse import unquote
 
-from fastapi import APIRouter, Query
+from fastapi import APIRouter, Query, Response
 from pydantic import BaseModel, Field
 from werkzeug.security import safe_join
 
 from logos._revocation_wiring import get_revocation_propagator
 from logos.api.routes._config import HAPAX_HOME
+from shared.governance.consent import (
+    estate_identity_operation,
+    resolve_contract_id,
+    resolve_principal_id,
+)
+from shared.governance.revocation import RevocationReport
 
 _log = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/api/consent", tags=["consent"])
+
+# Keep failure reports for explicit retries during this API process's lifetime.
+_pending_revocations: dict[str, RevocationReport] = {}
+_revocation_lock = Lock()
 
 _TRACE_ALLOWED_BASES = (
     Path(__file__).resolve().parents[3],
@@ -69,6 +82,11 @@ class ConsentCreateRequest(BaseModel):
 
 @router.post("/create")
 async def create_consent(req: ConsentCreateRequest) -> dict:
+    return await asyncio.to_thread(_create_consent, req)
+
+
+@estate_identity_operation()
+def _create_consent(req: ConsentCreateRequest) -> dict:
     """Create a consent contract at runtime.
 
     Called when a guest grants consent via any channel. Writes contract
@@ -78,7 +96,7 @@ async def create_consent(req: ConsentCreateRequest) -> dict:
 
     registry = load_contracts()
     contract = registry.create_contract(
-        person_id=req.person_id,
+        person_id=resolve_principal_id(req.person_id),
         scope=frozenset(req.scope),
         direction=req.direction,
         visibility_mechanism=req.visibility_mechanism,
@@ -87,14 +105,14 @@ async def create_consent(req: ConsentCreateRequest) -> dict:
     _log.info(
         "Consent created: %s for %s via %s (scope: %s)",
         contract.id,
-        req.person_id,
+        contract.parties[1],
         req.channel_id,
         sorted(req.scope),
     )
 
     return {
         "contract_id": contract.id,
-        "person_id": req.person_id,
+        "person_id": contract.parties[1],
         "scope": sorted(req.scope),
         "channel_used": req.channel_id,
         "active": contract.active,
@@ -137,39 +155,83 @@ async def consent_channels(
     }
 
 
+def _revocation_response(report: RevocationReport, response: Response) -> dict:
+    payload = asdict(report)
+    payload["total_purged"] = report.total_purged
+    payload["failures"] = [cause for result in report.purge_results for cause in result.failures]
+    if report.retry_contract_ids or payload["failures"]:
+        response.status_code = 503
+    return payload
+
+
+def _run_revocation(person_id: str, *, retry: bool = False) -> RevocationReport | None:
+    with _revocation_lock, estate_identity_operation():
+        person_id = resolve_principal_id(person_id)
+        prop = get_revocation_propagator()
+        pending = _pending_revocations.get(person_id)
+        if retry:
+            if pending is None:
+                return None
+            report = prop.retry_purge(pending)
+        else:
+            report = prop.revoke(person_id)
+            if pending is not None:
+                # A repeated revoke must keep failures AND revoke any newly granted consent.
+                report = RevocationReport(
+                    contract_id=",".join(
+                        dict.fromkeys(
+                            filter(
+                                None, (pending.contract_id + "," + report.contract_id).split(",")
+                            )
+                        )
+                    ),
+                    person_id=person_id,
+                    contract_revoked=pending.contract_revoked or report.contract_revoked,
+                    purge_results=pending.purge_results + report.purge_results,
+                    retry_contract_ids=tuple(
+                        dict.fromkeys(pending.retry_contract_ids + report.retry_contract_ids)
+                    ),
+                    prior_purge_results=pending.prior_purge_results + report.prior_purge_results,
+                )
+        if report.retry_contract_ids:
+            _pending_revocations[person_id] = report
+        else:
+            _pending_revocations.pop(person_id, None)
+        _log.info(
+            "Revocation: revoked=%s, purged=%d, purge_complete=%s",
+            report.contract_revoked,
+            report.total_purged,
+            report.purge_complete,
+        )
+        return report
+
+
 @router.post("/revoke/{person_id}")
-async def revoke_consent(person_id: str) -> dict:
-    """Revoke all consent contracts for a person and cascade purge."""
-    prop = get_revocation_propagator()
-    report = prop.revoke(person_id)
+async def revoke_consent(person_id: str, response: Response) -> dict:
+    """Revoke consent and retain an incomplete purge for an explicit retry."""
+    report = await asyncio.to_thread(_run_revocation, person_id)
+    return _revocation_response(report, response)
 
-    _log.info(
-        "Revocation for %s: revoked=%s, purged=%d",
-        person_id,
-        report.contract_revoked,
-        report.total_purged,
-    )
 
-    return {
-        "person_id": report.person_id,
-        "contract_revoked": report.contract_revoked,
-        "contract_id": report.contract_id,
-        "total_purged": report.total_purged,
-        "purge_results": [
-            {
-                "subsystem": r.subsystem,
-                "items_purged": r.items_purged,
-                "details": r.details,
-            }
-            for r in report.purge_results
-        ],
-    }
+@router.post("/retry/{person_id}")
+async def retry_consent_purge(person_id: str, response: Response) -> dict:
+    """Resume a retained purge without restoring consent or losing prior effects."""
+    report = await asyncio.to_thread(_run_revocation, person_id, retry=True)
+    if report is None:
+        response.status_code = 404
+        return {"error": "purge_retry_unavailable"}
+    return _revocation_response(report, response)
 
 
 @router.get("/trace")
 async def trace_consent(
     source: str = Query(..., description="File path or source identifier"),
 ) -> dict:
+    return await asyncio.to_thread(_trace_consent, source)
+
+
+@estate_identity_operation()
+def _trace_consent(source: str = Query(..., description="File path or source identifier")) -> dict:
     """Trace consent provenance for a file.
 
     Shows: consent label, provenance contracts, flow constraints,
@@ -216,8 +278,8 @@ async def trace_consent(
             if contract:
                 contracts.append(
                     {
-                        "id": contract.id,
-                        "parties": list(contract.parties),
+                        "id": resolve_contract_id(contract.id),
+                        "parties": [resolve_principal_id(party) for party in contract.parties],
                         "scope": sorted(contract.scope),
                         "active": contract.active,
                         "created_at": contract.created_at,
@@ -290,6 +352,13 @@ async def trace_consent(
 
 @router.get("/contracts")
 async def list_contracts() -> dict:
+    return await asyncio.to_thread(
+        _list_contracts,
+    )
+
+
+@estate_identity_operation()
+def _list_contracts() -> dict:
     """List all consent contracts (active and revoked).
 
     LRR Phase 6 §4.A: when stream is publicly visible, replaces each party
@@ -316,10 +385,10 @@ async def list_contracts() -> dict:
                         n += 1
                         parties_out.append(f"party_{n}")
             else:
-                parties_out = list(contract.parties)
+                parties_out = [resolve_principal_id(party) for party in contract.parties]
             contracts.append(
                 {
-                    "id": contract.id,
+                    "id": resolve_contract_id(contract.id),
                     "parties": parties_out,
                     "scope": sorted(contract.scope),
                     "active": contract.active,
