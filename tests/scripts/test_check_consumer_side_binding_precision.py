@@ -1032,11 +1032,13 @@ def test_untracked_result_retains_the_readers_literal_pattern(gate, tmp_path: Pa
 
 
 def test_visible_source_relative_helper_survives_module_call_effects(gate, tmp_path: Path) -> None:
+    # Exercise lexical source identity through module-call effects. Runtime cwd and
+    # symlink resolution are not needed to construct this source-relative fixture.
     _write(
         tmp_path,
         "shared/consumer.py",
         "from pathlib import Path\nimport logging\nLOG = logging.getLogger(__name__)\n"
-        "def source_root() -> Path:\n    return Path(__file__).resolve().parents[1]\n"
+        "def source_root() -> Path:\n    return Path(__file__).parents[1]\n"
         "def load_state():\n"
         "    root = source_root()\n"
         "    return (root / 'config' / 'literal.json').read_text()\n",
@@ -1754,3 +1756,36 @@ def test_standalone_absolute_retains_literal_as_unresolved_evidence(
     assert not any(a.bounded for a in accesses)
     assert unresolved == report.unresolvable == 1
     assert any("Path('artifacts/old.json').absolute()" in site for site in report.unresolved_paths)
+
+
+@pytest.mark.parametrize("assigned", [False, True], ids=["reviewer-join", "assigned"])
+def test_resolve_writer_does_not_certify_wrong_prefix_reader(synthetic_repo, assigned) -> None:
+    setup = "target = Path('artifacts/old.json').resolve()\n" if assigned else ""
+    operand = "target" if assigned else "Path('artifacts/old.json').resolve()"
+    report, (accesses, unresolved, *_) = synthetic_repo(
+        "from pathlib import Path\n" + setup + f"(Path('/wrong') / {operand}).write_text('{{}}')\n"
+        "Path('/wrong/artifacts/old.json').read_text()\n"
+    )
+    # A resolved operand is absolute and discards /wrong; its actual root and
+    # symlink targets cannot be established from this source.
+    assert (Path("shared/consumer.py"), "/wrong/artifacts/old.json") in _unwritten(report)
+    assert [(a.pattern, a.bounded) for a in accesses if a.action == "write"] == [
+        ("/wrong/*", False)
+    ]
+    assert unresolved == report.unresolvable == 1
+    if not assigned:
+        assert any(
+            "Path('artifacts/old.json').resolve()" in site for site in report.unresolved_paths
+        )
+
+
+@pytest.mark.parametrize("operation", ["read_text()", "write_text('{}')"])
+def test_standalone_resolve_retains_literal_as_unresolved_evidence(
+    synthetic_repo, operation
+) -> None:
+    report, (accesses, unresolved, *_) = synthetic_repo(
+        "from pathlib import Path\n" + f"Path('artifacts/old.json').resolve().{operation}\n"
+    )
+    assert not any(a.bounded for a in accesses)
+    assert unresolved == report.unresolvable == 1
+    assert any("Path('artifacts/old.json').resolve()" in site for site in report.unresolved_paths)

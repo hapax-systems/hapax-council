@@ -1585,6 +1585,7 @@ def _has_unbounded_format(
             if isinstance(item.func, ast.Attribute) and item.func.attr in {
                 "expanduser",
                 "absolute",
+                "resolve",
             }:
                 return True
         if isinstance(item, ast.Call) and isinstance(path_functions, PathFunctionTable):
@@ -1767,17 +1768,10 @@ def _resolve_path_expr(
     if isinstance(node.func, ast.Attribute) and node.func.attr == "absolute":
         # Runtime cwd is unknown, so retain input evidence without certifying a result.
         return None
-    # Keep resolve separate: its legacy identity behavior is deferred for review of
-    # tests/scripts/test_check_consumer_side_binding.py's named positive expectations:
-    # test_consumer_reads_unwritten_artifact (one config/orphan.json finding),
-    # test_committed_read_pattern_is_counted_as_excluded (one committed exclusion),
-    # test_unwritten_finding_deduplicates_reader_sites (one finding, count 4, 3 readers).
-    # Those three survive withholding via retained evidence; the measured blocker is
-    # precision.py::test_visible_source_relative_helper_survives_module_call_effects.
     if isinstance(node.func, ast.Attribute) and node.func.attr == "resolve":
-        return _resolve_path_expr(
-            node.func.value, values, path, repo_root, path_functions, depth=depth + 1
-        )
+        # Runtime cwd and symlink targets are unknown. Retain input evidence without
+        # certifying a resolved path or following the scanner's filesystem.
+        return None
     if isinstance(node.func, ast.Attribute) and node.func.attr == "with_suffix":
         base = _resolve_path_expr(
             node.func.value, values, path, repo_root, path_functions, depth=depth + 1
