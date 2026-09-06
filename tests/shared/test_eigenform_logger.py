@@ -1,17 +1,132 @@
 """Tests for shared.eigenform_logger.log_state_vector.
 
-59-LOC JSONL state-vector logger w/ ring-buffer trim. Untested
-before this commit. Tests use the ``path=`` parameter so the real
-/dev/shm/hapax-eigenform log is never written.
+Both sinks are isolated by the root conftest. Fresh imports below bind
+production defaults inside a synthetic home before exercising regressions.
 """
 
 from __future__ import annotations
 
+import importlib.util
+import inspect
 import json
+import os
+import subprocess
+import sys
 from pathlib import Path
+
+import pytest
 
 from shared import eigenform_logger
 from shared.eigenform_logger import log_state_vector
+
+
+@pytest.fixture
+def logger(tmp_path, monkeypatch):
+    fake_home = tmp_path / "synthetic-home"
+    source = Path(eigenform_logger.__file__)
+    spec = importlib.util.spec_from_file_location("isolated_eigenform_logger", source)
+    assert spec is not None and spec.loader is not None
+    module = importlib.util.module_from_spec(spec)
+    with monkeypatch.context() as patch:
+        patch.setattr(Path, "home", classmethod(lambda cls: fake_home))
+        spec.loader.exec_module(module)
+    expected = fake_home / "hapax-state/research/eigenform-log.jsonl"
+    assert expected == module.PERSISTENT_LOG
+    monkeypatch.setattr(module, "EIGENFORM_LOG", fake_home / "state-log.jsonl")
+    # Old ring defaults are also redirected so the RED run cannot reach tmpfs.
+    ring_default = inspect.signature(module.log_state_vector).parameters["path"].default
+    if isinstance(ring_default, Path):
+        monkeypatch.setattr(
+            module.log_state_vector,
+            "__kwdefaults__",
+            {**module.log_state_vector.__kwdefaults__, "path": module.EIGENFORM_LOG},
+        )
+    # Accept a required path or the old captured default, but never an unsafe one.
+    destinations = [value for value in vars(module).values() if isinstance(value, Path)]
+    for function in (module.log_state_vector, module._append_and_trim):
+        destinations.extend(
+            parameter.default
+            for parameter in inspect.signature(function).parameters.values()
+            if isinstance(parameter.default, Path)
+        )
+    assert destinations and all(path.is_relative_to(fake_home) for path in destinations)
+    return module
+
+
+def test_custom_sink_does_not_write_default_research_log(logger):
+    target = logger.EIGENFORM_LOG.parent / "custom-state-log.jsonl"
+    logger.log_state_vector(presence=0.7, path=target)
+    assert target.exists()
+    assert not logger.PERSISTENT_LOG.exists(), "custom sink escaped to default persistent sink"
+
+
+def test_patching_persistent_sink_redirects_the_actual_write(logger, monkeypatch):
+    captured_default = logger.PERSISTENT_LOG
+    replacement = logger.EIGENFORM_LOG.parent / "replacement-persistent.jsonl"
+    monkeypatch.setattr(logger, "PERSISTENT_LOG", replacement)
+    logger.log_state_vector(presence=0.8, path=logger.EIGENFORM_LOG.parent / "custom-log.jsonl")
+    assert replacement.exists(), "global patch did not redirect the captured default"
+    assert not captured_default.exists()
+
+
+def test_default_call_writes_both_sinks(logger):
+    logger.log_state_vector(presence=0.9)
+    assert logger.EIGENFORM_LOG.read_text() == logger.PERSISTENT_LOG.read_text()
+    assert json.loads(logger.PERSISTENT_LOG.read_text())["presence"] == 0.9
+
+
+def test_persistent_trim_retains_50k_after_twice_the_limit(logger):
+    target = logger.EIGENFORM_LOG.parent / "persistent.jsonl"
+    target.parent.mkdir(parents=True)
+    target.write_text("".join(json.dumps({"n": i}) + "\n" for i in range(99_999)))
+    logger._append_and_trim({"n": 99_999}, path=target)
+    assert len(target.read_text().splitlines()) == 100_000
+    logger._append_and_trim({"n": 100_000}, path=target)
+    entries = [json.loads(line) for line in target.read_text().splitlines()]
+    assert len(entries) == 50_000
+    assert entries[0] == {"n": 50_001}
+    assert entries[-1] == {"n": 100_000}
+
+
+def test_persistent_oserror_does_not_prevent_ring_write(logger, monkeypatch):
+    blocker = logger.EIGENFORM_LOG.parent / "not-a-directory"
+    blocker.parent.mkdir(parents=True)
+    blocker.write_text("blocked")
+    monkeypatch.setattr(logger, "PERSISTENT_LOG", blocker / "persistent.jsonl")
+    logger.log_state_vector(presence=0.4)
+    assert json.loads(logger.EIGENFORM_LOG.read_text())["presence"] == 0.4
+
+
+def test_persistent_sink_isolation(tmp_path):
+    """Run both whole modules before checking HOME; survives fixture removal."""
+    fake_home = tmp_path / "suite-home"
+    fake_home.mkdir()
+    result = subprocess.run(
+        [
+            sys.executable,
+            "-m",
+            "pytest",
+            "-q",
+            "-p",
+            "no:cacheprovider",
+            "--confcutdir=tests",
+            "tests/test_eigenform_logger.py",
+            "tests/shared/test_eigenform_logger.py",
+            "-k",
+            "not test_persistent_sink_isolation",
+        ],
+        cwd=Path(__file__).resolve().parents[2],
+        env={**os.environ, "HOME": str(fake_home), "PYTHONDONTWRITEBYTECODE": "1"},
+        capture_output=True,
+        text=True,
+        timeout=60,
+    )
+    research = fake_home / "hapax-state/research"
+    assert not any(path.is_file() for path in research.rglob("*")), (
+        "test modules wrote the default persistent research sink"
+    )
+    assert result.returncode == 0, result.stdout + result.stderr
+
 
 # ── Append behaviour ──────────────────────────────────────────────
 
