@@ -150,6 +150,8 @@ class DecayedMember:
     reader: str = ""
     host_aliases: tuple[tuple[str, str], ...] = ()
     content_query: ContentQuery | None = None
+    # Aligned with roots; canonical containment and lexical skip eligibility stay separate.
+    lexical_roots: tuple[Path, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -475,11 +477,12 @@ def _member_location(
     tuple[Path, ...],
     tuple[QualifiedLocation, ...],
     tuple[QualifiedLocation, ...],
+    tuple[Path, ...],
 ]:
     """Filesystem and scheme-qualified roots/files plus the member's file patterns."""
     location = member.get("location")
     if not isinstance(location, dict):
-        return (), (), (), (), ()
+        return (), (), (), (), (), ()
     reader = member.get("reader")
     content_query = isinstance(reader, dict) and reader.get("id") == "fs.content_query"
     raw_roots: list[str] = []
@@ -488,20 +491,23 @@ def _member_location(
     if isinstance(location.get("roots"), list):
         raw_roots.extend(str(item) for item in location["roots"] if isinstance(item, str))
     roots: list[Path] = []
+    lexical_roots: list[Path] = []
     qualified_roots: list[QualifiedLocation] = []
 
     def local_path(raw: str) -> Path:
         path = Path(raw).expanduser()
         if not path.is_absolute():
             path = _producer_working_directory(epoch_dir) / path
-        return path.resolve()
+        return path
 
     for raw in raw_roots:
         raw = raw.strip()
         if _has_qualifier(raw):
             qualified_roots.append(_qualified_location(raw)[0])
             continue
-        roots.append(local_path(raw))
+        lexical_root = local_path(raw)
+        lexical_roots.append(lexical_root)
+        roots.append(lexical_root.resolve())
     patterns = location.get("patterns")
     globs = tuple(str(item) for item in patterns) if isinstance(patterns, list) else ()
     files_raw = None if content_query else location.get("files")
@@ -515,13 +521,14 @@ def _member_location(
             if _has_qualifier(item):
                 qualified_files.append(_qualified_location(item)[0])
             else:
-                files.append(local_path(item))
+                files.append(local_path(item).resolve())
     return (
         tuple(roots),
         globs,
         tuple(files),
         tuple(qualified_roots),
         tuple(qualified_files),
+        tuple(lexical_roots),
     )
 
 
@@ -853,8 +860,8 @@ def _load_epoch_verdicts(
                 "with a supported reader; " + PRODUCER_REMEDY,
             )
         try:
-            roots, patterns, files, qualified_roots, qualified_files = _member_location(
-                member, epoch_dir=epoch_dir
+            roots, patterns, files, qualified_roots, qualified_files, lexical_roots = (
+                _member_location(member, epoch_dir=epoch_dir)
             )
             host_aliases = _member_host_aliases(member) if reader_id == "ssh.glob" else ()
         except NonCanonicalScopeRef as exc:
@@ -892,6 +899,7 @@ def _load_epoch_verdicts(
                     reader=reader_id,
                     host_aliases=host_aliases,
                     content_query=content_query,
+                    lexical_roots=lexical_roots,
                 )
             )
         if not roots and not files and not qualified_roots and not qualified_files:
@@ -1195,6 +1203,21 @@ def _literal_scope_glob(pattern: str) -> str | None:
     return "".join(literal)
 
 
+def _member_path_is_excluded(path: Path, root: Path, member: DecayedMember) -> bool:
+    """Filter an in-root remainder under each spelling of that declared root.
+
+    The canonical root still governs containment. fs.glob filters all lexical path
+    components, including the declared root; fs.content_query never reads skip_dirs.
+    """
+    if member.reader == "fs.content_query" or not member.lexical_roots:
+        return _path_is_excluded(path, member)
+    return all(
+        _path_is_excluded(lexical_root / path.relative_to(root), member)
+        for canonical_root, lexical_root in zip(member.roots, member.lexical_roots, strict=True)
+        if canonical_root == root
+    )
+
+
 def _path_is_excluded(path: Path, member: DecayedMember) -> bool:
     """Filter a producer-selected lexical spelling before resolving mass exclusions."""
     if any(part in member.skip_dirs for part in path.parts):
@@ -1252,8 +1275,15 @@ def _glob_intersects_subtree(scope_pattern: str, relative_prefix: str) -> bool |
     return None
 
 
-def _scope_intersects_exclusions(path: Path, scope_pattern: str, member: DecayedMember) -> bool:
-    if _path_is_excluded(path, member):
+def _scope_intersects_exclusions(
+    path: Path, scope_pattern: str, member: DecayedMember, *, root: Path | None = None
+) -> bool:
+    excluded = (
+        _path_is_excluded(path, member)
+        if root is None
+        else _member_path_is_excluded(path, root, member)
+    )
+    if excluded:
         return True
     if member.skip_dirs and any(
         segment == "**" or any(fnmatch.fnmatchcase(skip, segment) for skip in member.skip_dirs)
@@ -1594,6 +1624,7 @@ def _canonical_member_patterns(
     directory matches add canonical spellings without erasing the future language.
     Each form's lexical_base is the selected prefix spelling, not its canonical target.
     Project a canonical candidate's tail onto that spelling before applying skip_dirs.
+    The skip checks also restore the declared root spelling without changing comparisons.
     """
     patterns = []
     for pattern in _member_file_patterns(member.patterns or ("**/*",)):
@@ -1604,7 +1635,7 @@ def _canonical_member_patterns(
             if form.remainder is None and canonical_base.is_dir():
                 # A literal pattern selecting a directory supplies no file language.
                 continue
-            if _path_is_excluded(lexical_base, member) or any(
+            if _member_path_is_excluded(lexical_base, root, member) or any(
                 part in member.skip_dirs for part in _glob_segments(form.remainder or "")
             ):
                 continue
@@ -1612,9 +1643,9 @@ def _canonical_member_patterns(
                 scope_path == canonical_base or canonical_base in scope_path.parents
             ):
                 selected = lexical_base / scope_path.relative_to(canonical_base)
-                if _path_is_excluded(selected, member) or (
+                if _member_path_is_excluded(selected, root, member) or (
                     scope_pattern is not None
-                    and _scope_intersects_exclusions(selected, scope_pattern, member)
+                    and _scope_intersects_exclusions(selected, scope_pattern, member, root=root)
                 ):
                     continue
             if canonical_base != root and root not in canonical_base.parents:
@@ -1689,7 +1720,7 @@ def _check_member_symlinks(
         if (
             _path_is_mass_excluded(selected, member)
             if disjoint
-            else _path_is_excluded(selected, member)
+            else _member_path_is_excluded(selected, root, member)
         ):
             has_excluded_entry = True
             continue
@@ -1767,7 +1798,7 @@ def _canonical_member_entries(member: DecayedMember) -> dict[Path, Path]:
                 ):
                     continue
                 canonical = _resolve_external_scope_path(entry)
-                if entry.is_file() and not _path_is_excluded(entry, member):
+                if entry.is_file() and not _member_path_is_excluded(entry, root, member):
                     surface[entry] = canonical
     return surface
 
@@ -2180,7 +2211,7 @@ def ref_within_member(
                 continue
             exclusion_scope_pattern = _scope_pattern_from_base("", scope_pattern)
             if not canonical_covered and _scope_intersects_exclusions(
-                path, exclusion_scope_pattern, member
+                path, exclusion_scope_pattern, member, root=root
             ):
                 continue
             # Existing files can disprove containment, but cannot establish the proof.
@@ -2193,7 +2224,7 @@ def ref_within_member(
             if has_excluded_entry:
                 continue
             return True
-        if has_excluded_entry or _path_is_excluded(path, member):
+        if has_excluded_entry or _member_path_is_excluded(path, root, member):
             continue
         return True
     # The member's own entries may be aliases, so canonical targets must be considered

@@ -222,6 +222,7 @@ def test_patched_default_gate_log_wins_over_the_environment(
     from shared import gate_log
 
     patched = tmp_path / "patched" / "gate-events.jsonl"
+    assert patched != gate_log._IMPORT_TIME_GATE_LOG
     monkeypatch.setenv("HAPAX_GATE_LOG", str(tmp_path / "env" / "gate-events.jsonl"))
     monkeypatch.setattr(gate_log, "DEFAULT_GATE_LOG", patched)
     monkeypatch.setenv("HAPAX_DURABLE_SINK_ROOT", str(tmp_path / "durable"))
@@ -230,3 +231,17 @@ def test_patched_default_gate_log_wins_over_the_environment(
     gate_log.append_gate_event(gate_log.GateEvent(route="r", routing_class="c", task_hash="h2"))
     assert patched.exists()
     assert not (tmp_path / "env" / "gate-events.jsonl").exists()
+
+
+def test_import_time_default_gate_log_does_not_override_the_environment(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from shared import gate_log
+
+    configured = tmp_path / "env" / "gate-events.jsonl"
+    assert configured != gate_log._IMPORT_TIME_GATE_LOG
+    monkeypatch.setattr(gate_log, "DEFAULT_GATE_LOG", Path(str(gate_log._IMPORT_TIME_GATE_LOG)))
+    monkeypatch.setenv("HAPAX_GATE_LOG", str(configured))
+
+    assert gate_log.DEFAULT_GATE_LOG == gate_log._IMPORT_TIME_GATE_LOG
+    assert gate_log.default_gate_log() == configured
