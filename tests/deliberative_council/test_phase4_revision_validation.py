@@ -104,6 +104,15 @@ def _assert_retained(verdict, reason, *, status="rejected", served=True):
         assert transcript["scores"] == _scores(1 if index < 2 else 5)
         assert transcript["status"] == status
         assert transcript["original_retained"] is True
+    assert verdict.execution_receipt["phases_attempted"] == [1, 2, 3, 4, 5]
+    assert verdict.execution_receipt["phases_completed"] == [1, 2, 3, 5]
+    assert verdict.execution_receipt["phases_failed"] == [
+        {
+            "phase": 4,
+            "reason": "revision_call_failed" if status == "failed" else "revision_rejected",
+        }
+    ]
+    assert verdict.execution_receipt["phases_not_attempted"] == []
     return records
 
 
@@ -210,6 +219,10 @@ async def test_rubric_axis_not_scored_by_member_is_not_demanded():
 
 @pytest.mark.parametrize("value", [1, 3, 5], ids=["floor", "interior", "ceiling"])
 async def test_scored_axis_outside_rubric_accepts_revision_within_default_scale(value):
+    """Bound revisions over previously accepted legacy member scores, not demand shapes.
+
+    The dict fixture bypasses native build_phase1_model, which forbids extra axes.
+    """
     rubric = EpistemicQualityRubric()
     axis = "a"
     assert axis not in {rubric_axis.name for rubric_axis in rubric.axes}
@@ -237,6 +250,7 @@ async def test_scored_axis_outside_rubric_accepts_revision_within_default_scale(
 
 @pytest.mark.parametrize("value", [0, 6], ids=["below_floor", "above_ceiling"])
 async def test_scored_axis_outside_rubric_rejects_revision_outside_default_scale(value):
+    """Bound legacy member-score revisions; the synthetic axis is no demand-shape evidence."""
     rubric = EpistemicQualityRubric()
     axis = "a"
     assert axis not in {rubric_axis.name for rubric_axis in rubric.axes}
@@ -280,7 +294,7 @@ async def test_noninteger_revision_score_is_rejected_without_coercion(value):
 async def test_unparseable_revision_is_labelled_and_retains_call_provenance(payload):
     verdict, _ = await _deliberate_revision(payload)
 
-    _assert_retained(verdict, "revision_unparseable")
+    _assert_retained(verdict, "revision_unparseable", status="failed")
 
 
 async def test_valid_revision_applies_and_carries_revision_served_model():

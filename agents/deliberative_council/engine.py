@@ -535,15 +535,18 @@ async def _deliberate_inner(
         required=inp.requires_reviewable_argument,
         failures_out=failed_members,
     )
-    if phase1_results:
-        phases_completed.append(1)
-    else:
-        phases_failed.append({"phase": 1, "reason": "no_valid_member_results"})
     failed_members_payload = [
         {"model_alias": f.model_alias, "reason": f.reason} for f in failed_members
     ]
     health = _assess_health(phase1_results, failed_members, config)
     health_payload = health.model_dump(mode="json")
+    # Phase 1 requires the surviving panel to meet both configured quorum floors.
+    if not phase1_results:
+        phases_failed.append({"phase": 1, "reason": "no_valid_member_results"})
+    elif health.below_quorum:
+        phases_failed.append({"phase": 1, "reason": "below_quorum_or_family_floor"})
+    else:
+        phases_completed.append(1)
 
     if health.below_quorum:
         # Refuse LOUDLY. The panel is below the principled quorum / family-
@@ -649,10 +652,18 @@ async def _deliberate_inner(
         revisions_out=revision_receipts,
     )
     if revision_receipts and all(record["attempted"] for record in revision_receipts):
-        # Completion here means every member had a revision attempt. Its outcome
-        # (including rejection or call failure) remains explicit per member.
         phases_attempted.append(4)
-        phases_completed.append(4)
+        # Every retained phase-1 member must have an accepted revision. Retaining
+        # originals after a failed/rejected attempt does not complete this phase.
+        if all(record["status"] == "revised" for record in revision_receipts):
+            phases_completed.append(4)
+        else:
+            reason = (
+                "revision_call_failed"
+                if any(record["status"] == "failed" for record in revision_receipts)
+                else "revision_rejected"
+            )
+            phases_failed.append({"phase": 4, "reason": reason})
     else:
         phases_not_attempted.append({"phase": 4, "reason": "no_adversarial_exchanges"})
     revisions_by_alias = {record["model_alias"]: record for record in revision_receipts}
@@ -918,7 +929,10 @@ async def _run_phase3(
 def _revision_validation_error(
     scores: object, rubric: Rubric, original_scores: dict[str, int]
 ) -> tuple[str, dict[str, object]] | None:
-    """Validate a nonempty subset of the axes this member scored in phase 1."""
+    """Bound revision validation to previously accepted member scores.
+
+    This does not establish that those scores capture an externally defined demand.
+    """
     if not isinstance(scores, dict):
         return "revision_unparseable", {"received_type": type(scores).__name__}
     if not scores:
@@ -938,8 +952,9 @@ def _revision_validation_error(
     score_bounds = {axis.name: (axis.min_score, axis.max_score) for axis in rubric.axes}
     out_of_range = []
     for key, value in scores.items():
-        # Rubric has no rubric-wide bounds; undefined axes use the documented
-        # 1-5 scale, matching the defaults declared by RubricAxis.
+        # Legacy Phase1Output dict callers can supply axes outside the rubric;
+        # native build_phase1_model forbids extras. Bound revisions of those
+        # previously accepted scores to 1-5, matching RubricAxis defaults.
         min_score, max_score = score_bounds.get(key, (1, 5))
         if not min_score <= value <= max_score:
             out_of_range.append(key)
@@ -1034,7 +1049,11 @@ async def _run_phase4(
             revised_scores = data.get("revised_scores")
             error = _revision_validation_error(revised_scores, rubric, original.scores)
             if error is not None:
-                record.update(reason=error[0], detail=error[1])
+                record.update(
+                    status="failed" if error[0] == "revision_unparseable" else "rejected",
+                    reason=error[0],
+                    detail=error[1],
+                )
                 return original, record
             revised = PhaseOneResult(
                 model_alias=original.model_alias,
@@ -1061,7 +1080,9 @@ async def _run_phase4(
         except Exception as e:
             _log.warning("Phase 4 revision failed for %s: %s", original.model_alias, e)
             record.update(
-                reason="revision_unparseable", detail={"exception_type": type(e).__name__}
+                status="failed",
+                reason="revision_unparseable",
+                detail={"exception_type": type(e).__name__},
             )
             return original, record
 
