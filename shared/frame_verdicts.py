@@ -47,7 +47,7 @@ DEFAULT_FRAME_VAULT_ROOT = Path("~/Documents/Personal")
 #: when the timer changes, and the tolerated age below follows.
 FRAME_ITERATION_CADENCE_S = 3 * 3600
 #: One missed iteration is tolerated (the timer counts from the previous activation, so a slow
-#: run shifts the next one); two missed iterations mean the producer is down, and a
+#: run shifts the next one); an older accepted epoch no longer supplies timely verdicts, and a
 #: work-selection point that kept admitting work against six-hour-old verdicts would be exactly
 #: the silent fall-out-of-accountability the frame exists to refuse.
 FRAME_EPOCH_MAX_AGE_S = 2 * FRAME_ITERATION_CADENCE_S
@@ -76,10 +76,16 @@ ALL_RELATIONS = DECAY_RELATIONS | MODEL_RELATIONS
 VERDICT_STATES = frozenset({"TRUE", "FALSE", "UNKNOWN", "UNEVALUABLE"})
 
 PRODUCER_REMEDY = (
-    "run the frame producer — `systemctl --user start hapax-frame-iteration.service`, or from "
-    "~/Documents/Personal/30-areas/hapax: `uv run --with pyyaml python -m frame.procedure.run` — "
-    "then retry the dispatch"
+    "run the frame producer — verify it targets procedure root HAPAX_FRAME_PROCEDURE_ROOT, "
+    "then `systemctl --user start hapax-frame-iteration.service` — then retry the dispatch"
 )
+
+
+def _producer_remedy(procedure_root: Path) -> str:
+    """Bind the generic producer action to the subject of this read, not a default checkout."""
+    return PRODUCER_REMEDY.replace(FRAME_PROCEDURE_ROOT_ENV, str(procedure_root))
+
+
 MASS_DECLARATION_LOCATION = (
     "declaration/mass.yaml (relative to the procedure root, HAPAX_FRAME_PROCEDURE_ROOT)"
 )
@@ -250,40 +256,55 @@ def current_epoch_dir(procedure_root: Path) -> Path:
     runs = procedure_root / "_runs"
     current = runs / "current"
     if not (current.exists() or current.is_symlink()):
-        raise FrameVerdictsUnavailable(f"no frame epoch is published at {current}")
+        raise FrameVerdictsUnavailable(
+            f"no frame epoch is published at {current}", remedy=_producer_remedy(procedure_root)
+        )
     try:
         epoch_dir = current.resolve(strict=True)
         epochs = (runs / "epochs").resolve(strict=True)
     except (OSError, RuntimeError) as exc:
         raise FrameVerdictsUnavailable(
-            f"published frame pointer {current} is broken or unreadable: {exc}"
+            f"published frame pointer {current} is broken or unreadable: {exc}",
+            remedy=_producer_remedy(procedure_root),
         ) from exc
     if not epoch_dir.is_dir() or epoch_dir.parent != epochs:
         raise FrameVerdictsUnavailable(
-            f"published frame pointer {current} resolves outside the epoch directory {epochs}"
+            f"published frame pointer {current} resolves outside the epoch directory {epochs}",
+            remedy=_producer_remedy(procedure_root),
         )
     if epoch_produced_at(epoch_dir.name) is None:
         raise FrameVerdictsUnavailable(
-            f"published frame pointer {current} names invalid epoch {epoch_dir.name!r}"
+            f"published frame pointer {current} names invalid epoch {epoch_dir.name!r}",
+            remedy=_producer_remedy(procedure_root),
         )
 
     publish_path = epoch_dir / "publish.json"
     if not publish_path.is_file():
-        raise FrameVerdictsUnavailable(f"current epoch {epoch_dir.name} publish.json is missing")
+        raise FrameVerdictsUnavailable(
+            f"current epoch {epoch_dir.name} publish.json is missing",
+            remedy=_producer_remedy(procedure_root),
+        )
     try:
         receipt = json.loads(publish_path.read_text(encoding="utf-8"))
     except (OSError, UnicodeDecodeError, json.JSONDecodeError) as exc:
-        raise FrameVerdictsUnavailable(f"{publish_path} is unreadable or malformed: {exc}") from exc
+        raise FrameVerdictsUnavailable(
+            f"{publish_path} is unreadable or malformed: {exc}",
+            remedy=_producer_remedy(procedure_root),
+        ) from exc
     if not isinstance(receipt, dict):
-        raise FrameVerdictsUnavailable(f"{publish_path} must contain a JSON object")
+        raise FrameVerdictsUnavailable(
+            f"{publish_path} must contain a JSON object", remedy=_producer_remedy(procedure_root)
+        )
     if receipt.get("epoch") != epoch_dir.name:
         raise FrameVerdictsUnavailable(
-            f"{publish_path} names epoch {receipt.get('epoch')!r}, not current {epoch_dir.name!r}"
+            f"{publish_path} names epoch {receipt.get('epoch')!r}, not current {epoch_dir.name!r}",
+            remedy=_producer_remedy(procedure_root),
         )
     if receipt.get("swapped") is not True:
         raise FrameVerdictsUnavailable(
             f"current epoch {epoch_dir.name} was not accepted for publication according to "
-            f"{publish_path}"
+            f"{publish_path}",
+            remedy=_producer_remedy(procedure_root),
         )
     return epoch_dir
 
@@ -411,7 +432,7 @@ def _producer_working_directory(epoch_dir: Path) -> Path:
 
     Current producer epochs persist iteration.environment in hypothesis.json, but only
     record python/platform/host. Honour cwd when recorded; older epochs use the working
-    directory from the producer command in PRODUCER_REMEDY.
+    directory under the declared vault binding.
     """
     remedy = (
         "record an absolute producer working directory in hypothesis.json iteration.environment.cwd "
@@ -635,7 +656,7 @@ def load_frame_verdicts(
         # The dispatcher must not re-resolve an environment override when writing its receipt.
         raise FrameVerdictsUnavailable(
             exc.reason,
-            exc.remedy,
+            exc.remedy.replace(PRODUCER_REMEDY, _producer_remedy(root)),
             frame_epoch=epoch_dir.name if epoch_dir is not None else None,
             frame_root_resolved=str(root),
         ) from exc
@@ -650,9 +671,15 @@ def _load_epoch_verdicts(
     age = current - produced_at
     if age > timedelta(seconds=max_age_s):
         raise FrameVerdictsUnavailable(
-            f"current frame epoch {epoch_dir.name} is {int(age.total_seconds()) // 60} min old, "
-            f"older than {max_age_s // 60} min (two iterations of a "
-            f"{FRAME_ITERATION_CADENCE_S // 60}-min cadence); the producer has stopped"
+            f"current frame epoch {epoch_dir.name} is {age.total_seconds():.6f} s old, "
+            f"older than {max_age_s // 60} min ({max_age_s} s); "
+            "the accepted pointer may not have been advanced, or the producer's publication "
+            "may have been refused",
+            remedy=f"read {root / '_runs/current'}, then the newest retained epoch's publish.json "
+            f"under {root / '_runs/epochs'} (swapped and reason fields), then inspect producer "
+            "state with `systemctl --user status hapax-frame-iteration.service` before any "
+            "restart; distinguish an unadvanced accepted pointer from refused publication, "
+            "then retry the dispatch",
         )
     elements_path = epoch_dir / "elements.json"
     try:

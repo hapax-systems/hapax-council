@@ -51,6 +51,23 @@ def test_direct_rg_oracle_never_skips_missing_rg(
 NOW = datetime(2026, 9, 3, 22, 30, tzinfo=UTC)
 
 
+def _expected_producer_remedy(root: Path) -> str:
+    return (
+        f"run the frame producer — verify it targets procedure root {root}, "
+        "then `systemctl --user start hapax-frame-iteration.service` — then retry the dispatch"
+    )
+
+
+def _expected_stale_remedy(root: Path) -> str:
+    return (
+        f"read {root / '_runs/current'}, then the newest retained epoch's publish.json "
+        f"under {root / '_runs/epochs'} (swapped and reason fields), then inspect producer "
+        "state with `systemctl --user status hapax-frame-iteration.service` before any "
+        "restart; distinguish an unadvanced accepted pointer from refused publication, "
+        "then retry the dispatch"
+    )
+
+
 @pytest.mark.parametrize(
     "patterns",
     [["*"], ["*.md"], ["file[12].md"], ["session/*.md"], [], ["**"], ["file**.md"], ["."]],
@@ -544,20 +561,21 @@ def test_latest_epoch_is_the_newest_parseable_dir_that_carries_elements(tmp_path
         "20260903T123460Z",
     ],
 )
+@pytest.mark.parametrize("reader", ["current_epoch_dir", "load_frame_verdicts"])
 def test_invalid_calendar_epoch_refuses_with_the_producer_remedy(
-    tmp_path: Path, stamp: str
+    tmp_path: Path, stamp: str, reader: str
 ) -> None:
     name = f"{stamp}-deadbeef"
     epoch = tmp_path / "_runs/epochs" / name
     epoch.mkdir(parents=True)
     (tmp_path / "_runs/current").symlink_to(Path("epochs") / name)
 
-    for read in (fv.current_epoch_dir, fv.load_frame_verdicts):
-        with pytest.raises(fv.FrameVerdictsUnavailable, match="names invalid epoch") as caught:
-            read(tmp_path)
-        assert name in caught.value.reason
-        assert caught.value.remedy == fv.PRODUCER_REMEDY
-    assert caught.value.frame_root_resolved == str(tmp_path.resolve())
+    with pytest.raises(fv.FrameVerdictsUnavailable, match="names invalid epoch") as caught:
+        getattr(fv, reader)(tmp_path)
+    assert name in caught.value.reason
+    assert caught.value.remedy == _expected_producer_remedy(tmp_path.resolve())
+    if reader == "load_frame_verdicts":
+        assert caught.value.frame_root_resolved == str(tmp_path.resolve())
     assert fv.epoch_produced_at(name) is None
 
 
@@ -648,7 +666,10 @@ def test_missing_root_or_epoch_refuse_with_the_producer_named(tmp_path: Path) ->
     assert "hapax-frame-iteration" in str(excinfo.value)
 
 
-def test_epoch_older_than_two_cadences_refuses_and_younger_does_not(tmp_path: Path) -> None:
+@pytest.mark.parametrize("diagnostic", ["reason", "remedy"])
+def test_epoch_older_than_two_cadences_refuses_and_younger_does_not(
+    tmp_path: Path, diagnostic: str
+) -> None:
     limit = timedelta(seconds=fv.FRAME_EPOCH_MAX_AGE_S)
     members = [{"id": "m", "location": {"path": str(tmp_path / "m")}}]
 
@@ -668,7 +689,30 @@ def test_epoch_older_than_two_cadences_refuses_and_younger_does_not(tmp_path: Pa
     )
     with pytest.raises(fv.FrameVerdictsUnavailable, match="older than 360 min") as excinfo:
         fv.load_frame_verdicts(stale, now=NOW)
-    assert "the producer has stopped" in excinfo.value.reason
+    if diagnostic == "reason":
+        epoch = (stale / "_runs/current").resolve().name
+        assert excinfo.value.reason == (
+            f"current frame epoch {epoch} is 21601.000000 s old, older than 360 min (21600 s); "
+            "the accepted pointer may not have been advanced, or the producer's publication "
+            f"may have been refused; frame_root_resolved={stale.resolve()}"
+        )
+    else:
+        assert excinfo.value.remedy == _expected_stale_remedy(stale.resolve())
+
+
+@pytest.mark.parametrize("age_s", [21599, 21600, 21601])
+def test_default_epoch_age_boundary_is_six_hours(tmp_path: Path, age_s: int) -> None:
+    root = _procedure_root(
+        tmp_path,
+        members=[{"id": "m", "location": {"path": str(tmp_path / "m")}}],
+        verdicts=[_verdict("m", "scope_exited", False)],
+        at=NOW - timedelta(seconds=age_s),
+    )
+    if age_s <= 21600:
+        assert fv.load_frame_verdicts(root, now=NOW).decayed == ()
+    else:
+        with pytest.raises(fv.FrameVerdictsUnavailable, match="older than 360 min"):
+            fv.load_frame_verdicts(root, now=NOW)
 
 
 def test_malformed_elements_mass_or_no_verdict_rows_refuse(tmp_path: Path) -> None:
@@ -2059,6 +2103,9 @@ def test_unavailable_frame_evidence_binds_resolved_root(
         assert error.frame_root_resolved == str(root.resolve())
         assert error.frame_epoch == epoch_name
         assert f"frame_root_resolved={root.resolve()}" in error.reason
-        assert error.remedy == fv.PRODUCER_REMEDY
+        if state == "stale":
+            assert error.remedy == _expected_stale_remedy(root.resolve())
+        else:
+            assert error.remedy == _expected_producer_remedy(root.resolve())
         reasons.append(error.reason)
     assert reasons[0] != reasons[1]

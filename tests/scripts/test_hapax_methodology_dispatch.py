@@ -4627,6 +4627,38 @@ def _assert_frame_refusal_receipt(tmp_path: Path, frame_root: Path, rc: int, err
     assert "Next:" in receipt["reason"]
 
 
+def _expected_producer_remedy(root: Path) -> str:
+    return (
+        f"run the frame producer — verify it targets procedure root {root}, "
+        "then `systemctl --user start hapax-frame-iteration.service` — then retry the dispatch"
+    )
+
+
+def _assert_stale_dispatch_reason(reason: str, root: Path, minimum_age_s: int) -> None:
+    epoch = (root / "_runs/current").resolve().name
+    prefix = f"current frame epoch {epoch} is "
+    assert prefix in reason
+    age_text, _, suffix = reason.split(prefix, 1)[1].partition(" s old, ")
+    produced_at = datetime.strptime(epoch.split("-", 1)[0], "%Y%m%dT%H%M%SZ").replace(tzinfo=UTC)
+    assert minimum_age_s <= float(age_text) <= (datetime.now(UTC) - produced_at).total_seconds()
+    assert suffix.startswith(
+        "older than 360 min (21600 s); the accepted pointer may not have been advanced, "
+        "or the producer's publication may have been refused; "
+        f"frame_root_resolved={root.resolve()}"
+    )
+    assert "the producer has stopped" not in reason
+
+
+def _expected_stale_remedy(root: Path) -> str:
+    return (
+        f"read {root / '_runs/current'}, then the newest retained epoch's publish.json "
+        f"under {root / '_runs/epochs'} (swapped and reason fields), then inspect producer "
+        "state with `systemctl --user status hapax-frame-iteration.service` before any "
+        "restart; distinguish an unadvanced accepted pointer from refused publication, "
+        "then retry the dispatch"
+    )
+
+
 def _frame_procedure_root(
     root: Path,
     *,
@@ -7044,8 +7076,12 @@ def test_dispatch_patterned_member_symlinks_do_not_bypass_decay(
     assert receipt["reason"] in err
 
 
+@pytest.mark.parametrize("diagnostic", ["stderr", "receipt"])
 def test_dispatch_refuses_an_invalid_epoch_date_with_a_producer_receipt(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+    diagnostic: str,
 ) -> None:
     module = _dispatcher_module()
     frame_root = tmp_path / "frame"
@@ -7065,18 +7101,25 @@ def test_dispatch_refuses_an_invalid_epoch_date_with_a_producer_receipt(
     assert rc == 10
     assert "frame verdicts unavailable" in err
     assert f"names invalid epoch {name!r}" in err
-    assert fv.PRODUCER_REMEDY in err
+    if diagnostic == "stderr":
+        assert _expected_producer_remedy(frame_root.resolve()) in err
     receipt = json.loads(
         (tmp_path / "ledger/methodology-dispatch.jsonl").read_text().splitlines()[-1]
     )
     assert receipt["ok"] is False
     assert receipt["frame_epoch"] is None
-    assert receipt["frame_unavailable"]["remedy"] == fv.PRODUCER_REMEDY
+    if diagnostic == "receipt":
+        assert receipt["frame_unavailable"]["remedy"] == _expected_producer_remedy(
+            frame_root.resolve()
+        )
     assert receipt["frame_unavailable"]["frame_root_resolved"] == str(frame_root.resolve())
     assert f"names invalid epoch {name!r}" in receipt["frame_unavailable"]["reason"]
 
 
-def test_dispatch_looping_publication_pointer_refuses_with_producer_remedy(tmp_path: Path) -> None:
+@pytest.mark.parametrize("diagnostic", ["stderr", "receipt"])
+def test_dispatch_looping_publication_pointer_refuses_with_producer_remedy(
+    tmp_path: Path, diagnostic: str
+) -> None:
     _worktree(tmp_path / "worktree")
     spec = _spec(tmp_path / "isap-test.md")
     _task(tmp_path / "tasks", "governed-build", _codex_only_build_frontmatter(spec))
@@ -7102,7 +7145,8 @@ def test_dispatch_looping_publication_pointer_refuses_with_producer_remedy(tmp_p
     assert result.returncode == 10, result.stderr
     assert "frame verdicts unavailable" in result.stderr
     assert str(current) in result.stderr
-    assert fv.PRODUCER_REMEDY in result.stderr
+    if diagnostic == "stderr":
+        assert _expected_producer_remedy(root.resolve()) in result.stderr
     receipt = json.loads(
         (tmp_path / "ledger/methodology-dispatch.jsonl").read_text().splitlines()[-1]
     )
@@ -7111,7 +7155,8 @@ def test_dispatch_looping_publication_pointer_refuses_with_producer_remedy(tmp_p
     evidence = receipt["frame_unavailable"]
     assert evidence["frame_epoch"] is None
     assert evidence["frame_root_resolved"] == str(root.resolve())
-    assert evidence["remedy"] == fv.PRODUCER_REMEDY
+    if diagnostic == "receipt":
+        assert evidence["remedy"] == _expected_producer_remedy(root.resolve())
     assert str(current) in evidence["reason"]
     assert evidence["reason"] in receipt["reason"]
 
@@ -7155,7 +7200,10 @@ def test_receipt_frame_unavailable_binds_resolved_root(tmp_path: Path, state: st
         evidence = receipt["frame_unavailable"]
         assert evidence["frame_root_resolved"] == str(root.resolve())
         assert evidence["frame_epoch"] == (epoch_name if state == "stale" else None)
-        assert "hapax-frame-iteration.service" in evidence["remedy"]
+        if state == "stale":
+            assert evidence["remedy"] == _expected_stale_remedy(root.resolve())
+        else:
+            assert evidence["remedy"] == _expected_producer_remedy(root.resolve())
         assert f"frame_root_resolved={root.resolve()}" in evidence["reason"]
         assert evidence["reason"] in receipt["reason"]
         assert receipt["frame_epoch"] is None  # Existing meaning: no verdict set was consulted.
@@ -7290,11 +7338,22 @@ def test_frame_dispatch_negated_scope_class_with_exclusion_has_a_remedy(
             "uncontainable scheme-qualified location",
             "amend declaration/mass.yaml (relative to the procedure root, HAPAX_FRAME_PROCEDURE_ROOT)",
         ),
-        ("stale", "the producer has stopped", "run the frame producer"),
+        (
+            "stale",
+            "the accepted pointer may not have been advanced, or the producer's publication "
+            "may have been refused",
+            "read",
+        ),
     ],
 )
+@pytest.mark.parametrize("diagnostic", ["reason", "remedy"])
 def test_frame_dispatch_refusals_name_the_remedy_for_each_error_class(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, case: str, diagnosis: str, remedy: str
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    case: str,
+    diagnosis: str,
+    remedy: str,
+    diagnostic: str,
 ) -> None:
     module = _dispatcher_module()
     council = tmp_path / "council"
@@ -7329,10 +7388,18 @@ def test_frame_dispatch_refusals_name_the_remedy_for_each_error_class(
 
     refusal, _, _ = module.frame_verdict_refusal({"mutation_scope_refs": refs})
 
-    assert refusal is not None and diagnosis in refusal
-    assert f"Next: {remedy}" in refusal
-    if case in {"unmatchable", "declaration", "stale"}:
-        assert "systemctl --user start hapax-frame-iteration.service" in refusal
+    assert refusal is not None
+    if case == "stale":
+        if diagnostic == "reason":
+            _assert_stale_dispatch_reason(refusal, frame_root, age_s)
+            assert diagnosis in refusal
+        else:
+            assert f"Next: {_expected_stale_remedy(frame_root.resolve())}" in refusal
+    else:
+        assert diagnosis in refusal
+        assert f"Next: {remedy}" in refusal
+        if case in {"unmatchable", "declaration"}:
+            assert "systemctl --user start hapax-frame-iteration.service" in refusal
 
 
 def test_frame_dispatch_resolves_relative_refs_against_the_configured_vault(
@@ -7707,7 +7774,7 @@ def test_dispatch_without_fixture_verdict_set_refuses_every_scope(
     assert receipt["frame_epoch"] is None and receipt["frame_decayed_members"] == []
     assert reason in receipt["frame_unavailable"]["reason"]
     assert receipt["frame_unavailable"]["frame_root_resolved"] == str(root)
-    assert receipt["frame_unavailable"]["remedy"] == fv.PRODUCER_REMEDY
+    assert receipt["frame_unavailable"]["remedy"] == _expected_producer_remedy(root.resolve())
     assert "Next:" in receipt["reason"]
 
 
@@ -8547,11 +8614,13 @@ def test_dispatch_explicit_file_glob_spellings_do_not_bypass_decay(
 @pytest.mark.parametrize(
     "filename", ["elements.json", "publish.json", "coverage.json", "mass.yaml"]
 )
+@pytest.mark.parametrize("diagnostic", ["stderr", "receipt"])
 def test_dispatch_invalid_utf8_refuses_with_producer_evidence(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
     capsys: pytest.CaptureFixture[str],
     filename: str,
+    diagnostic: str,
 ) -> None:
     module = _dispatcher_module()
     frame_root = _frame_procedure_root(tmp_path / "frame", decayed_root=None)
@@ -8572,7 +8641,8 @@ def test_dispatch_invalid_utf8_refuses_with_producer_evidence(
     assert "frame verdicts unavailable" in err
     assert str(damaged) in err
     assert "unreadable or malformed" in err
-    assert fv.PRODUCER_REMEDY in err
+    if diagnostic == "stderr":
+        assert _expected_producer_remedy(frame_root.resolve()) in err
     assert "fixture refusal" not in err
     assert "Traceback" not in err
     receipt = json.loads(
@@ -8582,7 +8652,8 @@ def test_dispatch_invalid_utf8_refuses_with_producer_evidence(
     assert receipt["frame_epoch"] is None
     assert receipt["frame_decayed_members"] == []
     evidence = receipt["frame_unavailable"]
-    assert evidence["remedy"] == fv.PRODUCER_REMEDY
+    if diagnostic == "receipt":
+        assert evidence["remedy"] == _expected_producer_remedy(frame_root.resolve())
     assert evidence["frame_root_resolved"] == str(frame_root.resolve())
     assert evidence["frame_epoch"] == (None if filename == "publish.json" else epoch.name)
     assert str(damaged) in evidence["reason"]
@@ -8637,12 +8708,16 @@ def test_dispatch_admits_work_when_the_member_is_not_decayed(
     assert "BLOCKED: capability adapter launch refused: fixture refusal" in err
 
 
+@pytest.mark.parametrize("diagnostic", ["reason", "remedy"])
 def test_dispatch_refuses_when_the_frame_verdicts_are_stale_naming_the_producer(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+    diagnostic: str,
 ) -> None:
     """An epoch older than two iterations of the producer's cadence is not a verdict set; the
-    dominator refuses every dispatch and says which producer to run rather than admitting work
-    against verdicts nobody has renewed."""
+    dominator refuses every dispatch and distinguishes pointer age from producer state,
+    with publication inspection before any restart."""
     module = _dispatcher_module()
     frame_root = _frame_procedure_root(
         tmp_path / "frame",
@@ -8661,7 +8736,10 @@ def test_dispatch_refuses_when_the_frame_verdicts_are_stale_naming_the_producer(
 
     assert rc == 10
     assert "BLOCKED: frame verdicts unavailable at the work-selection point" in err
-    assert "the producer has stopped" in err
+    if diagnostic == "reason":
+        _assert_stale_dispatch_reason(err, frame_root, 21660)
+    else:
+        assert f"Next: {_expected_stale_remedy(frame_root.resolve())}" in err
     assert "hapax-frame-iteration" in err
     assert "fixture refusal" not in err
 
@@ -9130,7 +9208,7 @@ def test_receipt_only_member_root_resolution_failure_has_repair_action(
     assert "legacy-surface" in evidence["remedy"]
     assert str(root) in evidence["remedy"]
     assert fv.MASS_DECLARATION_LOCATION in evidence["remedy"]
-    assert fv.PRODUCER_REMEDY in evidence["remedy"]
+    assert _expected_producer_remedy(frame_root.resolve()) in evidence["remedy"]
     assert rc == 10
     assert receipt["ok"] is False and receipt["launched"] is False
     assert receipt["frame_epoch"] is None
