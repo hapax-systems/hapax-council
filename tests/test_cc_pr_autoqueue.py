@@ -2,7 +2,9 @@
 
 from __future__ import annotations
 
+import ast
 import importlib.util
+import inspect
 import json
 import re
 import subprocess
@@ -35,6 +37,7 @@ def _load_module() -> ModuleType:
 
 
 autoqueue = _load_module()
+github_pr_status = sys.modules["github_pr_status"]
 
 COMPLETE_ALWAYS_ON_CHECKLIST = {
     "tests-cover-the-diff": {
@@ -1064,6 +1067,458 @@ def test_fetch_open_prs_uses_rest_core_not_gh_pr_list(tmp_path: Path) -> None:
     assert not any(call[:3] == ["gh", "pr", "view"] for call in runner.calls)
 
 
+@pytest.mark.parametrize(
+    ("adapter_base", "rest_base"),
+    [("main", None), (None, "main"), ("main", "main"), (None, None), ("main", "release")],
+    ids=["adapter_only", "rest_only", "both", "neither", "base_conflict"],
+)
+def test_run_reconciler_base_sources(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, adapter_base: str | None, rest_base: str | None
+) -> None:
+    vault = _make_vault(tmp_path)
+    _write_task(vault, task_id="base-source", pr=42)
+    runner = _FakeRunner()
+    runner.open_prs = [_pr(42, base=rest_base, auto_merge=True, auto_merge_method="MERGE")]
+    runner.queued_prs = {42}
+    item = _pr(42, base=adapter_base, auto_merge=True, auto_merge_method="MERGE")
+    item["baseRepoDefaultBranch"] = "main" if adapter_base else None
+    monkeypatch.setattr(
+        autoqueue,
+        "list_open_pr_statuses",
+        lambda **_kwargs: ([item], github_pr_status.ListingRoute("rest", False, "test")),
+    )
+
+    report = autoqueue.run_reconciler(
+        repo="owner/repo",
+        repo_root=tmp_path,
+        vault_root=vault,
+        apply=False,
+        lineage_ledger_path=None,
+        quarantine_path=tmp_path / "quarantine.json",
+        admission_governor_path=tmp_path / "governor.yaml",
+        runner=runner,
+    )
+
+    decision = report["decisions"][0]
+    governance = decision["merge_queue_governance"]
+    assert governance["base_ref"] == (adapter_base or rest_base)
+    if adapter_base and rest_base and adapter_base != rest_base:
+        reason = (
+            "auto_merge_method_unverified:pr_base_ref_conflict:"
+            f"list={adapter_base}:detail={rest_base}"
+        )
+        assert decision["action"] == "dequeue"
+        assert decision["reasons"] == [reason]
+        assert decision["auto_merge_method_owner"] == "unverified"
+        assert governance == {
+            "base_ref": adapter_base,
+            "base_ref_detail": rest_base,
+            "method": None,
+            "source": None,
+            "reason": reason,
+        }
+        assert item["baseRefConflict"] == "pr_base_ref_conflict"
+    elif adapter_base or rest_base:
+        assert decision["action"] == "already_queued"
+        assert decision.get("reasons", []) == []
+        assert decision["auto_merge_method_owner"] == "merge_queue"
+        assert governance["method"] == "SQUASH"
+        assert governance["source"].startswith("ruleset:")
+        assert governance["reason"] is None
+    else:
+        reason = "auto_merge_method_unverified:pr_base_ref_missing"
+        assert decision["action"] == "dequeue"
+        assert decision["reasons"] == [reason]
+        assert decision["auto_merge_method_owner"] == "unverified"
+        assert governance["reason"] == reason
+    assert not any("POST" in call or "--disable-auto" in call for call in runner.calls)
+    assert not any("mutation" in part for call in runner.calls for part in call)
+
+
+@pytest.mark.parametrize(
+    "list_base,detail_base",
+    [("main", "release"), ("release", "main"), ("main", "none"), ("main", "null")],
+)
+@pytest.mark.parametrize("state", ["armed", "queued", "unarmed"])
+@pytest.mark.parametrize("override", [None, "MERGE"])
+@pytest.mark.parametrize(
+    "read_sequence", ["both", "adapter_only", "second_only", "returned_to_list", "third_base"]
+)
+def test_run_reconciler_conflicting_base_receipts(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    list_base: str,
+    detail_base: str,
+    state: str,
+    read_sequence: str,
+    override: str | None,
+) -> None:
+    vault = _make_vault(tmp_path)
+    _write_task(vault, task_id="base-conflict", pr=42)
+    runner = _FakeRunner()
+    runner.open_prs = [
+        _pr(42, base=list_base, auto_merge=state != "unarmed", auto_merge_method="MERGE")
+    ]
+    runner.queued_prs = {42} if state == "queued" else set()
+    # The enforced SQUASH rule applies only to main, independently of PR base.
+    runner.ruleset_details[16186443] = {
+        "id": 16186443,
+        "name": "main-merge-queue",
+        "target": "branch",
+        "enforcement": "active",
+        "conditions": {"ref_name": {"include": ["refs/heads/main"], "exclude": []}},
+        "rules": [{"type": "merge_queue", "parameters": {"merge_method": "SQUASH"}}],
+    }
+    detail_refs = iter(
+        {
+            "both": [detail_base, detail_base],
+            "adapter_only": [detail_base, None],
+            "second_only": [list_base, detail_base],
+            "returned_to_list": [detail_base, list_base],
+            "third_base": [detail_base, "staging"],
+        }[read_sequence]
+    )
+    detail_for_number = runner._rest_pull_for_number
+
+    def retargeted_detail(number: int) -> dict[str, Any] | None:
+        ref = next(detail_refs)
+        if ref is None:
+            return None
+        detail = detail_for_number(number)
+        assert detail is not None
+        detail["base"]["ref"] = ref
+        return detail
+
+    monkeypatch.setattr(runner, "_rest_pull_for_number", retargeted_detail)
+    report = autoqueue.run_reconciler(
+        repo="owner/repo",
+        repo_root=tmp_path,
+        vault_root=vault,
+        apply=False,
+        lineage_ledger_path=None,
+        quarantine_path=tmp_path / "quarantine.json",
+        admission_governor_path=tmp_path / "governor.yaml",
+        expected_auto_merge_method_override=override,
+        runner=runner,
+    )
+
+    decision = report["decisions"][0]
+    reason = (
+        f"auto_merge_method_unverified:pr_base_ref_conflict:list={list_base}:detail={detail_base}"
+    )
+    assert (
+        decision["action"]
+        == {
+            "armed": "disable_auto_merge",
+            "queued": "dequeue",
+            "unarmed": "blocked",
+        }[state]
+    )
+    assert decision["reasons"] == [f"{reason}:override={override}" if override else reason]
+    assert decision.get("auto_merge_method_owner") == (None if state == "unarmed" else "unverified")
+    governance = decision["merge_queue_governance"]
+    assert governance["base_ref"] == list_base
+    assert governance["base_ref_detail"] == detail_base
+    assert governance.get("base_ref_detail_latest") == (
+        "staging" if read_sequence == "third_base" else None
+    )
+    assert governance["reason"] == reason
+    assert governance["method"] is None
+    assert governance["source"] is None
+    assert report["counts"]["already_auto_merge_enabled"] == 0
+    assert report["counts"]["already_queued"] == 0
+    assert not any("POST" in call or "--disable-auto" in call for call in runner.calls)
+    assert not any("mutation" in part for call in runner.calls for part in call)
+    assert next(detail_refs, "exhausted") == "exhausted"
+
+
+@pytest.mark.parametrize("conflict_first", [False, True])
+def test_run_reconciler_base_conflict_cache_isolation(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, conflict_first: bool
+) -> None:
+    vault = _make_vault(tmp_path)
+    runner = _FakeRunner()
+    runner.open_prs = [
+        _pr(number, auto_merge=True, auto_merge_method="MERGE") for number in (41, 42, 43)
+    ]
+    if conflict_first:
+        runner.open_prs.reverse()
+    for item in runner.open_prs:
+        _write_task(vault, task_id=f"base-cache-{item['number']}", pr=item["number"])
+    detail_for_number = runner._rest_pull_for_number
+
+    def retargeted_detail(number: int) -> dict[str, Any]:
+        detail = detail_for_number(number)
+        assert detail is not None
+        detail["base"]["ref"] = {41: "main", 42: "release", 43: "staging"}[number]
+        return detail
+
+    monkeypatch.setattr(runner, "_rest_pull_for_number", retargeted_detail)
+    report = autoqueue.run_reconciler(
+        repo="owner/repo",
+        repo_root=tmp_path,
+        vault_root=vault,
+        apply=False,
+        lineage_ledger_path=None,
+        quarantine_path=tmp_path / "quarantine.json",
+        admission_governor_path=tmp_path / "governor.yaml",
+        runner=runner,
+    )
+    decisions = {decision["pr"]: decision for decision in report["decisions"]}
+    assert decisions[41]["action"] == "already_auto_merge_enabled"
+    assert decisions[41]["auto_merge_method_owner"] == "merge_queue"
+    assert decisions[41]["merge_queue_governance"]["reason"] is None
+    for number, ref in ((42, "release"), (43, "staging")):
+        assert decisions[number]["action"] == "disable_auto_merge"
+        assert decisions[number]["auto_merge_method_owner"] == "unverified"
+        assert decisions[number]["reasons"] == [
+            f"auto_merge_method_unverified:pr_base_ref_conflict:list=main:detail={ref}"
+        ]
+
+
+@pytest.mark.parametrize("state", ["armed", "queued", "unarmed"])
+@pytest.mark.parametrize("override", [None, "MERGE"])
+@pytest.mark.parametrize("detail_default", ["release", "null"])
+@pytest.mark.parametrize(
+    "read_sequence",
+    ["both", "adapter_only", "second_only", "returned_to_list", "third_default", "equal"],
+)
+def test_run_reconciler_default_branch_receipts(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    state: str,
+    override: str | None,
+    detail_default: str,
+    read_sequence: str,
+) -> None:
+    """Disagreeing defaults cannot establish ~DEFAULT_BRANCH queue ownership."""
+    vault = _make_vault(tmp_path)
+    _write_task(vault, task_id="default-conflict", pr=42)
+    runner = _FakeRunner()
+    runner.open_prs = [
+        _pr(42, base="main", auto_merge=state != "unarmed", auto_merge_method="MERGE")
+    ]
+    runner.queued_prs = {42} if state == "queued" else set()
+    # _FakeRunner's SQUASH rule targets ~DEFAULT_BRANCH, with list default main.
+    detail_defaults = iter(
+        {
+            "both": [detail_default, detail_default],
+            "adapter_only": [detail_default, None],
+            "second_only": ["main", detail_default],
+            "returned_to_list": [detail_default, "main"],
+            "third_default": [detail_default, "staging"],
+            "equal": ["main", "main"],
+        }[read_sequence]
+    )
+    detail_for_number = runner._rest_pull_for_number
+
+    def changed_default_detail(number: int) -> dict[str, Any] | None:
+        default = next(detail_defaults)
+        if default is None:
+            return None
+        detail = detail_for_number(number)
+        assert detail is not None
+        detail["base"]["repo"]["default_branch"] = default
+        return detail
+
+    monkeypatch.setattr(runner, "_rest_pull_for_number", changed_default_detail)
+    report = autoqueue.run_reconciler(
+        repo="owner/repo",
+        repo_root=tmp_path,
+        vault_root=vault,
+        apply=False,
+        lineage_ledger_path=None,
+        quarantine_path=tmp_path / "quarantine.json",
+        admission_governor_path=tmp_path / "governor.yaml",
+        expected_auto_merge_method_override=override,
+        runner=runner,
+    )
+
+    decision = report["decisions"][0]
+    governance = decision["merge_queue_governance"]
+    assert governance["base_ref"] == "main"
+    if read_sequence == "equal":
+        assert decision["action"] == (
+            ("blocked" if state == "unarmed" else "hold")
+            if override
+            else {
+                "armed": "already_auto_merge_enabled",
+                "queued": "already_queued",
+                "unarmed": "queue",
+            }[state]
+        )
+        assert decision.get("reasons", []) == (
+            [
+                "auto_merge_method_override_contradicts_queue_governance:override=MERGE:governed=SQUASH"
+            ]
+            if override
+            else []
+        )
+        assert decision.get("auto_merge_method_owner") == (
+            None if state == "unarmed" else "unverified" if override else "merge_queue"
+        )
+        assert "default_branch_detail" not in governance
+        assert governance["method"] == "SQUASH"
+        assert governance["source"] == "ruleset:main-merge-queue:16186443"
+        assert governance["reason"] is None
+    else:
+        reason = (
+            "auto_merge_method_unverified:pr_default_branch_conflict:"
+            f"list=main:detail={detail_default}"
+        )
+        assert (
+            decision["action"]
+            == {
+                "armed": "disable_auto_merge",
+                "queued": "dequeue",
+                "unarmed": "blocked",
+            }[state]
+        )
+        assert decision["reasons"] == [f"{reason}:override={override}" if override else reason]
+        assert decision.get("auto_merge_method_owner") == (
+            None if state == "unarmed" else "unverified"
+        )
+        assert governance["default_branch_detail"] == detail_default
+        assert governance["reason"] == reason
+        assert governance["method"] is None
+        assert governance["source"] is None
+        # Evidence conflicts refuse before any ruleset applicability read.
+        assert not any(
+            "repos/owner/repo/rulesets?per_page=100&page=1" in call for call in runner.calls
+        )
+    assert not any("POST" in call or "--disable-auto" in call for call in runner.calls)
+    assert not any("mutation" in part for call in runner.calls for part in call)
+    assert next(detail_defaults, "exhausted") == "exhausted"
+
+
+@pytest.mark.parametrize("conflict_first", [False, True])
+def test_run_reconciler_default_branch_conflict_cache_isolation(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, conflict_first: bool
+) -> None:
+    vault = _make_vault(tmp_path)
+    runner = _FakeRunner()
+    runner.open_prs = [
+        _pr(number, auto_merge=True, auto_merge_method="MERGE") for number in (41, 42, 43)
+    ]
+    if conflict_first:
+        runner.open_prs.reverse()
+    for item in runner.open_prs:
+        _write_task(vault, task_id=f"default-cache-{item['number']}", pr=item["number"])
+    detail_for_number = runner._rest_pull_for_number
+
+    def changed_default_detail(number: int) -> dict[str, Any]:
+        detail = detail_for_number(number)
+        assert detail is not None
+        detail["base"]["repo"]["default_branch"] = {41: "main", 42: "release", 43: "staging"}[
+            number
+        ]
+        return detail
+
+    monkeypatch.setattr(runner, "_rest_pull_for_number", changed_default_detail)
+    report = autoqueue.run_reconciler(
+        repo="owner/repo",
+        repo_root=tmp_path,
+        vault_root=vault,
+        apply=False,
+        lineage_ledger_path=None,
+        quarantine_path=tmp_path / "quarantine.json",
+        admission_governor_path=tmp_path / "governor.yaml",
+        runner=runner,
+    )
+    decisions = {decision["pr"]: decision for decision in report["decisions"]}
+    assert decisions[41]["action"] == "already_auto_merge_enabled"
+    assert decisions[41]["auto_merge_method_owner"] == "merge_queue"
+    assert decisions[41]["merge_queue_governance"]["reason"] is None
+    for number, default in ((42, "release"), (43, "staging")):
+        assert decisions[number]["action"] == "disable_auto_merge"
+        assert decisions[number]["auto_merge_method_owner"] == "unverified"
+        assert decisions[number]["reasons"] == [
+            f"auto_merge_method_unverified:pr_default_branch_conflict:list=main:detail={default}"
+        ]
+        assert decisions[number]["merge_queue_governance"]["default_branch_detail"] == default
+
+
+@pytest.mark.parametrize("detail_state", ["absent", "base_missing"])
+@pytest.mark.parametrize("override", [None, "SQUASH", "MERGE"])
+def test_run_reconciler_adapter_only_preserves_all_decisions(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, detail_state: str, override: str | None
+) -> None:
+    vault = _make_vault(tmp_path)
+    runner = _FakeRunner()
+    runner.open_prs = [
+        _pr(42, auto_merge=True, auto_merge_method="MERGE"),
+        _pr(43, auto_merge=True, auto_merge_method="MERGE"),
+        _pr(44, base="release", auto_merge=True, auto_merge_method="MERGE"),
+        _pr(45),
+    ]
+    runner.queued_prs = {42}
+    for pr in runner.open_prs:
+        _write_task(vault, task_id=f"base-source-{pr['number']}", pr=pr["number"])
+    kwargs = {
+        "repo": "owner/repo",
+        "repo_root": tmp_path,
+        "vault_root": vault,
+        "apply": False,
+        "lineage_ledger_path": None,
+        "quarantine_path": tmp_path / "quarantine.json",
+        "admission_governor_path": tmp_path / "governor.yaml",
+        "expected_auto_merge_method_override": override,
+        "runner": runner,
+    }
+    with_detail = autoqueue.run_reconciler(**kwargs)
+    detail_for_number = runner._rest_pull_for_number
+
+    def missing_detail(number: int) -> dict[str, Any] | None:
+        if detail_state == "absent":
+            return None
+        detail = detail_for_number(number)
+        assert detail is not None
+        detail.pop("base")
+        return detail
+
+    monkeypatch.setattr(runner, "_rest_pull_for_number", missing_detail)
+    runner.calls.clear()
+    adapter_only = autoqueue.run_reconciler(**kwargs)
+
+    assert adapter_only["decisions"] == with_detail["decisions"]
+    assert adapter_only["counts"] == with_detail["counts"]
+    decisions = {decision["pr"]: decision for decision in adapter_only["decisions"]}
+    expected_actions = (
+        {
+            42: "hold",
+            43: "hold",
+            44: "already_auto_merge_enabled",
+            45: "blocked",
+        }
+        if override == "MERGE"
+        else {
+            42: "already_queued",
+            43: "already_auto_merge_enabled",
+            44: "disable_auto_merge",
+            45: "queue",
+        }
+    )
+    assert {
+        number: decision["action"] for number, decision in decisions.items()
+    } == expected_actions
+    for number, decision in decisions.items():
+        governance = decision["merge_queue_governance"]
+        assert governance["base_ref"] == ("release" if number == 44 else "main")
+        assert governance["method"] == (None if number == 44 else "SQUASH")
+        assert governance["reason"] is None
+    # Each PR still gets only the two pre-existing detail attempts: adapter
+    # hydration and the reconciler's secondary read. No request was added.
+    detail_calls = [
+        call
+        for call in runner.calls
+        if call[:5] == ["gh", "api", "--method", "GET", "-H"]
+        and re.fullmatch(r"repos/owner/repo/pulls/\d+", call[6])
+    ]
+    assert len(detail_calls) == 2 * len(runner.open_prs)
+    assert not any("POST" in call or "--disable-auto" in call for call in runner.calls)
+    assert not any("mutation" in part for call in runner.calls for part in call)
+
+
 def test_empty_rest_reviews_do_not_synthesize_review_required(tmp_path: Path) -> None:
     class EmptyReviewsRunner(_FakeRunner):
         def _rest_response(self, cmd: list[str]) -> subprocess.CompletedProcess | None:
@@ -1091,6 +1546,242 @@ def test_empty_rest_reviews_do_not_synthesize_review_required(tmp_path: Path) ->
 
     assert report["counts"]["queue"] == 1
     assert "review_decision:REVIEW_REQUIRED" not in report["decisions"][0].get("reasons", [])
+
+
+def test_run_reconciler_empty_open_pr_scan_has_no_refusal(tmp_path: Path) -> None:
+    runner = _FakeRunner()
+    report_path = tmp_path / "cc-pr-autoqueue-report.json"
+
+    report = autoqueue.run_reconciler(
+        repo="owner/repo",
+        repo_root=tmp_path,
+        vault_root=_make_vault(tmp_path),
+        apply=False,
+        lineage_ledger_path=None,
+        quarantine_path=tmp_path / "quarantine.json",
+        admission_governor_path=tmp_path / "governor.yaml",
+        report_path=report_path,
+        runner=runner,
+    )
+
+    saved = json.loads(report_path.read_text())
+    for payload in (report, saved):
+        assert payload["decisions"] == []
+        assert payload["mutations"] == []
+        assert "skipped" not in payload
+        assert "reason" not in payload
+        assert "refusal" not in payload
+    assert report["stable_report"]["written"] is True
+    list_calls = [call for call in runner.calls if "repos/owner/repo/pulls" in call]
+    assert len(list_calls) == 1
+    assert list_calls[0][:4] == ["gh", "api", "--method", "GET"]
+    assert not any(call[:2] == ["gh", "pr"] or "POST" in call for call in runner.calls)
+    assert not any("mutation" in part for call in runner.calls for part in call)
+
+
+@pytest.mark.parametrize(
+    ("returncode", "stdout", "stderr", "exception", "cause"),
+    [
+        pytest.param(
+            1,
+            '{"message":"API rate limit exceeded","status":"403"}',
+            "gh: API rate limit exceeded (HTTP 403)",
+            None,
+            "rate_limit",
+            id="rate_limit_403",
+        ),
+        pytest.param(0, "not json", "", None, "invalid_json", id="non_json"),
+        pytest.param(0, "{}", "", None, "invalid_list", id="object_body"),
+        pytest.param(0, "null", "", None, "invalid_list", id="null_body"),
+        pytest.param(0, '"array"', "", None, "invalid_list", id="string_body"),
+        pytest.param(0, "", "", None, "empty_body", id="empty_body"),
+        pytest.param(1, "[]", "connection reset", None, "request_failed", id="nonzero_exit"),
+        pytest.param(
+            1,
+            '{"message":"Internal Server Error"}',
+            "gh: Internal Server Error (HTTP 500)",
+            None,
+            "request_failed",
+            id="http_500",
+        ),
+        pytest.param(
+            0, "", "", OSError("connection failed"), "transport_error", id="transport_error"
+        ),
+        pytest.param(
+            0,
+            "",
+            "",
+            subprocess.TimeoutExpired("gh", 60),
+            "transport_error",
+            id="transport_timeout",
+        ),
+    ],
+)
+def test_run_reconciler_refuses_indeterminate_open_pr_scan(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    returncode: int,
+    stdout: str,
+    stderr: str,
+    exception: Exception | None,
+    cause: str,
+) -> None:
+    vault = _make_vault(tmp_path)
+    task_paths = [_write_task(vault, task_id=f"task-{number}", pr=number) for number in (42, 43)]
+    original_notes = [path.read_text() for path in task_paths]
+    runner = _FakeRunner()
+    runner.open_prs = [_pr(42, auto_merge=True), _pr(43)]
+    runner.queued_prs = {42}
+    rest_response = runner._rest_response
+
+    def failed_list(cmd: list[str]) -> subprocess.CompletedProcess | None:
+        if "repos/owner/repo/pulls" in cmd:
+            if exception is not None:
+                raise exception
+            return subprocess.CompletedProcess(cmd, returncode, stdout, stderr)
+        return rest_response(cmd)
+
+    monkeypatch.setattr(runner, "_rest_response", failed_list)
+    report_path = tmp_path / "cc-pr-autoqueue-report.json"
+    quarantine_path = tmp_path / "quarantine.json"
+    ledger_path = tmp_path / "auto-arm.jsonl"
+    report = autoqueue.run_reconciler(
+        repo="owner/repo",
+        repo_root=tmp_path,
+        vault_root=vault,
+        apply=False,
+        lineage_ledger_path=None,
+        quarantine_path=quarantine_path,
+        auto_arm_ledger_path=ledger_path,
+        admission_governor_path=tmp_path / "governor.yaml",
+        report_path=report_path,
+        runner=runner,
+    )
+
+    saved = json.loads(report_path.read_text())
+    for payload in (report, saved):
+        assert payload["skipped"] is True
+        assert payload["reason"] == f"open_pr_scan_indeterminate:{cause}"
+        assert re.fullmatch(r"[a-z_]+:[a-z_]+", payload["reason"])
+        assert payload["decisions"] == []
+        assert payload["mutations"] == []
+        assert payload["apply"] is False
+    assert report["stable_report"]["written"] is True
+    assert [path.read_text() for path in task_paths] == original_notes
+    assert not quarantine_path.exists()
+    assert not ledger_path.exists()
+    # The router may try the independently eligible GraphQL pool once. This fake
+    # refuses that listing too; neither failed scan may trigger per-PR work.
+    list_calls = [call for call in runner.calls if "repos/owner/repo/pulls" in call]
+    assert len(list_calls) == 1
+    assert list_calls[0][:4] == ["gh", "api", "--method", "GET"]
+    after_list = runner.calls[runner.calls.index(list_calls[0]) + 1 :]
+    assert len(after_list) == 1 and after_list[0][:3] == ["gh", "pr", "list"]
+    assert not any(
+        (call[:2] == ["gh", "pr"] and call[:3] != ["gh", "pr", "list"]) or "POST" in call
+        for call in runner.calls
+    )
+    assert not any("mutation" in part for call in runner.calls for part in call)
+
+
+@pytest.mark.parametrize(
+    ("body", "later_page", "expected_decisions"),
+    [
+        pytest.param("[null]", False, None, id="null"),
+        pytest.param("[1]", False, None, id="scalar"),
+        pytest.param('["x"]', False, None, id="string"),
+        pytest.param("[{}]", False, None, id="missing_number"),
+        pytest.param('[{"number": "7"}]', False, None, id="string_number"),
+        pytest.param("[null]", True, None, id="later_page_null"),
+        pytest.param("[]", False, 0, id="empty"),
+        pytest.param(None, False, 1, id="valid"),
+    ],
+)
+def test_run_reconciler_open_pr_rows_report(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    body: str | None,
+    later_page: bool,
+    expected_decisions: int | None,
+) -> None:
+    import github_pr_status
+
+    vault = _make_vault(tmp_path)
+    task_paths = [_write_task(vault, task_id=f"task-{number}", pr=number) for number in (42, 43)]
+    original_notes = [path.read_text() for path in task_paths]
+    runner = _FakeRunner()
+    runner.open_prs = [_pr(42, auto_merge=True), _pr(43)]
+    runner.queued_prs = {42}
+    rest_response = runner._rest_response
+
+    if later_page:
+        # Shrink the page ceiling to two, retaining the real REST pagination loop.
+        monkeypatch.setattr(github_pr_status, "min", lambda *args: min(2, *args), raising=False)
+
+    def list_response(cmd: list[str]) -> subprocess.CompletedProcess | None:
+        if "repos/owner/repo/pulls" in cmd:
+            page = int(runner._fields(cmd)["page"])
+            if later_page and page == 1:
+                assert runner._fields(cmd)["per_page"] == "2"
+                stdout = json.dumps([runner._rest_pr(pr) for pr in runner.open_prs])
+            else:
+                assert page == (2 if later_page else 1)
+                stdout = (
+                    body if body is not None else json.dumps([runner._rest_pr(runner.open_prs[0])])
+                )
+            return subprocess.CompletedProcess(cmd, 0, stdout, "")
+        return rest_response(cmd)
+
+    monkeypatch.setattr(runner, "_rest_response", list_response)
+    report_path = tmp_path / "cc-pr-autoqueue-report.json"
+    quarantine_path = tmp_path / "quarantine.json"
+    ledger_path = tmp_path / "auto-arm.jsonl"
+    report = autoqueue.run_reconciler(
+        repo="owner/repo",
+        repo_root=tmp_path,
+        vault_root=vault,
+        apply=False,
+        limit=3 if later_page else 100,
+        lineage_ledger_path=None,
+        quarantine_path=quarantine_path,
+        auto_arm_ledger_path=ledger_path,
+        admission_governor_path=tmp_path / "governor.yaml",
+        report_path=report_path,
+        runner=runner,
+    )
+
+    saved = json.loads(report_path.read_text())
+    for payload in (report, saved):
+        assert payload["apply"] is False
+        assert payload["mutations"] == []
+        if expected_decisions is None:
+            assert payload["skipped"] is True
+            assert payload["reason"] == "open_pr_scan_indeterminate:invalid_row"
+            assert payload["decisions"] == []
+        else:
+            assert "skipped" not in payload
+            assert "reason" not in payload
+            assert "refusal" not in payload
+            assert len(payload["decisions"]) == expected_decisions
+    assert report["stable_report"]["written"] is True
+    assert [path.read_text() for path in task_paths] == original_notes
+    assert not quarantine_path.exists()
+    assert not ledger_path.exists()
+    list_calls = [call for call in runner.calls if "repos/owner/repo/pulls" in call]
+    assert [runner._fields(call)["page"] for call in list_calls] == (
+        ["1", "2"] if later_page else ["1"]
+    )
+    assert all(call[:4] == ["gh", "api", "--method", "GET"] for call in list_calls)
+    if expected_decisions is None:
+        after_list = runner.calls[runner.calls.index(list_calls[-1]) + 1 :]
+        assert len(after_list) == 1 and after_list[0][:3] == ["gh", "pr", "list"]
+    else:
+        assert not any(call[:3] == ["gh", "pr", "list"] for call in runner.calls)
+    assert not any(
+        (call[:2] == ["gh", "pr"] and call[:3] != ["gh", "pr", "list"]) or "POST" in call
+        for call in runner.calls
+    )
+    assert not any("mutation" in part for call in runner.calls for part in call)
 
 
 def test_graphql_backoff_skips_autoqueue_reconciler(tmp_path: Path) -> None:
@@ -1879,19 +2570,32 @@ def test_queue_owned_method_survives_arm_readback(tmp_path: Path, queued: bool) 
 @pytest.mark.parametrize(
     ("fault", "reason"),
     [
-        ("unreadable", "enforcement_unreadable:rulesets unavailable"),
+        ("unreadable", "enforcement_unreadable:source=rulesets:cause=request_failed"),
         ("conflicting_rules", "queue_strategy_conflict:MERGE,SQUASH"),
         ("conflicting_later_page", "queue_strategy_conflict:MERGE,SQUASH"),
         ("pr_fields_absent", "pr_base_ref_missing"),
-        ("pr_base_malformed", "pr_base_ref_missing"),
+        ("pr_base_malformed", "pr_base_ref_malformed"),
         ("conditions_absent", "ref_enforcement_unknown:ruleset=16186443"),
         ("unknown_pattern", "ref_enforcement_unknown:ruleset=16186443"),
         ("enforcement_absent", "enforcement_malformed:summary"),
         ("enforcement_malformed", "enforcement_malformed:summary"),
         ("rulesets_malformed", "enforcement_malformed:rulesets"),
+        ("summary_malformed", "enforcement_malformed:summary"),
+        ("ruleset_id_absent", "enforcement_malformed:ruleset_id"),
+        ("ruleset_id_boolean", "enforcement_malformed:ruleset_id"),
+        ("ruleset_id_nonpositive", "enforcement_malformed:ruleset_id"),
+        ("detail_malformed", "enforcement_conflict:ruleset=16186443"),
         ("detail_conflict", "enforcement_conflict:ruleset=16186443"),
+        ("rules_absent", "queue_rule_malformed:ruleset=16186443"),
+        ("rules_malformed", "queue_rule_malformed:ruleset=16186443"),
+        ("rule_malformed", "queue_rule_malformed:ruleset=16186443"),
+        ("rule_type_absent", "queue_rule_malformed:ruleset=16186443"),
+        ("rule_type_malformed", "queue_rule_malformed:ruleset=16186443"),
+        ("parameters_absent", "queue_strategy_invalid:ruleset=16186443"),
+        ("parameters_malformed", "queue_strategy_invalid:ruleset=16186443"),
+        ("strategy_absent", "queue_strategy_invalid:ruleset=16186443"),
         ("strategy_invalid", "queue_strategy_invalid:ruleset=99"),
-        ("detail_unreadable", "enforcement_unreadable:ruleset=99:detail forbidden"),
+        ("detail_unreadable", "enforcement_unreadable:ruleset=99:cause=request_failed"),
     ],
 )
 def test_queue_governance_evidence_refuses_unknown(
@@ -1921,15 +2625,25 @@ def test_queue_governance_evidence_refuses_unknown(
                     payload[0]["enforcement"] = []
                 elif fault == "rulesets_malformed":
                     payload = {}
+                elif fault == "summary_malformed":
+                    payload = [None]
+                elif fault == "ruleset_id_absent":
+                    payload[0].pop("id")
+                elif fault == "ruleset_id_boolean":
+                    payload[0]["id"] = True
+                elif fault == "ruleset_id_nonpositive":
+                    payload[0]["id"] = 0
                 elif fault == "conflicting_later_page":
                     payload = [payload[0]] + [
                         {"id": i, "target": "tag", "enforcement": "disabled"}
                         for i in range(100, 199)
                     ]
-            if path == "repos/owner/repo/pulls/4584" and fault == "pr_fields_absent":
-                payload.pop("base")
-            if path == "repos/owner/repo/pulls/4584" and fault == "pr_base_malformed":
-                payload["base"]["ref"] = {"unknown": "main"}
+            if path in {"repos/owner/repo/pulls", "repos/owner/repo/pulls/4584"}:
+                for pull in payload if isinstance(payload, list) else [payload]:
+                    if fault == "pr_fields_absent":
+                        pull.pop("base")
+                    elif fault == "pr_base_malformed":
+                        pull["base"]["ref"] = {"unknown": "main"}
             if path == "repos/owner/repo/rulesets/16186443":
                 if fault == "conditions_absent":
                     payload.pop("conditions")
@@ -1937,6 +2651,30 @@ def test_queue_governance_evidence_refuses_unknown(
                     payload["conditions"]["ref_name"]["include"] = ["refs/heads/**"]
                 elif fault == "detail_conflict":
                     payload["enforcement"] = "disabled"
+                elif fault == "detail_malformed":
+                    payload = []
+                elif fault == "rules_absent":
+                    payload.pop("rules")
+                elif fault == "rules_malformed":
+                    payload["rules"] = {}
+                elif fault == "rule_malformed":
+                    payload["rules"] = [None]
+                elif fault == "rule_type_absent":
+                    payload["rules"].append({})
+                elif fault == "rule_type_malformed":
+                    payload["rules"].append({"type": []})
+                elif fault == "parameters_absent":
+                    payload["rules"][0].pop("parameters")
+                elif fault == "parameters_malformed":
+                    payload["rules"][0]["parameters"] = []
+                elif fault == "strategy_absent":
+                    payload["rules"][0]["parameters"].pop("merge_method")
+            if path == "repos/owner/repo/rulesets":
+                # Keep the desired-method receipt readable so malformed detail
+                # faults reach the independent governance read on this pass.
+                payload[0]["rules"] = [
+                    {"type": "merge_queue", "parameters": {"merge_method": "SQUASH"}}
+                ]
             return subprocess.CompletedProcess(cmd, 0, json.dumps(payload), "")
 
     vault = _make_vault(tmp_path)
@@ -1979,13 +2717,903 @@ def test_queue_governance_evidence_refuses_unknown(
             runner.ruleset_detail_errors[99] = "detail forbidden"
 
     report = autoqueue.run_reconciler(
-        repo="owner/repo", repo_root=tmp_path, vault_root=vault, apply=True, runner=runner
+        repo="owner/repo", repo_root=tmp_path, vault_root=vault, apply=False, runner=runner
     )
     decision = report["decisions"][0]
     assert decision["action"] == ("dequeue" if queued else "disable_auto_merge")
     assert decision["reasons"] == [f"auto_merge_method_unverified:{reason}"]
     assert decision["auto_merge_method_owner"] == "unverified"
     assert not any("--auto" in call for call in runner.calls)
+
+
+def _method_override_report(
+    tmp_path: Path,
+    *,
+    state: str,
+    override: str | None,
+    fault: str | None = None,
+    blocker: str | None = None,
+    apply: bool = False,
+    runner: _FakeRunner | None = None,
+    lineage_ledger_path: Path | None = None,
+) -> dict[str, Any]:
+    vault = _make_vault(tmp_path)
+    _write_task(vault, task_id="method-override", pr=42)
+    runner = runner or _FakeRunner()
+    runner.open_prs = [
+        _pr(
+            42,
+            base="release" if state == "ordinary" else "main",
+            auto_merge=state != "unarmed",
+            auto_merge_method="MERGE",
+        )
+    ]
+    if blocker == "ci_failure":
+        runner.open_prs[0]["statusCheckRollup"][1]["conclusion"] = "FAILURE"
+    elif blocker == "do_not_merge":
+        runner.open_prs[0]["labels"] = [{"name": "do-not-merge"}]
+    runner.queued_prs = {42} if state == "queued" else set()
+    if fault == "unreadable":
+        runner.rulesets_error = "rulesets unavailable"
+    elif fault == "malformed":
+        runner.rulesets_payload = {}
+    elif fault == "invalid_json":
+        runner.rulesets_raw_stdout = "not json"
+    elif fault == "detail_unreadable":
+        runner.ruleset_detail_errors[16186443] = "detail forbidden"
+    elif fault == "detail_malformed":
+        runner.ruleset_detail_raw_stdout[16186443] = "[]"
+
+    report = autoqueue.run_reconciler(
+        repo="owner/repo",
+        repo_root=tmp_path,
+        vault_root=vault,
+        apply=apply,
+        lineage_ledger_path=lineage_ledger_path,
+        quarantine_path=tmp_path / "quarantine.json",
+        admission_governor_path=tmp_path / "governor.yaml",
+        expected_auto_merge_method_override=override,
+        runner=runner,
+    )
+    if not apply:
+        assert not any(call[:3] == ["gh", "pr", "merge"] for call in runner.calls)
+        assert not any("mutation" in part for call in runner.calls for part in call)
+        assert not any("POST" in call for call in runner.calls)
+    return report
+
+
+def _override_governance_runner(evidence: str) -> _FakeRunner:
+    class GovernanceRunner(_FakeRunner):
+        def _rest_response(self, cmd: list[str]) -> subprocess.CompletedProcess | None:
+            response = super()._rest_response(cmd)
+            if response is None or response.returncode != 0:
+                return response
+            path = cmd[6]
+            payload = json.loads(response.stdout)
+            if path == "repos/owner/repo/rulesets":
+                # A desired SQUASH receipt is separate from applicable governance.
+                payload[0]["rules"] = [
+                    {"type": "merge_queue", "parameters": {"merge_method": "SQUASH"}}
+                ]
+            elif path == "repos/owner/repo/rulesets?per_page=100&page=1":
+                if evidence == "enforcement_unreadable":
+                    return subprocess.CompletedProcess(cmd, 1, "", "rulesets unavailable")
+                if evidence == "enforcement_malformed":
+                    payload = {}
+            elif path == "repos/owner/repo/rulesets/16186443":
+                if evidence == "enforcement_conflict":
+                    payload["enforcement"] = "disabled"
+                elif evidence == "queue_rule_malformed":
+                    payload["rules"] = [None]
+                elif evidence == "queue_strategy_invalid":
+                    payload["rules"][0]["parameters"]["merge_method"] = "FASTFORWARD"
+                elif evidence == "ref_enforcement_unknown":
+                    payload["conditions"]["ref_name"]["include"] = ["refs/heads/**"]
+                elif evidence == "readable_disagreeing":
+                    payload["rules"][0]["parameters"]["merge_method"] = "MERGE"
+            return subprocess.CompletedProcess(cmd, 0, json.dumps(payload), "")
+
+    return GovernanceRunner()
+
+
+def test_override_contradiction_prefix_has_one_definition() -> None:
+    source = (_SCRIPTS / "cc-pr-autoqueue.py").read_text(encoding="utf-8")
+    prefix = "auto_merge_method_override_contradicts_queue_governance:"
+    assert source.count(prefix) == 1
+    [definition] = [
+        node
+        for node in ast.walk(ast.parse(source))
+        if isinstance(node, ast.Assign)
+        and isinstance(node.value, ast.Constant)
+        and node.value.value == prefix
+    ]
+    [target] = definition.targets
+    assert isinstance(target, ast.Name)
+    assert target.id == "OVERRIDE_CONTRADICTION_PREFIX"
+
+
+@pytest.mark.parametrize("action", ["blocked", "hold"])
+@pytest.mark.parametrize("renamed", [False, True], ids=["canonical", "renamed"])
+def test_override_contradiction_owner_follows_prefix_constant(
+    monkeypatch: pytest.MonkeyPatch, action: str, renamed: bool
+) -> None:
+    prefix = "auto_merge_method_override_contradicts_queue_governance:"
+    if renamed:
+        prefix = "renamed_override_contradiction:"
+        monkeypatch.setattr(autoqueue, "OVERRIDE_CONTRADICTION_PREFIX", prefix)
+    pr = autoqueue._parse_pr(_pr(42, auto_merge=True, auto_merge_method="MERGE"))
+    assert pr is not None
+    decision = autoqueue.Decision(
+        pr=autoqueue.replace(
+            pr,
+            queue_governance=autoqueue.MergeQueueGovernance(
+                method="SQUASH", source="test", reason=None
+            ),
+        ),
+        action=action,
+        reasons=(prefix + "override=MERGE:governed=SQUASH",),
+    )
+    assert decision.as_dict()["auto_merge_method_owner"] == "unverified"
+    assert decision.as_dict()["next_action"] == autoqueue._merge_method_operator_next_action()
+    assert autoqueue._admission_status_for(decision) == (
+        "failure",
+        autoqueue._status_description(f"cc-pr-autoqueue blocked: {decision.reasons[0]}"),
+    )
+    assert autoqueue._decision_is_non_ready(decision) is True
+    assert autoqueue._release_auto_arm_fail_closed_decision(decision, "status post failed") is None
+
+
+@pytest.mark.parametrize("entrypoint", ["reconciler", "classify"])
+@pytest.mark.parametrize("state", ["queued", "armed", "unarmed"])
+@pytest.mark.parametrize(
+    "evidence,source",
+    [
+        ("enforcement_unreadable", "enforcement_unreadable:source=rulesets:cause=request_failed"),
+        ("enforcement_malformed", "enforcement_malformed:rulesets"),
+        ("enforcement_conflict", "enforcement_conflict:ruleset=16186443"),
+        ("queue_rule_malformed", "queue_rule_malformed:ruleset=16186443"),
+        ("queue_strategy_invalid", "queue_strategy_invalid:ruleset=16186443"),
+        ("ref_enforcement_unknown", "ref_enforcement_unknown:ruleset=16186443"),
+        ("readable_agreeing", None),
+        ("readable_disagreeing", None),
+    ],
+)
+def test_override_governance_action_matrix(
+    tmp_path: Path, entrypoint: str, state: str, evidence: str, source: str | None
+) -> None:
+    decisions = []
+    for override in (None, "SQUASH"):
+        runner = _override_governance_runner(evidence)
+        report = _method_override_report(
+            tmp_path,
+            state=state,
+            override=override,
+            runner=runner,
+            apply=entrypoint == "reconciler" and source is not None,
+        )
+        if entrypoint == "reconciler":
+            decision = report["decisions"][0]
+        else:
+            [pr], _route = autoqueue.fetch_open_prs(
+                repo="owner/repo", repo_root=tmp_path, runner=runner
+            )
+            governance = autoqueue.fetch_pr_merge_queue_governance(
+                pr, repo="owner/repo", repo_root=tmp_path, runner=runner
+            )
+            decision = autoqueue.classify_pr(
+                autoqueue.replace(pr, queue_governance=governance),
+                tasks=autoqueue.load_task_notes(_make_vault(tmp_path)),
+                queued_prs=runner.queued_prs,
+                expected_auto_merge_method="SQUASH",
+                expected_auto_merge_method_is_override=override is not None,
+                require_expected_auto_merge_method=True,
+            ).as_dict()
+        if source:
+            assert (
+                decision["action"]
+                == {"queued": "dequeue", "armed": "disable_auto_merge", "unarmed": "blocked"}[state]
+            )
+            assert decision["reasons"] == [
+                f"auto_merge_method_unverified:{source}"
+                + (f":override={override}" if override else "")
+            ]
+            if override:
+                assert decision["next_action"].endswith(
+                    autoqueue._merge_method_operator_next_action()
+                )
+                assert "Expected merge-method evidence is missing" not in decision["next_action"]
+            if entrypoint == "reconciler":
+                [mutation] = report["mutations"]
+                assert mutation["action"] == (
+                    "set_admission_status" if state == "unarmed" else decision["action"]
+                )
+                assert mutation["ok"] is True
+                disables = [call for call in runner.calls if "--disable-auto" in call]
+                assert disables == (
+                    [["gh", "pr", "merge", "42", "--repo", "owner/repo", "--disable-auto"]]
+                    if state == "armed"
+                    else []
+                )
+                dequeues = [
+                    call
+                    for call in runner.calls
+                    if any("dequeuePullRequest" in part for part in call)
+                ]
+                assert len(dequeues) == (1 if state == "queued" else 0)
+                assert not any("--auto" in call for call in runner.calls)
+        elif evidence == "readable_disagreeing":
+            assert decision["action"] == (
+                ("blocked" if state == "unarmed" else "hold")
+                if override
+                else {"queued": "dequeue", "armed": "disable_auto_merge", "unarmed": "blocked"}[
+                    state
+                ]
+            )
+            assert decision["reasons"] == [
+                "auto_merge_method_override_contradicts_queue_governance:override=SQUASH:governed=MERGE"
+                if override
+                else "auto_merge_method_unverified:queue_strategy_expected_conflict:rule=MERGE:expected=SQUASH"
+            ]
+            if override:
+                assert report["counts"]["hold"] == (0 if state == "unarmed" else 1)
+                assert report["counts"]["blocked"] == (1 if state == "unarmed" else 0)
+                assert not any("--disable-auto" in call for call in runner.calls)
+                assert not any(
+                    "dequeuePullRequest" in part for call in runner.calls for part in call
+                )
+                assert runner.queued_prs == ({42} if state == "queued" else set())
+                assert runner.open_prs[0]["autoMergeRequest"] == (
+                    None if state == "unarmed" else {"enabledAt": "now", "mergeMethod": "MERGE"}
+                )
+        else:
+            assert (
+                decision["action"]
+                == {
+                    "queued": "already_queued",
+                    "armed": "already_auto_merge_enabled",
+                    "unarmed": "queue",
+                }[state]
+            )
+            assert decision.get("reasons", []) == []
+        assert all(
+            re.fullmatch(r"[A-Za-z0-9_:,=.-]+", reason) for reason in decision.get("reasons", [])
+        )
+        decisions.append(decision)
+    if evidence != "readable_disagreeing":
+        assert decisions[0]["action"] == decisions[1]["action"]
+
+
+def test_unverified_override_disables_auto_merge_in_apply(tmp_path: Path) -> None:
+    outcomes = []
+    for override in (None, "SQUASH"):
+        runner = _override_governance_runner("enforcement_unreadable")
+        report = _method_override_report(
+            tmp_path, state="armed", override=override, apply=True, runner=runner
+        )
+        [decision] = report["decisions"]
+        assert decision["action"] == "disable_auto_merge"
+        assert decision["reasons"] == [
+            "auto_merge_method_unverified:enforcement_unreadable:source=rulesets:cause=request_failed"
+            + (f":override={override}" if override else "")
+        ]
+        assert decision["auto_merge_method_owner"] == "unverified"
+        assert decision.get("next_action") == (
+            autoqueue._merge_method_operator_next_action() if override else None
+        )
+        [mutation] = report["mutations"]
+        assert mutation["action"] == "disable_auto_merge"
+        assert mutation["reasons"] == decision["reasons"]
+        assert mutation["ok"] is True
+        assert mutation["admission_status"]["state"] == "failure"
+        assert mutation["admission_status"]["ok"] is True
+        disables = [call for call in runner.calls if call[:3] == ["gh", "pr", "merge"]]
+        assert disables == [["gh", "pr", "merge", "42", "--repo", "owner/repo", "--disable-auto"]]
+        assert not any("dequeuePullRequest" in part for call in runner.calls for part in call)
+        assert not any("--auto" in call for call in runner.calls)
+        # The override changes only the reason token and its existing guidance.
+        outcomes.append(
+            (
+                {
+                    key: value
+                    for key, value in decision.items()
+                    if key not in {"reasons", "next_action"}
+                },
+                disables,
+            )
+        )
+    assert outcomes[0] == outcomes[1]
+
+
+@pytest.mark.parametrize("fault", ["malformed", "unreadable"])
+def test_unverified_override_dequeues_after_failed_status_without_other_blockers(
+    tmp_path: Path, fault: str
+) -> None:
+    requests = []
+    for override in (None, "SQUASH"):
+        runner = _FakeRunner()
+        runner.fail_status_posts = True
+        runner.head_statuses["sha-42"] = [
+            {"context": autoqueue.AUTOQUEUE_ADMISSION_CONTEXT, "state": "success"}
+        ]
+        report = _method_override_report(
+            tmp_path, state="queued", override=override, fault=fault, apply=True, runner=runner
+        )
+        [decision] = report["decisions"]
+        assert decision["action"] == "dequeue"
+        assert len(decision["reasons"]) == 1
+        if override:
+            cause = {
+                "malformed": "enforcement_malformed:rulesets",
+                "unreadable": "enforcement_unreadable:source=rulesets:cause=request_failed",
+            }[fault]
+            assert decision["reasons"] == [
+                f"auto_merge_method_unverified:{cause}:override={override}"
+            ]
+        else:
+            assert decision["reasons"][0].startswith(
+                "auto_merge_method_unverified:expected_missing:source="
+            )
+        [mutation] = report["mutations"]
+        assert mutation["action"] == "dequeue"
+        assert mutation["ok"] is True
+        assert mutation["admission_status"] == {
+            "state": "failure",
+            "ok": False,
+            "message": "status post failed",
+        }
+        assert autoqueue._admission_status_write_deferral_class("status post failed") is None
+        dequeues = [
+            call for call in runner.calls if any("dequeuePullRequest" in part for part in call)
+        ]
+        assert len(dequeues) == 1
+        posts = [call for call in runner.calls if call[:4] == ["gh", "api", "-X", "POST"]]
+        assert len(posts) == 1
+        assert "state=failure" in posts[0]
+        assert not any("--disable-auto" in call or "--auto" in call for call in runner.calls)
+        # Only the reason description and the no-override desired-method GET differ.
+        requests.append(
+            (dequeues, [part for part in posts[0] if not part.startswith("description=")])
+        )
+    assert requests[0] == requests[1]
+
+
+@pytest.mark.parametrize("blocker", [None, "ci_failure", "do_not_merge"])
+def test_storm_override_contradiction_preserves_only_its_own_refusal(
+    tmp_path: Path, blocker: str | None
+) -> None:
+    ledger = tmp_path / "merge-queue-lineage.jsonl"
+    write_jsonl_records(
+        ledger,
+        [
+            MergeQueueLineageRecord(
+                observed_at=_recent_observed_at(i),
+                pr_number=42,
+                merge_group_run_id=9001 + i,
+                run_conclusion="failure",
+                run_outcome="failure",
+            )
+            for i in range(4)
+        ],
+    )
+    runner = _FakeRunner()
+    report = _method_override_report(
+        tmp_path,
+        state="queued",
+        override="MERGE",
+        blocker=blocker,
+        apply=True,
+        runner=runner,
+        lineage_ledger_path=ledger,
+    )
+    assert report["storm_mode"]["active"] is True
+    assert report["storm_mode"]["rate_frozen"] is True
+    [decision] = report["decisions"]
+    assert decision["action"] == ("dequeue" if blocker else "hold")
+    reasons = [
+        "auto_merge_method_override_contradicts_queue_governance:override=MERGE:governed=SQUASH"
+    ]
+    if blocker:
+        reasons.insert(
+            0, "failed_checks:test" if blocker == "ci_failure" else "hold_labels:do-not-merge"
+        )
+    assert decision["reasons"] == reasons
+    dequeues = [call for call in runner.calls if any("dequeuePullRequest" in part for part in call)]
+    assert len(dequeues) == (1 if blocker else 0)
+    assert not any("--disable-auto" in call or "--auto" in call for call in runner.calls)
+    if blocker is None:
+        assert runner.queued_prs == {42}
+        assert runner.open_prs[0]["autoMergeRequest"] == {
+            "enabledAt": "now",
+            "mergeMethod": "MERGE",
+        }
+        assert report["counts"]["hold"] == 1
+        assert report["counts"]["blocked"] == 0
+        assert len(report["storm_mode"]["failed_recent_merge_group_runs"]) == 4
+        assert all(
+            run["decision_action"] == "hold"
+            for run in report["storm_mode"]["failed_recent_merge_group_runs"]
+        )
+        [mutation] = report["mutations"]
+        assert mutation["action"] == "set_admission_status"
+        assert mutation["status_state"] == "failure"
+        assert mutation["reasons"] == reasons
+
+
+@pytest.mark.parametrize("override", ["SQUASH", "MERGE", "REBASE"])
+def test_override_exemption_exhausts_governance_producer_tokens(override: str) -> None:
+    # Extract literal prefixes from producer ASTs; adding/renaming one requires
+    # updating this exhaustive contract, without a parallel production allowlist.
+    prefix = "auto_merge_method_unverified:"
+    tree = ast.parse(inspect.getsource(autoqueue.fetch_pr_merge_queue_governance))
+    suffixes = set()
+    for node in ast.walk(tree):
+        if isinstance(node, ast.keyword) and node.arg == "reason":
+            # A producer adopting a different expression shape must update the
+            # extractor instead of silently escaping the exhaustive set.
+            leftmost = node.value
+            while isinstance(leftmost, ast.BinOp):
+                leftmost = leftmost.left
+            assert isinstance(leftmost, ast.Name) and leftmost.id == "prefix"
+        if (
+            isinstance(node, ast.BinOp)
+            and isinstance(node.left, ast.Name)
+            and node.left.id == "prefix"
+        ):
+            literal = node.right.values[0] if isinstance(node.right, ast.JoinedStr) else node.right
+            if isinstance(literal, ast.Constant) and isinstance(literal.value, str):
+                suffixes.add(literal.value.split(":", 1)[0])
+    ref_tree = ast.parse(inspect.getsource(autoqueue.pr_reference_reasons))
+    suffixes.update(
+        node.value
+        for node in ast.walk(ref_tree)
+        if isinstance(node, ast.Constant)
+        and isinstance(node.value, str)
+        and node.value.startswith("pr_")
+    )
+    classify_tree = ast.parse(inspect.getsource(autoqueue.classify_pr))
+    suffixes.update(
+        node.value.removeprefix(prefix).split(":", 1)[0]
+        for node in ast.walk(classify_tree)
+        if isinstance(node, ast.Constant)
+        and isinstance(node.value, str)
+        and node.value.startswith(prefix)
+        and node.value != prefix
+    )
+    assert suffixes == {
+        "pr_base_ref_missing",
+        "pr_base_ref_conflict",
+        "pr_default_branch_conflict",
+        "pr_base_ref_malformed",
+        "pr_default_branch_malformed",
+        "pr_head_ref_malformed",
+        "enforcement_unreadable",
+        "enforcement_malformed",
+        "enforcement_conflict",
+        "queue_rule_malformed",
+        "ref_enforcement_unknown",
+        "queue_strategy_invalid",
+        "queue_strategy_conflict",
+        "queue_membership_evidence_contradiction",
+        "queue_strategy_expected_conflict",
+    }
+    reasons = {prefix + suffix + ":witness" for suffix in suffixes}
+    pr = autoqueue._parse_pr(_pr(42))
+    assert pr is not None
+    wrapped = {
+        reason
+        for governance_reason in reasons
+        for reason in autoqueue.classify_pr(
+            autoqueue.replace(
+                pr, queue_governance=autoqueue.MergeQueueGovernance(reason=governance_reason)
+            ),
+            tasks=[],
+            queued_prs=set(),
+            expected_auto_merge_method=override,
+            expected_auto_merge_method_is_override=True,
+            require_expected_auto_merge_method=True,
+        ).reasons
+        if reason.startswith(prefix)
+    }
+    assert wrapped == {f"{reason}:override={override}" for reason in reasons}
+    reasons.update(wrapped)
+    missing_source = autoqueue._expected_merge_method_unverified_reason(None)
+    assert missing_source == prefix + "expected_missing:source=source_missing"
+    reasons.add(missing_source)
+    contradiction = autoqueue.OVERRIDE_CONTRADICTION_PREFIX + "override=MERGE:governed=SQUASH"
+    assert (
+        autoqueue.OVERRIDE_CONTRADICTION_PREFIX
+        == "auto_merge_method_override_contradicts_queue_governance:"
+    )
+    reasons.add(contradiction)
+    assert {reason for reason in reasons if autoqueue._override_only_refusal([reason])} == {
+        contradiction
+    }
+    assert not autoqueue._override_only_refusal([])
+    for reason in reasons - {contradiction}:
+        assert not autoqueue._override_only_refusal([contradiction, reason])
+
+
+def test_merge_method_outage_next_action_names_autoqueue_timer() -> None:
+    timer = "hapax-cc-pr-autoqueue.timer"
+    assert (_SCRIPTS.parent / "systemd" / "units" / timer).is_file()
+    for text in (autoqueue.__doc__, autoqueue._merge_method_operator_next_action()):
+        assert f"systemctl --user stop {timer}" in text
+        assert f"systemctl --user start {timer}" in text
+        assert "No merge-method bypass flag exists by design" in text
+
+
+def test_run_reconciler_records_none_strict_pages_reader(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(github_pr_status, "_rest_get_json_pages_or_none", lambda *_a, **_k: None)
+    report = _method_override_report(tmp_path, state="queued", override="SQUASH")
+    assert report["skipped"] is True
+    assert report["reason"] == "open_pr_scan_indeterminate:invalid_list"
+    assert report["decisions"] == []
+    assert report["mutations"] == []
+
+
+@pytest.mark.parametrize("state", ["queued", "armed", "ordinary", "unarmed"])
+@pytest.mark.parametrize(
+    "override", [None, "SQUASH", "MERGE"], ids=["none", "compatible", "contradictory"]
+)
+def test_merge_method_override_respects_governance(
+    tmp_path: Path, state: str, override: str | None
+) -> None:
+    """A contradiction alone holds existing state and blocks new admission."""
+    report = _method_override_report(tmp_path, state=state, override=override)
+    decision = report["decisions"][0]
+    if state == "ordinary":
+        assert decision["action"] == (
+            "already_auto_merge_enabled" if override == "MERGE" else "disable_auto_merge"
+        )
+        assert decision.get("reasons", []) == (
+            []
+            if override == "MERGE"
+            else ["auto_merge_method_mismatch:armed=MERGE:expected=SQUASH"]
+        )
+        assert decision["auto_merge_method_owner"] == "pull_request"
+        assert decision["merge_queue_governance"]["method"] is None
+        return
+
+    if override == "MERGE":
+        assert decision["action"] == ("blocked" if state == "unarmed" else "hold")
+    else:
+        assert (
+            decision["action"]
+            == {
+                "queued": "already_queued",
+                "armed": "already_auto_merge_enabled",
+                "unarmed": "queue",
+            }[state]
+        )
+    assert decision.get("reasons", []) == (
+        ["auto_merge_method_override_contradicts_queue_governance:override=MERGE:governed=SQUASH"]
+        if override == "MERGE"
+        else []
+    )
+    assert decision.get("auto_merge_method") == (None if state == "unarmed" else "MERGE")
+    assert decision.get("expected_auto_merge_method", "SQUASH") == (override or "SQUASH")
+    assert decision.get("auto_merge_method_owner") == (
+        None if state == "unarmed" else "unverified" if override == "MERGE" else "merge_queue"
+    )
+    assert decision["merge_queue_governance"] == {
+        "base_ref": "main",
+        "method": "SQUASH",
+        "source": "ruleset:main-merge-queue:16186443",
+        "reason": None,
+    }
+    if override == "MERGE":
+        assert decision["next_action"] == autoqueue._merge_method_operator_next_action()
+        assert "remove the contradictory override" in decision["next_action"]
+
+
+@pytest.mark.parametrize("state", ["queued", "armed", "ordinary", "unarmed"])
+@pytest.mark.parametrize("override", ["SQUASH", "MERGE"])
+@pytest.mark.parametrize(
+    ("fault", "source"),
+    [
+        ("unreadable", "enforcement_unreadable:source=rulesets:cause=request_failed"),
+        ("malformed", "enforcement_malformed:rulesets"),
+        ("invalid_json", "enforcement_unreadable:source=rulesets:cause=invalid_json"),
+        ("detail_unreadable", "enforcement_unreadable:ruleset=16186443:cause=request_failed"),
+        ("detail_malformed", "enforcement_conflict:ruleset=16186443"),
+    ],
+)
+def test_merge_method_override_requires_readable_governance(
+    tmp_path: Path, state: str, override: str, fault: str, source: str
+) -> None:
+    """Unavailable governance revokes queue membership or auto-merge regardless of override."""
+    report = _method_override_report(tmp_path, state=state, override=override, fault=fault)
+    decision = report["decisions"][0]
+    assert (
+        decision["action"]
+        == {
+            "queued": "dequeue",
+            "armed": "disable_auto_merge",
+            "ordinary": "disable_auto_merge",
+            "unarmed": "blocked",
+        }[state]
+    )
+    assert decision["reasons"] == [f"auto_merge_method_unverified:{source}:override={override}"]
+    assert decision.get("expected_auto_merge_method", "SQUASH") == override
+    assert decision.get("auto_merge_method_owner") == (None if state == "unarmed" else "unverified")
+    assert decision["merge_queue_governance"]["reason"] == f"auto_merge_method_unverified:{source}"
+    assert decision["next_action"].endswith(autoqueue._merge_method_operator_next_action())
+    assert "Restore unreadable governance evidence" in decision["next_action"]
+    assert all(re.fullmatch(r"[A-Za-z0-9_:,=.-]+", reason) for reason in decision["reasons"])
+
+
+@pytest.mark.parametrize("state", ["queued", "armed", "unarmed"])
+@pytest.mark.parametrize("override", ["SQUASH", "MERGE", "REBASE"])
+def test_override_governance_reason_never_claims_expected_missing(
+    tmp_path: Path, state: str, override: str
+) -> None:
+    reports = []
+    for fault in (
+        "unreadable",
+        "malformed",
+        "invalid_json",
+        "detail_unreadable",
+        "detail_malformed",
+    ):
+        report = _method_override_report(tmp_path, state=state, override=override, fault=fault)
+        [decision] = report["decisions"]
+        governance_reason = decision["merge_queue_governance"]["reason"]
+        assert governance_reason is not None
+        assert all("expected_missing" not in reason for reason in decision["reasons"])
+        assert decision["reasons"] == [f"{governance_reason}:override={override}"]
+        reports.append(report)
+
+    # Without an override, loss of the desired-method receipt still names that loss.
+    missing = _method_override_report(tmp_path, state=state, override=None, fault="malformed")
+    assert missing["merge_queue_merge_method"]["method"] is None
+    assert missing["decisions"][0]["reasons"] == [
+        "auto_merge_method_unverified:expected_missing:source=rulesets_payload_not_list:dict"
+    ]
+    reports.append(missing)
+
+    def assert_pure_reasons(value: Any) -> None:
+        if isinstance(value, dict):
+            for key, item in value.items():
+                if key == "reason" and isinstance(item, str):
+                    assert re.fullmatch(r"[A-Za-z0-9_:,=.-]+", item)
+                elif key == "reasons":
+                    assert all(re.fullmatch(r"[A-Za-z0-9_:,=.-]+", reason) for reason in item)
+                else:
+                    assert_pure_reasons(item)
+        elif isinstance(value, list):
+            for item in value:
+                assert_pure_reasons(item)
+
+    assert_pure_reasons(reports)
+
+
+@pytest.mark.parametrize("state", ["queued", "armed", "unarmed"])
+@pytest.mark.parametrize(
+    ("blocker", "reason"),
+    [("ci_failure", "failed_checks:test"), ("do_not_merge", "hold_labels:do-not-merge")],
+)
+def test_merge_method_override_contradiction_preserves_independent_blockers(
+    tmp_path: Path, state: str, blocker: str, reason: str
+) -> None:
+    report = _method_override_report(tmp_path, state=state, override="MERGE", blocker=blocker)
+    decision = report["decisions"][0]
+    assert (
+        decision["action"]
+        == {
+            "queued": "dequeue",
+            "armed": "disable_auto_merge",
+            "unarmed": "blocked",
+        }[state]
+    )
+    assert decision["reasons"] == [
+        reason,
+        "auto_merge_method_override_contradicts_queue_governance:override=MERGE:governed=SQUASH",
+    ]
+    assert decision["expected_auto_merge_method"] == "MERGE"
+
+
+@pytest.mark.parametrize("state", ["queued", "armed", "unarmed"])
+@pytest.mark.parametrize("fault", [None, "unreadable"], ids=["contradictory", "unreadable"])
+@pytest.mark.parametrize("fail_status_posts", [False, True], ids=["status-ok", "status-failed"])
+def test_merge_method_override_refusal_disposition_in_apply(
+    tmp_path: Path, state: str, fault: str | None, fail_status_posts: bool
+) -> None:
+    runner = _FakeRunner()
+    runner.fail_status_posts = fail_status_posts
+    report = _method_override_report(
+        tmp_path, state=state, override="MERGE", fault=fault, apply=True, runner=runner
+    )
+    decision = report["decisions"][0]
+    dequeue = fault is not None and state == "queued"
+    disable = fault is not None and state == "armed"
+    assert [call for call in runner.calls if call[:3] == ["gh", "pr", "merge"]] == (
+        [["gh", "pr", "merge", "42", "--repo", "owner/repo", "--disable-auto"]] if disable else []
+    )
+    dequeues = [call for call in runner.calls if any("dequeuePullRequest" in part for part in call)]
+    assert len(dequeues) == (1 if dequeue else 0)
+    assert runner.queued_prs == ({42} if state == "queued" else set())
+    assert runner.open_prs[0]["autoMergeRequest"] == (
+        None if state == "unarmed" else {"enabledAt": "now", "mergeMethod": "MERGE"}
+    )
+    assert decision["action"] == (
+        "dequeue"
+        if dequeue
+        else "disable_auto_merge"
+        if disable
+        else "blocked"
+        if state == "unarmed"
+        else "hold"
+    )
+    assert decision.get("auto_merge_method_owner") == (None if state == "unarmed" else "unverified")
+    if fault is None:
+        assert decision["next_action"] == autoqueue._merge_method_operator_next_action()
+        assert report["counts"]["hold"] == (0 if state == "unarmed" else 1)
+        assert report["counts"]["blocked"] == (1 if state == "unarmed" else 0)
+        [status_post] = [call for call in runner.calls if call[:4] == ["gh", "api", "-X", "POST"]]
+        assert status_post[4] == "repos/owner/repo/statuses/sha-42"
+        assert "state=failure" in status_post
+        assert (
+            "description=cc-pr-autoqueue blocked: "
+            "auto_merge_method_override_contradicts_queue_governance:override=MERGE:governed=SQUASH"
+        ) in status_post
+    [mutation] = report["mutations"]
+    if dequeue or disable:
+        assert mutation["action"] == decision["action"]
+        assert mutation["admission_status"]["state"] == "failure"
+        assert mutation["admission_status"]["ok"] is not fail_status_posts
+        assert mutation["ok"] is True
+    else:
+        assert mutation["action"] == "set_admission_status"
+        assert mutation["status_state"] == "failure"
+        assert mutation["reasons"] == decision["reasons"]
+        assert mutation["ok"] is not fail_status_posts
+
+
+@pytest.mark.parametrize("state", ["queued", "armed"])
+@pytest.mark.parametrize(
+    ("fault", "refusal"),
+    [
+        (
+            None,
+            "auto_merge_method_override_contradicts_queue_governance:override=MERGE:governed=SQUASH",
+        ),
+        (
+            "unreadable",
+            "auto_merge_method_unverified:enforcement_unreadable:"
+            "source=rulesets:cause=request_failed:override=MERGE",
+        ),
+    ],
+    ids=["contradictory", "unreadable"],
+)
+@pytest.mark.parametrize(
+    ("blocker", "reason"),
+    [("ci_failure", "failed_checks:test"), ("do_not_merge", "hold_labels:do-not-merge")],
+)
+def test_merge_method_override_refusal_disposition_when_admission_status_write_fails(
+    tmp_path: Path, state: str, fault: str | None, refusal: str, blocker: str, reason: str
+) -> None:
+    runner = _FakeRunner()
+    runner.fail_status_posts = True
+    report = _method_override_report(
+        tmp_path,
+        state=state,
+        override="MERGE",
+        fault=fault,
+        blocker=blocker,
+        apply=True,
+        runner=runner,
+    )
+    if state == "queued":
+        assert any(
+            call[:3] == ["gh", "api", "graphql"]
+            and any("dequeuePullRequest" in part for part in call)
+            for call in runner.calls
+        )
+    else:
+        assert ["gh", "pr", "merge", "42", "--repo", "owner/repo", "--disable-auto"] in runner.calls
+    assert any(
+        call[:4] == ["gh", "api", "-X", "POST"]
+        and call[4] == "repos/owner/repo/statuses/sha-42"
+        and "state=failure" in call
+        for call in runner.calls
+    )
+    decision = report["decisions"][0]
+    assert decision["action"] == ("dequeue" if state == "queued" else "disable_auto_merge")
+    assert decision["reasons"] == [reason, refusal]
+    assert decision["expected_auto_merge_method"] == "MERGE"
+    [mutation] = report["mutations"]
+    assert mutation["action"] == decision["action"]
+    assert mutation["reasons"] == decision["reasons"]
+    assert mutation["ok"] is True
+    assert mutation["admission_status"] == {
+        "state": "failure",
+        "ok": False,
+        "message": "status post failed",
+    }
+    assert not any("--auto" in call for call in runner.calls)
+
+
+@pytest.mark.parametrize("armed_method", ["MERGE", "SQUASH"])
+def test_queue_membership_contradiction_reports_unverified_owner(
+    tmp_path: Path, armed_method: str
+) -> None:
+    vault = _make_vault(tmp_path)
+    _write_task(vault, task_id="contradictory-membership", pr=42)
+    runner = _FakeRunner()
+    runner.open_prs = [_pr(42, base="release", auto_merge=True, auto_merge_method=armed_method)]
+    runner.queued_prs = {42}
+
+    report = autoqueue.run_reconciler(
+        repo="owner/repo", repo_root=tmp_path, vault_root=vault, apply=False, runner=runner
+    )
+    decision = report["decisions"][0]
+    reason = (
+        "auto_merge_method_unverified:queue_membership_evidence_contradiction:"
+        "owner=merge_queue:membership=present:governance=non_queue"
+    )
+    assert decision["auto_merge_method_owner"] == "unverified"
+    assert decision["action"] == "dequeue"
+    assert decision["reasons"] == [reason]
+    assert decision["merge_queue_governance"] == {
+        "base_ref": "release",
+        "method": None,
+        "source": "rulesets:base=release:non_queue",
+        "reason": reason,
+    }
+
+
+def test_dequeue_precedes_disable_after_membership_readback(tmp_path: Path) -> None:
+    vault = _make_vault(tmp_path)
+    _write_task(vault, task_id="dequeue-before-disable", pr=42)
+    runner = _FakeRunner()
+    runner.open_prs = [_pr(42, base="release", auto_merge=True, auto_merge_method="MERGE")]
+    runner.queued_prs = {42}
+
+    actions = []
+    # Two unchanged receipts must keep choosing dequeue. Only a subsequent
+    # absent-membership receipt allows the ordinary method check to disable.
+    for queued in (True, True, False):
+        runner.queued_prs = {42} if queued else set()
+        report = autoqueue.run_reconciler(
+            repo="owner/repo", repo_root=tmp_path, vault_root=vault, apply=False, runner=runner
+        )
+        actions.append(report["decisions"][0]["action"])
+    assert actions == ["dequeue", "dequeue", "disable_auto_merge"]
+    assert report["decisions"][0]["reasons"] == [
+        "auto_merge_method_mismatch:armed=MERGE:expected=SQUASH"
+    ]
+    assert not any(call[:3] == ["gh", "pr", "merge"] for call in runner.calls)
+    assert not any("mutation" in part for call in runner.calls for part in call)
+
+
+@pytest.mark.parametrize("queued", [False, True], ids=["armed", "queued"])
+def test_queue_strategy_conflicts_with_expected_receipt(tmp_path: Path, queued: bool) -> None:
+    vault = _make_vault(tmp_path)
+    _write_task(vault, task_id="strategy-receipts", pr=42)
+    runner = _FakeRunner()
+    runner.open_prs = [_pr(42, auto_merge=True, auto_merge_method="SQUASH")]
+    runner.queued_prs = {42} if queued else set()
+    runner.rulesets_payload = [
+        {
+            "id": 16186443,
+            "name": "main-merge-queue",
+            "target": "branch",
+            "enforcement": "active",
+            "rules": [{"type": "merge_queue", "parameters": {"merge_method": "SQUASH"}}],
+        }
+    ]
+    runner.merge_queue_method = "MERGE"
+    report = autoqueue.run_reconciler(
+        repo="owner/repo", repo_root=tmp_path, vault_root=vault, apply=False, runner=runner
+    )
+    decision = report["decisions"][0]
+    assert decision["action"] == ("dequeue" if queued else "disable_auto_merge")
+    assert decision["auto_merge_method_owner"] == "merge_queue"
+    assert decision["reasons"] == [
+        "auto_merge_method_unverified:queue_strategy_expected_conflict:rule=MERGE:expected=SQUASH"
+    ]
 
 
 def test_mismatched_auto_merge_method_converges_after_disable_next_pass(
@@ -2053,6 +3681,232 @@ def test_already_auto_merge_enabled_reports_unsupported_armed_method(
         "auto_merge_method_unrecognized:armed=FASTFORWARD:expected=SQUASH"
     ]
     assert "This decision disables auto-merge when run with --apply" in decision["next_action"]
+
+
+@pytest.mark.parametrize(
+    "field,attribute,malformed_reason",
+    [
+        ("headRefName", "head_ref", "pr_head_ref_malformed"),
+        ("baseRefName", "base_ref", "pr_base_ref_malformed"),
+        ("baseRefNameDetail", "base_ref_detail", "pr_base_ref_malformed"),
+        ("baseRefNameDetailLatest", "base_ref_detail_latest", "pr_base_ref_malformed"),
+        ("baseRepoDefaultBranch", "default_branch", "pr_default_branch_malformed"),
+        ("baseRepoDefaultBranchDetail", "default_branch_detail", "pr_default_branch_malformed"),
+    ],
+)
+@pytest.mark.parametrize(
+    "value", ["none", "null", "None", "NULL", " topic ", None, "", " \t", {}, 0]
+)
+def test_parse_pr_reference_evidence(
+    field: str, attribute: str, malformed_reason: str, value: Any
+) -> None:
+    pr = autoqueue._parse_pr({**_pr(42), field: value})
+    assert pr is not None
+    expected = value if isinstance(value, str) and value.strip() else None
+    assert getattr(pr, attribute) == expected
+    assert pr.reference_reasons == (
+        (malformed_reason,) if value is not None and not isinstance(value, str) else ()
+    )
+    # Null-word coercion remains intentional for methods/states and other scalars.
+    assert autoqueue._scalar("none") is None
+    assert autoqueue._scalar("NULL") is None
+
+
+@pytest.mark.parametrize("head", ["none", "null", "None", "NULL"])
+def test_run_reconciler_literal_head_receipt(tmp_path: Path, head: str) -> None:
+    vault = _make_vault(tmp_path)
+    _write_task(vault, task_id="literal-head", pr=42)
+    runner = _FakeRunner()
+    runner.open_prs = [_pr(42, branch=head, auto_merge=True, auto_merge_method="MERGE")]
+    report = autoqueue.run_reconciler(
+        repo="owner/repo",
+        repo_root=tmp_path,
+        vault_root=vault,
+        apply=False,
+        lineage_ledger_path=None,
+        quarantine_path=tmp_path / "quarantine.json",
+        admission_governor_path=tmp_path / "governor.yaml",
+        runner=runner,
+    )
+    decision = report["decisions"][0]
+    assert decision["head_ref"] == head
+    assert decision["action"] == "already_auto_merge_enabled"
+    assert decision["auto_merge_method_owner"] == "merge_queue"
+
+
+@pytest.mark.parametrize("head", [None, "", " \t"])
+def test_missing_head_does_not_match_unlinked_task(tmp_path: Path, head: str | None) -> None:
+    vault = _make_vault(tmp_path)
+    _write_task(vault, task_id="unlinked")
+    pr = autoqueue._parse_pr({**_pr(42), "headRefName": head})
+    assert pr is not None
+    assert autoqueue._matching_tasks(pr, autoqueue.load_task_notes(vault)) == []
+
+
+@pytest.mark.parametrize(
+    "field,reason",
+    [("ref", "pr_base_ref_malformed"), ("default_branch", "pr_default_branch_malformed")],
+)
+@pytest.mark.parametrize("source", ["list", "adapter", "second"])
+@pytest.mark.parametrize("value", [{"bad": "private payload"}, 0], ids=["dict", "number"])
+@pytest.mark.parametrize("state", ["armed", "queued", "unarmed"])
+@pytest.mark.parametrize("override", [None, "MERGE"])
+def test_run_reconciler_malformed_reference_refusal(
+    tmp_path: Path,
+    field: str,
+    reason: str,
+    source: str,
+    value: Any,
+    state: str,
+    override: str | None,
+) -> None:
+    class MalformedRunner(_FakeRunner):
+        detail_reads = 0
+
+        def _rest_response(self, cmd: list[str]) -> subprocess.CompletedProcess | None:
+            response = super()._rest_response(cmd)
+            if response is None or response.returncode != 0:
+                return response
+            path = cmd[6]
+            if path not in {"repos/owner/repo/pulls", "repos/owner/repo/pulls/42"}:
+                return response
+            if path.endswith("/42"):
+                self.detail_reads += 1
+                observed_source = "adapter" if self.detail_reads == 1 else "second"
+            else:
+                observed_source = "list"
+            if source != observed_source:
+                return response
+            payload = json.loads(response.stdout)
+            pull = payload[0] if isinstance(payload, list) else payload
+            base = pull["base"]
+            (base if field == "ref" else base["repo"])[field] = value
+            return subprocess.CompletedProcess(cmd, 0, json.dumps(payload), "")
+
+    report = _method_override_report(
+        tmp_path, state=state, override=override, runner=MalformedRunner()
+    )
+    decision = report["decisions"][0]
+    assert (
+        decision["action"]
+        == {"armed": "disable_auto_merge", "queued": "dequeue", "unarmed": "blocked"}[state]
+    )
+    prefix = "auto_merge_method_unverified:"
+    assert decision["reasons"] == [prefix + reason + (f":override={override}" if override else "")]
+    assert decision.get("auto_merge_method_owner") == (None if state == "unarmed" else "unverified")
+    assert decision["merge_queue_governance"]["reason"] == prefix + reason
+    assert decision["merge_queue_governance"]["method"] is None
+    assert decision["merge_queue_governance"]["source"] is None
+    assert "private payload" not in json.dumps(report)
+
+
+@pytest.mark.parametrize("malformed_first", [False, True])
+def test_run_reconciler_malformed_reference_cache_isolation(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, malformed_first: bool
+) -> None:
+    vault = _make_vault(tmp_path)
+    runner = _FakeRunner()
+    runner.open_prs = [
+        _pr(number, auto_merge=True, auto_merge_method="MERGE") for number in (41, 42)
+    ]
+    runner.open_prs[1]["baseRefName"] = 0
+    if malformed_first:
+        runner.open_prs.reverse()
+    for item in runner.open_prs:
+        _write_task(vault, task_id=f"malformed-cache-{item['number']}", pr=item["number"])
+    detail_for_number = runner._rest_pull_for_number
+
+    def valid_detail(number: int) -> dict[str, Any]:
+        detail = detail_for_number(number)
+        assert detail is not None
+        detail["base"]["ref"] = "main"
+        return detail
+
+    monkeypatch.setattr(runner, "_rest_pull_for_number", valid_detail)
+    report = autoqueue.run_reconciler(
+        repo="owner/repo",
+        repo_root=tmp_path,
+        vault_root=vault,
+        apply=False,
+        lineage_ledger_path=None,
+        quarantine_path=tmp_path / "quarantine.json",
+        admission_governor_path=tmp_path / "governor.yaml",
+        runner=runner,
+    )
+    decisions = {item["pr"]: item for item in report["decisions"]}
+    assert decisions[41]["action"] == "already_auto_merge_enabled"
+    assert decisions[41]["auto_merge_method_owner"] == "merge_queue"
+    assert decisions[42]["action"] == "disable_auto_merge"
+    assert decisions[42]["auto_merge_method_owner"] == "unverified"
+    assert decisions[42]["reasons"] == ["auto_merge_method_unverified:pr_base_ref_malformed"]
+
+
+@pytest.mark.parametrize("source", ["rulesets", "ruleset"])
+@pytest.mark.parametrize("state", ["armed", "queued", "unarmed"])
+@pytest.mark.parametrize(
+    "returncode,body,stderr,error,cause",
+    [
+        pytest.param(
+            1, "", "API rate limit exceeded (HTTP 403)", None, "rate_limit", id="rate_limit_stderr"
+        ),
+        pytest.param(
+            1,
+            '{"message":"rate_limit"}',
+            "private diagnostic",
+            None,
+            "rate_limit",
+            id="rate_limit_stdout",
+        ),
+        pytest.param(1, "", "forbidden (HTTP 403)", None, "request_failed", id="forbidden"),
+        pytest.param(1, "", "not found (HTTP 404)", None, "request_failed", id="not_found"),
+        pytest.param(1, "", "private diagnostic", None, "request_failed", id="unknown"),
+        pytest.param(0, "", "", OSError("private diagnostic"), "transport_error", id="oserror"),
+        pytest.param(
+            0, "", "", subprocess.TimeoutExpired("gh", 60), "transport_error", id="timeout"
+        ),
+        pytest.param(0, " \n", "private diagnostic", None, "empty_body", id="empty_body"),
+        pytest.param(0, "private diagnostic", "", None, "invalid_json", id="invalid_json"),
+    ],
+)
+def test_run_reconciler_unreadable_governance_cause(
+    tmp_path: Path,
+    source: str,
+    state: str,
+    returncode: int,
+    body: str,
+    stderr: str,
+    error: Exception | None,
+    cause: str,
+) -> None:
+    endpoint = "rulesets?per_page=100&page=1" if source == "rulesets" else "rulesets/16186443"
+
+    class UnreadableRunner(_FakeRunner):
+        def __call__(self, cmd: list[str], **kwargs: Any) -> subprocess.CompletedProcess:
+            if (
+                cmd[:4] == ["gh", "api", "--method", "GET"]
+                and cmd[6] == f"repos/owner/repo/{endpoint}"
+            ):
+                self.calls.append(list(cmd))
+                if error is not None:
+                    raise error
+                return subprocess.CompletedProcess(cmd, returncode, body, stderr)
+            return super().__call__(cmd, **kwargs)
+
+    report = _method_override_report(
+        tmp_path, state=state, override="MERGE", runner=UnreadableRunner()
+    )
+    decision = report["decisions"][0]
+    scope = "source=rulesets" if source == "rulesets" else "ruleset=16186443"
+    refusal = f"enforcement_unreadable:{scope}:cause={cause}"
+    assert decision["merge_queue_governance"]["reason"] == f"auto_merge_method_unverified:{refusal}"
+    assert decision["reasons"] == [f"auto_merge_method_unverified:{refusal}:override=MERGE"]
+    assert (
+        decision["action"]
+        == {"queued": "dequeue", "armed": "disable_auto_merge", "unarmed": "blocked"}[state]
+    )
+    assert decision.get("auto_merge_method_owner") == (None if state == "unarmed" else "unverified")
+    assert all(re.fullmatch(r"[A-Za-z0-9_:,=.-]+", reason) for reason in decision["reasons"])
+    assert "private diagnostic" not in json.dumps(report)
 
 
 def test_parse_pr_accepts_rest_auto_merge_method_shape() -> None:
@@ -2280,14 +4134,13 @@ def test_run_reconciler_expected_method_override_is_reported_and_used(
     vault = _make_vault(tmp_path)
     _write_task(vault, task_id="rulesets-override", pr=81)
     runner = _FakeRunner()
-    runner.open_prs = [_pr(81)]
-    runner.rulesets_error = "rulesets unavailable"
+    runner.open_prs = [_pr(81, base="release")]
 
     report = autoqueue.run_reconciler(
         repo="owner/repo",
         repo_root=tmp_path,
         vault_root=vault,
-        apply=True,
+        apply=False,
         expected_auto_merge_method_override="rebase",
         expected_auto_merge_method_source="override:test",
         runner=runner,
@@ -2296,7 +4149,9 @@ def test_run_reconciler_expected_method_override_is_reported_and_used(
     assert report["merge_queue_merge_method"]["method"] == "REBASE"
     assert report["merge_queue_merge_method"]["source"] == "override:test"
     assert report["merge_queue_merge_method"]["indeterminate"] is False
-    assert ["gh", "pr", "merge", "81", "--repo", "owner/repo", "--auto", "--rebase"] in runner.calls
+    assert report["decisions"][0]["action"] == "queue"
+    assert report["decisions"][0]["expected_auto_merge_method"] == "REBASE"
+    assert report["decisions"][0]["merge_queue_governance"]["method"] is None
     assert not any(
         call[:5] == ["gh", "api", "--method", "GET", "-H"]
         and call[6] == "repos/owner/repo/rulesets"
@@ -8766,3 +10621,39 @@ def test_fetch_open_prs_detail_fills_only_missing_base_field(
     prs, _route = autoqueue.fetch_open_prs(repo="owner/repo", repo_root=tmp_path)
     assert prs[0].base_ref == ("release" if missing == "baseRefName" else "main")
     assert prs[0].default_branch == ("trunk" if missing == "baseRepoDefaultBranch" else "main")
+
+
+@pytest.mark.parametrize(
+    "field,reason",
+    [
+        ("baseRefName", "pr_base_ref_malformed"),
+        ("baseRepoDefaultBranch", "pr_default_branch_malformed"),
+        ("headRefName", "pr_head_ref_malformed"),
+    ],
+)
+def test_graphql_malformed_references_refuse_governance_without_rest(
+    tmp_path: Path, field: str, reason: str
+) -> None:
+    calls: list[list[str]] = []
+    row = {**_GRAPHQL_ROW, "baseRefName": "main"}
+    if field != "baseRepoDefaultBranch":
+        row[field] = {"name": "main"}
+    fake = _rate_only_runner(core=0, graphql=4660, calls=calls, rows=[row])
+
+    def runner(cmd: list[str], **kwargs: Any) -> subprocess.CompletedProcess:
+        if cmd[:3] == ["gh", "repo", "view"] and field == "baseRepoDefaultBranch":
+            calls.append(cmd)
+            return subprocess.CompletedProcess(
+                cmd, 0, json.dumps({"defaultBranchRef": {"name": {"name": "main"}}}), ""
+            )
+        return fake(cmd, **kwargs)
+
+    [pr], route = autoqueue.fetch_open_prs(repo="owner/repo", repo_root=tmp_path, runner=runner)
+    assert route is not None and route.transport == "graphql" and route.rest_blocked
+    assert pr.reference_reasons == (reason,)
+    governance = autoqueue.fetch_pr_merge_queue_governance(
+        pr, repo="owner/repo", repo_root=tmp_path, runner=runner
+    )
+    assert governance.reason == f"auto_merge_method_unverified:{reason}"
+    assert governance.method is None
+    assert not any(cmd[:4] == ["gh", "api", "--method", "GET"] for cmd in calls)

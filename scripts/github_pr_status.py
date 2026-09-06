@@ -60,6 +60,37 @@ DEFAULT_REVIEW_DECISION_REST_LIMIT = 5000
 _SAFE_CACHE_RE = re.compile(r"[^A-Za-z0-9_.-]+")
 
 
+class RestIndeterminateError(subprocess.SubprocessError):
+    """A strict REST read failed, with a payload-free reason token."""
+
+    def __init__(self, reason: str, *, row_index: int | None = None) -> None:
+        super().__init__(reason)
+        self.reason = reason
+        self.row_index = row_index
+
+
+def read_ref_name(value: Any) -> str | None:
+    """Keep literal ref names, including null words; only blank strings are absent."""
+    return value if isinstance(value, str) and value.strip() else None
+
+
+def pr_reference_reasons(item: dict[str, Any]) -> tuple[str, ...]:
+    """Retain classified malformed evidence before hydration/normalization loses it."""
+    fields_by_reason = {
+        "pr_base_ref_malformed": ("baseRefName", "baseRefNameDetail", "baseRefNameDetailLatest"),
+        "pr_default_branch_malformed": ("baseRepoDefaultBranch", "baseRepoDefaultBranchDetail"),
+        "pr_head_ref_malformed": ("headRefName",),
+    }
+    inherited = item.get("refEvidenceReasons")
+    inherited = inherited if isinstance(inherited, (list, tuple)) else ()
+    return tuple(
+        reason
+        for reason, fields in fields_by_reason.items()
+        if reason in inherited
+        or any(item.get(key) is not None and not isinstance(item[key], str) for key in fields)
+    )
+
+
 @dataclass(frozen=True)
 class GraphQLBackoff:
     remaining: int
@@ -278,6 +309,7 @@ def _rest_get_json(
     runner: Any,
     fields: dict[str, str] | None = None,
     timeout: int = DEFAULT_TIMEOUT_SECONDS,
+    fail_on_indeterminate: bool = False,
 ) -> Any | None:
     cmd = [
         "gh",
@@ -292,11 +324,27 @@ def _rest_get_json(
         cmd.extend(["-f", f"{key}={value}"])
     try:
         proc = _run(runner, cmd, repo_root=repo_root, timeout=timeout)
-    except OSError as exc:
-        # NOT caught-and-returned-as-None: `None` here means "no data", and a transport that could
-        # not run is a different fact. Collapsing them is the silent-empty defect this module
-        # already refuses elsewhere — an empty listing is indistinguishable from "no open PRs".
-        raise RestTransportUnavailable(f"gh REST invocation failed for {path}: {exc}") from exc
+    except (OSError, subprocess.SubprocessError) as exc:
+        if fail_on_indeterminate:
+            raise RestIndeterminateError("transport_error") from exc
+        if isinstance(exc, OSError):
+            raise RestTransportUnavailable(f"gh REST invocation failed for {path}: {exc}") from exc
+        raise
+    if fail_on_indeterminate:
+        if proc.returncode != 0:
+            message = f"{proc.stderr or ''} {proc.stdout or ''}".lower()
+            reason = (
+                "rate_limit"
+                if "rate limit" in message or "rate_limit" in message
+                else "request_failed"
+            )
+            raise RestIndeterminateError(reason)
+        if not (proc.stdout or "").strip():
+            raise RestIndeterminateError("empty_body")
+        try:
+            return json.loads(proc.stdout)
+        except json.JSONDecodeError as exc:
+            raise RestIndeterminateError("invalid_json") from exc
     return _json_from_proc(proc)
 
 
@@ -308,6 +356,7 @@ def _rest_get_json_pages_or_none(
     fields: dict[str, str] | None = None,
     limit: int = 100,
     timeout: int = DEFAULT_TIMEOUT_SECONDS,
+    fail_on_indeterminate: bool = False,
 ) -> list[Any] | None:
     if limit <= 0:
         return []
@@ -323,8 +372,11 @@ def _rest_get_json_pages_or_none(
             runner=runner,
             fields=page_fields,
             timeout=timeout,
+            fail_on_indeterminate=fail_on_indeterminate,
         )
         if not isinstance(payload, list):
+            if fail_on_indeterminate:
+                raise RestIndeterminateError("invalid_list")
             return None
         if not payload:
             break
@@ -579,9 +631,10 @@ def list_pulls_rest(
             runner=runner,
             fields=fields,
             limit=limit,
+            fail_on_indeterminate=True,
         )
         if payload is None:
-            raise subprocess.SubprocessError(f"REST pull list indeterminate for {repo}")
+            raise RestIndeterminateError("invalid_list")
     else:
         payload = _rest_get_json_pages(
             f"repos/{repo}/pulls",
@@ -591,17 +644,14 @@ def list_pulls_rest(
             limit=limit,
         )
     if fail_on_indeterminate:
+        # Validate the accumulated rows from every page before filtering or hydration.
+        # An unidentifiable PR cannot be silently omitted from a strict scan.
         for index, item in enumerate(payload):
             if not isinstance(item, dict):
-                raise subprocess.SubprocessError(
-                    f"REST pull list indeterminate for {repo}: row {index} is "
-                    f"{type(item).__name__}, not an object"
-                )
+                raise RestIndeterminateError("invalid_row", row_index=index)
             number = item.get("number")
             if isinstance(number, bool) or not isinstance(number, int) or number <= 0:
-                raise subprocess.SubprocessError(
-                    f"REST pull list indeterminate for {repo}: row {index} has no usable `number`"
-                )
+                raise RestIndeterminateError("invalid_row", row_index=index)
     return [item for item in payload if isinstance(item, dict)]
 
 
@@ -686,11 +736,26 @@ def _pull_status_row_from_rest(
         else None
     )
     pull = detail if isinstance(detail, dict) else item
-    head = pull.get("head") if isinstance(pull.get("head"), dict) else {}
-    base = pull.get("base") if isinstance(pull.get("base"), dict) else {}
+    base = item.get("base") if isinstance(item.get("base"), dict) else {}
     base_repo = base.get("repo") if isinstance(base.get("repo"), dict) else {}
+    detail_base = pull.get("base") if isinstance(pull.get("base"), dict) else {}
+    detail_base_repo = detail_base.get("repo") if isinstance(detail_base.get("repo"), dict) else {}
+    head = pull.get("head") if isinstance(pull.get("head"), dict) else {}
     sha = str(head.get("sha") or "")
-    head_ref = str(head.get("ref") or "")
+    reference_reasons = pr_reference_reasons(
+        {
+            "headRefName": head.get("ref"),
+            "baseRefName": base.get("ref"),
+            "baseRefNameDetail": detail_base.get("ref"),
+            "baseRepoDefaultBranch": base_repo.get("default_branch"),
+            "baseRepoDefaultBranchDetail": detail_base_repo.get("default_branch"),
+        }
+    )
+    head_ref = read_ref_name(head.get("ref"))
+    base_ref = read_ref_name(base.get("ref"))
+    detail_ref = read_ref_name(detail_base.get("ref"))
+    default_branch = read_ref_name(base_repo.get("default_branch"))
+    detail_default = read_ref_name(detail_base_repo.get("default_branch"))
     status_ref = sha or head_ref
     files = (
         list_pull_files_rest(number, repo=repo, repo_root=repo_root, runner=runner)
@@ -717,8 +782,20 @@ def _pull_status_row_from_rest(
         "mergedAt": pull.get("merged_at"),
         "headRefName": head_ref,
         "headRefOid": sha,
-        "baseRefName": base.get("ref"),
-        "baseRepoDefaultBranch": base_repo.get("default_branch"),
+        "baseRefName": base_ref or detail_ref,
+        "baseRefNameDetail": detail_ref
+        if isinstance(detail, dict) and base_ref and detail_ref and base_ref != detail_ref
+        else None,
+        "baseRepoDefaultBranch": default_branch or detail_default,
+        **(
+            {"baseRepoDefaultBranchDetail": detail_default}
+            if isinstance(detail, dict)
+            and default_branch
+            and detail_default
+            and default_branch != detail_default
+            else {}
+        ),
+        **({"refEvidenceReasons": reference_reasons} if reference_reasons else {}),
         "changedFiles": changed_files,
         "files": _files_payload_from_rest(files) if include_files else None,
         "isDraft": bool(pull.get("draft")),
@@ -866,6 +943,15 @@ class RestListingFailed(PrListingUnavailable):
     fleet path demands a determinate listing and converts an indeterminate one into a refusal.
     Direct callers of ``list_open_pr_statuses_rest`` keep the older, laxer contract.
     """
+
+    def __init__(
+        self, reason: str, *, rest_error: subprocess.SubprocessError | None = None
+    ) -> None:
+        # Row location belongs in the routed diagnostic; the strict reader's reason
+        # and exception text remain pure tokens for governance/report consumers.
+        if isinstance(rest_error, RestIndeterminateError) and rest_error.row_index is not None:
+            reason += f"; row {rest_error.row_index}"
+        super().__init__(reason)
 
 
 class GraphQLListingFailed(PrListingUnavailable):
@@ -1116,7 +1202,6 @@ def list_open_pr_statuses_graphql(
             f"github_graphql_listing_malformed:expected list, got {type(raw).__name__}"
         )
 
-    out: list[dict[str, Any]] = []
     for index, item in enumerate(raw):
         # Skipping a bad row rebuilds the silent-empty failure one level down: a payload of
         # `[null]` parses fine, yields no rows, and reads downstream as "no open PRs" — the
@@ -1136,6 +1221,11 @@ def list_open_pr_statuses_graphql(
             raise GraphQLListingFailed(
                 f"github_graphql_listing_malformed:row {index} has no usable `number`"
             )
+    # Validate the complete listing before any hydration, just like strict REST.
+    out: list[dict[str, Any]] = []
+    for item in raw:
+        number = item["number"]
+        reference_reasons = pr_reference_reasons(item)
         files = item.get("files") if isinstance(item.get("files"), list) else []
         changed_files = item.get("changedFiles")
         if changed_files is None and files:
@@ -1150,9 +1240,11 @@ def list_open_pr_statuses_graphql(
                 "url": item.get("url"),
                 "updatedAt": item.get("updatedAt"),
                 "mergedAt": item.get("mergedAt"),
-                "headRefName": str(item.get("headRefName") or ""),
+                "headRefName": read_ref_name(item.get("headRefName")),
                 "headRefOid": str(item.get("headRefOid") or ""),
-                "baseRefName": item.get("baseRefName"),
+                "baseRefName": read_ref_name(item.get("baseRefName")),
+                "baseRefNameDetail": None,
+                **({"refEvidenceReasons": reference_reasons} if reference_reasons else {}),
                 "changedFiles": changed_files,
                 "files": files if include_files else None,
                 "isDraft": bool(item.get("isDraft")),
@@ -1184,6 +1276,7 @@ def list_open_pr_statuses_graphql(
     # repository of this listing; gh repo view supplies its defaultBranchRef.name
     # over GraphQL once per nonempty, validated listing, without spending REST/core.
     default_branch = None
+    default_branch_value = None
     if raw:
         try:
             repo_proc = _run(
@@ -1195,13 +1288,19 @@ def list_open_pr_statuses_graphql(
             default_ref = (
                 repo_payload.get("defaultBranchRef") if isinstance(repo_payload, dict) else None
             )
-            if isinstance(default_ref, dict) and isinstance(default_ref.get("name"), str):
-                default_branch = default_ref["name"]
+            if isinstance(default_ref, dict):
+                default_branch_value = default_ref.get("name")
+                default_branch = read_ref_name(default_branch_value)
         except (subprocess.TimeoutExpired, OSError):
             pass  # Unknown default branch remains unknown to ruleset applicability.
 
     for row in out:
+        reference_reasons = pr_reference_reasons(
+            {**row, "baseRepoDefaultBranch": default_branch_value}
+        )
         row["baseRepoDefaultBranch"] = default_branch
+        if reference_reasons:
+            row["refEvidenceReasons"] = reference_reasons
     return out
 
 
@@ -1410,7 +1509,7 @@ def list_open_pr_statuses(
                 )
             except subprocess.SubprocessError as rest_exc:
                 raise RestListingFailed(
-                    f"github_rest_fallback_indeterminate:{rest_exc}"
+                    f"github_rest_fallback_indeterminate:{rest_exc}", rest_error=rest_exc
                 ) from rest_exc
             return rows, ListingRoute(
                 transport="rest", rest_blocked=False, reason="graphql_listing_failed_rest_healthy"
@@ -1457,7 +1556,8 @@ def list_open_pr_statuses(
             except GraphQLListingFailed as graph_exc:
                 raise RestListingFailed(
                     f"github_rest_listing_indeterminate:{exc}; graphql fallback also failed: "
-                    f"{graph_exc.reason}"
+                    f"{graph_exc.reason}",
+                    rest_error=exc,
                 ) from exc
             print(
                 "github_pr_status: REST listing failed; falling back to GraphQL, which is not "
@@ -1470,7 +1570,7 @@ def list_open_pr_statuses(
                 rest_blocked=route.rest_blocked,
                 reason="rest_listing_failed_graphql_not_blocked",
             )
-        raise RestListingFailed(f"github_rest_listing_indeterminate:{exc}") from exc
+        raise RestListingFailed(f"github_rest_listing_indeterminate:{exc}", rest_error=exc) from exc
     return (rows, route)
 
 
