@@ -1378,8 +1378,8 @@ def _refuse_in_root_alias_reaching_surface(
     but an alias (symlink, character class, wildcard over an existing directory) can name
     the same future file under a spelling the patterns never select while the leaf does
     not exist and an empty expansion supplies no witness. Ordinary recursive expansion
-    supplies no alias witness. Existing file witnesses and unchanged or lexically covered
-    languages keep their normal containment/exclusion checks.
+    supplies no alias witness. Existing witnesses retain their containment/exclusion checks;
+    future literals also compare the declaration's canonical pattern prefixes.
     """
     file_patterns = _member_file_patterns(member.patterns)
     if not file_patterns:
@@ -1402,6 +1402,20 @@ def _refuse_in_root_alias_reaching_surface(
         if scope_pattern is not None:
             canonical_path, canonical_pattern = _resolve_scope_directory_prefix(
                 path, scope_pattern, missing_ok=True
+            )
+        elif (
+            root in canonical_path.parents
+            and not _path_is_excluded(canonical_path, member)
+            and any(
+                _local_member_file_matches(canonical_path, root, pattern)
+                for pattern in _canonical_member_patterns(root, member)
+            )
+        ):
+            # A future candidate can already use the canonical spelling while the
+            # declaration traverses an alias. Compare both sides before the no-change exit.
+            raise UndecidableScopeContainment(
+                f"canonical declaration pattern reaches future member surface at {canonical_path}; "
+                "whole-surface containment cannot be decided safely"
             )
         if (canonical_path, canonical_pattern) == (path, scope_pattern):
             return
@@ -1816,6 +1830,45 @@ def ref_within_member(
                     f"scope glob {scope_pattern!r} matches declared member file {file}; "
                     "whole-surface containment cannot be decided safely"
                 )
+        if member.files:
+            # Lexical glob matching misses aliases in a nonliteral parent segment.
+            # Explicit-file members need canonical witnesses even without any roots.
+            try:
+                canonical_files = {
+                    _resolve_external_scope_path(file)
+                    for file in member.files
+                    if not _path_is_excluded(file, member)
+                }
+                for entry, target in _canonical_scope_entries(path, scope_pattern, member).items():
+                    if target in canonical_files:
+                        raise UndecidableScopeContainment(
+                            f"scope glob {path / scope_pattern} component {entry} reaches canonical "
+                            f"declared member file {target}; "
+                            "whole-surface containment cannot be decided safely"
+                        )
+                canonical_path, canonical_pattern = _resolve_scope_directory_prefix(
+                    path, scope_pattern, missing_ok=True
+                )
+                if (canonical_path, canonical_pattern) != (
+                    path,
+                    scope_pattern,
+                ) and ref_within_member(
+                    canonical_path,
+                    canonical_pattern is not None or canonical_path.is_dir(),
+                    member,
+                    scope_pattern=canonical_pattern,
+                ):
+                    raise UndecidableScopeContainment(
+                        f"scope glob {path / scope_pattern} reaches canonical declared member file "
+                        f"at {canonical_path}; whole-surface containment cannot be decided safely"
+                    )
+            except UndecidableScopeContainment as exc:
+                error = UndecidableScopeContainment(
+                    f"scope_containment_undecidable: candidate {path / scope_pattern} "
+                    f"against explicit member files: {exc}; containment is undecidable"
+                )
+                error.remedy = exc.remedy
+                raise error from exc
         literal = _literal_scope_glob(scope_pattern)
         if literal is not None:
             candidate = path / literal

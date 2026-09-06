@@ -5074,19 +5074,175 @@ def test_dispatch_gate_event_accept_without_home_override(
     assert [row["payload"]["gate_result"] for row in mirrors] == ["accept"]
 
 
-def test_dispatch_gate_events_stay_under_the_fixture_home(tmp_path: Path) -> None:
+def _dispatch_receipt_only_scope(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+    frame_root: Path,
+    scope: Path,
+) -> tuple[int, str]:
+    spec = _spec(tmp_path / "isap-test.md")
+    _task(
+        tmp_path / "tasks",
+        "governed-build",
+        _governed_source_frontmatter(
+            spec,
+            mutation_scope_refs=json.dumps([str(scope)]),
+            allowed_platforms="[codex]",
+            required_mode="headless",
+            required_profile="full",
+        ),
+        route_metadata_defaults=False,
+    )
+    monkeypatch.setenv("HAPAX_CC_TASK_ROOT", str(tmp_path / "tasks"))
+    monkeypatch.setenv("HAPAX_FRAME_PROCEDURE_ROOT", str(frame_root))
+    monkeypatch.setenv("HAPAX_DISPATCH_CLAIM_SWEEP", "0")
+    monkeypatch.setenv("HAPAX_ORCHESTRATION_LEDGER_DIR", str(tmp_path / "ledger"))
+    rc = _dispatcher_module().main(
+        [
+            "--task",
+            "governed-build",
+            "--lane",
+            "cx-green",
+            "--platform",
+            "codex",
+            "--mode",
+            "receipt-only",
+            "--skip-worktree-check",
+        ]
+    )
+    return rc, capsys.readouterr().err
+
+
+@pytest.mark.parametrize("declaration", ["bin", "sbin"])
+@pytest.mark.parametrize("candidate", ["bin", "sbin", "[s-s]bin", "s*"])
+@pytest.mark.parametrize("exists", [True, False], ids=["existing", "future"])
+def test_receipt_only_explicit_file_parent_alias_refuses_decay(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+    declaration: str,
+    candidate: str,
+    exists: bool,
+) -> None:
+    root = tmp_path / "usr"
+    (root / "bin").mkdir(parents=True)
+    if exists:
+        (root / "bin/ls").write_text("selected bytes")
+    (root / "sbin").symlink_to("bin", target_is_directory=True)
+    frame_root = _frame_procedure_root(
+        tmp_path / "frame",
+        decayed_root=root,
+        location={"files": [str(root / declaration / "ls")]},
+        reader="fs.glob",
+    )
+    scope = root / candidate / "ls"
+    assert {p.resolve() for p in root.glob(f"{candidate}/ls")} == (
+        {root / "bin/ls"} if exists else set()
+    )
+
+    rc, err = _dispatch_receipt_only_scope(tmp_path, monkeypatch, capsys, frame_root, scope)
+
+    assert rc == 10, f"{declaration=}, {candidate=}: receipt-only main() returned {rc}: {err}"
+    _assert_frame_refusal_receipt(tmp_path, frame_root, rc, err)
+    assert str(scope) in err
+
+
+@pytest.mark.parametrize("declaration", ["bin", "sbin"])
+@pytest.mark.parametrize("candidate", ["bin", "sbin"])
+@pytest.mark.parametrize("exists", [True, False], ids=["existing", "future"])
+def test_receipt_only_declaration_pattern_parent_alias_refuses_decay(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+    declaration: str,
+    candidate: str,
+    exists: bool,
+) -> None:
+    root = tmp_path / "usr"
+    surface = root / "bin/site_perl"
+    surface.mkdir(parents=True)
+    (root / "sbin").symlink_to("bin", target_is_directory=True)
+    if exists:
+        (surface / "new.py").write_text("selected bytes")
+    pattern = f"{declaration}/site_perl/**/*"
+    assert {p.resolve() for p in root.glob(pattern)} == ({surface / "new.py"} if exists else set())
+    frame_root = _frame_procedure_root(
+        tmp_path / "frame",
+        decayed_root=root,
+        location={"path": str(root), "patterns": [pattern]},
+        reader="fs.glob",
+    )
+    scope = root / candidate / "site_perl/new.py"
+
+    rc, err = _dispatch_receipt_only_scope(tmp_path, monkeypatch, capsys, frame_root, scope)
+
+    assert rc == 10, (
+        f"{declaration=}, {candidate=}, {exists=}: receipt-only main() returned {rc}: {err}"
+    )
+    _assert_frame_refusal_receipt(tmp_path, frame_root, rc, err)
+    assert str(scope) in err
+
+
+@pytest.mark.parametrize("kind", ["missing-parent", "permission"])
+@pytest.mark.parametrize("declaration", ["explicit-file", "pattern"])
+def test_receipt_only_parent_alias_resolution_failure_is_undecidable(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+    kind: str,
+    declaration: str,
+) -> None:
+    root = tmp_path / "usr"
+    (root / "bin/site_perl").mkdir(parents=True)
+    alias = root / "sbin"
+    alias.symlink_to("missing/bin" if kind == "missing-parent" else "bin", target_is_directory=True)
+    frame_root = _frame_procedure_root(
+        tmp_path / "frame",
+        decayed_root=root,
+        location=(
+            {"files": [str(root / "bin/ls")]}
+            if declaration == "explicit-file"
+            else {"path": str(root), "patterns": ["sbin/site_perl/**/*"]}
+        ),
+        reader="fs.glob",
+    )
+    if kind == "permission":
+        resolve = Path.resolve
+
+        def denied(path: Path, strict: bool = False) -> Path:
+            if path == alias and strict:
+                raise PermissionError("unreadable parent alias")
+            return resolve(path, strict=strict)
+
+        monkeypatch.setattr(Path, "resolve", denied)
+    scope = root / ("[s-s]bin/ls" if declaration == "explicit-file" else "bin/site_perl/new.py")
+
+    rc, err = _dispatch_receipt_only_scope(tmp_path, monkeypatch, capsys, frame_root, scope)
+
+    _assert_frame_refusal_receipt(tmp_path, frame_root, rc, err)
+    assert "scope_containment_undecidable" in err
+    assert str(scope) in err
+    assert str(scope.parent if declaration == "explicit-file" else alias) in err
+
+
+def test_dispatch_gate_events_stay_under_the_fixture_home(
+    tmp_path: Path, tmp_path_factory: pytest.TempPathFactory
+) -> None:
     """Exercise admitted main() calls both with and without a later HOME change.
 
     The child starts without sink overrides and with a writable, persistent default
     sink, so lost isolation produces an actual leak rather than a swallowed write error.
     Both selected tests require accept rows in their own logs and durable mirrors.
     """
-    suite_home = Path(
-        subprocess.check_output(
-            ["mktemp", "-d", "/store-fast/tmp/hapax-4629-home.XXXXXX"], text=True
-        ).strip()
-    )
+    from shared.durable_jsonl_sink import NON_DURABLE_FS_TYPES, _mount_fstype_for_path
+
+    suite_home = tmp_path / "suite-home"
+    assert suite_home.is_relative_to(tmp_path_factory.getbasetemp())
     (suite_home / ".cache/hapax/stage0-durable-sink").mkdir(parents=True)
+    fstype = _mount_fstype_for_path(suite_home)
+    if fstype is None or fstype in NON_DURABLE_FS_TYPES:
+        pytest.skip(f"ledger isolation needs persistent pytest basetemp; found {fstype}")
     env = {
         key: value
         for key, value in os.environ.items()
@@ -5106,6 +5262,7 @@ def test_dispatch_gate_events_stay_under_the_fixture_home(tmp_path: Path) -> Non
             "-q",
             "-p",
             "no:cacheprovider",
+            "--assert=plain",
             "--confcutdir=tests",
             f"--basetemp={tmp_path / 'child-tests'}",
             f"{test_file}::test_dispatch_ancestor_root_member_in_root_alias"
@@ -7807,11 +7964,27 @@ def test_invocation_id_refuses_invalid_tokens_with_constraint_and_remedy(
 
 
 @pytest.mark.parametrize(
-    "token", ["", "x" * 129, "bad/part"], ids=["empty", "too-long", "bad-character"]
+    "token",
+    ["", " ", "has space", "bad\n", "bad/part", "bad\\part", "x" * 129, "é", "bad\x1b"],
+    ids=[
+        "empty",
+        "whitespace",
+        "space",
+        "newline",
+        "slash",
+        "backslash",
+        "too-long",
+        "unicode",
+        "escape",
+    ],
 )
 def test_invocation_id_token_direct_rejection(token: str) -> None:
-    with pytest.raises(argparse.ArgumentTypeError, match="1-128 characters"):
+    with pytest.raises(argparse.ArgumentTypeError) as caught:
         _dispatcher_module().invocation_id_token(token)
+    assert str(caught.value) == (
+        "must be 1-128 characters from [A-Za-z0-9._:-]. Next: supply a bounded printable "
+        "correlation token with --invocation-id, or omit the option"
+    )
 
 
 @pytest.mark.parametrize("refused", [False, True], ids=["admitted", "refused"])
@@ -7867,6 +8040,7 @@ def test_validation_receipt_binds_invocation_note_and_frame_consult(
     )
     assert receipt["ok"] is (not refused)
     assert receipt["invocation_id"] == "round15:validation.1"
+    assert module.invocation_id_token(receipt["invocation_id"]) == "round15:validation.1"
     assert receipt["task_note_sha256"] == hashlib.sha256(note_bytes).hexdigest()
     assert receipt["does_not_prove"] == [
         "invocation_id: correlation token supplied by the caller; not an identity, not an authority"
