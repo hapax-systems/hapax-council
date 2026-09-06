@@ -151,7 +151,7 @@ snippets with no sensitive fields. A quoted redaction marker keeps later redacti
 consuming prose after a sensitive fragment. Receipts name `suppressed_undecodable_output`
 and record each affected stream under `suppressed_streams`: its character length, first token
 class (never token text), and reason `undecodable_stream_suppressed`. This also applies to
-malformed stderr on success. For a successful run with an unsupported diagnostic class,
+malformed stderr on success. For a successful run with any suppressed stream,
 inspect the receipt's `suppressed_streams` shapes as the retained diagnostic record,
 correct the capacity's diagnostic format and retry the brief; the warning names this action.
 Check `--out` and retry the brief, or increase `--timeout` after
@@ -217,6 +217,7 @@ env -u HAPAX_GLMCP_MODEL -u HAPAX_GLMCP_REVIEW_MODEL -u HAPAX_GLMCP_REVIEW_PAYG_
   tests/scripts/test_hapax_recruit.py::test_unreadable_brief_names_recovery_without_traceback \
   tests/scripts/test_hapax_recruit.py::test_undecodable_claude_envelope_cannot_claim_success \
   tests/scripts/test_hapax_recruit.py::test_undecodable_claude_diagnostic_stream_is_suppressed \
+  tests/scripts/test_hapax_recruit.py::test_successful_suppressed_diagnostic_names_recovery \
   tests/scripts/test_hapax_recruit.py::test_codex_suppression_keeps_independent_streams \
   tests/scripts/test_hapax_recruit.py::test_local_result_uses_same_redaction_boundary \
   tests/scripts/test_hapax_recruit.py::test_successful_claude_answer_preserves_ordinary_text \

@@ -253,7 +253,7 @@ class RunResult:
 
 
 def _yaml_key(key: str, *, flow: bool = False) -> str:
-    """Decode a single-line YAML scalar key, preserving its quote style for matching."""
+    """Decode a YAML scalar key, preserving its quote style for matching."""
     key = key.strip()
     if flow and re.match(r"^\?[ ]*\t", key):
         raise UndecodableStream(sensitive=True, unsupported_class="YAMLFlowKeyTab")
@@ -263,6 +263,29 @@ def _yaml_key(key: str, *, flow: bool = False) -> str:
         key = key[1:].lstrip(" \t\r\n\x85\u2028\u2029")
     if key.startswith(("!", "&")):
         raise UndecodableStream(sensitive=True)
+    if flow and re.search(r"[\r\n\x85\u2028\u2029]", key):
+        # Use the installed loader's scalar scanner for folding and quoted escapes:
+        # one ordinary break folds to a space; blank lines retain their breaks.
+        # The explicit flow wrapper preserves context without constructing values,
+        # resolving tags or expanding aliases. Accept exactly one scalar key.
+        try:
+            tokens = list(yaml.scan("{? " + key + ": null}"))
+        except yaml.YAMLError:
+            raise UndecodableStream(sensitive=True) from None
+        if [type(token) for token in tokens] != [
+            yaml.tokens.StreamStartToken,
+            yaml.tokens.FlowMappingStartToken,
+            yaml.tokens.KeyToken,
+            yaml.tokens.ScalarToken,
+            yaml.tokens.ValueToken,
+            yaml.tokens.ScalarToken,
+            yaml.tokens.FlowMappingEndToken,
+            yaml.tokens.StreamEndToken,
+        ]:
+            raise UndecodableStream(sensitive=True)
+        scalar = tokens[3]
+        quote = scalar.style or ""
+        return quote + scalar.value + quote
     if not key or key[0] not in "\"'":
         return re.split(r"[ \t]+#", key, maxsplit=1)[0].rstrip()
     if key[0] == "'":
@@ -1281,9 +1304,7 @@ def main(argv: list[str] | None = None) -> int:
         result.stderr_tail = (result.stderr_tail + f"\n{args.capacity}: {result.recovery_action}")[
             -400:
         ]
-    elif result is not None and any(
-        "unsupported_class" in shape for shape in result.suppressed_streams.values()
-    ):
+    elif result is not None and result.suppressed_streams:
         remedy = (
             "inspect the receipt's suppressed_streams shapes, the retained diagnostic record; "
             "correct the capacity's diagnostic format and retry the brief"
@@ -1324,9 +1345,14 @@ def main(argv: list[str] | None = None) -> int:
             if "unsupported_class" in shape
         }
     )
-    if unsupported:
+    if result.suppressed_streams:
+        description = (
+            f"unsupported stream classes: {', '.join(unsupported)}"
+            if unsupported
+            else "streams: undecodable_stream_suppressed"
+        )
         print(
-            f"hapax-recruit: suppressed unsupported stream classes: {', '.join(unsupported)} "
+            f"hapax-recruit: suppressed {description} "
             f"(receipt: {receipt_path}); {result.recovery_action}",
             file=sys.stderr,
         )

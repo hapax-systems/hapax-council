@@ -226,6 +226,156 @@ def test_json_credential_separator_agreement_at_every_destination(
     assert not failures, "\n".join(failures)
 
 
+def _yaml_folded_key_fixtures():
+    first = "SYNTHETIC_FIRST_CREDENTIAL"  # pragma: allowlist secret (synthetic sentinel)
+    second = "SYNTHETIC_SECOND_CREDENTIAL"  # pragma: allowlist secret (synthetic sentinel)
+    keys = {
+        "plain-lf": "? api\n key",
+        "plain-crlf": "? api\r\n key",
+        "plain-cr": "? api\r key",
+        "plain-nel": "? api\x85 key",
+        "plain-indented": "? api   \n     key",
+        "plain-compact": "?api\nkey",
+        "plain-surrounding-space": "  ?  api\n key  \n ",
+        "single-lf": "? 'api\n key'",
+        "double-lf": '? "api\n key"',
+        "double-hex-fold": '? "\\x61pi\n key"',
+        "double-unicode-fold": '? "api\n \\u006bey"',
+        "double-escaped-break": '? "api\\x20\\\n key"',
+    }
+    cases = {}
+    for name, key in keys.items():
+        member = f"{key}: [{first}, {second}]"  # pragma: allowlist secret (synthetic sentinel)
+        cases[f"folded-{name}-mapping"] = "{" + member + "}"
+        cases[f"folded-{name}-sequence"] = "[" + member + "]"
+        cases[f"folded-{name}-nested"] = "{safe: [{" + member + "}]}"
+    return cases
+
+
+@pytest.mark.parametrize(
+    "name,response",
+    [pytest.param(name, text, id=name) for name, text in _yaml_folded_key_fixtures().items()],
+)
+@pytest.mark.parametrize("capacity", ["grok", "claude", "local:qwen36"])
+def test_yaml_folded_key_agreement_at_every_destination(
+    bench, monkeypatch, capsys, name, response, capacity
+):
+    module, _bin_dir, brief, out = bench
+    assert _yaml_loader_oracle(response) is True
+    receipt_path = out.with_name(out.name + ".receipt.json")
+    persisted = {}
+    original_write, original_read = Path.write_text, Path.read_bytes
+    original_stat, original_is_file = Path.stat, Path.is_file
+
+    def write(path, text, *args, **kwargs):
+        if path in {out, receipt_path}:
+            persisted[path] = text
+            return len(text)
+        return original_write(path, text, *args, **kwargs)
+
+    def read(path):
+        return persisted[path].encode() if path in persisted else original_read(path)
+
+    def stat(path, *args, **kwargs):
+        if path in persisted:
+            return os.stat_result((0,) * 6 + (len(persisted[path].encode()),) + (0,) * 3)
+        return original_stat(path, *args, **kwargs)
+
+    # Keep both writes in memory, including under the leaking normalizer mutation.
+    monkeypatch.setattr(Path, "write_text", write)
+    monkeypatch.setattr(Path, "read_bytes", read)
+    monkeypatch.setattr(Path, "stat", stat)
+    monkeypatch.setattr(Path, "is_file", lambda path: path in persisted or original_is_file(path))
+    monkeypatch.setattr(module, "_require_binary", lambda name: name)
+    if capacity.startswith("local:"):
+        payload = {"choices": [{"message": {"content": response}}]}
+        monkeypatch.setattr(
+            module.urllib.request,
+            "urlopen",
+            lambda *a, **kw: io.BytesIO(json.dumps(payload).encode()),
+        )
+    else:
+        stdout = json.dumps({"result": response}) if capacity == "claude" else response
+        monkeypatch.setattr(
+            module,
+            "_run",
+            lambda *a, **kw: (
+                7 if capacity == "grok" else 0,
+                stdout,
+                response if capacity == "grok" else "",
+                False,
+                None,
+            ),
+        )
+    rc = module.main([capacity, "--brief", str(brief), "--out", str(out)])
+    captured = capsys.readouterr()
+    receipt = json.loads(persisted[receipt_path])
+    failures = []
+    sentinels = (
+        "SYNTHETIC_FIRST_CREDENTIAL",  # pragma: allowlist secret (synthetic sentinel)
+        "SYNTHETIC_SECOND_CREDENTIAL",  # pragma: allowlist secret (synthetic sentinel)
+    )
+    for destination, text in {
+        "answer": persisted[out],
+        "receipt": persisted[receipt_path],
+        "stderr": captured.err,
+        "stdout": captured.out,
+    }.items():
+        if any(sentinel in text for sentinel in sentinels):
+            failures.append(f"credential reached {destination}: {name}/{capacity}")
+        if (
+            destination == "answer" or capacity == "grok" and destination in {"receipt", "stderr"}
+        ) and "<redacted>" not in text:
+            failures.append(f"loader/redactor divergence at {destination}: {name}/{capacity}")
+    assert not failures, "\n".join(failures)
+    assert receipt["suppressed_streams"] == {}, "loader-supported folded key was suppressed"
+    assert rc == (3 if capacity == "grok" else 0)
+    assert receipt["exit_code"] == (7 if capacity == "grok" else 0)
+    assert receipt["answer_policy"] == (
+        "redacted_failure_output" if capacity == "grok" else "capacity_answer"
+    )
+    assert receipt["output_bytes"] == len(persisted[out].encode()) > 0
+
+
+@pytest.mark.parametrize(
+    "key",
+    [
+        "? api\n\n key",
+        "? api \n \n \n key",
+        "? api\u2028 key",
+        "? api\u2029 key",
+        "? api\n\u2028 key",
+        "? api\u2028\n key",
+        "? 'api''\n key'",
+        r"? 'api\nkey'",
+        r'? "api\nkey"',
+    ],
+    ids=[
+        "blank-line",
+        "two-blank-lines",
+        "line-separator",
+        "paragraph-separator",
+        "lf-then-line-separator",
+        "line-separator-then-lf",
+        "single-doubled-quote",
+        "single-literal-escape",
+        "double-escaped-newline",
+    ],
+)
+def test_yaml_folded_key_preserves_noncredential_identity(bench, key):
+    module, _bin_dir, _brief, _out = bench
+    response = "{" + key + ": [KEEP]}"
+    expected = next(iter(yaml.safe_load(response)))
+    assert _yaml_loader_oracle(response) is False
+    normalized = module._yaml_key(key, flow=True)
+    assert normalized == (
+        key.lstrip("? ")[0] + expected + key.lstrip("? ")[0]
+        if key.lstrip("? ")[0] in "\"'"
+        else expected
+    )
+    assert module._redact_streams(answer=response) == ({"answer": response}, {})
+
+
 _SCANNER_YAML_FIXTURES = {
     "flow-key-comment-after-question": '{ ? # comment\n"api\\x5fkey"\n : [FIRST, SYNTHETIC_SECOND_CREDENTIAL]}',  # pragma: allowlist secret
     "flow-key-comment-before-colon": '{ ? "api\\x5fkey" # comment\n : [FIRST, SYNTHETIC_SECOND_CREDENTIAL]}',  # pragma: allowlist secret
@@ -957,9 +1107,14 @@ def test_codex_answer_read_failure_retains_execution_evidence(
     assert caplog.text == ""
 
 
-def test_successful_suppressed_diagnostic_names_recovery(bench, monkeypatch, capsys):
+@pytest.mark.parametrize("diagnostic", ["custom-tag", "escaped-json"])
+def test_successful_suppressed_diagnostic_names_recovery(bench, monkeypatch, capsys, diagnostic):
     module, _bin_dir, brief, out = bench
-    stderr = "safe: !unsupported KEEP"
+    stderr = (
+        "safe: !unsupported KEEP"
+        if diagnostic == "custom-tag"
+        else r"{\u0022api_key\u0022: \u0022SYNTHETIC_BROKEN_STREAM_CANARY\u0022"  # pragma: allowlist secret (synthetic sentinel)
+    )
     monkeypatch.setattr(module, "_require_binary", lambda name: name)
     monkeypatch.setattr(module, "_run", lambda *a, **kw: (0, "OK", stderr, False, None))
     assert module.main(["grok", "--brief", str(brief), "--out", str(out)]) == 0
@@ -969,9 +1124,9 @@ def test_successful_suppressed_diagnostic_names_recovery(bench, monkeypatch, cap
     assert receipt["suppressed_streams"] == {
         "stderr": {
             "length": len(stderr),
-            "first_token_class": "text",
+            "first_token_class": "text" if diagnostic == "custom-tag" else "object",
             "reason": "undecodable_stream_suppressed",
-            "unsupported_class": "YAMLCustomTag",
+            **({"unsupported_class": "YAMLCustomTag"} if diagnostic == "custom-tag" else {}),
         }
     }
     assert receipt["recovery_action"], "successful suppression has no recovery action"
@@ -979,7 +1134,9 @@ def test_successful_suppressed_diagnostic_names_recovery(bench, monkeypatch, cap
     assert "diagnostic format" in receipt["recovery_action"]
     assert "retry" in receipt["recovery_action"]
     assert receipt["recovery_action"] in captured.err
-    assert "YAMLCustomTag" in captured.err
+    assert (
+        "YAMLCustomTag" if diagnostic == "custom-tag" else "undecodable_stream_suppressed"
+    ) in captured.err
     assert str(out.with_name(out.name + ".receipt.json")) in captured.err
     assert stderr not in captured.err
 
@@ -2354,6 +2511,7 @@ def test_runbook_has_headless_read_refusal_rechecks(request):
         "test_undecodable_claude_envelope_cannot_claim_success",
         "test_unwritable_receipt_and_fallback_name_recovery_without_traceback",
         "test_undecodable_claude_diagnostic_stream_is_suppressed",
+        "test_successful_suppressed_diagnostic_names_recovery",
         "test_codex_run_without_new_output_never_attributes_an_old_answer",
         "test_expected_launch_decode_and_transport_failures_are_receipted",
         "test_local_deadline_covers_connection_and_body",
@@ -3025,6 +3183,12 @@ def test_undecodable_claude_diagnostic_stream_is_suppressed(
     assert receipt["output_bytes"] == len(out.read_bytes())
     assert "startup chatter" not in receipt["stderr_tail"]
     assert "undecodable_stream_suppressed" in receipt["stderr_tail"]
+    if expected_rc == 0:
+        assert receipt["recovery_action"], "successful suppression has no recovery action"
+        assert "suppressed_streams" in receipt["recovery_action"]
+        assert "diagnostic format" in receipt["recovery_action"]
+        assert "retry" in receipt["recovery_action"]
+        assert receipt["recovery_action"] in captured.err
     assert caplog.text == ""
 
 
@@ -3527,7 +3691,7 @@ def _yaml_oracle_fixtures():
     """Reuse the actual existing key/collection fixtures, rather than sanitized copies."""
     first = "SYNTHETIC_FIRST_CREDENTIAL"  # pragma: allowlist secret
     second = "SYNTHETIC_SECOND_CREDENTIAL"  # pragma: allowlist secret
-    cases = {**_SCANNER_YAML_FIXTURES, **_yaml_key_forms(second)}
+    cases = {**_SCANNER_YAML_FIXTURES, **_yaml_key_forms(second), **_yaml_folded_key_fixtures()}
     cases["bom-fenced-extracted"] = (
         cases["bom-fenced-response"].split("```yaml\n", 1)[1].split("\n```", 1)[0]
     )
@@ -3617,8 +3781,8 @@ def test_yaml_loader_oracle_agreement(bench, name, response):
     streams, suppressed = module._redact_streams(answer=response)
     actual = "suppressed" if suppressed else str("<redacted>" in streams["answer"])
     print(f"ORACLE {name}: loader={verdict}; redactor={actual}")
-    if name.startswith("flow-key-comment"):
-        assert not suppressed, "scanner-supported flow key comments must be normalized"
+    if name.startswith(("flow-key-comment", "folded-")):
+        assert not suppressed, "scanner-supported flow keys must be normalized"
     if suppressed:
         assert streams == {"answer": ""}
         assert suppressed["answer"]["length"] == len(response)
