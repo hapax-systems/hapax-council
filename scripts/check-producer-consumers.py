@@ -1582,7 +1582,10 @@ def _has_unbounded_format(
             # A default is useful evidence, not an established environment binding.
             if name in {"os.getenv", "os.environ.get"}:
                 return True
-            if isinstance(item.func, ast.Attribute) and item.func.attr == "expanduser":
+            if isinstance(item.func, ast.Attribute) and item.func.attr in {
+                "expanduser",
+                "absolute",
+            }:
                 return True
         if isinstance(item, ast.Call) and isinstance(path_functions, PathFunctionTable):
             result, unbounded = _resolve_path_helper(item, values, path, repo_root, path_functions)
@@ -1761,10 +1764,17 @@ def _resolve_path_expr(
         # Expansion depends on runtime home/user bindings. Do not certify its input
         # as its result or inspect the scanner's environment to guess that result.
         return None
-    if isinstance(node.func, ast.Attribute) and node.func.attr in {
-        "absolute",
-        "resolve",
-    }:
+    if isinstance(node.func, ast.Attribute) and node.func.attr == "absolute":
+        # Runtime cwd is unknown, so retain input evidence without certifying a result.
+        return None
+    # Keep resolve separate: its legacy identity behavior is deferred for review of
+    # tests/scripts/test_check_consumer_side_binding.py's named positive expectations:
+    # test_consumer_reads_unwritten_artifact (one config/orphan.json finding),
+    # test_committed_read_pattern_is_counted_as_excluded (one committed exclusion),
+    # test_unwritten_finding_deduplicates_reader_sites (one finding, count 4, 3 readers).
+    # Those three survive withholding via retained evidence; the measured blocker is
+    # precision.py::test_visible_source_relative_helper_survives_module_call_effects.
+    if isinstance(node.func, ast.Attribute) and node.func.attr == "resolve":
         return _resolve_path_expr(
             node.func.value, values, path, repo_root, path_functions, depth=depth + 1
         )

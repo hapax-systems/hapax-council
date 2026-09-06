@@ -1721,3 +1721,36 @@ def test_formatted_backslashes_are_runtime_filename_characters(synthetic_repo, c
     assert (Path("shared/consumer.py"), expected) not in _unwritten(report)
     assert [(a.pattern, a.bounded) for a in accesses if a.action == "write"] == [(expected, True)]
     assert unresolved == report.unresolvable == 0
+
+
+@pytest.mark.parametrize("assigned", [False, True], ids=["codex-exact", "assigned"])
+def test_absolute_writer_does_not_certify_wrong_prefix_reader(synthetic_repo, assigned) -> None:
+    setup = "target = Path('artifacts/old.json').absolute()\n" if assigned else ""
+    operand = "target" if assigned else "Path('artifacts/old.json').absolute()"
+    report, (accesses, unresolved, *_) = synthetic_repo(
+        "from pathlib import Path\n" + setup + f"(Path('/wrong') / {operand}).write_text('{{}}')\n"
+        "Path('/wrong/artifacts/old.json').read_text()\n"
+    )
+    assert (Path("shared/consumer.py"), "/wrong/artifacts/old.json") in _unwritten(report)
+    assert [(a.pattern, a.bounded) for a in accesses if a.action == "write"] == [
+        ("/wrong/*", False)
+    ]
+    assert unresolved == report.unresolvable == 1
+    if not assigned:
+        # The literal remains visible evidence in the unresolved expression, not
+        # a claimed result of absolute() or an assumed cwd in the writer pattern.
+        assert any(
+            "Path('artifacts/old.json').absolute()" in site for site in report.unresolved_paths
+        )
+
+
+@pytest.mark.parametrize("operation", ["read_text()", "write_text('{}')"])
+def test_standalone_absolute_retains_literal_as_unresolved_evidence(
+    synthetic_repo, operation
+) -> None:
+    report, (accesses, unresolved, *_) = synthetic_repo(
+        "from pathlib import Path\n" + f"Path('artifacts/old.json').absolute().{operation}\n"
+    )
+    assert not any(a.bounded for a in accesses)
+    assert unresolved == report.unresolvable == 1
+    assert any("Path('artifacts/old.json').absolute()" in site for site in report.unresolved_paths)
