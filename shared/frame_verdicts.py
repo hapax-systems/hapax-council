@@ -1316,8 +1316,57 @@ def _resolve_external_scope_path(path: Path) -> Path:
     return resolved
 
 
+@dataclass(frozen=True)
+class _CanonicalPathForm:
+    lexical_base: Path
+    base: Path
+    remainder: str | None
+    prefix: tuple[str, ...]
+
+
+def _canonical_path_forms(
+    path: Path, pattern: str | None, *, recursive: bool = False
+) -> tuple[_CanonicalPathForm, ...]:
+    """Canonical existing prefixes plus lexical future tails, for either side of a decision.
+
+    Keep the unexpanded language as well as EVERY existing directory expansion. A missing
+    leaf never removes a prefix witness. Strict component resolution precedes directory
+    filtering, so broken aliases cannot disappear as empty glob results. ``recursive``
+    supplies the content reader's rglob semantics; it does not change resolution.
+    """
+    if pattern is None:
+        return (_CanonicalPathForm(path, _resolve_external_scope_path(path), None, ()),)
+    prefix, tail, _ = _filesystem_scope_parts(pattern)
+    bases = [(path.joinpath(*prefix), tail, tuple(prefix))]
+    parts = _glob_segments(pattern)
+    for length in range(1 if recursive else len(prefix) + 1, len(parts)):
+        directory_pattern = "/".join(parts[:length])
+        try:
+            entries = path.rglob(directory_pattern) if recursive else path.glob(directory_pattern)
+            for entry in entries:
+                canonical = _resolve_external_scope_path(entry)
+                if canonical.is_dir():
+                    bases.append((entry, "/".join(parts[length:]), parts[:length]))
+        except (OSError, RuntimeError, ValueError) as exc:
+            if isinstance(exc, UndecidableScopeContainment):
+                raise
+            raise UndecidableScopeContainment(
+                f"cannot resolve directory prefix {path / directory_pattern}: {exc}; "
+                "containment is undecidable"
+            ) from exc
+    return tuple(
+        _CanonicalPathForm(base, _resolve_external_scope_path(base), remainder, consumed)
+        for base, remainder, consumed in dict.fromkeys(bases)
+    )
+
+
 def _resolve_scope_directory_prefix(
-    path: Path, pattern: str, *, missing_ok: bool = False
+    path: Path,
+    pattern: str,
+    *,
+    missing_ok: bool = False,
+    literal_targets: tuple[Path, ...] = (),
+    member_roots: tuple[Path, ...] = (),
 ) -> tuple[Path, str | None]:
     """Resolve the longest existing globbed directory prefix, retaining future tails.
 
@@ -1327,40 +1376,77 @@ def _resolve_scope_directory_prefix(
     directories and recursive expansions without alias crossings remain lexical;
     they supply no new canonical spelling for the containment check.
     """
+    forms = _canonical_path_forms(path, pattern)
     parts = _glob_segments(pattern)
-    if len(parts) < 2:
-        return path, pattern
-    for length in range(len(parts) - 1, 0, -1):
-        prefix = "/".join(parts[:length])
-        directories = []
-        has_alias = False
-        try:
-            for entry in path.glob(prefix):
-                target = entry.resolve(strict=True)
-                if target.is_dir():
-                    directories.append(target)
-                    has_alias = has_alias or entry != target
-        except (OSError, RuntimeError, ValueError) as exc:
-            raise UndecidableScopeContainment(
-                f"cannot resolve directory prefix {path / prefix}: {exc}"
-            ) from exc
-        if missing_ok and "**" in parts[:length] and not has_alias:
+    resolved_prefix = None
+    for length in range(1, len(parts)):
+        directories = [form for form in forms[1:] if len(form.prefix) == length]
+        if (
+            missing_ok
+            and "**" in parts[:length]
+            and not any(form.lexical_base != form.base for form in directories)
+        ):
             # Ordinary recursive expansion does not canonicalize an alias. Collapsing
             # it to today's directories would erase the future language. An actual
             # alias after ** still supplies an overlap witness for the refusing caller.
             continue
         if len(directories) > 1:
+            base = forms[0].base
+            if (
+                member_roots
+                and "**" not in parts
+                and all(form.lexical_base == form.base for form in forms)
+                and all(
+                    root != base
+                    and root not in base.parents
+                    and (
+                        base not in root.parents
+                        or _glob_intersects_subtree(
+                            forms[0].remainder or "**/*", root.relative_to(base).as_posix()
+                        )
+                        is False
+                    )
+                    for root in member_roots
+                )
+            ):
+                # With no alias crossing, an exact lexical proof of root disjointness
+                # remains valid for all future tails. Do not narrow to one expansion.
+                return base, forms[0].remainder
             raise UndecidableScopeContainment(
-                f"directory prefix {path / prefix} expands to {len(directories)} directories"
+                f"scope_containment_undecidable: directory prefix "
+                f"{path / '/'.join(parts[:length])} expands to "
+                f"{len(directories)} directories; containment is undecidable"
             )
         if directories:
-            # Only the existing prefix is canonicalized; no leaf need exist.
-            tail, scope_pattern, _ = _filesystem_scope_parts("/".join(parts[length:]))
-            return directories[0].joinpath(*tail), scope_pattern
-    if missing_ok:
-        return path, pattern
+            resolved_prefix = directories[0]
+    if resolved_prefix is not None:
+        # An earlier branch must not disappear merely because only another branch
+        # has deeper existing directories. Check every depth before choosing a prefix.
+        remainder = parts[len(resolved_prefix.prefix) :]
+        if any(_WILDCARD.search(part) and part != "**" for part in remainder[:-1]):
+            raise UndecidableScopeContainment(
+                f"scope_containment_undecidable: directory prefix "
+                f"{resolved_prefix.base / '/'.join(remainder[:-1])} "
+                "expands to no resolvable directory; containment is undecidable"
+            )
+        tail, scope_pattern, _ = _filesystem_scope_parts("/".join(remainder))
+        return _resolve_external_scope_path(resolved_prefix.base.joinpath(*tail)), scope_pattern
+    # A recursive future language stays lexical. An unmatched nonrecursive directory
+    # glob has no canonical alias witness and cannot establish disjointness.
+    if missing_ok and not any(_WILDCARD.search(part) and part != "**" for part in parts[:-1]):
+        return forms[0].base, forms[0].remainder
+    if len(parts) < 2:
+        return forms[0].base, forms[0].remainder
+    if literal_targets and all(
+        not _glob_to_regex(str(forms[0].base / (forms[0].remainder or ""))).match(str(target))
+        for target in literal_targets
+    ):
+        # A finite set of canonical explicit files admits an exact lexical comparison,
+        # including unequal path depths. No unexpanded member glob is assumed empty.
+        return forms[0].base, forms[0].remainder
     raise UndecidableScopeContainment(
-        f"directory prefix {path / parts[0]} expands to no resolvable directory"
+        f"scope_containment_undecidable: directory prefix {path / parts[0]} "
+        "expands to no resolvable directory; containment is undecidable"
     )
 
 
@@ -1385,9 +1471,10 @@ def _refuse_in_root_alias_reaching_surface(
     if not file_patterns:
         # Directory-only declarations have no future file surface to reach.
         return
+    lexical_covered = False
     if scope_pattern is None:
         # Preserve the component-specific refusal and remedy for loops/dangling links.
-        canonical_path, canonical_pattern = _resolve_external_scope_path(path), None
+        canonical_path, canonical_pattern = _canonical_path_forms(path, None)[0].base, None
         if canonical_path.is_file():
             # Existing selected targets are handled by the canonical surface below;
             # they establish containment rather than an ambiguous future overlap.
@@ -1395,20 +1482,27 @@ def _refuse_in_root_alias_reaching_surface(
     else:
         relative = "" if path == root else path.relative_to(root).as_posix()
         lexical_pattern = _scope_pattern_from_base(relative, scope_pattern)
-        if any(_glob_pattern_covers(pattern, lexical_pattern) for pattern in file_patterns):
-            # Keep the producer's lexical skip-dir and symlink traversal checks.
-            return
+        lexical_covered = any(
+            _glob_pattern_covers(pattern, lexical_pattern) for pattern in file_patterns
+        )
     try:
+        canonical_patterns = _canonical_member_patterns(root, member)
+        if lexical_covered:
+            _canonical_path_forms(path, scope_pattern)
+            # Both sides have been resolved. Keep the producer's lexical skip-dir
+            # and symlink traversal checks for an already proven language inclusion.
+            return
         if scope_pattern is not None:
             canonical_path, canonical_pattern = _resolve_scope_directory_prefix(
                 path, scope_pattern, missing_ok=True
             )
-        elif (
-            root in canonical_path.parents
+        if (
+            canonical_pattern is None
+            and root in canonical_path.parents
             and not _path_is_excluded(canonical_path, member)
             and any(
                 _local_member_file_matches(canonical_path, root, pattern)
-                for pattern in _canonical_member_patterns(root, member)
+                for pattern in canonical_patterns
             )
         ):
             # A future candidate can already use the canonical spelling while the
@@ -1417,20 +1511,47 @@ def _refuse_in_root_alias_reaching_surface(
                 f"canonical declaration pattern reaches future member surface at {canonical_path}; "
                 "whole-surface containment cannot be decided safely"
             )
-        if (canonical_path, canonical_pattern) == (path, scope_pattern):
-            return
         if canonical_path != root and root not in canonical_path.parents:
             return
         canonical_relative = (
             "" if canonical_path == root else canonical_path.relative_to(root).as_posix()
         )
-        if scope_pattern is not None and canonical_pattern is not None:
-            if _scope_pattern_from_base(canonical_relative, canonical_pattern) == lexical_pattern:
-                return
-        if canonical_pattern is None and not any(
-            _local_member_file_matches(canonical_path, root, pattern) for pattern in member.patterns
-        ):
+        if canonical_pattern is None:
             return
+        covered = _scope_glob_covered(
+            _scope_pattern_from_base(canonical_relative, canonical_pattern), canonical_patterns
+        )
+        if (canonical_path, canonical_pattern) == (path, scope_pattern):
+            # The canonical comparison is complete; the caller still checks the
+            # producer's exclusions and selected entries before returning containment.
+            return
+        if covered:
+            raise UndecidableScopeContainment(
+                f"resolved directory prefix reaches canonical member patterns at {canonical_path}; "
+                "whole-surface containment cannot be decided safely"
+            )
+        if _scope_pattern_from_base(canonical_relative, canonical_pattern) == lexical_pattern:
+            return
+        # A changed spelling with incomparable remaining globs cannot use a sampled
+        # nonmember witness as proof of disjointness. Only distinct literal prefixes
+        # establish that the canonical future languages cannot meet.
+        candidate_parts = _glob_segments(
+            _scope_pattern_from_base(canonical_relative, canonical_pattern)
+        )
+        for pattern in canonical_patterns:
+            for left, right in zip(candidate_parts, _glob_segments(pattern), strict=False):
+                if _WILDCARD.search(left) or _WILDCARD.search(right):
+                    raise UndecidableScopeContainment(
+                        f"canonical candidate remainder {canonical_pattern!r} cannot be compared "
+                        f"with member pattern {pattern!r}; containment is undecidable"
+                    )
+                if left != right:
+                    break
+            else:
+                raise UndecidableScopeContainment(
+                    f"canonical candidate at {canonical_path} and member pattern {pattern!r} "
+                    "have incomparable future depths; containment is undecidable"
+                )
         if ref_within_member(
             canonical_path,
             canonical_pattern is not None or canonical_path.is_dir(),
@@ -1460,41 +1581,12 @@ def _canonical_member_patterns(root: Path, member: DecayedMember) -> tuple[str, 
     """
     patterns = []
     for pattern in _member_file_patterns(member.patterns or ("**/*",)):
-        prefix, tail, _ = _filesystem_scope_parts(pattern)
-        if tail is None:
-            prefix, tail = prefix[:-1], prefix[-1]
-        bases = [(root.joinpath(*prefix), tail, False)]
-        if member.reader == "fs.content_query" and prefix:
-            # rglob can encounter the literal prefix at any depth. Resolve those
-            # aliases too, including when the scope names a not-yet-created file.
-            try:
-                bases.extend((base, tail, False) for base in root.rglob(Path(*prefix).as_posix()))
-            except (OSError, RuntimeError, ValueError) as exc:
-                raise UndecidableScopeContainment(
-                    f"cannot inspect member pattern prefix {Path(*prefix)} below {root}: {exc}; "
-                    "containment is undecidable"
-                ) from exc
-        parts = _glob_segments(pattern)
-        for length in range(len(prefix) + 1, len(parts)):
-            directory_pattern = "/".join(parts[:length])
-            remainder = "/".join(parts[length:])
-            try:
-                entries = (
-                    root.rglob(directory_pattern)
-                    if member.reader == "fs.content_query"
-                    else root.glob(directory_pattern)
-                )
-                bases.extend((entry, remainder, True) for entry in entries)
-            except (OSError, RuntimeError, ValueError) as exc:
-                raise UndecidableScopeContainment(
-                    f"cannot inspect member pattern prefix {directory_pattern} below {root}: {exc}; "
-                    "containment is undecidable"
-                ) from exc
-        for lexical_base, remainder, globbed in dict.fromkeys(bases):
-            canonical_base = _resolve_external_scope_path(lexical_base)
-            # Resolve before filtering: a dangling alias must not disappear as a
-            # non-directory. Every existing match supplies its own canonical remainder.
-            if globbed and not canonical_base.is_dir():
+        for form in _canonical_path_forms(
+            root, pattern, recursive=member.reader == "fs.content_query"
+        ):
+            lexical_base, canonical_base = form.lexical_base, form.base
+            if form.remainder is None and canonical_base.is_dir():
+                # A literal pattern selecting a directory supplies no file language.
                 continue
             if _path_is_excluded(lexical_base, member):
                 continue
@@ -1504,7 +1596,11 @@ def _canonical_member_patterns(root: Path, member: DecayedMember) -> tuple[str, 
                     f"to {canonical_base}; containment is undecidable"
                 )
             relative = "" if canonical_base == root else canonical_base.relative_to(root).as_posix()
-            patterns.append(_scope_pattern_from_base(relative, remainder))
+            patterns.append(
+                relative
+                if form.remainder is None
+                else _scope_pattern_from_base(relative, form.remainder)
+            )
     return tuple(patterns)
 
 
@@ -1751,7 +1847,8 @@ def _content_query_within_member(
     query = member.content_query
     if query is None:
         raise UncontainableMemberLocation("fs.content_query has no declared content predicate")
-    canonical = _resolve_external_scope_path(path)
+    canonical = _canonical_path_forms(path, None)[0].base
+    canonical_pattern = scope_pattern
     if not dirlike and scope_pattern is None and canonical in selected_entries.values():
         # A producer-selected entry is inside even when its alias targets another root.
         return any(
@@ -1759,6 +1856,9 @@ def _content_query_within_member(
             for entry, target in selected_entries.items()
         )
     if scope_pattern is not None:
+        canonical, canonical_pattern = _resolve_scope_directory_prefix(
+            path, scope_pattern, missing_ok=True
+        )
         # A glob can hide an external alias in a nonliteral segment. Compare its
         # resolved expansions, including directories that can reach selected bytes.
         # Such witnesses prove overlap only, never the glob's whole future surface.
@@ -1779,7 +1879,7 @@ def _content_query_within_member(
     if dirlike or scope_pattern is not None:
         for entry, target in selected_entries.items():
             if canonical in target.parents and _pattern_matches(
-                target.relative_to(canonical).as_posix(), scope_pattern or "**/*"
+                target.relative_to(canonical).as_posix(), canonical_pattern or "**/*"
             ):
                 raise UndecidableScopeContainment(
                     f"fs.content_query scope component {path} reaches selected target {target} "
@@ -1787,6 +1887,7 @@ def _content_query_within_member(
                     "declare explicit files so the content predicate can be evaluated"
                 )
     for root in member.roots:
+        canonical_patterns = _canonical_member_patterns(root, member)
         if canonical != root and root not in canonical.parents:
             if scope_pattern is not None and canonical in root.parents:
                 raise UndecidableScopeContainment(
@@ -1802,7 +1903,7 @@ def _content_query_within_member(
         if _path_is_excluded(canonical, member) or not member.patterns:
             continue
         relative = canonical.relative_to(root).as_posix()
-        for pattern in _canonical_member_patterns(root, member):
+        for pattern in canonical_patterns:
             # rglob adds recursive selection; canonical patterns omit directory-only **.
             if _pattern_matches(relative, "**/" + pattern) and not canonical.exists():
                 # Missing bytes cannot be called outside based on an alias spelling.
@@ -1868,7 +1969,7 @@ def ref_within_member(
                             "whole-surface containment cannot be decided safely"
                         )
                 canonical_path, canonical_pattern = _resolve_scope_directory_prefix(
-                    path, scope_pattern, missing_ok=True
+                    path, scope_pattern, missing_ok=True, literal_targets=tuple(canonical_files)
                 )
                 if (canonical_path, canonical_pattern) != (
                     path,
@@ -1929,7 +2030,7 @@ def ref_within_member(
             if scope_pattern is not None:
                 try:
                     canonical_path, canonical_pattern = _resolve_scope_directory_prefix(
-                        path, scope_pattern
+                        path, scope_pattern, member_roots=(root,)
                     )
                     if (canonical_path, canonical_pattern) != (path, scope_pattern):
                         if ref_within_member(

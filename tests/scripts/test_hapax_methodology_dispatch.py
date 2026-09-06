@@ -5148,8 +5148,8 @@ def test_receipt_only_explicit_file_parent_alias_refuses_decay(
     assert str(scope) in err
 
 
-@pytest.mark.parametrize("declaration", ["bin", "sbin"])
-@pytest.mark.parametrize("candidate", ["bin", "sbin"])
+@pytest.mark.parametrize("declaration", ["bin", "sbin", "[s-s]bin", "s*"])
+@pytest.mark.parametrize("candidate", ["bin", "sbin", "s?in", "[s-s]bin", "s*"])
 @pytest.mark.parametrize("exists", [True, False], ids=["existing", "future"])
 def test_receipt_only_declaration_pattern_parent_alias_refuses_decay(
     tmp_path: Path,
@@ -5181,7 +5181,159 @@ def test_receipt_only_declaration_pattern_parent_alias_refuses_decay(
         f"{declaration=}, {candidate=}, {exists=}: receipt-only main() returned {rc}: {err}"
     )
     _assert_frame_refusal_receipt(tmp_path, frame_root, rc, err)
-    assert str(scope) in err
+    assert str(root) in err
+    contained = (
+        candidate in {"bin", "sbin"} and declaration in {"bin", "sbin"}
+        if exists
+        else candidate == declaration
+    )
+    if contained:
+        assert "marks every declared mutation surface out of accountability" in err, err
+    else:
+        assert "containment is undecidable" in err, err
+
+
+@pytest.mark.parametrize(
+    "candidate",
+    [
+        "run/review-future/new.py",
+        "var/run/review-future/new.py",
+        "var/r[u-u]n/review-future/new.py",
+        "var/r*/review-future/new.py",
+        "var/log/review-future/new.py",
+    ],
+)
+@pytest.mark.parametrize(
+    "declaration", ["review-future", "review-alias", "[r-r]eview-alias", "r*alias"]
+)
+def test_receipt_only_content_query_external_alias_future_tail(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+    candidate: str,
+    declaration: str,
+) -> None:
+    root = tmp_path / "run"
+    (root / "review-future").mkdir(parents=True)
+    (root / "review-alias").symlink_to("review-future", target_is_directory=True)
+    (tmp_path / "var/log").mkdir(parents=True)
+    (tmp_path / "var/run").symlink_to("../run", target_is_directory=True)
+    assert not list(tmp_path.glob(candidate))
+    frame_root = _frame_procedure_root(
+        tmp_path / "frame",
+        decayed_root=root,
+        location={"roots": [str(root)], "patterns": [f"{declaration}/*.py"], "query": "query"},
+        reader="fs.content_query",
+        query_params=True,
+    )
+    scope = tmp_path / candidate
+
+    rc, err = _dispatch_receipt_only_scope(tmp_path, monkeypatch, capsys, frame_root, scope)
+
+    if candidate.startswith("var/log/"):
+        assert rc == 0, err
+        receipt = json.loads(
+            (tmp_path / "ledger/methodology-dispatch.jsonl").read_text().splitlines()[-1]
+        )
+        assert receipt["ok"] is True and receipt["launched"] is False
+        assert receipt["frame_decayed_members"] == ["legacy-surface"]
+        return
+    _assert_frame_refusal_receipt(tmp_path, frame_root, rc, err)
+    assert "containment is undecidable" in err, err
+    assert str(root) in err
+
+
+@pytest.mark.parametrize("reader", ["fs.glob", "fs.content_query"])
+@pytest.mark.parametrize("candidate", ["x?in/site_perl/new.py", "s?in/x?in/new.py"])
+def test_receipt_only_unmatched_candidate_directory_glob_is_undecidable(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+    reader: str,
+    candidate: str,
+) -> None:
+    root = tmp_path / "usr"
+    (root / "bin/site_perl").mkdir(parents=True)
+    (root / "sbin").symlink_to("bin", target_is_directory=True)
+    assert not list(root.glob("x?in"))
+    frame_root = _frame_procedure_root(
+        tmp_path / "frame",
+        decayed_root=root,
+        location={
+            **({"roots": [str(root)]} if reader == "fs.content_query" else {"path": str(root)}),
+            "patterns": ["bin/site_perl/**/*"],
+            **({"query": "query"} if reader == "fs.content_query" else {}),
+        },
+        reader=reader,
+        query_params=reader == "fs.content_query",
+    )
+    scope = root / candidate
+
+    rc, err = _dispatch_receipt_only_scope(tmp_path, monkeypatch, capsys, frame_root, scope)
+
+    _assert_frame_refusal_receipt(tmp_path, frame_root, rc, err)
+    assert "containment is undecidable" in err
+    assert "no resolvable directory" in err
+    assert str(root) in err
+
+
+@pytest.mark.parametrize("reader", ["fs.glob", "fs.content_query"])
+def test_receipt_only_candidate_prefix_keeps_branch_with_future_directories(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+    reader: str,
+) -> None:
+    root = tmp_path / "usr"
+    (root / "bin/site_perl").mkdir(parents=True)
+    (root / "lib").mkdir()
+    (root / "sbin").symlink_to("bin", target_is_directory=True)
+    (root / "slib").symlink_to("lib", target_is_directory=True)
+    # Only the disjoint branch has the deeper directory today. The shorter
+    # canonical lib prefix must retain the future tail selected by the member.
+    assert list(root.glob("s*/site_perl")) == [root / "sbin/site_perl"]
+    frame_root = _frame_procedure_root(
+        tmp_path / "frame",
+        decayed_root=root,
+        location={
+            **({"roots": [str(root)]} if reader == "fs.content_query" else {"path": str(root)}),
+            "patterns": ["lib/site_perl/**/*"],
+            **({"query": "query"} if reader == "fs.content_query" else {}),
+        },
+        reader=reader,
+        query_params=reader == "fs.content_query",
+    )
+
+    rc, err = _dispatch_receipt_only_scope(
+        tmp_path, monkeypatch, capsys, frame_root, root / "s*/site_perl/new.py"
+    )
+
+    _assert_frame_refusal_receipt(tmp_path, frame_root, rc, err)
+    assert "2 directories" in err
+
+
+def test_receipt_only_canonical_glob_remainders_without_comparison_refuse(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    root = tmp_path / "usr"
+    (root / "bin/site_perl").mkdir(parents=True)
+    (root / "sbin").symlink_to("bin", target_is_directory=True)
+    frame_root = _frame_procedure_root(
+        tmp_path / "frame",
+        decayed_root=root,
+        location={"path": str(root), "patterns": ["bin/site_perl/*.py"]},
+        reader="fs.glob",
+    )
+
+    rc, err = _dispatch_receipt_only_scope(
+        tmp_path, monkeypatch, capsys, frame_root, root / "s?in/site_perl/*py"
+    )
+
+    _assert_frame_refusal_receipt(tmp_path, frame_root, rc, err)
+    assert "canonical candidate remainder" in err
+    assert "scope_containment_undecidable" in err
 
 
 @pytest.mark.parametrize("declaration", ["[s-s]bin", "s*", "?bin", "**/[s-s]bin", "bin"])
