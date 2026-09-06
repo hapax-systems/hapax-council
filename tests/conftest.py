@@ -249,12 +249,24 @@ def sink_subprocess(tmp_path):
         ]
         command += ["--dev-bind", "/dev", "/dev", "--bind", str(shm), "/dev/shm"]
         # Some unrelated readers still contain absolute operator paths. Hide
-        # those parents as well, without reading their contents.
+        # those parents as well, without reading their contents. Only the
+        # estate's own parents are hidden: the interpreter that runs the child
+        # lives under the same share directory (uv-managed Pythons), and a
+        # mount point must already exist because bubblewrap would otherwise
+        # create it on the real home.
         operator_home = Path(pwd.getpwuid(os.getuid()).pw_dir)
-        for index, parts in enumerate((("hapax-state",), (".cache", "hapax"), (".local", "share"))):
+        hidden_parents = (
+            ("hapax-state",),
+            (".cache", "hapax"),
+            (".local", "share", "hapax-daimonion"),
+        )
+        for index, parts in enumerate(hidden_parents):
+            target = operator_home.joinpath(*parts)
+            if not target.is_dir():
+                continue
             empty = root / f"absolute-parent-{index}"
             empty.mkdir()
-            command += ["--bind", str(empty), str(operator_home.joinpath(*parts))]
+            command += ["--bind", str(empty), str(target)]
         command += [
             sys.executable,
             "-m",
