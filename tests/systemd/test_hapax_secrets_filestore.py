@@ -23,6 +23,7 @@ PRODUCER = REPO_ROOT / "scripts" / "secret_env_from_filestore.py"
 AUTHORITY_ENV = "HAPAX_PUBLIC_GATE_AUTHORITY_HMAC_KEY"
 AUTHORITY_ENTRY = "hapax-public-gate-authority-hmac-key"
 AUTHORITY_FILE = "hapax-public-gate-authority.env"
+HELPER_CONTRACT_PROBE = "hapax-contract-probe-" + "x" * 256
 AUTHORITY_VALUE = b"synthetic-public-gate-authority-key"  # pragma: allowlist secret
 REQUIRED_VALUES = {
     "litellm-master-key": b"synthetic-litellm",  # pragma: allowlist secret
@@ -535,11 +536,9 @@ def test_invalid_explicit_reins_source_is_refused(reins_git_checkout, tmp_path, 
         _require_reins_pin()
 
 
-@pytest.mark.parametrize(
-    "head",
-    ["edf05c05615df083d8dfd90ad1c11d88ba88761e", "0" * 40],  # pragma: allowlist secret
-)
-def test_ci_stages_verified_reins_source_outside_workspace(tmp_path, monkeypatch, head):
+@pytest.mark.parametrize("failure", ["none", "clone", "fetch", "checkout", "rev-parse", "mismatch"])
+def test_ci_stages_verified_reins_source_outside_workspace(tmp_path, monkeypatch, failure):
+    head = "0" * 40 if failure == "mismatch" else REINS_EXPECTED_COMMIT
     workflow = yaml.safe_load((REPO_ROOT / ".github/workflows/ci.yml").read_text())
     steps = workflow["jobs"]["test-full-shard"]["steps"]
     stage = next(
@@ -560,6 +559,8 @@ def test_ci_stages_verified_reins_source_outside_workspace(tmp_path, monkeypatch
         "from pathlib import Path\n"
         "with Path(os.environ['REINS_GIT_CALLS']).open('a') as log:\n"
         "    log.write(json.dumps(sys.argv[1:]) + '\\n')\n"
+        "if os.environ['REINS_GIT_FAILURE'] in sys.argv[1:]:\n"
+        "    sys.exit(128)\n"
         "if sys.argv[-2:] == ['rev-parse', 'HEAD']:\n"
         "    print(os.environ['REINS_GIT_HEAD'])\n"
     )
@@ -570,11 +571,19 @@ def test_ci_stages_verified_reins_source_outside_workspace(tmp_path, monkeypatch
     monkeypatch.setenv("REINS_TEST_SOURCE", source)
     monkeypatch.setenv("REINS_GIT_CALLS", str(log))
     monkeypatch.setenv("REINS_GIT_HEAD", head)
+    monkeypatch.setenv("REINS_GIT_FAILURE", failure)
     result = subprocess.run(["/bin/bash", "-c", stage["run"]], capture_output=True, text=True)
-    assert (result.returncode == 0) == (head == stage["env"]["REINS_TEST_COMMIT"])
-    assert head in result.stdout
+    assert (result.returncode == 0) == (failure == "none")
+    if failure in ("none", "mismatch"):
+        assert head in result.stdout
+    if failure != "none":
+        assert "Reins test source staging failed" in result.stderr
+        assert stage["env"]["REINS_TEST_COMMIT"] in result.stderr
+        assert "Next action:" in result.stderr
+        assert "GitHub reachability" in result.stderr
+        assert "rerun" in result.stderr
     calls = [json.loads(line) for line in log.read_text().splitlines()]
-    assert calls == [
+    expected = [
         [
             "clone",
             "--depth",
@@ -587,6 +596,9 @@ def test_ci_stages_verified_reins_source_outside_workspace(tmp_path, monkeypatch
         ["-C", source, "checkout", "--detach", stage["env"]["REINS_TEST_COMMIT"]],
         ["-C", source, "rev-parse", "HEAD"],
     ]
+    if failure in ("clone", "fetch", "checkout", "rev-parse"):
+        expected = expected[: ("clone", "fetch", "checkout", "rev-parse").index(failure) + 1]
+    assert calls == expected
 
 
 def _run_producer(
@@ -660,10 +672,16 @@ def helper_source(tmp_path, monkeypatch):
         "with Path(os.environ['SYNTHETIC_HELPER_CALLS']).open('a') as log:\n"
         "    log.write(('--where ' if operation == 'where' else '') + name + '\\n')\n"
         "entry = json.loads(os.environ['SYNTHETIC_HELPER_TABLE']).get(name, {})\n"
+        f"if name == {HELPER_CONTRACT_PROBE!r} and not entry:\n"
+        "    entry = {'where': {'action': 'unreadable', 'exception': 'OSError'}, "
+        "'get': {'action': 'unreadable', 'exception': 'OSError'}}\n"
         "default = entry if operation == 'get' else {'action': "
         "'absent' if entry.get('action', 'absent') == 'absent' else 'present'}\n"
         "entry = entry.get(operation, default)\n"
         "action = entry.get('action', 'absent')\n"
+        "if action == 'unreadable':\n"
+        "    sys.stderr.write(f\"unreadable: {name} ({entry['exception']})\\n\")\n"
+        "    sys.exit(2)\n"
         "if action == 'store':\n"
         "    sys.path.insert(0, os.environ['HAPAX_REINS_API'])\n"
         "    from k0.key_capture import FileStore\n"
@@ -720,7 +738,7 @@ def _run_helper(table, setup=""):
 
 
 def _expected_helper_calls():
-    return [
+    return [f"--where {HELPER_CONTRACT_PROBE}", HELPER_CONTRACT_PROBE] + [
         call
         for name in (*REQUIRED_VALUES, *OPTIONAL_ENTRIES, AUTHORITY_ENTRY)
         for call in (f"--where {name}", name)
@@ -756,6 +774,145 @@ def _file_state(path):
     except FileNotFoundError:
         return None
     return info.st_ino, info.st_mtime_ns, path.read_bytes()
+
+
+@pytest.mark.parametrize("contract", ["old", "corrected"])
+@pytest.mark.parametrize("operation", ["where", "get"])
+@pytest.mark.parametrize(
+    ("fault", "exception"),
+    [("EIO", "OSError"), ("EACCES", "PermissionError"), ("ELOOP", "OSError")],
+)
+def test_helper_entry_fault_contract_preserves_files(
+    helper_source, contract, operation, fault, exception
+):
+    table, _, common = helper_source
+    # Reach the authority read even on an old helper: no earlier optional absence.
+    for name in OPTIONAL_ENTRIES:
+        table.setdefault(name, {"action": "value", "hex": AUTHORITY_VALUE.hex()})
+    if contract == "old":
+        table[HELPER_CONTRACT_PROBE] = {"action": "absent"}
+        table[AUTHORITY_ENTRY] = {"action": "absent"}
+        reason = "helper_absence_unverifiable"
+    else:
+        table[AUTHORITY_ENTRY][operation] = {"action": "unreadable", "exception": exception}
+        reason = "helper_unreadable"
+    authority, inodes = _prior_files(common)
+    before = (_file_state(common), _file_state(authority))
+    result = _run_helper(table)
+    _assert_read_refusal(result, common, authority, inodes, AUTHORITY_ENTRY, reason)
+    assert (_file_state(common), _file_state(authority)) == before, fault
+    assert f"reason={reason}" in result.stderr
+    if contract == "corrected":
+        assert f"exception={exception}" in result.stderr
+    else:
+        assert "install the corrected helper (reins#39) and bump the pin" in result.stderr
+
+
+@pytest.mark.parametrize("operation", ["where", "get"])
+@pytest.mark.parametrize("fault", ["absent", "exit", "present", "wrong-class"])
+def test_helper_contract_probe_requires_both_exact_responses(helper_source, operation, fault):
+    table, _, common = helper_source
+    probe = {
+        "where": {"action": "unreadable", "exception": "OSError"},
+        "get": {"action": "unreadable", "exception": "OSError"},
+    }
+    probe[operation] = (
+        {"action": "unreadable", "exception": "PermissionError"}
+        if fault == "wrong-class"
+        else {"action": fault, "code": 255}
+    )
+    table[HELPER_CONTRACT_PROBE] = probe
+    authority, inodes = _prior_files(common)
+    result = _run_helper(table)
+    _assert_read_refusal(
+        result, common, authority, inodes, "helper", "reason=helper_absence_unverifiable"
+    )
+    calls = (common.parent / "helper-calls").read_text().splitlines()
+    assert calls[:2] == [f"--where {HELPER_CONTRACT_PROBE}", HELPER_CONTRACT_PROBE]
+
+
+@pytest.mark.parametrize("layout", ["missing-attribute", "outside-root", "wrong-inside-root"])
+def test_filestore_layout_unverified_preserves_files(producer_store, layout):
+    store, common = producer_store
+    store.put(AUTHORITY_ENTRY, AUTHORITY_VALUE)
+    authority, inodes = _prior_files(common)
+    setup = (
+        "sys.path.insert(0, os.environ['HAPAX_REINS_API'])\nfrom k0.key_capture import FileStore\n"
+    )
+    if layout == "missing-attribute":
+        setup += "del FileStore._blob_path\n"
+    else:
+        setup += (
+            "original_blob_path = FileStore._blob_path\n"
+            "def changed_path(store, name):\n"
+            f"    if name == {AUTHORITY_ENTRY!r}:\n"
+            + (
+                "        return store.root.parent / 'nonexistent.bin'\n"
+                if layout == "outside-root"
+                else "        return store.root / 'nonexistent.bin'\n"
+            )
+            + "    return original_blob_path(store, name)\n"
+            "FileStore._blob_path = changed_path\n"
+        )
+    result = _run_producer(os.environ.copy(), setup)
+    _assert_read_refusal(
+        result, common, authority, inodes, "FileStore", "reason=filestore_layout_unverified"
+    )
+
+
+@pytest.mark.parametrize("filename", ["hapax-secrets.env", AUTHORITY_FILE])
+@pytest.mark.parametrize("operation", ["replace", "unlink"])
+@pytest.mark.parametrize(
+    ("fault", "exception"), [("EIO", "OSError"), ("EACCES", "PermissionError")]
+)
+def test_publication_and_inspection_failure_reports_unknown(
+    helper_source, filename, operation, fault, exception
+):
+    if operation == "unlink" and filename != AUTHORITY_FILE:
+        # The common file has no removal publication path.
+        operation = "open"
+    table, _, common = helper_source
+    authority, _ = _prior_files(common)
+    target = common.with_name(filename)
+    before = _file_state(target)
+    if operation == "unlink":
+        table[AUTHORITY_ENTRY] = {"action": "absent"}
+    owner = "Path" if operation == "unlink" else "os"
+    setup = (
+        "import errno\nfrom pathlib import Path\n"
+        f"target = Path({str(target)!r})\n"
+        f"publish = {owner}.{operation}\n"
+        "inspect = Path.stat\n"
+        "publication_failed = False\n"
+        "def fail_publish(*args, **kwargs):\n"
+        "    global publication_failed\n"
+        + (
+            "    destination = Path(args[1])\n"
+            if operation == "replace"
+            else "    destination = Path(args[0])\n"
+        )
+        + "    if destination in (target, target.with_name('.' + target.name + '.tmp')):\n"
+        "        publication_failed = True\n"
+        f"        raise OSError(errno.{fault}, 'synthetic-private-error-detail')\n"  # pragma: allowlist secret (synthetic sentinel)
+        "    return publish(*args, **kwargs)\n"
+        "def fail_inspect(path, *args, **kwargs):\n"
+        "    if publication_failed and path == target:\n"
+        f"        raise OSError(errno.{fault}, 'synthetic-private-error-detail')\n"  # pragma: allowlist secret (synthetic sentinel)
+        "    return inspect(path, *args, **kwargs)\n"
+        f"{owner}.{operation} = fail_publish\n"
+        "Path.stat = fail_inspect\n"
+    )
+    result = _run_helper(table, setup)
+    assert result.returncode == 2
+    assert _file_state(target) == before
+    file_kind = "common" if filename == common.name else "authority"
+    assert f"prior {file_kind} file unknown (exception={exception})" in result.stderr
+    assert f"prior {file_kind} file absent" not in result.stderr
+    assert "Next action: restore write access" in result.stderr
+    assert "Traceback" not in result.stderr and "synthetic" not in result.stderr
+    if file_kind == "common":
+        assert authority.read_bytes() == AUTHORITY_VALUE
+        assert not result.stdout
 
 
 @pytest.mark.parametrize(
@@ -1299,9 +1456,7 @@ def test_service_filestore_entry_fault_preserves_files(
     if not prior:
         authority.unlink()
     before = (_file_state(common), _file_state(authority))
-    result = _run_producer(
-        os.environ.copy(), _entry_fault_setup(operation, fault), interpreter="/usr/bin/python3"
-    )
+    result = _run_producer(os.environ.copy(), _entry_fault_setup(operation, fault))
     assert (store.root / "entry-fault-observed").read_text() == fault
     assert authority.exists() == prior, "entry fault removed or created the authority file"
     assert (_file_state(common), _file_state(authority)) == before
@@ -1314,12 +1469,36 @@ def test_service_filestore_entry_fault_preserves_files(
     assert not list(common.parent.glob(".*.tmp"))
 
 
+@pytest.fixture(params=["supported", "python314"])
+def native_helper_interpreter(request):
+    if request.param == "supported":
+        return sys.executable
+    interpreter = os.environ.get("HAPAX_TEST_PYTHON314")
+    if not interpreter:
+        pytest.skip(
+            "PYTHON314_NOT_PROVISIONED: set HAPAX_TEST_PYTHON314 to an explicit Python 3.14 executable"
+        )
+    version = subprocess.run(
+        [interpreter, "-I", "-c", "import sys; print('%d.%d' % sys.version_info[:2])"],
+        capture_output=True,
+        text=True,
+        check=True,
+        timeout=5,
+    )
+    assert version.stdout == "3.14\n", "HAPAX_TEST_PYTHON314 must execute Python 3.14"
+    return interpreter
+
+
 @pytest.fixture
-def native_helper_source(producer_store, monkeypatch):
+def native_helper_source(producer_store, monkeypatch, native_helper_interpreter):
     store, common = producer_store
+    # Old helpers must reach the authority decision without an earlier absence.
+    for name in OPTIONAL_ENTRIES:
+        if name != "orcid-orcid":
+            store.put(name, AUTHORITY_VALUE)
     helper = common.parent / "bin" / "hapax-secret"
     helper.write_text(
-        "#!/usr/bin/python3\n"
+        f"#!{native_helper_interpreter}\n"
         "import os, runpy, sys\n"
         "sys.path.insert(0, os.environ['HAPAX_REINS_API'])\n"
         "exec(os.environ.get('SYNTHETIC_ENTRY_FAULT_SETUP', ''))\n"
@@ -1336,27 +1515,35 @@ def native_helper_source(producer_store, monkeypatch):
 @pytest.mark.parametrize("prior", [False, True], ids=["missing-file", "existing-file"])
 @pytest.mark.parametrize("state", ["absent", "readable", "unreadable"])
 @pytest.mark.parametrize("source", ["filestore", "helper"])
-def test_service_entry_decision_table(native_helper_source, monkeypatch, prior, state, source):
+def test_service_entry_decision_table(
+    native_helper_source, native_helper_interpreter, monkeypatch, prior, state, source
+):
     store, common, _ = native_helper_source
     monkeypatch.setenv("HAPAX_SECRETS_SOURCE", source)
     if state != "absent":
         store.put(AUTHORITY_ENTRY, AUTHORITY_VALUE)
         if state == "unreadable":
-            store._blob_path(AUTHORITY_ENTRY).write_bytes(b"truncated")
+            store._blob_path(AUTHORITY_ENTRY).write_bytes(
+                b"truncated"
+            )  # pragma: allowlist secret (synthetic sentinel)
     authority, _ = _prior_files(common)
     if not prior:
         authority.unlink()
     before = (_file_state(common), _file_state(authority))
-    result = _run_producer(os.environ.copy(), interpreter="/usr/bin/python3")
-    if state == "unreadable":
+    result = _run_producer(os.environ.copy(), interpreter=native_helper_interpreter)
+    if state == "unreadable" or (source == "helper" and state == "absent"):
         assert (_file_state(common), _file_state(authority)) == before
         assert result.returncode == 2
-        assert AUTHORITY_ENTRY in result.stderr and "present-but-unreadable" in result.stderr
+        diagnostic = (
+            "helper_absence_unverifiable" if state == "absent" else "present-but-unreadable"
+        )
+        assert AUTHORITY_ENTRY in result.stderr and diagnostic in result.stderr
         assert "Next action:" in result.stderr
         assert not result.stdout
     else:
         assert result.returncode == 0, result.stderr
-        assert common.read_bytes() == COMMON_BASELINE
+        expected = _environment_file_model(COMMON_BASELINE)
+        assert _environment_file_model(common.read_bytes()).items() >= expected.items()
         if state == "absent":
             assert not authority.exists()
             assert not store._blob_path(AUTHORITY_ENTRY).exists()
@@ -1366,16 +1553,17 @@ def test_service_entry_decision_table(native_helper_source, monkeypatch, prior, 
     assert not list(common.parent.glob(".*.tmp"))
 
 
-@pytest.mark.parametrize("fault", ["EIO", "EACCES", "ELOOP"])
-def test_native_helper_stat_fault_is_indistinguishable_from_absence(
-    native_helper_source, monkeypatch, fault
-):
-    """Protocol boundary evidence, not a claim that helper omission is safe.
+def test_native_helper_uses_selected_interpreter(native_helper_source, native_helper_interpreter):
+    _, _, helper = native_helper_source
+    assert helper.read_text().splitlines()[0] == f"#!{native_helper_interpreter}"
 
-    Reins must distinguish these responses before this producer can do so.
-    Never run the producer on this ambiguous response to endorse deletion.
-    """
-    store, _, helper = native_helper_source
+
+@pytest.mark.parametrize("fault", ["EIO", "EACCES", "ELOOP"])
+def test_native_helper_stat_fault_refuses_even_when_indistinguishable_from_absence(
+    native_helper_source, native_helper_interpreter, monkeypatch, fault
+):
+    """Witness the selected interpreter's native response AND producer refusal."""
+    store, common, helper = native_helper_source
     responses = []
     for present in (False, True):
         if present:
@@ -1392,26 +1580,48 @@ def test_native_helper_stat_fault_is_indistinguishable_from_absence(
             )
             pair.append((result.returncode, result.stdout, result.stderr))
         responses.append(pair)
-    assert (
-        responses[0]
-        == responses[1]
-        == [
-            (1, f"not found: {AUTHORITY_ENTRY}\n".encode(), b""),
-            (
-                1,
-                b"",
-                f"not found in FileStore: {AUTHORITY_ENTRY}. legal_next: "
-                "run hapax-secret (TTY put) via reins.\n".encode(),
-            ),
-        ]
+    absent_pair = [
+        (1, f"not found: {AUTHORITY_ENTRY}\n".encode(), b""),
+        (
+            1,
+            b"",
+            f"not found in FileStore: {AUTHORITY_ENTRY}. legal_next: "
+            "run hapax-secret (TTY put) via reins.\n".encode(),
+        ),
+    ]
+    assert responses[0] == absent_pair
+    version = subprocess.run(
+        [
+            native_helper_interpreter,
+            "-I",
+            "-c",
+            "import sys; print('%d.%d' % sys.version_info[:2])",
+        ],
+        capture_output=True,
+        text=True,
+        check=True,
+        timeout=5,
     )
+    swallowed = version.stdout == "3.14\n" or fault == "ELOOP"
+    if swallowed:
+        assert responses[1] == absent_pair
+        diagnostic = "reason=helper_absence_unverifiable"
+    else:
+        exception = "PermissionError" if fault == "EACCES" else "OSError"
+        for code, stdout, stderr in responses[1]:
+            assert code == 1 and stdout == b""
+            assert b"Traceback" in stderr and exception.encode() in stderr
+        diagnostic = "--where transport exit 1"
     assert (store.root / "entry-fault-observed").read_text() == fault
+    authority, inodes = _prior_files(common)
+    result = _run_producer(os.environ.copy(), interpreter=native_helper_interpreter)
+    _assert_read_refusal(result, common, authority, inodes, AUTHORITY_ENTRY, diagnostic)
 
 
 @pytest.mark.parametrize("prior", [False, True], ids=["missing-file", "existing-file"])
 @pytest.mark.parametrize("fault", ["EIO", "EACCES", "ELOOP"])
 def test_service_native_helper_open_fault_preserves_files(
-    native_helper_source, monkeypatch, prior, fault
+    native_helper_source, native_helper_interpreter, monkeypatch, prior, fault
 ):
     store, common, _ = native_helper_source
     store.put(AUTHORITY_ENTRY, AUTHORITY_VALUE)
@@ -1420,7 +1630,7 @@ def test_service_native_helper_open_fault_preserves_files(
         authority.unlink()
     before = (_file_state(common), _file_state(authority))
     monkeypatch.setenv("SYNTHETIC_ENTRY_FAULT_SETUP", _entry_fault_setup("open", fault))
-    result = _run_producer(os.environ.copy(), interpreter="/usr/bin/python3")
+    result = _run_producer(os.environ.copy(), interpreter=native_helper_interpreter)
     assert (store.root / "entry-fault-observed").read_text() == fault
     assert (_file_state(common), _file_state(authority)) == before
     assert result.returncode == 2
@@ -1449,7 +1659,8 @@ def test_store_exceptions_preserve_files(producer_store, operation, exception):
         f"FileStore.{operation} = fail\n"
     )
     result = _run_producer(os.environ.copy(), setup)
-    _assert_read_refusal(result, common, authority, inodes, "api-openai", exception)
+    diagnostic = "filestore_layout_unverified" if operation == "_blob_path" else "api-openai"
+    _assert_read_refusal(result, common, authority, inodes, diagnostic, exception)
 
 
 def test_store_initialization_exception_preserves_files(producer_store):
@@ -1734,7 +1945,7 @@ def test_helper_timeout_preserves_both_files(helper_source):
     [
         ("missing", "helper executable missing or not executable"),
         ("not-executable", "helper executable missing or not executable"),
-        ("launch-oserror", "helper litellm-master-key --where launch OSError"),
+        ("launch-oserror", "helper contract_probe --where launch OSError"),
     ],
 )
 def test_helper_executable_failure_preserves_files(helper_source, monkeypatch, fault, diagnostic):
@@ -1860,7 +2071,7 @@ def test_producer_absent_authority_removes_stale_file(producer_store, stale) -> 
     authority = common.with_name(AUTHORITY_FILE)
     if stale:
         authority.write_bytes(AUTHORITY_VALUE)
-    result = _run_producer(os.environ.copy(), interpreter="/usr/bin/python3")
+    result = _run_producer(os.environ.copy())
     assert result.returncode == 0, result.stderr
     assert not authority.exists()
     assert common.read_bytes() == COMMON_BASELINE

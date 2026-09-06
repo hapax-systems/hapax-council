@@ -19,7 +19,7 @@ import subprocess
 import sys
 import unicodedata
 from pathlib import Path
-from typing import NoReturn
+from typing import NamedTuple, NoReturn
 
 
 def _prerequisite_failure(problem: str, repair: str) -> NoReturn:
@@ -29,6 +29,8 @@ def _prerequisite_failure(problem: str, repair: str) -> NoReturn:
 
 _SOURCE = os.environ.get("HAPAX_SECRETS_SOURCE", "filestore")
 _HELPER_TIMEOUT_SECONDS = 20
+_HELPER_CONTRACT_PROBE = "hapax-contract-probe-" + "x" * 256
+_HELPER_CONTRACT_REPAIR = "install the corrected helper (reins#39) and bump the pin, then rerun"
 _HELPER_REPAIR = (
     "check HAPAX_SECRETS_HOST reachability and FileStore enrollment on that host; "
     "install executable hapax-secret on PATH or set HAPAX_SECRET_HELPER and rerun"
@@ -184,6 +186,7 @@ def _validate_env_value(env_name: str, value: str, entry: str) -> None:
 
 def _helper_call(name: str, *, where: bool = False) -> subprocess.CompletedProcess[bytes]:
     operation = "--where" if where else "GET"
+    label = "contract_probe" if name == _HELPER_CONTRACT_PROBE else name
     try:
         return subprocess.run(
             [_helper, "--where", name] if where else [_helper, name],
@@ -194,14 +197,64 @@ def _helper_call(name: str, *, where: bool = False) -> subprocess.CompletedProce
         )
     except subprocess.TimeoutExpired:
         _prerequisite_failure(
-            f"helper {name} {operation} timeout after {_HELPER_TIMEOUT_SECONDS}s", _HELPER_REPAIR
+            f"helper {label} {operation} timeout after {_HELPER_TIMEOUT_SECONDS}s", _HELPER_REPAIR
         )
     except OSError:
-        _prerequisite_failure(f"helper {name} {operation} launch OSError", _HELPER_REPAIR)
+        _prerequisite_failure(f"helper {label} {operation} launch OSError", _HELPER_REPAIR)
 
 
-def _helper_value(name: str) -> bytes | None:
+class _HelperFailure(NamedTuple):
+    reason: str
+    detail: str
+    exception: str | None = None
+
+
+def _helper_unreadable(result: subprocess.CompletedProcess[bytes], name: str) -> str | None:
+    # Never echo helper material, even an apparent exception-class field.
+    # Reins catches OSError; accept only the built-in class names it can report.
+    if result.returncode != 2 or result.stdout:
+        return None
+    for exception in (
+        "OSError",
+        "PermissionError",
+        "FileNotFoundError",
+        "IsADirectoryError",
+        "NotADirectoryError",
+        "BlockingIOError",
+        "InterruptedError",
+        "TimeoutError",
+        "ConnectionError",
+        "BrokenPipeError",
+        "ConnectionAbortedError",
+        "ConnectionRefusedError",
+        "ConnectionResetError",
+        "ChildProcessError",
+        "ProcessLookupError",
+    ):
+        if result.stderr == f"unreadable: {name} ({exception})\n".encode():
+            return exception
+    return None
+
+
+def _probe_helper_contract() -> bool:
+    # Both Reins revisions accept this name, whose path component exceeds the
+    # store host's NAME_MAX. No entry is created/read: stat fails ENAMETOOLONG.
+    # reins#39 alone maps that failure to exit 2/unreadable in BOTH operations.
+    # An old helper, an unreachable host, or any other response cannot attest
+    # absence. Probe the selected executable (including its remote forwarding),
+    # never a local import, version label, or an assumed installed pin.
+    where = _helper_call(_HELPER_CONTRACT_PROBE, where=True)
+    get = _helper_call(_HELPER_CONTRACT_PROBE)
+    return (
+        _helper_unreadable(where, _HELPER_CONTRACT_PROBE) == "OSError"
+        and _helper_unreadable(get, _HELPER_CONTRACT_PROBE) == "OSError"
+    )
+
+
+def _helper_value(name: str) -> bytes | None | _HelperFailure:
     where = _helper_call(name, where=True)
+    if exception := _helper_unreadable(where, name):
+        return _HelperFailure("helper_unreadable", "--where unreadable", exception)
     present = where.returncode == 0 and where.stdout == b"filestore\n" and not where.stderr
     absent = (
         where.returncode == 1
@@ -213,49 +266,89 @@ def _helper_value(name: str) -> bytes | None:
         backend = {b"pass\n": "pass", b"filestore\n": "filestore", b"": "empty"}.get(
             where.stdout, "unknown"
         )
-        _prerequisite_failure(
-            f"helper {name} --where transport exit {where.returncode} "
-            f"backend={backend} (unrecognized response)",
-            _HELPER_REPAIR,
+        return _HelperFailure(
+            "helper_response_unrecognized",
+            f"--where transport exit {where.returncode} backend={backend} (unrecognized response)",
         )
 
     result = _helper_call(name)
-    # Reins GET maps both absent and invalid blobs to this exact response.
-    # The paired --where response is required for omission/deletion, but pinned
-    # Reins also maps entry stat faults to this pair. Distinguishing those faults
-    # requires a native helper change; this transport cannot recover the cause.
+    if exception := _helper_unreadable(result, name):
+        return _HelperFailure("helper_unreadable", "GET unreadable", exception)
     not_found = (
         f"not found in FileStore: {name}. legal_next: run hapax-secret (TTY put) via reins.\n"
     ).encode()
     if result.returncode == 1 and result.stdout == b"" and result.stderr == not_found:
         if present:
-            _prerequisite_failure(
-                f"helper {name} GET present-but-unreadable; --where backend=filestore",
-                _HELPER_REPAIR,
+            return _HelperFailure(
+                "helper_unreadable", "GET present-but-unreadable; --where backend=filestore"
+            )
+        if not _HELPER_DISTINGUISHES_ABSENCE:
+            return _HelperFailure(
+                "helper_absence_unverifiable", "GET and --where absence unverified"
             )
         return None
     if result.returncode != 0:
-        _prerequisite_failure(
-            f"helper {name} GET transport exit {result.returncode}", _HELPER_REPAIR
-        )
+        return _HelperFailure("helper_transport_failure", f"GET transport exit {result.returncode}")
     if absent:
-        _prerequisite_failure(
-            f"helper {name} GET disagrees with --where backend=absent", _HELPER_REPAIR
+        return _HelperFailure(
+            "helper_response_disagreement", "GET disagrees with --where backend=absent"
         )
     return result.stdout
+
+
+def _verified_store_entries() -> dict[str, Path]:
+    # FileStore's public has/get conflate absence and faults. Until a public
+    # distinguishing API exists, verify its documented root/<name>.bin layout
+    # for EVERY requested name at startup, before any entry is read.
+    try:
+        blob_path = getattr(store, "_blob_path", None)
+        if not callable(blob_path):
+            raise ValueError
+        root = store.root.resolve(strict=True)
+        entries = {}
+        for name in (
+            *REQUIRED.values(),
+            *OPTIONAL.values(),
+            "hapax-public-gate-authority-hmac-key",
+        ):
+            entry = blob_path(name)
+            if (
+                not isinstance(entry, Path)
+                or entry.absolute() != store.root.absolute() / f"{name}.bin"
+            ):
+                raise ValueError
+            # Resolve the parent, not the blob: the latter's own stat errors
+            # must retain their read-failure classification (e.g. ELOOP).
+            if entry.parent.resolve(strict=True) != root:
+                raise ValueError
+            entries[name] = entry
+        return entries
+    except Exception as exc:
+        _prerequisite_failure(
+            f"FileStore reason=filestore_layout_unverified exception={type(exc).__name__}",
+            "install a FileStore with verified root/<name>.bin layout and callable _blob_path, "
+            "then rerun",
+        )
 
 
 def _store_value(name: str, env_name: str) -> str | None:
     if _SOURCE == "helper":
         raw = _helper_value(name)
         repair = _HELPER_REPAIR
+        if isinstance(raw, _HelperFailure):
+            if raw.reason == "helper_absence_unverifiable":
+                repair = _HELPER_CONTRACT_REPAIR
+            exception = f" exception={raw.exception}" if raw.exception else ""
+            _prerequisite_failure(
+                f"helper {name} {raw.detail}; reason={raw.reason}{exception}", repair
+            )
     else:
         repair = _STORE_REPAIR
         try:
             # Pinned FileStore exposes its validated root/<safe-name>.bin path.
             # has()/get() use is_file(), which can suppress stat errors. Only
             # the entry stat's FileNotFoundError demonstrates optional absence.
-            entry = store._blob_path(name)
+            entry = _STORE_ENTRIES[name]
             try:
                 entry.stat()
             except FileNotFoundError:
@@ -298,6 +391,22 @@ def _write_env(out: Path, lines: list[str]) -> None:
             os.close(fd)
         tmp.unlink(missing_ok=True)
         raise
+
+
+def _prior_file_state(path: Path) -> str:
+    try:
+        path.stat()
+    except FileNotFoundError:
+        return "absent"
+    except OSError as exc:
+        return f"unknown (exception={type(exc).__name__})"
+    return "retained"
+
+
+if _SOURCE == "helper":
+    _HELPER_DISTINGUISHES_ABSENCE = _probe_helper_contract()
+else:
+    _STORE_ENTRIES = _verified_store_entries()
 
 
 uid = os.getuid()
@@ -348,7 +457,7 @@ if authority_value is not None:
 try:
     _write_env(out, lines)
 except OSError:
-    prior_common = "retained" if out.exists() else "absent"
+    prior_common = _prior_file_state(out)
     _prerequisite_failure(
         f"common replacement failed at {out}; prior common file {prior_common}; authority untouched",
         "restore write access to the environment directory and rerun",
@@ -363,7 +472,7 @@ try:
             [f"HAPAX_PUBLIC_GATE_AUTHORITY_HMAC_KEY={authority_value}"],
         )
 except OSError:
-    prior_authority = "retained" if authority_out.exists() else "absent"
+    prior_authority = _prior_file_state(authority_out)
     action = "removal" if authority_value is None else "replacement"
     _prerequisite_failure(
         f"common refreshed; authority {action} failed at {authority_out}; "

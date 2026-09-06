@@ -610,6 +610,7 @@ jobs:
           REINS_TEST_SOURCE: ${{ runner.temp }}/reins
         run: |
           set -euo pipefail
+          trap 'echo "Reins test source staging failed for commit $REINS_TEST_COMMIT. Next action: check GitHub reachability and access to hapax-systems/reins, verify the pinned commit is available and the runner temporary directory is writable, then rerun the job." >&2' ERR
           git clone --depth 1 --no-checkout https://github.com/hapax-systems/reins.git "$REINS_TEST_SOURCE"
           git -C "$REINS_TEST_SOURCE" fetch --depth 1 origin "$REINS_TEST_COMMIT"
           git -C "$REINS_TEST_SOURCE" checkout --detach "$REINS_TEST_COMMIT"
