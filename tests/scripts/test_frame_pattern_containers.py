@@ -111,7 +111,16 @@ def test_main_scalar_star_producer_parity(tmp_path, monkeypatch, capsys):
     bwrap = shutil.which("bwrap")
     if bwrap is None:
         pytest.skip("bwrap unavailable; isolated producer parity not executed")
-    isolation = [bwrap, "--ro-bind", "/", "/", "--unshare-net", "--die-with-parent"]
+    isolation = [
+        bwrap,
+        "--ro-bind",
+        "/",
+        "/",
+        "--dev",
+        "/dev",
+        "--unshare-net",
+        "--die-with-parent",
+    ]
     probe = subprocess.run([*isolation, "/usr/bin/true"], capture_output=True, text=True)
     if probe.returncode:
         pytest.skip(f"isolated producer parity not executed: {probe.stderr.strip()}")
@@ -135,3 +144,6 @@ print('installed fs.content_query selects candidate for both star spellings')
         text=True,
     )
     assert result.returncode == 0, result.stdout + result.stderr
+    assert result.stdout.strip() == (
+        "installed fs.content_query selects candidate for both star spellings"
+    )
