@@ -615,19 +615,34 @@ def test_loop_target_tuple_unpacking_binds_each_component(gate, tmp_path: Path, 
     )
 
 
-def test_loop_target_post_loop_keeps_zero_iteration_and_body_end(gate, tmp_path: Path) -> None:
+@pytest.mark.parametrize(
+    ("iterable", "expected", "unresolved"),
+    [
+        ("[Path('artifacts/new.json')]", {"artifacts/new.json"}, 0),
+        ("items", {"artifacts/old.json"}, 1),
+        ("[]", {"artifacts/old.json"}, 0),
+    ],
+    ids=["nonempty-literal", "possibly-empty", "empty-literal"],
+)
+def test_loop_target_post_loop_keeps_zero_iteration_and_body_end(
+    gate, tmp_path: Path, iterable: str, expected: set[str], unresolved: int
+) -> None:
+    """Dossier: zero iterations are possible only when the iterable may be empty.
+
+    The former non-empty literal pin included an impossible old.json exit. Keep
+    the possibly-empty and empty iterable siblings beside the corrected pin.
+    """
     _write(
         tmp_path,
         "shared/consumer.py",
         "from pathlib import Path\ndef use():\n"
         "    artifact = Path('artifacts/old.json')\n"
-        "    for artifact in [Path('artifacts/new.json')]:\n        pass\n"
+        f"    for artifact in {iterable}:\n        pass\n"
         "    artifact.read_text()\n",
     )
-    assert _unwritten_patterns(gate.analyse_consumer_side(tmp_path, []), "shared/consumer.py") == {
-        "artifacts/old.json",
-        "artifacts/new.json",
-    }
+    report = gate.analyse_consumer_side(tmp_path, [])
+    assert _unwritten_patterns(report, "shared/consumer.py") == expected
+    assert report.unresolvable == unresolved
 
 
 @pytest.mark.parametrize(
@@ -698,3 +713,90 @@ def test_loop_unpacking_keeps_known_sibling_of_dynamic_component(gate, tmp_path:
     report = gate.analyse_consumer_side(tmp_path, [])
     assert _unwritten_patterns(report, "shared/consumer.py") == {"artifacts/known.json"}
     assert report.unresolvable == 1
+
+
+@pytest.mark.parametrize("loop", ["for", "async for"])
+@pytest.mark.parametrize(
+    "target", ["known, *rest, dest", "*rest, known, dest", "known, dest, *rest"]
+)
+def test_loop_starred_target_retains_fixed_siblings(gate, tmp_path: Path, loop, target) -> None:
+    items = {
+        "known, *rest, dest": "Path('artifacts/known.json'), unknown, Path('artifacts/dest.json')",
+        "*rest, known, dest": "unknown, Path('artifacts/known.json'), Path('artifacts/dest.json')",
+        "known, dest, *rest": "Path('artifacts/known.json'), Path('artifacts/dest.json'), unknown",
+    }[target]
+    _write(
+        tmp_path,
+        "shared/consumer.py",
+        "from pathlib import Path\nasync def use(unknown):\n"
+        f"    {loop} {target} in [({items})]:\n"
+        "        known.read_text()\n        dest.write_text('{}')\n"
+        "        rest.read_text()\n",
+    )
+    accesses, unresolved, *_ = gate.collect_artifact_accesses(tmp_path)
+    assert {(a.action, a.pattern) for a in accesses if a.bounded} == {
+        ("read", "artifacts/known.json"),
+        ("write", "artifacts/dest.json"),
+    }
+    assert unresolved == 1  # A starred capture is a list, not a modelled path.
+
+
+@pytest.mark.parametrize("loop", ["for", "async for"])
+def test_loop_unpacking_freezes_components_before_iterations(gate, tmp_path: Path, loop) -> None:
+    _write(
+        tmp_path,
+        "shared/consumer.py",
+        "from pathlib import Path\nasync def use(unknown):\n"
+        "    artifact = Path('artifacts/start')\n    piece = 'a'\n"
+        f"    {loop} suffix, dynamic in [(piece, unknown), (piece, unknown)]:\n"
+        "        artifact /= suffix\n        piece = 'b'\n"
+        "    artifact.write_text('{}')\n",
+    )
+    accesses, unresolved, *_ = gate.collect_artifact_accesses(tmp_path)
+    assert {(a.action, a.pattern) for a in accesses if a.bounded} == {
+        ("write", "artifacts/start/a/a")
+    }
+    assert unresolved == 0
+
+
+@pytest.mark.parametrize("loop", ["for", "async for"])
+@pytest.mark.parametrize(
+    "iterable",
+    ["{Path('artifacts/known.json')}", "[Path('artifacts/known.json'), *items]"],
+    ids=["set", "unknown-expansion"],
+)
+def test_loop_fallback_retains_known_access_and_uncertain_accumulation(
+    gate, tmp_path: Path, loop, iterable
+) -> None:
+    _write(
+        tmp_path,
+        "shared/consumer.py",
+        "from pathlib import Path\nasync def use(items):\n"
+        "    artifact = Path('artifacts/start')\n"
+        f"    {loop} piece in {iterable}:\n"
+        "        piece.read_text()\n        artifact /= piece\n"
+        "    artifact.write_text('{}')\n",
+    )
+    accesses, unresolved, *_ = gate.collect_artifact_accesses(tmp_path)
+    assert "artifacts/known.json" in {a.pattern for a in accesses if a.action == "read"}
+    assert not [a for a in accesses if a.action == "write" and a.bounded]
+    assert unresolved > 0
+
+
+def test_capped_loop_retains_known_sibling_of_dynamic_component(gate, tmp_path: Path, monkeypatch):
+    monkeypatch.setattr(gate, "_MAX_BINDING_STATES", 1)
+    _write(
+        tmp_path,
+        "shared/consumer.py",
+        "from pathlib import Path\ndef use(unknown):\n"
+        "    for known, dynamic in [(Path('artifacts/first.json'), unknown), "
+        "(Path('artifacts/second.json'), unknown)]:\n"
+        "        known.read_text()\n        dynamic.write_text('{}')\n",
+    )
+    report = gate.analyse_consumer_side(tmp_path, [])
+    assert _unwritten_patterns(report, "shared/consumer.py") == {
+        "artifacts/first.json",
+        "artifacts/second.json",
+    }
+    assert report.unresolvable > 0
+    assert any("literal loop iteration cap" in site for site in report.capped_expressions)

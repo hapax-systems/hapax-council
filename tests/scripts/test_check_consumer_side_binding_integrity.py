@@ -9,6 +9,7 @@ import json
 import re
 import subprocess
 import sys
+import time
 from dataclasses import replace
 from pathlib import Path
 
@@ -41,6 +42,148 @@ def _unwritten(report) -> set[str]:
         for finding in report.findings
         if finding.kind == "consumer-reads-unwritten-artifact"
     }
+
+
+@pytest.mark.parametrize("indirect", [False, True], ids=["direct", "indirect"])
+def test_round_nine_direct_indirect_outer_effects(gate, tmp_path, indirect):
+    _write(
+        tmp_path,
+        "from pathlib import Path\n\nARTIFACT = Path('artifacts/old.json')\n\n\n"
+        + ("def change_path():\n" if indirect else "def configure():\n")
+        + "    global ARTIFACT\n    ARTIFACT = Path('artifacts/new.json')\n"
+        + ("\n\ndef configure():\n    change_path()\n" if indirect else "")
+        + "\n\nconfigure()\nARTIFACT.write_text('{}')\n"
+        "Path('artifacts/old.json').read_text()\n",
+    )
+    accesses, *_ = gate.collect_artifact_accesses(tmp_path)
+    bounded_writes = {a.pattern for a in accesses if a.action == "write" and a.bounded}
+    assert "artifacts/old.json" not in bounded_writes, bounded_writes
+    report = gate.analyse_consumer_side(tmp_path, [])
+    assert _unwritten(report) == {"artifacts/old.json"}
+    assert report.unresolvable > 0 or bounded_writes == {"artifacts/new.json"}
+    if not indirect:
+        assert report.unresolvable > 0
+
+
+@pytest.mark.parametrize("aliased", [False, True], ids=["chain", "alias"])
+@pytest.mark.parametrize("wrapped", [False, True], ids=["module", "invocation-globals"])
+def test_round_nine_three_level_outer_effects(gate, tmp_path, aliased, wrapped):
+    _write(
+        tmp_path,
+        "from pathlib import Path\nARTIFACT = Path('artifacts/old.json')\n"
+        "def change_path():\n    global ARTIFACT\n"
+        "    ARTIFACT = Path('artifacts/new.json')\n"
+        "def middle():\n"
+        + ("    update = change_path\n    update()\n" if aliased else "    change_path()\n")
+        + "def configure():\n    middle()\n"
+        + (
+            "def write_state():\n    ARTIFACT.write_text('{}')\n"
+            "def run():\n    ARTIFACT = Path('artifacts/local.json')\n"
+            "    configure()\n    ARTIFACT.write_text('{}')\n    write_state()\nrun()\n"
+            if wrapped
+            else "configure()\nARTIFACT.write_text('{}')\n"
+        )
+        + "Path('artifacts/old.json').read_text()\n",
+    )
+    accesses, *_ = gate.collect_artifact_accesses(tmp_path)
+    assert {a.pattern for a in accesses if a.action == "write" and a.bounded} == (
+        {"artifacts/local.json"} if wrapped else set()
+    )
+    report = gate.analyse_consumer_side(tmp_path, [])
+    assert _unwritten(report) == {"artifacts/old.json"}
+    assert report.unresolvable > 0
+    assert not report.unresolved_closures
+
+
+def test_round_nine_recursive_outer_effects_are_unresolved(tmp_path):
+    _write(
+        tmp_path,
+        "from pathlib import Path\nARTIFACT = Path('artifacts/old.json')\n"
+        "def a():\n    b()\n"
+        "def b():\n    global ARTIFACT\n    ARTIFACT = Path('artifacts/new.json')\n    a()\n"
+        "a()\nARTIFACT.write_text('{}')\nPath('artifacts/old.json').read_text()\n",
+    )
+    # The source is data for the production parser. A subprocess bounds even a mutation
+    # that removes the cycle guard and loops in effect closure construction.
+    driver = """
+import importlib.util, json, sys
+from pathlib import Path
+spec = importlib.util.spec_from_file_location("recursive_scanner", sys.argv[1])
+gate = importlib.util.module_from_spec(spec)
+sys.modules[spec.name] = gate
+spec.loader.exec_module(gate)
+repo = Path(sys.argv[2])
+accesses, *_ = gate.collect_artifact_accesses(repo)
+report = gate.analyse_consumer_side(repo, [])
+print(json.dumps({"writes": [a.pattern for a in accesses if a.action == "write" and a.bounded],
+                  "unresolvable": report.unresolvable,
+                  "unresolved_closures": report.unresolved_closures}))
+"""
+    result = subprocess.run(
+        [sys.executable, "-c", driver, str(SCRIPT_PATH), str(tmp_path)],
+        capture_output=True,
+        text=True,
+        check=True,
+        timeout=5,
+    )
+    measured = json.loads(result.stdout)
+    assert measured["writes"] == [], measured
+    assert measured["unresolvable"] > 0
+    assert any("recursive outer effect cycle" in site for site in measured["unresolved_closures"])
+
+
+@pytest.mark.parametrize("unbounded", ["target", "cap"])
+def test_round_nine_unbounded_outer_effects_are_named(gate, tmp_path, monkeypatch, unbounded):
+    if unbounded == "cap":
+        monkeypatch.setattr(gate, "_MAX_BINDING_STATES", 1)
+    _write(
+        tmp_path,
+        "from pathlib import Path\nARTIFACT = Path('artifacts/old.json')\n"
+        "def configure(flag):\n"
+        + (
+            "    pass\n"
+            if unbounded == "cap"
+            else "    unknown_callback()\n    ARTIFACT.write_text('{}')\n"
+        )
+        + "def run():\n    configure(1)\n"
+        + ("    configure(2)\n" if unbounded == "cap" else "")
+        + "Path('artifacts/old.json').read_text()\nrun()\nARTIFACT.write_text('{}')\n"
+        "(ARTIFACT / 'nested.json').write_text('{}')\n",
+    )
+    accesses, *_ = gate.collect_artifact_accesses(tmp_path)
+    assert not [a for a in accesses if a.action == "write" and a.bounded], accesses
+    report = gate.analyse_consumer_side(tmp_path, [])
+    assert _unwritten(report) == {"artifacts/old.json"}
+    assert report.unresolvable > 0
+    assert any(
+        "outer effects" in site and "UNRESOLVED" in site for site in report.unresolved_closures
+    )
+    assert any(
+        "outer effects" in site
+        and ("binding state cap" if unbounded == "cap" else "unresolved call target") in site
+        for site in report.unresolved_closures
+    )
+
+
+def test_round_nine_transitive_nonlocal_keeps_lexical_owner(gate, tmp_path):
+    _write(
+        tmp_path,
+        "from pathlib import Path\nARTIFACT = Path('artifacts/module.json')\n"
+        "def run():\n    ARTIFACT = Path('artifacts/old.json')\n"
+        "    def configure():\n"
+        "        def change_path():\n            nonlocal ARTIFACT\n"
+        "            ARTIFACT = Path('artifacts/new.json')\n"
+        "        change_path()\n"
+        "    configure()\n    ARTIFACT.write_text('{}')\n"
+        "run()\nARTIFACT.write_text('{}')\nPath('artifacts/old.json').read_text()\n",
+    )
+    accesses, *_ = gate.collect_artifact_accesses(tmp_path)
+    assert {a.pattern for a in accesses if a.action == "write" and a.bounded} == {
+        "artifacts/module.json"
+    }
+    report = gate.analyse_consumer_side(tmp_path, [])
+    assert _unwritten(report) == {"artifacts/old.json"}
+    assert report.unresolvable > 0
 
 
 @pytest.mark.parametrize(
@@ -698,11 +841,9 @@ def test_round_six_loop_exit_preserves_bindings_and_runs_finally(gate, tmp_path,
         "artifact.read_text()\n",
     )
     report = gate.analyse_consumer_side(tmp_path, [])
-    assert _unwritten(report) == {
-        "artifacts/before.json",
-        "artifacts/exit.json",
-        "artifacts/else.json",
-    }
+    assert _unwritten(report) == {"artifacts/exit.json"} | (
+        {"artifacts/else.json"} if terminator == "continue" else set()
+    )
 
 
 @pytest.mark.parametrize("signature", ["artifact=ARTIFACT", "*, artifact=ARTIFACT"])
@@ -896,8 +1037,8 @@ def test_round_six_target_stores_execute_left_to_right(gate, tmp_path, statement
     _write(
         tmp_path,
         "from pathlib import Path\nslots = {}\nartifact = Path('artifacts/old.json')\n"
-        + statement
-        + "\n",
+        # This pin isolates target order; an unresolved manager can also rebind globals.
+        "def manager():\n    pass\n" + statement + "\n",
     )
     assert _unwritten(gate.analyse_consumer_side(tmp_path, [])) == {"artifacts/new.json"}
 
@@ -1351,7 +1492,10 @@ def test_generated_branch_corpus_preserves_concrete_union(
     _write(tmp_path, source + "    return artifact.read_text()\n")
     report = gate.analyse_consumer_side(tmp_path, [])
     assert _unwritten(report) == expected
-    assert report.unresolvable == 0
+    if shape == "loop":
+        assert report.unresolvable > 0
+    else:
+        assert report.unresolvable == 0
 
 
 def test_json_failure_remedy_is_an_accepted_and_effective_option(
@@ -1903,3 +2047,828 @@ def test_dynamic_helper_pair_is_retained_as_unresolved_evidence(
         "status=unresolved; equal dynamic patterns, possible pairing only"
         in capsys.readouterr().out
     )
+
+
+def test_round_ten_literal_setup_configure(gate, tmp_path):
+    _write(
+        tmp_path,
+        "from pathlib import Path\nARTIFACT=Path('artifacts/old.json')\n"
+        "def configure():\n    global ARTIFACT\n"
+        "    ARTIFACT=Path('artifacts/new.json')\n"
+        "def setup():\n    configure()\n"
+        "setup()\nARTIFACT.write_text('{}')\n"
+        "Path('artifacts/old.json').read_text()\n",
+    )
+    accesses, *_ = gate.collect_artifact_accesses(tmp_path)
+    assert not [a for a in accesses if a.action == "write" and a.bounded]
+    report = gate.analyse_consumer_side(tmp_path, [])
+    assert _unwritten(report) == {"artifacts/old.json"}
+    assert report.unresolvable > 0
+
+
+@pytest.mark.parametrize("factory_parameter", [False, True])
+def test_round_ten_attribute_owner_never_borrows_namesake(gate, tmp_path, factory_parameter):
+    # The literal dossier is already masked by unknown-call poisoning of Holder.
+    # A constructor parameter keeps that independent effect from hiding the fallback.
+    _write(
+        tmp_path,
+        "from pathlib import Path\nARTIFACT=Path('artifacts/old.json')\n"
+        "class Holder:\n    ARTIFACT=Path('artifacts/new.json')\n"
+        + (
+            "def run(factory):\n    ARTIFACT=Path('artifacts/old.json')\n"
+            "    factory().ARTIFACT.write_text('{}')\nrun(Holder)\n"
+            if factory_parameter
+            else "Holder().ARTIFACT.write_text('{}')\n"
+        )
+        + "Path('artifacts/old.json').read_text()\n",
+    )
+    expression = ast.parse("Holder().ARTIFACT", mode="eval").body
+    assert (
+        gate._resolve_path_expr(
+            expression, {"ARTIFACT": "artifacts/old.json"}, Path("shared/consumer.py"), tmp_path, {}
+        )
+        is None
+    )
+    accesses, *_ = gate.collect_artifact_accesses(tmp_path)
+    assert "artifacts/old.json" not in {
+        a.pattern for a in accesses if a.action == "write" and a.bounded
+    }
+    report = gate.analyse_consumer_side(tmp_path, [])
+    assert _unwritten(report) == {"artifacts/old.json"}
+    assert report.unresolvable > 0
+
+
+def test_round_ten_literal_loop_composes_iterations(gate, tmp_path):
+    _write(
+        tmp_path,
+        "from pathlib import Path\nartifact=Path('artifacts/start')\n"
+        "for piece in ['a','b']:\n    artifact /= piece\n"
+        "artifact.write_text('{}')\n"
+        "Path('artifacts/start').read_text()\n"
+        "Path('artifacts/start/a').read_text()\n"
+        "Path('artifacts/start/b').read_text()\n",
+    )
+    accesses, unresolved, *_ = gate.collect_artifact_accesses(tmp_path)
+    assert {a.pattern for a in accesses if a.action == "write" and a.bounded} == {
+        "artifacts/start/a/b"
+    }
+    assert unresolved == 0
+    assert _unwritten(gate.analyse_consumer_side(tmp_path, [])) == {
+        "artifacts/start",
+        "artifacts/start/a",
+        "artifacts/start/b",
+    }
+
+
+def test_round_ten_loop_freezes_iterable_and_handles_empty(gate, tmp_path):
+    _write(
+        tmp_path,
+        "from pathlib import Path\nartifact=Path('artifacts/start')\npiece='a'\n"
+        "for suffix in (piece, piece):\n    artifact /= suffix\n    piece='b'\n"
+        "for suffix in []:\n    artifact /= 'impossible'\n"
+        "artifact.write_text('{}')\n",
+    )
+    accesses, unresolved, *_ = gate.collect_artifact_accesses(tmp_path)
+    assert {a.pattern for a in accesses if a.action == "write" and a.bounded} == {
+        "artifacts/start/a/a"
+    }
+    assert unresolved == 0
+
+
+@pytest.mark.parametrize("iterable", ["pieces", "['a'] * 100", "['a', 'b', 'c']"])
+def test_round_ten_uncertain_loop_never_certifies_producers(gate, tmp_path, monkeypatch, iterable):
+    monkeypatch.setattr(gate, "_MAX_BINDING_STATES", 2)
+    _write(
+        tmp_path,
+        "from pathlib import Path\nartifact=Path('artifacts/start')\n"
+        f"for piece in {iterable}:\n    artifact /= piece\n"
+        "artifact.write_text('{}')\nPath('artifacts/start').read_text()\n",
+    )
+    accesses, *_ = gate.collect_artifact_accesses(tmp_path)
+    assert not [a for a in accesses if a.action == "write" and a.bounded]
+    report = gate.analyse_consumer_side(tmp_path, [])
+    assert "artifacts/start" in _unwritten(report)
+    assert report.unresolvable > 0
+    if iterable == "['a', 'b', 'c']":
+        assert any("literal loop iteration cap" in site for site in report.capped_expressions)
+
+
+@pytest.mark.parametrize(
+    "expression",
+    [
+        "write_state(ARTIFACT, configure())",
+        "ARTIFACT.write_text(configure())",
+        "write_state(ARTIFACT, [0 for item in configure()])",
+    ],
+)
+def test_round_ten_ordered_outer_effects_without_walrus(gate, tmp_path, expression):
+    _write(
+        tmp_path,
+        "from pathlib import Path\nARTIFACT=Path('artifacts/old.json')\n"
+        "def configure():\n    global ARTIFACT\n"
+        "    ARTIFACT=Path('artifacts/new.json')\n    return []\n"
+        + (
+            "def write_state(artifact, ignored):\n    artifact.write_text('{}')\n"
+            if expression.startswith("write_state")
+            else ""
+        )
+        + f"{expression}\nPath('artifacts/old.json').read_text()\n",
+    )
+    accesses, unresolved, *_ = gate.collect_artifact_accesses(tmp_path)
+    assert {a.pattern for a in accesses if a.action == "write" and a.bounded} == {
+        "artifacts/old.json"
+    }
+    assert unresolved == 0
+    assert not _unwritten(gate.analyse_consumer_side(tmp_path, []))
+
+
+def test_round_ten_comprehension_exports_outer_effects(gate, tmp_path):
+    _write(
+        tmp_path,
+        "from pathlib import Path\nARTIFACT=Path('artifacts/old.json')\n"
+        "def configure():\n    global ARTIFACT\n"
+        "    ARTIFACT=Path('artifacts/new.json')\n    return []\n"
+        "[0 for item in configure()]\nARTIFACT.write_text('{}')\n"
+        "Path('artifacts/old.json').read_text()\n",
+    )
+    accesses, *_ = gate.collect_artifact_accesses(tmp_path)
+    assert not [a for a in accesses if a.action == "write" and a.bounded]
+    report = gate.analyse_consumer_side(tmp_path, [])
+    assert _unwritten(report) == {"artifacts/old.json"}
+    assert report.unresolvable > 0
+
+
+def test_round_ten_reduced_registry_instance(gate, tmp_path):
+    # The real canary expects only the unwritten-artifact kind for this path.
+    path = tmp_path / "shared" / "platform_capability_registry.py"
+    path.parent.mkdir(parents=True)
+    path.write_text(
+        "from pathlib import Path\nimport json\n"
+        "REGISTRY_PATH=Path('config/platform-capability-registry.json')\n"
+        "def _load_json_object(path):\n"
+        "    payload=json.loads(path.read_text(encoding='utf-8'))\n    return payload\n"
+        "def load_registry():\n    return _load_json_object(REGISTRY_PATH)\n"
+    )
+    report = gate.analyse_consumer_side(tmp_path, [])
+    registry = [
+        item
+        for item in report.findings
+        if item.reader.pattern == "config/platform-capability-registry.json"
+    ]
+    assert registry
+    assert {item.kind for item in registry} == {"consumer-reads-unwritten-artifact"}
+
+
+def test_round_ten_reduced_claim_dispatch_instance(gate, tmp_path):
+    # Reduced from sdlc_claim._capture_claim_leases and the task-store writer:
+    # captured() mentions snapshot, never its caller's binding_path local.
+    shared = tmp_path / "shared"
+    shared.mkdir()
+    (shared / "sdlc_task_store.py").write_text(
+        "from pathlib import Path\nimport os\n"
+        "CLAIM_DISPATCH_BINDING_SCHEMA='hapax.claim-dispatch-binding.v1'\n"
+        "def claim_dispatch_binding_path(cache_dir: Path, claim_key: str) -> Path:\n"
+        "    if not claim_key or '/' in claim_key or claim_key in {'.','..'}:\n"
+        "        raise TaskStoreError('claim_dispatch_binding_key_invalid', claim_key)\n"
+        "    return cache_dir / f'cc-claim-dispatch-{claim_key}.json'\n"
+        "def write_claim_dispatch_binding(cache_dir: Path, claim_key: str, binding):\n"
+        "    path=claim_dispatch_binding_path(cache_dir, claim_key)\n"
+        "    path.parent.mkdir(parents=True, exist_ok=True)\n"
+        "    payload=_canonical_json_bytes(binding.to_record())\n"
+        "    temporary=path.parent / f'.{path.name}.{os.getpid()}.tmp'\n"
+        "    os.replace(temporary, path)\n    return path\n"
+    )
+    (shared / "sdlc_claim.py").write_text(
+        "from pathlib import Path\n"
+        "from shared.sdlc_task_store import claim_dispatch_binding_path\n"
+        "def capture_claim(cache: Path, role, snapshot):\n"
+        "    def captured(name):\n        return snapshot.observe_file_at(name).captured\n"
+        "    binding_path=claim_dispatch_binding_path(cache, role)\n"
+        "    binding_file=captured(binding_path.name)\n"
+        "    return load_claim_dispatch_binding(binding_path, content=binding_file.content)\n"
+    )
+    report = gate.analyse_consumer_side(tmp_path, [])
+    pairs = [item for item in report.pairs if item.family == "claim_dispatch_binding"]
+    assert pairs
+    assert all(item.reader.pattern == item.writer.pattern for item in pairs)
+    assert any(item.reader.path == Path("shared/sdlc_claim.py") for item in pairs)
+    assert any(item.writer.path == Path("shared/sdlc_task_store.py") for item in pairs)
+
+
+def test_round_ten_unknown_transitive_capture_keeps_its_owner(gate, tmp_path):
+    _write(
+        tmp_path,
+        "from pathlib import Path\n"
+        "def run():\n    artifact=Path('artifacts/old.json')\n"
+        "    stable=Path('artifacts/stable.json')\n"
+        "    def captured():\n        callback(artifact)\n"
+        "    def wrapper():\n        captured()\n"
+        "    wrapper()\n    artifact.write_text('{}')\n    stable.write_text('{}')\n"
+        "run()\nPath('artifacts/old.json').read_text()\n",
+    )
+    accesses, *_ = gate.collect_artifact_accesses(tmp_path)
+    assert {a.pattern for a in accesses if a.action == "write" and a.bounded} == {
+        "artifacts/stable.json"
+    }
+    report = gate.analyse_consumer_side(tmp_path, [])
+    assert _unwritten(report) == {"artifacts/old.json"}
+    assert report.unresolvable > 0
+
+
+@pytest.mark.parametrize("limit", ["depth", "summary"])
+def test_round_ten_effect_caps_are_named_and_withhold_writers(gate, tmp_path, limit):
+    count = (gate._MAX_BINDING_ROUNDS + 2) if limit == "depth" else (gate._MAX_BINDING_STATES + 1)
+    definitions = (
+        "def leaf():\n    global ARTIFACT\n    ARTIFACT=Path('artifacts/new.json')\n"
+        + "".join(
+            f"def step_{i}():\n    {f'step_{i - 1}' if i else 'leaf'}()\n" for i in range(count)
+        )
+        + f"step_{count - 1}()\n"
+        if limit == "depth"
+        else "".join(
+            f"def step_{i}():\n    global ARTIFACT\n    ARTIFACT=Path('artifacts/new.json')\n"
+            for i in range(count)
+        )
+        + "def setup():\n"
+        + "".join(f"    step_{i}()\n" for i in range(count))
+        + "setup()\n"
+    )
+    _write(
+        tmp_path,
+        "from pathlib import Path\nARTIFACT=Path('artifacts/old.json')\n"
+        + definitions
+        + "ARTIFACT.write_text('{}')\nPath('artifacts/old.json').read_text()\n",
+    )
+    accesses, *_ = gate.collect_artifact_accesses(tmp_path)
+    assert not [a for a in accesses if a.action == "write" and a.bounded]
+    report = gate.analyse_consumer_side(tmp_path, [])
+    assert report.unresolvable > 0
+    assert any(f"outer effect {limit} cap" in site for site in report.capped_expressions)
+    assert _unwritten(report) == {"artifacts/old.json"}
+
+
+def test_round_ten_effect_closure_linear_cost_and_local_cache(gate, monkeypatch):
+    # Count construction work, not a timing ratio susceptible to scheduler noise.
+    # The chain has shared fan-in at every level; closure must never unfold it per call.
+    original_effects = gate._OuterEffects
+    original_mutations = gate._scope_outer_mutations
+    work = {"summaries": 0, "bodies": 0}
+
+    def effects(*args, **kwargs):
+        if args or kwargs:
+            work["summaries"] += 1
+        return original_effects(*args, **kwargs)
+
+    def mutations(node):
+        work["bodies"] += 1
+        return original_mutations(node)
+
+    monkeypatch.setattr(gate, "_OuterEffects", effects)
+    monkeypatch.setattr(gate, "_scope_outer_mutations", mutations)
+    measurements = []
+    for count in (200, 400):
+        table = gate.PathFunctionTable()
+        nodes = ast.parse("".join(f"def step_{i}():\n    pass\n" for i in range(count))).body
+        for i, node in enumerate(nodes):
+            table.register(
+                Path("shared/chain.py"),
+                node.name,
+                gate.PathFunction((), None, {}, Path("shared/chain.py"), False, (node.name,), node),
+            )
+            table.scope_results[node] = {}
+            table.call_edges[node] = {nodes[i - 1], nodes[0]} if i else set()
+        independent = ast.parse("def independent():\n    pass\n").body[0]
+        marker = object()
+        table.scope_results[independent] = {("cached",): marker}
+        before = dict(work)
+        started = time.monotonic()
+        table.close_outer_effects()
+        seconds = time.monotonic() - started
+        measured = {key: work[key] - before[key] for key in work}
+        assert measured == {"summaries": count, "bodies": count}, measured
+        assert seconds < 1.0, seconds
+        assert len(table.outer_effects) == count
+        assert "depth cap" in table.outer_effects[nodes[-1]].unresolved
+        assert table.scope_results[independent] == {("cached",): marker}
+        # A second fixpoint reuses direct bodies; summaries are closed once per node again.
+        table.close_outer_effects()
+        assert work["bodies"] - before["bodies"] == count
+        assert work["summaries"] - before["summaries"] == 2 * count
+        measurements.append((count, measured, seconds))
+    assert measurements[1][1]["summaries"] == 2 * measurements[0][1]["summaries"]
+    print(f"outer closure scaling measurements: {measurements}")
+
+
+def test_round_ten_unknown_loop_outer_effects_are_uncertain(gate, tmp_path):
+    _write(
+        tmp_path,
+        "from pathlib import Path\nARTIFACT=Path('artifacts/old.json')\n"
+        "def configure():\n    global ARTIFACT\n"
+        "    ARTIFACT=Path('artifacts/new.json')\n"
+        "for piece in pieces:\n    configure()\nARTIFACT.write_text('{}')\n"
+        "Path('artifacts/old.json').read_text()\n",
+    )
+    accesses, *_ = gate.collect_artifact_accesses(tmp_path)
+    assert not [a for a in accesses if a.action == "write" and a.bounded]
+    report = gate.analyse_consumer_side(tmp_path, [])
+    assert _unwritten(report) == {"artifacts/old.json"}
+    assert report.unresolvable > 0
+
+
+@pytest.mark.parametrize("callee", ["len", "unknown_callback"])
+def test_round_twelve_flat_module_binding_lookup_cost(gate, tmp_path, monkeypatch, callee):
+    # shared/sdlc_claim.py and shared/coord_projection.py have large module-global
+    # maps and flat validation/API call bodies. The real profile spent 122.8s
+    # rebuilding aliases and 117.8s freezing operands, rather than in graph closure.
+    # Count that work through the production scanner, independently of CPU scheduling.
+    measured = {"lookups": 0, "enumerated": 0, "snapshots": 0, "invalidations": 0}
+    original_aliases = gate._import_aliases
+    original_freeze = gate._BlockScanner._freeze_expression
+    original_invalidate = gate._invalidate_names
+
+    class CountedBindings(dict):
+        def items(self):
+            measured["enumerated"] += len(self)
+            return super().items()
+
+        def __iter__(self):
+            measured["enumerated"] += len(self)
+            return super().__iter__()
+
+        def __getitem__(self, key):
+            measured["lookups"] += 1
+            return super().__getitem__(key)
+
+        def __contains__(self, key):
+            measured["lookups"] += 1
+            return super().__contains__(key)
+
+        def get(self, key, default=None):
+            measured["lookups"] += 1
+            return super().get(key, default)
+
+    def aliases(values):
+        return original_aliases(CountedBindings(values))
+
+    def freeze(scanner, node, states):
+        measured["snapshots"] += len(states)
+        return original_freeze(scanner, node, states)
+
+    def invalidate(values, names):
+        measured["invalidations"] += sum(name.startswith("CONSTANT_") for name in names)
+        return original_invalidate(values, names)
+
+    monkeypatch.setattr(gate, "_invalidate_names", invalidate)
+    monkeypatch.setattr(gate, "_import_aliases", aliases)
+    monkeypatch.setattr(gate._BlockScanner, "_freeze_expression", freeze)
+    _write(
+        tmp_path,
+        "from pathlib import Path\n"
+        + "".join(f"CONSTANT_{i} = 'metadata-{i}'\n" for i in range(64))
+        + "".join(
+            f"def validate_{i}(value):\n"
+            + f"    {callee}(value)\n" * 20
+            + f"    artifact = Path('artifacts/{i}.json')\n"
+            "    artifact.read_text()\n"
+            for i in range(24)
+        ),
+    )
+    report = gate.analyse_consumer_side(tmp_path, [])
+    assert _unwritten(report) == {f"artifacts/{i}.json" for i in range(24)}
+    assert measured["enumerated"] == 0, measured
+    assert measured["lookups"] > 1000
+    assert measured["snapshots"] == 0, measured
+    assert measured["invalidations"] <= 4 * 64 * 24, measured
+    print(f"flat {callee} binding work: {measured}")
+
+
+def test_round_twelve_real_claim_capture_survives_callee_cap(gate, tmp_path, monkeypatch):
+    # Byte-exact function bodies from the real reader and writer modules, attributed below.
+    # The real sdlc_close caller exhausts captured()'s 16 invocation states. A smaller
+    # budget reaches the same cap/cache-eviction transition without the rest of that estate.
+    # In particular preserve captured()'s observed-file cache, exception branch and the
+    # role/session loop: the old reduction omitted all three and never capped captured().
+    monkeypatch.setattr(gate, "_MAX_BINDING_STATES", 6)
+    shared = tmp_path / "shared"
+    shared.mkdir()
+    (shared / "sdlc_claim.py").write_text(
+        r"""from pathlib import Path
+import os
+from shared.sdlc_task_store import claim_dispatch_binding_path, load_claim_dispatch_binding
+
+# shared/sdlc_claim.py:154-155 at bc0a922c2
+def _normalized(path: Path) -> Path:
+    return Path(os.path.abspath(os.path.expanduser(os.fspath(path))))
+
+
+# shared/sdlc_claim.py:4054-4210 at bc0a922c2
+def _capture_claim_leases(
+    snapshot: ReadOnlyFsSnapshot,
+    cache_dir: Path,
+    *,
+    role: str,
+    task_id: str,
+    session_id: str | None,
+) -> tuple[ClaimLeaseSnapshot, ...]:
+    if not role.strip() or role == "unknown":
+        raise ClaimPublicationError(
+            "claim_identity_missing",
+            "bind one real lane identity before lifecycle mutation",
+        )
+    cache = _normalized(cache_dir)
+    try:
+        claim_dispatch_binding_path(cache, role)
+    except TaskStoreError as exc:
+        raise ClaimPublicationError(exc.reason_code, exc.repair_action, exc.detail) from exc
+    directory = snapshot.pin_absolute_dir(cache, private_final=False)
+    assert directory is not None
+    observations: dict[str, CapturedFile | None] = {}
+
+    def captured(name: str, *, reason_code: str) -> CapturedFile:
+        if name not in observations:
+            observations[name] = snapshot.observe_file_at(
+                directory,
+                name,
+                private=False,
+                max_bytes=_CLAIM_SNAPSHOT_MAX_SIDECAR_BYTES,
+            ).captured
+        value = observations[name]
+        if value is None:
+            raise ClaimPublicationError(
+                reason_code,
+                "restore the exact regular claim, epoch, and dispatch-binding sidecars",
+                str(cache / name),
+            )
+        return value
+
+    role_binding_path = claim_dispatch_binding_path(cache, role)
+    role_binding_file = captured(
+        role_binding_path.name,
+        reason_code="claim_dispatch_binding_missing",
+    )
+    try:
+        role_binding = load_claim_dispatch_binding(
+            role_binding_path,
+            content=role_binding_file.content,
+        )
+    except TaskStoreError as exc:
+        raise ClaimPublicationError(exc.reason_code, exc.repair_action, exc.detail) from exc
+    resolved_session = role_binding.session_id if session_id is None else session_id
+    if (
+        _CLAIM_SESSION_FRAGMENT_RE.fullmatch(resolved_session) is None
+        or resolved_session.isdecimal()
+        or "/" in resolved_session
+    ):
+        raise ClaimPublicationError(
+            "claim_session_identity_invalid",
+            "bind one non-PID claim-keyable harness session before lifecycle mutation",
+            resolved_session,
+        )
+    if session_id is None and (
+        role_binding.task_id != task_id
+        or role_binding.lane != role
+        or not role_binding.session_id.strip()
+    ):
+        raise ClaimPublicationError(
+            "claim_role_binding_mismatch",
+            "restore the role binding for this exact task, lane, and claim session",
+            role,
+        )
+
+    leases: list[ClaimLeaseSnapshot] = []
+    for key in (role, f"{role}-{resolved_session}"):
+        claim_path = cache / f"cc-active-task-{key}"
+        epoch_path = cache / f"cc-claim-epoch-{key}"
+        binding_path = claim_dispatch_binding_path(cache, key)
+        claim_file = captured(claim_path.name, reason_code="claim_cache_missing")
+        epoch_file = captured(epoch_path.name, reason_code="claim_epoch_missing")
+        binding_file = captured(
+            binding_path.name,
+            reason_code="claim_dispatch_binding_missing",
+        )
+        try:
+            claim_task = claim_file.content.decode("utf-8").strip()
+        except UnicodeError as exc:
+            raise ClaimPublicationError(
+                "claim_cache_missing",
+                "restore the exact regular claim, epoch, and dispatch-binding sidecars",
+                str(claim_path),
+            ) from exc
+        if claim_task != task_id:
+            raise ClaimPublicationError(
+                "claim_task_mismatch",
+                "bind every current claim cache to the exact task",
+                str(claim_path),
+            )
+        try:
+            epoch_text, epoch_task = epoch_file.content.decode("utf-8").split()
+            epoch = int(epoch_text)
+        except (UnicodeError, ValueError) as exc:
+            raise ClaimPublicationError(
+                "claim_epoch_malformed",
+                "restore the '<epoch> <task_id>' claim epoch sidecar",
+                str(epoch_path),
+            ) from exc
+        try:
+            binding = load_claim_dispatch_binding(binding_path, content=binding_file.content)
+        except TaskStoreError as exc:
+            raise ClaimPublicationError(exc.reason_code, exc.repair_action, exc.detail) from exc
+        if (
+            epoch <= 0
+            or epoch_task != task_id
+            or binding.claim_epoch != epoch
+            or binding.task_id != task_id
+            or binding.lane != role
+            or binding.session_id != resolved_session
+        ):
+            raise ClaimPublicationError(
+                "claim_binding_vector_mismatch",
+                "reclaim through the exact governed dispatch so all claim sidecars agree",
+                key,
+            )
+        leases.append(
+            ClaimLeaseSnapshot(
+                claim_key=key,
+                claim_path=claim_path,
+                claim_content=claim_file.content,
+                claim_mode=stat.S_IMODE(claim_file.stamp.mode),
+                epoch_path=epoch_path,
+                epoch_content=epoch_file.content,
+                epoch_mode=stat.S_IMODE(epoch_file.stamp.mode),
+                binding_path=binding_path,
+                binding_content=binding_file.content,
+                binding_mode=stat.S_IMODE(binding_file.stamp.mode),
+                binding=binding,
+            )
+        )
+    if any(item.binding != leases[0].binding for item in leases[1:]):
+        raise ClaimPublicationError(
+            "claim_binding_sidecars_conflict",
+            "restore identical role and session claim dispatch bindings",
+            role,
+        )
+    if session_id is None and (
+        leases[0].binding_path != role_binding_path
+        or leases[0].binding_content != role_binding_file.content
+        or leases[0].binding_mode != stat.S_IMODE(role_binding_file.stamp.mode)
+        or leases[0].binding != role_binding
+    ):
+        raise ClaimPublicationError(
+            "claim_role_binding_changed_during_resolution",
+            "retry after the exact role binding stabilizes",
+            role,
+        )
+    return tuple(leases)
+"""
+    )
+    (shared / "sdlc_task_store.py").write_text(
+        r"""from pathlib import Path
+import os
+
+# shared/sdlc_task_store.py:177-184 at bc0a922c2
+def claim_dispatch_binding_path(cache_dir: Path, claim_key: str) -> Path:
+    if not claim_key or "/" in claim_key or claim_key in {".", ".."}:
+        raise TaskStoreError(
+            "claim_dispatch_binding_key_invalid",
+            "use the exact role or role-session claim key",
+            claim_key,
+        )
+    return cache_dir / f"cc-claim-dispatch-{claim_key}.json"
+
+
+# shared/sdlc_task_store.py:187-209 at bc0a922c2
+def write_claim_dispatch_binding(
+    cache_dir: Path, claim_key: str, binding: ClaimDispatchBinding
+) -> Path:
+    path = claim_dispatch_binding_path(cache_dir, claim_key)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    payload = _canonical_json_bytes(binding.to_record()) + b"\n"
+    temporary = path.parent / f".{path.name}.{os.getpid()}.tmp"
+    fd = os.open(temporary, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+    try:
+        with os.fdopen(fd, "wb") as handle:
+            handle.write(payload)
+            handle.flush()
+            os.fsync(handle.fileno())
+        os.replace(temporary, path)
+        directory_fd = os.open(path.parent, os.O_RDONLY | os.O_DIRECTORY)
+        try:
+            os.fsync(directory_fd)
+        finally:
+            os.close(directory_fd)
+    finally:
+        if temporary.exists():
+            temporary.unlink()
+    return path
+
+
+# shared/sdlc_task_store.py:212-314 at bc0a922c2
+def load_claim_dispatch_binding(
+    path: Path,
+    *,
+    content: bytes | None = None,
+) -> ClaimDispatchBinding:
+    def unique_pairs(values: list[tuple[str, object]]) -> dict[str, object]:
+        output: dict[str, object] = {}
+        for key, value in values:
+            if key in output:
+                raise TaskStoreError(
+                    "claim_dispatch_binding_duplicate_key",
+                    "remove duplicate JSON keys from the claim binding",
+                    key,
+                )
+            output[key] = value
+        return output
+
+    try:
+        payload = (
+            content
+            if content is not None
+            else _regular_file_bytes(
+                path,
+                reason_code="claim_dispatch_binding_unreadable",
+            )[0]
+        )
+        record = json.loads(payload.decode("ascii"), object_pairs_hook=unique_pairs)
+    except TaskStoreError:
+        raise
+    except (OSError, UnicodeError, json.JSONDecodeError) as exc:
+        raise TaskStoreError(
+            "claim_dispatch_binding_unreadable",
+            "restore the exact self-hashed claim binding sidecar",
+            str(path),
+        ) from exc
+    exact_keys = {
+        "authority_case",
+        "binding_hash",
+        "claim_epoch",
+        "coord_dispatch_idempotency_key",
+        "dispatch_message_id",
+        "lane",
+        "may_authorize",
+        "mode",
+        "platform",
+        "profile",
+        "receipt_hash",
+        "schema",
+        "session_id",
+        "task_id",
+    }
+    if (
+        not isinstance(record, dict)
+        or set(record) != exact_keys
+        or record.get("schema") != CLAIM_DISPATCH_BINDING_SCHEMA
+        or record.get("may_authorize") is not False
+        or type(record.get("claim_epoch")) is not int
+        or any(
+            not isinstance(record.get(key), str)
+            for key in {
+                "authority_case",
+                "binding_hash",
+                "dispatch_message_id",
+                "lane",
+                "mode",
+                "platform",
+                "profile",
+                "receipt_hash",
+                "session_id",
+                "task_id",
+            }
+        )
+        or (
+            record.get("coord_dispatch_idempotency_key") is not None
+            and not isinstance(record.get("coord_dispatch_idempotency_key"), str)
+        )
+        or payload != _canonical_json_bytes(record) + b"\n"
+    ):
+        raise TaskStoreError(
+            "claim_dispatch_binding_malformed",
+            "restore the exact non-authorizing claim binding schema",
+            str(path),
+        )
+    binding = ClaimDispatchBinding.create(
+        task_id=record["task_id"],
+        lane=record["lane"],
+        session_id=record["session_id"],
+        claim_epoch=record["claim_epoch"],
+        dispatch_message_id=record["dispatch_message_id"],
+        platform=record["platform"],
+        mode=record["mode"],
+        profile=record["profile"],
+        authority_case=record["authority_case"],
+        binding_hash=record["binding_hash"],
+        coord_dispatch_idempotency_key=record["coord_dispatch_idempotency_key"],
+    )
+    if record.get("receipt_hash") != binding.receipt_hash:
+        raise TaskStoreError(
+            "claim_dispatch_binding_receipt_hash_mismatch",
+            "restore the exact self-hashed claim binding sidecar",
+            str(path),
+        )
+    return binding
+"""
+    )
+    report = gate.analyse_consumer_side(tmp_path, [])
+    pairs = [item for item in report.pairs if item.family == "claim_dispatch_binding"]
+    assert pairs
+    assert all(
+        item.reader.pattern == item.writer.pattern == "*/cc-claim-dispatch-*.json" for item in pairs
+    )
+    assert any(item.reader.path == Path("shared/sdlc_claim.py") for item in pairs)
+    assert any(item.writer.path == Path("shared/sdlc_task_store.py") for item in pairs)
+    assert all(not item.reader.bounded and not item.writer.bounded for item in pairs)
+    assert report.unresolvable > 0
+    assert any(
+        "_capture_claim_leases.captured" in site and "binding state cap" in site
+        for site in report.capped_expressions
+    )
+
+
+def test_round_twelve_captured_api_name_is_not_an_effect_cap(gate, tmp_path):
+    # The real profile reported 'unresolved call target captured.append' as a cap.
+    # A diagnostic string containing 'cap' cannot erase an unrelated caller local.
+    _write(
+        tmp_path,
+        "from pathlib import Path\n"
+        "def run():\n"
+        "    artifact = Path('artifacts/valid.json')\n"
+        "    def inspect():\n"
+        "        captured = []\n"
+        "        captured.append(1)\n"
+        "    inspect()\n"
+        "    artifact.write_text('{}')\n"
+        "run()\nPath('artifacts/valid.json').read_text()\n",
+    )
+    report = gate.analyse_consumer_side(tmp_path, [])
+    assert not report.capped_expressions
+    assert not _unwritten(report)
+
+
+@pytest.mark.parametrize("width", [32, 256])
+def test_round_twelve_wide_conditional_payload_copy_bound(gate, tmp_path, monkeypatch, width):
+    # The shared-package profile spent 50s deep-copying conditional payloads. Real
+    # validation calls pass wide records beside a conditional argument; only
+    # the changed expression's ancestors need copying, regardless of record width.
+    # Examples: shared/sdlc_claim.py:3562 (267 AST nodes) and
+    # shared/content_programme_run_store.py:1032 (621 AST nodes), at bc0a922c2.
+    copied = [0]
+    original_copy, original_deepcopy = gate.copy.copy, gate.copy.deepcopy
+
+    def shallow(node):
+        if isinstance(node, ast.AST):
+            copied[0] += 1
+        return original_copy(node)
+
+    def deep(node, *args, **kwargs):
+        if isinstance(node, ast.AST):
+            copied[0] += sum(1 for _ in ast.walk(node))
+        return original_deepcopy(node, *args, **kwargs)
+
+    monkeypatch.setattr(gate.copy, "copy", shallow)
+    monkeypatch.setattr(gate.copy, "deepcopy", deep)
+    _write(
+        tmp_path,
+        "from pathlib import Path\n"
+        "def inspect(flag):\n"
+        "    payload = assemble('first' if flag else 'second', {\n"
+        + "".join(f"        'metadata_{i}': [{i}, 'schema-field'],\n" for i in range(width))
+        + "    })\n"
+        "    Path('artifacts/first.json' if flag else 'artifacts/second.json').read_text()\n",
+    )
+    report = gate.analyse_consumer_side(tmp_path, [])
+    assert _unwritten(report) == {"artifacts/first.json", "artifacts/second.json"}
+    assert 0 < copied[0] <= 64, copied
+    print(f"wide payload {width}: copied {copied[0]} AST nodes")
+
+
+def test_round_twelve_unbounded_helper_keeps_uncertainty_without_snapshots(
+    gate, tmp_path, monkeypatch
+):
+    # Real validation helpers encounter an opaque API before nested formatting calls.
+    # Their return summary is then unresolved, while the ordinary scope walker must
+    # still report the helper body's independent reads and the caller's unwritten file.
+    snapshots = [0]
+    original = gate._BlockScanner._freeze_expression
+
+    def freeze(scanner, node, states):
+        if isinstance(scanner, gate._PathHelperScanner):
+            snapshots[0] += sum(gate._HELPER_EFFECT_KEY in state for state in states)
+        return original(scanner, node, states)
+
+    monkeypatch.setattr(gate._BlockScanner, "_freeze_expression", freeze)
+    _write(
+        tmp_path,
+        "from pathlib import Path\n"
+        "def normalize(path: Path) -> Path:\n"
+        "    opaque_api()\n"
+        "    Path('artifacts/inside.json').read_text()\n"
+        + "    validate(str(path), encode(path))\n"
+        * 20
+        + "    return path\n"
+        "normalize(Path('artifacts/outside.json')).write_text('{}')\n"
+        "Path('artifacts/outside.json').read_text()\n",
+    )
+    report = gate.analyse_consumer_side(tmp_path, [])
+    assert _unwritten(report) == {"artifacts/inside.json", "artifacts/outside.json"}
+    assert report.unresolvable > 0
+    assert snapshots[0] == 0
