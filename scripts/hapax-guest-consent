@@ -37,7 +37,7 @@ REPO = Path(__file__).resolve().parent.parent
 # health-signal / ntfy stack into a tiny CLI).
 sys.path.insert(0, str(REPO / "packages" / "agentgov" / "src"))
 
-from agentgov.consent import ConsentRegistry  # noqa: E402
+from agentgov.consent import ConsentRegistry, resolve_principal_id  # noqa: E402
 
 SCOPE = frozenset({"world_render"})
 
@@ -56,6 +56,7 @@ def _registry(directory: Path) -> ConsentRegistry:
 
 
 def cmd_grant(person: str) -> int:
+    person = resolve_principal_id(person) or person
     directory = contracts_dir()
     reg = _registry(directory)
     cid = f"guest-render-{person}-{date.today().isoformat()}"
@@ -74,11 +75,15 @@ def cmd_grant(person: str) -> int:
 
 
 def cmd_revoke(person: str) -> int:
+    person = resolve_principal_id(person) or person
     directory = contracts_dir()
     reg = _registry(directory)
     revoked = []
     for contract in list(reg.active_contracts):
-        if person in contract.parties and "world_render" in contract.scope:
+        if (
+            person in {resolve_principal_id(party) or party for party in contract.parties}
+            and "world_render" in contract.scope
+        ):
             reg.revoke_contract(contract.id, contracts_dir=directory)
             revoked.append(contract.id)
     if revoked:

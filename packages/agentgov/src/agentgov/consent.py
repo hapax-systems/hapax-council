@@ -9,8 +9,9 @@ from __future__ import annotations
 
 import logging
 import time
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from datetime import datetime
+from importlib import import_module
 from pathlib import Path
 from typing import Any
 
@@ -19,26 +20,30 @@ import yaml
 log = logging.getLogger(__name__)
 
 
-def resolve_principal_id(candidate: str) -> str | None:
-    """Use council migration metadata when installed alongside council."""
+def _resolve_identifier(candidate: str, kind: str) -> str | None:
+    """Refuse operations if migration metadata cannot be imported.
+
+    Literal fallback is safe for unknown identifiers only after the resolver
+    has checked them; an unavailable resolver cannot establish that condition.
+    """
     try:
-        from shared.governance.consent import resolve_principal_id as resolve
+        consent = import_module("shared.governance.consent")
     except ModuleNotFoundError as exc:
-        if exc.name not in {"shared", "shared.governance", "shared.governance.consent"}:
-            raise
-        return None
-    return resolve(candidate)
+        raise RuntimeError(
+            "Consent identifier resolver unavailable; restore the council "
+            "migration metadata module and retry"
+        ) from exc
+    return getattr(consent, f"resolve_{kind}_id")(candidate)
+
+
+def resolve_principal_id(candidate: str) -> str | None:
+    """Resolve principal migration metadata, refusing if it is unavailable."""
+    return _resolve_identifier(candidate, "principal")
 
 
 def resolve_contract_id(candidate: str) -> str | None:
-    """Use council migration metadata without requiring council in the wheel."""
-    try:
-        from shared.governance.consent import resolve_contract_id as resolve
-    except ModuleNotFoundError as exc:
-        if exc.name not in {"shared", "shared.governance", "shared.governance.consent"}:
-            raise
-        return None
-    return resolve(candidate)
+    """Resolve contract migration metadata, refusing if it is unavailable."""
+    return _resolve_identifier(candidate, "contract")
 
 
 class ConsentContractLoadError(Exception):
@@ -80,6 +85,7 @@ class ConsentRegistry:
     _fail_closed: bool = field(default=False)
     _loaded_at: float = field(default=0.0)
     _contracts_dir: Path | None = field(default=None)
+    _contract_paths: dict[str, Path] = field(default_factory=dict)
 
     @property
     def fail_closed(self) -> bool:
@@ -114,6 +120,7 @@ class ConsentRegistry:
                 self._fail_closed = True
                 return 0
 
+            self._contracts_dir = directory
             count = 0
             for path in sorted(directory.glob("*.yaml")):
                 try:
@@ -122,6 +129,7 @@ class ConsentRegistry:
                         continue
                     contract = parse_contract(data)
                     self._contracts[contract.id] = contract
+                    self._contract_paths[contract.id] = path
                     if contract.active:
                         count += 1
                         log.info(
@@ -148,8 +156,13 @@ class ConsentRegistry:
             self._fail_closed = True
             return 0
 
+    def _matching_contract_keys(self, contract_id: str) -> list[str]:
+        canonical = resolve_contract_id(contract_id) or contract_id
+        return [key for key in self._contracts if (resolve_contract_id(key) or key) == canonical]
+
     def get(self, contract_id: str) -> ConsentContract | None:
-        return self._contracts.get(resolve_contract_id(contract_id) or contract_id)
+        keys = self._matching_contract_keys(contract_id)
+        return self._contracts[keys[0]] if keys else None
 
     def __iter__(self):
         return iter(self._contracts.values())
@@ -202,36 +215,26 @@ class ConsentRegistry:
         Raises KeyError if the contract_id is not registered.
         """
         t0 = time.monotonic()
-        contract_id = resolve_contract_id(contract_id) or contract_id
-        contract = self._contracts.get(contract_id)
-        if contract is None:
+        keys = self._matching_contract_keys(contract_id)
+        if not keys:
             raise KeyError(f"Contract {contract_id} not registered")
 
         now_iso = datetime.now().isoformat()
-        revoked_contract = ConsentContract(
-            id=contract.id,
-            parties=contract.parties,
-            scope=contract.scope,
-            direction=contract.direction,
-            visibility_mechanism=contract.visibility_mechanism,
-            created_at=contract.created_at,
-            revoked_at=now_iso,
-            principal_class=contract.principal_class,
-            guardian=contract.guardian,
-        )
-        self._contracts[contract_id] = revoked_contract
-
-        directory = contracts_dir or self._contracts_dir
-        if directory is not None:
-            src = directory / f"{contract_id}.yaml"
+        for key in keys:
+            self._contracts[key] = replace(self._contracts[key], revoked_at=now_iso)
+            src = self._contract_paths.get(key)
+            if src is None:
+                continue
+            if contracts_dir is not None:
+                src = contracts_dir / src.name
             if src.exists():
-                revoked_dir = directory / "revoked"
+                revoked_dir = src.parent / "revoked"
                 revoked_dir.mkdir(parents=True, exist_ok=True)
                 stamp = now_iso[:10]
-                dst = revoked_dir / f"{stamp}-{contract_id}.yaml"
+                dst = revoked_dir / f"{stamp}-{src.name}"
                 n = 2
                 while dst.exists():
-                    dst = revoked_dir / f"{stamp}-{contract_id}-{n}.yaml"
+                    dst = revoked_dir / f"{stamp}-{src.stem}-{n}.yaml"
                     n += 1
                 src.rename(dst)
                 log.info("Revoked contract %s — moved YAML to %s", contract_id, dst)
@@ -246,18 +249,7 @@ class ConsentRegistry:
             if contract.active and (resolve_principal_id(person_id) or person_id) in {
                 resolve_principal_id(party) or party for party in contract.parties
             }:
-                revoked_contract = ConsentContract(
-                    id=contract.id,
-                    parties=contract.parties,
-                    scope=contract.scope,
-                    direction=contract.direction,
-                    visibility_mechanism=contract.visibility_mechanism,
-                    created_at=contract.created_at,
-                    revoked_at=datetime.now().isoformat(),
-                    principal_class=contract.principal_class,
-                    guardian=contract.guardian,
-                )
-                self._contracts[contract_id] = revoked_contract
+                self.revoke_contract(contract_id)
                 revoked.append(contract_id)
                 log.info("Revoked contract %s for %s", contract_id, person_id)
         return revoked
@@ -303,6 +295,7 @@ class ConsentRegistry:
             if contract.guardian:
                 contract_data["guardian"] = contract.guardian
             contract_path.write_text(yaml.dump(contract_data, default_flow_style=False))
+            self._contract_paths[cid] = contract_path
             log.info("Created consent contract %s for %s at %s", cid, person_id, contract_path)
 
         self._contracts[cid] = contract

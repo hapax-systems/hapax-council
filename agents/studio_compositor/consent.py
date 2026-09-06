@@ -8,6 +8,8 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
+from agentgov.consent import resolve_contract_id
+
 from .config import CONSENT_AUDIT_PATH
 
 log = logging.getLogger(__name__)
@@ -96,6 +98,7 @@ def enable_persistence(compositor: Any) -> None:
 
 def purge_video_recordings(compositor: Any, contract_id: str) -> int:
     """Purge video recording segments associated with a revoked consent contract."""
+    contract_id = resolve_contract_id(contract_id) or contract_id
     purged = 0
     rec_dir = Path(compositor.config.recording.output_dir)
 
@@ -108,7 +111,9 @@ def purge_video_recordings(compositor: Any, contract_id: str) -> int:
                 if not line.strip():
                     continue
                 entry = json.loads(line)
-                if contract_id in entry.get("active_contracts", []):
+                if contract_id in {
+                    resolve_contract_id(cid) or cid for cid in entry.get("active_contracts", [])
+                }:
                     if entry["event"] == "recording_resumed" and current_start is None:
                         current_start = entry["timestamp"]
                     elif entry["event"] == "recording_paused" and current_start:

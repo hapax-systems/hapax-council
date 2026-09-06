@@ -125,6 +125,8 @@ def enroll_principal(
         # numpy ≥1.22 honours the explicit .npz extension; in that case the
         # tmp path itself was used.
         tmp.replace(target)
+    # Only a successful, consent-checked enrollment supersedes revocation.
+    target.with_suffix(".revoked").unlink(missing_ok=True)
     log.info("Enrolled principal %s at %s", principal_id, target)
     return target
 
@@ -138,13 +140,15 @@ def load_enrollment(principal_id: str, *, root: Path | None = None) -> NDArray[n
 
     import numpy as np
 
-    path = _enrollment_path(principal_id, root=root)
-    if not path.exists():
-        matches = _matching_enrollment_paths(principal_id, root=root)
-        if not matches:
-            return None
-        path = matches[0]
     try:
+        path = _enrollment_path(principal_id, root=root)
+        if path.with_suffix(".revoked").exists():
+            return None
+        if not path.exists():
+            matches = _matching_enrollment_paths(principal_id, root=root)
+            if not matches:
+                return None
+            path = matches[0]
         with np.load(path) as data:
             embedding = data["embedding"]
         return np.asarray(embedding, dtype=np.float32)
@@ -154,24 +158,40 @@ def load_enrollment(principal_id: str, *, root: Path | None = None) -> NDArray[n
 
 
 def revoke_enrollment(principal_id: str, *, root: Path | None = None) -> bool:
-    """Delete a principal's on-disk embedding.
+    """Disable matching durably, then delete all equivalent enrollment files.
 
     Per the cc-task invariant, revocation must ship before any matcher
-    gate. Returns True if a file was removed, False if none existed.
-    Never raises — revocation must always succeed at the operator's
-    intent regardless of disk state.
+    gate. Returns True only if every matching file was removed, False if
+    none existed or deletion was incomplete. A canonical revocation marker
+    blocks surviving aliases until a new consent-checked enrollment succeeds.
+    Raises FaceEnrollmentError if that marker cannot be persisted; storage
+    access must be corrected and revocation retried in that case.
     """
 
     principal_id = resolve_principal_id(principal_id) or principal_id
-    removed = False
-    for path in _matching_enrollment_paths(principal_id, root=root):
+    paths = _matching_enrollment_paths(principal_id, root=root)
+    if not paths:
+        return False
+    try:
+        _enrollment_path(principal_id, root=root).with_suffix(".revoked").touch()
+    except OSError as exc:
+        raise FaceEnrollmentError(
+            f"Enrollment revocation incomplete ({type(exc).__name__}); "
+            "correct storage access and retry"
+        ) from None
+    complete = True
+    for path in paths:
         try:
             path.unlink()
-            removed = True
             log.info("Revoked enrollment for principal %s", principal_id)
-        except OSError:
-            log.warning("Failed to revoke enrollment for %s", principal_id)
-    return removed
+        except OSError as exc:
+            complete = False
+            log.warning(
+                "Enrollment revocation incomplete (%s); matching remains disabled. "
+                "Correct storage access and retry",
+                type(exc).__name__,
+            )
+    return complete
 
 
 def list_enrollments(*, root: Path | None = None) -> list[str]:

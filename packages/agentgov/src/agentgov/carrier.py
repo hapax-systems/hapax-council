@@ -7,7 +7,6 @@ values — consent labels travel with carried facts via the DLM join.
 
 from __future__ import annotations
 
-import re
 from collections.abc import Callable
 from dataclasses import dataclass
 from typing import Any
@@ -121,11 +120,9 @@ class CarrierRegistry:
 
     def purge_by_provenance(self, contract_id: str) -> int:
         """Remove carrier facts whose provenance includes contract_id."""
-        resolved = resolve_contract_id(contract_id)
-        # Alias digests are metadata, never contract IDs.
-        if resolved is None and re.fullmatch(r"[0-9a-f]{64}", contract_id):
-            return 0
-        contract_id = resolved or contract_id
+        # Provenance contains contract IDs. Alias records live separately in
+        # the resolver's metadata registry; their string shape is irrelevant.
+        contract_id = resolve_contract_id(contract_id) or contract_id
         purged = 0
         for slots in self._slots.values():
             before = len(slots)
