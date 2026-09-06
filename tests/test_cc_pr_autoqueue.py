@@ -1279,6 +1279,100 @@ def test_run_reconciler_refuses_indeterminate_open_pr_scan(
     assert not any("mutation" in part for call in runner.calls for part in call)
 
 
+@pytest.mark.parametrize(
+    ("body", "later_page", "expected_decisions"),
+    [
+        pytest.param("[null]", False, None, id="null"),
+        pytest.param("[1]", False, None, id="scalar"),
+        pytest.param('["x"]', False, None, id="string"),
+        pytest.param("[{}]", False, None, id="missing_number"),
+        pytest.param('[{"number": "7"}]', False, None, id="string_number"),
+        pytest.param("[null]", True, None, id="later_page_null"),
+        pytest.param("[]", False, 0, id="empty"),
+        pytest.param(None, False, 1, id="valid"),
+    ],
+)
+def test_run_reconciler_open_pr_rows_report(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    body: str | None,
+    later_page: bool,
+    expected_decisions: int | None,
+) -> None:
+    import github_pr_status
+
+    vault = _make_vault(tmp_path)
+    task_paths = [_write_task(vault, task_id=f"task-{number}", pr=number) for number in (42, 43)]
+    original_notes = [path.read_text() for path in task_paths]
+    runner = _FakeRunner()
+    runner.open_prs = [_pr(42, auto_merge=True), _pr(43)]
+    runner.queued_prs = {42}
+    rest_response = runner._rest_response
+
+    if later_page:
+        # Shrink the page ceiling to two, retaining the real REST pagination loop.
+        monkeypatch.setattr(github_pr_status, "min", lambda *args: min(2, *args), raising=False)
+
+    def list_response(cmd: list[str]) -> subprocess.CompletedProcess | None:
+        if "repos/owner/repo/pulls" in cmd:
+            page = int(runner._fields(cmd)["page"])
+            if later_page and page == 1:
+                assert runner._fields(cmd)["per_page"] == "2"
+                stdout = json.dumps([runner._rest_pr(pr) for pr in runner.open_prs])
+            else:
+                assert page == (2 if later_page else 1)
+                stdout = (
+                    body if body is not None else json.dumps([runner._rest_pr(runner.open_prs[0])])
+                )
+            return subprocess.CompletedProcess(cmd, 0, stdout, "")
+        return rest_response(cmd)
+
+    monkeypatch.setattr(runner, "_rest_response", list_response)
+    report_path = tmp_path / "cc-pr-autoqueue-report.json"
+    quarantine_path = tmp_path / "quarantine.json"
+    ledger_path = tmp_path / "auto-arm.jsonl"
+    report = autoqueue.run_reconciler(
+        repo="owner/repo",
+        repo_root=tmp_path,
+        vault_root=vault,
+        apply=False,
+        limit=3 if later_page else 100,
+        lineage_ledger_path=None,
+        quarantine_path=quarantine_path,
+        auto_arm_ledger_path=ledger_path,
+        admission_governor_path=tmp_path / "governor.yaml",
+        report_path=report_path,
+        runner=runner,
+    )
+
+    saved = json.loads(report_path.read_text())
+    for payload in (report, saved):
+        assert payload["apply"] is False
+        assert payload["mutations"] == []
+        if expected_decisions is None:
+            assert payload["skipped"] is True
+            assert payload["reason"] == "open_pr_scan_indeterminate:invalid_row"
+            assert payload["decisions"] == []
+        else:
+            assert "skipped" not in payload
+            assert "reason" not in payload
+            assert "refusal" not in payload
+            assert len(payload["decisions"]) == expected_decisions
+    assert report["stable_report"]["written"] is True
+    assert [path.read_text() for path in task_paths] == original_notes
+    assert not quarantine_path.exists()
+    assert not ledger_path.exists()
+    list_calls = [call for call in runner.calls if "repos/owner/repo/pulls" in call]
+    assert [runner._fields(call)["page"] for call in list_calls] == (
+        ["1", "2"] if later_page else ["1"]
+    )
+    assert all(call[:4] == ["gh", "api", "--method", "GET"] for call in list_calls)
+    if expected_decisions is None:
+        assert runner.calls[-1] == list_calls[-1]
+    assert not any(call[:2] == ["gh", "pr"] or "POST" in call for call in runner.calls)
+    assert not any("mutation" in part for call in runner.calls for part in call)
+
+
 def test_graphql_backoff_skips_autoqueue_reconciler(tmp_path: Path) -> None:
     vault = _make_vault(tmp_path)
     _write_task(vault, task_id="task-a", pr=42)

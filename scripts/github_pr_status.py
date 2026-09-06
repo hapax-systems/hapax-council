@@ -501,6 +501,15 @@ def list_pulls_rest(
             fields=fields,
             limit=limit,
         )
+    if fail_on_indeterminate:
+        # Validate the accumulated rows from every page before filtering or hydration.
+        # An unidentifiable PR cannot be silently omitted from a strict scan.
+        for item in payload:
+            if not isinstance(item, dict):
+                raise RestIndeterminateError("invalid_row")
+            number = item.get("number")
+            if isinstance(number, bool) or not isinstance(number, int) or number <= 0:
+                raise RestIndeterminateError("invalid_row")
     return [item for item in payload if isinstance(item, dict)]
 
 

@@ -75,6 +75,7 @@ class FakeRunner:
     ("returncode", "body", "stderr", "cause"),
     [
         (0, "[]", "", None),
+        (0, "[null]", "", "invalid_row"),
         (0, "{}", "", "invalid_list"),
         (1, "", "gh: API rate limit exceeded (HTTP 403)", "rate_limit"),
     ],
@@ -94,7 +95,7 @@ def test_rest_pull_list_second_page_preserves_indeterminacy(
             assert cmd[6] == "repos/owner/repo/pulls"
             if _api_fields(cmd)["page"] == "1":
                 return subprocess.CompletedProcess(
-                    cmd, 0, json.dumps([{"number": number} for number in range(100)]), ""
+                    cmd, 0, json.dumps([{"number": number} for number in range(1, 101)]), ""
                 )
             return subprocess.CompletedProcess(cmd, returncode, body, stderr)
 
@@ -114,8 +115,56 @@ def test_rest_pull_list_second_page_preserves_indeterminacy(
         assert str(caught.value) == cause
     else:
         rows = github_pr_status.list_pulls_rest(**kwargs)
-        assert len(rows) == (100 if cause is None else 0)
+        assert len(rows) == (100 if cause in (None, "invalid_row") else 0)
     assert len(runner.calls) == 2
+
+
+@pytest.mark.parametrize("fail_on_indeterminate", [False, True])
+@pytest.mark.parametrize(
+    "row",
+    [
+        None,
+        1,
+        "x",
+        [],
+        {},
+        {"number": "7"},
+        {"number": None},
+        {"number": 7.0},
+        {"number": True},
+        {"number": False},
+        {"number": 0},
+        {"number": -1},
+    ],
+)
+def test_rest_pull_list_unusable_rows(
+    tmp_path: Path, fail_on_indeterminate: bool, row: Any
+) -> None:
+    class RowRunner(FakeRunner):
+        def __call__(self, cmd: list[str], **kwargs: Any) -> subprocess.CompletedProcess:
+            self.calls.append(list(cmd))
+            assert cmd[:4] == ["gh", "api", "--method", "GET"]
+            assert cmd[6] == "repos/owner/repo/pulls"
+            return subprocess.CompletedProcess(cmd, 0, json.dumps([row]), "")
+
+    runner = RowRunner()
+    kwargs = {
+        "repo": "owner/repo",
+        "repo_root": tmp_path,
+        "runner": runner,
+        "fail_on_indeterminate": fail_on_indeterminate,
+    }
+    if fail_on_indeterminate:
+        with pytest.raises(github_pr_status.RestIndeterminateError) as caught:
+            github_pr_status.list_pulls_rest(**kwargs)
+        assert isinstance(caught.value, subprocess.SubprocessError)
+        assert caught.value.reason == "invalid_row"
+        assert str(caught.value) == "invalid_row"
+    else:
+        assert github_pr_status.list_pulls_rest(**kwargs) == (
+            [row] if isinstance(row, dict) else []
+        )
+    assert len(runner.calls) == 1
 
 
 def test_rest_status_rollup_uses_check_runs_and_statuses(tmp_path: Path) -> None:
