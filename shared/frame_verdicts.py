@@ -1316,6 +1316,41 @@ def _resolve_external_scope_path(path: Path) -> Path:
     return resolved
 
 
+def _resolve_scope_directory_prefix(path: Path, pattern: str) -> tuple[Path, str | None]:
+    """Resolve the longest existing globbed directory prefix, retaining future tails.
+
+    The terminal segment may select future files, so an empty complete expansion
+    cannot establish disjointness. Multiple lexical directories remain ambiguous
+    even when their canonical targets coincide.
+    """
+    parts = _glob_segments(pattern)
+    if len(parts) < 2:
+        return path, pattern
+    for length in range(len(parts) - 1, 0, -1):
+        prefix = "/".join(parts[:length])
+        directories = []
+        try:
+            for entry in path.glob(prefix):
+                target = entry.resolve(strict=True)
+                if target.is_dir():
+                    directories.append(target)
+        except (OSError, RuntimeError, ValueError) as exc:
+            raise UndecidableScopeContainment(
+                f"cannot resolve directory prefix {path / prefix}: {exc}"
+            ) from exc
+        if len(directories) > 1:
+            raise UndecidableScopeContainment(
+                f"directory prefix {path / prefix} expands to {len(directories)} directories"
+            )
+        if directories:
+            # Only the existing prefix is canonicalized; no leaf need exist.
+            tail, scope_pattern, _ = _filesystem_scope_parts("/".join(parts[length:]))
+            return directories[0].joinpath(*tail), scope_pattern
+    raise UndecidableScopeContainment(
+        f"directory prefix {path / parts[0]} expands to no resolvable directory"
+    )
+
+
 def _canonical_member_patterns(root: Path, member: DecayedMember) -> tuple[str, ...]:
     """Resolve each selected pattern's literal prefix before comparing file languages.
 
@@ -1731,6 +1766,29 @@ def ref_within_member(
             # and the member-specific symlink checks below.
             path = _resolve_external_scope_path(path)
         if path != root and root not in path.parents:
+            if scope_pattern is not None:
+                try:
+                    canonical_path, canonical_pattern = _resolve_scope_directory_prefix(
+                        path, scope_pattern
+                    )
+                    if (canonical_path, canonical_pattern) != (path, scope_pattern):
+                        if ref_within_member(
+                            canonical_path,
+                            canonical_pattern is not None or canonical_path.is_dir(),
+                            member,
+                            scope_pattern=canonical_pattern,
+                        ):
+                            # The existing prefix reaches the member's future surface.
+                            # Its expansion cannot prove containment of every future alias.
+                            raise UndecidableScopeContainment(
+                                f"resolved directory prefix reaches member surface at "
+                                f"{canonical_path}; whole-surface containment cannot be decided safely"
+                            )
+                except UndecidableScopeContainment as exc:
+                    raise UndecidableScopeContainment(
+                        f"scope_containment_undecidable: candidate {lexical_path / scope_pattern} "
+                        f"against member root {root}: {exc}; containment is undecidable"
+                    ) from exc
             if scope_pattern is not None and any(
                 target in surface
                 or any(target in file.parents for file in surface)

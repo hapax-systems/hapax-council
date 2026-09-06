@@ -4822,6 +4822,86 @@ def test_dispatch_content_query_external_glob_alias_refuses_selected_bytes(
         assert "containment is undecidable" in err and str(component) in err
 
 
+@pytest.mark.parametrize(
+    ("candidate", "outcome"),
+    [
+        ("usr/[s-s]bin/site_perl/new.py", "refused"),
+        ("usr/[s-s]bin/site_perl/*.py", "refused"),
+        ("usr/s?in/site_perl/new.py", "refused"),
+        ("usr/s?in/site_perl/*.py", "refused"),
+        ("usr/sbin/site_perl/new.py", "refused"),
+        ("usr/[s-s]bin/site_perl/future/nested/new.py", "refused"),
+        ("usr/[t-t]bin/site_perl/new.py", "outside"),
+        ("usr/[t-t]bin/site_perl/*.py", "outside"),
+        ("usr/other-*/site_perl/new.py", "multiple"),
+        ("usr/[z-z]bin/site_perl/new.py", "unmatched"),
+        ("usr/[l-l]bin/site_perl/new.py", "unresolved"),
+    ],
+    ids=[
+        "glob-missing-file",
+        "glob-empty-selection",
+        "wildcard-missing-file",
+        "wildcard-empty-selection",
+        "plain-missing-file",
+        "glob-future-directories",
+        "outside-missing-file",
+        "outside-empty-selection",
+        "multiple-directories",
+        "unmatched-directory",
+        "unresolved-directory",
+    ],
+)
+def test_dispatch_empty_member_glob_directory_prefix(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+    candidate: str,
+    outcome: str,
+) -> None:
+    member_root = tmp_path / "usr/bin/site_perl"
+    member_root.mkdir(parents=True)
+    (tmp_path / "usr/sbin").symlink_to("bin", target_is_directory=True)
+    outside = tmp_path / "outside/site_perl"
+    outside.mkdir(parents=True)
+    (tmp_path / "usr/tbin").symlink_to("../outside", target_is_directory=True)
+    for name in ("other-a", "other-b"):
+        (tmp_path / "usr" / name).symlink_to("../outside", target_is_directory=True)
+    (tmp_path / "usr/lbin").symlink_to("lbin", target_is_directory=True)
+    assert not list(member_root.glob("**/*"))
+    # The complete selection has no witnesses, including for the globbed alias.
+    assert not list(tmp_path.glob(candidate))
+    if outcome == "multiple":
+        assert len(list(tmp_path.glob("usr/other-*/site_perl"))) == 2
+    frame_root = _frame_procedure_root(
+        tmp_path / "frame",
+        decayed_root=member_root,
+        reader="fs.glob",
+        location={"path": str(member_root), "patterns": ["**/*"]},
+    )
+    scope = str(tmp_path / candidate)
+    rc, err = _dispatch_up_to_the_adapter(
+        tmp_path,
+        monkeypatch,
+        capsys,
+        _dispatcher_module(),
+        mutation_scope_refs=json.dumps([scope]),
+        frame_root=frame_root,
+    )
+    if outcome == "outside":
+        assert rc == 10 and "fixture refusal" in err
+        assert "declared mutation scope is not containable" not in err
+        assert "out of accountability" not in err
+        return
+    _assert_frame_refusal_receipt(tmp_path, frame_root, rc, err)
+    assert scope in err
+    if candidate != "usr/sbin/site_perl/new.py":
+        assert str(member_root) in err
+        assert "scope_containment_undecidable" in err
+        assert "containment is undecidable" in err
+    if outcome == "multiple":
+        assert "2 directories" in err
+
+
 @pytest.mark.parametrize("decayed", [True, False], ids=["decayed", "healthy"])
 @pytest.mark.parametrize(
     "kind", ["directory", "file", "escape", "empty-directory", "empty-escape", "empty-subtree"]
@@ -7361,8 +7441,15 @@ def test_dispatch_refuses_root_globs_from_an_equivalent_activation_checkout(
     )
 
     assert rc == 10
-    assert "marks every declared mutation surface out of accountability" in err
-    assert f"{scope_ref} lies in legacy-surface (scope_exited)" in err
+    if scope_ref == "**/*.md":
+        # The first candidate's existing ** prefix selects several directories.
+        # Ambiguity refuses before the equivalent checkout can prove containment.
+        assert "scope_containment_undecidable" in err
+        assert str(activation / scope_ref) in err and str(canonical) in err
+        assert "directories" in err
+    else:
+        assert "marks every declared mutation surface out of accountability" in err
+        assert f"{scope_ref} lies in legacy-surface (scope_exited)" in err
     receipt = json.loads(
         (tmp_path / "ledger/methodology-dispatch.jsonl").read_text().splitlines()[-1]
     )
