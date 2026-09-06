@@ -930,10 +930,6 @@ def _normalise_pattern(value: str, repo_root: Path) -> str:
     # character, not a directory separator.
     if value.startswith("$HOME\\"):
         value = value.replace("\\", "/")
-    if value == "$HOME":
-        value = "~"
-    elif value.startswith("$HOME/"):
-        value = "~/" + value[len("$HOME/") :]
     root = repo_root.resolve().as_posix()
     if value == root:
         return "."
@@ -947,11 +943,10 @@ def _normalise_pattern(value: str, repo_root: Path) -> str:
 
 
 def _join_pattern(left: str, right: str, repo_root: Path) -> str:
-    if right.startswith("/"):
-        return _normalise_pattern(right, repo_root)
-    if left in ("", "."):
-        return _normalise_pattern(right, repo_root)
-    return _normalise_pattern(f"{left.rstrip('/')}/{right.lstrip('/')}", repo_root)
+    joined = right if right.startswith("/") or left in ("", ".") else f"{left.rstrip('/')}/{right}"
+    # An inner join can be the absolute RHS of another join. Keep its root until
+    # access recording; stripping the repository prefix here loses the reset.
+    return joined if joined.startswith("/") else _normalise_pattern(joined, repo_root)
 
 
 def _parent_pattern(value: str, levels: int, repo_root: Path) -> str | None:

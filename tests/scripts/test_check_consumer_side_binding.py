@@ -179,8 +179,14 @@ def test_non_python_producer_downgrades_cache_finding(gate, tmp_path: Path) -> N
     assert "scripts/producer.sh" in matches[0].detail
 
 
-def test_pattern_matching_normalises_home_and_separators(gate) -> None:
-    assert gate._patterns_match(r"$HOME\cache\wanted.json", "~/cache/wanted.json")
+def test_pattern_matching_normalises_separators(gate) -> None:
+    assert gate._patterns_match(r"$HOME\cache\wanted.json", "$HOME/cache/wanted.json")
+
+
+def test_pattern_matching_keeps_literal_home_and_tilde_distinct(gate) -> None:
+    # The replaced equivalence had one production caller, handling Python accesses;
+    # expanding a literal $HOME to a literal ~ was wrong for that caller.
+    assert not gate._patterns_match("$HOME/cache/wanted.json", "~/cache/wanted.json")
 
 
 def test_glob_reader_rejects_same_directory_wrong_extension_writer(gate, tmp_path: Path) -> None:

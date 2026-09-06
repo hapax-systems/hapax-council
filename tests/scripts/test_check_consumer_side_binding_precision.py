@@ -9,6 +9,7 @@ module's ``artifact_path`` answer for another's.
 
 from __future__ import annotations
 
+import ast
 import importlib.util
 import sys
 from pathlib import Path
@@ -1530,3 +1531,108 @@ def test_unestablished_root_keeps_suffix_uncertain(gate, tmp_path: Path, root) -
     assert (Path("shared/consumer.py"), "artifacts/old.json") in _unwritten(
         gate.analyse_consumer_side(tmp_path, [])
     )
+
+
+@pytest.mark.parametrize(
+    "writer,reader,writer_pattern,reader_pattern",
+    [
+        (
+            "Path('$HOME/artifacts/old.json')",
+            "Path('~/artifacts/old.json')",
+            "$HOME/artifacts/old.json",
+            "./~/artifacts/old.json",
+        ),
+        (
+            "Path('$HOME/artifacts/old.json')",
+            "Path.home() / 'artifacts/old.json'",
+            "$HOME/artifacts/old.json",
+            "~/artifacts/old.json",
+        ),
+        (
+            "Path('~/artifacts/old.json')",
+            "Path.home() / 'artifacts/old.json'",
+            "./~/artifacts/old.json",
+            "~/artifacts/old.json",
+        ),
+    ],
+    ids=["dollar-home-vs-tilde", "dollar-home-vs-home", "tilde-vs-home"],
+)
+@pytest.mark.parametrize("reverse", [False, True], ids=["forward", "reverse"])
+def test_python_home_identities_do_not_pair(
+    gate, tmp_path: Path, writer, reader, writer_pattern, reader_pattern, reverse
+) -> None:
+    if reverse:
+        writer, reader = reader, writer
+        writer_pattern, reader_pattern = reader_pattern, writer_pattern
+    _write(
+        tmp_path,
+        "shared/consumer.py",
+        f"from pathlib import Path\n({writer}).write_text('{{}}')\n({reader}).read_text()\n",
+    )
+    report = gate.analyse_consumer_side(tmp_path, [])
+    assert (Path("shared/consumer.py"), reader_pattern) in _unwritten(report)
+    accesses, unresolved, *_ = gate.collect_artifact_accesses(tmp_path)
+    assert {(a.action, a.pattern, a.bounded) for a in accesses} == {
+        ("write", writer_pattern, True),
+        ("read", reader_pattern, True),
+    }
+    assert unresolved == report.unresolvable == 0
+
+
+@pytest.mark.parametrize(
+    "expression,expected",
+    [
+        (
+            "Path('wrong') / (Path('/review-fixture') / 'artifacts/old.json')",
+            "/review-fixture/artifacts/old.json",
+        ),
+        ("Path('a') / '/b'", "/b"),
+    ],
+    ids=["codex-exact-nested", "plain"],
+)
+def test_absolute_rhs_discards_left_before_repo_normalisation(gate, expression, expected) -> None:
+    root = Path("/review-fixture")
+    assert (
+        gate._resolve_path_expr(
+            ast.parse(expression, mode="eval").body, {}, root / "consumer.py", root, {}
+        )
+        == expected
+    )
+
+
+@pytest.mark.parametrize("assigned", [False, True], ids=["inline", "assigned"])
+@pytest.mark.parametrize("root_kind", ["codex-exact", "repository"])
+def test_nested_absolute_join_does_not_certify_left_relative_reader(
+    gate, tmp_path: Path, assigned, root_kind
+) -> None:
+    root = "/review-fixture" if root_kind == "codex-exact" else tmp_path.as_posix()
+    inner = f"Path({root!r}) / 'artifacts/old.json'"
+    setup = f"target = {inner}\n" if assigned else ""
+    expression = "Path('wrong') / " + ("target" if assigned else f"({inner})")
+    _write(
+        tmp_path,
+        "shared/consumer.py",
+        "from pathlib import Path\n" + setup + f"({expression}).write_text('{{}}')\n"
+        "Path('wrong/artifacts/old.json').read_text()\n",
+    )
+    report = gate.analyse_consumer_side(tmp_path, [])
+    assert (Path("shared/consumer.py"), "wrong/artifacts/old.json") in _unwritten(report)
+    accesses, unresolved, *_ = gate.collect_artifact_accesses(tmp_path)
+    expected = (
+        "/review-fixture/artifacts/old.json" if root_kind == "codex-exact" else "artifacts/old.json"
+    )
+    assert [(a.pattern, a.bounded) for a in accesses if a.action == "write"] == [(expected, True)]
+    assert unresolved == report.unresolvable == 0
+
+
+def test_genuine_relative_join_still_pairs(gate, tmp_path: Path) -> None:
+    _write(
+        tmp_path,
+        "shared/consumer.py",
+        "from pathlib import Path\n"
+        "(Path('wrong') / (Path('artifacts') / 'old.json')).write_text('{}')\n"
+        "Path('wrong/artifacts/old.json').read_text()\n",
+    )
+    report = gate.analyse_consumer_side(tmp_path, [])
+    assert not report.findings
+    assert report.unresolvable == 0
