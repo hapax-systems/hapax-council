@@ -1316,12 +1316,16 @@ def _resolve_external_scope_path(path: Path) -> Path:
     return resolved
 
 
-def _resolve_scope_directory_prefix(path: Path, pattern: str) -> tuple[Path, str | None]:
+def _resolve_scope_directory_prefix(
+    path: Path, pattern: str, *, missing_ok: bool = False
+) -> tuple[Path, str | None]:
     """Resolve the longest existing globbed directory prefix, retaining future tails.
 
     The terminal segment may select future files, so an empty complete expansion
     cannot establish disjointness. Multiple lexical directories remain ambiguous
-    even when their canonical targets coincide.
+    even when their canonical targets coincide. With ``missing_ok``, in-root future
+    directories and recursive expansions without alias crossings remain lexical;
+    they supply no new canonical spelling for the containment check.
     """
     parts = _glob_segments(pattern)
     if len(parts) < 2:
@@ -1329,15 +1333,22 @@ def _resolve_scope_directory_prefix(path: Path, pattern: str) -> tuple[Path, str
     for length in range(len(parts) - 1, 0, -1):
         prefix = "/".join(parts[:length])
         directories = []
+        has_alias = False
         try:
             for entry in path.glob(prefix):
                 target = entry.resolve(strict=True)
                 if target.is_dir():
                     directories.append(target)
+                    has_alias = has_alias or entry != target
         except (OSError, RuntimeError, ValueError) as exc:
             raise UndecidableScopeContainment(
                 f"cannot resolve directory prefix {path / prefix}: {exc}"
             ) from exc
+        if missing_ok and "**" in parts[:length] and not has_alias:
+            # Ordinary recursive expansion does not canonicalize an alias. Collapsing
+            # it to today's directories would erase the future language. An actual
+            # alias after ** still supplies an overlap witness for the refusing caller.
+            continue
         if len(directories) > 1:
             raise UndecidableScopeContainment(
                 f"directory prefix {path / prefix} expands to {len(directories)} directories"
@@ -1346,9 +1357,84 @@ def _resolve_scope_directory_prefix(path: Path, pattern: str) -> tuple[Path, str
             # Only the existing prefix is canonicalized; no leaf need exist.
             tail, scope_pattern, _ = _filesystem_scope_parts("/".join(parts[length:]))
             return directories[0].joinpath(*tail), scope_pattern
+    if missing_ok:
+        return path, pattern
     raise UndecidableScopeContainment(
         f"directory prefix {path / parts[0]} expands to no resolvable directory"
     )
+
+
+def _refuse_in_root_alias_reaching_surface(
+    path: Path,
+    scope_pattern: str | None,
+    member: DecayedMember,
+    *,
+    root: Path,
+    lexical_path: Path,
+) -> None:
+    """Refuse an in-root candidate whose resolved spelling reaches the member's surface.
+
+    Inside the root the lexical pattern comparison keeps the producer's glob semantics,
+    but an alias (symlink, character class, wildcard over an existing directory) can name
+    the same future file under a spelling the patterns never select while the leaf does
+    not exist and an empty expansion supplies no witness. Ordinary recursive expansion
+    supplies no alias witness. Existing file witnesses and unchanged or lexically covered
+    languages keep their normal containment/exclusion checks.
+    """
+    file_patterns = _member_file_patterns(member.patterns)
+    if not file_patterns:
+        # Directory-only declarations have no future file surface to reach.
+        return
+    if scope_pattern is None:
+        # Preserve the component-specific refusal and remedy for loops/dangling links.
+        canonical_path, canonical_pattern = _resolve_external_scope_path(path), None
+        if canonical_path.is_file():
+            # Existing selected targets are handled by the canonical surface below;
+            # they establish containment rather than an ambiguous future overlap.
+            return
+    else:
+        relative = "" if path == root else path.relative_to(root).as_posix()
+        lexical_pattern = _scope_pattern_from_base(relative, scope_pattern)
+        if any(_glob_pattern_covers(pattern, lexical_pattern) for pattern in file_patterns):
+            # Keep the producer's lexical skip-dir and symlink traversal checks.
+            return
+    try:
+        if scope_pattern is not None:
+            canonical_path, canonical_pattern = _resolve_scope_directory_prefix(
+                path, scope_pattern, missing_ok=True
+            )
+        if (canonical_path, canonical_pattern) == (path, scope_pattern):
+            return
+        if canonical_path != root and root not in canonical_path.parents:
+            return
+        canonical_relative = (
+            "" if canonical_path == root else canonical_path.relative_to(root).as_posix()
+        )
+        if scope_pattern is not None and canonical_pattern is not None:
+            if _scope_pattern_from_base(canonical_relative, canonical_pattern) == lexical_pattern:
+                return
+        if canonical_pattern is None and not any(
+            _local_member_file_matches(canonical_path, root, pattern) for pattern in member.patterns
+        ):
+            return
+        if ref_within_member(
+            canonical_path,
+            canonical_pattern is not None or canonical_path.is_dir(),
+            member,
+            scope_pattern=canonical_pattern,
+        ):
+            raise UndecidableScopeContainment(
+                f"resolved directory prefix reaches member surface at {canonical_path}; "
+                "whole-surface containment cannot be decided safely"
+            )
+    except UndecidableScopeContainment as exc:
+        spelled = lexical_path if scope_pattern is None else lexical_path / scope_pattern
+        error = UndecidableScopeContainment(
+            f"scope_containment_undecidable: candidate {spelled} against member root {root}: "
+            f"{exc}; containment is undecidable"
+        )
+        error.remedy = exc.remedy
+        raise error from exc
 
 
 def _canonical_member_patterns(root: Path, member: DecayedMember) -> tuple[str, ...]:
@@ -1817,6 +1903,12 @@ def ref_within_member(
                     "whole-surface containment cannot be decided safely"
                 )
             continue
+        if scope_pattern is not None and member.patterns:
+            # A glob based at or below the member root can reach its future surface
+            # through an alias even when there are no leaf witnesses to compare.
+            _refuse_in_root_alias_reaching_surface(
+                path, scope_pattern, member, root=root, lexical_path=lexical_path
+            )
         relative = "" if path == root else path.relative_to(root).as_posix()
         if (
             not broad
@@ -1826,6 +1918,12 @@ def ref_within_member(
                 _local_member_file_matches(path, root, pattern) for pattern in member.patterns
             )
         ):
+            # A lexical miss is not proof of being outside the patterned surface: an in-root
+            # alias resolves to a spelling the patterns DO select. Resolve the existing prefix
+            # (future tail kept lexical) before treating the candidate as outside.
+            _refuse_in_root_alias_reaching_surface(
+                path, scope_pattern, member, root=root, lexical_path=lexical_path
+            )
             continue
         has_excluded_entry = _check_member_symlinks(
             path, root, member, scope_pattern=(scope_pattern or "**/*") if broad else None

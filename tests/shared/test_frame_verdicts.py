@@ -1718,6 +1718,37 @@ def test_disjoint_loop_literal_requires_canonical_resolution(tmp_path: Path, ref
     assert str(link) in caught.value.remedy and "intended target" in caught.value.remedy
 
 
+@pytest.mark.parametrize(
+    ("scope_pattern", "alias"),
+    [
+        ("**/*.py", False),
+        ("**/bin/site_perl/*.py", False),
+        ("**/s?in/site_perl/new.py", True),
+        ("**/[s-s]bin/site_perl/*.py", True),
+        ("s?in/site_perl/**/*.py", True),
+        ("[s-s]bin/site_perl/*.py", True),
+    ],
+)
+@pytest.mark.parametrize("relative_base", ["", "local"], ids=["root", "nested-base"])
+def test_in_root_recursive_glob_only_resolves_alias_prefixes(
+    tmp_path: Path, scope_pattern: str, alias: bool, relative_base: str
+) -> None:
+    root = tmp_path / "usr"
+    base = root / relative_base
+    (base / "bin/site_perl").mkdir(parents=True)
+    (base / "sbin").symlink_to("bin", target_is_directory=True)
+    pattern = (Path(relative_base) / "bin/site_perl/**/*").as_posix()
+    member = fv.DecayedMember("m", "scope_exited", (root,), (pattern,), ())
+    assert not list(base.glob(scope_pattern))
+    if alias:
+        with pytest.raises(fv.UndecidableScopeContainment, match="scope_containment_undecidable"):
+            fv.ref_within_member(base, True, member, scope_pattern=scope_pattern)
+    else:
+        # Resolving ordinary directories must not erase the recursive language;
+        # these scopes can also select future files outside the declared surface.
+        assert not fv.ref_within_member(base, True, member, scope_pattern=scope_pattern)
+
+
 @pytest.mark.parametrize("skip", ["alias", "target"])
 def test_patterned_symlink_skip_dirs_use_lexical_parts(tmp_path: Path, skip: str) -> None:
     (tmp_path / "target").mkdir()

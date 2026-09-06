@@ -20,6 +20,20 @@ from shared import frame_verdicts as fv
 
 
 @pytest.fixture(autouse=True)
+def _isolate_gate_log(tmp_path, monkeypatch):
+    """Keep routing-gate events and their durable mirror out of the operator's ledger.
+
+    shared.gate_log resolves its canonical path at call time from HAPAX_GATE_LOG, so
+    every test (and every child process it spawns) appends under tmp_path; the durable
+    sink root follows the same rule through HAPAX_DURABLE_SINK_ROOT.
+    """
+    sink_root = tmp_path / "durable-sink"
+    sink_root.mkdir(parents=True, exist_ok=True)
+    monkeypatch.setenv("HAPAX_GATE_LOG", str(tmp_path / "gate-events.jsonl"))
+    monkeypatch.setenv("HAPAX_DURABLE_SINK_ROOT", str(sink_root))
+
+
+@pytest.fixture(autouse=True)
 def _isolate_turn_timing_witness(tmp_path, monkeypatch):
     """Keep TurnBudget.emit() receipts out of the production /dev/shm witness.
 

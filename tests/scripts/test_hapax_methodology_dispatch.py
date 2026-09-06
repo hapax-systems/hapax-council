@@ -814,6 +814,10 @@ def _run(
 ) -> subprocess.CompletedProcess[str]:
     env = os.environ.copy()
     env["HOME"] = str(tmp_path / "home")
+    env["HAPAX_GATE_LOG"] = str(tmp_path / "home" / ".cache/hapax/sdlc-routing/gate-events.jsonl")
+    sink_root = tmp_path / "home" / ".cache/hapax/stage0-durable-sink"
+    sink_root.mkdir(parents=True, exist_ok=True)
+    env["HAPAX_DURABLE_SINK_ROOT"] = str(sink_root)
     env["HAPAX_CC_TASK_ROOT"] = str(tmp_path / "tasks")
     env["HAPAX_DISPATCH_WORKTREE"] = str(tmp_path / "worktree")
     env["HAPAX_ORCHESTRATION_LEDGER_DIR"] = str(tmp_path / "ledger")
@@ -1332,6 +1336,16 @@ def test_dispatch_main_uses_adapter_admit_for_route_decision(
         return HoldingAdapter()
 
     monkeypatch.setenv("HOME", str(tmp_path / "home"))
+    # The dispatcher was imported before HOME changed; the gate log and its durable
+    # mirror are resolved at call time from these, so admitted cases stay in the fixture.
+    monkeypatch.setenv(
+        "HAPAX_GATE_LOG",
+        str(tmp_path / "home" / ".cache" / "hapax" / "sdlc-routing" / "gate-events.jsonl"),
+    )
+    monkeypatch.setenv(
+        "HAPAX_DURABLE_SINK_ROOT",
+        str(tmp_path / "home" / ".cache" / "hapax" / "stage0-durable-sink"),
+    )
     monkeypatch.setenv("HAPAX_CC_TASK_ROOT", str(tmp_path / "tasks"))
     monkeypatch.setenv("HAPAX_DISPATCH_WORKTREE", str(tmp_path / "worktree"))
     monkeypatch.setenv("HAPAX_ORCHESTRATION_LEDGER_DIR", str(tmp_path / "ledger"))
@@ -1619,6 +1633,16 @@ def test_launch_authority_violation_writes_blocked_receipt(
     assert message_id is not None
 
     monkeypatch.setenv("HOME", str(tmp_path / "home"))
+    # The dispatcher was imported before HOME changed; the gate log and its durable
+    # mirror are resolved at call time from these, so admitted cases stay in the fixture.
+    monkeypatch.setenv(
+        "HAPAX_GATE_LOG",
+        str(tmp_path / "home" / ".cache" / "hapax" / "sdlc-routing" / "gate-events.jsonl"),
+    )
+    monkeypatch.setenv(
+        "HAPAX_DURABLE_SINK_ROOT",
+        str(tmp_path / "home" / ".cache" / "hapax" / "stage0-durable-sink"),
+    )
     monkeypatch.setenv("HAPAX_CC_TASK_ROOT", str(tmp_path / "tasks"))
     monkeypatch.setenv("HAPAX_DISPATCH_WORKTREE", str(tmp_path / "worktree"))
     monkeypatch.setenv("HAPAX_ORCHESTRATION_LEDGER_DIR", str(tmp_path / "ledger"))
@@ -1703,6 +1727,16 @@ printf '%s\\n' "$@" > {launcher_args}
 
     monkeypatch.setitem(module._WORKER_FAILURE_ADAPTERS, "codex", SpyCodexAdapter)
     monkeypatch.setenv("HOME", str(tmp_path / "home"))
+    # The dispatcher was imported before HOME changed; the gate log and its durable
+    # mirror are resolved at call time from these, so admitted cases stay in the fixture.
+    monkeypatch.setenv(
+        "HAPAX_GATE_LOG",
+        str(tmp_path / "home" / ".cache" / "hapax" / "sdlc-routing" / "gate-events.jsonl"),
+    )
+    monkeypatch.setenv(
+        "HAPAX_DURABLE_SINK_ROOT",
+        str(tmp_path / "home" / ".cache" / "hapax" / "stage0-durable-sink"),
+    )
     monkeypatch.setenv("HAPAX_CC_TASK_ROOT", str(tmp_path / "tasks"))
     monkeypatch.setenv("HAPAX_DISPATCH_WORKTREE", str(tmp_path / "worktree"))
     monkeypatch.setenv("HAPAX_ORCHESTRATION_LEDGER_DIR", str(tmp_path / "ledger"))
@@ -2779,6 +2813,16 @@ def test_unsupported_selected_route_writes_blocked_receipt_with_next_action(
         """,
     )
     monkeypatch.setenv("HOME", str(tmp_path / "home"))
+    # The dispatcher was imported before HOME changed; the gate log and its durable
+    # mirror are resolved at call time from these, so admitted cases stay in the fixture.
+    monkeypatch.setenv(
+        "HAPAX_GATE_LOG",
+        str(tmp_path / "home" / ".cache" / "hapax" / "sdlc-routing" / "gate-events.jsonl"),
+    )
+    monkeypatch.setenv(
+        "HAPAX_DURABLE_SINK_ROOT",
+        str(tmp_path / "home" / ".cache" / "hapax" / "stage0-durable-sink"),
+    )
     monkeypatch.setenv("HAPAX_CC_TASK_ROOT", str(tmp_path / "tasks"))
     monkeypatch.setenv("HAPAX_DISPATCH_WORKTREE", str(tmp_path / "worktree"))
     monkeypatch.setenv("HAPAX_ORCHESTRATION_LEDGER_DIR", str(tmp_path / "ledger"))
@@ -4902,6 +4946,187 @@ def test_dispatch_empty_member_glob_directory_prefix(
         assert "2 directories" in err
 
 
+@pytest.mark.parametrize(
+    ("candidate", "outcome"),
+    [
+        ("usr/sbin/site_perl/new.py", "refused"),
+        ("usr/[s-s]bin/site_perl/new.py", "refused"),
+        ("usr/[s-s]bin/site_perl/*.py", "refused"),
+        ("usr/s?in/site_perl/new.py", "refused"),
+        ("usr/bin/site_perl/new.py", "inside"),
+        ("usr/other-*/site_perl/new.py", "multiple"),
+        ("usr/tbin/site_perl/new.py", "outside"),
+        ("usr/future-dir/new.py", "outside"),
+    ],
+    ids=[
+        "in-root-symlink-missing-file",
+        "in-root-class-missing-file",
+        "in-root-class-empty-selection",
+        "in-root-wildcard-missing-file",
+        "in-root-literal-inside",
+        "in-root-multiple-directories",
+        "in-root-alias-leaving-the-surface",
+        "in-root-future-directory-outside-the-surface",
+    ],
+)
+def test_dispatch_ancestor_root_member_in_root_alias(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+    candidate: str,
+    outcome: str,
+) -> None:
+    """A member declared at an ancestor root with a pattern under it: aliases INSIDE the root
+    (a symlink, a character class, a wildcard over an existing directory) must not admit a
+    future file the member's canonical surface would contain."""
+    ancestor_root = tmp_path / "usr"
+    member_surface = ancestor_root / "bin/site_perl"
+    member_surface.mkdir(parents=True)
+    (ancestor_root / "sbin").symlink_to("bin", target_is_directory=True)
+    outside = tmp_path / "outside/site_perl"
+    outside.mkdir(parents=True)
+    (ancestor_root / "tbin").symlink_to("../outside", target_is_directory=True)
+    for name in ("other-a", "other-b"):
+        (ancestor_root / name).symlink_to("../outside", target_is_directory=True)
+    assert not list(member_surface.glob("**/*"))
+    assert not list(tmp_path.glob(candidate))
+    frame_root = _frame_procedure_root(
+        tmp_path / "frame",
+        decayed_root=ancestor_root,
+        reader="fs.glob",
+        location={"path": str(ancestor_root), "patterns": ["bin/site_perl/**/*"]},
+    )
+    scope = str(tmp_path / candidate)
+    rc, err = _dispatch_up_to_the_adapter(
+        tmp_path,
+        monkeypatch,
+        capsys,
+        _dispatcher_module(),
+        mutation_scope_refs=json.dumps([scope]),
+        frame_root=frame_root,
+    )
+    if outcome == "outside":
+        assert rc == 10 and "fixture refusal" in err
+        assert "declared mutation scope is not containable" not in err
+        assert "out of accountability" not in err
+        gate_root = tmp_path / "home" / ".cache" / "hapax"
+        events = [
+            json.loads(line)
+            for line in (gate_root / "sdlc-routing/gate-events.jsonl").read_text().splitlines()
+        ]
+        mirrors = [
+            json.loads(line)
+            for line in (gate_root / "stage0-durable-sink/gate-log.jsonl").read_text().splitlines()
+        ]
+        assert [event["gate_result"] for event in events] == ["accept"]
+        assert [row["payload"]["gate_result"] for row in mirrors] == ["accept"]
+        return
+    _assert_frame_refusal_receipt(tmp_path, frame_root, rc, err)
+    assert scope in err
+    if outcome != "inside":
+        assert str(ancestor_root) in err
+        assert "scope_containment_undecidable" in err
+        assert "containment is undecidable" in err
+    if outcome == "multiple":
+        assert "2 directories" in err
+
+
+def test_dispatch_gate_event_accept_without_home_override(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """A main() accept with HOME unchanged still belongs to this test's two sinks."""
+    module = _dispatcher_module()
+    _worktree(tmp_path / "worktree")
+    spec = _spec(tmp_path / "isap-test.md")
+    _task(tmp_path / "tasks", "governed-build", _codex_only_build_frontmatter(spec))
+    monkeypatch.setenv("HAPAX_CC_TASK_ROOT", str(tmp_path / "tasks"))
+    monkeypatch.setenv("HAPAX_DISPATCH_WORKTREE", str(tmp_path / "worktree"))
+    monkeypatch.setenv("HAPAX_ORCHESTRATION_LEDGER_DIR", str(tmp_path / "ledger"))
+    monkeypatch.setenv("HAPAX_PLATFORM_CAPABILITY_REGISTRY", str(_fresh_registry(tmp_path)))
+    monkeypatch.setenv("HAPAX_PLATFORM_CAPABILITY_RECEIPT_DIR", str(tmp_path / "platform-receipts"))
+    monkeypatch.setenv(
+        "HAPAX_QUOTA_SPEND_LEDGER", str(_fresh_claude_subscription_quota_ledger(tmp_path))
+    )
+    monkeypatch.setenv("HAPAX_RELAY_MQ_DB", str(tmp_path / "missing.db"))
+    monkeypatch.setenv("HAPAX_DISPATCH_CLAIM_SWEEP", "0")
+    rc = module.main(
+        [
+            "--task",
+            "governed-build",
+            "--lane",
+            "cx-green",
+            "--platform",
+            "codex",
+            "--mode",
+            "headless",
+        ]
+    )
+    output = capsys.readouterr()
+    assert rc == 0, output.err
+    events = [
+        json.loads(line) for line in (tmp_path / "gate-events.jsonl").read_text().splitlines()
+    ]
+    mirrors = [
+        json.loads(line)
+        for line in (tmp_path / "durable-sink/gate-log.jsonl").read_text().splitlines()
+    ]
+    assert [event["gate_result"] for event in events] == ["accept"]
+    assert [row["payload"]["gate_result"] for row in mirrors] == ["accept"]
+
+
+def test_dispatch_gate_events_stay_under_the_fixture_home(tmp_path: Path) -> None:
+    """Exercise admitted main() calls both with and without a later HOME change.
+
+    The child starts without sink overrides and with a writable, persistent default
+    sink, so lost isolation produces an actual leak rather than a swallowed write error.
+    Both selected tests require accept rows in their own logs and durable mirrors.
+    """
+    suite_home = Path(
+        subprocess.check_output(
+            ["mktemp", "-d", "/store-fast/tmp/hapax-4629-home.XXXXXX"], text=True
+        ).strip()
+    )
+    (suite_home / ".cache/hapax/stage0-durable-sink").mkdir(parents=True)
+    env = {
+        key: value
+        for key, value in os.environ.items()
+        if key not in {"HAPAX_GATE_LOG", "HAPAX_DURABLE_SINK_ROOT"}
+    }
+    env["HOME"] = str(suite_home)
+    env["PYTHONDONTWRITEBYTECODE"] = "1"
+    env["UV_OFFLINE"] = "1"
+    test_file = str(Path(__file__).resolve().relative_to(REPO_ROOT))
+    result = subprocess.run(
+        [
+            "uv",
+            "run",
+            "env",
+            f"HOME={suite_home}",
+            "pytest",
+            "-q",
+            "-p",
+            "no:cacheprovider",
+            "--confcutdir=tests",
+            f"--basetemp={tmp_path / 'child-tests'}",
+            f"{test_file}::test_dispatch_ancestor_root_member_in_root_alias"
+            "[in-root-alias-leaving-the-surface]",
+            f"{test_file}::test_dispatch_gate_event_accept_without_home_override",
+        ],
+        cwd=REPO_ROOT,
+        env=env,
+        capture_output=True,
+        text=True,
+        timeout=600,
+    )
+    leaked = [
+        path
+        for path in (suite_home / ".cache" / "hapax").rglob("*")
+        if path.is_file() and ("sdlc-routing" in path.parts or "stage0-durable-sink" in path.parts)
+    ]
+    assert not leaked, f"dispatch fixtures wrote to the operator-shaped home: {leaked}"
+    assert result.returncode == 0, result.stdout + result.stderr
+
+
 @pytest.mark.parametrize("decayed", [True, False], ids=["decayed", "healthy"])
 @pytest.mark.parametrize(
     "kind", ["directory", "file", "escape", "empty-directory", "empty-escape", "empty-subtree"]
@@ -6308,6 +6533,16 @@ def _dispatch_up_to_the_adapter(
     assert message_id is not None
 
     monkeypatch.setenv("HOME", str(tmp_path / "home"))
+    # The dispatcher was imported before HOME changed; the gate log and its durable
+    # mirror are resolved at call time from these, so admitted cases stay in the fixture.
+    monkeypatch.setenv(
+        "HAPAX_GATE_LOG",
+        str(tmp_path / "home" / ".cache" / "hapax" / "sdlc-routing" / "gate-events.jsonl"),
+    )
+    monkeypatch.setenv(
+        "HAPAX_DURABLE_SINK_ROOT",
+        str(tmp_path / "home" / ".cache" / "hapax" / "stage0-durable-sink"),
+    )
     monkeypatch.setenv("HAPAX_CC_TASK_ROOT", str(tmp_path / "tasks"))
     monkeypatch.setenv("HAPAX_DISPATCH_WORKTREE", str(tmp_path / "worktree"))
     monkeypatch.setenv("HAPAX_ORCHESTRATION_LEDGER_DIR", str(tmp_path / "ledger"))
