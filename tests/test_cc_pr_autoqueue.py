@@ -422,6 +422,7 @@ class _FakeRunner:
         self.open_prs: list[dict[str, Any]] = []
         self.queued_prs: set[int] = set()
         self.queue_refs: list[str] = []
+        self.merge_queue_stdout: str | None = None
         self.merge_queue_method = "SQUASH"
         self.rulesets_payload: Any | None = None
         self.rulesets_error: str | None = None
@@ -645,6 +646,8 @@ class _FakeRunner:
                 return subprocess.CompletedProcess(cmd, 1, "", self.status_post_failure_message)
             return subprocess.CompletedProcess(cmd, 0, '{"state":"ok"}', "")
         if cmd[:3] == ["gh", "api", "graphql"]:
+            if self.merge_queue_stdout is not None and any("mergeQueue{" in part for part in cmd):
+                return subprocess.CompletedProcess(cmd, 0, self.merge_queue_stdout, "")
             nodes = [{"pullRequest": {"number": number}} for number in sorted(self.queued_prs)]
             payload = {
                 "data": {
@@ -1816,6 +1819,365 @@ def test_graphql_backoff_skips_autoqueue_reconciler(tmp_path: Path) -> None:
     assert report["skipped"] is True
     assert report["reason"] == "merge_queue_state_indeterminate"
     assert not any(call[:3] == ["gh", "api", "graphql"] for call in runner.calls)
+
+
+class TestMergeQueuePayloadReconciliation:
+    @pytest.mark.parametrize("has_refs", [False, True], ids=["empty", "queue_refs"])
+    def test_null_merge_queue_decides_and_reads_refs(
+        self, tmp_path: Path, caplog: pytest.LogCaptureFixture, has_refs: bool
+    ) -> None:
+        vault = _make_vault(tmp_path)
+        _write_task(vault, task_id="null-queue", pr=42)
+        runner = _FakeRunner()
+        runner.open_prs = [_pr(42)]
+        runner.merge_queue_stdout = json.dumps({"data": {"repository": {"mergeQueue": None}}})
+        if has_refs:
+            runner.queue_refs = ["refs/heads/gh-readonly-queue/main/pr-42-deadbeef"]
+
+        with caplog.at_level("INFO", logger=autoqueue.LOG.name):
+            report = autoqueue.run_reconciler(
+                repo="owner/repo",
+                repo_root=tmp_path,
+                vault_root=vault,
+                lineage_ledger_path=None,
+                quarantine_path=tmp_path / "quarantine.json",
+                runner=runner,
+            )
+
+        assert "skipped" not in report
+        assert report["queued_prs"] == ([42] if has_refs else [])
+        assert report["decisions"][0]["action"] == ("already_queued" if has_refs else "queue")
+        assert report["mutations"] == []
+        assert any("repos/owner/repo/pulls" in call for call in runner.calls)
+        assert any(
+            call[:3] == ["gh", "api", "repos/owner/repo/git/matching-refs/heads/gh-readonly-queue"]
+            for call in runner.calls
+        )
+        reasons = [
+            record.args[0]
+            for record in caplog.records
+            if record.msg == "gh merge queue query decided: %s"
+        ]
+        assert reasons == ["no_configured_merge_queue:ref_fallback=gh-readonly-queue"]
+        assert re.fullmatch(r"[A-Za-z0-9_:,=.-]+", reasons[0])
+
+    @pytest.mark.parametrize(
+        "payload,cause",
+        [
+            pytest.param(None, "invalid_payload", id="payload_null"),
+            pytest.param([], "invalid_payload", id="payload_list"),
+            pytest.param({}, "missing_data", id="data_absent"),
+            pytest.param({"data": None}, "invalid_data", id="data_null"),
+            pytest.param({"data": []}, "invalid_data", id="data_not_object"),
+            pytest.param({"data": {}}, "missing_repository", id="repository_absent"),
+            pytest.param(
+                {"data": {"repository": None}}, "repository_unresolved", id="repository_null"
+            ),
+            pytest.param(
+                {"data": {"repository": "private diagnostic /?\n"}},
+                "invalid_repository",
+                id="repository_not_object",
+            ),
+            pytest.param(
+                {"data": {"repository": {}}}, "missing_merge_queue", id="merge_queue_absent"
+            ),
+            pytest.param(
+                {"data": {"repository": {"mergeQueue": "private diagnostic /?\n"}}},
+                "invalid_merge_queue",
+                id="merge_queue_scalar",
+            ),
+            pytest.param(
+                {"data": {"repository": {"mergeQueue": {}}}},
+                "invalid_entries",
+                id="entries_absent",
+            ),
+            pytest.param(
+                {"data": {"repository": {"mergeQueue": {"entries": None}}}},
+                "invalid_entries",
+                id="entries_not_object",
+            ),
+            pytest.param(
+                {"data": {"repository": {"mergeQueue": {"entries": {}}}}},
+                "invalid_nodes",
+                id="nodes_absent",
+            ),
+            pytest.param(
+                {"data": {"repository": {"mergeQueue": {"entries": {"nodes": {}}}}}},
+                "invalid_nodes",
+                id="nodes_not_list",
+            ),
+            pytest.param(
+                {"data": {"repository": {"mergeQueue": {"entries": {"nodes": None}}}}},
+                "nodes_unresolved",
+                id="nodes_null",
+            ),
+            *[
+                pytest.param(
+                    {"data": {"repository": {"mergeQueue": {"entries": {"nodes": nodes}}}}},
+                    cause,
+                    id=case,
+                )
+                for nodes, cause, case in [
+                    ([None], "entry_unresolved:null_node", "node_null"),
+                    (["private diagnostic /?\n"], "invalid_entry:node_type", "node_scalar"),
+                    ([[]], "invalid_entry:node_type", "node_list"),
+                    ([{}], "invalid_entry:missing_pull_request", "pull_request_absent"),
+                    (
+                        [{"pullRequest": None}],
+                        "entry_unresolved:null_pull_request",
+                        "pull_request_null",
+                    ),
+                    (
+                        [{"pullRequest": "private diagnostic /?\n"}],
+                        "invalid_entry:pull_request_type",
+                        "pull_request_scalar",
+                    ),
+                    (
+                        [{"pullRequest": []}],
+                        "invalid_entry:pull_request_type",
+                        "pull_request_list",
+                    ),
+                    ([{"pullRequest": {}}], "invalid_entry:missing_number", "number_absent"),
+                    *[
+                        (
+                            [{"pullRequest": {"number": number}}],
+                            "invalid_entry:number_type",
+                            f"number_{case}",
+                        )
+                        for number, case in [
+                            (True, "true"),
+                            (False, "false"),
+                            (42.75, "float"),
+                            (42.0, "integral_float"),
+                            ("42", "string"),
+                            (None, "null"),
+                            ({}, "object"),
+                            ([], "list"),
+                        ]
+                    ],
+                    (
+                        [{"pullRequest": {"number": 42}}, {"pullRequest": {"number": 42.75}}],
+                        "invalid_entry:number_type",
+                        "mixed_valid_invalid",
+                    ),
+                    (
+                        [{"pullRequest": {"number": 42}}, None],
+                        "entry_unresolved:null_node",
+                        "mixed_valid_unresolved",
+                    ),
+                ]
+            ],
+            *[
+                pytest.param(
+                    {
+                        "errors": errors,
+                        "data": {"repository": {"mergeQueue": merge_queue}},
+                    },
+                    "invalid_errors",
+                    id=f"errors_{case}_{queue_case}",
+                )
+                for errors, case in [
+                    ({}, "object"),
+                    (False, "false"),
+                    (None, "null"),
+                    ("private diagnostic /?\n", "string"),
+                    (0, "zero"),
+                ]
+                for merge_queue, queue_case in [
+                    ({"entries": {"nodes": []}}, "configured"),
+                    (None, "null_queue"),
+                ]
+            ],
+            pytest.param(
+                {
+                    "errors": [{"message": "private diagnostic /?\n"}],
+                    "data": {"repository": {"mergeQueue": {"entries": {"nodes": []}}}},
+                },
+                "graphql_errors",
+                id="errors_with_usable_data",
+            ),
+            pytest.param(
+                {
+                    "errors": [{"message": "private diagnostic /?\n"}],
+                    "data": {"repository": {"mergeQueue": None}},
+                },
+                "graphql_errors",
+                id="errors_with_null_queue",
+            ),
+        ],
+    )
+    def test_indeterminate_payload_refuses_before_decisions(
+        self, tmp_path: Path, caplog: pytest.LogCaptureFixture, payload: Any, cause: str
+    ) -> None:
+        vault = _make_vault(tmp_path)
+        task_path = _write_task(vault, task_id="unreadable-queue", pr=42)
+        original_note = task_path.read_bytes()
+        runner = _FakeRunner()
+        runner.open_prs = [_pr(42)]
+        runner.queue_refs = ["refs/heads/gh-readonly-queue/main/pr-42-deadbeef"]
+        runner.merge_queue_stdout = json.dumps(payload)
+        report_path = tmp_path / "report.json"
+        quarantine_path = tmp_path / "quarantine.json"
+        ledger_path = tmp_path / "auto-arm.jsonl"
+
+        report = autoqueue.run_reconciler(
+            repo="owner/repo",
+            repo_root=tmp_path,
+            vault_root=vault,
+            apply=True,
+            lineage_ledger_path=None,
+            quarantine_path=quarantine_path,
+            auto_arm_ledger_path=ledger_path,
+            report_path=report_path,
+            admission_governor_path=tmp_path / "governor.json",
+            runner=runner,
+        )
+
+        for recorded in (report, json.loads(report_path.read_text())):
+            assert recorded["skipped"] is True
+            assert recorded["reason"] == "merge_queue_state_indeterminate"
+            assert recorded.get("decisions", []) == []
+            assert recorded.get("mutations", []) == []
+        assert report["stable_report"]["written"] is True
+        assert task_path.read_bytes() == original_note
+        assert not quarantine_path.exists()
+        assert not ledger_path.exists()
+        assert not any(call[:3] == ["gh", "pr", "merge"] for call in runner.calls)
+        assert not any("mutation" in part for call in runner.calls for part in call)
+        assert _admission_posts(runner) == []
+        # Only the rate probe and the queue read are allowed; a ref cannot resolve
+        # an indeterminate queue object, and no listing/decision/mutation may follow.
+        assert sum(call[:3] == ["gh", "api", "graphql"] for call in runner.calls) == 1
+        assert all(
+            call[:4] == ["gh", "api", "-i", "rate_limit"]
+            or (call[:3] == ["gh", "api", "graphql"] and "mutation" not in " ".join(call))
+            for call in runner.calls
+        )
+        records = [
+            record
+            for record in caplog.records
+            if record.msg == "gh merge queue query indeterminate: %s"
+        ]
+        assert len(records) == 1
+        assert records[0].levelname == "ERROR"
+        assert records[0].args == (cause,)
+        assert re.fullmatch(r"[A-Za-z0-9_:,=.-]+", cause)
+        assert "private diagnostic" not in caplog.text + json.dumps(report)
+
+    @pytest.mark.parametrize("numbers", [[], [42]], ids=["empty_nodes", "integer_number"])
+    @pytest.mark.parametrize("has_refs", [False, True], ids=["empty_refs", "queue_refs"])
+    def test_configured_queue_combines_nodes_and_refs(
+        self, tmp_path: Path, caplog: pytest.LogCaptureFixture, numbers: list[int], has_refs: bool
+    ) -> None:
+        runner = _FakeRunner()
+        runner.merge_queue_stdout = json.dumps(
+            {
+                "errors": [],
+                "data": {
+                    "repository": {
+                        "mergeQueue": {
+                            "entries": {
+                                "nodes": [{"pullRequest": {"number": number}} for number in numbers]
+                            }
+                        }
+                    }
+                },
+            }
+        )
+        if has_refs:
+            runner.queue_refs = ["refs/heads/gh-readonly-queue/main/pr-43-deadbeef"]
+        with caplog.at_level("INFO", logger=autoqueue.LOG.name):
+            report = autoqueue.run_reconciler(
+                repo="owner/repo",
+                repo_root=tmp_path,
+                vault_root=_make_vault(tmp_path),
+                lineage_ledger_path=None,
+                quarantine_path=tmp_path / "quarantine.json",
+                runner=runner,
+            )
+        assert "skipped" not in report
+        assert report["queued_prs"] == numbers + ([43] if has_refs else [])
+        assert any(
+            call[:3] == ["gh", "api", "repos/owner/repo/git/matching-refs/heads/gh-readonly-queue"]
+            for call in runner.calls
+        )
+        assert report["mutations"] == []
+        assert "no_configured_merge_queue" not in caplog.text
+
+    def test_queueless_repository_completes_reconcile(
+        self, tmp_path: Path, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        vault = _make_vault(tmp_path)
+        _write_task(vault, task_id="queueless-repository", pr=42)
+        runner = _FakeRunner()
+        runner.open_prs = [_pr(42)]
+        runner.merge_queue_stdout = json.dumps({"data": {"repository": {"mergeQueue": None}}})
+        runner.rulesets_payload = []
+        report_path = tmp_path / "report.json"
+
+        with caplog.at_level("INFO", logger=autoqueue.LOG.name):
+            report = autoqueue.run_reconciler(
+                repo="owner/repo",
+                repo_root=tmp_path,
+                vault_root=vault,
+                apply=True,
+                lineage_ledger_path=None,
+                quarantine_path=tmp_path / "quarantine.json",
+                auto_arm_ledger_path=tmp_path / "auto-arm.jsonl",
+                report_path=report_path,
+                admission_governor_path=tmp_path / "governor.json",
+                runner=runner,
+            )
+
+        assert "skipped" not in report
+        assert report["queued_prs"] == []
+        assert report["open_pr_count"] == 1
+        assert report["counts"]["blocked"] == 1
+        assert report["decisions"][0]["reasons"] == [
+            "auto_merge_method_unverified:expected_missing:"
+            "source=active_named_merge_queue_ruleset_missing:main-merge-queue"
+        ]
+        assert report["stable_report"]["written"] is True
+        assert json.loads(report_path.read_text())["decisions"] == report["decisions"]
+        assert "no_configured_merge_queue:ref_fallback=gh-readonly-queue" in caplog.text
+        assert not any(call[:3] == ["gh", "pr", "merge"] for call in runner.calls)
+        assert not any("mutation" in part for call in runner.calls for part in call)
+
+    def test_dequeue_revalidation_refuses_unresolved_repository(
+        self, tmp_path: Path, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        vault = _make_vault(tmp_path)
+        _write_task(vault, task_id="dequeue-unresolved", pr=42)
+        fake = _FakeRunner()
+        fake.open_prs = [_pr(42, draft=True)]
+        fake.queued_prs = {42}
+
+        def runner(cmd: list[str], **kwargs: Any) -> subprocess.CompletedProcess:
+            proc = fake(cmd, **kwargs)
+            if cmd[:3] == ["gh", "api", "graphql"] and any("mergeQueue{" in part for part in cmd):
+                fake.merge_queue_stdout = json.dumps({"data": {"repository": None}})
+            return proc
+
+        report = autoqueue.run_reconciler(
+            repo="owner/repo",
+            repo_root=tmp_path,
+            vault_root=vault,
+            apply=True,
+            lineage_ledger_path=None,
+            quarantine_path=tmp_path / "quarantine.json",
+            runner=runner,
+        )
+
+        assert report["decisions"][0]["action"] == "dequeue"
+        refused = [result for result in report["mutations"] if result["action"] == "dequeue"]
+        assert len(refused) == 1
+        assert refused[0]["ok"] is False
+        assert (
+            refused[0]["message"] == "merge_queue_state_indeterminate:dequeue_revalidation_failed"
+        )
+        assert "gh merge queue query indeterminate: repository_unresolved" in caplog.text
+        assert not any("dequeuePullRequest" in part for call in fake.calls for part in call)
+        assert not any(call[:3] == ["gh", "pr", "merge"] for call in fake.calls)
 
 
 def test_review_required_rest_decision_blocks_autoqueue(tmp_path: Path) -> None:

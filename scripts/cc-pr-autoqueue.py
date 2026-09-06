@@ -1572,21 +1572,73 @@ def fetch_merge_queue_pr_numbers(
     except json.JSONDecodeError as exc:
         LOG.error("gh merge queue query emitted non-JSON: %s", exc)
         return None
-    nodes = (
-        payload.get("data", {})
-        .get("repository", {})
-        .get("mergeQueue", {})
-        .get("entries", {})
-        .get("nodes", [])
-    )
+
+    def indeterminate(cause: str) -> None:
+        LOG.error("gh merge queue query indeterminate: %s", cause)
+        return None
+
+    if not isinstance(payload, dict):
+        return indeterminate("invalid_payload")
+    if "errors" in payload:
+        if not isinstance(payload["errors"], list):
+            return indeterminate("invalid_errors")
+        if payload["errors"]:
+            return indeterminate("graphql_errors")
+    if "data" not in payload:
+        return indeterminate("missing_data")
+    data = payload["data"]
+    if not isinstance(data, dict):
+        return indeterminate("invalid_data")
+    if "repository" not in data:
+        return indeterminate("missing_repository")
+    repository = data["repository"]
+    if repository is None:
+        return indeterminate("repository_unresolved")
+    if not isinstance(repository, dict):
+        return indeterminate("invalid_repository")
+    if "mergeQueue" not in repository:
+        return indeterminate("missing_merge_queue")
+    merge_queue = repository["mergeQueue"]
+    if merge_queue is None:
+        LOG.info(
+            "gh merge queue query decided: %s",
+            "no_configured_merge_queue:ref_fallback=gh-readonly-queue",
+        )
+        nodes = []
+    else:
+        if not isinstance(merge_queue, dict):
+            return indeterminate("invalid_merge_queue")
+        entries = merge_queue.get("entries")
+        if not isinstance(entries, dict):
+            return indeterminate("invalid_entries")
+        if "nodes" not in entries:
+            return indeterminate("invalid_nodes")
+        nodes = entries["nodes"]
+        if nodes is None:
+            return indeterminate("nodes_unresolved")
+        if not isinstance(nodes, list):
+            return indeterminate("invalid_nodes")
     queued: set[int] = set()
-    if isinstance(nodes, list):
-        for node in nodes:
-            try:
-                number = int(node["pullRequest"]["number"])
-            except (KeyError, TypeError, ValueError):
-                continue
-            queued.add(number)
+    for node in nodes:
+        # Nullable entries/PRs are schema-licensed but cannot establish membership.
+        if node is None:
+            return indeterminate("entry_unresolved:null_node")
+        if not isinstance(node, dict):
+            return indeterminate("invalid_entry:node_type")
+        # The query selects this key unconditionally; omission is not nullability.
+        if "pullRequest" not in node:
+            return indeterminate("invalid_entry:missing_pull_request")
+        pull_request = node["pullRequest"]
+        if pull_request is None:
+            return indeterminate("entry_unresolved:null_pull_request")
+        if not isinstance(pull_request, dict):
+            return indeterminate("invalid_entry:pull_request_type")
+        if "number" not in pull_request:
+            return indeterminate("invalid_entry:missing_number")
+        number = pull_request["number"]
+        if isinstance(number, bool) or not isinstance(number, int):
+            return indeterminate("invalid_entry:number_type")
+        queued.add(number)
     queued |= _merge_queue_ref_pr_numbers(repo=repo, repo_root=repo_root, runner=runner)
     return queued
 
