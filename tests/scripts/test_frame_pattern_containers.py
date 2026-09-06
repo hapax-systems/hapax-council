@@ -1,0 +1,137 @@
+"""Malformed pattern containers must refuse through governed dispatch main()."""
+
+import json
+import os
+import shutil
+import subprocess
+import sys
+
+import pytest
+import yaml
+
+from shared import frame_verdicts as fv
+from tests.frame_verdict_helpers import PRODUCER_BUILTIN_PATH
+from tests.scripts.test_hapax_methodology_dispatch import (
+    _dispatch_receipt_only_scope,
+    _frame_procedure_root,
+)
+
+
+def _pattern_dispatch(tmp_path, monkeypatch, capsys, reader, location_update, *, unrelated=False):
+    root = tmp_path / "member"
+    root.mkdir()
+    candidate = root / "candidate.txt"
+    candidate.write_text("NEEDLE\n")
+    location = (
+        {"roots": [str(root)], "query": "NEEDLE"}
+        if reader == "fs.content_query"
+        else {"path": str(root)}
+    )
+    location.update(location_update)
+    frame = _frame_procedure_root(
+        tmp_path / "frame",
+        decayed_root=root,
+        reader=reader,
+        location=location,
+        query_params=reader == "fs.content_query",
+    )
+    if unrelated:
+        # This member is non-decayed and unused for containment. Do not require
+        # admission despite a malformed governing member.
+        mass_path = frame / "declaration/mass.yaml"
+        mass = yaml.safe_load(mass_path.read_text())
+        mass["members"][1]["location"]["patterns"] = {"glob": "*"}
+        mass_path.write_text(yaml.safe_dump(mass))
+        coverage = frame / "_runs/current/coverage.json"
+        rows = json.loads(coverage.read_text())
+        rows[1]["member_declaration_identity"] = fv._member_declaration_identity(
+            mass["members"][1], mass["exclusions"]
+        )
+        coverage.write_text(json.dumps(rows))
+    rc, err = _dispatch_receipt_only_scope(tmp_path, monkeypatch, capsys, frame, candidate)
+    return rc, err, root, candidate
+
+
+@pytest.mark.parametrize("reader", ["fs.content_query", "fs.glob"])
+@pytest.mark.parametrize("patterns", ["*", {"glob": "*"}, 3], ids=["scalar", "mapping", "integer"])
+def test_main_refuses_malformed_pattern_container(tmp_path, monkeypatch, capsys, reader, patterns):
+    rc, err, _, _ = _pattern_dispatch(tmp_path, monkeypatch, capsys, reader, {"patterns": patterns})
+    assert rc == 10, "a malformed container must not establish an empty selection"
+    assert "legacy-surface" in err
+    assert "location.patterns has malformed container" in err, (
+        "This pins the strict container contract: wrapping '*' as ['*'] happens to agree "
+        "with producer character iteration, but must still refuse the malformed declaration."
+    )
+    assert type(patterns).__name__ in err
+    assert repr(patterns) in err
+    assert "expected a list of patterns or absence" in err
+    assert "use a list such as ['*'], or omit patterns" in err
+
+
+@pytest.mark.parametrize("reader", ["fs.content_query", "fs.glob"])
+@pytest.mark.parametrize(
+    ("location", "query_rc"),
+    [({}, 10), ({"patterns": None}, 10), ({"patterns": []}, 0), ({"patterns": ["*"]}, 10)],
+    ids=["absent", "null-absence", "empty-list", "list"],
+)
+def test_main_pattern_absence_and_lists_unchanged(
+    tmp_path, monkeypatch, capsys, reader, location, query_rc
+):
+    rc, err, _, _ = _pattern_dispatch(tmp_path, monkeypatch, capsys, reader, location)
+    assert rc == (query_rc if reader == "fs.content_query" else 10)
+    assert "malformed container" not in err
+    if rc == 10:
+        assert "legacy-surface (scope_exited)" in err
+
+
+@pytest.mark.parametrize("reader", ["fs.content_query", "fs.glob"])
+def test_main_malformed_non_decayed_unrelated_member_unchanged(
+    tmp_path, monkeypatch, capsys, reader
+):
+    rc, err, _, _ = _pattern_dispatch(
+        tmp_path, monkeypatch, capsys, reader, {"patterns": ["*.py"]}, unrelated=True
+    )
+    assert rc == 0
+    assert "malformed container" not in err
+
+
+def test_main_scalar_star_producer_parity(tmp_path, monkeypatch, capsys):
+    rc, err, root, candidate = _pattern_dispatch(
+        tmp_path, monkeypatch, capsys, "fs.content_query", {"patterns": "*"}
+    )
+    assert rc == 10, "reviewer's exact scalar '*' scope_exited=TRUE case must refuse"
+    assert "location.patterns has malformed container" in err, (
+        "This pins the strict container contract: coercing '*' into ['*'] coincides with "
+        "the producer's one-character iteration but is not the required declaration refusal."
+    )
+    # Execute only the installed reader on synthetic files with a read-only host
+    # and no network. Absence of this environment is explicitly an unexecuted oracle.
+    if not PRODUCER_BUILTIN_PATH.is_file():
+        pytest.skip(f"FRAME_PRODUCER_ABSENT:{PRODUCER_BUILTIN_PATH}; parity not executed")
+    bwrap = shutil.which("bwrap")
+    if bwrap is None:
+        pytest.skip("bwrap unavailable; isolated producer parity not executed")
+    isolation = [bwrap, "--ro-bind", "/", "/", "--unshare-net", "--die-with-parent"]
+    probe = subprocess.run([*isolation, "/usr/bin/true"], capture_output=True, text=True)
+    if probe.returncode:
+        pytest.skip(f"isolated producer parity not executed: {probe.stderr.strip()}")
+    code = """
+import sys
+from pathlib import Path
+import pytest
+from tests.frame_verdict_helpers import producer_glob_bytes
+root, candidate = map(Path, sys.argv[1:])
+with pytest.MonkeyPatch.context() as mp:
+    for patterns in ('*', ['*']):
+        selected = producer_glob_bytes(root, patterns, mp, content_query='NEEDLE')
+        assert selected == {candidate: b'NEEDLE\\n'}, (patterns, selected)
+print('installed fs.content_query selects candidate for both star spellings')
+"""
+    env = dict(os.environ, PYTHONDONTWRITEBYTECODE="1")
+    result = subprocess.run(
+        [*isolation, sys.executable, "-c", code, str(root), str(candidate)],
+        env=env,
+        capture_output=True,
+        text=True,
+    )
+    assert result.returncode == 0, result.stdout + result.stderr

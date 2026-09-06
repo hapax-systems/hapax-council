@@ -544,6 +544,14 @@ def _member_location(
                 f"root {raw!r} in {MASS_DECLARATION_LOCATION}; " + PRODUCER_REMEDY,
             ) from exc
     patterns = location.get("patterns")
+    if patterns is not None and not isinstance(patterns, list):
+        raise FrameVerdictsUnavailable(
+            f"member {member.get('id')!r} location.patterns has malformed container "
+            f"{type(patterns).__name__}: {patterns!r}; expected a list of patterns or absence",
+            remedy=f"repair location.patterns for member {member.get('id')!r} in "
+            f"{MASS_DECLARATION_LOCATION}: use a list such as ['*'], or omit patterns; "
+            + PRODUCER_REMEDY,
+        )
     globs = tuple(str(item) for item in patterns) if isinstance(patterns, list) else ()
     files_raw = None if content_query else location.get("files")
     files: list[Path] = []
