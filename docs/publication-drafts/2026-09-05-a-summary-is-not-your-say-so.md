@@ -10,12 +10,12 @@ surfaces_targeted: [omg-weblog]
 review_required: Claim Verification Council
 required_gates: [source_artifact_public_safe, source_refs_present, rights_privacy_redaction_pass, target_surface_allowlist_pass, claim_review_current, no_direct_public_egress]
 publication_gate_receipts:
-  - public-gate:summary-authority-20260905-source-artifact-public-safe
-  - public-gate:summary-authority-20260905-source-refs-present
-  - public-gate:summary-authority-20260905-rights-privacy-redaction-pass
-  - public-gate:summary-authority-20260905-target-surface-allowlist-pass
-  - public-gate:summary-authority-20260905-claim-review-current
-  - public-gate:summary-authority-20260905-no-direct-public-egress
+  source_artifact_public_safe: public-gate:summary-authority-20260905-source-artifact-public-safe
+  source_refs_present: public-gate:summary-authority-20260905-source-refs-present
+  rights_privacy_redaction_pass: public-gate:summary-authority-20260905-rights-privacy-redaction-pass
+  target_surface_allowlist_pass: public-gate:summary-authority-20260905-target-surface-allowlist-pass
+  claim_review_current: public-gate:summary-authority-20260905-claim-review-current
+  no_direct_public_egress: public-gate:summary-authority-20260905-no-direct-public-egress
 source_artifact: 30-areas/hapax/frame/coordination-20260904/PUBLIC-DRAFT-SUMMARY-AUTHORITY.md
 source_artifact_sha256: 95b39fc104e4b8eca07739467d65ef3315e4d0123948d55e966018b06f7fb5cb
 intake_task: public-payload-summary-authority-20260905
