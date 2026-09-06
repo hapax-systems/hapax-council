@@ -1041,6 +1041,7 @@ _HELPER_STACK_KEY = "\0helper-stack"
 _HELPER_EFFECT_KEY = "\0helper-unbounded-effect"
 _FLOW_EXIT_KEY = "\0flow-exit"
 _CALL_GLOBALS_KEY = "\0call-globals"
+_MODULE_EFFECT_PREFIX = "\0module-effect:"
 _CLASS_OUTER_KEY = "\0class-outer"
 _CALL_LOCALS_KEY = "\0call-locals"
 _CALL_CELLS_KEY = "\0call-cells"
@@ -1137,7 +1138,19 @@ def _call_global_values(
 ) -> dict[str, str]:
     """Keep invocation globals separate from the caller's parameters and local bindings."""
     if calling_path != function.path:
-        return dict(function.module_values)
+        globals_ = dict(function.module_values)
+        # Foreign effects belong to this invocation's view, never the shared definition.
+        # Carry them through intermediate modules so a later imported call cannot reload
+        # a certified value from the producer's initialization snapshot.
+        globals_.update(
+            (key, value) for key, value in values.items() if key.startswith(_MODULE_EFFECT_PREFIX)
+        )
+        prefix = f"{_MODULE_EFFECT_PREFIX}{function.path}\0"
+        names = {key.removeprefix(prefix) for key in globals_ if key.startswith(prefix)}
+        if "*" in names:
+            names = {name for name in globals_ if not name.startswith("\0")}
+        _BlockScanner._invalidate_effect_names(globals_, names)
+        return globals_
     return _current_global_values(values, path_functions)
 
 
@@ -2947,6 +2960,9 @@ def _merge_states(states: list[dict[str, str]], *, collapse: bool = False) -> li
         if name == _HELPER_EFFECT_KEY and "1" in alternatives:
             collapsed[name] = "1"
             continue
+        if name.startswith(_MODULE_EFFECT_PREFIX) and "1" in alternatives:
+            collapsed[name] = "1"
+            continue
         if name.startswith(_UNRESOLVED_FORMAT_PREFIX) and any(alternatives):
             collapsed[name] = "1"
             continue
@@ -3149,6 +3165,8 @@ class _BlockScanner:
             captures: set[str] = set()
             for owner in effects.uncertain_owners | {function.node}:
                 origin = table.functions_by_node.get(owner)
+                if origin is not None and origin.path != self.path:
+                    self._invalidate_outer_bindings(origin, state, {"*"}, set())
                 if (
                     origin is None
                     or origin.path != self.path
@@ -3203,7 +3221,8 @@ class _BlockScanner:
         self._invalidate_effect_names(state, names - locals_)
         return bool(names) or outer_changed
 
-    def _invalidate_effect_names(self, values: dict[str, str], names: set[str]) -> None:
+    @staticmethod
+    def _invalidate_effect_names(values: dict[str, str], names: set[str]) -> None:
         # Flat validation bodies repeatedly encounter unknown APIs with identical
         # effects. An already poisoned binding needs no further stores or deletions.
         names = {
@@ -3232,6 +3251,8 @@ class _BlockScanner:
     ) -> None:
         table = self.path_functions
         if function.path != self.path:
+            for name in globals_ | nonlocals:
+                state[f"{_MODULE_EFFECT_PREFIX}{function.path}\0{name}"] = "1"
             return
         if not globals_ and not nonlocals:
             return
@@ -5589,6 +5610,7 @@ def run_consumer_side(args: argparse.Namespace) -> int:
     repo_root = Path.cwd()
     report_path = args.report_json or _report_output_path(repo_root)
     analysis_error: str | None = None
+    next_action = "repair or drop the input the message names (--frame, --mass or the allowlist)"
     try:
         allowlist = load_allowlist(args.allowlist)
         report = analyse_consumer_side(
@@ -5597,7 +5619,28 @@ def run_consumer_side(args: argparse.Namespace) -> int:
             frame_path=args.frame,
             mass_path=args.mass,
         )
-    except (AllowlistError, OSError, ValueError, json.JSONDecodeError, yaml.YAMLError) as exc:
+    except (
+        AllowlistError,
+        OSError,
+        ValueError,
+        json.JSONDecodeError,
+        yaml.YAMLError,
+        RecursionError,
+    ) as exc:
+        if isinstance(exc, RecursionError):
+            # Recursive AST walkers need not all carry a path. Their nearest enclosing
+            # scanner frame does; walk the traceback iteratively after stack unwinding.
+            source = "<unknown source>"
+            trace = exc.__traceback__
+            while trace is not None:
+                if trace.tb_frame.f_code.co_filename == __file__:
+                    for name in ("source_path", "relative", "path"):
+                        candidate = trace.tb_frame.f_locals.get(name)
+                        if isinstance(candidate, Path):
+                            source = str(candidate)
+                trace = trace.tb_next
+            exc = RecursionError(f"{source}: scanner recursion exhausted (RecursionError)")
+            next_action = f"simplify deeply nested expressions in {source}"
         analysis_error = f"consumer-side analysis incomplete: {exc}"
         report = ConsumerSideReport(
             [],
@@ -5610,8 +5653,8 @@ def run_consumer_side(args: argparse.Namespace) -> int:
     _write_consumer_side_json_report_only(report, report_path)
     if analysis_error is not None:
         print(
-            f"[REPORT-ERROR] {analysis_error}; next action: repair or drop the input the message "
-            "names (--frame, --mass or the allowlist) and rerun; the gate stays report-only"
+            f"[REPORT-ERROR] {analysis_error}; next action: {next_action} "
+            "and rerun; the gate stays report-only"
         )
     print_consumer_side_report(report, report_path)
     return 0

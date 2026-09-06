@@ -808,6 +808,117 @@ def test_function_object_alias_keeps_its_definition(gate, tmp_path: Path) -> Non
     assert report.unresolvable == 0
 
 
+@pytest.mark.parametrize("configured", [True, False], ids=["configured", "unchanged"])
+@pytest.mark.parametrize("wrapped", [False, True], ids=["direct", "transitive"])
+@pytest.mark.parametrize("in_function", [False, True], ids=["module", "function"])
+def test_imported_global_effect_withholds_stale_writer(
+    gate, tmp_path: Path, configured, wrapped, in_function
+) -> None:
+    _write(
+        tmp_path,
+        "shared/helper.py",
+        "from pathlib import Path\nARTIFACT = Path('artifacts/old.json')\n"
+        "def configure():\n    global ARTIFACT\n"
+        "    ARTIFACT = Path('artifacts/new.json')\n"
+        "def prepare():\n    configure()\n"
+        "def write_state():\n    ARTIFACT.write_text('{}')\n",
+    )
+    calls = (
+        f"helper.{'prepare' if wrapped else 'configure'}()\n" if configured else ""
+    ) + "helper.write_state()\nPath('artifacts/old.json').read_text()\n"
+    _write(
+        tmp_path,
+        "shared/consumer.py",
+        "from pathlib import Path\nfrom shared import helper\n"
+        + (
+            "def consume():\n" + "".join(f"    {line}\n" for line in calls.splitlines())
+            if in_function
+            else calls
+        ),
+    )
+    accesses, unresolved, *_ = gate.collect_artifact_accesses(tmp_path)
+    writers = [a for a in accesses if a.action == "write"]
+    assert writers and {a.pattern for a in writers} == {"artifacts/old.json"}
+    assert all(a.bounded is not configured for a in writers)
+    assert (unresolved > 0) is configured
+    report = gate.analyse_consumer_side(tmp_path, [])
+    assert (report.unresolvable > 0) is configured
+    assert ((Path("shared/consumer.py"), "artifacts/old.json") in _unwritten(report)) is configured
+    if not configured:
+        assert not report.findings
+
+
+@pytest.mark.parametrize("branch_cap", [1, 32], ids=["collapsed-branch", "separate-branches"])
+def test_imported_global_effect_survives_branch_and_module_hops(
+    gate, tmp_path: Path, monkeypatch, branch_cap
+) -> None:
+    monkeypatch.setattr(gate, "_MAX_BRANCH_STATES", branch_cap)
+    _write(
+        tmp_path,
+        "shared/helper.py",
+        "from pathlib import Path\nARTIFACT = Path('artifacts/old.json')\n"
+        "def configure():\n    global ARTIFACT\n"
+        "    ARTIFACT = Path('artifacts/new.json')\n"
+        "def read_state():\n    return ARTIFACT.read_text()\n",
+    )
+    _write(
+        tmp_path,
+        "shared/bridge.py",
+        "from shared import helper\ndef read_state():\n    return helper.read_state()\n",
+    )
+    _write(
+        tmp_path,
+        "shared/consumer.py",
+        "from shared import helper, bridge\n"
+        "if condition:\n    helper.configure()\nbridge.read_state()\n",
+    )
+    accesses, unresolved, *_ = gate.collect_artifact_accesses(tmp_path)
+    readers = [a for a in accesses if a.action == "read" and a.pattern == "artifacts/old.json"]
+    assert readers and any(not a.bounded for a in readers)
+    assert unresolved > 0
+    report = gate.analyse_consumer_side(tmp_path, [])
+    assert (Path("shared/helper.py"), "artifacts/old.json") in _unwritten(report)
+    assert report.unresolvable > 0
+
+
+@pytest.mark.parametrize("uncertain", [False, True], ids=["named-effect", "unknown-effect"])
+def test_imported_global_effect_limits_certification_to_untouched_names(
+    gate, tmp_path: Path, uncertain
+) -> None:
+    _write(
+        tmp_path,
+        "shared/helper.py",
+        "from pathlib import Path\nARTIFACT = Path('artifacts/old.json')\n"
+        "STABLE = Path('artifacts/stable.json')\n"
+        "def configure():\n"
+        + (
+            "    unseen_effect()\n"
+            if uncertain
+            else "    global ARTIFACT\n    ARTIFACT = Path('artifacts/new.json')\n"
+        )
+        + "def write_state():\n    ARTIFACT.write_text('{}')\n"
+        "    STABLE.write_text('{}')\n",
+    )
+    _write(
+        tmp_path,
+        "shared/consumer.py",
+        "from pathlib import Path\nfrom shared import helper\n"
+        "helper.configure()\nhelper.write_state()\n"
+        "Path('artifacts/old.json').read_text()\n"
+        "Path('artifacts/stable.json').read_text()\n",
+    )
+    accesses, unresolved, *_ = gate.collect_artifact_accesses(tmp_path)
+    assert {a.pattern for a in accesses if a.action == "write" and a.bounded} == (
+        set() if uncertain else {"artifacts/stable.json"}
+    )
+    assert unresolved > 0
+    report = gate.analyse_consumer_side(tmp_path, [])
+    assert (Path("shared/consumer.py"), "artifacts/old.json") in _unwritten(report)
+    assert (
+        (Path("shared/consumer.py"), "artifacts/stable.json") in _unwritten(report)
+    ) is uncertain
+
+
 @pytest.mark.parametrize("kind", ["function", "class"])
 def test_decorator_application_propagates_global_assignment(gate, tmp_path: Path, kind) -> None:
     definition = (

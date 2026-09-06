@@ -835,6 +835,33 @@ def test_malformed_allowlist_is_a_recorded_report_only_error(tmp_path: Path) -> 
     _assert_report_only_error(result, tmp_path / ".consumer-side-report.json", allowlist)
 
 
+def test_main_keeps_scanner_recursion_report_only(
+    gate, tmp_path: Path, monkeypatch, capsys
+) -> None:
+    source = "VALUE = " + " + ".join(["'literal'"] * 500) + "\n"
+    compile(source, "shared/deep.py", "exec")
+    _write(tmp_path, "shared/deep.py", source)
+    monkeypatch.chdir(tmp_path)
+    report_path = tmp_path / "report.json"
+    assert gate.main(["--consumer-side", "--report-json", str(report_path)]) == 0
+    output = capsys.readouterr().out
+    error_lines = [line for line in output.splitlines() if line.startswith("[REPORT-ERROR]")]
+    assert len(error_lines) == 1
+    assert "shared/deep.py" in error_lines[0] and "RecursionError" in error_lines[0]
+    assert "next action: simplify deeply nested expressions in shared/deep.py" in error_lines[0]
+    assert "consumer-side counts: status=incomplete" in output
+    assert "consumer-side full JSON report:" in output
+    assert "consumer-side gate is REPORT-ONLY" in output
+    payload = json.loads(report_path.read_text())
+    assert payload["summary"]["status"] == "incomplete"
+    assert payload["summary"]["report_only"] is True
+    assert payload["summary"]["errors"] == 1
+    assert payload["errors"] == [
+        "consumer-side analysis incomplete: shared/deep.py: scanner recursion exhausted "
+        "(RecursionError)"
+    ]
+
+
 def test_real_tree_names_both_known_consumer_side_instances(gate) -> None:
     report = gate.analyse_consumer_side(
         REPO_ROOT, gate.load_allowlist(REPO_ROOT / gate.DEFAULT_ALLOWLIST_PATH)
