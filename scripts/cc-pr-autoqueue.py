@@ -348,11 +348,9 @@ class Decision:
                     "unverified"
                     if governance.reason
                     or (
-                        self.action == "blocked"
+                        self.action in {"blocked", "hold"}
                         and any(
-                            reason.startswith(
-                                "auto_merge_method_override_contradicts_queue_governance:"
-                            )
+                            reason.startswith(OVERRIDE_CONTRADICTION_PREFIX)
                             for reason in self.reasons
                         )
                     )
@@ -2184,7 +2182,7 @@ def classify_pr(
 
     if reasons:
         if _override_only_refusal(reasons):
-            action = "blocked"
+            action = "hold" if queued or pr.auto_merge_enabled else "blocked"
         elif queued:
             action = "dequeue"
         elif pr.auto_merge_enabled and not expected_method_unverified:
@@ -2828,7 +2826,7 @@ def _admission_status_for(decision: Decision) -> tuple[str, str] | None:
     }:
         return "success", _status_description(f"cc-pr-autoqueue admitted: {decision.action}")
 
-    if decision.action in {"blocked", "dequeue", "disable_auto_merge"}:
+    if decision.action in {"blocked", "hold", "dequeue", "disable_auto_merge"}:
         reasons = "; ".join(decision.reasons or ("not ready for merge queue",))
         return "failure", _status_description(f"cc-pr-autoqueue blocked: {reasons}")
 
@@ -3109,7 +3107,7 @@ def set_autoqueue_admission_status(
 
 
 def _decision_is_non_ready(decision: Decision) -> bool:
-    return decision.action in {"blocked", "dequeue", "disable_auto_merge"} and bool(
+    return decision.action in {"blocked", "hold", "dequeue", "disable_auto_merge"} and bool(
         decision.reasons
     )
 
@@ -3844,6 +3842,7 @@ def run_reconciler(
             ),
             "dequeue": sum(1 for decision in decisions if decision.action == "dequeue"),
             "blocked": sum(1 for decision in decisions if decision.action == "blocked"),
+            "hold": sum(1 for decision in decisions if decision.action == "hold"),
         },
         "mutations": mutation_results,
     }

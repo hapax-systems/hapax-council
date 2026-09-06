@@ -1339,7 +1339,7 @@ def test_run_reconciler_default_branch_receipts(
     assert governance["base_ref"] == "main"
     if read_sequence == "equal":
         assert decision["action"] == (
-            "blocked"
+            ("blocked" if state == "unarmed" else "hold")
             if override
             else {
                 "armed": "already_auto_merge_enabled",
@@ -1485,8 +1485,8 @@ def test_run_reconciler_adapter_only_preserves_all_decisions(
     decisions = {decision["pr"]: decision for decision in adapter_only["decisions"]}
     expected_actions = (
         {
-            42: "blocked",
-            43: "blocked",
+            42: "hold",
+            43: "hold",
             44: "already_auto_merge_enabled",
             45: "blocked",
         }
@@ -2816,6 +2816,53 @@ def _override_governance_runner(evidence: str) -> _FakeRunner:
     return GovernanceRunner()
 
 
+def test_override_contradiction_prefix_has_one_definition() -> None:
+    source = (_SCRIPTS / "cc-pr-autoqueue.py").read_text(encoding="utf-8")
+    prefix = "auto_merge_method_override_contradicts_queue_governance:"
+    assert source.count(prefix) == 1
+    [definition] = [
+        node
+        for node in ast.walk(ast.parse(source))
+        if isinstance(node, ast.Assign)
+        and isinstance(node.value, ast.Constant)
+        and node.value.value == prefix
+    ]
+    [target] = definition.targets
+    assert isinstance(target, ast.Name)
+    assert target.id == "OVERRIDE_CONTRADICTION_PREFIX"
+
+
+@pytest.mark.parametrize("action", ["blocked", "hold"])
+@pytest.mark.parametrize("renamed", [False, True], ids=["canonical", "renamed"])
+def test_override_contradiction_owner_follows_prefix_constant(
+    monkeypatch: pytest.MonkeyPatch, action: str, renamed: bool
+) -> None:
+    prefix = "auto_merge_method_override_contradicts_queue_governance:"
+    if renamed:
+        prefix = "renamed_override_contradiction:"
+        monkeypatch.setattr(autoqueue, "OVERRIDE_CONTRADICTION_PREFIX", prefix)
+    pr = autoqueue._parse_pr(_pr(42, auto_merge=True, auto_merge_method="MERGE"))
+    assert pr is not None
+    decision = autoqueue.Decision(
+        pr=autoqueue.replace(
+            pr,
+            queue_governance=autoqueue.MergeQueueGovernance(
+                method="SQUASH", source="test", reason=None
+            ),
+        ),
+        action=action,
+        reasons=(prefix + "override=MERGE:governed=SQUASH",),
+    )
+    assert decision.as_dict()["auto_merge_method_owner"] == "unverified"
+    assert decision.as_dict()["next_action"] == autoqueue._merge_method_operator_next_action()
+    assert autoqueue._admission_status_for(decision) == (
+        "failure",
+        autoqueue._status_description(f"cc-pr-autoqueue blocked: {decision.reasons[0]}"),
+    )
+    assert autoqueue._decision_is_non_ready(decision) is True
+    assert autoqueue._release_auto_arm_fail_closed_decision(decision, "status post failed") is None
+
+
 @pytest.mark.parametrize("entrypoint", ["reconciler", "classify"])
 @pytest.mark.parametrize("state", ["queued", "armed", "unarmed"])
 @pytest.mark.parametrize(
@@ -2896,7 +2943,7 @@ def test_override_governance_action_matrix(
                 assert not any("--auto" in call for call in runner.calls)
         elif evidence == "readable_disagreeing":
             assert decision["action"] == (
-                "blocked"
+                ("blocked" if state == "unarmed" else "hold")
                 if override
                 else {"queued": "dequeue", "armed": "disable_auto_merge", "unarmed": "blocked"}[
                     state
@@ -2907,6 +2954,17 @@ def test_override_governance_action_matrix(
                 if override
                 else "auto_merge_method_unverified:queue_strategy_expected_conflict:rule=MERGE:expected=SQUASH"
             ]
+            if override:
+                assert report["counts"]["hold"] == (0 if state == "unarmed" else 1)
+                assert report["counts"]["blocked"] == (1 if state == "unarmed" else 0)
+                assert not any("--disable-auto" in call for call in runner.calls)
+                assert not any(
+                    "dequeuePullRequest" in part for call in runner.calls for part in call
+                )
+                assert runner.queued_prs == ({42} if state == "queued" else set())
+                assert runner.open_prs[0]["autoMergeRequest"] == (
+                    None if state == "unarmed" else {"enabledAt": "now", "mergeMethod": "MERGE"}
+                )
         else:
             assert (
                 decision["action"]
@@ -3050,7 +3108,7 @@ def test_storm_override_contradiction_preserves_only_its_own_refusal(
     assert report["storm_mode"]["active"] is True
     assert report["storm_mode"]["rate_frozen"] is True
     [decision] = report["decisions"]
-    assert decision["action"] == ("dequeue" if blocker else "blocked")
+    assert decision["action"] == ("dequeue" if blocker else "hold")
     reasons = [
         "auto_merge_method_override_contradicts_queue_governance:override=MERGE:governed=SQUASH"
     ]
@@ -3062,6 +3120,23 @@ def test_storm_override_contradiction_preserves_only_its_own_refusal(
     dequeues = [call for call in runner.calls if any("dequeuePullRequest" in part for part in call)]
     assert len(dequeues) == (1 if blocker else 0)
     assert not any("--disable-auto" in call or "--auto" in call for call in runner.calls)
+    if blocker is None:
+        assert runner.queued_prs == {42}
+        assert runner.open_prs[0]["autoMergeRequest"] == {
+            "enabledAt": "now",
+            "mergeMethod": "MERGE",
+        }
+        assert report["counts"]["hold"] == 1
+        assert report["counts"]["blocked"] == 0
+        assert len(report["storm_mode"]["failed_recent_merge_group_runs"]) == 4
+        assert all(
+            run["decision_action"] == "hold"
+            for run in report["storm_mode"]["failed_recent_merge_group_runs"]
+        )
+        [mutation] = report["mutations"]
+        assert mutation["action"] == "set_admission_status"
+        assert mutation["status_state"] == "failure"
+        assert mutation["reasons"] == reasons
 
 
 @pytest.mark.parametrize("override", ["SQUASH", "MERGE", "REBASE"])
@@ -3185,11 +3260,7 @@ def test_run_reconciler_records_none_strict_pages_reader(
 def test_merge_method_override_respects_governance(
     tmp_path: Path, state: str, override: str | None
 ) -> None:
-    """Round seven pinned revocation even for a lone contradictory override.
-
-    The row exit predicate requires a "named pure-token refusal without dequeue";
-    round eight restores that refusal after collecting independent blockers.
-    """
+    """A contradiction alone holds existing state and blocks new admission."""
     report = _method_override_report(tmp_path, state=state, override=override)
     decision = report["decisions"][0]
     if state == "ordinary":
@@ -3206,7 +3277,7 @@ def test_merge_method_override_respects_governance(
         return
 
     if override == "MERGE":
-        assert decision["action"] == "blocked"
+        assert decision["action"] == ("blocked" if state == "unarmed" else "hold")
     else:
         assert (
             decision["action"]
@@ -3345,35 +3416,59 @@ def test_merge_method_override_contradiction_preserves_independent_blockers(
 
 @pytest.mark.parametrize("state", ["queued", "armed", "unarmed"])
 @pytest.mark.parametrize("fault", [None, "unreadable"], ids=["contradictory", "unreadable"])
+@pytest.mark.parametrize("fail_status_posts", [False, True], ids=["status-ok", "status-failed"])
 def test_merge_method_override_refusal_disposition_in_apply(
-    tmp_path: Path, state: str, fault: str | None
+    tmp_path: Path, state: str, fault: str | None, fail_status_posts: bool
 ) -> None:
     runner = _FakeRunner()
+    runner.fail_status_posts = fail_status_posts
     report = _method_override_report(
         tmp_path, state=state, override="MERGE", fault=fault, apply=True, runner=runner
     )
     decision = report["decisions"][0]
     dequeue = fault is not None and state == "queued"
     disable = fault is not None and state == "armed"
-    assert decision["action"] == (
-        "dequeue" if dequeue else "disable_auto_merge" if disable else "blocked"
-    )
-    assert decision.get("auto_merge_method_owner") == (None if state == "unarmed" else "unverified")
     assert [call for call in runner.calls if call[:3] == ["gh", "pr", "merge"]] == (
         [["gh", "pr", "merge", "42", "--repo", "owner/repo", "--disable-auto"]] if disable else []
     )
     dequeues = [call for call in runner.calls if any("dequeuePullRequest" in part for part in call)]
     assert len(dequeues) == (1 if dequeue else 0)
     assert runner.queued_prs == ({42} if state == "queued" else set())
-    assert bool(runner.open_prs[0]["autoMergeRequest"]) == (state != "unarmed")
+    assert runner.open_prs[0]["autoMergeRequest"] == (
+        None if state == "unarmed" else {"enabledAt": "now", "mergeMethod": "MERGE"}
+    )
+    assert decision["action"] == (
+        "dequeue"
+        if dequeue
+        else "disable_auto_merge"
+        if disable
+        else "blocked"
+        if state == "unarmed"
+        else "hold"
+    )
+    assert decision.get("auto_merge_method_owner") == (None if state == "unarmed" else "unverified")
+    if fault is None:
+        assert decision["next_action"] == autoqueue._merge_method_operator_next_action()
+        assert report["counts"]["hold"] == (0 if state == "unarmed" else 1)
+        assert report["counts"]["blocked"] == (1 if state == "unarmed" else 0)
+        [status_post] = [call for call in runner.calls if call[:4] == ["gh", "api", "-X", "POST"]]
+        assert status_post[4] == "repos/owner/repo/statuses/sha-42"
+        assert "state=failure" in status_post
+        assert (
+            "description=cc-pr-autoqueue blocked: "
+            "auto_merge_method_override_contradicts_queue_governance:override=MERGE:governed=SQUASH"
+        ) in status_post
     [mutation] = report["mutations"]
     if dequeue or disable:
         assert mutation["action"] == decision["action"]
         assert mutation["admission_status"]["state"] == "failure"
+        assert mutation["admission_status"]["ok"] is not fail_status_posts
+        assert mutation["ok"] is True
     else:
         assert mutation["action"] == "set_admission_status"
         assert mutation["status_state"] == "failure"
-    assert mutation["ok"] is True
+        assert mutation["reasons"] == decision["reasons"]
+        assert mutation["ok"] is not fail_status_posts
 
 
 @pytest.mark.parametrize("state", ["queued", "armed"])
