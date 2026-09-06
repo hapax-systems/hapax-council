@@ -1062,9 +1062,10 @@ def frame_verdict_refusal(
     epoch at ``_runs/current`` marks TRUE for superseded, discharged, scope_exited, absorbed,
     contradicted, context_lost or unconsulted. A newer rejected attempt does not govern.
     Work on a surface out of accountability is the ad hoc expediency the reduction exists to end.
-    A scope partly inside a decayed member
-    is admitted (moving things out of one is legitimate work). No declared scope: nothing for
-    this reader to judge; the route-metadata gate owns that refusal.
+    A scope partly inside a decayed member is admitted when a canonical outside path is
+    established (moving things out of one is legitimate work). Same-host remote path misses
+    cannot establish this without the remote filesystem and cwd, so refuse as undecidable.
+    No declared scope: nothing for this reader to judge; the route-metadata gate owns that refusal.
     """
     try:
         verdicts = frame_verdicts.load_frame_verdicts()

@@ -102,10 +102,18 @@ def test_ssh_glob_matches_producer_find_name_oracle(tmp_path: Path, patterns: li
         now=NOW,
     )
     for name in names:
-        result = fv.scope_within_decayed(
-            [f"{location}/{name}"], verdicts, council_root=tmp_path, vault_root=tmp_path
-        )
-        assert result.all_inside == (name in selected), (patterns, name, selected, result)
+        ref = f"{location}/{name}"
+        if name in selected:
+            result = fv.scope_within_decayed(
+                [ref], verdicts, council_root=tmp_path, vault_root=tmp_path
+            )
+            assert result.all_inside, (patterns, name, selected, result)
+        else:
+            # Round 30: find's lexical miss cannot exclude remote path aliases.
+            with pytest.raises(
+                fv.UndecidableScopeContainment, match="scope_containment_undecidable"
+            ):
+                fv.scope_within_decayed([ref], verdicts, council_root=tmp_path, vault_root=tmp_path)
 
 
 def test_ssh_glob_unsupported_filename_syntax_is_undecidable(tmp_path: Path) -> None:
@@ -827,11 +835,10 @@ def test_scope_matching_by_containment_patterns_files_and_wildcard_tails(tmp_pat
 
     # a non-.py file under legacy/ is not the member's declared surface
     assert scope("legacy/README.md").outside == ("legacy/README.md",)
-    # Round 29: partial inclusion cannot establish disjointness. Both languages
-    # still include direct .py files selected by the decayed member.
+    # Round 30 repairs round 29's over-refusal: these partial languages include
+    # canonical paths outside the selected direct .py files.
     for ref in ("legacy/**", "legacy/**/*.py"):
-        with pytest.raises(fv.UndecidableScopeContainment, match="scope_containment_undecidable"):
-            scope(ref)
+        assert scope(ref).outside == (ref,)
     assert scope("legacy/sub/").outside == ("legacy/sub/",)
     # partly inside: admitted (moving things out of a decayed member is legitimate work)
     mixed = scope("legacy/a.py", "scripts/live.py")
@@ -953,9 +960,8 @@ def test_patterned_member_requires_the_entire_directory_or_wildcard_scope(tmp_pa
     assert scope("docs/guides/*.md").all_inside
     assert scope("scripts/**").outside == ("scripts/**",)
     assert scope("docs/**/*.py").outside == ("docs/**/*.py",)
-    # Round 29: the directory includes selected .md files, so admission is unestablished.
-    with pytest.raises(fv.UndecidableScopeContainment, match="scope_containment_undecidable"):
-        scope("docs/")
+    # Round 30: a canonical non-.md path proves this directory only partly contained.
+    assert scope("docs/").outside == ("docs/",)
 
 
 @pytest.mark.parametrize("populated", [False, True])

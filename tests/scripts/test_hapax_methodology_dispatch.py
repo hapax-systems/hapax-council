@@ -5079,7 +5079,7 @@ def _dispatch_receipt_only_scope(
     monkeypatch: pytest.MonkeyPatch,
     capsys: pytest.CaptureFixture[str],
     frame_root: Path,
-    scope: Path,
+    scope: Path | str,
 ) -> tuple[int, str]:
     spec = _spec(tmp_path / "isap-test.md")
     _task(
@@ -5611,7 +5611,7 @@ def test_receipt_only_overlapping_declaration_spellings_require_positive_admissi
     [("a[bc]", "a[de]", []), ("*.py", "*", ["*.py"])],
     ids=["class-intersection", "wildcard-is-not-a-literal-skip"],
 )
-def test_receipt_only_unestablished_glob_comparison_refuses_admission(
+def test_receipt_only_canonical_outside_witness_establishes_admission(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
     capsys: pytest.CaptureFixture[str],
@@ -5627,17 +5627,20 @@ def test_receipt_only_unestablished_glob_comparison_refuses_admission(
         location={"path": str(root), "patterns": [declaration], "skip_dirs": skip_dirs},
         reader="fs.glob",
     )
-    # Class/class intersection is unestablished; a wildcard segment matching a
-    # skip_dirs string cannot establish exclusion by the producer's literal filter.
-    # Empty present-day expansions cannot complete either future-language comparison.
+    # Round 30: ad (class case) or scope.md (partial *.py case) is canonically
+    # outside. That witness proves noncontainment even with no current files.
+    # Neither requires whole-language disjointness or a wildcard skip_dirs filter.
     rc, err = _dispatch_receipt_only_scope(
         tmp_path, monkeypatch, capsys, frame_root, root / candidate
     )
 
-    assert rc == 10, f"receipt-only main() returned {rc}: {err}"
-    assert "scope_containment_undecidable" in err
-    assert "every producer-selected spelling" in err
-    _assert_frame_refusal_receipt(tmp_path, frame_root, rc, err)
+    assert rc == 0, f"receipt-only main() returned {rc}: {err}"
+    receipt = json.loads(
+        (tmp_path / "ledger/methodology-dispatch.jsonl").read_text().splitlines()[-1]
+    )
+    assert receipt["ok"] is True and receipt["launched"] is False
+    assert receipt["frame_epoch"] == (frame_root / "_runs/current").resolve().name
+    assert receipt["frame_decayed_members"] == ["legacy-surface"]
 
 
 @pytest.mark.parametrize("reader", ["fs.glob", "fs.content_query"])
@@ -6526,13 +6529,9 @@ def test_dispatch_glob_language_is_independent_of_current_matches(
     )
     assert rc == 10
     assert ("marks every declared mutation surface out of accountability" in err) is inside
-    # Round 29: gaw*k can select gawk, so partial inclusion cannot admit it,
-    # regardless of whether that selected file exists today.
-    overlap = pattern == "gawk" and candidate == "gaw*k"
-    assert ("fixture refusal" in err) is (not inside and not overlap)
-    if overlap:
-        assert "scope_containment_undecidable" in err
-        _assert_frame_refusal_receipt(tmp_path, frame_root, rc, err)
+    # Round 30 repairs round 29's over-refusal: gaw*k includes a canonical outside
+    # path (gawscopek), whether the selected gawk exists today or not.
+    assert ("fixture refusal" in err) is (not inside)
 
 
 @pytest.mark.parametrize("candidate", ["awk", "[a]wk"])
@@ -8124,6 +8123,170 @@ def test_dispatch_refuses_work_whose_whole_scope_lies_in_a_decayed_member(
     assert "legacy-surface/old.py lies in legacy-surface (scope_exited)" in err
     assert "re-declare mutation_scope_refs" in err
     assert "fixture refusal" not in err
+
+
+@pytest.mark.parametrize(
+    "candidate, expected_rc, undecidable",
+    [
+        ("reviewhost:/usr/sbin/true", 10, False),
+        ("reviewhost:/usr/bin/true", 10, True),
+        ("otherhost:/usr/bin/true", 0, False),
+        ("reviewhost:usr/sbin/true", 10, True),
+        ("REVIEWHOST.EXAMPLE:/usr/bin/true", 10, True),
+        ("reviewhost://usr/bin/true", 10, True),
+    ],
+    ids=[
+        "sbin",
+        "bin",
+        "different-host",
+        "absolute-path-flag",
+        "canonical-host-alias",
+        "uri-shaped-path",
+    ],
+)
+def test_receipt_only_ssh_glob_unresolved_remote_paths_refuse(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+    candidate: str,
+    expected_rc: int,
+    undecidable: bool,
+) -> None:
+    # As in the remote find-name oracle, execute selection only on a local fixture.
+    # The consumer receives synthetic remote names, with no access to this layout.
+    mirror = tmp_path / "remote/usr"
+    (mirror / "bin").mkdir(parents=True)
+    (mirror / "bin/true").write_bytes(b"identical selected bytes\n")
+    (mirror / "sbin").symlink_to("bin", target_is_directory=True)
+    selected = []
+    for spelling in ("sbin", "bin"):
+        names = subprocess.run(
+            ["find", ".", "-type", "f", "(", "-name", "true", ")", "-print"],
+            cwd=mirror / spelling,
+            text=True,
+            capture_output=True,
+            check=True,
+        ).stdout.splitlines()
+        assert names == ["./true"]
+        selected.append([(mirror / spelling / name).read_bytes() for name in names])
+    assert selected[0] == selected[1] == [b"identical selected bytes\n"]
+
+    real_run = subprocess.run
+
+    def no_remote_transport(command, *args, **kwargs):
+        assert Path(command[0]).name not in {"ssh", "scp", "sftp"}, command
+        return real_run(command, *args, **kwargs)
+
+    monkeypatch.setattr(subprocess, "run", no_remote_transport)
+    remote = "reviewhost:/usr/sbin"
+    frame_root = _frame_procedure_root(
+        tmp_path / "frame",
+        decayed_root=remote,
+        reader="ssh.glob",
+        location={
+            "path": remote,
+            "patterns": ["true"],
+            "host_aliases": {
+                "reviewhost": "reviewhost.example",
+                "otherhost": "otherhost.example",
+            },
+        },
+    )
+    rc, err = _dispatch_receipt_only_scope(tmp_path, monkeypatch, capsys, frame_root, candidate)
+    assert rc == expected_rc, f"{candidate}: receipt-only main() returned {rc}: {err}"
+    if expected_rc == 10:
+        _assert_frame_refusal_receipt(tmp_path, frame_root, rc, err)
+        assert ("scope_containment_undecidable" in err) is undecidable
+        if undecidable:
+            assert fv.UndecidableScopeContainment.remedy in err
+        else:
+            assert "marks every declared mutation surface out of accountability" in err
+    else:
+        receipt = json.loads(
+            (tmp_path / "ledger/methodology-dispatch.jsonl").read_text().splitlines()[-1]
+        )
+        assert receipt["ok"] is True and receipt["launched"] is False
+        assert receipt["frame_epoch"] == (frame_root / "_runs/current").resolve().name
+        assert receipt["frame_decayed_members"] == ["legacy-surface"]
+
+
+@pytest.mark.parametrize("populated", [False, True], ids=["future", "existing"])
+@pytest.mark.parametrize(
+    "pattern, candidate, selected, outside",
+    [
+        ("*.py", "**", "old.py", "README.md"),
+        ("*.py", "**/*.py", "old.py", "nested/live.py"),
+        ("docs/**/*.md", "docs/", "docs/old.md", "docs/live.py"),
+        ("gawk", "gaw*k", "gawk", "gaw-new-k"),
+    ],
+    ids=["whole-tree", "recursive-python", "partial-directory", "partial-filename"],
+)
+def test_receipt_only_partial_scope_with_canonical_outside_path_is_eligible(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+    populated: bool,
+    pattern: str,
+    candidate: str,
+    selected: str,
+    outside: str,
+) -> None:
+    root = tmp_path / "member"
+    (root / "docs").mkdir(parents=True)
+    if populated:
+        for name in (selected, outside):
+            file = root / name
+            file.parent.mkdir(parents=True, exist_ok=True)
+            file.write_bytes(b"fixture bytes\n")
+        producer_files = {p.resolve() for p in root.glob(pattern) if p.is_file()}
+        scope_files = {
+            p.resolve()
+            for p in root.glob(candidate + "**/*" if candidate.endswith("/") else candidate)
+            if p.is_file()
+        }
+        # pathlib's terminal ** enumerates directories; the declared scope includes files.
+        if candidate == "**":
+            scope_files = {p.resolve() for p in root.rglob("*") if p.is_file()}
+        assert producer_files == {(root / selected).resolve()}
+        assert scope_files == {(root / selected).resolve(), (root / outside).resolve()}
+    frame_root = _frame_procedure_root(
+        tmp_path / "frame",
+        decayed_root=root,
+        reader="fs.glob",
+        location={"path": str(root), "patterns": [pattern]},
+    )
+    rc, err = _dispatch_receipt_only_scope(
+        tmp_path, monkeypatch, capsys, frame_root, f"{root}/{candidate}"
+    )
+    assert rc == 0, f"{candidate}: partial-scope receipt-only main() returned {rc}: {err}"
+    receipt = json.loads(
+        (tmp_path / "ledger/methodology-dispatch.jsonl").read_text().splitlines()[-1]
+    )
+    assert receipt["ok"] is True and receipt["launched"] is False
+    assert receipt["frame_epoch"] == (frame_root / "_runs/current").resolve().name
+    assert receipt["frame_decayed_members"] == ["legacy-surface"]
+
+
+def test_receipt_only_partial_scope_lexical_outside_witness_alias_cannot_admit(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    root = tmp_path / "member"
+    root.mkdir()
+    (root / "gawk").write_bytes(b"selected bytes\n")
+    (root / "gawscopek").symlink_to("gawk")
+    frame_root = _frame_procedure_root(
+        tmp_path / "frame",
+        decayed_root=root,
+        reader="fs.glob",
+        location={"path": str(root), "patterns": ["gawk"]},
+    )
+    member = fv.load_frame_verdicts(frame_root).decayed[0]
+    assert not fv._local_partial_scope_established(root, True, "gaw*k", member)
+    rc, err = _dispatch_receipt_only_scope(
+        tmp_path, monkeypatch, capsys, frame_root, root / "gaw*k"
+    )
+    assert rc == 10, err
+    _assert_frame_refusal_receipt(tmp_path, frame_root, rc, err)
 
 
 @pytest.mark.parametrize(

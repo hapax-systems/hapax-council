@@ -2285,6 +2285,7 @@ def _ssh_glob_patterns(patterns: tuple[str, ...]) -> tuple[str, ...]:
 def _canonical_remote_location(
     location: QualifiedLocation, member: DecayedMember
 ) -> QualifiedLocation:
+    """Normalize declared host identities only; remote paths and cwd remain unresolved."""
     if location.authority is not None:
         return location
     aliases = dict(member.host_aliases)
@@ -2582,6 +2583,9 @@ def _qualified_disjoint_established(
 ) -> bool | None:
     remote = member.reader == "ssh.glob"
     if remote:
+        if ref.authority is not None:
+            # URI-shaped refs have not established an ssh host identity.
+            return None
         ref = _canonical_remote_location(ref, member)
     language = "/".join(ref.parts)
     if dirlike or scope_pattern is not None:
@@ -2594,7 +2598,15 @@ def _qualified_disjoint_established(
     for is_root, locations in ((False, member.qualified_files), (True, member.qualified_roots)):
         for location in locations:
             if remote:
+                if location.authority is not None:
+                    return None
                 location = _canonical_remote_location(location, member)
+                if (ref.scheme, ref.authority) == (location.scheme, location.authority):
+                    # Neither lexical path mismatch nor absolute/relative spelling proves
+                    # disjointness without the remote filesystem and working directory.
+                    # The decision path cannot consult either: same-host misses refuse.
+                    return None
+                continue
             if (ref.scheme, ref.authority, ref.absolute_path) != (
                 location.scheme,
                 location.authority,
@@ -2610,17 +2622,40 @@ def _qualified_disjoint_established(
     return True
 
 
+def _local_partial_scope_established(
+    path: Path, dirlike: bool, scope_pattern: str | None, member: DecayedMember
+) -> bool:
+    """Prove noncontainment with a canonical outside path in a broad scope's language.
+
+    One proven outside path suffices for the row's partial-scope predicate. A sampled
+    lexical miss does not: resolve that path and compare every producer selection form.
+    No witness, or an unresolved comparison, supplies no admission evidence.
+    """
+    if not dirlike and scope_pattern is None:
+        return False
+    pattern = scope_pattern or "**/*"
+    for witness in _glob_witnesses(pattern):
+        if not _pattern_matches(witness, pattern):
+            continue
+        candidate = path / witness
+        if candidate.is_dir():
+            continue
+        if _local_disjoint_established(candidate, False, None, member) is True:
+            return True
+    return False
+
+
 def _scope_admission_established(
     candidates: tuple[Path | QualifiedLocation, ...],
     dirlike: bool,
     scope_pattern: str | None,
     members: tuple[DecayedMember, ...],
 ) -> bool:
-    """Admit only after every candidate spelling is established outside every member.
+    """Admit only after every candidate spelling is proven not wholly in each member.
 
-    Containment has already run unchanged. Its negative answers are not admission
-    evidence: every declared selection language and canonical alias form must now have
-    a positive disjointness or whole-selection exclusion proof. Unknown means refusal.
+    Containment has already run unchanged. Its negative answers alone are not admission
+    evidence. Establish disjointness/exclusion or, for a local partial scope, a canonical
+    outside witness. Remote paths cannot supply such a witness. Unknown means refusal.
     """
     for member in members:
         for candidate in candidates:
@@ -2630,9 +2665,14 @@ def _scope_admission_established(
                     if isinstance(candidate, QualifiedLocation)
                     else _local_disjoint_established(candidate, dirlike, scope_pattern, member)
                 )
+                if established is not True and isinstance(candidate, Path):
+                    established = _local_partial_scope_established(
+                        candidate, dirlike, scope_pattern, member
+                    )
                 if established is not True:
                     raise UndecidableScopeContainment(
-                        "disjointness from every producer-selected spelling is not established"
+                        "neither disjointness nor a partial-scope outside witness against "
+                        "every producer-selected spelling is established"
                     )
             except (OSError, RuntimeError, ValueError) as exc:
                 error = UndecidableScopeContainment(
