@@ -143,6 +143,7 @@ class ConsentRegistry:
                 return contract
         return None
 
+    @estate_identity_operation()
     def subject_data_categories(self, person_id: str) -> frozenset[str]:
         categories: set[str] = set()
         for contract in self._contracts.values():
@@ -152,6 +153,7 @@ class ConsentRegistry:
                 categories |= contract.scope
         return frozenset(categories)
 
+    @estate_identity_operation()
     def purge_subject(self, person_id: str) -> list[str]:
         revoked: list[str] = []
         for contract_id, contract in self._contracts.items():

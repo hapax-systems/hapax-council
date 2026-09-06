@@ -204,6 +204,7 @@ def _run_revocation(
         pending_revocations = app.state.pending_consent_revocations
         person_id = resolve_principal_id(person_id)
         prop = get_revocation_propagator()
+        prop.refresh_contracts()
         pending = pending_revocations.get(person_id)
         if retry:
             if pending is None:
@@ -226,6 +227,13 @@ def _run_revocation(
                     purge_results=pending.purge_results + report.purge_results,
                     retry_contract_ids=tuple(
                         dict.fromkeys(pending.retry_contract_ids + report.retry_contract_ids)
+                    ),
+                    retry_revocation_ids=tuple(
+                        cid
+                        for cid in dict.fromkeys(
+                            pending.retry_revocation_ids + report.retry_revocation_ids
+                        )
+                        if cid not in report.contract_id.split(",")
                     ),
                     prior_purge_results=pending.prior_purge_results + report.prior_purge_results,
                 )

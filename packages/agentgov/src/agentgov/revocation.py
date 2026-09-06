@@ -20,6 +20,7 @@ from agentgov.carrier import CarrierRegistry
 from agentgov.consent import (
     ConsentRegistry,
     IdentityMigrationUnavailable,
+    SubjectPurgeIncomplete,
     identity_operation,
     resolve_contract_id,
     resolve_principal_id,
@@ -54,6 +55,7 @@ class RevocationReport:
     purge_results: tuple[PurgeResult, ...]
 
     retry_contract_ids: tuple[str, ...] = ()
+    retry_revocation_ids: tuple[str, ...] = ()
     prior_purge_results: tuple[PurgeResult, ...] = ()
 
     purge_complete: bool = field(init=False)
@@ -91,6 +93,11 @@ class RevocationPropagator:
 
     def register_handler(self, name: str, handler: PurgeHandler) -> None:
         self._handlers.append((name, handler))
+
+    def refresh_contracts(self) -> None:
+        """Refresh durable grants at the caller's serialized mutation boundary."""
+        if self._consent_registry._contracts_dir is not None:
+            self._consent_registry.load(self._consent_registry._contracts_dir)
 
     def record_purge_pending(self, report: RevocationReport, audit_path: Path) -> None:
         """Append residue to the installation's existing purge audit, not a retry journal."""
@@ -172,43 +179,85 @@ class RevocationPropagator:
                     results.append(PurgeResult(subsystem, 0, failures=("purge_failed",)))
         return tuple(results)
 
+    def _revoke_subject(self, person_id: str) -> tuple[tuple[str, ...], tuple[str, ...]]:
+        try:
+            revoked = self._consent_registry.purge_subject(person_id)
+        except SubjectPurgeIncomplete as exc:
+            return exc.revoked_ids, exc.pending_ids
+        return tuple(dict.fromkeys(resolve_contract_id(cid) for cid in revoked)), ()
+
     def revoke(self, person_id: str) -> RevocationReport:
         """Revoke durably before purging; downstream failure never restores consent."""
         with identity_operation(self._consent_registry._identity_binding):
             person_id = resolve_principal_id(person_id) or person_id
-            revoked_ids = tuple(
-                dict.fromkeys(
-                    resolve_contract_id(cid) or cid
-                    for cid in self._consent_registry.purge_subject(person_id)
-                )
-            )
+            revoked_ids, outstanding = self._revoke_subject(person_id)
             results = self._purge(revoked_ids)
+            purge_pending = revoked_ids if any(r.failures for r in results) else ()
+            if outstanding:
+                results += (
+                    PurgeResult(
+                        "contract_persistence", 0, failures=("contract_persistence_failed",)
+                    ),
+                )
             return RevocationReport(
                 contract_id=",".join(revoked_ids),
                 person_id=person_id,
                 contract_revoked=bool(revoked_ids),
                 purge_results=results,
-                retry_contract_ids=revoked_ids if any(r.failures for r in results) else (),
+                retry_contract_ids=tuple(dict.fromkeys(purge_pending + outstanding)),
+                retry_revocation_ids=outstanding,
             )
 
     def retry_purge(self, report: RevocationReport) -> RevocationReport:
         """Retry from the retained report after reload; do not reactivate consent."""
-        if not report.contract_revoked or not report.retry_contract_ids:
+        if not report.retry_contract_ids:
             return report
         with identity_operation(self._consent_registry._identity_binding):
-            pending = {result.subsystem for result in report.purge_results if result.failures}
+            persistence_ids = set(report.retry_revocation_ids)
+            for cid in report.retry_contract_ids:
+                contract = self._consent_registry.get(cid)
+                if contract is not None and contract.active:
+                    persistence_ids.add(cid)
+            revoked, outstanding = (
+                self._revoke_subject(report.person_id) if persistence_ids else ((), ())
+            )
+            # A pending file may already have disappeared on reload. Its purge
+            # obligation remains even when there is no active contract to move.
+            full_purge_ids = tuple(sorted((set(revoked) | persistence_ids) - set(outstanding)))
+            pending = {
+                result.subsystem
+                for result in report.purge_results
+                if result.failures and result.subsystem != "contract_persistence"
+            }
+            purge_ids = tuple(
+                cid for cid in report.retry_contract_ids if cid not in persistence_ids
+            )
             registered = {name for name, _ in self._handlers}
-            results = self._purge(report.retry_contract_ids, pending) + tuple(
+            results = self._purge(purge_ids, pending) + tuple(
                 PurgeResult(name, 0, failures=("purge_handler_missing",))
                 for name in sorted(pending - registered)
             )
+            remaining = purge_ids if any(r.failures for r in results) else ()
+            full_results = self._purge(full_purge_ids)
+            if any(r.failures for r in full_results):
+                remaining += full_purge_ids
+            results += full_results
+            if outstanding:
+                results += (
+                    PurgeResult(
+                        "contract_persistence", 0, failures=("contract_persistence_failed",)
+                    ),
+                )
+            remaining += outstanding
+            contract_ids = list(filter(None, report.contract_id.split(","))) + list(full_purge_ids)
             return replace(
                 report,
+                contract_id=",".join(dict.fromkeys(contract_ids)),
+                contract_revoked=bool(contract_ids),
                 purge_results=results,
                 prior_purge_results=report.prior_purge_results + report.purge_results,
-                retry_contract_ids=(
-                    report.retry_contract_ids if any(r.failures for r in results) else ()
-                ),
+                retry_contract_ids=tuple(dict.fromkeys(remaining)),
+                retry_revocation_ids=outstanding,
             )
 
 

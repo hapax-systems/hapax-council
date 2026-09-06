@@ -127,12 +127,13 @@ class _CorrespondenceSnapshot:
         )
 
     def mentioned_principal_ids(self, content: str) -> frozenset[str]:
-        """Recognize all private labels on a matching-only string, never rewrite data."""
+        """Recognize both identity spellings independently of active consent."""
         matching_content = content.lower()
         return frozenset(
             canonical
             for label, canonical in self.principals.items()
-            if re.search(r"\b" + re.escape(label) + r"\b", matching_content, re.IGNORECASE)
+            for spelling in (label, canonical)
+            if re.search(r"\b" + re.escape(spelling) + r"\b", matching_content, re.IGNORECASE)
         )
 
     def contains_predecessor(self, text: str) -> bool:
@@ -149,8 +150,10 @@ def load_identity_snapshot() -> _CorrespondenceSnapshot:
         data = json.loads(raw, object_pairs_hook=_unique_object)
     except IdentityMigrationUnavailable:
         raise
-    except Exception:
-        raise IdentityMigrationUnavailable("compat_malformed") from None
+    except Exception as exc:
+        raise IdentityMigrationUnavailable(
+            "compat_malformed", cause_class=type(exc).__name__
+        ) from None
     if (
         not isinstance(data, dict)
         or set(data) != {"version", "principals", "contracts", "inventory"}

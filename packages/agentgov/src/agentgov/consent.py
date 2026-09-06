@@ -28,34 +28,45 @@ log = logging.getLogger(__name__)
 class IdentityMigrationUnavailable(RuntimeError):
     """Identity resolution refused; only a public reason token is exposed."""
 
-    def __init__(self, reason: str, *, cause_class: str | None = None) -> None:
-        allowed = {
-            "identity_unconfigured",
-            "compat_missing",
-            "compat_unreadable",
-            "compat_malformed",
-            "compat_conflict",
-            "compat_incomplete",
+    def __init__(
+        self, reason: str, *, cause_class: str | None = None, missing_module: str | None = None
+    ) -> None:
+        remedies = {
+            "identity_unconfigured": "configure_identity_binding",
+            "compat_missing": "restore_compat_custody",
+            "compat_unreadable": "restore_compat_custody",
+            "compat_malformed": "repair_compat_document",
+            "compat_conflict": "reconcile_compat_conflict",
+            "compat_incomplete": "complete_compat_inventory",
         }
-        self.reason = reason if reason in allowed else "compat_unreadable"
-        self.cause_class = cause_class
+        self.reason = reason if reason in remedies else "compat_unreadable"
+        self.cause_class = (
+            cause_class
+            if isinstance(cause_class, str) and re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]*", cause_class)
+            else None
+        )
+        self.remedy = remedies[self.reason]
+        module = (
+            missing_module
+            if isinstance(missing_module, str) and re.fullmatch(r"[A-Za-z_][\w.]*", missing_module)
+            else "unavailable"
+        )
+        log.warning(
+            "%s: cause_class=%s missing_module=%s remedy=%s",
+            self.reason,
+            self.cause_class or "unavailable",
+            module,
+            self.remedy,
+        )
         super().__init__(self.reason)
 
 
 def custody_read_failure(exc: Exception) -> IdentityMigrationUnavailable:
     """Expose cause types and import names, never exception text or paths."""
-    cause_class = type(exc).__name__
-    if re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]*", cause_class) is None:
-        cause_class = "Exception"
     module = getattr(exc, "name", None) if isinstance(exc, ImportError) else None
-    if not isinstance(module, str) or re.fullmatch(r"[A-Za-z_][\w.]*", module) is None:
-        module = None
-    log.warning(
-        "compat_unreadable: cause_class=%s missing_module=%s remedy=restore_compat_custody",
-        cause_class,
-        module or "unavailable",
+    return IdentityMigrationUnavailable(
+        "compat_unreadable", cause_class=type(exc).__name__, missing_module=module
     )
-    return IdentityMigrationUnavailable("compat_unreadable", cause_class=cause_class)
 
 
 @dataclass(frozen=True)
@@ -103,8 +114,10 @@ def identity_operation(binding: IdentityMigrationBinding | None = None):
     elif selected.mode == "required" and selected.provider:
         try:
             provider = import_module(selected.provider)
-        except Exception:
-            raise IdentityMigrationUnavailable("identity_unconfigured") from None
+        except Exception as exc:
+            raise IdentityMigrationUnavailable(
+                "identity_unconfigured", cause_class=type(exc).__name__
+            ) from None
         try:
             snapshot = provider.load_identity_snapshot()
             if not all(
@@ -161,6 +174,15 @@ def resolve_contract_id(candidate: str) -> str:
 
 class ConsentContractLoadError(Exception):
     """Raised when a contract YAML file fails to parse in strict mode."""
+
+
+class SubjectPurgeIncomplete(RuntimeError):
+    """Durable revocations and remaining obligations after a persistence refusal."""
+
+    def __init__(self, revoked_ids: tuple[str, ...], pending_ids: tuple[str, ...]) -> None:
+        self.revoked_ids = revoked_ids
+        self.pending_ids = pending_ids
+        super().__init__("contract_persistence_failed")
 
 
 def _private_load_error(path: Path, error: Exception) -> bool:
@@ -368,9 +390,11 @@ class ConsentRegistry:
 
         now_iso = datetime.now().isoformat()
         for key in keys:
-            self._contracts[key] = replace(self._contracts[key], revoked_at=now_iso)
+            if not self._contracts[key].active:
+                continue
             src = self._contract_paths.get(key)
             if src is None:
+                self._contracts[key] = replace(self._contracts[key], revoked_at=now_iso)
                 continue
             if contracts_dir is not None:
                 src = contracts_dir / src.name
@@ -385,6 +409,7 @@ class ConsentRegistry:
                     n += 1
                 src.rename(dst)
                 log.info("consent_contract_revoked")
+            self._contracts[key] = replace(self._contracts[key], revoked_at=now_iso)
 
         elapsed = time.monotonic() - t0
         return elapsed
@@ -393,13 +418,26 @@ class ConsentRegistry:
     def purge_subject(self, person_id: str) -> list[str]:
         """Mark all contracts for a person as revoked. Returns revoked IDs."""
         revoked: list[str] = []
-        for contract_id, contract in self._contracts.items():
-            if contract.active and (resolve_principal_id(person_id) or person_id) in {
-                resolve_principal_id(party) or party for party in contract.parties
-            }:
+        candidates = [
+            contract_id
+            for contract_id, contract in self._contracts.items()
+            if contract.active
+            and resolve_principal_id(person_id)
+            in {resolve_principal_id(party) or party for party in contract.parties}
+        ]
+        for index, contract_id in enumerate(candidates):
+            try:
                 self.revoke_contract(contract_id)
-                revoked.append(contract_id)
-                log.info("consent_subject_revoked")
+            except OSError:
+                log.warning(
+                    "contract_persistence_failed: remedy=restore_contract_storage_then_retry"
+                )
+                raise SubjectPurgeIncomplete(
+                    tuple(resolve_contract_id(cid) for cid in revoked),
+                    tuple(resolve_contract_id(cid) for cid in candidates[index:]),
+                ) from None
+            revoked.append(contract_id)
+            log.info("consent_subject_revoked")
         return revoked
 
     @_registry_operation

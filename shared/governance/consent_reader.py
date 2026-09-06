@@ -236,10 +236,10 @@ class ConsentGatedReader:
 
     @estate_identity_operation()
     def _build_known_persons(self) -> frozenset[str]:
-        """Build the set of known person names from active contracts."""
+        """Supplement custody recognition with canonical parties from all contracts."""
         persons: set[str] = set()
         with estate_identity_operation() as snapshot:
-            for contract in self._registry.active_contracts:
+            for contract in self._registry:
                 for party in contract.parties:
                     canonical = snapshot.resolve_principal_id(party)
                     if canonical != "operator" and canonical not in self._operator_ids:

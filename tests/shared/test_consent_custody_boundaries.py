@@ -149,14 +149,16 @@ def test_mirror_get_predecessor_storage(mirror, requested, synthetic_custody, tm
     assert OLD_PRINCIPAL not in caplog.text
 
 
-@pytest.mark.parametrize("operation", ["contract_check", "provenance"])
+@pytest.mark.parametrize(
+    "operation", ["contract_check", "provenance", "subject_data_categories", "purge_subject"]
+)
 def test_mirror_decision_pins_snapshot(mirror, operation, synthetic_custody, monkeypatch):
     other_old = "synthetic-predecessor-other"
     other_new = "synthetic-successor-other"
     data = document()
-    section = "principals" if operation == "contract_check" else "contracts"
-    old = OLD_PRINCIPAL if operation == "contract_check" else OLD_CONTRACT
-    new = PRINCIPAL if operation == "contract_check" else CONTRACT
+    section = "contracts" if operation == "provenance" else "principals"
+    old = OLD_CONTRACT if operation == "provenance" else OLD_PRINCIPAL
+    new = CONTRACT if operation == "provenance" else PRINCIPAL
     data[section][other_old] = other_new
     data["inventory"].append(other_old)
     synthetic_custody.put(ENTRY, json.dumps(data).encode())
@@ -172,7 +174,7 @@ def test_mirror_decision_pins_snapshot(mirror, operation, synthetic_custody, mon
         return raw
 
     monkeypatch.setattr(consent, "_read_compatibility_document", swap_after_read)
-    if operation == "contract_check":
+    if operation != "provenance":
         registry = mirror.ConsentRegistry(
             _contracts={
                 CONTRACT: mirror.ConsentContract(
@@ -180,7 +182,13 @@ def test_mirror_decision_pins_snapshot(mirror, operation, synthetic_custody, mon
                 )
             }
         )
-        assert not registry.contract_check(old, "audio")
+        if operation == "contract_check":
+            assert not registry.contract_check(old, "audio")
+        elif operation == "subject_data_categories":
+            assert registry.subject_data_categories(old) == frozenset()
+        else:
+            assert registry.purge_subject(old) == []
+            assert registry._contracts[CONTRACT].active
     else:
         assert not mirror.ProvenanceExpr.leaf(old).evaluate(frozenset({other_old}))
     assert calls == 1
