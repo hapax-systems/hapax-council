@@ -2071,9 +2071,6 @@ def classify_pr(
             )
             pr = replace(pr, queue_governance=governance)
         if governance.reason:
-            # Neither a desired method nor an override establishes unverifiable
-            # governance. Use the same disposition with or without an override.
-            expected_method_unverified = True
             if expected_auto_merge_method_is_override:
                 reasons.append(
                     _expected_merge_method_unverified_reason(

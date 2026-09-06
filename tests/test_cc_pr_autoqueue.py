@@ -1136,7 +1136,7 @@ def test_run_reconciler_conflicting_base_receipts(
     assert (
         decision["action"]
         == {
-            "armed": "blocked",
+            "armed": "disable_auto_merge",
             "queued": "dequeue",
             "unarmed": "blocked",
         }[state]
@@ -1201,7 +1201,7 @@ def test_run_reconciler_base_conflict_cache_isolation(
     assert decisions[41]["auto_merge_method_owner"] == "merge_queue"
     assert decisions[41]["merge_queue_governance"]["reason"] is None
     for number, ref in ((42, "release"), (43, "staging")):
-        assert decisions[number]["action"] == "blocked"
+        assert decisions[number]["action"] == "disable_auto_merge"
         assert decisions[number]["auto_merge_method_owner"] == "unverified"
         assert decisions[number]["reasons"] == [
             f"auto_merge_method_unverified:pr_base_ref_conflict:list=main:detail={ref}"
@@ -1301,7 +1301,7 @@ def test_run_reconciler_default_branch_receipts(
         assert (
             decision["action"]
             == {
-                "armed": "blocked",
+                "armed": "disable_auto_merge",
                 "queued": "dequeue",
                 "unarmed": "blocked",
             }[state]
@@ -1367,7 +1367,7 @@ def test_run_reconciler_default_branch_conflict_cache_isolation(
     assert decisions[41]["auto_merge_method_owner"] == "merge_queue"
     assert decisions[41]["merge_queue_governance"]["reason"] is None
     for number, default in ((42, "release"), (43, "staging")):
-        assert decisions[number]["action"] == "blocked"
+        assert decisions[number]["action"] == "disable_auto_merge"
         assert decisions[number]["auto_merge_method_owner"] == "unverified"
         assert decisions[number]["reasons"] == [
             f"auto_merge_method_unverified:pr_default_branch_conflict:list=main:detail={default}"
@@ -2640,7 +2640,7 @@ def test_queue_governance_evidence_refuses_unknown(
         repo="owner/repo", repo_root=tmp_path, vault_root=vault, apply=False, runner=runner
     )
     decision = report["decisions"][0]
-    assert decision["action"] == ("dequeue" if queued else "blocked")
+    assert decision["action"] == ("dequeue" if queued else "disable_auto_merge")
     assert decision["reasons"] == [f"auto_merge_method_unverified:{reason}"]
     assert decision["auto_merge_method_owner"] == "unverified"
     assert not any("--auto" in call for call in runner.calls)
@@ -2757,7 +2757,13 @@ def test_override_governance_action_matrix(
     decisions = []
     for override in (None, "SQUASH"):
         runner = _override_governance_runner(evidence)
-        report = _method_override_report(tmp_path, state=state, override=override, runner=runner)
+        report = _method_override_report(
+            tmp_path,
+            state=state,
+            override=override,
+            runner=runner,
+            apply=entrypoint == "reconciler" and source is not None,
+        )
         if entrypoint == "reconciler":
             decision = report["decisions"][0]
         else:
@@ -2774,12 +2780,34 @@ def test_override_governance_action_matrix(
                 require_expected_auto_merge_method=True,
             ).as_dict()
         if source:
-            assert decision["action"] == ("dequeue" if state == "queued" else "blocked")
+            assert (
+                decision["action"]
+                == {"queued": "dequeue", "armed": "disable_auto_merge", "unarmed": "blocked"}[state]
+            )
             assert decision["reasons"] == [
                 "auto_merge_method_unverified:"
                 + ("expected_missing:source=" if override else "")
                 + source
             ]
+            if entrypoint == "reconciler":
+                [mutation] = report["mutations"]
+                assert mutation["action"] == (
+                    "set_admission_status" if state == "unarmed" else decision["action"]
+                )
+                assert mutation["ok"] is True
+                disables = [call for call in runner.calls if "--disable-auto" in call]
+                assert disables == (
+                    [["gh", "pr", "merge", "42", "--repo", "owner/repo", "--disable-auto"]]
+                    if state == "armed"
+                    else []
+                )
+                dequeues = [
+                    call
+                    for call in runner.calls
+                    if any("dequeuePullRequest" in part for part in call)
+                ]
+                assert len(dequeues) == (1 if state == "queued" else 0)
+                assert not any("--auto" in call for call in runner.calls)
         elif evidence == "readable_disagreeing":
             assert decision["action"] == (
                 "blocked"
@@ -2806,6 +2834,48 @@ def test_override_governance_action_matrix(
         decisions.append(decision)
     if evidence != "readable_disagreeing":
         assert decisions[0]["action"] == decisions[1]["action"]
+
+
+def test_unverified_override_disables_auto_merge_in_apply(tmp_path: Path) -> None:
+    outcomes = []
+    for override in (None, "SQUASH"):
+        runner = _override_governance_runner("enforcement_unreadable")
+        report = _method_override_report(
+            tmp_path, state="armed", override=override, apply=True, runner=runner
+        )
+        [decision] = report["decisions"]
+        assert decision["action"] == "disable_auto_merge"
+        assert decision["reasons"] == [
+            "auto_merge_method_unverified:"
+            + ("expected_missing:source=" if override else "")
+            + "enforcement_unreadable:source=rulesets:cause=request_failed"
+        ]
+        assert decision["auto_merge_method_owner"] == "unverified"
+        assert decision.get("next_action") == (
+            autoqueue._merge_method_operator_next_action() if override else None
+        )
+        [mutation] = report["mutations"]
+        assert mutation["action"] == "disable_auto_merge"
+        assert mutation["reasons"] == decision["reasons"]
+        assert mutation["ok"] is True
+        assert mutation["admission_status"]["state"] == "failure"
+        assert mutation["admission_status"]["ok"] is True
+        disables = [call for call in runner.calls if call[:3] == ["gh", "pr", "merge"]]
+        assert disables == [["gh", "pr", "merge", "42", "--repo", "owner/repo", "--disable-auto"]]
+        assert not any("dequeuePullRequest" in part for call in runner.calls for part in call)
+        assert not any("--auto" in call for call in runner.calls)
+        # The override changes only the reason token and its existing guidance.
+        outcomes.append(
+            (
+                {
+                    key: value
+                    for key, value in decision.items()
+                    if key not in {"reasons", "next_action"}
+                },
+                disables,
+            )
+        )
+    assert outcomes[0] == outcomes[1]
 
 
 @pytest.mark.parametrize("fault", ["malformed", "unreadable"])
@@ -3071,10 +3141,18 @@ def test_merge_method_override_respects_governance(
 def test_merge_method_override_requires_readable_governance(
     tmp_path: Path, state: str, override: str, fault: str, source: str
 ) -> None:
-    """Unavailable governance revokes queue membership regardless of override."""
+    """Unavailable governance revokes queue membership or auto-merge regardless of override."""
     report = _method_override_report(tmp_path, state=state, override=override, fault=fault)
     decision = report["decisions"][0]
-    assert decision["action"] == ("dequeue" if state == "queued" else "blocked")
+    assert (
+        decision["action"]
+        == {
+            "queued": "dequeue",
+            "armed": "disable_auto_merge",
+            "ordinary": "disable_auto_merge",
+            "unarmed": "blocked",
+        }[state]
+    )
     assert decision["reasons"] == [f"auto_merge_method_unverified:expected_missing:source={source}"]
     assert decision.get("expected_auto_merge_method", "SQUASH") == override
     assert decision.get("auto_merge_method_owner") == (None if state == "unarmed" else "unverified")
@@ -3120,16 +3198,21 @@ def test_merge_method_override_refusal_disposition_in_apply(
     )
     decision = report["decisions"][0]
     dequeue = fault is not None and state == "queued"
-    assert decision["action"] == ("dequeue" if dequeue else "blocked")
+    disable = fault is not None and state == "armed"
+    assert decision["action"] == (
+        "dequeue" if dequeue else "disable_auto_merge" if disable else "blocked"
+    )
     assert decision.get("auto_merge_method_owner") == (None if state == "unarmed" else "unverified")
-    assert not any(call[:3] == ["gh", "pr", "merge"] for call in runner.calls)
+    assert [call for call in runner.calls if call[:3] == ["gh", "pr", "merge"]] == (
+        [["gh", "pr", "merge", "42", "--repo", "owner/repo", "--disable-auto"]] if disable else []
+    )
     dequeues = [call for call in runner.calls if any("dequeuePullRequest" in part for part in call)]
     assert len(dequeues) == (1 if dequeue else 0)
     assert runner.queued_prs == ({42} if state == "queued" else set())
     assert bool(runner.open_prs[0]["autoMergeRequest"]) == (state != "unarmed")
     [mutation] = report["mutations"]
-    if dequeue:
-        assert mutation["action"] == "dequeue"
+    if dequeue or disable:
+        assert mutation["action"] == decision["action"]
         assert mutation["admission_status"]["state"] == "failure"
     else:
         assert mutation["action"] == "set_admission_status"
@@ -3177,10 +3260,8 @@ def test_merge_method_override_refusal_disposition_when_admission_status_write_f
             and any("dequeuePullRequest" in part for part in call)
             for call in runner.calls
         )
-    elif fault is None:
-        assert ["gh", "pr", "merge", "42", "--repo", "owner/repo", "--disable-auto"] in runner.calls
     else:
-        assert not any("--disable-auto" in call for call in runner.calls)
+        assert ["gh", "pr", "merge", "42", "--repo", "owner/repo", "--disable-auto"] in runner.calls
     assert any(
         call[:4] == ["gh", "api", "-X", "POST"]
         and call[4] == "repos/owner/repo/statuses/sha-42"
@@ -3188,18 +3269,10 @@ def test_merge_method_override_refusal_disposition_when_admission_status_write_f
         for call in runner.calls
     )
     decision = report["decisions"][0]
-    assert decision["action"] == (
-        "dequeue" if state == "queued" else "disable_auto_merge" if fault is None else "blocked"
-    )
+    assert decision["action"] == ("dequeue" if state == "queued" else "disable_auto_merge")
     assert decision["reasons"] == [reason, refusal]
     assert decision["expected_auto_merge_method"] == "MERGE"
     [mutation] = report["mutations"]
-    if decision["action"] == "blocked":
-        assert mutation["action"] == "set_admission_status"
-        assert mutation["status_state"] == "failure"
-        assert mutation["ok"] is False
-        assert mutation["message"] == "status post failed"
-        return
     assert mutation["action"] == decision["action"]
     assert mutation["reasons"] == decision["reasons"]
     assert mutation["ok"] is True
@@ -3464,7 +3537,8 @@ def test_run_reconciler_malformed_reference_refusal(
     )
     decision = report["decisions"][0]
     assert (
-        decision["action"] == {"armed": "blocked", "queued": "dequeue", "unarmed": "blocked"}[state]
+        decision["action"]
+        == {"armed": "disable_auto_merge", "queued": "dequeue", "unarmed": "blocked"}[state]
     )
     prefix = "auto_merge_method_unverified:"
     assert decision["reasons"] == [
@@ -3513,7 +3587,7 @@ def test_run_reconciler_malformed_reference_cache_isolation(
     decisions = {item["pr"]: item for item in report["decisions"]}
     assert decisions[41]["action"] == "already_auto_merge_enabled"
     assert decisions[41]["auto_merge_method_owner"] == "merge_queue"
-    assert decisions[42]["action"] == "blocked"
+    assert decisions[42]["action"] == "disable_auto_merge"
     assert decisions[42]["auto_merge_method_owner"] == "unverified"
     assert decisions[42]["reasons"] == ["auto_merge_method_unverified:pr_base_ref_malformed"]
 
@@ -3579,7 +3653,10 @@ def test_run_reconciler_unreadable_governance_cause(
     assert decision["reasons"] == [
         f"auto_merge_method_unverified:expected_missing:source={refusal}"
     ]
-    assert decision["action"] == ("dequeue" if state == "queued" else "blocked")
+    assert (
+        decision["action"]
+        == {"queued": "dequeue", "armed": "disable_auto_merge", "unarmed": "blocked"}[state]
+    )
     assert decision.get("auto_merge_method_owner") == (None if state == "unarmed" else "unverified")
     assert all(re.fullmatch(r"[A-Za-z0-9_:,=.-]+", reason) for reason in decision["reasons"])
     assert "private diagnostic" not in json.dumps(report)
