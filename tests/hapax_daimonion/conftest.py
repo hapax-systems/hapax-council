@@ -1,5 +1,6 @@
 """Shared fixtures and markers for hapax_daimonion tests."""
 
+import importlib
 import subprocess
 import sys
 from pathlib import Path
@@ -112,7 +113,6 @@ def _stub_hardware_modules():
         "torchaudio",
         "openwakeword",
         "openwakeword.model",
-        "cv2",
         "insightface",
         "insightface.app",
         "insightface.app.common",
@@ -121,6 +121,15 @@ def _stub_hardware_modules():
     ]:
         if mod_name not in sys.modules:
             sys.modules[mod_name] = MagicMock()
+
+    # cv2 is a real test dependency for non-daimonion image/provenance suites.
+    # Preserve it when installed; only fall back to a stub on hosts without
+    # OpenCV so this directory's hardware-adjacent tests still collect.
+    if "cv2" not in sys.modules:
+        try:
+            importlib.import_module("cv2")
+        except ImportError:
+            sys.modules["cv2"] = MagicMock()
 
 
 _stub_hardware_modules()

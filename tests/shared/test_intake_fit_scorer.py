@@ -42,6 +42,26 @@ def test_fit_score_partial_vector() -> None:
     assert fit_score(rv) == 4.5  # (4+5)/2
 
 
+def test_fit_score_drops_unknown_dimension() -> None:
+    # An unknown key (typo / stale decomposer entry not in REQUIREMENT_VECTOR_DIMENSIONS) is
+    # dropped — it can never inflate the score. The valid dim still scores normally.
+    # (codex-1 finding #2: malformed frontmatter must not change ranking under blend>0.)
+    rv = {"context_length": 4, "bogus_dimension": 5}
+    assert fit_score(rv) == 4.0  # only context_length counts
+
+
+def test_fit_score_drops_out_of_range_value() -> None:
+    # Out-of-range scores (>5 or <=0) are dropped, not clamped — they cannot push the mean.
+    rv = {"context_length": 4, "mutation_risk": 999}
+    assert fit_score(rv) == 4.0  # 999 dropped; only context_length counts
+
+
+def test_fit_score_only_unknown_dims_is_dark() -> None:
+    # A vector with no recognized scored dims is honest-DARK, even if every value is large.
+    rv = {"bogus": 5, "also_bogus": 5}
+    assert fit_score(rv) == 0.0
+
+
 def test_fit_score_none_is_dark_zero() -> None:
     # None = absent/unparsed -> honest-DARK, the neutral score (no fit influence).
     assert fit_score(None) == 0.0
@@ -125,8 +145,10 @@ def test_composite_blend_positive_adds_term() -> None:
 
 
 def test_composite_negative_blend_inverts() -> None:
-    # a negative blend is a valid operator knob (prefer simpler tasks first); it must
-    # flow through as plain arithmetic, not be clamped (the flag is the operator's dial).
+    # The PURE composite function is unclamped arithmetic: a negative blend (prefer simpler
+    # tasks first) flows through as wsjf + blend*fit. The deployment policy — which blends
+    # are reachable from HAPAX_INTAKE_FIT_BLEND — is clamped to [0.0, 0.5) at the env gate
+    # (see tests/test_intake_fit_blend_clamp.py); this asserts the math layer only.
     wsjf = 5.0
     assert composite_rank_key(wsjf, 3.0, blend=-1.0) == 2.0
 
