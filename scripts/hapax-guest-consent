@@ -33,11 +33,18 @@ from datetime import date
 from pathlib import Path
 
 REPO = Path(__file__).resolve().parent.parent
-# Use the lightweight agentgov registry directly (avoids pulling the council's
-# health-signal / ntfy stack into a tiny CLI).
+# Use the portable registry with an explicit required estate provider.
+sys.path.insert(0, str(REPO))
 sys.path.insert(0, str(REPO / "packages" / "agentgov" / "src"))
 
 from agentgov.consent import ConsentRegistry, resolve_principal_id  # noqa: E402
+
+from shared.governance.consent import (  # noqa: E402
+    bind_estate_identity,
+    estate_identity_operation,
+)
+
+bind_estate_identity()
 
 SCOPE = frozenset({"world_render"})
 
@@ -55,6 +62,7 @@ def _registry(directory: Path) -> ConsentRegistry:
     return reg
 
 
+@estate_identity_operation()
 def cmd_grant(person: str) -> int:
     person = resolve_principal_id(person) or person
     directory = contracts_dir()
@@ -74,6 +82,7 @@ def cmd_grant(person: str) -> int:
     return 0
 
 
+@estate_identity_operation()
 def cmd_revoke(person: str) -> int:
     person = resolve_principal_id(person) or person
     directory = contracts_dir()
@@ -98,6 +107,7 @@ def cmd_revoke(person: str) -> int:
     return 0
 
 
+@estate_identity_operation()
 def cmd_list() -> int:
     directory = contracts_dir()
     reg = _registry(directory)

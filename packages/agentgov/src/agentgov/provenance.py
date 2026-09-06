@@ -14,7 +14,7 @@ from __future__ import annotations
 import enum
 from dataclasses import dataclass
 
-from agentgov.consent import resolve_contract_id
+from agentgov.consent import identity_operation, resolve_contract_id
 
 
 class ProvenanceOp(enum.Enum):
@@ -85,6 +85,7 @@ class ProvenanceExpr:
             return self
         return ProvenanceExpr(op=ProvenanceOp.PLUS, left=self, right=other)
 
+    @identity_operation()
     def evaluate(self, active_contracts: frozenset[str]) -> bool:
         """Evaluate provenance against active contracts."""
         if self._is_zero:

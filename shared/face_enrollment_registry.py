@@ -27,7 +27,7 @@ from collections.abc import Iterable
 from pathlib import Path
 from typing import TYPE_CHECKING, Final, Protocol
 
-from shared.governance.consent import resolve_principal_id
+from shared.governance.consent import estate_identity_operation, resolve_principal_id
 
 if TYPE_CHECKING:
     import numpy as np
@@ -79,6 +79,7 @@ def _matching_enrollment_paths(principal_id: str, *, root: Path | None = None) -
     )
 
 
+@estate_identity_operation()
 def enroll_principal(
     principal_id: str,
     embedding: NDArray[np.float32],
@@ -131,6 +132,7 @@ def enroll_principal(
     return target
 
 
+@estate_identity_operation()
 def load_enrollment(principal_id: str, *, root: Path | None = None) -> NDArray[np.float32] | None:
     """Read a principal's embedding from disk.
 
@@ -157,6 +159,7 @@ def load_enrollment(principal_id: str, *, root: Path | None = None) -> NDArray[n
         return None
 
 
+@estate_identity_operation()
 def revoke_enrollment(principal_id: str, *, root: Path | None = None) -> bool:
     """Disable matching durably, then delete all equivalent enrollment files.
 
@@ -194,6 +197,7 @@ def revoke_enrollment(principal_id: str, *, root: Path | None = None) -> bool:
     return complete
 
 
+@estate_identity_operation()
 def list_enrollments(*, root: Path | None = None) -> list[str]:
     """Return enrolled principal ids (sorted, no embedding content).
 
@@ -217,6 +221,7 @@ def _cosine_similarity(a: NDArray[np.float32], b: NDArray[np.float32]) -> float:
     return float(np.dot(a, b) / (norm_a * norm_b))
 
 
+@estate_identity_operation()
 def match_principal(
     embedding: NDArray[np.float32] | None,
     *,

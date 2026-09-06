@@ -19,14 +19,16 @@ import yaml
 
 from shared.governance import consent
 
+pytest_plugins = ("tests.shared.test_consent_identifier_compatibility",)
+
 ROOT = Path(__file__).resolve().parents[2]
-PRINCIPAL = "principal-c1"
-CONTRACT = "contract-principal-c1"
+PRINCIPAL = "synthetic-successor-subject"
+CONTRACT = "synthetic-successor-contract"
 OLD_PRINCIPAL = "synthetic-predecessor-subject"
 OLD_CONTRACT = "synthetic-predecessor-contract"
 UNKNOWN = "synthetic-unregistered-contract"
 CONTRACTS = (
-    CONTRACT,
+    "contract-principal-c1",
     "contract-principal-c2",
     "contract-principal-a1-2026-04-19",
     "contract-principal-a1-enroll-2026-04-19",
@@ -38,9 +40,8 @@ def digest(value):
 
 
 @pytest.fixture
-def aliases(monkeypatch):
-    monkeypatch.setitem(consent._PRINCIPAL_ALIASES, digest(OLD_PRINCIPAL), PRINCIPAL)
-    monkeypatch.setitem(consent._CONTRACT_ALIASES, digest(OLD_CONTRACT), CONTRACT)
+def aliases(synthetic_custody):
+    return synthetic_custody
 
 
 def file_module(path, name):
@@ -52,48 +53,54 @@ def file_module(path, name):
     return module
 
 
-@pytest.mark.parametrize("principal", ["principal-c1", "principal-c2", "principal-a1"])
-def test_opaque_principal_resolution(principal):
-    assert consent.resolve_principal_id(principal) == principal
-
-
-@pytest.mark.parametrize("contract", CONTRACTS)
-def test_opaque_contract_resolution(contract):
-    assert consent.resolve_contract_id(contract) == contract
-
-
-def test_digest_resolution(aliases):
+def test_synthetic_resolution(aliases):
+    assert consent.resolve_principal_id(PRINCIPAL) == PRINCIPAL
     assert consent.resolve_principal_id(OLD_PRINCIPAL) == PRINCIPAL
+    assert consent.resolve_contract_id(CONTRACT) == CONTRACT
     assert consent.resolve_contract_id(OLD_CONTRACT) == CONTRACT
-    assert consent.is_child_principal(OLD_PRINCIPAL)
+    registry = consent.ConsentRegistry(
+        _contracts={
+            CONTRACT: consent.ConsentContract(
+                CONTRACT, ("operator", PRINCIPAL), frozenset({"audio"}), principal_class="child"
+            )
+        }
+    )
+    assert consent.is_child_principal(OLD_PRINCIPAL, registry)
 
 
-def test_unregistered_resolution():
-    for candidate in (UNKNOWN, digest(UNKNOWN), "", "principal-z99"):
-        assert consent.resolve_principal_id(candidate) is None
-        assert consent.resolve_contract_id(candidate) is None
+def test_unregistered_resolution(aliases):
+    for candidate in (UNKNOWN, digest(UNKNOWN), "", "synthetic-unregistered-subject"):
+        assert consent.resolve_principal_id(candidate) == candidate
+        assert consent.resolve_contract_id(candidate) == candidate
 
 
 @pytest.mark.parametrize("contract_id", CONTRACTS)
-def test_contract_schema_and_digests(contract_id):
+def test_public_contract_has_no_correspondence(contract_id):
     path = ROOT / "axioms/contracts" / f"{contract_id}.yaml"
-    assert path.exists(), "successor contract is missing"
     data = yaml.safe_load(path.read_text())
     assert data["schema_version"] == 2
     assert data["id"] == contract_id
     assert consent.parse_contract(data).id == contract_id
-    assert all(re.fullmatch(r"(?:principal-[a-z][0-9]+|operator)", p) for p in data["parties"])
-    for kind, registry in (
-        ("principals", consent._PRINCIPAL_ALIASES),
-        ("contracts", consent._CONTRACT_ALIASES),
-    ):
-        aliases = data["predecessor_aliases"][kind]
-        assert aliases
-        for successor, hashes in aliases.items():
-            assert hashes
-            for value in hashes:
-                assert re.fullmatch(r"[0-9a-f]{64}", value)
-                assert registry[value] == successor
+    assert "predecessor_aliases" not in data
+    assert "sha256" not in path.read_text()
+
+
+def test_public_resolver_has_no_digest_table():
+    tree = ast.parse((ROOT / "shared/governance/consent.py").read_text())
+    assert not any(
+        isinstance(node, ast.Dict)
+        and any(
+            isinstance(key, ast.Constant)
+            and isinstance(key.value, str)
+            and re.fullmatch(r"[0-9a-f]{64}", key.value)
+            for key in node.keys
+        )
+        for node in ast.walk(tree)
+    )
+    assert not any(
+        isinstance(node, ast.Name) and node.id in {"_PRINCIPAL_ALIASES", "_CONTRACT_ALIASES"}
+        for node in ast.walk(tree)
+    )
 
 
 @pytest.mark.parametrize(
@@ -248,7 +255,9 @@ def test_recording_purge_resolves_supplied_predecessor(aliases, monkeypatch, tmp
     from agents.studio_compositor.consent import purge_video_recordings
 
     compositor, segments = recording_fixture(tmp_path, CONTRACT, monkeypatch)
-    assert purge_video_recordings(compositor, OLD_CONTRACT) == 2
+    result = purge_video_recordings(compositor, OLD_CONTRACT)
+    assert result.items_purged == 2
+    assert result.purge_complete
     assert all(not path.exists() for path in segments)
 
 
@@ -480,7 +489,7 @@ def test_enrollment_refuses_when_revocation_marker_cannot_persist(aliases, monke
 
 
 @pytest.mark.parametrize("missing", ["shared", "shared.governance", "shared.governance.consent"])
-def test_optional_resolver_absence_refuses_lifecycle(missing, aliases, monkeypatch, tmp_path):
+def test_required_resolver_absence_refuses_lifecycle(missing, aliases, monkeypatch, tmp_path):
     from agentgov.carrier import CarrierFact, CarrierRegistry
     from agentgov.consent import ConsentRegistry
     from agentgov.consent_label import ConsentLabel
@@ -513,7 +522,7 @@ def test_optional_resolver_absence_refuses_lifecycle(missing, aliases, monkeypat
         lambda: RevocationPropagator(registry).revoke(OLD_PRINCIPAL),
         lambda: facts.purge_by_provenance(CONTRACT),
     ):
-        with pytest.raises(RuntimeError, match="resolver unavailable; restore.*retry"):
+        with pytest.raises(RuntimeError, match="^identity_unconfigured$"):
             operation()
     assert (tmp_path / f"{CONTRACT}.yaml").exists()
     assert registry.active_contracts
@@ -529,3 +538,197 @@ def test_package_and_agent_share_implementations():
         package = importlib.import_module("agentgov." + name)
         mirror = importlib.import_module("agents._governance." + name)
         assert getattr(package, symbol) is getattr(mirror, symbol)
+
+
+@pytest.mark.parametrize("failed_kind", ["audit", "recording", "hls", "timestamp"])
+def test_partial_recording_purge_keeps_revocation_and_retry(
+    failed_kind, aliases, monkeypatch, tmp_path
+):
+    from functools import partial
+
+    from agentgov.revocation import RevocationPropagator
+
+    from agents.studio_compositor import consent as recording
+
+    registry = consent.ConsentRegistry(_contracts_dir=tmp_path / "contracts")
+    registry.create_contract(PRINCIPAL, frozenset({"video"}), contract_id=CONTRACT)
+    compositor, segments = recording_fixture(tmp_path, OLD_CONTRACT, monkeypatch)
+    original_unlink = Path.unlink
+    original_read = Path.read_text
+    invalid = tmp_path / "recordings/camera/invalid.mkv"
+    if failed_kind == "timestamp":
+        invalid.write_bytes(b"synthetic recording")
+
+    def fail_delete(path, *args, **kwargs):
+        target = segments[0 if failed_kind == "recording" else 1]
+        if failed_kind in {"recording", "hls"} and path == target:
+            raise PermissionError("synthetic-private-detail")
+        return original_unlink(path, *args, **kwargs)
+
+    def fail_audit(path, *args, **kwargs):
+        if failed_kind == "audit" and path == recording.CONSENT_AUDIT_PATH:
+            raise PermissionError("synthetic-private-detail")
+        return original_read(path, *args, **kwargs)
+
+    propagator = RevocationPropagator(registry)
+    propagator.register_handler("recordings", partial(recording.purge_video_recordings, compositor))
+    with monkeypatch.context() as patch:
+        patch.setattr(Path, "unlink", fail_delete)
+        patch.setattr(Path, "read_text", fail_audit)
+        report = propagator.revoke(OLD_PRINCIPAL)
+    assert report.contract_revoked
+    assert not report.purge_complete
+    from dataclasses import asdict
+
+    assert asdict(report)["purge_complete"] is False
+    assert report.retry_contract_ids
+    assert report.purge_results[0].failures
+    assert all(re.fullmatch(r"[a-z_]+", reason) for reason in report.purge_results[0].failures)
+    assert (
+        report.total_purged == {"audit": 0, "recording": 1, "hls": 1, "timestamp": 2}[failed_kind]
+    )
+    assert sum(path.exists() for path in segments) == 2 - report.total_purged
+    assert not registry.contract_check(PRINCIPAL, "video")
+    fresh = consent.ConsentRegistry(_contracts_dir=tmp_path / "contracts")
+    fresh.load(tmp_path / "contracts")
+    assert not fresh.contract_check(OLD_PRINCIPAL, "video")
+    if invalid.exists():
+        invalid.unlink()
+    retry = RevocationPropagator(fresh)
+    retry.register_handler("recordings", partial(recording.purge_video_recordings, compositor))
+    completed = retry.retry_purge(report)
+    assert completed.contract_revoked
+    assert completed.purge_complete
+    assert completed.total_purged == 2
+    assert completed.prior_purge_results[0].failures
+    assert not any(path.exists() for path in segments)
+    assert not fresh.contract_check(PRINCIPAL, "video")
+
+
+def test_mapping_failure_is_not_recording_success(aliases, monkeypatch, tmp_path):
+    from agents.studio_compositor import consent as recording
+
+    compositor, segments = recording_fixture(tmp_path, OLD_CONTRACT, monkeypatch)
+    aliases.delete("consent-identifier-compatibility")
+    report = recording.purge_video_recordings(compositor, CONTRACT)
+    assert not report.purge_complete
+    assert report.items_purged == 0
+    assert report.failures == ("compat_missing",)
+    assert all(path.exists() for path in segments)
+
+
+def test_guest_source_reconciles_binding_and_denies_errors(aliases, monkeypatch, tmp_path, capsys):
+    cli = file_module("scripts/hapax-guest-consent", "synthetic_guest_grant")
+    source = file_module("scripts/screwm-guest-source.py", "synthetic_guest_source")
+    monkeypatch.setenv("HAPAX_GUEST_CONSENT_DIR", str(tmp_path / "contracts"))
+    assert cli.cmd_grant(OLD_PRINCIPAL) == 0
+    capsys.readouterr()
+    assert source.consented(PRINCIPAL, tmp_path / "contracts")
+    aliases.delete("consent-identifier-compatibility")
+    assert not source.consented(PRINCIPAL, tmp_path / "contracts")
+    assert capsys.readouterr().err.strip() == "[screwm-guest-source] consent_unavailable"
+    with pytest.raises(RuntimeError, match="^compat_missing$"):
+        cli.cmd_grant(PRINCIPAL)
+
+
+def test_downstream_exception_retains_completed_effects(aliases, tmp_path):
+    from agentgov.revocation import RevocationPropagator
+
+    registry = consent.ConsentRegistry(_contracts_dir=tmp_path / "contracts")
+    registry.create_contract(PRINCIPAL, frozenset({"audio"}), contract_id=CONTRACT)
+    artifact = tmp_path / "synthetic-artifact"
+    artifact.write_bytes(b"synthetic")
+
+    def completed(contract_id):
+        artifact.unlink()
+        return 1
+
+    def fail(contract_id):
+        raise OSError("synthetic-private-detail")
+
+    propagator = RevocationPropagator(registry)
+    propagator.register_handler("completed", completed)
+    propagator.register_handler("failed", fail)
+    report = propagator.revoke(PRINCIPAL)
+    assert report.contract_revoked and not report.purge_complete
+    assert report.total_purged == 1
+    assert report.purge_results[-1].failures == ("purge_failed",)
+    assert not artifact.exists()
+    assert not registry.contract_check(PRINCIPAL, "audio")
+
+
+def test_retry_requires_failed_handlers_and_preserves_history(aliases, tmp_path):
+    from agentgov.revocation import RevocationPropagator
+
+    registry = consent.ConsentRegistry(_contracts_dir=tmp_path / "contracts")
+    registry.create_contract(PRINCIPAL, frozenset({"audio"}), contract_id=CONTRACT)
+    calls = []
+
+    def complete(contract_id):
+        calls.append(True)
+        return 1
+
+    def fail(contract_id):
+        raise OSError("synthetic-private-detail")
+
+    cascade = RevocationPropagator(registry)
+    cascade.register_handler("complete", complete)
+    cascade.register_handler("failed", fail)
+    report = cascade.revoke(PRINCIPAL)
+    fresh = consent.ConsentRegistry(_contracts_dir=tmp_path / "contracts")
+    fresh.load(tmp_path / "contracts")
+    retry = RevocationPropagator(fresh)
+    retry.register_handler("complete", complete)
+    pending = retry.retry_purge(report)
+    assert pending.contract_revoked and not pending.purge_complete
+    assert pending.purge_results[0].failures == ("purge_handler_missing",)
+    assert len(calls) == 1
+    retry.register_handler("failed", lambda contract_id: 1)
+    completed = retry.retry_purge(pending)
+    assert completed.purge_complete
+    assert completed.total_purged == 2
+    assert len(calls) == 1
+    assert any(result.failures for result in completed.prior_purge_results)
+
+
+@pytest.mark.parametrize("operation", ["grant", "enrollment", "cascade", "archive"])
+def test_compound_lifecycle_uses_one_custody_read(
+    operation, aliases, monkeypatch, tmp_path, capsys
+):
+    import numpy as np
+    from agentgov.revocation import RevocationPropagator
+
+    from shared import face_enrollment_registry as enrollment
+
+    registry = consent.ConsentRegistry(_contracts_dir=tmp_path / "contracts")
+    registry.create_contract(PRINCIPAL, frozenset({"face_enrollment"}), contract_id=CONTRACT)
+    cli = file_module("scripts/hapax-guest-consent", "synthetic_snapshot_cli")
+    archive = file_module("scripts/archive-purge.py", "synthetic_snapshot_archive")
+    monkeypatch.setenv("HAPAX_GUEST_CONSENT_DIR", str(tmp_path / "contracts"))
+    api = importlib.import_module("k0.key_capture")
+    original = api.FileStore.get
+    reads = []
+
+    def read_once(store, name):
+        raw = original(store, name)
+        reads.append(True)
+        aliases.delete("consent-identifier-compatibility")
+        return raw
+
+    monkeypatch.setattr(api.FileStore, "get", read_once)
+    if operation == "grant":
+        assert cli.cmd_grant(OLD_PRINCIPAL) == 0
+    elif operation == "enrollment":
+        path = enrollment.enroll_principal(
+            OLD_PRINCIPAL, np.ones(512, dtype=np.float32), consent=registry, root=tmp_path
+        )
+        assert path.exists()
+    elif operation == "cascade":
+        assert RevocationPropagator(registry).revoke(OLD_PRINCIPAL).contract_revoked
+    else:
+        assert not archive._consent_revocation_check(OLD_PRINCIPAL, tmp_path / "contracts")[0]
+    assert len(reads) == 1
+    with pytest.raises(RuntimeError, match="^compat_missing$"):
+        registry.contract_check(PRINCIPAL, "face_enrollment")
+    assert len(reads) == 2
+    capsys.readouterr()

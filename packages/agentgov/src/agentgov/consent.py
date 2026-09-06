@@ -8,9 +8,13 @@ contract_check() before persisting state.
 from __future__ import annotations
 
 import logging
+import os
 import time
+from contextlib import contextmanager
+from contextvars import ContextVar
 from dataclasses import dataclass, field, replace
 from datetime import datetime
+from functools import wraps
 from importlib import import_module
 from pathlib import Path
 from typing import Any
@@ -20,34 +24,146 @@ import yaml
 log = logging.getLogger(__name__)
 
 
-def _resolve_identifier(candidate: str, kind: str) -> str | None:
-    """Refuse operations if migration metadata cannot be imported.
+class IdentityMigrationUnavailable(RuntimeError):
+    """Identity resolution refused; only a public reason token is exposed."""
 
-    Literal fallback is safe for unknown identifiers only after the resolver
-    has checked them; an unavailable resolver cannot establish that condition.
+    def __init__(self, reason: str) -> None:
+        allowed = {
+            "identity_unconfigured",
+            "compat_missing",
+            "compat_unreadable",
+            "compat_malformed",
+            "compat_conflict",
+            "compat_incomplete",
+        }
+        self.reason = reason if reason in allowed else "compat_unreadable"
+        super().__init__(self.reason)
+
+
+@dataclass(frozen=True)
+class IdentityMigrationBinding:
+    """Explicit installation selection; required providers supply snapshots."""
+
+    mode: str
+    provider: str | None = None
+
+
+_configured_binding: IdentityMigrationBinding | None = None
+_identity_snapshot: ContextVar[tuple[IdentityMigrationBinding, Any] | None] = ContextVar(
+    "identity_snapshot", default=None
+)
+
+
+def configure_identity_migration(mode: str, provider: str | None = None) -> None:
+    """Select the installation binding at startup instead of using environment configuration."""
+    global _configured_binding
+    _configured_binding = IdentityMigrationBinding(mode, provider)
+
+
+def _installation_binding() -> IdentityMigrationBinding:
+    return _configured_binding or IdentityMigrationBinding(
+        os.environ.get("AGENTGOV_IDENTITY_MIGRATION", ""),
+        os.environ.get("AGENTGOV_IDENTITY_PROVIDER"),
+    )
+
+
+@contextmanager
+def identity_operation(binding: IdentityMigrationBinding | None = None):
+    """Share one validated snapshot across nested calls; discard it on exit.
+
+    A provider exports load_identity_snapshot(); the returned object implements
+    resolve_principal_id() and resolve_contract_id(). No provider is imported
+    for an explicitly selected non-migrating installation.
     """
+    active = _identity_snapshot.get()
+    if active is not None and (binding is None or active[0] == binding):
+        yield active[1]
+        return
+    selected = binding or _installation_binding()
+    if selected.mode == "none":
+        snapshot = None
+    elif selected.mode == "required" and selected.provider:
+        try:
+            provider = import_module(selected.provider)
+        except Exception:
+            raise IdentityMigrationUnavailable("identity_unconfigured") from None
+        try:
+            snapshot = provider.load_identity_snapshot()
+            if not all(
+                callable(getattr(snapshot, name, None))
+                for name in ("resolve_principal_id", "resolve_contract_id")
+            ):
+                raise IdentityMigrationUnavailable("compat_malformed")
+        except IdentityMigrationUnavailable as exc:
+            raise IdentityMigrationUnavailable(exc.reason) from None
+        except Exception:
+            raise IdentityMigrationUnavailable("compat_unreadable") from None
+    else:
+        raise IdentityMigrationUnavailable("identity_unconfigured")
+    token = _identity_snapshot.set((selected, snapshot))
     try:
-        consent = import_module("shared.governance.consent")
-    except ModuleNotFoundError as exc:
-        raise RuntimeError(
-            "Consent identifier resolver unavailable; restore the council "
-            "migration metadata module and retry"
-        ) from exc
-    return getattr(consent, f"resolve_{kind}_id")(candidate)
+        yield snapshot
+    finally:
+        _identity_snapshot.reset(token)
 
 
-def resolve_principal_id(candidate: str) -> str | None:
-    """Resolve principal migration metadata, refusing if it is unavailable."""
+def _registry_operation(function):
+    @wraps(function)
+    def wrapped(self, *args, **kwargs):
+        with identity_operation(self._identity_binding):
+            return function(self, *args, **kwargs)
+
+    return wrapped
+
+
+def _resolve_identifier(candidate: str, kind: str) -> str:
+    with identity_operation() as snapshot:
+        if snapshot is None:
+            return candidate
+        try:
+            result = getattr(snapshot, f"resolve_{kind}_id")(candidate)
+            if result is not None and not isinstance(result, str):
+                raise IdentityMigrationUnavailable("compat_malformed")
+            return candidate if result is None else result
+        except IdentityMigrationUnavailable as exc:
+            raise IdentityMigrationUnavailable(exc.reason) from None
+        except Exception:
+            raise IdentityMigrationUnavailable("compat_unreadable") from None
+
+
+def resolve_principal_id(candidate: str) -> str:
+    """Resolve through the explicitly selected installation binding."""
     return _resolve_identifier(candidate, "principal")
 
 
-def resolve_contract_id(candidate: str) -> str | None:
-    """Resolve contract migration metadata, refusing if it is unavailable."""
+def resolve_contract_id(candidate: str) -> str:
+    """Resolve through the explicitly selected installation binding."""
     return _resolve_identifier(candidate, "contract")
 
 
 class ConsentContractLoadError(Exception):
     """Raised when a contract YAML file fails to parse in strict mode."""
+
+
+def _private_load_error(path: Path, error: Exception) -> bool:
+    """Preserve ordinary parse diagnostics while protecting predecessor text."""
+    with identity_operation() as snapshot:
+        if snapshot is None:
+            return False
+        if (
+            resolve_contract_id(path.stem) != path.stem
+            or resolve_principal_id(path.stem) != path.stem
+        ):
+            return True
+        # Providers may classify embedded text (including YAML parser excerpts).
+        # Without that capability, required custody keeps diagnostics private.
+        contains_predecessor = getattr(snapshot, "contains_predecessor", None)
+        if not callable(contains_predecessor):
+            return True
+        try:
+            return bool(contains_predecessor(f"{path}: {error}"))
+        except Exception:
+            return True
 
 
 @dataclass(frozen=True)
@@ -81,6 +197,7 @@ class ConsentRegistry:
     ingestion boundary enforcement.
     """
 
+    _identity_binding: IdentityMigrationBinding | None = field(default=None, repr=False)
     _contracts: dict[str, ConsentContract] = field(default_factory=dict)
     _fail_closed: bool = field(default=False)
     _loaded_at: float = field(default=0.0)
@@ -97,6 +214,7 @@ class ConsentRegistry:
             return False
         return time.time() - self._loaded_at > stale_threshold_s
 
+    @_registry_operation
     def load(self, contracts_dir: Path | None = None, *, strict: bool = False) -> int:
         """Load all contract files from the contracts directory.
 
@@ -121,6 +239,8 @@ class ConsentRegistry:
                 return 0
 
             self._contracts_dir = directory
+            self._contracts.clear()
+            self._contract_paths.clear()
             count = 0
             for path in sorted(directory.glob("*.yaml")):
                 try:
@@ -132,14 +252,13 @@ class ConsentRegistry:
                     self._contract_paths[contract.id] = path
                     if contract.active:
                         count += 1
-                        log.info(
-                            "Loaded contract %s: %s <-> %s (scope: %s)",
-                            contract.id,
-                            contract.parties[0],
-                            contract.parties[1],
-                            ", ".join(sorted(contract.scope)),
-                        )
+                        log.info("consent_contract_loaded")
                 except Exception as exc:
+                    if _private_load_error(path, exc):
+                        if strict:
+                            raise ConsentContractLoadError("consent_contract_malformed") from None
+                        log.warning("consent_contract_malformed")
+                        continue
                     if strict:
                         raise ConsentContractLoadError(
                             f"Failed to load contract from {path}: {exc}"
@@ -160,6 +279,7 @@ class ConsentRegistry:
         canonical = resolve_contract_id(contract_id) or contract_id
         return [key for key in self._contracts if (resolve_contract_id(key) or key) == canonical]
 
+    @_registry_operation
     def get(self, contract_id: str) -> ConsentContract | None:
         keys = self._matching_contract_keys(contract_id)
         return self._contracts[keys[0]] if keys else None
@@ -167,6 +287,7 @@ class ConsentRegistry:
     def __iter__(self):
         return iter(self._contracts.values())
 
+    @_registry_operation
     def contract_check(self, person_id: str, data_category: str) -> bool:
         """Check whether an active contract permits this data flow.
 
@@ -184,6 +305,7 @@ class ConsentRegistry:
                 return True
         return False
 
+    @_registry_operation
     def get_contract_for(self, person_id: str) -> ConsentContract | None:
         """Return the active contract for a person, if any."""
         for contract in self._contracts.values():
@@ -193,6 +315,7 @@ class ConsentRegistry:
                 return contract
         return None
 
+    @_registry_operation
     def subject_data_categories(self, person_id: str) -> frozenset[str]:
         """Return all permitted data categories for a person."""
         categories: set[str] = set()
@@ -203,6 +326,7 @@ class ConsentRegistry:
                 categories |= contract.scope
         return frozenset(categories)
 
+    @_registry_operation
     def revoke_contract(
         self,
         contract_id: str,
@@ -217,6 +341,11 @@ class ConsentRegistry:
         t0 = time.monotonic()
         keys = self._matching_contract_keys(contract_id)
         if not keys:
+            if (
+                resolve_contract_id(contract_id) != contract_id
+                or resolve_principal_id(contract_id) != contract_id
+            ):
+                raise KeyError("consent_contract_unregistered")
             raise KeyError(f"Contract {contract_id} not registered")
 
         now_iso = datetime.now().isoformat()
@@ -237,11 +366,12 @@ class ConsentRegistry:
                     dst = revoked_dir / f"{stamp}-{src.stem}-{n}.yaml"
                     n += 1
                 src.rename(dst)
-                log.info("Revoked contract %s — moved YAML to %s", contract_id, dst)
+                log.info("consent_contract_revoked")
 
         elapsed = time.monotonic() - t0
         return elapsed
 
+    @_registry_operation
     def purge_subject(self, person_id: str) -> list[str]:
         """Mark all contracts for a person as revoked. Returns revoked IDs."""
         revoked: list[str] = []
@@ -251,9 +381,10 @@ class ConsentRegistry:
             }:
                 self.revoke_contract(contract_id)
                 revoked.append(contract_id)
-                log.info("Revoked contract %s for %s", contract_id, person_id)
+                log.info("consent_subject_revoked")
         return revoked
 
+    @_registry_operation
     def create_contract(
         self,
         person_id: str,
@@ -296,7 +427,7 @@ class ConsentRegistry:
                 contract_data["guardian"] = contract.guardian
             contract_path.write_text(yaml.dump(contract_data, default_flow_style=False))
             self._contract_paths[cid] = contract_path
-            log.info("Created consent contract %s for %s at %s", cid, person_id, contract_path)
+            log.info("consent_contract_created")
 
         self._contracts[cid] = contract
         return contract

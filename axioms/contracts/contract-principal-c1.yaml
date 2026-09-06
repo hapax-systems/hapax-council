@@ -1,4 +1,3 @@
-# Alias digest recipe: sha256("principal-alias-v1:" + predecessor).hexdigest()
 id: contract-principal-c1
 parties:
 - operator
@@ -14,10 +13,3 @@ created_at: '2026-03-16T00:00:00'
 principal_class: child
 guardian: operator
 schema_version: 2
-predecessor_aliases:
-  principals:
-    principal-c1:
-    - 0e9b2cd2da8bed8fe7534e0c4a5fb3b82513a6701a66c638b04690f359e3d89a
-  contracts:
-    contract-principal-c1:
-    - a51ebc899c84427004e7240a013dd0d0fbd9ae0da77a8239f28f9b571fea3b08

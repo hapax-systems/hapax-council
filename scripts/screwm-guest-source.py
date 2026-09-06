@@ -34,9 +34,17 @@ import time
 from pathlib import Path
 
 REPO = Path(__file__).resolve().parent.parent
+sys.path.insert(0, str(REPO))
 sys.path.insert(0, str(REPO / "packages" / "agentgov" / "src"))
 
 from agentgov.consent import ConsentRegistry  # noqa: E402
+
+from shared.governance.consent import (  # noqa: E402
+    bind_estate_identity,
+    estate_identity_operation,
+)
+
+bind_estate_identity()
 
 SCOPE_CATEGORY = "world_render"
 # Slot 7 (cam_cov) buffer — reused for the guest so no relaunch is needed.
@@ -59,11 +67,12 @@ def void_frame(width: int, height: int) -> bytes:
 def consented(person: str, directory: Path) -> bool:
     """Fresh load + contract_check. Fail-closed: any error -> False."""
     try:
-        reg = ConsentRegistry(_contracts_dir=directory)
-        reg.load(directory)
-        return reg.contract_check(person, SCOPE_CATEGORY)
-    except Exception as exc:  # noqa: BLE001 — fail-closed on any consent error
-        print(f"[screwm-guest-source] consent check error (fail-closed): {exc}", file=sys.stderr)
+        with estate_identity_operation():
+            reg = ConsentRegistry(_contracts_dir=directory)
+            reg.load(directory)
+            return reg.contract_check(person, SCOPE_CATEGORY)
+    except Exception:  # noqa: BLE001 — fail-closed on any consent error
+        print("[screwm-guest-source] consent_unavailable", file=sys.stderr)
         return False
 
 

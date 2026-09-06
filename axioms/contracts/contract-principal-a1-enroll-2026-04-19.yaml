@@ -1,4 +1,3 @@
-# Alias digest recipe: sha256("principal-alias-v1:" + predecessor).hexdigest()
 id: contract-principal-a1-enroll-2026-04-19
 parties:
 - operator
@@ -12,10 +11,3 @@ principal_class: adult
 relationship: operator_sibling
 expires_after: single_enrollment_event
 schema_version: 2
-predecessor_aliases:
-  principals:
-    principal-a1:
-    - 31224f3e0ccf3be0ab957b5719877b66723aa6f4ebca89bcb250fabd07450d6d
-  contracts:
-    contract-principal-a1-enroll-2026-04-19:
-    - 9d754c6983e2fc76a96c80696b072586d6436cd940b48a0fe9dcaf0c149d0a5d

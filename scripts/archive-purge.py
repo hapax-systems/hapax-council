@@ -71,22 +71,30 @@ def _consent_revocation_check(
     modify any contract state.
     """
     try:
-        from shared.governance.consent import ConsentRegistry, resolve_principal_id
+        from shared.governance.consent import (
+            ConsentRegistry,
+            estate_identity_operation,
+            resolve_principal_id,
+        )
     except ImportError as exc:
         return False, f"ConsentRegistry import failed: {exc}"
 
-    person_id = resolve_principal_id(person_id) or person_id
-    registry = ConsentRegistry()
-    registry.load(contracts_dir)
-    contract = registry.get_contract_for(person_id)
-    if contract is None:
-        return True, f"no contract for {person_id!r} — consent check passes"
-    if not contract.active:
-        return True, f"contract {contract.id!r} for {person_id!r} is revoked — consent check passes"
-    return False, (
-        f"contract {contract.id!r} for {person_id!r} is LIVE (not revoked); "
-        f"revoke it in axioms/contracts/ before purging the derived data"
-    )
+    with estate_identity_operation():
+        person_id = resolve_principal_id(person_id) or person_id
+        registry = ConsentRegistry()
+        registry.load(contracts_dir)
+        contract = registry.get_contract_for(person_id)
+        if contract is None:
+            return True, f"no contract for {person_id!r} — consent check passes"
+        if not contract.active:
+            return (
+                True,
+                f"contract {contract.id!r} for {person_id!r} is revoked — consent check passes",
+            )
+        return False, (
+            f"contract {contract.id!r} for {person_id!r} is LIVE (not revoked); "
+            f"revoke it in axioms/contracts/ before purging the derived data"
+        )
 
 
 def _iter_sidecars(root: Path) -> list[Path]:
@@ -203,13 +211,14 @@ def main(argv: list[str] | None = None) -> int:
 
     # LRR Phase 2 spec §3.9 consent-revocation tie-in.
     if args.consent_revoked_for is not None:
-        from shared.governance.consent import resolve_principal_id
+        from shared.governance.consent import estate_identity_operation, resolve_principal_id
 
-        args.consent_revoked_for = (
-            resolve_principal_id(args.consent_revoked_for) or args.consent_revoked_for
-        )
-        contracts_dir = Path(args.contracts_dir) if args.contracts_dir else None
-        ok, msg = _consent_revocation_check(args.consent_revoked_for, contracts_dir)
+        with estate_identity_operation():
+            args.consent_revoked_for = (
+                resolve_principal_id(args.consent_revoked_for) or args.consent_revoked_for
+            )
+            contracts_dir = Path(args.contracts_dir) if args.contracts_dir else None
+            ok, msg = _consent_revocation_check(args.consent_revoked_for, contracts_dir)
         print(f"consent-check: {msg}", file=sys.stderr)
         if not ok:
             print(
