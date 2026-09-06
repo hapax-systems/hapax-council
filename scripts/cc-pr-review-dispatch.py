@@ -32,6 +32,7 @@ from __future__ import annotations
 
 import argparse
 import fcntl
+import hashlib
 import json
 import logging
 import os
@@ -56,9 +57,12 @@ if str(SCRIPTS_DIR) not in sys.path:
 
 import review_team  # noqa: E402
 from github_pr_status import (  # noqa: E402
+    ListingRoute,
+    PrListingUnavailable,
     get_pull_rest,
-    list_open_pr_statuses_rest,
+    list_open_pr_statuses,
     list_pull_files_rest,
+    listing_unavailable_detail,
 )
 
 from shared import public_gate_receipts  # noqa: E402
@@ -895,9 +899,24 @@ class PRInfo:
 
 
 def _run_gh(cmd: list[str], *, repo_root: Path, runner: Any, timeout: int = 120) -> str:
-    proc = runner(
-        cmd, cwd=str(repo_root), capture_output=True, text=True, check=False, timeout=timeout
-    )
+    """Run a `gh` command, normalising EVERY failure to RuntimeError.
+
+    A nonzero return code was already converted; a RAISED failure was not. `runner` can raise
+    `subprocess.TimeoutExpired` or `OSError` (a missing or unexecutable `gh`), and neither is a
+    `RuntimeError` — so both sailed past all **eight** `except RuntimeError` handlers in this
+    module, skipping the transport fallback they guard and surfacing as a per-PR error that can
+    starve that PR every cycle. Found by external review.
+
+    Normalising here rather than widening those eight handlers is deliberate: one mitigation at the
+    boundary, not eight for the same hazard. The distinction the handlers depend on is preserved —
+    this still raises, and never returns an empty string that would read as "gh said nothing".
+    """
+    try:
+        proc = runner(
+            cmd, cwd=str(repo_root), capture_output=True, text=True, check=False, timeout=timeout
+        )
+    except (subprocess.SubprocessError, OSError) as exc:
+        raise RuntimeError(f"{' '.join(cmd[:3])} could not run: {exc}") from exc
     if proc.returncode != 0:
         raise RuntimeError(
             f"{' '.join(cmd[:3])} failed (rc={proc.returncode}): {proc.stderr.strip()[:300]}"
@@ -967,9 +986,67 @@ def _fetch_pr_via_view(
     )
 
 
-def fetch_pr(pr_number: int, *, repo: str, repo_root: Path, runner: Any) -> PRInfo:
+def fetch_pr(
+    pr_number: int,
+    *,
+    repo: str,
+    repo_root: Path,
+    runner: Any,
+    route: ListingRoute | None = None,
+) -> PRInfo:
+    """Fetch one PR's metadata, preferring the transport the cycle chose.
+
+    `gh pr view --json` is GraphQL-backed and already existed here — but only as a *fallback*
+    after REST failed, which is the shape `choose_transport` was written against: a path that
+    engages on failure can react to exhaustion but never prevent it. When the cycle measured
+    REST below its floor, this begins on GraphQL instead, and REST becomes the fallback.
+    """
+    incomplete_pr: PRInfo | None = None
+    if route is not None and route.transport == "graphql":
+        try:
+            pr_info = _fetch_pr_via_view(pr_number, repo=repo, repo_root=repo_root, runner=runner)
+            if (
+                pr_info.changed_file_count is None
+                or len(pr_info.files) >= pr_info.changed_file_count
+                or route.rest_blocked
+            ):
+                return pr_info
+            # Keep the known truncation for review_pr's withholding reason if REST also
+            # fails. A successful metadata response is not a complete file listing.
+            incomplete_pr = pr_info
+            LOG.warning(
+                "GraphQL pull files truncated for PR #%d (%d/%d); falling back to REST",
+                pr_number,
+                len(pr_info.files),
+                pr_info.changed_file_count,
+            )
+        except RuntimeError as exc:
+            if route.rest_blocked:
+                # REST was MEASURED below its floor. Falling back to it would attempt more
+                # after a failure than before it, and would recreate the failure-triggered
+                # routing this change exists to replace — with a pool already known empty.
+                raise RuntimeError(
+                    f"GraphQL pull fetch failed for PR #{pr_number} ({exc}) and REST is "
+                    f"measured below its floor ({route.reason}), so it is not an eligible "
+                    "fallback. Next action: retry once either pool recovers; "
+                    "`github_pr_status.py rate` reports both."
+                ) from exc
+            LOG.warning(
+                "GraphQL pull fetch failed for PR #%d; falling back to REST: %s", pr_number, exc
+            )
     item = get_pull_rest(pr_number, repo=repo, repo_root=repo_root, runner=runner)
     if item is None:
+        if incomplete_pr is not None:
+            return incomplete_pr
+        if route is not None and route.transport == "graphql":
+            # `gh pr view` was already the PRIMARY on this cycle and it failed; retrying it here
+            # would repeat a call we know just failed, which is the "attempt more after a
+            # failure" shape the routing rules forbid.
+            raise RuntimeError(
+                f"both transports failed for PR #{pr_number}: `gh pr view` was tried first "
+                f"(cycle routed to GraphQL) and REST also returned nothing. Next action: check "
+                f"`gh auth status` and `github_pr_status.py rate`."
+            )
         try:
             LOG.warning(
                 "REST pull fetch failed for PR #%d; falling back to `gh pr view`",
@@ -992,6 +1069,8 @@ def fetch_pr(pr_number: int, *, repo: str, repo_root: Path, runner: Any) -> PRIn
     head = item.get("head") if isinstance(item.get("head"), dict) else {}
     base = item.get("base") if isinstance(item.get("base"), dict) else {}
     file_items = list_pull_files_rest(pr_number, repo=repo, repo_root=repo_root, runner=runner)
+    if incomplete_pr is not None and not file_items:
+        return incomplete_pr
     files = tuple(
         str(entry["filename"])
         for entry in file_items
@@ -1017,10 +1096,63 @@ def fetch_pr(pr_number: int, *, repo: str, repo_root: Path, runner: Any) -> PRIn
     )
 
 
-def fetch_pr_diff(pr_info: PRInfo, *, repo: str, repo_root: Path, runner: Any) -> str:
+_GITHUB_DIFF_BASE = "merge-base(base, head), as computed by GitHub"
+
+
+class PrDiff(str):
+    """A unified diff that knows what it was computed against.
+
+    A plain ``str`` everywhere a diff is consumed (truncation, prompt rendering); the two
+    attributes let the reviewer prompt state the comparison base and the transport. Review
+    on #4610 asked for that once the local fallback stopped requiring the PR's recorded base
+    sha to equal the local base tip.
+    """
+
+    comparison_base: str
+    source: str
+
+    def __new__(cls, text: str, *, source: str, comparison_base: str = "") -> PrDiff:
+        diff = super().__new__(cls, text)
+        diff.source = source
+        diff.comparison_base = comparison_base
+        return diff
+
+
+def fetch_pr_diff(
+    pr_info: PRInfo,
+    *,
+    repo: str,
+    repo_root: Path,
+    runner: Any,
+    route: ListingRoute | None = None,
+) -> PrDiff:
+    """Fetch the PR diff, avoiding the REST pool when the cycle measured it empty.
+
+    There is no GraphQL diff API — GraphQL cannot return a unified diff, and `gh pr diff`
+    goes to the REST diff media type — so "route to GraphQL" has no meaning here. The path
+    that actually spares the pool is the **local** one: `git fetch` speaks the git protocol,
+    which is a different quota entirely. It already existed as the last fallback; when REST
+    is measured empty it becomes the first choice.
+    """
     pr_number = pr_info.number
+    if route is not None and route.transport == "graphql":
+        try:
+            return fetch_pr_diff_from_local(pr_info, repo_root=repo_root, runner=runner)
+        except RuntimeError as exc:
+            if route.rest_blocked:
+                raise RuntimeError(
+                    f"local git diff unavailable for PR #{pr_info.number} ({exc}) and REST is "
+                    f"measured below its floor ({route.reason}), so the REST diff endpoint is "
+                    "not an eligible fallback. Next action: ensure the PR ref can be fetched "
+                    "locally (`git fetch origin pull/N/head`), or retry once REST recovers."
+                ) from exc
+            LOG.warning(
+                "local git diff unavailable for PR #%d; falling back to the REST diff endpoint: %s",
+                pr_number,
+                exc,
+            )
     try:
-        return _run_gh(
+        text = _run_gh(
             [
                 "gh",
                 "api",
@@ -1033,6 +1165,7 @@ def fetch_pr_diff(pr_info: PRInfo, *, repo: str, repo_root: Path, runner: Any) -
             repo_root=repo_root,
             runner=runner,
         )
+        return PrDiff(text, source="github-rest", comparison_base=_GITHUB_DIFF_BASE)
     except RuntimeError as exc:
         LOG.warning(
             "REST diff fetch failed for PR #%d; falling back to `gh pr diff`: %s",
@@ -1040,11 +1173,12 @@ def fetch_pr_diff(pr_info: PRInfo, *, repo: str, repo_root: Path, runner: Any) -
             exc,
         )
         try:
-            return _run_gh(
+            text = _run_gh(
                 ["gh", "pr", "diff", str(pr_number), "--repo", repo],
                 repo_root=repo_root,
                 runner=runner,
             )
+            return PrDiff(text, source="gh-pr-diff", comparison_base=_GITHUB_DIFF_BASE)
         except RuntimeError as diff_exc:
             LOG.warning(
                 "`gh pr diff` failed for PR #%d; falling back to local git diff: %s",
@@ -1054,7 +1188,7 @@ def fetch_pr_diff(pr_info: PRInfo, *, repo: str, repo_root: Path, runner: Any) -
             return fetch_pr_diff_from_local(pr_info, repo_root=repo_root, runner=runner)
 
 
-def fetch_pr_diff_from_local(pr_info: PRInfo, *, repo_root: Path, runner: Any) -> str:
+def fetch_pr_diff_from_local(pr_info: PRInfo, *, repo_root: Path, runner: Any) -> PrDiff:
     """Build a pinned local PR diff when GitHub diff endpoints are unavailable."""
     base_ref = pr_info.base_ref or "main"
     remote_base = f"origin/{base_ref}"
@@ -1112,6 +1246,20 @@ def fetch_pr_diff_from_local(pr_info: PRInfo, *, repo_root: Path, runner: Any) -
             f"between {remote_base} and head {head[:12]}; refusing to review an unproven "
             "diff. Next action: fetch the PR head and base refs, then retry review dispatch."
         )
+    if merge_base != pinned_base or merge_base != pr_info.base_sha:
+        # A PR behind main is valid: GitHub reviews merge-base(base, head)..head.
+        # The metadata may also lag the refreshed base. Record the actual comparison
+        # base in the dossier instead of rejecting either normal shape of a PR.
+        LOG.info(
+            "PR #%d: reviewing head %s against merge base %s "
+            "(refreshed %s %s, recorded PR base %s)",
+            pr_info.number,
+            head[:12],
+            merge_base[:12],
+            base_ref,
+            pinned_base[:12],
+            pr_info.base_sha[:12],
+        )
     diff = _run_gh(
         ["git", "diff", "--no-ext-diff", "--find-renames", f"{merge_base}..{head}"],
         repo_root=repo_root,
@@ -1123,7 +1271,7 @@ def fetch_pr_diff_from_local(pr_info: PRInfo, *, repo_root: Path, runner: Any) -
             f"local git diff for PR #{pr_info.number} was empty between "
             f"{remote_base} and {head[:12]}; next action: fetch PR head/base and retry"
         )
-    return diff
+    return PrDiff(diff, source="local-git", comparison_base=merge_base)
 
 
 def _resolve_local_ref(ref: str, *, repo_root: Path, runner: Any) -> str | None:
@@ -1155,7 +1303,7 @@ def _ensure_local_ref_at_sha(
     repo_root: Path,
     runner: Any,
 ) -> str:
-    """Refresh and pin the base tip, proving the recorded PR base is its ancestor."""
+    """Refresh and return an immutable base tip with the recorded PR base as an ancestor."""
     # GitHub refreshes baseRefOid lazily; even a matching local ref may lag origin.
     try:
         _run_gh(
@@ -1310,6 +1458,8 @@ def render_reviewer_prompt(
     diff: str,
     prior_criticals: list[dict[str, Any]],
     prior_file_excerpts: str = "",
+    diff_source: str = "",
+    comparison_base: str = "",
 ) -> str:
     prior_block = ""
     if prior_criticals:
@@ -1329,6 +1479,8 @@ def render_reviewer_prompt(
             "title": pr_info.title,
             "branch": pr_info.head_ref,
             "head_sha": pr_info.head_sha,
+            "diff_source": diff_source or "unrecorded",
+            "comparison_base": comparison_base or "unrecorded",
             "linked_cc_task": task_id,
             "team_class": team_class,
             "changed_files": list(pr_info.files),
@@ -2571,8 +2723,15 @@ def review_pr(
     registry_path: Path | None = None,
     now_iso: str | None = None,
     route_blocked_families: dict[str, tuple[str, ...]] | None = None,
+    route: ListingRoute | None = None,
 ) -> dict[str, Any]:
-    """Constitute (and with ``apply``, dispatch) the review team for one PR."""
+    """Constitute (and with ``apply``, dispatch) the review team for one PR.
+
+    ``route`` is the cycle's measured decision, made once by the caller rather than re-probed
+    per PR: a per-call decision would cost a rate probe per PR and could disagree with itself
+    mid-scan. It also carries whether REST is *blocked*, which decides whether REST is eligible
+    as a fallback at all.
+    """
 
     repo_root = repo_root or REPO_ROOT
     gh_runner = gh_runner or subprocess.run
@@ -2605,7 +2764,7 @@ def review_pr(
             "reason": truncate_context(f"{type(exc).__name__}: {exc}", limit=500),
         }
 
-    pr_info = fetch_pr(pr_number, repo=repo, repo_root=repo_root, runner=gh_runner)
+    pr_info = fetch_pr(pr_number, repo=repo, repo_root=repo_root, runner=gh_runner, route=route)
     if pr_info.is_draft:
         return {"status": "draft_skipped", "pr": pr_number}
     if not pr_info.files:
@@ -2832,7 +2991,8 @@ def review_pr(
         changed_source_excerpt_files, repo_root=repo_root, head_sha=pr_info.head_sha
     )
     reviewer_source_excerpts = prior_file_excerpts + changed_file_excerpts
-    diff = truncate_diff(fetch_pr_diff(pr_info, repo=repo, repo_root=repo_root, runner=gh_runner))
+    pr_diff = fetch_pr_diff(pr_info, repo=repo, repo_root=repo_root, runner=gh_runner, route=route)
+    diff = truncate_diff(pr_diff)
     task_note_text = "\n\n".join(
         f"## Linked task note: {path.name}\n\n{path.read_text(encoding='utf-8')}"
         for path, _, _ in keyed_matches
@@ -2842,6 +3002,8 @@ def review_pr(
         render_reviewer_prompt(
             seat=seat,
             pr_info=pr_info,
+            diff_source=pr_diff.source,
+            comparison_base=pr_diff.comparison_base,
             task_id=task_ids[0] if len(task_ids) == 1 else ", ".join(task_ids),
             team_class=team_class,
             lenses=lenses,
@@ -2918,6 +3080,9 @@ def review_pr(
             changed_file_count=pr_info.changed_file_count,
             repo_root=repo_root,
         )
+        dossier["diff_source"] = pr_diff.source
+        dossier["comparison_base"] = pr_diff.comparison_base
+        dossier["diff_sha256"] = hashlib.sha256(pr_diff.encode("utf-8")).hexdigest()
         # Durable evidence audit trail: exactly which prior-critical excerpts
         # were shown to reviewers, pinned to which head (sdlc-legibility —
         # receipts must reconstruct the evidence, not just the verdict).
@@ -3034,12 +3199,27 @@ def review_all_open_prs(
 ) -> list[dict[str, Any]]:
     repo_root = repo_root or REPO_ROOT
     gh_runner = gh_runner or subprocess.run
-    open_prs = list_open_pr_statuses_rest(
-        repo=repo,
-        repo_root=repo_root,
-        runner=gh_runner,
-        limit=100,
-    )
+    try:
+        open_prs, route = list_open_pr_statuses(
+            repo=repo,
+            repo_root=repo_root,
+            runner=gh_runner,
+            limit=100,
+        )
+    except PrListingUnavailable as exc:
+        # Skip this scan rather than spending it into guaranteed 403s. Returning an empty
+        # result set is safe here — the next scan re-evaluates every open PR from scratch,
+        # so nothing is lost by sitting out a cycle. Logged loudly so an empty scan is
+        # never mistaken for "no PRs needed review".
+        LOG.warning(
+            "review-team dispatch scan skipped: %s%s",
+            exc.reason,
+            listing_unavailable_detail(exc),
+        )
+        return []
+    # The cycle's transport comes from the chooser, not from scanning rows for a stamp. Routing
+    # only the bulk listing spared almost nothing anyway — the listing is one call and the
+    # per-PR work below is N — so `route` is threaded all the way down.
     results: list[dict[str, Any]] = []
     for item in open_prs:
         if not isinstance(item, dict) or item.get("isDraft"):
@@ -3059,6 +3239,7 @@ def review_all_open_prs(
                     wake_dir=wake_dir,
                     send_runner=send_runner,
                     route_blocked_families=route_blocked_families,
+                    route=route,
                 )
             )
         except Exception as exc:  # noqa: BLE001 — one PR must not starve the scan
