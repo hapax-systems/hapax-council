@@ -378,3 +378,36 @@ class TestGateInstanceMethod:
             rendered_payload="payload",
         )
         assert result.allowed is True
+
+
+def test_root_sink_flagged_write(tmp_path, monkeypatch):
+    import json
+
+    from shared.governance import monetization_safety as safety
+
+    classifier = _StubClassifier(
+        RiskAssessment(allowed=False, risk="high", reason="ring2: test block")
+    )
+    candidate = _Candidate("test.flagged", {"monetization_risk": "low"})
+    for reset in (False, True):
+        # Exercise both the cached object and lazy reconstruction.
+        if reset:
+            monkeypatch.setattr(safety, "_FLAGGED_STORE", None)
+        assessment = MonetizationRiskGate().assess(
+            candidate,
+            programme=None,
+            ring2_classifier=classifier,
+            surface=SurfaceKind.TTS,
+            rendered_payload="synthetic blocked payload",
+        )
+        assert not assessment.allowed
+    paths = list((tmp_path / "flagged-payloads").glob("*/*.jsonl"))
+    assert len(paths) == 1
+    rows = [json.loads(line) for line in paths[0].read_text().splitlines()]
+    assert len(rows) == 2
+    assert all(row["capability_name"] == candidate.capability_name for row in rows)
+    assert all(row["rendered_payload"] == "synthetic blocked payload" for row in rows)
+
+
+def test_root_sink_subprocess_pin_flagged(sink_subprocess):
+    sink_subprocess("flagged")

@@ -224,3 +224,16 @@ def test_read_pending_question_non_dict_root_returns_none(tmp_path, payload, kin
     qfile.write_text(payload)
     with patch("shared.active_correction.QUESTION_FILE", qfile):
         assert read_pending_question() is None, f"non-dict root={kind} must yield None"
+
+
+def test_root_sink_correction_write(tmp_path):
+    question = CorrectionSeeker().evaluate(activity="coding", confidence=0.2)
+    assert question is not None
+    row = json.loads((tmp_path / "correction.json").read_text())
+    assert row["question"] == question.question
+    assert row["dimension"] == "activity"
+    assert read_pending_question().question == question.question
+
+
+def test_root_sink_subprocess_pin_correction(sink_subprocess):
+    sink_subprocess("correction")

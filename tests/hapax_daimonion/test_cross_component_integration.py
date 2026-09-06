@@ -560,3 +560,18 @@ class TestAudioPipelineIntegration:
         await daemon._audio_loop()
 
         assert engagement_called
+
+
+def test_root_sink_workspace_write(tmp_path):
+    monitor = WorkspaceMonitor(enabled=True)
+    monitor._persist_analysis(_make_analysis(summary="fixture workspace snapshot"))
+    path = (
+        tmp_path / "fixture-home" / ".local" / "share" / "hapax-daimonion" / "workspace_state.json"
+    )
+    row = json.loads(path.read_text())
+    assert row["summary"] == "fixture workspace snapshot"
+    assert row["app"] == "terminal"
+
+
+def test_root_sink_subprocess_pin_workspace(sink_subprocess):
+    sink_subprocess("workspace")

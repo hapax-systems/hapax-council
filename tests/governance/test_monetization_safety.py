@@ -180,3 +180,27 @@ class TestSurfaceKindEnum:
         assert len(list(SurfaceKind)) == 7
         assert SurfaceKind.TTS.value == "tts"
         assert SurfaceKind.CAPTIONS.value == "captions"
+
+
+def test_root_sink_egress_write(tmp_path, monkeypatch):
+    import json
+
+    from shared.governance import monetization_egress_audit as audit
+    from shared.governance import monetization_safety as safety
+
+    monkeypatch.setattr(safety, "_should_sample_audit", lambda _: True)
+    candidate = _FakeCandidate("test.blocked", {"monetization_risk": "high"})
+    assessment = MonetizationRiskGate().assess(candidate, programme=None)
+    assert not assessment.allowed
+    path = tmp_path / "egress-audit.jsonl"
+    row = json.loads(path.read_text().splitlines()[0])
+    assert row["capability_name"] == candidate.capability_name
+    assert row["allowed"] is False
+    # Reset exercises the production accessor and constructor fallback too.
+    monkeypatch.setattr(audit, "_DEFAULT_WRITER", None)
+    audit.default_writer().record(candidate.capability_name, assessment)
+    assert len(path.read_text().splitlines()) == 2
+
+
+def test_root_sink_subprocess_pin_egress(sink_subprocess):
+    sink_subprocess("egress")
