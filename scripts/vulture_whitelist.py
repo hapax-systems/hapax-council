@@ -5118,3 +5118,15 @@ from agents.deliberative_council.models import (
 
 _PhaseOneResult._populate_dossier_sections
 _CouncilVerdict._populate_dossier_sections
+
+# Private-custody identity binding (2026-09-06, row
+# principal-identifiers-live-source-subset-20260905): `load_identity_snapshot` is the provider
+# entry point `agentgov.consent.identity_operation` reaches through `import_module(provider)`
+# and attribute lookup on the declared AGENTGOV_IDENTITY_PROVIDER, and `contains_predecessor`
+# is the optional classifier capability the portable package probes with getattr before
+# sanitizing a diagnostic. DETECTOR BLIND SPOT, not dead code: both are called dynamically
+# through the declared provider binding.
+from shared.governance import consent as _estate_consent  # noqa: E402
+
+_estate_consent.load_identity_snapshot
+_estate_consent._CorrespondenceSnapshot.contains_predecessor

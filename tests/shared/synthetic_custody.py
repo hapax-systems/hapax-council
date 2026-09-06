@@ -46,6 +46,17 @@ def installed_api() -> Path:
     )
 
 
+INSTALLED_API_ABSENT = (
+    "the installed reins API (k0.key_capture) is not importable from {api}; "
+    "consent-bound tests refuse until it is: point HAPAX_REINS_API at a reins checkout's api/ "
+    "directory (the repository is public) or install reins on this host"
+)
+
+
+def installed_api_present() -> bool:
+    return installed_api().joinpath("k0", "key_capture.py").is_file()
+
+
 @pytest.fixture(autouse=True)
 def synthetic_custody(monkeypatch, tmp_path_factory):
     # Only installed API source is imported; every store is explicitly temporary.
@@ -58,11 +69,19 @@ def synthetic_custody(monkeypatch, tmp_path_factory):
     # Give custody a separate per-test directory so it cannot pollute that surface.
     custody_root = tmp_path_factory.mktemp("synthetic-custody") / "custody"
     monkeypatch.setenv("REINS_SECRET_STORE", str(custody_root))
+    monkeypatch.setattr(portable, "_configured_binding", None)
+    monkeypatch.setenv("AGENTGOV_IDENTITY_MIGRATION", "required")
+    monkeypatch.setenv("AGENTGOV_IDENTITY_PROVIDER", "shared.governance.consent")
+    if not installed_api_present():
+        # No store can be written without the installed API. The binding above is
+        # still declared, so a test that performs an identity operation refuses
+        # through the registry's own cause (compat_missing / compat_unreadable)
+        # naming this remedy; a test that never touches consent is unaffected.
+        # This narrows (no store, no import) rather than widening; nothing is
+        # skipped or faked. test_installed_api_is_present names the condition once.
+        return None
     monkeypatch.syspath_prepend(str(api))
     key_capture = importlib.import_module("k0.key_capture")
     store = key_capture.FileStore(root=custody_root)
     store.put(ENTRY, json.dumps(document()).encode())
-    monkeypatch.setattr(portable, "_configured_binding", None)
-    monkeypatch.setenv("AGENTGOV_IDENTITY_MIGRATION", "required")
-    monkeypatch.setenv("AGENTGOV_IDENTITY_PROVIDER", "shared.governance.consent")
     return store

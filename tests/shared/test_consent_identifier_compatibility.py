@@ -20,13 +20,26 @@ from shared.governance import consent
 from tests.shared.synthetic_custody import (
     CONTRACT,
     ENTRY,
+    INSTALLED_API_ABSENT,
     OLD_CONTRACT,
     OLD_PRINCIPAL,
     PRINCIPAL,
     UNKNOWN_CONTRACT,
     UNKNOWN_PRINCIPAL,
     document,
+    installed_api,
+    installed_api_present,
 )
+
+
+def test_installed_api_is_present():
+    """One named failure, with the remedy, where the consent-bound suites cannot run.
+
+    The estate registry is bound `required` and reads its custody document through
+    the installed reins API; without it every identity operation refuses. This test
+    turns that into one explicit failure instead of a scatter of setup errors.
+    """
+    assert installed_api_present(), INSTALLED_API_ABSENT.format(api=installed_api())
 
 
 @pytest.mark.parametrize("side", ["estate", "portable"])
