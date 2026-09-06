@@ -515,7 +515,17 @@ def _member_location(
     if not content_query and isinstance(location.get("path"), str):
         raw_roots.append(str(location["path"]))
     if isinstance(location.get("roots"), list):
-        raw_roots.extend(str(item) for item in location["roots"] if isinstance(item, str))
+        for index, item in enumerate(location["roots"]):
+            if not isinstance(item, str):
+                raise FrameVerdictsUnavailable(
+                    f"member {member.get('id')!r} location.roots[{index}] has unsupported entry "
+                    f"{type(item).__name__}: {item!r}; expected a string path or "
+                    "scheme-qualified location",
+                    remedy=f"repair location.roots[{index}] for member {member.get('id')!r} in "
+                    f"{MASS_DECLARATION_LOCATION}: use a string such as '/path/to/root'; "
+                    + PRODUCER_REMEDY,
+                )
+            raw_roots.append(item)
     roots: list[Path] = []
     lexical_roots: list[Path] = []
     qualified_roots: list[QualifiedLocation] = []
