@@ -1393,3 +1393,140 @@ def test_path_mismatch_requires_established_divergent_paths(
     )
     if mismatches:
         assert {a.pattern for f in mismatches for a in f.writers} == {writer}
+
+
+@pytest.mark.parametrize("api", ["os.getenv", "os.environ.get"])
+@pytest.mark.parametrize("assigned", [False, True], ids=["inline", "assigned"])
+@pytest.mark.parametrize("keyword", [False, True], ids=["positional", "keyword"])
+def test_environment_default_writer_is_not_established(
+    gate, tmp_path: Path, api, assigned, keyword
+) -> None:
+    default = "default='artifacts/old.json'" if keyword else "'artifacts/old.json'"
+    expression = f"Path({api}('ARTIFACT', {default}))"
+    statement = f"artifact = {expression}\nartifact" if assigned else expression
+    _write(
+        tmp_path,
+        "shared/consumer.py",
+        "import os\nfrom pathlib import Path\n"
+        + statement
+        + ".write_text('{}')\nPath('artifacts/old.json').read_text()\n",
+    )
+    accesses, unresolved, *_ = gate.collect_artifact_accesses(tmp_path)
+    writers = [a for a in accesses if a.action == "write"]
+    assert [(a.pattern, a.bounded) for a in writers] == [("artifacts/old.json", False)]
+    assert unresolved > 0
+    report = gate.analyse_consumer_side(tmp_path, [])
+    assert (Path("shared/consumer.py"), "artifacts/old.json") in _unwritten(report)
+    assert report.unresolvable > 0
+
+
+@pytest.mark.parametrize(
+    "expression,pattern",
+    [
+        ("Path('artifacts/old.json')", "artifacts/old.json"),
+        ("Path.home() / 'artifacts/old.json'", "~/artifacts/old.json"),
+    ],
+    ids=["literal", "symbolic-home"],
+)
+def test_established_path_writer_still_pairs(gate, tmp_path: Path, expression, pattern) -> None:
+    _write(
+        tmp_path,
+        "shared/consumer.py",
+        f"from pathlib import Path\n({expression}).write_text('{{}}')\n"
+        f"({expression}).read_text()\n",
+    )
+    accesses, unresolved, *_ = gate.collect_artifact_accesses(tmp_path)
+    assert {(a.action, a.pattern, a.bounded) for a in accesses} == {
+        ("write", pattern, True),
+        ("read", pattern, True),
+    }
+    assert unresolved == 0
+    assert not gate.analyse_consumer_side(tmp_path, []).findings
+
+
+@pytest.mark.parametrize("assigned", [False, True], ids=["inline", "assigned"])
+def test_literal_tilde_writer_does_not_certify_home_reader(gate, tmp_path: Path, assigned) -> None:
+    statement = (
+        "artifact = Path('~/artifacts/old.json')\nartifact"
+        if assigned
+        else ("Path('~/artifacts/old.json')")
+    )
+    _write(
+        tmp_path,
+        "shared/consumer.py",
+        "from pathlib import Path\n" + statement + ".write_text('{}')\n"
+        "(Path.home() / 'artifacts/old.json').read_text()\n",
+    )
+    accesses, unresolved, *_ = gate.collect_artifact_accesses(tmp_path)
+    assert {(a.action, a.pattern, a.bounded) for a in accesses} == {
+        ("write", "./~/artifacts/old.json", True),
+        ("read", "~/artifacts/old.json", True),
+    }
+    assert unresolved == 0
+    report = gate.analyse_consumer_side(tmp_path, [])
+    assert (Path("shared/consumer.py"), "~/artifacts/old.json") in _unwritten(report)
+
+
+@pytest.mark.parametrize("expanded", [False, True], ids=["literal", "expanduser"])
+def test_expanduser_writer_does_not_certify_literal_tilde_reader(
+    gate, tmp_path: Path, expanded
+) -> None:
+    operation = ".expanduser()" if expanded else ""
+    _write(
+        tmp_path,
+        "shared/consumer.py",
+        "from pathlib import Path\n"
+        f"Path('~/artifacts/old.json'){operation}.write_text('{{}}')\n"
+        "Path('~/artifacts/old.json').read_text()\n",
+    )
+    accesses, unresolved, *_ = gate.collect_artifact_accesses(tmp_path)
+    assert any(a.action == "read" and a.pattern == "./~/artifacts/old.json" for a in accesses)
+    assert any(a.action == "write" and a.bounded for a in accesses) is not expanded
+    assert (unresolved > 0) is expanded
+    report = gate.analyse_consumer_side(tmp_path, [])
+    assert (
+        (Path("shared/consumer.py"), "./~/artifacts/old.json") in _unwritten(report)
+    ) is expanded
+    assert (report.unresolvable > 0) is expanded
+    if not expanded:
+        assert not report.findings
+
+
+def test_symbolic_home_parent_is_not_a_modelled_layout(gate, tmp_path: Path) -> None:
+    _write(
+        tmp_path,
+        "shared/consumer.py",
+        "from pathlib import Path\n"
+        "(Path.home().parent / 'artifacts/old.json').write_text('{}')\n"
+        "Path('/artifacts/old.json').read_text()\n",
+    )
+    accesses, unresolved, *_ = gate.collect_artifact_accesses(tmp_path)
+    assert not any(a.action == "write" and a.bounded for a in accesses)
+    assert unresolved > 0
+    assert (Path("shared/consumer.py"), "/artifacts/old.json") in _unwritten(
+        gate.analyse_consumer_side(tmp_path, [])
+    )
+
+
+def test_literal_tilde_globs_keep_relative_identity(gate) -> None:
+    assert not gate._patterns_match("./~/artifacts/*.json", "~/artifacts/*.json")
+    assert gate._patterns_match("./~/artifacts/*.json", "./~/artifacts/old.json")
+
+
+@pytest.mark.parametrize(
+    "root", ["Path(os.getenv('ARTIFACT', 'artifacts'))", "Path('~').expanduser()"]
+)
+def test_unestablished_root_keeps_suffix_uncertain(gate, tmp_path: Path, root) -> None:
+    _write(
+        tmp_path,
+        "shared/consumer.py",
+        "import os\nfrom pathlib import Path\n"
+        f"({root} / 'old.json').write_text('{{}}')\n"
+        "Path('artifacts/old.json').read_text()\n",
+    )
+    accesses, unresolved, *_ = gate.collect_artifact_accesses(tmp_path)
+    assert not any(a.action == "write" and a.bounded for a in accesses)
+    assert unresolved > 0
+    assert (Path("shared/consumer.py"), "artifacts/old.json") in _unwritten(
+        gate.analyse_consumer_side(tmp_path, [])
+    )

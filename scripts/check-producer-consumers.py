@@ -907,6 +907,9 @@ def _dotted_name(node: ast.expr) -> str | None:
 # NUL cannot occur in a filename. Protect literal metacharacters in the value maps
 # (including serialized branch unions), retaining bare '*' only for dynamic patterns.
 _LITERAL_GLOB_MARKERS = {"*": "\0star", "?": "\0question", "[": "\0left", "]": "\0right"}
+# A symbolic absolute root, independent of the scanner's HOME. Source literals cannot
+# impersonate it: _literal_path escapes NUL. Only the rendered report uses '~' for home.
+_HOME_ROOT = "/\0home"
 
 
 def _literal_path(value: str) -> str:
@@ -915,6 +918,8 @@ def _literal_path(value: str) -> str:
 
 
 def _literal_text(value: str, *, escape: bool = False) -> str:
+    if value == _HOME_ROOT or value.startswith(_HOME_ROOT + "/"):
+        value = "~" + value[len(_HOME_ROOT) :]
     for character, marker in _LITERAL_GLOB_MARKERS.items():
         value = value.replace(marker, f"[{character}]" if escape else character)
     return value
@@ -929,17 +934,12 @@ def _normalise_pattern(value: str, repo_root: Path) -> str:
         value = "~"
     elif value.startswith("$HOME/"):
         value = "~/" + value[len("$HOME/") :]
-    home = Path.home().as_posix()
     root = repo_root.resolve().as_posix()
     if value == root:
         return "."
     if value.startswith(root + "/"):
         value = value[len(root) + 1 :]
-    elif value == home:
-        return "~"
-    elif value.startswith(home + "/"):
-        value = "~/" + value[len(home) + 1 :]
-    while value.startswith("./"):
+    while value.startswith("./") and not (value == "./~" or value.startswith("./~/")):
         value = value[2:]
     while "//" in value:
         value = value.replace("//", "/")
@@ -947,16 +947,18 @@ def _normalise_pattern(value: str, repo_root: Path) -> str:
 
 
 def _join_pattern(left: str, right: str, repo_root: Path) -> str:
-    if right.startswith(("/", "~/")):
+    if right.startswith("/"):
         return _normalise_pattern(right, repo_root)
     if left in ("", "."):
         return _normalise_pattern(right, repo_root)
     return _normalise_pattern(f"{left.rstrip('/')}/{right.lstrip('/')}", repo_root)
 
 
-def _parent_pattern(value: str, levels: int, repo_root: Path) -> str:
+def _parent_pattern(value: str, levels: int, repo_root: Path) -> str | None:
     result = value
     for _ in range(levels):
+        if result == _HOME_ROOT:
+            return None
         result = str(PurePosixPath(result).parent)
     return _normalise_pattern(result, repo_root)
 
@@ -1546,8 +1548,50 @@ def _has_unbounded_format(
     if node is None:
         return False
     for item in ast.walk(node):
-        if isinstance(item, ast.Name) and f"{_UNRESOLVED_FORMAT_PREFIX}{item.id}" in values:
+        # Preserve uncertainty in composed path operands without turning a separate
+        # unresolved call branch into uncertainty about its known sibling branch.
+        evaluated = (
+            _evaluated_expression(item, values)
+            if isinstance(item, (ast.Attribute, ast.Subscript, ast.BinOp))
+            else item
+        )
+        if (
+            isinstance(evaluated, ast.Name)
+            and f"{_UNRESOLVED_FORMAT_PREFIX}{evaluated.id}" in values
+        ):
             return True
+        if (
+            isinstance(item, ast.Attribute)
+            and item.attr == "parent"
+            or isinstance(item, ast.Subscript)
+            and isinstance(item.value, ast.Attribute)
+            and item.value.attr == "parents"
+        ):
+            base = item.value if isinstance(item, ast.Attribute) else item.value.value
+            resolved = _resolve_path_expr(base, values, path, repo_root, path_functions)
+            if (
+                resolved is not None
+                and resolved.startswith(_HOME_ROOT)
+                and _resolve_path_expr(item, values, path, repo_root, path_functions) is None
+            ):
+                # The parent above home is not a known wildcard root.
+                return True
+        if isinstance(item, ast.Call):
+            name = (
+                path_functions.canonical_name(
+                    _function_name(item, values),
+                    path,
+                    _lexical_scope(values),
+                    _import_aliases(values),
+                )
+                if isinstance(path_functions, PathFunctionTable)
+                else _function_name(item)
+            )
+            # A default is useful evidence, not an established environment binding.
+            if name in {"os.getenv", "os.environ.get"}:
+                return True
+            if isinstance(item.func, ast.Attribute) and item.func.attr == "expanduser":
+                return True
         if isinstance(item, ast.Call) and isinstance(path_functions, PathFunctionTable):
             result, unbounded = _resolve_path_helper(item, values, path, repo_root, path_functions)
             if unbounded or "*" in (result or ""):
@@ -1714,15 +1758,18 @@ def _resolve_path_expr(
             node.args[0], values, path, repo_root, path_functions, depth=depth + 1
         )
     if name in {"Path.home", "pathlib.Path.home"}:
-        return "~"
+        return _HOME_ROOT
     if name in {"os.getenv", "os.environ.get"}:
         default = node.args[1] if len(node.args) > 1 else None
         for keyword in node.keywords:
             if keyword.arg == "default":
                 default = keyword.value
         return _resolve_path_expr(default, values, path, repo_root, path_functions, depth=depth + 1)
+    if isinstance(node.func, ast.Attribute) and node.func.attr == "expanduser":
+        # Expansion depends on runtime home/user bindings. Do not certify its input
+        # as its result or inspect the scanner's environment to guess that result.
+        return None
     if isinstance(node.func, ast.Attribute) and node.func.attr in {
-        "expanduser",
         "absolute",
         "resolve",
     }:
@@ -1992,7 +2039,7 @@ def _useful_pattern(pattern: str | None) -> bool:
     return bool(
         pattern
         and _literal_text(pattern).isprintable()
-        and pattern not in {"*", ".", "~"}
+        and pattern not in {"*", ".", "~", _HOME_ROOT}
         and pattern.strip("*/.")
     )
 
@@ -2098,6 +2145,10 @@ def _record_access(
                 continue
         assert pattern is not None
         pattern = _normalise_pattern(pattern, repo_root)
+        # Keep a literal relative '~' distinct from the symbolic home root in both
+        # human-readable paths and glob matching, without guessing a home layout.
+        if pattern == "~" or pattern.startswith("~/"):
+            pattern = "./" + pattern
         accesses.append(
             ArtifactAccess(
                 action,
