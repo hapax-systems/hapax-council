@@ -2655,3 +2655,453 @@ def test_successors_transport_status_is_unknown(tmp_path: Path) -> None:
         )
     assert error.value.reason == "transport_error"
     assert error.value.observed_http_status is None
+
+
+@pytest.fixture
+def quota_clock(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> list[float]:
+    """Fixed incident clock, private evidence store, and no real subprocess boundary."""
+    from datetime import datetime
+
+    clock = [datetime.fromisoformat("2026-09-06T18:57:09+00:00").timestamp()]
+    monkeypatch.setattr(github_pr_status.time, "time", lambda: clock[0])
+    monkeypatch.setattr(github_pr_status, "DEFAULT_CACHE_DIR", tmp_path / "quota-cache")
+
+    def forbidden(*args: Any, **kwargs: Any) -> Any:
+        raise AssertionError("real subprocess forbidden in quota regression")
+
+    monkeypatch.setattr(subprocess, "Popen", forbidden)
+    return clock
+
+
+def _quota_wire(pool: str, remaining: int, date: str, *, reset: int = 1788723922) -> str:
+    return (
+        "HTTP/2.0 200 OK\r\n"
+        f"Date: Sun, 06 Sep 2026 {date} GMT\r\n"
+        f"X-Ratelimit-Resource: {pool}\r\n"
+        f"X-Ratelimit-Remaining: {remaining}\r\n"
+        "X-Ratelimit-Limit: 5000\r\n"
+        f"X-Ratelimit-Reset: {reset}\r\n\r\n"
+    )
+
+
+class QuotaObservationRunner:
+    """Only the existing probe and collections; no diagnostic quota query."""
+
+    def __init__(self, *, core: int = 3569, graphql: int = 2242) -> None:
+        self.core = core
+        self.graphql = graphql
+        self.endpoint_date = "18:56:50"
+        self.calls: list[list[str]] = []
+        self.probe_fails = False
+
+    def __call__(self, cmd: list[str], **kwargs: Any) -> subprocess.CompletedProcess:
+        self.calls.append(cmd)
+        if cmd == ["gh", "api", "-i", "rate_limit"]:
+            if self.probe_fails:
+                return subprocess.CompletedProcess(cmd, 1, "", "unavailable")
+            body = {
+                "resources": {
+                    pool: {"remaining": 5000, "limit": 5000, "reset": 1788724610}
+                    for pool in ("core", "graphql")
+                }
+            }
+            wire = _quota_wire("core", 5000, self.endpoint_date, reset=1788724610)
+            return subprocess.CompletedProcess(cmd, 0, wire + json.dumps(body), "")
+        if cmd[:4] == ["gh", "api", "--method", "GET"]:
+            assert cmd[6] == "repos/example/project/pulls"
+            assert "-i" in cmd, "collection must expose the headers of its own request"
+            return subprocess.CompletedProcess(
+                cmd, 0, _quota_wire("core", self.core, "18:57:08") + "[]", ""
+            )
+        if cmd[:3] == ["gh", "pr", "list"]:
+            assert kwargs["env"]["GH_DEBUG"] == "api"
+            head = _quota_wire("graphql", self.graphql, "18:57:09", reset=1788721995)
+            trace = "* Request to https://api.github.com/graphql\n"
+            trace += "\n".join("< " + line for line in head.splitlines()) + "\n"
+            return subprocess.CompletedProcess(cmd, 0, "[]", trace)
+        raise AssertionError("unexpected quota regression request")
+
+
+def _observe_collections(tmp_path: Path, runner: QuotaObservationRunner) -> None:
+    assert (
+        github_pr_status.list_pulls_rest(
+            repo="example/project",
+            repo_root=tmp_path,
+            runner=runner,
+            limit=1,
+            fail_on_indeterminate=True,
+        )
+        == []
+    )
+    assert (
+        github_pr_status.list_open_pr_statuses_graphql(
+            repo="example/project",
+            repo_root=tmp_path,
+            runner=runner,
+            include_status=False,
+        )
+        == []
+    )
+
+
+def test_incident_collection_headers_replace_agreeing_endpoint_claims(
+    tmp_path: Path,
+    quota_clock: list[float],
+) -> None:
+    runner = QuotaObservationRunner()
+    endpoint = github_pr_status.rate_snapshot(repo_root=tmp_path, runner=runner)
+    assert endpoint.core.remaining == endpoint.graphql.remaining == 5000
+    assert endpoint.core.source == "header" and endpoint.graphql.source == "body"
+    assert endpoint.core.source_kind == endpoint.graphql.source_kind == "rate_limit"
+    assert endpoint.core.endpoint == endpoint.graphql.endpoint == "rate_limit"
+    assert endpoint.core.observed_at == quota_clock[0] - 19
+    assert github_pr_status.choose_transport(repo_root=tmp_path, snapshot=endpoint) == (
+        "rest",
+        "github_rest_has_headroom",
+    )
+
+    _observe_collections(tmp_path, runner)
+    snapshot = github_pr_status.rate_snapshot(repo_root=tmp_path, runner=runner)
+    assert snapshot.core.remaining == 3569
+    assert snapshot.graphql.remaining == 2242
+    assert snapshot.core.source_kind == snapshot.graphql.source_kind == "actual_call"
+    assert snapshot.core.source == snapshot.graphql.source == "header"
+    assert snapshot.core.endpoint == "repos/example/project/pulls"
+    assert snapshot.graphql.endpoint == "graphql"
+    assert snapshot.core.observed_at == quota_clock[0] - 1
+    assert snapshot.graphql.observed_at == quota_clock[0]
+    assert snapshot.core.reset_epoch == 1788723922
+    assert snapshot.graphql.reset_epoch == 1788721995
+    assert github_pr_status.choose_transport(repo_root=tmp_path, snapshot=snapshot) == (
+        "rest",
+        "github_rest_has_headroom",
+    )
+    assert len(runner.calls) == 4  # Two requested snapshots plus two real collections.
+    # A new reader can use the metadata; no process-local state or replayed payload needed.
+    for pool in ("core", "graphql"):
+        data = json.loads(github_pr_status._rate_observation_path(tmp_path, pool).read_text())
+        assert set(data) == {
+            "resource",
+            "remaining",
+            "limit",
+            "reset_epoch",
+            "source",
+            "source_kind",
+            "endpoint",
+            "observed_at",
+        }
+
+
+@pytest.mark.parametrize("endpoint_date", ["18:56:50", "18:57:10"])
+def test_rate_limit_cannot_overwrite_fresh_collection(
+    tmp_path: Path,
+    quota_clock: list[float],
+    endpoint_date: str,
+) -> None:
+    runner = QuotaObservationRunner(core=0)
+    _observe_collections(tmp_path, runner)
+    quota_clock[0] += 1
+    runner.endpoint_date = endpoint_date
+    snapshot = github_pr_status.rate_snapshot(repo_root=tmp_path, runner=runner)
+    assert snapshot.core.remaining == 0, "rate_limit must not replace actual-call evidence"
+    transport, reason = github_pr_status.choose_transport(repo_root=tmp_path, snapshot=snapshot)
+    assert transport == "graphql"
+    assert reason.startswith("github_rest_below_floor:")
+    rows, route = github_pr_status.list_open_pr_statuses(
+        repo="example/project", repo_root=tmp_path, runner=runner, include_status=False
+    )
+    assert rows == [] and route.transport == "graphql" and route.rest_blocked
+    assert sum(cmd[:4] == ["gh", "api", "--method", "GET"] for cmd in runner.calls) == 1
+
+
+@pytest.mark.parametrize("age,known", [(60, True), (60.001, False), (-0.001, False)])
+def test_collection_observation_freshness_bound(
+    tmp_path: Path,
+    quota_clock: list[float],
+    age: float,
+    known: bool,
+) -> None:
+    runner = QuotaObservationRunner()
+    _observe_collections(tmp_path, runner)
+    quota_clock[0] += age
+    runner.probe_fails = True
+    snapshot = github_pr_status.rate_snapshot(repo_root=tmp_path, runner=runner)
+    assert (snapshot.graphql is not None) is known, "stale or future evidence is unknown"
+    if known:
+        assert snapshot.graphql.remaining == 2242
+    # REST was observed one second earlier; its age is independent of GraphQL's.
+    if age == 60:
+        assert snapshot.core is None
+
+
+def test_unknown_pool_is_not_full_or_permission_to_spend_a_measured_block(
+    tmp_path: Path,
+    quota_clock: list[float],
+) -> None:
+    runner = QuotaObservationRunner(core=0, graphql=0)
+    _observe_collections(tmp_path, runner)
+    runner.probe_fails = True
+    quota_clock[0] += 60
+    snapshot = github_pr_status.rate_snapshot(repo_root=tmp_path, runner=runner)
+    assert snapshot.core is None, "unknown core must not be synthesized as full"
+    assert snapshot.graphql.remaining == 0
+    assert github_pr_status.choose_transport(repo_root=tmp_path, snapshot=snapshot) == (
+        "rest",
+        "github_graphql_below_floor:0<500",
+    )
+    # Conversely, unknown GraphQL preserves its reason; measured core stays blocked.
+    unknown_graphql = github_pr_status.RateSnapshot(
+        core=github_pr_status.RatePool("core", 0, 5000, None, "header"), graphql=None
+    )
+    assert github_pr_status.choose_transport(repo_root=tmp_path, snapshot=unknown_graphql) == (
+        "graphql",
+        "github_rest_below_floor_graphql_unknown:core=0",
+    )
+    # The existing contract permits an unmeasured pool, but never revives a measured block.
+    quota_clock[0] -= 60
+    calls_before = len(runner.calls)
+    with pytest.raises(github_pr_status.RestPoolExhausted):
+        github_pr_status.list_open_pr_statuses(
+            repo="example/project", repo_root=tmp_path, runner=runner, include_status=False
+        )
+    assert runner.calls[calls_before:] == [["gh", "api", "-i", "rate_limit"]]
+
+
+@pytest.mark.parametrize("failure", ["timeout", "missing", "bad_json"])
+def test_fresh_observations_survive_endpoint_probe_failure(
+    tmp_path: Path,
+    quota_clock: list[float],
+    failure: str,
+) -> None:
+    _observe_collections(tmp_path, QuotaObservationRunner())
+
+    def failed(cmd: list[str], **kwargs: Any) -> subprocess.CompletedProcess:
+        assert cmd == ["gh", "api", "-i", "rate_limit"]
+        if failure == "timeout":
+            raise subprocess.TimeoutExpired(cmd, 30)
+        if failure == "missing":
+            raise OSError("unavailable")
+        return subprocess.CompletedProcess(cmd, 0, "invalid", "")
+
+    snapshot = github_pr_status.rate_snapshot(repo_root=tmp_path, runner=failed)
+    assert snapshot.core.remaining == 3569 and snapshot.graphql.remaining == 2242
+
+
+@pytest.mark.parametrize(
+    "field,value",
+    [
+        ("observed_at", None),
+        ("endpoint", None),
+        ("observed_at", "invalid"),
+        ("remaining", True),
+        ("limit", 0),
+        ("source_kind", "rate_limit"),
+        ("resource", "graphql"),
+    ],
+)
+def test_invalid_stored_observation_is_unknown(
+    tmp_path: Path,
+    quota_clock: list[float],
+    field: str,
+    value: Any,
+) -> None:
+    runner = QuotaObservationRunner()
+    _observe_collections(tmp_path, runner)
+    path = github_pr_status._rate_observation_path(tmp_path, "core")
+    data = json.loads(path.read_text())
+    if value is None:
+        del data[field]
+    else:
+        data[field] = value
+    path.write_text(json.dumps(data))
+    runner.probe_fails = True
+    snapshot = github_pr_status.rate_snapshot(repo_root=tmp_path, runner=runner)
+    assert snapshot.core is None
+    assert snapshot.graphql.remaining == 2242
+
+
+def test_graphql_trace_last_response_wins_without_retaining_debug_payloads(
+    tmp_path: Path,
+    quota_clock: list[float],
+) -> None:
+    def runner(cmd: list[str], **kwargs: Any) -> subprocess.CompletedProcess:
+        assert cmd[:3] == ["gh", "pr", "list"]
+        assert kwargs["env"]["GH_DEBUG"] == "api"
+        trace = "* Request to https://api.github.com/graphql\n> body must not survive\n"
+        for remaining, date in [(2300, "18:57:08"), (2242, "18:57:09"), (2400, "18:57:07")]:
+            trace += (
+                "\n".join(
+                    "< " + line for line in _quota_wire("graphql", remaining, date).splitlines()
+                )
+                + "\nresponse body must not survive\n"
+            )
+        return subprocess.CompletedProcess(cmd, 1, "", trace)
+
+    with pytest.raises(github_pr_status.GraphQLListingFailed) as exc:
+        github_pr_status.list_open_pr_statuses_graphql(repo_root=tmp_path, runner=runner)
+    assert "must not survive" not in str(exc.value)
+    observation = github_pr_status._read_rate_observation(tmp_path, "graphql")
+    assert observation.remaining == 2242
+    assert (
+        "must not survive"
+        not in github_pr_status._rate_observation_path(tmp_path, "graphql").read_text()
+    )
+
+
+def test_a_scrubbed_graphql_failure_still_carries_its_status_code(
+    tmp_path: Path,
+    quota_clock: list[float],
+) -> None:
+    """A constant failure string cannot be classified downstream.
+
+    The debug trace is discarded, but the status code is digits from a prefixed response
+    line, so it can be carried out in the terminal `(HTTP NNN)` position without letting
+    any header or body text escape.
+    """
+
+    def runner(cmd: list[str], **kwargs: Any) -> subprocess.CompletedProcess:
+        trace = (
+            "* Request to https://api.github.com/graphql\n"
+            "> Authorization: token must not survive\n"
+            "< HTTP/2.0 403 Forbidden\n"
+            "< X-Ratelimit-Resource: graphql\n"
+            "unprefixed body must not survive\n"
+        )
+        return subprocess.CompletedProcess(cmd, 1, "", trace)
+
+    with pytest.raises(github_pr_status.GraphQLListingFailed) as exc:
+        github_pr_status.list_open_pr_statuses_graphql(repo_root=tmp_path, runner=runner)
+    message = str(exc.value)
+    assert message.endswith("(HTTP 403)")
+    assert "must not survive" not in message
+    assert "Authorization" not in message and "Ratelimit" not in message
+
+
+@pytest.mark.parametrize(
+    "bad_header",
+    [
+        "X-Ratelimit-Resource: graphql",
+        "X-Ratelimit-Limit: invalid",
+        "X-Ratelimit-Remaining: -1",
+    ],
+)
+def test_collection_does_not_invent_missing_or_wrong_pool_headers(
+    tmp_path: Path,
+    quota_clock: list[float],
+    bad_header: str,
+) -> None:
+    key = bad_header.split(":")[0]
+    wire = re.sub(rf"{key}: [^\r\n]+", bad_header, _quota_wire("core", 3569, "18:57:08"))
+
+    def runner(cmd: list[str], **kwargs: Any) -> subprocess.CompletedProcess:
+        return subprocess.CompletedProcess(cmd, 0, wire + "[]", "")
+
+    assert (
+        github_pr_status.list_pulls_rest(
+            repo="example/project",
+            repo_root=tmp_path,
+            runner=runner,
+            limit=1,
+            fail_on_indeterminate=True,
+        )
+        == []
+    )
+    assert github_pr_status._read_rate_observation(tmp_path, "core") is None
+    assert github_pr_status._read_rate_observation(tmp_path, "graphql") is None
+
+
+def test_held_snapshot_expires_at_chooser_and_both_pool_guards(
+    tmp_path: Path,
+    quota_clock: list[float],
+) -> None:
+    runner = QuotaObservationRunner(core=0, graphql=0)
+    _observe_collections(tmp_path, runner)
+    snapshot = github_pr_status.rate_snapshot(repo_root=tmp_path, runner=runner)
+    assert github_pr_status.choose_transport(repo_root=tmp_path, snapshot=snapshot)[0] is None
+    quota_clock[0] += 61
+    assert github_pr_status.choose_transport(repo_root=tmp_path, snapshot=snapshot) == (
+        "rest",
+        "github_graphql_unknown",
+    )
+    assert github_pr_status.rest_pool_blocked(snapshot) is None
+    assert github_pr_status.graphql_pool_blocked(snapshot) is None
+
+
+@pytest.mark.parametrize("core,graphql,preferred", [(0, 2242, "graphql"), (3569, 0, "rest")])
+def test_actual_call_eligibility_is_symmetric(
+    tmp_path: Path,
+    quota_clock: list[float],
+    core: int,
+    graphql: int,
+    preferred: str,
+) -> None:
+    runner = QuotaObservationRunner(core=core, graphql=graphql)
+    _observe_collections(tmp_path, runner)
+    snapshot = github_pr_status.rate_snapshot(repo_root=tmp_path, runner=runner)
+    assert github_pr_status.choose_transport(repo_root=tmp_path, snapshot=snapshot)[0] == preferred
+    assert (github_pr_status.rest_pool_blocked(snapshot) is not None) is (core == 0)
+    assert (github_pr_status.graphql_pool_blocked(snapshot) is not None) is (graphql == 0)
+
+
+@pytest.mark.parametrize(
+    "stderr,cause",
+    [
+        ("gh: request refused (HTTP 403)", "request_failed"),
+        ("gh: API rate limit exceeded (HTTP 403)", "rate_limit"),
+    ],
+)
+def test_failed_collection_preserves_http_evidence_and_records_pool_headers(
+    tmp_path: Path,
+    quota_clock: list[float],
+    stderr: str,
+    cause: str,
+) -> None:
+    def runner(cmd: list[str], **kwargs: Any) -> subprocess.CompletedProcess:
+        assert "-i" in cmd
+        wire = _quota_wire("core", 0, "18:57:08").replace("200 OK", "403 Forbidden")
+        return subprocess.CompletedProcess(cmd, 1, wire + '{"message":"refused"}', stderr)
+
+    with pytest.raises(github_pr_status.RestIndeterminateError) as exc:
+        github_pr_status.list_pulls_rest(
+            repo="example/project",
+            repo_root=tmp_path,
+            runner=runner,
+            limit=1,
+            fail_on_indeterminate=True,
+        )
+    assert exc.value.reason == cause
+    assert exc.value.observed_http_status == 403
+    assert github_pr_status._read_rate_observation(tmp_path, "core").remaining == 0
+
+
+def test_rest_collection_retains_last_page_headers_and_population(
+    tmp_path: Path,
+    quota_clock: list[float],
+) -> None:
+    calls = []
+
+    def runner(cmd: list[str], **kwargs: Any) -> subprocess.CompletedProcess:
+        assert "-i" in cmd
+        calls.append(cmd)
+        page = _api_fields(cmd)["page"]
+        if page == "1":
+            rows = [{"number": n} for n in range(1, 101)]
+            remaining, date = 3570, "18:57:07"
+        else:
+            assert page == "2"
+            rows = [{"number": 101}]
+            remaining, date = 3569, "18:57:08"
+        return subprocess.CompletedProcess(
+            cmd, 0, _quota_wire("core", remaining, date) + json.dumps(rows), ""
+        )
+
+    rows = github_pr_status.list_pulls_rest(
+        repo="example/project",
+        repo_root=tmp_path,
+        runner=runner,
+        limit=101,
+        fail_on_indeterminate=True,
+    )
+    assert [row["number"] for row in rows] == list(range(1, 102))
+    assert len(calls) == 2
+    assert github_pr_status._read_rate_observation(tmp_path, "core").remaining == 3569

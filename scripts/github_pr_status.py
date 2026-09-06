@@ -3,8 +3,9 @@
 
 REST/``core`` and GraphQL are **separate** quotas. Polling everything through one of
 them drains it while the other idles — measured 2026-08-29 at ``core`` 0/5000 with
-``graphql`` 4660/5000 — so ``list_open_pr_statuses`` measures both and picks the
-roomier pool *before* spending the call. Ties and unknown headroom resolve to REST,
+``graphql`` 4660/5000 — so ``list_open_pr_statuses`` compares bounded quota evidence
+and picks the roomier pool *before* spending the call. Fresh collection headers
+outrank the weaker ``rate_limit`` endpoint claims. Ties and unknowns resolve to REST,
 which is the post-#4436 default, so traffic only ever diverts away from a pool
 measured to be in trouble.
 
@@ -15,14 +16,18 @@ dequeue mutation) and remain GraphQL regardless.
 from __future__ import annotations
 
 import argparse
+import fcntl
+import hashlib
 import json
+import math
 import os
 import re
 import subprocess
 import sys
 import time
-from dataclasses import asdict, dataclass
+from dataclasses import asdict, dataclass, field
 from datetime import UTC, datetime
+from email.utils import parsedate_to_datetime
 from http import HTTPStatus
 from pathlib import Path
 from typing import Any
@@ -30,6 +35,8 @@ from typing import Any
 DEFAULT_REPO = "hapax-systems/hapax-council"
 DEFAULT_CACHE_DIR = Path.home() / ".cache" / "hapax" / "pr-status"
 DEFAULT_CACHE_TTL_SECONDS = 60
+# Evidence expires; neither an elapsed reset nor absent telemetry refills a pool.
+RATE_OBSERVATION_MAX_AGE_SECONDS = 60
 DEFAULT_GRAPHQL_MIN_REMAINING = 500
 # Floor for the REST (`core`) pool, which had no guard at all before this change. Applied by
 # `rest_pool_blocked`, which is the single place this floor is evaluated; `choose_transport`
@@ -114,21 +121,21 @@ class GraphQLBackoff:
 
 @dataclass(frozen=True)
 class RatePool:
-    """Measured headroom for one GitHub rate-limit pool.
+    """One pool's bounded evidence, with wire location distinct from source kind.
 
-    ``source`` records provenance, because the two available sources have been observed to
-    disagree. Measured 2026-08-29: ``gh api rate_limit`` reported ``core: 4996/5000
-    remaining`` at the same moment a real call returned ``403`` with
-    ``X-Ratelimit-Remaining: 0``, ``Used: 5000``, ``Resource: core``. Response headers are
-    what actually govern a call, so a body-sourced figure is weaker evidence and says so
-    rather than being silently treated as equivalent.
+    Even agreeing headers and body from ``rate_limit`` are endpoint claims. Headers
+    from an actual collection request take precedence while fresh. ``observed_at``
+    is the response Date in UTC epoch seconds, or receipt time when Date is absent.
     """
 
     resource: str
     remaining: int
     limit: int
     reset_epoch: int | None
-    source: str  # "header" (authoritative) | "body" (weaker)
+    source: str  # "header" | "body", not a claim of usable headroom
+    source_kind: str = "rate_limit"  # "rate_limit" | "actual_call"
+    endpoint: str = "rate_limit"
+    observed_at: float = field(default_factory=lambda: time.time())
 
     @property
     def fraction(self) -> float:
@@ -150,7 +157,7 @@ class RatePool:
 
 @dataclass(frozen=True)
 class RateSnapshot:
-    """Both pools from a single probe, so a routing decision costs one call, not two."""
+    """Per-pool evidence; fresh collection observations outrank the endpoint probe."""
 
     core: RatePool | None
     graphql: RatePool | None
@@ -222,15 +229,45 @@ def _run(
     *,
     repo_root: Path,
     timeout: int = DEFAULT_TIMEOUT_SECONDS,
+    observe_graphql: bool = False,
 ) -> subprocess.CompletedProcess:
-    return runner(
+    # gh pr list owns its query and pagination. Its debug stream exposes response
+    # headers without changing that population or adding a diagnostic request.
+    options = {"env": {**os.environ, "GH_DEBUG": "api"}} if observe_graphql else {}
+    proc = runner(
         cmd,
         cwd=str(repo_root),
         capture_output=True,
         text=True,
         check=False,
         timeout=timeout,
+        **options,
     )
+    if observe_graphql:
+        trace = proc.stderr or ""
+        for block in re.split(r"(?m)^< HTTP/", trace)[1:]:
+            lines = block.splitlines()
+            head = []
+            for line in lines[1:]:
+                if not line.startswith("< ") or line == "< ":
+                    break
+                head.append(line[2:])
+            _record_rate_observation(
+                "\n".join(head) + "\n\n", pool="graphql", endpoint="graphql", repo_root=repo_root
+            )
+        if "< HTTP/" in trace or "* Request " in trace:
+            # Never propagate debug request headers or payloads into failure reports. Nothing
+            # unprefixed survives, so a dumped body cannot escape. But a constant string
+            # discards the one fact downstream classification needs, so carry the status code
+            # out of the prefixed response line — digits only — in the terminal `(HTTP NNN)`
+            # position the status reader parses.
+            statuses = re.findall(r"(?m)^< HTTP/[\d.]+\s+(\d{3})\b", trace)
+            proc.stderr = ""
+            if proc.returncode:
+                proc.stderr = "gh GraphQL listing request failed" + (
+                    f" (HTTP {statuses[-1]})" if statuses else ""
+                )
+    return proc
 
 
 def _json_from_proc(proc: subprocess.CompletedProcess) -> Any | None:
@@ -330,6 +367,9 @@ def _rest_get_json(
     ]
     for key, value in (fields or {}).items():
         cmd.extend(["-f", f"{key}={value}"])
+    observe_collection = bool(re.fullmatch(r"repos/[^/]+/[^/]+/pulls", path))
+    if observe_collection:
+        cmd.append("-i")
     try:
         proc = _run(runner, cmd, repo_root=repo_root, timeout=timeout)
     except (OSError, subprocess.SubprocessError) as exc:
@@ -338,6 +378,10 @@ def _rest_get_json(
         if isinstance(exc, OSError):
             raise RestTransportUnavailable(f"gh REST invocation failed for {path}: {exc}") from exc
         raise
+    if observe_collection:
+        _record_rate_observation(proc.stdout or "", pool="core", endpoint=path, repo_root=repo_root)
+        if (proc.stdout or "").startswith("HTTP/"):
+            _, proc.stdout = _split_head_body(proc.stdout)
     if fail_on_indeterminate:
         if proc.returncode != 0:
             message = f"{proc.stderr or ''} {proc.stdout or ''}".lower()
@@ -853,7 +897,7 @@ def graphql_pool_blocked(
     pool end up disagreeing. Unknown headroom is NOT blocked — same fail-open rule as REST.
     """
     floor = _graphql_floor() if min_remaining is None else max(0, min_remaining)
-    pool = snapshot.graphql
+    pool = _fresh_rate_pool(snapshot.graphql)
     if pool is None:
         return None
     if pool.remaining < floor:
@@ -886,7 +930,7 @@ def rest_pool_blocked(
     so there is exactly one place the floor is applied.
     """
     floor = _rest_floor() if min_remaining is None else max(0, min_remaining)
-    core = snapshot.core
+    core = _fresh_rate_pool(snapshot.core)
     if core is None:
         return None  # unknown headroom is not exhaustion; fail open
     if core.remaining >= floor:
@@ -1203,6 +1247,7 @@ def list_open_pr_statuses_graphql(
                 ",".join(_GRAPHQL_PR_LIST_FIELDS),
             ],
             repo_root=repo_root,
+            observe_graphql=True,
         )
     except (subprocess.TimeoutExpired, OSError) as exc:
         raise GraphQLListingFailed(f"github_graphql_listing_unavailable:{exc}") from exc
@@ -1676,7 +1721,107 @@ def _parse_rate_headers(stdout: str) -> dict[str, str]:
     return headers
 
 
-def _pool_from_body(payload: Any, resource: str) -> RatePool | None:
+def _fresh_rate_pool(pool: RatePool | None) -> RatePool | None:
+    if pool is None:
+        return None
+    age = time.time() - pool.observed_at
+    if not (0 <= age <= RATE_OBSERVATION_MAX_AGE_SECONDS):
+        return None
+    return pool
+
+
+def _rate_observation_path(repo_root: Path, pool: str) -> Path:
+    # Retain only quota metadata, scoped to this execution root. Never persist an
+    # authentication value or assume that another worktree has the same gh context.
+    scope = hashlib.sha256(os.fsencode(repo_root.resolve())).hexdigest()[:16]
+    return DEFAULT_CACHE_DIR / "rate-observations" / scope / f"{pool}.json"
+
+
+def _read_rate_observation(repo_root: Path, pool: str) -> RatePool | None:
+    try:
+        data = json.loads(_rate_observation_path(repo_root, pool).read_text())
+        if not isinstance(data, dict) or not {"observed_at", "endpoint"} <= data.keys():
+            return None
+        observation = RatePool(**data)
+        if (
+            observation.resource != pool
+            or observation.source_kind != "actual_call"
+            or observation.source != "header"
+            or not isinstance(observation.endpoint, str)
+            or not observation.endpoint
+            or type(observation.remaining) is not int
+            or observation.remaining < 0
+            or type(observation.limit) is not int
+            or observation.limit <= 0
+            or type(observation.observed_at) not in (int, float)
+            or not math.isfinite(observation.observed_at)
+            or (observation.reset_epoch is not None and type(observation.reset_epoch) is not int)
+        ):
+            return None
+        return _fresh_rate_pool(observation)
+    except (OSError, ValueError, TypeError):
+        return None
+
+
+def _response_time(headers: dict[str, str]) -> float:
+    try:
+        return parsedate_to_datetime(headers["date"]).timestamp()
+    except (KeyError, TypeError, ValueError, OverflowError):
+        return time.time()
+
+
+def _record_rate_observation(stdout: str, *, pool: str, endpoint: str, repo_root: Path) -> None:
+    headers = _parse_rate_headers(stdout)
+    if headers.get("x-ratelimit-resource") != pool:
+        return
+    try:
+        remaining = int(headers["x-ratelimit-remaining"])
+        limit = int(headers["x-ratelimit-limit"])
+        reset = headers.get("x-ratelimit-reset")
+        reset_epoch = int(reset) if reset is not None else None
+    except (KeyError, ValueError):
+        return
+    if remaining < 0 or limit <= 0:
+        return
+    observation = RatePool(
+        resource=pool,
+        remaining=remaining,
+        limit=limit,
+        reset_epoch=reset_epoch,
+        source="header",
+        source_kind="actual_call",
+        endpoint=endpoint,
+        observed_at=_response_time(headers),
+    )
+    if _fresh_rate_pool(observation) is None:
+        return
+    path = _rate_observation_path(repo_root, pool)
+    try:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        # Serialize concurrent timer responses so an older completion cannot replace
+        # newer evidence. Readers see an atomic, per-pool metadata document.
+        with (path.parent / ".lock").open("a") as lock:
+            fcntl.flock(lock, fcntl.LOCK_EX)
+            previous = _read_rate_observation(repo_root, pool)
+            if previous is not None and previous.observed_at > observation.observed_at:
+                return
+            tmp = path.with_suffix(".tmp")
+            tmp.write_text(json.dumps(asdict(observation)))
+            tmp.replace(path)
+    except OSError:
+        pass  # Unavailable evidence storage must not invalidate the collection itself.
+
+
+def _observed_snapshot(
+    repo_root: Path, core: RatePool | None, graphql: RatePool | None
+) -> RateSnapshot:
+    return RateSnapshot(
+        core=_read_rate_observation(repo_root, "core") or _fresh_rate_pool(core),
+        graphql=_read_rate_observation(repo_root, "graphql") or _fresh_rate_pool(graphql),
+    )
+
+
+def _pool_from_body(payload: Any, resource: str, *, observed_at: float) -> RatePool | None:
     if not isinstance(payload, dict):
         return None
     resources = payload.get("resources")
@@ -1700,6 +1845,7 @@ def _pool_from_body(payload: Any, resource: str) -> RatePool | None:
         limit=limit,
         reset_epoch=reset_epoch,
         source="body",
+        observed_at=observed_at,
     )
 
 
@@ -1708,21 +1854,12 @@ def rate_snapshot(
     repo_root: Path,
     runner: Any = None,
 ) -> RateSnapshot:
-    """Probe both rate pools with one call.
+    """Read endpoint claims once, preferring fresh headers from existing collections.
 
-    ``core`` is taken from the response headers when they are present, because the headers
-    are what the API enforces. When the header and body figures disagree the **pessimistic**
-    one wins: over-reporting exhaustion costs at most an unnecessary reroute, while
-    under-reporting it spends a call into a 403. That asymmetry is the whole reason the
-    disagreement matters.
-
-    ``graphql`` has no cheap header source — only an actual GraphQL call returns GraphQL
-    headers — so it is body-sourced and labelled as such. Callers that need certainty about
-    GraphQL must make the call and read its headers.
-
-    A lookup failure yields ``RateSnapshot(None, None)`` so callers fail open, preserving
-    the pre-existing contract: a network or auth hiccup must not be mistaken for confirmed
-    exhaustion.
+    Header/body agreement at ``rate_limit`` does not establish usable headroom.
+    The pessimistic merge remains for those weaker claims, but cannot overwrite
+    fresh actual-call evidence, even if the endpoint repeats its claim later.
+    Without either kind of fresh evidence a pool is unknown, never assumed full.
     """
     # Late-bound so the module-level `subprocess.run` stays patchable. A
     # `runner: Any = subprocess.run` default binds at def time, which silently makes a
@@ -1736,15 +1873,14 @@ def rate_snapshot(
         # to break it: the probe is now on the path of every fleet scan, so a 30-second hang
         # would crash the timer rather than proceed on unknown headroom. A probe that cannot
         # answer means "unknown", which routes to REST exactly as before this change.
-        return RateSnapshot(core=None, graphql=None)
+        return _observed_snapshot(repo_root, None, None)
     stdout = proc.stdout or ""
     ok = getattr(proc, "returncode", 1) == 0
 
     # Headers are read even on a NONZERO exit. A 403 carrying `X-Ratelimit-Resource: core`
     # and `X-Ratelimit-Remaining: 0` is GitHub telling us the pool is spent — that is the
-    # most direct evidence of exhaustion there is, and an earlier revision threw it away and
-    # failed open, then shipped a test codifying the discard. Transport-level rate headers
-    # are authoritative regardless of status code.
+    # endpoint evidence of exhaustion, retained even on failure. It is still a
+    # rate_limit claim, not an observation from a collection request.
     #
     # The BODY is only rate data when the call succeeded: a 403's body is an error payload,
     # not a rate_limit document. So headers survive failure; the body does not.
@@ -1757,8 +1893,9 @@ def rate_snapshot(
         except json.JSONDecodeError:
             payload = None
 
-    core = _pool_from_body(payload, "core")
-    graphql = _pool_from_body(payload, "graphql")
+    observed_at = _response_time(headers)
+    core = _pool_from_body(payload, "core", observed_at=observed_at)
+    graphql = _pool_from_body(payload, "graphql", observed_at=observed_at)
 
     if headers.get("x-ratelimit-resource") == "core":
         try:
@@ -1789,9 +1926,10 @@ def rate_snapshot(
                 limit=header_limit or (core.limit if core else 0),
                 reset_epoch=header_reset,
                 source=remaining_source,
+                observed_at=observed_at,
             )
 
-    return RateSnapshot(core=core, graphql=graphql)
+    return _observed_snapshot(repo_root, core, graphql)
 
 
 def graphql_backoff(
@@ -1855,6 +1993,7 @@ def choose_transport(
     ever diverts traffic away from a pool measured to be in trouble.
     """
     snapshot = snapshot or rate_snapshot(repo_root=repo_root, runner=runner)
+    snapshot = RateSnapshot(_fresh_rate_pool(snapshot.core), _fresh_rate_pool(snapshot.graphql))
     rest_floor = _rest_floor() if rest_min_remaining is None else max(0, rest_min_remaining)
     graphql_floor = (
         _graphql_floor() if graphql_min_remaining is None else max(0, graphql_min_remaining)
