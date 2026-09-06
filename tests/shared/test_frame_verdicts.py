@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import fnmatch
 import hashlib
 import json
 import re
@@ -66,6 +67,57 @@ def _expected_stale_remedy(root: Path) -> str:
         "restart; distinguish an unadvanced accepted pointer from refused publication, "
         "then retry the dispatch"
     )
+
+
+def test_producer_remedy_template_requires_named_root_placeholder() -> None:
+    assert "{procedure_root}" in fv.PRODUCER_REMEDY_TEMPLATE
+
+
+def test_producer_remedy_renders_resolved_root(tmp_path: Path) -> None:
+    root = tmp_path / "actual-procedure"
+    alias = tmp_path / "procedure-alias"
+    alias.symlink_to(root, target_is_directory=True)
+
+    with pytest.raises(fv.FrameVerdictsUnavailable) as caught:
+        fv.load_frame_verdicts(alias, now=NOW)
+
+    remedy = caught.value.remedy
+    assert str(root.resolve()) in remedy
+    assert str(alias) not in remedy
+    assert fv.FRAME_PROCEDURE_ROOT_ENV not in remedy
+    assert "{procedure_root}" not in remedy
+
+
+@pytest.mark.parametrize(
+    ("left", "right"),
+    [("a.py", "b.py"), ("a*.py", "b*.py"), ("a*.py", "a*.md")],
+    ids=["literal-mismatch", "incompatible-prefixes", "incompatible-suffixes"],
+)
+def test_glob_disjoint_established_returns_true(left: str, right: str) -> None:
+    assert fv._glob_disjoint(left, right) is True
+    assert fv._glob_disjoint(right, left) is True
+
+
+@pytest.mark.parametrize(
+    ("left", "right"),
+    [("a.py", "a.py"), ("a.py", "*.py"), ("a.py", "**/*.py")],
+    ids=["identical-literals", "literal-in-wildcard", "globstar-zero-segments"],
+)
+def test_glob_disjoint_literal_overlap_returns_none(left: str, right: str) -> None:
+    assert fv._glob_disjoint(left, right) is None
+    assert fv._glob_disjoint(right, left) is None
+
+
+def test_glob_disjoint_overlapping_wildcards_remain_unknown() -> None:
+    left, right = "a*b*c", "a*c*b*c"
+    # Both fixed prefixes are 'a' and both suffixes are 'c'. The heuristic does not
+    # compare the intervening wildcard languages; it must keep their intersection
+    # unknown. This concrete shared member proves that returning True is unsound.
+    witness = "acbc"
+    assert fnmatch.fnmatchcase(witness, left)
+    assert fnmatch.fnmatchcase(witness, right)
+    assert fv._glob_disjoint(left, right) is None
+    assert fv._glob_disjoint(right, left) is None
 
 
 @pytest.mark.parametrize(

@@ -75,15 +75,16 @@ MODEL_RELATIONS = frozenset({"never_relevant", "composition_only", "periodic", "
 ALL_RELATIONS = DECAY_RELATIONS | MODEL_RELATIONS
 VERDICT_STATES = frozenset({"TRUE", "FALSE", "UNKNOWN", "UNEVALUABLE"})
 
-PRODUCER_REMEDY = (
-    "run the frame producer — verify it targets procedure root HAPAX_FRAME_PROCEDURE_ROOT, "
+PRODUCER_REMEDY_TEMPLATE = (
+    "run the frame producer — verify it targets procedure root {procedure_root}, "
     "then `systemctl --user start hapax-frame-iteration.service` — then retry the dispatch"
 )
+PRODUCER_REMEDY = PRODUCER_REMEDY_TEMPLATE.format(procedure_root=FRAME_PROCEDURE_ROOT_ENV)
 
 
 def _producer_remedy(procedure_root: Path) -> str:
     """Bind the generic producer action to the subject of this read, not a default checkout."""
-    return PRODUCER_REMEDY.replace(FRAME_PROCEDURE_ROOT_ENV, str(procedure_root))
+    return PRODUCER_REMEDY_TEMPLATE.format(procedure_root=procedure_root)
 
 
 MASS_DECLARATION_LOCATION = (
