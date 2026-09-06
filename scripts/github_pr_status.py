@@ -628,6 +628,12 @@ def _pull_status_row_from_rest(
         "headRefName": head_ref,
         "headRefOid": sha,
         "baseRefName": base.get("ref") or detail_base.get("ref"),
+        "baseRefNameDetail": detail_base.get("ref")
+        if isinstance(detail, dict)
+        and base.get("ref")
+        and detail_base.get("ref")
+        and base.get("ref") != detail_base.get("ref")
+        else None,
         "baseRepoDefaultBranch": base_repo.get("default_branch")
         or detail_base_repo.get("default_branch"),
         "changedFiles": changed_files,

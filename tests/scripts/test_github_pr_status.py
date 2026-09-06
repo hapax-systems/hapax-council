@@ -727,7 +727,22 @@ def test_open_pr_status_snapshot_does_not_hydrate_list_rows_by_default(tmp_path:
     assert len(runner.calls) == 1
 
 
-def test_open_pr_status_snapshot_hydrates_list_rows_when_requested(tmp_path: Path) -> None:
+@pytest.mark.parametrize(
+    "hydration", ["hydrate_pull", "include_files", "include_review_decision", None]
+)
+@pytest.mark.parametrize(
+    "list_base,detail_base",
+    [
+        ("release", None),
+        (None, "main"),
+        ("release", "release"),
+        ("release", "main"),
+        ("main", "release"),
+    ],
+)
+def test_open_pr_status_snapshot_hydrates_list_rows_when_requested(
+    tmp_path: Path, hydration: str | None, list_base: str | None, detail_base: str | None
+) -> None:
     class SnapshotRunner(FakeRunner):
         def __call__(self, cmd: list[str], **kwargs: Any) -> subprocess.CompletedProcess:
             self.calls.append(list(cmd))
@@ -743,7 +758,7 @@ def test_open_pr_status_snapshot_hydrates_list_rows_when_requested(tmp_path: Pat
                                     "number": 9,
                                     "title": "REST PR",
                                     "head": {"ref": "feat/rest", "sha": "abc123"},
-                                    "base": {"ref": "release", "repo": {"default_branch": "main"}},
+                                    "base": {"ref": list_base, "repo": {"default_branch": "main"}},
                                     "draft": False,
                                     "state": "open",
                                     "updated_at": "2026-07-05T15:00:00Z",
@@ -765,10 +780,13 @@ def test_open_pr_status_snapshot_hydrates_list_rows_when_requested(tmp_path: Pat
                                 "state": "open",
                                 "updated_at": "2026-07-05T15:00:00Z",
                                 "mergeable_state": "behind",
+                                "base": {"ref": detail_base, "repo": {"default_branch": "main"}},
                             }
                         ),
                         "",
                     )
+                if path in {"repos/owner/repo/pulls/9/files", "repos/owner/repo/pulls/9/reviews"}:
+                    return subprocess.CompletedProcess(cmd, 0, "[]", "")
             return super().__call__(cmd, **kwargs)
 
     runner = SnapshotRunner()
@@ -778,10 +796,15 @@ def test_open_pr_status_snapshot_hydrates_list_rows_when_requested(tmp_path: Pat
         repo_root=tmp_path,
         runner=runner,
         include_status=False,
-        hydrate_pull=True,
+        **({hydration: True} if hydration else {}),
     )
 
-    assert rows[0]["mergeStateStatus"] == "BEHIND"
-    assert rows[0]["baseRefName"] == "release"
+    assert rows[0]["mergeStateStatus"] == ("BEHIND" if hydration else "UNKNOWN")
+    assert rows[0]["baseRefName"] == (list_base or (detail_base if hydration else None))
+    assert rows[0].get("baseRefNameDetail") == (
+        detail_base
+        if hydration and list_base and detail_base and list_base != detail_base
+        else None
+    )
     assert rows[0]["baseRepoDefaultBranch"] == "main"
-    assert any(call[6] == "repos/owner/repo/pulls/9" for call in runner.calls)
+    assert any(call[6] == "repos/owner/repo/pulls/9" for call in runner.calls) == bool(hydration)

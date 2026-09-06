@@ -998,7 +998,7 @@ def test_fetch_open_prs_uses_rest_core_not_gh_pr_list(tmp_path: Path) -> None:
 @pytest.mark.parametrize(
     ("adapter_base", "rest_base"),
     [("main", None), (None, "main"), ("main", "main"), (None, None), ("main", "release")],
-    ids=["adapter_only", "rest_only", "both", "neither", "adapter_precedence"],
+    ids=["adapter_only", "rest_only", "both", "neither", "base_conflict"],
 )
 def test_run_reconciler_base_sources(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, adapter_base: str | None, rest_base: str | None
@@ -1026,7 +1026,23 @@ def test_run_reconciler_base_sources(
     decision = report["decisions"][0]
     governance = decision["merge_queue_governance"]
     assert governance["base_ref"] == (adapter_base or rest_base)
-    if adapter_base or rest_base:
+    if adapter_base and rest_base and adapter_base != rest_base:
+        reason = (
+            "auto_merge_method_unverified:pr_base_ref_conflict:"
+            f"list={adapter_base}:detail={rest_base}"
+        )
+        assert decision["action"] == "dequeue"
+        assert decision["reasons"] == [reason]
+        assert decision["auto_merge_method_owner"] == "unverified"
+        assert governance == {
+            "base_ref": adapter_base,
+            "base_ref_detail": rest_base,
+            "method": None,
+            "source": None,
+            "reason": reason,
+        }
+        assert item["baseRefConflict"] == "pr_base_ref_conflict"
+    elif adapter_base or rest_base:
         assert decision["action"] == "already_queued"
         assert decision.get("reasons", []) == []
         assert decision["auto_merge_method_owner"] == "merge_queue"
@@ -1041,6 +1057,141 @@ def test_run_reconciler_base_sources(
         assert governance["reason"] == reason
     assert not any("POST" in call or "--disable-auto" in call for call in runner.calls)
     assert not any("mutation" in part for call in runner.calls for part in call)
+
+
+@pytest.mark.parametrize("list_base,detail_base", [("main", "release"), ("release", "main")])
+@pytest.mark.parametrize("state", ["armed", "queued", "unarmed"])
+@pytest.mark.parametrize(
+    "read_sequence", ["both", "adapter_only", "second_only", "returned_to_list", "third_base"]
+)
+def test_run_reconciler_conflicting_base_receipts(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    list_base: str,
+    detail_base: str,
+    state: str,
+    read_sequence: str,
+) -> None:
+    vault = _make_vault(tmp_path)
+    _write_task(vault, task_id="base-conflict", pr=42)
+    runner = _FakeRunner()
+    runner.open_prs = [
+        _pr(42, base=list_base, auto_merge=state != "unarmed", auto_merge_method="MERGE")
+    ]
+    runner.queued_prs = {42} if state == "queued" else set()
+    # The enforced SQUASH rule applies only to main, independently of PR base.
+    runner.ruleset_details[16186443] = {
+        "id": 16186443,
+        "name": "main-merge-queue",
+        "target": "branch",
+        "enforcement": "active",
+        "conditions": {"ref_name": {"include": ["refs/heads/main"], "exclude": []}},
+        "rules": [{"type": "merge_queue", "parameters": {"merge_method": "SQUASH"}}],
+    }
+    detail_refs = iter(
+        {
+            "both": [detail_base, detail_base],
+            "adapter_only": [detail_base, None],
+            "second_only": [list_base, detail_base],
+            "returned_to_list": [detail_base, list_base],
+            "third_base": [detail_base, "staging"],
+        }[read_sequence]
+    )
+    detail_for_number = runner._rest_pull_for_number
+
+    def retargeted_detail(number: int) -> dict[str, Any] | None:
+        ref = next(detail_refs)
+        if ref is None:
+            return None
+        detail = detail_for_number(number)
+        assert detail is not None
+        detail["base"]["ref"] = ref
+        return detail
+
+    monkeypatch.setattr(runner, "_rest_pull_for_number", retargeted_detail)
+    report = autoqueue.run_reconciler(
+        repo="owner/repo",
+        repo_root=tmp_path,
+        vault_root=vault,
+        apply=False,
+        lineage_ledger_path=None,
+        quarantine_path=tmp_path / "quarantine.json",
+        admission_governor_path=tmp_path / "governor.yaml",
+        runner=runner,
+    )
+
+    decision = report["decisions"][0]
+    reason = (
+        f"auto_merge_method_unverified:pr_base_ref_conflict:list={list_base}:detail={detail_base}"
+    )
+    assert (
+        decision["action"]
+        == {
+            "armed": "disable_auto_merge",
+            "queued": "dequeue",
+            "unarmed": "blocked",
+        }[state]
+    )
+    assert decision["reasons"] == [reason]
+    assert decision.get("auto_merge_method_owner") == (None if state == "unarmed" else "unverified")
+    governance = decision["merge_queue_governance"]
+    assert governance["base_ref"] == list_base
+    assert governance["base_ref_detail"] == detail_base
+    assert governance.get("base_ref_detail_latest") == (
+        "staging" if read_sequence == "third_base" else None
+    )
+    assert governance["reason"] == reason
+    assert governance["method"] is None
+    assert governance["source"] is None
+    assert report["counts"]["already_auto_merge_enabled"] == 0
+    assert report["counts"]["already_queued"] == 0
+    assert not any("POST" in call or "--disable-auto" in call for call in runner.calls)
+    assert not any("mutation" in part for call in runner.calls for part in call)
+    assert next(detail_refs, "exhausted") == "exhausted"
+
+
+@pytest.mark.parametrize("conflict_first", [False, True])
+def test_run_reconciler_base_conflict_cache_isolation(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, conflict_first: bool
+) -> None:
+    vault = _make_vault(tmp_path)
+    runner = _FakeRunner()
+    runner.open_prs = [
+        _pr(number, auto_merge=True, auto_merge_method="MERGE") for number in (41, 42, 43)
+    ]
+    if conflict_first:
+        runner.open_prs.reverse()
+    for item in runner.open_prs:
+        _write_task(vault, task_id=f"base-cache-{item['number']}", pr=item["number"])
+    detail_for_number = runner._rest_pull_for_number
+
+    def retargeted_detail(number: int) -> dict[str, Any]:
+        detail = detail_for_number(number)
+        assert detail is not None
+        detail["base"]["ref"] = {41: "main", 42: "release", 43: "staging"}[number]
+        return detail
+
+    monkeypatch.setattr(runner, "_rest_pull_for_number", retargeted_detail)
+    report = autoqueue.run_reconciler(
+        repo="owner/repo",
+        repo_root=tmp_path,
+        vault_root=vault,
+        apply=False,
+        lineage_ledger_path=None,
+        quarantine_path=tmp_path / "quarantine.json",
+        admission_governor_path=tmp_path / "governor.yaml",
+        runner=runner,
+    )
+    decisions = {decision["pr"]: decision for decision in report["decisions"]}
+    assert decisions[41]["action"] == "already_auto_merge_enabled"
+    assert decisions[41]["auto_merge_method_owner"] == "merge_queue"
+    assert decisions[41]["merge_queue_governance"]["reason"] is None
+    for number, ref in ((42, "release"), (43, "staging")):
+        assert decisions[number]["action"] == "disable_auto_merge"
+        assert decisions[number]["auto_merge_method_owner"] == "unverified"
+        assert decisions[number]["reasons"] == [
+            f"auto_merge_method_unverified:pr_base_ref_conflict:list=main:detail={ref}"
+        ]
 
 
 @pytest.mark.parametrize("detail_state", ["absent", "base_missing"])

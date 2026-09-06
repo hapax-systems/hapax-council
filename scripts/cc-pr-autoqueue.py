@@ -254,6 +254,8 @@ class PullRequest:
     base_ref: str | None = None
     default_branch: str | None = None
     queue_governance: MergeQueueGovernance | None = None
+    base_ref_detail: str | None = None
+    base_ref_detail_latest: str | None = None
 
 
 @dataclass(frozen=True)
@@ -317,6 +319,12 @@ class Decision:
                 "source": governance.source,
                 "reason": governance.reason,
             }
+            if self.pr.base_ref_detail:
+                out["merge_queue_governance"]["base_ref_detail"] = self.pr.base_ref_detail
+            if self.pr.base_ref_detail_latest:
+                out["merge_queue_governance"]["base_ref_detail_latest"] = (
+                    self.pr.base_ref_detail_latest
+                )
             if self.pr.auto_merge_enabled:
                 out["auto_merge_method_owner"] = (
                     "unverified"
@@ -731,6 +739,10 @@ def fetch_pr_merge_queue_governance(
     prefix = "auto_merge_method_unverified:"
     if not pr.base_ref:
         return MergeQueueGovernance(reason=prefix + "pr_base_ref_missing")
+    if pr.base_ref_detail and pr.base_ref_detail != pr.base_ref:
+        return MergeQueueGovernance(
+            reason=prefix + f"pr_base_ref_conflict:list={pr.base_ref}:detail={pr.base_ref_detail}"
+        )
     methods: set[str] = set()
     sources: list[str] = []
     page = 1
@@ -1118,6 +1130,12 @@ def _parse_pr(item: dict[str, Any]) -> PullRequest | None:
         default_branch=_scalar(item.get("baseRepoDefaultBranch"))
         if isinstance(item.get("baseRepoDefaultBranch"), str)
         else None,
+        base_ref_detail=_scalar(item.get("baseRefNameDetail"))
+        if isinstance(item.get("baseRefNameDetail"), str)
+        else None,
+        base_ref_detail_latest=_scalar(item.get("baseRefNameDetailLatest"))
+        if isinstance(item.get("baseRefNameDetailLatest"), str)
+        else None,
     )
 
 
@@ -1156,12 +1174,20 @@ def fetch_open_prs(
                 if rest_pr is not None
                 else str(item.get("mergeStateStatus") or "UNKNOWN").upper()
             )
-            # Keep the adapter's base fields even when this detail read fails;
-            # use the existing read only to fill missing applicability evidence.
+            # Fill missing base evidence, but never erase a disagreement already
+            # observed by the adapter, even if this read returns to the list base.
             base = rest_pr.get("base") if isinstance(rest_pr, dict) else None
             base = base if isinstance(base, dict) else {}
             base_repo = base.get("repo")
             item["baseRefName"] = item.get("baseRefName") or base.get("ref")
+            detail_ref = base.get("ref")
+            if detail_ref and detail_ref != item["baseRefName"]:
+                if not item.get("baseRefNameDetail"):
+                    item["baseRefNameDetail"] = detail_ref
+                elif detail_ref != item["baseRefNameDetail"]:
+                    item["baseRefNameDetailLatest"] = detail_ref
+            if item.get("baseRefNameDetail") and item["baseRefNameDetail"] != item["baseRefName"]:
+                item["baseRefConflict"] = "pr_base_ref_conflict"
             item["baseRepoDefaultBranch"] = item.get("baseRepoDefaultBranch") or (
                 base_repo.get("default_branch") if isinstance(base_repo, dict) else None
             )
@@ -3076,10 +3102,12 @@ def run_reconciler(
             now=now,
         )
     if expected_auto_merge_method is not None:
-        governance_by_base: dict[tuple[str | None, str | None], MergeQueueGovernance] = {}
+        governance_by_base: dict[
+            tuple[str | None, str | None, str | None], MergeQueueGovernance
+        ] = {}
         governed_prs: list[PullRequest] = []
         for pr in prs:
-            base_key = (pr.base_ref, pr.default_branch)
+            base_key = (pr.base_ref, pr.default_branch, pr.base_ref_detail)
             if base_key not in governance_by_base:
                 governance_by_base[base_key] = fetch_pr_merge_queue_governance(
                     pr, repo=repo, repo_root=repo_root, runner=runner or subprocess.run
