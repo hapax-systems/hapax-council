@@ -4982,6 +4982,16 @@ def test_graphql_routed_scan_does_not_begin_each_pr_on_rest(
         if cmd[:3] == ["gh", "pr", "list"]:
             return subprocess.CompletedProcess(cmd, 0, json.dumps([row]), "")
         if cmd[:3] == ["gh", "pr", "view"]:
+            fields = cmd[cmd.index("--json") + 1]
+            if fields == "headRefOid,statusCheckRollup":
+                return subprocess.CompletedProcess(
+                    cmd,
+                    0,
+                    json.dumps({"headRefOid": "deadbeef", "statusCheckRollup": []}),
+                    "",
+                )
+            assert "files" in fields.split(",")
+            assert "statusCheckRollup" not in fields.split(",")
             return subprocess.CompletedProcess(
                 cmd,
                 0,
@@ -4997,7 +5007,6 @@ def test_graphql_routed_scan_does_not_begin_each_pr_on_rest(
                         "changedFiles": 1,
                         "isDraft": False,
                         "files": [{"path": "scripts/example.py"}],
-                        "statusCheckRollup": [],
                     }
                 ),
                 "",
@@ -5027,6 +5036,10 @@ def test_graphql_routed_scan_does_not_begin_each_pr_on_rest(
     assert reviews[0][1].transport == "graphql"
     assert reviews[0][1].rest_blocked is True
     assert results == [{"status": "no_task", "pr": 4610}]
+    views = [call for call in calls if call[:3] == ["gh", "pr", "view"]]
+    assert len(views) == 2
+    assert views[0][views[0].index("--json") + 1] == "headRefOid,statusCheckRollup"
+    assert "files" in views[1][views[1].index("--json") + 1].split(",")
     assert any(call[:3] == ["gh", "pr", "list"] for call in calls)
     assert not any(len(call) > 6 and str(call[6]).startswith("repos/") for call in calls)
 

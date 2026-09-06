@@ -687,6 +687,8 @@ def _pull_status_row_from_rest(
     )
     pull = detail if isinstance(detail, dict) else item
     head = pull.get("head") if isinstance(pull.get("head"), dict) else {}
+    base = pull.get("base") if isinstance(pull.get("base"), dict) else {}
+    base_repo = base.get("repo") if isinstance(base.get("repo"), dict) else {}
     sha = str(head.get("sha") or "")
     head_ref = str(head.get("ref") or "")
     status_ref = sha or head_ref
@@ -715,6 +717,8 @@ def _pull_status_row_from_rest(
         "mergedAt": pull.get("merged_at"),
         "headRefName": head_ref,
         "headRefOid": sha,
+        "baseRefName": base.get("ref"),
+        "baseRepoDefaultBranch": base_repo.get("default_branch"),
         "changedFiles": changed_files,
         "files": _files_payload_from_rest(files) if include_files else None,
         "isDraft": bool(pull.get("draft")),
@@ -974,6 +978,7 @@ _GRAPHQL_PR_LIST_FIELDS = (
     "mergedAt",
     "headRefName",
     "headRefOid",
+    "baseRefName",
     "changedFiles",
     "files",
     "isDraft",
@@ -1147,6 +1152,7 @@ def list_open_pr_statuses_graphql(
                 "mergedAt": item.get("mergedAt"),
                 "headRefName": str(item.get("headRefName") or ""),
                 "headRefOid": str(item.get("headRefOid") or ""),
+                "baseRefName": item.get("baseRefName"),
                 "changedFiles": changed_files,
                 "files": files if include_files else None,
                 "isDraft": bool(item.get("isDraft")),
@@ -1173,6 +1179,29 @@ def list_open_pr_statuses_graphql(
                 "transport": "graphql",
             }
         )
+    # gh pr list expands nested fields (files, labels, autoMergeRequest) itself, but
+    # its field catalogue has no baseRepository. The named repository is the base
+    # repository of this listing; gh repo view supplies its defaultBranchRef.name
+    # over GraphQL once per nonempty, validated listing, without spending REST/core.
+    default_branch = None
+    if raw:
+        try:
+            repo_proc = _run(
+                runner,
+                ["gh", "repo", "view", repo, "--json", "defaultBranchRef"],
+                repo_root=repo_root,
+            )
+            repo_payload = _json_from_proc(repo_proc)
+            default_ref = (
+                repo_payload.get("defaultBranchRef") if isinstance(repo_payload, dict) else None
+            )
+            if isinstance(default_ref, dict) and isinstance(default_ref.get("name"), str):
+                default_branch = default_ref["name"]
+        except (subprocess.TimeoutExpired, OSError):
+            pass  # Unknown default branch remains unknown to ruleset applicability.
+
+    for row in out:
+        row["baseRepoDefaultBranch"] = default_branch
     return out
 
 

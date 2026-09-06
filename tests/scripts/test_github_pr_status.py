@@ -1274,6 +1274,7 @@ class _BothTransportsRunner(FakeRunner):
                             "mergedAt": None,
                             "headRefName": "feat/rest",
                             "headRefOid": "abc123",
+                            "baseRefName": "main",
                             "changedFiles": 1,
                             "files": [{"path": "scripts/example.py"}],
                             "isDraft": False,
@@ -1285,6 +1286,10 @@ class _BothTransportsRunner(FakeRunner):
                     ]
                 ),
                 "",
+            )
+        if cmd[:3] == ["gh", "repo", "view"]:
+            return subprocess.CompletedProcess(
+                cmd, 0, json.dumps({"defaultBranchRef": {"name": "main"}}), ""
             )
         if cmd[:3] == ["gh", "pr", "view"]:
             return subprocess.CompletedProcess(
@@ -1298,6 +1303,7 @@ class _BothTransportsRunner(FakeRunner):
                 "title": "REST PR",
                 "body": "body",
                 "head": {"ref": "feat/rest", "sha": "abc123"},
+                "base": {"ref": "main", "repo": {"default_branch": "main"}},
                 "draft": False,
                 "state": "open",
                 "merged_at": None,
@@ -2258,3 +2264,59 @@ def test_open_prs_quota_refusal_is_actionable(
     assert "wait" in captured.err
     assert ("2030-01-01T00:00:00+00:00" if reset else "reset time unknown") in captured.err
     assert "Traceback" not in captured.err
+
+
+@pytest.mark.parametrize("base", ["main", "release", None])
+def test_graphql_listing_carries_base_and_default_branch_independently(
+    tmp_path: Path, base: str | None
+) -> None:
+    fake = _BothTransportsRunner(rest_remaining=0, graphql_remaining=4660)
+
+    def runner(cmd: list[str], **kwargs: Any) -> subprocess.CompletedProcess:
+        proc = fake(cmd, **kwargs)
+        if cmd[:3] == ["gh", "pr", "list"]:
+            rows = json.loads(proc.stdout)
+            fields = cmd[cmd.index("--json") + 1].split(",")
+            for row in rows:
+                row["baseRefName"] = base
+            rows = [{key: value for key, value in row.items() if key in fields} for row in rows]
+            return subprocess.CompletedProcess(cmd, 0, json.dumps(rows), "")
+        return proc
+
+    rows, route = github_pr_status.list_open_pr_statuses(
+        repo="owner/repo", repo_root=tmp_path, runner=runner
+    )
+    assert route.transport == "graphql" and route.rest_blocked
+    assert rows[0]["baseRefName"] == base
+    assert rows[0]["baseRepoDefaultBranch"] == "main"
+    assert [call for call in fake.calls if call[:3] == ["gh", "repo", "view"]] == [
+        ["gh", "repo", "view", "owner/repo", "--json", "defaultBranchRef"]
+    ]
+
+
+@pytest.mark.parametrize(
+    "payload",
+    [
+        None,
+        {},
+        {"defaultBranchRef": None},
+        {"defaultBranchRef": {}},
+        {"defaultBranchRef": {"name": None}},
+        {"defaultBranchRef": {"name": {"unknown": "main"}}},
+    ],
+)
+def test_graphql_listing_unknown_default_branch_is_not_invented(
+    tmp_path: Path, payload: Any
+) -> None:
+    fake = _BothTransportsRunner(rest_remaining=0, graphql_remaining=4660)
+
+    def runner(cmd: list[str], **kwargs: Any) -> subprocess.CompletedProcess:
+        if cmd[:3] == ["gh", "repo", "view"]:
+            return subprocess.CompletedProcess(cmd, 0, json.dumps(payload), "")
+        return fake(cmd, **kwargs)
+
+    rows = github_pr_status.list_open_pr_statuses_graphql(
+        repo="owner/repo", repo_root=tmp_path, runner=runner
+    )
+    assert rows[0]["baseRefName"] == "main"
+    assert rows[0]["baseRepoDefaultBranch"] is None

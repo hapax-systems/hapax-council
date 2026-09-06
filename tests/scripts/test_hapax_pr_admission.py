@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import importlib.util
 import json
+from datetime import UTC, datetime
 from importlib.machinery import SourceFileLoader
 from pathlib import Path
 from types import SimpleNamespace
@@ -445,6 +446,64 @@ def test_an_unavailable_listing_is_not_counted_as_a_quiet_fleet(gov_module, monk
     monkeypatch.setattr(gov_module, "query_open_prs_measured", lambda: ([], True))
     gov_module.current_throttle_decision()
     assert captured["open_pr_count"] == 0
+
+
+@pytest.mark.parametrize(
+    "samples,failures,frozen",
+    [(0, 0, False), (3, 3, False), (4, 1, False), (4, 2, True), (4, 4, True)],
+    ids=["empty", "insufficient", "below_threshold", "at_threshold", "all_failed"],
+)
+@pytest.mark.parametrize("mode", ["normal", "drain", "frozen"])
+@pytest.mark.parametrize("command", ["auto", "normal"])
+def test_advisory_substitution_cannot_change_admission(
+    gov_module, monkeypatch, samples, failures, frozen, mode, command
+) -> None:
+    from shared.merge_queue_lineage import MergeQueueLineageRecord
+
+    now = datetime.now(UTC)
+    records = [
+        MergeQueueLineageRecord(
+            observed_at=now,
+            merge_group_run_id=index,
+            run_conclusion="failure" if index < failures else "success",
+            run_outcome="failure" if index < failures else "success",
+        )
+        for index in range(samples)
+    ]
+    monkeypatch.setattr(gov_module, "read_jsonl_records", lambda _: records)
+    # Hold the branch baseline constant to isolate the advisory count's admission effect.
+    monkeypatch.setattr(gov_module, "_snapshot_open_branches", lambda: [])
+    initial = {**gov_module.load_state(), "mode": mode}
+    decisions = []
+    outcomes = []
+    for measured in (True, False):
+        monkeypatch.setattr(
+            gov_module, "query_open_prs_measured", lambda measured=measured: ([], measured)
+        )
+        gov_module.save_state(initial)
+        decisions.append(gov_module.current_throttle_decision())
+        args = SimpleNamespace(force=False, reason="advisory_bound")
+        result = getattr(gov_module, f"cmd_{command}")(args)
+        outcomes.append(
+            (result, gov_module.load_state()["mode"], gov_module.is_admission_allowed(None)[0])
+        )
+
+    target_mode = (
+        (mode if frozen else "normal")
+        if command == "normal"
+        else ("frozen" if frozen and mode == "normal" else mode if frozen else "normal")
+    )
+    expected = (int(command == "normal" and frozen), target_mode, target_mode == "normal")
+    assert outcomes == [expected, expected]
+    assert [decision.frozen for decision in decisions] == [frozen, frozen]
+    assert [decision.samples for decision in decisions] == [samples, samples]
+    assert [decision.open_pr_count for decision in decisions] == [
+        0,
+        gov_module.ADVISORY_OPEN_PR_COUNT,
+    ]
+    assert [decision.state for decision in decisions] == (
+        ["rate_freeze", "rate_freeze"] if frozen else ["calm", "busy"]
+    )
 
 
 class TestManualFreezeWithoutAListing:

@@ -368,6 +368,7 @@ def _pr(
     number: int,
     *,
     branch: str | None = None,
+    base: str | None = "main",
     title: str | None = None,
     files: list[str] | None = None,
     changed_files_count: int | None = None,
@@ -392,6 +393,7 @@ def _pr(
         "title": title or f"PR {number}",
         "body": body,
         "headRefName": branch or f"feat/{number}",
+        "baseRefName": base,
         "headRefOid": f"sha-{number}",
         "changedFiles": len(file_list) if changed_files_count is None else changed_files_count,
         "files": [{"path": path} for path in file_list],
@@ -449,15 +451,27 @@ class _FakeRunner:
     def _rest_pr(pr: dict[str, Any]) -> dict[str, Any]:
         labels = pr.get("labels") if isinstance(pr.get("labels"), list) else []
         merge_state = str(pr.get("mergeStateStatus") or "CLEAN").lower()
+        auto_merge = pr.get("autoMergeRequest") or {}
+        method = auto_merge.get("mergeMethod")
         return {
             "number": pr.get("number"),
             "node_id": pr.get("id"),
             "title": pr.get("title") or "",
             "body": pr.get("body") or "",
             "head": {"ref": pr.get("headRefName") or "", "sha": pr.get("headRefOid") or ""},
+            "base": {"ref": pr.get("baseRefName"), "repo": {"default_branch": "main"}},
             "draft": bool(pr.get("isDraft")),
             "labels": labels,
-            "auto_merge": pr.get("autoMergeRequest"),
+            "auto_merge": (
+                {
+                    "enabled_by": {"login": "operator"},
+                    "merge_method": method.lower()
+                    if method in {"MERGE", "SQUASH", "REBASE"}
+                    else method,
+                }
+                if pr.get("autoMergeRequest")
+                else None
+            ),
             "mergeable_state": merge_state,
             "mergeable": merge_state in {"clean", "has_hooks", "unstable"},
             "changed_files": pr.get("changedFiles"),
@@ -497,7 +511,10 @@ class _FakeRunner:
                 branch = head.split(":", 1)[-1]
                 rows = [row for row in rows if (row.get("head") or {}).get("ref") == branch]
             return subprocess.CompletedProcess(cmd, 0, json.dumps(rows), "")
-        if path == "repos/owner/repo/rulesets":
+        if path in {
+            "repos/owner/repo/rulesets",
+            "repos/owner/repo/rulesets?per_page=100&page=1",
+        }:
             if self.rulesets_error is not None:
                 return subprocess.CompletedProcess(cmd, 1, "", self.rulesets_error)
             if self.rulesets_raw_stdout is not None:
@@ -531,6 +548,7 @@ class _FakeRunner:
                     "name": "main-merge-queue",
                     "target": "branch",
                     "enforcement": "active",
+                    "conditions": {"ref_name": {"include": ["~DEFAULT_BRANCH"], "exclude": []}},
                     "rules": [
                         {
                             "type": "merge_queue",
@@ -1767,12 +1785,22 @@ def test_skips_prs_already_in_queue_or_auto_merge_enabled(tmp_path: Path) -> Non
     assert not any(call[:3] == ["gh", "pr", "merge"] for call in runner.calls)
 
 
-def test_already_auto_merge_enabled_requires_matching_ruleset_method(tmp_path: Path) -> None:
+@pytest.mark.parametrize("scope", ["other_base", "excluded_base"])
+def test_non_queue_auto_merge_still_requires_matching_method(tmp_path: Path, scope: str) -> None:
     vault = _make_vault(tmp_path)
     _write_task(vault, task_id="wrong-method-armed", pr=4584)
     runner = _FakeRunner()
     runner.merge_queue_method = "SQUASH"
-    runner.open_prs = [_pr(4584, auto_merge=True, auto_merge_method="MERGE")]
+    runner.open_prs = [_pr(4584, base="release", auto_merge=True, auto_merge_method="MERGE")]
+    if scope == "excluded_base":
+        runner.ruleset_details[16186443] = {
+            "id": 16186443,
+            "name": "main-merge-queue",
+            "target": "branch",
+            "enforcement": "active",
+            "conditions": {"ref_name": {"include": ["~ALL"], "exclude": ["refs/heads/release"]}},
+            "rules": [{"type": "merge_queue", "parameters": {"merge_method": "SQUASH"}}],
+        }
 
     report = autoqueue.run_reconciler(
         repo="owner/repo",
@@ -1789,6 +1817,7 @@ def test_already_auto_merge_enabled_requires_matching_ruleset_method(tmp_path: P
     assert decision["action"] == "disable_auto_merge"
     assert decision["auto_merge_method"] == "MERGE"
     assert "auto_merge_method_mismatch:armed=MERGE:expected=SQUASH" in decision["reasons"]
+    assert decision["auto_merge_method_owner"] == "pull_request"
     assert [
         "gh",
         "pr",
@@ -1800,34 +1829,17 @@ def test_already_auto_merge_enabled_requires_matching_ruleset_method(tmp_path: P
     ] in runner.calls
 
 
-def test_queued_armed_pr_with_wrong_method_is_dequeued_before_disable(
-    tmp_path: Path,
-) -> None:
+@pytest.mark.parametrize("queued", [False, True], ids=["armed", "queued"])
+def test_queue_owned_method_survives_arm_readback(tmp_path: Path, queued: bool) -> None:
     vault = _make_vault(tmp_path)
-    _write_task(vault, task_id="queued-wrong-method-armed", pr=4584)
+    _write_task(vault, task_id="queue-owned-readback", pr=4584)
     runner = _FakeRunner()
-    runner.queued_prs = {4584}
-    runner.open_prs = [_pr(4584, auto_merge=True, auto_merge_method="MERGE")]
+    runner.open_prs = [_pr(4584)]
 
-    report = autoqueue.run_reconciler(
-        repo="owner/repo",
-        repo_root=tmp_path,
-        vault_root=vault,
-        apply=True,
-        runner=runner,
+    armed = autoqueue.run_reconciler(
+        repo="owner/repo", repo_root=tmp_path, vault_root=vault, apply=True, runner=runner
     )
-
-    decision = report["decisions"][0]
-    assert report["counts"]["dequeue"] == 1
-    assert report["counts"]["disable_auto_merge"] == 0
-    assert decision["action"] == "dequeue"
-    assert "auto_merge_method_mismatch:armed=MERGE:expected=SQUASH" in decision["reasons"]
-    assert "does not disable auto-merge" in decision["next_action"]
-    assert "next reconciler pass will re-arm" not in decision["next_action"]
-    assert any(
-        call[:3] == ["gh", "api", "graphql"] and any("dequeuePullRequest" in part for part in call)
-        for call in runner.calls
-    )
+    assert armed["counts"]["queue"] == 1
     assert [
         "gh",
         "pr",
@@ -1835,8 +1847,145 @@ def test_queued_armed_pr_with_wrong_method_is_dequeued_before_disable(
         "4584",
         "--repo",
         "owner/repo",
-        "--disable-auto",
-    ] not in runner.calls
+        "--auto",
+        "--squash",
+    ] in runner.calls
+
+    # API readback after the arm: GitHub reports MERGE even though the enforced
+    # queue strategy (and the command just issued) is SQUASH.
+    runner.open_prs = [_pr(4584, auto_merge=True, auto_merge_method="MERGE")]
+    runner.queued_prs = {4584} if queued else set()
+    runner.calls.clear()
+    report = autoqueue.run_reconciler(
+        repo="owner/repo", repo_root=tmp_path, vault_root=vault, apply=True, runner=runner
+    )
+
+    decision = report["decisions"][0]
+    assert decision["action"] == ("already_queued" if queued else "already_auto_merge_enabled")
+    assert decision.get("reasons", []) == []
+    assert decision["auto_merge_method"] == "MERGE"
+    assert decision["auto_merge_method_owner"] == "merge_queue"
+    assert decision["merge_queue_governance"] == {
+        "base_ref": "main",
+        "method": "SQUASH",
+        "source": "ruleset:main-merge-queue:16186443",
+        "reason": None,
+    }
+    assert not any(call[:3] == ["gh", "pr", "merge"] for call in runner.calls)
+    assert not any("dequeuePullRequest" in part for call in runner.calls for part in call)
+
+
+@pytest.mark.parametrize("queued", [False, True], ids=["armed", "queued"])
+@pytest.mark.parametrize(
+    ("fault", "reason"),
+    [
+        ("unreadable", "enforcement_unreadable:rulesets unavailable"),
+        ("conflicting_rules", "queue_strategy_conflict:MERGE,SQUASH"),
+        ("conflicting_later_page", "queue_strategy_conflict:MERGE,SQUASH"),
+        ("pr_fields_absent", "pr_base_ref_missing"),
+        ("pr_base_malformed", "pr_base_ref_missing"),
+        ("conditions_absent", "ref_enforcement_unknown:ruleset=16186443"),
+        ("unknown_pattern", "ref_enforcement_unknown:ruleset=16186443"),
+        ("enforcement_absent", "enforcement_malformed:summary"),
+        ("enforcement_malformed", "enforcement_malformed:summary"),
+        ("rulesets_malformed", "enforcement_malformed:rulesets"),
+        ("detail_conflict", "enforcement_conflict:ruleset=16186443"),
+        ("strategy_invalid", "queue_strategy_invalid:ruleset=99"),
+        ("detail_unreadable", "enforcement_unreadable:ruleset=99:detail forbidden"),
+    ],
+)
+def test_queue_governance_evidence_refuses_unknown(
+    tmp_path: Path, queued: bool, fault: str, reason: str
+) -> None:
+    class FaultRunner(_FakeRunner):
+        def _rest_response(self, cmd: list[str]) -> subprocess.CompletedProcess | None:
+            if (
+                cmd[:5] == ["gh", "api", "--method", "GET", "-H"]
+                and cmd[6] == "repos/owner/repo/rulesets?per_page=100&page=2"
+                and fault == "conflicting_later_page"
+            ):
+                return subprocess.CompletedProcess(
+                    cmd, 0, json.dumps([self.rulesets_payload[1]]), ""
+                )
+            response = super()._rest_response(cmd)
+            if response is None or response.returncode != 0:
+                return response
+            path = cmd[6]
+            payload = json.loads(response.stdout)
+            if path == "repos/owner/repo/rulesets?per_page=100&page=1":
+                if fault == "unreadable":
+                    return subprocess.CompletedProcess(cmd, 1, "", "rulesets unavailable")
+                if fault == "enforcement_absent":
+                    payload[0].pop("enforcement")
+                elif fault == "enforcement_malformed":
+                    payload[0]["enforcement"] = []
+                elif fault == "rulesets_malformed":
+                    payload = {}
+                elif fault == "conflicting_later_page":
+                    payload = [payload[0]] + [
+                        {"id": i, "target": "tag", "enforcement": "disabled"}
+                        for i in range(100, 199)
+                    ]
+            if path == "repos/owner/repo/pulls/4584" and fault == "pr_fields_absent":
+                payload.pop("base")
+            if path == "repos/owner/repo/pulls/4584" and fault == "pr_base_malformed":
+                payload["base"]["ref"] = {"unknown": "main"}
+            if path == "repos/owner/repo/rulesets/16186443":
+                if fault == "conditions_absent":
+                    payload.pop("conditions")
+                elif fault == "unknown_pattern":
+                    payload["conditions"]["ref_name"]["include"] = ["refs/heads/**"]
+                elif fault == "detail_conflict":
+                    payload["enforcement"] = "disabled"
+            return subprocess.CompletedProcess(cmd, 0, json.dumps(payload), "")
+
+    vault = _make_vault(tmp_path)
+    _write_task(vault, task_id="queue-evidence-lost", pr=4584)
+    runner = FaultRunner()
+    # Matching metadata makes it impossible for the old strict comparison to
+    # hide a fail-open loss of enforcement evidence.
+    runner.open_prs = [_pr(4584, auto_merge=True, auto_merge_method="SQUASH")]
+    runner.queued_prs = {4584} if queued else set()
+    if fault in {
+        "conflicting_rules",
+        "conflicting_later_page",
+        "strategy_invalid",
+        "detail_unreadable",
+    }:
+        runner.rulesets_payload = [
+            {
+                "id": 16186443,
+                "name": "main-merge-queue",
+                "target": "branch",
+                "enforcement": "active",
+            },
+            {"id": 99, "name": "another-queue", "target": "branch", "enforcement": "active"},
+        ]
+        runner.ruleset_details[99] = {
+            **runner.rulesets_payload[1],
+            "conditions": {"ref_name": {"include": ["refs/heads/main"], "exclude": []}},
+            "rules": [
+                {
+                    "type": "merge_queue",
+                    "parameters": {
+                        "merge_method": "MERGE"
+                        if fault in {"conflicting_rules", "conflicting_later_page"}
+                        else "FASTFORWARD"
+                    },
+                }
+            ],
+        }
+        if fault == "detail_unreadable":
+            runner.ruleset_detail_errors[99] = "detail forbidden"
+
+    report = autoqueue.run_reconciler(
+        repo="owner/repo", repo_root=tmp_path, vault_root=vault, apply=True, runner=runner
+    )
+    decision = report["decisions"][0]
+    assert decision["action"] == ("dequeue" if queued else "disable_auto_merge")
+    assert decision["reasons"] == [f"auto_merge_method_unverified:{reason}"]
+    assert decision["auto_merge_method_owner"] == "unverified"
+    assert not any("--auto" in call for call in runner.calls)
 
 
 def test_mismatched_auto_merge_method_converges_after_disable_next_pass(
@@ -1845,7 +1994,7 @@ def test_mismatched_auto_merge_method_converges_after_disable_next_pass(
     vault = _make_vault(tmp_path)
     _write_task(vault, task_id="wrong-method-armed", pr=4584)
     runner = _FakeRunner()
-    runner.open_prs = [_pr(4584, auto_merge=True, auto_merge_method="MERGE")]
+    runner.open_prs = [_pr(4584, base="release", auto_merge=True, auto_merge_method="MERGE")]
 
     first_report = autoqueue.run_reconciler(
         repo="owner/repo",
@@ -1859,7 +2008,7 @@ def test_mismatched_auto_merge_method_converges_after_disable_next_pass(
     assert "next reconciler pass will re-arm" in first_report["decisions"][0]["next_action"]
 
     runner.calls.clear()
-    runner.open_prs = [_pr(4584, auto_merge=False)]
+    runner.open_prs = [_pr(4584, base="release", auto_merge=False)]
     second_report = autoqueue.run_reconciler(
         repo="owner/repo",
         repo_root=tmp_path,
@@ -1887,7 +2036,7 @@ def test_already_auto_merge_enabled_reports_unsupported_armed_method(
     vault = _make_vault(tmp_path)
     _write_task(vault, task_id="unknown-method-armed", pr=4585)
     runner = _FakeRunner()
-    runner.open_prs = [_pr(4585, auto_merge=True, auto_merge_method="FASTFORWARD")]
+    runner.open_prs = [_pr(4585, base="release", auto_merge=True, auto_merge_method="FASTFORWARD")]
 
     report = autoqueue.run_reconciler(
         repo="owner/repo",
@@ -2317,7 +2466,7 @@ def test_already_auto_merge_enabled_without_armed_method_is_rearmed_next_pass(
     vault = _make_vault(tmp_path)
     _write_task(vault, task_id="armed-method-missing", pr=83)
     runner = _FakeRunner()
-    runner.open_prs = [_pr(83, auto_merge=True, auto_merge_method=None)]
+    runner.open_prs = [_pr(83, base="release", auto_merge=True, auto_merge_method=None)]
 
     report = autoqueue.run_reconciler(
         repo="owner/repo",
@@ -2342,7 +2491,7 @@ def test_already_auto_merge_enabled_without_armed_method_is_rearmed_next_pass(
     ] in runner.calls
 
     runner.calls.clear()
-    runner.open_prs = [_pr(83, auto_merge=False)]
+    runner.open_prs = [_pr(83, base="release", auto_merge=False)]
     second_report = autoqueue.run_reconciler(
         repo="owner/repo",
         repo_root=tmp_path,
@@ -7596,6 +7745,10 @@ def _rate_only_runner(
             return subprocess.CompletedProcess(cmd, 0, f"{head}\r\n{json.dumps(payload)}", "")
         if cmd[:3] == ["gh", "pr", "list"]:
             return subprocess.CompletedProcess(cmd, 0, json.dumps(rows or []), "")
+        if cmd[:3] == ["gh", "repo", "view"]:
+            return subprocess.CompletedProcess(
+                cmd, 0, json.dumps({"defaultBranchRef": {"name": "main"}}), ""
+            )
         if cmd[:3] == ["gh", "pr", "view"]:
             queried_row = next(row for row in rows or [] if str(row["number"]) == cmd[3])
             return subprocess.CompletedProcess(
@@ -7824,6 +7977,39 @@ def test_a_graphql_row_with_no_checks_keeps_an_empty_rollup_rather_than_asking_r
     assert not any(len(call) > 6 and str(call[6]).startswith("repos/") for call in calls), (
         f"an empty rollup on a GraphQL row must stay empty, not fall through to REST: {calls}"
     )
+
+
+@pytest.mark.parametrize(
+    "rollup_fields",
+    [{}, {"statusCheckRollup": None}, {"statusCheckRollup": {}}, {"statusCheckRollup": "SUCCESS"}],
+    ids=["absent", "null", "object", "string"],
+)
+def test_graphql_row_invalid_rollup_is_unknown_without_rest(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, rollup_fields: dict[str, Any]
+) -> None:
+    # Inject at the adapter boundary: the real adapter refuses malformed rollups before
+    # this defensive consumer branch, so a subprocess fixture cannot exercise it directly.
+    row = {**_GRAPHQL_ROW, "transport": "graphql", **rollup_fields}
+    route = _graphql_route()
+    monkeypatch.setattr(autoqueue, "list_open_pr_statuses", lambda **_: ([row], route))
+
+    def no_rest(*args: Any, **kwargs: Any) -> Any:
+        pytest.fail("invalid GraphQL row must not rehydrate through REST")
+
+    monkeypatch.setattr(autoqueue, "get_pull_rest", no_rest)
+    monkeypatch.setattr(autoqueue, "_fetch_status_check_rollup", no_rest)
+    prs, returned_route = autoqueue.fetch_open_prs(
+        repo="owner/repo", repo_root=tmp_path, runner=no_rest
+    )
+
+    assert returned_route is route
+    assert row["statusCheckRollup"] == []
+    assert len(prs) == 1
+    assert not prs[0].check_summary.observed
+    assert not prs[0].check_summary.verified_passed
+    decision = autoqueue.classify_pr(prs[0], tasks=[], queued_prs=set())
+    assert decision.action == "blocked"
+    assert "no_status_checks" in decision.reasons
 
 
 def test_fetch_open_prs_skips_the_cycle_when_both_pools_are_exhausted(tmp_path: Path) -> None:
@@ -8429,3 +8615,154 @@ def test_graphql_admission_confirmed_absence_is_readable(tmp_path: Path, status:
         repo_root=tmp_path,
         runner=runner,
     ) == ("R_test", None)
+
+
+@pytest.mark.parametrize("transport", ["graphql", "rest"])
+@pytest.mark.parametrize("evidence", ["present", "absent", "default_only"])
+def test_routed_base_evidence_reaches_queue_governance(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, transport: str, evidence: str
+) -> None:
+    """Exercise the actual listing, adapter, extraction and reconciler decision."""
+
+    class BaseEvidenceRunner(_FakeRunner):
+        def __call__(self, cmd: list[str], **kwargs: Any) -> subprocess.CompletedProcess:
+            if cmd[:4] == ["gh", "api", "-i", "rate_limit"]:
+                return _rate_only_runner(
+                    core=0 if transport == "graphql" else 4900,
+                    graphql=4660 if transport == "graphql" else 1000,
+                    calls=self.calls,
+                )(cmd, **kwargs)
+            if cmd[:3] == ["gh", "pr", "list"]:
+                self.calls.append(list(cmd))
+                # Model gh field selection: unrequested base evidence cannot arrive.
+                fields = cmd[cmd.index("--json") + 1].split(",")
+                rows = [
+                    {key: value for key, value in row.items() if key in fields}
+                    for row in self.open_prs
+                ]
+                return subprocess.CompletedProcess(cmd, 0, json.dumps(rows), "")
+            if cmd[:3] == ["gh", "repo", "view"]:
+                self.calls.append(list(cmd))
+                payload = {"defaultBranchRef": {"name": "main"}} if evidence != "absent" else {}
+                return subprocess.CompletedProcess(cmd, 0, json.dumps(payload), "")
+            if cmd[:3] == ["gh", "pr", "view"]:
+                self.calls.append(list(cmd))
+                row = self.open_prs[0]
+                payload = {key: row[key] for key in ("headRefOid", "statusCheckRollup")}
+                return subprocess.CompletedProcess(cmd, 0, json.dumps(payload), "")
+            if (
+                transport == "graphql"
+                and cmd[:2] == ["gh", "api"]
+                and any("/pulls" in arg or "/commits/" in arg for arg in cmd)
+            ):
+                self.calls.append(list(cmd))
+                return subprocess.CompletedProcess(cmd, 1, "", "API rate limit exceeded")
+            return super().__call__(cmd, **kwargs)
+
+        @staticmethod
+        def _rest_pr(pr: dict[str, Any]) -> dict[str, Any]:
+            payload = _FakeRunner._rest_pr(pr)
+            if evidence == "absent":
+                payload.pop("base")
+            return payload
+
+    vault = _make_vault(tmp_path)
+    _write_task(vault, task_id="routed-base", pr=4610)
+    fake = BaseEvidenceRunner()
+    fake.open_prs = [_pr(4610, base="main" if evidence == "present" else None)]
+    if evidence != "present":
+        fake.open_prs[0].pop("baseRefName")
+    listed: list[dict[str, Any]] = []
+    real_listing = autoqueue.list_open_pr_statuses
+
+    def capture_listing(**kwargs: Any) -> Any:
+        rows, route = real_listing(**kwargs)
+        assert route.transport == transport
+        assert route.rest_blocked is (transport == "graphql")
+        listed.extend(dict(row) for row in rows)
+        return rows, route
+
+    monkeypatch.setattr(autoqueue, "list_open_pr_statuses", capture_listing)
+    report = autoqueue.run_reconciler(
+        repo="owner/repo", repo_root=tmp_path, vault_root=vault, apply=False, runner=fake
+    )
+    decision = report["decisions"][0]
+    expected = "queue" if evidence == "present" else "blocked"
+    assert decision["action"] == expected, decision
+    governance = decision["merge_queue_governance"]
+    if evidence == "present":
+        assert governance == {
+            "base_ref": "main",
+            "method": "SQUASH",
+            "source": "ruleset:main-merge-queue:16186443",
+            "reason": None,
+        }
+        assert listed[0]["baseRefName"] == "main"
+        assert listed[0]["baseRepoDefaultBranch"] == "main"
+    else:
+        assert governance["reason"] == "auto_merge_method_unverified:pr_base_ref_missing"
+        assert governance["base_ref"] is None
+    assert listed[0]["transport"] == transport
+    assert listed[0]["headRefOid"] == "sha-4610"
+    assert listed[0]["statusCheckRollup"]
+    metadata = [
+        call
+        for call in fake.calls
+        if call[:2] == ["gh", "api"] and any("/pulls" in arg or "/commits/" in arg for arg in call)
+    ]
+    if transport == "graphql":
+        assert metadata == [], fake.calls
+        assert any(call[:3] == ["gh", "pr", "view"] for call in fake.calls)
+    else:
+        assert metadata
+    assert not any(call[:3] == ["gh", "pr", "merge"] for call in fake.calls)
+    assert _graphql_mutations(fake.calls) == []
+    print(
+        json.dumps(
+            {
+                "transport": transport,
+                "evidence": evidence,
+                "decision": decision,
+                "requests": fake.calls,
+            }
+        )
+    )
+
+
+@pytest.mark.parametrize("transport", ["graphql", "rest"])
+@pytest.mark.parametrize(
+    "detail", [None, {}, {"base": {"ref": "other", "repo": {"default_branch": "other"}}}]
+)
+def test_fetch_open_prs_preserves_adapter_base_evidence(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, transport: str, detail: Any
+) -> None:
+    row = {**_pr(4610), "transport": transport, "baseRepoDefaultBranch": "main"}
+    monkeypatch.setattr(autoqueue, "list_open_pr_statuses", lambda **_kwargs: ([row], transport))
+    calls = []
+
+    def get_detail(*args: Any, **kwargs: Any) -> Any:
+        calls.append(args)
+        return detail
+
+    monkeypatch.setattr(autoqueue, "get_pull_rest", get_detail)
+    prs, _route = autoqueue.fetch_open_prs(repo="owner/repo", repo_root=tmp_path)
+    assert prs[0].base_ref == "main"
+    assert prs[0].default_branch == "main"
+    assert bool(calls) is (transport == "rest")
+
+
+@pytest.mark.parametrize("missing", ["baseRefName", "baseRepoDefaultBranch"])
+def test_fetch_open_prs_detail_fills_only_missing_base_field(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, missing: str
+) -> None:
+    row = {**_pr(4610), "transport": "rest", "baseRepoDefaultBranch": "main"}
+    row[missing] = None
+    monkeypatch.setattr(autoqueue, "list_open_pr_statuses", lambda **_kwargs: ([row], "rest"))
+    monkeypatch.setattr(
+        autoqueue,
+        "get_pull_rest",
+        lambda *_args, **_kwargs: {"base": {"ref": "release", "repo": {"default_branch": "trunk"}}},
+    )
+    prs, _route = autoqueue.fetch_open_prs(repo="owner/repo", repo_root=tmp_path)
+    assert prs[0].base_ref == ("release" if missing == "baseRefName" else "main")
+    assert prs[0].default_branch == ("trunk" if missing == "baseRepoDefaultBranch" else "main")
