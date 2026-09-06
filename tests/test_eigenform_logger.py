@@ -2,6 +2,17 @@ import json
 from pathlib import Path
 
 
+def test_default_call_uses_isolated_sinks(tmp_path, monkeypatch) -> None:
+    from shared import eigenform_logger
+
+    # Exercise the production no-path call so removing conftest isolation leaks
+    # into the subprocess HOME checked by test_persistent_sink_isolation.
+    ring = tmp_path / "state-log.jsonl"
+    monkeypatch.setattr(eigenform_logger, "EIGENFORM_LOG", ring)
+    eigenform_logger.log_state_vector(presence=0.6)
+    assert ring.read_text() == eigenform_logger.PERSISTENT_LOG.read_text()
+
+
 def test_log_state_vector(tmp_path: Path) -> None:
     from shared.eigenform_logger import log_state_vector
 

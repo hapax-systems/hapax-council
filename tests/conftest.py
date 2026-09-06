@@ -16,6 +16,15 @@ import pytest
 
 
 @pytest.fixture(autouse=True)
+def _isolate_eigenform_logger(tmp_path, monkeypatch):
+    """Cover direct imports and the aggregator's no-path observational writes."""
+    from shared import eigenform_logger
+
+    monkeypatch.setattr(eigenform_logger, "PERSISTENT_LOG", tmp_path / "eigenform-persistent.jsonl")
+    monkeypatch.setattr(eigenform_logger, "EIGENFORM_LOG", tmp_path / "eigenform-state.jsonl")
+
+
+@pytest.fixture(autouse=True)
 def _isolate_turn_timing_witness(tmp_path, monkeypatch):
     """Keep TurnBudget.emit() receipts out of the production /dev/shm witness.
 

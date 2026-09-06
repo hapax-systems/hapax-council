@@ -26,13 +26,12 @@ def _safe_label(value: str, *, allowed: frozenset[str], default: str) -> str:
     return label if label in allowed else default
 
 
-PERSISTENT_LOG = Path.home() / "hapax-state/research/eigenform-log.jsonl"
+_DEFAULT_PERSISTENT_LOG = Path.home() / "hapax-state/research/eigenform-log.jsonl"
+PERSISTENT_LOG = _DEFAULT_PERSISTENT_LOG
 MAX_PERSISTENT_ENTRIES = 50_000
 
 
-def _append_and_trim(
-    entry: dict, path: Path = PERSISTENT_LOG, max_entries: int = MAX_PERSISTENT_ENTRIES
-) -> None:
+def _append_and_trim(entry: dict, path: Path, max_entries: int = MAX_PERSISTENT_ENTRIES) -> None:
     """Append *entry* to a persistent JSONL ring buffer on disk."""
     try:
         path.parent.mkdir(parents=True, exist_ok=True)
@@ -58,9 +57,17 @@ def log_state_vector(
     activity: str = "idle",
     e_mesh: float = 1.0,
     restriction_residual_rms: float = 0.0,
-    path: Path = EIGENFORM_LOG,
+    path: Path | None = None,
 ) -> None:
-    """Append state vector to JSONL log for eigenform analysis."""
+    """Append state vector to JSONL log for eigenform analysis.
+
+    No path writes both production sinks. An explicit ring path is isolated
+    unless PERSISTENT_LOG has been redirected to opt into persistent mirroring.
+    """
+    persistent_path = (
+        PERSISTENT_LOG if path is None or PERSISTENT_LOG != _DEFAULT_PERSISTENT_LOG else None
+    )
+    path = EIGENFORM_LOG if path is None else path
     entry = {
         "t": time.time(),
         "presence": presence,
@@ -94,4 +101,5 @@ def log_state_vector(
         pass
 
     # Persistent disk log (50K ring buffer for long-term convergence analysis)
-    _append_and_trim(entry)
+    if persistent_path is not None:
+        _append_and_trim(entry, path=persistent_path)
