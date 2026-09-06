@@ -757,3 +757,244 @@ def test_class_attributes_do_not_become_method_closure_cells(
     assert (
         (Path("shared/consumer.py"), "artifacts/class.json") in _unwritten(report)
     ) is not default
+
+
+@pytest.mark.parametrize("imported", [False, True], ids=["local", "imported"])
+@pytest.mark.parametrize(
+    "call_after", [False, True], ids=["before-redefinition", "after-redefinition"]
+)
+def test_calls_bind_to_individual_definitions(gate, tmp_path: Path, imported, call_after) -> None:
+    first = "def output_path():\n    return Path('artifacts/actual.json')\n"
+    if imported:
+        _write(tmp_path, "shared/helper.py", "from pathlib import Path\n" + first)
+        first = "from shared.helper import output_path\n"
+    second = "def output_path():\n    return Path('artifacts/orphan.json')\n"
+    call = "destination = output_path()\n"
+    orphan = "actual" if call_after else "orphan"
+    _write(
+        tmp_path,
+        "shared/consumer.py",
+        "from pathlib import Path\n"
+        + first
+        + (second + call if call_after else call + second)
+        + "destination.write_text('{}')\n"
+        + f"Path('artifacts/{orphan}.json').read_text()\n",
+    )
+    accesses, *_ = gate.collect_artifact_accesses(tmp_path)
+    assert {a.pattern for a in accesses if a.action == "write" and a.bounded} == {
+        f"artifacts/{'orphan' if call_after else 'actual'}.json"
+    }
+    report = gate.analyse_consumer_side(tmp_path, [])
+    assert (Path("shared/consumer.py"), f"artifacts/{orphan}.json") in _unwritten(report)
+    assert report.unresolvable == 0
+
+
+def test_function_object_alias_keeps_its_definition(gate, tmp_path: Path) -> None:
+    _write(
+        tmp_path,
+        "shared/consumer.py",
+        "from pathlib import Path\n"
+        "def output_path():\n    return Path('artifacts/actual.json')\n"
+        "saved = output_path\n"
+        "def output_path():\n    return Path('artifacts/orphan.json')\n"
+        "saved().write_text('{}')\nPath('artifacts/orphan.json').read_text()\n",
+    )
+    accesses, *_ = gate.collect_artifact_accesses(tmp_path)
+    assert {a.pattern for a in accesses if a.action == "write" and a.bounded} == {
+        "artifacts/actual.json"
+    }
+    report = gate.analyse_consumer_side(tmp_path, [])
+    assert (Path("shared/consumer.py"), "artifacts/orphan.json") in _unwritten(report)
+    assert report.unresolvable == 0
+
+
+@pytest.mark.parametrize("kind", ["function", "class"])
+def test_decorator_application_propagates_global_assignment(gate, tmp_path: Path, kind) -> None:
+    definition = (
+        "def configured():\n    pass\n" if kind == "function" else "class Configured:\n    pass\n"
+    )
+    _write(
+        tmp_path,
+        "shared/consumer.py",
+        "from pathlib import Path\nARTIFACT = Path('artifacts/old.json')\n"
+        "def configure(obj):\n    global ARTIFACT\n"
+        "    ARTIFACT = Path('artifacts/new.json')\n    return obj\n"
+        "@configure\n"
+        + definition
+        + "ARTIFACT.write_text('{}')\nPath('artifacts/old.json').read_text()\n",
+    )
+    accesses, *_ = gate.collect_artifact_accesses(tmp_path)
+    assert {a.pattern for a in accesses if a.action == "write" and a.bounded} == {
+        "artifacts/new.json"
+    }
+    report = gate.analyse_consumer_side(tmp_path, [])
+    assert (Path("shared/consumer.py"), "artifacts/old.json") in _unwritten(report)
+    assert report.unresolvable == 0
+
+
+@pytest.mark.parametrize("kind", ["function", "class"])
+def test_unseen_decorator_keeps_outer_binding_uncertain(gate, tmp_path: Path, kind) -> None:
+    definition = (
+        "def configured():\n    pass\n" if kind == "function" else "class Configured:\n    pass\n"
+    )
+    _write(
+        tmp_path,
+        "shared/consumer.py",
+        "from pathlib import Path\nfrom unavailable import configure\n"
+        "ARTIFACT = Path('artifacts/old.json')\n@configure\n"
+        + definition
+        + "ARTIFACT.write_text('{}')\nPath('artifacts/old.json').read_text()\n",
+    )
+    accesses, *_ = gate.collect_artifact_accesses(tmp_path)
+    assert not [a for a in accesses if a.action == "write" and a.bounded]
+    report = gate.analyse_consumer_side(tmp_path, [])
+    assert (Path("shared/consumer.py"), "artifacts/old.json") in _unwritten(report)
+    assert report.unresolvable > 0
+
+
+@pytest.mark.parametrize("kind", ["function", "class"])
+def test_stacked_decorators_apply_innermost_first(gate, tmp_path: Path, kind) -> None:
+    definition = (
+        "def configured():\n    pass\n" if kind == "function" else "class Configured:\n    pass\n"
+    )
+    _write(
+        tmp_path,
+        "shared/consumer.py",
+        "from pathlib import Path\nARTIFACT = Path('artifacts/old.json')\n"
+        "def outer(obj):\n    global ARTIFACT\n"
+        "    ARTIFACT = Path('artifacts/outer.json')\n    return obj\n"
+        "def inner(obj):\n    global ARTIFACT\n"
+        "    ARTIFACT = Path('artifacts/inner.json')\n    return obj\n"
+        "@outer\n@inner\n"
+        + definition
+        + "ARTIFACT.write_text('{}')\nPath('artifacts/inner.json').read_text()\n",
+    )
+    accesses, *_ = gate.collect_artifact_accesses(tmp_path)
+    assert {a.pattern for a in accesses if a.action == "write" and a.bounded} == {
+        "artifacts/outer.json"
+    }
+    report = gate.analyse_consumer_side(tmp_path, [])
+    assert (Path("shared/consumer.py"), "artifacts/inner.json") in _unwritten(report)
+    assert report.unresolvable == 0
+
+
+def test_function_attribute_assignment_keeps_result_identity_uncertain(
+    gate, tmp_path: Path
+) -> None:
+    # Attribute assignment of a function object is deliberately not modelled. Its unknown
+    # result must not become artifacts/*/state.json and certify the unrelated orphan reader.
+    _write(tmp_path, "shared/helper.py", "def output_name():\n    return 'orphan'\n")
+    _write(
+        tmp_path,
+        "shared/consumer.py",
+        "from pathlib import Path\n"
+        "def replacement():\n    return 'actual'\n"
+        "def run():\n    from shared import helper\n"
+        "    helper.output_name = replacement\n"
+        "    name = helper.output_name()\n"
+        "    (Path('artifacts') / name / 'state.json').write_text('{}')\nrun()\n"
+        "Path('artifacts/orphan/state.json').read_text()\n",
+    )
+    accesses, *_ = gate.collect_artifact_accesses(tmp_path)
+    assert not [a for a in accesses if a.action == "write" and a.bounded]
+    report = gate.analyse_consumer_side(tmp_path, [])
+    assert (Path("shared/consumer.py"), "artifacts/orphan/state.json") in _unwritten(report)
+    assert report.unresolvable > 0
+    # The uncalled-body fallback consumes the module prepass snapshot, not a discovered
+    # invocation. It must carry the same uncertainty as the evaluated call above.
+    _write(
+        tmp_path,
+        "shared/consumer.py",
+        "from pathlib import Path\nfrom shared import helper\n"
+        "def replacement():\n    return 'actual'\n"
+        "helper.output_name = replacement\nname = helper.output_name()\n"
+        "def write_state():\n"
+        "    (Path('artifacts') / name / 'state.json').write_text('{}')\n"
+        "Path('artifacts/orphan/state.json').read_text()\n",
+    )
+    accesses, *_ = gate.collect_artifact_accesses(tmp_path)
+    assert not [a for a in accesses if a.action == "write" and a.bounded]
+    report = gate.analyse_consumer_side(tmp_path, [])
+    assert (Path("shared/consumer.py"), "artifacts/orphan/state.json") in _unwritten(report)
+    assert report.unresolvable > 0
+
+
+def test_callee_identity_is_captured_before_argument_rebinding(gate, tmp_path: Path) -> None:
+    _write(
+        tmp_path,
+        "shared/consumer.py",
+        "from pathlib import Path\n"
+        "def output_path(ignored):\n    return Path('artifacts/actual.json')\n"
+        "def replacement(ignored):\n    return Path('artifacts/orphan.json')\n"
+        "destination = output_path(output_path := replacement)\n"
+        "destination.write_text('{}')\nPath('artifacts/orphan.json').read_text()\n",
+    )
+    accesses, *_ = gate.collect_artifact_accesses(tmp_path)
+    assert {a.pattern for a in accesses if a.action == "write" and a.bounded} == {
+        "artifacts/actual.json"
+    }
+    report = gate.analyse_consumer_side(tmp_path, [])
+    assert (Path("shared/consumer.py"), "artifacts/orphan.json") in _unwritten(report)
+    assert report.unresolvable == 0
+
+
+def test_decorator_identity_is_captured_before_class_body(gate, tmp_path: Path) -> None:
+    _write(
+        tmp_path,
+        "shared/consumer.py",
+        "from pathlib import Path\nARTIFACT = Path('artifacts/old.json')\n"
+        "def configure(obj):\n    global ARTIFACT\n"
+        "    ARTIFACT = Path('artifacts/new.json')\n    return obj\n"
+        "def replacement(obj):\n    global ARTIFACT\n"
+        "    ARTIFACT = Path('artifacts/orphan.json')\n    return obj\n"
+        "@configure\nclass Configured:\n    global configure\n    configure = replacement\n"
+        "ARTIFACT.write_text('{}')\nPath('artifacts/orphan.json').read_text()\n",
+    )
+    accesses, *_ = gate.collect_artifact_accesses(tmp_path)
+    assert {a.pattern for a in accesses if a.action == "write" and a.bounded} == {
+        "artifacts/new.json"
+    }
+    report = gate.analyse_consumer_side(tmp_path, [])
+    assert (Path("shared/consumer.py"), "artifacts/orphan.json") in _unwritten(report)
+    assert report.unresolvable == 0
+
+
+@pytest.mark.parametrize("kind", ["function", "class"])
+def test_decorator_with_uncertain_effects_keeps_orphan(gate, tmp_path: Path, kind) -> None:
+    definition = (
+        "def configured():\n    pass\n" if kind == "function" else "class Configured:\n    pass\n"
+    )
+    _write(
+        tmp_path,
+        "shared/consumer.py",
+        "from pathlib import Path\nARTIFACT = Path('artifacts/old.json')\n"
+        "def configure(obj):\n    unseen_effect()\n    return obj\n"
+        "@configure\n"
+        + definition
+        + "ARTIFACT.write_text('{}')\nPath('artifacts/old.json').read_text()\n",
+    )
+    accesses, *_ = gate.collect_artifact_accesses(tmp_path)
+    assert not [a for a in accesses if a.action == "write" and a.bounded]
+    report = gate.analyse_consumer_side(tmp_path, [])
+    assert (Path("shared/consumer.py"), "artifacts/old.json") in _unwritten(report)
+    assert report.unresolvable > 0
+
+
+def test_imported_decorated_helper_cannot_borrow_original_body(gate, tmp_path: Path) -> None:
+    _write(
+        tmp_path,
+        "shared/helper.py",
+        "from pathlib import Path\nfrom unavailable import configure\n"
+        "@configure\ndef output_path():\n    return Path('artifacts/orphan.json')\n",
+    )
+    _write(
+        tmp_path,
+        "shared/consumer.py",
+        "from pathlib import Path\nfrom shared.helper import output_path\n"
+        "output_path().write_text('{}')\nPath('artifacts/orphan.json').read_text()\n",
+    )
+    accesses, *_ = gate.collect_artifact_accesses(tmp_path)
+    assert not [a for a in accesses if a.action == "write" and a.bounded]
+    report = gate.analyse_consumer_side(tmp_path, [])
+    assert (Path("shared/consumer.py"), "artifacts/orphan.json") in _unwritten(report)
+    assert report.unresolvable > 0

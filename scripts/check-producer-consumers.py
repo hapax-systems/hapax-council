@@ -627,7 +627,7 @@ class _OuterEffects:
 
 
 class PathFunctionTable(dict[str, PathFunction]):
-    """Path helpers keyed by their qualified name (``module.function``).
+    """Path helpers keyed by definition identity, with qualified export lookups.
 
     A repository-global table keyed by bare function name let a later module's ``artifact_path``
     overwrite an earlier module's, so calls in the earlier module resolved through an unrelated
@@ -657,6 +657,7 @@ class PathFunctionTable(dict[str, PathFunction]):
         self.scope_mutations: dict[ast.AST, tuple[set[str], set[str]]] = {}
         self.call_edges: dict[ast.AST, set[ast.AST]] = {}
         self.functions_by_node: dict[ast.AST, PathFunction] = {}
+        self.export_bindings: dict[str, str] = {}
         self.unknown_effects: dict[ast.AST, str] = {}
         self.outer_effects: dict[ast.AST, _OuterEffects] = {}
         self.effect_revisions: Counter[ast.AST] = Counter()
@@ -765,8 +766,10 @@ class PathFunctionTable(dict[str, PathFunction]):
                 current.append(state)
 
     def register(self, relative: Path, qualname: str, function: PathFunction) -> None:
-        self[f"{_module_name(relative)}.{qualname}"] = function
+        qualified = f"{_module_name(relative)}.{qualname}"
+        self[qualified] = function
         if function.node is not None:
+            self[_definition_identity(qualified, function.node)] = function
             self.functions_by_node[function.node] = function
         self.helper_results.clear()
 
@@ -805,12 +808,25 @@ class PathFunctionTable(dict[str, PathFunction]):
         canonical = self.canonical_name(name, calling_path, lexical_prefixes, aliases)
         if not canonical:
             return None
+        # Imports see the module's evaluated export, including a replaced/decorated or
+        # conditionally defined function. Registration alone cannot certify that object.
+        seen: set[str] = set()
+        while canonical in self.export_bindings:
+            if canonical in seen:
+                return None
+            seen.add(canonical)
+            canonical = self.export_bindings[canonical]
+            if not canonical:
+                return None
         bindings = self.aliases_by_path.get(calling_path, {}) if aliases is None else aliases
         if name.partition(".")[0] in bindings:
             # The live statement-order binding also records definitions. An import can
             # replace an earlier definition, and a later definition can replace the import.
             # A missing imported body must not fall back to a shadowed local producer.
             return self.get(canonical)
+        if aliases is not None:
+            # Syntax discovery is not an evaluated binding (for example a call before def).
+            return None
         short = name.rsplit(".", 1)[-1]
         imports = self.imports_by_path.get(calling_path, frozenset())
         if "." in name:
@@ -854,12 +870,16 @@ class PathFunctionTable(dict[str, PathFunction]):
         return None
 
 
+def _definition_identity(qualified: str, node: ast.AST) -> str:
+    return f"{qualified}@{node.lineno}:{node.col_offset}"
+
+
 def _dotted_name(node: ast.expr) -> str | None:
     if isinstance(node, ast.Name):
         return node.id
     if isinstance(node, ast.Attribute):
         base = _dotted_name(node.value)
-        return f"{base}.{node.attr}" if base else node.attr
+        return f"{base}.{node.attr}" if base else None
     return None
 
 
@@ -920,8 +940,11 @@ def _parent_pattern(value: str, levels: int, repo_root: Path) -> str:
     return _normalise_pattern(result, repo_root)
 
 
-def _function_name(call: ast.Call) -> str:
-    return _dotted_name(call.func) or ""
+def _function_name(call: ast.Call, values: dict[str, str] | None = None) -> str:
+    return (
+        _dotted_name(_evaluated_expression(call.func, values) if values is not None else call.func)
+        or ""
+    )
 
 
 def _return_expression(node: ast.FunctionDef | ast.AsyncFunctionDef) -> ast.expr | None:
@@ -1493,7 +1516,7 @@ def _has_unbounded_format(
             return True
         if isinstance(item, ast.Call) and isinstance(path_functions, PathFunctionTable):
             helper = path_functions.resolve(
-                _function_name(item), path, _lexical_scope(values), _import_aliases(values)
+                _function_name(item, values), path, _lexical_scope(values), _import_aliases(values)
             )
             if helper is not None and "*" in (
                 _resolve_path_expr(item, values, path, repo_root, path_functions) or ""
@@ -1625,7 +1648,7 @@ def _resolve_path_expr(
 
     name = (
         path_functions.canonical_name(
-            _function_name(node), path, _lexical_scope(values), _import_aliases(values)
+            _function_name(node, values), path, _lexical_scope(values), _import_aliases(values)
         )
         if isinstance(path_functions, PathFunctionTable)
         else _function_name(node)
@@ -1709,7 +1732,9 @@ def _resolve_path_expr(
             return _join_pattern(str(PurePosixPath(base).parent), new_name, repo_root)
 
     function = (
-        path_functions.resolve(name, path, _lexical_scope(values), _import_aliases(values))
+        path_functions.resolve(
+            _function_name(node, values), path, _lexical_scope(values), _import_aliases(values)
+        )
         if isinstance(path_functions, PathFunctionTable)
         else (path_functions.get(name) or path_functions.get(name.rsplit(".", 1)[-1]))
     )
@@ -1816,7 +1841,7 @@ def _is_path_valued_expr(
         return False
     name = (
         path_functions.canonical_name(
-            _function_name(node), path, _lexical_scope(values), _import_aliases(values)
+            _function_name(node, values), path, _lexical_scope(values), _import_aliases(values)
         )
         if isinstance(path_functions, PathFunctionTable)
         else _function_name(node)
@@ -1832,7 +1857,9 @@ def _is_path_valued_expr(
     }:
         return _is_path_valued_expr(node.func.value, values, path, path_functions, depth=depth + 1)
     function = (
-        path_functions.resolve(name, path, _lexical_scope(values), _import_aliases(values))
+        path_functions.resolve(
+            _function_name(node, values), path, _lexical_scope(values), _import_aliases(values)
+        )
         if isinstance(path_functions, PathFunctionTable)
         else (path_functions.get(name) or path_functions.get(name.rsplit(".", 1)[-1]))
     )
@@ -2036,7 +2063,7 @@ def _classify_call(
     unrecognised: Counter[str],
     context_family: str,
 ) -> None:
-    raw_name = _function_name(call)
+    raw_name = _function_name(call, values)
     name = (
         path_functions.canonical_name(
             raw_name, path, _lexical_scope(values), _import_aliases(values)
@@ -2044,6 +2071,8 @@ def _classify_call(
         if isinstance(path_functions, PathFunctionTable)
         else raw_name
     )
+    # API labels use the qualified spelling; helper resolution above retains its identity.
+    name = name.partition("@")[0]
     short_name = name.rsplit(".", 1)[-1]
     if name in FILE_BACKED_APIS:
         # A file-backed API this scanner models as an access (review finding on #4626, round 5:
@@ -2556,11 +2585,12 @@ def _apply_assignment(
             assigned[format_key] = "1"
         _set_path_value(assigned, target.id, is_path)
         _set_import_alias(assigned, target.id, None)
-        if isinstance(statement.value, (ast.Name, ast.Attribute)) and isinstance(
+        alias_expression = _evaluated_expression(statement.value, values)
+        if isinstance(alias_expression, (ast.Name, ast.Attribute)) and isinstance(
             path_functions, PathFunctionTable
         ):
             aliased = path_functions.resolve(
-                _dotted_name(statement.value) or "",
+                _dotted_name(alias_expression) or "",
                 path,
                 _lexical_scope(values),
                 _import_aliases(values),
@@ -2569,7 +2599,9 @@ def _apply_assignment(
                 _set_import_alias(
                     assigned,
                     target.id,
-                    f"{_module_name(aliased.path)}.{aliased.lexical_prefixes[0]}",
+                    _definition_identity(
+                        f"{_module_name(aliased.path)}.{aliased.lexical_prefixes[0]}", aliased.node
+                    ),
                 )
         _clear_value_alternatives(assigned, target.id)
         closure_origins = _unresolved_expression_origins(statement.value, values)
@@ -2989,9 +3021,16 @@ class _BlockScanner:
             function = None
             if isinstance(self.path_functions, PathFunctionTable):
                 function = self.path_functions.resolve(
-                    _function_name(call), self.path, _lexical_scope(state), _import_aliases(state)
+                    _function_name(call, state),
+                    self.path,
+                    _lexical_scope(state),
+                    _import_aliases(state),
                 )
-                if function is not None and function.node is not None:
+                if (
+                    function is not None
+                    and function.node is not None
+                    and self.scope_node is not None
+                ):
                     supplied = _call_parameter_values(
                         function, call, state, self.path, self.repo_root, self.path_functions
                     )
@@ -3018,9 +3057,12 @@ class _BlockScanner:
             flagged.update(local_unrecognised)
             if function is not None and function.node is not None:
                 self._invalidate_callee_mutations(function, state)
-            elif isinstance(self.path_functions, PathFunctionTable) and self.scope_node is not None:
+            elif isinstance(self.path_functions, PathFunctionTable):
                 name = self.path_functions.canonical_name(
-                    _function_name(call), self.path, _lexical_scope(state), _import_aliases(state)
+                    _function_name(call, state),
+                    self.path,
+                    _lexical_scope(state),
+                    _import_aliases(state),
                 )
                 # These primitives are already modelled as paths, scalars, or file accesses.
                 # An arbitrary unresolved helper must not acquire an empty effect summary.
@@ -3056,14 +3098,26 @@ class _BlockScanner:
                     and all(access.modelled for access in call_accesses[before:])
                 )
                 if not (known or path_method or modelled_access):
-                    self.path_functions.unknown_effects[self.scope_node] = (
-                        f"unresolved call target {_function_name(call) or '<dynamic>'}"
-                    )
+                    if self.scope_node is not None:
+                        self.path_functions.unknown_effects[self.scope_node] = (
+                            f"unresolved call target {_function_name(call) or '<dynamic>'}"
+                        )
                     self._invalidate_uncertain_bindings(state)
+                    # A missing callable identity is not a dynamic filename component.
+                    # Freeze uncertainty so assigning/formatting its result cannot certify
+                    # a wildcard writer at _record_access, even after later rebinding.
+                    self._mark_untracked_result(call, state)
         self.accesses.extend(dict.fromkeys(call_accesses))
         self.unresolved[0] += unresolved_slots
         for name in flagged:
             self.unrecognised[name] += 1
+
+    def _mark_untracked_result(self, call: ast.Call, state: dict[str, str]) -> None:
+        result_name = _expression_value_name(call)
+        state[result_name] = "*"
+        state[f"{_UNRESOLVED_CLOSURE_PREFIX}{result_name}"] = (
+            f"{self.path}:{call.lineno}: binding identity not tracked"
+        )
 
     def _invalidate_callee_mutations(self, function: PathFunction, state: dict[str, str]) -> None:
         table = self.path_functions
@@ -3438,6 +3492,8 @@ class _BlockScanner:
             # and each argument before the next. Snapshot complete values, not just names:
             # attributes, subscripts, and nested calls can all depend on a rebound name.
             self._scan_expression(node.func, states)
+            if isinstance(node.func, (ast.Name, ast.Attribute)):
+                self._freeze_callable(node.func, states)
             if isinstance(node.func, ast.Attribute):
                 self._freeze_expression(node.func.value, states)
             for argument in (*node.args, *(keyword.value for keyword in node.keywords)):
@@ -3532,6 +3588,131 @@ class _BlockScanner:
             )[0]
             state.update((key, assigned[key]) for key in _binding_keys(name) if key in assigned)
 
+    def _freeze_callable(self, node: ast.expr, states: list[dict[str, str]]) -> None:
+        for state in states:
+            name = _expression_value_name(node)
+            target = self.path_functions.canonical_name(
+                _dotted_name(_evaluated_expression(node, state)) or "",
+                self.path,
+                _lexical_scope(state),
+                _import_aliases(state),
+            )
+            state[name] = "*"
+            _set_import_alias(state, name, target)
+
+    def _decorator_effect_values(
+        self, function: PathFunction, state: dict[str, str]
+    ) -> tuple[dict[str, str], set[str]] | None:
+        """Refine invalidation only for a visible, straight-line identity decorator.
+
+        Other bodies retain the ordinary call-effect uncertainty. In particular, neither
+        wrapper factories nor arbitrary return values certify the decorated definition.
+        """
+        node = function.node
+        table = self.path_functions
+        if (
+            not isinstance(node, ast.FunctionDef)
+            or function.path != self.path
+            or not function.params
+            or table.outer_effects.get(node, _OuterEffects()).unresolved
+        ):
+            return None
+        globals_, nonlocals = _scope_outer_mutations(node)
+        if nonlocals or "*" in globals_:
+            return None
+        bound = _scope_initial_values(
+            node,
+            state,
+            function.path,
+            self.repo_root,
+            table,
+            function.lexical_prefixes,
+            _call_global_values(function, state, self.path, table),
+        )
+        for index, statement in enumerate(node.body):
+            if isinstance(statement, (ast.Global, ast.Pass)) or (
+                isinstance(statement, ast.Expr) and isinstance(statement.value, ast.Constant)
+            ):
+                continue
+            if isinstance(statement, ast.Return):
+                if (
+                    index == len(node.body) - 1
+                    and isinstance(statement.value, ast.Name)
+                    and statement.value.id == function.params[0]
+                ):
+                    if any("*" in bound.get(name, "*") for name in globals_):
+                        return None
+                    return bound, globals_
+                return None
+            if not isinstance(statement, (ast.Assign, ast.AnnAssign)):
+                return None
+            targets = statement.targets if isinstance(statement, ast.Assign) else [statement.target]
+            if any(
+                not isinstance(target, ast.Name) or target.id in function.params
+                for target in targets
+            ):
+                return None
+            # Only already modelled path constructors may execute in the refinement.
+            # Even a visible helper uses the ordinary transitive effect machinery instead.
+            if any(
+                isinstance(item, (ast.NamedExpr, ast.Await, ast.Yield, ast.Lambda))
+                or isinstance(item, ast.Call)
+                and table.canonical_name(
+                    _function_name(item),
+                    function.path,
+                    function.lexical_prefixes,
+                    _import_aliases(bound),
+                )
+                not in _PATH_CONSTRUCTORS
+                for item in ast.walk(statement)
+            ):
+                return None
+            bound = _apply_assignment(statement, bound, function.path, self.repo_root, table)[0]
+        return None
+
+    def _apply_decorators(
+        self,
+        statement: ast.FunctionDef | ast.AsyncFunctionDef | ast.ClassDef,
+        states: list[dict[str, str]],
+    ) -> list[bool]:
+        identities = [True] * len(states)
+        table = self.path_functions
+        for decorator in reversed(statement.decorator_list):
+            name = f"\0decorator:{decorator.lineno}:{decorator.col_offset}"
+            call = ast.copy_location(
+                ast.Call(
+                    func=ast.Name(id=name, ctx=ast.Load()), args=[ast.Constant(None)], keywords=[]
+                ),
+                decorator,
+            )
+            for index, state in enumerate(states):
+                function = table.resolve(
+                    name, self.path, _lexical_scope(state), _import_aliases(state)
+                )
+                refinement = self._decorator_effect_values(function, state) if function else None
+                self._classify(call, [state])
+                if refinement is None:
+                    identities[index] = False
+                    # Missing bodies and unsupported effect summaries may touch outer data.
+                    self._invalidate_uncertain_bindings(state)
+                else:
+                    bound, globals_ = refinement
+                    inherited = _current_global_values(state, table)
+                    hidden = set(json.loads(state.get(_CALL_LOCALS_KEY, "[]"))) | set(
+                        json.loads(state.get(_CALL_CELLS_KEY, "[]"))
+                    )
+                    for target in globals_:
+                        for destination in [inherited] + ([] if target in hidden else [state]):
+                            for key in _binding_keys(target):
+                                destination.pop(key, None)
+                                if key in bound:
+                                    destination[key] = bound[key]
+                    if _CALL_GLOBALS_KEY in state:
+                        state[_CALL_GLOBALS_KEY] = _encode_call_globals(inherited, table)
+                for key in _binding_keys(name):
+                    state.pop(key, None)
+        return identities
+
     def _scan_statement(
         self,
         statement: ast.stmt,
@@ -3557,9 +3738,15 @@ class _BlockScanner:
             # Augmented assignment evaluates its target before the RHS, exactly once.
             self._scan_target(statement.target, states)
             self._freeze_expression(statement.target, states)
-        if isinstance(statement, (ast.FunctionDef, ast.AsyncFunctionDef)):
+        if isinstance(statement, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)):
             for decorator in statement.decorator_list:
                 self._scan_expression(decorator, states)
+                self._bind(
+                    ast.Name(id=f"\0decorator:{decorator.lineno}:{decorator.col_offset}"),
+                    decorator,
+                    states,
+                )
+        if isinstance(statement, (ast.FunctionDef, ast.AsyncFunctionDef)):
             self._scan_defaults(statement, states)
             for argument in ast.walk(statement.args):
                 if isinstance(argument, ast.arg) and argument.annotation is not None:
@@ -3568,8 +3755,10 @@ class _BlockScanner:
                 self._scan_expression(statement.returns, states)
         elif not isinstance(statement, (ast.With, ast.AsyncWith)):
             for child in ast.iter_child_nodes(statement):
-                if child not in owned_targets and not isinstance(
-                    child, (ast.stmt, ast.ExceptHandler, ast.match_case)
+                if (
+                    child not in owned_targets
+                    and child not in getattr(statement, "decorator_list", ())
+                    and not isinstance(child, (ast.stmt, ast.ExceptHandler, ast.match_case))
                 ):
                     self._scan_expression(child, states)
         for scope in _statement_scopes(statement):
@@ -3579,15 +3768,16 @@ class _BlockScanner:
         if isinstance(statement, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)):
             if isinstance(statement, ast.ClassDef):
                 states = self._scan_class_body(statement, states, exception_states)
-            for state in states:
+            identities = self._apply_decorators(statement, states)
+            for state, identity in zip(states, identities, strict=True):
                 _invalidate_names(state, {statement.name})
                 prefix = next(iter(_lexical_scope(state)), "")
                 target = ".".join(filter(None, (_module_name(self.path), prefix, statement.name)))
                 _set_import_alias(
                     state,
                     statement.name,
-                    target
-                    if isinstance(statement, (ast.FunctionDef, ast.AsyncFunctionDef))
+                    _definition_identity(target, statement)
+                    if isinstance(statement, (ast.FunctionDef, ast.AsyncFunctionDef)) and identity
                     else None,
                 )
             return states
@@ -3854,10 +4044,11 @@ class _BlockScanner:
 
 
 class _ModuleBindingScanner(_BlockScanner):
-    """Compute post-flow globals without publishing duplicate prepass diagnostics."""
+    """Compute post-flow globals with the same uncertainty as evaluated calls.
 
-    def _classify(self, call: ast.Call, states: list[dict[str, str]]) -> None:
-        return
+    Diagnostics are discarded by _module_values and scope_node=None does not publish
+    invocation states. Unobserved bodies must still inherit unresolved result provenance.
+    """
 
 
 class _PathHelperScanner(_BlockScanner):
@@ -3891,7 +4082,10 @@ class _PathHelperScanner(_BlockScanner):
                 state[_HELPER_EFFECT_KEY] = "1"
             if isinstance(self.path_functions, PathFunctionTable):
                 function = self.path_functions.resolve(
-                    _function_name(call), self.path, _lexical_scope(state), _import_aliases(state)
+                    _function_name(call, state),
+                    self.path,
+                    _lexical_scope(state),
+                    _import_aliases(state),
                 )
                 if (
                     function
@@ -4205,7 +4399,11 @@ def _module_aliases(
     for statement in tree.body:
         aliases.update(_import_bindings([statement], module_name, is_package=is_package))
         if isinstance(statement, (ast.FunctionDef, ast.AsyncFunctionDef)):
-            aliases[statement.name] = f"{module_name}.{statement.name}"
+            aliases[statement.name] = (
+                _definition_identity(f"{module_name}.{statement.name}", statement)
+                if not statement.decorator_list
+                else ""
+            )
         elif isinstance(statement, ast.ClassDef):
             aliases[statement.name] = ""
         elif isinstance(statement, (ast.Assign, ast.AnnAssign)):
@@ -4283,6 +4481,13 @@ def collect_artifact_accesses(
                         node,
                     ),
                 )
+
+    for relative, values in module_values_by_path.items():
+        for key, target in values.items():
+            if key.startswith(_IMPORT_ALIAS_PREFIX) and not (
+                name := key.removeprefix(_IMPORT_ALIAS_PREFIX)
+            ).startswith("\0"):
+                path_functions.export_bindings[f"{_module_name(relative)}.{name}"] = target
 
     # Gather calls across the whole repository before retaining any body's accesses.
     # Recompute each round: provisional defaults must disappear when a later caller is found.
