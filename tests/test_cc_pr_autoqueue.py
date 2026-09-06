@@ -1214,12 +1214,7 @@ def test_run_reconciler_conflicting_base_receipts(
             "unarmed": "blocked",
         }[state]
     )
-    assert decision["reasons"] == [
-        "auto_merge_method_unverified:expected_missing:source="
-        + reason.removeprefix("auto_merge_method_unverified:")
-        if override
-        else reason
-    ]
+    assert decision["reasons"] == [f"{reason}:override={override}" if override else reason]
     assert decision.get("auto_merge_method_owner") == (None if state == "unarmed" else "unverified")
     governance = decision["merge_queue_governance"]
     assert governance["base_ref"] == list_base
@@ -1379,12 +1374,7 @@ def test_run_reconciler_default_branch_receipts(
                 "unarmed": "blocked",
             }[state]
         )
-        assert decision["reasons"] == [
-            "auto_merge_method_unverified:expected_missing:source="
-            + reason.removeprefix("auto_merge_method_unverified:")
-            if override
-            else reason
-        ]
+        assert decision["reasons"] == [f"{reason}:override={override}" if override else reason]
         assert decision.get("auto_merge_method_owner") == (
             None if state == "unarmed" else "unverified"
         )
@@ -2877,10 +2867,14 @@ def test_override_governance_action_matrix(
                 == {"queued": "dequeue", "armed": "disable_auto_merge", "unarmed": "blocked"}[state]
             )
             assert decision["reasons"] == [
-                "auto_merge_method_unverified:"
-                + ("expected_missing:source=" if override else "")
-                + source
+                f"auto_merge_method_unverified:{source}"
+                + (f":override={override}" if override else "")
             ]
+            if override:
+                assert decision["next_action"].endswith(
+                    autoqueue._merge_method_operator_next_action()
+                )
+                assert "Expected merge-method evidence is missing" not in decision["next_action"]
             if entrypoint == "reconciler":
                 [mutation] = report["mutations"]
                 assert mutation["action"] == (
@@ -2923,6 +2917,9 @@ def test_override_governance_action_matrix(
                 }[state]
             )
             assert decision.get("reasons", []) == []
+        assert all(
+            re.fullmatch(r"[A-Za-z0-9_:,=.-]+", reason) for reason in decision.get("reasons", [])
+        )
         decisions.append(decision)
     if evidence != "readable_disagreeing":
         assert decisions[0]["action"] == decisions[1]["action"]
@@ -2938,9 +2935,8 @@ def test_unverified_override_disables_auto_merge_in_apply(tmp_path: Path) -> Non
         [decision] = report["decisions"]
         assert decision["action"] == "disable_auto_merge"
         assert decision["reasons"] == [
-            "auto_merge_method_unverified:"
-            + ("expected_missing:source=" if override else "")
-            + "enforcement_unreadable:source=rulesets:cause=request_failed"
+            "auto_merge_method_unverified:enforcement_unreadable:source=rulesets:cause=request_failed"
+            + (f":override={override}" if override else "")
         ]
         assert decision["auto_merge_method_owner"] == "unverified"
         assert decision.get("next_action") == (
@@ -2987,7 +2983,18 @@ def test_unverified_override_dequeues_after_failed_status_without_other_blockers
         [decision] = report["decisions"]
         assert decision["action"] == "dequeue"
         assert len(decision["reasons"]) == 1
-        assert decision["reasons"][0].startswith("auto_merge_method_unverified:expected_missing:")
+        if override:
+            cause = {
+                "malformed": "enforcement_malformed:rulesets",
+                "unreadable": "enforcement_unreadable:source=rulesets:cause=request_failed",
+            }[fault]
+            assert decision["reasons"] == [
+                f"auto_merge_method_unverified:{cause}:override={override}"
+            ]
+        else:
+            assert decision["reasons"][0].startswith(
+                "auto_merge_method_unverified:expected_missing:source="
+            )
         [mutation] = report["mutations"]
         assert mutation["action"] == "dequeue"
         assert mutation["ok"] is True
@@ -3057,7 +3064,8 @@ def test_storm_override_contradiction_preserves_only_its_own_refusal(
     assert not any("--disable-auto" in call or "--auto" in call for call in runner.calls)
 
 
-def test_override_exemption_exhausts_governance_producer_tokens() -> None:
+@pytest.mark.parametrize("override", ["SQUASH", "MERGE", "REBASE"])
+def test_override_exemption_exhausts_governance_producer_tokens(override: str) -> None:
     # Extract literal prefixes from producer ASTs; adding/renaming one requires
     # updating this exhaustive contract, without a parallel production allowlist.
     prefix = "auto_merge_method_unverified:"
@@ -3114,13 +3122,24 @@ def test_override_exemption_exhausts_governance_producer_tokens() -> None:
         "queue_strategy_expected_conflict",
     }
     reasons = {prefix + suffix + ":witness" for suffix in suffixes}
+    pr = autoqueue._parse_pr(_pr(42))
+    assert pr is not None
     wrapped = {
-        autoqueue._expected_merge_method_unverified_reason(suffix + ":witness")
-        for suffix in suffixes
+        reason
+        for governance_reason in reasons
+        for reason in autoqueue.classify_pr(
+            autoqueue.replace(
+                pr, queue_governance=autoqueue.MergeQueueGovernance(reason=governance_reason)
+            ),
+            tasks=[],
+            queued_prs=set(),
+            expected_auto_merge_method=override,
+            expected_auto_merge_method_is_override=True,
+            require_expected_auto_merge_method=True,
+        ).reasons
+        if reason.startswith(prefix)
     }
-    assert wrapped == {
-        prefix + "expected_missing:source=" + suffix + ":witness" for suffix in suffixes
-    }
+    assert wrapped == {f"{reason}:override={override}" for reason in reasons}
     reasons.update(wrapped)
     missing_source = autoqueue._expected_merge_method_unverified_reason(None)
     assert missing_source == prefix + "expected_missing:source=source_missing"
@@ -3245,13 +3264,58 @@ def test_merge_method_override_requires_readable_governance(
             "unarmed": "blocked",
         }[state]
     )
-    assert decision["reasons"] == [f"auto_merge_method_unverified:expected_missing:source={source}"]
+    assert decision["reasons"] == [f"auto_merge_method_unverified:{source}:override={override}"]
     assert decision.get("expected_auto_merge_method", "SQUASH") == override
     assert decision.get("auto_merge_method_owner") == (None if state == "unarmed" else "unverified")
     assert decision["merge_queue_governance"]["reason"] == f"auto_merge_method_unverified:{source}"
     assert decision["next_action"].endswith(autoqueue._merge_method_operator_next_action())
     assert "Restore unreadable governance evidence" in decision["next_action"]
     assert all(re.fullmatch(r"[A-Za-z0-9_:,=.-]+", reason) for reason in decision["reasons"])
+
+
+@pytest.mark.parametrize("state", ["queued", "armed", "unarmed"])
+@pytest.mark.parametrize("override", ["SQUASH", "MERGE", "REBASE"])
+def test_override_governance_reason_never_claims_expected_missing(
+    tmp_path: Path, state: str, override: str
+) -> None:
+    reports = []
+    for fault in (
+        "unreadable",
+        "malformed",
+        "invalid_json",
+        "detail_unreadable",
+        "detail_malformed",
+    ):
+        report = _method_override_report(tmp_path, state=state, override=override, fault=fault)
+        [decision] = report["decisions"]
+        governance_reason = decision["merge_queue_governance"]["reason"]
+        assert governance_reason is not None
+        assert all("expected_missing" not in reason for reason in decision["reasons"])
+        assert decision["reasons"] == [f"{governance_reason}:override={override}"]
+        reports.append(report)
+
+    # Without an override, loss of the desired-method receipt still names that loss.
+    missing = _method_override_report(tmp_path, state=state, override=None, fault="malformed")
+    assert missing["merge_queue_merge_method"]["method"] is None
+    assert missing["decisions"][0]["reasons"] == [
+        "auto_merge_method_unverified:expected_missing:source=rulesets_payload_not_list:dict"
+    ]
+    reports.append(missing)
+
+    def assert_pure_reasons(value: Any) -> None:
+        if isinstance(value, dict):
+            for key, item in value.items():
+                if key == "reason" and isinstance(item, str):
+                    assert re.fullmatch(r"[A-Za-z0-9_:,=.-]+", item)
+                elif key == "reasons":
+                    assert all(re.fullmatch(r"[A-Za-z0-9_:,=.-]+", reason) for reason in item)
+                else:
+                    assert_pure_reasons(item)
+        elif isinstance(value, list):
+            for item in value:
+                assert_pure_reasons(item)
+
+    assert_pure_reasons(reports)
 
 
 @pytest.mark.parametrize("state", ["queued", "armed", "unarmed"])
@@ -3322,8 +3386,8 @@ def test_merge_method_override_refusal_disposition_in_apply(
         ),
         (
             "unreadable",
-            "auto_merge_method_unverified:expected_missing:"
-            "source=enforcement_unreadable:source=rulesets:cause=request_failed",
+            "auto_merge_method_unverified:enforcement_unreadable:"
+            "source=rulesets:cause=request_failed:override=MERGE",
         ),
     ],
     ids=["contradictory", "unreadable"],
@@ -3633,9 +3697,7 @@ def test_run_reconciler_malformed_reference_refusal(
         == {"armed": "disable_auto_merge", "queued": "dequeue", "unarmed": "blocked"}[state]
     )
     prefix = "auto_merge_method_unverified:"
-    assert decision["reasons"] == [
-        prefix + ("expected_missing:source=" if override else "") + reason
-    ]
+    assert decision["reasons"] == [prefix + reason + (f":override={override}" if override else "")]
     assert decision.get("auto_merge_method_owner") == (None if state == "unarmed" else "unverified")
     assert decision["merge_queue_governance"]["reason"] == prefix + reason
     assert decision["merge_queue_governance"]["method"] is None
@@ -3742,9 +3804,7 @@ def test_run_reconciler_unreadable_governance_cause(
     scope = "source=rulesets" if source == "rulesets" else "ruleset=16186443"
     refusal = f"enforcement_unreadable:{scope}:cause={cause}"
     assert decision["merge_queue_governance"]["reason"] == f"auto_merge_method_unverified:{refusal}"
-    assert decision["reasons"] == [
-        f"auto_merge_method_unverified:expected_missing:source={refusal}"
-    ]
+    assert decision["reasons"] == [f"auto_merge_method_unverified:{refusal}:override=MERGE"]
     assert (
         decision["action"]
         == {"queued": "dequeue", "armed": "disable_auto_merge", "unarmed": "blocked"}[state]

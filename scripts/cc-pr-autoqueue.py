@@ -492,7 +492,17 @@ def _decision_next_action(action: str, reasons: tuple[str, ...]) -> str | None:
         or reason.startswith("auto_merge_method_unrecognized")
         for reason in reasons
     )
+    override_governance_reason = any(
+        reason.startswith("auto_merge_method_unverified:") and ":override=" in reason
+        for reason in reasons
+    )
     if action == "dequeue" and merge_method_reason:
+        if override_governance_reason:
+            return (
+                "This decision removes the PR from the native merge queue when run "
+                "with --apply; it does not disable auto-merge. Queue governance "
+                f"evidence is unverified. {_merge_method_operator_next_action()}"
+            )
         if any(
             reason.startswith("auto_merge_method_unverified:expected_missing") for reason in reasons
         ):
@@ -507,7 +517,7 @@ def _decision_next_action(action: str, reasons: tuple[str, ...]) -> str | None:
             "the next reconciler pass revalidates queue membership and armed "
             "auto-merge state before choosing any disable or re-arm mutation."
         )
-    if any(
+    if override_governance_reason or any(
         reason.startswith("auto_merge_method_unverified:expected_missing") for reason in reasons
     ):
         return _merge_method_operator_next_action()
@@ -2143,11 +2153,7 @@ def classify_pr(
             pr = replace(pr, queue_governance=governance)
         if governance.reason:
             if expected_auto_merge_method_is_override:
-                reasons.append(
-                    _expected_merge_method_unverified_reason(
-                        governance.reason.removeprefix("auto_merge_method_unverified:")
-                    )
-                )
+                reasons.append(f"{governance.reason}:override={expected_method}")
             else:
                 reasons.append(governance.reason)
         elif governance.method is not None and governance.method != expected_method:
