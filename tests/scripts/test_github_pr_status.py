@@ -15,6 +15,16 @@ if str(SCRIPTS) not in sys.path:
 import github_pr_status
 
 
+def test_strict_pull_list_none_pages_reader_raises_indeterminate(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(github_pr_status, "_rest_get_json_pages_or_none", lambda *_a, **_k: None)
+    with pytest.raises(github_pr_status.RestIndeterminateError, match="^invalid_list$"):
+        github_pr_status.list_pulls_rest(
+            repo_root=tmp_path, runner=FakeRunner(), fail_on_indeterminate=True
+        )
+
+
 def _api_fields(cmd: list[str]) -> dict[str, str]:
     return {
         cmd[index + 1].split("=", 1)[0]: cmd[index + 1].split("=", 1)[1]

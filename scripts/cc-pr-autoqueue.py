@@ -24,6 +24,11 @@ Usage::
 Default mode is a dry-run report. ``--apply`` performs the GitHub mutation.
 ``--expected-merge-method`` overrides the desired strategy; applicable queue
 governance must still be verified. The report records the override source.
+No merge-method bypass flag exists by design. During a GitHub rulesets outage,
+stop the autoqueue timer with ``systemctl --user stop hapax-cc-pr-autoqueue.timer``
+until governance is readable again, then run
+``systemctl --user start hapax-cc-pr-autoqueue.timer``. The override is not an
+outage bypass.
 """
 
 from __future__ import annotations
@@ -105,6 +110,7 @@ DEFAULT_REPORT_PATH = (
 DEFAULT_ADMISSION_GOVERNOR_PATH = Path.home() / ".cache" / "hapax" / "pr-admission-governor.yaml"
 KILLSWITCH_ENVS = ("HAPAX_CC_PR_AUTOQUEUE_OFF", "HAPAX_CC_HYGIENE_OFF")
 EXPECTED_MERGE_METHOD_OVERRIDE_ENV = "HAPAX_CC_PR_AUTOQUEUE_EXPECTED_MERGE_METHOD"
+OVERRIDE_CONTRADICTION_PREFIX = "auto_merge_method_override_contradicts_queue_governance:"
 
 PASS_STATES = {"SUCCESS", "SKIPPED", "NEUTRAL"}
 # Ordinary queue admission treats skipped/neutral as non-failing, but mitigation
@@ -467,15 +473,15 @@ def _merge_method_operator_next_action(
         "set `--expected-merge-method <METHOD>` or "
         f"{EXPECTED_MERGE_METHOD_OVERRIDE_ENV}=<METHOD> to match the applicable queue strategy, "
         "or remove the contradictory override. Restore unreadable governance evidence "
-        "before retrying; an override cannot replace that evidence."
+        "before retrying; an override cannot replace that evidence. No merge-method bypass "
+        "flag exists by design. During a GitHub rulesets outage, run "
+        "`systemctl --user stop hapax-cc-pr-autoqueue.timer` until governance is readable "
+        "again, then run `systemctl --user start hapax-cc-pr-autoqueue.timer`."
     )
 
 
 def _decision_next_action(action: str, reasons: tuple[str, ...]) -> str | None:
-    if any(
-        reason.startswith("auto_merge_method_override_contradicts_queue_governance:")
-        for reason in reasons
-    ):
+    if any(reason.startswith(OVERRIDE_CONTRADICTION_PREFIX) for reason in reasons):
         return _merge_method_operator_next_action()
     merge_method_reason = any(
         reason.startswith("auto_merge_method_mismatch")
@@ -1904,24 +1910,9 @@ def shared_file_epic_affinity_blockers(
 
 
 def _override_only_refusal(reasons: list[str]) -> bool:
-    """Refuse an override alone; independent blockers still revoke admission.
-
-    Only override-wrapped unreadable/malformed governance is exempt. PR ref,
-    queue membership and queue strategy conflicts remain independent.
-    """
+    """Only a contradictory override alone is exempt from revocation."""
     return bool(reasons) and all(
-        reason.startswith(
-            (
-                "auto_merge_method_override_contradicts_queue_governance:",
-                "auto_merge_method_unverified:expected_missing:source=enforcement_unreadable:",
-                "auto_merge_method_unverified:expected_missing:source=enforcement_malformed:",
-                "auto_merge_method_unverified:expected_missing:source=enforcement_conflict:",
-                "auto_merge_method_unverified:expected_missing:source=queue_rule_malformed:",
-                "auto_merge_method_unverified:expected_missing:source=queue_strategy_invalid:",
-                "auto_merge_method_unverified:expected_missing:source=ref_enforcement_unknown:",
-            )
-        )
-        for reason in reasons
+        reason.startswith(OVERRIDE_CONTRADICTION_PREFIX) for reason in reasons
     )
 
 
@@ -2080,6 +2071,9 @@ def classify_pr(
             )
             pr = replace(pr, queue_governance=governance)
         if governance.reason:
+            # Neither a desired method nor an override establishes unverifiable
+            # governance. Use the same disposition with or without an override.
+            expected_method_unverified = True
             if expected_auto_merge_method_is_override:
                 reasons.append(
                     _expected_merge_method_unverified_reason(
@@ -2091,8 +2085,8 @@ def classify_pr(
         elif governance.method is not None and governance.method != expected_method:
             if expected_auto_merge_method_is_override:
                 reasons.append(
-                    "auto_merge_method_override_contradicts_queue_governance:"
-                    f"override={expected_method}:governed={governance.method}"
+                    OVERRIDE_CONTRADICTION_PREFIX
+                    + f"override={expected_method}:governed={governance.method}"
                 )
             else:
                 reasons.append(

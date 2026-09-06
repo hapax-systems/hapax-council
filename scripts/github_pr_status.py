@@ -514,7 +514,8 @@ def list_pulls_rest(
             limit=limit,
             fail_on_indeterminate=True,
         )
-        assert payload is not None
+        if payload is None:
+            raise RestIndeterminateError("invalid_list")
     else:
         payload = _rest_get_json_pages(
             f"repos/{repo}/pulls",
