@@ -3291,6 +3291,8 @@ def main(argv: list[str] | None = None) -> int:
         )
     json.dump(results, sys.stdout, indent=2, default=str)
     sys.stdout.write("\n")
+    if args.transfer_acceptance and results.get("status") == "refused":
+        return 3  # Transfer refused; 2 is argparse usage failure, 1 is an uncaught error.
     return 0
 
 

@@ -4551,10 +4551,15 @@ payg_fallback: false
 
 
 @pytest.mark.parametrize("apply", [False, True])
-def test_main_acceptance_transfer_verb_is_separate_from_review(monkeypatch, capsys, apply):
+@pytest.mark.parametrize("refused", [False, True])
+def test_main_acceptance_transfer_verb_is_separate_from_review(monkeypatch, capsys, apply, refused):
     from unittest.mock import Mock
 
-    transfer = Mock(return_value={"status": "transferred" if apply else "plan"})
+    status = "refused" if refused else "transferred" if apply else "plan"
+    payload = {"status": status}
+    if refused:
+        payload["reason"] = "transfer_pr_not_merged"
+    transfer = Mock(return_value=payload)
     review = Mock(side_effect=AssertionError("transfer must not review execution B"))
     monkeypatch.delenv(dispatch.KILLSWITCH_ENV, raising=False)
     monkeypatch.setattr(dispatch, "transfer_acceptance", transfer)
@@ -4568,8 +4573,9 @@ def test_main_acceptance_transfer_verb_is_separate_from_review(monkeypatch, caps
     ]
     if apply:
         args.append("--apply")
-    assert dispatch.main(args) == 0
-    assert json.loads(capsys.readouterr().out)["status"] == ("transferred" if apply else "plan")
+    exit_code = dispatch.main(args)
+    assert json.loads(capsys.readouterr().out) == payload
+    assert exit_code == (3 if refused else 0)
     transfer.assert_called_once_with(
         7,
         repo=dispatch.DEFAULT_REPO,
