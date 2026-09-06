@@ -150,7 +150,8 @@ class DecayedMember:
     reader: str = ""
     host_aliases: tuple[tuple[str, str], ...] = ()
     content_query: ContentQuery | None = None
-    # Aligned with roots; canonical containment and lexical skip eligibility stay separate.
+    # Aligned with roots; producer spellings stay relative when declared relative.
+    # Only skip_dirs uses these unanchored, unresolved paths.
     lexical_roots: tuple[Path, ...] = ()
 
 
@@ -501,13 +502,15 @@ def _member_location(
         return path
 
     for raw in raw_roots:
-        raw = raw.strip()
-        if _has_qualifier(raw):
-            qualified_roots.append(_qualified_location(raw)[0])
+        if _has_qualifier(raw.strip()):
+            qualified_roots.append(_qualified_location(raw.strip())[0])
             continue
-        lexical_root = local_path(raw)
-        lexical_roots.append(lexical_root)
-        roots.append(lexical_root.resolve())
+        if content_query:
+            raw = raw.strip()
+        producer_root = Path(raw).expanduser()
+        lexical_roots.append(producer_root)
+        absolute_root = local_path(raw)
+        roots.append(absolute_root.resolve())
     patterns = location.get("patterns")
     globs = tuple(str(item) for item in patterns) if isinstance(patterns, list) else ()
     files_raw = None if content_query else location.get("files")
@@ -1206,16 +1209,17 @@ def _literal_scope_glob(pattern: str) -> str | None:
 def _member_path_is_excluded(path: Path, root: Path, member: DecayedMember) -> bool:
     """Filter an in-root remainder under each spelling of that declared root.
 
-    The canonical root still governs containment. fs.glob filters all lexical path
-    components, including the declared root; fs.content_query never reads skip_dirs.
+    fs.glob checks producer_root / selected_tail, with no cwd anchoring or resolution.
+    The absolute selected path still governs mass exclusions and containment;
+    fs.content_query never reads skip_dirs.
     """
     if member.reader == "fs.content_query" or not member.lexical_roots:
         return _path_is_excluded(path, member)
     return all(
-        _path_is_excluded(lexical_root / path.relative_to(root), member)
+        any(part in member.skip_dirs for part in (lexical_root / path.relative_to(root)).parts)
         for canonical_root, lexical_root in zip(member.roots, member.lexical_roots, strict=True)
         if canonical_root == root
-    )
+    ) or _path_is_mass_excluded(path, member)
 
 
 def _path_is_excluded(path: Path, member: DecayedMember) -> bool:
@@ -1353,6 +1357,7 @@ def _resolve_external_scope_path(path: Path) -> Path:
 
 @dataclass(frozen=True)
 class _CanonicalPathForm:
+    # Producer-spelled prefix for member forms; original absolute prefix for scope forms.
     lexical_base: Path
     base: Path
     remainder: str | None
@@ -1360,7 +1365,11 @@ class _CanonicalPathForm:
 
 
 def _canonical_path_forms(
-    path: Path, pattern: str | None, *, recursive: bool = False
+    path: Path,
+    pattern: str | None,
+    *,
+    recursive: bool = False,
+    producer_root: Path | None = None,
 ) -> tuple[_CanonicalPathForm, ...]:
     """Canonical existing prefixes plus lexical future tails, for either side of a decision.
 
@@ -1368,9 +1377,11 @@ def _canonical_path_forms(
     leaf never removes a prefix witness. Strict component resolution precedes directory
     filtering, so broken aliases cannot disappear as empty glob results. ``recursive``
     supplies the content reader's rglob semantics; it does not change resolution.
+    ``producer_root`` changes only the retained spelling, never the absolute comparisons.
     """
+    lexical_root = path if producer_root is None else producer_root
     if pattern is None:
-        return (_CanonicalPathForm(path, _resolve_external_scope_path(path), None, ()),)
+        return (_CanonicalPathForm(lexical_root, _resolve_external_scope_path(path), None, ()),)
     prefix, tail, _ = _filesystem_scope_parts(pattern)
     bases = [(path.joinpath(*prefix), tail, tuple(prefix))]
     parts = _glob_segments(pattern)
@@ -1390,7 +1401,12 @@ def _canonical_path_forms(
                 "containment is undecidable"
             ) from exc
     return tuple(
-        _CanonicalPathForm(base, _resolve_external_scope_path(base), remainder, consumed)
+        _CanonicalPathForm(
+            lexical_root / base.relative_to(path),
+            _resolve_external_scope_path(base),
+            remainder,
+            consumed,
+        )
         for base, remainder, consumed in dict.fromkeys(bases)
     )
 
@@ -1622,27 +1638,38 @@ def _canonical_member_patterns(
     A directory alias in the declaration selects the same future paths as its target.
     Keep each remainder intact, including the original literal-prefix form: today's
     directory matches add canonical spellings without erasing the future language.
-    Each form's lexical_base is the selected prefix spelling, not its canonical target.
-    Project a canonical candidate's tail onto that spelling before applying skip_dirs.
-    The skip checks also restore the declared root spelling without changing comparisons.
+    Each form's lexical_base retains the producer-spelled root and selected prefix.
+    Keep the absolute selection separately for mass exclusions and comparisons; the skip
+    helper projects its tail onto every producer spelling of this canonical root.
     """
+    producer_root = root
+    if member.reader != "fs.content_query" and member.lexical_roots:
+        producer_root = next(
+            lexical_root
+            for canonical_root, lexical_root in zip(member.roots, member.lexical_roots, strict=True)
+            if canonical_root == root
+        )
     patterns = []
     for pattern in _member_file_patterns(member.patterns or ("**/*",)):
         for form in _canonical_path_forms(
-            root, pattern, recursive=member.reader == "fs.content_query"
+            root,
+            pattern,
+            recursive=member.reader == "fs.content_query",
+            producer_root=producer_root,
         ):
             lexical_base, canonical_base = form.lexical_base, form.base
+            selected_base = root / lexical_base.relative_to(producer_root)
             if form.remainder is None and canonical_base.is_dir():
                 # A literal pattern selecting a directory supplies no file language.
                 continue
-            if _member_path_is_excluded(lexical_base, root, member) or any(
+            if _member_path_is_excluded(selected_base, root, member) or any(
                 part in member.skip_dirs for part in _glob_segments(form.remainder or "")
             ):
                 continue
             if scope_path is not None and (
                 scope_path == canonical_base or canonical_base in scope_path.parents
             ):
-                selected = lexical_base / scope_path.relative_to(canonical_base)
+                selected = selected_base / scope_path.relative_to(canonical_base)
                 if _member_path_is_excluded(selected, root, member) or (
                     scope_pattern is not None
                     and _scope_intersects_exclusions(selected, scope_pattern, member, root=root)

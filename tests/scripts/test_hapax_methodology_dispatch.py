@@ -5482,6 +5482,71 @@ def test_receipt_only_skip_dirs_filter_declared_root_components(
     assert receipt["frame_epoch"] == (frame_root / "_runs/current").resolve().name
 
 
+@pytest.mark.parametrize(
+    "absolute, skip, pattern, tail, exists, expected_rc",
+    [
+        (False, "usr", "true", "true", True, 10),
+        (False, "sbin", "true", "true", True, 0),
+        (False, "bin", "true", "true", True, 10),
+        (True, "usr", "true", "true", True, 0),
+        (False, "usr", "site_perl/**/*.py", "site_perl/new.py", False, 10),
+    ],
+    ids=["relative-cwd", "relative-declaration", "relative-target", "absolute-cwd", "future"],
+)
+@pytest.mark.parametrize("candidate", ["sbin", "bin"])
+def test_receipt_only_skip_dirs_use_producer_spelled_relative_root(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+    absolute: bool,
+    skip: str,
+    pattern: str,
+    tail: str,
+    exists: bool,
+    expected_rc: int,
+    candidate: str,
+) -> None:
+    usr = tmp_path / "usr"
+    (usr / "bin/site_perl").mkdir(parents=True)
+    (usr / "sbin").symlink_to("bin", target_is_directory=True)
+    if exists:
+        (usr / "bin" / tail).write_text("producer-selected bytes")
+    producer_root = usr / "sbin" if absolute else Path("sbin")
+    # The producer runs in usr; main() runs elsewhere and consumes that recorded cwd.
+    monkeypatch.chdir(tmp_path)
+    with monkeypatch.context() as producer:
+        producer.chdir(usr)
+        selected = {p for p in producer_root.glob(pattern) if p.is_file() and skip not in p.parts}
+        assert selected == ({producer_root / tail} if exists and expected_rc == 10 else set())
+        assert producer_root.resolve() == usr / "bin"
+    frame_root = _frame_procedure_root(
+        tmp_path / "frame",
+        decayed_root=usr / "sbin",
+        location={"path": str(producer_root), "patterns": [pattern], "skip_dirs": [skip]},
+        reader="fs.glob",
+    )
+    (frame_root / "_runs/current/hypothesis.json").write_text(
+        json.dumps({"iteration": {"environment": {"cwd": str(usr)}}})
+    )
+
+    rc, err = _dispatch_receipt_only_scope(
+        tmp_path, monkeypatch, capsys, frame_root, usr / candidate / tail
+    )
+
+    assert rc == expected_rc, (
+        f"{absolute=}, {skip=}, {candidate=}, {exists=}: receipt-only main() returned {rc}: {err}"
+    )
+    if expected_rc == 10:
+        _assert_frame_refusal_receipt(tmp_path, frame_root, rc, err)
+    else:
+        receipt = json.loads(
+            (tmp_path / "ledger/methodology-dispatch.jsonl").read_text().splitlines()[-1]
+        )
+        assert receipt["ok"] is True and receipt["launched"] is False
+        assert receipt["frame_decayed_members"] == ["legacy-surface"]
+        assert receipt["frame_epoch"] == (frame_root / "_runs/current").resolve().name
+
+
 @pytest.mark.parametrize("reader", ["fs.glob", "fs.content_query"])
 @pytest.mark.parametrize("candidate", ["sbin", "bin", "s?in"])
 @pytest.mark.parametrize("leaf", ["new.py", "*.py"], ids=["file", "file-glob"])
