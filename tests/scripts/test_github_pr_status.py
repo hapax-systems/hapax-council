@@ -738,6 +738,10 @@ def test_open_pr_status_snapshot_does_not_hydrate_list_rows_by_default(tmp_path:
         ("release", "release"),
         ("release", "main"),
         ("main", "release"),
+        ("main", "none"),
+        ("main", "null"),
+        ("none", "main"),
+        ("null", None),
     ],
 )
 def test_open_pr_status_snapshot_hydrates_list_rows_when_requested(
@@ -813,7 +817,16 @@ def test_open_pr_status_snapshot_hydrates_list_rows_when_requested(
 @pytest.mark.parametrize("hydrate", [False, True])
 @pytest.mark.parametrize(
     "list_default,detail_default",
-    [("main", "release"), ("main", "main"), (None, "main"), ("main", None), (None, None)],
+    [
+        ("main", "release"),
+        ("main", "main"),
+        (None, "main"),
+        ("main", None),
+        (None, None),
+        ("main", "null"),
+        ("null", "main"),
+        ("null", None),
+    ],
 )
 def test_pull_status_row_preserves_default_branch_disagreement(
     tmp_path: Path,
@@ -838,3 +851,55 @@ def test_pull_status_row_preserves_default_branch_disagreement(
         assert row["baseRepoDefaultBranchDetail"] == detail_default
     else:
         assert "baseRepoDefaultBranchDetail" not in row
+
+
+@pytest.mark.parametrize("source", ["list", "detail"])
+@pytest.mark.parametrize(
+    "field,key,reason",
+    [
+        ("ref", "baseRefName", "pr_base_ref_malformed"),
+        ("default_branch", "baseRepoDefaultBranch", "pr_default_branch_malformed"),
+        ("head", "headRefName", "pr_head_ref_malformed"),
+    ],
+)
+@pytest.mark.parametrize("value", ["none", "null", "None", "NULL", None, "", " \t", {}, 0])
+def test_pull_status_row_reference_evidence(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    source: str,
+    field: str,
+    key: str,
+    reason: str,
+    value: Any,
+) -> None:
+    item = {
+        "number": 9,
+        "head": {"ref": None},
+        "base": {"ref": None, "repo": {"default_branch": None}},
+    }
+    detail = {
+        "number": 9,
+        "head": {"ref": None},
+        "base": {"ref": None, "repo": {"default_branch": None}},
+    }
+    target = item if source == "list" else detail
+    if field == "head":
+        target["head"]["ref"] = value
+    elif field == "ref":
+        target["base"]["ref"] = value
+    else:
+        target["base"]["repo"]["default_branch"] = value
+    monkeypatch.setattr(github_pr_status, "get_pull_rest", lambda *_args, **_kwargs: detail)
+    row = github_pr_status._pull_status_row_from_rest(
+        item,
+        repo="owner/repo",
+        repo_root=tmp_path,
+        runner=FakeRunner(),
+        include_status=False,
+        hydrate_pull=source == "detail" or field != "head",
+    )
+    expected = value if isinstance(value, str) and value.strip() else None
+    assert row[key] == expected
+    assert row.get("refEvidenceReasons", ()) == (
+        (reason,) if value is not None and not isinstance(value, str) else ()
+    )

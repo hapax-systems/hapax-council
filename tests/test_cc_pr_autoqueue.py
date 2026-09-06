@@ -1059,7 +1059,10 @@ def test_run_reconciler_base_sources(
     assert not any("mutation" in part for call in runner.calls for part in call)
 
 
-@pytest.mark.parametrize("list_base,detail_base", [("main", "release"), ("release", "main")])
+@pytest.mark.parametrize(
+    "list_base,detail_base",
+    [("main", "release"), ("release", "main"), ("main", "none"), ("main", "null")],
+)
 @pytest.mark.parametrize("state", ["armed", "queued", "unarmed"])
 @pytest.mark.parametrize("override", [None, "MERGE"])
 @pytest.mark.parametrize(
@@ -1204,6 +1207,7 @@ def test_run_reconciler_base_conflict_cache_isolation(
 
 @pytest.mark.parametrize("state", ["armed", "queued", "unarmed"])
 @pytest.mark.parametrize("override", [None, "MERGE"])
+@pytest.mark.parametrize("detail_default", ["release", "null"])
 @pytest.mark.parametrize(
     "read_sequence",
     ["both", "adapter_only", "second_only", "returned_to_list", "third_default", "equal"],
@@ -1213,6 +1217,7 @@ def test_run_reconciler_default_branch_receipts(
     monkeypatch: pytest.MonkeyPatch,
     state: str,
     override: str | None,
+    detail_default: str,
     read_sequence: str,
 ) -> None:
     """Disagreeing defaults cannot establish ~DEFAULT_BRANCH queue ownership."""
@@ -1226,11 +1231,11 @@ def test_run_reconciler_default_branch_receipts(
     # _FakeRunner's SQUASH rule targets ~DEFAULT_BRANCH, with list default main.
     detail_defaults = iter(
         {
-            "both": ["release", "release"],
-            "adapter_only": ["release", None],
-            "second_only": ["main", "release"],
-            "returned_to_list": ["release", "main"],
-            "third_default": ["release", "staging"],
+            "both": [detail_default, detail_default],
+            "adapter_only": [detail_default, None],
+            "second_only": ["main", detail_default],
+            "returned_to_list": [detail_default, "main"],
+            "third_default": [detail_default, "staging"],
             "equal": ["main", "main"],
         }[read_sequence]
     )
@@ -1286,7 +1291,10 @@ def test_run_reconciler_default_branch_receipts(
         assert governance["source"] == "ruleset:main-merge-queue:16186443"
         assert governance["reason"] is None
     else:
-        reason = "auto_merge_method_unverified:pr_default_branch_conflict:list=main:detail=release"
+        reason = (
+            "auto_merge_method_unverified:pr_default_branch_conflict:"
+            f"list=main:detail={detail_default}"
+        )
         assert (
             decision["action"]
             == {
@@ -1304,7 +1312,7 @@ def test_run_reconciler_default_branch_receipts(
         assert decision.get("auto_merge_method_owner") == (
             None if state == "unarmed" else "unverified"
         )
-        assert governance["default_branch_detail"] == "release"
+        assert governance["default_branch_detail"] == detail_default
         assert governance["reason"] == reason
         assert governance["method"] is None
         assert governance["source"] is None
@@ -2479,11 +2487,11 @@ def test_queue_owned_method_survives_arm_readback(tmp_path: Path, queued: bool) 
 @pytest.mark.parametrize(
     ("fault", "reason"),
     [
-        ("unreadable", "enforcement_unreadable:source=rulesets"),
+        ("unreadable", "enforcement_unreadable:source=rulesets:cause=request_failed"),
         ("conflicting_rules", "queue_strategy_conflict:MERGE,SQUASH"),
         ("conflicting_later_page", "queue_strategy_conflict:MERGE,SQUASH"),
         ("pr_fields_absent", "pr_base_ref_missing"),
-        ("pr_base_malformed", "pr_base_ref_missing"),
+        ("pr_base_malformed", "pr_base_ref_malformed"),
         ("conditions_absent", "ref_enforcement_unknown:ruleset=16186443"),
         ("unknown_pattern", "ref_enforcement_unknown:ruleset=16186443"),
         ("enforcement_absent", "enforcement_malformed:summary"),
@@ -2504,7 +2512,7 @@ def test_queue_owned_method_survives_arm_readback(tmp_path: Path, queued: bool) 
         ("parameters_malformed", "queue_strategy_invalid:ruleset=16186443"),
         ("strategy_absent", "queue_strategy_invalid:ruleset=16186443"),
         ("strategy_invalid", "queue_strategy_invalid:ruleset=99"),
-        ("detail_unreadable", "enforcement_unreadable:ruleset=99"),
+        ("detail_unreadable", "enforcement_unreadable:ruleset=99:cause=request_failed"),
     ],
 )
 def test_queue_governance_evidence_refuses_unknown(
@@ -2754,10 +2762,10 @@ def test_merge_method_override_respects_governance(
 @pytest.mark.parametrize(
     ("fault", "source"),
     [
-        ("unreadable", "enforcement_unreadable:source=rulesets"),
+        ("unreadable", "enforcement_unreadable:source=rulesets:cause=request_failed"),
         ("malformed", "enforcement_malformed:rulesets"),
-        ("invalid_json", "enforcement_unreadable:source=rulesets"),
-        ("detail_unreadable", "enforcement_unreadable:ruleset=16186443"),
+        ("invalid_json", "enforcement_unreadable:source=rulesets:cause=invalid_json"),
+        ("detail_unreadable", "enforcement_unreadable:ruleset=16186443:cause=request_failed"),
         ("detail_malformed", "enforcement_conflict:ruleset=16186443"),
     ],
 )
@@ -2837,7 +2845,7 @@ def test_merge_method_override_only_refusal_preserves_admission_in_apply(
         (
             "unreadable",
             "auto_merge_method_unverified:expected_missing:"
-            "source=enforcement_unreadable:source=rulesets",
+            "source=enforcement_unreadable:source=rulesets:cause=request_failed",
         ),
     ],
     ids=["contradictory", "unreadable"],
@@ -3036,6 +3044,233 @@ def test_already_auto_merge_enabled_reports_unsupported_armed_method(
         "auto_merge_method_unrecognized:armed=FASTFORWARD:expected=SQUASH"
     ]
     assert "This decision disables auto-merge when run with --apply" in decision["next_action"]
+
+
+@pytest.mark.parametrize(
+    "field,attribute,malformed_reason",
+    [
+        ("headRefName", "head_ref", "pr_head_ref_malformed"),
+        ("baseRefName", "base_ref", "pr_base_ref_malformed"),
+        ("baseRefNameDetail", "base_ref_detail", "pr_base_ref_malformed"),
+        ("baseRefNameDetailLatest", "base_ref_detail_latest", "pr_base_ref_malformed"),
+        ("baseRepoDefaultBranch", "default_branch", "pr_default_branch_malformed"),
+        ("baseRepoDefaultBranchDetail", "default_branch_detail", "pr_default_branch_malformed"),
+    ],
+)
+@pytest.mark.parametrize(
+    "value", ["none", "null", "None", "NULL", " topic ", None, "", " \t", {}, 0]
+)
+def test_parse_pr_reference_evidence(
+    field: str, attribute: str, malformed_reason: str, value: Any
+) -> None:
+    pr = autoqueue._parse_pr({**_pr(42), field: value})
+    assert pr is not None
+    expected = value if isinstance(value, str) and value.strip() else None
+    assert getattr(pr, attribute) == expected
+    assert pr.reference_reasons == (
+        (malformed_reason,) if value is not None and not isinstance(value, str) else ()
+    )
+    # Null-word coercion remains intentional for methods/states and other scalars.
+    assert autoqueue._scalar("none") is None
+    assert autoqueue._scalar("NULL") is None
+
+
+@pytest.mark.parametrize("head", ["none", "null", "None", "NULL"])
+def test_run_reconciler_literal_head_receipt(tmp_path: Path, head: str) -> None:
+    vault = _make_vault(tmp_path)
+    _write_task(vault, task_id="literal-head", pr=42)
+    runner = _FakeRunner()
+    runner.open_prs = [_pr(42, branch=head, auto_merge=True, auto_merge_method="MERGE")]
+    report = autoqueue.run_reconciler(
+        repo="owner/repo",
+        repo_root=tmp_path,
+        vault_root=vault,
+        apply=False,
+        lineage_ledger_path=None,
+        quarantine_path=tmp_path / "quarantine.json",
+        admission_governor_path=tmp_path / "governor.yaml",
+        runner=runner,
+    )
+    decision = report["decisions"][0]
+    assert decision["head_ref"] == head
+    assert decision["action"] == "already_auto_merge_enabled"
+    assert decision["auto_merge_method_owner"] == "merge_queue"
+
+
+@pytest.mark.parametrize("head", [None, "", " \t"])
+def test_missing_head_does_not_match_unlinked_task(tmp_path: Path, head: str | None) -> None:
+    vault = _make_vault(tmp_path)
+    _write_task(vault, task_id="unlinked")
+    pr = autoqueue._parse_pr({**_pr(42), "headRefName": head})
+    assert pr is not None
+    assert autoqueue._matching_tasks(pr, autoqueue.load_task_notes(vault)) == []
+
+
+@pytest.mark.parametrize(
+    "field,reason",
+    [("ref", "pr_base_ref_malformed"), ("default_branch", "pr_default_branch_malformed")],
+)
+@pytest.mark.parametrize("source", ["list", "adapter", "second"])
+@pytest.mark.parametrize("value", [{"bad": "private payload"}, 0], ids=["dict", "number"])
+@pytest.mark.parametrize("state", ["armed", "queued", "unarmed"])
+@pytest.mark.parametrize("override", [None, "MERGE"])
+def test_run_reconciler_malformed_reference_refusal(
+    tmp_path: Path,
+    field: str,
+    reason: str,
+    source: str,
+    value: Any,
+    state: str,
+    override: str | None,
+) -> None:
+    class MalformedRunner(_FakeRunner):
+        detail_reads = 0
+
+        def _rest_response(self, cmd: list[str]) -> subprocess.CompletedProcess | None:
+            response = super()._rest_response(cmd)
+            if response is None or response.returncode != 0:
+                return response
+            path = cmd[6]
+            if path not in {"repos/owner/repo/pulls", "repos/owner/repo/pulls/42"}:
+                return response
+            if path.endswith("/42"):
+                self.detail_reads += 1
+                observed_source = "adapter" if self.detail_reads == 1 else "second"
+            else:
+                observed_source = "list"
+            if source != observed_source:
+                return response
+            payload = json.loads(response.stdout)
+            pull = payload[0] if isinstance(payload, list) else payload
+            base = pull["base"]
+            (base if field == "ref" else base["repo"])[field] = value
+            return subprocess.CompletedProcess(cmd, 0, json.dumps(payload), "")
+
+    report = _method_override_report(
+        tmp_path, state=state, override=override, runner=MalformedRunner()
+    )
+    decision = report["decisions"][0]
+    assert (
+        decision["action"]
+        == {"armed": "disable_auto_merge", "queued": "dequeue", "unarmed": "blocked"}[state]
+    )
+    prefix = "auto_merge_method_unverified:"
+    assert decision["reasons"] == [
+        prefix + ("expected_missing:source=" if override else "") + reason
+    ]
+    assert decision.get("auto_merge_method_owner") == (None if state == "unarmed" else "unverified")
+    assert decision["merge_queue_governance"]["reason"] == prefix + reason
+    assert decision["merge_queue_governance"]["method"] is None
+    assert decision["merge_queue_governance"]["source"] is None
+    assert "private payload" not in json.dumps(report)
+
+
+@pytest.mark.parametrize("malformed_first", [False, True])
+def test_run_reconciler_malformed_reference_cache_isolation(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, malformed_first: bool
+) -> None:
+    vault = _make_vault(tmp_path)
+    runner = _FakeRunner()
+    runner.open_prs = [
+        _pr(number, auto_merge=True, auto_merge_method="MERGE") for number in (41, 42)
+    ]
+    runner.open_prs[1]["baseRefName"] = 0
+    if malformed_first:
+        runner.open_prs.reverse()
+    for item in runner.open_prs:
+        _write_task(vault, task_id=f"malformed-cache-{item['number']}", pr=item["number"])
+    detail_for_number = runner._rest_pull_for_number
+
+    def valid_detail(number: int) -> dict[str, Any]:
+        detail = detail_for_number(number)
+        assert detail is not None
+        detail["base"]["ref"] = "main"
+        return detail
+
+    monkeypatch.setattr(runner, "_rest_pull_for_number", valid_detail)
+    report = autoqueue.run_reconciler(
+        repo="owner/repo",
+        repo_root=tmp_path,
+        vault_root=vault,
+        apply=False,
+        lineage_ledger_path=None,
+        quarantine_path=tmp_path / "quarantine.json",
+        admission_governor_path=tmp_path / "governor.yaml",
+        runner=runner,
+    )
+    decisions = {item["pr"]: item for item in report["decisions"]}
+    assert decisions[41]["action"] == "already_auto_merge_enabled"
+    assert decisions[41]["auto_merge_method_owner"] == "merge_queue"
+    assert decisions[42]["action"] == "disable_auto_merge"
+    assert decisions[42]["auto_merge_method_owner"] == "unverified"
+    assert decisions[42]["reasons"] == ["auto_merge_method_unverified:pr_base_ref_malformed"]
+
+
+@pytest.mark.parametrize("source", ["rulesets", "ruleset"])
+@pytest.mark.parametrize("state", ["armed", "queued", "unarmed"])
+@pytest.mark.parametrize(
+    "returncode,body,stderr,error,cause",
+    [
+        pytest.param(
+            1, "", "API rate limit exceeded (HTTP 403)", None, "rate_limit", id="rate_limit_stderr"
+        ),
+        pytest.param(
+            1,
+            '{"message":"rate_limit"}',
+            "private diagnostic",
+            None,
+            "rate_limit",
+            id="rate_limit_stdout",
+        ),
+        pytest.param(1, "", "forbidden (HTTP 403)", None, "request_failed", id="forbidden"),
+        pytest.param(1, "", "not found (HTTP 404)", None, "request_failed", id="not_found"),
+        pytest.param(1, "", "private diagnostic", None, "request_failed", id="unknown"),
+        pytest.param(0, "", "", OSError("private diagnostic"), "transport_error", id="oserror"),
+        pytest.param(
+            0, "", "", subprocess.TimeoutExpired("gh", 60), "transport_error", id="timeout"
+        ),
+        pytest.param(0, " \n", "private diagnostic", None, "empty_body", id="empty_body"),
+        pytest.param(0, "private diagnostic", "", None, "invalid_json", id="invalid_json"),
+    ],
+)
+def test_run_reconciler_unreadable_governance_cause(
+    tmp_path: Path,
+    source: str,
+    state: str,
+    returncode: int,
+    body: str,
+    stderr: str,
+    error: Exception | None,
+    cause: str,
+) -> None:
+    endpoint = "rulesets?per_page=100&page=1" if source == "rulesets" else "rulesets/16186443"
+
+    class UnreadableRunner(_FakeRunner):
+        def __call__(self, cmd: list[str], **kwargs: Any) -> subprocess.CompletedProcess:
+            if (
+                cmd[:4] == ["gh", "api", "--method", "GET"]
+                and cmd[6] == f"repos/owner/repo/{endpoint}"
+            ):
+                self.calls.append(list(cmd))
+                if error is not None:
+                    raise error
+                return subprocess.CompletedProcess(cmd, returncode, body, stderr)
+            return super().__call__(cmd, **kwargs)
+
+    report = _method_override_report(
+        tmp_path, state=state, override="MERGE", runner=UnreadableRunner()
+    )
+    decision = report["decisions"][0]
+    scope = "source=rulesets" if source == "rulesets" else "ruleset=16186443"
+    refusal = f"enforcement_unreadable:{scope}:cause={cause}"
+    assert decision["merge_queue_governance"]["reason"] == f"auto_merge_method_unverified:{refusal}"
+    assert decision["reasons"] == [
+        f"auto_merge_method_unverified:expected_missing:source={refusal}"
+    ]
+    assert decision["action"] == "blocked"
+    assert decision.get("auto_merge_method_owner") == (None if state == "unarmed" else "unverified")
+    assert all(re.fullmatch(r"[A-Za-z0-9_:,=.-]+", reason) for reason in decision["reasons"])
+    assert "private diagnostic" not in json.dumps(report)
 
 
 def test_parse_pr_accepts_rest_auto_merge_method_shape() -> None:

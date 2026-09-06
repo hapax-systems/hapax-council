@@ -42,6 +42,28 @@ class RestIndeterminateError(subprocess.SubprocessError):
         self.reason = reason
 
 
+def read_ref_name(value: Any) -> str | None:
+    """Keep literal ref names, including null words; only blank strings are absent."""
+    return value if isinstance(value, str) and value.strip() else None
+
+
+def pr_reference_reasons(item: dict[str, Any]) -> tuple[str, ...]:
+    """Retain classified malformed evidence before hydration/normalization loses it."""
+    fields_by_reason = {
+        "pr_base_ref_malformed": ("baseRefName", "baseRefNameDetail", "baseRefNameDetailLatest"),
+        "pr_default_branch_malformed": ("baseRepoDefaultBranch", "baseRepoDefaultBranchDetail"),
+        "pr_head_ref_malformed": ("headRefName",),
+    }
+    inherited = item.get("refEvidenceReasons")
+    inherited = inherited if isinstance(inherited, (list, tuple)) else ()
+    return tuple(
+        reason
+        for reason, fields in fields_by_reason.items()
+        if reason in inherited
+        or any(item.get(key) is not None and not isinstance(item[key], str) for key in fields)
+    )
+
+
 @dataclass(frozen=True)
 class GraphQLBackoff:
     remaining: int
@@ -600,7 +622,20 @@ def _pull_status_row_from_rest(
     detail_base_repo = detail_base.get("repo") if isinstance(detail_base.get("repo"), dict) else {}
     head = pull.get("head") if isinstance(pull.get("head"), dict) else {}
     sha = str(head.get("sha") or "")
-    head_ref = str(head.get("ref") or "")
+    reference_reasons = pr_reference_reasons(
+        {
+            "headRefName": head.get("ref"),
+            "baseRefName": base.get("ref"),
+            "baseRefNameDetail": detail_base.get("ref"),
+            "baseRepoDefaultBranch": base_repo.get("default_branch"),
+            "baseRepoDefaultBranchDetail": detail_base_repo.get("default_branch"),
+        }
+    )
+    head_ref = read_ref_name(head.get("ref"))
+    base_ref = read_ref_name(base.get("ref"))
+    detail_ref = read_ref_name(detail_base.get("ref"))
+    default_branch = read_ref_name(base_repo.get("default_branch"))
+    detail_default = read_ref_name(detail_base_repo.get("default_branch"))
     status_ref = sha or head_ref
     files = (
         list_pull_files_rest(number, repo=repo, repo_root=repo_root, runner=runner)
@@ -627,23 +662,20 @@ def _pull_status_row_from_rest(
         "mergedAt": pull.get("merged_at"),
         "headRefName": head_ref,
         "headRefOid": sha,
-        "baseRefName": base.get("ref") or detail_base.get("ref"),
-        "baseRefNameDetail": detail_base.get("ref")
-        if isinstance(detail, dict)
-        and base.get("ref")
-        and detail_base.get("ref")
-        and base.get("ref") != detail_base.get("ref")
+        "baseRefName": base_ref or detail_ref,
+        "baseRefNameDetail": detail_ref
+        if isinstance(detail, dict) and base_ref and detail_ref and base_ref != detail_ref
         else None,
-        "baseRepoDefaultBranch": base_repo.get("default_branch")
-        or detail_base_repo.get("default_branch"),
+        "baseRepoDefaultBranch": default_branch or detail_default,
         **(
-            {"baseRepoDefaultBranchDetail": detail_base_repo["default_branch"]}
+            {"baseRepoDefaultBranchDetail": detail_default}
             if isinstance(detail, dict)
-            and base_repo.get("default_branch")
-            and detail_base_repo.get("default_branch")
-            and base_repo["default_branch"] != detail_base_repo["default_branch"]
+            and default_branch
+            and detail_default
+            and default_branch != detail_default
             else {}
         ),
+        **({"refEvidenceReasons": reference_reasons} if reference_reasons else {}),
         "changedFiles": changed_files,
         "files": _files_payload_from_rest(files) if include_files else None,
         "isDraft": bool(pull.get("draft")),

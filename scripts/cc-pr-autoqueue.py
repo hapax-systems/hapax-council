@@ -54,9 +54,12 @@ from github_pr_status import (  # noqa: E402
     GRAPHQL_BACKOFF_RC,
     REST_INDETERMINATE_CHECK_NAME,
     RestIndeterminateError,
+    _rest_get_json,
     fetch_status_check_rollup_rest,
     get_pull_rest,
     list_open_pr_statuses_rest,
+    pr_reference_reasons,
+    read_ref_name,
     rest_merge_state_status,
     run_graphql_rate_aware,
 )
@@ -239,7 +242,7 @@ class PullRequest:
     number: int
     node_id: str | None
     title: str
-    head_ref: str
+    head_ref: str | None
     head_sha: str | None
     files: tuple[str, ...] | None
     changed_files_count: int | None
@@ -257,6 +260,7 @@ class PullRequest:
     base_ref_detail: str | None = None
     base_ref_detail_latest: str | None = None
     default_branch_detail: str | None = None
+    reference_reasons: tuple[str, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -751,6 +755,8 @@ def fetch_pr_merge_queue_governance(
     cannot establish that ordinary per-PR auto-merge owns the strategy.
     """
     prefix = "auto_merge_method_unverified:"
+    if pr.reference_reasons:
+        return MergeQueueGovernance(reason=prefix + pr.reference_reasons[0])
     if not pr.base_ref:
         return MergeQueueGovernance(reason=prefix + "pr_base_ref_missing")
     if pr.base_ref_detail and pr.base_ref_detail != pr.base_ref:
@@ -766,13 +772,17 @@ def fetch_pr_merge_queue_governance(
     sources: list[str] = []
     page = 1
     while True:
-        ok, rulesets, _message = _gh_api_get_json(
-            f"repos/{repo}/rulesets?per_page=100&page={page}",
-            repo_root=repo_root,
-            runner=runner,
-        )
-        if not ok:
-            return MergeQueueGovernance(reason=prefix + "enforcement_unreadable:source=rulesets")
+        try:
+            rulesets = _rest_get_json(
+                f"repos/{repo}/rulesets?per_page=100&page={page}",
+                repo_root=repo_root,
+                runner=runner,
+                fail_on_indeterminate=True,
+            )
+        except RestIndeterminateError as exc:
+            return MergeQueueGovernance(
+                reason=prefix + f"enforcement_unreadable:source=rulesets:cause={exc.reason}"
+            )
         if not isinstance(rulesets, list):
             return MergeQueueGovernance(reason=prefix + "enforcement_malformed:rulesets")
         for summary in rulesets:
@@ -787,12 +797,17 @@ def fetch_pr_merge_queue_governance(
             ruleset_id = summary.get("id")
             if type(ruleset_id) is not int or ruleset_id <= 0:
                 return MergeQueueGovernance(reason=prefix + "enforcement_malformed:ruleset_id")
-            ok, detail, _message = _gh_api_get_json(
-                f"repos/{repo}/rulesets/{ruleset_id}", repo_root=repo_root, runner=runner
-            )
-            if not ok:
+            try:
+                detail = _rest_get_json(
+                    f"repos/{repo}/rulesets/{ruleset_id}",
+                    repo_root=repo_root,
+                    runner=runner,
+                    fail_on_indeterminate=True,
+                )
+            except RestIndeterminateError as exc:
                 return MergeQueueGovernance(
-                    reason=prefix + f"enforcement_unreadable:ruleset={ruleset_id}"
+                    reason=prefix
+                    + f"enforcement_unreadable:ruleset={ruleset_id}:cause={exc.reason}"
                 )
             if not isinstance(detail, dict) or any(
                 detail.get(key) != summary.get(key) for key in ("id", "target", "enforcement")
@@ -1131,7 +1146,7 @@ def _parse_pr(item: dict[str, Any]) -> PullRequest | None:
         number=number,
         node_id=_scalar(item.get("id")),
         title=_scalar(item.get("title")) or "",
-        head_ref=_scalar(item.get("headRefName")) or "",
+        head_ref=read_ref_name(item.get("headRefName")),
         files=files,
         changed_files_count=changed_files_count,
         body=str(item.get("body") or ""),
@@ -1143,21 +1158,12 @@ def _parse_pr(item: dict[str, Any]) -> PullRequest | None:
         auto_merge_enabled=bool(item.get("autoMergeRequest")),
         auto_merge_method=_auto_merge_request_method(item.get("autoMergeRequest")),
         check_summary=summarize_checks(item.get("statusCheckRollup") or []),
-        base_ref=_scalar(item.get("baseRefName"))
-        if isinstance(item.get("baseRefName"), str)
-        else None,
-        default_branch=_scalar(item.get("baseRepoDefaultBranch"))
-        if isinstance(item.get("baseRepoDefaultBranch"), str)
-        else None,
-        default_branch_detail=_scalar(item.get("baseRepoDefaultBranchDetail"))
-        if isinstance(item.get("baseRepoDefaultBranchDetail"), str)
-        else None,
-        base_ref_detail=_scalar(item.get("baseRefNameDetail"))
-        if isinstance(item.get("baseRefNameDetail"), str)
-        else None,
-        base_ref_detail_latest=_scalar(item.get("baseRefNameDetailLatest"))
-        if isinstance(item.get("baseRefNameDetailLatest"), str)
-        else None,
+        base_ref=read_ref_name(item.get("baseRefName")),
+        default_branch=read_ref_name(item.get("baseRepoDefaultBranch")),
+        default_branch_detail=read_ref_name(item.get("baseRepoDefaultBranchDetail")),
+        base_ref_detail=read_ref_name(item.get("baseRefNameDetail")),
+        base_ref_detail_latest=read_ref_name(item.get("baseRefNameDetailLatest")),
+        reference_reasons=pr_reference_reasons(item),
     )
 
 
@@ -1201,25 +1207,36 @@ def fetch_open_prs(
             base = rest_pr.get("base") if isinstance(rest_pr, dict) else None
             base = base if isinstance(base, dict) else {}
             base_repo = base.get("repo")
-            item["baseRefName"] = item.get("baseRefName") or base.get("ref")
-            detail_ref = base.get("ref")
+            detail_default = (
+                base_repo.get("default_branch") if isinstance(base_repo, dict) else None
+            )
+            item["refEvidenceReasons"] = pr_reference_reasons(
+                {
+                    "refEvidenceReasons": pr_reference_reasons(item),
+                    "baseRefNameDetailLatest": base.get("ref"),
+                    "baseRepoDefaultBranchDetail": detail_default,
+                }
+            )
+            detail_ref = read_ref_name(base.get("ref"))
+            item["baseRefName"] = read_ref_name(item.get("baseRefName")) or detail_ref
             if detail_ref and detail_ref != item["baseRefName"]:
-                if not item.get("baseRefNameDetail"):
+                if not read_ref_name(item.get("baseRefNameDetail")):
                     item["baseRefNameDetail"] = detail_ref
                 elif detail_ref != item["baseRefNameDetail"]:
                     item["baseRefNameDetailLatest"] = detail_ref
-            if item.get("baseRefNameDetail") and item["baseRefNameDetail"] != item["baseRefName"]:
+            if (
+                read_ref_name(item.get("baseRefNameDetail"))
+                and item["baseRefNameDetail"] != item["baseRefName"]
+            ):
                 item["baseRefConflict"] = "pr_base_ref_conflict"
-            item["baseRepoDefaultBranch"] = item.get("baseRepoDefaultBranch") or (
-                base_repo.get("default_branch") if isinstance(base_repo, dict) else None
-            )
-            detail_default = (
-                base_repo.get("default_branch") if isinstance(base_repo, dict) else None
+            detail_default = read_ref_name(detail_default)
+            item["baseRepoDefaultBranch"] = (
+                read_ref_name(item.get("baseRepoDefaultBranch")) or detail_default
             )
             if (
                 detail_default
                 and detail_default != item["baseRepoDefaultBranch"]
-                and not item.get("baseRepoDefaultBranchDetail")
+                and not read_ref_name(item.get("baseRepoDefaultBranchDetail"))
             ):
                 item["baseRepoDefaultBranchDetail"] = detail_default
             # Preserve the shared REST snapshot when available. If it is absent, derive the
@@ -1627,7 +1644,7 @@ def _matching_tasks(pr: PullRequest, tasks: list[TaskNote]) -> list[TaskNote]:
     by_pr = [task for task in tasks if task.pr == pr.number]
     if by_pr:
         return by_pr
-    return [task for task in tasks if task.branch == pr.head_ref]
+    return [task for task in tasks if pr.head_ref and task.branch == pr.head_ref]
 
 
 def _release_authorized_head_blockers(
@@ -3146,7 +3163,8 @@ def run_reconciler(
         )
     if expected_auto_merge_method is not None:
         governance_by_base: dict[
-            tuple[str | None, str | None, str | None, str | None], MergeQueueGovernance
+            tuple[str | None, str | None, str | None, str | None, tuple[str, ...]],
+            MergeQueueGovernance,
         ] = {}
         governed_prs: list[PullRequest] = []
         for pr in prs:
@@ -3155,6 +3173,7 @@ def run_reconciler(
                 pr.default_branch,
                 pr.base_ref_detail,
                 pr.default_branch_detail,
+                pr.reference_reasons,
             )
             if base_key not in governance_by_base:
                 governance_by_base[base_key] = fetch_pr_merge_queue_governance(
