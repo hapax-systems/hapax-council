@@ -205,7 +205,10 @@ class TestRendererIntegration:
         page = render_citation_graph_page(snap)
         assert page.path == "/citation-graph"
         assert "snapshot-placeholder" in page.body_html
-        assert "configure-orcid.sh" in page.body_html
+        # Reader-facing placeholder: no operator instruction (the former
+        # configure-orcid.sh hint) leaks into public copy.
+        assert "No reviewed citation graph is included in this build." in page.body_html
+        assert "configure-orcid.sh" not in page.body_html
         # No graph-data script when absent.
         assert 'id="graph-data"' not in page.body_html
 

@@ -1,23 +1,10 @@
 # GitHub Actions workflow for the citable-nexus front-door site.
 #
-# This file is the TEMPLATE that ships in hapax-council; the actual
-# `.github/workflows/deploy.yml` lives in the bootstrapped external repo
-# (`hapax-systems/hapax-research`). The bootstrap script
-# (`scripts/bootstrap_citable_nexus_repo.sh`) copies this template into
-# the new repo at `.github/workflows/deploy.yml` during initial push.
-#
-# What the workflow does:
-#   - Checks out hapax-council (the source-of-truth for the renderer).
-#   - Runs `scripts/build_citable_nexus.py` to render fresh HTML.
-#   - Commits the rendered output into the citable-nexus repo's main
-#     branch + lets GitHub Pages auto-deploy.
-#
-# Cron cadence: 04:30 UTC daily — chosen so the rebuild fires AFTER
-# the council DataCite mirror's nightly fire (04:00 UTC) so any
-# DataCite-derived rendering picks up the freshest snapshot.
-#
-# Triggers: cron + push-to-main (for manual edits) + workflow_dispatch
-# (for ad-hoc rebuilds).
+# Text template only; it is not evidence of a configured or deployed site.
+# The build needs an explicitly configured HAPAX_CITABLE_NEXUS_CANONICAL_URL
+# repository variable. No vault or local DataCite snapshot is supplied here;
+# the build's default clears no optional inputs. The legacy bootstrap script
+# needs reconciliation before reuse (its address and page-count text are stale).
 
 name: Deploy citable-nexus
 
@@ -63,17 +50,18 @@ jobs:
 
       - name: Render site
         working-directory: hapax-council
+        env:
+          HAPAX_CITABLE_NEXUS_CANONICAL_URL: ${{ vars.HAPAX_CITABLE_NEXUS_CANONICAL_URL }}
         run: |
           uv run python scripts/build_citable_nexus.py \
             --out "${GITHUB_WORKSPACE}/render"
 
       - name: Sync rendered site to hapax-research repo
         run: |
-          # Preserve the CNAME + .github/ in the destination
+          # Preserve repository/workflow metadata; sync the build-derived CNAME.
           rsync -av --delete \
             --exclude '.git' \
             --exclude '.github' \
-            --exclude 'CNAME' \
             "${GITHUB_WORKSPACE}/render/" \
             "${GITHUB_WORKSPACE}/hapax-research/"
 
@@ -86,11 +74,11 @@ jobs:
             git add -A
             council_head="$(cd ../hapax-council && git rev-parse --short HEAD)"
             printf '%s\n' \
-              "chore(render): nightly rebuild from hapax-council@${council_head}" \
+              "chore(render): rebuild from hapax-council@${council_head}" \
               "" \
               "Triggered by: ${{ github.event_name }}" \
               "Renderer: hapax-council/agents/citable_nexus/" \
-              "Pages: /, /cite, /refuse, /surfaces" \
+              "Content: committed home and explicitly cleared inputs" \
               > "$RUNNER_TEMP/citable-nexus-commit-message.txt"
             git commit -F "$RUNNER_TEMP/citable-nexus-commit-message.txt"
             git push origin main

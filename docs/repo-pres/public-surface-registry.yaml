@@ -55,12 +55,17 @@ surfaces:
     stale_behavior: block_public_current
 
   - surface_id: omg.landing
+    owner: "agents/omg_web_builder/static/index.html"
+    disposition: corrected
+    disposition_reason: >-
+      Source copy reconciled; provider update belongs to root through the existing publication bus after native release.
     surface_type: omg_landing
     path_globs:
       - agents/omg_web_builder/static/index.html
       - config/omg-lol.yaml
     claim_ceiling_ref: council.public_egress_control
     source_refs:
+      - agents/omg_web_builder/static/index.html
       - config/omg-lol.yaml
       - docs/repo-pres/2026-07-08-public-copy-rewrite-matrix-plan.md
     publication_gate_context: omg_legacy_guarded_surface
@@ -81,6 +86,10 @@ surfaces:
     stale_behavior: degrade_or_block_live_claim
 
   - surface_id: weblog.rss_fanout
+    owner: "agents/self_federate/rss_validator.py (validation only)"
+    disposition: unchanged-with-reason
+    disposition_reason: >-
+      RSS validator is operational code, not feed or article chrome. Its /rss default discrepancy remains outside this source-copy row.
     surface_type: weblog_rss_fanout
     path_globs:
       - agents/weblog_publish_public_event_producer.py
@@ -89,6 +98,7 @@ surfaces:
       - agents/self_federate/rss_validator.py
     claim_ceiling_ref: council.publication_bus_receipts_only
     source_refs:
+      - agents/self_federate/rss_validator.py
       - docs/repo-pres/2026-07-08-public-copy-rewrite-matrix-plan.md
       - config/omg-lol-fanout.yaml
     publication_gate_context: publication_bus_fanout
@@ -96,6 +106,10 @@ surfaces:
     stale_behavior: block_public_current
 
   - surface_id: obsidian.publish.home
+    owner: "Operator withdrawal; council source excision in PR #4645"
+    disposition: withdrawn
+    disposition_reason: >-
+      Source publishing path and entry links excised at this head; this disposition does not attest provider removal.
     surface_type: obsidian_publish
     withdrawn: 2026-09-05
     withdrawal_reason: |-
@@ -111,6 +125,7 @@ surfaces:
       - systemd/units/hapax-obsidian-publish-sync.timer
     claim_ceiling_ref: council.public_egress_control
     source_refs:
+      - docs/runbooks/obsidian-publish-sync.md
       - config/obsidian-publish/Home.md
       - docs/repo-pres/2026-07-08-public-copy-rewrite-matrix-plan.md
     publication_gate_context: obsidian_publish_sync
@@ -141,3 +156,67 @@ surfaces:
     publication_gate_context: archive_only
     freshness_ttl_s: 1800
     stale_behavior: archive_only_or_recheck
+
+  - surface_id: citable_nexus.entry
+    surface_type: static_research_site
+    owner: agents/citable_nexus/renderer.py via scripts/build_citable_nexus.py
+    disposition: corrected
+    disposition_reason: >-
+      Source build now requires an explicit canonical address and optional cleared
+      inputs; home copy is committed. No deployed canonical site is asserted.
+      The excluded legacy bootstrap script still needs address and copy reconciliation.
+    path_globs:
+      - agents/citable_nexus/renderer.py
+      - agents/citable_nexus/vault_content.py
+      - scripts/build_citable_nexus.py
+      - docs/citable-nexus/home.md
+      - docs/citable-nexus/*.template
+    claim_ceiling_ref: council.source_visible_research_runtime
+    source_refs:
+      - agents/citable_nexus/renderer.py
+      - scripts/build_citable_nexus.py
+      - docs/citable-nexus/home.md
+    publication_gate_context: reviewed_static_source_build
+    freshness_ttl_s: 1800
+    stale_behavior: block_public_current
+
+  - surface_id: weblog.chrome
+    surface_type: omg_weblog
+    owner: Provider-held chrome; no verified committed chrome source owner
+    disposition: unchanged-with-reason
+    disposition_reason: >-
+      Path search under agents/omg_web_builder, config and docs found publisher,
+      landing, configuration and research receipts. Content search for Hapax Weblog,
+      Evergreen docs, Recent posts and Backlinking Is Anemic RAG found historical
+      receipts only. The September 5 browser baseline contains no description or
+      complete navigation strings. No editable current chrome source was recovered;
+      entries, feed and provider settings are unchanged.
+    path_globs:
+      - agents/publication_bus/omg_weblog_publisher.py
+    claim_ceiling_ref: council.publication_bus_receipts_only
+    source_refs:
+      - agents/publication_bus/omg_weblog_publisher.py
+      - docs/legibility/public-canonical-url-smoke-2026-06-11.md
+      - docs/research/evidence/2026-05-13-public-surface-source-of-truth-reconciliation.md
+    publication_gate_context: publication_bus_fanout
+    freshness_ttl_s: 1800
+    stale_behavior: block_public_current
+
+  - surface_id: github.organization.profile
+    surface_type: github_profile
+    owner: hapax-constitution/sdlc/render/org_profile_readme.py
+    disposition: unchanged-with-reason
+    disposition_reason: >-
+      Another source owner integrates the organization lede. Council contains an
+      ownership pointer only; the generated profile and its renderer are outside
+      this row. No live profile correction is claimed here.
+    path_globs:
+      - docs/repo-pres/dot-github-scaffold/profile/README.md
+    claim_ceiling_ref: council.archive_not_current_copy
+    source_refs:
+      - hapax-constitution/sdlc/render/org_profile_readme.py
+      - hapax-systems/.github/profile/README.md
+      - docs/repo-pres/dot-github-scaffold/profile/README.md
+    publication_gate_context: external_owner_org_profile
+    freshness_ttl_s: 1800
+    stale_behavior: block_public_current
