@@ -97,7 +97,15 @@ surfaces:
 
   - surface_id: obsidian.publish.home
     surface_type: obsidian_publish
+    withdrawn: 2026-09-05
+    withdrawal_reason: |-
+      get rid of obsidian publish exposure: we need another way to make a curated research basis available. that was an early way to do so but too much exposure
+      we can deal with the research curation issue later, for now, just excise obsid pub
+    withdrawal_source: "Operator direction, verbatim, relayed by root at 2026-09-05T20:03:49Z (bus message filename label 20260905T2013Z, not the delivery time)"
+    withdrawal_record: docs/runbooks/obsidian-publish-sync.md
     path_globs:
+      - docs/runbooks/obsidian-publish-sync.md
+    withdrawn_path_globs:
       - config/obsidian-publish/Home.md
       - scripts/hapax-obsidian-publish-sync
       - systemd/units/hapax-obsidian-publish-sync.timer
