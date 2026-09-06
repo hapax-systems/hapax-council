@@ -2441,6 +2441,211 @@ def _repo_relative_candidates(
     return [root / relative for root in sorted(roots) if _repository_identity(root) == identity]
 
 
+def _glob_disjoint(left: str, right: str) -> bool | None:
+    """Establish empty intersection; a possible or unsupported intersection stays unknown.
+
+    The product walk retains every ** transition. Segment comparisons prove only literal
+    mismatches or incompatible fixed prefixes/suffixes; no sampled witness proves absence.
+    """
+    a, b = _glob_segments(left), _glob_segments(right)
+    pending = [(0, 0)]
+    seen = set()
+    while pending:
+        i, j = pending.pop()
+        if (i, j) in seen:
+            continue
+        seen.add((i, j))
+        if i == len(a) and j == len(b):
+            return None
+        if i < len(a) and a[i] == "**":
+            pending.append((i + 1, j))
+        if j < len(b) and b[j] == "**":
+            pending.append((i, j + 1))
+        if i == len(a) or j == len(b):
+            continue
+        x, y = a[i], b[j]
+        if not _WILDCARD.search(x):
+            disjoint = not fnmatch.fnmatchcase(x, y)
+        elif not _WILDCARD.search(y):
+            disjoint = not fnmatch.fnmatchcase(y, x)
+        else:
+            x_prefix, y_prefix = re.split(r"[*?\[]", x)[0], re.split(r"[*?\[]", y)[0]
+            x_suffix, y_suffix = re.split(r"[*?\[\]]", x)[-1], re.split(r"[*?\[\]]", y)[-1]
+            disjoint = not (
+                (x_prefix.startswith(y_prefix) or y_prefix.startswith(x_prefix))
+                and (x_suffix.endswith(y_suffix) or y_suffix.endswith(x_suffix))
+            )
+        if not disjoint:
+            pending.append((i if x == "**" else i + 1, j if y == "**" else j + 1))
+    return True
+
+
+def _form_language(form: _CanonicalPathForm) -> str:
+    return str(form.base if form.remainder is None else form.base / form.remainder)
+
+
+def _local_disjoint_established(
+    path: Path, dirlike: bool, scope_pattern: str | None, member: DecayedMember
+) -> bool | None:
+    """Compare all canonical candidate forms with every producer-spelled selection form."""
+    if not member.roots and not member.files:
+        return True  # Local and qualified namespaces are distinct.
+    if scope_pattern is not None:
+        literal = _literal_scope_glob(scope_pattern)
+        if literal is not None:
+            path = path / literal
+            dirlike, scope_pattern = path.is_dir(), None
+    candidate_forms = _canonical_path_forms(
+        path, scope_pattern if scope_pattern is not None else ("**/*" if dirlike else None)
+    )
+    for file in member.files:
+        if not _path_is_excluded(file, member):
+            target = _resolve_external_scope_path(file)
+            for candidate in candidate_forms:
+                if _glob_disjoint(_form_language(candidate), str(target)) is not True:
+                    return None
+    content_query = member.reader == "fs.content_query"
+    # Concrete selected aliases supplement the future languages; an empty selection
+    # never establishes their disjointness. A negative content predicate does establish
+    # that a literal file is outside this reader's surface at the accepted comparison.
+    for entry, target in _canonical_member_entries(member).items():
+        for candidate in candidate_forms:
+            if _glob_disjoint(_form_language(candidate), str(target)) is True:
+                continue
+            if content_query and member.content_query is not None:
+                if not _content_query_matches(entry, member.content_query):
+                    continue
+            return None
+    patterns = _member_file_patterns(
+        member.patterns if content_query else member.patterns or ("**/*",)
+    )
+    for root, producer_root in zip(member.roots, member.lexical_roots or member.roots, strict=True):
+        # This spelling is wholly skipped, but every other declared spelling still runs.
+        if not content_query and any(part in member.skip_dirs for part in producer_root.parts):
+            continue
+        for pattern in patterns:
+            declaration_forms = _canonical_path_forms(
+                root,
+                "**/" + pattern if content_query else pattern,
+                producer_root=producer_root,
+            )
+            for declaration in declaration_forms:
+                selected_base = root / declaration.lexical_base.relative_to(producer_root)
+                if declaration.remainder is None and declaration.base.is_dir():
+                    continue
+                if not content_query and (
+                    any(part in member.skip_dirs for part in declaration.lexical_base.parts)
+                    or any(
+                        not _WILDCARD.search(part) and part in member.skip_dirs
+                        for part in _glob_segments(declaration.remainder or "")
+                    )
+                ):
+                    continue
+                for candidate in candidate_forms:
+                    if (
+                        _glob_disjoint(_form_language(candidate), _form_language(declaration))
+                        is True
+                    ):
+                        continue
+                    if (
+                        candidate.base == declaration.base
+                        or declaration.base in candidate.base.parents
+                    ):
+                        tail = candidate.base.relative_to(declaration.base)
+                        selected = selected_base / tail
+                        producer_selected = declaration.lexical_base / tail
+                        # Exclusion is evidence for THIS producer spelling only. No
+                        # canonical candidate skip may discard the other declaration forms.
+                        if not content_query and (
+                            any(part in member.skip_dirs for part in producer_selected.parts)
+                            or any(
+                                not _WILDCARD.search(part) and part in member.skip_dirs
+                                for part in _glob_segments(candidate.remainder or "")
+                            )
+                        ):
+                            continue
+                        if _path_is_mass_excluded(selected, member):
+                            continue
+                    if (
+                        content_query
+                        and candidate.remainder is None
+                        and member.content_query is not None
+                        and not _content_query_matches(candidate.base, member.content_query)
+                    ):
+                        continue
+                    return None
+    return True
+
+
+def _qualified_disjoint_established(
+    ref: QualifiedLocation, dirlike: bool, scope_pattern: str | None, member: DecayedMember
+) -> bool | None:
+    remote = member.reader == "ssh.glob"
+    if remote:
+        ref = _canonical_remote_location(ref, member)
+    language = "/".join(ref.parts)
+    if dirlike or scope_pattern is not None:
+        language = _scope_pattern_from_base(language, scope_pattern)
+    patterns = (
+        _ssh_glob_patterns(member.patterns)
+        if remote
+        else _member_file_patterns(member.patterns or ("**/*",))
+    )
+    for is_root, locations in ((False, member.qualified_files), (True, member.qualified_roots)):
+        for location in locations:
+            if remote:
+                location = _canonical_remote_location(location, member)
+            if (ref.scheme, ref.authority, ref.absolute_path) != (
+                location.scheme,
+                location.authority,
+                location.absolute_path,
+            ):
+                continue
+            for pattern in patterns if is_root else (None,):
+                selected = "/".join(location.parts)
+                if pattern is not None:
+                    selected = _scope_pattern_from_base(selected, pattern)
+                if _glob_disjoint(language, selected) is not True:
+                    return None
+    return True
+
+
+def _scope_admission_established(
+    candidates: tuple[Path | QualifiedLocation, ...],
+    dirlike: bool,
+    scope_pattern: str | None,
+    members: tuple[DecayedMember, ...],
+) -> bool:
+    """Admit only after every candidate spelling is established outside every member.
+
+    Containment has already run unchanged. Its negative answers are not admission
+    evidence: every declared selection language and canonical alias form must now have
+    a positive disjointness or whole-selection exclusion proof. Unknown means refusal.
+    """
+    for member in members:
+        for candidate in candidates:
+            try:
+                established = (
+                    _qualified_disjoint_established(candidate, dirlike, scope_pattern, member)
+                    if isinstance(candidate, QualifiedLocation)
+                    else _local_disjoint_established(candidate, dirlike, scope_pattern, member)
+                )
+                if established is not True:
+                    raise UndecidableScopeContainment(
+                        "disjointness from every producer-selected spelling is not established"
+                    )
+            except (OSError, RuntimeError, ValueError) as exc:
+                error = UndecidableScopeContainment(
+                    f"scope_containment_undecidable: candidate {candidate}"
+                    f"{('/' + scope_pattern) if scope_pattern else ''} against decayed member "
+                    f"{member.member_id!r}: {exc}; containment is undecidable"
+                )
+                if isinstance(exc, NonCanonicalScopeRef):
+                    error.remedy = exc.remedy
+                raise error from exc
+    return True
+
+
 def scope_within_decayed(
     refs: list[str] | tuple[str, ...],
     verdicts: FrameVerdicts,
@@ -2473,6 +2678,15 @@ def scope_within_decayed(
                 None,
             )
             if hit is None:
+                if (
+                    _scope_admission_established(
+                        (qualified_ref,), dirlike, scope_pattern, verdicts.decayed
+                    )
+                    is not True
+                ):
+                    raise UndecidableScopeContainment(
+                        f"scope_containment_undecidable: admission not established for {ref}"
+                    )
                 outside.append(str(ref))
             else:
                 matches.append(ScopeMatch(str(ref), hit.member_id, hit.relation))
@@ -2495,6 +2709,15 @@ def scope_within_decayed(
             None,
         )
         if hit is None:
+            if (
+                _scope_admission_established(
+                    tuple(candidates), dirlike, scope_pattern, verdicts.decayed
+                )
+                is not True
+            ):
+                raise UndecidableScopeContainment(
+                    f"scope_containment_undecidable: admission not established for {ref}"
+                )
             outside.append(str(ref))
         else:
             matches.append(ScopeMatch(str(ref), hit.member_id, hit.relation))

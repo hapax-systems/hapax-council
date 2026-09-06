@@ -5547,6 +5547,99 @@ def test_receipt_only_skip_dirs_use_producer_spelled_relative_root(
         assert receipt["frame_epoch"] == (frame_root / "_runs/current").resolve().name
 
 
+@pytest.mark.parametrize(
+    "candidate, exists, expected_rc",
+    [
+        ("bin", False, 10),
+        ("sbin", False, 10),
+        ("bin", True, 10),
+        ("sbin", True, 10),
+        ("unrelated", False, 0),
+    ],
+    ids=["canonical-future", "alias-future", "canonical-existing", "alias-existing", "disjoint"],
+)
+def test_receipt_only_overlapping_declaration_spellings_require_positive_admission(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+    candidate: str,
+    exists: bool,
+    expected_rc: int,
+) -> None:
+    usr = tmp_path / "usr"
+    (usr / "bin").mkdir(parents=True)
+    (usr / "sbin").symlink_to("bin", target_is_directory=True)
+    (usr / "bin/true").write_text("producer-selected bytes")
+    unrelated = tmp_path / "unrelated"
+    unrelated.mkdir()
+    pattern = "*bin/true*"
+    assert {p for p in usr.glob(pattern) if p.is_file() and "bin" not in p.parts} == {
+        usr / "sbin/true"
+    }
+    frame_root = _frame_procedure_root(
+        tmp_path / "frame",
+        decayed_root=usr,
+        location={"path": str(usr), "patterns": [pattern], "skip_dirs": ["bin"]},
+        reader="fs.glob",
+    )
+    scope = (
+        unrelated / "future.txt"
+        if candidate == "unrelated"
+        else usr / candidate / ("true" if exists else "true-frame-review-new")
+    )
+    assert scope.exists() is exists
+
+    rc, err = _dispatch_receipt_only_scope(tmp_path, monkeypatch, capsys, frame_root, scope)
+
+    assert rc == expected_rc, f"{candidate=}, {exists=}: receipt-only main() returned {rc}: {err}"
+    if expected_rc == 10:
+        _assert_frame_refusal_receipt(tmp_path, frame_root, rc, err)
+        if candidate == "bin" and not exists:
+            assert "scope_containment_undecidable" in err
+            assert "every producer-selected spelling" in err
+    else:
+        receipt = json.loads(
+            (tmp_path / "ledger/methodology-dispatch.jsonl").read_text().splitlines()[-1]
+        )
+        assert receipt["ok"] is True and receipt["launched"] is False
+        assert receipt["frame_decayed_members"] == ["legacy-surface"]
+        assert receipt["frame_epoch"] == (frame_root / "_runs/current").resolve().name
+
+
+@pytest.mark.parametrize(
+    "declaration, candidate, skip_dirs",
+    [("a[bc]", "a[de]", []), ("*.py", "*", ["*.py"])],
+    ids=["class-intersection", "wildcard-is-not-a-literal-skip"],
+)
+def test_receipt_only_unestablished_glob_comparison_refuses_admission(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+    declaration: str,
+    candidate: str,
+    skip_dirs: list[str],
+) -> None:
+    root = tmp_path / "member"
+    root.mkdir()
+    frame_root = _frame_procedure_root(
+        tmp_path / "frame",
+        decayed_root=root,
+        location={"path": str(root), "patterns": [declaration], "skip_dirs": skip_dirs},
+        reader="fs.glob",
+    )
+    # Class/class intersection is unestablished; a wildcard segment matching a
+    # skip_dirs string cannot establish exclusion by the producer's literal filter.
+    # Empty present-day expansions cannot complete either future-language comparison.
+    rc, err = _dispatch_receipt_only_scope(
+        tmp_path, monkeypatch, capsys, frame_root, root / candidate
+    )
+
+    assert rc == 10, f"receipt-only main() returned {rc}: {err}"
+    assert "scope_containment_undecidable" in err
+    assert "every producer-selected spelling" in err
+    _assert_frame_refusal_receipt(tmp_path, frame_root, rc, err)
+
+
 @pytest.mark.parametrize("reader", ["fs.glob", "fs.content_query"])
 @pytest.mark.parametrize("candidate", ["sbin", "bin", "s?in"])
 @pytest.mark.parametrize("leaf", ["new.py", "*.py"], ids=["file", "file-glob"])
@@ -6433,7 +6526,13 @@ def test_dispatch_glob_language_is_independent_of_current_matches(
     )
     assert rc == 10
     assert ("marks every declared mutation surface out of accountability" in err) is inside
-    assert ("fixture refusal" in err) is (not inside)
+    # Round 29: gaw*k can select gawk, so partial inclusion cannot admit it,
+    # regardless of whether that selected file exists today.
+    overlap = pattern == "gawk" and candidate == "gaw*k"
+    assert ("fixture refusal" in err) is (not inside and not overlap)
+    if overlap:
+        assert "scope_containment_undecidable" in err
+        _assert_frame_refusal_receipt(tmp_path, frame_root, rc, err)
 
 
 @pytest.mark.parametrize("candidate", ["awk", "[a]wk"])

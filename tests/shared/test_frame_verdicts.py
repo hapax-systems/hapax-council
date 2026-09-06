@@ -827,9 +827,11 @@ def test_scope_matching_by_containment_patterns_files_and_wildcard_tails(tmp_pat
 
     # a non-.py file under legacy/ is not the member's declared surface
     assert scope("legacy/README.md").outside == ("legacy/README.md",)
-    # Broad directory and wildcard refs also name non-.py files, so they are only partly inside.
-    assert scope("legacy/**").outside == ("legacy/**",)
-    assert scope("legacy/**/*.py").outside == ("legacy/**/*.py",)
+    # Round 29: partial inclusion cannot establish disjointness. Both languages
+    # still include direct .py files selected by the decayed member.
+    for ref in ("legacy/**", "legacy/**/*.py"):
+        with pytest.raises(fv.UndecidableScopeContainment, match="scope_containment_undecidable"):
+            scope(ref)
     assert scope("legacy/sub/").outside == ("legacy/sub/",)
     # partly inside: admitted (moving things out of a decayed member is legitimate work)
     mixed = scope("legacy/a.py", "scripts/live.py")
@@ -951,7 +953,9 @@ def test_patterned_member_requires_the_entire_directory_or_wildcard_scope(tmp_pa
     assert scope("docs/guides/*.md").all_inside
     assert scope("scripts/**").outside == ("scripts/**",)
     assert scope("docs/**/*.py").outside == ("docs/**/*.py",)
-    assert scope("docs/").outside == ("docs/",)
+    # Round 29: the directory includes selected .md files, so admission is unestablished.
+    with pytest.raises(fv.UndecidableScopeContainment, match="scope_containment_undecidable"):
+        scope("docs/")
 
 
 @pytest.mark.parametrize("populated", [False, True])
