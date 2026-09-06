@@ -174,13 +174,22 @@ def _resolve_co_authors(frontmatter: dict) -> list[CoAuthor]:
         kebab-case, looked up via ``shared.co_author_model.get()``
       - ``{"alias": "..."}`` — dict with explicit alias
 
-    Absent or empty lists retain the existing ``PreprintArtifact`` default.
+    An absent declaration or explicit null retains the ``PreprintArtifact`` default.
+    An empty list also retains that default; it does not select zero participants.
+    Every other container must be a list, including when the value is falsey.
     If any explicit entry fails to resolve, refuse the entire list before
     constructing or writing an artifact.
     """
     raw = frontmatter.get("co_authors")
-    if not raw:
+    if raw is None:  # Absent or explicit null: preserve the established default.
         return []  # PreprintArtifact default → ALL_CO_AUTHORS
+    if not isinstance(raw, list):
+        raise PublicationFrontmatterError(
+            f"malformed co_authors container: found {type(raw).__name__}; "
+            "next action: declare a list such as ['codex'] or [{'alias': 'codex'}]"
+        )
+    if not raw:  # Established empty-list behavior also selects the default.
+        return []
 
     resolved: list[CoAuthor] = []
     for entry in raw:

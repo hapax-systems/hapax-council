@@ -22,7 +22,7 @@ from tests.scripts.test_publish_vault_artifact import (
 pytestmark = pytest.mark.usefixtures("durable_public_gate_receipts")
 
 
-def _source_with_receipts(tmp_path, *, entries, expected_authors, byline):
+def _source_with_receipts(tmp_path, *, entries, expected_authors, byline, include_null=False):
     """Synthetic clearance for a specified artifact, using real receipt validation."""
     body = "# Synthetic draft\n\nFixture body.\n"
     expected = PreprintArtifact(
@@ -57,7 +57,7 @@ def _source_with_receipts(tmp_path, *, entries, expected_authors, byline):
         "attribution_block": byline,
         "publication_gate_receipts": PUBLICATION_GATE_RECEIPTS,
     }
-    if entries is not None:
+    if entries is not None or include_null:
         frontmatter["co_authors"] = entries
     source = tmp_path / "synthetic.md"
     source.write_text("---\n" + yaml.safe_dump(frontmatter) + "---\n" + body)
@@ -153,3 +153,89 @@ def test_publisher_refuses_whole_unknown_list_before_artifact_write(
     assert "next action: use a registered key" in caplog.text
     assert "'codex'" in caplog.text
     assert "{'alias': 'codex'}" in caplog.text
+
+
+@pytest.mark.parametrize("entries", [None, []], ids=["null", "empty-list"])
+def test_publisher_null_and_empty_list_retain_default_participants(tmp_path, entries):
+    expected_authors = [authors.HAPAX, authors.CLAUDE_CODE, authors.get("operator")]
+    source, expected = _source_with_receipts(
+        tmp_path, entries=entries, expected_authors=expected_authors, byline="", include_null=True
+    )
+    original_source = source.read_bytes()
+    state = tmp_path / "isolated-state"
+
+    assert _run_publisher(source, state) == 0
+
+    destination = state / "publish" / "inbox" / "synthetic-byline.json"
+    assert sorted(state.rglob("*.json")) == [destination]
+    payload = json.loads(destination.read_text())
+    assert payload["co_authors"] == expected.model_dump(mode="json")["co_authors"]
+    assert payload["attribution_block"] == ""
+    assert source.read_bytes() == original_source
+
+
+@pytest.mark.parametrize(
+    "entries, shape",
+    [
+        pytest.param(False, "bool", id="false"),
+        pytest.param(0, "int", id="zero"),
+        pytest.param("", "str", id="empty-string"),
+        pytest.param({}, "dict", id="empty-mapping"),
+        pytest.param(3, "int", id="integer"),
+        pytest.param({"codex": "unregistered"}, "dict", id="resolvable-mapping-key"),
+        pytest.param("codex", "str", id="string"),
+        pytest.param(True, "bool", id="true"),
+        pytest.param(0.5, "float", id="float"),
+    ],
+)
+def test_publisher_refuses_malformed_container_before_artifact_write(
+    tmp_path, caplog, entries, shape
+):
+    # Clear the buggy output too: an iterable mapping would select its valid key;
+    # falsey declarations would activate the constructor's default participants.
+    expected_authors = (
+        [authors.get("codex")]
+        if entries == {"codex": "unregistered"}
+        else [authors.HAPAX, authors.CLAUDE_CODE, authors.get("operator")]
+    )
+    source, _ = _source_with_receipts(
+        tmp_path, entries=entries, expected_authors=expected_authors, byline="Synthetic attribution"
+    )
+    original_source = source.read_bytes()
+    state = tmp_path / "isolated-state"
+    with caplog.at_level(logging.ERROR):
+        rc = _run_publisher(source, state)
+
+    assert rc == 1
+    assert not state.exists()
+    assert source.read_bytes() == original_source
+    assert f"malformed co_authors container: found {shape}" in caplog.text
+    assert "next action: declare a list" in caplog.text
+    assert "['codex']" in caplog.text
+    assert "[{'alias': 'codex'}]" in caplog.text
+
+
+@pytest.mark.parametrize("receipt_authors", ["defaults", "survivors"])
+def test_publisher_refuses_codex_and_unregistered_before_artifact_write(
+    tmp_path, caplog, receipt_authors
+):
+    expected_authors = (
+        [authors.HAPAX, authors.CLAUDE_CODE, authors.get("operator")]
+        if receipt_authors == "defaults"
+        else [authors.get("codex")]
+    )
+    source, _ = _source_with_receipts(
+        tmp_path,
+        entries=["codex", "unregistered"],
+        expected_authors=expected_authors,
+        byline="Synthetic attribution",
+    )
+    original_source = source.read_bytes()
+    state = tmp_path / "isolated-state"
+    with caplog.at_level(logging.ERROR):
+        rc = _run_publisher(source, state)
+
+    assert rc == 1
+    assert not state.exists()
+    assert source.read_bytes() == original_source
+    assert "unrecognized co_authors entry 'unregistered'" in caplog.text
