@@ -4946,6 +4946,57 @@ def test_exhausted_rest_routes_the_review_scan_to_graphql(tmp_path: Path) -> Non
     )
 
 
+def test_graphql_scan_skips_draft_with_failing_rollup_and_reviews_next_pr(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A draft's 504 rollup must not starve the eligible PR after it in the real listing."""
+    calls: list[list[str]] = []
+    rows = [
+        {"number": 4610, "isDraft": True, "headRefOid": "draft-sha"},
+        {"number": 4611, "isDraft": False, "headRefOid": "ready-sha"},
+    ]
+    rate_runner = _rate_only_runner(core=0, graphql=4660)
+
+    def runner(cmd: list[str], **kwargs: Any) -> subprocess.CompletedProcess:
+        calls.append(list(cmd))
+        if cmd[:4] == ["gh", "api", "-i", "rate_limit"]:
+            return rate_runner(cmd, **kwargs)
+        if cmd[:3] == ["gh", "pr", "list"]:
+            return subprocess.CompletedProcess(cmd, 0, json.dumps(rows), "")
+        if cmd[:3] == ["gh", "repo", "view"]:
+            return subprocess.CompletedProcess(
+                cmd, 0, json.dumps({"defaultBranchRef": {"name": "main"}}), ""
+            )
+        if cmd[:3] == ["gh", "pr", "view"]:
+            assert cmd[cmd.index("--json") + 1] == "headRefOid,statusCheckRollup"
+            assert cmd[3] == "4610", f"unexpected rollup request: {cmd}"
+            # A failing runner response reproduces listing refusal before per-PR isolation.
+            return subprocess.CompletedProcess(cmd, 1, "", "HTTP 504 Gateway Timeout")
+        pytest.fail(f"unexpected request with REST blocked: {cmd}")
+
+    reviews: list[tuple[int, Any]] = []
+
+    def record_review(pr_number: int, **kwargs: Any) -> dict[str, Any]:
+        reviews.append((pr_number, kwargs["route"]))
+        return {"status": "reviewed", "pr": pr_number}
+
+    monkeypatch.setattr(dispatch, "review_pr", record_review)
+    results = dispatch.review_all_open_prs(
+        repo="owner/repo",
+        repo_root=tmp_path,
+        vault_root=tmp_path,
+        gh_runner=runner,
+        route_blocked_families={},
+    )
+
+    assert [number for number, _route in reviews] == [4611], results
+    assert reviews[0][1].transport == "graphql"
+    assert reviews[0][1].rest_blocked is True
+    assert results == [{"status": "reviewed", "pr": 4611}]
+    assert any(call[:3] == ["gh", "pr", "list"] for call in calls)
+    assert not any(call[:3] == ["gh", "pr", "view"] for call in calls)
+
+
 def test_graphql_routed_scan_does_not_begin_each_pr_on_rest(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -4955,6 +5006,9 @@ def test_graphql_routed_scan_does_not_begin_each_pr_on_rest(
     no per-PR path to observe — while `review_pr` was in fact calling `fetch_pr`, whose first
     act was `get_pull_rest`. A fixture that avoids the failing path is the same defect it is
     meant to catch, and this is the second time in this PR that exact shape got through.
+
+    The scan now needs only numbers and draft flags, so the sole PR view hydrates review
+    metadata; no status rollup request is expected.
     """
     calls: list[list[str]] = []
     row = {
@@ -4983,13 +5037,6 @@ def test_graphql_routed_scan_does_not_begin_each_pr_on_rest(
             return subprocess.CompletedProcess(cmd, 0, json.dumps([row]), "")
         if cmd[:3] == ["gh", "pr", "view"]:
             fields = cmd[cmd.index("--json") + 1]
-            if fields == "headRefOid,statusCheckRollup":
-                return subprocess.CompletedProcess(
-                    cmd,
-                    0,
-                    json.dumps({"headRefOid": "deadbeef", "statusCheckRollup": []}),
-                    "",
-                )
             assert "files" in fields.split(",")
             assert "statusCheckRollup" not in fields.split(",")
             return subprocess.CompletedProcess(
@@ -5037,9 +5084,9 @@ def test_graphql_routed_scan_does_not_begin_each_pr_on_rest(
     assert reviews[0][1].rest_blocked is True
     assert results == [{"status": "no_task", "pr": 4610}]
     views = [call for call in calls if call[:3] == ["gh", "pr", "view"]]
-    assert len(views) == 2
-    assert views[0][views[0].index("--json") + 1] == "headRefOid,statusCheckRollup"
-    assert "files" in views[1][views[1].index("--json") + 1].split(",")
+    assert len(views) == 1
+    assert "files" in views[0][views[0].index("--json") + 1].split(",")
+    assert "statusCheckRollup" not in views[0][views[0].index("--json") + 1].split(",")
     assert any(call[:3] == ["gh", "pr", "list"] for call in calls)
     assert not any(len(call) > 6 and str(call[6]).startswith("repos/") for call in calls)
 
