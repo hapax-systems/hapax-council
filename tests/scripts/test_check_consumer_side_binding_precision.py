@@ -514,3 +514,246 @@ def test_an_imported_path_helper_resolves_through_the_import(gate, tmp_path: Pat
     unwritten = _unwritten(report)
     assert (Path("shared/consumer.py"), "artifacts/shared.json") in unwritten
     assert (Path("shared/consumer.py"), "artifacts/other.json") not in unwritten
+
+
+@pytest.mark.parametrize("import_last", [True, False], ids=["import-last", "definition-last"])
+def test_current_import_binding_wins_over_an_earlier_definition(
+    gate, tmp_path: Path, import_last: bool
+) -> None:
+    _write(
+        tmp_path,
+        "shared/writer.py",
+        "from pathlib import Path\n"
+        "def write_state(target=Path('artifacts/old.json')):\n"
+        "    target.write_text('{}')\n",
+    )
+    definition = "def write_state(target):\n    pass\n"
+    imported = "from shared.writer import write_state\n"
+    _write(
+        tmp_path,
+        "shared/consumer.py",
+        "from pathlib import Path\n"
+        + (definition + imported if import_last else imported + definition)
+        + "write_state(Path('artifacts/new.json'))\n"
+        "Path('artifacts/old.json').read_text()\n",
+    )
+    accesses, *_ = gate.collect_artifact_accesses(tmp_path)
+    assert {(a.path, a.pattern) for a in accesses if a.action == "write" and a.bounded} == {
+        (Path("shared/writer.py"), f"artifacts/{'new' if import_last else 'old'}.json")
+    }
+    report = gate.analyse_consumer_side(tmp_path, [])
+    assert ((Path("shared/consumer.py"), "artifacts/old.json") in _unwritten(report)) is import_last
+
+
+@pytest.mark.parametrize("import_last", [True, False], ids=["import-last", "definition-last"])
+def test_import_resolution_uses_the_binding_at_each_call(gate, tmp_path: Path, import_last) -> None:
+    _write(
+        tmp_path,
+        "shared/writer.py",
+        "def write_state(target):\n    target.write_text('{}')\n",
+    )
+    definition = "def write_state(target):\n    pass\n"
+    imported = "from shared.writer import write_state\n"
+    first, second = (definition, imported) if import_last else (imported, definition)
+    _write(
+        tmp_path,
+        "shared/consumer.py",
+        "from pathlib import Path\n"
+        + first
+        + "write_state(Path('artifacts/before.json'))\n"
+        + second
+        + "write_state(Path('artifacts/after.json'))\n",
+    )
+    accesses, *_ = gate.collect_artifact_accesses(tmp_path)
+    assert {a.pattern for a in accesses if a.action == "write" and a.bounded} == {
+        f"artifacts/{'after' if import_last else 'before'}.json"
+    }
+
+
+@pytest.mark.parametrize("shape", ["call", "assignment"])
+@pytest.mark.parametrize("scope", ["module", "global", "nonlocal"])
+def test_class_body_propagates_outer_binding_effects(gate, tmp_path: Path, shape, scope) -> None:
+    declaration = "nonlocal" if scope == "nonlocal" else "global"
+    body = (
+        "ARTIFACT = Path('artifacts/old.json')\n"
+        "def configure():\n"
+        f"    {declaration} ARTIFACT\n"
+        "    ARTIFACT = Path('artifacts/new.json')\n"
+        "class Configure:\n"
+        + (
+            "    configure()\n"
+            if shape == "call"
+            else f"    {declaration} ARTIFACT\n    ARTIFACT = Path('artifacts/new.json')\n"
+        )
+        + "ARTIFACT.write_text('{}')\n"
+    )
+    if scope != "module":
+        if scope == "global":
+            body = "global ARTIFACT\n" + body
+        body = (
+            "def run():\n" + "".join("    " + line + "\n" for line in body.splitlines()) + "run()\n"
+        )
+    _write(
+        tmp_path,
+        "shared/consumer.py",
+        "from pathlib import Path\n" + body + "Path('artifacts/old.json').read_text()\n",
+    )
+    accesses, *_ = gate.collect_artifact_accesses(tmp_path)
+    bounded_writes = {a.pattern for a in accesses if a.action == "write" and a.bounded}
+    assert bounded_writes == ({"artifacts/new.json"} if shape == "assignment" else set())
+    report = gate.analyse_consumer_side(tmp_path, [])
+    assert (Path("shared/consumer.py"), "artifacts/old.json") in _unwritten(report)
+    if shape == "call":
+        assert report.unresolvable > 0
+
+
+@pytest.mark.parametrize("wrapped", [False, True], ids=["module", "function"])
+def test_class_attributes_do_not_replace_enclosing_bindings(gate, tmp_path: Path, wrapped) -> None:
+    body = (
+        "ARTIFACT = Path('artifacts/old.json')\n"
+        "class Configure:\n    ARTIFACT = Path('artifacts/new.json')\n"
+        "ARTIFACT.write_text('{}')\n"
+    )
+    if wrapped:
+        body = (
+            "def run():\n" + "".join("    " + line + "\n" for line in body.splitlines()) + "run()\n"
+        )
+    _write(
+        tmp_path,
+        "shared/consumer.py",
+        "from pathlib import Path\n" + body + "Path('artifacts/new.json').read_text()\n",
+    )
+    accesses, *_ = gate.collect_artifact_accesses(tmp_path)
+    assert {a.pattern for a in accesses if a.action == "write" and a.bounded} == {
+        "artifacts/old.json"
+    }
+    report = gate.analyse_consumer_side(tmp_path, [])
+    assert (Path("shared/consumer.py"), "artifacts/new.json") in _unwritten(report)
+
+
+@pytest.mark.parametrize("scope", ["global", "nonlocal"])
+def test_class_attribute_cannot_hide_a_callee_outer_effect(gate, tmp_path: Path, scope) -> None:
+    body = (
+        "ARTIFACT = Path('artifacts/old.json')\n"
+        f"def configure():\n    {scope} ARTIFACT\n"
+        "    ARTIFACT = Path('artifacts/new.json')\n"
+        "class Configure:\n"
+        "    ARTIFACT = Path('artifacts/class.json')\n"
+        "    configure()\n"
+        "    ARTIFACT = Path('artifacts/class.json')\n"
+        "ARTIFACT.write_text('{}')\n"
+    )
+    if scope == "nonlocal":
+        body = (
+            "def run():\n" + "".join("    " + line + "\n" for line in body.splitlines()) + "run()\n"
+        )
+    _write(
+        tmp_path,
+        "shared/consumer.py",
+        "from pathlib import Path\n" + body + "Path('artifacts/old.json').read_text()\n",
+    )
+    accesses, *_ = gate.collect_artifact_accesses(tmp_path)
+    assert not [a for a in accesses if a.action == "write" and a.bounded]
+    report = gate.analyse_consumer_side(tmp_path, [])
+    assert (Path("shared/consumer.py"), "artifacts/old.json") in _unwritten(report)
+    assert report.unresolvable > 0
+
+
+@pytest.mark.parametrize("assignment", [False, True], ids=["declaration", "assignment"])
+def test_class_global_bypasses_an_enclosing_local(gate, tmp_path: Path, assignment) -> None:
+    _write(
+        tmp_path,
+        "shared/consumer.py",
+        "from pathlib import Path\nARTIFACT = Path('artifacts/module.json')\n"
+        "def write_state():\n    ARTIFACT.write_text('{}')\n"
+        "def run():\n    ARTIFACT = Path('artifacts/local.json')\n"
+        "    class Configure:\n        global ARTIFACT\n"
+        + ("        ARTIFACT = Path('artifacts/new.json')\n" if assignment else "")
+        + "        ARTIFACT.write_text('{}')\n"
+        "    ARTIFACT.write_text('{}')\n    write_state()\nrun()\n"
+        "Path('artifacts/module.json').read_text()\n",
+    )
+    accesses, *_ = gate.collect_artifact_accesses(tmp_path)
+    class_write_line = next(
+        index
+        for index, line in enumerate(
+            (tmp_path / "shared/consumer.py").read_text().splitlines(), start=1
+        )
+        if line == "        ARTIFACT.write_text('{}')"
+    )
+    assert {
+        a.pattern for a in accesses if a.action == "write" and a.lineno == class_write_line
+    } == {f"artifacts/{'new' if assignment else 'module'}.json"}
+    assert {a.pattern for a in accesses if a.action == "write" and a.bounded} == {
+        "artifacts/local.json",
+        f"artifacts/{'new' if assignment else 'module'}.json",
+    }
+    report = gate.analyse_consumer_side(tmp_path, [])
+    assert (
+        (Path("shared/consumer.py"), "artifacts/module.json") in _unwritten(report)
+    ) is assignment
+
+
+def test_class_global_store_is_an_effect_of_its_enclosing_function(gate, tmp_path: Path) -> None:
+    _write(
+        tmp_path,
+        "shared/consumer.py",
+        "from pathlib import Path\nARTIFACT = Path('artifacts/old.json')\n"
+        "def configure():\n    class Configure:\n        global ARTIFACT\n"
+        "        ARTIFACT = Path('artifacts/new.json')\n"
+        "configure()\nARTIFACT.write_text('{}')\n"
+        "Path('artifacts/old.json').read_text()\n",
+    )
+    accesses, *_ = gate.collect_artifact_accesses(tmp_path)
+    assert not [a for a in accesses if a.action == "write" and a.bounded]
+    report = gate.analyse_consumer_side(tmp_path, [])
+    assert (Path("shared/consumer.py"), "artifacts/old.json") in _unwritten(report)
+    assert report.unresolvable > 0
+
+
+def test_class_effect_branch_cap_keeps_the_orphan_reader(gate, tmp_path: Path, monkeypatch) -> None:
+    monkeypatch.setattr(gate, "_MAX_BRANCH_STATES", 1)
+    _write(
+        tmp_path,
+        "shared/consumer.py",
+        "from pathlib import Path\nARTIFACT = Path('artifacts/old.json')\n"
+        "def configure():\n    global ARTIFACT\n"
+        "    ARTIFACT = Path('artifacts/new.json')\n"
+        "class Configure:\n    if flag:\n        configure()\n"
+        "ARTIFACT.write_text('{}')\nPath('artifacts/old.json').read_text()\n",
+    )
+    accesses, *_ = gate.collect_artifact_accesses(tmp_path)
+    assert not [a for a in accesses if a.action == "write" and a.bounded]
+    report = gate.analyse_consumer_side(tmp_path, [])
+    assert (Path("shared/consumer.py"), "artifacts/old.json") in _unwritten(report)
+    assert report.unresolvable > 0
+
+
+@pytest.mark.parametrize("enclosing_local", [False, True], ids=["module", "cell"])
+@pytest.mark.parametrize("default", [False, True], ids=["method-body", "method-default"])
+def test_class_attributes_do_not_become_method_closure_cells(
+    gate, tmp_path: Path, enclosing_local, default
+) -> None:
+    _write(
+        tmp_path,
+        "shared/consumer.py",
+        "from pathlib import Path\nARTIFACT = Path('artifacts/module.json')\n"
+        "def outer():\n"
+        + ("    ARTIFACT = Path('artifacts/cell.json')\n" if enclosing_local else "")
+        + "    class Configure:\n        ARTIFACT = Path('artifacts/class.json')\n"
+        + (
+            "        def write_state(self, target=ARTIFACT):\n            target.write_text('{}')\n"
+            if default
+            else "        def write_state(self):\n            ARTIFACT.write_text('{}')\n"
+        )
+        + "Path('artifacts/class.json').read_text()\n",
+    )
+    accesses, *_ = gate.collect_artifact_accesses(tmp_path)
+    expected = "class" if default else "cell" if enclosing_local else "module"
+    assert {a.pattern for a in accesses if a.action == "write" and a.bounded} == {
+        f"artifacts/{expected}.json"
+    }
+    report = gate.analyse_consumer_side(tmp_path, [])
+    assert (
+        (Path("shared/consumer.py"), "artifacts/class.json") in _unwritten(report)
+    ) is not default

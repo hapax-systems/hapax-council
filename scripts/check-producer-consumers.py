@@ -802,8 +802,15 @@ class PathFunctionTable(dict[str, PathFunction]):
         lexical_prefixes: tuple[str, ...] = (),
         aliases: Mapping[str, str] | None = None,
     ) -> PathFunction | None:
-        if not self.canonical_name(name, calling_path, lexical_prefixes, aliases):
+        canonical = self.canonical_name(name, calling_path, lexical_prefixes, aliases)
+        if not canonical:
             return None
+        bindings = self.aliases_by_path.get(calling_path, {}) if aliases is None else aliases
+        if name.partition(".")[0] in bindings:
+            # The live statement-order binding also records definitions. An import can
+            # replace an earlier definition, and a later definition can replace the import.
+            # A missing imported body must not fall back to a shadowed local producer.
+            return self.get(canonical)
         short = name.rsplit(".", 1)[-1]
         imports = self.imports_by_path.get(calling_path, frozenset())
         if "." in name:
@@ -1009,6 +1016,7 @@ _HELPER_STACK_KEY = "\0helper-stack"
 _HELPER_EFFECT_KEY = "\0helper-unbounded-effect"
 _FLOW_EXIT_KEY = "\0flow-exit"
 _CALL_GLOBALS_KEY = "\0call-globals"
+_CLASS_OUTER_KEY = "\0class-outer"
 _CALL_LOCALS_KEY = "\0call-locals"
 _CALL_CELLS_KEY = "\0call-cells"
 _EXPRESSION_VALUE_PREFIX = "\0evaluated:"
@@ -1068,6 +1076,7 @@ def _encode_call_globals(values: dict[str, str], functions: dict[str, PathFuncti
     # the state cap and propagating artificial changes around the call graph.
     metadata = {
         _CALL_GLOBALS_KEY,
+        _CLASS_OUTER_KEY,
         _CALL_LOCALS_KEY,
         _CALL_CELLS_KEY,
         _LEXICAL_SCOPE_KEY,
@@ -1104,6 +1113,13 @@ def _call_global_values(
     """Keep invocation globals separate from the caller's parameters and local bindings."""
     if calling_path != function.path:
         return dict(function.module_values)
+    return _current_global_values(values, path_functions)
+
+
+def _current_global_values(
+    values: dict[str, str], path_functions: dict[str, PathFunction]
+) -> dict[str, str]:
+    """Invocation globals shared by function calls and immediately executed class bodies."""
     inherited = _decode_call_globals(values.get(_CALL_GLOBALS_KEY), path_functions)
     local_keys = {
         key
@@ -1116,7 +1132,14 @@ def _call_global_values(
     for key in inherited.keys() | values.keys():
         if (
             key in local_keys
-            or key in {_CALL_GLOBALS_KEY, _CALL_LOCALS_KEY, _CALL_CELLS_KEY, _LEXICAL_SCOPE_KEY}
+            or key
+            in {
+                _CALL_GLOBALS_KEY,
+                _CLASS_OUTER_KEY,
+                _CALL_LOCALS_KEY,
+                _CALL_CELLS_KEY,
+                _LEXICAL_SCOPE_KEY,
+            }
             or _EXPRESSION_VALUE_PREFIX in key
             or _LOOP_VALUE_PREFIX in key
         ):
@@ -1125,6 +1148,29 @@ def _call_global_values(
         if key in values:
             inherited[key] = values[key]
     return inherited
+
+
+def _definition_scope_values(
+    values: dict[str, str], path_functions: dict[str, PathFunction]
+) -> dict[str, str]:
+    """Methods and lambdas capture enclosing function cells, never class attributes."""
+    captured = dict(values)
+    if _CLASS_OUTER_KEY not in captured:
+        return captured
+    globals_ = _current_global_values(captured, path_functions)
+    while _CLASS_OUTER_KEY in captured:
+        outer = _decode_call_globals(captured[_CLASS_OUTER_KEY], path_functions)
+        cells = set(json.loads(captured.get(_CALL_CELLS_KEY, "[]"))) - set(
+            json.loads(captured.get(_CALL_LOCALS_KEY, "[]"))
+        )
+        for name in cells:
+            for key in _binding_keys(name):
+                outer.pop(key, None)
+                if key in captured:
+                    outer[key] = captured[key]
+        captured = outer
+    captured[_CALL_GLOBALS_KEY] = _encode_call_globals(globals_, path_functions)
+    return captured
 
 
 def _expression_value_name(node: ast.AST) -> str:
@@ -2587,7 +2633,9 @@ def _scope_local_names(node: ast.AST) -> set[str]:
 
 
 def _scope_outer_mutations(
-    node: ast.FunctionDef | ast.AsyncFunctionDef,
+    node: ast.FunctionDef | ast.AsyncFunctionDef | ast.ClassDef,
+    *,
+    stores_only: bool = True,
 ) -> tuple[set[str], set[str]]:
     """Names a callee may store outside its local frame; nested bodies run separately."""
     globals_: set[str] = set()
@@ -2601,7 +2649,16 @@ def _scope_outer_mutations(
             globals_.update(item.names)
         elif isinstance(item, ast.Nonlocal):
             nonlocals.update(item.names)
-        elif isinstance(item, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)):
+        elif isinstance(item, ast.ClassDef):
+            stores.add(item.name)
+            if stores_only:
+                class_globals, class_nonlocals = _scope_outer_mutations(item)
+                namespace_stores.update(class_globals)
+                stores.update(class_nonlocals)
+                if isinstance(node, ast.ClassDef):
+                    nonlocals.update(class_nonlocals)
+            continue
+        elif isinstance(item, (ast.FunctionDef, ast.AsyncFunctionDef)):
             stores.add(item.name)
             continue
         elif isinstance(item, ast.Lambda):
@@ -2621,6 +2678,8 @@ def _scope_outer_mutations(
                     else "*"
                 )
         pending.extend(ast.iter_child_nodes(item))
+    if not stores_only:
+        return globals_, nonlocals
     return (globals_ & stores) | namespace_stores, nonlocals & stores
 
 
@@ -3010,6 +3069,10 @@ class _BlockScanner:
         table = self.path_functions
         if not isinstance(table, PathFunctionTable):
             return
+        if _CLASS_OUTER_KEY in state:
+            outer = _decode_call_globals(state[_CLASS_OUTER_KEY], table)
+            self._invalidate_callee_mutations(function, outer)
+            state[_CLASS_OUTER_KEY] = _intern_binding_state(outer, table)
         if function.node not in table.scope_mutations:
             table.scope_mutations[function.node] = _scope_outer_mutations(function.node)
         effects = table.outer_effects.get(function.node, _OuterEffects())
@@ -3051,6 +3114,11 @@ class _BlockScanner:
         self, state: dict[str, str], *, captures: set[str] | None = None
     ) -> bool:
         table = self.path_functions
+        outer_changed = False
+        if _CLASS_OUTER_KEY in state:
+            outer = _decode_call_globals(state[_CLASS_OUTER_KEY], table)
+            outer_changed = self._invalidate_uncertain_bindings(outer, captures=captures)
+            state[_CLASS_OUTER_KEY] = _intern_binding_state(outer, table)
         locals_ = set(json.loads(state.get(_CALL_LOCALS_KEY, "[]"))) - (captures or set())
         inherited = _decode_call_globals(state.get(_CALL_GLOBALS_KEY), table)
         # Keep established API/import provenance. Unknown effects poison data globals
@@ -3068,7 +3136,7 @@ class _BlockScanner:
         if _CALL_GLOBALS_KEY in state:
             state[_CALL_GLOBALS_KEY] = _encode_call_globals(inherited, table)
         self._invalidate_effect_names(state, names - locals_)
-        return bool(names)
+        return bool(names) or outer_changed
 
     def _invalidate_effect_names(self, values: dict[str, str], names: set[str]) -> None:
         # Flat validation bodies repeatedly encounter unknown APIs with identical
@@ -3505,22 +3573,12 @@ class _BlockScanner:
                 ):
                     self._scan_expression(child, states)
         for scope in _statement_scopes(statement):
-            self.nested_scope_values.setdefault(scope, []).extend(_fork(states))
+            self.nested_scope_values.setdefault(scope, []).extend(
+                _definition_scope_values(state, self.path_functions) for state in states
+            )
         if isinstance(statement, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)):
             if isinstance(statement, ast.ClassDef):
-                # Bases and decorators above run in the enclosing scope.  A class body also runs
-                # immediately, but its bindings live in a fresh namespace and cannot continue
-                # into the enclosing block.
-                class_exceptions: list[dict[str, str]] = []
-                class_exits: list[dict[str, str]] = []
-                self.scan_block(
-                    statement.body,
-                    _fork(states),
-                    class_exceptions,
-                    class_exits,
-                )
-                if exception_states is not None and (class_exceptions or class_exits):
-                    exception_states.extend(_fork(states))
+                states = self._scan_class_body(statement, states, exception_states)
             for state in states:
                 _invalidate_names(state, {statement.name})
                 prefix = next(iter(_lexical_scope(state)), "")
@@ -3716,6 +3774,83 @@ class _BlockScanner:
                 )
             return []
         return states
+
+    def _scan_class_body(
+        self,
+        statement: ast.ClassDef,
+        states: list[dict[str, str]],
+        exception_states: list[dict[str, str]] | None,
+    ) -> list[dict[str, str]]:
+        # Reuse function ownership metadata and effect invalidation. Keep the enclosing
+        # frame as well: a class attribute can hide a global or cell that a callee changes.
+        table = self.path_functions
+        local_names = _scope_local_names(statement)
+        globals_, nonlocals = _scope_outer_mutations(statement, stores_only=False)
+        mutated_globals, _ = _scope_outer_mutations(statement)
+        completed: list[dict[str, str]] = []
+
+        def project(inner: dict[str, str]) -> dict[str, str]:
+            if _CLASS_OUTER_KEY not in inner:
+                # A branch join may discard differing frame snapshots at the state cap.
+                # Keep the caller's identity, withdrawing certainty about its data bindings.
+                outer = dict(state)
+                self._invalidate_uncertain_bindings(
+                    outer, captures=set(json.loads(outer.get(_CALL_LOCALS_KEY, "[]")))
+                )
+                return outer
+            outer = _decode_call_globals(inner[_CLASS_OUTER_KEY], table)
+            hidden = set(json.loads(outer.get(_CALL_LOCALS_KEY, "[]"))) | set(
+                json.loads(outer.get(_CALL_CELLS_KEY, "[]"))
+            )
+            inherited = _current_global_values(outer, table)
+            for name in globals_ | nonlocals:
+                destinations = (
+                    [inherited] + ([] if name in hidden else [outer])
+                    if name in globals_
+                    else [outer]
+                )
+                for destination in destinations:
+                    for key in _binding_keys(name):
+                        destination.pop(key, None)
+                        if key in inner:
+                            destination[key] = inner[key]
+            # Namespace stores and stores in nested classes have no direct value in
+            # this namespace. They still cannot leave an enclosing snapshot bounded.
+            indirect = mutated_globals - globals_
+            if "*" in indirect:
+                indirect = {name for name in inherited if not name.startswith("\0")}
+            self._invalidate_effect_names(inherited, indirect)
+            self._invalidate_effect_names(outer, indirect - hidden)
+            if _CALL_GLOBALS_KEY in outer:
+                outer[_CALL_GLOBALS_KEY] = _encode_call_globals(inherited, table)
+            if _HELPER_EFFECT_KEY in inner:
+                outer[_HELPER_EFFECT_KEY] = inner[_HELPER_EFFECT_KEY]
+            return outer
+
+        for state in states:
+            inner = dict(state)
+            inherited = _current_global_values(state, table)
+            cells = set(json.loads(state.get(_CALL_LOCALS_KEY, "[]"))) | set(
+                json.loads(state.get(_CALL_CELLS_KEY, "[]"))
+            )
+            for name in globals_:
+                for key in _binding_keys(name):
+                    inner.pop(key, None)
+                    if key in inherited:
+                        inner[key] = inherited[key]
+            inner[_CALL_LOCALS_KEY] = json.dumps(sorted(local_names))
+            inner[_CALL_CELLS_KEY] = json.dumps(sorted(cells - globals_))
+            inner[_CALL_GLOBALS_KEY] = _encode_call_globals(inherited, table)
+            inner[_CLASS_OUTER_KEY] = _intern_binding_state(state, table)
+            class_exceptions: list[dict[str, str]] = []
+            class_exits: list[dict[str, str]] = []
+            normal = self.scan_block(statement.body, [inner], class_exceptions, class_exits)
+            completed.extend(project(result) for result in normal)
+            if exception_states is not None:
+                exception_states.extend(
+                    project(result) for result in class_exceptions + class_exits
+                )
+        return _merge_states(completed)
 
 
 class _ModuleBindingScanner(_BlockScanner):
