@@ -256,6 +256,7 @@ class PullRequest:
     queue_governance: MergeQueueGovernance | None = None
     base_ref_detail: str | None = None
     base_ref_detail_latest: str | None = None
+    default_branch_detail: str | None = None
 
 
 @dataclass(frozen=True)
@@ -325,10 +326,23 @@ class Decision:
                 out["merge_queue_governance"]["base_ref_detail_latest"] = (
                     self.pr.base_ref_detail_latest
                 )
+            if self.pr.default_branch_detail:
+                out["merge_queue_governance"]["default_branch_detail"] = (
+                    self.pr.default_branch_detail
+                )
             if self.pr.auto_merge_enabled:
                 out["auto_merge_method_owner"] = (
                     "unverified"
                     if governance.reason
+                    or (
+                        self.action == "blocked"
+                        and any(
+                            reason.startswith(
+                                "auto_merge_method_override_contradicts_queue_governance:"
+                            )
+                            for reason in self.reasons
+                        )
+                    )
                     else "merge_queue"
                     if governance.method
                     else "pull_request"
@@ -743,6 +757,11 @@ def fetch_pr_merge_queue_governance(
         return MergeQueueGovernance(
             reason=prefix + f"pr_base_ref_conflict:list={pr.base_ref}:detail={pr.base_ref_detail}"
         )
+    if pr.default_branch_detail and pr.default_branch_detail != pr.default_branch:
+        return MergeQueueGovernance(
+            reason=prefix
+            + f"pr_default_branch_conflict:list={pr.default_branch}:detail={pr.default_branch_detail}"
+        )
     methods: set[str] = set()
     sources: list[str] = []
     page = 1
@@ -1130,6 +1149,9 @@ def _parse_pr(item: dict[str, Any]) -> PullRequest | None:
         default_branch=_scalar(item.get("baseRepoDefaultBranch"))
         if isinstance(item.get("baseRepoDefaultBranch"), str)
         else None,
+        default_branch_detail=_scalar(item.get("baseRepoDefaultBranchDetail"))
+        if isinstance(item.get("baseRepoDefaultBranchDetail"), str)
+        else None,
         base_ref_detail=_scalar(item.get("baseRefNameDetail"))
         if isinstance(item.get("baseRefNameDetail"), str)
         else None,
@@ -1191,6 +1213,15 @@ def fetch_open_prs(
             item["baseRepoDefaultBranch"] = item.get("baseRepoDefaultBranch") or (
                 base_repo.get("default_branch") if isinstance(base_repo, dict) else None
             )
+            detail_default = (
+                base_repo.get("default_branch") if isinstance(base_repo, dict) else None
+            )
+            if (
+                detail_default
+                and detail_default != item["baseRepoDefaultBranch"]
+                and not item.get("baseRepoDefaultBranchDetail")
+            ):
+                item["baseRepoDefaultBranchDetail"] = detail_default
             # Preserve the shared REST snapshot when available. If it is absent, derive the
             # rollup through REST/core check-runs and commit statuses, not another GraphQL PR
             # view. Fail-closed: an unfetchable rollup reads as "checks unknown / not green".
@@ -1855,6 +1886,28 @@ def shared_file_epic_affinity_blockers(
     return blockers
 
 
+def _override_only_refusal(reasons: list[str]) -> bool:
+    """Refuse an override alone; independent blockers still revoke admission.
+
+    Only override-wrapped unreadable/malformed governance is exempt. PR ref,
+    queue membership and queue strategy conflicts remain independent.
+    """
+    return bool(reasons) and all(
+        reason.startswith(
+            (
+                "auto_merge_method_override_contradicts_queue_governance:",
+                "auto_merge_method_unverified:expected_missing:source=enforcement_unreadable:",
+                "auto_merge_method_unverified:expected_missing:source=enforcement_malformed:",
+                "auto_merge_method_unverified:expected_missing:source=enforcement_conflict:",
+                "auto_merge_method_unverified:expected_missing:source=queue_rule_malformed:",
+                "auto_merge_method_unverified:expected_missing:source=queue_strategy_invalid:",
+                "auto_merge_method_unverified:expected_missing:source=ref_enforcement_unknown:",
+            )
+        )
+        for reason in reasons
+    )
+
+
 def classify_pr(
     pr: PullRequest,
     *,
@@ -2044,16 +2097,24 @@ def classify_pr(
         if method_mismatch:
             reasons.append(method_mismatch)
 
+    if reasons:
+        if _override_only_refusal(reasons):
+            action = "blocked"
+        elif queued:
+            action = "dequeue"
+        elif pr.auto_merge_enabled and not expected_method_unverified:
+            action = "disable_auto_merge"
+        else:
+            action = "blocked"
+        return Decision(
+            pr=pr,
+            task=task,
+            tasks=matched_tasks,
+            action=action,
+            reasons=tuple(reasons),
+            expected_auto_merge_method=expected_auto_merge_method,
+        )
     if queued:
-        if reasons:
-            return Decision(
-                pr=pr,
-                task=task,
-                tasks=matched_tasks,
-                action="dequeue",
-                reasons=tuple(reasons),
-                expected_auto_merge_method=expected_auto_merge_method,
-            )
         return Decision(
             pr=pr,
             task=task,
@@ -2062,24 +2123,6 @@ def classify_pr(
             reasons=tuple(reasons),
             auto_arm=auto_arm,
             auto_arm_verified_checks=auto_arm_verified_checks,
-            expected_auto_merge_method=expected_auto_merge_method,
-        )
-    if reasons:
-        if pr.auto_merge_enabled and not expected_method_unverified:
-            return Decision(
-                pr=pr,
-                task=task,
-                tasks=matched_tasks,
-                action="disable_auto_merge",
-                reasons=tuple(reasons),
-                expected_auto_merge_method=expected_auto_merge_method,
-            )
-        return Decision(
-            pr=pr,
-            task=task,
-            tasks=matched_tasks,
-            action="blocked",
-            reasons=tuple(reasons),
             expected_auto_merge_method=expected_auto_merge_method,
         )
     if pr.auto_merge_enabled:
@@ -3103,11 +3146,16 @@ def run_reconciler(
         )
     if expected_auto_merge_method is not None:
         governance_by_base: dict[
-            tuple[str | None, str | None, str | None], MergeQueueGovernance
+            tuple[str | None, str | None, str | None, str | None], MergeQueueGovernance
         ] = {}
         governed_prs: list[PullRequest] = []
         for pr in prs:
-            base_key = (pr.base_ref, pr.default_branch, pr.base_ref_detail)
+            base_key = (
+                pr.base_ref,
+                pr.default_branch,
+                pr.base_ref_detail,
+                pr.default_branch_detail,
+            )
             if base_key not in governance_by_base:
                 governance_by_base[base_key] = fetch_pr_merge_queue_governance(
                     pr, repo=repo, repo_root=repo_root, runner=runner or subprocess.run

@@ -636,6 +636,14 @@ def _pull_status_row_from_rest(
         else None,
         "baseRepoDefaultBranch": base_repo.get("default_branch")
         or detail_base_repo.get("default_branch"),
+        **(
+            {"baseRepoDefaultBranchDetail": detail_base_repo["default_branch"]}
+            if isinstance(detail, dict)
+            and base_repo.get("default_branch")
+            and detail_base_repo.get("default_branch")
+            and base_repo["default_branch"] != detail_base_repo["default_branch"]
+            else {}
+        ),
         "changedFiles": changed_files,
         "files": _files_payload_from_rest(files) if include_files else None,
         "isDraft": bool(pull.get("draft")),

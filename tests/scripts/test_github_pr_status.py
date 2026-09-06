@@ -808,3 +808,33 @@ def test_open_pr_status_snapshot_hydrates_list_rows_when_requested(
     )
     assert rows[0]["baseRepoDefaultBranch"] == "main"
     assert any(call[6] == "repos/owner/repo/pulls/9" for call in runner.calls) == bool(hydration)
+
+
+@pytest.mark.parametrize("hydrate", [False, True])
+@pytest.mark.parametrize(
+    "list_default,detail_default",
+    [("main", "release"), ("main", "main"), (None, "main"), ("main", None), (None, None)],
+)
+def test_pull_status_row_preserves_default_branch_disagreement(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    hydrate: bool,
+    list_default: str | None,
+    detail_default: str | None,
+) -> None:
+    item = {"number": 9, "base": {"ref": "main", "repo": {"default_branch": list_default}}}
+    detail = {"number": 9, "base": {"ref": "main", "repo": {"default_branch": detail_default}}}
+    monkeypatch.setattr(github_pr_status, "get_pull_rest", lambda *_args, **_kwargs: detail)
+    row = github_pr_status._pull_status_row_from_rest(
+        item,
+        repo="owner/repo",
+        repo_root=tmp_path,
+        runner=FakeRunner(),
+        include_status=False,
+        hydrate_pull=hydrate,
+    )
+    assert row["baseRepoDefaultBranch"] == (list_default or (detail_default if hydrate else None))
+    if hydrate and list_default and detail_default and list_default != detail_default:
+        assert row["baseRepoDefaultBranchDetail"] == detail_default
+    else:
+        assert "baseRepoDefaultBranchDetail" not in row

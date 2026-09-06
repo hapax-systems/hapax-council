@@ -1061,6 +1061,7 @@ def test_run_reconciler_base_sources(
 
 @pytest.mark.parametrize("list_base,detail_base", [("main", "release"), ("release", "main")])
 @pytest.mark.parametrize("state", ["armed", "queued", "unarmed"])
+@pytest.mark.parametrize("override", [None, "MERGE"])
 @pytest.mark.parametrize(
     "read_sequence", ["both", "adapter_only", "second_only", "returned_to_list", "third_base"]
 )
@@ -1071,6 +1072,7 @@ def test_run_reconciler_conflicting_base_receipts(
     detail_base: str,
     state: str,
     read_sequence: str,
+    override: str | None,
 ) -> None:
     vault = _make_vault(tmp_path)
     _write_task(vault, task_id="base-conflict", pr=42)
@@ -1117,6 +1119,7 @@ def test_run_reconciler_conflicting_base_receipts(
         lineage_ledger_path=None,
         quarantine_path=tmp_path / "quarantine.json",
         admission_governor_path=tmp_path / "governor.yaml",
+        expected_auto_merge_method_override=override,
         runner=runner,
     )
 
@@ -1132,7 +1135,12 @@ def test_run_reconciler_conflicting_base_receipts(
             "unarmed": "blocked",
         }[state]
     )
-    assert decision["reasons"] == [reason]
+    assert decision["reasons"] == [
+        "auto_merge_method_unverified:expected_missing:source="
+        + reason.removeprefix("auto_merge_method_unverified:")
+        if override
+        else reason
+    ]
     assert decision.get("auto_merge_method_owner") == (None if state == "unarmed" else "unverified")
     governance = decision["merge_queue_governance"]
     assert governance["base_ref"] == list_base
@@ -1194,6 +1202,168 @@ def test_run_reconciler_base_conflict_cache_isolation(
         ]
 
 
+@pytest.mark.parametrize("state", ["armed", "queued", "unarmed"])
+@pytest.mark.parametrize("override", [None, "MERGE"])
+@pytest.mark.parametrize(
+    "read_sequence",
+    ["both", "adapter_only", "second_only", "returned_to_list", "third_default", "equal"],
+)
+def test_run_reconciler_default_branch_receipts(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    state: str,
+    override: str | None,
+    read_sequence: str,
+) -> None:
+    """Disagreeing defaults cannot establish ~DEFAULT_BRANCH queue ownership."""
+    vault = _make_vault(tmp_path)
+    _write_task(vault, task_id="default-conflict", pr=42)
+    runner = _FakeRunner()
+    runner.open_prs = [
+        _pr(42, base="main", auto_merge=state != "unarmed", auto_merge_method="MERGE")
+    ]
+    runner.queued_prs = {42} if state == "queued" else set()
+    # _FakeRunner's SQUASH rule targets ~DEFAULT_BRANCH, with list default main.
+    detail_defaults = iter(
+        {
+            "both": ["release", "release"],
+            "adapter_only": ["release", None],
+            "second_only": ["main", "release"],
+            "returned_to_list": ["release", "main"],
+            "third_default": ["release", "staging"],
+            "equal": ["main", "main"],
+        }[read_sequence]
+    )
+    detail_for_number = runner._rest_pull_for_number
+
+    def changed_default_detail(number: int) -> dict[str, Any] | None:
+        default = next(detail_defaults)
+        if default is None:
+            return None
+        detail = detail_for_number(number)
+        assert detail is not None
+        detail["base"]["repo"]["default_branch"] = default
+        return detail
+
+    monkeypatch.setattr(runner, "_rest_pull_for_number", changed_default_detail)
+    report = autoqueue.run_reconciler(
+        repo="owner/repo",
+        repo_root=tmp_path,
+        vault_root=vault,
+        apply=False,
+        lineage_ledger_path=None,
+        quarantine_path=tmp_path / "quarantine.json",
+        admission_governor_path=tmp_path / "governor.yaml",
+        expected_auto_merge_method_override=override,
+        runner=runner,
+    )
+
+    decision = report["decisions"][0]
+    governance = decision["merge_queue_governance"]
+    assert governance["base_ref"] == "main"
+    if read_sequence == "equal":
+        assert decision["action"] == (
+            "blocked"
+            if override
+            else {
+                "armed": "already_auto_merge_enabled",
+                "queued": "already_queued",
+                "unarmed": "queue",
+            }[state]
+        )
+        assert decision.get("reasons", []) == (
+            [
+                "auto_merge_method_override_contradicts_queue_governance:override=MERGE:governed=SQUASH"
+            ]
+            if override
+            else []
+        )
+        assert decision.get("auto_merge_method_owner") == (
+            None if state == "unarmed" else "unverified" if override else "merge_queue"
+        )
+        assert "default_branch_detail" not in governance
+        assert governance["method"] == "SQUASH"
+        assert governance["source"] == "ruleset:main-merge-queue:16186443"
+        assert governance["reason"] is None
+    else:
+        reason = "auto_merge_method_unverified:pr_default_branch_conflict:list=main:detail=release"
+        assert (
+            decision["action"]
+            == {
+                "armed": "disable_auto_merge",
+                "queued": "dequeue",
+                "unarmed": "blocked",
+            }[state]
+        )
+        assert decision["reasons"] == [
+            "auto_merge_method_unverified:expected_missing:source="
+            + reason.removeprefix("auto_merge_method_unverified:")
+            if override
+            else reason
+        ]
+        assert decision.get("auto_merge_method_owner") == (
+            None if state == "unarmed" else "unverified"
+        )
+        assert governance["default_branch_detail"] == "release"
+        assert governance["reason"] == reason
+        assert governance["method"] is None
+        assert governance["source"] is None
+        # Evidence conflicts refuse before any ruleset applicability read.
+        assert not any(
+            "repos/owner/repo/rulesets?per_page=100&page=1" in call for call in runner.calls
+        )
+    assert not any("POST" in call or "--disable-auto" in call for call in runner.calls)
+    assert not any("mutation" in part for call in runner.calls for part in call)
+    assert next(detail_defaults, "exhausted") == "exhausted"
+
+
+@pytest.mark.parametrize("conflict_first", [False, True])
+def test_run_reconciler_default_branch_conflict_cache_isolation(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, conflict_first: bool
+) -> None:
+    vault = _make_vault(tmp_path)
+    runner = _FakeRunner()
+    runner.open_prs = [
+        _pr(number, auto_merge=True, auto_merge_method="MERGE") for number in (41, 42, 43)
+    ]
+    if conflict_first:
+        runner.open_prs.reverse()
+    for item in runner.open_prs:
+        _write_task(vault, task_id=f"default-cache-{item['number']}", pr=item["number"])
+    detail_for_number = runner._rest_pull_for_number
+
+    def changed_default_detail(number: int) -> dict[str, Any]:
+        detail = detail_for_number(number)
+        assert detail is not None
+        detail["base"]["repo"]["default_branch"] = {41: "main", 42: "release", 43: "staging"}[
+            number
+        ]
+        return detail
+
+    monkeypatch.setattr(runner, "_rest_pull_for_number", changed_default_detail)
+    report = autoqueue.run_reconciler(
+        repo="owner/repo",
+        repo_root=tmp_path,
+        vault_root=vault,
+        apply=False,
+        lineage_ledger_path=None,
+        quarantine_path=tmp_path / "quarantine.json",
+        admission_governor_path=tmp_path / "governor.yaml",
+        runner=runner,
+    )
+    decisions = {decision["pr"]: decision for decision in report["decisions"]}
+    assert decisions[41]["action"] == "already_auto_merge_enabled"
+    assert decisions[41]["auto_merge_method_owner"] == "merge_queue"
+    assert decisions[41]["merge_queue_governance"]["reason"] is None
+    for number, default in ((42, "release"), (43, "staging")):
+        assert decisions[number]["action"] == "disable_auto_merge"
+        assert decisions[number]["auto_merge_method_owner"] == "unverified"
+        assert decisions[number]["reasons"] == [
+            f"auto_merge_method_unverified:pr_default_branch_conflict:list=main:detail={default}"
+        ]
+        assert decisions[number]["merge_queue_governance"]["default_branch_detail"] == default
+
+
 @pytest.mark.parametrize("detail_state", ["absent", "base_missing"])
 @pytest.mark.parametrize("override", [None, "SQUASH", "MERGE"])
 def test_run_reconciler_adapter_only_preserves_all_decisions(
@@ -1241,8 +1411,8 @@ def test_run_reconciler_adapter_only_preserves_all_decisions(
     decisions = {decision["pr"]: decision for decision in adapter_only["decisions"]}
     expected_actions = (
         {
-            42: "dequeue",
-            43: "disable_auto_merge",
+            42: "blocked",
+            43: "blocked",
             44: "already_auto_merge_enabled",
             45: "blocked",
         }
@@ -2527,6 +2697,11 @@ def _method_override_report(
 def test_merge_method_override_respects_governance(
     tmp_path: Path, state: str, override: str | None
 ) -> None:
+    """Round seven pinned revocation even for a lone contradictory override.
+
+    The row exit predicate requires a "named pure-token refusal without dequeue";
+    round eight restores that refusal after collecting independent blockers.
+    """
     report = _method_override_report(tmp_path, state=state, override=override)
     decision = report["decisions"][0]
     if state == "ordinary":
@@ -2543,14 +2718,7 @@ def test_merge_method_override_respects_governance(
         return
 
     if override == "MERGE":
-        assert (
-            decision["action"]
-            == {
-                "queued": "dequeue",
-                "armed": "disable_auto_merge",
-                "unarmed": "blocked",
-            }[state]
-        )
+        assert decision["action"] == "blocked"
     else:
         assert (
             decision["action"]
@@ -2568,7 +2736,7 @@ def test_merge_method_override_respects_governance(
     assert decision.get("auto_merge_method") == (None if state == "unarmed" else "MERGE")
     assert decision.get("expected_auto_merge_method", "SQUASH") == (override or "SQUASH")
     assert decision.get("auto_merge_method_owner") == (
-        None if state == "unarmed" else "merge_queue"
+        None if state == "unarmed" else "unverified" if override == "MERGE" else "merge_queue"
     )
     assert decision["merge_queue_governance"] == {
         "base_ref": "main",
@@ -2596,49 +2764,66 @@ def test_merge_method_override_respects_governance(
 def test_merge_method_override_requires_readable_governance(
     tmp_path: Path, state: str, override: str, fault: str, source: str
 ) -> None:
-    """Refusal revokes admission; the previous expectation pinned a hold-without-dequeue."""
+    """Round seven revoked unreadable overrides alone; the exit predicate refuses
+    unverified overrides, with "without dequeue" applying when no blocker is independent.
+    """
     report = _method_override_report(tmp_path, state=state, override=override, fault=fault)
+    decision = report["decisions"][0]
+    assert decision["action"] == "blocked"
+    assert decision["reasons"] == [f"auto_merge_method_unverified:expected_missing:source={source}"]
+    assert decision.get("expected_auto_merge_method", "SQUASH") == override
+    assert decision.get("auto_merge_method_owner") == (None if state == "unarmed" else "unverified")
+    assert decision["merge_queue_governance"]["reason"] == f"auto_merge_method_unverified:{source}"
+    assert decision["next_action"] == autoqueue._merge_method_operator_next_action()
+    assert "Restore unreadable governance evidence" in decision["next_action"]
+    assert all(re.fullmatch(r"[A-Za-z0-9_:,=.-]+", reason) for reason in decision["reasons"])
+
+
+@pytest.mark.parametrize("state", ["queued", "armed", "unarmed"])
+@pytest.mark.parametrize(
+    ("blocker", "reason"),
+    [("ci_failure", "failed_checks:test"), ("do_not_merge", "hold_labels:do-not-merge")],
+)
+def test_merge_method_override_contradiction_preserves_independent_blockers(
+    tmp_path: Path, state: str, blocker: str, reason: str
+) -> None:
+    report = _method_override_report(tmp_path, state=state, override="MERGE", blocker=blocker)
     decision = report["decisions"][0]
     assert (
         decision["action"]
         == {
             "queued": "dequeue",
             "armed": "disable_auto_merge",
-            "ordinary": "disable_auto_merge",
             "unarmed": "blocked",
         }[state]
     )
-    assert decision["reasons"] == [f"auto_merge_method_unverified:expected_missing:source={source}"]
-    assert decision.get("expected_auto_merge_method", "SQUASH") == override
-    assert decision.get("auto_merge_method_owner") == (None if state == "unarmed" else "unverified")
-    assert decision["merge_queue_governance"]["reason"] == f"auto_merge_method_unverified:{source}"
-    if state == "queued":
-        assert decision["next_action"] == (
-            "This decision removes the PR from the native merge queue when run "
-            "with --apply; it does not disable auto-merge. Expected merge-method "
-            f"evidence is missing. {autoqueue._merge_method_operator_next_action()}"
-        )
-    else:
-        assert decision["next_action"] == autoqueue._merge_method_operator_next_action()
-    assert "Restore unreadable governance evidence" in decision["next_action"]
-    assert all(re.fullmatch(r"[A-Za-z0-9_:,=.-]+", reason) for reason in decision["reasons"])
-
-
-@pytest.mark.parametrize(
-    ("blocker", "reason"),
-    [("ci_failure", "failed_checks:test"), ("do_not_merge", "hold_labels:do-not-merge")],
-)
-def test_merge_method_override_contradiction_preserves_independent_blockers(
-    tmp_path: Path, blocker: str, reason: str
-) -> None:
-    report = _method_override_report(tmp_path, state="queued", override="MERGE", blocker=blocker)
-    decision = report["decisions"][0]
-    assert decision["action"] == "dequeue"
     assert decision["reasons"] == [
         reason,
         "auto_merge_method_override_contradicts_queue_governance:override=MERGE:governed=SQUASH",
     ]
     assert decision["expected_auto_merge_method"] == "MERGE"
+
+
+@pytest.mark.parametrize("state", ["queued", "armed", "unarmed"])
+@pytest.mark.parametrize("fault", [None, "unreadable"], ids=["contradictory", "unreadable"])
+def test_merge_method_override_only_refusal_preserves_admission_in_apply(
+    tmp_path: Path, state: str, fault: str | None
+) -> None:
+    runner = _FakeRunner()
+    report = _method_override_report(
+        tmp_path, state=state, override="MERGE", fault=fault, apply=True, runner=runner
+    )
+    decision = report["decisions"][0]
+    assert decision["action"] == "blocked"
+    assert decision.get("auto_merge_method_owner") == (None if state == "unarmed" else "unverified")
+    assert not any(call[:3] == ["gh", "pr", "merge"] for call in runner.calls)
+    assert not any("mutation" in part for call in runner.calls for part in call)
+    assert runner.queued_prs == ({42} if state == "queued" else set())
+    assert bool(runner.open_prs[0]["autoMergeRequest"]) == (state != "unarmed")
+    [mutation] = report["mutations"]
+    assert mutation["action"] == "set_admission_status"
+    assert mutation["status_state"] == "failure"
+    assert mutation["ok"] is True
 
 
 @pytest.mark.parametrize("state", ["queued", "armed"])
