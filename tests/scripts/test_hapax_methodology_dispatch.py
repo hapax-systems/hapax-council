@@ -5147,8 +5147,10 @@ def _dispatch_receipt_only_scope(
 
 
 @pytest.mark.parametrize("declaration", ["bin", "sbin"])
-@pytest.mark.parametrize("candidate", ["bin", "sbin", "[s-s]bin", "s*"])
+@pytest.mark.parametrize("candidate", ["bin", "sbin", "[s-s]bin", "s*", "var/log"])
 @pytest.mark.parametrize("exists", [True, False], ids=["existing", "future"])
+@pytest.mark.parametrize("skip", [None, "bin", "sbin", "unrelated"])
+@pytest.mark.parametrize("mass_exclusion", [None, "subtree", "prefix"])
 def test_receipt_only_explicit_file_parent_alias_refuses_decay(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -5156,26 +5158,55 @@ def test_receipt_only_explicit_file_parent_alias_refuses_decay(
     declaration: str,
     candidate: str,
     exists: bool,
+    skip: str | None,
+    mass_exclusion: str | None,
 ) -> None:
     root = tmp_path / "usr"
     (root / "bin").mkdir(parents=True)
     if exists:
-        (root / "bin/ls").write_text("selected bytes")
+        (root / "bin/true").write_text("selected bytes")
     (root / "sbin").symlink_to("bin", target_is_directory=True)
+    declared_file = root / declaration / "true"
+    assert declared_file.resolve() == root / "bin/true"
+    assert declared_file.exists() is exists
+    assert (root / "bin/true").exists() is exists
     frame_root = _frame_procedure_root(
         tmp_path / "frame",
         decayed_root=root,
-        location={"files": [str(root / declaration / "ls")]},
+        location={"files": [str(declared_file)], "skip_dirs": [skip] if skip else []},
+        exclusions=(
+            [
+                {
+                    "id": "canonical-target",
+                    "paths": [str(root / "bin") + ("*" if mass_exclusion == "prefix" else "")],
+                }
+            ]
+            if mass_exclusion
+            else []
+        ),
         reader="fs.glob",
     )
-    scope = root / candidate / "ls"
-    assert {p.resolve() for p in root.glob(f"{candidate}/ls")} == (
-        {root / "bin/ls"} if exists else set()
+    scope = root / candidate / "true"
+    assert {p.resolve() for p in root.glob(f"{candidate}/true")} == (
+        {root / "bin/true"} if exists and candidate != "var/log" else set()
     )
 
     rc, err = _dispatch_receipt_only_scope(tmp_path, monkeypatch, capsys, frame_root, scope)
 
-    assert rc == 10, f"{declaration=}, {candidate=}: receipt-only main() returned {rc}: {err}"
+    # skip_dirs judges the declaration; mass exclusions judge its canonical target.
+    # A skipped declaration and a genuinely unrelated candidate each establish disjointness.
+    expected = 0 if skip == declaration or mass_exclusion or candidate == "var/log" else 10
+    assert rc == expected, (
+        f"{declaration=}, {candidate=}, {exists=}, {skip=}, {mass_exclusion=}: "
+        f"receipt-only main() returned {rc}: {err}"
+    )
+    if expected == 0:
+        receipt = json.loads(
+            (tmp_path / "ledger/methodology-dispatch.jsonl").read_text().splitlines()[-1]
+        )
+        assert receipt["ok"] is True and receipt["launched"] is False
+        assert receipt["frame_decayed_members"] == ["legacy-surface"]
+        return
     _assert_frame_refusal_receipt(tmp_path, frame_root, rc, err)
     assert str(scope) in err
 

@@ -1999,6 +1999,7 @@ def test_explicit_file_globs_do_not_include_excluded_files(tmp_path: Path, exclu
         skip_dirs=("config",) if exclusion == "skip_dirs" else (),
         excluded_roots=(file.parent,) if exclusion == "root" else (),
         excluded_prefixes=(file.parent / "dead",) if exclusion == "prefix" else (),
+        lexical_files=(file,),
     )
     assert not fv.ref_within_member(file, False, member)
     assert not fv.ref_within_member(file.parent, True, member, scope_pattern="[d]ead.yaml")

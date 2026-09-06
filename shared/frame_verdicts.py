@@ -159,6 +159,8 @@ class DecayedMember:
     # Aligned with roots; producer spellings stay relative when declared relative.
     # Only skip_dirs uses these unanchored, unresolved paths.
     lexical_roots: tuple[Path, ...] = ()
+    # Aligned with files; only skip_dirs judges the declared, unresolved spelling.
+    lexical_files: tuple[Path, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -500,11 +502,12 @@ def _member_location(
     tuple[QualifiedLocation, ...],
     tuple[QualifiedLocation, ...],
     tuple[Path, ...],
+    tuple[Path, ...],
 ]:
     """Filesystem and scheme-qualified roots/files plus the member's file patterns."""
     location = member.get("location")
     if not isinstance(location, dict):
-        return (), (), (), (), (), ()
+        return (), (), (), (), (), (), ()
     reader = member.get("reader")
     content_query = isinstance(reader, dict) and reader.get("id") == "fs.content_query"
     raw_roots: list[str] = []
@@ -543,6 +546,7 @@ def _member_location(
     globs = tuple(str(item) for item in patterns) if isinstance(patterns, list) else ()
     files_raw = None if content_query else location.get("files")
     files: list[Path] = []
+    lexical_files: list[Path] = []
     qualified_files: list[QualifiedLocation] = []
     if isinstance(files_raw, list):
         for item in files_raw:
@@ -552,6 +556,7 @@ def _member_location(
             if _has_qualifier(item):
                 qualified_files.append(_qualified_location(item)[0])
             else:
+                lexical_files.append(Path(item).expanduser())
                 files.append(local_path(item).resolve())
     return (
         tuple(roots),
@@ -560,6 +565,7 @@ def _member_location(
         tuple(qualified_roots),
         tuple(qualified_files),
         tuple(lexical_roots),
+        tuple(lexical_files),
     )
 
 
@@ -904,9 +910,15 @@ def _load_epoch_verdicts(
                 "with a supported reader; " + PRODUCER_REMEDY,
             )
         try:
-            roots, patterns, files, qualified_roots, qualified_files, lexical_roots = (
-                _member_location(member, epoch_dir=epoch_dir)
-            )
+            (
+                roots,
+                patterns,
+                files,
+                qualified_roots,
+                qualified_files,
+                lexical_roots,
+                lexical_files,
+            ) = _member_location(member, epoch_dir=epoch_dir)
             host_aliases = _member_host_aliases(member) if reader_id == "ssh.glob" else ()
         except NonCanonicalScopeRef as exc:
             raise FrameVerdictsUnavailable(
@@ -944,6 +956,7 @@ def _load_epoch_verdicts(
                     host_aliases=host_aliases,
                     content_query=content_query,
                     lexical_roots=lexical_roots,
+                    lexical_files=lexical_files,
                 )
             )
         if not roots and not files and not qualified_roots and not qualified_files:
@@ -1279,6 +1292,22 @@ def _path_is_mass_excluded(path: Path, member: DecayedMember) -> bool:
         return True
     text = str(path)
     return any(text.startswith(str(prefix)) for prefix in member.excluded_prefixes)
+
+
+def _selected_member_files(member: DecayedMember) -> tuple[Path, ...]:
+    """Keep canonical targets selected by at least one declared file spelling."""
+    if member.files and member.skip_dirs and not member.lexical_files:
+        raise UndecidableScopeContainment(
+            f"member {member.member_id!r} has no declared file spellings for skip_dirs"
+        )
+    return tuple(
+        file
+        for file, lexical_file in zip(
+            member.files, member.lexical_files or member.files, strict=True
+        )
+        if not any(part in member.skip_dirs for part in lexical_file.parts)
+        and not _path_is_mass_excluded(file, member)
+    )
 
 
 def _glob_intersects_subtree(scope_pattern: str, relative_prefix: str) -> bool | None:
@@ -2064,17 +2093,16 @@ def ref_within_member(
 ) -> bool:
     _member_file_patterns(member.patterns)  # Validate even when the candidate is outside.
     broad = dirlike or scope_pattern is not None
+    selected_files = _selected_member_files(member)
     file_path = _resolve_member_path(path) if member.files else path
-    if any(file_path == file for file in member.files):
+    if any(file_path == file for file in selected_files):
         if broad:
             _refuse_directory_spelled_file(file_path)
-        return not _path_is_excluded(path, member)
+        return True
     if scope_pattern is not None:
-        for file in member.files:
-            if (
-                file_path in file.parents
-                and not _path_is_excluded(file, member)
-                and _pattern_matches(file.relative_to(file_path).as_posix(), scope_pattern)
+        for file in selected_files:
+            if file_path in file.parents and _pattern_matches(
+                file.relative_to(file_path).as_posix(), scope_pattern
             ):
                 # The declared file is concrete; the scope supplies the glob. A matching file
                 # proves overlap, but the glob may also name undeclared (even future) files.
@@ -2086,11 +2114,7 @@ def ref_within_member(
             # Lexical glob matching misses aliases in a nonliteral parent segment.
             # Explicit-file members need canonical witnesses even without any roots.
             try:
-                canonical_files = {
-                    _resolve_external_scope_path(file)
-                    for file in member.files
-                    if not _path_is_excluded(file, member)
-                }
+                canonical_files = {_resolve_external_scope_path(file) for file in selected_files}
                 for entry, target in _canonical_scope_entries(path, scope_pattern, member).items():
                     if target in canonical_files:
                         raise UndecidableScopeContainment(
@@ -2540,12 +2564,11 @@ def _local_disjoint_established(
     candidate_forms = _canonical_path_forms(
         path, scope_pattern if scope_pattern is not None else ("**/*" if dirlike else None)
     )
-    for file in member.files:
-        if not _path_is_excluded(file, member):
-            target = _resolve_external_scope_path(file)
-            for candidate in candidate_forms:
-                if _glob_disjoint(_form_language(candidate), str(target)) is not True:
-                    return None
+    for file in _selected_member_files(member):
+        target = _resolve_external_scope_path(file)
+        for candidate in candidate_forms:
+            if _glob_disjoint(_form_language(candidate), str(target)) is not True:
+                return None
     content_query = member.reader == "fs.content_query"
     # Concrete selected aliases supplement the future languages; an empty selection
     # never establishes their disjointness. A negative content predicate does establish
