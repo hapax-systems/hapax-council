@@ -1572,13 +1572,45 @@ def fetch_merge_queue_pr_numbers(
     except json.JSONDecodeError as exc:
         LOG.error("gh merge queue query emitted non-JSON: %s", exc)
         return None
-    nodes = (
-        payload.get("data", {})
-        .get("repository", {})
-        .get("mergeQueue", {})
-        .get("entries", {})
-        .get("nodes", [])
-    )
+
+    def indeterminate(cause: str) -> None:
+        LOG.error("gh merge queue query indeterminate: %s", cause)
+        return None
+
+    if not isinstance(payload, dict):
+        return indeterminate("invalid_payload")
+    if payload.get("errors"):
+        return indeterminate("graphql_errors")
+    if "data" not in payload:
+        return indeterminate("missing_data")
+    data = payload["data"]
+    if not isinstance(data, dict):
+        return indeterminate("invalid_data")
+    if "repository" not in data:
+        return indeterminate("missing_repository")
+    repository = data["repository"]
+    if repository is None:
+        return indeterminate("repository_unresolved")
+    if not isinstance(repository, dict):
+        return indeterminate("invalid_repository")
+    if "mergeQueue" not in repository:
+        return indeterminate("missing_merge_queue")
+    merge_queue = repository["mergeQueue"]
+    if merge_queue is None:
+        LOG.info(
+            "gh merge queue query decided: %s",
+            "no_configured_merge_queue:ref_fallback=gh-readonly-queue",
+        )
+        nodes = []
+    else:
+        if not isinstance(merge_queue, dict):
+            return indeterminate("invalid_merge_queue")
+        entries = merge_queue.get("entries")
+        if not isinstance(entries, dict):
+            return indeterminate("invalid_entries")
+        nodes = entries.get("nodes")
+        if not isinstance(nodes, list):
+            return indeterminate("invalid_nodes")
     queued: set[int] = set()
     if isinstance(nodes, list):
         for node in nodes:
