@@ -74,6 +74,7 @@ def _consent_revocation_check(
         from shared.governance.consent import (
             ConsentRegistry,
             estate_identity_operation,
+            resolve_contract_id,
             resolve_principal_id,
         )
     except ImportError as exc:
@@ -89,10 +90,10 @@ def _consent_revocation_check(
         if not contract.active:
             return (
                 True,
-                f"contract {contract.id!r} for {person_id!r} is revoked — consent check passes",
+                f"contract {resolve_contract_id(contract.id)!r} for {person_id!r} is revoked — consent check passes",
             )
         return False, (
-            f"contract {contract.id!r} for {person_id!r} is LIVE (not revoked); "
+            f"contract {resolve_contract_id(contract.id)!r} for {person_id!r} is LIVE (not revoked); "
             f"revoke it in axioms/contracts/ before purging the derived data"
         )
 

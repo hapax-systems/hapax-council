@@ -626,7 +626,10 @@ def test_guest_source_reconciles_binding_and_denies_errors(aliases, monkeypatch,
     assert source.consented(PRINCIPAL, tmp_path / "contracts")
     aliases.delete("consent-identifier-compatibility")
     assert not source.consented(PRINCIPAL, tmp_path / "contracts")
-    assert capsys.readouterr().err.strip() == "[screwm-guest-source] consent_unavailable"
+    diagnostic = capsys.readouterr().err
+    assert "consent_unavailable: cause_class=IdentityMigrationUnavailable" in diagnostic
+    assert "restore identity custody before retrying" in diagnostic
+    assert OLD_PRINCIPAL not in diagnostic
     with pytest.raises(RuntimeError, match="^compat_missing$"):
         cli.cmd_grant(PRINCIPAL)
 

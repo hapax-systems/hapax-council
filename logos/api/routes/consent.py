@@ -15,8 +15,9 @@ from __future__ import annotations
 import asyncio
 import logging
 import os
+import re
 from contextlib import asynccontextmanager
-from dataclasses import asdict
+from dataclasses import asdict, replace
 from pathlib import Path
 from threading import Lock
 from urllib.parse import unquote
@@ -28,11 +29,12 @@ from werkzeug.security import safe_join
 from logos._revocation_wiring import get_revocation_propagator
 from logos.api.routes._config import HAPAX_HOME
 from shared.governance.consent import (
+    ConsentRegistry,
     estate_identity_operation,
     resolve_contract_id,
     resolve_principal_id,
 )
-from shared.governance.revocation import RevocationReport
+from shared.governance.revocation import RevocationPropagator, RevocationReport
 from shared.notify import send_notification
 from shared.stream_archive import archive_root
 
@@ -53,9 +55,19 @@ def _purge_retry_instruction(person_id: str) -> str:
 
 def _warn_pending_purges() -> None:
     try:
-        pending = get_revocation_propagator().pending_purges(_PURGE_AUDIT_PATH)
-    except Exception:
-        _log.warning("purge_audit_unreadable: inspect the durable purge audit before retrying")
+        # Startup reads audit residue only; it must not initialize the runtime
+        # singleton or bind it to a snapshot of grants from process startup.
+        pending = RevocationPropagator(ConsentRegistry(_contracts_dir=None)).pending_purges(
+            _PURGE_AUDIT_PATH
+        )
+    except Exception as exc:
+        cause = type(exc).__name__
+        cause = cause if re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]*", cause) else "unavailable"
+        _log.warning(
+            "purge_audit_unreadable: cause_class=%s; "
+            "inspect the durable purge audit and restore custody before retrying",
+            cause,
+        )
         return
     for person_id in sorted(pending):
         _log.warning("purge_pending: %s; %s", person_id, _purge_retry_instruction(person_id))
@@ -187,10 +199,18 @@ def _revocation_response(report: RevocationReport, response: Response) -> dict:
     payload = asdict(report)
     payload["total_purged"] = report.total_purged
     payload["failures"] = [cause for result in report.purge_results for cause in result.failures]
-    if report.retry_contract_ids or payload["failures"]:
+    if report.retry_contract_ids or payload["failures"] or report.audit_failures:
         response.status_code = 503
         payload["durable_record"] = {"event": "purge_pending", "audit": str(_PURGE_AUDIT_PATH)}
         payload["retry_instruction"] = _purge_retry_instruction(report.person_id)
+        if report.audit_failures:
+            if report.purge_complete:
+                payload["durable_record"]["event"] = "purge_complete"
+            payload["durable_record"]["written"] = False
+            payload["retry_instruction"] = (
+                "Purge audit write failed; retain this response and repair the audit destination. "
+                + payload["retry_instruction"]
+            )
     return payload
 
 
@@ -202,6 +222,9 @@ def _run_revocation(
         if not hasattr(app.state, "pending_consent_revocations"):
             app.state.pending_consent_revocations = {}
         pending_revocations = app.state.pending_consent_revocations
+        if not hasattr(app.state, "pending_consent_audit_completions"):
+            app.state.pending_consent_audit_completions = {}
+        audit_completions = app.state.pending_consent_audit_completions
         person_id = resolve_principal_id(person_id)
         prop = get_revocation_propagator()
         prop.refresh_contracts()
@@ -237,13 +260,44 @@ def _run_revocation(
                     ),
                     prior_purge_results=pending.prior_purge_results + report.prior_purge_results,
                 )
+        # Retire every obligation completed by this stage, including stages
+        # that still leave other contracts pending. Preserve failed audit writes
+        # in process so a subsequent retry can reconcile without repeating purges.
+        completed = set(audit_completions.get(person_id, ()))
+        if pending is not None:
+            completed.update(set(pending.retry_contract_ids) - set(report.retry_contract_ids))
+        audit_failures = []
+        if completed:
+            try:
+                prop.record_purge_complete(person_id, tuple(sorted(completed)), _PURGE_AUDIT_PATH)
+                audit_completions.pop(person_id, None)
+            except Exception:
+                audit_completions[person_id] = tuple(sorted(completed))
+                audit_failures.append("purge_complete_audit_unwritten")
         if report.retry_contract_ids:
+            try:
+                prop.record_purge_pending(report, _PURGE_AUDIT_PATH)
+            except Exception:
+                audit_failures.append("purge_pending_audit_unwritten")
+        report = replace(report, audit_failures=tuple(audit_failures))
+        if report.retry_contract_ids or audit_failures:
             pending_revocations[person_id] = report
-            prop.record_purge_pending(report, _PURGE_AUDIT_PATH)
+            if audit_failures:
+                _log.warning(
+                    "purge_audit_unwritten: retain the response and repair the audit destination; "
+                    "current-process retry remains available"
+                )
             try:
                 send_notification(
-                    "Consent purge pending",
+                    "Consent purge pending"
+                    if report.retry_contract_ids
+                    else "Consent purge audit pending",
                     f"purge_pending: {person_id}; contracts={','.join(report.retry_contract_ids)}. "
+                    + (
+                        "Audit write failed; retain the response and repair the audit destination. "
+                        if audit_failures
+                        else ""
+                    )
                     + _purge_retry_instruction(person_id),
                     priority="high",
                     tags=["warning"],
@@ -251,8 +305,6 @@ def _run_revocation(
             except Exception:
                 _log.warning("purge_pending_notification_failed: inspect the durable purge audit")
         else:
-            if retry and pending is not None and report.purge_complete:
-                prop.record_purge_complete(person_id, pending.retry_contract_ids, _PURGE_AUDIT_PATH)
             pending_revocations.pop(person_id, None)
         _log.info(
             "Revocation: revoked=%s, purged=%d, purge_complete=%s",
@@ -308,6 +360,8 @@ def _trace_consent(source: str = Query(..., description="File path or source ide
     label_data = None
     provenance_data: list[str] = []
     body_preview = ""
+    body = ""
+    consent_label = None
 
     if source_path is not None and source_path.exists():
         try:
@@ -320,23 +374,43 @@ def _trace_consent(source: str = Query(..., description="File path or source ide
             fm, body = parse_frontmatter(source_path)
             consent_label = extract_consent_label(fm)
             provenance = extract_provenance(fm)
-            provenance_data = sorted(provenance)
-            body_preview = body[:200] if body else ""
+            provenance_data = sorted({resolve_contract_id(cid) for cid in provenance})
 
             if consent_label is not None:
                 label_data = [
-                    {"owner": owner, "readers": sorted(readers)}
+                    {
+                        "owner": resolve_principal_id(owner),
+                        "readers": sorted({resolve_principal_id(reader) for reader in readers}),
+                    }
                     for owner, readers in consent_label.policies
                 ]
-        except Exception as e:
-            _log.debug("Failed to parse %s: %s", source_path, e)
+        except Exception:
+            _log.warning("consent_trace_parse_failed: inspect source metadata before retrying")
+            body = ""
 
     # Look up contracts from provenance
     contracts = []
     try:
+        from logos._consent_reader import ConsentGatedReader
         from logos._governance import load_contracts
+        from logos.api.deps.consent_gate import gate_response
+        from logos.api.deps.stream_redaction import pii_redact, references_non_broadcast_person_id
+        from shared.labeled_trace import serialize_label
 
         registry = load_contracts()
+        preview = gate_response({"body": body, "_consent": serialize_label(consent_label)})
+        with estate_identity_operation() as snapshot:
+            if (
+                preview.get("_redacted")
+                or snapshot.contains_predecessor(body.lower())
+                or references_non_broadcast_person_id(body, registry)
+            ):
+                body_preview = "[redacted]" if body else ""
+            else:
+                reader = ConsentGatedReader(registry, frozenset({"operator"}))
+                body_preview = pii_redact(
+                    reader.filter_tool_result("search_documents", preview.get("body", ""))
+                )[:200]
         for contract_id in provenance_data:
             contract = registry.get(contract_id)
             if contract:
@@ -351,7 +425,8 @@ def _trace_consent(source: str = Query(..., description="File path or source ide
                     }
                 )
     except Exception:
-        _log.warning("Failed to load consent contracts", exc_info=True)
+        _log.warning("consent_trace_unavailable: inspect contract storage before retrying")
+        body_preview = "[redacted]" if body else ""
 
     # Information flow analysis
 
@@ -400,10 +475,16 @@ def _trace_consent(source: str = Query(..., description="File path or source ide
                 "note": f"Revoking these contracts would purge {total} Qdrant points",
             }
         except Exception:
-            _log.warning("Qdrant point count failed", exc_info=True)
+            _log.warning(
+                "consent_trace_count_unavailable: inspect document storage before retrying"
+            )
 
+    exported_source = str(source_path) if source_path is not None else decoded_source
+    with estate_identity_operation() as snapshot:
+        if snapshot.contains_predecessor(exported_source.lower()):
+            exported_source = "[redacted]"
     return {
-        "source": str(source_path) if source_path is not None else decoded_source,
+        "source": exported_source,
         "exists": source_path.exists() if source_path is not None else False,
         "body_preview": body_preview,
         "consent_label": label_data,

@@ -62,11 +62,9 @@ _SERIAL_RE = re.compile(r"\b[A-Z0-9]{10,}\b")
 def _load_consent_registry():
     """Lazily load consent registry for person-id redaction.
 
-    Swallowing load failures here is deliberate: if the registry can't
-    be loaded, fall back to treating ALL names as non-broadcast-consented
-    (fail closed — reference detection returns True because an empty
-    registry can't confirm any person). Callers checking the returned
-    value must treat a None as "no registry available → assume worst".
+    None means custody or contract storage is unavailable. Public callers
+    must omit the affected items and explicitly mark the response incomplete;
+    it is never an empty registry that could permit unfiltered output.
     """
     try:
         from logos._governance import load_contracts
@@ -85,13 +83,17 @@ def _load_consent_registry():
         return None
 
 
-def _public_person_items(items: list, fields: tuple[str, ...]) -> list:
+def _public_person_items(items: list, fields: tuple[str, ...]) -> list | None:
     """Load and filter a whole public result within one worker custody operation."""
     try:
         with estate_identity_operation():
             registry = _load_consent_registry()
             if registry is None:
-                return []
+                _log.warning(
+                    "public_consent_incomplete: custody unavailable; inspect contract storage "
+                    "and restore identity custody before retrying"
+                )
+                return None
             return [
                 item
                 for item in items
@@ -102,12 +104,23 @@ def _public_person_items(items: list, fields: tuple[str, ...]) -> list:
             ]
     except IdentityMigrationUnavailable as exc:
         _log.warning(
-            "public_consent_refused: %s cause_class=%s remedy=%s",
+            "public_consent_refused: result incomplete because custody is unavailable; "
+            "%s cause_class=%s remedy=%s",
             exc.reason,
             exc.cause_class or "unavailable",
             exc.remedy,
         )
-        return []
+        return None
+
+
+def _incomplete_consent_response(data):
+    """Preserve the route's data shape while marking withheld items as unavailable."""
+    response = _slow_response(data)
+    response.status_code = 503
+    response.headers["X-Consent-Result"] = "incomplete"
+    response.headers["X-Consent-Reason"] = "custody_unavailable"
+    response.headers["X-Consent-Remedy"] = "restore_identity_custody_and_retry"
+    return response
 
 
 def _dict_factory(fields: list[tuple]) -> dict:
@@ -224,11 +237,14 @@ async def get_briefing():
         # LRR Phase 6 §4.A: omit action_items that reference a person
         # without active broadcast contract
         action_items = data.get("action_items") or []
-        data["action_items"] = await asyncio.to_thread(
+        filtered = await asyncio.to_thread(
             _public_person_items,
             action_items if isinstance(action_items, list) else [],
             ("action", "reason", "command"),
         )
+        data["action_items"] = filtered if filtered is not None else []
+        if filtered is None:
+            return _incomplete_consent_response(data)
     return _slow_response(data)
 
 
@@ -270,6 +286,8 @@ async def get_nudges():
         data = await asyncio.to_thread(
             _public_person_items, data, ("detail", "title", "suggested_action")
         )
+        if data is None:
+            return _incomplete_consent_response([])
     return _slow_response(data)
 
 

@@ -27,6 +27,7 @@ from __future__ import annotations
 
 import argparse
 import os
+import re
 import signal
 import subprocess
 import sys
@@ -71,8 +72,14 @@ def consented(person: str, directory: Path) -> bool:
             reg = ConsentRegistry(_contracts_dir=directory)
             reg.load(directory)
             return reg.contract_check(person, SCOPE_CATEGORY)
-    except Exception:  # noqa: BLE001 — fail-closed on any consent error
-        print("[screwm-guest-source] consent_unavailable", file=sys.stderr)
+    except Exception as exc:  # noqa: BLE001 — fail-closed on any consent error
+        cause = type(exc).__name__
+        cause = cause if re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]*", cause) else "unavailable"
+        print(
+            f"[screwm-guest-source] consent_unavailable: cause_class={cause}; "
+            "inspect consent contract storage and restore identity custody before retrying",
+            file=sys.stderr,
+        )
         return False
 
 
