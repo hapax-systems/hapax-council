@@ -660,6 +660,8 @@ class PathFunctionTable(dict[str, PathFunction]):
         self.call_edges: dict[ast.AST, set[ast.AST]] = {}
         self.functions_by_node: dict[ast.AST, PathFunction] = {}
         self.export_bindings: dict[str, str] = {}
+        self.export_paths: dict[str, Path] = {}
+        self.uncertain_bindings: set[ast.AST] = set()
         self.unknown_effects: dict[ast.AST, str] = {}
         self.outer_effects: dict[ast.AST, _OuterEffects] = {}
         self.effect_revisions: Counter[ast.AST] = Counter()
@@ -806,6 +808,8 @@ class PathFunctionTable(dict[str, PathFunction]):
         calling_path: Path,
         lexical_prefixes: tuple[str, ...] = (),
         aliases: Mapping[str, str] | None = None,
+        *,
+        retain_uncertain: bool = False,
     ) -> PathFunction | None:
         canonical = self.canonical_name(name, calling_path, lexical_prefixes, aliases)
         if not canonical:
@@ -813,12 +817,27 @@ class PathFunctionTable(dict[str, PathFunction]):
         # Imports see the module's evaluated export, including a replaced/decorated or
         # conditionally defined function. Registration alone cannot certify that object.
         seen: set[str] = set()
+        uncertain = False
         while canonical in self.export_bindings:
             if canonical in seen:
                 return None
             seen.add(canonical)
+            if isinstance(aliases, _ImportAliases) and canonical in self.export_paths:
+                prefix = f"{_MODULE_EFFECT_PREFIX}{self.export_paths[canonical]}\0"
+                exported_name = canonical.rsplit(".", 1)[-1]
+                uncertain |= (
+                    f"{prefix}{exported_name}" in aliases.values or f"{prefix}*" in aliases.values
+                )
             canonical = self.export_bindings[canonical]
             if not canonical:
+                return None
+        if uncertain:
+            # The initialization body identifies evidence to withhold, not a callable to
+            # follow. Otherwise the uncalled-body fallback could still certify its writes.
+            function = self.get(canonical)
+            if function is not None and function.node is not None:
+                self.uncertain_bindings.add(function.node)
+            if not retain_uncertain:
                 return None
         bindings = self.aliases_by_path.get(calling_path, {}) if aliases is None else aliases
         if name.partition(".")[0] in bindings:
@@ -1530,15 +1549,9 @@ def _has_unbounded_format(
         if isinstance(item, ast.Name) and f"{_UNRESOLVED_FORMAT_PREFIX}{item.id}" in values:
             return True
         if isinstance(item, ast.Call) and isinstance(path_functions, PathFunctionTable):
-            helper = path_functions.resolve(
-                _function_name(item, values), path, _lexical_scope(values), _import_aliases(values)
-            )
-            if helper is not None:
-                result, unbounded = _resolve_path_helper(
-                    item, values, path, repo_root, path_functions
-                )
-                if unbounded or "*" in (result or ""):
-                    return True
+            result, unbounded = _resolve_path_helper(item, values, path, repo_root, path_functions)
+            if unbounded or "*" in (result or ""):
+                return True
         if isinstance(item, ast.FormattedValue) and _format_constant(item, values) is None:
             if (
                 item.format_spec is not None
@@ -1761,12 +1774,18 @@ def _resolve_path_helper(
     """Keep a visible helper's literal result separate from its certification certainty."""
     name = _function_name(node, values)
     function = (
-        path_functions.resolve(name, path, _lexical_scope(values), _import_aliases(values))
+        path_functions.resolve(
+            name, path, _lexical_scope(values), _import_aliases(values), retain_uncertain=True
+        )
         if isinstance(path_functions, PathFunctionTable)
         else (path_functions.get(name) or path_functions.get(name.rsplit(".", 1)[-1]))
     )
     if function is None or function.node is None or function.return_expr is None:
         return None, False
+    uncertain = (
+        isinstance(path_functions, PathFunctionTable)
+        and function.node in path_functions.uncertain_bindings
+    )
     if _HELPER_EFFECT_KEY in values:
         # An unknown effect already prevents this helper invocation from returning a bounded
         # path. Keep walking its control flow, but do not recursively expand more helpers.
@@ -1803,7 +1822,8 @@ def _resolve_path_helper(
     cache = path_functions.helper_results if isinstance(path_functions, PathFunctionTable) else {}
     cache_key = (id(function), tuple(sorted(bound.items())))
     if cache_key in cache:
-        return cache[cache_key]
+        result, unbounded = cache[cache_key]
+        return result, unbounded or uncertain
     scanner = _PathHelperScanner(
         path=function.path,
         repo_root=repo_root,
@@ -1825,7 +1845,7 @@ def _resolve_path_helper(
     if len(cache) >= 4096:
         cache.clear()
     cache[cache_key] = (result, scanner.unbounded_return)
-    return cache[cache_key]
+    return result, scanner.unbounded_return or uncertain
 
 
 def _is_path_annotation(node: ast.expr | None) -> bool:
@@ -1885,7 +1905,11 @@ def _is_path_valued_expr(
         return _is_path_valued_expr(node.func.value, values, path, path_functions, depth=depth + 1)
     function = (
         path_functions.resolve(
-            _function_name(node, values), path, _lexical_scope(values), _import_aliases(values)
+            _function_name(node, values),
+            path,
+            _lexical_scope(values),
+            _import_aliases(values),
+            retain_uncertain=True,
         )
         if isinstance(path_functions, PathFunctionTable)
         else (path_functions.get(name) or path_functions.get(name.rsplit(".", 1)[-1]))
@@ -1985,18 +2009,26 @@ def _looks_like_artifact_pattern(pattern: str | None) -> bool:
     )
 
 
-def _mode_effect(call: ast.Call, position: int) -> str:
+def _mode_effect(call: ast.Call, position: int) -> str | None:
     """Read/write from a mode argument at ``position`` (or ``mode=``), as tarfile.open and
     zipfile.ZipFile take it; ``_open_effect`` reads Path.open's first argument instead."""
     mode_node: ast.expr | None = call.args[position] if len(call.args) > position else None
     for keyword in call.keywords:
         if keyword.arg == "mode":
             mode_node = keyword.value
-    mode = mode_node.value if isinstance(mode_node, ast.Constant) else "r"
+    if any(isinstance(arg, ast.Starred) for arg in call.args[: position + 1]) or any(
+        keyword.arg is None for keyword in call.keywords
+    ):
+        return None
+    if mode_node is not None and not (
+        isinstance(mode_node, ast.Constant) and isinstance(mode_node.value, str)
+    ):
+        return None
+    mode = mode_node.value if mode_node is not None else "r"
     return "write" if isinstance(mode, str) and any(flag in mode for flag in "wax") else "read"
 
 
-def _open_effect(call: ast.Call, *, path_method: bool) -> str:
+def _open_effect(call: ast.Call, *, path_method: bool) -> str | None:
     """Classify open without confusing a module function's path with ``Path.open``'s mode."""
     return _mode_effect(call, 0 if path_method else 1)
 
@@ -2032,7 +2064,7 @@ def _record_access(
     accesses: list[ArtifactAccess],
     unresolved: list[int],
     *,
-    action: str,
+    action: str | None,
     expression: ast.expr | None,
     call: ast.Call,
     values: dict[str, str],
@@ -2044,7 +2076,11 @@ def _record_access(
     append: str | None = None,
     modelled: bool = True,
 ) -> None:
-    bounded = not _has_unbounded_format(expression, values, path, repo_root, path_functions)
+    bounded = action is not None and not _has_unbounded_format(
+        expression, values, path, repo_root, path_functions
+    )
+    # Unknown modes retain a possible literal read as uncertainty, never a certified access.
+    action = action or "read"
     for pattern in _resolve_path_expr_variants(expression, values, path, repo_root, path_functions):
         if pattern is not None and append is not None:
             pattern = _join_pattern(pattern, append, repo_root)
@@ -3143,7 +3179,14 @@ class _BlockScanner:
 
     def _mark_untracked_result(self, call: ast.Call, state: dict[str, str]) -> None:
         result_name = _expression_value_name(call)
-        state[result_name] = "*"
+        # An obsolete helper may still expose a literal reader pattern. Its return is
+        # evidence only: the uncertainty flag must accompany every retained component.
+        result, unbounded = _resolve_path_helper(
+            call, state, self.path, self.repo_root, self.path_functions
+        )
+        is_path = unbounded and _is_path_valued_expr(call, state, self.path, self.path_functions)
+        state[result_name] = result if unbounded and result is not None else "*"
+        _set_path_value(state, result_name, is_path)
         state[f"{_UNRESOLVED_FORMAT_PREFIX}{result_name}"] = "1"
 
     def _invalidate_callee_mutations(self, function: PathFunction, state: dict[str, str]) -> None:
@@ -4535,6 +4578,7 @@ def collect_artifact_accesses(
                 name := key.removeprefix(_IMPORT_ALIAS_PREFIX)
             ).startswith("\0"):
                 path_functions.export_bindings[f"{_module_name(relative)}.{name}"] = target
+                path_functions.export_paths[f"{_module_name(relative)}.{name}"] = relative
 
     # Gather calls across the whole repository before retaining any body's accesses.
     # Recompute each round: provisional defaults must disappear when a later caller is found.
@@ -4674,6 +4718,33 @@ def collect_artifact_accesses(
             key=lambda access: (str(access.path), access.lineno, access.pattern),
         )
     )
+    # A refused export lookup must also withdraw fallback evidence from the old body
+    # and the callees it could reach. Keep literal readers and writers, visibly unbounded.
+    uncertain_nodes = set(path_functions.uncertain_bindings)
+    pending = list(uncertain_nodes)
+    while pending:
+        for callee in path_functions.call_edges.get(pending.pop(), set()) - uncertain_nodes:
+            uncertain_nodes.add(callee)
+            pending.append(callee)
+    uncertain_lines: set[tuple[Path, int]] = set()
+    for node in uncertain_nodes:
+        function = path_functions.functions_by_node.get(node)
+        if function is None:
+            continue
+        uncertain_lines.update(
+            (function.path, item.lineno) for item in ast.walk(node) if isinstance(item, ast.Call)
+        )
+        path_functions.unresolved_paths.add(
+            f"{function.path}:{node.lineno}: callable binding for "
+            f"{function.lexical_prefixes[0]} may have been rebound by a foreign call"
+        )
+        unresolved[0] += 1
+    accesses = [
+        replace(access, bounded=False)
+        if (access.path, access.lineno) in uncertain_lines
+        else access
+        for access in accesses
+    ]
     unique = list(dict.fromkeys(accesses))
     if capped_expressions is not None:
         capped_expressions.update(path_functions.capped_expressions)
@@ -5324,13 +5395,20 @@ def analyse_consumer_side(
                 if (writer.bounded or not reader.bounded)
                 and _specific_pair_identity(reader, writer, imports_by_path)
             )
-        if identity_writers and not paired:
+        divergent_writers = [
+            writer
+            for writer in identity_writers
+            if writer.bounded
+            and any(reader.bounded for reader in reader_sites)
+            and not _accesses_match(representative, writer)
+        ]
+        if divergent_writers and not paired:
             kind = "consumer-producer-path-mismatch"
             findings.append(
                 ConsumerSideFinding(
                     kind,
                     reader_sites[:3],
-                    _nearest_writers(representative, identity_writers),
+                    _nearest_writers(representative, divergent_writers),
                     f"{kind}:{pattern}",
                     reader_total=len(reader_sites),
                 )

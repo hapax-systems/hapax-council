@@ -65,7 +65,8 @@ def test_consumer_producer_path_mismatch(gate, tmp_path: Path) -> None:
         "OUTPUT = Path.home() / '.cache' / 'alpha'\n"
         "def write_widget_binding(key):\n"
         "    path = OUTPUT / f'widget-binding-{key}.json'\n"
-        "    path.write_text('{}', encoding='utf-8')\n",
+        "    path.write_text('{}', encoding='utf-8')\n"
+        "write_widget_binding('fixed')\n",
     )
     _write(
         tmp_path,
@@ -75,7 +76,8 @@ def test_consumer_producer_path_mismatch(gate, tmp_path: Path) -> None:
         "INPUT = Path.home() / '.cache' / 'beta'\n"
         "def load_widget_binding(key):\n"
         "    path = INPUT / f'widget-binding-{key}.json'\n"
-        "    return path.read_text(encoding='utf-8')\n",
+        "    return path.read_text(encoding='utf-8')\n"
+        "load_widget_binding('fixed')\n",
     )
     report = gate.analyse_consumer_side(tmp_path, [])
     mismatch = [
@@ -84,8 +86,9 @@ def test_consumer_producer_path_mismatch(gate, tmp_path: Path) -> None:
         if item.kind == "consumer-producer-path-mismatch" and item.reader.family == "widget_binding"
     ]
     assert len(mismatch) == 1
-    assert mismatch[0].reader.pattern == "~/.cache/beta/widget-binding-*.json"
-    assert mismatch[0].writers[0].pattern == "~/.cache/alpha/widget-binding-*.json"
+    assert mismatch[0].reader.pattern == "~/.cache/beta/widget-binding-fixed.json"
+    assert mismatch[0].writers[0].pattern == "~/.cache/alpha/widget-binding-fixed.json"
+    assert mismatch[0].reader.bounded and mismatch[0].writers[0].bounded
 
 
 def test_committed_read_pattern_is_counted_as_excluded(

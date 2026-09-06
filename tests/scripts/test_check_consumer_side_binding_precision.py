@@ -1203,3 +1203,193 @@ def test_imported_decorated_helper_cannot_borrow_original_body(gate, tmp_path: P
     report = gate.analyse_consumer_side(tmp_path, [])
     assert (Path("shared/consumer.py"), "artifacts/orphan.json") in _unwritten(report)
     assert report.unresolvable > 0
+
+
+@pytest.mark.parametrize("configured", [True, False], ids=["configured", "unchanged"])
+@pytest.mark.parametrize("wrapped", [False, True], ids=["direct", "transitive"])
+@pytest.mark.parametrize("in_function", [False, True], ids=["module", "function"])
+def test_imported_callable_effect_withholds_obsolete_body(
+    gate, tmp_path: Path, configured, wrapped, in_function
+) -> None:
+    _write(
+        tmp_path,
+        "shared/helper.py",
+        "from pathlib import Path\n"
+        "def write_state():\n    Path('artifacts/old.json').write_text('{}')\n"
+        "def replacement():\n    Path('artifacts/new.json').write_text('{}')\n"
+        "def configure():\n    global write_state\n    write_state = replacement\n"
+        "def prepare():\n    configure()\n",
+    )
+    calls = (
+        f"helper.{'prepare' if wrapped else 'configure'}()\n" if configured else ""
+    ) + "helper.write_state()\nPath('artifacts/old.json').read_text()\n"
+    _write(
+        tmp_path,
+        "shared/consumer.py",
+        "from pathlib import Path\nfrom shared import helper\n"
+        + (
+            "def consume():\n" + "".join(f"    {line}\n" for line in calls.splitlines())
+            if in_function
+            else calls
+        ),
+    )
+    accesses, unresolved, *_ = gate.collect_artifact_accesses(tmp_path)
+    old_writers = [a for a in accesses if a.action == "write" and a.pattern == "artifacts/old.json"]
+    assert old_writers and all(a.bounded is not configured for a in old_writers)
+    assert (unresolved > 0) is configured
+    report = gate.analyse_consumer_side(tmp_path, [])
+    assert (report.unresolvable > 0) is configured
+    assert ((Path("shared/consumer.py"), "artifacts/old.json") in _unwritten(report)) is configured
+    if not configured:
+        assert not report.findings
+
+
+@pytest.mark.parametrize("branch_cap", [1, 32], ids=["collapsed-branch", "separate-branches"])
+def test_imported_callable_effect_retains_uncertain_reads_across_module_hops(
+    gate, tmp_path: Path, monkeypatch, branch_cap
+) -> None:
+    monkeypatch.setattr(gate, "_MAX_BRANCH_STATES", branch_cap)
+    _write(
+        tmp_path,
+        "shared/helper.py",
+        "from pathlib import Path\n"
+        "def read_state():\n    return Path('artifacts/old.json').read_text()\n"
+        "def replacement():\n    return Path('artifacts/new.json').read_text()\n"
+        "def configure():\n    global read_state\n    read_state = replacement\n",
+    )
+    _write(
+        tmp_path,
+        "shared/bridge.py",
+        "from shared import helper\ndef read_state():\n    return helper.read_state()\n",
+    )
+    _write(
+        tmp_path,
+        "shared/consumer.py",
+        "from shared import helper, bridge\n"
+        "if condition:\n    helper.configure()\nbridge.read_state()\n",
+    )
+    accesses, unresolved, *_ = gate.collect_artifact_accesses(tmp_path)
+    readers = [a for a in accesses if a.action == "read" and a.pattern == "artifacts/old.json"]
+    assert readers and all(not a.bounded for a in readers)
+    assert unresolved > 0
+    report = gate.analyse_consumer_side(tmp_path, [])
+    assert (Path("shared/helper.py"), "artifacts/old.json") in _unwritten(report)
+    assert report.unresolvable > 0
+
+
+@pytest.mark.parametrize("access", ["read_text()", "write_text('{}')"])
+def test_rebound_imported_path_helper_keeps_only_uncertain_literal_evidence(
+    gate, tmp_path: Path, access
+) -> None:
+    _write(
+        tmp_path,
+        "shared/helper.py",
+        "from pathlib import Path\n"
+        "def artifact_path() -> Path:\n    return Path('artifacts/old.json')\n"
+        "def replacement() -> Path:\n    return Path('artifacts/new.json')\n"
+        "def configure():\n    global artifact_path\n    artifact_path = replacement\n",
+    )
+    _write(
+        tmp_path,
+        "shared/consumer.py",
+        "from pathlib import Path\nfrom shared import helper\n"
+        "helper.configure()\n"
+        f"helper.artifact_path().{access}\nPath('artifacts/old.json').read_text()\n",
+    )
+    accesses, unresolved, *_ = gate.collect_artifact_accesses(tmp_path)
+    through_helper = [a for a in accesses if a.path == Path("shared/consumer.py") and a.lineno == 4]
+    assert through_helper and all(not a.bounded for a in through_helper)
+    assert {a.pattern for a in through_helper} == {"artifacts/old.json"}
+    assert unresolved > 0
+    report = gate.analyse_consumer_side(tmp_path, [])
+    assert (Path("shared/consumer.py"), "artifacts/old.json") in _unwritten(report)
+    assert report.unresolvable > 0
+
+
+def test_rebound_imported_callable_withholds_its_fallback_callees(gate, tmp_path: Path) -> None:
+    _write(
+        tmp_path,
+        "shared/helper.py",
+        "from pathlib import Path\n"
+        "def old_writer():\n    Path('artifacts/old.json').write_text('{}')\n"
+        "def write_state():\n    old_writer()\n"
+        "def replacement():\n    Path('artifacts/new.json').write_text('{}')\n"
+        "def configure():\n    global write_state\n    write_state = replacement\n",
+    )
+    _write(
+        tmp_path,
+        "shared/consumer.py",
+        "from pathlib import Path\nfrom shared import helper\n"
+        "helper.configure()\nhelper.write_state()\nPath('artifacts/old.json').read_text()\n",
+    )
+    accesses, unresolved, *_ = gate.collect_artifact_accesses(tmp_path)
+    writers = [a for a in accesses if a.action == "write" and a.pattern == "artifacts/old.json"]
+    assert writers and all(not a.bounded for a in writers)
+    assert unresolved > 0
+    report = gate.analyse_consumer_side(tmp_path, [])
+    assert (Path("shared/consumer.py"), "artifacts/old.json") in _unwritten(report)
+
+
+@pytest.mark.parametrize(
+    "opening",
+    [
+        "open('artifacts/state.json', MODE)",
+        "io.open('artifacts/state.json', mode=MODE)",
+        "Path('artifacts/state.json').open(MODE)",
+        "Path('artifacts/state.json').open(mode=MODE)",
+        "tarfile.open('artifacts/state.json', MODE)",
+        "zipfile.ZipFile('artifacts/state.json', mode=MODE)",
+    ],
+)
+@pytest.mark.parametrize("mode", ["mode", "'r'", "'w'"], ids=["nonliteral", "read", "write"])
+def test_nonliteral_open_mode_withholds_access_certification(
+    gate, tmp_path: Path, opening, mode
+) -> None:
+    _write(
+        tmp_path,
+        "shared/consumer.py",
+        "import io, tarfile, zipfile\nfrom pathlib import Path\n"
+        "def use_state(mode):\n    " + opening.replace("MODE", mode) + "\n",
+    )
+    accesses, unresolved, *_ = gate.collect_artifact_accesses(tmp_path)
+    assert len(accesses) == 1
+    access = accesses[0]
+    assert access.pattern == "artifacts/state.json"
+    assert access.action == ("write" if mode == "'w'" else "read")
+    assert access.bounded is (mode != "mode")
+    assert unresolved == (1 if mode == "mode" else 0)
+    report = gate.analyse_consumer_side(tmp_path, [])
+    assert report.unresolvable == unresolved
+    if mode == "mode":
+        assert (Path("shared/consumer.py"), "artifacts/state.json") in _unwritten(report)
+
+
+@pytest.mark.parametrize("uncertain", [True, False], ids=["uncertain", "bounded"])
+@pytest.mark.parametrize("divergent", [False, True], ids=["same-path", "different-path"])
+def test_path_mismatch_requires_established_divergent_paths(
+    gate, tmp_path: Path, uncertain, divergent
+) -> None:
+    writer = "artifacts/state.yaml" if divergent else "artifacts/state.json"
+    _write(
+        tmp_path,
+        "shared/producer.py",
+        "from pathlib import Path\n"
+        f"ARTIFACT = Path('{writer}')\n"
+        + ("unknown_setup()\n" if uncertain else "")
+        + "def write_state():\n    ARTIFACT.write_text('{}')\n",
+    )
+    _write(
+        tmp_path,
+        "shared/consumer.py",
+        "from pathlib import Path\nfrom shared import producer\n"
+        "def read_state():\n    return Path('artifacts/state.json').read_text()\n",
+    )
+    report = gate.analyse_consumer_side(tmp_path, [])
+    mismatches = [f for f in report.findings if f.kind == "consumer-producer-path-mismatch"]
+    assert bool(mismatches) is (divergent and not uncertain)
+    assert (report.unresolvable > 0) is uncertain
+    assert ((Path("shared/consumer.py"), "artifacts/state.json") in _unwritten(report)) is (
+        uncertain or divergent
+    )
+    if mismatches:
+        assert {a.pattern for f in mismatches for a in f.writers} == {writer}
