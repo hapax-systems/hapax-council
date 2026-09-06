@@ -22,8 +22,13 @@ Usage::
     HAPAX_CC_PR_AUTOQUEUE_EXPECTED_MERGE_METHOD=SQUASH uv run python scripts/cc-pr-autoqueue.py --apply
 
 Default mode is a dry-run report. ``--apply`` performs the GitHub mutation.
-``--expected-merge-method`` is a governed emergency bypass for rulesets API or
-configuration incidents; the report records the override source.
+``--expected-merge-method`` overrides the desired strategy; applicable queue
+governance must still be verified. The report records the override source.
+No merge-method bypass flag exists by design. During a GitHub rulesets outage,
+stop the autoqueue timer with ``systemctl --user stop hapax-cc-pr-autoqueue.timer``
+until governance is readable again, then run
+``systemctl --user start hapax-cc-pr-autoqueue.timer``. The override is not an
+outage bypass.
 """
 
 from __future__ import annotations
@@ -55,10 +60,14 @@ from github_pr_status import (  # noqa: E402
     REST_INDETERMINATE_CHECK_NAME,
     ListingRoute,
     PrListingUnavailable,
+    RestIndeterminateError,
+    _rest_get_json,
     fetch_status_check_rollup_rest,
     get_pull_rest,
     list_open_pr_statuses,
     listing_unavailable_detail,
+    pr_reference_reasons,
+    read_ref_name,
     rest_merge_state_status,
     run_graphql_rate_aware,
 )
@@ -104,6 +113,7 @@ DEFAULT_REPORT_PATH = (
 DEFAULT_ADMISSION_GOVERNOR_PATH = Path.home() / ".cache" / "hapax" / "pr-admission-governor.yaml"
 KILLSWITCH_ENVS = ("HAPAX_CC_PR_AUTOQUEUE_OFF", "HAPAX_CC_HYGIENE_OFF")
 EXPECTED_MERGE_METHOD_OVERRIDE_ENV = "HAPAX_CC_PR_AUTOQUEUE_EXPECTED_MERGE_METHOD"
+OVERRIDE_CONTRADICTION_PREFIX = "auto_merge_method_override_contradicts_queue_governance:"
 
 PASS_STATES = {"SUCCESS", "SKIPPED", "NEUTRAL"}
 # Ordinary queue admission treats skipped/neutral as non-failing, but mitigation
@@ -241,7 +251,7 @@ class PullRequest:
     number: int
     node_id: str | None
     title: str
-    head_ref: str
+    head_ref: str | None
     head_sha: str | None
     files: tuple[str, ...] | None
     changed_files_count: int | None
@@ -256,6 +266,10 @@ class PullRequest:
     base_ref: str | None = None
     default_branch: str | None = None
     queue_governance: MergeQueueGovernance | None = None
+    base_ref_detail: str | None = None
+    base_ref_detail_latest: str | None = None
+    default_branch_detail: str | None = None
+    reference_reasons: tuple[str, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -319,10 +333,27 @@ class Decision:
                 "source": governance.source,
                 "reason": governance.reason,
             }
+            if self.pr.base_ref_detail:
+                out["merge_queue_governance"]["base_ref_detail"] = self.pr.base_ref_detail
+            if self.pr.base_ref_detail_latest:
+                out["merge_queue_governance"]["base_ref_detail_latest"] = (
+                    self.pr.base_ref_detail_latest
+                )
+            if self.pr.default_branch_detail:
+                out["merge_queue_governance"]["default_branch_detail"] = (
+                    self.pr.default_branch_detail
+                )
             if self.pr.auto_merge_enabled:
                 out["auto_merge_method_owner"] = (
                     "unverified"
                     if governance.reason
+                    or (
+                        self.action in {"blocked", "hold"}
+                        and any(
+                            reason.startswith(OVERRIDE_CONTRADICTION_PREFIX)
+                            for reason in self.reasons
+                        )
+                    )
                     else "merge_queue"
                     if governance.method
                     else "pull_request"
@@ -440,19 +471,36 @@ def _merge_method_operator_next_action(
         "`gh api repos/<repo>/rulesets/<ruleset_id> --jq "
         "'.rules[] | select(.type==\"merge_queue\") | .parameters.merge_method'` "
         f"and verify one of {methods}; "
-        "during a documented GitHub API or ruleset incident, rerun with "
-        f"`--expected-merge-method <METHOD>` or {EXPECTED_MERGE_METHOD_OVERRIDE_ENV}=<METHOD>."
+        "set `--expected-merge-method <METHOD>` or "
+        f"{EXPECTED_MERGE_METHOD_OVERRIDE_ENV}=<METHOD> to match the applicable queue strategy, "
+        "or remove the contradictory override. Restore unreadable governance evidence "
+        "before retrying; an override cannot replace that evidence. No merge-method bypass "
+        "flag exists by design. During a GitHub rulesets outage, run "
+        "`systemctl --user stop hapax-cc-pr-autoqueue.timer` until governance is readable "
+        "again, then run `systemctl --user start hapax-cc-pr-autoqueue.timer`."
     )
 
 
 def _decision_next_action(action: str, reasons: tuple[str, ...]) -> str | None:
+    if any(reason.startswith(OVERRIDE_CONTRADICTION_PREFIX) for reason in reasons):
+        return _merge_method_operator_next_action()
     merge_method_reason = any(
         reason.startswith("auto_merge_method_mismatch")
         or reason.startswith("auto_merge_method_unverified")
         or reason.startswith("auto_merge_method_unrecognized")
         for reason in reasons
     )
+    override_governance_reason = any(
+        reason.startswith("auto_merge_method_unverified:") and ":override=" in reason
+        for reason in reasons
+    )
     if action == "dequeue" and merge_method_reason:
+        if override_governance_reason:
+            return (
+                "This decision removes the PR from the native merge queue when run "
+                "with --apply; it does not disable auto-merge. Queue governance "
+                f"evidence is unverified. {_merge_method_operator_next_action()}"
+            )
         if any(
             reason.startswith("auto_merge_method_unverified:expected_missing") for reason in reasons
         ):
@@ -467,7 +515,7 @@ def _decision_next_action(action: str, reasons: tuple[str, ...]) -> str | None:
             "the next reconciler pass revalidates queue membership and armed "
             "auto-merge state before choosing any disable or re-arm mutation."
         )
-    if any(
+    if override_governance_reason or any(
         reason.startswith("auto_merge_method_unverified:expected_missing") for reason in reasons
     ):
         return _merge_method_operator_next_action()
@@ -718,24 +766,40 @@ def fetch_pr_merge_queue_governance(
 ) -> MergeQueueGovernance:
     """Validate all enforced queue rules for this base, separately from arm flags.
 
-    The REST PR read supplies base.ref (and base.repo.default_branch); it does
-    not expose isInMergeQueue/mergeQueueEntry. An empty queue membership list
+    The REST status adapter carries base.ref and base.repo.default_branch from
+    the list payload, with detail reads as a secondary source. REST does not
+    expose isInMergeQueue/mergeQueueEntry. An empty queue membership list
     cannot establish that ordinary per-PR auto-merge owns the strategy.
     """
     prefix = "auto_merge_method_unverified:"
+    if pr.reference_reasons:
+        return MergeQueueGovernance(reason=prefix + pr.reference_reasons[0])
     if not pr.base_ref:
         return MergeQueueGovernance(reason=prefix + "pr_base_ref_missing")
+    if pr.base_ref_detail and pr.base_ref_detail != pr.base_ref:
+        return MergeQueueGovernance(
+            reason=prefix + f"pr_base_ref_conflict:list={pr.base_ref}:detail={pr.base_ref_detail}"
+        )
+    if pr.default_branch_detail and pr.default_branch_detail != pr.default_branch:
+        return MergeQueueGovernance(
+            reason=prefix
+            + f"pr_default_branch_conflict:list={pr.default_branch}:detail={pr.default_branch_detail}"
+        )
     methods: set[str] = set()
     sources: list[str] = []
     page = 1
     while True:
-        ok, rulesets, message = _gh_api_get_json(
-            f"repos/{repo}/rulesets?per_page=100&page={page}",
-            repo_root=repo_root,
-            runner=runner,
-        )
-        if not ok:
-            return MergeQueueGovernance(reason=prefix + f"enforcement_unreadable:{message}")
+        try:
+            rulesets = _rest_get_json(
+                f"repos/{repo}/rulesets?per_page=100&page={page}",
+                repo_root=repo_root,
+                runner=runner,
+                fail_on_indeterminate=True,
+            )
+        except RestIndeterminateError as exc:
+            return MergeQueueGovernance(
+                reason=prefix + f"enforcement_unreadable:source=rulesets:cause={exc.reason}"
+            )
         if not isinstance(rulesets, list):
             return MergeQueueGovernance(reason=prefix + "enforcement_malformed:rulesets")
         for summary in rulesets:
@@ -750,12 +814,17 @@ def fetch_pr_merge_queue_governance(
             ruleset_id = summary.get("id")
             if type(ruleset_id) is not int or ruleset_id <= 0:
                 return MergeQueueGovernance(reason=prefix + "enforcement_malformed:ruleset_id")
-            ok, detail, message = _gh_api_get_json(
-                f"repos/{repo}/rulesets/{ruleset_id}", repo_root=repo_root, runner=runner
-            )
-            if not ok:
+            try:
+                detail = _rest_get_json(
+                    f"repos/{repo}/rulesets/{ruleset_id}",
+                    repo_root=repo_root,
+                    runner=runner,
+                    fail_on_indeterminate=True,
+                )
+            except RestIndeterminateError as exc:
                 return MergeQueueGovernance(
-                    reason=prefix + f"enforcement_unreadable:ruleset={ruleset_id}:{message}"
+                    reason=prefix
+                    + f"enforcement_unreadable:ruleset={ruleset_id}:cause={exc.reason}"
                 )
             if not isinstance(detail, dict) or any(
                 detail.get(key) != summary.get(key) for key in ("id", "target", "enforcement")
@@ -1094,7 +1163,7 @@ def _parse_pr(item: dict[str, Any]) -> PullRequest | None:
         number=number,
         node_id=_scalar(item.get("id")),
         title=_scalar(item.get("title")) or "",
-        head_ref=_scalar(item.get("headRefName")) or "",
+        head_ref=read_ref_name(item.get("headRefName")),
         files=files,
         changed_files_count=changed_files_count,
         body=str(item.get("body") or ""),
@@ -1106,12 +1175,12 @@ def _parse_pr(item: dict[str, Any]) -> PullRequest | None:
         auto_merge_enabled=bool(item.get("autoMergeRequest")),
         auto_merge_method=_auto_merge_request_method(item.get("autoMergeRequest")),
         check_summary=summarize_checks(item.get("statusCheckRollup") or []),
-        base_ref=_scalar(item.get("baseRefName"))
-        if isinstance(item.get("baseRefName"), str)
-        else None,
-        default_branch=_scalar(item.get("baseRepoDefaultBranch"))
-        if isinstance(item.get("baseRepoDefaultBranch"), str)
-        else None,
+        base_ref=read_ref_name(item.get("baseRefName")),
+        default_branch=read_ref_name(item.get("baseRepoDefaultBranch")),
+        default_branch_detail=read_ref_name(item.get("baseRepoDefaultBranchDetail")),
+        base_ref_detail=read_ref_name(item.get("baseRefNameDetail")),
+        base_ref_detail_latest=read_ref_name(item.get("baseRefNameDetailLatest")),
+        reference_reasons=pr_reference_reasons(item),
     )
 
 
@@ -1127,6 +1196,7 @@ def fetch_open_prs(
     The decision is returned rather than left for the caller to infer from row stamps: an
     empty GraphQL-routed listing has no rows to inspect, so inference silently read "rest".
     ``None`` means the listing was unavailable and the cycle is skipping.
+    Strict REST failures retain their RestIndeterminateError cause for the report.
     """
     runner = runner or subprocess.run
     repo_root = repo_root or default_repo_root()
@@ -1140,6 +1210,10 @@ def fetch_open_prs(
             include_review_decision=True,
         )
     except PrListingUnavailable as exc:
+        # The router has already tried any eligible fallback. Preserve the strict REST
+        # cause for the reconciler's classified refusal, without changing its pure token.
+        if isinstance(exc.__cause__, RestIndeterminateError):
+            raise RestIndeterminateError(exc.__cause__.reason) from exc
         # Skip this cycle rather than spending a listing plus per-PR hydration into
         # guaranteed 403s. Distinguished from the empty-scan warning below because the
         # two mean different things: this one is "we did not look", not "nothing found".
@@ -1174,17 +1248,43 @@ def fetch_open_prs(
                 if rest_pr is not None
                 else str(item.get("mergeStateStatus") or "UNKNOWN").upper()
             )
-            # Both adapters carry base evidence. The optional REST detail read
-            # only fills missing fields; a skipped/failed read cannot erase it.
+            # Fill missing base evidence, but never erase a disagreement already
+            # observed by the adapter, even if this read returns to the list base.
             base = rest_pr.get("base") if isinstance(rest_pr, dict) else None
             base = base if isinstance(base, dict) else {}
             base_repo = base.get("repo")
-            if item.get("baseRefName") is None:
-                item["baseRefName"] = base.get("ref")
-            if item.get("baseRepoDefaultBranch") is None:
-                item["baseRepoDefaultBranch"] = (
-                    base_repo.get("default_branch") if isinstance(base_repo, dict) else None
-                )
+            detail_default = (
+                base_repo.get("default_branch") if isinstance(base_repo, dict) else None
+            )
+            item["refEvidenceReasons"] = pr_reference_reasons(
+                {
+                    "refEvidenceReasons": pr_reference_reasons(item),
+                    "baseRefNameDetailLatest": base.get("ref"),
+                    "baseRepoDefaultBranchDetail": detail_default,
+                }
+            )
+            detail_ref = read_ref_name(base.get("ref"))
+            item["baseRefName"] = read_ref_name(item.get("baseRefName")) or detail_ref
+            if detail_ref and detail_ref != item["baseRefName"]:
+                if not read_ref_name(item.get("baseRefNameDetail")):
+                    item["baseRefNameDetail"] = detail_ref
+                elif detail_ref != item["baseRefNameDetail"]:
+                    item["baseRefNameDetailLatest"] = detail_ref
+            if (
+                read_ref_name(item.get("baseRefNameDetail"))
+                and item["baseRefNameDetail"] != item["baseRefName"]
+            ):
+                item["baseRefConflict"] = "pr_base_ref_conflict"
+            detail_default = read_ref_name(detail_default)
+            item["baseRepoDefaultBranch"] = (
+                read_ref_name(item.get("baseRepoDefaultBranch")) or detail_default
+            )
+            if (
+                detail_default
+                and detail_default != item["baseRepoDefaultBranch"]
+                and not read_ref_name(item.get("baseRepoDefaultBranchDetail"))
+            ):
+                item["baseRepoDefaultBranchDetail"] = detail_default
             # Preserve the shared REST snapshot when available. If it is absent, derive the
             # rollup through REST/core check-runs and commit statuses, not another GraphQL PR
             # view. Fail-closed: an unfetchable rollup reads as "checks unknown / not green".
@@ -1629,7 +1729,7 @@ def _matching_tasks(pr: PullRequest, tasks: list[TaskNote]) -> list[TaskNote]:
     by_pr = [task for task in tasks if task.pr == pr.number]
     if by_pr:
         return by_pr
-    return [task for task in tasks if task.branch == pr.head_ref]
+    return [task for task in tasks if pr.head_ref and task.branch == pr.head_ref]
 
 
 def _release_authorized_head_blockers(
@@ -1888,6 +1988,13 @@ def shared_file_epic_affinity_blockers(
     return blockers
 
 
+def _override_only_refusal(reasons: list[str]) -> bool:
+    """Only a contradictory override alone is exempt from revocation."""
+    return bool(reasons) and all(
+        reason.startswith(OVERRIDE_CONTRADICTION_PREFIX) for reason in reasons
+    )
+
+
 def classify_pr(
     pr: PullRequest,
     *,
@@ -1901,6 +2008,7 @@ def classify_pr(
     storm_reasons: tuple[str, ...] = (),
     expected_auto_merge_method: str | None = None,
     expected_auto_merge_method_source: str | None = None,
+    expected_auto_merge_method_is_override: bool = False,
     require_expected_auto_merge_method: bool = False,
 ) -> Decision:
     reasons: list[str] = []
@@ -2032,15 +2140,31 @@ def classify_pr(
 
     governance = pr.queue_governance
     if governance is not None:
-        if governance.reason:
-            reasons.append(governance.reason)
-        elif queued and governance.method is None:
-            reasons.append("auto_merge_method_unverified:queue_membership_conflict")
-        elif governance.method is not None and governance.method != expected_method:
-            reasons.append(
-                "auto_merge_method_unverified:queue_strategy_expected_conflict:"
-                f"rule={governance.method}:expected={expected_method}"
+        if queued and governance.reason is None and governance.method is None:
+            # Membership and applicable-rule receipts contradict each other;
+            # neither receipt establishes ownership of the per-PR method.
+            governance = replace(
+                governance,
+                reason="auto_merge_method_unverified:queue_membership_evidence_contradiction:"
+                "owner=merge_queue:membership=present:governance=non_queue",
             )
+            pr = replace(pr, queue_governance=governance)
+        if governance.reason:
+            if expected_auto_merge_method_is_override:
+                reasons.append(f"{governance.reason}:override={expected_method}")
+            else:
+                reasons.append(governance.reason)
+        elif governance.method is not None and governance.method != expected_method:
+            if expected_auto_merge_method_is_override:
+                reasons.append(
+                    OVERRIDE_CONTRADICTION_PREFIX
+                    + f"override={expected_method}:governed={governance.method}"
+                )
+            else:
+                reasons.append(
+                    "auto_merge_method_unverified:queue_strategy_expected_conflict:"
+                    f"rule={governance.method}:expected={expected_method}"
+                )
 
     # GitHub ignores autoMergeRequest.mergeMethod under enforced queue handling;
     # only a validated applicable rule establishes queue ownership of that field.
@@ -2056,16 +2180,24 @@ def classify_pr(
         if method_mismatch:
             reasons.append(method_mismatch)
 
+    if reasons:
+        if _override_only_refusal(reasons):
+            action = "hold" if queued or pr.auto_merge_enabled else "blocked"
+        elif queued:
+            action = "dequeue"
+        elif pr.auto_merge_enabled and not expected_method_unverified:
+            action = "disable_auto_merge"
+        else:
+            action = "blocked"
+        return Decision(
+            pr=pr,
+            task=task,
+            tasks=matched_tasks,
+            action=action,
+            reasons=tuple(reasons),
+            expected_auto_merge_method=expected_auto_merge_method,
+        )
     if queued:
-        if reasons:
-            return Decision(
-                pr=pr,
-                task=task,
-                tasks=matched_tasks,
-                action="dequeue",
-                reasons=tuple(reasons),
-                expected_auto_merge_method=expected_auto_merge_method,
-            )
         return Decision(
             pr=pr,
             task=task,
@@ -2074,24 +2206,6 @@ def classify_pr(
             reasons=tuple(reasons),
             auto_arm=auto_arm,
             auto_arm_verified_checks=auto_arm_verified_checks,
-            expected_auto_merge_method=expected_auto_merge_method,
-        )
-    if reasons:
-        if pr.auto_merge_enabled and not expected_method_unverified:
-            return Decision(
-                pr=pr,
-                task=task,
-                tasks=matched_tasks,
-                action="disable_auto_merge",
-                reasons=tuple(reasons),
-                expected_auto_merge_method=expected_auto_merge_method,
-            )
-        return Decision(
-            pr=pr,
-            task=task,
-            tasks=matched_tasks,
-            action="blocked",
-            reasons=tuple(reasons),
             expected_auto_merge_method=expected_auto_merge_method,
         )
     if pr.auto_merge_enabled:
@@ -2712,7 +2826,7 @@ def _admission_status_for(decision: Decision) -> tuple[str, str] | None:
     }:
         return "success", _status_description(f"cc-pr-autoqueue admitted: {decision.action}")
 
-    if decision.action in {"blocked", "dequeue", "disable_auto_merge"}:
+    if decision.action in {"blocked", "hold", "dequeue", "disable_auto_merge"}:
         reasons = "; ".join(decision.reasons or ("not ready for merge queue",))
         return "failure", _status_description(f"cc-pr-autoqueue blocked: {reasons}")
 
@@ -2993,7 +3107,7 @@ def set_autoqueue_admission_status(
 
 
 def _decision_is_non_ready(decision: Decision) -> bool:
-    return decision.action in {"blocked", "dequeue", "disable_auto_merge"} and bool(
+    return decision.action in {"blocked", "hold", "dequeue", "disable_auto_merge"} and bool(
         decision.reasons
     )
 
@@ -3277,13 +3391,26 @@ def run_reconciler(
             repo_root=repo_root,
             runner=runner,
         )
-    prs, listing_route = fetch_open_prs(repo=repo, repo_root=repo_root, limit=limit, runner=runner)
+    try:
+        prs, listing_route = fetch_open_prs(
+            repo=repo, repo_root=repo_root, limit=limit, runner=runner
+        )
+    except RestIndeterminateError as exc:
+        report = {
+            "repo": repo,
+            "apply": apply,
+            "skipped": True,
+            "reason": f"open_pr_scan_indeterminate:{exc.reason}",
+            "decisions": [],
+            "mutations": [],
+        }
+        return _finalize_reconciler_report(
+            report,
+            report_path=report_path,
+            admission_governor_path=admission_governor_path,
+            now=now,
+        )
     if listing_route is None:
-        # The listing was unavailable, which is NOT "no open PRs" — and returning ([], None)
-        # made the two look identical to everything downstream. This is the defect the routing
-        # change itself introduced: `fetch_open_prs` grew a second return value, and the
-        # reconciler kept reading only the first. A cycle that could not look must skip, or it
-        # reports an empty estate and every decision below it is made on absent evidence.
         LOG.warning(
             "autoqueue reconcile skipped: open-PR listing unavailable "
             "(this is 'we did not look', not 'nothing to do'). Next action: none if the next "
@@ -3299,6 +3426,8 @@ def run_reconciler(
                 "both rate pools measured below their floors, or the listing itself failed; "
                 "no PR decisions attempted"
             ),
+            "decisions": [],
+            "mutations": [],
         }
         return _finalize_reconciler_report(
             report,
@@ -3306,11 +3435,20 @@ def run_reconciler(
             admission_governor_path=admission_governor_path,
             now=now,
         )
-    if expected_auto_merge_method is not None and expected_auto_merge_method_override is None:
-        governance_by_base: dict[tuple[str | None, str | None], MergeQueueGovernance] = {}
+    if expected_auto_merge_method is not None:
+        governance_by_base: dict[
+            tuple[str | None, str | None, str | None, str | None, tuple[str, ...]],
+            MergeQueueGovernance,
+        ] = {}
         governed_prs: list[PullRequest] = []
         for pr in prs:
-            base_key = (pr.base_ref, pr.default_branch)
+            base_key = (
+                pr.base_ref,
+                pr.default_branch,
+                pr.base_ref_detail,
+                pr.default_branch_detail,
+                pr.reference_reasons,
+            )
             if base_key not in governance_by_base:
                 governance_by_base[base_key] = fetch_pr_merge_queue_governance(
                     pr, repo=repo, repo_root=repo_root, runner=runner or subprocess.run
@@ -3328,6 +3466,7 @@ def run_reconciler(
             active_ci_repair_task_ids=active_ci_repair_task_ids,
             expected_auto_merge_method=expected_auto_merge_method,
             expected_auto_merge_method_source=merge_method_source,
+            expected_auto_merge_method_is_override=expected_auto_merge_method_override is not None,
             require_expected_auto_merge_method=True,
         )
         for pr in prs
@@ -3392,6 +3531,8 @@ def run_reconciler(
                 storm_reasons=storm_mode.reasons,
                 expected_auto_merge_method=expected_auto_merge_method,
                 expected_auto_merge_method_source=merge_method_source,
+                expected_auto_merge_method_is_override=expected_auto_merge_method_override
+                is not None,
                 require_expected_auto_merge_method=True,
             )
             for pr in prs
@@ -3701,6 +3842,7 @@ def run_reconciler(
             ),
             "dequeue": sum(1 for decision in decisions if decision.action == "dequeue"),
             "blocked": sum(1 for decision in decisions if decision.action == "blocked"),
+            "hold": sum(1 for decision in decisions if decision.action == "hold"),
         },
         "mutations": mutation_results,
     }

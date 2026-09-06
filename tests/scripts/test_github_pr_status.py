@@ -17,6 +17,16 @@ if str(SCRIPTS) not in sys.path:
 import github_pr_status
 
 
+def test_strict_pull_list_none_pages_reader_raises_indeterminate(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(github_pr_status, "_rest_get_json_pages_or_none", lambda *_a, **_k: None)
+    with pytest.raises(github_pr_status.RestIndeterminateError, match="^invalid_list$"):
+        github_pr_status.list_pulls_rest(
+            repo_root=tmp_path, runner=FakeRunner(), fail_on_indeterminate=True
+        )
+
+
 def _api_fields(cmd: list[str]) -> dict[str, str]:
     return {
         cmd[index + 1].split("=", 1)[0]: cmd[index + 1].split("=", 1)[1]
@@ -86,6 +96,103 @@ class FakeRunner:
         if cmd[:3] == ["gh", "api", "graphql"]:
             return subprocess.CompletedProcess(cmd, 0, '{"data":{}}', "")
         return subprocess.CompletedProcess(cmd, 1, "", "unexpected command")
+
+
+@pytest.mark.parametrize("fail_on_indeterminate", [False, True])
+@pytest.mark.parametrize(
+    ("returncode", "body", "stderr", "cause"),
+    [
+        (0, "[]", "", None),
+        (0, "[null]", "", "invalid_row"),
+        (0, "{}", "", "invalid_list"),
+        (1, "", "gh: API rate limit exceeded (HTTP 403)", "rate_limit"),
+    ],
+)
+def test_rest_pull_list_second_page_preserves_indeterminacy(
+    tmp_path: Path,
+    fail_on_indeterminate: bool,
+    returncode: int,
+    body: str,
+    stderr: str,
+    cause: str | None,
+) -> None:
+    class PaginatedListRunner(FakeRunner):
+        def __call__(self, cmd: list[str], **kwargs: Any) -> subprocess.CompletedProcess:
+            self.calls.append(list(cmd))
+            assert cmd[:4] == ["gh", "api", "--method", "GET"]
+            assert cmd[6] == "repos/owner/repo/pulls"
+            if _api_fields(cmd)["page"] == "1":
+                return subprocess.CompletedProcess(
+                    cmd, 0, json.dumps([{"number": number} for number in range(1, 101)]), ""
+                )
+            return subprocess.CompletedProcess(cmd, returncode, body, stderr)
+
+    runner = PaginatedListRunner()
+    kwargs = {
+        "repo": "owner/repo",
+        "repo_root": tmp_path,
+        "runner": runner,
+        "limit": 200,
+        "fail_on_indeterminate": fail_on_indeterminate,
+    }
+    if fail_on_indeterminate and cause:
+        with pytest.raises(github_pr_status.RestIndeterminateError) as caught:
+            github_pr_status.list_pulls_rest(**kwargs)
+        assert isinstance(caught.value, subprocess.SubprocessError)
+        assert caught.value.reason == cause
+        assert str(caught.value) == cause
+    else:
+        rows = github_pr_status.list_pulls_rest(**kwargs)
+        assert len(rows) == (100 if cause in (None, "invalid_row") else 0)
+    assert len(runner.calls) == 2
+
+
+@pytest.mark.parametrize("fail_on_indeterminate", [False, True])
+@pytest.mark.parametrize(
+    "row",
+    [
+        None,
+        1,
+        "x",
+        [],
+        {},
+        {"number": "7"},
+        {"number": None},
+        {"number": 7.0},
+        {"number": True},
+        {"number": False},
+        {"number": 0},
+        {"number": -1},
+    ],
+)
+def test_rest_pull_list_unusable_rows(
+    tmp_path: Path, fail_on_indeterminate: bool, row: Any
+) -> None:
+    class RowRunner(FakeRunner):
+        def __call__(self, cmd: list[str], **kwargs: Any) -> subprocess.CompletedProcess:
+            self.calls.append(list(cmd))
+            assert cmd[:4] == ["gh", "api", "--method", "GET"]
+            assert cmd[6] == "repos/owner/repo/pulls"
+            return subprocess.CompletedProcess(cmd, 0, json.dumps([row]), "")
+
+    runner = RowRunner()
+    kwargs = {
+        "repo": "owner/repo",
+        "repo_root": tmp_path,
+        "runner": runner,
+        "fail_on_indeterminate": fail_on_indeterminate,
+    }
+    if fail_on_indeterminate:
+        with pytest.raises(github_pr_status.RestIndeterminateError) as caught:
+            github_pr_status.list_pulls_rest(**kwargs)
+        assert isinstance(caught.value, subprocess.SubprocessError)
+        assert caught.value.reason == "invalid_row"
+        assert str(caught.value) == "invalid_row"
+    else:
+        assert github_pr_status.list_pulls_rest(**kwargs) == (
+            [row] if isinstance(row, dict) else []
+        )
+    assert len(runner.calls) == 1
 
 
 def test_rest_status_rollup_uses_check_runs_and_statuses(tmp_path: Path) -> None:
@@ -613,6 +720,7 @@ def test_open_pr_status_snapshot_does_not_hydrate_list_rows_by_default(tmp_path:
                                     "title": "REST PR",
                                     "body": "body",
                                     "head": {"ref": "feat/rest", "sha": "abc123"},
+                                    "base": {"ref": "release", "repo": {"default_branch": "main"}},
                                     "draft": True,
                                     "state": "open",
                                     "merged_at": None,
@@ -637,6 +745,8 @@ def test_open_pr_status_snapshot_does_not_hydrate_list_rows_by_default(tmp_path:
     )
 
     assert rows[0]["state"] == "OPEN"
+    assert rows[0]["baseRefName"] == "release"
+    assert rows[0]["baseRepoDefaultBranch"] == "main"
     assert rows[0]["isDraft"] is True
     assert rows[0]["mergedAt"] is None
     assert rows[0]["updatedAt"] == "2026-07-05T15:00:00Z"
@@ -644,9 +754,32 @@ def test_open_pr_status_snapshot_does_not_hydrate_list_rows_by_default(tmp_path:
     # Length-guarded: the rate probe (`gh api -i rate_limit`) is a 4-element call, so an
     # unguarded call[6] raises IndexError rather than reporting the property under test.
     assert not any(len(call) > 6 and call[6] == "repos/owner/repo/pulls/9" for call in runner.calls)
+    assert sum(len(call) > 6 for call in runner.calls) == 1
+    # SnapshotRunner and its parent both record the probe; every extra recorded
+    # request must still be that probe, never per-PR hydration.
+    assert all(len(call) > 6 or call == ["gh", "api", "-i", "rate_limit"] for call in runner.calls)
 
 
-def test_open_pr_status_snapshot_hydrates_list_rows_when_requested(tmp_path: Path) -> None:
+@pytest.mark.parametrize(
+    "hydration", ["hydrate_pull", "include_files", "include_review_decision", None]
+)
+@pytest.mark.parametrize(
+    "list_base,detail_base",
+    [
+        ("release", None),
+        (None, "main"),
+        ("release", "release"),
+        ("release", "main"),
+        ("main", "release"),
+        ("main", "none"),
+        ("main", "null"),
+        ("none", "main"),
+        ("null", None),
+    ],
+)
+def test_open_pr_status_snapshot_hydrates_list_rows_when_requested(
+    tmp_path: Path, hydration: str | None, list_base: str | None, detail_base: str | None
+) -> None:
     class SnapshotRunner(FakeRunner):
         def __call__(self, cmd: list[str], **kwargs: Any) -> subprocess.CompletedProcess:
             self.calls.append(list(cmd))
@@ -662,6 +795,7 @@ def test_open_pr_status_snapshot_hydrates_list_rows_when_requested(tmp_path: Pat
                                     "number": 9,
                                     "title": "REST PR",
                                     "head": {"ref": "feat/rest", "sha": "abc123"},
+                                    "base": {"ref": list_base, "repo": {"default_branch": "main"}},
                                     "draft": False,
                                     "state": "open",
                                     "updated_at": "2026-07-05T15:00:00Z",
@@ -683,10 +817,13 @@ def test_open_pr_status_snapshot_hydrates_list_rows_when_requested(tmp_path: Pat
                                 "state": "open",
                                 "updated_at": "2026-07-05T15:00:00Z",
                                 "mergeable_state": "behind",
+                                "base": {"ref": detail_base, "repo": {"default_branch": "main"}},
                             }
                         ),
                         "",
                     )
+                if path in {"repos/owner/repo/pulls/9/files", "repos/owner/repo/pulls/9/reviews"}:
+                    return subprocess.CompletedProcess(cmd, 0, "[]", "")
             return super().__call__(cmd, **kwargs)
 
     runner = SnapshotRunner()
@@ -696,11 +833,111 @@ def test_open_pr_status_snapshot_hydrates_list_rows_when_requested(tmp_path: Pat
         repo_root=tmp_path,
         runner=runner,
         include_status=False,
-        hydrate_pull=True,
+        **({hydration: True} if hydration else {}),
     )
 
-    assert rows[0]["mergeStateStatus"] == "BEHIND"
-    assert any(len(call) > 6 and call[6] == "repos/owner/repo/pulls/9" for call in runner.calls)
+    assert rows[0]["mergeStateStatus"] == ("BEHIND" if hydration else "UNKNOWN")
+    assert rows[0]["baseRefName"] == (list_base or (detail_base if hydration else None))
+    assert rows[0].get("baseRefNameDetail") == (
+        detail_base
+        if hydration and list_base and detail_base and list_base != detail_base
+        else None
+    )
+    assert rows[0]["baseRepoDefaultBranch"] == "main"
+    assert any(
+        len(call) > 6 and call[6] == "repos/owner/repo/pulls/9" for call in runner.calls
+    ) == bool(hydration)
+
+
+@pytest.mark.parametrize("hydrate", [False, True])
+@pytest.mark.parametrize(
+    "list_default,detail_default",
+    [
+        ("main", "release"),
+        ("main", "main"),
+        (None, "main"),
+        ("main", None),
+        (None, None),
+        ("main", "null"),
+        ("null", "main"),
+        ("null", None),
+    ],
+)
+def test_pull_status_row_preserves_default_branch_disagreement(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    hydrate: bool,
+    list_default: str | None,
+    detail_default: str | None,
+) -> None:
+    item = {"number": 9, "base": {"ref": "main", "repo": {"default_branch": list_default}}}
+    detail = {"number": 9, "base": {"ref": "main", "repo": {"default_branch": detail_default}}}
+    monkeypatch.setattr(github_pr_status, "get_pull_rest", lambda *_args, **_kwargs: detail)
+    row = github_pr_status._pull_status_row_from_rest(
+        item,
+        repo="owner/repo",
+        repo_root=tmp_path,
+        runner=FakeRunner(),
+        include_status=False,
+        hydrate_pull=hydrate,
+    )
+    assert row["baseRepoDefaultBranch"] == (list_default or (detail_default if hydrate else None))
+    if hydrate and list_default and detail_default and list_default != detail_default:
+        assert row["baseRepoDefaultBranchDetail"] == detail_default
+    else:
+        assert "baseRepoDefaultBranchDetail" not in row
+
+
+@pytest.mark.parametrize("source", ["list", "detail"])
+@pytest.mark.parametrize(
+    "field,key,reason",
+    [
+        ("ref", "baseRefName", "pr_base_ref_malformed"),
+        ("default_branch", "baseRepoDefaultBranch", "pr_default_branch_malformed"),
+        ("head", "headRefName", "pr_head_ref_malformed"),
+    ],
+)
+@pytest.mark.parametrize("value", ["none", "null", "None", "NULL", None, "", " \t", {}, 0])
+def test_pull_status_row_reference_evidence(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    source: str,
+    field: str,
+    key: str,
+    reason: str,
+    value: Any,
+) -> None:
+    item = {
+        "number": 9,
+        "head": {"ref": None},
+        "base": {"ref": None, "repo": {"default_branch": None}},
+    }
+    detail = {
+        "number": 9,
+        "head": {"ref": None},
+        "base": {"ref": None, "repo": {"default_branch": None}},
+    }
+    target = item if source == "list" else detail
+    if field == "head":
+        target["head"]["ref"] = value
+    elif field == "ref":
+        target["base"]["ref"] = value
+    else:
+        target["base"]["repo"]["default_branch"] = value
+    monkeypatch.setattr(github_pr_status, "get_pull_rest", lambda *_args, **_kwargs: detail)
+    row = github_pr_status._pull_status_row_from_rest(
+        item,
+        repo="owner/repo",
+        repo_root=tmp_path,
+        runner=FakeRunner(),
+        include_status=False,
+        hydrate_pull=source == "detail" or field != "head",
+    )
+    expected = value if isinstance(value, str) and value.strip() else None
+    assert row[key] == expected
+    assert row.get("refEvidenceReasons", ()) == (
+        (reason,) if value is not None and not isinstance(value, str) else ()
+    )
 
 
 # --------------------------------------------------------------- rate pool balancing
@@ -2320,3 +2557,58 @@ def test_graphql_listing_unknown_default_branch_is_not_invented(
     )
     assert rows[0]["baseRefName"] == "main"
     assert rows[0]["baseRepoDefaultBranch"] is None
+
+
+@pytest.mark.parametrize(
+    "field,reason",
+    [
+        ("baseRefName", "pr_base_ref_malformed"),
+        ("baseRepoDefaultBranch", "pr_default_branch_malformed"),
+        ("headRefName", "pr_head_ref_malformed"),
+    ],
+)
+@pytest.mark.parametrize("value", ["none", "null", "None", "NULL", None, "", " \t", {}, 0])
+def test_routed_graphql_listing_preserves_reference_evidence(
+    tmp_path: Path, field: str, reason: str, value: Any
+) -> None:
+    fake = _BothTransportsRunner(rest_remaining=0, graphql_remaining=4660)
+
+    def runner(cmd: list[str], **kwargs: Any) -> subprocess.CompletedProcess:
+        proc = fake(cmd, **kwargs)
+        if cmd[:3] == ["gh", "pr", "list"] and field != "baseRepoDefaultBranch":
+            rows = json.loads(proc.stdout)
+            rows[0][field] = value
+            return subprocess.CompletedProcess(cmd, 0, json.dumps(rows), "")
+        if cmd[:3] == ["gh", "repo", "view"] and field == "baseRepoDefaultBranch":
+            return subprocess.CompletedProcess(
+                cmd, 0, json.dumps({"defaultBranchRef": {"name": value}}), ""
+            )
+        return proc
+
+    [row], route = github_pr_status.list_open_pr_statuses(
+        repo="owner/repo", repo_root=tmp_path, runner=runner
+    )
+    assert route.transport == "graphql" and route.rest_blocked
+    assert row[field] == (value if isinstance(value, str) and value.strip() else None)
+    assert row.get("refEvidenceReasons", ()) == (
+        (reason,) if value is not None and not isinstance(value, str) else ()
+    )
+    assert not any(cmd[:4] == ["gh", "api", "--method", "GET"] for cmd in fake.calls)
+
+
+@pytest.mark.parametrize("bad_row", [None, {}, {"number": True}, {"number": "10"}])
+def test_graphql_validates_all_rows_before_hydrating_any(tmp_path: Path, bad_row: Any) -> None:
+    calls = []
+
+    def runner(cmd: list[str], **_: Any) -> subprocess.CompletedProcess:
+        calls.append(cmd)
+        assert cmd[:3] == ["gh", "pr", "list"], "validation must precede all hydration"
+        return subprocess.CompletedProcess(
+            cmd, 0, json.dumps([{"number": 9, "headRefOid": "abc123"}, bad_row]), ""
+        )
+
+    with pytest.raises(github_pr_status.GraphQLListingFailed, match="row 1"):
+        github_pr_status.list_open_pr_statuses_graphql(
+            repo="owner/repo", repo_root=tmp_path, runner=runner
+        )
+    assert len(calls) == 1
