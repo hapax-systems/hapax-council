@@ -1973,7 +1973,6 @@ def classify_pr(
             reasons.append(expected_method_unverified_reason)
 
     governance = pr.queue_governance
-    override_refusal = False
     if governance is not None:
         if queued and governance.reason is None and governance.method is None:
             # Membership and applicable-rule receipts contradict each other;
@@ -1991,7 +1990,6 @@ def classify_pr(
                         governance.reason.removeprefix("auto_merge_method_unverified:")
                     )
                 )
-                override_refusal = True
             else:
                 reasons.append(governance.reason)
         elif governance.method is not None and governance.method != expected_method:
@@ -2000,22 +1998,11 @@ def classify_pr(
                     "auto_merge_method_override_contradicts_queue_governance:"
                     f"override={expected_method}:governed={governance.method}"
                 )
-                override_refusal = True
             else:
                 reasons.append(
                     "auto_merge_method_unverified:queue_strategy_expected_conflict:"
                     f"rule={governance.method}:expected={expected_method}"
                 )
-
-    if override_refusal:
-        return Decision(
-            pr=pr,
-            task=task,
-            tasks=matched_tasks,
-            action="blocked",
-            reasons=tuple(reasons),
-            expected_auto_merge_method=expected_auto_merge_method,
-        )
 
     # GitHub ignores autoMergeRequest.mergeMethod under enforced queue handling;
     # only a validated applicable rule establishes queue ownership of that field.
