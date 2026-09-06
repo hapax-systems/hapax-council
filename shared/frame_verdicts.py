@@ -510,7 +510,14 @@ def _member_location(
         producer_root = Path(raw).expanduser()
         lexical_roots.append(producer_root)
         absolute_root = local_path(raw)
-        roots.append(absolute_root.resolve())
+        try:
+            roots.append(absolute_root.resolve())
+        except (OSError, RuntimeError) as exc:
+            raise FrameVerdictsUnavailable(
+                f"member {member.get('id')!r} root {raw!r} cannot be resolved: {exc}",
+                remedy=f"repair filesystem access or symlinks for member {member.get('id')!r} "
+                f"root {raw!r} in {MASS_DECLARATION_LOCATION}; " + PRODUCER_REMEDY,
+            ) from exc
     patterns = location.get("patterns")
     globs = tuple(str(item) for item in patterns) if isinstance(patterns, list) else ()
     files_raw = None if content_query else location.get("files")
@@ -2623,12 +2630,12 @@ def _qualified_disjoint_established(
 
 
 def _local_partial_scope_established(
-    path: Path, dirlike: bool, scope_pattern: str | None, member: DecayedMember
+    path: Path, dirlike: bool, scope_pattern: str | None, *members: DecayedMember
 ) -> bool:
     """Prove noncontainment with a canonical outside path in a broad scope's language.
 
-    One proven outside path suffices for the row's partial-scope predicate. A sampled
-    lexical miss does not: resolve that path and compare every producer selection form.
+    One path outside every decayed member suffices for the partial-scope predicate.
+    Per-member witnesses do not compose: resolve the same path against every selection.
     No witness, or an unresolved comparison, supplies no admission evidence.
     """
     if not dirlike and scope_pattern is None:
@@ -2640,7 +2647,10 @@ def _local_partial_scope_established(
         candidate = path / witness
         if candidate.is_dir():
             continue
-        if _local_disjoint_established(candidate, False, None, member) is True:
+        if all(
+            _local_disjoint_established(candidate, False, None, member) is True
+            for member in members
+        ):
             return True
     return False
 
@@ -2651,11 +2661,12 @@ def _scope_admission_established(
     scope_pattern: str | None,
     members: tuple[DecayedMember, ...],
 ) -> bool:
-    """Admit only after every candidate spelling is proven not wholly in each member.
+    """Admit only after every candidate spelling is proven outside the decayed union.
 
     Containment has already run unchanged. Its negative answers alone are not admission
     evidence. Establish disjointness/exclusion or, for a local partial scope, a canonical
-    outside witness. Remote paths cannot supply such a witness. Unknown means refusal.
+    witness outside every decayed member. Remote paths cannot supply such a witness.
+    Unknown means refusal.
     """
     for member in members:
         for candidate in candidates:
@@ -2667,7 +2678,7 @@ def _scope_admission_established(
                 )
                 if established is not True and isinstance(candidate, Path):
                     established = _local_partial_scope_established(
-                        candidate, dirlike, scope_pattern, member
+                        candidate, dirlike, scope_pattern, *members
                     )
                 if established is not True:
                     raise UndecidableScopeContainment(

@@ -9035,3 +9035,111 @@ def test_receipt_task_note_sha256_binds_parsed_bytes_across_file_race(
         assert before_hash != after_hash
     assert expected_hash != after_hash
     assert receipt["task_note_sha256"] == expected_hash
+
+
+def test_receipt_only_two_decayed_members_require_one_common_outside_witness(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """Codex reproducer: A skips scope; B covers scope; their union covers R/*."""
+    root = tmp_path / "R"
+    root.mkdir()
+    frame_root = _frame_procedure_root(tmp_path / "frame", decayed_root=root)
+    members = [
+        {
+            "id": "A",
+            "reader": {"id": "fs.glob", "version": "^1.0.0"},
+            "location": {"path": str(root), "patterns": ["**/*"], "skip_dirs": ["scope"]},
+        },
+        {
+            "id": "B",
+            "reader": {"id": "fs.glob", "version": "^1.0.0"},
+            "location": {"path": str(root), "patterns": ["scope", "scope/**/*"]},
+        },
+    ]
+    (frame_root / "declaration/mass.yaml").write_text(
+        yaml.safe_dump({"projection": "frame-reduction", "members": members, "exclusions": []})
+    )
+    epoch = (frame_root / "_runs/current").resolve()
+    (epoch / "coverage.json").write_text(
+        json.dumps(
+            [
+                {
+                    "member_id": member["id"],
+                    "member_declaration_identity": fv._member_declaration_identity(member, []),
+                }
+                for member in members
+            ]
+        )
+    )
+    elements = json.loads((epoch / "elements.json").read_text())
+    for row in elements[0]["payload"]["verdicts"]:
+        row["subject"]["member_id"] = (
+            "A" if row["subject"]["member_id"] == "legacy-surface" else "B"
+        )
+        row["verdict"] = True if row["relation"] == "scope_exited" else "UNKNOWN"
+    (epoch / "elements.json").write_text(json.dumps(elements))
+    assert list(root.iterdir()) == []
+
+    rc, err = _dispatch_receipt_only_scope(tmp_path, monkeypatch, capsys, frame_root, root / "*")
+
+    assert rc == 10, f"decayed union covers R/* but main() admitted it: {err}"
+    receipt = json.loads(
+        (tmp_path / "ledger/methodology-dispatch.jsonl").read_text().splitlines()[-1]
+    )
+    assert receipt["ok"] is False and receipt["launched"] is False
+    assert receipt["frame_epoch"] == epoch.name
+    assert receipt["frame_decayed_members"] == ["A", "B"]
+    assert "scope_containment_undecidable" in receipt["reason"]
+    assert "Next:" in receipt["reason"]
+    assert receipt["reason"] in err
+
+
+@pytest.mark.parametrize("failure", [RuntimeError, OSError], ids=["symlink-loop", "filesystem"])
+def test_receipt_only_member_root_resolution_failure_has_repair_action(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+    failure: type[Exception],
+) -> None:
+    root = tmp_path / "unresolvable-member"
+    frame_root = _frame_procedure_root(tmp_path / "frame", decayed_root=root)
+    epoch = (frame_root / "_runs/current").resolve()
+    resolve = Path.resolve
+
+    def broken_root(path: Path, *args, **kwargs) -> Path:
+        if path == root:
+            raise failure("fixture member root resolution failure")
+        return resolve(path, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "resolve", broken_root)
+    try:
+        rc, err = _dispatch_receipt_only_scope(
+            tmp_path, monkeypatch, capsys, frame_root, tmp_path / "live.py"
+        )
+    except (OSError, RuntimeError):
+        # A bare exception already refuses authority; the regression is its missing remedy.
+        rc, err = None, capsys.readouterr().err
+    ledger = tmp_path / "ledger/methodology-dispatch.jsonl"
+    receipt = json.loads(ledger.read_text().splitlines()[-1]) if ledger.is_file() else {}
+    evidence = receipt.get("frame_unavailable") or {}
+    assert "repair filesystem access or symlinks" in evidence.get("remedy", ""), (
+        "member root resolution failure has no receipt repair action"
+    )
+    assert "legacy-surface" in evidence["remedy"]
+    assert str(root) in evidence["remedy"]
+    assert fv.MASS_DECLARATION_LOCATION in evidence["remedy"]
+    assert fv.PRODUCER_REMEDY in evidence["remedy"]
+    assert rc == 10
+    assert receipt["ok"] is False and receipt["launched"] is False
+    assert receipt["frame_epoch"] is None
+    assert receipt["frame_decayed_members"] == []  # The verdict set could not be loaded.
+    assert evidence["frame_epoch"] == epoch.name
+    assert evidence["frame_root_resolved"] == str(frame_root.resolve())
+    assert "member 'legacy-surface'" in evidence["reason"]
+    assert str(root) in evidence["reason"]
+    assert "fixture member root resolution failure" in evidence["reason"]
+    assert evidence["remedy"] in receipt["reason"]
+    assert receipt["reason"] in err
+    assert "Traceback" not in err
