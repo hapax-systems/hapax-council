@@ -15,11 +15,12 @@ from __future__ import annotations
 
 import json
 import logging
+import re
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
 
-from shared.governance.consent import estate_identity_operation
+from shared.governance.consent import REGISTERED_PRINCIPALS, estate_identity_operation
 
 from .consent import ConsentRegistry, load_contracts
 from .degradation import degrade
@@ -157,7 +158,8 @@ class ConsentGatedReader:
         """
         with estate_identity_operation() as snapshot:
             canonical_person_ids = frozenset(
-                snapshot.resolve_principal_id(pid) for pid in datum.person_ids
+                snapshot.resolve_principal_id(pid)
+                for pid in datum.person_ids | self._extract_person_ids(datum.content)
             ) | snapshot.mentioned_principal_ids(datum.content)
             operator_ids = frozenset(
                 snapshot.resolve_principal_id(pid) for pid in self._operator_ids
@@ -228,7 +230,7 @@ class ConsentGatedReader:
 
             # Use category-specific extractor if available, else generic
             extractor = _CATEGORY_EXTRACTORS.get(category)
-            person_ids = extract_person_ids(result, known_persons=self._build_known_persons())
+            person_ids = self._extract_person_ids(result)
             if extractor:
                 person_ids |= extractor(result)
 
@@ -250,17 +252,21 @@ class ConsentGatedReader:
         """All decisions made by this reader instance."""
         return list(self._decisions)
 
-    @estate_identity_operation()
+    def _extract_person_ids(self, content: str) -> frozenset[str]:
+        return extract_person_ids(content) | frozenset(
+            person
+            for person in self._build_known_persons()
+            if re.search(r"\b" + re.escape(person) + r"\b", content, re.IGNORECASE)
+        )
+
     def _build_known_persons(self) -> frozenset[str]:
-        """Supplement custody recognition with canonical parties from all contracts."""
-        persons: set[str] = set()
+        """Recognize validated identities independently of loaded or active consent."""
         with estate_identity_operation() as snapshot:
-            for contract in self._registry:
-                for party in contract.parties:
-                    canonical = snapshot.resolve_principal_id(party)
-                    if canonical != "operator" and canonical not in self._operator_ids:
-                        persons.add(canonical)
-        return frozenset(persons)
+            return (
+                frozenset(snapshot.principals)
+                | frozenset(snapshot.principals.values())
+                | REGISTERED_PRINCIPALS
+            )
 
     def _record(self, decision: ReaderDecision, source: str, category: str) -> None:
         """Record decision to in-memory log and optional disk audit."""

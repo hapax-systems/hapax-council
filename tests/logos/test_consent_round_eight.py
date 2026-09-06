@@ -169,17 +169,17 @@ async def test_startup_then_route_grant_revoke_refreshes_under_lock(
 ):
     app, directory, carrier = composed_api
     async with app.router.lifespan_context(app):
-        prop = revocation_wiring._propagator
-        assert prop is not None
+        assert revocation_wiring._propagator is None
+        prop = await asyncio.to_thread(revocation_wiring.get_revocation_propagator)
         assert not prop._consent_registry.active_contracts
-        original = prop._consent_registry.load
+        original = type(prop._consent_registry).load
         refresh_locks = []
 
-        def checked_refresh(*args, **kwargs):
+        def checked_refresh(registry, *args, **kwargs):
             refresh_locks.append(routes._revocation_lock.locked())
-            return original(*args, **kwargs)
+            return original(registry, *args, **kwargs)
 
-        monkeypatch.setattr(prop._consent_registry, "load", checked_refresh)
+        monkeypatch.setattr(type(prop._consent_registry), "load", checked_refresh)
         broken = purge_fails
 
         def flaky(contract_id):
@@ -311,7 +311,8 @@ async def test_pending_persistence_becomes_a_purge_obligation(
 
     monkeypatch.setattr(Path, "rename", denied_move)
     async with app.router.lifespan_context(app):
-        prop = revocation_wiring._propagator
+        assert revocation_wiring._propagator is None
+        prop = await asyncio.to_thread(revocation_wiring.get_revocation_propagator)
         prop.register_handler("synthetic-flaky", flaky)
         async with httpx.AsyncClient(
             transport=httpx.ASGITransport(app=app), base_url="http://synthetic.test"

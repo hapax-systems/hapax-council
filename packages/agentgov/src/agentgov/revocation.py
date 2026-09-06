@@ -11,6 +11,7 @@ import json
 import logging
 import os
 from collections.abc import Callable
+from copy import copy
 from dataclasses import dataclass, field, replace
 from datetime import UTC, datetime
 from pathlib import Path
@@ -18,6 +19,7 @@ from typing import Any
 
 from agentgov.carrier import CarrierRegistry
 from agentgov.consent import (
+    ConsentContractLoadError,
     ConsentRegistry,
     IdentityMigrationUnavailable,
     SubjectPurgeIncomplete,
@@ -57,6 +59,7 @@ class RevocationReport:
     retry_contract_ids: tuple[str, ...] = ()
     retry_revocation_ids: tuple[str, ...] = ()
     prior_purge_results: tuple[PurgeResult, ...] = ()
+    audit_failures: tuple[str, ...] = ()
 
     purge_complete: bool = field(init=False)
 
@@ -96,8 +99,27 @@ class RevocationPropagator:
 
     def refresh_contracts(self) -> None:
         """Refresh durable grants at the caller's serialized mutation boundary."""
-        if self._consent_registry._contracts_dir is not None:
-            self._consent_registry.load(self._consent_registry._contracts_dir)
+        registry = self._consent_registry
+        directory = registry._contracts_dir
+        if directory is None:
+            return
+        # A failed load must neither discard known grants nor permit a purge
+        # against a silently truncated contract set.
+        staged = copy(registry)
+        staged._contracts = registry._contracts.copy()
+        staged._contract_paths = registry._contract_paths.copy()
+        try:
+            list(directory.iterdir())  # glob alone can hide an unreadable directory.
+            staged.load(directory, strict=True)
+            if staged._fail_closed:
+                raise ConsentContractLoadError("consent_refresh_unavailable")
+        except Exception:
+            log.warning("consent_refresh_unavailable: inspect contract storage before retrying")
+            raise ConsentContractLoadError("consent_refresh_unavailable") from None
+        registry._contracts = staged._contracts
+        registry._contract_paths = staged._contract_paths
+        registry._loaded_at = staged._loaded_at
+        registry._fail_closed = staged._fail_closed
 
     def record_purge_pending(self, report: RevocationReport, audit_path: Path) -> None:
         """Append residue to the installation's existing purge audit, not a retry journal."""
