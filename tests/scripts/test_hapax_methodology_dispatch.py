@@ -5277,6 +5277,33 @@ def test_receipt_only_unmatched_candidate_directory_glob_is_undecidable(
     assert str(root) in err
 
 
+def test_receipt_only_resolved_candidate_prefix_unmatched_remainder_names_spelling(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    root = tmp_path / "usr"
+    (root / "bin/site_perl").mkdir(parents=True)
+    (root / "sbin").symlink_to("bin", target_is_directory=True)
+    frame_root = _frame_procedure_root(
+        tmp_path / "frame",
+        decayed_root=root,
+        location={"path": str(root), "patterns": ["bin/site_perl/**/*"]},
+        reader="fs.glob",
+    )
+    scope = root / "s?in/x?in/new.py"
+
+    rc, err = _dispatch_receipt_only_scope(tmp_path, monkeypatch, capsys, frame_root, scope)
+
+    _assert_frame_refusal_receipt(tmp_path, frame_root, rc, err)
+    assert "scope_containment_undecidable" in err
+    assert str(scope) in err
+    assert (
+        f"directory prefix {root / 'bin/x?in'} expands to no resolvable directory; "
+        "containment is undecidable"
+    ) in err
+
+
 @pytest.mark.parametrize("reader", ["fs.glob", "fs.content_query"])
 def test_receipt_only_candidate_prefix_keeps_branch_with_future_directories(
     tmp_path: Path,
@@ -5371,6 +5398,137 @@ def test_receipt_only_declaration_glob_prefix_alias_refuses_decay(
     _assert_frame_refusal_receipt(tmp_path, frame_root, rc, err)
     if not exists and candidate == "bin":
         assert str(scope) in err
+
+
+@pytest.mark.parametrize("reader", ["fs.glob", "fs.content_query"])
+@pytest.mark.parametrize("candidate", ["sbin", "bin", "s?in"])
+@pytest.mark.parametrize("leaf", ["new.py", "*.py"], ids=["file", "file-glob"])
+@pytest.mark.parametrize("exists", [False, True], ids=["future", "existing"])
+def test_receipt_only_skip_dirs_preserve_selected_alias_spelling(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+    reader: str,
+    candidate: str,
+    leaf: str,
+    exists: bool,
+) -> None:
+    root = tmp_path / "usr"
+    surface = root / "bin/site_perl"
+    surface.mkdir(parents=True)
+    (root / "sbin").symlink_to("bin", target_is_directory=True)
+    if exists:
+        (surface / "new.py").write_text("query selected bytes")
+    pattern = "sbin/site_perl/**/*"
+    selected = {p for p in root.glob(pattern) if p.is_file() and "bin" not in p.parts}
+    assert selected == ({root / "sbin/site_perl/new.py"} if exists else set())
+    frame_root = _frame_procedure_root(
+        tmp_path / "frame",
+        decayed_root=root,
+        location={
+            **({"roots": [str(root)]} if reader == "fs.content_query" else {"path": str(root)}),
+            "patterns": [pattern],
+            "skip_dirs": ["bin"],
+            **({"query": "query"} if reader == "fs.content_query" else {}),
+        },
+        reader=reader,
+        query_params=reader == "fs.content_query",
+    )
+    scope = root / candidate / "site_perl" / leaf
+
+    rc, err = _dispatch_receipt_only_scope(tmp_path, monkeypatch, capsys, frame_root, scope)
+
+    assert rc == 10, f"{reader=}, {candidate=}, {exists=}: receipt-only main() returned {rc}: {err}"
+    _assert_frame_refusal_receipt(tmp_path, frame_root, rc, err)
+    if not exists and reader == "fs.glob" and leaf == "new.py":
+        assert str(scope) in err
+
+
+@pytest.mark.parametrize("reader", ["fs.glob", "fs.content_query"])
+@pytest.mark.parametrize(
+    "declaration, skip", [("bin", "bin"), ("sbin", "sbin"), ("[s-s]bin", "sbin"), ("s?in", "sbin")]
+)
+@pytest.mark.parametrize("exists", [False, True], ids=["future", "existing"])
+def test_receipt_only_skip_dirs_filter_declared_spelling(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+    reader: str,
+    declaration: str,
+    skip: str,
+    exists: bool,
+) -> None:
+    root = tmp_path / "usr"
+    surface = root / "bin/site_perl"
+    surface.mkdir(parents=True)
+    (root / "sbin").symlink_to("bin", target_is_directory=True)
+    if exists:
+        (surface / "new.py").write_text("query selected bytes")
+    pattern = f"{declaration}/site_perl/**/*"
+    assert not {p for p in root.glob(pattern) if p.is_file() and skip not in p.parts}
+    frame_root = _frame_procedure_root(
+        tmp_path / "frame",
+        decayed_root=root,
+        location={
+            **({"roots": [str(root)]} if reader == "fs.content_query" else {"path": str(root)}),
+            "patterns": [pattern],
+            "skip_dirs": [skip],
+            **({"query": "query"} if reader == "fs.content_query" else {}),
+        },
+        reader=reader,
+        query_params=reader == "fs.content_query",
+    )
+    scope = surface / "new.py"
+
+    rc, err = _dispatch_receipt_only_scope(tmp_path, monkeypatch, capsys, frame_root, scope)
+
+    # fs.glob skips the producer-selected spelling; fs.content_query ignores skip_dirs.
+    assert rc == (10 if reader == "fs.content_query" else 0), err
+    if reader == "fs.content_query":
+        _assert_frame_refusal_receipt(tmp_path, frame_root, rc, err)
+    else:
+        receipt = json.loads(
+            (tmp_path / "ledger/methodology-dispatch.jsonl").read_text().splitlines()[-1]
+        )
+        assert receipt["ok"] is True and receipt["launched"] is False
+        assert receipt["frame_decayed_members"] == ["legacy-surface"]
+        assert receipt["frame_epoch"] == (frame_root / "_runs/current").resolve().name
+
+
+@pytest.mark.parametrize("declaration", ["sbin/site_perl/**/*", "s?in/site_perl/bin/**/*"])
+@pytest.mark.parametrize("exists", [False, True], ids=["future", "existing"])
+def test_receipt_only_skip_dirs_filter_selected_future_remainder(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+    declaration: str,
+    exists: bool,
+) -> None:
+    root = tmp_path / "usr"
+    surface = root / "bin/site_perl/bin"
+    surface.mkdir(parents=True)
+    (root / "sbin").symlink_to("bin", target_is_directory=True)
+    if exists:
+        (surface / "new.py").write_text("skipped bytes")
+    assert not {p for p in root.glob(declaration) if p.is_file() and "bin" not in p.parts}
+    frame_root = _frame_procedure_root(
+        tmp_path / "frame",
+        decayed_root=root,
+        location={"path": str(root), "patterns": [declaration], "skip_dirs": ["bin"]},
+        reader="fs.glob",
+    )
+
+    rc, err = _dispatch_receipt_only_scope(
+        tmp_path, monkeypatch, capsys, frame_root, surface / "new.py"
+    )
+
+    assert rc == 0, err
+    receipt = json.loads(
+        (tmp_path / "ledger/methodology-dispatch.jsonl").read_text().splitlines()[-1]
+    )
+    assert receipt["ok"] is True and receipt["launched"] is False
+    assert receipt["frame_decayed_members"] == ["legacy-surface"]
+    assert receipt["frame_epoch"] == (frame_root / "_runs/current").resolve().name
 
 
 @pytest.mark.parametrize("candidate", ["bin", "lib"])

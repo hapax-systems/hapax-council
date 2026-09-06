@@ -1196,11 +1196,16 @@ def _literal_scope_glob(pattern: str) -> str | None:
 
 
 def _path_is_excluded(path: Path, member: DecayedMember) -> bool:
+    """Filter a producer-selected lexical spelling before resolving mass exclusions."""
     if any(part in member.skip_dirs for part in path.parts):
         return True
+    return _path_is_mass_excluded(path, member)
+
+
+def _path_is_mass_excluded(path: Path, member: DecayedMember) -> bool:
+    """Canonical byte targets have mass exclusions, but never lexical skip_dirs."""
     if not member.excluded_roots and not member.excluded_prefixes:
         return False
-    # The producer checks skip_dirs lexically, but Declaration.is_excluded resolves paths.
     path = _resolve_member_path(path)
     if any(path == root or root in path.parents for root in member.excluded_roots):
         return True
@@ -1496,10 +1501,13 @@ def _refuse_in_root_alias_reaching_surface(
             canonical_path, canonical_pattern = _resolve_scope_directory_prefix(
                 path, scope_pattern, missing_ok=True
             )
+        canonical_patterns = _canonical_member_patterns(
+            root, member, scope_path=canonical_path, scope_pattern=canonical_pattern
+        )
         if (
             canonical_pattern is None
             and root in canonical_path.parents
-            and not _path_is_excluded(canonical_path, member)
+            and not _path_is_mass_excluded(canonical_path, member)
             and any(
                 _local_member_file_matches(canonical_path, root, pattern)
                 for pattern in canonical_patterns
@@ -1572,12 +1580,20 @@ def _refuse_in_root_alias_reaching_surface(
         raise error from exc
 
 
-def _canonical_member_patterns(root: Path, member: DecayedMember) -> tuple[str, ...]:
+def _canonical_member_patterns(
+    root: Path,
+    member: DecayedMember,
+    *,
+    scope_path: Path | None = None,
+    scope_pattern: str | None = None,
+) -> tuple[str, ...]:
     """Resolve literal and existing globbed directory prefixes before comparing file languages.
 
     A directory alias in the declaration selects the same future paths as its target.
     Keep each remainder intact, including the original literal-prefix form: today's
     directory matches add canonical spellings without erasing the future language.
+    Each form's lexical_base is the selected prefix spelling, not its canonical target.
+    Project a canonical candidate's tail onto that spelling before applying skip_dirs.
     """
     patterns = []
     for pattern in _member_file_patterns(member.patterns or ("**/*",)):
@@ -1588,8 +1604,19 @@ def _canonical_member_patterns(root: Path, member: DecayedMember) -> tuple[str, 
             if form.remainder is None and canonical_base.is_dir():
                 # A literal pattern selecting a directory supplies no file language.
                 continue
-            if _path_is_excluded(lexical_base, member):
+            if _path_is_excluded(lexical_base, member) or any(
+                part in member.skip_dirs for part in _glob_segments(form.remainder or "")
+            ):
                 continue
+            if scope_path is not None and (
+                scope_path == canonical_base or canonical_base in scope_path.parents
+            ):
+                selected = lexical_base / scope_path.relative_to(canonical_base)
+                if _path_is_excluded(selected, member) or (
+                    scope_pattern is not None
+                    and _scope_intersects_exclusions(selected, scope_pattern, member)
+                ):
+                    continue
             if canonical_base != root and root not in canonical_base.parents:
                 raise UndecidableScopeContainment(
                     f"member pattern component {lexical_base} resolves outside member root {root} "
@@ -1659,7 +1686,11 @@ def _check_member_symlinks(
                         f"{canonical}, but whole-surface containment is undecidable"
                     )
             selected = canonical
-        if _path_is_excluded(selected, member):
+        if (
+            _path_is_mass_excluded(selected, member)
+            if disjoint
+            else _path_is_excluded(selected, member)
+        ):
             has_excluded_entry = True
             continue
         for link in (selected, *selected.parents):
@@ -1900,7 +1931,7 @@ def _content_query_within_member(
                 f"fs.content_query scope component {path} needs explicit file paths below {root} "
                 "to evaluate the content predicate; whole-surface containment is undecidable"
             )
-        if _path_is_excluded(canonical, member) or not member.patterns:
+        if _path_is_mass_excluded(canonical, member) or not member.patterns:
             continue
         relative = canonical.relative_to(root).as_posix()
         for pattern in canonical_patterns:
@@ -2118,7 +2149,12 @@ def ref_within_member(
                 )
                 canonical_covered = _scope_glob_covered(
                     _scope_pattern_from_base(canonical_relative, scope_pattern),
-                    _canonical_member_patterns(root, member),
+                    _canonical_member_patterns(
+                        root,
+                        member,
+                        scope_path=canonical_base,
+                        scope_pattern=scope_pattern or "**/*",
+                    ),
                 )
             if member.patterns and not (
                 canonical_covered or _scope_glob_covered(member_scope_pattern, member.patterns)
@@ -2143,7 +2179,9 @@ def ref_within_member(
                     )
                 continue
             exclusion_scope_pattern = _scope_pattern_from_base("", scope_pattern)
-            if _scope_intersects_exclusions(path, exclusion_scope_pattern, member):
+            if not canonical_covered and _scope_intersects_exclusions(
+                path, exclusion_scope_pattern, member
+            ):
                 continue
             # Existing files can disprove containment, but cannot establish the proof.
             if any(
