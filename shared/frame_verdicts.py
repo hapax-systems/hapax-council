@@ -1452,29 +1452,50 @@ def _refuse_in_root_alias_reaching_surface(
 
 
 def _canonical_member_patterns(root: Path, member: DecayedMember) -> tuple[str, ...]:
-    """Resolve each selected pattern's literal prefix before comparing file languages.
+    """Resolve literal and existing globbed directory prefixes before comparing file languages.
 
     A directory alias in the declaration selects the same future paths as its target.
-    Keep the glob tail intact: today's file witnesses cannot prove that language.
+    Keep each remainder intact, including the original literal-prefix form: today's
+    directory matches add canonical spellings without erasing the future language.
     """
     patterns = []
     for pattern in _member_file_patterns(member.patterns or ("**/*",)):
         prefix, tail, _ = _filesystem_scope_parts(pattern)
         if tail is None:
             prefix, tail = prefix[:-1], prefix[-1]
-        bases = [root.joinpath(*prefix)]
+        bases = [(root.joinpath(*prefix), tail, False)]
         if member.reader == "fs.content_query" and prefix:
             # rglob can encounter the literal prefix at any depth. Resolve those
             # aliases too, including when the scope names a not-yet-created file.
             try:
-                bases.extend(root.rglob(Path(*prefix).as_posix()))
+                bases.extend((base, tail, False) for base in root.rglob(Path(*prefix).as_posix()))
             except (OSError, RuntimeError, ValueError) as exc:
                 raise UndecidableScopeContainment(
                     f"cannot inspect member pattern prefix {Path(*prefix)} below {root}: {exc}; "
                     "containment is undecidable"
                 ) from exc
-        for lexical_base in dict.fromkeys(bases):
+        parts = _glob_segments(pattern)
+        for length in range(len(prefix) + 1, len(parts)):
+            directory_pattern = "/".join(parts[:length])
+            remainder = "/".join(parts[length:])
+            try:
+                entries = (
+                    root.rglob(directory_pattern)
+                    if member.reader == "fs.content_query"
+                    else root.glob(directory_pattern)
+                )
+                bases.extend((entry, remainder, True) for entry in entries)
+            except (OSError, RuntimeError, ValueError) as exc:
+                raise UndecidableScopeContainment(
+                    f"cannot inspect member pattern prefix {directory_pattern} below {root}: {exc}; "
+                    "containment is undecidable"
+                ) from exc
+        for lexical_base, remainder, globbed in dict.fromkeys(bases):
             canonical_base = _resolve_external_scope_path(lexical_base)
+            # Resolve before filtering: a dangling alias must not disappear as a
+            # non-directory. Every existing match supplies its own canonical remainder.
+            if globbed and not canonical_base.is_dir():
+                continue
             if _path_is_excluded(lexical_base, member):
                 continue
             if canonical_base != root and root not in canonical_base.parents:
@@ -1483,7 +1504,7 @@ def _canonical_member_patterns(root: Path, member: DecayedMember) -> tuple[str, 
                     f"to {canonical_base}; containment is undecidable"
                 )
             relative = "" if canonical_base == root else canonical_base.relative_to(root).as_posix()
-            patterns.append(_scope_pattern_from_base(relative, tail))
+            patterns.append(_scope_pattern_from_base(relative, remainder))
     return tuple(patterns)
 
 

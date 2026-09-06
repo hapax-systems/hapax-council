@@ -5184,6 +5184,157 @@ def test_receipt_only_declaration_pattern_parent_alias_refuses_decay(
     assert str(scope) in err
 
 
+@pytest.mark.parametrize("declaration", ["[s-s]bin", "s*", "?bin", "**/[s-s]bin", "bin"])
+@pytest.mark.parametrize("candidate", ["bin", "sbin"])
+@pytest.mark.parametrize("exists", [True, False], ids=["existing", "future"])
+def test_receipt_only_declaration_glob_prefix_alias_refuses_decay(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+    declaration: str,
+    candidate: str,
+    exists: bool,
+) -> None:
+    root = tmp_path / "usr"
+    surface = root / "bin/site_perl"
+    surface.mkdir(parents=True)
+    (root / "sbin").symlink_to("bin", target_is_directory=True)
+    if exists:
+        (surface / "new.py").write_text("selected bytes")
+    pattern = f"{declaration}/site_perl/**/*"
+    assert {p.resolve() for p in root.glob(pattern)} == ({surface / "new.py"} if exists else set())
+    frame_root = _frame_procedure_root(
+        tmp_path / "frame",
+        decayed_root=root,
+        location={"path": str(root), "patterns": [pattern]},
+        reader="fs.glob",
+    )
+    scope = root / candidate / "site_perl/new.py"
+
+    rc, err = _dispatch_receipt_only_scope(tmp_path, monkeypatch, capsys, frame_root, scope)
+
+    assert rc == 10, (
+        f"{declaration=}, {candidate=}, {exists=}: receipt-only main() returned {rc}: {err}"
+    )
+    _assert_frame_refusal_receipt(tmp_path, frame_root, rc, err)
+    if not exists and candidate == "bin":
+        assert str(scope) in err
+
+
+@pytest.mark.parametrize("candidate", ["bin", "lib"])
+@pytest.mark.parametrize("parent_exists", [True, False], ids=["existing-parent", "future-parent"])
+def test_receipt_only_declaration_glob_prefix_every_match_refuses_decay(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+    candidate: str,
+    parent_exists: bool,
+) -> None:
+    root = tmp_path / "usr"
+    aliases = root / "compat"
+    aliases.mkdir(parents=True)
+    for name in ("bin", "lib"):
+        (root / name).mkdir()
+        (aliases / f"s{name}").symlink_to(f"../{name}", target_is_directory=True)
+        if parent_exists:
+            (root / name / "site_perl").mkdir()
+    pattern = "**/s*/site_perl/**/*"
+    assert {p.resolve() for p in root.glob("**/s*") if p.is_symlink()} == {
+        root / "bin",
+        root / "lib",
+    }
+    assert not list(root.glob(pattern))
+    frame_root = _frame_procedure_root(
+        tmp_path / "frame",
+        decayed_root=root,
+        location={"path": str(root), "patterns": [pattern]},
+        reader="fs.glob",
+    )
+    scope = root / candidate / "site_perl/new.py"
+
+    rc, err = _dispatch_receipt_only_scope(tmp_path, monkeypatch, capsys, frame_root, scope)
+
+    _assert_frame_refusal_receipt(tmp_path, frame_root, rc, err)
+    assert "scope_containment_undecidable" in err
+    assert str(scope) in err
+
+
+@pytest.mark.parametrize("candidate, expected_rc", [("bin", 0), ("xbin", 10)])
+def test_receipt_only_declaration_glob_prefix_no_match_keeps_literal_rule(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+    candidate: str,
+    expected_rc: int,
+) -> None:
+    root = tmp_path / "usr"
+    (root / "bin/site_perl").mkdir(parents=True)
+    pattern = "[x-x]bin/site_perl/**/*"
+    assert not list(root.glob("[x-x]bin"))
+    assert not list(root.glob(pattern))
+    frame_root = _frame_procedure_root(
+        tmp_path / "frame",
+        decayed_root=root,
+        location={"path": str(root), "patterns": [pattern]},
+        reader="fs.glob",
+    )
+    scope = root / candidate / "site_perl/new.py"
+    assert not scope.exists()
+    assert scope.resolve() == scope
+
+    rc, err = _dispatch_receipt_only_scope(tmp_path, monkeypatch, capsys, frame_root, scope)
+
+    # No existing prefix supplies an alias: bin is disjoint; future xbin matches lexically.
+    assert rc == expected_rc, err
+    if expected_rc == 10:
+        _assert_frame_refusal_receipt(tmp_path, frame_root, rc, err)
+    else:
+        receipt = json.loads(
+            (tmp_path / "ledger/methodology-dispatch.jsonl").read_text().splitlines()[-1]
+        )
+        assert receipt["ok"] is True and receipt["launched"] is False
+        assert receipt["frame_decayed_members"] == ["legacy-surface"]
+        assert receipt["frame_epoch"] == (frame_root / "_runs/current").resolve().name
+
+
+@pytest.mark.parametrize("kind", ["missing-parent", "permission"])
+def test_receipt_only_declaration_glob_prefix_resolution_failure_is_undecidable(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+    kind: str,
+) -> None:
+    root = tmp_path / "usr"
+    (root / "bin/site_perl").mkdir(parents=True)
+    alias = root / "sbin"
+    alias.symlink_to("missing/bin" if kind == "missing-parent" else "bin", target_is_directory=True)
+    assert list(root.glob("[s-s]bin")) == [alias]
+    frame_root = _frame_procedure_root(
+        tmp_path / "frame",
+        decayed_root=root,
+        location={"path": str(root), "patterns": ["[s-s]bin/site_perl/**/*"]},
+        reader="fs.glob",
+    )
+    if kind == "permission":
+        resolve = Path.resolve
+
+        def denied(path: Path, strict: bool = False) -> Path:
+            if path == alias and strict:
+                raise PermissionError("unreadable globbed parent alias")
+            return resolve(path, strict=strict)
+
+        monkeypatch.setattr(Path, "resolve", denied)
+    scope = root / "bin/site_perl/new.py"
+
+    rc, err = _dispatch_receipt_only_scope(tmp_path, monkeypatch, capsys, frame_root, scope)
+
+    _assert_frame_refusal_receipt(tmp_path, frame_root, rc, err)
+    assert "scope_containment_undecidable" in err
+    assert str(scope) in err
+    assert str(alias) in err
+    assert f"repair or re-declare unresolved component {alias}" in err
+
+
 @pytest.mark.parametrize("kind", ["missing-parent", "permission"])
 @pytest.mark.parametrize("declaration", ["explicit-file", "pattern"])
 def test_receipt_only_parent_alias_resolution_failure_is_undecidable(
