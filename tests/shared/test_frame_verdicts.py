@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import ast
 import fnmatch
 import hashlib
 import json
@@ -718,11 +719,28 @@ def test_missing_root_or_epoch_refuse_with_the_producer_named(tmp_path: Path) ->
     assert "hapax-frame-iteration" in str(excinfo.value)
 
 
+def test_epoch_age_is_declared_independently_of_cadence() -> None:
+    tree = ast.parse(Path(fv.__file__).read_text(encoding="utf-8"))
+    assignments = [
+        node
+        for node in tree.body
+        if isinstance(node, ast.Assign)
+        and any(
+            isinstance(target, ast.Name) and target.id == "FRAME_EPOCH_MAX_AGE_S"
+            for target in node.targets
+        )
+    ]
+    assert len(assignments) == 1
+    assert isinstance(assignments[0].value, ast.Constant)
+    assert assignments[0].value.value == 21600
+    assert fv.FRAME_EPOCH_MAX_AGE_S == 21600
+
+
 @pytest.mark.parametrize("diagnostic", ["reason", "remedy"])
-def test_epoch_older_than_two_cadences_refuses_and_younger_does_not(
+def test_epoch_older_than_accepted_evidence_allowance_refuses_and_younger_does_not(
     tmp_path: Path, diagnostic: str
 ) -> None:
-    limit = timedelta(seconds=fv.FRAME_EPOCH_MAX_AGE_S)
+    limit = timedelta(seconds=21600)
     members = [{"id": "m", "location": {"path": str(tmp_path / "m")}}]
 
     fresh = _procedure_root(

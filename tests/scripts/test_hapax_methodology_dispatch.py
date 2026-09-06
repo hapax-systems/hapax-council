@@ -8746,7 +8746,7 @@ def test_dispatch_refuses_when_the_frame_verdicts_are_stale_naming_the_producer(
     capsys: pytest.CaptureFixture[str],
     diagnostic: str,
 ) -> None:
-    """An epoch older than two iterations of the producer's cadence is not a verdict set; the
+    """An epoch beyond the accepted-evidence reliance allowance cannot govern dispatch; the
     dominator refuses every dispatch and distinguishes pointer age from producer state,
     with publication inspection before any restart."""
     module = _dispatcher_module()

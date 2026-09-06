@@ -3,14 +3,14 @@
 Stated with no estate noun in it: a work-selection point admits a unit of work only after
 consulting the current accountability verdicts; work whose declared effect surface lies wholly
 inside surfaces the verdicts mark as out of accountability is refused with the remedy named, and a
-verdict set that is absent or older than its producer's cadence refuses too, naming the producer to
-run. That is the whole architecture. Everything below it is a binding, declared here so it can be
-swapped:
+verdict set that is absent or older than the declared accepted-evidence allowance refuses too,
+naming the producer to run. That is the whole architecture. Everything below it is a binding,
+declared here so it can be swapped:
 
 - the verdict set is the accepted epoch selected by the frame procedure's atomic
   ``_runs/current`` pointer with a matching accepted ``publish.json`` receipt; a newer rejected
-  attempt does not govern. Epochs are produced by ``hapax-frame-iteration.timer`` every
-  :data:`FRAME_ITERATION_CADENCE_S`;
+  attempt does not govern. The accepted-evidence reliance allowance is
+  :data:`FRAME_EPOCH_MAX_AGE_S`, independent of the producer's collection schedule;
 - the surfaces are the members of the procedure's ``declaration/mass.yaml`` and their declared
   filesystem locations;
 - the effect surface of a unit of work is its task row's ``mutation_scope_refs``;
@@ -43,14 +43,20 @@ DEFAULT_FRAME_PROCEDURE_ROOT = Path("~/Documents/Personal/30-areas/hapax/frame/p
 FRAME_VAULT_ROOT_ENV = "HAPAX_FRAME_VAULT_ROOT"
 DEFAULT_FRAME_VAULT_ROOT = Path("~/Documents/Personal")
 
-#: ``hapax-frame-iteration.timer``: ``OnUnitActiveSec=3h``. A binding, not a law — change it here
-#: when the timer changes, and the tolerated age below follows.
+#: Historical cadence value; no runtime consumer remains. This does not describe the installed
+#: producer schedule and does not determine the accepted-evidence allowance.
 FRAME_ITERATION_CADENCE_S = 3 * 3600
-#: One missed iteration is tolerated (the timer counts from the previous activation, so a slow
-#: run shifts the next one); an older accepted epoch no longer supplies timely verdicts, and a
-#: work-selection point that kept admitting work against six-hour-old verdicts would be exactly
-#: the silent fall-out-of-accountability the frame exists to refuse.
-FRAME_EPOCH_MAX_AGE_S = 2 * FRAME_ITERATION_CADENCE_S
+#: Independent six-hour maximum accepted-evidence age: an evidence-reliance allowance, not a
+#: model of the producer's sampling. A faster schedule permits more missed attempts inside the
+#: same allowance; a slower one can outlast it. Ordinary changes to this producer's collection
+#: schedule or material collection and failure behaviour must reconsider and record whether
+#: this allowance remains appropriate. The actor making the change owes that review and record,
+#: whether human, agent or other governed execution.
+#: Separating the allowance from the schedule removes the coupling that used to prompt review.
+#: This amendment adds no automatic enforcement; a missed review remains a risk.
+#: This supersedes the timer-coupled criterion; it is not retroactive
+#: compliance, semantic-health proof, universal policy or activation permission.
+FRAME_EPOCH_MAX_AGE_S = 21600
 
 #: The producer's own set, copied from `frame/procedure/iteration.py`'s DECAY_RELATIONS: the seven
 #: relations a TRUE under which places a member in DECAYED. The consumer carried three of them until
