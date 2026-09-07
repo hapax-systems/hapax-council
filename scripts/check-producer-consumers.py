@@ -643,9 +643,7 @@ class PathFunctionTable(dict[str, PathFunction]):
         self.capped_expressions: set[str] = set()
         self.unresolved_closures: set[str] = set()
         self.unresolved_paths: set[str] = set()
-        self.helper_results: dict[
-            tuple[int, tuple[tuple[str, str], ...]], tuple[str | None, bool]
-        ] = {}
+        self.helper_results: dict[tuple[int, tuple[tuple[str, str], ...]], _HelperReturn] = {}
         self.definition_defaults: dict[ast.AST, dict[str, str]] = {}
         self.call_bindings: dict[ast.AST, list[dict[str, str]]] = {}
         self.scope_results: dict[ast.AST, dict[tuple, _ScopeEvidence]] = {}
@@ -1531,6 +1529,16 @@ def _constant_value(
         encoded = values.get(f"{_CONSTANT_VALUE_PREFIX}{node.id}")
         if encoded is not None:
             return True, json.loads(encoded)
+    if isinstance(node, ast.IfExp):
+        known, condition = _constant_value(node.test, values, path, path_functions)
+        if known:
+            return _constant_value(
+                node.body if condition else node.orelse, values, path, path_functions
+            )
+        left_known, left = _constant_value(node.body, values, path, path_functions)
+        right_known, right = _constant_value(node.orelse, values, path, path_functions)
+        if left_known and right_known and type(left) is type(right) and left == right:
+            return True, left
     if isinstance(node, ast.Call) and _builtin_str_call(node, values, path, path_functions):
         # `str()` is the empty string and `str(<known scalar>)` is that scalar's text. The path
         # resolver already knows both; the constant channel did not, so an interpolation of `str()`
@@ -1570,8 +1578,13 @@ def _format_constant(
     values: dict[str, str],
     path: Path | None = None,
     path_functions: object | None = None,
+    repo_root: Path | None = None,
 ) -> str | None:
     known, value = _constant_value(node.value, values, path, path_functions)
+    if not known and path is not None and isinstance(path_functions, PathFunctionTable):
+        known, value = _returned_constant(
+            node.value, path, values, path_functions, repo_root=repo_root
+        )
     if not known:
         return None
     spec = ""
@@ -1659,7 +1672,7 @@ def _has_unbounded_format(
                 return True
         if (
             isinstance(item, ast.FormattedValue)
-            and _format_constant(item, values, path, path_functions) is None
+            and _format_constant(item, values, path, path_functions, repo_root) is None
         ):
             if (
                 item.format_spec is not None
@@ -1705,7 +1718,7 @@ def _resolve_path_expr(
             if isinstance(item, ast.Constant) and isinstance(item.value, str):
                 parts.append(_literal_path(item.value))
             elif isinstance(item, ast.FormattedValue):
-                formatted = _format_constant(item, values, path, path_functions)
+                formatted = _format_constant(item, values, path, path_functions, repo_root)
                 if formatted is not None:
                     parts.append(_literal_path(formatted))
                     continue
@@ -1823,7 +1836,11 @@ def _resolve_path_expr(
             # Empty is a known string component, not an unknown path or current directory.
             return "" if not node.keywords else None
         if len(node.args) == 1 and not node.keywords:
-            known, value = _constant_value(node.args[0], values)
+            known, value = _constant_value(node.args[0], values, path, path_functions)
+            if not known:
+                known, value = _returned_constant(
+                    node.args[0], path, values, path_functions, repo_root=repo_root
+                )
             if known:
                 return _literal_path(str(value))
         return _resolve_path_expr(
@@ -1896,95 +1913,21 @@ def _returned_constant(
     path: Path,
     values: dict[str, str],
     path_functions: dict[str, PathFunction],
-    depth: int = 0,
-    context: dict[str, str] | None = None,
+    *,
     repo_root: Path | None = None,
 ) -> tuple[bool, object]:
-    """The scalar a visible helper returns, when the value can be followed to a constant.
-
-    `def descriptor(): return True` followed by `open(descriptor(), 'w')` resolved to the *text*
-    `True` and certified a file of that name, because the type was known only inside the helper and
-    the call site saw an unresolved expression. Descriptor identity is a property of the value, and
-    a value does not stop being an integer by being returned — or by passing through a name.
-
-    **The transfer shapes, enumerated rather than discovered one reviewer at a time.** Each earlier
-    round closed the shape it was shown and left the next one certifying a wrong filename:
-
-    ==============================  ==========  ==========================================
-    shape                           supported   established by
-    ==============================  ==========  ==========================================
-    ``return <literal>``            yes         the return expression itself
-    ``x = f()`` then ``open(x)``    yes         the assignment carries the typed constant
-    ``y = 3`` … ``return y``        yes         the helper's own constant bindings, below
-    ``def f(a): return a``, ``f(3)``  yes       the call's argument, bound to the parameter
-    ``return g()``                  yes         the same folding, one call deeper, bounded
-    ``return x + 1``, ``f(2)``      yes         constant folding over the bound parameter
-    ``return <anything else>``      no          only constant folding, never evaluation
-    ==============================  ==========  ==========================================
-
-    **Naming the last row as a limit is not enforcing it**, and an earlier revision of this
-    docstring said "the boundary treats it as it always has" as though that closed the case. The
-    resolver still follows those forms and still produces a bounded writer, so a prose limit does
-    not survive into the report's claim (root, 2026-09-07). The chain row above is repaired rather
-    than documented for that reason; what remains genuinely unfoldable stays a known gap in the
-    report, not a sentence here.
-
-    The scope built here is the HELPER's, never the caller's: its own constant assignments plus the
-    arguments this call site actually passes. Reading the caller's other bindings for a name that
-    merely shares a spelling would be inventing a value rather than following one.
-    """
-
-    if depth > 4 or not isinstance(node, ast.Call):
+    """Read typed evidence from the same invocation summary as path resolution."""
+    if not isinstance(node, ast.Call) or not isinstance(path_functions, PathFunctionTable):
         return False, None
-    if not isinstance(path_functions, PathFunctionTable):
-        return False, None
-    # Names are resolved in the CONTEXT (imports and lexical scope of the module holding the call),
-    # while constants come from `values`. Passing a helper's constant-only scope as both left the
-    # chained case unable to find the inner function at all, so the repair silently did nothing.
-    resolution = values if context is None else context
-    function = path_functions.resolve(
-        _function_name(node, resolution),
-        path,
-        _lexical_scope(resolution),
-        _import_aliases(resolution),
-    )
-    if function is None or function.return_expr is None:
-        return False, None
-    definition = function.node
-    if not isinstance(definition, (ast.FunctionDef, ast.AsyncFunctionDef)):
-        return False, None
-    # Built with the helper machinery the path resolver already uses, not a second approximation
-    # of Python. A hand-rolled version applied every body assignment and then overlaid the
-    # parameters, which reverses execution order — `def f(held): held = 3; return held` called
-    # with '3' returned the ARGUMENT — and visited assignments after the return, so a dead
-    # rebinding decided the type (review findings, root, 2026-09-07). Order is not a detail here:
-    # it is the difference between a descriptor and a filename.
-    repo_root = function.path.parent if repo_root is None else repo_root
-    scope = _scope_initial_values(
-        definition,
-        dict(resolution),
-        function.path,
-        repo_root,
-        path_functions,
-        function.lexical_prefixes,
-    )
-    supplied = _call_parameter_values(function, node, values, path, repo_root, path_functions)
-    _invalidate_names(scope, {name for name in supplied if not name.startswith("\0")})
-    scope.update(supplied)
-    for statement in definition.body:
-        if isinstance(statement, ast.Return):
-            break
-        if isinstance(statement, (ast.Assign, ast.AnnAssign)):
-            scope = _apply_assignment(statement, scope, function.path, repo_root, path_functions)[0]
-    known, constant = _constant_value(function.return_expr, scope)
-    if known:
-        return True, constant
-    # `return inner()` is the same question one call deeper, and answering it in prose while the
-    # resolver kept following the chain left an unqualified bounded writer. Bounded, because a
-    # self-recursive helper would otherwise not terminate and because depth is not evidence.
-    return _returned_constant(
-        function.return_expr, path, scope, path_functions, depth + 1, resolution, repo_root
-    )
+    result = _helper_return_summary(node, values, path, repo_root or path.parent, path_functions)
+    return (True, json.loads(result.constant)) if result.constant is not None else (False, None)
+
+
+@dataclass(frozen=True)
+class _HelperReturn:
+    pattern: str | None = None
+    unbounded: bool = False
+    constant: str | None = None
 
 
 def _resolve_path_helper(
@@ -1994,6 +1937,17 @@ def _resolve_path_helper(
     repo_root: Path,
     path_functions: dict[str, PathFunction],
 ) -> tuple[str | None, bool]:
+    result = _helper_return_summary(node, values, path, repo_root, path_functions)
+    return result.pattern, result.unbounded
+
+
+def _helper_return_summary(
+    node: ast.Call,
+    values: dict[str, str],
+    path: Path,
+    repo_root: Path,
+    path_functions: dict[str, PathFunction],
+) -> _HelperReturn:
     """Keep a visible helper's literal result separate from its certification certainty."""
     name = _function_name(node, values)
     function = (
@@ -2004,7 +1958,7 @@ def _resolve_path_helper(
         else (path_functions.get(name) or path_functions.get(name.rsplit(".", 1)[-1]))
     )
     if function is None or function.node is None or function.return_expr is None:
-        return None, False
+        return _HelperReturn()
     uncertain = (
         isinstance(path_functions, PathFunctionTable)
         and function.node in path_functions.uncertain_bindings
@@ -2012,22 +1966,22 @@ def _resolve_path_helper(
     if _HELPER_EFFECT_KEY in values:
         # An unknown effect already prevents this helper invocation from returning a bounded
         # path. Keep walking its control flow, but do not recursively expand more helpers.
-        return None, False
+        return _HelperReturn()
     if (
         isinstance(path_functions, PathFunctionTable)
         and function.node not in path_functions.definition_defaults
     ):
         # Registration discovers syntax, but an unreachable definition creates no binding.
-        return None, False
+        return _HelperReturn()
     helper_key = f"{function.path}:{function.node.lineno}"
     stack = values.get(_HELPER_STACK_KEY, "").split("|")
     if helper_key in stack or len(stack) > 12:
-        return None, False
+        return _HelperReturn()
     invocation_globals = _call_global_values(function, values, path, path_functions)
     inherited = dict(invocation_globals)
     if len(function.lexical_prefixes) > 1:
         if function.lexical_prefixes[1] not in _lexical_scope(values):
-            return None, False
+            return _HelperReturn()
         inherited = dict(values)
     inherited[_HELPER_STACK_KEY] = "|".join((*stack, helper_key))
     bound = _scope_initial_values(
@@ -2045,8 +1999,10 @@ def _resolve_path_helper(
     cache = path_functions.helper_results if isinstance(path_functions, PathFunctionTable) else {}
     cache_key = (id(function), tuple(sorted(bound.items())))
     if cache_key in cache:
-        result, unbounded = cache[cache_key]
-        return result, unbounded or uncertain
+        result = cache[cache_key]
+        return _HelperReturn(
+            result.pattern, result.unbounded or uncertain, None if uncertain else result.constant
+        )
     scanner = _PathHelperScanner(
         path=function.path,
         repo_root=repo_root,
@@ -2067,8 +2023,16 @@ def _resolve_path_helper(
     # nested helpers do not repeatedly expand the same bodies. Bound the per-scan cache.
     if len(cache) >= 4096:
         cache.clear()
-    cache[cache_key] = (result, scanner.unbounded_return)
-    return result, scanner.unbounded_return or uncertain
+    constant = (
+        next(iter(scanner.return_constants))
+        if not fallthrough and len(scanner.return_constants) == 1
+        else None
+    )
+    summary = _HelperReturn(result, scanner.unbounded_return, constant)
+    cache[cache_key] = summary
+    return _HelperReturn(
+        summary.pattern, summary.unbounded or uncertain, None if uncertain else summary.constant
+    )
 
 
 def _is_path_annotation(node: ast.expr | None) -> bool:
@@ -4184,6 +4148,16 @@ class _BlockScanner:
                 assigned.extend(stored)
             return _merge_states(assigned)
         if isinstance(statement, ast.If):
+            try:
+                # literal_eval accepts set(), but a source call may shadow that name.
+                if any(isinstance(node, ast.Call) for node in ast.walk(statement.test)):
+                    raise ValueError("condition contains a call")
+                literal_condition = ast.literal_eval(statement.test)
+            except (ValueError, TypeError, RecursionError):
+                pass
+            else:
+                branch = statement.body if literal_condition else statement.orelse
+                return self.scan_block(branch, states, exception_states, exit_states)
             taken = self.scan_block(statement.body, _fork(states), exception_states, exit_states)
             not_taken = (
                 self.scan_block(statement.orelse, _fork(states), exception_states, exit_states)
@@ -4416,6 +4390,7 @@ class _PathHelperScanner(_BlockScanner):
     def __init__(self, **kwargs) -> None:
         super().__init__(**kwargs)
         self.return_values: set[str | None] = set()
+        self.return_constants: set[str | None] = set()
         self.unbounded_return = False
 
     def _scan_expression(self, node: ast.AST, states: list[dict[str, str]]) -> None:
@@ -4433,7 +4408,14 @@ class _PathHelperScanner(_BlockScanner):
             resolved = _resolve_path_expr(
                 call, state, self.path, self.repo_root, self.path_functions
             )
-            if resolved is None:
+            scalar_known, _ = (
+                _returned_constant(
+                    call, self.path, state, self.path_functions, repo_root=self.repo_root
+                )
+                if resolved is None
+                else (False, None)
+            )
+            if resolved is None and not scalar_known:
                 state[_HELPER_EFFECT_KEY] = "1"
             if isinstance(self.path_functions, PathFunctionTable):
                 function = self.path_functions.resolve(
@@ -4467,12 +4449,38 @@ class _PathHelperScanner(_BlockScanner):
             for state in states:
                 if _HELPER_EFFECT_KEY in state:
                     self.return_values.add(None)
+                    self.return_constants.add(None)
                 else:
+                    known, constant = _constant_value(
+                        statement.value, state, self.path, self.path_functions
+                    )
+                    if not known:
+                        known, constant = _returned_constant(
+                            statement.value,
+                            self.path,
+                            state,
+                            self.path_functions,
+                            repo_root=self.repo_root,
+                        )
+                    self.return_constants.add(json.dumps(constant) if known else None)
+                    # Keep scalar evidence for explicit conversion, never certify its spelling.
+                    non_path = known and not isinstance(constant, str)
+                    if not known:
+                        for expression in _path_expressions(
+                            statement.value, self.path, self.path_functions
+                        ):
+                            scalar_known, scalar = _constant_value(
+                                expression, state, self.path, self.path_functions
+                            )
+                            if scalar_known and not isinstance(scalar, str):
+                                non_path = True
                     self.unbounded_return |= _has_unbounded_format(
                         statement.value, state, self.path, self.repo_root, self.path_functions
                     )
                     self.return_values.update(
-                        _resolve_path_expr_variants(
+                        (None,)
+                        if non_path
+                        else _resolve_path_expr_variants(
                             statement.value, state, self.path, self.repo_root, self.path_functions
                         )
                     )
