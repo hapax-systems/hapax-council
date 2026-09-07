@@ -348,17 +348,28 @@ def test_row_p3_an_external_alias_is_the_same_file_under_either_spelling(
     assert rc == 10, "an external hard link is the selected file under either spelling"
 
 
-def test_row_p2_one_aliased_file_does_not_make_a_mixed_glob_wholly_decayed(
+def test_row_p2_a_mixed_glob_over_an_alias_is_undecidable_not_admitted(
     tmp_path, monkeypatch, capsys
 ):
-    """P2: an identity hit on one expansion entry is overlap, not containment of the whole scope.
+    """P2: overlap plus a witness is neither containment nor disjointness.
 
-    My first identity repair returned True as soon as any file the glob expands to aliased a
-    selected one, and `ref_within_member`'s caller reads True as whole-scope containment — so a
-    glob covering a link to the selected file **and** an independently admitted distinct file was
-    refused as wholly decayed (review finding, codex, 2026-09-07, against round 41). A partial
-    scope reported as a total one is the same error as admitting one: both replace a measurement
-    with a convenient answer.
+    This row has been all three answers, which is the point of keeping its history here.
+
+    It began asserting a **refusal**, when my first identity repair returned True as soon as any
+    file a glob expanded to aliased a selected one — `ref_within_member`'s caller reads True as
+    *whole-scope* containment, so a glob covering both a link and an independently admitted
+    distinct file was refused as wholly decayed. The coordinator was right that a partial scope
+    reported as a total one is the same error as admitting one.
+
+    It then asserted **admission**, which is what the partial-scope witness gives: some path in the
+    glob's language is outside every member, so the scope is not wholly inside. Three reviewer
+    families independently called that a critical, and they are right too — one of the files the
+    scope names **is** a decayed file under another spelling, and the witness rule never asks
+    identity, so admission rested on a proof that could not see it.
+
+    Both objections hold because the answer is neither: it is **undecidable**, which is the state
+    the in-root class alias already gets. The scope overlaps the decayed surface and also reaches
+    beyond it; nothing here establishes containment, and nothing establishes disjointness.
     """
 
     root = tmp_path / "surface"
@@ -381,7 +392,8 @@ def test_row_p2_one_aliased_file_does_not_make_a_mixed_glob_wholly_decayed(
     with capsys.disabled():
         print(f"P2 mixed glob over an alias and a distinct file: main()={rc}")
 
-    assert rc == 0, "a glob whose expansion includes an outside file is a partial scope"
+    assert rc == 10, "a glob naming a decayed file under another spelling is not disjoint"
+    assert REFUSED not in err, "and it is not whole containment either — the answer is undecidable"
 
 
 @pytest.mark.parametrize("reader", LOCAL_READERS)
