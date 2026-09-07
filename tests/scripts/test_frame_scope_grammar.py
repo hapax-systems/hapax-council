@@ -7,18 +7,33 @@ scope can denote either a local path or a qualified location, and admitting it b
 These controls are written before the repair, deliberately. They are built to separate three rules
 that the existing 36-case local-only reproduction cannot tell apart:
 
-* **current**: classify by string shape — refuses row B, wrongly admits row A.
-* **local-only**: treat every colon-bearing scope as local — fixes row A, wrongly admits row B.
-* **the contract**: refuse when contained under any plausible meaning — passes both.
+* **current**: classify by string shape — wrongly admits the bare rows A and D.
+* **local-only**: treat every colon-bearing scope as local.
+* **the contract**: refuse when contained under any plausible meaning.
 
-Row B is therefore not decoration. It is the control that a naive fix to row A would break, and the
-reason a namespace correction must not change unrelated member-reader support.
+Measured by running the other two rules against these controls (patching only ``_has_qualifier``,
+no source edited), each is caught, and by a different set of rows:
+
+===================  ===================================================================
+rule                 rows that fail
+===================  ===================================================================
+current              A bare, D bare
+local-only           G, H, I
+refuse-any-colon     A (every spelling), C, D bare, E
+===================  ===================================================================
+
+**Row B is not one of the discriminators, and an earlier revision of this docstring said it was.**
+It refuses under local-only as well, because containment still matches there — the member's own
+lexical spelling is compared, so reading the scope as a local path does not make it disjoint. B
+remains a correct control (contained under the qualified meaning must refuse) but it does not
+separate the contract from local-only; rows G, H and I do.
 
 Rows E-I guard the edges the rule does not settle by itself: the remedy the refusal names must
 actually be reachable (E), an alias must not open a hole the literal spelling would have closed (F),
 and the qualified side must keep its own conservatism — same-host misses and undeclared hosts refuse
 without the remote filesystem (G, H) — while an unparseable qualifier must not fall back into local
-permission (I).
+permission (I). Row A's second assertion is load-bearing for the same reason: a refusal that does
+not name the containment is not the contract's refusal, and refuse-any-colon is caught there.
 """
 
 import pytest
@@ -120,11 +135,13 @@ def test_row_a_local_contained_refuses_under_every_scope_spelling(
 def test_row_b_qualified_contained_refuses_and_guards_the_naive_fix(
     tmp_path, monkeypatch, capsys, scope_form
 ):
-    """B: contained under the QUALIFIED meaning while disjoint under the local one.
+    """B: contained under the QUALIFIED meaning.
 
     A member declaring a remote reader keeps `host:path` as its grammar, so this scope is
-    contained there. Reading every colon-bearing scope as local would find it disjoint and admit
-    it — which is why fixing row A by choosing local everywhere is not the contract.
+    contained there and must refuse. It was built expecting to be the row that separates the
+    contract from local-only; it is not — under local-only it still refuses, because containment
+    matches against the member's lexical spelling rather than needing the qualified reading. Kept
+    because the assertion is true and worth holding, not because it discriminates.
 
     Nothing here contacts a host: the decay verdict comes from the epoch's rows, and containment
     is a comparison of declared locations.
