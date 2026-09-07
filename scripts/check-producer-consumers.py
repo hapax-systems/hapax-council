@@ -1230,6 +1230,22 @@ def _expression_value_name(node: ast.AST) -> str:
     )
 
 
+def _completion_order(node: ast.AST | None) -> Iterator[ast.AST]:
+    """Sub-expressions in the order their evaluation FINISHES: children first, left to right.
+
+    `ast.walk` is breadth-first, which visits an assignment expression before the one nested
+    inside it — the reverse of the order they complete, so the inner binding overwrote the outer
+    one and `f"{(x := (x := 'a') + 'b')}{x}"` reported `aba` where Python builds `abab` (root,
+    2026-09-07).
+    """
+
+    if node is None:
+        return
+    for child in ast.iter_child_nodes(node):
+        yield from _completion_order(child)
+    yield node
+
+
 def _published_bindings(
     node: ast.expr | None,
     values: dict[str, str],
@@ -1252,10 +1268,14 @@ def _published_bindings(
     """
 
     published = values
-    for item in ast.walk(node) if node is not None else ():
+    for item in _completion_order(node):
         if not isinstance(item, ast.NamedExpr) or not isinstance(item.target, ast.Name):
             continue
-        known, bound = _constant_value(item.value, values, path, path_functions)
+        # Against what has been published SO FAR, not against the scope this operand started in:
+        # `(x := 'a') + (x := x + 'b')` binds twice, and the second read of `x` is the first
+        # binding's value. Folding it against the entry scope reported `aabwrongb` for a string
+        # Python builds as `aabab` (root, 2026-09-07).
+        known, bound = _constant_value(item.value, published, path, path_functions)
         if not known:
             continue
         if published is values:

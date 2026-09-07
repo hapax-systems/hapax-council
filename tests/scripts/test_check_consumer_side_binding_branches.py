@@ -1577,3 +1577,41 @@ def test_an_order_dependent_walrus_certifies_nothing(gate, tmp_path, body, truth
         if pattern.startswith(("wrong", "actual"))
     ] == [truth], "the certified writer is the string Python actually builds"
     assert truth not in unwritten(report), "so the reader of that file is not an orphan"
+
+
+@pytest.mark.parametrize(
+    ("body", "truth"),
+    [
+        ('return f\'{(x := "a") + (x := x + "b")}{x}\'', "aabab"),
+        ('return f\'{(x := (x := "a") + "b")}{x}\'', "abab"),
+    ],
+    ids=["a-sibling-rebinds-what-the-next-operand-reads", "an-inner-binding-completes-first"],
+)
+def test_nested_assignment_expressions_publish_in_completion_order(gate, tmp_path, body, truth):
+    """Two assignment expressions in one interpolation, and both orderings were wrong.
+
+    Publishing each `:=` against the scope its OPERAND started in read `x` at its entry value, so
+    `(x := "a") + (x := x + "b")` certified `aabwrongb` where Python builds `aabab`. And walking
+    with `ast.walk` is breadth-first, which reaches an outer assignment before the one nested
+    inside it — the reverse of the order they complete — so `(x := (x := "a") + "b")` published
+    the inner binding last and certified `aba` where Python builds `abab`. Both reproduce at
+    `529e625c3` and at `858e387bd` (root, 2026-09-07), so they are the module's boundary rather
+    than a regression the ordered publication introduced.
+
+    Folding each binding against what has been published so far, in completion order, is one
+    change answering both: it is what "left to right, innermost first" means when the thing being
+    threaded is a scope.
+    """
+
+    report = report_for(
+        gate,
+        tmp_path,
+        f"def value(x):\n    {body}\nopen(value('wrong'), 'w').close()\n"
+        f"Path({truth!r}).read_text()\n",
+    )
+    assert [
+        pattern
+        for pattern in _bounded_writers(gate, tmp_path)
+        if pattern.startswith(("a", "wrong"))
+    ] == [truth], "nested bindings resolve to the string Python actually builds"
+    assert truth not in unwritten(report)
