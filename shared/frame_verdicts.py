@@ -626,7 +626,11 @@ def _member_location(
             if not isinstance(item, str):
                 continue
             item = item.strip()
-            if _has_qualifier(item):
+            # The same reader grammar governs `location.files`, not only `location.roots` — a
+            # declared file under a local reader is a filesystem path whose name may contain a
+            # colon. Gating only the roots loop left this sibling with the original defect, in
+            # the same function.
+            if not local_filesystem_reader and _has_qualifier(item):
                 qualified_files.append(_qualified_location(item)[0])
             else:
                 lexical_files.append(Path(item).expanduser())
@@ -712,14 +716,28 @@ def load_frame_verdicts(
     :class:`FrameVerdictsUnavailable` with the producer named — a work-selection point that
     guessed "nothing decayed" on any of these would be admitting work against no verdicts.
     """
-    root = procedure_root if procedure_root is not None else frame_procedure_root()
+    # `frame_procedure_root()` expands `~` itself, so calling it outside this handler left the
+    # same RuntimeError escaping as an unhandled traceback that the member-root repair closed —
+    # the configured default is `~`-relative, so the ordinary path is the one that escaped.
+    # `root` must be bound before the handler can name it: when `frame_procedure_root()` is the
+    # thing that raises, referring to `root` in the message would fail with a NameError inside
+    # the refusal path and lose the actual cause.
+    declared_root = (
+        str(procedure_root)
+        if procedure_root is not None
+        else (
+            os.environ.get(FRAME_PROCEDURE_ROOT_ENV, "").strip()
+            or str(DEFAULT_FRAME_PROCEDURE_ROOT)
+        )
+    )
     try:
+        root = procedure_root if procedure_root is not None else frame_procedure_root()
         root = root.expanduser().resolve()
     except (OSError, RuntimeError) as exc:
         raise FrameVerdictsUnavailable(
-            f"configured frame procedure root {root} cannot be resolved: {exc}",
-            f"repair filesystem access or symlinks for configured frame procedure root {root} "
-            f"(check {FRAME_PROCEDURE_ROOT_ENV}), then retry the dispatch",
+            f"configured frame procedure root {declared_root} cannot be resolved: {exc}",
+            f"repair filesystem access or symlinks for configured frame procedure root "
+            f"{declared_root} (check {FRAME_PROCEDURE_ROOT_ENV}), then retry the dispatch",
         ) from exc
     epoch_dir: Path | None = None
     try:
@@ -2839,6 +2857,95 @@ def _scope_admission_established(
     return True
 
 
+def _candidate_within_member(
+    candidate: Path | QualifiedLocation,
+    dirlike: bool,
+    member: DecayedMember,
+    scope_pattern: str | None,
+) -> bool:
+    """Containment for one candidate spelling, against a member declared in the same namespace.
+
+    The scope is what is ambiguous; the member is not. A member that declares no location in this
+    candidate's namespace cannot contain it, and must not be read with this candidate's grammar
+    either: normalising an ``ssh.glob`` member's ``find -name`` patterns as filesystem globs
+    refuses a declaration the producer never mis-spelled. Pairing the spelling with the namespace
+    the member actually declares is what keeps reading both meanings from becoming a second
+    grammar error.
+    """
+    if isinstance(candidate, QualifiedLocation):
+        if not member.qualified_roots and not member.qualified_files:
+            return False
+        return qualified_ref_within_member(candidate, dirlike, member, scope_pattern=scope_pattern)
+    if not member.roots and not member.files:
+        return False
+    return ref_within_member(candidate, dirlike, member, scope_pattern=scope_pattern)
+
+
+def _scope_readings(
+    text: str,
+    verdicts: FrameVerdicts,
+    *,
+    council_root: Path,
+    vault_root: Path,
+) -> tuple[
+    list[tuple[tuple[Path | QualifiedLocation, ...], bool, str | None]],
+    Exception | None,
+]:
+    """Every meaning a scope reference can carry, because it declares none of its own.
+
+    A member's location is read with the grammar of the reader the member declares. A scope
+    reference declares no reader, so a colon-bearing relative one denotes a scheme-qualified
+    location *or* a path whose first directory happens to end in a colon, and nothing in the text
+    settles which. Both readings are returned, each keeping its **own** dirlike and glob parsing
+    and its own checkout projections, and the caller must find the scope outside every one of them
+    before admitting it: a scope contained under a meaning the operator may have intended is not
+    made disjoint by another meaning under which it is not.
+
+    Returning only the qualified reading was the defect this replaces. Against a local member
+    ``_qualified_disjoint_established`` compares against no qualified location at all and returns
+    ``True`` — disjointness concluded from an empty comparison, which is the same substitution as
+    the local branch's "namespaces are distinct" and lands in the opposite direction.
+
+    The ``//`` authority form is the one unambiguous case: its local reading would need an empty
+    path segment, which the filesystem grammar refuses as non-canonical, so only one meaning is
+    plausible and only one is returned.
+
+    A reading whose grammar refuses the spelling outright is returned as the second element rather
+    than raised here. It still refuses — a ref that is malformed under any grammar it could be read
+    with is unresolved, and unresolved refuses — but it must not pre-empt a refusal from a reading
+    that *did* parse, which is the more specific answer. ``podium:**/[d]ead.yaml`` is not a
+    filesystem glob, and reporting that instead of the qualified reading's whole-surface
+    undecidability would name the wrong repair. This is not the "does not parse, so read it the
+    other way" fallback: nothing is admitted on the strength of a failed parse.
+    """
+
+    readings: list[tuple[tuple[Path | QualifiedLocation, ...], bool, str | None]] = []
+    deferred: Exception | None = None
+    if _has_qualifier(text):
+        try:
+            qualified_ref, qualified_dirlike, qualified_pattern = _qualified_location(
+                text, scope_ref=True
+            )
+        except (NonCanonicalScopeRef, UndecidableScopeContainment) as exc:
+            deferred = exc
+        else:
+            readings.append(((qualified_ref,), qualified_dirlike, qualified_pattern))
+            if text.split(":", 1)[1].startswith("//"):
+                return readings, deferred
+    try:
+        path, dirlike = resolve_scope_ref(text, council_root=council_root, vault_root=vault_root)
+        _, scope_pattern, _ = _filesystem_scope_parts(text)
+        candidates: tuple[Path | QualifiedLocation, ...] = (
+            path,
+            *_repo_relative_candidates(text, verdicts, council_root=council_root),
+        )
+    except (NonCanonicalScopeRef, UndecidableScopeContainment) as exc:
+        deferred = deferred or exc
+    else:
+        readings.append((candidates, dirlike, scope_pattern))
+    return readings, deferred
+
+
 def scope_within_decayed(
     refs: list[str] | tuple[str, ...],
     verdicts: FrameVerdicts,
@@ -2858,59 +2965,34 @@ def scope_within_decayed(
         )
     for ref in declared_refs:
         text = str(ref).strip()
-        if _has_qualifier(text):
-            qualified_ref, dirlike, scope_pattern = _qualified_location(text, scope_ref=True)
-            hit = next(
-                (
-                    member
-                    for member in verdicts.decayed
-                    if qualified_ref_within_member(
-                        qualified_ref, dirlike, member, scope_pattern=scope_pattern
-                    )
-                ),
-                None,
-            )
-            if hit is None:
+        readings, unreadable = _scope_readings(
+            text, verdicts, council_root=council_root, vault_root=vault_root
+        )
+        hit = next(
+            (
+                member
+                for candidates, dirlike, scope_pattern in readings
+                for member in verdicts.decayed
+                for candidate in candidates
+                if _candidate_within_member(candidate, dirlike, member, scope_pattern)
+            ),
+            None,
+        )
+        if hit is None:
+            for candidates, dirlike, scope_pattern in readings:
                 if (
                     _scope_admission_established(
-                        (qualified_ref,), dirlike, scope_pattern, verdicts.decayed
+                        candidates, dirlike, scope_pattern, verdicts.decayed
                     )
                     is not True
                 ):
                     raise UndecidableScopeContainment(
                         f"scope_containment_undecidable: admission not established for {ref}"
                     )
-                outside.append(str(ref))
-            else:
-                matches.append(ScopeMatch(str(ref), hit.member_id, hit.relation))
-            continue
-        path, dirlike = resolve_scope_ref(
-            str(ref), council_root=council_root, vault_root=vault_root
-        )
-        _, scope_pattern, _ = _filesystem_scope_parts(str(ref))
-        candidates = [
-            path,
-            *_repo_relative_candidates(str(ref), verdicts, council_root=council_root),
-        ]
-        hit = next(
-            (
-                member
-                for member in verdicts.decayed
-                for candidate in candidates
-                if ref_within_member(candidate, dirlike, member, scope_pattern=scope_pattern)
-            ),
-            None,
-        )
-        if hit is None:
-            if (
-                _scope_admission_established(
-                    tuple(candidates), dirlike, scope_pattern, verdicts.decayed
-                )
-                is not True
-            ):
-                raise UndecidableScopeContainment(
-                    f"scope_containment_undecidable: admission not established for {ref}"
-                )
+            # Nothing that parsed refuses this ref, so a spelling no grammar accepts is now the
+            # whole answer and is raised on its own terms.
+            if unreadable is not None:
+                raise unreadable
             outside.append(str(ref))
         else:
             matches.append(ScopeMatch(str(ref), hit.member_id, hit.relation))

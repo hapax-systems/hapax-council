@@ -11,35 +11,40 @@ that the existing 36-case local-only reproduction cannot tell apart:
 * **local-only**: treat every colon-bearing scope as local.
 * **the contract**: refuse when contained under any plausible meaning.
 
-Measured by running the other two rules against these controls (patching only ``_has_qualifier``,
-no source edited), each is caught, and by a different set of rows:
+Each counterfactual is caught, and by a different set of rows. **The intervention must change the
+scope's interpretation only.** Replacing ``_has_qualifier`` outright also changes how a member's
+*declaration* is parsed, because the same helper serves both — under that confound a remote
+member's location becomes lexical and row B refuses for a reason that has nothing to do with the
+scope's reading. Measured with scope-only interventions (``_scope_readings`` alone), on the 58 rows
+here:
 
-===================  ===================================================================
-rule                 rows that fail
-===================  ===================================================================
-current              A bare, D bare
-local-only           G, H, I
-refuse-any-colon     A (every spelling), C, D bare, E
-===================  ===================================================================
+=========================  =======  ==================================================
+rule                       failing  where
+=========================  =======  ==================================================
+qualified reading only      18      A/D/F bare, J, K (both readers)
+local reading only           4      B (both), G, H
+refuse anything ambiguous   33      A, C, E, H, I, J, K — admission gone
+=========================  =======  ==================================================
 
-**Row B is not one of the discriminators, and an earlier revision of this docstring said it was.**
-It refuses under local-only as well, because containment still matches there — the member's own
-lexical spelling is compared, so reading the scope as a local path does not make it disjoint. B
-remains a correct control (contained under the qualified meaning must refuse) but it does not
-separate the contract from local-only; rows G, H and I do.
-
-Rows E-I guard the edges the rule does not settle by itself: the remedy the refusal names must
-actually be reachable (E), an alias must not open a hole the literal spelling would have closed (F),
-and the qualified side must keep its own conservatism — same-host misses and undeclared hosts refuse
-without the remote filesystem (G, H) — while an unparseable qualifier must not fall back into local
-permission (I). Row A's second assertion is load-bearing for the same reason: a refusal that does
-not name the containment is not the contract's refusal, and refuse-any-colon is caught there.
+Row B is a discriminator against the local-only rule; an earlier revision of this docstring said it
+was not, on the strength of the confounded intervention above. Rows E-K guard the edges the rule
+does not settle by itself: the remedy the refusal names must stay reachable (E), an alias must not
+open a hole the literal spelling would have closed (F), the qualified side keeps its own
+conservatism on same-host misses and undeclared hosts (G, H), an unparseable qualifier must not
+fall back into local permission (I), one ambiguous ref must not decide a whole multi-ref scope (J),
+and every unrelated decision must land exactly where its colon-free twin does (K). Row A's second
+assertion is load-bearing for the same reason: a refusal that does not name the containment is not
+the contract's refusal.
 """
 
 import pytest
+import yaml
 
+from shared import frame_verdicts as fv
+from tests.frame_verdict_helpers import git_checkout
 from tests.scripts import test_hapax_methodology_dispatch as dispatch_tests
 from tests.scripts.test_frame_root_entries import _root_dispatch
+from tests.shared.test_frame_verdicts import NOW, _procedure_root, _verdict
 
 
 def _pin_checkout_base(monkeypatch, base):
@@ -61,18 +66,12 @@ LOCAL_READERS = ("fs.content_query", "fs.glob")
 REFUSED = "lies in legacy-surface (scope_exited)"
 REMOTE_DECLARED = "podium.local:/remote/dir"
 
-#: The one open defect these controls isolate: a bare colon-bearing scope enters the qualified
-#: namespace on its first segment, and against a *local* decayed member there is then nothing
-#: qualified to compare it with — so ``_qualified_disjoint_established`` returns True on an empty
-#: comparison and the local containment that does hold is never consulted. Strict, so the repair
-#: that closes it turns these into failures until the marks come off with it.
-BARE = pytest.param(
-    "bare",
-    marks=pytest.mark.xfail(
-        strict=True,
-        reason="ambiguous bare colon scope admitted by empty qualified comparison",
-    ),
-)
+#: Carried as a strict xfail while the defect was open: a bare colon-bearing scope entered the
+#: qualified namespace on its first segment, and against a *local* decayed member there was then
+#: nothing qualified to compare it with, so ``_qualified_disjoint_established`` returned True on an
+#: empty comparison and the local containment that does hold was never consulted. The repair reads
+#: both meanings; strictness is what turned these four into failures the moment it landed.
+BARE = "bare"
 
 
 def _location_for(reader, declared):
@@ -135,13 +134,12 @@ def test_row_a_local_contained_refuses_under_every_scope_spelling(
 def test_row_b_qualified_contained_refuses_and_guards_the_naive_fix(
     tmp_path, monkeypatch, capsys, scope_form
 ):
-    """B: contained under the QUALIFIED meaning.
+    """B: contained under the QUALIFIED meaning, disjoint under the local one.
 
     A member declaring a remote reader keeps `host:path` as its grammar, so this scope is
-    contained there and must refuse. It was built expecting to be the row that separates the
-    contract from local-only; it is not — under local-only it still refuses, because containment
-    matches against the member's lexical spelling rather than needing the qualified reading. Kept
-    because the assertion is true and worth holding, not because it discriminates.
+    contained there and must refuse. Reading every colon-bearing scope as local would find it
+    disjoint and admit it, which is why fixing row A by choosing local everywhere is not the
+    contract — both rows fail under a scope-only local rule.
 
     Nothing here contacts a host: the decay verdict comes from the epoch's rows, and containment
     is a comparison of declared locations.
@@ -169,11 +167,17 @@ def test_row_b_qualified_contained_refuses_and_guards_the_naive_fix(
 
 
 @pytest.mark.parametrize("reader", LOCAL_READERS)
-def test_row_c_disjoint_under_every_meaning_admits(tmp_path, monkeypatch, capsys, reader):
+@pytest.mark.parametrize("scope_form", ["bare", "dot", "absolute"])
+def test_row_c_disjoint_under_every_meaning_admits(
+    tmp_path, monkeypatch, capsys, reader, scope_form
+):
     """C: outside the declared root under both readings, so admission is correct.
 
-    Without this, a repair that refused every colon-bearing scope would look right on A and B
-    while having replaced one wrong answer with another.
+    The **bare** spelling is the one that carries the claim: it is ambiguous, and admitting it
+    requires the scope to be established outside under the local reading *and* the qualified one.
+    An absolute-only control would have established explicit-local admission and said nothing
+    about the ambiguous case, so a repair that refused every colon-bearing scope would look right
+    on A and B while having replaced one wrong answer with another.
     """
 
     root = tmp_path / "notes:archive"
@@ -185,6 +189,9 @@ def test_row_c_disjoint_under_every_meaning_admits(tmp_path, monkeypatch, capsys
     outside = elsewhere / "candidate.txt"
     outside.write_bytes(b"NEEDLE\n")
 
+    relative = f"other:archive/{outside.name}"
+    scope = {"bare": relative, "dot": f"./{relative}", "absolute": str(outside)}[scope_form]
+
     _pin_checkout_base(monkeypatch, tmp_path)
     rc, err = _root_dispatch(
         tmp_path,
@@ -193,10 +200,10 @@ def test_row_c_disjoint_under_every_meaning_admits(tmp_path, monkeypatch, capsys
         _location_for(reader, str(root)),
         reader=reader,
         cwd=tmp_path,
-        candidate=outside,
+        candidate=scope,
     )
     with capsys.disabled():
-        print(f"C {reader}: main()={rc}")
+        print(f"C {reader} scope={scope!r}: main()={rc}")
 
     assert rc == 0
     assert REFUSED not in err
@@ -275,8 +282,9 @@ def test_row_e_the_remedy_the_refusal_names_is_reachable(tmp_path, monkeypatch, 
 
 
 @pytest.mark.parametrize("reader", LOCAL_READERS)
+@pytest.mark.parametrize("scope_form", ["bare", "dot"])
 def test_row_f_a_colon_bearing_alias_into_the_decayed_root_refuses(
-    tmp_path, monkeypatch, capsys, reader
+    tmp_path, monkeypatch, capsys, reader, scope_form
 ):
     """F: an alias must not open a hole the literal spelling closes.
 
@@ -284,6 +292,10 @@ def test_row_f_a_colon_bearing_alias_into_the_decayed_root_refuses(
     on the literal text rather than on where the path leads would find it outside the declared
     root. Aliasing is already refused in the plain namespace; introducing a colon must not be a
     way around that.
+
+    The **bare** spelling is the one that tests the ambiguous hole: the dot spelling never leaves
+    the local branch, so on its own it says nothing about whether the local reading of an ambiguous
+    ref keeps the canonical alias resolution the explicit one has.
     """
 
     root = tmp_path / "notes:archive"
@@ -291,6 +303,9 @@ def test_row_f_a_colon_bearing_alias_into_the_decayed_root_refuses(
     (root / "candidate.txt").write_bytes(b"NEEDLE\n")
     alias = tmp_path / "link:alias"
     alias.symlink_to(root, target_is_directory=True)
+
+    relative = "link:alias/candidate.txt"
+    scope = {"bare": relative, "dot": f"./{relative}"}[scope_form]
 
     _pin_checkout_base(monkeypatch, tmp_path)
     rc, err = _root_dispatch(
@@ -300,10 +315,10 @@ def test_row_f_a_colon_bearing_alias_into_the_decayed_root_refuses(
         _location_for(reader, str(root)),
         reader=reader,
         cwd=tmp_path,
-        candidate="./link:alias/candidate.txt",
+        candidate=scope,
     )
     with capsys.disabled():
-        print(f"F {reader} colon-bearing alias: main()={rc}")
+        print(f"F {reader} colon-bearing alias scope={scope!r}: main()={rc}")
 
     assert rc == 10, "an alias into the decayed root must not be admitted"
 
@@ -387,3 +402,169 @@ def test_row_i_an_unparseable_qualifier_does_not_fall_back_into_local_permission
 
     assert rc == 10, "an unparseable qualifier is undecidable, not locally disjoint"
     assert "authority" in err
+
+
+# --------------------------------------------------------------------------------------------
+# Rows J-M work directly on ``scope_within_decayed``. The properties they pin are about the
+# verdict's shape and about which machinery each interpretation reaches — neither survives being
+# collapsed into a dispatcher exit code, and one of them needs two refs in a single task scope,
+# which the receipt-only dispatch fixture does not carry.
+# --------------------------------------------------------------------------------------------
+
+
+def _local_member(*, root=None, files=None, patterns=("*.txt",), reader="fs.glob"):
+    location = {"patterns": list(patterns)}
+    if files is not None:
+        location["files"] = [str(item) for item in files]
+    elif reader == "fs.content_query":
+        location["roots"] = [str(root)]
+        location["query"] = "NEEDLE"
+    else:
+        location["path"] = str(root)
+    return {
+        "id": "legacy-surface",
+        "reader": {"id": reader, "version": "^1.0.0"},
+        "location": location,
+    }
+
+
+def _decayed(tmp_path, member):
+    procedure = _procedure_root(
+        tmp_path / "procedure",
+        members=[member],
+        verdicts=[_verdict("legacy-surface", "scope_exited")],
+    )
+    if member["reader"]["id"] == "fs.content_query":
+        (procedure / "declaration/params.yaml").write_text(
+            yaml.safe_dump(
+                {
+                    "profile_id": "fixture",
+                    "parameters": {
+                        "max_unit_bytes": {"value": 1 << 20, "why": "test bound"},
+                        "encoding_error_policy": {"value": "strict", "why": "test decoding"},
+                    },
+                }
+            )
+        )
+    return fv.load_frame_verdicts(procedure, now=NOW)
+
+
+def test_row_j_a_contained_ambiguous_ref_does_not_lose_an_unambiguous_outside_ref(tmp_path):
+    """J: one ref's answer must not become the whole task's answer.
+
+    A declared scope can carry several refs. Reading two meanings for one of them adds a way for
+    that ref to refuse — it must not add a way for the *scope* to refuse before the other refs are
+    decided. The contained ambiguous ref belongs in `matches`, the unambiguous outside ref in
+    `outside`, and `all_inside` stays False because they disagree.
+    """
+
+    base = tmp_path / "base"
+    root = base / "notes:archive"
+    root.mkdir(parents=True)
+    (root / "candidate.txt").write_bytes(b"NEEDLE\n")
+    elsewhere = base / "other:archive"
+    elsewhere.mkdir()
+    outside = elsewhere / "candidate.txt"
+    outside.write_bytes(b"NEEDLE\n")
+
+    verdicts = _decayed(tmp_path, _local_member(root=root))
+    result = fv.scope_within_decayed(
+        ["notes:archive/candidate.txt", str(outside)],
+        verdicts,
+        council_root=base,
+        vault_root=base,
+    )
+
+    assert [match.ref for match in result.matches] == ["notes:archive/candidate.txt"]
+    assert result.outside == (str(outside),)
+    assert result.all_inside is False
+
+
+def _twin_outcome(tmp_path, name, tail, *, patterns, extra, reader="fs.glob"):
+    """Run one scope shape against a directory named `name`, returning a comparable outcome.
+
+    `name` differs only in whether the directory carries a colon, so two runs of this helper
+    differ only in whether the scope reference is ambiguous. Anything else that differs between
+    them is the namespace correction reaching work it has no business changing.
+    """
+
+    base = tmp_path / ("colon" if ":" in name else "plain")
+    root = base / name
+    root.mkdir(parents=True)
+    for leaf in ("candidate.txt", "notes.md"):
+        (root / leaf).write_bytes(b"NEEDLE\n")
+    inner = root / "inner"
+    inner.mkdir()
+    (inner / "deep.md").write_bytes(b"NEEDLE\n")
+    for leaf in extra:
+        (base / leaf).write_bytes(b"NEEDLE\n")
+
+    verdicts = _decayed(base, _local_member(root=root, patterns=patterns, reader=reader))
+    ref = f"{name}{tail}"
+    try:
+        result = fv.scope_within_decayed([ref], verdicts, council_root=base, vault_root=base)
+    except Exception as exc:  # noqa: BLE001 - the exception type is part of the outcome
+        return type(exc).__name__
+    return result.all_inside, len(result.matches), len(result.outside)
+
+
+@pytest.mark.parametrize(
+    "tail",
+    ["/candidate.txt", "/", "/*.txt", "/*.md", "/**/*.md", "/inner/deep.md", "/missing.txt"],
+)
+@pytest.mark.parametrize("patterns", [("*.txt",), ("**/*",)], ids=["narrow", "broad"])
+@pytest.mark.parametrize("reader", LOCAL_READERS)
+def test_row_k_the_colon_changes_nothing_but_the_ambiguity(
+    tmp_path, capsys, tail, patterns, reader
+):
+    """K: a scope over a colon-named directory must decide exactly as its colon-free twin.
+
+    This is the control for everything the contract does *not* change. Each interpretation keeps
+    its own dirlike and glob parsing, and the local reading keeps whatever admission basis it had:
+    plain disjointness for some shapes, the canonical outside witness for a broad `fs.glob` one,
+    and — for `fs.content_query` — the earlier undecidable refusal on a broad overlap, which is a
+    reader-specific outcome the correction has no business flattening.
+
+    Predicting each of those outcomes separately would only record what I expected; pinning them
+    to the twin records the contract. The printed line carries what each shape actually decides,
+    so the row cannot be mistaken for two identical refusals compared with each other.
+    """
+
+    colon = _twin_outcome(
+        tmp_path, "notes:archive", tail, patterns=patterns, extra=("loose.md",), reader=reader
+    )
+    plain = _twin_outcome(
+        tmp_path, "notes-archive", tail, patterns=patterns, extra=("loose.md",), reader=reader
+    )
+    with capsys.disabled():
+        print(f"K {reader} tail={tail!r} patterns={patterns}: colon={colon} plain={plain}")
+
+    assert colon == plain, "reading a second meaning changed a decision the colon does not touch"
+
+
+def test_row_m_the_local_reading_keeps_its_checkout_projections(tmp_path):
+    """M: an ambiguous ref is still tried under each declared member's own checkout.
+
+    The dispatcher runs from one checkout while the mass declares members at another, so a
+    repository-relative ref that could never match under the running tree matched under the
+    declared one. That projection belongs to the local reading; giving a colon-bearing ref a
+    second meaning must not cost it the first meaning's reach, or the guard is inert exactly
+    where it runs.
+    """
+
+    running = tmp_path / "running"
+    declared = tmp_path / "declared"
+    git_checkout(running, history="frame scope grammar")
+    git_checkout(declared, history="frame scope grammar")
+    root = declared / "notes:archive"
+    root.mkdir(parents=True)
+    (root / "candidate.txt").write_bytes(b"NEEDLE\n")
+
+    verdicts = _decayed(tmp_path, _local_member(root=root))
+    ref = "notes:archive/candidate.txt"
+    assert not (running / ref).exists(), "the running checkout must not hold the ref itself"
+
+    result = fv.scope_within_decayed([ref], verdicts, council_root=running, vault_root=running)
+
+    assert result.all_inside is True
+    assert [match.member_id for match in result.matches] == ["legacy-surface"]
