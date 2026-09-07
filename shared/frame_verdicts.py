@@ -546,8 +546,7 @@ def _member_location(
         if _has_qualifier(raw.strip()):
             qualified_roots.append(_qualified_location(raw.strip())[0])
             continue
-        if content_query:
-            raw = raw.strip()
+        # Both filesystem readers preserve whitespace in the declared root name.
         producer_root = Path(raw).expanduser()
         lexical_roots.append(producer_root)
         absolute_root = local_path(raw)
