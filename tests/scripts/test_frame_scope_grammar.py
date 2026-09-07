@@ -1,8 +1,19 @@
-"""Ambiguity cannot supply admission: a scope must be disjoint under *every* plausible meaning.
+"""Ambiguity cannot supply admission: a scope needs an admission basis under *every* plausible
+meaning.
 
 The declaration carries reader grammar; a scope reference does not. So a colon-bearing relative
 scope can denote either a local path or a qualified location, and admitting it because the
-*convenient* reading is disjoint is the defect — in either direction.
+*convenient* reading permits it is the defect — in either direction.
+
+**"Disjoint under every meaning" is too narrow, and this file said it for a day.** Disjointness is
+one admission basis; the partial-scope outside witness is another, and it establishes
+*noncontainment* rather than disjointness — which is the only thing `all_inside` claims. Rows C, E,
+K and P2 all rest on that second basis, so the rule as first written described something stricter
+than the controls beneath it enforce, and stricter than the estate's disposition allows. The
+coordinator found the same over-narrow sentence in its own 08:04 disposition and corrected it in
+place on 2026-09-07; this is the matching correction here. Prose that overclaims a rule is the same
+failure as prose that names a limit the code does not keep — the direction differs, the gap between
+what is written and what runs does not.
 
 These controls are written before the repair, deliberately. They are built to separate three rules
 that the existing 36-case local-only reproduction cannot tell apart:
