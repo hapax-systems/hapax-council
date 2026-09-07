@@ -802,6 +802,70 @@ def test_capped_loop_retains_known_sibling_of_dynamic_component(gate, tmp_path: 
     assert any("literal loop iteration cap" in site for site in report.capped_expressions)
 
 
+def test_a_descriptor_held_in_a_variable_is_not_certified_as_a_filename(
+    gate, tmp_path: Path
+) -> None:
+    """A literal is not the only way a descriptor arrives.
+
+    `fd = 3; open(fd, "w")` resolved to the pattern "3" and certified a file of that name.
+    Narrowing the earlier repair to literal integers left this open, which the review caught.
+    """
+
+    _write(
+        tmp_path,
+        "shared/consumer.py",
+        "from pathlib import Path\n"
+        "def emit():\n"
+        "    fd = 3\n"
+        "    open(fd, 'w').close()\n"
+        "def load():\n"
+        "    return Path('3').read_text()\n",
+    )
+    report = gate.analyse_consumer_side(tmp_path, [])
+    assert "3" in _unwritten_patterns(report, "shared/consumer.py")
+    assert not [pair for pair in report.pairs if pair.writer.pattern == "3"]
+
+
+def test_keyword_unpacking_withholds_both_rename_operands(gate, tmp_path: Path) -> None:
+    """`**kw` may carry either descriptor, and the call site does not say which.
+
+    A name scan sees `dst_dir_fd=` when it is written out and nothing when it is unpacked, so
+    the earlier repair was bypassed by a form it never examined. An undetermined keyword set is
+    not an absent one.
+    """
+
+    _write(
+        tmp_path,
+        "shared/consumer.py",
+        "import os\n"
+        "from pathlib import Path\n"
+        "def promote(**kw):\n"
+        "    os.rename('a/tmp.json', 'a/final.json', **kw)\n"
+        "def load():\n"
+        "    return Path('a/final.json').read_text()\n",
+    )
+    report = gate.analyse_consumer_side(tmp_path, [])
+    assert "a/final.json" in _unwritten_patterns(report, "shared/consumer.py")
+    assert not [pair for pair in report.pairs if pair.writer.pattern == "a/final.json"]
+
+
+def test_a_custom_opener_withholds_the_written_path(gate, tmp_path: Path) -> None:
+    """`opener` returns a descriptor of its own choosing, so the literal is not evidence."""
+
+    _write(
+        tmp_path,
+        "shared/consumer.py",
+        "from pathlib import Path\n"
+        "def emit(op):\n"
+        "    open('a/final.json', 'w', opener=op).close()\n"
+        "def load():\n"
+        "    return Path('a/final.json').read_text()\n",
+    )
+    report = gate.analyse_consumer_side(tmp_path, [])
+    assert "a/final.json" in _unwritten_patterns(report, "shared/consumer.py")
+    assert not [pair for pair in report.pairs if pair.writer.pattern == "a/final.json"]
+
+
 def test_empty_str_call_is_withheld_rather_than_read_as_the_current_directory(
     gate, tmp_path: Path
 ) -> None:

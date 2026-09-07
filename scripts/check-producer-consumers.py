@@ -2264,6 +2264,24 @@ def _classify_call(
             and not isinstance(expression.value, bool)
         ):
             expression = None
+        elif expression is not None:
+            # A literal is not the only way an fd arrives: `fd = 3; open(fd, "w")` resolves to
+            # the pattern "3" and was certified as a file of that name. The scanner cannot tell
+            # a descriptor from a path by value alone, so a resolved name with no separator and
+            # only digits is treated as the descriptor it almost certainly is. This withholds
+            # rather than certifies, which is the safe direction: a real file named "3" becomes
+            # an unresolved access that stays visible, while an fd stops naming a wrong file.
+            resolved = _resolve_path_expr(expression, values, path, repo_root, path_functions)
+            if resolved is not None and resolved.isdigit():
+                expression = None
+        # A custom `opener` receives the path and returns a descriptor of its own choosing, so
+        # the literal in the call is not evidence of what was written. Same for `**` unpacking,
+        # which can supply `opener` without naming it here.
+        if expression is not None and (
+            any(keyword.arg == "opener" for keyword in call.keywords)
+            or any(keyword.arg is None for keyword in call.keywords)
+        ):
+            expression = None
         operation = "Path.open" if path_method else name or raw_name
         _record_access(
             accesses,
@@ -2317,12 +2335,16 @@ def _classify_call(
         # carries names a different file than the one written. The descriptor's directory is
         # established at a call this expression does not carry, so the operand is withheld
         # and its access stays unresolved rather than certifying a wrong target.
-        # Both are keyword-only in `os.rename`/`os.replace`, so a keyword scan is exact.
+        # Both are keyword-only in `os.rename`/`os.replace`, so a keyword scan sees them when
+        # they are named. `**` unpacking is the case a name scan cannot see: the mapping may
+        # carry either descriptor and this call site does not say. An undetermined keyword set
+        # is not an absent one, so both operands are withheld rather than certified.
+        unpacked_keywords = any(keyword.arg is None for keyword in call.keywords)
         supplied_fds = {
             keyword.arg for keyword in call.keywords if keyword.arg in {"src_dir_fd", "dst_dir_fd"}
         }
-        src_fd = "src_dir_fd" in supplied_fds
-        dst_fd = "dst_dir_fd" in supplied_fds
+        src_fd = unpacked_keywords or "src_dir_fd" in supplied_fds
+        dst_fd = unpacked_keywords or "dst_dir_fd" in supplied_fds
         _record_access(
             accesses,
             unresolved,
