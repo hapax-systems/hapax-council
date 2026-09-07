@@ -3931,14 +3931,22 @@ class _BlockScanner:
             alternatives: list[dict[str, str]] = []
             for index, value in enumerate(node.values):
                 self._scan_expression(value, continued)
-                # A CONSTANT operand decides the operator. Keeping the alternative it rules
-                # out is not caution: it invents a state the program cannot reach, and a
-                # binding made there certifies an artifact that is never written.
+                # THE INVARIANT, held identically in the `ast.Compare` handler below:
+                # keep every REACHABLE stop point, and only those. A constant operand
+                # decides the operator, so the alternative it rules out is not a cautious
+                # extra — it is a state the program cannot reach, and a binding made there
+                # certifies an artifact that is never written.
+                #
+                # The predicates in the two handlers are opposite because the operators are.
+                # Here `decided is True` means "stops here", so a decided-False operand has
+                # no reachable stop and is skipped; in `Compare`, `decided is True` means the
+                # chain CONTINUES, so it is the True case that has no reachable stop. Both
+                # reduce to the one sentence above; neither may be inverted on its own.
                 decided = _boolop_stops_after(node.op, value)
                 if decided is not False or index == len(node.values) - 1:
-                    alternatives.extend(_fork(continued))
+                    alternatives.extend(_fork(continued))  # stopping here is reachable
                 if decided is True:
-                    break
+                    break  # nothing after a deciding operand can run
             states[:] = _merge_states(alternatives)
             return
         if isinstance(node, ast.Compare) and len(node.comparators) > 1:
@@ -3951,6 +3959,11 @@ class _BlockScanner:
             # program never writes — and suppressed the orphan reader that would have shown it.
             #
             # `left` and the first comparator always evaluate; only the rest are conditional.
+            #
+            # THE INVARIANT, identical to the `ast.BoolOp` handler above: keep every REACHABLE
+            # stop point, and only those. Here `decided is True` means the chain CONTINUES —
+            # the opposite polarity to `BoolOp`, which is why the predicate reads
+            # `is not True` here and `is not False` there. Both say the one sentence above.
             operands = [node.left, *node.comparators]
             self._scan_expression(node.left, states)
             self._scan_expression(node.comparators[0], states)
