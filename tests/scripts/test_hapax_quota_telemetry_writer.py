@@ -10,6 +10,7 @@ import stat
 import subprocess
 import sys
 from concurrent.futures import ThreadPoolExecutor
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from threading import Event
 
@@ -3642,3 +3643,59 @@ def test_no_secret_material_in_output(tmp_path: Path) -> None:
         "hapax-secrets.env",
     ):
         assert token not in text
+
+
+def test_a_ledger_with_no_snapshots_merges_instead_of_raising() -> None:
+    """An empty snapshot tuple is a declared state, and the merge could not survive it.
+
+    The final model_copy computed max(ledger.captured_at, *snapshot_times). With no snapshots
+    that is max() of one non-iterable argument, so the merge raised
+    TypeError: datetime.datetime object is not iterable — measured (review finding, gemini,
+    2026-09-07). QuotaSpendLedger declares quota_snapshots with default=(), so the model permits
+    exactly the state the merge died on, and a first scan before any admission is written reaches
+    it.
+
+    The one-snapshot twin is what keeps the repair honest: the ledger's own instant stays IN the
+    comparison, so a snapshot older than the ledger cannot move captured_at backwards.
+    """
+
+    from shared.quota_spend_ledger import QuotaSpendLedger
+
+    writer = runpy.run_path(str(SCRIPT))
+    merge = writer["keep_newer_valid_admissions"]
+    captured = datetime(2026, 9, 5, tzinfo=UTC)
+
+    def ledger(snapshots):
+        return QuotaSpendLedger.model_validate(
+            {
+                "ledger_id": "quota-spend-ledger-live-20260905T000000Z",
+                "captured_at": captured,
+                "authority_source": "isap:quota-spend-ledger-20260509",
+                "generated_from": ["scripts/hapax-quota-telemetry-writer"],
+                "consumer_permission_after": "private_capacity_routing_tests_only",
+                "evidence_refs": ["local:ledger:test"],
+                "quota_snapshots": snapshots,
+            }
+        )
+
+    empty = ledger(())
+    assert merge(empty, empty, now=captured).captured_at == captured
+
+    older = ledger(
+        (
+            {
+                "snapshot_id": "quota-agy-subscription-live-20260904t000000z",
+                "captured_at": captured - timedelta(days=1),
+                "route_id": "agy.review.direct",
+                "provider": "agy",
+                "capacity_pool": "subscription_quota",
+                "subscription_quota_state": "fresh",
+                "fresh_until": captured + timedelta(seconds=900),
+                "evidence_refs": ["relay-receipt:agy.review.direct:present"],
+                "operator_visible_reason": "test fixture",
+            },
+        )
+    )
+    assert merge(older, older, now=captured).captured_at == captured, (
+        "a snapshot older than the ledger must not move captured_at backwards"
+    )

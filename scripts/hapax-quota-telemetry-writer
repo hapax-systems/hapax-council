@@ -2217,7 +2217,20 @@ def keep_newer_valid_admissions(
     return ledger.model_copy(
         update={
             "quota_snapshots": tuple(snapshots),
-            "captured_at": max(ledger.captured_at, *(row.captured_at for row in snapshots)),
+            # `max(x, *rest)` is `max(x)` when `rest` is empty — one non-iterable argument, so
+            # `TypeError: 'datetime.datetime' object is not iterable` came out of the merge for a
+            # ledger with no quota snapshots (review finding, gemini, 2026-09-07). That is not a
+            # corrupt ledger: `quota_snapshots` is declared `default=()`, so the model permits
+            # exactly the state this line could not survive, and a first scan before any admission
+            # is written reaches it.
+            #
+            # One iterable rather than a first argument plus a splat, so the empty case is the
+            # ordinary `max` of a one-element sequence. Deliberately NOT
+            # `max(<snapshots>, default=ledger.captured_at)`: that would drop the ledger's own
+            # instant from the comparison whenever a snapshot exists, and a snapshot older than
+            # the ledger would then move `captured_at` backwards. The comparison keeps exactly
+            # the operands it always had.
+            "captured_at": max((ledger.captured_at, *(row.captured_at for row in snapshots))),
         }
     )
 
