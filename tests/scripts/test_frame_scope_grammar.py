@@ -347,8 +347,14 @@ def test_row_p_a_hard_link_to_a_selected_file_is_that_file(
     assert rc == expected
 
 
+@pytest.mark.parametrize(
+    "fault",
+    [PermissionError(13, "denied"), OSError(5, "I/O error"), RuntimeError("symlink loop")],
+    ids=["permission", "oserror", "runtime"],
+)
+@pytest.mark.parametrize("linked", [True, False], ids=["same-inode", "distinct-file"])
 def test_row_q_an_unreadable_identity_is_not_evidence_of_disjointness(
-    tmp_path, monkeypatch, capsys
+    tmp_path, monkeypatch, capsys, fault, linked
 ):
     """Q: a filesystem that will not answer has not answered "different".
 
@@ -357,24 +363,47 @@ def test_row_q_an_unreadable_identity_is_not_evidence_of_disjointness(
     returned False on any OSError and called that "the behaviour that was there before", which is
     the fallback-discipline failure exactly: a precondition asserted away rather than checked.
 
-    A genuinely absent path is the other case and must stay separable: it answers, and its answer
-    is that nothing is there. Row D already depends on that.
+    **The injection goes at `Path.stat`, and the row asserts the fault actually fired.** An earlier
+    version patched `_file_identity` itself, which tests the caller's handling of the sentinel and
+    says nothing about whether the capture still turns an error into "absent" — reverting that
+    capture left it green (root's instrumentation finding, 2026-09-07, against its own oracle and
+    then against this row). Patching the thing under test out of the way is not a test of it.
+
+    Both a real hard link and a genuinely distinct file are covered, because the answer here is
+    about the *comparison* rather than about the outcome it would have had.
     """
 
     root = tmp_path / "surface"
     root.mkdir()
     selected = root / "selected.txt"
     selected.write_bytes(b"NEEDLE\n")
-    alias = root / "alias.txt"
-    os.link(selected, alias)
+    other = root / "other.txt"
+    if linked:
+        os.link(selected, other)
+    else:
+        other.write_bytes(b"DIFFERENT\n")
 
-    unreadable = {alias.resolve(), alias}
+    fired = []
+    real_stat = pathlib.Path.stat
     real_identity = fv._file_identity
-    monkeypatch.setattr(
-        fv,
-        "_file_identity",
-        lambda path: fv._UNREADABLE if path in unreadable else real_identity(path),
-    )
+
+    def refuse(self, *args, **kwargs):
+        if self.name == other.name:
+            fired.append(self)
+            raise fault
+        return real_stat(self, *args, **kwargs)
+
+    def identity_under_fault(path):
+        # The real `_file_identity` body runs; only the stat it makes is faulted, and only for the
+        # duration of that call. Reverting its error handling therefore changes this row's result,
+        # which is the whole point — patching the function out would not.
+        monkeypatch.setattr(pathlib.Path, "stat", refuse)
+        try:
+            return real_identity(path)
+        finally:
+            monkeypatch.setattr(pathlib.Path, "stat", real_stat)
+
+    monkeypatch.setattr(fv, "_file_identity", identity_under_fault)
 
     _pin_checkout_base(monkeypatch, tmp_path)
     rc, err = _root_dispatch(
@@ -384,13 +413,45 @@ def test_row_q_an_unreadable_identity_is_not_evidence_of_disjointness(
         {"path": str(root), "patterns": ["selected.txt"]},
         reader="fs.glob",
         cwd=tmp_path,
-        candidate=str(alias),
+        candidate=str(other),
     )
     with capsys.disabled():
-        print(f"Q unreadable identity: main()={rc}")
+        print(f"Q {'link' if linked else 'distinct'} {type(fault).__name__}: main()={rc}")
 
+    assert fired, "the fault never reached a stat, so this row measured nothing"
     assert rc == 10, "an unreadable comparison must not admit"
     assert "identity" in err, "and the refusal must say what could not be read"
+
+
+@pytest.mark.parametrize("scope_name", ["not-created-yet.txt", "nested/deeper.txt"])
+def test_row_q2_a_genuinely_absent_path_still_admits(tmp_path, monkeypatch, capsys, scope_name):
+    """Q2: the companion. Absence is an ANSWER — nothing is there, nothing can be identical to
+    it — so the lexical comparison legitimately stands and a future file keeps its surface. If
+    the unreadable repair had been written as "any stat problem refuses", this row would be the
+    one that caught it."""
+
+    root = tmp_path / "surface"
+    root.mkdir()
+    (root / "selected.txt").write_bytes(b"NEEDLE\n")
+    elsewhere = tmp_path / "elsewhere"
+    elsewhere.mkdir()
+    future = elsewhere / scope_name
+    assert not future.exists()
+
+    _pin_checkout_base(monkeypatch, tmp_path)
+    rc, err = _root_dispatch(
+        tmp_path,
+        monkeypatch,
+        capsys,
+        {"path": str(root), "patterns": ["selected.txt"]},
+        reader="fs.glob",
+        cwd=tmp_path,
+        candidate=str(future),
+    )
+    with capsys.disabled():
+        print(f"Q2 absent {scope_name!r}: main()={rc}")
+
+    assert rc == 0, "a not-yet-created path outside the member is not an unreadable comparison"
 
 
 @pytest.mark.parametrize("spelling", ["plain", "trailing-star"])
