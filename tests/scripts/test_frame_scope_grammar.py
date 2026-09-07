@@ -359,9 +359,13 @@ def test_row_p3_an_external_alias_is_the_same_file_under_either_spelling(
     assert rc == 10, "an external hard link is the selected file under either spelling"
 
 
-@pytest.mark.parametrize("spelling", ["alias-glob", "direct-glob"])
+@pytest.mark.parametrize(
+    ("alias", "pattern"),
+    [(True, "tool*"), (False, "tool*"), (True, "toolb*")],
+    ids=["mixed-with-alias", "mixed-without-alias", "disjoint-only"],
+)
 def test_row_p2_one_aliased_file_does_not_make_a_mixed_glob_wholly_decayed(
-    tmp_path, monkeypatch, capsys, spelling
+    tmp_path, monkeypatch, capsys, alias, pattern
 ):
     """P2: an identity hit on one expansion entry is overlap, not containment of the whole scope.
 
@@ -389,23 +393,34 @@ def test_row_p2_one_aliased_file_does_not_make_a_mixed_glob_wholly_decayed(
     an any-match ban."* No later decision supersedes that. **Reviewer convergence is evidence about
     a mechanism, not authority over a policy**, and I treated four families agreeing as though it
     were the second.
+
+    **The pairing this row first claimed did not exist** (coordinator, 2026-09-07 11:38). The
+    second arm was spelled `toolb*`, which expands to one file nobody selected — a *disjoint-only*
+    scope, admitted by `_local_disjoint_established` without the witness ever running. It could not
+    be the control for the alias case, because the withdrawn guard did not act on it either: two
+    rows agreeing proved nothing when only one of them was in the guard's reach. A control's twin
+    must differ in the one fact under test and in nothing else, so the direct-mixed arm keeps the
+    **same `tool*` pattern** over a fixture where the neighbour is an independent file rather than
+    a second name for the selected one. The disjoint-only case is retained under its own name for
+    the branch it actually exercises. Mutation-verified: re-applying the guard fails
+    `mixed-with-alias` alone and leaves the other two green.
     """
 
     root = tmp_path / "surface"
     root.mkdir()
     selected = root / "tool"
     selected.write_bytes(b"NEEDLE\n")
-    os.link(selected, root / "tool-1.0")
+    neighbour = root / "tool-1.0"
+    if alias:
+        os.link(selected, neighbour)
+    else:
+        neighbour.write_bytes(b"INDEPENDENT\n")
     (root / "toolbug").write_bytes(b"DIFFERENT\n")
-    scope = {
-        # The same shape, two glob spellings; the explicit two-ref form of it is in row J, which
-        # already speaks the multi-ref API. The withdrawn guard refused the alias glob while the
-        # direct glob and the two-ref scope admitted, so three spellings disagreed about one
-        # situation — the tell this module exists for, and the pairing that would have caught my
-        # error before the coordinator had to.
-        "alias-glob": str(root / "tool*"),
-        "direct-glob": str(root / "toolb*"),
-    }[spelling]
+    # `tool*` reaches the selected file, its neighbour and an unselected one: a mixed scope, whose
+    # admission rests on the partial-scope witness. `toolb*` reaches only the unselected file and
+    # is established disjoint one layer earlier. The explicit two-ref form of the mixed case is
+    # row J2, which speaks the multi-ref API directly.
+    scope = str(root / pattern)
 
     _pin_checkout_base(monkeypatch, tmp_path)
     rc, err = _root_dispatch(
@@ -418,9 +433,11 @@ def test_row_p2_one_aliased_file_does_not_make_a_mixed_glob_wholly_decayed(
         candidate=scope,
     )
     with capsys.disabled():
-        print(f"P2 {spelling} over an alias and a distinct file: main()={rc}")
+        print(f"P2 {pattern} with alias={alias}: main()={rc}")
 
-    assert rc == 0, f"{spelling}: a scope reaching outside the member is a partial scope"
+    assert rc == 0, (
+        f"{pattern} with alias={alias}: a scope reaching outside the member is a partial scope"
+    )
 
 
 @pytest.mark.parametrize("reader", LOCAL_READERS)
