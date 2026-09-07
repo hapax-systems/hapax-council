@@ -669,19 +669,22 @@ def observe_quota(
             if best_by_route
             else None
         )
-        # **Readable is not current.** A ledger that parses but was captured BEFORE the admission
+        # **Readable is not current.** A ledger that parses but has not read since the admission
         # this run is holding has not seen that admission, so its silence about the route is not
         # an observation of the admission's absence — it is the same unknown as an unreadable
         # ledger, reached by a different route (review finding, codex, 2026-09-07: a readable old
-        # ledger still revoked a renewal after the unreadable one stopped). A ledger captured at
-        # or after the admission HAS looked, and its silence is a real absence.
-        # `<=`, not `<`: both stamps are second-resolution, so an equal capture cannot show the
-        # ledger looked AFTER the admission was written — it is indistinguishable from looking
-        # before (review finding, codex, 2026-09-07). `observation_supersedes` two hundred lines
-        # below already decides ties this way and says why: "at equal observation times positive
-        # evidence wins: failure/absence has not established a later distinct observation
-        # (admissions have second precision)." This is that same sentence applied one step
-        # earlier, so the two agree instead of contradicting each other.
+        # ledger still revoked a renewal after the unreadable one stopped). Only a ledger captured
+        # STRICTLY AFTER the admission has demonstrably looked, and only then is its silence a
+        # real absence.
+        #
+        # Hence `<=`, not `<`: both stamps are second-resolution, so an equal capture cannot show
+        # the ledger looked after the admission was written — it is indistinguishable from looking
+        # before (codex again, after the first version of this comparison shipped with a strict
+        # `<` and an explanation that said "at or after ... HAS looked", which the code below it
+        # then contradicted). `observation_supersedes` two hundred lines below already decides
+        # ties this way and says why: "at equal observation times positive evidence wins:
+        # failure/absence has not established a later distinct observation (admissions have second
+        # precision)." This is that same sentence applied one step earlier, so the two agree.
         ledger_behind = (
             newest_admission is not None
             and ledger_captured_at is not None
