@@ -43,9 +43,11 @@ DEFAULT_FRAME_PROCEDURE_ROOT = Path("~/Documents/Personal/30-areas/hapax/frame/p
 FRAME_VAULT_ROOT_ENV = "HAPAX_FRAME_VAULT_ROOT"
 DEFAULT_FRAME_VAULT_ROOT = Path("~/Documents/Personal")
 
-#: Historical cadence value; no runtime consumer remains. This does not describe the installed
-#: producer schedule and does not determine the accepted-evidence allowance.
-FRAME_ITERATION_CADENCE_S = 3 * 3600
+#: A ``FRAME_ITERATION_CADENCE_S = 3 * 3600`` constant stood here until 2026-09-07, already
+#: annotated as historical with no runtime consumer. The annotation was not enough: a name that
+#: reads as the producer's cadence invites the next editor to re-derive the allowance below from
+#: it, which is the coupling deliberately removed. Deleted rather than renamed — nothing in the
+#: tree referenced it, and a comment is a weaker guard than an absent symbol.
 #: Independent six-hour maximum accepted-evidence age: an evidence-reliance allowance, not a
 #: model of the producer's sampling. A faster schedule permits more missed attempts inside the
 #: same allowance; a slower one can outlast it. Ordinary changes to this producer's collection
@@ -2906,9 +2908,13 @@ def _scope_readings(
     ``True`` — disjointness concluded from an empty comparison, which is the same substitution as
     the local branch's "namespaces are distinct" and lands in the opposite direction.
 
-    The ``//`` authority form is the one unambiguous case: its local reading would need an empty
-    path segment, which the filesystem grammar refuses as non-canonical, so only one meaning is
-    plausible and only one is returned.
+    There is no unambiguous colon-bearing spelling to carve out. A first revision excepted the
+    ``//`` authority form, on the claim that its local reading would need an empty path segment the
+    filesystem grammar refuses — it does not: :func:`_filesystem_scope_parts` drops empty segments,
+    so ``notes://archive/future.py`` reads as ``notes:/archive/future.py``, a directory whose name
+    ends in a colon, which is exactly the case this function exists for. The exception admitted a
+    contained scope while both of its equivalent spellings refused, and it was the same defect it
+    was carved out of. Both readings are built for every colon-bearing reference.
 
     A reading whose grammar refuses the spelling outright is returned as the second element rather
     than raised here. It still refuses — a ref that is malformed under any grammar it could be read
@@ -2930,8 +2936,6 @@ def _scope_readings(
             deferred = exc
         else:
             readings.append(((qualified_ref,), qualified_dirlike, qualified_pattern))
-            if text.split(":", 1)[1].startswith("//"):
-                return readings, deferred
     try:
         path, dirlike = resolve_scope_ref(text, council_root=council_root, vault_root=vault_root)
         _, scope_pattern, _ = _filesystem_scope_parts(text)

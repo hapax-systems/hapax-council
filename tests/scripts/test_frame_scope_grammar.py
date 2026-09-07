@@ -247,6 +247,57 @@ def test_row_d_a_future_leaf_under_a_contained_root_still_refuses(
     assert rc == 10, "a not-yet-created leaf under a decayed root must not be admitted"
 
 
+@pytest.mark.parametrize(
+    ("spelling", "expected"),
+    [
+        ("notes://archive/future.py", 10),
+        ("./notes:/archive/future.py", 10),
+        ("absolute", 10),
+        ("other://archive/future.py", 0),
+    ],
+    ids=["uri-shaped", "explicit-local", "absolute", "uri-shaped-disjoint"],
+)
+def test_row_n_a_uri_shaped_scope_keeps_its_local_reading(
+    tmp_path, monkeypatch, capsys, spelling, expected
+):
+    """N: `//` does not make a scope unambiguous.
+
+    I excluded the authority form from the second reading on the claim that its local meaning would
+    need an empty path segment the filesystem grammar refuses. It does not: `_filesystem_scope_parts`
+    drops empty segments, so `notes://archive/future.py` reads perfectly well as
+    `notes:/archive/future.py` — a directory whose name ends in a colon, which is the very case this
+    module exists for. The exception was the defect it was carved out of.
+
+    Reported as critical by the codex reader at `893542fa0` with a reproduction; the disjoint row is
+    theirs too, and it is the half that matters — removing the exception must not turn every
+    URI-shaped scope into a refusal.
+    """
+
+    base = tmp_path / "scope-base"
+    inner = base / "notes:/archive"
+    inner.mkdir(parents=True)
+    (inner / "present.py").write_bytes(b"NEEDLE\n")
+    future = inner / "future.py"
+    assert not future.exists(), "existence is not the test here either"
+
+    scope = str(future) if spelling == "absolute" else spelling
+
+    _pin_checkout_base(monkeypatch, base)
+    rc, err = _root_dispatch(
+        tmp_path,
+        monkeypatch,
+        capsys,
+        {"path": str(base), "patterns": ["notes:/**/*.py"]},
+        reader="fs.glob",
+        cwd=base,
+        candidate=scope,
+    )
+    with capsys.disabled():
+        print(f"N scope={scope!r}: main()={rc} (expected {expected})")
+
+    assert rc == expected
+
+
 @pytest.mark.parametrize("reader", LOCAL_READERS)
 def test_row_e_the_remedy_the_refusal_names_is_reachable(tmp_path, monkeypatch, capsys, reader):
     """E: the explicit local spelling the remedy names must actually admit when it is disjoint.
