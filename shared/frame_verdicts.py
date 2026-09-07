@@ -2982,14 +2982,21 @@ def _local_disjoint_established(
     # the withdrawn `aa5939179` a policy change instead of a repair.
     surface = _member_selected_surface(member)
     if surface:
+        # ONE question, asked of every spelling: do the concrete files this candidate denotes
+        # include one of the member's selected files under another name? Only the input differs —
+        # a literal candidate denotes itself, a glob or a directory denotes what it currently
+        # expands to. Written as an if/else around two separate identity calls this read as a
+        # narrowing to the literal case, and two reviewer families in a row reported the broad
+        # spellings as unguarded on that reading (gemini and claude, 2026-09-07). They were
+        # wrong about the behaviour and right that the shape invited it; this says the same
+        # thing with one predicate and one exit.
         if not dirlike and scope_pattern is None:
-            if _identity_reaches_surface((path,), surface):
-                return None
+            denoted: tuple[Path, ...] = (path,)
         else:
             expansion = _canonical_scope_entries(path, scope_pattern or "**/*", member)
-            concrete = tuple(target for target in expansion.values() if target not in surface)
-            if concrete and _identity_reaches_surface(concrete, surface):
-                return None
+            denoted = tuple(target for target in expansion.values() if target not in surface)
+        if denoted and _identity_reaches_surface(denoted, surface):
+            return None
     candidate_forms = _canonical_path_forms(
         path, scope_pattern if scope_pattern is not None else ("**/*" if dirlike else None)
     )
