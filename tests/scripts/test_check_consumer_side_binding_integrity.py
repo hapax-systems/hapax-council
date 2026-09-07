@@ -1394,11 +1394,10 @@ def test_provenance_names_the_sources_git_does_not_track(gate, tmp_path: Path) -
 def test_a_commit_that_tracks_nothing_is_still_a_checkout(gate, tmp_path: Path) -> None:
     """An empty tracked set is a fact about the commit, not about there being no commit.
 
-    The first version of this repair guarded on a non-empty tracked set, which is what
-    `_non_python_source_paths` does for a different purpose. A repository whose commit tracks
-    nothing is still a repository: its untracked source was reported as `dirty: false` with an
-    empty list beside a real HEAD (review finding, cx-blue, 2026-09-07). The discriminator is
-    whether there is a head at all.
+    The first repair guarded on a non-empty tracked set, which is what `_non_python_source_paths`
+    asks for a different purpose. A repository whose commit tracks nothing is still a repository:
+    its untracked source was reported as `dirty: false` with an empty list beside a real HEAD
+    (review finding, cx-blue, 2026-09-07).
 
     Both neighbours are pinned here so the fix cannot drift into either: the same empty commit
     with nothing untracked still reports clean, and a directory that is no checkout claims nothing
@@ -1423,14 +1422,42 @@ def test_a_commit_that_tracks_nothing_is_still_a_checkout(gate, tmp_path: Path) 
     assert measured["dirty"] is True
 
 
+def test_an_enumeration_that_failed_is_unknown_not_a_clean_measurement(
+    gate, tmp_path: Path, monkeypatch
+) -> None:
+    """A `git ls-files` that could not run must not become a list of untracked files.
+
+    The repair above answered the empty-commit case by asking whether a head resolves — which
+    assumes a resolvable head proves the index was read. It does not. Injecting exit 128 over a
+    genuinely clean tracked fixture had the report name a **tracked** file as untracked with
+    `dirty: true` (review finding, cx-blue, 2026-09-07, against that repair).
+
+    So the outcome travels with the result of the same acquisition rather than being inferred
+    from a second one — a later success cannot certify an earlier empty set, and an earlier
+    success cannot license a later failure. Unknown is `null`: not `[]`, which would read as a
+    clean measurement, and not a fabricated list.
+    """
+
+    _write(tmp_path, "value = 1\n")
+    monkeypatch.setattr(gate, "_git_tracking", lambda _root: gate.GitTracking(frozenset(), False))
+    monkeypatch.setattr(gate, "_git_head", lambda _root: ("a" * 40, False))
+
+    measured = gate.analyse_consumer_side(tmp_path, []).measured
+    assert measured["head"] == "a" * 40, "the head is known and says so"
+    assert measured["untracked_sources"] is None, "the enumeration is not"
+    assert measured["dirty"] is False, (
+        "an unreadable index does not upgrade into dirty, and does not invent a file list"
+    )
+
+
 def test_a_directory_that_is_no_checkout_claims_nothing(gate, tmp_path: Path) -> None:
-    """The twin of the row above: no head, so no untracked claim about anything."""
+    """The twin of the two rows above: no head, so no untracked claim about anything."""
 
     _write(tmp_path, "value = 1\n")
     measured = gate.analyse_consumer_side(tmp_path, []).measured
     assert measured["head"] is None
     assert measured["dirty"] is None
-    assert measured["untracked_sources"] == []
+    assert measured["untracked_sources"] is None
 
 
 def test_a_walk_error_from_outside_the_tree_is_recorded_not_raised(gate, tmp_path: Path) -> None:

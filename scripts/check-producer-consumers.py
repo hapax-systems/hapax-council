@@ -54,6 +54,7 @@ from dataclasses import dataclass, field, replace
 from datetime import UTC, datetime
 from functools import lru_cache
 from pathlib import Path, PurePosixPath
+from typing import NamedTuple
 
 import yaml
 
@@ -5240,20 +5241,49 @@ def _nearest_writers(
     return tuple(sorted(writes, key=score)[:3])
 
 
-def _git_tracked_paths(repo_root: Path) -> frozenset[str]:
+class GitTracking(NamedTuple):
+    """One enumeration: the paths it returned, and whether it happened at all.
+
+    The empty frozenset used to mean three different things — no repository, an `ls-files` that
+    failed, and an index that is honestly empty. Every caller only wanted the paths, so the
+    collapse cost nothing until the report's provenance began reasoning from emptiness. Then an
+    untracked source in a repository whose commit tracks nothing was described as a clean tree
+    with a real HEAD, and injecting `ls-files` exit 128 over a genuinely clean tracked fixture had
+    the report name a tracked file as UNTRACKED (review findings, cx-blue, 2026-09-07, the second
+    against the first repair of the first).
+
+    The status travels WITH the result of the same acquisition, deliberately. A second query
+    cannot witness the first: a later success does not certify an earlier empty set as an honest
+    index, and an earlier success does not license a later failure. So there is one read, and it
+    carries its own outcome.
+    """
+
+    paths: frozenset[str]
+    enumerated: bool
+
+
+#: What a caller that did not enumerate knows: nothing, and it says so rather than passing an
+#: empty set that would read as "the index is empty".
+NO_GIT_TRACKING = GitTracking(frozenset(), False)
+
+
+def _git_tracking(repo_root: Path) -> GitTracking:
     if not (repo_root / ".git").exists():
-        return frozenset()
+        return GitTracking(frozenset(), False)
     result = subprocess.run(
         ["git", "-C", str(repo_root), "ls-files", "-z"],
         check=False,
         capture_output=True,
     )
     if result.returncode != 0:
-        return frozenset()
-    return frozenset(
-        item.decode("utf-8", errors="surrogateescape")
-        for item in result.stdout.split(b"\0")
-        if item
+        return GitTracking(frozenset(), False)
+    return GitTracking(
+        frozenset(
+            item.decode("utf-8", errors="surrogateescape")
+            for item in result.stdout.split(b"\0")
+            if item
+        ),
+        True,
     )
 
 
@@ -5590,7 +5620,7 @@ def measured_provenance(
     decayed_members: list[str],
     *,
     measured_sources: Iterable[Path] = (),
-    tracked: frozenset[str] = frozenset(),
+    tracking: GitTracking = NO_GIT_TRACKING,
 ) -> dict[str, object]:
     head, dirty = _git_head(repo_root)
     # **`dirty` described the commit, not the measurement.** `git status` is asked with
@@ -5603,16 +5633,23 @@ def measured_provenance(
     # measured file git does not track is named, and its presence makes the tree dirty whatever
     # `status` said about tracked paths.
     #
-    # Whether this is a checkout is `head`, not `tracked`. Guarding on a non-empty tracked set —
-    # which is what `_non_python_source_paths` does for a different purpose — collapsed two facts:
-    # a repository whose commit tracks nothing is still a repository, and an untracked source in
-    # one was reported as `dirty: false` with an empty list beside a real HEAD (review finding,
-    # cx-blue, 2026-09-07, on the first version of this repair). An empty tracked set is a fact
-    # about the commit; the absence of a head is the fact about there being no commit at all.
-    untracked = (
-        sorted(str(path) for path in measured_sources if str(path) not in tracked)
-        if head is not None
-        else []
+    # Four outcomes, kept apart, because two repairs died collapsing them (review findings,
+    # cx-blue, 2026-09-07, the second against the first):
+    #
+    #   enumerated, non-empty  -> the list is what git does not track
+    #   enumerated, empty      -> a commit that tracks nothing is still a commit; the list stands
+    #   NOT enumerated         -> unknown. `null`, never `[]`: an unreadable index is not a clean
+    #                             measurement, and inventing a list from it named a tracked file
+    #                             as untracked when `ls-files` was made to exit 128
+    #   no head                -> no repository, so nothing is claimed either way
+    #
+    # `dirty` follows the same discipline: an untracked measured source makes it true, and an
+    # unknown enumeration leaves whatever `status` established about tracked paths rather than
+    # upgrading absence of knowledge into cleanliness.
+    untracked: list[str] | None = (
+        sorted(str(path) for path in measured_sources if str(path) not in tracking.paths)
+        if head is not None and tracking.enumerated
+        else None
     )
     epoch = frame_path.expanduser().absolute().parent.name if frame_path is not None else None
     return {
@@ -5637,7 +5674,8 @@ def analyse_consumer_side(
     frame_path: Path | None = None,
     mass_path: Path | None = None,
 ) -> ConsumerSideReport:
-    tracked = _git_tracked_paths(repo_root)
+    tracking = _git_tracking(repo_root)
+    tracked = tracking.paths
     _REPORTED_GLOB_ERRORS.clear()
     _GLOB_ERRORS.clear()
     # `_glob_regex` is memoised, so a second analysis in one process never re-enters the
@@ -5834,7 +5872,7 @@ def analyse_consumer_side(
             decayed_member_ids,
             # What the scan actually read: every source that parsed, plus every one it could not.
             measured_sources=[*imports_by_path, *(gap.path for gap in source_gaps)],
-            tracked=tracked,
+            tracking=tracking,
         ),
         errors=tuple(
             [

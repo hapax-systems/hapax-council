@@ -1646,7 +1646,9 @@ def synthetic_repo(gate, monkeypatch):
     root = Path("/review-fixture")
     relative = Path("shared/consumer.py")
     monkeypatch.setattr(gate, "_iter_python_sources", lambda *_a, **_kw: [root / relative])
-    monkeypatch.setattr(gate, "_git_tracked_paths", lambda _root: frozenset({str(relative)}))
+    monkeypatch.setattr(
+        gate, "_git_tracking", lambda _root: gate.GitTracking(frozenset({str(relative)}), True)
+    )
 
     def analyse(source):
         monkeypatch.setattr(gate, "_read", lambda *_a, **_kw: source)

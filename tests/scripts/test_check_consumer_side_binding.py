@@ -102,8 +102,12 @@ def test_committed_read_pattern_is_counted_as_excluded(
         "def load_config():\n"
         "    return (REPO_ROOT / 'config' / 'tracked.json').read_text()\n",
     )
+    # An enumeration that succeeded and found one tracked path — the state is explicit because
+    # the same empty set used to stand for three different ones.
     monkeypatch.setattr(
-        gate, "_git_tracked_paths", lambda _root: frozenset({"config/tracked.json"})
+        gate,
+        "_git_tracking",
+        lambda _root: gate.GitTracking(frozenset({"config/tracked.json"}), True),
     )
     report = gate.analyse_consumer_side(tmp_path, [])
     assert report.exclusions["committed-in-repository"] == 1
