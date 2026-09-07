@@ -2910,6 +2910,22 @@ def _local_disjoint_established(
     """Compare all canonical candidate forms with every producer-spelled selection form."""
     if not member.roots and not member.files:
         return True  # Local and qualified namespaces are distinct.
+    if not dirlike and scope_pattern is None:
+        # Every comparison below is between path STRINGS, and `_resolve_external_scope_path`
+        # unifies symlinks but not hard links — two directory entries sharing an inode stay two
+        # distinct canonical names. So this predicate certified disjointness for a candidate that
+        # IS one of the member's selected files under another spelling, and said so while
+        # containment said the opposite about the same pair (review finding, glm/gemini/codex,
+        # 2026-09-07; measured here as contained=True and disjoint_established=True together).
+        #
+        # Only the disjointness claim is repaired. Partial-scope semantics are untouched: this
+        # predicate answers "is the candidate outside", never "is the scope wholly inside", and the
+        # witness loop asks it about synthetic paths that alias nothing.
+        selected = frozenset(_canonical_member_entries(member).values()) | {
+            _resolve_external_scope_path(file) for file in _selected_member_files(member)
+        }
+        if selected and _identity_reaches_surface((path,), selected):
+            return None
     if scope_pattern is not None:
         literal = _literal_scope_glob(scope_pattern)
         if literal is not None:
@@ -3040,31 +3056,6 @@ def _qualified_disjoint_established(
     return True
 
 
-def _expansion_aliases_a_member(
-    path: Path, scope_pattern: str | None, members: tuple[DecayedMember, ...]
-) -> bool:
-    """Whether a file the scope currently expands to IS one of a member's selected files.
-
-    Identity only, over paths that exist now: the same limits the containment side states apply
-    here, and a comparison that cannot be made raises rather than answering "no".
-    """
-
-    for member in members:
-        selected = frozenset(_canonical_member_entries(member).values()) | {
-            _resolve_external_scope_path(file) for file in _selected_member_files(member)
-        }
-        if not selected:
-            continue
-        try:
-            expansion = _canonical_scope_entries(path, scope_pattern or "**/*", member)
-        except (OSError, RuntimeError):
-            continue
-        concrete = tuple(target for entry, target in expansion.items() if target not in selected)
-        if concrete and _identity_reaches_surface(concrete, selected):
-            return True
-    return False
-
-
 def _local_partial_scope_established(
     path: Path,
     dirlike: bool,
@@ -3079,16 +3070,6 @@ def _local_partial_scope_established(
     No witness, or an unresolved comparison, supplies no admission evidence.
     """
     if not dirlike and scope_pattern is None:
-        return False
-    # A witness proves that SOME path in the scope's language is outside every member. It cannot
-    # prove that about a path already known to be one of the member's files under another name:
-    # containment reads an identity hit on a broad scope as overlap rather than whole containment
-    # (correctly — the scope also holds files nobody selected), and admission then rested on a
-    # witness that never asks identity, so the scope was admitted while one of its files WAS a
-    # decayed file (review findings, glm/gemini/codex, 2026-09-07). Overlap plus a witness is
-    # neither containment nor disjointness; withholding here yields the undecidable refusal, which
-    # is the third state both answers were being forced into.
-    if _expansion_aliases_a_member(path, scope_pattern, members):
         return False
     pattern = scope_pattern or "**/*"
     for witness in _glob_witnesses(pattern):

@@ -348,28 +348,36 @@ def test_row_p3_an_external_alias_is_the_same_file_under_either_spelling(
     assert rc == 10, "an external hard link is the selected file under either spelling"
 
 
-def test_row_p2_a_mixed_glob_over_an_alias_is_undecidable_not_admitted(
-    tmp_path, monkeypatch, capsys
+@pytest.mark.parametrize("spelling", ["alias-glob", "direct-glob"])
+def test_row_p2_one_aliased_file_does_not_make_a_mixed_glob_wholly_decayed(
+    tmp_path, monkeypatch, capsys, spelling
 ):
-    """P2: overlap plus a witness is neither containment nor disjointness.
+    """P2: an identity hit on one expansion entry is overlap, not containment of the whole scope.
 
-    This row has been all three answers, which is the point of keeping its history here.
+    My first identity repair returned True as soon as any file the glob expands to aliased a
+    selected one, and `ref_within_member`'s caller reads True as whole-scope containment — so a
+    glob covering a link to the selected file **and** an independently admitted distinct file was
+    refused as wholly decayed (review finding, codex, 2026-09-07, against round 41). A partial
+    scope reported as a total one is the same error as admitting one: both replace a measurement
+    with a convenient answer.
 
-    It began asserting a **refusal**, when my first identity repair returned True as soon as any
-    file a glob expanded to aliased a selected one — `ref_within_member`'s caller reads True as
-    *whole-scope* containment, so a glob covering both a link and an independently admitted
-    distinct file was refused as wholly decayed. The coordinator was right that a partial scope
-    reported as a total one is the same error as admitting one.
+    **This row briefly asserted an undecidable refusal instead, and that was withdrawn.** Three
+    reviewer families converged on calling this admission a critical, and I changed the
+    partial-scope witness to withhold on an alias. The coordinator's objection is correct and the
+    written record settles it two ways:
 
-    It then asserted **admission**, which is what the partial-scope witness gives: some path in the
-    glob's language is outside every member, so the scope is not wholly inside. Three reviewer
-    families independently called that a critical, and they are right too — one of the files the
-    scope names **is** a decayed file under another spelling, and the witness rule never asks
-    identity, so admission rested on a proof that could not see it.
+    * The witness establishes **noncontainment**, not disjointness. An alias proves overlap, and
+      overlap does not contradict "this scope is not wholly inside the decayed union" — which is
+      the only claim `all_inside` makes. I made a predicate answer a question it was not asked.
+    * `scope_within_decayed` already admits a **multi-ref** scope when one ref is proved outside
+      while another is contained or undecidable — a deferral I built myself. Refusing the
+      single-ref glob for the same shape contradicts it.
 
-    Both objections hold because the answer is neither: it is **undecidable**, which is the state
-    the in-root class alias already gets. The scope overlaps the decayed surface and also reaches
-    beyond it; nothing here establishes containment, and nothing establishes disjointness.
+    And `coordination-20260904/FRAME-REVIEW-SCOPE-DISPOSITION-20260907.md` states it outright:
+    *"The consumer refuses wholly decayed scopes and does not replace partial-scope semantics with
+    an any-match ban."* No later decision supersedes that. **Reviewer convergence is evidence about
+    a mechanism, not authority over a policy**, and I treated four families agreeing as though it
+    were the second.
     """
 
     root = tmp_path / "surface"
@@ -378,6 +386,15 @@ def test_row_p2_a_mixed_glob_over_an_alias_is_undecidable_not_admitted(
     selected.write_bytes(b"NEEDLE\n")
     os.link(selected, root / "tool-1.0")
     (root / "toolbug").write_bytes(b"DIFFERENT\n")
+    scope = {
+        # The same shape, two glob spellings; the explicit two-ref form of it is in row J, which
+        # already speaks the multi-ref API. The withdrawn guard refused the alias glob while the
+        # direct glob and the two-ref scope admitted, so three spellings disagreed about one
+        # situation — the tell this module exists for, and the pairing that would have caught my
+        # error before the coordinator had to.
+        "alias-glob": str(root / "tool*"),
+        "direct-glob": str(root / "toolb*"),
+    }[spelling]
 
     _pin_checkout_base(monkeypatch, tmp_path)
     rc, err = _root_dispatch(
@@ -387,13 +404,12 @@ def test_row_p2_a_mixed_glob_over_an_alias_is_undecidable_not_admitted(
         {"path": str(root), "patterns": ["tool"]},
         reader="fs.glob",
         cwd=tmp_path,
-        candidate=str(root / "tool*"),
+        candidate=scope,
     )
     with capsys.disabled():
-        print(f"P2 mixed glob over an alias and a distinct file: main()={rc}")
+        print(f"P2 {spelling} over an alias and a distinct file: main()={rc}")
 
-    assert rc == 10, "a glob naming a decayed file under another spelling is not disjoint"
-    assert REFUSED not in err, "and it is not whole containment either — the answer is undecidable"
+    assert rc == 0, f"{spelling}: a scope reaching outside the member is a partial scope"
 
 
 @pytest.mark.parametrize("reader", LOCAL_READERS)
@@ -1050,6 +1066,39 @@ def test_row_j_a_contained_ambiguous_ref_does_not_lose_an_unambiguous_outside_re
     assert [match.ref for match in result.matches] == ["notes:archive/candidate.txt"]
     assert result.outside == (str(outside),)
     assert result.all_inside is False
+
+
+def test_row_j2_the_contained_ref_may_be_a_hard_link_and_the_scope_is_still_partial(tmp_path):
+    """J2: the explicit two-ref form of the shape row P2 tests as a glob.
+
+    An alias is the selected file, so it belongs in `matches` exactly as a directly named file
+    does — and a scope carrying it **plus** a provably outside ref is still partial, because
+    `all_inside` asks whether every ref is inside, not whether any is.
+
+    This is the pairing the withdrawn overlap guard failed: it refused the glob spelling of this
+    situation while this spelling admitted, so the two disagreed about one arrangement of the same
+    three files. Keeping them in one module, asserting the same predicate, is what makes that kind
+    of divergence visible without a coordinator having to reproduce it.
+    """
+
+    base = tmp_path / "base"
+    root = base / "surface"
+    root.mkdir(parents=True)
+    selected = root / "tool"
+    selected.write_bytes(b"NEEDLE\n")
+    alias = root / "tool-1.0"
+    os.link(selected, alias)
+    outside = base / "elsewhere.txt"
+    outside.write_bytes(b"NEEDLE\n")
+
+    verdicts = _decayed(tmp_path, _local_member(root=root, patterns=("tool",)))
+    result = fv.scope_within_decayed(
+        [str(alias), str(outside)], verdicts, council_root=base, vault_root=base
+    )
+
+    assert [match.ref for match in result.matches] == [str(alias)], "the alias IS the member's file"
+    assert result.outside == (str(outside),)
+    assert result.all_inside is False, "one contained ref does not make the whole scope contained"
 
 
 def _twin_outcome(tmp_path, name, tail, *, patterns, extra, reader="fs.glob"):
